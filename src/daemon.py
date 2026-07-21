@@ -118,8 +118,6 @@ def main():
         emit({"type": "status", "text": "⚠️ Суфлёр уже слушает в другом окне — второй запуск отменён"})
         return
     cfg = yaml.safe_load(_cfg_text(ROOT))
-    owner = cfg["sufler"].get("user_name") or "пользователь"
-    user_ctx = cfg["sufler"].get("user_context", "")
     emit({"type": "status", "text": "Загружаю модели…"})
     stt = STT(cfg)
     llm = LLM(cfg)
@@ -208,7 +206,8 @@ def main():
                     # режим собеседования: вопрос с той стороны → мгновенный ответ.
                     # startswith: живая диаризация метит «Собеседник N» — строгое
                     # равенство оставляло ⚡/☁️ мёртвыми всю встречу
-                    if instant_on and speaker.startswith("Собеседник") and looks_question(added):
+                    if instant_on and toggles["hints"] and speaker.startswith("Собеседник") \
+                            and looks_question(added):
                         fire_question(added)
 
     THINK_SYSTEM = (
@@ -226,6 +225,8 @@ def main():
         context_tail = ""
         while not stop.is_set():
             time.sleep(THESIS_EVERY)
+            if not toggles["theses"]:
+                continue
             full = tr.full()
             fresh = full[seen:]
             if len(fresh) < 120:  # мало нового — не гонять модель
@@ -265,6 +266,9 @@ def main():
     _last_fire = [0.0]
     _cloud_last = {"t": 0.0, "words": set()}
     _pending_q = {"text": ""}  # последний детектированный вопрос — панели показывают его над ответом
+    # живые тумблеры UI (`set hints|theses|cloud on|off`): выключенные контуры
+    # молчат до обратного включения; дефолты хранит и присылает приложение
+    toggles = {"hints": True, "theses": True, "cloud": True}
 
     def fire_question(q: str = ""):
         """Один вопрос = один ⚡/☁️: fast_trigger и stt_loop не дублируют друг друга."""
@@ -275,7 +279,7 @@ def main():
         if q.strip():  # панели показывают, НА ЧТО отвечают — без этого ответ висел без вопроса
             _pending_q["text"] = " ".join(q.split())[:200]
         instant_evt.set()
-        if not cloud_live:
+        if not (cloud_live and toggles["cloud"]):
             return
         # Дедуп облака по содержанию вопроса: переформулировка/повтор той же фразы
         # (partial → финал STT, «то есть…») давала второй ответ Haiku на тот же
@@ -325,6 +329,8 @@ def main():
         seen = 0
         while not stop.is_set():
             time.sleep(HINT_EVERY)
+            if not toggles["hints"]:
+                continue
             full = tr.full()
             if len(full) - seen < HINT_MIN_NEW:
                 continue  # разговор не набежал — молчим
@@ -504,7 +510,7 @@ def main():
         seen_len = 0
         while not stop.is_set():
             time.sleep(45)
-            if not cores_dir.exists():
+            if not toggles["theses"] or not cores_dir.exists():
                 continue
             full = tr.full()
             fresh = full[seen_len:]
@@ -567,8 +573,8 @@ def main():
                     "начинается с «— ». СЛОВА НЕ МЕНЯЙ, ничего не добавляй и не "
                     "удаляй. Если это одна реплика одного человека — верни текст "
                     "без изменений.",
-                    # разметке нужна дословность: qwen3.5:4b чуть правит слова
-                    # (валидация режет), gemma держит их точно
+                    # разметке нужна дословность: бенч 21.07 — qwen3.5:4b чуть
+                    # правит слова (валидация режет), gemma держит их точно
                     model=cfg["sufler"].get("markup_model", llm.small),
                     system="Ты расставляешь границы реплик в стенограмме. Слова неприкосновенны.",
                     num_predict=900,
@@ -606,11 +612,15 @@ def main():
                     if labels:
                         out = "".join(llm.stream(
                             f"Стенограмма (метки говорящих условные):\n{sample}\n\n"
-                            "Определи ИМЕНА говорящих ТОЛЬКО по надёжным признакам: "
-                            "человек сам представился, или к нему обратились по имени "
-                            "и он ответил следом. Верни ТОЛЬКО JSON вида "
-                            '{"Собеседник 1": "Имя"} — включай лишь метки, в которых '
-                            "УВЕРЕН. Не уверен ни в ком — верни {}.",
+                            "Определи ИМЕНА говорящих. КРИТИЧНО: имя внутри реплики — "
+                            "почти всегда ОБРАЩЕНИЕ к ДРУГОМУ человеку («Саш, а ты…» "
+                            "говорит НЕ Саша). Говорящий получает имя только если: "
+                            "(а) он сам представился («это Таня», «меня зовут…»), или "
+                            "(б) к нему обратились по имени В ЧУЖОЙ реплике и он ответил "
+                            "СЛЕДУЮЩЕЙ репликой. Имя — в именительном падеже (Таня, не "
+                            "Тань). Не путай с названиями компаний и междометиями. "
+                            'Верни ТОЛЬКО JSON вида {"Собеседник 1": "Имя"} — лишь метки, '
+                            "в которых УВЕРЕН. Не уверен ни в ком — верни {}.",
                             model=cfg["sufler"].get("think_model", llm.small),
                             system="Ты сопоставляешь имена говорящим по стенограмме. Только JSON.",
                         ))
@@ -621,10 +631,22 @@ def main():
                             pairs = {}
                         for label, name in pairs.items():
                             name = str(name).strip().strip(".,!«»\"").capitalize()
-                            # имя обязано реально звучать в тексте — защита от галлюцинаций
+                            # гвард «обращение ≠ говорящий»: если имя звучит ТОЛЬКО в
+                            # репликах самой метки и это не самопредставление — отказ
+                            # («Саш, ну а кто…» помечало говорящего Сашей — 21.07)
+                            own_only = False
+                            if name:
+                                lines_with = [ln for ln in sample.splitlines()
+                                              if name.lower() in ln.lower()]
+                                own = [ln for ln in lines_with if ln.startswith(f"{label}:")
+                                       or f"**{label}**" in ln]
+                                intro = re.search(
+                                    rf"(это|я|меня зовут)\s+{re.escape(name)}", sample, re.I)
+                                own_only = bool(lines_with) and len(own) == len(lines_with) \
+                                    and not intro
                             if (label in labels and name and name.replace("-", "").isalpha()
-                                    and 2 <= len(name) <= 15 and name.lower() != owner.lower()
-                                    and name.lower() in sample.lower()
+                                    and 3 <= len(name) <= 15 and name.lower() != OWNER.lower()
+                                    and name.lower() in sample.lower() and not own_only
                                     and name not in renamed.values()):
                                 renamed[label] = name
                                 tr.rename_speaker(label, name)
@@ -644,7 +666,7 @@ def main():
                         system="Ты определяешь имя говорящего по стенограмме. Одно слово или NONE.",
                     ))
                     name = out.strip().split()[0].strip(".,!«»\"") if out.strip() else ""
-                    if (name and name.upper() != "NONE" and name.lower() != owner.lower()
+                    if (name and name.upper() != "NONE" and name.lower() != OWNER.lower()
                             and name.replace("-", "").isalpha() and 2 <= len(name) <= 15):
                         tr.rename_speaker("Собеседник", name.capitalize())
                         emit({"type": "rename", "from": "Собеседник", "to": name.capitalize()})
@@ -717,6 +739,8 @@ def main():
         seen_notes = 0
         while not stop.is_set():
             time.sleep(600 if quiet else 300)  # в тихом режиме 26b фоном — реже
+            if not toggles["theses"]:
+                continue
             notes = tr.notes()
             if len(notes) - seen_notes < 3:
                 continue  # мало новых заметок — глубокому нечего пересматривать
@@ -822,6 +846,13 @@ def main():
                 cloud_evt.set()  # ручной запрос облачного ответа
             elif cmd == "summary":
                 threading.Thread(target=_do_summary, daemon=True).start()
+            elif cmd.startswith("set "):
+                parts = cmd.split()
+                if len(parts) == 3 and parts[1] in toggles and parts[2] in ("on", "off"):
+                    toggles[parts[1]] = parts[2] == "on"
+                    ru = {"hints": "подсказки", "theses": "тезисы", "cloud": "Claude"}
+                    state = "включены" if toggles[parts[1]] else "выключены"
+                    emit({"type": "status", "text": f"⚙️ {ru[parts[1]]} {state}"})
         stop.set()  # stdin закрылся — родитель умер
 
     threads = [threading.Thread(target=f, daemon=True) for f in (

@@ -4,7 +4,7 @@
 Живая лента режет звук 3с-чанками и решает мгновенно — это потолок качества.
 Здесь — глобально, как MacWhisper: сегментация голосов по всей записи, STT по
 сегментам, имена из разговора. Козырь, которого у MacWhisper нет: каналы
-записаны РАЗДЕЛЬНО — голос из mic-канала с максимальным временем = владелец (user_name)
+записаны РАЗДЕЛЬНО — голос из mic-канала с максимальным временем = владелец
 (его микрофон), собеседники звонка живут в blackhole-канале.
 
 Конвейер: daemon (Стоп) → rebuild_transcript.py <live.md>
@@ -44,10 +44,6 @@ def _cfg_text(root):
         p = root / "config" / "config.example.yaml"
     return p.read_text(encoding="utf-8")
 
-try:  # имя владельца mic-канала — из конфига
-    OWNER = (yaml.safe_load(_cfg_text(ROOT))["sufler"].get("user_name") or "Я").strip()
-except Exception:  # noqa: BLE001
-    OWNER = "Я"
 SEG_S, OVERLAP_S = 25.0, 1.0
 WAIT_WAV_S = 45  # демон финализирует .wav параллельно нашему старту
 
@@ -132,10 +128,14 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]]) -> dict[str, str]:
                   "options": {"num_ctx": 8192},
                   "messages": [
                       {"role": "system", "content": (
-                          "По репликам определи ЛИЧНЫЕ имена говорящих (Сергей, Юля): кто "
-                          "представился, к кому обращались. Обращения («коллеги», «ребята», "
-                          "«друзья»), должности и роли именем НЕ являются — для них «?». "
-                          "Верни СТРОГО JSON {\"Собеседник 1\":\"Имя\","
+                          "По репликам определи ЛИЧНЫЕ имена говорящих (Сергей, Юля). "
+                          "КРИТИЧНО: имя внутри реплики — почти всегда ОБРАЩЕНИЕ к ДРУГОМУ "
+                          "(«Саш, а ты…» говорит НЕ Саша; Саша — тот, кто отвечает следом). "
+                          "Имя присваивается говорящему только если он представился сам или "
+                          "ответил сразу после обращения к нему. Имена — в именительном "
+                          "падеже (Таня, не Тань). Обращения («коллеги», «ребята»), "
+                          "должности, названия компаний и междометия именем НЕ являются — "
+                          "для них «?». Верни СТРОГО JSON {\"Собеседник 1\":\"Имя\","
                           "\"Собеседник 2\":\"?\"} — «?» если имя не звучало. Не выдумывай.")},
                       {"role": "user", "content": sample},
                   ]},
@@ -170,10 +170,29 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     chan: dict[str, str] = {}  # метка → канал-источник звука
     next_n = 1
 
+    def merge_dwarfs(segs: list[tuple[float, float, int]],
+                     min_dur: float) -> list[tuple[float, float, int]]:
+        """Кластеры-карлики (< min_dur суммарно) — осколки кластеризации
+        (встреча 21.07: 23 «голоса» в канале звонка): вливаем их сегменты
+        во временно ближайший крупный кластер — текст не теряется."""
+        durs: dict[int, float] = {}
+        for s, e, k in segs:
+            durs[k] = durs.get(k, 0.0) + (e - s)
+        big = {k for k, d in durs.items() if d >= min_dur} or set(durs)
+        bigsegs = [t for t in segs if t[2] in big]
+        if not bigsegs:
+            return segs
+
+        def nearest_big(s: float, e: float) -> int:
+            return min(bigsegs, key=lambda x: min(abs(x[0] - e), abs(s - x[1])))[2]
+        return [(s, e, k if k in big else nearest_big(s, e)) for s, e, k in segs]
+
     if bh_p is not None:
         bh, sr = load_wav(bh_p)
         if len(bh) > sr * 20:
-            bh_segs = diarize_channel(bh, sr)
+            # в звонке участники говорят подолгу — кластер короче 25с почти
+            # наверняка осколок чьего-то голоса, не отдельный человек
+            bh_segs = merge_dwarfs(diarize_channel(bh, sr), 25.0)
             mapping: dict[int, str] = {}
             for s, e, k in bh_segs:
                 if k not in mapping:
@@ -191,17 +210,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
             bh_iv = [(s, e) for s, e, _ in segments]
             mic_segs = [t for t in mic_segs
                         if not any(overlap_frac((t[0], t[1]), iv) > 0.5 for iv in bh_iv)]
-            durs: dict[int, float] = {}
-            for s, e, k in mic_segs:
-                durs[k] = durs.get(k, 0.0) + (e - s)
-            # кластеры-карлики (<10с суммарно) — артефакты порога на комнатной
-            # акустике (реальная встреча дала 28 «голосов»): вливаем их сегменты
-            # во временно ближайший крупный кластер — текст не теряется
-            big = {k for k, d in durs.items() if d >= 10.0} or set(durs)
-            bigsegs = [t for t in mic_segs if t[2] in big]
-            def nearest_big(s: float, e: float) -> int:
-                return min(bigsegs, key=lambda x: min(abs(x[0] - e), abs(s - x[1])))[2]
-            mic_segs = [(s, e, k if k in big else nearest_big(s, e)) for s, e, k in mic_segs]
+            mic_segs = merge_dwarfs(mic_segs, 10.0)
             durs = {}
             for s, e, k in mic_segs:
                 durs[k] = durs.get(k, 0.0) + (e - s)
