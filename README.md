@@ -24,7 +24,7 @@ Charoite listens to your meetings (microphone + system audio, no bots joining ca
 ## Quick start
 
 ```bash
-git clone https://github.com/charoiteai/charoite && cd charoite
+git clone https://github.com/charoiteai/Charoite_audio && cd charoite
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp config/config.example.yaml config/config.yaml   # then set user_name & graph_dir
 .venv/bin/python src/main.py                        # CLI mode: live transcript + hints
