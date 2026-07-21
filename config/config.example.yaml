@@ -20,8 +20,11 @@ stt:
 llm:
   base_url: http://localhost:11434   # Ollama
   model: qwen3.6:35b-a3b             # основная модель (подсказки, саммари, имена)
-  small_model: gemma4:latest         # лёгкая (живые тезисы, классификация)
+  small_model: qwen3.5:4b            # лёгкая (тезисы, классификация) — 3.4GB
   fallback_model: gemma4:latest
+  # Пресеты (см. docs/MODELS.md):
+  #  16GB RAM:  model: gemma4:latest · small_model: qwen3.5:2b
+  #  English:   stt.backend: parakeet · промпты в sufler.role — на английский
   max_context_chars: 6000
   temperature: 0.4
   num_ctx: 8192                      # обязательный: без него KV-кэш раздувается
@@ -52,6 +55,7 @@ sufler:
   live_diarize: true      # живая диаризация «Собеседник 1/2/…»
   live_diarize_threshold: 0.45
   live_dialog_markup: true  # лёгкая модель расставляет реплики внутри абзацев
+  markup_model: gemma4:latest  # разметке нужна дословность — gemma не правит слова
 
   # Роль суфлёра: под какие встречи затачивать подсказки. Правьте свободно.
   role: |

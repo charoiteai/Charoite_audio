@@ -43,15 +43,19 @@ speed.
 - `think: false` everywhere: reasoning mode moves output into the thinking
   field (empty content) and adds ~10 s of latency.
 
-## Light model: gemma4 (e4b)
+## Light model: qwen3.5:4b
 
-Live theses, classification, dialogue markup inside paragraphs, draft
-minutes — everything that must run every few seconds in parallel with the
-main model.
+Live theses, classification, draft minutes — everything that must run every
+few seconds in parallel with the main model.
 
-- ~0.36 s per classification, ~92% accuracy on our tasks.
-- Fits in RAM alongside qwen (~30 GB total) so background loops never
-  compete with the main model for loading.
+- **Our benchmark vs gemma4:e4b** (July 2026, real assistant tasks):
+  more accurate question classification (e4b failed a direct question),
+  theses in 2.9 s vs 3.3 s without filler preambles, and 3.4 GB RAM vs
+  9.6 GB — almost 3x lighter next to the main model.
+- The exception is **dialogue markup** (`markup_model: gemma4:latest`):
+  words must stay verbatim there, and qwen3.5:4b tends to slightly polish
+  them; gemma keeps the text exact.
+- Very low RAM — `qwen3.5:2b` (edge-class model of the same family).
 
 ## Diarization: ERes2Net (3D-Speaker)
 
@@ -73,6 +77,27 @@ Speaker embeddings — [ERes2Net](https://github.com/modelscope/3D-Speaker)
 Some Ollama Modelfiles ship with a 262144 context default — without an
 explicit `num_ctx` the KV cache balloons by gigabytes and generation slows
 down several-fold. Every Charoite call passes `num_ctx: 8192` explicitly.
+
+## English meetings
+
+The default STT targets Russian. For English audiences:
+
+- **Parakeet TDT 0.6B v3** (`stt.backend: parakeet`) — 6.32% WER on the Open
+  ASR Leaderboard vs 7.44% for Whisper, up to thousands of times real-time;
+  already supported in the config.
+- **Moonshine** — streaming by design (words appear as you speak, ~107 ms
+  latency, models from 27 MB) — a candidate for early question detection
+  instead of a server-side streaming STT.
+- `whisper-large-v3-turbo` — the multilingual fallback (100+ languages).
+
+## Phones (roadmap)
+
+Memory budget: a 6 GB phone realistically gives a model ~3–3.5 GB. The
+working mobile stack: **Moonshine Tiny/Base** (27–245 MB, CPU) or ANE-based
+ASR + **qwen3.5:0.8b/2b** (~25–40 tok/s on phones) for theses and summaries.
+On iOS additionally: the built-in ~3B Foundation Models (iOS 26+, zero
+download) and Core AI for native Swift inference; diarization via ANE
+pipelines. Model choice stays in the config.
 
 ## Swapping models
 
