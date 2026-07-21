@@ -1,0 +1,9 @@
+numpy
+sounddevice
+pyyaml
+requests
+websockets
+rich
+onnx-asr
+onnxruntime
+mcp

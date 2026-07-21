@@ -1,0 +1,11 @@
+config/config.yaml
+transcripts/
+recordings/
+logs/
+models/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+CLAUDE.md
+.env
