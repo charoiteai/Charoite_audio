@@ -22,7 +22,7 @@
 ## Быстрый старт
 
 ```bash
-git clone https://github.com/charoiteai/Charoite_audio && cd charoite
+git clone https://github.com/charoiteai/Charoite_audio && cd Charoite_audio
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp config/config.example.yaml config/config.yaml   # впишите user_name и graph_dir
 .venv/bin/python src/main.py                        # CLI: живая стенограмма + подсказки
