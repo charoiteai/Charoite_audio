@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Ruff (errors only — style is not gated)
+        run: pipx run ruff check --select E9,F src/
+      - name: Byte-compile all sources
+        run: python -m compileall -q src/
+      - name: Example config is valid YAML with required keys
+        run: |
+          pip -q install pyyaml
+          python - <<'EOF'
+          import yaml
+          cfg = yaml.safe_load(open("config/config.example.yaml"))
+          for path in ("audio.samplerate", "stt.backend", "llm.model",
+                       "llm.num_ctx", "sufler.user_name", "log.transcripts_dir"):
+              node = cfg
+              for k in path.split("."):
+                  assert k in node, f"missing key: {path}"
+                  node = node[k]
+          print("config example: ok")
+          EOF

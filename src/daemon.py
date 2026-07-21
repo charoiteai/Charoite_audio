@@ -118,6 +118,8 @@ def main():
         emit({"type": "status", "text": "⚠️ Суфлёр уже слушает в другом окне — второй запуск отменён"})
         return
     cfg = yaml.safe_load(_cfg_text(ROOT))
+    owner = cfg["sufler"].get("user_name") or "пользователь"
+    user_ctx = cfg["sufler"].get("user_context", "")
     emit({"type": "status", "text": "Загружаю модели…"})
     stt = STT(cfg)
     llm = LLM(cfg)
@@ -645,7 +647,7 @@ def main():
                                 own_only = bool(lines_with) and len(own) == len(lines_with) \
                                     and not intro
                             if (label in labels and name and name.replace("-", "").isalpha()
-                                    and 3 <= len(name) <= 15 and name.lower() != OWNER.lower()
+                                    and 3 <= len(name) <= 15 and name.lower() != owner.lower()
                                     and name.lower() in sample.lower() and not own_only
                                     and name not in renamed.values()):
                                 renamed[label] = name
@@ -666,7 +668,7 @@ def main():
                         system="Ты определяешь имя говорящего по стенограмме. Одно слово или NONE.",
                     ))
                     name = out.strip().split()[0].strip(".,!«»\"") if out.strip() else ""
-                    if (name and name.upper() != "NONE" and name.lower() != OWNER.lower()
+                    if (name and name.upper() != "NONE" and name.lower() != owner.lower()
                             and name.replace("-", "").isalpha() and 2 <= len(name) <= 15):
                         tr.rename_speaker("Собеседник", name.capitalize())
                         emit({"type": "rename", "from": "Собеседник", "to": name.capitalize()})

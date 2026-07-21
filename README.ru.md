@@ -1,5 +1,7 @@
 # Charoite (Чароит)
 
+[![CI](https://github.com/charoiteai/Charoite_audio/actions/workflows/ci.yml/badge.svg)](https://github.com/charoiteai/Charoite_audio/actions/workflows/ci.yml) [![CodeQL](https://github.com/charoiteai/Charoite_audio/actions/workflows/codeql.yml/badge.svg)](https://github.com/charoiteai/Charoite_audio/actions/workflows/codeql.yml) ![License](https://img.shields.io/badge/license-Apache--2.0-blue) ![Platform](https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-lightgrey) ![Local](https://img.shields.io/badge/cloud-none%20by%20default-success)
+
 **Полностью локальный AI-ассистент встреч: диаризация спикеров и самообновляемый граф знаний. Ничего не покидает ваш Mac.**
 
 Чароит слушает встречи (микрофон + системный звук, без ботов в звонке), транскрибирует локально, различает говорящих, отвечает на вопросы прямо по ходу встречи, а после — обновляет Obsidian-граф знаний: люди, системы, решения и сквозные темы помнятся между встречами.

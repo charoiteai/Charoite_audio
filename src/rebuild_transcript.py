@@ -44,6 +44,11 @@ def _cfg_text(root):
         p = root / "config" / "config.example.yaml"
     return p.read_text(encoding="utf-8")
 
+try:  # имя владельца mic-канала — из конфига
+    OWNER = (yaml.safe_load(_cfg_text(ROOT))["sufler"].get("user_name") or "Я").strip()
+except Exception:  # noqa: BLE001
+    OWNER = "Я"
+
 SEG_S, OVERLAP_S = 25.0, 1.0
 WAIT_WAV_S = 45  # демон финализирует .wav параллельно нашему старту
 
