@@ -15,7 +15,7 @@
 ## Требования
 
 - Mac на Apple Silicon (M1+), рекомендуется 32 ГБ RAM для моделей по умолчанию
-- [Ollama](https://ollama.com) с `qwen3.6:35b-a3b` и `gemma4:latest` (или подставьте модели полегче в конфиге)
+- [Ollama](https://ollama.com) с `qwen3.6:35b-a3b` и `gemma4:latest` (или подставьте модели полегче в конфиге — почему выбраны эти: [docs/MODELS.ru.md](docs/MODELS.ru.md))
 - Python 3.11+
 - Опционально: [BlackHole](https://existential.audio/blackhole/) для захвата системного звука, [Obsidian](https://obsidian.md) для графа
 

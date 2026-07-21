@@ -17,7 +17,7 @@ Charoite listens to your meetings (microphone + system audio, no bots joining ca
 ## Requirements
 
 - Apple Silicon Mac (M1 or newer), 32 GB RAM recommended for the default models
-- [Ollama](https://ollama.com) with `qwen3.6:35b-a3b` and `gemma4:latest` (or edit `config` to use smaller models)
+- [Ollama](https://ollama.com) with `qwen3.6:35b-a3b` and `gemma4:latest` (or edit `config` to use smaller models — see [docs/MODELS.md](docs/MODELS.md) for why these defaults)
 - Python 3.11+
 - Optional: [BlackHole](https://existential.audio/blackhole/) to capture system audio (calls), [Obsidian](https://obsidian.md) to browse the graph
 
