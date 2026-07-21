@@ -32,6 +32,14 @@ cp config/config.example.yaml config/config.yaml   # then set user_name & graph_
 
 STT models download automatically on first run (GigaAM via `onnx_asr`). For live diarization put an ERes2Net speaker-embedding ONNX model at `models/diar/embedding.onnx` (see [docs/DIARIZATION.md](docs/DIARIZATION.md)).
 
+## Documentation
+
+- [Setup](docs/SETUP.md) — install, BlackHole for calls, permissions, first run
+- [Features](docs/FEATURES.md) — everything Charoite does, live and post-meeting
+- [Architecture](docs/ARCHITECTURE.md) — the daemon, two-pass diarization, graph pipeline
+- [Models](docs/MODELS.md) — why these defaults, with benchmarks; English & mobile notes
+- [Diarization](docs/DIARIZATION.md) — embedding model setup and tuning
+
 ## Privacy
 
 See [PRIVACY.md](PRIVACY.md). Short version: no telemetry, no network calls except to your own localhost services (Ollama) — verify it yourself, it's all here. Recordings auto-delete after `record_keep_days`. Voice embeddings live only in RAM during a meeting; no voice prints are stored.
