@@ -206,11 +206,11 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
             for s, e, k in mic_segs:
                 durs[k] = durs.get(k, 0.0) + (e - s)
             # голос с максимальным суммарным временем в СВОЁМ микрофоне = владелец
-            anton = max(durs, key=durs.get) if durs else None
+            owner_voice = max(durs, key=durs.get) if durs else None
             mapping = {}
             for s, e, k in mic_segs:
                 if k not in mapping:
-                    if k == anton:
+                    if k == owner_voice:
                         mapping[k] = OWNER
                     else:
                         mapping[k] = f"Собеседник {next_n}"

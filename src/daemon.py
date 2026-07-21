@@ -81,7 +81,7 @@ def append_hint(tr_path: pathlib.Path, header: str, body: str):
 def load_claude_proxy_env() -> dict:
     """Прокси из ~/.claude/settings.json (env-секция).
 
-    Демон из Mendeleev.app стартует без shell-окружения, а `--setting-sources ""`
+    Демон из GUI-приложения стартует без shell-окружения, а `--setting-sources ""`
     отрезает env настроек — headless `claude -p` шёл к api.anthropic.com напрямую
     и ловил 403 Request not allowed (регион). Подкладываем прокси явно.
     """
@@ -391,7 +391,7 @@ def main():
                      "Только текст ответа — без преамбул, без markdown-заголовков.",
                      "--model", model,
                      "--disallowedTools", "Bash,Read,Write,Edit,Grep,Glob,WebFetch,WebSearch,Task,NotebookEdit,AskUserQuestion,TodoWrite",
-                     # без пользовательских hooks/MCP: mendeleev-хук на каждый промпт
+                     # без пользовательских hooks/MCP: memory-хуки на каждый промпт
                      # лезет в Ollama, занятую instant-ответом → вызов висел (паттерн claude-mem)
                      "--setting-sources", "", "--strict-mcp-config"],
                     capture_output=True, text=True, timeout=90, env=env,
