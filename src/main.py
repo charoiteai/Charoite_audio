@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import difflib
 import pathlib
+import re
 import sys
 import threading
 
@@ -55,14 +57,61 @@ class Transcript:
         self._lock = threading.Lock()
         self._save()
 
+    # Соседние чанки перекрываются, и STT распознаёт общий кусок ПО-РАЗНОМУ:
+    # «Вот тут, на самом деле…» / «Тут, на самом деле…», «в магине» / «в кабинете».
+    # Точное сравнение слов такое не ловит — сверяем нечётко (замер 22.07: склейки
+    # были в 41 реплике из 2556, в худшей встрече 28 из 212).
+    _DUPLICATE_RATIO = 0.8  # ниже 0.75 начинает резать живую речь
+    _MIN_DUP_WORDS = 3  # «Да. Да.» — нормальная речь, не склейка
+
     @staticmethod
-    def _cut_overlap(prev: str, new: str) -> str:
-        """Режет повтор шва: чанки идут с перекрытием, хвост предыдущего = началу нового."""
-        pw = prev.lower().replace(",", "").replace(".", "").split()
-        nw = new.lower().replace(",", "").replace(".", "").split()
+    def _norm_words(text: str) -> list[str]:
+        return re.findall(r"[\w-]+", text.lower())
+
+    @classmethod
+    def _similar(cls, a: list[str], b: list[str]) -> float:
+        """Похожесть по словам, а не по буквам: одна кривая буква не рушит счёт."""
+        if not a or not b:
+            return 0.0
+        return difflib.SequenceMatcher(None, a, b).ratio()
+
+    @classmethod
+    def _cut_overlap(cls, prev: str, new: str) -> str:
+        """Режет повтор шва: хвост предыдущего чанка обычно повторяется в начале нового."""
+        pw, nw = cls._norm_words(prev), cls._norm_words(new)
+        if not pw or not nw:
+            return new
+        words = new.split()
+
+        # Границу перекрытия не угадываем по длине, а вычисляем по совпадающим
+        # кускам. Берём все блоки, а не самый длинный: одно расслышанное иначе
+        # слово («будет, то очень хорошо» / «будет хорошо») рвёт совпадение
+        # надвое, и по одному куску конец перекрытия не найти.
+        blocks = [b for b in difflib.SequenceMatcher(None, pw, nw).get_matching_blocks() if b.size]
+        if blocks:
+            first, last = blocks[0], blocks[-1]
+            matched = sum(b.size for b in blocks)
+            # Склейка выглядит так: общее начинается в НАЧАЛЕ нового чанка (STT
+            # порой лепит спереди «а вот») и дотягивается до КОНЦА предыдущего.
+            # Совпадение в середине — обычный повтор слова в живой речи.
+            at_start = first.b <= 2
+            at_end = last.a + last.size >= len(pw) - 1
+            # 0.8, а не 0.6: «посмотреть на бюджет» / «посмотреть на сроки» —
+            # разные мысли с общим началом, их совпадение как раз 0.75.
+            enough = (matched >= cls._MIN_DUP_WORDS
+                      and matched >= 0.8 * min(len(pw), len(nw)))
+            if enough and at_start and at_end:
+                rest = words[last.b + last.size:]
+                # Огрызок в одно слово — хвост неверно расслышанной концовки
+                # («…нету адреса» / «…нету адреса»). Мусор, а не прирост.
+                if len(rest) <= 1 and cls._similar(pw, nw) >= cls._DUPLICATE_RATIO:
+                    return ""
+                return " ".join(rest)
+
+        # Короткий хвост совпал точно — прежнее поведение, для «на» и «что»
         for k in range(min(8, len(pw), len(nw)), 1, -1):
             if pw[-k:] == nw[:k]:
-                return " ".join(new.split()[k:])
+                return " ".join(words[k:])
         return new
 
     def add(self, text: str, speaker: str | None = None) -> str | None:
