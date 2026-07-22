@@ -139,7 +139,9 @@ def _history_context(folder: pathlib.Path) -> str:
                     if (m := re.search(r"- \[\[Встречи/(\d{4}-\d{2}-\d{2})", ln))
                     and m.group(1) <= date_cut]
             if hist:
-                parts.append(f"Ядро «{p.stem}»:\n" + "\n".join(hist[-3:]))
+                # хроника пишется newest-first — берём ВЕРХНИЕ 3 (ближайшие к дате
+                # встречи), а не hist[-3:], где лежат самые старые события
+                parts.append(f"Ядро «{p.stem}»:\n" + "\n".join(hist[:3]))
     prev = [p for p in sorted(folder.parent.iterdir())
             if p.is_dir() and p.name < folder.name and (p / "Саммари.md").exists()]
     for p in prev[-2:]:
