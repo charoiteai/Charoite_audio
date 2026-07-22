@@ -45,6 +45,7 @@ def extract(cfg: dict, transcript: str) -> dict | None:
             "model": cfg["llm"]["model"],
             "stream": False,
             "format": "json",
+            "options": {"num_ctx": 8192},  # иначе модель грузится с контекстом из Modelfile
             "messages": [
                 {"role": "system", "content": (
                     "Ты строишь граф знаний по стенограмме встречи. Верни СТРОГО JSON:\n"
@@ -347,6 +348,7 @@ def main():
             json={
                 "model": cfg["llm"]["model"],
                 "stream": False,
+                "options": {"num_ctx": 8192},  # без него раздувается KV-кэш и растёт RAM
                 "messages": [
                     {"role": "system", "content": (
                         "Ты аналитик после рабочей встречи. Пиши по-русски, сухо, markdown. "

@@ -626,9 +626,11 @@ def main():
                             model=cfg["sufler"].get("think_model", llm.small),
                             system="Ты сопоставляешь имена говорящим по стенограмме. Только JSON.",
                         ))
-                        m = re.search(r"\{.*\}", out, re.DOTALL)
+                        # берём ПОСЛЕДНИЙ плоский {...}: жадный \{.*\} склеивал два
+                        # объекта в невалидный кусок, если модель добавляла прозу
+                        cands = re.findall(r"\{[^{}]*\}", out, re.DOTALL)
                         try:
-                            pairs = json.loads(m.group(0)) if m else {}
+                            pairs = json.loads(cands[-1]) if cands else {}
                         except ValueError:
                             pairs = {}
                         for label, name in pairs.items():
@@ -640,8 +642,10 @@ def main():
                             if name:
                                 lines_with = [ln for ln in sample.splitlines()
                                               if name.lower() in ln.lower()]
-                                own = [ln for ln in lines_with if ln.startswith(f"{label}:")
-                                       or f"**{label}**" in ln]
+                                # формат tail: «[HH:MM] Собеседник N: текст» — метка НЕ
+                                # в начале строки, старый startswith(label+":") был мёртв
+                                own = [ln for ln in lines_with
+                                       if re.search(rf"\]\s*{re.escape(label)}:", ln)]
                                 intro = re.search(
                                     rf"(это|я|меня зовут)\s+{re.escape(name)}", sample, re.I)
                                 own_only = bool(lines_with) and len(own) == len(lines_with) \
