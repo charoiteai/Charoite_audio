@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 import pathlib
+import queue
 import sys
 import threading
 
@@ -20,15 +21,6 @@ from llm import LLM  # noqa: E402
 from stt import STT  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-
-
-def _cfg_text(root):
-    """config.yaml, а без него — config.example.yaml (свежий клон)."""
-    p = root / "config" / "config.yaml"
-    if not p.exists():
-        p = root / "config" / "config.example.yaml"
-    return p.read_text(encoding="utf-8")
-
 console = Console()
 
 # Мусор, который whisper галлюцинирует на тишине/шуме
@@ -36,7 +28,7 @@ NOISE = {"продолжение следует...", "субтитры дела�
 
 
 def load_cfg() -> dict:
-    return yaml.safe_load(_cfg_text(ROOT))
+    return yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
 
 
 class Transcript:
@@ -196,6 +188,15 @@ class Transcript:
     def notes(self) -> list[str]:
         with self._lock:
             return list(self._notes)
+
+    def names(self) -> dict[str, str]:
+        """Опознанные за встречу имена: «Собеседник N» → «Алексей».
+
+        Нужны пересборке: без них rebuild диаризует заново и заново гадает
+        имена, теряя всё, что демон выяснил за час разговора.
+        """
+        with self._lock:
+            return dict(self._names)
 
 
 def stt_loop(hub: AudioHub, stt: STT, tr: Transcript, stop: threading.Event):

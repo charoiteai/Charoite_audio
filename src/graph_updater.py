@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import pathlib
@@ -18,17 +19,8 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
-def _cfg_text(root):
-    """config.yaml, а без него — config.example.yaml (свежий клон)."""
-    p = root / "config" / "config.yaml"
-    if not p.exists():
-        p = root / "config" / "config.example.yaml"
-    return p.read_text(encoding="utf-8")
-
-
-
 def load_cfg() -> dict:
-    return yaml.safe_load(_cfg_text(ROOT))
+    return yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
 
 
 def latest_transcript() -> pathlib.Path | None:
@@ -37,7 +29,6 @@ def latest_transcript() -> pathlib.Path | None:
 
 
 def extract(cfg: dict, transcript: str) -> dict | None:
-    default_project = (cfg["sufler"].get("default_project") or "Работа").strip()
     """LLM → JSON: сущности, связи, решения, темы."""
     r = requests.post(
         cfg["llm"]["base_url"].rstrip("/") + "/api/chat",
@@ -45,22 +36,25 @@ def extract(cfg: dict, transcript: str) -> dict | None:
             "model": cfg["llm"]["model"],
             "stream": False,
             "format": "json",
-            "options": {"num_ctx": 8192},  # иначе модель грузится с контекстом из Modelfile
+            "options": {"num_ctx": 8192},  # иначе qwen3.6 грузится на 262144 → своп/перезагрузка
             "messages": [
                 {"role": "system", "content": (
                     "Ты строишь граф знаний по стенограмме встречи. Верни СТРОГО JSON:\n"
                     '{"название":"2-3 слова, о чём встреча (не больше трёх!)",'
-                    f'"проект":"строго {default_project} для ЛЮБОЙ рабочей встречи — релизы, данные, '
-                    f'инциденты, подрядчики, инфраструктура: всё это {default_project}, '
+                    '"проект":"строго рабочий проект для ЛЮБОЙ рабочей/рабочей встречи — проект, витрины, '
+                    'релизы, данные, инциденты, подрядчики, DAG, LLM-платформа, CRM, GPU: всё это рабочий проект, '
                     'НЕ выдумывай новых рабочих проектов (встреча 20.07 раскололась на два графа). '
                     'Отдельное имя 1-2 слова ТОЛЬКО для явно нерабочих сфер (Семья, Ремонт, Книга)",'
                     '"люди":[{"имя":"...","роль":"...","вклад":"кратко что говорил/решал"}],'
                     '"сущности":[{"имя":"...","тип":"система|проект|команда|документ","суть":"..."}],'
                     '"решения":["..."],"связи":[{"от":"...","к":"...","тип":"..."}],"темы":["..."],'
-                    '"ядра":[{"имя":"сквозная тема или задача 2-4 слова (Пилот проекта, Оптимизация ресурсов)",'
+                    '"ядра":[{"имя":"сквозная тема или задача 2-4 слова (Пилот проект, Оптимизация ресурсов 10%)",'
                     '"тип":"тема|задача","статус":"текущее состояние одной фразой",'
-                    '"обновление":"что нового по этому ядру именно на ЭТОЙ встрече"}]}\n'
-                    "Только то, что реально прозвучало. Имена людей — как звучали в разговоре. "
+                    '"обновление":"что нового по этому ядру именно на ЭТОЙ встрече",'
+                    '"кто":"имя говорящего, чья реплика дала это обновление",'
+                    '"время":"время той реплики в формате ЧЧ:ММ, как указано в стенограмме",'
+                    '"цитата":"её ДОСЛОВНЫЙ фрагмент, 5-15 слов, скопированный из стенограммы без изменений"}]}\n'
+                    "Только то, что реально прозвучало. Имена людей — как звучали (владелец, Дмитрий…). "
                     "Пустые списки допустимы."
                 )},
                 {"role": "user", "content": f"Стенограмма:\n\n{transcript[:12000]}"},
@@ -102,7 +96,7 @@ def canon_link(graph: pathlib.Path, name: str, default_folder: str | None = None
 
 
 def find_canonical(graph: pathlib.Path, name: str) -> pathlib.Path | None:
-    """Ищет существующий узел: точное имя или имя-подстрока (CRM → ИС CRM Про)."""
+    """Ищет существующий узел: точное имя или имя-подстрока (проект → ИС 1494 проект)."""
     n = safe_name(name).casefold()
     candidates: list[pathlib.Path] = []
     for folder in ("Люди", "Команды", "Системы", "Модели", "Блокеры", "Ядра"):
@@ -112,7 +106,7 @@ def find_canonical(graph: pathlib.Path, name: str) -> pathlib.Path | None:
         for f in d.glob("*.md"):
             stem = f.stem.casefold()
             if stem == n:
-                return f  # точное имя всегда выигрывает (иначе возрождались дубли)
+                return f  # точное имя всегда выигрывает (иначе дубль проект возрождался)
             if n in stem or stem in n:
                 candidates.append(f)
     return candidates[0] if len(candidates) == 1 else None
@@ -145,7 +139,30 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         )
 
 
-def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str):
+def core_anchor(core: dict, transcript: str) -> str:
+    """Происхождение факта: кто сказал, когда и дословно.
+
+    Без этого хроника обрывается на уровне встречи («что-то решили 21.07»), и
+    чтобы понять, чья это была реплика, приходится глазами искать в стенограмме.
+
+    Цитата ПРОВЕРЯЕТСЯ по стенограмме: модель охотно сочиняет правдоподобные
+    формулировки, а выдуманная цитата в графе хуже, чем её отсутствие. Сверяем
+    по словам (регистр, пунктуация и переносы строк роли не играют).
+    """
+    who = (core.get("кто") or "").strip().strip(".,!?»«\"")
+    when = (core.get("время") or "").strip()
+    quote = " ".join((core.get("цитата") or "").split())
+    if not quote or len(quote.split()) < 3:
+        return ""
+    norm = lambda s: " ".join(re.findall(r"[а-яёa-z0-9]+", s.lower()))
+    if norm(quote) not in norm(transcript):
+        return ""  # цитаты нет в стенограмме — молча отбрасываем выдумку
+    head = ", ".join(x for x in (who, when if re.match(r"^\d{1,2}:\d{2}$", when) else "") if x)
+    return f" · {head}: «{quote}»" if head else f" · «{quote}»"
+
+
+def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
+                transcript: str = ""):
     """Ядро — сквозная тема/задача: статус ПЕРЕЗАПИСЫВАЕТСЯ каждой встречей,
     хроника копится. В графе Obsidian ядра становятся хабами над-уровня."""
     d = graph / "Ядра"
@@ -153,7 +170,9 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str):
     p = d / f"{safe_name(core['имя'])}.md"
     status = (core.get("статус") or "").strip()
     upd = (core.get("обновление") or "").strip()
-    stamp_line = f"- [[{meeting_link}]] — {upd}" if upd else f"- [[{meeting_link}]]"
+    anchor = core_anchor(core, transcript) if transcript else ""
+    stamp_line = (f"- [[{meeting_link}]] — {upd}{anchor}" if upd
+                  else f"- [[{meeting_link}]]{anchor}")
     if p.exists():
         text = p.read_text(encoding="utf-8")
         if status:  # свежий статус вытесняет прежний
@@ -215,12 +234,11 @@ def main():
         print("LLM не вернула валидный JSON")
         return
 
-    default_project = (cfg["sufler"].get("default_project") or "Работа").strip()
-    # Мультиграф: каждая сфера — свой граф-папка; рабочий дефолт — из конфига.
+    # Мультиграф: каждая сфера — свой граф в iCloud-vault; рабочий дефолт — рабочий проект.
     # SUFLER_GRAPH_DIR (тесты) выбор отключает — путь принудительный.
     project = (data.get("проект") or "").strip()
     if not os.environ.get("SUFLER_GRAPH_DIR") and project and \
-            safe_name(project).casefold() not in (graph.name.casefold(), default_project.casefold()):
+            safe_name(project).casefold() not in (graph.name.casefold(), "рабочий проект"):
         graph = graph.parent / safe_name(project)
         if not (graph / "_MOC.md").exists():
             for d in ("Встречи", "Люди", "Системы"):
@@ -277,7 +295,7 @@ def main():
     cores = [c for c in (data.get("ядра") or [])
              if isinstance(c, dict) and c.get("имя")][:4]
     for c in cores:
-        upsert_core(graph, c, meeting_link, stamp)
+        upsert_core(graph, c, meeting_link, stamp, transcript)
     if cores:
         rebuild_cores_moc(graph)
 
@@ -348,14 +366,16 @@ def main():
             json={
                 "model": cfg["llm"]["model"],
                 "stream": False,
-                "options": {"num_ctx": 8192},  # без него раздувается KV-кэш и растёт RAM
+                "options": {"num_ctx": 8192},  # без него qwen3.6 на 262144 → раздутый KV-кэш
                 "messages": [
                     {"role": "system", "content": (
+                        # позитивные формулировки вместо «не выдумывай / БЕЗ таблиц»:
+                        # локальная модель следует им заметно точнее
                         "Ты аналитик после рабочей встречи. Пиши по-русски, сухо, markdown. "
-                        "Опирайся на стенограмму и память прошлых встреч; не выдумывай факты, "
-                        "но в разделах решений и рекомендаций предлагай варианты явно как предложения. "
-                        "БЕЗ markdown-таблиц (|…|) — только списки «- …» с жирным ключом: "
-                        "таблицы нечитаемы в plain-тексте."
+                        "Опирайся строго на стенограмму и память прошлых встреч; в разделах "
+                        "решений и рекомендаций помечай свои варианты словом «предложение». "
+                        "Оформляй всё списками «- …» с жирным ключом в начале пункта: "
+                        "так документ читается в любом plain-тексте."
                     )},
                     {"role": "user", "content": (
                         (f"Память прошлых встреч (граф):\n{gctx}\n\n" if gctx else "")
@@ -402,7 +422,7 @@ def main():
     except Exception as e:  # noqa: BLE001
         print(f"архив встречи не удался: {e}")
 
-    # 5) уровень 4 — авто-доработка облачным Claude (cloud_enrich в конфиге).
+    # 5) уровень 4 — авто-доработка облачным Claude (решение владельца 17.07.2026).
     # Стенограмма уходит в Anthropic API! Выключатель: sufler.cloud_enrich.
     if cfg["sufler"].get("cloud_enrich") and not os.environ.get("SUFLER_NO_CLOUD"):
         try:

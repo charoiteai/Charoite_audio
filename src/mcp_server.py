@@ -14,22 +14,13 @@ import requests
 from mcp.server.fastmcp import FastMCP
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-
-
-def _cfg_text(root):
-    """config.yaml, а без него — config.example.yaml (свежий клон)."""
-    p = root / "config" / "config.yaml"
-    if not p.exists():
-        p = root / "config" / "config.example.yaml"
-    return p.read_text(encoding="utf-8")
-
 TRANSCRIPTS = ROOT / "transcripts"
 
 
 def _cfg() -> dict:
     import yaml
     try:
-        return yaml.safe_load(_cfg_text(ROOT))
+        return yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
     except Exception:
         return {}
 
@@ -99,14 +90,14 @@ def sufler_make_minutes() -> str:
         return "Стенограмм нет."
     transcript = f.read_text(encoding="utf-8")
     r = requests.post(
-        "http://localhost:11434/api/chat",
+        OLLAMA + "/api/chat",
         json={
-            "model": MODEL,  # модель из конфига: не тянем вторую тяжёлую поверх резидентной
+            "model": MODEL,  # из конфига: не тянем вторую тяжёлую модель поверх резидентной
             "stream": False,
-            "options": {"num_ctx": 8192},
+            "options": {"num_ctx": 8192, "num_predict": 420},
             "messages": [
-                {"role": "system", "content": "Ты секретарь встречи. Пишешь точные, сухие минутки по-русски, markdown. БЕЗ таблиц — только списки «- …»."},
-                {"role": "user", "content": f"Стенограмма:\n\n{transcript}\n\nСоставь минутки: дата, участники, темы, решения, поручения списком «- **Кто** — что — срок», открытые вопросы, риски. Только факты."},
+                {"role": "system", "content": "Ты секретарь встречи. Пишешь точные, сухие минутки по-русски, markdown. Оформляешь всё списками «- …» с жирным ключом."},
+                {"role": "user", "content": f"Стенограмма:\n\n{transcript}\n\nСоставь минутки: дата, участники, темы, решения, поручения списком «- **Кто** — что — срок», открытые вопросы, риски. Только факты. ЖЁСТКИЙ ЛИМИТ: не длиннее 900 знаков, максимум 3 пункта в разделе, каждый — одна строка."},
             ],
         },
         timeout=600,
