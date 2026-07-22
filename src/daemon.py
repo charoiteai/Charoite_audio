@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import fcntl
 import json
+import math
 import os
 import pathlib
 import re
@@ -19,6 +20,7 @@ import sys
 import threading
 import time
 
+import requests
 import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
@@ -28,15 +30,6 @@ from main import NOISE, Transcript  # noqa: E402
 from stt import STT  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-
-
-def _cfg_text(root):
-    """config.yaml, а без него — config.example.yaml (свежий клон)."""
-    p = root / "config" / "config.yaml"
-    if not p.exists():
-        p = root / "config" / "config.example.yaml"
-    return p.read_text(encoding="utf-8")
-
 THESIS_EVERY = 40.0     # автотезисы: раз в N секунд по новым фразам
 HINT_EVERY = 75.0       # автоподсказки: не чаще, чем раз в N секунд
 HINT_MIN_NEW = 220      # и только если накопилось столько новых знаков разговора
@@ -81,7 +74,7 @@ def append_hint(tr_path: pathlib.Path, header: str, body: str):
 def load_claude_proxy_env() -> dict:
     """Прокси из ~/.claude/settings.json (env-секция).
 
-    Демон из GUI-приложения стартует без shell-окружения, а `--setting-sources ""`
+    Демон из desktop-приложения стартует без shell-окружения, а `--setting-sources ""`
     отрезает env настроек — headless `claude -p` шёл к api.anthropic.com напрямую
     и ловил 403 Request not allowed (регион). Подкладываем прокси явно.
     """
@@ -117,9 +110,7 @@ def main():
     except OSError:
         emit({"type": "status", "text": "⚠️ Суфлёр уже слушает в другом окне — второй запуск отменён"})
         return
-    cfg = yaml.safe_load(_cfg_text(ROOT))
-    owner = cfg["sufler"].get("user_name") or "пользователь"
-    user_ctx = cfg["sufler"].get("user_context", "")
+    cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
     emit({"type": "status", "text": "Загружаю модели…"})
     stt = STT(cfg)
     llm = LLM(cfg)
@@ -142,7 +133,7 @@ def main():
 
     # Живая диаризация ОБОИХ каналов: звонок кладёт чужие голоса в BlackHole,
     # очная встреча — все голоса в микрофон. Трекер один, метки по маппингу:
-    # все голоса — нейтральные «Собеседник N», имена расставляет name_loop.
+    # первый голос из mic = владелец (его микрофон), остальные — «Собеседник N».
     spk_tracker = None
     voice_names: dict[int, str] = {}
     if bool(cfg["sufler"].get("live_diarize", True)):
@@ -158,10 +149,10 @@ def main():
             emit({"type": "status", "text": f"живая диаризация недоступна: {e}"})
 
     def voice_label(channel_speaker: str, chunk) -> str:
-        """Метка голоса для чанка. Живая разметка НЕ угадывает владельца
-        (эвристики «первый голос из микрофона» ловят лектора из видео) — все
-        голоса нейтральные «Собеседник N». Имена расставляют name_loop
-        (из разговора) и финальная пересборка записи после Стопа."""
+        """Метка голоса для чанка. Живая разметка НЕ угадывает владельца (решение
+        20.07: «первый голос mic» ловил лектора из видео, «доминирование» тоже
+        ошибалось) — все голоса нейтральные «Собеседник N». Имена расставляют
+        name_loop (из разговора) и финальная пересборка записи после Стопа."""
         if spk_tracker is None:
             return channel_speaker  # без трекера канальные метки честны в звонке
         try:
@@ -213,11 +204,15 @@ def main():
                         fire_question(added)
 
     THINK_SYSTEM = (
-        f"Ты — второй мозг {owner} на рабочей встрече: думаешь вместе с ним по живой стенограмме. "
+        "Ты — второй мозг владельца на рабочей встрече: думаешь вместе с ним по живой стенограмме. "
         "Из НОВОГО фрагмента выдели только по-настоящему ценное, каждое с новой строки со строгим префиксом:\n"
         "📌 — контрольная точка: решение, договорённость, срок, поручение (кто/что/когда)\n"
         "💎 — ценная информация: цифра, имя, обещание, условие, риск\n"
         "💭 — твоя мысль (максимум одна): противоречие со сказанным ранее, упущенный вопрос, скрытый риск\n"
+        "ИГНОРИРУЙ фоновое медиа: радио, телевизор, ролики, новости, политика, "
+        "реклама — всё, что явно не разговор присутствующих о работе. Из такого "
+        "фрагмента тезисы не делай (21.07: «поручение» из новостного эфира "
+        "попало в контрольные точки).\n"
         "Телеграфно, по-русски. Если ничего ценного не прозвучало — ответь ровно: NONE"
     )
 
@@ -337,7 +332,13 @@ def main():
             if len(full) - seen < HINT_MIN_NEW:
                 continue  # разговор не набежал — молчим
             seen = len(full)
-            gen_hint(header=f"\n\n━━ авто {dt.datetime.now():%H:%M} ━━\n", model=auto_model)
+            try:
+                gen_hint(header=f"\n\n━━ авто {dt.datetime.now():%H:%M} ━━\n", model=auto_model)
+            except Exception as e:  # noqa: BLE001 — единственный поток без своего try:
+                # сбой вне внутреннего try gen_hint (например, запись подсказки в
+                # файл на недоступном iCloud) убивал поток НАВСЕГДА, а heartbeat
+                # главного треда продолжал идти — UI считал, что всё живо
+                emit({"type": "status", "text": f"авто-подсказка сорвалась: {e}"})
 
     def instant_loop():
         """Режим собеседования: вопрос от собеседника → готовый ответ без задержки.
@@ -393,13 +394,14 @@ def main():
             try:
                 r = subprocess.run(
                     [claude_bin, "-p",
-                     f"Рабочая встреча. Пользователь — {owner}. {user_ctx} Последние реплики:\n" + tail + "\n\n"
-                     f"Собеседник задал вопрос (последняя реплика). Дай {owner} ГОТОВЫЙ ответ "
+                     "Рабочая встреча , пользователь владелец — техлид (контекст: проект, "
+                     "витрины данных, Airflow, GPU). Последние реплики:\n" + tail + "\n\n"
+                     "Собеседник задал вопрос (последняя реплика). Дай владельцу ГОТОВЫЙ ответ "
                      "от первого лица: 3-5 предложений, уверенно, по делу, по-русски. "
                      "Только текст ответа — без преамбул, без markdown-заголовков.",
                      "--model", model,
                      "--disallowedTools", "Bash,Read,Write,Edit,Grep,Glob,WebFetch,WebSearch,Task,NotebookEdit,AskUserQuestion,TodoWrite",
-                     # без пользовательских hooks/MCP: memory-хуки на каждый промпт
+                     # без пользовательских hooks/MCP: внешний хук на каждый промпт
                      # лезет в Ollama, занятую instant-ответом → вызов висел (паттерн claude-mem)
                      "--setting-sources", "", "--strict-mcp-config"],
                     capture_output=True, text=True, timeout=90, env=env,
@@ -502,14 +504,42 @@ def main():
     def deja_vu_loop():
         """⏮ Предиктивные точки: тема разговора уже обсуждалась раньше —
         показываем, когда и с каким статусом. Источник — Ядра графа (сквозные
-        темы с хроникой встреч): матч по словам имени ядра, без LLM в цикле —
-        мгновенно и локально. Каждое ядро показывается раз за встречу."""
+        темы с хроникой встреч). Каждое ядро показывается раз за встречу.
+
+        Совпадение ищем ПО СМЫСЛУ (эмбеддинги bge-m3 через Ollama, модель уже
+        стоит для графа), а не по обрубкам слов: прежний матч по основам искал
+        «бюджет» в тексте буквально и не видел, что «урезали финансирование
+        GPU» — это ядро «Бюджетирование GPU ресурсов». Векторы ядер считаются
+        один раз (18 ядер ≈ 1.8с) и живут в памяти; на каждом проходе считается
+        только вектор свежего фрагмента (≈0.2с).
+
+        Порог — ОТНОСИТЕЛЬНЫЙ: bge-m3 даёт узкий разброс косинусов (замер 22.07
+        на живом графе: 0.33…0.45), поэтому абсолютная отсечка не работает.
+        Берём лидера, только если он заметно оторвался от медианы.
+        """
         if not bool(cfg["sufler"].get("deja_vu", True)):
             return
         gdir = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser()
         cores_dir = gdir / "Ядра"
+        emb_model = cfg["sufler"].get("embed_model", "bge-m3:latest")
+        margin = float(cfg["sufler"].get("deja_vu_margin", 0.04))
         shown: set[str] = set()
         seen_len = 0
+        vecs: dict[str, list[float]] = {}  # ядро → вектор (кэш на всю встречу)
+
+        def embed(texts: list[str]) -> list[list[float]]:
+            # 20с, не 120: эмбеддинг занимает ~0.2с, и если Ollama занят тяжёлой
+            # генерацией — лучше пропустить проход дежавю, чем держать поток
+            # заблокированным две минуты
+            r = requests.post(cfg["llm"]["base_url"].rstrip("/") + "/api/embed",
+                              json={"model": emb_model, "input": texts}, timeout=20)
+            return r.json().get("embeddings", []) or []
+
+        def cosine(a: list[float], b: list[float]) -> float:
+            num = sum(x * y for x, y in zip(a, b))
+            den = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+            return num / den if den else 0.0
+
         while not stop.is_set():
             time.sleep(45)
             if not toggles["theses"] or not cores_dir.exists():
@@ -519,30 +549,44 @@ def main():
             if len(fresh) < 300:
                 continue
             seen_len = len(full)
-            frag = fresh[-1500:].lower()
             try:
-                for p in cores_dir.glob("*.md"):
-                    if p.name.startswith("_") or p.stem in shown:
-                        continue
-                    words = re.findall(r"[А-Яа-яЁёA-Za-z]{4,}", p.stem)
-                    if not words:
-                        continue
-                    # русские падежи: матч по основе слова (минус 2 буквы окончания),
-                    # иначе «Бюджетирование» не ловит «про бюджетированию»
-                    stems = [w.lower()[: max(4, len(w) - 2)] for w in words]
-                    hits = sum(1 for s in stems if s in frag)
-                    if hits < max(1, len(words) - 1):
-                        continue
-                    text = p.read_text(encoding="utf-8")
-                    m = re.search(r"## Статус\n(.+)", text)
-                    dates = sorted({d for d in re.findall(
-                        r"\[\[Встречи/(\d{4}-\d{2}-\d{2})_\d{4}", text)})
-                    when = ", ".join(d[8:10] + "." + d[5:7] for d in dates[-2:]) or "ранее"
-                    st = re.sub(r"_\(.*?\)_", "", m.group(1)).strip() if m else ""
-                    shown.add(p.stem)
-                    line = f"⏮ {p.stem} — уже обсуждалось {when}." + (f" Статус: {st}" if st else "")
-                    emit({"type": "thesis", "text": line})
-                    tr.note(line)
+                cores = [p for p in sorted(cores_dir.glob("*.md"))
+                         if not p.name.startswith("_")]
+                if not cores:
+                    continue
+                # прогреваем кэш векторов один раз (и добираем новые ядра)
+                fresh_cores = [p for p in cores if p.stem not in vecs]
+                if fresh_cores:
+                    payload = []
+                    for p in fresh_cores:
+                        txt = p.read_text(encoding="utf-8")
+                        m = re.search(r"## Статус\n(.+)", txt)
+                        st = re.sub(r"_\(.*?\)_", "", m.group(1)).strip() if m else ""
+                        payload.append(f"{p.stem}. {st}"[:400])
+                    got = embed(payload)
+                    for p, v in zip(fresh_cores, got):
+                        vecs[p.stem] = v
+                qv = embed([" ".join(fresh[-1500:].split())])
+                if not qv:
+                    continue
+                scored = sorted(((cosine(qv[0], vecs[p.stem]), p) for p in cores
+                                 if p.stem in vecs), key=lambda x: -x[0])
+                if len(scored) < 3:
+                    continue
+                mid = scored[len(scored) // 2][0]  # медиана как «фон» разговора
+                top_score, top = scored[0]
+                if top.stem in shown or top_score - mid < margin:
+                    continue
+                text = top.read_text(encoding="utf-8")
+                m = re.search(r"## Статус\n(.+)", text)
+                dates = sorted({d for d in re.findall(
+                    r"\[\[Встречи/(\d{4}-\d{2}-\d{2})_\d{4}", text)})
+                when = ", ".join(d[8:10] + "." + d[5:7] for d in dates[-2:]) or "ранее"
+                st = re.sub(r"_\(.*?\)_", "", m.group(1)).strip() if m else ""
+                shown.add(top.stem)
+                line = f"⏮ {top.stem} — уже обсуждалось {when}." + (f" Статус: {st}" if st else "")
+                emit({"type": "thesis", "text": line})
+                tr.note(line)
             except Exception:  # noqa: BLE001 — дежавю вспомогательно
                 pass
 
@@ -596,12 +640,15 @@ def main():
         Живая замена меток: «Собеседник N» → имя, как только оно определено
         НАДЁЖНО (человек представился, или к нему обратились и он ответил).
         Меняется задним числом стенограмма (rename_speaker), лента приложения
-        (событие rename) и все будущие реплики (voice_names). Имя владельца не
-        угадываем. Без диаризации — старый одиночный режим.
+        (событие rename) и все будущие реплики (voice_names). владельца не
+        угадываем (решение 20.07). Без диаризации — старый одиночный режим.
         """
         named = False
         listed: list[str] = []
         renamed: dict[str, str] = {}  # «Собеседник 1» → «Дмитрий»
+        # владельца не подписываем: его голос определяется каналом микрофона,
+        # а не разговором. Пусто в конфиге — проверка просто не сработает.
+        owner_name = (cfg["sufler"].get("user_name") or "").strip().lower()
         while not stop.is_set():
             time.sleep(90)
             sample = tr.tail(3000)
@@ -626,8 +673,8 @@ def main():
                             model=cfg["sufler"].get("think_model", llm.small),
                             system="Ты сопоставляешь имена говорящим по стенограмме. Только JSON.",
                         ))
-                        # берём ПОСЛЕДНИЙ плоский {...}: жадный \{.*\} склеивал два
-                        # объекта в невалидный кусок, если модель добавляла прозу
+                        # берём ПОСЛЕДНИЙ плоский {...}: жадный \{.*\} склеивал
+                        # два объекта в один невалидный кусок, если модель добавляла прозу
                         cands = re.findall(r"\{[^{}]*\}", out, re.DOTALL)
                         try:
                             pairs = json.loads(cands[-1]) if cands else {}
@@ -642,8 +689,8 @@ def main():
                             if name:
                                 lines_with = [ln for ln in sample.splitlines()
                                               if name.lower() in ln.lower()]
-                                # формат tail: «[HH:MM] Собеседник N: текст» — метка НЕ
-                                # в начале строки, старый startswith(label+":") был мёртв
+                                # формат tail: «[HH:MM] Собеседник N: текст» — метка
+                                # НЕ в начале строки, старый startswith(label+":") был мёртв
                                 own = [ln for ln in lines_with
                                        if re.search(rf"\]\s*{re.escape(label)}:", ln)]
                                 intro = re.search(
@@ -651,7 +698,7 @@ def main():
                                 own_only = bool(lines_with) and len(own) == len(lines_with) \
                                     and not intro
                             if (label in labels and name and name.replace("-", "").isalpha()
-                                    and 3 <= len(name) <= 15 and name.lower() != owner.lower()
+                                    and 3 <= len(name) <= 15 and name.lower() != owner_name
                                     and name.lower() in sample.lower() and not own_only
                                     and name not in renamed.values()):
                                 renamed[label] = name
@@ -672,7 +719,7 @@ def main():
                         system="Ты определяешь имя говорящего по стенограмме. Одно слово или NONE.",
                     ))
                     name = out.strip().split()[0].strip(".,!«»\"") if out.strip() else ""
-                    if (name and name.upper() != "NONE" and name.lower() != owner.lower()
+                    if (name and name.upper() != "NONE" and name.lower() != owner_name
                             and name.replace("-", "").isalpha() and 2 <= len(name) <= 15):
                         tr.rename_speaker("Собеседник", name.capitalize())
                         emit({"type": "rename", "from": "Собеседник", "to": name.capitalize()})
@@ -779,7 +826,7 @@ def main():
     def gen_answer(question: str):
         """Вопрос пользователя из UI: ответ по живой стенограмме + графу/vault.
 
-        Скорость — приоритет: вопрос задаётся ПОСРЕДИ встречи. Отклик в панель
+        Скорость — приоритет: владелец спрашивает ПОСРЕДИ встречи. Отклик в панель
         мгновенно (до lock), vault не дольше 2.5с, ответ каплен 220 токенами
         на лёгкой модели — итого первые слова ~1-2с, полный ответ ~4-6с.
         """
@@ -888,6 +935,16 @@ def main():
         # graph_updater по уже ЧИСТОЙ стенограмме; записей нет — просто граф по живой.
         # NB: никаких локальных `import subprocess` здесь — локальный импорт в main()
         # делает имя локальным для ВСЕГО скоупа и ломает cloud_loop (NameError).
+        try:
+            # живые данные — пересборке: сколько голосов реально звучало и какие
+            # имена опознаны за встречу. Без них rebuild кластеризует аудио с нуля
+            # (21.07: живьём 8 голосов и 4 имени → в финале 14 безымянных) и
+            # заново гадает имена, выбрасывая всё, что демон выяснил за час.
+            pathlib.Path(str(tr.path) + ".live.json").write_text(
+                json.dumps({"speakers": len(voice_names), "names": tr.names()},
+                           ensure_ascii=False), encoding="utf-8")
+        except Exception:  # noqa: BLE001 — подсказка вспомогательна, не рушим финал
+            pass
         try:
             gstamp = pathlib.Path(tr.path).stem[:15]
             glog = open(ROOT / "logs" / f"graph_{gstamp}.log", "w")  # не DEVNULL: молчаливые падения графа

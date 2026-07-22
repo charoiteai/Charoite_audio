@@ -5,6 +5,39 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-07-22
+
+### Added
+
+- **Speaker names survive the post-meeting rebuild.** The daemon now hands the
+  rebuild what it learned during the meeting (a sidecar with the live speaker
+  count and recognised names); the rebuild maps those names onto its own
+  clusters **by time**, because the two clusterings are independent and matching
+  them by label would attach a name to the wrong person.
+- **Fewer phantom speakers.** The live speaker count is passed to the offline
+  clustering as a hint instead of letting it decide freely — in a real meeting
+  auto mode produced 14 "people" where the live pass had heard 8.
+- **Provenance in the knowledge graph.** Each chronicle entry now records who
+  said it, when, and the exact quote. The quote is verified against the
+  transcript before writing: models readily invent plausible wording, and an
+  invented quote in a graph is worse than none.
+- **Déjà vu matches by meaning.** Recurring topics are now found via embeddings
+  instead of comparing word stems, which could not connect "we cut the GPU
+  funding" to the topic "GPU budget". The threshold is relative to the median,
+  since bi-encoder scores sit in a narrow band.
+
+### Fixed
+
+- **Minutes and summaries no longer sprawl.** They were running 2-3× longer than
+  a document meant to be read in a minute. Length is now enforced in code rather
+  than asked for in the prompt — models do not count their own output reliably.
+- **Prompts follow current guidance**: data is delimited from instructions, rules
+  are phrased positively ("write it this way") instead of stacked negations, and
+  the task format carries one worked example.
+- Embedding calls time out in 20s instead of 120s, so a busy backend cannot stall
+  the déjà vu loop.
+- The auto-hint loop no longer dies silently on an unexpected error.
+
 ## [0.1.1] - 2026-07-22
 
 ### Fixed

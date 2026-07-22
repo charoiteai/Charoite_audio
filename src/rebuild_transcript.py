@@ -35,20 +35,6 @@ from main import NOISE, Transcript  # noqa: E402
 from stt import STT  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-
-
-def _cfg_text(root):
-    """config.yaml, а без него — config.example.yaml (свежий клон)."""
-    p = root / "config" / "config.yaml"
-    if not p.exists():
-        p = root / "config" / "config.example.yaml"
-    return p.read_text(encoding="utf-8")
-
-try:  # имя владельца mic-канала — из конфига
-    OWNER = (yaml.safe_load(_cfg_text(ROOT))["sufler"].get("user_name") or "Я").strip()
-except Exception:  # noqa: BLE001
-    OWNER = "Я"
-
 SEG_S, OVERLAP_S = 25.0, 1.0
 WAIT_WAV_S = 45  # демон финализирует .wav параллельно нашему старту
 
@@ -107,10 +93,17 @@ def stt_segment(stt: STT, audio: np.ndarray, sr: int) -> str:
     return " ".join(parts)
 
 
-def diarize_channel(audio: np.ndarray, sr: int, min_len: float = 1.0) -> list[tuple[float, float, int]]:
-    """Сегменты (start, end, cluster) канала; короче min_len — отброшены."""
+def diarize_channel(audio: np.ndarray, sr: int, min_len: float = 1.0,
+                    num_speakers: int = -1) -> list[tuple[float, float, int]]:
+    """Сегменты (start, end, cluster) канала; короче min_len — отброшены.
+
+    num_speakers > 0 — жёстко фиксирует число кластеров. Подсказку даёт живая
+    сессия: авто-режим на моно-миксе плодит осколки (21.07: 14 «голосов» на
+    встрече, где живьём их было 8).
+    """
     try:
-        return [(s, e, k) for s, e, k in diarize(audio, sr) if e - s >= min_len]
+        return [(s, e, k) for s, e, k in diarize(audio, sr, num_speakers=num_speakers)
+                if e - s >= min_len]
     except Exception as e:  # noqa: BLE001
         log(f"диаризация канала не удалась: {e}")
         return []
@@ -124,6 +117,7 @@ def overlap_frac(a: tuple[float, float], b: tuple[float, float]) -> float:
 def name_speakers(cfg: dict, lines: list[tuple[str, str]]) -> dict[str, str]:
     """qwen: «Собеседник N» ↔ имена из разговора; владельца не трогаем."""
     import requests
+    _owner = ((cfg.get("sufler") or {}).get("user_name") or "").strip().lower()
     sample = "\n".join(f"[{spk}] {text}" for spk, text in lines if text)[:7000]
     try:
         r = requests.post(
@@ -150,16 +144,80 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]]) -> dict[str, str]:
         return {k: v.strip() for k, v in data.items()
                 if isinstance(v, str) and v.strip() and v.strip() != "?"
                 and k.startswith("Собеседник")
-                and v.strip().lower() != OWNER.lower()}  # владелец уже определён каналом
+                and v.strip().lower() != _owner}  # владелец уже определён каналом
     except Exception as e:  # noqa: BLE001
         log(f"имена: не удалось ({e})")
         return {}
+
+
+def live_meta(live: pathlib.Path) -> dict:
+    """Данные живой сессии рядом со стенограммой: число голосов и опознанные имена.
+
+    Пишет демон при завершении встречи (<стенограмма>.live.json). Нет файла —
+    работаем как раньше: авто-кластеризация и определение имён по репликам.
+    """
+    try:
+        p = live.with_name(live.name + ".live.json")
+        if p.exists():
+            d = json.loads(p.read_text(encoding="utf-8"))
+            return d if isinstance(d, dict) else {}
+    except Exception as e:  # noqa: BLE001 — подсказка не обязательна
+        log(f"live.json не прочитан: {e}")
+    return {}
+
+
+def names_by_time(live_text: str, base, segments: list[tuple[float, float, str]],
+                  allowed: set[str]) -> dict[str, str]:
+    """Переносит имена из живой стенограммы на метки пересборки ПО ВРЕМЕНИ.
+
+    Метки живой сессии и пересборки — разные кластеризации, поэтому переносить
+    «Собеседник 1» → «Собеседник 1» нельзя (приклеит имя не тому). Сопоставляем
+    по пересечению интервалов: у какой метки больше всего совпадений по времени
+    с репликами живого «Алексея» — та и Алексей. Имя достаётся одной метке.
+    """
+    import datetime as _dt
+    spans: list[tuple[float, float, str]] = []
+    for m in re.finditer(r"^\*\*(.+?)\*\* \[(\d{2}:\d{2})(?:–(\d{2}:\d{2}))?\]:", live_text, re.M):
+        spk, t1, t2 = m.group(1).strip(), m.group(2), m.group(3)
+        # только имена, которые демон РЕАЛЬНО опознал за встречу (allowed из
+        # live.json). Иначе в имена попадают служебные потоки, пишущие в тот же
+        # файл под своей меткой (21.07: «Темы» — 27 блоков наравне со спикерами)
+        if spk not in allowed:
+            continue
+        def _sec(hhmm: str) -> float:
+            h, mi = (int(x) for x in hhmm.split(":"))
+            d = _dt.datetime.combine(base.date(), _dt.time(h, mi))
+            if d < base - _dt.timedelta(hours=12):
+                d += _dt.timedelta(days=1)  # встреча через полночь
+            return (d - base).total_seconds()
+        s = _sec(t1)
+        e = _sec(t2) + 60 if t2 else s + 60  # у живых блоков точность до минуты
+        spans.append((s, e, spk))
+    if not spans:
+        return {}
+    score: dict[str, dict[str, float]] = {}
+    for s, e, spk in segments:
+        for ls, le, name in spans:
+            ov = min(e, le) - max(s, ls)
+            if ov > 0:
+                score.setdefault(spk, {})[name] = score.setdefault(spk, {}).get(name, 0.0) + ov
+    # жадно: сначала самые уверенные пары, каждое имя — только одной метке
+    pairs = sorted(((v, lbl, nm) for lbl, d in score.items() for nm, v in d.items()),
+                   reverse=True)
+    out: dict[str, str] = {}
+    used: set[str] = set()
+    for _v, lbl, nm in pairs:
+        if lbl not in out and nm not in used:
+            out[lbl] = nm
+            used.add(nm)
+    return out
 
 
 def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     stamp = live.stem[:15]
     if not re.match(r"\d{4}-\d{2}-\d{2}_\d{4}", stamp):
         return None
+    meta = live_meta(live)
     sr_cfg = int(cfg["audio"]["samplerate"])
     rec_dir = ROOT / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings")
     if os.environ.get("SUFLER_RECORDINGS_DIR"):
@@ -197,7 +255,11 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
         if len(bh) > sr * 20:
             # в звонке участники говорят подолгу — кластер короче 25с почти
             # наверняка осколок чьего-то голоса, не отдельный человек
-            bh_segs = merge_dwarfs(diarize_channel(bh, sr), 25.0)
+            # сколько голосов слышала живая сессия — жёсткая подсказка кластеризации;
+            # без неё авто-режим дробит голоса на осколки (14 «людей» вместо 8)
+            hint = int(meta.get("speakers") or 0)
+            bh_segs = merge_dwarfs(
+                diarize_channel(bh, sr, num_speakers=hint if 1 < hint <= 12 else -1), 25.0)
             mapping: dict[int, str] = {}
             for s, e, k in bh_segs:
                 if k not in mapping:
@@ -225,7 +287,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
             for s, e, k in mic_segs:
                 if k not in mapping:
                     if k == owner_voice:
-                        mapping[k] = OWNER
+                        mapping[k] = "владелец"
                     else:
                         mapping[k] = f"Собеседник {next_n}"
                         next_n += 1
@@ -265,13 +327,26 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     if not lines:
         return None
 
-    names = name_speakers(cfg, [(spk, txt) for _, _, spk, txt in lines])
-    if names:
-        log("имена: " + ", ".join(f"{k}→{v}" for k, v in names.items()))
-
     # часы:минуты от реального начала встречи (stamp)
     import datetime as dt
     base = dt.datetime.strptime(stamp, "%Y-%m-%d_%H%M")
+
+    # Имена: сперва переносим добытые ЖИВОЙ сессией (демон проверял их всю
+    # встречу — самопредставления, ответы после обращения), сопоставляя по
+    # времени. Затем qwen досматривает только те метки, которым имя не досталось.
+    allowed = {v for v in (meta.get("names") or {}).values() if isinstance(v, str) and v.strip()}
+    names = names_by_time(live.read_text(encoding="utf-8"), base,
+                          [(s, e, spk) for s, e, spk, _ in lines], allowed) if allowed else {}
+    if names:
+        log("имена из живой сессии: " + ", ".join(f"{k}→{v}" for k, v in names.items()))
+    rest = {spk for _, _, spk, _ in lines} - set(names)
+    if rest:
+        guessed = name_speakers(cfg, [(spk, txt) for _, _, spk, txt in lines if spk in rest])
+        for k, v in guessed.items():
+            if k in rest and v not in names.values():  # одно имя — одной метке
+                names[k] = v
+        if guessed:
+            log("имена от модели: " + ", ".join(f"{k}→{v}" for k, v in guessed.items()))
     fmt = lambda sec: (base + dt.timedelta(seconds=sec)).strftime("%H:%M")
     body = [f"# Встреча {stamp}", ""]
     for s, e, spk, text in lines:
@@ -296,7 +371,7 @@ def main():
     live = pathlib.Path(sys.argv[1]).expanduser()
     if not live.exists():
         sys.exit(f"нет файла: {live}")
-    cfg = yaml.safe_load(_cfg_text(ROOT))
+    cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
     try:
         rebuild(live, cfg)
     except Exception as e:  # noqa: BLE001 — граф важнее идеальной пересборки
