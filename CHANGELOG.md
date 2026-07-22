@@ -5,6 +5,27 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-07-22
+
+### Fixed
+
+- **Explicit context window (`num_ctx`) for every LLM call.** Graph extraction,
+  the post-meeting debrief and the MCP minutes tool were calling Ollama without
+  it, so the model loaded with the (very large) context from its Modelfile,
+  bloating the KV cache and swapping on 16–32 GB machines.
+- **Minutes no longer pull a second heavy model.** The MCP minutes tool had a
+  hardcoded 17 GB model that could not run alongside the resident one on 16 GB;
+  it now uses the model from the config.
+- **Speaker naming: "the name is a vocative, not the speaker".** The guard that
+  prevents *"Sam, what do you think?"* from labelling the **current** speaker as
+  Sam compared against a line format that never matches the transcript tail, so
+  it never fired.
+- **Name parsing no longer drops every name.** A greedy `{...}` match glued two
+  JSON objects together and failed to parse; the last flat object is used now.
+- **Summary history takes the newest events.** The per-topic chronicle is written
+  newest-first, so taking the last three entries fed the summary the *oldest*
+  context instead of what happened most recently.
+
 ## [0.1.0] - 2026-07-21
 
 Initial public release. A fully local AI meeting assistant for macOS on Apple
