@@ -117,6 +117,7 @@ def overlap_frac(a: tuple[float, float], b: tuple[float, float]) -> float:
 def name_speakers(cfg: dict, lines: list[tuple[str, str]]) -> dict[str, str]:
     """qwen: «Собеседник N» ↔ имена из разговора; владельца не трогаем."""
     import requests
+    _owner = ((cfg.get("sufler") or {}).get("user_name") or "").strip().lower()
     sample = "\n".join(f"[{spk}] {text}" for spk, text in lines if text)[:7000]
     try:
         r = requests.post(
@@ -143,7 +144,7 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]]) -> dict[str, str]:
         return {k: v.strip() for k, v in data.items()
                 if isinstance(v, str) and v.strip() and v.strip() != "?"
                 and k.startswith("Собеседник")
-                and v.strip().lower() != (owner or "").lower()}  # владелец уже определён каналом
+                and v.strip().lower() != _owner}  # владелец уже определён каналом
     except Exception as e:  # noqa: BLE001
         log(f"имена: не удалось ({e})")
         return {}
