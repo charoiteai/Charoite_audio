@@ -1,7 +1,7 @@
 """Архив встреч для Finder: папка «дата — название», внутри вся документация.
 
 Структура (в iCloud-вольте, рядом с графом — синкается на все устройства):
-    <граф>/Встречи-архив/
+    рабочий проект/Встречи-архив/
         _ОГЛАВЛЕНИЕ.md
         2026-07-20 — Планирование релизов и задач на август/
             Стенограмма.md · Минутки.md · Подсказки и ответы.md
@@ -22,15 +22,6 @@ import stat as _stat
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-
-
-def _cfg_text(root):
-    """config.yaml, а без него — config.example.yaml (свежий клон)."""
-    p = root / "config" / "config.yaml"
-    if not p.exists():
-        p = root / "config" / "config.example.yaml"
-    return p.read_text(encoding="utf-8")
-
 ARCHIVE_DIR = "Встречи-архив"
 # суффикс исходника → человеческое имя в папке встречи
 NICE = [
@@ -139,8 +130,8 @@ def _history_context(folder: pathlib.Path) -> str:
                     if (m := re.search(r"- \[\[Встречи/(\d{4}-\d{2}-\d{2})", ln))
                     and m.group(1) <= date_cut]
             if hist:
-                # хроника пишется newest-first — берём ВЕРХНИЕ 3 (ближайшие к дате
-                # встречи), а не hist[-3:], где лежат самые старые события
+                # хроника пишется newest-first (upsert_core вставляет под заголовок) —
+                # берём ВЕРХНИЕ 3 (ближайшие к дате встречи), не hist[-3:] (самые старые)
                 parts.append(f"Ядро «{p.stem}»:\n" + "\n".join(hist[:3]))
     prev = [p for p in sorted(folder.parent.iterdir())
             if p.is_dir() and p.name < folder.name and (p / "Саммари.md").exists()]
@@ -148,6 +139,45 @@ def _history_context(folder: pathlib.Path) -> str:
         parts.append(f"Саммари встречи {p.name}:\n"
                      + (p / "Саммари.md").read_text(encoding="utf-8")[:1200])
     return "\n\n".join(parts)[:3500]
+
+
+def _trim_summary(text: str, limit: int = 900, per_item: int = 165, per_section: int = 3) -> str:
+    """Гарантирует лимит саммари структурно, а не обрезкой по символу.
+
+    Промптом объём не удержать: модель не считает собственную длину (замер
+    22.07: при лимите «900 знаков / 120 слов» qwen выдавал 1421-1830). Поэтому
+    режем детерминированно — длинные пункты по границе слова, лишние пункты
+    сверх per_section, а если всё ещё длинно — целиком наименее важные разделы
+    с конца. Суть, решения и поручения переживают обрезку последними.
+    """
+    if len(text) <= limit:
+        return text
+
+    def cut(line: str) -> str:
+        if len(line) <= per_item:
+            return line
+        head = line[:per_item].rsplit(" ", 1)[0].rstrip(" ,;:—-")
+        return head + "…"
+
+    blocks = re.split(r"(?m)^(?=## )", text)
+    out_blocks: list[str] = []
+    for b in blocks:
+        lines = b.rstrip().splitlines()
+        kept, items = [], 0
+        for ln in lines:
+            if ln.lstrip().startswith(("- ", "* ")):
+                if items >= per_section:
+                    continue
+                items += 1
+                kept.append(cut(ln))
+            else:
+                kept.append(cut(ln) if len(ln) > per_item * 2 else ln)
+        out_blocks.append("\n".join(kept))
+
+    # всё ещё длинно — отбрасываем хвостовые разделы (важное идёт первым)
+    while len(("\n\n".join(out_blocks)).strip()) > limit and len(out_blocks) > 2:
+        out_blocks.pop()
+    return ("\n\n".join(out_blocks)).strip()
 
 
 def _gen_summary(folder: pathlib.Path, force: bool = False):
@@ -186,23 +216,33 @@ def _gen_summary(folder: pathlib.Path, force: bool = False):
             "model": "qwen3.6:35b-a3b", "stream": False, "think": False,
             "messages": [
                 {"role": "system", "content":
-                    "Ты делаешь выжимку рабочей встречи для быстрого чтения. По-русски, "
-                    "сухо, только факты из материалов. БЕЗ markdown-таблиц — только "
-                    "списки «- …» с жирным ключом. 100-300 слов."},
+                    # правила позитивные и данные в тегах — qwen следует такому лучше,
+                    # чем стопке «БЕЗ / НЕ / никогда» (замер 22.07 на минутках)
+                    "Ты делаешь выжимку рабочей встречи для быстрого чтения. Пишешь "
+                    "по-русски, сухо, по фактам из материалов. Оформляешь списками "
+                    "«- …» с жирным ключом в начале пункта. Держишь весь текст в "
+                    "пределах 120 слов (900 знаков): максимум 3 пункта в разделе, "
+                    "пункт — одна строка до 12 слов, в пустом разделе одно слово «нет». "
+                    "Саммари читают за минуту — это выжимка; детали остаются в "
+                    "Минутках и Разборе."},
                 {"role": "user", "content":
-                    "Материалы встречи:\n\n" + "\n\n".join(src_parts) + hist_block + "\n\n"
-                    "Составь саммари строго по шаблону:\n"
+                    "<материалы>\n" + "\n\n".join(src_parts) + hist_block + "\n</материалы>\n\n"
+                    "Составь саммари по шаблону:\n"
                     "**Суть одной строкой:** …\n\n"
-                    "## О чём говорили\n(2-4 пункта «- **тема** — что по ней», не проза)\n\n"
+                    "## О чём говорили\n(до 3 пунктов «- **тема** — что по ней», не проза)\n\n"
                     "## Решили\n(список «- **решение** — кто внедряет»; нет решений — «решений не было»)\n\n"
                     "## Поручения\n(список «- **Кто** — что — срок»)\n\n"
-                    "## Открытые вопросы\n(список)\n\n"
-                    "## Следующие шаги\n(список)" + hist_tpl},
+                    "## Открытые вопросы\n(список; это последний раздел — следующие шаги "
+                    "уже перечислены в поручениях)" + hist_tpl},
             ],
-            "options": {"temperature": 0.2, "num_predict": 900, "num_ctx": 8192},
+            # 560 токенов ≈ 1900 знаков: потолок НЕ должен резать (у русского в qwen
+            # ~3.4 знака на токен, прежние 420 обрубали саммари на полуслове).
+            # Объём держит промпт (120 слов), потолок — лишь страховка от простыни
+            "options": {"temperature": 0.2, "num_predict": 560, "num_ctx": 8192},
         }, timeout=180)
         text = r.json().get("message", {}).get("content", "").strip()
         if text:
+            text = _trim_summary(text)  # лимит гарантирует код, не промпт
             date = folder.name[:10]
             # progressive disclosure: из выжимки видно, куда идти за деталями
             deeper = " · ".join(
@@ -329,7 +369,7 @@ def migrate_all(graph: pathlib.Path, tdir: pathlib.Path) -> int:
 
 if __name__ == "__main__":
     import yaml
-    cfg = yaml.safe_load(_cfg_text(ROOT))
+    cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
     graph = pathlib.Path(cfg["sufler"]["graph_dir"]).expanduser()
     tdir = ROOT / cfg["log"]["transcripts_dir"]
     if "--all" in sys.argv:
