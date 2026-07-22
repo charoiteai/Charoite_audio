@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
+import fact_check  # noqa: E402
 from audio import AudioHub, list_devices  # noqa: E402
 from llm import LLM  # noqa: E402
 from stt import STT  # noqa: E402
@@ -251,9 +252,15 @@ def main():
                 continue
             if cmd == "s":
                 console.print(Panel.fit("Саммари", style="yellow"))
-                for tok in llm.summary(tr.full() or "(пусто)"):
+                full = tr.full() or "(пусто)"
+                parts: list[str] = []
+                for tok in llm.summary(full):
+                    parts.append(tok)
                     console.print(tok, end="")
                 console.print("\n")
+                bad = fact_check.unanchored("".join(parts), full)
+                if bad:
+                    console.print(f"[red]⚠️ Нет в стенограмме: {', '.join(bad)}[/red]\n")
                 continue
             # Enter (или любой другой ввод) — подсказка
             tail = tr.tail(max_ctx)

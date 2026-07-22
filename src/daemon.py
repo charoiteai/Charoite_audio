@@ -24,6 +24,7 @@ import requests
 import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
+import fact_check  # noqa: E402
 from audio import AudioHub  # noqa: E402
 from llm import LLM  # noqa: E402
 from main import NOISE, Transcript  # noqa: E402
@@ -878,7 +879,10 @@ def main():
             emit({"type": "hint_done"})
             if chunks:  # минутки — отдельным файлом рядом со стенограммой
                 mpath = tr.path.with_name(tr.path.stem + "_minutes.md")
-                mpath.write_text("".join(chunks), encoding="utf-8")
+                # сверка номеров задач и дат со стенограммой: выдуманный
+                # номер внешне неотличим от настоящего, но в тексте его нет
+                doc = fact_check.annotate("".join(chunks), tr.full())
+                mpath.write_text(doc, encoding="utf-8")
                 emit({"type": "status", "text": f"Минутки: {mpath}"})
 
     def stdin_loop():

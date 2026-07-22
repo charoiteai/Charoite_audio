@@ -37,7 +37,8 @@ class LLM:
         return self.model  # пусть ollama сам скажет об ошибке
 
     def stream(self, prompt: str, model: str | None = None, system: str | None = None,
-               think: bool = False, num_predict: int | None = None) -> Iterator[str]:
+               think: bool = False, num_predict: int | None = None,
+               temperature: float | None = None) -> Iterator[str]:
         # think=False КРИТИЧЕН для live-контуров: дефолтный thinking у gemma4
         # молча съедает ~10с до первого слова (замер 17.07: TTFT 10.4с → 0.5с).
         # think=True — только для глубоких фоновых проходов (deep_loop).
@@ -49,7 +50,10 @@ class LLM:
         # 500 и 1600, а при 4000 — 83с против 10с и документ вдвое беднее.
         # Для документов рассуждение не включать; при think=True num_predict
         # либо не задавать вовсе (как в deep_loop), либо давать с запасом ×8.
-        options: dict = {"temperature": self.temperature, "num_ctx": self.num_ctx}
+        options: dict = {
+            "temperature": self.temperature if temperature is None else temperature,
+            "num_ctx": self.num_ctx,
+        }
         if num_predict:
             options["num_predict"] = num_predict
         payload = {
@@ -133,6 +137,7 @@ class LLM:
             model=self.small,
             system="Ты сжимаешь стенограммы рабочих встреч в чёткий протокол. Без воды. " + self.STYLE,
             num_predict=320,
+            temperature=0.0,  # см. minutes(): документ — не творческая задача
         )
 
     def minutes(self, transcript: str) -> Iterator[str]:
@@ -157,4 +162,14 @@ class LLM:
             "это выжимка решений и поручений",
             system="Ты секретарь встречи. Пишешь точные, сухие минутки по-русски. " + self.STYLE,
             num_predict=420,  # потолок ≈1400 знаков: страховка от простыни
+            # Замер на реальной встрече: при t=0.3 четыре прогона одной
+            # встречи дали 39 разных утверждений, 32 — в единственном
+            # экземпляре; один прогон выдумал номер задачи, которого в
+            # стенограмме нет. При t=0 три прогона совпали побуквенно,
+            # выдумка ушла: жадная выборка режет хвост распределения,
+            # где галлюцинации и живут.
+            # Оговорка: одинаковость ≠ правота. Стабильная ошибка
+            # останется стабильной — на это работает сверка в
+            # fact_check, а не температура.
+            temperature=0.0,
         )
