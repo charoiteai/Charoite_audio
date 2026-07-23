@@ -19,9 +19,28 @@ Charoite listens to your meetings (microphone + system audio, no bots joining ca
 ## Requirements
 
 - Apple Silicon Mac (M1 or newer), 32 GB RAM recommended for the default models
-- [Ollama](https://ollama.com) with `qwen3.6:35b-a3b` and `gemma4:latest` (or edit `config` to use smaller models — see [docs/MODELS.md](docs/MODELS.md) for why these defaults)
+- [Ollama](https://ollama.com) — see the RAM table below for which models fit
 - Python 3.11+
 - Optional: [BlackHole](https://existential.audio/blackhole/) to capture system audio (calls), [Obsidian](https://obsidian.md) to browse the graph
+
+## Which models for your RAM
+
+Everything runs locally. STT (~1 GB) and diarization (~0.5 GB) are constant;
+the LLMs are what scale with memory. `num_ctx: 8192` throughout.
+
+| RAM | Main LLM | Light LLM | Graph | Notes |
+|----|----|----|----|----|
+| **8 GB** | `qwen3.5:4b` | same | no | Transcript, theses, minutes, basic suggestions |
+| **16 GB** | `gemma4:latest` | `qwen3.5:2b` | slow | Full live loop — recommended entry point |
+| **32 GB** | `qwen3.6:35b-a3b` | `qwen3.5:4b` | yes | The default config, benchmarked here |
+| **64 GB+** | `qwen3.6:35b-a3b` | `qwen3.5:4b` | yes | Headroom for the cloud Claude layer + long meetings |
+
+Below 16 GB the knowledge graph is off (sub-30B models break the JSON schema);
+on 4 GB run STT only and point `llm.base_url` at another machine.
+
+**iOS/iPadOS**: the phone does STT + light generation, anything heavier goes to
+a Mac over the REST API. On iOS 26+ the built-in ~3B Foundation Models handle
+theses for free. Full macOS/iOS tables and the reasoning: [docs/MODELS.md](docs/MODELS.md).
 
 ## Quick start
 
