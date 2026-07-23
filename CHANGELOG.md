@@ -5,6 +5,15 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3](https://github.com/charoiteai/Charoite_audio/compare/v0.1.2...v0.1.3) (2026-07-23)
+
+
+### Bug Fixes
+
+* граф не обновлялся — модель уходила думать и обрывала JSON ([#10](https://github.com/charoiteai/Charoite_audio/issues/10)) ([e47af9f](https://github.com/charoiteai/Charoite_audio/commit/e47af9fff7a0931097b0f4e3ab1807e4274980b4))
+* детекция вопросов — ловим «?» в любом месте, спорное решает модель ([#11](https://github.com/charoiteai/Charoite_audio/issues/11)) ([f147b85](https://github.com/charoiteai/Charoite_audio/commit/f147b855b1b3f83e29f5a81cbb0b44cb5de057b4))
+* имя проекта из содержания, неоднозначные имена, пометка NOISE ([#12](https://github.com/charoiteai/Charoite_audio/issues/12)) ([0b06c24](https://github.com/charoiteai/Charoite_audio/commit/0b06c24ff340590023d30d6609b9ddedcd8ab06e))
+
 ## [0.1.2] - 2026-07-22
 
 ### Added
