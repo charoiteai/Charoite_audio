@@ -20,7 +20,7 @@ import requests
 import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from meeting_archive import ARCHIVE_DIR, archive_meeting  # noqa: E402
+from meeting_archive import archive_meeting  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 NOTE = "<!-- восстановлено ретроспективно по стенограмме, 2026-07-20 -->\n"
