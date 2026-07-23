@@ -99,6 +99,44 @@ On iOS additionally: the built-in ~3B Foundation Models (iOS 26+, zero
 download) and Core AI for native Swift inference; diarization via ANE
 pipelines. Model choice stays in the config.
 
+## Presets by RAM — macOS
+
+Live suggestions and the graph LLM are the memory-hungry parts; STT (~1 GB)
+and diarization (~0.5 GB) are constant. Numbers are the working set on Apple
+Silicon, `num_ctx: 8192` throughout (mandatory — larger contexts reload the
+model and blow up RAM).
+
+| RAM | Main LLM | Light LLM | STT | What you get |
+|----|----|----|----|----|
+| **4 GB** | — | — | GigaAM | Not enough for a local LLM. Run STT only (live transcript + saved minutes), and point `llm.base_url` at another machine or a cloud endpoint for suggestions. |
+| **8 GB** | `qwen3.5:4b` (3.4 GB) | same model | GigaAM | Transcript, theses, draft minutes, basic suggestions. One model serves both roles; no parallel Claude layer. Skip the graph (30B floor). |
+| **16 GB** | `gemma4:latest` (9.6 GB) | `qwen3.5:2b` | GigaAM | Full live loop: suggestions + theses + minutes in parallel. Graph extraction works but is slower. Recommended entry point. |
+| **32 GB** | `qwen3.6:35b-a3b` (23 GB) | `qwen3.5:4b` (3.4 GB) | GigaAM | The default config. Big-model suggestions, light model for theses in parallel, reliable graph extraction. Benchmarked here. |
+| **64 GB+** | `qwen3.6:35b-a3b` | `qwen3.5:4b` | GigaAM | Same models, but headroom for the optional cloud Claude layer, longer meetings, and offline transcript rebuild without eviction. |
+
+Rules of thumb: below 16 GB, drop the knowledge graph — sub-30B models break
+the JSON schema. Below 8 GB, keep only STT locally. The `small_model` always
+runs next to the main one, so budget for both at once.
+
+## Presets by RAM — iOS / iPadOS
+
+Phones and tablets can't hold a 30B model, so the split is different: the
+device does STT and light generation, anything heavier goes to a Mac over the
+REST API (`llm.base_url`). iOS RAM is also capped per app (roughly half the
+physical RAM), so the usable budget is smaller than the sticker number.
+
+| Device RAM | Local | Over REST API | Notes |
+|----|----|----|----|
+| **4 GB** (older iPhone/iPad) | STT only (Moonshine Tiny, ANE) | suggestions, theses, graph | Thin client. Live transcript on device, everything smart from the Mac. |
+| **6 GB** (iPhone 15/16 base) | STT + `qwen3.5:0.8b` for theses | suggestions, minutes, graph | On-device theses and quick answers; the Mac handles depth. |
+| **8 GB** (iPhone Pro, iPad) | STT + `qwen3.5:2b` | graph, cloud layer | Most of the live loop runs locally; only the graph needs the Mac. |
+| **iOS 26+** (any) | + built-in ~3B Foundation Models | graph | Apple's on-device model ships free (zero download) via Core AI — use it for theses/classification, keep the graph on the Mac. |
+
+The mobile STT choice is **Moonshine** (streaming by design, 27–245 MB, ~107 ms
+latency) rather than GigaAM, which is tuned for the Mac. Diarization on iOS
+runs through ANE pipelines. All of this stays configurable — the phone is a
+client that can borrow the Mac's models whenever they're reachable.
+
 ## Swapping models
 
 Everything lives in `config/config.yaml`: `stt.backend`, `llm.model`,
