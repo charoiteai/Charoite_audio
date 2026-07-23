@@ -25,5 +25,12 @@ jobs:
     steps:
       - uses: googleapis/release-please-action@v4
         with:
+          # PAT вместо GITHUB_TOKEN: ветку, созданную встроенным токеном бота,
+          # GitHub НЕ прогоняет через CI (защита от рекурсии), и release-PR
+          # висит BLOCKED без обязательных проверок. Свой токен делает ветку
+          # «человеческой» — lint/analyze запускаются сами. Секрет
+          # RELEASE_PLEASE_TOKEN задаётся в настройках репозитория;
+          # пока его нет — падаем на встроенный токен, чтобы workflow не ломался.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: .github/release-please-config.json
           manifest-file: .github/.release-please-manifest.json
