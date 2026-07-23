@@ -4,8 +4,11 @@
       "release-type": "simple",
       "changelog-path": "CHANGELOG.md",
       "bump-minor-pre-major": true,
-      "extra-files": ["version.txt"]
+      "extra-files": [
+        "version.txt"
+      ]
     }
   },
-  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json"
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "pull-request-title-pattern": "chore: release ${version}"
 }
