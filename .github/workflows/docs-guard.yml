@@ -1,0 +1,60 @@
+# Требует обновлять документацию вместе с кодом.
+#
+# Ловит ровно случай «код починил, доку забыл»: если PR трогает src/**, но
+# не трогает docs/**, README* или CHANGELOG — падает. Обойти осознанно можно
+# меткой skip-docs на PR (например, чистый рефакторинг без смысловых правок).
+#
+# Безопасность: имена файлов из git и метку из события НЕ подставляем в
+# оболочку интерполяцией — читаем через переменные окружения (иначе имя
+# ветки или файла может нести инъекцию, см. github.blog про workflow injection).
+name: docs-guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  docs-updated:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # нужен merge-base для диапазона изменений
+
+      - name: Документация обновлена вместе с кодом?
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # запятыми-разделённый список меток PR — читаем как данные, не как код
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+
+          # осознанный обход: метка skip-docs
+          case ",$PR_LABELS," in
+            *,skip-docs,*)
+              echo "Метка skip-docs — проверка пропущена."
+              exit 0 ;;
+          esac
+
+          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+
+          touches_code="$(echo "$changed" | grep -E '^src/' || true)"
+          touches_docs="$(echo "$changed" | grep -E '^(docs/|README|CHANGELOG)' || true)"
+
+          if [ -n "$touches_code" ] && [ -z "$touches_docs" ]; then
+            echo "::error::Изменён код в src/, но не тронута документация."
+            echo ""
+            echo "Обнови docs/, README* или CHANGELOG.md — либо повесь метку skip-docs,"
+            echo "если правка чисто техническая и документировать нечего."
+            echo ""
+            echo "Изменённые файлы:"
+            echo "$changed" | sed 's/^/  /'
+            exit 1
+          fi
+
+          echo "Документация в порядке."
