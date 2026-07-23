@@ -2,9 +2,12 @@
 #
 # Ничего писать в CHANGELOG.md руками не нужно: action читает fix:/feat:/
 # BREAKING-коммиты после каждого пуша в main, копит их в отдельном
-# release-PR и при его мёрдже — пишет CHANGELOG, бампает версию, ставит
-# git-tag и создаёт GitHub Release. Коммит без conventional-префикса в
-# changelog не попадёт, поэтому префиксы обязательны.
+# release-PR и при его мёрдже — пишет CHANGELOG, бампает версию в version.txt,
+# ставит git-tag и создаёт GitHub Release. Коммит без conventional-префикса
+# в changelog не попадёт, поэтому префиксы обязательны.
+#
+# Текущую версию release-please берёт из последнего git-тега (v0.1.2 уже
+# стоит) — никаких config/manifest-файлов в корне не нужно.
 name: release-please
 
 on:
@@ -21,7 +24,6 @@ jobs:
     steps:
       - uses: googleapis/release-please-action@v4
         with:
-          # конфиг и стартовая версия — в файлах рядом, чтобы продолжить с
-          # текущей 0.1.2, а не начинать нумерацию заново
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
+          # simple: версия живёт в version.txt, changelog в CHANGELOG.md;
+          # стартовая точка — тег v0.1.2, дальше нумерует сам
+          release-type: simple
