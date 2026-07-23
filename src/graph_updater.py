@@ -35,7 +35,14 @@ def extract(cfg: dict, transcript: str) -> dict | None:
             "model": cfg["llm"]["model"],
             "stream": False,
             "format": "json",
-            "options": {"num_ctx": 8192},  # иначе qwen3.6 грузится на 262144 → своп/перезагрузка
+            # think=false обязателен: у qwen3.6 рассуждение включено по умолчанию
+            # и делит бюджет с ответом. На разборе стенограммы модель уходила
+            # думать на тысячи знаков — и JSON приходил пустым или обрывался.
+            "think": False,
+            # num_ctx 8192 не хватало: 12000 знаков стенограммы съедали почти
+            # весь контекст, и модель обрывала JSON на полуслове — граф молча
+            # не обновлялся. 16384 оставляет место и на вход, и на ответ.
+            "options": {"num_ctx": 16384, "num_predict": 3000},
             "messages": [
                 {"role": "system", "content": (
                     "Ты строишь граф знаний по стенограмме встречи. Верни СТРОГО JSON:\n"
@@ -65,7 +72,14 @@ def extract(cfg: dict, transcript: str) -> dict | None:
     raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.M).strip()
     try:
         return json.loads(raw)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        # Раньше здесь был молчаливый None, и наверху печаталось «LLM не вернула
+        # валидный JSON» — из этой фразы не понять ни что случилось, ни что
+        # делать. А случай типовой: ответ обрывается, когда вход съел контекст.
+        cut = "оборван на полуслове" if "Unterminated" in str(e) else "не разобрался"
+        print(f"граф: ответ модели {cut} ({e}); длина ответа {len(raw)} знаков")
+        if raw:
+            print(f"граф: хвост ответа → …{raw[-120:]}")
         return None
 
 
