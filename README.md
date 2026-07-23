@@ -39,7 +39,7 @@ STT models download automatically on first run (GigaAM via `onnx_asr`). For live
 - [Setup](docs/SETUP.md) — install, BlackHole for calls, permissions, first run
 - [Features](docs/FEATURES.md) — everything Charoite does, live and post-meeting
 - [Architecture](docs/ARCHITECTURE.md) — the daemon, two-pass diarization, graph pipeline
-- [Models](docs/MODELS.md) — why these defaults, with benchmarks; English & mobile notes
+- [Models](docs/MODELS.md) — why these defaults, with benchmarks; **RAM presets for macOS (4/8/16/32 GB) and iOS**
 - [Diarization](docs/DIARIZATION.md) — embedding model setup and tuning
 
 ## Privacy
