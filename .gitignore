@@ -2,10 +2,12 @@ config/config.yaml
 transcripts/
 recordings/
 logs/
-models/
+/models/
 .venv/
 __pycache__/
 *.pyc
 .DS_Store
 CLAUDE.md
 .env
+app/.build/
+app/build/
