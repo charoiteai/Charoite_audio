@@ -51,13 +51,17 @@
 5. **Debrief** (optional) — meeting Q&A, tasks, options for open questions,
    recommendations for the next meeting.
 
-**Core revision** (`scripts/tier3_cores.py`, manual run) — over time the
-extractor splits one recurring topic into twin Cores. The script finds such
-pairs: an embedding prefilter (bge-m3) → an NLI judge. Duplicates (mutual
-entailment) get merged with chronicle transfer and a redirect stub; nestings
-("episode ⊂ process") are NOT merged but cross-linked; borderline pairs go
-to a report for a human. Without `--apply` it only reports; generic "hub"
-cores are never touched automatically.
+**Core revision** (`src/tier3.py`) — over time the extractor splits one
+recurring topic into twin Cores. The revision finds such pairs — an
+embedding prefilter (bge-m3) → an NLI judge — and runs itself:
+incrementally after every meeting (this meeting's cores against all), and
+as a full sweep via `scripts/tier3_cores.py --all-graphs --apply` (cron it
+if you like). The mode is cautious: only crystal-clear duplicates (mutual
+entailment ≥ 0.80) get merged — chronicle transferred, redirect stub left;
+mid-confidence pairs get a reversible "possible duplicate" note; nestings
+("episode ⊂ process") are cross-linked, never merged; generic "hub" cores
+are never touched. Every write is preceded by a backup into
+`Ядра/.tier3_backup/`.
 
 ## Outside meetings
 
