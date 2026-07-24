@@ -972,9 +972,16 @@ def main():
             try:  # граф и документы через brain Чароита (если поднят)
                 import requests as _rq
                 v = _rq.post("http://127.0.0.1:8100/vault_search",
-                             json={"query": question, "limit": 4}, timeout=2.5).json().get("text", "")
+                             json={"query": question, "limit": 4,
+                                   "snippet_chars": 600}, timeout=2.5).json().get("text", "")
                 if v and "не найдено" not in v.lower():
-                    extra = "\n\nИз графа и документов (vault):\n" + v[:2000]
+                    # «⚠» — гейт уверенности brain: совпадения слабые, модель
+                    # обязана честно сказать «в архиве нет», а не сочинять
+                    if v.startswith("⚠"):
+                        extra = ("\n\nИз графа и документов (vault) — СОВПАДЕНИЯ "
+                                 "СЛАБЫЕ, скорее всего в архиве ответа нет:\n" + v[:2000])
+                    else:
+                        extra = "\n\nИз графа и документов (vault):\n" + v[:2000]
             except Exception:  # noqa: BLE001
                 pass
             parts: list[str] = []
