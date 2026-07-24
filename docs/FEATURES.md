@@ -17,7 +17,11 @@
   with the question shown above it.
 - **Cloud answer (☁️, opt-in)** — the same question goes to Claude in
   parallel (your subscription, `claude` CLI): local is instant, cloud is
-  deeper 10-20 s later. Off by default.
+  deeper 10-20 s later. Off by default. The prompt carries only your role,
+  never a topic list, and instructs honesty over confidence: meeting facts
+  (agenda, numbers, statuses) come from the transcript or are declared
+  unknown — early in a meeting a topic-primed prompt used to make the model
+  present those topics as the actual agenda.
 - **Auto-theses** — 📌 facts/decisions, 💎 highlights, 💭 ideas as the
   conversation flows; the heavy model periodically reviews them (🔬).
 - **Déjà vu (⏮)** — when the conversation touches a "Core" (a cross-meeting
