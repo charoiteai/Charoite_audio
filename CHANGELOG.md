@@ -5,6 +5,21 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0](https://github.com/charoiteai/Charoite_audio/compare/v0.1.3...v0.2.0) (2026-07-24)
+
+
+### Features
+
+* **nli:** semantic thesis dedup via local NLI + honest instant prompt ([#23](https://github.com/charoiteai/Charoite_audio/issues/23)) ([559416e](https://github.com/charoiteai/Charoite_audio/commit/559416eca1842e9d6c118d08a80f5db222400540))
+* **tier3:** automatic core revision everywhere, cautious mode ([#25](https://github.com/charoiteai/Charoite_audio/issues/25)) ([57f1eb6](https://github.com/charoiteai/Charoite_audio/commit/57f1eb6a94a817ae7e4456803ef45d44524ecd7d))
+* **tier3:** core revision tool — duplicates and nestings via bge-m3 + NLI ([#24](https://github.com/charoiteai/Charoite_audio/issues/24)) ([5131e29](https://github.com/charoiteai/Charoite_audio/commit/5131e29386a5e17fab210ccc6e0ae0f2b0b4a87b))
+
+
+### Bug Fixes
+
+* **cloud:** cloud panel no longer invents agenda from prompt hardcode ([#20](https://github.com/charoiteai/Charoite_audio/issues/20)) ([1ddbeb2](https://github.com/charoiteai/Charoite_audio/commit/1ddbeb236c8a2170601fffdf1b2ceb54325883b4))
+* **graph:** core provenance survives paraphrasing — fuzzy anchor to transcript ([#22](https://github.com/charoiteai/Charoite_audio/issues/22)) ([27e4fad](https://github.com/charoiteai/Charoite_audio/commit/27e4fadb7a4dd02474b70f24c59b3d3e15558e3c))
+
 ## [0.1.3](https://github.com/charoiteai/Charoite_audio/compare/v0.1.2...v0.1.3) (2026-07-23)
 
 
