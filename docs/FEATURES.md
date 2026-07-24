@@ -51,6 +51,14 @@
 5. **Debrief** (optional) — meeting Q&A, tasks, options for open questions,
    recommendations for the next meeting.
 
+**Core revision** (`scripts/tier3_cores.py`, manual run) — over time the
+extractor splits one recurring topic into twin Cores. The script finds such
+pairs: an embedding prefilter (bge-m3) → an NLI judge. Duplicates (mutual
+entailment) get merged with chronicle transfer and a redirect stub; nestings
+("episode ⊂ process") are NOT merged but cross-linked; borderline pairs go
+to a report for a human. Without `--apply` it only reports; generic "hub"
+cores are never touched automatically.
+
 ## Outside meetings
 
 - **Dictation** (global hotkey) — speak → recognized locally → pasted into
