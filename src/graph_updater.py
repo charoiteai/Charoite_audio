@@ -174,8 +174,15 @@ def core_anchor(core: dict, transcript: str) -> str:
     чтобы понять, чья это была реплика, приходится глазами искать в стенограмме.
 
     Цитата ПРОВЕРЯЕТСЯ по стенограмме: модель охотно сочиняет правдоподобные
-    формулировки, а выдуманная цитата в графе хуже, чем её отсутствие. Сверяем
-    по словам (регистр, пунктуация и переносы строк роли не играют).
+    формулировки, а выдуманная цитата в графе хуже, чем её отсутствие.
+
+    Два уровня сверки. Точное вхождение по словам — идеал, но на практике
+    модель ПЕРЕСКАЗЫВАЕТ даже при «скопируй дословно» в промпте — и все
+    цитаты уходили в корзину, провенанс не работал вовсе. Поэтому второй
+    уровень: ищем в стенограмме окно, максимально похожее на модельную
+    формулировку (difflib по словам), и при сходстве ≥ 0.75 цитируем САМУ
+    СТЕНОГРАММУ, не модель. Цитата тогда дословна по построению; модель
+    лишь указывает, ГДЕ искать. Ниже порога — по-прежнему отбрасываем.
     """
     who = (core.get("кто") or "").strip().strip(".,!?»«\"")
     when = (core.get("время") or "").strip()
@@ -184,9 +191,46 @@ def core_anchor(core: dict, transcript: str) -> str:
         return ""
     norm = lambda s: " ".join(re.findall(r"[а-яёa-z0-9]+", s.lower()))
     if norm(quote) not in norm(transcript):
-        return ""  # цитаты нет в стенограмме — молча отбрасываем выдумку
+        quote = _closest_span(quote, transcript)
+        if not quote:
+            return ""  # даже похожего места нет — отбрасываем выдумку
     head = ", ".join(x for x in (who, when if re.match(r"^\d{1,2}:\d{2}$", when) else "") if x)
     return f" · {head}: «{quote}»" if head else f" · «{quote}»"
+
+
+def _closest_span(quote: str, transcript: str, threshold: float = 0.75) -> str:
+    """Найти в стенограмме фрагмент, ближайший к модельному пересказу.
+
+    Скользящее окно той же длины в словах (±2) по всей стенограмме; сходство —
+    difflib по спискам нормализованных слов. Возвращается ОРИГИНАЛЬНЫЙ срез
+    стенограммы (с регистром и пунктуацией), а не текст модели: даже если окно
+    чуть сползло, в граф попадает настоящая реплика, а не правдоподобный сочин.
+    """
+    import difflib
+
+    q_words = re.findall(r"[а-яёa-z0-9]+", quote.lower())
+    if not q_words:
+        return ""
+    tokens = [(m.start(), m.end(), m.group(0))
+              for m in re.finditer(r"[а-яёa-z0-9]+", transcript.lower())]
+    if len(tokens) < len(q_words):
+        return ""
+    words = [t[2] for t in tokens]
+    best_ratio, best_span = 0.0, (0, 0)
+    for size in (len(q_words), len(q_words) + 2, max(3, len(q_words) - 2)):
+        sm = difflib.SequenceMatcher(b=q_words, autojunk=False)
+        for i in range(0, len(words) - size + 1):
+            sm.set_seq1(words[i:i + size])
+            # дешёвый верхний предел прежде полного ratio — на порядок быстрее
+            if sm.real_quick_ratio() < threshold:
+                continue
+            r = sm.ratio()
+            if r > best_ratio:
+                best_ratio, best_span = r, (i, i + size)
+    if best_ratio < threshold:
+        return ""
+    start, end = tokens[best_span[0]][0], tokens[best_span[1] - 1][1]
+    return " ".join(transcript[start:end].split())
 
 
 def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
