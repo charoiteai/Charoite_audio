@@ -100,11 +100,16 @@ final class LocalChatService: ObservableObject {
         «Чароит, локальный ассистент», без имени вендора модели.
         """
         if useMemory {
-            let vault = String(ArchiveSearch.search(query: prompt, limit: 5, snippet: 800).prefix(2400))
+            var vault = String(await ArchiveSearch.search(query: prompt, limit: 5, snippet: 800).prefix(2400))
+            // маркер слабых совпадений: модель предупреждена, что граф скорее не про это
+            let lowConf = vault.hasPrefix(ArchiveSearch.lowConfidenceMarker)
+            if lowConf { vault.removeFirst() }
             if !vault.isEmpty {
-                system += "\n\n[ГРАФ ВСТРЕЧ — люди, системы, решения, документация]\n" + vault
+                system += lowConf
+                    ? "\n\n[ГРАФ ВСТРЕЧ — совпадения СЛАБЫЕ, вероятно не про вопрос; не выдавай за факт]\n" + vault
+                    : "\n\n[ГРАФ ВСТРЕЧ — люди, системы, решения, документация]\n" + vault
             }
-            status = vault.isEmpty ? "в графе пусто по теме" : "🧠 граф подмешан"
+            status = vault.isEmpty ? "в графе пусто по теме" : (lowConf ? "граф: слабые совпадения" : "🧠 граф подмешан")
         }
         var msgs: [[String: String]] = [["role": "system", "content": system]]
         for m in messages.suffix(13) where !m.text.isEmpty {

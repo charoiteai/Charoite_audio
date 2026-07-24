@@ -144,7 +144,11 @@ struct SuflerView: View {
             defer { Task { @MainActor in isSearchingArchive = false } }
             // 1200 знаков на файл: модель отвечает по содержимому, а не по
             // обрезкам (на коротких сниппетах честно пишет «информации нет»)
-            let found = ArchiveSearch.search(query: q, limit: 5, snippet: 1200)
+            var found = await ArchiveSearch.search(query: q, limit: 5, snippet: 1200)
+            // маркер слабых совпадений: показываем честно и просим модель
+            // не сочинять — «в архиве об этом нет» лучше выдуманного ответа
+            let lowConfidence = found.hasPrefix(ArchiveSearch.lowConfidenceMarker)
+            if lowConfidence { found.removeFirst() }
             guard !found.isEmpty else {
                 await MainActor.run {
                     archiveAnswer = "В графе ничего не нашлось по запросу. "
@@ -159,8 +163,11 @@ struct SuflerView: View {
             let sourceBlock = sources.isEmpty ? "" : "\n\nИсточники:\n"
                 + sources.map { "· \($0)" }.joined(separator: "\n")
             // прогресс: человек видит, ЧТО нашлось, но не сырые куски
+            let confNote = lowConfidence
+                ? "⚠ Совпадения слабые — возможно, в архиве этого нет.\n" : ""
             await MainActor.run {
-                archiveAnswer = "Нашёл источников: \(sources.count) — формулирую ответ…" + sourceBlock
+                archiveAnswer = confNote
+                    + "Нашёл источников: \(sources.count) — формулирую ответ…" + sourceBlock
             }
             let instruction = brief
                 ? "Готовлюсь к встрече по теме: \(q)\n\nФрагменты из архива встреч:\n\(found)\n\n"
@@ -304,12 +311,32 @@ struct SuflerView: View {
         for (i, line) in raw.components(separatedBy: "\n").enumerated() {
             if i > 0 { out.append(AttributedString("\n")) }
             var piece = AttributedString(line)
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("❓") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("❓") {
                 piece.font = .callout.bold()
+            } else if trimmed.hasPrefix("· "), let url = obsidianURL(String(trimmed.dropFirst(2))) {
+                // источник ответа — ссылка: клик открывает заметку в Obsidian
+                piece.link = url
+                piece.foregroundColor = .accentColor
+                piece.underlineStyle = .single
             }
             out.append(piece)
         }
         return out
+    }
+
+    /// obsidian://open на заметку графа. Имя вольта — родитель папки графа
+    /// (стандартная раскладка: vault/граф/заметка.md).
+    private func obsidianURL(_ rel: String) -> URL? {
+        guard let graph = AppSettings.graphDir else { return nil }
+        let vault = graph.deletingLastPathComponent().lastPathComponent
+        let file = graph.lastPathComponent + "/" + rel
+        var comps = URLComponents()
+        comps.scheme = "obsidian"
+        comps.host = "open"
+        comps.queryItems = [URLQueryItem(name: "vault", value: vault),
+                            URLQueryItem(name: "file", value: file)]
+        return comps.url
     }
 
     // MARK: - Header
