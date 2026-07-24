@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 
 import requests
 import yaml
@@ -272,6 +273,36 @@ def main():
         "Телеграфно, по-русски. Если ничего ценного не прозвучало — ответь ровно: NONE"
     )
 
+    # Дедуп тезисов по СМЫСЛУ. Модель каждые 40с смотрит свежий фрагмент и на
+    # длинной встрече переоткрывает уже сказанное другими словами — контекст в
+    # 800 знаков этого не лечит. Подстрочное сравнение дубли-перефразы не
+    # ловит, эмбеддинги путают «согласован»/«не согласован», поэтому NLI:
+    # дубль = двустороннее следование (nli.py, ONNX, без torch). Дорогой
+    # инференс (~0.2с) прикрыт дешёвым difflib-префильтром — в NLI идут только
+    # словесно похожие кандидаты. Нет модели на диске — дедуп молча выключен.
+    recent_theses: deque[str] = deque(maxlen=16)
+
+    def is_dup_thesis(line: str) -> bool:
+        import difflib as _dl
+
+        import nli
+        if not nli.is_available():
+            return False
+        text = line.lstrip("📌💎💭 ").strip()
+        if len(text) < 12:
+            return False
+        words = text.lower().split()
+        for prev in reversed(recent_theses):
+            # 0.3, не выше: перефраз с аббревиатурами («2 RPS» ↔ «2 запроса в
+            # секунду») словесно далёк, и жадный порог отрезал бы его до NLI
+            if _dl.SequenceMatcher(None, words, prev.lower().split()).ratio() < 0.3:
+                continue  # совсем далёкие пары NLI не беспокоят
+            if nli.is_duplicate(text, prev):
+                print(f"тезис-дубль отсеян: «{text[:80]}» ≈ «{prev[:80]}»", flush=True)
+                return True
+        recent_theses.append(text)
+        return False
+
     def think_loop():
         """Ко-мышление: КТ, ценные факты и мысли модели по ходу встречи."""
         seen = 0
@@ -301,9 +332,13 @@ def main():
                     line = line.strip()
                     if not line or line == "NONE":
                         continue
-                    emit({"type": "thesis", "text": line})
                     if line.startswith(("📌", "💎", "💭")):
+                        if is_dup_thesis(line):
+                            continue
+                        emit({"type": "thesis", "text": line})
                         tr.note(line)
+                    else:
+                        emit({"type": "thesis", "text": line})
             except Exception as e:  # noqa: BLE001
                 emit({"type": "status", "text": f"мышление: {e}"})
 
