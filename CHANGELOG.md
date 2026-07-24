@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0](https://github.com/charoiteai/Charoite_audio/compare/v0.4.0...v0.5.0) (2026-07-24)
+
+
+### Features
+
+* **app:** native macOS app — SwiftUI shell over the daemon ([#31](https://github.com/charoiteai/Charoite_audio/issues/31)) ([59c38c4](https://github.com/charoiteai/Charoite_audio/commit/59c38c4250bf9ca49cd218e4841e3f61b713fb5c))
+
 ## [0.4.0](https://github.com/charoiteai/Charoite_audio/compare/v0.3.0...v0.4.0) (2026-07-24)
 
 
