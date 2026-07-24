@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/charoiteai/Charoite_audio/compare/v0.2.0...v0.3.0) (2026-07-24)
+
+
+### Features
+
+* **brief:** auto-brief from the archive at meeting start ([#27](https://github.com/charoiteai/Charoite_audio/issues/27)) ([7154e0e](https://github.com/charoiteai/Charoite_audio/commit/7154e0e00a1d995c783669f38e6b76d4bc762f26))
+
 ## [0.2.0](https://github.com/charoiteai/Charoite_audio/compare/v0.1.3...v0.2.0) (2026-07-24)
 
 
