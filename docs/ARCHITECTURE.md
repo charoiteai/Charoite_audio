@@ -40,7 +40,13 @@ sit on top of this protocol; a second instance is blocked via flock.
    participants, topics, decisions, action items, entities, Cores.
 2. Graph update: a meeting note with `[[Folder/Name|Name]]` links, upserts
    of People/Systems nodes (dated facts, history never erased), Cores —
-   "Status" is rewritten, "Chronicle" accumulates.
+   "Status" is rewritten, "Chronicle" accumulates. Every chronicle line
+   carries provenance: who said it, at what time, verbatim quote. The quote
+   is verified against the transcript: exact word-level match first; if the
+   model paraphrased, a fuzzy search finds the closest transcript window
+   (difflib, 0.75 threshold) and the graph gets a slice of the TRANSCRIPT
+   itself, never the model's wording; anything below the threshold is
+   dropped as fabrication.
 3. Archive (src/meeting_archive.py): a "date — title" folder, human file
    names, Q&A assembled from the hints log, the Summary generated with
    historical context (Cores + two previous summaries; the future never
