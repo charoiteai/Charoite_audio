@@ -1,0 +1,324 @@
+import Foundation
+
+#if os(macOS)
+
+/// Мост к локальному суфлёру (папка установки Charoite_audio): запускает
+/// python-демон, читает NDJSON-события из stdout, шлёт команды в stdin.
+/// Всё локально: аудио → STT → Ollama, ничего не покидает машину.
+@MainActor
+final class SuflerService: ObservableObject {
+    // один сервис на приложение: чат смотрит isRunning, чтобы не вставать
+    // в очередь Ollama за встречными генерациями большой модели
+    static let shared = SuflerService()
+    struct TranscriptLine: Identifiable, Equatable {
+        let id = UUID()
+        let ts: String
+        var speaker: String = ""
+        var text: String
+    }
+
+    @Published var isRunning = false
+    @Published var status = "Готов к запуску"
+    @Published var lines: [TranscriptLine] = []
+    @Published var theses: [String] = []
+    @Published var hint = ""
+    @Published var isHinting = false
+    @Published var cloud = ""          // ответ Claude (Sonnet) — третья панель
+    @Published var isClouding = false
+
+    // Живые тумблеры контуров. Выбор запоминается и становится дефолтом
+    // следующих встреч (UserDefaults) — «один раз отказался, и так дальше».
+    @Published var hintsOn = UserDefaults.standard.object(forKey: "sufler.hints") as? Bool ?? true {
+        didSet { applyToggle("hints", hintsOn) }
+    }
+    @Published var thesesOn = UserDefaults.standard.object(forKey: "sufler.theses") as? Bool ?? true {
+        didSet { applyToggle("theses", thesesOn) }
+    }
+    @Published var cloudOn = UserDefaults.standard.object(forKey: "sufler.cloud") as? Bool ?? true {
+        didSet { applyToggle("cloud", cloudOn) }
+    }
+
+    private func applyToggle(_ key: String, _ on: Bool) {
+        UserDefaults.standard.set(on, forKey: "sufler.\(key)")
+        send("set \(key) \(on ? "on" : "off")")
+    }
+
+    private var process: Process?
+    private var stdinPipe: Pipe?
+    private var stdoutHandle: FileHandle?  // для снятия readabilityHandler при смерти демона
+    private var errHandle: FileHandle?     // daemon.err.log — закрывать, иначе fd-утечка на рестартах
+    private var stdoutBuffer = Data()
+    private var _hintBuf = ""            // буфер троттла подсказки (см. consume)
+    private var _lastHintUI = Date.distantPast
+    // Watchdog: демон шлёт hb каждые 30с из главного цикла; тишина 100с на живом
+    // процессе = завис (20.07: встреча шла, транскрипция молча стояла 20 минут)
+    private var lastEventAt = Date()
+    private var watchdog: Timer?
+    private var userStopped = false
+    private var restartAttempts = 0      // защита от краш-лупа: максимум 3 подряд
+
+    private var suflerRoot: URL { AppSettings.charoiteRoot }
+
+    func start(preserveUI: Bool = false) {
+        guard !isRunning else { return }
+        // Прошлый демон ещё дожёвывает stop (грейс 8-12с) и держит flock —
+        // новый отскочил бы с «уже слушает». Старт = пользователь решил: добиваем.
+        if let old = process, old.isRunning {
+            old.terminationHandler = nil  // не дёргать daemonDied по нашему же kill
+            kill(old.processIdentifier, SIGKILL)
+            process = nil
+        }
+        if !preserveUI {                 // авто-рестарт не должен стирать встречу с экрана
+            lines = []
+            theses = []
+            hint = ""
+            cloud = ""
+        }
+        _hintBuf = ""; _lastHintUI = .distantPast
+        // демон мог умереть посреди генерации — hint_done уже не придёт,
+        // без сброса кнопки Подсказка/Claude/Протокол залипали заблокированными
+        isHinting = false
+        isClouding = false
+        userStopped = false
+        status = "Запускаю…"
+
+        let p = Process()
+        p.executableURL = suflerRoot.appendingPathComponent(".venv/bin/python")
+        p.arguments = ["src/daemon.py"]
+        p.currentDirectoryURL = suflerRoot
+
+        let outPipe = Pipe()
+        let inPipe = Pipe()
+        p.standardOutput = outPipe
+        p.standardInput = inPipe
+        // stderr — в лог: без него сбои демона невидимы (logs/daemon.err.log)
+        let logDir = suflerRoot.appendingPathComponent("logs")
+        try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+        let errURL = logDir.appendingPathComponent("daemon.err.log")
+        // append, не пересоздание: авто-рестарт после крэша затирал трейсбек
+        // ровно в момент, когда он нужен для диагноза
+        if !FileManager.default.fileExists(atPath: errURL.path) {
+            FileManager.default.createFile(atPath: errURL.path, contents: nil)
+        }
+        let errFH = try? FileHandle(forWritingTo: errURL)
+        errFH?.seekToEndOfFile()
+        p.standardError = errFH ?? FileHandle.nullDevice
+        errHandle = errFH
+
+        outPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                // EOF: без снятия хендлера dispatch-source жил после смерти демона —
+                // CPU-спин пустыми срабатываниями + утечка pipe на каждый рестарт
+                handle.readabilityHandler = nil
+                return
+            }
+            Task { @MainActor in self?.consume(data) }
+        }
+        stdoutHandle = outPipe.fileHandleForReading
+        p.terminationHandler = { [weak self] proc in
+            Task { @MainActor in self?.daemonDied(proc) }
+        }
+
+        do {
+            try p.run()
+            process = p
+            stdinPipe = inPipe
+            isRunning = true
+            // сохранённые дефолты — новому демону (stdin буферизуется до готовности)
+            for (key, on) in [("hints", hintsOn), ("theses", thesesOn), ("cloud", cloudOn)] where !on {
+                send("set \(key) off")
+            }
+            lastEventAt = Date()
+            watchdog?.invalidate()
+            watchdog = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.checkAlive() }
+            }
+        } catch {
+            status = "Не удалось начать запись: \(error.localizedDescription)"
+        }
+    }
+
+    func stop() {
+        userStopped = true
+        watchdog?.invalidate()
+        watchdog = nil
+        send("stop")
+        // Демону нужно успеть: запустить graph_updater и закрыть аудио-стримы.
+        // 1.5с не хватало на длинной встрече — обновление графа терялось.
+        let p = process  // сильный захват: добить именно ЭТОТ демон, не преемника
+        DispatchQueue.global().asyncAfter(deadline: .now() + 8.0) {
+            if let p, p.isRunning { p.terminate() }
+        }
+        // Зависший в finally демон (мёртвый PortAudio-стрим не закрывается) жил
+        // дальше и держал flock daemon.lock — следующий Старт молча отскакивал
+        // («уже слушает в другом окне»). SIGKILL гарантирует смерть и снятие lock.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 12.0) {
+            if let p, p.isRunning { kill(p.processIdentifier, SIGKILL) }
+        }
+        isRunning = false
+        status = "Останавливаю…"
+    }
+
+    /// Демон-процесс умер (крэш или наш terminate). Если это не ручной Стоп —
+    /// поднимаем свежий, не стирая встречу с экрана (стенограмма-файл цел).
+    private func daemonDied(_ proc: Process) {
+        guard proc === process else { return }  // умер прошлый демон, не текущий
+        stdoutHandle?.readabilityHandler = nil
+        stdoutHandle = nil
+        try? errHandle?.close()
+        errHandle = nil
+        let wasRunning = isRunning
+        isRunning = false
+        isHinting = false   // ждать hint_done/cloud_done от мёртвого демона бессмысленно
+        isClouding = false
+        watchdog?.invalidate()
+        watchdog = nil
+        // Статусы читает человек на встрече, а не разработчик в логах. «Демон
+        // умер», «нет heartbeat» ему ничего не говорят — важно другое: пишется
+        // ли встреча прямо сейчас и надо ли что-то делать руками.
+        guard wasRunning, !userStopped else {
+            status = "Остановлен"
+            return
+        }
+        guard restartAttempts < 3 else {
+            // Три попытки подряд не помогли — молчать нельзя: человек уверен,
+            // что встреча пишется, а запись давно встала.
+            status = "⛔️ Запись остановилась и не восстановилась. Нажмите «Слушать встречу» ещё раз"
+            return
+        }
+        restartAttempts += 1
+        status = "Запись прервалась — восстанавливаю (\(restartAttempts) из 3)"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self, !self.userStopped, !self.isRunning else { return }
+            self.start(preserveUI: true)
+        }
+    }
+
+    /// Процесс жив, но heartbeat молчит 100с (hb идёт раз в 30с) — демон завис.
+    /// Раньше это требовало ручного Стоп/Старт посреди встречи.
+    private func checkAlive() {
+        guard isRunning, let p = process, p.isRunning else { return }
+        guard Date().timeIntervalSince(lastEventAt) > 100 else { return }
+        status = "Запись замерла — перезапускаю"
+        p.terminate()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5.0) {
+            if p.isRunning { kill(p.processIdentifier, SIGKILL) }  // SIGTERM дедлок не берёт
+        }
+    }
+
+    func requestHint() {
+        guard isRunning, !isHinting else { return }
+        hint = ""
+        _hintBuf = ""; _lastHintUI = .distantPast
+        isHinting = true
+        send("hint")
+    }
+
+    func requestSummary() {
+        guard isRunning, !isHinting else { return }
+        hint = ""
+        _hintBuf = ""; _lastHintUI = .distantPast
+        isHinting = true
+        send("summary")
+    }
+
+    func requestCloud() {
+        guard isRunning, !isClouding else { return }
+        send("cloud")
+    }
+
+    func ask(_ question: String) {
+        let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ")
+        // !isHinting: вопрос поверх идущей генерации мешал токены двух ответов в панели
+        guard isRunning, !isHinting, !q.isEmpty else { return }
+        hint = ""
+        _hintBuf = ""; _lastHintUI = .distantPast
+        isHinting = true
+        send("ask " + q)
+    }
+
+    private func send(_ cmd: String) {
+        guard let fh = stdinPipe?.fileHandleForWriting,
+              let data = (cmd + "\n").data(using: .utf8) else { return }
+        try? fh.write(contentsOf: data)
+    }
+
+    private func consume(_ data: Data) {
+        stdoutBuffer.append(data)
+        lastEventAt = Date()  // любое событие (включая hb) = демон жив
+        while let nl = stdoutBuffer.firstIndex(of: 0x0A) {
+            let lineData = stdoutBuffer.prefix(upTo: nl)
+            stdoutBuffer.removeSubrange(...nl)
+            guard let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  let type = obj["type"] as? String else { continue }
+            let text = obj["text"] as? String ?? ""
+            switch type {
+            case "status":
+                status = text
+            case "transcript":
+                let spk = obj["speaker"] as? String ?? ""
+                let plain = obj["plain"] as? String ?? ""
+                // куски одного голоса — в один абзац, а не строкой-«батчем» на каждый
+                // 3с-чанк; новый блок только на смене говорящего (или очень длинном)
+                if !spk.isEmpty, !plain.isEmpty, let last = lines.last,
+                   last.speaker == spk, last.text.count < 2500 {
+                    lines[lines.count - 1].text += " " + plain
+                } else {
+                    lines.append(TranscriptLine(ts: obj["ts"] as? String ?? "",
+                                                speaker: spk,
+                                                text: plain.isEmpty ? text : plain))
+                }
+                if lines.count > 500 { lines.removeFirst(lines.count - 500) }
+                restartAttempts = 0  // транскрипция реально идёт — лимит рестартов обнуляем
+            case "thesis":
+                theses.append(text)
+                if theses.count > 200 { theses.removeFirst(theses.count - 200) }
+            case "hint":
+                // троттл ~30fps: hint растёт по токену, растущий Text = O(n²)
+                _hintBuf += text
+                if Date().timeIntervalSince(_lastHintUI) >= 0.033 {
+                    hint = _hintBuf; _lastHintUI = Date()
+                }
+            case "transcript_markup":
+                // e4b разметил реплики диалога внутри последнего абзаца этого голоса
+                let spk = obj["speaker"] as? String ?? ""
+                if !spk.isEmpty, !text.isEmpty {
+                    for i in stride(from: lines.count - 1, through: 0, by: -1)
+                    where lines[i].speaker == spk {
+                        lines[i].text = text
+                        break
+                    }
+                }
+            case "hint_done":
+                hint = _hintBuf  // финальный флаш хвоста
+                isHinting = false
+            case "cloud_start":
+                // лента, как hint: `cloud = …` затирала все прошлые ответы Haiku
+                cloud += (cloud.isEmpty ? "" : "\n\n") + text + "\n"
+                isClouding = true
+            case "cloud":
+                cloud += text
+                if cloud.count > 40_000 {  // панель не должна пухнуть бесконечно
+                    cloud = String(cloud.suffix(30_000))
+                }
+            case "cloud_done":
+                isClouding = false
+            case "rename":
+                // нейросеть надёжно определила имя: «Собеседник N» → имя,
+                // задним числом по всей ленте (стенограмму демон правит сам)
+                if let from = obj["from"] as? String,
+                   let to = obj["to"] as? String, !from.isEmpty, !to.isEmpty {
+                    for i in lines.indices where lines[i].speaker == from {
+                        lines[i].speaker = to
+                    }
+                }
+            default:
+                break  // hb и будущие типы — просто отметка живости выше
+            }
+        }
+    }
+}
+
+#endif
