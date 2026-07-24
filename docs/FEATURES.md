@@ -68,6 +68,18 @@ mid-confidence pairs get a reversible "possible duplicate" note; nestings
 are never touched. Every write is preceded by a backup into
 `Ядра/.tier3_backup/`.
 
+**Nightly loop** (`scripts/nightly.sh`, cron/launchd it): Tier3 revision →
+**morning brief** → **memory bench**. The morning brief
+(`scripts/morning_brief.py`) writes `_Сегодня.md` into each graph — the
+latest meetings with one-line gists, Decided/Tasks/Open from summaries,
+live Cores and merge notes; assembled from ready-made graph lines, no LLM —
+your morning context in one minute of reading BEFORE the first question.
+The memory bench (`scripts/memory_bench.py` + `config/memory_bench.yaml`,
+format in the example file) runs reference questions through the real RAG
+loop and checks that must-have facts appear in the answers — degradation
+after threshold/prompt tweaks shows up in the nightly log, not in a live
+meeting.
+
 ## Outside meetings
 
 - **Dictation** (global hotkey) — speak → recognized locally → pasted into
