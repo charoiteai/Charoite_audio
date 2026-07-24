@@ -38,8 +38,38 @@ def norm(s: str) -> str:
     return s.lower().replace("ё", "е")
 
 
+def search_brain(graph: pathlib.Path, query: str) -> str | None:
+    """Боевой контур: vault_search на brain :8100 (тот же, что в приложении).
+
+    Бенч обязан мерить то, что видит пользователь, а не свою копию
+    алгоритма — иначе улучшения ранжирования в brain остаются незамеренными.
+    None → сервер лежит, вызывающий уходит на локальный фолбэк.
+    """
+    import json
+    import urllib.request
+
+    folder = graph.name  # стандартная раскладка: vault/<граф>/…
+    req = urllib.request.Request(
+        "http://127.0.0.1:8100/vault_search",
+        data=json.dumps({"query": query, "folder": folder,
+                         "limit": LIMIT_FILES, "snippet_chars": SNIPPET},
+                        ensure_ascii=False).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            text = json.load(resp).get("text", "")
+    except OSError:
+        return None
+    if text.startswith("Ничего не найдено"):
+        return ""
+    # срезаем шапку «Найдено в vault (N из M):»
+    _, _, body = text.partition("\n\n")
+    return body or text
+
+
 def search(graph: pathlib.Path, query: str) -> str:
-    """Та же механика, что vault_search: слова → скоринг файлов → сниппеты."""
+    """Локальный фолбэк: та же механика, что vault_search: слова → скоринг файлов → сниппеты."""
     stop = {"что", "как", "где", "когда", "это", "нас", "есть", "про", "для",
             "или", "чем", "кто", "было", "быть", "по", "мы", "решили"}
     words = [w for w in re.findall(r"[А-Яа-яЁёA-Za-z0-9_-]{3,}", query)
@@ -83,26 +113,36 @@ def main() -> None:
 
     llm = LLM(cfg)
     passed, failures = 0, []
+    brain_alive = search_brain(graph, "проверка") is not None
+    print(f"контур поиска: {'brain :8100 (боевой)' if brain_alive else 'локальный фолбэк (brain лежит)'}")
     for i, case in enumerate(cases, 1):
         q, must = case["q"], case.get("must", [])
-        found = search(graph, q)
+        found = (search_brain(graph, q) if brain_alive else None)
+        if found is None:
+            found = search(graph, q)
         if not found:
             failures.append((q, must, "поиск ничего не нашёл"))
             print(f"[{i}/{len(cases)}] ✗ {q} — поиск пуст")
             continue
+        # диагностика: чей провал — ПОИСКА (факт не в выдаче) или СИНТЕЗА
+        # (факт в выдаче, LLM не включил в ответ). Лечатся по-разному.
+        retr_missing = [m for m in must if norm(m) not in norm(found)]
         answer = "".join(llm.stream(
             f"Вопрос: {q}\n\nФрагменты из архива встреч:\n{found}\n\n"
             "Ответь на вопрос по фрагментам: кратко, с конкретными фактами "
             "(имена, числа, идентификаторы) из фрагментов. Ничего не выдумывай.",
             system="Ты — ассистент по архиву рабочих встреч. Только факты из фрагментов.",
+            temperature=0.0,  # бенч — регрессия, не творчество: убираем флап
         ))
         missing = [m for m in must if norm(m) not in norm(answer)]
         if missing:
-            failures.append((q, missing, answer[:160]))
-            print(f"[{i}/{len(cases)}] ✗ {q} — нет: {missing}")
+            stage = "ПОИСК" if retr_missing else "синтез"
+            failures.append((q, missing, f"[{stage}] " + answer[:160]))
+            print(f"[{i}/{len(cases)}] ✗ {q} — нет: {missing} (этап: {stage})")
         else:
             passed += 1
-            print(f"[{i}/{len(cases)}] ✓ {q}")
+            note = f" (в выдаче не было: {retr_missing})" if retr_missing else ""
+            print(f"[{i}/{len(cases)}] ✓ {q}{note}")
 
     total = len(cases)
     print(f"\nИТОГ: {passed}/{total}")
