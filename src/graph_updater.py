@@ -370,6 +370,20 @@ def main():
         upsert_core(graph, c, meeting_link, stamp, transcript)
     if cores:
         rebuild_cores_moc(graph)
+        # Tier3-ревизия СРАЗУ после upsert: свежие ядра этой встречи против
+        # всех — дубль-двойник сливается (или помечается — осторожный режим)
+        # в момент рождения, а не копится до ручной уборки. Инкрементально
+        # (O(k×n)); любая беда внутри revise (нет NLI-модели, лежит Ollama) —
+        # тихий пропуск, не падение пайплайна встречи.
+        try:
+            import tier3
+            rep = tier3.revise(graph, only_names=[safe_name(c["имя"]) for c in cores])
+            for line in rep["log"]:
+                print(f"tier3: {line}")
+            if rep["log"]:
+                rebuild_cores_moc(graph)  # слияния меняют список ядер
+        except Exception as e:  # noqa: BLE001
+            print(f"tier3: пропущен ({e})")
 
     # 2) заметка встречи
     md = [f"---\ntype: встреча\nдата: {stamp}\nтеги: [встреча, авто]"

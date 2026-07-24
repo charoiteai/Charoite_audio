@@ -297,7 +297,9 @@ def main():
             # секунду») словесно далёк, и жадный порог отрезал бы его до NLI
             if _dl.SequenceMatcher(None, words, prev.lower().split()).ratio() < 0.3:
                 continue  # совсем далёкие пары NLI не беспокоят
-            if nli.is_duplicate(text, prev):
+            # 0.8 — осторожный режим: лучше редкий повтор в ленте, чем
+            # потерянный тезис с новым фактом
+            if nli.is_duplicate(text, prev, threshold=0.8):
                 print(f"тезис-дубль отсеян: «{text[:80]}» ≈ «{prev[:80]}»", flush=True)
                 return True
         recent_theses.append(text)
