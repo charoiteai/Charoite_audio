@@ -7,3 +7,4 @@ rich
 onnx-asr
 onnxruntime
 mcp
+tokenizers  # NLI-дедуп тезисов (src/nli.py); лёгкий, без torch
