@@ -75,3 +75,17 @@ work. Superseded facts are dated, not deleted.
 Benchmarks and sources — [MODELS.md](MODELS.md). Key points: the main model
 stays in the 30B class (the floor for graph extraction), the light model
 lives in RAM alongside it, `num_ctx` is always explicit.
+
+## Memory model in one page
+
+- **Files are the source of truth.** No graph DB or vector store as the
+  primary carrier: plain Markdown the user owns. Every chronicle fact
+  carries provenance (who, when, verbatim transcript quote).
+- **One embedder — bge-m3** (Ollama): semantic search and the core-revision
+  prefilter. There is deliberately no second embedding model.
+- **Precision — local NLI** (src/nli.py, ONNX): thesis dedup and the
+  core-revision judge. Only in latency-tolerant loops; live hints and
+  déjà vu run on cheap stemming.
+- **Cloud — opt-in post-meeting enrichment only**, via subscription (no API
+  key in the environment). Meeting data never leaves the machine by
+  default; no cloud memory SaaS, none planned.
