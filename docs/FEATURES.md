@@ -30,7 +30,12 @@
   see src/nli.py.
 - **Déjà vu (⏮)** — when the conversation touches a "Core" (a cross-meeting
   topic from your graph), a thesis arrives: "⏮ discussed on Jul 15,
-  status was …". Stem matching, works with Russian morphology.
+  status was …". Semantic match (bge-m3 embeddings, relative threshold),
+  not literal words.
+- **Auto-brief at meeting start (⏮)** — once the first utterances reveal
+  the topic, the daemon pulls archive context once: top Cores with their
+  status and last-discussed dates. Assembled from ready-made graph lines,
+  no LLM — instant and nothing to hallucinate. Config: `meeting_brief`.
 - **Live draft minutes** — refreshed every ~2.5 minutes; the final protocol
   on demand or after stop.
 - **Ask the assistant** — type a question mid-meeting: the answer is built
