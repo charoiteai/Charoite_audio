@@ -88,6 +88,15 @@ meeting.
   extracts tasks → a file in the graph (`Notes/`) + remembered in memory.
   The raw text is kept alongside ("As spoken").
 
+- **Archive questions and briefs** — search v2: Russian morphology
+  stemming, IDF (rare query terms weigh more), query coverage, file
+  freshness, graph distillates ranked above raw transcripts, result
+  diversity (one meeting no longer fills every slot). Weak matches are
+  flagged "⚠ possibly not in the archive" — the assistant doesn't
+  synthesize from irrelevant fragments. Answer sources are clickable
+  (open in Obsidian). With the optional brain companion (:8100) a
+  bge-m3 semantic layer finds answers even without word overlap.
+
 ## Document format
 
 Everything is plain markdown, readable without rendering: bold-keyed lists
