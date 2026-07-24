@@ -624,6 +624,14 @@ def main():
         cores_dir = gdir / "Ядра"
         emb_model = cfg["sufler"].get("embed_model", "bge-m3:latest")
         margin = float(cfg["sufler"].get("deja_vu_margin", 0.04))
+        # Авто-бриф в начале встречи: как только по первым репликам понятна
+        # тема — один раз вытащить контекст из архива (топ-ядра: статус +
+        # когда обсуждалось). Собирается из ГОТОВЫХ строк файлов, без LLM:
+        # мгновенно и нечему галлюцинировать. Окно попыток — до 3000 знаков
+        # стенограммы: small talk в начале сигнала не даёт, дальше тему
+        # подхватит обычное дежавю.
+        brief_on = bool(cfg["sufler"].get("meeting_brief", True))
+        brief_done = not brief_on
         shown: set[str] = set()
         seen_len = 0
         vecs: dict[str, list[float]] = {}  # ядро → вектор (кэш на всю встречу)
@@ -675,6 +683,31 @@ def main():
                 if len(scored) < 3:
                     continue
                 mid = scored[len(scored) // 2][0]  # медиана как «фон» разговора
+
+                if not brief_done and len(full) >= 600:
+                    # порог мягче обычного (margin/2): бриф — обзор, не точечное
+                    # «уже обсуждалось», и в начале встречи сигнал ещё слабый
+                    picks = [(s, p) for s, p in scored[:2]
+                             if s - mid >= margin / 2 and p.stem not in shown]
+                    if picks:
+                        brief_done = True
+                        lines = ["⏮ Контекст к встрече из архива:"]
+                        for _s, p in picks:
+                            btxt = p.read_text(encoding="utf-8")
+                            bm = re.search(r"## Статус\n(.+)", btxt)
+                            bst = re.sub(r"_\(.*?\)_", "", bm.group(1)).strip() if bm else ""
+                            bdates = sorted({d for d in re.findall(
+                                r"\[\[Встречи/(\d{4}-\d{2}-\d{2})_\d{4}", btxt)})
+                            bwhen = ", ".join(d[8:10] + "." + d[5:7] for d in bdates[-2:]) or "ранее"
+                            lines.append(f"• {p.stem} — {bst or 'без статуса'} (обсуждалось {bwhen})")
+                            shown.add(p.stem)
+                        line = "\n".join(lines)
+                        emit({"type": "thesis", "text": line})
+                        tr.note(line)
+                        continue
+                    if len(full) > 3000:
+                        brief_done = True  # тема так и не совпала с архивом — молчим
+
                 top_score, top = scored[0]
                 if top.stem in shown or top_score - mid < margin:
                     continue
