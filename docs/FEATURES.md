@@ -24,6 +24,10 @@
   present those topics as the actual agenda.
 - **Auto-theses** — 📌 facts/decisions, 💎 highlights, 💭 ideas as the
   conversation flows; the heavy model periodically reviews them (🔬).
+  Paraphrased repeats are filtered by a local NLI model (duplicate =
+  mutual entailment; a refinement carrying a new fact is not a duplicate).
+  The layer is optional: with no model in `models/nli/` it is simply off —
+  see src/nli.py.
 - **Déjà vu (⏮)** — when the conversation touches a "Core" (a cross-meeting
   topic from your graph), a thesis arrives: "⏮ discussed on Jul 15,
   status was …". Stem matching, works with Russian morphology.
