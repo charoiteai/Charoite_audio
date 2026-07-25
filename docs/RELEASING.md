@@ -16,6 +16,27 @@ happens on merge to `main`.
 The current version lives in `.github/.release-please-manifest.json` — not in
 a `version.txt` in the repo root. Git tags are the source of truth.
 
+## Squash merges: the PR title IS the commit
+
+With squash merge, `main` receives exactly one commit whose subject is the
+**PR title**. If that title is not a conventional commit (`fix: …`,
+`feat: …`), release-please does not see the work at all: no release PR, no
+CHANGELOG entry, no version bump. This bit us four times in one day
+(#83–#86 all merged as `Fix/<branch name>`), leaving a day of shipped
+fixes invisible to the changelog.
+
+Rules:
+
+1. Edit the title in the merge dialog to conventional form before
+   confirming the squash.
+2. One PR with several user-visible changes: add extra plain
+   `fix(scope): …` lines to the squash **body** (no `* ` bullets —
+   bulleted lines are not parsed) — release-please registers each line
+   as its own entry.
+3. Already merged with a bad title: push a carrier commit whose message
+   holds the missed conventional lines (an empty commit from a
+   maintainer's machine, or a small real change through a PR).
+
 ## One-time setup: RELEASE_PLEASE_TOKEN
 
 The release PR must be created by a **personal access token**, not the built-in
