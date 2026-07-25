@@ -83,7 +83,10 @@ merged. Generic "hub" cores are never touched, and every write is preceded
 by a backup into `Ядра/.tier3_backup/`.
 
 **Nightly loop** (`scripts/nightly.sh`, cron/launchd it): Tier3 revision →
-**morning brief** → **memory bench**. The morning brief
+**morning brief** → **memory bench**. The nightly revision merges cores
+only when `sufler.tier3_auto_apply: true`; without the key it stops at
+reversible marks — the right to irreversible edits lives in the config,
+not in the schedule. The morning brief
 (`scripts/morning_brief.py`) writes `_Сегодня.md` into each graph — the
 latest meetings with one-line gists, Decided/Tasks/Open from summaries,
 live Cores and merge notes; assembled from ready-made graph lines, no LLM —
