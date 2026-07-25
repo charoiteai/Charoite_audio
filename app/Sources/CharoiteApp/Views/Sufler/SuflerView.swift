@@ -12,9 +12,9 @@ struct SuflerView: View {
     @State private var question = ""
     @State private var archiveAnswer = ""      // ответ по архиву, когда встреча не идёт
     @State private var lastArchiveQuestion = ""  // для «сохранить в граф»
-    // прошлые ответы сессии: раньше каждый новый вопрос СТИРАЛ предыдущий
-    // ответ — сравнить два ответа или вернуться было невозможно
-    @State private var archiveHistory: [(q: String, a: String)] = []
+    // прошлые ответы: раньше стирались новым вопросом, потом жили только
+    // до перезапуска — теперь персист на диске (Application Support)
+    @ObservedObject private var history = ArchiveHistoryStore.shared
     @State private var isSearchingArchive = false
     @State private var showFirstRun = false
     @AppStorage("charoit.firstRunSeen") private var firstRunSeen = false
@@ -76,6 +76,7 @@ struct SuflerView: View {
             // человек нажмёт «Слушать встречу» и получит системный запрос.
             if !firstRunSeen { showFirstRun = true }
             TasksService.shared.rescan()   // бейдж «Задачи · N» актуален сразу
+            ArchiveHistoryStore.shared.load()
             if calendarBriefs { CalendarService.shared.enable() }
         }
     }
@@ -160,8 +161,7 @@ struct SuflerView: View {
     private func askArchive(_ q: String, brief: Bool = false) {
         if !archiveAnswer.isEmpty, !lastArchiveQuestion.isEmpty,
            !archiveAnswer.hasPrefix("Нашёл источников") {
-            archiveHistory.append((q: lastArchiveQuestion, a: archiveAnswer))
-            if archiveHistory.count > 20 { archiveHistory.removeFirst() }
+            history.append(q: lastArchiveQuestion, a: archiveAnswer)
         }
         isSearchingArchive = true
         archiveAnswer = ""
@@ -661,10 +661,10 @@ struct SuflerView: View {
                                 .foregroundStyle(paneIsPlaceholder ? .tertiary : .primary)
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                            // прошлые вопросы сессии — свёрнуты, свежие сверху
-                            if !sufler.isRunning && !archiveHistory.isEmpty {
+                            // прошлые вопросы — свёрнуты, свежие сверху (персист)
+                            if !sufler.isRunning && !history.entries.isEmpty {
                                 Divider().padding(.vertical, 8)
-                                ForEach(Array(archiveHistory.enumerated().reversed()), id: \.offset) { _, qa in
+                                ForEach(Array(history.entries.enumerated().reversed()), id: \.offset) { _, qa in
                                     DisclosureGroup {
                                         Text(withBoldQuestions(qa.a))
                                             .font(.callout)

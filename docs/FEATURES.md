@@ -108,8 +108,8 @@ meeting.
 - **Streaming archive answers** — first words in ~1s, token-by-token
   with a typing cursor; the chat model picker lists what Ollama
   actually has.
-- **Answer history** — past session Q&A collapsed under the current
-  answer: compare or return without re-asking.
+- **Answer history** — past Q&A collapsed under the current answer,
+  surviving restarts (up to 50 entries on disk).
 - **Archive questions and briefs** — search v2: Russian morphology
   stemming, IDF (rare query terms weigh more), query coverage, file
   freshness, graph distillates ranked above raw transcripts, result
