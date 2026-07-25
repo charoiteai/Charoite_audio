@@ -35,15 +35,21 @@ actor SemanticIndex {
     private var storeOverride: URL?
 
     #if DEBUG
-    func useForTests(store: URL, embedder: @escaping ([String]) async -> [[Float]]?) {
+    func useForTests(store: URL, embedder: @escaping ([String]) async -> [[Float]]?) async {
+        // Актор реентерабелен, а localSearch порождает НЕструктурированный
+        // Task.detached с refresh — хвост прошлого теста может жить прямо
+        // сейчас, вися на await эмбеддера и держа флаг indexing. gen-токен
+        // убивает его ЗАПИСИ, но свежий refresh нового теста дропнулся бы
+        // об занятый флаг (guard !indexing) — молча и не каждый раз: ровно
+        // так выглядел зелёный push-прогон при красном PR-прогоне того же
+        // дерева. Поэтому подмена сначала осиротляет чужой refresh, потом
+        // ДОЖИДАЕТСЯ его смерти — тест начинается с тихого индекса.
+        generation += 1
+        while indexing { await Task.yield() }
         storeOverride = store
         embedOverride = embedder
         index = [:]
         loaded = true      // не подтягивать настоящий файл с диска
-        indexing = false
-        // Актор реентерабелен: чужой refresh, повисший на await эмбеддера,
-        // не должен дописать СВОЙ снапшот в НАШ индекс после подмены.
-        generation += 1
     }
 
     /// Сохранённый mtime записи — проверки инвалидации в тестах.

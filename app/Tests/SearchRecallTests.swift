@@ -104,8 +104,9 @@ final class IndexInvalidationTests: XCTestCase {
                                             limit: 3, snippet: 200, root: graph)
 
         // доиндексация уходит в фоновую Task — дожидаемся записи в индексе
+        // (запас до 10 секунд: раннер CI бывает занят соседями)
         var stored: Double?
-        for _ in 0..<200 {
+        for _ in 0..<500 {
             stored = await SemanticIndex.shared.storedMtime(of: rel)
             if stored != nil { break }
             try await Task.sleep(nanoseconds: 20_000_000)
