@@ -92,6 +92,9 @@ meeting.
   («- [ ] **Name** — what — when»); the Tasks window collects every
   `- [ ]` across the graph with an open-count badge, ticking writes
   `[x]` straight into markdown — Obsidian and the app always agree.
+- **Streaming archive answers** — first words in ~1s, token-by-token
+  with a typing cursor; the chat model picker lists what Ollama
+  actually has.
 - **Answer history** — past session Q&A collapsed under the current
   answer: compare or return without re-asking.
 - **Archive questions and briefs** — search v2: Russian morphology
