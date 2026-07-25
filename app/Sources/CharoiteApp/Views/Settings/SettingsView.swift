@@ -178,9 +178,15 @@ struct SettingsView: View {
                 let names = ((try? JSONSerialization.jsonObject(with: data) as? [String: Any])
                     .flatMap { $0["models"] as? [[String: Any]] } ?? [])
                     .compactMap { $0["name"] as? String }
-                parts.append(names.contains { $0.hasPrefix("bge-m3") }
-                             ? "✓ bge-m3 (семантика)"
-                             : "– bge-m3 нет: ollama pull bge-m3")
+                if names.contains(where: { $0.hasPrefix("bge-m3") }) {
+                    // видно не только «модель есть», но и что индекс реально построен
+                    let indexed = await SemanticIndex.shared.count()
+                    parts.append(indexed > 0
+                                 ? "✓ семантика: \(indexed) файлов в индексе"
+                                 : "✓ bge-m3 (индекс построится при первом поиске)")
+                } else {
+                    parts.append("– bge-m3 нет: ollama pull bge-m3")
+                }
             } else {
                 parts.append("✗ Ollama не отвечает")
             }
