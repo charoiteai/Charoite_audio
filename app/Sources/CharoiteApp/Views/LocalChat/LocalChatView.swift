@@ -95,9 +95,10 @@ struct LocalChatView: View {
     }
 
     private func bubble(_ m: LocalChatService.Message) -> some View {
-        HStack {
+        HStack(alignment: .top) {
             if m.role == "user" { Spacer(minLength: 60) }
-            Text(m.text.isEmpty ? "…" : m.text)
+            // markdown вместо сырых звёздочек: модели пишут **жирное** и `код`
+            Text(m.text.isEmpty ? AttributedString("…") : MarkdownLine.render(text: m.text))
                 .font(.callout)
                 .textSelection(.enabled)
                 .padding(.horizontal, 12)
@@ -108,7 +109,20 @@ struct LocalChatView: View {
                               ? Color(hex: "#6366F1").opacity(0.14)
                               : Color(nsColor: .quaternarySystemFill))
                 )
-            if m.role != "user" { Spacer(minLength: 60) }
+            if m.role != "user" {
+                // копирование целиком: textSelection хорош для куска, кнопка — для всего
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(m.text, forType: .string)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.tertiary)
+                .help("Скопировать ответ целиком")
+                .opacity(m.text.isEmpty ? 0 : 1)
+                Spacer(minLength: 40)
+            }
         }
     }
 

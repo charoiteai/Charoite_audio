@@ -312,15 +312,20 @@ struct SuflerView: View {
         var out = AttributedString()
         for (i, line) in raw.components(separatedBy: "\n").enumerated() {
             if i > 0 { out.append(AttributedString("\n")) }
-            var piece = AttributedString(line)
             let trimmed = line.trimmingCharacters(in: .whitespaces)
+            var piece: AttributedString
             if trimmed.hasPrefix("❓") {
+                piece = AttributedString(line)
                 piece.font = .callout.bold()
             } else if trimmed.hasPrefix("· "), let url = obsidianURL(String(trimmed.dropFirst(2))) {
                 // источник ответа — ссылка: клик открывает заметку в Obsidian
+                piece = AttributedString(line)
                 piece.link = url
                 piece.foregroundColor = .accentColor
                 piece.underlineStyle = .single
+            } else {
+                // модель пишет **жирное»/`код` — рендерим, а не показываем звёздочки
+                piece = MarkdownLine.render(String(line))
             }
             out.append(piece)
         }
@@ -548,6 +553,20 @@ struct SuflerView: View {
                               systemImage: sufler.isRunning ? "lightbulb" : "clock.arrow.circlepath")
                     if sufler.isHinting || isSearchingArchive {
                         ProgressView().controlSize(.small).padding(.trailing, 10)
+                    }
+                    // копировать содержимое панели целиком (ответ/подсказку)
+                    let paneRaw = sufler.isRunning ? sufler.hint : archiveAnswer
+                    if !paneRaw.isEmpty {
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(paneRaw, forType: .string)
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.tertiary)
+                        .help("Скопировать целиком")
+                        .padding(.trailing, 10)
                     }
                 }
                 ScrollViewReader { proxy in
