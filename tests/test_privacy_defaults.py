@@ -29,6 +29,13 @@ EXAMPLE = pathlib.Path(__file__).resolve().parent.parent / "config" / "config.ex
 
 GATES = (privacy.cloud_live_enabled, privacy.cloud_enrich_enabled)
 
+TOGGLES = ("cloud_live", "cloud_enrich")
+
+
+def _direct_reads(text: str) -> list[str]:
+    """Тумблеры облака, которые этот текст читает из конфига сам."""
+    return [k for k in TOGGLES if f'get("{k}"' in text]
+
 
 def test_no_key_means_no_cloud():
     """Ключа нет — облако молчит. Главный инвариант файла."""
@@ -75,8 +82,35 @@ def test_nobody_decides_about_the_cloud_on_their_own():
     не читают ключи облака напрямую».
     """
     for name in ("daemon.py", "graph_updater.py"):
-        text = (SRC / name).read_text(encoding="utf-8")
-        offenders = [k for k in ("cloud_live", "cloud_enrich") if f'get("{k}"' in text]
-        del text  # иначе pytest вывалит в отчёт весь файл целиком
+        offenders = _direct_reads((SRC / name).read_text(encoding="utf-8"))
         assert not offenders, \
             f"{name} решает про облако сам ({', '.join(offenders)}) — решение живёт в privacy.py"
+
+
+BYPASSES = (
+    'cfg["sufler"].get("cloud_live")',
+    "cfg['sufler'].get('cloud_live')",
+    'cfg["sufler"]["cloud_enrich"]',
+    "cfg['sufler']['cloud_enrich']",
+    'cfg.get("sufler", {}).get("cloud_live", True)',
+    '(cfg.get("sufler") or {}).get("cloud_enrich")',
+)
+NOT_BYPASSES = (
+    'model = cfg["sufler"].get("cloud_live_model", "claude-sonnet-5")',
+    'emit({"type": "status", "text": "облако выключено: sufler.cloud_live"})',
+    "cloud_live = privacy.cloud_live_enabled(cfg)",
+)
+
+
+def test_the_bypass_detector_sees_every_shape_of_read():
+    """Сторож ищет обход строкой в исходниках — значит он сам нуждается в тесте.
+
+    Раньше сторож искал ровно `get("cloud_live"` — только двойные кавычки и
+    только .get. Обход одинарными кавычками или прямым индексированием он
+    пропускал молча, и «одна точка решения» держалась на том, что никто так
+    не написал. Инвариант, который ловит одну форму из пяти, — не инвариант.
+    """
+    for src in BYPASSES:
+        assert _direct_reads(src), f"обход не замечен: {src}"
+    for src in NOT_BYPASSES:
+        assert not _direct_reads(src), f"ложная тревога: {src}"
