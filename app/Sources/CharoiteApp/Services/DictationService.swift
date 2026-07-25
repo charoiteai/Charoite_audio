@@ -109,7 +109,7 @@ final class DictationService: ObservableObject {
             let data = handle.availableData
             guard !data.isEmpty else { handle.readabilityHandler = nil; return }
             guard let chunk = String(data: data, encoding: .utf8) else { return }
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.errTail = String((self.errTail + chunk).suffix(500))
                 if chunk.contains("REC"), self.isRecording {
