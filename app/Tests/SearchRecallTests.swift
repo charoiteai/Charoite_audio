@@ -64,7 +64,9 @@ final class SemanticUnionTests: XCTestCase {
         // Эмбеддер-подделка: запрос и файл про деньги — один вектор,
         // остальное — ортогональ. Настоящая Ollama не трогается.
         await SemanticIndex.shared.useForTests(store: tempIndexStore()) { texts in
-            texts.map { $0.contains("деньги") || $0.contains("финанс") ? [1, 0] : [0, 1] }
+            texts.map { t -> [Float] in
+                (t.contains("деньги") || t.contains("финанс")) ? [1, 0] : [0, 1]
+            }
         }
         await SemanticIndex.shared.refresh(files: [
             (path: "Ядра/Бюджет.md", mtime: 1, text: "курс валют и деньги на квартал"),
@@ -95,7 +97,7 @@ final class IndexInvalidationTests: XCTestCase {
         let graph = try makeTestGraph([(rel, "обсудили бюджет проекта")])
         defer { try? FileManager.default.removeItem(at: graph) }
         await SemanticIndex.shared.useForTests(store: tempIndexStore()) { texts in
-            texts.map { _ in [1, 0] }
+            texts.map { _ -> [Float] in [1, 0] }
         }
 
         _ = await ArchiveSearch.localSearch(query: "бюджет проекта",
