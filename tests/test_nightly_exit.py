@@ -20,8 +20,6 @@ import pathlib
 import shutil
 import subprocess
 
-import pytest
-
 REPO = pathlib.Path(__file__).resolve().parent.parent
 NIGHTLY = REPO / "scripts" / "nightly.sh"
 
