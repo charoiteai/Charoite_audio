@@ -228,7 +228,11 @@ final class SuflerService: ObservableObject {
     }
 
     func requestCloud() {
-        guard isRunning, !isClouding else { return }
+        // cloudOn — единственный тумблер, отправляющий стенограмму с машины.
+        // Выключен — не шлём даже по горячей клавише: ⌘⇧⏎ работает и тогда,
+        // когда кнопка серая, а демон до правки принимал команду `cloud`ом
+        // не глядя на выключатель.
+        guard isRunning, !isClouding, cloudOn else { return }
         send("cloud")
     }
 

@@ -524,8 +524,10 @@ struct SuflerView: View {
 
                 Button("Claude") { sufler.requestCloud() }
                     .keyboardShortcut(.return, modifiers: [.command, .shift])
-                    .disabled(sufler.isClouding)
-                    .help("Спросить Claude по ходу встречи (⌘⇧⏎)")
+                    .disabled(sufler.isClouding || !sufler.cloudOn)
+                    .help(sufler.cloudOn
+                          ? "Спросить Claude по ходу встречи — кусок стенограммы уйдёт в облако (⌘⇧⏎)"
+                          : "Облако выключено: включите «Облако» в настройках. Стенограмма не покидает машину")
 
                 Button("Протокол") { sufler.requestSummary() }
                     .disabled(sufler.isHinting)
