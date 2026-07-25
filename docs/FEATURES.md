@@ -17,7 +17,12 @@
   with the question shown above it.
 - **Cloud answer (☁️, opt-in)** — the same question goes to Claude in
   parallel (your subscription, `claude` CLI): local is instant, cloud is
-  deeper 10-20 s later. Off by default. The prompt carries only your role,
+  deeper 10-20 s later. Off by default — and off on every path: the switch
+  is read by `src/privacy.py` and checked inside the thread that actually
+  launches `claude`, so a manual request (⌘⇧⏎) cannot slip past it either.
+  With the layer off the button is greyed out and says why;
+  `SUFLER_NO_CLOUD=1` forces it off whatever the config says.
+  The prompt carries only your role,
   never a topic list, and instructs honesty over confidence: meeting facts
   (agenda, numbers, statuses) come from the transcript or are declared
   unknown — early in a meeting a topic-primed prompt used to make the model
@@ -61,12 +66,18 @@ recurring topic into twin Cores. The revision finds such pairs — an
 embedding prefilter (bge-m3) → an NLI judge — and runs itself:
 incrementally after every meeting (this meeting's cores against all), and
 as a full sweep via `scripts/tier3_cores.py --all-graphs --apply` (cron it
-if you like). The mode is cautious: only crystal-clear duplicates (mutual
-entailment ≥ 0.80) get merged — chronicle transferred, redirect stub left;
-mid-confidence pairs get a reversible "possible duplicate" note; nestings
-("episode ⊂ process") are cross-linked, never merged; generic "hub" cores
-are never touched. Every write is preceded by a backup into
-`Ядра/.tier3_backup/`.
+if you like). Two levels of permission, because the edits differ in price.
+Reversible ones always run: mid-confidence pairs get a "possible duplicate"
+note (the morning brief collects those into "Tier3 asks you to merge"), and
+nestings ("episode ⊂ process") are cross-linked, never merged. The
+irreversible one — merging, where the chronicle is transferred and a
+redirect stub is left in place of the duplicate — needs `--apply` on the CLI
+or `sufler.tier3_auto_apply: true` in the config, and additionally needs at
+least one core of the pair to carry a human-written `## Суть`: cores built
+by the extractor have none, so the judge would be comparing today's status
+lines, and two live tasks of one project read alike on those. A pair like
+that is marked rather than merged. Generic "hub" cores are never touched,
+and every write is preceded by a backup into `Ядра/.tier3_backup/`.
 
 **Nightly loop** (`scripts/nightly.sh`, cron/launchd it): Tier3 revision →
 **morning brief** → **memory bench**. The morning brief
@@ -78,7 +89,11 @@ The memory bench (`scripts/memory_bench.py` + `config/memory_bench.yaml`,
 format in the example file) runs reference questions through the real RAG
 loop and checks that must-have facts appear in the answers — degradation
 after threshold/prompt tweaks shows up in the nightly log, not in a live
-meeting.
+meeting. The steps are independent — a failed revision does not cancel the
+brief — but the run exits non-zero if any of them failed: the job used to
+end on an `echo`, so launchd reported green even on nights when nothing
+happened at all. A sagging bench is a warning in the log, not a failure:
+it signals degradation, it does not break the loop.
 
 ## Outside meetings
 
