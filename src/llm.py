@@ -22,6 +22,9 @@ class LLM:
         self.system = cfg["sufler"]["role"]
         # свой шаблон минуток: разделы/формат под команду, не наш дефолт
         self.minutes_template = str(cfg["sufler"].get("minutes_template", "")).strip()
+        # язык генерируемых документов (минутки/саммари/мгновенный ответ):
+        # ru (дефолт) | en. Роль подсказок задаёт сам пользователь в sufler.role.
+        self.lang = str(cfg["sufler"].get("language", "ru")).strip().lower()
 
     def _models_available(self) -> set[str]:
         try:
@@ -114,14 +117,20 @@ class LLM:
             # встреч оно на тонкой стенограмме (первая минута) рождало ответы про
             # задачи и системы, которых на ЭТОЙ встрече никто не называл, —
             # модель уверенно выдавала контекст памяти за текущую повестку.
-            system=(
+            system=((
+                "You answer AS the owner in a work meeting or interview, in their voice. "
+                "Short, concrete, in English. HONESTY OVER CONFIDENCE: facts of THIS "
+                "meeting (agenda, tasks, names, numbers) come ONLY from the conversation. "
+                "Past-meeting memory below is style/terminology background, NOT today's "
+                "agenda. No data in the conversation — say so or answer vaguely.\n\n" + mem
+            ) if self.lang == "en" else (
                 "Ты отвечаешь ЗА владельца на рабочей встрече или собеседовании, его голосом. "
                 "Коротко, конкретно, по-русски. ЧЕСТНОСТЬ ВАЖНЕЕ УВЕРЕННОСТИ: факты этой "
                 "встречи (повестка, задачи, названия, цифры) бери ТОЛЬКО из реплик разговора. "
                 "Память прошлых встреч ниже — фон для стиля и терминов, НЕ повестка текущей "
                 "встречи. Нет данных в разговоре — скажи прямо или дай обтекаемую "
                 "формулировку без конкретики.\n\n" + mem
-            ),
+            )),
             # полный ответ за ~3с вместо 5-7с: глубокую версию параллельно даёт облако
             num_predict=180,
         )
@@ -136,8 +145,25 @@ class LLM:
         "(например «- **Иван** — подготовить расчёт — к пятнице»). "
         "Пустая строка после каждого заголовка. Коротко, без воды."
     )
+    STYLE_EN = (
+        "FORMAT: no markdown tables (|…|) — unreadable as plain text; "
+        "use lists «- …» with a bold key first "
+        "(e.g. «- **Ivan** — prepare the estimate — by Friday»). "
+        "Blank line after every heading. Terse, no filler."
+    )
 
     def summary(self, transcript: str) -> Iterator[str]:
+        if self.lang == "en":
+            return self.stream(
+                f"Meeting transcript:\n\n{transcript}\n\n"
+                "Compress into a protocol: decisions, tasks as «- **Who** — what — due», "
+                "open questions. Bullets, in English. "
+                "HARD LIMIT: under 700 characters, one line per item.",
+                model=self.small,
+                system="You compress work-meeting transcripts into a crisp protocol. No filler. " + self.STYLE_EN,
+                num_predict=320,
+                temperature=0.0,
+            )
         return self.stream(
             f"Стенограмма встречи:\n\n{transcript}\n\n"
             "Сожми в протокол: решения, задачи списком «- **Кто** — что — срок», "
@@ -151,6 +177,27 @@ class LLM:
 
     def minutes(self, transcript: str) -> Iterator[str]:
         """Полноценные минутки встречи (markdown, сохраняются файлом)."""
+        if self.lang == "en":
+            return self.stream(
+                f"<transcript>\n{transcript}\n</transcript>\n\n"
+                "Write meeting minutes in markdown using this template:\n"
+                + (self.minutes_template + "\n\n" if self.minutes_template else
+                   "# Meeting minutes\n"
+                   "**Date/time:** … **Participants:** …\n"
+                   "## Topics\n## Decisions\n## Action items\n## Open questions\n## Risks\n\n")
+                + "Rules:\n"
+                "- use only what was said in the transcript\n"
+                "- one line per item, at most 3 items per section\n"
+                "- action items as checkboxes: «- [ ] **Name** — what — due»\n"
+                "  example: «- [ ] **Dmitry** — align the budget with finance — by Jul 25»\n"
+                "- decisions as: «- **what was decided** — who implements»\n"
+                "- participants: names from the conversation; none heard — «owner and counterparts»\n"
+                "- empty section: single word «none»\n"
+                "- keep the whole document under 900 characters: minutes are a one-minute read",
+                system="You are the meeting secretary. Precise, dry minutes in English. " + self.STYLE_EN,
+                num_predict=420,
+                temperature=0.0,
+            )
         return self.stream(
             # Данные отделены тегами от инструкций, правила — позитивные
             # («пиши так»), а не отрицания: qwen следует им заметно лучше

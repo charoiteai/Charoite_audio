@@ -88,6 +88,9 @@ meeting.
   extracts tasks → a file in the graph (`Notes/`) + remembered in memory.
   The raw text is kept alongside ("As spoken").
 
+- **English documents** — `sufler.language: en` switches minutes,
+  summary and instant answers to English (validated on an English
+  transcript); hints speak the language of your role.
 - **Night cycle in one click** — Settings installs the 04:15 launchd
   job (core revision with backups, morning brief, memory bench);
   the same button removes it.
