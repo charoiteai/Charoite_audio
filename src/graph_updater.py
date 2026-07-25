@@ -399,16 +399,20 @@ def main():
             auto = bool(cfg["sufler"].get("tier3_auto_apply", False))
             rep = tier3.revise(graph, only_names=[safe_name(c["имя"]) for c in cores],
                                mark=True, apply=auto)
+            # печатаем СДЕЛАННОЕ (log) и осознанно пропущенное (skipped).
+            # dups/nests — тот же список вторым слоем: он нужен отчёту CLI,
+            # а здесь был бы двойным эхом каждой правки
             for line in rep["log"]:
                 print(f"tier3: {line}")
             if rep["log"]:
                 rebuild_cores_moc(graph)  # слияния меняют список ядер
-            for line in rep["dups"]:
-                print(f"tier3: похоже на дубль — {line}")
-            for line in rep["nests"]:
-                print(f"tier3: вложение — {line}")
-            if rep["dups"] and not auto:
-                print("tier3: свести — .venv/bin/python scripts/tier3_cores.py --apply")
+            for line in rep["skipped"]:
+                print(f"tier3: пропущено — {line}")
+            if rep["pending_merges"]:
+                # советуем --apply, только когда ему есть что делать: совет,
+                # который на данных пользователя ничего не меняет, хуже молчания
+                print(f"tier3: свести ({len(rep['pending_merges'])}) — "
+                      ".venv/bin/python scripts/tier3_cores.py --apply")
         except Exception as e:  # noqa: BLE001
             print(f"tier3: пропущен ({e})")
 

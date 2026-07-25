@@ -72,12 +72,15 @@ note (the morning brief collects those into "Tier3 asks you to merge"), and
 nestings ("episode ⊂ process") are cross-linked, never merged. The
 irreversible one — merging, where the chronicle is transferred and a
 redirect stub is left in place of the duplicate — needs `--apply` on the CLI
-or `sufler.tier3_auto_apply: true` in the config, and additionally needs at
-least one core of the pair to carry a human-written `## Суть`: cores built
-by the extractor have none, so the judge would be comparing today's status
-lines, and two live tasks of one project read alike on those. A pair like
-that is marked rather than merged. Generic "hub" cores are never touched,
-and every write is preceded by a backup into `Ядра/.tier3_backup/`.
+or `sufler.tier3_auto_apply: true` in the config. The weaker the evidence,
+the higher the bar: cores built by the extractor carry no `## Суть`, so the
+judge is comparing today's status lines, and two live tasks of one project
+read alike on those. For such a pair a confident verdict is not enough — the
+chronicles must also be disjoint: twins come from *different* meetings (June
+named the topic one way, July another), while two threads of one project are
+carried through the same ones. A pair with a shared chronicle is marked, not
+merged. Generic "hub" cores are never touched, and every write is preceded
+by a backup into `Ядра/.tier3_backup/`.
 
 **Nightly loop** (`scripts/nightly.sh`, cron/launchd it): Tier3 revision →
 **morning brief** → **memory bench**. The morning brief
