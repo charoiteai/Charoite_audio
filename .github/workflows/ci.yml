@@ -1,9 +1,17 @@
 name: CI
 
+# Пуш в ЛЮБУЮ ветку: сигнал должен приходить в момент пуша, а не после
+# оформления PR. Пуш в ветку с открытым PR рождает два события (push и
+# pull_request) — пусть бегут оба, но event_name в ключе группы обязателен:
+# без него прогоны отменяют друг друга, и обязательный чек приходит в PR
+# отменённым, то есть красным.
 on:
   push:
-    branches: [main]
   pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   lint:

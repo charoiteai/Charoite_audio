@@ -1,15 +1,22 @@
-# Swift-тесты приложения: гоняются только когда PR трогает app/.
+# Swift-тесты приложения: гоняются, когда изменение трогает app/.
 # macos-раннер: на публичном репо бесплатно; кэш SPM ускоряет прогон.
 name: swift-tests
 
+# Пуш в любую ветку (paths-фильтр остаётся): Swift-правка должна
+# компилироваться в момент пуша, а не после оформления PR. Ключ группы
+# включает event_name — иначе push- и pull_request-прогоны одного коммита
+# отменяют друг друга (см. ci.yml).
 on:
   pull_request:
     paths:
       - "app/**"
   push:
-    branches: [main]
     paths:
       - "app/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   test:
