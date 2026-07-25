@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0](https://github.com/charoiteai/Charoite_audio/compare/v0.10.0...v0.11.0) (2026-07-25)
+
+
+### Features
+
+* **app:** calendar brief — one-click prep for the next meeting (opt-in) ([#43](https://github.com/charoiteai/Charoite_audio/issues/43)) ([19d5cb6](https://github.com/charoiteai/Charoite_audio/commit/19d5cb6cb344fadfbbd42433e4f68827acef958c))
+
 ## [0.10.0](https://github.com/charoiteai/Charoite_audio/compare/v0.9.0...v0.10.0) (2026-07-25)
 
 
