@@ -24,6 +24,7 @@ NLI и Ollama здесь не поднимаются: обе внешние за
 «уверенный дубль». Тест проверяет поведение автомата, а не качество модели.
 """
 import pathlib
+import re
 import sys
 
 import pytest
@@ -102,11 +103,60 @@ tags: [ядро, авто]
 """
 
 
-def _confident(monkeypatch):
-    """NLI и Ollama подменены на «уверенный дубль» с обеих сторон."""
+# Два ЖИВЫХ потока одного проекта. Их ведут на одних и тех же встречах, и
+# сегодняшний автостатус у них общий на вид — ровно та пара, на которой
+# слияние по статусу и ошибается. Отличает её от двойников хроника.
+CORE_E = """---
+type: ядро
+вид: задача
+tags: [ядро, авто]
+---
+# Личный кабинет
+
+## Статус
+Собираем требования, ждём макеты от дизайна _(обновлено 2026-07-21)_
+
+## Хроника
+- [[Встречи/2026-07-20|2026-07-20]] — завели тему
+- [[Встречи/2026-07-21|2026-07-21]] — уточнили объём
+"""
+
+CORE_F = """---
+type: ядро
+вид: задача
+tags: [ядро, авто]
+---
+# Мобильное приложение
+
+## Статус
+Собираем требования, ждём макеты от дизайна _(обновлено 2026-07-21)_
+
+## Хроника
+- [[Встречи/2026-07-20|2026-07-20]] — завели тему
+- [[Встречи/2026-07-21|2026-07-21]] — уточнили объём
+"""
+
+
+def _judge(monkeypatch, p: float):
+    """NLI и Ollama подменены: каждая пара следует друг из друга с силой p."""
     monkeypatch.setattr(nli, "is_available", lambda: True)
     monkeypatch.setattr(tier3, "_embed_all", lambda cores: [[1.0, 0.0]] * len(cores))
-    monkeypatch.setattr(nli, "entail_prob", lambda a, b: 0.99)
+    monkeypatch.setattr(nli, "entail_prob", lambda a, b: p)
+
+
+def _confident(monkeypatch):
+    """NLI и Ollama подменены на «уверенный дубль» с обеих сторон."""
+    _judge(monkeypatch, 0.99)
+
+
+def _pair(tmp_path, monkeypatch, first: str, second: str, p: float) -> pathlib.Path:
+    folder = tmp_path / "Ядра"
+    folder.mkdir()
+    for text in (first, second):
+        name = re.search(r"^# (.+)$", text, re.M).group(1)
+        (folder / f"{name}.md").write_text(text, encoding="utf-8")
+    _judge(monkeypatch, p)
+    return tmp_path
 
 
 @pytest.fixture
@@ -192,22 +242,86 @@ def test_mark_marks_nesting_too(tmp_path, monkeypatch):
     assert all("Tier3-NLI" in t for t in texts.values()), "ссылки-подсказки не вписаны"
 
 
-def test_merge_needs_essence_written_by_a_human(graph):
-    """Автостатус — слабое основание для необратимого слияния.
+def test_merge_works_on_cores_the_product_actually_writes(graph):
+    """Слияние обязано работать на ядрах из upsert_core, а не только в тесте.
 
-    В graph нет «## Суть» ни у одного ядра, значит в NLI ушёл автостатус.
-    Он переписывается на каждой встрече, и у двух активных задач одного
-    проекта похож сам по себе («ждём аудит», «в очереди»). Такой уверенности
-    хватает на обратимую пометку, но не на перезапись файла пользователя.
+    «## Суть» не пишет ни экстрактор, ни meeting_archive, ни один демо-граф:
+    у ядра от продукта её нет никогда. Требовать её для слияния — значит
+    выключить --apply, ночную джобу и sufler.tier3_auto_apply целиком, причём
+    молча: пометки в графе появляются и выглядят как работа, а сведения ядер
+    не происходит никогда и совет «свести — scripts/tier3_cores.py --apply»
+    ведёт в тупик.
     """
+    report = tier3.revise(graph, apply=True)
+    assert report["log"], "уверенная пара ядер продукта не слита"
+    assert any("Дубль. Смерджен" in t for t in _snapshot(graph).values()), \
+        "redirect-заглушки нет — слияние недостижимо на реальных данных"
+
+
+def test_weak_evidence_needs_a_higher_bar(tmp_path, monkeypatch):
+    """Суть из автостатуса — основание слабее: планка выше, а не запрет.
+
+    Статус переписывает каждая встреча, и у двух активных задач одного
+    проекта он похож сам по себе («ждём аудит», «в очереди»). 0.85 по такому
+    тексту хватает на обратимую пометку, но не на перезапись файла.
+    """
+    graph = _pair(tmp_path, monkeypatch, CORE_A, CORE_B, 0.85)
     report = tier3.revise(graph, apply=True)
     texts = _snapshot(graph)
     assert not any("Дубль. Смерджен" in t for t in texts.values()), \
-        "слияние по автостатусу: сравнивались не темы, а сегодняшние формулировки"
+        "слияние по автостатусу на средней уверенности"
     assert all("возможный дубль" in t for t in texts.values()), \
         "понижение до пометки обязано оставить след в графе"
-    assert any("пометка" in line for line in report["dups"]), \
-        "в отчёте не видно, что уверенную пару понизили"
+    assert any("автостатус" in line for line in report["dups"]), \
+        f"в отчёте не сказано, чего именно не хватило: {report['dups']}"
+
+
+def test_written_essence_lowers_the_bar_back(tmp_path, monkeypatch):
+    """Формулировку темы писал человек — по ней 0.85 уже основание слить."""
+    graph = _pair(tmp_path, monkeypatch, CORE_C, CORE_D, 0.85)
+    assert tier3.revise(graph, apply=True)["log"], \
+        "написанная руками суть не должна судиться строже автостатуса"
+
+
+def test_two_threads_of_one_project_are_marked_not_merged(tmp_path, monkeypatch):
+    """Общая хроника — довод ПРОТИВ слияния, а не за.
+
+    Двойники рождаются из разных встреч: в июне тему назвали одним именем, в
+    июле другим — хроники дополняют друг друга. А два живых потока одного
+    проекта ходят по одним и тем же встречам, и статус у них общий на вид.
+    Пара с пересекающейся хроникой и сутью из автостатуса — та самая, на
+    которой автомату верить нельзя даже при 0.99.
+    """
+    graph = _pair(tmp_path, monkeypatch, CORE_E, CORE_F, 0.99)
+    report = tier3.revise(graph, apply=True)
+    texts = _snapshot(graph)
+    assert not any("Дубль. Смерджен" in t for t in texts.values()), \
+        "слиты два потока одного проекта: хроника общая, тема разная"
+    assert all("возможный дубль" in t for t in texts.values())
+    assert any("одних встречах" in line for line in report["dups"]), \
+        f"в отчёте не сказано, почему пару понизили: {report['dups']}"
+
+
+def test_apply_advice_appears_only_when_apply_would_do_something(graph):
+    """«свести — scripts/tier3_cores.py --apply» печатается по этому полю.
+
+    Совет, который на данных пользователя ничего не делает, хуже молчания:
+    человек его выполняет, ничего не происходит, доверие к автомату уходит.
+    """
+    assert tier3.revise(graph, mark=True)["pending_merges"], \
+        "уверенная пара осталась несведённой, а поле пустое"
+    assert not tier3.revise(graph, apply=True)["pending_merges"], \
+        "пара слита — советовать --apply больше нечего"
+
+
+def test_merging_clears_the_stale_manual_merge_request(graph):
+    """Пометка «свести вручную» отработала — она не должна пережить слияние."""
+    tier3.revise(graph, mark=True)
+    tier3.revise(graph, apply=True)
+    canon = [t for t in _snapshot(graph).values() if "Дубль. Смерджен" not in t]
+    assert canon, "слияния не было — тест ничего не проверяет"
+    assert "возможный дубль" not in canon[0], \
+        "morning_brief будет вечно просить свести то, что уже сведено"
 
 
 def test_essence_comes_from_the_section_that_actually_exists(tmp_path):
