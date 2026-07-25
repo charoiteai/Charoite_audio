@@ -96,7 +96,7 @@ See [PRIVACY.md](PRIVACY.md). Short version: no telemetry, no network calls exce
 
 ## Status
 
-Public beta. Issues and feedback welcome. The native macOS app lives in [app/](app/) — build with `app/make_app.sh`. Roadmap: English-first prompts, speaker enrollment across meetings (voice → person node), packaged graph viewer.
+Public beta. Issues and feedback welcome. The native macOS app lives in [app/](app/) — build with `app/make_app.sh`. Roadmap: English graph nodes (docs phase done — `sufler.language: en`), speaker enrollment across meetings (voice → person node), packaged graph viewer.
 
 ## License
 
