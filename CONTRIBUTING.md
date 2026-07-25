@@ -20,7 +20,7 @@ contributions that keep it local-first are very welcome.
 
 1. Fork, branch from `main`: `feat/…`, `fix/…`, `docs/…`.
 2. Conventional commits (`feat(app): …`, `fix(daemon): …`).
-3. `swift build` clean for app changes; `python -m py_compile` for the
+3. `swift build` clean and `swift test` green (app/Tests) for app changes; `python -m py_compile` for the
    daemon; run `scripts/memory_bench.py` if you touch search or prompts.
 4. **Update docs in the same PR** — CI blocks code changes that leave
    `docs/`, `README*` and `CHANGELOG.md` untouched (label `skip-docs`

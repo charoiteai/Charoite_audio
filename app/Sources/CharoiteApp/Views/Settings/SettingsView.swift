@@ -91,8 +91,19 @@ struct SettingsView: View {
             let cfg = URLSessionConfiguration.ephemeral
             cfg.connectionProxyDictionary = [:]
             cfg.timeoutIntervalForRequest = 4
-            let ok = (try? await URLSession(configuration: cfg).data(from: url)) != nil
-            parts.append(ok ? "✓ Ollama" : "✗ Ollama не отвечает")
+            if let (data, _) = try? await URLSession(configuration: cfg).data(from: url) {
+                parts.append("✓ Ollama")
+                // семантический слой поиска живёт на bge-m3 — покажем сразу,
+                // стоит ли она, вместо молчаливой лексической деградации
+                let names = ((try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+                    .flatMap { $0["models"] as? [[String: Any]] } ?? [])
+                    .compactMap { $0["name"] as? String }
+                parts.append(names.contains { $0.hasPrefix("bge-m3") }
+                             ? "✓ bge-m3 (семантика)"
+                             : "– bge-m3 нет: ollama pull bge-m3")
+            } else {
+                parts.append("✗ Ollama не отвечает")
+            }
         }
         parts.append(AppSettings.graphDir != nil ? "✓ граф" : "– граф не задан")
         check = parts.joined(separator: "  ")
