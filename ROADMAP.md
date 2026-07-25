@@ -15,11 +15,11 @@ Local-first, in rough priority order. No dates — quality over deadlines.
 
 - **Packaged graph viewer** — browse the meeting graph without Obsidian.
 - **Streaming archive answers** — tokens as they generate, not one blob.
-- **Calendar awareness** — pre-meeting brief triggered by the upcoming
-  event title (fully local, read-only calendar access).
 
 ## Done (recent)
 
+- Calendar brief: one-click prep for the next event (opt-in, read-only,
+  July 2026)
 - Semantic layer in the built-in app search — bge-m3 + RRF, incremental
   background index, honesty gate (July 2026)
 - Meeting tasks window + archive answer history (July 2026)

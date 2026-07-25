@@ -6,6 +6,7 @@ import SwiftUI
 struct SettingsView: View {
     @AppStorage("charoite.root") private var root = ""
     @AppStorage("charoite.ollama") private var ollama = ""
+    @AppStorage("charoite.calendarBriefs") private var calendarBriefs = false
     @State private var check = ""
 
     var body: some View {
@@ -37,6 +38,15 @@ struct SettingsView: View {
                         Text(check).font(.caption).foregroundStyle(.secondary)
                     }
                 }
+            }
+            Section("Календарь") {
+                Toggle("Предлагать бриф к ближайшей встрече", isOn: $calendarBriefs)
+                    .onChange(of: calendarBriefs) { _, on in
+                        on ? CalendarService.shared.enable() : CalendarService.shared.disable()
+                    }
+                Text("Читает только название и время ближайшего события — "
+                     + "для кнопки «Бриф» перед встречей. Локально, ничего не пишет.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section {
                 Text("Всё работает локально: аудио, распознавание, модели, граф. "

@@ -46,6 +46,10 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<array><string>ru</string><string>en</string></array>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Название ближайшей встречи — для кнопки «Бриф» (локально, только чтение).</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Название ближайшей встречи — для кнопки «Бриф» (локально, только чтение).</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Суфлёр слушает встречу локально: распознавание речи не покидает этот Mac.</string>
 </dict>
