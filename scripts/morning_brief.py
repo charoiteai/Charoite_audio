@@ -22,7 +22,8 @@ import pathlib
 import re
 import sys
 
-VAULT = pathlib.Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents"
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import graphs  # noqa: E402
 
 
 def sect(text: str, title: str) -> list[str]:
@@ -116,10 +117,14 @@ def main() -> None:
                     help="один граф (default: все графы vault с Встречи-архив)")
     args = ap.parse_args()
 
-    graphs = ([args.graph] if args.graph else
-              [d for d in sorted(VAULT.iterdir())
-               if d.is_dir() and (d / "Встречи-архив").is_dir()])
-    for g in graphs:
+    found = [args.graph] if args.graph else graphs.all_graphs("Встречи-архив")
+    if not found:
+        # второй шаг ночной джобы: «графов нет» — не авария, а сообщение.
+        # Раньше здесь был iterdir() по несуществующей iCloud-папке, то есть
+        # traceback и красный прогон у всех, кто держит Obsidian не там
+        print(f"нет графов с папкой «Встречи-архив» — искал в {graphs.where()}")
+        return
+    for g in found:
         brief = build_brief(g)
         if brief is None:
             print(f"{g.name}: встреч нет — пропуск")

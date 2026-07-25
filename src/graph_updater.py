@@ -15,6 +15,9 @@ import sys
 import requests
 import yaml
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import privacy  # noqa: E402
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
@@ -380,17 +383,36 @@ def main():
     if cores:
         rebuild_cores_moc(graph)
         # Tier3-ревизия СРАЗУ после upsert: свежие ядра этой встречи против
-        # всех — дубль-двойник сливается (или помечается — осторожный режим)
-        # в момент рождения, а не копится до ручной уборки. Инкрементально
-        # (O(k×n)); любая беда внутри revise (нет NLI-модели, лежит Ollama) —
-        # тихий пропуск, не падение пайплайна встречи.
+        # всех — дубль-двойник виден в момент рождения, а не копится до
+        # ручной уборки. Инкрементально (O(k×n)); любая беда внутри revise
+        # (нет NLI-модели, лежит Ollama) — тихий пропуск, не падение
+        # пайплайна встречи.
+        #
+        # СЛИВАЕТ только при sufler.tier3_auto_apply: true — слияние
+        # перезаписывает файл, и это решение пользователя, а не побочный
+        # эффект того, что встреча закончилась. Обратимые правки (пометка
+        # «возможный дубль», взаимные ссылки вложений) идут всегда: их
+        # читает morning_brief, и без них выключенный автомат не осторожен,
+        # а нем — находка остаётся в логе прогона, которого никто не видит.
         try:
             import tier3
-            rep = tier3.revise(graph, only_names=[safe_name(c["имя"]) for c in cores])
+            auto = bool(cfg["sufler"].get("tier3_auto_apply", False))
+            rep = tier3.revise(graph, only_names=[safe_name(c["имя"]) for c in cores],
+                               mark=True, apply=auto)
+            # печатаем СДЕЛАННОЕ (log) и осознанно пропущенное (skipped).
+            # dups/nests — тот же список вторым слоем: он нужен отчёту CLI,
+            # а здесь был бы двойным эхом каждой правки
             for line in rep["log"]:
                 print(f"tier3: {line}")
             if rep["log"]:
                 rebuild_cores_moc(graph)  # слияния меняют список ядер
+            for line in rep["skipped"]:
+                print(f"tier3: пропущено — {line}")
+            if rep["pending_merges"]:
+                # советуем --apply, только когда ему есть что делать: совет,
+                # который на данных пользователя ничего не меняет, хуже молчания
+                print(f"tier3: свести ({len(rep['pending_merges'])}) — "
+                      ".venv/bin/python scripts/tier3_cores.py --apply")
         except Exception as e:  # noqa: BLE001
             print(f"tier3: пропущен ({e})")
 
@@ -518,8 +540,9 @@ def main():
         print(f"архив встречи не удался: {e}")
 
     # 5) уровень 4 — авто-доработка облачным Claude (решение владельца 17.07.2026).
-    # Стенограмма уходит в Anthropic API! Выключатель: sufler.cloud_enrich.
-    if cfg["sufler"].get("cloud_enrich") and not os.environ.get("SUFLER_NO_CLOUD"):
+    # Стенограмма уходит в Anthropic API! Выключатель: sufler.cloud_enrich,
+    # рубильник поверх конфига: SUFLER_NO_CLOUD. Решение — в src/privacy.py.
+    if privacy.cloud_enrich_enabled(cfg):
         try:
             import shutil as _sh
             import subprocess as _sp

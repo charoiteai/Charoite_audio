@@ -26,6 +26,7 @@ import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import fact_check  # noqa: E402
+import privacy  # noqa: E402
 from audio import AudioHub  # noqa: E402
 from llm import LLM  # noqa: E402
 from main import NOISE, Transcript  # noqa: E402
@@ -351,7 +352,7 @@ def main():
     instant_on = bool(cfg["sufler"].get("instant", True))
     auto_model = llm.small if quiet else None  # тихий режим: весь фон без 26b
     instant_evt = threading.Event()
-    cloud_live = bool(cfg["sufler"].get("cloud_live", True)) and not os.environ.get("SUFLER_NO_CLOUD")
+    cloud_live = privacy.cloud_live_enabled(cfg)  # молчание конфига = «нет», см. src/privacy.py
     cloud_evt = threading.Event()
     _last_fire = [0.0]
     _cloud_last = {"t": 0.0, "words": set()}
@@ -468,6 +469,11 @@ def main():
 
         Headless `claude -p` по подписке Max (API-ключ вырезан из env).
         Локальный ответ приходит за ~2-3с, Sonnet догоняет глубже за ~10-20с.
+
+        Выключатель спрашиваем ЗДЕСЬ, а не только у вызывающего: сюда ведут
+        две дороги — авто-детект вопроса (fire_question) и ручная команда
+        `cloud` из stdin (кнопка «Claude», ⌘⇧⏎). Вторая проверку обходила,
+        и нажатие отправляло стенограмму при cloud_live: false.
         """
         claude_bin = shutil.which("claude") or "/opt/homebrew/bin/claude"
         model = cfg["sufler"].get("cloud_live_model", "claude-sonnet-5")
@@ -477,6 +483,14 @@ def main():
             if not cloud_evt.wait(timeout=0.5):
                 continue
             cloud_evt.clear()
+            if not cloud_live:
+                # молча отказать — значит оставить человека гадать, почему кнопка
+                # не работает; поэтому статус, а не пустой continue
+                emit({"type": "status", "text": "облако выключено: sufler.cloud_live"})
+                continue
+            if not toggles["cloud"]:
+                emit({"type": "status", "text": "облако выключено тумблером"})
+                continue
             tail = tr.tail(2200)
             if not tail:
                 continue

@@ -14,7 +14,9 @@
 судит каждую пару NLI (src/nli.py). Категории:
 
   ДУБЛЬ     обоюдное следование ≥ 0.80 → слить: хроника объединяется,
-            статус берётся свежий, от дубля остаётся redirect
+            статус берётся свежий, от дубля остаётся redirect. Требует
+            права apply; если суть у обоих взята из автостатуса —
+            вдобавок ≥ 0.92 и непересекающиеся хроники (см. revise)
   ДУБЛЬ?    обоюдное 0.72–0.80 → обратимая пометка «возможный дубль»
             в оба файла, сливает человек (осторожный режим автомата)
   ВЛОЖЕНИЕ  одна сторона ≥ 0.85, другая < 0.5 → НЕ сливать: эпизод и
@@ -44,10 +46,42 @@ DUP_T = 0.72              # обоюдное следование → похож
 # только при кристальной уверенности с ОБЕИХ сторон; зона DUP_T..MERGE_T
 # получает обратимую пометку «возможный дубль» в оба файла, сливает человек.
 MERGE_T = 0.80
+# Планка для пары, у которой суть с ОБЕИХ сторон взята из автостатуса.
+# «## Суть» пишет человек и пишет про тему; статус переписывает каждая
+# встреча, и у двух активных задач одного проекта он похож сам по себе
+# («ждём аудит», «в очереди»). Основание слабее — планка выше; запретить
+# такие слияния совсем нельзя: у ядра от upsert_core «## Сути» нет никогда,
+# и запрет выключил бы --apply целиком.
+MERGE_T_WEAK = 0.92
+CHRON_OVERLAP = 0.5       # доля общих встреч, после которой пару не сливаем
 NEST_HI, NEST_LO = 0.85, 0.5
 HUB_LIMIT = 3             # ≥ стольких вложений в одно ядро → хаб, не трогаем
 OLLAMA = "http://127.0.0.1:11434"
 BACKUP_KEEP = 20          # держим столько последних бэкап-папок
+
+
+_UPDATED = re.compile(r"_?\(обновлено \d{4}-\d{2}-\d{2}\)_?")
+_CHRON_LINK = re.compile(r"^- \[\[([^\]|#]+)")
+
+
+def _plain(status: str) -> str:
+    """Статус без служебной метки даты — на вход NLI идёт смысл, не разметка."""
+    return " ".join(_UPDATED.sub("", status).split())
+
+
+def _meeting_overlap(a: dict, b: dict) -> float:
+    """Доля общих встреч в хронике меньшего из двух ядер.
+
+    Независимый от текста довод. Двойники рождаются из РАЗНЫХ встреч: одну и
+    ту же тему экстрактор в июне назвал одним именем, в июле другим, и хроники
+    у них дополняют друг друга. Два живых потока одного проекта, наоборот,
+    ведут на одних и тех же встречах — и сегодняшний статус у них общий на
+    вид. Поэтому пересечение хроник — довод ПРОТИВ слияния.
+    """
+    if not a["meetings"] or not b["meetings"]:
+        return 0.0
+    common = a["meetings"] & b["meetings"]
+    return len(common) / min(len(a["meetings"]), len(b["meetings"]))
 
 
 def load_cores(folder: pathlib.Path) -> list[dict]:
@@ -62,11 +96,25 @@ def load_cores(folder: pathlib.Path) -> list[dict]:
             m = re.search(rf"## {title}\n(.*?)(?=\n## |\Z)", text, re.S)
             return " ".join(m.group(1).split()) if m else ""
         status = sect("Статус")
-        essence = sect("Суть") or sect("Задача одной фразой")
+        # «## Суть» пишет только человек: upsert_core собирает ядро из
+        # «## Статус» и «## Хроники». Без запасного варианта repr сводился к
+        # имени файла, и NLI судил пары голых заголовков — ровно та слепота,
+        # ради ухода от которой сюда и ставили эмбеддинги с NLI.
+        written = sect("Суть") or sect("Задача одной фразой")
+        essence = written or _plain(status)
         dm = re.search(r"обновлено (\d{4}-\d{2}-\d{2})", status)
+        chron = re.findall(r"^- \[\[.*", text, re.M)
         cores.append({
             "path": p, "name": p.stem, "status": status, "essence": essence,
-            "chron": re.findall(r"^- \[\[.*", text, re.M), "text": text,
+            # откуда взялась суть: формулировка темы или сегодняшний автостатус.
+            # По этому полю revise выбирает планку для необратимого слияния
+            "essence_src": "секция" if written else "статус",
+            # встречи хроники без подписи и хвоста «— что изменилось»:
+            # одну встречу два ядра описывают разными словами, сравнивать
+            # надо ссылку, а не строку
+            "meetings": {m.group(1) for ln in chron
+                         if (m := _CHRON_LINK.match(ln))},
+            "chron": chron, "text": text,
             "date": dm.group(1) if dm else "",
             "repr": f"{p.stem}. {essence}"[:REPR_LIMIT],
         })
@@ -120,6 +168,10 @@ def _merge(folder: pathlib.Path, stamp: str, a: dict, b: dict, log: list[str]) -
             text = re.sub(r"(## Хроника\n)", "\\1" + "\n".join(extra) + "\n", text, 1)
         else:
             text += "\n## Хроника\n" + "\n".join(extra) + "\n"
+    # просьба «свести вручную» на эту же пару отработала: снимаем, иначе
+    # morning_brief будет вечно звать человека сводить уже сведённое
+    text = re.sub(rf"\n> ⚠️ Tier3-NLI: возможный дубль: "
+                  rf"\[\[Ядра/{re.escape(dup['name'])}\|.*?\n", "\n", text)
     text += f"\n> 🔀 Tier3-NLI: сюда влита хроника дубля «{dup['name']}».\n"
     canon["path"].write_text(text, encoding="utf-8")
     canon["text"] = text
@@ -164,14 +216,39 @@ def _link(folder: pathlib.Path, stamp: str, part: dict, whole: dict, log: list[s
 
 
 def revise(graph: pathlib.Path, only_names: list[str] | None = None,
-           apply: bool = True) -> dict:
+           apply: bool = False, mark: bool = False) -> dict:
     """Ревизия ядер графа. only_names — инкрементально (ядра этой встречи).
 
-    Возвращает {"dups": [...], "nests": [...], "border": [...], "log": [...]}.
+    Два права, а не одно, потому что цена у правок разная:
+
+    mark  — обратимое: строка-цитата «возможный дубль» / «часть темы» в конец
+            файла. Её читает morning_brief в раздел «Tier3 просит свести
+            вручную». Без отдельного права выключенный автомат не осторожен,
+            а нем: находка живёт только в логе одного прогона.
+    apply — необратимое для пользователя: слияние перезаписывает ядро, от
+            дубля остаётся redirect-заглушка (оригинал — в .tier3_backup).
+            Такое право берут явно: scripts/tier3_cores.py --apply или
+            sufler.tier3_auto_apply в конфиге. apply включает и mark.
+
+    Без права на слияние уверенная пара не пропадает, а понижается до
+    пометки. Понижается она и тогда, когда основание слабое: если суть у
+    обоих ядер взята из автостатуса (а у ядра от upsert_core «## Сути» нет
+    никогда), нужно ≥ MERGE_T_WEAK и непересекающиеся хроники. Статус
+    переписывает каждая встреча, у двух живых задач одного проекта он похож
+    сам по себе — и такие задачи ведут на одних и тех же встречах, а
+    двойники, наоборот, приходят из разных.
+
+    Возвращает {"dups": [...], "nests": [...], "border": [...], "log": [...],
+    "pending_merges": [...], "skipped": [...]}.
     Любая инфраструктурная беда (нет модели, лежит Ollama) — пустой результат,
     НЕ исключение: ревизия — уборка, она не имеет права валить пайплайн встречи.
     """
-    out: dict = {"dups": [], "nests": [], "border": [], "log": []}
+    out: dict = {"dups": [], "nests": [], "border": [], "log": [],
+                 # пары, которые слил бы прогон с apply=True, а этот не слил.
+                 # По этому полю (а не по факту находки) вызывающий решает,
+                 # советовать ли человеку `tier3_cores.py --apply`: совет,
+                 # который на его данных ничего не делает, хуже молчания
+                 "pending_merges": [], "skipped": []}
     folder = graph / "Ядра"
     if not folder.is_dir() or not nli.is_available():
         return out
@@ -203,8 +280,22 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
         except Exception:
             continue
         if ab >= MERGE_T and ba >= MERGE_T:
-            dups.append((a, b, c, ab, ba))
-            out["dups"].append(f"«{a['name']}» ↔ «{b['name']}» {ab:.2f}/{ba:.2f}")
+            weak = a["essence_src"] == "статус" and b["essence_src"] == "статус"
+            if not weak:
+                doubt = ""
+            elif min(ab, ba) < MERGE_T_WEAK:
+                doubt = f"суть из автостатуса, для слияния нужно ≥ {MERGE_T_WEAK}"
+            elif _meeting_overlap(a, b) >= CHRON_OVERLAP:
+                doubt = "суть из автостатуса, а ядра ведут на одних встречах"
+            else:
+                doubt = ""
+            if doubt:
+                maybe_dups.append((a, b, c, ab, ba))
+                out["dups"].append(f"«{a['name']}» ↔? «{b['name']}» "
+                                   f"{ab:.2f}/{ba:.2f} ({doubt} — пометка)")
+            else:
+                dups.append((a, b, c, ab, ba))
+                out["dups"].append(f"«{a['name']}» ↔ «{b['name']}» {ab:.2f}/{ba:.2f}")
         elif ab >= DUP_T and ba >= DUP_T:
             maybe_dups.append((a, b, c, ab, ba))
             out["dups"].append(f"«{a['name']}» ↔? «{b['name']}» {ab:.2f}/{ba:.2f} (пометка)")
@@ -220,19 +311,40 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
     hubs = {n for n, k in whole_count.items() if k >= HUB_LIMIT}
     for a, b, c, ab, ba in nests:
         part, whole = (a, b) if ab > ba else (b, a)
-        mark = " [хаб — пропуск]" if whole["name"] in hubs else ""
-        out["nests"].append(f"«{part['name']}» ⊂ «{whole['name']}» {ab:.2f}/{ba:.2f}{mark}")
+        hub_note = " [хаб — пропуск]" if whole["name"] in hubs else ""
+        out["nests"].append(f"«{part['name']}» ⊂ «{whole['name']}» {ab:.2f}/{ba:.2f}{hub_note}")
+        if hub_note:
+            # найдено, но осознанно не тронуто — единственное, о чём стоит
+            # сказать вызывающему отдельно от лога правок
+            out["skipped"].append(f"«{whole['name']}» — хаб ({whole_count[whole['name']]} "
+                                  f"вложений), ссылки не вписываем")
 
-    if not apply:
+    def _pair(a: dict, b: dict) -> str:
+        return f"«{a['name']}» ↔ «{b['name']}»"
+
+    if not (apply or mark):
+        out["pending_merges"] = [_pair(a, b) for a, b, *_ in dups]
         return out
     stamp = _dt.datetime.now().strftime("%Y-%m-%d_%H%M")
     merged: set[str] = set()
-    for a, b, c, ab, ba in dups:
-        if a["name"] in merged or b["name"] in merged:
-            continue
-        _merge(folder, stamp, a, b, out["log"])
-        merged.update((a["name"], b["name"]))
-    for a, b, c, ab, ba in maybe_dups:
+    if apply:
+        for a, b, c, ab, ba in dups:
+            if a["name"] in merged or b["name"] in merged:
+                # ядро уже слито в этом прогоне, и его текст в памяти устарел.
+                # Пару не теряем: после слияния дубль становится redirect и
+                # выпадает из load_cores, так что следующий прогон разберёт её
+                # на свежих файлах
+                out["pending_merges"].append(_pair(a, b))
+                continue
+            _merge(folder, stamp, a, b, out["log"])
+            merged.update((a["name"], b["name"]))
+        to_mark = maybe_dups
+    else:
+        # права сливать нет — уверенная пара получает ту же обратимую пометку,
+        # иначе находка исчезает вместе с логом прогона
+        to_mark = dups + maybe_dups
+        out["pending_merges"] = [_pair(a, b) for a, b, *_ in dups]
+    for a, b, c, ab, ba in to_mark:
         if a["name"] in merged or b["name"] in merged:
             continue
         _mark_dup(folder, stamp, a, b, out["log"])

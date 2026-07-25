@@ -23,11 +23,33 @@ jobs:
           python - <<'EOF'
           import yaml
           cfg = yaml.safe_load(open("config/config.example.yaml"))
-          for path in ("audio.samplerate", "stt.backend", "llm.model",
-                       "llm.num_ctx", "sufler.user_name", "log.transcripts_dir"):
+          for path in ("audio.samplerate", "stt.backend", "stt.language",
+                       "llm.model", "llm.num_ctx", "sufler.user_name",
+                       "sufler.language", "log.transcripts_dir"):
               node = cfg
               for k in path.split("."):
                   assert k in node, f"missing key: {path}"
                   node = node[k]
           print("config example: ok")
           EOF
+
+  # Python-тесты в CI не гонялись вообще: tests/ существовали, но ни один
+  # workflow их не запускал (swift-tests.yml гоняет только app/). Тест, который
+  # никто не гоняет, — это комментарий: он не удержит ни один инвариант.
+  tests:
+    name: pytest (src/)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      # main/daemon тянут sounddevice на импорте — без PortAudio падает сбор тестов
+      - name: PortAudio
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libportaudio2
+      - name: Deps
+        run: pip -q install -r requirements.txt pytest
+      - name: pytest
+        run: python -m pytest tests/ -q
