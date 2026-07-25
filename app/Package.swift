@@ -9,5 +9,10 @@ let package = Package(
             name: "CharoiteApp",
             path: "Sources"
         ),
+        .testTarget(
+            name: "CharoiteAppTests",
+            dependencies: ["CharoiteApp"],
+            path: "Tests"
+        ),
     ]
 )
