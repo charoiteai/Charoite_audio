@@ -113,11 +113,11 @@ final class SuflerService: ObservableObject {
                 handle.readabilityHandler = nil
                 return
             }
-            Task { @MainActor in self?.consume(data) }
+            Task { @MainActor [weak self] in self?.consume(data) }
         }
         stdoutHandle = outPipe.fileHandleForReading
         p.terminationHandler = { [weak self] proc in
-            Task { @MainActor in self?.daemonDied(proc) }
+            Task { @MainActor [weak self] in self?.daemonDied(proc) }
         }
 
         do {
@@ -132,7 +132,7 @@ final class SuflerService: ObservableObject {
             lastEventAt = Date()
             watchdog?.invalidate()
             watchdog = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.checkAlive() }
+                Task { @MainActor [weak self] in self?.checkAlive() }
             }
         } catch {
             status = "Не удалось начать запись: \(error.localizedDescription)"
