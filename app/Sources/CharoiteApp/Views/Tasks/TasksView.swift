@@ -52,25 +52,19 @@ struct TasksView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(visible) { item in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Button {
-                            tasks.toggle(item)
-                        } label: {
-                            Image(systemName: item.done ? "checkmark.square.fill" : "square")
-                                .foregroundStyle(item.done ? Color.accentColor : .secondary)
+                // секции по файлам: десяток задач плоским списком читался
+                // кашей — теперь видно, с какой встречи хвосты
+                List {
+                    ForEach(groups, id: \.rel) { group in
+                        Section {
+                            ForEach(group.items) { item in
+                                row(item)
+                            }
+                        } header: {
+                            Text(group.rel.replacingOccurrences(of: ".md", with: ""))
+                                .font(.caption).foregroundStyle(.secondary)
                         }
-                        .buttonStyle(.plain)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(MarkdownLine.render(item.text))
-                                .strikethrough(item.done)
-                                .foregroundStyle(item.done ? .secondary : .primary)
-                            Text(item.rel.replacingOccurrences(of: ".md", with: ""))
-                                .font(.caption2).foregroundStyle(.tertiary)
-                        }
-                        Spacer()
                     }
-                    .padding(.vertical, 2)
                 }
                 .listStyle(.inset)
             }
@@ -81,6 +75,34 @@ struct TasksView: View {
 
     private var visible: [TasksService.Item] {
         showDone ? tasks.items : tasks.items.filter { !$0.done }
+    }
+
+    /// Файлы с их задачами, свежие файлы сверху (порядок visible сохранён).
+    private var groups: [(rel: String, items: [TasksService.Item])] {
+        var order: [String] = []
+        var byRel: [String: [TasksService.Item]] = [:]
+        for item in visible {
+            if byRel[item.rel] == nil { order.append(item.rel) }
+            byRel[item.rel, default: []].append(item)
+        }
+        return order.map { (rel: $0, items: byRel[$0] ?? []) }
+    }
+
+    private func row(_ item: TasksService.Item) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Button {
+                tasks.toggle(item)
+            } label: {
+                Image(systemName: item.done ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(item.done ? Color.accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
+            Text(MarkdownLine.render(item.text))
+                .strikethrough(item.done)
+                .foregroundStyle(item.done ? .secondary : .primary)
+            Spacer()
+        }
+        .padding(.vertical, 2)
     }
 }
 
