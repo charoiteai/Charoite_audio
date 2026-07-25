@@ -69,6 +69,33 @@ def test_stt_language_is_a_different_key():
     assert "language" in cfg["sufler"], "sufler.language — язык документов встречи"
 
 
+def test_scanner_sees_every_shape_of_read():
+    """Регулярка ищет ключи в исходниках — значит она сама нуждается в тесте.
+
+    Ключ, прочитанный формой, которой нет в READ_PATTERNS, не «разрешён» —
+    он невидим, и проверка ниже молча его пропускает. Здесь перечислены
+    ключи, которые код читает всеми живыми в репозитории формами:
+    cfg["sufler"]["role"], cfg['sufler']['hotkey_hint'] (одинарные кавычки),
+    (cfg.get("sufler") or {}).get("user_name").
+    """
+    keys = _keys_read_by_code()
+    for key in ("role", "graph_dir", "hotkey_hint", "user_name"):
+        assert key in keys, \
+            f"сканер не видит чтение sufler.{key} — расширьте READ_PATTERNS"
+
+
+def test_cloud_switches_stay_under_the_same_guard():
+    """Облачные тумблеры читает privacy.py — через переменную, не литерал.
+
+    Регуляркой такое чтение не поймать, и ровно в тот момент, когда решение
+    об облаке съехало в один модуль, cloud_live и cloud_enrich выпали
+    из-под проверки на документированность. Список ключей privacy.py
+    экспортирует сам — так он не разъедется с этим тестом.
+    """
+    assert {"cloud_live", "cloud_enrich"} <= _keys_read_by_code(), \
+        "ключи облака не попали в список читаемых — их отсутствие в примере не поймают"
+
+
 def test_every_key_the_code_reads_is_documented():
     missing = sorted(_keys_read_by_code() - set(_example()["sufler"]) - UNDOCUMENTED_ON_PURPOSE)
     assert not missing, (
