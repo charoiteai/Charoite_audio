@@ -10,6 +10,9 @@ struct SuflerView: View {
     @State private var question = ""
     @State private var archiveAnswer = ""      // ответ по архиву, когда встреча не идёт
     @State private var lastArchiveQuestion = ""  // для «сохранить в граф»
+    // прошлые ответы сессии: раньше каждый новый вопрос СТИРАЛ предыдущий
+    // ответ — сравнить два ответа или вернуться было невозможно
+    @State private var archiveHistory: [(q: String, a: String)] = []
     @State private var isSearchingArchive = false
     @State private var showFirstRun = false
     @AppStorage("charoit.firstRunSeen") private var firstRunSeen = false
@@ -143,6 +146,11 @@ struct SuflerView: View {
     /// brief: тот же контур, но формат «подготовка ко встрече» — статус темы,
     /// решено, открыто, люди. Один и тот же поиск, разные инструкции синтеза.
     private func askArchive(_ q: String, brief: Bool = false) {
+        if !archiveAnswer.isEmpty, !lastArchiveQuestion.isEmpty,
+           !archiveAnswer.hasPrefix("Нашёл источников") {
+            archiveHistory.append((q: lastArchiveQuestion, a: archiveAnswer))
+            if archiveHistory.count > 20 { archiveHistory.removeFirst() }
+        }
         isSearchingArchive = true
         archiveAnswer = ""
         lastArchiveQuestion = q
@@ -631,6 +639,24 @@ struct SuflerView: View {
                                 .foregroundStyle(paneIsPlaceholder ? .tertiary : .primary)
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                            // прошлые вопросы сессии — свёрнуты, свежие сверху
+                            if !sufler.isRunning && !archiveHistory.isEmpty {
+                                Divider().padding(.vertical, 8)
+                                ForEach(Array(archiveHistory.enumerated().reversed()), id: \.offset) { _, qa in
+                                    DisclosureGroup {
+                                        Text(withBoldQuestions(qa.a))
+                                            .font(.callout)
+                                            .textSelection(.enabled)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .padding(.top, 4)
+                                    } label: {
+                                        Text(qa.q)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+                            }
                             Color.clear.frame(height: 1).id("hintBottom")
                         }
                         .padding(12)
