@@ -99,8 +99,9 @@ enum ArchiveSearch {
     /// через Ollama, если индекс прогрет) через RRF; гейт честности при
     /// слабых обоих сигналах. Работает и вовсе без серверов — тогда чисто
     /// лексически.
-    static func localSearch(query: String, limit: Int = 5, snippet: Int = 1200) async -> String {
-        guard let graph = AppSettings.graphDir,
+    static func localSearch(query: String, limit: Int = 5, snippet: Int = 1200,
+                            root: URL? = nil) async -> String {
+        guard let graph = root ?? AppSettings.graphDir,
               FileManager.default.fileExists(atPath: graph.path) else { return "" }
         let words = query
             .components(separatedBy: CharacterSet.alphanumerics.inverted)

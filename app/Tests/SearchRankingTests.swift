@@ -64,3 +64,38 @@ final class TasksServiceTests: XCTestCase {
         XCTAssertEqual(svc.openCount, 1)
     }
 }
+
+/// Интеграция: гибридный поиск на демо-графе из репозитория.
+final class DemoGraphSearchTests: XCTestCase {
+    private var demoGraph: URL {
+        // app/Tests/… → корень репо → demo/graph
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // app
+            .deletingLastPathComponent()   // repo root
+            .appendingPathComponent("demo/graph")
+    }
+
+    func testDecisionQuestionFindsPaymentNodes() async {
+        let out = await ArchiveSearch.localSearch(
+            query: "что решили по платёжному провайдеру?", limit: 5, snippet: 600,
+            root: demoGraph)
+        XCTAssertTrue(out.contains("платёжного провайдера") || out.contains("Платёжный шлюз"),
+                      "ожидали узлы про платёжного провайдера, получили: \(out.prefix(200))")
+        XCTAssertTrue(out.lowercased().contains("юpay".lowercased()),
+                      "факт-ответ (ЮPay) должен попасть в сниппеты")
+    }
+
+    func testBlockerQuestionFindsBlockerNode() async {
+        let out = await ArchiveSearch.localSearch(
+            query: "какие блокеры сейчас?", limit: 3, snippet: 400, root: demoGraph)
+        XCTAssertTrue(out.contains("Блокеры/"), "узел блокера должен быть в выдаче")
+    }
+
+    func testOffTopicGetsLowConfidenceOrEmpty() async {
+        let out = await ArchiveSearch.localSearch(
+            query: "рецепт борща с пампушками", limit: 3, snippet: 300, root: demoGraph)
+        XCTAssertTrue(out.isEmpty || out.hasPrefix(ArchiveSearch.lowConfidenceMarker),
+                      "офтопик обязан быть пустым или с «⚠», получили: \(out.prefix(120))")
+    }
+}
