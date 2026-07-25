@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0](https://github.com/charoiteai/Charoite_audio/compare/v0.14.1...v0.15.0) (2026-07-25)
+
+
+### Features
+
+* English meeting documents (phase 1) — sufler.language: en ([#61](https://github.com/charoiteai/Charoite_audio/issues/61)) ([bc2170b](https://github.com/charoiteai/Charoite_audio/commit/bc2170bd3a32ac098bbc7df9fa58c131cafb18af))
+
 ## [0.14.1](https://github.com/charoiteai/Charoite_audio/compare/v0.14.0...v0.14.1) (2026-07-25)
 
 
