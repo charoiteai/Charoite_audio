@@ -60,6 +60,12 @@ actor SemanticIndex {
         return Array(sims.prefix(limit))
     }
 
+    /// Сколько файлов в индексе — для строки статуса в Настройках.
+    func count() -> Int {
+        loadIfNeeded()
+        return index.count
+    }
+
     /// Лучшая похожесть — сигнал для гейта честности.
     func bestSimilarity(to query: String, within paths: Set<String>) async -> Double {
         await similar(to: query, within: paths, limit: 1).first?.1 ?? 0
