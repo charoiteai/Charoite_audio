@@ -6,6 +6,7 @@ import SwiftUI
 /// Суфлёр: левая панель — стенограмма в реальном времени, правая — тезисы и подсказки.
 struct SuflerView: View {
     @ObservedObject private var sufler = SuflerService.shared
+    @ObservedObject private var tasksSvc = TasksService.shared
     @State private var question = ""
     @State private var archiveAnswer = ""      // ответ по архиву, когда встреча не идёт
     @State private var lastArchiveQuestion = ""  // для «сохранить в граф»
@@ -69,6 +70,7 @@ struct SuflerView: View {
             // Первый запуск: объясняем, что это и зачем микрофон, ДО того как
             // человек нажмёт «Слушать встречу» и получит системный запрос.
             if !firstRunSeen { showFirstRun = true }
+            TasksService.shared.rescan()   // бейдж «Задачи · N» актуален сразу
         }
     }
 
@@ -79,6 +81,8 @@ struct SuflerView: View {
     // вчерашнюю встречу приходилось запускать запись сегодняшней. Теперь идёт
     // живая встреча — спрашиваем демона (он видит стенограмму), не идёт —
     // ищем по архиву встреч и графу через Чароит.
+    private var tasksOpen: Int { tasksSvc.openCount }
+
     private var askBar: some View {
         HStack(spacing: 10) {
             Image(systemName: "questionmark.bubble")
@@ -457,6 +461,20 @@ struct SuflerView: View {
                 Image(systemName: "arrow.up.forward.square")
             }
             .help("Чат отдельным окном (история общая с панелью)")
+
+            Button {
+                TasksService.shared.rescan()
+                openWindow(id: "tasks")
+                NSApp.activate(ignoringOtherApps: true)
+            } label: {
+                // бейдж открытых поручений: видно, что по встречам есть хвосты
+                if tasksOpen > 0 {
+                    Label("Задачи · \(tasksOpen)", systemImage: "checklist")
+                } else {
+                    Label("Задачи", systemImage: "checklist")
+                }
+            }
+            .help("Поручения со встреч (чекбоксы из минуток и заметок графа)")
 
             Button {
                 openMeetingsFolder()

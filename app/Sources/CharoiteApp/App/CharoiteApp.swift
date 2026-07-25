@@ -18,6 +18,11 @@ struct CharoiteApp: App {
         }
         .defaultSize(width: 640, height: 520)
 
+        Window("Задачи со встреч", id: "tasks") {
+            TasksView()
+        }
+        .defaultSize(width: 520, height: 480)
+
         MenuBarExtra {
             MenuBarView()
         } label: {
