@@ -81,6 +81,7 @@ chat with graph memory, dictation (⌥⌘D) and voice notes (⌥⌘N).
 (Russian) or [demo/graph_en](demo/) (English) and ask
 «что решили по платёжному провайдеру?» / "what did we decide about the
 payment provider?" — see the product working before recording anything.
+One command validates the whole retrieval loop: `python3 scripts/memory_bench.py --demo`.
 
 STT models download automatically on first run (GigaAM via `onnx_asr`). For live diarization put an ERes2Net speaker-embedding ONNX model at `models/diar/embedding.onnx` (see [docs/DIARIZATION.md](docs/DIARIZATION.md)).
 
