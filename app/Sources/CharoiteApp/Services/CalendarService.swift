@@ -22,8 +22,8 @@ final class CalendarService: ObservableObject {
                 guard granted else { self.nextEventTitle = nil; return }
                 self.refresh()
                 self.timer?.invalidate()
-                self.timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in
-                    Task { @MainActor in self.refresh() }
+                self.timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+                    Task { @MainActor [weak self] in self?.refresh() }
                 }
             }
         }
