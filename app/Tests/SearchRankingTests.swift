@@ -29,3 +29,38 @@ final class SearchRankingTests: XCTestCase {
         XCTAssertEqual(String(out.characters), "Решения")
     }
 }
+
+/// Задачи: парсинг чекбоксов и отметка пишутся в файл корректно.
+@MainActor
+final class TasksServiceTests: XCTestCase {
+    func testScanAndToggleRoundtrip() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("charoite-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("Минутки.md")
+        try """
+        # Минутки
+        ## Поручения
+        - [ ] **Мария** — подписать договор — до 31.07
+        - [x] **Игорь** — прислать сравнение — сделано
+        обычная строка без чекбокса
+        """.write(to: file, atomically: true, encoding: .utf8)
+
+        let svc = TasksService.shared
+        svc.rescan(root: dir)
+        XCTAssertEqual(svc.items.count, 2)
+        XCTAssertEqual(svc.openCount, 1)
+
+        let open = try XCTUnwrap(svc.items.first { !$0.done })
+        svc.toggle(open, root: dir)
+        XCTAssertEqual(svc.openCount, 0)
+        let text = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertTrue(text.contains("- [x] **Мария**"))
+
+        // обратно в открытую
+        let done = try XCTUnwrap(svc.items.first { $0.text.contains("Мария") })
+        svc.toggle(done, root: dir)
+        XCTAssertEqual(svc.openCount, 1)
+    }
+}
