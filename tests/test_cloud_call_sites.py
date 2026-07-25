@@ -84,23 +84,54 @@ def test_cloud_loop_respects_the_live_toggle():
 
 @pytest.mark.parametrize("filename,func", NETWORK_EXITS)
 def test_api_key_is_stripped_before_calling_claude(filename, func):
-    """Только подписка. Ключ в env увёл бы вызов на потокенный биллинг."""
+    """Только подписка. Ключ в env увёл бы вызов на потокенный биллинг.
+
+    Не просто «литерал упомянут» — иначе setdefault("ANTHROPIC_API_KEY", …)
+    прошёл бы сторожа. Требуется сравнение на НЕравенство с этим именем:
+    форма фильтра `if k != "ANTHROPIC_API_KEY"`.
+    """
     fn = _func(SRC / filename, func)
-    assert "ANTHROPIC_API_KEY" in _consts(fn), \
-        f"{filename}:{func} зовёт claude, не вычистив ANTHROPIC_API_KEY из env"
+    strips = any(
+        isinstance(node, ast.Compare)
+        and any(isinstance(op, ast.NotEq) for op in node.ops)
+        and "ANTHROPIC_API_KEY" in _consts(node)
+        for node in ast.walk(fn))
+    assert strips, \
+        f"{filename}:{func} зовёт claude без фильтра k != ANTHROPIC_API_KEY в env"
+
+
+def _mentions_claude(consts: set[str]) -> bool:
+    return any(c.startswith("claude") or c.endswith("/claude") for c in consts)
 
 
 def test_no_other_place_starts_claude():
-    """Новый выход в сеть должен попасть в список выше, а не появиться тихо."""
+    """Новый выход в сеть должен попасть в список выше, а не появиться тихо.
+
+    Сторож обязан видеть все три укрытия, где может родиться вызов:
+    обычные def, async def (у корутины те же права запустить процесс) и
+    модульный уровень (константа с командой вне всякой функции). И не
+    только src/ — scripts/ ходят теми же дорогами.
+    """
     known = {f"{f}:{fn}" for f, fn in NETWORK_EXITS}
     found = set()
-    for path in sorted(SRC.glob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.FunctionDef):
-                continue
-            if any(c.startswith("claude") or c.endswith("/claude") for c in _own_consts(node)):
-                found.add(f"{path.name}:{node.name}")
+    for root in (SRC, SRC.parent / "scripts"):
+        for path in sorted(root.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                        and _mentions_claude(_own_consts(node)):
+                    found.add(f"{path.name}:{node.name}")
+            top: set[str] = set()
+            stack = list(ast.iter_child_nodes(tree))
+            while stack:
+                node = stack.pop()
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    top.add(node.value)
+                stack.extend(ast.iter_child_nodes(node))
+            if _mentions_claude(top):
+                found.add(f"{path.name}:<module>")
     unknown = sorted(found - known)
     assert not unknown, (
         "появился новый путь запуска claude: " + ", ".join(unknown)

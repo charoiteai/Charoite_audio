@@ -14,6 +14,15 @@ ICLOUD = pathlib.Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Docu
 CONFIG = pathlib.Path(__file__).resolve().parent.parent / "config" / "config.yaml"
 
 
+def load_config() -> dict:
+    """config.yaml целиком; {} — файла нет или он битый (пути fail-closed)."""
+    try:
+        import yaml
+        return yaml.safe_load(CONFIG.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+
+
 def configured_graph() -> pathlib.Path | None:
     """sufler.graph_dir из конфига. None — не настроен или конфига нет."""
     try:

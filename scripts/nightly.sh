@@ -13,7 +13,9 @@ cd "$(dirname "$0")/.." || exit 1
 PY=.venv/bin/python
 rc=0
 echo "=== nightly $(date '+%F %T') ==="
-$PY scripts/tier3_cores.py --all-graphs --apply || { echo "❌ РЕВИЗИЯ ЯДЕР УПАЛА (код $?)"; rc=1; }
+# право на слияние — у конфига (sufler.tier3_auto_apply), не у cron:
+# --auto сливает только при true, иначе обратимые пометки (--mark)
+$PY scripts/tier3_cores.py --all-graphs --auto || { echo "❌ РЕВИЗИЯ ЯДЕР УПАЛА (код $?)"; rc=1; }
 echo "--- morning brief ---"
 $PY scripts/morning_brief.py || { echo "❌ УТРЕННИЙ БРИФ УПАЛ (код $?)"; rc=1; }
 echo "--- memory bench ---"

@@ -359,3 +359,50 @@ def test_explicit_suti_section_still_wins(tmp_path):
         "## Статус\nавтостатус _(обновлено 2026-07-20)_\n", encoding="utf-8")
     core = tier3.load_cores(folder)[0]
     assert core["essence"] == "ручная формулировка темы"
+
+
+# ─── Право на слияние: у КАЖДОГО пути к revise, не только у дневного ─────────
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+def test_nightly_does_not_take_apply_by_itself():
+    """Ночная джоба не имеет права решать за пользователя.
+
+    tier3_auto_apply: false обязан выключать слияние и у ночного контура.
+    А nightly.sh зовёт tier3_cores с захардкоженным --apply: каждый запуск
+    launchd необратимо сливает ядра во всех графах vault, включая личные, —
+    у пользователя, который никакого apply не давал. Дневной путь
+    (graph_updater после встречи) этим же пакетом привязан к конфигу, и
+    модель «слияние — решение человека» держится ровно до 04:15.
+    """
+    text = (ROOT / "scripts" / "nightly.sh").read_text(encoding="utf-8")
+    assert "--apply" not in text, \
+        "nightly.sh сливает безусловно (--apply захардкожен) — право должно браться из конфига"
+    assert "--auto" in text, \
+        "ночной режим обязан спрашивать конфиг: --auto (слияние только при tier3_auto_apply: true)"
+
+
+def test_junk_in_auto_apply_is_not_permission():
+    """Строгий is True — та же политика, что у облачных тумблеров privacy."""
+    assert hasattr(tier3, "auto_apply_allowed"), \
+        "нет единой точки решения tier3.auto_apply_allowed(cfg)"
+    for junk in (None, "", 0, 1, "false", "true", "да", []):
+        assert tier3.auto_apply_allowed({"sufler": {"tier3_auto_apply": junk}}) is False, \
+            f"мусор в конфиге стал разрешением: {junk!r}"
+    assert tier3.auto_apply_allowed({"sufler": {"tier3_auto_apply": True}}) is True
+    assert tier3.auto_apply_allowed({"sufler": {}}) is False
+    assert tier3.auto_apply_allowed({}) is False
+
+
+def test_meeting_pipeline_reads_permission_strictly():
+    """bool() на тумблере превращает мусор в разрешение: bool("false") is True.
+
+    Этот же пакет ввёл строгий is True для облачных тумблеров — а
+    единственный другой разрушительный тумблер остался на bool().
+    """
+    src = (ROOT / "src" / "graph_updater.py").read_text(encoding="utf-8")
+    assert 'bool(cfg["sufler"].get("tier3_auto_apply"' not in src, \
+        'graph_updater решает через bool() — строка "false" включит слияние'
+    assert "auto_apply_allowed" in src, \
+        "разрешение должно браться из единой точки tier3.auto_apply_allowed"

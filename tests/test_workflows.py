@@ -33,8 +33,11 @@ def _on(wf: dict) -> dict:
 
 def test_ci_runs_on_every_push():
     """Пуш в ветку обязан гонять pytest, не дожидаясь PR."""
-    push = _on(_load("ci.yml")).get("push")
-    assert push is None or not (push or {}).get("branches"), (
+    on = _on(_load("ci.yml"))
+    # `push:` без значения парсится в None — поэтому сначала «ключ есть»,
+    # иначе тест зелёный и при полностью удалённом push-триггере
+    assert "push" in on, "ci.yml: push-триггер удалён — пуш не гоняет ничего"
+    assert not (on["push"] or {}).get("branches"), (
         "ci.yml: push отфильтрован до main — ветка без PR не даёт сигнала, "
         "и красный тест виден только после того, как работа уже оформлена")
 
@@ -62,6 +65,21 @@ def test_twin_runs_do_not_cancel_each_other():
         assert "event_name" in group, (
             f"{name}: в concurrency.group нет github.event_name — push- и "
             "pull_request-прогоны одного коммита будут отменять друг друга")
+
+
+def test_concurrency_key_separates_pull_requests_from_different_forks():
+    """head_ref — только ИМЯ ветки, без владельца форка.
+
+    Два PR из разных форков с веткой main (типовой drive-by) дают одну
+    группу; cancel-in-progress: true — пуш во второй PR отменяет идущий
+    чек первого, и обязательная проверка виснет красной. Ключом события
+    pull_request обязан быть номер PR — он уникален в репозитории.
+    """
+    for name in ("ci.yml", "swift-tests.yml"):
+        group = str((_load(name).get("concurrency") or {}).get("group", ""))
+        assert "pull_request.number" in group, (
+            f"{name}: группа ключуется по head_ref — PR из разных форков "
+            "с одинаковым именем ветки отменяют чеки друг друга")
 
 
 # ─── release-app: сборка обязана собирать ТЕГ и не собирать зря ──────────────
@@ -127,6 +145,21 @@ def test_checkout_builds_the_release_tag_not_main():
     refs = [str((s.get("with") or {}).get("ref", "")) for s in checkouts]
     assert any("tags/" in r for r in refs), (
         "checkout без ref собирает вершину main — к тегу прикрепится не тот код")
+
+
+def test_tag_resolver_skips_draft_releases():
+    """gh release list показывает и драфты — а у драфта git-тега ещё НЕТ.
+
+    Мейнтейнер держит черновик релиз-нот → каждый пуш в main дотягивается
+    до resolve, тот берёт драфт-тег, ассета нет → build=true → checkout
+    refs/tags/<драфт> падает «couldn't find remote ref» — красный
+    release-app на каждом пуше, пока жив черновик.
+    """
+    steps = _release_steps()
+    resolve = steps[_step_index(steps, "gh release list")]
+    assert "--exclude-drafts" in str(resolve.get("run", "")), (
+        "резолв свежайшего релиза не исключает драфты — черновик релиз-нот "
+        "уронит сборку: у драфта есть tagName, но нет git-тега")
 
 
 def test_release_app_can_be_pointed_at_a_tag_by_hand():

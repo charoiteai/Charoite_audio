@@ -396,7 +396,7 @@ def main():
         # а нем — находка остаётся в логе прогона, которого никто не видит.
         try:
             import tier3
-            auto = bool(cfg["sufler"].get("tier3_auto_apply", False))
+            auto = tier3.auto_apply_allowed(cfg)
             rep = tier3.revise(graph, only_names=[safe_name(c["имя"]) for c in cores],
                                mark=True, apply=auto)
             # печатаем СДЕЛАННОЕ (log) и осознанно пропущенное (skipped).

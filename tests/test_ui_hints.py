@@ -27,9 +27,12 @@ SETTINGS = "SettingsView.swift"
 # в комментариях не в счёт: инвариант про то, что читает пользователь.
 DIRECTIVE = re.compile(r'"[^"\n]*?(?:включите|выключите)\s+«([^»]+)»([^"\n]*)"')
 
-# Подписи органов управления: Toggle("X"/{ Text("X") }, Button("X"), Label("X"),
-# Section("X"). Ими же человек ищет орган глазами на экране.
-CONTROL = re.compile(r'(?:Toggle|Button|Label|Section|Text)\(\s*"([^"\n]+)"')
+# Подписи органов, которые можно ВКЛЮЧИТЬ: Toggle/{ Text("X") }, Label("X"),
+# Section("X"). Button здесь сознательно нет: кнопка-НОСИТЕЛЬ подсказки
+# («Button("Claude")… .help("включите «Claude»…")») матчила бы сама себя,
+# и проверка «орган существует» была бы истинной вакуумно — переименуйте
+# тумблер, и тест остался бы зелёным при мёртвой подсказке.
+CONTROL = re.compile(r'(?:Toggle|Label|Section|Text)\(\s*"([^"\n]+)"')
 
 
 def _swift() -> list[pathlib.Path]:
@@ -65,13 +68,28 @@ def test_hint_names_a_control_that_exists():
 
 
 def test_hint_sends_to_the_screen_where_the_control_is():
+    """Адрес проверяется для ОБОИХ известных адресов, не только для Настроек."""
     settings = _controls([p for p in _swift() if p.name == SETTINGS])
     for path, name, tail in _directives():
-        if not re.search(r"в [Нн]астройках", tail):
-            continue
-        assert name in settings, (
-            f"{path.name}: подсказка посылает за «{name}» в Настройки, "
-            f"а такого органа там нет — он на другом экране")
+        if re.search(r"в [Нн]астройках", tail):
+            assert name in settings, (
+                f"{path.name}: подсказка посылает за «{name}» в Настройки, "
+                f"а такого органа там нет — он на другом экране")
+        elif re.search(r"в тулбаре", tail):
+            here = _controls([path])
+            assert name in here, (
+                f"{path.name}: подсказка посылает за «{name}» в тулбар этого же "
+                f"экрана, а органа с такой подписью в файле нет")
+
+
+@pytest.mark.parametrize("sample, matched", [
+    # тумблер и его подпись — орган; кнопка-носитель подсказки — нет
+    ('Toggle(isOn: $sufler.cloudOn) { Text("Claude").fixedSize() }', True),
+    ('Section("Подключение")', True),
+    ('Button("Claude") { sufler.requestCloud() }', False),
+])
+def test_control_pattern_does_not_match_the_hint_carrier(sample, matched):
+    assert bool(CONTROL.findall(sample)) is matched, sample
 
 
 @pytest.mark.parametrize("sample, ok", [

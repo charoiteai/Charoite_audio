@@ -59,7 +59,9 @@ jobs:
           TAG="${EVENT_TAG:-$INPUT_TAG}"
           # workflow_run: тега в событии нет — берём свежайший релиз
           if [ -z "$TAG" ]; then
-            TAG=$(gh release list --repo "$REPO" --limit 1 --json tagName -q '.[0].tagName')
+            # --exclude-drafts: у черновика есть tagName, но НЕТ git-тега —
+            # checkout такого «тега» красил бы прогон, пока жив драфт
+            TAG=$(gh release list --repo "$REPO" --exclude-drafts --limit 1 --json tagName -q '.[0].tagName')
           fi
           if [ -z "$TAG" ]; then
             echo "релизов нет — нечего прикладывать"

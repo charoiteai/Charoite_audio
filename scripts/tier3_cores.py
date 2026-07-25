@@ -4,7 +4,8 @@
     .venv/bin/python scripts/tier3_cores.py                # текущий граф, только отчёт
     .venv/bin/python scripts/tier3_cores.py --mark         # обратимые пометки в графе
     .venv/bin/python scripts/tier3_cores.py --apply        # + слить уверенные дубли
-    .venv/bin/python scripts/tier3_cores.py --all-graphs --apply   # все графы vault (ночной режим)
+    .venv/bin/python scripts/tier3_cores.py --all-graphs --auto    # ночной режим:
+        # слияние ТОЛЬКО при sufler.tier3_auto_apply: true, иначе --mark
     .venv/bin/python scripts/tier3_cores.py --graph /путь  # конкретный граф
 
 Инкрементальная ревизия после каждой встречи уже встроена в graph_updater —
@@ -44,7 +45,17 @@ def main() -> None:
                     help="слить уверенные дубли (включает --mark)")
     ap.add_argument("--mark", action="store_true",
                     help="обратимые правки: пометки «возможный дубль» и ссылки вложений")
+    ap.add_argument("--auto", action="store_true",
+                    help="режим из конфига: слияние только при sufler.tier3_auto_apply: true, "
+                         "иначе только --mark. Для ночной джобы: право на необратимое — "
+                         "у пользователя в конфиге, не у cron")
     args = ap.parse_args()
+
+    apply_mode = args.apply
+    mark_mode = args.mark
+    if args.auto:
+        apply_mode = apply_mode or tier3.auto_apply_allowed(graphs.load_config())
+        mark_mode = True
 
     if args.all_graphs:
         found = graphs.all_graphs("Ядра")
@@ -55,10 +66,10 @@ def main() -> None:
             print(f"нет графов с папкой «Ядра» — искал в {graphs.where()}")
             return
         for g in found:
-            run(g, args.apply, args.mark)
+            run(g, apply_mode, mark_mode)
         return
     run(args.graph or graphs.configured_graph() or pathlib.Path.cwd(),
-        args.apply, args.mark)
+        apply_mode, mark_mode)
 
 
 if __name__ == "__main__":
