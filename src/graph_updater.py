@@ -65,6 +65,15 @@ def extract(cfg: dict, transcript: str) -> dict | None:
                     '"цитата":"её ДОСЛОВНЫЙ фрагмент, 5-15 слов, скопированный из стенограммы без изменений"}]}\n'
                     "Только то, что реально прозвучало. Имена людей — как звучали (владелец, Дмитрий…). "
                     "Пустые списки допустимы."
+                    # en-режим: КЛЮЧИ JSON — контракт кода, не трогаем; на
+                    # английский переводятся только ЗНАЧЕНИЯ полей — граф
+                    # читается англоязычным пользователем, парсер стабилен
+                    + ("\n\nLANGUAGE: write every field VALUE in English "
+                       "(node names, summaries, statuses, updates, topics; people "
+                       "as spoken). Keep the JSON KEYS exactly as specified above. "
+                       "The «цитата» field stays VERBATIM from the transcript."
+                       if str(cfg.get("sufler", {}).get("language", "ru")).lower() == "en"
+                       else "")
                 )},
                 {"role": "user", "content": f"Стенограмма:\n\n{transcript[:12000]}"},
             ],
