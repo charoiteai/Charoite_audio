@@ -45,7 +45,12 @@ enum ArchiveSearch {
             .contains($0) && $0.isASCII } ?? false
         let table = isLatin ? enSuffixes : suffixes
         for suf in table where w.hasSuffix(suf) && w.count - suf.count >= 4 {
-            return String(w.dropLast(suf.count))
+            let cut = String(w.dropLast(suf.count))
+            // Один срез разводит пары ед/мн: meetings→meeting, meeting→meet.
+            // Латиницу дожимаем до неподвижной точки — страховка длины (≥4)
+            // остаётся на каждом шаге, глубина ограничена длиной слова.
+            // Русские окончания каскадом не наслаиваются — им один срез.
+            return isLatin ? stem(cut) : cut
         }
         return w
     }
