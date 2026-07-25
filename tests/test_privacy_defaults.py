@@ -76,6 +76,7 @@ def test_nobody_decides_about_the_cloud_on_their_own():
     """
     for name in ("daemon.py", "graph_updater.py"):
         text = (SRC / name).read_text(encoding="utf-8")
-        for key in ("cloud_live", "cloud_enrich"):
-            assert f'get("{key}"' not in text, \
-                f"{name} решает про облако сам — решение живёт в privacy.py"
+        offenders = [k for k in ("cloud_live", "cloud_enrich") if f'get("{k}"' in text]
+        del text  # иначе pytest вывалит в отчёт весь файл целиком
+        assert not offenders, \
+            f"{name} решает про облако сам ({', '.join(offenders)}) — решение живёт в privacy.py"

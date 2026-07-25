@@ -15,6 +15,9 @@ import sys
 import requests
 import yaml
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import privacy  # noqa: E402
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
@@ -531,8 +534,9 @@ def main():
         print(f"архив встречи не удался: {e}")
 
     # 5) уровень 4 — авто-доработка облачным Claude (решение владельца 17.07.2026).
-    # Стенограмма уходит в Anthropic API! Выключатель: sufler.cloud_enrich.
-    if cfg["sufler"].get("cloud_enrich") and not os.environ.get("SUFLER_NO_CLOUD"):
+    # Стенограмма уходит в Anthropic API! Выключатель: sufler.cloud_enrich,
+    # рубильник поверх конфига: SUFLER_NO_CLOUD. Решение — в src/privacy.py.
+    if privacy.cloud_enrich_enabled(cfg):
         try:
             import shutil as _sh
             import subprocess as _sp

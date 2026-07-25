@@ -34,7 +34,11 @@ final class SuflerService: ObservableObject {
     @Published var thesesOn = UserDefaults.standard.object(forKey: "sufler.theses") as? Bool ?? true {
         didSet { applyToggle("theses", thesesOn) }
     }
-    @Published var cloudOn = UserDefaults.standard.object(forKey: "sufler.cloud") as? Bool ?? true {
+    // Облако — единственный тумблер, который отправляет стенограмму с машины,
+    // поэтому его дефолт «выключено», а не «включено», как у локальных
+    // контуров: PRIVACY.md обещает opt-in, и первое включение делает человек.
+    // Уже сделанный выбор из UserDefaults уважается как есть.
+    @Published var cloudOn = UserDefaults.standard.object(forKey: "sufler.cloud") as? Bool ?? false {
         didSet { applyToggle("cloud", cloudOn) }
     }
 

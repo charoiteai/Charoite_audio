@@ -26,6 +26,7 @@ import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import fact_check  # noqa: E402
+import privacy  # noqa: E402
 from audio import AudioHub  # noqa: E402
 from llm import LLM  # noqa: E402
 from main import NOISE, Transcript  # noqa: E402
@@ -351,7 +352,7 @@ def main():
     instant_on = bool(cfg["sufler"].get("instant", True))
     auto_model = llm.small if quiet else None  # тихий режим: весь фон без 26b
     instant_evt = threading.Event()
-    cloud_live = bool(cfg["sufler"].get("cloud_live", True)) and not os.environ.get("SUFLER_NO_CLOUD")
+    cloud_live = privacy.cloud_live_enabled(cfg)  # молчание конфига = «нет», см. src/privacy.py
     cloud_evt = threading.Event()
     _last_fire = [0.0]
     _cloud_last = {"t": 0.0, "words": set()}
