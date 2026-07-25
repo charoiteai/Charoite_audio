@@ -17,19 +17,8 @@ import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import graphs  # noqa: E402
 import tier3  # noqa: E402
-
-VAULT = pathlib.Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents"
-
-
-def default_graph() -> pathlib.Path:
-    cfg = pathlib.Path(__file__).resolve().parent.parent / "config" / "config.yaml"
-    try:
-        import yaml
-        gd = yaml.safe_load(cfg.read_text(encoding="utf-8"))["sufler"]["graph_dir"]
-        return pathlib.Path(gd).expanduser()
-    except Exception:
-        return pathlib.Path.cwd()
 
 
 def run(graph: pathlib.Path, apply: bool, mark: bool = False) -> None:
@@ -58,14 +47,18 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.all_graphs:
-        graphs = [d for d in sorted(VAULT.iterdir())
-                  if d.is_dir() and (d / "Ядра").is_dir()]
-        if not graphs:
-            sys.exit(f"в vault нет графов с папкой Ядра: {VAULT}")
-        for g in graphs:
+        found = graphs.all_graphs("Ядра")
+        if not found:
+            # НЕ sys.exit: этим ходит ночная джоба, а «ревизовать нечего» —
+            # не авария. Раньше отсутствие ровно iCloud-папки красило launchd
+            # каждую ночь у любого, кто держит граф в другом месте.
+            print(f"нет графов с папкой «Ядра» — искал в {graphs.where()}")
+            return
+        for g in found:
             run(g, args.apply, args.mark)
         return
-    run(args.graph or default_graph(), args.apply, args.mark)
+    run(args.graph or graphs.configured_graph() or pathlib.Path.cwd(),
+        args.apply, args.mark)
 
 
 if __name__ == "__main__":
