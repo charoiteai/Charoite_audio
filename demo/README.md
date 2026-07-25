@@ -18,6 +18,13 @@ Open the app (or CLI) and ask:
 - «какие блокеры сейчас?»
 - «подготовь меня к встрече по запуску магазина»
 
+One command checks the whole RAG loop on the demo graph (works even
+before `config.yaml` exists):
+
+```bash
+.venv/bin/python scripts/memory_bench.py --demo
+```
+
 Switch `graph_dir` back to your real vault when done. Everything in
 `demo/graph` is fictional.
 
