@@ -77,6 +77,9 @@ enum ArchiveSearch {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let text = obj["text"] as? String, !text.isEmpty else { return nil }
         if text.hasPrefix("Ничего не найдено") { return "" }
+        // граф вне vault brain-сервера (демо, другой диск) — честный фолбэк
+        // на локальный поиск, а не сообщение об ошибке в качестве «сырья»
+        if text.hasPrefix("Папка не найдена") || text.hasPrefix("Недопустимый путь") { return nil }
         // тело без строки-шапки «Найдено в vault (N из M):», маркер «⚠» сохраняем
         let lowConf = text.hasPrefix(lowConfidenceMarker)
         if let range = text.range(of: "\n\n") {

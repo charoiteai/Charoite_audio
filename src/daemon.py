@@ -971,8 +971,11 @@ def main():
             extra = ""
             try:  # граф и документы через brain Чароита (если поднят)
                 import requests as _rq
+                # folder: искать в ГРАФЕ проекта, не по всему Obsidian-vault —
+                # соседние личные папки не должны попадать в ответы на встрече
+                _folder = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser().name
                 v = _rq.post("http://127.0.0.1:8100/vault_search",
-                             json={"query": question, "limit": 4,
+                             json={"query": question, "limit": 4, "folder": _folder,
                                    "snippet_chars": 600}, timeout=2.5).json().get("text", "")
                 if v and "не найдено" not in v.lower():
                     # «⚠» — гейт уверенности brain: совпадения слабые, модель

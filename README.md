@@ -8,6 +8,8 @@ Charoite listens to your meetings (microphone + system audio, no bots joining ca
 
 *Русская документация: [README.ru.md](README.ru.md). Charoite is Russian-first today (GigaAM STT is SOTA for Russian); English STT works via Whisper/Parakeet backends.*
 
+![Charoite app — live transcript, theses, archive answers](docs/img/app-main.png)
+
 ## Why Charoite
 
 - **100% local by default.** Audio, transcription, diarization, LLM summaries — all on your machine (Ollama + ONNX). No cloud, no telemetry, no accounts. The optional Claude layer is off unless you turn it on.
@@ -48,8 +50,26 @@ theses for free. Full macOS/iOS tables and the reasoning: [docs/MODELS.md](docs/
 git clone https://github.com/charoiteai/Charoite_audio && cd Charoite_audio
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp config/config.example.yaml config/config.yaml   # then set user_name & graph_dir
-.venv/bin/python src/main.py                        # CLI mode: live transcript + hints
 ```
+
+**Option A — the macOS app (recommended):**
+
+```bash
+./app/make_app.sh && open app/build/Charoite.app
+```
+
+Live transcript, theses and hints, archive questions and briefs, local
+chat with graph memory, dictation (⌥⌘D) and voice notes (⌥⌘N).
+
+**Option B — CLI:**
+
+```bash
+.venv/bin/python src/main.py     # live transcript + hints in the terminal
+```
+
+**No meetings yet?** Point `graph_dir` at the bundled [demo graph](demo/)
+and ask «что решили по платёжному провайдеру?» — see the product working
+before recording anything.
 
 STT models download automatically on first run (GigaAM via `onnx_asr`). For live diarization put an ERes2Net speaker-embedding ONNX model at `models/diar/embedding.onnx` (see [docs/DIARIZATION.md](docs/DIARIZATION.md)).
 

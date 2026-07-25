@@ -18,6 +18,11 @@ struct CharoiteApp: App {
         }
         .defaultSize(width: 640, height: 520)
 
+        Window("Задачи со встреч", id: "tasks") {
+            TasksView()
+        }
+        .defaultSize(width: 520, height: 480)
+
         MenuBarExtra {
             MenuBarView()
         } label: {
@@ -37,6 +42,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // этого валила всё приложение сигналом 13
         signal(SIGPIPE, SIG_IGN)
         _ = DictationService.shared  // регистрирует глобальные ⌥⌘D и ⌥⌘N
+        // Тихий прогрев brain-компаньона: холодный первый скан графа мог не
+        // уложиться в таймаут запроса — первый вопрос пользователя падал на
+        // медленный локальный фолбэк. Пустой запрос строит кэш заранее.
+        Task.detached(priority: .background) {
+            _ = await ArchiveSearch.search(query: "прогрев", limit: 1, snippet: 100)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
