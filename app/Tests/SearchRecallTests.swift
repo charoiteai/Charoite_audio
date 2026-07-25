@@ -127,3 +127,69 @@ final class IndexInvalidationTests: XCTestCase {
                        "в индексе не настоящий mtime файла")
     }
 }
+
+/// Дозировка фона: первый поиск не имеет права зажевать весь граф разом.
+///
+/// Снапшот доиндексации — весь граф, и это правильно; но refresh без капа
+/// ставит в очередь СОТНИ embed-вызовов подряд в ту же Ollama, которая в
+/// этот момент обслуживает подсказки живой встречи. Хвост обязан доезжать
+/// порциями со следующими поисками, а не одним залпом.
+final class RefreshPacingTests: XCTestCase {
+    private actor Counter {
+        var n = 0
+        func bump(_ k: Int) { n += k }
+        func value() -> Int { n }
+    }
+
+    func testRefreshIsPacedPerCall() async {
+        let counter = Counter()
+        await SemanticIndex.shared.useForTests(store: tempIndexStore()) { texts in
+            await counter.bump(texts.count)
+            return texts.map { _ -> [Float] in [1, 0] }
+        }
+        let files = (0..<100).map { i in
+            (path: "Ядра/узел-\(i).md", mtime: 1.0, text: "текст узла \(i)")
+        }
+        await SemanticIndex.shared.refresh(files: files)
+        let first = await counter.value()
+        XCTAssertGreaterThan(first, 0, "refresh не сделал ничего")
+        XCTAssertLessThanOrEqual(first, 48,
+            "один вызов refresh зажевал \(first) файлов из 100 — залп в Ollama посреди встречи")
+        await SemanticIndex.shared.refresh(files: files)
+        let second = await counter.value()
+        XCTAssertGreaterThan(second, first, "второй вызов не продолжил хвост")
+    }
+}
+
+/// Слот для семантики: находка обязана доехать до выдачи.
+///
+/// RRF-вес семантики 0.7/(60+rank) НИКОГДА не обгоняет лексический
+/// 1/(60+rank) при ranks 0..25 — при ≥limit лексических хитов чисто
+/// семантическая находка математически не попадает в выдачу. Объединение
+/// без слота работает только на почти пустой лексике; заодно ломается
+/// гейт честности: bestSim считается по всему графу, а файл-источник
+/// этого bestSim пользователь не видит.
+final class SemanticSlotTests: XCTestCase {
+    func testSemanticTopSurvivesLexicalFlood() async throws {
+        var corpus: [(String, String)] = (1...6).map {
+            ("Ядра/Лексика \($0).md", "здесь упоминается контракт номер \($0)")
+        }
+        corpus.append(("Ядра/Скрытое ядро.md", "суть договорённости другими словами"))
+        let graph = try makeTestGraph(corpus)
+        defer { try? FileManager.default.removeItem(at: graph) }
+        await SemanticIndex.shared.useForTests(store: tempIndexStore()) { texts in
+            texts.map { t -> [Float] in
+                (t.contains("договорённости") || t == "контракт номер") ? [1, 0] : [0, 1]
+            }
+        }
+        await SemanticIndex.shared.refresh(files: corpus.map {
+            (path: $0.0, mtime: 1.0, text: $0.1)
+        })
+
+        // 6 лексических попаданий при limit 5 — поток; ответ в скрытом файле
+        let out = await ArchiveSearch.localSearch(query: "контракт номер",
+                                                  limit: 5, snippet: 200, root: graph)
+        XCTAssertTrue(out.contains("Скрытое ядро"),
+            "сильная семантическая находка (cos 1.0) не пробилась сквозь лексический поток: \(out.prefix(150))")
+    }
+}
