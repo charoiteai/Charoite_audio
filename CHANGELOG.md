@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.1](https://github.com/charoiteai/Charoite_audio/compare/v0.19.0...v0.19.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* **ci:** release-app fires after release-please via workflow_run ([#72](https://github.com/charoiteai/Charoite_audio/issues/72)) ([86a8015](https://github.com/charoiteai/Charoite_audio/commit/86a80153cbe5789a8790b035281c7a63e0445143))
+
 ## [0.19.0](https://github.com/charoiteai/Charoite_audio/compare/v0.18.0...v0.19.0) (2026-07-25)
 
 
