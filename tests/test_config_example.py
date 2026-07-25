@@ -98,6 +98,28 @@ def test_scanner_sees_every_shape_of_read():
             f"сканер не видит чтение sufler.{key} — расширьте READ_PATTERNS"
 
 
+# Каждая форма — отдельной строкой, а не поиском по src/. Ключ, который
+# читают ДВУМЯ формами, скрывает дыру в третьей: user_name читается и как
+# cfg["sufler"].get(...), и как (cfg.get("sufler") or {}).get(...), поэтому
+# тест выше проходил, даже когда вторую форму регулярка не понимала.
+SHAPES = (
+    'cfg["sufler"].get("quiet")',
+    "cfg['sufler'].get('quiet')",
+    '(cfg.get("sufler") or {}).get("quiet")',
+    "(cfg.get('sufler') or {}).get('quiet')",
+    'cfg.get("sufler", {}).get("quiet")',
+    'cfg["sufler"]["quiet"]',
+)
+
+
+def test_scanner_recognises_each_shape_by_itself():
+    for src in SHAPES:
+        found: set[str] = set()
+        for pattern in READ_PATTERNS:
+            found.update(pattern.findall(src))
+        assert "quiet" in found, f"форма чтения не распознана: {src}"
+
+
 def test_cloud_switches_stay_under_the_same_guard():
     """Облачные тумблеры читает privacy.py — через переменную, не литерал.
 
