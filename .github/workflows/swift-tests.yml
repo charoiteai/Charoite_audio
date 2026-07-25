@@ -1,0 +1,31 @@
+# Swift-тесты приложения: гоняются только когда PR трогает app/.
+# macos-раннер: на публичном репо бесплатно; кэш SPM ускоряет прогон.
+name: swift-tests
+
+on:
+  pull_request:
+    paths:
+      - "app/**"
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+
+jobs:
+  test:
+    name: swift test (app)
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: app/.build
+          key: spm-${{ runner.os }}-${{ hashFiles('app/Package.swift') }}
+          restore-keys: spm-${{ runner.os }}-
+      - name: Build
+        working-directory: app
+        run: swift build
+      - name: Test
+        working-directory: app
+        run: swift test
