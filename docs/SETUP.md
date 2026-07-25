@@ -62,3 +62,16 @@ First run downloads the STT model (~1 min).
 - **Slow answers** — `ollama ps`: the model must stay in RAM; keep
   `num_ctx: 8192` in the config.
 - **No system audio** — macOS output must be the Multi-Output device.
+
+## Semantic search (recommended)
+
+The app's archive search adds a semantic layer when the `bge-m3`
+embedding model is available in Ollama:
+
+```bash
+ollama pull bge-m3   # ~1.2 GB; without it search is lexical-only
+```
+
+The index builds in the background on first search and updates
+incrementally as the graph changes (stored in
+`~/Library/Application Support/Charoite/semantic_index.json`).

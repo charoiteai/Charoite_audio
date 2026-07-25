@@ -10,8 +10,6 @@ Local-first, in rough priority order. No dates — quality over deadlines.
   Maria again» without re-introductions.
 - **Archive answer history** — a feed of past Q&A in the app instead of
   one replaceable answer.
-- **Semantic layer in the built-in search** — the app's local search
-  gets bge-m3 embeddings like the brain companion already has.
 
 ## Mid
 
@@ -22,6 +20,9 @@ Local-first, in rough priority order. No dates — quality over deadlines.
 
 ## Done (recent)
 
+- Semantic layer in the built-in app search — bge-m3 + RRF, incremental
+  background index, honesty gate (July 2026)
+- Meeting tasks window + archive answer history (July 2026)
 - Hybrid search v2: stemming, IDF, freshness, distillates over raw
   transcripts, honesty gate, clickable sources (July 2026)
 - Native macOS app: live transcript, theses, archive Q&A, local chat,
