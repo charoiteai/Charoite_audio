@@ -55,7 +55,8 @@ def check_config() -> dict:
     gdir = pathlib.Path(str(suf.get("graph_dir", ""))).expanduser()
     if not suf.get("graph_dir"):
         line(WARN, "sufler.graph_dir пуст",
-             "граф встреч не будет писаться; для пробы подойдёт demo/graph")
+             "граф не будет писаться; для пробы: demo/graph, а проверить весь "
+             "контур — scripts/memory_bench.py --demo")
     elif not gdir.exists():
         line(FAIL, f"graph_dir не существует: {gdir}", "создайте папку или поправьте путь")
     else:
