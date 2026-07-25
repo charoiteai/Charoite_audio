@@ -39,7 +39,9 @@ UNDOCUMENTED_ON_PURPOSE = {
 Q = r"[\"']"
 READ_PATTERNS = (
     # cfg["sufler"].get("key") · (cfg.get("sufler") or {}).get("key")
-    re.compile(rf"{Q}sufler{Q}\]?\s*(?:or\s*\{{\}}\s*\))?\.get\(\s*{Q}([a-z0-9_]+){Q}"),
+    # После имени секции закрывается либо скобка индекса, либо скобка самого
+    # cfg.get(...) — обе, иначе вторая форма из комментария не ловится.
+    re.compile(rf"{Q}sufler{Q}[\]\)]?\s*(?:or\s*\{{\}}\s*\))?\.get\(\s*{Q}([a-z0-9_]+){Q}"),
     # cfg.get("sufler", {}).get("key")
     re.compile(rf"\.get\({Q}sufler{Q},\s*\{{\}}\)\.get\(\s*{Q}([a-z0-9_]+){Q}"),
     # cfg["sufler"]["key"] — прямое индексирование, падает на отсутствии ключа
