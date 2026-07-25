@@ -6,8 +6,13 @@ import SwiftUI
 /// Суфлёр: левая панель — стенограмма в реальном времени, правая — тезисы и подсказки.
 struct SuflerView: View {
     @ObservedObject private var sufler = SuflerService.shared
+    @ObservedObject private var tasksSvc = TasksService.shared
     @State private var question = ""
     @State private var archiveAnswer = ""      // ответ по архиву, когда встреча не идёт
+    @State private var lastArchiveQuestion = ""  // для «сохранить в граф»
+    // прошлые ответы сессии: раньше каждый новый вопрос СТИРАЛ предыдущий
+    // ответ — сравнить два ответа или вернуться было невозможно
+    @State private var archiveHistory: [(q: String, a: String)] = []
     @State private var isSearchingArchive = false
     @State private var showFirstRun = false
     @AppStorage("charoit.firstRunSeen") private var firstRunSeen = false
@@ -68,6 +73,7 @@ struct SuflerView: View {
             // Первый запуск: объясняем, что это и зачем микрофон, ДО того как
             // человек нажмёт «Слушать встречу» и получит системный запрос.
             if !firstRunSeen { showFirstRun = true }
+            TasksService.shared.rescan()   // бейдж «Задачи · N» актуален сразу
         }
     }
 
@@ -78,6 +84,8 @@ struct SuflerView: View {
     // вчерашнюю встречу приходилось запускать запись сегодняшней. Теперь идёт
     // живая встреча — спрашиваем демона (он видит стенограмму), не идёт —
     // ищем по архиву встреч и графу через Чароит.
+    private var tasksOpen: Int { tasksSvc.openCount }
+
     private var askBar: some View {
         HStack(spacing: 10) {
             Image(systemName: "questionmark.bubble")
@@ -138,8 +146,14 @@ struct SuflerView: View {
     /// brief: тот же контур, но формат «подготовка ко встрече» — статус темы,
     /// решено, открыто, люди. Один и тот же поиск, разные инструкции синтеза.
     private func askArchive(_ q: String, brief: Bool = false) {
+        if !archiveAnswer.isEmpty, !lastArchiveQuestion.isEmpty,
+           !archiveAnswer.hasPrefix("Нашёл источников") {
+            archiveHistory.append((q: lastArchiveQuestion, a: archiveAnswer))
+            if archiveHistory.count > 20 { archiveHistory.removeFirst() }
+        }
         isSearchingArchive = true
         archiveAnswer = ""
+        lastArchiveQuestion = q
         Task {
             defer { Task { @MainActor in isSearchingArchive = false } }
             // 1200 знаков на файл: модель отвечает по содержимому, а не по
@@ -198,11 +212,34 @@ struct SuflerView: View {
             let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
                 // синтез не удался — хотя бы сырьё, лучше каша, чем пустота
-                await MainActor.run { archiveAnswer = found }
+                await MainActor.run { archiveAnswer = confNote + found }
                 return
             }
-            await MainActor.run { archiveAnswer = trimmed + sourceBlock }
+            // плашка неуверенности живёт и в ФИНАЛЬНОМ ответе: раньше она
+            // показывалась только в прогрессе и исчезала после синтеза
+            await MainActor.run { archiveAnswer = confNote + trimmed + sourceBlock }
         }
+    }
+
+    /// Ответ по архиву → заметка в графе: Заметки/YYYY-MM-DD_HHMM_Вопрос.md.
+    /// Обратные [[ссылки]]源 из текста сохраняются — узлы графа свяжутся сами.
+    private func saveAnswerToGraph() {
+        guard let graph = AppSettings.graphDir else { return }
+        let dir = graph.appendingPathComponent("Заметки")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd_HHmm"
+        let stamp = fmt.string(from: Date())
+        let safeQ = lastArchiveQuestion
+            .replacingOccurrences(of: "[/\\:*?\"<>|]", with: "-", options: .regularExpression)
+            .prefix(60)
+        let name = safeQ.isEmpty ? "Ответ по архиву" : String(safeQ)
+        let url = dir.appendingPathComponent("\(stamp)_\(name).md")
+        let body = "# \(lastArchiveQuestion.isEmpty ? "Ответ по архиву" : lastArchiveQuestion)\n\n"
+            + "*Сохранено из Charoite \(stamp.replacingOccurrences(of: "_", with: " "))*\n\n"
+            + archiveAnswer + "\n"
+        try? body.write(to: url, atomically: true, encoding: .utf8)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     /// Открыть чат и ВЫНЕСТИ ЕГО ВПЕРЁД.
@@ -310,15 +347,20 @@ struct SuflerView: View {
         var out = AttributedString()
         for (i, line) in raw.components(separatedBy: "\n").enumerated() {
             if i > 0 { out.append(AttributedString("\n")) }
-            var piece = AttributedString(line)
             let trimmed = line.trimmingCharacters(in: .whitespaces)
+            var piece: AttributedString
             if trimmed.hasPrefix("❓") {
+                piece = AttributedString(line)
                 piece.font = .callout.bold()
             } else if trimmed.hasPrefix("· "), let url = obsidianURL(String(trimmed.dropFirst(2))) {
                 // источник ответа — ссылка: клик открывает заметку в Obsidian
+                piece = AttributedString(line)
                 piece.link = url
                 piece.foregroundColor = .accentColor
                 piece.underlineStyle = .single
+            } else {
+                // модель пишет **жирное»/`код` — рендерим, а не показываем звёздочки
+                piece = MarkdownLine.render(String(line))
             }
             out.append(piece)
         }
@@ -427,6 +469,20 @@ struct SuflerView: View {
                 Image(systemName: "arrow.up.forward.square")
             }
             .help("Чат отдельным окном (история общая с панелью)")
+
+            Button {
+                TasksService.shared.rescan()
+                openWindow(id: "tasks")
+                NSApp.activate(ignoringOtherApps: true)
+            } label: {
+                // бейдж открытых поручений: видно, что по встречам есть хвосты
+                if tasksOpen > 0 {
+                    Label("Задачи · \(tasksOpen)", systemImage: "checklist")
+                } else {
+                    Label("Задачи", systemImage: "checklist")
+                }
+            }
+            .help("Поручения со встреч (чекбоксы из минуток и заметок графа)")
 
             Button {
                 openMeetingsFolder()
@@ -547,6 +603,32 @@ struct SuflerView: View {
                     if sufler.isHinting || isSearchingArchive {
                         ProgressView().controlSize(.small).padding(.trailing, 10)
                     }
+                    // копировать содержимое панели целиком (ответ/подсказку)
+                    let paneRaw = sufler.isRunning ? sufler.hint : archiveAnswer
+                    if !paneRaw.isEmpty {
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(paneRaw, forType: .string)
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.tertiary)
+                        .help("Скопировать целиком")
+                        .padding(.trailing, 4)
+                    }
+                    // хороший ответ жалко терять: одной кнопкой — заметкой в граф
+                    if !sufler.isRunning && !archiveAnswer.isEmpty && !isSearchingArchive {
+                        Button {
+                            saveAnswerToGraph()
+                        } label: {
+                            Image(systemName: "square.and.arrow.down.on.square")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.tertiary)
+                        .help("Сохранить ответ заметкой в граф (Заметки/)")
+                        .padding(.trailing, 10)
+                    }
                 }
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -557,6 +639,24 @@ struct SuflerView: View {
                                 .foregroundStyle(paneIsPlaceholder ? .tertiary : .primary)
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                            // прошлые вопросы сессии — свёрнуты, свежие сверху
+                            if !sufler.isRunning && !archiveHistory.isEmpty {
+                                Divider().padding(.vertical, 8)
+                                ForEach(Array(archiveHistory.enumerated().reversed()), id: \.offset) { _, qa in
+                                    DisclosureGroup {
+                                        Text(withBoldQuestions(qa.a))
+                                            .font(.callout)
+                                            .textSelection(.enabled)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .padding(.top, 4)
+                                    } label: {
+                                        Text(qa.q)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+                            }
                             Color.clear.frame(height: 1).id("hintBottom")
                         }
                         .padding(12)

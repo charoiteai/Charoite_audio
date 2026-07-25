@@ -88,6 +88,12 @@ meeting.
   extracts tasks → a file in the graph (`Notes/`) + remembered in memory.
   The raw text is kept alongside ("As spoken").
 
+- **Meeting tasks** — minutes write assignments as checkboxes
+  («- [ ] **Name** — what — when»); the Tasks window collects every
+  `- [ ]` across the graph with an open-count badge, ticking writes
+  `[x]` straight into markdown — Obsidian and the app always agree.
+- **Answer history** — past session Q&A collapsed under the current
+  answer: compare or return without re-asking.
 - **Archive questions and briefs** — search v2: Russian morphology
   stemming, IDF (rare query terms weigh more), query coverage, file
   freshness, graph distillates ranked above raw transcripts, result

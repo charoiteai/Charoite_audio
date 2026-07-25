@@ -23,6 +23,14 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
+                // прозрачность: сразу видно, что граф живой и наполняется —
+                // без этого «архив молчит» неотличим от «путь не тот»
+                if !graphStats.isEmpty {
+                    LabeledContent("В графе") {
+                        Text(graphStats)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 HStack {
                     Button("Проверить") { Task { await runCheck() } }
                     if !check.isEmpty {
@@ -40,6 +48,28 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 440)
         .navigationTitle("Настройки")
+    }
+
+    /// «N заметок · последняя встреча DD.MM» — по файловой системе, мгновенно.
+    private var graphStats: String {
+        guard let graph = AppSettings.graphDir,
+              let walker = FileManager.default.enumerator(
+                at: graph, includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]) else { return "" }
+        var notes = 0
+        var lastMeeting: String?
+        for case let url as URL in walker where url.pathExtension == "md" {
+            notes += 1
+            let name = url.deletingPathExtension().lastPathComponent
+            if url.deletingLastPathComponent().lastPathComponent.hasPrefix("Встречи"),
+               name >= (lastMeeting ?? "") {
+                lastMeeting = name
+            }
+        }
+        guard notes > 0 else { return "" }
+        var parts = ["\(notes) заметок"]
+        if let m = lastMeeting { parts.append("последняя встреча \(String(m.prefix(10)))") }
+        return parts.joined(separator: " · ")
     }
 
     private func runCheck() async {
