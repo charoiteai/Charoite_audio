@@ -122,7 +122,7 @@ final class DictationService: ObservableObject {
             errPipe.fileHandleForReading.readabilityHandler = nil
             let text = String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            Task { @MainActor in self?.finished(text: text, exit: proc.terminationStatus) }
+            Task { @MainActor [weak self] in self?.finished(text: text, exit: proc.terminationStatus) }
         }
         do {
             try p.run()
