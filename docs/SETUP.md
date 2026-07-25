@@ -75,3 +75,7 @@ ollama pull bge-m3   # ~1.2 GB; without it search is lexical-only
 The index builds in the background on first search and updates
 incrementally as the graph changes (stored in
 `~/Library/Application Support/Charoite/semantic_index.json`).
+
+## Diagnosis
+
+`python3 scripts/doctor.py` checks Python, dependencies, config keys, the graph folder, Ollama and its models (incl. `bge-m3`), and diarization — with an exact fix for every problem.
