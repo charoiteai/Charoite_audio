@@ -215,6 +215,17 @@ def _link(folder: pathlib.Path, stamp: str, part: dict, whole: dict, log: list[s
         log.append(f"🧩 «{part['name']}» ⊂ «{whole['name']}»")
 
 
+def auto_apply_allowed(cfg: dict) -> bool:
+    """Разрешено ли автомату НЕОБРАТИМОЕ слияние (sufler.tier3_auto_apply).
+
+    Строго is True — та же политика, что у облачных тумблеров в privacy.py:
+    None, "", 0, 1, "false" строкой и прочий мусор разрешением не считаются.
+    Единая точка для обоих путей к revise(apply=True) — дневного
+    (graph_updater после встречи) и ночного (tier3_cores --auto).
+    """
+    return (cfg.get("sufler") or {}).get("tier3_auto_apply") is True
+
+
 def revise(graph: pathlib.Path, only_names: list[str] | None = None,
            apply: bool = False, mark: bool = False) -> dict:
     """Ревизия ядер графа. only_names — инкрементально (ядра этой встречи).

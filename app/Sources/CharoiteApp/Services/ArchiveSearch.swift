@@ -220,7 +220,20 @@ enum ArchiveSearch {
         }
 
         // разнообразие: одна встреча (заметка+архив+стенограмма) ≤ 1-2 слота
-        let body = diversify(merged, limit: limit).map(\.block).joined(separator: "\n\n")
+        var shown = diversify(merged, limit: limit)
+        // Слот для семантики: RRF-вес 0.7/(60+rank) не обгоняет лексический
+        // 1/(60+rank) при rank<26 — при ≥limit лексических хитов сильная
+        // семантическая находка математически не попадала в выдачу. Сильная
+        // (≥ порога гейта) — показывается всегда; заодно честен и сам гейт:
+        // bestSim, снявший пометку «⚠», виден пользователю, а не лежит
+        // где-то в графе невидимым оправданием.
+        if let top = sem.first, top.1 >= 0.47,
+           !shown.contains(where: { $0.rel == top.0 }),
+           let topHit = semHits.first(where: { $0.rel == top.0 }) {
+            if shown.count >= limit { shown.removeLast() }
+            shown.append(topHit)
+        }
+        let body = shown.map(\.block).joined(separator: "\n\n")
         // гейт честности: оба сигнала слабые → пометка, синтез не сочиняет
         if bestSim < 0.47 && bestCov < 0.67 && !body.isEmpty {
             return lowConfidenceMarker + body

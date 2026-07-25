@@ -15,7 +15,9 @@ on:
       - "app/**"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  # PR ключуется НОМЕРОМ: head_ref — имя ветки без владельца форка,
+  # и два форк-PR с веткой main отменяли бы чеки друг друга
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref_name }}
   cancel-in-progress: true
 
 jobs:

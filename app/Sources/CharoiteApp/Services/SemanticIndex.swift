@@ -19,7 +19,13 @@ actor SemanticIndex {
     private var index: [String: Entry] = [:]   // путь → вектор (нормированный)
     private var loaded = false
     private var indexing = false
+    private var generation = 0                 // растёт в useForTests: осиротевший refresh умирает
     private static let headChars = 12000       // суть узла/встречи — в начале файла
+    // Кап фоновой доиндексации за вызов: 6 пачек × 8 = 48 файлов. Первый
+    // поиск на большом графе иначе ставит в очередь сотни embed-вызовов в
+    // ту же Ollama, что обслуживает подсказки живой встречи. Хвост доедет
+    // со следующими поисками.
+    private static let maxChunksPerRefresh = 6
 
     // Тестовый шов: подменный эмбеддер и отдельный файл индекса. Продовый
     // путь без useForTests() не меняется. Тесты обязаны подменять ОБА конца:
@@ -28,12 +34,22 @@ actor SemanticIndex {
     private var embedOverride: (([String]) async -> [[Float]]?)?
     private var storeOverride: URL?
 
-    func useForTests(store: URL, embedder: @escaping ([String]) async -> [[Float]]?) {
+    #if DEBUG
+    func useForTests(store: URL, embedder: @escaping ([String]) async -> [[Float]]?) async {
+        // Актор реентерабелен, а localSearch порождает НЕструктурированный
+        // Task.detached с refresh — хвост прошлого теста может жить прямо
+        // сейчас, вися на await эмбеддера и держа флаг indexing. gen-токен
+        // убивает его ЗАПИСИ, но свежий refresh нового теста дропнулся бы
+        // об занятый флаг (guard !indexing) — молча и не каждый раз: ровно
+        // так выглядел зелёный push-прогон при красном PR-прогоне того же
+        // дерева. Поэтому подмена сначала осиротляет чужой refresh, потом
+        // ДОЖИДАЕТСЯ его смерти — тест начинается с тихого индекса.
+        generation += 1
+        while indexing { await Task.yield() }
         storeOverride = store
         embedOverride = embedder
         index = [:]
         loaded = true      // не подтягивать настоящий файл с диска
-        indexing = false
     }
 
     /// Сохранённый mtime записи — проверки инвалидации в тестах.
@@ -41,6 +57,7 @@ actor SemanticIndex {
         loadIfNeeded()
         return index[path]?.mtime
     }
+    #endif
 
     private var storeURL: URL {
         if let storeOverride { return storeOverride }
@@ -99,19 +116,25 @@ actor SemanticIndex {
     }
 
     /// Фоновая доиндексация изменившихся файлов (пачки по 8, персист после
-    /// каждой — обрыв не теряет прогресс). Одна за раз.
+    /// каждой — обрыв не теряет прогресс). Одна за раз, не больше
+    /// maxChunksPerRefresh пачек за вызов — хвост доедет со следующими.
     func refresh(files: [(path: String, mtime: Double, text: String)]) async {
         loadIfNeeded()
         guard !indexing else { return }
         indexing = true
         defer { indexing = false }
+        let gen = generation
         let pending = files.filter { index[$0.path]?.mtime != $0.mtime }
         guard !pending.isEmpty else { return }
-        for chunk in stride(from: 0, to: pending.count, by: 8).map({
+        let chunks = stride(from: 0, to: pending.count, by: 8).map {
             Array(pending[$0..<min($0 + 8, pending.count)])
-        }) {
+        }.prefix(Self.maxChunksPerRefresh)
+        for chunk in chunks {
             guard let embs = await embedTexts(chunk.map { String($0.text.prefix(Self.headChars)) }),
                   embs.count == chunk.count else { return }   // Ollama лежит/нет модели
+            // за await эмбеддера индекс могли подменить (useForTests) —
+            // осиротевший снапшот не имеет права писать в чужой store
+            guard gen == generation else { return }
             for (item, emb) in zip(chunk, embs) {
                 index[item.path] = Entry(mtime: item.mtime, vec: Self.unit(emb))
             }
