@@ -203,12 +203,22 @@ struct SuflerView: View {
                     + "его не пиши. Только факты из фрагментов, ничего не выдумывай. "
                     + "Без вступлений, без воды, без markdown-заголовков. Если ответа "
                     + "во фрагментах нет — одна строка: чего именно не хватает."
+            // стрим: токены сразу в панель (троттлинг кадров — в StreamThrottler-стиле
+            // не нужен: панель обновляется снапшотом полного текста, ~разы в сек)
+            var lastPaint = Date.distantPast
             let answer = await ArchiveSearch.ask(
                 question: instruction,
                 system: "Ты — ассистент по архиву рабочих встреч. "
                     + "Отвечаешь только по приведённым фрагментам, без домыслов, телеграфно.",
                 model: LocalChatService.shared.model,
-                ollama: AppSettings.ollamaURL)
+                ollama: AppSettings.ollamaURL) { partial in
+                let now = Date()
+                guard now.timeIntervalSince(lastPaint) > 0.12 else { return }
+                lastPaint = now
+                Task { @MainActor in
+                    archiveAnswer = confNote + partial + "▌"
+                }
+            }
             let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
                 // синтез не удался — хотя бы сырьё, лучше каша, чем пустота

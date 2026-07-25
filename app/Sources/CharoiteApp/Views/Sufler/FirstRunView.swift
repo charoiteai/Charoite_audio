@@ -100,6 +100,11 @@ struct FirstRunView: View {
                   systemImage: "info.circle")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
+            // новичку без встреч есть что пощупать: демо-граф в комплекте
+            Label("Нет встреч? В комплекте демо-граф (папка demo/) — наведи на него graph_dir и спроси «что решили по платёжному провайдеру?»",
+                  systemImage: "sparkles")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
 
             HStack {
                 Button("Осмотрюсь сам") {

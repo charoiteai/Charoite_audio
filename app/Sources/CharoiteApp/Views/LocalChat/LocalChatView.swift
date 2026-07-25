@@ -51,6 +51,7 @@ struct LocalChatView: View {
         // распирали drawer, кнопка «Отправить» уезжала за край окна.
         .frame(minHeight: 320)
         .onDisappear { chat.stopStreaming() }  // закрытое окно не должно держать Ollama 300с
+        .task { await chat.refreshModels() }   // пикер моделей — живой список из Ollama
     }
 
     private var header: some View {
