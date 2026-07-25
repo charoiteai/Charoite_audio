@@ -8,6 +8,7 @@ struct SuflerView: View {
     @ObservedObject private var sufler = SuflerService.shared
     @State private var question = ""
     @State private var archiveAnswer = ""      // ответ по архиву, когда встреча не идёт
+    @State private var lastArchiveQuestion = ""  // для «сохранить в граф»
     @State private var isSearchingArchive = false
     @State private var showFirstRun = false
     @AppStorage("charoit.firstRunSeen") private var firstRunSeen = false
@@ -140,6 +141,7 @@ struct SuflerView: View {
     private func askArchive(_ q: String, brief: Bool = false) {
         isSearchingArchive = true
         archiveAnswer = ""
+        lastArchiveQuestion = q
         Task {
             defer { Task { @MainActor in isSearchingArchive = false } }
             // 1200 знаков на файл: модель отвечает по содержимому, а не по
@@ -205,6 +207,27 @@ struct SuflerView: View {
             // показывалась только в прогрессе и исчезала после синтеза
             await MainActor.run { archiveAnswer = confNote + trimmed + sourceBlock }
         }
+    }
+
+    /// Ответ по архиву → заметка в графе: Заметки/YYYY-MM-DD_HHMM_Вопрос.md.
+    /// Обратные [[ссылки]]源 из текста сохраняются — узлы графа свяжутся сами.
+    private func saveAnswerToGraph() {
+        guard let graph = AppSettings.graphDir else { return }
+        let dir = graph.appendingPathComponent("Заметки")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd_HHmm"
+        let stamp = fmt.string(from: Date())
+        let safeQ = lastArchiveQuestion
+            .replacingOccurrences(of: "[/\\:*?\"<>|]", with: "-", options: .regularExpression)
+            .prefix(60)
+        let name = safeQ.isEmpty ? "Ответ по архиву" : String(safeQ)
+        let url = dir.appendingPathComponent("\(stamp)_\(name).md")
+        let body = "# \(lastArchiveQuestion.isEmpty ? "Ответ по архиву" : lastArchiveQuestion)\n\n"
+            + "*Сохранено из Charoite \(stamp.replacingOccurrences(of: "_", with: " "))*\n\n"
+            + archiveAnswer + "\n"
+        try? body.write(to: url, atomically: true, encoding: .utf8)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     /// Открыть чат и ВЫНЕСТИ ЕГО ВПЕРЁД.
@@ -566,6 +589,18 @@ struct SuflerView: View {
                         .buttonStyle(.plain)
                         .foregroundStyle(.tertiary)
                         .help("Скопировать целиком")
+                        .padding(.trailing, 4)
+                    }
+                    // хороший ответ жалко терять: одной кнопкой — заметкой в граф
+                    if !sufler.isRunning && !archiveAnswer.isEmpty && !isSearchingArchive {
+                        Button {
+                            saveAnswerToGraph()
+                        } label: {
+                            Image(systemName: "square.and.arrow.down.on.square")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.tertiary)
+                        .help("Сохранить ответ заметкой в граф (Заметки/)")
                         .padding(.trailing, 10)
                     }
                 }
