@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """CLI ревизии ядер (ядро — src/tier3.py, там же вся логика и пороги).
 
-    .venv/bin/python scripts/tier3_cores.py                # текущий граф, отчёт
-    .venv/bin/python scripts/tier3_cores.py --apply        # применить
+    .venv/bin/python scripts/tier3_cores.py                # текущий граф, только отчёт
+    .venv/bin/python scripts/tier3_cores.py --mark         # обратимые пометки в графе
+    .venv/bin/python scripts/tier3_cores.py --apply        # + слить уверенные дубли
     .venv/bin/python scripts/tier3_cores.py --all-graphs --apply   # все графы vault (ночной режим)
     .venv/bin/python scripts/tier3_cores.py --graph /путь  # конкретный граф
 
@@ -31,8 +32,8 @@ def default_graph() -> pathlib.Path:
         return pathlib.Path.cwd()
 
 
-def run(graph: pathlib.Path, apply: bool) -> None:
-    r = tier3.revise(graph, apply=apply)
+def run(graph: pathlib.Path, apply: bool, mark: bool = False) -> None:
+    r = tier3.revise(graph, apply=apply, mark=mark)
     n = sum(len(r[k]) for k in ("dups", "nests", "border"))
     if not n and not r["log"]:
         print(f"{graph.name}: чисто")
@@ -51,7 +52,9 @@ def main() -> None:
     ap.add_argument("--all-graphs", action="store_true",
                     help="все папки vault с подпапкой Ядра")
     ap.add_argument("--apply", action="store_true",
-                    help="применить (без флага — только отчёт)")
+                    help="слить уверенные дубли (включает --mark)")
+    ap.add_argument("--mark", action="store_true",
+                    help="обратимые правки: пометки «возможный дубль» и ссылки вложений")
     args = ap.parse_args()
 
     if args.all_graphs:
@@ -60,9 +63,9 @@ def main() -> None:
         if not graphs:
             sys.exit(f"в vault нет графов с папкой Ядра: {VAULT}")
         for g in graphs:
-            run(g, args.apply)
+            run(g, args.apply, args.mark)
         return
-    run(args.graph or default_graph(), args.apply)
+    run(args.graph or default_graph(), args.apply, args.mark)
 
 
 if __name__ == "__main__":

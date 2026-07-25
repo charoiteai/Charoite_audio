@@ -14,7 +14,10 @@
 судит каждую пару NLI (src/nli.py). Категории:
 
   ДУБЛЬ     обоюдное следование ≥ 0.80 → слить: хроника объединяется,
-            статус берётся свежий, от дубля остаётся redirect
+            статус берётся свежий, от дубля остаётся redirect. Требует
+            права apply И написанной человеком «## Суть» хотя бы у одного
+            из пары: по автостатусу сравниваются не темы, а сегодняшние
+            формулировки — такая пара понижается до пометки
   ДУБЛЬ?    обоюдное 0.72–0.80 → обратимая пометка «возможный дубль»
             в оба файла, сливает человек (осторожный режим автомата)
   ВЛОЖЕНИЕ  одна сторона ≥ 0.85, другая < 0.5 → НЕ сливать: эпизод и
@@ -74,10 +77,14 @@ def load_cores(folder: pathlib.Path) -> list[dict]:
         # «## Статус» и «## Хроники». Без запасного варианта repr сводился к
         # имени файла, и NLI судил пары голых заголовков — ровно та слепота,
         # ради ухода от которой сюда и ставили эмбеддинги с NLI.
-        essence = sect("Суть") or sect("Задача одной фразой") or _plain(status)
+        written = sect("Суть") or sect("Задача одной фразой")
+        essence = written or _plain(status)
         dm = re.search(r"обновлено (\d{4}-\d{2}-\d{2})", status)
         cores.append({
             "path": p, "name": p.stem, "status": status, "essence": essence,
+            # откуда взялась суть: формулировка темы или сегодняшний автостатус.
+            # По этому полю revise решает, можно ли пару необратимо сливать
+            "essence_src": "секция" if written else "статус",
             "chron": re.findall(r"^- \[\[.*", text, re.M), "text": text,
             "date": dm.group(1) if dm else "",
             "repr": f"{p.stem}. {essence}"[:REPR_LIMIT],
@@ -176,14 +183,25 @@ def _link(folder: pathlib.Path, stamp: str, part: dict, whole: dict, log: list[s
 
 
 def revise(graph: pathlib.Path, only_names: list[str] | None = None,
-           apply: bool = False) -> dict:
+           apply: bool = False, mark: bool = False) -> dict:
     """Ревизия ядер графа. only_names — инкрементально (ядра этой встречи).
 
-    apply=False по умолчанию — сознательно. Слияние перезаписывает файл
-    пользователя (от дубля остаётся redirect-заглушка), а такое право берут
-    явно, а не получают по забывчивости вызывающего. Кто хочет править —
-    пишет apply=True: так делают scripts/tier3_cores.py --apply и
-    graph_updater, если в конфиге включён sufler.tier3_auto_apply.
+    Два права, а не одно, потому что цена у правок разная:
+
+    mark  — обратимое: строка-цитата «возможный дубль» / «часть темы» в конец
+            файла. Её читает morning_brief в раздел «Tier3 просит свести
+            вручную». Без отдельного права выключенный автомат не осторожен,
+            а нем: находка живёт только в логе одного прогона.
+    apply — необратимое для пользователя: слияние перезаписывает ядро, от
+            дубля остаётся redirect-заглушка (оригинал — в .tier3_backup).
+            Такое право берут явно: scripts/tier3_cores.py --apply или
+            sufler.tier3_auto_apply в конфиге. apply включает и mark.
+
+    Без права на слияние уверенная пара не пропадает, а понижается до
+    пометки. Слияние вдобавок требует, чтобы хотя бы у одного ядра суть была
+    написана человеком («## Суть»), а не взята из автостатуса: статус
+    переписывается на каждой встрече и у двух живых задач одного проекта
+    похож сам по себе.
 
     Возвращает {"dups": [...], "nests": [...], "border": [...], "log": [...]}.
     Любая инфраструктурная беда (нет модели, лежит Ollama) — пустой результат,
@@ -221,8 +239,15 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
         except Exception:
             continue
         if ab >= MERGE_T and ba >= MERGE_T:
-            dups.append((a, b, c, ab, ba))
-            out["dups"].append(f"«{a['name']}» ↔ «{b['name']}» {ab:.2f}/{ba:.2f}")
+            if a["essence_src"] == "статус" and b["essence_src"] == "статус":
+                # сравнивались не темы, а сегодняшние формулировки статуса —
+                # на пометку хватает, на перезапись файла нет
+                maybe_dups.append((a, b, c, ab, ba))
+                out["dups"].append(f"«{a['name']}» ↔? «{b['name']}» {ab:.2f}/{ba:.2f}"
+                                   " (суть только из статуса — пометка)")
+            else:
+                dups.append((a, b, c, ab, ba))
+                out["dups"].append(f"«{a['name']}» ↔ «{b['name']}» {ab:.2f}/{ba:.2f}")
         elif ab >= DUP_T and ba >= DUP_T:
             maybe_dups.append((a, b, c, ab, ba))
             out["dups"].append(f"«{a['name']}» ↔? «{b['name']}» {ab:.2f}/{ba:.2f} (пометка)")
@@ -238,19 +263,25 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
     hubs = {n for n, k in whole_count.items() if k >= HUB_LIMIT}
     for a, b, c, ab, ba in nests:
         part, whole = (a, b) if ab > ba else (b, a)
-        mark = " [хаб — пропуск]" if whole["name"] in hubs else ""
-        out["nests"].append(f"«{part['name']}» ⊂ «{whole['name']}» {ab:.2f}/{ba:.2f}{mark}")
+        hub_note = " [хаб — пропуск]" if whole["name"] in hubs else ""
+        out["nests"].append(f"«{part['name']}» ⊂ «{whole['name']}» {ab:.2f}/{ba:.2f}{hub_note}")
 
-    if not apply:
+    if not (apply or mark):
         return out
     stamp = _dt.datetime.now().strftime("%Y-%m-%d_%H%M")
     merged: set[str] = set()
-    for a, b, c, ab, ba in dups:
-        if a["name"] in merged or b["name"] in merged:
-            continue
-        _merge(folder, stamp, a, b, out["log"])
-        merged.update((a["name"], b["name"]))
-    for a, b, c, ab, ba in maybe_dups:
+    if apply:
+        for a, b, c, ab, ba in dups:
+            if a["name"] in merged or b["name"] in merged:
+                continue
+            _merge(folder, stamp, a, b, out["log"])
+            merged.update((a["name"], b["name"]))
+        to_mark = maybe_dups
+    else:
+        # права сливать нет — уверенная пара получает ту же обратимую пометку,
+        # иначе находка исчезает вместе с логом прогона
+        to_mark = dups + maybe_dups
+    for a, b, c, ab, ba in to_mark:
         if a["name"] in merged or b["name"] in merged:
             continue
         _mark_dup(folder, stamp, a, b, out["log"])

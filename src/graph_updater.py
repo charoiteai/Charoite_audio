@@ -388,24 +388,26 @@ def main():
         # (нет NLI-модели, лежит Ollama) — тихий пропуск, не падение
         # пайплайна встречи.
         #
-        # ПРАВИТ граф только при sufler.tier3_auto_apply: true. По умолчанию
-        # автомат находит и докладывает, а сливает человек — слияние
+        # СЛИВАЕТ только при sufler.tier3_auto_apply: true — слияние
         # перезаписывает файл, и это решение пользователя, а не побочный
-        # эффект того, что встреча закончилась.
+        # эффект того, что встреча закончилась. Обратимые правки (пометка
+        # «возможный дубль», взаимные ссылки вложений) идут всегда: их
+        # читает morning_brief, и без них выключенный автомат не осторожен,
+        # а нем — находка остаётся в логе прогона, которого никто не видит.
         try:
             import tier3
             auto = bool(cfg["sufler"].get("tier3_auto_apply", False))
             rep = tier3.revise(graph, only_names=[safe_name(c["имя"]) for c in cores],
-                               apply=auto)
+                               mark=True, apply=auto)
             for line in rep["log"]:
                 print(f"tier3: {line}")
             if rep["log"]:
                 rebuild_cores_moc(graph)  # слияния меняют список ядер
-            elif rep["dups"]:
-                # без этой ветки выключенный автомат = молчание: находка есть,
-                # а пользователь о ней не узнаёт никогда
-                for line in rep["dups"]:
-                    print(f"tier3: похоже на дубль — {line}")
+            for line in rep["dups"]:
+                print(f"tier3: похоже на дубль — {line}")
+            for line in rep["nests"]:
+                print(f"tier3: вложение — {line}")
+            if rep["dups"] and not auto:
                 print("tier3: свести — .venv/bin/python scripts/tier3_cores.py --apply")
         except Exception as e:  # noqa: BLE001
             print(f"tier3: пропущен ({e})")
