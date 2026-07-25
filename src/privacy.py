@@ -27,6 +27,11 @@ import os
 
 KILL_SWITCH = "SUFLER_NO_CLOUD"
 
+# Ключи конфига, которыми управляется облако. Список нужен снаружи: здесь они
+# читаются через переменную, и сканер config.example.yaml по исходникам их не
+# видит — без явного экспорта они выпадают из проверки на документированность.
+KEYS = ("cloud_live", "cloud_enrich")
+
 
 def _allowed(cfg: dict, key: str, env: dict | None) -> bool:
     env = os.environ if env is None else env

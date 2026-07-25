@@ -14,6 +14,7 @@ sufler.*, которые код реально читает, и требует, 
 """
 import pathlib
 import re
+import sys
 
 import yaml
 
@@ -32,9 +33,17 @@ UNDOCUMENTED_ON_PURPOSE = {
     "model",
 }
 
+# Все формы чтения sufler.*, живущие в src/. Кавычки — любые: cfg['sufler']
+# встречается наравне с cfg["sufler"], и разница в кавычках не должна решать,
+# проверяется ключ или нет.
+Q = r"[\"']"
 READ_PATTERNS = (
-    re.compile(r'\["sufler"\]\.get\(\s*"([a-z0-9_]+)"'),
-    re.compile(r'\.get\("sufler",\s*\{\}\)\.get\(\s*"([a-z0-9_]+)"'),
+    # cfg["sufler"].get("key") · (cfg.get("sufler") or {}).get("key")
+    re.compile(rf"{Q}sufler{Q}\]?\s*(?:or\s*\{{\}}\s*\))?\.get\(\s*{Q}([a-z0-9_]+){Q}"),
+    # cfg.get("sufler", {}).get("key")
+    re.compile(rf"\.get\({Q}sufler{Q},\s*\{{\}}\)\.get\(\s*{Q}([a-z0-9_]+){Q}"),
+    # cfg["sufler"]["key"] — прямое индексирование, падает на отсутствии ключа
+    re.compile(rf"\[{Q}sufler{Q}\]\[\s*{Q}([a-z0-9_]+){Q}\s*\]"),
 )
 
 
@@ -44,6 +53,11 @@ def _keys_read_by_code() -> set[str]:
         text = path.read_text(encoding="utf-8")
         for pattern in READ_PATTERNS:
             keys.update(pattern.findall(text))
+    # privacy.py читает свои ключи через переменную — регуляркой не поймать,
+    # поэтому список он объявляет сам
+    sys.path.insert(0, str(REPO / "src"))
+    import privacy
+    keys.update(privacy.KEYS)
     return keys
 
 
