@@ -198,10 +198,12 @@ struct SuflerView: View {
             let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
                 // синтез не удался — хотя бы сырьё, лучше каша, чем пустота
-                await MainActor.run { archiveAnswer = found }
+                await MainActor.run { archiveAnswer = confNote + found }
                 return
             }
-            await MainActor.run { archiveAnswer = trimmed + sourceBlock }
+            // плашка неуверенности живёт и в ФИНАЛЬНОМ ответе: раньше она
+            // показывалась только в прогрессе и исчезала после синтеза
+            await MainActor.run { archiveAnswer = confNote + trimmed + sourceBlock }
         }
     }
 
