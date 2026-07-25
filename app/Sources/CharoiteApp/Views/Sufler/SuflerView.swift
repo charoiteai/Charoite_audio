@@ -525,9 +525,11 @@ struct SuflerView: View {
                 Button("Claude") { sufler.requestCloud() }
                     .keyboardShortcut(.return, modifiers: [.command, .shift])
                     .disabled(sufler.isClouding || !sufler.cloudOn)
+                    // адрес в подсказке — тот же тулбар, а не Настройки: облака
+                    // там нет, а тумблер стоит левее этой же кнопки
                     .help(sufler.cloudOn
                           ? "Спросить Claude по ходу встречи — кусок стенограммы уйдёт в облако (⌘⇧⏎)"
-                          : "Облако выключено: включите «Облако» в настройках. Стенограмма не покидает машину")
+                          : "Облако выключено: включите «Claude» в тулбаре. Стенограмма не покидает машину")
 
                 Button("Протокол") { sufler.requestSummary() }
                     .disabled(sufler.isHinting)
