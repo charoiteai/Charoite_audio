@@ -16,10 +16,12 @@ Local-first, in rough priority order. No dates — quality over deadlines.
 
 ## Done (recent)
 
-- English documents, phase 1: `sufler.language: en` switches minutes,
-  summary and instant answers to English (validated on an English
-  transcript; hints follow your own `sufler.role` language). Phase 2 —
-  graph nodes and deep-dive docs (July 2026)
+- English documents, phase 1+2: `sufler.language: en` switches minutes,
+  summary, instant answers AND graph node content (names, summaries,
+  statuses, topics — JSON contract and folder structure stay stable) to
+  English; validated on English transcripts with the default 35B model
+  (small models may mix languages). Phase 3 — folder/section labels
+  (July 2026)
 
 - Calendar brief: one-click prep for the next event (opt-in, read-only,
   July 2026)
