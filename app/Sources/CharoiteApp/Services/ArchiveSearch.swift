@@ -121,8 +121,12 @@ enum ArchiveSearch {
         var needles: [String] = []
         for w in words.map(stem) where !needles.contains(w) { needles.append(w) }
 
-        // проход 1: попадания по файлам (текст и путь)
-        var files: [(text: String, rel: String, tHits: [Int], pHits: [Int], dateTs: Double)] = []  // rel — ключ RRF
+        // проход 1: читаем весь граф. Лексические попадания — фильтром ниже,
+        // но файлы без совпадений не выбрасываются: семантика ищет по всему
+        // графу. Пересечение с лексикой запирало её в пересортировку уже
+        // найденного, а её главная работа — словарный разрыв: вопрос задан
+        // словами, которых в файле нет.
+        var all: [(text: String, rel: String, tHits: [Int], pHits: [Int], dateTs: Double)] = []  // rel — ключ RRF
         let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey]
         guard let walker = FileManager.default.enumerator(
             at: graph, includingPropertiesForKeys: keys,
@@ -135,13 +139,14 @@ enum ArchiveSearch {
             let relLow = norm(rel)
             let tHits = needles.map { countOccurrences(of: $0, in: low) }
             let pHits = needles.map { countOccurrences(of: $0, in: relLow) }
-            guard tHits.contains(where: { $0 > 0 }) || pHits.contains(where: { $0 > 0 })
-            else { continue }
             let rv = try? url.resourceValues(forKeys: [.contentModificationDateKey])
             let mtime = rv?.contentModificationDate?.timeIntervalSince1970 ?? 0
-            files.append((text, rel, tHits, pHits, fileDate(rel: rel, mtime: mtime)))
+            all.append((text, rel, tHits, pHits, fileDate(rel: rel, mtime: mtime)))
         }
-        guard !files.isEmpty else { return "" }
+        guard !all.isEmpty else { return "" }
+        let files = all.filter { f in
+            f.tHits.contains(where: { $0 > 0 }) || f.pHits.contains(where: { $0 > 0 })
+        }
 
         // проход 2: IDF + скоринг
         let nDocs = max(1, files.count)
@@ -172,10 +177,13 @@ enum ArchiveSearch {
         }
 
         // ─ Семантика: RRF с лексикой (веса 1.0/0.7), как в brain-компаньоне ─
-        let byPath = Dictionary(uniqueKeysWithValues: files.map {
+        // Кандидаты — ВЕСЬ граф, не только лексические попадания: иначе ветка
+        // объединения в слиянии ниже — мёртвый код, а словарный разрыв
+        // (вопрос другими словами) не закрывается никогда.
+        let byPath = Dictionary(uniqueKeysWithValues: all.map {
             ($0.rel, (text: $0.text, dateTs: $0.dateTs))
         })
-        let allPaths = Set(files.map(\.rel))
+        let allPaths = Set(all.map(\.rel))
         let sem = await SemanticIndex.shared.similar(to: query, within: allPaths,
                                                      limit: max(limit * 4, 20))
         let bestSim = sem.first?.1 ?? 0
@@ -200,8 +208,9 @@ enum ArchiveSearch {
         }
         let merged = fused.values.map { Hit(score: $0.score, rel: $0.hit.rel, block: $0.hit.block) }
 
-        // фоновая доиндексация изменившихся файлов — не задерживает ответ
-        let snapshot = files.map { (path: $0.rel, mtime: $0.dateTs, text: $0.text) }
+        // фоновая доиндексация изменившихся файлов — не задерживает ответ;
+        // весь граф, а не только попавшееся текущему запросу
+        let snapshot = all.map { (path: $0.rel, mtime: $0.dateTs, text: $0.text) }
         Task.detached(priority: .background) {
             await SemanticIndex.shared.refresh(files: snapshot)
         }
