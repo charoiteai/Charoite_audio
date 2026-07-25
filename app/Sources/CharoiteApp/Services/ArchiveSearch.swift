@@ -54,7 +54,7 @@ enum ArchiveSearch {
         if let viaBrain = await brainSearch(query: query, limit: limit, snippet: snippet) {
             return viaBrain
         }
-        return localSearch(query: query, limit: limit, snippet: snippet)
+        return await localSearch(query: query, limit: limit, snippet: snippet)
     }
 
     /// Поиск через локальный brain-сервер; nil — сервер не поднят/не ответил.
@@ -95,8 +95,11 @@ enum ArchiveSearch {
         let block: String
     }
 
-    /// Локальный поиск с ранжированием v2 — работает без каких-либо серверов.
-    static func localSearch(query: String, limit: Int = 5, snippet: Int = 1200) -> String {
+    /// Локальный поиск с ранжированием v2: лексика + семантика (bge-m3
+    /// через Ollama, если индекс прогрет) через RRF; гейт честности при
+    /// слабых обоих сигналах. Работает и вовсе без серверов — тогда чисто
+    /// лексически.
+    static func localSearch(query: String, limit: Int = 5, snippet: Int = 1200) async -> String {
         guard let graph = AppSettings.graphDir,
               FileManager.default.fileExists(atPath: graph.path) else { return "" }
         let words = query
@@ -107,7 +110,7 @@ enum ArchiveSearch {
         for w in words.map(stem) where !needles.contains(w) { needles.append(w) }
 
         // проход 1: попадания по файлам (текст и путь)
-        var files: [(text: String, rel: String, tHits: [Int], pHits: [Int], dateTs: Double)] = []
+        var files: [(text: String, rel: String, tHits: [Int], pHits: [Int], dateTs: Double)] = []  // rel — ключ RRF
         let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey]
         guard let walker = FileManager.default.enumerator(
             at: graph, includingPropertiesForKeys: keys,
@@ -150,8 +153,54 @@ enum ArchiveSearch {
             hits.append(Hit(score: score, rel: f.rel, block: "• \(f.rel)\n  …\(frag)…"))
         }
 
+        var bestCov = 0.0
+        for f in files {
+            let matched = (0..<needles.count).filter { f.tHits[$0] > 0 || f.pHits[$0] > 0 }.count
+            bestCov = max(bestCov, Double(matched) / Double(needles.count))
+        }
+
+        // ─ Семантика: RRF с лексикой (веса 1.0/0.7), как в brain-компаньоне ─
+        let byPath = Dictionary(uniqueKeysWithValues: files.map {
+            ($0.rel, (text: $0.text, dateTs: $0.dateTs))
+        })
+        let allPaths = Set(files.map(\.rel))
+        let sem = await SemanticIndex.shared.similar(to: query, within: allPaths,
+                                                     limit: max(limit * 4, 20))
+        let bestSim = sem.first?.1 ?? 0
+        var semHits: [Hit] = []
+        for (rel, sim) in sem {
+            guard let f = byPath[rel] else { continue }
+            let frag = bestWindow(text: f.text, needles: needles, span: snippet)
+            let block = frag.isEmpty
+                ? "• \(rel)\n  …\(String(f.text.prefix(snippet)).split(whereSeparator: \.isNewline).joined(separator: " "))…"
+                : "• \(rel)\n  …\(frag)…"
+            semHits.append(Hit(score: sim * recency(f.dateTs) * rawDampener(rel),
+                               rel: rel, block: block))
+        }
+        var fused: [String: (score: Double, hit: Hit)] = [:]
+        for (rank, h) in hits.sorted(by: { $0.score > $1.score }).enumerated() {
+            fused[h.rel] = (1.0 / (60.0 + Double(rank) + 1), h)
+        }
+        for (rank, h) in semHits.enumerated() {
+            let add = 0.7 / (60.0 + Double(rank) + 1)
+            if let cur = fused[h.rel] { fused[h.rel] = (cur.score + add, cur.hit) }
+            else { fused[h.rel] = (add, h) }
+        }
+        let merged = fused.values.map { Hit(score: $0.score, rel: $0.hit.rel, block: $0.hit.block) }
+
+        // фоновая доиндексация изменившихся файлов — не задерживает ответ
+        let snapshot = files.map { (path: $0.rel, mtime: $0.dateTs, text: $0.text) }
+        Task.detached(priority: .background) {
+            await SemanticIndex.shared.refresh(files: snapshot)
+        }
+
         // разнообразие: одна встреча (заметка+архив+стенограмма) ≤ 1-2 слота
-        return diversify(hits, limit: limit).map(\.block).joined(separator: "\n\n")
+        let body = diversify(merged, limit: limit).map(\.block).joined(separator: "\n\n")
+        // гейт честности: оба сигнала слабые → пометка, синтез не сочиняет
+        if bestSim < 0.47 && bestCov < 0.67 && !body.isEmpty {
+            return lowConfidenceMarker + body
+        }
+        return body
     }
 
     // MARK: - Ранжирование
