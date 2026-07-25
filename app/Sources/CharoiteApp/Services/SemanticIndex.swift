@@ -21,12 +21,39 @@ actor SemanticIndex {
     private var indexing = false
     private static let headChars = 12000       // суть узла/встречи — в начале файла
 
+    // Тестовый шов: подменный эмбеддер и отдельный файл индекса. Продовый
+    // путь без useForTests() не меняется. Тесты обязаны подменять ОБА конца:
+    // иначе swift test на машине разработчика с поднятой Ollama писал бы
+    // эмбеддинги тестовых корпусов в настоящий индекс пользователя.
+    private var embedOverride: (([String]) async -> [[Float]]?)?
+    private var storeOverride: URL?
+
+    func useForTests(store: URL, embedder: @escaping ([String]) async -> [[Float]]?) {
+        storeOverride = store
+        embedOverride = embedder
+        index = [:]
+        loaded = true      // не подтягивать настоящий файл с диска
+        indexing = false
+    }
+
+    /// Сохранённый mtime записи — проверки инвалидации в тестах.
+    func storedMtime(of path: String) -> Double? {
+        loadIfNeeded()
+        return index[path]?.mtime
+    }
+
     private var storeURL: URL {
+        if let storeOverride { return storeOverride }
         let dir = FileManager.default.urls(for: .applicationSupportDirectory,
                                            in: .userDomainMask)[0]
             .appendingPathComponent("Charoite", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("semantic_index.json")
+    }
+
+    private func embedTexts(_ texts: [String]) async -> [[Float]]? {
+        if let embedOverride { return await embedOverride(texts) }
+        return await Self.embed(texts)
     }
 
     private func loadIfNeeded() {
@@ -48,7 +75,7 @@ actor SemanticIndex {
     func similar(to query: String, within paths: Set<String>, limit: Int) async -> [(String, Double)] {
         loadIfNeeded()
         guard !index.isEmpty,
-              let qv = await Self.embed([query])?.first else { return [] }
+              let qv = await embedTexts([query])?.first else { return [] }
         let q = Self.unit(qv)
         var sims: [(String, Double)] = []
         for (path, entry) in index where paths.contains(path) {
@@ -83,7 +110,7 @@ actor SemanticIndex {
         for chunk in stride(from: 0, to: pending.count, by: 8).map({
             Array(pending[$0..<min($0 + 8, pending.count)])
         }) {
-            guard let embs = await Self.embed(chunk.map { String($0.text.prefix(Self.headChars)) }),
+            guard let embs = await embedTexts(chunk.map { String($0.text.prefix(Self.headChars)) }),
                   embs.count == chunk.count else { return }   // Ollama лежит/нет модели
             for (item, emb) in zip(chunk, embs) {
                 index[item.path] = Entry(mtime: item.mtime, vec: Self.unit(emb))

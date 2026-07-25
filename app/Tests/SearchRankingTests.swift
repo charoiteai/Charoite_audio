@@ -67,6 +67,15 @@ final class TasksServiceTests: XCTestCase {
 
 /// Интеграция: гибридный поиск на демо-графе из репозитория.
 final class DemoGraphSearchTests: XCTestCase {
+    override func setUp() async throws {
+        // Пустой индекс во временном файле и эмбеддер «Ollama лежит»: тест
+        // детерминирован (чистая лексика, как в CI) и не пишет эмбеддинги
+        // демо-графа в настоящий индекс на машине с поднятой Ollama.
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("charoite-demo-index-\(UUID().uuidString).json")
+        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
+    }
+
     private var demoGraph: URL {
         // app/Tests/… → корень репо → demo/graph
         URL(fileURLWithPath: #filePath)
@@ -128,6 +137,13 @@ final class ArchiveHistoryStoreTests: XCTestCase {
 
 /// Английский поиск: en-стемминг и e2e по английскому демо-графу.
 final class EnglishSearchTests: XCTestCase {
+    override func setUp() async throws {
+        // см. DemoGraphSearchTests.setUp — те же причины
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("charoite-demo-index-\(UUID().uuidString).json")
+        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
+    }
+
     func testEnglishStemming() {
         XCTAssertEqual(ArchiveSearch.stem("decided"), "decid")
         XCTAssertEqual(ArchiveSearch.stem("blockers"), "blocker")
