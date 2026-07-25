@@ -63,6 +63,10 @@ def search_brain(graph: pathlib.Path, query: str) -> str | None:
         return None
     if text.startswith("Ничего не найдено"):
         return ""
+    # граф вне vault brain-сервера (демо, другой диск): честный фолбэк
+    # на локальный поиск, а не сообщение об ошибке в роли «сырья»
+    if text.startswith("Папка не найдена") or text.startswith("Недопустимый путь"):
+        return None
     # срезаем шапку «Найдено в vault (N из M):»
     _, _, body = text.partition("\n\n")
     return body or text
@@ -100,11 +104,23 @@ def search(graph: pathlib.Path, query: str) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--limit", type=int, default=0, help="только первые N вопросов")
+    ap.add_argument("--demo", action="store_true",
+                    help="демо-граф из репозитория вместо вашего: проверка контура без встреч")
     args = ap.parse_args()
 
-    cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
-    graph = pathlib.Path(cfg["sufler"]["graph_dir"]).expanduser()
-    bench_file = ROOT / "config" / "memory_bench.yaml"  # см. memory_bench.example.yaml
+    cfg_path = ROOT / "config" / "config.yaml"
+    if not cfg_path.exists() and args.demo:
+        # демо-режим работает и до настройки: дефолтная модель Ollama
+        cfg = {"llm": {"base_url": "http://127.0.0.1:11434", "model": "qwen3.5:4b"},
+               "sufler": {"role": "Ассистент по архиву встреч."}}
+    else:
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    if args.demo:
+        graph = ROOT / "demo" / "graph"
+        bench_file = ROOT / "config" / "memory_bench_demo.yaml"
+    else:
+        graph = pathlib.Path(cfg["sufler"]["graph_dir"]).expanduser()
+        bench_file = ROOT / "config" / "memory_bench.yaml"  # см. memory_bench.example.yaml
     if not bench_file.exists():
         sys.exit(f"нет файла бенча: {bench_file}")
     cases = yaml.safe_load(bench_file.read_text(encoding="utf-8")) or []
@@ -113,7 +129,8 @@ def main() -> None:
 
     llm = LLM(cfg)
     passed, failures = 0, []
-    brain_alive = search_brain(graph, "проверка") is not None
+    # демо-граф живёт в репозитории, вне vault brain-сервера — только локальный
+    brain_alive = (not args.demo) and search_brain(graph, "проверка") is not None
     print(f"контур поиска: {'brain :8100 (боевой)' if brain_alive else 'локальный фолбэк (brain лежит)'}")
     for i, case in enumerate(cases, 1):
         q, must = case["q"], case.get("must", [])
