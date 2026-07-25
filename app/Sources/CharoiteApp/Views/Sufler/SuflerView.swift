@@ -7,6 +7,8 @@ import SwiftUI
 struct SuflerView: View {
     @ObservedObject private var sufler = SuflerService.shared
     @ObservedObject private var tasksSvc = TasksService.shared
+    @ObservedObject private var calendar = CalendarService.shared
+    @AppStorage("charoite.calendarBriefs") private var calendarBriefs = false
     @State private var question = ""
     @State private var archiveAnswer = ""      // ответ по архиву, когда встреча не идёт
     @State private var lastArchiveQuestion = ""  // для «сохранить в граф»
@@ -74,6 +76,7 @@ struct SuflerView: View {
             // человек нажмёт «Слушать встречу» и получит системный запрос.
             if !firstRunSeen { showFirstRun = true }
             TasksService.shared.rescan()   // бейдж «Задачи · N» актуален сразу
+            if calendarBriefs { CalendarService.shared.enable() }
         }
     }
 
@@ -100,6 +103,15 @@ struct SuflerView: View {
             DictationButton(text: $question)
             if isSearchingArchive {
                 ProgressView().controlSize(.small)
+            }
+            // календарь: одна кнопка — бриф к ближайшему событию по архиву
+            if !sufler.isRunning, calendarBriefs, let ev = calendar.nextEventTitle {
+                Button {
+                    askArchive(ev, brief: true)
+                } label: {
+                    Label(String(ev.prefix(28)), systemImage: "calendar")
+                }
+                .help("Бриф к ближайшей встрече: «\(ev)»")
             }
             // Подготовка ко встрече: та же архивная механика, но бриф-формат
             // (статус, решено, открыто, люди) вместо ответа на вопрос.

@@ -88,6 +88,10 @@ meeting.
   extracts tasks → a file in the graph (`Notes/`) + remembered in memory.
   The raw text is kept alongside ("As spoken").
 
+- **Calendar brief** (opt-in) — a Settings toggle: before your next
+  meeting the bar shows a button with its title, one click builds an
+  archive brief. Only the title and time of the nearest event are
+  read, locally.
 - **Custom minutes template** — `sufler.minutes_template` in
   config.yaml: your own markdown skeleton instead of the default
   sections.
