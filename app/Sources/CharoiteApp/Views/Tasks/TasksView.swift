@@ -19,6 +19,17 @@ struct TasksView: View {
                 Toggle(isOn: $showDone) { Text("Показывать сделанные").fixedSize() }
                     .toggleStyle(.checkbox)
                     .font(.caption)
+                // все открытые — в буфер: вставить список в письмо/чат команды
+                Button {
+                    let open = tasks.items.filter { !$0.done }
+                        .map { "- [ ] \($0.text)" }.joined(separator: "\n")
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(open, forType: .string)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .help("Скопировать все открытые задачи списком")
+                .disabled(tasks.openCount == 0)
                 Button {
                     tasks.rescan()
                 } label: {

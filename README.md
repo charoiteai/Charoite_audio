@@ -29,6 +29,7 @@ Charoite listens to your meetings (microphone + system audio, no bots joining ca
 
 Everything runs locally. STT (~1 GB) and diarization (~0.5 GB) are constant;
 the LLMs are what scale with memory. `num_ctx: 8192` throughout.
+Semantic search adds `bge-m3` (~1.2 GB) — recommended at 16 GB+.
 
 | RAM | Main LLM | Light LLM | Graph | Notes |
 |----|----|----|----|----|

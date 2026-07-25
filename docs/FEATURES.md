@@ -88,6 +88,9 @@ meeting.
   extracts tasks → a file in the graph (`Notes/`) + remembered in memory.
   The raw text is kept alongside ("As spoken").
 
+- **Custom minutes template** — `sufler.minutes_template` in
+  config.yaml: your own markdown skeleton instead of the default
+  sections.
 - **Meeting tasks** — minutes write assignments as checkboxes
   («- [ ] **Name** — what — when»); the Tasks window collects every
   `- [ ]` across the graph with an open-count badge, ticking writes
