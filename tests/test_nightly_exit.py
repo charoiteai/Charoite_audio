@@ -19,9 +19,18 @@ pipefail` без `-e`, а последняя команда — echo. Значи
 import pathlib
 import shutil
 import subprocess
+import sys
+
+import pytest
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 NIGHTLY = REPO / "scripts" / "nightly.sh"
+
+sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(REPO / "scripts"))
+import graphs  # noqa: E402
+import morning_brief  # noqa: E402
+import tier3_cores  # noqa: E402
 
 FAIL_ALL = "#!/bin/sh\nexit 3\n"
 FAIL_ONLY_BENCH = (
@@ -82,3 +91,39 @@ def test_clean_run_is_clean(tmp_path):
 def test_everything_broken_is_reported(tmp_path):
     r = _run(tmp_path, FAIL_ALL)
     assert r.returncode != 0
+
+
+@pytest.mark.parametrize("script, argv, marker", [
+    (tier3_cores, ["tier3_cores.py", "--all-graphs", "--apply"], "Ядра"),
+    (morning_brief, ["morning_brief.py"], "Встречи-архив"),
+])
+def test_missing_vault_is_not_a_failure(script, argv, marker, tmp_path,
+                                        monkeypatch, capsys):
+    """«Обходить нечего» — не авария; ровно этим ходят оба шага джобы.
+
+    Графы оба скрипта искали в одной захардкоженной папке
+    (~/Library/.../iCloud~md~obsidian/Documents): ревизия делала sys.exit со
+    строкой, бриф — iterdir() по несуществующему пути, то есть traceback.
+    Оба дают ненулевой код. Пока падение шага тонуло в логе, это было
+    незаметно; теперь оно красит прогон, и у любого, кто держит Obsidian не
+    в iCloud, launchd будет краснеть каждую ночь без единой причины.
+    """
+    monkeypatch.setattr(graphs, "ICLOUD", tmp_path / "нет-iCloud")
+    monkeypatch.setattr(graphs, "configured_graph", lambda: None)
+    monkeypatch.setattr(sys, "argv", argv)
+    script.main()
+    assert marker in capsys.readouterr().out, "молча вышел — человеку нечего понять"
+
+
+def test_vault_is_the_folder_above_the_configured_graph(tmp_path, monkeypatch):
+    """Граф ищется рядом с настроенным graph_dir, а не только в iCloud.
+
+    Vault — это папка НАД графом: sufler.graph_dir указывает на ~/Vault/Работа,
+    а ночью надо обойти и ~/Vault/Личное. Одного захардкоженного пути мало.
+    """
+    monkeypatch.setattr(graphs, "ICLOUD", tmp_path / "нет-iCloud")
+    work, home = tmp_path / "Vault" / "Работа", tmp_path / "Vault" / "Личное"
+    for g in (work, home):
+        (g / "Ядра").mkdir(parents=True)
+    monkeypatch.setattr(graphs, "configured_graph", lambda: work)
+    assert graphs.all_graphs("Ядра") == [home, work], "граф из vault не найден"
