@@ -4,8 +4,6 @@ Local-first, in rough priority order. No dates — quality over deadlines.
 
 ## Near
 
-- **English-first prompts** — STT already handles English (Whisper /
-  Parakeet); prompts, hints and graph nodes should follow.
 - **Speaker enrollment across meetings** — voice → person node: «this is
   Maria again» without re-introductions.
 - **Archive answer history** — a feed of past Q&A in the app instead of
@@ -17,6 +15,11 @@ Local-first, in rough priority order. No dates — quality over deadlines.
 - **Streaming archive answers** — tokens as they generate, not one blob.
 
 ## Done (recent)
+
+- English documents, phase 1: `sufler.language: en` switches minutes,
+  summary and instant answers to English (validated on an English
+  transcript; hints follow your own `sufler.role` language). Phase 2 —
+  graph nodes and deep-dive docs (July 2026)
 
 - Calendar brief: one-click prep for the next event (opt-in, read-only,
   July 2026)
