@@ -3,9 +3,16 @@
 # правый клик → Открыть (или xattr -d com.apple.quarantine), см. README.
 name: release-app
 
+# release-please публикует релиз через GITHUB_TOKEN, а такие события НЕ
+# запускают другие workflows (защита GitHub от рекурсии) — поэтому цепочка
+# workflow_run: она от GITHUB_TOKEN срабатывает. Ручной release: published
+# оставлен для релизов, созданных человеком.
 on:
   release:
     types: [published]
+  workflow_run:
+    workflows: [release-please]
+    types: [completed]
 
 permissions:
   contents: write
@@ -33,5 +40,16 @@ jobs:
       - name: Attach to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$TAG" app/build/Charoite.app.zip --clobber
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          TAG="$EVENT_TAG"
+          # workflow_run: тега в событии нет — берём свежайший релиз
+          if [ -z "$TAG" ]; then
+            TAG=$(gh release list --limit 1 --json tagName -q '.[0].tagName')
+          fi
+          if [ -z "$TAG" ]; then echo "релизов нет — нечего прикладывать"; exit 0; fi
+          # не перекачивать зря: ассет уже есть → выходим тихо
+          if gh release view "$TAG" --json assets -q '.assets[].name' | grep -q '^Charoite.app.zip$'; then
+            echo "у $TAG уже есть артефакт"; exit 0
+          fi
+          gh release upload "$TAG" app/build/Charoite.app.zip --clobber
