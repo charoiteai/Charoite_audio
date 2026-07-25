@@ -93,3 +93,28 @@ ollama pull bge-m3   # ~1.2 ГБ; без неё поиск чисто лекси
 ## Диагностика
 
 `python3 scripts/doctor.py` проверяет Python, зависимости, ключи конфига, папку графа, Ollama и модели (включая `bge-m3`), диаризацию — с точным рецептом для каждой проблемы.
+
+## Ночной цикл (опционально)
+
+`scripts/nightly.sh` приводит граф в порядок, пока вы спите: Tier-3
+ревизия ядер (дубли, слияния — с бэкапами), утренний бриф `_Сегодня.md`
+(готовый контекст дня) и бенч памяти (сигнал деградации качества).
+Планируется через launchd:
+
+```xml
+<!-- ~/Library/LaunchAgents/ai.charoite.nightly.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>ai.charoite.nightly</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/bash</string><string>/ПУТЬ/К/Charoite_audio/scripts/nightly.sh</string></array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>15</integer></dict>
+  <key>StandardOutPath</key><string>/tmp/charoite_nightly.log</string>
+  <key>StandardErrorPath</key><string>/tmp/charoite_nightly.log</string>
+</dict></plist>
+```
+
+```bash
+launchctl load ~/Library/LaunchAgents/ai.charoite.nightly.plist
+```
