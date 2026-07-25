@@ -35,3 +35,21 @@ To set it up (repo owner, once):
 The workflow falls back to `GITHUB_TOKEN` when the secret is absent, so nothing
 breaks meanwhile — the release PR just needs a manual "Approve and run" until
 the PAT is in place.
+
+## App bundle on every release
+
+`release-app` builds `Charoite.app.zip` on a macos runner and attaches
+it to the release. Two triggers:
+
+- `workflow_run` after the `release-please` workflow — the main path.
+  release-please publishes releases with `GITHUB_TOKEN`, and GitHub's
+  recursion guard means such events do NOT fire `release: published`
+  in other workflows (v0.19.0 initially shipped without the bundle —
+  that's how we learned). The chained job resolves the newest tag
+  itself and exits quietly if the asset is already there.
+- `release: published` — kept for human-created releases.
+
+The bundle version comes from the latest git tag (`make_app.sh` does a
+tag fetch), so a full checkout (`fetch-depth: 0`) is required in CI.
+Validation after changing any of this: download the asset, `ditto -x -k`,
+`codesign -dv`, check `CFBundleShortVersionString` matches the tag.
