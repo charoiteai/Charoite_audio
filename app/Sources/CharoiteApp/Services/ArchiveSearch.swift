@@ -126,7 +126,9 @@ enum ArchiveSearch {
         // графу. Пересечение с лексикой запирало её в пересортировку уже
         // найденного, а её главная работа — словарный разрыв: вопрос задан
         // словами, которых в файле нет.
-        var all: [(text: String, rel: String, tHits: [Int], pHits: [Int], dateTs: Double)] = []  // rel — ключ RRF
+        // dateTs — дата для свежести (у встреч/daily — из имени файла);
+        // mtime — настоящее время правки, только для инвалидации индекса
+        var all: [(text: String, rel: String, tHits: [Int], pHits: [Int], dateTs: Double, mtime: Double)] = []  // rel — ключ RRF
         let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey]
         guard let walker = FileManager.default.enumerator(
             at: graph, includingPropertiesForKeys: keys,
@@ -141,7 +143,7 @@ enum ArchiveSearch {
             let pHits = needles.map { countOccurrences(of: $0, in: relLow) }
             let rv = try? url.resourceValues(forKeys: [.contentModificationDateKey])
             let mtime = rv?.contentModificationDate?.timeIntervalSince1970 ?? 0
-            all.append((text, rel, tHits, pHits, fileDate(rel: rel, mtime: mtime)))
+            all.append((text, rel, tHits, pHits, fileDate(rel: rel, mtime: mtime), mtime))
         }
         guard !all.isEmpty else { return "" }
         let files = all.filter { f in
@@ -209,8 +211,10 @@ enum ArchiveSearch {
         let merged = fused.values.map { Hit(score: $0.score, rel: $0.hit.rel, block: $0.hit.block) }
 
         // фоновая доиндексация изменившихся файлов — не задерживает ответ;
-        // весь граф, а не только попавшееся текущему запросу
-        let snapshot = all.map { (path: $0.rel, mtime: $0.dateTs, text: $0.text) }
+        // весь граф, а не только попавшееся текущему запросу. В снапшоте —
+        // НАСТОЯЩИЙ mtime: dateTs у встреч — дата из имени, она не меняется
+        // при правке, и правленый файл никогда не переиндексировался бы
+        let snapshot = all.map { (path: $0.rel, mtime: $0.mtime, text: $0.text) }
         Task.detached(priority: .background) {
             await SemanticIndex.shared.refresh(files: snapshot)
         }
