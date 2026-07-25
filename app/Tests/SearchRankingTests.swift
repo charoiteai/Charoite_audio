@@ -125,3 +125,35 @@ final class ArchiveHistoryStoreTests: XCTestCase {
         store.clear(root: dir)
     }
 }
+
+/// Английский поиск: en-стемминг и e2e по английскому демо-графу.
+final class EnglishSearchTests: XCTestCase {
+    func testEnglishStemming() {
+        XCTAssertEqual(ArchiveSearch.stem("decided"), "decid")
+        XCTAssertEqual(ArchiveSearch.stem("blockers"), "blocker")
+        XCTAssertEqual(ArchiveSearch.stem("launching"), "launch")
+        // русская ветка не задета
+        XCTAssertEqual(ArchiveSearch.stem("встречах"), "встреч")
+    }
+
+    private var demoGraphEn: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("demo/graph_en")
+    }
+
+    func testEnglishDecisionQuestion() async {
+        let out = await ArchiveSearch.localSearch(
+            query: "what did we decide about the payment provider?",
+            limit: 5, snippet: 600, root: demoGraphEn)
+        XCTAssertTrue(out.contains("Payment"), "payment nodes expected: \(out.prefix(200))")
+        XCTAssertTrue(out.contains("YuPay"), "the factual answer must reach snippets")
+    }
+
+    func testEnglishBlockerQuestion() async {
+        let out = await ArchiveSearch.localSearch(
+            query: "what are the current blockers?", limit: 3, snippet: 400,
+            root: demoGraphEn)
+        XCTAssertTrue(out.contains("Blockers/"), "blocker node expected")
+    }
+}
