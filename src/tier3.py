@@ -50,6 +50,14 @@ OLLAMA = "http://127.0.0.1:11434"
 BACKUP_KEEP = 20          # держим столько последних бэкап-папок
 
 
+_UPDATED = re.compile(r"_?\(обновлено \d{4}-\d{2}-\d{2}\)_?")
+
+
+def _plain(status: str) -> str:
+    """Статус без служебной метки даты — на вход NLI идёт смысл, не разметка."""
+    return " ".join(_UPDATED.sub("", status).split())
+
+
 def load_cores(folder: pathlib.Path) -> list[dict]:
     cores = []
     for p in sorted(folder.glob("*.md")):
@@ -62,7 +70,11 @@ def load_cores(folder: pathlib.Path) -> list[dict]:
             m = re.search(rf"## {title}\n(.*?)(?=\n## |\Z)", text, re.S)
             return " ".join(m.group(1).split()) if m else ""
         status = sect("Статус")
-        essence = sect("Суть") or sect("Задача одной фразой")
+        # «## Суть» пишет только человек: upsert_core собирает ядро из
+        # «## Статус» и «## Хроники». Без запасного варианта repr сводился к
+        # имени файла, и NLI судил пары голых заголовков — ровно та слепота,
+        # ради ухода от которой сюда и ставили эмбеддинги с NLI.
+        essence = sect("Суть") or sect("Задача одной фразой") or _plain(status)
         dm = re.search(r"обновлено (\d{4}-\d{2}-\d{2})", status)
         cores.append({
             "path": p, "name": p.stem, "status": status, "essence": essence,
@@ -164,8 +176,14 @@ def _link(folder: pathlib.Path, stamp: str, part: dict, whole: dict, log: list[s
 
 
 def revise(graph: pathlib.Path, only_names: list[str] | None = None,
-           apply: bool = True) -> dict:
+           apply: bool = False) -> dict:
     """Ревизия ядер графа. only_names — инкрементально (ядра этой встречи).
+
+    apply=False по умолчанию — сознательно. Слияние перезаписывает файл
+    пользователя (от дубля остаётся redirect-заглушка), а такое право берут
+    явно, а не получают по забывчивости вызывающего. Кто хочет править —
+    пишет apply=True: так делают scripts/tier3_cores.py --apply и
+    graph_updater, если в конфиге включён sufler.tier3_auto_apply.
 
     Возвращает {"dups": [...], "nests": [...], "border": [...], "log": [...]}.
     Любая инфраструктурная беда (нет модели, лежит Ollama) — пустой результат,

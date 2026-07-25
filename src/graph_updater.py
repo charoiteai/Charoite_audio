@@ -380,17 +380,30 @@ def main():
     if cores:
         rebuild_cores_moc(graph)
         # Tier3-ревизия СРАЗУ после upsert: свежие ядра этой встречи против
-        # всех — дубль-двойник сливается (или помечается — осторожный режим)
-        # в момент рождения, а не копится до ручной уборки. Инкрементально
-        # (O(k×n)); любая беда внутри revise (нет NLI-модели, лежит Ollama) —
-        # тихий пропуск, не падение пайплайна встречи.
+        # всех — дубль-двойник виден в момент рождения, а не копится до
+        # ручной уборки. Инкрементально (O(k×n)); любая беда внутри revise
+        # (нет NLI-модели, лежит Ollama) — тихий пропуск, не падение
+        # пайплайна встречи.
+        #
+        # ПРАВИТ граф только при sufler.tier3_auto_apply: true. По умолчанию
+        # автомат находит и докладывает, а сливает человек — слияние
+        # перезаписывает файл, и это решение пользователя, а не побочный
+        # эффект того, что встреча закончилась.
         try:
             import tier3
-            rep = tier3.revise(graph, only_names=[safe_name(c["имя"]) for c in cores])
+            auto = bool(cfg["sufler"].get("tier3_auto_apply", False))
+            rep = tier3.revise(graph, only_names=[safe_name(c["имя"]) for c in cores],
+                               apply=auto)
             for line in rep["log"]:
                 print(f"tier3: {line}")
             if rep["log"]:
                 rebuild_cores_moc(graph)  # слияния меняют список ядер
+            elif rep["dups"]:
+                # без этой ветки выключенный автомат = молчание: находка есть,
+                # а пользователь о ней не узнаёт никогда
+                for line in rep["dups"]:
+                    print(f"tier3: похоже на дубль — {line}")
+                print("tier3: свести — .venv/bin/python scripts/tier3_cores.py --apply")
         except Exception as e:  # noqa: BLE001
             print(f"tier3: пропущен ({e})")
 
