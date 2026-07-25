@@ -25,6 +25,7 @@ final class DictationService: ObservableObject {
     /// и сохраняет в граф — Swift только показывает итог
     private var noteMode = false
     private var errTail = ""  // хвост stderr питона — для внятной ошибки
+    private var autoStop: Task<Void, Never>?  // предохранитель забытой записи
 
     private var suflerRoot: URL { AppSettings.charoiteRoot }
 
@@ -130,6 +131,14 @@ final class DictationService: ObservableObject {
             isRecording = true
             status = noteMode ? "🎙 заметка… говори (⌥⌘N — стоп)" : "🎙 диктовка… (⌥⌘D — стоп)"
             NSSound(named: "Pop")?.play()
+            // глобальный хоткей легко забыть: не даём писать вечно — часовой
+            // wav всё равно не распознается, а микрофон «висит» открытым
+            autoStop = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(600))
+                guard let self, self.isRecording, !Task.isCancelled else { return }
+                self.stop()
+                self.status = "диктовка остановлена сама через 10 минут — распознаю…"
+            }
         } catch {
             status = "диктовка не запустилась: \(error.localizedDescription)"
             // залипший колбэк уводил бы следующую ГЛОБАЛЬНУЮ диктовку в невидимый биндинг
@@ -140,6 +149,8 @@ final class DictationService: ObservableObject {
     }
 
     private func stop() {
+        autoStop?.cancel()
+        autoStop = nil
         status = "распознаю…"
         isRecording = false
         try? stdinPipe?.fileHandleForWriting.close()  // EOF = стоп записи
