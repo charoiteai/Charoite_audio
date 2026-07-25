@@ -75,8 +75,9 @@ chat with graph memory, dictation (⌥⌘D) and voice notes (⌥⌘N).
 ```
 
 **No meetings yet?** Point `graph_dir` at the bundled [demo graph](demo/)
-and ask «что решили по платёжному провайдеру?» — see the product working
-before recording anything.
+(Russian) or [demo/graph_en](demo/) (English) and ask
+«что решили по платёжному провайдеру?» / "what did we decide about the
+payment provider?" — see the product working before recording anything.
 
 STT models download automatically on first run (GigaAM via `onnx_asr`). For live diarization put an ERes2Net speaker-embedding ONNX model at `models/diar/embedding.onnx` (see [docs/DIARIZATION.md](docs/DIARIZATION.md)).
 

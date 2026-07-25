@@ -20,3 +20,11 @@ Open the app (or CLI) and ask:
 
 Switch `graph_dir` back to your real vault when done. Everything in
 `demo/graph` is fictional.
+
+## English demo
+
+`demo/graph_en` is the same fictional project in English. Point
+`graph_dir` at it, set `sufler.language: en`, and ask:
+
+- "what did we decide about the payment provider?"
+- "what are the current blockers?"

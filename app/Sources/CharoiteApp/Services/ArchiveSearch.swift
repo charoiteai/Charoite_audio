@@ -35,10 +35,16 @@ enum ArchiveSearch {
         s.lowercased().replacingOccurrences(of: "ё", with: "е")
     }
 
+    /// Английские окончания — porter-lite: ing/ed/es/s (остаток ≥ 4).
+    private static let enSuffixes = ["ing", "ed", "es", "s"]
+
     static func stem(_ word: String) -> String {
         let w = norm(word)
         guard w.count > 4 else { return w }
-        for suf in suffixes where w.hasSuffix(suf) && w.count - suf.count >= 4 {
+        let isLatin = w.unicodeScalars.first.map { CharacterSet.lowercaseLetters
+            .contains($0) && $0.isASCII } ?? false
+        let table = isLatin ? enSuffixes : suffixes
+        for suf in table where w.hasSuffix(suf) && w.count - suf.count >= 4 {
             return String(w.dropLast(suf.count))
         }
         return w
