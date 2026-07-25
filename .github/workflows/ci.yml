@@ -23,8 +23,9 @@ jobs:
           python - <<'EOF'
           import yaml
           cfg = yaml.safe_load(open("config/config.example.yaml"))
-          for path in ("audio.samplerate", "stt.backend", "llm.model",
-                       "llm.num_ctx", "sufler.user_name", "log.transcripts_dir"):
+          for path in ("audio.samplerate", "stt.backend", "stt.language",
+                       "llm.model", "llm.num_ctx", "sufler.user_name",
+                       "sufler.language", "log.transcripts_dir"):
               node = cfg
               for k in path.split("."):
                   assert k in node, f"missing key: {path}"
