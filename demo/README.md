@@ -22,7 +22,8 @@ One command checks the whole RAG loop on the demo graph (works even
 before `config.yaml` exists):
 
 ```bash
-.venv/bin/python scripts/memory_bench.py --demo
+.venv/bin/python scripts/memory_bench.py --demo      # Russian demo graph
+.venv/bin/python scripts/memory_bench.py --demo-en   # English demo graph
 ```
 
 Switch `graph_dir` back to your real vault when done. Everything in

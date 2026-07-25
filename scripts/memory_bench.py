@@ -106,16 +106,22 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=0, help="только первые N вопросов")
     ap.add_argument("--demo", action="store_true",
                     help="демо-граф из репозитория вместо вашего: проверка контура без встреч")
+    ap.add_argument("--demo-en", action="store_true",
+                    help="английский демо-граф (demo/graph_en) и английские кейсы")
     args = ap.parse_args()
 
     cfg_path = ROOT / "config" / "config.yaml"
-    if not cfg_path.exists() and args.demo:
+    if not cfg_path.exists() and (args.demo or args.demo_en):
         # демо-режим работает и до настройки: дефолтная модель Ollama
         cfg = {"llm": {"base_url": "http://127.0.0.1:11434", "model": "qwen3.5:4b"},
                "sufler": {"role": "Ассистент по архиву встреч."}}
     else:
         cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    if args.demo:
+    if args.demo_en:
+        args.demo = True
+        graph = ROOT / "demo" / "graph_en"
+        bench_file = ROOT / "config" / "memory_bench_demo_en.yaml"
+    elif args.demo:
         graph = ROOT / "demo" / "graph"
         bench_file = ROOT / "config" / "memory_bench_demo.yaml"
     else:

@@ -1,0 +1,7 @@
+# English demo bench cases — run with --demo-en against demo/graph_en.
+- q: "What did we decide about the payment provider?"
+  must: ["YuPay"]
+- q: "What are the current blockers?"
+  must: ["PCI"]
+- q: "What is the shop launch deadline?"
+  must: ["September"]
