@@ -80,3 +80,48 @@ final class SemanticUnionTests: XCTestCase {
         XCTAssertFalse(out.contains("Погода"), "ортогональный файл пролез в выдачу")
     }
 }
+
+/// Инвалидация индекса: правка файла обязана делать его эмбеддинг устаревшим.
+///
+/// В снапшот доиндексации уходит dateTs — а для встреч и daily-заметок это
+/// дата из ИМЕНИ файла (fileDate предпочитает её iCloud-mtime). Имя при
+/// правке не меняется, значит «mtime» в индексе не меняется никогда:
+/// заметка встречи, дополненная после первой индексации, до конца жизни
+/// ищется по своему первому черновику. Для свежести ранжирования дата из
+/// имени — правильный сигнал; для инвалидации — только настоящий mtime.
+final class IndexInvalidationTests: XCTestCase {
+    func testEditedMeetingBecomesStaleInIndex() async throws {
+        let rel = "Встречи/2026-01-01 планёрка.md"
+        let graph = try makeTestGraph([(rel, "обсудили бюджет проекта")])
+        defer { try? FileManager.default.removeItem(at: graph) }
+        await SemanticIndex.shared.useForTests(store: tempIndexStore()) { texts in
+            texts.map { _ in [1, 0] }
+        }
+
+        _ = await ArchiveSearch.localSearch(query: "бюджет проекта",
+                                            limit: 3, snippet: 200, root: graph)
+
+        // доиндексация уходит в фоновую Task — дожидаемся записи в индексе
+        var stored: Double?
+        for _ in 0..<200 {
+            stored = await SemanticIndex.shared.storedMtime(of: rel)
+            if stored != nil { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let got = try XCTUnwrap(stored, "файл не попал в индекс вовсе")
+
+        let attrs = try FileManager.default.attributesOfItem(
+            atPath: graph.appendingPathComponent(rel).path)
+        let real = try XCTUnwrap(attrs[.modificationDate] as? Date).timeIntervalSince1970
+
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        fmt.timeZone = TimeZone(identifier: "UTC")
+        let named = try XCTUnwrap(fmt.date(from: "2026-01-01")).timeIntervalSince1970
+
+        XCTAssertGreaterThan(abs(got - named), 86400,
+                             "в индекс ушла дата из имени файла — правки не устаревают никогда")
+        XCTAssertEqual(got, real, accuracy: 2,
+                       "в индексе не настоящий mtime файла")
+    }
+}
