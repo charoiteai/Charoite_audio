@@ -79,3 +79,28 @@ incrementally as the graph changes (stored in
 ## Diagnosis
 
 `python3 scripts/doctor.py` checks Python, dependencies, config keys, the graph folder, Ollama and its models (incl. `bge-m3`), and diarization — with an exact fix for every problem.
+
+## Night cycle (optional)
+
+`scripts/nightly.sh` keeps the graph tidy while you sleep: Tier-3 core
+revision (duplicates, merges — with backups), the morning brief
+`_Сегодня.md` (ready-made context for the day), and the memory bench
+(quality regression signal). Schedule it with launchd:
+
+```xml
+<!-- ~/Library/LaunchAgents/ai.charoite.nightly.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>ai.charoite.nightly</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/bash</string><string>/PATH/TO/Charoite_audio/scripts/nightly.sh</string></array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>15</integer></dict>
+  <key>StandardOutPath</key><string>/tmp/charoite_nightly.log</string>
+  <key>StandardErrorPath</key><string>/tmp/charoite_nightly.log</string>
+</dict></plist>
+```
+
+```bash
+launchctl load ~/Library/LaunchAgents/ai.charoite.nightly.plist
+```
