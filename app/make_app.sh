@@ -6,6 +6,12 @@ cd "$(dirname "$0")"
 
 swift build -c release --arch arm64
 
+# версия бандла = последний git-тег (release-please), не зашитая константа:
+# приложение перестаёт представляться древней версией
+git fetch --tags --quiet 2>/dev/null || true   # свежие release-please теги
+VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+VERSION=${VERSION:-0.0.0}
+
 APP=build/Charoite.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -33,7 +39,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.4.0</string>
+	<string>__VERSION__</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
@@ -55,6 +61,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+/usr/bin/sed -i '' "s/__VERSION__/$VERSION/" "$APP/Contents/Info.plist"
 
 codesign --force --sign - "$APP"
 echo "готово: $APP"
