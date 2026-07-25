@@ -65,8 +65,9 @@
 recurring topic into twin Cores. The revision finds such pairs — an
 embedding prefilter (bge-m3) → an NLI judge — and runs itself:
 incrementally after every meeting (this meeting's cores against all), and
-as a full sweep via `scripts/tier3_cores.py --all-graphs --apply` (cron it
-if you like). Two levels of permission, because the edits differ in price.
+as a full sweep via `scripts/tier3_cores.py --all-graphs --auto` (cron it
+if you like — `--auto` merges only when `tier3_auto_apply: true`, else it
+only marks; `--apply` remains for hands-on manual runs). Two levels of permission, because the edits differ in price.
 Reversible ones always run: mid-confidence pairs get a "possible duplicate"
 note (the morning brief collects those into "Tier3 asks you to merge"), and
 nestings ("episode ⊂ process") are cross-linked, never merged. The
