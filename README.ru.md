@@ -59,6 +59,9 @@ python3 scripts/doctor.py
 
 **Вариант A — macOS-приложение (рекомендуется):**
 
+Скачайте `Charoite.app.zip` из [последнего релиза](https://github.com/charoiteai/Charoite_audio/releases/latest)
+(первый запуск: правый клик → Открыть — подпись ad-hoc), либо соберите сами:
+
 ```bash
 ./app/make_app.sh && open app/build/Charoite.app
 ```
