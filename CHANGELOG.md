@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0](https://github.com/charoiteai/Charoite_audio/compare/v0.12.0...v0.13.0) (2026-07-25)
+
+
+### Features
+
+* **scripts:** doctor.py — one-command install diagnosis ([#47](https://github.com/charoiteai/Charoite_audio/issues/47)) ([97e184a](https://github.com/charoiteai/Charoite_audio/commit/97e184af585a40f56edbe0ff758d354579c63cf2))
+
 ## [0.12.0](https://github.com/charoiteai/Charoite_audio/compare/v0.11.0...v0.12.0) (2026-07-25)
 
 
