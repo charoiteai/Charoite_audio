@@ -50,6 +50,12 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp config/config.example.yaml config/config.yaml   # впишите user_name и graph_dir
 ```
 
+Что-то не работает? Одна команда покажет, чего не хватает и как починить:
+
+```bash
+python3 scripts/doctor.py
+```
+
 **Вариант A — macOS-приложение (рекомендуется):**
 
 ```bash
