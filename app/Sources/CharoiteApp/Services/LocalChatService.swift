@@ -48,7 +48,26 @@ final class LocalChatService: ObservableObject {
     @Published var useMemory = true
     @Published var status = ""
 
-    let models = ["qwen3.6:35b-a3b", "gemma4:26b", "gemma4:latest"]
+    // живой список из Ollama /api/tags: у пользователя свои модели, хардкод
+    // из трёх имён превращал пикер в лотерею «есть ли такая». Фолбэк — прежний.
+    @Published var models = ["qwen3.6:35b-a3b", "gemma4:26b", "gemma4:latest"]
+
+    func refreshModels() async {
+        guard let url = URL(string: ollamaBase + "/api/tags") else { return }
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.connectionProxyDictionary = [:]
+        cfg.timeoutIntervalForRequest = 3
+        guard let (data, _) = try? await URLSession(configuration: cfg).data(from: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = obj["models"] as? [[String: Any]] else { return }
+        // эмбеддинг-модели в чате бессмысленны — прячем
+        let names = list.compactMap { $0["name"] as? String }
+            .filter { !$0.contains("bge") && !$0.contains("embed") }
+            .sorted()
+        guard !names.isEmpty else { return }
+        models = names
+        if !names.contains(model), let first = names.first { model = first }
+    }
 
     private var task: Task<Void, Never>?
 

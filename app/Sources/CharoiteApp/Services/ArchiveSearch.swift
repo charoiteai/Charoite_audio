@@ -251,9 +251,11 @@ enum ArchiveSearch {
         return picked
     }
 
-    /// Разовый вопрос к Ollama (без стрима) — синтез ответа по сниппетам.
+    /// Вопрос к Ollama с построчным стримом: onToken зовётся на каждый кусок,
+    /// возврат — полный текст. Стрим — живость главной функции: первые слова
+    /// через ~1с вместо десятков секунд молчания на длинных ответах.
     static func ask(question: String, system: String, model: String,
-                    ollama: String) async -> String {
+                    ollama: String, onToken: ((String) -> Void)? = nil) async -> String {
         guard let url = URL(string: ollama + "/api/chat") else { return "" }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -263,7 +265,7 @@ enum ArchiveSearch {
             "model": model,
             "messages": [["role": "system", "content": system],
                          ["role": "user", "content": question]],
-            "stream": false,
+            "stream": true,
             "think": false,
             "keep_alive": "30m",
             "options": ["temperature": 0.3, "num_ctx": 8192, "num_predict": 1024],
@@ -271,10 +273,21 @@ enum ArchiveSearch {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.connectionProxyDictionary = [:]   // локальный вызов мимо системного прокси
         let session = URLSession(configuration: cfg)
-        guard let (data, _) = try? await session.data(for: req),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let msg = obj["message"] as? [String: Any],
-              let text = msg["content"] as? String else { return "" }
-        return text
+        guard let (bytes, _) = try? await session.bytes(for: req) else { return "" }
+        var full = ""
+        do {
+            for try await line in bytes.lines {
+                guard let data = line.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else { continue }
+                if let msg = obj["message"] as? [String: Any],
+                   let chunk = msg["content"] as? String, !chunk.isEmpty {
+                    full += chunk
+                    onToken?(full)
+                }
+                if obj["done"] as? Bool == true { break }
+            }
+        } catch { return full }
+        return full
     }
 }
