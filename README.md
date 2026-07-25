@@ -82,6 +82,8 @@ STT models download automatically on first run (GigaAM via `onnx_asr`). For live
 
 ## Documentation
 
+- [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md)
+
 - [Setup](docs/SETUP.md) — install, BlackHole for calls, permissions, first run
 - [Features](docs/FEATURES.md) — everything Charoite does, live and post-meeting
 - [Architecture](docs/ARCHITECTURE.md) — the daemon, two-pass diarization, graph pipeline
