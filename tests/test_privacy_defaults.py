@@ -16,6 +16,7 @@
 kill-switch SUFLER_NO_CLOUD поверх конфига.
 """
 import pathlib
+import re
 import sys
 
 import yaml
@@ -29,12 +30,15 @@ EXAMPLE = pathlib.Path(__file__).resolve().parent.parent / "config" / "config.ex
 
 GATES = (privacy.cloud_live_enabled, privacy.cloud_enrich_enabled)
 
-TOGGLES = ("cloud_live", "cloud_enrich")
+# Чтение ключа из словаря — и .get(), и прямое индексирование, кавычки любые.
+# Имя ключа целиком: рядом живёт cloud_live_model, это модель, а не
+# разрешение, и читать её напрямую никто не запрещал.
+_DIRECT = re.compile(r"""(?:\.get\(\s*|\[\s*)["'](cloud_live|cloud_enrich)["']""")
 
 
 def _direct_reads(text: str) -> list[str]:
     """Тумблеры облака, которые этот текст читает из конфига сам."""
-    return [k for k in TOGGLES if f'get("{k}"' in text]
+    return sorted(set(_DIRECT.findall(text)))
 
 
 def test_no_key_means_no_cloud():
