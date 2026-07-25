@@ -39,6 +39,26 @@ struct SettingsView: View {
                     }
                 }
             }
+            Section("Ночной цикл") {
+                LabeledContent("Пока вы спите") {
+                    Text(nightlyInstalled
+                         ? "включён · 04:15 — ревизия ядер, утренний бриф, бенч памяти"
+                         : "выключен")
+                        .foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button(nightlyInstalled ? "Выключить" : "Включить") {
+                        nightlyInstalled ? nightlyDisable() : nightlyEnable()
+                    }
+                    if !nightlyNote.isEmpty {
+                        Text(nightlyNote).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Text("Ставит launchd-задачу на 04:15: Tier-3 ревизия ядер графа "
+                     + "(с бэкапами), бриф _Сегодня.md и бенч качества памяти. "
+                     + "Всё локально; лог в /tmp/charoite_nightly.log.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Календарь") {
                 Toggle("Предлагать бриф к ближайшей встрече", isOn: $calendarBriefs)
                     .onChange(of: calendarBriefs) { _, on in
@@ -58,6 +78,66 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 440)
         .navigationTitle("Настройки")
+    }
+
+    // ─ Ночной цикл: launchd-plist одной кнопкой ─
+
+    private var nightlyPlistURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/ai.charoite.nightly.plist")
+    }
+
+    private var nightlyInstalled: Bool {
+        _ = nightlyTick   // перерисовка после включения/выключения
+        return FileManager.default.fileExists(atPath: nightlyPlistURL.path)
+    }
+
+    @State private var nightlyTick = 0
+    @State private var nightlyNote = ""
+
+    private func nightlyEnable() {
+        let script = AppSettings.charoiteRoot.appendingPathComponent("scripts/nightly.sh")
+        guard FileManager.default.fileExists(atPath: script.path) else {
+            nightlyNote = "scripts/nightly.sh не найден — проверьте путь установки"
+            return
+        }
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict>
+          <key>Label</key><string>ai.charoite.nightly</string>
+          <key>ProgramArguments</key>
+          <array><string>/bin/bash</string><string>\(script.path)</string></array>
+          <key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>15</integer></dict>
+          <key>StandardOutPath</key><string>/tmp/charoite_nightly.log</string>
+          <key>StandardErrorPath</key><string>/tmp/charoite_nightly.log</string>
+        </dict></plist>
+        """
+        do {
+            try FileManager.default.createDirectory(
+                at: nightlyPlistURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try plist.write(to: nightlyPlistURL, atomically: true, encoding: .utf8)
+            launchctl(["load", nightlyPlistURL.path])
+            nightlyNote = "готово — первый прогон сегодня в 04:15"
+        } catch {
+            nightlyNote = "не удалось: \(error.localizedDescription)"
+        }
+        nightlyTick += 1
+    }
+
+    private func nightlyDisable() {
+        launchctl(["unload", nightlyPlistURL.path])
+        try? FileManager.default.removeItem(at: nightlyPlistURL)
+        nightlyNote = "выключен"
+        nightlyTick += 1
+    }
+
+    private func launchctl(_ args: [String]) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        p.arguments = args
+        try? p.run()
+        p.waitUntilExit()
     }
 
     /// «N заметок · последняя встреча DD.MM» — по файловой системе, мгновенно.

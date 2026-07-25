@@ -88,6 +88,9 @@ meeting.
   extracts tasks → a file in the graph (`Notes/`) + remembered in memory.
   The raw text is kept alongside ("As spoken").
 
+- **Night cycle in one click** — Settings installs the 04:15 launchd
+  job (core revision with backups, morning brief, memory bench);
+  the same button removes it.
 - **Calendar brief** (opt-in) — a Settings toggle: before your next
   meeting the bar shows a button with its title, one click builds an
   archive brief. Only the title and time of the nearest event are
