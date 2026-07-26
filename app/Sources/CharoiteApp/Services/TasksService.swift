@@ -29,7 +29,8 @@ final class TasksService: ObservableObject {
     /// окна задач и после каждой отметки. root — для тестов (по умолчанию
     /// граф из настроек).
     func rescan(root: URL? = nil) {
-        guard let graph = root ?? AppSettings.graphDir else { items = []; openCount = 0; return }
+        guard var graph = root ?? AppSettings.graphDir else { items = []; openCount = 0; return }
+        graph = graph.resolvingSymlinksInPath()   // /var vs /private/var — см. ArchiveSearch
         var found: [Item] = []
         let keys: [URLResourceKey] = [.contentModificationDateKey]
         guard let walker = FileManager.default.enumerator(
@@ -39,7 +40,10 @@ final class TasksService: ObservableObject {
             guard url.pathExtension == "md",
                   let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
             guard text.contains("- [") else { continue }
-            let rel = url.path.replacingOccurrences(of: graph.path + "/", with: "")
+            let canon = url.resolvingSymlinksInPath().path
+            let rel = canon.hasPrefix(graph.path + "/")
+                ? String(canon.dropFirst(graph.path.count + 1))
+                : url.lastPathComponent
             let mdate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
                 .contentModificationDate ?? .distantPast
             for (i, line) in text.components(separatedBy: "\n").enumerated() {

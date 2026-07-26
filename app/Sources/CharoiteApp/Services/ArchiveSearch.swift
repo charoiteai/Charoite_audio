@@ -112,8 +112,12 @@ enum ArchiveSearch {
     /// лексически.
     static func localSearch(query: String, limit: Int = 5, snippet: Int = 1200,
                             root: URL? = nil) async -> String {
-        guard let graph = root ?? AppSettings.graphDir,
+        guard var graph = root ?? AppSettings.graphDir,
               FileManager.default.fileExists(atPath: graph.path) else { return "" }
+        // канонизация: /var/… и /private/var/… — один каталог через симлинк;
+        // enumerator отдаёт канонический путь, и строковый срез graph.path
+        // иначе оставляет мусорный префикс в rel — ключи индекса расходятся
+        graph = graph.resolvingSymlinksInPath()
         let words = query
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { $0.count >= 3 && !stop.contains(norm($0)) }
@@ -137,7 +141,10 @@ enum ArchiveSearch {
             guard url.pathExtension == "md",
                   let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
             let low = norm(text)
-            let rel = url.path.replacingOccurrences(of: graph.path + "/", with: "")
+            let canon = url.resolvingSymlinksInPath().path
+            let rel = canon.hasPrefix(graph.path + "/")
+                ? String(canon.dropFirst(graph.path.count + 1))
+                : url.lastPathComponent
             let relLow = norm(rel)
             let tHits = needles.map { countOccurrences(of: $0, in: low) }
             let pHits = needles.map { countOccurrences(of: $0, in: relLow) }
