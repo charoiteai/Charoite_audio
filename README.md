@@ -10,6 +10,8 @@ Charoite listens to your meetings (microphone + system audio, no bots joining ca
 
 ![Charoite app — live transcript, theses, archive answers](docs/img/app-main.png)
 
+![Meeting tasks — every graph checkbox in one window](docs/img/app-tasks.png)
+
 ## Why Charoite
 
 - **100% local by default.** Audio, transcription, diarization, LLM summaries — all on your machine (Ollama + ONNX). No cloud, no telemetry, no accounts. The optional Claude layer is off unless you turn it on.
