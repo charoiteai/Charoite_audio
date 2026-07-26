@@ -5,6 +5,23 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.1](https://github.com/charoiteai/Charoite_audio/compare/v0.22.0...v0.22.1) (2026-07-26)
+
+
+### Bug Fixes
+
+* **app:** canonical rel paths — /var vs /private/var symlink broke index keys ([#90](https://github.com/charoiteai/Charoite_audio/issues/90)) ([440c0e9](https://github.com/charoiteai/Charoite_audio/commit/440c0e96864b1f7131a52217d4367531b669153f))
+* **privacy:** облако выключено по умолчанию во всех трёх местах чтения конфига ([#87](https://github.com/charoiteai/Charoite_audio/issues/87)) ([58982a9](https://github.com/charoiteai/Charoite_audio/commit/58982a92d3cfc64a66fe6236b26cbb0f9a092a10))
+* **privacy:** облако выключено по умолчанию во всех трёх местах чтения конфига ([#89](https://github.com/charoiteai/Charoite_audio/issues/89)) ([630185a](https://github.com/charoiteai/Charoite_audio/commit/630185ace9efadd8ff24d412458a5554a3f085f5))
+* **release:** Charoite.app.zip собирается из кода своего тега, а не из вершины main ([630185a](https://github.com/charoiteai/Charoite_audio/commit/630185ace9efadd8ff24d412458a5554a3f085f5))
+* **release:** Charoite.app.zip собирается из кода своего тега, а не из вершины main ([58982a9](https://github.com/charoiteai/Charoite_audio/commit/58982a92d3cfc64a66fe6236b26cbb0f9a092a10))
+* **search:** семантика по всему графу, инвалидация индекса, латинский стеммер ([630185a](https://github.com/charoiteai/Charoite_audio/commit/630185ace9efadd8ff24d412458a5554a3f085f5))
+* **search:** семантика по всему графу, инвалидация индекса, латинский стеммер ([58982a9](https://github.com/charoiteai/Charoite_audio/commit/58982a92d3cfc64a66fe6236b26cbb0f9a092a10))
+* **tier3:** ревизия помечает, но не сливает без явного разрешения — днём и ночью ([630185a](https://github.com/charoiteai/Charoite_audio/commit/630185ace9efadd8ff24d412458a5554a3f085f5))
+* **tier3:** ревизия помечает, но не сливает без явного разрешения — днём и ночью ([58982a9](https://github.com/charoiteai/Charoite_audio/commit/58982a92d3cfc64a66fe6236b26cbb0f9a092a10))
+* **ui:** подсказка кнопки Claude ведёт к существующему тумблеру ([630185a](https://github.com/charoiteai/Charoite_audio/commit/630185ace9efadd8ff24d412458a5554a3f085f5))
+* **ui:** подсказка кнопки Claude ведёт к существующему тумблеру ([58982a9](https://github.com/charoiteai/Charoite_audio/commit/58982a92d3cfc64a66fe6236b26cbb0f9a092a10))
+
 ## [0.22.0](https://github.com/charoiteai/Charoite_audio/compare/v0.21.0...v0.22.0) (2026-07-25)
 
 
