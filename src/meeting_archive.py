@@ -80,10 +80,16 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
     """Собирает/обновляет папку встречи; возвращает её путь (None — исключена)."""
     if stamp in _excluded(graph):
         return None
-    pretty = (title or "").replace("_", " ").strip()
-    if not pretty:  # безымянная: время в имени, иначе встречи дня слипнутся
-        pretty = f"встреча {stamp[11:13]}:{stamp[13:15]}"
-    folder = graph / ARCHIVE_DIR / f"{stamp[:10]} — {_safe(pretty)}"
+    pretty = (title or "").replace("_", " ").strip() or "встреча"
+    # время в имени папки: 5 встреч в день неотличимы по «дата — тема»,
+    # а mtime врёт после доработок (ревизии дописывают файлы). Двоеточие
+    # в имени нельзя (Finder/Windows/синк) — «11-30» читаемо и безопасно
+    nice_time = f"{stamp[11:13]}-{stamp[13:15]}"
+    folder = graph / ARCHIVE_DIR / f"{stamp[:10]} {nice_time} — {_safe(pretty)}"
+    for legacy in (graph / ARCHIVE_DIR / f"{stamp} — {_safe(pretty)}",
+                   graph / ARCHIVE_DIR / f"{stamp[:10]} — {_safe(pretty)}"):
+        if legacy.exists() and not folder.exists():
+            legacy.rename(folder)   # старые форматы: тихо мигрируем при обновлении
     folder.mkdir(parents=True, exist_ok=True)
     for f in sorted(tdir.glob(f"{stamp}*.md")):
         dest = "Стенограмма.md"
