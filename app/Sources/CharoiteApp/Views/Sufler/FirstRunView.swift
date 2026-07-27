@@ -60,8 +60,7 @@ struct FirstRunView: View {
         HStack(spacing: 14) {
             ZStack {
                 Circle()
-                    .fill(LinearGradient(colors: [Color(hex: "#6366F1"), Color(hex: "#8B5CF6")],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .fill(Theme.brand)
                     .frame(width: 46, height: 46)
                 Text("Ч")
                     .font(.system(.title2, design: .rounded, weight: .bold))
@@ -78,7 +77,7 @@ struct FirstRunView: View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: icon)
                 .font(.system(size: 17))
-                .foregroundStyle(Color(hex: "#6366F1"))
+                .foregroundStyle(Theme.accent)
                 .frame(width: 24)
                 .accessibilityHidden(true)      // смысл несёт текст рядом
             VStack(alignment: .leading, spacing: 3) {

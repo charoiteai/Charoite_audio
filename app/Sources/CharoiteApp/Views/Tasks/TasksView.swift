@@ -11,7 +11,7 @@ struct TasksView: View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "checklist")
-                    .foregroundStyle(Color(hex: "#6366F1"))
+                    .foregroundStyle(Theme.accent)
                 Text("Задачи со встреч").font(.headline).fixedSize()
                 Text("\(tasks.openCount) открытых")
                     .font(.caption).foregroundStyle(.secondary)

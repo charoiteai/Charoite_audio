@@ -57,7 +57,7 @@ struct LocalChatView: View {
     private var header: some View {
         HStack(spacing: 10) {
             Image(systemName: "brain.head.profile")
-                .foregroundStyle(Color(hex: "#6366F1"))
+                .foregroundStyle(Theme.accent)
             // fixedSize: в панели рядом с суфлёром места мало, и заголовки
             // ломались пополам — «Локальный / чат», «Память / Чароита».
             Text("Локальный чат")
@@ -107,7 +107,7 @@ struct LocalChatView: View {
                 .background(
                     RoundedRectangle(cornerRadius: 10)
                         .fill(m.role == "user"
-                              ? Color(hex: "#6366F1").opacity(0.14)
+                              ? Theme.accent.opacity(0.14)
                               : Color(nsColor: .quaternarySystemFill))
                 )
             if m.role != "user" {
@@ -140,7 +140,7 @@ struct LocalChatView: View {
             DictationButton(text: $draft)
             Button("Отправить") { submit() }
                 .buttonStyle(.borderedProminent)
-                .tint(Color(hex: "#6366F1"))
+                .tint(Theme.accent)
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(chat.isStreaming || draft.trimmingCharacters(in: .whitespaces).isEmpty)
         }
