@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0](https://github.com/charoiteai/Charoite_audio/compare/v0.29.0...v0.30.0) (2026-07-27)
+
+
+### Features
+
+* iPhone companion v1 skeleton + voice-note routing in import ([#108](https://github.com/charoiteai/Charoite_audio/issues/108)) ([e3dd182](https://github.com/charoiteai/Charoite_audio/commit/e3dd182d301b6f762f9d42fd1cdd08b61d0621bb))
+
 ## [0.29.0](https://github.com/charoiteai/Charoite_audio/compare/v0.28.0...v0.29.0) (2026-07-27)
 
 
