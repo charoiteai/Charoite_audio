@@ -1,0 +1,19 @@
+# Локальные проверки до коммита: pre-commit install
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        args: [--select, "E9,F"]
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+  - repo: local
+    hooks:
+      - id: swiftlint
+        name: swiftlint (errors)
+        entry: bash -c 'swiftlint lint --quiet | grep error && exit 1 || exit 0'
+        language: system
+        files: \.swift$
+        pass_filenames: false

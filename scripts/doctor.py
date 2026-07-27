@@ -68,6 +68,7 @@ def check_config() -> dict:
 def check_ollama(cfg: dict) -> None:
     base = str(cfg.get("llm", {}).get("base_url", "http://127.0.0.1:11434")).rstrip("/")
     try:
+        # nosemgrep — base из локального конфига (свой Ollama), не пользовательский ввод
         with urllib.request.urlopen(f"{base}/api/tags", timeout=4) as r:
             models = [m.get("name", "") for m in json.load(r).get("models", [])]
     except OSError:

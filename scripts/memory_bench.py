@@ -49,6 +49,7 @@ def search_brain(graph: pathlib.Path, query: str) -> str | None:
     import urllib.request
 
     folder = graph.name  # стандартная раскладка: vault/<граф>/…
+    # nosemgrep — адрес локального brain/Ollama из конфига, не внешний ввод
     req = urllib.request.Request(
         "http://127.0.0.1:8100/vault_search",
         data=json.dumps({"query": query, "folder": folder,
@@ -57,6 +58,7 @@ def search_brain(graph: pathlib.Path, query: str) -> str | None:
         headers={"Content-Type": "application/json"},
     )
     try:
+        # nosemgrep — адрес локального brain/Ollama из конфига, не внешний ввод
         with urllib.request.urlopen(req, timeout=25) as resp:
             text = json.load(resp).get("text", "")
     except OSError:

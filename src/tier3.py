@@ -122,11 +122,13 @@ def load_cores(folder: pathlib.Path) -> list[dict]:
 
 
 def _embed_all(cores: list[dict]) -> list[list[float]]:
+    # nosemgrep — адрес локального brain/Ollama из конфига, не внешний ввод
     req = urllib.request.Request(
         f"{OLLAMA}/api/embed",
         data=json.dumps({"model": "bge-m3", "input": [c["repr"] for c in cores],
                          "keep_alive": "60m"}).encode(),
         headers={"Content-Type": "application/json"})
+    # nosemgrep — адрес локального brain/Ollama из конфига, не внешний ввод
     with urllib.request.urlopen(req, timeout=120) as r:
         return json.load(r)["embeddings"]
 

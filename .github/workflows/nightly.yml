@@ -1,0 +1,21 @@
+# Ночной прогон тестов: ловим гниение (зависимости, окружение, флаки),
+# пока никто не смотрит. Красный — увидим утром в Actions.
+name: nightly
+on:
+  schedule:
+    - cron: "15 1 * * *"   # 04:15 МСК — в такт ночному циклу приложения
+  workflow_dispatch: {}
+jobs:
+  pytest:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with: {python-version: "3.12"}
+      - run: python -m pip install -q pytest pyyaml requests numpy soundfile
+      - run: python -m pytest tests/ -q
+  swift:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+      - run: swift test --package-path app 2>&1 | tail -5
