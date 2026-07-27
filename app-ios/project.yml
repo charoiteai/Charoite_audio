@@ -1,0 +1,28 @@
+# XcodeGen-описание iOS-приложения: `xcodegen generate` в этой папке →
+# CharoiteiOS.xcodeproj. Подпись и iCloud-контейнер добавляются в Xcode
+# (Signing & Capabilities: команда разработчика + iCloud Documents).
+name: CharoiteiOS
+options:
+  bundleIdPrefix: ai.charoite
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  CharoiteiOS:
+    type: application
+    platform: iOS
+    sources: [Sources/CharoiteiOS]
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Charoite
+        NSMicrophoneUsageDescription: >-
+          Микрофон нужен для записи встреч и голосовых заметок. Файлы
+          обрабатываются на вашем Mac; в облако сервисов ничего не уходит.
+        UIBackgroundModes: [audio]
+        UILaunchScreen: {}
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.9"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
