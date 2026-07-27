@@ -42,6 +42,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // этого валила всё приложение сигналом 13
         signal(SIGPIPE, SIG_IGN)
         _ = DictationService.shared  // регистрирует глобальные ⌥⌘D и ⌥⌘N
+        // Папка импорта переживает перезапуск: тумблер в Настройках включён —
+        // следим с первого запуска, не дожидаясь открытия настроек
+        let d = UserDefaults.standard
+        if d.bool(forKey: "charoite.importWatch"),
+           let dir = d.string(forKey: "charoite.importDir"), !dir.isEmpty {
+            ImportService.shared.enable(dir: dir)
+        }
         // Тихий прогрев brain-компаньона: холодный первый скан графа мог не
         // уложиться в таймаут запроса — первый вопрос пользователя падал на
         // медленный локальный фолбэк. Пустой запрос строит кэш заранее.

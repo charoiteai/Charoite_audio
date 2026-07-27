@@ -91,7 +91,28 @@ def main() -> None:
     ap.add_argument("--date", help="дата встречи ГГГГ-ММ-ДД (по умолчанию mtime файла)")
     ap.add_argument("--time", help="время ЧЧММ (по умолчанию mtime файла)")
     ap.add_argument("--title", default="", help="тема встречи для архива")
+    ap.add_argument("--scan", action="store_true",
+                    help="файл = ПАПКА-вход: импортировать все поддерживаемые "
+                         "файлы из неё, успешные переносить в done/")
     args = ap.parse_args()
+
+    if args.scan:
+        folder = pathlib.Path(args.file).expanduser()
+        if not folder.is_dir():
+            sys.exit(f"--scan ждёт папку: {folder}")
+        done = folder / "done"
+        done.mkdir(exist_ok=True)
+        todo = [p for p in sorted(folder.iterdir())
+                if p.suffix.lower() in (AUDIO | TEXT | SUBS)]
+        if not todo:
+            print("папка пуста — нечего импортировать")
+            return
+        for f in todo:
+            print(f"=== импорт {f.name} ===")
+            r = subprocess.run([sys.executable, __file__, str(f)])
+            if r.returncode == 0:
+                f.rename(done / f.name)
+        return
 
     src = pathlib.Path(args.file).expanduser()
     if not src.exists():
@@ -122,7 +143,9 @@ def main() -> None:
             tpath.rename(titled)
             tpath = titled
     elif ext in SUBS:
-        entries = parse_subs(src.read_text(encoding="utf-8", errors="ignore"))
+        from vocabulary import apply as vapply, compile_rules
+        entries = parse_subs(vapply(src.read_text(encoding="utf-8", errors="ignore"),
+                                    compile_rules(cfg)))
         if not entries:
             sys.exit("в субтитрах не нашлось реплик")
         tpath.write_text(subs_to_transcript(entries, stamp, src.name), encoding="utf-8")
@@ -130,7 +153,9 @@ def main() -> None:
         print(f"стенограмма из субтитров: {tpath}"
               + (f" · спикеры: {', '.join(speakers)}" if speakers else ""))
     elif ext in TEXT:
-        body = src.read_text(encoding="utf-8", errors="ignore").strip()
+        from vocabulary import apply as vapply, compile_rules
+        body = vapply(src.read_text(encoding="utf-8", errors="ignore").strip(),
+                      compile_rules(cfg))
         if len(body) < 200:
             sys.exit("текст слишком короткий для встречи")
         tpath.write_text(f"# Встреча {stamp} — импорт {src.name}\n\n{body}\n",
@@ -144,6 +169,16 @@ def main() -> None:
     subprocess.run([sys.executable, str(ROOT / "src" / "graph_updater.py"), str(tpath)])
     print("— догенерирую минутки/разбор/тезисы и раскладываю архив…")
     subprocess.run([sys.executable, str(ROOT / "src" / "retro_fill.py")])
+    # исходник — рядом с материалами встречи (APFS-клон: без лишнего места)
+    graph = pathlib.Path(str((cfg.get("sufler") or {}).get("graph_dir", ""))).expanduser()
+    day = stamp[:10]
+    for folder in sorted(graph.parent.glob(f"*/Встречи-архив/{day}*")) + \
+                  sorted(graph.glob(f"Встречи-архив/{day}*")):
+        dest = folder / f"Исходник{src.suffix.lower()}"
+        if not dest.exists():
+            subprocess.run(["cp", "-c", str(src), str(dest)],
+                           capture_output=True)
+        break
     print(f"готово: встреча {stamp} в архиве и графе")
 
 
