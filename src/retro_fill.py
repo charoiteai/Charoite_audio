@@ -23,17 +23,18 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from meeting_archive import archive_meeting  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-NOTE = "<!-- восстановлено ретроспективно по стенограмме, 2026-07-20 -->\n"
+import datetime as _dt
+NOTE = f"<!-- восстановлено ретроспективно по стенограмме, {_dt.date.today()} -->\n"
 
 MINUTES_PROMPT = (
     "Составь минутки в markdown строго по шаблону:\n"
     "# Минутки встречи\n"
-    "**Дата/время:** … **Участники:** (имена из контекста разговора; если не звучали — владелец и собеседники)\n"
-    "## Темы\n(нумерованный список обсуждённых тем, по строке)\n"
-    "## Решения\n(что решили; если решений не было — так и напиши)\n"
-    "## Поручения\n(таблица: Кто | Что | Срок — только реально прозвучавшее)\n"
-    "## Открытые вопросы\n## Риски\n"
-    "Только факты из стенограммы, ничего не выдумывай."
+    "**Дата/время:** … **Участники:** …\n"
+    "## Темы\n## Решения\n## Поручения\n## Открытые вопросы\n## Риски\n\n"
+    "Правила: только то, что прозвучало; пункт — одна строка; никаких "
+    "markdown-таблиц; поручение чекбоксом «- [ ] **Имя** — что — срок»; "
+    "решение «- **что решили** — кто внедряет»; пустой раздел — «нет»; "
+    "весь документ до 900 знаков."
 )
 DEBRIEF_PROMPT = (
     "Составь разбор строго по разделам:\n"
@@ -67,7 +68,10 @@ def gen(cfg: dict, system: str, transcript: str, task: str) -> str:
 
 
 def main():
-    cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
+    cfg_p = ROOT / "config" / "config.yaml"
+    if not cfg_p.exists():  # свежий клон: пример вместо жёсткого падения
+        cfg_p = ROOT / "config" / "config.example.yaml"
+    cfg = yaml.safe_load(cfg_p.read_text(encoding="utf-8"))
     graph = pathlib.Path(cfg["sufler"]["graph_dir"]).expanduser()
     tdir = ROOT / cfg["log"]["transcripts_dir"]
 

@@ -106,6 +106,10 @@ it signals degradation, it does not break the loop.
 
 - **Dictation** (global hotkey) — speak → recognized locally → pasted into
   the active field; the clipboard is restored, images included.
+- **Import recorded meetings** — `scripts/import_meeting.py file`
+  (audio m4a/wav/mp3, text txt/md, subtitles vtt/srt from Zoom/Teams —
+  speaker names preserved) → the full meeting archive: transcript,
+  minutes, debrief, theses, graph; meeting date via `--date/--time`.
 - **Diary (⌥⌘J)** — speak a thought → an entry in the personal sphere
   `Дневник/YYYY-MM-DD.md` under «## HH:MM»: your voice with punctuation,
   ideas, checkbox tasks (visible in the Tasks window), the raw «as
