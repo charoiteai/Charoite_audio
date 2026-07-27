@@ -545,7 +545,7 @@ struct SuflerView: View {
 
     private var transcriptPane: some View {
         VStack(alignment: .leading, spacing: 0) {
-            paneTitle("Стенограмма", systemImage: "text.quote")
+            paneTitle("Стенограмма", systemImage: "text.quote", copy: { sufler.lines.map { "\($0.speaker): \($0.text)" }.joined(separator: "\n\n") })
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
@@ -587,7 +587,7 @@ struct SuflerView: View {
         VSplitView {
             if sufler.thesesOn {
             VStack(alignment: .leading, spacing: 0) {
-                paneTitle("Тезисы", systemImage: "list.bullet.rectangle")
+                paneTitle("Тезисы", systemImage: "list.bullet.rectangle", copy: { sufler.theses.map { "— " + $0 }.joined(separator: "\n") })
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 6) {
@@ -625,7 +625,8 @@ struct SuflerView: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     paneTitle(sufler.isRunning ? "Подсказка" : "Ответ по архиву",
-                              systemImage: sufler.isRunning ? "lightbulb" : "clock.arrow.circlepath")
+                              systemImage: sufler.isRunning ? "lightbulb" : "clock.arrow.circlepath",
+                              copy: { sufler.isRunning ? sufler.hint : archiveAnswer })
                     if sufler.isHinting || isSearchingArchive {
                         ProgressView().controlSize(.small).padding(.trailing, 10)
                     }
@@ -710,7 +711,7 @@ struct SuflerView: View {
             if sufler.cloudOn {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
-                    paneTitle("Claude", systemImage: "cloud.fill")
+                    paneTitle("Claude", systemImage: "cloud.fill", copy: { sufler.cloud })
                     if sufler.isClouding {
                         ProgressView().controlSize(.small).padding(.trailing, 10)
                     }
@@ -771,18 +772,45 @@ struct SuflerView: View {
         .padding(.top, topPad)
     }
 
-    private func paneTitle(_ title: String, systemImage: String) -> some View {
+    private func paneTitle(_ title: String, systemImage: String,
+                           copy: (() -> String)? = nil) -> some View {
         HStack(spacing: 6) {
             Image(systemName: systemImage)
                 .font(.caption)
             Text(title)
                 .font(.caption.weight(.semibold))
             Spacer()
+            if let copy {
+                CopyButton(text: copy)
+            }
         }
         .foregroundStyle(.secondary)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.bar)
+    }
+
+    /// Маленькая кнопка «скопировать панель»: содержимое уходит в буфер,
+    /// иконка на секунду становится галочкой — видно, что сработало.
+    private struct CopyButton: View {
+        let text: () -> String
+        @State private var copied = false
+
+        var body: some View {
+            Button {
+                let s = text()
+                guard !s.isEmpty else { return }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(s, forType: .string)
+                copied = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.caption)
+            }
+            .buttonStyle(.plain)
+            .help("Скопировать")
+        }
     }
 
     /// Единое пустое состояние панелей: иконка + строка, спокойно и тепло.
