@@ -6,6 +6,8 @@ import numpy as np
 
 class STT:
     def __init__(self, cfg: dict):
+        from vocabulary import compile_rules
+        self._vocab_rules = compile_rules(cfg)  # словарь замен на все распознавания
         s = cfg["stt"]
         self.backend = s["backend"]
         self.language = s.get("language", "ru")
@@ -32,6 +34,13 @@ class STT:
 
     def transcribe(self, audio: np.ndarray, samplerate: int) -> str:
         """float32 mono 16kHz → текст. Пустую/шумовую отдачу чистим снаружи."""
+        out = self._transcribe_raw(audio, samplerate)
+        if self._vocab_rules:
+            from vocabulary import apply as _vapply
+            out = _vapply(out, self._vocab_rules)
+        return out
+
+    def _transcribe_raw(self, audio: np.ndarray, samplerate: int) -> str:
         if self.backend == "gigaam":
             return (self._model.recognize(audio, sample_rate=samplerate) or "").strip()
         if self.backend == "parakeet":

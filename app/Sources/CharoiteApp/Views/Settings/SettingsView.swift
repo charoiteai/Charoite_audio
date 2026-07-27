@@ -7,6 +7,9 @@ struct SettingsView: View {
     @AppStorage("charoite.root") private var root = ""
     @AppStorage("charoite.ollama") private var ollama = ""
     @AppStorage("charoite.calendarBriefs") private var calendarBriefs = false
+    @AppStorage("charoite.importDir") private var importDir = ""
+    @AppStorage("charoite.importWatch") private var importWatch = false
+    @ObservedObject private var importer = ImportService.shared
     @State private var check = ""
 
     var body: some View {
@@ -57,6 +60,30 @@ struct SettingsView: View {
                 Text("Ставит launchd-задачу на 04:15: Tier-3 ревизия ядер графа "
                      + "(с бэкапами), бриф _Сегодня.md и бенч качества памяти. "
                      + "Всё локально; лог в /tmp/charoite_nightly.log.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Импорт записей") {
+                TextField("Папка импорта",
+                          text: $importDir,
+                          prompt: Text("~/Charoite_inbox"))
+                    .help("Сюда кладут записи встреч: m4a/wav/mp3, txt/md, vtt/srt")
+                    .onChange(of: importDir) { _, dir in
+                        if importWatch { importer.enable(dir: dir) }
+                    }
+                Toggle("Следить за папкой", isOn: $importWatch)
+                    .disabled(importDir.isEmpty)
+                    .onChange(of: importWatch) { _, on in
+                        on ? importer.enable(dir: importDir) : importer.disable()
+                    }
+                HStack {
+                    Button("Импортировать сейчас") { importer.scanNow(dir: importDir) }
+                        .disabled(importDir.isEmpty)
+                    if !importer.status.isEmpty {
+                        Text(importer.status).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Text("Упавший в папку файл станет встречей графа: стенограмма, "
+                     + "протокол, задачи, узлы. Готовые уходят в done/. Локально.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Календарь") {

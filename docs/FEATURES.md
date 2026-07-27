@@ -109,7 +109,19 @@ it signals degradation, it does not break the loop.
 - **Import recorded meetings** — `scripts/import_meeting.py file`
   (audio m4a/wav/mp3, text txt/md, subtitles vtt/srt from Zoom/Teams —
   speaker names preserved) → the full meeting archive: transcript,
-  minutes, debrief, theses, graph; meeting date via `--date/--time`.
+  minutes, debrief, theses, graph; meeting date via `--date/--time`;
+  the source file is kept next to the meeting materials (APFS clone).
+- **Import folder (watched)** — point the app at a folder (Settings →
+  Import, or `--scan` in the CLI): recordings dropped there become graph
+  meetings on their own; processed files move to `done/`, failed ones
+  stay visible.
+- **Replacement dictionary** — STT mangles domain terms and names;
+  `sufler.vocabulary` in the config fixes them declaratively
+  (case-insensitive, whole words only) on live meetings, dictation,
+  notes and imports alike.
+- **Post-meeting hook** — `sufler.post_meeting_hook`: your command runs
+  after every meeting (live or imported) with `SUFLER_TRANSCRIPT` and
+  `SUFLER_STAMP` in the environment — a local take on webhooks.
 - **Diary (⌥⌘J)** — speak a thought → an entry in the personal sphere
   `Дневник/YYYY-MM-DD.md` under «## HH:MM»: your voice with punctuation,
   ideas, checkbox tasks (visible in the Tasks window), the raw «as

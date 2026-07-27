@@ -600,6 +600,28 @@ def main():
         except Exception as e:
             print(f"cloud-enrich не запустился: {e}")
 
+    run_post_hook(cfg, tpath, stamp)
+
+
+
+
+
+def run_post_hook(cfg: dict, tpath: pathlib.Path, stamp: str) -> None:
+    """Команда пользователя после каждой встречи (аналог webhooks — локально).
+
+    config.yaml: sufler.post_meeting_hook: "путь/скрипт". Получает env
+    SUFLER_TRANSCRIPT / SUFLER_STAMP; сбой хука не валит конвейер.
+    """
+    cmd = str((cfg.get("sufler") or {}).get("post_meeting_hook", "")).strip()
+    if not cmd:
+        return
+    import subprocess
+    env = os.environ | {"SUFLER_TRANSCRIPT": str(tpath), "SUFLER_STAMP": stamp}
+    try:
+        subprocess.run(cmd, shell=True, env=env, timeout=180)
+    except Exception as e:  # noqa: BLE001
+        print(f"post_meeting_hook: {e}")
+
 
 if __name__ == "__main__":
     main()

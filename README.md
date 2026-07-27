@@ -84,7 +84,7 @@ chat with graph memory, dictation (⌥⌘D) and voice notes (⌥⌘N).
 «что решили по платёжному провайдеру?» / "what did we decide about the
 payment provider?" — see the product working before recording anything.
 One command validates the whole retrieval loop: `python3 scripts/memory_bench.py --demo`.
-Got old recordings? One command imports a meeting file (audio/text/Zoom-subtitles) into the archive and the graph: `python3 scripts/import_meeting.py file --date 2026-07-15`.
+Got old recordings? One command imports a meeting file (audio/text/Zoom-subtitles) into the archive and the graph: `python3 scripts/import_meeting.py file --date 2026-07-15`. Or point the app at an import folder (Settings → Import) — recordings dropped there become meetings on their own. A replacement dictionary (`sufler.vocabulary`) fixes terms the STT keeps mangling, everywhere at once.
 
 STT models download automatically on first run (GigaAM via `onnx_asr`). For live diarization put an ERes2Net speaker-embedding ONNX model at `models/diar/embedding.onnx` (see [docs/DIARIZATION.md](docs/DIARIZATION.md)).
 
