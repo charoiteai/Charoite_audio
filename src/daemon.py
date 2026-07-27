@@ -218,6 +218,12 @@ def main():
     if brief:
         emit({"type": "hint", "text": brief})
         emit({"type": "hint_done"})
+        append_hint(tr.path, "стартовый бриф (архив)", brief)   # аудит: бриф был
+    # канон имён: узлы Люди/ графа — чтобы «Андрюха/Света/Полин» подписывались
+    # каноничной формой, а не плодили дубли узлов
+    _people_dir = pathlib.Path(str(cfg["sufler"].get("graph_dir", ""))).expanduser() / "Люди"
+    known_people = sorted(q.stem for q in _people_dir.glob("*.md")) if _people_dir.exists() else []
+    known_first = sorted({n.split()[0] for n in known_people if n and not n.startswith("Собеседник")})
     threading.Thread(target=llm.warmup, daemon=True).start()
     emit({"type": "status", "text": f"Слушаю: {' + '.join(hub.sources)} · LLM: {llm.resolve_model()}"})
 
@@ -922,6 +928,11 @@ def main():
                             pairs = {}
                         for label, name in pairs.items():
                             name = str(name).strip().strip(".,!«»\"").capitalize()
+                            if name and known_first and name not in known_first:
+                                pref = name.casefold()[:4]
+                                hit = [k for k in known_first if k.casefold().startswith(pref)]
+                                if len(hit) == 1:
+                                    name = hit[0]   # Полин→Полина, Андрюх→Андрей
                             # гвард «обращение ≠ говорящий»: если имя звучит ТОЛЬКО в
                             # репликах самой метки и это не самопредставление — отказ
                             # («Саш, ну а кто…» помечало говорящего Сашей — 21.07)
@@ -1176,12 +1187,12 @@ def main():
         seen_bytes = 0
         first = True
         while not stop.is_set():
-            stop.wait(180 if first else interval)
+            stop.wait(75 if first else interval)
             if stop.is_set():
                 return
             first = False
             tail = tr.tail(2500)
-            if len(tail) < 600:
+            if len(tail) < 400:
                 continue
             try:  # прирост стенограммы мал — тема не менялась, не дёргаемся
                 size = tr.path.stat().st_size
