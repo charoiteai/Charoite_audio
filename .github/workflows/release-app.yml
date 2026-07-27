@@ -80,7 +80,7 @@ jobs:
           fi
       # Собираем КОД ТЕГА. make_app.sh штампует версию из git describe —
       # на checkout тега это ровно сам тег, Info.plist совпадает с релизом.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.resolve.outputs.build == 'true'
         with:
           ref: refs/tags/${{ steps.resolve.outputs.tag }}
