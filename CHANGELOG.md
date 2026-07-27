@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.1](https://github.com/charoiteai/Charoite_audio/compare/v0.31.0...v0.31.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* voice-notes index first letter + cloud guard covers scripts/ ([#115](https://github.com/charoiteai/Charoite_audio/issues/115)) ([ea7e77b](https://github.com/charoiteai/Charoite_audio/commit/ea7e77bd463028827f77a2285cf36ee2d58d2387))
+
 ## [0.31.0](https://github.com/charoiteai/Charoite_audio/compare/v0.30.0...v0.31.0) (2026-07-27)
 
 
