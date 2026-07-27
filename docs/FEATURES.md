@@ -106,6 +106,12 @@ it signals degradation, it does not break the loop.
 
 - **Dictation** (global hotkey) — speak → recognized locally → pasted into
   the active field; the clipboard is restored, images included.
+- **Diary (⌥⌘J)** — speak a thought → an entry in the personal sphere
+  `Дневник/YYYY-MM-DD.md` under «## HH:MM»: your voice with punctuation,
+  ideas, checkbox tasks (visible in the Tasks window), the raw «as
+  spoken» text; a thought about today's meeting gets a link to it —
+  backlinks connect the spheres while the text stays in the diary.
+  Personal entries never leak into work search.
 - **Voice note** — speak a thought → the model cleans it up, adds a title,
   extracts tasks → a file in the graph (`Notes/`) + remembered in memory.
   The raw text is kept alongside ("As spoken").

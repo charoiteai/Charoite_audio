@@ -50,6 +50,11 @@ struct MenuBarView: View {
                 } label: {
                     Label("Заметка ⌥⌘N", systemImage: "note.text.badge.plus")
                 }
+                Button {
+                    DictationService.shared.toggleDiary()
+                } label: {
+                    Label("Дневник ⌥⌘J", systemImage: "book.closed")
+                }
             }
             .buttonStyle(.plain)
             .font(.caption)
