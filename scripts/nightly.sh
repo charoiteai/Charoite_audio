@@ -16,6 +16,10 @@ echo "=== nightly $(date '+%F %T') ==="
 # право на слияние — у конфига (sufler.tier3_auto_apply), не у cron:
 # --auto сливает только при true, иначе обратимые пометки (--mark)
 $PY scripts/tier3_cores.py --all-graphs --auto || { echo "❌ РЕВИЗИЯ ЯДЕР УПАЛА (код $?)"; rc=1; }
+echo "--- claude cores review ---"
+# облачный взгляд на ядра (Opus): отчёт-рекомендации, ничего не правит.
+# Выключено sufler.cloud_enrich/SUFLER_NO_CLOUD — шаг молчит.
+$PY scripts/nightly_claude_cores.py || echo "⚠️ облачная ревизия не отработала"
 echo "--- morning brief ---"
 $PY scripts/morning_brief.py || { echo "❌ УТРЕННИЙ БРИФ УПАЛ (код $?)"; rc=1; }
 echo "--- memory bench ---"

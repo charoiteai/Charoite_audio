@@ -20,9 +20,38 @@ targets:
           обрабатываются на вашем Mac; в облако сервисов ничего не уходит.
         UIBackgroundModes: [audio]
         UILaunchScreen: {}
+        CFBundleVersion: "4"
+        NSUbiquitousContainers:
+          iCloud.ai.charoite.inbox:
+            NSUbiquitousContainerIsDocumentScopePublic: true
+            NSUbiquitousContainerName: Charoite
+            NSUbiquitousContainerSupportedFolderLevels: Any
+    entitlements:
+      path: CharoiteiOS.entitlements
     settings:
       base:
         TARGETED_DEVICE_FAMILY: "1"
+        DEVELOPMENT_TEAM: AR7PDJQNR4
+        CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.9"
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
+  CharoiteiOSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [Tests/CharoiteiOSUITests]
+    dependencies:
+      - target: CharoiteiOS
+    settings:
+      base:
+        TEST_TARGET_NAME: CharoiteiOS
+        DEVELOPMENT_TEAM: AR7PDJQNR4
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  CharoiteiOS:
+    build:
+      targets: {CharoiteiOS: all, CharoiteiOSUITests: [test]}
+    run: {config: Debug}
+    test:
+      config: Debug
+      targets: [CharoiteiOSUITests]

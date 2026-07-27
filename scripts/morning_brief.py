@@ -108,6 +108,29 @@ def build_brief(graph: pathlib.Path) -> str | None:
             lines += ["## Tier3 просит свести вручную"] + [
                 f"- [[Ядра/{n}|{n}]]" for n in sorted(set(to_merge))] + [""]
 
+    # ночная ревизия Opus: три риска — в самый верх брифа, хвосты — в конец.
+    # Берём свежий отчёт (сегодня либо вчера), старый молча пропускаем.
+    for shift in (0, 1):
+        day = (dt.date.today() - dt.timedelta(days=shift)).isoformat()
+        rev = graph / f"Служебное_ночная_ревизия_{day}.md"
+        if rev.exists():
+            rt = rev.read_text(encoding="utf-8")
+            def night_sect(name: str) -> list[str]:
+                m = re.search(rf"^#+\s*(?:\d+\.\s*)?{name}.*?$\n(.*?)(?=^#+\s|\Z)",
+                              rt, re.M | re.S | re.I)
+                return [ln for ln in m.group(1).strip().splitlines() if ln.strip()] if m else []
+            risks = night_sect("Три (?:главных )?риска")
+            tails = night_sect("Потерянные хвосты")
+            link = f"[[{rev.stem}|полный отчёт]]"
+            if risks:
+                head = lines.index("")  # после frontmatter-блока и заголовка
+                # вставляем сразу после «# Сегодня …» и пустой строки
+                pos = lines.index("", lines.index("# Сегодня — контекст дня (по встречам " + last_day + ")"))
+                lines[pos:pos] = ["", "## Три риска недели (ночная ревизия)"] + risks + [link, ""]
+            if tails:
+                lines += ["## Потерянные хвосты (ночная ревизия)"] + tails + [link, ""]
+            break
+
     return "\n".join(lines)
 
 

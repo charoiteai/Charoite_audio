@@ -4,6 +4,7 @@ import SwiftUI
 struct RecordView: View {
     @StateObject private var rec = Recorder()
     @State private var kind: Recorder.Kind = .meeting
+    @State private var showPicker = false
 
     var body: some View {
         VStack(spacing: 24) {
@@ -55,6 +56,30 @@ struct RecordView: View {
         }
         .padding(.vertical)
         .navigationTitle("Запись")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showPicker = true
+                } label: {
+                    Image(systemName: Inbox.folderChosen ? "folder.badge.gearshape" : "folder.badge.questionmark")
+                }
+                .accessibilityLabel("Папка доставки")
+            }
+        }
+        .sheet(isPresented: $showPicker) {
+            FolderPicker { url in
+                do {
+                    try Inbox.saveFolder(url)
+                    rec.lastResult = "Папка выбрана: \(url.lastPathComponent)"
+                    Task { await Inbox.flush { msg in rec.lastResult = msg } }
+                } catch {
+                    rec.lastResult = "Не удалось запомнить папку: \(error.localizedDescription)"
+                }
+            }
+        }
+        .task {
+            await Inbox.flush { msg in rec.lastResult = msg }
+        }
     }
 
     private func timeString(_ t: TimeInterval) -> String {
