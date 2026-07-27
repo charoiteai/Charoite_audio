@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0](https://github.com/charoiteai/Charoite_audio/compare/v0.28.0...v0.29.0) (2026-07-27)
+
+
+### Features
+
+* merge same-voice diarization shards (no biometrics stored) ([#106](https://github.com/charoiteai/Charoite_audio/issues/106)) ([c588393](https://github.com/charoiteai/Charoite_audio/commit/c588393d9da78b2f616a6e133669c333cbe8d1ef))
+
 ## [0.28.0](https://github.com/charoiteai/Charoite_audio/compare/v0.27.0...v0.28.0) (2026-07-27)
 
 
