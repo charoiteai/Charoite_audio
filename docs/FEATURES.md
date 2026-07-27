@@ -102,6 +102,11 @@ end on an `echo`, so launchd reported green even on nights when nothing
 happened at all. A sagging bench is a warning in the log, not a failure:
 it signals degradation, it does not break the loop.
 
+- **Archive folder names carry the meeting time** — «2026-07-24 11-30 —
+  Topic»: five meetings a day are distinguishable at a glance, and folder
+  mtime lies after re-processing anyway. Old-format folders migrate
+  automatically on next update.
+
 ## Outside meetings
 
 - **Dictation** (global hotkey) — speak → recognized locally → pasted into
