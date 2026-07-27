@@ -119,9 +119,12 @@ it signals degradation, it does not break the loop.
   (`sufler.live_context`).
 - **Cloud-refined hints** — the ladder pattern for hints: the local
   model answers instantly, then a cloud model (Claude CLI, default
-  Haiku) appends a refinement to the cloud feed of the same window.
-  Sends transcript to the cloud on every hint — separate switch,
-  default OFF (`sufler.cloud_hints`).
+  Haiku) appends «☁️ …» right into the SAME hint card (stale
+  refinements go to the hints log only). Sends transcript to the cloud
+  on every hint — separate switch, default OFF (`sufler.cloud_hints`).
+- **Opening brief** — the hint card is not empty at meeting start: it
+  shows the last meeting's topic, agreed decisions and open-task count
+  from the archive — instantly, file-parse only, main graph only.
 - **Import folder (watched)** — point the app at a folder (Settings →
   Import, or `--scan` in the CLI): recordings dropped there become graph
   meetings on their own; processed files move to `done/`, failed ones
