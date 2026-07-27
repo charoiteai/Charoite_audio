@@ -18,6 +18,7 @@ final class DictationService: ObservableObject {
     private var stdinPipe: Pipe?
     private var hotKeyRef: EventHotKeyRef?
     private var noteHotKeyRef: EventHotKeyRef?
+    private var diaryHotKeyRef: EventHotKeyRef?
     /// Задан — распознанный текст уходит сюда (кнопка-микрофон в чате),
     /// иначе — системная вставка в активное поле (глобальный ⌥⌘D)
     private var onResult: ((String) -> Void)?
@@ -45,8 +46,11 @@ final class DictationService: ObservableObject {
                               MemoryLayout<EventHotKeyID>.size, nil, &hkID)
             let id = hkID.id
             Task { @MainActor in
-                id == 2 ? DictationService.shared.toggleNote()
-                        : DictationService.shared.toggle()
+                switch id {
+                case 2: DictationService.shared.toggleNote()
+                case 3: DictationService.shared.toggleDiary()
+                default: DictationService.shared.toggle()
+                }
             }
             return noErr
         }, 1, &eventType, nil, nil)
@@ -57,6 +61,10 @@ final class DictationService: ObservableObject {
         let noteID = EventHotKeyID(signature: OSType(0x4348_5244), id: 2)
         RegisterEventHotKey(UInt32(kVK_ANSI_N), UInt32(cmdKey | optionKey),
                             noteID, GetApplicationEventTarget(), 0, &noteHotKeyRef)
+        // ⌥⌘J — дневник (мысль в Дневник/YYYY-MM-DD.md со связью со встречей)
+        let diaryID = EventHotKeyID(signature: OSType(0x4348_5244), id: 3)
+        RegisterEventHotKey(UInt32(kVK_ANSI_J), UInt32(cmdKey | optionKey),
+                            diaryID, GetApplicationEventTarget(), 0, &diaryHotKeyRef)
     }
 
     func toggle() {
@@ -82,9 +90,20 @@ final class DictationService: ObservableObject {
         }
     }
 
+    /// Дневник: мысль уходит в личную сферу (Дневник/день.md, секция HH:MM)
+    /// с идеями, задачами-чекбоксами и ссылкой на сегодняшнюю встречу.
+    func toggleDiary() {
+        if isRecording {
+            stop()
+        } else {
+            start(script: "src/dictate_note.py", args: ["--diary"], note: true)
+        }
+    }
+
     // MARK: - Запись (python: sounddevice + GigaAM, всё локально)
 
-    private func start(script: String = "src/dictate.py", note: Bool = false,
+    private func start(script: String = "src/dictate.py", args: [String] = [],
+                       note: Bool = false,
                        onResult: ((String) -> Void)? = nil) {
         // proc ещё жив (стоп идёт, распознавание не финишировало) — выходим, НЕ
         // трогая noteMode/onResult in-flight записи. Иначе повторный вызов
@@ -94,7 +113,7 @@ final class DictationService: ObservableObject {
         self.onResult = onResult
         let p = Process()
         p.executableURL = suflerRoot.appendingPathComponent(".venv/bin/python")
-        p.arguments = [script]
+        p.arguments = [script] + args
         p.currentDirectoryURL = suflerRoot
         let inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()
         p.standardInput = inPipe
@@ -129,7 +148,10 @@ final class DictationService: ObservableObject {
             proc = p
             stdinPipe = inPipe
             isRecording = true
-            status = noteMode ? "🎙 заметка… говори (⌥⌘N — стоп)" : "🎙 диктовка… (⌥⌘D — стоп)"
+            status = noteMode
+                ? (args.contains("--diary") ? "🎙 дневник… говори (⌥⌘J — стоп)"
+                                            : "🎙 заметка… говори (⌥⌘N — стоп)")
+                : "🎙 диктовка… (⌥⌘D — стоп)"
             NSSound(named: "Pop")?.play()
             // глобальный хоткей легко забыть: не даём писать вечно — часовой
             // wav всё равно не распознается, а микрофон «висит» открытым

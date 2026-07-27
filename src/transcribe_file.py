@@ -1,6 +1,6 @@
 """Оффлайн-расшифровка аудиозаписи в стенограмму конвейера суфлёра.
 
-Запуск: .venv/bin/python src/transcribe_file.py <файл.m4a|wav> [ЧЧММ]
+Запуск: .venv/bin/python src/transcribe_file.py <файл.m4a|wav> [ЧЧММ] [ГГГГ-ММ-ДД]
 m4a → wav 16кГц (afconvert, нативный macOS) → GigaAM сегментами 25с
 с перекрытием → склейка с дедупом швов → transcripts/<дата>_<ЧЧММ>.md →
 дальше обычный путь: graph_updater (тема, граф, разбор, Opus-ревизия).
@@ -69,7 +69,10 @@ def main():
     # штамп: время записи файла (когда встреча была), не время расшифровки
     mt = dt.datetime.fromtimestamp(src.stat().st_mtime)
     hhmm = sys.argv[2] if len(sys.argv) > 2 else f"{mt:%H%M}"
-    stamp = f"{mt:%Y-%m-%d}_{hhmm}"
+    # дата встречи третьим аргументом: у старой записи mtime может быть
+    # датой копирования, а recency и имя файла живут на дате встречи
+    day = sys.argv[3] if len(sys.argv) > 3 else f"{mt:%Y-%m-%d}"
+    stamp = f"{day}_{hhmm}"
 
     out_dir = ROOT / cfg["log"]["transcripts_dir"]
     tpath = out_dir / f"{stamp}.md"
