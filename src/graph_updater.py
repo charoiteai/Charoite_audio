@@ -618,6 +618,7 @@ def run_post_hook(cfg: dict, tpath: pathlib.Path, stamp: str) -> None:
     import subprocess
     env = os.environ | {"SUFLER_TRANSCRIPT": str(tpath), "SUFLER_STAMP": stamp}
     try:
+        # nosemgrep — команду задаёт владелец в СВОЁМ конфиге (post_meeting_hook), это фича
         subprocess.run(cmd, shell=True, env=env, timeout=180)
     except Exception as e:  # noqa: BLE001
         print(f"post_meeting_hook: {e}")

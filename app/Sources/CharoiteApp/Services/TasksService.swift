@@ -23,6 +23,7 @@ final class TasksService: ObservableObject {
     @Published private(set) var items: [Item] = []
     @Published private(set) var openCount = 0
 
+    // swiftlint:disable:next force_try — литеральный паттерн, ошибка невозможна
     private static let todoRx = try! NSRegularExpression(pattern: #"^\s*[-*] \[( |x|X)\] +(.+)$"#)
 
     /// Полный скан графа. Быстрый (только чтение .md), зовётся при открытии

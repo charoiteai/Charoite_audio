@@ -1,0 +1,12 @@
+included: [app/Sources, app-ios/Sources]
+disabled_rules:
+  - identifier_name    # короткие имена в утилитарном коде — осознанный стиль
+  - line_length          # русские комментарии длинные — это осознанно
+  - trailing_comma
+opt_in_rules:
+  - empty_count
+  - closure_spacing
+cyclomatic_complexity: {warning: 25, error: 40}
+function_body_length: {warning: 80, error: 150}
+type_body_length: {warning: 300, error: 800}
+large_tuple: {warning: 3, error: 5}
