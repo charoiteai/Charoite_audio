@@ -43,7 +43,7 @@ def build_brief(graph: pathlib.Path) -> str | None:
     # последний день со встречами: папки «YYYY-MM-DD — Название»
     days: dict[str, list[pathlib.Path]] = {}
     for d in archive.iterdir():
-        m = re.match(r"(\d{4}-\d{2}-\d{2}) — ", d.name)
+        m = re.match(r"(\d{4}-\d{2}-\d{2})(?:[_ ]\d{2}-?\d{2})? — ", d.name)
         if d.is_dir() and m:
             days.setdefault(m.group(1), []).append(d)
     if not days:
