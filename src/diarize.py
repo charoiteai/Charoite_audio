@@ -83,7 +83,67 @@ def diarize(audio: np.ndarray, sr: int, num_speakers: int = -1, threshold: float
     assert sd.sample_rate == sr, f"диаризатор ждёт {sd.sample_rate} Гц"
     print("диаризация…", flush=True)
     result = sd.process(audio).sort_by_start_time()
-    return [(s.start, s.end, s.speaker) for s in result]
+    segs = [(s.start, s.end, s.speaker) for s in result]
+    if num_speakers <= 0:
+        segs = _merge_shards(audio, sr, segs)
+    return segs
+
+
+def _merge_shards(audio: np.ndarray, sr: int, segs, threshold: float = 0.72):
+    """Осколки одного голоса → один кластер (очная встреча в один микрофон
+    давала 30 «голосов» на четверых, 27.07). Средние эмбеддинги кластеров
+    сравниваются по косинусу; ≥ threshold — это один человек. Пороги из
+    прототипа 27.07: свой голос 0.83–0.91, чужие ≤0.58 — середина с запасом.
+
+    Биометрию НЕ храним (решение владельца 27.07): эмбеддинги живут только
+    внутри этого вызова и выбрасываются.
+    """
+    import sherpa_onnx
+    by: dict[int, list[tuple[float, float, float]]] = {}
+    for s, e, k in segs:
+        if e - s >= 2.0:
+            by.setdefault(k, []).append((e - s, s, e))
+    if len(by) <= 1:
+        return segs
+    ex = sherpa_onnx.SpeakerEmbeddingExtractor(
+        sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(EMB_MODEL)))
+    embs: dict[int, np.ndarray] = {}
+    for k, items in by.items():
+        vecs = []
+        for _d, s, e in sorted(items, reverse=True)[:5]:
+            st = ex.create_stream()
+            st.accept_waveform(sr, audio[int(s * sr):int(e * sr)])
+            st.input_finished()
+            if ex.is_ready(st):
+                vecs.append(np.array(ex.compute(st)))
+        if vecs:
+            v = np.mean(vecs, axis=0)
+            embs[k] = v / np.linalg.norm(v)
+
+    parent = {k: k for k in by}
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    ks = sorted(embs)
+    for i, a in enumerate(ks):
+        for b in ks[i + 1:]:
+            if float(np.dot(embs[a], embs[b])) >= threshold:
+                parent[find(b)] = find(a)
+    # канон группы — кластер с наибольшей суммарной речью (стабильные метки)
+    talk = {k: sum(d for d, _s, _e in items) for k, items in by.items()}
+    canon: dict[int, int] = {}
+    for k in by:
+        r = find(k)
+        canon[r] = k if r not in canon or talk[k] > talk[canon[r]] else canon[r]
+    remap = {k: canon[find(k)] for k in by}
+    merged = len(by) - len(set(remap.values()))
+    if merged:
+        print(f"склейка осколков: {len(by)} кластеров → {len(set(remap.values()))}", flush=True)
+    return [(s, e, remap.get(k, k)) for s, e, k in segs]
 
 
 def name_speakers(cfg: dict, lines: list[tuple[str, float, float, str]]) -> dict[str, str]:
