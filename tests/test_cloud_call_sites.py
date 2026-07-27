@@ -31,10 +31,13 @@ NETWORK_EXITS = (
     ("daemon.py", "cloud_loop"),
     ("daemon.py", "cloud_hint_refine"),
     ("graph_updater.py", "main"),
+    ("nightly_claude_cores.py", "main"),
 )
 
 
 def _func(path: pathlib.Path, name: str) -> ast.FunctionDef:
+    if not path.exists():   # выходы живут и в scripts/, не только в src/
+        path = path.parent.parent / "scripts" / path.name
     tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == name:

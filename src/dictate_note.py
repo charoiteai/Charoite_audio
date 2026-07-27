@@ -167,7 +167,7 @@ def main():
     notes = sorted((p for p in ndir.glob("*.md") if not p.name.startswith("_")), reverse=True)
     moc.write_text(
         "# Голосовые заметки\n\n" +
-        "\n".join(f"- [[Заметки/{p.stem}|{p.stem[17:].replace('_', ' ') or p.stem}]] — {p.stem[:16].replace('_', ' ')}"
+        "\n".join(f"- [[Заметки/{p.stem}|{p.stem[16:].replace('_', ' ') or p.stem}]] — {p.stem[:15].replace('_', ' ')}"
                   for p in notes) + "\n",
         encoding="utf-8")
 
