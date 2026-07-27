@@ -143,6 +143,36 @@ def load_claude_proxy_env() -> dict:
         return {}
 
 
+def start_brief(cfg: dict) -> str:
+    """Компактный бриф последней встречи для стартовой карточки подсказок.
+
+    Файловый парс без моделей: старт должен быть мгновенным. Только основной
+    граф — соседние сферы vault (личные) в рабочий бриф не подмешиваются.
+    """
+    gdir = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser()
+    meetings = sorted((gdir / "Встречи").glob("*.md")) if (gdir / "Встречи").exists() else []
+    if not meetings:
+        return ""
+    last = meetings[-1]
+    text = last.read_text(encoding="utf-8", errors="ignore")
+    title = last.stem
+    for line in text.splitlines():
+        if line.startswith("# "):
+            title = line[2:].strip()
+            break
+    lines: list[str] = [f"📚 Прошлая встреча: {title}"]
+    if "## Решения" in text:
+        sec = text.split("## Решения", 1)[1].split("\n## ", 1)[0]
+        dots = [ln.strip() for ln in sec.splitlines() if ln.strip().startswith("- ")][:4]
+        if dots:
+            lines.append("Договорились:")
+            lines += [f"  {d}" for d in dots]
+    open_tasks = text.count("- [ ]")
+    if open_tasks:
+        lines.append(f"Открытых задач: {open_tasks}")
+    return "\n".join(lines)[:900] + "\n"
+
+
 def load_graph_context(cfg: dict) -> str:
     """Память прошлых встреч из Obsidian-графа: MOC + две последние встречи."""
     gdir = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser()
@@ -182,6 +212,12 @@ def main():
     if graph_ctx:
         llm.system += f"\n\nПамять прошлых встреч (из графа проекта):\n{graph_ctx}"
         emit({"type": "status", "text": f"Граф подключён к промптам ({len(graph_ctx)} зн. памяти)"})
+    # архив ГЛАЗАМИ с первой секунды: карточка подсказок пустует до первой
+    # генерации — кладём туда бриф последней встречи (тема, решения, задачи)
+    brief = start_brief(cfg)
+    if brief:
+        emit({"type": "hint", "text": brief})
+        emit({"type": "hint_done"})
     threading.Thread(target=llm.warmup, daemon=True).start()
     emit({"type": "status", "text": f"Слушаю: {' + '.join(hub.sources)} · LLM: {llm.resolve_model()}"})
 
@@ -387,9 +423,12 @@ def main():
     if quiet:
         emit({"type": "status", "text": f"🔇 тихий режим: фон на {llm.small}, 26b — только точечно"})
 
+    _hint_gen = [0]   # поколение подсказки: облачное уточнение к устаревшей — в файл, не в UI
+
     def gen_hint(header: str | None = None, manual: bool = False, model: str | None = None):
         if manual:
             manual_evt.set()  # сигнал авто-генерации уступить
+        _hint_gen[0] += 1
         with hint_lock:
             if manual:
                 manual_evt.clear()
@@ -441,8 +480,7 @@ def main():
             env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
             env.update(load_claude_proxy_env())
             short = model.split("-")[1] if model.count("-") else model
-            emit({"type": "cloud_start",
-                  "text": f"☁️ {dt.datetime.now():%H:%M:%S} {short} уточняет подсказку…"})
+            my_gen = _hint_gen[0]
             try:
                 r = subprocess.run(
                     [claude_bin, "-p",
@@ -455,10 +493,17 @@ def main():
                      "--model", model],
                     capture_output=True, text=True, timeout=60, env=env)
                 out = (r.stdout or "").strip()
-                emit({"type": "cloud", "text": out or f"[{short}: пусто]"})
             except Exception as e:  # noqa: BLE001
-                emit({"type": "cloud", "text": f"[{short}: {e}]"})
-            emit({"type": "cloud_done"})
+                out = f"[{short}: {e}]"
+            if not out:
+                return
+            append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] уточнение ({short})", out)
+            # подсказки и облако — ЕДИНЫЙ поток: уточнение дописывается в ту же
+            # карточку. Если пользователь уже запросил новую подсказку (ручной
+            # сброс буфера) — устаревшее уточнение остаётся только в файле
+            if _hint_gen[0] == my_gen:
+                emit({"type": "hint", "text": f"\n\n☁️ {short}: {out}"})
+                emit({"type": "hint_done"})
 
         threading.Thread(target=cloud_hint_refine, daemon=True).start()
 
