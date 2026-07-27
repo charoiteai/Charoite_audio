@@ -29,6 +29,7 @@ SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 # (файл, функция, что должно упоминаться внутри)
 NETWORK_EXITS = (
     ("daemon.py", "cloud_loop"),
+    ("daemon.py", "cloud_hint_refine"),
     ("graph_updater.py", "main"),
 )
 
