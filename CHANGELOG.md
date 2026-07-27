@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.0](https://github.com/charoiteai/Charoite_audio/compare/v0.30.0...v0.31.0) (2026-07-27)
+
+
+### Features
+
+* iOS folder-picker delivery + outbox queue; nightly Opus review in brief ([#111](https://github.com/charoiteai/Charoite_audio/issues/111)) ([7c0dde1](https://github.com/charoiteai/Charoite_audio/commit/7c0dde11c63427d6d3fe21a02d8d91c99281ade5))
+
 ## [0.30.0](https://github.com/charoiteai/Charoite_audio/compare/v0.29.0...v0.30.0) (2026-07-27)
 
 
