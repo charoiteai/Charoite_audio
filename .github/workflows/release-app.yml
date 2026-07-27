@@ -85,7 +85,7 @@ jobs:
         with:
           ref: refs/tags/${{ steps.resolve.outputs.tag }}
           fetch-depth: 0   # вся история + теги, иначе git describe слепнет
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         if: steps.resolve.outputs.build == 'true'
         with:
           path: app/.build
