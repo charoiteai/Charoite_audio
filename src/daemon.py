@@ -177,6 +177,7 @@ def main():
     # env-override для тестов: стенограммы в песочницу, не в боевую папку
     tdir = os.environ.get("SUFLER_TRANSCRIPTS_DIR")
     tr = Transcript(pathlib.Path(tdir) if tdir else ROOT / cfg["log"]["transcripts_dir"])
+    system_base = llm.system   # без памяти: живой контекст пересобирает поверх
     graph_ctx = load_graph_context(cfg)
     if graph_ctx:
         llm.system += f"\n\nПамять прошлых встреч (из графа проекта):\n{graph_ctx}"
@@ -414,6 +415,52 @@ def main():
             if parts:  # подсказки тоже сохраняем — лог полного разговора
                 kind = "ручная" if manual else "авто"
                 append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] подсказка ({kind})", "".join(parts))
+            if parts and not parts[-1].endswith("⏸"):
+                _cloud_refine_hint(tail, "".join(parts))
+
+    _refine_last = {"len": 0}
+
+    def _cloud_refine_hint(tail: str, local_hint: str):
+        """Лестница и для подсказок: локальная мгновенно → Haiku доуточняет.
+
+        Уточнение падает в облачную ленту того же окна (тот же путь, что
+        ответы на вопросы) — hint-карточку перезапишет следующая подсказка,
+        а лента остаётся. Выключатель отдельный от cloud_live: подсказки
+        стреляют часто, и это постоянный поток стенограммы в облако.
+        """
+        if not (cfg["sufler"].get("cloud_hints", False)
+                and cloud_live and toggles["cloud"]):
+            return
+        if len(tail) - _refine_last["len"] < 400:
+            return   # разговор не набежал — Haiku скажет то же самое
+        _refine_last["len"] = len(tail)
+
+        def cloud_hint_refine():
+            claude_bin = shutil.which("claude") or "/opt/homebrew/bin/claude"
+            model = cfg["sufler"].get("cloud_hints_model", "claude-haiku-4-5")
+            env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+            env.update(load_claude_proxy_env())
+            short = model.split("-")[1] if model.count("-") else model
+            emit({"type": "cloud_start",
+                  "text": f"☁️ {dt.datetime.now():%H:%M:%S} {short} уточняет подсказку…"})
+            try:
+                r = subprocess.run(
+                    [claude_bin, "-p",
+                     "Рабочая встреча. Последние реплики:\n" + tail + "\n\n"
+                     "Локальная модель уже дала подсказку:\n" + local_hint[:1200] +
+                     "\n\nДай УТОЧНЕНИЕ: 2-4 коротких пункта — что локальная "
+                     "подсказка упустила или где неточна. Только новое, не "
+                     "пересказывай её. ЧЕСТНОСТЬ ВАЖНЕЕ УВЕРЕННОСТИ: факты "
+                     "встречи бери только из реплик. Русский, без преамбул.",
+                     "--model", model],
+                    capture_output=True, text=True, timeout=60, env=env)
+                out = (r.stdout or "").strip()
+                emit({"type": "cloud", "text": out or f"[{short}: пусто]"})
+            except Exception as e:  # noqa: BLE001
+                emit({"type": "cloud", "text": f"[{short}: {e}]"})
+            emit({"type": "cloud_done"})
+
+        threading.Thread(target=cloud_hint_refine, daemon=True).start()
 
     def auto_hint_loop():
         """Подсказки в реальном времени: сами, по мере накопления разговора."""
@@ -1069,10 +1116,71 @@ def main():
                     emit({"type": "status", "text": f"⚙️ {ru[parts[1]]} {state}"})
         stop.set()  # stdin закрылся — родитель умер
 
+    def live_context_loop():
+        """Архив подтягивается ПО ТЕМЕ идущей встречи, а не «две последние».
+
+        Стартовый load_graph_context слеп: тема встречи проявляется в первые
+        минуты разговора. Здесь: хвост стенограммы → small-модель выжимает
+        тему и термины → vault_search по графу → блок «Память прошлых
+        встреч» в системном промпте пересобирается. Подсказки, instant и
+        ответы на вопросы начинают видеть старые договорённости по теме.
+        """
+        if not cfg["sufler"].get("live_context", True):
+            return
+        interval = int(cfg["sufler"].get("live_context_interval", 600))
+        seen_bytes = 0
+        first = True
+        while not stop.is_set():
+            stop.wait(180 if first else interval)
+            if stop.is_set():
+                return
+            first = False
+            tail = tr.tail(2500)
+            if len(tail) < 600:
+                continue
+            try:  # прирост стенограммы мал — тема не менялась, не дёргаемся
+                size = tr.path.stat().st_size
+            except OSError:
+                continue
+            if size - seen_bytes < 1500:
+                continue
+            seen_bytes = size
+            query = ""
+            try:
+                with hint_lock:   # не толкаться с подсказкой на одной модели
+                    query = "".join(llm.stream(
+                        "Стенограмма идущей встречи (хвост):\n\n" + tail +
+                        "\n\nНазови тему встречи и 6-8 ключевых терминов, "
+                        "систем, имён. ОДНОЙ строкой, через запятую, без "
+                        "пояснений.",
+                        model=llm.small,
+                        system="Ты выжимаешь поисковый запрос из стенограммы. "
+                               "Отвечай одной короткой строкой.")).strip()[:300]
+            except Exception:  # noqa: BLE001
+                pass
+            if not query:
+                query = tail[-400:]
+            try:
+                import requests as _rq
+                _folder = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser().name
+                v = _rq.post("http://127.0.0.1:8100/vault_search",
+                             json={"query": query, "limit": 4, "folder": _folder,
+                                   "snippet_chars": 500}, timeout=6).json().get("text", "")
+            except Exception:  # noqa: BLE001
+                continue   # brain лежит — остаёмся на стартовом контексте
+            if not v or v.startswith("⚠") or "не найдено" in v.lower():
+                continue   # запрос мимо архива — не портим то, что есть
+            llm.system = (system_base +
+                          "\n\nПамять прошлых встреч (подобрано по теме идущей "
+                          "встречи; договорённости и решения оттуда можно "
+                          "упоминать как прошлые):\n" + v[:2600])
+            topic = query.split(",")[0][:60]
+            emit({"type": "status", "text": f"🧠 Контекст по теме «{topic}»: архив подтянут"})
+
     threads = [threading.Thread(target=f, daemon=True) for f in (
         stt_loop, think_loop, auto_hint_loop, instant_loop, cloud_loop,
         fast_trigger_loop, deja_vu_loop, dialog_markup_loop, name_loop,
-        minutes_loop, deep_loop, stdin_loop,
+        minutes_loop, deep_loop, live_context_loop, stdin_loop,
     )]
     for t in threads:
         t.start()

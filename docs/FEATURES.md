@@ -111,6 +111,17 @@ it signals degradation, it does not break the loop.
   speaker names preserved) → the full meeting archive: transcript,
   minutes, debrief, theses, graph; meeting date via `--date/--time`;
   the source file is kept next to the meeting materials (APFS clone).
+- **Live meeting context** — the topic emerges a few minutes into the
+  call; the daemon distills it from the live transcript, searches the
+  archive and rebuilds the «past meetings» block in the hint prompt:
+  hints, instant answers and Q&A see old agreements on the CURRENT
+  topic, not just the two latest meetings. Local, on by default
+  (`sufler.live_context`).
+- **Cloud-refined hints** — the ladder pattern for hints: the local
+  model answers instantly, then a cloud model (Claude CLI, default
+  Haiku) appends a refinement to the cloud feed of the same window.
+  Sends transcript to the cloud on every hint — separate switch,
+  default OFF (`sufler.cloud_hints`).
 - **Import folder (watched)** — point the app at a folder (Settings →
   Import, or `--scan` in the CLI): recordings dropped there become graph
   meetings on their own; processed files move to `done/`, failed ones
