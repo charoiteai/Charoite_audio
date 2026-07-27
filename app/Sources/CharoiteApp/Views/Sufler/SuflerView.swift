@@ -123,7 +123,7 @@ struct SuflerView: View {
             }
             Button("Спросить") { submitQuestion() }
                 .buttonStyle(.borderedProminent)
-                .tint(Color(hex: "#6366F1"))
+                .tint(Theme.accent)
                 .disabled(question.trimmingCharacters(in: .whitespaces).isEmpty || isSearchingArchive)
         }
         .padding(.horizontal, 14)
@@ -427,7 +427,11 @@ struct SuflerView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 7)
                 .background(
-                    Capsule().fill(sufler.isRunning ? Color.red : Color(hex: "#6366F1"))
+                    Capsule().fill(sufler.isRunning
+                                   ? AnyShapeStyle(Color.red)
+                                   : AnyShapeStyle(Theme.brand))
+                        .shadow(color: Theme.accent.opacity(sufler.isRunning ? 0 : 0.35),
+                                radius: 6, y: 2)
                 )
             }
             .buttonStyle(.plain)
@@ -705,7 +709,7 @@ struct SuflerView: View {
                 }
             }
             .frame(minHeight: 140)
-            .background(Color(hex: "#6366F1").opacity(0.05))
+            .background(Theme.accent.opacity(0.05))
             }
 
             if sufler.cloudOn {
@@ -738,7 +742,7 @@ struct SuflerView: View {
                 }
             }
             .frame(minHeight: 120)
-            .background(Color(hex: "#0EA5E9").opacity(0.06))
+            .background(Theme.sky.opacity(0.06))
             }
 
             if !sufler.thesesOn && !sufler.hintsOn && !sufler.cloudOn {
@@ -758,7 +762,7 @@ struct SuflerView: View {
             ? Text(line.text)
             : Text(line.speaker + "  ")
                 .font(.callout.weight(.semibold))
-                .foregroundStyle(Color(hex: "#6366F1"))
+                .foregroundStyle(Theme.accent)
               + Text(line.text)
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(line.ts)
@@ -834,7 +838,7 @@ struct SuflerView: View {
     /// Плоский текст с эмодзи читался как лог; карточки дают глазу зацепки.
     private func thesisCard(_ t: String) -> some View {
         let tint: Color = t.hasPrefix("📌") ? .orange
-            : t.hasPrefix("💎") ? Color(hex: "#6366F1")
+            : t.hasPrefix("💎") ? Theme.accent
             : t.hasPrefix("⏮") ? .teal
             : .gray
         return Text(t)
