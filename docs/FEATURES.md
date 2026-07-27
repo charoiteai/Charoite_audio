@@ -130,6 +130,12 @@ it signals degradation, it does not break the loop.
 - **Opening brief** — the hint card is not empty at meeting start: it
   shows the last meeting's topic, agreed decisions and open-task count
   from the archive — instantly, file-parse only, main graph only.
+- **iPhone companion (v1 skeleton in app-ios/)** — the phone records a
+  meeting/note/diary entry and drops the m4a into the iCloud import
+  folder; the Mac does the rest. `note_*`/`diary_*` files are routed to
+  the notes pipeline instead of the meeting one. Build: `xcodegen
+  generate` in app-ios/, sign in Xcode.
+
 - **Import folder (watched)** — point the app at a folder (Settings →
   Import, or `--scan` in the CLI): recordings dropped there become graph
   meetings on their own; processed files move to `done/`, failed ones

@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Charoite: низкополигональный кристалл чароита на тёмно-индиговом фоне.
+       Экспорт в PNG 1024 для AppIcon: qlmanage/rsvg-convert/Figma. -->
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="38%" r="75%">
+      <stop offset="0%" stop-color="#232047"/>
+      <stop offset="100%" stop-color="#14121F"/>
+    </radialGradient>
+    <linearGradient id="f1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#A78BFA"/>
+      <stop offset="100%" stop-color="#6366F1"/>
+    </linearGradient>
+    <linearGradient id="f2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8B5CF6"/>
+      <stop offset="100%" stop-color="#4F46E5"/>
+    </linearGradient>
+    <linearGradient id="f3" x1="1" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#C4B5FD"/>
+      <stop offset="100%" stop-color="#7C3AED"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <!-- мягкое свечение под камнем -->
+  <ellipse cx="512" cy="600" rx="330" ry="110" fill="#6366F1" opacity="0.16"/>
+  <!-- кристалл: семь граней -->
+  <g stroke="#14121F" stroke-width="6" stroke-linejoin="round">
+    <polygon points="512,168 700,340 640,560 512,470" fill="url(#f3)"/>
+    <polygon points="512,168 324,340 384,560 512,470" fill="url(#f1)"/>
+    <polygon points="324,340 384,560 512,760 512,470" fill="url(#f2)" opacity="0.96"/>
+    <polygon points="700,340 640,560 512,760 512,470" fill="url(#f1)" opacity="0.9"/>
+    <polygon points="384,560 512,760 640,560 512,470" fill="url(#f2)"/>
+  </g>
+  <!-- шелковистые полосы чароита -->
+  <path d="M368 420 C 450 470, 580 470, 662 412" stroke="#E9E4FF" stroke-width="10" fill="none" opacity="0.35" stroke-linecap="round"/>
+  <path d="M400 520 C 470 560, 560 560, 622 516" stroke="#E9E4FF" stroke-width="8" fill="none" opacity="0.22" stroke-linecap="round"/>
+  <!-- блик -->
+  <polygon points="512,168 560,215 512,300 464,215" fill="#FFFFFF" opacity="0.28"/>
+</svg>

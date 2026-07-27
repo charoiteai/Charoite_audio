@@ -96,6 +96,13 @@ def main() -> None:
                          "файлы из неё, успешные переносить в done/")
     args = ap.parse_args()
 
+    # записи с iPhone: note_*/diary_* — это НЕ встречи, а голосовые заметки
+    # и дневник; транскрибируем и отдаём конвейеру заметок
+    base = pathlib.Path(args.file).name.lower()
+    if base.startswith(("note_", "diary_")) and pathlib.Path(args.file).suffix.lower() in AUDIO:
+        return import_voice_note(pathlib.Path(args.file).expanduser(),
+                                 diary=base.startswith("diary_"))
+
     if args.scan:
         folder = pathlib.Path(args.file).expanduser()
         if not folder.is_dir():
@@ -182,5 +189,43 @@ def main() -> None:
     print(f"готово: встреча {stamp} в архиве и графе")
 
 
+def import_voice_note(src: pathlib.Path, diary: bool) -> None:
+    """Голосовая заметка/дневник с телефона → тот же конвейер, что диктовка.
+
+    m4a → wav 16k (afconvert, штатный macOS) → STT → dictate_note --text:
+    модель чистит, вытаскивает идеи и задачи, кладёт в граф или Дневник.
+    """
+    import subprocess as sp
+    import tempfile
+
+    sys.path.insert(0, str(ROOT / "src"))
+    import numpy as np
+    import soundfile as sf
+    from stt import STT
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        wav = pathlib.Path(f.name)
+    try:
+        conv = sp.run(["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1",
+                       str(src), str(wav)], capture_output=True, text=True)
+        if conv.returncode != 0:
+            sys.exit(f"afconvert не смог: {conv.stderr.strip()[:200]}")
+        audio, sr = sf.read(wav, dtype="float32")
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+        text = STT(_cfg()).transcribe(audio, sr).strip()
+    finally:
+        wav.unlink(missing_ok=True)
+    if len(text) < 3:
+        sys.exit("в записи не расслышалось ни слова")
+    mode = ["--diary"] if diary else []
+    r = sp.run([sys.executable, str(ROOT / "src" / "dictate_note.py"), "--text", *mode],
+               input=text, text=True)
+    if r.returncode != 0:
+        sys.exit("конвейер заметки завершился с ошибкой")
+    print(f"голосовая {'дневниковая ' if diary else ''}заметка обработана: {src.name}")
+
+
 if __name__ == "__main__":
     main()
+
