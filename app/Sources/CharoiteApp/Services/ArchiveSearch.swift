@@ -132,6 +132,7 @@ enum ArchiveSearch {
         // словами, которых в файле нет.
         // dateTs — дата для свежести (у встреч/daily — из имени файла);
         // mtime — настоящее время правки, только для инвалидации индекса
+        // swiftlint:disable:next large_tuple — внутренний счётный кортеж, не API
         var all: [(text: String, rel: String, tHits: [Int], pHits: [Int], dateTs: Double, mtime: Double)] = []  // rel — ключ RRF
         let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey]
         guard let walker = FileManager.default.enumerator(
