@@ -26,7 +26,7 @@ final class Recorder: NSObject, ObservableObject {
     @Published var isRecording = false
     @Published var elapsed: TimeInterval = 0
     @Published var level: Float = 0          // 0…1 для волны
-    @Published var lastResult: String?       // «уехал в iCloud» / ошибка
+    @Published var lastResult: String?       // статус доставки/очереди
 
     private var recorder: AVAudioRecorder?
     private var timer: Timer?
