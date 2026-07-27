@@ -545,7 +545,7 @@ struct SuflerView: View {
 
     private var transcriptPane: some View {
         VStack(alignment: .leading, spacing: 0) {
-            paneTitle("Стенограмма", systemImage: "text.quote", copy: { sufler.lines.map { "\($0.speaker): \($0.text)" }.joined(separator: "\n\n") })
+            paneTitle("Стенограмма", systemImage: "text.quote")
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
@@ -587,7 +587,7 @@ struct SuflerView: View {
         VSplitView {
             if sufler.thesesOn {
             VStack(alignment: .leading, spacing: 0) {
-                paneTitle("Тезисы", systemImage: "list.bullet.rectangle", copy: { sufler.theses.map { "— " + $0 }.joined(separator: "\n") })
+                paneTitle("Тезисы", systemImage: "list.bullet.rectangle")
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 6) {
