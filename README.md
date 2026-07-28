@@ -8,9 +8,9 @@ Charoite listens to your meetings (microphone + system audio, no bots joining ca
 
 *[Русский](README.ru.md) · [中文](README.zh.md). Charoite is Russian-first today (GigaAM STT is SOTA for Russian); English works via Parakeet/Whisper, Chinese via Whisper — and Qwen, the default LLM, is native in Chinese.*
 
-![Charoite app — live transcript, theses, archive answers](docs/img/app-main.png)
+![Charoite app — archive answers with sources, English UI](docs/img/app-main-en.png)
 
-![Meeting tasks — every graph checkbox in one window](docs/img/app-tasks.png)
+![Meeting tasks — every graph checkbox in one window](docs/img/app-tasks-en.png)
 
 ## Why Charoite
 

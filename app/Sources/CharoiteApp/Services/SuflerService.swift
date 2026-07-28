@@ -18,7 +18,7 @@ final class SuflerService: ObservableObject {
     }
 
     @Published var isRunning = false
-    @Published var status = "Готов к запуску"
+    @Published var status = L.t("Готов к запуску", "Ready", "就绪")
     @Published var lines: [TranscriptLine] = []
     @Published var theses: [String] = []
     @Published var hint = ""
@@ -84,7 +84,7 @@ final class SuflerService: ObservableObject {
         isHinting = false
         isClouding = false
         userStopped = false
-        status = "Запускаю…"
+        status = L.t("Запускаю…", "Starting…", "启动中…")
 
         let p = Process()
         p.executableURL = suflerRoot.appendingPathComponent(".venv/bin/python")
@@ -139,7 +139,7 @@ final class SuflerService: ObservableObject {
                 Task { @MainActor [weak self] in self?.checkAlive() }
             }
         } catch {
-            status = "Не удалось начать запись: \(error.localizedDescription)"
+            status = L.t("Не удалось начать запись: \(error.localizedDescription)", "Could not start recording: \(error.localizedDescription)", "无法开始录音：\(error.localizedDescription)")
         }
     }
 
@@ -161,7 +161,7 @@ final class SuflerService: ObservableObject {
             if let p, p.isRunning { kill(p.processIdentifier, SIGKILL) }
         }
         isRunning = false
-        status = "Останавливаю…"
+        status = L.t("Останавливаю…", "Stopping…", "停止中…")
     }
 
     /// Демон-процесс умер (крэш или наш terminate). Если это не ручной Стоп —
@@ -182,7 +182,7 @@ final class SuflerService: ObservableObject {
         // умер», «нет heartbeat» ему ничего не говорят — важно другое: пишется
         // ли встреча прямо сейчас и надо ли что-то делать руками.
         guard wasRunning, !userStopped else {
-            status = "Остановлен"
+            status = L.t("Остановлен", "Stopped", "已停止")
             return
         }
         guard restartAttempts < 3 else {
@@ -192,7 +192,7 @@ final class SuflerService: ObservableObject {
             return
         }
         restartAttempts += 1
-        status = "Запись прервалась — восстанавливаю (\(restartAttempts) из 3)"
+        status = L.t("Запись прервалась — восстанавливаю (\(restartAttempts) из 3)", "Recording dropped — recovering (\(restartAttempts) of 3)", "录音中断——恢复中（第 \(restartAttempts)/3 次）")
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             guard let self, !self.userStopped, !self.isRunning else { return }
             self.start(preserveUI: true)
@@ -204,7 +204,7 @@ final class SuflerService: ObservableObject {
     private func checkAlive() {
         guard isRunning, let p = process, p.isRunning else { return }
         guard Date().timeIntervalSince(lastEventAt) > 100 else { return }
-        status = "Запись замерла — перезапускаю"
+        status = L.t("Запись замерла — перезапускаю", "Recording stalled — restarting", "录音停滞——正在重启")
         p.terminate()
         DispatchQueue.global().asyncAfter(deadline: .now() + 5.0) {
             if p.isRunning { kill(p.processIdentifier, SIGKILL) }  // SIGTERM дедлок не берёт
