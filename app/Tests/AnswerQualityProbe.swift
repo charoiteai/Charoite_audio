@@ -21,21 +21,22 @@ final class AnswerQualityProbe: XCTestCase {
               !raw.isEmpty else { throw XCTSkip("не запрошено") }
         let graph = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
 
+        var report = ""
         for q in questions {
             let found = await ArchiveSearch.localSearch(query: q, limit: 5,
                                                         snippet: 1200, root: graph)
             let sources = found.components(separatedBy: "\n\n")
                 .compactMap { $0.split(whereSeparator: \.isNewline).first }
                 .map { String($0.dropFirst(2)) }
-            print("\n──────── ВОПРОС: \(q)")
-            print("ИСТОЧНИКИ (\(found.count) знаков):")
-            for s in sources { print("   · \(s)") }
-            if let answer = await ask(question: q, context: found) {
-                print("ОТВЕТ МОДЕЛИ:\n\(answer)")
-            } else {
-                print("ОТВЕТ: модель недоступна")
-            }
+            report += "\n──────── ВОПРОС: \(q)\nИСТОЧНИКИ (\(found.count) знаков):\n"
+            for s in sources { report += "   · \(s)\n" }
+            let answer = await ask(question: q, context: found) ?? "(модель недоступна)"
+            report += "ОТВЕТ МОДЕЛИ:\n\(answer)\n"
         }
+        // print из XCTest теряется при перенаправлении вывода — пишем в файл.
+        let out = URL(fileURLWithPath: "/tmp/charoite_answer_probe.txt")
+        try? report.write(to: out, atomically: true, encoding: .utf8)
+        print(report)
     }
 
     private func ask(question: String, context: String) async -> String? {
@@ -59,7 +60,12 @@ final class AnswerQualityProbe: XCTestCase {
             "options": ["num_ctx": 32768, "num_predict": 500],
             "messages": [["role": "user", "content": prompt]],
         ] as [String: Any])
-        guard let (data, _) = try? await URLSession.shared.data(for: req),
+        // Прокси обнуляем, как в проде: системный прокси (у пользователя он
+        // может стоять ради других сервисов) ломает запрос к localhost —
+        // именно на этом первая версия пробы молча возвращала пустой ответ.
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.connectionProxyDictionary = [:]
+        guard let (data, _) = try? await URLSession(configuration: cfg).data(for: req),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let msg = obj["message"] as? [String: Any] else { return nil }
         return msg["content"] as? String
