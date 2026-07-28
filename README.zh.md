@@ -59,7 +59,9 @@ python3 scripts/doctor.py
 
 **方式 A — macOS 应用（推荐）：**
 
-从[最新发布](https://github.com/charoiteai/Charoite_audio/releases/latest)下载 `Charoite.app.zip`（首次启动：右键 → 打开，ad-hoc 签名），或自行构建：
+从[最新发布](https://github.com/charoiteai/Charoite_audio/releases/latest)下载 `Charoite.app.zip`（ad-hoc 签名，未经公证 — 首次启动会被 macOS 拦截：
+执行 `xattr -d com.apple.quarantine /Applications/Charoite.app`，或前往
+系统设置 → 隐私与安全性，点击 *仍要打开*。macOS 15+ 上右键 → 打开已失效），或自行构建：
 
 ```bash
 ./app/make_app.sh && open app/build/Charoite.app

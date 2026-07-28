@@ -23,13 +23,52 @@ enum Inbox {
         return d
     }
 
+    /// Куда пишется ИДУЩАЯ запись. Documents, а не tmp: систему не волнует,
+    /// что мы посреди встречи, — tmp она чистит когда захочет, и вместе с ним
+    /// исчезал единственный экземпляр часового разговора.
+    static var inProgress: URL {
+        let d = outbox.appendingPathComponent("current", isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }
+
+    /// Расширения, которые считаются записью. CAF — основной формат: он
+    /// переживает обрыв (в отличие от M4A без атома `moov`), M4A оставлен
+    /// для файлов, записанных прежними версиями.
+    private static let audioExts: Set<String> = ["caf", "m4a"]
+
     static var queuedCount: Int {
         (try? FileManager.default.contentsOfDirectory(at: outbox, includingPropertiesForKeys: nil))?
-            .filter { $0.pathExtension == "m4a" }.count ?? 0
+            .filter { audioExts.contains($0.pathExtension) }.count ?? 0
+    }
+
+    /// Записи, пережившие смерть приложения: их никто не закрыл и не поставил
+    /// в очередь. Зовётся на старте — раньше такие файлы просто пропадали.
+    static func rescueOrphans() {
+        let fm = FileManager.default
+        let left = (try? fm.contentsOfDirectory(at: inProgress, includingPropertiesForKeys: nil)) ?? []
+        for f in left where audioExts.contains(f.pathExtension) {
+            try? fm.moveItem(at: f, to: uniqueName(in: outbox, like: f))
+        }
+    }
+
+    /// Свободное имя рядом с занятым. Затирать чужой файл нельзя нигде:
+    /// ни в своей очереди, ни в папке импорта на Mac.
+    private static func uniqueName(in dir: URL, like file: URL) -> URL {
+        let fm = FileManager.default
+        var candidate = dir.appendingPathComponent(file.lastPathComponent)
+        let base = file.deletingPathExtension().lastPathComponent
+        let ext = file.pathExtension
+        var n = 1
+        while fm.fileExists(atPath: candidate.path) {
+            candidate = dir.appendingPathComponent("\(base)-\(n).\(ext)")
+            n += 1
+        }
+        return candidate
     }
 
     static var folderChosen: Bool {
-        UserDefaults.standard.data(forKey: bookmarkKey) != nil
+        destinationFolder() != nil
     }
 
     /// Пользователь выбрал папку в «Файлах» — запоминаем закладку навсегда.
@@ -43,49 +82,114 @@ enum Inbox {
     private static func destinationFolder() -> URL? {
         guard let bm = UserDefaults.standard.data(forKey: bookmarkKey) else { return nil }
         var stale = false
-        guard let url = try? URL(resolvingBookmarkData: bm, bookmarkDataIsStale: &stale) else { return nil }
-        if stale, let fresh = try? url.bookmarkData() {
-            UserDefaults.standard.set(fresh, forKey: bookmarkKey)
+        guard let url = try? URL(resolvingBookmarkData: bm, bookmarkDataIsStale: &stale) else {
+            // Закладка не разрешается (восстановление из бэкапа, папку удалили).
+            // Забываем её, чтобы UI перестал рисовать «папка настроена» и позвал
+            // выбрать заново: раньше folderChosen смотрел на наличие байтов, и
+            // человек месяцами копил очередь, не понимая, почему ничего не едет.
+            UserDefaults.standard.removeObject(forKey: bookmarkKey)
+            return nil
+        }
+        if stale {
+            // Обновлять закладку можно только внутри security scope — раньше
+            // bookmarkData() вызывался снаружи, всегда падал в try? и закладка
+            // оставалась протухшей навсегда.
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            if let fresh = try? url.bookmarkData() {
+                UserDefaults.standard.set(fresh, forKey: bookmarkKey)
+            }
         }
         return url
     }
 
     /// Файл — в очередь, затем попытка доставки всей очереди.
     static func deliver(_ file: URL, status: @MainActor @escaping (String) -> Void) async {
-        let queued = outbox.appendingPathComponent(file.lastPathComponent)
-        try? FileManager.default.moveItem(at: file, to: queued)
+        let fm = FileManager.default
+        do {
+            try fm.moveItem(at: file, to: uniqueName(in: outbox, like: file))
+        } catch {
+            // Раньше ошибка глушилась `try?`, и файл оставался в tmp — то есть
+            // терялся при первой же уборке системы. Молчать здесь нельзя.
+            await status(L.t("Не удалось поставить запись в очередь: \(error.localizedDescription)",
+                             "Could not queue the recording: \(error.localizedDescription)",
+                             "无法将录音加入队列：\(error.localizedDescription)"))
+            return
+        }
         await flush(status: status)
     }
 
     /// Дослать всё из очереди. Вызывается на старте и после каждого стопа.
+    ///
+    /// Публикация атомарная: копируем под `.part` и переименовываем. Сканер на
+    /// Mac отбирает файлы по расширению и не проверяет, дописан ли файл, —
+    /// попадание его таймера в окно копирования 43-мегабайтной встречи давало
+    /// расшифровку половины разговора, после чего файл уезжал в done/ и
+    /// повторный импорт становился невозможен.
     static func flush(status: @MainActor @escaping (String) -> Void) async {
-        let files = (try? FileManager.default.contentsOfDirectory(
-            at: outbox, includingPropertiesForKeys: nil))?.filter { $0.pathExtension == "m4a" } ?? []
+        guard !flushing else { return }   // .task на вкладке и стоп могут прийти вместе
+        flushing = true
+        defer { flushing = false }
+
+        let fm = FileManager.default
+        let files = (try? fm.contentsOfDirectory(at: outbox, includingPropertiesForKeys: nil))?
+            .filter { audioExts.contains($0.pathExtension) } ?? []
         guard !files.isEmpty else { return }
         guard let dir = destinationFolder() else {
-            await status("Выберите папку iCloud (кнопка вверху) — записей в очереди: \(files.count)")
+            await status(L.t("Выберите папку iCloud (кнопка вверху) — записей в очереди: \(files.count)",
+                             "Choose the iCloud folder (button above) — queued: \(files.count)",
+                             "请选择 iCloud 文件夹（上方按钮）— 队列中：\(files.count)"))
             return
         }
         let scoped = dir.startAccessingSecurityScopedResource()
         defer { if scoped { dir.stopAccessingSecurityScopedResource() } }
+
         var sent = 0
+        var stuck: [String] = []
         for f in files {
-            let dest = dir.appendingPathComponent(f.lastPathComponent)
+            let dest = uniqueName(in: dir, like: f)
+            let part = dest.appendingPathExtension("part")
             do {
-                if FileManager.default.fileExists(atPath: dest.path) {
-                    try FileManager.default.removeItem(at: dest)
+                try? fm.removeItem(at: part)
+                try fm.copyItem(at: f, to: part)
+                try fm.moveItem(at: part, to: dest)     // публикация одним шагом
+                // Исходник удаляем, только если iCloud принял файл. Раньше
+                // «Уехало на Mac» печаталось по факту копирования — при
+                // переполненном хранилище выгрузка отваливалась, а очередь
+                // уже была пуста, и запись пропадала незаметно.
+                let v = try? dest.resourceValues(forKeys: [.ubiquitousItemUploadingErrorKey])
+                if let err = v?.ubiquitousItemUploadingError {
+                    stuck.append(f.lastPathComponent)
+                    await status(L.t("iCloud не принял \(f.lastPathComponent): \(err.localizedDescription)",
+                                     "iCloud rejected \(f.lastPathComponent): \(err.localizedDescription)",
+                                     "iCloud 拒绝了 \(f.lastPathComponent)：\(err.localizedDescription)"))
+                    continue
                 }
-                try FileManager.default.copyItem(at: f, to: dest)
-                try FileManager.default.removeItem(at: f)
+                try fm.removeItem(at: f)
                 sent += 1
             } catch {
-                await status("Не отправилось (\(f.lastPathComponent)): \(error.localizedDescription)")
-                return
+                // continue, а не return: один сбойный файл не должен запирать
+                // всю очередь, включая сегодняшнюю встречу.
+                try? fm.removeItem(at: part)
+                stuck.append(f.lastPathComponent)
+                await status(L.t("Не отправилось (\(f.lastPathComponent)): \(error.localizedDescription)",
+                                 "Failed (\(f.lastPathComponent)): \(error.localizedDescription)",
+                                 "发送失败（\(f.lastPathComponent)）：\(error.localizedDescription)"))
             }
         }
         let left = queuedCount
-        await status(left == 0 ? "Уехало на Mac: \(sent) файл(а)" : "Отправлено \(sent), в очереди \(left)")
+        if left == 0 {
+            await status(L.t("Уехало на Mac: \(sent) файл(а)",
+                             "Delivered to Mac: \(sent)",
+                             "已发送到 Mac：\(sent)"))
+        } else {
+            await status(L.t("Отправлено \(sent), в очереди \(left)",
+                             "Sent \(sent), queued \(left)",
+                             "已发送 \(sent)，队列中 \(left)"))
+        }
     }
+
+    private nonisolated(unsafe) static var flushing = false
 }
 
 /// Системный выбор папки (UIKit-мост): один раз выбрать «Charoite Inbox»

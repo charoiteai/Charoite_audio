@@ -34,6 +34,10 @@ NETWORK_EXITS = (
     ("nightly_claude_cores.py", "main"),
 )
 
+# Оба имени одного рубильника. Точка выхода не должна упоминать их сама —
+# знать их обязан только src/privacy.py.
+KILL_SWITCH_NAMES = ("CHAROITE_NO_CLOUD", "SUFLER_NO_CLOUD")
+
 
 def _func(path: pathlib.Path, name: str) -> ast.FunctionDef:
     if not path.exists():   # выходы живут и в scripts/, не только в src/
@@ -102,6 +106,41 @@ def test_api_key_is_stripped_before_calling_claude(filename, func):
         for node in ast.walk(fn))
     assert strips, \
         f"{filename}:{func} зовёт claude без фильтра k != ANTHROPIC_API_KEY в env"
+
+
+@pytest.mark.parametrize("filename,func", NETWORK_EXITS)
+def test_switch_is_asked_through_privacy(filename, func):
+    """Выключатель спрашивают у privacy, а не проверяют env своими руками.
+
+    Сторож знал две вещи — что точка выхода зарегистрирована и что ключ
+    вычищается, — но не знал третьей: КАК спрошено разрешение. В
+    nightly_claude_cores стояла своя проверка `os.environ.get("SUFLER_NO_CLOUD")`,
+    и после переименования проекта она не увидела CHAROITE_NO_CLOUD: ночная
+    ревизия отправляла граф в Anthropic при выключенном рубильнике. Имён у
+    рубильника два, и знать их обязано одно место — src/privacy.py.
+    """
+    path = SRC / filename
+    if not path.exists():
+        path = path.parent.parent / "scripts" / path.name
+    source = path.read_text(encoding="utf-8")
+    # Разрешение спрашивается в файле: либо в самой точке выхода, либо выше —
+    # cloud_loop берёт готовое `cloud_live` из объемлющей main через замыкание.
+    assert "cloud_live_enabled" in source or "cloud_enrich_enabled" in source, (
+        f"{filename} нигде не спрашивает privacy — облако решается на месте")
+
+    fn = _func(path, func)
+    own = _own_consts(fn)
+    assert not (own & set(KILL_SWITCH_NAMES)), (
+        f"{filename}:{func} проверяет имя рубильника вручную: "
+        f"{sorted(own & set(KILL_SWITCH_NAMES))}. Имена живут в privacy.KILL_SWITCHES — "
+        f"своя проверка знает одно имя из двух и пропускает второе")
+
+
+def test_privacy_knows_both_switch_names():
+    """Список имён рубильника — единственный источник правды."""
+    src = (SRC / "privacy.py").read_text(encoding="utf-8")
+    for name in KILL_SWITCH_NAMES:
+        assert name in src, f"privacy.py не знает про {name}"
 
 
 def _mentions_claude(consts: set[str]) -> bool:

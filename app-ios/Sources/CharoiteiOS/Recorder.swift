@@ -2,18 +2,30 @@ import ActivityKit
 import AVFoundation
 import Foundation
 
-/// Запись m4a с продолжением в фоне (Background Audio).
+/// Запись с продолжением в фоне (Background Audio).
 ///
 /// Правила платформы: стартуем ТОЛЬКО с экрана (из фона iOS не даст),
-/// прерывание звонком ловим и по возможности возобновляем. Файл по стопу
-/// уезжает в iCloud-папку импорта — дальше всё делает Mac.
+/// прерывание звонком ловим и возобновляем. Файл по стопу уезжает в
+/// iCloud-папку импорта — дальше всё делает Mac.
+///
+/// Всё, что здесь написано про прерывания, контейнер и место записи, стоит
+/// денег ровно один раз: час чужой встречи не переснять. Поэтому запись
+/// живёт в Documents (не в tmp, который система чистит) и в CAF (не в M4A,
+/// который без штатного stop() остаётся без атома `moov` и не читается ничем).
 @MainActor
-final class Recorder: NSObject, ObservableObject {
+final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     enum Kind: String, CaseIterable, Identifiable {
-        case meeting = "Встреча"
-        case note = "Заметка"
-        case diary = "Дневник"
+        // rawValue — стабильный идентификатор (уходит в Live Activity и в
+        // имя файла), подпись для человека берётся из `title`.
+        case meeting, note, diary
         var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .meeting: return L.t("Встреча", "Meeting", "会议")
+            case .note: return L.t("Заметка", "Note", "笔记")
+            case .diary: return L.t("Дневник", "Diary", "日记")
+            }
+        }
         /// Префикс имени файла — по нему Mac выбирает конвейер.
         var prefix: String {
             switch self {
@@ -31,22 +43,73 @@ final class Recorder: NSObject, ObservableObject {
 
     private var recorder: AVAudioRecorder?
     private var timer: Timer?
-    private var startedAt: Date?
     private var activity: Activity<RecordActivityAttributes>?
+    private var observers: [NSObjectProtocol] = []
+
+    /// Запас, ниже которого начинать час записи бессмысленно (~96 кбит/с ≈ 43 МБ/час).
+    private static let minFreeBytes: Int64 = 300_000_000
+
+    override init() {
+        super.init()
+        observeSession()
+    }
 
     func start(kind: Kind) {
+        // Разрешение спрашиваем ДО старта. Раньше не спрашивали вовсе:
+        // setActive при запрещённом микрофоне обычно не бросает, система
+        // просто подаёт тишину — и человек писал час, получая пустой файл
+        // и бодрое «Уехало на Mac».
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted:
+            break
+        case .undetermined:
+            AVAudioApplication.requestRecordPermission { [weak self] granted in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if granted { self.start(kind: kind) }
+                    else { self.lastResult = L.t("Без доступа к микрофону запись невозможна",
+                                                 "Recording needs microphone access",
+                                                 "录音需要麦克风权限") }
+                }
+            }
+            return
+        default:
+            lastResult = L.t("Микрофон запрещён: Настройки › Charoite › Микрофон",
+                             "Microphone denied: Settings › Charoite › Microphone",
+                             "麦克风被拒绝：设置 › Charoite › 麦克风")
+            return
+        }
+
+        guard Self.freeBytes() > Self.minFreeBytes else {
+            lastResult = L.t("Мало места на iPhone — освободите 300 МБ",
+                             "Low storage — free up 300 MB",
+                             "存储空间不足 — 请释放 300 MB")
+            return
+        }
+
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playAndRecord, mode: .default,
+            // .measurement: режим отключает обработку голоса, из-за которой
+            // AAC-запись встречи звучит «телефонно» и хуже распознаётся.
+            //
+            // allowBluetooth помечен deprecated в свежих SDK (переименован в
+            // allowBluetoothHFP), но нового имени нет в iOS 18 SDK, на котором
+            // собирает CI, — а собираться должно и там, и на машине с новым
+            // Xcode. Оставляем совместимое имя до обновления раннеров.
+            try session.setCategory(.playAndRecord, mode: .measurement,
                                     options: [.allowBluetooth])
             try session.setActive(true)
         } catch {
-            lastResult = "Микрофон не дали: \(error.localizedDescription)"
+            lastResult = L.t("Аудиосессия не открылась: \(error.localizedDescription)",
+                             "Audio session failed: \(error.localizedDescription)",
+                             "音频会话失败：\(error.localizedDescription)")
             return
         }
-        let stamp = Self.stamp(Date())
-        let name = "\(kind.prefix)iphone_\(stamp).m4a"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+
+        // Секунды в штампе: без них две заметки внутри одной минуты давали
+        // одно имя, и вторая физически затирала первую в папке на Mac.
+        let name = "\(kind.prefix)iphone_\(Self.stamp(Date())).caf"
+        let url = Inbox.inProgress.appendingPathComponent(name)
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: 44_100,
@@ -55,18 +118,90 @@ final class Recorder: NSObject, ObservableObject {
         ]
         do {
             let r = try AVAudioRecorder(url: url, settings: settings)
+            r.delegate = self
             r.isMeteringEnabled = true
-            r.record()
+            guard r.record() else {
+                lastResult = L.t("Запись не стартовала — микрофон занят другим приложением?",
+                                 "Recording did not start — microphone busy?",
+                                 "录音未开始 — 麦克风被占用？")
+                return
+            }
             recorder = r
-            startedAt = Date()
             isRecording = true
+            elapsed = 0
             lastResult = nil
             timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.tick() }
             }
             startActivity(kind: kind)
         } catch {
-            lastResult = "Запись не стартовала: \(error.localizedDescription)"
+            lastResult = L.t("Запись не стартовала: \(error.localizedDescription)",
+                             "Recording failed: \(error.localizedDescription)",
+                             "录音失败：\(error.localizedDescription)")
+        }
+    }
+
+    /// Прерывания и смена маршрута. Без этого звонок посреди встречи оставлял
+    /// запись на паузе навсегда, а таймер на экране и в Dynamic Island
+    /// продолжал считать — человек узнавал о потере через час.
+    private func observeSession() {
+        let nc = NotificationCenter.default
+        observers.append(nc.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(), queue: .main
+        ) { [weak self] note in
+            guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            Task { @MainActor [weak self] in self?.handleInterruption(type) }
+        })
+        observers.append(nc.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.isRecording else { return }
+                self.lastResult = L.t("Аудиослужба перезапущена — запись остановлена, файл сохранён",
+                                      "Audio service reset — recording stopped, file kept",
+                                      "音频服务已重置 — 录音停止，文件已保留")
+                self.stop()
+            }
+        })
+        observers.append(nc.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] note in
+            guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                  raw == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue else { return }
+            Task { @MainActor [weak self] in
+                guard let self, self.isRecording else { return }
+                self.lastResult = L.t("Гарнитура отключилась — пишем встроенным микрофоном",
+                                      "Headset disconnected — using built-in mic",
+                                      "耳机已断开 — 使用内置麦克风")
+            }
+        })
+    }
+
+    private func handleInterruption(_ type: AVAudioSession.InterruptionType) {
+        guard isRecording, let r = recorder else { return }
+        switch type {
+        case .began:
+            lastResult = L.t("Пауза: звонок. Запись продолжится сама",
+                             "Paused: call. Recording will resume",
+                             "已暂停：来电。录音将自动继续")
+        case .ended:
+            try? AVAudioSession.sharedInstance().setActive(true)
+            if r.record() {
+                lastResult = nil
+            } else {
+                // Возобновить не удалось — честно говорим и закрываем файл,
+                // чтобы записанное до звонка точно уехало на Mac.
+                lastResult = L.t("Запись оборвалась после звонка — сохраняю записанное",
+                                 "Recording broke after the call — saving what we have",
+                                 "通话后录音中断 — 正在保存已录内容")
+                stop()
+            }
+        @unknown default:
+            break
         }
     }
 
@@ -74,38 +209,73 @@ final class Recorder: NSObject, ObservableObject {
     /// телефон лежит экраном к столу и приложение свернули.
     private func startActivity(kind: Kind) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        // staleDate: плашка обязана потускнеть, если приложение умерло и
+        // некому вызвать end() — иначе она врёт про идущую запись часами.
         activity = try? Activity.request(
             attributes: RecordActivityAttributes(kind: kind.rawValue),
-            content: .init(state: .init(startedAt: Date()), staleDate: nil))
+            content: .init(state: .init(startedAt: Date()),
+                           staleDate: Date().addingTimeInterval(900)))
     }
 
     func stop() {
         guard let r = recorder else { return }
-        r.stop()
+        r.stop()                       // финализация контейнера
         timer?.invalidate()
         timer = nil
         isRecording = false
+        level = 0
         let url = r.url
         recorder = nil
         if let a = activity {
             activity = nil
             Task { await a.end(nil, dismissalPolicy: .immediate) }
         }
+        // Освобождаем сессию: иначе оранжевый индикатор микрофона горит после
+        // стопа, а чужая музыка не возобновляется — для приложения про
+        // приватность это выглядит хуже любого бага.
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         Task { await Inbox.deliver(url) { [weak self] msg in self?.lastResult = msg } }
     }
 
     private func tick() {
-        guard let r = recorder, let t0 = startedAt else { return }
-        elapsed = Date().timeIntervalSince(t0)
+        guard let r = recorder else { return }
+        // Время берём у рекордера, а не у стенных часов: при прерывании
+        // запись стоит, и только currentTime покажет реальную длину файла.
+        elapsed = r.currentTime
         r.updateMeters()
         // −60…0 дБ → 0…1
         level = max(0, min(1, (r.averagePower(forChannel: 0) + 60) / 60))
     }
 
+    nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
+        Task { @MainActor [weak self] in
+            self?.lastResult = L.t("Сбой записи: \(error?.localizedDescription ?? "кодек")",
+                                   "Recording error: \(error?.localizedDescription ?? "codec")",
+                                   "录音错误：\(error?.localizedDescription ?? "编解码器")")
+            self?.stop()
+        }
+    }
+
+    nonisolated func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder,
+                                                     successfully flag: Bool) {
+        guard !flag else { return }
+        Task { @MainActor [weak self] in
+            self?.lastResult = L.t("Запись завершилась с ошибкой — файл может быть неполным",
+                                   "Recording finished with an error — file may be incomplete",
+                                   "录音异常结束 — 文件可能不完整")
+        }
+    }
+
     static func stamp(_ d: Date) -> String {
         let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd_HHmm"
+        f.dateFormat = "yyyy-MM-dd_HHmmss"
         f.locale = Locale(identifier: "en_US_POSIX")
         return f.string(from: d)
+    }
+
+    private static func freeBytes() -> Int64 {
+        let home = URL(fileURLWithPath: NSHomeDirectory())
+        let v = try? home.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return v?.volumeAvailableCapacityForImportantUsage ?? .max
     }
 }

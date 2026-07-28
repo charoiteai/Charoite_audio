@@ -197,8 +197,30 @@ class LLM:
             temperature=0.0,  # см. minutes(): документ — не творческая задача
         )
 
+    def _fit(self, transcript: str) -> str:
+        """Длинную встречу сворачиваем в сводки частей, а не отдаём на обрезку.
+
+        num_ctx 8192 — это примерно 25 000 знаков русского, то есть полчаса
+        разговора. Часовая встреча не влезала вдвое, трёхчасовая вшестеро, и
+        Ollama молча обрезала промпт: минутки выходили без единого решения из
+        первого часа, но выглядели нормальным документом. Плюс num_predict
+        делит тот же бюджет — при переполнении ответ обрывался на полуслове.
+        """
+        limit = max(4_000, self.num_ctx * 3 - 4_000)   # ~3 знака на токен, запас на ответ
+        if len(transcript) <= limit:
+            return transcript
+        step = limit // 2
+        parts = [transcript[i:i + step] for i in range(0, len(transcript), step)]
+        digests = []
+        for n, part in enumerate(parts, 1):
+            text = "".join(self.summary(part)).strip()
+            if text:
+                digests.append(f"[Часть {n} из {len(parts)}]\n{text}")
+        return "\n\n".join(digests) if digests else transcript[:limit]
+
     def minutes(self, transcript: str) -> Iterator[str]:
         """Полноценные минутки встречи (markdown, сохраняются файлом)."""
+        transcript = self._fit(transcript)
         if self.lang == "zh":
             return self.stream(
                 f"<transcript>\n{transcript}\n</transcript>\n\n"

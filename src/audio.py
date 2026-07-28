@@ -85,8 +85,13 @@ class AudioHub:
 
     SPEAKER = {"blackhole": "Собеседник", "mic": "Я"}
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, stamp: str | None = None):
         a = cfg["audio"]
+        # Штамп берём у стенограммы, а не считаем свой: два независимых
+        # datetime.now() на границе минуты давали `..._1359.md` и `..._1400_mic.pcm`,
+        # после чего rebuild_transcript не находил записи и молча пропускал
+        # финальную пересборку — пользователь оставался с черновиком чанков.
+        self.stamp = stamp or f"{dt.datetime.now():%Y-%m-%d_%H%M%S}"
         # метка своего канала — имя владельца из конфига
         own = (cfg.get("sufler", {}).get("user_name") or "").strip()
         if own:
@@ -149,21 +154,41 @@ class AudioHub:
         """Сырое аудио каждого канала — на диск сразу: обрыв STT/демона больше не
         теряет встречу (20.07 потеряли 5+ минут безвозвратно). Пишем .pcm (s16le,
         без заголовка — переживает крэш), штатный стоп финализирует в .wav."""
+        # Уборка старого и открытие нового — разные заботы, и раньше они делили
+        # один try: файл, исчезнувший между iterdir() и stat(), или строка вместо
+        # числа в record_keep_days выключали запись НА ВСЮ ВСТРЕЧУ, причём молча.
+        # Отказывала ровно та страховка, ради которой всё это писалось.
+        try:
+            self.prune_recordings(self.record_dir, self.record_keep_days)
+        except Exception as e:  # noqa: BLE001 — уборка не должна мешать записи
+            self._say(f"чистка старых записей не удалась: {e}")
         try:
             self.record_dir.mkdir(parents=True, exist_ok=True)
-            # Запись — только страховка от обрыва транскрипции, не архив: аудио
-            # рабочих встреч — чувствительный носитель (из него извлекаются
-            # голосовые эмбеддинги), не держим дольше страхового окна.
-            keep_days = float(self.record_keep_days)
-            cutoff = time.time() - keep_days * 86400
-            for old in self.record_dir.iterdir():
+            for c in self.captures:
+                path = self.record_dir / f"{self.stamp}_{c.label}.pcm"
+                # "xb", а не "wb": коллизия штампов должна быть видимой ошибкой,
+                # а не молчаливым обнулением чужой записи.
+                self._sinks[c.label] = path.open("xb")
+        except Exception as e:  # noqa: BLE001 — захват важнее записи, но не молча
+            self._sinks = {}
+            self._say(f"ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: {e} — после сбоя встречу будет не восстановить")
+
+    @staticmethod
+    def prune_recordings(record_dir: pathlib.Path, keep_days) -> None:
+        """Аудио встреч — чувствительный носитель (из него извлекаются голосовые
+        эмбеддинги), держим не дольше страхового окна. Вызывается и на старте
+        демона: раньше чистка жила только внутри _open_sinks, поэтому при
+        record: false или простое в неделю записи не удалялись вовсе, хотя
+        PRIVACY обещает удаление через record_keep_days."""
+        if not record_dir.exists():
+            return
+        cutoff = time.time() - float(keep_days) * 86400
+        for old in record_dir.iterdir():
+            try:
                 if old.suffix in (".pcm", ".wav") and old.stat().st_mtime < cutoff:
                     old.unlink(missing_ok=True)
-            stamp = f"{dt.datetime.now():%Y-%m-%d_%H%M}"
-            for c in self.captures:
-                self._sinks[c.label] = (self.record_dir / f"{stamp}_{c.label}.pcm").open("wb")
-        except Exception:  # noqa: BLE001 — запись вспомогательна, захват важнее
-            self._sinks = {}
+            except FileNotFoundError:
+                continue  # файл убрали параллельно — не наша забота
 
     def _finalize_recordings(self):
         """.pcm → .wav при штатном стопе; при крэше остаётся .pcm — его дотранскрибирует
@@ -241,6 +266,15 @@ class AudioHub:
                     self.on_status(msg)
                 except Exception:  # noqa: BLE001
                     pass
+
+    def _say(self, msg: str) -> None:
+        """Статус в UI. Отказ страховочной записи пользователь обязан увидеть
+        до конца встречи, а не узнать о нём, когда восстанавливать уже нечего."""
+        if self.on_status is not None:
+            try:
+                self.on_status(msg)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _cut(self, label: str) -> np.ndarray | None:
         need = int(self.sr * self.chunk_s)

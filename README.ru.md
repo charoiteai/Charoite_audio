@@ -64,7 +64,11 @@ python3 scripts/doctor.py
 **Вариант A — macOS-приложение (рекомендуется):**
 
 Скачайте `Charoite.app.zip` из [последнего релиза](https://github.com/charoiteai/Charoite_audio/releases/latest)
-(первый запуск: правый клик → Открыть — подпись ad-hoc), либо соберите сами:
+(подпись ad-hoc, без нотаризации — при первом запуске macOS его блокирует:
+выполните `xattr -d com.apple.quarantine /Applications/Charoite.app` либо
+откройте Системные настройки → Конфиденциальность и безопасность и нажмите
+*Всё равно открыть*. Правый клик → Открыть на macOS 15+ уже не работает),
+либо соберите сами:
 
 ```bash
 ./app/make_app.sh && open app/build/Charoite.app

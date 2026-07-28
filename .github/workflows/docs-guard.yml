@@ -41,13 +41,24 @@ jobs:
               exit 0 ;;
           esac
 
-          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          # Три точки, а не две: сравнение с точкой ветвления, а не с текущим
+          # состоянием main. С двумя точками чужой коммит в main показывался
+          # как изменение этого PR — и страж то пропускал PR без документации
+          # (в diff случайно попадал README из main), то требовал её у PR,
+          # который кода не касался.
+          changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"
 
-          touches_code="$(echo "$changed" | grep -E '^src/' || true)"
-          touches_docs="$(echo "$changed" | grep -E '^(docs/|README|CHANGELOG|PRIVACY|SECURITY|ROADMAP|CONTRIBUTING)' || true)"
+          # Кодом считается весь код, а не только Python: приложение на 4400
+          # строк Swift раньше можно было переписать целиком, и страж молчал.
+          touches_code="$(echo "$changed" | grep -E '^(src/|app/|app-ios/|scripts/)' || true)"
+          # Документацией — только то, что человек правда читает как документацию.
+          # Переводы (README.zh.md и прочие) из списка убраны: опечатка в
+          # китайском переводе закрывала требование задокументировать демон.
+          # CHANGELOG убран тоже — docs/RELEASING.md запрещает править его руками.
+          touches_docs="$(echo "$changed" | grep -E '^(docs/|README\.md$|PRIVACY\.md$|SECURITY\.md$|ROADMAP\.md$|CONTRIBUTING\.md$)' || true)"
 
           if [ -n "$touches_code" ] && [ -z "$touches_docs" ]; then
-            echo "::error::Изменён код в src/, но не тронута документация."
+            echo "::error::Изменён код, но не тронута документация."
             echo ""
             echo "Обнови docs/, README* или CHANGELOG.md — либо повесь метку skip-docs,"
             echo "если правка чисто техническая и документировать нечего."

@@ -202,11 +202,24 @@ def main():
     emit({"type": "status", "text": "Загружаю модели…"})
     stt = STT(cfg)
     llm = LLM(cfg)
-    hub = AudioHub(cfg)
-    hub.on_status = lambda t: emit({"type": "status", "text": t})
     # env-override для тестов: стенограммы в песочницу, не в боевую папку
     tdir = os.environ.get("SUFLER_TRANSCRIPTS_DIR")
     tr = Transcript(pathlib.Path(tdir) if tdir else ROOT / cfg["log"]["transcripts_dir"])
+    # Штамп записи — тот же, что у стенограммы: rebuild_transcript ищет .wav
+    # по имени .md, и разъехавшиеся на границе минуты штампы означали молча
+    # пропущенную финальную пересборку.
+    hub = AudioHub(cfg, stamp=tr.stamp)
+    hub.on_status = lambda t: emit({"type": "status", "text": t})
+    # Ретеншн аудио не должен зависеть от того, началась ли новая встреча:
+    # раньше чистка жила внутри _open_sinks, поэтому при record: false или
+    # недельном простое записи лежали дольше обещанного в PRIVACY.
+    try:
+        AudioHub.prune_recordings(
+            ROOT / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings"),
+            cfg["audio"].get("record_keep_days", 2),
+        )
+    except Exception as e:  # noqa: BLE001 — уборка не повод не начать встречу
+        print(f"чистка записей: {e}", file=sys.stderr, flush=True)
     system_base = llm.system   # без памяти: живой контекст пересобирает поверх
     graph_ctx = load_graph_context(cfg)
     if graph_ctx:

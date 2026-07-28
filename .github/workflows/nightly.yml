@@ -18,4 +18,8 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v7
-      - run: swift test --package-path app 2>&1 | tail -5
+      # Без пайпа: `swift test | tail` возвращал код `tail`, то есть всегда 0.
+      # Джоба, заведённая ловить гниение зависимостей, была зелёной при любом
+      # падении Swift-тестов — ровно ту аварию, ради которой её сделали, она
+      # и не видела.
+      - run: swift test --package-path app

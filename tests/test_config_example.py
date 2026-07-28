@@ -147,3 +147,34 @@ def test_ci_checks_the_same_required_keys():
     text = CI.read_text(encoding="utf-8")
     for path in ("sufler.user_name", "sufler.language"):
         assert f'"{path}"' in text, f"ci.yml не проверяет {path}"
+
+
+def test_every_preset_starts():
+    """Все три пресета обязаны быть запускаемыми, а не только русский.
+
+    Релиз 0.34.0 добавил английское и китайское «лицо» продукта, README велит
+    `cp config/config.example.zh.yaml config/config.yaml` — а в пресете стоял
+    stt.backend: whisper, которого STT не знал: оба новых пресета падали
+    ValueError на первой же строке. Тест читал только русский пример и этого
+    не видел; CI проверял наличие ключей, но не допустимость значений.
+    """
+    backends = _known_backends()
+    for preset in sorted((REPO / "config").glob("config.example*.yaml")):
+        cfg = yaml.safe_load(preset.read_text(encoding="utf-8"))
+        backend = cfg["stt"]["backend"]
+        assert backend in backends, (
+            f"{preset.name}: stt.backend={backend!r} не принимается src/stt.py "
+            f"(известны: {sorted(backends)}) — пресет не запустится")
+        # у выбранного бэкенда должно быть чем грузить модель
+        need = {"gigaam": "gigaam_model", "parakeet": "parakeet_model",
+                "whisper": "whisper_model", "mlx_whisper": "whisper_model"}[backend]
+        assert cfg["stt"].get(need), f"{preset.name}: нет stt.{need} для backend={backend}"
+
+
+def _known_backends() -> set[str]:
+    """Имена бэкендов вытаскиваем из самого кода, чтобы список не разъезжался."""
+    src = (REPO / "src" / "stt.py").read_text(encoding="utf-8")
+    found = set(re.findall(r'self\.backend\s*==\s*"([a-z_]+)"', src))
+    found |= set(re.findall(r'self\.backend\s+in\s+\(([^)]+)\)', src)) and set(
+        re.findall(r'"([a-z_]+)"', "".join(re.findall(r'self\.backend\s+in\s+\(([^)]+)\)', src))))
+    return found
