@@ -4,6 +4,8 @@ about: An idea that would make Charoite better
 labels: enhancement
 ---
 
+*Issues are welcome in English, Русский or 中文 — pick whichever is easiest for you.*
+
 **The problem you're solving**
 
 **Proposed solution**

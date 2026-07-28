@@ -1,5 +1,7 @@
 # Contributing to Charoite
 
+***English** · [Русский](CONTRIBUTING.ru.md) · [中文](CONTRIBUTING.zh.md)*
+
 Thanks for your interest! Charoite is a fully local meeting assistant —
 contributions that keep it local-first are very welcome.
 
