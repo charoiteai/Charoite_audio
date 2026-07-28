@@ -847,7 +847,7 @@ struct SuflerView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
             .overlay(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 1.5)
                     .fill(tint.opacity(0.55))

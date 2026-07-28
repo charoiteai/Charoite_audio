@@ -12,4 +12,9 @@ enum Theme {
     /// Градиент «живого» действия: запись, первый запуск, акцентные кнопки.
     static let brand = LinearGradient(
         colors: [accent, violet], startPoint: .topLeading, endPoint: .bottomTrailing)
+
+    /// Геометрия (docs/DESIGN.md): 8 — поля и мелкие карточки, 12 — крупные
+    /// карточки и пузыри. Третьего радиуса нет — капсулы делает Capsule().
+    static let radius: CGFloat = 8
+    static let radiusCard: CGFloat = 12
 }

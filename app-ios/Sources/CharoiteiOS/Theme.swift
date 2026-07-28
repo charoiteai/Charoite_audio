@@ -6,7 +6,12 @@ import SwiftUI
 enum Theme {
     static let accent = Color(red: 0.39, green: 0.40, blue: 0.95)   // #6366F1
     static let violet = Color(red: 0.55, green: 0.36, blue: 0.96)   // #8B5CF6
-    static let ok = Color(red: 0.02, green: 0.59, blue: 0.41)
+    static let sky = Color(red: 0.05, green: 0.65, blue: 0.91)      // #0EA5E9 — облачное
+    static let ok = Color(red: 0.02, green: 0.59, blue: 0.41)       // #059669
+
+    /// Геометрия (docs/DESIGN.md): 8 — поля и мелкие карточки, 12 — крупные.
+    static let radius: CGFloat = 8
+    static let radiusCard: CGFloat = 12
 
     /// Градиент кнопки записи — из мокапа 27.07.
     static let record = RadialGradient(
