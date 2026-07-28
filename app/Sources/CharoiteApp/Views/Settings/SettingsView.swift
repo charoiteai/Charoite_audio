@@ -217,6 +217,48 @@ struct SettingsView: View {
         return parts.joined(separator: " · ")
     }
 
+    /// Сколько файлов графа реально доступно поиску.
+    ///
+    /// Дефект, который это ловит, был невидим полностью: iCloud пометил папки
+    /// «Люди», «Системы», «Встречи» флагом UF_HIDDEN, обходчик поиска их
+    /// пропускал, и приложение честно отвечало «в памяти этого нет» про людей,
+    /// с которыми встречи были на этой неделе. Ни ошибки, ни предупреждения —
+    /// просто половина графа перестала существовать. Пока такие расхождения
+    /// не показаны человеку, о них узнают случайно.
+    private nonisolated static func countGraphFiles(_ graph: URL) -> (onDisk: Int, visible: Int) {
+        let fm = FileManager.default
+        var onDisk = 0, visible = 0
+        // «На диске» — всё, кроме служебных папок с точкой в имени.
+        guard let walker = fm.enumerator(at: graph, includingPropertiesForKeys: nil) else {
+            return (0, 0)
+        }
+        for case let url as URL in walker where url.pathExtension == "md" {
+            let service = url.pathComponents.contains { $0.hasPrefix(".") && $0.count > 1 }
+            if service { continue }
+            onDisk += 1
+            let hidden = (try? url.resourceValues(forKeys: [.isHiddenKey]))?.isHidden ?? false
+            if !hidden { visible += 1 }
+        }
+        return (onDisk, visible)
+    }
+
+    private func graphVisibility() -> String {
+        guard let graph = AppSettings.graphDir else {
+            return L.t("– граф не задан", "– graph not set", "– 未设置图谱")
+        }
+        let (onDisk, visible) = Self.countGraphFiles(graph)
+        guard onDisk > 0 else { return L.t("✓ граф", "✓ graph", "✓ 图谱") }
+        let hidden = onDisk - visible
+        guard hidden > 0 else {
+            return L.t("✓ граф: \(onDisk) заметок", "✓ graph: \(onDisk) notes", "✓ 图谱：\(onDisk) 条笔记")
+        }
+        // Поиск на флаг больше не смотрит, но человеку знать полезно: файлы с
+        // ним не видны в Finder и могут пропасть из чужих инструментов.
+        return L.t("✓ граф: \(onDisk) заметок, из них \(hidden) помечены скрытыми (iCloud)",
+                   "✓ graph: \(onDisk) notes, \(hidden) flagged hidden by iCloud",
+                   "✓ 图谱：\(onDisk) 条笔记，其中 \(hidden) 条被 iCloud 标记为隐藏")
+    }
+
     private func runCheck() async {
         var parts: [String] = []
         let daemon = AppSettings.charoiteRoot.appendingPathComponent("src/daemon.py")
@@ -246,7 +288,7 @@ struct SettingsView: View {
                 parts.append(L.t("✗ Ollama не отвечает", "✗ Ollama not responding", "✗ Ollama 无响应"))
             }
         }
-        parts.append(AppSettings.graphDir != nil ? L.t("✓ граф", "✓ graph", "✓ 图谱") : L.t("– граф не задан", "– graph not set", "– 未设置图谱"))
+        parts.append(graphVisibility())
         check = parts.joined(separator: "  ")
     }
 }
