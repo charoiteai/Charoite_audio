@@ -97,6 +97,7 @@ STT models download automatically on first run (GigaAM via `onnx_asr`). For live
 - [Architecture](docs/ARCHITECTURE.md) — the daemon, two-pass diarization, graph pipeline
 - [Models](docs/MODELS.md) — why these defaults, with benchmarks; **RAM presets for macOS (4/8/16/32 GB) and iOS**
 - [Diarization](docs/DIARIZATION.md) — embedding model setup and tuning
+- [Design](docs/DESIGN.md) — shared tokens and UI conventions for macOS and iOS
 
 ## Privacy
 

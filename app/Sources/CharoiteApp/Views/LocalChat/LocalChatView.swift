@@ -105,7 +105,7 @@ struct LocalChatView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(
-                    RoundedRectangle(cornerRadius: 10)
+                    RoundedRectangle(cornerRadius: Theme.radiusCard)
                         .fill(m.role == "user"
                               ? Theme.accent.opacity(0.14)
                               : Color(nsColor: .quaternarySystemFill))
