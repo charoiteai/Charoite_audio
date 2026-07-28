@@ -57,7 +57,11 @@ jobs:
     # у того, кто первым откроет Xcode. .swiftlint.yml при этом уже включал
     # app-ios/Sources — линтер был настроен, но не вызывался.
     name: build (app-ios)
-    runs-on: macos-14
+    # macos-15, а не 14: xcodegen пишет проект в формате objectVersion 77, и
+    # Xcode 15.4 с раннера macos-14 его не открывает («future project format»).
+    # Зафиксировать формат в project.yml нельзя — опция objectVersion в
+    # xcodegen 2.45 молча игнорируется.
+    runs-on: macos-15
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
