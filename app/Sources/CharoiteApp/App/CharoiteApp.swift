@@ -37,10 +37,35 @@ struct CharoiteApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Настройки переезжают за приложением при смене идентификатора.
+    ///
+    /// UserDefaults живут в домене bundle id, и переименование обнуляло всё
+    /// разом: путь установки, адрес Ollama, тумблеры контуров, отметку
+    /// онбординга. Это уже случалось при переходе с прежнего идентификатора —
+    /// приложение стартовало с пустыми настройками, и человек видел
+    /// «первый запуск» вместо своей рабочей конфигурации.
+    static func migrateSettingsFromOldBundle() {
+        let d = UserDefaults.standard
+        guard d.object(forKey: "charoite.root") == nil else { return }  // уже настроено
+        // Домены прежних идентификаторов приложения. Своих внутренних сюда
+        // не добавляем — публичной сборке они ни к чему.
+        for old in ["ai.charoite.sufler"] {
+            guard let src = UserDefaults(suiteName: old) else { continue }
+            let moved = src.dictionaryRepresentation().filter {
+                $0.key.hasPrefix("charoit") || $0.key.hasPrefix("sufler.")
+            }
+            guard !moved.isEmpty else { continue }
+            for (k, v) in moved { d.set(v, forKey: k) }
+            NSLog("Charoite: перенесено настроек из %@: %d", old, moved.count)
+            return
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // запись в лопнувший pipe демона (умер между send и daemonDied) без
         // этого валила всё приложение сигналом 13
         signal(SIGPIPE, SIG_IGN)
+        Self.migrateSettingsFromOldBundle()
         _ = DictationService.shared  // регистрирует глобальные ⌥⌘D и ⌥⌘N
         // Папка импорта переживает перезапуск: тумблер в Настройках включён —
         // следим с первого запуска, не дожидаясь открытия настроек
@@ -91,16 +116,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard SuflerService.shared.isRunning else { return .terminateNow }
         let alert = NSAlert()
-        alert.messageText = "Идёт запись встречи"
-        alert.informativeText = "Если выйти сейчас, запись прервётся. "
-            + "Стенограмма сохранится, но всё, что скажут дальше, потеряется."
-        alert.addButton(withTitle: "Продолжить встречу")
-        alert.addButton(withTitle: "Выйти и остановить запись")
+        // Самый дорогой диалог приложения — и он был только на русском:
+        // англоязычный пользователь читал две кириллические кнопки наугад,
+        // а ценой промаха была оборванная запись встречи.
+        alert.messageText = L.t("Идёт запись встречи", "A meeting is being recorded", "正在录制会议")
+        alert.informativeText = L.t(
+            "Если выйти сейчас, запись прервётся. Стенограмма сохранится, но всё, что скажут дальше, потеряется.",
+            "Quitting now stops the recording. The transcript is kept, but everything said after this is lost.",
+            "现在退出会中断录音。逐字稿会保留，但此后所说的内容都会丢失。")
+        alert.addButton(withTitle: L.t("Продолжить встречу", "Keep recording", "继续录制"))
+        alert.addButton(withTitle: L.t("Выйти и остановить запись", "Quit and stop recording", "退出并停止录音"))
         alert.buttons.last?.hasDestructiveAction = true
         if alert.runModal() == .alertFirstButtonReturn { return .terminateCancel }
         // Демону нужно успеть закрыть аудио-стримы и дописать граф встречи.
+        // Три секунды тут стояли произвольно и были МЕНЬШЕ грейса, который
+        // назначает себе сам stop() (8с на terminate, 12с на SIGKILL): оба
+        // добивающих таймера умирали вместе с процессом на третьей секунде,
+        // и зависший демон оставался сиротой — держал flock, из-за чего
+        // следующий запуск приложения молча отскакивал.
         SuflerService.shared.stop()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 14.0) {
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater

@@ -47,16 +47,37 @@ enum AppSettings {
     /// Лёгкий разбор одной строки config.yaml, без YAML-зависимости.
     /// Ключ ищется по всему файлу (stt.language и sufler.language совпадают
     /// по имени — берём последнее вхождение: sufler-секция ниже stt).
-    private static func configValue(_ key: String) -> String? {
+    static func configValue(_ key: String) -> String? {
         let cfg = charoiteRoot.appendingPathComponent("config/config.yaml")
         guard let text = try? String(contentsOf: cfg, encoding: .utf8) else { return nil }
+        return parseValue(key, in: text)
+    }
+
+    /// Отделено от чтения файла ради тестов: разбор — чистая функция.
+    ///
+    /// Три ловушки, каждая давала молчаливый отказ.
+    /// • CRLF: `.whitespaces` не включает `\r`, и путь графа получал хвостовой
+    ///   возврат каретки — каталог «не существовал», архив молчал, а язык
+    ///   «en\r» не совпадал ни с одним значением и откатывался на русский.
+    ///   Файл с CRLF появляется сам: редактор на Windows, шара, копипаст.
+    /// • `#` внутри значения: `graph_dir: "~/Vault #1"` резался до `~/Vault`.
+    /// • Блочный скаляр (`key: >`) давал значение «>» — то есть относительный
+    ///   путь от рабочего каталога приложения.
+    static func parseValue(_ key: String, in text: String) -> String? {
         var found: String?
-        for line in text.split(separator: "\n") {
-            let t = line.trimmingCharacters(in: .whitespaces)
+        for rawLine in text.split(whereSeparator: \.isNewline) {
+            let t = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard t.hasPrefix(key + ":") else { continue }
-            var v = t.dropFirst(key.count + 1).trimmingCharacters(in: .whitespaces)
-            if let hash = v.firstIndex(of: "#") { v = String(v[..<hash]).trimmingCharacters(in: .whitespaces) }
+            var v = t.dropFirst(key.count + 1)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !v.hasPrefix(">"), !v.hasPrefix("|") else { continue }  // блочный скаляр не наш случай
+            let quoted = v.hasPrefix("\"") || v.hasPrefix("'")
+            if !quoted, let hash = v.range(of: " #") {   // комментарий отделён пробелом
+                v = String(v[..<hash.lowerBound])
+            }
+            v = v.trimmingCharacters(in: .whitespacesAndNewlines)
             v = v.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            v = v.trimmingCharacters(in: .whitespacesAndNewlines)
             if !v.isEmpty { found = v }
         }
         return found

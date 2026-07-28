@@ -21,6 +21,20 @@ final class SuflerService: ObservableObject {
 
     @Published var isRunning = false
     @Published var status = L.t("Готов к запуску", "Ready", "就绪")
+    /// Текущий статус — про сбой, а не про обычный ход дела.
+    ///
+    /// Раньше это определялось поиском подстрок в самом статусе («прервалась»,
+    /// «Не удалось»), а статусы локализованы: у англо- и китаеязычного
+    /// пользователя сообщение об оборванной записи выводилось мелким серым
+    /// текстом в одну строку и обрезалось. Признак должен приходить из
+    /// модели, а не угадываться по переводу.
+    @Published var statusIsError = false
+
+    /// Ставит статус и помечает его как сообщение об отказе.
+    private func fail(_ text: String) {
+        status = text
+        statusIsError = true
+    }
     @Published var lines: [TranscriptLine] = []
     @Published var theses: [String] = []
     @Published var hint = ""
@@ -87,9 +101,9 @@ final class SuflerService: ObservableObject {
     }
 
     private func micDenied() {
-        status = L.t("Нет доступа к микрофону — Системные настройки › Конфиденциальность › Микрофон",
-                     "No microphone access — System Settings › Privacy › Microphone",
-                     "无法访问麦克风 — 系统设置 › 隐私与安全性 › 麦克风")
+        fail(L.t("Нет доступа к микрофону — Системные настройки › Конфиденциальность › Микрофон",
+                 "No microphone access — System Settings › Privacy › Microphone",
+                 "无法访问麦克风 — 系统设置 › 隐私与安全性 › 麦克风"))
         if let url = URL(string:
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
             NSWorkspace.shared.open(url)
@@ -114,8 +128,11 @@ final class SuflerService: ObservableObject {
             status = L.t("Дописываю прошлую встречу…",
                          "Finishing previous meeting…",
                          "正在收尾上一场会议…")
+            // terminationHandler зовётся с фонового потока Process, поэтому
+            // возвращаемся на главный актор явно: обращение к @MainActor-полям
+            // из захваченного self иначе становится ошибкой на Swift 6.
             old.terminationHandler = { [weak self] _ in
-                DispatchQueue.main.async {
+                Task { @MainActor [weak self] in
                     self?.process = nil
                     self?.start(preserveUI: preserveUI)
                 }
@@ -144,6 +161,7 @@ final class SuflerService: ObservableObject {
         isClouding = false
         userStopped = false
         status = L.t("Запускаю…", "Starting…", "启动中…")
+        statusIsError = false
 
         let p = Process()
         p.executableURL = suflerRoot.appendingPathComponent(".venv/bin/python")
@@ -198,7 +216,7 @@ final class SuflerService: ObservableObject {
                 Task { @MainActor [weak self] in self?.checkAlive() }
             }
         } catch {
-            status = L.t("Не удалось начать запись: \(error.localizedDescription)", "Could not start recording: \(error.localizedDescription)", "无法开始录音：\(error.localizedDescription)")
+            fail(L.t("Не удалось начать запись: \(error.localizedDescription)", "Could not start recording: \(error.localizedDescription)", "无法开始录音：\(error.localizedDescription)"))
         }
     }
 
@@ -234,6 +252,7 @@ final class SuflerService: ObservableObject {
         let wasRunning = isRunning
         isRunning = false
         isHinting = false   // ждать hint_done/cloud_done от мёртвого демона бессмысленно
+        disarmHintTimeout()
         isClouding = false
         watchdog?.invalidate()
         watchdog = nil
@@ -242,16 +261,17 @@ final class SuflerService: ObservableObject {
         // ли встреча прямо сейчас и надо ли что-то делать руками.
         guard wasRunning, !userStopped else {
             status = L.t("Остановлен", "Stopped", "已停止")
+        statusIsError = false
             return
         }
         guard restartAttempts < 3 else {
             // Три попытки подряд не помогли — молчать нельзя: человек уверен,
             // что встреча пишется, а запись давно встала.
-            status = "⛔️ Запись остановилась и не восстановилась. Нажмите «Слушать встречу» ещё раз"
+            fail("⛔️ Запись остановилась и не восстановилась. Нажмите «Слушать встречу» ещё раз")
             return
         }
         restartAttempts += 1
-        status = L.t("Запись прервалась — восстанавливаю (\(restartAttempts) из 3)", "Recording dropped — recovering (\(restartAttempts) of 3)", "录音中断——恢复中（第 \(restartAttempts)/3 次）")
+        fail(L.t("Запись прервалась — восстанавливаю (\(restartAttempts) из 3)", "Recording dropped — recovering (\(restartAttempts) of 3)", "录音中断——恢复中（第 \(restartAttempts)/3 次）"))
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             guard let self, !self.userStopped, !self.isRunning else { return }
             self.start(preserveUI: true)
@@ -263,11 +283,39 @@ final class SuflerService: ObservableObject {
     private func checkAlive() {
         guard isRunning, let p = process, p.isRunning else { return }
         guard Date().timeIntervalSince(lastEventAt) > 100 else { return }
-        status = L.t("Запись замерла — перезапускаю", "Recording stalled — restarting", "录音停滞——正在重启")
+        fail(L.t("Запись замерла — перезапускаю", "Recording stalled — restarting", "录音停滞——正在重启"))
         p.terminate()
         DispatchQueue.global().asyncAfter(deadline: .now() + 5.0) {
             if p.isRunning { kill(p.processIdentifier, SIGKILL) }  // SIGTERM дедлок не берёт
         }
+    }
+
+    /// Предохранитель на генерацию.
+    ///
+    /// isHinting снимался ТОЛЬКО событием hint_done от демона. Если Ollama
+    /// перезагружала модель или вставала, поток генерации висел на HTTP —
+    /// hint_done не приходил никогда, а главный цикл демона продолжал слать
+    /// hb, поэтому ни watchdog, ни daemonDied не срабатывали. Кнопки
+    /// «Подсказка» и «Протокол» оставались заблокированными до конца встречи,
+    /// и спросить было нельзя ровно тогда, когда это нужнее всего.
+    private var hintDeadline: Timer?
+
+    private func armHintTimeout() {
+        hintDeadline?.invalidate()
+        hintDeadline = Timer.scheduledTimer(withTimeInterval: 150, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.isHinting else { return }
+                self.isHinting = false
+                self.fail(L.t("Модель не ответила — попробуйте ещё раз",
+                              "The model did not answer — try again",
+                              "模型没有响应——请重试"))
+            }
+        }
+    }
+
+    private func disarmHintTimeout() {
+        hintDeadline?.invalidate()
+        hintDeadline = nil
     }
 
     func requestHint() {
@@ -275,6 +323,7 @@ final class SuflerService: ObservableObject {
         hint = ""
         _hintBuf = ""; _lastHintUI = .distantPast
         isHinting = true
+        armHintTimeout()
         send("hint")
     }
 
@@ -283,6 +332,7 @@ final class SuflerService: ObservableObject {
         hint = ""
         _hintBuf = ""; _lastHintUI = .distantPast
         isHinting = true
+        armHintTimeout()
         send("summary")
     }
 
@@ -361,6 +411,7 @@ final class SuflerService: ObservableObject {
             case "hint_done":
                 hint = _hintBuf  // финальный флаш хвоста
                 isHinting = false
+                disarmHintTimeout()
             case "cloud_start":
                 // лента, как hint: `cloud = …` затирала все прошлые ответы Haiku
                 cloud += (cloud.isEmpty ? "" : "\n\n") + text + "\n"
