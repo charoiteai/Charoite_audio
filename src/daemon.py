@@ -206,6 +206,28 @@ def load_graph_context(cfg: dict) -> str:
     return "\n---\n".join(parts)[:limit]
 
 
+def _prune_graph_logs(cfg: dict) -> None:
+    """Логи графа стареют по тому же сроку, что и записи.
+
+    На каждую встречу создавался logs/graph_<штамп>.log, и не удалял их никто.
+    В них попадают имена участников, названия ядер и куски цитат — то есть
+    содержимое встреч, на которое ретеншн record_keep_days не распространялся.
+    За год это тысячи файлов с личными данными в каталоге, про который никто
+    не помнит.
+    """
+    logs = ROOT / "logs"
+    if not logs.is_dir():
+        return
+    keep_days = float(cfg.get("audio", {}).get("record_keep_days", 2))
+    cutoff = time.time() - max(keep_days, 1) * 86400
+    for old in logs.glob("graph_*.log"):
+        try:
+            if old.stat().st_mtime < cutoff:
+                old.unlink(missing_ok=True)
+        except FileNotFoundError:
+            continue
+
+
 def _recover_orphans(cfg: dict, current_stamp: str) -> None:
     """Добить встречи, оборванные аварийно.
 
@@ -218,6 +240,7 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> None:
     Здесь мы, наоборот, запускаем пересборку для каждой чужой записи —
     ровно то, что сделал бы штатный стоп.
     """
+    _prune_graph_logs(cfg)
     rec_dir = ROOT / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings")
     tdir = ROOT / cfg["log"]["transcripts_dir"]
     if not rec_dir.is_dir():

@@ -91,3 +91,31 @@ lives in RAM alongside it, `num_ctx` is always explicit.
 - **Cloud — opt-in post-meeting enrichment only**, via subscription (no API
   key in the environment). Meeting data never leaves the machine by
   default; no cloud memory SaaS, none planned.
+
+## Surviving a crash
+
+The daemon is a child process of the app, so it dies in ways a stop button
+never covers: the app is relaunched, the watchdog fires, the OS kills it under
+memory pressure. Three mechanisms keep a meeting from disappearing with it.
+
+**One timestamp per process.** The transcript filename and the raw-audio
+filename come from a single stamp with seconds, and neither is ever written
+over an existing file. Recording sinks open with `"xb"`, so a collision is a
+visible error instead of a silent truncation — the auto-restart fires two
+seconds after a crash, i.e. almost always inside the same minute.
+
+**Explicit handover of the recording.** On a normal stop the daemon converts
+`.pcm` → `.wav` through a `.part` file and publishes the result with an atomic
+rename. `rebuild_transcript` waits while a `.part` exists and only converts the
+`.pcm` itself when the daemon's lock is free. Age of the file decides nothing:
+a three-hour meeting is 345 MB per channel, and its mtime freezes at `stop()`
+long before the conversion finishes.
+
+**Catch-up on start.** Any `.pcm` that still has a transcript beside it and
+does not belong to the current meeting gets its rebuild launched when the
+daemon starts — before retention runs, so cleanup never removes the only copy
+of a meeting nobody has processed yet.
+
+A broken stdout pipe (the app quit or restarted) sets the same stop event the
+UI would: the daemon finishes normally with graph and minutes written, instead
+of losing the STT thread silently while heartbeats keep the watchdog calm.

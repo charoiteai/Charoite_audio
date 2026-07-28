@@ -46,3 +46,39 @@ final class LocalizationTests: XCTestCase {
                       + offenders.joined(separator: "\n"))
     }
 }
+
+/// Разбор config.yaml — самописный, и каждая его слепая зона давала
+/// молчаливый отказ: путь «не существовал», язык откатывался на русский.
+final class ConfigParsingTests: XCTestCase {
+    func testHandlesCRLFLineEndings() {
+        // Файл с CRLF появляется сам: редактор на Windows, сетевая шара,
+        // копипаст из веба. `.whitespaces` не включает \r, и значение
+        // приезжало с хвостовым возвратом каретки.
+        let cfg = "sufler:\r\n  graph_dir: ~/Vault\r\n  language: en\r\n"
+        XCTAssertEqual(AppSettings.parseValue("graph_dir", in: cfg), "~/Vault")
+        XCTAssertEqual(AppSettings.parseValue("language", in: cfg), "en")
+    }
+
+    func testKeepsHashInsideQuotedValue() {
+        let cfg = "sufler:\n  graph_dir: \"~/Vault #1\"\n"
+        XCTAssertEqual(AppSettings.parseValue("graph_dir", in: cfg), "~/Vault #1")
+    }
+
+    func testStripsTrailingComment() {
+        let cfg = "sufler:\n  language: en   # интерфейс и документы\n"
+        XCTAssertEqual(AppSettings.parseValue("language", in: cfg), "en")
+    }
+
+    func testIgnoresBlockScalar() {
+        // «>» — не значение, а признак многострочного блока; раньше он
+        // становился относительным путём от каталога приложения.
+        let cfg = "sufler:\n  graph_dir: >\n    ~/Vault\n"
+        XCTAssertNil(AppSettings.parseValue("graph_dir", in: cfg))
+    }
+
+    func testLastOccurrenceWins() {
+        // stt.language и sufler.language совпадают по имени; sufler ниже.
+        let cfg = "stt:\n  language: ru\nsufler:\n  language: zh\n"
+        XCTAssertEqual(AppSettings.parseValue("language", in: cfg), "zh")
+    }
+}

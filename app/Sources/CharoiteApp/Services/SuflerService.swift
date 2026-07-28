@@ -252,6 +252,7 @@ final class SuflerService: ObservableObject {
         let wasRunning = isRunning
         isRunning = false
         isHinting = false   // ждать hint_done/cloud_done от мёртвого демона бессмысленно
+        disarmHintTimeout()
         isClouding = false
         watchdog?.invalidate()
         watchdog = nil
@@ -289,11 +290,40 @@ final class SuflerService: ObservableObject {
         }
     }
 
+    /// Предохранитель на генерацию.
+    ///
+    /// isHinting снимался ТОЛЬКО событием hint_done от демона. Если Ollama
+    /// перезагружала модель или вставала, поток генерации висел на HTTP —
+    /// hint_done не приходил никогда, а главный цикл демона продолжал слать
+    /// hb, поэтому ни watchdog, ни daemonDied не срабатывали. Кнопки
+    /// «Подсказка» и «Протокол» оставались заблокированными до конца встречи,
+    /// и спросить было нельзя ровно тогда, когда это нужнее всего.
+    private var hintDeadline: Timer?
+
+    private func armHintTimeout() {
+        hintDeadline?.invalidate()
+        hintDeadline = Timer.scheduledTimer(withTimeInterval: 150, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.isHinting else { return }
+                self.isHinting = false
+                self.fail(L.t("Модель не ответила — попробуйте ещё раз",
+                              "The model did not answer — try again",
+                              "模型没有响应——请重试"))
+            }
+        }
+    }
+
+    private func disarmHintTimeout() {
+        hintDeadline?.invalidate()
+        hintDeadline = nil
+    }
+
     func requestHint() {
         guard isRunning, !isHinting else { return }
         hint = ""
         _hintBuf = ""; _lastHintUI = .distantPast
         isHinting = true
+        armHintTimeout()
         send("hint")
     }
 
@@ -302,6 +332,7 @@ final class SuflerService: ObservableObject {
         hint = ""
         _hintBuf = ""; _lastHintUI = .distantPast
         isHinting = true
+        armHintTimeout()
         send("summary")
     }
 
@@ -380,6 +411,7 @@ final class SuflerService: ObservableObject {
             case "hint_done":
                 hint = _hintBuf  // финальный флаш хвоста
                 isHinting = false
+                disarmHintTimeout()
             case "cloud_start":
                 // лента, как hint: `cloud = …` затирала все прошлые ответы Haiku
                 cloud += (cloud.isEmpty ? "" : "\n\n") + text + "\n"

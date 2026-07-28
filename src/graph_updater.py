@@ -244,7 +244,15 @@ def find_canonical(graph: pathlib.Path, name: str,
             stem = f.stem.casefold()
             if stem == n:
                 return f  # точное имя всегда выигрывает (иначе дубль системы возрождался)
-            if n in stem or stem in n:
+            # Подстрока — только для достаточно длинных имён и близких по
+            # длине пар. Двухбуквенное «Ян» из распознавания входило в
+            # «Январский релиз», «БД» — в «Обновление БД витрин»; при
+            # единственном совпадении функция уверенно возвращала чужой узел,
+            # и встреча дописывалась не туда. В обратную сторону так же:
+            # «Риски» проглатывали «Отчётность по рискам».
+            if len(n) < 5 or len(stem) < 5:
+                continue
+            if (n in stem or stem in n) and abs(len(n) - len(stem)) <= max(len(n), len(stem)) // 2:
                 candidates.append(f)
     if len(candidates) == 1:
         return candidates[0]

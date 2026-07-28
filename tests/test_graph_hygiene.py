@@ -60,3 +60,48 @@ def test_scratch_dir_is_removed_with_the_process():
     path = pathlib.Path(out.stdout.strip())
     assert str(path), f"скрипт не отработал: {out.stderr[-300:]}"
     assert not path.exists(), f"временная копия аудио осталась в {path}"
+
+
+def test_canonical_does_not_glue_short_names_to_long_nodes(tmp_path):
+    """«Ян» не должен приклеиваться к «Январский релиз».
+
+    Двухбуквенные имена из распознавания входят подстрокой в десятки узлов.
+    Пока проверка была без ограничения длины, единственное совпадение
+    возвращалось как канонический узел — и встреча дописывалась в чужой файл.
+    """
+    people = tmp_path / "Люди"
+    people.mkdir()
+    (people / "Январский релиз.md").write_text("# Январский релиз", encoding="utf-8")
+
+    assert g.find_canonical(tmp_path, "Ян") is None, "короткое имя приклеилось к длинному узлу"
+
+
+def test_canonical_still_matches_real_variants(tmp_path):
+    """Но настоящие варианты одного имени по-прежнему схлопываются."""
+    systems = tmp_path / "Системы"
+    systems.mkdir()
+    (systems / "Витрина продаж.md").write_text("# Витрина продаж", encoding="utf-8")
+
+    found = g.find_canonical(tmp_path, "витрина продаж")
+    assert found is not None and found.stem == "Витрина продаж"
+
+
+def test_graph_logs_expire(tmp_path, monkeypatch):
+    """Логи графа с содержимым встреч не должны копиться годами."""
+    import daemon as d
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    old = logs / "graph_2020-01-01_1200.log"
+    old.write_text("Дмитрий: обсудили миграцию", encoding="utf-8")
+    import os
+    stale = old.stat().st_mtime - 30 * 86400
+    os.utime(old, (stale, stale))
+    fresh = logs / "graph_now.log"
+    fresh.write_text("сегодняшняя встреча", encoding="utf-8")
+
+    monkeypatch.setattr(d, "ROOT", tmp_path)
+    d._prune_graph_logs({"audio": {"record_keep_days": 2}})
+
+    assert not old.exists(), "старый лог с содержимым встречи остался"
+    assert fresh.exists(), "свежий лог удалён — диагностику потеряли"
