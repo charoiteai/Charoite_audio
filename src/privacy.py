@@ -25,7 +25,10 @@ from __future__ import annotations
 
 import os
 
-KILL_SWITCH = "SUFLER_NO_CLOUD"
+# Два имени одного рубильника: проект переименовался в Charoite, демон
+# и старые скрипты знают SUFLER_NO_CLOUD — оба работают всегда.
+KILL_SWITCHES = ("CHAROITE_NO_CLOUD", "SUFLER_NO_CLOUD")
+KILL_SWITCH = KILL_SWITCHES[1]  # исторический алиас для существующих импортов
 
 # Ключи конфига, которыми управляется облако. Список нужен снаружи: здесь они
 # читаются через переменную, и сканер config.example.yaml по исходникам их не
@@ -35,7 +38,7 @@ KEYS = ("cloud_live", "cloud_enrich")
 
 def _allowed(cfg: dict, key: str, env: dict | None) -> bool:
     env = os.environ if env is None else env
-    if env.get(KILL_SWITCH):
+    if any(env.get(k) for k in KILL_SWITCHES):
         return False
     sufler = cfg.get("sufler") or {}
     # именно `is True`: «false», "", 0 и None разрешением не считаются

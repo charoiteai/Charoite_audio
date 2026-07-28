@@ -70,6 +70,7 @@ def test_kill_switch_beats_config():
     cfg = {"sufler": {"cloud_live": True, "cloud_enrich": True}}
     for gate in GATES:
         assert gate(cfg, {"SUFLER_NO_CLOUD": "1"}) is False, gate.__name__
+        assert gate(cfg, {"CHAROITE_NO_CLOUD": "1"}) is False, gate.__name__
 
 
 def test_example_config_ships_with_cloud_off():

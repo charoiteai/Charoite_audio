@@ -44,7 +44,7 @@ jobs:
           changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
 
           touches_code="$(echo "$changed" | grep -E '^src/' || true)"
-          touches_docs="$(echo "$changed" | grep -E '^(docs/|README|CHANGELOG)' || true)"
+          touches_docs="$(echo "$changed" | grep -E '^(docs/|README|CHANGELOG|PRIVACY|SECURITY|ROADMAP|CONTRIBUTING)' || true)"
 
           if [ -n "$touches_code" ] && [ -z "$touches_docs" ]; then
             echo "::error::Изменён код в src/, но не тронута документация."
