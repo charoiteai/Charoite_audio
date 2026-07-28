@@ -165,9 +165,29 @@ enum ArchiveSearch {
         guard let walker = FileManager.default.enumerator(
             at: graph, includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles]) else { return "" }
-        for case let url as URL in walker {
-            guard url.pathExtension == "md",
-                  let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+        // Конвейер намеренно кладёт документы встречи ДВАЖДЫ: оригинал в
+        // «Документация/Стенограммы встреч», побайтовая копия — в
+        // «Встречи-архив/<дата — название>», чтобы папку можно было открыть
+        // из Finder. Для человека это удобно, для поиска — двойной счёт:
+        // на реальном графе 214 групп дублей, 37% объёма. Обе копии читались,
+        // индексировались семантикой и попадали в выдачу как разные
+        // источники, то есть модель получала один и тот же текст дважды и
+        // тратила на повтор контекст.
+        //
+        // Оригинал выигрывает: сортируем так, чтобы архивные копии шли
+        // последними, и первый увиденный текст остаётся единственным.
+        let urls = walker.compactMap { $0 as? URL }
+            .filter { $0.pathExtension == "md" }
+            .sorted { a, b in
+                let aArch = a.path.contains("/Встречи-архив/")
+                let bArch = b.path.contains("/Встречи-архив/")
+                return aArch == bArch ? a.path < b.path : !aArch
+            }
+        var seenContent = Set<Int>()
+        for url in urls {
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            // Хеш содержимого, а не пути: копия отличается именем и папкой.
+            guard seenContent.insert(text.hashValue).inserted else { continue }
             let low = norm(text)
             let canon = url.resolvingSymlinksInPath().path
             let rel = canon.hasPrefix(graph.path + "/")

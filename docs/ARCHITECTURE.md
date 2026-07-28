@@ -119,3 +119,25 @@ of a meeting nobody has processed yet.
 A broken stdout pipe (the app quit or restarted) sets the same stop event the
 UI would: the daemon finishes normally with graph and minutes written, instead
 of losing the STT thread silently while heartbeats keep the watchdog calm.
+
+## Two kinds of duplicates
+
+The graph accumulates duplicates of two different natures, and they are handled
+by two different mechanisms — mixing them up leads to fixing the wrong thing.
+
+**Conceptual duplicates of cores** — the same topic split into twins by the
+extractor across meetings ("API access setup" and "getting a token"). Word
+overlap is zero, so only meaning finds them: bge-m3 selects candidates, NLI
+judges each pair, and `tier3` merges the chronicles under
+`sufler.tier3_auto_apply`. This runs nightly and incrementally after each
+meeting.
+
+**Byte-identical copies of files** — the pipeline deliberately writes meeting
+documents twice: the original into `Документация/Стенограммы встреч`, a copy
+into `Встречи-архив/<date — title>` so the folder opens from Finder. On a
+working graph that is 173 groups and 6.4 MB — duplicated iCloud sync and
+duplicated weight on the phone. `scripts/dedup_graph.py` replaces the copy with
+a hard link under `sufler.dedup_files`: both paths keep working, the bytes are
+stored once. Search does not wait for the nightly job — it hashes content while
+scanning and keeps the first copy, so the model never receives the same text
+twice in one context.
