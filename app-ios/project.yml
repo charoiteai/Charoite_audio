@@ -1,6 +1,12 @@
 # XcodeGen-описание iOS-приложения: `xcodegen generate` в этой папке →
 # CharoiteiOS.xcodeproj. Подпись и iCloud-контейнер добавляются в Xcode
 # (Signing & Capabilities: команда разработчика + iCloud Documents).
+#
+# DEVELOPMENT_TEAM берётся из окружения — свой Team ID здесь не хранится.
+# У индивидуального аккаунта Apple имя команды это юридическое имя владельца,
+# а репозиторий обезличен; заодно чужой Team ID не ломал бы сборку контрибьютору.
+#   export DEVELOPMENT_TEAM=XXXXXXXXXX && xcodegen generate
+# Для CI подпись не нужна вовсе: xcodebuild ... CODE_SIGNING_ALLOWED=NO.
 name: CharoiteiOS
 options:
   bundleIdPrefix: ai.charoite
@@ -35,7 +41,7 @@ targets:
     settings:
       base:
         TARGETED_DEVICE_FAMILY: "1"
-        DEVELOPMENT_TEAM: AR7PDJQNR4
+        DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.9"
         MARKETING_VERSION: "0.1.0"
@@ -53,7 +59,7 @@ targets:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
       base:
-        DEVELOPMENT_TEAM: AR7PDJQNR4
+        DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.9"
         MARKETING_VERSION: "0.1.0"
@@ -68,7 +74,7 @@ targets:
       - target: CharoiteiOS
     settings:
       base:
-        DEVELOPMENT_TEAM: AR7PDJQNR4
+        DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
         GENERATE_INFOPLIST_FILE: YES
   CharoiteiOSUITests:
     type: bundle.ui-testing
@@ -79,7 +85,7 @@ targets:
     settings:
       base:
         TEST_TARGET_NAME: CharoiteiOS
-        DEVELOPMENT_TEAM: AR7PDJQNR4
+        DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
         GENERATE_INFOPLIST_FILE: YES
 schemes:
   CharoiteiOS:

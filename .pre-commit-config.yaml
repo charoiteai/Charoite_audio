@@ -17,3 +17,11 @@ repos:
         language: system
         files: \.swift$
         pass_filenames: false
+      # Страж обезличивания: раньше жил в .git/hooks и не переносился с
+      # репозиторием — на новой машине защиты не было вовсе.
+      - id: private-markers
+        name: приватные маркеры (обезличивание публичного репо)
+        entry: scripts/check_private_markers.sh
+        language: system
+        pass_filenames: false
+        always_run: true

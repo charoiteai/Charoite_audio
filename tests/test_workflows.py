@@ -43,14 +43,24 @@ def test_ci_runs_on_every_push():
 
 
 def test_swift_tests_run_on_every_push_touching_app():
-    """То же для Swift: пуш ветки, трогающей app/, собирает и гоняет тесты."""
-    push = _on(_load("swift-tests.yml")).get("push") or {}
+    """То же для Swift: пуш ветки, трогающей Swift-код, собирает и гоняет тесты.
+
+    Фильтр paths остаётся (незачем гонять macos-раннер на пуш, не трогающий
+    приложение), но он обязан покрывать ОБА Swift-таргета. Пока в нём стоял
+    один app/**, iPhone-компаньон не собирался в CI ни разу: правка в app-ios/
+    уезжала в main непроверенной.
+    """
+    wf = _load("swift-tests.yml")
+    push = _on(wf).get("push") or {}
     assert not push.get("branches"), (
         "swift-tests.yml: push отфильтрован до main — Swift-правка в ветке "
         "не компилируется, пока нет PR")
-    assert push.get("paths") == ["app/**"], (
-        "фильтр paths: [app/**] должен остаться — незачем гонять macos-раннер "
-        "на пуш, не трогающий приложение")
+    paths = set(push.get("paths") or [])
+    assert {"app/**", "app-ios/**"} <= paths, (
+        f"paths={sorted(paths)} — не покрыт один из Swift-таргетов, "
+        f"его правки поедут в main без единой проверки")
+    assert any("app-ios" in str(job) for job in wf["jobs"].values()), \
+        "нет джобы, собирающей app-ios — фильтр paths его пускает, а собирать некому"
 
 
 def test_twin_runs_do_not_cancel_each_other():

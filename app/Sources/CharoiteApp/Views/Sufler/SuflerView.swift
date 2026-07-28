@@ -67,7 +67,11 @@ struct SuflerView: View {
         // 1080 при открытом чате: сплиту нужно ≥620 (минимумы панелей) плюс
         // 430 чата — узкое окно само дорастает, и никто никого не перекрывает
         .frame(minWidth: showChat ? 1080 : 700, minHeight: 460)
-        .onDisappear { if sufler.isRunning { sufler.stop() } }
+        // Окно закрыли — запись продолжается. Приложение живёт в меню-баре, и
+        // ⌘W посреди совещания (убрать окно с экрана при демонстрации) не
+        // должен стоить встречи. Выход из приложения — другое дело: там
+        // applicationShouldTerminate спрашивает подтверждение.
+        .onDisappear { }
         .sheet(isPresented: $showFirstRun) {
             FirstRunView { sufler.start() }
         }

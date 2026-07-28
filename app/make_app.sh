@@ -41,7 +41,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleShortVersionString</key>
 	<string>__VERSION__</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>__BUILD__</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<!-- ВЕРХНИЙ уровень плиста: вложенные куда-либо ключи локализации
@@ -63,6 +63,12 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 /usr/bin/sed -i '' "s/__VERSION__/$VERSION/" "$APP/Contents/Info.plist"
+# CFBundleVersion был вечной единицей. Именно по нему система и любой механизм
+# автообновления решают, какая сборка новее, — с константой все версии
+# выглядели одинаково. Счётчик коммитов монотонно растёт и не требует ведения.
+BUILD="$(git rev-list --count HEAD 2>/dev/null || true)"
+BUILD="${BUILD:-1}"
+/usr/bin/sed -i '' "s/__BUILD__/$BUILD/" "$APP/Contents/Info.plist"
 
 codesign --force --sign - "$APP"
 echo "готово: $APP"

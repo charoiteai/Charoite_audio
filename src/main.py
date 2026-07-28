@@ -52,8 +52,18 @@ class Transcript:
 
     def __init__(self, out_dir: pathlib.Path):
         out_dir.mkdir(exist_ok=True)
-        stamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M")
+        # Секунды в штампе и отказ писать поверх — не косметика. Авто-рестарт
+        # после сбоя поднимает демон через 2 секунды, то есть в 58 случаях из 60
+        # внутри той же минуты: со штампом до минут новый процесс открывал файл
+        # прошлой встречи и затирал её первым же _save(), а .pcm обнулял open("wb").
+        # Час разговора исчезал вместе со страховочной записью.
+        stamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
         self.path = out_dir / f"{stamp}.md"
+        n = 1
+        while self.path.exists():
+            self.path = out_dir / f"{stamp}-{n}.md"
+            n += 1
+        self.stamp = self.path.stem
         self._title = f"# Встреча {stamp}"
         # блок: [t_start, t_last, speaker, text]
         self._blocks: list[list] = []

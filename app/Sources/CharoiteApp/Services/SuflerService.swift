@@ -1,6 +1,8 @@
+import AVFoundation
 import Foundation
 
 #if os(macOS)
+import AppKit
 
 /// Мост к локальному суфлёру (папка установки Charoite_audio): запускает
 /// python-демон, читает NDJSON-события из stdout, шлёт команды в stdin.
@@ -60,23 +62,80 @@ final class SuflerService: ObservableObject {
     private var watchdog: Timer?
     private var userStopped = false
     private var restartAttempts = 0      // защита от краш-лупа: максимум 3 подряд
+    private var micChecked = false       // разрешение спрашиваем один раз за сессию
 
     private var suflerRoot: URL { AppSettings.charoiteRoot }
 
+    /// Микрофон открывает не приложение, а дочерний python (PortAudio), поэтому
+    /// отказ TCC приходил не ошибкой, а тишиной: демон стартовал, статус писал
+    /// «Слушаю», индикатор пульсировал, heartbeat шёл — и через час человек
+    /// получал пустую стенограмму. Единственный след — трейсбек в логе, куда
+    /// никто не смотрит. Спрашиваем до запуска и говорим прямо.
+    private func ensureMicrophone(_ then: @escaping () -> Void) {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            then()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                DispatchQueue.main.async {
+                    if granted { then() } else { self.micDenied() }
+                }
+            }
+        default:
+            micDenied()
+        }
+    }
+
+    private func micDenied() {
+        status = L.t("Нет доступа к микрофону — Системные настройки › Конфиденциальность › Микрофон",
+                     "No microphone access — System Settings › Privacy › Microphone",
+                     "无法访问麦克风 — 系统设置 › 隐私与安全性 › 麦克风")
+        if let url = URL(string:
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     func start(preserveUI: Bool = false) {
         guard !isRunning else { return }
-        // Прошлый демон ещё дожёвывает stop (грейс 8-12с) и держит flock —
-        // новый отскочил бы с «уже слушает». Старт = пользователь решил: добиваем.
+        guard micChecked else {
+            micChecked = true
+            ensureMicrophone { [weak self] in self?.start(preserveUI: preserveUI) }
+            return
+        }
+        // Прошлый демон ещё дожёвывает stop (грейс 8-12с) и держит flock.
+        // Раньше здесь стоял немедленный SIGKILL — и он попадал в окно ~0.5с
+        // между командой «стоп» и запуском пересборки: демон не успевал
+        // стартовать rebuild_transcript и финализировать .pcm → .wav, то есть
+        // предыдущая встреча теряла и финальную стенограмму, и граф. Двойной
+        // клик по кнопке этого стоить не должен: ждём штатной смерти, добиваем
+        // только по таймауту.
         if let old = process, old.isRunning {
-            old.terminationHandler = nil  // не дёргать daemonDied по нашему же kill
-            kill(old.processIdentifier, SIGKILL)
-            process = nil
+            status = L.t("Дописываю прошлую встречу…",
+                         "Finishing previous meeting…",
+                         "正在收尾上一场会议…")
+            old.terminationHandler = { [weak self] _ in
+                DispatchQueue.main.async {
+                    self?.process = nil
+                    self?.start(preserveUI: preserveUI)
+                }
+            }
+            send("stop")
+            DispatchQueue.global().asyncAfter(deadline: .now() + 13) {
+                if old.isRunning { kill(old.processIdentifier, SIGKILL) }
+            }
+            return
         }
         if !preserveUI {                 // авто-рестарт не должен стирать встречу с экрана
             lines = []
             theses = []
             hint = ""
             cloud = ""
+            // Ручной старт — это новая попытка, а не продолжение краш-лупа.
+            // Без сброса одна неудачная серия (например, осиротевший python
+            // держал flock) навсегда выключала автовосстановление: человек жал
+            // «Слушать встречу» и мгновенно получал то же ⛔️ без объяснения.
+            restartAttempts = 0
         }
         _hintBuf = ""; _lastHintUI = .distantPast
         // демон мог умереть посреди генерации — hint_done уже не придёт,
