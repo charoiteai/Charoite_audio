@@ -24,8 +24,11 @@ final class TasksService: ObservableObject {
     @Published private(set) var openCount = 0
 
     // Литеральный паттерн — ошибка компиляции невозможна.
+    // nonisolated: константа читается из фонового скана, а не только с
+    // главного актора (на Swift 6 обращение к изолированному статику из
+    // nonisolated-контекста — ошибка, а не предупреждение).
     // swiftlint:disable:next force_try
-    private static let todoRx = try! NSRegularExpression(pattern: #"^\s*[-*] \[( |x|X)\] +(.+)$"#)
+    private nonisolated static let todoRx = try! NSRegularExpression(pattern: #"^\s*[-*] \[( |x|X)\] +(.+)$"#)
 
     /// Полный скан графа — в фоне, с публикацией результата на главном потоке.
     ///

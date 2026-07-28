@@ -121,9 +121,11 @@ struct SettingsView: View {
         // Пересчёт только когда путь установки действительно сменился, и не
         // на главном потоке: обход графа в iCloud занимает секунды.
         .task(id: root) {
-            let stats = await Task.detached(priority: .utility) {
-                Self.computeGraphStats()
-            }.value
+            // nonisolated-функция в detached-задаче: на Swift 5.10 (Xcode 15.4,
+            // раннер CI) computeGraphStats внутри View считается async-вызовом
+            // и требует await, на более новом компиляторе — нет. Явная
+            // nonisolated-обёртка снимает расхождение.
+            let stats = await Self.graphStatsInBackground()
             graphStats = stats
         }
     }
@@ -189,7 +191,12 @@ struct SettingsView: View {
     }
 
     /// «N заметок · последняя встреча DD.MM» — по файловой системе, мгновенно.
-    private static func computeGraphStats() -> String {
+    /// Обёртка для .task: считает в фоне и возвращает готовую строку.
+    private nonisolated static func graphStatsInBackground() async -> String {
+        await Task.detached(priority: .utility) { computeGraphStats() }.value
+    }
+
+    private nonisolated static func computeGraphStats() -> String {
         guard let graph = AppSettings.graphDir,
               let walker = FileManager.default.enumerator(
                 at: graph, includingPropertiesForKeys: [.contentModificationDateKey],

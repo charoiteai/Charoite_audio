@@ -128,8 +128,11 @@ final class SuflerService: ObservableObject {
             status = L.t("Дописываю прошлую встречу…",
                          "Finishing previous meeting…",
                          "正在收尾上一场会议…")
+            // terminationHandler зовётся с фонового потока Process, поэтому
+            // возвращаемся на главный актор явно: обращение к @MainActor-полям
+            // из захваченного self иначе становится ошибкой на Swift 6.
             old.terminationHandler = { [weak self] _ in
-                DispatchQueue.main.async {
+                Task { @MainActor [weak self] in
                     self?.process = nil
                     self?.start(preserveUI: preserveUI)
                 }
