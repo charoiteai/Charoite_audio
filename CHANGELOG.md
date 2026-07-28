@@ -5,6 +5,14 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.35.0](https://github.com/charoiteai/Charoite_audio/compare/v0.34.0...v0.35.0) (2026-07-28)
+
+
+### Features
+
+* **i18n:** Chinese face — engine prompts, config preset, README and docs ([#132](https://github.com/charoiteai/Charoite_audio/issues/132)) ([df8db39](https://github.com/charoiteai/Charoite_audio/commit/df8db398a7e2b11ef71ae02d37bbe0e561c2b642))
+* **i18n:** every folder documented in three languages + the owl icon returns ([#134](https://github.com/charoiteai/Charoite_audio/issues/134)) ([854cd3c](https://github.com/charoiteai/Charoite_audio/commit/854cd3cfc172e5f7d9eafac054d6fb1977881cb3))
+
 ## [0.34.0](https://github.com/charoiteai/Charoite_audio/compare/v0.33.0...v0.34.0) (2026-07-28)
 
 
