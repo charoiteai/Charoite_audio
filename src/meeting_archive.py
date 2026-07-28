@@ -112,7 +112,15 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
     _derive_extras(folder)
     _gen_summary(folder)
     _rebuild_index(graph)
-    _unhide(graph / ARCHIVE_DIR)
+    # Флаг снимаем со ВСЕГО графа, а не только с архивной папки.
+    # iCloud метит UF_HIDDEN что угодно в своём контейнере, и на папках
+    # «Люди», «Системы», «Встречи» это уже случилось: обходчик поиска
+    # (FileManager с .skipsHiddenFiles) видел 546 файлов из 1172 — сердце
+    # графа стало невидимым, и приложение отвечало «в памяти этого нет» про
+    # людей, с которыми встречи были на этой неделе. Поиск с тех пор на флаг
+    # не смотрит, но и графу незачем оставаться помеченным: он же открывается
+    # в Finder и Obsidian.
+    _unhide(graph)
     return folder
 
 

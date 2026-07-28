@@ -205,3 +205,46 @@ final class EnglishSearchTests: XCTestCase {
         XCTAssertFalse(ArchiveSearch.isStopWord("блокер"))
     }
 }
+
+/// Вес документа по роли в конвейере.
+///
+/// Замер по рабочему графу: демпфер видел только треть сырья. Стенограммы
+/// (290 файлов, 8.2 МБ) он ловил, а «Подсказки и ответы» (2.4 МБ), «Вопросы и
+/// ответы» (1.7 МБ) и черновики (1.1 МБ) конкурировали с узлами графа на
+/// равных. Минутки — готовая выжимка решений, ровно то, за чем приходят с
+/// вопросом «что решили», — не имели никакого преимущества.
+final class DocumentRoleWeightTests: XCTestCase {
+    func testRawMaterialIsDamped() {
+        for path in ["Документация/Стенограммы встреч/2026-07-20_1000.md",
+                     "Встречи-архив/2026-07-20 Витрина/Подсказки и ответы.md",
+                     "Встречи-архив/2026-07-20 Витрина/Вопросы и ответы.md",
+                     "Встречи-архив/2026-07-20 Витрина/Черновик (live).md",
+                     "Документация/2026-07-20_1000_hints.md"] {
+            XCTAssertLessThan(ArchiveSearch.roleWeightForTests(path), 1.0,
+                              "сырьё не демпфировано: \(path)")
+        }
+    }
+
+    func testDistilledIsPreferred() {
+        for path in ["Встречи/2026-07-20 Витрина_minutes.md",
+                     "Встречи/2026-07-20 Витрина минутки.md",
+                     "Ядра/Пилот витрины.md",
+                     "Встречи-архив/2026-07-20 Витрина/Саммари.md",
+                     "Документация/2026-07-20_разбор.md"] {
+            XCTAssertGreaterThan(ArchiveSearch.roleWeightForTests(path), 1.0,
+                                 "дистиллят не получил приоритета: \(path)")
+        }
+    }
+
+    func testOrdinaryNotesStayNeutral() {
+        XCTAssertEqual(ArchiveSearch.roleWeightForTests("Люди/Дмитрий.md"), 1.0)
+        XCTAssertEqual(ArchiveSearch.roleWeightForTests("Системы/Витрина.md"), 1.0)
+    }
+
+    func testDistilledOutweighsRaw() {
+        let minutes = ArchiveSearch.roleWeightForTests("Встречи/Витрина_minutes.md")
+        let raw = ArchiveSearch.roleWeightForTests("Архив/Подсказки и ответы.md")
+        XCTAssertGreaterThan(minutes / raw, 1.5,
+                             "разрыв между выжимкой и сырьём слишком мал, чтобы влиять на порядок")
+    }
+}

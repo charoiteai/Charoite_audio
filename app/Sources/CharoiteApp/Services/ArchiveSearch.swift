@@ -152,6 +152,8 @@ enum ArchiveSearch {
         guard !words.isEmpty else { return "" }
         var needles: [String] = []
         for w in words.map(stem) where !needles.contains(w) { needles.append(w) }
+        // Байтовые копии игл считаем ОДИН раз на запрос, а не на каждый файл.
+        let needleBytes = needles.map { Array($0.utf8) }
 
         // проход 1: читаем весь граф. Лексические попадания — фильтром ниже,
         // но файлы без совпадений не выбрасываются: семантика ищет по всему
@@ -164,9 +166,20 @@ enum ArchiveSearch {
         // swiftlint:disable:next large_tuple
         var all: [(text: String, rel: String, tHits: [Int], pHits: [Int], dateTs: Double, mtime: Double)] = []  // rel — ключ RRF
         let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey]
+        // БЕЗ .skipsHiddenFiles — намеренно.
+        //
+        // iCloud метит элементы контейнера флагом UF_HIDDEN (это уже ловили
+        // 20.07: Finder показывал архивную папку пустой). Флаг ложится и на
+        // папки графа, а .skipsHiddenFiles пропускает их молча. Замер на
+        // рабочем графе: обходчик видел 546 файлов из 1172 — целиком пропали
+        // «Люди», «Системы», «Встречи» и почти вся «Документация», то есть
+        // сердце графа. Поиск отвечал «в памяти этого нет» про людей, с
+        // которыми были встречи на этой неделе.
+        //
+        // Скрытое по НАМЕРЕНИЮ (.obsidian, .trash, .git) отсекаем по имени —
+        // это надёжнее флага, который ставит не пользователь.
         guard let walker = FileManager.default.enumerator(
-            at: graph, includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles]) else { return "" }
+            at: graph, includingPropertiesForKeys: keys) else { return "" }
         // Конвейер намеренно кладёт документы встречи ДВАЖДЫ: оригинал в
         // «Документация/Стенограммы встреч», побайтовая копия — в
         // «Встречи-архив/<дата — название>», чтобы папку можно было открыть
@@ -180,28 +193,42 @@ enum ArchiveSearch {
         // последними, и первый увиденный текст остаётся единственным.
         let urls = walker.compactMap { $0 as? URL }
             .filter { $0.pathExtension == "md" }
+            .filter { url in
+                // Точка в начале любого компонента пути = служебное:
+                // .obsidian/, .trash/, .git/, .DS_Store и подобное.
+                !url.pathComponents.contains { $0.hasPrefix(".") && $0.count > 1 }
+            }
             .sorted { a, b in
                 let aArch = a.path.contains("/Встречи-архив/")
                 let bArch = b.path.contains("/Встречи-архив/")
                 return aArch == bArch ? a.path < b.path : !aArch
             }
         var seenContent = Set<Int>()
+        var liveKeys = Set<String>()
         for url in urls {
-            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
-            // Хеш содержимого, а не пути: копия отличается именем и папкой.
-            guard seenContent.insert(text.hashValue).inserted else { continue }
-            let low = norm(text)
             let canon = url.resolvingSymlinksInPath().path
             let rel = canon.hasPrefix(graph.path + "/")
                 ? String(canon.dropFirst(graph.path.count + 1))
                 : url.lastPathComponent
-            let relLow = norm(rel)
-            let tHits = needles.map { countOccurrences(of: $0, in: low) }
-            let pHits = needles.map { countOccurrences(of: $0, in: relLow) }
             let rv = try? url.resourceValues(forKeys: [.contentModificationDateKey])
             let mtime = rv?.contentModificationDate?.timeIntervalSince1970 ?? 0
-            all.append((text, rel, tHits, pHits, fileDate(rel: rel, mtime: mtime), mtime))
+            liveKeys.insert(rel)
+            // Кэш по mtime: правка в Obsidian видна сразу, а неизменившийся
+            // файл не читается и не нормализуется повторно. В чате с памятью
+            // поиск идёт на каждое сообщение — без кэша диалог из десяти
+            // реплик перечитывал весь граф десять раз.
+            guard let cached = await GraphCache.shared.text(at: url, key: rel,
+                                                           mtime: mtime, normalize: norm)
+            else { continue }
+            // Хеш содержимого, а не пути: копия отличается именем и папкой.
+            guard seenContent.insert(cached.text.hashValue).inserted else { continue }
+            let relBytes = Array(norm(rel).utf8)
+            let tHits = needleBytes.map { countOccurrences(of: $0, in: cached.bytes) }
+            let pHits = needleBytes.map { countOccurrences(of: $0, in: relBytes) }
+            all.append((cached.text, rel, tHits, pHits, fileDate(rel: rel, mtime: mtime), mtime))
         }
+        // Переименованные и удалённые файлы не должны занимать память вечно.
+        await GraphCache.shared.retain(keys: liveKeys)
         guard !all.isEmpty else { return "" }
         let files = all.filter { f in
             f.tHits.contains(where: { $0 > 0 }) || f.pHits.contains(where: { $0 > 0 })
@@ -213,7 +240,8 @@ enum ArchiveSearch {
             let df = files.filter { $0.tHits[i] > 0 || $0.pHits[i] > 0 }.count
             return log(1.0 + Double(max(0, nDocs - df + 1)) / Double(df + 1))
         }
-        var hits: [Hit] = []
+        // Сначала СКОРЫ для всех совпавших — это дёшево, только арифметика.
+        var scored: [(score: Double, rel: String, text: String)] = []
         for f in files {
             var score = 0.0
             for i in 0..<needles.count {
@@ -224,9 +252,20 @@ enum ArchiveSearch {
             score *= pow(Double(matched) / Double(needles.count), 0.5)   // покрытие запроса
             score *= recency(f.dateTs)                                    // свежесть
             score *= rawDampener(f.rel)                                   // сырьё ниже дистиллятов
-            let frag = bestWindow(text: f.text, needles: needles, span: snippet)
+            scored.append((score, f.rel, f.text))
+        }
+        // Сниппеты — ТОЛЬКО для кандидатов на выдачу. Раньше окно искалось у
+        // КАЖДОГО совпавшего файла, то есть у сотен документов, из которых в
+        // ответ попадут пять. На рабочем графе это была основная статья
+        // расхода поиска. Берём с запасом: дальше слияние с семантикой и
+        // разнообразие могут отбросить часть кандидатов.
+        scored.sort { $0.score > $1.score }
+        var hits: [Hit] = []
+        for cand in scored.prefix(max(limit * 4, 20)) {
+            let frag = bestWindow(text: cand.text, needles: needles, span: snippet)
             guard !frag.isEmpty else { continue }
-            hits.append(Hit(score: score, rel: f.rel, block: "• \(f.rel)\n  …\(frag)…"))
+            hits.append(Hit(score: cand.score, rel: cand.rel,
+                            block: "• \(cand.rel)\n  …\(frag)…"))
         }
 
         var bestCov = 0.0
@@ -371,12 +410,36 @@ enum ArchiveSearch {
     // MARK: - Ранжирование
 
     private static func countOccurrences(of needle: String, in hay: String) -> Int {
-        guard !needle.isEmpty else { return 0 }
+        countOccurrences(of: Array(needle.utf8), in: Array(hay.utf8))
+    }
+
+    /// Шов для теста эквивалентности со строковым поиском.
+    static func countOccurrencesForTests(of needle: String, in hay: String) -> Int {
+        countOccurrences(of: needle, in: hay)
+    }
+
+    /// Побайтовый счётчик вхождений.
+    ///
+    /// String.range(of:) сравнивает с юникод-нормализацией — учитывает
+    /// эквивалентность составных символов, чего нам не нужно: обе стороны уже
+    /// приведены к нижнему регистру и «ё»→«е». На графе в тысячу файлов эта
+    /// нормализация и была главной статьёй расхода поиска.
+    private static func countOccurrences(of needle: [UInt8], in hay: [UInt8]) -> Int {
+        guard !needle.isEmpty, hay.count >= needle.count else { return 0 }
+        let first = needle[0]
+        let last = hay.count - needle.count
         var count = 0
-        var idx = hay.startIndex
-        while let r = hay.range(of: needle, range: idx..<hay.endIndex) {
-            count += 1
-            idx = r.upperBound
+        var i = 0
+        while i <= last {
+            guard hay[i] == first else { i += 1; continue }
+            var j = 1
+            while j < needle.count, hay[i + j] == needle[j] { j += 1 }
+            if j == needle.count {
+                count += 1
+                i += needle.count      // без перекрытий, как было
+            } else {
+                i += 1
+            }
         }
         return count
     }
@@ -400,10 +463,36 @@ enum ArchiveSearch {
     }
 
     /// Сырые стенограммы фонят частотами и дублируют дистилляты графа.
+    /// Вес документа по его роли в конвейере.
+    ///
+    /// Конвейер производит из одной встречи несколько документов, и они очень
+    /// разного качества как ответ на вопрос «что решили». Замер по рабочему
+    /// графу показал, что демпфер видел только треть сырья:
+    ///
+    ///   стенограммы          290 файлов, 8.2 МБ — демпфер был
+    ///   подсказки/hints       44 файла, 2.4 МБ — демпфера НЕ было
+    ///   вопросы-ответы        49 файлов, 1.7 МБ — демпфера НЕ было
+    ///   черновики             31 файл,  1.1 МБ — демпфера НЕ было
+    ///   минутки/саммари       98 файлов, 0.4 МБ — приоритета НЕ было
+    ///
+    /// То есть 5.2 МБ сырых расшифровок конкурировали на равных с узлами
+    /// графа, а минутки — готовая человеческая выжимка решений, ровно то, за
+    /// чем приходят с вопросом, — не имели никакого преимущества.
+    /// Шов для тестов: вес роли документа проверяется напрямую, а не через
+    /// косвенный порядок выдачи — тот зависит ещё от IDF и покрытия запроса.
+    static func roleWeightForTests(_ rel: String) -> Double { rawDampener(rel) }
+
     private static func rawDampener(_ rel: String) -> Double {
         let low = norm(rel)
-        return (low.contains("стенограмм") || low.contains("_live.md")
-                || low.contains("transcript")) ? 0.75 : 1.0
+        // Сырьё: длинное, дословное, с оговорками и повторами. Ценно для
+        // цитаты, плохо как ответ.
+        let raw = ["стенограмм", "_live.md", "transcript", "подсказки и ответы",
+                   "_hints", "вопросы и ответы", "черновик"]
+        if raw.contains(where: { low.contains($0) }) { return 0.7 }
+        // Дистиллят: решения уже отобраны и сформулированы.
+        let distilled = ["минутк", "_minutes", "саммари", "разбор", "ядра/", "_moc"]
+        if distilled.contains(where: { low.contains($0) }) { return 1.15 }
+        return 1.0
     }
 
     /// Окно вокруг места с максимумом РАЗНЫХ слов запроса: первое совпадение

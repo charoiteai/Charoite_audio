@@ -141,3 +141,75 @@ a hard link under `sufler.dedup_files`: both paths keep working, the bytes are
 stored once. Search does not wait for the nightly job — it hashes content while
 scanning and keeps the first copy, so the model never receives the same text
 twice in one context.
+
+## How search actually works
+
+Two independent signals fused by RRF: lexical (stemming, IDF, query coverage,
+freshness) and semantic (bge-m3 through the local Ollama). Neither is enough
+alone — lexical catches internal identifiers a vector never will, semantic
+closes the vocabulary gap when the question uses different words than the note.
+
+**Chunks, not files.** Each file is split by markdown headings; long sections
+are split by paragraphs with overlap, and text without punctuation by length.
+Every chunk carries a breadcrumb (`File → H1 → H2`) into the embedder, because
+a block that reads "yes, let's do that" means nothing on its own. Measured on a
+working graph: 941 unique files become ~4800 chunks, median 1686 characters.
+
+This replaced one vector per file built from the first 12 000 characters. For a
+node that assumption held; for a meeting transcript it inverted the result —
+decisions are made at the end. On the same graph, 325 files were longer than
+that cutoff, and **63% of all content never reached the index**. Ollama also
+truncates bge-m3 input silently at roughly 12 300 characters despite the model's
+declared 8192 tokens — verified by binary search, a unique marker appended at
+the end leaves the vector unchanged.
+
+**The hidden flag.** iCloud marks items inside its container `UF_HIDDEN`, and
+`FileManager` with `.skipsHiddenFiles` skips them without a word. On a working
+graph that hid `Люди`, `Системы`, `Встречи` and nearly all of `Документация` —
+546 files visible out of 1172. Search no longer looks at the flag at all;
+intentionally hidden folders (`.obsidian`, `.trash`, `.git`) are filtered by
+name, which is a property the user controls and sync does not.
+
+**Document role.** The pipeline emits several documents per meeting, and they
+differ sharply as an answer to "what did we decide": raw material (transcript,
+hints, drafts) is damped to 0.7, distilled material (minutes, summaries, cores)
+is lifted to 1.15. Raw text is best for a quotation and worst for an answer.
+
+**Context budget.** Output is capped: no single source takes more than 40% of
+the budget, a source left with under 300 characters is dropped whole, and the
+two strongest sources go to the beginning and the end — attention sags in the
+middle of a long context. The 32K window is not a target to fill.
+
+**Cost.** Files are read and normalized only when their mtime changes; needles
+are matched over UTF-8 bytes rather than through `String.range(of:)` with its
+unicode normalization; snippets are extracted only for candidates that can
+still reach the answer. On the working graph a query takes 0.6-1.1 s, down
+from 1.8-2.5 s.
+
+### What the numbers say
+
+Quality is measured end-to-end (search → synthesis) against a private set of
+questions with expected facts; generation temperature is pinned to zero so the
+bench compares changes rather than sampling noise. On the working graph:
+
+| Change | Facts recalled |
+|---|---|
+| One vector per file, first 12 000 chars | 11 / 14 |
+| Vectors per chunk | **13 / 14** |
+| Damping only transcripts | 11 / 14 |
+| Weighting by document role | **13 / 14** |
+| Context budget on/off | 13 / 14 either way |
+
+What the chunked index recovers is exactly the kind of detail a question is
+usually about: rate limits, token names, system abbreviations — things stated
+once, deep inside a long meeting.
+
+The budget shows no gain here and is kept for a different reason: it bounds
+how much of the context a single transcript may occupy, which this ten-question
+set does not exercise.
+
+One negative result worth recording. Adding "carry abbreviations and error
+codes VERBATIM" to the synthesis prompt looked like an improvement (13/14 on a
+first run) and turned out to be a regression once temperature was pinned:
+11/14 against 13/14 without it. The instruction pushes the model to quote
+instead of admitting it does not know. The change was reverted.

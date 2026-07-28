@@ -46,7 +46,16 @@ actor SemanticIndex {
     /// графе иначе ставит в очередь тысячи embed-вызовов в ту же Ollama, что
     /// обслуживает подсказки живой встречи. Хвост доедет со следующими
     /// поисками.
-    private static let maxChunksPerRefresh = 48
+    /// Дефолт бережёт живую встречу: подсказки и индексация делят одну
+    /// Ollama. Разовое построение индекса с нуля (4785 блоков рабочего графа)
+    /// при этом растянулось бы на сотню поисков, поэтому лимит поднимается
+    /// переменной окружения:
+    ///   CHAROITE_INDEX_CHUNKS=5000 open -a Charoite
+    private static var maxChunksPerRefresh: Int {
+        if let raw = ProcessInfo.processInfo.environment["CHAROITE_INDEX_CHUNKS"],
+           let n = Int(raw), n > 0 { return n }
+        return 48
+    }
     private static let batchSize = 8
 
     // Тестовый шов: подменный эмбеддер и отдельный файл индекса. Продовый

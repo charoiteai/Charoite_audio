@@ -261,3 +261,66 @@ final class DuplicateContentTests: XCTestCase {
                        "архивная копия попала в выдачу вместо оригинала")
     }
 }
+
+/// Флаг UF_HIDDEN не должен прятать граф от поиска.
+///
+/// iCloud метит элементы своего контейнера этим флагом (ловили 20.07 —
+/// Finder показывал архивную папку пустой). Флаг ложится и на папки графа, а
+/// `.skipsHiddenFiles` пропускает их молча. Замер на рабочем графе: обходчик
+/// видел 546 файлов из 1172 — целиком пропали «Люди», «Системы», «Встречи»
+/// и почти вся «Документация». Поиск отвечал «в памяти этого нет» про людей,
+/// с которыми встречи были на этой неделе.
+final class HiddenFlagTests: XCTestCase {
+    func testHiddenFlaggedFolderIsStillSearched() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("charoite-hidden-\(UUID().uuidString)")
+        let people = root.appendingPathComponent("Люди")
+        try FileManager.default.createDirectory(at: people, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "# Дмитрий\n\nВедёт витрину сертификации, аналитик."
+            .write(to: people.appendingPathComponent("Дмитрий.md"),
+                   atomically: true, encoding: .utf8)
+
+        // Ставим флаг ровно так, как это делает iCloud.
+        var values = URLResourceValues()
+        values.isHidden = true
+        var dir = people
+        try dir.setResourceValues(values)
+
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hidden-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: store) }
+        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
+
+        let out = await ArchiveSearch.localSearch(query: "кто ведёт витрину сертификации",
+                                                  limit: 5, snippet: 400, root: root)
+        XCTAssertTrue(out.contains("Дмитрий"),
+                      "папка с флагом hidden выпала из поиска — так пропадало полграфа:\n\(out)")
+    }
+
+    func testDotFoldersAreStillSkipped() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("charoite-dot-\(UUID().uuidString)")
+        let obsidian = root.appendingPathComponent(".obsidian")
+        let notes = root.appendingPathComponent("Ядра")
+        for d in [obsidian, notes] {
+            try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        }
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "витрина сертификации служебный кэш плагина"
+            .write(to: obsidian.appendingPathComponent("cache.md"), atomically: true, encoding: .utf8)
+        try "# Витрина\n\nвитрина сертификации — запуск в августе"
+            .write(to: notes.appendingPathComponent("Витрина.md"), atomically: true, encoding: .utf8)
+
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dot-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: store) }
+        await SemanticIndex.shared.useForTests(store: store) { _ in nil }
+
+        let out = await ArchiveSearch.localSearch(query: "витрина сертификации",
+                                                  limit: 5, snippet: 400, root: root)
+        XCTAssertTrue(out.contains("Ядра/"), "нужный узел не найден")
+        XCTAssertFalse(out.contains(".obsidian"),
+                       "служебная папка плагина попала в выдачу")
+    }
+}
