@@ -9,6 +9,13 @@ merging happens in memory during a single recording and is discarded.
 
 ## Near
 
+- **Full English face** — the engine already speaks English (Parakeet/Whisper
+  STT, `language: en` documents and graph content, `config.example.en.yaml`,
+  README.ru.md/README.md as two front doors). What's left is the last mile:
+  app UI localization (string catalogs for macOS and iOS) and English
+  screenshots for the README — then the product is presentable to an
+  English-speaking audience end to end.
+
 - **iPhone companion, v1 completion** — the recorder is shipped
   (app-ios/): meetings feed and task checkboxes from the graph, a Live
   Activity in the Dynamic Island (timer + stop from anywhere), TestFlight.

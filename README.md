@@ -55,6 +55,13 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp config/config.example.yaml config/config.yaml   # then set user_name & graph_dir
 ```
 
+Working in English? Use the English preset instead — Parakeet STT (English
+SOTA on Apple Silicon), English meeting documents and an English copilot role:
+
+```bash
+cp config/config.example.en.yaml config/config.yaml
+```
+
 Something not working? One command shows what's missing and how to fix it:
 
 ```bash

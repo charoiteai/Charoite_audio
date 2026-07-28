@@ -1,0 +1,120 @@
+# Charoite — English preset. Copy to config/config.yaml and adjust.
+# Everything runs locally: audio, speech recognition, diarization, LLM — on your machine.
+# This preset differs from config.example.yaml (Russian default) in three places:
+# stt.backend (Parakeet — English SOTA on Apple Silicon, no GigaAM), stt.language,
+# sufler.language (meeting documents in English) and an English sufler.role prompt.
+
+audio:
+  device: auto            # auto = microphone + system audio (BlackHole, if installed)
+  samplerate: 16000
+  chunk_seconds: 3.0
+  overlap_seconds: 0.5
+  vad_energy_db: -55      # silence threshold; lower = more sensitive
+  record: true            # keep the full recording for the offline transcript re-pass
+  record_keep_days: 2     # recordings are deleted after N days (privacy)
+
+stt:
+  backend: parakeet       # parakeet (English, fast) | whisper (multilingual) | gigaam (Russian)
+  gigaam_model: gigaam-v3-e2e-rnnt
+  parakeet_model: mlx-community/parakeet-tdt-0.6b-v3
+  whisper_model: mlx-community/whisper-large-v3-turbo
+  language: en
+
+llm:
+  base_url: http://localhost:11434   # Ollama
+  model: qwen3.6:35b-a3b             # main model (hints, summaries, names)
+  small_model: qwen3.5:4b            # light model (theses, classification) — 3.4GB
+  fallback_model: gemma4:latest
+  # Presets (see docs/MODELS.md):
+  #  16GB RAM:  model: gemma4:latest · small_model: qwen3.5:2b
+  max_context_chars: 6000
+  temperature: 0.4
+  num_ctx: 8192                      # required: without it the KV cache balloons
+
+sufler:
+  # --- owner ---
+  user_name: ""           # your name: labels your microphone and addresses you in hints
+  user_context: ""        # 1-2 sentences about you/your work — context for answers
+                          # (e.g. "Data platform tech lead: pipelines, marts, LLM.")
+
+  quiet: true             # quiet mode: background on the light model, heavy one on demand
+  instant: true           # instant answer when the other side asks you a question (⚡)
+  think_model: qwen3.6:35b-a3b
+
+  # Language of meeting DOCUMENTS: hints, summaries, minutes, graph field
+  # values (ru | en). Not the same as stt.language above — that one is about
+  # speech recognition. You can listen in one language and write documents
+  # in another. Graph section/folder names are Russian in both modes for now
+  # (see ROADMAP).
+  language: en
+  # voice diary (⌥⌘J) — a SEPARATE sphere-folder; empty = "Diary" next to the graph.
+  diary_dir: ""
+  # replacement dictionary: STT mangles names and jargon — fix it declaratively,
+  # case-insensitive, word-boundary aware; applies to live meetings, dictation,
+  # notes and imports
+  vocabulary: {}
+  # example:
+  # vocabulary:
+  #   "charoid": "Charoite"
+  # command after every meeting (live or imported): a local webhook analogue;
+  # receives SUFLER_TRANSCRIPT and SUFLER_STAMP env vars
+  post_meeting_hook: ""
+  # live context: pull past decisions from the archive into the hint prompt
+  # based on the topic of the ongoing meeting; refresh every interval seconds
+  live_context: true
+  live_context_interval: 600
+  # hint ladder: instant local answer → cloud refinement (Claude CLI) appended.
+  # WARNING: sends the transcript to the cloud on every hint — hence a separate
+  # switch, default OFF
+  cloud_hints: false
+  cloud_hints_model: claude-haiku-4-5
+
+  # --- knowledge graph (optional; empty = off) ---
+  graph_dir: ""           # Obsidian graph folder, e.g. ~/Documents/Charoite/Work
+  # custom minutes template (optional): a markdown skeleton with your team's
+  # sections; empty — default (Topics/Decisions/Actions/Questions/Risks)
+  # minutes_template: |
+  #   # Minutes
+  #   ## Agenda
+  #   ## Agreed
+  #   ## Actions
+  default_project: Work   # which graph receives work meetings
+  graph_context_chars: 2500
+  deja_vu: true           # "⏮ discussed on DD.MM" — Core topics surfaced in theses
+  deja_vu_margin: 0.04    # margin above the similarity threshold: higher — rarer déjà vu
+  # embeddings for deja_vu (Ollama). Only for it: the Tier3 core revision is
+  # pinned to bge-m3 on purpose — its pair-selection threshold (EMB_PREFILTER
+  # in src/tier3.py) is tuned to this model's cosine spread
+  embed_model: bge-m3:latest
+  meeting_brief: true     # auto-brief at meeting start: archive context on the topic
+  # Tier3 core revision after every meeting. false — duplicates and nestings
+  # are marked in the graph reversibly (a "possible duplicate" line picked up
+  # by the morning brief) but cores are not merged: merging rewrites the file
+  # (the duplicate becomes a redirect, the original goes to Cores/.tier3_backup/),
+  # so by default a human runs it: scripts/tier3_cores.py --apply.
+  # true merges only high-confidence pairs.
+  tier3_auto_apply: false
+
+  # --- cloud layer (optional; keep off — everything stays local) ---
+  cloud_enrich: false     # post-meeting review by cloud Claude (needs claude CLI)
+  cloud_model: claude-opus-4-8
+  cloud_live: false       # parallel Claude answers to questions mid-meeting
+  cloud_live_model: claude-haiku-4-5-20251001
+
+  fast_trigger: true      # early question detection via streaming STT (if running)
+  live_diarize: true      # live "Speaker 1/2/…" labels
+  live_diarize_threshold: 0.45
+  live_dialog_markup: true  # a light model splits paragraphs into speaker turns
+  markup_model: gemma4:latest  # markup must not paraphrase — gemma keeps words intact
+
+  # The sufler role: what kind of meetings to tune hints for. Edit freely.
+  role: |
+    You are a meeting copilot. You help the user based on the live transcript.
+    From the transcript give BRIEFLY: 1) the essence of the last question
+    addressed to the user; 2) a ready first-person answer; 3) what to clarify.
+    In English, no filler.
+  hotkey_hint: "Enter — hint on the last 2 minutes; s — summary; q — quit"
+
+log:
+  transcripts_dir: transcripts
+  recordings_dir: recordings
