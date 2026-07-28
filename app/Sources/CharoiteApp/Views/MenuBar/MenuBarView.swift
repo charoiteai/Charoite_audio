@@ -14,12 +14,12 @@ struct MenuBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Чароит").font(.headline)
+                Text(L.t("Чароит", "Charoite", "Charoite")).font(.headline)
                 Spacer()
                 Circle()
                     .fill(sufler.isRunning ? Color.red : (stackNote.isEmpty ? Color.green : Color.orange))
                     .frame(width: 8, height: 8)
-                Text(sufler.isRunning ? "Идёт запись" : (stackNote.isEmpty ? "Готов" : stackNote))
+                Text(sufler.isRunning ? L.t("Идёт запись", "Recording", "录音中") : (stackNote.isEmpty ? L.t("Готов", "Ready", "就绪") : stackNote))
                     .font(.caption).foregroundStyle(.secondary)
             }
             // здоровье стека проверяется при открытии меню: молча зелёный,
@@ -27,7 +27,7 @@ struct MenuBarView: View {
             .task { await checkStack() }
 
             HStack(spacing: 8) {
-                TextField("Быстрый вопрос…", text: $quick)
+                TextField(L.t("Быстрый вопрос…", "Quick question…", "快速提问…"), text: $quick)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(sendQuick)
                 Button {
@@ -43,17 +43,17 @@ struct MenuBarView: View {
                 Button {
                     DictationService.shared.toggle()
                 } label: {
-                    Label("Диктовка ⌥⌘D", systemImage: dictation.isRecording ? "mic.fill" : "mic")
+                    Label(L.t("Диктовка ⌥⌘D", "Dictation ⌥⌘D", "听写 ⌥⌘D"), systemImage: dictation.isRecording ? "mic.fill" : "mic")
                 }
                 Button {
                     DictationService.shared.toggleNote()
                 } label: {
-                    Label("Заметка ⌥⌘N", systemImage: "note.text.badge.plus")
+                    Label(L.t("Заметка ⌥⌘N", "Voice note ⌥⌘N", "语音笔记 ⌥⌘N"), systemImage: "note.text.badge.plus")
                 }
                 Button {
                     DictationService.shared.toggleDiary()
                 } label: {
-                    Label("Дневник ⌥⌘J", systemImage: "book.closed")
+                    Label(L.t("Дневник ⌥⌘J", "Diary ⌥⌘J", "日记 ⌥⌘J"), systemImage: "book.closed")
                 }
             }
             .buttonStyle(.plain)
@@ -67,7 +67,7 @@ struct MenuBarView: View {
             Divider()
 
             HStack {
-                Button("Открыть") {
+                Button(L.t("Открыть", "Open", "打开")) {
                     NSApp.activate(ignoringOtherApps: true)
                     NSApp.windows.first { $0.canBecomeMain }?.makeKeyAndOrderFront(nil)
                 }
@@ -75,7 +75,7 @@ struct MenuBarView: View {
                 Button {
                     NSApp.terminate(nil)
                 } label: {
-                    Label("Выход", systemImage: "power")
+                    Label(L.t("Выход", "Quit", "退出"), systemImage: "power")
                 }
             }
             .buttonStyle(.plain)

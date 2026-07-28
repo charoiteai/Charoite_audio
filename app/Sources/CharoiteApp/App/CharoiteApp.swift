@@ -7,18 +7,18 @@ struct CharoiteApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
-        WindowGroup("Чароит — суфлёр", id: "main") {
+        WindowGroup(L.t("Чароит — суфлёр", "Charoite — meeting copilot", "Charoite — 会议提词"), id: "main") {
             SuflerView()
         }
         .defaultSize(width: 1100, height: 700)
 
-        Window("Чат с памятью", id: "localchat") {
+        Window(L.t("Чат с памятью", "Chat with memory", "记忆聊天"), id: "localchat") {
             LocalChatView()
                 .frame(minWidth: 520, minHeight: 420)   // минимум только у окна: в панели вью уже
         }
         .defaultSize(width: 640, height: 520)
 
-        Window("Задачи со встреч", id: "tasks") {
+        Window(L.t("Задачи со встреч", "Meeting tasks", "会议任务"), id: "tasks") {
             TasksView()
         }
         .defaultSize(width: 520, height: 480)

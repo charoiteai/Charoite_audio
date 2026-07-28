@@ -61,8 +61,13 @@ enum ArchiveSearch {
 
     /// Топ-`limit` файлов графа со сниппетами ~`snippet` знаков.
     /// Сначала пробуем brain (:8100, гибрид с семантикой), иначе — локально.
+    /// CHAROITE_GRAPH_DIR (демо/тесты) — строго файловый поиск: brain этой
+    /// машины индексирует ДРУГОЙ граф и молча отвечал бы не по подменённому.
     static func search(query: String, limit: Int = 5, snippet: Int = 1200) async -> String {
-        if let viaBrain = await brainSearch(query: query, limit: limit, snippet: snippet) {
+        let graphOverridden = !(ProcessInfo.processInfo
+            .environment["CHAROITE_GRAPH_DIR"] ?? "").isEmpty
+        if !graphOverridden,
+           let viaBrain = await brainSearch(query: query, limit: limit, snippet: snippet) {
             return viaBrain
         }
         return await localSearch(query: query, limit: limit, snippet: snippet)
