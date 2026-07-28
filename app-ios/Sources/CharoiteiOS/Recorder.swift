@@ -89,11 +89,15 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
 
         let session = AVAudioSession.sharedInstance()
         do {
-            // allowBluetoothHFP вместо устаревшего allowBluetooth. Заодно
             // .measurement: режим отключает обработку голоса, из-за которой
             // AAC-запись встречи звучит «телефонно» и хуже распознаётся.
+            //
+            // allowBluetooth помечен deprecated в свежих SDK (переименован в
+            // allowBluetoothHFP), но нового имени нет в iOS 18 SDK, на котором
+            // собирает CI, — а собираться должно и там, и на машине с новым
+            // Xcode. Оставляем совместимое имя до обновления раннеров.
             try session.setCategory(.playAndRecord, mode: .measurement,
-                                    options: [.allowBluetoothHFP])
+                                    options: [.allowBluetooth])
             try session.setActive(true)
         } catch {
             lastResult = L.t("Аудиосессия не открылась: \(error.localizedDescription)",
