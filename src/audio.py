@@ -203,14 +203,21 @@ class AudioHub:
                 if p.stat().st_size < self.sr * 2 * 5:  # меньше 5с звука — мусор
                     p.unlink(missing_ok=True)
                     continue
-                with wave.open(str(p.with_suffix(".wav")), "wb") as w, p.open("rb") as src:
+                # Пишем во временное имя и переименовываем: rebuild_transcript
+                # ждёт готовый .wav и до появления файла считает канал
+                # незавершённым — иначе он видел полупустой .wav и начинал
+                # конвертировать тот же .pcm параллельно нам.
+                wav = p.with_suffix(".wav")
+                tmp = p.with_suffix(".wav.part")
+                with wave.open(str(tmp), "wb") as w, p.open("rb") as src:
                     w.setnchannels(1)
                     w.setsampwidth(2)
                     w.setframerate(self.sr)
                     while chunk := src.read(1 << 20):
                         w.writeframes(chunk)
+                tmp.replace(wav)
                 p.unlink(missing_ok=True)
-                self.finalized[label] = p.with_suffix(".wav")
+                self.finalized[label] = wav
             except Exception:  # noqa: BLE001 — .pcm остаётся, восстановим оффлайн
                 pass
 

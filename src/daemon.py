@@ -110,12 +110,29 @@ def ask_question_model(text: str) -> bool:
         return True
 
 _out_lock = threading.Lock()
+# Общий стоп: emit ставит его, когда приложение закрыло свой конец пайпа.
+# Ссылка на событие main появляется при старте — до неё emit просто молчит.
+_stop_event: threading.Event | None = None
 
 
 def emit(obj: dict):
-    with _out_lock:
-        sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+    """Событие в приложение. Смерть читателя — повод завершиться штатно.
+
+    Раньше исключение отсюда летело в вызывающий поток. Если это был stt_loop
+    (единственное место, где emit стоял вне try), поток умирал молча: главный
+    цикл продолжал слать hb, watchdog приложения видел «демон жив», а
+    транскрипция стояла. Ровно этот профиль наблюдался 20.07 — «встреча шла,
+    транскрипция молча стояла 20 минут».
+    """
+    try:
+        with _out_lock:
+            sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+    except (BrokenPipeError, ValueError):
+        # Приложение закрылось или перезапустилось: доигрывать некому.
+        # Ставим общий стоп — main дойдёт до finally и сохранит встречу.
+        if _stop_event is not None:
+            _stop_event.set()
 
 
 def append_hint(tr_path: pathlib.Path, header: str, body: str):
@@ -189,6 +206,39 @@ def load_graph_context(cfg: dict) -> str:
     return "\n---\n".join(parts)[:limit]
 
 
+def _recover_orphans(cfg: dict, current_stamp: str) -> None:
+    """Добить встречи, оборванные аварийно.
+
+    SIGKILL (watchdog приложения на 12-й секунде, OOM, паника) не исполняет
+    finally — значит rebuild_transcript не запускался, и остаются сырые .pcm
+    без стенограммы, минуток, графа и архивной папки. Ни один старт и ни одна
+    ночная джоба этого не замечали, а через record_keep_days запись удалялась
+    вместе с последним шансом восстановить встречу.
+
+    Здесь мы, наоборот, запускаем пересборку для каждой чужой записи —
+    ровно то, что сделал бы штатный стоп.
+    """
+    rec_dir = ROOT / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings")
+    tdir = ROOT / cfg["log"]["transcripts_dir"]
+    if not rec_dir.is_dir():
+        return
+    stamps = sorted({p.stem.rsplit("_", 1)[0] for p in rec_dir.glob("*.pcm")})
+    for stamp in stamps:
+        if stamp == current_stamp:
+            continue                      # наша встреча, она только началась
+        live = tdir / f"{stamp}.md"
+        if not live.exists():
+            continue                      # без стенограммы пересобирать нечего
+        emit({"type": "status",
+              "text": f"Догоняю прерванную встречу {stamp} — пересборка фоном"})
+        subprocess.Popen(
+            ["nice", "-n", "10", sys.executable,
+             str(ROOT / "src" / "rebuild_transcript.py"), str(live)],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+        )
+
+
 def main():
     # single-instance: второй демон устроил бы битую стенограмму (один .tmp-путь)
     (ROOT / "logs").mkdir(exist_ok=True)
@@ -210,6 +260,9 @@ def main():
     # пропущенную финальную пересборку.
     hub = AudioHub(cfg, stamp=tr.stamp)
     hub.on_status = lambda t: emit({"type": "status", "text": t})
+    # Встречи, оборванные аварийно, добиваем ДО чистки — иначе ретеншн
+    # удалит единственную запись раньше, чем кто-то её пересоберёт.
+    _recover_orphans(cfg, tr.stamp)
     # Ретеншн аудио не должен зависеть от того, началась ли новая встреча:
     # раньше чистка жила внутри _open_sinks, поэтому при record: false или
     # недельном простое записи лежали дольше обещанного в PRIVACY.
@@ -241,6 +294,8 @@ def main():
     emit({"type": "status", "text": f"Слушаю: {' + '.join(hub.sources)} · LLM: {llm.resolve_model()}"})
 
     stop = threading.Event()
+    global _stop_event
+    _stop_event = stop          # emit сможет остановить нас при обрыве пайпа
     # SIGTERM (Swift terminate по грейсу) → штатный стоп с finally, а не убийство
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     hub.start()
