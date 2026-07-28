@@ -2,32 +2,63 @@
 
 Local-first, in rough priority order. No dates — quality over deadlines.
 
+A design principle worth stating: **no voice biometrics**. Speaker
+recognition stays social — introductions and addressing in the
+conversation itself — never stored voice prints. Same-voice cluster
+merging happens in memory during a single recording and is discarded.
+
 ## Near
 
-- **Speaker enrollment across meetings** — voice → person node: «this is
-  Maria again» without re-introductions.
-- **Archive answer history** — a feed of past Q&A in the app instead of
-  one replaceable answer.
+- **iPhone companion, v1 completion** — the recorder is shipped
+  (app-ios/): meetings feed and task checkboxes from the graph, a Live
+  Activity in the Dynamic Island (timer + stop from anywhere), TestFlight.
+- **Direct Wi-Fi delivery to the Mac** — the phone hands recordings to
+  the Mac daemon over the local network (Bonjour, pairing code); iCloud
+  becomes the optional fallback, not the default path.
+- **Graph-aware archive answers** — pull 1-hop neighbours of matched
+  nodes (person → their meetings → decisions) into the answer context,
+  plus a local reranker over the top candidates.
+- **Diarization shard-merge tuning** — same-voice merging within a
+  recording shipped (30 clusters → 12 on a real in-person meeting);
+  tighten thresholds on more live data.
 
 ## Mid
 
+- **Companion live mode** — the phone streams meeting audio to the Mac
+  and mirrors the live transcript and hints on its screen.
+- **App Store release** — after the meetings feed makes v1 feel complete
+  (TestFlight first).
 - **Packaged graph viewer** — browse the meeting graph without Obsidian.
 - **Streaming archive answers** — tokens as they generate, not one blob.
 
 ## Done (recent)
 
-- English documents, phase 1+2: `sufler.language: en` switches minutes,
-  summary, instant answers AND graph node content (names, summaries,
-  statuses, topics — JSON contract and folder structure stay stable) to
-  English; validated on English transcripts with the default 35B model
-  (small models may mix languages). Phase 3 — folder/section labels
+- iPhone companion v1 core: background recording (meeting / note /
+  diary), delivery into a user-chosen iCloud Drive folder with an
+  on-device outbox queue that re-sends on every launch; voice notes are
+  routed to the notes pipeline on the Mac (July 2026)
+- Nightly cloud review of graph cores — contradictions, stale facts,
+  merge candidates, lost threads; top risks and lost threads land in the
+  morning brief (July 2026)
+- Live meeting context: the daemon distills the topic from the live
+  transcript and rebuilds the «past meetings» block mid-call; cloud
+  refinement appends to the same hint card (July 2026)
+- Same-voice shard merging in diarization, in-memory only (July 2026)
+- Import folder (watched) for recorded meetings, replacement dictionary
+  for STT-mangled terms, post-meeting hook (July 2026)
+- Voice diary mode + one-command import of recorded meetings
+  (audio/text/subtitles) (July 2026)
+- Meeting archive folders carry the meeting time; copy buttons on hint
+  and cloud panes; speaker-name canonicalization against graph nodes
   (July 2026)
-
+- Free guard rail: Dependabot, secret scanning with push protection,
+  nightly CI, shellcheck/semgrep gates, SwiftLint (July 2026)
+- English documents, phase 1+2: `sufler.language: en` switches minutes,
+  summary, instant answers AND graph node content to English (July 2026)
 - Calendar brief: one-click prep for the next event (opt-in, read-only,
   July 2026)
 - Semantic layer in the built-in app search — bge-m3 + RRF, incremental
   background index, honesty gate (July 2026)
-- Meeting tasks window + archive answer history (July 2026)
 - Hybrid search v2: stemming, IDF, freshness, distillates over raw
   transcripts, honesty gate, clickable sources (July 2026)
 - Native macOS app: live transcript, theses, archive Q&A, local chat,
