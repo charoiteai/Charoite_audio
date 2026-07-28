@@ -1,5 +1,7 @@
 # Setup
 
+***English** · [Русский](SETUP.ru.md) · [中文](SETUP.zh.md)*
+
 ## 1. Dependencies
 
 ```bash

@@ -1,0 +1,98 @@
+# Charoite — 中文预设。复制为 config/config.yaml 并按需修改。
+# 一切都在本地运行：音频、语音识别、说话人分离、LLM——全部在您的机器上。
+# 与 config.example.yaml（俄语默认）的区别：stt.backend 使用 Whisper（多语言，
+# 中文识别可用），stt.language/sufler.language 设为 zh，副驾驶角色提示词为中文。
+# LLM 默认就是 Qwen（阿里巴巴）——中文是它的母语。
+
+audio:
+  device: auto            # auto = 麦克风 + 系统声音（安装了 BlackHole 时）
+  samplerate: 16000
+  chunk_seconds: 3.0
+  overlap_seconds: 0.5
+  vad_energy_db: -55      # 静音阈值；越低越灵敏
+  record: true            # 保留完整录音，用于会后离线重建逐字稿
+  record_keep_days: 2     # 录音 N 天后自动删除（隐私）
+
+stt:
+  backend: whisper        # whisper（多语言，含中文） | parakeet（英语） | gigaam（俄语）
+  gigaam_model: gigaam-v3-e2e-rnnt
+  parakeet_model: mlx-community/parakeet-tdt-0.6b-v3
+  whisper_model: mlx-community/whisper-large-v3-turbo
+  language: zh
+
+llm:
+  base_url: http://localhost:11434   # Ollama
+  model: qwen3.6:35b-a3b             # 主模型（提示、纪要、姓名）——中文原生
+  small_model: qwen3.5:4b            # 轻量模型（要点、分类）— 3.4GB
+  fallback_model: gemma4:latest
+  max_context_chars: 6000
+  temperature: 0.4
+  num_ctx: 8192                      # 必须设置：否则 KV 缓存会膨胀
+
+sufler:
+  # --- 使用者 ---
+  user_name: ""           # 您的名字：标记您的麦克风，提示中也以此称呼您
+  user_context: ""        # 用一两句话介绍您/您的工作——作为回答的背景
+                          # （例如：「数据平台技术负责人：管道、数仓、LLM。」）
+
+  quiet: true             # 安静模式：后台用轻量模型，重模型按需调用
+  instant: true           # 对方提问时的即时回答（⚡）
+  think_model: qwen3.6:35b-a3b
+
+  # 会议文档的语言：提示、摘要、纪要、知识图谱字段值（ru | en | zh）。
+  # 与上面的 stt.language 不同——那个控制语音识别。可以听一种语言、
+  # 用另一种语言写文档。图谱的分区/文件夹名称目前仍为俄语（见 ROADMAP）。
+  language: zh
+  # 语音日记（⌥⌘J）——独立的领域文件夹；留空 = 图谱旁的「Дневник」。
+  diary_dir: ""
+  # 识别替换词典：STT 会写错术语和人名——在此声明式修正，
+  # 不区分大小写、按词边界匹配；对实时会议、听写、笔记和导入都生效
+  vocabulary: {}
+  # 示例：
+  # vocabulary:
+  #   "charoid": "Charoite"
+  # 每次会议后执行的命令（本地 webhook 替代品）；
+  # 通过环境变量 SUFLER_TRANSCRIPT 和 SUFLER_STAMP 传参
+  post_meeting_hook: ""
+  # 实时上下文：按当前会议主题从档案中提取过往决定，注入提示词；
+  # 每 interval 秒刷新一次
+  live_context: true
+  live_context_interval: 600
+  # 提示阶梯：本地即时回答 → 云端补充（Claude CLI）。
+  # 注意：每次提示都会把逐字稿发送到云端——因此单独开关，默认关闭
+  cloud_hints: false
+  cloud_hints_model: claude-haiku-4-5
+
+  # --- 知识图谱（可选；留空 = 关闭） ---
+  graph_dir: ""           # Obsidian 图谱文件夹，例如 ~/Documents/Charoite/Work
+  default_project: Work   # 工作会议归入哪个图谱
+  graph_context_chars: 2500
+  deja_vu: true           # 「⏮ 已于 DD.MM 讨论过」——核心主题浮现在要点中
+  deja_vu_margin: 0.04
+  embed_model: bge-m3:latest
+  meeting_brief: true     # 会议开始时自动简报：按主题提取档案上下文
+  tier3_auto_apply: false
+
+  # --- 云层（可选；保持关闭 = 一切留在本地） ---
+  cloud_enrich: false     # 会后由云端 Claude 复盘（需要 claude CLI）
+  cloud_model: claude-opus-4-8
+  cloud_live: false       # 会议中 Claude 并行回答问题
+  cloud_live_model: claude-haiku-4-5-20251001
+
+  fast_trigger: true      # 通过流式 STT 提前检测问题（如已启用）
+  live_diarize: true      # 实时「说话人 1/2/…」标签
+  live_diarize_threshold: 0.45
+  live_dialog_markup: true  # 轻量模型在段落内区分发言
+  markup_model: gemma4:latest
+
+  # 副驾驶角色：针对什么样的会议调校提示。可自由修改。
+  role: |
+    你是工作会议中的提词助手。根据实时逐字稿帮助使用者。
+    请简要给出：1) 对方最后一个问题的要点；
+    2) 以第一人称写好的现成回答；3) 需要澄清的事项。
+    用中文，不说废话。
+  hotkey_hint: "Enter — 按最近2分钟提示；s — 摘要；q — 退出"
+
+log:
+  transcripts_dir: transcripts
+  recordings_dir: recordings

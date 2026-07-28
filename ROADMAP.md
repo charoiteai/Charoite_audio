@@ -9,12 +9,15 @@ merging happens in memory during a single recording and is discarded.
 
 ## Near
 
-- **Full English face** — the engine already speaks English (Parakeet/Whisper
-  STT, `language: en` documents and graph content, `config.example.en.yaml`,
-  README.ru.md/README.md as two front doors). What's left is the last mile:
-  app UI localization (string catalogs for macOS and iOS) and English
-  screenshots for the README — then the product is presentable to an
-  English-speaking audience end to end.
+- **Full English and Chinese faces** — the engine speaks all three
+  (Parakeet/Whisper STT, `language: en|zh` documents, graph content, hints
+  and minutes; Qwen is native in Chinese; `config.example.{en,zh}.yaml`;
+  README ×3 and translated docs as front doors). What's left is the last
+  mile: app UI localization (string catalogs for macOS and iOS) and
+  per-language screenshots for the READMEs.
+- **Chinese SOTA STT backend** — SenseVoice/Paraformer (FunASR) via
+  sherpa-onnx as a `stt.backend` option: noticeably lower CER on Chinese
+  than Whisper, same local-only story as GigaAM for Russian.
 
 - **iPhone companion, v1 completion** — the recorder is shipped
   (app-ios/): meetings feed and task checkboxes from the graph, a Live
