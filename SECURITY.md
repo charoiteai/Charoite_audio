@@ -1,5 +1,7 @@
 # Security policy
 
+***English** · [Русский](SECURITY.ru.md) · [中文](SECURITY.zh.md)*
+
 Charoite runs fully on the user's machine, so most classic web attack
 surface does not apply — but bugs in audio handling, file paths or the
 local HTTP calls are still security-relevant.

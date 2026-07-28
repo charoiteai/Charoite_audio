@@ -4,6 +4,8 @@ about: Something broke
 labels: bug
 ---
 
+*Issues are welcome in English, Русский or 中文 — pick whichever is easiest for you.*
+
 **What happened**
 
 **Steps to reproduce**
