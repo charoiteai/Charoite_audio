@@ -166,9 +166,20 @@ enum ArchiveSearch {
         // swiftlint:disable:next large_tuple
         var all: [(text: String, rel: String, tHits: [Int], pHits: [Int], dateTs: Double, mtime: Double)] = []  // rel — ключ RRF
         let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey]
+        // БЕЗ .skipsHiddenFiles — намеренно.
+        //
+        // iCloud метит элементы контейнера флагом UF_HIDDEN (это уже ловили
+        // 20.07: Finder показывал архивную папку пустой). Флаг ложится и на
+        // папки графа, а .skipsHiddenFiles пропускает их молча. Замер на
+        // рабочем графе: обходчик видел 546 файлов из 1172 — целиком пропали
+        // «Люди», «Системы», «Встречи» и почти вся «Документация», то есть
+        // сердце графа. Поиск отвечал «в памяти этого нет» про людей, с
+        // которыми были встречи на этой неделе.
+        //
+        // Скрытое по НАМЕРЕНИЮ (.obsidian, .trash, .git) отсекаем по имени —
+        // это надёжнее флага, который ставит не пользователь.
         guard let walker = FileManager.default.enumerator(
-            at: graph, includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles]) else { return "" }
+            at: graph, includingPropertiesForKeys: keys) else { return "" }
         // Конвейер намеренно кладёт документы встречи ДВАЖДЫ: оригинал в
         // «Документация/Стенограммы встреч», побайтовая копия — в
         // «Встречи-архив/<дата — название>», чтобы папку можно было открыть
@@ -182,6 +193,11 @@ enum ArchiveSearch {
         // последними, и первый увиденный текст остаётся единственным.
         let urls = walker.compactMap { $0 as? URL }
             .filter { $0.pathExtension == "md" }
+            .filter { url in
+                // Точка в начале любого компонента пути = служебное:
+                // .obsidian/, .trash/, .git/, .DS_Store и подобное.
+                !url.pathComponents.contains { $0.hasPrefix(".") && $0.count > 1 }
+            }
             .sorted { a, b in
                 let aArch = a.path.contains("/Встречи-архив/")
                 let bArch = b.path.contains("/Встречи-архив/")
