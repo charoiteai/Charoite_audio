@@ -78,6 +78,16 @@ struct SuflerView: View {
             TasksService.shared.rescan()   // бейдж «Задачи · N» актуален сразу
             ArchiveHistoryStore.shared.load()
             if calendarBriefs { CalendarService.shared.enable() }
+            // Dev-хуки скринов/смоков: на живой машине владельца клавиатурный
+            // ввод в чужое окно проигрывает гонку за фокус — вопрос и окна
+            // задаются окружением и выполняются сами.
+            let env = ProcessInfo.processInfo.environment
+            if let q = env["CHAROITE_ASK"], !q.isEmpty {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { askArchive(q) }
+            }
+            if env["CHAROITE_OPEN_TASKS"] == "1" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { openWindow(id: "tasks") }
+            }
         }
     }
 
@@ -96,8 +106,8 @@ struct SuflerView: View {
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)   // декоративная, рядом есть поле с подписью
             TextField(sufler.isRunning
-                      ? "Спросить по этой встрече и графу…"
-                      : "Что обсуждали на встрече вчера?  ·  спросить по архиву встреч",
+                      ? L.t("Спросить по этой встрече и графу…", "Ask about this meeting and the graph…", "就本次会议和图谱提问…")
+                      : L.t("Что обсуждали на встрече вчера?  ·  спросить по архиву встреч", "What did we discuss yesterday?  ·  ask the meeting archive", "昨天的会议讨论了什么？ · 向会议档案提问"),
                       text: $question)
                 .textFieldStyle(.plain)
                 .onSubmit { submitQuestion() }
@@ -112,16 +122,16 @@ struct SuflerView: View {
                 } label: {
                     Label(String(ev.prefix(28)), systemImage: "calendar")
                 }
-                .help("Бриф к ближайшей встрече: «\(ev)»")
+                .help(L.t("Бриф к ближайшей встрече: «\(ev)»", "Brief for the next event: “\(ev)”", "下一场会议的简报：「\(ev)」"))
             }
             // Подготовка ко встрече: та же архивная механика, но бриф-формат
             // (статус, решено, открыто, люди) вместо ответа на вопрос.
             if !sufler.isRunning {
-                Button("К встрече") { submitBrief() }
+                Button(L.t("К встрече", "Prep", "备会")) { submitBrief() }
                     .disabled(question.trimmingCharacters(in: .whitespaces).isEmpty || isSearchingArchive)
-                    .help("Бриф для подготовки: статус темы, что решено, что открыто, кто вовлечён")
+                    .help(L.t("Бриф для подготовки: статус темы, что решено, что открыто, кто вовлечён", "Prep brief: topic status, what's decided, what's open, who's involved", "备会简报：主题状态、已决定、待解决、相关人员"))
             }
-            Button("Спросить") { submitQuestion() }
+            Button(L.t("Спросить", "Ask", "提问")) { submitQuestion() }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
                 .disabled(question.trimmingCharacters(in: .whitespaces).isEmpty || isSearchingArchive)
@@ -160,7 +170,7 @@ struct SuflerView: View {
     /// решено, открыто, люди. Один и тот же поиск, разные инструкции синтеза.
     private func askArchive(_ q: String, brief: Bool = false) {
         if !archiveAnswer.isEmpty, !lastArchiveQuestion.isEmpty,
-           !archiveAnswer.hasPrefix("Нашёл источников") {
+           !archiveAnswer.hasPrefix(L.t("Нашёл источников", "Sources found", "已找到来源")) {
             history.append(q: lastArchiveQuestion, a: archiveAnswer)
         }
         isSearchingArchive = true
@@ -177,8 +187,8 @@ struct SuflerView: View {
             if lowConfidence { found.removeFirst() }
             guard !found.isEmpty else {
                 await MainActor.run {
-                    archiveAnswer = "В графе ничего не нашлось по запросу. "
-                        + "Проверь путь установки в Настройках (graph_dir в config.yaml)."
+                    archiveAnswer = L.t("В графе ничего не нашлось по запросу. ", "Nothing matched in the graph. ", "图谱中没有匹配结果。")
+                        + L.t("Проверь путь установки в Настройках (graph_dir в config.yaml).", "Check the install path in Settings (graph_dir in config.yaml).", "请在设置中检查安装路径（config.yaml 的 graph_dir）。")
                 }
                 return
             }
@@ -186,42 +196,36 @@ struct SuflerView: View {
             let sources = found.split(separator: "\n")
                 .filter { $0.hasPrefix("• ") }
                 .map { String($0.dropFirst(2)).replacingOccurrences(of: ".md", with: "") }
-            let sourceBlock = sources.isEmpty ? "" : "\n\nИсточники:\n"
+            let sourceBlock = sources.isEmpty ? "" : L.t("\n\nИсточники:\n", "\n\nSources:\n", "\n\n来源：\n")
                 + sources.map { "· \($0)" }.joined(separator: "\n")
             // прогресс: человек видит, ЧТО нашлось, но не сырые куски
             let confNote = lowConfidence
                 ? "⚠ Совпадения слабые — возможно, в архиве этого нет.\n" : ""
             await MainActor.run {
                 archiveAnswer = confNote
-                    + "Нашёл источников: \(sources.count) — формулирую ответ…" + sourceBlock
+                    + L.t("Нашёл источников: \(sources.count) — формулирую ответ…", "Sources found: \(sources.count) — composing the answer…", "已找到来源：\(sources.count) — 正在组织回答…") + sourceBlock
             }
             let instruction = brief
-                ? "Готовлюсь к встрече по теме: \(q)\n\nФрагменты из архива встреч:\n\(found)\n\n"
-                    + "Собери бриф для подготовки, по-русски, телеграфно, строго блоками. "
-                    + "«Статус:» — 1-2 строки, где тема сейчас. "
-                    + "«Решено:» — пункты «— дата: что» от старого к новому. "
-                    + "«Открыто:» — нерешённые вопросы и риски, пункты. "
-                    + "«Люди:» — кто вовлечён и чем занят, из фрагментов, одной строкой на "
-                    + "человека; никого нет — блок не пиши. Только факты из фрагментов, "
-                    + "ничего не выдумывай, без вступлений и воды. Если фрагменты не про "
-                    + "эту тему — одна строка: по теме в архиве пусто."
-                : "Вопрос: \(q)\n\nФрагменты из архива встреч:\n\(found)\n\n"
-                    + "Составь ответ строго такой структуры, по-русски, телеграфно. "
-                    + "Первая строка — прямой ответ на вопрос, 1-2 предложения, без "
-                    + "нумерации и префиксов. Затем блок «Факты:» — пункты вида "
-                    + "«— дата: что решили/что случилось (кто)», хронологически от "
-                    + "старого к новому; даты бери из фрагментов. Если по фрагментам "
-                    + "что-то осталось нерешённым — блок «Открыто:» с пунктами, иначе "
-                    + "его не пиши. Только факты из фрагментов, ничего не выдумывай. "
-                    + "Без вступлений, без воды, без markdown-заголовков. Если ответа "
-                    + "во фрагментах нет — одна строка: чего именно не хватает."
+                ? L.t("Готовлюсь к встрече по теме: \(q)\n\nФрагменты из архива встреч:\n\(found)\n\n", "Preparing for a meeting on: \(q)\n\nFragments from the meeting archive:\n\(found)\n\n", "正在为会议做准备，主题：\(q)\n\n会议档案片段：\n\(found)\n\n")
+                    + L.t("Собери бриф для подготовки, по-русски, телеграфно, строго блоками. ", "Build a prep brief, in English, telegraphic, strictly in blocks. ", "编写备会简报，用中文，电报式，严格分块。")
+                    + L.t("«Статус:» — 1-2 строки, где тема сейчас. ", "\"Status:\" — 1-2 lines, where the topic stands. ", "「状态：」——1-2 行，主题现状。")
+                    + L.t("«Решено:» — пункты «— дата: что» от старого к новому. ", "\"Decided:\" — items \"— date: what\", oldest to newest. ", "「已决定：」——条目「— 日期：内容」，从旧到新。")
+                    + L.t("«Открыто:» — нерешённые вопросы и риски, пункты. ", "\"Open:\" — unresolved questions and risks, items. ", "「待解决：」——未决问题与风险，条目。")
+                    + L.t("«Люди:» — кто вовлечён и чем занят, из фрагментов, одной строкой на человека; никого нет — блок не пиши. Только факты из фрагментов, ничего не выдумывай, без вступлений и воды. Если фрагменты не про эту тему — одна строка: по теме в архиве пусто.", "\"People:\" — who is involved and doing what, from the fragments, one line per person; nobody — skip the block. Only facts from the fragments, invent nothing, no intros or filler. If the fragments are off-topic — one line: nothing on this topic in the archive.", "「相关人员：」——谁在参与、在做什么，出自片段，每人一行；没有人就不写该块。只用片段中的事实，不得编造，不要开场白和废话。若片段与主题无关——用一行说明：档案中没有该主题。")
+                : L.t("Вопрос: \(q)\n\nФрагменты из архива встреч:\n\(found)\n\n", "Question: \(q)\n\nFragments from the meeting archive:\n\(found)\n\n", "问题：\(q)\n\n会议档案片段：\n\(found)\n\n")
+                    + L.t("Составь ответ строго такой структуры, по-русски, телеграфно. ", "Compose the answer in exactly this structure, in English, telegraphic. ", "严格按此结构作答，用中文，电报式。")
+                    + L.t("Первая строка — прямой ответ на вопрос, 1-2 предложения, без ", "First line — a direct answer, 1-2 sentences, without ", "第一行——直接回答，1-2 句，不要")
+                    + L.t("нумерации и префиксов. Затем блок «Факты:» — пункты вида «— дата: что решили/что случилось (кто)», хронологически от старого к новому; даты бери из фрагментов. Если по фрагментам что-то осталось нерешённым — блок «Открыто:» с пунктами, иначе ", "numbering or prefixes. Then a \"Facts:\" block — items like \"— date: what was decided/what happened (who)\", oldest to newest; take dates from the fragments. If something remains unresolved — an \"Open:\" block with items, otherwise ", "编号和前缀。然后是「事实：」块——条目形如「— 日期：决定了什么/发生了什么（谁）」，从旧到新；日期取自片段。若仍有未决事项——写「待解决：」块，否则")
+                    + L.t("его не пиши. Только факты из фрагментов, ничего не выдумывай. ", "don't write it. Only facts from the fragments, invent nothing. ", "就不要写。只用片段中的事实，不得编造。")
+                    + L.t("Без вступлений, без воды, без markdown-заголовков. Если ответа ", "No intros, no filler, no markdown headings. If the answer is ", "不要开场白、废话和 markdown 标题。如果答案")
+                    + L.t("во фрагментах нет — одна строка: чего именно не хватает.", "not in the fragments — one line: what exactly is missing.", "片段中没有——用一行说明缺什么。")
             // стрим: токены сразу в панель (троттлинг кадров — в StreamThrottler-стиле
             // не нужен: панель обновляется снапшотом полного текста, ~разы в сек)
             var lastPaint = Date.distantPast
             let answer = await ArchiveSearch.ask(
                 question: instruction,
-                system: "Ты — ассистент по архиву рабочих встреч. "
-                    + "Отвечаешь только по приведённым фрагментам, без домыслов, телеграфно.",
+                system: L.t("Ты — ассистент по архиву рабочих встреч. ", "You are an assistant over a work-meeting archive. Answer in English. ", "你是工作会议档案助手。用中文回答。")
+                    + L.t("Отвечаешь только по приведённым фрагментам, без домыслов, телеграфно.", "Answer only from the given fragments, no speculation, telegraphic style.", "只依据给出的片段回答，不臆测，电报式简洁。"),
                 model: LocalChatService.shared.model,
                 ollama: AppSettings.ollamaURL) { partial in
                 let now = Date()
@@ -247,7 +251,7 @@ struct SuflerView: View {
     /// Обратные [[ссылки]]源 из текста сохраняются — узлы графа свяжутся сами.
     private func saveAnswerToGraph() {
         guard let graph = AppSettings.graphDir else { return }
-        let dir = graph.appendingPathComponent("Заметки")
+        let dir = graph.appendingPathComponent(L.t("Заметки", "Notes", "笔记"))
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd_HHmm"
@@ -255,9 +259,9 @@ struct SuflerView: View {
         let safeQ = lastArchiveQuestion
             .replacingOccurrences(of: "[/\\:*?\"<>|]", with: "-", options: .regularExpression)
             .prefix(60)
-        let name = safeQ.isEmpty ? "Ответ по архиву" : String(safeQ)
+        let name = safeQ.isEmpty ? L.t("Ответ по архиву", "Archive answer", "档案回答") : String(safeQ)
         let url = dir.appendingPathComponent("\(stamp)_\(name).md")
-        let body = "# \(lastArchiveQuestion.isEmpty ? "Ответ по архиву" : lastArchiveQuestion)\n\n"
+        let body = "# \(lastArchiveQuestion.isEmpty ? L.t("Ответ по архиву", "Archive answer", "档案回答") : lastArchiveQuestion)\n\n"
             + "*Сохранено из Charoite \(stamp.replacingOccurrences(of: "_", with: " "))*\n\n"
             + archiveAnswer + "\n"
         try? body.write(to: url, atomically: true, encoding: .utf8)
@@ -274,7 +278,7 @@ struct SuflerView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             NSApp.activate(ignoringOtherApps: true)
             let chat = NSApp.windows.first { w in
-                w.identifier?.rawValue.contains("localchat") == true || w.title == "Локальный чат"
+                w.identifier?.rawValue.contains("localchat") == true || w.title == L.t("Локальный чат", "Local chat", "本地聊天")
             }
             chat?.makeKeyAndOrderFront(nil)
         }
@@ -298,8 +302,8 @@ struct SuflerView: View {
         if let vaults = try? FileManager.default.contentsOfDirectory(
             at: icloud, includingPropertiesForKeys: nil) {
             for v in vaults {
-                candidates.append(v.appendingPathComponent("Встречи-архив"))
-                candidates.append(v.appendingPathComponent("Встречи"))
+                candidates.append(v.appendingPathComponent(L.t("Встречи-архив", "Meeting archive", "会议档案")))
+                candidates.append(v.appendingPathComponent(L.t("Встречи", "Meetings", "会议")))
             }
         }
         candidates.append(AppSettings.charoiteRoot.appendingPathComponent("transcripts"))
@@ -325,10 +329,10 @@ struct SuflerView: View {
         }
         // совсем ничего нет — честно говорим, а не молчим
         let alert = NSAlert()
-        alert.messageText = "Папка со встречами пока не создана"
-        alert.informativeText = "Она появится после первой записанной встречи — "
+        alert.messageText = L.t("Папка со встречами пока не создана", "The meetings folder does not exist yet", "会议文件夹尚未创建")
+        alert.informativeText = L.t("Она появится после первой записанной встречи — ", "It appears after the first recorded meeting — ", "首次录制会议后即会出现——")
             + "нажмите «Слушать встречу»."
-        alert.addButton(withTitle: "Понятно")
+        alert.addButton(withTitle: L.t("Понятно", "OK", "知道了"))
         alert.runModal()
     }
 
@@ -336,7 +340,7 @@ struct SuflerView: View {
     private var statusIsProblem: Bool {
         let s = sufler.status
         return s.hasPrefix("⛔️") || s.contains("прервалась")
-            || s.contains("замерла") || s.contains("Не удалось")
+            || s.contains(L.t("замерла", "stalled", "已停滞")) || s.contains(L.t("Не удалось", "Failed", "失败"))
     }
 
     /// Что показывать в панели: во время встречи — подсказку демона, вне
@@ -350,8 +354,8 @@ struct SuflerView: View {
         if archiveAnswer.isEmpty {
             // при открытом чате нижнего поля нет — не отправляем в никуда
             return AttributedString(showChat
-                ? "Ответы по архиву появятся здесь. Спросить — в чате справа или закрой Чат для поля внизу"
-                : "Спроси про прошлые встречи в поле внизу — найду по архиву и графу")
+                ? L.t("Ответы по архиву появятся здесь. Спросить — в чате справа или закрой Чат для поля внизу", "Archive answers appear here. Ask in the chat on the right, or close Chat for the field below", "档案回答会显示在这里。在右侧聊天提问，或关闭聊天使用下方输入框")
+                : L.t("Спроси про прошлые встречи в поле внизу — найду по архиву и графу", "Ask about past meetings in the field below — I'll search the archive and graph", "在下方输入框询问过往会议——我会检索档案与图谱"))
         }
         return withBoldQuestions(archiveAnswer)
     }
@@ -411,7 +415,7 @@ struct SuflerView: View {
                 sufler.isRunning ? sufler.stop() : sufler.start()
             } label: {
                 Label {
-                    Text(sufler.isRunning ? "Стоп" : "Слушать встречу")
+                    Text(sufler.isRunning ? L.t("Стоп", "Stop", "停止") : L.t("Слушать встречу", "Listen to meeting", "聆听会议"))
                 } icon: {
                     Image(systemName: sufler.isRunning ? "stop.circle.fill" : "waveform.circle.fill")
                         // живая волна на записи — видно СРАЗУ, что слушаем,
@@ -460,22 +464,22 @@ struct SuflerView: View {
             // буквам — на экране стояло «По-дс-ка-зки» в четыре строки.
             // Пусть лучше панель прокрутится, чем слово рассыплется.
             HStack(spacing: 12) {
-                Toggle(isOn: $sufler.hintsOn) { Text("Подсказки").fixedSize() }
-                    .help("Подсказки и мгновенные ответы на вопросы собеседника")
-                    .accessibilityLabel("Подсказки во время встречи")
-                    .accessibilityHint("Мгновенные ответы на вопросы собеседника")
-                Toggle(isOn: $sufler.thesesOn) { Text("Тезисы").fixedSize() }
-                    .help("Автотезисы 📌💎💭 и дежавю ⏮ по ходу встречи")
-                    .accessibilityLabel("Автотезисы")
+                Toggle(isOn: $sufler.hintsOn) { Text(L.t("Подсказки", "Hints", "提示")).fixedSize() }
+                    .help(L.t("Подсказки и мгновенные ответы на вопросы собеседника", "Hints and instant answers to the other side's questions", "提示与对方提问的即时回答"))
+                    .accessibilityLabel(L.t("Подсказки во время встречи", "Hints during the meeting", "会议期间的提示"))
+                    .accessibilityHint(L.t("Мгновенные ответы на вопросы собеседника", "Instant answers to the other side's questions", "对方提问的即时回答"))
+                Toggle(isOn: $sufler.thesesOn) { Text(L.t("Тезисы", "Theses", "要点")).fixedSize() }
+                    .help(L.t("Автотезисы 📌💎💭 и дежавю ⏮ по ходу встречи", "Auto-theses 📌💎💭 and déjà vu ⏮ during the meeting", "会议中的自动要点 📌💎💭 与似曾相识 ⏮"))
+                    .accessibilityLabel(L.t("Автотезисы", "Auto-theses", "自动要点"))
                     .accessibilityHint("Ключевые мысли и повторы по ходу встречи")
                 Toggle(isOn: $sufler.cloudOn) { Text("Claude").fixedSize() }
-                    .help("Параллельные ответы Claude на вопросы собеседника")
-                    .accessibilityLabel("Ответы Claude")
-                    .accessibilityHint("Параллельные ответы облачной модели")
-                Toggle(isOn: $archiveOn) { Text("Архив").fixedSize() }
-                    .help("Вопросы по архиву встреч и графу, когда встреча не идёт")
-                    .accessibilityLabel("Поиск по архиву встреч")
-                    .accessibilityHint("Ответы по прошлым встречам вне записи")
+                    .help(L.t("Параллельные ответы Claude на вопросы собеседника", "Parallel Claude answers to the other side's questions", "Claude 并行回答对方的提问"))
+                    .accessibilityLabel(L.t("Ответы Claude", "Claude answers", "Claude 回答"))
+                    .accessibilityHint(L.t("Параллельные ответы облачной модели", "Parallel answers from the cloud model", "云端模型的并行回答"))
+                Toggle(isOn: $archiveOn) { Text(L.t("Архив", "Archive", "档案")).fixedSize() }
+                    .help(L.t("Вопросы по архиву встреч и графу, когда встреча не идёт", "Questions over the meeting archive and graph between meetings", "会议之外对档案与图谱提问"))
+                    .accessibilityLabel(L.t("Поиск по архиву встреч", "Meeting archive search", "会议档案搜索"))
+                    .accessibilityHint(L.t("Ответы по прошлым встречам вне записи", "Answers from past meetings outside recording", "非录音时基于过往会议回答"))
             }
             .fixedSize(horizontal: true, vertical: false)
             .toggleStyle(.switch)
@@ -485,16 +489,16 @@ struct SuflerView: View {
             Button {
                 showChat.toggle()
             } label: {
-                Label("Чат", systemImage: showChat ? "message.fill" : "message")
+                Label(L.t("Чат", "Chat", "聊天"), systemImage: showChat ? "message.fill" : "message")
             }
-            .help("Локальный чат с памятью — панель прямо в окне суфлёра")
+            .help(L.t("Локальный чат с памятью — панель прямо в окне суфлёра", "Local chat with memory — a pane right in the copilot window", "带记忆的本地聊天——直接嵌在提词窗口"))
 
             Button {
                 openChatWindow()  // не просто открыть, а вынести вперёд
             } label: {
                 Image(systemName: "arrow.up.forward.square")
             }
-            .help("Чат отдельным окном (история общая с панелью)")
+            .help(L.t("Чат отдельным окном (история общая с панелью)", "Chat in its own window (history shared with the pane)", "聊天独立窗口(与面板共用历史)"))
 
             Button {
                 TasksService.shared.rescan()
@@ -503,28 +507,28 @@ struct SuflerView: View {
             } label: {
                 // бейдж открытых поручений: видно, что по встречам есть хвосты
                 if tasksOpen > 0 {
-                    Label("Задачи · \(tasksOpen)", systemImage: "checklist")
+                    Label(L.t("Задачи · \(tasksOpen)", "Tasks · \(tasksOpen)", "任务 · \(tasksOpen)"), systemImage: "checklist")
                 } else {
-                    Label("Задачи", systemImage: "checklist")
+                    Label(L.t("Задачи", "Tasks", "任务"), systemImage: "checklist")
                 }
             }
-            .help("Поручения со встреч (чекбоксы из минуток и заметок графа)")
+            .help(L.t("Поручения со встреч (чекбоксы из минуток и заметок графа)", "Meeting action items (checkboxes from minutes and graph notes)", "会议行动项（来自纪要和图谱笔记的复选框）"))
 
             Button {
                 openMeetingsFolder()
             } label: {
-                Label("Встречи", systemImage: "folder")
+                Label(L.t("Встречи", "Meetings", "会议"), systemImage: "folder")
             }
-            .help("Открыть встречи в Finder (стенограммы, тезисы, минутки, разборы)")
+            .help(L.t("Открыть встречи в Finder (стенограммы, тезисы, минутки, разборы)", "Open meetings in Finder (transcripts, theses, minutes, debriefs)", "在 Finder 打开会议（逐字稿、要点、纪要、复盘）"))
 
             // Действия записи живут ТОЛЬКО во время встречи: вне её это были
             // три вечно серые кнопки, занимавшие треть тулбара. Появляются
             // мягко вместе со стартом записи.
             if sufler.isRunning {
-                Button("Подсказка") { sufler.requestHint() }
+                Button(L.t("Подсказка", "Hint", "提示")) { sufler.requestHint() }
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(sufler.isHinting)
-                    .help("Подсказка по последним минутам (⌘⏎)")
+                    .help(L.t("Подсказка по последним минутам (⌘⏎)", "Hint on the last minutes (⌘⏎)", "按最近几分钟提示（⌘⏎）"))
 
                 Button("Claude") { sufler.requestCloud() }
                     .keyboardShortcut(.return, modifiers: [.command, .shift])
@@ -532,12 +536,12 @@ struct SuflerView: View {
                     // адрес в подсказке — тот же тулбар, а не Настройки: облака
                     // там нет, а тумблер стоит левее этой же кнопки
                     .help(sufler.cloudOn
-                          ? "Спросить Claude по ходу встречи — кусок стенограммы уйдёт в облако (⌘⇧⏎)"
-                          : "Облако выключено: включите «Claude» в тулбаре. Стенограмма не покидает машину")
+                          ? L.t("Спросить Claude по ходу встречи — кусок стенограммы уйдёт в облако (⌘⇧⏎)", "Ask Claude mid-meeting — a transcript slice goes to the cloud (⌘⇧⏎)", "会议中问 Claude — 一段逐字稿将发送至云端（⌘⇧⏎）")
+                          : L.t("Облако выключено: включите «Claude» в тулбаре. Стенограмма не покидает машину", "Cloud is off: enable “Claude” in the toolbar. The transcript never leaves this machine", "云端已关闭：在工具栏开启「Claude」。逐字稿不会离开本机"))
 
-                Button("Протокол") { sufler.requestSummary() }
+                Button(L.t("Протокол", "Minutes", "纪要")) { sufler.requestSummary() }
                     .disabled(sufler.isHinting)
-                    .help("Собрать протокол встречи прямо сейчас")
+                    .help(L.t("Собрать протокол встречи прямо сейчас", "Build the meeting minutes right now", "立即生成会议纪要"))
             }
         }
         .padding(.horizontal, 14)
@@ -549,13 +553,13 @@ struct SuflerView: View {
 
     private var transcriptPane: some View {
         VStack(alignment: .leading, spacing: 0) {
-            paneTitle("Стенограмма", systemImage: "text.quote")
+            paneTitle(L.t("Стенограмма", "Transcript", "逐字稿"), systemImage: "text.quote")
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         if sufler.lines.isEmpty {
                             emptyState(sufler.isRunning ? "waveform" : "waveform.circle",
-                                       sufler.isRunning ? "Слушаю…" : "Нажми «Слушать встречу»")
+                                       sufler.isRunning ? L.t("Слушаю…", "Listening…", "聆听中…") : L.t("Нажми «Слушать встречу»", "Press “Listen to meeting”", "点按「聆听会议」"))
                         }
                         // Ритм чтения: реплики одного спикера идут плотно, смена
                         // спикера даёт воздух — глаз находит границы разговора
@@ -594,13 +598,13 @@ struct SuflerView: View {
         VSplitView {
             if sufler.thesesOn {
             VStack(alignment: .leading, spacing: 0) {
-                paneTitle("Тезисы", systemImage: "list.bullet.rectangle")
+                paneTitle(L.t("Тезисы", "Theses", "要点"), systemImage: "list.bullet.rectangle")
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 6) {
                             if sufler.theses.isEmpty {
                                 emptyState("list.bullet.rectangle",
-                                           "Автотезисы появятся по ходу встречи")
+                                           L.t("Автотезисы появятся по ходу встречи", "Auto-theses appear as the meeting goes", "要点将随会议进行自动出现"))
                             }
                             ForEach(Array(sufler.theses.enumerated()), id: \.offset) { _, t in
                                 thesisCard(t)
@@ -634,8 +638,8 @@ struct SuflerView: View {
                     // подсказки выключены, облако включено — панель честно
                     // называется по единственному жильцу
                     let cloudOnly = sufler.isRunning && !sufler.hintsOn
-                    paneTitle(sufler.isRunning ? (cloudOnly ? "Claude" : "Подсказка")
-                                               : "Ответ по архиву",
+                    paneTitle(sufler.isRunning ? (cloudOnly ? "Claude" : L.t("Подсказка", "Hint", "提示"))
+                                               : L.t("Ответ по архиву", "Archive answer", "档案回答"),
                               systemImage: sufler.isRunning
                                   ? (cloudOnly ? "cloud.fill" : "lightbulb")
                                   : "clock.arrow.circlepath",
@@ -655,7 +659,7 @@ struct SuflerView: View {
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(.tertiary)
-                        .help("Сохранить ответ заметкой в граф (Заметки/)")
+                        .help(L.t("Сохранить ответ заметкой в граф (Заметки/)", "Save the answer as a graph note (Notes/)", "将回答保存为图谱笔记（Заметки/）"))
                         .padding(.trailing, 10)
                     }
                 }
@@ -725,7 +729,7 @@ struct SuflerView: View {
             }
 
             if !sufler.thesesOn && !sufler.hintsOn && !sufler.cloudOn {
-                Text("Все панели выключены — включи плашки сверху")
+                Text(L.t("Все панели выключены — включи плашки сверху", "All panes are off — enable the chips above", "所有面板均已关闭——请启用上方开关"))
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -772,7 +776,7 @@ struct SuflerView: View {
             }
             .foregroundStyle(Theme.sky)
             Text(sufler.cloud.isEmpty
-                 ? AttributedString("Вопрос собеседника уйдёт Claude автоматически · ⌘⇧⏎ — вручную")
+                 ? AttributedString(L.t("Вопрос собеседника уйдёт Claude автоматически · ⌘⇧⏎ — вручную", "The other side's question goes to Claude automatically · ⌘⇧⏎ — manually", "对方的问题会自动发给 Claude · ⌘⇧⏎ — 手动发送"))
                  : withBoldQuestions(sufler.cloud))
                 .font(.callout)
                 .foregroundStyle(sufler.cloud.isEmpty ? .tertiary : .primary)
@@ -825,7 +829,7 @@ struct SuflerView: View {
                     .font(.caption)
             }
             .buttonStyle(.plain)
-            .help("Скопировать")
+            .help(L.t("Скопировать", "Copy", "复制"))
         }
     }
 

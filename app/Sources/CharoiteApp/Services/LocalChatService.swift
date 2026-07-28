@@ -115,11 +115,19 @@ final class LocalChatService: ObservableObject {
         Ты — Чароит, локальный ассистент владельца этого Mac, работаешь офлайн. \
         Отвечай по-русски, кратко и по делу. ЧЕСТНОСТЬ: отвечай только \
         по данным из блоков ниже и из разговора; если блоки не про то, что спросили, — \
-        так и скажи («в памяти этого нет»), не сочиняй. На вопрос «кто ты» — \
-        «Чароит, локальный ассистент», без имени вендора модели.
+        так и скажи («в памяти этого нет»), не сочиняй. Ты помнишь весь текущий \
+        диалог — «а что я спрашивал», «продолжи», «а по второму пункту» относятся \
+        к нему. Сопоставляй факты из разных встреч: называй повторяющиеся темы, \
+        расхождения и что изменилось со временем, с датами и источниками из блока \
+        графа. На вопрос «кто ты» — «Чароит, локальный ассистент», без имени \
+        вендора модели.
         """
         if useMemory {
-            var vault = String(await ArchiveSearch.search(query: prompt, limit: 5, snippet: 800).prefix(2400))
+            // Поиск по одной последней реплике («а что дальше?») находил мусор:
+            // тему разговора несут ПОСЛЕДНИЕ вопросы вместе, свежий — главный
+            let topic = (messages.filter { $0.role == "user" }.suffix(3).map(\.text)
+                .joined(separator: " ") as String).suffix(500)
+            var vault = String(await ArchiveSearch.search(query: String(topic), limit: 8, snippet: 800).prefix(4000))
             // маркер слабых совпадений: модель предупреждена, что граф скорее не про это
             let lowConf = vault.hasPrefix(ArchiveSearch.lowConfidenceMarker)
             if lowConf { vault.removeFirst() }
@@ -131,9 +139,17 @@ final class LocalChatService: ObservableObject {
             status = vault.isEmpty ? "в графе пусто по теме" : (lowConf ? "граф: слабые совпадения" : "🧠 граф подмешан")
         }
         var msgs: [[String: String]] = [["role": "system", "content": system]]
-        for m in messages.suffix(13) where !m.text.isEmpty {
-            msgs.append(["role": m.role, "content": m.text])
+        // Окно истории: не хвост в N сообщений, а бюджет в знаках — длинные
+        // ответы не выталкивают начало разговора мгновенно
+        var budget = 7000
+        var window: [[String: String]] = []
+        for m in messages.reversed() where !m.text.isEmpty {
+            let cost = m.text.count
+            if budget - cost < 0 { break }
+            budget -= cost
+            window.append(["role": m.role, "content": m.text])
         }
+        msgs.append(contentsOf: window.reversed())
 
         // Встреча держит большую модель в очереди Ollama (запросы к одной модели
         // сериализуются) — вопрос в чате «висел без реакции» минутами. На время
@@ -156,8 +172,10 @@ final class LocalChatService: ObservableObject {
             "think": false,           // критично: дефолтный thinking = ~10с молчания
             "keep_alive": "30m",
             // num_ctx как в OllamaService: без него Modelfile-дефолт 262144 →
-            // перезагрузка 23GB модели при переключении чатов и пустой 2-й ответ
-            "options": ["temperature": 0.5, "num_ctx": 8192, "num_predict": 2048],
+            // перезагрузка 23GB модели при переключении чатов и пустой 2-й ответ.
+            // 16384: система+граф (4К) + история (7К) в 8192 не помещались —
+            // модель молча теряла начало разговора
+            "options": ["temperature": 0.35, "num_ctx": 16384, "num_predict": 2048],
         ] as [String: Any])
 
         do {

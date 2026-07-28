@@ -22,19 +22,43 @@ enum AppSettings {
 
     /// Папка графа Obsidian — читается из config/config.yaml суфлёра
     /// (sufler.graph_dir), чтобы не настраивать одно и то же дважды.
+    /// CHAROITE_GRAPH_DIR перекрывает конфиг (скрины/тесты на демо-графе).
     static var graphDir: URL? {
-        let cfg = charoiteRoot.appendingPathComponent("config/config.yaml")
-        guard let text = try? String(contentsOf: cfg, encoding: .utf8) else { return nil }
-        // лёгкий разбор одной строки, без YAML-зависимости
-        for line in text.split(separator: "\n") {
-            let t = line.trimmingCharacters(in: .whitespaces)
-            if t.hasPrefix("graph_dir:") {
-                var v = t.dropFirst("graph_dir:".count).trimmingCharacters(in: .whitespaces)
-                v = v.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-                guard !v.isEmpty else { return nil }
-                return URL(fileURLWithPath: (v as NSString).expandingTildeInPath)
-            }
+        if let env = ProcessInfo.processInfo.environment["CHAROITE_GRAPH_DIR"],
+           !env.isEmpty {
+            return URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
+        }
+        if let v = configValue("graph_dir") {
+            return URL(fileURLWithPath: (v as NSString).expandingTildeInPath)
         }
         return nil
+    }
+
+    /// Язык интерфейса: та же настройка, что у документов встреч
+    /// (sufler.language: ru|en|zh) — продукт переключается одним ключом,
+    /// а не системной локалью. CHAROITE_UI_LANG перекрывает (скрины/тесты).
+    static var uiLanguage: String {
+        if let env = ProcessInfo.processInfo.environment["CHAROITE_UI_LANG"],
+           ["ru", "en", "zh"].contains(env) { return env }
+        if let v = configValue("language"), ["ru", "en", "zh"].contains(v) { return v }
+        return "ru"
+    }
+
+    /// Лёгкий разбор одной строки config.yaml, без YAML-зависимости.
+    /// Ключ ищется по всему файлу (stt.language и sufler.language совпадают
+    /// по имени — берём последнее вхождение: sufler-секция ниже stt).
+    private static func configValue(_ key: String) -> String? {
+        let cfg = charoiteRoot.appendingPathComponent("config/config.yaml")
+        guard let text = try? String(contentsOf: cfg, encoding: .utf8) else { return nil }
+        var found: String?
+        for line in text.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard t.hasPrefix(key + ":") else { continue }
+            var v = t.dropFirst(key.count + 1).trimmingCharacters(in: .whitespaces)
+            if let hash = v.firstIndex(of: "#") { v = String(v[..<hash]).trimmingCharacters(in: .whitespaces) }
+            v = v.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            if !v.isEmpty { found = v }
+        }
+        return found
     }
 }

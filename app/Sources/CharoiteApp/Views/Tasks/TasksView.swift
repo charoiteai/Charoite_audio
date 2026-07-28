@@ -12,11 +12,11 @@ struct TasksView: View {
             HStack(spacing: 10) {
                 Image(systemName: "checklist")
                     .foregroundStyle(Theme.accent)
-                Text("Задачи со встреч").font(.headline).fixedSize()
-                Text("\(tasks.openCount) открытых")
+                Text(L.t("Задачи со встреч", "Meeting tasks", "会议任务")).font(.headline).fixedSize()
+                Text(L.t("\(tasks.openCount) открытых", "\(tasks.openCount) open", "\(tasks.openCount) 项未完成"))
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Toggle(isOn: $showDone) { Text("Показывать сделанные").fixedSize() }
+                Toggle(isOn: $showDone) { Text(L.t("Показывать сделанные", "Show completed", "显示已完成")).fixedSize() }
                     .toggleStyle(.checkbox)
                     .font(.caption)
                 // все открытые — в буфер: вставить список в письмо/чат команды
@@ -28,14 +28,14 @@ struct TasksView: View {
                 } label: {
                     Image(systemName: "doc.on.doc")
                 }
-                .help("Скопировать все открытые задачи списком")
+                .help(L.t("Скопировать все открытые задачи списком", "Copy all open tasks as a list", "复制全部未完成任务"))
                 .disabled(tasks.openCount == 0)
                 Button {
                     tasks.rescan()
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
-                .help("Перечитать граф")
+                .help(L.t("Перечитать граф", "Rescan the graph", "重新扫描图谱"))
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
@@ -45,8 +45,8 @@ struct TasksView: View {
                     Image(systemName: "checkmark.circle")
                         .font(.largeTitle).foregroundStyle(.quaternary)
                     Text(tasks.openCount == 0 && !tasks.items.isEmpty
-                         ? "Всё сделано"
-                         : "Поручения из минуток появятся здесь.\nМинутки пишут их чекбоксами — как в Obsidian.")
+                         ? L.t("Всё сделано", "All done", "全部完成")
+                         : L.t("Поручения из минуток появятся здесь.\nМинутки пишут их чекбоксами — как в Obsidian.", "Action items from minutes appear here.\nMinutes write them as checkboxes — like Obsidian.", "纪要中的行动项会显示在这里。\n纪要以复选框记录——与 Obsidian 一致。"))
                         .font(.subheadline).foregroundStyle(.tertiary)
                         .multilineTextAlignment(.center)
                 }
