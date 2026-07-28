@@ -585,8 +585,11 @@ struct SuflerView: View {
 
     // MARK: - Правая панель: тезисы + подсказка
 
-    // Выключенная плашка убирает и свою панель: ⚡ — «Подсказка», Тезисы —
-    // «Тезисы», ☁️ — «Claude». Пустых мёртвых панелей на экране нет.
+    // Выключенная плашка убирает своё: ⚡ — карточку подсказки, Тезисы —
+    // панель тезисов, ☁️ — облачную ленту. Подсказка и Claude живут в ОДНОЙ
+    // панели (решение 28.07): локальная карточка сверху, облачные ответы
+    // ниже sky-карточкой — граница «что ушло с машины» видна цветом,
+    // а не отдельным окном. Пустых мёртвых панелей на экране нет.
     private var rightPane: some View {
         VSplitView {
             if sufler.thesesOn {
@@ -623,30 +626,25 @@ struct SuflerView: View {
             }
 
             // Вне встречи панель живёт для ответов по архиву (тумблер «Архив»),
-            // во время встречи — для подсказок (тумблер «Подсказки»). С обоими
-            // выключенными пустых мёртвых панелей на экране нет.
-            if sufler.isRunning ? sufler.hintsOn : archiveOn {
+            // во время встречи — для подсказок И облачной ленты Claude в одном
+            // окне. Со всеми выключенными пустых мёртвых панелей на экране нет.
+            if sufler.isRunning ? (sufler.hintsOn || sufler.cloudOn) : archiveOn {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
-                    paneTitle(sufler.isRunning ? "Подсказка" : "Ответ по архиву",
-                              systemImage: sufler.isRunning ? "lightbulb" : "clock.arrow.circlepath",
-                              copy: { sufler.isRunning ? sufler.hint : archiveAnswer })
-                    if sufler.isHinting || isSearchingArchive {
+                    // подсказки выключены, облако включено — панель честно
+                    // называется по единственному жильцу
+                    let cloudOnly = sufler.isRunning && !sufler.hintsOn
+                    paneTitle(sufler.isRunning ? (cloudOnly ? "Claude" : "Подсказка")
+                                               : "Ответ по архиву",
+                              systemImage: sufler.isRunning
+                                  ? (cloudOnly ? "cloud.fill" : "lightbulb")
+                                  : "clock.arrow.circlepath",
+                              copy: { sufler.isRunning
+                                  ? (cloudOnly ? sufler.cloud : sufler.hint)
+                                  : archiveAnswer })
+                    if sufler.isHinting || isSearchingArchive
+                        || (sufler.isRunning && sufler.isClouding) {
                         ProgressView().controlSize(.small).padding(.trailing, 10)
-                    }
-                    // копировать содержимое панели целиком (ответ/подсказку)
-                    let paneRaw = sufler.isRunning ? sufler.hint : archiveAnswer
-                    if !paneRaw.isEmpty {
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(paneRaw, forType: .string)
-                        } label: {
-                            Image(systemName: "doc.on.doc")
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.tertiary)
-                        .help("Скопировать целиком")
-                        .padding(.trailing, 4)
                     }
                     // хороший ответ жалко терять: одной кнопкой — заметкой в граф
                     if !sufler.isRunning && !archiveAnswer.isEmpty && !isSearchingArchive {
@@ -665,11 +663,19 @@ struct SuflerView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 0) {
                             Color.clear.frame(height: 1).id("hintTop")
-                            Text(paneText)
-                                .font(.callout)
-                                .foregroundStyle(paneIsPlaceholder ? .tertiary : .primary)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            if !sufler.isRunning || sufler.hintsOn {
+                                Text(paneText)
+                                    .font(.callout)
+                                    .foregroundStyle(paneIsPlaceholder ? .tertiary : .primary)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            // облачная лента — в той же панели, sky-карточкой:
+                            // видно, ЧТО ушло с машины, без отдельного окна
+                            if sufler.isRunning && sufler.cloudOn {
+                                cloudCard
+                                    .padding(.top, sufler.hintsOn ? 10 : 0)
+                            }
                             // прошлые вопросы — свёрнуты, свежие сверху (персист)
                             if !sufler.isRunning && !history.entries.isEmpty {
                                 Divider().padding(.vertical, 8)
@@ -698,6 +704,12 @@ struct SuflerView: View {
                             proxy.scrollTo("hintBottom", anchor: .bottom)
                         }
                     }
+                    // лента Claude растёт вниз — держимся за низ и для неё
+                    .onChange(of: sufler.cloud) { _, _ in
+                        DispatchQueue.main.async {
+                            proxy.scrollTo("hintBottom", anchor: .bottom)
+                        }
+                    }
                     // ответ по архиву — НЕ стрим: приходит целиком, ответ сверху,
                     // источники под ним. Скролл вниз (как у подсказок) оставлял
                     // на экране хвост источников, а сам ответ приходилось мотать.
@@ -710,39 +722,6 @@ struct SuflerView: View {
             }
             .frame(minHeight: 140)
             .background(Theme.accent.opacity(0.05))
-            }
-
-            if sufler.cloudOn {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    paneTitle("Claude", systemImage: "cloud.fill", copy: { sufler.cloud })
-                    if sufler.isClouding {
-                        ProgressView().controlSize(.small).padding(.trailing, 10)
-                    }
-                }
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(sufler.cloud.isEmpty
-                                 ? AttributedString("Вопрос собеседника уйдёт Claude автоматически · ⌘⇧⏎ — вручную")
-                                 : withBoldQuestions(sufler.cloud))
-                                .font(.callout)
-                                .foregroundStyle(sufler.cloud.isEmpty ? .tertiary : .primary)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            Color.clear.frame(height: 1).id("cloudBottom")
-                        }
-                        .padding(12)
-                    }
-                    .onChange(of: sufler.cloud) { _, _ in
-                        DispatchQueue.main.async {
-                            proxy.scrollTo("cloudBottom", anchor: .bottom)
-                        }
-                    }
-                }
-            }
-            .frame(minHeight: 120)
-            .background(Theme.sky.opacity(0.06))
             }
 
             if !sufler.thesesOn && !sufler.hintsOn && !sufler.cloudOn {
@@ -774,6 +753,39 @@ struct SuflerView: View {
                 .textSelection(.enabled)
         }
         .padding(.top, topPad)
+    }
+
+    /// Облачная лента внутри панели подсказки: sky-карточка — облачное
+    /// заметно цветом (DESIGN.md), тумблер ☁️ остаётся единственным
+    /// выключателем отправки стенограммы с машины.
+    private var cloudCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "cloud.fill")
+                    .font(.caption2)
+                Text("Claude")
+                    .font(.caption2.weight(.semibold))
+                Spacer()
+                if !sufler.cloud.isEmpty {
+                    CopyButton(text: { sufler.cloud })
+                }
+            }
+            .foregroundStyle(Theme.sky)
+            Text(sufler.cloud.isEmpty
+                 ? AttributedString("Вопрос собеседника уйдёт Claude автоматически · ⌘⇧⏎ — вручную")
+                 : withBoldQuestions(sufler.cloud))
+                .font(.callout)
+                .foregroundStyle(sufler.cloud.isEmpty ? .tertiary : .primary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(10)
+        .background(Theme.sky.opacity(0.07),
+                    in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+                .strokeBorder(Theme.sky.opacity(0.25), lineWidth: 1)
+        }
     }
 
     private func paneTitle(_ title: String, systemImage: String,
