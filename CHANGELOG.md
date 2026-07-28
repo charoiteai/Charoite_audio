@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.0](https://github.com/charoiteai/Charoite_audio/compare/v0.33.0...v0.34.0) (2026-07-28)
+
+
+### Features
+
+* brand crystal icons for macOS and iOS + English config preset ([#130](https://github.com/charoiteai/Charoite_audio/issues/130)) ([9e24691](https://github.com/charoiteai/Charoite_audio/commit/9e246917fe51377f1c7bd25dc084ad38979cf6b1))
+
 ## [0.33.0](https://github.com/charoiteai/Charoite_audio/compare/v0.32.0...v0.33.0) (2026-07-28)
 
 
