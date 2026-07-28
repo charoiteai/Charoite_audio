@@ -27,17 +27,30 @@ final class TasksService: ObservableObject {
     // swiftlint:disable:next force_try
     private static let todoRx = try! NSRegularExpression(pattern: #"^\s*[-*] \[( |x|X)\] +(.+)$"#)
 
-    /// Полный скан графа. Быстрый (только чтение .md), зовётся при открытии
-    /// окна задач и после каждой отметки. root — для тестов (по умолчанию
-    /// граф из настроек).
+    /// Полный скан графа — в фоне, с публикацией результата на главном потоке.
+    ///
+    /// Раньше он был синхронным на @MainActor и звался при каждом запуске
+    /// приложения, при каждом открытии окна задач и после каждой отметки
+    /// чекбокса. На графе в тысячи заметок это чтение всех .md подряд —
+    /// секунды замороженного интерфейса в самых обычных сценариях, причём
+    /// pull-to-refresh морозил его же спиннер.
     func rescan(root: URL? = nil) {
-        guard var graph = root ?? AppSettings.graphDir else { items = []; openCount = 0; return }
+        let target = root ?? AppSettings.graphDir
+        Task.detached(priority: .utility) { [target] in
+            let found = Self.scanSync(graph: target)
+            await MainActor.run { self.apply(found) }
+        }
+    }
+
+    /// Синхронный скан: вызывается из фона, а в тестах — напрямую.
+    nonisolated static func scanSync(graph root: URL?) -> [Item] {
+        guard var graph = root else { return [] }
         graph = graph.resolvingSymlinksInPath()   // /var vs /private/var — см. ArchiveSearch
         var found: [Item] = []
         let keys: [URLResourceKey] = [.contentModificationDateKey]
         guard let walker = FileManager.default.enumerator(
             at: graph, includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles]) else { return }
+            options: [.skipsHiddenFiles]) else { return [] }
         for case let url as URL in walker {
             guard url.pathExtension == "md",
                   let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
@@ -59,6 +72,11 @@ final class TasksService: ObservableObject {
                     text: String(line[textRange]), done: done, fileDate: mdate))
             }
         }
+        return found
+    }
+
+    /// Публикация результата — единственное, что делается на главном потоке.
+    private func apply(_ found: [Item]) {
         // открытые сверху, внутри — свежие файлы первыми
         items = found.sorted {
             if $0.done != $1.done { return !$0.done }

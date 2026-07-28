@@ -47,21 +47,24 @@ final class TasksServiceTests: XCTestCase {
         обычная строка без чекбокса
         """.write(to: file, atomically: true, encoding: .utf8)
 
-        let svc = TasksService.shared
-        svc.rescan(root: dir)
-        XCTAssertEqual(svc.items.count, 2)
-        XCTAssertEqual(svc.openCount, 1)
+        // scanSync, а не rescan: rescan уводит работу в фон (полный обход
+        // графа морозил интерфейс), и тест не должен зависеть от планировщика.
+        var found = TasksService.scanSync(graph: dir)
+        XCTAssertEqual(found.count, 2)
+        XCTAssertEqual(found.filter { !$0.done }.count, 1)
 
-        let open = try XCTUnwrap(svc.items.first { !$0.done })
+        let svc = TasksService.shared
+        let open = try XCTUnwrap(found.first { !$0.done })
         svc.toggle(open, root: dir)
-        XCTAssertEqual(svc.openCount, 0)
         let text = try String(contentsOf: file, encoding: .utf8)
         XCTAssertTrue(text.contains("- [x] **Мария**"))
 
         // обратно в открытую
-        let done = try XCTUnwrap(svc.items.first { $0.text.contains("Мария") })
+        found = TasksService.scanSync(graph: dir)
+        let done = try XCTUnwrap(found.first { $0.text.contains("Мария") })
         svc.toggle(done, root: dir)
-        XCTAssertEqual(svc.openCount, 1)
+        found = TasksService.scanSync(graph: dir)
+        XCTAssertEqual(found.filter { !$0.done }.count, 1)
     }
 }
 

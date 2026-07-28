@@ -40,6 +40,16 @@ final class ImportService: ObservableObject {
     private func scan(dir: String) {
         guard proc == nil else { return }   // предыдущий прогон ещё молотит
         let folder = URL(fileURLWithPath: (dir as NSString).expandingTildeInPath)
+        // Импорт перемещает файлы (успешные уезжают в done/), поэтому папка
+        // должна существовать и быть именно папкой. Промежуточный путь,
+        // случайно совпавший с реальной папкой мультимедиа, растаскивал бы
+        // чужие файлы в граф.
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDir),
+              isDir.boolValue else {
+            status = L.t("папка импорта не найдена", "import folder not found", "未找到导入文件夹")
+            return
+        }
         let pending = (try? FileManager.default.contentsOfDirectory(
             at: folder, includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles])) ?? []

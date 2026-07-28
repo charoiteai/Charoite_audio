@@ -204,7 +204,9 @@ struct SuflerView: View {
                 + sources.map { "· \($0)" }.joined(separator: "\n")
             // прогресс: человек видит, ЧТО нашлось, но не сырые куски
             let confNote = lowConfidence
-                ? "⚠ Совпадения слабые — возможно, в архиве этого нет.\n" : ""
+                ? L.t("⚠ Совпадения слабые — возможно, в архиве этого нет.\n",
+                  "⚠ Weak matches — this may not be in the archive.\n",
+                  "⚠ 匹配较弱——档案中可能没有这条。\n") : ""
             await MainActor.run {
                 archiveAnswer = confNote
                     + L.t("Нашёл источников: \(sources.count) — формулирую ответ…", "Sources found: \(sources.count) — composing the answer…", "已找到来源：\(sources.count) — 正在组织回答…") + sourceBlock
@@ -266,7 +268,9 @@ struct SuflerView: View {
         let name = safeQ.isEmpty ? L.t("Ответ по архиву", "Archive answer", "档案回答") : String(safeQ)
         let url = dir.appendingPathComponent("\(stamp)_\(name).md")
         let body = "# \(lastArchiveQuestion.isEmpty ? L.t("Ответ по архиву", "Archive answer", "档案回答") : lastArchiveQuestion)\n\n"
-            + "*Сохранено из Charoite \(stamp.replacingOccurrences(of: "_", with: " "))*\n\n"
+            + L.t("*Сохранено из Charoite \(stamp.replacingOccurrences(of: "_", with: " "))*\n\n",
+                    "*Saved from Charoite \(stamp.replacingOccurrences(of: "_", with: " "))*\n\n",
+                    "*由 Charoite 保存 \(stamp.replacingOccurrences(of: "_", with: " "))*\n\n")
             + archiveAnswer + "\n"
         try? body.write(to: url, atomically: true, encoding: .utf8)
         NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -335,24 +339,26 @@ struct SuflerView: View {
         let alert = NSAlert()
         alert.messageText = L.t("Папка со встречами пока не создана", "The meetings folder does not exist yet", "会议文件夹尚未创建")
         alert.informativeText = L.t("Она появится после первой записанной встречи — ", "It appears after the first recorded meeting — ", "首次录制会议后即会出现——")
-            + "нажмите «Слушать встречу»."
+            + L.t("нажмите «Слушать встречу».", "press \"Listen to meeting\".", "请点击「旁听会议」。")
         alert.addButton(withTitle: L.t("Понятно", "OK", "知道了"))
         alert.runModal()
     }
 
     /// Статус про сбой, а не про обычный ход дела.
-    private var statusIsProblem: Bool {
-        let s = sufler.status
-        return s.hasPrefix("⛔️") || s.contains("прервалась")
-            || s.contains(L.t("замерла", "stalled", "已停滞")) || s.contains(L.t("Не удалось", "Failed", "失败"))
-    }
+    ///
+    /// Признак приходит из сервиса. Поиск подстрок в локализованном тексте,
+    /// стоявший здесь раньше, работал только по-русски: английское
+    /// «Recording dropped — recovering» не содержало ни «прервалась», ни
+    /// «Failed», и сообщение об оборванной записи показывалось мелким серым
+    /// текстом в одну строку — ровно то, чего этот код должен избегать.
+    private var statusIsProblem: Bool { sufler.statusIsError }
 
     /// Что показывать в панели: во время встречи — подсказку демона, вне
     /// встречи — ответ по архиву. Пусто — приглашение спросить.
     private var paneText: AttributedString {
         if sufler.isRunning {
             return sufler.hint.isEmpty
-                ? AttributedString("⌘⏎ — подсказка по последним минутам")
+                ? AttributedString(L.t("⌘⏎ — подсказка по последним минутам", "⌘⏎ — a hint on the last few minutes", "⌘⏎ — 针对最近几分钟的提示"))
                 : withBoldQuestions(sufler.hint)
         }
         if archiveAnswer.isEmpty {
@@ -475,7 +481,7 @@ struct SuflerView: View {
                 Toggle(isOn: $sufler.thesesOn) { Text(L.t("Тезисы", "Theses", "要点")).fixedSize() }
                     .help(L.t("Автотезисы 📌💎💭 и дежавю ⏮ по ходу встречи", "Auto-theses 📌💎💭 and déjà vu ⏮ during the meeting", "会议中的自动要点 📌💎💭 与似曾相识 ⏮"))
                     .accessibilityLabel(L.t("Автотезисы", "Auto-theses", "自动要点"))
-                    .accessibilityHint("Ключевые мысли и повторы по ходу встречи")
+                    .accessibilityHint(L.t("Ключевые мысли и повторы по ходу встречи", "Key thoughts and repetitions during the meeting", "会议中的关键想法与重复内容"))
                 Toggle(isOn: $sufler.cloudOn) { Text("Claude").fixedSize() }
                     .help(L.t("Параллельные ответы Claude на вопросы собеседника", "Parallel Claude answers to the other side's questions", "Claude 并行回答对方的提问"))
                     .accessibilityLabel(L.t("Ответы Claude", "Claude answers", "Claude 回答"))
