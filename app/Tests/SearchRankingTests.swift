@@ -172,4 +172,33 @@ final class EnglishSearchTests: XCTestCase {
             root: demoGraphEn)
         XCTAssertTrue(out.contains("Blockers/"), "blocker node expected")
     }
+
+    /// Гейт честности обязан молчать, когда ответ в архиве ЕСТЬ.
+    ///
+    /// Проверка была только обратная — «офтопик получает пометку», и она
+    /// проходила тривиально. Тем временем служебные слова (what/did/the)
+    /// считались в покрытие запроса, и оба канонических вопроса из README
+    /// возвращались с «⚠ возможно, в архиве этого нет» плюс инструкцией
+    /// синтезу не доверять найденному. Продукт объявлял безответным вопрос,
+    /// ответ на который лежал в первом же сниппете.
+    func testOnTopicQuestionIsNotFlaggedLowConfidence() async {
+        for query in ["what did we decide about the payment provider?",
+                      "what are the current blockers?"] {
+            let out = await ArchiveSearch.localSearch(
+                query: query, limit: 5, snippet: 600, root: demoGraphEn)
+            XCTAssertFalse(out.hasPrefix(ArchiveSearch.lowConfidenceMarker),
+                           "вопрос по существу помечен как безответный: \(query)")
+        }
+    }
+
+    /// Служебные слова не должны попадать в иглы: они есть почти в каждом
+    /// файле и занижают покрытие, из-за чего срабатывает гейт честности.
+    func testStopWordsAreNotNeedles() {
+        for word in ["what", "the", "did", "current", "какие", "статус"] {
+            XCTAssertTrue(ArchiveSearch.isStopWord(word),
+                          "«\(word)» считается значимым словом запроса")
+        }
+        XCTAssertFalse(ArchiveSearch.isStopWord("payment"))
+        XCTAssertFalse(ArchiveSearch.isStopWord("блокер"))
+    }
 }

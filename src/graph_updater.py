@@ -30,18 +30,78 @@ def latest_transcript() -> pathlib.Path | None:
     return max(files, key=lambda p: p.stat().st_mtime) if files else None
 
 
+# Сколько знаков стенограммы влезает в один проход при num_ctx 16384.
+CHUNK_CHARS = 12_000
+# Нахлёст между кусками: решение, произнесённое на стыке, не должно пропасть.
+CHUNK_OVERLAP = 1_000
+
+
 def extract(cfg: dict, transcript: str) -> dict | None:
     """LLM → JSON: сущности, связи, решения, темы.
+
+    Длинная встреча разбирается по частям. Раньше здесь стоял transcript[:12000],
+    то есть в граф уходили первые двадцать минут — а решения принимают в конце
+    («ну что, договорились: релиз 15-го»). Ничего не падало, граф выглядел
+    наполненным, просто он был про не ту часть встречи. Минутки, которые
+    подклеиваются в хвост стенограммы, срезались вместе со всем остальным.
 
     None означает «граф не обновляем», но остальной пост-процессинг обязан
     продолжиться: папка встречи со стенограммой и минутками ценна и без графа.
     """
     try:
-        return _extract(cfg, transcript)
+        if len(transcript) <= CHUNK_CHARS:
+            return _extract(cfg, transcript)
+        return _extract_long(cfg, transcript)
     except requests.RequestException as e:
         print(f"граф: Ollama недоступна ({type(e).__name__}: {e}) — "
               f"встреча сохранена, граф не обновлён")
         return None
+
+
+def _extract_long(cfg: dict, transcript: str) -> dict | None:
+    """Разбор по частям со слиянием: длинная встреча целиком, а не её начало."""
+    step = CHUNK_CHARS - CHUNK_OVERLAP
+    parts = [transcript[i:i + CHUNK_CHARS] for i in range(0, len(transcript), step)]
+    print(f"граф: стенограмма {len(transcript)} знаков — разбираю {len(parts)} частями")
+
+    merged: dict = {}
+    for n, part in enumerate(parts, 1):
+        got = _extract(cfg, part)
+        if not got:
+            print(f"граф: часть {n}/{len(parts)} не разобралась — продолжаю")
+            continue
+        for key, value in got.items():
+            if isinstance(value, list):
+                merged.setdefault(key, []).extend(value)
+            elif key not in merged or not merged[key]:
+                merged[key] = value          # название берём из первой удачной части
+    if not merged:
+        return None
+
+    # Один и тот же человек/система/решение всплывает в нескольких частях.
+    for key, value in list(merged.items()):
+        if isinstance(value, list):
+            merged[key] = _dedup(value)
+    return merged
+
+
+def _dedup(items: list) -> list:
+    """Убирает повторы, сохраняя порядок. Ключ — имя/текст, а не весь объект:
+    одна и та же сущность в разных частях приходит с разными формулировками
+    полей, и сравнение целиком не схлопнуло бы ничего."""
+    seen: set[str] = set()
+    out: list = []
+    for item in items:
+        if isinstance(item, dict):
+            key = str(item.get("имя") or item.get("название")
+                      or item.get("текст") or item.get("тема") or item)
+        else:
+            key = str(item)
+        key = key.strip().casefold()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(item)
+    return out
 
 
 def _extract(cfg: dict, transcript: str) -> dict | None:
@@ -94,7 +154,7 @@ def _extract(cfg: dict, transcript: str) -> dict | None:
                               "The «цитата» field stays VERBATIM from the transcript."}
                        .get(str(cfg.get("sufler", {}).get("language", "ru")).lower(), ""))
                 )},
-                {"role": "user", "content": f"Стенограмма:\n\n{transcript[:12000]}"},
+                {"role": "user", "content": f"Стенограмма:\n\n{transcript}"},
             ],
         },
         timeout=600,
