@@ -10,7 +10,10 @@ targets:
   CharoiteiOS:
     type: application
     platform: iOS
-    sources: [Sources/CharoiteiOS]
+    sources: [Sources/CharoiteiOS, Sources/Shared]
+    dependencies:
+      - target: CharoiteWidgets
+        embed: true
     info:
       path: Info.plist
       properties:
@@ -20,7 +23,8 @@ targets:
           обрабатываются на вашем Mac; в облако сервисов ничего не уходит.
         UIBackgroundModes: [audio]
         UILaunchScreen: {}
-        CFBundleVersion: "4"
+        NSSupportsLiveActivities: true
+        CFBundleVersion: "5"
         NSUbiquitousContainers:
           iCloud.ai.charoite.inbox:
             NSUbiquitousContainerIsDocumentScopePublic: true
@@ -36,6 +40,35 @@ targets:
         SWIFT_VERSION: "5.9"
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
+  CharoiteWidgets:
+    type: app-extension
+    platform: iOS
+    sources: [Sources/CharoiteWidgets, Sources/Shared]
+    info:
+      path: WidgetsInfo.plist
+      properties:
+        CFBundleDisplayName: Charoite
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        DEVELOPMENT_TEAM: AR7PDJQNR4
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.9"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        # WidgetKit-расширение обязано жить в bundle приложения
+        PRODUCT_BUNDLE_IDENTIFIER: ai.charoite.CharoiteiOS.widgets
+  CharoiteiOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests/CharoiteiOSTests]
+    dependencies:
+      - target: CharoiteiOS
+    settings:
+      base:
+        DEVELOPMENT_TEAM: AR7PDJQNR4
+        GENERATE_INFOPLIST_FILE: YES
   CharoiteiOSUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -50,8 +83,8 @@ targets:
 schemes:
   CharoiteiOS:
     build:
-      targets: {CharoiteiOS: all, CharoiteiOSUITests: [test]}
+      targets: {CharoiteiOS: all, CharoiteiOSTests: [test], CharoiteiOSUITests: [test]}
     run: {config: Debug}
     test:
       config: Debug
-      targets: [CharoiteiOSUITests]
+      targets: [CharoiteiOSTests, CharoiteiOSUITests]

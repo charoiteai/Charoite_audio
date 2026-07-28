@@ -13,3 +13,4 @@ app/.build/
 app/build/
 app-ios/*.xcodeproj
 app-ios/Info.plist
+app-ios/WidgetsInfo.plist

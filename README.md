@@ -88,6 +88,17 @@ Got old recordings? One command imports a meeting file (audio/text/Zoom-subtitle
 
 STT models download automatically on first run (GigaAM via `onnx_asr`). For live diarization put an ERes2Net speaker-embedding ONNX model at `models/diar/embedding.onnx` (see [docs/DIARIZATION.md](docs/DIARIZATION.md)).
 
+## iPhone companion (app-ios/)
+
+The phone is the microphone on the table, the Mac stays the brain. The
+SwiftUI companion ([app-ios/](app-ios/)) records meetings, voice notes
+and diary entries (background-safe, with a Live Activity timer in the
+Dynamic Island), drops files into a user-chosen iCloud Drive folder with
+an on-device outbox queue — and reads the graph back: a meetings feed
+and task checkboxes straight from the same markdown files Obsidian and
+the Mac app see. Build with XcodeGen: `cd app-ios && xcodegen generate`,
+then open `CharoiteiOS.xcodeproj`.
+
 ## Documentation
 
 - [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md)
