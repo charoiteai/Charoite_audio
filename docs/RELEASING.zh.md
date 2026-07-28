@@ -59,3 +59,26 @@ job 内部的顺序是刻意安排的：**第一步**先解析哪个标签需要
 由此得出的不变量 — *资产必须从其自身标签的代码构建* — 现在由 `tests/test_workflows.py` 强制保证，工作流也显式检出标签。
 
 **重新上传正确的 0.19.0 资产：** Actions → release-app → Run workflow → `tag: v0.19.0`。手动运行会从 `v0.19.0` 标签重新构建并替换错误资产（`--clobber`）。然后按上文验证：解压出的应用必须报告 `CFBundleShortVersionString` 为 0.19.0。
+
+
+## 分支保护：什么会阻止合并，以及为什么
+
+`main` 上的必需检查是 **`lint`** 和 **`pytest (src/)`**。这个简短的列表背后有两个有意的决定。
+
+**测试现在会阻止合并。** 此前并不会：必需检查是 `lint` 和 `analyze`，因此失败的
+`pytest` 也能顺利合并。全部 123 个测试都只是参考性的，包括守护隐私承诺的那些哨兵。
+
+**`analyze`（CodeQL）是参考性的，而非必需。** 它由 `pull_request` 事件触发；而对于与
+`main` 冲突的 PR，GitHub 不会创建 merge ref，因此根本不会启动任何 `pull_request`
+工作流。必需的检查上下文永远不会到达，PR 会永远卡在
+“Expected — Waiting for status to be reported”，而且无从重跑。这正是过去那些
+“幽灵检查”的全部原因——只能靠从 `main` 重建分支来解决。`lint` 和 `pytest` 也会在
+`push` 时运行，所以即使 PR 存在冲突，它们的上下文依然存在。
+
+**`strict`（要求分支为最新）已关闭。** 在一天发布四次的节奏下，每次合入 `main` 都会把
+所有开启的 PR 推入 BEHIND，而 `required_linear_history` 使修复方式变成 rebase——
+新的 SHA、全部检查重跑、又一次冲突的机会。它换来的是对语义冲突的防护，而这里本就没有
+任何机制实现这种防护。
+
+**`swift test (app)` 与 `build (app-ios)` 保持参考性**，只要其工作流仍带 `paths:`
+过滤器。一个在没有 Swift 改动的 PR 上永不启动的必需检查，会像 `analyze` 一样把它挂死。

@@ -112,3 +112,31 @@ Run workflow → `tag: v0.19.0`. The manual run rebuilds from the
 `v0.19.0` tag and replaces the wrong asset (`--clobber`). Then validate
 as above: the unzipped app must report `CFBundleShortVersionString`
 0.19.0.
+
+## Branch protection: what blocks a merge, and why
+
+Required checks on `main` are **`lint`** and **`pytest (src/)`**. Two
+deliberate choices behind that short list:
+
+**Tests block merges now.** They did not before — required checks were
+`lint` and `analyze`, so a red `pytest` merged without complaint. All 123
+tests were advisory, including the guards that hold the privacy promises.
+
+**`analyze` (CodeQL) is advisory, not required.** It runs on
+`pull_request`, and GitHub creates no merge ref for a PR that conflicts
+with `main` — so no `pull_request` workflow starts at all. The required
+context then never arrives and the PR hangs forever on *"Expected —
+Waiting for status to be reported"*, unfixable by re-running anything.
+That was the whole story behind the "phantom checks" that used to be
+cured by recreating the branch from `main`. `lint` and `pytest` also run
+on `push`, so their contexts exist even on a conflicted PR.
+
+**`strict` (require branches up to date) is off.** With four releases in
+a day, every merge into `main` pushed every open PR into BEHIND, and
+`required_linear_history` made the fix a rebase — new SHAs, all checks
+re-run from scratch, fresh chance of conflict. It buys protection against
+semantic conflicts, which nothing here implements anyway.
+
+**`swift test (app)` and `build (app-ios)` stay advisory** while their
+workflow keeps a `paths:` filter. A required check that never starts on
+PRs which touch no Swift would hang them exactly like `analyze` did.
