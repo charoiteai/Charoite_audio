@@ -185,3 +185,31 @@ are matched over UTF-8 bytes rather than through `String.range(of:)` with its
 unicode normalization; snippets are extracted only for candidates that can
 still reach the answer. On the working graph a query takes 0.6-1.1 s, down
 from 1.8-2.5 s.
+
+### What the numbers say
+
+Quality is measured end-to-end (search → synthesis) against a private set of
+questions with expected facts; generation temperature is pinned to zero so the
+bench compares changes rather than sampling noise. On the working graph:
+
+| Change | Facts recalled |
+|---|---|
+| One vector per file, first 12 000 chars | 11 / 14 |
+| Vectors per chunk | **13 / 14** |
+| Damping only transcripts | 11 / 14 |
+| Weighting by document role | **13 / 14** |
+| Context budget on/off | 13 / 14 either way |
+
+What the chunked index recovers is exactly the kind of detail a question is
+usually about: rate limits, token names, system abbreviations — things stated
+once, deep inside a long meeting.
+
+The budget shows no gain here and is kept for a different reason: it bounds
+how much of the context a single transcript may occupy, which this ten-question
+set does not exercise.
+
+One negative result worth recording. Adding "carry abbreviations and error
+codes VERBATIM" to the synthesis prompt looked like an improvement (13/14 on a
+first run) and turned out to be a regression once temperature was pinned:
+11/14 against 13/14 without it. The instruction pushes the model to quote
+instead of admitting it does not know. The change was reverted.
