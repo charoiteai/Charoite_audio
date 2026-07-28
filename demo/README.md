@@ -1,5 +1,7 @@
 # Demo graph — see Charoite before your first meeting
 
+*[**English**] · [Русский](README.ru.md) · [中文](README.zh.md)*
+
 A tiny fictional project («Ромашка», an online shop launch) so you can
 try archive questions and briefs without recording anything.
 

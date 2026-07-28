@@ -1,5 +1,7 @@
 # Features
 
+***English** · [Русский](FEATURES.ru.md) · [中文](FEATURES.zh.md)*
+
 ## During the meeting
 
 - **Live transcript** — utterances merge into per-speaker paragraphs instead

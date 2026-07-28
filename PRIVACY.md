@@ -1,5 +1,7 @@
 # Privacy
 
+*[**English**] · [Русский](PRIVACY.ru.md) · [中文](PRIVACY.zh.md)*
+
 Charoite is built local-first. Concretely:
 
 - **No telemetry.** Zero analytics, crash reporters or "anonymous usage stats". Grep the code.

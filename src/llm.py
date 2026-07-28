@@ -118,6 +118,11 @@ class LLM:
             # задачи и системы, которых на ЭТОЙ встрече никто не называл, —
             # модель уверенно выдавала контекст памяти за текущую повестку.
             system=((
+                "你代表主人在工作会议或面试中发言，用他的口吻回答。简短、具体，用中文。"
+                "诚实优先于自信：本次会议的事实（议程、任务、名称、数字）只能来自对话内容。"
+                "下方的过往会议记忆只是风格和术语的背景，不是本次会议的议程。"
+                "对话中没有的信息——直接说明或给出不含具体细节的笼统回答。\n\n" + mem
+            ) if self.lang == "zh" else (
                 "You answer AS the owner in a work meeting or interview, in their voice. "
                 "Short, concrete, in English. HONESTY OVER CONFIDENCE: facts of THIS "
                 "meeting (agenda, tasks, names, numbers) come ONLY from the conversation. "
@@ -151,8 +156,25 @@ class LLM:
         "(e.g. «- **Ivan** — prepare the estimate — by Friday»). "
         "Blank line after every heading. Terse, no filler."
     )
+    STYLE_ZH = (
+        "格式：禁止使用 markdown 表格（|…|）——纯文本下不可读；"
+        "只用列表「- …」，每项开头加粗关键词"
+        "（例如「- **伊万** — 准备预算 — 周五前」）。"
+        "每个标题后空一行。简洁，不说废话。"
+    )
 
     def summary(self, transcript: str) -> Iterator[str]:
+        if self.lang == "zh":
+            return self.stream(
+                f"会议记录：\n\n{transcript}\n\n"
+                "压缩成会议纪要：决定事项、任务用「- **谁** — 做什么 — 期限」格式、"
+                "待解决问题。用列表，中文。"
+                "硬性限制：不超过700字符，每项一行。",
+                model=self.small,
+                system="你把工作会议记录压缩成清晰的纪要。不说废话。" + self.STYLE_ZH,
+                num_predict=320,
+                temperature=0.0,
+            )
         if self.lang == "en":
             return self.stream(
                 f"Meeting transcript:\n\n{transcript}\n\n"
@@ -177,6 +199,27 @@ class LLM:
 
     def minutes(self, transcript: str) -> Iterator[str]:
         """Полноценные минутки встречи (markdown, сохраняются файлом)."""
+        if self.lang == "zh":
+            return self.stream(
+                f"<transcript>\n{transcript}\n</transcript>\n\n"
+                "按以下模板用 markdown 写会议纪要：\n"
+                + (self.minutes_template + "\n\n" if self.minutes_template else
+                   "# 会议纪要\n"
+                   "**日期/时间：** … **参会人：** …\n"
+                   "## 议题\n## 决定\n## 行动项\n## 待解决问题\n## 风险\n\n")
+                + "规则：\n"
+                "- 只用会议记录中说过的内容\n"
+                "- 每项一行，每节最多3项\n"
+                "- 行动项用复选框：「- [ ] **姓名** — 做什么 — 期限」\n"
+                "  例：「- [ ] **德米特里** — 与财务对齐预算 — 7月25日前」\n"
+                "- 决定的格式：「- **决定了什么** — 谁负责执行」\n"
+                "- 参会人：对话中出现的名字；一个都没听到——写「主人及对方」\n"
+                "- 空的部分只写一个词：「无」\n"
+                "- 全文控制在900字符以内：纪要要一分钟能读完",
+                system="你是会议记录员。准确、简练的中文会议纪要。" + self.STYLE_ZH,
+                num_predict=420,
+                temperature=0.0,
+            )
         if self.lang == "en":
             return self.stream(
                 f"<transcript>\n{transcript}\n</transcript>\n\n"

@@ -1,5 +1,7 @@
 # Архитектура
 
+*[English](ARCHITECTURE.md) · **Русский** · [中文](ARCHITECTURE.zh.md)*
+
 ## Общая схема
 
 ```
