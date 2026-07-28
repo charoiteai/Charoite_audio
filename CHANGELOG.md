@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.0](https://github.com/charoiteai/Charoite_audio/compare/v0.31.1...v0.32.0) (2026-07-28)
+
+
+### Features
+
+* **ios:** meetings feed, graph tasks and a Live Activity recording timer ([#126](https://github.com/charoiteai/Charoite_audio/issues/126)) ([2b90f03](https://github.com/charoiteai/Charoite_audio/commit/2b90f030dc99169d13e72bec22676e963f139eb4))
+
 ## [0.31.1](https://github.com/charoiteai/Charoite_audio/compare/v0.31.0...v0.31.1) (2026-07-27)
 
 
