@@ -184,7 +184,8 @@ struct SuflerView: View {
             defer { Task { @MainActor in isSearchingArchive = false } }
             // 1200 знаков на файл: модель отвечает по содержимому, а не по
             // обрезкам (на коротких сниппетах честно пишет «информации нет»)
-            var found = await ArchiveSearch.search(query: q, limit: 5, snippet: 1200)
+            var found = await ArchiveSearch.search(query: q, limit: 5, snippet: 1200,
+                                                   budget: ArchiveSearch.defaultBudget)
             // маркер слабых совпадений: показываем честно и просим модель
             // не сочинять — «в архиве об этом нет» лучше выдуманного ответа
             let lowConfidence = found.hasPrefix(ArchiveSearch.lowConfidenceMarker)

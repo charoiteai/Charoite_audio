@@ -213,3 +213,51 @@ final class StemFormTests: XCTestCase {
         }
     }
 }
+
+/// Конвейер кладёт документы встречи дважды: оригинал в «Документация», копию
+/// в «Встречи-архив» для Finder. Поиск обязан видеть их как ОДИН документ.
+final class DuplicateContentTests: XCTestCase {
+    private func makeGraph() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("charoite-dup-\(UUID().uuidString)")
+        let orig = root.appendingPathComponent("Документация/Стенограммы встреч")
+        let arch = root.appendingPathComponent("Встречи-архив/2026-07-24 09-11 — Постман")
+        for d in [orig, arch] {
+            try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        }
+        let body = """
+        # Встреча про платёжного провайдера
+        Решили брать YuPay: комиссия 2.8%, запуск за две недели.
+        """
+        try body.write(to: orig.appendingPathComponent("2026-07-24_0911_Постман_hints.md"),
+                       atomically: true, encoding: .utf8)
+        try body.write(to: arch.appendingPathComponent("Подсказки и ответы.md"),
+                       atomically: true, encoding: .utf8)
+        return root
+    }
+
+    func testIdenticalCopyIsNotReturnedTwice() async throws {
+        let root = try makeGraph()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let out = await ArchiveSearch.localSearch(query: "платёжный провайдер YuPay",
+                                                  limit: 5, snippet: 400, root: root)
+
+        let mentions = out.components(separatedBy: "YuPay").count - 1
+        XCTAssertEqual(mentions, 1,
+                       "один и тот же текст выдан \(mentions) раз — модель получит повтор:\n\(out)")
+    }
+
+    func testOriginalWinsOverArchiveCopy() async throws {
+        let root = try makeGraph()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let out = await ArchiveSearch.localSearch(query: "платёжный провайдер YuPay",
+                                                  limit: 5, snippet: 400, root: root)
+
+        XCTAssertTrue(out.contains("Документация/"),
+                      "в источниках должен остаться оригинал, а не копия для Finder:\n\(out)")
+        XCTAssertFalse(out.contains("Встречи-архив/"),
+                       "архивная копия попала в выдачу вместо оригинала")
+    }
+}

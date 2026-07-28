@@ -148,7 +148,11 @@ final class LocalChatService: ObservableObject {
             // тему разговора несут ПОСЛЕДНИЕ вопросы вместе, свежий — главный
             let topic = (messages.filter { $0.role == "user" }.suffix(3).map(\.text)
                 .joined(separator: " ") as String).suffix(500)
-            var vault = String(await ArchiveSearch.search(query: String(topic), limit: 8, snippet: 800).prefix(5000))
+            // Бюджет задаётся поиску, а не срезается по хвосту: prefix(5000) резал
+            // ПОСЛЕДНИЙ источник на полуслове и мог оставить от него огрызок,
+            // при этом первый источник имел право занять сколько угодно.
+            var vault = await ArchiveSearch.search(query: String(topic), limit: 8,
+                                                   snippet: 800, budget: 5000)
             // маркер слабых совпадений: модель предупреждена, что граф скорее не про это
             let lowConf = vault.hasPrefix(ArchiveSearch.lowConfidenceMarker)
             if lowConf { vault.removeFirst() }
