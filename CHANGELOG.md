@@ -5,6 +5,19 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.0](https://github.com/charoiteai/Charoite_audio/compare/v0.35.0...v0.36.0) (2026-07-28)
+
+
+### Features
+
+* **chat:** 32K context with matching budgets ([#138](https://github.com/charoiteai/Charoite_audio/issues/138)) ([63f189e](https://github.com/charoiteai/Charoite_audio/commit/63f189ea5fd885efdc4972d7b71c288348be19c9))
+* smarter local chat + UI in three languages + English screenshots ([#135](https://github.com/charoiteai/Charoite_audio/issues/135)) ([8bb7978](https://github.com/charoiteai/Charoite_audio/commit/8bb79780e014bfc54c5416ade081314314c3df6c))
+
+
+### Bug Fixes
+
+* **privacy:** CHAROITE_NO_CLOUD kill-switch alias ([#139](https://github.com/charoiteai/Charoite_audio/issues/139)) ([889c34e](https://github.com/charoiteai/Charoite_audio/commit/889c34e68388fcd870315a4e123bf05cfb15dd63))
+
 ## [0.35.0](https://github.com/charoiteai/Charoite_audio/compare/v0.34.0...v0.35.0) (2026-07-28)
 
 
