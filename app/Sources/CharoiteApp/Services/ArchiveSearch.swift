@@ -247,16 +247,31 @@ enum ArchiveSearch {
         let allPaths = Set(all.map(\.rel))
         let sem = await SemanticIndex.shared.similar(to: query, within: allPaths,
                                                      limit: max(limit * 4, 20))
-        let bestSim = sem.first?.1 ?? 0
+        let bestSim = sem.first?.score ?? 0
         var semHits: [Hit] = []
-        for (rel, sim) in sem {
+        for (rel, sim, chunkSnippet) in sem {
             guard let f = byPath[rel] else { continue }
+            // Порядок предпочтений для сниппета семантического хита:
+            // 1) окно вокруг лексических игл — если они в файле есть;
+            // 2) НАЙДЕННЫЙ БЛОК — попадание было именно в него;
+            // 3) начало файла — последняя надежда.
+            // Раньше пунктов 2 не существовало, и семантическое попадание в
+            // середину трёхчасовой стенограммы показывало её приветствие:
+            // модель получала «все собрались, слышно меня?» вместо решения,
+            // ради которого файл и был найден.
             let frag = bestWindow(text: f.text, needles: needles, span: snippet)
-            let block = frag.isEmpty
-                ? "• \(rel)\n  …\(String(f.text.prefix(snippet)).split(whereSeparator: \.isNewline).joined(separator: " "))…"
-                : "• \(rel)\n  …\(frag)…"
+            let body: String
+            if !frag.isEmpty {
+                body = frag
+            } else if !chunkSnippet.isEmpty {
+                body = String(chunkSnippet.prefix(snippet))
+                    .split(whereSeparator: \.isNewline).joined(separator: " ")
+            } else {
+                body = String(f.text.prefix(snippet))
+                    .split(whereSeparator: \.isNewline).joined(separator: " ")
+            }
             semHits.append(Hit(score: sim * recency(f.dateTs) * rawDampener(rel),
-                               rel: rel, block: block))
+                               rel: rel, block: "• \(rel)\n  …\(body)…"))
         }
         var fused: [String: (score: Double, hit: Hit)] = [:]
         for (rank, h) in hits.sorted(by: { $0.score > $1.score }).enumerated() {
