@@ -1,70 +1,72 @@
-# Charoite.app — macOS-приложение суфлёра
+# Charoite.app — the macOS companion app
 
-Нативная SwiftUI-оболочка над Python-демоном Charoite: живая стенограмма
-с диаризацией, тезисы-карточки, подсказки и Claude-панель, вопросы и брифы
-по архиву встреч, локальный чат с памятью графа, диктовка (⌥⌘D) и
-голосовые заметки (⌥⌘N), меню-бар. Всё локально — как и сам демон.
+*[**English**] · [Русский](README.ru.md) · [中文](README.zh.md)*
 
-## Сборка
+A native SwiftUI shell over the Charoite Python daemon: live transcript
+with diarization, thesis cards, hints and the Claude pane, archive
+questions and briefs, local chat with graph memory, dictation (⌥⌘D) and
+voice notes (⌥⌘N), menu bar. Everything local — just like the daemon.
+
+## Build
 
 ```bash
 cd app
-./make_app.sh          # swift build -c release + бандл + ad-hoc подпись
+./make_app.sh          # swift build -c release + bundle + ad-hoc signing
 open build/Charoite.app
 ```
 
-Требования: macOS 14+, Xcode Command Line Tools (`xcode-select --install`).
+Requirements: macOS 14+, Xcode Command Line Tools (`xcode-select --install`).
 
-## Первая настройка
+## First-time setup
 
-1. Установите сам Charoite_audio (корень репозитория): venv, модели,
-   `config/config.yaml` — см. корневой README.
-2. Запустите приложение → Настройки (⌘,):
-   - **Папка Charoite_audio** — куда клонировали репозиторий
-     (по умолчанию `~/Charoite_audio`);
-   - **Ollama** — адрес сервера (по умолчанию `http://localhost:11434`);
-   - кнопка «Проверить» покажет, что демон, Ollama и граф на месте.
-3. Путь графа приложение читает из `config/config.yaml` (`sufler.graph_dir`)
-   — настраивается один раз для демона, приложение подхватывает.
+1. Install Charoite_audio itself (the repository root): venv, models,
+   `config/config.yaml` — see the root README.
+2. Launch the app → Settings (⌘,):
+   - **Charoite_audio folder** — where you cloned the repository
+     (default `~/Charoite_audio`);
+   - **Ollama** — server address (default `http://localhost:11434`);
+   - the "Check" button verifies the daemon, Ollama and the graph.
+3. The graph path is read from `config/config.yaml` (`sufler.graph_dir`)
+   — configured once for the daemon, the app picks it up.
 
-При первом «Слушать встречу» macOS спросит доступ к микрофону; для
-автовставки диктовки в активное поле дайте приложению право Accessibility
-(Универсальный доступ).
+On the first "Listen to meeting" macOS asks for microphone access; for
+dictation auto-insert into the active field grant the app Accessibility
+rights.
 
-## Что где
+## What lives where
 
-- `Sources/CharoiteApp/Views/Sufler` — главное окно: стенограмма, панели
-  тезисов/подсказки/Claude, вопросы и брифы по архиву.
-- `Sources/CharoiteApp/Views/LocalChat` — чат с локальной моделью; тумблер
-  «Память» подмешивает найденное в графе (поиск по файлам, без серверов).
-- `Sources/CharoiteApp/Services` — мост к демону (NDJSON stdin/stdout,
-  watchdog, авто-рестарт), диктовка, локальный поиск по графу.
+- `Sources/CharoiteApp/Views/Sufler` — the main window: transcript,
+  theses/hint/Claude panes, archive questions and briefs.
+- `Sources/CharoiteApp/Views/LocalChat` — chat with a local model; the
+  "Memory" toggle mixes in graph findings (file search, no servers).
+- `Sources/CharoiteApp/Services` — the daemon bridge (NDJSON
+  stdin/stdout, watchdog, auto-restart), dictation, local graph search.
 
-## Окна
+## Windows
 
-- **Суфлёр** — стенограмма, тезисы, подсказки, ответы по архиву, брифы.
-- **Задачи со встреч** — все чекбоксы графа одним списком, отметка
-  пишется прямо в markdown; бейдж открытых в тулбаре.
-- **Чат с памятью** — локальная модель + факты графа; живой список
-  моделей из Ollama; markdown в баблах; копирование ответа кнопкой.
-- Ответы архива стримятся токен за токеном; прошлые вопросы сессии
-  свёрнуты под текущим ответом; хороший ответ сохраняется заметкой
-  в граф одной кнопкой.
+- **Copilot** — transcript, theses, hints, archive answers, briefs.
+- **Meeting tasks** — every graph checkbox in one list, ticking writes
+  straight into the markdown; open-count badge in the toolbar.
+- **Chat with memory** — a local model + graph facts; live model list
+  from Ollama; markdown in bubbles; one-button answer copy.
+- Archive answers stream token by token; past session questions collapse
+  under the current answer; a good answer saves into the graph as a note
+  with one button.
 
-## Поиск по архиву (v2)
+## Archive search (v2)
 
-Вопросы и брифы ранжируются по-взрослому: стемминг русских окончаний,
-IDF (редкое слово запроса весит больше), покрытие запроса, свежесть
-файла (дата в имени), приоритет дистиллятов графа над сырыми
-стенограммами, разнообразие выдачи (одна встреча не занимает все слоты).
-Слабые совпадения помечаются «⚠ возможно, в архиве этого нет» — модель
-не сочиняет ответ по нерелевантным кускам. Источники в ответе
-кликабельны — открываются в Obsidian.
+Questions and briefs are ranked properly: Russian stemming, IDF (a rare
+query word weighs more), query coverage, file freshness (date in the
+name), graph distillates prioritized over raw transcripts, result
+diversity (one meeting can't take every slot). Weak matches are flagged
+"⚠ the archive may not contain this" — the model won't invent an answer
+from irrelevant chunks. Sources in the answer are clickable — they open
+in Obsidian.
 
-Семантический слой (bge-m3 через вашу Ollama) работает и во встроенном
-поиске: индекс строится фоном и обновляется по mtime (см. docs/SETUP —
-`ollama pull bge-m3`). Если поднят опциональный brain-сервер (порт
-8100), поиск уходит в него; без обоих — чистая лексика.
+The semantic layer (bge-m3 via your Ollama) works in the built-in search
+too: the index builds in the background and refreshes by mtime (see
+docs/SETUP — `ollama pull bge-m3`). If the optional brain server is up
+(port 8100), search goes there; with neither — pure lexical.
 
-Приложение не открывает сетевых соединений, кроме localhost: ваш
-Ollama, опциональный brain-компаньон (:8100) и демон суфлёра.
+The app opens no network connections except localhost: your Ollama, the
+optional brain companion (:8100) and the copilot daemon.

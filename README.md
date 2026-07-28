@@ -6,7 +6,7 @@
 
 Charoite listens to your meetings (microphone + system audio, no bots joining calls), transcribes them locally, tells speakers apart, answers questions mid-meeting, and after each meeting builds an Obsidian knowledge graph that remembers people, systems, decisions and recurring topics — across all your meetings.
 
-*Русская документация: [README.ru.md](README.ru.md). Charoite is Russian-first today (GigaAM STT is SOTA for Russian); English STT works via Whisper/Parakeet backends.*
+*[Русский](README.ru.md) · [中文](README.zh.md). Charoite is Russian-first today (GigaAM STT is SOTA for Russian); English works via Parakeet/Whisper, Chinese via Whisper — and Qwen, the default LLM, is native in Chinese.*
 
 ![Charoite app — live transcript, theses, archive answers](docs/img/app-main.png)
 
@@ -55,11 +55,14 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp config/config.example.yaml config/config.yaml   # then set user_name & graph_dir
 ```
 
-Working in English? Use the English preset instead — Parakeet STT (English
-SOTA on Apple Silicon), English meeting documents and an English copilot role:
+Working in English or Chinese? Use a language preset instead — English gets
+Parakeet STT (English SOTA on Apple Silicon), Chinese gets Whisper STT with
+Qwen (native Chinese) as the LLM, both get meeting documents and a copilot
+role in your language:
 
 ```bash
-cp config/config.example.en.yaml config/config.yaml
+cp config/config.example.en.yaml config/config.yaml   # English
+cp config/config.example.zh.yaml config/config.yaml   # 中文
 ```
 
 Something not working? One command shows what's missing and how to fix it:

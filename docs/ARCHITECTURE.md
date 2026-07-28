@@ -1,5 +1,7 @@
 # Architecture
 
+***English** · [Русский](ARCHITECTURE.ru.md) · [中文](ARCHITECTURE.zh.md)*
+
 ## Overview
 
 ```
