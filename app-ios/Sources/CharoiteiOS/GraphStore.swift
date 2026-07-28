@@ -129,23 +129,67 @@ final class GraphStore: ObservableObject {
         openCount = found.filter { !$0.done }.count
     }
 
-    /// Отметка — точечная замена строки, файл остаётся истиной для всех.
+    /// Отметка — точечная замена маркера, файл остаётся истиной для всех.
+    ///
+    /// Две вещи здесь принципиальны. Первая: строку ищем по ТЕКСТУ задачи, а
+    /// номер строки — лишь подсказка. Файл общий с Obsidian и Mac; если между
+    /// сканом и тапом граф дописали сверху, индексы уехали, и галка вставала
+    /// на соседнюю задачу — молча и не ту. Вторая: пишем через
+    /// NSFileCoordinator, перечитывая файл внутри координации, иначе чужие
+    /// правки затираются, а iCloud плодит конфликтные копии.
     func toggle(_ item: TaskItem) {
         guard let root = graphRoot() else { return }
         let scoped = root.startAccessingSecurityScopedResource()
         defer { if scoped { root.stopAccessingSecurityScopedResource() } }
-        guard let text = try? String(contentsOf: item.url, encoding: .utf8) else { return }
-        var lines = text.components(separatedBy: "\n")
-        guard item.lineIndex < lines.count else { rescanTasks(); return }
-        let line = lines[item.lineIndex]
-        let flipped = item.done
-            ? line.replacingOccurrences(of: "[x]", with: "[ ]")
-                  .replacingOccurrences(of: "[X]", with: "[ ]")
-            : line.replacingOccurrences(of: "[ ]", with: "[x]")
-        guard flipped != line else { rescanTasks(); return }
-        lines[item.lineIndex] = flipped
-        try? lines.joined(separator: "\n").write(to: item.url, atomically: true, encoding: .utf8)
+
+        var coordError: NSError?
+        var failure: String?
+        NSFileCoordinator(filePresenter: nil).coordinate(
+            writingItemAt: item.url, options: .forMerging, error: &coordError
+        ) { url in
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+                failure = L.t("Файл ещё скачивается из iCloud",
+                              "File is still downloading from iCloud",
+                              "文件仍在从 iCloud 下载")
+                return
+            }
+            var lines = text.components(separatedBy: "\n")
+            let hinted = lines.indices.contains(item.lineIndex)
+                && lines[item.lineIndex].contains(item.text)
+            guard let idx = hinted ? item.lineIndex
+                    : lines.firstIndex(where: { $0.contains(item.text) && Self.isTodo($0) }) else {
+                failure = L.t("Задача изменилась в графе — список обновлён",
+                              "Task changed in the graph — list refreshed",
+                              "任务在图谱中已变更 — 列表已刷新")
+                return
+            }
+            let line = lines[idx]
+            let range = NSRange(line.startIndex..., in: line)
+            guard let m = Self.todoRx.firstMatch(in: line, range: range),
+                  let markRange = Range(m.range(at: 1), in: line) else { return }
+            // Меняем ровно один символ маркера, не трогая остальную строку.
+            var updated = line
+            updated.replaceSubrange(markRange, with: item.done ? " " : "x")
+            lines[idx] = updated
+            do {
+                // atomically: false — внутри координации так сохраняется
+                // identity файла, и iCloud не считает это заменой документа.
+                try lines.joined(separator: "\n").write(to: url, atomically: false, encoding: .utf8)
+            } catch {
+                failure = error.localizedDescription
+            }
+        }
+        if let e = coordError ?? (failure.map { NSError(domain: "graph", code: 0,
+                                                       userInfo: [NSLocalizedDescriptionKey: $0]) }) {
+            status = L.t("Не удалось отметить: \(e.localizedDescription)",
+                         "Could not update the task: \(e.localizedDescription)",
+                         "无法更新任务：\(e.localizedDescription)")
+        }
         rescanTasks()
+    }
+
+    private static func isTodo(_ line: String) -> Bool {
+        todoRx.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil
     }
 
     /// Полный текст встречи для просмотра.

@@ -10,9 +10,11 @@ on:
   pull_request:
     paths:
       - "app/**"
+      - "app-ios/**"
   push:
     paths:
       - "app/**"
+      - "app-ios/**"
 
 concurrency:
   # PR ключуется НОМЕРОМ: head_ref — имя ветки без владельца форка,
@@ -28,9 +30,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: SwiftLint (errors — гейт, пороги в .swiftlint.yml)
+        shell: bash
         run: |
+          # pipefail обязателен: без него `swiftlint | grep` возвращал код grep,
+          # и сломанный или неустановленный линтер давал зелёный шаг — галочка
+          # была, проверки не было.
+          set -euo pipefail
           brew list swiftlint >/dev/null 2>&1 || brew install swiftlint >/dev/null
-          swiftlint lint --quiet | tee /tmp/lint.out | grep error && exit 1 || true
+          swiftlint lint --quiet | tee /tmp/lint.out
+          ! grep -q error /tmp/lint.out
       - uses: actions/cache@v6
         with:
           path: app/.build
@@ -42,3 +50,25 @@ jobs:
       - name: Test
         working-directory: app
         run: swift test
+
+  ios:
+    # iPhone-компаньон не собирался в CI ни разу: paths-фильтр покрывал только
+    # app/**, поэтому правка в app-ios/ уезжала в main непроверенной и ломалась
+    # у того, кто первым откроет Xcode. .swiftlint.yml при этом уже включал
+    # app-ios/Sources — линтер был настроен, но не вызывался.
+    name: build (app-ios)
+    runs-on: macos-14
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen >/dev/null
+      - name: Generate project
+        working-directory: app-ios
+        run: xcodegen generate
+      - name: Build
+        working-directory: app-ios
+        run: |
+          xcodebuild -project CharoiteiOS.xcodeproj -scheme CharoiteiOS \
+            -destination 'generic/platform=iOS Simulator' \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO build
