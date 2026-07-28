@@ -224,6 +224,7 @@ struct SuflerView: View {
                     + L.t("Первая строка — прямой ответ на вопрос, 1-2 предложения, без ", "First line — a direct answer, 1-2 sentences, without ", "第一行——直接回答，1-2 句，不要")
                     + L.t("нумерации и префиксов. Затем блок «Факты:» — пункты вида «— дата: что решили/что случилось (кто)», хронологически от старого к новому; даты бери из фрагментов. Если по фрагментам что-то осталось нерешённым — блок «Открыто:» с пунктами, иначе ", "numbering or prefixes. Then a \"Facts:\" block — items like \"— date: what was decided/what happened (who)\", oldest to newest; take dates from the fragments. If something remains unresolved — an \"Open:\" block with items, otherwise ", "编号和前缀。然后是「事实：」块——条目形如「— 日期：决定了什么/发生了什么（谁）」，从旧到新；日期取自片段。若仍有未决事项——写「待解决：」块，否则")
                     + L.t("его не пиши. Только факты из фрагментов, ничего не выдумывай. ", "don't write it. Only facts from the fragments, invent nothing. ", "就不要写。只用片段中的事实，不得编造。")
+
                     + L.t("Без вступлений, без воды, без markdown-заголовков. Если ответа ", "No intros, no filler, no markdown headings. If the answer is ", "不要开场白、废话和 markdown 标题。如果答案")
                     + L.t("во фрагментах нет — одна строка: чего именно не хватает.", "not in the fragments — one line: what exactly is missing.", "片段中没有——用一行说明缺什么。")
             // стрим: токены сразу в панель (троттлинг кадров — в StreamThrottler-стиле
