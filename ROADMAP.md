@@ -1,5 +1,7 @@
 # Charoite Roadmap
 
+***English** · [Русский](ROADMAP.ru.md) · [中文](ROADMAP.zh.md)*
+
 Local-first, in rough priority order. No dates — quality over deadlines.
 
 A design principle worth stating: **no voice biometrics**. Speaker

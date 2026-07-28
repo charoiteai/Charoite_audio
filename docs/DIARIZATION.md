@@ -1,5 +1,7 @@
 # Speaker diarization setup
 
+***English** · [Русский](DIARIZATION.ru.md) · [中文](DIARIZATION.zh.md)*
+
 Charoite uses two diarization passes:
 
 1. **Live** (during the meeting): speaker-embedding model labels chunks as
