@@ -40,3 +40,20 @@ contributions that keep it local-first are very welcome.
 
 release-please manages versions from conventional commits — no manual
 version bumps in PRs, please.
+
+## The de-identification guard
+
+This repository is the public product; a private project sits behind it, and
+nothing personal from there may leak in — names, employer, internal systems,
+paths. `scripts/check_private_markers.py` runs as a pre-commit hook and blocks
+a commit that adds any of them.
+
+The marker list itself is private and lives outside git
+(`~/.config/charoite/private_markers.txt`) — a list of what must not be
+published is sensitive on its own. Without the file the hook fails closed
+locally and skips in CI, so contributors are never blocked by a list they
+cannot have.
+
+Markers of four characters or fewer are matched on word boundaries: a
+three-letter abbreviation otherwise matches inside ordinary words, and a guard
+that cries wolf is a guard people learn to bypass.

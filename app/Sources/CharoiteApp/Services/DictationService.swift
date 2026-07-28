@@ -176,14 +176,39 @@ final class DictationService: ObservableObject {
         status = "распознаю…"
         isRecording = false
         try? stdinPipe?.fileHandleForWriting.close()  // EOF = стоп записи
-        // распознавание короткое; зависший процесс добьём
+        // Распознавание короткое; зависший процесс добьём — и обязательно
+        // с SIGKILL следом. Python, застрявший в нативном вызове (NeMo,
+        // PortAudio), обработает SIGTERM только по выходе из C-кода, то есть
+        // никогда: terminationHandler не вызывался, proc оставался не-nil, и
+        // start() навсегда упирался в `guard proc == nil`. ⌥⌘D, ⌥⌘N, ⌥⌘J и
+        // кнопка-микрофон переставали отвечать до перезапуска приложения, а
+        // индикатор микрофона в статус-баре продолжал гореть.
         let p = proc
         DispatchQueue.global().asyncAfter(deadline: .now() + 25) {
             if let p, p.isRunning { p.terminate() }
         }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 35) {
+            guard let p, p.isRunning else { return }
+            kill(p.processIdentifier, SIGKILL)
+            Task { @MainActor [weak self] in
+                self?.proc = nil
+                self?.stdinPipe = nil
+                self?.isRecording = false
+                self?.status = L.t("распознавание зависло — процесс остановлен",
+                                   "recognition hung — process killed",
+                                   "识别卡住——进程已终止")
+            }
+        }
     }
 
     private func finished(text: String, exit: Int32) {
+        // Таймер автостопа снимался только в stop(). Если процесс завершался
+        // сам (краш распознавателя, свой таймаут), таск оставался спать — и
+        // через десять минут просыпался уже посреди СЛЕДУЮЩЕЙ диктовки,
+        // обрывая её со статусом про «10 минут», которых не было.
+        autoStop?.cancel()
+        autoStop = nil
+        errTail = ""          // чужой хвост stderr не должен попасть в новую ошибку
         proc = nil
         stdinPipe = nil
         isRecording = false

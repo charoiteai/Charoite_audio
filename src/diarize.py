@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import atexit
+import shutil
 import pathlib
 import re
 import subprocess
@@ -40,9 +42,23 @@ SEG_MODEL = ROOT / "models" / "diar" / "segmentation.onnx"
 EMB_MODEL = ROOT / "models" / "diar" / "embedding.onnx"
 
 
+
+def _scratch_dir() -> pathlib.Path:
+    """Временная папка, которая ГАРАНТИРОВАННО исчезнет вместе с процессом.
+
+    Сюда кладётся 16-кГц WAV всей встречи (трёхчасовая — 345 МБ). Раньше это
+    был просто mkdtemp без уборки: копия полного аудио оставалась в
+    /var/folders до перезагрузки, а часто и дольше. Из неё извлекаются
+    голосовые эмбеддинги, и про неё не знает ретеншн record_keep_days —
+    то есть обещание «записи временны» обходилось незаметной копией.
+    """
+    d = pathlib.Path(tempfile.mkdtemp(prefix="charoite-"))
+    atexit.register(shutil.rmtree, d, True)
+    return d
+
 def load_audio(src: pathlib.Path, channel: str) -> tuple[np.ndarray, int]:
     if src.suffix.lower() != ".wav":
-        tmp = pathlib.Path(tempfile.mkdtemp()) / "d.wav"
+        tmp = _scratch_dir() / "d.wav"
         subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@16000",
                         str(src), str(tmp)], check=True, capture_output=True)
         src = tmp

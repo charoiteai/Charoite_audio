@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import pathlib
@@ -63,17 +64,50 @@ def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path:
 
 
 def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int) -> pathlib.Path | None:
-    """Ждём финализацию канала демоном; после SIGKILL добиваем .pcm сами."""
+    """Ждём финализацию канала демоном; после SIGKILL добиваем .pcm сами.
+
+    Признак «демон бросил запись» — живой процесс, а не возраст файла.
+    Раньше здесь стояло `mtime старше 10 секунд`: у трёхчасовой встречи
+    (345 МБ на канал) демон физически не успевал сконвертировать оба канала
+    за это время, mtime у .pcm замирал в момент stop() — и мы начинали писать
+    в тот же .wav параллельно ему. Два писателя давали кашу из перемежающихся
+    блоков, после чего оба делали unlink исходника: финальная стенограмма
+    собиралась из битого звука, а восстановить было уже нечего.
+    """
     wav, pcm = rec_dir / f"{stamp}_{label}.wav", rec_dir / f"{stamp}_{label}.pcm"
+    part = rec_dir / f"{stamp}_{label}.wav.part"
     deadline = time.time() + WAIT_WAV_S
     while time.time() < deadline:
         if wav.exists():
             return wav
-        if pcm.exists() and time.time() - pcm.stat().st_mtime > 10:
-            log(f"{label}: демон не финализировал — конвертирую .pcm сам")
+        if part.exists():
+            time.sleep(2)          # демон сейчас конвертирует — не мешаем
+            continue
+        if pcm.exists() and not _daemon_alive():
+            log(f"{label}: демон мёртв и не финализировал — конвертирую .pcm сам")
             return pcm_to_wav(pcm, sr)
         time.sleep(2)
-    return wav if wav.exists() else None
+    if wav.exists():
+        return wav
+    # Вышло время: конвертируем сами, но только если никто не пишет .part.
+    if pcm.exists() and not part.exists():
+        log(f"{label}: ожидание истекло — конвертирую .pcm сам")
+        return pcm_to_wav(pcm, sr)
+    return None
+
+
+def _daemon_alive() -> bool:
+    """Держит ли кто-то лок демона. Пока держит — записи финализирует он."""
+    lock = ROOT / "logs" / "daemon.lock"
+    if not lock.exists():
+        return False
+    try:
+        with lock.open("r+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(f, fcntl.LOCK_UN)
+        return False      # взяли лок — значит демона нет
+    except OSError:
+        return True       # лок занят — демон жив
 
 
 def stt_segment(stt: STT, audio: np.ndarray, sr: int) -> str:

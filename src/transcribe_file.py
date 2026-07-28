@@ -8,6 +8,8 @@ m4a → wav 16кГц (afconvert, нативный macOS) → GigaAM сегмен
 from __future__ import annotations
 
 import datetime as dt
+import atexit
+import shutil
 import pathlib
 import subprocess
 import sys
@@ -35,11 +37,25 @@ SEG_S = 25.0
 OVERLAP_S = 1.0
 
 
+
+def _scratch_dir() -> pathlib.Path:
+    """Временная папка, которая ГАРАНТИРОВАННО исчезнет вместе с процессом.
+
+    Сюда кладётся 16-кГц WAV всей встречи (трёхчасовая — 345 МБ). Раньше это
+    был просто mkdtemp без уборки: копия полного аудио оставалась в
+    /var/folders до перезагрузки, а часто и дольше. Из неё извлекаются
+    голосовые эмбеддинги, и про неё не знает ретеншн record_keep_days —
+    то есть обещание «записи временны» обходилось незаметной копией.
+    """
+    d = pathlib.Path(tempfile.mkdtemp(prefix="charoite-"))
+    atexit.register(shutil.rmtree, d, True)
+    return d
+
 def to_wav16k(src: pathlib.Path, pcm_rate: int = 16000) -> pathlib.Path:
     if src.suffix.lower() == ".wav":
         return src
     if src.suffix.lower() == ".pcm":  # сырая запись AudioHub после крэша: s16le mono
-        out = pathlib.Path(tempfile.mkdtemp()) / "rec.wav"
+        out = _scratch_dir() / "rec.wav"
         with wave.open(str(out), "wb") as w, src.open("rb") as f:
             w.setnchannels(1)
             w.setsampwidth(2)
@@ -47,7 +63,7 @@ def to_wav16k(src: pathlib.Path, pcm_rate: int = 16000) -> pathlib.Path:
             while chunk := f.read(1 << 20):
                 w.writeframes(chunk)
         return out
-    out = pathlib.Path(tempfile.mkdtemp()) / "rec.wav"
+    out = _scratch_dir() / "rec.wav"
     subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1",
                     str(src), str(out)], check=True, capture_output=True)
     return out

@@ -111,7 +111,11 @@ final class LocalChatService: ObservableObject {
     }
 
     private func stream(_ prompt: String, into bubbleId: UUID) async {
-        var system = """
+        // Промпт локализован целиком: при sufler.language: en интерфейс,
+        // панели и поиск по архиву уже отвечали по-английски, а чат — главная
+        // фича «спроси про прошлые встречи» — продолжал отвечать по-русски,
+        // потому что этого требовала зашитая здесь строка.
+        var system = L.t("""
         Ты — Чароит, локальный ассистент владельца этого Mac, работаешь офлайн. \
         Отвечай по-русски, кратко и по делу. ЧЕСТНОСТЬ: отвечай только \
         по данным из блоков ниже и из разговора; если блоки не про то, что спросили, — \
@@ -121,7 +125,24 @@ final class LocalChatService: ObservableObject {
         расхождения и что изменилось со временем, с датами и источниками из блока \
         графа. На вопрос «кто ты» — «Чароит, локальный ассистент», без имени \
         вендора модели.
-        """
+        """, """
+        You are Charoite, the local assistant of this Mac's owner, running offline. \
+        Answer in English, briefly and to the point. HONESTY: answer only from the \
+        blocks below and from this conversation; if the blocks are not about what \
+        was asked, say so ("that is not in memory") and do not invent. You remember \
+        the whole current dialogue — "what did I ask", "go on", "what about the \
+        second point" refer to it. Cross-reference facts across meetings: name \
+        recurring topics, contradictions and what changed over time, with dates and \
+        sources from the graph block. To "who are you" — "Charoite, a local \
+        assistant", without naming the model vendor.
+        """, """
+        你是 Charoite，这台 Mac 主人的本地助手，离线运行。用中文简洁地回答。\
+        诚实原则：只依据下面的资料块和当前对话作答；如果资料块与所问无关，\
+        就直说「记忆中没有这条」，不要编造。你记得整段对话——「我刚才问了什么」\
+        「继续」「第二点呢」都指向它。跨会议比对事实：指出反复出现的主题、\
+        分歧以及随时间发生的变化，并附上图谱资料块中的日期与来源。\
+        被问「你是谁」时回答「Charoite，本地助手」，不要提模型厂商。
+        """)
         if useMemory {
             // Поиск по одной последней реплике («а что дальше?») находил мусор:
             // тему разговора несут ПОСЛЕДНИЕ вопросы вместе, свежий — главный

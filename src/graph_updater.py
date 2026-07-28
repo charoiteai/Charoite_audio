@@ -189,7 +189,18 @@ def _extract(cfg: dict, transcript: str) -> dict | None:
 
 
 def safe_name(name: str) -> str:
-    return re.sub(r'[/\\:*?"<>|]', "-", name).strip()[:60]
+    """Имя узла графа: безопасное и для файловой системы, и для вики-ссылок.
+
+    Раньше вырезались только запрещённые в именах файлов символы, а из имени
+    строится `[[Папка/Имя|Имя]]`. Сущность «Витрина [v2]» давала ссылку,
+    которую Obsidian закрывал на первом `]]` — узел оставался несвязанным;
+    `#` уводил ссылку на заголовок, `^` — на блок. Отдельно: имя, схлопнутое
+    в пустоту, давало скрытый файл «.md» и ломало поиск канонического узла
+    (пустая строка входит в любую).
+    """
+    s = re.sub(r'[/\\:*?"<>|\[\]#^]', "-", name)
+    s = re.sub(r"\s+", " ", s).strip(" .-")[:60]
+    return s or "без имени"
 
 
 ENT_FOLDER = {"система": "Системы", "команда": "Команды", "проект": "Системы",
@@ -233,7 +244,15 @@ def find_canonical(graph: pathlib.Path, name: str,
             stem = f.stem.casefold()
             if stem == n:
                 return f  # точное имя всегда выигрывает (иначе дубль системы возрождался)
-            if n in stem or stem in n:
+            # Подстрока — только для достаточно длинных имён и близких по
+            # длине пар. Двухбуквенное «Ян» из распознавания входило в
+            # «Январский релиз», «БД» — в «Обновление БД витрин»; при
+            # единственном совпадении функция уверенно возвращала чужой узел,
+            # и встреча дописывалась не туда. В обратную сторону так же:
+            # «Риски» проглатывали «Отчётность по рискам».
+            if len(n) < 5 or len(stem) < 5:
+                continue
+            if (n in stem or stem in n) and abs(len(n) - len(stem)) <= max(len(n), len(stem)) // 2:
                 candidates.append(f)
     if len(candidates) == 1:
         return candidates[0]
@@ -291,7 +310,13 @@ def core_anchor(core: dict, transcript: str) -> str:
     quote = " ".join((core.get("цитата") or "").split())
     if not quote or len(quote.split()) < 3:
         return ""
-    norm = lambda s: " ".join(re.findall(r"[а-яёa-z0-9]+", s.lower()))
+    # \w с re.UNICODE, а не список русских и латинских букв: у китайской
+    # цитаты старый шаблон не находил ни одного слова, norm(quote) выходил
+    # пустым, а пустая строка входит в любую — проверка провенанса в zh-режиме
+    # не отбрасывала выдумки, а пропускала их как подтверждённые.
+    norm = lambda s: " ".join(re.findall(r"\w+", s.lower(), re.UNICODE))
+    if not norm(quote):
+        return ""       # сверять нечего — за проверенное не выдаём
     if norm(quote) not in norm(transcript):
         quote = _closest_span(quote, transcript)
         if not quote:
