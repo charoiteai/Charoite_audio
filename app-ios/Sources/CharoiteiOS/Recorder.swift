@@ -1,3 +1,4 @@
+import ActivityKit
 import AVFoundation
 import Foundation
 
@@ -31,6 +32,7 @@ final class Recorder: NSObject, ObservableObject {
     private var recorder: AVAudioRecorder?
     private var timer: Timer?
     private var startedAt: Date?
+    private var activity: Activity<RecordActivityAttributes>?
 
     func start(kind: Kind) {
         let session = AVAudioSession.sharedInstance()
@@ -62,9 +64,19 @@ final class Recorder: NSObject, ObservableObject {
             timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.tick() }
             }
+            startActivity(kind: kind)
         } catch {
             lastResult = "Запись не стартовала: \(error.localizedDescription)"
         }
+    }
+
+    /// Таймер в Dynamic Island / на локскрине: запись видна, даже когда
+    /// телефон лежит экраном к столу и приложение свернули.
+    private func startActivity(kind: Kind) {
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
+        activity = try? Activity.request(
+            attributes: RecordActivityAttributes(kind: kind.rawValue),
+            content: .init(state: .init(startedAt: Date()), staleDate: nil))
     }
 
     func stop() {
@@ -75,6 +87,10 @@ final class Recorder: NSObject, ObservableObject {
         isRecording = false
         let url = r.url
         recorder = nil
+        if let a = activity {
+            activity = nil
+            Task { await a.end(nil, dismissalPolicy: .immediate) }
+        }
         Task { await Inbox.deliver(url) { [weak self] msg in self?.lastResult = msg } }
     }
 
