@@ -84,7 +84,8 @@ enum ArchiveSearch {
     /// Сначала пробуем brain (:8100, гибрид с семантикой), иначе — локально.
     /// CHAROITE_GRAPH_DIR (демо/тесты) — строго файловый поиск: brain этой
     /// машины индексирует ДРУГОЙ граф и молча отвечал бы не по подменённому.
-    static func search(query: String, limit: Int = 5, snippet: Int = 1200) async -> String {
+    static func search(query: String, limit: Int = 5, snippet: Int = 1200,
+                       budget: Int = defaultBudget) async -> String {
         let graphOverridden = !(ProcessInfo.processInfo
             .environment["CHAROITE_GRAPH_DIR"] ?? "").isEmpty
         if !graphOverridden,
@@ -126,7 +127,7 @@ enum ArchiveSearch {
         return text
     }
 
-    private struct Hit {
+    struct Hit {
         let score: Double
         let rel: String
         let block: String
@@ -137,6 +138,7 @@ enum ArchiveSearch {
     /// слабых обоих сигналах. Работает и вовсе без серверов — тогда чисто
     /// лексически.
     static func localSearch(query: String, limit: Int = 5, snippet: Int = 1200,
+                            budget: Int = defaultBudget,
                             root: URL? = nil) async -> String {
         guard var graph = root ?? AppSettings.graphDir,
               FileManager.default.fileExists(atPath: graph.path) else { return "" }
@@ -306,13 +308,13 @@ enum ArchiveSearch {
         // (≥ порога гейта) — показывается всегда; заодно честен и сам гейт:
         // bestSim, снявший пометку «⚠», виден пользователю, а не лежит
         // где-то в графе невидимым оправданием.
-        if let top = sem.first, top.1 >= 0.47,
-           !shown.contains(where: { $0.rel == top.0 }),
-           let topHit = semHits.first(where: { $0.rel == top.0 }) {
+        if let top = sem.first, top.score >= 0.47,
+           !shown.contains(where: { $0.rel == top.path }),
+           let topHit = semHits.first(where: { $0.rel == top.path }) {
             if shown.count >= limit { shown.removeLast() }
             shown.append(topHit)
         }
-        let body = shown.map(\.block).joined(separator: "\n\n")
+        let body = packContext(shown, budget: budget)
         // Гейт честности: оба сигнала слабые → пометка, синтез не сочиняет.
         // Порог 0.66, а не 0.67: «две иглы из трёх» — это 0.6667, и с прежним
         // числом правило требовало на самом деле три из трёх.
@@ -320,6 +322,50 @@ enum ArchiveSearch {
             return lowConfidenceMarker + body
         }
         return body
+    }
+
+    // MARK: - Бюджет контекста
+
+    /// Сколько знаков выдачи уходит модели по умолчанию.
+    ///
+    /// Окно локальной модели (num_ctx 32768 ≈ 100 000 знаков) — не цель, в
+    /// которую надо целиться. При заполнении больше половины окна модель
+    /// начинает терять начало контекста, а лишний найденный файл вредит
+    /// сильнее, чем помогает: дистракторы бьют по точности нелинейно. Плюс
+    /// у MoE-модели активны единицы миллиардов параметров, и длинный шумный
+    /// контекст даётся ей тяжелее, чем плотному аналогу.
+    static let defaultBudget = 6000
+
+    /// Собрать выдачу под бюджет: потолок на источник и порядок против
+    /// «потери середины».
+    ///
+    /// Три правила, каждое из наблюдаемого поведения длинных контекстов:
+    /// • ни один источник не забирает больше 40% бюджета — иначе одна
+    ///   трёхчасовая стенограмма вытесняет все остальные встречи, а ответ на
+    ///   «что решили по X» почти всегда требует нескольких;
+    /// • источник, которому досталось меньше 300 знаков, выбрасывается
+    ///   целиком: огрызок не несёт смысла, но занимает место и путает;
+    /// • лучший источник идёт первым, второй по силе — ПОСЛЕДНИМ. Внимание
+    ///   модели распределено по краям контекста, и середина проседает; так
+    ///   два сильнейших попадают в оба сильных места.
+    static func packContext(_ hits: [Hit], budget: Int) -> String {
+        guard budget > 0 else { return hits.map(\.block).joined(separator: "\n\n") }
+        let perSource = max(600, budget * 2 / 5)
+        var kept: [String] = []
+        var spent = 0
+        for hit in hits {
+            let room = min(perSource, budget - spent)
+            if room < 300 { break }
+            let block = hit.block.count <= room
+                ? hit.block
+                : String(hit.block.prefix(room)) + "…"
+            kept.append(block)
+            spent += block.count + 2
+        }
+        guard kept.count > 2 else { return kept.joined(separator: "\n\n") }
+        // [1-й, 3-й, 4-й, …, 2-й]
+        let reordered = [kept[0]] + kept.dropFirst(2) + [kept[1]]
+        return reordered.joined(separator: "\n\n")
     }
 
     // MARK: - Ранжирование
