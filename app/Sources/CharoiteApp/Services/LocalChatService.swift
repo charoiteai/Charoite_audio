@@ -127,7 +127,7 @@ final class LocalChatService: ObservableObject {
             // тему разговора несут ПОСЛЕДНИЕ вопросы вместе, свежий — главный
             let topic = (messages.filter { $0.role == "user" }.suffix(3).map(\.text)
                 .joined(separator: " ") as String).suffix(500)
-            var vault = String(await ArchiveSearch.search(query: String(topic), limit: 8, snippet: 800).prefix(4000))
+            var vault = String(await ArchiveSearch.search(query: String(topic), limit: 8, snippet: 800).prefix(5000))
             // маркер слабых совпадений: модель предупреждена, что граф скорее не про это
             let lowConf = vault.hasPrefix(ArchiveSearch.lowConfidenceMarker)
             if lowConf { vault.removeFirst() }
@@ -141,7 +141,7 @@ final class LocalChatService: ObservableObject {
         var msgs: [[String: String]] = [["role": "system", "content": system]]
         // Окно истории: не хвост в N сообщений, а бюджет в знаках — длинные
         // ответы не выталкивают начало разговора мгновенно
-        var budget = 7000
+        var budget = 12000
         var window: [[String: String]] = []
         for m in messages.reversed() where !m.text.isEmpty {
             let cost = m.text.count
@@ -173,9 +173,10 @@ final class LocalChatService: ObservableObject {
             "keep_alive": "30m",
             // num_ctx как в OllamaService: без него Modelfile-дефолт 262144 →
             // перезагрузка 23GB модели при переключении чатов и пустой 2-й ответ.
-            // 16384: система+граф (4К) + история (7К) в 8192 не помещались —
-            // модель молча теряла начало разговора
-            "options": ["temperature": 0.35, "num_ctx": 16384, "num_predict": 2048],
+            // 32768 — потолок для 32 ГБ машины (KV-кэш ~3-5 ГБ при 23 ГБ модели):
+            // система+граф (5К) + история (12К) + ответ дышат свободно. 64К на
+            // 32 ГБ уходит в своп — не поднимать без 64 ГБ RAM.
+            "options": ["temperature": 0.35, "num_ctx": 32768, "num_predict": 2048],
         ] as [String: Any])
 
         do {
