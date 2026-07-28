@@ -31,7 +31,20 @@ def latest_transcript() -> pathlib.Path | None:
 
 
 def extract(cfg: dict, transcript: str) -> dict | None:
-    """LLM → JSON: сущности, связи, решения, темы."""
+    """LLM → JSON: сущности, связи, решения, темы.
+
+    None означает «граф не обновляем», но остальной пост-процессинг обязан
+    продолжиться: папка встречи со стенограммой и минутками ценна и без графа.
+    """
+    try:
+        return _extract(cfg, transcript)
+    except requests.RequestException as e:
+        print(f"граф: Ollama недоступна ({type(e).__name__}: {e}) — "
+              f"встреча сохранена, граф не обновлён")
+        return None
+
+
+def _extract(cfg: dict, transcript: str) -> dict | None:
     r = requests.post(
         cfg["llm"]["base_url"].rstrip("/") + "/api/chat",
         json={
@@ -86,7 +99,21 @@ def extract(cfg: dict, transcript: str) -> dict | None:
         },
         timeout=600,
     )
-    raw = r.json().get("message", {}).get("content", "")
+    # Сетевая ошибка здесь стоила всего пост-процессинга: исключение летело
+    # наружу, main() падал с трейсбеком в logs/graph_*.log, и не выполнялось
+    # НИЧЕГО из дальнейшего — ни заметки встречи, ни ядер, ни разбора, ни
+    # архивной папки, ни post-hook. А приложение к этому моменту уже сказало
+    # «граф будет готов через 2-4 минуты». Типовой повод: Ollama выгрузила
+    # модель или не запущена после перезагрузки.
+    if r.status_code != 200:
+        print(f"граф: Ollama ответила HTTP {r.status_code} — модель "
+              f"{cfg['llm']['model']} установлена? (ollama pull)")
+        return None
+    body = r.json()
+    if isinstance(body, dict) and body.get("error"):
+        print(f"граф: Ollama вернула ошибку: {body['error']}")
+        return None
+    raw = body.get("message", {}).get("content", "")
     raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.M).strip()
     try:
         return json.loads(raw)
@@ -263,8 +290,13 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
     if p.exists():
         text = p.read_text(encoding="utf-8")
         if status:  # свежий статус вытесняет прежний
+            # Замена через lambda, а не строкой: status приходит от модели, и
+            # re.sub разбирает в подстановке обратные слэши. Путь вида
+            # «миграция C:\1С\base готова» давал PatternError: invalid group
+            # reference — исключение убивало весь пост-процессинг встречи.
+            repl = f"## Статус\n{status} _(обновлено {stamp[:10]})_\n\n"
             text = re.sub(r"## Статус\n.*?(?=\n## |\Z)",
-                          f"## Статус\n{status} _(обновлено {stamp[:10]})_\n\n", text, count=1, flags=re.S)
+                          lambda _: repl, text, count=1, flags=re.S)
         if meeting_link not in text:
             if "## Хроника" in text:
                 text = text.replace("## Хроника", f"## Хроника\n{stamp_line}", 1)

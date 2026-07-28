@@ -24,13 +24,19 @@ class STT:
             from parakeet_mlx import from_pretrained
 
             self._model = from_pretrained(s["parakeet_model"])
-        elif self.backend == "mlx_whisper":
+        elif self.backend in ("mlx_whisper", "whisper"):
+            # Оба имени: движок — mlx_whisper, но и комментарий в
+            # config.example.yaml, и китайский пресет пишут просто «whisper».
+            # Принимать одно из двух значило отдавать пользователю пресет,
+            # который падает на первой же строке ValueError.
             import mlx_whisper  # ленивый импорт: тяжёлый
 
             self._mod = mlx_whisper
             self.model = s["whisper_model"]
         else:
-            raise ValueError(f"неизвестный stt.backend: {self.backend}")
+            raise ValueError(
+                f"неизвестный stt.backend: {self.backend} "
+                f"(ожидается gigaam | parakeet | whisper)")
 
     def transcribe(self, audio: np.ndarray, samplerate: int) -> str:
         """float32 mono 16kHz → текст. Пустую/шумовую отдачу чистим снаружи."""

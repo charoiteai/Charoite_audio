@@ -24,6 +24,9 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 FRESH_DAYS = 7
 MAX_CHARS = 60_000
 
+sys.path.insert(0, str(ROOT / "src"))
+import privacy  # noqa: E402 — путь к src задаётся строкой выше
+
 
 def _cfg() -> dict:
     p = ROOT / "config" / "config.yaml"
@@ -42,8 +45,13 @@ def _proxy_env() -> dict:
 
 def main() -> None:
     cfg = _cfg()
-    if not cfg["sufler"].get("cloud_enrich") or os.environ.get("SUFLER_NO_CLOUD"):
-        print("облако выключено (cloud_enrich/SUFLER_NO_CLOUD) — пропуск")
+    # Решение об отправке принимает только src/privacy.py. Своя проверка,
+    # стоявшая здесь раньше, знала одно имя рубильника из двух: после
+    # переименования проекта CHAROITE_NO_CLOUD этот скрипт игнорировал —
+    # и до 60 000 знаков графа уходили в Anthropic вопреки выключателю,
+    # который PRIVACY.md называет перекрывающим любой конфиг.
+    if not privacy.cloud_enrich_enabled(cfg):
+        print("облако выключено (cloud_enrich / kill-switch) — пропуск")
         return
     graph = pathlib.Path(str(cfg["sufler"].get("graph_dir", ""))).expanduser()
     cores = graph / "Ядра"

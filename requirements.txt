@@ -1,10 +1,19 @@
-numpy
-sounddevice
-pyyaml
-requests
-websockets
-rich
-onnx-asr
-onnxruntime
-mcp
-tokenizers  # NLI-дедуп тезисов (src/nli.py); лёгкий, без torch
+# Версии закреплены по нижней границе: onnxruntime и numpy 2.x расходятся
+# регулярно, а «pip install -r» без пинов даёт разные окружения в разные дни.
+numpy>=1.26,<3
+sounddevice>=0.4.6
+pyyaml>=6.0
+requests>=2.31
+websockets>=12.0
+rich>=13.0
+onnx-asr>=0.3
+onnxruntime>=1.17
+mcp>=1.0
+tokenizers>=0.15      # NLI-дедуп тезисов (src/nli.py); лёгкий, без torch
+soundfile>=0.12       # чтение/запись wav в диаризации и пересборке стенограммы
+sherpa-onnx>=1.10     # ERes2Net-эмбеддинги: без него диаризация молча выключена
+
+# Бэкенды STT — ставится тот, что выбран в stt.backend.
+# gigaam работает на onnx-asr выше; для остальных нужны свои пакеты:
+parakeet-mlx>=0.2 ; sys_platform == "darwin"   # английский пресет
+mlx-whisper>=0.4 ; sys_platform == "darwin"    # китайский/мультиязычный пресет
