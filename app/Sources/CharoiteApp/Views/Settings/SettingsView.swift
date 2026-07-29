@@ -277,10 +277,24 @@ struct SettingsView: View {
                     .compactMap { $0["name"] as? String }
                 if names.contains(where: { $0.hasPrefix("bge-m3") }) {
                     // видно не только «модель есть», но и что индекс реально построен
+                    // Полнота индекса, а не просто «сколько файлов»: индекс
+                    // набирается фоном по 48 блоков за поиск, и пока он неполон,
+                    // семантика молча работает вполсилы. Без этой строки
+                    // человек видит «✓ семантика» и считает, что всё готово.
                     let indexed = await SemanticIndex.shared.count()
-                    parts.append(indexed > 0
-                                 ? L.t("✓ семантика: \(indexed) файлов в индексе", "✓ semantics: \(indexed) files indexed", "✓ 语义：已索引 \(indexed) 个文件")
-                                 : L.t("✓ bge-m3 (индекс построится при первом поиске)", "✓ bge-m3 (index builds on first search)", "✓ bge-m3（首次搜索时建立索引）"))
+                    let chunks = await SemanticIndex.shared.totalChunks()
+                    let total = AppSettings.graphDir.map { Self.countGraphFiles($0).onDisk } ?? 0
+                    if indexed == 0 {
+                        parts.append(L.t("✓ bge-m3 (индекс построится при первом поиске)", "✓ bge-m3 (index builds on first search)", "✓ bge-m3（首次搜索时建立索引）"))
+                    } else if total > 0, indexed < total * 9 / 10 {
+                        parts.append(L.t("◔ семантика: \(indexed) из \(total) заметок, \(chunks) блоков — индекс ещё набирается",
+                                         "◔ semantics: \(indexed) of \(total) notes, \(chunks) chunks — still indexing",
+                                         "◔ 语义：\(total) 条中已索引 \(indexed) 条，\(chunks) 个块——仍在建立索引"))
+                    } else {
+                        parts.append(L.t("✓ семантика: \(indexed) заметок, \(chunks) блоков",
+                                         "✓ semantics: \(indexed) notes, \(chunks) chunks",
+                                         "✓ 语义：\(indexed) 条笔记，\(chunks) 个块"))
+                    }
                 } else {
                     parts.append(L.t("– bge-m3 нет: ollama pull bge-m3", "– no bge-m3: ollama pull bge-m3", "– 缺少 bge-m3：ollama pull bge-m3"))
                 }

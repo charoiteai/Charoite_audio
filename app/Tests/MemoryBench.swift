@@ -49,8 +49,13 @@ final class MemoryBench: XCTestCase {
         try? report.write(to: URL(fileURLWithPath: "/tmp/charoite_bench.txt"),
                           atomically: true, encoding: .utf8)
         print(report)
-        XCTAssertGreaterThan(ratio, 0.5,
-                             "поиск не доносит до модели половину ожидаемых фактов")
+        // Порог ниже текущего уровня, но не вдвое: при 0.5 падение с 13/14 до
+        // 8/14 прошло бы незамеченным, а это уже другой продукт. Запас нужен,
+        // потому что граф живой — вопросы про его содержимое естественно
+        // дрейфуют, и краснеть от этого бенч не должен.
+        XCTAssertGreaterThan(ratio, 0.75,
+                             "качество памяти просело: \(hitTotal)/\(mustTotal) — "
+                             + "смотри /tmp/charoite_bench.txt, там видно, какие факты потерялись")
     }
 
     /// Синтез ответа локальной моделью — тот же путь, что в приложении.
