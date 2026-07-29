@@ -208,6 +208,11 @@ The budget shows no gain here and is kept for a different reason: it bounds
 how much of the context a single transcript may occupy, which this ten-question
 set does not exercise.
 
+On a fully built index (865 files, 4335 chunks) the same bench reaches
+**14/14**: every expected fact survives into the answer. The two that used to
+go missing were details stated once, deep inside long meetings — a rate limit
+and a token name.
+
 One negative result worth recording. Adding "carry abbreviations and error
 codes VERBATIM" to the synthesis prompt looked like an improvement (13/14 on a
 first run) and turned out to be a regression once temperature was pinned:
