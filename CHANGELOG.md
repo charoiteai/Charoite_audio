@@ -5,6 +5,20 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.0](https://github.com/charoiteai/Charoite_audio/compare/v0.36.0...v0.37.0) (2026-07-29)
+
+
+### Features
+
+* **graph:** дедупликация копий файлов — в поиске и в ночном цикле ([#145](https://github.com/charoiteai/Charoite_audio/issues/145)) ([770206b](https://github.com/charoiteai/Charoite_audio/commit/770206b8f9db52dbe0b190b8af81efefe7095b42))
+* **search:** чанкинг семантики, бюджет контекста, ускорение вчетверо ([#146](https://github.com/charoiteai/Charoite_audio/issues/146)) ([cfdf80d](https://github.com/charoiteai/Charoite_audio/commit/cfdf80d11c33ec84b4ab2d372f4a6929ad5fb0f9))
+
+
+### Bug Fixes
+
+* kill-switch, потеря встречи при рестарте, нерабочие пресеты en/zh ([#141](https://github.com/charoiteai/Charoite_audio/issues/141)) ([912fbe0](https://github.com/charoiteai/Charoite_audio/commit/912fbe0598d750f0c34c3f0182d0c8890e822ffb))
+* аварийное восстановление встречи, заморозки UI, доделанная локализация ([#144](https://github.com/charoiteai/Charoite_audio/issues/144)) ([940877d](https://github.com/charoiteai/Charoite_audio/commit/940877db8451a11da25ffc69714d1655c8587d5a))
+
 ## [0.36.0](https://github.com/charoiteai/Charoite_audio/compare/v0.35.0...v0.36.0) (2026-07-28)
 
 
