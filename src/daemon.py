@@ -488,6 +488,7 @@ def main():
     auto_model = llm.small if quiet else None  # тихий режим: весь фон без 26b
     instant_evt = threading.Event()
     cloud_live = privacy.cloud_live_enabled(cfg)  # молчание конфига = «нет», см. src/privacy.py
+    cloud_hints = privacy.cloud_hints_enabled(cfg)  # свой ключ ПОВЕРХ cloud_live
     cloud_evt = threading.Event()
     _last_fire = [0.0]
     _cloud_last = {"t": 0.0, "words": set()}
@@ -563,10 +564,12 @@ def main():
         Уточнение падает в облачную ленту того же окна (тот же путь, что
         ответы на вопросы) — hint-карточку перезапишет следующая подсказка,
         а лента остаётся. Выключатель отдельный от cloud_live: подсказки
-        стреляют часто, и это постоянный поток стенограммы в облако.
+        стреляют часто, и это постоянный поток стенограммы в облако. Решение
+        о нём — в src/privacy.py, как и обо всех остальных: раньше ключ
+        читался здесь, и рубильник действовал только потому, что рядом в
+        условии стоял cloud_live.
         """
-        if not (cfg["sufler"].get("cloud_hints", False)
-                and cloud_live and toggles["cloud"]):
+        if not (cloud_hints and toggles["cloud"]):
             return
         if len(tail) - _refine_last["len"] < 400:
             return   # разговор не набежал — Haiku скажет то же самое
