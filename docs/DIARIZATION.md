@@ -37,3 +37,39 @@ Tuning (`config/config.yaml`):
 - `live_diarize_threshold` (default 0.45) — cosine similarity to attach a chunk
   to a known voice; raise it if different people get merged, lower it if one
   person keeps splitting into two.
+
+## How to measure it
+
+"It confuses speakers" stays an opinion until there is a number.
+`scripts/diar_bench.py` computes DER (diarization error rate): the share of
+speech time labelled wrongly — speech that was missed, speech heard in silence,
+and time given to the wrong voice. Hypothesis labels are matched against the
+reference first, so "spk0 instead of Milena" is not an error: diarization must
+tell people apart, not guess names.
+
+```bash
+.venv/bin/python scripts/diar_bench.py --make    # synthetic dialogue + ground truth
+.venv/bin/python scripts/diar_bench.py           # measure both engines
+```
+
+There are no meeting recordings in this repository and there cannot be — those
+are other people's conversations. The fixture is built locally with the macOS
+speech synthesiser: four different voices read lines, and the ground truth is
+exact because we wrote it. This is a floor, not a benchmark: synthesised voices
+are cleaner than live ones, with no crosstalk and no room noise, so an engine
+that confuses speakers HERE will do worse in a real meeting. The converse does
+not hold — these numbers must not be presented as real-meeting quality.
+
+Measured on 2026-07-30 (32 s, 4 voices):
+
+| Engine | DER | Voices found |
+|---|---|---|
+| live tracker (cosine to centroids) | 0.725 | 1 of 4 |
+| sherpa-onnx: pyannote segmentation + the same embedder | 0.296 | 3 of 4 |
+| same, told there are 4 speakers | **0.248** | 4 of 4 |
+
+The live tracker's threshold barely matters: from 0.25 to 0.55 it collapses
+everyone into a single voice. The cause is not the threshold but the fact that
+speech is cut by a timer (three-second chunks) rather than at utterance
+boundaries: one chunk holds the end of one phrase and the start of another, and
+the embedding comes out mixed. That is exactly what a segmentation model fixes.
