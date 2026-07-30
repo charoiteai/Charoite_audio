@@ -64,12 +64,18 @@ Measured on 2026-07-30 (32 s, 4 voices):
 
 | Engine | DER | Voices found |
 |---|---|---|
-| live tracker (cosine to centroids) | 0.725 | 1 of 4 |
-| sherpa-onnx: pyannote segmentation + the same embedder | 0.296 | 3 of 4 |
-| same, told there are 4 speakers | **0.248** | 4 of 4 |
+| live mode today (segmentation + per-utterance embeddings) | **0.246** | 4 of 4 |
+| previous chunk tracker (`--engine live-legacy`) | 0.725 | 1 of 4 |
+| after-meeting pass (`--engine sherpa`) | 0.296 | 3 of 4 |
+| same, told there are 4 speakers | 0.248 | 4 of 4 |
 
-The live tracker's threshold barely matters: from 0.25 to 0.55 it collapses
-everyone into a single voice. The cause is not the threshold but the fact that
-speech is cut by a timer (three-second chunks) rather than at utterance
-boundaries: one chunk holds the end of one phrase and the start of another, and
-the embedding comes out mixed. That is exactly what a segmentation model fixes.
+The previous tracker collapsed everyone into a single voice, and the threshold
+barely mattered: from 0.25 to 0.55 the result was identical. The cause was not
+the threshold but the fact that speech was cut by a timer (three-second chunks)
+rather than at utterance boundaries: one chunk holds the end of one phrase and
+the start of another, and the embedding comes out mixed. Segmentation gives the
+boundaries, and the embedding is computed per utterance.
+
+A chunk still gets one label — it carries one piece of recognised text, so the
+voice that spoke longest in it wins. If recognition also goes per utterance,
+errors halve again: the measured DER of per-utterance labelling is 0.090.
