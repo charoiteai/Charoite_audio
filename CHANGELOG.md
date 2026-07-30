@@ -5,6 +5,16 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.38.1](https://github.com/charoiteai/Charoite_audio/compare/v0.38.0...v0.38.1) (2026-07-30)
+
+
+### Bug Fixes
+
+* **docs:** команды README запускаются через .venv, а не тем питоном, где нет пакетов ([#157](https://github.com/charoiteai/Charoite_audio/issues/157)) ([c4ed6d4](https://github.com/charoiteai/Charoite_audio/commit/c4ed6d423c921d6674f247989806d5e5e60cc662))
+* **markers:** страж обезличивания проверяет всё дерево, а не только диф ([#159](https://github.com/charoiteai/Charoite_audio/issues/159)) ([1a04da6](https://github.com/charoiteai/Charoite_audio/commit/1a04da673e78564f5f0e62f8f64cd216abf12bfc))
+* **names:** опознанное имя проверяется одинаково с моделью голосов и без неё ([#155](https://github.com/charoiteai/Charoite_audio/issues/155)) ([3ef05e5](https://github.com/charoiteai/Charoite_audio/commit/3ef05e56d716caceb6a14394d91280e3541b3530))
+* **privacy:** все четыре тумблера облака решаются в src/privacy.py ([#156](https://github.com/charoiteai/Charoite_audio/issues/156)) ([7fb826f](https://github.com/charoiteai/Charoite_audio/commit/7fb826f2b997f445c384f60356a38f18372c4291))
+
 ## [0.38.0](https://github.com/charoiteai/Charoite_audio/compare/v0.37.0...v0.38.0) (2026-07-30)
 
 
