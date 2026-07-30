@@ -82,4 +82,47 @@ enum AppSettings {
         }
         return found
     }
+
+    /// Логический ключ конфига. Отсутствует или не распознан — `false`:
+    /// для облачных разрешений безопасный дефолт — «нельзя».
+    static func configFlag(_ key: String) -> Bool {
+        ["true", "yes", "on", "1"].contains((configValue(key) ?? "").lowercased())
+    }
+
+    /// Переписать логический ключ в config.yaml суфлёра.
+    ///
+    /// Приложение не тащит YAML-зависимость ради одного тумблера: правится
+    /// ровно та строка, где ключ уже объявлен, остальной файл — включая
+    /// комментарии, которыми конфиг и документирован — не трогается.
+    /// Ключа в файле нет — не дописываем: значит конфиг не от этой версии,
+    /// и молча менять его структуру опаснее, чем отказать.
+    @discardableResult
+    static func setConfigFlag(_ key: String, _ value: Bool) -> Bool {
+        let cfg = charoiteRoot.appendingPathComponent("config/config.yaml")
+        guard let text = try? String(contentsOf: cfg, encoding: .utf8) else { return false }
+
+        var out: [String] = []
+        var done = false
+        for line in text.components(separatedBy: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if !done, t.hasPrefix(key + ":") {
+                // отступ сохраняем — ключ живёт внутри секции
+                let indent = String(line.prefix(while: { $0 == " " }))
+                // хвостовой комментарий сохраняем: он объясняет смысл ключа
+                var tail = ""
+                if let hash = line.range(of: " #") { tail = String(line[hash.lowerBound...]) }
+                out.append("\(indent)\(key): \(value)\(tail)")
+                done = true
+            } else {
+                out.append(line)
+            }
+        }
+        guard done else { return false }
+        do {
+            try out.joined(separator: "\n").write(to: cfg, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            return false
+        }
+    }
 }
