@@ -9,6 +9,10 @@ struct SettingsView: View {
     @AppStorage("charoite.calendarBriefs") private var calendarBriefs = false
     @AppStorage("charoite.importDir") private var importDir = ""
     @AppStorage("charoite.importWatch") private var importWatch = false
+    /// Не @AppStorage: источник правды — config.yaml, его читает ночной скрипт.
+    /// Здесь только отражение, начальное значение берётся из файла в onAppear.
+    @State private var cloudEditGraph = false
+    @State private var cloudEditNote = ""
     @ObservedObject private var importer = ImportService.shared
     @State private var check = ""
     // Считается в фоне и только при смене пути: раньше это было вычисляемое
@@ -61,9 +65,32 @@ struct SettingsView: View {
                         Text(nightlyNote).font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                Text(L.t("Ставит launchd-задачу на 04:15: Tier-3 ревизия ядер графа (с бэкапами), бриф _Сегодня.md и бенч качества памяти. Всё локально; лог в /tmp/charoite_nightly.log.",
-                         "Installs a launchd job at 04:15: Tier-3 review of graph cores (with backups), the _Today.md brief and a memory-quality bench. All local; log in /tmp/charoite_nightly.log.",
-                         "在 04:15 安装 launchd 任务：图谱核心的 Tier-3 复审（含备份）、_Today.md 简报与记忆质量基准。全部本地运行；日志见 /tmp/charoite_nightly.log。"))
+                Text(L.t("Ставит launchd-задачу на 04:15: Tier-3 ревизия ядер графа (с бэкапами), досье по темам, бриф _Сегодня.md и бенч качества памяти. Всё локально; лог в /tmp/charoite_nightly.log.",
+                         "Installs a launchd job at 04:15: Tier-3 review of graph cores (with backups), topic dossiers, the _Today.md brief and a memory-quality bench. All local; log in /tmp/charoite_nightly.log.",
+                         "在 04:15 安装 launchd 任务：图谱核心的 Tier-3 复审（含备份）、主题档案、_Today.md 简报与记忆质量基准。全部本地运行；日志见 /tmp/charoite_nightly.log。"))
+                    .font(.caption).foregroundStyle(.secondary)
+
+                Toggle(L.t("Разрешить облаку править досье",
+                           "Let the cloud edit dossiers",
+                           "允许云端修改档案"), isOn: $cloudEditGraph)
+                    .onChange(of: cloudEditGraph) { _, on in
+                        // Пишем в config.yaml, а не в UserDefaults: разрешение
+                        // спрашивает ночной скрипт, и знать он должен одно место.
+                        if !AppSettings.setConfigFlag("cloud_edit_graph", on) {
+                            cloudEditNote = L.t("не нашёл ключ в config.yaml",
+                                                "key not found in config.yaml",
+                                                "在 config.yaml 中未找到该键")
+                            cloudEditGraph = !on
+                        } else {
+                            cloudEditNote = ""
+                        }
+                    }
+                if !cloudEditNote.isEmpty {
+                    Text(cloudEditNote).font(.caption).foregroundStyle(.orange)
+                }
+                Text(L.t("Ночью локальная модель собирает досье по темам. С этой галочкой облачная модель проходит вторым и правит их сама: замечает отменённые решения, истёкшие сроки, расхождения между источниками. Без галочки — только пишет отчёт, а правите вы. Стенограммы, минутки и раздел «Правки автора» не трогаются никогда; перед каждой правкой — бэкап.",
+                         "At night a local model builds topic dossiers. With this on, a cloud model makes a second pass and edits them itself: it spots superseded decisions, expired deadlines, contradictions between sources. Off — it only writes a report and you apply the fixes. Transcripts, minutes and the “Author edits” section are never touched; every edit is backed up first.",
+                         "夜间由本地模型生成主题档案。开启后，云端模型会进行第二遍并自行修改：发现被推翻的决定、已过期的期限、来源之间的矛盾。关闭时只写报告，由你来修改。会议记录、纪要和“作者修改”小节永不触碰；每次修改前先备份。"))
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section(L.t("Импорт записей", "Recording import", "录音导入")) {
@@ -118,6 +145,9 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 440)
         .navigationTitle(L.t("Настройки", "Settings", "设置"))
+        // Состояние галочки читаем из файла, а не помним своё: конфиг могли
+        // поправить руками, и тогда UI обязан показать то, что там лежит.
+        .onAppear { cloudEditGraph = AppSettings.configFlag("cloud_edit_graph") }
         // Пересчёт только когда путь установки действительно сменился, и не
         // на главном потоке: обход графа в iCloud занимает секунды.
         .task(id: root) {
