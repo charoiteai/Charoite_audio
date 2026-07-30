@@ -16,7 +16,6 @@ import requests
 import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import cloud  # noqa: E402
 import privacy  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -665,54 +664,26 @@ def main():
     # рубильник поверх конфига: SUFLER_NO_CLOUD. Решение — в src/privacy.py.
     if privacy.cloud_enrich_enabled(cfg):
         try:
-            import shutil as _sh
             import subprocess as _sp
-            claude_bin = _sh.which("claude") or "/opt/homebrew/bin/claude"
+            # путь к claude и выбор модели теперь дело воркера: здесь остаётся
+            # только решение «запускать разбор» и имена файлов
             slug3 = re.sub(r"[,;:!?.]", "", safe_name(title)).replace(" ", "_")[:50] if title else ""
             rev = tpath.with_name(f"{stamp}_{slug3}_ревизия_claude.md" if slug3 else f"{stamp}_ревизия_claude.md")
-            may_edit = privacy.cloud_edit_graph_enabled(cfg)
-            # набор файлов готовим МЫ: что ушло в облако, видно из кода, а не
-            # из того, куда модель решила заглянуть на диске
-            context, sent = cloud_enrich_context(tpath.parent, stamp)
-            prompt = cloud_enrich_prompt(
-                transcript_name=tpath.name, folder=tpath.parent, graph=graph,
-                rev_name=rev.name, stamp=stamp, arch_folder=arch_folder,
-                may_edit=may_edit, context=context)
-            print(f"cloud-enrich: в облако уходит {len(sent)} файлов встречи "
-                  f"({', '.join(sent)}), {len(context)} знаков")
-            log = ROOT / "logs" / f"claude_enrich_{stamp}.log"
+            log = ROOT / "logs" / f"cloud_review_{stamp}.log"
             log.parent.mkdir(exist_ok=True)
-            # строго через Claude Code по подписке (Max): выкидываем API-ключ из env,
-            # чтобы вызов никогда не ушёл на потокенный биллинг Anthropic API
-            env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-            try:  # прокси из ~/.claude/settings.json: GUI-запуск без него ловит 403 (регион)
-                _s = json.loads((pathlib.Path.home() / ".claude" / "settings.json").read_text(encoding="utf-8"))
-                env.update({k: v for k, v in _s.get("env", {}).items() if "proxy" in k.lower()})
-            except Exception:  # noqa: BLE001
-                pass
-            cmd = cloud_enrich_command(cfg, claude_bin=claude_bin, prompt=prompt,
-                                       model=cloud.model(cfg, "cloud_model"))
-            # Без права записи ревизию сохраняем МЫ: stdout `claude -p` — это
-            # ответ модели целиком, служебное идёт в stderr. Раньше отчёт писала
-            # сама модель, для чего ей и выдавали Write.
-            # Рабочая директория — граф в ОБОИХ режимах. Инструменты работают
-            # относительно cwd, и корень репозитория означал бы доступ к
-            # transcripts/ со всеми прошлыми встречами, recordings/, logs/,
-            # .git и config/config.yaml — при том что задача про одну встречу.
-            work_dir = cloud_enrich_workdir(cfg, graph, tpath.parent)
-            # Ревизию сохраняем МЫ в обоих режимах: stdout `claude -p` — это
-            # ответ модели целиком, служебное идёт в stderr. Модель пишет
-            # только в граф и только когда это разрешено тумблером.
-            with rev.open("w", encoding="utf-8") as of, \
-                    log.open("w", encoding="utf-8") as lf:
-                # маркер в начале файла: если модель не ответит, останется не
-                # пустой файл-загадка, а строка с встречей и временем запуска
-                of.write(f"<!-- {stamp} · {title or 'встреча'} · ревизия облаком -->\n")
-                of.flush()
-                _sp.Popen(cmd, cwd=str(work_dir), env=env,
-                          stdin=_sp.DEVNULL,   # не наследовать fifo — claude ждал бы EOF
-                          stdout=of, stderr=lf, start_new_session=True)
-            print(f"cloud-enrich: Claude запущен фоном (лог {log.name})")
+            # Фоном уходит НЕ сам claude, а воркер: он ждёт разбор с таймаутом,
+            # проверяет код возврата и то, что ответ похож на ревизию, кладёт
+            # файл атомарно, а в режиме правки снимает бэкап графа и откатывает
+            # то, что трогать было нельзя. Раньше здесь был Popen на claude без
+            # присмотра: «запущен фоном» значило только «процесс стартовал».
+            _sp.Popen(
+                [sys.executable, str(ROOT / "scripts" / "cloud_review.py"),
+                 "--stamp", stamp, "--transcript", str(tpath),
+                 "--graph", str(graph), "--rev", str(rev), "--log", str(log)],
+                cwd=str(ROOT), stdin=_sp.DEVNULL,
+                stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, start_new_session=True,
+            )
+            print(f"cloud-enrich: разбор идёт под присмотром воркера (лог {log.name})")
         except Exception as e:
             print(f"cloud-enrich не запустился: {e}")
 
