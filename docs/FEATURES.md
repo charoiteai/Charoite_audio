@@ -117,6 +117,18 @@ case it writes `Service_dossier_review_<date>.md` and a human applies the
 fixes. Transcripts, minutes and `## Author edits` are untouched in either mode;
 every edit is backed up to `Dossiers/.backup/<date>/` first.
 
+**Forget a meeting** (`scripts/forget_meeting.py <date|stamp>`) — the other
+side of recording: removes the meeting from all six places it lives — the
+transcript and its derivatives, the folder under «Встречи-архив», the
+«Встречи/» node, the transcript copy under «Документация», chronicle lines in
+Cores (together with the fact that came from that meeting) and links in
+Dossiers and people's nodes. A link inside a sentence becomes a
+«(встреча удалена)» note instead of a dangling wiki-link. By default it prints
+the plan: deletion is irreversible and needs `--yes`. Edits to nodes that stay
+alive are backed up into `.forget_backup/<stamp>/` — we delete a meeting, not
+someone's notes. Transcript and recording only, leaving the graph alone:
+`--keep-graph`.
+
 **Nightly loop** (`scripts/nightly.sh`, cron/launchd it): Tier3 revision →
 **morning brief** → **memory bench**. The nightly revision merges cores
 only when `sufler.tier3_auto_apply: true`; without the key it stops at
