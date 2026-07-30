@@ -21,6 +21,7 @@ Claude Code по подписке, поэтому ANTHROPIC_API_KEY вычища
 """
 import ast
 import pathlib
+import re
 
 import pytest
 
@@ -144,8 +145,27 @@ def test_privacy_knows_both_switch_names():
         assert name in src, f"privacy.py не знает про {name}"
 
 
+# Имя модели — не бинарник: «claude-opus-5» запустить нельзя. Сторож ловит
+# строку, которой стартует процесс, и одно от другого обязан отличать, иначе
+# модуль, который ТОЛЬКО называет модель (src/cloud.py — одно место для
+# дефолтов вместо литерала в каждой точке выхода), объявляется новым выходом в
+# сеть и с него требуется фильтр ANTHROPIC_API_KEY. Покрытие при этом не
+# сужается: исключаются ровно строки вида claude-<версия>, а «claude»,
+# «/opt/homebrew/bin/claude» и «claude -p …» ловятся по-прежнему.
+_MODEL_NAME = re.compile(r"^claude-[a-z0-9.\-]+$")
+
+
 def _mentions_claude(consts: set[str]) -> bool:
-    return any(c.startswith("claude") or c.endswith("/claude") for c in consts)
+    return any((c.startswith("claude") or c.endswith("/claude"))
+               and not _MODEL_NAME.match(c) for c in consts)
+
+
+def test_the_guard_still_sees_a_launch_and_ignores_a_model_name():
+    """Сторож различает запуск процесса и имя модели — проверяем оба случая."""
+    for launcher in ("claude", "/opt/homebrew/bin/claude", "claude -p prompt"):
+        assert _mentions_claude({launcher}), f"пропущен запуск: {launcher}"
+    for model in ("claude-opus-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001"):
+        assert not _mentions_claude({model}), f"имя модели принято за запуск: {model}"
 
 
 def test_no_other_place_starts_claude():

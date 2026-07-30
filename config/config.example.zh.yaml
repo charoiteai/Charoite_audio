@@ -75,7 +75,7 @@ sufler:
 
   # --- 云层（可选；保持关闭 = 一切留在本地） ---
   cloud_enrich: false     # 会后由云端 Claude 复盘（需要 claude CLI）
-  cloud_model: claude-opus-4-8
+  cloud_model: claude-opus-5
   cloud_edit_graph: false
   # ↑ РАЗРЕШИТЬ ОБЛАКУ ПРАВИТЬ ГРАФ (опционально, по умолчанию выключено).
   # Без него Opus только пишет отчёт-рекомендации, правит человек руками.
@@ -86,7 +86,7 @@ sufler:
   # НЕ правит никогда: стенограммы, минутки, раздел «## Правки автора».
   # Перед каждой правкой — бэкап в `Досье/.backup/<дата>/`.
   cloud_live: false       # 会议中 Claude 并行回答问题
-  cloud_live_model: claude-haiku-4-5-20251001
+  cloud_live_model: claude-haiku-4-5
 
   fast_trigger: true      # 通过流式 STT 提前检测问题（如已启用）
   live_diarize: true      # 实时「说话人 1/2/…」标签

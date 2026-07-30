@@ -16,6 +16,7 @@ import requests
 import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import cloud  # noqa: E402
 import privacy  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -706,7 +707,7 @@ def main():
             with log.open("w", encoding="utf-8") as lf:
                 _sp.Popen(
                     [claude_bin, "-p", prompt,
-                     "--model", cfg["sufler"].get("cloud_model", "claude-opus-4-8"),
+                     "--model", cloud.model(cfg, "cloud_model"),
                      "--allowedTools", "Read,Edit,Write,Grep,Glob",
                      # неразрешённый инструмент в headless = вечный пермишен-запрос
                      "--disallowedTools", "Bash,WebFetch,WebSearch,Task,NotebookEdit,AskUserQuestion",

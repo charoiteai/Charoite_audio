@@ -123,7 +123,6 @@ def build_brief(graph: pathlib.Path) -> str | None:
             tails = night_sect("Потерянные хвосты")
             link = f"[[{rev.stem}|полный отчёт]]"
             if risks:
-                head = lines.index("")  # после frontmatter-блока и заголовка
                 # вставляем сразу после «# Сегодня …» и пустой строки
                 pos = lines.index("", lines.index("# Сегодня — контекст дня (по встречам " + last_day + ")"))
                 lines[pos:pos] = ["", "## Три риска недели (ночная ревизия)"] + risks + [link, ""]
