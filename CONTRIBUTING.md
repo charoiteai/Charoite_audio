@@ -54,6 +54,20 @@ published is sensitive on its own. Without the file the hook fails closed
 locally and skips in CI, so contributors are never blocked by a list they
 cannot have.
 
+The hook checks **two** things: the lines a commit adds, and the whole tracked
+tree. The second one matters because a marker added to the list *later* leaves
+its earlier occurrences untouched forever — the diff of every following commit
+is clean, and the leak lives on in `main`. Two such lines were found this way.
+A full scan on demand:
+
+```bash
+python3 scripts/check_private_markers.py --all   # prints places, never the marker
+```
+
+For already-published files the report is `path:line` without the text: that
+output ends up in CI logs and other people's terminals, and it should not become
+another copy of what we are hiding.
+
 Markers of four characters or fewer are matched on word boundaries: a
 three-letter abbreviation otherwise matches inside ordinary words, and a guard
 that cries wolf is a guard people learn to bypass.

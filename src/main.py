@@ -1,6 +1,6 @@
 """Суфлёр v1: слушает встречу, транскрибирует, подсказывает по Enter. Всё локально.
 
-Запуск:  cd ~/Project/sufler && ./.venv/bin/python src/main.py
+Запуск:  .venv/bin/python src/main.py   (из корня репозитория)
 Клавиши: Enter — подсказка · s — саммари · d — устройства · q — выход
 """
 from __future__ import annotations
