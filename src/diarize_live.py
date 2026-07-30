@@ -16,6 +16,24 @@ import pathlib
 import numpy as np
 
 
+def availability_note(enabled: bool, model_path: pathlib.Path) -> str | None:
+    """Что сказать пользователю про живую диаризацию. None — она работает.
+
+    Модель эмбеддингов в поставку не входит, а `live_diarize` включён по
+    умолчанию: «модели нет» — это состояние сразу после установки, а не
+    авария. Молча отдать метки по каналам вместо обещанных «Собеседник 1/2/…»
+    хуже, чем сказать вслух: человек видит слитную кашу и не знает, чинить ему
+    что-то или так и задумано.
+    """
+    if not enabled:
+        return ("живая диаризация выключена в конфиге (sufler.live_diarize) — "
+                "метки пойдут по каналам")
+    if not model_path.exists():
+        return ("живой диаризации нет: не найден models/diar/embedding.onnx — "
+                "метки пойдут по каналам, где взять модель: docs/DIARIZATION.md")
+    return None
+
+
 class SpeakerTracker:
     def __init__(self, model_path: pathlib.Path, sample_rate: int = 16000,
                  threshold: float = 0.45, min_sec: float = 1.2, max_speakers: int = 8,
