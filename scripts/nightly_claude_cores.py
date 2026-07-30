@@ -25,7 +25,8 @@ FRESH_DAYS = 7
 MAX_CHARS = 60_000
 
 sys.path.insert(0, str(ROOT / "src"))
-import privacy  # noqa: E402 — путь к src задаётся строкой выше
+import cloud  # noqa: E402 — путь к src задаётся строкой выше
+import privacy  # noqa: E402
 
 
 def _cfg() -> dict:
@@ -72,7 +73,7 @@ def main() -> None:
         parts.append(f"## ЯДРО: {p.stem}\n{p.read_text(encoding='utf-8')}")
     blob = "\n\n".join(parts)[:MAX_CHARS]
 
-    model = cfg["sufler"].get("cloud_model", "claude-opus-5")
+    model = cloud.model(cfg, "cloud_model")
     claude = shutil.which("claude") or "/opt/homebrew/bin/claude"
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
     env.update(_proxy_env())

@@ -202,7 +202,6 @@ def import_voice_note(src: pathlib.Path, diary: bool) -> None:
     import tempfile
 
     sys.path.insert(0, str(ROOT / "src"))
-    import numpy as np
     import soundfile as sf
     from stt import STT
 
