@@ -5,6 +5,22 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.40.0](https://github.com/charoiteai/Charoite_audio/compare/v0.39.0...v0.40.0) (2026-07-30)
+
+
+### Features
+
+* **bench:** DER-бенч диаризации — «путает говорящих» стало числом ([#172](https://github.com/charoiteai/Charoite_audio/issues/172)) ([0ce2b37](https://github.com/charoiteai/Charoite_audio/commit/0ce2b3704db83fc737f94802482f24e81bb68bc5))
+* **cloud:** воркер разбора — таймаут, проверка ответа и границы правок графа ([#177](https://github.com/charoiteai/Charoite_audio/issues/177)) ([58acd09](https://github.com/charoiteai/Charoite_audio/commit/58acd097a82694a8231f072157723dfeb7ca45a1))
+* **diarize:** живая диаризация по кускам речи — DER 0.725 → 0.246 ([#173](https://github.com/charoiteai/Charoite_audio/issues/173)) ([5cb4cff](https://github.com/charoiteai/Charoite_audio/commit/5cb4cff4d54825acea8c9ef078593bd3a8834e90))
+* **voice:** гейт по голосу — басовитого собеседника больше не назовут Анной ([#170](https://github.com/charoiteai/Charoite_audio/issues/170)) ([f7abf96](https://github.com/charoiteai/Charoite_audio/commit/f7abf965a3adb5075d4a55a7a049d7c29c7ec522))
+
+
+### Bug Fixes
+
+* **privacy:** облако читает подготовленный набор, а не весь репозиторий ([#175](https://github.com/charoiteai/Charoite_audio/issues/175)) ([a3f96c2](https://github.com/charoiteai/Charoite_audio/commit/a3f96c22397ad9b9586e472878858fba1f12403f))
+* **privacy:** право писать даёт cloud_edit_graph, а не согласие на разбор ([#174](https://github.com/charoiteai/Charoite_audio/issues/174)) ([8ea9f14](https://github.com/charoiteai/Charoite_audio/commit/8ea9f1407f1bfdf9e04534e3800ed81c2a0dce1e))
+
 ## [0.39.0](https://github.com/charoiteai/Charoite_audio/compare/v0.38.1...v0.39.0) (2026-07-30)
 
 
