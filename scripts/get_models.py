@@ -47,6 +47,12 @@ ONNX_MAGIC = b"\x08"        # protobuf field 1 (ir_version) — первый б�
 
 MIRROR = "https://huggingface.co/csukuangfj/speaker-embedding-models/resolve/main"
 UPSTREAM = "https://github.com/modelscope/3D-Speaker"
+# Релизы sherpa-onnx, а не зеркало на Hugging Face: HF отдаёт этот файл
+# без Content-Length и рвёт закачку на середине (проверено — приходило
+# 2.1-2.5 МБ вместо шести, и ONNX не парсился). GitHub отдаёт архив целиком.
+SEG_MIRROR = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/"
+              "speaker-segmentation-models")
+SEG_UPSTREAM = "https://github.com/pyannote/pyannote-audio"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -78,13 +84,39 @@ MODELS = {
 }
 DEFAULT = "eres2net-base"
 
+# Модель сегментации: «кто говорит в этот момент» до всякой кластеризации.
+# Наш собственный проход её не использует — он режет речь по каналам и
+# косинусам, — но sherpa-onnx умеет полноценную диаризацию, и сравнить одно
+# с другим без этой модели нельзя.
+SEGMENTATION = {
+    "pyannote-3.0": Model(
+        url=f"{SEG_MIRROR}/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
+        size_mb=7,
+        note="pyannote segmentation 3.0 в экспорте sherpa-onnx: границы речи и "
+             "перекрытия говорящих",
+        source=SEG_UPSTREAM,
+    ),
+    "pyannote-3.0-int8": Model(
+        url=f"{SEG_MIRROR}/sherpa-onnx-pyannote-segmentation-3-0-int8.tar.bz2",
+        size_mb=3,
+        note="та же модель квантованная — вчетверо меньше, для слабых машин",
+        source=SEG_UPSTREAM,
+    ),
+}
+SEG_DEFAULT = "pyannote-3.0"
+
+
+def seg_target(root: pathlib.Path = ROOT) -> pathlib.Path:
+    """Куда кладём модель сегментации."""
+    return root / "models" / "diar" / "segmentation.onnx"
+
 
 def diar_target(root: pathlib.Path = ROOT) -> pathlib.Path:
     """Путь, по которому модель ищет демон (src/daemon.py)."""
     return root / "models" / "diar" / "embedding.onnx"
 
 
-def check(path: pathlib.Path) -> str | None:
+def check(path: pathlib.Path, min_bytes: int = MIN_BYTES) -> str | None:
     """Что не так с этим файлом. None — модель на месте и похожа на себя.
 
     Проверка нарочно дешёвая и офлайновая: существование, размер, ONNX-магия.
@@ -103,11 +135,34 @@ def check(path: pathlib.Path) -> str | None:
         return (f"{path.name} не похож на .onnx (первый байт {head!r}) — так "
                 f"выглядит скачанная HTML-страница вместо модели. {fix}")
     size = path.stat().st_size
-    if size < MIN_BYTES:
-        return (f"файл .onnx слишком мал для модели эмбеддингов: {size} байт "
-                f"(ждём хотя бы {MIN_BYTES // 1024 // 1024} МБ) — похоже на обрыв "
+    if size < min_bytes:
+        return (f"файл .onnx слишком мал: {size} байт "
+                f"(ждём хотя бы {min_bytes // 1024 // 1024} МБ) — похоже на обрыв "
                 f"закачки. {fix}")
     return None
+
+
+def _extract_onnx(archive: pathlib.Path, dest: pathlib.Path) -> None:
+    """Достать единственную .onnx-модель из архива релиза sherpa-onnx.
+
+    Архив разворачивается во временную папку рядом: путь внутри задан не нами,
+    и распаковывать его прямо в models/ значит согласиться на любую структуру,
+    которую туда положили.
+    """
+    import shutil as _sh
+    import tarfile
+    import tempfile
+
+    with tempfile.TemporaryDirectory(dir=str(dest.parent)) as tmp:
+        with tarfile.open(archive, "r:bz2") as tar:
+            members = [m for m in tar.getmembers()
+                       if m.isfile() and m.name.endswith(".onnx")
+                       and ".." not in m.name and not m.name.startswith("/")]
+            if not members:
+                raise SystemExit(f"в архиве нет .onnx: {archive.name}")
+            best = max(members, key=lambda m: m.size)
+            tar.extract(best, path=tmp, filter="data")
+            _sh.move(str(pathlib.Path(tmp) / best.name), str(dest))
 
 
 def download(url: str, dest: pathlib.Path, expect_mb: int) -> None:
@@ -122,11 +177,19 @@ def download(url: str, dest: pathlib.Path, expect_mb: int) -> None:
     except (urllib.error.URLError, OSError) as e:
         part.unlink(missing_ok=True)
         raise SystemExit(f"не скачалось: {e}\nповторите позже или укажите свой --url")
-    problem = check(part)
-    if problem:
+    if url.endswith((".tar.bz2", ".tar.gz")):
+        _extract_onnx(part, dest)
         part.unlink(missing_ok=True)
-        raise SystemExit(f"скачанный файл не годится: {problem}")
-    part.replace(dest)
+        problem = check(dest, min_bytes=1024 * 1024)
+        if problem:
+            dest.unlink(missing_ok=True)
+            raise SystemExit(f"распакованная модель не годится: {problem}")
+    else:
+        problem = check(part, min_bytes=max(1, expect_mb // 2) * 1024 * 1024)
+        if problem:
+            part.unlink(missing_ok=True)
+            raise SystemExit(f"скачанный файл не годится: {problem}")
+        part.replace(dest)
     print(f"готово: {dest} ({dest.stat().st_size // 1024 // 1024} МБ)")
 
 
@@ -135,13 +198,20 @@ def list_models() -> None:
     for key, m in MODELS.items():
         mark = " (по умолчанию)" if key == DEFAULT else ""
         print(f"  {key}{mark}\n    {m.size_mb} МБ · {m.note}\n    {m.url}")
-    print(f"\nUpstream: {UPSTREAM} (Apache-2.0). Лицензию модели принимаете вы.")
+    print("\nМодели сегментации речи (для полной диаризации sherpa-onnx):\n")
+    for key, m in SEGMENTATION.items():
+        mark = " (по умолчанию)" if key == SEG_DEFAULT else ""
+        print(f"  {key}{mark}\n    {m.size_mb} МБ · {m.note}\n    {m.url}")
+    print(f"\nUpstream: {UPSTREAM} и {SEG_UPSTREAM}. Лицензии моделей принимаете вы.")
     print("Поставить: .venv/bin/python scripts/get_models.py --diar [--model КЛЮЧ]")
+    print("           .venv/bin/python scripts/get_models.py --segmentation")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--diar", action="store_true", help="модель живой диаризации")
+    ap.add_argument("--segmentation", action="store_true",
+                    help="модель сегментации речи (нужна полной диаризации sherpa-onnx)")
     ap.add_argument("--model", default=DEFAULT, choices=sorted(MODELS),
                     help=f"какую модель брать (по умолчанию {DEFAULT})")
     ap.add_argument("--url", default=None, help="своя ссылка на .onnx вместо известных")
@@ -155,9 +225,25 @@ def main() -> int:
     if args.list:
         list_models()
         return 0
-    if not args.diar:
+    if not args.diar and not args.segmentation:
         ap.print_help()
         return 0
+
+    if args.segmentation:
+        seg_dest = args.dest or seg_target()
+        seg_min = 1024 * 1024   # распакованная сегментация весит около шести
+        seg_problem = check(seg_dest, min_bytes=seg_min)
+        if args.check:
+            print(seg_problem or f"модель сегментации на месте: {seg_dest}")
+            return 1 if seg_problem else 0
+        if seg_problem:
+            print(seg_problem.split(" — ")[0])
+            seg = SEGMENTATION[SEG_DEFAULT]
+            download(args.url or seg.url, seg_dest, seg.size_mb)
+        else:
+            print(f"модель сегментации уже стоит: {seg_dest}")
+        if not args.diar:
+            return 0
 
     dest = args.dest or diar_target()
     problem = check(dest)

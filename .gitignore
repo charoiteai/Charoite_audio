@@ -14,3 +14,5 @@ app/build/
 app-ios/*.xcodeproj
 app-ios/Info.plist
 app-ios/WidgetsInfo.plist
+# синтетика бенча диаризации: аудио собирается на месте
+data/
