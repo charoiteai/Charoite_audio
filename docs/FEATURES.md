@@ -85,6 +85,27 @@ carried through the same ones. A pair with a shared chronicle is marked, not
 merged. Generic "hub" cores are never touched, and every write is preceded
 by a backup into `Ядра/.tier3_backup/`.
 
+**Topic dossiers** (`src/dossier.py`, `scripts/nightly_dossier.py`) — a summary
+per cross-cutting topic: current state, chronology, decisions, open questions,
+who is involved, every point linked to its source node. A topic cluster is a
+core plus everything that links to it; boundaries come from the links a human
+already drew. Search consults `Dossiers/_index.json` **first** and only goes
+into the graph for details, so "where does this topic stand" is answered from
+one written summary instead of a dozen fragments. Rebuilds are incremental: a
+dossier carries a fingerprint of its sources, and an unchanged fingerprint
+means the model is not called. Hand-written additions live in the
+`## Author edits` section and survive rebuilds. To check what a query would
+find: `scripts/nightly_dossier.py --find "your question"`.
+
+**Cloud dossier review — optional** (`scripts/nightly_dossier_review.py`). The
+local model builds dossiers in bulk and cheaply, but misses the links: that a
+decision has been superseded, that a deadline expired, that two sources
+contradict each other. Opus sees those, and runs as a second pass. With
+`sufler.cloud_edit_graph: true` it edits directly; **off by default**, in which
+case it writes `Service_dossier_review_<date>.md` and a human applies the
+fixes. Transcripts, minutes and `## Author edits` are untouched in either mode;
+every edit is backed up to `Dossiers/.backup/<date>/` first.
+
 **Nightly loop** (`scripts/nightly.sh`, cron/launchd it): Tier3 revision →
 **morning brief** → **memory bench**. The nightly revision merges cores
 only when `sufler.tier3_auto_apply: true`; without the key it stops at

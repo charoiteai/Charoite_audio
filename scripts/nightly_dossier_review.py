@@ -12,8 +12,8 @@ Opus это видит. Поэтому он идёт вторым проходо
     .venv/bin/python scripts/nightly_dossier_review.py --limit 5
 
 Правит только при включённом `sufler.cloud_edit_graph`. Выключен — пишет
-рекомендации в отчёт и ничего не трогает. Общий рубильник облака
-(`cloud_enrich` / `SUFLER_NO_CLOUD`) старше: выключен — шаг молчит совсем.
+рекомендации в отчёт и ничего не трогает. Общий рубильник облака старше
+(спрашивается через `src/privacy.py`): выключен — шаг молчит совсем.
 
 Неприкосновенно в любом режиме: стенограммы, минутки и раздел «Правки автора».
 Перед каждой правкой — бэкап в `Досье/.backup/<дата>/`.
@@ -34,6 +34,7 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 import dossier  # noqa: E402
+import privacy  # noqa: E402
 
 VAULT = pathlib.Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents"
 FRESH_DAYS = 3          # смотрим досье, собранные за последние сутки-трое
@@ -103,7 +104,8 @@ PROMPT = """Ниже досье по теме «{theme}» и его источн
 
 
 def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
-           files: dict, members: list[str], model: str) -> str | None:
+           files: dict, members: list[str], model: str | None) -> str | None:
+    model = model or "claude-opus-5"
     current = path.read_text(encoding="utf-8")
     # раздел «Правки автора» в запрос не отдаём и не даём его переписать
     body = current.split("## Правки автора")[0]
@@ -142,7 +144,7 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
         return 0
 
     may_edit = bool(cfg["sufler"].get("cloud_edit_graph"))
-    model = cfg["sufler"].get("cloud_model", "claude-opus-5")
+    model = cfg["sufler"].get("cloud_model")
     files, backlinks = dossier.scan(graph)
     cl = dossier.clusters(files, backlinks)
 
@@ -213,8 +215,8 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = _cfg()
-    if not cfg["sufler"].get("cloud_enrich") or os.environ.get("SUFLER_NO_CLOUD"):
-        print("облако выключено (cloud_enrich/SUFLER_NO_CLOUD) — пропуск")
+    if not privacy.cloud_enrich_enabled(cfg):
+        print("облако выключено рубильником — пропуск")
         return 0
 
     if args.all_graphs:
