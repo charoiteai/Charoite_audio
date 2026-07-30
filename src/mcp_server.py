@@ -2,8 +2,8 @@
 
 Инструменты читают файлы transcripts/ (пишутся атомарно) и Ollama —
 работают независимо от того, запущен ли демон из UI.
-Запуск (регистрируется через `claude mcp add`):
-  ~/redacted/.venv/bin/python ~/redacted/src/mcp_server.py
+Запуск (регистрируется через `claude mcp add`), пути — от корня репозитория:
+  .venv/bin/python src/mcp_server.py
 """
 from __future__ import annotations
 

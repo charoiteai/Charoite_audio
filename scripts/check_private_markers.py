@@ -40,7 +40,41 @@ def build_pattern(markers: list[str]) -> re.Pattern[str]:
     return re.compile("|".join(parts), re.IGNORECASE)
 
 
+def tracked_files() -> list[pathlib.Path]:
+    """Файлы под учётом git — то, что уже опубликовано."""
+    out = subprocess.run(["git", "ls-files", "-z"],
+                         capture_output=True, text=True).stdout
+    return [pathlib.Path(p) for p in out.split("\0") if p]
+
+
+SKIP_SUFFIX = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf",
+               ".zip", ".onnx", ".wav", ".m4a", ".mp3"}
+
+
+def scan_files(pattern: re.Pattern[str], files: list[pathlib.Path]) -> list[str]:
+    """Где в этих файлах маркеры. Возвращает «путь:строка» — без цитаты.
+
+    Диф страж показывает строкой: там она ещё не опубликована и автору нужно
+    видеть, что именно он пишет. Для файлов, которые УЖЕ в репозитории, вывод
+    попадает в логи CI и чужие терминалы, поэтому здесь только место — автор
+    откроет файл сам.
+    """
+    hits: list[str] = []
+    for f in files:
+        if f.suffix.lower() in SKIP_SUFFIX:
+            continue
+        try:
+            text = f.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue        # бинарь или удалённый файл — не наша забота
+        for i, line in enumerate(text.splitlines(), 1):
+            if pattern.search(line):
+                hits.append(f"{f}:{i}")
+    return hits
+
+
 def main() -> int:
+    full_only = "--all" in sys.argv
     path = markers_path()
     if not path.exists():
         # fail-closed на машине автора и мягкий пропуск в CI и у контрибьюторов:
@@ -56,6 +90,22 @@ def main() -> int:
         print("❌ список маркеров пуст — fail-closed", file=sys.stderr)
         return 1
     pattern = build_pattern(markers)
+
+    # Полный проход по дереву. Диф-проверка ловит то, что пишут сейчас, а это —
+    # то, что уже опубликовано: маркер, попавший в main до пополнения списка,
+    # иначе не всплывёт никогда. Стоит миллисекунды на двух сотнях файлов.
+    stale = scan_files(pattern, tracked_files())
+    if stale:
+        print(f"❌ приватные маркеры в опубликованном дереве: {len(stale)}",
+              file=sys.stderr)
+        for place in stale[:10]:
+            print(f"  {place}", file=sys.stderr)
+        print("Обезличь эти строки. Полный список мест: "
+              "python3 scripts/check_private_markers.py --all", file=sys.stderr)
+        return 1
+    if full_only:
+        print(f"дерево чисто: {len(tracked_files())} файлов, маркеров нет")
+        return 0
 
     diff = subprocess.run(["git", "diff", "--cached", "-U0"],
                           capture_output=True, text=True).stdout
