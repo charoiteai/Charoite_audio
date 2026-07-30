@@ -21,11 +21,15 @@ import threading
 import time
 from collections import deque
 
-import requests
-import yaml
-
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-import action_items
+import deps  # noqa: E402
+
+deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
+
+import requests  # noqa: E402
+import yaml  # noqa: E402
+
+import action_items  # noqa: E402
 import fact_check  # noqa: E402
 import privacy  # noqa: E402
 from audio import AudioHub  # noqa: E402

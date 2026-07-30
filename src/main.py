@@ -12,11 +12,15 @@ import re
 import sys
 import threading
 
-import yaml
-from rich.console import Console
-from rich.panel import Panel
-
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
+import deps  # noqa: E402
+
+deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
+
+import yaml  # noqa: E402
+from rich.console import Console  # noqa: E402
+from rich.panel import Panel  # noqa: E402
+
 import fact_check  # noqa: E402
 from audio import AudioHub, list_devices  # noqa: E402
 from llm import LLM  # noqa: E402
