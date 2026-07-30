@@ -117,6 +117,15 @@ case it writes `Service_dossier_review_<date>.md` and a human applies the
 fixes. Transcripts, minutes and `## Author edits` are untouched in either mode;
 every edit is backed up to `Dossiers/.backup/<date>/` first.
 
+**Protocol for participants** (`scripts/protocol.py`) — what you actually
+send people after a meeting: the bottom line, decisions, action items, open
+questions and risks, assembled from the Summary and the Minutes. Wiki-links
+become plain names, thesis markers are stripped, empty sections are dropped.
+`--style plain` produces text for email and chat (no markdown), `--copy` puts it
+on the clipboard, `--out` writes a file. The raw transcript never enters the
+protocol under any flag: mailing participants a verbatim recording of the
+conversation is worse than mailing nothing.
+
 **Forget a meeting** (`scripts/forget_meeting.py <date|stamp>`) — the other
 side of recording: removes the meeting from all six places it lives — the
 transcript and its derivatives, the folder under «Встречи-архив», the
