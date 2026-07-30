@@ -5,6 +5,16 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.0](https://github.com/charoiteai/Charoite_audio/compare/v0.38.1...v0.39.0) (2026-07-30)
+
+
+### Features
+
+* **cue:** полоса «встреча началась — начать запись?» ([#168](https://github.com/charoiteai/Charoite_audio/issues/168)) ([96a7313](https://github.com/charoiteai/Charoite_audio/commit/96a731388c77df4ce8a5ba52d22fe6d9e69926b4))
+* **forget:** забыть встречу целиком — scripts/forget_meeting.py ([#163](https://github.com/charoiteai/Charoite_audio/issues/163)) ([91bad9d](https://github.com/charoiteai/Charoite_audio/commit/91bad9d62d5b898cf9b1d6f5be962cb426ebc0f7))
+* **models:** модель диаризации ставится одной командой ([#164](https://github.com/charoiteai/Charoite_audio/issues/164)) ([506406c](https://github.com/charoiteai/Charoite_audio/commit/506406cd147e7d772f567fde6144b0edaeebd418))
+* **protocol:** протокол встречи одной командой — в буфер, в файл, для письма ([#166](https://github.com/charoiteai/Charoite_audio/issues/166)) ([d0daec9](https://github.com/charoiteai/Charoite_audio/commit/d0daec97f487439476eaad40e15879b1659e4754))
+
 ## [0.38.1](https://github.com/charoiteai/Charoite_audio/compare/v0.38.0...v0.38.1) (2026-07-30)
 
 
