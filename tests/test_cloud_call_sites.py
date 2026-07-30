@@ -31,7 +31,11 @@ SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 NETWORK_EXITS = (
     ("daemon.py", "cloud_loop"),
     ("daemon.py", "cloud_hint_refine"),
-    ("graph_updater.py", "main"),
+    # разбор после встречи переехал из graph_updater.main в отдельный воркер:
+    # тот ждёт claude с таймаутом, проверяет ответ и держит границы правок.
+    # graph_updater теперь запускает питон, а не claude, — выходом в сеть быть
+    # перестал, и держать его в списке значило бы охранять пустое место.
+    ("cloud_review.py", "run"),
     ("nightly_claude_cores.py", "main"),
     ("nightly_dossier_review.py", "review"),
 )
