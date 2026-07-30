@@ -153,3 +153,68 @@ def test_read_only_prompt_does_not_ask_for_writes():
         arch_folder=None, may_edit=False)
     for verb in ("скопируй", "перезаписывая", "допиши в её заметку"):
         assert verb not in prompt.lower(), f"read-only промпт просит писать: {verb}"
+
+
+# ── CHR-AUD-002: что облако вообще может прочитать ──────────────────────────
+#
+# Право писать отобрано, но читать модель могла весь корень репозитория:
+# transcripts/ со ВСЕМИ прошлыми встречами, recordings/, logs/, .git и
+# config/config.yaml. Промпт просил одну встречу — доступ давал всё.
+#
+# Правило: набор файлов готовит Чароит. Содержимое встречи уходит текстом в
+# промпте (мы точно знаем, что отправили), а на диске остаётся только граф —
+# он нужен для кросс-ссылок и его человек уже доверил продукту.
+
+
+def test_workdir_is_the_graph_not_the_repository():
+    """Корень репозитория облаку не рабочая папка ни в одном режиме."""
+    graph = pathlib.Path("/tmp/vault/Работа")
+    for cfg in (READ_ONLY, FULL):
+        work = graph_updater.cloud_enrich_workdir(cfg, graph)
+        assert work == graph, work
+        assert "charoite" not in str(work).lower() or str(work).startswith("/tmp"), work
+
+
+def test_workdir_falls_back_when_there_is_no_graph():
+    """Граф не настроен — рабочей папкой становится папка встречи, а не корень."""
+    folder = pathlib.Path("/tmp/transcripts")
+    work = graph_updater.cloud_enrich_workdir(READ_ONLY, pathlib.Path(""), folder)
+    assert work == folder, work
+
+
+def test_context_carries_the_meeting_and_nothing_else(tmp_path):
+    """Подготовленный набор: файлы этой встречи и только они."""
+    stamp = "2026-07-15_1400"
+    (tmp_path / f"{stamp}.md").write_text("стенограмма встречи", encoding="utf-8")
+    (tmp_path / f"{stamp}_minutes.md").write_text("минутки встречи", encoding="utf-8")
+    (tmp_path / "2026-07-10_1000.md").write_text("ЧУЖАЯ ВСТРЕЧА", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text("cloud_live: false", encoding="utf-8")
+
+    context, names = graph_updater.cloud_enrich_context(tmp_path, stamp)
+    assert "стенограмма встречи" in context and "минутки встречи" in context
+    assert "ЧУЖАЯ ВСТРЕЧА" not in context, "в контекст попала другая встреча"
+    assert "cloud_live" not in context, "в контекст попал конфиг"
+    assert f"{stamp}.md" in names and len(names) == 2, names
+
+
+def test_context_truncation_is_visible(tmp_path):
+    """Усечение длинной встречи должно быть видно, а не молчаливо."""
+    stamp = "2026-07-15_1400"
+    (tmp_path / f"{stamp}.md").write_text("а" * 5000, encoding="utf-8")
+    context, _ = graph_updater.cloud_enrich_context(tmp_path, stamp, limit=1000)
+    assert len(context) < 2000
+    assert "усечено" in context.lower() or "…" in context
+
+
+def test_prompt_does_not_send_the_model_to_read_meeting_files(tmp_path):
+    """Файлы встречи уже в промпте — просить их читать значит открывать диск."""
+    prompt = graph_updater.cloud_enrich_prompt(
+        transcript_name="t.md", folder=tmp_path, graph=pathlib.Path("/tmp/g"),
+        rev_name="rev.md", stamp="s", arch_folder=None, may_edit=True,
+        context="СТЕНОГРАММА ЗДЕСЬ")
+    assert "СТЕНОГРАММА ЗДЕСЬ" in prompt
+    low = prompt.lower()
+    assert "прочитай стенограмму полностью" not in low, \
+        "промпт всё ещё отправляет модель читать файл с диска"
+    assert "скопируй свежие файлы" not in low, \
+        "копирование артефактов делает Чароит, модели для этого нужен диск"
