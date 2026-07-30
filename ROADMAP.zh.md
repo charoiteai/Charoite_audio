@@ -17,6 +17,9 @@
 
 ## 中期
 
+- **Windows 移植** — 守护进程是 Python + ONNX，投递协议本身与平台无关（mDNS + TLS）；要做的是原生外壳，以及替代 BlackHole 的系统声音采集方案。
+- **Android 伴侣应用** — 与 iPhone 应用同一套开放投递协议（NsdManager + TLS）；Android 上的后台录音更简单。在此之前，用 Syncthing 同步到导入文件夹即可。
+
 - **伴侣应用实时模式** — 手机把会议音频流式传到 Mac，并在自己屏幕上镜像实时逐字稿与提示。
 - **App Store 发布** — 等会议信息流让 v1 显得完整之后（先走 TestFlight）。
 - **自带图谱查看器** — 不用 Obsidian 也能浏览会议图谱。
