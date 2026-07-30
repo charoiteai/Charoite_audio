@@ -91,16 +91,25 @@ def test_without_the_edit_toggle_there_is_no_write_permission():
 
 
 def test_read_only_command_still_lets_the_model_read():
-    """Отобрать запись — не значит сломать разбор: чтение остаётся."""
+    """Отобрать запись — не значит сломать разбор: чтение остаётся.
+
+    Равенство, а не вхождение: список разрешённого должен быть ИСЧЕРПЫВАЮЩИМ.
+    Проверка «нужные инструменты на месте» пропустила бы случайно добавленный
+    пятый — а каждый инструмент здесь это ещё одна дорога наружу.
+    """
     allowed = _allowed(_command(READ_ONLY))
-    assert {"Read", "Grep", "Glob"} <= allowed, allowed
+    assert allowed == {"Read", "Grep", "Glob"}, allowed
 
 
 def test_edit_mode_works_when_both_toggles_are_explicit():
     cmd = _command(FULL)
-    assert {"Edit", "Write"} <= _allowed(cmd), _allowed(cmd)
+    assert _allowed(cmd) == {"Read", "Grep", "Glob", "Edit", "Write"}, _allowed(cmd)
     assert _flags(cmd).get("--permission-mode") == "acceptEdits", \
         "разрешённый режим потерял автоприём правок"
+    # инструмент, одновременно разрешённый и запрещённый, — это спор двух
+    # флагов, который разрешает CLI, а не мы. Такого быть не должно.
+    assert not ({"Edit", "Write"} & _forbidden(cmd)), \
+        f"Edit/Write и разрешены, и запрещены: {_forbidden(cmd)}"
 
 
 def test_the_right_comes_from_privacy_not_from_a_neighbouring_key():
