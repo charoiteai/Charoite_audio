@@ -143,7 +143,9 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
     if not folder.is_dir():
         return 0
 
-    may_edit = bool(cfg["sufler"].get("cloud_edit_graph"))
+    # Право на запись спрашиваем у privacy.py: bool() принимал строку «false»
+    # за разрешение, а этот ключ разрешает переписывать файлы графа.
+    may_edit = privacy.cloud_edit_graph_enabled(cfg)
     model = cfg["sufler"].get("cloud_model")
     files, backlinks = dossier.scan(graph)
     cl = dossier.clusters(files, backlinks)
@@ -227,7 +229,7 @@ def main() -> int:
         raw = args.graph or str(cfg["sufler"].get("graph_dir", ""))
         graphs = [pathlib.Path(raw).expanduser()]
 
-    режим = "правит граф" if cfg["sufler"].get("cloud_edit_graph") else "только отчёт"
+    режим = "правит граф" if privacy.cloud_edit_graph_enabled(cfg) else "только отчёт"
     print(f"режим: {режим}")
     total = 0
     for g in graphs:
