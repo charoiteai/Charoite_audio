@@ -79,7 +79,13 @@ python3 scripts/doctor.py
 
 **还没有会议？** 把 `graph_dir` 指向内置[英文演示图谱](demo/)（demo/graph_en），问一句 "what did we decide about the payment provider?" ——录音之前就能看到产品的样子。一条命令验证整个检索闭环：`.venv/bin/python scripts/memory_bench.py --demo`。已有旧录音？一条命令把会议文件（音频/文本/Zoom字幕）导入档案和图谱：`.venv/bin/python scripts/import_meeting.py 文件 --date 2026-07-15`。或在应用里指定导入文件夹（设置 → 导入）——放进去的录音自动成为会议。替换词典（`sufler.vocabulary`）可修正 STT 总写错的术语——一处声明，处处生效。
 
-STT 模型首次运行自动下载。实时说话人分离需将 ERes2Net 声纹模型放到 `models/diar/embedding.onnx`（见 docs/DIARIZATION.md）。
+STT 模型首次运行自动下载。实时说话人分离（按声音区分的「Собеседник 1/2/…」）只需一条命令：
+
+```bash
+.venv/bin/python scripts/get_models.py --diar    # 可选模型：--list
+```
+
+没有它 Charoite 也能工作，只是标签按声道区分（你 vs. 对方），并且守护进程会在会议开始时说明这一点。详见 [docs/DIARIZATION.zh.md](docs/DIARIZATION.zh.md)。
 
 ## 文档
 
