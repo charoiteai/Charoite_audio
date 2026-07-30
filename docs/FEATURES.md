@@ -4,6 +4,16 @@
 
 ## During the meeting
 
+- **A nudge to record** — the most expensive mistake in a meeting is a
+  forgotten button: with no audio there is no transcript, no minutes, no graph
+  nodes. With the calendar enabled (the same opt-in toggle as the brief), the
+  app shows a bar: “«Планёрка» has started — start recording?” with two
+  buttons. **Recording never starts on its own** — only when you press it; a
+  “Not now” is remembered and that meeting is not offered again. The window is
+  from two minutes before the start to ten minutes after — later than that the
+  offer is pointless, and a bar popping up mid-conversation costs more than it
+  gives. All-day events and events without other attendees are not meetings:
+  there is nothing to record about “pick up the parcel”.
 - **Live transcript** — utterances merge into per-speaker paragraphs instead
   of raw 3-second chunks; a light model re-draws utterance boundaries inside
   a paragraph without changing a single word (strict validation).
