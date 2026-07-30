@@ -17,6 +17,8 @@ Charoite listens to your meetings (microphone + system audio, no bots joining ca
 - **100% local by default.** Audio, transcription, diarization, LLM summaries — all on your machine (Ollama + ONNX). No cloud, no telemetry, no accounts. The optional Claude layer is off unless you turn it on.
 - **Speaker diarization that ships.** Live "Speaker 1/2/…" labels during the meeting, plus an offline re-pass over the full recording after the meeting for clean paragraphs per speaker. Names are assigned automatically when someone introduces themselves — never guessed.
 - **A knowledge graph, not a pile of notes.** Meetings become episodes; people, systems and decisions become nodes; recurring topics become "Cores" with status and history. During a meeting Charoite whispers "⏮ this was discussed on Jul 15, status was …".
+- **Topic dossiers.** At night a local model builds a summary per cross-cutting topic: current state, chronology, decisions, open questions, who is involved — each point linked to its source node. Search consults the dossier index **first**, so "where does this topic stand" is answered by a written summary instead of a dozen scattered fragments. Rebuilds are incremental: a dossier carries a fingerprint of its sources, and an unchanged topic never wakes the model. Hand-written additions live in the "Author edits" section and survive rebuilds.
+- **Cloud models — optional, at every step.** All of them are off by default and enabled one by one: post-meeting review (`cloud_enrich`), a second opinion at conversation speed (`cloud_live`), dossier review with the right to edit (`cloud_edit_graph`). They run on a subscription, with no API key in the environment. What leaves for the cloud and what never does — see [PRIVACY.md](PRIVACY.md).
 - **Layered output per meeting**: one-minute Summary (with links to what changed since past meetings) → Minutes → Debrief → full Transcript. Read as deep as you need.
 - **Real-time help**: instant local answer when the other side asks you a question (⚡), auto-theses, live draft minutes, voice notes and dictation.
 
@@ -129,7 +131,7 @@ See [PRIVACY.md](PRIVACY.md). Short version: no telemetry, no network calls exce
 
 ## Status
 
-Public beta. Issues and feedback welcome. The native macOS app lives in [app/](app/) — build with `app/make_app.sh`. Roadmap: English graph nodes (docs phase done — `sufler.language: en`), speaker enrollment across meetings (voice → person node), packaged graph viewer.
+Public beta, currently 0.38.0. Issues and feedback welcome. The native macOS app lives in [app/](app/) — build with `app/make_app.sh`; the iPhone companion is in [app-ios/](app-ios/). Roadmap in [ROADMAP.md](ROADMAP.md): UI localization for both apps, direct Wi-Fi delivery of recordings from the phone, a packaged graph viewer.
 
 ## License
 
