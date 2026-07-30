@@ -101,7 +101,13 @@ payment provider?" — see the product working before recording anything.
 One command validates the whole retrieval loop: `.venv/bin/python scripts/memory_bench.py --demo`.
 Got old recordings? One command imports a meeting file (audio/text/Zoom-subtitles) into the archive and the graph: `.venv/bin/python scripts/import_meeting.py file --date 2026-07-15`. Or point the app at an import folder (Settings → Import) — recordings dropped there become meetings on their own. A replacement dictionary (`sufler.vocabulary`) fixes terms the STT keeps mangling, everywhere at once.
 
-STT models download automatically on first run (GigaAM via `onnx_asr`). For live diarization put an ERes2Net speaker-embedding ONNX model at `models/diar/embedding.onnx` (see [docs/DIARIZATION.md](docs/DIARIZATION.md)).
+STT models download automatically on first run (GigaAM via `onnx_asr`). Live diarization ("Speaker 1/2/…" per voice) takes one command:
+
+```bash
+.venv/bin/python scripts/get_models.py --diar    # model choices: --list
+```
+
+Without it Charoite still works, but labels follow channels (you vs. the other side) and the daemon says so when the meeting starts. Details in [docs/DIARIZATION.md](docs/DIARIZATION.md).
 
 ## iPhone companion (app-ios/)
 
