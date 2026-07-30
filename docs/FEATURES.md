@@ -9,11 +9,22 @@
   a paragraph without changing a single word (strict validation).
 - **Live diarization** — "Speaker 1/2/…" per voice from the first seconds.
   The owner's name is never guessed; your mic is labeled with your
-  configured name.
+  configured name. When the voice model is absent
+  (`models/diar/embedding.onnx` does not ship with the product) or
+  diarization is off in the config, the daemon says so in a status line at
+  the start of the meeting: labels will follow channels, and you see it right
+  away instead of discovering it in the transcript.
 - **Live names** — once someone introduces themselves (or is addressed and
   replies), their label is replaced with the name — retroactively across the
   transcript and in all future utterances. The name must literally occur in
-  the text, which kills hallucinations.
+  the text, which kills hallucinations. All trust checks live in one place
+  (`src/speaker_names.py`) and are equally strict with and without the voice
+  model: a name from `sufler.user_name` never goes to a participant (matched
+  word by word, so "Igor" is recognised inside "Igor Vetrov"); a name heard
+  only in the speaker's own lines, with no self-introduction, counts as
+  addressing someone else (saying "Sash, could you…" does not make the
+  speaker Sasha); grammatical cases are folded onto known people of the
+  graph.
 - **Instant answer (⚡)** — the other side's question is detected via STT
   punctuation and lead words; a ready first-person answer arrives in ~2-3 s,
   with the question shown above it.

@@ -82,6 +82,11 @@ incrementally as the graph changes (stored in
 
 `python3 scripts/doctor.py` checks Python, dependencies, config keys, the graph folder, Ollama and its models (incl. `bge-m3`), and diarization — with an exact fix for every problem.
 
+The doctor is the one script that runs under any Python: it is written without
+dependencies so that it can answer *before* they are installed. Everything else
+runs via `.venv/bin/python` — and if you start it with the system Python, the
+answer is a one-line recipe instead of a traceback (`src/deps.py`).
+
 ## Night cycle (optional)
 
 `scripts/nightly.sh` keeps the graph tidy while you sleep: Tier-3 core

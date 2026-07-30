@@ -21,13 +21,19 @@ import threading
 import time
 from collections import deque
 
-import requests
-import yaml
-
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-import action_items
+import deps  # noqa: E402
+
+deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
+
+import requests  # noqa: E402
+import yaml  # noqa: E402
+
+import action_items  # noqa: E402
+import cloud  # noqa: E402
 import fact_check  # noqa: E402
 import privacy  # noqa: E402
+import speaker_names  # noqa: E402
 from audio import AudioHub  # noqa: E402
 from llm import LLM  # noqa: E402
 from main import NOISE, Transcript  # noqa: E402
@@ -329,17 +335,22 @@ def main():
     # первый голос из mic = владелец (его микрофон), остальные — «Собеседник N».
     spk_tracker = None
     voice_names: dict[int, str] = {}
-    if bool(cfg["sufler"].get("live_diarize", True)):
-        try:
-            from diarize_live import SpeakerTracker
-            emb_model = ROOT / "models" / "diar" / "embedding.onnx"
-            if emb_model.exists():
-                spk_tracker = SpeakerTracker(
-                    emb_model, sample_rate=hub.sr,
-                    threshold=float(cfg["sufler"].get("live_diarize_threshold", 0.45)))
-                emit({"type": "status", "text": "👥 живая диаризация голосов включена"})
-        except Exception as e:  # noqa: BLE001 — диаризация вспомогательна
-            emit({"type": "status", "text": f"живая диаризация недоступна: {e}"})
+    diarize_on = bool(cfg["sufler"].get("live_diarize", True))
+    emb_model = ROOT / "models" / "diar" / "embedding.onnx"
+    try:
+        from diarize_live import SpeakerTracker, availability_note
+        # сначала честный ответ: почему диаризации не будет. Модель в поставку
+        # не входит, и раньше этот случай проходил вообще без сообщения
+        note = availability_note(diarize_on, emb_model)
+        if note:
+            emit({"type": "status", "text": note})
+        elif diarize_on:
+            spk_tracker = SpeakerTracker(
+                emb_model, sample_rate=hub.sr,
+                threshold=float(cfg["sufler"].get("live_diarize_threshold", 0.45)))
+            emit({"type": "status", "text": "👥 живая диаризация голосов включена"})
+    except Exception as e:  # noqa: BLE001 — диаризация вспомогательна
+        emit({"type": "status", "text": f"живая диаризация недоступна: {e}"})
 
     def voice_label(channel_speaker: str, chunk) -> str:
         """Метка голоса для чанка. Живая разметка НЕ угадывает владельца (решение
@@ -488,6 +499,7 @@ def main():
     auto_model = llm.small if quiet else None  # тихий режим: весь фон без 26b
     instant_evt = threading.Event()
     cloud_live = privacy.cloud_live_enabled(cfg)  # молчание конфига = «нет», см. src/privacy.py
+    cloud_hints = privacy.cloud_hints_enabled(cfg)  # свой ключ ПОВЕРХ cloud_live
     cloud_evt = threading.Event()
     _last_fire = [0.0]
     _cloud_last = {"t": 0.0, "words": set()}
@@ -563,10 +575,12 @@ def main():
         Уточнение падает в облачную ленту того же окна (тот же путь, что
         ответы на вопросы) — hint-карточку перезапишет следующая подсказка,
         а лента остаётся. Выключатель отдельный от cloud_live: подсказки
-        стреляют часто, и это постоянный поток стенограммы в облако.
+        стреляют часто, и это постоянный поток стенограммы в облако. Решение
+        о нём — в src/privacy.py, как и обо всех остальных: раньше ключ
+        читался здесь, и рубильник действовал только потому, что рядом в
+        условии стоял cloud_live.
         """
-        if not (cfg["sufler"].get("cloud_hints", False)
-                and cloud_live and toggles["cloud"]):
+        if not (cloud_hints and toggles["cloud"]):
             return
         if len(tail) - _refine_last["len"] < 400:
             return   # разговор не набежал — Haiku скажет то же самое
@@ -574,7 +588,7 @@ def main():
 
         def cloud_hint_refine():
             claude_bin = shutil.which("claude") or "/opt/homebrew/bin/claude"
-            model = cfg["sufler"].get("cloud_hints_model", "claude-haiku-4-5")
+            model = cloud.model(cfg, "cloud_hints_model")
             env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
             env.update(load_claude_proxy_env())
             short = model.split("-")[1] if model.count("-") else model
@@ -666,7 +680,7 @@ def main():
         и нажатие отправляло стенограмму при cloud_live: false.
         """
         claude_bin = shutil.which("claude") or "/opt/homebrew/bin/claude"
-        model = cfg["sufler"].get("cloud_live_model", "claude-sonnet-5")
+        model = cloud.model(cfg, "cloud_live_model")
         env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
         env.update(load_claude_proxy_env())  # без прокси из GUI-запуска — 403 по региону
         while not stop.is_set():
@@ -986,7 +1000,9 @@ def main():
         renamed: dict[str, str] = {}  # «Собеседник 1» → «Дмитрий»
         # владельца не подписываем: его голос определяется каналом микрофона,
         # а не разговором. Пусто в конфиге — проверка просто не сработает.
-        owner_name = (cfg["sufler"].get("user_name") or "").strip().lower()
+        # Строка идёт в speaker_names целиком: сравнение по словам, потому что
+        # в user_name обычно имя И фамилия, а модель предлагает одно имя.
+        owner_name = (cfg["sufler"].get("user_name") or "").strip()
         while not stop.is_set():
             time.sleep(90)
             sample = tr.tail(3000)
@@ -1018,31 +1034,15 @@ def main():
                             pairs = json.loads(cands[-1]) if cands else {}
                         except ValueError:
                             pairs = {}
-                        for label, name in pairs.items():
-                            name = str(name).strip().strip(".,!«»\"").capitalize()
-                            if name and known_first and name not in known_first:
-                                pref = name.casefold()[:4]
-                                hit = [k for k in known_first if k.casefold().startswith(pref)]
-                                if len(hit) == 1:
-                                    name = hit[0]   # Полин→Полина, Андрюх→Андрей
-                            # гвард «обращение ≠ говорящий»: если имя звучит ТОЛЬКО в
-                            # репликах самой метки и это не самопредставление — отказ
-                            # («Саш, ну а кто…» помечало говорящего Сашей — 21.07)
-                            own_only = False
-                            if name:
-                                lines_with = [ln for ln in sample.splitlines()
-                                              if name.lower() in ln.lower()]
-                                # формат tail: «[HH:MM] Собеседник N: текст» — метка
-                                # НЕ в начале строки, старый startswith(label+":") был мёртв
-                                own = [ln for ln in lines_with
-                                       if re.search(rf"\]\s*{re.escape(label)}:", ln)]
-                                intro = re.search(
-                                    rf"(это|я|меня зовут)\s+{re.escape(name)}", sample, re.I)
-                                own_only = bool(lines_with) and len(own) == len(lines_with) \
-                                    and not intro
-                            if (label in labels and name and name.replace("-", "").isalpha()
-                                    and 3 <= len(name) <= 15 and name.lower() != owner_name
-                                    and name.lower() in sample.lower() and not own_only
+                        for label, raw_name in pairs.items():
+                            # все гварды доверия — в одном месте (src/speaker_names.py),
+                            # чтобы безмодельная ветка ниже не расходилась с этой:
+                            # владелец по словам user_name, «обращение ≠ говорящий»,
+                            # выдуманные имена, падежи по людям графа
+                            name = speaker_names.trustworthy_name(
+                                raw_name, sample=sample, label=label,
+                                owner_name=owner_name, known=tuple(known_first))
+                            if (label in labels and name
                                     and name not in renamed.values()):
                                 renamed[label] = name
                                 tr.rename_speaker(label, name)
@@ -1061,12 +1061,18 @@ def main():
                         model=llm.small,
                         system="Ты определяешь имя говорящего по стенограмме. Одно слово или NONE.",
                     ))
-                    name = out.strip().split()[0].strip(".,!«»\"") if out.strip() else ""
-                    if (name and name.upper() != "NONE" and name.lower() != owner_name
-                            and name.replace("-", "").isalpha() and 2 <= len(name) <= 15):
-                        tr.rename_speaker("Собеседник", name.capitalize())
-                        emit({"type": "rename", "from": "Собеседник", "to": name.capitalize()})
-                        emit({"type": "status", "text": f"👤 Собеседник опознан: {name.capitalize()}"})
+                    raw_name = out.strip().split()[0] if out.strip() else ""
+                    # та же проверка доверия, что в мультиспикерной ветке выше:
+                    # эта ветка работает БЕЗ модели голосов, то есть по умолчанию,
+                    # и раньше была слабее — гварда «обращение ≠ говорящий» в ней
+                    # не было вовсе, а владелец узнавался только по полной строке
+                    name = speaker_names.trustworthy_name(
+                        raw_name, sample=sample, label="Собеседник",
+                        owner_name=owner_name, known=tuple(known_first))
+                    if name:
+                        tr.rename_speaker("Собеседник", name)
+                        emit({"type": "rename", "from": "Собеседник", "to": name})
+                        emit({"type": "status", "text": f"👤 Собеседник опознан: {name}"})
                         named = True
                         continue
                 out = "".join(llm.stream(

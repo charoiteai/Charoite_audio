@@ -23,10 +23,13 @@ import re
 import subprocess
 import sys
 
-import yaml
-
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
+import deps  # noqa: E402
+
+deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
+
+import yaml  # noqa: E402
 
 AUDIO = {".m4a", ".wav", ".mp3", ".aif", ".aiff", ".caf"}
 TEXT = {".txt", ".md"}
@@ -199,7 +202,6 @@ def import_voice_note(src: pathlib.Path, diary: bool) -> None:
     import tempfile
 
     sys.path.insert(0, str(ROOT / "src"))
-    import numpy as np
     import soundfile as sf
     from stt import STT
 

@@ -139,6 +139,23 @@ latency) rather than GigaAM, which is tuned for the Mac. Diarization on iOS
 runs through ANE pipelines. All of this stays configurable — the phone is a
 client that can borrow the Mac's models whenever they're reachable.
 
+## Cloud models (when the layer is on)
+
+The cloud layer is off by default in full — which switch enables what is
+described in [PRIVACY.md](../PRIVACY.md). This section is only about model
+choice.
+
+| Config key | Default | Where it runs |
+|----|----|----|
+| `cloud_model` | `claude-opus-5` | post-meeting debrief, nightly core and dossier reviews — not at conversation speed, so the strongest model is worth it |
+| `cloud_live_model` | `claude-haiku-4-5` | answering a question mid-meeting: speed matters more |
+| `cloud_hints_model` | `claude-haiku-4-5` | hint refinement: same, but more often |
+
+Defaults live in one place — `src/cloud.py` — and match the example configs; a
+mismatch fails a test. Previously the literal sat in every call site, and one
+key (`cloud_model`) had two different defaults: with a trimmed config the
+post-meeting debrief and the nightly review went to different models.
+
 ## Swapping models
 
 Everything lives in `config/config.yaml`: `stt.backend`, `llm.model`,
