@@ -26,6 +26,7 @@ import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import action_items
+import cloud  # noqa: E402
 import fact_check  # noqa: E402
 import privacy  # noqa: E402
 from audio import AudioHub  # noqa: E402
@@ -574,7 +575,7 @@ def main():
 
         def cloud_hint_refine():
             claude_bin = shutil.which("claude") or "/opt/homebrew/bin/claude"
-            model = cfg["sufler"].get("cloud_hints_model", "claude-haiku-4-5")
+            model = cloud.model(cfg, "cloud_hints_model")
             env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
             env.update(load_claude_proxy_env())
             short = model.split("-")[1] if model.count("-") else model
@@ -666,7 +667,7 @@ def main():
         и нажатие отправляло стенограмму при cloud_live: false.
         """
         claude_bin = shutil.which("claude") or "/opt/homebrew/bin/claude"
-        model = cfg["sufler"].get("cloud_live_model", "claude-sonnet-5")
+        model = cloud.model(cfg, "cloud_live_model")
         env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
         env.update(load_claude_proxy_env())  # без прокси из GUI-запуска — 403 по региону
         while not stop.is_set():

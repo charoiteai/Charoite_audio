@@ -33,6 +33,7 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
+import cloud  # noqa: E402
 import dossier  # noqa: E402
 import privacy  # noqa: E402
 
@@ -104,8 +105,7 @@ PROMPT = """Ниже досье по теме «{theme}» и его источн
 
 
 def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
-           files: dict, members: list[str], model: str | None) -> str | None:
-    model = model or "claude-opus-5"
+           files: dict, members: list[str], model: str) -> str | None:
     current = path.read_text(encoding="utf-8")
     # раздел «Правки автора» в запрос не отдаём и не даём его переписать
     body = current.split("## Правки автора")[0]
@@ -144,7 +144,7 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
         return 0
 
     may_edit = bool(cfg["sufler"].get("cloud_edit_graph"))
-    model = cfg["sufler"].get("cloud_model")
+    model = cloud.model(cfg, "cloud_model")
     files, backlinks = dossier.scan(graph)
     cl = dossier.clusters(files, backlinks)
 
