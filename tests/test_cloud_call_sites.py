@@ -32,6 +32,7 @@ NETWORK_EXITS = (
     ("daemon.py", "cloud_hint_refine"),
     ("graph_updater.py", "main"),
     ("nightly_claude_cores.py", "main"),
+    ("nightly_dossier_review.py", "review"),
 )
 
 # Оба имени одного рубильника. Точка выхода не должна упоминать их сама —

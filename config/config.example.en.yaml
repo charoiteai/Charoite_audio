@@ -98,6 +98,15 @@ sufler:
   # --- cloud layer (optional; keep off — everything stays local) ---
   cloud_enrich: false     # post-meeting review by cloud Claude (needs claude CLI)
   cloud_model: claude-opus-4-8
+  cloud_edit_graph: false
+  # ↑ LET THE CLOUD EDIT THE GRAPH (optional, off by default).
+  # Without it Opus only writes a report and a human applies the fixes.
+  # With it, Opus edits at night from its own findings: superseded decisions,
+  # expired deadlines, contradictions between sources. The local model builds
+  # dossiers in bulk; the cloud does a second pass and sees the links between them.
+  # Edits: dossiers (derived summaries) and prose sections of cores.
+  # Never edits: transcripts, minutes, the "## Author edits" section.
+  # Every edit is backed up to `Dossiers/.backup/<date>/` first.
   cloud_live: false       # parallel Claude answers to questions mid-meeting
   cloud_live_model: claude-haiku-4-5-20251001
 

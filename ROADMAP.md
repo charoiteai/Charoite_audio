@@ -52,6 +52,10 @@ merging happens in memory during a single recording and is discarded.
 
 ## Done (recent)
 
+- Topic dossiers: nightly summaries built on top of cores, incremental
+  rebuild by source fingerprint, an index the search consults first, and an
+  optional cloud review pass behind the `cloud_edit_graph` toggle (July 2026)
+
 - iPhone companion v1 core: background recording (meeting / note /
   diary), delivery into a user-chosen iCloud Drive folder with an
   on-device outbox queue that re-sends on every launch; voice notes are

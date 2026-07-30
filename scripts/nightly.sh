@@ -16,6 +16,15 @@ echo "=== nightly $(date '+%F %T') ==="
 # право на слияние — у конфига (sufler.tier3_auto_apply), не у cron:
 # --auto сливает только при true, иначе обратимые пометки (--mark)
 $PY scripts/tier3_cores.py --all-graphs --auto || { echo "❌ РЕВИЗИЯ ЯДЕР УПАЛА (код $?)"; rc=1; }
+echo "--- dossiers ---"
+# Сводки по темам поверх ядер + индекс для поиска. Инкрементально:
+# пересобираются только темы, у которых изменился хоть один источник.
+$PY scripts/nightly_dossier.py --all-graphs || echo "⚠️ сборка досье не отработала"
+echo "--- dossier review (cloud, optional) ---"
+# Второй проход по свежим досье: облако видит связи между источниками,
+# которых локальная модель не замечает. Правит сам только при
+# sufler.cloud_edit_graph: true, иначе пишет отчёт-рекомендации.
+$PY scripts/nightly_dossier_review.py --all-graphs || echo "⚠️ ревизия досье не отработала"
 echo "--- claude cores review ---"
 # облачный взгляд на ядра (Opus): отчёт-рекомендации, ничего не правит.
 # Выключено sufler.cloud_enrich/SUFLER_NO_CLOUD — шаг молчит.

@@ -72,6 +72,44 @@ This is the three-layer "episodes → entities → communities" scheme (as in
 Graphiti/Zep) on plain markdown: grep, Obsidian, git and any editor just
 work. Superseded facts are dated, not deleted.
 
+## Dossiers: a floor between search and the graph
+
+Asked "so where does this topic stand", search returns a dozen scattered
+fragments and the model reassembles the answer from scratch every time. A
+dossier is that answer already written: current state, chronology, decisions,
+open questions, who is involved — every point linked to its source node.
+Search consults the dossier index **first** and only goes into the graph for
+details.
+
+**How it is built.** A cluster is a core plus its 1-hop neighbourhood along
+`[[backlinks]]`: adjacent cores, meetings, documents. Topic boundaries come
+from the links a human already drew; no graph clustering algorithm is needed.
+At night a local model writes a five-section summary per cluster.
+
+**Incremental.** Each dossier carries a fingerprint of its composition — the
+source list and their modification times. Unchanged fingerprint means the
+topic did not move, so the model is not called. On a typical night a handful
+of topics out of dozens get rebuilt. A weekly full pass (`--full`) is still
+useful: incremental updates gradually blur cluster boundaries.
+
+**Index lookup** (`Dossiers/_index.json`) is lexical, over word stems with
+prefix matching, so `qwen` finds `qwen3-32b`. No embeddings and no running
+Ollama required; semantics is layered on top.
+
+**An optional cloud pass.** The local model retells faithfully but misses
+links: that one decision supersedes another, that a deadline has expired,
+that two nodes disagree. Opus sees those. With
+`sufler.cloud_edit_graph: true` it edits dossiers itself at night; off (the
+default) it writes a report and a human applies the fixes. Transcripts,
+minutes and the "## Author edits" section are never touched; every edit is
+backed up first.
+
+From 2025-2026 practice this takes: the community-summaries idea (GraphRAG),
+incremental update without a full rebuild and dual-level retrieval
+(LightRAG), and event-driven invalidation rather than scheduled (Graphiti).
+A recursive abstraction tree (RAPTOR) proved unnecessary — the hierarchy is
+already expressed by links.
+
 ## Why these models
 
 Benchmarks and sources — [MODELS.md](MODELS.md). Key points: the main model
