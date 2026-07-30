@@ -338,18 +338,27 @@ def main():
     voice_names: dict[int, str] = {}
     diarize_on = bool(cfg["sufler"].get("live_diarize", True))
     emb_model = ROOT / "models" / "diar" / "embedding.onnx"
+    seg_model = ROOT / "models" / "diar" / "segmentation.onnx"
     try:
-        from diarize_live import SpeakerTracker, availability_note
-        # сначала честный ответ: почему диаризации не будет. Модель в поставку
-        # не входит, и раньше этот случай проходил вообще без сообщения
-        note = availability_note(diarize_on, emb_model)
+        from diarize_live import SegmentTracker, SpeakerTracker, availability_note, tracker_kind
+        # сначала честный ответ: почему диаризации не будет или почему она
+        # будет хуже обещанной. Модели в поставку не входят, и раньше этот
+        # случай проходил вообще без сообщения
+        note = availability_note(diarize_on, emb_model, seg_model)
         if note:
             emit({"type": "status", "text": note})
-        elif diarize_on:
+        kind = tracker_kind(seg_model, emb_model) if diarize_on else None
+        if kind == "segments":
+            # эмбеддинг по кускам речи, а не по трёхсекундному чанку: на
+            # границе реплик чанк смешивает голоса, и трекер залипал на первом
+            # (замер: DER 0.725 и один голос из четырёх против 0.246 и всех)
+            spk_tracker = SegmentTracker(seg_model, emb_model, sample_rate=hub.sr)
+            emit({"type": "status", "text": "👥 живая диаризация голосов включена"})
+        elif kind == "chunks":
             spk_tracker = SpeakerTracker(
                 emb_model, sample_rate=hub.sr,
                 threshold=float(cfg["sufler"].get("live_diarize_threshold", 0.45)))
-            emit({"type": "status", "text": "👥 живая диаризация голосов включена"})
+            emit({"type": "status", "text": "👥 живая диаризация: упрощённый режим"})
     except Exception as e:  # noqa: BLE001 — диаризация вспомогательна
         emit({"type": "status", "text": f"живая диаризация недоступна: {e}"})
 
