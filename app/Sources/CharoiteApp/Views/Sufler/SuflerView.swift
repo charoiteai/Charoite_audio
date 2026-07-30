@@ -30,6 +30,7 @@ struct SuflerView: View {
         VStack(spacing: 0) {
             header
             Divider()
+            meetingCueBar
             // Чат — сосед сплита в HStack, НЕ третья колонка HSplitView (тот
             // не пересчитывает ширины при добавлении панели — чат открывался
             // за краем окна) и НЕ оверлей (перекрывал «Ответ по архиву» и
@@ -75,6 +76,11 @@ struct SuflerView: View {
         .sheet(isPresented: $showFirstRun) {
             FirstRunView { sufler.start() }
         }
+        // Идёт запись — подсказка о начале встречи молчит; остановились —
+        // снова имеет смысл (следующая встреча дня).
+        .onChange(of: sufler.isRunning) { _, running in
+            CalendarService.shared.recording(running)
+        }
         .onAppear {
             // Первый запуск: объясняем, что это и зачем микрофон, ДО того как
             // человек нажмёт «Слушать встречу» и получит системный запрос.
@@ -82,6 +88,7 @@ struct SuflerView: View {
             TasksService.shared.rescan()   // бейдж «Задачи · N» актуален сразу
             ArchiveHistoryStore.shared.load()
             if calendarBriefs { CalendarService.shared.enable() }
+            CalendarService.shared.recording(sufler.isRunning)
             // Dev-хуки скринов/смоков: на живой машине владельца клавиатурный
             // ввод в чужое окно проигрывает гонку за фокус — вопрос и окна
             // задаются окружением и выполняются сами.
@@ -103,6 +110,40 @@ struct SuflerView: View {
     // живая встреча — спрашиваем демона (он видит стенограмму), не идёт —
     // ищем по архиву встреч и графу через Чароит.
     private var tasksOpen: Int { tasksSvc.openCount }
+
+    /// «Встреча началась — начать запись?» Полоса вместо системного
+    /// уведомления: разрешение на уведомления просить ради этого не хочется, а
+    /// человек, у которого идёт встреча, смотрит в экран.
+    ///
+    /// Запись не включается сама ни при каком исходе: решение остаётся за
+    /// человеком, и «Не сейчас» по этой встрече больше не спрашивают. Когда
+    /// подсказки нет, полосы нет вовсе — пустого места она не занимает.
+    @ViewBuilder
+    private var meetingCueBar: some View {
+        if !sufler.isRunning, let cue = calendar.cue {
+            HStack(spacing: 10) {
+                Image(systemName: "record.circle").foregroundStyle(Theme.accent)
+                Text(cue.prompt).font(.callout)
+                Spacer(minLength: 8)
+                Button(L.t("Начать запись", "Start recording", "开始录制")) {
+                    CalendarService.shared.dismissCue()
+                    sufler.start()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
+                Button(L.t("Не сейчас", "Not now", "暂不")) {
+                    CalendarService.shared.dismissCue()
+                }
+                .help(L.t("Про эту встречу больше не спросим",
+                          "We will not ask about this meeting again",
+                          "不会再就这场会议询问"))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Theme.accent.opacity(0.08))
+            Divider()
+        }
+    }
 
     private var askBar: some View {
         HStack(spacing: 10) {
