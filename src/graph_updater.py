@@ -705,6 +705,10 @@ def main():
             # только в граф и только когда это разрешено тумблером.
             with rev.open("w", encoding="utf-8") as of, \
                     log.open("w", encoding="utf-8") as lf:
+                # маркер в начале файла: если модель не ответит, останется не
+                # пустой файл-загадка, а строка с встречей и временем запуска
+                of.write(f"<!-- {stamp} · {title or 'встреча'} · ревизия облаком -->\n")
+                of.flush()
                 _sp.Popen(cmd, cwd=str(work_dir), env=env,
                           stdin=_sp.DEVNULL,   # не наследовать fifo — claude ждал бы EOF
                           stdout=of, stderr=lf, start_new_session=True)
