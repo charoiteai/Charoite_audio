@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Features
 
+* **graph:** досье по темам — сводки поверх ядер с индексом для поиска, инкрементальная пересборка по отпечатку источников, опциональная ревизия облаком ([#150](https://github.com/charoiteai/Charoite_audio/issues/150)) ([fcb7899](https://github.com/charoiteai/Charoite_audio/commit/fcb7899))
 * **app:** тумблер «Разрешить облаку править досье» в Настройках ([#152](https://github.com/charoiteai/Charoite_audio/issues/152)) ([06d4782](https://github.com/charoiteai/Charoite_audio/commit/06d4782e4789c3d7019cad322c0ccf2ee3a1e674))
 * **tasks:** поручения из минуток доходят до окна задач ([#149](https://github.com/charoiteai/Charoite_audio/issues/149)) ([1143b1b](https://github.com/charoiteai/Charoite_audio/commit/1143b1bf426da020db8a2340b8c79bc4fa99eb64))
 
