@@ -94,7 +94,8 @@ def check_models() -> None:
         line(OK, "диаризация: models/diar/embedding.onnx")
     else:
         line(WARN, "диаризации нет (метки «Собеседник N» будут по каналам)",
-             "docs/DIARIZATION.md — где взять ERes2Net ONNX")
+             ".venv/bin/python scripts/get_models.py --diar — поставит модель "
+             "(варианты: --list, подробности: docs/DIARIZATION.md)")
 
 
 def check_deps() -> None:
