@@ -34,6 +34,7 @@ import cloud  # noqa: E402
 import fact_check  # noqa: E402
 import privacy  # noqa: E402
 import speaker_names  # noqa: E402
+import voice_pitch  # noqa: E402
 from audio import AudioHub  # noqa: E402
 from llm import LLM  # noqa: E402
 from main import NOISE, Transcript  # noqa: E402
@@ -352,12 +353,29 @@ def main():
     except Exception as e:  # noqa: BLE001 — диаризация вспомогательна
         emit({"type": "status", "text": f"живая диаризация недоступна: {e}"})
 
+    # Частоты основного тона по метке говорящего — только для того, чтобы не
+    # назвать басовитого собеседника Анной (см. src/voice_pitch.py). Живут в
+    # памяти встречи и умирают вместе с процессом, как и эмбеддинги голосов;
+    # в стенограмму, граф и документы регистр голоса не попадает никогда.
+    voice_f0: dict[str, list[float]] = {}
+
+    def _note_pitch(label: str, chunk) -> None:
+        try:
+            f0 = voice_pitch.estimate_f0(chunk, hub.sr)
+        except Exception:  # noqa: BLE001 — подсказка вспомогательна
+            return
+        if f0:
+            vals = voice_f0.setdefault(label, [])
+            vals.append(f0)
+            del vals[:-40]      # держим последние — голос за встречу не меняется
+
     def voice_label(channel_speaker: str, chunk) -> str:
         """Метка голоса для чанка. Живая разметка НЕ угадывает владельца (решение
         20.07: «первый голос mic» ловил лектора из видео, «доминирование» тоже
         ошибалось) — все голоса нейтральные «Собеседник N». Имена расставляют
         name_loop (из разговора) и финальная пересборка записи после Стопа."""
         if spk_tracker is None:
+            _note_pitch(channel_speaker, chunk)
             return channel_speaker  # без трекера канальные метки честны в звонке
         try:
             n = spk_tracker.label(chunk)
@@ -369,6 +387,7 @@ def main():
         if name is None:
             name = f"Собеседник {len(voice_names) + 1}"
             voice_names[n] = name
+        _note_pitch(name, chunk)
         return name
 
     def stt_loop():
@@ -986,6 +1005,46 @@ def main():
             except Exception:  # noqa: BLE001 — разметка вспомогательна
                 pass
 
+    def _median_f0(label: str) -> float | None:
+        """Медианная частота основного тона этой метки за встречу.
+
+        Медиана, а не среднее: смех и вопросительная интонация задирают
+        отдельные чанки, но не голос человека.
+        """
+        vals = voice_f0.get(label) or []
+        if len(vals) < voice_pitch.MIN_CHUNKS:
+            return None
+        return float(sorted(vals)[len(vals) // 2])
+
+    _gender_cache: dict[str, str] = {}
+
+    def name_gender(raw_name: str) -> str | None:
+        """Мужское имя, женское или подходит обоим. None — не смогли решить.
+
+        Спрашиваем лёгкую модель, а не список имён: списком «Саша», «Женя» и
+        «Валя» не разложить, а уменьшительных в живой речи больше, чем полных.
+        Ответ кэшируется на встречу — имён на встрече единицы.
+        """
+        name = (raw_name or "").strip().capitalize()
+        if not name:
+            return None
+        if name in _gender_cache:
+            return _gender_cache[name]
+        try:
+            out = "".join(llm.stream(
+                f"Имя «{name}». Оно мужское, женское или подходит обоим? "
+                "Ответь ОДНИМ словом: male, female или unisex. "
+                "Сомневаешься — unisex.",
+                model=llm.small,
+                system="Ты отвечаешь одним словом: male, female или unisex.",
+            )).strip().lower()
+        except Exception:  # noqa: BLE001 — подсказка вспомогательна
+            return None
+        verdict = next((w for w in ("female", "male", "unisex") if w in out), None)
+        if verdict:
+            _gender_cache[name] = verdict
+        return verdict
+
     def name_loop():
         """Опознание людей из разговора, всю встречу (каждые ~90с).
 
@@ -994,6 +1053,10 @@ def main():
         Меняется задним числом стенограмма (rename_speaker), лента приложения
         (событие rename) и все будущие реплики (voice_names). владельца не
         угадываем (решение 20.07). Без диаризации — старый одиночный режим.
+
+        Поверх текстовых проверок стоит гейт по голосу: если регистр голоса
+        метки и род имени уверенно противоречат («Анна» у баса), имя
+        отклоняется и метка остаётся честным «Собеседник N».
         """
         named = False
         listed: list[str] = []
@@ -1041,7 +1104,9 @@ def main():
                             # выдуманные имена, падежи по людям графа
                             name = speaker_names.trustworthy_name(
                                 raw_name, sample=sample, label=label,
-                                owner_name=owner_name, known=tuple(known_first))
+                                owner_name=owner_name, known=tuple(known_first),
+                                voice=voice_pitch.register(_median_f0(label)),
+                                name_gender=name_gender(str(raw_name)))
                             if (label in labels and name
                                     and name not in renamed.values()):
                                 renamed[label] = name
@@ -1068,7 +1133,9 @@ def main():
                     # не было вовсе, а владелец узнавался только по полной строке
                     name = speaker_names.trustworthy_name(
                         raw_name, sample=sample, label="Собеседник",
-                        owner_name=owner_name, known=tuple(known_first))
+                        owner_name=owner_name, known=tuple(known_first),
+                        voice=voice_pitch.register(_median_f0("Собеседник")),
+                        name_gender=name_gender(raw_name))
                     if name:
                         tr.rename_speaker("Собеседник", name)
                         emit({"type": "rename", "from": "Собеседник", "to": name})

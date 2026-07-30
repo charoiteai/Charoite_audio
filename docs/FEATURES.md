@@ -24,6 +24,19 @@
   diarization is off in the config, the daemon says so in a status line at
   the start of the meeting: labels will follow channels, and you see it right
   away instead of discovering it in the transcript.
+- **Voice against name** — names are recognised from the text of the
+  conversation, and the light model sometimes assigns one to the wrong person:
+  a deep-voiced participant becomes "Анна" because the name was spoken nearby.
+  On top of the text checks there is a voice gate: the daemon tracks the median
+  fundamental frequency of a label, and asks the light model whether the name is
+  male, female or unisex ("Саша", "Женя" — unisex, never blocked). A name is
+  rejected only when both sides confidently disagree; the label then stays an
+  honest "Собеседник N". Inside the androgynous band (≈145-190 Hz, where pitch
+  alone does not decide) no register is assigned at all. The error always falls
+  towards silence: a missing name can be added later, a wrong one lives in the
+  graph for months. The register is never stored and never written into
+  documents — it lives in the meeting's memory exactly as long as the voice
+  embeddings do (see [PRIVACY.md](../PRIVACY.md)).
 - **Live names** — once someone introduces themselves (or is addressed and
   replies), their label is replaced with the name — retroactively across the
   transcript and in all future utterances. The name must literally occur in
