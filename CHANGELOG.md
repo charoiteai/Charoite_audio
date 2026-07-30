@@ -5,6 +5,14 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.38.0](https://github.com/charoiteai/Charoite_audio/compare/v0.37.0...v0.38.0) (2026-07-30)
+
+
+### Features
+
+* **app:** тумблер «Разрешить облаку править досье» в Настройках ([#152](https://github.com/charoiteai/Charoite_audio/issues/152)) ([06d4782](https://github.com/charoiteai/Charoite_audio/commit/06d4782e4789c3d7019cad322c0ccf2ee3a1e674))
+* **tasks:** поручения из минуток доходят до окна задач ([#149](https://github.com/charoiteai/Charoite_audio/issues/149)) ([1143b1b](https://github.com/charoiteai/Charoite_audio/commit/1143b1bf426da020db8a2340b8c79bc4fa99eb64))
+
 ## [0.37.0](https://github.com/charoiteai/Charoite_audio/compare/v0.36.0...v0.37.0) (2026-07-29)
 
 
