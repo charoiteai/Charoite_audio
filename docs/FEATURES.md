@@ -197,3 +197,23 @@ it signals degradation, it does not break the loop.
 Everything is plain markdown, readable without rendering: bold-keyed lists
 instead of tables, short blocks, the same structure every time, the main
 point first (BLUF). Layers: Summary (1 min) → Minutes → Debrief → Transcript.
+
+## Action items reach the task window
+
+Minutes name who does what by when — the prompt asks for a checkbox, and the
+model does produce the name, the task and the deadline. It just wraps the whole
+line in its own markdown and loses the `[ ]` along the way:
+
+    *   **- **Dmitry** — prepare the demo. — **Due: tomorrow**.**
+
+The task window matches `^\s*[-*] \[( |x|X)\] +(.+)$`, so nothing above is a
+task for it. Measured on a working graph: 89 minute files, **4 visible tasks**.
+Every meeting produced assignments; the window stayed empty.
+
+The format is now normalized after generation — deterministically, not by
+asking the model more firmly, because it already "complies" as best it can and
+drifts again on the next long answer. Only the assignments section is touched,
+and only its formatting: names, wording and deadlines stay as written.
+
+Same graph after normalization: **275 tasks**. Existing files are converted
+once by `scripts/fix_action_items.py` (dry run by default).
