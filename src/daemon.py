@@ -330,17 +330,22 @@ def main():
     # первый голос из mic = владелец (его микрофон), остальные — «Собеседник N».
     spk_tracker = None
     voice_names: dict[int, str] = {}
-    if bool(cfg["sufler"].get("live_diarize", True)):
-        try:
-            from diarize_live import SpeakerTracker
-            emb_model = ROOT / "models" / "diar" / "embedding.onnx"
-            if emb_model.exists():
-                spk_tracker = SpeakerTracker(
-                    emb_model, sample_rate=hub.sr,
-                    threshold=float(cfg["sufler"].get("live_diarize_threshold", 0.45)))
-                emit({"type": "status", "text": "👥 живая диаризация голосов включена"})
-        except Exception as e:  # noqa: BLE001 — диаризация вспомогательна
-            emit({"type": "status", "text": f"живая диаризация недоступна: {e}"})
+    diarize_on = bool(cfg["sufler"].get("live_diarize", True))
+    emb_model = ROOT / "models" / "diar" / "embedding.onnx"
+    try:
+        from diarize_live import SpeakerTracker, availability_note
+        # сначала честный ответ: почему диаризации не будет. Модель в поставку
+        # не входит, и раньше этот случай проходил вообще без сообщения
+        note = availability_note(diarize_on, emb_model)
+        if note:
+            emit({"type": "status", "text": note})
+        elif diarize_on:
+            spk_tracker = SpeakerTracker(
+                emb_model, sample_rate=hub.sr,
+                threshold=float(cfg["sufler"].get("live_diarize_threshold", 0.45)))
+            emit({"type": "status", "text": "👥 живая диаризация голосов включена"})
+    except Exception as e:  # noqa: BLE001 — диаризация вспомогательна
+        emit({"type": "status", "text": f"живая диаризация недоступна: {e}"})
 
     def voice_label(channel_speaker: str, chunk) -> str:
         """Метка голоса для чанка. Живая разметка НЕ угадывает владельца (решение

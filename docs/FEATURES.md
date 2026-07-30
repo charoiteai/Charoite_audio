@@ -9,7 +9,11 @@
   a paragraph without changing a single word (strict validation).
 - **Live diarization** — "Speaker 1/2/…" per voice from the first seconds.
   The owner's name is never guessed; your mic is labeled with your
-  configured name.
+  configured name. When the voice model is absent
+  (`models/diar/embedding.onnx` does not ship with the product) or
+  diarization is off in the config, the daemon says so in a status line at
+  the start of the meeting: labels will follow channels, and you see it right
+  away instead of discovering it in the transcript.
 - **Live names** — once someone introduces themselves (or is addressed and
   replies), their label is replaced with the name — retroactively across the
   transcript and in all future utterances. The name must literally occur in
