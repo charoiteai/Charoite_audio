@@ -144,16 +144,25 @@ def der(truth: list[dict], hyp: list[dict], total: float) -> dict:
     }
 
 
-def run_live(wav: pathlib.Path, cfg_threshold: float = 0.45) -> list[dict]:
-    """Наш живой трекер: чанки по 3 секунды, косинус к центроидам."""
-    from diarize_live import SpeakerTracker
+def _live_tracker(sr: int, legacy: bool, cfg_threshold: float):
+    """Тот же трекер, что поднимает демон: по кускам речи или по чанкам."""
+    from diarize_live import SegmentTracker, SpeakerTracker
 
-    model = ROOT / "models" / "diar" / "embedding.onnx"
-    if not model.exists():
+    emb = ROOT / "models" / "diar" / "embedding.onnx"
+    seg = ROOT / "models" / "diar" / "segmentation.onnx"
+    if not emb.exists():
         raise SystemExit("нет models/diar/embedding.onnx — "
                          ".venv/bin/python scripts/get_models.py --diar")
+    if legacy or not seg.exists():
+        return SpeakerTracker(emb, sample_rate=sr, threshold=cfg_threshold)
+    return SegmentTracker(seg, emb, sample_rate=sr)
+
+
+def run_live(wav: pathlib.Path, cfg_threshold: float = 0.45,
+             legacy: bool = False) -> list[dict]:
+    """Живой режим целиком: чанки по 3 секунды, как их получает демон."""
     audio, sr = sf.read(wav, dtype="float32")
-    tracker = SpeakerTracker(model, sample_rate=sr, threshold=cfg_threshold)
+    tracker = _live_tracker(sr, legacy, cfg_threshold)
     step = int(3.0 * sr)
     out: list[dict] = []
     for i in range(0, len(audio), step):
@@ -206,7 +215,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--make", action="store_true", help="собрать синтетику и выйти")
     ap.add_argument("--fixture", type=pathlib.Path, default=FIXTURE)
-    ap.add_argument("--engine", choices=("live", "sherpa", "both"), default="both")
+    ap.add_argument("--engine",
+                    choices=("live", "live-legacy", "sherpa", "both", "all"),
+                    default="both",
+                    help="live — как сейчас работает демон, live-legacy — прежний "
+                         "трекер по чанкам, sherpa — проход после встречи")
     ap.add_argument("--speakers", type=int, default=-1,
                     help="сколько голосов ждать (-1 — решает кластеризация)")
     args = ap.parse_args()
@@ -227,9 +240,12 @@ def main() -> int:
     print(f"{wav.name}: {total:.1f}с, голосов в разметке: "
           f"{len({s['speaker'] for s in data['segments']})}\n")
 
-    if args.engine in ("live", "both"):
+    if args.engine in ("live", "both", "all"):
         report("live", der(data["segments"], run_live(wav), total))
-    if args.engine in ("sherpa", "both"):
+    if args.engine in ("live-legacy", "all"):
+        report("live-legacy",
+               der(data["segments"], run_live(wav, legacy=True), total))
+    if args.engine in ("sherpa", "both", "all"):
         report("sherpa", der(data["segments"], run_sherpa(wav, args.speakers), total))
     print("\nDER — доля времени речи, подписанная неверно. Меньше лучше.")
     return 0
