@@ -6,7 +6,13 @@ Charoite is built local-first. Concretely:
 
 - **No telemetry.** Zero analytics, crash reporters or "anonymous usage stats". Grep the code.
 - **No network calls** except to services you run yourself on localhost (Ollama at `127.0.0.1:11434`, optional local STT stream server) — unless you explicitly enable the cloud layer.
-- **Cloud layer is opt-in and off by default** (`cloud_enrich: false`, `cloud_live: false`). When enabled, it runs the `claude` CLI under your own subscription; transcripts you choose to enrich are sent to Anthropic under your account and their terms. Turn it off and Charoite is fully offline.
+- **Cloud layer is opt-in and off by default.** There are exactly four switches, all of them `false` in the shipped config, and this list is the whole truth — a test fails if a fifth one appears and is not documented here:
+  - `cloud_enrich` — after you stop the meeting, the **full transcript** goes to Claude for a debrief.
+  - `cloud_live` — mid-meeting questions go out as **chunks of the transcript**, one request per question.
+  - `cloud_hints` — cloud refinement of live hints: the transcript is sent on **every hint**, i.e. a steady stream for as long as the meeting runs, not a single package. Requires `cloud_live` as well.
+  - `cloud_edit_graph` — the only switch that grants **writing, not sending**: the nightly dossier review may rewrite graph files itself instead of just filing a report. Requires `cloud_enrich` as well. Transcripts, minutes and `## Author edits` are never touched, and every edit is backed up first.
+
+  When enabled, they run the `claude` CLI under your own subscription; what you choose to send goes to Anthropic under your account and their terms. Turn them off and Charoite is fully offline.
 - **One place decides, and the check sits where the request leaves.** Every "may this leave the machine?" question is answered by `src/privacy.py`. The check lives at the network exit itself, not only at the caller: a manual request (the ☁️ button, ⌘⇧⏎) used to reach the API past a switch that was only consulted on the automatic path. Silence in the config means *no* — a missing key, `"false"`, `0` or an empty value are never read as permission. `tests/test_privacy_defaults.py` and `tests/test_cloud_call_sites.py` hold both properties, so this bullet is a test rather than a promise.
 - **Kill switch.** `CHAROITE_NO_CLOUD=1` (or the historical `SUFLER_NO_CLOUD=1`) in the environment forces the cloud layer off whatever the config says — "run this one strictly offline" should be an env var, not a YAML edit before someone else's meeting.
 - **Recordings are temporary.** Full-meeting audio is kept only to rebuild an accurate transcript after the meeting and is deleted after `record_keep_days` (default 2). Cleanup runs when the daemon starts, not only when a new meeting begins — so recordings expire on schedule even if you do not record for a week or turn `record` off.
