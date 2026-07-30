@@ -77,7 +77,7 @@ python3 scripts/doctor.py
 .venv/bin/python src/main.py     # 终端里的实时逐字稿 + 提示
 ```
 
-**还没有会议？** 把 `graph_dir` 指向内置[英文演示图谱](demo/)（demo/graph_en），问一句 "what did we decide about the payment provider?" ——录音之前就能看到产品的样子。一条命令验证整个检索闭环：`python3 scripts/memory_bench.py --demo`。已有旧录音？一条命令把会议文件（音频/文本/Zoom字幕）导入档案和图谱：`python3 scripts/import_meeting.py 文件 --date 2026-07-15`。或在应用里指定导入文件夹（设置 → 导入）——放进去的录音自动成为会议。替换词典（`sufler.vocabulary`）可修正 STT 总写错的术语——一处声明，处处生效。
+**还没有会议？** 把 `graph_dir` 指向内置[英文演示图谱](demo/)（demo/graph_en），问一句 "what did we decide about the payment provider?" ——录音之前就能看到产品的样子。一条命令验证整个检索闭环：`.venv/bin/python scripts/memory_bench.py --demo`。已有旧录音？一条命令把会议文件（音频/文本/Zoom字幕）导入档案和图谱：`.venv/bin/python scripts/import_meeting.py 文件 --date 2026-07-15`。或在应用里指定导入文件夹（设置 → 导入）——放进去的录音自动成为会议。替换词典（`sufler.vocabulary`）可修正 STT 总写错的术语——一处声明，处处生效。
 
 STT 模型首次运行自动下载。实时说话人分离需将 ERes2Net 声纹模型放到 `models/diar/embedding.onnx`（见 docs/DIARIZATION.md）。
 

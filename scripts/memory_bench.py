@@ -24,10 +24,13 @@ import pathlib
 import re
 import sys
 
-import yaml
-
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
+import deps  # noqa: E402
+
+deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
+
+import yaml  # noqa: E402
 from llm import LLM  # noqa: E402
 
 SNIPPET = 1200   # как в боевом RAG приложения
