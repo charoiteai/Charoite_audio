@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import re
 
+import voice_pitch
+
 # Планка длины. Ниже трёх — мусор от лёгкой модели («Ок», «Да»); выше
 # пятнадцати — не имя, а склеенная фраза. Безмодельный режим раньше пускал
 # двухбуквенные, и это была единственная разница между ветками не в пользу
@@ -93,6 +95,7 @@ def _own_lines_only(name: str, sample: str, label: str) -> bool:
 
 def trustworthy_name(raw: str, *, sample: str, label: str,
                      owner_name: str = "", known: tuple[str, ...] | list[str] = (),
+                     voice: str | None = None, name_gender: str | None = None,
                      ) -> str | None:
     """Имя, которому можно доверять, или None — с одинаковой строгостью в
     обоих режимах опознания.
@@ -102,6 +105,13 @@ def trustworthy_name(raw: str, *, sample: str, label: str,
     label  — метка говорящего, которую собираемся заменить
     owner_name — `sufler.user_name`, целиком, как в конфиге
     known  — имена людей графа для приведения падежей
+    voice  — регистр голоса этой метки: «low» / «high» / None (voice_pitch)
+    name_gender — род имени: «male» / «female» / «unisex» / None
+
+    Последние два — про случай «мужчину назвали Анной»: имя приходит из
+    текста, и про голос оно не знает ничего. Отказ бывает только при
+    уверенном противоречии: обе стороны определённы и противоположны.
+    Пусто, «не знаю» или «unisex» («Саша», «Женя») ничего не блокируют.
     """
     name = _clean(raw)
     if not name or name.upper() == "NONE":
@@ -127,4 +137,6 @@ def trustworthy_name(raw: str, *, sample: str, label: str,
         return None
     if _own_lines_only(name, sample, label):
         return None
+    if voice_pitch.contradicts(voice, name_gender):
+        return None     # басовитый голос и женское имя — оставляем «Собеседник N»
     return name
