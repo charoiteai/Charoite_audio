@@ -125,13 +125,13 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section(L.t("Календарь", "Calendar", "日历")) {
-                Toggle(L.t("Предлагать бриф к ближайшей встрече", "Offer a brief for the next meeting", "为下一场会议提供简报"), isOn: $calendarBriefs)
+                Toggle(L.t("Бриф и напоминание о записи", "Brief and a nudge to record", "简报与录制提醒"), isOn: $calendarBriefs)
                     .onChange(of: calendarBriefs) { _, on in
                         on ? CalendarService.shared.enable() : CalendarService.shared.disable()
                     }
-                Text(L.t("Читает только название и время ближайшего события — для кнопки «Бриф» перед встречей. Локально, ничего не пишет.",
-                         "Reads only the title and time of the next event — for the Brief button before a meeting. Local, write-free.",
-                         "仅读取下一个日程的标题与时间——用于会前的「简报」按钮。本地运行，不做任何写入。"))
+                Text(L.t("Читает только название и время событий — для кнопки «Бриф» перед встречей и для полосы «встреча началась — начать запись?». Запись сама не включается: спрашиваем и ждём ответа, «Не сейчас» по этой встрече больше не повторяем. Локально, ничего не пишет.",
+                         "Reads only the title and time of your events — for the Brief button before a meeting and for the “meeting has started — start recording?” bar. Recording never starts on its own: we ask and wait, and “Not now” is remembered for that meeting. Local, write-free.",
+                         "仅读取日程的标题与时间——用于会前的「简报」按钮，以及「会议已开始——开始录制吗？」提示条。录制不会自动开始：我们询问并等待你的选择，选择「暂不」后不再就该会议询问。本地运行，不做任何写入。"))
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
