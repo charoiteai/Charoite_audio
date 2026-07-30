@@ -55,50 +55,77 @@ def _command(cfg: dict, env: dict | None = None) -> list[str]:
         env=env if env is not None else {})
 
 
-def _joined(cmd: list[str]) -> str:
-    return " ".join(cmd)
+def _flags(cmd: list[str]) -> dict[str, str]:
+    """Команда → словарь флагов. Проверяем смысл, а не порядок аргументов."""
+    out: dict[str, str] = {}
+    for i, item in enumerate(cmd):
+        if item.startswith("--") and i + 1 < len(cmd) and not cmd[i + 1].startswith("--"):
+            out[item] = cmd[i + 1]
+        elif item.startswith("--"):
+            out[item] = ""
+    return out
+
+
+def _allowed(cmd: list[str]) -> set[str]:
+    return {t for t in _flags(cmd).get("--allowedTools", "").split(",") if t}
+
+
+def _forbidden(cmd: list[str]) -> set[str]:
+    return {t for t in _flags(cmd).get("--disallowedTools", "").split(",") if t}
 
 
 def test_without_the_edit_toggle_there_is_no_write_permission():
-    """Главный инвариант: согласие на разбор не даёт права на запись."""
-    text = _joined(_command(READ_ONLY))
+    """Главный инвариант: согласие на разбор не даёт права на запись.
+
+    Проверяются РАЗРЕШЁННЫЕ инструменты и режим доступа. Упоминание Edit в
+    списке ЗАПРЕЩЁННЫХ — это усиление, а не дыра, и путать одно с другим
+    значит запрещать себе правильную реализацию.
+    """
+    cmd = _command(READ_ONLY)
     for tool in WRITE_TOOLS:
-        assert tool not in text, f"read-only команда содержит {tool}: {text}"
+        assert tool not in _allowed(cmd), f"read-only разрешает {tool}: {cmd}"
+    assert "--permission-mode" not in _flags(cmd), \
+        "автоприём правок в режиме без права записи"
+    assert {"Edit", "Write"} <= _forbidden(cmd), \
+        "инструменты записи не запрещены явно — headless попросит разрешение"
 
 
 def test_read_only_command_still_lets_the_model_read():
     """Отобрать запись — не значит сломать разбор: чтение остаётся."""
-    text = _joined(_command(READ_ONLY))
-    for tool in ("Read", "Grep", "Glob"):
-        assert tool in text, f"в read-only режиме нет {tool}"
+    allowed = _allowed(_command(READ_ONLY))
+    assert {"Read", "Grep", "Glob"} <= allowed, allowed
 
 
 def test_edit_mode_works_when_both_toggles_are_explicit():
-    text = _joined(_command(FULL))
-    assert "Edit" in text and "Write" in text, text
-    assert "acceptEdits" in text, "разрешённый режим потерял автоприём правок"
+    cmd = _command(FULL)
+    assert {"Edit", "Write"} <= _allowed(cmd), _allowed(cmd)
+    assert _flags(cmd).get("--permission-mode") == "acceptEdits", \
+        "разрешённый режим потерял автоприём правок"
 
 
 def test_the_right_comes_from_privacy_not_from_a_neighbouring_key():
     """Мусор в значении — не разрешение, как и везде в privacy.py."""
     for value in ("true", 1, "yes", [], None, "false"):
         cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": value}}
-        text = _joined(_command(cfg))
-        assert "Write" not in text, f"значение {value!r} выдало право записи"
+        assert "Write" not in _allowed(_command(cfg)), \
+            f"значение {value!r} выдало право записи"
 
 
 def test_kill_switch_takes_the_write_permission_away():
     """«Этот запуск строго офлайн» — сильнее любого «да» в конфиге."""
     for switch in ("CHAROITE_NO_CLOUD", "SUFLER_NO_CLOUD"):
-        text = _joined(_command(FULL, env={switch: "1"}))
-        assert "Write" not in text and "acceptEdits" not in text, switch
+        cmd = _command(FULL, env={switch: "1"})
+        assert "Write" not in _allowed(cmd), switch
+        assert "--permission-mode" not in _flags(cmd), switch
 
 
 def test_dangerous_tools_stay_forbidden_in_both_modes():
     for cfg in (READ_ONLY, FULL):
-        text = _joined(_command(cfg))
+        cmd = _command(cfg)
+        forbidden = _forbidden(cmd)
         for tool in ("Bash", "WebFetch", "WebSearch", "Task"):
-            assert tool in text, f"{tool} должен оставаться в запрете: {text}"
+            assert tool in forbidden, f"{tool} не запрещён: {cmd}"
+            assert tool not in _allowed(cmd), f"{tool} разрешён: {cmd}"
 
 
 def test_transcript_is_framed_as_data_not_as_instructions():
