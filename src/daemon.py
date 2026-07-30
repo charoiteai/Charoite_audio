@@ -28,6 +28,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import action_items
 import fact_check  # noqa: E402
 import privacy  # noqa: E402
+import speaker_names  # noqa: E402
 from audio import AudioHub  # noqa: E402
 from llm import LLM  # noqa: E402
 from main import NOISE, Transcript  # noqa: E402
@@ -986,7 +987,9 @@ def main():
         renamed: dict[str, str] = {}  # «Собеседник 1» → «Дмитрий»
         # владельца не подписываем: его голос определяется каналом микрофона,
         # а не разговором. Пусто в конфиге — проверка просто не сработает.
-        owner_name = (cfg["sufler"].get("user_name") or "").strip().lower()
+        # Строка идёт в speaker_names целиком: сравнение по словам, потому что
+        # в user_name обычно имя И фамилия, а модель предлагает одно имя.
+        owner_name = (cfg["sufler"].get("user_name") or "").strip()
         while not stop.is_set():
             time.sleep(90)
             sample = tr.tail(3000)
@@ -1018,31 +1021,15 @@ def main():
                             pairs = json.loads(cands[-1]) if cands else {}
                         except ValueError:
                             pairs = {}
-                        for label, name in pairs.items():
-                            name = str(name).strip().strip(".,!«»\"").capitalize()
-                            if name and known_first and name not in known_first:
-                                pref = name.casefold()[:4]
-                                hit = [k for k in known_first if k.casefold().startswith(pref)]
-                                if len(hit) == 1:
-                                    name = hit[0]   # Полин→Полина, Андрюх→Андрей
-                            # гвард «обращение ≠ говорящий»: если имя звучит ТОЛЬКО в
-                            # репликах самой метки и это не самопредставление — отказ
-                            # («Саш, ну а кто…» помечало говорящего Сашей — 21.07)
-                            own_only = False
-                            if name:
-                                lines_with = [ln for ln in sample.splitlines()
-                                              if name.lower() in ln.lower()]
-                                # формат tail: «[HH:MM] Собеседник N: текст» — метка
-                                # НЕ в начале строки, старый startswith(label+":") был мёртв
-                                own = [ln for ln in lines_with
-                                       if re.search(rf"\]\s*{re.escape(label)}:", ln)]
-                                intro = re.search(
-                                    rf"(это|я|меня зовут)\s+{re.escape(name)}", sample, re.I)
-                                own_only = bool(lines_with) and len(own) == len(lines_with) \
-                                    and not intro
-                            if (label in labels and name and name.replace("-", "").isalpha()
-                                    and 3 <= len(name) <= 15 and name.lower() != owner_name
-                                    and name.lower() in sample.lower() and not own_only
+                        for label, raw_name in pairs.items():
+                            # все гварды доверия — в одном месте (src/speaker_names.py),
+                            # чтобы безмодельная ветка ниже не расходилась с этой:
+                            # владелец по словам user_name, «обращение ≠ говорящий»,
+                            # выдуманные имена, падежи по людям графа
+                            name = speaker_names.trustworthy_name(
+                                raw_name, sample=sample, label=label,
+                                owner_name=owner_name, known=tuple(known_first))
+                            if (label in labels and name
                                     and name not in renamed.values()):
                                 renamed[label] = name
                                 tr.rename_speaker(label, name)
@@ -1061,12 +1048,18 @@ def main():
                         model=llm.small,
                         system="Ты определяешь имя говорящего по стенограмме. Одно слово или NONE.",
                     ))
-                    name = out.strip().split()[0].strip(".,!«»\"") if out.strip() else ""
-                    if (name and name.upper() != "NONE" and name.lower() != owner_name
-                            and name.replace("-", "").isalpha() and 2 <= len(name) <= 15):
-                        tr.rename_speaker("Собеседник", name.capitalize())
-                        emit({"type": "rename", "from": "Собеседник", "to": name.capitalize()})
-                        emit({"type": "status", "text": f"👤 Собеседник опознан: {name.capitalize()}"})
+                    raw_name = out.strip().split()[0] if out.strip() else ""
+                    # та же проверка доверия, что в мультиспикерной ветке выше:
+                    # эта ветка работает БЕЗ модели голосов, то есть по умолчанию,
+                    # и раньше была слабее — гварда «обращение ≠ говорящий» в ней
+                    # не было вовсе, а владелец узнавался только по полной строке
+                    name = speaker_names.trustworthy_name(
+                        raw_name, sample=sample, label="Собеседник",
+                        owner_name=owner_name, known=tuple(known_first))
+                    if name:
+                        tr.rename_speaker("Собеседник", name)
+                        emit({"type": "rename", "from": "Собеседник", "to": name})
+                        emit({"type": "status", "text": f"👤 Собеседник опознан: {name}"})
                         named = True
                         continue
                 out = "".join(llm.stream(

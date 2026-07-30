@@ -13,7 +13,14 @@
 - **Live names** — once someone introduces themselves (or is addressed and
   replies), their label is replaced with the name — retroactively across the
   transcript and in all future utterances. The name must literally occur in
-  the text, which kills hallucinations.
+  the text, which kills hallucinations. All trust checks live in one place
+  (`src/speaker_names.py`) and are equally strict with and without the voice
+  model: a name from `sufler.user_name` never goes to a participant (matched
+  word by word, so "Igor" is recognised inside "Igor Vetrov"); a name heard
+  only in the speaker's own lines, with no self-introduction, counts as
+  addressing someone else (saying "Sash, could you…" does not make the
+  speaker Sasha); grammatical cases are folded onto known people of the
+  graph.
 - **Instant answer (⚡)** — the other side's question is detected via STT
   punctuation and lead words; a ready first-person answer arrives in ~2-3 s,
   with the question shown above it.
