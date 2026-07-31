@@ -58,16 +58,35 @@ class WavWriterTest {
     @Test
     fun `починка дописывает длину после обрыва`() {
         val f = File.createTempFile("rec", ".wav")
-        // Пишем как при убийстве процесса: заголовок остался нулевым,
-        // данные на диске есть.
-        val w = WavWriter(f)
-        w.write(ByteArray(8_000), 8_000)
-        // close() намеренно не зовём.
+        // Имитируем уже умерший процесс: данные на диске есть, блокировка
+        // отпущена, но сохранённый заголовок отстаёт от факта.
+        WavWriter(f).use { it.write(ByteArray(8_000), 8_000) }
+        RandomAccessFile(f, "rw").use { raf ->
+            raf.seek(4)
+            raf.write(ByteArray(4))
+            raf.seek(40)
+            raf.write(ByteArray(4))
+        }
 
         assertEquals(0L, le32(f, 40))
         assertTrue(WavWriter.repair(f))
         assertEquals(8_000L, le32(f, 40))
         assertEquals(36 + 8_000L, le32(f, 4))
+        f.delete()
+    }
+
+    @Test
+    fun `активная запись не чинится как сирота`() {
+        val f = File.createTempFile("active", ".wav")
+        val w = WavWriter(f)
+        try {
+            w.write(ByteArray(8_000), 8_000)
+
+            assertFalse(WavWriter.repair(f))
+        } finally {
+            w.close()
+        }
+        assertTrue(WavWriter.repair(f))
         f.delete()
     }
 
@@ -80,9 +99,33 @@ class WavWriterTest {
     }
 
     @Test
+    fun `чужой RIFF контейнер не принимается за WAV`() {
+        val f = File.createTempFile("riff", ".wav")
+        f.writeBytes("RIFF".toByteArray() + ByteArray(96))
+        assertFalse(WavWriter.repair(f))
+        f.delete()
+    }
+
+    @Test
     fun `пустой файл не чинится`() {
         val f = File.createTempFile("empty", ".wav")
         assertFalse(WavWriter.repair(f))
+        f.delete()
+    }
+
+    @Test
+    fun `недоступная блокировка не срывает запись`() {
+        // Блокировка — страховка от «сироты», а не условие записи. Если файловые
+        // замки недоступны (чужой канал, экзотическая ФС прошивки), встреча всё
+        // равно обязана писаться: потерять час разговора из-за страховки хуже,
+        // чем остаться без страховки.
+        val f = File.createTempFile("locked", ".wav")
+        RandomAccessFile(f, "rw").use { holder ->
+            holder.channel.lock().use {
+                WavWriter(f).use { w -> w.write(ByteArray(3_200), 3_200) }
+            }
+        }
+        assertEquals(3_200L, le32(f, 40))
         f.delete()
     }
 }
