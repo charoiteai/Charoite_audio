@@ -44,6 +44,11 @@ merging happens in memory during a single recording and is discarded.
   you pick. What is left is the LAN upload to the Mac (NsdManager + TLS,
   the protocol shared with the iPhone); until then Syncthing keeps the
   folder in step.
+- **Android: compileSdk 36** — the build targets API 35, while current
+  androidx (activity 1.13, lifecycle 2.11, Compose BOM 2026) needs 36. The
+  bump makes sense — tablets already run Android 16 — but it has to come
+  with background recording verified on a device, not as a bot's dependency
+  bump.
 
 - **Companion live mode** — the phone streams meeting audio to the Mac
   and mirrors the live transcript and hints on its screen.
