@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Тема нужна только до первого кадра Compose: дальше цвета задаёт Theme.kt. -->
+    <style name="Theme.Charoite" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#0E0B14</item>
+        <item name="android:navigationBarColor">#0E0B14</item>
+        <item name="android:windowBackground">#0E0B14</item>
+    </style>
+</resources>
