@@ -56,6 +56,7 @@ class MainActivity : ComponentActivity() {
             if (uri != null) {
                 GraphStore.saveFolder(this, uri)
                 GraphStore.rescanMeetings(this)
+                GraphStore.rescanTasks(this)
             }
         }
 

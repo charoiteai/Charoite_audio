@@ -50,12 +50,12 @@ jobs:
 
           # Кодом считается весь код, а не только Python: приложение на 4400
           # строк Swift раньше можно было переписать целиком, и страж молчал.
-          touches_code="$(echo "$changed" | grep -E '^(src/|app/|app-ios/|scripts/)' || true)"
+          touches_code="$(echo "$changed" | grep -E '^(src/|app/|app-ios/|app-android/|scripts/)' || true)"
           # Документацией — только то, что человек правда читает как документацию.
           # Переводы (README.zh.md и прочие) из списка убраны: опечатка в
           # китайском переводе закрывала требование задокументировать демон.
           # CHANGELOG убран тоже — docs/RELEASING.md запрещает править его руками.
-          touches_docs="$(echo "$changed" | grep -E '^(docs/|README\.md$|PRIVACY\.md$|SECURITY\.md$|ROADMAP\.md$|CONTRIBUTING\.md$)' || true)"
+          touches_docs="$(echo "$changed" | grep -E '^(docs/|(app-android|scripts)/README\.md$|README\.md$|PRIVACY\.md$|SECURITY\.md$|ROADMAP\.md$|CONTRIBUTING\.md$)' || true)"
 
           if [ -n "$touches_code" ] && [ -z "$touches_docs" ]; then
             echo "::error::Изменён код, но не тронута документация."

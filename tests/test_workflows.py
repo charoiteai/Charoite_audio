@@ -92,6 +92,55 @@ def test_concurrency_key_separates_pull_requests_from_different_forks():
             "с одинаковым именем ветки отменяют чеки друг друга")
 
 
+def test_android_changes_run_the_full_gradle_gate():
+    """Android-код нельзя мёрджить, ни разу не собрав Kotlin."""
+    wf = _load("android-tests.yml")
+    on = _on(wf)
+    for event in ("push", "pull_request"):
+        paths = set((on.get(event) or {}).get("paths") or [])
+        assert "app-android/**" in paths, (
+            f"android-tests.yml: {event} не покрывает app-android/**")
+
+    job = wf["jobs"]["test"]
+    assert job.get("timeout-minutes"), "Android-сборка может зависнуть без таймаута"
+    steps = job["steps"]
+    uses = {str(step.get("uses", "")) for step in steps}
+    assert any(use.startswith("actions/setup-java@") for use in uses)
+    assert any(use.startswith("android-actions/setup-android@") for use in uses)
+    assert any(use.startswith("gradle/actions/setup-gradle@") for use in uses)
+
+    java = next(step for step in steps if "actions/setup-java@" in str(step.get("uses")))
+    assert str((java.get("with") or {}).get("java-version")) == "17"
+    commands = "\n".join(str(step.get("run", "")) for step in steps)
+    for task in ("testDebugUnitTest", "lintDebug", "assembleDebug"):
+        assert task in commands, f"Android CI не запускает {task}"
+
+
+def test_android_workflow_has_safe_concurrency_key():
+    """Push и PR одного Android-коммита не должны отменять друг друга."""
+    group = str((_load("android-tests.yml").get("concurrency") or {}).get("group", ""))
+    assert "event_name" in group
+    assert "pull_request.number" in group
+
+
+def test_docs_guard_treats_android_as_code():
+    """Изменение Android-поведения требует документации или skip-docs."""
+    source = (WF / "docs-guard.yml").read_text(encoding="utf-8")
+    assert "app-android/" in source
+    assert r"(app-android|scripts)/README\.md" in source
+
+
+def test_dependabot_tracks_android_gradle_dependencies():
+    """Новые Kotlin/Android-зависимости не должны стареть молча."""
+    config = yaml.safe_load(
+        (WF.parent / "dependabot.yml").read_text(encoding="utf-8"))
+    assert any(
+        update.get("package-ecosystem") == "gradle"
+        and update.get("directory") == "/app-android"
+        for update in config["updates"]
+    )
+
+
 # ─── release-app: сборка обязана собирать ТЕГ и не собирать зря ──────────────
 #
 # Это не гипотеза, а случившийся сценарий: v0.19.0 вышел без бандла, а после

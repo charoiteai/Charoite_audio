@@ -7,3 +7,6 @@ updates:
   - package-ecosystem: swift
     directory: /app
     schedule: {interval: weekly}
+  - package-ecosystem: gradle
+    directory: /app-android
+    schedule: {interval: weekly}

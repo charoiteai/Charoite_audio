@@ -13,10 +13,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,6 +35,7 @@ fun MeetingsScreen(onPickGraph: () -> Unit) {
     val context = LocalContext.current
     val meetings by GraphStore.meetings.collectAsStateWithLifecycle()
     val status by GraphStore.status.collectAsStateWithLifecycle()
+    val loading by GraphStore.meetingsLoading.collectAsStateWithLifecycle()
     var open by remember { mutableStateOf<GraphStore.Meeting?>(null) }
 
     val chosen = GraphStore.folderChosen(context)
@@ -60,6 +63,10 @@ fun MeetingsScreen(onPickGraph: () -> Unit) {
 
     val meeting = open
     if (meeting != null) {
+        var body by remember(meeting.id) { mutableStateOf<String?>(null) }
+        LaunchedEffect(meeting.id) {
+            body = GraphStore.text(context, meeting)
+        }
         Column(Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
             TextButton(onClick = { open = null }) {
                 Text(L.t("← Назад", "← Back", "← 返回"))
@@ -67,14 +74,19 @@ fun MeetingsScreen(onPickGraph: () -> Unit) {
             Text(meeting.title, style = MaterialTheme.typography.titleLarge)
             Text(meeting.stamp, style = MaterialTheme.typography.labelMedium)
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            Text(GraphStore.text(context, meeting))
+            if (body == null) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            } else {
+                Text(body.orEmpty())
+            }
         }
         return
     }
 
     Column(Modifier.fillMaxSize()) {
+        if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         status?.let { Text(it, Modifier.padding(16.dp)) }
-        if (meetings.isEmpty()) {
+        if (meetings.isEmpty() && !loading) {
             Text(
                 L.t("Встреч пока нет", "No meetings yet", "暂无会议"),
                 Modifier.padding(16.dp),
