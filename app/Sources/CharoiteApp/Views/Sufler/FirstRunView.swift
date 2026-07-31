@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 
 #if os(macOS)
@@ -13,18 +14,20 @@ struct FirstRunView: View {
     /// Показываем один раз; отметка переживает перезапуск.
     @AppStorage("charoit.firstRunSeen") private var seen = false
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var readiness = SetupReadinessService.shared
+    @State private var requestingMicrophone = false
     let onStart: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
+        VStack(alignment: .leading, spacing: 18) {
             header
             Divider()
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 12) {
                 step("waveform.circle.fill",
                      L.t("Слушает встречу", "Listens to the meeting", "旁听会议"),
-                     L.t("Берёт звук из микрофона и из динамиков — обе стороны разговора. Никаких ботов в звонке: собеседники ничего не увидят.",
-                         "Takes audio from the microphone and the speakers — both sides of the conversation. No bots joining the call: the others see nothing.",
-                         "同时采集麦克风与扬声器的声音——对话双方都在内。不会有机器人加入通话：对方看不到任何东西。"))
+                     L.t("Берёт звук из микрофона и, если настроен BlackHole, из звонка. Бот не входит во встречу; сообщите участникам о записи.",
+                         "Takes audio from the microphone and, when BlackHole is configured, from the call. No bot joins; tell participants about the recording.",
+                         "采集麦克风声音，并在配置 BlackHole 后采集通话声音。不会有机器人加入；请告知参与者正在录音。"))
                 step("lock.laptopcomputer",
                      L.t("Всё остаётся на этом Mac", "Everything stays on this Mac", "一切都留在这台 Mac 上"),
                      L.t("Распознавание речи и разбор идут локально. Записи, стенограммы и тезисы никуда не отправляются.",
@@ -36,12 +39,16 @@ struct FirstRunView: View {
                          "Transcript, theses, minutes and decisions land in the meetings folder. Later you can ask: \"what did we discuss yesterday?\"",
                          "逐字稿、要点、纪要与决定都会存入会议文件夹。之后你可以问：「昨天讨论了什么？」"))
             }
+            readinessPanel
             Spacer(minLength: 0)
             footer
         }
         .padding(28)
-        .frame(width: 520, height: 460)
-        .onAppear(perform: warmUpFolderAccess)
+        .frame(width: 560, height: 680)
+        .onAppear {
+            warmUpFolderAccess()
+            readiness.refresh()
+        }
     }
 
     /// Спрашиваем доступ к папке заранее, пока человек читает этот экран.
@@ -98,6 +105,70 @@ struct FirstRunView: View {
         .accessibilityElement(children: .combine)
     }
 
+    private var readinessPanel: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Text(L.t("Готовность к первой встрече", "Ready for the first meeting", "首次会议准备情况"))
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                if readiness.isChecking {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button(L.t("Проверить снова", "Check again", "再次检查")) {
+                        readiness.refresh()
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                }
+            }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(readiness.snapshot?.checks ?? []) { check in
+                        readinessRow(check)
+                    }
+                    if readiness.snapshot == nil, !readiness.isChecking {
+                        Text(L.t("Не удалось выполнить проверку",
+                                 "The readiness check could not run",
+                                 "无法执行准备情况检查"))
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .frame(height: 205)
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func readinessRow(_ check: SetupCheck) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: check.state == .ready
+                  ? "checkmark.circle.fill"
+                  : check.state == .warning ? "exclamationmark.triangle.fill" : "xmark.circle.fill")
+                .foregroundStyle(readinessColor(check.state))
+                .frame(width: 16)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(check.title).font(.system(size: 12, weight: .medium))
+                Text(check.detail)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func readinessColor(_ state: SetupCheck.State) -> Color {
+        switch state {
+        case .ready: return .green
+        case .warning: return .orange
+        case .blocked: return .red
+        }
+    }
+
     private var footer: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Про микрофон предупреждаем ДО нажатия: системный запрос,
@@ -121,19 +192,53 @@ struct FirstRunView: View {
                     seen = true
                     dismiss()
                 }
+                SettingsLink {
+                    Label(L.t("Настройки", "Settings", "设置"), systemImage: "gearshape")
+                }
                 Spacer()
                 Button {
-                    seen = true
-                    dismiss()
-                    onStart()
+                    beginFirstMeeting()
                 } label: {
                     Text(L.t("Начать слушать встречу", "Start listening", "开始旁听"))
                         .fontWeight(.medium)
                         .padding(.horizontal, 6)
                 }
                 .keyboardShortcut(.defaultAction)
+                .disabled(readiness.isChecking || requestingMicrophone
+                          || readiness.snapshot?.canStart != true)
             }
         }
+    }
+
+    /// Явное нажатие «Начать» — правильный момент для системного вопроса.
+    /// При отказе мастер остаётся на экране и превращает предупреждение в
+    /// точную ошибку; отметку «онбординг пройден» раньше разрешения не ставим.
+    private func beginFirstMeeting() {
+        guard readiness.snapshot?.canStart == true else { return }
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            finishFirstMeetingStart()
+        case .notDetermined:
+            requestingMicrophone = true
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                Task { @MainActor in
+                    requestingMicrophone = false
+                    if granted {
+                        finishFirstMeetingStart()
+                    } else {
+                        readiness.refresh()
+                    }
+                }
+            }
+        default:
+            readiness.refresh()
+        }
+    }
+
+    private func finishFirstMeetingStart() {
+        seen = true
+        dismiss()
+        onStart()
     }
 }
 
