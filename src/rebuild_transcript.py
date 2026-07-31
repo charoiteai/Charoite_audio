@@ -33,6 +33,7 @@ import yaml
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from diarize import diarize  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
 from main import NOISE, Transcript  # noqa: E402
+from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
 from stt import STT  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -405,13 +406,41 @@ def main():
     live = pathlib.Path(sys.argv[1]).expanduser()
     if not live.exists():
         sys.exit(f"нет файла: {live}")
-    cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
+    status = MeetingStatusStore(ROOT)
+    pipeline_started = time.time()
+
+    def publish(method, *args):
+        try:
+            return method(*args)
+        except Exception as e:  # noqa: BLE001 — статус не должен ломать сам пайплайн
+            log(f"статус обработки не записан ({type(e).__name__}: {e})")
+            return None
+
+    publish(status.processing, live, "waiting_for_audio")
     try:
-        rebuild(live, cfg)
-    except Exception as e:  # noqa: BLE001 — граф важнее идеальной пересборки
-        log(f"пересборка не удалась ({type(e).__name__}: {e}) — граф по живой версии")
-    subprocess.run([sys.executable, str(pathlib.Path(__file__).parent / "graph_updater.py"),
-                    str(live)], check=False)
+        cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
+        publish(status.processing, live, "rebuilding_transcript")
+        try:
+            rebuild(live, cfg)
+        except Exception as e:  # noqa: BLE001 — граф важнее идеальной пересборки
+            log(f"пересборка не удалась ({type(e).__name__}: {e}) — граф по живой версии")
+        publish(status.processing, live, "updating_graph")
+        result = subprocess.run(
+            [sys.executable, str(pathlib.Path(__file__).parent / "graph_updater.py"), str(live)],
+            check=False,
+        )
+        if result.returncode:
+            raise RuntimeError(f"graph_updater завершился с кодом {result.returncode}")
+        note = find_meeting_note(cfg, live, newer_than=pipeline_started - 2)
+        if note is None:
+            raise RuntimeError("заметка встречи не создана")
+        if not status.has_transcript(live):
+            raise RuntimeError("финальная стенограмма не найдена")
+        publish(status.ready, live, note)
+    except Exception as e:  # noqa: BLE001 — статус ошибки обязан пережить процесс
+        log(f"обработка не завершена ({type(e).__name__}: {e})")
+        publish(status.failed, live, f"{type(e).__name__}: {e}")
+        raise
 
 
 if __name__ == "__main__":

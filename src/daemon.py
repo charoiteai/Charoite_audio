@@ -32,6 +32,7 @@ import yaml  # noqa: E402
 import action_items  # noqa: E402
 import cloud  # noqa: E402
 import fact_check  # noqa: E402
+from meeting_processing import MeetingStatusStore  # noqa: E402
 import privacy  # noqa: E402
 import speaker_names  # noqa: E402
 import voice_pitch  # noqa: E402
@@ -262,12 +263,20 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> None:
             continue                      # без стенограммы пересобирать нечего
         emit({"type": "status",
               "text": f"Догоняю прерванную встречу {stamp} — пересборка фоном"})
-        subprocess.Popen(
-            ["nice", "-n", "10", sys.executable,
-             str(ROOT / "src" / "rebuild_transcript.py"), str(live)],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
-        )
+        statuses = MeetingStatusStore(ROOT)
+        try:
+            statuses.processing(live, "recovering")
+        except Exception:  # статус вспомогателен; запись всё равно восстанавливаем
+            pass
+        try:
+            subprocess.Popen(
+                ["nice", "-n", "10", sys.executable,
+                 str(ROOT / "src" / "rebuild_transcript.py"), str(live)],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+            )
+        except Exception as e:  # noqa: BLE001 — восстановление должно быть видимым
+            statuses.failed(live, f"не удалось запустить восстановление: {e}")
 
 
 def main():
@@ -1453,14 +1462,22 @@ def main():
         try:
             gstamp = pathlib.Path(tr.path).stem[:15]
             glog = open(ROOT / "logs" / f"graph_{gstamp}.log", "w")  # не DEVNULL: молчаливые падения графа
+            statuses = MeetingStatusStore(ROOT)
+            try:
+                statuses.processing(tr.path, "waiting_for_audio")
+            except Exception:  # статус вспомогателен; встречу всё равно обрабатываем
+                pass
             subprocess.Popen(
                 ["nice", "-n", "10", sys.executable,
                  str(pathlib.Path(__file__).parent / "rebuild_transcript.py"), str(tr.path)],
                 start_new_session=True, stdout=glog, stderr=subprocess.STDOUT,
             )
             emit({"type": "status", "text": "Финальная стенограмма и граф: фоном (~2-4 мин)"})
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 — UI должен показать, что фон не стартовал
+            try:
+                MeetingStatusStore(ROOT).failed(tr.path, f"не удалось запустить обработку: {e}")
+            except Exception:
+                pass
         hub.stop()  # финализирует записи .pcm → .wav — их и ждёт rebuild
         emit({"type": "status", "text": f"Стенограмма: {tr.path}"})
 
