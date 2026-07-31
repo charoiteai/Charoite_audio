@@ -19,6 +19,7 @@
 
 - **Windows 移植** — 守护进程是 Python + ONNX，投递协议本身与平台无关（mDNS + TLS）；要做的是原生外壳，以及替代 BlackHole 的系统声音采集方案。
 - **Android 伴侣应用：直连投递** — 伴侣应用核心已发布（app-android/）：录音、会议列表、任务、投递到你选定的文件夹。剩下的是通过局域网上传到 Mac（NsdManager + TLS，与 iPhone 共用协议）；在此之前由 Syncthing 保持文件夹同步。
+- **Android：compileSdk 36** — 目前针对 API 35 构建，而较新的 androidx（activity 1.13、lifecycle 2.11、Compose BOM 2026）需要 36。这次升级是合理的 — 平板已经运行 Android 16 — 但必须连同真机后台录音验证一起做，而不是照单接受机器人的依赖升级。
 
 - **伴侣应用实时模式** — 手机把会议音频流式传到 Mac，并在自己屏幕上镜像实时逐字稿与提示。
 - **App Store 发布** — 等会议信息流让 v1 显得完整之后（先走 TestFlight）。
