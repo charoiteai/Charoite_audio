@@ -6,6 +6,7 @@ import SwiftUI
 /// Суфлёр: левая панель — стенограмма в реальном времени, правая — тезисы и подсказки.
 struct SuflerView: View {
     @ObservedObject private var sufler = SuflerService.shared
+    @ObservedObject private var processing = MeetingProcessingService.shared
     @ObservedObject private var tasksSvc = TasksService.shared
     @ObservedObject private var calendar = CalendarService.shared
     @AppStorage("charoite.calendarBriefs") private var calendarBriefs = false
@@ -393,7 +394,19 @@ struct SuflerView: View {
     /// «Recording dropped — recovering» не содержало ни «прервалась», ни
     /// «Failed», и сообщение об оборванной записи показывалось мелким серым
     /// текстом в одну строку — ровно то, чего этот код должен избегать.
-    private var statusIsProblem: Bool { sufler.statusIsError }
+    private var displayedStatus: String {
+        if !sufler.isRunning, let processingStatus = processing.statusText {
+            return processingStatus
+        }
+        return sufler.status
+    }
+
+    private var statusIsProblem: Bool {
+        if !sufler.isRunning, processing.statusText != nil {
+            return processing.isError
+        }
+        return sufler.statusIsError
+    }
 
     /// Что показывать в панели: во время встречи — подсказку демона, вне
     /// встречи — ответ по архиву. Пусто — приглашение спросить.
@@ -496,12 +509,20 @@ struct SuflerView: View {
             // Сбой записи нельзя показывать так же, как «Готов к запуску»:
             // мелкий серый текст в одну строку человек на встрече не заметит, а
             // сообщение «нажмите ещё раз» вдобавок обрезалось на полуслове.
-            Text(sufler.status)
+            Text(displayedStatus)
                 .font(statusIsProblem ? .caption.weight(.medium) : .caption)
                 .foregroundStyle(statusIsProblem ? Color.red : Color.secondary)
                 .lineLimit(statusIsProblem ? 2 : 1)
                 .fixedSize(horizontal: false, vertical: statusIsProblem)
                 .textSelection(.enabled)
+
+            if !sufler.isRunning, processing.isProcessing {
+                ProgressView().controlSize(.small)
+            }
+            if !sufler.isRunning, let actionTitle = processing.actionTitle {
+                Button(actionTitle) { processing.openResult() }
+                    .controlSize(.small)
+            }
 
             Spacer()
 

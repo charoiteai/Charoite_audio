@@ -222,6 +222,7 @@ final class SuflerService: ObservableObject {
 
     func stop() {
         userStopped = true
+        MeetingProcessingService.shared.expectResult()
         watchdog?.invalidate()
         watchdog = nil
         send("stop")

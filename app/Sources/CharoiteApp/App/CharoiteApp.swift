@@ -67,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         signal(SIGPIPE, SIG_IGN)
         Self.migrateSettingsFromOldBundle()
         MeetingNotificationService.shared.configure()
+        MeetingProcessingService.shared.startMonitoring()
         _ = DictationService.shared  // регистрирует глобальные ⌥⌘D и ⌥⌘N
         // Папка импорта переживает перезапуск: тумблер в Настройках включён —
         // следим с первого запуска, не дожидаясь открытия настроек
