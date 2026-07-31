@@ -120,6 +120,17 @@ and task checkboxes straight from the same markdown files Obsidian and
 the Mac app see. Build with XcodeGen: `cd app-ios && xcodegen generate`,
 then open `CharoiteiOS.xcodeproj`.
 
+## Android companion (app-android/)
+
+The same role for a tablet or an Android phone
+([app-android/](app-android/)): background recording through a foreground
+service, an on-device queue, the meetings feed and task checkboxes from
+the same markdown files. Recordings are written as 16 kHz mono WAV —
+exactly what recognition needs, and a format that survives a crash —
+and land in a folder you pick once; the Mac sees that folder through
+Syncthing or any sync tool. The app holds no network permissions at all.
+Build: `cd app-android && ./gradlew assembleDebug`.
+
 ## Documentation
 
 - [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md)
@@ -137,7 +148,7 @@ See [PRIVACY.md](PRIVACY.md). Short version: no telemetry, no network calls exce
 
 ## Status
 
-Public beta, currently 0.38.0. Issues and feedback welcome. The native macOS app lives in [app/](app/) — build with `app/make_app.sh`; the iPhone companion is in [app-ios/](app-ios/). Roadmap in [ROADMAP.md](ROADMAP.md): UI localization for both apps, direct Wi-Fi delivery of recordings from the phone, a packaged graph viewer.
+Public beta, currently 0.38.0. Issues and feedback welcome. The native macOS app lives in [app/](app/) — build with `app/make_app.sh`; the iPhone companion is in [app-ios/](app-ios/) and the Android one in [app-android/](app-android/). Roadmap in [ROADMAP.md](ROADMAP.md): UI localization for both apps, direct Wi-Fi delivery of recordings from the phone, a packaged graph viewer.
 
 ## License
 

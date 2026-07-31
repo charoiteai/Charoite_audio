@@ -103,7 +103,7 @@ STT 模型首次运行自动下载。实时说话人分离（按声音区分的�
 
 ## 状态
 
-公开测试版，当前版本 0.38.0。欢迎 Issues 和反馈。原生 macOS 应用在 [app/](app/)，构建命令 `app/make_app.sh`；iPhone 伴侣应用在 [app-ios/](app-ios/)。界面语言目前为俄语（界面本地化在路线图上）；会议文档、图谱内容和提示已支持中文（`language: zh`）。路线图见 [ROADMAP.zh.md](ROADMAP.zh.md)。
+公开测试版，当前版本 0.38.0。欢迎 Issues 和反馈。原生 macOS 应用在 [app/](app/)，构建命令 `app/make_app.sh`；iPhone 伴侣应用在 [app-ios/](app-ios/)，安卓伴侣应用在 [app-android/](app-android/)。界面语言目前为俄语（界面本地化在路线图上）；会议文档、图谱内容和提示已支持中文（`language: zh`）。路线图见 [ROADMAP.zh.md](ROADMAP.zh.md)。
 
 ## 许可证
 
