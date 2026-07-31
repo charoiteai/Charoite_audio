@@ -129,6 +129,11 @@ lives in RAM alongside it, `num_ctx` is always explicit.
 - **Cloud — opt-in post-meeting enrichment only**, via subscription (no API
   key in the environment). Meeting data never leaves the machine by
   default; no cloud memory SaaS, none planned.
+- **MCP server** (src/mcp_server.py) exposes the archive and the live
+  meeting as Claude Code tools. It supports both branches of the `mcp`
+  package: 2.0 moved the class (`mcp.server.fastmcp.FastMCP` →
+  `mcp.server.MCPServer`) and requirements allow either — an install must
+  not silently produce a server that dies on import.
 
 ## Surviving a crash
 
