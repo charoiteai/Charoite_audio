@@ -8,6 +8,11 @@ Charoite listens to your meetings (microphone + system audio, no bots joining ca
 
 *[Русский](docs/ru/README.md) · [中文](docs/zh/README.md). Charoite is Russian-first today (GigaAM STT is SOTA for Russian); English works via Parakeet/Whisper, Chinese via Whisper — and Qwen, the default LLM, is native in Chinese.*
 
+> **[Manifesto: local-first, not local-only](MANIFESTO.md)** — what months on real
+> meetings taught us about where local models shine and why a strong model
+> runs the knowledge graph. Numbers, boundaries, and the test that would
+> prove us wrong.
+
 ![Charoite app — archive answers with sources, English UI](docs/img/app-main-en.png)
 
 ![Meeting tasks — every graph checkbox in one window](docs/img/app-tasks-en.png)
@@ -135,7 +140,7 @@ Build: `cd app-android && ./gradlew assembleDebug`.
 
 - [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md)
 
-- [Manifesto](docs/MANIFESTO.md) — why local models run the conveyor and a strong model runs the graph
+- [Manifesto](MANIFESTO.md) — why local models run the conveyor and a strong model runs the graph
 - [Setup](docs/SETUP.md) — install, BlackHole for calls, permissions, first run
 - [Features](docs/FEATURES.md) — everything Charoite does, live and post-meeting
 - [Architecture](docs/ARCHITECTURE.md) — the daemon, two-pass diarization, graph pipeline
