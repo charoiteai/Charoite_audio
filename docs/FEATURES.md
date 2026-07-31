@@ -243,6 +243,11 @@ it signals degradation, it does not break the loop.
 - **Night cycle in one click** — Settings installs the 04:15 launchd
   job (core revision with backups, morning brief, memory bench);
   the same button removes it.
+- **Recording reminder** (opt-in) — the calendar toggle shows a system
+  notification and an in-window bar when a meeting starts, with explicit
+  **Start recording** and **Not now** actions. Recording never starts on its
+  own. Optional launch at login uses macOS Login Items so the reminder works
+  before the window is opened.
 - **Calendar brief** (opt-in) — a Settings toggle: before your next
   meeting the bar shows a button with its title, one click builds an
   archive brief. Only the title and time of the nearest event are

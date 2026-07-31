@@ -14,6 +14,7 @@ struct SettingsView: View {
     @State private var cloudEditGraph = false
     @State private var cloudEditNote = ""
     @ObservedObject private var importer = ImportService.shared
+    @ObservedObject private var launchAtLogin = LaunchAtLoginService.shared
     @State private var check = ""
     // Считается в фоне и только при смене пути: раньше это было вычисляемое
     // свойство, и полный обход графа (в iCloud — с докачкой выгруженных
@@ -125,13 +126,27 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section(L.t("Календарь", "Calendar", "日历")) {
+                Toggle(
+                    L.t("Запускать Charoite при входе",
+                        "Launch Charoite at login",
+                        "登录时启动 Charoite"),
+                    isOn: Binding(
+                        get: { launchAtLogin.isEnabled },
+                        set: { launchAtLogin.setEnabled($0) }))
+                if !launchAtLogin.note.isEmpty {
+                    Text(launchAtLogin.note)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
                 Toggle(L.t("Бриф и напоминание о записи", "Brief and a nudge to record", "简报与录制提醒"), isOn: $calendarBriefs)
                     .onChange(of: calendarBriefs) { _, on in
-                        on ? CalendarService.shared.enable() : CalendarService.shared.disable()
+                        on
+                            ? CalendarService.shared.enable(askForNotifications: true)
+                            : CalendarService.shared.disable()
                     }
-                Text(L.t("Читает только название и время событий — для кнопки «Бриф» перед встречей и для полосы «встреча началась — начать запись?». Запись сама не включается: спрашиваем и ждём ответа, «Не сейчас» по этой встрече больше не повторяем. Локально, ничего не пишет.",
-                         "Reads only the title and time of your events — for the Brief button before a meeting and for the “meeting has started — start recording?” bar. Recording never starts on its own: we ask and wait, and “Not now” is remembered for that meeting. Local, write-free.",
-                         "仅读取日程的标题与时间——用于会前的「简报」按钮，以及「会议已开始——开始录制吗？」提示条。录制不会自动开始：我们询问并等待你的选择，选择「暂不」后不再就该会议询问。本地运行，不做任何写入。"))
+                Text(L.t("Читает только название и время событий — для кнопки «Бриф», системного уведомления и полосы внутри окна. Запись сама не включается: спрашиваем и ждём ответа, «Не сейчас» по этой встрече больше не повторяем. Локально, ничего не пишет.",
+                         "Reads only event titles and times — for the Brief button, a system notification and the in-window bar. Recording never starts on its own: we ask and wait, and “Not now” is remembered for that meeting. Local, write-free.",
+                         "仅读取日程的标题与时间——用于「简报」按钮、系统通知和窗口内提示条。录制不会自动开始：我们询问并等待你的选择，选择「暂不」后不再就该会议询问。本地运行，不做任何写入。"))
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
@@ -147,7 +162,10 @@ struct SettingsView: View {
         .navigationTitle(L.t("Настройки", "Settings", "设置"))
         // Состояние галочки читаем из файла, а не помним своё: конфиг могли
         // поправить руками, и тогда UI обязан показать то, что там лежит.
-        .onAppear { cloudEditGraph = AppSettings.configFlag("cloud_edit_graph") }
+        .onAppear {
+            cloudEditGraph = AppSettings.configFlag("cloud_edit_graph")
+            launchAtLogin.refresh()
+        }
         // Пересчёт только когда путь установки действительно сменился, и не
         // на главном потоке: обход графа в iCloud занимает секунды.
         .task(id: root) {

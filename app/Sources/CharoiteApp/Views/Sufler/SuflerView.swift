@@ -87,7 +87,6 @@ struct SuflerView: View {
             if !firstRunSeen { showFirstRun = true }
             TasksService.shared.rescan()   // бейдж «Задачи · N» актуален сразу
             ArchiveHistoryStore.shared.load()
-            if calendarBriefs { CalendarService.shared.enable() }
             CalendarService.shared.recording(sufler.isRunning)
             // Dev-хуки скринов/смоков: на живой машине владельца клавиатурный
             // ввод в чужое окно проигрывает гонку за фокус — вопрос и окна
