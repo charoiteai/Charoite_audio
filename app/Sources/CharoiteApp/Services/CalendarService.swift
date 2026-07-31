@@ -23,6 +23,10 @@ final class CalendarService: ObservableObject {
     /// Запросить доступ (системный диалог) и начать следить за ближайшим
     /// событием. Отказ пользователя — тихо выключаемся.
     func enable() {
+        // Уведомления спрашиваем в тот же момент, когда человек явно включает
+        // календарный контур. Отказ не ломает функцию: полоса внутри окна
+        // остаётся доступна.
+        MeetingNotificationService.shared.requestAuthorization()
         let done: (Bool) -> Void = { granted in
             Task { @MainActor in
                 guard granted else { self.nextEventTitle = nil; return }
@@ -47,7 +51,9 @@ final class CalendarService: ObservableObject {
         timer?.invalidate()
         timer = nil
         nextEventTitle = nil
+        if let id = cue?.id { MeetingNotificationService.shared.remove(cueID: id) }
         cue = nil
+        MeetingNotificationService.shared.reset()
     }
 
     /// Состояние записи из вида: при идущей записи подсказка молчит.
@@ -59,7 +65,10 @@ final class CalendarService: ObservableObject {
 
     /// «Не сейчас» по этой встрече: больше не спрашиваем про неё.
     func dismissCue() {
-        if let id = cue?.id { silenced.insert(id) }
+        if let id = cue?.id {
+            silenced.insert(id)
+            MeetingNotificationService.shared.remove(cueID: id)
+        }
         cue = nil
     }
 
@@ -87,7 +96,14 @@ final class CalendarService: ObservableObject {
                              attendees: max(0, (ev.attendees?.count ?? 0) - 1),
                              isAllDay: ev.isAllDay)
         }
-        cue = MeetingCue.decide(now: now, events: events,
-                                isRecording: isRecording, silencedIds: silenced)
+        let nextCue = MeetingCue.decide(now: now, events: events,
+                                        isRecording: isRecording, silencedIds: silenced)
+        if let oldID = cue?.id, oldID != nextCue?.id {
+            MeetingNotificationService.shared.remove(cueID: oldID)
+        }
+        cue = nextCue
+        if let nextCue {
+            MeetingNotificationService.shared.present(nextCue)
+        }
     }
 }

@@ -66,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // этого валила всё приложение сигналом 13
         signal(SIGPIPE, SIG_IGN)
         Self.migrateSettingsFromOldBundle()
+        MeetingNotificationService.shared.configure()
         _ = DictationService.shared  // регистрирует глобальные ⌥⌘D и ⌥⌘N
         // Папка импорта переживает перезапуск: тумблер в Настройках включён —
         // следим с первого запуска, не дожидаясь открытия настроек
@@ -73,6 +74,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if d.bool(forKey: "charoite.importWatch"),
            let dir = d.string(forKey: "charoite.importDir"), !dir.isEmpty {
             ImportService.shared.enable(dir: dir)
+        }
+        // Календарный контур принадлежит приложению, а не окну: при запуске
+        // через Login Items главное окно может ни разу не открыться, но
+        // напоминание о встрече всё равно должно прийти.
+        if d.bool(forKey: "charoite.calendarBriefs") {
+            CalendarService.shared.enable()
         }
         // Тихий прогрев brain-компаньона: холодный первый скан графа мог не
         // уложиться в таймаут запроса — первый вопрос пользователя падал на
@@ -94,21 +101,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// пересоздаём через пункт меню File → New Window (Cmd+N).
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         guard !flag else { return true }
-        sender.activate(ignoringOtherApps: true)
-        // Открыли сами → false, иначе система откроет ВТОРОЕ окно поверх
-        if let win = sender.windows.first(where: {
+        Self.showMainWindow()
+        if sender.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) { return false }
+        return true   // сами не смогли — пусть пробует система
+    }
+
+    /// Поднять главное окно из Dock, меню-бара или действия уведомления.
+    static func showMainWindow() {
+        let app = NSApplication.shared
+        app.activate(ignoringOtherApps: true)
+        // Открыли существующее → не создаём второе окно поверх.
+        if let win = app.windows.first(where: {
             $0.identifier?.rawValue.hasPrefix("main") == true && $0.canBecomeMain
         }) {
             win.makeKeyAndOrderFront(nil)
-            return false
+            return
         }
-        if let fileMenu = sender.mainMenu?.items.first(where: { $0.submenu?.items.contains(where: { $0.keyEquivalent == "n" }) == true }),
-           let newWindow = fileMenu.submenu?.items.first(where: { $0.keyEquivalent == "n" && $0.isEnabled }),
+        if let fileMenu = app.mainMenu?.items.first(where: {
+            $0.submenu?.items.contains(where: { $0.keyEquivalent == "n" }) == true
+        }),
+           let newWindow = fileMenu.submenu?.items.first(where: {
+               $0.keyEquivalent == "n" && $0.isEnabled
+           }),
            let action = newWindow.action {
-            sender.sendAction(action, to: newWindow.target, from: newWindow)
-            return false
+            app.sendAction(action, to: newWindow.target, from: newWindow)
         }
-        return true   // сами не смогли — пусть пробует система
     }
 
     /// Выход посреди встречи — самая дорогая случайность: цена промаха —
