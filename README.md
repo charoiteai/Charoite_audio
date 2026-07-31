@@ -109,6 +109,10 @@ no longer works on macOS 15+), or build it yourself:
 
 Live transcript, theses and hints, archive questions and briefs, local
 chat with graph memory, dictation (⌥⌘D) and voice notes (⌥⌘N).
+On the first launch the app checks the actual meeting path before offering to
+record: `.venv`, daemon and config, Python dependencies, microphone and audio
+inputs, Ollama models and the graph folder. Missing BlackHole, `bge-m3` or an
+optional graph is shown as a limitation, not confused with a fatal failure.
 
 **Option B — CLI:**
 

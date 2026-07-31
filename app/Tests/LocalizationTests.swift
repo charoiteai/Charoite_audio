@@ -16,6 +16,7 @@ final class LocalizationTests: XCTestCase {
         "Views/Sufler/SuflerView.swift",
         "Views/Tasks/TasksView.swift",
         "Views/LocalChat/LocalChatView.swift",
+        "Services/SetupReadinessService.swift",
     ]
 
     func testUIHasNoBareRussianLiterals() throws {
@@ -80,5 +81,19 @@ final class ConfigParsingTests: XCTestCase {
         // stt.language и sufler.language совпадают по имени; sufler ниже.
         let cfg = "stt:\n  language: ru\nsufler:\n  language: zh\n"
         XCTAssertEqual(AppSettings.parseValue("language", in: cfg), "zh")
+    }
+
+    func testRelativeGraphPathIsResolvedFromInstallationRoot() {
+        let root = URL(fileURLWithPath: "/tmp/Charoite_audio")
+        XCTAssertEqual(
+            AppSettings.resolvePath("demo/graph", relativeTo: root).path,
+            "/tmp/Charoite_audio/demo/graph")
+    }
+
+    func testAbsoluteGraphPathIsKept() {
+        let root = URL(fileURLWithPath: "/tmp/Charoite_audio")
+        XCTAssertEqual(
+            AppSettings.resolvePath("/Volumes/Meetings", relativeTo: root).path,
+            "/Volumes/Meetings")
     }
 }
