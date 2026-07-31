@@ -5,6 +5,20 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.41.0](https://github.com/charoiteai/Charoite_audio/compare/v0.40.0...v0.41.0) (2026-07-31)
+
+
+### Features
+
+* **android:** компаньон для Android — запись, доставка, граф ([#178](https://github.com/charoiteai/Charoite_audio/issues/178)) ([8688f93](https://github.com/charoiteai/Charoite_audio/commit/8688f93735517b4330f409c3b47304f3b756c095))
+* **macOS:** напоминать о записи вне окна приложения ([#188](https://github.com/charoiteai/Charoite_audio/issues/188)) ([4ed2dea](https://github.com/charoiteai/Charoite_audio/commit/4ed2dead31aa8f8caee268999bb15d39e8ea932a))
+
+
+### Bug Fixes
+
+* **android:** make companion checks and imports reliable ([#180](https://github.com/charoiteai/Charoite_audio/issues/180)) ([9e9bd03](https://github.com/charoiteai/Charoite_audio/commit/9e9bd033dfe30006eb3e7432bb0299be1f7afc18))
+* **android:** protect recordings during recovery and delivery ([#187](https://github.com/charoiteai/Charoite_audio/issues/187)) ([90fc3ca](https://github.com/charoiteai/Charoite_audio/commit/90fc3ca0f001631345fd17ee776b30d28087fd7d))
+
 ## [0.40.0](https://github.com/charoiteai/Charoite_audio/compare/v0.39.0...v0.40.0) (2026-07-30)
 
 
