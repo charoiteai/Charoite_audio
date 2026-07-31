@@ -5,6 +5,18 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.42.0](https://github.com/charoiteai/Charoite_audio/compare/v0.41.0...v0.42.0) (2026-07-31)
+
+
+### Features
+
+* **macOS:** show post-meeting processing status ([#192](https://github.com/charoiteai/Charoite_audio/issues/192)) ([0c480db](https://github.com/charoiteai/Charoite_audio/commit/0c480db1fe576c05ec8174ae38fe8036b4af964f))
+
+
+### Bug Fixes
+
+* **mcp:** сервер поднимается и на mcp 2.x ([#190](https://github.com/charoiteai/Charoite_audio/issues/190)) ([1ec2e9d](https://github.com/charoiteai/Charoite_audio/commit/1ec2e9d4cd86003facc00e1e0f0c89e66c92c0b7))
+
 ## [0.41.0](https://github.com/charoiteai/Charoite_audio/compare/v0.40.0...v0.41.0) (2026-07-31)
 
 
