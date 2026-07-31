@@ -5,9 +5,19 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 
 /**
  * Чтение графа встреч прямо с планшета.
@@ -45,10 +55,19 @@ object GraphStore {
     private val _meetings = MutableStateFlow<List<Meeting>>(emptyList())
     private val _tasks = MutableStateFlow<List<TaskItem>>(emptyList())
     private val _status = MutableStateFlow<String?>(null)
+    private val _meetingsLoading = MutableStateFlow(false)
+    private val _tasksLoading = MutableStateFlow(false)
+
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val meetingsScan = LatestJob(ioScope)
+    private val tasksScan = LatestJob(ioScope)
+    private val taskWrites = Mutex()
 
     val meetings: StateFlow<List<Meeting>> = _meetings.asStateFlow()
     val tasks: StateFlow<List<TaskItem>> = _tasks.asStateFlow()
     val status: StateFlow<String?> = _status.asStateFlow()
+    val meetingsLoading: StateFlow<Boolean> = _meetingsLoading.asStateFlow()
+    val tasksLoading: StateFlow<Boolean> = _tasksLoading.asStateFlow()
 
     fun folderChosen(context: Context): Boolean = treeUri(context) != null
 
@@ -81,26 +100,51 @@ object GraphStore {
 
     /** Лента: файлы .md из папки «Встречи», свежие сверху. */
     fun rescanMeetings(context: Context) {
+        val app = context.applicationContext
+        meetingsScan.replace(
+            onStart = { _meetingsLoading.value = true },
+            onFinish = { _meetingsLoading.value = false },
+        ) {
+            try {
+                val result = scanMeetings(app)
+                _meetings.value = result.items
+                _status.value = result.status
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                _status.value = L.t(
+                    "Не удалось прочитать встречи",
+                    "Could not read meetings",
+                    "无法读取会议",
+                )
+            }
+        }
+    }
+
+    private data class MeetingScan(val items: List<Meeting>, val status: String?)
+
+    private suspend fun scanMeetings(context: Context): MeetingScan {
         val tree = treeUri(context)
         if (tree == null) {
-            _meetings.value = emptyList()
-            return
+            return MeetingScan(emptyList(), null)
         }
         val rootId = DocumentsContract.getTreeDocumentId(tree)
         val meetingsId = children(context, tree, rootId)
             .firstOrNull { it.isDir && it.name == MEETINGS_DIR }?.documentId
         if (meetingsId == null) {
-            _meetings.value = emptyList()
-            _status.value = L.t(
-                "В выбранной папке нет раздела «Встречи» — это корень графа?",
-                "No “Встречи” folder inside — is this the graph root?",
-                "所选文件夹内没有 “Встречи” — 这是图谱根目录吗？",
+            return MeetingScan(
+                emptyList(),
+                L.t(
+                    "В выбранной папке нет раздела «Встречи» — это корень графа?",
+                    "No “Встречи” folder inside — is this the graph root?",
+                    "所选文件夹内没有 “Встречи” — 这是图谱根目录吗？",
+                ),
             )
-            return
         }
         val out = children(context, tree, meetingsId)
             .filter { !it.isDir && it.name.endsWith(".md") }
             .map { entry ->
+                coroutineContext.ensureActive()
                 val name = entry.name.removeSuffix(".md")
                 val text = read(context, entry.uri).orEmpty()
                 Meeting(
@@ -112,16 +156,34 @@ object GraphStore {
                 )
             }
             .sortedByDescending { it.sortKey }
-        _meetings.value = out
-        _status.value = null
+        return MeetingScan(out, null)
     }
 
     /** Задачи `- [ ]` по всему графу — как на Mac, открытые сверху. */
     fun rescanTasks(context: Context) {
+        val app = context.applicationContext
+        tasksScan.replace(
+            onStart = { _tasksLoading.value = true },
+            onFinish = { _tasksLoading.value = false },
+        ) {
+            try {
+                _tasks.value = scanTasks(app)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                _status.value = L.t(
+                    "Не удалось прочитать задачи",
+                    "Could not read tasks",
+                    "无法读取任务",
+                )
+            }
+        }
+    }
+
+    private suspend fun scanTasks(context: Context): List<TaskItem> {
         val tree = treeUri(context)
         if (tree == null) {
-            _tasks.value = emptyList()
-            return
+            return emptyList()
         }
         val found = mutableListOf<TaskItem>()
         walk(context, tree, DocumentsContract.getTreeDocumentId(tree), "") { entry, rel ->
@@ -136,13 +198,31 @@ object GraphStore {
                 )
             }
         }
-        _tasks.value = found.sortedBy { it.done }
+        return found.sortedBy { it.done }
     }
 
     fun openCount(): Int = _tasks.value.count { !it.done }
 
     /** Отметка — точечная замена маркера, файл остаётся истиной для всех. */
     fun toggle(context: Context, item: TaskItem) {
+        val app = context.applicationContext
+        ioScope.launch {
+            try {
+                taskWrites.withLock { toggleBlocking(app, item) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                _status.value = L.t(
+                    "Не удалось отметить задачу",
+                    "Could not update the task",
+                    "无法更新任务",
+                )
+            }
+            rescanTasks(app)
+        }
+    }
+
+    private fun toggleBlocking(context: Context, item: TaskItem) {
         val text = read(context, item.uri)
         if (text == null) {
             _status.value = L.t(
@@ -159,7 +239,6 @@ object GraphStore {
                 "Task changed in the graph — list refreshed",
                 "任务在图谱中已变更 — 列表已刷新",
             )
-            rescanTasks(context)
             return
         }
         val ok = runCatching {
@@ -177,11 +256,12 @@ object GraphStore {
                 "无法更新任务",
             )
         }
-        rescanTasks(context)
     }
 
-    fun text(context: Context, meeting: Meeting): String =
-        read(context, meeting.uri) ?: L.t("Файл не читается", "File is unreadable", "文件无法读取")
+    suspend fun text(context: Context, meeting: Meeting): String = withContext(Dispatchers.IO) {
+        read(context.applicationContext, meeting.uri)
+            ?: L.t("Файл не читается", "File is unreadable", "文件无法读取")
+    }
 
     // --- обход дерева -----------------------------------------------------
 
@@ -213,14 +293,15 @@ object GraphStore {
         return out
     }
 
-    private fun walk(
+    private suspend fun walk(
         context: Context,
         tree: Uri,
         parentId: String,
         prefix: String,
-        visit: (Entry, String) -> Unit,
+        visit: suspend (Entry, String) -> Unit,
     ) {
         for (e in children(context, tree, parentId)) {
+            coroutineContext.ensureActive()
             if (e.name.startsWith(".")) continue          // .obsidian и прочая служебка
             val rel = if (prefix.isEmpty()) e.name else "$prefix/${e.name}"
             if (e.isDir) walk(context, tree, e.documentId, rel, visit) else visit(e, rel)

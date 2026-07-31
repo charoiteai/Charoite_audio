@@ -55,7 +55,7 @@ jobs:
           # Переводы (README.zh.md и прочие) из списка убраны: опечатка в
           # китайском переводе закрывала требование задокументировать демон.
           # CHANGELOG убран тоже — docs/RELEASING.md запрещает править его руками.
-          touches_docs="$(echo "$changed" | grep -E '^(docs/|README\.md$|PRIVACY\.md$|SECURITY\.md$|ROADMAP\.md$|CONTRIBUTING\.md$)' || true)"
+          touches_docs="$(echo "$changed" | grep -E '^(docs/|app-android/README\.md$|README\.md$|PRIVACY\.md$|SECURITY\.md$|ROADMAP\.md$|CONTRIBUTING\.md$)' || true)"
 
           if [ -n "$touches_code" ] && [ -z "$touches_docs" ]; then
             echo "::error::Изменён код, но не тронута документация."

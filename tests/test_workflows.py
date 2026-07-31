@@ -127,6 +127,7 @@ def test_docs_guard_treats_android_as_code():
     """Изменение Android-поведения требует документации или skip-docs."""
     source = (WF / "docs-guard.yml").read_text(encoding="utf-8")
     assert "app-android/" in source
+    assert r"app-android/README\.md" in source
 
 
 def test_dependabot_tracks_android_gradle_dependencies():

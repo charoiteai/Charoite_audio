@@ -25,6 +25,10 @@ heavy step (STT, diarization, LLM, graph building) runs on your Mac.
   writes back into the markdown file itself, so the Mac, Obsidian and
   the tablet always agree.
 
+Graph scans and file reads run in the background. Large vaults therefore
+stay responsive, and opening the same tab again cancels its obsolete scan
+instead of publishing stale results.
+
 ## Recording format
 
 16 kHz, mono, 16-bit WAV — exactly what recognition on the Mac needs,

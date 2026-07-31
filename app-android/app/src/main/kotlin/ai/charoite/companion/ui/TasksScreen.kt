@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -29,6 +30,7 @@ fun TasksScreen(onPickGraph: () -> Unit) {
     val context = LocalContext.current
     val tasks by GraphStore.tasks.collectAsStateWithLifecycle()
     val status by GraphStore.status.collectAsStateWithLifecycle()
+    val loading by GraphStore.tasksLoading.collectAsStateWithLifecycle()
 
     if (!GraphStore.folderChosen(context)) {
         Column(
@@ -52,6 +54,7 @@ fun TasksScreen(onPickGraph: () -> Unit) {
     }
 
     Column(Modifier.fillMaxSize()) {
+        if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         status?.let { Text(it, Modifier.padding(16.dp)) }
         Text(
             L.t(
