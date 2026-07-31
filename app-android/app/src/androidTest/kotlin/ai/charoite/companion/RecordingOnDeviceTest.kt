@@ -7,6 +7,7 @@ import androidx.test.rule.GrantPermissionRule
 import java.io.File
 import java.io.RandomAccessFile
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -67,6 +68,36 @@ class RecordingOnDeviceTest {
             raf.seek(40)
             assertEquals("длина данных в заголовке разошлась с файлом", dataBytes, le32(raf))
         }
+    }
+
+    @Test
+    fun активную_запись_не_забирает_восстановление_сирот() {
+        // Пересозданная Activity зовёт rescueOrphans в onCreate. Пока сервис
+        // пишет, current/ принадлежит ему: утащить файл в доставку значит
+        // отправить огрызок и оставить сервис писать в отвязанный inode.
+        RecorderService.start(context, RecordKind.NOTE)
+        Thread.sleep(3_000)
+        assertTrue("сервис не начал писать", RecorderState.recording.value)
+
+        val live = Outbox.inProgress(context).listFiles()?.firstOrNull()
+        assertTrue("файл записи не появился", live != null)
+
+        // Файловая блокировка на внутреннем хранилище Android: живой файл
+        // не должен «чиниться» посторонним кодом.
+        assertFalse("repair тронул активную запись", WavWriter.repair(live!!))
+
+        Outbox.rescueOrphans(context)
+
+        assertTrue("восстановление утащило активную запись", live.exists())
+        assertTrue("активная запись попала в очередь", queued().isEmpty())
+
+        RecorderService.stop(context)
+        waitFor { !RecorderState.recording.value }
+        waitFor { queued().isNotEmpty() }
+
+        // После стопа блокировка снята, файл ушёл в очередь целиком.
+        assertEquals("после стопа файл не доехал до очереди", 1, queued().size)
+        assertTrue("в current/ остался хвост", Outbox.inProgress(context).listFiles().isNullOrEmpty())
     }
 
     private fun queued(): List<File> =

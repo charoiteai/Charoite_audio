@@ -2,6 +2,7 @@ package ai.charoite.companion
 
 import java.io.File
 import java.io.RandomAccessFile
+import java.nio.channels.OverlappingFileLockException
 
 /**
  * Запись PCM прямо в WAV.
@@ -28,6 +29,17 @@ class WavWriter(
 ) : AutoCloseable {
 
     private val raf = RandomAccessFile(file, "rw")
+
+    // Не только RecorderState: файловая блокировка закрывает короткое окно
+    // между созданием writer и публикацией состояния сервиса. Activity,
+    // пересозданная ровно в этот момент, не сможет «починить» живой WAV.
+    //
+    // Но это страховка, а не условие записи. Замки живут не на всякой ФС и не
+    // во всякой прошивке; час чужого разговора не переснять, поэтому отказ
+    // блокировки не имеет права сорвать запись — остаётся защита по
+    // RecorderState, которой хватало до неё.
+    @Suppress("unused")
+    private val recordingLock = runCatching { raf.channel.tryLock() }.getOrNull()
     private var dataBytes = 0L
     private var sinceHeaderRefresh = 0L
 
@@ -114,14 +126,25 @@ class WavWriter(
         fun repair(file: File): Boolean {
             if (!file.isFile || file.length() <= HEADER_SIZE) return false
             RandomAccessFile(file, "rw").use { raf ->
-                val magic = ByteArray(4)
-                raf.readFully(magic)
-                if (String(magic, Charsets.US_ASCII) != "RIFF") return false
-                val dataLen = file.length() - HEADER_SIZE
-                raf.seek(4)
-                writeLe32(raf, 36 + dataLen)
-                raf.seek(40)
-                writeLe32(raf, dataLen)
+                val lock = try {
+                    raf.channel.tryLock()
+                } catch (_: OverlappingFileLockException) {
+                    null
+                } ?: return false
+                lock.use {
+                    val header = ByteArray(12)
+                    raf.readFully(header)
+                    if (String(header, 0, 4, Charsets.US_ASCII) != "RIFF" ||
+                        String(header, 8, 4, Charsets.US_ASCII) != "WAVE"
+                    ) {
+                        return false
+                    }
+                    val dataLen = file.length() - HEADER_SIZE
+                    raf.seek(4)
+                    writeLe32(raf, 36 + dataLen)
+                    raf.seek(40)
+                    writeLe32(raf, dataLen)
+                }
             }
             return true
         }

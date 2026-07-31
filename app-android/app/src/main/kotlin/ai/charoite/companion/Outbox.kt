@@ -6,7 +6,7 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import java.io.File
-import kotlin.concurrent.thread
+import java.util.concurrent.Executors
 
 /**
  * Доставка записи на Mac.
@@ -25,7 +25,12 @@ object Outbox {
     private const val KEY_TREE = "inbox.tree"
     private val AUDIO_EXT = setOf("wav", "m4a")
 
-    @Volatile private var flushing = false
+    // Не флаг check-then-set, а настоящая последовательная очередь: два
+    // одновременных stop/onResume не копируют один файл дважды, и второй
+    // запрос не теряется, если новый файл появился уже после первого снимка.
+    private val flushExecutor = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "charoite-outbox").apply { isDaemon = true }
+    }
 
     fun dir(context: Context): File =
         File(context.filesDir, "Outbox").apply { mkdirs() }
@@ -80,13 +85,36 @@ object Outbox {
      * Записи, пережившие смерть приложения: их никто не закрыл и не поставил
      * в очередь. Заголовок такого WAV отстаёт от факта на пару секунд —
      * чиним и отправляем. Зовётся на старте.
+     *
+     * Activity может пересоздаться, пока foreground-сервис продолжает писать.
+     * Поэтому «в current/ лежит файл» ещё не означает «процесс умер»: активную
+     * запись нельзя чинить, переименовывать и тем более отправлять.
      */
     fun rescueOrphans(context: Context) {
-        val left = inProgress(context).listFiles() ?: return
+        val left = rescuableFiles(
+            inProgress(context),
+            recording = RecorderState.recording.value,
+            audioExtensions = AUDIO_EXT,
+        )
+        val stuck = mutableListOf<String>()
         for (f in left) {
-            if (f.extension.lowercase() !in AUDIO_EXT) continue
-            WavWriter.repair(f)
-            f.renameTo(uniqueFile(dir(context), f.name))
+            // WAV после смерти процесса сначала обязан стать валидным.
+            // Повреждённый файл оставляем в current/ для ручного спасения:
+            // отправить мусор и удалить единственную копию было бы хуже.
+            if (!orphanReadyForQueue(f) ||
+                !f.renameTo(uniqueFile(dir(context), f.name))
+            ) {
+                stuck += f.name
+            }
+        }
+        if (stuck.isNotEmpty()) {
+            RecorderState.say(
+                L.t(
+                    "Не удалось восстановить: ${stuck.joinToString()}",
+                    "Could not recover: ${stuck.joinToString()}",
+                    "无法恢复：${stuck.joinToString()}",
+                )
+            )
         }
     }
 
@@ -113,14 +141,11 @@ object Outbox {
      * даст расшифровку половины разговора без права на повтор.
      */
     fun flush(context: Context, onDone: (() -> Unit)? = null) {
-        if (flushing) return
         val app = context.applicationContext
-        flushing = true
-        thread(name = "charoite-outbox") {
+        flushExecutor.execute {
             try {
                 flushBlocking(app)
             } finally {
-                flushing = false
                 onDone?.invoke()
             }
         }
@@ -220,9 +245,11 @@ object Outbox {
                 ?: throw IllegalStateException(
                     L.t("папка не принимает файлы", "folder rejects files", "文件夹拒绝写入")
                 )
-            context.contentResolver.openOutputStream(direct.uri, "w").use { out ->
-                checkNotNull(out) { "no stream" }
-                file.inputStream().use { it.copyTo(out, 256 * 1024) }
+            cleanupOnFailure(cleanup = { direct.delete() }) {
+                context.contentResolver.openOutputStream(direct.uri, "w").use { out ->
+                    checkNotNull(out) { "no stream" }
+                    file.inputStream().use { it.copyTo(out, 256 * 1024) }
+                }
             }
             doc.delete()
         }
