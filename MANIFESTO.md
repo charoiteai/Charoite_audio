@@ -1,6 +1,6 @@
 # Local-first, not local-only. Why a strong model runs the graph
 
-*[**English**] · [Русский](ru/MANIFESTO.md) · [中文](zh/MANIFESTO.md)*
+*[**English**] · [Русский](docs/ru/MANIFESTO.md) · [中文](docs/zh/MANIFESTO.md)*
 
 This is the honest takeaway from several months of running Charoite on
 real meetings. In short: local models already hear, search and classify

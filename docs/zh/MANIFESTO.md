@@ -1,6 +1,6 @@
 # Local-first ≠ local-only：为什么图谱由强模型来维护
 
-*[English](../MANIFESTO.md) · [Русский](../ru/MANIFESTO.md) · **中文***
+*[English](../../MANIFESTO.md) · [Русский](../ru/MANIFESTO.md) · **中文***
 
 这是 Charoite 在真实会议上运行数月后的诚实结论。一句话：本地模型已经
 能出色地听、搜、分类——但它们还无法维护知识图谱。我们测量了这一点，
