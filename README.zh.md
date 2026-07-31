@@ -91,6 +91,7 @@ STT 模型首次运行自动下载。实时说话人分离（按声音区分的�
 
 - [路线图](ROADMAP.md) · [参与贡献](CONTRIBUTING.md)
 
+- [宣言](docs/MANIFESTO.zh.md) — 为什么流水线交给本地模型、图谱交给强模型
 - [安装](docs/SETUP.zh.md) — 依赖、线上会议用 BlackHole、权限、首次运行
 - [功能](docs/FEATURES.zh.md) — Charoite 在会议中和会后能做的一切
 - [架构](docs/ARCHITECTURE.zh.md) — 守护进程、两遍说话人分离、图谱流水线
