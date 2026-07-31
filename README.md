@@ -135,6 +135,7 @@ Build: `cd app-android && ./gradlew assembleDebug`.
 
 - [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md)
 
+- [Manifesto](docs/MANIFESTO.md) — why local models run the conveyor and a strong model runs the graph
 - [Setup](docs/SETUP.md) — install, BlackHole for calls, permissions, first run
 - [Features](docs/FEATURES.md) — everything Charoite does, live and post-meeting
 - [Architecture](docs/ARCHITECTURE.md) — the daemon, two-pass diarization, graph pipeline
