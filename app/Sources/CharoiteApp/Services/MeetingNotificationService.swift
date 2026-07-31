@@ -21,6 +21,18 @@ struct MeetingNotificationLedger {
     }
 }
 
+/// Нужен ли баннер поверх того, что человек и так видит.
+///
+/// Полоса внутри окна и баннер несут одно сообщение. Пока окно Charoite
+/// открыто и активно, второй экземпляр только мешает; во всех остальных
+/// случаях — свёрнуто, перекрыто другой программой, запущено из меню-бара
+/// без окна — напоминание и есть смысл функции.
+enum MeetingNotificationPolicy {
+    static func shouldPresent(appActive: Bool, mainWindowVisible: Bool) -> Bool {
+        !(appActive && mainWindowVisible)
+    }
+}
+
 /// Системное напоминание о встрече.
 ///
 /// Это только сигнал: запись начинается исключительно по отдельному действию
@@ -30,11 +42,14 @@ struct MeetingNotificationLedger {
 final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelegate {
     static let shared = MeetingNotificationService()
 
-    private static let categoryID = "CHAROITE_MEETING_CUE"
-    private static let startActionID = "CHAROITE_START_RECORDING"
-    private static let dismissActionID = "CHAROITE_NOT_NOW"
-    private static let requestPrefix = "charoite.meeting."
-    private static let meetingIDKey = "meetingID"
+    // nonisolated: эти константы читает делегат уведомлений, который система
+    // зовёт вне главного актора. В Swift 6 обращение к main-actor свойству
+    // оттуда — уже ошибка компиляции, а не предупреждение.
+    private nonisolated static let categoryID = "CHAROITE_MEETING_CUE"
+    private nonisolated static let startActionID = "CHAROITE_START_RECORDING"
+    private nonisolated static let dismissActionID = "CHAROITE_NOT_NOW"
+    private nonisolated static let requestPrefix = "charoite.meeting."
+    private nonisolated static let meetingIDKey = "meetingID"
 
     private let center = UNUserNotificationCenter.current()
     private var ledger = MeetingNotificationLedger()
@@ -68,6 +83,13 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
     }
 
     func present(_ cue: MeetingCue.Cue) {
+        let visible = NSApplication.shared.windows.contains {
+            $0.isVisible && $0.identifier?.rawValue.hasPrefix("main") == true
+        }
+        guard MeetingNotificationPolicy.shouldPresent(
+            appActive: NSApplication.shared.isActive,
+            mainWindowVisible: visible
+        ) else { return }
         guard ledger.claim(cue.id) else { return }
 
         let content = UNMutableNotificationContent()

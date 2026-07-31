@@ -140,7 +140,9 @@ struct SettingsView: View {
                 }
                 Toggle(L.t("Бриф и напоминание о записи", "Brief and a nudge to record", "简报与录制提醒"), isOn: $calendarBriefs)
                     .onChange(of: calendarBriefs) { _, on in
-                        on ? CalendarService.shared.enable() : CalendarService.shared.disable()
+                        on
+                            ? CalendarService.shared.enable(askForNotifications: true)
+                            : CalendarService.shared.disable()
                     }
                 Text(L.t("Читает только название и время событий — для кнопки «Бриф», системного уведомления и полосы внутри окна. Запись сама не включается: спрашиваем и ждём ответа, «Не сейчас» по этой встрече больше не повторяем. Локально, ничего не пишет.",
                          "Reads only event titles and times — for the Brief button, a system notification and the in-window bar. Recording never starts on its own: we ask and wait, and “Not now” is remembered for that meeting. Local, write-free.",

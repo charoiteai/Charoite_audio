@@ -22,11 +22,15 @@ final class CalendarService: ObservableObject {
 
     /// Запросить доступ (системный диалог) и начать следить за ближайшим
     /// событием. Отказ пользователя — тихо выключаемся.
-    func enable() {
-        // Уведомления спрашиваем в тот же момент, когда человек явно включает
-        // календарный контур. Отказ не ломает функцию: полоса внутри окна
-        // остаётся доступна.
-        MeetingNotificationService.shared.requestAuthorization()
+    /// - Parameter askForNotifications: спрашивать ли разрешение на баннеры.
+    ///   Только когда человек сам щёлкнул тумблер. При автозапуске приложение
+    ///   поднимается в фоне без единого действия пользователя, и системный
+    ///   диалог, выскочивший сам по себе после входа в систему, выглядит как
+    ///   навязчивость — а отказ в нём закрывает функцию навсегда.
+    func enable(askForNotifications: Bool = false) {
+        if askForNotifications {
+            MeetingNotificationService.shared.requestAuthorization()
+        }
         let done: (Bool) -> Void = { granted in
             Task { @MainActor in
                 guard granted else { self.nextEventTitle = nil; return }

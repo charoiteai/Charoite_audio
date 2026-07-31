@@ -27,4 +27,22 @@ final class MeetingNotificationTests: XCTestCase {
 
         XCTAssertTrue(ledger.claim("standup"))
     }
+
+    func testBannerIsSkippedWhenTheStripeIsAlreadyOnScreen() {
+        // Полоса внутри окна и баннер — одно и то же сообщение. Пока человек
+        // смотрит в открытое окно Charoite, второй экземпляр только мешает.
+        XCTAssertFalse(MeetingNotificationPolicy.shouldPresent(appActive: true,
+                                                              mainWindowVisible: true))
+    }
+
+    func testBannerAppearsWhenTheWindowIsNotInFront() {
+        XCTAssertTrue(MeetingNotificationPolicy.shouldPresent(appActive: false,
+                                                             mainWindowVisible: true),
+                      "свёрнутое окно человек не видит")
+        XCTAssertTrue(MeetingNotificationPolicy.shouldPresent(appActive: true,
+                                                             mainWindowVisible: false),
+                      "запущено из меню-бара, окна нет — напоминание нужно")
+        XCTAssertTrue(MeetingNotificationPolicy.shouldPresent(appActive: false,
+                                                             mainWindowVisible: false))
+    }
 }
