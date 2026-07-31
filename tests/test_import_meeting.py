@@ -1,10 +1,16 @@
 """Импорт встреч: парсер vtt/srt и сборка стенограммы конвейера."""
+import struct
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
-from import_meeting import parse_subs, subs_to_transcript  # noqa: E402
+from import_meeting import (  # noqa: E402
+    parse_subs,
+    scan_candidates,
+    subs_to_transcript,
+    wav_complete,
+)
 
 VTT = """WEBVTT
 
@@ -26,6 +32,45 @@ SRT = """1
 00:00:07,500 --> 00:00:12,000
 Просто реплика без спикера.
 """
+
+
+def _wav(declared_data: int, actual_data: int) -> bytes:
+    """Минимальный канонический WAV: заголовок объявляет одно, файл содержит другое."""
+    return (
+        b"RIFF"
+        + struct.pack("<I", 36 + declared_data)
+        + b"WAVE"
+        + b"fmt "
+        + struct.pack("<IHHIIHH", 16, 1, 1, 16_000, 32_000, 2, 16)
+        + b"data"
+        + struct.pack("<I", declared_data)
+        + bytes(actual_data)
+    )
+
+
+def test_incomplete_wav_is_not_ready(tmp_path):
+    wav = tmp_path / "android_meeting.wav"
+    wav.write_bytes(_wav(declared_data=32_000, actual_data=8_000))
+
+    assert not wav_complete(wav)
+    assert scan_candidates(tmp_path) == []
+
+
+def test_complete_wav_becomes_scan_candidate(tmp_path):
+    wav = tmp_path / "android_meeting.wav"
+    wav.write_bytes(_wav(declared_data=32_000, actual_data=32_000))
+
+    assert wav_complete(wav)
+    assert scan_candidates(tmp_path) == [wav]
+
+
+def test_scan_ignores_invalid_wav_and_supported_directories(tmp_path):
+    (tmp_path / "broken.wav").write_bytes(b"not a wave")
+    (tmp_path / "folder.wav").mkdir()
+    note = tmp_path / "meeting.txt"
+    note.write_text("готовая стенограмма", encoding="utf-8")
+
+    assert scan_candidates(tmp_path) == [note]
 
 
 def test_vtt_speakers_and_times():
