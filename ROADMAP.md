@@ -39,9 +39,11 @@ merging happens in memory during a single recording and is discarded.
 - **Windows port** — the daemon is Python + ONNX and the delivery protocol
   is platform-neutral (mDNS + TLS); the work is a native shell and an
   audio-capture story to replace BlackHole.
-- **Android companion** — same open delivery protocol as the iPhone app
-  (NsdManager + TLS upload); background recording is simpler on Android.
-  Until then, Syncthing into the import folder works today.
+- **Android companion: direct delivery** — the companion core has shipped
+  (app-android/): recording, meetings feed, tasks, delivery into a folder
+  you pick. What is left is the LAN upload to the Mac (NsdManager + TLS,
+  the protocol shared with the iPhone); until then Syncthing keeps the
+  folder in step.
 
 - **Companion live mode** — the phone streams meeting audio to the Mac
   and mirrors the live transcript and hints on its screen.

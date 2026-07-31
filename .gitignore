@@ -16,3 +16,8 @@ app-ios/Info.plist
 app-ios/WidgetsInfo.plist
 # синтетика бенча диаризации: аудио собирается на месте
 data/
+app-android/local.properties
+app-android/.gradle/
+app-android/build/
+app-android/app/build/
+app-android/.kotlin/
