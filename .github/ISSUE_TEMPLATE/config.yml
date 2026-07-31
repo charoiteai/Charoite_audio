@@ -1,0 +1,7 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question / Вопрос / 提问
+    url: https://github.com/charoiteai/Charoite_audio/discussions
+    about: >-
+      Not a bug, just a question or an idea to talk through? Discussions is
+      the right place — English, Русский or 中文 all welcome.
