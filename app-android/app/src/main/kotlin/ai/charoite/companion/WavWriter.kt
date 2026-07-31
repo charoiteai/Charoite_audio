@@ -29,11 +29,17 @@ class WavWriter(
 ) : AutoCloseable {
 
     private val raf = RandomAccessFile(file, "rw")
+
     // Не только RecorderState: файловая блокировка закрывает короткое окно
     // между созданием writer и публикацией состояния сервиса. Activity,
     // пересозданная ровно в этот момент, не сможет «починить» живой WAV.
+    //
+    // Но это страховка, а не условие записи. Замки живут не на всякой ФС и не
+    // во всякой прошивке; час чужого разговора не переснять, поэтому отказ
+    // блокировки не имеет права сорвать запись — остаётся защита по
+    // RecorderState, которой хватало до неё.
     @Suppress("unused")
-    private val recordingLock = raf.channel.lock()
+    private val recordingLock = runCatching { raf.channel.tryLock() }.getOrNull()
     private var dataBytes = 0L
     private var sinceHeaderRefresh = 0L
 

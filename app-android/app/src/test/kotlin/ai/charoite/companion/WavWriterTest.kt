@@ -112,4 +112,20 @@ class WavWriterTest {
         assertFalse(WavWriter.repair(f))
         f.delete()
     }
+
+    @Test
+    fun `недоступная блокировка не срывает запись`() {
+        // Блокировка — страховка от «сироты», а не условие записи. Если файловые
+        // замки недоступны (чужой канал, экзотическая ФС прошивки), встреча всё
+        // равно обязана писаться: потерять час разговора из-за страховки хуже,
+        // чем остаться без страховки.
+        val f = File.createTempFile("locked", ".wav")
+        RandomAccessFile(f, "rw").use { holder ->
+            holder.channel.lock().use {
+                WavWriter(f).use { w -> w.write(ByteArray(3_200), 3_200) }
+            }
+        }
+        assertEquals(3_200L, le32(f, 40))
+        f.delete()
+    }
 }
