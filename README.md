@@ -27,6 +27,23 @@ Charoite listens to your meetings (microphone + system audio, no bots joining ca
 - **Layered output per meeting**: one-minute Summary (with links to what changed since past meetings) → Minutes → Debrief → full Transcript. Read as deep as you need.
 - **Real-time help**: instant local answer when the other side asks you a question (⚡), auto-theses, live draft minutes, voice notes and dictation.
 
+## How it compares
+
+|  | Cloud meeting assistants | Local transcribers | **Charoite** |
+|---|:---:|:---:|:---:|
+| Audio stays on your machine | ✗ | ✓ | ✓ |
+| No bot joins the call | sometimes | ✓ | ✓ |
+| Speaker diarization | ✓ | rarely | ✓ |
+| Live hints during the meeting | ✓ | ✗ | ✓ |
+| Memory across meetings (graph) | ✗ | ✗ | ✓ |
+| Works fully offline | ✗ | ✓ | ✓ |
+| Open source | rarely | sometimes | ✓ |
+
+Cloud assistants are smart but your conversations live on someone else's
+servers. Local transcribers keep audio private but forget each meeting the
+moment it ends. Charoite keeps both promises: everything stays on the Mac,
+and every meeting makes the next one smarter.
+
 ## Requirements
 
 - Apple Silicon Mac (M1 or newer), 32 GB RAM recommended for the default models
@@ -154,7 +171,9 @@ See [PRIVACY.md](PRIVACY.md). Short version: no telemetry, no network calls exce
 
 ## Status
 
-Public beta, currently 0.38.0. Issues and feedback welcome. The native macOS app lives in [app/](app) — build with `app/make_app.sh`; the iPhone companion is in [app-ios/](app-ios) and the Android one in [app-android/](app-android). Roadmap in [ROADMAP.md](ROADMAP.md): UI localization for both apps, direct Wi-Fi delivery of recordings from the phone, a packaged graph viewer.
+Public beta — the current version is on the [Releases page](https://github.com/charoiteai/Charoite_audio/releases/latest). Issues and feedback welcome; questions go to [Discussions](https://github.com/charoiteai/Charoite_audio/discussions). The native macOS app lives in [app/](app) — build with `app/make_app.sh`; the iPhone companion is in [app-ios/](app-ios) and the Android one in [app-android/](app-android). Roadmap in [ROADMAP.md](ROADMAP.md): UI localization for both apps, direct Wi-Fi delivery of recordings from the phone, a packaged graph viewer.
+
+If Charoite is useful to you, a ⭐ helps other people find it.
 
 ## License
 

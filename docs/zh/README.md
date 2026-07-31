@@ -27,6 +27,22 @@ Charoite 倾听您的会议（麦克风 + 系统声音，无需机器人入会�
 - **实时辅助**：对方向您提问时的即时本地回答（⚡）、自动要点、实时纪要草稿、语音笔记和听写。
 - **中文原生的 LLM。** 默认主模型是 Qwen（阿里巴巴出品）——中文就是它的母语；语音识别用 Whisper（`stt.backend: whisper`，`language: zh`）。
 
+## 与其他方案的对比
+
+|  | 云端会议助手 | 本地转写工具 | **Charoite** |
+|---|:---:|:---:|:---:|
+| 音频留在您的机器上 | ✗ | ✓ | ✓ |
+| 无机器人加入通话 | 视情况 | ✓ | ✓ |
+| 说话人分离 | ✓ | 少见 | ✓ |
+| 会议进行中的实时提示 | ✓ | ✗ | ✓ |
+| 跨会议记忆（知识图谱） | ✗ | ✗ | ✓ |
+| 完全离线可用 | ✗ | ✓ | ✓ |
+| 开源 | 少见 | 视情况 | ✓ |
+
+云端助手很聪明，但您的对话存放在别人的服务器上。本地转写工具保护隐私，
+却在会议结束的那一刻就忘掉它。Charoite 同时守住两个承诺：一切留在 Mac 上，
+而且每场会议都让下一场更聪明。
+
 ## 系统要求
 
 - Apple Silicon Mac（M1 及以上），默认模型建议 32 GB 内存
@@ -108,7 +124,9 @@ STT 模型首次运行自动下载。实时说话人分离（按声音区分的�
 
 ## 状态
 
-公开测试版，当前版本 0.38.0。欢迎 Issues 和反馈。原生 macOS 应用在 [app/](../../app)，构建命令 `app/make_app.sh`；iPhone 伴侣应用在 [app-ios/](../../app-ios)，安卓伴侣应用在 [app-android/](../../app-android)。界面语言目前为俄语（界面本地化在路线图上）；会议文档、图谱内容和提示已支持中文（`language: zh`）。路线图见 [ROADMAP.zh.md](ROADMAP.md)。
+公开测试版——当前版本见[发布页](https://github.com/charoiteai/Charoite_audio/releases/latest)。欢迎 Issues 和反馈；提问请到 [Discussions](https://github.com/charoiteai/Charoite_audio/discussions)。原生 macOS 应用在 [app/](../../app)，构建命令 `app/make_app.sh`；iPhone 伴侣应用在 [app-ios/](../../app-ios)，安卓伴侣应用在 [app-android/](../../app-android)。界面语言目前为俄语（界面本地化在路线图上）；会议文档、图谱内容和提示已支持中文（`language: zh`）。路线图见 [ROADMAP.zh.md](ROADMAP.md)。
+
+如果 Charoite 对您有用，一颗 ⭐ 能帮助更多人找到它。
 
 ## 许可证
 
