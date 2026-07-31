@@ -21,8 +21,10 @@ struct SetupReadinessSnapshot: Equatable, Sendable {
     let checks: [SetupCheck]
 
     var canStart: Bool { !checks.contains { $0.state == .blocked } }
-    var problems: Int { checks.count { $0.state == .blocked } }
-    var warnings: Int { checks.count { $0.state == .warning } }
+    // filter().count, а не count { }: SE-0220 появился в Swift 6, а CI
+    // собирает и более старым тулчейном — сборка должна проходить на обоих.
+    var problems: Int { checks.filter { $0.state == .blocked }.count }
+    var warnings: Int { checks.filter { $0.state == .warning }.count }
 }
 
 /// Чистая политика готовности — отдельно от файлов, сети и TCC ради тестов.
