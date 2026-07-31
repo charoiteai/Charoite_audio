@@ -6,6 +6,10 @@
 
 *[English](../../README.md) · [Русский](../ru/README.md)*
 
+> **[宣言：local-first ≠ local-only](MANIFESTO.md)** — 数月真实会议教会我们的
+> 事：本地模型在哪里出色、为什么知识图谱由强模型维护。数字、边界，
+> 以及能证明我们错了的那个测试。
+
 ![Charoite 应用 — 实时逐字稿、要点、档案问答](../img/app-main.png)
 
 ![会议任务 — 图谱中所有复选框汇于一窗](../img/app-tasks.png)
