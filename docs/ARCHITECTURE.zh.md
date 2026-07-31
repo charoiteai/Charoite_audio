@@ -16,6 +16,11 @@ Stop → recording rebuild → graph update → archive + Summary → [Claude de
 一切都在你自己的机器上运行；网络调用仅指向 localhost（Ollama）。
 云端层是一个独立的、默认关闭的选项。
 
+MCP 服务器（src/mcp_server.py）把档案与进行中的会议作为 Claude Code 的工具
+暴露出去。它同时支持 `mcp` 包的两个分支：2.0 移动了类
+（`mcp.server.fastmcp.FastMCP` → `mcp.server.MCPServer`），而 requirements
+两者都允许 — 安装不应悄悄产出一个在导入时就崩溃的服务器。
+
 ## 守护进程（src/daemon.py）
 
 单个进程，多个线程循环围绕一个共享加锁的 `Transcript` 运转：STT 循环、

@@ -11,7 +11,15 @@ import pathlib
 import subprocess
 
 import requests
-from mcp.server.fastmcp import FastMCP
+
+# requirements разрешают mcp>=1.0, а в 2.0 класс переехал: FastMCP из
+# mcp.server.fastmcp стал MCPServer в mcp.server. Оба дают .tool() и .run(),
+# то есть весь файл ниже работает одинаково — расходится только имя импорта.
+# Без этого «pip install -r» проходил, а сервер падал на первой же строке.
+try:
+    from mcp.server.fastmcp import FastMCP          # mcp 1.x
+except ModuleNotFoundError:  # pragma: no cover — ветка зависит от версии пакета
+    from mcp.server import MCPServer as FastMCP     # mcp 2.x
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 TRANSCRIPTS = ROOT / "transcripts"
