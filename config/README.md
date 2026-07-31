@@ -1,6 +1,6 @@
 # Config presets
 
-*[**English**] · [Русский](README.ru.md) · [中文](README.zh.md)*
+*[**English**] · [Русский](../docs/ru/config/README.md) · [中文](../docs/zh/config/README.md)*
 
 Copy one preset to `config/config.yaml`, then set `user_name` and `graph_dir`.
 

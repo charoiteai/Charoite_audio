@@ -1,6 +1,6 @@
 # Architecture
 
-***English** · [Русский](ARCHITECTURE.ru.md) · [中文](ARCHITECTURE.zh.md)*
+***English** · [Русский](ru/ARCHITECTURE.md) · [中文](zh/ARCHITECTURE.md)*
 
 ## Overview
 

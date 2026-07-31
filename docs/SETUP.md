@@ -1,6 +1,6 @@
 # Setup
 
-***English** · [Русский](SETUP.ru.md) · [中文](SETUP.zh.md)*
+***English** · [Русский](ru/SETUP.md) · [中文](zh/SETUP.md)*
 
 ## 1. Dependencies
 

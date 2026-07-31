@@ -1,6 +1,6 @@
 # Charoite for Android — the companion app
 
-*[**English**] · [Русский](README.ru.md) · [中文](README.zh.md)*
+*[**English**] · [Русский](../docs/ru/app-android/README.md) · [中文](../docs/zh/app-android/README.md)*
 
 The tablet (or phone) is the microphone on the table; the Mac stays the
 brain. A Compose companion (Android 8+) that records meetings, voice

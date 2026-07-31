@@ -1,6 +1,6 @@
 # Releasing
 
-***English** · [Русский](RELEASING.ru.md) · [中文](RELEASING.zh.md)*
+***English** · [Русский](ru/RELEASING.md) · [中文](zh/RELEASING.md)*
 
 Versions and `CHANGELOG.md` are automated by
 [release-please](https://github.com/googleapis/release-please). You never edit

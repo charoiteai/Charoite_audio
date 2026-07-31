@@ -1,6 +1,6 @@
 # Privacy
 
-*[**English**] · [Русский](PRIVACY.ru.md) · [中文](PRIVACY.zh.md)*
+*[**English**] · [Русский](docs/ru/PRIVACY.md) · [中文](docs/zh/PRIVACY.md)*
 
 Charoite is built local-first. Concretely:
 

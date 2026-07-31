@@ -1,6 +1,6 @@
 # Speaker diarization setup
 
-***English** · [Русский](DIARIZATION.ru.md) · [中文](DIARIZATION.zh.md)*
+***English** · [Русский](ru/DIARIZATION.md) · [中文](zh/DIARIZATION.md)*
 
 Charoite uses two diarization passes:
 

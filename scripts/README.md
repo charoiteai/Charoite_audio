@@ -1,6 +1,6 @@
 # Scripts
 
-*[**English**] · [Русский](README.ru.md) · [中文](README.zh.md)*
+*[**English**] · [Русский](../docs/ru/scripts/README.md) · [中文](../docs/zh/scripts/README.md)*
 
 Operational helpers. All local, all optional.
 

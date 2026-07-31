@@ -1,6 +1,6 @@
 # Charoite.app — the macOS companion app
 
-*[**English**] · [Русский](README.ru.md) · [中文](README.zh.md)*
+*[**English**] · [Русский](../docs/ru/app/README.md) · [中文](../docs/zh/app/README.md)*
 
 A native SwiftUI shell over the Charoite Python daemon: live transcript
 with diarization, thesis cards, hints and the Claude pane, archive
