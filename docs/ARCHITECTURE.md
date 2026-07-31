@@ -56,6 +56,10 @@ sit on top of this protocol; a second instance is blocked via flock.
 4. Optionally the cloud Claude cross-checks minutes against the transcript
    and enriches the graph with links visible only from history.
 
+Each phase is published atomically under `logs/meeting-status/`: the macOS
+app shows real progress, keeps failures linked to the source transcript, and
+announces readiness only after the exact meeting note exists.
+
 ## The knowledge graph (an Obsidian folder)
 
 ```

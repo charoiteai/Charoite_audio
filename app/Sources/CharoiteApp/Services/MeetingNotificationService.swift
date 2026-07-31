@@ -46,10 +46,14 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
     // зовёт вне главного актора. В Swift 6 обращение к main-actor свойству
     // оттуда — уже ошибка компиляции, а не предупреждение.
     private nonisolated static let categoryID = "CHAROITE_MEETING_CUE"
+    private nonisolated static let readyCategoryID = "CHAROITE_MEETING_READY"
     private nonisolated static let startActionID = "CHAROITE_START_RECORDING"
     private nonisolated static let dismissActionID = "CHAROITE_NOT_NOW"
+    private nonisolated static let openMeetingActionID = "CHAROITE_OPEN_MEETING"
     private nonisolated static let requestPrefix = "charoite.meeting."
+    private nonisolated static let readyRequestPrefix = "charoite.ready."
     private nonisolated static let meetingIDKey = "meetingID"
+    private nonisolated static let notePathKey = "notePath"
 
     private let center = UNUserNotificationCenter.current()
     private var ledger = MeetingNotificationLedger()
@@ -68,10 +72,19 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
             identifier: Self.dismissActionID,
             title: L.t("Не сейчас", "Not now", "暂不"),
             options: [])
+        let openMeeting = UNNotificationAction(
+            identifier: Self.openMeetingActionID,
+            title: L.t("Открыть встречу", "Open meeting", "打开会议"),
+            options: [.foreground])
         center.setNotificationCategories([
             UNNotificationCategory(
                 identifier: Self.categoryID,
                 actions: [start, dismiss],
+                intentIdentifiers: [],
+                options: []),
+            UNNotificationCategory(
+                identifier: Self.readyCategoryID,
+                actions: [openMeeting],
                 intentIdentifiers: [],
                 options: [])
         ])
@@ -106,6 +119,23 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
         center.add(request)
     }
 
+    func presentReady(_ snapshot: MeetingProcessingSnapshot) {
+        guard let notePath = snapshot.notePath else { return }
+        let content = UNMutableNotificationContent()
+        content.title = L.t("Встреча готова", "Meeting ready", "会议已就绪")
+        content.body = L.t("Стенограмма и граф обновлены",
+                           "The transcript and graph are updated",
+                           "逐字稿和图谱已更新")
+        content.sound = .default
+        content.categoryIdentifier = Self.readyCategoryID
+        content.userInfo = [Self.meetingIDKey: snapshot.meetingID,
+                            Self.notePathKey: notePath]
+        center.add(UNNotificationRequest(
+            identifier: Self.readyRequestPrefix + snapshot.meetingID,
+            content: content,
+            trigger: nil))
+    }
+
     func remove(cueID: String) {
         let id = Self.requestID(for: cueID)
         center.removePendingNotificationRequests(withIdentifiers: [id])
@@ -134,9 +164,18 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let action = response.actionIdentifier
+        let category = response.notification.request.content.categoryIdentifier
         let meetingID = response.notification.request.content.userInfo[Self.meetingIDKey] as? String
+        let notePath = response.notification.request.content.userInfo[Self.notePathKey] as? String
         Task { @MainActor in
-            if let meetingID { self.remove(cueID: meetingID) }
+            if let meetingID {
+                if category == Self.readyCategoryID {
+                    self.center.removeDeliveredNotifications(
+                        withIdentifiers: [Self.readyRequestPrefix + meetingID])
+                } else {
+                    self.remove(cueID: meetingID)
+                }
+            }
             switch action {
             case Self.startActionID:
                 CalendarService.shared.dismissCue()
@@ -144,10 +183,21 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
                 SuflerService.shared.start()
             case Self.dismissActionID:
                 CalendarService.shared.dismissCue()
+            case Self.openMeetingActionID:
+                if let notePath, FileManager.default.fileExists(atPath: notePath) {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: notePath))
+                } else {
+                    AppDelegate.showMainWindow()
+                }
             default:
-                // Обычный клик по баннеру только открывает приложение.
-                // Он не считается согласием на запись.
-                AppDelegate.showMainWindow()
+                if category == Self.readyCategoryID,
+                   let notePath, FileManager.default.fileExists(atPath: notePath) {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: notePath))
+                } else {
+                    // Обычный клик по напоминанию только открывает приложение.
+                    // Он не считается согласием на запись.
+                    AppDelegate.showMainWindow()
+                }
             }
         }
         completionHandler()
