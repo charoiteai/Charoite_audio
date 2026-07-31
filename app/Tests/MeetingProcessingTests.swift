@@ -64,4 +64,19 @@ final class MeetingProcessingTests: XCTestCase {
         XCTAssertEqual(MeetingProcessingPolicy.latest([old, recent], now: now), recent)
         XCTAssertNil(MeetingProcessingPolicy.latest([old], now: now))
     }
+
+    func testSilentPipelineStopsClaimingLaunchAfterGracePeriod() {
+        // «Запускаю обработку встречи…» — обещание. Если конвейер за разумное
+        // время не записал ни одного статуса (диск, права, ранний выход до
+        // первой записи), обещание обязано смениться честной ошибкой, а не
+        // висеть вечным спиннером.
+        let pressed = Date(timeIntervalSince1970: 1_000)
+
+        XCTAssertFalse(MeetingProcessingPolicy.waitingExpired(
+            since: pressed, now: pressed.addingTimeInterval(60)),
+            "минута — конвейер ещё может стартовать")
+        XCTAssertTrue(MeetingProcessingPolicy.waitingExpired(
+            since: pressed, now: pressed.addingTimeInterval(4 * 60)),
+            "четыре минуты тишины — статус уже не появится")
+    }
 }

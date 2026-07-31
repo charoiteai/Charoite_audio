@@ -37,6 +37,18 @@ enum MeetingProcessingPolicy {
     static let staleAfter: TimeInterval = 30 * 60
     static let visibleFor: TimeInterval = 24 * 60 * 60
 
+    /// Сколько ждать первый статус после «Стоп». Конвейер объявляет о себе
+    /// в первые секунды; три минуты тишины значят, что статус уже не появится.
+    static let announceWithin: TimeInterval = 3 * 60
+
+    /// «Запускаю обработку…» — обещание, а не заставка. Если конвейер не
+    /// записал ни одного статуса (диск, права, ранний выход до первой
+    /// записи), обещание обязано смениться честной ошибкой, а не висеть
+    /// вечным спиннером.
+    static func waitingExpired(since: Date, now: Date = Date()) -> Bool {
+        now.timeIntervalSince(since) > announceWithin
+    }
+
     static func resolvedState(
         _ snapshot: MeetingProcessingSnapshot,
         now: Date = Date()
@@ -87,6 +99,9 @@ final class MeetingProcessingService: ObservableObject {
     @Published private(set) var snapshot: MeetingProcessingSnapshot?
     @Published private(set) var waitingForPipeline = false
 
+    /// Конвейер не записал ни одного статуса за отведённое время.
+    @Published private(set) var pipelineSilent = false
+
     private var timer: Timer?
     private var refreshInFlight = false
     private var waitingSince: Date?
@@ -106,6 +121,7 @@ final class MeetingProcessingService: ObservableObject {
     func expectResult() {
         waitingSince = Date()
         waitingForPipeline = true
+        pipelineSilent = false
         snapshot = nil
         refresh()
     }
@@ -115,6 +131,11 @@ final class MeetingProcessingService: ObservableObject {
             return L.t("Запускаю обработку встречи…",
                        "Starting meeting processing…",
                        "正在启动会议处理…")
+        }
+        if pipelineSilent {
+            return L.t("Статус обработки не появился — стенограмма сохранена, проверьте logs/",
+                       "Processing never reported status — the transcript was kept, check logs/",
+                       "处理未上报状态——逐字稿已保留，请查看 logs/")
         }
         guard let snapshot else { return nil }
         switch MeetingProcessingPolicy.resolvedState(snapshot) {
@@ -156,7 +177,8 @@ final class MeetingProcessingService: ObservableObject {
     }
 
     var isError: Bool {
-        snapshot.map { MeetingProcessingPolicy.resolvedState($0) == .error } == true
+        pipelineSilent ||
+            snapshot.map { MeetingProcessingPolicy.resolvedState($0) == .error } == true
     }
 
     var actionTitle: String? {
@@ -195,11 +217,21 @@ final class MeetingProcessingService: ObservableObject {
 
     private func accept(_ latest: MeetingProcessingSnapshot?) {
         if let waitingSince {
-            guard let latest,
-                  latest.startedAt >= waitingSince.timeIntervalSince1970 - 5 else { return }
-            self.waitingSince = nil
-            waitingForPipeline = false
-            snapshot = latest
+            if let latest, latest.startedAt >= waitingSince.timeIntervalSince1970 - 5 {
+                self.waitingSince = nil
+                waitingForPipeline = false
+                pipelineSilent = false
+                snapshot = latest
+            } else if MeetingProcessingPolicy.waitingExpired(since: waitingSince) {
+                // Конвейер так и не объявил о себе — честная ошибка вместо
+                // вечного «Запускаю…». Стенограмма при этом на диске, просто
+                // статусов о ней не будет.
+                self.waitingSince = nil
+                waitingForPipeline = false
+                pipelineSilent = true
+                snapshot = nil
+            }
+            // иначе продолжаем ждать первый статус
         } else {
             snapshot = latest
         }
