@@ -1,6 +1,6 @@
 # Charoite for iPhone — the companion app
 
-*[**English**] · [Русский](README.ru.md) · [中文](README.zh.md)*
+*[**English**] · [Русский](../docs/ru/app-ios/README.md) · [中文](../docs/zh/app-ios/README.md)*
 
 The phone is the microphone on the table; the Mac stays the brain. A
 SwiftUI companion (iOS 17+, works from iPhone 12 up) that records

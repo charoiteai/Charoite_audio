@@ -1,6 +1,6 @@
 # Charoite Design System
 
-***English** · [Русский](DESIGN.ru.md) · [中文](DESIGN.zh.md)*
+***English** · [Русский](ru/DESIGN.md) · [中文](zh/DESIGN.md)*
 
 One character across two platforms: the macOS app and the iPhone
 companion are built from the same tokens. The source of truth in code

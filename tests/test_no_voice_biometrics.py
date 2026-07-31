@@ -62,7 +62,7 @@ def test_voice_modules_cannot_serialise_vectors():
 
 def test_the_promise_is_written_where_users_read_it():
     """Обещание должно стоять во всех трёх PRIVACY, а не только в английском."""
-    for doc in ("PRIVACY.md", "PRIVACY.ru.md", "PRIVACY.zh.md"):
+    for doc in ("PRIVACY.md", "docs/ru/PRIVACY.md", "docs/zh/PRIVACY.md"):
         text = (REPO / doc).read_text(encoding="utf-8")
         assert "biometric" in text.lower() or "биометри" in text or "声纹" in text, \
             f"{doc} не обещает пользователю, что слепки голоса не хранятся"
