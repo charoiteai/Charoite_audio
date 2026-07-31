@@ -17,8 +17,11 @@ heavy step (STT, diarization, LLM, graph building) runs on your Mac.
   system picker (SAF). The Mac must see the same folder: through
   Syncthing or any sync tool; on the Mac it is the import folder. No
   sync right now? An on-device queue re-sends on every launch and after
-  every stop. Voice notes (`note_`/`diary_` prefixes) are routed into
-  the Mac's notes pipeline automatically.
+  every stop. Reopening the app during a recording never touches the
+  active file; crash recovery validates it before moving it to the queue,
+  and a failed provider copy leaves no half-published WAV. Voice notes
+  (`note_`/`diary_` prefixes) are routed into the Mac's notes pipeline
+  automatically.
 - **Meetings feed** — reads `.md` files from the graph's “Встречи”
   folder (second folder you pick), newest first, full text on tap.
 - **Tasks** — every `- [ ]` checkbox from the graph in one list; ticking
