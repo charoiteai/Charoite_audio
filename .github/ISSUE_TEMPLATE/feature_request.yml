@@ -1,0 +1,30 @@
+name: Feature request
+description: An idea that would make Charoite better. English, Русский or 中文.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that Charoite doesn't help with today?
+      placeholder: After a week of meetings I want to see…
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: How you imagine it working
+      placeholder: A button / a nightly job / a section in the graph that…
+    validations:
+      required: true
+  - type: dropdown
+    id: privacy
+    attributes:
+      label: Should this stay fully local?
+      description: >-
+        Charoite is local-first — cloud steps are opt-in. Where does your
+        idea live?
+      options:
+        - Fully local, always
+        - Fine as an opt-in cloud step
+        - No preference

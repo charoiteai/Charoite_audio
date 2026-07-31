@@ -1,0 +1,55 @@
+name: Bug report
+description: Something broke. English, Русский or 中文 — pick whichever is easiest.
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what happened instead?
+      placeholder: Stopped a meeting, the transcript never appeared…
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start a meeting from the app
+        2. …
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - macOS app
+        - Python daemon / pipeline
+        - iPhone companion
+        - Android companion
+        - Docs
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac model
+      placeholder: macOS 15.5, MacBook Pro M1 Max 32 GB
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Charoite version
+      description: Menu bar → About, or the release you downloaded.
+      placeholder: 0.42.0
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: >-
+        logs/ in the install folder. Please strip anything personal —
+        transcripts stay yours.
+      render: text
