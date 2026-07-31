@@ -36,6 +36,11 @@ TEXT = {".txt", ".md"}
 SUBS = {".vtt", ".srt"}
 
 
+# Размеры, которыми потоковые писатели (ffmpeg в pipe, часть диктофонов)
+# помечают «длину не знаю»: ноль и «все единицы».
+RIFF_SIZE_UNKNOWN = {0, 0xFFFFFFFF}
+
+
 def wav_complete(path: pathlib.Path) -> bool:
     """RIFF уже дописан до длины, объявленной в заголовке.
 
@@ -43,6 +48,10 @@ def wav_complete(path: pathlib.Path) -> bool:
     вынужден копировать запись сразу под конечным именем .wav. Первые 12 байт
     уже объявляют полный размер источника, поэтому растущий файл надёжно
     отличается от готового без таймеров и догадок по mtime.
+
+    Заголовок без честного размера — не приговор файлу. Такие WAV читаются
+    и импортировались годами; судить по их заголовку нельзя, а запирать
+    запись в папке импорта навсегда — хуже, чем импортировать лишнее.
     """
     try:
         actual = path.stat().st_size
@@ -54,7 +63,10 @@ def wav_complete(path: pathlib.Path) -> bool:
         return False
     if header[:4] != b"RIFF" or header[8:12] != b"WAVE":
         return False
-    declared = int.from_bytes(header[4:8], "little") + 8
+    riff = int.from_bytes(header[4:8], "little")
+    if riff in RIFF_SIZE_UNKNOWN:
+        return True
+    declared = riff + 8
     return declared >= 44 and actual >= declared
 
 
@@ -68,6 +80,19 @@ def scan_candidates(folder: pathlib.Path) -> list[pathlib.Path]:
             continue
         out.append(path)
     return out
+
+
+def postponed_files(folder: pathlib.Path) -> list[pathlib.Path]:
+    """Файлы, отложенные до следующего скана: копирование ещё идёт.
+
+    Нужны только чтобы сказать о них вслух. Молчаливый пропуск человек
+    читает как «запись потерялась», и следующий его шаг — искать её руками.
+    """
+    return [
+        path
+        for path in sorted(folder.iterdir())
+        if path.is_file() and path.suffix.lower() == ".wav" and not wav_complete(path)
+    ]
 
 
 def _cfg() -> dict:
@@ -140,6 +165,8 @@ def main() -> None:
         done = folder / "done"
         done.mkdir(exist_ok=True)
         todo = scan_candidates(folder)
+        for waiting in postponed_files(folder):
+            print(f"ещё копируется, отложен до следующего скана: {waiting.name}")
         if not todo:
             print("готовых файлов нет — нечего импортировать")
             return

@@ -186,7 +186,12 @@ object GraphStore {
             return emptyList()
         }
         val found = mutableListOf<TaskItem>()
+        val active = coroutineContext
         walk(context, tree, DocumentsContract.getTreeDocumentId(tree), "") { entry, rel ->
+            // Обход задач тяжелее ленты встреч — он читает ВЕСЬ граф. Без этой
+            // проверки отменённый скан продолжает молотить файлы до конца, и
+            // переключение вкладок туда-обратно множит их друг на друга.
+            active.ensureActive()
             if (!entry.name.endsWith(".md")) return@walk
             val text = read(context, entry.uri) ?: return@walk
             if (!text.contains("- [")) return@walk

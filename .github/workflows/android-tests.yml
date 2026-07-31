@@ -33,5 +33,10 @@ jobs:
           java-version: "17"
       - uses: android-actions/setup-android@v4
       - uses: gradle/actions/setup-gradle@v6
+      # assembleDebugAndroidTest собирает тест записи на устройстве. Запустить
+      # его в CI нечем (нужен живой микрофон), но пусть хотя бы компилируется:
+      # иначе он тихо сгниёт при первом же переименовании в коде.
       - name: Unit tests, lint and debug build
-        run: ./gradlew testDebugUnitTest lintDebug assembleDebug --no-daemon
+        run: >-
+          ./gradlew testDebugUnitTest lintDebug assembleDebug
+          assembleDebugAndroidTest --no-daemon
