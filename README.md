@@ -6,7 +6,7 @@
 
 Charoite listens to your meetings (microphone + system audio, no bots joining calls), transcribes them locally, tells speakers apart, answers questions mid-meeting, and after each meeting builds an Obsidian knowledge graph that remembers people, systems, decisions and recurring topics — across all your meetings.
 
-*[Русский](README.ru.md) · [中文](README.zh.md). Charoite is Russian-first today (GigaAM STT is SOTA for Russian); English works via Parakeet/Whisper, Chinese via Whisper — and Qwen, the default LLM, is native in Chinese.*
+*[Русский](docs/ru/README.md) · [中文](docs/zh/README.md). Charoite is Russian-first today (GigaAM STT is SOTA for Russian); English works via Parakeet/Whisper, Chinese via Whisper — and Qwen, the default LLM, is native in Chinese.*
 
 ![Charoite app — archive answers with sources, English UI](docs/img/app-main-en.png)
 
@@ -94,8 +94,8 @@ chat with graph memory, dictation (⌥⌘D) and voice notes (⌥⌘N).
 .venv/bin/python src/main.py     # live transcript + hints in the terminal
 ```
 
-**No meetings yet?** Point `graph_dir` at the bundled [demo graph](demo/)
-(Russian) or [demo/graph_en](demo/) (English) and ask
+**No meetings yet?** Point `graph_dir` at the bundled [demo graph](demo)
+(Russian) or [demo/graph_en](demo) (English) and ask
 «что решили по платёжному провайдеру?» / "what did we decide about the
 payment provider?" — see the product working before recording anything.
 One command validates the whole retrieval loop: `.venv/bin/python scripts/memory_bench.py --demo`.
@@ -112,7 +112,7 @@ Without it Charoite still works, but labels follow channels (you vs. the other s
 ## iPhone companion (app-ios/)
 
 The phone is the microphone on the table, the Mac stays the brain. The
-SwiftUI companion ([app-ios/](app-ios/)) records meetings, voice notes
+SwiftUI companion ([app-ios/](app-ios)) records meetings, voice notes
 and diary entries (background-safe, with a Live Activity timer in the
 Dynamic Island), drops files into a user-chosen iCloud Drive folder with
 an on-device outbox queue — and reads the graph back: a meetings feed
@@ -123,7 +123,7 @@ then open `CharoiteiOS.xcodeproj`.
 ## Android companion (app-android/)
 
 The same role for a tablet or an Android phone
-([app-android/](app-android/)): background recording through a foreground
+([app-android/](app-android)): background recording through a foreground
 service, an on-device queue, the meetings feed and task checkboxes from
 the same markdown files. Recordings are written as 16 kHz mono WAV —
 exactly what recognition needs, and a format that survives a crash —
@@ -149,7 +149,7 @@ See [PRIVACY.md](PRIVACY.md). Short version: no telemetry, no network calls exce
 
 ## Status
 
-Public beta, currently 0.38.0. Issues and feedback welcome. The native macOS app lives in [app/](app/) — build with `app/make_app.sh`; the iPhone companion is in [app-ios/](app-ios/) and the Android one in [app-android/](app-android/). Roadmap in [ROADMAP.md](ROADMAP.md): UI localization for both apps, direct Wi-Fi delivery of recordings from the phone, a packaged graph viewer.
+Public beta, currently 0.38.0. Issues and feedback welcome. The native macOS app lives in [app/](app) — build with `app/make_app.sh`; the iPhone companion is in [app-ios/](app-ios) and the Android one in [app-android/](app-android). Roadmap in [ROADMAP.md](ROADMAP.md): UI localization for both apps, direct Wi-Fi delivery of recordings from the phone, a packaged graph viewer.
 
 ## License
 

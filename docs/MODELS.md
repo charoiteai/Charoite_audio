@@ -1,6 +1,6 @@
 # Why these models
 
-***English** · [Русский](MODELS.ru.md) · [中文](MODELS.zh.md)*
+***English** · [Русский](ru/MODELS.md) · [中文](zh/MODELS.md)*
 
 Everything runs locally. Below is the reasoning for each default: our own
 benchmarks on an M1 Max (32 GB) plus independent sources. Every choice is

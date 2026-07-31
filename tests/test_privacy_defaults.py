@@ -54,7 +54,7 @@ DECIDERS = ("src/daemon.py", "src/graph_updater.py",
 
 # Документы, которые обещают пользователю приватность. Все языки, а не только
 # английский: обещание не имеет права отличаться от перевода к переводу.
-PRIVACY_DOCS = ("PRIVACY.md", "PRIVACY.ru.md", "PRIVACY.zh.md")
+PRIVACY_DOCS = ("PRIVACY.md", "docs/ru/PRIVACY.md", "docs/zh/PRIVACY.md")
 
 
 def _direct_reads(text: str) -> list[str]:

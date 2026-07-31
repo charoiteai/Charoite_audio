@@ -1,6 +1,6 @@
 # Charoite Roadmap
 
-***English** · [Русский](ROADMAP.ru.md) · [中文](ROADMAP.zh.md)*
+***English** · [Русский](docs/ru/ROADMAP.md) · [中文](docs/zh/ROADMAP.md)*
 
 Local-first, in rough priority order. No dates — quality over deadlines.
 

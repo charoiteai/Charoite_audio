@@ -1,6 +1,6 @@
 # Features
 
-***English** · [Русский](FEATURES.ru.md) · [中文](FEATURES.zh.md)*
+***English** · [Русский](ru/FEATURES.md) · [中文](zh/FEATURES.md)*
 
 ## During the meeting
 

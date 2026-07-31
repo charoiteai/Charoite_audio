@@ -1,6 +1,6 @@
 # Tests
 
-*[**English**] · [Русский](README.ru.md) · [中文](README.zh.md)*
+*[**English**] · [Русский](../docs/ru/tests/README.md) · [中文](../docs/zh/tests/README.md)*
 
 ```bash
 .venv/bin/python -m pytest tests/ -x -q

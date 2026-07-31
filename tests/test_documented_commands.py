@@ -33,9 +33,9 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 _CMD = re.compile(r"(?P<runner>\.venv/bin/python|python3?)\s+(?P<script>(?:src|scripts)/[\w./-]+\.py)")
 
 # Документация для пользователя: её читают до того, как разберутся в устройстве.
-USER_DOCS = ("README.md", "README.ru.md", "README.zh.md",
-             "docs/SETUP.md", "docs/SETUP.ru.md", "docs/SETUP.zh.md",
-             "demo/README.md", "demo/README.ru.md", "demo/README.zh.md")
+USER_DOCS = ("README.md", "docs/ru/README.md", "docs/zh/README.md",
+             "docs/SETUP.md", "docs/ru/SETUP.md", "docs/zh/SETUP.md",
+             "demo/README.md", "docs/ru/demo/README.md", "docs/zh/demo/README.md")
 
 _LOCAL = {p.stem for p in (REPO / "src").glob("*.py")} | \
          {p.stem for p in (REPO / "scripts").glob("*.py")}
