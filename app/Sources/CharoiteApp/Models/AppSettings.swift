@@ -29,9 +29,21 @@ enum AppSettings {
             return URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
         }
         if let v = configValue("graph_dir") {
-            return URL(fileURLWithPath: (v as NSString).expandingTildeInPath)
+            return resolvePath(v, relativeTo: charoiteRoot)
         }
         return nil
+    }
+
+    /// Относительный путь в config.yaml считается от корня установки — так же,
+    /// как его видит Python-демон с `currentDirectoryURL = charoiteRoot`.
+    /// Иначе документированный `graph_dir: demo/graph` работал в демоне, но
+    /// приложение искало граф относительно случайной текущей папки .app.
+    static func resolvePath(_ raw: String, relativeTo root: URL) -> URL {
+        let expanded = (raw as NSString).expandingTildeInPath
+        if (expanded as NSString).isAbsolutePath {
+            return URL(fileURLWithPath: expanded)
+        }
+        return root.appendingPathComponent(expanded).standardizedFileURL
     }
 
     /// Язык интерфейса: та же настройка, что у документов встреч
