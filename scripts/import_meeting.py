@@ -36,6 +36,65 @@ TEXT = {".txt", ".md"}
 SUBS = {".vtt", ".srt"}
 
 
+# Размеры, которыми потоковые писатели (ffmpeg в pipe, часть диктофонов)
+# помечают «длину не знаю»: ноль и «все единицы».
+RIFF_SIZE_UNKNOWN = {0, 0xFFFFFFFF}
+
+
+def wav_complete(path: pathlib.Path) -> bool:
+    """RIFF уже дописан до длины, объявленной в заголовке.
+
+    Некоторые SAF/sync-провайдеры не умеют атомарный rename: тогда Android
+    вынужден копировать запись сразу под конечным именем .wav. Первые 12 байт
+    уже объявляют полный размер источника, поэтому растущий файл надёжно
+    отличается от готового без таймеров и догадок по mtime.
+
+    Заголовок без честного размера — не приговор файлу. Такие WAV читаются
+    и импортировались годами; судить по их заголовку нельзя, а запирать
+    запись в папке импорта навсегда — хуже, чем импортировать лишнее.
+    """
+    try:
+        actual = path.stat().st_size
+        if actual < 44:
+            return False
+        with path.open("rb") as stream:
+            header = stream.read(12)
+    except OSError:
+        return False
+    if header[:4] != b"RIFF" or header[8:12] != b"WAVE":
+        return False
+    riff = int.from_bytes(header[4:8], "little")
+    if riff in RIFF_SIZE_UNKNOWN:
+        return True
+    declared = riff + 8
+    return declared >= 44 and actual >= declared
+
+
+def scan_candidates(folder: pathlib.Path) -> list[pathlib.Path]:
+    """Поддерживаемые и уже полностью опубликованные файлы папки импорта."""
+    out = []
+    for path in sorted(folder.iterdir()):
+        if not path.is_file() or path.suffix.lower() not in (AUDIO | TEXT | SUBS):
+            continue
+        if path.suffix.lower() == ".wav" and not wav_complete(path):
+            continue
+        out.append(path)
+    return out
+
+
+def postponed_files(folder: pathlib.Path) -> list[pathlib.Path]:
+    """Файлы, отложенные до следующего скана: копирование ещё идёт.
+
+    Нужны только чтобы сказать о них вслух. Молчаливый пропуск человек
+    читает как «запись потерялась», и следующий его шаг — искать её руками.
+    """
+    return [
+        path
+        for path in sorted(folder.iterdir())
+        if path.is_file() and path.suffix.lower() == ".wav" and not wav_complete(path)
+    ]
+
+
 def _cfg() -> dict:
     p = ROOT / "config" / "config.yaml"
     if not p.exists():
@@ -99,23 +158,17 @@ def main() -> None:
                          "файлы из неё, успешные переносить в done/")
     args = ap.parse_args()
 
-    # записи с iPhone: note_*/diary_* — это НЕ встречи, а голосовые заметки
-    # и дневник; транскрибируем и отдаём конвейеру заметок
-    base = pathlib.Path(args.file).name.lower()
-    if base.startswith(("note_", "diary_")) and pathlib.Path(args.file).suffix.lower() in AUDIO:
-        return import_voice_note(pathlib.Path(args.file).expanduser(),
-                                 diary=base.startswith("diary_"))
-
     if args.scan:
         folder = pathlib.Path(args.file).expanduser()
         if not folder.is_dir():
             sys.exit(f"--scan ждёт папку: {folder}")
         done = folder / "done"
         done.mkdir(exist_ok=True)
-        todo = [p for p in sorted(folder.iterdir())
-                if p.suffix.lower() in (AUDIO | TEXT | SUBS)]
+        todo = scan_candidates(folder)
+        for waiting in postponed_files(folder):
+            print(f"ещё копируется, отложен до следующего скана: {waiting.name}")
         if not todo:
-            print("папка пуста — нечего импортировать")
+            print("готовых файлов нет — нечего импортировать")
             return
         for f in todo:
             print(f"=== импорт {f.name} ===")
@@ -127,6 +180,15 @@ def main() -> None:
     src = pathlib.Path(args.file).expanduser()
     if not src.exists():
         sys.exit(f"нет файла: {src}")
+    if src.suffix.lower() == ".wav" and not wav_complete(src):
+        sys.exit(f"WAV ещё дописывается или повреждён: {src}")
+
+    # записи с телефона: note_*/diary_* — это НЕ встречи, а голосовые заметки
+    # и дневник; транскрибируем и отдаём конвейеру заметок
+    base = src.name.lower()
+    if base.startswith(("note_", "diary_")) and src.suffix.lower() in AUDIO:
+        return import_voice_note(src, diary=base.startswith("diary_"))
+
     cfg = _cfg()
     tdir = ROOT / cfg["log"]["transcripts_dir"]
     tdir.mkdir(parents=True, exist_ok=True)
@@ -230,4 +292,3 @@ def import_voice_note(src: pathlib.Path, diary: bool) -> None:
 
 if __name__ == "__main__":
     main()
-
