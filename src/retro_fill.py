@@ -20,6 +20,7 @@ import requests
 import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
+import privacy  # noqa: E402
 from meeting_archive import archive_meeting  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -55,7 +56,7 @@ THESES_PROMPT = (
 
 def gen(cfg: dict, system: str, transcript: str, task: str) -> str:
     r = requests.post(
-        cfg["llm"]["base_url"].rstrip("/") + "/api/chat",
+        privacy.llm_base_url(cfg) + "/api/chat",
         json={"model": cfg["llm"]["model"], "stream": False, "think": False,
               "options": {"temperature": 0.3, "num_ctx": 16384},
               "messages": [

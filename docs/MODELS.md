@@ -110,7 +110,7 @@ model and blow up RAM).
 
 | RAM | Main LLM | Light LLM | STT | What you get |
 |----|----|----|----|----|
-| **4 GB** | — | — | GigaAM | Not enough for a local LLM. Run STT only (live transcript + saved minutes), and point `llm.base_url` at another machine or a cloud endpoint for suggestions. |
+| **4 GB** | — | — | GigaAM | Not enough for a local LLM. Run STT only (live transcript + saved minutes). Suggestions can go to Ollama on another machine you own — but that sends transcripts off this device, so it requires an explicit `llm.allow_remote: true` in the config and is refused under `CHAROITE_NO_CLOUD` (see PRIVACY.md). |
 | **8 GB** | `qwen3.5:4b` (3.4 GB) | same model | GigaAM | Transcript, theses, draft minutes, basic suggestions. One model serves both roles; no parallel Claude layer. Skip the graph (30B floor). |
 | **16 GB** | `gemma4:latest` (9.6 GB) | `qwen3.5:2b` | GigaAM | Full live loop: suggestions + theses + minutes in parallel. Graph extraction works but is slower. Recommended entry point. |
 | **32 GB** | `qwen3.6:35b-a3b` (23 GB) | `qwen3.5:4b` (3.4 GB) | GigaAM | The default config. Big-model suggestions, light model for theses in parallel, reliable graph extraction. Benchmarked here. |

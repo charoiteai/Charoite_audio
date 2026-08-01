@@ -39,7 +39,9 @@ True, то есть строка вместо булева давала обла
 """
 from __future__ import annotations
 
+import ipaddress
 import os
+import urllib.parse
 
 # Два имени одного рубильника: проект переименовался в Charoite, демон
 # и старые скрипты знают SUFLER_NO_CLOUD — оба работают всегда.
@@ -88,3 +90,59 @@ def cloud_edit_graph_enabled(cfg: dict, env: dict | None = None) -> bool:
     Поверх — общий тумблер разбора: без cloud_enrich шаг не идёт вовсе.
     """
     return _allowed(cfg, "cloud_edit_graph", env) and cloud_enrich_enabled(cfg, env)
+
+
+DEFAULT_LLM_URL = "http://127.0.0.1:11434"
+
+# localhost — не IP, ip_address() его не разбирает, а это самый частый адрес
+# в конфиге. Остальное решает is_loopback: 127.0.0.0/8 целиком и ::1.
+_LOCAL_NAMES = ("localhost",)
+
+
+def _is_loopback(host: str | None) -> bool:
+    if not host:
+        return False
+    if host.lower() in _LOCAL_NAMES:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:      # имя машины, .local, домен — что угодно не-IP
+        return False
+
+
+def llm_base_url(cfg: dict, env: dict | None = None) -> str:
+    """Единственный законный способ узнать адрес LLM-сервера.
+
+    Четыре облачных тумблера выше стерегут слой Claude, но у проекта есть
+    второй путь наружу, который они не видели: `llm.base_url`. Восемь мест
+    читали его из конфига напрямую, и адрес чужой машины превращал «всё
+    локально» в отправку стенограммы по сети — при выключенном облаке и
+    даже под CHAROITE_NO_CLOUD. Обещание PRIVACY.md обязано держать и этот
+    путь, поэтому адрес выдаётся только отсюда.
+
+    Правило то же, что у тумблеров: молчание — «нет». Loopback проходит
+    всегда. Всё остальное — только при явном `llm.allow_remote: true`
+    (строго булево, как и облачные ключи) и никогда под рубильником:
+    CHAROITE_NO_CLOUD означает «с этой машины ничего не уходит», а не
+    «ничего, кроме того, что уходит в Ollama на другой машине».
+
+    Отказ — исключение, а не тихий откат на localhost: молча подменить
+    адрес значит сделать вид, что настройка применена.
+    """
+    env = os.environ if env is None else env
+    raw = str((cfg.get("llm") or {}).get("base_url") or DEFAULT_LLM_URL)
+    url = raw.rstrip("/")
+    host = urllib.parse.urlsplit(url).hostname
+    if _is_loopback(host):
+        return url
+    if any(env.get(k) for k in KILL_SWITCHES):
+        raise RuntimeError(
+            f"llm.base_url = {raw} указывает не на эту машину, а рубильник "
+            f"{'/'.join(k for k in KILL_SWITCHES if env.get(k))} запрещает "
+            "любой выход наружу")
+    if (cfg.get("llm") or {}).get("allow_remote") is True:
+        return url
+    raise RuntimeError(
+        f"llm.base_url = {raw} указывает не на эту машину. Чароит локальный "
+        "по умолчанию: чтобы слать запросы на другой адрес, поставьте в "
+        "config.yaml явное llm.allow_remote: true")

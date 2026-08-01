@@ -165,6 +165,50 @@ def test_surviving_nodes_are_backed_up_before_editing(tmp_path):
     assert backups[0].read_text(encoding="utf-8") == before
 
 
+def _cloud_snapshot(graph: pathlib.Path, stamp: str) -> pathlib.Path:
+    """Снимок графа, как его делает cloud_review перед облачной правкой."""
+    snap = graph / forget.CLOUD_BACKUP_DIR / "2026-07-20_0300"
+    (snap / "Встречи").mkdir(parents=True)
+    (snap / "Встречи" / f"{stamp}.md").write_text("# копия узла\n", encoding="utf-8")
+    (snap / "Документация" / "Стенограммы встреч").mkdir(parents=True)
+    (snap / "Документация" / "Стенограммы встреч" / f"{stamp}.md").write_text(
+        "копия стенограммы\n", encoding="utf-8")
+    arch = snap / "Встречи-архив" / "2026-07-15 14-00 — Платёжный провайдер"
+    arch.mkdir(parents=True)
+    (arch / "Минутки.md").write_text("минутки\n", encoding="utf-8")
+    (snap / "Ядра").mkdir()
+    (snap / "Ядра" / "Выбор платёжного провайдера.md").write_text(
+        f"## Хроника\n- [[Встречи/{stamp}]] — выбрали ЮPay\n", encoding="utf-8")
+    return snap
+
+
+def test_cloud_backup_copies_are_forgotten_too(tmp_path):
+    """Бэкап облачной ревизии копирует граф целиком — «забыть» обязано дойти.
+
+    Иначе стенограмма и узел встречи остаются лежать в `.cloud_backup/` до
+    десяти копий, и «встречу можно забыть целиком» после первой же облачной
+    правки графа — неправда.
+    """
+    root, graph = _world(tmp_path)
+    snap = _cloud_snapshot(graph, STAMP)
+    forget.apply(forget.plan(STAMP, root, graph), yes=True)
+
+    assert not (snap / "Встречи" / f"{STAMP}.md").exists(), \
+        "узел встречи остался в снимке облачной ревизии"
+    assert not (snap / "Документация" / "Стенограммы встреч" / f"{STAMP}.md").exists(), \
+        "копия стенограммы осталась в снимке облачной ревизии"
+    assert not (snap / "Встречи-архив" / "2026-07-15 14-00 — Платёжный провайдер").exists(), \
+        "архив встречи остался в снимке облачной ревизии"
+    core = (snap / "Ядра" / "Выбор платёжного провайдера.md").read_text(encoding="utf-8")
+    assert f"Встречи/{STAMP}" not in core, "строка хроники осталась в копии Ядра"
+    # бэкап бэкапа не снимается: в .forget_backup — только копия ЖИВОГО Ядра
+    # (полного, со «## Статус»), а не отдельная копия файла из .cloud_backup
+    buried = list((graph / forget.BACKUP_DIR).rglob("Выбор платёжного провайдера.md"))
+    assert len(buried) == 1, f"ожидался один бэкап Ядра, найдено {len(buried)}"
+    assert "## Статус" in buried[0].read_text(encoding="utf-8"), \
+        "в .forget_backup попала копия из .cloud_backup вместо живого узла"
+
+
 def test_running_twice_is_not_a_failure(tmp_path):
     root, graph = _world(tmp_path)
     forget.apply(forget.plan(STAMP, root, graph), yes=True)

@@ -895,7 +895,7 @@ def main():
             # 20с, не 120: эмбеддинг занимает ~0.2с, и если Ollama занят тяжёлой
             # генерацией — лучше пропустить проход дежавю, чем держать поток
             # заблокированным две минуты
-            r = requests.post(cfg["llm"]["base_url"].rstrip("/") + "/api/embed",
+            r = requests.post(privacy.llm_base_url(cfg) + "/api/embed",
                               json={"model": emb_model, "input": texts}, timeout=20)
             return r.json().get("embeddings", []) or []
 

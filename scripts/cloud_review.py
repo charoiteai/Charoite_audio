@@ -48,8 +48,11 @@ BACKUP_KEEP = 10            # столько последних бэкапов �
 TIMEOUT = 30 * 60           # разбор длинной встречи идёт минуты, но не часы
 MIN_REPORT = 60             # страховка от «ok» и пустой строки
 
-# Что облако не трогает никогда, даже находясь внутри графа.
-PROTECTED_DIRS = ("Документация/Стенограммы встреч",)
+# Что облако не трогает никогда, даже находясь внутри графа. Архив встречи —
+# та же категория, что копии стенограмм: Саммари, Минутки, Стенограмма суфлёра
+# и документы, разложенные конвейером. Докстринг выше обещал это всегда, а
+# граница покрывала только одну папку из двух.
+PROTECTED_DIRS = ("Документация/Стенограммы встреч", "Встречи-архив")
 PROTECTED_SECTION = "## Правки автора"
 
 
@@ -85,9 +88,16 @@ def _digest(path: pathlib.Path) -> str:
 
 
 def snapshot(graph: pathlib.Path) -> dict[str, str]:
-    """Хеши всех markdown-файлов графа. Дёшево: граф это текст."""
+    """Хеши всех файлов графа. Дёшево: граф это текст.
+
+    Именно всех, а не только *.md: граница «что тронуло облако» обязана
+    видеть любой файл, иначе .txt или .canvas меняются и создаются мимо
+    контроля — снимок по расширению охранял бы не граф, а формат.
+    """
     out: dict[str, str] = {}
-    for p in graph.rglob("*.md"):
+    for p in graph.rglob("*"):
+        if not p.is_file():
+            continue
         if BACKUP_DIR in p.parts or any(part.startswith(".") for part in p.parts):
             continue
         out[str(p.resolve())] = _digest(p)
@@ -95,16 +105,25 @@ def snapshot(graph: pathlib.Path) -> dict[str, str]:
 
 
 def changed_since(before: dict[str, str], graph: pathlib.Path) -> list[pathlib.Path]:
-    """Что изменилось или появилось после запуска облака."""
+    """Что изменилось, появилось или ИСЧЕЗЛО после запуска облака.
+
+    Удалённые — обязательно: diff только по текущим файлам делает удаление
+    невидимым, то есть стереть узел облаку было «можно» просто потому, что
+    сравнивать становилось нечего.
+    """
     now = snapshot(graph)
-    return [pathlib.Path(k) for k, v in now.items() if before.get(k) != v]
+    touched = [pathlib.Path(k) for k, v in now.items() if before.get(k) != v]
+    touched += [pathlib.Path(k) for k in before if k not in now]
+    return touched
 
 
 def backup_graph(graph: pathlib.Path, stamp: str) -> pathlib.Path:
-    """Копия markdown-файлов графа перед правкой. Обещание PRIVACY — кодом."""
+    """Копия файлов графа перед правкой. Обещание PRIVACY — кодом."""
     dest = graph / BACKUP_DIR / stamp
     dest.mkdir(parents=True, exist_ok=True)
-    for p in graph.rglob("*.md"):
+    for p in graph.rglob("*"):
+        if not p.is_file():
+            continue
         if BACKUP_DIR in p.parts or any(part.startswith(".") for part in p.parts):
             continue
         target = dest / p.resolve().relative_to(graph.resolve())
@@ -126,6 +145,43 @@ def restore(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path) -> bo
         return False
     shutil.copy2(source, path)
     return True
+
+
+def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
+                       backup: pathlib.Path) -> tuple[list[str], list[str], int]:
+    """Сверить граф с состоянием до запуска и убрать запрещённое.
+
+    Возвращает (откачено, удалено, всего правок). Нарушение — это не только
+    правка существующего файла: удаление тоже правка (пропавшие «Правки
+    автора» не перестают быть авторскими), а файл, СОЗДАННЫЙ облаком в
+    защищённой папке, не имеет копии в бэкапе — его нельзя откатить, но
+    обязаны убрать, иначе запрет действует только на то, что существовало
+    до запуска.
+    """
+    reverted, removed = [], []
+    touched = changed_since(before, graph)
+    for path in touched:
+        try:
+            old = backup / path.resolve().relative_to(graph.resolve())
+        except (ValueError, OSError):
+            old = backup / path.name        # вне графа — старой копии нет
+        old_text = (old.read_text(encoding="utf-8", errors="ignore")
+                    if old.exists() else "")
+        new_text = (path.read_text(encoding="utf-8", errors="ignore")
+                    if path.exists() else "")
+        bad = not may_write(path, graph)
+        if not bad and old.exists():
+            # правка и удаление меряются одинаково: у стёртого файла
+            # new_text пуст, и пропавшие «Правки автора» — нарушение
+            bad = author_section_changed(old_text, new_text)
+        if not bad:
+            continue
+        if restore(path, graph, backup):
+            reverted.append(path.name)
+        elif path.exists():
+            path.unlink()
+            removed.append(path.name)
+    return reverted, removed, len(touched)
 
 
 def looks_like_report(text: str) -> bool:
@@ -210,20 +266,12 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             lf.write(f"[cloud-review] ревизия НЕ сохранена (код {code}, "
                      f"{len(text)} знаков) — см. {rev.name}.partial\n")
         if may_edit and backup is not None:
-            reverted = []
-            for path in changed_since(before, graph):
-                old = (backup / path.resolve().relative_to(graph.resolve()))
-                bad = not may_write(path, graph)
-                if not bad and old.exists():
-                    bad = author_section_changed(
-                        old.read_text(encoding="utf-8", errors="ignore"),
-                        path.read_text(encoding="utf-8", errors="ignore"))
-                if bad and restore(path, graph, backup):
-                    reverted.append(path.name)
-            lf.write(f"[cloud-review] правок графа: "
-                     f"{len(changed_since(before, graph))}"
+            reverted, removed, touched = enforce_boundaries(before, graph, backup)
+            lf.write(f"[cloud-review] правок графа: {touched}"
                      + (f", откатано запрещённых: {', '.join(reverted)}"
-                        if reverted else "") + "\n")
+                        if reverted else "")
+                     + (f", удалено созданных в защищённых: {', '.join(removed)}"
+                        if removed else "") + "\n")
     return 0 if published else 1
 
 

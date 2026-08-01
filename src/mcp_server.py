@@ -12,6 +12,8 @@ import subprocess
 
 import requests
 
+import privacy
+
 # requirements разрешают mcp>=1.0, а в 2.0 класс переехал: FastMCP из
 # mcp.server.fastmcp стал MCPServer в mcp.server. Оба дают .tool() и .run(),
 # то есть весь файл ниже работает одинаково — расходится только имя импорта.
@@ -35,7 +37,7 @@ def _cfg() -> dict:
 
 _CFG = _cfg()
 _LLM = _CFG.get("llm", {})
-OLLAMA = _LLM.get("base_url", "http://localhost:11434").rstrip("/")
+OLLAMA = privacy.llm_base_url(_CFG)
 MODEL = _LLM.get("model", "qwen3.6:35b-a3b")  # боевая модель из конфига, не хардкод
 
 mcp = FastMCP("sufler")
