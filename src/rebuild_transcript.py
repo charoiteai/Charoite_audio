@@ -31,6 +31,7 @@ import numpy as np
 import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
+import privacy  # noqa: E402
 from diarize import diarize  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
 from main import NOISE, Transcript  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
@@ -156,7 +157,7 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]]) -> dict[str, str]:
     sample = "\n".join(f"[{spk}] {text}" for spk, text in lines if text)[:7000]
     try:
         r = requests.post(
-            cfg["llm"]["base_url"].rstrip("/") + "/api/chat",
+            privacy.llm_base_url(cfg) + "/api/chat",
             json={"model": cfg["llm"]["model"], "stream": False, "think": False,
                   "format": "json",
                   "options": {"num_ctx": 8192},

@@ -92,6 +92,62 @@ def test_backup_restores_a_file_the_cloud_should_not_have_touched(tmp_path):
     assert doc.read_text(encoding="utf-8") == "стенограмма\n"
 
 
+def test_archive_folders_are_untouchable(tmp_path):
+    """Саммари и минутки в архиве — та же категория, что копии стенограмм."""
+    graph = _graph(tmp_path)
+    arch = graph / "Встречи-архив" / "2026-07-15 14-00 — Платёжный провайдер"
+    arch.mkdir(parents=True)
+    assert not cloud_review.may_write(arch / "Минутки.md", graph)
+
+
+def test_deleted_file_is_seen_and_restored(tmp_path):
+    """Удаление — тоже правка: diff только по живым файлам его не видел."""
+    graph = _graph(tmp_path)
+    core = graph / "Ядра" / "Платёжный провайдер.md"
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
+    core.unlink()
+    assert core.resolve() in {p.resolve() for p in
+                              cloud_review.changed_since(before, graph)}, \
+        "удалённый файл невидим для сверки"
+    # в удалённом узле был раздел «## Правки автора» — его пропажа нарушение
+    reverted, removed, _ = cloud_review.enforce_boundaries(before, graph, backup)
+    assert core.exists(), "удалённый узел с правками автора не восстановлен"
+    assert core.name in reverted and not removed
+
+
+def test_created_in_protected_dir_is_removed_not_ignored(tmp_path):
+    """Файл, созданный облаком там, где писать нельзя, убирается, а не прощается.
+
+    Откатывать нечего — копии в бэкапе нет, и раньше `if bad and restore(...)`
+    на этом молча заканчивался: нарушение оставалось на диске и не попадало в
+    лог. Запрет, который действует только на существовавшие до запуска файлы,
+    запретом не является.
+    """
+    graph = _graph(tmp_path)
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
+    fake = graph / "Документация" / "Стенограммы встреч" / "2026-07-15_1400_v2.md"
+    fake.write_text("переписанная стенограмма\n", encoding="utf-8")
+    reverted, removed, touched = cloud_review.enforce_boundaries(before, graph, backup)
+    assert not fake.exists(), "созданный в защищённой папке файл остался"
+    assert fake.name in removed and touched == 1 and not reverted
+
+
+def test_non_markdown_files_are_covered_too(tmp_path):
+    """Граница стережёт граф, а не расширение .md."""
+    graph = _graph(tmp_path)
+    data = graph / "Документация" / "Стенограммы встреч" / "запись.vtt"
+    data.write_text("WEBVTT\n", encoding="utf-8")
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
+    data.write_text("WEBVTT\nоблако дописало\n", encoding="utf-8")
+    reverted, removed, _ = cloud_review.enforce_boundaries(before, graph, backup)
+    assert data.read_text(encoding="utf-8") == "WEBVTT\n", \
+        "правка не-markdown файла в защищённой папке не откачена"
+    assert data.name in reverted
+
+
 def test_report_must_look_like_a_review(tmp_path):
     """Пустой или обрезанный ответ не должен публиковаться как ревизия."""
     assert not cloud_review.looks_like_report("")
