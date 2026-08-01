@@ -85,6 +85,59 @@ enum MeetingProcessingPolicy {
             return nil
         }
     }
+
+    /// Можно ли предложить «Повторить обработку». Ошибкой считается и явный
+    /// failed, и зависший processing (30 минут без записи статуса): для
+    /// пользователя оба выглядят одинаково — результата нет. Повтор возможен,
+    /// пока жива стенограмма: конвейер стартует от неё.
+    static func canRetry(
+        _ snapshot: MeetingProcessingSnapshot,
+        transcriptExists: Bool,
+        now: Date = Date()
+    ) -> Bool {
+        resolvedState(snapshot, now: now) == .error && transcriptExists
+    }
+
+    /// Дождались ли мы «своего» статуса после нажатия кнопки.
+    ///
+    /// После «Стоп» свой статус — любой новый запуск конвейера (started_at не
+    /// раньше нажатия). После «Повторить» так нельзя: store сохраняет
+    /// started_at первого запуска, и повторный прогон приходит со СТАРЫМ
+    /// started_at — по прежнему критерию он был бы невидим, и через три
+    /// минуты честного ожидания UI объявил бы «конвейер молчит» про конвейер,
+    /// который работает. Поэтому для повтора критерий другой: та же встреча
+    /// и свежая запись статуса.
+    static func matchesExpectation(
+        _ snapshot: MeetingProcessingSnapshot,
+        since: Date,
+        retryOf meetingID: String?
+    ) -> Bool {
+        if let meetingID {
+            return snapshot.meetingID == meetingID
+                && snapshot.updatedAt >= since.timeIntervalSince1970 - 5
+        }
+        return snapshot.startedAt >= since.timeIntervalSince1970 - 5
+    }
+}
+
+/// Команда повторной обработки: тот же конвейер, что демон запускает после
+/// «Стоп» (rebuild_transcript.py сам разбирается, что уже сделано, и по
+/// завершении зовёт graph_updater). Сборка вынесена в чистую функцию, чтобы
+/// тест держал контракт: venv-питон, правильный скрипт, лог рядом с логом
+/// демонского запуска той же встречи.
+enum MeetingRetryCommand {
+    static func build(root: URL, transcriptPath: String) -> (exec: URL, args: [String], log: URL) {
+        let python = root.appendingPathComponent(".venv/bin/python").path
+        let script = root.appendingPathComponent("src/rebuild_transcript.py").path
+        let stem = URL(fileURLWithPath: transcriptPath)
+            .deletingPathExtension().lastPathComponent
+        let stamp = String(stem.prefix(15))
+        return (
+            exec: URL(fileURLWithPath: "/usr/bin/nice"),
+            args: ["-n", "10", python, script, transcriptPath],
+            log: root.appendingPathComponent("logs/graph_\(stamp).log")
+        )
+    }
 }
 
 /// Reads the Python pipeline's atomic status files without blocking SwiftUI.
@@ -102,9 +155,14 @@ final class MeetingProcessingService: ObservableObject {
     /// Конвейер не записал ни одного статуса за отведённое время.
     @Published private(set) var pipelineSilent = false
 
+    /// Повторный запуск не записал ни статуса, ни процесса (нет venv, прав).
+    @Published private(set) var retryFailedToStart = false
+
     private var timer: Timer?
     private var refreshInFlight = false
     private var waitingSince: Date?
+    /// Не nil — ждём статус повторной обработки именно этой встречи.
+    private var retryingMeetingID: String?
     private let notifiedKey = "charoite.processing.lastReadyNotification"
 
     private init() {}
@@ -120,14 +178,85 @@ final class MeetingProcessingService: ObservableObject {
     /// Immediately replace the previous meeting's result after Stop is clicked.
     func expectResult() {
         waitingSince = Date()
+        retryingMeetingID = nil
         waitingForPipeline = true
         pipelineSilent = false
+        retryFailedToStart = false
         snapshot = nil
         refresh()
     }
 
+    /// Есть ли у последней встречи ошибка, которую можно исправить повтором.
+    var canRetry: Bool {
+        guard let snapshot else { return false }
+        return MeetingProcessingPolicy.canRetry(
+            snapshot,
+            transcriptExists: FileManager.default.fileExists(atPath: snapshot.transcriptPath))
+    }
+
+    /// Что именно сломалось — строка конвейера, она уже человеческая
+    /// («graph_updater завершился с кодом 1», «заметка встречи не создана»).
+    var errorDetail: String? {
+        guard let snapshot,
+              MeetingProcessingPolicy.resolvedState(snapshot) == .error,
+              let error = snapshot.error, !error.isEmpty else { return nil }
+        return error
+    }
+
+    /// Запустить обработку заново по сохранённой стенограмме.
+    ///
+    /// Ошибка обработки не должна быть тупиком: стенограмма на диске, конвейер
+    /// идемпотентен — но до этой кнопки повторить его можно было только из
+    /// терминала, зная имя скрипта. Теперь тот же путь нажимается мышкой.
+    func retry() {
+        guard let snapshot, canRetry else { return }
+        let cmd = MeetingRetryCommand.build(
+            root: AppSettings.charoiteRoot,
+            transcriptPath: snapshot.transcriptPath)
+
+        let p = Process()
+        p.executableURL = cmd.exec
+        p.arguments = cmd.args
+        p.currentDirectoryURL = AppSettings.charoiteRoot
+        // лог — тот же файл, что у демонского запуска этой встречи, но append:
+        // прошлый трейсбек — единственный след первой ошибки, затирать нельзя
+        try? FileManager.default.createDirectory(
+            at: cmd.log.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if !FileManager.default.fileExists(atPath: cmd.log.path) {
+            FileManager.default.createFile(atPath: cmd.log.path, contents: nil)
+        }
+        if let fh = try? FileHandle(forWritingTo: cmd.log) {
+            fh.seekToEndOfFile()
+            p.standardOutput = fh
+            p.standardError = fh
+        }
+        do {
+            try p.run()
+        } catch {
+            retryFailedToStart = true
+            return
+        }
+        retryingMeetingID = snapshot.meetingID
+        waitingSince = Date()
+        waitingForPipeline = true
+        pipelineSilent = false
+        retryFailedToStart = false
+        self.snapshot = nil
+        refresh()
+    }
+
     var statusText: String? {
+        if retryFailedToStart {
+            return L.t("Не удалось запустить повторную обработку — проверьте logs/",
+                       "Could not start reprocessing — check logs/",
+                       "无法启动重新处理——请查看 logs/")
+        }
         if waitingForPipeline {
+            if retryingMeetingID != nil {
+                return L.t("Повторяю обработку встречи…",
+                           "Reprocessing the meeting…",
+                           "正在重新处理会议…")
+            }
             return L.t("Запускаю обработку встречи…",
                        "Starting meeting processing…",
                        "正在启动会议处理…")
@@ -159,14 +288,19 @@ final class MeetingProcessingService: ObservableObject {
         case .ready:
             return L.t("Встреча готова", "Meeting ready", "会议已就绪")
         case .error:
-            if snapshot.state == .processing {
-                return L.t("Обработка не завершилась — стенограмма сохранена",
-                           "Processing did not finish — the transcript was kept",
-                           "处理未完成——逐字稿已保留")
+            let headline = snapshot.state == .processing
+                ? L.t("Обработка не завершилась — стенограмма сохранена",
+                      "Processing did not finish — the transcript was kept",
+                      "处理未完成——逐字稿已保留")
+                : L.t("Не удалось обработать встречу — стенограмма сохранена",
+                      "Could not process the meeting — the transcript was kept",
+                      "会议处理失败——逐字稿已保留")
+            // причина — второй строкой: конвейер пишет её человеческим языком,
+            // и оставлять её только в логах запрещает сам смысл этого статуса
+            if let errorDetail {
+                return headline + "\n" + errorDetail
             }
-            return L.t("Не удалось обработать встречу — стенограмма сохранена",
-                       "Could not process the meeting — the transcript was kept",
-                       "会议处理失败——逐字稿已保留")
+            return headline
         }
     }
 
@@ -177,7 +311,7 @@ final class MeetingProcessingService: ObservableObject {
     }
 
     var isError: Bool {
-        pipelineSilent ||
+        pipelineSilent || retryFailedToStart ||
             snapshot.map { MeetingProcessingPolicy.resolvedState($0) == .error } == true
     }
 
@@ -217,8 +351,10 @@ final class MeetingProcessingService: ObservableObject {
 
     private func accept(_ latest: MeetingProcessingSnapshot?) {
         if let waitingSince {
-            if let latest, latest.startedAt >= waitingSince.timeIntervalSince1970 - 5 {
+            if let latest, MeetingProcessingPolicy.matchesExpectation(
+                latest, since: waitingSince, retryOf: retryingMeetingID) {
                 self.waitingSince = nil
+                retryingMeetingID = nil
                 waitingForPipeline = false
                 pipelineSilent = false
                 snapshot = latest
@@ -227,6 +363,7 @@ final class MeetingProcessingService: ObservableObject {
                 // вечного «Запускаю…». Стенограмма при этом на диске, просто
                 // статусов о ней не будет.
                 self.waitingSince = nil
+                retryingMeetingID = nil
                 waitingForPipeline = false
                 pipelineSilent = true
                 snapshot = nil
@@ -243,8 +380,11 @@ final class MeetingProcessingService: ObservableObject {
               snapshot.state == .ready,
               snapshot.notePath != nil else { return }
         let defaults = UserDefaults.standard
-        guard defaults.string(forKey: notifiedKey) != snapshot.meetingID else { return }
-        defaults.set(snapshot.meetingID, forKey: notifiedKey)
+        // ключ различает прогоны: после успешного повтора meetingID тот же,
+        // но updated_at новый — «встреча готова» обязана прозвучать снова
+        let stamp = "\(snapshot.meetingID)@\(Int(snapshot.updatedAt))"
+        guard defaults.string(forKey: notifiedKey) != stamp else { return }
+        defaults.set(stamp, forKey: notifiedKey)
         MeetingNotificationService.shared.presentReady(snapshot)
     }
 

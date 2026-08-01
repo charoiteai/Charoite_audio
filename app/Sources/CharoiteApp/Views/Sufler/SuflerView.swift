@@ -523,6 +523,15 @@ struct SuflerView: View {
                 Button(actionTitle) { processing.openResult() }
                     .controlSize(.small)
             }
+            // Ошибка — не тупик: стенограмма цела, конвейер перезапускаем
+            // отсюда же, где показана сама ошибка. До этой кнопки повтор
+            // существовал только как имя скрипта в терминале.
+            if !sufler.isRunning, processing.canRetry {
+                Button(L.t("Повторить обработку", "Retry processing", "重新处理")) {
+                    processing.retry()
+                }
+                .controlSize(.small)
+            }
 
             Spacer()
 

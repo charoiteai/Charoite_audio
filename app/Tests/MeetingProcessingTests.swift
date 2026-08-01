@@ -65,6 +65,63 @@ final class MeetingProcessingTests: XCTestCase {
         XCTAssertNil(MeetingProcessingPolicy.latest([old], now: now))
     }
 
+    func testRetryOfferedOnlyForFailuresWithLiveTranscript() {
+        // Ошибка с живой стенограммой — повтор возможен. Без стенограммы
+        // повторять нечего. Готовой встрече кнопка не положена вовсе.
+        let failed = snapshot(state: .error)
+        XCTAssertTrue(MeetingProcessingPolicy.canRetry(failed, transcriptExists: true))
+        XCTAssertFalse(MeetingProcessingPolicy.canRetry(failed, transcriptExists: false))
+        XCTAssertFalse(MeetingProcessingPolicy.canRetry(
+            snapshot(state: .ready), transcriptExists: true))
+
+        // Зависший processing для пользователя — та же ошибка: результата нет.
+        let stuck = snapshot(state: .processing, updated: 100)
+        XCTAssertTrue(MeetingProcessingPolicy.canRetry(
+            stuck, transcriptExists: true,
+            now: Date(timeIntervalSince1970: 100 + 31 * 60)))
+        XCTAssertFalse(MeetingProcessingPolicy.canRetry(
+            stuck, transcriptExists: true,
+            now: Date(timeIntervalSince1970: 100 + 60)))
+    }
+
+    func testRetryWaitsByFreshUpdateNotByStartTime() {
+        // store сохраняет started_at первого запуска, поэтому статус повтора
+        // приходит со «старым» started_at. Критерий «Стопа» его не увидел бы
+        // и через три минуты объявил бы молчание про работающий конвейер.
+        let pressed = Date(timeIntervalSince1970: 10_000)
+        let retryRun = snapshot(state: .processing, started: 100, updated: 10_002)
+
+        XCTAssertFalse(
+            MeetingProcessingPolicy.matchesExpectation(
+                retryRun, since: pressed, retryOf: nil),
+            "критерий „Стопа“ не видит повторный прогон — для того и отдельный")
+        XCTAssertTrue(MeetingProcessingPolicy.matchesExpectation(
+            retryRun, since: pressed, retryOf: retryRun.meetingID))
+
+        // чужая встреча и лежалый статус той же встречи — не наш прогон
+        XCTAssertFalse(MeetingProcessingPolicy.matchesExpectation(
+            retryRun, since: pressed, retryOf: "2026-07-30_090001"))
+        let staleSameMeeting = snapshot(state: .error, started: 100, updated: 9_000)
+        XCTAssertFalse(MeetingProcessingPolicy.matchesExpectation(
+            staleSameMeeting, since: pressed, retryOf: staleSameMeeting.meetingID))
+    }
+
+    func testRetryCommandRunsSamePipelineFromVenv() {
+        let cmd = MeetingRetryCommand.build(
+            root: URL(fileURLWithPath: "/repo"),
+            transcriptPath: "/transcripts/2026-07-31_1415_План.md")
+
+        XCTAssertEqual(cmd.exec.path, "/usr/bin/nice")
+        XCTAssertEqual(cmd.args, [
+            "-n", "10",
+            "/repo/.venv/bin/python",
+            "/repo/src/rebuild_transcript.py",
+            "/transcripts/2026-07-31_1415_План.md",
+        ])
+        // лог — тот же файл, что у демонского запуска этой встречи
+        XCTAssertEqual(cmd.log.path, "/repo/logs/graph_2026-07-31_1415.log")
+    }
+
     func testSilentPipelineStopsClaimingLaunchAfterGracePeriod() {
         // «Запускаю обработку встречи…» — обещание. Если конвейер за разумное
         // время не записал ни одного статуса (диск, права, ранний выход до
