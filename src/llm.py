@@ -6,11 +6,13 @@ from collections.abc import Iterator
 
 import requests
 
+import privacy
+
 
 class LLM:
     def __init__(self, cfg: dict):
         l = cfg["llm"]
-        self.base = l["base_url"].rstrip("/")
+        self.base = privacy.llm_base_url(cfg)
         self.model = l["model"]
         self.small = l.get("small_model", self.model)
         self.fallback = l.get("fallback_model", self.small)

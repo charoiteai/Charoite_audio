@@ -26,6 +26,7 @@ import numpy as np
 import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
+import privacy  # noqa: E402
 from stt import STT  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -168,7 +169,7 @@ def name_speakers(cfg: dict, lines: list[tuple[str, float, float, str]]) -> dict
     sample = "\n".join(f"[{spk}] {text}" for spk, _s, _e, text in lines[:80] if text)[:7000]
     try:
         r = requests.post(
-            cfg["llm"]["base_url"].rstrip("/") + "/api/chat",
+            privacy.llm_base_url(cfg) + "/api/chat",
             json={"model": cfg["llm"]["model"], "stream": False, "think": False,
                   "format": "json",
                   "messages": [

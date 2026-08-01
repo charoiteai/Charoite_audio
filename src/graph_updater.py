@@ -106,7 +106,7 @@ def _dedup(items: list) -> list:
 
 def _extract(cfg: dict, transcript: str) -> dict | None:
     r = requests.post(
-        cfg["llm"]["base_url"].rstrip("/") + "/api/chat",
+        privacy.llm_base_url(cfg) + "/api/chat",
         json={
             "model": cfg["llm"]["model"],
             "stream": False,
@@ -599,7 +599,7 @@ def main():
             gctx_parts.append(m.read_text(encoding="utf-8")[:800])
         gctx = "\n---\n".join(gctx_parts)[:2500]
         r2 = requests.post(
-            cfg["llm"]["base_url"].rstrip("/") + "/api/chat",
+            privacy.llm_base_url(cfg) + "/api/chat",
             json={
                 "model": cfg["llm"]["model"],
                 "stream": False,

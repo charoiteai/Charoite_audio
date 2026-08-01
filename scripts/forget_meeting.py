@@ -22,6 +22,10 @@
     <граф>/Встречи/<штамп>.md       узел встречи
     <граф>/Встречи-архив/<папка>/   папка встречи со всеми документами
     <граф>/Документация/Стенограммы встреч/<штамп>.md
+    <граф>/.cloud_backup/*/…        те же файлы встречи в снимках облачной
+                                    ревизии: бэкап графа копирует его целиком,
+                                    и без этой строки «забыть» оставляло бы
+                                    стенограмму лежать в десяти копиях рядом
 
 Что правится (не удаляется):
     строки хроники в Ядрах, которые ссылались на эту встречу, — уходят вместе
@@ -58,6 +62,7 @@ ARCHIVE_DIR = "Встречи-архив"
 MEETINGS_DIR = "Встречи"
 DOCS_DIR = pathlib.Path("Документация") / "Стенограммы встреч"
 BACKUP_DIR = ".forget_backup"
+CLOUD_BACKUP_DIR = ".cloud_backup"      # снимки графа перед облачной правкой
 REMOVED_NOTE = "(встреча удалена)"
 
 # «- [[Встречи/2026-07-15_1400]] — выбрали ЮPay» — строка хроники целиком.
@@ -175,6 +180,19 @@ def plan(stamp: str, root: pathlib.Path,
             p.delete.append(doc)
         p.delete += _archive_folders(g, stamp)
 
+        # Снимки облачной ревизии копируют граф целиком, то есть каждая из
+        # последних десяти правок держит свою копию узла, стенограммы и
+        # архива этой встречи. «Забыть» обязано дойти и туда — иначе оно
+        # переименовывает файл, а не убирает встречу.
+        cloud = g / CLOUD_BACKUP_DIR
+        if cloud.is_dir():
+            for snap in sorted(d for d in cloud.iterdir() if d.is_dir()):
+                for trace in (snap / MEETINGS_DIR / f"{stamp}.md",
+                              snap / DOCS_DIR / f"{stamp}.md"):
+                    if trace.exists():
+                        p.delete.append(trace)
+                p.delete += _archive_folders(snap, stamp)
+
         # Файлы внутри удаляемой папки править не нужно и нельзя: папка уйдёт
         # целиком, а запись в неё после удаления — FileNotFoundError.
         doomed = {q.resolve() for q in p.delete}
@@ -242,7 +260,10 @@ def apply(p: Plan, yes: bool = False) -> bool:
         elif path.exists():
             path.unlink()
     for path, text in p.edit.items():
-        _backup(path, p.stamp)
+        # копии внутри .cloud_backup правим (там те же строки хроники), но
+        # бэкап бэкапа не снимаем: он воскресил бы то, что человек забывает
+        if CLOUD_BACKUP_DIR not in path.parts:
+            _backup(path, p.stamp)
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(text, encoding="utf-8")
         tmp.replace(path)
