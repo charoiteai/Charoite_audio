@@ -23,6 +23,11 @@ struct CharoiteApp: App {
         }
         .defaultSize(width: 520, height: 480)
 
+        Window(L.t("Последние встречи", "Recent meetings", "最近的会议"), id: "meetings") {
+            RecentMeetingsView()
+        }
+        .defaultSize(width: 560, height: 420)
+
         MenuBarExtra {
             MenuBarView()
         } label: {

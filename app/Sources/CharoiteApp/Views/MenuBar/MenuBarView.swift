@@ -78,6 +78,12 @@ struct MenuBarView: View {
                     Button(L.t("Повторить", "Retry", "重试")) { processing.retry() }
                         .disabled(processing.retryInFlight)
                 }
+                if !processing.history.isEmpty {
+                    Button(L.t("Все встречи", "All meetings", "全部会议")) {
+                        openWindow(id: "meetings")
+                        NSApp.activate(ignoringOtherApps: true)
+                    }
+                }
             }
             .buttonStyle(.plain)
             .font(.caption)
