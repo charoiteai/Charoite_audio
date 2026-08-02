@@ -506,6 +506,18 @@ struct SuflerView: View {
             .buttonStyle(.plain)
             .keyboardShortcut(.space, modifiers: [.command, .shift])
 
+            // Часы записи. Пульсирующая волна говорит «работает», но не
+            // говорит «сколько уже» — а человек, вернувшийся к ноутбуку,
+            // спрашивает именно это. Моноширинные цифры, чтобы строка не
+            // дёргалась каждую секунду.
+            if sufler.isRunning {
+                Text(SuflerService.clockText(sufler.recordingElapsed))
+                    .font(.headline.monospacedDigit())
+                    .foregroundStyle(.red)
+                    .accessibilityLabel(L.t("Идёт запись", "Recording", "录音中"))
+                    .accessibilityValue(SuflerService.clockText(sufler.recordingElapsed))
+            }
+
             // Сбой записи нельзя показывать так же, как «Готов к запуску»:
             // мелкий серый текст в одну строку человек на встрече не заметит, а
             // сообщение «нажмите ещё раз» вдобавок обрезалось на полуслове.

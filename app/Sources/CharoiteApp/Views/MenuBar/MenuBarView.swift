@@ -5,11 +5,38 @@ import SwiftUI
 /// Меню-бар: статус, быстрый вопрос локальной модели, диктовка и заметка.
 struct MenuBarView: View {
     @ObservedObject private var sufler = SuflerService.shared
+    @ObservedObject private var processing = MeetingProcessingService.shared
     @ObservedObject private var dictation = DictationService.shared
     @ObservedObject private var chat = LocalChatService.shared
     @Environment(\.openWindow) private var openWindow
     @State private var quick = ""
     @State private var stackNote = ""   // здоровье стека: пусто = всё в порядке
+
+    /// Что происходит прямо сейчас — одной строкой и одним цветом.
+    ///
+    /// Приложение живёт в меню-баре, и окно после встречи обычно закрывают.
+    /// Раньше здесь были только «Идёт запись» и «Готов»: всё, что случалось
+    /// с встречей после «Стоп» — обработка, готовый результат, ошибка, —
+    /// было видно только в окне, то есть чаще всего нигде.
+    private var state: (text: String, color: Color) {
+        if sufler.isRunning {
+            return (L.t("Запись", "Recording", "录音中") + " · "
+                    + SuflerService.clockText(sufler.recordingElapsed), .red)
+        }
+        if processing.isError {
+            return (L.t("Ошибка — исходник сохранён",
+                        "Failed — source kept",
+                        "处理失败——原始文件已保留"), .orange)
+        }
+        if processing.isProcessing {
+            return (L.t("Обрабатываю встречу…", "Processing…", "正在处理…"), .accentColor)
+        }
+        if processing.actionTitle != nil {
+            return (L.t("Встреча готова", "Meeting ready", "会议已就绪"), .green)
+        }
+        if !stackNote.isEmpty { return (stackNote, .orange) }
+        return (L.t("Готов к записи", "Ready to record", "可以录音"), .green)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -17,14 +44,43 @@ struct MenuBarView: View {
                 Text(L.t("Чароит", "Charoite", "Charoite")).font(.headline)
                 Spacer()
                 Circle()
-                    .fill(sufler.isRunning ? Color.red : (stackNote.isEmpty ? Color.green : Color.orange))
+                    .fill(state.color)
                     .frame(width: 8, height: 8)
-                Text(sufler.isRunning ? L.t("Идёт запись", "Recording", "录音中") : (stackNote.isEmpty ? L.t("Готов", "Ready", "就绪") : stackNote))
+                Text(state.text)
                     .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
             // здоровье стека проверяется при открытии меню: молча зелёный,
             // а если Ollama лежит — видно ДО того, как вопрос уйдёт в пустоту
             .task { await checkStack() }
+
+            // Запись и результат — прямо здесь: за ними не нужно открывать окно.
+            HStack(spacing: 10) {
+                if sufler.isRunning {
+                    Button {
+                        SuflerService.shared.stop()
+                    } label: {
+                        Label(L.t("Остановить", "Stop", "停止"), systemImage: "stop.circle")
+                    }
+                } else {
+                    Button {
+                        SuflerService.shared.start()
+                    } label: {
+                        Label(L.t("Начать запись", "Start recording", "开始录音"),
+                              systemImage: "record.circle")
+                    }
+                    .disabled(processing.isProcessing)
+                }
+                if !sufler.isRunning, let title = processing.actionTitle {
+                    Button(title) { processing.openResult() }
+                }
+                if !sufler.isRunning, processing.canRetry || processing.retryInFlight {
+                    Button(L.t("Повторить", "Retry", "重试")) { processing.retry() }
+                        .disabled(processing.retryInFlight)
+                }
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
 
             HStack(spacing: 8) {
                 TextField(L.t("Быстрый вопрос…", "Quick question…", "快速提问…"), text: $quick)
