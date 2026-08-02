@@ -84,26 +84,60 @@ final class MeetingProcessingTests: XCTestCase {
             now: Date(timeIntervalSince1970: 100 + 60)))
     }
 
+    private func expectation(
+        of snapshot: MeetingProcessingSnapshot
+    ) -> RetryExpectation {
+        RetryExpectation(
+            meetingID: snapshot.meetingID,
+            afterUpdatedAt: snapshot.updatedAt,
+            transcriptPath: snapshot.transcriptPath)
+    }
+
     func testRetryWaitsByFreshUpdateNotByStartTime() {
         // store сохраняет started_at первого запуска, поэтому статус повтора
         // приходит со «старым» started_at. Критерий «Стопа» его не увидел бы
         // и через три минуты объявил бы молчание про работающий конвейер.
         let pressed = Date(timeIntervalSince1970: 10_000)
+        let seen = snapshot(state: .error, started: 100, updated: 9_998)
         let retryRun = snapshot(state: .processing, started: 100, updated: 10_002)
 
         XCTAssertFalse(
             MeetingProcessingPolicy.matchesExpectation(
-                retryRun, since: pressed, retryOf: nil),
+                retryRun, since: pressed, retry: nil),
             "критерий „Стопа“ не видит повторный прогон — для того и отдельный")
         XCTAssertTrue(MeetingProcessingPolicy.matchesExpectation(
-            retryRun, since: pressed, retryOf: retryRun.meetingID))
+            retryRun, since: pressed, retry: expectation(of: seen)))
 
-        // чужая встреча и лежалый статус той же встречи — не наш прогон
+        // чужая встреча — не наш прогон
+        let alien = RetryExpectation(
+            meetingID: "2026-07-30_090001", afterUpdatedAt: 9_998, transcriptPath: "/t.md")
         XCTAssertFalse(MeetingProcessingPolicy.matchesExpectation(
-            retryRun, since: pressed, retryOf: "2026-07-30_090001"))
-        let staleSameMeeting = snapshot(state: .error, started: 100, updated: 9_000)
+            retryRun, since: pressed, retry: alien))
+    }
+
+    func testStatusTheUserClickedOnIsNotMistakenForTheRetryResult() {
+        // Жать «Повторить» сразу, как появилась ошибка, — нормальное поведение.
+        // Прежний допуск в пять секунд принимал ТОТ ЖЕ статус ошибки за
+        // результат нового запуска: UI возвращался в «ошибка», кнопка
+        // оживала, и следующее нажатие запускало второй конвейер поверх
+        // работающего первого.
+        let pressed = Date(timeIntervalSince1970: 10_000)
+        let seen = snapshot(state: .error, started: 100, updated: 9_999)
+
+        XCTAssertFalse(
+            MeetingProcessingPolicy.matchesExpectation(
+                seen, since: pressed, retry: expectation(of: seen)),
+            "статус, по которому нажали кнопку, — прошлое, а не результат")
+
+        // и лежалый статус той же встречи тоже не наш
+        let stale = snapshot(state: .error, started: 100, updated: 9_000)
         XCTAssertFalse(MeetingProcessingPolicy.matchesExpectation(
-            staleSameMeeting, since: pressed, retryOf: staleSameMeeting.meetingID))
+            stale, since: pressed, retry: expectation(of: seen)))
+
+        // а вот запись, сделанная конвейером после нажатия, — наша
+        let fresh = snapshot(state: .processing, started: 100, updated: 10_001)
+        XCTAssertTrue(MeetingProcessingPolicy.matchesExpectation(
+            fresh, since: pressed, retry: expectation(of: seen)))
     }
 
     func testRetryCommandRunsSamePipelineFromVenv() {

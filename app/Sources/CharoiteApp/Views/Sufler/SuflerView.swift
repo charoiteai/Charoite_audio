@@ -526,11 +526,15 @@ struct SuflerView: View {
             // Ошибка — не тупик: стенограмма цела, конвейер перезапускаем
             // отсюда же, где показана сама ошибка. До этой кнопки повтор
             // существовал только как имя скрипта в терминале.
-            if !sufler.isRunning, processing.canRetry {
+            if !sufler.isRunning, processing.canRetry || processing.retryInFlight {
                 Button(L.t("Повторить обработку", "Retry processing", "重新处理")) {
                     processing.retry()
                 }
                 .controlSize(.small)
+                // пока прошлый повтор жив — кнопка гаснет, но остаётся на
+                // месте: исчезающая кнопка под курсором читается как сбой,
+                // а два конвейера на одну встречу пишут один статус и лог
+                .disabled(processing.retryInFlight)
             }
 
             Spacer()
