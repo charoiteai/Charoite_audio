@@ -598,6 +598,21 @@ struct SuflerView: View {
             }
             .help(L.t("Чат отдельным окном (история общая с панелью)", "Chat in its own window (history shared with the pane)", "聊天独立窗口(与面板共用历史)"))
 
+            // Список встреч: результат вчерашней записи не должен исчезать с
+            // экрана в ту секунду, когда начата новая.
+            if !processing.history.isEmpty {
+                Button {
+                    openWindow(id: "meetings")
+                    NSApp.activate(ignoringOtherApps: true)
+                } label: {
+                    Label(L.t("Встречи", "Meetings", "会议"),
+                          systemImage: "clock.arrow.circlepath")
+                }
+                .help(L.t("Последние записи: состояние, результат, повтор обработки",
+                          "Recent recordings: state, result, retry processing",
+                          "最近的录音：状态、结果、重新处理"))
+            }
+
             Button {
                 TasksService.shared.rescan()
                 openWindow(id: "tasks")

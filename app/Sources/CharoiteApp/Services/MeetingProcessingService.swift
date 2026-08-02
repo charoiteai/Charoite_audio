@@ -86,6 +86,42 @@ enum MeetingProcessingPolicy {
         }
     }
 
+    /// Сколько встреч показываем в истории. Store хранит статусы 14 дней;
+    /// список нужен, чтобы «что там было вчера» находилось за один взгляд,
+    /// а не чтобы заменить архив графа.
+    static let historyLimit = 20
+
+    /// Недавние встречи, новая первая.
+    ///
+    /// Один и тот же meeting_id может прийти из нескольких файлов (повтор
+    /// пишет в тот же статус, но на диске могли остаться следы прошлых
+    /// прогонов) — оставляем самую свежую запись о каждой встрече, иначе
+    /// человек видит одну встречу дважды в разных состояниях.
+    static func history(
+        _ snapshots: [MeetingProcessingSnapshot],
+        now: Date = Date(),
+        limit: Int = historyLimit
+    ) -> [MeetingProcessingSnapshot] {
+        var freshest: [String: MeetingProcessingSnapshot] = [:]
+        for snapshot in snapshots
+        where now.timeIntervalSince1970 - snapshot.updatedAt <= Double(STATUS_KEEP_DAYS) * 86_400 {
+            if let seen = freshest[snapshot.meetingID], seen.updatedAt >= snapshot.updatedAt {
+                continue
+            }
+            freshest[snapshot.meetingID] = snapshot
+        }
+        return freshest.values
+            .sorted {
+                if $0.startedAt == $1.startedAt { return $0.updatedAt > $1.updatedAt }
+                return $0.startedAt > $1.startedAt
+            }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    /// Столько же дней, сколько хранит python-store (STATUS_KEEP_DAYS).
+    static let STATUS_KEEP_DAYS = 14
+
     /// Можно ли предложить «Повторить обработку». Ошибкой считается и явный
     /// failed, и зависший processing (30 минут без записи статуса): для
     /// пользователя оба выглядят одинаково — результата нет. Повтор возможен,
@@ -125,6 +161,46 @@ enum MeetingProcessingPolicy {
                 && snapshot.updatedAt > retry.afterUpdatedAt
         }
         return snapshot.startedAt >= since.timeIntervalSince1970 - 5
+    }
+}
+
+extension MeetingProcessingSnapshot {
+    /// Человеческое имя встречи для списка.
+    ///
+    /// graph_updater переименовывает файлы по теме разговора
+    /// («2026-07-15_1415_Платёжный_провайдер.md»), поэтому тема уже лежит в
+    /// имени стенограммы — выдумывать и лезть в граф не нужно. Пока разбор не
+    /// дошёл до переименования, честнее показать дату, чем пустую строку.
+    var title: String {
+        let stem = URL(fileURLWithPath: transcriptPath)
+            .deletingPathExtension().lastPathComponent
+        let stamp = String(stem.prefix(15))
+        var rest = String(stem.dropFirst(15))
+        while rest.first == "_" || rest.first == " " { rest.removeFirst() }
+        for suffix in ["_minutes", "_hints", "_live", "_debrief"] where rest.hasSuffix(suffix) {
+            rest.removeLast(suffix.count)
+        }
+        let name = rest.replacingOccurrences(of: "_", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? Self.dayAndTime(stamp) : name
+    }
+
+    /// Когда встречу начали. Штамп в имени — местное время машины, а
+    /// started_at — момент, когда конвейер впервые записал статус; для списка
+    /// нужен первый, он совпадает с тем, что человек помнит.
+    var startedDate: Date {
+        Date(timeIntervalSince1970: startedAt)
+    }
+
+    /// «31 июля, 14:15» из штампа «2026-07-31_1415».
+    private static func dayAndTime(_ stamp: String) -> String {
+        let parser = DateFormatter()
+        parser.dateFormat = "yyyy-MM-dd_HHmm"
+        guard let date = parser.date(from: stamp) else { return stamp }
+        let out = DateFormatter()
+        out.locale = Locale.current
+        out.setLocalizedDateFormatFromTemplate("d MMMM HH:mm")
+        return out.string(from: date)
     }
 }
 
@@ -180,6 +256,11 @@ final class MeetingProcessingService: ObservableObject {
 
     /// Повтор уже идёт: кнопка недоступна, второй запуск не начнётся.
     @Published private(set) var retryInFlight = false
+
+    /// Недавние встречи, новая первая. Наполняется тем же опросом статусов,
+    /// что и текущее состояние: отдельного хранилища у истории нет —
+    /// источник правды один, файлы конвейера.
+    @Published private(set) var history: [MeetingProcessingSnapshot] = []
 
     private var timer: Timer?
     private var refreshInFlight = false
@@ -256,6 +337,22 @@ final class MeetingProcessingService: ObservableObject {
         let path = snapshot?.transcriptPath ?? retryExpectation?.transcriptPath
         guard let meetingID, let path else { return }
         let seenAt = snapshot?.updatedAt ?? retryExpectation?.afterUpdatedAt ?? 0
+        launchRetry(meetingID: meetingID, path: path, seenAt: seenAt)
+    }
+
+    /// Повторить обработку встречи, выбранной в списке.
+    ///
+    /// Это может быть не последняя встреча: позавчерашняя ошибка так же
+    /// чинится, и заставлять ради неё «сделать её текущей» нечем.
+    func retry(_ snapshot: MeetingProcessingSnapshot) {
+        guard canRetry(snapshot) else { return }
+        launchRetry(
+            meetingID: snapshot.meetingID,
+            path: snapshot.transcriptPath,
+            seenAt: snapshot.updatedAt)
+    }
+
+    private func launchRetry(meetingID: String, path: String, seenAt: TimeInterval) {
 
         let cmd = MeetingRetryCommand.build(
             root: AppSettings.charoiteRoot,
@@ -401,10 +498,31 @@ final class MeetingProcessingService: ObservableObject {
     }
 
     func openResult() {
-        guard let snapshot,
-              let path = MeetingProcessingPolicy.actionPath(for: snapshot),
+        guard let snapshot else { return }
+        open(snapshot)
+    }
+
+    /// Открыть результат конкретной встречи: готовую — заметкой, неудачную —
+    /// стенограммой (она уцелела, и это единственное, что можно прочитать).
+    func open(_ snapshot: MeetingProcessingSnapshot) {
+        guard let path = MeetingProcessingPolicy.actionPath(for: snapshot),
               FileManager.default.fileExists(atPath: path) else { return }
         NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
+    /// Показать стенограмму встречи независимо от состояния: у готовой она
+    /// тоже осталась, и иногда нужна именно она, а не заметка.
+    func openTranscript(_ snapshot: MeetingProcessingSnapshot) {
+        guard FileManager.default.fileExists(atPath: snapshot.transcriptPath) else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: snapshot.transcriptPath))
+    }
+
+    /// Можно ли повторить обработку этой встречи из списка.
+    func canRetry(_ snapshot: MeetingProcessingSnapshot) -> Bool {
+        guard !retryInFlight else { return false }
+        return MeetingProcessingPolicy.canRetry(
+            snapshot,
+            transcriptExists: FileManager.default.fileExists(atPath: snapshot.transcriptPath))
     }
 
     private func refresh() {
@@ -418,6 +536,7 @@ final class MeetingProcessingService: ObservableObject {
             }.value
             guard let self else { return }
             self.refreshInFlight = false
+            self.history = MeetingProcessingPolicy.history(snapshots)
             self.accept(MeetingProcessingPolicy.latest(snapshots))
         }
     }
