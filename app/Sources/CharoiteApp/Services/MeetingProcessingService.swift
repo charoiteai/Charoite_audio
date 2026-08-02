@@ -106,18 +106,38 @@ enum MeetingProcessingPolicy {
     /// started_at — по прежнему критерию он был бы невидим, и через три
     /// минуты честного ожидания UI объявил бы «конвейер молчит» про конвейер,
     /// который работает. Поэтому для повтора критерий другой: та же встреча
-    /// и свежая запись статуса.
+    /// и запись статуса СВЕЖЕЕ той, что человек видел, когда нажимал.
+    ///
+    /// Сравнение с видимым статусом, а не со временем нажатия: часы файла и
+    /// часы приложения — разные источники, и пятисекундный допуск, который
+    /// был здесь раньше, принимал ЗА РЕЗУЛЬТАТ ПОВТОРА тот самый статус
+    /// ошибки, по которому кнопку и нажали (если жали сразу, как только
+    /// ошибка появилась). UI мгновенно возвращался в «ошибка», кнопка
+    /// «Повторить» появлялась снова — и следующее нажатие запускало вторую
+    /// обработку поверх работающей первой.
     static func matchesExpectation(
         _ snapshot: MeetingProcessingSnapshot,
         since: Date,
-        retryOf meetingID: String?
+        retry: RetryExpectation?
     ) -> Bool {
-        if let meetingID {
-            return snapshot.meetingID == meetingID
-                && snapshot.updatedAt >= since.timeIntervalSince1970 - 5
+        if let retry {
+            return snapshot.meetingID == retry.meetingID
+                && snapshot.updatedAt > retry.afterUpdatedAt
         }
         return snapshot.startedAt >= since.timeIntervalSince1970 - 5
     }
+}
+
+/// Чего мы ждём после нажатия «Повторить обработку».
+///
+/// `afterUpdatedAt` — отметка статуса, который человек видел на экране в этот
+/// момент. Всё, что не свежее её, — прошлое, а не результат повтора.
+/// `transcriptPath` хранится, чтобы повтор оставался возможен, даже если
+/// конвейер промолчал и снимок статуса пропал из виду.
+struct RetryExpectation: Equatable, Sendable {
+    let meetingID: String
+    let afterUpdatedAt: TimeInterval
+    let transcriptPath: String
 }
 
 /// Команда повторной обработки: тот же конвейер, что демон запускает после
@@ -158,11 +178,18 @@ final class MeetingProcessingService: ObservableObject {
     /// Повторный запуск не записал ни статуса, ни процесса (нет venv, прав).
     @Published private(set) var retryFailedToStart = false
 
+    /// Повтор уже идёт: кнопка недоступна, второй запуск не начнётся.
+    @Published private(set) var retryInFlight = false
+
     private var timer: Timer?
     private var refreshInFlight = false
     private var waitingSince: Date?
     /// Не nil — ждём статус повторной обработки именно этой встречи.
-    private var retryingMeetingID: String?
+    private var retryExpectation: RetryExpectation?
+    /// Процесс повтора, пока он жив. Держим ссылку, чтобы не запустить второй
+    /// поверх работающего: два конвейера на одну встречу пишут один статус и
+    /// один лог, и чей результат окажется последним — вопрос удачи.
+    private var retryProcess: Process?
     private let notifiedKey = "charoite.processing.lastReadyNotification"
 
     private init() {}
@@ -178,7 +205,7 @@ final class MeetingProcessingService: ObservableObject {
     /// Immediately replace the previous meeting's result after Stop is clicked.
     func expectResult() {
         waitingSince = Date()
-        retryingMeetingID = nil
+        retryExpectation = nil
         waitingForPipeline = true
         pipelineSilent = false
         retryFailedToStart = false
@@ -187,11 +214,24 @@ final class MeetingProcessingService: ObservableObject {
     }
 
     /// Есть ли у последней встречи ошибка, которую можно исправить повтором.
+    ///
+    /// Пока прошлый повтор жив — нет: иначе второе нажатие запустит второй
+    /// конвейер поверх работающего. Это же условие гасит и «зависший»
+    /// processing: тридцать минут без статуса делают состояние ошибкой, но
+    /// процесс при этом может быть ещё жив.
     var canRetry: Bool {
-        guard let snapshot else { return false }
-        return MeetingProcessingPolicy.canRetry(
-            snapshot,
-            transcriptExists: FileManager.default.fileExists(atPath: snapshot.transcriptPath))
+        guard !retryInFlight else { return false }
+        if let snapshot {
+            return MeetingProcessingPolicy.canRetry(
+                snapshot,
+                transcriptExists: FileManager.default.fileExists(atPath: snapshot.transcriptPath))
+        }
+        // Повтор промолчал: снимка нет, но стенограмма известна из ожидания —
+        // тупика быть не должно, пробовать снова можно.
+        if pipelineSilent, let path = retryExpectation?.transcriptPath {
+            return FileManager.default.fileExists(atPath: path)
+        }
+        return false
     }
 
     /// Что именно сломалось — строка конвейера, она уже человеческая
@@ -209,10 +249,17 @@ final class MeetingProcessingService: ObservableObject {
     /// идемпотентен — но до этой кнопки повторить его можно было только из
     /// терминала, зная имя скрипта. Теперь тот же путь нажимается мышкой.
     func retry() {
-        guard let snapshot, canRetry else { return }
+        guard canRetry else { return }
+        // путь берём из снимка, а если его нет — из ожидания промолчавшего
+        // повтора; meetingID и отметка «свежее чего ждём» оттуда же
+        let meetingID = snapshot?.meetingID ?? retryExpectation?.meetingID
+        let path = snapshot?.transcriptPath ?? retryExpectation?.transcriptPath
+        guard let meetingID, let path else { return }
+        let seenAt = snapshot?.updatedAt ?? retryExpectation?.afterUpdatedAt ?? 0
+
         let cmd = MeetingRetryCommand.build(
             root: AppSettings.charoiteRoot,
-            transcriptPath: snapshot.transcriptPath)
+            transcriptPath: path)
 
         let p = Process()
         p.executableURL = cmd.exec
@@ -230,19 +277,45 @@ final class MeetingProcessingService: ObservableObject {
             p.standardOutput = fh
             p.standardError = fh
         }
+        // terminationHandler ставится ДО run(): короткий процесс (нет venv,
+        // сразу упавший питон) успевает завершиться раньше следующей строки
+        p.terminationHandler = { [weak self] proc in
+            Task { @MainActor [weak self] in self?.retryFinished(proc) }
+        }
         do {
             try p.run()
         } catch {
             retryFailedToStart = true
             return
         }
-        retryingMeetingID = snapshot.meetingID
+        retryProcess = p
+        retryInFlight = true
+        retryExpectation = RetryExpectation(
+            meetingID: meetingID, afterUpdatedAt: seenAt, transcriptPath: path)
         waitingSince = Date()
         waitingForPipeline = true
         pipelineSilent = false
         retryFailedToStart = false
         self.snapshot = nil
         refresh()
+    }
+
+    /// Процесс повтора завершился.
+    ///
+    /// Ненулевой код — сразу честная ошибка: ждать три минуты «а вдруг статус
+    /// появится» незачем, конвейер уже мёртв. Нулевой код ничего не решает:
+    /// результат объявляет статус, а не код возврата, поэтому здесь только
+    /// снимаем блокировку кнопки.
+    private func retryFinished(_ proc: Process) {
+        guard proc === retryProcess else { return }
+        retryProcess = nil
+        retryInFlight = false
+        guard proc.terminationStatus != 0 else { return }
+        if waitingForPipeline {
+            waitingSince = nil
+            waitingForPipeline = false
+            retryFailedToStart = true
+        }
     }
 
     var statusText: String? {
@@ -252,7 +325,7 @@ final class MeetingProcessingService: ObservableObject {
                        "无法启动重新处理——请查看 logs/")
         }
         if waitingForPipeline {
-            if retryingMeetingID != nil {
+            if retryExpectation != nil {
                 return L.t("Повторяю обработку встречи…",
                            "Reprocessing the meeting…",
                            "正在重新处理会议…")
@@ -352,9 +425,9 @@ final class MeetingProcessingService: ObservableObject {
     private func accept(_ latest: MeetingProcessingSnapshot?) {
         if let waitingSince {
             if let latest, MeetingProcessingPolicy.matchesExpectation(
-                latest, since: waitingSince, retryOf: retryingMeetingID) {
+                latest, since: waitingSince, retry: retryExpectation) {
                 self.waitingSince = nil
-                retryingMeetingID = nil
+                retryExpectation = nil
                 waitingForPipeline = false
                 pipelineSilent = false
                 snapshot = latest
@@ -363,7 +436,8 @@ final class MeetingProcessingService: ObservableObject {
                 // вечного «Запускаю…». Стенограмма при этом на диске, просто
                 // статусов о ней не будет.
                 self.waitingSince = nil
-                retryingMeetingID = nil
+                // retryExpectation НЕ сбрасываем: в нём путь стенограммы, по
+                // которому «Повторить» останется доступным и после молчания
                 waitingForPipeline = false
                 pipelineSilent = true
                 snapshot = nil
