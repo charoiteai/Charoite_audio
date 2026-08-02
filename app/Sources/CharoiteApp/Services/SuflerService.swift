@@ -20,6 +20,17 @@ final class SuflerService: ObservableObject {
     }
 
     @Published var isRunning = false
+
+    /// Когда началась текущая запись. Не nil ровно тогда, когда идёт встреча.
+    ///
+    /// «Идёт запись» без времени — обещание без доказательства: человек,
+    /// который вернулся к ноутбуку через час, не может отличить работающую
+    /// запись от зависшего индикатора. Часы отсчитывают от старта демона,
+    /// а не от первой реплики: тишина в начале встречи тоже записана.
+    @Published private(set) var recordingStartedAt: Date?
+
+    /// Тик раз в секунду, чтобы SwiftUI перерисовывал таймер.
+    @Published private(set) var recordingElapsed: TimeInterval = 0
     @Published var status = L.t("Готов к запуску", "Ready", "就绪")
     /// Текущий статус — про сбой, а не про обычный ход дела.
     ///
@@ -63,6 +74,42 @@ final class SuflerService: ObservableObject {
         send("set \(key) \(on ? "on" : "off")")
     }
 
+    /// Часы записи. Секундный тик — единственное, что здесь происходит:
+    /// длительность считается от даты старта, а не накоплением тиков, поэтому
+    /// уснувший ноутбук её не «съедает».
+    private func startClock() {
+        let started = Date()
+        recordingStartedAt = started
+        recordingElapsed = 0
+        clock?.invalidate()
+        clock = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, let from = self.recordingStartedAt else { return }
+                self.recordingElapsed = Date().timeIntervalSince(from)
+            }
+        }
+    }
+
+    private func stopClock() {
+        clock?.invalidate()
+        clock = nil
+        recordingStartedAt = nil
+        recordingElapsed = 0
+    }
+
+    /// «18:42» — мм:сс, а после часа «1:18:42». Для таймера, который человек
+    /// читает боковым зрением, ведущие нули у минут важнее единообразия.
+    nonisolated static func clockText(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds))
+        let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60)
+        return h > 0
+            ? String(format: "%d:%02d:%02d", h, m, s)
+            : String(format: "%d:%02d", m, s)
+    }
+
+    /// Слишком короткая запись — скорее всего промах по кнопке.
+    nonisolated static let tooShortToStop: TimeInterval = 20
+
     private var process: Process?
     private var stdinPipe: Pipe?
     private var stdoutHandle: FileHandle?  // для снятия readabilityHandler при смерти демона
@@ -74,6 +121,7 @@ final class SuflerService: ObservableObject {
     // процессе = завис (20.07: встреча шла, транскрипция молча стояла 20 минут)
     private var lastEventAt = Date()
     private var watchdog: Timer?
+    private var clock: Timer?
     private var userStopped = false
     private var restartAttempts = 0      // защита от краш-лупа: максимум 3 подряд
     private var micChecked = false       // разрешение спрашиваем один раз за сессию
@@ -206,6 +254,7 @@ final class SuflerService: ObservableObject {
             process = p
             stdinPipe = inPipe
             isRunning = true
+            startClock()
             // сохранённые дефолты — новому демону (stdin буферизуется до готовности)
             for (key, on) in [("hints", hintsOn), ("theses", thesesOn), ("cloud", cloudOn)] where !on {
                 send("set \(key) off")
@@ -239,6 +288,7 @@ final class SuflerService: ObservableObject {
             if let p, p.isRunning { kill(p.processIdentifier, SIGKILL) }
         }
         isRunning = false
+        stopClock()
         status = L.t("Останавливаю…", "Stopping…", "停止中…")
     }
 
@@ -252,6 +302,7 @@ final class SuflerService: ObservableObject {
         errHandle = nil
         let wasRunning = isRunning
         isRunning = false
+        stopClock()
         isHinting = false   // ждать hint_done/cloud_done от мёртвого демона бессмысленно
         disarmHintTimeout()
         isClouding = false
