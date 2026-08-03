@@ -8,7 +8,7 @@
 
 ## 近期
 
-- **完整的英文与中文面孔** — 引擎已经会说全部三种语言（Parakeet/Whisper STT、`language: en|zh` 文档、图谱内容、提示与会议纪要；Qwen 的中文是母语级；`config.example.{en,zh}.yaml`；README ×3 与翻译版文档作为门面）。剩下的是最后一公里：应用 UI 本地化（macOS 与 iOS 的字符串目录）以及 README 的分语言截图。
+- **完整的英文与中文面孔** — 引擎与 macOS 界面已经支持全部三种语言（Parakeet/Whisper STT、`language: en|zh` 文档、图谱内容、提示与会议纪要；Qwen 的中文是母语级；`config.example.{en,zh}.yaml`；README ×3 与翻译版文档作为门面）。剩下的是最后一公里：非俄语摘要与卡片的统一分段解析、iOS 字符串目录，以及 README 的分语言截图。
 - **中文 SOTA STT 后端** — 通过 sherpa-onnx 接入 SenseVoice/Paraformer（FunASR），作为 `stt.backend` 选项：中文 CER 明显低于 Whisper，并且与俄语的 GigaAM 一样，纯本地运行。
 - **iPhone 伴侣应用 v1 收官** — 录音器已交付（app-ios/）：还差来自图谱的会议信息流与任务勾选框、灵动岛里的实时活动（Live Activity，计时器 + 随处可停止）、TestFlight。
 - **直连 Wi-Fi 传输到 Mac** — 手机通过局域网把录音交给 Mac 守护进程（Bonjour、配对码）；iCloud 变成可选的回退方案，而非默认路径。
@@ -24,9 +24,10 @@
 - **伴侣应用实时模式** — 手机把会议音频流式传到 Mac，并在自己屏幕上镜像实时逐字稿与提示。
 - **App Store 发布** — 等会议信息流让 v1 显得完整之后（先走 TestFlight）。
 - **自带图谱查看器** — 不用 Obsidian 也能浏览会议图谱。
-- **流式档案问答** — token 边生成边输出，而不是一次性一整块。
-
 ## 已完成（近期）
+
+- macOS 界面中的完整会议生命周期：录音计时器与菜单栏状态、真实的会后处理阶段、防止重复运行的重试、14 天近期会议列表，以及带复制和协同重命名的应用内结果卡片（2026 年 8 月）
+- 流式档案问答与持久化问题历史（2026 年 8 月）
 
 - 主题档案：夜间在核心主题之上生成综述，按来源指纹增量重建，检索优先
   查询索引，并可通过 `cloud_edit_graph` 开关启用云端复核（2026 年 7 月）

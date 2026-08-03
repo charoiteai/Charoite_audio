@@ -58,6 +58,12 @@ Put an ERes2Net embedding model at `models/diar/embedding.onnx` — see
 
 First run downloads the STT model (~1 min).
 
+The first successful recording should end in a meeting card, not merely in a
+transcript file. Follow the end-to-end check in the
+[practical user guide](USER_GUIDE.md). A complete map of temporary audio,
+transcripts, graph documents and retention lives in
+[Data and recovery](DATA_AND_RECOVERY.md).
+
 ## Troubleshooting
 
 - **Empty transcript** — check inputs: `python -c "import sounddevice as sd; print(sd.query_devices())"`.

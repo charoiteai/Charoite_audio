@@ -130,6 +130,8 @@ STT-модели скачаются сами при первом запуске.
 
 - [Манифест](MANIFESTO.md) — почему конвейер ведут локальные модели, а граф — сильная
 - [Установка](SETUP.md) — зависимости, BlackHole для звонков, права, первый запуск
+- [Практическое руководство](USER_GUIDE.md) — весь путь от проверки готовности до карточки и повтора
+- [Данные и восстановление](DATA_AND_RECOVERY.md) — где что хранится, сроки, резервные копии и безопасное восстановление
 - [Возможности](FEATURES.md) — всё, что делает Чароит во время встречи и после
 - [Архитектура](ARCHITECTURE.md) — демон, двухпроходная диаризация, пайплайн графа
 - [Модели](MODELS.md) — почему такие дефолты, с бенчмарками; **пресеты по RAM для macOS (4/8/16/32 ГБ) и iOS**
@@ -141,7 +143,7 @@ STT-модели скачаются сами при первом запуске.
 
 ## Статус
 
-Публичная бета — текущая версия на [странице релизов](https://github.com/charoiteai/Charoite_audio/releases/latest). Issues и фидбек приветствуются; вопросы — в [Discussions](https://github.com/charoiteai/Charoite_audio/discussions). Нативное macOS-приложение — в [app/](../../app), сборка `app/make_app.sh`; компаньон для iPhone — в [app-ios/](../../app-ios), компаньон для Android — в [app-android/](../../app-android). Планы — в [ROADMAP.ru.md](ROADMAP.md): локализация интерфейса приложений, прямая доставка записей с телефона по Wi-Fi, просмотрщик графа без Obsidian.
+Публичная бета — текущая версия на [странице релизов](https://github.com/charoiteai/Charoite_audio/releases/latest). Issues и фидбек приветствуются; вопросы — в [Discussions](https://github.com/charoiteai/Charoite_audio/discussions). Нативное macOS-приложение — в [app/](../../app), сборка `app/make_app.sh`; компаньон для iPhone — в [app-ios/](../../app-ios), компаньон для Android — в [app-android/](../../app-android). Планы — в [ROADMAP.ru.md](ROADMAP.md): разбор нерусских карточек результата, локализация iOS, прямая доставка записей с телефонов и просмотрщик графа без Obsidian.
 
 Если Charoite вам полезен — ⭐ помогает другим его найти.
 
