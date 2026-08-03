@@ -8,6 +8,19 @@ struct MeetingProcessingSnapshot: Decodable, Equatable, Sendable {
         case processing
         case ready
         case error
+        /// Запись есть, речи в ней нет — не ошибка, а результат.
+        case empty
+        /// Состояние из более новой версии конвейера.
+        ///
+        /// Без этого случая любое добавленное на стороне Python состояние
+        /// роняло разбор всего снимка, и встреча просто исчезала из окна:
+        /// строгий enum превращал совместимую правку в потерю данных.
+        case unknown
+
+        init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = State(rawValue: raw) ?? .unknown
+        }
     }
 
     let schemaVersion: Int
@@ -79,9 +92,11 @@ enum MeetingProcessingPolicy {
         switch resolvedState(snapshot, now: now) {
         case .ready:
             return snapshot.notePath
-        case .error:
+        case .error, .empty:
+            // И у ошибки, и у записи без речи полезен один и тот же ответ:
+            // показать саму стенограмму — по ней видно, что там на самом деле.
             return snapshot.transcriptPath
-        case .processing:
+        case .processing, .unknown:
             return nil
         }
     }
@@ -176,6 +191,13 @@ extension MeetingProcessingSnapshot {
             .deletingPathExtension().lastPathComponent
         let stamp = String(stem.prefix(15))
         var rest = String(stem.dropFirst(15))
+        // Штамп бывает и с секундами: живая запись даёт «2026-08-03_113012»,
+        // а graph_updater переименовывает её в «2026-08-03_1130_Тема». Резать
+        // ровно 15 символов нельзя — от «…113012» оставалось «12», и в списке
+        // сегодняшняя встреча называлась числом.
+        if rest.count >= 2, rest.prefix(2).allSatisfy(\.isNumber) {
+            rest.removeFirst(2)
+        }
         while rest.first == "_" || rest.first == " " { rest.removeFirst() }
         for suffix in ["_minutes", "_hints", "_live", "_debrief"] where rest.hasSuffix(suffix) {
             rest.removeLast(suffix.count)
@@ -471,6 +493,14 @@ final class MeetingProcessingService: ObservableObject {
                 return headline + "\n" + errorDetail
             }
             return headline
+        case .empty:
+            return L.t("В записи нет речи — стенограмма пустая",
+                       "No speech in the recording — the transcript is empty",
+                       "录音中没有语音——逐字稿为空")
+        case .unknown:
+            return L.t("Статус встречи не распознан — проверьте logs/",
+                       "Unrecognized meeting status — check logs/",
+                       "无法识别会议状态——请查看 logs/")
         }
     }
 
@@ -490,9 +520,9 @@ final class MeetingProcessingService: ObservableObject {
         switch MeetingProcessingPolicy.resolvedState(snapshot) {
         case .ready:
             return L.t("Открыть встречу", "Open meeting", "打开会议")
-        case .error:
+        case .error, .empty:
             return L.t("Открыть стенограмму", "Open transcript", "打开逐字稿")
-        case .processing:
+        case .processing, .unknown:
             return nil
         }
     }

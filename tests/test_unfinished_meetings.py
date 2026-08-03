@@ -116,3 +116,26 @@ def test_garbage_status_does_not_break_the_scan(store):
     (store.directory / "broken.json").write_text("{не json", encoding="utf-8")
     _put(store, "2026-08-03_1030", state="error", attempts=1)
     assert [d["meeting_id"] for d in store.unfinished()] == ["2026-08-03_1030"]
+
+
+def test_recording_without_speech_is_not_retried(store):
+    """Тишину можно разбирать хоть трижды — речи в ней не появится.
+
+    03.08 сорокасекундная запись без речи получила статус «ошибка»: человек
+    искал поломку там, где её не было, а конвейер собирался повторять разбор
+    тишины ещё дважды.
+    """
+    transcript = _transcript(store.root, "2026-08-03_0844")
+    store.no_speech(transcript)
+
+    assert store.unfinished() == []
+
+
+def test_no_speech_keeps_the_transcript_path(store, tmp_path):
+    # пустая стенограмма — тоже результат, и открыть её человек должен уметь
+    transcript = _transcript(tmp_path, "2026-08-03_0844")
+    path = store.no_speech(transcript)
+    data = json.loads(path.read_text(encoding="utf-8"))
+
+    assert data["state"] == "empty"
+    assert data["transcript_path"].endswith("2026-08-03_0844.md")

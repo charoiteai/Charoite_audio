@@ -6,6 +6,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 from import_meeting import (  # noqa: E402
+    clean_date,
+    clean_time,
     parse_subs,
     postponed_files,
     scan_candidates,
@@ -121,3 +123,47 @@ def test_scan_reports_files_it_postponed(tmp_path):
     postponed = postponed_files(tmp_path)
 
     assert postponed == [growing]
+
+
+# --- время и дата встречи из того, что ввёл человек -------------------------
+#
+# Справка говорила «ЧЧММ», и значение уходило в имя файла как есть. Человек
+# пишет время привычно — `--time 08:44`, — и на диске появлялась стенограмма
+# `2026-08-03_08:44.md`: штамп уже не четырёхзначный, а двоеточие в имени
+# ломает и разбор имени, и инструменты, которые с этим файлом работают.
+
+def test_time_with_colon_becomes_a_stamp():
+    assert clean_time("08:44") == "0844"
+
+
+def test_time_without_leading_zero_survives():
+    assert clean_time("8:44") == "0844"
+
+
+def test_plain_hhmm_passes_through():
+    assert clean_time("0844") == "0844"
+
+
+def test_stray_punctuation_does_not_make_the_time_wrong():
+    # «844:» — это те же 08:44 с промахом по клавише, а не ошибка ввода
+    assert clean_time("844:") == "0844"
+
+
+def test_impossible_time_is_refused():
+    import pytest
+    for bad in ("2599", "0899", "штука", "123456", ""):
+        with pytest.raises(SystemExit):
+            clean_time(bad)
+
+
+def test_date_separator_is_up_to_the_human():
+    assert clean_date("2026-08-03") == "2026-08-03"
+    assert clean_date("2026.08.03") == "2026-08-03"
+    assert clean_date("20260803") == "2026-08-03"
+
+
+def test_impossible_date_is_refused():
+    import pytest
+    for bad in ("2026-13-03", "2026-02-31", "03.08.26", "вчера"):
+        with pytest.raises(SystemExit):
+            clean_date(bad)

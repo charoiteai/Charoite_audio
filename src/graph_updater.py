@@ -43,6 +43,10 @@ CHUNK_OVERLAP = 1_000
 # обещанное «граф будет готов через 2-4 минуты» и ни строчки правды.
 LLM_TIMEOUT = 300
 
+# «В записи нет речи» — не ошибка конвейера, а его честный результат.
+# Вызывающий отличает это от падения по коду возврата и не ставит повтор.
+EXIT_NO_SPEECH = 3
+
 
 def known_graphs(graph: pathlib.Path) -> list[str]:
     """Графы, которые уже есть в vault, — соседние папки с `_MOC.md`."""
@@ -511,8 +515,13 @@ def main():
     if minutes_p.exists():
         transcript += "\n\n[МИНУТКИ]\n" + minutes_p.read_text(encoding="utf-8")
     if len(transcript) < 300:
+        # Отдельный код возврата, а не тихий выход: для вызывающего это не
+        # ошибка обработки, а факт — в записи нет речи. Разница практическая:
+        # ошибку конвейер обязан повторить, а тишину повторять бессмысленно,
+        # сколько ни пробуй. 03.08 запись без речи получила статус «ошибка» и
+        # ушла бы в три бесполезных прогона.
         print("стенограмма слишком короткая — граф не трогаем")
-        return
+        sys.exit(EXIT_NO_SPEECH)
 
     known = [] if os.environ.get("SUFLER_GRAPH_DIR") else known_graphs(graph)
     data = extract(cfg, transcript, _project_rule(known, graph.name))

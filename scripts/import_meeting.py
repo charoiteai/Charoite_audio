@@ -102,6 +102,36 @@ def _cfg() -> dict:
     return yaml.safe_load(p.read_text(encoding="utf-8"))
 
 
+def clean_time(value: str) -> str:
+    """Время встречи → ЧЧММ, как его пишет весь конвейер.
+
+    Справка говорит «ЧЧММ», но человек пишет время так, как привык, —
+    `08:44`. Раньше значение уходило в имя файла как есть, и на диске
+    появлялась стенограмма `2026-08-03_08:44.md`: штамп у неё уже не
+    четырёхзначный, а двоеточие в имени ломает и разбор имени, и половину
+    инструментов, которые с этим файлом работают.
+    """
+    digits = re.sub(r"\D", "", value)
+    if len(digits) == 3:            # «8:44» — ведущий ноль человек опускает
+        digits = "0" + digits
+    if len(digits) != 4 or int(digits[:2]) > 23 or int(digits[2:]) > 59:
+        sys.exit(f"время встречи непонятно: {value!r} — нужно ЧЧММ, например 0844")
+    return digits
+
+
+def clean_date(value: str) -> str:
+    """Дата встречи → ГГГГ-ММ-ДД. Разделитель человек ставит любой."""
+    digits = re.sub(r"\D", "", value)
+    if len(digits) != 8:
+        sys.exit(f"дата встречи непонятна: {value!r} — нужно ГГГГ-ММ-ДД, например 2026-08-03")
+    day = f"{digits[:4]}-{digits[4:6]}-{digits[6:]}"
+    try:
+        dt.date.fromisoformat(day)
+    except ValueError:
+        sys.exit(f"такой даты не бывает: {value!r}")
+    return day
+
+
 def parse_subs(text: str) -> list[tuple[str, str, str]]:
     """.vtt/.srt → [(HH:MM, спикер, реплика)]; спикер может быть пустым.
 
@@ -150,8 +180,10 @@ def subs_to_transcript(entries: list[tuple[str, str, str]], stamp: str, src: str
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("file", help="аудио/текст/субтитры записанной встречи")
-    ap.add_argument("--date", help="дата встречи ГГГГ-ММ-ДД (по умолчанию mtime файла)")
-    ap.add_argument("--time", help="время ЧЧММ (по умолчанию mtime файла)")
+    ap.add_argument("--date", help="дата встречи ГГГГ-ММ-ДД, разделитель любой "
+                                   "(по умолчанию mtime файла)")
+    ap.add_argument("--time", help="время встречи ЧЧММ или ЧЧ:ММ "
+                                   "(по умолчанию mtime файла)")
     ap.add_argument("--title", default="", help="тема встречи для архива")
     ap.add_argument("--scan", action="store_true",
                     help="файл = ПАПКА-вход: импортировать все поддерживаемые "
@@ -194,8 +226,8 @@ def main() -> None:
     tdir.mkdir(parents=True, exist_ok=True)
 
     mt = dt.datetime.fromtimestamp(src.stat().st_mtime)
-    day = args.date or f"{mt:%Y-%m-%d}"
-    hhmm = args.time or f"{mt:%H%M}"
+    day = clean_date(args.date) if args.date else f"{mt:%Y-%m-%d}"
+    hhmm = clean_time(args.time) if args.time else f"{mt:%H%M}"
     stamp = f"{day}_{hhmm}"
     slug = re.sub(r"[^\wА-Яа-яЁё-]+", "_", args.title).strip("_")[:40]
     tpath = tdir / (f"{stamp}_{slug}.md" if slug else f"{stamp}.md")
