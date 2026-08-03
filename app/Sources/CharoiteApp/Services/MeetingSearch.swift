@@ -57,7 +57,7 @@ enum MeetingSearch {
         let seenDays = Set(hits.map(\.day))
         for note in noteFiles {
             guard hits.count < limit else { break }
-            let day = String(note.lastPathComponent.prefix(15))
+            let day = dayKey(note.lastPathComponent)
             if seenDays.contains(day) { continue }   // архивная папка уже нашлась
             if let hit = match(file: note, tokens: tokens,
                                title: note.deletingPathExtension().lastPathComponent) {
@@ -78,8 +78,17 @@ enum MeetingSearch {
                 return tokens.contains { l.contains($0) }
             }
             .map { snippet(String($0)) } ?? ""
-        return Hit(file: file, title: title, snippet: line,
-                   day: String(title.prefix(15)))
+        return Hit(file: file, title: title, snippet: line, day: dayKey(title))
+    }
+
+    /// Ключ встречи для дедупа архива и заметок графа.
+    ///
+    /// Папка называется «2026-08-01 10-00 — Тема», заметка — «2026-08-01_1000»:
+    /// сырые префиксы этих имён не совпадают никогда, и дедуп на них молча не
+    /// работал — встреча приходила в результатах дважды. Одни цифры совпадают
+    /// в обоих форматах: 2026-08-01 10-00 и 2026-08-01_1000 → «202608011000».
+    static func dayKey(_ title: String) -> String {
+        String(title.filter(\.isNumber).prefix(12))
     }
 
     static func tokens(of query: String) -> [String] {

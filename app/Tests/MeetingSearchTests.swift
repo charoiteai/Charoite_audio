@@ -74,3 +74,24 @@ final class MeetingSearchTests: XCTestCase {
         XCTAssertEqual(hits.first?.title.prefix(10), "2026-08-02")
     }
 }
+
+extension MeetingSearchTests {
+    /// Архивная папка и заметка графа — одна встреча, а не две находки.
+    ///
+    /// Ключ дня у папки («2026-08-01 10-00 — Тема») и у заметки
+    /// («2026-08-01_1000.md») пишется в разных форматах; дедуп, сравнивавший
+    /// сырые префиксы, не совпадал никогда — встреча приходила дважды.
+    func testArchivedMeetingIsNotDuplicatedByItsGraphNote() throws {
+        let notes = graph.appendingPathComponent("Встречи")
+        try "# Встреча 2026-08-01_1000 — Ретеншн партиций\nобсуждали ретеншн".write(
+            to: notes.appendingPathComponent("2026-08-01_1000.md"),
+            atomically: true, encoding: .utf8)
+
+        let hits = MeetingSearch.search("ретеншн", graph: graph)
+        let days = hits.map(\.day)
+        XCTAssertEqual(days.count, Set(days).count,
+                       "одна встреча пришла дважды: \(hits.map(\.title))")
+        XCTAssertFalse(hits.contains { $0.file.path.hasSuffix("Встречи/2026-08-01_1000.md") },
+                       "заметка графа продублировала архивную папку того же дня")
+    }
+}
