@@ -5,6 +5,37 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.0](https://github.com/charoiteai/Charoite_audio/compare/v0.43.0...v0.44.0) (2026-08-03)
+
+
+### Features
+
+* **app:** кнопка «Повторить обработку» — ошибка встречи больше не тупик ([#201](https://github.com/charoiteai/Charoite_audio/issues/201)) ([a6fb8a6](https://github.com/charoiteai/Charoite_audio/commit/a6fb8a6236b9742643375af991d5322a74ef05cd))
+* **app:** список последних встреч — состояние, результат и повтор по каждой ([#204](https://github.com/charoiteai/Charoite_audio/issues/204)) ([89285d8](https://github.com/charoiteai/Charoite_audio/commit/89285d83fcec7cbd6fcb3a720c75dfb49565ebad))
+* **app:** таймер записи и состояния встречи в меню-баре ([#203](https://github.com/charoiteai/Charoite_audio/issues/203)) ([379ab50](https://github.com/charoiteai/Charoite_audio/commit/379ab505fdedd8f1db0e3e89c7cff307515e6edb))
+* **ios:** очередь как экран; архив — одна встреча, одна папка ([#213](https://github.com/charoiteai/Charoite_audio/issues/213)) ([dd4c118](https://github.com/charoiteai/Charoite_audio/commit/dd4c118ae6469979bbc3a4b5e6c65ce74ec0b14c))
+* **macOS:** карточка встречи — результат в приложении, не в файле ([#220](https://github.com/charoiteai/Charoite_audio/issues/220)) ([fedf4cc](https://github.com/charoiteai/Charoite_audio/commit/fedf4cc8a7480dccaeec8057aeb4543e414e0149))
+* **sufler:** нить встречи — растёт, а не пересобирается ([#218](https://github.com/charoiteai/Charoite_audio/issues/218)) ([d27a4ee](https://github.com/charoiteai/Charoite_audio/commit/d27a4eeb2f787df258baf6fd29cc78fc7e6c66e4))
+* **sufler:** подсказка ведёт нить разговора, а не отвечает за вас ([#216](https://github.com/charoiteai/Charoite_audio/issues/216)) ([2cbcf84](https://github.com/charoiteai/Charoite_audio/commit/2cbcf84cf74a0738fef37834cf4eb2fd72475431))
+* честное время обработки, прогресс по частям и doctor про работу ([#212](https://github.com/charoiteai/Charoite_audio/issues/212)) ([a00a281](https://github.com/charoiteai/Charoite_audio/commit/a00a28192fed96aec98be78caebbea6c3c70b975))
+
+
+### Bug Fixes
+
+* **app:** «Повторить обработку» — три гонки, из-за которых мог стартовать второй конвейер ([#202](https://github.com/charoiteai/Charoite_audio/issues/202)) ([0fac660](https://github.com/charoiteai/Charoite_audio/commit/0fac660c20741954d09a0d6b2331c8be9fe24a1e))
+* **archive:** решения в саммари берём из минуток, а не ищем заново ([#215](https://github.com/charoiteai/Charoite_audio/issues/215)) ([a52eeda](https://github.com/charoiteai/Charoite_audio/commit/a52eedaa4dfcda849d9474e5b5013bc8c1bb6c72))
+* **archive:** саммари теряло решения встречи, а потом и поручения ([#214](https://github.com/charoiteai/Charoite_audio/issues/214)) ([93724cb](https://github.com/charoiteai/Charoite_audio/commit/93724cb52d9e83d25191524d0fa46effc3d7d222))
+* **graph:** модель выбирает проект из существующих, а не придумывает ([#209](https://github.com/charoiteai/Charoite_audio/issues/209)) ([d62206e](https://github.com/charoiteai/Charoite_audio/commit/d62206edc24e79f8363ce21adeae2436fc912fe8))
+* **graph:** разбор переживает вставшую модель и догоняет упавшие встречи ([#208](https://github.com/charoiteai/Charoite_audio/issues/208)) ([4e2729b](https://github.com/charoiteai/Charoite_audio/commit/4e2729b35edc9c8499b343c35dd15749fe85ffe4))
+* **ios:** «Поделиться записью» переживает доставку ([#207](https://github.com/charoiteai/Charoite_audio/issues/207)) ([a8d0602](https://github.com/charoiteai/Charoite_audio/commit/a8d0602a0777390e4ee68d85fff5483ba5475956))
+* **ios:** сторож вставшей записи, кнопка «Поделиться» и файловый доступ ([#205](https://github.com/charoiteai/Charoite_audio/issues/205)) ([23168a7](https://github.com/charoiteai/Charoite_audio/commit/23168a7016aba949c7adf78ec2adbf1b903ff3d5))
+* **ios:** файловый доступ к очереди записей — ключи в project.yml ([#206](https://github.com/charoiteai/Charoite_audio/issues/206)) ([d1d4228](https://github.com/charoiteai/Charoite_audio/commit/d1d4228fa4d447014c22eed6984fa5ad84d76282))
+* **llm:** перезапускаем того, кто держит порт, а не что установлено ([#210](https://github.com/charoiteai/Charoite_audio/issues/210)) ([a5438ff](https://github.com/charoiteai/Charoite_audio/commit/a5438ffe9e0b9c0a48567ef7eceed12372fb5fff))
+* **macOS:** полировка списка встреч по разбору ([#219](https://github.com/charoiteai/Charoite_audio/issues/219)) ([ce4f380](https://github.com/charoiteai/Charoite_audio/commit/ce4f380eadc01908ec6948732773b4dfc517d4c9))
+* **privacy:** llm.base_url через privacy, полные границы правки графа, забывание доходит до .cloud_backup ([#199](https://github.com/charoiteai/Charoite_audio/issues/199)) ([56e08ff](https://github.com/charoiteai/Charoite_audio/commit/56e08ff4d96aa9d727ba28451b6353bf4bb9ba11))
+* **rename:** главный файл без темы получает её при переименовании ([#221](https://github.com/charoiteai/Charoite_audio/issues/221)) ([fedd433](https://github.com/charoiteai/Charoite_audio/commit/fedd433ea61802db8f7193b5329310844669e2c1))
+* **ui:** находки живого прохода по приложениям ([#211](https://github.com/charoiteai/Charoite_audio/issues/211)) ([04a1b26](https://github.com/charoiteai/Charoite_audio/commit/04a1b2653fb486e7b83777e45bbd18ef3760a507))
+
 ## [0.43.0](https://github.com/charoiteai/Charoite_audio/compare/v0.42.0...v0.43.0) (2026-07-31)
 
 
