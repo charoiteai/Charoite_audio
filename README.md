@@ -163,6 +163,8 @@ Build: `cd app-android && ./gradlew assembleDebug`.
 
 - [Manifesto](MANIFESTO.md) — why local models run the conveyor and a strong model runs the graph
 - [Setup](docs/SETUP.md) — install, BlackHole for calls, permissions, first run
+- [Practical user guide](docs/USER_GUIDE.md) — the complete path from readiness to a result card and retry
+- [Data and recovery](docs/DATA_AND_RECOVERY.md) — storage, retention, backups and safe recovery
 - [Features](docs/FEATURES.md) — everything Charoite does, live and post-meeting
 - [Architecture](docs/ARCHITECTURE.md) — the daemon, two-pass diarization, graph pipeline
 - [Models](docs/MODELS.md) — why these defaults, with benchmarks; **RAM presets for macOS (4/8/16/32 GB) and iOS**
@@ -175,7 +177,7 @@ See [PRIVACY.md](PRIVACY.md). Short version: no telemetry, no network calls exce
 
 ## Status
 
-Public beta — the current version is on the [Releases page](https://github.com/charoiteai/Charoite_audio/releases/latest). Issues and feedback welcome; questions go to [Discussions](https://github.com/charoiteai/Charoite_audio/discussions). The native macOS app lives in [app/](app) — build with `app/make_app.sh`; the iPhone companion is in [app-ios/](app-ios) and the Android one in [app-android/](app-android). Roadmap in [ROADMAP.md](ROADMAP.md): UI localization for both apps, direct Wi-Fi delivery of recordings from the phone, a packaged graph viewer.
+Public beta — the current version is on the [Releases page](https://github.com/charoiteai/Charoite_audio/releases/latest). Issues and feedback welcome; questions go to [Discussions](https://github.com/charoiteai/Charoite_audio/discussions). The native macOS app lives in [app/](app) — build with `app/make_app.sh`; the iPhone companion is in [app-ios/](app-ios) and the Android one in [app-android/](app-android). Roadmap in [ROADMAP.md](ROADMAP.md): non-Russian result-card parsing, iOS localization, direct Wi-Fi delivery from phones and a packaged graph viewer.
 
 If Charoite is useful to you, a ⭐ helps other people find it.
 

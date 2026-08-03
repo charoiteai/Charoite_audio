@@ -114,6 +114,8 @@ STT 模型首次运行自动下载。实时说话人分离（按声音区分的�
 
 - [宣言](MANIFESTO.md) — 为什么流水线交给本地模型、图谱交给强模型
 - [安装](SETUP.md) — 依赖、线上会议用 BlackHole、权限、首次运行
+- [用户实用指南](USER_GUIDE.md) — 从就绪检查到结果卡片与重试的完整流程
+- [数据与恢复](DATA_AND_RECOVERY.md) — 存储位置、保留期、备份与安全恢复
 - [功能](FEATURES.md) — Charoite 在会议中和会后能做的一切
 - [架构](ARCHITECTURE.md) — 守护进程、两遍说话人分离、图谱流水线
 - [模型](MODELS.md) — 为什么是这些默认值，附基准测试；**macOS（4/8/16/32 GB）与 iOS 的内存预设**
@@ -125,7 +127,7 @@ STT 模型首次运行自动下载。实时说话人分离（按声音区分的�
 
 ## 状态
 
-公开测试版——当前版本见[发布页](https://github.com/charoiteai/Charoite_audio/releases/latest)。欢迎 Issues 和反馈；提问请到 [Discussions](https://github.com/charoiteai/Charoite_audio/discussions)。原生 macOS 应用在 [app/](../../app)，构建命令 `app/make_app.sh`；iPhone 伴侣应用在 [app-ios/](../../app-ios)，安卓伴侣应用在 [app-android/](../../app-android)。界面语言目前为俄语（界面本地化在路线图上）；会议文档、图谱内容和提示已支持中文（`language: zh`）。路线图见 [ROADMAP.zh.md](ROADMAP.md)。
+公开测试版——当前版本见[发布页](https://github.com/charoiteai/Charoite_audio/releases/latest)。欢迎 Issues 和反馈；提问请到 [Discussions](https://github.com/charoiteai/Charoite_audio/discussions)。原生 macOS 应用在 [app/](../../app)，构建命令 `app/make_app.sh`；iPhone 伴侣应用在 [app-ios/](../../app-ios)，安卓伴侣应用在 [app-android/](../../app-android)。macOS 界面、会议文档、图谱内容和提示已支持中文；非俄语摘要卡片的结构解析和 iOS 本地化仍在路线图上。路线图见 [ROADMAP.zh.md](ROADMAP.md)。
 
 如果 Charoite 对您有用，一颗 ⭐ 能帮助更多人找到它。
 
