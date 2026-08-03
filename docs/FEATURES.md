@@ -94,6 +94,10 @@
 4. **Summary** — a one-minute read: bottom line up front → topics →
    decisions → action items (who/what/when) → open questions → **link to
    past meetings** ("was: … (Jul 15) → today: …") → navigation deeper.
+   Length is enforced by code rather than the prompt, and sections are
+   sacrificed by importance: the link to past meetings first, then open
+   questions, then the topic overview. Decisions and action items survive
+   trimming — they are why the summary gets opened at all.
 5. **Debrief** (optional) — meeting Q&A, tasks, options for open questions,
    recommendations for the next meeting.
 
