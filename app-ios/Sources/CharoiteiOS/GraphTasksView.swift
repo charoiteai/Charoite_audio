@@ -17,7 +17,7 @@ struct GraphTasksView: View {
                 } description: {
                     Text("Укажите папку вашего графа в Файлах (iCloud Drive → Obsidian) — задачи придут из тех же файлов, что и встречи.")
                 } actions: {
-                    Button("Выбрать папку") { showPicker = true }
+                    Button("Выбрать папку графа") { showPicker = true }
                         .buttonStyle(.borderedProminent)
                         .tint(Theme.accent)
                 }
