@@ -98,3 +98,62 @@ def test_format_does_not_live_in_the_user_config():
     """Формат — код, а не роль: иначе его нельзя ни проверить, ни исправить
     централизованно."""
     assert "по формату из твоей роли" not in _prompt()
+
+
+# --- нить встречи: дописываем, а не пересочиняем -----------------------------
+#
+# Подсказка каждый раз сочиняет конспект последних минут заново — и пересказывает
+# уже сказанное: за встречу 03.08 её лог вырос до 68 КБ. Нить устроена иначе:
+# модель видит уже собранное и добавляет только новое.
+
+def _thread_prompt(so_far: str = "", lang: str = "ru") -> str:
+    llm = _llm(lang)
+    captured: dict = {}
+    llm.stream = lambda prompt, model=None, system=None: (
+        captured.update(p=prompt), iter(()))[1]
+    list(llm.thread("…свежий кусок разговора…", so_far))
+    return captured["p"]
+
+
+def test_thread_shows_the_model_what_is_already_collected():
+    p = _thread_prompt("● Партиции\n  - поток упал")
+
+    assert "Партиции" in p and "поток упал" in p
+    assert "ТОЛЬКО то, чего в нити ещё нет" in p
+
+
+def test_empty_thread_does_not_send_an_empty_block():
+    # в начале встречи нити нет — пустой блок «<нить></нить>» только сбивает
+    assert "<нить>" not in _thread_prompt("")
+
+
+def test_thread_asks_for_none_when_nothing_new():
+    """Молчание лучше пересказа: не появилось нового — на экране не дёргается."""
+    assert "NONE" in _thread_prompt()
+
+
+def test_all_marks_are_explained():
+    p = _thread_prompt()
+    for mark in ("●", "-", "⚑", "?", "⏮"):
+        assert mark in p, f"знак {mark} не объяснён модели"
+
+
+def test_one_line_one_thought():
+    """Строка в три предложения не читается краем глаза во время разговора."""
+    p = _thread_prompt()
+    assert "ОДНА СТРОКА — ОДНА МЫСЛЬ" in p
+    assert "12 слов" in p
+
+
+def test_archive_line_comes_only_from_memory():
+    assert "ТОЛЬКО из памяти прошлых встреч" in _thread_prompt()
+
+
+def test_thread_keeps_names_as_they_sounded():
+    # та же ловушка, что у подсказки: «1.8» превращается в «RHEL 8»
+    assert "RHEL" in _thread_prompt()
+
+
+def test_thread_speaks_the_configured_language():
+    assert "NONE" in _thread_prompt(lang="en")
+    assert "会议脉络" in _thread_prompt(lang="zh")

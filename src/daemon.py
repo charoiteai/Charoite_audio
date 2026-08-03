@@ -33,6 +33,7 @@ import action_items  # noqa: E402
 import cloud  # noqa: E402
 import fact_check  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
+from meeting_thread import Thread as MeetingThread  # noqa: E402
 import privacy  # noqa: E402
 import speaker_names  # noqa: E402
 import voice_pitch  # noqa: E402
@@ -45,6 +46,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 THESIS_EVERY = 40.0     # автотезисы: раз в N секунд по новым фразам
 HINT_EVERY = 75.0       # автоподсказки: не чаще, чем раз в N секунд
 HINT_MIN_NEW = 220      # и только если накопилось столько новых знаков разговора
+THREAD_TICK = 30.0      # нить встречи: как часто СМОТРИМ, набежал ли разговор
+THREAD_MIN_NEW = 900    # и сколько новых знаков нужно, чтобы позвать модель
 
 # Гейт мгновенного ответа. «?» ставит сама GigaAM (нейро-пунктуация) — это основной
 # AI-сигнал; стартовые слова лишь страхуют, когда STT не дорисовала знак.
@@ -295,6 +298,8 @@ def main():
     # env-override для тестов: стенограммы в песочницу, не в боевую папку
     tdir = os.environ.get("SUFLER_TRANSCRIPTS_DIR")
     tr = Transcript(pathlib.Path(tdir) if tdir else ROOT / cfg["log"]["transcripts_dir"])
+    # Нить встречи живёт весь разговор: её дописывают, а не пересобирают.
+    thread = MeetingThread()
     # Штамп записи — тот же, что у стенограммы: rebuild_transcript ищет .wav
     # по имени .md, и разъехавшиеся на границе минуты штампы означали молча
     # пропущенную финальную пересборку.
@@ -655,6 +660,48 @@ def main():
                 emit({"type": "hint_done"})
 
         threading.Thread(target=cloud_hint_refine, daemon=True).start()
+
+    def thread_loop():
+        """Нить встречи: растёт по мере разговора, не переписывается заново.
+
+        Отличие от подсказки принципиальное. Подсказка каждый раз сочиняет
+        конспект последних двух минут — и повторяет уже сказанное: за встречу
+        03.08 лог подсказок вырос до 68 КБ, в основном пересказом. Здесь модель
+        видит уже собранную нить и дописывает только новое; не появилось нового
+        — возвращает NONE, и на экране ничего не дёргается.
+
+        Зовём не по часам, а по приросту разговора: молчание в переговорной не
+        рождает новых строк, сколько ни жди.
+        """
+        seen = 0
+        quiet_rounds = 0
+        while not stop.is_set():
+            time.sleep(THREAD_TICK)
+            if not toggles["hints"]:
+                continue
+            full = tr.full()
+            # Порог растёт после пустых заходов: если разговор идёт, а нового в
+            # нём нет (обсуждают одно и то же по кругу), дёргать модель каждую
+            # минуту незачем — она снова ответит NONE.
+            need = THREAD_MIN_NEW * (1 + min(quiet_rounds, 3))
+            if len(full) - seen < need:
+                continue
+            seen = len(full)
+            tail = tr.tail(3500)
+            if len(tail) < 400:
+                continue
+            try:
+                with hint_lock:
+                    answer = "".join(llm.thread(tail, thread.as_context(),
+                                                model=auto_model))
+                added = thread.ingest(answer, at=f"{dt.datetime.now():%H:%M}")
+                quiet_rounds = 0 if added else quiet_rounds + 1
+                if added:
+                    emit({"type": "thread", "text": thread.render()})
+                    append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] нить (+{added})",
+                                thread.full())
+            except Exception as e:  # noqa: BLE001 — поток не должен умирать молча
+                emit({"type": "status", "text": f"нить встречи сорвалась: {e}"})
 
     def auto_hint_loop():
         """Подсказки в реальном времени: сами, по мере накопления разговора."""
@@ -1423,7 +1470,7 @@ def main():
             emit({"type": "status", "text": f"🧠 Контекст по теме «{topic}»: архив подтянут"})
 
     threads = [threading.Thread(target=f, daemon=True) for f in (
-        stt_loop, think_loop, auto_hint_loop, instant_loop, cloud_loop,
+        stt_loop, think_loop, thread_loop, auto_hint_loop, instant_loop, cloud_loop,
         fast_trigger_loop, deja_vu_loop, dialog_markup_loop, name_loop,
         minutes_loop, deep_loop, live_context_loop, stdin_loop,
     )]

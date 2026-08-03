@@ -49,6 +49,13 @@ final class SuflerService: ObservableObject {
     @Published var lines: [TranscriptLine] = []
     @Published var theses: [String] = []
     @Published var hint = ""
+
+    /// Нить встречи: то, что читают, пока разговор идёт.
+    ///
+    /// Приходит целиком при каждом изменении — демон дописывает её у себя и
+    /// присылает готовый вид. Это не лента: старое не уезжает вверх, а стоит
+    /// на месте, и глазу не приходится каждый раз искать, что изменилось.
+    @Published var thread = ""
     @Published var isHinting = false
     @Published var cloud = ""          // ответ Claude (Sonnet) — третья панель
     @Published var isClouding = false
@@ -441,6 +448,8 @@ final class SuflerService: ObservableObject {
                 }
                 if lines.count > 500 { lines.removeFirst(lines.count - 500) }
                 restartAttempts = 0  // транскрипция реально идёт — лимит рестартов обнуляем
+            case "thread":
+                thread = text
             case "thesis":
                 theses.append(text)
                 if theses.count > 200 { theses.removeFirst(theses.count - 200) }

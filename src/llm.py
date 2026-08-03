@@ -141,6 +141,66 @@ class LLM:
         ),
     }
 
+    # Дописывание нити. Отличие от HINT_FORMAT принципиальное: там модель
+    # каждый раз пишет конспект заново, здесь — только то, чего в нити ещё нет.
+    # Приём из практики прогрессивных заметок (arXiv:2510.06677): показать уже
+    # собранное и попросить «только новое»; нет нового — вернуть NONE.
+    THREAD_FORMAT = {
+        "ru": (
+            "Ниже уже собранная нить встречи и свежий кусок разговора.\n"
+            "Добавь ТОЛЬКО то, чего в нити ещё нет. Ничего нового не прозвучало — "
+            "ответь ровно: NONE\n\n"
+            "Каждая строка начинается со знака:\n"
+            "● — новая тема разговора (3-5 слов). Ставь, только если тема сменилась.\n"
+            "- — что сказали: кто и что предложил, возразил, сообщил\n"
+            "⚑ — решение, срок, поручение: то, за что потом спросят\n"
+            "? — вопрос, оставшийся без ответа\n"
+            "⏮ — что по этой теме было раньше, с датой; ТОЛЬКО из памяти прошлых "
+            "встреч выше, иначе не пиши\n\n"
+            "ОДНА СТРОКА — ОДНА МЫСЛЬ, до 12 слов. Это читают краем глаза во время "
+            "разговора: строка в три предложения там не читается вовсе. Два факта — "
+            "две строки.\n"
+            "Телеграфно, по-русски, фактами из разговора. Имена людей, систем и "
+            "версий — ровно как звучали: «1.8», а не «RHEL 8»: узнаваемое название "
+            "продукта, которого в разговоре не было, — выдумка. Пересказывать уже "
+            "записанное другими словами не нужно: это и есть повтор."
+        ),
+        "en": (
+            "Below is the thread of the meeting so far and a fresh stretch of talk.\n"
+            "Add ONLY what is not in the thread yet. Nothing new — answer exactly: NONE\n\n"
+            "Every line starts with a mark:\n"
+            "● — a new topic (3-5 words). Only when the topic actually changed.\n"
+            "- — what was said: who proposed, objected, reported\n"
+            "⚑ — a decision, a deadline, an assignment: what you will be asked about\n"
+            "? — a question left unanswered\n"
+            "⏮ — what happened on this topic before, with a date; ONLY from the "
+            "past-meeting memory above\n\n"
+            "Terse, factual, in English. Names and versions exactly as they sounded."
+        ),
+        "zh": (
+            "以下是已整理的会议脉络和最新一段对话。\n"
+            "只补充脉络中还没有的内容。没有新内容就回答：NONE\n\n"
+            "每行以符号开头：\n"
+            "● — 新话题（3-5 个词），仅在话题真正改变时使用\n"
+            "- — 谁说了什么：提议、反对、通报\n"
+            "⚑ — 决定、期限、任务\n"
+            "? — 尚未回答的问题\n"
+            "⏮ — 该话题此前的情况，带日期；只能来自上方的过往会议记忆\n\n"
+            "简洁、用中文、只用对话中的事实。名称和版本号照原样。"
+        ),
+    }
+
+    def thread(self, transcript_tail: str, so_far: str,
+               model: str | None = None) -> Iterator[str]:
+        """Дописать нить встречи по свежему куску разговора."""
+        collected = (f"<нить>\n{so_far}\n</нить>\n\n" if so_far.strip() else "")
+        return self.stream(
+            collected
+            + f"<свежий разговор>\n{transcript_tail}\n</свежий разговор>\n\n"
+            + self.THREAD_FORMAT.get(self.lang, self.THREAD_FORMAT["en"]),
+            model=model,
+        )
+
     def hint(self, transcript_tail: str, model: str | None = None) -> Iterator[str]:
         return self.stream(
             "Свежая стенограмма встречи (последние минуты):\n\n"

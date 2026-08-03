@@ -213,6 +213,17 @@ it signals degradation, it does not break the loop.
   speaker names preserved) → the full meeting archive: transcript,
   minutes, debrief, theses, graph; meeting date via `--date/--time`;
   the source file is kept next to the meeting materials (APFS clone).
+- **The meeting thread** — the main thing on screen while people talk. It is
+  not rebuilt every few minutes but **grows**: the model sees what has been
+  collected and adds only what is new; nothing new — it stays silent and the
+  screen does not twitch. Topics act as anchors, lines pile up under them, and
+  the kind of a line is visible from its mark: `●` topic, `-` what was said,
+  `⚑` a decision or deadline, `?` an open question, `⏮` what happened on this
+  topic before (with a date, from the archive). Earlier topics collapse into a
+  heading with a counter — a thread is for reading, not scrolling. A restated
+  thought is dropped by code: both character similarity and overlap of
+  meaningful words are checked. The model is called by how much talk piled up,
+  not by the clock: silence in the room produces no new lines.
 - **The hint follows the thread** instead of answering for you: current
   topic → who said what → **why** this is being discussed → **what
   happened before** on this topic in the archive (with a date) → what is
