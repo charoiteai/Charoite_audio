@@ -18,7 +18,7 @@ the only input for a retry.
 | `<graph_dir>/Встречи-архив/` | Readable meeting folder with summary, minutes, transcript and other layers | Persistent | Finder, Obsidian and sync result |
 | `<graph_dir>/Документация/` | Document copies referenced by graph nodes | Persistent | Graph sources |
 | `logs/meeting-status/` | Processing state, transcript path and error | 14 days | App state and Recent meetings |
-| `~/Library/Application Support/Charoite/semantic_index.json` | Derived search index | Rebuildable | Search acceleration, not a backup |
+| `~/Library/Application Support/Charoite/semantic_index_v2.bin` | Derived search index | Rebuildable | Search acceleration, not a backup |
 
 `record_keep_days` deletes audio, not meeting documents. Disappearing from the
 Recent meetings window also deletes nothing; only the status record expired.

@@ -16,7 +16,7 @@ Charoite 的 local-first 不只表示模型在本机运行。它的工作状态�
 | `<graph_dir>/Встречи-архив/` | 可读会议文件夹：摘要、纪要、逐字稿等 | 长期保留 | Finder、Obsidian 与同步结果 |
 | `<graph_dir>/Документация/` | 图谱节点引用的文档副本 | 长期保留 | 图谱来源 |
 | `logs/meeting-status/` | 处理状态、逐字稿路径和错误 | 14 天 | 应用状态与“近期会议” |
-| `~/Library/Application Support/Charoite/semantic_index.json` | 派生搜索索引 | 可重建 | 加速搜索，不是备份 |
+| `~/Library/Application Support/Charoite/semantic_index_v2.bin` | 派生搜索索引 | 可重建 | 加速搜索，不是备份 |
 
 `record_keep_days` 删除的是音频，不是会议文档。某条记录从“近期会议”中消失也
 不会删除会议，只是状态记录过期。
