@@ -88,9 +88,23 @@ struct RecentMeetingsView: View {
                     processing.openTranscript(meeting)
                 }
             }
-            if processing.canRetry(meeting) || processing.retryInFlight {
+            switch MeetingProcessingPolicy.retryControl(
+                for: meeting,
+                transcriptExists: FileManager.default.fileExists(atPath: meeting.transcriptPath),
+                retryingID: processing.retryingID) {
+            case .running:
+                HStack(spacing: 5) {
+                    ProgressView().controlSize(.small)
+                    Text(L.t("Повторяю…", "Retrying…", "重试中…"))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            case .ready:
                 Button(L.t("Повторить", "Retry", "重试")) { processing.retry(meeting) }
-                    .disabled(!processing.canRetry(meeting))
+            case .waiting:
+                Button(L.t("Повторить", "Retry", "重试")) {}
+                    .disabled(true)
+            case .hidden:
+                EmptyView()
             }
         }
         .buttonStyle(.link)
