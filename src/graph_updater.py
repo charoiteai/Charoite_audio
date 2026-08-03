@@ -16,6 +16,7 @@ import requests
 import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import llm_health  # noqa: E402
 import privacy  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -35,6 +36,30 @@ CHUNK_CHARS = 12_000
 # Нахлёст между кусками: решение, произнесённое на стыке, не должно пропасть.
 CHUNK_OVERLAP = 1_000
 
+# Потолок ожидания одного запроса. Реальный разбор части укладывается в минуту
+# (промпт на 16К контекста плюс три тысячи токенов ответа), так что пять минут —
+# это пятикратный запас, а не рабочая длительность. Прежние десять минут ничего
+# не спасали: столько ждут только вставшую модель, и всё это время человек видит
+# обещанное «граф будет готов через 2-4 минуты» и ни строчки правды.
+LLM_TIMEOUT = 300
+
+
+def _chat(cfg: dict, payload: dict, timeout: float = LLM_TIMEOUT):
+    """POST /api/chat с одной попыткой поднять вставшую модель.
+
+    Проба перед разбором ловит Ollama, которая уже стоит; эта обёртка — ту,
+    что встала посреди работы. Для длинной стенограммы это разные события:
+    между частями проходят минуты.
+    """
+    url = privacy.llm_base_url(cfg) + "/api/chat"
+    try:
+        return requests.post(url, json=payload, timeout=timeout)
+    except requests.RequestException as e:
+        print(f"граф: запрос к модели не прошёл ({type(e).__name__}) — пробую оживить")
+        if not llm_health.ensure_alive(cfg, lambda m: print(f"граф: {m}")):
+            raise
+        return requests.post(url, json=payload, timeout=timeout)
+
 
 def extract(cfg: dict, transcript: str) -> dict | None:
     """LLM → JSON: сущности, связи, решения, темы.
@@ -48,6 +73,12 @@ def extract(cfg: dict, transcript: str) -> dict | None:
     None означает «граф не обновляем», но остальной пост-процессинг обязан
     продолжиться: папка встречи со стенограммой и минутками ценна и без графа.
     """
+    # Проба до разбора, а не выяснение после: вставшая Ollama отвечает на
+    # /api/tags мгновенно и держит настоящий запрос до самого таймаута. 03.08
+    # так ушли десять минут, после которых не выполнился весь пост-процессинг.
+    if not llm_health.ensure_alive(cfg, lambda m: print(f"граф: {m}")):
+        print("граф: модель не отвечает — встреча сохранена, граф не обновлён")
+        return None
     try:
         if len(transcript) <= CHUNK_CHARS:
             return _extract(cfg, transcript)
@@ -105,9 +136,9 @@ def _dedup(items: list) -> list:
 
 
 def _extract(cfg: dict, transcript: str) -> dict | None:
-    r = requests.post(
-        privacy.llm_base_url(cfg) + "/api/chat",
-        json={
+    r = _chat(
+        cfg,
+        {
             "model": cfg["llm"]["model"],
             "stream": False,
             "format": "json",
@@ -157,7 +188,6 @@ def _extract(cfg: dict, transcript: str) -> dict | None:
                 {"role": "user", "content": f"Стенограмма:\n\n{transcript}"},
             ],
         },
-        timeout=600,
     )
     # Сетевая ошибка здесь стоила всего пост-процессинга: исключение летело
     # наружу, main() падал с трейсбеком в logs/graph_*.log, и не выполнялось
@@ -598,9 +628,9 @@ def main():
         for m in sorted((graph / "Встречи").glob("*.md"))[-3:-1]:
             gctx_parts.append(m.read_text(encoding="utf-8")[:800])
         gctx = "\n---\n".join(gctx_parts)[:2500]
-        r2 = requests.post(
-            privacy.llm_base_url(cfg) + "/api/chat",
-            json={
+        r2 = _chat(
+            cfg,
+            {
                 "model": cfg["llm"]["model"],
                 "stream": False,
                 "options": {"num_ctx": 8192},  # без него qwen3.6 на 262144 → раздутый KV-кэш
@@ -626,7 +656,6 @@ def main():
                     )},
                 ],
             },
-            timeout=600,
         )
         debrief = r2.json().get("message", {}).get("content", "")
         if debrief.strip():

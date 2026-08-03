@@ -224,6 +224,15 @@ it signals degradation, it does not break the loop.
 - **Stalled-recording watchdog** — if the file's duration stops growing
   for more than three seconds (an interruption, a stolen microphone), the
   screen says so in orange instead of running a timer over silence.
+- **Processing survives a stalled model** — Ollama can hang while looking
+  healthy from outside: the model list answers instantly while the actual
+  request waits for the timeout. A cheap generation probe runs before the
+  graph pass; a stalled local Ollama is restarted automatically (loopback
+  only — someone else's machine is not ours to bounce) and the pass retries.
+- **Unfinished meetings get picked up** — a failed or abandoned run no
+  longer just sits there: the next successful meeting retries the freshest
+  leftover (up to three attempts, never touching a run in progress).
+  A failure used to mean silence — the meeting simply never appeared.
 
 - **Import folder (watched)** — point the app at a folder (Settings →
   Import, or `--scan` in the CLI): recordings dropped there become graph
