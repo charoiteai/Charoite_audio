@@ -21,3 +21,8 @@ app-android/.gradle/
 app-android/build/
 app-android/app/build/
 app-android/.kotlin/
+
+# Локальный тест без модуля: ссылается на src/questions.py, которого в
+# репозитории нет. Дважды уезжал в коммит вместе с `git add tests/` и ронял
+# сбор тестов в CI. Лежит на диске, в историю не попадает.
+tests/test_questions.py
