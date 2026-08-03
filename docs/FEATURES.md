@@ -97,7 +97,10 @@
    Length is enforced by code rather than the prompt, and sections are
    sacrificed by importance: the link to past meetings first, then open
    questions, then the topic overview. Decisions and action items survive
-   trimming — they are why the summary gets opened at all.
+   trimming — they are why the summary gets opened at all. Decisions are
+   not re-discovered either: they go into the model as a ready block taken
+   from the minutes, and if the answer comes back empty anyway, the section
+   is filled from those same minutes by code.
 5. **Debrief** (optional) — meeting Q&A, tasks, options for open questions,
    recommendations for the next meeting.
 

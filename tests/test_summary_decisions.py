@@ -147,3 +147,71 @@ def test_overview_goes_before_decisions_when_it_is_really_tight():
 def test_short_summary_is_left_alone():
     text = "**Суть одной строкой:** коротко\n\n## Решили\n- **раз** — два"
     assert _trim_summary(text) == text
+
+
+# --- решения берём из минуток, а не ищем заново -----------------------------
+#
+# Промпт этот раздел не удерживает: замер 03.08 на одной встрече — модель нашла
+# записанные решения 1 раз из 3 при неизменном входе. Цена ошибки высокая:
+# «решений не было» поверх трёх записанных решений читается как факт встречи.
+# Раз данные лежат структурно, последнее слово оставлено коду.
+
+from meeting_archive import _force_decisions, decisions_of  # noqa: E402
+
+
+def test_decisions_are_read_from_the_minutes(tmp_path):
+    f = tmp_path / "встреча"
+    f.mkdir()
+    (f / "Минутки.md").write_text(
+        "## Обсудили\n- всякое\n\n## Решения\n1. Первое решение.\n2. Второе решение.\n\n"
+        "## Поручения\n- **Аня** — что-то\n", encoding="utf-8")
+
+    assert decisions_of(f) == ["Первое решение.", "Второе решение."]
+
+
+def test_third_level_heading_with_emoji_is_understood(tmp_path):
+    # живые минутки пишут и так: «### ✅ Решения:»
+    f = tmp_path / "встреча"
+    f.mkdir()
+    (f / "Минутки.md").write_text(
+        "### ✅ Решения:\n\n* **Документация:** уточнить процедуру.\n"
+        "* **Задача:** связаться с коллегой.\n\n### 📌 Поручения:\n", encoding="utf-8")
+
+    assert len(decisions_of(f)) == 2
+
+
+def test_debrief_is_the_fallback(tmp_path):
+    f = tmp_path / "встреча"
+    f.mkdir()
+    (f / "Минутки.md").write_text("## Обсудили\n- всякое\n", encoding="utf-8")
+    (f / "Разбор.md").write_text("## Решения\n- Единственное решение.\n", encoding="utf-8")
+
+    assert decisions_of(f) == ["Единственное решение."]
+
+
+def test_meeting_without_decisions_stays_empty(tmp_path):
+    f = tmp_path / "встреча"
+    f.mkdir()
+    (f / "Минутки.md").write_text("## Обсудили\n- всякое\n", encoding="utf-8")
+
+    assert decisions_of(f) == []
+
+
+def test_empty_section_is_overwritten_with_real_decisions():
+    text = "**Суть:** …\n\n## Решили\nрешений не было\n\n## Поручения\n- **Аня** — что-то\n"
+    out = _force_decisions(text, ["Первое.", "Второе."])
+
+    assert "решений не было" not in out
+    assert "- Первое." in out and "- Второе." in out
+    assert "## Поручения" in out, "подстановка не смеет съесть соседний раздел"
+
+
+def test_model_wording_is_kept_when_it_did_find_them():
+    # модель формулирует короче — если справилась, не мешаем
+    text = "## Решили\n- **Качество** — модели признаны непригодными.\n\n## Поручения\n- **Аня** — что\n"
+    assert _force_decisions(text, ["Длинное исходное решение из минуток."]) == text
+
+
+def test_nothing_to_force_when_there_were_no_decisions():
+    text = "## Решили\nрешений не было\n\n## Поручения\n- **Аня** — что\n"
+    assert _force_decisions(text, []) == text

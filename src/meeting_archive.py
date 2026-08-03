@@ -179,6 +179,50 @@ def _history_context(folder: pathlib.Path) -> str:
     return "\n\n".join(parts)[:3500]
 
 
+def decisions_of(folder: pathlib.Path) -> list[str]:
+    """Решения встречи так, как их записали минутки, — по пункту на строку.
+
+    Минутки и разбор пишут решения структурно: заголовок «Решения» (иногда
+    «### ✅ Решения:») и под ним список. Просить модель найти их заново —
+    лишний риск: замер 03.08 на одной и той же встрече дал 1 попадание из 3.
+    Дешевле подать готовое.
+    """
+    for name in ("Минутки.md", "Разбор.md"):
+        f = folder / name
+        if not f.exists():
+            continue
+        text = f.read_text(encoding="utf-8")
+        m = re.search(r"(?m)^#{2,4}[^\n]*Решени\w*[^\n]*$\n(.*?)(?=\n#{2,4} |\Z)", text, re.S)
+        if not m:
+            continue
+        items = [re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", ln).strip()
+                 for ln in m.group(1).splitlines()
+                 if re.match(r"\s*(?:[-*]|\d+[.)])\s+\S", ln)]
+        if items:
+            return items
+    return []
+
+
+def _force_decisions(text: str, decisions: list[str], per_item: int = 165) -> str:
+    """Вернуть в саммари решения, если модель написала «решений не было».
+
+    Промпт этот раздел не удерживает: модель то находит решения, то нет, и
+    цена ошибки высокая — «решений не было» поверх трёх записанных решений
+    читается как факт. Раз данные есть, последнее слово за кодом.
+    """
+    if not decisions or "решений не было" not in text.lower():
+        return text
+
+    def short(s: str) -> str:
+        s = re.sub(r"\*\*", "", s).strip()
+        if len(s) <= per_item:
+            return s
+        return s[:per_item].rsplit(" ", 1)[0].rstrip(" ,;:—-") + "…"
+
+    block = "## Решили\n" + "\n".join(f"- {short(d)}" for d in decisions[:3])
+    return re.sub(r"(?ms)^## Решили\n.*?(?=^## |\Z)", block + "\n\n", text)
+
+
 def _trim_summary(text: str, limit: int = 900, per_item: int = 165, per_section: int = 3) -> str:
     """Гарантирует лимит саммари структурно, а не обрезкой по символу.
 
@@ -266,6 +310,12 @@ def _gen_summary(folder: pathlib.Path, force: bool = False):
     if not src_parts:
         return
     history = _history_context(folder)
+    # Решения — отдельным блоком, а не «найди в материалах»: они уже записаны
+    # минутками структурно, и искать их заново модель умеет через раз.
+    decided = decisions_of(folder)
+    decided_block = ("\n\n=== Решения встречи (перенеси их в раздел «Решили», "
+                     "сократив каждое до строки) ===\n"
+                     + "\n".join(f"- {d}" for d in decided)) if decided else ""
     hist_block = (
         "\n\n=== История (Ядра и прошлые встречи) — ТОЛЬКО для раздела "
         "«Связь с прошлыми встречами» ===\n" + history) if history else ""
@@ -291,7 +341,8 @@ def _gen_summary(folder: pathlib.Path, force: bool = False):
                     "Саммари читают за минуту — это выжимка; детали остаются в "
                     "Минутках и Разборе."},
                 {"role": "user", "content":
-                    "<материалы>\n" + "\n\n".join(src_parts) + hist_block + "\n</материалы>\n\n"
+                    "<материалы>\n" + "\n\n".join(src_parts) + decided_block + hist_block
+                    + "\n</материалы>\n\n"
                     "Составь саммари по шаблону:\n"
                     "**Суть одной строкой:** …\n\n"
                     "## О чём говорили\n(до 3 пунктов «- **тема** — что по ней», не проза)\n\n"
@@ -313,6 +364,9 @@ def _gen_summary(folder: pathlib.Path, force: bool = False):
         }, timeout=180)
         text = r.json().get("message", {}).get("content", "").strip()
         if text:
+            # Последнее слово за кодом: раздел решений слишком дорог, чтобы
+            # зависеть от того, разглядела ли модель их в этот раз.
+            text = _force_decisions(text, decided)
             text = _trim_summary(text)  # лимит гарантирует код, не промпт
             date = folder.name[:10]
             # progressive disclosure: из выжимки видно, куда идти за деталями
