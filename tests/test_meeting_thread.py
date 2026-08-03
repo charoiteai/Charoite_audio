@@ -250,3 +250,12 @@ def test_concurrent_ingest_and_archive_do_not_duplicate_or_crash():
                if f"{p} факт {i:03d}" not in text]
     assert not missing, f"потеряно гонкой: {missing[:5]} (+{len(missing) - 5 if len(missing) > 5 else 0})"
 
+
+
+def test_parse_archive_facts_drops_none_and_markers():
+    from meeting_thread import parse_archive_facts
+    out = "NONE\n- 30.07: решение принято\n• мяч у отдела\n\nNone нового нет\n* факт четвёртый лишний\nпятый"
+    assert parse_archive_facts(out) == [
+        "30.07: решение принято", "мяч у отдела", "факт четвёртый лишний"]
+    assert parse_archive_facts("NONE") == []
+    assert parse_archive_facts("") == []

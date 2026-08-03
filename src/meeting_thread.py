@@ -245,6 +245,19 @@ class Thread:
             return sum(len(t.lines) for t in self.topics)
 
 
+def parse_archive_facts(out: str, limit: int = 3) -> list[str]:
+    """Ответ модели ⏮-разбора → чистые строки фактов.
+
+    Модель, воспитанная на NONE-протоколах, отвечает NONE и здесь — такую
+    строку нельзя класть в нить как факт прошлых встреч. Маркеры списков
+    срезаются, пустое отбрасывается, больше limit не берём: ⏮ — это
+    2-3 хвоста по теме, а не второй архив.
+    """
+    lines = (ln.strip(" -•*\t") for ln in out.splitlines())
+    return [ln for ln in lines
+            if ln and not ln.upper().startswith("NONE")][:limit]
+
+
 def _same_title(a: str, b: str) -> bool:
     """Один ли это якорь нити.
 

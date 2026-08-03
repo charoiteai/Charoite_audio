@@ -725,8 +725,8 @@ def main():
         except Exception as e:  # noqa: BLE001
             emit({"type": "status", "text": f"⏮ разбор сорвался: {e}"})
             return
-        lines = [ln.strip(" -•*\t") for ln in out.splitlines() if ln.strip(" -•*\t")][:3]
-        added = thread.add_archive(title, lines)
+        from meeting_thread import parse_archive_facts
+        added = thread.add_archive(title, parse_archive_facts(out))
         if added:
             emit({"type": "thread", "text": thread.render()})
             append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ⏮ {title}",
