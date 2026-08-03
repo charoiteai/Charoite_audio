@@ -290,6 +290,11 @@ it signals degradation, it does not break the loop.
   concerned with someone else's retry. The menu-bar button is visible even
   with an empty history — the window explains its own emptiness; and it is
   called "Recent", not "All": the full archive lives in the archive folder.
+  The search field in the header answers "where did we decide X": lexical
+  search over the archive's summaries, minutes and debriefs (plus graph notes
+  for meetings that never reached the archive), newest first, click opens the
+  document. Transcripts are deliberately not scanned: by then decisions live
+  in the upper layers.
 - **The meeting card** — a ready meeting opens on click: topic, date,
   duration (from transcript timecodes), participants, the one-line gist,
   decisions and action items from the Summary. "Copy" puts the summary,

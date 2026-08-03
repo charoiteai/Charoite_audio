@@ -13,6 +13,10 @@ struct RecentMeetingsView: View {
     /// Встреча, открытая карточкой. Snapshot Identifiable по meetingID —
     /// sheet(item:) сам закрывается и открывается при переключении строк.
     @State private var cardMeeting: MeetingProcessingSnapshot?
+    /// Поиск по архиву: окно отвечает не только «что со вчерашней записью»,
+    /// но и «где мы решали про X» — по саммари, минуткам и разборам.
+    @State private var query = ""
+    @State private var results: [MeetingSearch.Hit] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,12 +28,48 @@ struct RecentMeetingsView: View {
                 Text(L.t("за две недели", "last two weeks", "近两周"))
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
+                TextField(L.t("Поиск по встречам…", "Search meetings…", "搜索会议…"),
+                          text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 190)
+                    .onSubmit { runSearch() }
+                    .onChange(of: query) { _, q in
+                        if q.isEmpty { results = [] } else { runSearch() }
+                    }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             Divider()
 
-            if processing.history.isEmpty {
+            if !query.isEmpty {
+                if results.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.largeTitle).foregroundStyle(.quaternary)
+                        Text(L.t("Ничего не нашлось в саммари, минутках и разборах.",
+                                 "Nothing found in summaries, minutes or debriefs.",
+                                 "在摘要、纪要和复盘中未找到任何内容。"))
+                            .font(.subheadline).foregroundStyle(.tertiary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(results) { hit in
+                        Button {
+                            NSWorkspace.shared.open(hit.file)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(hit.title).font(.body.weight(.medium)).lineLimit(1)
+                                Text(hit.snippet).font(.caption)
+                                    .foregroundStyle(.secondary).lineLimit(2)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.vertical, 3)
+                    }
+                    .listStyle(.inset)
+                }
+            } else if processing.history.isEmpty {
                 VStack(spacing: 10) {
                     Image(systemName: "waveform")
                         .font(.largeTitle).foregroundStyle(.quaternary)
@@ -52,6 +92,11 @@ struct RecentMeetingsView: View {
         .sheet(item: $cardMeeting) { meeting in
             MeetingCardView(meeting: meeting)
         }
+    }
+
+    private func runSearch() {
+        guard let graph = AppSettings.graphDir else { results = []; return }
+        results = MeetingSearch.search(query, graph: graph)
     }
 
     @ViewBuilder
