@@ -76,6 +76,15 @@ This is the three-layer "episodes → entities → communities" scheme (as in
 Graphiti/Zep) on plain markdown: grep, Obsidian, git and any editor just
 work. Superseded facts are dated, not deleted.
 
+**Picking the graph.** Every sphere of life gets its own graph next to the
+others; the «проект» field from the extraction decides where a meeting lands.
+The model does not choose blind: the prompt carries the list of existing
+graphs (sibling folders holding a `_MOC.md`) and names the work default
+explicitly, and the answer is matched against known names ignoring case and
+separators — «Project Alpha» and «Project_Alpha» are one graph, not two. A new
+graph is created only for a clearly non-work topic; on a work meeting that is
+a mis-pick, so the log records which graphs were known at the time.
+
 ## Dossiers: a floor between search and the graph
 
 Asked "so where does this topic stand", search returns a dozen scattered
