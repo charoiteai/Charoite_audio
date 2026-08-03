@@ -574,7 +574,7 @@ struct SuflerView: View {
                     .accessibilityLabel(L.t("Подсказки во время встречи", "Hints during the meeting", "会议期间的提示"))
                     .accessibilityHint(L.t("Мгновенные ответы на вопросы собеседника", "Instant answers to the other side's questions", "对方提问的即时回答"))
                 Toggle(isOn: $sufler.thesesOn) { Text(L.t("Тезисы", "Theses", "要点")).fixedSize() }
-                    .help(L.t("Автотезисы 📌💎💭 и дежавю ⏮ по ходу встречи", "Auto-theses 📌💎💭 and déjà vu ⏮ during the meeting", "会议中的自动要点 📌💎💭 与似曾相识 ⏮"))
+                    .help(L.t("Автотезисы 📌💭 и дежавю ⏮ по ходу встречи", "Auto-theses 📌💭 and déjà vu ⏮ during the meeting", "会议中的自动要点 📌💭 与似曾相识 ⏮"))
                     .accessibilityLabel(L.t("Автотезисы", "Auto-theses", "自动要点"))
                     .accessibilityHint(L.t("Ключевые мысли и повторы по ходу встречи", "Key thoughts and repetitions during the meeting", "会议中的关键想法与重复内容"))
                 Toggle(isOn: $sufler.cloudOn) { Text("Claude").fixedSize() }
@@ -975,9 +975,10 @@ struct SuflerView: View {
         .padding(.horizontal, 16)
     }
 
-    /// Тезис — карточка с подложкой по типу: 📌 решения тёплые, 💎 факты
-    /// индиго, ⏮ контекст из архива бирюзовый, 💭/🔬 мысли нейтральные.
-    /// Плоский текст с эмодзи читался как лог; карточки дают глазу зацепки.
+    /// Тезис — карточка с подложкой по типу: 📌 решения тёплые, ⏮ контекст
+    /// из архива бирюзовый, 💭/🔬 мысли нейтральные (💎 остался только в
+    /// старых записях — рендерим, но демон его больше не шлёт: факты ведёт
+    /// нить). Плоский текст с эмодзи читался как лог; карточки дают зацепки.
     private func thesisCard(_ t: String) -> some View {
         let tint: Color = t.hasPrefix("📌") ? .orange
             : t.hasPrefix("💎") ? Theme.accent

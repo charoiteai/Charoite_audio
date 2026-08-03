@@ -36,6 +36,7 @@ from meeting_processing import MeetingStatusStore  # noqa: E402
 from meeting_thread import Thread as MeetingThread  # noqa: E402
 import privacy  # noqa: E402
 import speaker_names  # noqa: E402
+import thesis_rules  # noqa: E402
 import voice_pitch  # noqa: E402
 from audio import AudioHub  # noqa: E402
 from llm import LLM  # noqa: E402
@@ -449,18 +450,8 @@ def main():
                             and looks_question(added):
                         fire_question(added)
 
-    THINK_SYSTEM = (
-        "Ты — второй мозг владельца на рабочей встрече: думаешь вместе с ним по живой стенограмме. "
-        "Из НОВОГО фрагмента выдели только по-настоящему ценное, каждое с новой строки со строгим префиксом:\n"
-        "📌 — контрольная точка: решение, договорённость, срок, поручение (кто/что/когда)\n"
-        "💎 — ценная информация: цифра, имя, обещание, условие, риск\n"
-        "💭 — твоя мысль (максимум одна): противоречие со сказанным ранее, упущенный вопрос, скрытый риск\n"
-        "ИГНОРИРУЙ фоновое медиа: радио, телевизор, ролики, новости, политика, "
-        "реклама — всё, что явно не разговор присутствующих о работе. Из такого "
-        "фрагмента тезисы не делай (21.07: «поручение» из новостного эфира "
-        "попало в контрольные точки).\n"
-        "Телеграфно, по-русски. Если ничего ценного не прозвучало — ответь ровно: NONE"
-    )
+    # Промпт и фильтр тезисов — в src/thesis_rules.py (тестируются без аудио).
+    # 💎 убран 03.08: факты ведёт нить, тезисам остались 📌 и 💭.
 
     # Дедуп тезисов по СМЫСЛУ. Модель каждые 40с смотрит свежий фрагмент и на
     # длинной встрече переоткрывает уже сказанное другими словами — контекст в
@@ -477,7 +468,7 @@ def main():
         import nli
         if not nli.is_available():
             return False
-        text = line.lstrip("📌💎💭 ").strip()
+        text = thesis_rules.strip_mark(line)
         if len(text) < 12:
             return False
         words = text.lower().split()
@@ -513,23 +504,17 @@ def main():
                         (f"Контекст (уже обработано):\n{context_tail}\n\n" if context_tail else "")
                         + f"НОВЫЙ фрагмент стенограммы:\n{fresh}",
                         model=cfg["sufler"].get("think_model", llm.small),
-                        system=THINK_SYSTEM,
+                        system=thesis_rules.THINK_SYSTEM,
                     )
                 )
                 context_tail = fresh[-800:]
-                if "NONE" in out and len(out.strip()) < 12:
-                    continue
-                for line in out.strip().splitlines():
-                    line = line.strip()
-                    if not line or line == "NONE":
+                # Строки без живого префикса отбрасываются целиком: вступления
+                # («Вот что важно:») и отставной 💎 в ленте выглядели репликами.
+                for line in thesis_rules.parse(out):
+                    if is_dup_thesis(line):
                         continue
-                    if line.startswith(("📌", "💎", "💭")):
-                        if is_dup_thesis(line):
-                            continue
-                        emit({"type": "thesis", "text": line})
-                        tr.note(line)
-                    else:
-                        emit({"type": "thesis", "text": line})
+                    emit({"type": "thesis", "text": line})
+                    tr.note(line)
             except Exception as e:  # noqa: BLE001
                 emit({"type": "status", "text": f"мышление: {e}"})
 
@@ -1313,7 +1298,7 @@ def main():
     def deep_loop():
         """Глубокая проработка: 26b пересматривает заметки быстрой модели.
 
-        Раз в ~5 минут: подтверждает/уточняет/отбрасывает 📌💎💭 от e4b,
+        Раз в ~5 минут: подтверждает/уточняет/отбрасывает 📌💭 от e4b,
         связывает с памятью графа, выдаёт до 5 строк «🔬 …».
         """
         seen_notes = 0

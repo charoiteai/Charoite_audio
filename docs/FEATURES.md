@@ -63,8 +63,10 @@
   (agenda, numbers, statuses) come from the transcript or are declared
   unknown — early in a meeting a topic-primed prompt used to make the model
   present those topics as the actual agenda.
-- **Auto-theses** — 📌 facts/decisions, 💎 highlights, 💭 ideas as the
-  conversation flows; the heavy model periodically reviews them (🔬).
+- **Auto-theses** — 📌 checkpoints (decision, deadline, action item) and
+  💭 the model's own thoughts as the conversation flows; the heavy model
+  periodically reviews them (🔬). 💎 "highlights" was retired: the thread
+  carries the facts now — a third stream of the same facts was duplication.
   Paraphrased repeats are filtered by a local NLI model (duplicate =
   mutual entailment; a refinement carrying a new fact is not a duplicate).
   The layer is optional: with no model in `models/nli/` it is simply off —
