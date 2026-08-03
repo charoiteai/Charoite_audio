@@ -495,7 +495,7 @@ def migrate_all(graph: pathlib.Path, tdir: pathlib.Path) -> int:
 if __name__ == "__main__":
     import yaml
     cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
-    graph = pathlib.Path(cfg["sufler"]["graph_dir"]).expanduser()
+    graph = pathlib.Path(os.environ.get("SUFLER_GRAPH_DIR") or cfg["sufler"]["graph_dir"]).expanduser()
     tdir = ROOT / cfg["log"]["transcripts_dir"]
     if "--all" in sys.argv:
         n = migrate_all(graph, tdir)

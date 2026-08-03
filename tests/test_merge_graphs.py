@@ -91,3 +91,11 @@ def test_identical_copies_are_not_appended(tmp_path):
 
     moves, appends, _ = mg.plan(src, dst)
     assert moves == [] and appends == []
+
+
+def test_configured_graph_honours_env(tmp_path, monkeypatch):
+    """Все инструменты резолвят граф через graphs.configured_graph —
+    и тестовый прогон не должен дотягиваться до рабочего графа."""
+    import graphs
+    monkeypatch.setenv("SUFLER_GRAPH_DIR", str(tmp_path))
+    assert graphs.configured_graph() == tmp_path
