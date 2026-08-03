@@ -283,6 +283,13 @@ it signals degradation, it does not break the loop.
   transcript stays openable, and the pipeline will not re-process silence.
   A state from a newer pipeline also survives — it used to break decoding of
   the whole status, and the meeting vanished from the window entirely.
+- **The "Recent meetings" window** — twenty meetings from the last two
+  weeks: state as a colored dot, "Open" and "Transcript" on every row, a
+  "Retry" button on failed ones. While one meeting is being retried, the
+  "working" indicator shows only on that row: ready meetings are not
+  concerned with someone else's retry. The menu-bar button is visible even
+  with an empty history — the window explains its own emptiness; and it is
+  called "Recent", not "All": the full archive lives in the archive folder.
 
 - **Import folder (watched)** — point the app at a folder (Settings →
   Import, or `--scan` in the CLI): recordings dropped there become graph

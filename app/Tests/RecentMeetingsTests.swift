@@ -204,3 +204,49 @@ final class ProcessingProgressTests: XCTestCase {
         XCTAssertFalse(MeetingProcessingPolicy.canRetry(empty, transcriptExists: true))
     }
 }
+
+/// Что видно в строке списка, пока идёт повтор.
+///
+/// Пока одна встреча повторялась, погашенная кнопка «Повторить» вырастала у
+/// ВСЕХ строк, включая готовые: список знал факт «идёт повтор», но не знал чей.
+final class RetryControlTests: XCTestCase {
+    private func snapshot(id: String, state: MeetingProcessingSnapshot.State) -> MeetingProcessingSnapshot {
+        MeetingProcessingSnapshot(
+            schemaVersion: 1, meetingID: id, state: state, stage: "s",
+            startedAt: Date().timeIntervalSince1970 - 60,
+            updatedAt: Date().timeIntervalSince1970,
+            transcriptPath: "/t/\(id).md", notePath: nil, error: nil)
+    }
+
+    func testFailedMeetingOffersRetry() {
+        XCTAssertEqual(MeetingProcessingPolicy.retryControl(
+            for: snapshot(id: "a", state: .error),
+            transcriptExists: true, retryingID: nil), .ready)
+    }
+
+    func testReadyMeetingShowsNothingEvenDuringSomeoneElsesRetry() {
+        // главный случай из разбора: у готовой встречи повтору нет места
+        XCTAssertEqual(MeetingProcessingPolicy.retryControl(
+            for: snapshot(id: "ok", state: .ready),
+            transcriptExists: true, retryingID: "b"), .hidden)
+    }
+
+    func testTheRetriedMeetingShowsProgressNotAButton() {
+        // её статус уже переписан в processing — и всё равно «работаю», не кнопка
+        XCTAssertEqual(MeetingProcessingPolicy.retryControl(
+            for: snapshot(id: "b", state: .processing),
+            transcriptExists: true, retryingID: "b"), .running)
+    }
+
+    func testOtherFailedMeetingWaitsItsTurn() {
+        XCTAssertEqual(MeetingProcessingPolicy.retryControl(
+            for: snapshot(id: "a", state: .error),
+            transcriptExists: true, retryingID: "b"), .waiting)
+    }
+
+    func testNoTranscriptNoRetry() {
+        XCTAssertEqual(MeetingProcessingPolicy.retryControl(
+            for: snapshot(id: "a", state: .error),
+            transcriptExists: false, retryingID: nil), .hidden)
+    }
+}
