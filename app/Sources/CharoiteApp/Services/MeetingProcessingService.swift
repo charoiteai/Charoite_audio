@@ -32,6 +32,9 @@ struct MeetingProcessingSnapshot: Decodable, Equatable, Sendable {
     let transcriptPath: String
     let notePath: String?
     let error: String?
+    /// Какая часть длинной стенограммы разбирается и сколько их всего.
+    let part: Int?
+    let parts: Int?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -43,6 +46,28 @@ struct MeetingProcessingSnapshot: Decodable, Equatable, Sendable {
         case transcriptPath = "transcript_path"
         case notePath = "note_path"
         case error
+        case part
+        case parts
+    }
+
+    /// Свой init с умолчаниями вместо memberwise: прогресс есть только у
+    /// длинной встречи, и добавление такого поля не должно заставлять
+    /// переписывать каждый тест, который снимок собирает.
+    init(schemaVersion: Int, meetingID: String, state: State, stage: String,
+         startedAt: TimeInterval, updatedAt: TimeInterval, transcriptPath: String,
+         notePath: String?, error: String?,
+         part: Int? = nil, parts: Int? = nil) {
+        self.schemaVersion = schemaVersion
+        self.meetingID = meetingID
+        self.state = state
+        self.stage = stage
+        self.startedAt = startedAt
+        self.updatedAt = updatedAt
+        self.transcriptPath = transcriptPath
+        self.notePath = notePath
+        self.error = error
+        self.part = part
+        self.parts = parts
     }
 }
 
@@ -98,6 +123,39 @@ enum MeetingProcessingPolicy {
             return snapshot.transcriptPath
         case .processing, .unknown:
             return nil
+        }
+    }
+
+    /// Чем занят конвейер прямо сейчас — словами, а не кодом стадии.
+    ///
+    /// Отдельная чистая функция, а не ветка внутри вычисляемого свойства
+    /// сервиса: главная строка, которую человек читает, пока ждёт, должна
+    /// проверяться тестом.
+    static func stageText(for snapshot: MeetingProcessingSnapshot) -> String {
+        switch snapshot.stage {
+        case "waiting_for_audio", "recovering":
+            return L.t("Сохраняю запись…", "Saving the recording…", "正在保存录音…")
+        case "rebuilding_transcript":
+            return L.t("Пересобираю стенограмму…",
+                       "Rebuilding the transcript…",
+                       "正在重建逐字稿…")
+        case "updating_graph":
+            // На длинной встрече эта стадия висит минутами и внешне ничем не
+            // отличается от зависшего процесса. Номер части — то, что отличает
+            // работу от смерти, не заглядывая в логи. Одну часть не объявляем:
+            // «часть 1 из 1» читается как начало долгого пути.
+            if let part = snapshot.part, let parts = snapshot.parts, parts > 1 {
+                return L.t("Обновляю граф встречи… часть \(part) из \(parts)",
+                           "Updating the meeting graph… part \(part) of \(parts)",
+                           "正在更新会议图谱…第 \(part)/\(parts) 部分")
+            }
+            return L.t("Обновляю граф встречи…",
+                       "Updating the meeting graph…",
+                       "正在更新会议图谱…")
+        default:
+            return L.t("Обрабатываю встречу…",
+                       "Processing the meeting…",
+                       "正在处理会议…")
         }
     }
 
@@ -461,22 +519,7 @@ final class MeetingProcessingService: ObservableObject {
         guard let snapshot else { return nil }
         switch MeetingProcessingPolicy.resolvedState(snapshot) {
         case .processing:
-            switch snapshot.stage {
-            case "waiting_for_audio", "recovering":
-                return L.t("Сохраняю запись…", "Saving the recording…", "正在保存录音…")
-            case "rebuilding_transcript":
-                return L.t("Пересобираю стенограмму…",
-                           "Rebuilding the transcript…",
-                           "正在重建逐字稿…")
-            case "updating_graph":
-                return L.t("Обновляю граф встречи…",
-                           "Updating the meeting graph…",
-                           "正在更新会议图谱…")
-            default:
-                return L.t("Обрабатываю встречу…",
-                           "Processing the meeting…",
-                           "正在处理会议…")
-            }
+            return MeetingProcessingPolicy.stageText(for: snapshot)
         case .ready:
             return L.t("Встреча готова", "Meeting ready", "会议已就绪")
         case .error:

@@ -139,3 +139,45 @@ def test_no_speech_keeps_the_transcript_path(store, tmp_path):
 
     assert data["state"] == "empty"
     assert data["transcript_path"].endswith("2026-08-03_0844.md")
+
+
+def test_typical_duration_is_median_not_average(store, tmp_path):
+    """Одна встреча со вставшей LLM не должна задавать обещание для всех.
+
+    Приложение обещало «~2-4 минуты» константой, а живые обработки шли по
+    пять минут и по тридцать. Среднее из таких чисел врёт сильнее константы —
+    поэтому медиана.
+    """
+    for stem, span in (("a", 300), ("b", 360), ("c", 1800)):
+        _put(store, stem, state="ready", started_at=NOW - span, updated_at=NOW)
+
+    assert store.typical_duration() == 360
+
+
+def test_no_promise_until_there_is_something_to_promise(store):
+    _put(store, "a", state="ready", started_at=NOW - 300, updated_at=NOW)
+    assert store.typical_duration() is None, "по одной встрече обещать нечего"
+
+
+def test_unfinished_meetings_do_not_skew_the_estimate(store):
+    for stem, span, state in (("a", 300, "ready"), ("b", 360, "ready"),
+                              ("c", 9000, "error"), ("d", 420, "ready")):
+        _put(store, stem, state=state, started_at=NOW - span, updated_at=NOW)
+
+    assert store.typical_duration() == 360, "считаем только доведённые до конца"
+
+
+def test_progress_shows_which_part_is_running(store, tmp_path):
+    transcript = _transcript(tmp_path, "2026-08-03_1130")
+    path = store.processing(transcript, "updating_graph", part=2, parts=3)
+    data = json.loads(path.read_text(encoding="utf-8"))
+
+    assert (data["part"], data["parts"]) == (2, 3)
+
+
+def test_short_meeting_has_no_part_noise(store, tmp_path):
+    transcript = _transcript(tmp_path, "2026-08-03_1130")
+    path = store.processing(transcript, "updating_graph")
+    data = json.loads(path.read_text(encoding="utf-8"))
+
+    assert "part" not in data and "parts" not in data
