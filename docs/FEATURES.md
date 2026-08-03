@@ -167,6 +167,17 @@ up: the folder matching the current topic in the graph stays, files from the ext
 move into it, and the extras themselves go to `Встречи-архив/_дубли`. Without
 `--apply` it only prints the plan — nothing is ever deleted.
 
+**Merging graphs** (`scripts/merge_graphs.py <donor> <receiver>`) — stitches
+a split graph back together: on Aug 3 a work meeting drove off into a brand
+new graph the model honestly invented from the content. The pipeline now
+prevents splits (the prompt lists known graphs), and this script heals the
+ones that already happened: new files move over, name collisions get
+appended into the receiver's file as a "moved from graph …" section (donor
+frontmatter stripped — people and system nodes are additive, their
+histories must not be lost), meeting lines migrate into the receiver's
+`_MOC.md`, and the donor's `_MOC.md` becomes a "merged into …" note.
+Without `--apply` it only prints the plan.
+
 **Forget a meeting** (`scripts/forget_meeting.py <date|stamp>`) — the other
 side of recording: removes the meeting from all six places it lives — the
 transcript and its derivatives, the folder under «Встречи-архив», the
