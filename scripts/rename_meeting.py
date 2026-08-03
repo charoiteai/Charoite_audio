@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import sys
@@ -47,6 +48,19 @@ def pretty_and_slug(title: str) -> tuple[str, str]:
         sys.exit("новая тема пуста")
     slug = re.sub(r"[,;:!?.]", "", pretty).replace(" ", "_")[:50]
     return pretty, slug
+
+
+def resolve_graph(cfg: dict) -> pathlib.Path:
+    """SUFLER_GRAPH_DIR перекрывает конфиг — как во всём конвейере.
+
+    Найдено аудитом: скрипт читал граф только из config.yaml, и прогон в
+    тестовом окружении (SUFLER_GRAPH_DIR на временный граф) переименовывал
+    файлы transcripts/, а папку архива и заметку молча искал в РАБОЧЕМ
+    графе. «Готово» при полдела — и рука в проде, куда тестовый запуск не
+    должен дотягиваться вовсе.
+    """
+    raw = os.environ.get("SUFLER_GRAPH_DIR") or cfg["sufler"]["graph_dir"]
+    return pathlib.Path(raw).expanduser()
 
 
 def retitled(name: str, stamp: str, slug: str) -> str | None:
@@ -184,7 +198,7 @@ def main() -> None:
 
     import yaml
     cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
-    graph = pathlib.Path(cfg["sufler"]["graph_dir"]).expanduser()
+    graph = resolve_graph(cfg)
     tdir = ROOT / cfg["log"]["transcripts_dir"]
 
     p = plan(graph, tdir, stamp, pretty, slug)
