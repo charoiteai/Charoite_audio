@@ -229,6 +229,8 @@ it signals degradation, it does not break the loop.
   request waits for the timeout. A cheap generation probe runs before the
   graph pass; a stalled local Ollama is restarted automatically (loopback
   only — someone else's machine is not ours to bounce) and the pass retries.
+  The restart targets whichever process actually holds the port: the app and
+  the brew service coexist happily, and only the one answering matters.
 - **Unfinished meetings get picked up** — a failed or abandoned run no
   longer just sits there: the next successful meeting retries the freshest
   leftover (up to three attempts, never touching a run in progress).
