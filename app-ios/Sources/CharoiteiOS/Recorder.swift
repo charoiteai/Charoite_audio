@@ -51,6 +51,17 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     /// явный флаг, чтобы экран мог сказать словами.
     @Published private(set) var stalled = false
 
+    /// Последняя запись на телефоне — то, чем можно поделиться прямо сейчас.
+    ///
+    /// Отдельное published-поле, а не чтение папки прямо в теле экрана:
+    /// SwiftUI не следит за файловой системой и не перерисовал бы кнопку ни
+    /// после стопа, ни после доставки.
+    @Published private(set) var lastRecording: URL? = Inbox.lastRecording
+
+    func refreshLastRecording() {
+        lastRecording = Inbox.lastRecording
+    }
+
     /// Последняя длительность, на которой файл ещё рос.
     private var lastGrowth: (at: Date, seconds: TimeInterval)?
 
@@ -265,7 +276,10 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         // стопа, а чужая музыка не возобновляется — для приложения про
         // приватность это выглядит хуже любого бага.
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        Task { await Inbox.deliver(url) { [weak self] msg in self?.lastResult = msg } }
+        Task { [weak self] in
+            await Inbox.deliver(url) { msg in self?.lastResult = msg }
+            self?.refreshLastRecording()
+        }
     }
 
     private func tick() {
