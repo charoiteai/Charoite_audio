@@ -204,6 +204,14 @@ it signals degradation, it does not break the loop.
   speaker names preserved) → the full meeting archive: transcript,
   minutes, debrief, theses, graph; meeting date via `--date/--time`;
   the source file is kept next to the meeting materials (APFS clone).
+- **The hint follows the thread** instead of answering for you: current
+  topic → who said what → **why** this is being discussed → **what
+  happened before** on this topic in the archive (with a date) → what is
+  still open. Empty sections are skipped, and several topics inside one
+  stretch of talk split into separate cards. The format lives in code
+  (`src/llm.py`, `HINT_FORMAT`) and is the same for everyone: the role in
+  the config describes context and terminology, not layout. The ready
+  first-person answer is still there — on its own hotkey.
 - **Live meeting context** — the topic emerges a few minutes into the
   call; the daemon distills it from the live transcript, searches the
   archive and rebuilds the «past meetings» block in the hint prompt:
