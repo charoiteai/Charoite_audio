@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""Диагностика установки Charoite: одна команда вместо гадания «почему молчит».
+"""Диагностика Charoite: одна команда вместо гадания «почему молчит».
 
-Проверяет всё, обо что реально спотыкаются при первом запуске: конфиг и его
-ключи, папку графа, Ollama и нужные модели (включая bge-m3 для семантики),
-STT-модели, диаризацию, зависимости. Ничего не чинит сам — печатает точный
-следующий шаг для каждой проблемы.
+Две половины. Первая — установка: конфиг и его ключи, папка графа, Ollama и
+нужные модели (включая bge-m3 для семантики), STT-модели, диаризация,
+зависимости. Вторая — рабочее состояние: отвечает ли модель на самом деле,
+не застряли ли встречи, сколько ждёт в папке импорта, есть ли место на диске.
+
+Вторая половина появилась после 03.08. В тот день встречи перестали
+раскладываться по папкам, и на выяснение причины ушёл час: Ollama отвечала на
+`/api/tags` мгновенно, модель числилась загруженной, а инференс стоял — запрос
+висел десять минут и уходил с таймаутом. Все проверки для этого уже были
+написаны, но лежали по разным местам, и ни одна не собиралась в один ответ.
+
+Ничего не чинит сам — печатает точный следующий шаг для каждой проблемы.
 
     .venv/bin/python scripts/doctor.py
 """
@@ -12,7 +20,10 @@ from __future__ import annotations
 
 import json
 import pathlib
+import shutil
+import subprocess
 import sys
+import time
 import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -112,13 +123,121 @@ def check_deps() -> None:
         line(OK, "python-зависимости")
 
 
+def check_llm_alive(cfg: dict) -> None:
+    """Отвечает ли модель на самом деле.
+
+    Проверка выше спрашивает список моделей — у вставшей Ollama он приходит
+    мгновенно. Отличить работающий инференс от замершего может только
+    генерация: 03.08 разница между этими двумя вопросами стоила разбора
+    встречи и часа поисков.
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    try:
+        import llm_health
+    except Exception as e:  # noqa: BLE001 — модуль вспомогательный
+        line(WARN, f"проба генерации недоступна ({type(e).__name__})")
+        return
+    started = time.monotonic()
+    if llm_health.probe(cfg, timeout=90):
+        line(OK, f"модель отвечает ({time.monotonic() - started:.1f} с)")
+        return
+    port_owner = llm_health.listener_path(cfg.get("llm", {}).get("base_url")
+                                          or "http://127.0.0.1:11434")
+    line(FAIL, "модель не отвечает на генерацию"
+               + (f" (порт держит {port_owner})" if port_owner else ""),
+         "инференс встал: перезапустите Ollama. Конвейер сделает это сам при "
+         "следующей встрече — см. src/llm_health.py")
+
+
+def check_pipeline() -> None:
+    """Не застряли ли встречи и сколько обычно занимает обработка."""
+    sys.path.insert(0, str(ROOT / "src"))
+    try:
+        from meeting_processing import MeetingStatusStore
+    except Exception as e:  # noqa: BLE001
+        line(WARN, f"статусы встреч недоступны ({type(e).__name__})")
+        return
+    store = MeetingStatusStore(ROOT)
+    if not store.directory.exists():
+        line(WARN, "статусов встреч ещё нет — обработка ни разу не запускалась")
+        return
+    pending = store.unfinished()
+    if pending:
+        names = ", ".join(d["meeting_id"] for d in pending[:3])
+        line(WARN, f"не доехали до графа: {len(pending)} ({names})",
+             "следующая удачная встреча подберёт их сама; вручную — "
+             ".venv/bin/python src/rebuild_transcript.py transcripts/<файл>.md")
+    else:
+        line(OK, "незавершённых встреч нет")
+    typical = store.typical_duration()
+    if typical:
+        line(OK, f"обработка обычно занимает ~{round(typical / 60)} мин")
+
+
+def _import_dir(cfg: dict) -> str:
+    """Где папка импорта. Её задают в приложении, а не в конфиге.
+
+    macOS-приложение хранит путь в своих настройках (`charoite.importDir`),
+    поэтому один только config.yaml тут ничего не знает — а проверять надо
+    именно ту папку, за которой следит приложение.
+    """
+    raw = str((cfg.get("charoite") or cfg.get("sufler") or {}).get("importDir", "")).strip()
+    if raw:
+        return raw
+    try:
+        out = subprocess.run(["defaults", "read", "ai.charoite.app", "charoite.importDir"],
+                             capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() if out.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def check_import_queue(cfg: dict) -> None:
+    """Папка импорта: что легло и ждёт."""
+    raw = _import_dir(cfg)
+    if not raw:
+        return
+    folder = pathlib.Path(raw).expanduser()
+    if not folder.exists():
+        line(FAIL, f"папка импорта не существует: {folder}",
+             "проверьте charoite.importDir в config.yaml")
+        return
+    waiting = [p for p in folder.iterdir()
+               if p.is_file() and p.suffix.lower() in
+               {".m4a", ".wav", ".mp3", ".caf", ".txt", ".md", ".vtt", ".srt"}]
+    if waiting:
+        line(WARN, f"в папке импорта ждёт файлов: {len(waiting)}",
+             "их разберёт наблюдатель импорта; если он не запущен — "
+             ".venv/bin/python scripts/import_meeting.py --scan <папка>")
+    else:
+        line(OK, "папка импорта пуста")
+
+
+def check_disk() -> None:
+    """Место под записи: час встречи в двух каналах — это сотни мегабайт."""
+    free = shutil.disk_usage(ROOT).free / 1e9
+    if free < 5:
+        line(FAIL, f"на диске {free:.1f} ГБ",
+             "записи и модели не поместятся — освободите место")
+    elif free < 20:
+        line(WARN, f"на диске {free:.1f} ГБ — хватит на несколько встреч")
+    else:
+        line(OK, f"на диске {free:.0f} ГБ")
+
+
 def main() -> None:
     print("Charoite doctor\n")
+    print("Установка")
     check_python()
     check_deps()
     cfg = check_config()
     check_ollama(cfg)
     check_models()
+    print("\nРабочее состояние")
+    check_llm_alive(cfg)
+    check_pipeline()
+    check_import_queue(cfg)
+    check_disk()
     print()
     if issues:
         print(f"Проблем: {issues}. Пункты с «✗» чинить обязательно, с «–» — по желанию.")

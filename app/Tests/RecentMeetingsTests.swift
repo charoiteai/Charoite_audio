@@ -21,7 +21,9 @@ final class RecentMeetingsTests: XCTestCase {
             updatedAt: updated ?? started,
             transcriptPath: transcript,
             notePath: "/graph/Встречи/\(id).md",
-            error: state == .error ? "graph_updater завершился с кодом 1" : nil)
+            error: state == .error ? "graph_updater завершился с кодом 1" : nil,
+            part: nil,
+            parts: nil)
     }
 
     func testNewestFirstAndOlderThanTwoWeeksDropOut() {
@@ -146,5 +148,59 @@ final class MeetingStateDecodingTests: XCTestCase {
 
         XCTAssertEqual(snapshot.state, .unknown)
         XCTAssertEqual(snapshot.meetingID, "m", "остальные поля должны уцелеть")
+    }
+}
+
+/// Что видно человеку, пока идёт обработка.
+final class ProcessingProgressTests: XCTestCase {
+    private func snapshot(stage: String, part: Int?, parts: Int?) -> MeetingProcessingSnapshot {
+        MeetingProcessingSnapshot(
+            schemaVersion: 1, meetingID: "m", state: .processing, stage: stage,
+            startedAt: 1, updatedAt: 2,
+            transcriptPath: "/t/2026-08-03_1130_Тема.md", notePath: nil, error: nil,
+            part: part, parts: parts)
+    }
+
+    func testLongMeetingSaysWhichPartIsRunning() {
+        // «Обновляю граф» на встрече в двадцать тысяч знаков висит минутами и
+        // ничем не отличается от зависшего процесса.
+        let text = MeetingProcessingPolicy.stageText(
+            for: snapshot(stage: "updating_graph", part: 2, parts: 3))
+
+        XCTAssertTrue(text.contains("2") && text.contains("3"), "часть и всего: \(text)")
+    }
+
+    func testShortMeetingDoesNotInventParts() {
+        let text = MeetingProcessingPolicy.stageText(
+            for: snapshot(stage: "updating_graph", part: nil, parts: nil))
+
+        XCTAssertFalse(text.contains("часть"), "нечего делить — нечего и показывать: \(text)")
+    }
+
+    func testSinglePartIsNotAnnouncedEither() {
+        // «часть 1 из 1» читается как начало долгого пути, а это уже финиш
+        let text = MeetingProcessingPolicy.stageText(
+            for: snapshot(stage: "updating_graph", part: 1, parts: 1))
+
+        XCTAssertFalse(text.contains("часть"))
+    }
+
+    func testEarlyStagesStillSpeakHumanLanguage() {
+        for stage in ["waiting_for_audio", "rebuilding_transcript", "неизвестная"] {
+            let text = MeetingProcessingPolicy.stageText(
+                for: snapshot(stage: stage, part: nil, parts: nil))
+            XCTAssertFalse(text.isEmpty)
+            XCTAssertFalse(text.contains(stage), "код стадии — не текст для человека")
+        }
+    }
+
+    func testSilentRecordingOffersNoRetry() {
+        // Тишину можно разбирать хоть трижды — речи в ней не появится.
+        let empty = MeetingProcessingSnapshot(
+            schemaVersion: 1, meetingID: "m", state: .empty, stage: "no_speech",
+            startedAt: 1, updatedAt: 2, transcriptPath: "/t/2026-08-03_0844.md",
+            notePath: nil, error: nil, part: nil, parts: nil)
+
+        XCTAssertFalse(MeetingProcessingPolicy.canRetry(empty, transcriptExists: true))
     }
 }

@@ -100,7 +100,14 @@ class MeetingStatusStore:
         self.directory = self.root / "logs" / STATUS_DIR
         self._now = now
 
-    def processing(self, transcript: pathlib.Path, stage: str) -> pathlib.Path:
+    def processing(self, transcript: pathlib.Path, stage: str,
+                   part: int | None = None, parts: int | None = None) -> pathlib.Path:
+        """Текущий этап; для длинной стенограммы — ещё и какая часть из скольких.
+
+        «Обновляю граф» на встрече в двадцать тысяч знаков висит минутами и
+        ничем не отличается от зависшего процесса. Номер части — единственное,
+        что отличает работу от смерти, не заглядывая в логи.
+        """
         transcript = pathlib.Path(transcript)
         current = self._read(transcript)
         now = float(self._now())
@@ -117,6 +124,9 @@ class MeetingStatusStore:
             # своей причине, каталась бы по кругу вечно.
             "attempts": int(current.get("attempts", 0)),
         }
+        if part and parts:
+            payload["part"] = int(part)
+            payload["parts"] = int(parts)
         self._prune(now)
         return self._write(transcript, payload)
 
@@ -191,6 +201,36 @@ class MeetingStatusStore:
                 continue              # стенограмму удалили — повторять нечего
             out.append(data)
         return sorted(out, key=lambda d: float(d.get("updated_at", 0)), reverse=True)
+
+    def typical_duration(self, *, minimum_samples: int = 3) -> float | None:
+        """Сколько обычно занимает обработка — по прошлым встречам, в секундах.
+
+        Приложение обещало «~2-4 минуты» константой, а живые встречи считались
+        по пять и по тридцать минут: обещание расходилось с правдой в разы, и
+        человек шёл искать поломку там, где всё шло нормально. Длительность
+        прошлых обработок уже лежит в статусах — её достаточно, чтобы говорить
+        правду и подстраиваться под машину.
+
+        Медиана, а не среднее: одна встреча со вставшей LLM тянула тридцать
+        минут и в среднем перевесила бы десяток нормальных. Пока готовых
+        встреч мало, честнее не обещать ничего.
+        """
+        spans: list[float] = []
+        for path in self.directory.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict) or data.get("state") != "ready":
+                continue
+            span = float(data.get("updated_at", 0)) - float(data.get("started_at", 0))
+            if span > 0:
+                spans.append(span)
+        if len(spans) < minimum_samples:
+            return None
+        spans.sort()
+        mid = len(spans) // 2
+        return spans[mid] if len(spans) % 2 else (spans[mid - 1] + spans[mid]) / 2
 
     def no_speech(self, transcript: pathlib.Path) -> pathlib.Path:
         """Запись есть, речи в ней нет.
