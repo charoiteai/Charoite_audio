@@ -314,7 +314,10 @@ it signals degradation, it does not break the loop.
   the tasks, or everything into the clipboard — into a mail without
   opening a single file. "Open", "Transcript" and "Obsidian" buttons are
   right there. "Meeting ready" no longer means "go figure out a markdown
-  file".
+  file". When a cloud review ran for the meeting, the card honestly shows
+  its outcome from the log: "N graph edits", with an unsaved review file
+  highlighted — before, the review worked invisibly and its edits were
+  only discoverable in the logs.
 - **Renaming a meeting** — the pencil in the card, or
   `scripts/rename_meeting.py <stamp> "New topic"`. The topic is invented
   by the model and is sometimes off; changing it by hand meant visiting
