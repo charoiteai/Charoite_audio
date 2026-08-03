@@ -188,7 +188,10 @@ it signals degradation, it does not break the loop.
 ## Outside meetings
 
 - **Dictation** (global hotkey) — speak → recognized locally → pasted into
-  the active field; the clipboard is restored, images included.
+  the active field; the clipboard is restored, images included. In the menu
+  bar, dictation, note and diary sit in a column with their shortcuts in a
+  separate right-hand column: on one row they did not fit and got truncated
+  exactly at the shortcut.
 - **Import recorded meetings** — `scripts/import_meeting.py file`
   (audio m4a/wav/mp3, text txt/md, subtitles vtt/srt from Zoom/Teams —
   speaker names preserved) → the full meeting archive: transcript,
