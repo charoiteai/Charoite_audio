@@ -403,6 +403,37 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     return live
 
 
+def retry_unfinished(status: MeetingStatusStore) -> None:
+    """Догнать встречи, которые не доехали до готовности.
+
+    Зовётся в конце удачной обработки — момент, когда точно известно, что
+    конвейер жив, а LLM отвечает. 03.08 разбор упал на вставшей модели, и
+    встреча пролежала необработанной полдня: повторять её было некому, а
+    снаружи это выглядело как «программа перестала раскладывать по папкам».
+
+    Повторы идут по одному и без рекурсии: очередь разбирается за столько
+    удачных встреч, сколько в ней хвостов, — зато ни две модели разом в
+    памяти, ни лавина процессов после недельного простоя.
+    """
+    try:
+        pending = status.unfinished()
+    except Exception as e:  # noqa: BLE001 — подбор не должен ронять удачную встречу
+        log(f"подбор незавершённых не удался ({type(e).__name__}: {e})")
+        return
+    if not pending:
+        return
+    target = pathlib.Path(pending[0]["transcript_path"])
+    log(f"повтор незавершённой встречи: {target.name} "
+        f"(в очереди {len(pending)}, попытка {int(pending[0].get('attempts', 0)) + 1})")
+    env = dict(os.environ, CHAROITE_NO_RETRY="1")
+    subprocess.Popen(
+        ["nice", "-n", "10", sys.executable, str(pathlib.Path(__file__)), str(target)],
+        start_new_session=True, env=env,
+        stdout=open(ROOT / "logs" / f"retry_{target.stem[:15]}.log", "w"),
+        stderr=subprocess.STDOUT,
+    )
+
+
 def main():
     live = pathlib.Path(sys.argv[1]).expanduser()
     if not live.exists():
@@ -438,6 +469,10 @@ def main():
         if not status.has_transcript(live):
             raise RuntimeError("финальная стенограмма не найдена")
         publish(status.ready, live, note)
+        # Своя встреча готова — значит конвейер жив и LLM отвечает. Лучший
+        # момент вернуться к тем, кому в прошлый раз не повезло.
+        if os.environ.get("CHAROITE_NO_RETRY") != "1":
+            retry_unfinished(status)
     except Exception as e:  # noqa: BLE001 — статус ошибки обязан пережить процесс
         log(f"обработка не завершена ({type(e).__name__}: {e})")
         publish(status.failed, live, f"{type(e).__name__}: {e}")

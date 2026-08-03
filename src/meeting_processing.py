@@ -18,6 +18,16 @@ from typing import Any
 SCHEMA_VERSION = 1
 STATUS_DIR = "meeting-status"
 STATUS_KEEP_DAYS = 14
+
+# Сколько раз возвращаемся к упавшей встрече. Три попытки покрывают типовую
+# причину — вставшую или занятую LLM, — а дальше дело в самой встрече, и
+# бесконечный круг только жёг бы машину и путал статусы.
+RETRY_LIMIT = 3
+
+# Статус `processing`, который не обновлялся дольше этого, — брошенный: процесс
+# умер, не дописав ни ready, ни error. Час выбран с запасом на честную работу:
+# полная пересборка часовой встречи со всеми моделями укладывается в минуты.
+STALE_PROCESSING = 3600
 _STAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}_\d{4})")
 _AUX_SUFFIXES = ("_minutes", "_hints", "_live", "_debrief")
 
@@ -102,6 +112,10 @@ class MeetingStatusStore:
             "started_at": current.get("started_at", now),
             "updated_at": now,
             "transcript_path": str(find_final_transcript(transcript)),
+            # Повтор всегда проходит через processing. Обнулять здесь счётчик
+            # значило бы никогда не дойти до предела: встреча, падающая по
+            # своей причине, каталась бы по кругу вечно.
+            "attempts": int(current.get("attempts", 0)),
         }
         self._prune(now)
         return self._write(transcript, payload)
@@ -135,8 +149,46 @@ class MeetingStatusStore:
             "updated_at": now,
             "transcript_path": str(find_final_transcript(transcript)),
             "error": str(error)[:2000],
+            # Счётчик живёт в статусе, а не в памяти процесса: тот, кто будет
+            # повторять, — уже другой процесс, запущенный после следующей встречи.
+            "attempts": int(current.get("attempts", 0)) + 1,
         }
         return self._write(transcript, payload)
+
+    def unfinished(self, *, stale_after: float = STALE_PROCESSING,
+                   limit: int = RETRY_LIMIT) -> list[dict[str, Any]]:
+        """Встречи, которые не доехали до готовности, — свежие первыми.
+
+        03.08 разбор упал на вставшей LLM в 10:33, и встреча пролежала
+        необработанной до вечера: повторять её было некому. Со стороны это
+        читается как «программа перестала раскладывать встречи по папкам» —
+        худший вид поломки, молчаливый.
+
+        Берём два случая: явную ошибку и брошенный `processing` — процесс,
+        который умер, не дописав ни ready, ни error (SIGKILL, перезагрузка,
+        закрытая крышка).
+        """
+        now = float(self._now())
+        out: list[dict[str, Any]] = []
+        for path in sorted(self.directory.glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict) or data.get("state") == "ready":
+                continue
+            if int(data.get("attempts", 0)) >= limit:
+                continue
+            if data.get("state") == "processing":
+                if now - float(data.get("updated_at", 0)) < stale_after:
+                    continue          # идёт прямо сейчас — не мешаем
+            elif data.get("state") != "error":
+                continue
+            transcript = pathlib.Path(str(data.get("transcript_path", "")))
+            if not transcript.is_file():
+                continue              # стенограмму удалили — повторять нечего
+            out.append(data)
+        return sorted(out, key=lambda d: float(d.get("updated_at", 0)), reverse=True)
 
     def has_transcript(self, transcript: pathlib.Path) -> bool:
         return find_final_transcript(pathlib.Path(transcript)).is_file()
