@@ -215,6 +215,15 @@ it signals degradation, it does not break the loop.
   launch. `note_*`/`diary_*` files are routed to the notes pipeline.
   Background recording with the screen locked. Build: `xcodegen
   generate` in app-ios/, sign in Xcode.
+- **Take the recording by hand** — no waiting on iCloud and no dependency
+  on it: a «Share recording» button under the timer hands off the latest
+  file anywhere, and the queue itself shows up in Files on the phone and
+  over the cable (`UIFileSharingEnabled`). While the file is locked
+  inside the app, the only copy of a meeting rides on a single delivery
+  channel — this is the second one.
+- **Stalled-recording watchdog** — if the file's duration stops growing
+  for more than three seconds (an interruption, a stolen microphone), the
+  screen says so in orange instead of running a timer over silence.
 
 - **Import folder (watched)** — point the app at a folder (Settings →
   Import, or `--scan` in the CLI): recordings dropped there become graph
