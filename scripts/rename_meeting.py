@@ -50,12 +50,19 @@ def pretty_and_slug(title: str) -> tuple[str, str]:
 
 
 def retitled(name: str, stamp: str, slug: str) -> str | None:
-    """Новое имя файла — или None, если файл темы не содержит.
+    """Новое имя файла — или None, если файл темы не касается.
 
-    Слаг в имени стоит между штампом и известным хвостом. Файлы со штампом
-    посекундной точности («2026-08-03_113012_hints.md») темы не несут — их
-    остаток после штампа начинается с цифры, и трогать их нельзя: по полному
-    стему их находит конвейер.
+    Три случая, когда тему в имя можно и нужно положить:
+    - слаг уже есть — стоит между штампом и известным хвостом, меняем его;
+    - главный файл вообще без темы: «2026-08-03_1130.md» — дописываем;
+    - главный файл с посекундным штампом: «2026-08-03_113012.md». Конвейер
+      его так и не переименовал — секунды в стеме выглядели для него как
+      «файл уже с темой», — и в списке встреч такая встреча показывается
+      датой вместо темы. Переименовываем в короткий штамп со слагом, как
+      назвал бы сам конвейер.
+
+    ПРОИЗВОДНЫЕ посекундные файлы («…113012_hints.md») не трогаем: темы в их
+    именах нет, а по полному стему их находит конвейер.
     """
     stem, dot, ext = name.partition(".md")
     if not dot or ext:                      # .md.live.json и прочие — не трогаем
@@ -63,6 +70,8 @@ def retitled(name: str, stamp: str, slug: str) -> str | None:
     if not stem.startswith(stamp):
         return None
     rest = stem[len(stamp):]
+    if rest == "" or re.fullmatch(r"\d\d", rest):
+        return f"{stamp}_{slug}.md"         # главный файл без темы
     m = re.match(r"^_(?!\d)(.+)$", rest)
     if not m:
         return None
@@ -78,13 +87,23 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
          pretty: str, slug: str) -> dict:
     """Что переименуется и что перепишется. Считается без единой записи."""
     moves: list[tuple[pathlib.Path, pathlib.Path]] = []
+    taken: set[pathlib.Path] = set()
     for folder in (tdir, graph / "Документация" / "Стенограммы встреч"):
         if not folder.exists():
             continue
         for f in sorted(folder.iterdir()):
             new = retitled(f.name, stamp, slug)
-            if new:
-                moves.append((f, f.with_name(new)))
+            if not new:
+                continue
+            target = f.with_name(new)
+            # Два кандидата на одно имя (короткий и посекундный главные файлы
+            # разом) или уже занятое имя — второго не двигаем: затирать файл
+            # встречи переименованием нельзя ни при каком раскладе.
+            if target in taken or target.exists():
+                print(f"пропуск: {f.name} — имя {new} уже занято")
+                continue
+            taken.add(target)
+            moves.append((f, target))
 
     day, hhmm = stamp[:10], f"{stamp[11:13]}-{stamp[13:15]}"
     arch_prefix = f"{day} {hhmm} "

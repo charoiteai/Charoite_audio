@@ -41,11 +41,30 @@ def test_titled_files_get_the_new_slug():
         == f"{STAMP}_Инцидент_загрузки_разбор.md"
 
 
-def test_files_with_seconds_carry_no_title_and_stay():
-    """«2026-08-03_113012_hints.md» — штамп посекундной точности, темы в имени
-    нет, а по полному стему его находит конвейер: трогать нельзя."""
+def test_derived_files_with_seconds_stay():
+    """«…113012_hints.md» — производный файл: темы в имени нет, а по полному
+    стему его находит конвейер. Трогать нельзя."""
     assert rm.retitled("2026-08-03_113012_hints.md", STAMP, "Тема") is None
-    assert rm.retitled("2026-08-03_113012.md", STAMP, "Тема") is None
+
+
+def test_bare_main_transcript_finally_gets_its_title():
+    """Главный файл без темы — короткий или посекундный.
+
+    Конвейер посекундный стем так и не переименовывал: секунды в стеме
+    выглядели для него как «файл уже с темой», и в списке встреч такая
+    встреча показывалась датой вместо темы.
+    """
+    assert rm.retitled(f"{STAMP}.md", STAMP, "Тема") == f"{STAMP}_Тема.md"
+    assert rm.retitled("2026-08-03_113012.md", STAMP, "Тема") == f"{STAMP}_Тема.md"
+
+
+def test_two_mains_do_not_collide_on_one_name(tmp_path):
+    # короткий и посекундный главные разом: второй не двигается, файл встречи
+    # затирать переименованием нельзя ни при каком раскладе
+    (tmp_path / f"{STAMP}.md").write_text("а", encoding="utf-8")
+    (tmp_path / "2026-08-03_113012.md").write_text("б", encoding="utf-8")
+    p = rm.plan(tmp_path / "нет-графа", tmp_path, STAMP, "Тема", "Тема")
+    assert len(p["moves"]) == 1
 
 
 def test_sidecar_and_foreign_files_stay():
