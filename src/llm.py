@@ -94,11 +94,58 @@ class LLM:
         except Exception:
             pass  # ollama может быть не поднят — не валим старт
 
+    # Формат подсказки живёт в коде, а не в роли из конфига. Роль отвечает на
+    # вопрос «кто ты и в каком контексте», формат — общий для всех и проверяем
+    # тестом. Раньше он был размазан по пользовательскому config.yaml, и любая
+    # правка роли молча меняла то, что человек читает во время встречи.
+    HINT_FORMAT = {
+        "ru": (
+            "Веди конспект встречи для того, кто её слушает. Не ответ на вопрос, "
+            "а нить разговора: о чём сейчас, почему это обсуждают, что было по "
+            "этой теме раньше.\n\n"
+            "Формат (пропускай раздел, если сказать нечего — пустых заголовков не пиши):\n"
+            "● <тема сейчас, 3-5 слов>\n"
+            "- <кто что сказал/предложил/возразил — до 3 строк, по делу>\n"
+            "Почему: <зачем это обсуждают, что стоит за спором — одна строка>\n"
+            "Было: <что по этой теме в памяти прошлых встреч, с датой — одна строка>\n"
+            "Открыто: <вопрос, который висит без ответа — одна строка>\n\n"
+            "Пиши телеграфно, по-русски, фактами из разговора. Имена людей, систем и "
+            "версий — ровно как звучали: «1.8», а не «RHEL 8». Узнаваемое название "
+            "продукта, которого в разговоре не было, — выдумка, даже если оно кажется "
+            "очевидным. Раздел «Было» бери ТОЛЬКО из памяти прошлых встреч выше; нет "
+            "совпадений — пропусти его."
+        ),
+        "en": (
+            "Keep a running digest for someone following the meeting. Not an answer "
+            "to a question — the thread of the conversation: what is being discussed "
+            "now, why, and what happened on this topic before.\n\n"
+            "Format (skip a section when there is nothing to say):\n"
+            "● <current topic, 3-5 words>\n"
+            "- <who said//proposed/objected what — up to 3 lines>\n"
+            "Why: <what is behind this discussion — one line>\n"
+            "Before: <what past-meeting memory says on this topic, with a date — one line>\n"
+            "Open: <the question left hanging — one line>\n\n"
+            "Be terse, factual, in English. «Before» comes ONLY from the past-meeting "
+            "memory above; no match — skip it."
+        ),
+        "zh": (
+            "为正在旁听会议的人做实时纪要。不是回答问题，而是对话的脉络：现在在谈什么、"
+            "为什么谈、这个话题此前有过什么。\n\n"
+            "格式（没有内容的部分直接跳过）：\n"
+            "● <当前话题，3-5 个词>\n"
+            "- <谁说了/提议了/反对了什么——最多 3 行>\n"
+            "为什么：<讨论背后的原因——一行>\n"
+            "此前：<过往会议记忆中关于该话题的内容，带日期——一行>\n"
+            "待解：<悬而未决的问题——一行>\n\n"
+            "简洁、用中文、只用对话中的事实。「此前」只能来自上方的过往会议记忆。"
+        ),
+    }
+
     def hint(self, transcript_tail: str, model: str | None = None) -> Iterator[str]:
         return self.stream(
             "Свежая стенограмма встречи (последние минуты):\n\n"
             f"{transcript_tail}\n\n"
-            "Дай подсказку по формату из твоей роли.",
+            + self.HINT_FORMAT.get(self.lang, self.HINT_FORMAT["en"]),
             model=model,
         )
 
