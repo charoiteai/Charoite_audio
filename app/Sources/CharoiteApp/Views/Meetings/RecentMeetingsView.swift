@@ -130,6 +130,14 @@ struct RecentMeetingsView: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 8)
+                // Длительность — только у готовых: пока конвейер работает,
+                // таймкоды ещё дописываются и цифра врала бы.
+                if state == .ready,
+                   let dur = MeetingDurationCache.durationText(for: meeting) {
+                    Text(dur + " · ")
+                        .font(.caption).foregroundStyle(.tertiary)
+                        .fixedSize()
+                }
                 Text(when(meeting.startedDate))
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize()

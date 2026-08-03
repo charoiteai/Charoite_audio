@@ -309,7 +309,9 @@ it signals degradation, it does not break the loop.
   the whole status, and the meeting vanished from the window entirely.
 - **The "Recent meetings" window** — twenty meetings from the last two
   weeks: state as a colored dot, "Open" and "Transcript" on every row, a
-  "Retry" button on failed ones. While one meeting is being retried, the
+  "Retry" button on failed ones. A ready meeting's row shows its duration
+  (from transcript timecodes, cached — the file is re-read only when the
+  meeting was re-processed). While one meeting is being retried, the
   "working" indicator shows only on that row: ready meetings are not
   concerned with someone else's retry. The menu-bar button is visible even
   with an empty history — the window explains its own emptiness; and it is
