@@ -302,10 +302,12 @@ it signals degradation, it does not break the loop.
   by the model and is sometimes off; changing it by hand meant visiting
   five places. The script carries the new topic everywhere: transcripts/,
   the archive folder (and links inside it), the copies in Documentation,
-  the graph note heading, the app status. The old topic stays in aliases —
-  search by it keeps working; `[[Встречи/stamp]]` links never break, the
-  topic is not part of them. Without `--yes` the script prints a plan and
-  touches nothing.
+  the graph note heading, the app status. A main transcript that never got
+  a topic — including the second-precision one the pipeline never renamed —
+  receives it too: such meetings used to show up in the list as a date
+  instead of a topic. The old topic stays in aliases — search by it keeps
+  working; `[[Встречи/stamp]]` links never break, the topic is not part of
+  them. Without `--yes` the script prints a plan and touches nothing.
 
 - **Import folder (watched)** — point the app at a folder (Settings →
   Import, or `--scan` in the CLI): recordings dropped there become graph
