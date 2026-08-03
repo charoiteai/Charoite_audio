@@ -99,3 +99,27 @@ def test_configured_graph_honours_env(tmp_path, monkeypatch):
     import graphs
     monkeypatch.setenv("SUFLER_GRAPH_DIR", str(tmp_path))
     assert graphs.configured_graph() == tmp_path
+
+
+def test_apply_survives_cross_device_move(tmp_path, monkeypatch):
+    """Донор на другом томе: rename падает EXDEV, move обязан докопировать."""
+    import errno
+    import pathlib as pl
+
+    src = _graph(tmp_path, "Донор")
+    dst = _graph(tmp_path, "Приёмник")
+    (src / "Встречи" / "2026-08-01_1000.md").write_text("встреча", encoding="utf-8")
+
+    real_rename = pl.Path.rename
+
+    def exdev(self, target):  # noqa: ANN001 — сигнатура Path.rename
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    monkeypatch.setattr(pl.Path, "rename", exdev)
+    try:
+        mg.apply(src, dst, *mg.plan(src, dst))
+    finally:
+        monkeypatch.setattr(pl.Path, "rename", real_rename)
+
+    assert (dst / "Встречи" / "2026-08-01_1000.md").read_text(encoding="utf-8") == "встреча"
+    assert not (src / "Встречи" / "2026-08-01_1000.md").exists()

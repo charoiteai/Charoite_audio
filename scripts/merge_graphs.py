@@ -35,6 +35,7 @@ import argparse
 import datetime as dt
 import pathlib
 import re
+import shutil
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -98,7 +99,9 @@ def apply(src: pathlib.Path, dst: pathlib.Path,
     stamp = f"{dt.date.today():%Y-%m-%d}"
     for f, target in moves:
         target.parent.mkdir(parents=True, exist_ok=True)
-        f.rename(target)
+        # shutil.move, не Path.rename: донор бывает на другом томе (внешний
+        # диск, не-iCloud vault), а rename через границу ФС падает EXDEV.
+        shutil.move(str(f), str(target))
     for f, target in appends:
         body = strip_frontmatter(f.read_text(encoding="utf-8")).strip()
         target.write_text(
