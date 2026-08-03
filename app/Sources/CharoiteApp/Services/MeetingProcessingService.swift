@@ -516,6 +516,28 @@ final class MeetingProcessingService: ObservableObject {
         refresh()
     }
 
+    /// Переименовать встречу: скрипт разносит новую тему по всем местам —
+    /// transcripts/, архивная папка со ссылками, копии в Документации,
+    /// заголовок заметки графа, статус. Пять мест руками не обойти.
+    func rename(_ snapshot: MeetingProcessingSnapshot, to title: String) async -> Bool {
+        let cleaned = title.trimmingCharacters(in: .whitespaces)
+        guard !cleaned.isEmpty else { return false }
+        let cmd = MeetingRenameCommand.build(
+            root: AppSettings.charoiteRoot, meetingID: snapshot.meetingID, title: cleaned)
+        let ok: Bool = await withCheckedContinuation { cont in
+            let p = Process()
+            p.executableURL = cmd.exec
+            p.arguments = cmd.args
+            p.currentDirectoryURL = AppSettings.charoiteRoot
+            p.terminationHandler = { proc in
+                cont.resume(returning: proc.terminationStatus == 0)
+            }
+            do { try p.run() } catch { cont.resume(returning: false) }
+        }
+        if ok { refresh() }
+        return ok
+    }
+
     /// Процесс повтора завершился.
     ///
     /// Ненулевой код — сразу честная ошибка: ждать три минуты «а вдруг статус
