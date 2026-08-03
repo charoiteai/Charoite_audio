@@ -1472,7 +1472,19 @@ def main():
                  str(pathlib.Path(__file__).parent / "rebuild_transcript.py"), str(tr.path)],
                 start_new_session=True, stdout=glog, stderr=subprocess.STDOUT,
             )
-            emit({"type": "status", "text": "Финальная стенограмма и граф: фоном (~2-4 мин)"})
+            # Не константа «2-4 мин»: живые встречи считаются и по пять минут,
+            # и по двадцать — обещание расходилось с правдой в разы, и человек
+            # шёл искать поломку там, где всё шло нормально. Берём медиану
+            # прошлых обработок с этой самой машины; пока их мало — не обещаем.
+            typical = None
+            try:
+                typical = statuses.typical_duration()
+            except Exception:  # noqa: BLE001 — оценка не смеет мешать обработке
+                pass
+            how_long = (f"~{max(1, round(typical / 60))} мин" if typical
+                        else "обычно несколько минут")
+            emit({"type": "status",
+                  "text": f"Финальная стенограмма и граф: фоном ({how_long})"})
         except Exception as e:  # noqa: BLE001 — UI должен показать, что фон не стартовал
             try:
                 MeetingStatusStore(ROOT).failed(tr.path, f"не удалось запустить обработку: {e}")

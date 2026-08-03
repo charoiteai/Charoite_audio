@@ -48,6 +48,22 @@ LLM_TIMEOUT = 300
 EXIT_NO_SPEECH = 3
 
 
+# Куда докладывать о прогрессе. Ставится в main(), когда известна стенограмма:
+# graph_updater зовут и руками по произвольному файлу, и тогда статуса нет.
+_progress: tuple[object, pathlib.Path] | None = None
+
+
+def _report(part: int, parts: int) -> None:
+    """Сказать статусу, какая часть разбирается. Молча, если некому."""
+    if _progress is None:
+        return
+    store, transcript = _progress
+    try:
+        store.processing(transcript, "updating_graph", part=part, parts=parts)
+    except Exception as e:  # noqa: BLE001 — прогресс не смеет ронять разбор
+        print(f"граф: прогресс не записан ({type(e).__name__}: {e})")
+
+
 def known_graphs(graph: pathlib.Path) -> list[str]:
     """Графы, которые уже есть в vault, — соседние папки с `_MOC.md`."""
     try:
@@ -151,6 +167,9 @@ def _extract_long(cfg: dict, transcript: str, project_rule: str = "") -> dict | 
 
     merged: dict = {}
     for n, part in enumerate(parts, 1):
+        # Номер части — в статус: на длинной встрече эта стадия висит минутами
+        # и внешне ничем не отличается от зависшего процесса.
+        _report(n, len(parts))
         got = _extract(cfg, part, project_rule)
         if not got:
             print(f"граф: часть {n}/{len(parts)} не разобралась — продолжаю")
@@ -498,11 +517,17 @@ def rebuild_cores_moc(graph: pathlib.Path):
 
 
 def main():
+    global _progress
     cfg = load_cfg()
     tpath = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else latest_transcript()
     if not tpath or not tpath.exists():
         print("нет стенограммы")
         return
+    try:
+        from meeting_processing import MeetingStatusStore
+        _progress = (MeetingStatusStore(ROOT), tpath)
+    except Exception as e:  # noqa: BLE001 — без прогресса разбор всё равно идёт
+        print(f"граф: статус недоступен ({type(e).__name__}: {e})")
     graph_raw = os.environ.get("SUFLER_GRAPH_DIR") or cfg["sufler"].get("graph_dir", "")
     graph = pathlib.Path(graph_raw).expanduser()
     # проверять исходную строку: str(Path("")) == "." — пустой конфиг молча
