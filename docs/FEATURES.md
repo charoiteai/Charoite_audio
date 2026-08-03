@@ -320,6 +320,12 @@ it signals degradation, it does not break the loop.
   instead of a topic. The old topic stays in aliases — search by it keeps
   working; `[[Встречи/stamp]]` links never break, the topic is not part of
   them. Without `--yes` the script prints a plan and touches nothing.
+- **Prep screen** (menu bar → Today) — help BEFORE the meeting, not
+  after: the rest of today's calendar events (same opt-in access as the
+  recording cue), "previously on this topic" — three archive hits for the
+  next event's title (utility tails like "(weekly)" are trimmed), open
+  action items and the last meeting's card. Everything gathers in one
+  window a minute before the call, no tour across four windows.
 
 - **Import folder (watched)** — point the app at a folder (Settings →
   Import, or `--scan` in the CLI): recordings dropped there become graph
