@@ -38,8 +38,36 @@ enum Inbox {
     private static let audioExts: Set<String> = ["caf", "m4a"]
 
     static var queuedCount: Int {
-        (try? FileManager.default.contentsOfDirectory(at: outbox, includingPropertiesForKeys: nil))?
-            .filter { audioExts.contains($0.pathExtension) }.count ?? 0
+        queued.count
+    }
+
+    /// Записи, ждущие отправки, — новые первыми.
+    ///
+    /// Нужны не только счётчику: пока файл заперт внутри приложения, у человека
+    /// нет ни одного способа достать его руками, если iCloud молчит. Отсюда
+    /// кнопка «Поделиться» на экране и `UIFileSharingEnabled` в Info.plist.
+    static var queued: [URL] {
+        let fm = FileManager.default
+        let files = (try? fm.contentsOfDirectory(
+            at: outbox,
+            includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        return files
+            .filter { audioExts.contains($0.pathExtension) }
+            .sorted { a, b in
+                let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate ?? .distantPast
+                let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate ?? .distantPast
+                return da > db
+            }
+    }
+
+    /// Человеческий размер файла для подписи под кнопкой.
+    static func sizeText(_ url: URL) -> String {
+        let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        let f = ByteCountFormatter()
+        f.countStyle = .file
+        return f.string(fromByteCount: Int64(bytes))
     }
 
     /// Записи, пережившие смерть приложения: их никто не закрыл и не поставил
