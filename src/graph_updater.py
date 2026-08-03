@@ -44,6 +44,56 @@ CHUNK_OVERLAP = 1_000
 LLM_TIMEOUT = 300
 
 
+def known_graphs(graph: pathlib.Path) -> list[str]:
+    """Графы, которые уже есть в vault, — соседние папки с `_MOC.md`."""
+    try:
+        return sorted(p.name for p in graph.parent.iterdir()
+                      if p.is_dir() and (p / "_MOC.md").exists())
+    except OSError:
+        return []
+
+
+def _norm(name: str) -> str:
+    return re.sub(r"[\s_\-]+", "", name).casefold()
+
+
+def match_known(project: str, known: list[str]) -> str | None:
+    """Тот же граф, названный иначе.
+
+    Модель возвращает имя проекта свободным текстом, и «Проект Альфа»,
+    «Проект_Альфа», «проект-альфа» — это один и тот же граф. Без такого
+    сличения каждая вариация написания заводила бы соседнюю папку, и встречи
+    одного проекта расползались бы по вольту.
+    """
+    if not project:
+        return None
+    target = _norm(safe_name(project))
+    for name in known:
+        if _norm(name) == target:
+            return name
+    return None
+
+
+def _project_rule(known: list[str], default: str) -> str:
+    """Кусок промпта про выбор проекта.
+
+    Инструкции «не выдумывай новых проектов» было мало: модель не знала, какие
+    проекты существуют, и честно придумывала имя по содержанию разговора.
+    03.08 рабочая встреча про обновление инфраструктуры уехала в новый граф
+    «Linux 1.8» вместо рабочего — то есть ровно раскол, которого запрет и
+    пытался избежать. Запрет без списка — не правило, а пожелание.
+    """
+    if not known:
+        return ""
+    return ("\n\nСУЩЕСТВУЮЩИЕ ПРОЕКТЫ (поле «проект» бери ТОЧНО из этого списка): "
+            + ", ".join(known)
+            + f".\nРабочий проект по умолчанию: {default}. Любая рабочая встреча — "
+              "релизы, витрины, данные, инциденты, подрядчики, инфраструктура, "
+              "серверы, платформа — идёт в него, даже если обсуждали новую тему. "
+              "Новое имя проекта допустимо ТОЛЬКО для явно нерабочего разговора "
+              "(дом, здоровье, личные дела).")
+
+
 def _chat(cfg: dict, payload: dict, timeout: float = LLM_TIMEOUT):
     """POST /api/chat с одной попыткой поднять вставшую модель.
 
@@ -61,7 +111,7 @@ def _chat(cfg: dict, payload: dict, timeout: float = LLM_TIMEOUT):
         return requests.post(url, json=payload, timeout=timeout)
 
 
-def extract(cfg: dict, transcript: str) -> dict | None:
+def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     """LLM → JSON: сущности, связи, решения, темы.
 
     Длинная встреча разбирается по частям. Раньше здесь стоял transcript[:12000],
@@ -81,15 +131,15 @@ def extract(cfg: dict, transcript: str) -> dict | None:
         return None
     try:
         if len(transcript) <= CHUNK_CHARS:
-            return _extract(cfg, transcript)
-        return _extract_long(cfg, transcript)
+            return _extract(cfg, transcript, project_rule)
+        return _extract_long(cfg, transcript, project_rule)
     except requests.RequestException as e:
         print(f"граф: Ollama недоступна ({type(e).__name__}: {e}) — "
               f"встреча сохранена, граф не обновлён")
         return None
 
 
-def _extract_long(cfg: dict, transcript: str) -> dict | None:
+def _extract_long(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     """Разбор по частям со слиянием: длинная встреча целиком, а не её начало."""
     step = CHUNK_CHARS - CHUNK_OVERLAP
     parts = [transcript[i:i + CHUNK_CHARS] for i in range(0, len(transcript), step)]
@@ -97,7 +147,7 @@ def _extract_long(cfg: dict, transcript: str) -> dict | None:
 
     merged: dict = {}
     for n, part in enumerate(parts, 1):
-        got = _extract(cfg, part)
+        got = _extract(cfg, part, project_rule)
         if not got:
             print(f"граф: часть {n}/{len(parts)} не разобралась — продолжаю")
             continue
@@ -135,7 +185,7 @@ def _dedup(items: list) -> list:
     return out
 
 
-def _extract(cfg: dict, transcript: str) -> dict | None:
+def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     r = _chat(
         cfg,
         {
@@ -172,6 +222,7 @@ def _extract(cfg: dict, transcript: str) -> dict | None:
                     '"цитата":"её ДОСЛОВНЫЙ фрагмент, 5-15 слов, скопированный из стенограммы без изменений"}]}\n'
                     "Только то, что реально прозвучало. Имена людей — как звучали (владелец, Дмитрий…). "
                     "Пустые списки допустимы."
+                    + project_rule
                     # en/zh-режим: КЛЮЧИ JSON — контракт кода, не трогаем; на
                     # язык пользователя переводятся только ЗНАЧЕНИЯ полей —
                     # граф читается на его языке, парсер стабилен
@@ -463,7 +514,8 @@ def main():
         print("стенограмма слишком короткая — граф не трогаем")
         return
 
-    data = extract(cfg, transcript)
+    known = [] if os.environ.get("SUFLER_GRAPH_DIR") else known_graphs(graph)
+    data = extract(cfg, transcript, _project_rule(known, graph.name))
     if not data:
         print("LLM не вернула валидный JSON")
         return
@@ -473,13 +525,21 @@ def main():
     project = (data.get("проект") or "").strip()
     if not os.environ.get("SUFLER_GRAPH_DIR") and project and \
             safe_name(project).casefold() not in (graph.name.casefold(), "рабочий проект"):
-        graph = graph.parent / safe_name(project)
-        if not (graph / "_MOC.md").exists():
+        # Сначала ищем среди существующих: «Проект Альфа» и «Проект_Альфа» —
+        # один граф, и заводить второй из-за пробела значит расколоть проект.
+        matched = match_known(project, known)
+        graph = graph.parent / (matched or safe_name(project))
+        if matched:
+            print(f"граф проекта: {graph.name}")
+        elif not (graph / "_MOC.md").exists():
             for d in ("Встречи", "Люди", "Системы"):
                 (graph / d).mkdir(parents=True, exist_ok=True)
             (graph / "_MOC.md").write_text(
                 f"# {project} — MOC\n\n## 🗓 Встречи\n", encoding="utf-8")
-            print(f"новый граф проекта: {graph.name}")
+            # Отдельной строкой и словами: новый граф — редкое событие, и если
+            # он появился на рабочей встрече, это ошибка выбора, а не новая сфера.
+            print(f"новый граф проекта: {graph.name} "
+                  f"(известные были: {', '.join(known) or 'нет'})")
         else:
             print(f"граф проекта: {graph.name}")
 
