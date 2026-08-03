@@ -41,6 +41,33 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     @Published var level: Float = 0          // 0…1 для волны
     @Published var lastResult: String?       // статус доставки/очереди
 
+    /// Запись идёт, но в файл ничего не прибавляется.
+    ///
+    /// Ровно то, что стоило получаса встречи 03.08: старая сборка считала время
+    /// по стенным часам и не ловила прерывания, поэтому на экране бежали
+    /// тридцать минут, а в файле осталась сорок одна секунда. Часы с тех пор
+    /// честные (`r.currentTime`), но честные часы молчат: они просто перестают
+    /// расти, и человек, не глядя в них в упор, этого не замечает. Здесь —
+    /// явный флаг, чтобы экран мог сказать словами.
+    @Published private(set) var stalled = false
+
+    /// Последняя длительность, на которой файл ещё рос.
+    private var lastGrowth: (at: Date, seconds: TimeInterval)?
+
+    /// Сколько терпим неподвижное `currentTime`, прежде чем поднять тревогу.
+    /// Три секунды: короче — ложные срабатывания на дрожании таймера, длиннее —
+    /// человек успевает отвернуться.
+    nonisolated static let stallAfter: TimeInterval = 3
+
+    /// Пора ли объявлять запись вставшей: длительность файла не растёт дольше
+    /// порога. Вынесено отдельно, чтобы правило проверялось тестом, а не только
+    /// глазами на живой встрече.
+    nonisolated static func isStalled(fileSeconds: TimeInterval,
+                                      lastGrowthSeconds: TimeInterval,
+                                      sinceLastGrowth: TimeInterval) -> Bool {
+        fileSeconds <= lastGrowthSeconds && sinceLastGrowth > stallAfter
+    }
+
     private var recorder: AVAudioRecorder?
     private var timer: Timer?
     private var activity: Activity<RecordActivityAttributes>?
@@ -129,6 +156,8 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             recorder = r
             isRecording = true
             elapsed = 0
+            stalled = false
+            lastGrowth = nil
             lastResult = nil
             timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.tick() }
@@ -223,6 +252,8 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         timer?.invalidate()
         timer = nil
         isRecording = false
+        stalled = false
+        lastGrowth = nil
         level = 0
         let url = r.url
         recorder = nil
@@ -245,6 +276,35 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         r.updateMeters()
         // −60…0 дБ → 0…1
         level = max(0, min(1, (r.averagePower(forChannel: 0) + 60) / 60))
+        checkGrowth(r.currentTime)
+    }
+
+    /// Растёт ли файл. Сравниваем длительность с прошлым тиком: замерла — значит
+    /// запись стоит, что бы ни показывал индикатор и что бы ни думало приложение.
+    ///
+    /// Это ловит и то, о чём система нам не сообщила: прерывание без
+    /// уведомления, отнятый другим приложением вход, тихо умершую сессию.
+    private func checkGrowth(_ now: TimeInterval) {
+        guard let last = lastGrowth else {
+            lastGrowth = (Date(), now)
+            return
+        }
+        if now > last.seconds {
+            lastGrowth = (Date(), now)
+            if stalled {
+                stalled = false
+                lastResult = L.t("Запись продолжается", "Recording resumed", "录音已恢复")
+            }
+            return
+        }
+        guard !stalled,
+              Self.isStalled(fileSeconds: now,
+                             lastGrowthSeconds: last.seconds,
+                             sinceLastGrowth: Date().timeIntervalSince(last.at)) else { return }
+        stalled = true
+        lastResult = L.t("Запись остановилась — в файле \(Int(now)) с. Нажмите стоп и начните заново",
+                         "Recording stalled — \(Int(now))s in the file. Stop and start again",
+                         "录音已停止 — 文件中 \(Int(now)) 秒。请停止后重新开始")
     }
 
     nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {

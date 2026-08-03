@@ -47,12 +47,33 @@ struct RecordView: View {
 
             Spacer()
 
-            Text(rec.lastResult ?? "Стоп — и запись уедет на Mac через iCloud.\nДальше он сам: стенограмма, минутки, граф.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 28)
-                .padding(.bottom, 12)
+            // Тревога о вставшей записи — не мелким серым в общей строке:
+            // именно её человек должен увидеть, не вглядываясь в таймер.
+            if rec.stalled {
+                Label(rec.lastResult ?? "Запись остановилась", systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            } else {
+                Text(rec.lastResult ?? "Стоп — и запись уедет на Mac через iCloud.\nДальше он сам: стенограмма, минутки, граф.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 28)
+            }
+
+            // Запись можно забрать руками — не дожидаясь iCloud и не завися от
+            // него вовсе. 03.08 файл был единственным экземпляром получаса
+            // встречи, и достать его из приложения было нечем.
+            if !rec.isRecording, let last = Inbox.queued.first {
+                ShareLink(item: last) {
+                    Label("Поделиться записью · \(Inbox.sizeText(last))",
+                          systemImage: "square.and.arrow.up")
+                        .font(.footnote)
+                }
+                .padding(.bottom, 4)
+            }
         }
         .padding(.vertical)
         .navigationTitle("Запись")
