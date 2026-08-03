@@ -2,9 +2,18 @@ import SwiftUI
 
 /// Главный экран v1: одна большая кнопка. Всё остальное делает Mac.
 struct RecordView: View {
+    /// Что показываем поверх экрана. Одно состояние на все листы — иначе
+    /// SwiftUI показывает только последний из нескольких `.sheet`.
+    private enum Sheet: String, Identifiable {
+        case folder, queue
+        var id: String { rawValue }
+    }
+
     @StateObject private var rec = Recorder()
     @State private var kind: Recorder.Kind = .meeting
-    @State private var showPicker = false
+    @State private var sheet: Sheet?
+    @State private var queued = 0
+    @State private var stuckInQueue = 0
 
     var body: some View {
         VStack(spacing: 24) {
@@ -77,34 +86,70 @@ struct RecordView: View {
                 }
                 .padding(.bottom, 4)
             }
+
+            // Очередь — не серая строка, а вход. За числом «в очереди: 6»
+            // может стоять получасовая встреча недельной давности, про которую
+            // человек уверен, что она давно на Mac.
+            if !rec.isRecording, queued > 0 {
+                Button {
+                    sheet = .queue
+                } label: {
+                    Label(stuckInQueue > 0
+                          ? "В очереди \(queued) · \(stuckInQueue) ждёт дольше суток"
+                          : "В очереди записей: \(queued)",
+                          systemImage: stuckInQueue > 0
+                          ? "exclamationmark.triangle.fill" : "tray.full")
+                        .font(.footnote)
+                        .foregroundStyle(stuckInQueue > 0 ? .orange : Theme.accent)
+                }
+                .padding(.bottom, 6)
+            }
         }
         .padding(.vertical)
         .navigationTitle("Запись")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    showPicker = true
+                    sheet = .folder
                 } label: {
                     Image(systemName: Inbox.folderChosen ? "folder.badge.gearshape" : "folder.badge.questionmark")
                 }
                 .accessibilityLabel("Папка доставки")
             }
         }
-        .sheet(isPresented: $showPicker) {
-            FolderPicker { url in
-                do {
-                    try Inbox.saveFolder(url)
-                    rec.lastResult = "Папка выбрана: \(url.lastPathComponent)"
-                    Task { await Inbox.flush { msg in rec.lastResult = msg } }
-                } catch {
-                    rec.lastResult = "Не удалось запомнить папку: \(error.localizedDescription)"
+        // Один sheet на все листы: два `.sheet` на одном элементе SwiftUI не
+        // складывает — показывается только последний, и кнопка очереди молча
+        // ничего не делала.
+        .sheet(item: $sheet, onDismiss: refreshQueue) { which in
+            switch which {
+            case .folder:
+                FolderPicker { url in
+                    do {
+                        try Inbox.saveFolder(url)
+                        rec.lastResult = "Папка выбрана: \(url.lastPathComponent)"
+                        Task { await Inbox.flush { msg in rec.lastResult = msg } }
+                    } catch {
+                        rec.lastResult = "Не удалось запомнить папку: \(error.localizedDescription)"
+                    }
                 }
+            case .queue:
+                QueueView(rec: rec)
             }
         }
         .task {
             await Inbox.flush { msg in rec.lastResult = msg }
             rec.refreshLastRecording()
+            refreshQueue()
         }
+        .onChange(of: rec.lastRecording) { _, _ in refreshQueue() }
+    }
+
+    /// Пересчитать очередь: SwiftUI за файловой системой не следит, а число в
+    /// строке должно меняться сразу после стопа и после досылки.
+    private func refreshQueue() {
+        let items = Inbox.queuedItems
+        queued = items.count
+        stuckInQueue = items.filter { $0.isStuck() }.count
     }
 
     private func timeString(_ t: TimeInterval) -> String {

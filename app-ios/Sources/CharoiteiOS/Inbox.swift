@@ -62,6 +62,51 @@ enum Inbox {
         recordings(in: outbox)
     }
 
+    /// Одна запись в очереди — всё, что нужно показать человеку.
+    ///
+    /// Одной серой строкой «в очереди: 6» отделаться нельзя: за ней могут
+    /// стоять шесть свежих файлов, которые уедут через минуту, а могут —
+    /// получасовая встреча недельной давности, про которую человек уверен,
+    /// что она давно на Mac.
+    struct Item: Identifiable, Equatable {
+        let url: URL
+        let recorded: Date
+        let bytes: Int
+
+        var id: URL { url }
+        var name: String { Self.humanName(url) }
+        var size: String { sizeText(url) }
+
+        /// Сколько запись ждёт доставки.
+        func waiting(since now: Date = Date()) -> TimeInterval {
+            max(0, now.timeIntervalSince(recorded))
+        }
+
+        /// Ждёт дольше суток — знак, что доставка не работает, а не «сейчас уедет».
+        func isStuck(since now: Date = Date()) -> Bool {
+            waiting(since: now) > 24 * 3600
+        }
+
+        /// «Встреча», «Заметка», «Дневник» — по префиксу, который читает Mac.
+        static func humanName(_ url: URL) -> String {
+            let file = url.lastPathComponent
+            if file.hasPrefix("note_") { return L.t("Заметка", "Note", "笔记") }
+            if file.hasPrefix("diary_") { return L.t("Дневник", "Diary", "日记") }
+            return L.t("Встреча", "Meeting", "会议")
+        }
+    }
+
+    /// Очередь как список: что именно лежит, когда записано и сколько весит.
+    static var queuedItems: [Item] {
+        recordings(in: outbox).map { url in
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey,
+                                                           .fileSizeKey])
+            return Item(url: url,
+                        recorded: values?.contentModificationDate ?? .distantPast,
+                        bytes: values?.fileSize ?? 0)
+        }
+    }
+
     /// Последняя запись — из очереди или из уже отправленных.
     ///
     /// Пока файл заперт внутри приложения, у человека нет ни одного способа
@@ -94,9 +139,10 @@ enum Inbox {
     /// Человеческий размер файла для подписи под кнопкой.
     static func sizeText(_ url: URL) -> String {
         let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-        let f = ByteCountFormatter()
-        f.countStyle = .file
-        return f.string(fromByteCount: Int64(bytes))
+        // Единицы — на языке приложения: ByteCountFormatter берёт локаль
+        // устройства, и в русском интерфейсе выходило «106 KB» рядом с
+        // подписью «Поделиться записью».
+        return Int64(bytes).formatted(.byteCount(style: .file).locale(L.locale))
     }
 
     /// Записи, пережившие смерть приложения: их никто не закрыл и не поставил

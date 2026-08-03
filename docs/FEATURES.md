@@ -224,6 +224,11 @@ it signals degradation, it does not break the loop.
   and over the cable (`UIFileSharingEnabled`). The five most recent
   recordings stay on the phone after delivery: «iCloud accepted it» is
   not «the Mac got it».
+- **The queue is visible in full** — the «queued: 6» line opens a list:
+  what was recorded, when, how large, how long it has been waiting.
+  Anything older than a day is highlighted — normal delivery takes seconds,
+  so whatever hangs longer is no longer «about to leave». Re-send with one
+  button, or hand off any single recording from there.
 - **Stalled-recording watchdog** — if the file's duration stops growing
   for more than three seconds (an interruption, a stolen microphone), the
   screen says so in orange instead of running a timer over silence.

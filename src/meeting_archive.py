@@ -76,6 +76,21 @@ def _excluded(graph: pathlib.Path) -> set[str]:
     return set(re.findall(r"\d{4}-\d{2}-\d{2}_\d{4}", f.read_text(encoding="utf-8")))
 
 
+def _folders_for(graph: pathlib.Path, stamp: str) -> list[pathlib.Path]:
+    """Все папки архива, относящиеся к этой встрече, — свежие первыми.
+
+    Ищем по дате и времени в начале имени: тема в хвосте меняется, встреча —
+    нет. Свежие первыми, потому что при склейке дублей выживать должна та
+    папка, куда писали последней.
+    """
+    prefix = f"{stamp[:10]} {stamp[11:13]}-{stamp[13:15]} "
+    root = graph / ARCHIVE_DIR
+    if not root.exists():
+        return []
+    found = [d for d in root.iterdir() if d.is_dir() and d.name.startswith(prefix)]
+    return sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
 def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: str) -> pathlib.Path | None:
     """Собирает/обновляет папку встречи; возвращает её путь (None — исключена)."""
     if stamp in _excluded(graph):
@@ -90,6 +105,15 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
                    graph / ARCHIVE_DIR / f"{stamp[:10]} — {_safe(pretty)}"):
         if legacy.exists() and not folder.exists():
             legacy.rename(folder)   # старые форматы: тихо мигрируем при обновлении
+    # Тема встречи уточняется при повторных разборах, и папка называется по
+    # теме. Прежде это плодило вторую папку на ту же встречу: у 21 встречи из
+    # 62 в архиве оказалось по две — «Бюджет MVP» и «Бюджет и ресурсы MVP».
+    # Папка на встречу одна: старую переименовываем.
+    if not folder.exists():
+        for old in _folders_for(graph, stamp):
+            if old != folder:
+                old.rename(folder)
+                break
     folder.mkdir(parents=True, exist_ok=True)
     for f in sorted(tdir.glob(f"{stamp}*.md")):
         dest = "Стенограмма.md"

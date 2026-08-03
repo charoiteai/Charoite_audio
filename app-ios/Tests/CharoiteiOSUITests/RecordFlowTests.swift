@@ -56,3 +56,50 @@ final class RecordFlowTests: XCTestCase {
         add(a)
     }
 }
+
+/// Очередь недоставленных записей.
+///
+/// Раньше про неё говорила одна серая строка «в очереди: 6». За таким числом
+/// может стоять получасовая встреча недельной давности, про которую человек
+/// уверен, что она давно на Mac.
+final class QueueFlowTests: XCTestCase {
+    func testQueueOpensFromTheRecordScreen() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let entry = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS[c] 'очеред'")).firstMatch
+        guard entry.waitForExistence(timeout: 5) else {
+            throw XCTSkip("очередь пуста — открывать нечего")
+        }
+        entry.tap()
+
+        XCTAssertTrue(app.navigationBars["Очередь"].waitForExistence(timeout: 5),
+                      "строка очереди обязана открывать список, а не быть подписью")
+        XCTAssertTrue(app.buttons["Отправить"].exists, "досылка руками — главное действие экрана")
+    }
+
+    func testDatesSpeakTheSameLanguageAsTheRestOfTheScreen() throws {
+        // Подписи берутся из L.t, а даты — из системного форматтера: под
+        // заголовком «Заметка» выходило «July 28».
+        let app = XCUIApplication()
+        app.launch()
+
+        let entry = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS[c] 'очеред'")).firstMatch
+        guard entry.waitForExistence(timeout: 5) else {
+            throw XCTSkip("очередь пуста — дат не будет")
+        }
+        entry.tap()
+        XCTAssertTrue(app.navigationBars["Очередь"].waitForExistence(timeout: 5))
+
+        let latinMonths = ["January", "February", "March", "April", "May", "June", "July",
+                           "August", "September", "October", "November", "December"]
+        for cell in app.staticTexts.allElementsBoundByIndex {
+            let label = cell.label
+            for month in latinMonths where label.contains(month) {
+                XCTFail("дата на чужом языке: \(label)")
+            }
+        }
+    }
+}
