@@ -101,21 +101,22 @@ struct MenuBarView: View {
                 .disabled(quick.trimmingCharacters(in: .whitespaces).isEmpty)
             }
 
-            HStack(spacing: 14) {
-                Button {
+            // Столбиком, а не в ряд: три подписи с сочетаниями не влезали в
+            // 300 точек ширины и обрезались до «Диктовка ⌥…» — то есть именно
+            // та часть, ради которой подпись и написана, пропадала. Сочетание
+            // теперь стоит справа отдельной колонкой, как в системных меню.
+            VStack(spacing: 6) {
+                shortcutRow(L.t("Диктовка", "Dictation", "听写"), "⌥⌘D",
+                            icon: dictation.isRecording ? "mic.fill" : "mic") {
                     DictationService.shared.toggle()
-                } label: {
-                    Label(L.t("Диктовка ⌥⌘D", "Dictation ⌥⌘D", "听写 ⌥⌘D"), systemImage: dictation.isRecording ? "mic.fill" : "mic")
                 }
-                Button {
+                shortcutRow(L.t("Заметка", "Voice note", "语音笔记"), "⌥⌘N",
+                            icon: "note.text.badge.plus") {
                     DictationService.shared.toggleNote()
-                } label: {
-                    Label(L.t("Заметка ⌥⌘N", "Voice note ⌥⌘N", "语音笔记 ⌥⌘N"), systemImage: "note.text.badge.plus")
                 }
-                Button {
+                shortcutRow(L.t("Дневник", "Diary", "日记"), "⌥⌘J",
+                            icon: "book.closed") {
                     DictationService.shared.toggleDiary()
-                } label: {
-                    Label(L.t("Дневник ⌥⌘J", "Diary ⌥⌘J", "日记 ⌥⌘J"), systemImage: "book.closed")
                 }
             }
             .buttonStyle(.plain)
@@ -145,6 +146,25 @@ struct MenuBarView: View {
         }
         .padding(14)
         .frame(width: 300)
+    }
+
+    /// Строка действия с сочетанием клавиш справа.
+    ///
+    /// Сочетание — не украшение подписи: пока оно стояло внутри текста, при
+    /// нехватке ширины система резала именно его.
+    private func shortcutRow(_ title: String, _ key: String, icon: String,
+                             action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Label(title, systemImage: icon)
+                Spacer(minLength: 8)
+                Text(key)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .layoutPriority(1)     // подпись ужимается раньше сочетания
+            }
+            .contentShape(Rectangle())     // кликается вся строка, не только текст
+        }
     }
 
     /// Ollama доступна? Одна лёгкая проверка при открытии меню.

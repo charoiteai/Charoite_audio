@@ -34,6 +34,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import privacy  # noqa: E402
 from diarize import diarize  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
 from main import NOISE, Transcript  # noqa: E402
+from graph_updater import EXIT_NO_SPEECH  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
 from stt import STT  # noqa: E402
 
@@ -461,6 +462,12 @@ def main():
             [sys.executable, str(pathlib.Path(__file__).parent / "graph_updater.py"), str(live)],
             check=False,
         )
+        if result.returncode == EXIT_NO_SPEECH:
+            # Тишину повторять бессмысленно: статус честно говорит, что речи
+            # в записи нет, и подбор незавершённых сюда больше не вернётся.
+            log("в записи нет речи — граф не трогаем")
+            publish(status.no_speech, live)
+            return
         if result.returncode:
             raise RuntimeError(f"graph_updater завершился с кодом {result.returncode}")
         note = find_meeting_note(cfg, live, newer_than=pipeline_started - 2)

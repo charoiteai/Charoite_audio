@@ -10,7 +10,10 @@ struct RecordView: View {
         VStack(spacing: 24) {
             Picker("Тип записи", selection: $kind) {
                 ForEach(Recorder.Kind.allCases) { k in
-                    Text(k.rawValue).tag(k)
+                    // Именно title: rawValue — технический идентификатор, он
+                    // уходит в имя файла и Live Activity. На экране он давал
+                    // «meeting | note | diary» посреди русского интерфейса.
+                    Text(k.title).tag(k)
                 }
             }
             .pickerStyle(.segmented)

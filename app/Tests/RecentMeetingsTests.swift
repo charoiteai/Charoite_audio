@@ -84,4 +84,67 @@ final class RecentMeetingsTests: XCTestCase {
         XCTAssertFalse(raw.title.contains("2026-07-31_1415"),
                        "штамп файла — не имя для человека")
     }
+
+    func testStampWithSecondsIsNotMistakenForATitle() {
+        // Живая запись даёт имя с секундами: 2026-08-03_113012.md. Заголовок
+        // резал ровно 15 символов штампа — и от «…113012» оставалось «12».
+        // В окне «Последние встречи» сегодняшняя встреча так и называлась:
+        // числом. Поймано глазами, а не тестом: все прежние примеры были без
+        // секунд.
+        let live = snapshot(id: "m", started: 1,
+                            transcript: "/transcripts/2026-08-03_113012.md")
+
+        XCTAssertNotEqual(live.title, "12")
+        XCTAssertFalse(live.title.allSatisfy(\.isNumber),
+                       "имя встречи не может быть голым числом")
+    }
+
+    func testSecondsAreStrippedFromANamedMeetingToo() {
+        let named = snapshot(id: "m", started: 1,
+                             transcript: "/transcripts/2026-08-03_113012_План_релиза.md")
+        XCTAssertEqual(named.title, "План релиза")
+    }
+
+    func testTitleStartingWithDigitsSurvives() {
+        // «2026-07-31_1415_2026_год_планы» — после штампа идёт число, но это
+        // уже часть темы: срезать две цифры можно только у секунд штампа.
+        let named = snapshot(id: "m", started: 1,
+                             transcript: "/transcripts/2026-07-31_1415_2026_год_планы.md")
+        XCTAssertEqual(named.title, "2026 год планы")
+    }
+}
+
+/// Состояния приходят из Python, и список у него длиннее, чем у нас.
+final class MeetingStateDecodingTests: XCTestCase {
+    private func decode(_ state: String) throws -> MeetingProcessingSnapshot {
+        let json = """
+        {"schema_version":1,"meeting_id":"m","state":"\(state)","stage":"s",
+         "started_at":1,"updated_at":2,"transcript_path":"/t/2026-08-03_0844.md"}
+        """
+        return try JSONDecoder().decode(MeetingProcessingSnapshot.self,
+                                        from: Data(json.utf8))
+    }
+
+    func testKnownStatesDecode() throws {
+        XCTAssertEqual(try decode("ready").state, .ready)
+        XCTAssertEqual(try decode("processing").state, .processing)
+        XCTAssertEqual(try decode("error").state, .error)
+    }
+
+    func testRecordingWithoutSpeechIsItsOwnState() throws {
+        // «в записи нет речи» — результат, а не авария: строгий разбор ошибки
+        // и пустой записи в одно состояние заставлял человека искать поломку
+        // там, где её нет
+        XCTAssertEqual(try decode("empty").state, .empty)
+    }
+
+    func testStateFromANewerPipelineDoesNotDropTheMeeting() throws {
+        // Строгий enum ронял разбор всего снимка, и встреча просто исчезала
+        // из окна: совместимая правка на стороне Python превращалась в потерю
+        // данных у того, кто ещё не обновил приложение.
+        let snapshot = try decode("quarantined_by_a_future_version")
+
+        XCTAssertEqual(snapshot.state, .unknown)
+        XCTAssertEqual(snapshot.meetingID, "m", "остальные поля должны уцелеть")
+    }
 }

@@ -272,6 +272,13 @@ struct FolderPicker: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
         let p = UIDocumentPickerViewController(forOpeningContentTypes: [.folder])
         p.delegate = context.coordinator
+        // Открываемся сразу в iCloud Drive. По умолчанию пикер показывает
+        // «Недавние», а у нового пользователя там пусто: первый экран настройки
+        // выглядит как пустой список, и до нужной папки надо ещё догадаться
+        // дойти через «Обзор».
+        p.directoryURL = FileManager.default
+            .url(forUbiquityContainerIdentifier: nil)?
+            .deletingLastPathComponent()
         return p
     }
 
