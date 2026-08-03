@@ -10,6 +10,9 @@ import SwiftUI
 /// лежали на диске две недели: не хватало окна, чтобы на них посмотреть.
 struct RecentMeetingsView: View {
     @ObservedObject private var processing = MeetingProcessingService.shared
+    /// Встреча, открытая карточкой. Snapshot Identifiable по meetingID —
+    /// sheet(item:) сам закрывается и открывается при переключении строк.
+    @State private var cardMeeting: MeetingProcessingSnapshot?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -46,6 +49,9 @@ struct RecentMeetingsView: View {
             }
         }
         .frame(minWidth: 460, minHeight: 320)
+        .sheet(item: $cardMeeting) { meeting in
+            MeetingCardView(meeting: meeting)
+        }
     }
 
     @ViewBuilder
@@ -54,9 +60,30 @@ struct RecentMeetingsView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Circle().fill(color(state)).frame(width: 7, height: 7)
-                Text(meeting.title)
-                    .font(.body.weight(.medium))
-                    .lineLimit(1)
+                if state == .ready {
+                    // Готовая встреча открывается карточкой: результат виден в
+                    // приложении, а не «идите разбираться с файлом».
+                    Button {
+                        cardMeeting = meeting
+                    } label: {
+                        HStack(spacing: 5) {
+                            Text(meeting.title)
+                                .font(.body.weight(.medium))
+                                .lineLimit(1)
+                            Image(systemName: "chevron.right")
+                                .font(.caption2).foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(L.t("Карточка встречи: суть, решения, поручения",
+                              "Meeting card: gist, decisions, action items",
+                              "会议卡片：要点、决定、任务"))
+                } else {
+                    Text(meeting.title)
+                        .font(.body.weight(.medium))
+                        .lineLimit(1)
+                }
                 Spacer(minLength: 8)
                 Text(when(meeting.startedDate))
                     .font(.caption).foregroundStyle(.secondary)

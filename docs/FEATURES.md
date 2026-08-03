@@ -290,6 +290,22 @@ it signals degradation, it does not break the loop.
   concerned with someone else's retry. The menu-bar button is visible even
   with an empty history — the window explains its own emptiness; and it is
   called "Recent", not "All": the full archive lives in the archive folder.
+- **The meeting card** — a ready meeting opens on click: topic, date,
+  duration (from transcript timecodes), participants, the one-line gist,
+  decisions and action items from the Summary. "Copy" puts the summary,
+  the tasks, or everything into the clipboard — into a mail without
+  opening a single file. "Open", "Transcript" and "Obsidian" buttons are
+  right there. "Meeting ready" no longer means "go figure out a markdown
+  file".
+- **Renaming a meeting** — the pencil in the card, or
+  `scripts/rename_meeting.py <stamp> "New topic"`. The topic is invented
+  by the model and is sometimes off; changing it by hand meant visiting
+  five places. The script carries the new topic everywhere: transcripts/,
+  the archive folder (and links inside it), the copies in Documentation,
+  the graph note heading, the app status. The old topic stays in aliases —
+  search by it keeps working; `[[Встречи/stamp]]` links never break, the
+  topic is not part of them. Without `--yes` the script prints a plan and
+  touches nothing.
 
 - **Import folder (watched)** — point the app at a folder (Settings →
   Import, or `--scan` in the CLI): recordings dropped there become graph

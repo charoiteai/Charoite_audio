@@ -8,6 +8,10 @@ import Foundation
 enum L {
     static let lang = AppSettings.uiLanguage
 
+    /// Локаль для дат и чисел — от языка продукта, не от системы: под
+    /// русским заголовком системный форматтер писал бы «August 3».
+    static var locale: Locale { Locale(identifier: lang) }
+
     static func t(_ ru: String, _ en: String, _ zh: String) -> String {
         switch lang {
         case "en": return en
