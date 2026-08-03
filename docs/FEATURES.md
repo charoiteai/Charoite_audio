@@ -230,7 +230,11 @@ it signals degradation, it does not break the loop.
   heading with a counter — a thread is for reading, not scrolling. A restated
   thought is dropped by code: both character similarity and overlap of
   meaningful words are checked. The model is called by how much talk piled up,
-  not by the clock: silence in the room produces no new lines.
+  not by the clock: silence in the room produces no new lines. `⌘⇧E` (the ⏮
+  toolbar button) expands the current topic from the archive: a graph search
+  turns into 2-3 facts from past meetings (decision, status, who owns it)
+  appended as ⏮ lines right into the topic that was asked about — the hint
+  pane stays free, so a hint can be requested in parallel.
 - **The hint follows the thread** instead of answering for you: current
   topic → who said what → **why** this is being discussed → **what
   happened before** on this topic in the archive (with a date) → what is

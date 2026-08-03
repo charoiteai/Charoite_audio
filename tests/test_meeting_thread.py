@@ -172,3 +172,37 @@ def test_short_lines_are_not_merged_by_word_overlap():
     added = t.ingest(f"{SAY} поток встал")
 
     assert added == 1
+
+
+# --- ⏮ разбор темы по клавише -------------------------------------------------
+
+def test_expand_writes_into_named_topic_not_tail():
+    """Архивные строки идут в ту тему, по которой спросили, а не в хвост нити."""
+    t = Thread()
+    t.ingest(f"{TOPIC} Обновление ОС\n{SAY} обсуждают сроки", at="10:00")
+    t.ingest(f"{TOPIC} Бюджет\n{SAY} считают смету", at="10:20")
+    added = t.add_archive("Обновление ОС", ["30.07: решили катить волнами"])
+    assert added == 1
+    rendered = t.full()
+    os_block = rendered.split(f"{TOPIC} Бюджет")[0]
+    assert f"{ARCHIVE} 30.07: решили катить волнами" in os_block
+
+
+def test_expand_opens_topic_when_thread_lacks_it():
+    """Просьба «что было по X» сама делает X темой разговора."""
+    t = Thread()
+    added = t.add_archive("Платёжный провайдер", ["17.07: выбрали YuPay"])
+    assert added == 1
+    assert t.last_topic_title == "Платёжный провайдер"
+
+
+def test_expand_deduplicates_known_lines():
+    t = Thread()
+    t.ingest(f"{TOPIC} Обновление ОС\n{ARCHIVE} 30.07: мяч у отдела, дата не назначена")
+    added = t.add_archive("Обновление ОС",
+                          ["30.07: мяч у отдела, дата не назначена", "и новый факт про волны"])
+    assert added == 1
+
+
+def test_last_topic_title_on_empty_thread_is_blank():
+    assert Thread().last_topic_title == ""

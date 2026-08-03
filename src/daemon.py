@@ -2,7 +2,7 @@
 
 События:  {"type":"status","text":...} | {"type":"transcript","ts":"HH:MM:SS","text":...}
           {"type":"thesis","text":...}  | {"type":"hint","text":...} | {"type":"hint_done"}
-Команды (stdin, по строке): hint | summary | stop
+Команды (stdin, по строке): hint | summary | expand [тема] | stop
 """
 from __future__ import annotations
 
@@ -703,6 +703,52 @@ def main():
             except Exception as e:  # noqa: BLE001 — поток не должен умирать молча
                 emit({"type": "status", "text": f"нить встречи сорвалась: {e}"})
 
+    def expand_topic(title: str = ""):
+        """⏮ по клавише: что было по теме раньше — из графа прямо в нить.
+
+        Живой контекст подтягивает архив в системный промпт молча. Здесь
+        наоборот: человек явно просит хвосты по теме, и ответ дописывается в
+        нить строками ⏮ — туда, где он его ждёт, а не в отдельное окно.
+        Без названия разбирается текущая (последняя) тема нити.
+        """
+        title = title.strip() or thread.last_topic_title
+        if not title:
+            emit({"type": "status", "text": "⏮ нить пуста — разбирать нечего"})
+            return
+        try:
+            import requests as _rq
+            _folder = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser().name
+            v = _rq.post("http://127.0.0.1:8100/vault_search",
+                         json={"query": title, "limit": 3, "folder": _folder,
+                               "snippet_chars": 700}, timeout=8).json().get("text", "")
+        except Exception:  # noqa: BLE001 — brain лежит: честный статус, не тишина
+            emit({"type": "status", "text": "⏮ архив недоступен (brain не отвечает)"})
+            return
+        if not v or v.startswith("⚠") or "не найдено" in v.lower():
+            emit({"type": "status", "text": f"⏮ в архиве по «{title}» пусто"})
+            return
+        try:
+            with hint_lock:   # не толкаться с подсказкой на одной модели
+                out = "".join(llm.stream(
+                    f"Выдержки из архива прошлых встреч по теме «{title}»:\n\n{v}\n\n"
+                    "Выпиши 2-3 самых важных факта прошлых встреч по этой теме: "
+                    "решение, статус, кто ведёт — с датой, если она видна. "
+                    "По строке на факт, без вступлений и нумерации.",
+                    model=llm.small,
+                    system="Ты сжимаешь архив встреч в короткие факты. "
+                           "Отвечай только строками фактов."))
+        except Exception as e:  # noqa: BLE001
+            emit({"type": "status", "text": f"⏮ разбор сорвался: {e}"})
+            return
+        lines = [ln.strip(" -•*\t") for ln in out.splitlines() if ln.strip(" -•*\t")][:3]
+        added = thread.add_archive(title, lines)
+        if added:
+            emit({"type": "thread", "text": thread.render()})
+            append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ⏮ {title}",
+                        thread.full())
+        else:
+            emit({"type": "status", "text": f"⏮ по «{title}» нового не нашлось"})
+
     def auto_hint_loop():
         """Подсказки в реальном времени: сами, по мере накопления разговора."""
         seen = 0
@@ -1397,6 +1443,10 @@ def main():
                     threading.Thread(target=gen_answer, args=(q,), daemon=True).start()
             elif cmd == "cloud":
                 cloud_evt.set()  # ручной запрос облачного ответа
+            elif cmd == "expand" or cmd.startswith("expand "):
+                # ⏮: разбор темы нити по графу; без аргумента — текущая тема
+                t = raw.strip()[7:].strip() if cmd.startswith("expand ") else ""
+                threading.Thread(target=expand_topic, args=(t,), daemon=True).start()
             elif cmd == "summary":
                 threading.Thread(target=_do_summary, daemon=True).start()
             elif cmd.startswith("set "):

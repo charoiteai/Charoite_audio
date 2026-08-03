@@ -659,6 +659,12 @@ struct SuflerView: View {
                           ? L.t("Спросить Claude по ходу встречи — кусок стенограммы уйдёт в облако (⌘⇧⏎)", "Ask Claude mid-meeting — a transcript slice goes to the cloud (⌘⇧⏎)", "会议中问 Claude — 一段逐字稿将发送至云端（⌘⇧⏎）")
                           : L.t("Облако выключено: включите «Claude» в тулбаре. Стенограмма не покидает машину", "Cloud is off: enable “Claude” in the toolbar. The transcript never leaves this machine", "云端已关闭：在工具栏开启「Claude」。逐字稿不会离开本机"))
 
+                Button("⏮") { sufler.requestExpand() }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+                    .help(L.t("Что было по текущей теме на прошлых встречах — из архива в нить (⌘⇧E)",
+                              "What past meetings said on the current topic — from the archive into the thread (⌘⇧E)",
+                              "过往会议对当前话题的讨论——从档案写入脉络（⌘⇧E）"))
+
                 Button(L.t("Протокол", "Minutes", "纪要")) { sufler.requestSummary() }
                     .disabled(sufler.isHinting)
                     .help(L.t("Собрать протокол встречи прямо сейчас", "Build the meeting minutes right now", "立即生成会议纪要"))

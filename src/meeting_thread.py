@@ -169,6 +169,32 @@ class Thread:
                 added += 1 if self.add(KINDS[mark], rest, at) else 0
         return added
 
+    def add_archive(self, topic_title: str, lines: list[str]) -> int:
+        """Строки «что было раньше» (⏮) — в названную тему, не в хвост нити.
+
+        Разбор просят по конкретной теме; если модель успела открыть новую,
+        дописывать архив в неё значило бы приклеить прошлое чужой темы.
+        Темы нет в нити — открываем её: просьба «что было по X» сама по себе
+        делает X темой разговора. Дедуп тот же, что у обычных строк.
+        """
+        topic_title = topic_title.strip()
+        topic = next((t for t in reversed(self.topics)
+                      if _same_title(t.title, topic_title)), None)
+        if topic is None:
+            topic = self.open_topic(topic_title or "Разговор")
+        added = 0
+        for text in lines:
+            text = text.strip()
+            if not text or self.knows(text):
+                continue
+            topic.lines.append(Line(kind="archive", text=text))
+            added += 1
+        return added
+
+    @property
+    def last_topic_title(self) -> str:
+        return self.topics[-1].title if self.topics else ""
+
     def as_context(self, topics: int = 2) -> str:
         """Что показать модели как «уже собрано».
 
