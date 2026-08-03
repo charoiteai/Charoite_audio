@@ -11,12 +11,12 @@ merging happens in memory during a single recording and is discarded.
 
 ## Near
 
-- **Full English and Chinese faces** — the engine speaks all three
+- **Full English and Chinese faces** — the engine and macOS UI speak all three
   (Parakeet/Whisper STT, `language: en|zh` documents, graph content, hints
   and minutes; Qwen is native in Chinese; `config.example.{en,zh}.yaml`;
   README ×3 and translated docs as front doors). What's left is the last
-  mile: app UI localization (string catalogs for macOS and iOS) and
-  per-language screenshots for the READMEs.
+  mile: consistent non-Russian summary/card section parsing, iOS string
+  catalogs and per-language screenshots for the READMEs.
 - **Chinese SOTA STT backend** — SenseVoice/Paraformer (FunASR) via
   sherpa-onnx as a `stt.backend` option: noticeably lower CER on Chinese
   than Whisper, same local-only story as GigaAM for Russian.
@@ -55,9 +55,13 @@ merging happens in memory during a single recording and is discarded.
 - **App Store release** — after the meetings feed makes v1 feel complete
   (TestFlight first).
 - **Packaged graph viewer** — browse the meeting graph without Obsidian.
-- **Streaming archive answers** — tokens as they generate, not one blob.
-
 ## Done (recent)
+
+- macOS meeting lifecycle in the UI: recording timer and menu-bar state,
+  honest post-processing stages, retry without duplicate runs, a 14-day
+  recent-meetings list and an in-app result card with copy and coherent rename
+  actions (August 2026)
+- Streaming archive answers with persisted question history (August 2026)
 
 - Topic dossiers: nightly summaries built on top of cores, incremental
   rebuild by source fingerprint, an index the search consults first, and an

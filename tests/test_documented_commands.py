@@ -35,6 +35,9 @@ _CMD = re.compile(r"(?P<runner>\.venv/bin/python|python3?)\s+(?P<script>(?:src|s
 # Документация для пользователя: её читают до того, как разберутся в устройстве.
 USER_DOCS = ("README.md", "docs/ru/README.md", "docs/zh/README.md",
              "docs/SETUP.md", "docs/ru/SETUP.md", "docs/zh/SETUP.md",
+             "docs/USER_GUIDE.md", "docs/ru/USER_GUIDE.md",
+             "docs/DATA_AND_RECOVERY.md", "docs/ru/DATA_AND_RECOVERY.md",
+             "docs/zh/USER_GUIDE.md", "docs/zh/DATA_AND_RECOVERY.md",
              "demo/README.md", "docs/ru/demo/README.md", "docs/zh/demo/README.md")
 
 _LOCAL = {p.stem for p in (REPO / "src").glob("*.py")} | \

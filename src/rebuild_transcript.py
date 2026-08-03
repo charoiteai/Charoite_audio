@@ -27,10 +27,15 @@ import sys
 import time
 import wave
 
-import numpy as np
-import yaml
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+import deps  # noqa: E402
 
-sys.path.insert(0, str(pathlib.Path(__file__).parent))
+deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
+
+import numpy as np  # noqa: E402
+import yaml  # noqa: E402
+
 import privacy  # noqa: E402
 from diarize import diarize  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
 from main import NOISE, Transcript  # noqa: E402
@@ -38,7 +43,6 @@ from graph_updater import EXIT_NO_SPEECH  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
 from stt import STT  # noqa: E402
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
 SEG_S, OVERLAP_S = 25.0, 1.0
 WAIT_WAV_S = 45  # демон финализирует .wav параллельно нашему старту
 
