@@ -82,6 +82,8 @@ incrementally as the graph changes (stored in
 
 `python3 scripts/doctor.py` checks Python, dependencies, config keys, the graph folder, Ollama and its models (incl. `bge-m3`), and diarization — with an exact fix for every problem.
 
+The second half of the report is about running, not installing: whether the model answers a **generation** probe (a stalled Ollama returns its model list instantly while inference sits still — that difference is the only way to tell them apart), whether any meetings got stuck on the way to the graph, how many files wait in the import folder, and how much disk is left. Any "Charoite is silent" starts here.
+
 The doctor is the one script that runs under any Python: it is written without
 dependencies so that it can answer *before* they are installed. Everything else
 runs via `.venv/bin/python` — and if you start it with the system Python, the
