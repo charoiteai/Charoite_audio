@@ -156,6 +156,15 @@ on the clipboard, `--out` writes a file. The raw transcript never enters the
 protocol under any flag: mailing participants a verbatim recording of the
 conversation is worse than mailing nothing.
 
+**One meeting, one folder** (`scripts/dedup_archive.py`) — a meeting's topic
+gets refined on re-runs, and the archive folder is named after the topic. While
+archiving could not rename, every refinement created a second folder for the same
+meeting: by Aug 3 that had happened to 21 meetings out of 62. The cause is fixed
+in `meeting_archive` (the folder is renamed now); this script cleans up what piled
+up: the folder matching the current topic in the graph stays, files from the extras
+move into it, and the extras themselves go to `Встречи-архив/_дубли`. Without
+`--apply` it only prints the plan — nothing is ever deleted.
+
 **Forget a meeting** (`scripts/forget_meeting.py <date|stamp>`) — the other
 side of recording: removes the meeting from all six places it lives — the
 transcript and its derivatives, the folder under «Встречи-архив», the
