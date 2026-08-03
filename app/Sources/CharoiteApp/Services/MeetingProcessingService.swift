@@ -176,6 +176,13 @@ extension MeetingProcessingSnapshot {
             .deletingPathExtension().lastPathComponent
         let stamp = String(stem.prefix(15))
         var rest = String(stem.dropFirst(15))
+        // Штамп бывает и с секундами: живая запись даёт «2026-08-03_113012»,
+        // а graph_updater переименовывает её в «2026-08-03_1130_Тема». Резать
+        // ровно 15 символов нельзя — от «…113012» оставалось «12», и в списке
+        // сегодняшняя встреча называлась числом.
+        if rest.count >= 2, rest.prefix(2).allSatisfy(\.isNumber) {
+            rest.removeFirst(2)
+        }
         while rest.first == "_" || rest.first == " " { rest.removeFirst() }
         for suffix in ["_minutes", "_hints", "_live", "_debrief"] where rest.hasSuffix(suffix) {
             rest.removeLast(suffix.count)

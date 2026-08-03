@@ -4,14 +4,23 @@ import SwiftUI
 /// Отметка пишется прямо в markdown-файл графа — один источник истины.
 struct GraphTasksView: View {
     @ObservedObject var store = GraphStore.shared
+    @State private var showPicker = false
 
     var body: some View {
         Group {
             if !store.folderChosen {
-                ContentUnavailableView(
-                    "Сначала папка графа",
-                    systemImage: "checklist",
-                    description: Text("Выберите папку на вкладке «Встречи» — задачи придут из тех же файлов."))
+                // Кнопка прямо здесь, а не отсылка на соседнюю вкладку: папка
+                // у задач и встреч одна, и гонять человека за ней в другое
+                // место — лишний шаг ровно в момент первого запуска.
+                ContentUnavailableView {
+                    Label("Сначала папка графа", systemImage: "checklist")
+                } description: {
+                    Text("Укажите папку вашего графа в Файлах (iCloud Drive → Obsidian) — задачи придут из тех же файлов, что и встречи.")
+                } actions: {
+                    Button("Выбрать папку") { showPicker = true }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.accent)
+                }
             } else if store.tasks.isEmpty {
                 ContentUnavailableView(
                     "Задач нет",
@@ -44,6 +53,16 @@ struct GraphTasksView: View {
             }
         }
         .navigationTitle(store.openCount > 0 ? "Задачи · \(store.openCount)" : "Задачи")
+        .sheet(isPresented: $showPicker) {
+            FolderPicker { url in
+                do {
+                    try store.saveFolder(url)
+                    store.rescanTasks()
+                } catch {
+                    store.status = "Не удалось запомнить папку: \(error.localizedDescription)"
+                }
+            }
+        }
         .task { store.rescanTasks() }
     }
 }

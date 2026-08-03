@@ -84,4 +84,32 @@ final class RecentMeetingsTests: XCTestCase {
         XCTAssertFalse(raw.title.contains("2026-07-31_1415"),
                        "штамп файла — не имя для человека")
     }
+
+    func testStampWithSecondsIsNotMistakenForATitle() {
+        // Живая запись даёт имя с секундами: 2026-08-03_113012.md. Заголовок
+        // резал ровно 15 символов штампа — и от «…113012» оставалось «12».
+        // В окне «Последние встречи» сегодняшняя встреча так и называлась:
+        // числом. Поймано глазами, а не тестом: все прежние примеры были без
+        // секунд.
+        let live = snapshot(id: "m", started: 1,
+                            transcript: "/transcripts/2026-08-03_113012.md")
+
+        XCTAssertNotEqual(live.title, "12")
+        XCTAssertFalse(live.title.allSatisfy(\.isNumber),
+                       "имя встречи не может быть голым числом")
+    }
+
+    func testSecondsAreStrippedFromANamedMeetingToo() {
+        let named = snapshot(id: "m", started: 1,
+                             transcript: "/transcripts/2026-08-03_113012_План_релиза.md")
+        XCTAssertEqual(named.title, "План релиза")
+    }
+
+    func testTitleStartingWithDigitsSurvives() {
+        // «2026-07-31_1415_2026_год_планы» — после штампа идёт число, но это
+        // уже часть темы: срезать две цифры можно только у секунд штампа.
+        let named = snapshot(id: "m", started: 1,
+                             transcript: "/transcripts/2026-07-31_1415_2026_год_планы.md")
+        XCTAssertEqual(named.title, "2026 год планы")
+    }
 }
