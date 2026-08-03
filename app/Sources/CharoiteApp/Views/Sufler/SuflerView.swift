@@ -412,9 +412,15 @@ struct SuflerView: View {
     /// встречи — ответ по архиву. Пусто — приглашение спросить.
     private var paneText: AttributedString {
         if sufler.isRunning {
-            return sufler.hint.isEmpty
-                ? AttributedString(L.t("⌘⏎ — подсказка по последним минутам", "⌘⏎ — a hint on the last few minutes", "⌘⏎ — 针对最近几分钟的提示"))
-                : withBoldQuestions(sufler.hint)
+            // Главное во время встречи — нить: она стоит на месте и дописывается,
+            // поэтому её читают краем глаза. Подсказка перекрывает нить только
+            // когда её попросили руками (⌘⏎) — то есть когда человек ждёт ответ
+            // прямо сейчас и смотрит в панель в упор.
+            if !sufler.hint.isEmpty { return withBoldQuestions(sufler.hint) }
+            if !sufler.thread.isEmpty { return AttributedString(sufler.thread) }
+            return AttributedString(L.t("Нить встречи появится через минуту разговора · ⌘⏎ — подсказка сейчас",
+                                        "The meeting thread appears after a minute of talk · ⌘⏎ — hint now",
+                                        "会议脉络将在交谈一分钟后出现 · ⌘⏎ — 立即提示"))
         }
         if archiveAnswer.isEmpty {
             // при открытом чате нижнего поля нет — не отправляем в никуда
@@ -426,7 +432,8 @@ struct SuflerView: View {
     }
 
     private var paneIsPlaceholder: Bool {
-        sufler.isRunning ? sufler.hint.isEmpty : archiveAnswer.isEmpty
+        sufler.isRunning ? (sufler.hint.isEmpty && sufler.thread.isEmpty)
+                         : archiveAnswer.isEmpty
     }
 
     /// Вопрос в панели — жирным, ответ обычным.
