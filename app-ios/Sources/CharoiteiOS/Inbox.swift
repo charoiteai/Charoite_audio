@@ -45,7 +45,9 @@ enum Inbox {
     ///
     /// Нужны не только счётчику: пока файл заперт внутри приложения, у человека
     /// нет ни одного способа достать его руками, если iCloud молчит. Отсюда
-    /// кнопка «Поделиться» на экране и `UIFileSharingEnabled` в Info.plist.
+    /// кнопка «Поделиться» на экране и `UIFileSharingEnabled` в `project.yml`
+    /// (сам Info.plist генерируется xcodegen и в репозитории не хранится —
+    /// правка прямо в нём стирается следующей генерацией).
     static var queued: [URL] {
         let fm = FileManager.default
         let files = (try? fm.contentsOfDirectory(

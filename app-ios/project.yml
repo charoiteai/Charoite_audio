@@ -30,7 +30,13 @@ targets:
         UIBackgroundModes: [audio]
         UILaunchScreen: {}
         NSSupportsLiveActivities: true
-        CFBundleVersion: "5"
+        # Запись должна доставаться руками, без iCloud и без Mac: через
+        # «Файлы» на самом телефоне и по кабелю (AFC). 03.08 очередь в
+        # Documents была единственным экземпляром встречи, и достать её
+        # было нечем — приложение не отдавало папку наружу.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        CFBundleVersion: "6"
         NSUbiquitousContainers:
           iCloud.ai.charoite.inbox:
             NSUbiquitousContainerIsDocumentScopePublic: true
