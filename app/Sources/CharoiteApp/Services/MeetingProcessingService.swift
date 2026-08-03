@@ -207,6 +207,35 @@ enum MeetingProcessingPolicy {
         resolvedState(snapshot, now: now) == .error && transcriptExists
     }
 
+    /// Что показывать в строке списка про повтор этой встречи.
+    ///
+    /// Раньше строка знала только «идёт какой-то повтор» — и на время повтора
+    /// погашенная кнопка «Повторить» вырастала у всех встреч, включая готовые.
+    /// Правильных состояния четыре, и они разные:
+    /// - `hidden` — встрече повтор не нужен (готова, идёт, без стенограммы);
+    /// - `ready` — упала, можно повторить;
+    /// - `waiting` — упала, но сейчас повторяется другая: кнопка есть, ждёт;
+    /// - `running` — именно её и повторяем: не кнопка, а «работаю».
+    enum RetryControl: Equatable {
+        case hidden, ready, waiting, running
+    }
+
+    static func retryControl(
+        for snapshot: MeetingProcessingSnapshot,
+        transcriptExists: Bool,
+        retryingID: String?,
+        now: Date = Date()
+    ) -> RetryControl {
+        // Сначала «running»: у повторяемой встречи статус уже переписан в
+        // processing, и проверка состояния ниже спрятала бы индикатор ровно
+        // на время работы.
+        if retryingID == snapshot.meetingID { return .running }
+        guard canRetry(snapshot, transcriptExists: transcriptExists, now: now) else {
+            return .hidden
+        }
+        return retryingID == nil ? .ready : .waiting
+    }
+
     /// Дождались ли мы «своего» статуса после нажатия кнопки.
     ///
     /// После «Стоп» свой статус — любой новый запуск конвейера (started_at не
@@ -347,6 +376,16 @@ final class MeetingProcessingService: ObservableObject {
     private var waitingSince: Date?
     /// Не nil — ждём статус повторной обработки именно этой встречи.
     private var retryExpectation: RetryExpectation?
+
+    /// Какая встреча повторяется прямо сейчас — для списка.
+    ///
+    /// Пока повтор шёл, кнопка «Повторить» появлялась погашенной у ВСЕХ строк,
+    /// включая готовые встречи: список знал только факт «идёт повтор», но не
+    /// знал чей. Готовым встречам этот факт не касается вовсе, а у повторяемой
+    /// нужен не выключатель, а признак «работаю».
+    var retryingID: String? {
+        retryInFlight ? retryExpectation?.meetingID : nil
+    }
     /// Процесс повтора, пока он жив. Держим ссылку, чтобы не запустить второй
     /// поверх работающего: два конвейера на одну встречу пишут один статус и
     /// один лог, и чей результат окажется последним — вопрос удачи.

@@ -78,11 +78,14 @@ struct MenuBarView: View {
                     Button(L.t("Повторить", "Retry", "重试")) { processing.retry() }
                         .disabled(processing.retryInFlight)
                 }
-                if !processing.history.isEmpty {
-                    Button(L.t("Все встречи", "All meetings", "全部会议")) {
-                        openWindow(id: "meetings")
-                        NSApp.activate(ignoringOtherApps: true)
-                    }
+                // Всегда, а не только при непустой истории: окно честно
+                // объясняет пустоту само, а спрятанная кнопка выглядела как
+                // отсутствие функции. И «Последние», а не «Все»: список
+                // показывает двадцать встреч за две недели, «Все встречи»
+                // обещали архив, которого за этой кнопкой нет.
+                Button(L.t("Последние встречи", "Recent meetings", "近期会议")) {
+                    openWindow(id: "meetings")
+                    NSApp.activate(ignoringOtherApps: true)
                 }
             }
             .buttonStyle(.plain)
