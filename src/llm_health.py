@@ -30,6 +30,7 @@ import platform
 import shutil
 import subprocess
 import time
+import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
 
@@ -84,18 +85,45 @@ def probe(cfg: dict, timeout: float = PROBE_TIMEOUT) -> bool:
     return r.status_code == 200
 
 
-def restart_commands(system: str, has_app: bool, has_brew: bool,
-                     has_systemctl: bool) -> list[list[str]]:
+def listener_path(url: str) -> str | None:
+    """Путь к процессу, который реально слушает порт LLM.
+
+    Без этого вопроса перезапуск бьёт мимо. На машине владельца стоят ОБА
+    способа запуска — `/Applications/Ollama.app` и brew-сервис, — а порт держит
+    brew. Эвристика «есть Ollama.app → перезапускаем приложение» убивала бы
+    GUI, не трогая того, кто завис, и рапортовала бы об успехе: первый живой
+    тест сторожа прошёл именно так — ложноположительно.
+    """
+    port = urllib.parse.urlsplit(url).port or 11434
+    try:
+        out = subprocess.run(["lsof", "-nP", f"-i:{port}", "-sTCP:LISTEN", "-Fn"],
+                             capture_output=True, text=True, timeout=10).stdout
+        pids = [ln[1:] for ln in out.splitlines() if ln.startswith("p")]
+        if not pids:
+            return None
+        return subprocess.run(["ps", "-o", "comm=", "-p", pids[0]],
+                              capture_output=True, text=True,
+                              timeout=10).stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def restart_commands(system: str, listener: str | None, has_app: bool,
+                     has_brew: bool, has_systemctl: bool) -> list[list[str]]:
     """Чем перезапускать Ollama на этой системе.
 
-    Порядок важен: на маке с установленным приложением GUI-путь единственный
-    рабочий — `brew services` не знает про Ollama.app и молча отрапортует
-    успех, ничего не перезапустив.
+    Главный сигнал — кто держит порт, а не что установлено: обе установки
+    прекрасно уживаются на одной машине, и лечить надо ту, что отвечает на
+    запросы. Наличие файлов — только запасной путь, когда владельца порта
+    выяснить не вышло (например, сервер уже упал).
     """
+    if listener:
+        if "Ollama.app" in listener:
+            return _gui_restart()
+        if "homebrew" in listener or "Cellar" in listener:
+            return [["brew", "services", "restart", "ollama"]]
     if system == "Darwin" and has_app:
-        # pkill по пути внутрь бандла, а не по слову «ollama»: иначе под нож
-        # попадает и сам вызывающий процесс, если он запущен из папки проекта.
-        return [["pkill", "-f", "Ollama.app/Contents"], ["open", "-a", "Ollama"]]
+        return _gui_restart()
     if has_brew:
         return [["brew", "services", "restart", "ollama"]]
     if has_systemctl:
@@ -103,9 +131,20 @@ def restart_commands(system: str, has_app: bool, has_brew: bool,
     return []
 
 
-def _restart(log: Callable[[str], None]) -> bool:
+def _gui_restart() -> list[list[str]]:
+    # pkill по пути внутрь бандла, а не по слову «ollama»: иначе под нож
+    # попадает и сам вызывающий процесс, если он запущен из папки проекта.
+    return [["pkill", "-f", "Ollama.app/Contents"], ["open", "-a", "Ollama"]]
+
+
+def _restart(cfg: dict, log: Callable[[str], None]) -> bool:
+    try:
+        listener = listener_path(privacy.llm_base_url(cfg))
+    except RuntimeError:
+        listener = None
     cmds = restart_commands(
         platform.system(),
+        listener,
         MAC_APP.exists(),
         shutil.which("brew") is not None,
         shutil.which("systemctl") is not None,
@@ -113,6 +152,8 @@ def _restart(log: Callable[[str], None]) -> bool:
     if not cmds:
         log("LLM: перезапустить нечем — ни Ollama.app, ни brew, ни systemctl")
         return False
+    log(f"LLM: перезапуск через {' '.join(cmds[-1])}"
+        + (f" (порт держит {listener})" if listener else " (владелец порта не определён)"))
     for cmd in cmds:
         try:
             subprocess.run(cmd, check=False, timeout=30,
@@ -138,7 +179,7 @@ def ensure_alive(cfg: dict, log: Callable[[str], None] = print,
         log("LLM не отвечает, но адрес не локальный — перезапуск не наше дело")
         return False
     log("LLM не отвечает на пробу — перезапускаю Ollama")
-    if not _restart(log):
+    if not _restart(cfg, log):
         return False
 
     deadline = time.monotonic() + wait

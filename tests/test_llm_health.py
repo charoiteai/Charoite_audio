@@ -79,14 +79,24 @@ def test_forbidden_remote_is_not_local():
     assert llm_health.is_local({"llm": {"base_url": "http://10.0.0.5:11434"}}) is False
 
 
-def test_mac_app_restart_goes_through_gui():
-    """На маке с Ollama.app единственный рабочий путь — GUI.
+def test_port_owner_beats_what_is_installed():
+    """Обе установки уживаются на одной машине — лечить надо ту, что отвечает.
 
-    `brew services` про приложение не знает и молча отрапортует успех, ничего
-    не перезапустив, — а сторож решит, что починил.
+    У владельца стоят и `/Applications/Ollama.app`, и brew-сервис, а порт
+    держит brew. Эвристика «есть приложение → перезапускаем приложение» убила
+    бы GUI, не тронув зависшего, и отрапортовала бы об успехе: первый живой
+    тест сторожа прошёл ровно так — ложноположительно.
     """
-    cmds = llm_health.restart_commands("Darwin", has_app=True, has_brew=True,
-                                       has_systemctl=False)
+    cmds = llm_health.restart_commands(
+        "Darwin", listener="/opt/homebrew/Cellar/ollama/0.20.0/bin/ollama",
+        has_app=True, has_brew=True, has_systemctl=False)
+    assert cmds == [["brew", "services", "restart", "ollama"]]
+
+
+def test_gui_owner_gets_gui_restart():
+    cmds = llm_health.restart_commands(
+        "Darwin", listener="/Applications/Ollama.app/Contents/Resources/ollama",
+        has_app=True, has_brew=True, has_systemctl=False)
     assert any("open" in c for c in cmds[-1])
     assert not any("brew" in part for c in cmds for part in c)
 
@@ -97,39 +107,63 @@ def test_pkill_pattern_does_not_hit_the_caller():
     graph_updater запускается из папки проекта, и его командная строка вполне
     может содержать это слово — бить надо строго по пути внутрь бандла.
     """
-    cmds = llm_health.restart_commands("Darwin", has_app=True, has_brew=False,
-                                       has_systemctl=False)
+    cmds = llm_health.restart_commands("Darwin", listener=None, has_app=True,
+                                       has_brew=False, has_systemctl=False)
     pattern = cmds[0][-1]
     assert "Ollama.app" in pattern and "/" in pattern
 
 
-def test_brew_used_when_no_app():
-    cmds = llm_health.restart_commands("Darwin", has_app=False, has_brew=True,
-                                       has_systemctl=False)
+def test_dead_server_falls_back_to_what_is_installed():
+    # сервер уже упал — владельца порта не спросить, остаётся эвристика
+    cmds = llm_health.restart_commands("Darwin", listener=None, has_app=False,
+                                       has_brew=True, has_systemctl=False)
     assert cmds == [["brew", "services", "restart", "ollama"]]
 
 
 def test_linux_uses_systemctl():
-    cmds = llm_health.restart_commands("Linux", has_app=False, has_brew=False,
-                                       has_systemctl=True)
+    cmds = llm_health.restart_commands("Linux", listener=None, has_app=False,
+                                       has_brew=False, has_systemctl=True)
     assert cmds == [["systemctl", "--user", "restart", "ollama"]]
 
 
 def test_nothing_to_restart_is_empty_not_guess():
-    assert llm_health.restart_commands("Linux", False, False, False) == []
+    assert llm_health.restart_commands("Linux", None, False, False, False) == []
+
+
+def test_listener_lookup_uses_the_configured_port(monkeypatch):
+    seen: list[list[str]] = []
+
+    class _Done:
+        stdout = ""
+
+    def fake_run(cmd, **kw):
+        seen.append(cmd)
+        return _Done()
+
+    monkeypatch.setattr(llm_health.subprocess, "run", fake_run)
+    llm_health.listener_path("http://localhost:11500")
+    assert any("-i:11500" in part for cmd in seen for part in cmd)
+
+
+def test_listener_lookup_survives_missing_lsof(monkeypatch):
+    def boom(*a, **kw):
+        raise FileNotFoundError("lsof")
+
+    monkeypatch.setattr(llm_health.subprocess, "run", boom)
+    assert llm_health.listener_path("http://localhost:11434") is None
 
 
 def test_alive_model_is_not_restarted(monkeypatch):
     monkeypatch.setattr(llm_health, "probe", lambda cfg, timeout=None: True)
     monkeypatch.setattr(llm_health, "_restart",
-                        lambda log: pytest.fail("здоровую модель трогать нельзя"))
+                        lambda cfg, log: pytest.fail("здоровую модель трогать нельзя"))
     assert llm_health.ensure_alive(LOCAL, log=lambda m: None) is True
 
 
 def test_remote_stall_is_reported_not_fixed(monkeypatch):
     monkeypatch.setattr(llm_health, "probe", lambda cfg, timeout=None: False)
     monkeypatch.setattr(llm_health, "_restart",
-                        lambda log: pytest.fail("чужой сервер не наш"))
+                        lambda cfg, log: pytest.fail("чужой сервер не наш"))
     said: list[str] = []
     assert llm_health.ensure_alive(REMOTE, log=said.append) is False
     assert any("не локальный" in m for m in said)
@@ -142,7 +176,7 @@ def test_stalled_local_model_gets_restarted_and_rechecked(monkeypatch):
         calls["probe"] += 1
         return calls["restart"] > 0        # оживает только после перезапуска
 
-    def restart(log):
+    def restart(cfg, log):
         calls["restart"] += 1
         return True
 
@@ -155,7 +189,7 @@ def test_stalled_local_model_gets_restarted_and_rechecked(monkeypatch):
 
 def test_hopeless_restart_gives_up_and_says_so(monkeypatch):
     monkeypatch.setattr(llm_health, "probe", lambda cfg, timeout=None: False)
-    monkeypatch.setattr(llm_health, "_restart", lambda log: True)
+    monkeypatch.setattr(llm_health, "_restart", lambda cfg, log: True)
     monkeypatch.setattr(llm_health.time, "sleep", lambda s: None)
     said: list[str] = []
     assert llm_health.ensure_alive(LOCAL, log=said.append, wait=10) is False
