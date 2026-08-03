@@ -32,6 +32,22 @@ enum Inbox {
         return d
     }
 
+    /// Уже уехавшие записи, которые ещё держим на телефоне.
+    ///
+    /// «iCloud принял» не значит «Mac получил»: 27.07 контейнер не
+    /// материализовался на маке неделями. Пока копия лежит здесь, встречу
+    /// можно отдать руками — кнопкой «Поделиться» или через «Файлы».
+    static var sent: URL {
+        let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Sent", isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }
+
+    /// Сколько отправленных записей держим. Часовая встреча — десятки
+    /// мегабайт; пять последних это страховка, а не второй архив.
+    static let keepSent = 5
+
     /// Расширения, которые считаются записью. CAF — основной формат: он
     /// переживает обрыв (в отличие от M4A без атома `moov`), M4A оставлен
     /// для файлов, записанных прежними версиями.
@@ -42,26 +58,37 @@ enum Inbox {
     }
 
     /// Записи, ждущие отправки, — новые первыми.
-    ///
-    /// Нужны не только счётчику: пока файл заперт внутри приложения, у человека
-    /// нет ни одного способа достать его руками, если iCloud молчит. Отсюда
-    /// кнопка «Поделиться» на экране и `UIFileSharingEnabled` в `project.yml`
-    /// (сам Info.plist генерируется xcodegen и в репозитории не хранится —
-    /// правка прямо в нём стирается следующей генерацией).
     static var queued: [URL] {
+        recordings(in: outbox)
+    }
+
+    /// Последняя запись — из очереди или из уже отправленных.
+    ///
+    /// Пока файл заперт внутри приложения, у человека нет ни одного способа
+    /// достать его руками, если iCloud молчит. Отсюда кнопка «Поделиться» на
+    /// экране и `UIFileSharingEnabled` в `project.yml` (сам Info.plist
+    /// генерируется xcodegen и в репозитории не хранится — правка прямо в нём
+    /// стирается следующей генерацией).
+    ///
+    /// Смотрит в обе папки намеренно: искать только в очереди значило бы, что
+    /// кнопка есть ровно тогда, когда доставка сломалась, — то есть исчезает
+    /// в тот момент, когда всё прошло штатно, и человек её просто не находит.
+    static var lastRecording: URL? {
+        recordings(in: outbox, sent).first
+    }
+
+    private static func recordings(in dirs: URL...) -> [URL] {
         let fm = FileManager.default
-        let files = (try? fm.contentsOfDirectory(
-            at: outbox,
-            includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-        return files
+        return dirs
+            .flatMap { (try? fm.contentsOfDirectory(
+                at: $0, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] }
             .filter { audioExts.contains($0.pathExtension) }
-            .sorted { a, b in
-                let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]))?
-                    .contentModificationDate ?? .distantPast
-                let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]))?
-                    .contentModificationDate ?? .distantPast
-                return da > db
-            }
+            .sorted { modified($0) > modified($1) }
+    }
+
+    private static func modified(_ url: URL) -> Date {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate ?? .distantPast
     }
 
     /// Человеческий размер файла для подписи под кнопкой.
@@ -174,7 +201,7 @@ enum Inbox {
         let scoped = dir.startAccessingSecurityScopedResource()
         defer { if scoped { dir.stopAccessingSecurityScopedResource() } }
 
-        var sent = 0
+        var delivered = 0
         var stuck: [String] = []
         for f in files {
             let dest = uniqueName(in: dir, like: f)
@@ -183,7 +210,7 @@ enum Inbox {
                 try? fm.removeItem(at: part)
                 try fm.copyItem(at: f, to: part)
                 try fm.moveItem(at: part, to: dest)     // публикация одним шагом
-                // Исходник удаляем, только если iCloud принял файл. Раньше
+                // Из очереди убираем, только если iCloud принял файл. Раньше
                 // «Уехало на Mac» печаталось по факту копирования — при
                 // переполненном хранилище выгрузка отваливалась, а очередь
                 // уже была пуста, и запись пропадала незаметно.
@@ -195,8 +222,8 @@ enum Inbox {
                                      "iCloud 拒绝了 \(f.lastPathComponent)：\(err.localizedDescription)"))
                     continue
                 }
-                try fm.removeItem(at: f)
-                sent += 1
+                retire(f)
+                delivered += 1
             } catch {
                 // continue, а не return: один сбойный файл не должен запирать
                 // всю очередь, включая сегодняшнюю встречу.
@@ -209,14 +236,29 @@ enum Inbox {
         }
         let left = queuedCount
         if left == 0 {
-            await status(L.t("Уехало на Mac: \(sent) файл(а)",
-                             "Delivered to Mac: \(sent)",
-                             "已发送到 Mac：\(sent)"))
+            await status(L.t("Уехало на Mac: \(delivered) файл(а)",
+                             "Delivered to Mac: \(delivered)",
+                             "已发送到 Mac：\(delivered)"))
         } else {
-            await status(L.t("Отправлено \(sent), в очереди \(left)",
-                             "Sent \(sent), queued \(left)",
-                             "已发送 \(sent)，队列中 \(left)"))
+            await status(L.t("Отправлено \(delivered), в очереди \(left)",
+                             "Sent \(delivered), queued \(left)",
+                             "已发送 \(delivered)，队列中 \(left)"))
         }
+    }
+
+    /// Доставленный файл — из очереди в отправленные, лишнее удаляем.
+    /// Очередь остаётся списком долгов, а копия последних встреч живёт на
+    /// телефоне независимо от того, доехали ли они до Mac.
+    private static func retire(_ file: URL) {
+        let fm = FileManager.default
+        guard (try? fm.moveItem(at: file, to: uniqueName(in: sent, like: file))) != nil else {
+            // Переложить не вышло — из очереди файл убрать всё равно надо,
+            // иначе он поедет в iCloud на каждом flush по кругу.
+            try? fm.removeItem(at: file)
+            return
+        }
+        let old = recordings(in: sent).dropFirst(keepSent)
+        for f in old { try? fm.removeItem(at: f) }
     }
 
     private nonisolated(unsafe) static var flushing = false

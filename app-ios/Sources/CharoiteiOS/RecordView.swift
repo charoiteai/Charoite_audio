@@ -66,7 +66,7 @@ struct RecordView: View {
             // Запись можно забрать руками — не дожидаясь iCloud и не завися от
             // него вовсе. 03.08 файл был единственным экземпляром получаса
             // встречи, и достать его из приложения было нечем.
-            if !rec.isRecording, let last = Inbox.queued.first {
+            if !rec.isRecording, let last = rec.lastRecording {
                 ShareLink(item: last) {
                     Label("Поделиться записью · \(Inbox.sizeText(last))",
                           systemImage: "square.and.arrow.up")
@@ -100,6 +100,7 @@ struct RecordView: View {
         }
         .task {
             await Inbox.flush { msg in rec.lastResult = msg }
+            rec.refreshLastRecording()
         }
     }
 
