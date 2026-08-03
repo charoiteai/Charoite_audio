@@ -113,3 +113,38 @@ final class RecentMeetingsTests: XCTestCase {
         XCTAssertEqual(named.title, "2026 год планы")
     }
 }
+
+/// Состояния приходят из Python, и список у него длиннее, чем у нас.
+final class MeetingStateDecodingTests: XCTestCase {
+    private func decode(_ state: String) throws -> MeetingProcessingSnapshot {
+        let json = """
+        {"schema_version":1,"meeting_id":"m","state":"\(state)","stage":"s",
+         "started_at":1,"updated_at":2,"transcript_path":"/t/2026-08-03_0844.md"}
+        """
+        return try JSONDecoder().decode(MeetingProcessingSnapshot.self,
+                                        from: Data(json.utf8))
+    }
+
+    func testKnownStatesDecode() throws {
+        XCTAssertEqual(try decode("ready").state, .ready)
+        XCTAssertEqual(try decode("processing").state, .processing)
+        XCTAssertEqual(try decode("error").state, .error)
+    }
+
+    func testRecordingWithoutSpeechIsItsOwnState() throws {
+        // «в записи нет речи» — результат, а не авария: строгий разбор ошибки
+        // и пустой записи в одно состояние заставлял человека искать поломку
+        // там, где её нет
+        XCTAssertEqual(try decode("empty").state, .empty)
+    }
+
+    func testStateFromANewerPipelineDoesNotDropTheMeeting() throws {
+        // Строгий enum ронял разбор всего снимка, и встреча просто исчезала
+        // из окна: совместимая правка на стороне Python превращалась в потерю
+        // данных у того, кто ещё не обновил приложение.
+        let snapshot = try decode("quarantined_by_a_future_version")
+
+        XCTAssertEqual(snapshot.state, .unknown)
+        XCTAssertEqual(snapshot.meetingID, "m", "остальные поля должны уцелеть")
+    }
+}

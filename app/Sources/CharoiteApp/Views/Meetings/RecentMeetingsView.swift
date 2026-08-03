@@ -103,6 +103,10 @@ struct RecentMeetingsView: View {
         case .ready: return .green
         case .processing: return .accentColor
         case .error: return .orange
+        // Тишина в записи — не авария: серым, чтобы взгляд не цеплялся за
+        // строку, с которой всё в порядке.
+        case .empty: return .secondary
+        case .unknown: return .secondary
         }
     }
 
@@ -124,6 +128,12 @@ struct RecentMeetingsView: View {
             // единообразия строк
             if let detail = meeting.error, !detail.isEmpty { return head + ". " + detail }
             return head
+        case .empty:
+            return L.t("Речи нет — запись пустая",
+                       "No speech — empty recording",
+                       "无语音——录音为空")
+        case .unknown:
+            return L.t("Статус не распознан", "Unrecognized status", "状态无法识别")
         }
     }
 

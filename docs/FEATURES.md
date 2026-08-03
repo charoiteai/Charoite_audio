@@ -238,6 +238,11 @@ it signals degradation, it does not break the loop.
   longer just sits there: the next successful meeting retries the freshest
   leftover (up to three attempts, never touching a run in progress).
   A failure used to mean silence — the meeting simply never appeared.
+- **A recording without speech is called that** — forty seconds of silence
+  is not a "processing error" but a result: the status says so, the
+  transcript stays openable, and the pipeline will not re-process silence.
+  A state from a newer pipeline also survives — it used to break decoding of
+  the whole status, and the meeting vanished from the window entirely.
 
 - **Import folder (watched)** — point the app at a folder (Settings →
   Import, or `--scan` in the CLI): recordings dropped there become graph

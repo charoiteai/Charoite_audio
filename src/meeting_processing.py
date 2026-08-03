@@ -175,7 +175,9 @@ class MeetingStatusStore:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            if not isinstance(data, dict) or data.get("state") == "ready":
+            # ready — сделано; empty — сделано и повторять нечего: тишину
+            # можно разбирать хоть трижды, речи в ней не появится.
+            if not isinstance(data, dict) or data.get("state") in ("ready", "empty"):
                 continue
             if int(data.get("attempts", 0)) >= limit:
                 continue
@@ -189,6 +191,28 @@ class MeetingStatusStore:
                 continue              # стенограмму удалили — повторять нечего
             out.append(data)
         return sorted(out, key=lambda d: float(d.get("updated_at", 0)), reverse=True)
+
+    def no_speech(self, transcript: pathlib.Path) -> pathlib.Path:
+        """Запись есть, речи в ней нет.
+
+        Отдельное состояние, а не ошибка: 03.08 сорокасекундная запись с
+        одной тишиной получила «ошибку обработки» — и человек искал поломку
+        там, где её не было, а конвейер собирался повторять разбор тишины.
+        """
+        transcript = pathlib.Path(transcript)
+        current = self._read(transcript)
+        now = float(self._now())
+        payload = {
+            "schema_version": SCHEMA_VERSION,
+            "meeting_id": transcript.stem,
+            "state": "empty",
+            "stage": "no_speech",
+            "started_at": current.get("started_at", now),
+            "updated_at": now,
+            "transcript_path": str(find_final_transcript(transcript)),
+            "attempts": int(current.get("attempts", 0)),
+        }
+        return self._write(transcript, payload)
 
     def has_transcript(self, transcript: pathlib.Path) -> bool:
         return find_final_transcript(pathlib.Path(transcript)).is_file()
