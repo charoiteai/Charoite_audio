@@ -51,3 +51,31 @@ final class SetupReadinessTests: XCTestCase {
         XCTAssertEqual(snapshot.problems, 1)
     }
 }
+
+/// Первый запуск без терминала: рецепт из detail исполняется кнопкой.
+final class ReadinessFixActionsTests: XCTestCase {
+    func testPullCommandsBecomeButtons() {
+        let detail = "ollama pull qwen3.6:35b-a3b  ·  ollama pull bge-m3"
+        XCTAssertEqual(SetupReadinessPolicy.pullableModels(in: detail),
+                       ["qwen3.6:35b-a3b", "bge-m3"])
+    }
+
+    func testDetailWithoutRecipeGivesNoButtons() {
+        XCTAssertTrue(SetupReadinessPolicy.pullableModels(in: "Ollama не отвечает").isEmpty)
+        XCTAssertNil(SetupReadinessPolicy.copyableCommand(in: "Ollama не отвечает"))
+    }
+
+    func testPipRecipeIsCopyableNotPullable() {
+        let detail = ".venv/bin/pip install -r requirements.txt  ·  затем перезапуск"
+        XCTAssertTrue(SetupReadinessPolicy.pullableModels(in: detail).isEmpty)
+        XCTAssertEqual(SetupReadinessPolicy.copyableCommand(in: detail),
+                       ".venv/bin/pip install -r requirements.txt")
+    }
+
+    func testProgressPrefersPercents() {
+        XCTAssertEqual(ModelPullService.progressText(status: "downloading",
+                                                     completed: 340, total: 1000), "34 %")
+        XCTAssertEqual(ModelPullService.progressText(status: "verifying",
+                                                     completed: nil, total: nil), "verifying")
+    }
+}

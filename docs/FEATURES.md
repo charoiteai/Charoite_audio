@@ -203,6 +203,13 @@ it signals degradation, it does not break the loop.
 
 ## Outside meetings
 
+- **First run without a terminal** — the onboarding screen shows the
+  readiness check (environment, config, Ollama, models, microphone, graph
+  folder), and a failed item is fixed in place: a missing model is pulled by
+  the app itself through the Ollama API, with percentages from its own
+  stream; recipes that a button cannot fix are copied to the clipboard whole
+  instead of being retyped from the screen. "Start listening" unlocks once
+  no blocking items remain.
 - **Dictation** (global hotkey) — speak → recognized locally → pasted into
   the active field; the clipboard is restored, images included. In the menu
   bar, dictation, note and diary sit in a column with their shortcuts in a
