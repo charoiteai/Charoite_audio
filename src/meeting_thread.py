@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import difflib
 import re
+import threading
 from dataclasses import dataclass, field
 
 # Знаки строк. Один символ вместо слова: на встрече читают боковым зрением, и
@@ -96,11 +97,20 @@ class Topic:
 
 
 class Thread:
-    """Живая нить встречи. Растёт, не переписывается."""
+    """Живая нить встречи. Растёт, не переписывается.
+
+    Потокобезопасна: в нить пишут два потока демона — thread_loop
+    (ingest по приросту разговора) и expand_topic (⏮ по клавише), — и оба
+    вне hint_lock: тот держится минутами при генерации минуток, и разбор
+    темы под ним ждал бы их конца. Свой RLock дешевле и точнее: без него
+    два потока, одновременно прошедшие knows(), протаскивали дубль, а
+    render() читал темы посреди чужого open_topic.
+    """
 
     def __init__(self, live_topics: int = LIVE_TOPICS) -> None:
         self.topics: list[Topic] = []
         self.live_topics = live_topics
+        self._mutex = threading.RLock()
 
     # --- наполнение ---------------------------------------------------------
 
@@ -112,24 +122,26 @@ class Thread:
         следит за одной мыслью.
         """
         title = title.strip()
-        if self.topics and _same_title(self.topics[-1].title, title):
-            return self.topics[-1]
-        topic = Topic(title=title, at=at)
-        self.topics.append(topic)
-        return topic
+        with self._mutex:
+            if self.topics and _same_title(self.topics[-1].title, title):
+                return self.topics[-1]
+            topic = Topic(title=title, at=at)
+            self.topics.append(topic)
+            return topic
 
     def add(self, kind: str, text: str, at: str = "") -> bool:
         """Строка в текущую тему. False — если это повтор уже сказанного."""
         text = text.strip()
         if not text:
             return False
-        if not self.topics:
-            self.open_topic("Разговор", at)
-        topic = self.topics[-1]
-        if self.knows(text):
-            return False
-        topic.lines.append(Line(kind=kind, text=text, at=at))
-        return True
+        with self._mutex:
+            if not self.topics:
+                self.open_topic("Разговор", at)
+            topic = self.topics[-1]
+            if self.knows(text):
+                return False
+            topic.lines.append(Line(kind=kind, text=text, at=at))
+            return True
 
     def knows(self, text: str) -> bool:
         """Уже есть в нити? Сравниваем со всеми строками, а не только с
@@ -138,11 +150,12 @@ class Thread:
         probe = _norm(text)
         if not probe:
             return True
-        for topic in self.topics:
-            for line in topic.lines:
-                if _same_norm(probe, _norm(line.text)):
-                    return True
-        return False
+        with self._mutex:
+            for topic in self.topics:
+                for line in topic.lines:
+                    if _same_norm(probe, _norm(line.text)):
+                        return True
+            return False
 
     # --- обмен с моделью ----------------------------------------------------
 
@@ -154,19 +167,22 @@ class Thread:
         в нити выглядят как реплика участника.
         """
         added = 0
-        for raw in answer.splitlines():
-            line = raw.strip()
-            if not line or line.upper().startswith("NONE"):
-                continue
-            mark, _, rest = line.partition(" ")
-            rest = rest.strip(" *")
-            if not rest:
-                continue
-            if mark == TOPIC:
-                self.open_topic(rest, at)
-                added += 1
-            elif mark in KINDS:
-                added += 1 if self.add(KINDS[mark], rest, at) else 0
+        # Весь разбор под одним захватом: ответ модели должен лечь в нить
+        # целиком, а не вперемешку со строками параллельного ⏮-разбора.
+        with self._mutex:
+            for raw in answer.splitlines():
+                line = raw.strip()
+                if not line or line.upper().startswith("NONE"):
+                    continue
+                mark, _, rest = line.partition(" ")
+                rest = rest.strip(" *")
+                if not rest:
+                    continue
+                if mark == TOPIC:
+                    self.open_topic(rest, at)
+                    added += 1
+                elif mark in KINDS:
+                    added += 1 if self.add(KINDS[mark], rest, at) else 0
         return added
 
     def add_archive(self, topic_title: str, lines: list[str]) -> int:
@@ -178,22 +194,24 @@ class Thread:
         делает X темой разговора. Дедуп тот же, что у обычных строк.
         """
         topic_title = topic_title.strip()
-        topic = next((t for t in reversed(self.topics)
-                      if _same_title(t.title, topic_title)), None)
-        if topic is None:
-            topic = self.open_topic(topic_title or "Разговор")
-        added = 0
-        for text in lines:
-            text = text.strip()
-            if not text or self.knows(text):
-                continue
-            topic.lines.append(Line(kind="archive", text=text))
-            added += 1
-        return added
+        with self._mutex:
+            topic = next((t for t in reversed(self.topics)
+                          if _same_title(t.title, topic_title)), None)
+            if topic is None:
+                topic = self.open_topic(topic_title or "Разговор")
+            added = 0
+            for text in lines:
+                text = text.strip()
+                if not text or self.knows(text):
+                    continue
+                topic.lines.append(Line(kind="archive", text=text))
+                added += 1
+            return added
 
     @property
     def last_topic_title(self) -> str:
-        return self.topics[-1].title if self.topics else ""
+        with self._mutex:
+            return self.topics[-1].title if self.topics else ""
 
     def as_context(self, topics: int = 2) -> str:
         """Что показать модели как «уже собрано».
@@ -201,26 +219,30 @@ class Thread:
         Не вся нить: длинная встреча выест контекст, а дописывать надо к концу.
         Последние темы целиком — этого хватает, чтобы не повторяться.
         """
-        return "\n".join(t.render() for t in self.topics[-topics:])
+        with self._mutex:
+            return "\n".join(t.render() for t in self.topics[-topics:])
 
     # --- показ --------------------------------------------------------------
 
     def render(self) -> str:
         """Нить для экрана: последние темы целиком, ранние — свёрнуты."""
-        if not self.topics:
-            return ""
-        cut = max(0, len(self.topics) - self.live_topics)
-        parts = [t.render(full=False) for t in self.topics[:cut]]
-        parts += [t.render(full=True) for t in self.topics[cut:]]
-        return "\n\n".join(p for p in parts if p)
+        with self._mutex:
+            if not self.topics:
+                return ""
+            cut = max(0, len(self.topics) - self.live_topics)
+            parts = [t.render(full=False) for t in self.topics[:cut]]
+            parts += [t.render(full=True) for t in self.topics[cut:]]
+            return "\n\n".join(p for p in parts if p)
 
     def full(self) -> str:
         """Нить целиком — для файла встречи, там сворачивать нечего."""
-        return "\n\n".join(t.render(full=True) for t in self.topics)
+        with self._mutex:
+            return "\n\n".join(t.render(full=True) for t in self.topics)
 
     @property
     def size(self) -> int:
-        return sum(len(t.lines) for t in self.topics)
+        with self._mutex:
+            return sum(len(t.lines) for t in self.topics)
 
 
 def _same_title(a: str, b: str) -> bool:

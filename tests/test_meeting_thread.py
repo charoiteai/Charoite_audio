@@ -206,3 +206,47 @@ def test_expand_deduplicates_known_lines():
 
 def test_last_topic_title_on_empty_thread_is_blank():
     assert Thread().last_topic_title == ""
+
+
+# --- потокобезопасность: thread_loop и ⏮ пишут одновременно -------------------
+
+def test_concurrent_ingest_and_archive_do_not_duplicate_or_crash():
+    """В нить пишут два потока демона; дубль и мешанина — гонка, а не судьба.
+
+    До мьютекса два потока, одновременно прошедшие knows(), протаскивали
+    одну и ту же строку дважды, а render() читал темы посреди чужого
+    open_topic. Здесь оба потока долбят одну строку и свои уникальные —
+    общая обязана лечь ровно один раз, уникальные — все, render не падать.
+    """
+    import threading as th
+
+    t = Thread()
+    t.ingest(f"{TOPIC} Общая тема\n{SAY} стартовая строка нити")
+    # короче LINE_MIN_LEN: такие строки дедупятся только точным совпадением,
+    # и потерять их может лишь гонка, а не нечёткий фильтр
+    shared = "общая строка гонки"
+    errors: list[BaseException] = []
+    start = th.Barrier(3)
+
+    def worker(prefix: str):
+        try:
+            start.wait()
+            for i in range(200):
+                t.ingest(f"{SAY} {shared}")
+                t.add_archive("Общая тема", [f"{prefix} факт {i:03d}"])
+                t.render()
+        except BaseException as e:  # noqa: BLE001 — тест собирает всё
+            errors.append(e)
+
+    a = th.Thread(target=worker, args=("альфа",))
+    b = th.Thread(target=worker, args=("бета",))
+    a.start(); b.start(); start.wait(); a.join(); b.join()
+
+    assert not errors, errors
+    text = t.full()
+    assert text.count(shared) == 1, "гонка протащила дубль общей строки"
+    # все уникальные строки дошли — обе двухсотки целиком
+    missing = [f"{p} факт {i:03d}" for p in ("альфа", "бета") for i in range(200)
+               if f"{p} факт {i:03d}" not in text]
+    assert not missing, f"потеряно гонкой: {missing[:5]} (+{len(missing) - 5 if len(missing) > 5 else 0})"
+
