@@ -34,7 +34,10 @@ final class MeetingRepository: ObservableObject {
     private var cache: [String: MeetingRecord] = [:]
     private var cancellables: Set<AnyCancellable> = []
 
-    private init(processing: MeetingProcessingService = .shared) {
+    // Дефолт-аргумент вычисляется вне MainActor — Swift 6 на это ругался
+    // при каждой сборке; синглтон берём внутри изолированного init.
+    private init() {
+        let processing = MeetingProcessingService.shared
         processing.$history
             .receive(on: RunLoop.main)
             .sink { [weak self] snapshots in

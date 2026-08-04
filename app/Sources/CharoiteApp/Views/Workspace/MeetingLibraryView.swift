@@ -60,8 +60,12 @@ struct MeetingLibraryView: View {
             if repository.records.isEmpty {
                 emptyList
             } else {
-                List(repository.records, selection: $navigation.selectedMeetingID) { record in
-                    recordRow(record).tag(record.id)
+                // selection: String? — тег тоже обязан быть Optional, иначе
+                // строка не выбирается кликом (та же ловушка, что в сайдбаре).
+                List(selection: $navigation.selectedMeetingID) {
+                    ForEach(repository.records) { record in
+                        recordRow(record).tag(record.id as String?)
+                    }
                 }
                 .listStyle(.sidebar)
             }

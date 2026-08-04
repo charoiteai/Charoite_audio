@@ -94,6 +94,15 @@ def _title_and_date(folder: pathlib.Path) -> tuple[str, str]:
     return title, date
 
 
+def _strip_markdown(text: str) -> str:
+    """plain-стиль обещает текст «для письма и мессенджера»: пункты Саммари
+    приходят с markdown-жирностью («**Ирина** — …»), и в чате звёздочки —
+    мусор, а не акцент."""
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"__(.+?)__", r"\1", text)
+    return re.sub(r"`([^`]+)`", r"\1", text)
+
+
 def build(folder: pathlib.Path, style: str = "md") -> str:
     """Протокол встречи из её папки архива. Стенограмму не читает вовсе."""
     title, date = _title_and_date(folder)
@@ -105,18 +114,21 @@ def build(folder: pathlib.Path, style: str = "md") -> str:
     if not source.strip():
         return ""
 
+    plain = style != "md"
     head = f"Протокол встречи — {title}" + (f" ({date})" if date else "")
-    out: list[str] = [f"# {head}" if style == "md" else head.upper(), ""]
+    out: list[str] = [head.upper() if plain else f"# {head}", ""]
     gist = _gist(source)
     if gist:
-        out += [gist, ""]
+        out += [_strip_markdown(gist) if plain else gist, ""]
 
     for human, titles in SECTIONS:
         items = _section(source, titles)
         if not items:
             continue        # пустой заголовок читается как потерянные данные
-        out.append(f"## {human}" if style == "md" else f"{human}:")
-        out += [f"- {i}" if style == "md" else f"— {i}" for i in items]
+        if plain:
+            items = [_strip_markdown(i) for i in items]
+        out.append(f"{human}:" if plain else f"## {human}")
+        out += [f"— {i}" if plain else f"- {i}" for i in items]
         out.append("")
     return "\n".join(out).rstrip() + "\n"
 

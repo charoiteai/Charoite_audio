@@ -366,7 +366,10 @@ it signals degradation, it does not break the loop.
   protocol through `protocol.py`, opens the transcript for correction,
   rebuilds the result and previews every trace before the destructive
   `forget_meeting.py` confirmation. The established scripts remain the one
-  implementation of the privacy rules.
+  implementation of the privacy rules. Destructive actions are tinted red,
+  renaming can be cancelled (cross or Esc), the messenger-style protocol is
+  free of markdown markup, and the card shows when the meeting itself
+  started — not when the pipeline finished writing its status.
 - **Portable meeting card** — each archive folder receives a recoverable
   `meeting.meta.json` with stable, language-independent keys for participants,
   gist, decisions, action items and open questions. Markdown remains the
