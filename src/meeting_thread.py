@@ -38,9 +38,10 @@ DECISION = "⚑"
 QUESTION = "?"
 ARCHIVE = "⏮"
 THOUGHT = "💭"
+ANSWER = "⚡"
 
 KINDS = {SAY: "say", DECISION: "decision", QUESTION: "question",
-         ARCHIVE: "archive", THOUGHT: "thought"}
+         ARCHIVE: "archive", THOUGHT: "thought", ANSWER: "answer"}
 
 # Насколько строки должны совпасть, чтобы считаться повтором. 0.82 — компромисс
 # из наблюдений: модель переписывает одну мысль другими словами чаще, чем
@@ -184,6 +185,39 @@ class Thread:
                 elif mark in KINDS:
                     added += 1 if self.add(KINDS[mark], rest, at) else 0
         return added
+
+    def add_answer(self, question: str, answer: str) -> bool:
+        """Вопрос и ответ — двумя строками текущей темы, а не отдельной лентой.
+
+        До этого ответы жили в своей панели и перекрывали нить: автоответ
+        приходил раз в полминуты, панель не пустела никогда, и полотно
+        разговора человек не видел вообще. Теперь ответ — такая же строка
+        нити, как реплика: «? вопрос» и под ней «⚡ ответ».
+        """
+        question = " ".join(question.split())
+        answer = " ".join(answer.split())
+        if not answer:
+            return False
+        with self._mutex:
+            if question and not self.knows(question):
+                self.add("question", question)
+            return self.add("answer", answer)
+
+    def add_thesis(self, line: str) -> bool:
+        """Тезис 📌/💭 — строкой нити, чтобы читать одно полотно, а не два.
+
+        Знак сохраняется: 📌 остаётся контрольной точкой (в нити это
+        решение — тот же вес), 💭 — мыслью модели.
+        """
+        line = line.strip()
+        if not line:
+            return False
+        mark, _, rest = line.partition(" ")
+        rest = rest.strip(" *")
+        if not rest:
+            return False
+        kind = "decision" if mark == "📌" else "thought"
+        return self.add(kind, rest)
 
     def add_archive(self, topic_title: str, lines: list[str]) -> int:
         """Строки «что было раньше» (⏮) — в названную тему, не в хвост нити.

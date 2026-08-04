@@ -35,6 +35,7 @@ import fact_check  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
 from meeting_thread import Thread as MeetingThread  # noqa: E402
 import privacy  # noqa: E402
+import question_filter  # noqa: E402
 import speaker_names  # noqa: E402
 import thesis_rules  # noqa: E402
 import voice_pitch  # noqa: E402
@@ -513,7 +514,10 @@ def main():
                 for line in thesis_rules.parse(out):
                     if is_dup_thesis(line):
                         continue
-                    emit({"type": "thesis", "text": line})
+                    # Тезис — строка нити: одно полотно вместо двух панелей,
+                    # между которыми человек метался глазами на встрече.
+                    if thread.add_thesis(line):
+                        emit({"type": "thread", "text": thread.render()})
                     tr.note(line)
             except Exception as e:  # noqa: BLE001
                 emit({"type": "status", "text": f"мышление: {e}"})
@@ -536,9 +540,18 @@ def main():
     toggles = {"hints": True, "theses": True, "cloud": True}
 
     def fire_question(q: str = ""):
-        """Один вопрос = один ⚡/☁️: fast_trigger и stt_loop не дублируют друг друга."""
+        """Один вопрос = один ⚡/☁️: fast_trigger и stt_loop не дублируют друг друга.
+
+        Обрывок вопросом не считается. STT ставит «?» по интонации, и в
+        панель шли «Что?», «С какого бы?» — на каждый уходил вызов локальной
+        модели И облачной, а в ответ приходило «уточните вопрос» на четыре
+        строки (04.08). Проверка структурная, без списков фраз —
+        src/question_filter.py.
+        """
         now = time.time()
         if now - _last_fire[0] < 8:
+            return
+        if q.strip() and not question_filter.is_worth_asking(q, _pending_q["text"]):
             return
         _last_fire[0] = now
         if q.strip():  # панели показывают, НА ЧТО отвечают — без этого ответ висел без вопроса
@@ -781,19 +794,21 @@ def main():
                 if not tail:
                     continue
                 q = _pending_q["text"]
-                head = f"❓ {q}" if q else "ответ на вопрос"
-                emit({"type": "hint", "text": f"\n\n⚡ {dt.datetime.now():%H:%M:%S} — {head}\n"})
+                emit({"type": "status", "text": f"⚡ отвечаю: {q[:60]}" if q else "⚡ отвечаю"})
                 parts: list[str] = []
                 try:
                     for tok in llm.instant(tail):
-                        emit({"type": "hint", "text": tok})
                         parts.append(tok)
                 except Exception as e:  # noqa: BLE001
-                    emit({"type": "hint", "text": f"[LLM: {e}]"})
-                emit({"type": "hint_done"})
-                if parts:
+                    emit({"type": "status", "text": f"⚡ ответ не собрался: {e}"})
+                answer = "".join(parts)
+                # Отказ модели («вопроса не вижу, уточните») — не ответ, и в
+                # полотно он не идёт: раньше такие абзацы занимали пол-панели.
+                if answer and not question_filter.is_refusal(answer):
+                    if thread.add_answer(q, question_filter.squeeze(answer)):
+                        emit({"type": "thread", "text": thread.render()})
                     label = f"⚡ ответ на: {q[:120]}" if q else "⚡ мгновенный ответ"
-                    append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] {label}", "".join(parts))
+                    append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] {label}", answer)
 
     def cloud_loop():
         """Лестница live: параллельно локальному ⚡ — ответ Claude Sonnet в свою панель.
@@ -828,7 +843,9 @@ def main():
             q = _pending_q["text"]
             short = model.split("-")[1] if model.count("-") else model  # claude-haiku-… → haiku
             think = f"☁️ {dt.datetime.now():%H:%M:%S} {short} думает" + (f" над: ❓ {q[:120]}" if q else "…")
-            emit({"type": "cloud_start", "text": think})
+            # «думает над ❓…» жило в полотне и дублировало вопрос, который
+            # печатала панель ответа. Это служебная строка — её место в статусе.
+            emit({"type": "status", "text": think})
             try:
                 r = subprocess.run(
                     [claude_bin, "-p",
@@ -860,7 +877,9 @@ def main():
                 out = f"[cloud: {e}]"
             if q:  # ответ в панели начинается с вопроса, на который отвечает
                 out = f"❓ {q}\n\n{out}"
-            emit({"type": "cloud", "text": out})
+            if out and not question_filter.is_refusal(out):
+                if thread.add_answer(q, question_filter.squeeze(out, max_lines=3, max_chars=380)):
+                    emit({"type": "thread", "text": thread.render()})
             emit({"type": "cloud_done"})
             label = f"☁️ {model} — на: {q[:120]}" if q else f"☁️ {model}"
             append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] {label}", out)
