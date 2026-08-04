@@ -362,6 +362,17 @@ it signals degradation, it does not break the loop.
   side, and a search hit opens that card instead of a raw Markdown file.
   Menu-bar actions and prep navigate to the same workspace; the separate
   memory chat remains available only as an optional pop-out.
+- **Calendar with recorded-meeting marks** — a Calendar section next to the
+  meeting library: a week strip with dots on days that have recordings, the
+  day's events from the local read-only system calendar, and a green
+  "recorded at HH:MM · duration · open action items" line under every event
+  whose recording made it into the archive; the line opens the meeting card.
+  A recording attaches to an event when it started inside the event's window
+  (fifteen minutes early still counts, and back-to-back meetings never share
+  one recording). Past events without a recording say so, corridor talks show
+  up as "recordings outside the calendar", and without calendar access the
+  screen does not go blank — it keeps showing what was recorded, with a
+  connect card instead of an empty page.
 - **Meeting actions without Terminal** — the card copies a participant-safe
   protocol through `protocol.py`, opens the transcript for correction,
   rebuilds the result and previews every trace before the destructive
