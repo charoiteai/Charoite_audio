@@ -176,7 +176,9 @@ appended into the receiver's file as a "moved from graph …" section (donor
 frontmatter stripped — people and system nodes are additive, their
 histories must not be lost), meeting lines migrate into the receiver's
 `_MOC.md`, and the donor's `_MOC.md` becomes a "merged into …" note.
-Without `--apply` it only prints the plan.
+Without `--apply` it only prints the plan. Applying validates every operation
+before the first move, only auto-merges Markdown collisions, keeps a recovery backup
+and restores all touched files if any later step fails.
 
 **Forget a meeting** (`scripts/forget_meeting.py <date|stamp>`) — the other
 side of recording: removes the meeting from all six places it lives — the
