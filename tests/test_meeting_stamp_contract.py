@@ -117,6 +117,34 @@ def test_чужое_имя_файла_пересборку_не_запускае
     """Производное (`_minutes.md`, `_hints.md`) и посторонние файлы — не встречи."""
     for foreign in ("заметки", "2026-07-22_разбор", "readme", ""):
         assert meeting_stamp.started_at(foreign) is None, foreign
+    for derived in ("2026-08-04_1203_Отчет_по_задачам_разбор",
+                    "2026-08-04_120310_hints",
+                    "2026-08-04_1203_Тема_ревизия_claude",
+                    "2026-08-04_1203_Тема_minutes"):
+        assert meeting_stamp.stamp_of(derived) is None, derived
+
+
+def test_главный_файл_с_темой_остаётся_встречей():
+    """Retry из приложения приходит по transcript_path — минутное имя с темой."""
+    assert meeting_stamp.stamp_of("2026-08-04_1203_Отчет_по_задачам") == "2026-08-04_1203"
+    assert meeting_stamp.stamp_of("2026-08-04_120310") == "2026-08-04_120310"
+    assert meeting_stamp.stamp_of("2026-08-04_120310-1_Тема") == "2026-08-04_120310-1"
+
+
+def test_retry_находит_посекундную_запись_по_минутному_имени(tmp_path):
+    """Инцидент-близнец 28.07: демон назвал записи «…_120310_mic.wav», а retry
+    из приложения знает файл «…_1203_Отчет_по_задачам.md». Точного имени на
+    диске нет — resolve_stamp обязан довести до реального штампа записи."""
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    meeting_stamp.recording_path(rec, "2026-08-04_120310", "mic", "wav").write_bytes(b"RIFF")
+
+    resolved = meeting_stamp.resolve_stamp(rec, "2026-08-04_1203", "mic")
+    assert resolved == "2026-08-04_120310"
+
+    # Две встречи в одну минуту — двусмысленность, штамп не трогаем.
+    meeting_stamp.recording_path(rec, "2026-08-04_120355", "mic", "wav").write_bytes(b"RIFF")
+    assert meeting_stamp.resolve_stamp(rec, "2026-08-04_1203", "mic") == "2026-08-04_1203"
 
 
 def test_штамп_до_28_июля_ещё_читается(tmp_path):

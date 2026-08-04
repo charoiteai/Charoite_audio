@@ -31,6 +31,17 @@ _FMT_LEGACY = "%Y-%m-%d_%H%M"
 # пятнадцатизначным. `-N` — суффикс коллизии из Transcript.__init__.
 _RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{4}(?:\d{2})?)(?:-\d+)?$")
 
+# Хвосты производных файлов конвейера. Список согласован с
+# meeting_processing._AUX_SUFFIXES и rename_meeting.SUFFIXES: расхождение
+# уже стоило темы «… разбор» в списке встреч (инцидент 04.08).
+AUX_SUFFIXES = ("_minutes", "_hints", "_live", "_debrief",
+                "_разбор", "_ревизия_claude", "_спикеры")
+
+# Главный файл встречи после наката темы: «2026-08-04_1203_Отчет_по_задачам».
+# Ровно такие имена шлёт retry из приложения (transcript_path статуса).
+_RE_TITLED = re.compile(
+    r"((\d{4}-\d{2}-\d{2}_\d{4}(?:\d{2})?)(?:-\d+)?)(?:_(.+))?$")
+
 
 def now() -> str:
     """Штамп новой встречи. Секунды не косметика: автоперезапуск демона
@@ -47,6 +58,25 @@ def started_at(stamp: str) -> dt.datetime | None:
     return dt.datetime.strptime(core, FMT if len(core) == 17 else _FMT_LEGACY)
 
 
+def stamp_of(name: str) -> str | None:
+    """Штамп встречи из имени ГЛАВНОГО файла — живого или уже с темой.
+
+    Retry из приложения приходит по transcript_path статуса, а там файл
+    после наката темы: «2026-08-04_1203_Отчет_по_задачам». Производные
+    (`_разбор`, `_minutes`, …) — не встречи: пересобирать по ним нельзя,
+    иначе разбор перезапишет стенограмму.
+    """
+    m = _RE_TITLED.match(name)
+    if not m:
+        return None
+    tail = m.group(3)
+    if tail:
+        low = f"_{tail.lower()}"
+        if any(low.endswith(aux) for aux in AUX_SUFFIXES):
+            return None
+    return m.group(1)
+
+
 def recording_path(rec_dir: pathlib.Path, stamp: str, label: str,
                    ext: str) -> pathlib.Path:
     """Файл канала встречи: демон пишет по этому имени, пересборка по нему ищет.
@@ -55,3 +85,29 @@ def recording_path(rec_dir: pathlib.Path, stamp: str, label: str,
     стоило проекту финальной пересборки всех встреч за неделю.
     """
     return rec_dir / f"{stamp}_{label}.{ext}"
+
+
+def resolve_stamp(rec_dir: pathlib.Path, stamp: str, label: str) -> str:
+    """Штамп, под которым записи канала реально лежат на диске.
+
+    Демон называет записи ПОСЕКУНДНЫМ штампом стенограммы, а retry из
+    приложения знает только минутное имя после наката темы («…_1203»):
+    точного файла с таким именем на диске нет — ищем по минутному
+    префиксу. Двусмысленность (две встречи в одну минуту) честно оставляем
+    как есть: лучше не найти записи, чем пересобрать чужую встречу.
+    """
+    for ext in ("wav", "pcm", "wav.part"):
+        if recording_path(rec_dir, stamp, label, ext).exists():
+            return stamp
+    core = _RE.match(stamp)
+    if core is None or not rec_dir.is_dir():
+        return stamp
+    minute = core.group(1)[:15]
+    tail_by_ext = {ext: f"_{label}.{ext}" for ext in ("wav", "pcm", "wav.part")}
+    found: set[str] = set()
+    for ext, tail in tail_by_ext.items():
+        for p in rec_dir.glob(f"{minute}*{tail}"):
+            cand = p.name[: -len(tail)]
+            if started_at(cand) is not None:
+                found.add(cand)
+    return found.pop() if len(found) == 1 else stamp

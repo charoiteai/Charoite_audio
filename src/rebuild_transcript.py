@@ -82,6 +82,10 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int) -> pa
     блоков, после чего оба делали unlink исходника: финальная стенограмма
     собиралась из битого звука, а восстановить было уже нечего.
     """
+    # Retry из приложения приходит с минутным именем после наката темы, а
+    # записи названы посекундным штампом демона — сперва выясняем, под каким
+    # штампом файлы реально лежат.
+    stamp = meeting_stamp.resolve_stamp(rec_dir, stamp, label)
     name = meeting_stamp.recording_path
     wav, pcm = name(rec_dir, stamp, label, "wav"), name(rec_dir, stamp, label, "pcm")
     part = name(rec_dir, stamp, label, "wav.part")
@@ -261,8 +265,13 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # передаёт tr.stamp в AudioHub), поэтому любая обрезка здесь означает
     # поиск файла, которого не существует. Срез [:15] отбрасывал секунды и с
     # 28.07 не находил ни одной записи — ни одна встреча не пересобиралась.
-    stamp = live.stem
-    base = meeting_stamp.started_at(stamp)   # None → имя не наше
+    # stamp_of отделяет главный файл (в т.ч. уже с темой — так приходит retry
+    # из приложения) от производных: пересборка по «_разбор.md» перезаписала
+    # бы стенограмму разбором.
+    stamp = meeting_stamp.stamp_of(live.stem)
+    if stamp is None:
+        return None
+    base = meeting_stamp.started_at(stamp)
     if base is None:
         return None
     meta = live_meta(live)
