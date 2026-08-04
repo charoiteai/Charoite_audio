@@ -280,9 +280,17 @@ struct TaskDue: Equatable {
         var components = calendar.dateComponents([.year], from: now)
         components.day = day
         components.month = month
-        guard let target = calendar.date(from: components) else { return .later }
-        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: now),
+        guard var target = calendar.date(from: components) else { return .later }
+        var days = calendar.dateComponents([.day], from: calendar.startOfDay(for: now),
                                            to: calendar.startOfDay(for: target)).day ?? 0
+        // В тексте поручения года нет. «до 15.01», прочитанное в августе, —
+        // это следующий январь, а не просрочка на двести дней: всё, что
+        // дальше полугода в прошлом, относим к будущему году.
+        if days < -183, let next = calendar.date(byAdding: .year, value: 1, to: target) {
+            target = next
+            days = calendar.dateComponents([.day], from: calendar.startOfDay(for: now),
+                                           to: calendar.startOfDay(for: target)).day ?? 0
+        }
         if days < 0 { return .overdue(days: -days) }
         if days <= 7 { return .soon(days: days) }
         return .later
