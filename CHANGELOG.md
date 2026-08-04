@@ -5,6 +5,19 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.46.0](https://github.com/charoiteai/Charoite_audio/compare/v0.45.0...v0.46.0) (2026-08-04)
+
+
+### Features
+
+* **macOS:** связать поручения с их встречами ([#236](https://github.com/charoiteai/Charoite_audio/issues/236)) ([4aef81b](https://github.com/charoiteai/Charoite_audio/commit/4aef81bce32b268b3dd268066a2eabb1e99e8d38))
+
+
+### Bug Fixes
+
+* аудит 0.45.0 — ключ API, privacy-обходы, договор об имени встречи ([#237](https://github.com/charoiteai/Charoite_audio/issues/237)) ([1435e2e](https://github.com/charoiteai/Charoite_audio/commit/1435e2ebb8c0cbee6664abcfb3d40b6cfcbd3e45))
+* рабочий стол после живого прогона — сайдбар, карточка, протокол ([#234](https://github.com/charoiteai/Charoite_audio/issues/234)) ([a0c7d32](https://github.com/charoiteai/Charoite_audio/commit/a0c7d329687d1defaeae39d6635386a50b423763))
+
 ## [0.45.0](https://github.com/charoiteai/Charoite_audio/compare/v0.44.0...v0.45.0) (2026-08-04)
 
 
