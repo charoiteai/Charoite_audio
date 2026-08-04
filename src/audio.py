@@ -1,7 +1,6 @@
 """Захват аудио: микрофон и/или BlackHole (системный звук), кольцевой буфер."""
 from __future__ import annotations
 
-import datetime as dt
 import pathlib
 import queue
 import threading
@@ -10,6 +9,8 @@ import wave
 
 import numpy as np
 import sounddevice as sd
+
+import meeting_stamp
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -91,7 +92,7 @@ class AudioHub:
         # datetime.now() на границе минуты давали `..._1359.md` и `..._1400_mic.pcm`,
         # после чего rebuild_transcript не находил записи и молча пропускал
         # финальную пересборку — пользователь оставался с черновиком чанков.
-        self.stamp = stamp or f"{dt.datetime.now():%Y-%m-%d_%H%M%S}"
+        self.stamp = stamp or meeting_stamp.now()
         # метка своего канала — имя владельца из конфига
         own = (cfg.get("sufler", {}).get("user_name") or "").strip()
         if own:
@@ -165,7 +166,8 @@ class AudioHub:
         try:
             self.record_dir.mkdir(parents=True, exist_ok=True)
             for c in self.captures:
-                path = self.record_dir / f"{self.stamp}_{c.label}.pcm"
+                path = meeting_stamp.recording_path(
+                    self.record_dir, self.stamp, c.label, "pcm")
                 # "xb", а не "wb": коллизия штампов должна быть видимой ошибкой,
                 # а не молчаливым обнулением чужой записи.
                 self._sinks[c.label] = path.open("xb")

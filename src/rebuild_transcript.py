@@ -36,6 +36,7 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 import numpy as np  # noqa: E402
 import yaml  # noqa: E402
 
+import meeting_stamp  # noqa: E402
 import privacy  # noqa: E402
 from diarize import diarize  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
 from main import NOISE, Transcript  # noqa: E402
@@ -81,8 +82,9 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int) -> pa
     блоков, после чего оба делали unlink исходника: финальная стенограмма
     собиралась из битого звука, а восстановить было уже нечего.
     """
-    wav, pcm = rec_dir / f"{stamp}_{label}.wav", rec_dir / f"{stamp}_{label}.pcm"
-    part = rec_dir / f"{stamp}_{label}.wav.part"
+    name = meeting_stamp.recording_path
+    wav, pcm = name(rec_dir, stamp, label, "wav"), name(rec_dir, stamp, label, "pcm")
+    part = name(rec_dir, stamp, label, "wav.part")
     deadline = time.time() + WAIT_WAV_S
     while time.time() < deadline:
         if wav.exists():
@@ -255,8 +257,13 @@ def names_by_time(live_text: str, base, segments: list[tuple[float, float, str]]
 
 
 def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
-    stamp = live.stem[:15]
-    if not re.match(r"\d{4}-\d{2}-\d{2}_\d{4}", stamp):
+    # Штамп берём целиком: демон называет записи ИМЕНЕМ СТЕНОГРАММЫ (daemon
+    # передаёт tr.stamp в AudioHub), поэтому любая обрезка здесь означает
+    # поиск файла, которого не существует. Срез [:15] отбрасывал секунды и с
+    # 28.07 не находил ни одной записи — ни одна встреча не пересобиралась.
+    stamp = live.stem
+    base = meeting_stamp.started_at(stamp)   # None → имя не наше
+    if base is None:
         return None
     meta = live_meta(live)
     sr_cfg = int(cfg["audio"]["samplerate"])
@@ -368,9 +375,8 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     if not lines:
         return None
 
-    # часы:минуты от реального начала встречи (stamp)
+    # часы:минуты от реального начала встречи — base посчитан из штампа выше
     import datetime as dt
-    base = dt.datetime.strptime(stamp, "%Y-%m-%d_%H%M")
 
     # Имена: сперва переносим добытые ЖИВОЙ сессией (демон проверял их всю
     # встречу — самопредставления, ответы после обращения), сопоставляя по
