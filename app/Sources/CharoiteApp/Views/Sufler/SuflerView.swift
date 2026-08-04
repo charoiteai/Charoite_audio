@@ -659,8 +659,14 @@ struct SuflerView: View {
                           ? L.t("Спросить Claude по ходу встречи — кусок стенограммы уйдёт в облако (⌘⇧⏎)", "Ask Claude mid-meeting — a transcript slice goes to the cloud (⌘⇧⏎)", "会议中问 Claude — 一段逐字稿将发送至云端（⌘⇧⏎）")
                           : L.t("Облако выключено: включите «Claude» в тулбаре. Стенограмма не покидает машину", "Cloud is off: enable “Claude” in the toolbar. The transcript never leaves this machine", "云端已关闭：在工具栏开启「Claude」。逐字稿不会离开本机"))
 
-                Button("⏮") { sufler.requestExpand() }
+                Button { sufler.requestExpand() } label: {
+                    HStack(spacing: 4) {
+                        if sufler.isExpanding { ProgressView().controlSize(.small) }
+                        Text("⏮")
+                    }
+                }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
+                    .disabled(sufler.isExpanding)
                     .help(L.t("Что было по текущей теме на прошлых встречах — из архива в нить (⌘⇧E)",
                               "What past meetings said on the current topic — from the archive into the thread (⌘⇧E)",
                               "过往会议对当前话题的讨论——从档案写入脉络（⌘⇧E）"))
@@ -684,8 +690,8 @@ struct SuflerView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         if sufler.lines.isEmpty {
-                            emptyState(sufler.isRunning ? "waveform" : "waveform.circle",
-                                       sufler.isRunning ? L.t("Слушаю…", "Listening…", "聆听中…") : L.t("Нажми «Слушать встречу»", "Press “Listen to meeting”", "点按「聆听会议」"))
+                            SuflerEmptyState(symbol: sufler.isRunning ? "waveform" : "waveform.circle",
+                                             text: sufler.isRunning ? L.t("Слушаю…", "Listening…", "聆听中…") : L.t("Нажми «Слушать встречу»", "Press “Listen to meeting”", "点按「聆听会议」"))
                         }
                         // Ритм чтения: реплики одного спикера идут плотно, смена
                         // спикера даёт воздух — глаз находит границы разговора
@@ -733,7 +739,7 @@ struct SuflerView: View {
                                            L.t("Автотезисы появятся по ходу встречи", "Auto-theses appear as the meeting goes", "要点将随会议进行自动出现"))
                             }
                             ForEach(Array(sufler.theses.enumerated()), id: \.offset) { _, t in
-                                thesisCard(t)
+                                SuflerThesisCard(text: t)
                                     .transition(.opacity.combined(with: .move(edge: .bottom)))
                             }
                             Color.clear.frame(height: 1).id("thesesBottom")
@@ -897,7 +903,7 @@ struct SuflerView: View {
                     .font(.caption2.weight(.semibold))
                 Spacer()
                 if !sufler.cloud.isEmpty {
-                    CopyButton(text: { sufler.cloud })
+                    SuflerCopyButton(text: { sufler.cloud })
                 }
             }
             .foregroundStyle(Theme.sky)
@@ -927,7 +933,7 @@ struct SuflerView: View {
                 .font(.caption.weight(.semibold))
             Spacer()
             if let copy {
-                CopyButton(text: copy)
+                SuflerCopyButton(text: copy)
             }
         }
         .foregroundStyle(.secondary)
@@ -936,68 +942,6 @@ struct SuflerView: View {
         .background(.bar)
     }
 
-    /// Маленькая кнопка «скопировать панель»: содержимое уходит в буфер,
-    /// иконка на секунду становится галочкой — видно, что сработало.
-    private struct CopyButton: View {
-        let text: () -> String
-        @State private var copied = false
-
-        var body: some View {
-            Button {
-                let s = text()
-                guard !s.isEmpty else { return }
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(s, forType: .string)
-                copied = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
-            } label: {
-                Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                    .font(.caption)
-            }
-            .buttonStyle(.plain)
-            .help(L.t("Скопировать", "Copy", "复制"))
-        }
-    }
-
-    /// Единое пустое состояние панелей: иконка + строка, спокойно и тепло.
-    private func emptyState(_ symbol: String, _ text: String) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: symbol)
-                .font(.title2)
-                .foregroundStyle(.quaternary)
-            Text(text)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 28)
-        .padding(.horizontal, 16)
-    }
-
-    /// Тезис — карточка с подложкой по типу: 📌 решения тёплые, ⏮ контекст
-    /// из архива бирюзовый, 💭/🔬 мысли нейтральные (💎 остался только в
-    /// старых записях — рендерим, но демон его больше не шлёт: факты ведёт
-    /// нить). Плоский текст с эмодзи читался как лог; карточки дают зацепки.
-    private func thesisCard(_ t: String) -> some View {
-        let tint: Color = t.hasPrefix("📌") ? .orange
-            : t.hasPrefix("💎") ? Theme.accent
-            : t.hasPrefix("⏮") ? .teal
-            : .gray
-        return Text(t)
-            .font(.callout)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
-            .overlay(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 1.5)
-                    .fill(tint.opacity(0.55))
-                    .frame(width: 3)
-                    .padding(.vertical, 5)
-            }
-    }
 }
 
 #endif

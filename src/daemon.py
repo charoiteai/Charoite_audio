@@ -688,6 +688,8 @@ def main():
             except Exception as e:  # noqa: BLE001 — поток не должен умирать молча
                 emit({"type": "status", "text": f"нить встречи сорвалась: {e}"})
 
+    expand_lock = threading.Lock()
+
     def expand_topic(title: str = ""):
         """⏮ по клавише: что было по теме раньше — из графа прямо в нить.
 
@@ -696,43 +698,53 @@ def main():
         нить строками ⏮ — туда, где он его ждёт, а не в отдельное окно.
         Без названия разбирается текущая (последняя) тема нити.
         """
-        title = title.strip() or thread.last_topic_title
-        if not title:
-            emit({"type": "status", "text": "⏮ нить пуста — разбирать нечего"})
+        if not expand_lock.acquire(blocking=False):
+            emit({"type": "status", "text": "⏮ прошлый разбор ещё выполняется"})
             return
         try:
-            import requests as _rq
-            _folder = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser().name
-            v = _rq.post("http://127.0.0.1:8100/vault_search",
-                         json={"query": title, "limit": 3, "folder": _folder,
-                               "snippet_chars": 700}, timeout=8).json().get("text", "")
-        except Exception:  # noqa: BLE001 — brain лежит: честный статус, не тишина
-            emit({"type": "status", "text": "⏮ архив недоступен (brain не отвечает)"})
-            return
-        if not v or v.startswith("⚠") or "не найдено" in v.lower():
-            emit({"type": "status", "text": f"⏮ в архиве по «{title}» пусто"})
-            return
-        try:
-            with hint_lock:   # не толкаться с подсказкой на одной модели
-                out = "".join(llm.stream(
-                    f"Выдержки из архива прошлых встреч по теме «{title}»:\n\n{v}\n\n"
-                    "Выпиши 2-3 самых важных факта прошлых встреч по этой теме: "
-                    "решение, статус, кто ведёт — с датой, если она видна. "
-                    "По строке на факт, без вступлений и нумерации.",
-                    model=llm.small,
-                    system="Ты сжимаешь архив встреч в короткие факты. "
-                           "Отвечай только строками фактов."))
-        except Exception as e:  # noqa: BLE001
-            emit({"type": "status", "text": f"⏮ разбор сорвался: {e}"})
-            return
-        from meeting_thread import parse_archive_facts
-        added = thread.add_archive(title, parse_archive_facts(out))
-        if added:
-            emit({"type": "thread", "text": thread.render()})
-            append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ⏮ {title}",
-                        thread.full())
-        else:
-            emit({"type": "status", "text": f"⏮ по «{title}» нового не нашлось"})
+            emit({"type": "expand_started"})
+            title = title.strip() or thread.last_topic_title
+            if not title:
+                emit({"type": "status", "text": "⏮ нить пуста — разбирать нечего"})
+                return
+            try:
+                import requests as _rq
+                _folder = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser().name
+                v = _rq.post("http://127.0.0.1:8100/vault_search",
+                             json={"query": title, "limit": 3, "folder": _folder,
+                                   "snippet_chars": 700}, timeout=8).json().get("text", "")
+            except Exception:  # noqa: BLE001 — brain лежит: честный статус, не тишина
+                emit({"type": "status", "text": "⏮ архив недоступен (brain не отвечает)"})
+                return
+            if not v or v.startswith("⚠") or "не найдено" in v.lower():
+                emit({"type": "status", "text": f"⏮ в архиве по «{title}» пусто"})
+                return
+            try:
+                with hint_lock:   # не толкаться с подсказкой на одной модели
+                    out = "".join(llm.stream(
+                        f"Выдержки из архива прошлых встреч по теме «{title}»:\n\n{v}\n\n"
+                        "Выпиши 2-3 самых важных факта прошлых встреч по этой теме: "
+                        "решение, статус, кто ведёт — с датой, если она видна. "
+                        "По строке на факт, без вступлений и нумерации.",
+                        model=llm.small,
+                        system="Ты сжимаешь архив встреч в короткие факты. "
+                               "Отвечай только строками фактов."))
+            except Exception as e:  # noqa: BLE001
+                emit({"type": "status", "text": f"⏮ разбор сорвался: {e}"})
+                return
+            from meeting_thread import parse_archive_facts
+            added = thread.add_archive(title, parse_archive_facts(out))
+            if added:
+                emit({"type": "thread", "text": thread.render()})
+                append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ⏮ {title}",
+                            thread.full())
+            else:
+                emit({"type": "status", "text": f"⏮ по «{title}» нового не нашлось"})
+        finally:
+            try:
+                emit({"type": "expand_done"})
+            finally:
+                expand_lock.release()
 
     def auto_hint_loop():
         """Подсказки в реальном времени: сами, по мере накопления разговора."""
