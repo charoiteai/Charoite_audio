@@ -114,8 +114,9 @@ def check_ollama(cfg: dict) -> None:
     if base is None:
         return
     try:
-        # nosemgrep — base выдан privacy.llm_base_url: либо loopback, либо
-        # явно разрешённый владельцем адрес; не пользовательский ввод
+        # base выдан privacy.llm_base_url: либо loopback, либо явно
+        # разрешённый владельцем адрес; не пользовательский ввод.
+        # nosemgrep
         with urllib.request.urlopen(f"{base}/api/tags", timeout=4) as r:
             models = [m.get("name", "") for m in json.load(r).get("models", [])]
     except OSError:
