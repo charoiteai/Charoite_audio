@@ -12,12 +12,12 @@ struct PrepView: View {
     @ObservedObject private var calendar = CalendarService.shared
     @ObservedObject private var tasks = TasksService.shared
     @ObservedObject private var processing = MeetingProcessingService.shared
+    @ObservedObject private var repository = MeetingRepository.shared
+    @ObservedObject private var navigation = WorkspaceNavigation.shared
     /// Хвосты по теме ближайшей встречи — из того же поиска, что в окне встреч.
     @State private var topicHits: [MeetingSearch.Hit] = []
     @State private var topicSearchTask: Task<Void, Never>?
     @State private var isLoadingTopic = false
-    @State private var cardMeeting: MeetingProcessingSnapshot?
-    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -42,7 +42,6 @@ struct PrepView: View {
         }
         .onChange(of: calendar.today) { _, _ in loadTopicTrail() }
         .onDisappear { cancelTopicLoad() }
-        .sheet(item: $cardMeeting) { MeetingCardView(meeting: $0) }
     }
 
     private var header: some View {
@@ -112,7 +111,11 @@ struct PrepView: View {
                 } else {
                     ForEach(topicHits) { hit in
                         Button {
-                            NSWorkspace.shared.open(hit.file)
+                            if let meeting = repository.record(matching: hit) {
+                                navigation.open(.meetings, meetingID: meeting.id)
+                            } else {
+                                NSWorkspace.shared.open(hit.file)
+                            }
                         } label: {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(hit.title).font(.callout.weight(.medium)).lineLimit(1)
@@ -168,7 +171,7 @@ struct PrepView: View {
             section(L.t("Другие открытые поручения", "Other open action items", "其他未完成任务"),
                     icon: "tray.full") {
                 Button {
-                    openWindow(id: "tasks")
+                    navigation.open(.tasks)
                 } label: {
                     HStack(spacing: 6) {
                         Text(L.t("\(otherOpenTaskCount) в общем списке",
@@ -191,7 +194,7 @@ struct PrepView: View {
             section(L.t("Прошлая встреча по теме", "Last meeting on this topic", "该主题的上次会议"),
                     icon: "clock") {
                 Button {
-                    cardMeeting = last
+                    navigation.open(.meetings, meetingID: last.meetingID)
                 } label: {
                     HStack(spacing: 6) {
                         Text(last.title).font(.callout.weight(.medium)).lineLimit(1)

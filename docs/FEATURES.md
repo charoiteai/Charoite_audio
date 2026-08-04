@@ -355,6 +355,24 @@ it signals degradation, it does not break the loop.
   next event's title (utility tails like "(weekly)" are trimmed), open
   action items and the last meeting's card. Everything gathers in one
   window a minute before the call, no tour across four windows.
+- **One meeting workspace** — the macOS app now has one main window with
+  Today, Meeting, Meetings, Tasks and Memory in the sidebar. Today follows
+  the lifecycle from the next calendar event through recording and processing
+  to the ready result. The meeting library keeps the list and card side by
+  side, and a search hit opens that card instead of a raw Markdown file.
+  Menu-bar actions and prep navigate to the same workspace; the separate
+  memory chat remains available only as an optional pop-out.
+- **Meeting actions without Terminal** — the card copies a participant-safe
+  protocol through `protocol.py`, opens the transcript for correction,
+  rebuilds the result and previews every trace before the destructive
+  `forget_meeting.py` confirmation. The established scripts remain the one
+  implementation of the privacy rules.
+- **Portable meeting card** — each archive folder receives a recoverable
+  `meeting.meta.json` with stable, language-independent keys for participants,
+  gist, decisions, action items and open questions. Markdown remains the
+  source of truth; the manifest is regenerated from it. macOS, iOS and Android
+  show the same structured card and fall back to legacy graph notes when an
+  older meeting has no manifest.
 
 - **Import folder (watched)** — point the app at a folder (Settings →
   Import, or `--scan` in the CLI): recordings dropped there become graph

@@ -155,6 +155,25 @@ def test_apply_renames_all_five_places(world):
     assert data["transcript_path"].endswith(f"{STAMP}_Инцидент_загрузки.md")
 
 
+def test_apply_rebuilds_portable_manifest(world):
+    """Телефоны читают тему из meeting.meta.json: после переименования
+    манифест обязан говорить новую тему, а не прошлогоднюю."""
+    graph, tdir = world
+    old = graph / rm.ARCHIVE_DIR / "2026-08-03 11-30 — Обновление ОС"
+    (old / "meeting.meta.json").write_text(json.dumps(
+        {"schema_version": 1, "meeting_id": STAMP, "title": "Обновление ОС"},
+        ensure_ascii=False), encoding="utf-8")
+    pretty, slug = rm.pretty_and_slug("Инцидент загрузки")
+
+    rm.apply(rm.plan(graph, tdir, STAMP, pretty, slug), graph, STAMP, pretty)
+
+    new_folder = graph / rm.ARCHIVE_DIR / "2026-08-03 11-30 — Инцидент загрузки"
+    saved = json.loads(
+        (new_folder / "meeting.meta.json").read_text(encoding="utf-8"))
+    assert saved["title"] == "Инцидент загрузки"
+    assert saved["meeting_id"] == STAMP
+
+
 def test_meeting_without_graph_rename_still_works(world):
     """Встреча могла не доехать до графа: переименовать файлы всё равно можно."""
     graph, tdir = world

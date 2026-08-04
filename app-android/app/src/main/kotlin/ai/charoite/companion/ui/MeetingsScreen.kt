@@ -74,7 +74,19 @@ fun MeetingsScreen(onPickGraph: () -> Unit) {
             Text(meeting.title, style = MaterialTheme.typography.titleLarge)
             Text(meeting.stamp, style = MaterialTheme.typography.labelMedium)
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            if (body == null) {
+            val manifest = meeting.manifest
+            if (manifest != null) {
+                manifest.participants.takeIf { it.isNotEmpty() }?.let {
+                    Text(L.t("Участники: ", "Participants: ", "参会者：") + it.joinToString())
+                }
+                manifest.summary?.let { Text(it, Modifier.padding(vertical = 8.dp)) }
+                MeetingSection(L.t("Решили", "Decided", "决定"), manifest.decisions)
+                MeetingSection(L.t("Поручения", "Action items", "任务"), manifest.actionItems)
+                MeetingSection(
+                    L.t("Открытые вопросы", "Open questions", "待解决问题"),
+                    manifest.openQuestions,
+                )
+            } else if (body == null) {
                 LinearProgressIndicator(Modifier.fillMaxWidth())
             } else {
                 Text(body.orEmpty())
@@ -104,4 +116,11 @@ fun MeetingsScreen(onPickGraph: () -> Unit) {
             }
         }
     }
+}
+
+@Composable
+private fun MeetingSection(title: String, items: List<String>) {
+    if (items.isEmpty()) return
+    Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
+    items.forEach { Text("• $it", modifier = Modifier.padding(top = 4.dp)) }
 }

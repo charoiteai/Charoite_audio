@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+import datetime as dt
+import json
 import os
 import pathlib
 import re
@@ -135,6 +137,7 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
     _write_opener(folder / "Открыть в Obsidian.command", obs_url)
     _derive_extras(folder)
     _gen_summary(folder)
+    _write_manifest(folder, stamp, pretty)
     _rebuild_index(graph)
     # Флаг снимаем со ВСЕГО графа, а не только с архивной папки.
     # iCloud метит UF_HIDDEN что угодно в своём контейнере, и на папках
@@ -146,6 +149,96 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
     # в Finder и Obsidian.
     _unhide(graph)
     return folder
+
+
+def _manifest_items(text: str, names: tuple[str, ...]) -> list[str]:
+    """Пункты секции саммари для стабильных полей манифеста."""
+    for name in names:
+        match = re.search(
+            rf"(?m)^##\s*{re.escape(name)}\s*$\n(.*?)(?=^##\s|\Z)",
+            text,
+            re.S | re.M,
+        )
+        if not match:
+            continue
+        items = [
+            re.sub(r"^\s*[-*]\s+", "", line).strip()
+            for line in match.group(1).splitlines()
+            if re.match(r"^\s*[-*]\s+\S", line)
+        ]
+        return [item for item in items if item]
+    return []
+
+
+def _manifest_participants(transcript: str) -> list[str]:
+    for line in transcript.splitlines()[:8]:
+        if not line.startswith(("Участники", "Participants", "参会者")) or ":" not in line:
+            continue
+        return [name.strip() for name in line.split(":", 1)[1].split(",") if name.strip()]
+    return []
+
+
+def _manifest_duration(transcript: str) -> int | None:
+    times = []
+    for line in transcript.splitlines():
+        if not line.startswith("**"):
+            continue
+        for hour, minute in re.findall(r"\b(\d{1,2}):(\d{2})\b", line):
+            h, m = int(hour), int(minute)
+            if h < 24 and m < 60:
+                times.append(h * 60 + m)
+    if len(times) < 2:
+        return None
+    span = times[-1] - times[0]
+    if span < 0:
+        span += 24 * 60
+    return span or None
+
+
+def build_manifest(folder: pathlib.Path, stamp: str, title: str) -> dict:
+    """Производный индекс встречи; все поля можно восстановить из Markdown."""
+    summary_path = folder / "Саммари.md"
+    transcript_path = folder / "Стенограмма.md"
+    summary = summary_path.read_text(encoding="utf-8") if summary_path.exists() else ""
+    transcript = transcript_path.read_text(encoding="utf-8") if transcript_path.exists() else ""
+    gist_match = re.search(r"\*\*Суть одной строкой:\*\*\s*(.+)", summary)
+    files = {
+        key: name for key, name in (
+            ("transcript", "Стенограмма.md"),
+            ("summary", "Саммари.md"),
+            ("minutes", "Минутки.md"),
+            ("debrief", "Разбор.md"),
+        ) if (folder / name).exists()
+    }
+    started = None
+    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})_(\d{2})(\d{2})(?:\d{2})?", stamp)
+    if match:
+        started = f"{match.group(1)}T{match.group(2)}:{match.group(3)}:00"
+    return {
+        "schema_version": 1,
+        "meeting_id": stamp,
+        "title": title,
+        "started_at": started,
+        "duration_minutes": _manifest_duration(transcript),
+        "participants": _manifest_participants(transcript),
+        "summary": gist_match.group(1).strip() if gist_match else None,
+        "decisions": _manifest_items(summary, ("Решили", "Решения", "Decisions", "决定")),
+        "action_items": _manifest_items(summary, ("Поручения", "Action items", "任务")),
+        "open_questions": _manifest_items(summary, ("Открытые вопросы", "Open questions", "待解决问题")),
+        "files": files,
+        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+
+
+def _write_manifest(folder: pathlib.Path, stamp: str, title: str) -> None:
+    """Атомарно обновить манифест после сборки человекочитаемых файлов."""
+    path = folder / "meeting.meta.json"
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(build_manifest(folder, stamp, title), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(path)
 
 
 def _history_context(folder: pathlib.Path) -> str:

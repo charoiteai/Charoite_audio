@@ -9,6 +9,7 @@ struct SuflerView: View {
     @ObservedObject private var processing = MeetingProcessingService.shared
     @ObservedObject private var tasksSvc = TasksService.shared
     @ObservedObject private var calendar = CalendarService.shared
+    @ObservedObject private var navigation = WorkspaceNavigation.shared
     @AppStorage("charoite.calendarBriefs") private var calendarBriefs = false
     @State private var question = ""
     @State private var archiveAnswer = ""      // ответ по архиву, когда встреча не идёт
@@ -19,10 +20,6 @@ struct SuflerView: View {
     @State private var isSearchingArchive = false
     @State private var showFirstRun = false
     @AppStorage("charoit.firstRunSeen") private var firstRunSeen = false
-    // Архивный поиск (vault + граф) — выключаемый: не всем нужно, чтобы
-    // приложение вне встреч ходило по личному vault. Чисто клиентский
-    // тумблер, демону о нём знать не нужно.
-    @AppStorage("sufler.archiveOn") private var archiveOn = true
     // чат встроен в суфлёр (панель справа); видимость запоминается
     @AppStorage("sufler.showChat") private var showChat = false
     @Environment(\.openWindow) private var openWindow
@@ -55,13 +52,9 @@ struct SuflerView: View {
                 }
             }
             .animation(.spring(response: 0.3, dampingFraction: 0.85), value: showChat)
-            // Вне встречи поле вопроса живёт только ради архива: тумблер
-            // «Архив» выключен — прячем и поле, и разделитель. При ОТКРЫТОМ
-            // чате вне встречи бар тоже прячем: два похожих поля ввода на
-            // одном экране читались как дубль («почему два окна запросов?»),
-            // а чат с памятью закрывает те же вопросы. Во время встречи бар
-            // нужен всегда — это вопрос демону по живой стенограмме.
-            if sufler.isRunning || (archiveOn && !showChat) {
+            // Вопрос здесь относится только к живому разговору. Между
+            // встречами единый ввод находится в разделе «Память».
+            if sufler.isRunning {
                 Divider()
                 askBar
             }
@@ -97,7 +90,7 @@ struct SuflerView: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { askArchive(q) }
             }
             if env["CHAROITE_OPEN_TASKS"] == "1" {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { openWindow(id: "tasks") }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { navigation.open(.tasks) }
             }
         }
     }
@@ -610,10 +603,6 @@ struct SuflerView: View {
                     .help(L.t("Параллельные ответы Claude на вопросы собеседника", "Parallel Claude answers to the other side's questions", "Claude 并行回答对方的提问"))
                     .accessibilityLabel(L.t("Ответы Claude", "Claude answers", "Claude 回答"))
                     .accessibilityHint(L.t("Параллельные ответы облачной модели", "Parallel answers from the cloud model", "云端模型的并行回答"))
-                Toggle(isOn: $archiveOn) { Text(L.t("Архив", "Archive", "档案")).fixedSize() }
-                    .help(L.t("Вопросы по архиву встреч и графу, когда встреча не идёт", "Questions over the meeting archive and graph between meetings", "会议之外对档案与图谱提问"))
-                    .accessibilityLabel(L.t("Поиск по архиву встреч", "Meeting archive search", "会议档案搜索"))
-                    .accessibilityHint(L.t("Ответы по прошлым встречам вне записи", "Answers from past meetings outside recording", "非录音时基于过往会议回答"))
             }
             .fixedSize(horizontal: true, vertical: false)
             .toggleStyle(.switch)
@@ -638,8 +627,7 @@ struct SuflerView: View {
             // экрана в ту секунду, когда начата новая.
             if !processing.history.isEmpty {
                 Button {
-                    openWindow(id: "meetings")
-                    NSApp.activate(ignoringOtherApps: true)
+                    navigation.open(.meetings)
                 } label: {
                     Label(L.t("Встречи", "Meetings", "会议"),
                           systemImage: "clock.arrow.circlepath")
@@ -651,8 +639,7 @@ struct SuflerView: View {
 
             Button {
                 TasksService.shared.rescan()
-                openWindow(id: "tasks")
-                NSApp.activate(ignoringOtherApps: true)
+                navigation.open(.tasks)
             } label: {
                 // бейдж открытых поручений: видно, что по встречам есть хвосты
                 if tasksOpen > 0 {
@@ -764,10 +751,11 @@ struct SuflerView: View {
             // вовсе: 04.08 на экране была лента «вопрос — вопрос — уточните
             // вопрос», а разговора не было видно.
 
-            // Вне встречи панель живёт для ответов по архиву (тумблер «Архив»),
-            // во время встречи — для подсказок И облачной ленты Claude в одном
-            // окне. Со всеми выключенными пустых мёртвых панелей на экране нет.
-            if sufler.isRunning || archiveOn {
+            // Архивные вопросы переехали в единый раздел «Память»; эта панель
+            // теперь принадлежит только живому разговору. Нить видна всю
+            // встречу независимо от тумблеров ⚡/☁ — демон вплетает в неё
+            // и тезисы, и хвосты архива (решение 04.08, PR #232).
+            if sufler.isRunning {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     // подсказки выключены, облако включено — панель честно

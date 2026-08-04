@@ -10,7 +10,9 @@ import SwiftUI
 /// расстоянии кнопки; переименование — без обхода пяти мест руками.
 struct MeetingCardView: View {
     let meeting: MeetingProcessingSnapshot
+    var embedded = false
     @ObservedObject private var processing = MeetingProcessingService.shared
+    @ObservedObject private var navigation = WorkspaceNavigation.shared
     @Environment(\.dismiss) private var dismiss
     @State private var card = MeetingCard()
     @State private var renaming = false
@@ -18,6 +20,10 @@ struct MeetingCardView: View {
     @State private var renameBusy = false
     @State private var renameFailed = false
     @State private var copied = false
+    @State private var actionBusy = false
+    @State private var actionMessage = ""
+    @State private var forgetPlan = ""
+    @State private var showForget = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -37,16 +43,26 @@ struct MeetingCardView: View {
                             items: card.decisions)
                     section(L.t("Поручения", "Action items", "任务"), mark: "▸",
                             items: card.tasks)
+                    section(L.t("Открытые вопросы", "Open questions", "待解决问题"), mark: "?",
+                            items: card.openQuestions)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 2)
+            }
+            if !actionMessage.isEmpty {
+                Text(actionMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
             Divider()
             actions
         }
         .padding(14)
-        .frame(width: 500, height: 460)
+        .frame(minWidth: 420, minHeight: 400)
+        .frame(width: embedded ? nil : 500, height: embedded ? nil : 460)
         .task { card = MeetingCardLoader.load(for: meeting) }
+        .sheet(isPresented: $showForget) { forgetSheet }
     }
 
     private var header: some View {
@@ -75,13 +91,15 @@ struct MeetingCardView: View {
                               "重命名会议——主题将在所有文件和图谱中更新"))
                 }
                 Spacer()
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
+                if !embedded {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
             HStack(spacing: 6) {
                 Text(dateText)
@@ -151,7 +169,12 @@ struct MeetingCardView: View {
             if let url = card.obsidianURL {
                 Button("Obsidian") { NSWorkspace.shared.open(url) }
             }
+            Button(L.t("Протокол участникам", "Participant protocol", "参会者纪要")) {
+                copyParticipantProtocol()
+            }
+            .disabled(actionBusy)
             Spacer()
+            if actionBusy { ProgressView().controlSize(.small) }
             if copied {
                 Text(L.t("Скопировано", "Copied", "已复制"))
                     .font(.caption).foregroundStyle(.secondary)
@@ -171,9 +194,58 @@ struct MeetingCardView: View {
                 }
             }
             .fixedSize()
+            Menu {
+                Button(L.t("Исправить стенограмму…", "Edit transcript…", "编辑逐字稿…")) {
+                    processing.openTranscript(meeting)
+                }
+                Button(L.t("Пересобрать результат", "Rebuild result", "重建结果")) {
+                    processing.rebuild(meeting)
+                    actionMessage = L.t("Пересборка запущена",
+                                        "Rebuild started",
+                                        "已开始重建")
+                }
+                Divider()
+                Button(L.t("Забыть встречу…", "Forget meeting…", "忘记会议…"),
+                       role: .destructive) {
+                    prepareForget()
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .disabled(actionBusy)
         }
         .buttonStyle(.link)
         .font(.callout)
+    }
+
+    private var forgetSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(L.t("Забыть встречу", "Forget meeting", "忘记会议"),
+                  systemImage: "trash")
+                .font(.headline).foregroundStyle(.red)
+            Text(L.t("Будут удалены перечисленные ниже следы. Это действие нельзя отменить.",
+                     "The traces listed below will be deleted. This cannot be undone.",
+                     "下列痕迹将被删除。此操作无法撤销。"))
+                .font(.callout).foregroundStyle(.secondary)
+            ScrollView {
+                Text(forgetPlan)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: Theme.radiusCard)
+                .fill(Color(nsColor: .quaternarySystemFill)))
+            HStack {
+                Spacer()
+                Button(L.t("Отмена", "Cancel", "取消")) { showForget = false }
+                Button(L.t("Удалить безвозвратно", "Delete permanently", "永久删除"),
+                       role: .destructive) { runForget() }
+                    .disabled(actionBusy)
+            }
+        }
+        .padding(16)
+        .frame(width: 600, height: 430)
     }
 
     private var dateText: String {
@@ -193,6 +265,62 @@ struct MeetingCardView: View {
         }
     }
 
+    private func copyParticipantProtocol() {
+        guard !actionBusy else { return }
+        actionBusy = true
+        actionMessage = ""
+        Task {
+            let result = await MeetingActionsService.participantProtocol(meeting)
+            actionBusy = false
+            if result.succeeded {
+                copy(result.text)
+                actionMessage = L.t("Безопасный протокол скопирован — стенограммы в нём нет.",
+                                    "Safe protocol copied — it contains no transcript.",
+                                    "安全纪要已复制——其中不含逐字稿。")
+            } else {
+                actionMessage = result.text
+            }
+        }
+    }
+
+    private func prepareForget() {
+        guard !actionBusy else { return }
+        actionBusy = true
+        actionMessage = ""
+        Task {
+            let result = await MeetingActionsService.forgetPlan(meeting)
+            actionBusy = false
+            if result.succeeded {
+                forgetPlan = result.text
+                showForget = true
+            } else {
+                actionMessage = result.text
+            }
+        }
+    }
+
+    private func runForget() {
+        guard !actionBusy else { return }
+        actionBusy = true
+        Task {
+            let result = await MeetingActionsService.forget(meeting)
+            actionBusy = false
+            if result.succeeded {
+                showForget = false
+                navigation.selectedMeetingID = nil
+                processing.reload()
+                if embedded {
+                    navigation.open(.meetings)
+                } else {
+                    dismiss()
+                }
+            } else {
+                actionMessage = result.text
+                showForget = false
+            }
+        }
+    }
+
     private func runRename() {
         guard !renameBusy else { return }
         renameBusy = true
@@ -204,7 +332,15 @@ struct MeetingCardView: View {
             renameFailed = !ok
             // Список обновится сам через refresh(); карточка закрывается,
             // потому что её snapshot держит старый путь и заголовок.
-            if ok { dismiss() }
+            if ok {
+                processing.reload()
+                if embedded {
+                    navigation.selectedMeetingID = nil
+                    navigation.open(.meetings)
+                } else {
+                    dismiss()
+                }
+            }
         }
     }
 }

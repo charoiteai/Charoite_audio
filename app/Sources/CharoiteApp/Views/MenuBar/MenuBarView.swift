@@ -8,7 +8,7 @@ struct MenuBarView: View {
     @ObservedObject private var processing = MeetingProcessingService.shared
     @ObservedObject private var dictation = DictationService.shared
     @ObservedObject private var chat = LocalChatService.shared
-    @Environment(\.openWindow) private var openWindow
+    @ObservedObject private var navigation = WorkspaceNavigation.shared
     @State private var quick = ""
     @State private var stackNote = ""   // здоровье стека: пусто = всё в порядке
 
@@ -64,6 +64,7 @@ struct MenuBarView: View {
                     }
                 } else {
                     Button {
+                        navigation.open(.meeting)
                         SuflerService.shared.start()
                     } label: {
                         Label(L.t("Начать запись", "Start recording", "开始录音"),
@@ -72,7 +73,9 @@ struct MenuBarView: View {
                     .disabled(processing.isProcessing)
                 }
                 if !sufler.isRunning, let title = processing.actionTitle {
-                    Button(title) { processing.openResult() }
+                    Button(title) {
+                        navigation.open(.meetings, meetingID: processing.snapshot?.meetingID)
+                    }
                 }
                 if !sufler.isRunning, processing.canRetry || processing.retryInFlight {
                     Button(L.t("Повторить", "Retry", "重试")) { processing.retry() }
@@ -84,12 +87,10 @@ struct MenuBarView: View {
                 // показывает двадцать встреч за две недели, «Все встречи»
                 // обещали архив, которого за этой кнопкой нет.
                 Button(L.t("Последние встречи", "Recent meetings", "近期会议")) {
-                    openWindow(id: "meetings")
-                    NSApp.activate(ignoringOtherApps: true)
+                    navigation.open(.meetings)
                 }
                 Button(L.t("Сегодня", "Today", "今天")) {
-                    openWindow(id: "prep")
-                    NSApp.activate(ignoringOtherApps: true)
+                    navigation.open(.today)
                 }
             }
             .buttonStyle(.plain)
@@ -138,8 +139,7 @@ struct MenuBarView: View {
 
             HStack {
                 Button(L.t("Открыть", "Open", "打开")) {
-                    NSApp.activate(ignoringOtherApps: true)
-                    NSApp.windows.first { $0.canBecomeMain }?.makeKeyAndOrderFront(nil)
+                    navigation.open(.today)
                 }
                 Spacer()
                 Button {
@@ -190,8 +190,7 @@ struct MenuBarView: View {
         guard !q.isEmpty else { return }
         quick = ""
         chat.send(q)
-        openWindow(id: "localchat")
-        NSApp.activate(ignoringOtherApps: true)
+        navigation.open(.memory)
     }
 }
 

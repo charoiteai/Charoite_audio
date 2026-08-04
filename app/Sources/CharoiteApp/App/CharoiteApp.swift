@@ -7,31 +7,16 @@ struct CharoiteApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
-        WindowGroup(L.t("Чароит — суфлёр", "Charoite — meeting copilot", "Charoite — 会议提词"), id: "main") {
-            SuflerView()
+        WindowGroup(L.t("Чароит", "Charoite", "Charoite"), id: "main") {
+            WorkspaceView()
         }
-        .defaultSize(width: 1100, height: 700)
+        .defaultSize(width: 1180, height: 760)
 
         Window(L.t("Чат с памятью", "Chat with memory", "记忆聊天"), id: "localchat") {
             LocalChatView()
                 .frame(minWidth: 520, minHeight: 420)   // минимум только у окна: в панели вью уже
         }
         .defaultSize(width: 640, height: 520)
-
-        Window(L.t("Задачи со встреч", "Meeting tasks", "会议任务"), id: "tasks") {
-            TasksView()
-        }
-        .defaultSize(width: 520, height: 480)
-
-        Window(L.t("Последние встречи", "Recent meetings", "最近的会议"), id: "meetings") {
-            RecentMeetingsView()
-        }
-        .defaultSize(width: 560, height: 420)
-
-        Window(L.t("Подготовка к встрече", "Meeting prep", "会前准备"), id: "prep") {
-            PrepView()
-        }
-        .defaultSize(width: 520, height: 460)
 
         MenuBarExtra {
             MenuBarView()

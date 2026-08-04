@@ -471,6 +471,22 @@ final class MeetingProcessingService: ObservableObject {
             seenAt: snapshot.updatedAt)
     }
 
+    /// Пересобрать готовую встречу после ручной правки стенограммы.
+    /// Повтор для ошибки и осознанная пересборка — разные пользовательские
+    /// действия, но конвейер у них один и тот же.
+    func rebuild(_ snapshot: MeetingProcessingSnapshot) {
+        guard !retryInFlight,
+              FileManager.default.fileExists(atPath: snapshot.transcriptPath) else { return }
+        launchRetry(
+            meetingID: snapshot.meetingID,
+            path: snapshot.transcriptPath,
+            seenAt: snapshot.updatedAt)
+    }
+
+    func reload() {
+        refresh()
+    }
+
     private func launchRetry(meetingID: String, path: String, seenAt: TimeInterval) {
 
         let cmd = MeetingRetryCommand.build(
