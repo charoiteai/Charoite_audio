@@ -61,7 +61,10 @@ struct MeetingCardView: View {
         .padding(14)
         .frame(minWidth: 420, minHeight: 400)
         .frame(width: embedded ? nil : 500, height: embedded ? nil : 460)
-        .task { card = MeetingCardLoader.load(for: meeting) }
+        // task(id:) — embedded-карточка в библиотеке живёт одной вью на все
+        // встречи: без id смена выбора оставляла решения и участников от
+        // прошлой встречи под новым заголовком (найдено живым прогоном 04.08).
+        .task(id: meeting.meetingID) { card = MeetingCardLoader.load(for: meeting) }
         .sheet(isPresented: $showForget) { forgetSheet }
     }
 
@@ -73,8 +76,24 @@ struct MeetingCardView: View {
                         .textFieldStyle(.roundedBorder)
                         .font(.headline)
                         .onSubmit { runRename() }
+                        // Esc — выход без сохранения. Без этого из
+                        // переименования не выйти иначе как «Сохранить»,
+                        // и случайный клик по карандашу стоил темы.
+                        .onExitCommand { renaming = false }
                     Button(L.t("Сохранить", "Save", "保存")) { runRename() }
                         .disabled(renameBusy)
+                    Button {
+                        renaming = false
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    // Esc жмёт крестик: onExitCommand на TextField молчит,
+                    // пока фокус не в поле, — cancelAction ловит всегда.
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(renameBusy)
+                    .help(L.t("Отменить переименование", "Cancel renaming", "取消重命名"))
                     if renameBusy { ProgressView().controlSize(.small) }
                 } else {
                     Text(meeting.title).font(.headline)
@@ -205,13 +224,19 @@ struct MeetingCardView: View {
                                         "已开始重建")
                 }
                 Divider()
-                Button(L.t("Забыть встречу…", "Forget meeting…", "忘记会议…"),
-                       role: .destructive) {
+                // role: .destructive в Menu на macOS не красится — красим
+                // явно, чтобы разрушающий пункт читался цветом.
+                Button(role: .destructive) {
                     prepareForget()
+                } label: {
+                    Text(L.t("Забыть встречу…", "Forget meeting…", "忘记会议…"))
+                        .foregroundStyle(.red)
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
+            .menuIndicator(.hidden)
+            .fixedSize()
             .disabled(actionBusy)
         }
         .buttonStyle(.link)
@@ -239,8 +264,11 @@ struct MeetingCardView: View {
             HStack {
                 Spacer()
                 Button(L.t("Отмена", "Cancel", "取消")) { showForget = false }
+                    .keyboardShortcut(.cancelAction)
                 Button(L.t("Удалить безвозвратно", "Delete permanently", "永久删除"),
                        role: .destructive) { runForget() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
                     .disabled(actionBusy)
             }
         }
