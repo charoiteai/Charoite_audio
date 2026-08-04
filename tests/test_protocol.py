@@ -124,6 +124,28 @@ def test_plain_format_has_no_markdown_headings(tmp_path):
     assert "Мария" in text
 
 
+def test_plain_format_strips_bold_markers(tmp_path):
+    """Пункты Саммари приходят с «**Ирина** — …»: в мессенджере звёздочки —
+    мусор (инцидент 04.08 — протокол уехал в буфер с пятью «**»)."""
+    folder = tmp_path / "2026-07-15 14-00 — Жирный тест"
+    folder.mkdir(parents=True)
+    (folder / "Саммари.md").write_text(
+        "**Суть одной строкой:** решили `быстро`.\n\n"
+        "## Решили\n- **Концепция** — свести идеи в одну\n\n"
+        "## Поручения\n- [ ] **Мария** — договор до 22.07\n",
+        encoding="utf-8",
+    )
+
+    plain = protocol.build(folder, style="plain")
+    assert "**" not in plain, "жирность уехала в мессенджер"
+    assert "`" not in plain
+    assert "Концепция — свести идеи в одну" in plain
+    assert "Мария — договор до 22.07" in plain
+
+    md = protocol.build(folder, style="md")
+    assert "**Концепция**" in md, "markdown-стиль жирность сохраняет"
+
+
 def test_minutes_are_used_when_there_is_no_summary(tmp_path):
     """Саммари пишется тяжёлой моделью и может не успеть — минутки есть всегда."""
     folder = _meeting(tmp_path)

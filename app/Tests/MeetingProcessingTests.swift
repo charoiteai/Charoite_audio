@@ -33,6 +33,46 @@ final class MeetingProcessingTests: XCTestCase {
         XCTAssertEqual(decoded.updatedAt, 120)
     }
 
+    private func snapshotAt(_ transcriptPath: String) -> MeetingProcessingSnapshot {
+        MeetingProcessingSnapshot(
+            schemaVersion: 1,
+            meetingID: "2026-08-04_120310",
+            state: .ready,
+            stage: "complete",
+            startedAt: 100,
+            updatedAt: 100,
+            transcriptPath: transcriptPath,
+            notePath: nil,
+            error: nil)
+    }
+
+    func testTitleDropsDerivedFileSuffixes() {
+        // Инцидент 04.08: в старом статусе transcript_path указывал на файл
+        // разбора — тема в списке была «Отчет по задачам разбор», а UI-rename
+        // доклеивал хвост второй раз. Русские хвосты режутся так же, как
+        // английские.
+        XCTAssertEqual(
+            snapshotAt("/transcripts/2026-08-04_1203_Отчет_по_задачам_разбор.md").title,
+            "Отчет по задачам")
+        XCTAssertEqual(
+            snapshotAt("/transcripts/2026-08-04_1203_Тема_ревизия_claude.md").title,
+            "Тема")
+        XCTAssertEqual(
+            snapshotAt("/transcripts/2026-07-31_1415_План.md").title,
+            "План", "обычная тема не страдает")
+    }
+
+    func testStartedDateComesFromStampNotFromStatusWriteTime() {
+        // started_at пишется конвейером после встречи: «Очистка ресурсов»
+        // 11:31 показывалась «в 12:03». Начало встречи — это штамп.
+        let snap = snapshotAt("/transcripts/2026-08-04_1131_Тема.md")
+        let calendar = Calendar.current
+        let parts = calendar.dateComponents(
+            [.hour, .minute], from: snap.startedDate)
+        XCTAssertEqual(parts.hour, 12)
+        XCTAssertEqual(parts.minute, 3, "штамп 2026-08-04_120310 → 12:03")
+    }
+
     func testProcessingBecomesExplicitErrorAfterThirtyMinutes() {
         let processing = snapshot(state: .processing, updated: 100)
 

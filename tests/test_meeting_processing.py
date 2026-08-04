@@ -91,6 +91,24 @@ def test_auxiliary_file_is_not_mistaken_for_renamed_transcript(tmp_path):
     assert find_final_transcript(live) == live.resolve()
 
 
+def test_review_file_is_not_mistaken_for_renamed_transcript(tmp_path):
+    """Инцидент 04.08: «_разбор» не было в списке производных, файл разбора
+    свежее стенограммы — и он выигрывал по mtime. Тема встречи в приложении
+    превращалась в «… разбор», а «Стенограмма» открывала разбор."""
+    import os
+
+    live = _transcript(tmp_path)
+    live.unlink()
+    renamed = live.with_name("2026-07-31_1415_Отчет_по_задачам.md")
+    renamed.write_text("стенограмма", encoding="utf-8")
+    review = live.with_name("2026-07-31_1415_Отчет_по_задачам_разбор.md")
+    review.write_text("разбор", encoding="utf-8")
+    os.utime(renamed, (100, 100))
+    os.utime(review, (200, 200))  # разбор всегда моложе стенограммы
+
+    assert find_final_transcript(live) == renamed.resolve()
+
+
 def test_note_is_found_in_project_graph(tmp_path):
     configured = tmp_path / "vault" / "Рабочий"
     configured.mkdir(parents=True)
