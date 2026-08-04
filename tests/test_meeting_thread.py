@@ -259,3 +259,41 @@ def test_parse_archive_facts_drops_none_and_markers():
         "30.07: решение принято", "мяч у отдела", "факт четвёртый лишний"]
     assert parse_archive_facts("NONE") == []
     assert parse_archive_facts("") == []
+
+
+# --- одно полотно: ответы и тезисы вплетаются в нить -------------------------
+
+def test_answer_lands_in_thread_under_its_question():
+    """Ответ ⚡ — строка нити, а не отдельная лента поверх полотна."""
+    t = Thread()
+    t.ingest(f"{TOPIC} Перенос витрины\n{SAY} обсуждают окно миграции")
+    assert t.add_answer("Когда переносим витрину?", "В субботу ночью, окно четыре часа.")
+    text = t.full()
+    assert "? Когда переносим витрину?" in text
+    assert "⚡ В субботу ночью, окно четыре часа." in text
+    # вопрос стоит выше ответа — читается сверху вниз
+    assert text.index("Когда переносим") < text.index("В субботу ночью")
+
+
+def test_answer_without_text_is_ignored():
+    t = Thread()
+    t.ingest(f"{TOPIC} Тема\n{SAY} реплика")
+    assert not t.add_answer("Вопрос?", "")
+    assert not t.add_answer("Вопрос?", "   ")
+
+
+def test_repeated_question_is_not_duplicated_in_thread():
+    t = Thread()
+    t.add_answer("Кто ведёт график дежурств?", "Аналитик, таблица к пятнице.")
+    t.add_answer("Кто ведёт график дежурств?", "Он же готовит замены.")
+    assert t.full().count("Кто ведёт график дежурств?") == 1
+
+
+def test_thesis_becomes_thread_line_keeping_its_weight():
+    t = Thread()
+    t.ingest(f"{TOPIC} Перенос витрины\n{SAY} обсуждают окно")
+    assert t.add_thesis("📌 решили катить волнами, срок пятница")
+    assert t.add_thesis("💭 не спросили про откат")
+    text = t.full()
+    assert f"{DECISION} решили катить волнами, срок пятница" in text   # 📌 → вес решения
+    assert "💭 не спросили про откат" in text
