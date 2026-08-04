@@ -12,6 +12,7 @@ struct MeetingCard: Equatable {
     var gist: String?
     var decisions: [String] = []
     var tasks: [String] = []
+    var openQuestions: [String] = []
     var participants: [String] = []
     var durationText: String?
     var summaryMissing = false
@@ -25,6 +26,30 @@ struct MeetingCard: Equatable {
 struct CloudReviewResult: Equatable {
     let edits: Int
     let saved: Bool
+}
+
+struct MeetingManifest: Decodable, Equatable {
+    let schemaVersion: Int
+    let meetingID: String
+    let title: String
+    let durationMinutes: Int?
+    let participants: [String]
+    let summary: String?
+    let decisions: [String]
+    let actionItems: [String]
+    let openQuestions: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case meetingID = "meeting_id"
+        case title
+        case durationMinutes = "duration_minutes"
+        case participants
+        case summary
+        case decisions
+        case actionItems = "action_items"
+        case openQuestions = "open_questions"
+    }
 }
 
 extension MeetingProcessingSnapshot: Identifiable {
@@ -48,13 +73,33 @@ enum MeetingCardLoader {
         card.obsidianURL = obsidianURL(noteURL: note)
         let stamp = String(snapshot.meetingID.prefix(15))
         card.archiveFolder = archiveFolder(graph: graph, stamp: stamp)
-        if let folder = card.archiveFolder,
-           let summary = try? String(
-            contentsOf: folder.appendingPathComponent("Саммари.md"),
-            encoding: .utf8) {
-            card.gist = gist(fromSummary: summary)
-            card.decisions = items(inSection: "Решили", of: summary)
-            card.tasks = items(inSection: "Поручения", of: summary)
+        if let folder = card.archiveFolder {
+            if let manifest = manifest(in: folder) {
+                if card.participants.isEmpty { card.participants = manifest.participants }
+                if card.durationText == nil, let minutes = manifest.durationMinutes {
+                    card.durationText = durationText(minutes: minutes)
+                }
+                card.gist = manifest.summary
+                card.decisions = manifest.decisions
+                card.tasks = manifest.actionItems
+                card.openQuestions = manifest.openQuestions
+            }
+            if let summary = try? String(
+                contentsOf: folder.appendingPathComponent("Саммари.md"),
+                encoding: .utf8) {
+                if card.gist == nil { card.gist = gist(fromSummary: summary) }
+                if card.decisions.isEmpty {
+                    card.decisions = items(inSection: "Решили", of: summary)
+                }
+                if card.tasks.isEmpty {
+                    card.tasks = items(inSection: "Поручения", of: summary)
+                }
+                if card.openQuestions.isEmpty {
+                    card.openQuestions = items(inSection: "Открытые вопросы", of: summary)
+                }
+            } else if card.gist == nil {
+                card.summaryMissing = true
+            }
         } else {
             card.summaryMissing = true
         }
@@ -64,6 +109,24 @@ enum MeetingCardLoader {
             card.cloudReview = cloudReview(fromLog: text)
         }
         return card
+    }
+
+    static func manifest(in folder: URL) -> MeetingManifest? {
+        let file = folder.appendingPathComponent("meeting.meta.json")
+        guard let data = try? Data(contentsOf: file) else { return nil }
+        return try? JSONDecoder().decode(MeetingManifest.self, from: data)
+    }
+
+    static func durationText(minutes: Int) -> String? {
+        guard minutes > 0 else { return nil }
+        let hours = minutes / 60
+        let rest = minutes % 60
+        if hours > 0 {
+            return L.t("\(hours) ч \(String(format: "%02d", rest)) мин",
+                       "\(hours) h \(String(format: "%02d", rest)) min",
+                       "\(hours) 小时 \(String(format: "%02d", rest)) 分")
+        }
+        return L.t("\(rest) мин", "\(rest) min", "\(rest) 分钟")
     }
 
     // MARK: - Лог облачной ревизии
@@ -234,6 +297,10 @@ enum MeetingCardLoader {
         if !card.tasks.isEmpty {
             out.append(""); out.append(L.t("Поручения:", "Action items:", "任务："))
             out += card.tasks.map { "- \($0)" }
+        }
+        if !card.openQuestions.isEmpty {
+            out.append(""); out.append(L.t("Открытые вопросы:", "Open questions:", "待解决问题："))
+            out += card.openQuestions.map { "- \($0)" }
         }
         return out.joined(separator: "\n")
     }

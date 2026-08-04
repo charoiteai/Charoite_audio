@@ -5,6 +5,35 @@ import XCTest
 /// Здесь — парсеры: они чистые, и падать им положено в тестах, а не на
 /// открытой карточке во время рабочего дня.
 final class MeetingCardTests: XCTestCase {
+    func testPortableManifestUsesLanguageIndependentKeys() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let json = """
+        {
+          "schema_version": 1,
+          "meeting_id": "2026-08-03_1130",
+          "title": "Planning",
+          "duration_minutes": 75,
+          "participants": ["Anton", "Irene"],
+          "summary": "Plan accepted",
+          "decisions": ["Ship Friday"],
+          "action_items": ["Irene — verify build"],
+          "open_questions": ["Android scope?"],
+          "files": {}
+        }
+        """
+        try json.write(to: folder.appendingPathComponent("meeting.meta.json"),
+                       atomically: true, encoding: .utf8)
+
+        let manifest = try XCTUnwrap(MeetingCardLoader.manifest(in: folder))
+        XCTAssertEqual(manifest.title, "Planning")
+        XCTAssertEqual(manifest.durationMinutes, 75)
+        XCTAssertEqual(manifest.actionItems, ["Irene — verify build"])
+        XCTAssertEqual(MeetingCardLoader.durationText(minutes: 75),
+                       L.t("1 ч 15 мин", "1 h 15 min", "1 小时 15 分"))
+    }
     // MARK: стенограмма
 
     private let transcript = """
