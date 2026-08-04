@@ -735,8 +735,9 @@ struct SuflerView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 6) {
                             if sufler.theses.isEmpty {
-                                emptyState("list.bullet.rectangle",
-                                           L.t("Автотезисы появятся по ходу встречи", "Auto-theses appear as the meeting goes", "要点将随会议进行自动出现"))
+                                SuflerEmptyState(
+                                    symbol: "list.bullet.rectangle",
+                                    text: L.t("Автотезисы появятся по ходу встречи", "Auto-theses appear as the meeting goes", "要点将随会议进行自动出现"))
                             }
                             ForEach(Array(sufler.theses.enumerated()), id: \.offset) { _, t in
                                 SuflerThesisCard(text: t)
