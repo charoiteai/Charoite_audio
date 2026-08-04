@@ -412,12 +412,12 @@ struct SuflerView: View {
     /// встречи — ответ по архиву. Пусто — приглашение спросить.
     private var paneText: AttributedString {
         if sufler.isRunning {
-            // Главное во время встречи — нить: она стоит на месте и дописывается,
-            // поэтому её читают краем глаза. Подсказка перекрывает нить только
-            // когда её попросили руками (⌘⏎) — то есть когда человек ждёт ответ
-            // прямо сейчас и смотрит в панель в упор.
+            // Нить — единственное, что здесь показывается: ответы и тезисы
+            // демон вплетает в неё сам. Ручная подсказка (⌘⏎) остаётся
+            // исключением: её просят, когда ждут ответ прямо сейчас, и она
+            // гаснет со следующим обновлением нити.
             if !sufler.hint.isEmpty { return withBoldQuestions(sufler.hint) }
-            if !sufler.thread.isEmpty { return AttributedString(sufler.thread) }
+            if !sufler.thread.isEmpty { return withThreadMarks(sufler.thread) }
             return AttributedString(L.t("Нить встречи появится через минуту разговора · ⌘⏎ — подсказка сейчас",
                                         "The meeting thread appears after a minute of talk · ⌘⏎ — hint now",
                                         "会议脉络将在交谈一分钟后出现 · ⌘⏎ — 立即提示"))
@@ -434,6 +434,35 @@ struct SuflerView: View {
     private var paneIsPlaceholder: Bool {
         sufler.isRunning ? (sufler.hint.isEmpty && sufler.thread.isEmpty)
                          : archiveAnswer.isEmpty
+    }
+
+    /// Нить: знаки строк ведут глаз, служебное приглушено.
+    ///
+    /// Полотно читают боковым зрением, поэтому вес несут не абзацы, а знаки:
+    /// «●» тема, «⚑» решение, «⚡» ответ, «?» вопрос, «⏮» хвост из архива.
+    /// Реплики разговора («-») остаются обычными — их много, и жирный шрифт
+    /// на них превратил бы полотно в кашу.
+    private func withThreadMarks(_ raw: String) -> AttributedString {
+        var out = AttributedString()
+        for (i, line) in raw.components(separatedBy: "\n").enumerated() {
+            if i > 0 { out.append(AttributedString("\n")) }
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            var piece = AttributedString(line)
+            if trimmed.hasPrefix("●") {
+                piece.font = .callout.bold()
+            } else if trimmed.hasPrefix("⚑") || trimmed.hasPrefix("📌") {
+                piece.font = .callout.weight(.medium)
+                piece.foregroundColor = .orange
+            } else if trimmed.hasPrefix("⚡") {
+                piece.font = .callout.weight(.medium)
+            } else if trimmed.hasPrefix("?") {
+                piece.foregroundColor = .secondary
+            } else if trimmed.hasPrefix("⏮") || trimmed.hasPrefix("💭") {
+                piece.foregroundColor = .secondary
+            }
+            out.append(piece)
+        }
+        return out
     }
 
     /// Вопрос в панели — жирным, ответ обычным.
@@ -728,57 +757,28 @@ struct SuflerView: View {
     // а не отдельным окном. Пустых мёртвых панелей на экране нет.
     private var rightPane: some View {
         VSplitView {
-            if sufler.thesesOn {
-            VStack(alignment: .leading, spacing: 0) {
-                paneTitle(L.t("Тезисы", "Theses", "要点"), systemImage: "list.bullet.rectangle")
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 6) {
-                            if sufler.theses.isEmpty {
-                                SuflerEmptyState(
-                                    symbol: "list.bullet.rectangle",
-                                    text: L.t("Автотезисы появятся по ходу встречи", "Auto-theses appear as the meeting goes", "要点将随会议进行自动出现"))
-                            }
-                            ForEach(Array(sufler.theses.enumerated()), id: \.offset) { _, t in
-                                SuflerThesisCard(text: t)
-                                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-                            }
-                            Color.clear.frame(height: 1).id("thesesBottom")
-                        }
-                        .padding(10)
-                        .animation(.easeOut(duration: 0.25), value: sufler.theses.count)
-                    }
-                    .onChange(of: sufler.theses.count) { _, n in
-                        guard n > 0 else { return }
-                        // после лейаута, иначе scrollTo промахивается по свежему элементу
-                        DispatchQueue.main.async {
-                            withAnimation(.easeOut(duration: 0.15)) {
-                                proxy.scrollTo("thesesBottom", anchor: .bottom)
-                            }
-                        }
-                    }
-                }
-            }
-            .frame(minHeight: 140)
-            }
+            // Одно полотно вместо трёх панелей: тезисы, ответы ⚡/☁ и хвосты
+            // архива вплетает в нить сам демон (src/meeting_thread.py). Пока
+            // они жили порознь, автоответ раз в полминуты держал панель
+            // подсказки непустой — и нить, главное на встрече, не показывалась
+            // вовсе: 04.08 на экране была лента «вопрос — вопрос — уточните
+            // вопрос», а разговора не было видно.
 
             // Вне встречи панель живёт для ответов по архиву (тумблер «Архив»),
             // во время встречи — для подсказок И облачной ленты Claude в одном
             // окне. Со всеми выключенными пустых мёртвых панелей на экране нет.
-            if sufler.isRunning ? (sufler.hintsOn || sufler.cloudOn) : archiveOn {
+            if sufler.isRunning || archiveOn {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     // подсказки выключены, облако включено — панель честно
                     // называется по единственному жильцу
-                    let cloudOnly = sufler.isRunning && !sufler.hintsOn
-                    paneTitle(sufler.isRunning ? (cloudOnly ? "Claude" : L.t("Подсказка", "Hint", "提示"))
-                                               : L.t("Ответ по архиву", "Archive answer", "档案回答"),
+                    paneTitle(sufler.isRunning
+                                  ? L.t("Нить встречи", "Meeting thread", "会议脉络")
+                                  : L.t("Ответ по архиву", "Archive answer", "档案回答"),
                               systemImage: sufler.isRunning
-                                  ? (cloudOnly ? "cloud.fill" : "lightbulb")
+                                  ? "text.line.first.and.arrowtriangle.forward"
                                   : "clock.arrow.circlepath",
-                              copy: { sufler.isRunning
-                                  ? (cloudOnly ? sufler.cloud : sufler.hint)
-                                  : archiveAnswer })
+                              copy: { sufler.isRunning ? sufler.thread : archiveAnswer })
                     if sufler.isHinting || isSearchingArchive
                         || (sufler.isRunning && sufler.isClouding) {
                         ProgressView().controlSize(.small).padding(.trailing, 10)
