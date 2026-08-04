@@ -5,6 +5,14 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.45.0](https://github.com/charoiteai/Charoite_audio/compare/v0.44.0...v0.45.0) (2026-08-04)
+
+
+### Features
+
+* **sufler:** одно полотно вместо трёх панелей — нить, и в ней всё ([#232](https://github.com/charoiteai/Charoite_audio/issues/232)) ([33b352e](https://github.com/charoiteai/Charoite_audio/commit/33b352e50be80c4c203218112c0682571358f86b))
+* единый рабочий стол Charoite и переносимые карточки встреч ([#230](https://github.com/charoiteai/Charoite_audio/issues/230)) ([71d7989](https://github.com/charoiteai/Charoite_audio/commit/71d79893e9049e12b2e965f2135e26698223b3bd))
+
 ## [0.44.0](https://github.com/charoiteai/Charoite_audio/compare/v0.43.0...v0.44.0) (2026-08-03)
 
 
