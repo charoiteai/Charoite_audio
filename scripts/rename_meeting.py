@@ -148,6 +148,23 @@ def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
                 f.write_text(text.replace(old_folder.name, new_folder.name),
                              encoding="utf-8")
 
+    # Манифест meeting.meta.json — JSON с темой внутри; текстовая замена по
+    # *.md его не видит, а телефоны берут карточку именно из него. Пересборка
+    # из свежих Markdown возвращает манифесту правду (и создаёт его старым
+    # встречам, которых архивация до манифестов не застала).
+    folder = new_folder
+    if folder is None and (graph / ARCHIVE_DIR).exists():
+        day, hhmm = stamp[:10], f"{stamp[11:13]}-{stamp[13:15]}"
+        prefix = f"{day} {hhmm} "
+        folder = next((d for d in sorted((graph / ARCHIVE_DIR).iterdir())
+                       if d.is_dir() and d.name.startswith(prefix)), None)
+    if folder is not None:
+        try:
+            from meeting_archive import _write_manifest
+            _write_manifest(folder, stamp, pretty)
+        except Exception as e:  # noqa: BLE001 — манифест производный
+            print(f"манифест не пересобрался: {e}")
+
     note = p["note"]
     if note.exists():
         text = note.read_text(encoding="utf-8")

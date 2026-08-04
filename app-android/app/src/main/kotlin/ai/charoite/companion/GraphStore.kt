@@ -34,6 +34,19 @@ object GraphStore {
     private const val PREFS = "charoite"
     private const val KEY_TREE = "graph.tree"
     private const val MEETINGS_DIR = "Встречи"
+    private const val ARCHIVE_DIR = "Встречи-архив"
+
+    data class MeetingManifest(
+        val schemaVersion: Int,
+        val meetingId: String,
+        val title: String,
+        val durationMinutes: Int?,
+        val participants: List<String>,
+        val summary: String?,
+        val decisions: List<String>,
+        val actionItems: List<String>,
+        val openQuestions: List<String>,
+    )
 
     data class Meeting(
         val id: String,
@@ -41,6 +54,7 @@ object GraphStore {
         val title: String,
         val stamp: String,
         val sortKey: String,
+        val manifest: MeetingManifest? = null,
     )
 
     data class TaskItem(
@@ -129,9 +143,14 @@ object GraphStore {
             return MeetingScan(emptyList(), null)
         }
         val rootId = DocumentsContract.getTreeDocumentId(tree)
-        val meetingsId = children(context, tree, rootId)
-            .firstOrNull { it.isDir && it.name == MEETINGS_DIR }?.documentId
-        if (meetingsId == null) {
+        val rootChildren = children(context, tree, rootId)
+        val meetingsId = rootChildren.firstOrNull {
+            it.isDir && it.name == MEETINGS_DIR
+        }?.documentId
+        val archiveId = rootChildren.firstOrNull {
+            it.isDir && it.name == ARCHIVE_DIR
+        }?.documentId
+        if (meetingsId == null && archiveId == null) {
             return MeetingScan(
                 emptyList(),
                 L.t(
@@ -141,22 +160,38 @@ object GraphStore {
                 ),
             )
         }
-        val out = children(context, tree, meetingsId)
-            .filter { !it.isDir && it.name.endsWith(".md") }
-            .map { entry ->
+        val byId = linkedMapOf<String, Meeting>()
+        if (archiveId != null) {
+            for (folder in children(context, tree, archiveId).filter { it.isDir }) {
+                coroutineContext.ensureActive()
+                val meta = children(context, tree, folder.documentId)
+                    .firstOrNull { !it.isDir && it.name == "meeting.meta.json" } ?: continue
+                val manifest = parseManifest(read(context, meta.uri).orEmpty()) ?: continue
+                byId[manifest.meetingId] = Meeting(
+                    id = manifest.meetingId,
+                    uri = meta.uri,
+                    title = manifest.title,
+                    stamp = GraphText.stamp(manifest.meetingId),
+                    sortKey = manifest.meetingId,
+                    manifest = manifest,
+                )
+            }
+        }
+        val notes = meetingsId?.let { children(context, tree, it) }.orEmpty()
+        for (entry in notes.filter { !it.isDir && it.name.endsWith(".md") }) {
                 coroutineContext.ensureActive()
                 val name = entry.name.removeSuffix(".md")
+                if (byId.containsKey(name)) continue
                 val text = read(context, entry.uri).orEmpty()
-                Meeting(
+                byId[name] = Meeting(
                     id = "$MEETINGS_DIR/${entry.name}",
                     uri = entry.uri,
                     title = GraphText.title(text, name),
                     stamp = GraphText.stamp(name),
                     sortKey = name,
                 )
-            }
-            .sortedByDescending { it.sortKey }
-        return MeetingScan(out, null)
+        }
+        return MeetingScan(byId.values.sortedByDescending { it.sortKey }, null)
     }
 
     /** Задачи `- [ ]` по всему графу — как на Mac, открытые сверху. */
@@ -264,9 +299,90 @@ object GraphStore {
     }
 
     suspend fun text(context: Context, meeting: Meeting): String = withContext(Dispatchers.IO) {
+        meeting.manifest?.let { return@withContext cardText(it) }
         read(context.applicationContext, meeting.uri)
             ?: L.t("Файл не читается", "File is unreadable", "文件无法读取")
     }
+
+    /** Узкий JSON-парсер производного манифеста, работающий и в JVM-тестах. */
+    fun parseManifest(text: String): MeetingManifest? {
+        fun rawString(key: String): String? = Regex(
+            "\\\"${Regex.escape(key)}\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\""
+        ).find(text)?.groupValues?.get(1)?.let(::decodeJsonString)
+        fun number(key: String): Int? = Regex(
+            "\\\"${Regex.escape(key)}\\\"\\s*:\\s*(\\d+)"
+        ).find(text)?.groupValues?.get(1)?.toIntOrNull()
+        fun list(key: String): List<String> {
+            val body = Regex(
+                "\\\"${Regex.escape(key)}\\\"\\s*:\\s*\\[(.*?)]",
+                RegexOption.DOT_MATCHES_ALL,
+            ).find(text)?.groupValues?.get(1) ?: return emptyList()
+            return Regex("\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"")
+                .findAll(body)
+                .map { decodeJsonString(it.groupValues[1]) }
+                .filter(String::isNotBlank)
+                .toList()
+        }
+        val schema = number("schema_version") ?: return null
+        val meetingId = rawString("meeting_id") ?: return null
+        val title = rawString("title") ?: return null
+        return MeetingManifest(
+            schemaVersion = schema,
+            meetingId = meetingId,
+            title = title,
+            durationMinutes = number("duration_minutes")?.takeIf { it > 0 },
+            participants = list("participants"),
+            summary = rawString("summary")?.takeIf(String::isNotBlank),
+            decisions = list("decisions"),
+            actionItems = list("action_items"),
+            openQuestions = list("open_questions"),
+        )
+    }
+
+    private fun decodeJsonString(raw: String): String {
+        val out = StringBuilder(raw.length)
+        var index = 0
+        while (index < raw.length) {
+            val char = raw[index++]
+            if (char != '\\' || index >= raw.length) {
+                out.append(char)
+                continue
+            }
+            when (val escaped = raw[index++]) {
+                '\"', '\\', '/' -> out.append(escaped)
+                'b' -> out.append('\b')
+                'f' -> out.append('\u000C')
+                'n' -> out.append('\n')
+                'r' -> out.append('\r')
+                't' -> out.append('\t')
+                'u' -> {
+                    val end = (index + 4).coerceAtMost(raw.length)
+                    val value = raw.substring(index, end).toIntOrNull(16)
+                    if (value != null && end - index == 4) {
+                        out.append(value.toChar())
+                        index = end
+                    } else {
+                        out.append("\\u")
+                    }
+                }
+                else -> out.append(escaped)
+            }
+        }
+        return out.toString()
+    }
+
+    fun cardText(manifest: MeetingManifest): String = buildString {
+        manifest.summary?.let { appendLine(it) }
+        fun section(title: String, items: List<String>) {
+            if (items.isEmpty()) return
+            if (isNotEmpty()) appendLine()
+            appendLine(title)
+            items.forEach { appendLine("• $it") }
+        }
+        section(L.t("Решили", "Decided", "决定"), manifest.decisions)
+        section(L.t("Поручения", "Action items", "任务"), manifest.actionItems)
+        section(L.t("Открытые вопросы", "Open questions", "待解决问题"), manifest.openQuestions)
+    }.trim()
 
     // --- обход дерева -----------------------------------------------------
 
