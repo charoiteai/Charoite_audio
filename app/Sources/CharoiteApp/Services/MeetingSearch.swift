@@ -11,7 +11,7 @@ import Foundation
 /// сознательно: они в десятки раз больше, а решения и поручения к моменту
 /// поиска уже вынесены в верхние слои.
 enum MeetingSearch {
-    struct Hit: Identifiable, Equatable {
+    struct Hit: Identifiable, Equatable, Sendable {
         let file: URL
         /// Человеческое имя места: тема встречи из имени папки или файла.
         let title: String
@@ -38,6 +38,7 @@ enum MeetingSearch {
             .sorted { $0.lastPathComponent > $1.lastPathComponent }   // новые первыми
 
         for folder in folders {
+            guard !Task.isCancelled else { return [] }
             for layer in layers {
                 let file = folder.appendingPathComponent(layer)
                 guard let hit = match(file: file, tokens: tokens,
@@ -56,6 +57,7 @@ enum MeetingSearch {
             .sorted { $0.lastPathComponent > $1.lastPathComponent }
         let seenDays = Set(hits.map(\.day))
         for note in noteFiles {
+            guard !Task.isCancelled else { return [] }
             guard hits.count < limit else { break }
             let day = dayKey(note.lastPathComponent)
             if seenDays.contains(day) { continue }   // архивная папка уже нашлась
@@ -65,6 +67,23 @@ enum MeetingSearch {
             }
         }
         return hits
+    }
+
+    /// Чтение архива для SwiftUI: файловый обход выполняется не на главном
+    /// акторе, а отмена родительской задачи останавливает и рабочую задачу.
+    ///
+    /// Сам `search` остаётся синхронным для тестов и служебных вызовов. UI
+    /// использует только эту обёртку: на большом графе ввод в поле поиска не
+    /// должен ждать чтения десятков файлов.
+    static func searchAsync(_ query: String, graph: URL, limit: Int = 30) async -> [Hit] {
+        let worker = Task.detached(priority: .userInitiated) {
+            search(query, graph: graph, limit: limit)
+        }
+        return await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
     /// Все ли слова запроса есть в файле; сниппет — первая строка с совпадением.

@@ -14,7 +14,10 @@ struct PrepView: View {
     @ObservedObject private var processing = MeetingProcessingService.shared
     /// Хвосты по теме ближайшей встречи — из того же поиска, что в окне встреч.
     @State private var topicHits: [MeetingSearch.Hit] = []
+    @State private var topicSearchTask: Task<Void, Never>?
+    @State private var isLoadingTopic = false
     @State private var cardMeeting: MeetingProcessingSnapshot?
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -25,6 +28,7 @@ struct PrepView: View {
                     todaySection
                     topicSection
                     tasksSection
+                    otherTasksSection
                     lastMeetingSection
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -37,6 +41,7 @@ struct PrepView: View {
             loadTopicTrail()
         }
         .onChange(of: calendar.today) { _, _ in loadTopicTrail() }
+        .onDisappear { cancelTopicLoad() }
         .sheet(item: $cardMeeting) { MeetingCardView(meeting: $0) }
     }
 
@@ -91,7 +96,15 @@ struct PrepView: View {
                         "Previously on “\(short(next.title))”",
                         "「\(short(next.title))」此前的情况"),
                     icon: "clock.arrow.circlepath") {
-                if topicHits.isEmpty {
+                if isLoadingTopic {
+                    HStack(spacing: 7) {
+                        ProgressView().controlSize(.small)
+                        Text(L.t("Ищу связанные встречи…",
+                                 "Finding related meetings…",
+                                 "正在查找相关会议…"))
+                    }
+                    .font(.callout).foregroundStyle(.secondary)
+                } else if topicHits.isEmpty {
                     Text(L.t("В архиве встреч по этой теме ничего не нашлось.",
                              "Nothing on this topic in the meeting archive.",
                              "会议档案中没有该主题的内容。"))
@@ -119,23 +132,53 @@ struct PrepView: View {
 
     @ViewBuilder
     private var tasksSection: some View {
-        let open = tasks.items.filter { !$0.done }.prefix(5)
-        if !open.isEmpty {
-            section(L.t("Открытые поручения", "Open action items", "未完成任务"),
+        let visible = Array(relevantOpenTasks.prefix(5))
+        if nextTopic != nil {
+            section(L.t("Поручения по теме", "Topic action items", "主题任务"),
                     icon: "checklist") {
-                ForEach(Array(open)) { item in
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Image(systemName: "circle").font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Text(item.text).font(.callout).lineLimit(2)
+                if visible.isEmpty {
+                    Text(L.t("Открытых поручений, связанных с этой встречей, не нашлось.",
+                             "No open action items linked to this meeting were found.",
+                             "未找到与本次会议相关的未完成任务。"))
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    ForEach(visible) { item in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Image(systemName: "circle").font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text(item.text).font(.callout).lineLimit(2)
+                        }
+                    }
+                    if relevantOpenTasks.count > visible.count {
+                        Text(L.t("и ещё \(relevantOpenTasks.count - visible.count) по теме",
+                                 "and \(relevantOpenTasks.count - visible.count) more on this topic",
+                                 "另有 \(relevantOpenTasks.count - visible.count) 项相关任务"))
+                            .font(.caption).foregroundStyle(.tertiary)
                     }
                 }
-                if tasks.openCount > 5 {
-                    Text(L.t("и ещё \(tasks.openCount - 5) в окне задач",
-                             "and \(tasks.openCount - 5) more in the tasks window",
-                             "任务窗口中还有 \(tasks.openCount - 5) 项"))
-                        .font(.caption).foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    /// Общие хвосты не выдаём за обязательства ближайшей встречи: они
+    /// остаются доступны отдельным блоком и ведут в полный список задач.
+    @ViewBuilder
+    private var otherTasksSection: some View {
+        if otherOpenTaskCount > 0 {
+            section(L.t("Другие открытые поручения", "Other open action items", "其他未完成任务"),
+                    icon: "tray.full") {
+                Button {
+                    openWindow(id: "tasks")
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(L.t("\(otherOpenTaskCount) в общем списке",
+                                 "\(otherOpenTaskCount) in the full list",
+                                 "完整列表中有 \(otherOpenTaskCount) 项"))
+                        Image(systemName: "chevron.right")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
                 }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -144,8 +187,8 @@ struct PrepView: View {
 
     @ViewBuilder
     private var lastMeetingSection: some View {
-        if let last = processing.history.first {
-            section(L.t("Прошлая встреча", "Last meeting", "上次会议"),
+        if let last = relevantHistoryMeeting {
+            section(L.t("Прошлая встреча по теме", "Last meeting on this topic", "该主题的上次会议"),
                     icon: "clock") {
                 Button {
                     cardMeeting = last
@@ -172,14 +215,66 @@ struct PrepView: View {
     }
 
     private func loadTopicTrail() {
+        topicSearchTask?.cancel()
         guard let graph = AppSettings.graphDir,
               let next = calendar.today.first else {
             topicHits = []
+            isLoadingTopic = false
             return
         }
         let query = PrepPolicy.titleQuery(next.title)
-        guard !query.isEmpty else { topicHits = []; return }
-        topicHits = Array(MeetingSearch.search(query, graph: graph).prefix(3))
+        guard !query.isEmpty else {
+            topicHits = []
+            isLoadingTopic = false
+            return
+        }
+        topicHits = []
+        isLoadingTopic = true
+        topicSearchTask = Task { @MainActor in
+            let hits = await MeetingSearch.searchAsync(query, graph: graph, limit: 3)
+            guard !Task.isCancelled, nextTopic == query else { return }
+            topicHits = hits
+            isLoadingTopic = false
+        }
+    }
+
+    private func cancelTopicLoad() {
+        topicSearchTask?.cancel()
+        topicSearchTask = nil
+        isLoadingTopic = false
+    }
+
+    private var nextTopic: String? {
+        guard let title = calendar.today.first?.title else { return nil }
+        let query = PrepPolicy.titleQuery(title)
+        return query.isEmpty ? nil : query
+    }
+
+    private var relatedDays: Set<String> {
+        Set(topicHits.map(\.day))
+    }
+
+    private var relevantOpenTasks: [TasksService.Item] {
+        guard let topic = nextTopic else { return [] }
+        return tasks.items.filter {
+            !$0.done && PrepPolicy.matchesTopic(
+                text: $0.text, source: $0.rel, topic: topic, relatedDays: relatedDays)
+        }
+    }
+
+    private var otherOpenTaskCount: Int {
+        max(0, tasks.openCount - relevantOpenTasks.count)
+    }
+
+    private var relevantHistoryMeeting: MeetingProcessingSnapshot? {
+        guard let topic = nextTopic else { return nil }
+        return processing.history.first {
+            PrepPolicy.matchesTopic(
+                text: $0.title,
+                source: $0.meetingID + " " + $0.transcriptPath,
+                topic: topic,
+                relatedDays: relatedDays)
+        }
     }
 
     /// Название события без хвостов вида «(еженедельно)» — для заголовка.

@@ -17,6 +17,8 @@ struct RecentMeetingsView: View {
     /// но и «где мы решали про X» — по саммари, минуткам и разборам.
     @State private var query = ""
     @State private var results: [MeetingSearch.Hit] = []
+    @State private var isSearching = false
+    @State private var searchTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -32,17 +34,34 @@ struct RecentMeetingsView: View {
                           text: $query)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 190)
-                    .onSubmit { runSearch() }
+                    .onSubmit { runSearch(debounced: false) }
                     .onChange(of: query) { _, q in
-                        if q.isEmpty { results = [] } else { runSearch() }
+                        if q.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            cancelSearch()
+                        } else {
+                            runSearch()
+                        }
                     }
+                if isSearching {
+                    ProgressView().controlSize(.small)
+                        .accessibilityLabel(L.t("Ищу встречи", "Searching meetings", "正在搜索会议"))
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             Divider()
 
             if !query.isEmpty {
-                if results.isEmpty {
+                if isSearching && results.isEmpty {
+                    VStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(L.t("Ищу в саммари, минутках и разборах…",
+                                 "Searching summaries, minutes and debriefs…",
+                                 "正在摘要、纪要和复盘中搜索…"))
+                            .font(.subheadline).foregroundStyle(.tertiary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if results.isEmpty {
                     VStack(spacing: 8) {
                         Image(systemName: "magnifyingglass")
                             .font(.largeTitle).foregroundStyle(.quaternary)
@@ -92,11 +111,43 @@ struct RecentMeetingsView: View {
         .sheet(item: $cardMeeting) { meeting in
             MeetingCardView(meeting: meeting)
         }
+        .onDisappear { cancelSearch() }
     }
 
-    private func runSearch() {
-        guard let graph = AppSettings.graphDir else { results = []; return }
-        results = MeetingSearch.search(query, graph: graph)
+    /// Поиск начинается после короткой паузы во вводе. Каждый новый символ
+    /// отменяет прежнее чтение архива, поэтому медленный старый запрос не
+    /// может перезаписать результат более нового.
+    private func runSearch(debounced: Bool = true) {
+        searchTask?.cancel()
+        let submitted = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !submitted.isEmpty, let graph = AppSettings.graphDir else {
+            cancelSearch()
+            return
+        }
+        results = []
+        isSearching = true
+        searchTask = Task { @MainActor in
+            if debounced {
+                do {
+                    try await Task.sleep(nanoseconds: 350_000_000)
+                } catch {
+                    return
+                }
+            }
+            guard !Task.isCancelled else { return }
+            let found = await MeetingSearch.searchAsync(submitted, graph: graph)
+            guard !Task.isCancelled,
+                  query.trimmingCharacters(in: .whitespacesAndNewlines) == submitted else { return }
+            results = found
+            isSearching = false
+        }
+    }
+
+    private func cancelSearch() {
+        searchTask?.cancel()
+        searchTask = nil
+        results = []
+        isSearching = false
     }
 
     @ViewBuilder

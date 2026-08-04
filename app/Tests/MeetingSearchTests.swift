@@ -73,6 +73,11 @@ final class MeetingSearchTests: XCTestCase {
         let hits = MeetingSearch.search("решили", graph: graph)
         XCTAssertEqual(hits.first?.title.prefix(10), "2026-08-02")
     }
+
+    func testAsyncSearchReturnsTheSameArchiveResults() async {
+        let hits = await MeetingSearch.searchAsync("ретеншн", graph: graph)
+        XCTAssertTrue(hits.contains { $0.title.contains("Ретеншн партиций") })
+    }
 }
 
 extension MeetingSearchTests {
