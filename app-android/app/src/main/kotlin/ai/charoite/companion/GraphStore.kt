@@ -17,6 +17,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -34,6 +35,19 @@ object GraphStore {
     private const val PREFS = "charoite"
     private const val KEY_TREE = "graph.tree"
     private const val MEETINGS_DIR = "Встречи"
+    private const val ARCHIVE_DIR = "Встречи-архив"
+
+    data class MeetingManifest(
+        val schemaVersion: Int,
+        val meetingId: String,
+        val title: String,
+        val durationMinutes: Int?,
+        val participants: List<String>,
+        val summary: String?,
+        val decisions: List<String>,
+        val actionItems: List<String>,
+        val openQuestions: List<String>,
+    )
 
     data class Meeting(
         val id: String,
@@ -41,6 +55,7 @@ object GraphStore {
         val title: String,
         val stamp: String,
         val sortKey: String,
+        val manifest: MeetingManifest? = null,
     )
 
     data class TaskItem(
@@ -129,9 +144,14 @@ object GraphStore {
             return MeetingScan(emptyList(), null)
         }
         val rootId = DocumentsContract.getTreeDocumentId(tree)
-        val meetingsId = children(context, tree, rootId)
-            .firstOrNull { it.isDir && it.name == MEETINGS_DIR }?.documentId
-        if (meetingsId == null) {
+        val rootChildren = children(context, tree, rootId)
+        val meetingsId = rootChildren.firstOrNull {
+            it.isDir && it.name == MEETINGS_DIR
+        }?.documentId
+        val archiveId = rootChildren.firstOrNull {
+            it.isDir && it.name == ARCHIVE_DIR
+        }?.documentId
+        if (meetingsId == null && archiveId == null) {
             return MeetingScan(
                 emptyList(),
                 L.t(
@@ -141,22 +161,38 @@ object GraphStore {
                 ),
             )
         }
-        val out = children(context, tree, meetingsId)
-            .filter { !it.isDir && it.name.endsWith(".md") }
-            .map { entry ->
+        val byId = linkedMapOf<String, Meeting>()
+        if (archiveId != null) {
+            for (folder in children(context, tree, archiveId).filter { it.isDir }) {
+                coroutineContext.ensureActive()
+                val meta = children(context, tree, folder.documentId)
+                    .firstOrNull { !it.isDir && it.name == "meeting.meta.json" } ?: continue
+                val manifest = parseManifest(read(context, meta.uri).orEmpty()) ?: continue
+                byId[manifest.meetingId] = Meeting(
+                    id = manifest.meetingId,
+                    uri = meta.uri,
+                    title = manifest.title,
+                    stamp = GraphText.stamp(manifest.meetingId),
+                    sortKey = manifest.meetingId,
+                    manifest = manifest,
+                )
+            }
+        }
+        val notes = meetingsId?.let { children(context, tree, it) }.orEmpty()
+        for (entry in notes.filter { !it.isDir && it.name.endsWith(".md") }) {
                 coroutineContext.ensureActive()
                 val name = entry.name.removeSuffix(".md")
+                if (byId.containsKey(name)) continue
                 val text = read(context, entry.uri).orEmpty()
-                Meeting(
+                byId[name] = Meeting(
                     id = "$MEETINGS_DIR/${entry.name}",
                     uri = entry.uri,
                     title = GraphText.title(text, name),
                     stamp = GraphText.stamp(name),
                     sortKey = name,
                 )
-            }
-            .sortedByDescending { it.sortKey }
-        return MeetingScan(out, null)
+        }
+        return MeetingScan(byId.values.sortedByDescending { it.sortKey }, null)
     }
 
     /** Задачи `- [ ]` по всему графу — как на Mac, открытые сверху. */
@@ -264,9 +300,42 @@ object GraphStore {
     }
 
     suspend fun text(context: Context, meeting: Meeting): String = withContext(Dispatchers.IO) {
+        meeting.manifest?.let { return@withContext cardText(it) }
         read(context.applicationContext, meeting.uri)
             ?: L.t("Файл не читается", "File is unreadable", "文件无法读取")
     }
+
+    fun parseManifest(text: String): MeetingManifest? = runCatching {
+        val json = JSONObject(text)
+        fun list(key: String): List<String> {
+            val array = json.optJSONArray(key) ?: return emptyList()
+            return (0 until array.length()).mapNotNull { array.optString(it).takeIf(String::isNotBlank) }
+        }
+        MeetingManifest(
+            schemaVersion = json.getInt("schema_version"),
+            meetingId = json.getString("meeting_id"),
+            title = json.getString("title"),
+            durationMinutes = json.optInt("duration_minutes").takeIf { it > 0 },
+            participants = list("participants"),
+            summary = json.optString("summary").takeUnless { it.isBlank() || it == "null" },
+            decisions = list("decisions"),
+            actionItems = list("action_items"),
+            openQuestions = list("open_questions"),
+        )
+    }.getOrNull()
+
+    fun cardText(manifest: MeetingManifest): String = buildString {
+        manifest.summary?.let { appendLine(it) }
+        fun section(title: String, items: List<String>) {
+            if (items.isEmpty()) return
+            if (isNotEmpty()) appendLine()
+            appendLine(title)
+            items.forEach { appendLine("• $it") }
+        }
+        section(L.t("Решили", "Decided", "决定"), manifest.decisions)
+        section(L.t("Поручения", "Action items", "任务"), manifest.actionItems)
+        section(L.t("Открытые вопросы", "Open questions", "待解决问题"), manifest.openQuestions)
+    }.trim()
 
     // --- обход дерева -----------------------------------------------------
 

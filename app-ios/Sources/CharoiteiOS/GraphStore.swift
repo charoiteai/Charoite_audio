@@ -22,6 +22,29 @@ final class GraphStore: ObservableObject {
         let title: String
         let stamp: String     // «27.07 15:34» для строки списка
         let sortKey: String   // имя файла YYYY-MM-DD_HHMM — сортировка убыв.
+        let manifest: MeetingManifest?
+    }
+
+    struct MeetingManifest: Decodable, Equatable {
+        let schemaVersion: Int
+        let meetingID: String
+        let title: String
+        let durationMinutes: Int?
+        let participants: [String]
+        let summary: String?
+        let decisions: [String]
+        let actionItems: [String]
+        let openQuestions: [String]
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case meetingID = "meeting_id"
+            case title
+            case durationMinutes = "duration_minutes"
+            case participants, summary, decisions
+            case actionItems = "action_items"
+            case openQuestions = "open_questions"
+        }
     }
 
     struct TaskItem: Identifiable, Equatable {
@@ -75,24 +98,47 @@ final class GraphStore: ObservableObject {
         return try? String(contentsOf: url, encoding: .utf8)
     }
 
-    /// Лента: Встречи/*.md, свежие сверху. Тема — из первого `# …` («… — Тема»).
+    /// Лента: сначала переносимые манифесты карточек, затем старые заметки.
     func rescanMeetings() {
         guard let root = graphRoot() else { meetings = []; return }
         let scoped = root.startAccessingSecurityScopedResource()
         defer { if scoped { root.stopAccessingSecurityScopedResource() } }
+        var out: [Meeting] = []
+        var seen: Set<String> = []
+        var pending = 0
+
+        let archive = root.appendingPathComponent("Встречи-архив", isDirectory: true)
+        let folders = (try? FileManager.default.contentsOfDirectory(
+            at: archive, includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]))?.filter { $0.hasDirectoryPath } ?? []
+        for folder in folders {
+            let meta = folder.appendingPathComponent("meeting.meta.json")
+            guard let text = localizedText(of: meta) else {
+                if FileManager.default.fileExists(atPath: meta.path) { pending += 1 }
+                continue
+            }
+            guard let manifest = Self.manifest(from: text) else { continue }
+            let summary = folder.appendingPathComponent("Саммари.md")
+            let target = FileManager.default.fileExists(atPath: summary.path) ? summary : meta
+            out.append(Meeting(
+                id: manifest.meetingID, url: target, title: manifest.title,
+                stamp: Self.stamp(from: manifest.meetingID),
+                sortKey: manifest.meetingID, manifest: manifest))
+            seen.insert(manifest.meetingID)
+        }
+
         let dir = root.appendingPathComponent("Встречи", isDirectory: true)
         let files = (try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: [.ubiquitousItemDownloadingStatusKey],
             options: [.skipsHiddenFiles]))?.filter { $0.pathExtension == "md" } ?? []
-        var out: [Meeting] = []
-        var pending = 0
         for f in files {
             let name = f.deletingPathExtension().lastPathComponent  // 2026-07-27_1534
+            guard !seen.contains(name) else { continue }
             guard let text = localizedText(of: f) else { pending += 1; continue }
             out.append(Meeting(
                 id: "Встречи/\(f.lastPathComponent)", url: f,
                 title: Self.title(from: text, fallback: name),
-                stamp: Self.stamp(from: name), sortKey: name))
+                stamp: Self.stamp(from: name), sortKey: name, manifest: nil))
         }
         meetings = out.sorted { $0.sortKey > $1.sortKey }
         status = pending > 0 ? "Ещё скачивается из iCloud: \(pending)" : nil
@@ -194,10 +240,30 @@ final class GraphStore: ObservableObject {
 
     /// Полный текст встречи для просмотра.
     func text(of meeting: Meeting) -> String {
+        if let manifest = meeting.manifest { return Self.cardText(manifest) }
         guard let root = graphRoot() else { return "" }
         let scoped = root.startAccessingSecurityScopedResource()
         defer { if scoped { root.stopAccessingSecurityScopedResource() } }
         return localizedText(of: meeting.url) ?? "Скачивается из iCloud…"
+    }
+
+    nonisolated static func manifest(from text: String) -> MeetingManifest? {
+        try? JSONDecoder().decode(MeetingManifest.self, from: Data(text.utf8))
+    }
+
+    nonisolated static func cardText(_ manifest: MeetingManifest) -> String {
+        var lines: [String] = []
+        if let summary = manifest.summary { lines.append(summary) }
+        func append(_ title: String, _ items: [String]) {
+            guard !items.isEmpty else { return }
+            lines.append("")
+            lines.append(title)
+            lines += items.map { "• \($0)" }
+        }
+        append(L.t("Решили", "Decided", "决定"), manifest.decisions)
+        append(L.t("Поручения", "Action items", "任务"), manifest.actionItems)
+        append(L.t("Открытые вопросы", "Open questions", "待解决问题"), manifest.openQuestions)
+        return lines.joined(separator: "\n")
     }
 
     nonisolated static func title(from text: String, fallback: String) -> String {

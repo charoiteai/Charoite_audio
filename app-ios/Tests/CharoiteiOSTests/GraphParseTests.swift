@@ -32,4 +32,16 @@ final class GraphParseTests: XCTestCase {
         // неожиданное имя не ломает список — показываем как есть
         XCTAssertEqual(GraphStore.stamp(from: "черновик"), "черновик")
     }
+
+    func testPortableMeetingManifest() throws {
+        let json = """
+        {"schema_version":1,"meeting_id":"2026-08-03_1130","title":"Planning",
+         "duration_minutes":35,"participants":["Anton"],"summary":"Done",
+         "decisions":["Ship"],"action_items":["Test"],"open_questions":["When?"]}
+        """
+        let manifest = try XCTUnwrap(GraphStore.manifest(from: json))
+        XCTAssertEqual(manifest.title, "Planning")
+        XCTAssertEqual(manifest.actionItems, ["Test"])
+        XCTAssertTrue(GraphStore.cardText(manifest).contains("Ship"))
+    }
 }

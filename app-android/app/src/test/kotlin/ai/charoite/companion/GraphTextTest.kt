@@ -82,4 +82,17 @@ class GraphTextTest {
         val out = GraphText.toggle(md, "позвонить Ивану", 5)
         assertEquals("Обсудили: позвонить Ивану\n- [x] позвонить Ивану\n", out)
     }
+
+    @Test
+    fun `переносимый манифест даёт карточку вместо сырого markdown`() {
+        val json = """
+            {"schema_version":1,"meeting_id":"2026-08-03_1130","title":"Planning",
+             "duration_minutes":35,"participants":["Anton"],"summary":"Done",
+             "decisions":["Ship"],"action_items":["Test"],"open_questions":["When?"]}
+        """.trimIndent()
+        val manifest = GraphStore.parseManifest(json)
+        assertEquals("Planning", manifest?.title)
+        assertEquals(listOf("Test"), manifest?.actionItems)
+        assertTrue(GraphStore.cardText(requireNotNull(manifest)).contains("Ship"))
+    }
 }
