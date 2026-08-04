@@ -590,24 +590,26 @@ struct SuflerView: View {
             // fixedSize обязателен: в узкой панели SwiftUI ломал подписи по
             // буквам — на экране стояло «По-дс-ка-зки» в четыре строки.
             // Пусть лучше панель прокрутится, чем слово рассыплется.
-            HStack(spacing: 12) {
-                Toggle(isOn: $sufler.hintsOn) { Text(L.t("Подсказки", "Hints", "提示")).fixedSize() }
+            // Чипы слоёв вместо системных свитчей (UI_REVISION_2026-08,
+            // правило 1): три Toggle(.switch) в одну строку красили полосу
+            // в системный синий и спорили с фирменной кнопкой записи. Чип
+            // несёт цвет слоя: индиго — локальное, sky — единственный слой,
+            // который уходит с машины.
+            LayerBar {
+                LayerChip(title: L.t("Подсказки", "Hints", "提示"), isOn: $sufler.hintsOn)
                     .help(L.t("Подсказки и мгновенные ответы на вопросы собеседника", "Hints and instant answers to the other side's questions", "提示与对方提问的即时回答"))
                     .accessibilityLabel(L.t("Подсказки во время встречи", "Hints during the meeting", "会议期间的提示"))
                     .accessibilityHint(L.t("Мгновенные ответы на вопросы собеседника", "Instant answers to the other side's questions", "对方提问的即时回答"))
-                Toggle(isOn: $sufler.thesesOn) { Text(L.t("Тезисы", "Theses", "要点")).fixedSize() }
+                LayerChip(title: L.t("Тезисы", "Theses", "要点"), isOn: $sufler.thesesOn)
                     .help(L.t("Автотезисы 📌💭 и дежавю ⏮ по ходу встречи", "Auto-theses 📌💭 and déjà vu ⏮ during the meeting", "会议中的自动要点 📌💭 与似曾相识 ⏮"))
                     .accessibilityLabel(L.t("Автотезисы", "Auto-theses", "自动要点"))
                     .accessibilityHint(L.t("Ключевые мысли и повторы по ходу встречи", "Key thoughts and repetitions during the meeting", "会议中的关键想法与重复内容"))
-                Toggle(isOn: $sufler.cloudOn) { Text("Claude").fixedSize() }
+                LayerChip(title: "Claude", isOn: $sufler.cloudOn, tint: Theme.sky)
                     .help(L.t("Параллельные ответы Claude на вопросы собеседника", "Parallel Claude answers to the other side's questions", "Claude 并行回答对方的提问"))
                     .accessibilityLabel(L.t("Ответы Claude", "Claude answers", "Claude 回答"))
                     .accessibilityHint(L.t("Параллельные ответы облачной модели", "Parallel answers from the cloud model", "云端模型的并行回答"))
             }
             .fixedSize(horizontal: true, vertical: false)
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            .font(.caption)
 
             Button {
                 showChat.toggle()
@@ -913,22 +915,16 @@ struct SuflerView: View {
         }
     }
 
+    // PaneHeader из DesignKit: капсовое имя с кернингом и нижним
+    // разделителем — заголовок панели перестаёт путаться с подписью
+    // внутри неё. Сигнатура прежняя, оба вызова не тронуты.
     private func paneTitle(_ title: String, systemImage: String,
                            copy: (() -> String)? = nil) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: systemImage)
-                .font(.caption)
-            Text(title)
-                .font(.caption.weight(.semibold))
-            Spacer()
+        PaneHeader(title: title, systemImage: systemImage, count: nil) {
             if let copy {
                 SuflerCopyButton(text: copy)
             }
         }
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
     }
 
 }
