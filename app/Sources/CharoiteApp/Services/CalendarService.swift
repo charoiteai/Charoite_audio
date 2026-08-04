@@ -76,9 +76,34 @@ final class CalendarService: ObservableObject {
         cue = nil
     }
 
+    /// Оставшиеся встречи сегодняшнего дня — для экрана подготовки.
+    struct DayEvent: Identifiable, Equatable {
+        let id: String
+        let title: String
+        let start: Date
+        let attendees: Int
+    }
+
+    @Published private(set) var today: [DayEvent] = []
+
     /// Событие в окне «идёт сейчас или начнётся в ближайший час».
     private func refresh() {
         let now = Date()
+        // Отдельным запросом — весь остаток дня: подсказке о записи хватает
+        // часа, а подготовке нужен список «что сегодня ещё будет».
+        let dayEnd = Calendar.current.startOfDay(for: now).addingTimeInterval(24 * 3600)
+        let dayPredicate = store.predicateForEvents(
+            withStart: now.addingTimeInterval(-5 * 60), end: dayEnd, calendars: nil)
+        today = store.events(matching: dayPredicate)
+            .filter { !$0.isAllDay && !($0.title ?? "").isEmpty }
+            .sorted { $0.startDate < $1.startDate }
+            .map { ev in
+                DayEvent(id: ev.eventIdentifier ?? (ev.title ?? "") + "\(ev.startDate!)",
+                         title: ev.title ?? "",
+                         start: ev.startDate,
+                         attendees: max(0, (ev.attendees?.count ?? 0) - 1))
+            }
+
         let predicate = store.predicateForEvents(
             withStart: now.addingTimeInterval(-5 * 60),
             end: now.addingTimeInterval(60 * 60),

@@ -37,11 +37,12 @@ targets:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         CFBundleVersion: "6"
-        NSUbiquitousContainers:
-          iCloud.ai.charoite.inbox:
-            NSUbiquitousContainerIsDocumentScopePublic: true
-            NSUbiquitousContainerName: Charoite
-            NSUbiquitousContainerSupportedFolderLevels: Any
+        # NSUbiquitousContainers убран 03.08: собственный iCloud-контейнер
+        # приложения (iCloud.ai.charoite.inbox) в доставке не участвует с
+        # 27.07 — он неделями не материализовался на Mac, и доставка ушла в
+        # обычный iCloud Drive через выбранную пользователем папку. Пустые
+        # entitlements контейнер и так не подключали; блок только обещал в
+        # «Файлах» папку, которой нет.
     entitlements:
       path: CharoiteiOS.entitlements
     settings:

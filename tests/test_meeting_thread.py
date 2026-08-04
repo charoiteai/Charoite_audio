@@ -172,3 +172,90 @@ def test_short_lines_are_not_merged_by_word_overlap():
     added = t.ingest(f"{SAY} поток встал")
 
     assert added == 1
+
+
+# --- ⏮ разбор темы по клавише -------------------------------------------------
+
+def test_expand_writes_into_named_topic_not_tail():
+    """Архивные строки идут в ту тему, по которой спросили, а не в хвост нити."""
+    t = Thread()
+    t.ingest(f"{TOPIC} Обновление ОС\n{SAY} обсуждают сроки", at="10:00")
+    t.ingest(f"{TOPIC} Бюджет\n{SAY} считают смету", at="10:20")
+    added = t.add_archive("Обновление ОС", ["30.07: решили катить волнами"])
+    assert added == 1
+    rendered = t.full()
+    os_block = rendered.split(f"{TOPIC} Бюджет")[0]
+    assert f"{ARCHIVE} 30.07: решили катить волнами" in os_block
+
+
+def test_expand_opens_topic_when_thread_lacks_it():
+    """Просьба «что было по X» сама делает X темой разговора."""
+    t = Thread()
+    added = t.add_archive("Платёжный провайдер", ["17.07: выбрали YuPay"])
+    assert added == 1
+    assert t.last_topic_title == "Платёжный провайдер"
+
+
+def test_expand_deduplicates_known_lines():
+    t = Thread()
+    t.ingest(f"{TOPIC} Обновление ОС\n{ARCHIVE} 30.07: мяч у отдела, дата не назначена")
+    added = t.add_archive("Обновление ОС",
+                          ["30.07: мяч у отдела, дата не назначена", "и новый факт про волны"])
+    assert added == 1
+
+
+def test_last_topic_title_on_empty_thread_is_blank():
+    assert Thread().last_topic_title == ""
+
+
+# --- потокобезопасность: thread_loop и ⏮ пишут одновременно -------------------
+
+def test_concurrent_ingest_and_archive_do_not_duplicate_or_crash():
+    """В нить пишут два потока демона; дубль и мешанина — гонка, а не судьба.
+
+    До мьютекса два потока, одновременно прошедшие knows(), протаскивали
+    одну и ту же строку дважды, а render() читал темы посреди чужого
+    open_topic. Здесь оба потока долбят одну строку и свои уникальные —
+    общая обязана лечь ровно один раз, уникальные — все, render не падать.
+    """
+    import threading as th
+
+    t = Thread()
+    t.ingest(f"{TOPIC} Общая тема\n{SAY} стартовая строка нити")
+    # короче LINE_MIN_LEN: такие строки дедупятся только точным совпадением,
+    # и потерять их может лишь гонка, а не нечёткий фильтр
+    shared = "общая строка гонки"
+    errors: list[BaseException] = []
+    start = th.Barrier(3)
+
+    def worker(prefix: str):
+        try:
+            start.wait()
+            for i in range(200):
+                t.ingest(f"{SAY} {shared}")
+                t.add_archive("Общая тема", [f"{prefix} факт {i:03d}"])
+                t.render()
+        except BaseException as e:  # noqa: BLE001 — тест собирает всё
+            errors.append(e)
+
+    a = th.Thread(target=worker, args=("альфа",))
+    b = th.Thread(target=worker, args=("бета",))
+    a.start(); b.start(); start.wait(); a.join(); b.join()
+
+    assert not errors, errors
+    text = t.full()
+    assert text.count(shared) == 1, "гонка протащила дубль общей строки"
+    # все уникальные строки дошли — обе двухсотки целиком
+    missing = [f"{p} факт {i:03d}" for p in ("альфа", "бета") for i in range(200)
+               if f"{p} факт {i:03d}" not in text]
+    assert not missing, f"потеряно гонкой: {missing[:5]} (+{len(missing) - 5 if len(missing) > 5 else 0})"
+
+
+
+def test_parse_archive_facts_drops_none_and_markers():
+    from meeting_thread import parse_archive_facts
+    out = "NONE\n- 30.07: решение принято\n• мяч у отдела\n\nNone нового нет\n* факт четвёртый лишний\nпятый"
+    assert parse_archive_facts(out) == [
+        "30.07: решение принято", "мяч у отдела", "факт четвёртый лишний"]
+    assert parse_archive_facts("NONE") == []
+    assert parse_archive_facts("") == []

@@ -59,12 +59,15 @@ xcodebuild -project CharoiteiOS.xcodeproj -scheme CharoiteiOS \
 
 ## First-time setup on the phone
 
-1. **Record tab** → folder icon → pick your delivery folder in iCloud
-   Drive (e.g. `Charoite Inbox` — the Mac's import folder).
-2. **Meetings tab** → "Choose folder" → pick your graph folder inside
+1. **Record tab** → the tray icon (↑) → pick your delivery folder in
+   iCloud Drive (e.g. `Charoite Inbox` — the Mac's import folder).
+2. **Meetings tab** → the books icon → pick your graph folder inside
    the Obsidian location in Files.
 
-Both choices are one-time; security-scoped bookmarks survive restarts.
+The two folders are different on purpose — delivery is where recordings
+go, the graph is what the phone reads — so their icons differ too: an
+orange icon means that folder is not chosen yet. Both choices are
+one-time; security-scoped bookmarks survive restarts.
 
 ## Privacy
 

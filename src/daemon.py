@@ -2,7 +2,7 @@
 
 События:  {"type":"status","text":...} | {"type":"transcript","ts":"HH:MM:SS","text":...}
           {"type":"thesis","text":...}  | {"type":"hint","text":...} | {"type":"hint_done"}
-Команды (stdin, по строке): hint | summary | stop
+Команды (stdin, по строке): hint | summary | expand [тема] | stop
 """
 from __future__ import annotations
 
@@ -36,6 +36,7 @@ from meeting_processing import MeetingStatusStore  # noqa: E402
 from meeting_thread import Thread as MeetingThread  # noqa: E402
 import privacy  # noqa: E402
 import speaker_names  # noqa: E402
+import thesis_rules  # noqa: E402
 import voice_pitch  # noqa: E402
 from audio import AudioHub  # noqa: E402
 from llm import LLM  # noqa: E402
@@ -449,18 +450,8 @@ def main():
                             and looks_question(added):
                         fire_question(added)
 
-    THINK_SYSTEM = (
-        "Ты — второй мозг владельца на рабочей встрече: думаешь вместе с ним по живой стенограмме. "
-        "Из НОВОГО фрагмента выдели только по-настоящему ценное, каждое с новой строки со строгим префиксом:\n"
-        "📌 — контрольная точка: решение, договорённость, срок, поручение (кто/что/когда)\n"
-        "💎 — ценная информация: цифра, имя, обещание, условие, риск\n"
-        "💭 — твоя мысль (максимум одна): противоречие со сказанным ранее, упущенный вопрос, скрытый риск\n"
-        "ИГНОРИРУЙ фоновое медиа: радио, телевизор, ролики, новости, политика, "
-        "реклама — всё, что явно не разговор присутствующих о работе. Из такого "
-        "фрагмента тезисы не делай (21.07: «поручение» из новостного эфира "
-        "попало в контрольные точки).\n"
-        "Телеграфно, по-русски. Если ничего ценного не прозвучало — ответь ровно: NONE"
-    )
+    # Промпт и фильтр тезисов — в src/thesis_rules.py (тестируются без аудио).
+    # 💎 убран 03.08: факты ведёт нить, тезисам остались 📌 и 💭.
 
     # Дедуп тезисов по СМЫСЛУ. Модель каждые 40с смотрит свежий фрагмент и на
     # длинной встрече переоткрывает уже сказанное другими словами — контекст в
@@ -477,7 +468,7 @@ def main():
         import nli
         if not nli.is_available():
             return False
-        text = line.lstrip("📌💎💭 ").strip()
+        text = thesis_rules.strip_mark(line)
         if len(text) < 12:
             return False
         words = text.lower().split()
@@ -513,23 +504,17 @@ def main():
                         (f"Контекст (уже обработано):\n{context_tail}\n\n" if context_tail else "")
                         + f"НОВЫЙ фрагмент стенограммы:\n{fresh}",
                         model=cfg["sufler"].get("think_model", llm.small),
-                        system=THINK_SYSTEM,
+                        system=thesis_rules.THINK_SYSTEM,
                     )
                 )
                 context_tail = fresh[-800:]
-                if "NONE" in out and len(out.strip()) < 12:
-                    continue
-                for line in out.strip().splitlines():
-                    line = line.strip()
-                    if not line or line == "NONE":
+                # Строки без живого префикса отбрасываются целиком: вступления
+                # («Вот что важно:») и отставной 💎 в ленте выглядели репликами.
+                for line in thesis_rules.parse(out):
+                    if is_dup_thesis(line):
                         continue
-                    if line.startswith(("📌", "💎", "💭")):
-                        if is_dup_thesis(line):
-                            continue
-                        emit({"type": "thesis", "text": line})
-                        tr.note(line)
-                    else:
-                        emit({"type": "thesis", "text": line})
+                    emit({"type": "thesis", "text": line})
+                    tr.note(line)
             except Exception as e:  # noqa: BLE001
                 emit({"type": "status", "text": f"мышление: {e}"})
 
@@ -702,6 +687,64 @@ def main():
                                 thread.full())
             except Exception as e:  # noqa: BLE001 — поток не должен умирать молча
                 emit({"type": "status", "text": f"нить встречи сорвалась: {e}"})
+
+    expand_lock = threading.Lock()
+
+    def expand_topic(title: str = ""):
+        """⏮ по клавише: что было по теме раньше — из графа прямо в нить.
+
+        Живой контекст подтягивает архив в системный промпт молча. Здесь
+        наоборот: человек явно просит хвосты по теме, и ответ дописывается в
+        нить строками ⏮ — туда, где он его ждёт, а не в отдельное окно.
+        Без названия разбирается текущая (последняя) тема нити.
+        """
+        if not expand_lock.acquire(blocking=False):
+            emit({"type": "status", "text": "⏮ прошлый разбор ещё выполняется"})
+            return
+        try:
+            emit({"type": "expand_started"})
+            title = title.strip() or thread.last_topic_title
+            if not title:
+                emit({"type": "status", "text": "⏮ нить пуста — разбирать нечего"})
+                return
+            try:
+                import requests as _rq
+                _folder = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser().name
+                v = _rq.post("http://127.0.0.1:8100/vault_search",
+                             json={"query": title, "limit": 3, "folder": _folder,
+                                   "snippet_chars": 700}, timeout=8).json().get("text", "")
+            except Exception:  # noqa: BLE001 — brain лежит: честный статус, не тишина
+                emit({"type": "status", "text": "⏮ архив недоступен (brain не отвечает)"})
+                return
+            if not v or v.startswith("⚠") or "не найдено" in v.lower():
+                emit({"type": "status", "text": f"⏮ в архиве по «{title}» пусто"})
+                return
+            try:
+                with hint_lock:   # не толкаться с подсказкой на одной модели
+                    out = "".join(llm.stream(
+                        f"Выдержки из архива прошлых встреч по теме «{title}»:\n\n{v}\n\n"
+                        "Выпиши 2-3 самых важных факта прошлых встреч по этой теме: "
+                        "решение, статус, кто ведёт — с датой, если она видна. "
+                        "По строке на факт, без вступлений и нумерации.",
+                        model=llm.small,
+                        system="Ты сжимаешь архив встреч в короткие факты. "
+                               "Отвечай только строками фактов."))
+            except Exception as e:  # noqa: BLE001
+                emit({"type": "status", "text": f"⏮ разбор сорвался: {e}"})
+                return
+            from meeting_thread import parse_archive_facts
+            added = thread.add_archive(title, parse_archive_facts(out))
+            if added:
+                emit({"type": "thread", "text": thread.render()})
+                append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ⏮ {title}",
+                            thread.full())
+            else:
+                emit({"type": "status", "text": f"⏮ по «{title}» нового не нашлось"})
+        finally:
+            try:
+                emit({"type": "expand_done"})
+            finally:
+                expand_lock.release()
 
     def auto_hint_loop():
         """Подсказки в реальном времени: сами, по мере накопления разговора."""
@@ -1267,7 +1310,7 @@ def main():
     def deep_loop():
         """Глубокая проработка: 26b пересматривает заметки быстрой модели.
 
-        Раз в ~5 минут: подтверждает/уточняет/отбрасывает 📌💎💭 от e4b,
+        Раз в ~5 минут: подтверждает/уточняет/отбрасывает 📌💭 от e4b,
         связывает с памятью графа, выдаёт до 5 строк «🔬 …».
         """
         seen_notes = 0
@@ -1397,6 +1440,10 @@ def main():
                     threading.Thread(target=gen_answer, args=(q,), daemon=True).start()
             elif cmd == "cloud":
                 cloud_evt.set()  # ручной запрос облачного ответа
+            elif cmd == "expand" or cmd.startswith("expand "):
+                # ⏮: разбор темы нити по графу; без аргумента — текущая тема
+                t = raw.strip()[7:].strip() if cmd.startswith("expand ") else ""
+                threading.Thread(target=expand_topic, args=(t,), daemon=True).start()
             elif cmd == "summary":
                 threading.Thread(target=_do_summary, daemon=True).start()
             elif cmd.startswith("set "):

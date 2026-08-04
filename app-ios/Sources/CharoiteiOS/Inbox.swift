@@ -310,8 +310,10 @@ enum Inbox {
     private nonisolated(unsafe) static var flushing = false
 }
 
-/// Системный выбор папки (UIKit-мост): один раз выбрать «Charoite Inbox»
-/// в iCloud Drive — дальше всё само.
+/// Системный выбор папки (UIKit-мост). Пикер общий, папки разные: вкладка
+/// записи выбирает им папку ДОСТАВКИ («Charoite Inbox»), вкладки встреч и
+/// задач — папку ГРАФА (Obsidian-vault); какая нужна — объясняет вызывающий
+/// экран своей подписью.
 struct FolderPicker: UIViewControllerRepresentable {
     var onPick: (URL) -> Void
 

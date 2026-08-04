@@ -81,12 +81,12 @@ struct QueueView: View {
 
     private var folderWarning: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Папка доставки не выбрана", systemImage: "folder.badge.questionmark")
+            Label("Папка доставки не выбрана", systemImage: "tray.and.arrow.up")
                 .font(.callout.weight(.medium))
-            Text("Записи никуда не уедут, пока не укажете папку в iCloud Drive — ту же, за которой следит Mac.")
+            Text("Записи никуда не уедут, пока не укажете папку доставки в iCloud Drive — ту же, за которой следит Mac (обычно «Charoite Inbox»). Папка графа с вкладки «Встречи» — другая, она про чтение.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            Button("Выбрать папку") { showPicker = true }
+            Button("Выбрать папку доставки") { showPicker = true }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
         }

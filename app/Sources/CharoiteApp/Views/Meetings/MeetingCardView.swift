@@ -102,6 +102,20 @@ struct MeetingCardView: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .lineLimit(2)
             }
+            // Облачная ревизия работала невидимкой: правки графа делались,
+            // а человек узнавал о них только из лога. Одна честная строка.
+            if let review = card.cloudReview {
+                Label(review.saved
+                      ? L.t("Ревизия Claude: правок графа — \(review.edits)",
+                            "Claude review: \(review.edits) graph edits",
+                            "Claude 复审：图谱修改 \(review.edits) 处")
+                      : L.t("Ревизия Claude: правок графа — \(review.edits), файл ревизии не сохранился",
+                            "Claude review: \(review.edits) graph edits, the review file was not saved",
+                            "Claude 复审：图谱修改 \(review.edits) 处，复审文件未保存"),
+                      systemImage: "cloud")
+                    .font(.caption)
+                    .foregroundStyle(review.saved ? Color.secondary : .orange)
+            }
         }
     }
 

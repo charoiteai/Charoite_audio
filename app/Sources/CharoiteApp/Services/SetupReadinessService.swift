@@ -27,6 +27,38 @@ struct SetupReadinessSnapshot: Equatable, Sendable {
     var warnings: Int { checks.filter { $0.state == .warning }.count }
 }
 
+extension SetupReadinessPolicy {
+    /// Модели, которые чинятся одной кнопкой.
+    ///
+    /// Detail проверок пишет рецепт терминалом: «ollama pull qwen3.6:35b-a3b ·
+    /// ollama pull bge-m3». Первый запуск «без терминала» значит, что этот
+    /// рецепт исполняет само приложение — имя модели достаём отсюда же, а не
+    /// заводим параллельный источник правды.
+    static func pullableModels(in detail: String) -> [String] {
+        guard let re = try? NSRegularExpression(pattern: #"ollama pull ([^\s·]+)"#) else {
+            return []
+        }
+        let range = NSRange(detail.startIndex..., in: detail)
+        return re.matches(in: detail, range: range).compactMap { m in
+            Range(m.range(at: 1), in: detail).map { String(detail[$0]) }
+        }
+    }
+
+    /// Команда для копирования, когда починить кнопкой нельзя.
+    ///
+    /// pip-установка зависимостей требует терминала — но пусть человек хотя бы
+    /// не перепечатывает команду с экрана руками.
+    static func copyableCommand(in detail: String) -> String? {
+        for part in detail.components(separatedBy: "  ·  ") {
+            let cmd = part.trimmingCharacters(in: .whitespaces)
+            if cmd.hasPrefix(".venv/") || cmd.contains("pip install") {
+                return cmd
+            }
+        }
+        return nil
+    }
+}
+
 /// Чистая политика готовности — отдельно от файлов, сети и TCC ради тестов.
 enum SetupReadinessPolicy {
     static func modelAvailable(_ configured: String, in installed: [String]) -> Bool {

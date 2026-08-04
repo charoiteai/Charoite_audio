@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import collections
+import os
 import pathlib
 import re
 import shutil
@@ -94,7 +95,7 @@ def merge(keep: pathlib.Path, extra: pathlib.Path, apply: bool) -> list[str]:
 def main() -> None:
     apply = "--apply" in sys.argv
     cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
-    graph = pathlib.Path(cfg["sufler"]["graph_dir"]).expanduser()
+    graph = pathlib.Path(os.environ.get("SUFLER_GRAPH_DIR") or cfg["sufler"]["graph_dir"]).expanduser()
     archive = graph / ARCHIVE_DIR
     if not archive.exists():
         sys.exit(f"нет архива встреч: {archive}")

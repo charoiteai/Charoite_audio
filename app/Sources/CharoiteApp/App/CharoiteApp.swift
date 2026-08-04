@@ -28,6 +28,11 @@ struct CharoiteApp: App {
         }
         .defaultSize(width: 560, height: 420)
 
+        Window(L.t("Подготовка к встрече", "Meeting prep", "会前准备"), id: "prep") {
+            PrepView()
+        }
+        .defaultSize(width: 520, height: 460)
+
         MenuBarExtra {
             MenuBarView()
         } label: {

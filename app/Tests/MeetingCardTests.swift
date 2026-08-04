@@ -148,6 +148,39 @@ final class MeetingCardTests: XCTestCase {
         XCTAssertEqual(MeetingCardLoader.tasksText(card: card), "- дело один\n- дело два")
     }
 
+    // MARK: лог облачной ревизии
+
+    func testCloudReviewTakesTheLastRun() {
+        // в логе три прогона: правдой считается последний
+        let log = """
+        [cloud-review] 2026-08-03_1130: файлов в запросе 3, режим правка графа
+        [cloud-review] ревизия НЕ сохранена (код -1, 0 знаков) — см. x.partial
+        [cloud-review] правок графа: 83, откатано запрещённых: Саммари.md
+        [cloud-review] 2026-08-03_1130: файлов в запросе 4, режим правка графа
+        [cloud-review] ревизия сохранена: 2026-08-03_1130_Тема_ревизия_claude.md
+        [cloud-review] правок графа: 103, откатано запрещённых: Граф.md
+        """
+        let r = MeetingCardLoader.cloudReview(fromLog: log)
+        XCTAssertEqual(r, CloudReviewResult(edits: 103, saved: true))
+    }
+
+    func testCloudReviewUnsavedRevisionIsHonest() {
+        let log = """
+        [cloud-review] таймаут 1800с — разбор прерван
+        [cloud-review] ревизия НЕ сохранена (код -1, 0 знаков) — см. x.partial
+        [cloud-review] правок графа: 83, откатано запрещённых: Саммари.md
+        """
+        let r = MeetingCardLoader.cloudReview(fromLog: log)
+        XCTAssertEqual(r, CloudReviewResult(edits: 83, saved: false))
+    }
+
+    func testCloudReviewWithoutEditsLineIsNil() {
+        // ревизия ещё идёт или упала до разбора — итога нет
+        let log = "[cloud-review] 2026-08-03_1130: файлов в запросе 3\n"
+        XCTAssertNil(MeetingCardLoader.cloudReview(fromLog: log))
+        XCTAssertNil(MeetingCardLoader.cloudReview(fromLog: ""))
+    }
+
     // MARK: команда переименования
 
     func testRenameCommandUsesVenvPythonAndShortStamp() {
