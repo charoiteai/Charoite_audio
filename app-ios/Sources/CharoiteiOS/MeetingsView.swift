@@ -41,9 +41,14 @@ struct MeetingsView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showPicker = true } label: {
-                    Image(systemName: store.folderChosen ? "folder.badge.gearshape" : "folder.badge.questionmark")
+                    // Книги, не папка: на вкладке записи папкой называется
+                    // доставка, и одинаковые folder.*-иконки на двух экранах
+                    // просили «выбрать папку», не говоря какую.
+                    Image(systemName: store.folderChosen
+                          ? "books.vertical.fill" : "books.vertical")
+                        .foregroundStyle(store.folderChosen ? Theme.accent : .orange)
                 }
-                .accessibilityLabel("Папка графа")
+                .accessibilityLabel("Папка графа встреч")
             }
         }
         .sheet(isPresented: $showPicker) {
@@ -61,11 +66,11 @@ struct MeetingsView: View {
 
     private var emptyGraph: some View {
         ContentUnavailableView {
-            Label("Выберите папку графа", systemImage: "folder.badge.questionmark")
+            Label("Выберите папку графа", systemImage: "books.vertical")
         } description: {
-            Text("Один раз укажите папку вашего графа в Файлах (iCloud Drive → Obsidian) — лента встреч и задачи будут читаться прямо из неё.")
+            Text("Один раз укажите папку вашего графа в Файлах (iCloud Drive → Obsidian) — лента встреч и задачи будут читаться прямо из неё. Это не папка доставки записей: та настраивается на вкладке «Запись».")
         } actions: {
-            Button("Выбрать папку") { showPicker = true }
+            Button("Выбрать папку графа") { showPicker = true }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
         }

@@ -63,8 +63,10 @@
   (agenda, numbers, statuses) come from the transcript or are declared
   unknown — early in a meeting a topic-primed prompt used to make the model
   present those topics as the actual agenda.
-- **Auto-theses** — 📌 facts/decisions, 💎 highlights, 💭 ideas as the
-  conversation flows; the heavy model periodically reviews them (🔬).
+- **Auto-theses** — 📌 checkpoints (decision, deadline, action item) and
+  💭 the model's own thoughts as the conversation flows; the heavy model
+  periodically reviews them (🔬). 💎 "highlights" was retired: the thread
+  carries the facts now — a third stream of the same facts was duplication.
   Paraphrased repeats are filtered by a local NLI model (duplicate =
   mutual entailment; a refinement carrying a new fact is not a duplicate).
   The layer is optional: with no model in `models/nli/` it is simply off —
@@ -165,6 +167,19 @@ up: the folder matching the current topic in the graph stays, files from the ext
 move into it, and the extras themselves go to `Встречи-архив/_дубли`. Without
 `--apply` it only prints the plan — nothing is ever deleted.
 
+**Merging graphs** (`scripts/merge_graphs.py <donor> <receiver>`) — stitches
+a split graph back together: on Aug 3 a work meeting drove off into a brand
+new graph the model honestly invented from the content. The pipeline now
+prevents splits (the prompt lists known graphs), and this script heals the
+ones that already happened: new files move over, name collisions get
+appended into the receiver's file as a "moved from graph …" section (donor
+frontmatter stripped — people and system nodes are additive, their
+histories must not be lost), meeting lines migrate into the receiver's
+`_MOC.md`, and the donor's `_MOC.md` becomes a "merged into …" note.
+Without `--apply` it only prints the plan. Applying validates every operation
+before the first move, only auto-merges Markdown collisions, keeps a recovery backup
+and restores all touched files if any later step fails.
+
 **Forget a meeting** (`scripts/forget_meeting.py <date|stamp>`) — the other
 side of recording: removes the meeting from all six places it lives — the
 transcript and its derivatives, the folder under «Встречи-архив», the
@@ -203,6 +218,13 @@ it signals degradation, it does not break the loop.
 
 ## Outside meetings
 
+- **First run without a terminal** — the onboarding screen shows the
+  readiness check (environment, config, Ollama, models, microphone, graph
+  folder), and a failed item is fixed in place: a missing model is pulled by
+  the app itself through the Ollama API, with percentages from its own
+  stream; recipes that a button cannot fix are copied to the clipboard whole
+  instead of being retyped from the screen. "Start listening" unlocks once
+  no blocking items remain.
 - **Dictation** (global hotkey) — speak → recognized locally → pasted into
   the active field; the clipboard is restored, images included. In the menu
   bar, dictation, note and diary sit in a column with their shortcuts in a
@@ -223,7 +245,11 @@ it signals degradation, it does not break the loop.
   heading with a counter — a thread is for reading, not scrolling. A restated
   thought is dropped by code: both character similarity and overlap of
   meaningful words are checked. The model is called by how much talk piled up,
-  not by the clock: silence in the room produces no new lines.
+  not by the clock: silence in the room produces no new lines. `⌘⇧E` (the ⏮
+  toolbar button) expands the current topic from the archive: a graph search
+  turns into 2-3 facts from past meetings (decision, status, who owns it)
+  appended as ⏮ lines right into the topic that was asked about — the hint
+  pane stays free, so a hint can be requested in parallel.
 - **The hint follows the thread** instead of answering for you: current
   topic → who said what → **why** this is being discussed → **what
   happened before** on this topic in the archive (with a date) → what is
@@ -285,29 +311,50 @@ it signals degradation, it does not break the loop.
   the whole status, and the meeting vanished from the window entirely.
 - **The "Recent meetings" window** — twenty meetings from the last two
   weeks: state as a colored dot, "Open" and "Transcript" on every row, a
-  "Retry" button on failed ones. While one meeting is being retried, the
+  "Retry" button on failed ones. A ready meeting's row shows its duration
+  (from transcript timecodes, cached — the file is re-read only when the
+  meeting was re-processed). While one meeting is being retried, the
   "working" indicator shows only on that row: ready meetings are not
   concerned with someone else's retry. The menu-bar button is visible even
   with an empty history — the window explains its own emptiness; and it is
   called "Recent", not "All": the full archive lives in the archive folder.
+  The search field in the header answers "where did we decide X": lexical
+  search over the archive's summaries, minutes and debriefs (plus graph notes
+  for meetings that never reached the archive), newest first, click opens the
+  document. Transcripts are deliberately not scanned: by then decisions live
+  in the upper layers.
 - **The meeting card** — a ready meeting opens on click: topic, date,
   duration (from transcript timecodes), participants, the one-line gist,
   decisions and action items from the Summary. "Copy" puts the summary,
   the tasks, or everything into the clipboard — into a mail without
   opening a single file. "Open", "Transcript" and "Obsidian" buttons are
   right there. "Meeting ready" no longer means "go figure out a markdown
-  file".
+  file". When a cloud review ran for the meeting, the card honestly shows
+  its outcome from the log: "N graph edits", with an unsaved review file
+  highlighted — before, the review worked invisibly and its edits were
+  only discoverable in the logs.
 - **Renaming a meeting** — the pencil in the card, or
   `scripts/rename_meeting.py <stamp> "New topic"`. The topic is invented
   by the model and is sometimes off; changing it by hand meant visiting
   five places. The script carries the new topic everywhere: transcripts/,
   the archive folder (and links inside it), the copies in Documentation,
   the graph note heading, the app status. A main transcript that never got
-  a topic — including the second-precision one the pipeline never renamed —
-  receives it too: such meetings used to show up in the list as a date
-  instead of a topic. The old topic stays in aliases — search by it keeps
+  a topic — including the second-precision one from meetings processed
+  before the pipeline fix — receives it too: such meetings used to show up
+  in the list as a date instead of a topic. Fresh second-precision
+  transcripts are named by the pipeline itself: seconds in the file name
+  are not a topic, so the main file and its derivatives get the
+  minute-form name with the slug (files of a neighbour meeting in the
+  same minute are neither picked up nor overwritten). The old topic stays
+  in aliases — search by it keeps
   working; `[[Встречи/stamp]]` links never break, the topic is not part of
   them. Without `--yes` the script prints a plan and touches nothing.
+- **Prep screen** (menu bar → Today) — help BEFORE the meeting, not
+  after: the rest of today's calendar events (same opt-in access as the
+  recording cue), "previously on this topic" — three archive hits for the
+  next event's title (utility tails like "(weekly)" are trimmed), open
+  action items and the last meeting's card. Everything gathers in one
+  window a minute before the call, no tour across four windows.
 
 - **Import folder (watched)** — point the app at a folder (Settings →
   Import, or `--scan` in the CLI): recordings dropped there become graph

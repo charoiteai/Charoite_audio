@@ -20,6 +20,7 @@ exit code 1, если провалов больше трети — заметн�
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import re
 import sys
@@ -130,7 +131,7 @@ def main() -> None:
         graph = ROOT / "demo" / "graph"
         bench_file = ROOT / "config" / "memory_bench_demo.yaml"
     else:
-        graph = pathlib.Path(cfg["sufler"]["graph_dir"]).expanduser()
+        graph = pathlib.Path(os.environ.get("SUFLER_GRAPH_DIR") or cfg["sufler"]["graph_dir"]).expanduser()
         bench_file = ROOT / "config" / "memory_bench.yaml"  # см. memory_bench.example.yaml
     if not bench_file.exists():
         sys.exit(f"нет файла бенча: {bench_file}")

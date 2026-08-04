@@ -11,6 +11,7 @@ Operational helpers. All local, all optional.
 - `forget_meeting.py` — remove one meeting from its transcript, recording, archive and graph references. Dry-run by default; `--yes` applies and backs up surviving edited nodes.
 - `dedup_archive.py` — consolidate historical duplicate archive folders. Dry-run by default; `--apply` parks extras under `Встречи-архив/_дубли/` rather than deleting them.
 - `dedup_graph.py` — replace byte-identical archive copies with hard links when explicitly enabled. Editing either path then edits the same file, so read the report before applying.
+- `merge_graphs.py` — merge a split-off graph back into the main one: new files move, Markdown name collisions get appended as a "moved from" section (donor frontmatter stripped), meeting lines migrate into the receiver's `_MOC.md`, the donor `_MOC.md` becomes a "merged into" note. Dry-run by default; `--apply` first validates the whole plan, refuses binary and non-Markdown collisions, creates a recovery backup and rolls partial failures back.
 - `memory_bench.py` — benchmark the whole retrieval loop on the demo graph (`--demo`, `--demo-en`).
 - `tier3_cores.py` — core revision (duplicate merge) with `--apply`; without it, dry-run.
 - `nightly_dossier.py` — incrementally rebuild topic dossiers or inspect retrieval with `--find`.

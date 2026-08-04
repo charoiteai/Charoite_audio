@@ -307,6 +307,49 @@ def safe_name(name: str) -> str:
     return s or "без имени"
 
 
+def parse_stem(stem: str) -> tuple[str, str, bool]:
+    """Стем стенограммы → (минутный штамп, голый штамп, есть ли уже тема).
+
+    Голый штамп — и минутный «2026-08-03_1130», и посекундный
+    «2026-08-03_113012»: секунды не тема. Раньше секунды в стеме читались
+    как «файл уже переименовывали», конвейер темы не давал, и встреча жила
+    в списке датой — чинили руками через rename_meeting.py. Ссылки и имена
+    в графе всегда строятся от минутного штампа.
+    """
+    m = re.match(r"(\d{4}-\d{2}-\d{2}_\d{4})(?:\d\d)?(?=_|$)", stem)
+    if not m:
+        return stem, stem, False   # не штамп вовсе — считаем безымянным
+    return m.group(1), m.group(0), stem != m.group(0)
+
+
+def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.Path:
+    """Дать файлам встречи имя «штамп_тема»; вернуть новый путь стенограммы.
+
+    Посекундный главный файл получает МИНУТНОЕ имя — как назвал бы его
+    rename_meeting.py: по короткому штампу его находят архив, статус
+    приложения и ссылки графа. Производные («…113012_minutes.md») ищутся по
+    ГОЛОМУ штампу — у посекундной встречи глоб по минутному находил бы не
+    свои файлы, а файлы соседней встречи той же минуты. Занятое имя — сторож
+    от затирания: файл остаётся как есть, тема идёт только в шапку.
+    """
+    slug = re.sub(r"[,;:!?.]", "", safe_name(title)).replace(" ", "_")[:50]
+    new_t = tpath.with_name(f"{stamp}_{slug}.md")
+    if not new_t.exists():
+        for extra in tpath.parent.glob(f"{bare}_*.md"):  # _minutes, _hints…
+            suffix = extra.name[len(bare):]  # "_minutes.md"
+            target = extra.with_name(f"{stamp}_{slug}{suffix}")
+            if not target.exists():         # чужой файл затирать нельзя
+                extra.rename(target)
+        tpath.rename(new_t)
+        tpath = new_t
+    body = tpath.read_text(encoding="utf-8")
+    # Искать по bare: в шапке посекундной стенограммы штамп с секундами,
+    # и замена по короткому штампу оставляла бы хвост «19» после темы.
+    body = body.replace(f"# Встреча {bare}", f"# Встреча {stamp} — {title}", 1)
+    tpath.write_text(body, encoding="utf-8")
+    return tpath
+
+
 ENT_FOLDER = {"система": "Системы", "команда": "Команды", "проект": "Системы",
               "документ": "Системы"}
 
@@ -577,9 +620,7 @@ def main():
         else:
             print(f"граф проекта: {graph.name}")
 
-    m = re.match(r"(\d{4}-\d{2}-\d{2}_\d{4})", tpath.stem)
-    stamp = m.group(1) if m else tpath.stem  # только дата-время: 2026-07-17_1040
-    already_titled = tpath.stem != stamp  # файл уже переименовывали
+    stamp, bare, already_titled = parse_stem(tpath.stem)
     title = (data.get("название") or "").strip()
     # правило 20.07: имя встречи = дата + 2-3 слова, длиннее не бывает
     tw = title.split()[:3]
@@ -587,17 +628,7 @@ def main():
         tw.pop()  # обрезка не должна кончаться висящим союзом/предлогом
     title = " ".join(tw).rstrip(",;:")
     if title and not already_titled:  # переименовать логи: дата + о чём общались
-        slug = re.sub(r"[,;:!?.]", "", safe_name(title)).replace(" ", "_")[:50]
-        new_t = tpath.with_name(f"{stamp}_{slug}.md")
-        if not new_t.exists():
-            for extra in tpath.parent.glob(f"{stamp}_*.md"):  # _minutes, _hints…
-                suffix = extra.name[len(stamp):]  # "_minutes.md"
-                extra.rename(extra.with_name(f"{stamp}_{slug}{suffix}"))
-            tpath.rename(new_t)
-            tpath = new_t
-        body = tpath.read_text(encoding="utf-8")
-        body = body.replace(f"# Встреча {stamp}", f"# Встреча {stamp} — {title}", 1)
-        tpath.write_text(body, encoding="utf-8")
+        tpath = retitle(tpath, stamp, bare, title)
     meeting_link = f"Встречи/{stamp}"
     # 26b на длинных встречах иногда роняет ключи в JSON — битые записи пропускаем,
     # а не валим весь прогон (KeyError на часовой встрече 17.07)

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import sys
 from pathlib import Path
 
@@ -170,3 +171,17 @@ def test_title_is_sanitized_for_the_filesystem():
     pretty, slug = rm.pretty_and_slug('Инцидент: загрузки/ODS?')
     assert "/" not in pretty and ":" not in pretty
     assert ":" not in slug and " " not in slug
+
+
+def test_resolve_graph_honours_sufler_graph_dir(tmp_path, monkeypatch):
+    """Тестовое окружение не должно дотягиваться до рабочего графа.
+
+    Аудит 04.08: скрипт читал граф только из config.yaml, и прогон с
+    SUFLER_GRAPH_DIR переименовывал файлы transcripts/, а архивную папку и
+    заметку молча искал в рабочем графе — «готово» при сделанной половине.
+    """
+    cfg = {"sufler": {"graph_dir": "/tmp/рабочий-граф"}}
+    monkeypatch.setenv("SUFLER_GRAPH_DIR", str(tmp_path))
+    assert rm.resolve_graph(cfg) == tmp_path
+    monkeypatch.delenv("SUFLER_GRAPH_DIR")
+    assert rm.resolve_graph(cfg) == pathlib.Path("/tmp/рабочий-граф")

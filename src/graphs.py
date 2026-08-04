@@ -8,6 +8,7 @@ iCloud-Obsidian: одного захардкоженного пути мало �
 """
 from __future__ import annotations
 
+import os
 import pathlib
 
 ICLOUD = pathlib.Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents"
@@ -24,7 +25,15 @@ def load_config() -> dict:
 
 
 def configured_graph() -> pathlib.Path | None:
-    """sufler.graph_dir из конфига. None — не настроен или конфига нет."""
+    """sufler.graph_dir из конфига. None — не настроен или конфига нет.
+
+    SUFLER_GRAPH_DIR перекрывает конфиг: тестовый прогон любого инструмента
+    не должен дотягиваться до рабочего графа (аудит 04.08 — rename_meeting
+    делал ровно это).
+    """
+    env = os.environ.get("SUFLER_GRAPH_DIR", "").strip()
+    if env:
+        return pathlib.Path(env).expanduser()
     try:
         import yaml
         cfg = yaml.safe_load(CONFIG.read_text(encoding="utf-8")) or {}

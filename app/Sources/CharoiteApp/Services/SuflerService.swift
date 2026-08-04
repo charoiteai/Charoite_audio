@@ -57,6 +57,10 @@ final class SuflerService: ObservableObject {
     /// на месте, и глазу не приходится каждый раз искать, что изменилось.
     @Published var thread = ""
     @Published var isHinting = false
+    /// Идёт явный поиск прошлого контекста по кнопке ⏮.
+    /// Отдельно от isHinting: подсказка и архив могут выполняться параллельно,
+    /// но два архивных разбора одной темы одновременно не нужны.
+    @Published private(set) var isExpanding = false
     @Published var cloud = ""          // ответ Claude (Sonnet) — третья панель
     @Published var isClouding = false
 
@@ -213,6 +217,7 @@ final class SuflerService: ObservableObject {
         // демон мог умереть посреди генерации — hint_done уже не придёт,
         // без сброса кнопки Подсказка/Claude/Протокол залипали заблокированными
         isHinting = false
+        isExpanding = false
         isClouding = false
         userStopped = false
         status = L.t("Запускаю…", "Starting…", "启动中…")
@@ -295,6 +300,7 @@ final class SuflerService: ObservableObject {
             if let p, p.isRunning { kill(p.processIdentifier, SIGKILL) }
         }
         isRunning = false
+        isExpanding = false
         stopClock()
         status = L.t("Останавливаю…", "Stopping…", "停止中…")
     }
@@ -311,6 +317,7 @@ final class SuflerService: ObservableObject {
         isRunning = false
         stopClock()
         isHinting = false   // ждать hint_done/cloud_done от мёртвого демона бессмысленно
+        isExpanding = false
         disarmHintTimeout()
         isClouding = false
         watchdog?.invalidate()
@@ -395,6 +402,17 @@ final class SuflerService: ObservableObject {
         send("summary")
     }
 
+    /// ⏮: хвосты прошлых встреч по текущей теме нити — из графа в нить.
+    /// Не занимает панель подсказки: ответ дописывается в нить строками ⏮,
+    /// поэтому isHinting не трогаем — подсказку можно просить параллельно.
+    /// Состояние ставим до отправки команды: два быстрых клика не успеют
+    /// положить в очередь две одинаковые генерации до ответа демона.
+    func requestExpand() {
+        guard isRunning, !isExpanding else { return }
+        isExpanding = true
+        send("expand")
+    }
+
     func requestCloud() {
         // cloudOn — единственный тумблер, отправляющий стенограмму с машины.
         // Выключен — не шлём даже по горячей клавише: ⌘⇧⏎ работает и тогда,
@@ -450,6 +468,10 @@ final class SuflerService: ObservableObject {
                 restartAttempts = 0  // транскрипция реально идёт — лимит рестартов обнуляем
             case "thread":
                 thread = text
+            case "expand_started":
+                isExpanding = true
+            case "expand_done":
+                isExpanding = false
             case "thesis":
                 theses.append(text)
                 if theses.count > 200 { theses.removeFirst(theses.count - 200) }

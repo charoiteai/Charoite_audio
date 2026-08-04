@@ -15,6 +15,7 @@ struct FirstRunView: View {
     @AppStorage("charoit.firstRunSeen") private var seen = false
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var readiness = SetupReadinessService.shared
+    @ObservedObject private var pulls = ModelPullService.shared
     @State private var requestingMicrophone = false
     let onStart: () -> Void
 
@@ -156,9 +157,53 @@ struct FirstRunView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+                fixActions(check)
             }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    /// Починить, не открывая терминал: рецепт из detail исполняется кнопкой.
+    ///
+    /// «Первая стенограмма без терминала» ломалась ровно здесь: проверка уже
+    /// сказала, чего не хватает, человек уже согласен — а дальше «наберите
+    /// команду». Модели качает само приложение через API Ollama; для того,
+    /// что кнопкой не чинится, команда хотя бы копируется, а не
+    /// перепечатывается с экрана.
+    @ViewBuilder
+    private func fixActions(_ check: SetupCheck) -> some View {
+        if check.state != .ready {
+            let models = SetupReadinessPolicy.pullableModels(in: check.detail)
+            if !models.isEmpty {
+                HStack(spacing: 10) {
+                    ForEach(models, id: \.self) { model in
+                        if let status = pulls.progress[model] {
+                            HStack(spacing: 4) {
+                                ProgressView().controlSize(.mini)
+                                Text("\(model): \(status)").font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Button(L.t("Скачать \(model)", "Pull \(model)", "拉取 \(model)")) {
+                                pulls.pull(model)
+                            }
+                            .buttonStyle(.link)
+                            .font(.system(size: 11))
+                        }
+                    }
+                }
+                if let err = models.compactMap({ pulls.failed[$0] }).first {
+                    Text(err).font(.system(size: 10)).foregroundStyle(.red)
+                }
+            } else if let cmd = SetupReadinessPolicy.copyableCommand(in: check.detail) {
+                Button(L.t("Скопировать команду", "Copy command", "复制命令")) {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(cmd, forType: .string)
+                }
+                .buttonStyle(.link)
+                .font(.system(size: 11))
+            }
+        }
     }
 
     private func readinessColor(_ state: SetupCheck.State) -> Color {

@@ -112,9 +112,15 @@ struct RecordView: View {
                 Button {
                     sheet = .folder
                 } label: {
-                    Image(systemName: Inbox.folderChosen ? "folder.badge.gearshape" : "folder.badge.questionmark")
+                    // Лоток «наверх», не папка: у вкладки встреч своя папка
+                    // (граф), и две одинаковые иконки folder.* на соседних
+                    // экранах спрашивали у человека одно и то же разными
+                    // папками. Невыбранная — оранжевая: записи не уедут.
+                    Image(systemName: Inbox.folderChosen
+                          ? "tray.and.arrow.up.fill" : "tray.and.arrow.up")
+                        .foregroundStyle(Inbox.folderChosen ? Theme.accent : .orange)
                 }
-                .accessibilityLabel("Папка доставки")
+                .accessibilityLabel("Папка доставки записей")
             }
         }
         // Один sheet на все листы: два `.sheet` на одном элементе SwiftUI не

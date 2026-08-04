@@ -13,6 +13,12 @@ struct RecentMeetingsView: View {
     /// Встреча, открытая карточкой. Snapshot Identifiable по meetingID —
     /// sheet(item:) сам закрывается и открывается при переключении строк.
     @State private var cardMeeting: MeetingProcessingSnapshot?
+    /// Поиск по архиву: окно отвечает не только «что со вчерашней записью»,
+    /// но и «где мы решали про X» — по саммари, минуткам и разборам.
+    @State private var query = ""
+    @State private var results: [MeetingSearch.Hit] = []
+    @State private var isSearching = false
+    @State private var searchTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,12 +30,65 @@ struct RecentMeetingsView: View {
                 Text(L.t("за две недели", "last two weeks", "近两周"))
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
+                TextField(L.t("Поиск по встречам…", "Search meetings…", "搜索会议…"),
+                          text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 190)
+                    .onSubmit { runSearch(debounced: false) }
+                    .onChange(of: query) { _, q in
+                        if q.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            cancelSearch()
+                        } else {
+                            runSearch()
+                        }
+                    }
+                if isSearching {
+                    ProgressView().controlSize(.small)
+                        .accessibilityLabel(L.t("Ищу встречи", "Searching meetings", "正在搜索会议"))
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             Divider()
 
-            if processing.history.isEmpty {
+            if !query.isEmpty {
+                if isSearching && results.isEmpty {
+                    VStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(L.t("Ищу в саммари, минутках и разборах…",
+                                 "Searching summaries, minutes and debriefs…",
+                                 "正在摘要、纪要和复盘中搜索…"))
+                            .font(.subheadline).foregroundStyle(.tertiary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if results.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.largeTitle).foregroundStyle(.quaternary)
+                        Text(L.t("Ничего не нашлось в саммари, минутках и разборах.",
+                                 "Nothing found in summaries, minutes or debriefs.",
+                                 "在摘要、纪要和复盘中未找到任何内容。"))
+                            .font(.subheadline).foregroundStyle(.tertiary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(results) { hit in
+                        Button {
+                            NSWorkspace.shared.open(hit.file)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(hit.title).font(.body.weight(.medium)).lineLimit(1)
+                                Text(hit.snippet).font(.caption)
+                                    .foregroundStyle(.secondary).lineLimit(2)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.vertical, 3)
+                    }
+                    .listStyle(.inset)
+                }
+            } else if processing.history.isEmpty {
                 VStack(spacing: 10) {
                     Image(systemName: "waveform")
                         .font(.largeTitle).foregroundStyle(.quaternary)
@@ -52,6 +111,43 @@ struct RecentMeetingsView: View {
         .sheet(item: $cardMeeting) { meeting in
             MeetingCardView(meeting: meeting)
         }
+        .onDisappear { cancelSearch() }
+    }
+
+    /// Поиск начинается после короткой паузы во вводе. Каждый новый символ
+    /// отменяет прежнее чтение архива, поэтому медленный старый запрос не
+    /// может перезаписать результат более нового.
+    private func runSearch(debounced: Bool = true) {
+        searchTask?.cancel()
+        let submitted = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !submitted.isEmpty, let graph = AppSettings.graphDir else {
+            cancelSearch()
+            return
+        }
+        results = []
+        isSearching = true
+        searchTask = Task { @MainActor in
+            if debounced {
+                do {
+                    try await Task.sleep(nanoseconds: 350_000_000)
+                } catch {
+                    return
+                }
+            }
+            guard !Task.isCancelled else { return }
+            let found = await MeetingSearch.searchAsync(submitted, graph: graph)
+            guard !Task.isCancelled,
+                  query.trimmingCharacters(in: .whitespacesAndNewlines) == submitted else { return }
+            results = found
+            isSearching = false
+        }
+    }
+
+    private func cancelSearch() {
+        searchTask?.cancel()
+        searchTask = nil
+        results = []
+        isSearching = false
     }
 
     @ViewBuilder
@@ -85,6 +181,14 @@ struct RecentMeetingsView: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 8)
+                // Длительность — только у готовых: пока конвейер работает,
+                // таймкоды ещё дописываются и цифра врала бы.
+                if state == .ready,
+                   let dur = MeetingDurationCache.durationText(for: meeting) {
+                    Text(dur + " · ")
+                        .font(.caption).foregroundStyle(.tertiary)
+                        .fixedSize()
+                }
                 Text(when(meeting.startedDate))
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize()

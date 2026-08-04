@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import sys
@@ -49,17 +50,29 @@ def pretty_and_slug(title: str) -> tuple[str, str]:
     return pretty, slug
 
 
+def resolve_graph(cfg: dict) -> pathlib.Path:
+    """SUFLER_GRAPH_DIR перекрывает конфиг — как во всём конвейере.
+
+    Найдено аудитом: скрипт читал граф только из config.yaml, и прогон в
+    тестовом окружении (SUFLER_GRAPH_DIR на временный граф) переименовывал
+    файлы transcripts/, а папку архива и заметку молча искал в РАБОЧЕМ
+    графе. «Готово» при полдела — и рука в проде, куда тестовый запуск не
+    должен дотягиваться вовсе.
+    """
+    raw = os.environ.get("SUFLER_GRAPH_DIR") or cfg["sufler"]["graph_dir"]
+    return pathlib.Path(raw).expanduser()
+
+
 def retitled(name: str, stamp: str, slug: str) -> str | None:
     """Новое имя файла — или None, если файл темы не касается.
 
     Три случая, когда тему в имя можно и нужно положить:
     - слаг уже есть — стоит между штампом и известным хвостом, меняем его;
     - главный файл вообще без темы: «2026-08-03_1130.md» — дописываем;
-    - главный файл с посекундным штампом: «2026-08-03_113012.md». Конвейер
-      его так и не переименовал — секунды в стеме выглядели для него как
-      «файл уже с темой», — и в списке встреч такая встреча показывается
-      датой вместо темы. Переименовываем в короткий штамп со слагом, как
-      назвал бы сам конвейер.
+    - главный файл с посекундным штампом: «2026-08-03_113012.md». Свежий
+      конвейер называет такие сам (graph_updater.parse_stem/retitle), но
+      встречи, разобранные до фикса, остались голыми — переименовываем в
+      короткий штамп со слагом, как назвал бы сам конвейер.
 
     ПРОИЗВОДНЫЕ посекундные файлы («…113012_hints.md») не трогаем: темы в их
     именах нет, а по полному стему их находит конвейер.
@@ -185,7 +198,7 @@ def main() -> None:
 
     import yaml
     cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
-    graph = pathlib.Path(cfg["sufler"]["graph_dir"]).expanduser()
+    graph = resolve_graph(cfg)
     tdir = ROOT / cfg["log"]["transcripts_dir"]
 
     p = plan(graph, tdir, stamp, pretty, slug)

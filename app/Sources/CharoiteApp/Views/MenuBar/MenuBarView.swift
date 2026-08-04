@@ -87,6 +87,10 @@ struct MenuBarView: View {
                     openWindow(id: "meetings")
                     NSApp.activate(ignoringOtherApps: true)
                 }
+                Button(L.t("Сегодня", "Today", "今天")) {
+                    openWindow(id: "prep")
+                    NSApp.activate(ignoringOtherApps: true)
+                }
             }
             .buttonStyle(.plain)
             .font(.caption)

@@ -250,3 +250,56 @@ final class RetryControlTests: XCTestCase {
             transcriptExists: false, retryingID: nil), .hidden)
     }
 }
+
+/// Кэш длительности: файл читается один раз на (встреча, updatedAt).
+@MainActor
+final class MeetingDurationCacheTests: XCTestCase {
+    private var dir: URL!
+
+    override func setUp() {
+        super.setUp()
+        MeetingDurationCache.reset()
+        dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("duration-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: dir)
+        super.tearDown()
+    }
+
+    private func meeting(updated: TimeInterval, path: String) -> MeetingProcessingSnapshot {
+        MeetingProcessingSnapshot(
+            schemaVersion: 1, meetingID: "m", state: .ready, stage: "complete",
+            startedAt: 1, updatedAt: updated, transcriptPath: path,
+            notePath: nil, error: nil, part: nil, parts: nil)
+    }
+
+    func testDurationComesFromTimecodes() throws {
+        let t = dir.appendingPathComponent("a.md")
+        try "**Ведущий [10:00:03]:** начало\n**Ведущий [10:47:12]:** конец\n"
+            .write(to: t, atomically: true, encoding: .utf8)
+        XCTAssertNotNil(MeetingDurationCache.durationText(for: meeting(updated: 5, path: t.path)))
+    }
+
+    func testSameStampIsCachedEvenIfFileChanges() throws {
+        let t = dir.appendingPathComponent("a.md")
+        try "**Ведущий [10:00:03]:** начало\n**Ведущий [10:47:12]:** конец\n"
+            .write(to: t, atomically: true, encoding: .utf8)
+        let first = MeetingDurationCache.durationText(for: meeting(updated: 5, path: t.path))
+        try FileManager.default.removeItem(at: t)   // файл исчез — кэш не заметит
+        XCTAssertEqual(MeetingDurationCache.durationText(for: meeting(updated: 5, path: t.path)),
+                       first)
+    }
+
+    func testNewStampRereadsTheFile() throws {
+        let t = dir.appendingPathComponent("a.md")
+        try "**Ведущий [10:00:03]:** начало\n**Ведущий [10:47:12]:** конец\n"
+            .write(to: t, atomically: true, encoding: .utf8)
+        _ = MeetingDurationCache.durationText(for: meeting(updated: 5, path: t.path))
+        try FileManager.default.removeItem(at: t)
+        // доработка двинула updatedAt → честное перечтение (файла нет — nil)
+        XCTAssertNil(MeetingDurationCache.durationText(for: meeting(updated: 6, path: t.path)))
+    }
+}
