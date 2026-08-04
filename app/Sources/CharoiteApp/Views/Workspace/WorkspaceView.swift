@@ -10,10 +10,18 @@ struct WorkspaceView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(WorkspaceSection.allCases, selection: $navigation.selection) { section in
-                Label(section.title, systemImage: section.icon)
-                    .tag(section)
-                    .badge(badge(for: section))
+            // Выбор раздела — кнопки в обычном ScrollView, без List вовсе.
+            // List в sidebar-колонке этого окна молча терял и подсветку, и
+            // клики (AX: selected=false после клика) — найдено живым прогоном
+            // 04.08; кнопки же в этом окне срабатывают всегда.
+            ScrollView {
+                VStack(spacing: 2) {
+                    ForEach(WorkspaceSection.allCases) { section in
+                        sidebarRow(section)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.top, 8)
             }
             .navigationTitle("Charoite")
             .frame(minWidth: 170)
@@ -42,6 +50,38 @@ struct WorkspaceView: View {
         case .memory:
             LocalChatView()
         }
+    }
+
+    private func sidebarRow(_ section: WorkspaceSection) -> some View {
+        let isCurrent = (navigation.selection ?? .today) == section
+        let count = badge(for: section)
+        return Button {
+            navigation.selection = section
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: section.icon)
+                    .frame(width: 20)
+                    .foregroundStyle(isCurrent ? Theme.accent : Color.secondary)
+                Text(section.title)
+                    .foregroundStyle(isCurrent ? Theme.accent : Color.primary)
+                Spacer()
+                if count > 0 {
+                    Text("\(count)")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(Capsule().fill(Color.primary.opacity(0.08)))
+                }
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 6)
+                .fill(isCurrent ? Theme.accent.opacity(0.14) : Color.clear))
+            .contentShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        // бейдж — деталь, имя раздела VoiceOver читает первым
+        .accessibilityLabel(Text(section.title))
     }
 
     private func badge(for section: WorkspaceSection) -> Int {

@@ -29,7 +29,12 @@ RETRY_LIMIT = 3
 # полная пересборка часовой встречи со всеми моделями укладывается в минуты.
 STALE_PROCESSING = 3600
 _STAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}_\d{4})")
-_AUX_SUFFIXES = ("_minutes", "_hints", "_live", "_debrief")
+# Производные файлы конвейера. Список обязан совпадать со Swift-стороной
+# (MeetingProcessingService.title) и rename_meeting.SUFFIXES: пропущенный
+# хвост здесь = файл разбора в transcript_path и тема «… разбор» в списке
+# (инцидент 04.08 — «_разбор» был свежее стенограммы и выигрывал по mtime).
+_AUX_SUFFIXES = ("_minutes", "_hints", "_live", "_debrief",
+                 "_разбор", "_ревизия_claude", "_спикеры")
 
 
 def short_stamp(transcript: pathlib.Path) -> str:

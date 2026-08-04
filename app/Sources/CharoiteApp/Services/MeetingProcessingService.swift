@@ -286,7 +286,11 @@ extension MeetingProcessingSnapshot {
             rest.removeFirst(2)
         }
         while rest.first == "_" || rest.first == " " { rest.removeFirst() }
-        for suffix in ["_minutes", "_hints", "_live", "_debrief"] where rest.hasSuffix(suffix) {
+        // Полный список производных хвостов — включая русские: statuses со
+        // старых версий могли записать в transcript_path файл разбора, и
+        // тогда тема в списке обрастала «… разбор» (инцидент 04.08).
+        for suffix in ["_ревизия_claude", "_minutes", "_hints", "_live",
+                       "_debrief", "_разбор", "_спикеры"] where rest.hasSuffix(suffix) {
             rest.removeLast(suffix.count)
         }
         let name = rest.replacingOccurrences(of: "_", with: " ")
@@ -298,7 +302,17 @@ extension MeetingProcessingSnapshot {
     /// started_at — момент, когда конвейер впервые записал статус; для списка
     /// нужен первый, он совпадает с тем, что человек помнит.
     var startedDate: Date {
-        Date(timeIntervalSince1970: startedAt)
+        // started_at в статусе — момент, когда конвейер записал статус, а
+        // обработка идёт ПОСЛЕ встречи: карточка «Очистки ресурсов» 11:31
+        // показывала «в 12:03» (живой прогон 04.08). Человеку нужен штамп
+        // из meeting_id — это и есть начало записи.
+        let parser = DateFormatter()
+        parser.dateFormat = "yyyy-MM-dd_HHmm"
+        parser.timeZone = .current
+        if let date = parser.date(from: String(meetingID.prefix(15))) {
+            return date
+        }
+        return Date(timeIntervalSince1970: startedAt)
     }
 
     /// «31 июля, 14:15» из штампа «2026-07-31_1415».
