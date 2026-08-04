@@ -2,82 +2,137 @@ import SwiftUI
 
 #if os(macOS)
 
-/// Задачи со встреч: все `- [ ]` графа одним списком, клик — отметить в файле.
+/// Единый список поручений из Markdown с обратной связью к встречам.
 struct TasksView: View {
     @ObservedObject private var tasks = TasksService.shared
+    @ObservedObject private var repository = MeetingRepository.shared
+    @ObservedObject private var navigation = WorkspaceNavigation.shared
     @State private var showDone = false
+    @State private var query = ""
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "checklist")
-                    .foregroundStyle(Theme.accent)
-                Text(L.t("Задачи со встреч", "Meeting tasks", "会议任务")).font(.headline).fixedSize()
-                Text(L.t("\(tasks.openCount) открытых", "\(tasks.openCount) open", "\(tasks.openCount) 项未完成"))
-                    .font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Toggle(isOn: $showDone) { Text(L.t("Показывать сделанные", "Show completed", "显示已完成")).fixedSize() }
-                    .toggleStyle(.checkbox)
+            header
+            if let error = tasks.mutationError {
+                Label(error, systemImage: "exclamationmark.triangle")
                     .font(.caption)
-                // все открытые — в буфер: вставить список в письмо/чат команды
-                Button {
-                    let open = tasks.items.filter { !$0.done }
-                        .map { "- [ ] \($0.text)" }.joined(separator: "\n")
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(open, forType: .string)
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                }
-                .help(L.t("Скопировать все открытые задачи списком", "Copy all open tasks as a list", "复制全部未完成任务"))
-                .disabled(tasks.openCount == 0)
-                Button {
-                    tasks.rescan()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .help(L.t("Перечитать граф", "Rescan the graph", "重新扫描图谱"))
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12).padding(.bottom, 8)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
             Divider()
-            if visible.isEmpty {
-                VStack(spacing: 10) {
-                    Image(systemName: "checkmark.circle")
-                        .font(.largeTitle).foregroundStyle(.quaternary)
-                    Text(tasks.openCount == 0 && !tasks.items.isEmpty
-                         ? L.t("Всё сделано", "All done", "全部完成")
-                         : L.t("Поручения из минуток появятся здесь.\nМинутки пишут их чекбоксами — как в Obsidian.", "Action items from minutes appear here.\nMinutes write them as checkboxes — like Obsidian.", "纪要中的行动项会显示在这里。\n纪要以复选框记录——与 Obsidian 一致。"))
-                        .font(.subheadline).foregroundStyle(.tertiary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                // секции по файлам: десяток задач плоским списком читался
-                // кашей — теперь видно, с какой встречи хвосты
-                List {
-                    ForEach(groups, id: \.rel) { group in
-                        Section {
-                            ForEach(group.items) { item in
-                                row(item)
-                            }
-                        } header: {
-                            Text(group.rel.replacingOccurrences(of: ".md", with: ""))
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .listStyle(.inset)
-            }
+            content
         }
-        .frame(minWidth: 420, minHeight: 320)
+        .frame(minWidth: 520, minHeight: 360)
         .onAppear { tasks.rescan() }
     }
 
-    private var visible: [TasksService.Item] {
-        showDone ? tasks.items : tasks.items.filter { !$0.done }
+    private var header: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "checklist").foregroundStyle(Theme.accent)
+                Text(L.t("Задачи со встреч", "Meeting tasks", "会议任务"))
+                    .font(.headline).fixedSize()
+                Text(L.t("\(scopedOpenCount) открытых",
+                         "\(scopedOpenCount) open",
+                         "\(scopedOpenCount) 项未完成"))
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                TextField(L.t("Найти поручение", "Find an action item", "查找任务"), text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 210)
+                Toggle(isOn: $showDone) {
+                    Text(L.t("Сделанные", "Completed", "已完成")).fixedSize()
+                }
+                .toggleStyle(.checkbox).font(.caption)
+                Button { copyVisibleOpen() } label: { Image(systemName: "doc.on.doc") }
+                    .help(L.t("Скопировать видимые открытые задачи",
+                              "Copy visible open tasks",
+                              "复制当前显示的未完成任务"))
+                    .disabled(visibleOpen.isEmpty)
+                Button { tasks.rescan() } label: { Image(systemName: "arrow.clockwise") }
+                    .help(L.t("Перечитать граф", "Rescan the graph", "重新扫描图谱"))
+            }
+            if let meeting = selectedMeeting {
+                HStack(spacing: 7) {
+                    Image(systemName: "line.3.horizontal.decrease.circle.fill")
+                        .foregroundStyle(Theme.accent)
+                    Text(L.t("Только: \(meeting.title)",
+                             "Only: \(meeting.title)",
+                             "仅显示：\(meeting.title)"))
+                        .font(.caption.weight(.medium)).lineLimit(1)
+                    Button {
+                        navigation.selectedTaskMeetingID = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(L.t("Показать все поручения", "Show all action items", "显示全部任务"))
+                    Spacer()
+                    Button(L.t("Открыть встречу", "Open meeting", "打开会议")) {
+                        navigation.open(.meetings, meetingID: meeting.id)
+                    }
+                    .buttonStyle(.link).font(.caption)
+                }
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: 7).fill(Theme.accent.opacity(0.09)))
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
     }
 
-    /// Файлы с их задачами, свежие файлы сверху (порядок visible сохранён).
+    @ViewBuilder
+    private var content: some View {
+        if visible.isEmpty {
+            VStack(spacing: 10) {
+                Image(systemName: emptyIcon).font(.largeTitle).foregroundStyle(.quaternary)
+                Text(emptyText)
+                    .font(.subheadline).foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                if navigation.selectedTaskMeetingID != nil {
+                    Button(L.t("Показать все задачи", "Show all tasks", "显示全部任务")) {
+                        navigation.selectedTaskMeetingID = nil
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            List {
+                ForEach(groups, id: \.rel) { group in
+                    Section {
+                        ForEach(group.items) { item in row(item) }
+                    } header: {
+                        groupHeader(group)
+                    }
+                }
+            }
+            .listStyle(.inset)
+        }
+    }
+
+    private var selectedMeeting: MeetingRecord? {
+        repository.record(id: navigation.selectedTaskMeetingID)
+    }
+
+    private var scoped: [TasksService.Item] {
+        guard let meetingID = navigation.selectedTaskMeetingID else { return tasks.items }
+        return tasks.items(for: meetingID)
+    }
+
+    private var scopedOpenCount: Int { scoped.filter { !$0.done }.count }
+
+    private var visible: [TasksService.Item] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return scoped.filter { item in
+            (showDone || !item.done)
+                && (trimmed.isEmpty
+                    || item.text.localizedCaseInsensitiveContains(trimmed)
+                    || TasksService.sourceTitle(item.rel).localizedCaseInsensitiveContains(trimmed))
+        }
+    }
+
+    private var visibleOpen: [TasksService.Item] { visible.filter { !$0.done } }
+
     private var groups: [(rel: String, items: [TasksService.Item])] {
         var order: [String] = []
         var byRel: [String: [TasksService.Item]] = [:]
@@ -88,21 +143,77 @@ struct TasksView: View {
         return order.map { (rel: $0, items: byRel[$0] ?? []) }
     }
 
+    private func groupHeader(_ group: (rel: String, items: [TasksService.Item])) -> some View {
+        HStack(spacing: 6) {
+            Text(TasksService.sourceTitle(group.rel))
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Spacer()
+            if let first = group.items.first,
+               let meeting = repository.record(matching: first) {
+                Button {
+                    navigation.open(.meetings, meetingID: meeting.id)
+                } label: {
+                    Label(L.t("К встрече", "Meeting", "会议"), systemImage: "arrow.up.right.square")
+                }
+                .buttonStyle(.plain).font(.caption2)
+                .help(L.t("Открыть карточку встречи", "Open the meeting card", "打开会议卡片"))
+            }
+        }
+    }
+
     private func row(_ item: TasksService.Item) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Button {
-                tasks.toggle(item)
-            } label: {
-                Image(systemName: item.done ? "checkmark.square.fill" : "square")
-                    .foregroundStyle(item.done ? Color.accentColor : .secondary)
+            Button { tasks.toggle(item) } label: {
+                if tasks.isUpdating(item) {
+                    ProgressView().controlSize(.mini).frame(width: 14, height: 14)
+                } else {
+                    Image(systemName: item.done ? "checkmark.square.fill" : "square")
+                        .foregroundStyle(item.done ? Theme.accent : Color.secondary)
+                }
             }
             .buttonStyle(.plain)
+            .disabled(tasks.isUpdating(item))
             Text(MarkdownLine.render(item.text))
                 .strikethrough(item.done)
                 .foregroundStyle(item.done ? .secondary : .primary)
             Spacer()
         }
         .padding(.vertical, 2)
+        .contextMenu {
+            if let meeting = repository.record(matching: item) {
+                Button(L.t("Открыть встречу", "Open meeting", "打开会议")) {
+                    navigation.open(.meetings, meetingID: meeting.id)
+                }
+            }
+            Button(L.t("Открыть Markdown", "Open Markdown", "打开 Markdown")) {
+                NSWorkspace.shared.open(item.file)
+            }
+        }
+    }
+
+    private var emptyIcon: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "checkmark.circle" : "magnifyingglass"
+    }
+
+    private var emptyText: String {
+        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return L.t("По этому запросу поручений нет.",
+                       "No action items match this search.",
+                       "没有符合搜索条件的任务。")
+        }
+        if scopedOpenCount == 0 && !scoped.isEmpty {
+            return L.t("Всё сделано", "All done", "全部完成")
+        }
+        return L.t("Поручения из минуток появятся здесь.\nMarkdown остаётся источником истины.",
+                   "Action items from minutes appear here.\nMarkdown remains the source of truth.",
+                   "纪要中的任务会显示在这里。\nMarkdown 仍是真实来源。")
+    }
+
+    private func copyVisibleOpen() {
+        let text = visibleOpen.map { "- [ ] \($0.text)" }.joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 }
 

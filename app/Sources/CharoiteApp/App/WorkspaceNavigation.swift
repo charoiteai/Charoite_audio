@@ -42,12 +42,20 @@ final class WorkspaceNavigation: ObservableObject {
 
     @Published var selection: WorkspaceSection? = .today
     @Published var selectedMeetingID: String?
+    /// Фильтр, с которым карточка встречи открывает раздел поручений.
+    @Published var selectedTaskMeetingID: String?
 
     private init() {}
 
     func open(_ section: WorkspaceSection, meetingID: String? = nil) {
         if let meetingID { selectedMeetingID = meetingID }
         selection = section
+        AppDelegate.showMainWindow()
+    }
+
+    func openTasks(meetingID: String? = nil) {
+        selectedTaskMeetingID = meetingID
+        selection = .tasks
         AppDelegate.showMainWindow()
     }
 }
