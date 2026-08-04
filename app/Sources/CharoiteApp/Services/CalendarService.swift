@@ -33,6 +33,7 @@ final class CalendarService: ObservableObject {
         }
         let done: (Bool) -> Void = { granted in
             Task { @MainActor in
+                self.accessGranted = granted
                 guard granted else { self.nextEventTitle = nil; return }
                 self.refresh()
                 self.timer?.invalidate()
@@ -81,10 +82,35 @@ final class CalendarService: ObservableObject {
         let id: String
         let title: String
         let start: Date
+        var end: Date?
         let attendees: Int
     }
 
     @Published private(set) var today: [DayEvent] = []
+
+    /// Дал ли пользователь доступ к календарю. nil — ещё не спрашивали:
+    /// экрану «Календарь» нужно отличать «доступа нет» от «день пустой»,
+    /// это разные состояния и разные кнопки.
+    @Published private(set) var accessGranted: Bool?
+
+    /// События произвольного дня — для экрана «Календарь». Синхронно:
+    /// EventKit отвечает из локальной базы. Без доступа — пусто.
+    func events(on day: Date) -> [DayEvent] {
+        guard accessGranted == true else { return [] }
+        let start = Calendar.current.startOfDay(for: day)
+        let end = start.addingTimeInterval(24 * 3600)
+        let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
+        return store.events(matching: predicate)
+            .filter { !$0.isAllDay && !($0.title ?? "").isEmpty }
+            .sorted { $0.startDate < $1.startDate }
+            .map { ev in
+                DayEvent(id: ev.eventIdentifier ?? (ev.title ?? "") + "\(ev.startDate!)",
+                         title: ev.title ?? "",
+                         start: ev.startDate,
+                         end: ev.endDate,
+                         attendees: max(0, (ev.attendees?.count ?? 0) - 1))
+            }
+    }
 
     /// Событие в окне «идёт сейчас или начнётся в ближайший час».
     private func refresh() {
@@ -101,6 +127,7 @@ final class CalendarService: ObservableObject {
                 DayEvent(id: ev.eventIdentifier ?? (ev.title ?? "") + "\(ev.startDate!)",
                          title: ev.title ?? "",
                          start: ev.startDate,
+                         end: ev.endDate,
                          attendees: max(0, (ev.attendees?.count ?? 0) - 1))
             }
 
