@@ -385,6 +385,17 @@ it signals degradation, it does not break the loop.
   relocates one unambiguous item or refuses the write instead of completing a
   neighbouring task. A newly finished pipeline refreshes the list itself.
 
+- **Rebuild always finds its recordings** — the meeting name is produced by
+  a single module across the pipeline: the daemon names channel recordings,
+  rebuild looks them up, and an app-initiated retry resolves the
+  minute-precision titled name to the seconds-precision stamp of the
+  recordings. The silent format drift of 28.07 cost every meeting its final
+  transcript — the naming contract is now held by end-to-end tests.
+- **Diagnostics respect privacy** — `doctor` asks privacy for the LLM
+  address (honouring both the remote-address ban and the kill switch), and
+  the post-meeting hook no longer receives the Anthropic key in its
+  environment: cloud goes through the subscription only.
+
 - **Import folder (watched)** — point the app at a folder (Settings →
   Import, or `--scan` in the CLI): recordings dropped there become graph
   meetings on their own; processed files move to `done/`, failed ones

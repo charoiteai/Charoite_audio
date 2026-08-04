@@ -30,6 +30,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 OK, WARN, FAIL = "✓", "–", "✗"
 issues = 0
+llm_url_refused = False   # об отказе политики говорим один раз, а не в каждой секции
 
 
 def line(mark: str, what: str, hint: str = "") -> None:
@@ -37,6 +38,38 @@ def line(mark: str, what: str, hint: str = "") -> None:
     if mark == FAIL:
         issues += 1
     print(f" {mark} {what}" + (f"\n     → {hint}" if hint and mark != OK else ""))
+
+
+def llm_url(cfg: dict) -> str | None:
+    """Адрес LLM — только через privacy.llm_base_url, как и везде в проекте.
+
+    Диагностика читала `llm.base_url` из конфига сама и слала на этот адрес
+    запрос. Дыра та же, что закрывал privacy.py: чужой адрес в конфиге —
+    и `doctor` уходит наружу при выключенном облаке и под рубильником, да
+    ещё и рапортует «✓ Ollama», подтверждая владельцу, что всё локально.
+    Сторож `test_no_reader_bypasses_privacy` этого не видел: он смотрел
+    только `src/`, а `scripts/` не смотрел вовсе.
+
+    Отказ политики здесь — не крах, а диагноз: у `doctor` работа как раз
+    в том, чтобы назвать проблему и следующий шаг. Причина одна, поэтому и
+    строка одна: адрес спрашивают две секции, и без памятки один запрет
+    печатался бы дважды, а счётчик проблем показывал бы две.
+    """
+    global llm_url_refused
+    sys.path.insert(0, str(ROOT / "src"))
+    try:
+        import privacy
+    except Exception as e:  # noqa: BLE001
+        line(FAIL, f"src/privacy.py не читается ({type(e).__name__})",
+             "без него нельзя решить, законен ли адрес LLM — проверьте src/privacy.py")
+        return None
+    try:
+        return privacy.llm_base_url(cfg)
+    except RuntimeError as e:
+        if not llm_url_refused:
+            llm_url_refused = True
+            line(FAIL, "адрес LLM запрещён политикой приватности", str(e))
+        return None
 
 
 def check_python() -> None:
@@ -77,9 +110,13 @@ def check_config() -> dict:
 
 
 def check_ollama(cfg: dict) -> None:
-    base = str(cfg.get("llm", {}).get("base_url", "http://127.0.0.1:11434")).rstrip("/")
+    base = llm_url(cfg)
+    if base is None:
+        return
     try:
-        # nosemgrep — base из локального конфига (свой Ollama), не пользовательский ввод
+        # base выдан privacy.llm_base_url: либо loopback, либо явно
+        # разрешённый владельцем адрес; не пользовательский ввод.
+        # nosemgrep
         with urllib.request.urlopen(f"{base}/api/tags", timeout=4) as r:
             models = [m.get("name", "") for m in json.load(r).get("models", [])]
     except OSError:
@@ -131,6 +168,9 @@ def check_llm_alive(cfg: dict) -> None:
     генерация: 03.08 разница между этими двумя вопросами стоила разбора
     встречи и часа поисков.
     """
+    base = llm_url(cfg)
+    if base is None:
+        return                      # адрес уже отвергнут выше, диагноз назван
     sys.path.insert(0, str(ROOT / "src"))
     try:
         import llm_health
@@ -141,8 +181,7 @@ def check_llm_alive(cfg: dict) -> None:
     if llm_health.probe(cfg, timeout=90):
         line(OK, f"модель отвечает ({time.monotonic() - started:.1f} с)")
         return
-    port_owner = llm_health.listener_path(cfg.get("llm", {}).get("base_url")
-                                          or "http://127.0.0.1:11434")
+    port_owner = llm_health.listener_path(base)
     line(FAIL, "модель не отвечает на генерацию"
                + (f" (порт держит {port_owner})" if port_owner else ""),
          "инференс встал: перезапустите Ollama. Конвейер сделает это сам при "
