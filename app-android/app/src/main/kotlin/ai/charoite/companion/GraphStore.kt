@@ -17,7 +17,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -305,24 +304,72 @@ object GraphStore {
             ?: L.t("Файл не читается", "File is unreadable", "文件无法读取")
     }
 
-    fun parseManifest(text: String): MeetingManifest? = runCatching {
-        val json = JSONObject(text)
+    /** Узкий JSON-парсер производного манифеста, работающий и в JVM-тестах. */
+    fun parseManifest(text: String): MeetingManifest? {
+        fun rawString(key: String): String? = Regex(
+            "\\\"${Regex.escape(key)}\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\""
+        ).find(text)?.groupValues?.get(1)?.let(::decodeJsonString)
+        fun number(key: String): Int? = Regex(
+            "\\\"${Regex.escape(key)}\\\"\\s*:\\s*(\\d+)"
+        ).find(text)?.groupValues?.get(1)?.toIntOrNull()
         fun list(key: String): List<String> {
-            val array = json.optJSONArray(key) ?: return emptyList()
-            return (0 until array.length()).mapNotNull { array.optString(it).takeIf(String::isNotBlank) }
+            val body = Regex(
+                "\\\"${Regex.escape(key)}\\\"\\s*:\\s*\\[(.*?)]",
+                RegexOption.DOT_MATCHES_ALL,
+            ).find(text)?.groupValues?.get(1) ?: return emptyList()
+            return Regex("\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"")
+                .findAll(body)
+                .map { decodeJsonString(it.groupValues[1]) }
+                .filter(String::isNotBlank)
+                .toList()
         }
-        MeetingManifest(
-            schemaVersion = json.getInt("schema_version"),
-            meetingId = json.getString("meeting_id"),
-            title = json.getString("title"),
-            durationMinutes = json.optInt("duration_minutes").takeIf { it > 0 },
+        val schema = number("schema_version") ?: return null
+        val meetingId = rawString("meeting_id") ?: return null
+        val title = rawString("title") ?: return null
+        return MeetingManifest(
+            schemaVersion = schema,
+            meetingId = meetingId,
+            title = title,
+            durationMinutes = number("duration_minutes")?.takeIf { it > 0 },
             participants = list("participants"),
-            summary = json.optString("summary").takeUnless { it.isBlank() || it == "null" },
+            summary = rawString("summary")?.takeIf(String::isNotBlank),
             decisions = list("decisions"),
             actionItems = list("action_items"),
             openQuestions = list("open_questions"),
         )
-    }.getOrNull()
+    }
+
+    private fun decodeJsonString(raw: String): String {
+        val out = StringBuilder(raw.length)
+        var index = 0
+        while (index < raw.length) {
+            val char = raw[index++]
+            if (char != '\\' || index >= raw.length) {
+                out.append(char)
+                continue
+            }
+            when (val escaped = raw[index++]) {
+                '\"', '\\', '/' -> out.append(escaped)
+                'b' -> out.append('\b')
+                'f' -> out.append('\u000C')
+                'n' -> out.append('\n')
+                'r' -> out.append('\r')
+                't' -> out.append('\t')
+                'u' -> {
+                    val end = (index + 4).coerceAtMost(raw.length)
+                    val value = raw.substring(index, end).toIntOrNull(16)
+                    if (value != null && end - index == 4) {
+                        out.append(value.toChar())
+                        index = end
+                    } else {
+                        out.append("\\u")
+                    }
+                }
+                else -> out.append(escaped)
+            }
+        }
+        return out.toString()
+    }
 
     fun cardText(manifest: MeetingManifest): String = buildString {
         manifest.summary?.let { appendLine(it) }
