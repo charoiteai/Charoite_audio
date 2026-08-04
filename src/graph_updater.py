@@ -994,12 +994,21 @@ def run_post_hook(cfg: dict, tpath: pathlib.Path, stamp: str) -> None:
 
     config.yaml: sufler.post_meeting_hook: "путь/скрипт". Получает env
     SUFLER_TRANSCRIPT / SUFLER_STAMP; сбой хука не валит конвейер.
+
+    ANTHROPIC_API_KEY вычищается тем же фильтром, что и во всех остальных
+    точках запуска процессов (daemon.py, cloud_review.py, nightly_*). Здесь
+    он оставался: `os.environ | {...}` отдавал ключ произвольной команде из
+    конфига — а через неё и всему, что она запустит дальше. Инвариант
+    проекта — «облако идёт через Claude Code по подписке»: ключ в окружении
+    хука уводит любой вызов оттуда на потокенный биллинг, и владелец узнаёт
+    об этом из счёта, а не из логов.
     """
     cmd = str((cfg.get("sufler") or {}).get("post_meeting_hook", "")).strip()
     if not cmd:
         return
     import subprocess
-    env = os.environ | {"SUFLER_TRANSCRIPT": str(tpath), "SUFLER_STAMP": stamp}
+    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    env |= {"SUFLER_TRANSCRIPT": str(tpath), "SUFLER_STAMP": stamp}
     try:
         # nosemgrep — команду задаёт владелец в СВОЁМ конфиге (post_meeting_hook), это фича
         subprocess.run(cmd, shell=True, env=env, timeout=180)

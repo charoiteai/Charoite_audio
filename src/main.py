@@ -22,6 +22,7 @@ from rich.console import Console  # noqa: E402
 from rich.panel import Panel  # noqa: E402
 
 import fact_check  # noqa: E402
+import meeting_stamp  # noqa: E402
 from audio import AudioHub, list_devices  # noqa: E402
 from llm import LLM  # noqa: E402
 from stt import STT  # noqa: E402
@@ -61,7 +62,10 @@ class Transcript:
         # внутри той же минуты: со штампом до минут новый процесс открывал файл
         # прошлой встречи и затирал её первым же _save(), а .pcm обнулял open("wb").
         # Час разговора исчезал вместе со страховочной записью.
-        stamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        # Формат — в meeting_stamp: этим же именем демон называет записи
+        # каналов, а rebuild_transcript их ищет. Своя strftime здесь была бы
+        # четвёртым независимым представлением одного и того же имени.
+        stamp = meeting_stamp.now()
         self.path = out_dir / f"{stamp}.md"
         n = 1
         while self.path.exists():

@@ -83,6 +83,60 @@ def _own_consts(fn: ast.AST) -> set[str]:
     return out
 
 
+_PRIVACY_GATES = ("cloud_live_enabled", "cloud_hints_enabled",
+                  "cloud_enrich_enabled", "cloud_edit_graph_enabled")
+
+
+def _asks_privacy(node: ast.AST) -> bool:
+    return any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+               and n.func.attr in _PRIVACY_GATES for n in ast.walk(node))
+
+
+def _gate_names(tree: ast.AST) -> set[str]:
+    """Имена, в которые положили ответ privacy: `cloud_live = privacy.…`."""
+    out: set[str] = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Assign) and _asks_privacy(n.value):
+            out |= {t.id for t in n.targets if isinstance(t, ast.Name)}
+    return out
+
+
+def _guarding_tests(tree: ast.AST) -> list[ast.AST]:
+    """Условия, которыми решение privacy реально управляет ходом программы.
+
+    Либо разрешение спрошено прямо в условии, либо в условии стоит имя, в
+    которое ответ положили выше (так устроен daemon: main считает cloud_live,
+    треды его читают через замыкание).
+    """
+    names = _gate_names(tree)
+    return [n.test for n in ast.walk(tree)
+            if isinstance(n, (ast.If, ast.IfExp))
+            and (_asks_privacy(n.test) or (names & _names(n.test)))]
+
+
+def _deadened(test: ast.AST) -> bool:
+    """Условие обезврежено константой: `if False and …`, `if … or True`.
+
+    Именно так выглядит случайно убитый рубильник — вызов не тронут, имя на
+    месте, поиск по тексту доволен, а решение ни на что не влияет.
+
+    Спускаемся только по булевой структуре условия. Внутрь вызовов не идём:
+    `cfg["sufler"].get("fast_trigger", True)` — это значение по умолчанию,
+    а не короткое замыкание, и сторож, который путает одно с другим, скоро
+    будет отключён как надоедливый.
+    """
+    stack = [test]
+    while stack:
+        n = stack.pop()
+        if isinstance(n, ast.Constant) and (n.value is True or n.value is False):
+            return True
+        if isinstance(n, ast.BoolOp):
+            stack.extend(n.values)
+        elif isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not):
+            stack.append(n.operand)
+    return False
+
+
 def test_cloud_loop_checks_the_switch():
     """Тред, который запускает `claude -p`, обязан спросить выключатель сам."""
     fn = _func(SRC / "daemon.py", "cloud_loop")
@@ -96,22 +150,77 @@ def test_cloud_loop_respects_the_live_toggle():
     assert "toggles" in _names(fn), "живой тумблер UI не спрашивают перед отправкой"
 
 
+_LAUNCHERS = ("run", "Popen", "check_output", "check_call")
+
+
+def _subprocess_calls(fn: ast.AST) -> list[ast.Call]:
+    return [n for n in ast.walk(fn)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr in _LAUNCHERS]
+
+
+def _strips_the_key(node: ast.AST) -> bool:
+    """Выражение — это словарь окружения, из которого вычищен ключ."""
+    return any(
+        isinstance(n, ast.Compare)
+        and any(isinstance(op, ast.NotEq) for op in n.ops)
+        and "ANTHROPIC_API_KEY" in _consts(n)
+        for n in ast.walk(node))
+
+
+def _bindings(scope: ast.AST, name: str) -> list[ast.AST]:
+    """Все выражения, которые присваивались этому имени в области видимости."""
+    out = []
+    for n in ast.walk(scope):
+        if isinstance(n, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == name for t in n.targets):
+            out.append(n.value)
+        elif isinstance(n, (ast.AnnAssign, ast.AugAssign)) and \
+                isinstance(n.target, ast.Name) and n.target.id == name:
+            out.append(n.value)
+    return out
+
+
 @pytest.mark.parametrize("filename,func", NETWORK_EXITS)
 def test_api_key_is_stripped_before_calling_claude(filename, func):
     """Только подписка. Ключ в env увёл бы вызов на потокенный биллинг.
 
-    Не просто «литерал упомянут» — иначе setdefault("ANTHROPIC_API_KEY", …)
-    прошёл бы сторожа. Требуется сравнение на НЕравенство с этим именем:
-    форма фильтра `if k != "ANTHROPIC_API_KEY"`.
+    Сторож смотрит на АРГУМЕНТ вызова, а не на присутствие фильтра в теле
+    функции. Прежняя версия проверяла, что где-то внутри есть сравнение
+    `k != "ANTHROPIC_API_KEY"`, — и пропускала мутацию, при которой фильтр
+    остаётся на месте нетронутым, а в процесс уходит другой словарь:
+
+        env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+        subprocess.run([claude_bin, ...], env=os.environ)   # 488 passed
+
+    Ровно это и происходит при неудачном merge или рефакторинге, и ровно
+    это переводит продукт с подписки на потокенный биллинг.
     """
-    fn = _func(SRC / filename, func)
-    strips = any(
-        isinstance(node, ast.Compare)
-        and any(isinstance(op, ast.NotEq) for op in node.ops)
-        and "ANTHROPIC_API_KEY" in _consts(node)
-        for node in ast.walk(fn))
-    assert strips, \
-        f"{filename}:{func} зовёт claude без фильтра k != ANTHROPIC_API_KEY в env"
+    path = SRC / filename
+    if not path.exists():
+        path = path.parent.parent / "scripts" / path.name
+    module = ast.parse(path.read_text(encoding="utf-8"))
+    fn = _func(path, func)
+
+    calls = _subprocess_calls(fn)
+    assert calls, f"{filename}:{func} числится выходом в сеть, но никого не запускает"
+
+    for call in calls:
+        env_kw = next((k for k in call.keywords if k.arg == "env"), None)
+        assert env_kw is not None, (
+            f"{filename}:{func} запускает процесс без env= — дочерний процесс "
+            f"наследует окружение целиком, вместе с ANTHROPIC_API_KEY")
+        assert isinstance(env_kw.value, ast.Name), (
+            f"{filename}:{func} передаёт env={ast.unparse(env_kw.value)}: это не "
+            f"вычищенный словарь, а окружение как есть")
+
+        name = env_kw.value.id
+        bound = _bindings(fn, name) or _bindings(module, name)
+        assert bound, f"{filename}:{func} передаёт env={name}, но такого имени нигде не присваивают"
+        for value in bound:
+            assert _strips_the_key(value), (
+                f"{filename}:{func}: env={name} присваивают "
+                f"«{ast.unparse(value)}» — без фильтра k != ANTHROPIC_API_KEY")
 
 
 @pytest.mark.parametrize("filename,func", NETWORK_EXITS)
@@ -128,11 +237,21 @@ def test_switch_is_asked_through_privacy(filename, func):
     path = SRC / filename
     if not path.exists():
         path = path.parent.parent / "scripts" / path.name
-    source = path.read_text(encoding="utf-8")
+    module = ast.parse(path.read_text(encoding="utf-8"))
+
     # Разрешение спрашивается в файле: либо в самой точке выхода, либо выше —
     # cloud_loop берёт готовое `cloud_live` из объемлющей main через замыкание.
-    assert "cloud_live_enabled" in source or "cloud_enrich_enabled" in source, (
-        f"{filename} нигде не спрашивает privacy — облако решается на месте")
+    # Проверяем не присутствие имени в тексте, а то, что ответ privacy
+    # действительно управляет ходом программы: стоит в условии, от которого
+    # зависит, состоится ли отправка.
+    gates = _guarding_tests(module)
+    assert gates, (
+        f"{filename}: ответ privacy никуда не ведёт — либо его не спрашивают, "
+        f"либо спрашивают и не смотрят на ответ")
+    dead = [ast.unparse(t) for t in gates if _deadened(t)]
+    assert not dead, (
+        f"{filename}: условие с решением privacy обезврежено константой: {dead}. "
+        f"Вызов на месте, текст на месте, отправка идёт при поднятом рубильнике")
 
     fn = _func(path, func)
     own = _own_consts(fn)

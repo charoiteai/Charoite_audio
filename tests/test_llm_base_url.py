@@ -72,19 +72,32 @@ def test_kill_switch_beats_allow_remote():
 
 
 def test_no_reader_bypasses_privacy():
-    """Структурный сторож: адрес LLM в src/ выдаёт только privacy.py.
+    """Структурный сторож: адрес LLM выдаёт только privacy.py.
 
     Прямое чтение ключа — это ровно та дыра, которая закрыта: новый код,
     взявший cfg["llm"]["base_url"] сам, снова обойдёт и allow_remote, и
-    рубильник. Сканируется src/ целиком, а не список известных мест.
+    рубильник.
+
+    Сторож обходит РЕКУРСИВНО и `src/`, и `scripts/`. Раньше здесь стояло
+    `(REPO / "src").glob("*.py")`, а докстринг обещал «src/ целиком» —
+    и то, и другое было неправдой: подпапки не просматривались вовсе, а
+    `scripts/doctor.py` спокойно читал base_url напрямую и посылал запрос
+    по этому адресу. Сторож этого не видел и своим зелёным цветом закрывал
+    вопрос. Обещание в докстринге и обход в коде должны совпадать буквально,
+    иначе первым сломается доверие к самому сторожу.
     """
     direct = re.compile(r"""\[\s*["']base_url["']\s*\]|\.get\(\s*["']base_url["']""")
     offenders = []
-    for path in sorted((REPO / "src").glob("*.py")):
-        if path.name == "privacy.py":
-            continue
-        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if direct.search(line):
-                offenders.append(f"{path.name}:{n}: {line.strip()}")
+    scanned = 0
+    for root in ("src", "scripts"):
+        for path in sorted((REPO / root).rglob("*.py")):
+            if path.name == "privacy.py":
+                continue
+            scanned += 1
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if direct.search(line):
+                    offenders.append(
+                        f"{path.relative_to(REPO)}:{n}: {line.strip()}")
+    assert scanned > 1, "сторож не нашёл файлов для проверки — обход сломан"
     assert not offenders, (
         "llm.base_url читается мимо privacy.llm_base_url:\n" + "\n".join(offenders))
