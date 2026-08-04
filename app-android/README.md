@@ -48,7 +48,10 @@ length into it.
 
 Requires JDK 17 and the Android SDK (compileSdk 35). The SDK path lives
 in `app-android/local.properties` (`sdk.dir=...`), which is not in the
-repository.
+repository. The toolchain is AGP 9 on Gradle 9.5 (the wrapper downloads it
+on first run); AGP 9 ships Kotlin support itself, so the project declares
+no separate `org.jetbrains.kotlin.android` plugin — adding it back breaks
+the build.
 
 ```bash
 cd app-android
