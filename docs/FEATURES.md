@@ -376,6 +376,14 @@ it signals degradation, it does not break the loop.
   source of truth; the manifest is regenerated from it. macOS, iOS and Android
   show the same structured card and fall back to legacy graph notes when an
   older meeting has no manifest.
+- **Action items stay attached to their meeting** — the result card and prep
+  screen show live checkboxes from that meeting's `Минутки.md`; checking one
+  writes `[x]` back to Markdown. “All tasks” opens the Tasks workspace already
+  filtered to the meeting, while every task group can navigate back to its
+  result card. Search, completed-item filtering and visible-list copy work in
+  the same screen. If Obsidian moves lines between scan and click, Charoite
+  relocates one unambiguous item or refuses the write instead of completing a
+  neighbouring task. A newly finished pipeline refreshes the list itself.
 
 - **Import folder (watched)** — point the app at a folder (Settings →
   Import, or `--scan` in the CLI): recordings dropped there become graph

@@ -10,7 +10,7 @@ import Foundation
 final class TasksService: ObservableObject {
     static let shared = TasksService()
 
-    struct Item: Identifiable, Equatable {
+    struct Item: Identifiable, Equatable, Sendable {
         let id: String          // путь#номер-строки — стабилен между сканами
         let file: URL
         let rel: String
@@ -18,10 +18,24 @@ final class TasksService: ObservableObject {
         let text: String        // без маркера чекбокса
         let done: Bool
         let fileDate: Date
+        /// Полная строка в момент скана. При переключении проверяем её снова:
+        /// внешний редактор мог вставить строку, и старый lineIndex уже укажет
+        /// на соседнее поручение.
+        let sourceLine: String
+    }
+
+    enum ToggleResult: Equatable, Sendable {
+        case changed
+        case missing
+        case conflict
+        case writeFailed
     }
 
     @Published private(set) var items: [Item] = []
     @Published private(set) var openCount = 0
+    @Published private(set) var mutationError: String?
+    @Published private(set) var pendingIDs: Set<String> = []
+    private var scanGeneration = 0
 
     // Литеральный паттерн — ошибка компиляции невозможна.
     // nonisolated: константа читается из фонового скана, а не только с
@@ -39,9 +53,14 @@ final class TasksService: ObservableObject {
     /// pull-to-refresh морозил его же спиннер.
     func rescan(root: URL? = nil) {
         let target = root ?? AppSettings.graphDir
+        scanGeneration += 1
+        let generation = scanGeneration
         Task.detached(priority: .utility) { [target] in
             let found = Self.scanSync(graph: target)
-            await MainActor.run { self.apply(found) }
+            await MainActor.run {
+                guard generation == self.scanGeneration else { return }
+                self.apply(found)
+            }
         }
     }
 
@@ -72,10 +91,35 @@ final class TasksService: ObservableObject {
                 let done = line[markRange].lowercased() == "x"
                 found.append(Item(
                     id: "\(rel)#\(i)", file: url, rel: rel, lineIndex: i,
-                    text: String(line[textRange]), done: done, fileDate: mdate))
+                    text: String(line[textRange]), done: done, fileDate: mdate,
+                    sourceLine: line))
             }
         }
-        return found
+        return preferMeetingMinutes(found)
+    }
+
+    /// Конвейер может вынести одно поручение и в заметку встречи, и в её
+    /// Минутки.md. Оба файла нужны, но два одинаковых чекбокса в приложении —
+    /// ложные две задачи. При точном совпадении встречи и текста минутки
+    /// выигрывают; разные формулировки и обычные заметки не склеиваются.
+    nonisolated static func preferMeetingMinutes(_ items: [Item]) -> [Item] {
+        let minuteKeys = Set(items.compactMap { item -> String? in
+            guard item.file.lastPathComponent == "Минутки.md",
+                  let meeting = meetingKey(item.rel) else { return nil }
+            return meeting + "\u{0}" + normalizedTaskText(item.text)
+        })
+        return items.filter { item in
+            guard item.file.lastPathComponent != "Минутки.md",
+                  let meeting = meetingKey(item.rel) else { return true }
+            return !minuteKeys.contains(meeting + "\u{0}" + normalizedTaskText(item.text))
+        }
+    }
+
+    nonisolated private static func normalizedTaskText(_ text: String) -> String {
+        text.replacingOccurrences(of: "**", with: "")
+            .lowercased()
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
     }
 
     /// Публикация результата — единственное, что делается на главном потоке.
@@ -88,20 +132,133 @@ final class TasksService: ObservableObject {
         openCount = items.filter { !$0.done }.count
     }
 
-    /// Переключить чекбокс точечной заменой строки в файле.
+    /// Поручения одной встречи лежат в её архивной папке и несут тот же
+    /// цифровой ключ, что статус: `2026-08-04 11-31` и
+    /// `2026-08-04_1131` → `202608041131`.
+    nonisolated static func meetingKey(_ value: String) -> String? {
+        let key = String(value.filter(\.isNumber).prefix(12))
+        return key.count == 12 ? key : nil
+    }
+
+    nonisolated static func belongs(_ item: Item, to meetingID: String) -> Bool {
+        guard let source = meetingKey(item.rel), let meeting = meetingKey(meetingID) else {
+            return false
+        }
+        return source == meeting
+    }
+
+    func items(for meetingID: String, includeDone: Bool = true) -> [Item] {
+        Self.meetingItems(items, for: meetingID, includeDone: includeDone)
+    }
+
+    nonisolated static func meetingItems(
+        _ items: [Item],
+        for meetingID: String,
+        includeDone: Bool = true
+    ) -> [Item] {
+        let matches = items.filter { belongs($0, to: meetingID) }
+        // Одна встреча может продублировать поручение в заметке графа и в
+        // архивных минутках. Для карточки канонический редактируемый список —
+        // Минутки.md; к заметке откатываемся только у старых встреч без них.
+        let minutes = matches.filter { $0.file.lastPathComponent == "Минутки.md" }
+        let canonical = minutes.isEmpty ? matches : minutes
+        return includeDone ? canonical : canonical.filter { !$0.done }
+    }
+
+    func isUpdating(_ item: Item) -> Bool {
+        pendingIDs.contains(item.id)
+    }
+
+    /// Короткое имя источника для секции задач. Для архивной встречи вместо
+    /// `Встречи-архив/2026-08-04 11-31 — План/Минутки.md` показываем тему.
+    nonisolated static func sourceTitle(_ rel: String) -> String {
+        let parts = rel.split(separator: "/").map(String.init)
+        if let folder = parts.first(where: { meetingKey($0) != nil }),
+           let divider = folder.range(of: " — ") {
+            return String(folder[divider.upperBound...])
+        }
+        return URL(fileURLWithPath: rel).deletingPathExtension().lastPathComponent
+    }
+
+    /// Переключить чекбокс вне главного потока. Пока запись идёт, повторный
+    /// клик по той же строке блокируется; после изменения перечитываем граф.
     func toggle(_ item: Item, root: URL? = nil) {
-        guard var text = try? String(contentsOf: item.file, encoding: .utf8) else { return }
+        guard !pendingIDs.contains(item.id) else { return }
+        mutationError = nil
+        pendingIDs.insert(item.id)
+        let target = root ?? AppSettings.graphDir
+        Task.detached(priority: .userInitiated) {
+            let result = Self.toggleSync(item)
+            await MainActor.run {
+                self.pendingIDs.remove(item.id)
+                switch result {
+                case .changed:
+                    self.rescan(root: target)
+                case .missing:
+                    self.mutationError = L.t(
+                        "Поручение уже изменилось или было удалено. Список обновлён.",
+                        "The action item changed or was deleted. The list was refreshed.",
+                        "该任务已更改或删除。列表已刷新。")
+                    self.rescan(root: target)
+                case .conflict:
+                    self.mutationError = L.t(
+                        "Файл изменился в другом редакторе. Проверьте поручение и повторите.",
+                        "The file changed in another editor. Check the action item and try again.",
+                        "文件已在其他编辑器中更改。请检查任务后重试。")
+                    self.rescan(root: target)
+                case .writeFailed:
+                    self.mutationError = L.t(
+                        "Не удалось сохранить поручение. Markdown-файл не изменён.",
+                        "The action item could not be saved. The Markdown file was not changed.",
+                        "无法保存任务。Markdown 文件未更改。")
+                }
+            }
+        }
+    }
+
+    /// Синхронное ядро для фоновой записи и регрессий.
+    ///
+    /// lineIndex — лишь быстрый путь. Если файл сдвинулся, ищем ровно одну
+    /// строку с тем же текстом и состоянием. Два одинаковых кандидата —
+    /// конфликт: лучше не отметить ничего, чем закрыть чужое поручение.
+    nonisolated static func toggleSync(_ item: Item) -> ToggleResult {
+        guard var text = try? String(contentsOf: item.file, encoding: .utf8) else {
+            return .missing
+        }
         var lines = text.components(separatedBy: "\n")
-        guard item.lineIndex < lines.count else { rescan(root: root); return }
-        let line = lines[item.lineIndex]
+        let targetIndex: Int
+        if item.lineIndex < lines.count, lines[item.lineIndex] == item.sourceLine {
+            targetIndex = item.lineIndex
+        } else {
+            let candidates = lines.indices.filter { index in
+                guard let parsed = parse(lines[index]) else { return false }
+                return parsed.text == item.text && parsed.done == item.done
+            }
+            guard !candidates.isEmpty else { return .missing }
+            guard candidates.count == 1, let only = candidates.first else { return .conflict }
+            targetIndex = only
+        }
+        let line = lines[targetIndex]
         let flipped = item.done
             ? line.replacingOccurrences(of: "[x]", with: "[ ]")
                   .replacingOccurrences(of: "[X]", with: "[ ]")
             : line.replacingOccurrences(of: "[ ]", with: "[x]")
-        guard flipped != line else { rescan(root: root); return }
-        lines[item.lineIndex] = flipped
+        guard flipped != line else { return .conflict }
+        lines[targetIndex] = flipped
         text = lines.joined(separator: "\n")
-        try? text.write(to: item.file, atomically: true, encoding: .utf8)
-        rescan(root: root)
+        do {
+            try text.write(to: item.file, atomically: true, encoding: .utf8)
+            return .changed
+        } catch {
+            return .writeFailed
+        }
+    }
+
+    nonisolated private static func parse(_ line: String) -> (done: Bool, text: String)? {
+        let range = NSRange(line.startIndex..., in: line)
+        guard let match = todoRx.firstMatch(in: line, range: range),
+              let markRange = Range(match.range(at: 1), in: line),
+              let textRange = Range(match.range(at: 2), in: line) else { return nil }
+        return (line[markRange].lowercased() == "x", String(line[textRange]))
     }
 }

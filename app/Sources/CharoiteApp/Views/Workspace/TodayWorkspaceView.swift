@@ -9,6 +9,7 @@ struct TodayWorkspaceView: View {
     @ObservedObject private var repository = MeetingRepository.shared
     @ObservedObject private var calendar = CalendarService.shared
     @ObservedObject private var navigation = WorkspaceNavigation.shared
+    @ObservedObject private var tasks = TasksService.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -65,6 +66,14 @@ struct TodayWorkspaceView: View {
                             Text(record.title).font(.callout.weight(.medium)).lineLimit(2)
                             Text(record.card.gist ?? compactState(record.state))
                                 .font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                            let open = tasks.items(for: record.id, includeDone: false).count
+                            if open > 0 {
+                                Label(L.t("\(open) открытых поручений",
+                                          "\(open) open action items",
+                                          "\(open) 项未完成任务"),
+                                      systemImage: "checklist")
+                                    .font(.caption2).foregroundStyle(Theme.accent)
+                            }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)

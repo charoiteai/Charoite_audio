@@ -13,6 +13,7 @@ struct MeetingCardView: View {
     var embedded = false
     @ObservedObject private var processing = MeetingProcessingService.shared
     @ObservedObject private var navigation = WorkspaceNavigation.shared
+    @ObservedObject private var tasks = TasksService.shared
     @Environment(\.dismiss) private var dismiss
     @State private var card = MeetingCard()
     @State private var renaming = false
@@ -41,8 +42,7 @@ struct MeetingCardView: View {
                     }
                     section(L.t("Решили", "Decided", "决定"), mark: "⚑",
                             items: card.decisions)
-                    section(L.t("Поручения", "Action items", "任务"), mark: "▸",
-                            items: card.tasks)
+                    taskSection
                     section(L.t("Открытые вопросы", "Open questions", "待解决问题"), mark: "?",
                             items: card.openQuestions)
                 }
@@ -64,7 +64,10 @@ struct MeetingCardView: View {
         // task(id:) — embedded-карточка в библиотеке живёт одной вью на все
         // встречи: без id смена выбора оставляла решения и участников от
         // прошлой встречи под новым заголовком (найдено живым прогоном 04.08).
-        .task(id: meeting.meetingID) { card = MeetingCardLoader.load(for: meeting) }
+        .task(id: meeting.meetingID) {
+            card = MeetingCardLoader.load(for: meeting)
+            tasks.rescan()
+        }
         .sheet(isPresented: $showForget) { forgetSheet }
     }
 
@@ -167,6 +170,50 @@ struct MeetingCardView: View {
                         Text(cleanItem(item))
                     }
                     .font(.callout)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var taskSection: some View {
+        let linked = tasks.items(for: meeting.meetingID)
+        if linked.isEmpty {
+            section(L.t("Поручения", "Action items", "任务"), mark: "▸", items: card.tasks)
+        } else {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack {
+                    Text(L.t("Поручения", "Action items", "任务"))
+                        .font(.subheadline.weight(.semibold))
+                    Text(L.t("\(linked.filter { !$0.done }.count) открытых",
+                             "\(linked.filter { !$0.done }.count) open",
+                             "\(linked.filter { !$0.done }.count) 项未完成"))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button(L.t("Все задачи", "All tasks", "全部任务")) {
+                        navigation.openTasks(meetingID: meeting.meetingID)
+                    }
+                    .buttonStyle(.link).font(.caption)
+                }
+                ForEach(linked) { item in
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Button { tasks.toggle(item) } label: {
+                            if tasks.isUpdating(item) {
+                                ProgressView().controlSize(.mini).frame(width: 14, height: 14)
+                            } else {
+                                Image(systemName: item.done ? "checkmark.square.fill" : "square")
+                                    .foregroundStyle(item.done ? Theme.accent : Color.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain).disabled(tasks.isUpdating(item))
+                        Text(MarkdownLine.render(item.text))
+                            .font(.callout)
+                            .strikethrough(item.done)
+                            .foregroundStyle(item.done ? .secondary : .primary)
+                    }
+                }
+                if let error = tasks.mutationError {
+                    Text(error).font(.caption).foregroundStyle(.orange)
                 }
             }
         }
@@ -337,6 +384,7 @@ struct MeetingCardView: View {
                 showForget = false
                 navigation.selectedMeetingID = nil
                 processing.reload()
+                tasks.rescan()
                 if embedded {
                     navigation.open(.meetings)
                 } else {
@@ -362,6 +410,7 @@ struct MeetingCardView: View {
             // потому что её snapshot держит старый путь и заголовок.
             if ok {
                 processing.reload()
+                tasks.rescan()
                 if embedded {
                     navigation.selectedMeetingID = nil
                     navigation.open(.meetings)

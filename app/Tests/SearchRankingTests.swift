@@ -53,18 +53,100 @@ final class TasksServiceTests: XCTestCase {
         XCTAssertEqual(found.count, 2)
         XCTAssertEqual(found.filter { !$0.done }.count, 1)
 
-        let svc = TasksService.shared
         let open = try XCTUnwrap(found.first { !$0.done })
-        svc.toggle(open, root: dir)
+        XCTAssertEqual(TasksService.toggleSync(open), .changed)
         let text = try String(contentsOf: file, encoding: .utf8)
         XCTAssertTrue(text.contains("- [x] **Мария**"))
 
         // обратно в открытую
         found = TasksService.scanSync(graph: dir)
         let done = try XCTUnwrap(found.first { $0.text.contains("Мария") })
-        svc.toggle(done, root: dir)
+        XCTAssertEqual(TasksService.toggleSync(done), .changed)
         found = TasksService.scanSync(graph: dir)
         XCTAssertEqual(found.filter { !$0.done }.count, 1)
+    }
+
+    func testToggleFindsTheSameTaskAfterExternalLinesWereInserted() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("charoite-tasks-move-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("Минутки.md")
+        try "# Минутки\n- [ ] Мария — подписать договор\n".write(
+            to: file, atomically: true, encoding: .utf8)
+        let item = try XCTUnwrap(TasksService.scanSync(graph: dir).first)
+
+        // Obsidian вставил строку после скана: прежний lineIndex теперь
+        // указывает на заголовок, но текст поручения всё ещё однозначен.
+        try "новая строка\n# Минутки\n- [ ] Мария — подписать договор\n".write(
+            to: file, atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(TasksService.toggleSync(item), .changed)
+        let saved = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertTrue(saved.contains("- [x] Мария — подписать договор"))
+        XCTAssertTrue(saved.hasPrefix("новая строка"))
+    }
+
+    func testToggleRefusesAmbiguousDuplicateAfterExternalEdit() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("charoite-tasks-conflict-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("Минутки.md")
+        let line = "- [ ] Мария — подписать договор"
+        try "# Минутки\n\(line)\n".write(to: file, atomically: true, encoding: .utf8)
+        let item = try XCTUnwrap(TasksService.scanSync(graph: dir).first)
+
+        // Строка сдвинулась и теперь встречается дважды: выбирать одну наугад
+        // нельзя, обе остаются открытыми.
+        try "вставка\n# Минутки\n\(line)\n\(line)\n".write(
+            to: file, atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(TasksService.toggleSync(item), .conflict)
+        let saved = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertEqual(saved.components(separatedBy: "- [ ]").count - 1, 2)
+    }
+
+    func testMeetingLinkMatchesArchiveAndStatusFormats() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("charoite-task-link-\(UUID().uuidString)")
+        let folder = dir.appendingPathComponent(
+            "Встречи-архив/2026-08-04 11-31 — Планирование")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try "- [ ] Мария — проверить сборку\n".write(
+            to: folder.appendingPathComponent("Минутки.md"),
+            atomically: true, encoding: .utf8)
+        let item = try XCTUnwrap(TasksService.scanSync(graph: dir).first)
+
+        XCTAssertTrue(TasksService.belongs(item, to: "2026-08-04_113145"))
+        XCTAssertFalse(TasksService.belongs(item, to: "2026-08-04_1200"))
+        XCTAssertEqual(TasksService.sourceTitle(item.rel), "Планирование")
+    }
+
+    func testMeetingCardPrefersMinutesOverDuplicateGraphTask() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("charoite-task-source-\(UUID().uuidString)")
+        let archive = dir.appendingPathComponent(
+            "Встречи-архив/2026-08-04 11-31 — Планирование")
+        let notes = dir.appendingPathComponent("Встречи")
+        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: notes, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try "- [x] Мария — проверить сборку\n".write(
+            to: archive.appendingPathComponent("Минутки.md"),
+            atomically: true, encoding: .utf8)
+        try "- [ ] Мария — проверить сборку\n".write(
+            to: notes.appendingPathComponent("2026-08-04_1131.md"),
+            atomically: true, encoding: .utf8)
+
+        let all = TasksService.scanSync(graph: dir)
+        XCTAssertEqual(all.count, 1, "дубль заметки не должен раздувать общий счётчик")
+        let card = TasksService.meetingItems(all, for: "2026-08-04_113145")
+        XCTAssertEqual(card.count, 1)
+        XCTAssertTrue(card[0].done)
+        XCTAssertTrue(TasksService.meetingItems(
+            all, for: "2026-08-04_113145", includeDone: false).isEmpty)
     }
 }
 
