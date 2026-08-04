@@ -59,6 +59,11 @@ final class MeetingRepository: ObservableObject {
         records.first { MeetingSearch.dayKey($0.id) == hit.day }
     }
 
+    func record(matching task: TasksService.Item) -> MeetingRecord? {
+        guard let key = TasksService.meetingKey(task.rel) else { return nil }
+        return records.first { TasksService.meetingKey($0.id) == key }
+    }
+
     private func apply(_ snapshots: [MeetingProcessingSnapshot]) {
         var next: [MeetingRecord] = []
         var nextCache: [String: MeetingRecord] = [:]

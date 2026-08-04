@@ -147,16 +147,26 @@ struct PrepView: View {
                 } else {
                     ForEach(visible) { item in
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Image(systemName: "circle").font(.caption2)
-                                .foregroundStyle(.secondary)
-                            Text(item.text).font(.callout).lineLimit(2)
+                            Button { tasks.toggle(item) } label: {
+                                if tasks.isUpdating(item) {
+                                    ProgressView().controlSize(.mini).frame(width: 13, height: 13)
+                                } else {
+                                    Image(systemName: "square").foregroundStyle(.secondary)
+                                }
+                            }
+                            .buttonStyle(.plain).disabled(tasks.isUpdating(item))
+                            Text(MarkdownLine.render(item.text)).font(.callout).lineLimit(2)
                         }
                     }
                     if relevantOpenTasks.count > visible.count {
-                        Text(L.t("и ещё \(relevantOpenTasks.count - visible.count) по теме",
-                                 "and \(relevantOpenTasks.count - visible.count) more on this topic",
-                                 "另有 \(relevantOpenTasks.count - visible.count) 项相关任务"))
-                            .font(.caption).foregroundStyle(.tertiary)
+                        Button {
+                            navigation.openTasks()
+                        } label: {
+                            Text(L.t("и ещё \(relevantOpenTasks.count - visible.count) по теме",
+                                     "and \(relevantOpenTasks.count - visible.count) more on this topic",
+                                     "另有 \(relevantOpenTasks.count - visible.count) 项相关任务"))
+                        }
+                        .buttonStyle(.link).font(.caption)
                     }
                 }
             }
@@ -171,7 +181,7 @@ struct PrepView: View {
             section(L.t("Другие открытые поручения", "Other open action items", "其他未完成任务"),
                     icon: "tray.full") {
                 Button {
-                    navigation.open(.tasks)
+                    navigation.openTasks()
                 } label: {
                     HStack(spacing: 6) {
                         Text(L.t("\(otherOpenTaskCount) в общем списке",

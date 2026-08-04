@@ -34,6 +34,9 @@ struct WorkspaceView: View {
             tasks.rescan()
             MeetingProcessingService.shared.startMonitoring()
         }
+        // Готовая обработка создаёт Минутки.md с чекбоксами. Без повторного
+        // скана открытый раздел задач оставался старым до ручного обновления.
+        .onChange(of: processing.history) { _, _ in tasks.rescan() }
     }
 
     @ViewBuilder
@@ -56,6 +59,7 @@ struct WorkspaceView: View {
         let isCurrent = (navigation.selection ?? .today) == section
         let count = badge(for: section)
         return Button {
+            if section == .tasks { navigation.selectedTaskMeetingID = nil }
             navigation.selection = section
         } label: {
             HStack(spacing: 8) {
