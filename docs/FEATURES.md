@@ -245,7 +245,7 @@ it signals degradation, it does not break the loop.
   heading with a counter — a thread is for reading, not scrolling. A restated
   thought is dropped by code: both character similarity and overlap of
   meaningful words are checked. The model is called by how much talk piled up,
-  not by the clock: silence in the room produces no new lines. `⌘⇧E` (the ⏮
+  not by the clock: silence in the room produces no new lines. **The thread is the only canvas on screen**: answers (⚡ instant, ☁ cloud) and theses (📌 decision, 💭 thought) are woven into it as lines by the daemon instead of living in panes of their own. While those panes were separate, an auto-answer arrived every half a minute, the hint pane never went empty — and the thread, the whole point of the screen, never showed at all. `⌘⇧E` (the ⏮
   toolbar button) expands the current topic from the archive: a graph search
   turns into 2-3 facts from past meetings (decision, status, who owns it)
   appended as ⏮ lines right into the topic that was asked about — the hint

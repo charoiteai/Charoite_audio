@@ -16,10 +16,10 @@ final class MeetingCardTests: XCTestCase {
           "meeting_id": "2026-08-03_1130",
           "title": "Planning",
           "duration_minutes": 75,
-          "participants": ["Anton", "Irene"],
+          "participants": ["Ivan", "Maria"],
           "summary": "Plan accepted",
           "decisions": ["Ship Friday"],
-          "action_items": ["Irene — verify build"],
+          "action_items": ["Maria — verify build"],
           "open_questions": ["Android scope?"],
           "files": {}
         }
@@ -30,7 +30,7 @@ final class MeetingCardTests: XCTestCase {
         let manifest = try XCTUnwrap(MeetingCardLoader.manifest(in: folder))
         XCTAssertEqual(manifest.title, "Planning")
         XCTAssertEqual(manifest.durationMinutes, 75)
-        XCTAssertEqual(manifest.actionItems, ["Irene — verify build"])
+        XCTAssertEqual(manifest.actionItems, ["Maria — verify build"])
         XCTAssertEqual(MeetingCardLoader.durationText(minutes: 75),
                        L.t("1 ч 15 мин", "1 h 15 min", "1 小时 15 分"))
     }

@@ -36,7 +36,7 @@ final class GraphParseTests: XCTestCase {
     func testPortableMeetingManifest() throws {
         let json = """
         {"schema_version":1,"meeting_id":"2026-08-03_1130","title":"Planning",
-         "duration_minutes":35,"participants":["Anton"],"summary":"Done",
+         "duration_minutes":35,"participants":["Ivan"],"summary":"Done",
          "decisions":["Ship"],"action_items":["Test"],"open_questions":["When?"]}
         """
         let manifest = try XCTUnwrap(GraphStore.manifest(from: json))

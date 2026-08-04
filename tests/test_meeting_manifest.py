@@ -1,21 +1,25 @@
 import json
+import sys
+from pathlib import Path
 
-from meeting_archive import _write_manifest, build_manifest
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+from meeting_archive import _write_manifest, build_manifest  # noqa: E402
 
 
 def test_manifest_is_language_independent_index_of_markdown(tmp_path):
     folder = tmp_path / "2026-08-03 11-30 — Планирование"
     folder.mkdir()
     (folder / "Стенограмма.md").write_text(
-        "Участники: Антон, Ирина\n\n"
-        "**Антон** [11:30]: начали\n"
-        "**Ирина** [12:05]: закончили\n",
+        "Участники: Иван, Мария\n\n"
+        "**Иван** [11:30]: начали\n"
+        "**Мария** [12:05]: закончили\n",
         encoding="utf-8",
     )
     (folder / "Саммари.md").write_text(
         "**Суть одной строкой:** План согласован\n\n"
         "## Решили\n- Выпустить в пятницу\n\n"
-        "## Поручения\n- **Ирина** — проверить сборку\n\n"
+        "## Поручения\n- **Мария** — проверить сборку\n\n"
         "## Открытые вопросы\n- Нужен ли Android\n",
         encoding="utf-8",
     )
@@ -26,10 +30,10 @@ def test_manifest_is_language_independent_index_of_markdown(tmp_path):
     assert manifest["meeting_id"] == "2026-08-03_1130"
     assert manifest["started_at"] == "2026-08-03T11:30:00"
     assert manifest["duration_minutes"] == 35
-    assert manifest["participants"] == ["Антон", "Ирина"]
+    assert manifest["participants"] == ["Иван", "Мария"]
     assert manifest["summary"] == "План согласован"
     assert manifest["decisions"] == ["Выпустить в пятницу"]
-    assert manifest["action_items"] == ["**Ирина** — проверить сборку"]
+    assert manifest["action_items"] == ["**Мария** — проверить сборку"]
     assert manifest["files"] == {"transcript": "Стенограмма.md", "summary": "Саммари.md"}
 
 
