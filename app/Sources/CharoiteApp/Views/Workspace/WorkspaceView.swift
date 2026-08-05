@@ -48,8 +48,6 @@ struct WorkspaceView: View {
             SuflerView()
         case .meetings:
             MeetingLibraryView()
-        case .calendar:
-            CalendarDayView()
         case .tasks:
             TasksView()
         case .memory:
@@ -98,7 +96,7 @@ struct WorkspaceView: View {
                 MeetingProcessingPolicy.resolvedState($0) == .error
             }.count
         case .tasks: return tasks.openCount
-        case .today, .calendar, .memory: return 0
+        case .today, .memory: return 0
         }
     }
 }

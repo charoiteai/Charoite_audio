@@ -362,17 +362,19 @@ it signals degradation, it does not break the loop.
   side, and a search hit opens that card instead of a raw Markdown file.
   Menu-bar actions and prep navigate to the same workspace; the separate
   memory chat remains available only as an optional pop-out.
-- **Calendar with recorded-meeting marks** — a Calendar section next to the
-  meeting library: a week strip with dots on days that have recordings, the
-  day's events from the local read-only system calendar, and a green
-  "recorded at HH:MM · duration · open action items" line under every event
-  whose recording made it into the archive; the line opens the meeting card.
-  A recording attaches to an event when it started inside the event's window
-  (fifteen minutes early still counts, and back-to-back meetings never share
-  one recording). Past events without a recording say so, corridor talks show
-  up as "recordings outside the calendar", and without calendar access the
-  screen does not go blank — it keeps showing what was recorded, with a
-  connect card instead of an empty page.
+- **Calendar inside the meeting library** — the week strip lives on top of
+  the Meetings list: dots mark days that have recordings, one click turns
+  the list into that day's feed — recordings as usual selectable rows plus
+  dimmed rows for calendar events that never got recorded ("14:00 · not
+  recorded", "now", "upcoming"). A recording attaches to an event when it
+  started inside the event's window (fifteen minutes early still counts,
+  and back-to-back meetings never share one recording); events that have a
+  recording are not shown twice — the recording speaks for the meeting.
+  An active search takes priority over the day filter, without calendar
+  access the strip still navigates by recordings alone, and connecting is
+  one small button on the strip. One section answers both "what was
+  decided?" and "what happened on Tuesday?" — a separate Calendar screen
+  no longer exists.
 - **Meeting actions without Terminal** — the card copies a participant-safe
   protocol through `protocol.py`, opens the transcript for correction,
   rebuilds the result and previews every trace before the destructive
