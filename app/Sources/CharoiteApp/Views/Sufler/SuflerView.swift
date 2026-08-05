@@ -429,6 +429,25 @@ struct SuflerView: View {
                          : archiveAnswer.isEmpty
     }
 
+    /// ==Фрагменты==, которые внесла облачная ревизия нити, — небесным фоном:
+    /// правка видна в самой строке, отдельного блока «☁️ уточнения» больше нет.
+    /// Небесный цвет — общий знак «это ходило в облако» (docs/DESIGN.md).
+    private func cloudMarked(_ line: String) -> AttributedString {
+        guard line.contains("==") else { return AttributedString(line) }
+        var out = AttributedString()
+        let parts = line.components(separatedBy: "==")
+        for (i, part) in parts.enumerated() {
+            if part.isEmpty { continue }
+            var piece = AttributedString(part)
+            if i % 2 == 1 {
+                piece.backgroundColor = Theme.sky.opacity(0.16)
+                piece.foregroundColor = Theme.sky
+            }
+            out.append(piece)
+        }
+        return out
+    }
+
     /// Нить: знаки строк ведут глаз, служебное приглушено.
     ///
     /// Полотно читают боковым зрением, поэтому вес несут не абзацы, а знаки:
@@ -440,7 +459,7 @@ struct SuflerView: View {
         for (i, line) in raw.components(separatedBy: "\n").enumerated() {
             if i > 0 { out.append(AttributedString("\n")) }
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            var piece = AttributedString(line)
+            var piece = cloudMarked(line)
             if trimmed.hasPrefix("●") {
                 piece.font = .callout.bold()
             } else if trimmed.hasPrefix("⚑") || trimmed.hasPrefix("📌") {

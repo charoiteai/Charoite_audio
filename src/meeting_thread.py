@@ -63,6 +63,30 @@ LINE_MIN_LEN = 24
 LIVE_TOPICS = 3
 
 
+# Служебные префиксы разбора — не имена: «Почему: …» это поле, не голос.
+_NOT_SPEAKERS = {"почему", "было", "стало", "открыто", "решили", "итог",
+                 "вывод", "важно", "уточнение", "why", "was", "open", "decided"}
+_SPEAKER_RE = re.compile(r"^([^:—-]{1,32}?):\s+(.+)$", re.S)
+
+
+def split_speaker(text: str) -> tuple[str, str]:
+    """«Собеседник 4: поток упал» → («Собеседник 4», «поток упал»).
+
+    Имя — короткий префикс до двоеточия, максимум три слова; служебные
+    поля («Почему:», «Открыто:») именем не считаются. Всё остальное —
+    текст без изменений: дедупу и правкам облака имя только мешало.
+    """
+    m = _SPEAKER_RE.match(text.strip())
+    if not m:
+        return "", text.strip()
+    name, rest = m.group(1).strip(), m.group(2).strip()
+    if not name or len(name.split()) > 3:
+        return "", text.strip()
+    if name.lower() in _NOT_SPEAKERS:
+        return "", text.strip()
+    return name, rest
+
+
 def _norm(text: str) -> str:
     """Строка для сравнения: без разметки, регистра и пунктуации."""
     text = re.sub(r"[*_`]", "", text.lower())
@@ -74,12 +98,14 @@ class Line:
     kind: str
     text: str
     at: str = ""
+    speaker: str = ""
 
-    def render(self) -> str:
+    def render(self, show_speaker: bool = True) -> str:
         mark = next((m for m, k in KINDS.items() if k == self.kind), SAY)
         pad = "    " if self.kind == "say" else "  "
         stamp = f"    {self.at}" if self.at and self.kind == "decision" else ""
-        return f"{pad}{mark} {self.text}{stamp}"
+        head = f"{self.speaker}: " if self.speaker and show_speaker else ""
+        return f"{pad}{mark} {head}{self.text}{stamp}"
 
 
 @dataclass
@@ -94,7 +120,18 @@ class Topic:
             # свёрнутая тема: заголовок и счётчик, чтобы было видно, что там
             # что-то было, но глаз не спотыкался
             return f"{head}  ({len(self.lines)})" if self.lines else head
-        return "\n".join([head, *(ln.render() for ln in self.lines)])
+        # Имя говорящего — только при смене голоса. «Собеседник 4:» на каждой
+        # строке читается как протокол допроса; разговор идёт поступательно,
+        # и глазу хватает имени в момент передачи слова.
+        parts = [head]
+        prev_speaker = None
+        for ln in self.lines:
+            if ln.kind == "say" and ln.speaker:
+                parts.append(ln.render(show_speaker=ln.speaker != prev_speaker))
+                prev_speaker = ln.speaker
+            else:
+                parts.append(ln.render())
+        return "\n".join(parts)
 
 
 class Thread:
@@ -135,13 +172,16 @@ class Thread:
         text = text.strip()
         if not text:
             return False
+        speaker = ""
+        if kind == "say":
+            speaker, text = split_speaker(text)
         with self._mutex:
             if not self.topics:
                 self.open_topic("Разговор", at)
             topic = self.topics[-1]
             if self.knows(text):
                 return False
-            topic.lines.append(Line(kind=kind, text=text, at=at))
+            topic.lines.append(Line(kind=kind, text=text, at=at, speaker=speaker))
             return True
 
     def knows(self, text: str) -> bool:
@@ -242,6 +282,43 @@ class Thread:
                 added += 1
             return added
 
+    def apply_edits(self, edits: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """Правки облака ложатся В строки нити, а не отдельным блоком под ней.
+
+        Отдельный блок «☁️ уточнения» человек должен был сам сопоставить с
+        нитью — двойное чтение во время живого разговора. Теперь облако
+        возвращает пары «строка → как точнее», строка правится на месте, а
+        изменённые слова выделены ==так==: видно, ЧТО именно поменяла модель,
+        не выходя из полотна. Возвращает применённые пары (для файла-лога:
+        аудит «было → стало» живёт там, не на экране).
+        """
+        applied: list[tuple[str, str]] = []
+        with self._mutex:
+            for old, new in edits:
+                _, old_body = split_speaker(old.strip().lstrip("-⚑?⏮💭⚡● "))
+                new_speaker, new_body = split_speaker(new.strip().lstrip("-⚑?⏮💭⚡● "))
+                probe = _norm(old_body)
+                if not probe or not new_body:
+                    continue
+                line = self._find_line(probe)
+                if line is None or _norm(line.text) == _norm(new_body):
+                    continue
+                was = line.render(show_speaker=bool(line.speaker)).strip()
+                line.text = _mark_diff(line.text, new_body)
+                if new_speaker and not line.speaker:
+                    line.speaker = new_speaker
+                applied.append((was, line.text))
+        return applied
+
+    def _find_line(self, probe: str) -> Line | None:
+        """Строка нити под правку: ищем с конца — свежее правится чаще."""
+        for topic in reversed(self.topics):
+            for line in reversed(topic.lines):
+                clean = _norm(re.sub(r"==", "", line.text))
+                if _same_norm(probe, clean):
+                    return line
+        return None
+
     @property
     def last_topic_title(self) -> str:
         with self._mutex:
@@ -277,6 +354,52 @@ class Thread:
     def size(self) -> int:
         with self._mutex:
             return sum(len(t.lines) for t in self.topics)
+
+
+def parse_edits(out: str, limit: int = 4) -> list[tuple[str, str]]:
+    """Ответ облака-ревизора → пары (старая строка, новая строка).
+
+    Формат одной правки: «FIX: <старая> => <новая>». Всё, что не легло в
+    формат, отбрасывается молча: ревизор, как и остальные модели, любит
+    преамбулы. NONE — «всё точно», и это нормальный ответ.
+    """
+    edits: list[tuple[str, str]] = []
+    for raw in out.splitlines():
+        line = raw.strip().lstrip("-• ")
+        if not line or line.upper().startswith("NONE"):
+            continue
+        if line.upper().startswith("FIX:"):
+            line = line[4:].strip()
+        old, sep, new = line.partition(" => ")
+        if not sep:
+            continue
+        old, new = old.strip(), new.strip()
+        if old and new:
+            edits.append((old, new))
+    return edits[:limit]
+
+
+def _mark_diff(old: str, new: str) -> str:
+    """Новая строка с ==выделением== того, что изменилось против старой.
+
+    Сравнение по словам: посимвольный diff на живом тексте рвёт слова
+    пополам. Выделение несёт смысл «это внесло облако», поэтому одинаковые
+    куски остаются как были — глаз ловит только вставки и замены.
+    """
+    old_words = re.sub(r"==", "", old).split()
+    new_words = new.split()
+    sm = difflib.SequenceMatcher(None,
+                                 [w.lower() for w in old_words],
+                                 [w.lower() for w in new_words])
+    out: list[str] = []
+    for op, _i1, _i2, j1, j2 in sm.get_opcodes():
+        if j1 == j2:
+            continue
+        chunk = " ".join(new_words[j1:j2])
+        out.append(chunk if op == "equal" else f"=={chunk}==")
+    marked = " ".join(out)
+    # слившиеся соседние выделения — в одно, чтобы не рябило
+    return marked.replace("== ==", " ")
 
 
 def parse_archive_facts(out: str, limit: int = 3) -> list[str]:
