@@ -1,0 +1,45 @@
+# Единый манифест python-зависимостей: заменил requirements.txt (05.08.2026).
+# Установка: .venv/bin/pip install .  — ставятся только зависимости, сам
+# проект пакетом не является (py-modules пуст): скрипты запускаются из репо
+# через .venv/bin/python, как и раньше.
+#
+# Версии закреплены по нижней границе: onnxruntime и numpy 2.x расходятся
+# регулярно, а установка без пинов даёт разные окружения в разные дни.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "charoite"
+# Версию продукта ведёт release-please в CHANGELOG; пакет не публикуется,
+# поэтому здесь константа.
+version = "0.0.0"
+description = "Charoite: local-first meeting conveyor (STT, diarization, graph)"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26,<3",
+    "sounddevice>=0.4.6",
+    "pyyaml>=6.0",
+    "requests>=2.31",
+    "websockets>=12.0",
+    "rich>=13.0",
+    "onnx-asr>=0.3",
+    "onnxruntime>=1.17",
+    "mcp>=1.0",
+    # NLI-дедуп тезисов (src/nli.py); лёгкий, без torch
+    "tokenizers>=0.15",
+    # чтение/запись wav в диаризации и пересборке стенограммы
+    "soundfile>=0.12",
+    # ERes2Net-эмбеддинги: без него диаризация молча выключена
+    "sherpa-onnx>=1.10",
+    # Бэкенды STT — ставится тот, что выбран в stt.backend.
+    # gigaam работает на onnx-asr выше; для остальных нужны свои пакеты:
+    "parakeet-mlx>=0.2 ; sys_platform == 'darwin'",  # английский пресет
+    "mlx-whisper>=0.4 ; sys_platform == 'darwin'",   # китайский/мультиязычный пресет
+]
+
+[tool.setuptools]
+# Пустой список — pip install . ставит зависимости и ничего не кладёт
+# в site-packages: репозиторий остаётся рабочей директорией, не пакетом.
+py-modules = []

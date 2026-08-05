@@ -352,7 +352,7 @@ print(json.dumps({"missing": missing, "inputs": inputs, "audio_error": audio_err
                 id: "python",
                 state: .blocked,
                 title: L.t("Не хватает Python-зависимостей", "Python dependencies are missing", "缺少 Python 依赖"),
-                detail: ".venv/bin/pip install -r requirements.txt  ·  "
+                detail: ".venv/bin/pip install .  ·  "
                     + local.pythonMissingModules.joined(separator: ", "))
         }
         return SetupCheck(

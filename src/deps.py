@@ -33,7 +33,7 @@ def hint(module: str) -> str:
     """Текст рецепта. Отдельной функцией, чтобы его можно было проверить тестом."""
     script = pathlib.Path(sys.argv[0]).name if sys.argv and sys.argv[0] else "скрипт"
     where = ".venv/bin/python" if VENV.exists() else "python3 -m venv .venv && " \
-        ".venv/bin/pip install -r requirements.txt, затем .venv/bin/python"
+        ".venv/bin/pip install ., затем .venv/bin/python"
     return (f"Charoite: не найден пакет «{module}» — похоже, {script} запущен не тем "
             f"интерпретатором.\n"
             f"  Зависимости живут в .venv: {where} {' '.join(sys.argv[:1])}\n"

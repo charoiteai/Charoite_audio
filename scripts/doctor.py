@@ -155,7 +155,7 @@ def check_deps() -> None:
             missing.append(mod)
     if missing:
         line(FAIL, f"не хватает пакетов: {', '.join(missing)}",
-             ".venv/bin/pip install -r requirements.txt (и запускайте через .venv/bin/python)")
+             ".venv/bin/pip install . (и запускайте через .venv/bin/python)")
     else:
         line(OK, "python-зависимости")
 

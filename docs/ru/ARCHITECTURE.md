@@ -145,7 +145,7 @@ Graphiti/Zep), но на чистом markdown: работает grep, Obsidian,
 - **MCP-сервер** (src/mcp_server.py) отдаёт архив и живую встречу как
   инструменты Claude Code. Держит обе ветки пакета `mcp`: в 2.0 класс
   переехал (`mcp.server.fastmcp.FastMCP` → `mcp.server.MCPServer`), а
-  requirements разрешают обе — установка не должна молча давать сервер,
+  pyproject разрешает обе — установка не должна молча давать сервер,
   который падает на импорте.
 
 
