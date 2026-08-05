@@ -147,6 +147,13 @@ struct TasksView: View {
         HStack(spacing: 6) {
             Text(TasksService.sourceTitle(group.rel))
                 .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            // Дата встречи, а не файла: список идёт от свежих к ранним, и без
+            // подписи непонятно, поручение этой недели или трёхнедельной давности.
+            if let when = TasksService.meetingDate(group.rel) {
+                Text(Self.dayFormatter.string(from: when))
+                    .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                    .accessibilityLabel(Self.voiceOverFormatter.string(from: when))
+            }
             Spacer()
             if let first = group.items.first,
                let meeting = repository.record(matching: first) {
@@ -215,6 +222,23 @@ struct TasksView: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
+
+    /// «5 авг» — коротко, чтобы не спорить за ширину с названием встречи.
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale.current
+        f.setLocalizedDateFormatFromTemplate("d MMM")
+        return f
+    }()
+
+    /// VoiceOver читает сокращения плохо: ему — полная дата.
+    private static let voiceOverFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale.current
+        f.dateStyle = .long
+        f.timeStyle = .none
+        return f
+    }()
 }
 
 #endif

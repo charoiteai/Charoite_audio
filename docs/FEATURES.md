@@ -334,7 +334,15 @@ it signals degradation, it does not break the loop.
   in the upper layers.
 - **The meeting card** — a ready meeting opens on click: topic, date,
   duration (from transcript timecodes), participants, the one-line gist,
-  decisions and action items from the Summary. "Copy" puts the summary,
+  decisions and action items. By default the card shows the **detailed
+  minutes**: discussion topics, full wording of the decisions, action
+  items with deadlines, open questions and risks — everything that
+  previously required a trip to Obsidian. The "Detailed / Brief" switch
+  brings back the Summary digest, and a protocol written while the
+  meeting was still running is honestly marked as a draft. The model
+  writes minutes in several markup styles (`- Topics:`, `**Topics:**`,
+  `## Discussion topics`); the parser understands all of them.
+  "Copy" puts the summary,
   the tasks, or everything into the clipboard — into a mail without
   opening a single file. "Open", "Transcript" and "Obsidian" buttons are
   right there. "Meeting ready" no longer means "go figure out a markdown
@@ -466,7 +474,11 @@ it signals degradation, it does not break the loop.
 - **Meeting tasks** — minutes write assignments as checkboxes
   («- [ ] **Name** — what — when»); the Tasks window collects every
   `- [ ]` across the graph with an open-count badge, ticking writes
-  `[x]` straight into markdown — Obsidian and the app always agree.
+  `[x]` straight into markdown — Obsidian and the app always agree. The
+  list runs from the latest meeting to the earliest and every group
+  carries its date: the order comes from the meeting time in the archive
+  name, not the file mtime — the nightly review touches old folders and
+  used to float them to the top as if they were fresh.
 - **Streaming archive answers** — first words in ~1s, token-by-token
   with a typing cursor; the chat model picker lists what Ollama
   actually has.

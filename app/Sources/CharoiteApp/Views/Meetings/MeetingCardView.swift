@@ -15,7 +15,7 @@ struct MeetingCardView: View {
     @ObservedObject private var navigation = WorkspaceNavigation.shared
     @ObservedObject private var tasks = TasksService.shared
     @Environment(\.dismiss) private var dismiss
-    @State private var card = MeetingCard()
+    @State var card = MeetingCard()
     @State private var renaming = false
     @State private var newTitle = ""
     @State private var renameBusy = false
@@ -25,6 +25,9 @@ struct MeetingCardView: View {
     @State private var actionMessage = ""
     @State private var forgetPlan = ""
     @State private var showForget = false
+    /// Подробный протокол — вид по умолчанию: за ним человек и приходит в
+    /// карточку. Короткая выжимка остаётся на переключателе.
+    @AppStorage("meetingCardDetailed") var detailed = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -40,11 +43,16 @@ struct MeetingCardView: View {
                                  "摘要尚未生成——请打开逐字稿。"))
                             .font(.callout).foregroundStyle(.secondary)
                     }
-                    section(L.t("Решили", "Decided", "决定"), mark: "⚑",
-                            items: card.decisions)
-                    taskSection
-                    section(L.t("Открытые вопросы", "Open questions", "待解决问题"), mark: "?",
-                            items: card.openQuestions)
+                    detailPicker
+                    if let minutes = card.minutes, detailed {
+                        minutesSections(minutes)
+                    } else {
+                        section(L.t("Решили", "Decided", "决定"), mark: "⚑",
+                                items: card.decisions)
+                        taskSection
+                        section(L.t("Открытые вопросы", "Open questions", "待解决问题"), mark: "?",
+                                items: card.openQuestions)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 2)
@@ -176,7 +184,7 @@ struct MeetingCardView: View {
     }
 
     @ViewBuilder
-    private var taskSection: some View {
+    var taskSection: some View {
         let linked = tasks.items(for: meeting.meetingID)
         if linked.isEmpty {
             section(L.t("Поручения", "Action items", "任务"), mark: "▸", items: card.tasks)
