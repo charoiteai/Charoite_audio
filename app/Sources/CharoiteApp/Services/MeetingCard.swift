@@ -10,6 +10,10 @@ import Foundation
 /// копируются в письмо одним нажатием, а файлы остаются на расстоянии кнопки.
 struct MeetingCard: Equatable {
     var gist: String?
+    /// Подробный протокол из Минуток: темы, полные формулировки решений,
+    /// сроки поручений. Саммари даёт по строке на пункт — этого мало, чтобы
+    /// вспомнить встречу неделю спустя.
+    var minutes: MeetingMinutes?
     var decisions: [String] = []
     var tasks: [String] = []
     var openQuestions: [String] = []
@@ -99,6 +103,12 @@ enum MeetingCardLoader {
                 }
             } else if card.gist == nil {
                 card.summaryMissing = true
+            }
+            if let text = try? String(
+                contentsOf: folder.appendingPathComponent("Минутки.md"),
+                encoding: .utf8) {
+                let parsed = MeetingMinutes.parse(text)
+                if !parsed.isEmpty { card.minutes = parsed }
             }
         } else {
             card.summaryMissing = true

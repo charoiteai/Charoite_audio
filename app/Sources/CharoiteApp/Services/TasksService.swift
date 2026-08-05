@@ -22,6 +22,12 @@ final class TasksService: ObservableObject {
         /// внешний редактор мог вставить строку, и старый lineIndex уже укажет
         /// на соседнее поручение.
         let sourceLine: String
+
+        /// Когда поручение прозвучало: дата встречи из имени папки, а не
+        /// mtime файла. Ночная ревизия трогает старые архивы и переставляла
+        /// их наверх списка — по времени файла «свежей» оказывалась встреча
+        /// недельной давности.
+        var happenedAt: Date { TasksService.meetingDate(rel) ?? fileDate }
     }
 
     enum ToggleResult: Equatable, Sendable {
@@ -124,10 +130,13 @@ final class TasksService: ObservableObject {
 
     /// Публикация результата — единственное, что делается на главном потоке.
     private func apply(_ found: [Item]) {
-        // открытые сверху, внутри — свежие файлы первыми
+        // открытые сверху, внутри — свежие встречи первыми
         items = found.sorted {
             if $0.done != $1.done { return !$0.done }
-            return $0.fileDate > $1.fileDate
+            if $0.happenedAt != $1.happenedAt { return $0.happenedAt > $1.happenedAt }
+            // Один файл: сохраняем порядок строк, иначе пункты одной встречи
+            // перемешиваются между сканами.
+            return $0.lineIndex < $1.lineIndex
         }
         openCount = items.filter { !$0.done }.count
     }
@@ -138,6 +147,24 @@ final class TasksService: ObservableObject {
     nonisolated static func meetingKey(_ value: String) -> String? {
         let key = String(value.filter(\.isNumber).prefix(12))
         return key.count == 12 ? key : nil
+    }
+
+    /// Дата и время встречи из того же ключа: `202608041131` → 4 августа 11:31.
+    /// Час и минуты нужны, чтобы утренняя и вечерняя встречи одного дня
+    /// стояли в списке в том порядке, в каком проходили.
+    nonisolated static func meetingDate(_ rel: String) -> Date? {
+        guard let key = meetingKey(rel), let value = Int(key) else { return nil }
+        var parts = DateComponents()
+        parts.year = value / 100_000_000
+        parts.month = value / 1_000_000 % 100
+        parts.day = value / 10_000 % 100
+        parts.hour = value / 100 % 100
+        parts.minute = value % 100
+        guard (1...12).contains(parts.month ?? 0), (1...31).contains(parts.day ?? 0),
+              (0...23).contains(parts.hour ?? 24), (0...59).contains(parts.minute ?? 60) else {
+            return nil
+        }
+        return Calendar.current.date(from: parts)
     }
 
     nonisolated static func belongs(_ item: Item, to meetingID: String) -> Bool {

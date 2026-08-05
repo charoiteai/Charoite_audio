@@ -66,6 +66,52 @@ final class TasksServiceTests: XCTestCase {
         XCTAssertEqual(found.filter { !$0.done }.count, 1)
     }
 
+    func testДатаЗадачиБерётсяИзИмениВстречиАНеИзФайла() throws {
+        // Ключ встречи один и тот же в двух написаниях — дата обязана совпасть.
+        let folder = TasksService.meetingDate("Встречи-архив/2026-08-04 11-31 — Планёрка/Минутки.md")
+        let status = TasksService.meetingDate("2026-08-04_1131_minutes.md")
+        XCTAssertEqual(folder, status)
+        let parts = Calendar.current.dateComponents(
+            [.year, .month, .day, .hour, .minute], from: try XCTUnwrap(folder))
+        XCTAssertEqual(parts.day, 4)
+        XCTAssertEqual(parts.hour, 11)
+        XCTAssertEqual(parts.minute, 31)
+    }
+
+    func testБезКлючаВстречиДатыНет() {
+        // Обычная заметка графа: подписывать её датой встречи нечем,
+        // порядок держит mtime файла.
+        XCTAssertNil(TasksService.meetingDate("Заметки/Идеи.md"))
+        XCTAssertNil(TasksService.meetingDate("Встречи/2026-13-45_9999.md"),
+                     "несуществующий месяц не должен превращаться в дату")
+    }
+
+    func testСвежаяВстречаВышеСтаройНезависимоОтВремениФайла() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("charoite-tasks-order-\(UUID().uuidString)")
+        let old = dir.appendingPathComponent("2026-08-01 09-00 — Старая")
+        let fresh = dir.appendingPathComponent("2026-08-04 18-00 — Свежая")
+        for folder in [old, fresh] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try "- [ ] поручение\n".write(to: folder.appendingPathComponent("Минутки.md"),
+                                          atomically: true, encoding: .utf8)
+        }
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Ночная ревизия трогает старый архив последним: по mtime он «свежее».
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date()],
+            ofItemAtPath: old.appendingPathComponent("Минутки.md").path)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: -86_400)],
+            ofItemAtPath: fresh.appendingPathComponent("Минутки.md").path)
+
+        let sorted = TasksService.scanSync(graph: dir)
+            .sorted { $0.happenedAt > $1.happenedAt }
+        XCTAssertTrue(sorted.first?.rel.contains("Свежая") ?? false,
+                      "список идёт от последней встречи к ранней, а не по mtime")
+    }
+
     func testToggleFindsTheSameTaskAfterExternalLinesWereInserted() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("charoite-tasks-move-\(UUID().uuidString)")
