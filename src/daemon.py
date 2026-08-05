@@ -604,60 +604,62 @@ def main():
             if parts:  # подсказки тоже сохраняем — лог полного разговора
                 kind = "ручная" if manual else "авто"
                 append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] подсказка ({kind})", "".join(parts))
-            if parts and not parts[-1].endswith("⏸"):
-                _cloud_refine_hint(tail, "".join(parts))
+
 
     _refine_last = {"len": 0}
 
-    def _cloud_refine_hint(tail: str, local_hint: str):
-        """Лестница и для подсказок: локальная мгновенно → Haiku доуточняет.
+    def _cloud_refine_thread():
+        """Облако правит нить, а не комментирует её сбоку.
 
-        Уточнение падает в облачную ленту того же окна (тот же путь, что
-        ответы на вопросы) — hint-карточку перезапишет следующая подсказка,
-        а лента остаётся. Выключатель отдельный от cloud_live: подсказки
-        стреляют часто, и это постоянный поток стенограммы в облако. Решение
-        о нём — в src/privacy.py, как и обо всех остальных: раньше ключ
-        читался здесь, и рубильник действовал только потому, что рядом в
-        условии стоял cloud_live.
+        Раньше уточнение Haiku падало отдельным блоком «☁️ …» под подсказкой —
+        человек сам сопоставлял его с полотном (двойное чтение на живой
+        встрече; решение 05.08). Теперь ревизор получает нить и свежие
+        реплики, возвращает пары «FIX: строка => точнее» — строки правятся
+        на месте, изменённые слова выделены ==так==. «Было → стало» целиком
+        уходит в файл-лог: аудит не на экране. Тумблер прежний (cloud_hints):
+        это тот же постоянный поток стенограммы в облако.
         """
         if not (cloud_hints and toggles["cloud"]):
             return
-        if len(tail) - _refine_last["len"] < 400:
-            return   # разговор не набежал — Haiku скажет то же самое
+        tail = tr.tail(max_ctx)
+        if len(tail) - _refine_last["len"] < 1200:
+            return   # разговор не набежал — ревизору не на чем ловить неточности
         _refine_last["len"] = len(tail)
+        woven = thread.as_context(topics=2)
+        if not woven.strip():
+            return
 
-        def cloud_hint_refine():
+        def cloud_thread_refine():
             claude_bin = shutil.which("claude") or "/opt/homebrew/bin/claude"
             model = cloud.model(cfg, "cloud_hints_model")
             env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
             env.update(load_claude_proxy_env())
             short = model.split("-")[1] if model.count("-") else model
-            my_gen = _hint_gen[0]
             try:
                 r = subprocess.run(
                     [claude_bin, "-p",
-                     "Рабочая встреча. Последние реплики:\n" + tail + "\n\n"
-                     "Локальная модель уже дала подсказку:\n" + local_hint[:1200] +
-                     "\n\nДай УТОЧНЕНИЕ: 2-4 коротких пункта — что локальная "
-                     "подсказка упустила или где неточна. Только новое, не "
-                     "пересказывай её. ЧЕСТНОСТЬ ВАЖНЕЕ УВЕРЕННОСТИ: факты "
-                     "встречи бери только из реплик. Русский, без преамбул.",
+                     "Рабочая встреча. Нить (конспект на экране):\n" + woven +
+                     "\n\nСвежие реплики:\n" + tail[-3500:] +
+                     "\n\nНайди строки нити, которые НЕТОЧНЫ по репликам: "
+                     "перепутан факт, статус, стадия работы, акцент. На каждую "
+                     "неточность — ровно одна строка ответа:\n"
+                     "FIX: <строка нити как есть> => <исправленная, до 14 слов>\n"
+                     "Только правки существующих строк, ничего нового не добавляй, "
+                     "не комментируй. Всё точно — ответь ровно: NONE",
                      "--model", model],
                     capture_output=True, text=True, timeout=60, env=env)
                 out = (r.stdout or "").strip()
-            except Exception as e:  # noqa: BLE001
-                out = f"[{short}: {e}]"
-            if not out:
+            except Exception:  # noqa: BLE001 — ревизия не критична, тишина честнее
                 return
-            append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] уточнение ({short})", out)
-            # подсказки и облако — ЕДИНЫЙ поток: уточнение дописывается в ту же
-            # карточку. Если пользователь уже запросил новую подсказку (ручной
-            # сброс буфера) — устаревшее уточнение остаётся только в файле
-            if _hint_gen[0] == my_gen:
-                emit({"type": "hint", "text": f"\n\n☁️ {short}: {out}"})
-                emit({"type": "hint_done"})
+            from meeting_thread import parse_edits
+            applied = thread.apply_edits(parse_edits(out))
+            if not applied:
+                return
+            log = "\n".join(f"было: {a}\nстало: {b}" for a, b in applied)
+            append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ревизия нити ({short}, {len(applied)})", log)
+            emit({"type": "thread", "text": thread.render()})
 
-        threading.Thread(target=cloud_hint_refine, daemon=True).start()
+        threading.Thread(target=cloud_thread_refine, daemon=True).start()
 
     def thread_loop():
         """Нить встречи: растёт по мере разговора, не переписывается заново.
@@ -698,6 +700,7 @@ def main():
                     emit({"type": "thread", "text": thread.render()})
                     append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] нить (+{added})",
                                 thread.full())
+                    _cloud_refine_thread()
             except Exception as e:  # noqa: BLE001 — поток не должен умирать молча
                 emit({"type": "status", "text": f"нить встречи сорвалась: {e}"})
 
