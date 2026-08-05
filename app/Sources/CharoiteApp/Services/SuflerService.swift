@@ -125,6 +125,10 @@ final class SuflerService: ObservableObject {
     private var stdinPipe: Pipe?
     private var stdoutHandle: FileHandle?  // для снятия readabilityHandler при смерти демона
     private var errHandle: FileHandle?     // daemon.err.log — закрывать, иначе fd-утечка на рестартах
+    /// Системный звук без BlackHole. Живёт ровно столько же, сколько демон:
+    /// поднимается перед стартом, гасится в stop() и при смерти демона —
+    /// иначе устройство останется висеть в системе.
+    private var systemAudioTap: Any?
     private var stdoutBuffer = Data()
     private var _hintBuf = ""            // буфер троттла подсказки (см. consume)
     private var _lastHintUI = Date.distantPast
@@ -223,6 +227,10 @@ final class SuflerService: ObservableObject {
         status = L.t("Запускаю…", "Starting…", "启动中…")
         statusIsError = false
 
+        // Тап поднимаем ДО демона: он ищет устройство при старте, а не потом.
+        // Отказ не фатален — audio.py откатится на BlackHole.
+        startSystemAudioTap()
+
         let p = Process()
         p.executableURL = suflerRoot.appendingPathComponent(".venv/bin/python")
         p.arguments = ["src/daemon.py"]
@@ -302,13 +310,36 @@ final class SuflerService: ObservableObject {
         isRunning = false
         isExpanding = false
         stopClock()
+        // Тап гасим не сразу: демон ещё дописывает хвост записи и закрывает
+        // стримы. Снять устройство из-под него — это ровно тот обрыв, который
+        // 05.08 стоил сорока минут встречи.
+        let tap = systemAudioTap
+        systemAudioTap = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 13.0) {
+            if #available(macOS 14.4, *) { (tap as? SystemAudioTap)?.stop() }
+        }
         status = L.t("Останавливаю…", "Stopping…", "停止中…")
+    }
+
+    /// Поднять системный звук через Core Audio tap.
+    ///
+    /// До macOS 14.4 API нет, разрешение может быть не выдано, устройство
+    /// вывода бывает недоступно — во всех случаях просто работаем по-старому
+    /// через BlackHole. Молчать об этом нельзя только в одном месте: если нет
+    /// НИ тапа, НИ драйвера, демон запишет одну свою сторону разговора.
+    private func startSystemAudioTap() {
+        guard #available(macOS 14.4, *) else { return }
+        let tap = (systemAudioTap as? SystemAudioTap) ?? SystemAudioTap()
+        systemAudioTap = tap
+        if tap.start() == nil { systemAudioTap = nil }
     }
 
     /// Демон-процесс умер (крэш или наш terminate). Если это не ручной Стоп —
     /// поднимаем свежий, не стирая встречу с экрана (стенограмма-файл цел).
     private func daemonDied(_ proc: Process) {
         guard proc === process else { return }  // умер прошлый демон, не текущий
+        if #available(macOS 14.4, *) { (systemAudioTap as? SystemAudioTap)?.stop() }
+        systemAudioTap = nil
         stdoutHandle?.readabilityHandler = nil
         stdoutHandle = nil
         try? errHandle?.close()

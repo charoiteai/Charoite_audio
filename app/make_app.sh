@@ -58,6 +58,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<string>Название ближайшей встречи — для кнопки «Бриф» (локально, только чтение).</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Суфлёр слушает встречу локально: распознавание речи не покидает этот Mac.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Звук звонка записывается локально вместо установки стороннего драйвера: расшифровка не покидает этот Mac.</string>
 </dict>
 </plist>
 PLIST

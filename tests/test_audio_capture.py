@@ -212,3 +212,28 @@ def test_мёртвый_канал_не_уносит_соседей_при_ст�
         assert mic.started, "исправный микрофон не открыли из-за отказа соседнего канала"
     finally:
         hub._running = False
+
+def test_тап_приложения_выигрывает_у_blackhole(monkeypatch):
+    """Есть тап — берём его: он не требует стороннего драйвера от человека."""
+    devices = {a.TAP_DEVICE: 7, "BlackHole 2ch": 3}
+    monkeypatch.setattr(a, "find_device",
+                        lambda s: next((i for n, i in devices.items() if s.lower() in n.lower()), None))
+    assert a.find_system_audio() == (7, "tap")
+
+
+def test_без_тапа_откатываемся_на_blackhole(monkeypatch):
+    """Старая macOS, отказ в разрешении, приложение не запущено — тапа нет.
+
+    Молча остаться без канала собеседников нельзя: в стенограмме пропадёт
+    вторая сторона разговора, а узнаем мы об этом уже после встречи.
+    """
+    monkeypatch.setattr(a, "find_device",
+                        lambda s: 3 if "blackhole" in s.lower() else None)
+    assert a.find_system_audio() == (3, "blackhole")
+
+
+def test_нет_ни_тапа_ни_драйвера(monkeypatch):
+    """Оба источника отсутствуют — честный None, а не случайное устройство."""
+    monkeypatch.setattr(a, "find_device", lambda s: None)
+    index, via = a.find_system_audio()
+    assert index is None and via == "blackhole"

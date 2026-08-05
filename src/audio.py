@@ -29,6 +29,27 @@ def find_device(substr: str) -> int | None:
     return None
 
 
+# Устройство, которое приложение поднимает на время встречи через Core Audio
+# process tap (SystemAudioTap.swift). Имя — контракт между приложением и
+# демоном: меняешь здесь — меняй и там.
+TAP_DEVICE = "Charoite System Audio"
+
+
+def find_system_audio() -> tuple[int | None, str]:
+    """Индекс канала собеседников и чем он получен.
+
+    Сначала ищем тап приложения: он не требует от человека ставить сторонний
+    драйвер и переключать выход на «Многовыходное устройство». Если тапа нет
+    (старая macOS, отказ в разрешении, приложение не запущено) — работаем
+    по-старому через BlackHole. Молчаливого «ни того, ни другого» быть не
+    должно: без этого канала в стенограмме не будет второй стороны разговора.
+    """
+    tap = find_device(TAP_DEVICE)
+    if tap is not None:
+        return tap, "tap"
+    return find_device("blackhole"), "blackhole"
+
+
 class Capture:
     """Один входной поток → очередь float32-чанков (mono, samplerate)."""
 
@@ -115,12 +136,16 @@ class AudioHub:
         self._running = False
 
         mode = a["device"]
-        bh = find_device("blackhole")
+        # Метка канала осталась «blackhole» намеренно: по ней названы файлы
+        # записей (`..._blackhole.wav`), её знают rebuild_transcript и
+        # meeting_stamp. Переименование метки сломало бы пересборку старых
+        # встреч ради косметики.
+        bh, self.system_audio_via = find_system_audio()
         mic = sd.default.device[0] if sd.default.device else None
 
         if mode in ("auto", "mix", "blackhole") and bh is not None:
             self.captures.append(Capture(bh, self.sr, "blackhole"))
-            self.sources.append("BlackHole")
+            self.sources.append("Тап системы" if self.system_audio_via == "tap" else "BlackHole")
         # auto = система И микрофон: на встрече нужны обе стороны разговора
         if mode in ("mic", "mix", "auto") and (mode != "auto" or bh is None or mic is not None):
             if mode != "blackhole":
