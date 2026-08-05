@@ -75,7 +75,7 @@
 
 ```bash
 git clone https://github.com/charoiteai/Charoite_audio && cd Charoite_audio
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && .venv/bin/pip install .
 cp config/config.example.yaml config/config.yaml   # впишите user_name и graph_dir
 ```
 

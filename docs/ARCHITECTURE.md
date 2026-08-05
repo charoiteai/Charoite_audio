@@ -145,7 +145,7 @@ lives in RAM alongside it, `num_ctx` is always explicit.
 - **MCP server** (src/mcp_server.py) exposes the archive and the live
   meeting as Claude Code tools. It supports both branches of the `mcp`
   package: 2.0 moved the class (`mcp.server.fastmcp.FastMCP` →
-  `mcp.server.MCPServer`) and requirements allow either — an install must
+  `mcp.server.MCPServer`) and pyproject allows either — an install must
   not silently produce a server that dies on import.
 
 ## Surviving a crash

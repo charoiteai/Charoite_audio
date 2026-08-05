@@ -11,7 +11,7 @@ ollama pull qwen3.6:35b-a3b && ollama pull qwen3.5:4b && ollama pull gemma4:late
 
 # Charoite
 git clone https://github.com/charoiteai/Charoite_audio && cd Charoite_audio
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && .venv/bin/pip install .
 cp config/config.example.yaml config/config.yaml
 ```
 

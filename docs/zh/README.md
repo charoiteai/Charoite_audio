@@ -69,7 +69,7 @@ Charoite 倾听您的会议（麦克风 + 系统声音，无需机器人入会�
 
 ```bash
 git clone https://github.com/charoiteai/Charoite_audio && cd Charoite_audio
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && .venv/bin/pip install .
 cp config/config.example.zh.yaml config/config.yaml   # 填入 user_name 和 graph_dir
 ```
 

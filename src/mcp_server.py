@@ -14,7 +14,7 @@ import requests
 
 import privacy
 
-# requirements разрешают mcp>=1.0, а в 2.0 класс переехал: FastMCP из
+# pyproject разрешает mcp>=1.0, а в 2.0 класс переехал: FastMCP из
 # mcp.server.fastmcp стал MCPServer в mcp.server. Оба дают .tool() и .run(),
 # то есть весь файл ниже работает одинаково — расходится только имя импорта.
 # Без этого «pip install -r» проходил, а сервер падал на первой же строке.

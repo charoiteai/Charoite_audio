@@ -22,7 +22,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
 # diar_bench на уровне модуля тянет numpy и soundfile. В CI они стоят всегда
-# (requirements.txt ставится целиком), а вот на неполном локальном окружении
+# (зависимости из pyproject.toml ставятся целиком), а вот на неполном локальном окружении
 # голый import ронял СБОР всех тестов, не только этих. skip честнее падения:
 # здесь проверяется метрика, а не установленность аудиостека.
 pytest.importorskip("numpy")
