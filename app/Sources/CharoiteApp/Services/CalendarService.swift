@@ -11,6 +11,9 @@ final class CalendarService: ObservableObject {
     static let shared = CalendarService()
 
     @Published private(set) var nextEventTitle: String?
+    /// Меняется после каждого обновления EventKit. Виды произвольного дня
+    /// перечитывают свой срез, а не держат снимок до повторного открытия.
+    @Published private(set) var eventsRevision = 0
     /// Подсказка «встреча началась — начать запись?». Решение принимает
     /// MeetingCue, здесь только события и ответ пользователя.
     @Published private(set) var cue: MeetingCue.Cue?
@@ -19,6 +22,17 @@ final class CalendarService: ObservableObject {
     private var silenced: Set<String> = []
     /// Идёт ли запись — знает демон; сюда это состояние приносит вид.
     private var isRecording = false
+
+    private init() {
+        NotificationCenter.default.addObserver(
+            forName: .EKEventStoreChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.accessGranted == true else { return }
+                self.refresh()
+            }
+        }
+    }
 
     /// Запросить доступ (системный диалог) и начать следить за ближайшим
     /// событием. Отказ пользователя — тихо выключаемся.
@@ -34,7 +48,12 @@ final class CalendarService: ObservableObject {
         let done: (Bool) -> Void = { granted in
             Task { @MainActor in
                 self.accessGranted = granted
-                guard granted else { self.nextEventTitle = nil; return }
+                guard granted else {
+                    self.nextEventTitle = nil
+                    self.today = []
+                    self.eventsRevision &+= 1
+                    return
+                }
                 self.refresh()
                 self.timer?.invalidate()
                 // Минута, а не пять: окно подсказки о начале встречи —
@@ -58,6 +77,11 @@ final class CalendarService: ObservableObject {
         nextEventTitle = nil
         if let id = cue?.id { MeetingNotificationService.shared.remove(cueID: id) }
         cue = nil
+        today = []
+        // Разрешение macOS может сохраниться, но пользователь выключил
+        // opt-in функцию: до нового enable() EventKit для продукта недоступен.
+        accessGranted = nil
+        eventsRevision &+= 1
         MeetingNotificationService.shared.reset()
     }
 
@@ -98,7 +122,8 @@ final class CalendarService: ObservableObject {
     func events(on day: Date) -> [DayEvent] {
         guard accessGranted == true else { return [] }
         let start = Calendar.current.startOfDay(for: day)
-        let end = start.addingTimeInterval(24 * 3600)
+        let end = Calendar.current.date(byAdding: .day, value: 1, to: start)
+            ?? start.addingTimeInterval(24 * 3600)
         let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
         return store.events(matching: predicate)
             .filter { !$0.isAllDay && !($0.title ?? "").isEmpty }
@@ -114,6 +139,13 @@ final class CalendarService: ObservableObject {
 
     /// Событие в окне «идёт сейчас или начнётся в ближайший час».
     private func refresh() {
+        guard accessGranted == true else {
+            today = []
+            nextEventTitle = nil
+            cue = nil
+            eventsRevision &+= 1
+            return
+        }
         let now = Date()
         // Отдельным запросом — весь остаток дня: подсказке о записи хватает
         // часа, а подготовке нужен список «что сегодня ещё будет».
@@ -161,5 +193,6 @@ final class CalendarService: ObservableObject {
         if let nextCue {
             MeetingNotificationService.shared.present(nextCue)
         }
+        eventsRevision &+= 1
     }
 }

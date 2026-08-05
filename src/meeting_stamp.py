@@ -36,6 +36,7 @@ _RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{4}(?:\d{2})?)(?:-\d+)?$")
 # уже стоило темы «… разбор» в списке встреч (инцидент 04.08).
 AUX_SUFFIXES = ("_minutes", "_hints", "_live", "_debrief",
                 "_разбор", "_ревизия_claude", "_спикеры")
+RECORDING_LABELS = ("mic", "blackhole")
 
 # Главный файл встречи после наката темы: «2026-08-04_1203_Отчет_по_задачам».
 # Ровно такие имена шлёт retry из приложения (transcript_path статуса).
@@ -87,27 +88,39 @@ def recording_path(rec_dir: pathlib.Path, stamp: str, label: str,
     return rec_dir / f"{stamp}_{label}.{ext}"
 
 
-def resolve_stamp(rec_dir: pathlib.Path, stamp: str, label: str) -> str:
-    """Штамп, под которым записи канала реально лежат на диске.
+def resolve_stamp(rec_dir: pathlib.Path, stamp: str,
+                  labels: tuple[str, ...] = RECORDING_LABELS) -> str:
+    """Единый штамп, под которым лежат каналы одной встречи.
 
     Демон называет записи ПОСЕКУНДНЫМ штампом стенограммы, а retry из
     приложения знает только минутное имя после наката темы («…_1203»):
-    точного файла с таким именем на диске нет — ищем по минутному
-    префиксу. Двусмысленность (две встречи в одну минуту) честно оставляем
-    как есть: лучше не найти записи, чем пересобрать чужую встречу.
+    точного файла с таким именем на диске нет — ищем по минутному префиксу.
+
+    Критично смотреть на все каналы одним проходом. Если отдельно разрешить
+    mic и blackhole, две встречи в одну минуту могут дать по одному каналу и
+    пересборка склеит разговоры разных людей. Поэтому возвращаем найденный
+    штамп, только когда объединение кандидатов всех каналов однозначно.
+    Иначе оставляем исходное имя: лучше честно не пересобрать, чем смешать
+    две встречи в одном документе.
     """
-    for ext in ("wav", "pcm", "wav.part"):
-        if recording_path(rec_dir, stamp, label, ext).exists():
-            return stamp
+    extensions = ("wav", "pcm", "wav.part")
+    for label in labels:
+        for ext in extensions:
+            if recording_path(rec_dir, stamp, label, ext).exists():
+                # Хотя другой канал может принадлежать иному посекундному
+                # кандидату, общий точный штамп безопасен: wait_recording
+                # будет искать оба канала только под ним и чужой не возьмёт.
+                return stamp
     core = _RE.match(stamp)
     if core is None or not rec_dir.is_dir():
         return stamp
     minute = core.group(1)[:15]
-    tail_by_ext = {ext: f"_{label}.{ext}" for ext in ("wav", "pcm", "wav.part")}
     found: set[str] = set()
-    for ext, tail in tail_by_ext.items():
-        for p in rec_dir.glob(f"{minute}*{tail}"):
-            cand = p.name[: -len(tail)]
-            if started_at(cand) is not None:
-                found.add(cand)
+    for label in labels:
+        for ext in extensions:
+            tail = f"_{label}.{ext}"
+            for p in rec_dir.glob(f"{minute}*{tail}"):
+                cand = p.name[: -len(tail)]
+                if started_at(cand) is not None:
+                    found.add(cand)
     return found.pop() if len(found) == 1 else stamp

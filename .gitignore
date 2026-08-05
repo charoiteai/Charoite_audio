@@ -6,6 +6,7 @@ logs/
 .venv/
 __pycache__/
 *.pyc
+*.egg-info/
 .DS_Store
 CLAUDE.md
 .env

@@ -105,7 +105,12 @@ PROMPT = """Ниже досье по теме «{theme}» и его источн
 
 
 def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
-           files: dict, members: list[str], model: str) -> str | None:
+           files: dict, members: list[str], model: str, cfg: dict) -> str | None:
+    # Сетевой выход держит собственную границу. main уже проверяет её ради
+    # дешёвого раннего выхода всего прогона, но review можно вызвать отдельно
+    # из теста, будущего воркера или после рефакторинга call graph.
+    if not privacy.cloud_enrich_enabled(cfg):
+        return None
     current = path.read_text(encoding="utf-8")
     # раздел «Правки автора» в запрос не отдаём и не даём его переписать
     body = current.split("## Правки автора")[0]
@@ -172,7 +177,7 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
             done += 1
             continue
 
-        fixed = review(theme, path, graph, files, members, model)
+        fixed = review(theme, path, graph, files, members, model, cfg)
         if not fixed:
             continue
 

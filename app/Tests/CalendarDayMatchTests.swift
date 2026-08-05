@@ -58,4 +58,19 @@ final class CalendarDayMatchTests: XCTestCase {
             recordStarts: [("part-1", date(9, 1)), ("part-2", date(9, 47))])
         XCTAssertEqual(board.slots[0].recordIDs, ["part-1", "part-2"])
     }
+
+    func testПустойДеньБезДоступаНеНазываетсяТихим() {
+        XCTAssertEqual(
+            CalendarDayMatch.emptyState(
+                recordCount: 0, eventCount: 0, calendarConnected: false),
+            .calendarUnavailable)
+        XCTAssertEqual(
+            CalendarDayMatch.emptyState(
+                recordCount: 0, eventCount: 0, calendarConnected: true),
+            .quietDay)
+        XCTAssertEqual(
+            CalendarDayMatch.emptyState(
+                recordCount: 1, eventCount: 0, calendarConnected: false),
+            .none)
+    }
 }

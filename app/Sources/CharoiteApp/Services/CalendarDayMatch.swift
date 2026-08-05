@@ -8,6 +8,21 @@ import Foundation
 /// чтобы две встречи подряд не делили одну запись. Логика отделена от
 /// EventKit и вью ради тестов: даты сюда приходят готовыми.
 enum CalendarDayMatch {
+    enum EmptyState: Equatable {
+        case none
+        case calendarUnavailable
+        case quietDay
+    }
+
+    /// Пустая лента не всегда значит пустой календарь: без разрешения мы
+    /// знаем только об отсутствии записей и не имеем права утверждать, что
+    /// событий не было.
+    static func emptyState(recordCount: Int, eventCount: Int,
+                           calendarConnected: Bool) -> EmptyState {
+        guard recordCount == 0, eventCount == 0 else { return .none }
+        return calendarConnected ? .quietDay : .calendarUnavailable
+    }
+
     /// Событие дня и записи, которые к нему прикрепились.
     struct Slot: Identifiable, Equatable {
         let event: CalendarService.DayEvent

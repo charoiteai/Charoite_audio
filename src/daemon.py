@@ -630,6 +630,12 @@ def main():
             return
 
         def cloud_thread_refine():
+            # Проверка дублирует внешний cheap-gate намеренно: именно эта
+            # функция запускает процесс, а значит сама держит privacy-границу.
+            # Перенос/ручной вызов вложенной функции не должен сделать её
+            # сетевым выходом без рубильника.
+            if not privacy.cloud_hints_enabled(cfg):
+                return
             claude_bin = shutil.which("claude") or "/opt/homebrew/bin/claude"
             model = cloud.model(cfg, "cloud_hints_model")
             env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
@@ -832,7 +838,10 @@ def main():
             if not cloud_evt.wait(timeout=0.5):
                 continue
             cloud_evt.clear()
-            if not cloud_live:
+            # Спрашиваем privacy непосредственно перед сетевым выходом, а не
+            # доверяем снимку из main: сторож ниже доказывает связь именно с
+            # subprocess.run, и ручная команда не может обойти рубильник.
+            if not privacy.cloud_live_enabled(cfg):
                 # молча отказать — значит оставить человека гадать, почему кнопка
                 # не работает; поэтому статус, а не пустой continue
                 emit({"type": "status", "text": "облако выключено: sufler.cloud_live"})
