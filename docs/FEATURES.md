@@ -249,7 +249,15 @@ it signals degradation, it does not break the loop.
   toolbar button) expands the current topic from the archive: a graph search
   turns into 2-3 facts from past meetings (decision, status, who owns it)
   appended as ⏮ lines right into the topic that was asked about — the hint
-  pane stays free, so a hint can be requested in parallel.
+  pane stays free, so a hint can be requested in parallel. **A speaker's name
+  appears only when the voice changes**: "Speaker 4:" on every line read like
+  an interrogation protocol; now consecutive lines of the same person flow
+  without the prefix. **The cloud edits the thread instead of commenting next
+  to it**: refinements used to arrive as a separate "☁️ …" block you had to
+  match against the canvas yourself; now the reviser returns "line → more
+  precise" pairs, the line is fixed in place with the changed words
+  ==highlighted== (sky-tinted in the app — cloud stays visible), and the full
+  "was → became" trail goes to the meeting's log file.
 - **The hint follows the thread** instead of answering for you: current
   topic → who said what → **why** this is being discussed → **what
   happened before** on this topic in the archive (with a date) → what is

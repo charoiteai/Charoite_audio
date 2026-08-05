@@ -297,3 +297,77 @@ def test_thesis_becomes_thread_line_keeping_its_weight():
     text = t.full()
     assert f"{DECISION} решили катить волнами, срок пятница" in text   # 📌 → вес решения
     assert "💭 не спросили про откат" in text
+
+
+# --- спикер при смене голоса и правки облака (05.08.2026) -------------------
+
+from meeting_thread import parse_edits, split_speaker  # noqa: E402
+
+
+def test_speaker_shown_only_when_voice_changes():
+    """«Собеседник 4:» на каждой строке — протокол допроса, не разговор."""
+    t = Thread()
+    t.ingest(
+        f"{TOPIC} Проблемы ВВКИ\n"
+        f"{SAY} Собеседник 4: волна упала из-за типов дат\n"
+        f"{SAY} Собеседник 4: сделали ход-фикс для 5 полей\n"
+        f"{SAY} Мария: переход статуса — отдельная проблема"
+    )
+    out = t.render()
+    assert out.count("Собеседник 4:") == 1
+    assert "Мария:" in out
+    assert "сделали ход-фикс" in out
+
+
+def test_speaker_prefix_not_confused_with_fields():
+    """«Почему: …» и «Открыто: …» — поля разбора, не имена говорящих."""
+    assert split_speaker("Почему: конфликт форматов дат") == ("", "Почему: конфликт форматов дат")
+    assert split_speaker("Собеседник 4: тестировали только на янит-строке") == (
+        "Собеседник 4", "тестировали только на янит-строке")
+
+
+def test_dedup_ignores_speaker_prefix():
+    t = Thread()
+    t.ingest(f"{TOPIC} Тема\n{SAY} Собеседник 4: волна упала из-за типов дат в полях")
+    added = t.ingest(f"{SAY} волна упала из-за типов дат в полях")
+    assert added == 0
+
+
+def test_cloud_edit_lands_in_line_with_marks():
+    """Правка облака меняет строку на месте и выделяет изменённое ==так==."""
+    t = Thread()
+    t.ingest(f"{TOPIC} Скрипт сжатия\n{SAY} Собеседник 4: скрипт в разработке, ждём готовности")
+    applied = t.apply_edits([(
+        "скрипт в разработке, ждём готовности",
+        "скрипт готов, передают в сопровождение для накатки",
+    )])
+    assert len(applied) == 1
+    out = t.render()
+    assert "==" in out and "сопровождение" in out
+    assert "ждём готовности" not in out
+    # спикер строки пережил правку
+    assert "Собеседник 4:" in out
+
+
+def test_cloud_edit_skips_unknown_and_identical():
+    t = Thread()
+    t.ingest(f"{TOPIC} Тема\n{SAY} поток загрузки восстановлен после ночного сбоя")
+    applied = t.apply_edits([
+        ("строки такой в нити нет и близко", "что-то новое"),
+        ("поток загрузки восстановлен после ночного сбоя",
+         "поток загрузки восстановлен после ночного сбоя"),
+    ])
+    assert applied == []
+
+
+def test_parse_edits_tolerates_noise():
+    out = (
+        "Вот правки:\n"
+        "FIX: волна упала из-за дат => волна упала из-за смены типов дат\n"
+        "NONE\n"
+        "просто мусорная строка без сепаратора\n"
+        "- FIX: скрипт в разработке => скрипт готов к внедрению\n"
+    )
+    edits = parse_edits(out)
+    assert len(edits) == 2
+    assert edits[0][1].endswith("типов дат")
