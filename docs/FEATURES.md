@@ -265,7 +265,8 @@ it signals degradation, it does not break the loop.
   stretch of talk split into separate cards. The format lives in code
   (`src/llm.py`, `HINT_FORMAT`) and is the same for everyone: the role in
   the config describes context and terminology, not layout. The ready
-  first-person answer is still there — on its own hotkey.
+  first-person answer is still there — on its own hotkey. A speaker is named only when the voice changes, with no reporting verbs — substance, not paraphrase.
+
 - **Live meeting context** — the topic emerges a few minutes into the
   call; the daemon distills it from the live transcript, searches the
   archive and rebuilds the «past meetings» block in the hint prompt:
