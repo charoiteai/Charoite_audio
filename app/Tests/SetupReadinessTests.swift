@@ -66,10 +66,10 @@ final class ReadinessFixActionsTests: XCTestCase {
     }
 
     func testPipRecipeIsCopyableNotPullable() {
-        let detail = ".venv/bin/pip install -r requirements.txt  ·  затем перезапуск"
+        let detail = ".venv/bin/pip install .  ·  затем перезапуск"
         XCTAssertTrue(SetupReadinessPolicy.pullableModels(in: detail).isEmpty)
         XCTAssertEqual(SetupReadinessPolicy.copyableCommand(in: detail),
-                       ".venv/bin/pip install -r requirements.txt")
+                       ".venv/bin/pip install .")
     }
 
     func testProgressPrefersPercents() {

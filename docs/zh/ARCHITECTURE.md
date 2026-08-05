@@ -18,7 +18,7 @@ Stop → recording rebuild → graph update → archive + Summary → [Claude de
 
 MCP 服务器（src/mcp_server.py）把档案与进行中的会议作为 Claude Code 的工具
 暴露出去。它同时支持 `mcp` 包的两个分支：2.0 移动了类
-（`mcp.server.fastmcp.FastMCP` → `mcp.server.MCPServer`），而 requirements
+（`mcp.server.fastmcp.FastMCP` → `mcp.server.MCPServer`），而 pyproject
 两者都允许 — 安装不应悄悄产出一个在导入时就崩溃的服务器。
 
 ## 守护进程（src/daemon.py）
