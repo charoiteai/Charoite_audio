@@ -74,6 +74,31 @@ def test_rebuild_не_режет_штамп(tmp_path, monkeypatch):
         f"«{tr.stamp}»: файла с таким именем на диске не существует")
 
 
+def test_rebuild_разрешает_один_штамп_на_оба_канала(tmp_path, monkeypatch):
+    """mic и blackhole обязаны получить один результат общего разрешения."""
+    import rebuild_transcript as rt
+
+    live = tmp_path / "2026-08-04_1203_Тема.md"
+    live.write_text("# Встреча\n", encoding="utf-8")
+    resolved: list[tuple[str, tuple[str, ...]]] = []
+    asked: list[tuple[str, str]] = []
+
+    def resolve(_rec_dir, stamp, labels=meeting_stamp.RECORDING_LABELS):
+        resolved.append((stamp, labels))
+        return "2026-08-04_120301"
+
+    monkeypatch.setattr(rt.meeting_stamp, "resolve_stamp", resolve)
+    monkeypatch.setattr(rt, "wait_recording",
+                        lambda _dir, stamp, label, _sr: asked.append((stamp, label)))
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(tmp_path / "recordings"))
+
+    rt.rebuild(live, {"audio": {"samplerate": 16000}})
+
+    assert resolved == [("2026-08-04_1203", meeting_stamp.RECORDING_LABELS)]
+    assert asked == [("2026-08-04_120301", "mic"),
+                     ("2026-08-04_120301", "blackhole")]
+
+
 def test_демон_называет_записи_общей_функцией():
     """Вторая сторона договора: audio.py не собирает имя сам.
 
@@ -139,12 +164,25 @@ def test_retry_находит_посекундную_запись_по_мину�
     rec.mkdir()
     meeting_stamp.recording_path(rec, "2026-08-04_120310", "mic", "wav").write_bytes(b"RIFF")
 
-    resolved = meeting_stamp.resolve_stamp(rec, "2026-08-04_1203", "mic")
+    resolved = meeting_stamp.resolve_stamp(rec, "2026-08-04_1203")
     assert resolved == "2026-08-04_120310"
 
     # Две встречи в одну минуту — двусмысленность, штамп не трогаем.
     meeting_stamp.recording_path(rec, "2026-08-04_120355", "mic", "wav").write_bytes(b"RIFF")
-    assert meeting_stamp.resolve_stamp(rec, "2026-08-04_1203", "mic") == "2026-08-04_1203"
+    assert meeting_stamp.resolve_stamp(rec, "2026-08-04_1203") == "2026-08-04_1203"
+
+
+def test_retry_не_смешивает_каналы_двух_встреч_в_одну_минуту(tmp_path):
+    """Репродукция аудита: mic первой + blackhole второй — не одна встреча."""
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    meeting_stamp.recording_path(
+        rec, "2026-08-04_120301", "mic", "wav").write_bytes(b"RIFF")
+    meeting_stamp.recording_path(
+        rec, "2026-08-04_120359", "blackhole", "wav").write_bytes(b"RIFF")
+
+    assert meeting_stamp.resolve_stamp(rec, "2026-08-04_1203") == "2026-08-04_1203", (
+        "два разных посекундных штампа нельзя разрешать по одному на канал")
 
 
 def test_штамп_до_28_июля_ещё_читается(tmp_path):

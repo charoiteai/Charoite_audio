@@ -49,7 +49,8 @@ that sits next to your work, not a showcase.
 - **Layer chips**: the meeting screen's layers (Hints, Theses, Claude)
   are `LayerChip`s in a `LayerBar`, not system toggles — an active layer
   is an indigo fill, Claude is a `sky` outline because it is the only
-  layer that leaves the machine.
+  layer that leaves the machine. Each chip exposes its On/Off value and
+  selected trait to VoiceOver; color is never the only state signal.
 - **Record button**: circle/capsule with the `brand` gradient and a soft
   accent-colored shadow; while recording — system red, shadow off.
 - **Empty states**: an icon plus one line saying what will appear and

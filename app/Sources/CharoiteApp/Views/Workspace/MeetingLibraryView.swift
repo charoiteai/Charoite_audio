@@ -45,6 +45,7 @@ struct MeetingLibraryView: View {
         .onChange(of: repository.records) { _, _ in chooseDefaultIfNeeded() }
         .onChange(of: selectedDay) { _, _ in reloadDayEvents() }
         .onChange(of: calendar.accessGranted) { _, _ in reloadDayEvents() }
+        .onChange(of: calendar.eventsRevision) { _, _ in reloadDayEvents() }
         .onDisappear { cancelSearch() }
     }
 
@@ -255,7 +256,14 @@ struct MeetingLibraryView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             Divider()
-            if records.isEmpty && missed.isEmpty {
+            switch CalendarDayMatch.emptyState(
+                recordCount: records.count,
+                eventCount: missed.count,
+                calendarConnected: calendar.accessGranted == true
+            ) {
+            case .calendarUnavailable:
+                calendarUnavailableDay
+            case .quietDay:
                 VStack(spacing: 8) {
                     Image(systemName: "moon.zzz").foregroundStyle(.quaternary)
                     Text(L.t("Тихий день: ни записей, ни событий.",
@@ -265,7 +273,7 @@ struct MeetingLibraryView: View {
                         .multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
+            case .none:
                 List(selection: $navigation.selectedMeetingID) {
                     ForEach(records) { record in
                         recordRow(record, timeOfDay: true).tag(record.id as String?)
@@ -277,6 +285,26 @@ struct MeetingLibraryView: View {
                 .listStyle(.sidebar)
             }
         }
+    }
+
+    private var calendarUnavailableDay: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "calendar.badge.exclamationmark")
+                .foregroundStyle(.quaternary)
+            Text(L.t("Записей за этот день нет. События календаря недоступны.",
+                     "No recordings for this day. Calendar events are unavailable.",
+                     "这一天没有录音，且无法读取日历事件。"))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button(L.t("Подключить календарь", "Connect calendar", "连接日历")) {
+                calendarBriefs = true
+                calendar.enable(askForNotifications: true)
+            }
+            .buttonStyle(.link)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func dayCount(records: Int, events: Int) -> String {

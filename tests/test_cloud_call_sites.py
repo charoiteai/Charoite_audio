@@ -87,78 +87,114 @@ def _own_consts(fn: ast.AST) -> set[str]:
 
 _PRIVACY_GATES = ("cloud_live_enabled", "cloud_hints_enabled",
                   "cloud_enrich_enabled", "cloud_edit_graph_enabled")
+_LAUNCHERS = ("run", "Popen", "check_output", "check_call")
 
 
-def _asks_privacy(node: ast.AST) -> bool:
-    return any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-               and n.func.attr in _PRIVACY_GATES for n in ast.walk(node))
+def _privacy_polarity(test: ast.AST) -> bool | None:
+    """True: ветка разрешена privacy; False: ветка — отказ; None: не гейт.
 
-
-def _gate_names(tree: ast.AST) -> set[str]:
-    """Имена, в которые положили ответ privacy: `cloud_live = privacy.…`."""
-    out: set[str] = set()
-    for n in ast.walk(tree):
-        if isinstance(n, ast.Assign) and _asks_privacy(n.value):
-            out |= {t.id for t in n.targets if isinstance(t, ast.Name)}
-    return out
-
-
-def _guarding_tests(tree: ast.AST) -> list[ast.AST]:
-    """Условия, которыми решение privacy реально управляет ходом программы.
-
-    Либо разрешение спрошено прямо в условии, либо в условии стоит имя, в
-    которое ответ положили выше (так устроен daemon: main считает cloud_live,
-    треды его читают через замыкание).
+    Принимаем только прямой вызов privacy или его `not`. Это намеренно уже,
+    чем поиск упоминания: `False and privacy.…` и имя, присвоенное где-то в
+    модуле, не доказывают, что конкретный сетевой вызов закрыт.
     """
-    names = _gate_names(tree)
-    return [n.test for n in ast.walk(tree)
-            if isinstance(n, (ast.If, ast.IfExp))
-            and (_asks_privacy(n.test) or (names & _names(n.test)))]
+    if isinstance(test, ast.Call) and isinstance(test.func, ast.Attribute) \
+            and test.func.attr in _PRIVACY_GATES:
+        return True
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        nested = _privacy_polarity(test.operand)
+        return None if nested is None else not nested
+    return None
 
 
-def _deadened(test: ast.AST) -> bool:
-    """Условие обезврежено константой: `if False and …`, `if … or True`.
-
-    Именно так выглядит случайно убитый рубильник — вызов не тронут, имя на
-    месте, поиск по тексту доволен, а решение ни на что не влияет.
-
-    Спускаемся только по булевой структуре условия. Внутрь вызовов не идём:
-    `cfg["sufler"].get("fast_trigger", True)` — это значение по умолчанию,
-    а не короткое замыкание, и сторож, который путает одно с другим, скоро
-    будет отключён как надоедливый.
-    """
-    stack = [test]
-    while stack:
-        n = stack.pop()
-        if isinstance(n, ast.Constant) and (n.value is True or n.value is False):
-            return True
-        if isinstance(n, ast.BoolOp):
-            stack.extend(n.values)
-        elif isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not):
-            stack.append(n.operand)
+def _always_exits(body: list[ast.stmt]) -> bool:
+    """Заканчивает ли ветка текущий путь до следующих операторов блока."""
+    if not body:
+        return False
+    last = body[-1]
+    if isinstance(last, (ast.Return, ast.Raise, ast.Continue, ast.Break)):
+        return True
+    if isinstance(last, ast.If):
+        return _always_exits(last.body) and _always_exits(last.orelse)
     return False
 
 
-def test_cloud_loop_checks_the_switch():
-    """Тред, который запускает `claude -p`, обязан спросить выключатель сам."""
-    fn = _func(SRC / "daemon.py", "cloud_loop")
-    assert "cloud_live" in _names(fn), (
-        "cloud_loop отправляет стенограмму, ни разу не посмотрев на cloud_live: "
-        "ручной запрос (кнопка «Claude», ⌘⇧⏎ → stdin `cloud`) идёт мимо выключателя")
+def _is_subprocess_call(node: ast.AST) -> bool:
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+        and node.func.attr in _LAUNCHERS
+
+
+def _guarded_subprocess_calls(fn: ast.AST) -> list[tuple[ast.Call, bool]]:
+    """Сетевые вызовы функции и доказан ли privacy-гейт на их пути.
+
+    Это маленький анализ потока управления, а не поиск по файлу. Разрешение
+    переносится внутрь положительной ветки `if privacy.…` либо за ранний
+    fail-closed выход `if not privacy.…: return/continue`. Вложенные функции
+    не наследуют доказательство: каждая точка выхода отвечает за себя.
+    """
+    found: list[tuple[ast.Call, bool]] = []
+
+    def visit_expr(node: ast.AST, permitted: bool) -> None:
+        if _is_subprocess_call(node):
+            found.append((node, permitted))
+        if isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)):
+            return
+        for child in ast.iter_child_nodes(node):
+            visit_expr(child, permitted)
+
+    def visit_stmt(stmt: ast.stmt, permitted: bool) -> None:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return
+
+        # Сначала выражения самого оператора, но не вложенные блоки stmt.
+        for child in ast.iter_child_nodes(stmt):
+            if isinstance(child, (ast.stmt, ast.ExceptHandler)):
+                continue
+            visit_expr(child, permitted)
+
+        if isinstance(stmt, ast.If):
+            polarity = _privacy_polarity(stmt.test)
+            visit_block(stmt.body, permitted or polarity is True)
+            visit_block(stmt.orelse, permitted or polarity is False)
+        elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
+            visit_block(stmt.body, permitted)
+            visit_block(stmt.orelse, permitted)
+        elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+            visit_block(stmt.body, permitted)
+        elif isinstance(stmt, ast.Try):
+            visit_block(stmt.body, permitted)
+            for handler in stmt.handlers:
+                visit_block(handler.body, permitted)
+            visit_block(stmt.orelse, permitted)
+            visit_block(stmt.finalbody, permitted)
+        elif isinstance(stmt, ast.Match):
+            for case in stmt.cases:
+                if case.guard is not None:
+                    visit_expr(case.guard, permitted)
+                visit_block(case.body, permitted)
+
+    def visit_block(body: list[ast.stmt], permitted: bool) -> None:
+        flowing = permitted
+        for stmt in body:
+            visit_stmt(stmt, flowing)
+            if not isinstance(stmt, ast.If):
+                continue
+            polarity = _privacy_polarity(stmt.test)
+            if polarity is False and _always_exits(stmt.body):
+                flowing = True
+            elif polarity is True and _always_exits(stmt.orelse):
+                flowing = True
+
+    visit_block(fn.body, False)
+    return found
+
+
+def _subprocess_calls(fn: ast.AST) -> list[ast.Call]:
+    return [call for call, _guarded in _guarded_subprocess_calls(fn)]
 
 
 def test_cloud_loop_respects_the_live_toggle():
     fn = _func(SRC / "daemon.py", "cloud_loop")
     assert "toggles" in _names(fn), "живой тумблер UI не спрашивают перед отправкой"
-
-
-_LAUNCHERS = ("run", "Popen", "check_output", "check_call")
-
-
-def _subprocess_calls(fn: ast.AST) -> list[ast.Call]:
-    return [n for n in ast.walk(fn)
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-            and n.func.attr in _LAUNCHERS]
 
 
 def _strips_the_key(node: ast.AST) -> bool:
@@ -239,28 +275,56 @@ def test_switch_is_asked_through_privacy(filename, func):
     path = SRC / filename
     if not path.exists():
         path = path.parent.parent / "scripts" / path.name
-    module = ast.parse(path.read_text(encoding="utf-8"))
-
-    # Разрешение спрашивается в файле: либо в самой точке выхода, либо выше —
-    # cloud_loop берёт готовое `cloud_live` из объемлющей main через замыкание.
-    # Проверяем не присутствие имени в тексте, а то, что ответ privacy
-    # действительно управляет ходом программы: стоит в условии, от которого
-    # зависит, состоится ли отправка.
-    gates = _guarding_tests(module)
-    assert gates, (
-        f"{filename}: ответ privacy никуда не ведёт — либо его не спрашивают, "
-        f"либо спрашивают и не смотрят на ответ")
-    dead = [ast.unparse(t) for t in gates if _deadened(t)]
-    assert not dead, (
-        f"{filename}: условие с решением privacy обезврежено константой: {dead}. "
-        f"Вызов на месте, текст на месте, отправка идёт при поднятом рубильнике")
-
     fn = _func(path, func)
+    launches = _guarded_subprocess_calls(fn)
+    assert launches, f"{filename}:{func} числится выходом в сеть, но никого не запускает"
+    unsafe = [ast.unparse(call) for call, guarded in launches if not guarded]
+    assert not unsafe, (
+        f"{filename}:{func}: конкретный запуск не перекрыт privacy-гейтом на "
+        f"своём пути управления: {unsafe}. Проверка в соседней функции или "
+        "несвязанной ветке не защищает сетевой выход")
+
     own = _own_consts(fn)
     assert not (own & set(KILL_SWITCH_NAMES)), (
         f"{filename}:{func} проверяет имя рубильника вручную: "
         f"{sorted(own & set(KILL_SWITCH_NAMES))}. Имена живут в privacy.KILL_SWITCHES — "
         f"своя проверка знает одно имя из двух и пропускает второе")
+
+
+@pytest.mark.parametrize("source,expected", [
+    ("""
+def exit(cfg):
+    if not privacy.cloud_enrich_enabled(cfg):
+        return
+    subprocess.run([\"claude\"])
+""", True),
+    ("""
+def exit(cfg, diagnostic):
+    if diagnostic:
+        if not privacy.cloud_enrich_enabled(cfg):
+            return
+    subprocess.run([\"claude\"])
+""", False),
+    ("""
+def exit(cfg):
+    subprocess.run([\"claude\"])
+    if not privacy.cloud_enrich_enabled(cfg):
+        return
+""", False),
+    ("""
+def exit(cfg):
+    if False and not privacy.cloud_enrich_enabled(cfg):
+        return
+    subprocess.run([\"claude\"])
+""", False),
+])
+def test_privacy_guard_is_tied_to_the_launch_path(source, expected):
+    """Мутации: упоминание privacy рядом больше не сохраняет тест зелёным."""
+    fn = next(n for n in ast.walk(ast.parse(source))
+              if isinstance(n, ast.FunctionDef) and n.name == "exit")
+    launches = _guarded_subprocess_calls(fn)
+    assert len(launches) == 1
+    assert launches[0][1] is expected
 
 
 def test_privacy_knows_both_switch_names():

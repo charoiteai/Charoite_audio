@@ -381,7 +381,9 @@ it signals degradation, it does not break the loop.
   recording are not shown twice — the recording speaks for the meeting.
   An active search takes priority over the day filter, without calendar
   access the strip still navigates by recordings alone, and connecting is
-  one small button on the strip. One section answers both "what was
+  one small button on the strip. An empty feed says that calendar events are
+  unavailable instead of claiming the day had none; EventKit changes refresh
+  an already open day without reopening the section. One section answers both "what was
   decided?" and "what happened on Tuesday?" — a separate Calendar screen
   no longer exists.
 - **Meeting actions without Terminal** — the card copies a participant-safe
@@ -411,12 +413,16 @@ it signals degradation, it does not break the loop.
   a single module across the pipeline: the daemon names channel recordings,
   rebuild looks them up, and an app-initiated retry resolves the
   minute-precision titled name to the seconds-precision stamp of the
-  recordings. The silent format drift of 28.07 cost every meeting its final
+  recordings. Both channels are resolved together: if mic and system audio
+  point to different meetings in the same minute, rebuild refuses them instead
+  of producing a mixed transcript. The silent format drift of 28.07 cost every meeting its final
   transcript — the naming contract is now held by end-to-end tests.
 - **Diagnostics respect privacy** — `doctor` asks privacy for the LLM
   address (honouring both the remote-address ban and the kill switch), and
   the post-meeting hook no longer receives the Anthropic key in its
-  environment: cloud goes through the subscription only.
+  environment: cloud goes through the subscription only. Every Claude process
+  now asks privacy in the same function that launches it; the AST guard proves
+  that the gate controls that exact call, not an unrelated branch in the file.
 
 - **Import folder (watched)** — point the app at a folder (Settings →
   Import, or `--scan` in the CLI): recordings dropped there become graph

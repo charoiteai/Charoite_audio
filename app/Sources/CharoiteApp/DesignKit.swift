@@ -144,6 +144,11 @@ struct LayerChip: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(Text(title))
+        .accessibilityValue(Text(isOn
+            ? L.t("Включено", "On", "已开启")
+            : L.t("Выключено", "Off", "已关闭")))
+        .accessibilityAddTraits(isOn ? .isSelected : [])
         .help(isOn ? L.t("Выключить слой", "Turn the layer off", "关闭该层")
                    : L.t("Включить слой", "Turn the layer on", "开启该层"))
     }

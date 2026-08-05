@@ -82,10 +82,9 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int) -> pa
     блоков, после чего оба делали unlink исходника: финальная стенограмма
     собиралась из битого звука, а восстановить было уже нечего.
     """
-    # Retry из приложения приходит с минутным именем после наката темы, а
-    # записи названы посекундным штампом демона — сперва выясняем, под каким
-    # штампом файлы реально лежат.
-    stamp = meeting_stamp.resolve_stamp(rec_dir, stamp, label)
+    # stamp уже разрешён ОДИН РАЗ на пару каналов в rebuild(). Делать это
+    # здесь по label нельзя: две встречи в одну минуту способны отдать mic
+    # одной и blackhole другой, после чего стенограмма смешает два разговора.
     name = meeting_stamp.recording_path
     wav, pcm = name(rec_dir, stamp, label, "wav"), name(rec_dir, stamp, label, "pcm")
     part = name(rec_dir, stamp, label, "wav.part")
@@ -271,17 +270,21 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     stamp = meeting_stamp.stamp_of(live.stem)
     if stamp is None:
         return None
-    base = meeting_stamp.started_at(stamp)
-    if base is None:
-        return None
     meta = live_meta(live)
     sr_cfg = int(cfg["audio"]["samplerate"])
     rec_dir = ROOT / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings")
     if os.environ.get("SUFLER_RECORDINGS_DIR"):
         rec_dir = pathlib.Path(os.environ["SUFLER_RECORDINGS_DIR"])
 
-    mic_p = wait_recording(rec_dir, stamp, "mic", sr_cfg)
-    bh_p = wait_recording(rec_dir, stamp, "blackhole", sr_cfg)
+    # Retry знает минутное имя с темой, записи — посекундный штамп демона.
+    # Разрешаем его один раз сразу для обоих каналов: если кандидаты не
+    # совпали, не берём ни один вместо склейки двух разных встреч.
+    recording_stamp = meeting_stamp.resolve_stamp(rec_dir, stamp)
+    base = meeting_stamp.started_at(recording_stamp)
+    if base is None:
+        return None
+    mic_p = wait_recording(rec_dir, recording_stamp, "mic", sr_cfg)
+    bh_p = wait_recording(rec_dir, recording_stamp, "blackhole", sr_cfg)
     if mic_p is None and bh_p is None:
         log("записей нет — оставляю живую стенограмму")
         return None
