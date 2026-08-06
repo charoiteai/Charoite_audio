@@ -60,6 +60,19 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<string>Суфлёр слушает встречу локально: распознавание речи не покидает этот Mac.</string>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>Звук звонка записывается локально вместо установки стороннего драйвера: расшифровка не покидает этот Mac.</string>
+	<!-- charoite:// — управление из Shortcuts/терминала: record/start|stop|toggle,
+	     meeting/<id>, tasks, today. App Intents здесь не работают: их метаданные
+	     извлекает Xcode-фаза, которой у swift build нет — Shortcuts видел бы
+	     пустоту. URL scheme работает в любой сборке. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>ai.charoite.app.url</string>
+			<key>CFBundleURLSchemes</key>
+			<array><string>charoite</string></array>
+		</dict>
+	</array>
 </dict>
 </plist>
 PLIST

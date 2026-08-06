@@ -143,6 +143,28 @@ final class SuflerService: ObservableObject {
 
     private var suflerRoot: URL { AppSettings.charoiteRoot }
 
+    /// Пока идёт запись, мак не должен уходить в сон по бездействию: человек
+    /// на встрече слушает и не трогает клавиатуру — для системы это «простой»,
+    /// и после таймаута она усыпляла машину вместе с записью. Симптом ровно
+    /// как 20.07: демон жив, PortAudio-стрим молчит. Дисплею гаснуть можно —
+    /// звуку экран не нужен; от закрытой крышки это тоже не спасает, и не
+    /// должно: закрыл ноутбук — закончил встречу.
+    private var sleepGuard: NSObjectProtocol?
+
+    private func beginSleepGuard() {
+        guard sleepGuard == nil else { return }
+        sleepGuard = ProcessInfo.processInfo.beginActivity(
+            options: [.idleSystemSleepDisabled, .userInitiated],
+            reason: "Идёт запись встречи")
+    }
+
+    private func endSleepGuard() {
+        if let guardToken = sleepGuard {
+            ProcessInfo.processInfo.endActivity(guardToken)
+            sleepGuard = nil
+        }
+    }
+
     /// Микрофон открывает не приложение, а дочерний python (PortAudio), поэтому
     /// отказ TCC приходил не ошибкой, а тишиной: демон стартовал, статус писал
     /// «Слушаю», индикатор пульсировал, heartbeat шёл — и через час человек
@@ -281,6 +303,7 @@ final class SuflerService: ObservableObject {
             process = p
             stdinPipe = inPipe
             isRunning = true
+            beginSleepGuard()
             startClock()
             // сохранённые дефолты — новому демону (stdin буферизуется до готовности)
             for (key, on) in [("hints", hintsOn), ("theses", thesesOn), ("cloud", cloudOn)] where !on {
@@ -316,6 +339,7 @@ final class SuflerService: ObservableObject {
         }
         isRunning = false
         isExpanding = false
+        endSleepGuard()
         stopClock()
         // Тап гасим не сразу: демон ещё дописывает хвост записи и закрывает
         // стримы. Снять устройство из-под него — это ровно тот обрыв, который
@@ -364,13 +388,17 @@ final class SuflerService: ObservableObject {
         // умер», «нет heartbeat» ему ничего не говорят — важно другое: пишется
         // ли встреча прямо сейчас и надо ли что-то делать руками.
         guard wasRunning, !userStopped else {
+            endSleepGuard()   // записи больше нет — маку можно спать
             status = L.t("Остановлен", "Stopped", "已停止")
         statusIsError = false
             return
         }
         guard restartAttempts < 3 else {
             // Три попытки подряд не помогли — молчать нельзя: человек уверен,
-            // что встреча пишется, а запись давно встала.
+            // что встреча пишется, а запись давно встала. Страж сна тоже
+            // снимаем: иначе провалившаяся запись навсегда запрещала маку
+            // спать — до перезапуска приложения.
+            endSleepGuard()
             fail("⛔️ Запись остановилась и не восстановилась. Нажмите «Слушать встречу» ещё раз")
             return
         }
