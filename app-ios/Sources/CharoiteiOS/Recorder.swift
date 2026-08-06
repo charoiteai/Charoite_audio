@@ -65,6 +65,27 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     /// Последняя длительность, на которой файл ещё рос.
     private var lastGrowth: (at: Date, seconds: TimeInterval)?
 
+    /// Сколько раз подряд пытались поднять вставшую запись.
+    private var resumeAttempts = 0
+    /// После этого числа неудач файл закрывается и открывается новый.
+    nonisolated static let maxResumeAttempts = 3
+
+    /// Что делать после неудачной попытки поднять запись.
+    enum StallAction: Equatable {
+        /// Пробовать ещё: чужое приложение может отпустить вход в любой момент.
+        case retry
+        /// Хватит: закрыть файл и продолжить встречу следующим.
+        case rotate
+    }
+
+    /// Решение вынесено отдельной функцией, чтобы политика проверялась тестом,
+    /// а не живой встречей — как это было 03.08 и снова 06.08.
+    nonisolated static func actionAfterFailedResume(attempts: Int) -> StallAction {
+        attempts >= maxResumeAttempts ? .rotate : .retry
+    }
+    /// Что пишем сейчас — нужно, чтобы продолжить тем же типом после ротации.
+    private var currentKind: Kind = .meeting
+
     /// Сколько терпим неподвижное `currentTime`, прежде чем поднять тревогу.
     /// Три секунды: короче — ложные срабатывания на дрожании таймера, длиннее —
     /// человек успевает отвернуться.
@@ -136,6 +157,10 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             // Xcode. Оставляем совместимое имя до обновления раннеров.
             try session.setCategory(.playAndRecord, mode: .measurement,
                                     options: [.allowBluetooth])
+            // Системные алерты (будильник, таймер, баннер с звуком) прерывают
+            // сессию так же, как звонок: запись встаёт, а человек в это время
+            // говорит. Просим систему не рвать нас по мелочи — iOS 14.5+.
+            try? session.setPrefersNoInterruptionsFromSystemAlerts(true)
             try session.setActive(true)
         } catch {
             lastResult = L.t("Аудиосессия не открылась: \(error.localizedDescription)",
@@ -166,6 +191,8 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             }
             recorder = r
             isRecording = true
+            currentKind = kind
+            resumeAttempts = 0
             elapsed = 0
             stalled = false
             lastGrowth = nil
@@ -291,6 +318,9 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         // −60…0 дБ → 0…1
         level = max(0, min(1, (r.averagePower(forChannel: 0) + 60) / 60))
         checkGrowth(r.currentTime)
+        // Пока не поднялись — пробуем на каждом такте: чужое приложение может
+        // отпустить вход через секунду, а может через минуту.
+        if stalled { tryResume() }
     }
 
     /// Растёт ли файл. Сравниваем длительность с прошлым тиком: замерла — значит
@@ -316,9 +346,49 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
                              lastGrowthSeconds: last.seconds,
                              sinceLastGrowth: Date().timeIntervalSince(last.at)) else { return }
         stalled = true
-        lastResult = L.t("Запись остановилась — в файле \(Int(now)) с. Нажмите стоп и начните заново",
-                         "Recording stalled — \(Int(now))s in the file. Stop and start again",
-                         "录音已停止 — 文件中 \(Int(now)) 秒。请停止后重新开始")
+        // Раньше здесь была только надпись на экране — а телефон во время
+        // встречи лежит экраном вниз, и человек узнавал о потере постфактум:
+        // в файле полторы минуты вместо получаса. Теперь пытаемся поднять
+        // запись сами. iOS далеко не всегда присылает `.ended` после
+        // прерывания: если чужое приложение удержало вход, уведомления о
+        // конце можно ждать вечно.
+        resumeAttempts = 0
+        tryResume()
+    }
+
+    /// Поднять вставшую запись. До `maxResumeAttempts` попыток, между ними —
+    /// такт таймера; если не вышло, честно закрываем файл и начинаем новый,
+    /// чтобы остаток встречи писался, а записанное уже точно уехало.
+    private func tryResume() {
+        guard isRecording, let r = recorder else { return }
+        resumeAttempts += 1
+        try? AVAudioSession.sharedInstance().setActive(true)
+        if r.record() {
+            stalled = false
+            lastResult = L.t("Запись восстановлена автоматически",
+                             "Recording resumed automatically",
+                             "录音已自动恢复")
+            return
+        }
+        guard Self.actionAfterFailedResume(attempts: resumeAttempts) == .rotate else { return }
+        lastResult = L.t("Запись не поднялась — закрываю файл и начинаю новый",
+                         "Could not resume — closing the file and starting a new one",
+                         "无法恢复 — 正在关闭文件并开始新的录音")
+        rotateFile()
+    }
+
+    /// Закрыть текущий файл и продолжить встречу в следующем.
+    ///
+    /// Потерять полчаса разговора хуже, чем получить встречу двумя кусками:
+    /// конвейер на Mac принимает оба файла, а склейка — вопрос порядка по
+    /// имени, в котором стоят секунды.
+    private func rotateFile() {
+        let kind = currentKind
+        stop()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
+            guard let self, !self.isRecording else { return }
+            self.start(kind: kind)
+        }
     }
 
     nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
