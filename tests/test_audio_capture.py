@@ -37,6 +37,7 @@ def _hub(sr=16000, chunk_s=3.0, overlap_s=0.5, vad_db=-45.0):
     hub._last_check = 0.0
     hub._running = False
     hub.captures = []
+    hub._sys_speech_until = 0.0
     hub.sources = []
     hub.record_on = False
     hub.on_status = None
@@ -94,6 +95,49 @@ def test_own_voice_survives_when_the_other_side_is_silent():
     out = dict(hub.pull_labeled())
 
     assert hub.SPEAKER["mic"] in out, "своя речь отброшена как эхо"
+
+
+def test_эхо_глушится_когда_системный_срез_запаздывает():
+    """Фазы нарезки разъехались (перезапуск канала сторожем сбрасывает
+    буфер): микрофонный чанк с эхом готов, системный ещё копится. Раньше
+    both его не ловил — та же фраза уходила в стенограмму дважды, вторым
+    экземпляром «от владельца»."""
+    import time as _t
+    hub = _hub()
+    n = int(hub.sr * hub.chunk_s) + 100
+    hub._bufs = {"blackhole": np.zeros(0, dtype=np.float32), "mic": _tone(n)}
+    hub._sys_speech_until = _t.monotonic() + 1.0  # динамики звучали чанк назад
+
+    out = dict(hub.pull_labeled())
+
+    assert hub.SPEAKER["mic"] not in out, "эхо-дубль прошёл в стенограмму"
+
+
+def test_ответ_сразу_после_собеседника_не_глушится():
+    """Собеседник замолчал, владелец тут же отвечает: системный чанк готов и
+    тихий — значит это живой ответ, а не эхо, окно молчать не заставляет."""
+    import time as _t
+    hub = _hub()
+    n = int(hub.sr * hub.chunk_s) + 100
+    hub._bufs = {"blackhole": np.zeros(n, dtype=np.float32), "mic": _tone(n)}
+    hub._sys_speech_until = _t.monotonic() + 1.0  # окно ещё активно
+
+    out = dict(hub.pull_labeled())
+
+    assert hub.SPEAKER["mic"] in out, "живой ответ заглушён как эхо"
+
+
+def test_речь_динамиков_взводит_окно_эха():
+    """Речь в системном канале продлевает окно на длину чанка вперёд."""
+    import time as _t
+    hub = _hub()
+    n = int(hub.sr * hub.chunk_s) + 100
+    hub._bufs = {"blackhole": _tone(n), "mic": np.zeros(0, dtype=np.float32)}
+
+    before = _t.monotonic()
+    hub.pull_labeled()
+
+    assert hub._sys_speech_until >= before + hub.chunk_s * 0.99
 
 
 def test_finalize_drops_recordings_shorter_than_five_seconds(tmp_path):

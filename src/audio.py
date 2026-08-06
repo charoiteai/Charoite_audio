@@ -284,6 +284,7 @@ class AudioHub:
         self._last_frame: dict[str, float] = {}
         self._last_check = 0.0
         self._hung: set[str] = set()   # каналы, чей перезапуск завис — больше не трогаем
+        self._sys_speech_until = 0.0   # окно эха: до этого момента динамики недавно звучали
         self._lock = threading.Lock()
         self._running = False
 
@@ -535,13 +536,26 @@ class AudioHub:
         with self._lock:
             cut = {label: self._cut(label) for label in self._bufs}
         speech = {label: (c is not None and self.is_speech(c)) for label, c in cut.items()}
-        both = speech.get("blackhole") and speech.get("mic")
+        now = time.monotonic()
+        if speech.get("blackhole"):
+            # Эхо динамиков доживает в микрофоне до следующего среза, когда
+            # фазы нарезки каналов разъехались (перезапуск канала сторожем
+            # сбрасывает его буфер) — помним о недавней речи ещё один чанк.
+            self._sys_speech_until = now + self.chunk_s
         out: list[tuple[str, np.ndarray]] = []
         for label, chunk in cut.items():
             if not speech.get(label):
                 continue
-            if both and label == "mic":
-                continue  # эхо динамиков в микрофоне
+            if label == "mic":
+                if speech.get("blackhole"):
+                    continue  # эхо динамиков в микрофоне: оба канала звучат
+                if cut.get("blackhole") is None and now < self._sys_speech_until:
+                    # Системный срез запаздывает, а динамики только что
+                    # звучали: раньше этот чанк уходил в стенограмму вторым
+                    # экземпляром той же фразы — «от владельца». Если же
+                    # системный чанк есть и он тихий, собеседник реально
+                    # замолчал — свой ответ глушить нельзя.
+                    continue
             out.append((self.SPEAKER.get(label, label), chunk))
         return out
 
