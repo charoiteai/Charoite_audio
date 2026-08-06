@@ -43,7 +43,10 @@ final class SystemAudioTap {
         Self.removeStaleDevices()
 
         let uuid = UUID()
-        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+        // Моно, а не стерео: конвейер всё равно сводит канал в моно
+        // (Capture открывает поток с channels=1), так что стерео-тап гнал бы
+        // вдвое больше данных ради немедленного даунмикса.
+        let description = CATapDescription(monoGlobalTapButExcludeProcesses: [])
         description.name = Self.deviceName
         description.uuid = uuid
         description.isPrivate = false      // демон — другой процесс, см. грабля 2
@@ -73,6 +76,9 @@ final class SystemAudioTap {
             kAudioAggregateDeviceSubDeviceListKey as String: [
                 [kAudioSubDeviceUIDKey as String: outputUID],
             ],
+            // Тап должен ожить вместе с устройством, иначе первые секунды
+            // встречи уходят в тишину до первого чтения.
+            kAudioAggregateDeviceTapAutoStartKey as String: true,
             kAudioAggregateDeviceTapListKey as String: [
                 [kAudioSubTapUIDKey as String: uuid.uuidString,
                  kAudioSubTapDriftCompensationKey as String: true],
