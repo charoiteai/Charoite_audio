@@ -57,8 +57,75 @@ def find_system_audio() -> tuple[int | None, str]:
     return None, "blackhole"
 
 
+class _Downsampler:
+    """Понижение частоты дискретизации на одном numpy, с состоянием между блоками.
+
+    Почему не «брать каждый N-й отсчёт»: всё, что выше половины целевой
+    частоты, при прореживании заворачивается в речевую полосу. Музыка из
+    Zoom и шипящие на 12 кГц осели бы на 4 кГц прямо поверх речи — качество
+    расшифровки упало бы, и ни одной строчки в логе об этом не появилось бы.
+    Поэтому сначала ФНЧ, потом прореживание.
+
+    Почему не scipy: его нет в зависимостях проекта, и тянуть его ради одной
+    свёртки на 127 коэффициентов незачем.
+    """
+
+    TAPS = 127  # нечётное — фильтр линейнофазный, задержка ровно (TAPS-1)/2
+
+    def __init__(self, src_sr: int, dst_sr: int):
+        if src_sr <= dst_sr:
+            raise ValueError(f"ресемплер работает только вниз: {src_sr} → {dst_sr}")
+        self.src_sr = int(src_sr)
+        self.dst_sr = int(dst_sr)
+        self.ratio = self.src_sr / self.dst_sr
+        # Срез на 0.45 целевой частоты (в долях исходной): запас до Найквиста
+        # целевой (0.5) отдан переходной полосе окна Хэмминга.
+        cutoff = 0.45 * self.dst_sr / self.src_sr
+        n = np.arange(self.TAPS) - (self.TAPS - 1) / 2
+        h = np.sinc(2 * cutoff * n) * np.hamming(self.TAPS)
+        self._h = h / h.sum()                      # единичный коэффициент на постоянном токе
+        self._tail = np.zeros(self.TAPS - 1)       # хвост входа для непрерывной свёртки
+        self._carry = np.zeros(0)                  # последний отсчёт прошлого блока — для интерполяции через шов
+        self._pos = 0.0                            # дробная позиция следующего выхода
+
+    def process(self, block: np.ndarray) -> np.ndarray:
+        """Блок входа → блок выхода. Длина выхода плавает (при 48→16 кГц это
+        1334/1333/1333 на блок в 4000), в среднем ровно len(block)/ratio."""
+        if block.size == 0:
+            return np.zeros(0, dtype=np.float32)
+        x = np.concatenate([self._tail, np.asarray(block, dtype=np.float64)])
+        # .copy(), а не срез-вид: иначе хвост держал бы весь блок живым, а на
+        # входе может лежать буфер PortAudio, который после колбэка недействителен.
+        self._tail = x[-(self.TAPS - 1):].copy()
+        y = np.convolve(x, self._h, mode="valid")  # ровно len(block) отсчётов
+        s = np.concatenate([self._carry, y])
+        last = s.size - 1
+        if self._pos > last:
+            # Блок короче шага прореживания: копим состояние, выхода нет.
+            self._carry = s[last:].copy()
+            self._pos -= last
+            return np.zeros(0, dtype=np.float32)
+        count = int((last - self._pos) // self.ratio) + 1
+        pos = self._pos + self.ratio * np.arange(count)
+        idx = pos.astype(np.int64)
+        frac = pos - idx
+        # На последнем отсчёте frac == 0, но индекс idx+1 всё равно вычисляется —
+        # прижимаем его, чтобы не выйти за массив.
+        out = s[idx] * (1.0 - frac) + s[np.minimum(idx + 1, last)] * frac
+        self._carry = s[last:].copy()
+        self._pos = self._pos + self.ratio * count - last
+        return out.astype(np.float32)               # float32: иначе dtype буферов уплывёт в float64
+
+
 class Capture:
-    """Один входной поток → очередь float32-чанков (mono, samplerate)."""
+    """Один входной поток → очередь float32-чанков (mono, samplerate).
+
+    Очередь ВСЕГДА отдаёт self.samplerate. Если устройство удалось открыть
+    только на его собственной частоте, понижение делает _Downsampler внутри —
+    наружу, в AudioHub, это не протекает.
+    """
+
+    PLAIN = "как раньше"  # имя первой ступени лестницы; см. _ladder()
 
     def __init__(self, device_index: int | None, samplerate: int, label: str):
         self.device = device_index
@@ -66,22 +133,101 @@ class Capture:
         self.label = label
         self.q: queue.Queue[np.ndarray] = queue.Queue()
         self._stream: sd.InputStream | None = None
+        self._resampler: _Downsampler | None = None
+        self.opened_as: str | None = None  # сработавшая ступень — её показываем в статусе
 
     def _cb(self, indata, frames, time_info, status):  # noqa: ANN001
         if status:
             pass  # over/underflow не критичны для суфлёра
-        self.q.put(indata[:, 0].copy())
+        if self._resampler is None:
+            self.q.put(indata[:, 0].copy())
+            return
+        # Свёртка на 127 коэффициентов прямо в аудио-колбэке: около полумиллисекунды
+        # на блок, без блокировок, диска и аллокаций сверх одного массива. Дешевле,
+        # чем протаскивать частоту устройства через AudioHub, _pump и запись на диск.
+        self.q.put(self._resampler.process(indata[:, 0]))
 
-    def start(self):
-        self._stream = sd.InputStream(
+    def _device_samplerate(self) -> int | None:
+        """Родная частота устройства: на ней оно откроется заведомо."""
+        try:
+            info = sd.query_devices(self.device, "input")
+            return int(round(float(info["default_samplerate"])))
+        except Exception:  # noqa: BLE001 — не смогли спросить, значит эта ступень пропускается
+            return None
+
+    def _ladder(self):
+        """Три попытки открыть устройство, от самой безобидной к самой грубой.
+
+        Первая ступень — ровно то, что делалось всегда. Микрофон и BlackHole
+        открываются на ней и никакой новой логики не видят: виртуальный драйвер
+        принимает любую частоту, поэтому пара «16 кГц + блок 4000» много лет
+        выглядела безопасной.
+
+        Дальше — ради Core Audio-тапа. Агрегат тапа берёт частоту у физического
+        выхода (kAudioAggregateDeviceMainSubDeviceKey в SystemAudioTap.swift),
+        то есть 44.1 или 48 кГц. Частоту агрегата PortAudio поменять не может,
+        поэтому включает свой ресемплер и пересчитывает наш блок в кадры
+        устройства: 250 мс на 48 кГц — это 12000 кадров, втрое больше типичного
+        потолка kAudioDevicePropertyBufferFrameSizeRange (4096). AUHAL отвечает
+        -10851, kAudioUnitErr_InvalidPropertyValue — отказ по ЗНАЧЕНИЮ свойства,
+        а не по формату (-10868). Поток не открывается вовсе — отсюда ноль байт
+        в записи вместо тишины.
+
+        Что именно не принято, частота или размер блока, известно только машине
+        с тапом. Поэтому лестница, а не одна догадка: ступень 2 чинит случай
+        «мешал размер блока», ступень 3 — «мешала частота». Какая сработала,
+        видно в opened_as, и AudioHub говорит об этом вслух.
+
+        Генератор, а не список, намеренно: на здоровом устройстве всё кончается
+        на первой ступени и до опроса устройства дело не доходит. Лишний вызов
+        PortAudio на каждом рестарте сторожевого таймера нам не нужен.
+        """
+        yield self.PLAIN, self.samplerate, int(self.samplerate * 0.25)
+        yield "свободный размер блока", self.samplerate, 0
+        native = self._device_samplerate()
+        if native and native > self.samplerate:
+            yield f"частота устройства {native} Гц", native, 0
+
+    def _open(self, samplerate: int, blocksize: int) -> None:
+        resampler = (_Downsampler(samplerate, self.samplerate)
+                     if samplerate != self.samplerate else None)
+        stream = sd.InputStream(
             device=self.device,
             channels=1,
-            samplerate=self.samplerate,
+            samplerate=samplerate,
             dtype="float32",
-            blocksize=int(self.samplerate * 0.25),
+            blocksize=blocksize,
             callback=self._cb,
         )
-        self._stream.start()
+        self._resampler = resampler  # до start(): колбэк начнёт приходить только после него
+        try:
+            stream.start()
+        except Exception:  # noqa: BLE001 — неудачная ступень не должна оставить полусостояние
+            self._resampler = None
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        self._stream = stream
+
+    def start(self):
+        self._resampler = None
+        self.opened_as = None
+        errors: list[str] = []
+        for name, samplerate, blocksize in self._ladder():
+            try:
+                self._open(samplerate, blocksize)
+            except Exception as e:  # noqa: BLE001 — пробуем следующую ступень
+                errors.append(f"«{name}» → {type(e).__name__}: {e}")
+                continue
+            self.opened_as = name
+            return
+        # Раньше отсюда улетал голый PortAudioError с кодом вроде -10851 и без
+        # намёка, что именно устройство не приняло. Перечисляем все ступени.
+        raise RuntimeError(
+            f"канал {self.label}: устройство не приняло ни одну конфигурацию — "
+            + "; ".join(errors))
 
     def stop(self):
         if self._stream:
@@ -182,6 +328,12 @@ class AudioHub:
                 c.start()
             except Exception as e:  # noqa: BLE001 — сосед не должен уносить встречу
                 failed.append((c.label, e))
+                continue
+            if c.opened_as and c.opened_as != Capture.PLAIN:
+                # Не косметика: на какой ступени поднялся канал — это и есть ответ,
+                # что именно устройству не нравилось. Иначе выяснять вручную.
+                self._say(f"🎙 канал {c.label}: обычная конфигурация не принята, "
+                          f"открыт через «{c.opened_as}»")
         if len(failed) == len(self.captures):
             raise RuntimeError("ни один аудиоканал не открылся: "
                                + "; ".join(f"{lbl} → {err}" for lbl, err in failed))
