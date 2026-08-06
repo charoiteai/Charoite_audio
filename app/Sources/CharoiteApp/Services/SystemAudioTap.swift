@@ -40,7 +40,7 @@ final class SystemAudioTap {
     @discardableResult
     func start() -> String? {
         guard !isActive else { return Self.deviceName }
-        Self.removeStaleDevices()
+        Self.cleanupOrphans()
 
         let uuid = UUID()
         // Моно, а не стерео: конвейер всё равно сводит канал в моно
@@ -213,7 +213,13 @@ final class SystemAudioTap {
 
     /// Убрать наши устройства, пережившие падение приложения: иначе они
     /// накапливаются в системе и демон может выбрать мёртвое.
-    private static func removeStaleDevices() {
+    ///
+    /// Зовётся не только перед стартом тапа, но и при запуске и выходе
+    /// приложения: 06.08 агрегат, осиротевший после kill приложения,
+    /// подвесил CoreAudio всей машины — звук вернул только рестарт
+    /// coreaudiod. Уборки в start() мало: тап может быть выключен, а
+    /// сирота — оставаться.
+    static func cleanupOrphans() {
         for device in allDevices() where deviceUID(device)?.hasPrefix(uidPrefix) == true {
             AudioHardwareDestroyAggregateDevice(device)
         }

@@ -188,12 +188,14 @@ def test_мёртвый_канал_не_уносит_соседей_при_ст�
     """
     class _Failing:
         label = "blackhole"
+        opened_as = None
         def __init__(self): self.q = queue.Queue()
         def start(self): raise RuntimeError("устройство не приняло конфигурацию")
         def stop(self): pass
 
     class _Working:
         label = "mic"
+        opened_as = None          # как у настоящего Capture: ступень лестницы
         def __init__(self):
             self.started = False
             self.q = queue.Queue()
@@ -213,14 +215,13 @@ def test_мёртвый_канал_не_уносит_соседей_при_ст�
     finally:
         hub._running = False
 
-def test_тап_приложения_выигрывает_у_blackhole(monkeypatch):
-    """Есть тап — берём его: он не требует стороннего драйвера от человека."""
+def test_blackhole_выигрывает_у_тапа(monkeypatch):
+    """Есть оба — берём BlackHole: итог боевого теста 06.08.
 
-def test_пока_приоритет_у_blackhole(monkeypatch):
-    """ВРЕМЕННО 06.08: пока тап не отдаёт кадры демону, выигрывает BlackHole.
-
-    Тест закрепляет сознательный откат, а не желаемое поведение: вернуть
-    приоритет тапу вместе с правкой find_system_audio (см. PR #248).
+    Тап открывается штатно, но демону не отдаёт ни кадра (0 байт за 94
+    секунды записи). Пока причина не найдена, проверенный драйвер важнее
+    красивой нативности: перевернуть приоритет обратно можно только вместе
+    с разбором, почему тап молчит.
     """
     devices = {a.TAP_DEVICE: 7, "BlackHole 2ch": 3}
     monkeypatch.setattr(a, "find_device",
