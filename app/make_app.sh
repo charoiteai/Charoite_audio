@@ -83,7 +83,11 @@ BUILD="${BUILD:-1}"
 SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
     | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
 if [ -n "$SIGN_ID" ]; then
-    codesign --force --sign "$SIGN_ID" --options runtime --timestamp=none "$APP"
+    # Без --options runtime: hardened runtime ломает наследование доступа
+    # дочерними процессами, а микрофон у нас читает python-демон отдельным
+    # процессом — при жёстком рантайме он получает тишину без единой ошибки.
+    # Нотаризация нам не нужна, а стабильность requirement даёт сам Developer ID.
+    codesign --force --sign "$SIGN_ID" --timestamp=none "$APP"
     echo "подписано: $SIGN_ID"
 else
     codesign --force --sign - "$APP"

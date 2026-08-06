@@ -44,10 +44,17 @@ def find_system_audio() -> tuple[int | None, str]:
     по-старому через BlackHole. Молчаливого «ни того, ни другого» быть не
     должно: без этого канала в стенограмме не будет второй стороны разговора.
     """
+    # ВРЕМЕННО 06.08: приоритет отдан BlackHole. Тап устройства отдаёт звук при
+    # прямом чтении, но демон, запущенный приложением, не получает от него ни
+    # одного кадра (файл 0 байт) — причина не найдена, а встречи писать надо
+    # сегодня. Вернуть порядок обратно после разбора: см. PR #248.
+    bh = find_device("blackhole")
+    if bh is not None:
+        return bh, "blackhole"
     tap = find_device(TAP_DEVICE)
     if tap is not None:
         return tap, "tap"
-    return find_device("blackhole"), "blackhole"
+    return None, "blackhole"
 
 
 class Capture:

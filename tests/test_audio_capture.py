@@ -215,9 +215,22 @@ def test_мёртвый_канал_не_уносит_соседей_при_ст�
 
 def test_тап_приложения_выигрывает_у_blackhole(monkeypatch):
     """Есть тап — берём его: он не требует стороннего драйвера от человека."""
+
+def test_пока_приоритет_у_blackhole(monkeypatch):
+    """ВРЕМЕННО 06.08: пока тап не отдаёт кадры демону, выигрывает BlackHole.
+
+    Тест закрепляет сознательный откат, а не желаемое поведение: вернуть
+    приоритет тапу вместе с правкой find_system_audio (см. PR #248).
+    """
     devices = {a.TAP_DEVICE: 7, "BlackHole 2ch": 3}
     monkeypatch.setattr(a, "find_device",
                         lambda s: next((i for n, i in devices.items() if s.lower() in n.lower()), None))
+    assert a.find_system_audio() == (3, "blackhole")
+
+
+def test_без_blackhole_берём_тап(monkeypatch):
+    """Драйвера нет — тап остаётся единственным источником второй стороны."""
+    monkeypatch.setattr(a, "find_device", lambda s: 7 if s == a.TAP_DEVICE else None)
     assert a.find_system_audio() == (7, "tap")
 
 

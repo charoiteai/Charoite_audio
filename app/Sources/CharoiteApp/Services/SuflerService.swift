@@ -227,9 +227,13 @@ final class SuflerService: ObservableObject {
         status = L.t("Запускаю…", "Starting…", "启动中…")
         statusIsError = false
 
-        // Тап поднимаем ДО демона: он ищет устройство при старте, а не потом.
-        // Отказ не фатален — audio.py откатится на BlackHole.
-        startSystemAudioTap()
+        // 🔴 ВЫКЛЮЧЕНО 06.08. Пока тап поднят, PortAudio в демоне зависает на
+        // открытии ЛЮБОГО входа: mic писал 31 секунду и вставал, канал системы
+        // не получал ни кадра, ручное чтение устройств из питона тоже висло.
+        // Тап сейчас всё равно не используется (приоритет у BlackHole), а
+        // сломанная запись встречи — цена, которую платить нельзя.
+        // Включать обратно только после разбора: см. PR #248.
+        // startSystemAudioTap()
 
         let p = Process()
         p.executableURL = suflerRoot.appendingPathComponent(".venv/bin/python")
