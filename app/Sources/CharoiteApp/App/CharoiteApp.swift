@@ -210,6 +210,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+
+    /// charoite:// — управление из Shortcuts, терминала и других приложений:
+    ///   charoite://record/start · stop · toggle — запись встречи
+    ///   charoite://meeting/<id> — открыть карточку (id как в Spotlight)
+    ///   charoite://tasks · today — разделы
+    ///
+    /// Любое действие поднимает окно: старт записи по ссылке обязан быть
+    /// виден. Ссылку может дёрнуть и веб-страница — но браузер спрашивает
+    /// подтверждение, а «тихой» записи не существует: окно, статус и таймер
+    /// на экране.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.scheme == "charoite" {
+            let command = url.host() ?? ""
+            let argument = url.path().trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            switch (command, argument) {
+            case ("record", "start"):
+                Self.showMainWindow()
+                SuflerService.shared.start()
+            case ("record", "stop"):
+                SuflerService.shared.stop()
+            case ("record", "toggle"):
+                Self.showMainWindow()
+                SuflerService.shared.isRunning
+                    ? SuflerService.shared.stop()
+                    : SuflerService.shared.start()
+            case ("meeting", let id) where !id.isEmpty:
+                WorkspaceNavigation.shared.open(.meeting, meetingID: id)
+            case ("tasks", _):
+                WorkspaceNavigation.shared.openTasks()
+            case ("today", _):
+                WorkspaceNavigation.shared.open(.today)
+            default:
+                NSLog("charoite:// неизвестная команда: %@", url.absoluteString)
+            }
+        }
+    }
 }
 
 #endif
