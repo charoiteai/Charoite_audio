@@ -425,6 +425,16 @@ it signals degradation, it does not break the loop.
   point to different meetings in the same minute, rebuild refuses them instead
   of producing a mixed transcript. The silent format drift of 28.07 cost every meeting its final
   transcript — the naming contract is now held by end-to-end tests.
+- **A dead channel no longer takes the meeting with it** — when a source stops
+  delivering frames, the watchdog tries to recreate its stream, but does so off
+  to the side and with a time limit: closing a dead PortAudio stream can hang
+  forever, and the whole pipeline used to hang with it — a perfectly healthy
+  microphone stopped writing at the same second. Now a hopeless channel is
+  dropped, the status says so, and the meeting keeps recording on the rest.
+  Channel start-up is per-channel too: one failing source no longer leaves the
+  meeting with no recording at all. Incident of Aug 6 — four recordings in a
+  row, 31 seconds each.
+
 - **Diagnostics respect privacy** — `doctor` asks privacy for the LLM
   address (honouring both the remote-address ban and the kill switch), and
   the post-meeting hook no longer receives the Anthropic key in its

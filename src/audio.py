@@ -110,6 +110,7 @@ class AudioHub:
         self._sinks: dict = {}          # label → открытый .pcm (сырая запись встречи)
         self._last_frame: dict[str, float] = {}
         self._last_check = 0.0
+        self._hung: set[str] = set()   # каналы, чей перезапуск завис — больше не трогаем
         self._lock = threading.Lock()
         self._running = False
 
@@ -131,12 +132,29 @@ class AudioHub:
         for c in self.captures:
             self._bufs[c.label] = np.zeros(0, dtype=np.float32)
 
+    # Сколько ждём перезапуск канала, прежде чем считать его безнадёжным.
+    # Пять секунд: закрытие живого стрима укладывается в доли секунды, а
+    # мёртвый не возвращается никогда.
+    RESTART_TIMEOUT = 5.0
+
     def start(self):
         self._running = True
         if self.record_on:
             self._open_sinks()
+        # Поканально, а не общим циклом: 06.08 отказ канала системного звука
+        # оставил встречу вообще без записи — исключение вынесло цикл до
+        # микрофона, который был полностью исправен.
+        failed = []
         for c in self.captures:
-            c.start()
+            try:
+                c.start()
+            except Exception as e:  # noqa: BLE001 — сосед не должен уносить встречу
+                failed.append((c.label, e))
+        if len(failed) == len(self.captures):
+            raise RuntimeError("ни один аудиоканал не открылся: "
+                               + "; ".join(f"{lbl} → {err}" for lbl, err in failed))
+        for lbl, err in failed:
+            self._say(f"🎙 канал {lbl} не открылся ({err}) — встреча пишется без него")
         now = time.time()
         for c in self.captures:
             self._last_frame[c.label] = now
@@ -251,6 +269,31 @@ class AudioHub:
             if not got:
                 continue
 
+    def _restart_guarded(self, c):
+        """Перезапустить канал, не подставив под удар конвейер.
+
+        Возвращает None при успехе, исключение при отказе, TimeoutError если
+        перезапуск не вернулся за RESTART_TIMEOUT. Отдельный поток нужен
+        именно из-за последнего случая: `stop()` мёртвого PortAudio-стрима
+        виснет, а зависание не ловится через try/except.
+        """
+        box: dict = {}
+
+        def run():
+            try:
+                c.restart()
+                box["ok"] = True
+            except Exception as e:  # noqa: BLE001 — доносим наружу как значение
+                box["err"] = e
+
+        worker = threading.Thread(target=run, daemon=True, name=f"restart-{c.label}")
+        worker.start()
+        worker.join(self.RESTART_TIMEOUT)
+        if worker.is_alive():
+            # Поток бросаем: убить его нельзя, но он daemon и уйдёт с процессом.
+            return TimeoutError(f"перезапуск не вернулся за {self.RESTART_TIMEOUT:.0f}с")
+        return None if box.get("ok") else box.get("err")
+
     def _watch_streams(self):
         """InputStream шлёт кадры непрерывно даже в тишине: канал молчит 30с —
         значит PortAudio-стрим умер (CPU-голодание 20.07) — пересоздаём его."""
@@ -262,11 +305,20 @@ class AudioHub:
             silent = now - self._last_frame.get(c.label, now)
             if silent < 30:
                 continue
-            try:
-                c.restart()
+            if c.label in self._hung:
+                continue        # перезапуск этого канала уже завис — не трогаем повторно
+            outcome = self._restart_guarded(c)
+            if outcome is None:
                 msg = f"🎙 канал {c.label} молчал {int(silent)}с — аудио-стрим перезапущен"
-            except Exception as e:  # noqa: BLE001
-                msg = f"🎙 канал {c.label}: рестарт стрима не удался ({e}), попробую через 30с"
+            elif isinstance(outcome, TimeoutError):
+                # Главный урок 06.08: закрытие мёртвого стрима не возвращается,
+                # и вызов прямо из _pump останавливал конвейер целиком — вместе
+                # с исправным микрофоном. Бросаем канал, встречу дописываем.
+                self._hung.add(c.label)
+                msg = (f"🎙 канал {c.label}: перезапуск завис, канал отключён — "
+                       "встреча пишется остальными")
+            else:
+                msg = f"🎙 канал {c.label}: рестарт стрима не удался ({outcome}), попробую через 30с"
             # обновляем в обоих исходах: выдернутое устройство иначе даёт
             # рестарт-шторм с миганием статуса каждые 5 секунд
             self._last_frame[c.label] = time.time()
