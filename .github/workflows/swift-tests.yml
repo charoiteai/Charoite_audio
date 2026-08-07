@@ -25,7 +25,11 @@ concurrency:
 jobs:
   test:
     name: swift test (app)
-    runs-on: macos-14
+    # macos-15, а не 14: захват системного звука использует API микрофона
+    # ScreenCaptureKit (macOS 15), обёрнутый в #available. Минимальная
+    # версия приложения остаётся 14 — она задана в Package.swift; SDK нужен
+    # свежее ровно для того, чтобы такой код вообще компилировался.
+    runs-on: macos-15
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
