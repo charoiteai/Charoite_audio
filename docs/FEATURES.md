@@ -443,6 +443,10 @@ it signals degradation, it does not break the loop.
   stream only when it is alive — otherwise it honestly falls back to
   BlackHole. New installs no longer need the driver, Audio MIDI Setup or a
   Multi-Output Device.
+- **The meeting toolbar never hides buttons** — when width runs short the
+  header scrolls horizontally, and meeting actions sit right after the record
+  button: they used to slide off the right edge the moment recording started.
+  Button labels never shrink or get clipped.
 - **A single button scale** — six roles (prominent, regular, quiet, link,
   destructive, filled destructive — confirmation only) and three sizes instead
   of four system styles in 48 places. Exactly one prominent button per pane;

@@ -287,14 +287,14 @@ private extension View {
 // одного веса — и что заметная кнопка справа к ней не относится.
 
 struct CharoiteSegment<Content: View>: View {
-    var size: CharoiteSize = .s
+    var size: CharoiteSize = .m
     @ViewBuilder var content: () -> Content
 
     var body: some View {
         HStack(spacing: 2) { content() }
             .padding(2)
             .background(RoundedRectangle(cornerRadius: size.radius + 2, style: .continuous)
-                .fill(Color.primary.opacity(0.05)))
+                .fill(Color.primary.opacity(0.07)))
     }
 }
 
