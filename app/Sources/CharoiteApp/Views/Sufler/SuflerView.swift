@@ -581,19 +581,24 @@ struct SuflerView: View {
                         .symbolEffect(.variableColor.iterative, options: .repeating,
                                       isActive: sufler.isRunning)
                 }
-                .font(.headline)
+                .font(.system(size: 13.5, weight: .semibold))
                 // не переносить: в тесном тулбаре (4 тумблера) главная кнопка
                 // ломалась в «Слу-шать встр ечу» на три строки
                 .fixedSize()
                 .foregroundStyle(.white)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 7)
+                // Форма и высота — от шкалы (CharoiteSize.l: 32 pt, радиус 7),
+                // а не капсула: в одном ряду с кнопками шкалы капсула читалась
+                // как элемент из другого приложения. Заливка остаётся ручной —
+                // «идёт запись» красным ролью шкалы не описывается.
+                .frame(height: 32)
+                .padding(.horizontal, 16)
                 .background(
-                    Capsule().fill(sufler.isRunning
-                                   ? AnyShapeStyle(Color.red)
-                                   : AnyShapeStyle(Theme.brand))
-                        .shadow(color: Theme.accent.opacity(sufler.isRunning ? 0 : 0.35),
-                                radius: 6, y: 2)
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(sufler.isRunning
+                              ? AnyShapeStyle(Color.red)
+                              : AnyShapeStyle(Theme.brand))
+                        .shadow(color: Theme.accent.opacity(sufler.isRunning ? 0 : 0.4),
+                                radius: 8, y: 3)
                 )
             }
             .buttonStyle(.plain)
@@ -626,7 +631,7 @@ struct SuflerView: View {
             }
             if !sufler.isRunning, let actionTitle = processing.actionTitle {
                 Button(actionTitle) { processing.openResult() }
-                    .charoite(.regular, .s)
+                    .charoite(.regular, .m)
             }
             // Ошибка — не тупик: стенограмма цела, конвейер перезапускаем
             // отсюда же, где показана сама ошибка. До этой кнопки повтор
@@ -635,7 +640,7 @@ struct SuflerView: View {
                 Button(L.t("Повторить обработку", "Retry processing", "重新处理")) {
                     processing.retry()
                 }
-                .charoite(.regular, .s)
+                .charoite(.regular, .m)
                 // пока прошлый повтор жив — кнопка гаснет, но остаётся на
                 // месте: исчезающая кнопка под курсором читается как сбой,
                 // а два конвейера на одну встречу пишут один статус и лог
@@ -648,13 +653,13 @@ struct SuflerView: View {
             if sufler.isRunning {
                 CharoiteSegment {
                     Button(L.t("Подсказка", "Hint", "提示")) { sufler.requestHint() }
-                        .charoite(.quiet, .s)
+                        .charoite(.quiet, .m)
                         .keyboardShortcut(.return, modifiers: .command)
                         .disabled(sufler.isHinting)
                         .help(L.t("Подсказка по последним минутам (⌘⏎)", "Hint on the last minutes (⌘⏎)", "按最近几分钟提示（⌘⏎）"))
 
                     Button("Claude") { sufler.requestCloud() }
-                        .charoite(.quiet, .s)
+                        .charoite(.quiet, .m)
                         .keyboardShortcut(.return, modifiers: [.command, .shift])
                         .disabled(sufler.isClouding || !sufler.cloudOn)
                         .help(sufler.cloudOn
@@ -667,7 +672,7 @@ struct SuflerView: View {
                             Text("⏮")
                         }
                     }
-                        .charoite(.quiet, .s)
+                        .charoite(.quiet, .m)
                         .keyboardShortcut("e", modifiers: [.command, .shift])
                         .disabled(sufler.isExpanding)
                         .help(L.t("Что было по текущей теме на прошлых встречах — из архива в нить (⌘⇧E)",
@@ -675,7 +680,7 @@ struct SuflerView: View {
                                   "过往会议对当前话题的讨论——从档案写入脉络（⌘⇧E）"))
 
                     Button(L.t("Протокол", "Minutes", "纪要")) { sufler.requestSummary() }
-                        .charoite(.quiet, .s)
+                        .charoite(.quiet, .m)
                         .disabled(sufler.isHinting)
                         .help(L.t("Собрать протокол встречи прямо сейчас", "Build the meeting minutes right now", "立即生成会议纪要"))
                 }
@@ -717,7 +722,7 @@ struct SuflerView: View {
             } label: {
                 Label(L.t("Чат", "Chat", "聊天"), systemImage: showChat ? "message.fill" : "message")
             }
-            .charoite(.regular, .s)
+            .charoite(.regular, .m)
             .help(L.t("Локальный чат с памятью — панель прямо в окне суфлёра", "Local chat with memory — a pane right in the copilot window", "带记忆的本地聊天——直接嵌在提词窗口"))
 
             Button {
@@ -725,7 +730,7 @@ struct SuflerView: View {
             } label: {
                 Image(systemName: "arrow.up.forward.square")
             }
-            .charoite(.icon, .s)
+            .charoite(.icon, .m)
             .help(L.t("Чат отдельным окном (история общая с панелью)", "Chat in its own window (history shared with the pane)", "聊天独立窗口(与面板共用历史)"))
 
             // Список встреч: результат вчерашней записи не должен исчезать с
@@ -737,7 +742,7 @@ struct SuflerView: View {
                     Label(L.t("Встречи", "Meetings", "会议"),
                           systemImage: "clock.arrow.circlepath")
                 }
-                .charoite(.regular, .s)
+                .charoite(.regular, .m)
                 .help(L.t("Последние записи: состояние, результат, повтор обработки",
                           "Recent recordings: state, result, retry processing",
                           "最近的录音：状态、结果、重新处理"))
@@ -754,7 +759,7 @@ struct SuflerView: View {
                     Label(L.t("Задачи", "Tasks", "任务"), systemImage: "checklist")
                 }
             }
-            .charoite(.regular, .s)
+            .charoite(.regular, .m)
             .help(L.t("Поручения со встреч (чекбоксы из минуток и заметок графа)", "Meeting action items (checkboxes from minutes and graph notes)", "会议行动项（来自纪要和图谱笔记的复选框）"))
 
             Button {
@@ -762,7 +767,7 @@ struct SuflerView: View {
             } label: {
                 Label(L.t("Встречи", "Meetings", "会议"), systemImage: "folder")
             }
-            .charoite(.regular, .s)
+            .charoite(.regular, .m)
             .help(L.t("Открыть встречи в Finder (стенограммы, тезисы, минутки, разборы)", "Open meetings in Finder (transcripts, theses, minutes, debriefs)", "在 Finder 打开会议（逐字稿、要点、纪要、复盘）"))
 
         }
