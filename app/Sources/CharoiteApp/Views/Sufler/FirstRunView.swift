@@ -19,11 +19,42 @@ struct FirstRunView: View {
     @State private var requestingMicrophone = false
     let onStart: () -> Void
 
+    /// Два обязательных поля конфига — прямо в мастере.
+    ///
+    /// Раньше человек обязан был открыть config/config.yaml в редакторе и
+    /// вписать имя и путь к графу. Для «поставил и работает» это лишний шаг,
+    /// причём первый же: без имени микрофон в стенограмме подписан обезличенно.
+    @State private var ownerName = AppSettings.configValue("user_name") ?? ""
+    @State private var graphPath = AppSettings.configValue("graph_dir") ?? ""
+    @State private var configSaved = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             header
             Divider()
-            VStack(alignment: .leading, spacing: 12) {
+            // Середина прокручивается: окно мастера фиксированной высоты, а
+            // блоков в нём прибавляется (настройка, готовность, установка
+            // моделей). Обрезанный блок — это молча потерянный шаг установки,
+            // ровно та ошибка, что была с переполненным тулбаром встречи.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    stepsBlock
+                    configPanel
+                    readinessPanel
+                }
+            }
+            footer
+        }
+        .padding(28)
+        .frame(width: 580, height: 720)
+        .onAppear {
+            warmUpFolderAccess()
+            readiness.refresh()
+        }
+    }
+
+    private var stepsBlock: some View {
+        VStack(alignment: .leading, spacing: 12) {
                 step("waveform.circle.fill",
                      L.t("Слушает встречу", "Listens to the meeting", "旁听会议"),
                      L.t("Берёт звук из микрофона и, если настроен BlackHole, из звонка. Бот не входит во встречу; сообщите участникам о записи.",
@@ -39,16 +70,6 @@ struct FirstRunView: View {
                      L.t("Стенограмма, тезисы, минутки и решения складываются в папку встреч. Потом можно спросить: «что обсуждали вчера?»",
                          "Transcript, theses, minutes and decisions land in the meetings folder. Later you can ask: \"what did we discuss yesterday?\"",
                          "逐字稿、要点、纪要与决定都会存入会议文件夹。之后你可以问：「昨天讨论了什么？」"))
-            }
-            readinessPanel
-            Spacer(minLength: 0)
-            footer
-        }
-        .padding(28)
-        .frame(width: 560, height: 680)
-        .onAppear {
-            warmUpFolderAccess()
-            readiness.refresh()
         }
     }
 
@@ -104,6 +125,87 @@ struct FirstRunView: View {
             }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    /// Имя и папка графа — то, что раньше правили в YAML руками.
+    private var configPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(L.t("Как к вам обращаться и где хранить знания",
+                     "Your name and where to keep the knowledge",
+                     "您的称呼与知识存放位置"))
+                .font(.system(size: 13, weight: .semibold))
+            HStack(spacing: 8) {
+                TextField(L.t("Ваше имя", "Your name", "您的姓名"), text: $ownerName)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 190)
+                    .onSubmit(saveConfig)
+                TextField(L.t("Папка графа знаний", "Knowledge graph folder", "知识图谱文件夹"),
+                          text: $graphPath)
+                    .textFieldStyle(.roundedBorder)
+                Button(L.t("Выбрать…", "Choose…", "选择…")) { chooseGraphFolder() }
+                    .charoite(.regular, .m)
+            }
+            HStack(spacing: 8) {
+                Button(L.t("Сохранить", "Save", "保存")) { saveConfig() }
+                    .charoite(.prominent, .m)
+                    .disabled(ownerName.trimmingCharacters(in: .whitespaces).isEmpty)
+                if configSaved {
+                    Text(L.t("Сохранено в config.yaml", "Saved to config.yaml", "已保存到 config.yaml"))
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .transition(.opacity)
+                }
+            }
+            Text(L.t("Имя — метка вашего микрофона в стенограмме. Папка пустая = граф выключен, работает только расшифровка.",
+                     "The name labels your microphone in the transcript. An empty folder means the graph is off and only transcription runs.",
+                     "姓名用于在逐字稿中标记您的麦克风。留空文件夹表示关闭图谱，仅进行转写。"))
+                .font(.system(size: 10.5)).foregroundStyle(.secondary)
+
+            // Разделение голосов: единственный шаг установки, ради которого
+            // раньше приходилось открывать терминал уже после того, как
+            // приложение заработало.
+            if !ModelPullService.diarizationInstalled {
+                HStack(spacing: 8) {
+                    if let status = pulls.progress[ModelPullService.diarizationKey] {
+                        ProgressView().controlSize(.small)
+                        Text(status).font(.system(size: 11)).foregroundStyle(.secondary)
+                    } else {
+                        Button(L.t("Различать голоса собеседников",
+                                   "Tell speakers apart",
+                                   "区分不同说话人")) { pulls.pullDiarization() }
+                            .charoite(.regular, .m)
+                        Text(L.t("модель ~80 МБ, ставится один раз",
+                                 "~80 MB model, installed once",
+                                 "约 80 MB 模型，仅需安装一次"))
+                            .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                    }
+                }
+                if let err = pulls.failed[ModelPullService.diarizationKey] {
+                    Text(err).font(.system(size: 10)).foregroundStyle(.red).lineLimit(2)
+                }
+            }
+        }
+    }
+
+    private func chooseGraphFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = L.t("Выбрать", "Choose", "选择")
+        if panel.runModal() == .OK, let url = panel.url {
+            graphPath = url.path
+            saveConfig()
+        }
+    }
+
+    private func saveConfig() {
+        let name = ownerName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        AppSettings.setConfigValue("user_name", name)
+        AppSettings.setConfigValue("graph_dir", graphPath.trimmingCharacters(in: .whitespaces))
+        withAnimation { configSaved = true }
+        // Проверка готовности читает конфиг — пусть увидит новые значения.
+        readiness.refresh()
     }
 
     private var readinessPanel: some View {

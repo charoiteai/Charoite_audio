@@ -434,6 +434,11 @@ it signals degradation, it does not break the loop.
   point to different meetings in the same minute, rebuild refuses them instead
   of producing a mixed transcript. The silent format drift of 28.07 cost every meeting its final
   transcript — the naming contract is now held by end-to-end tests.
+- **Setup without a terminal or YAML** — the first-run wizard asks for your
+  name and the graph folder and writes them into the config itself (the folder
+  is picked in a panel); the voice-separation model installs with a button,
+  running the same script that used to require a console. Editing
+  `config.yaml` by hand is no longer needed.
 - **System audio out of the box (ScreenCaptureKit)** — the app captures
   meeting audio with macOS itself: no driver, no admin password, no
   Multi-Output Device. One system permission on the first recording and that's
