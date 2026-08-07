@@ -133,6 +133,10 @@ struct CharoiteButtonStyle: ButtonStyle {
             .shadow(color: shadow, radius: shadowRadius, y: shadowY)
             .underline(role == .link && isHovering && !isOff)
             .contentShape(shape)
+            // Кнопка держит СВОЙ размер и не сжимается соседями: в тесном
+            // ряду SwiftUI иначе ужимал подпись до «Стеногр…» и «Задач…».
+            // Правило спеки: размер и положение кнопки не меняются никогда.
+            .fixedSize(horizontal: true, vertical: false)
             .animation(.easeOut(duration: 0.12), value: isHovering)
             .animation(.easeOut(duration: 0.12), value: isPressed)
             .onHover { isHovering = $0 && !isOff }
