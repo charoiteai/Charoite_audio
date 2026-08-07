@@ -118,8 +118,7 @@ struct LocalChatView: View {
                 } label: {
                     Image(systemName: "doc.on.doc")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.tertiary)
+                .charoite(.icon, .s)
                 .help(L.t("Скопировать ответ целиком", "Copy the whole answer", "复制完整回答"))
                 .opacity(m.text.isEmpty ? 0 : 1)
                 Spacer(minLength: 40)
@@ -139,8 +138,7 @@ struct LocalChatView: View {
                 .onSubmit { submit() }
             DictationButton(text: $draft)
             Button(L.t("Отправить", "Send", "发送")) { submit() }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
+                .charoite(.prominent)
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(chat.isStreaming || draft.trimmingCharacters(in: .whitespaces).isEmpty)
         }
