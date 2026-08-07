@@ -83,6 +83,22 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     nonisolated static func actionAfterFailedResume(attempts: Int) -> StallAction {
         attempts >= maxResumeAttempts ? .rotate : .retry
     }
+
+    /// Идёт ли системное прерывание (звонок, ВКС). Пока идёт — микрофон
+    /// принадлежит звонку, и «застой» записи это ПАУЗА, а не поломка.
+    private var interrupted = false
+
+    /// Пытаться ли поднимать вставшую запись прямо сейчас.
+    ///
+    /// 07.08, встреча 30+ минут: звонок забрал микрофон, сторож застоя
+    /// этого не знал — три «неудачных» resume, ротация, и от встречи остался
+    /// 40-килобайтный огрызок с мёртвой записью. Во время прерывания resume
+    /// не имеет смысла (iOS не вернёт вход до конца звонка) и вреден:
+    /// исчерпывает попытки и рубит файл. Ждём `.ended` — и продолжаем ТОТ ЖЕ
+    /// файл. Политика вынесена статикой, чтобы её держал тест, а не встреча.
+    nonisolated static func shouldAutoResume(stalled: Bool, interrupted: Bool) -> Bool {
+        stalled && !interrupted
+    }
     /// Что пишем сейчас — нужно, чтобы продолжить тем же типом после ротации.
     private var currentKind: Kind = .meeting
 
@@ -249,27 +265,42 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     }
 
     private func handleInterruption(_ type: AVAudioSession.InterruptionType) {
-        guard isRecording, let r = recorder else { return }
+        guard isRecording, recorder != nil else { return }
         switch type {
         case .began:
-            lastResult = L.t("Пауза: звонок. Запись продолжится сама",
-                             "Paused: call. Recording will resume",
-                             "已暂停：来电。录音将自动继续")
+            interrupted = true
+            lastResult = L.t("Пауза: идёт звонок — микрофон у него. Запись продолжится после",
+                             "Paused: a call owns the microphone. Recording resumes after it",
+                             "已暂停：通话占用麦克风。通话结束后继续录音")
         case .ended:
-            try? AVAudioSession.sharedInstance().setActive(true)
-            if r.record() {
-                lastResult = nil
-            } else {
-                // Возобновить не удалось — честно говорим и закрываем файл,
-                // чтобы записанное до звонка точно уехало на Mac.
-                lastResult = L.t("Запись оборвалась после звонка — сохраняю записанное",
-                                 "Recording broke after the call — saving what we have",
-                                 "通话后录音中断 — 正在保存已录内容")
-                stop()
-            }
+            interrupted = false
+            resumeAfterCall(attempt: 1)
         @unknown default:
             break
         }
+    }
+
+    /// Продолжить ТОТ ЖЕ файл после конца звонка. Сессия освобождается
+    /// лениво — первая попытка сразу после `.ended` нередко упирается в ещё
+    /// занятый вход, поэтому до трёх заходов с паузой, и только потом
+    /// честное «сохраняю записанное».
+    private func resumeAfterCall(attempt: Int) {
+        guard isRecording, !interrupted, let r = recorder else { return }
+        try? AVAudioSession.sharedInstance().setActive(true)
+        if r.record() {
+            lastResult = nil
+            return
+        }
+        guard attempt >= 3 else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                self?.resumeAfterCall(attempt: attempt + 1)
+            }
+            return
+        }
+        lastResult = L.t("Запись оборвалась после звонка — сохраняю записанное",
+                         "Recording broke after the call — saving what we have",
+                         "通话后录音中断 — 正在保存已录内容")
+        stop()
     }
 
     /// Таймер в Dynamic Island / на локскрине: запись видна, даже когда
@@ -291,6 +322,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         timer = nil
         isRecording = false
         stalled = false
+        interrupted = false   // флаг не должен пережить запись
         lastGrowth = nil
         level = 0
         let url = r.url
@@ -319,8 +351,9 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         level = max(0, min(1, (r.averagePower(forChannel: 0) + 60) / 60))
         checkGrowth(r.currentTime)
         // Пока не поднялись — пробуем на каждом такте: чужое приложение может
-        // отпустить вход через секунду, а может через минуту.
-        if stalled { tryResume() }
+        // отпустить вход через секунду, а может через минуту. Но не во время
+        // звонка: там застой — это пауза, и попытки лишь исчерпают лимит.
+        if Self.shouldAutoResume(stalled: stalled, interrupted: interrupted) { tryResume() }
     }
 
     /// Растёт ли файл. Сравниваем длительность с прошлым тиком: замерла — значит
@@ -346,6 +379,11 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
                              lastGrowthSeconds: last.seconds,
                              sinceLastGrowth: Date().timeIntervalSince(last.at)) else { return }
         stalled = true
+        if interrupted {
+            // Звонок: микрофон у него до конца, resume бессмыслен и вреден —
+            // просто ждём `.ended` и продолжаем тот же файл.
+            return
+        }
         // Раньше здесь была только надпись на экране — а телефон во время
         // встречи лежит экраном вниз, и человек узнавал о потере постфактум:
         // в файле полторы минуты вместо получаса. Теперь пытаемся поднять
