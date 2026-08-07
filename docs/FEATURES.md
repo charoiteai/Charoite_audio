@@ -283,7 +283,12 @@ it signals degradation, it does not break the loop.
   from the archive — instantly, file-parse only, main graph only.
 - **iPhone companion (v1, app-ios/)** — the phone records a
   meeting/note/diary entry; you pick the delivery folder once in iCloud
-  Drive (folder button) — the same import folder the Mac watches. A folder
+  Drive (folder button) — the same import folder the Mac watches. A call or
+  video meeting during a recording is a pause, not a failure: on iPhone the
+  microphone belongs to the call (an iOS rule), the app says so plainly,
+  waits for the call to end and resumes THE SAME file; resume attempts and
+  file rotation are suppressed for the duration — on 07.08 they were what
+  turned a 30-minute meeting into a 40 KB scrap. A folder
   outside iCloud cannot be chosen: on-device storage looks identical in
   Files but never syncs anywhere — such a bookmark is rejected with a clear
   error, and stale local bookmarks are forgotten so the app asks to pick
