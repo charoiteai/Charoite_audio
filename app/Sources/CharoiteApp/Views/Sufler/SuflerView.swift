@@ -555,6 +555,19 @@ struct SuflerView: View {
     // MARK: - Header
 
     private var header: some View {
+        // Тулбар шире окна не должен ТЕРЯТЬ кнопки: раньше сегмент действий
+        // встречи стоял последним и во время записи уезжал за правый край —
+        // «включаешь, а кнопок не видно». Горизонтальный скролл делает
+        // переполнение видимым и доступным, а не обрезанным.
+        ScrollView(.horizontal, showsIndicators: false) {
+            headerRow
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+        }
+        .animation(.easeInOut(duration: 0.2), value: sufler.isRunning)
+    }
+
+    private var headerRow: some View {
         HStack(spacing: 12) {
             Button {
                 sufler.isRunning ? sufler.stop() : sufler.start()
@@ -629,7 +642,44 @@ struct SuflerView: View {
                 .disabled(processing.retryInFlight)
             }
 
-            Spacer()
+            // Действия по ходу встречи — сразу за кнопкой записи и статусом,
+            // ДО навигации: во время записи это главные кнопки, они обязаны
+            // быть видны первыми, а не уезжать в хвост тулбара.
+            if sufler.isRunning {
+                CharoiteSegment {
+                    Button(L.t("Подсказка", "Hint", "提示")) { sufler.requestHint() }
+                        .charoite(.quiet, .s)
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .disabled(sufler.isHinting)
+                        .help(L.t("Подсказка по последним минутам (⌘⏎)", "Hint on the last minutes (⌘⏎)", "按最近几分钟提示（⌘⏎）"))
+
+                    Button("Claude") { sufler.requestCloud() }
+                        .charoite(.quiet, .s)
+                        .keyboardShortcut(.return, modifiers: [.command, .shift])
+                        .disabled(sufler.isClouding || !sufler.cloudOn)
+                        .help(sufler.cloudOn
+                              ? L.t("Спросить Claude по ходу встречи — кусок стенограммы уйдёт в облако (⌘⇧⏎)", "Ask Claude mid-meeting — a transcript slice goes to the cloud (⌘⇧⏎)", "会议中问 Claude — 一段逐字稿将发送至云端（⌘⇧⏎）")
+                              : L.t("Облако выключено: включите «Claude» в тулбаре. Стенограмма не покидает машину", "Cloud is off: enable “Claude” in the toolbar. The transcript never leaves this machine", "云端已关闭：在工具栏开启「Claude」。逐字稿不会离开本机"))
+
+                    Button { sufler.requestExpand() } label: {
+                        HStack(spacing: 4) {
+                            if sufler.isExpanding { ProgressView().controlSize(.small) }
+                            Text("⏮")
+                        }
+                    }
+                        .charoite(.quiet, .s)
+                        .keyboardShortcut("e", modifiers: [.command, .shift])
+                        .disabled(sufler.isExpanding)
+                        .help(L.t("Что было по текущей теме на прошлых встречах — из архива в нить (⌘⇧E)",
+                                  "What past meetings said on the current topic — from the archive into the thread (⌘⇧E)",
+                                  "过往会议对当前话题的讨论——从档案写入脉络（⌘⇧E）"))
+
+                    Button(L.t("Протокол", "Minutes", "纪要")) { sufler.requestSummary() }
+                        .charoite(.quiet, .s)
+                        .disabled(sufler.isHinting)
+                        .help(L.t("Собрать протокол встречи прямо сейчас", "Build the meeting minutes right now", "立即生成会议纪要"))
+                }
+            }
 
             // Живые тумблеры: выключил на этой встрече — станет дефолтом следующих.
             // Подписи текстом, а не эмодзи: «⚡» и «☁️» в Toggle(.switch) на маке
@@ -715,52 +765,7 @@ struct SuflerView: View {
             .charoite(.regular, .s)
             .help(L.t("Открыть встречи в Finder (стенограммы, тезисы, минутки, разборы)", "Open meetings in Finder (transcripts, theses, minutes, debriefs)", "在 Finder 打开会议（逐字稿、要点、纪要、复盘）"))
 
-            // Действия записи живут ТОЛЬКО во время встречи: вне её это были
-            // три вечно серые кнопки, занимавшие треть тулбара. Появляются
-            // мягко вместе со стартом записи.
-            if sufler.isRunning {
-                // Одна группа одного веса, а не четыре отдельные кнопки:
-                // сегмент отделяет «действия по ходу встречи» от навигации.
-                CharoiteSegment {
-                    Button(L.t("Подсказка", "Hint", "提示")) { sufler.requestHint() }
-                        .charoite(.quiet, .s)
-                        .keyboardShortcut(.return, modifiers: .command)
-                        .disabled(sufler.isHinting)
-                        .help(L.t("Подсказка по последним минутам (⌘⏎)", "Hint on the last minutes (⌘⏎)", "按最近几分钟提示（⌘⏎）"))
-
-                    Button("Claude") { sufler.requestCloud() }
-                        .charoite(.quiet, .s)
-                        .keyboardShortcut(.return, modifiers: [.command, .shift])
-                        .disabled(sufler.isClouding || !sufler.cloudOn)
-                        // адрес в подсказке — тот же тулбар, а не Настройки: облака
-                        // там нет, а тумблер стоит левее этой же кнопки
-                        .help(sufler.cloudOn
-                              ? L.t("Спросить Claude по ходу встречи — кусок стенограммы уйдёт в облако (⌘⇧⏎)", "Ask Claude mid-meeting — a transcript slice goes to the cloud (⌘⇧⏎)", "会议中问 Claude — 一段逐字稿将发送至云端（⌘⇧⏎）")
-                              : L.t("Облако выключено: включите «Claude» в тулбаре. Стенограмма не покидает машину", "Cloud is off: enable “Claude” in the toolbar. The transcript never leaves this machine", "云端已关闭：在工具栏开启「Claude」。逐字稿不会离开本机"))
-
-                    Button { sufler.requestExpand() } label: {
-                        HStack(spacing: 4) {
-                            if sufler.isExpanding { ProgressView().controlSize(.small) }
-                            Text("⏮")
-                        }
-                    }
-                        .charoite(.quiet, .s)
-                        .keyboardShortcut("e", modifiers: [.command, .shift])
-                        .disabled(sufler.isExpanding)
-                        .help(L.t("Что было по текущей теме на прошлых встречах — из архива в нить (⌘⇧E)",
-                                  "What past meetings said on the current topic — from the archive into the thread (⌘⇧E)",
-                                  "过往会议对当前话题的讨论——从档案写入脉络（⌘⇧E）"))
-
-                    Button(L.t("Протокол", "Minutes", "纪要")) { sufler.requestSummary() }
-                        .charoite(.quiet, .s)
-                        .disabled(sufler.isHinting)
-                        .help(L.t("Собрать протокол встречи прямо сейчас", "Build the meeting minutes right now", "立即生成会议纪要"))
-                }
-            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .animation(.easeInOut(duration: 0.2), value: sufler.isRunning)
     }
 
     // MARK: - Левая панель: стенограмма
