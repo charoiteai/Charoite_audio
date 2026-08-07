@@ -443,6 +443,13 @@ it signals degradation, it does not break the loop.
   stream only when it is alive — otherwise it honestly falls back to
   BlackHole. New installs no longer need the driver, Audio MIDI Setup or a
   Multi-Output Device.
+- **Stopping a meeting no longer wipes its outcome** — the thread and the
+  hint stay on screen after the recording stops: that is the minute when they
+  are read to the end, copied into chats and checked against action items.
+  The pane used to be tied to whether recording was running, so Stop instantly
+  replaced the conversation with an invitation to ask about the archive, even
+  though the text was still in memory. Only the next meeting or an archive
+  question clears the pane.
 - **A dead channel no longer takes the meeting with it** — when a source stops
   delivering frames, the watchdog tries to recreate its stream, but does so off
   to the side and with a time limit: closing a dead PortAudio stream can hang

@@ -401,33 +401,65 @@ struct SuflerView: View {
         return sufler.statusIsError
     }
 
+    /// Откуда панель берёт текст прямо сейчас.
+    enum PaneSource: Equatable { case hint, thread, archive, placeholder }
+
+    /// Правило выбора источника — чистой функцией, чтобы его держал тест.
+    ///
+    /// 07.08: «Стоп» стирал итог встречи с экрана. Панель была привязана к
+    /// isRunning, и остановка мгновенно подменяла нить приглашением спросить
+    /// про архив — при том что текст оставался жив в памяти. Теперь после
+    /// встречи нить и подсказка остаются, пока не спросят про архив или не
+    /// начнётся следующая встреча.
+    static func paneSource(running: Bool,
+                           hasHint: Bool,
+                           hasThread: Bool,
+                           hasArchive: Bool) -> PaneSource {
+        if running {
+            if hasHint { return .hint }
+            if hasThread { return .thread }
+            return .placeholder
+        }
+        if hasArchive { return .archive }   // спросили про архив — он и главный
+        if hasHint { return .hint }
+        if hasThread { return .thread }
+        return .placeholder
+    }
+
+    private var currentPaneSource: PaneSource {
+        Self.paneSource(running: sufler.isRunning,
+                        hasHint: !sufler.hint.isEmpty,
+                        hasThread: !sufler.thread.isEmpty,
+                        hasArchive: !archiveAnswer.isEmpty)
+    }
+
     /// Что показывать в панели: во время встречи — подсказку демона, вне
     /// встречи — ответ по архиву. Пусто — приглашение спросить.
     private var paneText: AttributedString {
-        if sufler.isRunning {
-            // Нить — единственное, что здесь показывается: ответы и тезисы
-            // демон вплетает в неё сам. Ручная подсказка (⌘⏎) остаётся
-            // исключением: её просят, когда ждут ответ прямо сейчас, и она
-            // гаснет со следующим обновлением нити.
-            if !sufler.hint.isEmpty { return withBoldQuestions(sufler.hint) }
-            if !sufler.thread.isEmpty { return withThreadMarks(sufler.thread) }
+        switch currentPaneSource {
+        case .hint:
+            // Ручная подсказка (⌘⏎): её просят, когда ждут ответ прямо сейчас,
+            // и она гаснет со следующим обновлением нити.
+            return withBoldQuestions(sufler.hint)
+        case .thread:
+            // Нить — основное во время встречи: ответы и тезисы демон
+            // вплетает в неё сам. После «Стоп» остаётся на экране.
+            return withThreadMarks(sufler.thread)
+        case .archive:
+            return withBoldQuestions(archiveAnswer)
+        case .placeholder where sufler.isRunning:
             return AttributedString(L.t("Нить встречи появится через минуту разговора · ⌘⏎ — подсказка сейчас",
                                         "The meeting thread appears after a minute of talk · ⌘⏎ — hint now",
                                         "会议脉络将在交谈一分钟后出现 · ⌘⏎ — 立即提示"))
-        }
-        if archiveAnswer.isEmpty {
+        case .placeholder:
             // при открытом чате нижнего поля нет — не отправляем в никуда
             return AttributedString(showChat
                 ? L.t("Ответы по архиву появятся здесь. Спросить — в чате справа или закрой Чат для поля внизу", "Archive answers appear here. Ask in the chat on the right, or close Chat for the field below", "档案回答会显示在这里。在右侧聊天提问，或关闭聊天使用下方输入框")
                 : L.t("Спроси про прошлые встречи в поле внизу — найду по архиву и графу", "Ask about past meetings in the field below — I'll search the archive and graph", "在下方输入框询问过往会议——我会检索档案与图谱"))
         }
-        return withBoldQuestions(archiveAnswer)
     }
 
-    private var paneIsPlaceholder: Bool {
-        sufler.isRunning ? (sufler.hint.isEmpty && sufler.thread.isEmpty)
-                         : archiveAnswer.isEmpty
-    }
+    private var paneIsPlaceholder: Bool { currentPaneSource == .placeholder }
 
     /// ==Фрагменты==, которые внесла облачная ревизия нити, — небесным фоном:
     /// правка видна в самой строке, отдельного блока «☁️ уточнения» больше нет.
