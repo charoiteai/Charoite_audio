@@ -167,3 +167,35 @@ def test_impossible_date_is_refused():
     for bad in ("2026-13-03", "2026-02-31", "03.08.26", "вчера"):
         with pytest.raises(SystemExit):
             clean_date(bad)
+
+
+def test_повтор_импорта_успех_а_не_отказ(tmp_path):
+    """Повтор обязан (1) вернуть 0 и (2) видеть titled-встречи.
+
+    Скан переносит файл в done/ только при нулевом коде: выход строкой
+    (= код 1) оставлял файл в папке импорта навсегда — три записи с
+    телефона молотились каждые две минуты. А проверка по голому
+    `<stamp>.md` не видела встреч, переименованных конвейером в
+    `<stamp>_Тема.md`, и повторный импорт гонял по дублю полный
+    LLM-конвейер (оба найдены 06.08 — второй как раз этим тестом).
+    """
+    import subprocess
+
+    import pytest
+
+    titled = next((p for p in sorted((ROOT / "transcripts").glob("2026-*_*.md"))
+                   if len(p.name) > len("2026-08-03_1314.md")
+                   and not (p.parent / (p.name[:15] + ".md")).exists()), None)
+    if titled is None:
+        pytest.skip("нет titled-встречи без голой пары — не на чем проверять")
+    stamp = titled.name[:15]                          # 2026-08-05_1334
+    src = tmp_path / "повтор.txt"
+    src.write_text("х" * 300, encoding="utf-8")
+    run = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "import_meeting.py"), str(src),
+         "--date", stamp[:10], "--time", stamp[11:13] + ":" + stamp[13:15]],
+        capture_output=True, text=True, timeout=60)
+    assert "повтор не нужен" in run.stdout, (
+        f"titled-встреча {titled.name} не распознана как повтор:\n{run.stdout}")
+    assert run.returncode == 0, (
+        f"код {run.returncode}: повтор считается отказом, файл застрянет в импорте")

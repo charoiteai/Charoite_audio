@@ -451,7 +451,13 @@ it signals degradation, it does not break the loop.
   now asks privacy in the same function that launches it; the AST guard proves
   that the gate controls that exact call, not an unrelated branch in the file.
 
-- **Import folder (watched)** — point the app at a folder (Settings →
+- **Import folder (watched)** — a repeat of an already-imported meeting is
+  a success, not a failure (the file moves to `done/` instead of being
+  rescanned every two minutes forever), and meetings renamed by the
+  pipeline to `<stamp>_Topic.md` count as repeats too. A recording with no
+  speech saves its transcript and finishes immediately — a three-second
+  scrap no longer drives the LLM pipeline across the whole backlog.
+  Point the app at a folder (Settings →
   Import, or `--scan` in the CLI): recordings dropped there become graph
   meetings on their own; processed files move to `done/`, failed ones
   stay visible.
