@@ -56,6 +56,98 @@ def find_system_audio() -> tuple[int | None, str]:
     return None, "blackhole"
 
 
+TAP_STREAM_MANIFEST = ROOT / "data" / "tap_stream.json"
+
+
+def fresh_tap_manifest() -> dict | None:
+    """Манифест живого тап-потока приложения, если он есть и растёт.
+
+    Демон не может читать тап сам — никогда: право на запись системного
+    звука применяется к процессу-читателю, а дочерний python его не
+    наследует (вердикт разбора 06–07.08). Поэтому приложение читает тап
+    своим IOProc и пишет PCM в файл; манифест появляется только после
+    первых реальных кадров. Свежесть проверяем по mtime самого потока:
+    манифест без растущего файла — это труп прошлой встречи.
+    """
+    import json
+    try:
+        m = json.loads(TAP_STREAM_MANIFEST.read_text(encoding="utf-8"))
+        path = pathlib.Path(m["path"])
+        if time.time() - path.stat().st_mtime > 10:
+            return None
+        return m
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+class TapStreamCapture:
+    """Системный звук из файла-потока приложения — интерфейс как у Capture.
+
+    Читает растущий s16le-файл хвостом (как tail -f) с позиции на момент
+    старта, даунсемплит родную частоту до целевой и кладёт float32-блоки
+    в ту же очередь, что и PortAudio-каналы. Конвейеру всё равно, откуда
+    кадры; сторож тишины и страховка перезапуска работают без изменений.
+    """
+
+    def __init__(self, manifest: dict, samplerate: int, label: str):
+        self.label = label
+        self.samplerate = int(samplerate)
+        self.q: queue.Queue[np.ndarray] = queue.Queue()
+        self._m = manifest
+        self.opened_as = f"поток приложения, {float(manifest['samplerate']):.0f} Гц"
+        self._stop_flag = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self):
+        path = pathlib.Path(self._m["path"])
+        src_sr = int(float(self._m["samplerate"]))
+        stream = path.open("rb")
+        stream.seek(0, 2)   # только новое: хвост прошлой встречи не нужен
+        # Первые байты обязаны прийти быстро: приложение выписывает манифест
+        # только после реальных кадров. Нет роста — канала нет, и честнее
+        # упасть здесь (поканальный старт скажет об этом вслух), чем писать
+        # пустоту до конца встречи.
+        deadline = time.time() + 3.0
+        while path.stat().st_size <= stream.tell():
+            if time.time() > deadline:
+                stream.close()
+                raise RuntimeError("поток тапа не растёт — приложение кадров не пишет")
+            time.sleep(0.1)
+        down = (_Downsampler(src_sr, self.samplerate)
+                if src_sr != self.samplerate else None)
+        self._stop_flag.clear()
+        self._thread = threading.Thread(
+            target=self._pump_file, args=(stream, down),
+            daemon=True, name=f"tapstream-{self.label}")
+        self._thread.start()
+
+    def _pump_file(self, stream, down):
+        # 0.1 с исходного потока за чтение: тот же темп, что блоки PortAudio.
+        chunk_bytes = max(2, int(float(self._m["samplerate"]) * 0.1)) * 2
+        while not self._stop_flag.is_set():
+            data = stream.read(chunk_bytes)
+            if not data:
+                time.sleep(0.05)
+                continue
+            block = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
+            if down is not None:
+                block = down.process(block)
+            if len(block):
+                self.q.put(block)
+        stream.close()
+
+    def stop(self):
+        self._stop_flag.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+
+    def restart(self):
+        """Пересоединиться с файлом: позиция уезжает в конец, состояние чистое."""
+        self.stop()
+        self.start()
+
+
 class _Downsampler:
     """Понижение частоты дискретизации на одном numpy, с состоянием между блоками.
 
@@ -293,10 +385,19 @@ class AudioHub:
         # записей (`..._blackhole.wav`), её знают rebuild_transcript и
         # meeting_stamp. Переименование метки сломало бы пересборку старых
         # встреч ради косметики.
-        bh, self.system_audio_via = find_system_audio()
+        tap_stream = fresh_tap_manifest()
+        bh, self.system_audio_via = (None, "tap-stream") if tap_stream \
+            else find_system_audio()
         mic = sd.default.device[0] if sd.default.device else None
 
-        if mode in ("auto", "mix", "blackhole") and bh is not None:
+        if mode in ("auto", "mix", "blackhole") and tap_stream is not None:
+            # Живой поток приложения важнее устройств: он означает, что тап
+            # уже отдаёт кадры тому единственному процессу, которому система
+            # это разрешает. BlackHole остаётся фолбэком на случай, когда
+            # манифеста нет (нет права, старая macOS, тап не поднялся).
+            self.captures.append(TapStreamCapture(tap_stream, self.sr, "blackhole"))
+            self.sources.append("Системный звук (тап)")
+        elif mode in ("auto", "mix", "blackhole") and bh is not None:
             self.captures.append(Capture(bh, self.sr, "blackhole"))
             self.sources.append("Тап системы" if self.system_audio_via == "tap" else "BlackHole")
         # auto = система И микрофон: на встрече нужны обе стороны разговора

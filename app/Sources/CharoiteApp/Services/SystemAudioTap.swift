@@ -120,8 +120,132 @@ final class SystemAudioTap {
             return nil
         }
         selfTest(aggregate)
+        startStreaming(aggregate)
         log("системный звук через тап: «\(Self.deviceName)»")
         return Self.deviceName
+    }
+
+    // MARK: - Поток для демона
+
+    /// Демон не может читать тап сам — НИКОГДА: право на запись системного
+    /// звука применяется к процессу-читателю, а дочерний python его не
+    /// наследует (вердикт ночного разбора 06–07.08: приложению кадры идут,
+    /// демону — нет, при одном и том же агрегате). Поэтому читает
+    /// приложение, а демон забирает готовый PCM из растущего файла.
+    ///
+    /// Формат: s16le mono на родной частоте агрегата; демон даунсемплит
+    /// своим ФНЧ. Манифест пишется только ПОСЛЕ первых реальных кадров —
+    /// его наличие для демона означает «поток жив», а не «мы попытались».
+    private final class StreamBox: @unchecked Sendable {
+        let handle: FileHandle
+        var frames = 0
+        init(handle: FileHandle) { self.handle = handle }
+    }
+
+    private var streamProc: AudioDeviceIOProcID?
+    private var streamBox: StreamBox?
+
+    private static var streamDir: URL {
+        AppSettings.charoiteRoot.appendingPathComponent("data", isDirectory: true)
+    }
+    static var streamURL: URL { streamDir.appendingPathComponent("tap_stream.raw") }
+    static var manifestURL: URL { streamDir.appendingPathComponent("tap_stream.json") }
+
+    private func startStreaming(_ aggregate: AudioObjectID) {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: Self.streamDir, withIntermediateDirectories: true)
+        try? fm.removeItem(at: Self.manifestURL)   // манифест — только после первых кадров
+        fm.createFile(atPath: Self.streamURL.path, contents: nil)  // старый поток усечён
+        guard let handle = try? FileHandle(forWritingTo: Self.streamURL) else {
+            logSelfTest("файл потока не открылся — демону отдать нечего")
+            return
+        }
+        let box = StreamBox(handle: handle)
+        streamBox = box
+        let block: AudioDeviceIOBlock = { _, inData, _, _, _ in
+            // Пишем прямо с аудио-нити: блоки по четверти секунды, конкурентов
+            // за файл нет, у CoreAudio сотни миллисекунд запаса. Если когда-то
+            // появятся дропы — выносить в кольцевой буфер, не раздувать здесь.
+            let list = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inData))
+            var chunk = [Int16]()
+            for buffer in list {
+                guard let raw = buffer.mData else { continue }
+                let count = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size
+                let samples = raw.assumingMemoryBound(to: Float.self)
+                chunk.reserveCapacity(chunk.count + count)
+                for i in 0..<count {
+                    chunk.append(Int16(max(-1, min(1, samples[i])) * 32767))
+                }
+            }
+            guard !chunk.isEmpty else { return }
+            box.frames += chunk.count
+            chunk.withUnsafeBufferPointer { p in
+                box.handle.write(Data(buffer: p))
+            }
+        }
+        guard AudioDeviceCreateIOProcIDWithBlock(&streamProc, aggregate, nil, block) == noErr,
+              let proc = streamProc else {
+            logSelfTest("IOProc потока не создан")
+            try? handle.close()
+            streamBox = nil
+            return
+        }
+        var status = AudioDeviceStart(aggregate, proc)
+        if status != noErr {
+            // Свежий агрегат отвечает EAGAIN на первый старт и оживает со второго.
+            Thread.sleep(forTimeInterval: 0.4)
+            status = AudioDeviceStart(aggregate, proc)
+        }
+        guard status == noErr else {
+            logSelfTest("поток не стартовал: OSStatus \(status)")
+            AudioDeviceDestroyIOProcID(aggregate, proc)
+            streamProc = nil
+            try? handle.close()
+            streamBox = nil
+            return
+        }
+        let sampleRate = Self.nominalSampleRate(aggregate)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self, let box = self.streamBox else { return }
+            guard box.frames > 0 else {
+                self.logSelfTest("поток запущен, но кадров нет — манифест не выписан")
+                return
+            }
+            let manifest: [String: Any] = [
+                "path": Self.streamURL.path,
+                "samplerate": sampleRate,
+                "format": "s16le",
+                "channels": 1,
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: manifest) {
+                try? data.write(to: Self.manifestURL)
+                self.logSelfTest("поток жив: \(box.frames) кадров за секунду, манифест выписан")
+            }
+        }
+    }
+
+    private func stopStreaming() {
+        if let proc = streamProc, aggregateID != AudioObjectID(kAudioObjectUnknown) {
+            AudioDeviceStop(aggregateID, proc)
+            AudioDeviceDestroyIOProcID(aggregateID, proc)
+        }
+        streamProc = nil
+        try? streamBox?.handle.close()
+        streamBox = nil
+        // Манифест обязан умереть вместе с потоком: демон следующей встречи
+        // не должен выбрать замороженный файл вместо живого BlackHole.
+        try? FileManager.default.removeItem(at: Self.manifestURL)
+    }
+
+    private static func nominalSampleRate(_ device: AudioObjectID) -> Double {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var rate = Float64(0)
+        var size = UInt32(MemoryLayout<Float64>.size)
+        AudioObjectGetPropertyData(device, &address, 0, nil, &size, &rate)
+        return rate > 0 ? rate : 48000
     }
 
     /// Короткое чтение агрегата СВОИМ IOProc — две задачи разом.
@@ -212,6 +336,7 @@ final class SystemAudioTap {
     /// Снять тап. Вызывать обязательно: незакрытое устройство остаётся в
     /// системе и висит в списке звуковых устройств до перезагрузки.
     func stop() {
+        stopStreaming()
         if aggregateID != AudioObjectID(kAudioObjectUnknown) {
             AudioHardwareDestroyAggregateDevice(aggregateID)
             aggregateID = AudioObjectID(kAudioObjectUnknown)

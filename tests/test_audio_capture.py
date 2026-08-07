@@ -483,3 +483,76 @@ def test_ресемплер_пропускает_речевую_полосу():
     out = a._Downsampler(sr, 16000).process(tone)
 
     assert 0.6 < np.sqrt(np.mean(out[800:]**2)) < 0.75, "речевая полоса просела"
+
+
+# ── Поток тапа от приложения: демон читает файл, а не устройство ──────────
+
+def _manifest(tmp_path, sr=48000):
+    import json
+    raw = tmp_path / "tap_stream.raw"
+    raw.write_bytes(b"")
+    m = {"path": str(raw), "samplerate": sr, "format": "s16le", "channels": 1}
+    (tmp_path / "tap_stream.json").write_text(json.dumps(m), encoding="utf-8")
+    return m, raw
+
+
+def test_поток_тапа_читается_и_даунсемплится(tmp_path):
+    """Приложение пишет s16le 48 кГц, конвейер получает float32 16 кГц.
+
+    Право на системный звук есть только у приложения (вердикт 06–07.08),
+    поэтому демон берёт кадры из растущего файла — и они обязаны прийти
+    в той же форме, что и из PortAudio."""
+    m, raw = _manifest(tmp_path)
+    cap = a.TapStreamCapture(m, 16000, "blackhole")
+    t = np.arange(48000, dtype=np.float32) / 48000
+    tone = (0.5 * np.sin(2 * np.pi * 440 * t) * 32767).astype("<i2")
+    def writer():
+        # как приложение: кадры капают маленькими порциями непрерывно
+        with raw.open("ab") as f:
+            for i in range(0, len(tone), 4800):
+                f.write(tone[i:i + 4800].tobytes())
+                f.flush()
+                time.sleep(0.05)
+    import threading as _t
+    w = _t.Thread(target=writer, daemon=True)
+    w.start()
+    cap.start()
+    try:
+        w.join(timeout=5)
+        got = []
+        deadline = time.time() + 5
+        while sum(len(g) for g in got) < 12000 and time.time() < deadline:
+            try:
+                got.append(cap.q.get(timeout=0.5))
+            except queue.Empty:
+                pass
+    finally:
+        cap.stop()
+    out = np.concatenate(got) if got else np.zeros(0)
+    assert len(out) >= 12000, "секунда исходника не превратилась в кадры 16 кГц"
+    assert 0.2 < float(np.abs(out).max()) <= 1.0, "амплитуда тона потерялась"
+
+
+def test_поток_тапа_без_роста_падает_вслух(tmp_path):
+    """Файл есть, но не растёт: канал обязан отказаться, а не писать тишину."""
+    m, _raw = _manifest(tmp_path)
+    cap = a.TapStreamCapture(m, 16000, "blackhole")
+    try:
+        cap.start()
+    except RuntimeError as e:
+        assert "не растёт" in str(e)
+    else:
+        cap.stop()
+        raise AssertionError("старт без кадров обязан падать")
+
+
+def test_свежесть_манифеста(tmp_path, monkeypatch):
+    """Манифест мёртвой встречи (файл давно не рос) не выбирается."""
+    m, raw = _manifest(tmp_path)
+    monkeypatch.setattr(a, "TAP_STREAM_MANIFEST", tmp_path / "tap_stream.json")
+    raw.write_bytes(b"\0\0" * 100)
+    assert a.fresh_tap_manifest() is not None, "живой манифест не распознан"
+    old = time.time() - 60
+    import os
+    os.utime(raw, (old, old))
+    assert a.fresh_tap_manifest() is None, "труп прошлой встречи прошёл за живого"

@@ -258,7 +258,7 @@ final class SuflerService: ObservableObject {
         // Следующая гипотеза — двум входным потокам тесно в одном процессе;
         // проверять только не на рабочей машине: осиротевший агрегат дважды
         // за день подвесил CoreAudio. Включать после разбора.
-        // startSystemAudioTap()
+        startSystemAudioTap()
 
         let p = Process()
         p.executableURL = suflerRoot.appendingPathComponent(".venv/bin/python")
