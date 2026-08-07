@@ -638,3 +638,38 @@ def test_рестарт_продолжает_с_места_а_не_с_конца
     total = int(sum(len(g) for g in got))
     assert total >= 1600, (
         f"после рестарта дошло {total} из 1600 — накопленное выброшено прыжком в конец")
+
+
+def test_частота_микрофона_берётся_своя_а_не_системная(tmp_path):
+    """ScreenCaptureKit применяет запрошенную частоту только к системному
+    звуку: микрофон приходит в родном формате устройства. Живой тест 07.08
+    показал файл микрофона втрое больше системного — спутав частоты, демон
+    растянул бы голос втрое."""
+    sysraw, micraw = tmp_path / "s.raw", tmp_path / "m.raw"
+    sysraw.write_bytes(b"\0\0" * 10)
+    micraw.write_bytes(b"\0\0" * 10)
+    m = {"engine": "screencapturekit", "format": "s16le",
+         "samplerate": 16000,
+         "system": str(sysraw), "system_rate": 16000,
+         "mic": str(micraw), "mic_rate": 48000}
+
+    system = a.TapStreamCapture(m, 16000, "blackhole", key="system")
+    mic = a.TapStreamCapture(m, 16000, "mic", key="mic")
+
+    assert "16000 Гц" in system.opened_as, system.opened_as
+    assert "48000 Гц" in mic.opened_as, mic.opened_as
+
+
+def test_манифест_screencapturekit_живой_только_с_растущим_потоком(tmp_path, monkeypatch):
+    """Манифест без растущих файлов — труп прошлой встречи, брать нельзя."""
+    import json, os
+    sysraw = tmp_path / "s.raw"
+    sysraw.write_bytes(b"\0\0" * 100)
+    man = tmp_path / "sck.json"
+    man.write_text(json.dumps({"engine": "screencapturekit", "samplerate": 16000,
+                               "format": "s16le", "system": str(sysraw)}))
+    monkeypatch.setattr(a, "SCK_STREAM_MANIFEST", man)
+    assert a.fresh_sck_manifest() is not None, "живой манифест не распознан"
+    old = time.time() - 60
+    os.utime(sysraw, (old, old))
+    assert a.fresh_sck_manifest() is None, "труп прошлой встречи прошёл за живого"

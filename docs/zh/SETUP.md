@@ -24,17 +24,23 @@ cp config/config.example.yaml config/config.yaml
 
 建议同时填写：`sufler.user_context`（用 1-2 句话介绍你的工作）——即时回答所用的上下文。
 
-## 3. 系统音频（通话）
+## 3. 系统音频（通话）— 无需任何设置
 
-没有它，Charoite 只能听到麦克风（线下会议开箱即用）。有两条路径。
+应用通过 macOS 自身（ScreenCaptureKit）捕获会议音频。首次录制时系统会询问一次
+「屏幕与系统音频录制」权限——点击「允许」即可。就这样：不需要驱动、不需要
+音频 MIDI 设置、不需要切换输出设备。声音照常从扬声器播放；在 macOS 15 及以上，
+麦克风也通过同一数据流传入。
 
-**macOS 14.4 及更新版本：无需任何设置。** 应用会在会议期间自动创建 Core Audio 进程音频捕获（process tap），完全依靠系统能力。首次录制时 macOS 会请求“屏幕与系统音频录制”权限；声音照常从扬声器播放，会议结束后该设备自动消失。无需安装驱动，也无需切换输出设备。
+分离通道免费提供「你／对方」的说话人区分与回声过滤。
 
-**备用方案——BlackHole**（较旧的 macOS，或权限被拒绝）：安装 [BlackHole 2ch](https://existential.audio/blackhole/)，在“音频 MIDI 设置”中创建多输出设备（扬声器 + BlackHole），并将其设为系统输出。
+**备用方案 — BlackHole**（macOS 13 之前，或权限被拒绝）：
 
-⚠️ 若两者同时存在：请将系统输出保持在普通设备上，而非多输出设备。对聚合设备做 tap 只会得到静音，而在普通双声道设备上可获得完整音量。
+1. 安装 [BlackHole 2ch](https://existential.audio/blackhole/)。
+2. 音频 MIDI 设置 →「+」→ 多输出设备 → 勾选扬声器和 BlackHole。
+3. 系统输出 → 该多输出设备（既能听到声音，Charoite 也能收到）。
 
-分离的声道免费带来“你/对方”的说话人分离和回声过滤。
+Charoite 自行选择音源：优先 ScreenCaptureKit，其次 BlackHole。会议状态栏会
+显示当前使用的通道。
 
 ## 4. macOS 权限
 

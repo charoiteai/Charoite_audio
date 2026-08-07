@@ -57,27 +57,43 @@ def find_system_audio() -> tuple[int | None, str]:
 
 
 TAP_STREAM_MANIFEST = ROOT / "data" / "tap_stream.json"
+SCK_STREAM_MANIFEST = ROOT / "data" / "sck_stream.json"
 
 
-def fresh_tap_manifest() -> dict | None:
-    """Манифест живого тап-потока приложения, если он есть и растёт.
+def _fresh_manifest(path: pathlib.Path, *keys: str) -> dict | None:
+    """Манифест потока приложения, если он есть и файлы растут.
 
-    Демон не может читать тап сам — никогда: право на запись системного
-    звука применяется к процессу-читателю, а дочерний python его не
-    наследует (вердикт разбора 06–07.08). Поэтому приложение читает тап
-    своим IOProc и пишет PCM в файл; манифест появляется только после
-    первых реальных кадров. Свежесть проверяем по mtime самого потока:
-    манифест без растущего файла — это труп прошлой встречи.
+    Демон не может захватывать системный звук сам — никогда: право выдаётся
+    процессу-читателю, а дочерний python его не наследует (вердикт разбора
+    06–07.08). Поэтому захватывает приложение и пишет PCM в файлы; манифест
+    появляется только после первых реальных кадров. Свежесть проверяем по
+    mtime самих потоков: манифест без растущего файла — труп прошлой встречи.
     """
     import json
     try:
-        m = json.loads(TAP_STREAM_MANIFEST.read_text(encoding="utf-8"))
-        path = pathlib.Path(m["path"])
-        if time.time() - path.stat().st_mtime > 10:
-            return None
+        m = json.loads(path.read_text(encoding="utf-8"))
+        for key in keys:
+            if key in m and time.time() - pathlib.Path(m[key]).stat().st_mtime > 10:
+                return None
         return m
     except (OSError, ValueError, KeyError):
         return None
+
+
+def fresh_sck_manifest() -> dict | None:
+    """Живой поток ScreenCaptureKit: системный звук и, с macOS 15, микрофон.
+
+    Предпочтительный источник: ScreenCaptureKit не создаёт агрегатных
+    устройств, поэтому не может подвесить CoreAudio — в отличие от Core
+    Audio taps, стоивших четырёх подвесов звука 06–07.08. Микрофон в том же
+    манифесте означает, что PortAudio этой встрече не нужен вовсе.
+    """
+    return _fresh_manifest(SCK_STREAM_MANIFEST, "system")
+
+
+def fresh_tap_manifest() -> dict | None:
+    """Живой поток Core Audio tap (наследие; тап выключен по умолчанию)."""
+    return _fresh_manifest(TAP_STREAM_MANIFEST, "path")
 
 
 class TapStreamCapture:
@@ -89,12 +105,21 @@ class TapStreamCapture:
     кадры; сторож тишины и страховка перезапуска работают без изменений.
     """
 
-    def __init__(self, manifest: dict, samplerate: int, label: str):
+    def __init__(self, manifest: dict, samplerate: int, label: str, key: str = "path"):
         self.label = label
         self.samplerate = int(samplerate)
         self.q: queue.Queue[np.ndarray] = queue.Queue()
-        self._m = manifest
-        self.opened_as = f"поток приложения, {float(manifest['samplerate']):.0f} Гц"
+        # key указывает, какой из потоков манифеста читаем: у тапа он один
+        # («path»), у ScreenCaptureKit их два — «system» и «mic». Частота у
+        # каждого своя: система отдаёт запрошенную, а микрофон — родную
+        # частоту устройства (48 кГц), и спутать их значит растянуть голос.
+        if key != "path":
+            rate = manifest.get(f"{key}_rate", manifest["samplerate"])
+            self._m = dict(manifest, path=manifest[key], samplerate=rate)
+        else:
+            self._m = manifest
+        engine = manifest.get("engine", "tap")
+        self.opened_as = f"поток приложения ({engine}), {float(self._m['samplerate']):.0f} Гц"
         self._stop_flag = threading.Event()
         self._thread: threading.Thread | None = None
         # Позиция последнего прочитанного байта — переживает restart: сторож
@@ -407,12 +432,28 @@ class AudioHub:
         # записей (`..._blackhole.wav`), её знают rebuild_transcript и
         # meeting_stamp. Переименование метки сломало бы пересборку старых
         # встреч ради косметики.
-        tap_stream = fresh_tap_manifest()
-        bh, self.system_audio_via = (None, "tap-stream") if tap_stream \
-            else find_system_audio()
+        # Порядок источников системного звука — от лучшего к запасному:
+        # 1. ScreenCaptureKit: ничего не создаёт в CoreAudio, а с macOS 15
+        #    приносит и микрофон тем же потоком — PortAudio не нужен вовсе;
+        # 2. поток Core Audio tap (наследие, тап выключен по умолчанию);
+        # 3. BlackHole — проверенный драйвер, но требует установки руками.
+        sck = fresh_sck_manifest()
+        tap_stream = None if sck else fresh_tap_manifest()
+        if sck:
+            bh, self.system_audio_via = None, "screencapturekit"
+        elif tap_stream:
+            bh, self.system_audio_via = None, "tap-stream"
+        else:
+            bh, self.system_audio_via = find_system_audio()
         mic = sd.default.device[0] if sd.default.device else None
+        # Микрофон в манифесте = система отдаёт оба канала одним потоком.
+        mic_from_stream = bool(sck and sck.get("mic"))
 
-        if mode in ("auto", "mix", "blackhole") and tap_stream is not None:
+        if mode in ("auto", "mix", "blackhole") and sck is not None:
+            self.captures.append(
+                TapStreamCapture(sck, self.sr, "blackhole", key="system"))
+            self.sources.append("Системный звук (ScreenCaptureKit)")
+        elif mode in ("auto", "mix", "blackhole") and tap_stream is not None:
             # Живой поток приложения важнее устройств: он означает, что тап
             # уже отдаёт кадры тому единственному процессу, которому система
             # это разрешает. BlackHole остаётся фолбэком на случай, когда
@@ -423,8 +464,15 @@ class AudioHub:
             self.captures.append(Capture(bh, self.sr, "blackhole"))
             self.sources.append("Тап системы" if self.system_audio_via == "tap" else "BlackHole")
         # auto = система И микрофон: на встрече нужны обе стороны разговора
-        if mode in ("mic", "mix", "auto") and (mode != "auto" or bh is None or mic is not None):
-            if mode != "blackhole":
+        if mode in ("mic", "mix", "auto") and mode != "blackhole":
+            if mic_from_stream:
+                # Микрофон тем же потоком (macOS 15+): PortAudio не открывается
+                # вообще, и вместе с ним уходит класс аварий «мёртвый стрим
+                # виснет на close», стоивший записей 20.07 и 06.08.
+                self.captures.append(
+                    TapStreamCapture(sck, self.sr, "mic", key="mic"))
+                self.sources.append("Микрофон (ScreenCaptureKit)")
+            elif mode != "auto" or bh is None or mic is not None or sck is not None:
                 self.captures.append(Capture(mic, self.sr, "mic"))
                 self.sources.append("Микрофон")
         if not self.captures:  # blackhole запрошен, но не найден

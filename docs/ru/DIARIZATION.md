@@ -9,6 +9,9 @@ Charoite делает два прохода диаризации:
    ERes2Net в формате ONNX по пути `models/diar/embedding.onnx`
    (выход 512 измерений, вход 16 кГц). Ставится одной командой:
 
+   **Проще всего — кнопкой «Различать голоса собеседников» в мастере первого
+   запуска приложения.** Ниже — то же самое из терминала.
+
    ```bash
    .venv/bin/python scripts/get_models.py --diar          # дефолтная модель
    .venv/bin/python scripts/get_models.py --diar --list   # что ещё есть

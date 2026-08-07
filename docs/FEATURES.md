@@ -434,6 +434,18 @@ it signals degradation, it does not break the loop.
   point to different meetings in the same minute, rebuild refuses them instead
   of producing a mixed transcript. The silent format drift of 28.07 cost every meeting its final
   transcript — the naming contract is now held by end-to-end tests.
+- **Setup without a terminal or YAML** — the first-run wizard asks for your
+  name and the graph folder and writes them into the config itself (the folder
+  is picked in a panel); the voice-separation model installs with a button,
+  running the same script that used to require a console. Editing
+  `config.yaml` by hand is no longer needed.
+- **System audio out of the box (ScreenCaptureKit)** — the app captures
+  meeting audio with macOS itself: no driver, no admin password, no
+  Multi-Output Device. One system permission on the first recording and that's
+  it. No aggregate devices are created at all, so there is nothing to wedge
+  CoreAudio (taps did it four times). On macOS 15+ the microphone arrives in
+  the same stream and PortAudio never opens — taking the whole "dead stream
+  hangs on close" class of failures with it. BlackHole remains a fallback.
 - **System audio without BlackHole (native tap)** — on macOS 14.4+ the app
   captures call audio itself via a Core Audio process tap: it reads the tap
   with its own IOProc (the system grants system-audio recording to the

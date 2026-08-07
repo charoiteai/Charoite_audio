@@ -65,6 +65,59 @@ enum AppSettings {
         return parseValue(key, in: text)
     }
 
+    /// Записать значение в `config/config.yaml` — без YAML-зависимости.
+    ///
+    /// До этого приложение конфиг только читало, и два обязательных поля —
+    /// имя владельца и папка графа — человек правил в текстовом редакторе.
+    /// Для «поставил и работает» это лишний шаг: те же два поля спрашивает
+    /// мастер первого запуска.
+    ///
+    /// Возвращает false, если файла нет и создать его не удалось: молчаливый
+    /// отказ здесь означал бы «настроил, а ничего не изменилось».
+    @discardableResult
+    static func setConfigValue(_ key: String, _ value: String) -> Bool {
+        let cfg = charoiteRoot.appendingPathComponent("config/config.yaml")
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: cfg.path) {
+            // Первый запуск: конфига ещё нет — берём образец из поставки.
+            let example = charoiteRoot.appendingPathComponent("config/config.example.yaml")
+            guard (try? fm.copyItem(at: example, to: cfg)) != nil else { return false }
+        }
+        guard let text = try? String(contentsOf: cfg, encoding: .utf8) else { return false }
+        let updated = replacing(key, with: value, in: text)
+        return (try? updated.write(to: cfg, atomically: true, encoding: .utf8)) != nil
+    }
+
+    /// Замена значения ключа в тексте конфига. Чистая функция — под тестом.
+    ///
+    /// Правим ПОСЛЕДНЕЕ вхождение по той же причине, по какой его читает
+    /// parseValue: одинаковые имена ключей встречаются в разных секциях, и
+    /// секция sufler лежит ниже. Значение всегда в кавычках: путь с пробелом
+    /// или имя с двоеточием иначе ломают YAML молча.
+    static func replacing(_ key: String, with value: String, in text: String) -> String {
+        var lines = text.components(separatedBy: "\n")
+        let escaped = value.replacingOccurrences(of: "\"", with: "\\\"")
+        var target: Int?
+        for (i, line) in lines.enumerated()
+        where line.trimmingCharacters(in: .whitespaces).hasPrefix(key + ":") {
+            target = i
+        }
+        if let i = target {
+            let indent = String(lines[i].prefix { $0 == " " })
+            // Комментарий справа сохраняем: он объясняет поле человеку.
+            let comment = lines[i].range(of: " #").map { String(lines[i][$0.lowerBound...]) } ?? ""
+            lines[i] = "\(indent)\(key): \"\(escaped)\"\(comment)"
+            return lines.joined(separator: "\n")
+        }
+        // Ключа нет вовсе — дописываем в секцию sufler, а не в конец файла:
+        // в корне YAML он ничего не настроит.
+        if let i = lines.firstIndex(where: { $0.hasPrefix("sufler:") }) {
+            lines.insert("  \(key): \"\(escaped)\"", at: i + 1)
+            return lines.joined(separator: "\n")
+        }
+        return text + "\nsufler:\n  \(key): \"\(escaped)\"\n"
+    }
+
     /// Отделено от чтения файла ради тестов: разбор — чистая функция.
     ///
     /// Три ловушки, каждая давала молчаливый отказ.
@@ -83,8 +136,21 @@ enum AppSettings {
             var v = t.dropFirst(key.count + 1)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !v.hasPrefix(">"), !v.hasPrefix("|") else { continue }  // блочный скаляр не наш случай
-            let quoted = v.hasPrefix("\"") || v.hasPrefix("'")
-            if !quoted, let hash = v.range(of: " #") {   // комментарий отделён пробелом
+            if let quote = v.first, quote == "\"" || quote == "'" {
+                // Значение в кавычках: берём ровно до закрывающей кавычки,
+                // всё после неё — комментарий. Раньше комментарий у такой
+                // строки не отсекался вовсе, и в поле мастера приезжало
+                //   Мария"           # метка вашего микрофона
+                // (найдено на живом экране 07.08, когда конфиг стал писаться
+                // из приложения — а оно пишет значения в кавычках всегда:
+                // путь с пробелом или имя с двоеточием иначе ломают YAML).
+                let body = v.dropFirst()
+                if let close = body.firstIndex(of: quote) {
+                    v = String(body[..<close])
+                } else {
+                    v = String(body)   // кавычка не закрыта — берём остаток
+                }
+            } else if let hash = v.range(of: " #") {   // комментарий отделён пробелом
                 v = String(v[..<hash.lowerBound])
             }
             v = v.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -9,6 +9,9 @@ Charoite uses two diarization passes:
    ONNX format at `models/diar/embedding.onnx` (512-dim output, 16 kHz input).
    One command installs it:
 
+   **Easiest: the "Tell speakers apart" button in the app's first-run
+   wizard.** The same thing from the terminal is below.
+
    ```bash
    .venv/bin/python scripts/get_models.py --diar          # default model
    .venv/bin/python scripts/get_models.py --diar --list   # what else is available
