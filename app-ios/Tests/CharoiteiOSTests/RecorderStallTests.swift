@@ -61,4 +61,20 @@ final class RecorderStallTests: XCTestCase {
                        "встреча двумя кусками лучше, чем полторы минуты вместо часа")
         XCTAssertEqual(Recorder.actionAfterFailedResume(attempts: 10), .rotate)
     }
+
+    // MARK: - Звонок — это пауза, а не поломка (07.08)
+
+    /// Встреча 07.08, 30+ минут: звонок забрал микрофон, сторож не знал о
+    /// прерывании — три «неудачных» resume, ротация, от встречи остался
+    /// 40-килобайтный огрызок. Во время прерывания попытки подавлены.
+    func testВоВремяЗвонкаНеПоднимаемИНеРотируем() {
+        XCTAssertFalse(Recorder.shouldAutoResume(stalled: true, interrupted: true),
+                       "resume во время звонка исчерпывает попытки и рубит файл")
+    }
+
+    func testБезЗвонкаЗастойПоднимаемКакРаньше() {
+        XCTAssertTrue(Recorder.shouldAutoResume(stalled: true, interrupted: false))
+        XCTAssertFalse(Recorder.shouldAutoResume(stalled: false, interrupted: false))
+        XCTAssertFalse(Recorder.shouldAutoResume(stalled: false, interrupted: true))
+    }
 }
