@@ -129,6 +129,10 @@ final class SuflerService: ObservableObject {
     /// поднимается перед стартом, гасится в stop() и при смерти демона —
     /// иначе устройство останется висеть в системе.
     private var systemAudioTap: Any?
+    /// Захват ScreenCaptureKit — основной путь к системному звуку с 07.08.
+    /// Живёт столько же, сколько демон: поднимается перед стартом, гаснет
+    /// в stop() и при смерти демона.
+    private var systemAudioCapture: Any?
     private var stdoutBuffer = Data()
     private var _hintBuf = ""            // буфер троттла подсказки (см. consume)
     private var _lastHintUI = Date.distantPast
@@ -274,6 +278,26 @@ final class SuflerService: ObservableObject {
         // проверенным BlackHole.
         // startSystemAudioTap()
 
+        // Системный звук берём ScreenCaptureKit: агрегатных устройств он не
+        // создаёт, поэтому подвесить CoreAudio не может — в отличие от тапов,
+        // стоивших четырёх подвесов 06–07.08. Захват поднимаем ДО демона:
+        // манифест обязан существовать к моменту, когда python выбирает
+        // источники, иначе встреча уйдёт на BlackHole.
+        if #available(macOS 13.0, *), systemAudioCapture == nil {
+            let capture = SystemAudioCapture()
+            systemAudioCapture = capture
+            Task { @MainActor in
+                if await capture.start() == false { self.systemAudioCapture = nil }
+                self.launchDaemon(preserveUI: preserveUI)
+            }
+            return
+        }
+        launchDaemon(preserveUI: preserveUI)
+    }
+
+    /// Запуск python-демона. Отделён от start(), потому что захват звука
+    /// поднимается асинхронно, а демон обязан стартовать ПОСЛЕ него.
+    private func launchDaemon(preserveUI: Bool) {
         let p = Process()
         p.executableURL = suflerRoot.appendingPathComponent(".venv/bin/python")
         p.arguments = ["src/daemon.py"]
@@ -360,8 +384,13 @@ final class SuflerService: ObservableObject {
         // 05.08 стоил сорока минут встречи.
         let tap = systemAudioTap
         systemAudioTap = nil
+        let capture = systemAudioCapture
+        systemAudioCapture = nil
         DispatchQueue.main.asyncAfter(deadline: .now() + 13.0) {
             if #available(macOS 14.4, *) { (tap as? SystemAudioTap)?.stop() }
+            if #available(macOS 13.0, *) {
+                Task { @MainActor in await (capture as? SystemAudioCapture)?.stop() }
+            }
         }
         status = L.t("Останавливаю…", "Stopping…", "停止中…")
     }
@@ -385,6 +414,13 @@ final class SuflerService: ObservableObject {
         guard proc === process else { return }  // умер прошлый демон, не текущий
         if #available(macOS 14.4, *) { (systemAudioTap as? SystemAudioTap)?.stop() }
         systemAudioTap = nil
+        // Захват переживать демона не должен: без читателя поток пишется в
+        // никуда, а манифест сбивал бы с толку следующую встречу.
+        if #available(macOS 13.0, *) {
+            let capture = systemAudioCapture
+            systemAudioCapture = nil
+            Task { @MainActor in await (capture as? SystemAudioCapture)?.stop() }
+        }
         stdoutHandle?.readabilityHandler = nil
         stdoutHandle = nil
         try? errHandle?.close()

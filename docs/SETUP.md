@@ -29,26 +29,25 @@ In `config/config.yaml`:
 Also worth filling: `sufler.user_context` (1-2 sentences about your work) —
 context for instant answers.
 
-## 3. System audio (calls)
+## 3. System audio (calls) — nothing to do
 
-Without it Charoite hears only the mic (in-person meetings work as-is).
+The app captures meeting audio with macOS itself (ScreenCaptureKit). On the
+first recording the system asks once for "Screen & System Audio Recording" —
+press Allow. That's it: no drivers, no Audio MIDI Setup, no switching the
+output device. Sound keeps going to your speakers as usual, and on macOS 15+
+the microphone arrives in the same stream.
 
-**Nothing to do on macOS 14.4 and newer.** The app raises a Core Audio process
-tap for the duration of the meeting, using system means only. macOS asks for
-the "Screen & System Audio Recording" permission on the first recording; sound
-keeps playing through your speakers and the device disappears afterwards. No
-driver to install, no output device to switch.
+Separate channels give free "you / the other side" diarization and echo
+filtering.
 
-**Fallback — BlackHole** (older macOS, permission denied): install
-[BlackHole 2ch](https://existential.audio/blackhole/), create a Multi-Output
-Device (speakers + BlackHole) in Audio MIDI Setup and set it as the system
-output.
+**Fallback — BlackHole** (macOS before 13, or permission denied):
 
-⚠️ With both installed, keep the system output on a regular device rather than
-the Multi-Output one: a tap on an aggregate device returns silence, while on
-plain two-channel devices it captures at full level.
+1. Install [BlackHole 2ch](https://existential.audio/blackhole/).
+2. Audio MIDI Setup → "+" → Multi-Output Device → tick speakers AND BlackHole.
+3. System output → that Multi-Output (you hear sound, Charoite gets it too).
 
-Separate channels give you free you/them diarization and echo filtering.
+Charoite picks the source itself: ScreenCaptureKit first, then BlackHole. The
+meeting status shows which channel is in use.
 
 ## 4. macOS permissions
 
