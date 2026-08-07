@@ -46,6 +46,7 @@ struct SettingsView: View {
                 }
                 HStack {
                     Button(L.t("Проверить", "Check", "检查")) { Task { await runCheck() } }
+                        .charoite(.regular, .s)
                     if !check.isEmpty {
                         Text(check).font(.caption).foregroundStyle(.secondary)
                     }
@@ -62,6 +63,7 @@ struct SettingsView: View {
                     Button(nightlyInstalled ? L.t("Выключить", "Turn off", "关闭") : L.t("Включить", "Turn on", "开启")) {
                         nightlyInstalled ? nightlyDisable() : nightlyEnable()
                     }
+                    .charoite(.regular, .s)
                     if !nightlyNote.isEmpty {
                         Text(nightlyNote).font(.caption).foregroundStyle(.secondary)
                     }
@@ -115,6 +117,7 @@ struct SettingsView: View {
                     }
                 HStack {
                     Button(L.t("Импортировать сейчас", "Import now", "立即导入")) { importer.scanNow(dir: importDir) }
+                        .charoite(.regular, .s)
                         .disabled(importDir.isEmpty)
                     if !importer.status.isEmpty {
                         Text(importer.status).font(.caption).foregroundStyle(.secondary)

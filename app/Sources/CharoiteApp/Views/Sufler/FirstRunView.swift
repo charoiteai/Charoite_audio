@@ -118,8 +118,7 @@ struct FirstRunView: View {
                     Button(L.t("Проверить снова", "Check again", "再次检查")) {
                         readiness.refresh()
                     }
-                    .buttonStyle(.link)
-                    .font(.caption)
+                    .charoite(.quiet, .s)
                 }
             }
             ScrollView {
@@ -187,8 +186,7 @@ struct FirstRunView: View {
                             Button(L.t("Скачать \(model)", "Pull \(model)", "拉取 \(model)")) {
                                 pulls.pull(model)
                             }
-                            .buttonStyle(.link)
-                            .font(.system(size: 11))
+                            .charoite(.regular, .s)
                         }
                     }
                 }
@@ -200,8 +198,7 @@ struct FirstRunView: View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(cmd, forType: .string)
                 }
-                .buttonStyle(.link)
-                .font(.system(size: 11))
+                .charoite(.regular, .s)
             }
         }
     }
@@ -237,17 +234,18 @@ struct FirstRunView: View {
                     seen = true
                     dismiss()
                 }
+                .charoite(.quiet, .l)
                 SettingsLink {
                     Label(L.t("Настройки", "Settings", "设置"), systemImage: "gearshape")
                 }
+                .charoite(.regular, .l)
                 Spacer()
                 Button {
                     beginFirstMeeting()
                 } label: {
                     Text(L.t("Начать слушать встречу", "Start listening", "开始旁听"))
-                        .fontWeight(.medium)
-                        .padding(.horizontal, 6)
                 }
+                .charoite(.prominent, .l)
                 .keyboardShortcut(.defaultAction)
                 .disabled(readiness.isChecking || requestingMicrophone
                           || readiness.snapshot?.canStart != true)

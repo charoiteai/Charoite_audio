@@ -36,7 +36,7 @@ struct TodayWorkspaceView: View {
             Spacer()
             if processing.isProcessing { ProgressView().controlSize(.small) }
             Button(lifecycleActionTitle) { lifecycleAction() }
-                .buttonStyle(.borderedProminent).tint(Theme.accent)
+                .charoite(.prominent)
         }
         .padding(.horizontal, 18).padding(.vertical, 14)
         .background(Theme.accent.opacity(0.055))
@@ -49,7 +49,7 @@ struct TodayWorkspaceView: View {
                     .font(.headline)
                 Spacer()
                 Button(L.t("Все", "All", "全部")) { navigation.open(.meetings) }
-                    .buttonStyle(.link)
+                    .charoite(.link, .s)
             }
             if repository.records.isEmpty {
                 Text(L.t("Здесь появятся три последних результата.",

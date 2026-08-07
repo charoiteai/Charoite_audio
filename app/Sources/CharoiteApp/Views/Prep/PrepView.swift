@@ -166,7 +166,7 @@ struct PrepView: View {
                                      "and \(relevantOpenTasks.count - visible.count) more on this topic",
                                      "另有 \(relevantOpenTasks.count - visible.count) 项相关任务"))
                         }
-                        .buttonStyle(.link).font(.caption)
+                        .charoite(.link, .s)
                     }
                 }
             }
