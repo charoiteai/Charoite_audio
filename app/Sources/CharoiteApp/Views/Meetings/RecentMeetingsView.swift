@@ -213,11 +213,13 @@ struct RecentMeetingsView: View {
         HStack(spacing: 10) {
             if state == .ready, meeting.notePath != nil {
                 Button(L.t("Открыть", "Open", "打开")) { processing.open(meeting) }
+                    .charoite(.regular, .s)
             }
             if state != .processing {
                 Button(L.t("Стенограмма", "Transcript", "逐字稿")) {
                     processing.openTranscript(meeting)
                 }
+                .charoite(.regular, .s)
             }
             switch MeetingProcessingPolicy.retryControl(
                 for: meeting,
@@ -231,15 +233,15 @@ struct RecentMeetingsView: View {
                 }
             case .ready:
                 Button(L.t("Повторить", "Retry", "重试")) { processing.retry(meeting) }
+                    .charoite(.regular, .s)
             case .waiting:
                 Button(L.t("Повторить", "Retry", "重试")) {}
+                    .charoite(.regular, .s)
                     .disabled(true)
             case .hidden:
                 EmptyView()
             }
         }
-        .buttonStyle(.link)
-        .font(.caption)
         .fixedSize()
     }
 

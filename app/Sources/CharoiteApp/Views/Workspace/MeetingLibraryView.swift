@@ -68,13 +68,15 @@ struct MeetingLibraryView: View {
     private var weekStrip: some View {
         HStack(spacing: 3) {
             Button { shiftWeek(-1) } label: { Image(systemName: "chevron.left") }
-                .buttonStyle(.borderless)
+                .charoite(.icon, .s)
+                .help(L.t("Прошлая неделя", "Previous week", "上一周"))
                 .accessibilityLabel(Text(L.t("Прошлая неделя", "Previous week", "上一周")))
             ForEach(weekDays, id: \.self) { day in
                 dayCell(day)
             }
             Button { shiftWeek(1) } label: { Image(systemName: "chevron.right") }
-                .buttonStyle(.borderless)
+                .charoite(.icon, .s)
+                .help(L.t("Следующая неделя", "Next week", "下一周"))
                 .accessibilityLabel(Text(L.t("Следующая неделя", "Next week", "下一周")))
             Spacer(minLength: 4)
             if calendar.accessGranted != true {
@@ -84,7 +86,7 @@ struct MeetingLibraryView: View {
                 } label: {
                     Image(systemName: "calendar.badge.plus")
                 }
-                .buttonStyle(.borderless)
+                .charoite(.icon, .s)
                 .help(L.t("Подключить календарь: события дня появятся рядом с записями (локально, только чтение)",
                           "Connect the calendar: the day's events appear next to recordings (local, read-only)",
                           "连接日历：当天日程将与录音并排显示（本地，只读）"))
@@ -301,7 +303,7 @@ struct MeetingLibraryView: View {
                 calendarBriefs = true
                 calendar.enable(askForNotifications: true)
             }
-            .buttonStyle(.link)
+            .charoite(.prominent)
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -411,11 +413,12 @@ struct MeetingLibraryView: View {
                 Button(L.t("Стенограмма", "Transcript", "逐字稿")) {
                     processing.openTranscript(record.snapshot)
                 }
+                .charoite()
                 if processing.canRetry(record.snapshot) {
                     Button(L.t("Повторить обработку", "Retry processing", "重试处理")) {
                         processing.retry(record.snapshot)
                     }
-                    .buttonStyle(.borderedProminent).tint(Theme.accent)
+                    .charoite(.prominent)
                 }
             }
         }

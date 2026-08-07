@@ -10,6 +10,9 @@ struct CharoiteApp: App {
     var body: some Scene {
         WindowGroup(L.t("Чароит", "Charoite", "Charoite"), id: "main") {
             WorkspaceView()
+                // Фирменный тинт вместо системного синего: кольцо фокуса,
+                // прогрессы и оставшиеся системные контролы — индиго.
+                .tint(Theme.accent)
                 // Клик по встрече в Spotlight: системная активность несёт
                 // uniqueIdentifier — это meetingID из индекса.
                 .onContinueUserActivity(CSSearchableItemActionType) { activity in
@@ -22,12 +25,14 @@ struct CharoiteApp: App {
 
         Window(L.t("Чат с памятью", "Chat with memory", "记忆聊天"), id: "localchat") {
             LocalChatView()
+                .tint(Theme.accent)
                 .frame(minWidth: 520, minHeight: 420)   // минимум только у окна: в панели вью уже
         }
         .defaultSize(width: 640, height: 520)
 
         MenuBarExtra {
             MenuBarView()
+                .tint(Theme.accent)
         } label: {
             Image(systemName: "brain.head.profile")
         }
@@ -35,6 +40,7 @@ struct CharoiteApp: App {
 
         Settings {
             SettingsView()
+                .tint(Theme.accent)
         }
     }
 }

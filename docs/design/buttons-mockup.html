@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Charoite · кнопки — ревизия 2026-08</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  html, body { margin: 0; padding: 0 0 56px; background: #EEF0F6; }
+  * { box-sizing: border-box; }
+  a { color: #6366F1; text-decoration: none; border-bottom: 1px solid rgba(99,102,241,.35); }
+  a:hover { color: #4F46E5; border-bottom-color: #4F46E5; }
+  [style*="cursor:pointer"] { transition: all 120ms cubic-bezier(.4,0,.2,1); }
+  .x1:hover{background:linear-gradient(135deg,#7376F5,#9A6DF8) !important;box-shadow:0 2px 5px rgba(30,27,75,.2),0 10px 22px -8px rgba(99,102,241,.7) !important}
+  .x1:active{background:linear-gradient(135deg,#5457DE,#7B4CE3) !important;box-shadow:inset 0 1px 3px rgba(30,27,75,.4) !important}
+  .x2:hover{background:#F7F7FC !important;border-color:rgba(30,27,75,.26) !important}
+  .x2:active{background:#ECECF5 !important;box-shadow:inset 0 1px 2px rgba(30,27,75,.11) !important}
+  .x3:hover{background:rgba(30,27,75,.06) !important;color:#1E1B4B !important}
+  .x3:active{background:rgba(30,27,75,.12) !important}
+  .x4:hover{background:rgba(220,38,38,.09) !important}
+  .x4:active{background:rgba(220,38,38,.17) !important;color:#B91C1C !important}
+  .x5:hover{background:rgba(30,27,75,.06) !important}
+  .x5:active{background:rgba(30,27,75,.12) !important}
+</style>
+</head>
+<body>
+<section style="display:flex;flex-direction:column;gap:34px;padding:56px 56px 0;font-family:Inter,system-ui,sans-serif;color:#334155">
+
+  <div style="display:flex;flex-direction:column;gap:12px;max-width:980px">
+    <div style="display:flex;align-items:center;gap:10px">
+      <span style="font:600 10.5px/1 Inter;letter-spacing:.1em;text-transform:uppercase;color:#4F46E5;background:rgba(99,102,241,.10);padding:5px 9px;border-radius:999px">Турн 4 · кнопки</span>
+      <span style="font:400 13px/1 Inter;color:#94A3B8">аудит, шкала, состояния, кнопки на местах</span>
+    </div>
+    <h2 style="margin:0;font:800 36px/1.1 Manrope,sans-serif;letter-spacing:-0.025em;color:#1E1B4B;text-wrap:pretty">Шесть ролей вместо четырёх системных стилей</h2>
+    <p style="margin:0;font:400 16px/1.55 Inter;color:#475569;max-width:820px;text-wrap:pretty">В приложении 48 вызовов <code style="font:500 14px/1 ui-monospace,monospace;color:#1E1B4B;background:rgba(30,27,75,.06);padding:2px 5px;border-radius:4px">buttonStyle</code> и ни одного своего стиля. Роль кнопки должна читаться из вида, а не из того, какой системный стиль оказался под рукой: заметная обещает последствие, обычная просто открывает, тихая обслуживает панель.</p>
+  </div>
+
+  <div style="display:flex;flex-wrap:wrap;gap:44px">
+
+    <div id="4a" style="display:flex;flex-direction:column;gap:14px;width:700px;flex:none">
+      <div style="display:flex;align-items:baseline;gap:10px">
+        <span style="font:700 11px/1 Manrope,sans-serif;letter-spacing:.12em;color:#fff;background:#1E1B4B;padding:6px 9px;border-radius:6px">4a</span>
+        <span style="font:700 17px/1.2 Manrope,sans-serif;color:#1E1B4B">Что сейчас</span>
+        <span style="font:400 13px/1.2 Inter;color:#94A3B8">четыре стиля вперемешку</span>
+      </div>
+
+      <div data-screen-label="Кнопки — аудит" style="border:1px solid rgba(30,27,75,.12);border-radius:12px;background:#fff;box-shadow:0 24px 60px -24px rgba(30,27,75,.34);padding:22px;display:flex;flex-direction:column;gap:18px">
+
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:13px 16px;align-items:center">
+          <div style="display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 12px;border-radius:6px;background:#0A64F0;color:#fff;font:500 12.5px/1 Inter;white-space:nowrap">Начать запись</div>
+          <div style="display:flex;flex-direction:column;gap:2px">
+            <span style="font:600 12.5px/1.2 Inter;color:#1E1B4B">.borderedProminent · 6 раз</span>
+            <span style="font:400 12px/1.35 Inter;color:#64748B">Тинт задан у двух — остальные четыре системно-синие, рядом с фирменным индиго это чужой цвет.</span>
+          </div>
+
+          <div style="display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 12px;border-radius:6px;background:#6366F1;color:#fff;font:500 12.5px/1 Inter;white-space:nowrap">Стенограмма</div>
+          <div style="display:flex;flex-direction:column;gap:2px">
+            <span style="font:600 12.5px/1.2 Inter;color:#1E1B4B">.borderedProminent + .tint</span>
+            <span style="font:400 12px/1.35 Inter;color:#64748B">Тем же весом, что «Начать запись»: открыть файл и начать слушать встречу выглядят одинаково важно.</span>
+          </div>
+
+          <div style="display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 2px;font:400 12.5px/1 Inter;color:#1E1B4B;white-space:nowrap">Подсказка</div>
+          <div style="display:flex;flex-direction:column;gap:2px">
+            <span style="font:600 12.5px/1.2 Inter;color:#1E1B4B">.plain · 30 раз</span>
+            <span style="font:400 12px/1.35 Inter;color:#64748B">Ни рамки, ни подложки, ни наведения — неотличимо от подписи рядом. Половина кнопок приложения не выглядит кнопками.</span>
+          </div>
+
+          <div style="display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 2px;font:400 12.5px/1 Inter;color:#0A64F0;white-space:nowrap">Все задачи</div>
+          <div style="display:flex;flex-direction:column;gap:2px">
+            <span style="font:600 12.5px/1.2 Inter;color:#1E1B4B">.link · 9 раз</span>
+            <span style="font:400 12px/1.35 Inter;color:#64748B">Снова системный синий. «Забыть встречу» — тоже ссылка, хотя удаляет данные без возврата.</span>
+          </div>
+
+          <div style="display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 10px;border-radius:6px;border:1px solid rgba(30,27,75,.2);color:#1E1B4B;font:400 12.5px/1 Inter;white-space:nowrap">Сортировка</div>
+          <div style="display:flex;flex-direction:column;gap:2px">
+            <span style="font:600 12.5px/1.2 Inter;color:#1E1B4B">.borderless · 3 раза</span>
+            <span style="font:400 12px/1.35 Inter;color:#64748B">Три соседние кнопки в шапке библиотеки — пятая по счёту трактовка «обычной кнопки».</span>
+          </div>
+        </div>
+
+        <div style="height:1px;background:#E8EAF2"></div>
+
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <span style="font:600 10px/1 Inter;letter-spacing:.1em;text-transform:uppercase;color:#94A3B8">Одна панель, три стиля</span>
+          <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border:1px dashed rgba(220,38,38,.4);border-radius:8px;background:rgba(220,38,38,.03)">
+            <span style="font:400 12.5px/1 Inter;color:#1E1B4B">Подсказка</span>
+            <span style="font:400 12.5px/1 Inter;color:#1E1B4B">Claude</span>
+            <span style="font:400 12.5px/1 Inter;color:#1E1B4B">Протокол</span>
+            <span style="margin-left:auto;display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 12px;border-radius:6px;background:#0A64F0;color:#fff;font:500 12.5px/1 Inter">К встрече</span>
+            <span style="display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 12px;border-radius:6px;background:#0A64F0;color:#fff;font:500 12.5px/1 Inter">Спросить</span>
+          </div>
+          <span style="font:400 12px/1.4 Inter;color:#DC2626;text-wrap:pretty">Шапка встречи: три невидимые кнопки слева и две одинаково заметные справа. Куда нажать, чтобы началась запись, — не читается.</span>
+        </div>
+
+      </div>
+    </div>
+
+    <div id="4b" style="display:flex;flex-direction:column;gap:14px;width:1180px;flex:none">
+      <div style="display:flex;align-items:baseline;gap:10px">
+        <span style="font:700 11px/1 Manrope,sans-serif;letter-spacing:.12em;color:#fff;background:#1E1B4B;padding:6px 9px;border-radius:6px">4b</span>
+        <span style="font:700 17px/1.2 Manrope,sans-serif;color:#1E1B4B">Шкала</span>
+        <span style="font:400 13px/1.2 Inter;color:#94A3B8">шесть ролей × шесть состояний</span>
+      </div>
+
+      <div data-screen-label="Кнопки — шкала" style="border:1px solid rgba(30,27,75,.12);border-radius:12px;background:#fff;box-shadow:0 24px 60px -24px rgba(30,27,75,.34);padding:26px;display:flex;flex-direction:column;gap:22px">
+
+        <div style="display:grid;grid-template-columns:186px repeat(6,1fr);gap:15px 14px;align-items:center">
+
+          <span></span>
+          <span style="font:600 10px/1 Inter;letter-spacing:.1em;text-transform:uppercase;color:#94A3B8">Покой</span>
+          <span style="font:600 10px/1 Inter;letter-spacing:.1em;text-transform:uppercase;color:#94A3B8">Наведение</span>
+          <span style="font:600 10px/1 Inter;letter-spacing:.1em;text-transform:uppercase;color:#94A3B8">Нажатие</span>
+          <span style="font:600 10px/1 Inter;letter-spacing:.1em;text-transform:uppercase;color:#94A3B8">Фокус</span>
+          <span style="font:600 10px/1 Inter;letter-spacing:.1em;text-transform:uppercase;color:#94A3B8">Выключено</span>
+          <span style="font:600 10px/1 Inter;letter-spacing:.1em;text-transform:uppercase;color:#94A3B8">Занято</span>
+
+          <div style="display:flex;flex-direction:column;gap:3px">
+            <span style="font:700 13px/1.2 Manrope,sans-serif;color:#1E1B4B">Заметная</span>
+            <span style="font:400 11.5px/1.35 Inter;color:#64748B">Одна на панель. Действие с последствием: запись, отправка, доступ.</span>
+          </div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 13px;border-radius:6px;border:1px solid transparent;font:600 12.5px/1 Inter;white-space:nowrap;background:linear-gradient(135deg,#6366F1,#8B5CF6);color:#fff;box-shadow:0 1px 2px rgba(30,27,75,.2),0 6px 14px -7px rgba(99,102,241,.6)">Начать запись</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 13px;border-radius:6px;border:1px solid transparent;font:600 12.5px/1 Inter;white-space:nowrap;background:linear-gradient(135deg,#7376F5,#9A6DF8);color:#fff;box-shadow:0 2px 5px rgba(30,27,75,.2),0 10px 22px -8px rgba(99,102,241,.7)">Начать запись</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 13px;border-radius:6px;border:1px solid transparent;font:600 12.5px/1 Inter;white-space:nowrap;background:linear-gradient(135deg,#5457DE,#7B4CE3);color:#fff;box-shadow:inset 0 1px 3px rgba(30,27,75,.4)">Начать запись</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 13px;border-radius:6px;border:1px solid transparent;font:600 12.5px/1 Inter;white-space:nowrap;background:linear-gradient(135deg,#6366F1,#8B5CF6);color:#fff;box-shadow:0 0 0 3px rgba(99,102,241,.32),0 1px 2px rgba(30,27,75,.2)">Начать запись</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 13px;border-radius:6px;border:1px solid transparent;font:600 12.5px/1 Inter;white-space:nowrap;background:rgba(30,27,75,.09);color:rgba(30,27,75,.34)">Начать запись</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:7px;height:26px;padding:0 13px;border-radius:6px;border:1px solid transparent;font:600 12.5px/1 Inter;white-space:nowrap;background:linear-gradient(135deg,#6366F1,#8B5CF6);color:rgba(255,255,255,.82);box-shadow:0 1px 2px rgba(30,27,75,.2)"><svg width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="rgba(255,255,255,.32)" stroke-width="2"></circle><path d="M8 2a6 6 0 0 1 6 6" stroke="#fff" stroke-width="2" stroke-linecap="round"></path></svg>Начинаю</div>
+
+          <div style="display:flex;flex-direction:column;gap:3px">
+            <span style="font:700 13px/1.2 Manrope,sans-serif;color:#1E1B4B">Обычная</span>
+            <span style="font:400 11.5px/1.35 Inter;color:#64748B">Рабочая лошадь: открыть, проверить, экспортировать. Сколько угодно в ряд.</span>
+          </div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 12px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;background:#fff;border:1px solid rgba(30,27,75,.15);color:#1E1B4B;box-shadow:0 1px 1.5px rgba(30,27,75,.06)">Стенограмма</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 12px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;background:#F7F7FC;border:1px solid rgba(30,27,75,.26);color:#1E1B4B;box-shadow:0 1px 1.5px rgba(30,27,75,.06)">Стенограмма</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 12px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;background:#ECECF5;border:1px solid rgba(30,27,75,.26);color:#1E1B4B;box-shadow:inset 0 1px 2px rgba(30,27,75,.11)">Стенограмма</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 12px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;background:#fff;border:1px solid #6366F1;color:#1E1B4B;box-shadow:0 0 0 3px rgba(99,102,241,.28)">Стенограмма</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 12px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;background:#fff;border:1px solid rgba(30,27,75,.09);color:rgba(30,27,75,.3)">Стенограмма</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:7px;height:26px;padding:0 12px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;background:#fff;border:1px solid rgba(30,27,75,.15);color:#64748B"><svg width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="rgba(30,27,75,.16)" stroke-width="2"></circle><path d="M8 2a6 6 0 0 1 6 6" stroke="#6366F1" stroke-width="2" stroke-linecap="round"></path></svg>Собираю</div>
+
+          <div style="display:flex;flex-direction:column;gap:3px">
+            <span style="font:700 13px/1.2 Manrope,sans-serif;color:#1E1B4B">Тихая</span>
+            <span style="font:400 11.5px/1.35 Inter;color:#64748B">Обслуживает панель: подсказка, фильтр, повтор. Подложка только под курсором.</span>
+          </div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 10px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;border:1px solid transparent;color:#475569">Подсказка</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 10px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;border:1px solid transparent;background:rgba(30,27,75,.06);color:#1E1B4B">Подсказка</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 10px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;border:1px solid transparent;background:rgba(30,27,75,.12);color:#1E1B4B">Подсказка</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 10px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;border:1px solid transparent;color:#475569;box-shadow:0 0 0 3px rgba(99,102,241,.28)">Подсказка</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 10px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;border:1px solid transparent;color:rgba(30,27,75,.3)">Подсказка</div>
+          <span style="font:400 12px/1 Inter;color:#CBD5E1">—</span>
+
+          <div style="display:flex;flex-direction:column;gap:3px">
+            <span style="font:700 13px/1.2 Manrope,sans-serif;color:#1E1B4B">Ссылка</span>
+            <span style="font:400 11.5px/1.35 Inter;color:#64748B">Только переход внутри приложения, внутри фразы. Ничего не меняет.</span>
+          </div>
+          <div style="display:inline-flex;align-items:center;height:26px;font:500 12.5px/1 Inter;white-space:nowrap;color:#6366F1">Все задачи</div>
+          <div style="display:inline-flex;align-items:center;height:26px;font:500 12.5px/1 Inter;white-space:nowrap;color:#4F46E5;text-decoration:underline;text-underline-offset:3px">Все задачи</div>
+          <div style="display:inline-flex;align-items:center;height:26px;font:500 12.5px/1 Inter;white-space:nowrap;color:#4338CA;text-decoration:underline;text-underline-offset:3px">Все задачи</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 4px;border-radius:4px;font:500 12.5px/1 Inter;white-space:nowrap;color:#6366F1;box-shadow:0 0 0 3px rgba(99,102,241,.28)">Все задачи</div>
+          <div style="display:inline-flex;align-items:center;height:26px;font:500 12.5px/1 Inter;white-space:nowrap;color:rgba(99,102,241,.4)">Все задачи</div>
+          <span style="font:400 12px/1 Inter;color:#CBD5E1">—</span>
+
+          <div style="display:flex;flex-direction:column;gap:3px">
+            <span style="font:700 13px/1.2 Manrope,sans-serif;color:#1E1B4B">Опасная</span>
+            <span style="font:400 11.5px/1.35 Inter;color:#64748B">Тихая по умолчанию. Залитой красной бывает только в подтверждении.</span>
+          </div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 10px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;border:1px solid transparent;color:#DC2626">Забыть встречу</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 10px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;border:1px solid transparent;background:rgba(220,38,38,.09);color:#DC2626">Забыть встречу</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 10px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;border:1px solid transparent;background:rgba(220,38,38,.17);color:#B91C1C">Забыть встречу</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 10px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;border:1px solid transparent;color:#DC2626;box-shadow:0 0 0 3px rgba(220,38,38,.3)">Забыть встречу</div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 10px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;border:1px solid transparent;color:rgba(220,38,38,.38)">Забыть встречу</div>
+          <span style="font:400 12px/1 Inter;color:#CBD5E1">—</span>
+
+          <div style="display:flex;flex-direction:column;gap:3px">
+            <span style="font:700 13px/1.2 Manrope,sans-serif;color:#1E1B4B">Иконка</span>
+            <span style="font:400 11.5px/1.35 Inter;color:#64748B">Только в шапке и только со всплывающей подписью. Квадрат 26×26.</span>
+          </div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;border:1px solid transparent"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="#475569" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="2.2"></circle><path d="M8 1.6v1.5M8 12.9v1.5M1.6 8h1.5M12.9 8h1.5M3.5 3.5l1 1M11.5 11.5l1 1M12.5 3.5l-1 1M4.5 11.5l-1 1"></path></svg></div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;border:1px solid transparent;background:rgba(30,27,75,.06)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="#1E1B4B" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="2.2"></circle><path d="M8 1.6v1.5M8 12.9v1.5M1.6 8h1.5M12.9 8h1.5M3.5 3.5l1 1M11.5 11.5l1 1M12.5 3.5l-1 1M4.5 11.5l-1 1"></path></svg></div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;border:1px solid transparent;background:rgba(30,27,75,.12)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="#1E1B4B" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="2.2"></circle><path d="M8 1.6v1.5M8 12.9v1.5M1.6 8h1.5M12.9 8h1.5M3.5 3.5l1 1M11.5 11.5l1 1M12.5 3.5l-1 1M4.5 11.5l-1 1"></path></svg></div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;border:1px solid transparent;box-shadow:0 0 0 3px rgba(99,102,241,.28)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="#475569" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="2.2"></circle><path d="M8 1.6v1.5M8 12.9v1.5M1.6 8h1.5M12.9 8h1.5M3.5 3.5l1 1M11.5 11.5l1 1M12.5 3.5l-1 1M4.5 11.5l-1 1"></path></svg></div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;border:1px solid transparent"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="rgba(30,27,75,.3)" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="2.2"></circle><path d="M8 1.6v1.5M8 12.9v1.5M1.6 8h1.5M12.9 8h1.5M3.5 3.5l1 1M11.5 11.5l1 1M12.5 3.5l-1 1M4.5 11.5l-1 1"></path></svg></div>
+          <div style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;border:1px solid transparent"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="rgba(30,27,75,.16)" stroke-width="2"></circle><path d="M8 2a6 6 0 0 1 6 6" stroke="#6366F1" stroke-width="2" stroke-linecap="round"></path></svg></div>
+
+        </div>
+
+        <div style="display:flex;align-items:center;gap:14px;padding:13px 15px;border-radius:8px;background:rgba(220,38,38,.04);border:1px solid rgba(220,38,38,.16)">
+          <span style="font:600 10px/1 Inter;letter-spacing:.1em;text-transform:uppercase;color:#B91C1C;flex:none">Седьмая роль</span>
+          <div style="display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 12px;border-radius:6px;font:600 12.5px/1 Inter;white-space:nowrap;background:#DC2626;color:#fff;box-shadow:0 1px 2px rgba(30,27,75,.2);flex:none">Удалить безвозвратно</div>
+          <span style="font:400 12px/1.4 Inter;color:#64748B;text-wrap:pretty">Опасная залитая — отдельная роль, не состояние опасной. Живёт только в подтверждении удаления, и там она одна на диалог. Состояния — как у заметной, «занято» у обеих опасных не бывает: удаление подтверждают, а не ждут.</span>
+        </div>
+
+        <div style="height:1px;background:#E8EAF2"></div>
+
+        <div style="display:flex;gap:34px;flex-wrap:wrap">
+
+          <div style="display:flex;flex-direction:column;gap:12px;min-width:420px;flex:1">
+            <span style="font:600 10px/1 Inter;letter-spacing:.1em;text-transform:uppercase;color:#94A3B8">Три размера</span>
+            <div style="display:grid;grid-template-columns:auto auto 1fr;gap:12px 14px;align-items:center">
+              <div style="display:inline-flex;align-items:center;justify-content:center;height:21px;padding:0 9px;border-radius:5px;font:600 11.5px/1 Inter;background:linear-gradient(135deg,#6366F1,#8B5CF6);color:#fff;white-space:nowrap">Проверить</div>
+              <div style="display:inline-flex;align-items:center;justify-content:center;height:21px;padding:0 9px;border-radius:5px;font:500 11.5px/1 Inter;background:#fff;border:1px solid rgba(30,27,75,.15);color:#1E1B4B;white-space:nowrap">Проверить</div>
+              <span style="font:400 12px/1.35 Inter;color:#64748B"><b style="font-weight:600;color:#1E1B4B">S · 21</b> — в заголовке панели и в строке списка</span>
+
+              <div style="display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 13px;border-radius:6px;font:600 12.5px/1 Inter;background:linear-gradient(135deg,#6366F1,#8B5CF6);color:#fff;white-space:nowrap">Проверить</div>
+              <div style="display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 12px;border-radius:6px;font:500 12.5px/1 Inter;background:#fff;border:1px solid rgba(30,27,75,.15);color:#1E1B4B;white-space:nowrap">Проверить</div>
+              <span style="font:400 12px/1.35 Inter;color:#64748B"><b style="font-weight:600;color:#1E1B4B">M · 26</b> — размер по умолчанию, всё остальное</span>
+
+              <div style="display:inline-flex;align-items:center;justify-content:center;height:32px;padding:0 16px;border-radius:7px;font:600 13.5px/1 Inter;background:linear-gradient(135deg,#6366F1,#8B5CF6);color:#fff;white-space:nowrap;box-shadow:0 2px 4px rgba(30,27,75,.16),0 8px 18px -8px rgba(99,102,241,.6)">Проверить</div>
+              <div style="display:inline-flex;align-items:center;justify-content:center;height:32px;padding:0 15px;border-radius:7px;font:500 13.5px/1 Inter;background:#fff;border:1px solid rgba(30,27,75,.15);color:#1E1B4B;white-space:nowrap">Проверить</div>
+              <span style="font:400 12px/1.35 Inter;color:#64748B"><b style="font-weight:600;color:#1E1B4B">L · 32</b> — первый запуск, пустое состояние, подтверждение</span>
+            </div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:12px;min-width:330px;flex:1">
+            <span style="font:600 10px/1 Inter;letter-spacing:.1em;text-transform:uppercase;color:#94A3B8">Наведите курсор</span>
+            <div style="display:flex;flex-wrap:wrap;gap:9px;align-items:center;padding:14px;border-radius:8px;background:#FAFAFD;border:1px solid #E8EAF2">
+              <div class="x1" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 13px;border-radius:6px;border:1px solid transparent;font:600 12.5px/1 Inter;white-space:nowrap;background:linear-gradient(135deg,#6366F1,#8B5CF6);color:#fff;box-shadow:0 1px 2px rgba(30,27,75,.2),0 6px 14px -7px rgba(99,102,241,.6);cursor:pointer;transition:all 120ms cubic-bezier(.4,0,.2,1)" >Начать запись</div>
+              <div class="x2" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 12px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;background:#fff;border:1px solid rgba(30,27,75,.15);color:#1E1B4B;box-shadow:0 1px 1.5px rgba(30,27,75,.06);cursor:pointer;transition:all 120ms cubic-bezier(.4,0,.2,1)" >Стенограмма</div>
+              <div class="x3" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 10px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;border:1px solid transparent;color:#475569;cursor:pointer;transition:all 120ms cubic-bezier(.4,0,.2,1)" >Подсказка</div>
+              <div class="x4" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:26px;padding:0 10px;border-radius:6px;font:500 12.5px/1 Inter;white-space:nowrap;border:1px solid transparent;color:#DC2626;cursor:pointer;transition:all 120ms cubic-bezier(.4,0,.2,1)" >Забыть</div>
+              <div class="x5" style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;border:1px solid transparent;cursor:pointer;transition:all 120ms cubic-bezier(.4,0,.2,1)" ><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="#475569" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="2.2"></circle><path d="M8 1.6v1.5M8 12.9v1.5M1.6 8h1.5M12.9 8h1.5M3.5 3.5l1 1M11.5 11.5l1 1M12.5 3.5l-1 1M4.5 11.5l-1 1"></path></svg></div>
+            </div>
+            <span style="font:400 12px/1.4 Inter;color:#64748B;text-wrap:pretty">Переход 120 мс. Заметная светлеет и приподнимается тенью, остальные набирают подложку — размер и положение не меняются никогда.</span>
+          </div>
+
+        </div>
+
+      </div>
+    </div>
+
+    <div id="4c" style="display:flex;flex-direction:column;gap:14px;width:700px;flex:none">
+      <div style="display:flex;align-items:baseline;gap:10px">
+        <span style="font:700 11px/1 Manrope,sans-serif;letter-spacing:.12em;color:#fff;background:#1E1B4B;padding:6px 9px;border-radius:6px">4c</span>
+        <span style="font:700 17px/1.2 Manrope,sans-serif;color:#1E1B4B">На местах</span>
+        <span style="font:400 13px/1.2 Inter;color:#94A3B8">три ряда из приложения</span>
+      </div>
+
+      <div data-screen-label="Кнопки — на местах" style="border:1px solid rgba(30,27,75,.12);border-radius:12px;background:#fff;box-shadow:0 24px 60px -24px rgba(30,27,75,.34);padding:22px;display:flex;flex-direction:column;gap:22px">
+
+        <div style="display:flex;flex-direction:column;gap:9px">
+          <span style="font:600 10px/1 Inter;letter-spacing:.1em;text-transform:uppercase;color:#94A3B8">Шапка встречи · SuflerView</span>
+          <div style="display:flex;align-items:center;gap:8px;padding:9px 12px;border-radius:8px;background:rgba(246,247,251,.94);border:1px solid #E8EAF2">
+            <div style="display:flex;gap:2px;padding:2px;border-radius:7px;background:rgba(30,27,75,.05)">
+              <span style="display:inline-flex;align-items:center;height:22px;padding:0 9px;border-radius:5px;font:500 11.5px/1 Inter;color:#475569">Подсказка</span>
+              <span style="display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:5px;font:500 11.5px/1 Inter;color:#475569"><span style="width:5px;height:5px;border-radius:50%;border:1.5px solid #0EA5E9"></span>Claude</span>
+              <span style="display:inline-flex;align-items:center;height:22px;padding:0 9px;border-radius:5px;font:500 11.5px/1 Inter;color:#475569">Протокол</span>
+            </div>
+            <div style="margin-left:auto;display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 16px;border-radius:999px;font:600 13px/1 Inter;background:linear-gradient(135deg,#6366F1,#8B5CF6);color:#fff;box-shadow:0 2px 4px rgba(30,27,75,.16),0 8px 18px -8px rgba(99,102,241,.6)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round"><rect x="5.6" y="1.8" width="4.8" height="8" rx="2.4"></rect><path d="M3.4 7.6a4.6 4.6 0 0 0 9.2 0M8 12.2v2"></path></svg>Слушать встречу<span style="font:500 11px/1 Inter;color:rgba(255,255,255,.66)">⌥⌘R</span></div>
+          </div>
+          <span style="font:400 12px/1.4 Inter;color:#64748B;text-wrap:pretty">Три обслуживающих действия собраны в один тихий сегмент — рядом с ними единственная заметная кнопка панели. Точка <span style="color:#0EA5E9;font-weight:600">sky</span> у «Claude» предупреждает, что запрос уйдёт с машины.</span>
+        </div>
+
+        <div style="height:1px;background:#E8EAF2"></div>
+
+        <div style="display:flex;flex-direction:column;gap:9px">
+          <span style="font:600 10px/1 Inter;letter-spacing:.1em;text-transform:uppercase;color:#94A3B8">Подвал карточки встречи · MeetingCardView</span>
+          <div style="display:flex;align-items:center;gap:8px;padding:12px;border-radius:8px;border:1px solid #E8EAF2">
+            <div style="display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 13px;border-radius:6px;font:600 12.5px/1 Inter;background:linear-gradient(135deg,#6366F1,#8B5CF6);color:#fff;box-shadow:0 1px 2px rgba(30,27,75,.2),0 6px 14px -7px rgba(99,102,241,.6)">Открыть</div>
+            <div style="display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 12px;border-radius:6px;font:500 12.5px/1 Inter;background:#fff;border:1px solid rgba(30,27,75,.15);color:#1E1B4B;box-shadow:0 1px 1.5px rgba(30,27,75,.06)">Стенограмма</div>
+            <div style="display:inline-flex;align-items:center;justify-content:center;gap:5px;height:26px;padding:0 12px;border-radius:6px;font:500 12.5px/1 Inter;background:#fff;border:1px solid rgba(30,27,75,.15);color:#1E1B4B;box-shadow:0 1px 1.5px rgba(30,27,75,.06)">Ещё<svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="#64748B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4l3 3 3-3"></path></svg></div>
+            <div style="margin-left:auto;display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 10px;border-radius:6px;font:500 12.5px/1 Inter;color:#DC2626">Забыть встречу</div>
+          </div>
+          <span style="font:400 12px/1.4 Inter;color:#64748B;text-wrap:pretty">Было семь равных кнопок в ряд. Стало: одна заметная, две обычные, остальное — в «Ещё». Удаление отодвинуто в правый край и осталось тихим.</span>
+        </div>
+
+        <div style="height:1px;background:#E8EAF2"></div>
+
+        <div style="display:flex;flex-direction:column;gap:9px">
+          <span style="font:600 10px/1 Inter;letter-spacing:.1em;text-transform:uppercase;color:#94A3B8">Подтверждение · единственная залитая красная</span>
+          <div style="display:flex;flex-direction:column;gap:14px;padding:16px;border-radius:8px;border:1px solid rgba(220,38,38,.2);background:rgba(220,38,38,.03)">
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <span style="font:600 14px/1.3 Inter;color:#1E1B4B">Забыть «Платёжный провайдер · 24.07»?</span>
+              <span style="font:400 12.5px/1.45 Inter;color:#475569">Уйдут стенограмма, протокол и 3 поручения. Markdown в Obsidian останется.</span>
+            </div>
+            <div style="display:flex;gap:9px;justify-content:flex-end">
+              <div style="display:inline-flex;align-items:center;justify-content:center;height:32px;padding:0 15px;border-radius:7px;font:500 13.5px/1 Inter;border:1px solid transparent;color:#475569">Отмена</div>
+              <div style="display:inline-flex;align-items:center;justify-content:center;height:32px;padding:0 16px;border-radius:7px;font:600 13.5px/1 Inter;background:#DC2626;color:#fff;box-shadow:0 2px 4px rgba(30,27,75,.16)">Удалить безвозвратно</div>
+            </div>
+          </div>
+          <span style="font:400 12px/1.4 Inter;color:#64748B;text-wrap:pretty">Отмена тихая, а не заметная: заметная в диалоге тянет курсор к себе, и половина нажатий уходит не туда. Escape всё равно закрывает.</span>
+        </div>
+
+      </div>
+    </div>
+
+    <div id="4d" style="display:flex;flex-direction:column;gap:14px;width:700px;flex:none">
+      <div style="display:flex;align-items:baseline;gap:10px">
+        <span style="font:700 11px/1 Manrope,sans-serif;letter-spacing:.12em;color:#fff;background:#1E1B4B;padding:6px 9px;border-radius:6px">4d</span>
+        <span style="font:700 17px/1.2 Manrope,sans-serif;color:#1E1B4B">Правила и правки</span>
+        <span style="font:400 13px/1.2 Inter;color:#94A3B8">CharoiteButton.swift</span>
+      </div>
+
+      <div data-screen-label="Кнопки — правила" style="border:1px solid rgba(30,27,75,.12);border-radius:12px;background:#fff;box-shadow:0 24px 60px -24px rgba(30,27,75,.34);padding:22px;display:flex;flex-direction:column;gap:20px">
+
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <span style="font:600 10px/1 Inter;letter-spacing:.1em;text-transform:uppercase;color:#94A3B8">Семь правил</span>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;gap:10px"><span style="flex:none;font:700 12px/1.5 Manrope,sans-serif;color:#6366F1;width:14px">1</span><span style="font:400 13px/1.5 Inter;color:#334155;text-wrap:pretty">Одна заметная кнопка на панель. Вторая — только если первой нет на экране.</span></div>
+            <div style="display:flex;gap:10px"><span style="flex:none;font:700 12px/1.5 Manrope,sans-serif;color:#6366F1;width:14px">2</span><span style="font:400 13px/1.5 Inter;color:#334155;text-wrap:pretty"><code style="font:500 12px/1 ui-monospace,monospace;background:rgba(30,27,75,.06);padding:1px 4px;border-radius:3px">.plain</code> больше не стиль кнопки: если у действия нет ни рамки, ни подложки под курсором — это подпись, а не кнопка.</span></div>
+            <div style="display:flex;gap:10px"><span style="flex:none;font:700 12px/1.5 Manrope,sans-serif;color:#6366F1;width:14px">3</span><span style="font:400 13px/1.5 Inter;color:#334155;text-wrap:pretty">Системного синего в приложении нет. Заметная — фирменный градиент, ссылка — индиго <code style="font:500 12px/1 ui-monospace,monospace;background:rgba(30,27,75,.06);padding:1px 4px;border-radius:3px">#6366F1</code>.</span></div>
+            <div style="display:flex;gap:10px"><span style="flex:none;font:700 12px/1.5 Manrope,sans-serif;color:#6366F1;width:14px">4</span><span style="font:400 13px/1.5 Inter;color:#334155;text-wrap:pretty">Опасная кнопка тихая. Залитая красная живёт только в подтверждении, и там она одна.</span></div>
+            <div style="display:flex;gap:10px"><span style="flex:none;font:700 12px/1.5 Manrope,sans-serif;color:#6366F1;width:14px">5</span><span style="font:400 13px/1.5 Inter;color:#334155;text-wrap:pretty">Кнопка без подписи обязана иметь <code style="font:500 12px/1 ui-monospace,monospace;background:rgba(30,27,75,.06);padding:1px 4px;border-radius:3px">.help</code> и <code style="font:500 12px/1 ui-monospace,monospace;background:rgba(30,27,75,.06);padding:1px 4px;border-radius:3px">accessibilityLabel</code>.</span></div>
+            <div style="display:flex;gap:10px"><span style="flex:none;font:700 12px/1.5 Manrope,sans-serif;color:#6366F1;width:14px">6</span><span style="font:400 13px/1.5 Inter;color:#334155;text-wrap:pretty">Долгое действие не исчезает и не скачет: та же ширина, кольцо вместо иконки, глагол в настоящем времени («Собираю»).</span></div>
+            <div style="display:flex;gap:10px"><span style="flex:none;font:700 12px/1.5 Manrope,sans-serif;color:#6366F1;width:14px">7</span><span style="font:400 13px/1.5 Inter;color:#334155;text-wrap:pretty">Недоступное действие выключено, а не спрятано — рядом строка, почему. Хинт клавиш только внутри заметной кнопки в шапке.</span></div>
+          </div>
+        </div>
+
+        <div style="height:1px;background:#E8EAF2"></div>
+
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <span style="font:600 10px/1 Inter;letter-spacing:.1em;text-transform:uppercase;color:#94A3B8">Что менять в коде</span>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px">
+            <div style="display:flex;flex-direction:column;gap:3px;padding:10px 11px;border-radius:7px;background:#FAFAFD;border:1px solid #E8EAF2">
+              <span style="font:600 11.5px/1.3 Inter;color:#1E1B4B">CharoiteButton.swift</span>
+              <span style="font:400 11.5px/1.4 Inter;color:#64748B">Новый файл: шесть <code style="font:500 11px/1 ui-monospace,monospace">ButtonStyle</code> + модификатор <code style="font:500 11px/1 ui-monospace,monospace">.charoite(.prominent, .m)</code>.</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:3px;padding:10px 11px;border-radius:7px;background:#FAFAFD;border:1px solid #E8EAF2">
+              <span style="font:600 11.5px/1.3 Inter;color:#1E1B4B">SuflerView.swift</span>
+              <span style="font:400 11.5px/1.4 Inter;color:#64748B">Строки 121, 127, 168, 172, 717, 722, 743: тихий сегмент слева, одна заметная справа.</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:3px;padding:10px 11px;border-radius:7px;background:#FAFAFD;border:1px solid #E8EAF2">
+              <span style="font:600 11.5px/1.3 Inter;color:#1E1B4B">MeetingCardView.swift</span>
+              <span style="font:400 11.5px/1.4 Inter;color:#64748B">238–275 в «Открыть + Ещё»; 303 и 323 — опасная тихая и опасная залитая.</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:3px;padding:10px 11px;border-radius:7px;background:#FAFAFD;border:1px solid #E8EAF2">
+              <span style="font:600 11.5px/1.3 Inter;color:#1E1B4B">MeetingLibraryView.swift</span>
+              <span style="font:400 11.5px/1.4 Inter;color:#64748B">71–87: три <code style="font:500 11px/1 ui-monospace,monospace">.borderless</code> → обычные S. 418 — заметная.</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:3px;padding:10px 11px;border-radius:7px;background:#FAFAFD;border:1px solid #E8EAF2">
+              <span style="font:600 11.5px/1.3 Inter;color:#1E1B4B">FirstRunView.swift</span>
+              <span style="font:400 11.5px/1.4 Inter;color:#64748B">118, 187, 199, 236: размер L, «Осмотрюсь сам» — тихая.</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:3px;padding:10px 11px;border-radius:7px;background:#FAFAFD;border:1px solid #E8EAF2">
+              <span style="font:600 11.5px/1.3 Inter;color:#1E1B4B">DesignKit.swift</span>
+              <span style="font:400 11.5px/1.4 Inter;color:#64748B"><code style="font:500 11px/1 ui-monospace,monospace">RecordCapsule</code> и <code style="font:500 11px/1 ui-monospace,monospace">LayerChip</code> переводим на общий стиль вместо своих заливок.</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+</section>
+</body>
+</html>

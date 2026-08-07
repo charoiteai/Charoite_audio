@@ -443,6 +443,11 @@ it signals degradation, it does not break the loop.
   stream only when it is alive — otherwise it honestly falls back to
   BlackHole. New installs no longer need the driver, Audio MIDI Setup or a
   Multi-Output Device.
+- **A single button scale** — six roles (prominent, regular, quiet, link,
+  destructive, filled destructive — confirmation only) and three sizes instead
+  of four system styles in 48 places. Exactly one prominent button per pane;
+  deletion is red, not the overdue orange; a button never changes size or
+  position in any state. Spec: docs/design/BUTTONS_2026-08.md.
 - **Stopping a meeting no longer wipes its outcome** — the thread and the
   hint stay on screen after the recording stops: that is the minute when they
   are read to the end, copied into chats and checked against action items.

@@ -64,15 +64,15 @@ struct TasksView: View {
                     Button {
                         navigation.selectedTaskMeetingID = nil
                     } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        Image(systemName: "xmark.circle.fill")
                     }
-                    .buttonStyle(.plain)
+                    .charoite(.icon, .s)
                     .help(L.t("Показать все поручения", "Show all action items", "显示全部任务"))
                     Spacer()
                     Button(L.t("Открыть встречу", "Open meeting", "打开会议")) {
                         navigation.open(.meetings, meetingID: meeting.id)
                     }
-                    .buttonStyle(.link).font(.caption)
+                    .charoite(.link, .s)
                 }
                 .padding(.horizontal, 8).padding(.vertical, 5)
                 .background(RoundedRectangle(cornerRadius: 7).fill(Theme.accent.opacity(0.09)))
@@ -162,7 +162,7 @@ struct TasksView: View {
                 } label: {
                     Label(L.t("К встрече", "Meeting", "会议"), systemImage: "arrow.up.right.square")
                 }
-                .buttonStyle(.plain).font(.caption2)
+                .charoite(.link, .s)
                 .help(L.t("Открыть карточку встречи", "Open the meeting card", "打开会议卡片"))
             }
         }

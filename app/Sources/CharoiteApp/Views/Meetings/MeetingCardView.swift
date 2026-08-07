@@ -201,7 +201,7 @@ struct MeetingCardView: View {
                     Button(L.t("Все задачи", "All tasks", "全部任务")) {
                         navigation.openTasks(meetingID: meeting.meetingID)
                     }
-                    .buttonStyle(.link).font(.caption)
+                    .charoite(.link, .s)
                 }
                 ForEach(linked) { item in
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
@@ -236,39 +236,32 @@ struct MeetingCardView: View {
         HStack(spacing: 10) {
             if meeting.notePath != nil {
                 Button(L.t("Открыть", "Open", "打开")) { processing.open(meeting) }
+                    .charoite(.prominent, .s)
             }
             Button(L.t("Стенограмма", "Transcript", "逐字稿")) {
                 processing.openTranscript(meeting)
             }
-            if let url = card.obsidianURL {
-                Button("Obsidian") { NSWorkspace.shared.open(url) }
-            }
-            Button(L.t("Протокол участникам", "Participant protocol", "参会者纪要")) {
-                copyParticipantProtocol()
-            }
-            .disabled(actionBusy)
-            Spacer()
-            if actionBusy { ProgressView().controlSize(.small) }
-            if copied {
-                Text(L.t("Скопировано", "Copied", "已复制"))
-                    .font(.caption).foregroundStyle(.secondary)
-                    .transition(.opacity)
-            }
-            Menu(L.t("Копировать", "Copy", "复制")) {
-                Button(L.t("Резюме", "Summary", "摘要")) {
+            .charoite(.regular, .s)
+            Menu(L.t("Ещё", "More", "更多")) {
+                if let url = card.obsidianURL {
+                    Button("Obsidian") { NSWorkspace.shared.open(url) }
+                }
+                Button(L.t("Протокол участникам", "Participant protocol", "参会者纪要")) {
+                    copyParticipantProtocol()
+                }
+                Divider()
+                Button(L.t("Копировать резюме", "Copy summary", "复制摘要")) {
                     copy(MeetingCardLoader.summaryText(title: meeting.title, card: card))
                 }
-                Button(L.t("Задачи", "Tasks", "任务")) {
+                Button(L.t("Копировать задачи", "Copy tasks", "复制任务")) {
                     copy(MeetingCardLoader.tasksText(card: card))
                 }
                 .disabled(card.tasks.isEmpty)
-                Button(L.t("Всё", "Everything", "全部")) {
+                Button(L.t("Копировать всё", "Copy everything", "复制全部")) {
                     copy(MeetingCardLoader.fullText(
                         title: meeting.title, dateText: dateText, card: card))
                 }
-            }
-            .fixedSize()
-            Menu {
+                Divider()
                 Button(L.t("Исправить стенограмму…", "Edit transcript…", "编辑逐字稿…")) {
                     processing.openTranscript(meeting)
                 }
@@ -278,24 +271,26 @@ struct MeetingCardView: View {
                                         "Rebuild started",
                                         "已开始重建")
                 }
-                Divider()
-                // role: .destructive в Menu на macOS не красится — красим
-                // явно, чтобы разрушающий пункт читался цветом.
-                Button(role: .destructive) {
-                    prepareForget()
-                } label: {
-                    Text(L.t("Забыть встречу…", "Forget meeting…", "忘记会议…"))
-                        .foregroundStyle(.red)
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle")
             }
-            .menuIndicator(.hidden)
+            .menuStyle(.button)
+            .charoite(.regular, .s)
             .fixedSize()
             .disabled(actionBusy)
+            Spacer()
+            if actionBusy { ProgressView().controlSize(.small) }
+            if copied {
+                Text(L.t("Скопировано", "Copied", "已复制"))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .transition(.opacity)
+            }
+            // Удаление — на виду, но тихое: красный текст без заливки.
+            // Убранное в меню «Забыть» находили дольше, чем боялись нажать.
+            Button(L.t("Забыть встречу…", "Forget meeting…", "忘记会议…")) {
+                prepareForget()
+            }
+            .charoite(.destructive, .s)
+            .disabled(actionBusy)
         }
-        .buttonStyle(.link)
-        .font(.callout)
     }
 
     private var forgetSheet: some View {
@@ -318,12 +313,14 @@ struct MeetingCardView: View {
                 .fill(Color(nsColor: .quaternarySystemFill)))
             HStack {
                 Spacer()
+                // Отмена именно тихая: заметная в диалоге тянет курсор к
+                // себе, а Escape и так закрывает.
                 Button(L.t("Отмена", "Cancel", "取消")) { showForget = false }
+                    .charoite(.quiet, .l)
                     .keyboardShortcut(.cancelAction)
                 Button(L.t("Удалить безвозвратно", "Delete permanently", "永久删除"),
                        role: .destructive) { runForget() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
+                    .charoite(.destructiveFilled, .l)
                     .disabled(actionBusy)
             }
         }

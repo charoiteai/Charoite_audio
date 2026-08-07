@@ -89,12 +89,12 @@ struct MenuBarView: View {
                 Button(L.t("Последние встречи", "Recent meetings", "近期会议")) {
                     navigation.open(.meetings)
                 }
+                .charoite(.link, .s)
                 Button(L.t("Сегодня", "Today", "今天")) {
                     navigation.open(.today)
                 }
+                .charoite(.link, .s)
             }
-            .buttonStyle(.plain)
-            .font(.caption)
 
             HStack(spacing: 8) {
                 TextField(L.t("Быстрый вопрос…", "Quick question…", "快速提问…"), text: $quick)
@@ -105,7 +105,8 @@ struct MenuBarView: View {
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
                 }
-                .buttonStyle(.plain)
+                .charoite(.icon, .s)
+                .help(L.t("Отправить вопрос", "Send the question", "发送问题"))
                 .disabled(quick.trimmingCharacters(in: .whitespaces).isEmpty)
             }
 
@@ -141,15 +142,15 @@ struct MenuBarView: View {
                 Button(L.t("Открыть", "Open", "打开")) {
                     navigation.open(.today)
                 }
+                .charoite(.regular, .s)
                 Spacer()
                 Button {
                     NSApp.terminate(nil)
                 } label: {
                     Label(L.t("Выход", "Quit", "退出"), systemImage: "power")
                 }
+                .charoite(.quiet, .s)
             }
-            .buttonStyle(.plain)
-            .font(.callout)
         }
         .padding(14)
         .frame(width: 300)
