@@ -43,4 +43,22 @@ final class RecorderStallTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(Recorder.stallAfter, 1)
         XCTAssertLessThanOrEqual(Recorder.stallAfter, 10)
     }
+
+    // MARK: - Что делаем после того, как заговорили (06.08)
+
+    /// Встреча 06.08: снова полторы минуты в файле вместо получаса. Тревога
+    /// сработала — но телефон лежал экраном вниз, и надпись читать было некому.
+    /// Значит приложение обязано не только сказать, но и починить.
+    func testПерваяНеудачаНеПоводБроситьФайл() {
+        XCTAssertEqual(Recorder.actionAfterFailedResume(attempts: 1), .retry,
+                       "чужое приложение может отпустить вход через секунду")
+        XCTAssertEqual(Recorder.actionAfterFailedResume(attempts: 2), .retry)
+    }
+
+    func testПослеТрёхНеудачНачинаемНовыйФайл() {
+        XCTAssertEqual(Recorder.actionAfterFailedResume(attempts: Recorder.maxResumeAttempts),
+                       .rotate,
+                       "встреча двумя кусками лучше, чем полторы минуты вместо часа")
+        XCTAssertEqual(Recorder.actionAfterFailedResume(attempts: 10), .rotate)
+    }
 }

@@ -425,6 +425,15 @@ it signals degradation, it does not break the loop.
   point to different meetings in the same minute, rebuild refuses them instead
   of producing a mixed transcript. The silent format drift of 28.07 cost every meeting its final
   transcript — the naming contract is now held by end-to-end tests.
+- **System audio without BlackHole (native tap)** — on macOS 14.4+ the app
+  captures call audio itself via a Core Audio process tap: it reads the tap
+  with its own IOProc (the system grants system-audio recording to the
+  reading process only; the child daemon never inherits it) and hands the
+  daemon a PCM stream through `data/tap_stream.raw` plus a manifest. The
+  manifest is written only after real frames arrive, so the daemon picks the
+  stream only when it is alive — otherwise it honestly falls back to
+  BlackHole. New installs no longer need the driver, Audio MIDI Setup or a
+  Multi-Output Device.
 - **A dead channel no longer takes the meeting with it** — when a source stops
   delivering frames, the watchdog tries to recreate its stream, but does so off
   to the side and with a time limit: closing a dead PortAudio stream can hang

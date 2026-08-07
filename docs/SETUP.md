@@ -29,13 +29,26 @@ In `config/config.yaml`:
 Also worth filling: `sufler.user_context` (1-2 sentences about your work) —
 context for instant answers.
 
-## 3. System audio (calls) — BlackHole
+## 3. System audio (calls)
 
 Without it Charoite hears only the mic (in-person meetings work as-is).
-For calls: install [BlackHole 2ch](https://existential.audio/blackhole/),
-create a Multi-Output Device (speakers + BlackHole) in Audio MIDI Setup and
-set it as the system output. Separate channels give you free you/them
-diarization and echo filtering.
+
+**Nothing to do on macOS 14.4 and newer.** The app raises a Core Audio process
+tap for the duration of the meeting, using system means only. macOS asks for
+the "Screen & System Audio Recording" permission on the first recording; sound
+keeps playing through your speakers and the device disappears afterwards. No
+driver to install, no output device to switch.
+
+**Fallback — BlackHole** (older macOS, permission denied): install
+[BlackHole 2ch](https://existential.audio/blackhole/), create a Multi-Output
+Device (speakers + BlackHole) in Audio MIDI Setup and set it as the system
+output.
+
+⚠️ With both installed, keep the system output on a regular device rather than
+the Multi-Output one: a tap on an aggregate device returns silence, while on
+plain two-channel devices it captures at full level.
+
+Separate channels give you free you/them diarization and echo filtering.
 
 ## 4. macOS permissions
 

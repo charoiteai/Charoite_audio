@@ -1,3 +1,4 @@
+import CoreSpotlight
 import SwiftUI
 
 #if os(macOS)
@@ -9,6 +10,13 @@ struct CharoiteApp: App {
     var body: some Scene {
         WindowGroup(L.t("Чароит", "Charoite", "Charoite"), id: "main") {
             WorkspaceView()
+                // Клик по встрече в Spotlight: системная активность несёт
+                // uniqueIdentifier — это meetingID из индекса.
+                .onContinueUserActivity(CSSearchableItemActionType) { activity in
+                    guard let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String
+                    else { return }
+                    WorkspaceNavigation.shared.open(.meeting, meetingID: id)
+                }
         }
         .defaultSize(width: 1180, height: 760)
 
@@ -60,6 +68,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // запись в лопнувший pipe демона (умер между send и daemonDied) без
         // этого валила всё приложение сигналом 13
         signal(SIGPIPE, SIG_IGN)
+        // Тап-агрегаты, осиротевшие после прошлого запуска, убираем первым
+        // делом: 06.08 такой сирота подвесил CoreAudio целиком.
+        if #available(macOS 14.4, *) { SystemAudioTap.cleanupOrphans() }
         Self.migrateSettingsFromOldBundle()
         MeetingNotificationService.shared.configure()
         MeetingProcessingService.shared.startMonitoring()
@@ -83,6 +94,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task.detached(priority: .background) {
             _ = await ArchiveSearch.search(query: "прогрев", limit: 1, snippet: 100)
         }
+        // Встречи — в системный Spotlight (индекс локальный, машину не покидает).
+        SpotlightIndexService.shared.enable()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -156,6 +169,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         if SuflerService.shared.isRunning { SuflerService.shared.stop() }
+        // Тап не должен переживать приложение: живой агрегат без хозяина —
+        // это подвешенный CoreAudio (дважды за 06.08). stop() выше гасит
+        // его только при идущей записи — добираем оставшееся всегда.
+        if #available(macOS 14.4, *) { SystemAudioTap.cleanupOrphans() }
+    }
+
+    /// charoite:// — управление из Shortcuts, терминала и других приложений:
+    ///   charoite://record/start · stop · toggle — запись встречи
+    ///   charoite://meeting/<id> — открыть карточку (id как в Spotlight)
+    ///   charoite://tasks · today — разделы
+    ///
+    /// Любое действие поднимает окно: старт записи по ссылке обязан быть
+    /// виден. Ссылку может дёрнуть и веб-страница — но браузер спрашивает
+    /// подтверждение, а «тихой» записи не существует: окно, статус и таймер
+    /// на экране.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.scheme == "charoite" {
+            let command = url.host() ?? ""
+            let argument = url.path().trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            switch (command, argument) {
+            case ("record", "start"):
+                Self.showMainWindow()
+                SuflerService.shared.start()
+            case ("record", "stop"):
+                SuflerService.shared.stop()
+            case ("record", "toggle"):
+                Self.showMainWindow()
+                SuflerService.shared.isRunning
+                    ? SuflerService.shared.stop()
+                    : SuflerService.shared.start()
+            case ("meeting", let id) where !id.isEmpty:
+                WorkspaceNavigation.shared.open(.meeting, meetingID: id)
+            case ("tasks", _):
+                WorkspaceNavigation.shared.openTasks()
+            case ("today", _):
+                WorkspaceNavigation.shared.open(.today)
+            default:
+                NSLog("charoite:// неизвестная команда: %@", url.absoluteString)
+            }
+        }
     }
 }
 

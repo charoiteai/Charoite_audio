@@ -49,7 +49,7 @@
 - Mac на Apple Silicon (M1+), рекомендуется 32 ГБ RAM для моделей по умолчанию
 - [Ollama](https://ollama.com) — какие модели поместятся, см. таблицу по RAM ниже
 - Python 3.11+
-- Опционально: [BlackHole](https://existential.audio/blackhole/) для захвата системного звука, [Obsidian](https://obsidian.md) для графа
+- Опционально: [BlackHole](https://existential.audio/blackhole/) — запасной путь для системного звука (на macOS 14.4+ приложение поднимает захват само), [Obsidian](https://obsidian.md) для графа
 
 ## Какие модели под вашу RAM
 

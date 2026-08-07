@@ -125,6 +125,10 @@ final class SuflerService: ObservableObject {
     private var stdinPipe: Pipe?
     private var stdoutHandle: FileHandle?  // для снятия readabilityHandler при смерти демона
     private var errHandle: FileHandle?     // daemon.err.log — закрывать, иначе fd-утечка на рестартах
+    /// Системный звук без BlackHole. Живёт ровно столько же, сколько демон:
+    /// поднимается перед стартом, гасится в stop() и при смерти демона —
+    /// иначе устройство останется висеть в системе.
+    private var systemAudioTap: Any?
     private var stdoutBuffer = Data()
     private var _hintBuf = ""            // буфер троттла подсказки (см. consume)
     private var _lastHintUI = Date.distantPast
@@ -138,6 +142,28 @@ final class SuflerService: ObservableObject {
     private var micChecked = false       // разрешение спрашиваем один раз за сессию
 
     private var suflerRoot: URL { AppSettings.charoiteRoot }
+
+    /// Пока идёт запись, мак не должен уходить в сон по бездействию: человек
+    /// на встрече слушает и не трогает клавиатуру — для системы это «простой»,
+    /// и после таймаута она усыпляла машину вместе с записью. Симптом ровно
+    /// как 20.07: демон жив, PortAudio-стрим молчит. Дисплею гаснуть можно —
+    /// звуку экран не нужен; от закрытой крышки это тоже не спасает, и не
+    /// должно: закрыл ноутбук — закончил встречу.
+    private var sleepGuard: NSObjectProtocol?
+
+    private func beginSleepGuard() {
+        guard sleepGuard == nil else { return }
+        sleepGuard = ProcessInfo.processInfo.beginActivity(
+            options: [.idleSystemSleepDisabled, .userInitiated],
+            reason: "Идёт запись встречи")
+    }
+
+    private func endSleepGuard() {
+        if let guardToken = sleepGuard {
+            ProcessInfo.processInfo.endActivity(guardToken)
+            sleepGuard = nil
+        }
+    }
 
     /// Микрофон открывает не приложение, а дочерний python (PortAudio), поэтому
     /// отказ TCC приходил не ошибкой, а тишиной: демон стартовал, статус писал
@@ -223,6 +249,17 @@ final class SuflerService: ObservableObject {
         status = L.t("Запускаю…", "Starting…", "启动中…")
         statusIsError = false
 
+        // 🔴 ВЫКЛЮЧЕНО 06.08 по итогам боевого теста. Тап создаётся, виден
+        // системе и из отдельного процесса отдаёт звук, но демон не получает
+        // от него ни кадра (0 байт за 94 секунды записи). Диагноз «-10851 от
+        // размера блока» опровергнут: сообщение лестницы о другой ступени не
+        // появилось — поток открылся штатно и просто молчал. Страховка
+        // конвейера (PR #249) отработала: встреча записана микрофоном.
+        // Следующая гипотеза — двум входным потокам тесно в одном процессе;
+        // проверять только не на рабочей машине: осиротевший агрегат дважды
+        // за день подвесил CoreAudio. Включать после разбора.
+        startSystemAudioTap()
+
         let p = Process()
         p.executableURL = suflerRoot.appendingPathComponent(".venv/bin/python")
         p.arguments = ["src/daemon.py"]
@@ -266,6 +303,7 @@ final class SuflerService: ObservableObject {
             process = p
             stdinPipe = inPipe
             isRunning = true
+            beginSleepGuard()
             startClock()
             // сохранённые дефолты — новому демону (stdin буферизуется до готовности)
             for (key, on) in [("hints", hintsOn), ("theses", thesesOn), ("cloud", cloudOn)] where !on {
@@ -301,14 +339,38 @@ final class SuflerService: ObservableObject {
         }
         isRunning = false
         isExpanding = false
+        endSleepGuard()
         stopClock()
+        // Тап гасим не сразу: демон ещё дописывает хвост записи и закрывает
+        // стримы. Снять устройство из-под него — это ровно тот обрыв, который
+        // 05.08 стоил сорока минут встречи.
+        let tap = systemAudioTap
+        systemAudioTap = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 13.0) {
+            if #available(macOS 14.4, *) { (tap as? SystemAudioTap)?.stop() }
+        }
         status = L.t("Останавливаю…", "Stopping…", "停止中…")
+    }
+
+    /// Поднять системный звук через Core Audio tap.
+    ///
+    /// До macOS 14.4 API нет, разрешение может быть не выдано, устройство
+    /// вывода бывает недоступно — во всех случаях просто работаем по-старому
+    /// через BlackHole. Молчать об этом нельзя только в одном месте: если нет
+    /// НИ тапа, НИ драйвера, демон запишет одну свою сторону разговора.
+    private func startSystemAudioTap() {
+        guard #available(macOS 14.4, *) else { return }
+        let tap = (systemAudioTap as? SystemAudioTap) ?? SystemAudioTap()
+        systemAudioTap = tap
+        if tap.start() == nil { systemAudioTap = nil }
     }
 
     /// Демон-процесс умер (крэш или наш terminate). Если это не ручной Стоп —
     /// поднимаем свежий, не стирая встречу с экрана (стенограмма-файл цел).
     private func daemonDied(_ proc: Process) {
         guard proc === process else { return }  // умер прошлый демон, не текущий
+        if #available(macOS 14.4, *) { (systemAudioTap as? SystemAudioTap)?.stop() }
+        systemAudioTap = nil
         stdoutHandle?.readabilityHandler = nil
         stdoutHandle = nil
         try? errHandle?.close()
@@ -326,13 +388,17 @@ final class SuflerService: ObservableObject {
         // умер», «нет heartbeat» ему ничего не говорят — важно другое: пишется
         // ли встреча прямо сейчас и надо ли что-то делать руками.
         guard wasRunning, !userStopped else {
+            endSleepGuard()   // записи больше нет — маку можно спать
             status = L.t("Остановлен", "Stopped", "已停止")
         statusIsError = false
             return
         }
         guard restartAttempts < 3 else {
             // Три попытки подряд не помогли — молчать нельзя: человек уверен,
-            // что встреча пишется, а запись давно встала.
+            // что встреча пишется, а запись давно встала. Страж сна тоже
+            // снимаем: иначе провалившаяся запись навсегда запрещала маку
+            // спать — до перезапуска приложения.
+            endSleepGuard()
             fail("⛔️ Запись остановилась и не восстановилась. Нажмите «Слушать встречу» ещё раз")
             return
         }
