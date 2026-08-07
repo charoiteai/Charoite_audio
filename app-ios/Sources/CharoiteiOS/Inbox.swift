@@ -174,10 +174,26 @@ enum Inbox {
         destinationFolder() != nil
     }
 
+    /// Папка выбрана не в iCloud Drive. Локальное хранилище телефона
+    /// («На iPhone») выглядит в «Файлах» точно так же, но записи из него
+    /// никуда не синкаются: 06.08 закладка указывала на «На iPhone →
+    /// Загрузки» — телефон честно копировал встречи туда, помечал их
+    /// отправленными, а Mac неделями ждал их в пустой папке iCloud.
+    struct NotUbiquitousError: LocalizedError {
+        var errorDescription: String? {
+            L.t("Эта папка не в iCloud Drive — записи не доедут до Mac. Выберите iCloud Drive → Charoite Inbox.",
+                "This folder is not in iCloud Drive — recordings will never reach the Mac. Pick iCloud Drive → Charoite Inbox.",
+                "该文件夹不在 iCloud Drive 中——录音无法送达 Mac。请选择 iCloud Drive → Charoite Inbox。")
+        }
+    }
+
     /// Пользователь выбрал папку в «Файлах» — запоминаем закладку навсегда.
     static func saveFolder(_ url: URL) throws {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard FileManager.default.isUbiquitousItem(at: url) else {
+            throw NotUbiquitousError()
+        }
         let bm = try url.bookmarkData()
         UserDefaults.standard.set(bm, forKey: bookmarkKey)
     }
@@ -202,6 +218,16 @@ enum Inbox {
             if let fresh = try? url.bookmarkData() {
                 UserDefaults.standard.set(fresh, forKey: bookmarkKey)
             }
+        }
+        // Закладки, сохранённые до проверки на iCloud, могли указывать на
+        // локальную папку телефона (баг 06.08) — «доставка» в неё выглядит
+        // успешной, но никуда не ведёт. Такую забываем: пусть UI позовёт
+        // выбрать папку заново, чем очередь молча едет в никуда.
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard FileManager.default.isUbiquitousItem(at: url) else {
+            UserDefaults.standard.removeObject(forKey: bookmarkKey)
+            return nil
         }
         return url
     }
