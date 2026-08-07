@@ -556,3 +556,85 @@ def test_свежесть_манифеста(tmp_path, monkeypatch):
     import os
     os.utime(raw, (old, old))
     assert a.fresh_tap_manifest() is None, "труп прошлой встречи прошёл за живого"
+
+
+def test_нечётное_чтение_не_убивает_читателя(tmp_path):
+    """Чтение застаёт запись посередине сэмпла: нечётный хвост переносится,
+    а не роняет нить ValueError-ом — иначе канал глохнет молча."""
+    m, raw = _manifest(tmp_path, sr=16000)
+    cap = a.TapStreamCapture(m, 16000, "blackhole")
+    tone = (np.ones(1600, dtype=np.float32) * 0.25 * 32767).astype("<i2").tobytes()
+
+    def writer():
+        time.sleep(0.25)                    # строго после старта читателя:
+        with raw.open("ab") as f:           # первый старт читает только новое
+            half = len(tone) // 2
+            f.write(tone[:half + 1])        # нечётная граница — пол-сэмпла
+            f.flush()
+            time.sleep(0.15)
+            f.write(tone[half + 1:])        # дозапись второй половины
+            f.flush()
+    import threading as _t
+    w = _t.Thread(target=writer, daemon=True)
+    w.start()
+    # старт ждёт роста файла — писатель обеспечит его через четверть секунды
+    cap.start()
+    try:
+        w.join(timeout=3)
+        got = []
+        deadline = time.time() + 3
+        while sum(len(g) for g in got) < 1600 and time.time() < deadline:
+            try:
+                got.append(cap.q.get(timeout=0.3))
+            except queue.Empty:
+                pass
+    finally:
+        cap.stop()
+    total = int(sum(len(g) for g in got))
+    assert total == 1600, f"из 1600 сэмплов дошло {total} — нечётная граница съела данные"
+
+
+def test_рестарт_продолжает_с_места_а_не_с_конца(tmp_path):
+    """Сторож перезапустил канал — накопленное в файле читается, а не
+    выбрасывается прыжком в конец: там могло лежать до 30 с встречи."""
+    m, raw = _manifest(tmp_path, sr=16000)
+    cap = a.TapStreamCapture(m, 16000, "blackhole")
+    first = (np.ones(800, dtype=np.float32) * 0.2 * 32767).astype("<i2").tobytes()
+    with raw.open("ab") as f:
+        f.write(first)
+    # первый старт: позиции ещё нет — читатель встаёт в конец и ждёт нового
+    import threading as _t
+    def writer(payload):
+        def run():
+            time.sleep(0.2)
+            with raw.open("ab") as f:
+                f.write(payload)
+        w = _t.Thread(target=run, daemon=True)
+        w.start()
+        return w
+    w = writer(first)
+    cap.start()
+    w.join(timeout=3)
+    time.sleep(0.3)
+    cap.stop()
+    while not cap.q.empty():
+        cap.q.get()
+    # пока канал «висел», в файл приехало ещё 800 сэмплов
+    with raw.open("ab") as f:
+        f.write(first)
+    w = writer(first)                       # и после рестарта пишется дальше
+    cap.start()
+    try:
+        w.join(timeout=3)
+        got = []
+        deadline = time.time() + 3
+        while sum(len(g) for g in got) < 1600 and time.time() < deadline:
+            try:
+                got.append(cap.q.get(timeout=0.3))
+            except queue.Empty:
+                pass
+    finally:
+        cap.stop()
+    total = int(sum(len(g) for g in got))
+    assert total >= 1600, (
+        f"после рестарта дошло {total} из 1600 — накопленное выброшено прыжком в конец")

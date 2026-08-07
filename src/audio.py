@@ -97,12 +97,21 @@ class TapStreamCapture:
         self.opened_as = f"поток приложения, {float(manifest['samplerate']):.0f} Гц"
         self._stop_flag = threading.Event()
         self._thread: threading.Thread | None = None
+        # Позиция последнего прочитанного байта — переживает restart: сторож
+        # перезапускает канал после тишины, но файл-то жив, и всё, что в нём
+        # накопилось, читается с этого места, а не выбрасывается прыжком в
+        # конец. Прыжок стоил бы до 30 секунд системного звука на ровном месте.
+        self._pos: int | None = None
 
     def start(self):
         path = pathlib.Path(self._m["path"])
         src_sr = int(float(self._m["samplerate"]))
         stream = path.open("rb")
-        stream.seek(0, 2)   # только новое: хвост прошлой встречи не нужен
+        size = path.stat().st_size
+        if self._pos is not None and self._pos <= size:
+            stream.seek(self._pos)          # рестарт: продолжаем, где остановились
+        else:
+            stream.seek(0, 2)               # первый старт: хвост прошлой встречи не нужен
         # Первые байты обязаны прийти быстро: приложение выписывает манифест
         # только после реальных кадров. Нет роста — канала нет, и честнее
         # упасть здесь (поканальный старт скажет об этом вслух), чем писать
@@ -124,11 +133,24 @@ class TapStreamCapture:
     def _pump_file(self, stream, down):
         # 0.1 с исходного потока за чтение: тот же темп, что блоки PortAudio.
         chunk_bytes = max(2, int(float(self._m["samplerate"]) * 0.1)) * 2
+        carry = b""   # нечётный хвост чтения: пол-сэмпла до дозаписи писателем
         while not self._stop_flag.is_set():
             data = stream.read(chunk_bytes)
+            self._pos = stream.tell()
             if not data:
                 time.sleep(0.05)
                 continue
+            if carry:
+                data = carry + data
+                carry = b""
+            if len(data) % 2:
+                # Чтение застало запись посередине сэмпла. Без переноса
+                # np.frombuffer падает ValueError, нить умирает молча — и
+                # канал глохнет до вмешательства сторожа.
+                carry = data[-1:]
+                data = data[:-1]
+                if not data:
+                    continue
             block = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
             if down is not None:
                 block = down.process(block)
@@ -143,7 +165,7 @@ class TapStreamCapture:
             self._thread = None
 
     def restart(self):
-        """Пересоединиться с файлом: позиция уезжает в конец, состояние чистое."""
+        """Пересоединиться с файлом, продолжив с последней прочитанной позиции."""
         self.stop()
         self.start()
 

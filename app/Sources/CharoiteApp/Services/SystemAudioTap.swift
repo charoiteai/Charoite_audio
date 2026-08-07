@@ -174,7 +174,10 @@ final class SystemAudioTap {
                 let samples = raw.assumingMemoryBound(to: Float.self)
                 chunk.reserveCapacity(chunk.count + count)
                 for i in 0..<count {
-                    chunk.append(Int16(max(-1, min(1, samples[i])) * 32767))
+                    // isFinite обязателен: Int16(NaN) — это краш аудио-нити,
+                    // то есть смерть записи из-за одного мусорного сэмпла.
+                    let v = samples[i]
+                    chunk.append(Int16((v.isFinite ? max(-1, min(1, v)) : 0) * 32767))
                 }
             }
             guard !chunk.isEmpty else { return }
