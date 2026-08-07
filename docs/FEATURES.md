@@ -283,7 +283,11 @@ it signals degradation, it does not break the loop.
   from the archive — instantly, file-parse only, main graph only.
 - **iPhone companion (v1, app-ios/)** — the phone records a
   meeting/note/diary entry; you pick the delivery folder once in iCloud
-  Drive (folder button) — the same import folder the Mac watches.
+  Drive (folder button) — the same import folder the Mac watches. A folder
+  outside iCloud cannot be chosen: on-device storage looks identical in
+  Files but never syncs anywhere — such a bookmark is rejected with a clear
+  error, and stale local bookmarks are forgotten so the app asks to pick
+  the folder again.
   Nothing gets lost: an on-device queue in Documents re-sends on every
   launch. `note_*`/`diary_*` files are routed to the notes pipeline.
   Background recording with the screen locked. Build: `xcodegen
