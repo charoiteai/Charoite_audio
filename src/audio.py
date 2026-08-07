@@ -29,8 +29,194 @@ def find_device(substr: str) -> int | None:
     return None
 
 
+# Устройство, которое приложение поднимает на время встречи через Core Audio
+# process tap (SystemAudioTap.swift). Имя — контракт между приложением и
+# демоном: меняешь здесь — меняй и там.
+TAP_DEVICE = "Charoite System Audio"
+
+
+def find_system_audio() -> tuple[int | None, str]:
+    """Индекс канала собеседников и чем он получен.
+
+    Приоритет у BlackHole — осознанно (итог боевого теста 06.08). Тап
+    создаётся, виден системе и из отдельного процесса отдаёт звук, но демону
+    не приносит ни кадра: 0 байт за 94 секунды записи, причём поток
+    открывается штатно (лестница конфигураций не понадобилась). Пока причина
+    не найдена, рабочие встречи важнее эксперимента. Тап остаётся фолбэком
+    для машин без BlackHole: хуже нуля байт он не даст, а после разбора
+    может и заработать. Молчаливого «ни того, ни другого» быть не должно:
+    без этого канала в стенограмме не будет второй стороны разговора.
+    """
+    bh = find_device("blackhole")
+    if bh is not None:
+        return bh, "blackhole"
+    tap = find_device(TAP_DEVICE)
+    if tap is not None:
+        return tap, "tap"
+    return None, "blackhole"
+
+
+TAP_STREAM_MANIFEST = ROOT / "data" / "tap_stream.json"
+
+
+def fresh_tap_manifest() -> dict | None:
+    """Манифест живого тап-потока приложения, если он есть и растёт.
+
+    Демон не может читать тап сам — никогда: право на запись системного
+    звука применяется к процессу-читателю, а дочерний python его не
+    наследует (вердикт разбора 06–07.08). Поэтому приложение читает тап
+    своим IOProc и пишет PCM в файл; манифест появляется только после
+    первых реальных кадров. Свежесть проверяем по mtime самого потока:
+    манифест без растущего файла — это труп прошлой встречи.
+    """
+    import json
+    try:
+        m = json.loads(TAP_STREAM_MANIFEST.read_text(encoding="utf-8"))
+        path = pathlib.Path(m["path"])
+        if time.time() - path.stat().st_mtime > 10:
+            return None
+        return m
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+class TapStreamCapture:
+    """Системный звук из файла-потока приложения — интерфейс как у Capture.
+
+    Читает растущий s16le-файл хвостом (как tail -f) с позиции на момент
+    старта, даунсемплит родную частоту до целевой и кладёт float32-блоки
+    в ту же очередь, что и PortAudio-каналы. Конвейеру всё равно, откуда
+    кадры; сторож тишины и страховка перезапуска работают без изменений.
+    """
+
+    def __init__(self, manifest: dict, samplerate: int, label: str):
+        self.label = label
+        self.samplerate = int(samplerate)
+        self.q: queue.Queue[np.ndarray] = queue.Queue()
+        self._m = manifest
+        self.opened_as = f"поток приложения, {float(manifest['samplerate']):.0f} Гц"
+        self._stop_flag = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self):
+        path = pathlib.Path(self._m["path"])
+        src_sr = int(float(self._m["samplerate"]))
+        stream = path.open("rb")
+        stream.seek(0, 2)   # только новое: хвост прошлой встречи не нужен
+        # Первые байты обязаны прийти быстро: приложение выписывает манифест
+        # только после реальных кадров. Нет роста — канала нет, и честнее
+        # упасть здесь (поканальный старт скажет об этом вслух), чем писать
+        # пустоту до конца встречи.
+        deadline = time.time() + 3.0
+        while path.stat().st_size <= stream.tell():
+            if time.time() > deadline:
+                stream.close()
+                raise RuntimeError("поток тапа не растёт — приложение кадров не пишет")
+            time.sleep(0.1)
+        down = (_Downsampler(src_sr, self.samplerate)
+                if src_sr != self.samplerate else None)
+        self._stop_flag.clear()
+        self._thread = threading.Thread(
+            target=self._pump_file, args=(stream, down),
+            daemon=True, name=f"tapstream-{self.label}")
+        self._thread.start()
+
+    def _pump_file(self, stream, down):
+        # 0.1 с исходного потока за чтение: тот же темп, что блоки PortAudio.
+        chunk_bytes = max(2, int(float(self._m["samplerate"]) * 0.1)) * 2
+        while not self._stop_flag.is_set():
+            data = stream.read(chunk_bytes)
+            if not data:
+                time.sleep(0.05)
+                continue
+            block = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
+            if down is not None:
+                block = down.process(block)
+            if len(block):
+                self.q.put(block)
+        stream.close()
+
+    def stop(self):
+        self._stop_flag.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+
+    def restart(self):
+        """Пересоединиться с файлом: позиция уезжает в конец, состояние чистое."""
+        self.stop()
+        self.start()
+
+
+class _Downsampler:
+    """Понижение частоты дискретизации на одном numpy, с состоянием между блоками.
+
+    Почему не «брать каждый N-й отсчёт»: всё, что выше половины целевой
+    частоты, при прореживании заворачивается в речевую полосу. Музыка из
+    Zoom и шипящие на 12 кГц осели бы на 4 кГц прямо поверх речи — качество
+    расшифровки упало бы, и ни одной строчки в логе об этом не появилось бы.
+    Поэтому сначала ФНЧ, потом прореживание.
+
+    Почему не scipy: его нет в зависимостях проекта, и тянуть его ради одной
+    свёртки на 127 коэффициентов незачем.
+    """
+
+    TAPS = 127  # нечётное — фильтр линейнофазный, задержка ровно (TAPS-1)/2
+
+    def __init__(self, src_sr: int, dst_sr: int):
+        if src_sr <= dst_sr:
+            raise ValueError(f"ресемплер работает только вниз: {src_sr} → {dst_sr}")
+        self.src_sr = int(src_sr)
+        self.dst_sr = int(dst_sr)
+        self.ratio = self.src_sr / self.dst_sr
+        # Срез на 0.45 целевой частоты (в долях исходной): запас до Найквиста
+        # целевой (0.5) отдан переходной полосе окна Хэмминга.
+        cutoff = 0.45 * self.dst_sr / self.src_sr
+        n = np.arange(self.TAPS) - (self.TAPS - 1) / 2
+        h = np.sinc(2 * cutoff * n) * np.hamming(self.TAPS)
+        self._h = h / h.sum()                      # единичный коэффициент на постоянном токе
+        self._tail = np.zeros(self.TAPS - 1)       # хвост входа для непрерывной свёртки
+        self._carry = np.zeros(0)                  # последний отсчёт прошлого блока — для интерполяции через шов
+        self._pos = 0.0                            # дробная позиция следующего выхода
+
+    def process(self, block: np.ndarray) -> np.ndarray:
+        """Блок входа → блок выхода. Длина выхода плавает (при 48→16 кГц это
+        1334/1333/1333 на блок в 4000), в среднем ровно len(block)/ratio."""
+        if block.size == 0:
+            return np.zeros(0, dtype=np.float32)
+        x = np.concatenate([self._tail, np.asarray(block, dtype=np.float64)])
+        # .copy(), а не срез-вид: иначе хвост держал бы весь блок живым, а на
+        # входе может лежать буфер PortAudio, который после колбэка недействителен.
+        self._tail = x[-(self.TAPS - 1):].copy()
+        y = np.convolve(x, self._h, mode="valid")  # ровно len(block) отсчётов
+        s = np.concatenate([self._carry, y])
+        last = s.size - 1
+        if self._pos > last:
+            # Блок короче шага прореживания: копим состояние, выхода нет.
+            self._carry = s[last:].copy()
+            self._pos -= last
+            return np.zeros(0, dtype=np.float32)
+        count = int((last - self._pos) // self.ratio) + 1
+        pos = self._pos + self.ratio * np.arange(count)
+        idx = pos.astype(np.int64)
+        frac = pos - idx
+        # На последнем отсчёте frac == 0, но индекс idx+1 всё равно вычисляется —
+        # прижимаем его, чтобы не выйти за массив.
+        out = s[idx] * (1.0 - frac) + s[np.minimum(idx + 1, last)] * frac
+        self._carry = s[last:].copy()
+        self._pos = self._pos + self.ratio * count - last
+        return out.astype(np.float32)               # float32: иначе dtype буферов уплывёт в float64
+
+
 class Capture:
-    """Один входной поток → очередь float32-чанков (mono, samplerate)."""
+    """Один входной поток → очередь float32-чанков (mono, samplerate).
+
+    Очередь ВСЕГДА отдаёт self.samplerate. Если устройство удалось открыть
+    только на его собственной частоте, понижение делает _Downsampler внутри —
+    наружу, в AudioHub, это не протекает.
+    """
+
+    PLAIN = "как раньше"  # имя первой ступени лестницы; см. _ladder()
 
     def __init__(self, device_index: int | None, samplerate: int, label: str):
         self.device = device_index
@@ -38,22 +224,101 @@ class Capture:
         self.label = label
         self.q: queue.Queue[np.ndarray] = queue.Queue()
         self._stream: sd.InputStream | None = None
+        self._resampler: _Downsampler | None = None
+        self.opened_as: str | None = None  # сработавшая ступень — её показываем в статусе
 
     def _cb(self, indata, frames, time_info, status):  # noqa: ANN001
         if status:
             pass  # over/underflow не критичны для суфлёра
-        self.q.put(indata[:, 0].copy())
+        if self._resampler is None:
+            self.q.put(indata[:, 0].copy())
+            return
+        # Свёртка на 127 коэффициентов прямо в аудио-колбэке: около полумиллисекунды
+        # на блок, без блокировок, диска и аллокаций сверх одного массива. Дешевле,
+        # чем протаскивать частоту устройства через AudioHub, _pump и запись на диск.
+        self.q.put(self._resampler.process(indata[:, 0]))
 
-    def start(self):
-        self._stream = sd.InputStream(
+    def _device_samplerate(self) -> int | None:
+        """Родная частота устройства: на ней оно откроется заведомо."""
+        try:
+            info = sd.query_devices(self.device, "input")
+            return int(round(float(info["default_samplerate"])))
+        except Exception:  # noqa: BLE001 — не смогли спросить, значит эта ступень пропускается
+            return None
+
+    def _ladder(self):
+        """Три попытки открыть устройство, от самой безобидной к самой грубой.
+
+        Первая ступень — ровно то, что делалось всегда. Микрофон и BlackHole
+        открываются на ней и никакой новой логики не видят: виртуальный драйвер
+        принимает любую частоту, поэтому пара «16 кГц + блок 4000» много лет
+        выглядела безопасной.
+
+        Дальше — ради Core Audio-тапа. Агрегат тапа берёт частоту у физического
+        выхода (kAudioAggregateDeviceMainSubDeviceKey в SystemAudioTap.swift),
+        то есть 44.1 или 48 кГц. Частоту агрегата PortAudio поменять не может,
+        поэтому включает свой ресемплер и пересчитывает наш блок в кадры
+        устройства: 250 мс на 48 кГц — это 12000 кадров, втрое больше типичного
+        потолка kAudioDevicePropertyBufferFrameSizeRange (4096). AUHAL отвечает
+        -10851, kAudioUnitErr_InvalidPropertyValue — отказ по ЗНАЧЕНИЮ свойства,
+        а не по формату (-10868). Поток не открывается вовсе — отсюда ноль байт
+        в записи вместо тишины.
+
+        Что именно не принято, частота или размер блока, известно только машине
+        с тапом. Поэтому лестница, а не одна догадка: ступень 2 чинит случай
+        «мешал размер блока», ступень 3 — «мешала частота». Какая сработала,
+        видно в opened_as, и AudioHub говорит об этом вслух.
+
+        Генератор, а не список, намеренно: на здоровом устройстве всё кончается
+        на первой ступени и до опроса устройства дело не доходит. Лишний вызов
+        PortAudio на каждом рестарте сторожевого таймера нам не нужен.
+        """
+        yield self.PLAIN, self.samplerate, int(self.samplerate * 0.25)
+        yield "свободный размер блока", self.samplerate, 0
+        native = self._device_samplerate()
+        if native and native > self.samplerate:
+            yield f"частота устройства {native} Гц", native, 0
+
+    def _open(self, samplerate: int, blocksize: int) -> None:
+        resampler = (_Downsampler(samplerate, self.samplerate)
+                     if samplerate != self.samplerate else None)
+        stream = sd.InputStream(
             device=self.device,
             channels=1,
-            samplerate=self.samplerate,
+            samplerate=samplerate,
             dtype="float32",
-            blocksize=int(self.samplerate * 0.25),
+            blocksize=blocksize,
             callback=self._cb,
         )
-        self._stream.start()
+        self._resampler = resampler  # до start(): колбэк начнёт приходить только после него
+        try:
+            stream.start()
+        except Exception:  # noqa: BLE001 — неудачная ступень не должна оставить полусостояние
+            self._resampler = None
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        self._stream = stream
+
+    def start(self):
+        self._resampler = None
+        self.opened_as = None
+        errors: list[str] = []
+        for name, samplerate, blocksize in self._ladder():
+            try:
+                self._open(samplerate, blocksize)
+            except Exception as e:  # noqa: BLE001 — пробуем следующую ступень
+                errors.append(f"«{name}» → {type(e).__name__}: {e}")
+                continue
+            self.opened_as = name
+            return
+        # Раньше отсюда улетал голый PortAudioError с кодом вроде -10851 и без
+        # намёка, что именно устройство не приняло. Перечисляем все ступени.
+        raise RuntimeError(
+            f"канал {self.label}: устройство не приняло ни одну конфигурацию — "
+            + "; ".join(errors))
 
     def stop(self):
         if self._stream:
@@ -111,16 +376,30 @@ class AudioHub:
         self._last_frame: dict[str, float] = {}
         self._last_check = 0.0
         self._hung: set[str] = set()   # каналы, чей перезапуск завис — больше не трогаем
+        self._sys_speech_until = 0.0   # окно эха: до этого момента динамики недавно звучали
         self._lock = threading.Lock()
         self._running = False
 
         mode = a["device"]
-        bh = find_device("blackhole")
+        # Метка канала осталась «blackhole» намеренно: по ней названы файлы
+        # записей (`..._blackhole.wav`), её знают rebuild_transcript и
+        # meeting_stamp. Переименование метки сломало бы пересборку старых
+        # встреч ради косметики.
+        tap_stream = fresh_tap_manifest()
+        bh, self.system_audio_via = (None, "tap-stream") if tap_stream \
+            else find_system_audio()
         mic = sd.default.device[0] if sd.default.device else None
 
-        if mode in ("auto", "mix", "blackhole") and bh is not None:
+        if mode in ("auto", "mix", "blackhole") and tap_stream is not None:
+            # Живой поток приложения важнее устройств: он означает, что тап
+            # уже отдаёт кадры тому единственному процессу, которому система
+            # это разрешает. BlackHole остаётся фолбэком на случай, когда
+            # манифеста нет (нет права, старая macOS, тап не поднялся).
+            self.captures.append(TapStreamCapture(tap_stream, self.sr, "blackhole"))
+            self.sources.append("Системный звук (тап)")
+        elif mode in ("auto", "mix", "blackhole") and bh is not None:
             self.captures.append(Capture(bh, self.sr, "blackhole"))
-            self.sources.append("BlackHole")
+            self.sources.append("Тап системы" if self.system_audio_via == "tap" else "BlackHole")
         # auto = система И микрофон: на встрече нужны обе стороны разговора
         if mode in ("mic", "mix", "auto") and (mode != "auto" or bh is None or mic is not None):
             if mode != "blackhole":
@@ -150,6 +429,12 @@ class AudioHub:
                 c.start()
             except Exception as e:  # noqa: BLE001 — сосед не должен уносить встречу
                 failed.append((c.label, e))
+                continue
+            if c.opened_as and c.opened_as != Capture.PLAIN:
+                # Не косметика: на какой ступени поднялся канал — это и есть ответ,
+                # что именно устройству не нравилось. Иначе выяснять вручную.
+                self._say(f"🎙 канал {c.label}: обычная конфигурация не принята, "
+                          f"открыт через «{c.opened_as}»")
         if len(failed) == len(self.captures):
             raise RuntimeError("ни один аудиоканал не открылся: "
                                + "; ".join(f"{lbl} → {err}" for lbl, err in failed))
@@ -352,13 +637,26 @@ class AudioHub:
         with self._lock:
             cut = {label: self._cut(label) for label in self._bufs}
         speech = {label: (c is not None and self.is_speech(c)) for label, c in cut.items()}
-        both = speech.get("blackhole") and speech.get("mic")
+        now = time.monotonic()
+        if speech.get("blackhole"):
+            # Эхо динамиков доживает в микрофоне до следующего среза, когда
+            # фазы нарезки каналов разъехались (перезапуск канала сторожем
+            # сбрасывает его буфер) — помним о недавней речи ещё один чанк.
+            self._sys_speech_until = now + self.chunk_s
         out: list[tuple[str, np.ndarray]] = []
         for label, chunk in cut.items():
             if not speech.get(label):
                 continue
-            if both and label == "mic":
-                continue  # эхо динамиков в микрофоне
+            if label == "mic":
+                if speech.get("blackhole"):
+                    continue  # эхо динамиков в микрофоне: оба канала звучат
+                if cut.get("blackhole") is None and now < self._sys_speech_until:
+                    # Системный срез запаздывает, а динамики только что
+                    # звучали: раньше этот чанк уходил в стенограмму вторым
+                    # экземпляром той же фразы — «от владельца». Если же
+                    # системный чанк есть и он тихий, собеседник реально
+                    # замолчал — свой ответ глушить нельзя.
+                    continue
             out.append((self.SPEAKER.get(label, label), chunk))
         return out
 

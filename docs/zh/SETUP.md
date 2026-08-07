@@ -24,9 +24,17 @@ cp config/config.example.yaml config/config.yaml
 
 建议同时填写：`sufler.user_context`（用 1-2 句话介绍你的工作）——即时回答所用的上下文。
 
-## 3. 系统音频（通话）——BlackHole
+## 3. 系统音频（通话）
 
-没有它，Charoite 只能听到麦克风（线下会议开箱即用）。若要用于通话：安装 [BlackHole 2ch](https://existential.audio/blackhole/)，在“音频 MIDI 设置”（Audio MIDI Setup）中创建多输出设备（扬声器 + BlackHole），并将其设为系统输出。分离的声道免费带来“你/对方”的说话人分离和回声过滤。
+没有它，Charoite 只能听到麦克风（线下会议开箱即用）。有两条路径。
+
+**macOS 14.4 及更新版本：无需任何设置。** 应用会在会议期间自动创建 Core Audio 进程音频捕获（process tap），完全依靠系统能力。首次录制时 macOS 会请求“屏幕与系统音频录制”权限；声音照常从扬声器播放，会议结束后该设备自动消失。无需安装驱动，也无需切换输出设备。
+
+**备用方案——BlackHole**（较旧的 macOS，或权限被拒绝）：安装 [BlackHole 2ch](https://existential.audio/blackhole/)，在“音频 MIDI 设置”中创建多输出设备（扬声器 + BlackHole），并将其设为系统输出。
+
+⚠️ 若两者同时存在：请将系统输出保持在普通设备上，而非多输出设备。对聚合设备做 tap 只会得到静音，而在普通双声道设备上可获得完整音量。
+
+分离的声道免费带来“你/对方”的说话人分离和回声过滤。
 
 ## 4. macOS 权限
 

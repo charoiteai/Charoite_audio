@@ -37,6 +37,7 @@ def _hub(sr=16000, chunk_s=3.0, overlap_s=0.5, vad_db=-45.0):
     hub._last_check = 0.0
     hub._running = False
     hub.captures = []
+    hub._sys_speech_until = 0.0
     hub.sources = []
     hub.record_on = False
     hub.on_status = None
@@ -94,6 +95,49 @@ def test_own_voice_survives_when_the_other_side_is_silent():
     out = dict(hub.pull_labeled())
 
     assert hub.SPEAKER["mic"] in out, "своя речь отброшена как эхо"
+
+
+def test_эхо_глушится_когда_системный_срез_запаздывает():
+    """Фазы нарезки разъехались (перезапуск канала сторожем сбрасывает
+    буфер): микрофонный чанк с эхом готов, системный ещё копится. Раньше
+    both его не ловил — та же фраза уходила в стенограмму дважды, вторым
+    экземпляром «от владельца»."""
+    import time as _t
+    hub = _hub()
+    n = int(hub.sr * hub.chunk_s) + 100
+    hub._bufs = {"blackhole": np.zeros(0, dtype=np.float32), "mic": _tone(n)}
+    hub._sys_speech_until = _t.monotonic() + 1.0  # динамики звучали чанк назад
+
+    out = dict(hub.pull_labeled())
+
+    assert hub.SPEAKER["mic"] not in out, "эхо-дубль прошёл в стенограмму"
+
+
+def test_ответ_сразу_после_собеседника_не_глушится():
+    """Собеседник замолчал, владелец тут же отвечает: системный чанк готов и
+    тихий — значит это живой ответ, а не эхо, окно молчать не заставляет."""
+    import time as _t
+    hub = _hub()
+    n = int(hub.sr * hub.chunk_s) + 100
+    hub._bufs = {"blackhole": np.zeros(n, dtype=np.float32), "mic": _tone(n)}
+    hub._sys_speech_until = _t.monotonic() + 1.0  # окно ещё активно
+
+    out = dict(hub.pull_labeled())
+
+    assert hub.SPEAKER["mic"] in out, "живой ответ заглушён как эхо"
+
+
+def test_речь_динамиков_взводит_окно_эха():
+    """Речь в системном канале продлевает окно на длину чанка вперёд."""
+    import time as _t
+    hub = _hub()
+    n = int(hub.sr * hub.chunk_s) + 100
+    hub._bufs = {"blackhole": _tone(n), "mic": np.zeros(0, dtype=np.float32)}
+
+    before = _t.monotonic()
+    hub.pull_labeled()
+
+    assert hub._sys_speech_until >= before + hub.chunk_s * 0.99
 
 
 def test_finalize_drops_recordings_shorter_than_five_seconds(tmp_path):
@@ -188,12 +232,14 @@ def test_мёртвый_канал_не_уносит_соседей_при_ст�
     """
     class _Failing:
         label = "blackhole"
+        opened_as = None
         def __init__(self): self.q = queue.Queue()
         def start(self): raise RuntimeError("устройство не приняло конфигурацию")
         def stop(self): pass
 
     class _Working:
         label = "mic"
+        opened_as = None          # как у настоящего Capture: ступень лестницы
         def __init__(self):
             self.started = False
             self.q = queue.Queue()
@@ -212,3 +258,301 @@ def test_мёртвый_канал_не_уносит_соседей_при_ст�
         assert mic.started, "исправный микрофон не открыли из-за отказа соседнего канала"
     finally:
         hub._running = False
+
+def test_blackhole_выигрывает_у_тапа(monkeypatch):
+    """Есть оба — берём BlackHole: итог боевого теста 06.08.
+
+    Тап открывается штатно, но демону не отдаёт ни кадра (0 байт за 94
+    секунды записи). Пока причина не найдена, проверенный драйвер важнее
+    красивой нативности: перевернуть приоритет обратно можно только вместе
+    с разбором, почему тап молчит.
+    """
+    devices = {a.TAP_DEVICE: 7, "BlackHole 2ch": 3}
+    monkeypatch.setattr(a, "find_device",
+                        lambda s: next((i for n, i in devices.items() if s.lower() in n.lower()), None))
+    assert a.find_system_audio() == (3, "blackhole")
+
+
+def test_без_blackhole_берём_тап(monkeypatch):
+    """Драйвера нет — тап остаётся единственным источником второй стороны."""
+    monkeypatch.setattr(a, "find_device", lambda s: 7 if s == a.TAP_DEVICE else None)
+    assert a.find_system_audio() == (7, "tap")
+
+
+def test_без_тапа_откатываемся_на_blackhole(monkeypatch):
+    """Старая macOS, отказ в разрешении, приложение не запущено — тапа нет.
+
+    Молча остаться без канала собеседников нельзя: в стенограмме пропадёт
+    вторая сторона разговора, а узнаем мы об этом уже после встречи.
+    """
+    monkeypatch.setattr(a, "find_device",
+                        lambda s: 3 if "blackhole" in s.lower() else None)
+    assert a.find_system_audio() == (3, "blackhole")
+
+
+def test_нет_ни_тапа_ни_драйвера(monkeypatch):
+    """Оба источника отсутствуют — честный None, а не случайное устройство."""
+    monkeypatch.setattr(a, "find_device", lambda s: None)
+    index, via = a.find_system_audio()
+    assert index is None and via == "blackhole"
+
+
+# --- Открытие потока: лестница конфигураций и ресемплер -----------------------
+#
+# Тап отвечал PaMacCore AUHAL err=-10851 и не открывался вовсе — отсюда ноль
+# байт в записи. Проверить это на железе нельзя: рабочая машина занята
+# встречами, и ровно такие эксперименты её и подвесили. Поэтому весь узел
+# покрыт без единого обращения к устройству — sd.InputStream подменяется.
+
+
+class _FakeStream:
+    """Подмена sd.InputStream: запоминает, с чем её открыли."""
+
+    def __init__(self, **kw):
+        self.kw = kw
+        self.started = False
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.started = False
+
+    def close(self):
+        pass
+
+
+def _ladder_probe(monkeypatch, fail_first: int, native_sr=48000):
+    """Отказывать −10851 на первых fail_first попытках открыть поток.
+
+    Возвращает (попытки открыть, опросы устройства) — второе тоже под счётом:
+    опрашивать PortAudio на здоровом канале незачем.
+    """
+    attempts: list[dict] = []
+    queries: list = []
+
+    def factory(**kw):
+        attempts.append(kw)
+        if len(attempts) <= fail_first:
+            raise a.sd.PortAudioError(
+                "Error opening InputStream: Invalid Property Value "
+                "[PaMacCore ( AUHAL )| Error on line 2523: err='-10851']")
+        return _FakeStream(**kw)
+
+    def query(*args, **kw):
+        queries.append(args)
+        return {"default_samplerate": float(native_sr)}
+
+    monkeypatch.setattr(a.sd, "InputStream", factory)
+    monkeypatch.setattr(a.sd, "query_devices", query)
+    return attempts, queries
+
+
+def test_обычное_устройство_открывается_первой_же_ступенью(monkeypatch):
+    """Регрессия: BlackHole и микрофон обязаны видеть ровно прежний вызов.
+
+    Они везут встречи прямо сейчас. Лестница не имеет права ни поменять им
+    параметры потока, ни подсунуть ресемплер.
+    """
+    attempts, queries = _ladder_probe(monkeypatch, fail_first=0)
+    c = a.Capture(3, 16000, "blackhole")
+
+    c.start()
+
+    assert len(attempts) == 1, "устройство трогали больше одного раза"
+    assert queries == [], "лишний опрос PortAudio на здоровом канале"
+    assert attempts[0]["samplerate"] == 16000
+    assert attempts[0]["blocksize"] == 4000      # int(16000 * 0.25) — как было всегда
+    assert attempts[0]["channels"] == 1
+    assert c.opened_as == a.Capture.PLAIN
+    assert c._resampler is None, "обычному устройству ресемплер не нужен"
+
+
+def test_отказ_по_размеру_блока_чинится_второй_ступенью(monkeypatch):
+    """Если −10851 давал размер блока — открываемся на своей частоте.
+
+    Ресемплер при этом не поднимается: частота запрошена наша, пересчёт
+    делает сам PortAudio.
+    """
+    attempts, _ = _ladder_probe(monkeypatch, fail_first=1)
+    c = a.Capture(7, 16000, "blackhole")
+
+    c.start()
+
+    assert len(attempts) == 2
+    assert attempts[1]["samplerate"] == 16000
+    assert attempts[1]["blocksize"] == 0, "размер блока должен отдаваться PortAudio"
+    assert c.opened_as == "свободный размер блока"
+    assert c._resampler is None
+
+
+def test_отказ_по_частоте_чинится_третьей_ступенью(monkeypatch):
+    """Если −10851 давала частота — открываемся на родной и понижаем сами."""
+    attempts, _ = _ladder_probe(monkeypatch, fail_first=2, native_sr=48000)
+    c = a.Capture(7, 16000, "blackhole")
+
+    c.start()
+
+    assert len(attempts) == 3
+    assert attempts[2]["samplerate"] == 48000
+    assert attempts[2]["blocksize"] == 0
+    assert c.opened_as == "частота устройства 48000 Гц"
+    assert isinstance(c._resampler, a._Downsampler)
+
+
+def test_очередь_всегда_в_целевой_частоте(monkeypatch):
+    """Наружу Capture обязан отдавать 16 кГц, чем бы ни было открыто устройство.
+
+    Иначе _cut нарежет чанки втрое короче, чем думает, и STT получит обрывки.
+    """
+    _ladder_probe(monkeypatch, fail_first=2, native_sr=48000)  # noqa: F841
+    c = a.Capture(7, 16000, "blackhole")
+    c.start()
+
+    c._cb(np.zeros((4800, 1), dtype=np.float32), 4800, None, None)
+
+    got = c.q.get_nowait()
+    assert got.dtype == np.float32
+    assert abs(len(got) - 1600) <= 1, f"48 кГц не превратились в 16 кГц: {len(got)}"
+
+
+def test_отказ_всех_ступеней_объясняет_причину(monkeypatch):
+    """Раньше улетал голый PortAudioError. Теперь видно, что именно пробовали."""
+    _ladder_probe(monkeypatch, fail_first=99)
+    c = a.Capture(7, 16000, "blackhole")
+
+    try:
+        c.start()
+    except RuntimeError as e:
+        text = str(e)
+    else:
+        raise AssertionError("отказ устройства прошёл незамеченным")
+
+    assert "blackhole" in text
+    assert a.Capture.PLAIN in text and "свободный размер блока" in text
+    assert "-10851" in text, "код ошибки устройства обязан дойти до человека"
+
+
+def test_ресемплер_не_склеивает_блоки_со_щелчком():
+    """Поблочная обработка обязана совпасть с обработкой одним куском.
+
+    Состояние (хвост фильтра, дробная позиция) переносится через шов; ошибка
+    здесь дала бы щелчок каждые 250 мс — на слух почти незаметный, для
+    распознавания разрушительный.
+    """
+    rng = np.random.default_rng(0)
+    signal = (rng.standard_normal(4000 * 5) * 0.3).astype(np.float32)
+
+    one_shot = a._Downsampler(48000, 16000).process(signal)
+    blocked = a._Downsampler(48000, 16000)
+    joined = np.concatenate([blocked.process(signal[i:i + 4000])
+                             for i in range(0, len(signal), 4000)])
+
+    assert len(joined) == len(one_shot)
+    assert np.allclose(joined, one_shot, atol=1e-6)
+
+
+def test_ресемплер_держит_среднюю_длину():
+    """Длина выхода плавает по блокам, но не копит сдвиг."""
+    d = a._Downsampler(48000, 16000)
+    lengths = [len(d.process(np.zeros(4000, dtype=np.float32))) for _ in range(30)]
+
+    assert set(lengths) <= {1333, 1334}, f"неожиданные длины: {sorted(set(lengths))}"
+    assert abs(sum(lengths) - 30 * 4000 / 3) <= 1
+
+
+def test_ресемплер_не_заворачивает_высокие_частоты():
+    """12 кГц при 48→16 без фильтра сели бы на 4 кГц — прямо в речевую полосу."""
+    sr = 48000
+    t = np.arange(sr) / sr
+    tone = np.sin(2 * np.pi * 12000 * t).astype(np.float32)
+
+    out = a._Downsampler(sr, 16000).process(tone)
+    naive = tone[::3]                       # то же самое без фильтра — для контраста
+
+    assert np.sqrt(np.mean(naive**2)) > 0.5, "контроль: без фильтра тон остаётся"
+    assert np.sqrt(np.mean(out[800:]**2)) < 0.01, "12 кГц завернулись в речевую полосу"
+
+
+def test_ресемплер_пропускает_речевую_полосу():
+    """Обратная проверка: 1 кГц обязан пройти, а не быть срезан заодно с шумом."""
+    sr = 48000
+    t = np.arange(sr) / sr
+    tone = np.sin(2 * np.pi * 1000 * t).astype(np.float32)
+
+    out = a._Downsampler(sr, 16000).process(tone)
+
+    assert 0.6 < np.sqrt(np.mean(out[800:]**2)) < 0.75, "речевая полоса просела"
+
+
+# ── Поток тапа от приложения: демон читает файл, а не устройство ──────────
+
+def _manifest(tmp_path, sr=48000):
+    import json
+    raw = tmp_path / "tap_stream.raw"
+    raw.write_bytes(b"")
+    m = {"path": str(raw), "samplerate": sr, "format": "s16le", "channels": 1}
+    (tmp_path / "tap_stream.json").write_text(json.dumps(m), encoding="utf-8")
+    return m, raw
+
+
+def test_поток_тапа_читается_и_даунсемплится(tmp_path):
+    """Приложение пишет s16le 48 кГц, конвейер получает float32 16 кГц.
+
+    Право на системный звук есть только у приложения (вердикт 06–07.08),
+    поэтому демон берёт кадры из растущего файла — и они обязаны прийти
+    в той же форме, что и из PortAudio."""
+    m, raw = _manifest(tmp_path)
+    cap = a.TapStreamCapture(m, 16000, "blackhole")
+    t = np.arange(48000, dtype=np.float32) / 48000
+    tone = (0.5 * np.sin(2 * np.pi * 440 * t) * 32767).astype("<i2")
+    def writer():
+        # как приложение: кадры капают маленькими порциями непрерывно
+        with raw.open("ab") as f:
+            for i in range(0, len(tone), 4800):
+                f.write(tone[i:i + 4800].tobytes())
+                f.flush()
+                time.sleep(0.05)
+    import threading as _t
+    w = _t.Thread(target=writer, daemon=True)
+    w.start()
+    cap.start()
+    try:
+        w.join(timeout=5)
+        got = []
+        deadline = time.time() + 5
+        while sum(len(g) for g in got) < 12000 and time.time() < deadline:
+            try:
+                got.append(cap.q.get(timeout=0.5))
+            except queue.Empty:
+                pass
+    finally:
+        cap.stop()
+    out = np.concatenate(got) if got else np.zeros(0)
+    assert len(out) >= 12000, "секунда исходника не превратилась в кадры 16 кГц"
+    assert 0.2 < float(np.abs(out).max()) <= 1.0, "амплитуда тона потерялась"
+
+
+def test_поток_тапа_без_роста_падает_вслух(tmp_path):
+    """Файл есть, но не растёт: канал обязан отказаться, а не писать тишину."""
+    m, _raw = _manifest(tmp_path)
+    cap = a.TapStreamCapture(m, 16000, "blackhole")
+    try:
+        cap.start()
+    except RuntimeError as e:
+        assert "не растёт" in str(e)
+    else:
+        cap.stop()
+        raise AssertionError("старт без кадров обязан падать")
+
+
+def test_свежесть_манифеста(tmp_path, monkeypatch):
+    """Манифест мёртвой встречи (файл давно не рос) не выбирается."""
+    m, raw = _manifest(tmp_path)
+    monkeypatch.setattr(a, "TAP_STREAM_MANIFEST", tmp_path / "tap_stream.json")
+    raw.write_bytes(b"\0\0" * 100)
+    assert a.fresh_tap_manifest() is not None, "живой манифест не распознан"
+    old = time.time() - 60
+    import os
+    os.utime(raw, (old, old))
+    assert a.fresh_tap_manifest() is None, "труп прошлой встречи прошёл за живого"

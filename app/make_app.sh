@@ -58,6 +58,21 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<string>Название ближайшей встречи — для кнопки «Бриф» (локально, только чтение).</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Суфлёр слушает встречу локально: распознавание речи не покидает этот Mac.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Звук звонка записывается локально вместо установки стороннего драйвера: расшифровка не покидает этот Mac.</string>
+	<!-- charoite:// — управление из Shortcuts/терминала: record/start|stop|toggle,
+	     meeting/<id>, tasks, today. App Intents здесь не работают: их метаданные
+	     извлекает Xcode-фаза, которой у swift build нет — Shortcuts видел бы
+	     пустоту. URL scheme работает в любой сборке. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>ai.charoite.app.url</string>
+			<key>CFBundleURLSchemes</key>
+			<array><string>charoite</string></array>
+		</dict>
+	</array>
 </dict>
 </plist>
 PLIST
@@ -70,5 +85,26 @@ BUILD="$(git rev-list --count HEAD 2>/dev/null || true)"
 BUILD="${BUILD:-1}"
 /usr/bin/sed -i '' "s/__BUILD__/$BUILD/" "$APP/Contents/Info.plist"
 
-codesign --force --sign - "$APP"
+# Подпись: Developer ID, если он есть в связке, иначе ad-hoc.
+#
+# Это не про дистрибуцию, а про разрешения. У ad-hoc подписи designated
+# requirement — это `cdhash H"…"`, то есть привязка к точному хешу бинаря:
+# любая пересборка меняет хеш, и macOS считает приложение ДРУГИМ. Выданные
+# доступы (микрофон, а с переходом на Core Audio tap — и системный звук)
+# после каждой сборки приходится выдавать заново. С Developer ID requirement
+# становится «identifier + команда» и переживает пересборки.
+SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
+    | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
+if [ -n "$SIGN_ID" ]; then
+    # Без --options runtime: hardened runtime ломает наследование доступа
+    # дочерними процессами, а микрофон у нас читает python-демон отдельным
+    # процессом — при жёстком рантайме он получает тишину без единой ошибки.
+    # Нотаризация нам не нужна, а стабильность requirement даёт сам Developer ID.
+    codesign --force --sign "$SIGN_ID" --timestamp=none "$APP"
+    echo "подписано: $SIGN_ID"
+else
+    codesign --force --sign - "$APP"
+    echo "ВНИМАНИЕ: Developer ID не найден, подпись ad-hoc —"
+    echo "  доступ к микрофону и системному звуку будет слетать при каждой сборке."
+fi
 echo "готово: $APP"
