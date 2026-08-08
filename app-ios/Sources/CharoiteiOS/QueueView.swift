@@ -22,9 +22,11 @@ struct QueueView: View {
             Group {
                 if items.isEmpty {
                     ContentUnavailableView(
-                        "Очередь пуста",
+                        L.t("Очередь пуста", "Queue is empty", "队列为空"),
                         systemImage: "checkmark.circle",
-                        description: Text("Всё, что записано, уехало на Mac."))
+                        description: Text(L.t("Всё, что записано, уехало на Mac.",
+                                              "Everything recorded has reached the Mac.",
+                                              "所有录音都已送达 Mac。")))
                 } else {
                     List {
                         if !Inbox.folderChosen {
@@ -41,16 +43,18 @@ struct QueueView: View {
                                 row(item)
                             }
                         } header: {
-                            Text("Ждут отправки: \(items.count)")
+                            Text(L.t("Ждут отправки: \(items.count)",
+                                     "Waiting to be sent: \(items.count)",
+                                     "等待发送：\(items.count)"))
                         }
                     }
                 }
             }
-            .navigationTitle("Очередь")
+            .navigationTitle(L.t("Очередь", "Queue", "队列"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Готово") { dismiss() }
+                    Button(L.t("Готово", "Done", "完成")) { dismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -59,7 +63,7 @@ struct QueueView: View {
                         if sending {
                             ProgressView()
                         } else {
-                            Text("Отправить")
+                            Text(L.t("Отправить", "Send", "发送"))
                         }
                     }
                     .disabled(items.isEmpty || sending)
@@ -71,7 +75,9 @@ struct QueueView: View {
                         try Inbox.saveFolder(url)
                         send()
                     } catch {
-                        rec.lastResult = "Не удалось запомнить папку: \(error.localizedDescription)"
+                        rec.lastResult = L.t("Не удалось запомнить папку: \(error.localizedDescription)",
+                                             "Could not remember the folder: \(error.localizedDescription)",
+                                             "无法记住该文件夹：\(error.localizedDescription)")
                     }
                 }
             }
@@ -81,12 +87,16 @@ struct QueueView: View {
 
     private var folderWarning: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Папка доставки не выбрана", systemImage: "tray.and.arrow.up")
+            Label(L.t("Папка доставки не выбрана", "No delivery folder chosen", "尚未选择投递文件夹"),
+                  systemImage: "tray.and.arrow.up")
                 .font(.callout.weight(.medium))
-            Text("Записи никуда не уедут, пока не укажете папку доставки в iCloud Drive — ту же, за которой следит Mac (обычно «Charoite Inbox»). Папка графа с вкладки «Встречи» — другая, она про чтение.")
+            Text(L.t(
+                "Записи никуда не уедут, пока не укажете папку доставки в iCloud Drive — ту же, за которой следит Mac (обычно «Charoite Inbox»). Папка графа с вкладки «Встречи» — другая, она про чтение.",
+                "Recordings stay put until you pick a delivery folder in iCloud Drive — the same one the Mac watches (usually «Charoite Inbox»). The graph folder on the Meetings tab is a different one: that is for reading.",
+                "在你于 iCloud Drive 中指定投递文件夹之前，录音哪儿也不会去——就是 Mac 所监视的那个（通常是「Charoite Inbox」）。「会议」标签页里的图谱文件夹是另一个，它用于读取。"))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            Button("Выбрать папку доставки") { showPicker = true }
+            Button(L.t("Выбрать папку доставки", "Choose delivery folder", "选择投递文件夹")) { showPicker = true }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
         }
@@ -95,12 +105,16 @@ struct QueueView: View {
 
     private var stuckWarning: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label("Записи ждут дольше суток", systemImage: "exclamationmark.triangle.fill")
+            Label(L.t("Записи ждут дольше суток", "Recordings waiting over a day", "录音已等待超过一天"),
+                  systemImage: "exclamationmark.triangle.fill")
                 .font(.callout.weight(.medium))
                 .foregroundStyle(.orange)
             // Сутки — не про терпение, а про диагноз: обычная доставка занимает
             // секунды, и всё, что висит дольше, висит уже не «сейчас уедет».
-            Text("Обычно доставка занимает секунды. Проверьте, что на iPhone есть сеть и место в iCloud, — или заберите записи вручную кнопкой «Поделиться».")
+            Text(L.t(
+                "Обычно доставка занимает секунды. Проверьте, что на iPhone есть сеть и место в iCloud, — или заберите записи вручную кнопкой «Поделиться».",
+                "Delivery normally takes seconds. Check that the iPhone has a network and free iCloud space — or take the recordings by hand with «Share».",
+                "投递通常只需几秒。请检查 iPhone 是否有网络、iCloud 是否还有空间——或用「分享」手动取走录音。"))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }

@@ -153,6 +153,102 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
     return folder
 
 
+# Названия разделов саммари на трёх языках. Одно место на весь модуль:
+# отсюда собирается промпт (пишем на языке конфига) и отсюда же читается
+# готовый документ (разбираем на ЛЮБОМ языке).
+#
+# Разница принципиальная. Генерация зависит от `sufler.language` — что человек
+# выбрал, на том и пишем. Разбор от конфига зависеть не должен: в архиве лежат
+# встречи, записанные до переключения языка, и пересборка старой русской
+# встречи при `language: en` не имеет права потерять её решения. Раньше и то,
+# и другое было жёстко русским: при en/zh минутки выходили английские, а
+# Саммари.md — всё равно русское.
+SUMMARY_SECTIONS: dict[str, dict[str, str]] = {
+    "ru": {
+        "gist": "Суть одной строкой:",
+        "topics": "О чём говорили",
+        "decisions": "Решили",
+        "tasks": "Поручения",
+        "questions": "Открытые вопросы",
+        "history": "Связь с прошлыми встречами",
+        "none": "решений не было",
+    },
+    "en": {
+        "gist": "Bottom line:",
+        "topics": "What we talked about",
+        "decisions": "Decisions",
+        "tasks": "Action items",
+        "questions": "Open questions",
+        "history": "Link to past meetings",
+        "none": "no decisions were made",
+    },
+    "zh": {
+        "gist": "一句话概括：",
+        "topics": "讨论了什么",
+        "decisions": "决定",
+        "tasks": "任务",
+        "questions": "待解决问题",
+        "history": "与过往会议的关联",
+        "none": "没有做出决定",
+    },
+}
+
+#: Все написания раздела на всех языках — для разбора готового документа.
+def section_names(key: str) -> tuple[str, ...]:
+    names = [SUMMARY_SECTIONS[lang][key] for lang in ("ru", "en", "zh")]
+    # Исторические написания: «Решения» встречалось наравне с «Решили».
+    if key == "decisions":
+        names.append("Решения")
+    return tuple(dict.fromkeys(names))
+
+
+def _config_lang() -> str:
+    """Язык НОВЫХ документов — из `sufler.language`, с откатом на русский.
+
+    Отдельно от `summary_lang`: тот отвечает на вопрос «на чём написан этот
+    файл», а этот — «на чём писать следующий». Конфиг может не читаться
+    (архив зовут и из тестов, и из миграции) — тогда пишем по-русски, как
+    было всегда.
+    """
+    try:
+        import yaml
+        cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
+        lang = str((cfg.get("sufler") or {}).get("language", "ru")).strip().lower()
+    except Exception:  # noqa: BLE001 — язык документа не повод ронять архив
+        return "ru"
+    return lang if lang in SUMMARY_SECTIONS else "ru"
+
+
+def _lang_name() -> str:
+    """Как назвать язык в промпте (промпт остаётся русским, меняется ответ)."""
+    return {"ru": "по-русски", "en": "по-английски", "zh": "по-китайски"}[_config_lang()]
+
+
+def summary_lang(text: str) -> str:
+    """На каком языке написано это саммари — по его же заголовкам.
+
+    Нужен там, где документ обрабатывается после генерации: обрезка по лимиту
+    и восстановление раздела решений. Конфиг здесь не годится — он говорит,
+    на чём писать НОВОЕ, а на диске лежат встречи всех прошлых языков.
+    """
+    for lang in ("ru", "en", "zh"):
+        words = SUMMARY_SECTIONS[lang]
+        for key in ("decisions", "tasks", "questions", "topics"):
+            if re.search(rf"(?m)^##\s*{re.escape(words[key])}\s*$", text):
+                return lang
+    return "ru"
+
+
+def summary_gist(text: str) -> str | None:
+    """Суть одной строкой — на любом из трёх языков."""
+    for lang in ("ru", "en", "zh"):
+        marker = SUMMARY_SECTIONS[lang]["gist"]
+        match = re.search(rf"\*\*{re.escape(marker)}\*\*\s*(.+)", text)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
 def _manifest_items(text: str, names: tuple[str, ...]) -> list[str]:
     """Пункты секции саммари для стабильных полей манифеста."""
     for name in names:
@@ -203,7 +299,7 @@ def build_manifest(folder: pathlib.Path, stamp: str, title: str) -> dict:
     transcript_path = folder / "Стенограмма.md"
     summary = summary_path.read_text(encoding="utf-8") if summary_path.exists() else ""
     transcript = transcript_path.read_text(encoding="utf-8") if transcript_path.exists() else ""
-    gist_match = re.search(r"\*\*Суть одной строкой:\*\*\s*(.+)", summary)
+    gist = summary_gist(summary)
     files = {
         key: name for key, name in (
             ("transcript", "Стенограмма.md"),
@@ -223,10 +319,10 @@ def build_manifest(folder: pathlib.Path, stamp: str, title: str) -> dict:
         "started_at": started,
         "duration_minutes": _manifest_duration(transcript),
         "participants": _manifest_participants(transcript),
-        "summary": gist_match.group(1).strip() if gist_match else None,
-        "decisions": _manifest_items(summary, ("Решили", "Решения", "Decisions", "决定")),
-        "action_items": _manifest_items(summary, ("Поручения", "Action items", "任务")),
-        "open_questions": _manifest_items(summary, ("Открытые вопросы", "Open questions", "待解决问题")),
+        "summary": gist,
+        "decisions": _manifest_items(summary, section_names("decisions")),
+        "action_items": _manifest_items(summary, section_names("tasks")),
+        "open_questions": _manifest_items(summary, section_names("questions")),
         "files": files,
         "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
@@ -305,7 +401,13 @@ def _force_decisions(text: str, decisions: list[str], per_item: int = 165) -> st
     цена ошибки высокая — «решений не было» поверх трёх записанных решений
     читается как факт. Раз данные есть, последнее слово за кодом.
     """
-    if not decisions or "решений не было" not in text.lower():
+    if not decisions:
+        return text
+    # Язык берём из самого документа, а не из конфига: пересборка старой
+    # русской встречи при `language: en` обязана лечить её же русский раздел.
+    lang = summary_lang(text)
+    words = SUMMARY_SECTIONS[lang]
+    if words["none"].lower() not in text.lower():
         return text
 
     def short(s: str) -> str:
@@ -314,8 +416,9 @@ def _force_decisions(text: str, decisions: list[str], per_item: int = 165) -> st
             return s
         return s[:per_item].rsplit(" ", 1)[0].rstrip(" ,;:—-") + "…"
 
-    block = "## Решили\n" + "\n".join(f"- {short(d)}" for d in decisions[:3])
-    return re.sub(r"(?ms)^## Решили\n.*?(?=^## |\Z)", block + "\n\n", text)
+    head = f"## {words['decisions']}"
+    block = head + "\n" + "\n".join(f"- {short(d)}" for d in decisions[:3])
+    return re.sub(rf"(?ms)^{re.escape(head)}\n.*?(?=^## |\Z)", block + "\n\n", text)
 
 
 def _trim_summary(text: str, limit: int = 900, per_item: int = 165, per_section: int = 3) -> str:
@@ -356,7 +459,8 @@ def _trim_summary(text: str, limit: int = 900, per_item: int = 165, per_section:
     # говорили»: у встречи 15.07 из выжимки пропало, кто что должен сделать, —
     # то есть ровно то, ради чего её открывают. Порядок жертв — от наименее
     # ценного к более ценному; суть, решения и поручения не трогаем.
-    for head in ("## Связь с прошлыми встречами", "## Открытые вопросы", "## О чём говорили"):
+    words = SUMMARY_SECTIONS[summary_lang(text)]
+    for head in (f"## {words['history']}", f"## {words['questions']}", f"## {words['topics']}"):
         if len(("\n\n".join(out_blocks)).strip()) <= limit:
             break
         out_blocks = [b for b in out_blocks if not b.lstrip().startswith(head)]
@@ -408,14 +512,15 @@ def _gen_summary(folder: pathlib.Path, force: bool = False):
     # Решения — отдельным блоком, а не «найди в материалах»: они уже записаны
     # минутками структурно, и искать их заново модель умеет через раз.
     decided = decisions_of(folder)
-    decided_block = ("\n\n=== Решения встречи (перенеси их в раздел «Решили», "
+    words = SUMMARY_SECTIONS[_config_lang()]
+    decided_block = (f"\n\n=== Решения встречи (перенеси их в раздел «{words['decisions']}», "
                      "сократив каждое до строки) ===\n"
                      + "\n".join(f"- {d}" for d in decided)) if decided else ""
     hist_block = (
         "\n\n=== История (Ядра и прошлые встречи) — ТОЛЬКО для раздела "
-        "«Связь с прошлыми встречами» ===\n" + history) if history else ""
+        f"«{words['history']}» ===\n" + history) if history else ""
     hist_tpl = (
-        "\n\n## Связь с прошлыми встречами\n"
+        f"\n\n## {words['history']}\n"
         "(1-3 пункта «- **тема** — было: … (DD.MM) → сегодня: …» — ТОЛЬКО темы, "
         "которых сегодняшняя встреча реально касалась: продвижение, подтверждение "
         "или отмена прошлой договорённости. Нет пересечений — пропусти раздел)"
@@ -429,7 +534,7 @@ def _gen_summary(folder: pathlib.Path, force: bool = False):
                     # правила позитивные и данные в тегах — qwen следует такому лучше,
                     # чем стопке «БЕЗ / НЕ / никогда» (замер 22.07 на минутках)
                     "Ты делаешь выжимку рабочей встречи для быстрого чтения. Пишешь "
-                    "по-русски, сухо, по фактам из материалов. Оформляешь списками "
+                    f"{_lang_name()}, сухо, по фактам из материалов. Оформляешь списками "
                     "«- …» с жирным ключом в начале пункта. Держишь весь текст в "
                     "пределах 120 слов (900 знаков): максимум 3 пункта в разделе, "
                     "пункт — одна строка до 12 слов, в пустом разделе одно слово «нет». "
@@ -438,19 +543,21 @@ def _gen_summary(folder: pathlib.Path, force: bool = False):
                 {"role": "user", "content":
                     "<материалы>\n" + "\n\n".join(src_parts) + decided_block + hist_block
                     + "\n</материалы>\n\n"
-                    "Составь саммари по шаблону:\n"
-                    "**Суть одной строкой:** …\n\n"
-                    "## О чём говорили\n(до 3 пунктов «- **тема** — что по ней», не проза)\n\n"
+                    f"Составь саммари {_lang_name()} по шаблону "
+                    "(заголовки — дословно как здесь):\n"
+                    f"**{words['gist']}** …\n\n"
+                    f"## {words['topics']}\n(до 3 пунктов «- **тема** — что по ней», не проза)\n\n"
                     # «кто внедряет» тут стояло — и глушило весь раздел. У решений
                     # в минутках исполнителя обычно нет («признаны неподходящими»,
                     # «отказ от эскалации»), модель не находила его и писала
                     # «решений не было» поверх трёх записанных решений. Замер 03.08
                     # на четырёх встречах: без этого требования — 4 из 4 верно.
-                    "## Решили\n(список «- **тема решения** — суть одной строкой»; "
-                    "если в материалах нет ни одного решения — «решений не было»)\n\n"
-                    "## Поручения\n(список «- **Кто** — что — срок»)\n\n"
-                    "## Открытые вопросы\n(список; это последний раздел — следующие шаги "
-                    "уже перечислены в поручениях)" + hist_tpl},
+                    f"## {words['decisions']}\n(список «- **тема решения** — суть одной "
+                    "строкой»; если в материалах нет ни одного решения — "
+                    f"«{words['none']}»)\n\n"
+                    f"## {words['tasks']}\n(список «- **Кто** — что — срок»)\n\n"
+                    f"## {words['questions']}\n(список; это последний раздел — следующие "
+                    "шаги уже перечислены в поручениях)" + hist_tpl},
             ],
             # 560 токенов ≈ 1900 знаков: потолок НЕ должен резать (у русского в qwen
             # ~3.4 знака на токен, прежние 420 обрубали саммари на полуслове).

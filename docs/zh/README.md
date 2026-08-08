@@ -124,7 +124,7 @@ STT 模型首次运行自动下载。实时说话人分离（按声音区分的�
 
 手机是桌上的麦克风，大脑仍在 Mac。SwiftUI 伴侣应用
 （[app-ios/](../../app-ios)）录制会议、语音笔记和日记条目（后台安全，并在
-灵动岛显示 Live Activity 计时器），通过设备本地的发件队列把文件放入你选定的
+灵动岛显示 Live Activity 计时器与「停止」按钮），通过设备本地的发件队列把文件放入你选定的
 iCloud Drive 文件夹——同时把图谱读回来：会议动态与任务复选框，直接来自
 Obsidian 和 Mac 应用所看到的同一批 markdown 文件。使用 XcodeGen 构建：
 `cd app-ios && xcodegen generate`，然后打开 `CharoiteiOS.xcodeproj`。
