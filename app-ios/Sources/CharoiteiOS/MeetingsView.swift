@@ -11,9 +11,12 @@ struct MeetingsView: View {
                 emptyGraph
             } else if store.meetings.isEmpty {
                 ContentUnavailableView(
-                    "Пока пусто",
+                    L.t("Пока пусто", "Nothing yet", "暂时为空"),
                     systemImage: "calendar",
-                    description: Text(store.status ?? "Встречи появятся после первой записи — Mac собирает граф сам."))
+                    description: Text(store.status ?? L.t(
+                        "Встречи появятся после первой записи — Mac собирает граф сам.",
+                        "Meetings show up after your first recording — the Mac builds the graph itself.",
+                        "第一次录音之后会议就会出现——图谱由 Mac 自行构建。")))
             } else {
                 List {
                     if let s = store.status {
@@ -37,7 +40,7 @@ struct MeetingsView: View {
                 .refreshable { store.rescanMeetings() }
             }
         }
-        .navigationTitle("Встречи")
+        .navigationTitle(L.t("Встречи", "Meetings", "会议"))
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showPicker = true } label: {
@@ -48,7 +51,7 @@ struct MeetingsView: View {
                           ? "books.vertical.fill" : "books.vertical")
                         .foregroundStyle(store.folderChosen ? Theme.accent : .orange)
                 }
-                .accessibilityLabel("Папка графа встреч")
+                .accessibilityLabel(L.t("Папка графа встреч", "Meetings graph folder", "会议图谱文件夹"))
             }
         }
         .sheet(isPresented: $showPicker) {
@@ -57,7 +60,9 @@ struct MeetingsView: View {
                     try store.saveFolder(url)
                     store.rescanMeetings()
                 } catch {
-                    store.status = "Не удалось запомнить папку: \(error.localizedDescription)"
+                    store.status = L.t("Не удалось запомнить папку: \(error.localizedDescription)",
+                                       "Could not remember the folder: \(error.localizedDescription)",
+                                       "无法记住该文件夹：\(error.localizedDescription)")
                 }
             }
         }
@@ -66,11 +71,15 @@ struct MeetingsView: View {
 
     private var emptyGraph: some View {
         ContentUnavailableView {
-            Label("Выберите папку графа", systemImage: "books.vertical")
+            Label(L.t("Выберите папку графа", "Choose the graph folder", "选择图谱文件夹"),
+                  systemImage: "books.vertical")
         } description: {
-            Text("Один раз укажите папку вашего графа в Файлах (iCloud Drive → Obsidian) — лента встреч и задачи будут читаться прямо из неё. Это не папка доставки записей: та настраивается на вкладке «Запись».")
+            Text(L.t(
+                "Один раз укажите папку вашего графа в Файлах (iCloud Drive → Obsidian) — лента встреч и задачи будут читаться прямо из неё. Это не папка доставки записей: та настраивается на вкладке «Запись».",
+                "Point the app at your graph folder in Files once (iCloud Drive → Obsidian) — the meetings feed and tasks are read straight from it. This is not the delivery folder: that one lives on the Record tab.",
+                "只需在「文件」中指定一次你的图谱文件夹（iCloud Drive → Obsidian）——会议动态与任务将直接从中读取。这不是录音投递文件夹：那个在「录音」标签页设置。"))
         } actions: {
-            Button("Выбрать папку графа") { showPicker = true }
+            Button(L.t("Выбрать папку графа", "Choose graph folder", "选择图谱文件夹")) { showPicker = true }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
         }

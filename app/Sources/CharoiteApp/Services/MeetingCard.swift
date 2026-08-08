@@ -93,13 +93,13 @@ enum MeetingCardLoader {
                 encoding: .utf8) {
                 if card.gist == nil { card.gist = gist(fromSummary: summary) }
                 if card.decisions.isEmpty {
-                    card.decisions = items(inSection: "Решили", of: summary)
+                    card.decisions = items(inSections: Section.decisions, of: summary)
                 }
                 if card.tasks.isEmpty {
-                    card.tasks = items(inSection: "Поручения", of: summary)
+                    card.tasks = items(inSections: Section.tasks, of: summary)
                 }
                 if card.openQuestions.isEmpty {
-                    card.openQuestions = items(inSection: "Открытые вопросы", of: summary)
+                    card.openQuestions = items(inSections: Section.questions, of: summary)
                 }
             } else if card.gist == nil {
                 card.summaryMissing = true
@@ -217,14 +217,41 @@ enum MeetingCardLoader {
     // MARK: - Саммари
 
     /// «**Суть одной строкой:** …» — первая строка, ради которой саммари и есть.
+    /// Названия разделов саммари на всех языках, которые пишет конвейер.
+    ///
+    /// Карточка читает то, что уже лежит на диске, поэтому язык берётся из
+    /// документа, а не из настроек: в архиве соседствуют встречи, записанные
+    /// до и после переключения `sufler.language`. Раньше здесь были только
+    /// русские заголовки — у английской встречи карточка показывала пустые
+    /// «Решили» и «Поручения» при том, что в файле они есть.
+    /// Порядок и состав повторяют `SUMMARY_SECTIONS` в src/meeting_archive.py.
+    enum Section {
+        static let gist = ["Суть одной строкой:**", "Bottom line:**", "一句话概括：**"]
+        static let decisions = ["Решили", "Решения", "Decisions", "决定"]
+        static let tasks = ["Поручения", "Action items", "任务"]
+        static let questions = ["Открытые вопросы", "Open questions", "待解决问题"]
+        /// Пустой раздел: модель пишет это вместо списка.
+        static let empty = ["не было", "нет", "no decisions", "none", "没有", "无"]
+    }
+
     static func gist(fromSummary text: String) -> String? {
-        let marker = "Суть одной строкой:**"
-        for line in text.split(separator: "\n") {
-            guard let range = line.range(of: marker) else { continue }
-            let value = line[range.upperBound...].trimmingCharacters(in: .whitespaces)
-            return value.isEmpty ? nil : value
+        for marker in Section.gist {
+            for line in text.split(separator: "\n") {
+                guard let range = line.range(of: marker) else { continue }
+                let value = line[range.upperBound...].trimmingCharacters(in: .whitespaces)
+                if !value.isEmpty { return value }
+            }
         }
         return nil
+    }
+
+    /// Пункты раздела на любом из его языковых написаний.
+    static func items(inSections names: [String], of text: String) -> [String] {
+        for name in names {
+            let found = items(inSection: name, of: text)
+            if !found.isEmpty { return found }
+        }
+        return []
     }
 
     /// Пункты раздела «## <имя>» до следующего раздела.
@@ -238,8 +265,12 @@ enum MeetingCardLoader {
             .split(separator: "\n")
             .filter { $0.hasPrefix("- ") }
             .map { $0.dropFirst(2).trimmingCharacters(in: .whitespaces) }
-            // «решений не было» — честный пустой раздел, а не пункт списка
-            .filter { !$0.lowercased().contains("не было") && $0.lowercased() != "нет" }
+            // «решений не было» / «no decisions were made» / «没有做出决定» —
+            // честный пустой раздел, а не пункт списка.
+            .filter { item in
+                let low = item.lowercased()
+                return !Section.empty.contains { low.contains($0) }
+            }
     }
 
     // MARK: - Куда вести

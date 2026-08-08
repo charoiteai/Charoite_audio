@@ -13,19 +13,25 @@ struct GraphTasksView: View {
                 // у задач и встреч одна, и гонять человека за ней в другое
                 // место — лишний шаг ровно в момент первого запуска.
                 ContentUnavailableView {
-                    Label("Сначала папка графа", systemImage: "checklist")
+                    Label(L.t("Сначала папка графа", "Pick the graph folder first", "请先选择图谱文件夹"),
+                          systemImage: "checklist")
                 } description: {
-                    Text("Укажите папку вашего графа в Файлах (iCloud Drive → Obsidian) — задачи придут из тех же файлов, что и встречи.")
+                    Text(L.t("Укажите папку вашего графа в Файлах (iCloud Drive → Obsidian) — задачи придут из тех же файлов, что и встречи.",
+                             "Point the app at your graph folder in Files (iCloud Drive → Obsidian) — tasks come from the same files as meetings.",
+                             "在「文件」中指向你的图谱文件夹（iCloud Drive → Obsidian）——任务与会议来自同一批文件。"))
                 } actions: {
-                    Button("Выбрать папку графа") { showPicker = true }
+                    Button(L.t("Выбрать папку графа", "Choose graph folder", "选择图谱文件夹")) { showPicker = true }
                         .buttonStyle(.borderedProminent)
                         .tint(Theme.accent)
                 }
             } else if store.tasks.isEmpty {
                 ContentUnavailableView(
-                    "Задач нет",
+                    L.t("Задач нет", "No tasks", "暂无任务"),
                     systemImage: "checklist",
-                    description: Text("Поручения из минуток появятся здесь после ближайшей встречи."))
+                    description: Text(L.t(
+                        "Поручения из минуток появятся здесь после ближайшей встречи.",
+                        "Action items from the minutes will show up here after your next meeting.",
+                        "会议纪要中的行动项会在下一场会议后出现在这里。")))
             } else {
                 List(store.tasks) { t in
                     Button {
@@ -52,14 +58,18 @@ struct GraphTasksView: View {
                 .refreshable { store.rescanTasks() }
             }
         }
-        .navigationTitle(store.openCount > 0 ? "Задачи · \(store.openCount)" : "Задачи")
+        .navigationTitle(store.openCount > 0
+                         ? L.t("Задачи", "Tasks", "任务") + " · \(store.openCount)"
+                         : L.t("Задачи", "Tasks", "任务"))
         .sheet(isPresented: $showPicker) {
             FolderPicker { url in
                 do {
                     try store.saveFolder(url)
                     store.rescanTasks()
                 } catch {
-                    store.status = "Не удалось запомнить папку: \(error.localizedDescription)"
+                    store.status = L.t("Не удалось запомнить папку: \(error.localizedDescription)",
+                                       "Could not remember the folder: \(error.localizedDescription)",
+                                       "无法记住该文件夹：\(error.localizedDescription)")
                 }
             }
         }
