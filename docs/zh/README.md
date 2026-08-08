@@ -45,9 +45,9 @@ Charoite 倾听您的会议（麦克风 + 系统声音，无需机器人入会�
 
 ## 系统要求
 
-- Apple Silicon Mac（M1 及以上），默认模型建议 32 GB 内存
+- Apple Silicon Mac（M1 及以上），应用需要 macOS 14+，默认模型建议 32 GB 内存
 - [Ollama](https://ollama.com) — 哪些模型放得下，见下方内存表
-- Python 3.11+
+- Python 3.11+（仅在从源码运行时需要——应用自带运行环境）
 - 通话声音通过 macOS 自身（ScreenCaptureKit）捕获，无需设置：系统只会请求一次权限。仅在 macOS 13 之前或权限被拒绝时才需要 [BlackHole](https://existential.audio/blackhole/)
 - 可选：[Obsidian](https://obsidian.md) 浏览图谱
 
@@ -64,6 +64,8 @@ Charoite 倾听您的会议（麦克风 + 系统声音，无需机器人入会�
 
 16 GB 以下知识图谱关闭（30B 以下的模型会破坏 JSON 结构）；4 GB 只跑 STT，`llm.base_url` 指向另一台机器即可。
 
+**iOS/iPadOS**：手机负责 STT 和轻量生成，更重的任务通过 REST API 交给 Mac。
+在 iOS 26+ 上，内置的约 3B Foundation Models 免费承担要点提取。
 完整的 macOS/iOS 模型表和选型依据：[docs/MODELS.zh.md](MODELS.md)。
 
 ## 快速开始
@@ -118,6 +120,24 @@ STT 模型首次运行自动下载。实时说话人分离（按声音区分的�
 
 没有它 Charoite 也能工作，只是标签按声道区分（你 vs. 对方），并且守护进程会在会议开始时说明这一点。详见 [docs/DIARIZATION.zh.md](DIARIZATION.md)。
 
+## iPhone 伴侣应用（app-ios/）
+
+手机是桌上的麦克风，大脑仍在 Mac。SwiftUI 伴侣应用
+（[app-ios/](../../app-ios)）录制会议、语音笔记和日记条目（后台安全，并在
+灵动岛显示 Live Activity 计时器），通过设备本地的发件队列把文件放入你选定的
+iCloud Drive 文件夹——同时把图谱读回来：会议动态与任务复选框，直接来自
+Obsidian 和 Mac 应用所看到的同一批 markdown 文件。使用 XcodeGen 构建：
+`cd app-ios && xcodegen generate`，然后打开 `CharoiteiOS.xcodeproj`。
+
+## Android 伴侣应用（app-android/）
+
+平板或 Android 手机上的同一角色（[app-android/](../../app-android)）：通过
+前台服务后台录音、设备本地队列、来自同一批 markdown 文件的会议动态与任务
+复选框。录音以 16 kHz 单声道 WAV 写入——正是识别所需要的，也是一种能挺过
+崩溃的格式——并落入你只需选择一次的文件夹；Mac 通过 Syncthing 或任意同步
+工具看到该文件夹。该应用完全不持有任何网络权限。构建：
+`cd app-android && ./gradlew assembleDebug`。
+
 ## 文档
 
 - [路线图](../../ROADMAP.md) · [参与贡献](../../CONTRIBUTING.md)
@@ -129,7 +149,8 @@ STT 模型首次运行自动下载。实时说话人分离（按声音区分的�
 - [功能](FEATURES.md) — Charoite 在会议中和会后能做的一切
 - [架构](ARCHITECTURE.md) — 守护进程、两遍说话人分离、图谱流水线
 - [模型](MODELS.md) — 为什么是这些默认值，附基准测试；**macOS（4/8/16/32 GB）与 iOS 的内存预设**
-- [说话人分离](../DIARIZATION.md) — 声纹模型的安装与调优（英文）
+- [说话人分离](DIARIZATION.md) — 声纹模型的安装与调优
+- [设计](DESIGN.md) — macOS 与 iOS 共用的设计令牌和界面约定
 
 ## 隐私
 

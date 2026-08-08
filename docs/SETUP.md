@@ -38,6 +38,11 @@ config and downloads it with a single button. Model details are in
 
 ## 2. Config: two required fields
 
+**The easy way is in the app.** The first-run wizard asks for your name and
+graph folder and writes them into `config/config.yaml` itself; the folder is
+picked from a panel. Editing the file by hand, below, is for installs without
+the interface.
+
 In `config/config.yaml`:
 
 - `sufler.user_name` — your name: labels your microphone in the transcript
@@ -72,6 +77,9 @@ meeting status shows which channel is in use.
 ## 4. macOS permissions
 
 - **Microphone** — requested on first run.
+- **Screen & System Audio Recording** — requested on the first meeting
+  recording; without it only the microphone is heard (or BlackHole, if you
+  set it up).
 - **Universal Access** (optional) — only for dictation auto-paste; without
   it the text simply stays in the clipboard.
 
@@ -96,6 +104,17 @@ transcript file. Follow the end-to-end check in the
 transcripts, graph documents and retention lives in
 [Data and recovery](DATA_AND_RECOVERY.md).
 
+## 7. Where things live
+
+- `transcripts/` — transcripts and the meeting's working files
+- `recordings/` — full recordings (auto-deleted after `record_keep_days`)
+- `<graph_dir>/Встречи-архив/` — a "date — title" folder per meeting:
+  summary, minutes, transcript, questions and answers, debrief
+
+This is the short map. Wherever retention, the source of truth or the recovery
+order after a failure matter, use the
+[full data map](DATA_AND_RECOVERY.md).
+
 ## Troubleshooting
 
 - **Empty transcript** — check inputs: `python -c "import sounddevice as sd; print(sd.query_devices())"`.
@@ -118,7 +137,7 @@ ollama pull bge-m3   # ~1.2 GB; without it search is lexical-only
 
 The index builds in the background on first search and updates
 incrementally as the graph changes (stored in
-`~/Library/Application Support/Charoite/semantic_index.json`).
+`~/Library/Application Support/Charoite/semantic_index_v2.bin`).
 
 ## Diagnosis
 
