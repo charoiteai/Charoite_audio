@@ -181,6 +181,23 @@ def subs_to_transcript(entries: list[tuple[str, str, str]], stamp: str, src: str
     return "\n".join(lines) + "\n"
 
 
+def same_source(transcript: pathlib.Path, src_name: str) -> bool:
+    """Та же ли запись породила эту стенограмму.
+
+    Имя исходника конвейер уже пишет в первую строку — «# Встреча <штамп> —
+    импорт файл.txt», «— запись файл.m4a», субтитры туда же. Отдельного
+    журнала импортов заводить не надо: данные есть, их просто никто не читал.
+
+    Стенограмма демона имени исходника не содержит вовсе — и это правильный
+    ответ «нет»: встречу, записанную вживую, импорт затирать не должен.
+    """
+    try:
+        head = transcript.read_text(encoding="utf-8", errors="ignore")[:400]
+    except OSError:
+        return False
+    return src_name in head
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("file", help="аудио/текст/субтитры записанной встречи")
@@ -231,16 +248,39 @@ def main() -> None:
 
     mt = dt.datetime.fromtimestamp(src.stat().st_mtime)
     day = clean_date(args.date) if args.date else f"{mt:%Y-%m-%d}"
-    hhmm = clean_time(args.time) if args.time else f"{mt:%H%M}"
+    # Время из mtime берём С СЕКУНДАМИ, из --time — как назвал человек.
+    #
+    # Разница не косметическая. Штамп участвует в проверке повтора ниже, и с
+    # точностью до минуты два РАЗНЫХ файла, попавших в одну минуту (две записи
+    # Zoom, выгруженные подряд; пачка файлов с телефона), давали один штамп:
+    # второй объявлялся повтором, выходил с кодом 0 и уезжал в done/ как
+    # успешный. Встречи не оставалось нигде — ни в стенограммах, ни в графе,
+    # ни в архиве, — а по всем признакам импорт прошёл (аудит 0.46.0, P0-4).
+    # Секунды делают штамп таким же уникальным, каким его делает демон, и при
+    # этом повтор ОДНОГО файла по-прежнему ловится: mtime у него тот же.
+    # Явные --date/--time не трогаем: там минуту назвал человек, и совпадение
+    # штампов означает «та же встреча» — на этом стоит проверка ниже.
+    hhmm = clean_time(args.time) if args.time else f"{mt:%H%M%S}"
     stamp = f"{day}_{hhmm}"
     slug = re.sub(r"[^\wА-Яа-яЁё-]+", "_", args.title).strip("_")[:40]
-    tpath = tdir / (f"{stamp}_{slug}.md" if slug else f"{stamp}.md")
     # Повтор ищем глобом, а не по голому имени: конвейер переименовывает
     # стенограмму в `<stamp>_Тема.md`, и проверка только `<stamp>.md`
     # переставала видеть уже обработанную встречу — повторный импорт той же
     # записи создавал дубль рядом с titled-файлом и гонял по нему полный
     # LLM-конвейер (найдено 06.08 регрессионным тестом).
     already = next(iter(sorted(tdir.glob(f"{stamp}*.md"))), None)
+    if already is not None and not args.time and not same_source(already, src.name):
+        # Секунда совпала, а запись другая (файлы, скопированные одной пачкой,
+        # получают один mtime до секунды). Это две разные встречи, и вторую
+        # нельзя проглотить: разводим штамп суффиксом коллизии — тем же, что
+        # ставит Transcript у демона, и его понимает meeting_stamp.
+        base, n = stamp, 1
+        while sorted(tdir.glob(f"{base}-{n}*.md")):
+            n += 1
+        stamp = f"{base}-{n}"
+        print(f"в {base} уже лежит другая запись ({already.name}) — "
+              f"импортирую как {stamp}")
+        already = None
     if already is not None:
         # Код 0, а не sys.exit(строка): выход строкой возвращает 1, скан
         # считал повтор ОТКАЗОМ и не переносил файл в done/ — тот застревал
@@ -249,6 +289,7 @@ def main() -> None:
         # Повтор — это успех: встреча уже в архиве.
         print(f"встреча {stamp} уже импортирована: {already} — повтор не нужен")
         return
+    tpath = tdir / (f"{stamp}_{slug}.md" if slug else f"{stamp}.md")
 
     ext = src.suffix.lower()
     if ext in AUDIO:

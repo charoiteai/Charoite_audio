@@ -1,4 +1,5 @@
 """Импорт встреч: парсер vtt/srt и сборка стенограммы конвейера."""
+import os
 import struct
 import sys
 from pathlib import Path
@@ -199,3 +200,100 @@ def test_повтор_импорта_успех_а_не_отказ(tmp_path):
         f"titled-встреча {titled.name} не распознана как повтор:\n{run.stdout}")
     assert run.returncode == 0, (
         f"код {run.returncode}: повтор считается отказом, файл застрянет в импорте")
+
+
+def test_две_разные_записи_одной_минуты_обе_импортируются(tmp_path):
+    """Две встречи, попавшие в одну минуту, — это две встречи.
+
+    Раньше штамп импорта был поминутным, и вторая запись объявлялась
+    повтором: код 0, файл уезжал в done/ как успешный, а встречи не
+    оставалось нигде — ни в стенограммах, ни в графе, ни в архиве. Заметить
+    это можно было только ручной сверкой done/ с архивом.
+
+    Сценарий житейский: две записи Zoom, выгруженные подряд, или пачка
+    файлов, приехавшая с телефона одним синком.
+    """
+    import subprocess
+
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text(
+        "log: {transcripts_dir: transcripts}\nsufler: {graph_dir: ''}\n",
+        encoding="utf-8")
+
+    made = []
+    for name in ("первая.txt", "вторая.txt"):
+        f = tmp_path / name
+        f.write_text("х" * 300, encoding="utf-8")
+        os.utime(f, (1_780_000_000, 1_780_000_000))   # ровно один и тот же mtime
+        made.append(f)
+
+    env = dict(os.environ, CHAROITE_ROOT=str(tmp_path))
+    outs = []
+    for f in made:
+        r = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "import_meeting.py"), str(f)],
+            capture_output=True, text=True, timeout=120, env=env)
+        outs.append(r.stdout + r.stderr)
+
+    stamps = sorted(p.name for p in tdir.glob("*.md"))
+    assert len(stamps) == 2, (
+        "вторая запись проглочена как повтор — встречи нет нигде, а импорт "
+        f"отчитался успехом:\n{outs[1]}\nна диске: {stamps}")
+
+
+def test_повтор_одного_и_того_же_файла_по_прежнему_повтор(tmp_path):
+    """Секунды в штампе не должны сломать защиту от повторного импорта:
+    у одного и того же файла mtime тот же, значит и штамп тот же."""
+    import subprocess
+
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text(
+        "log: {transcripts_dir: transcripts}\nsufler: {graph_dir: ''}\n",
+        encoding="utf-8")
+    f = tmp_path / "одна.txt"
+    f.write_text("х" * 300, encoding="utf-8")
+    os.utime(f, (1_780_000_000, 1_780_000_000))
+
+    env = dict(os.environ, CHAROITE_ROOT=str(tmp_path))
+    cmd = [sys.executable, str(ROOT / "scripts" / "import_meeting.py"), str(f)]
+    subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
+    again = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
+
+    assert "повтор не нужен" in again.stdout, (
+        f"повторный импорт того же файла создал дубль:\n{again.stdout}")
+    assert again.returncode == 0, "повтор считается отказом — файл застрянет в импорте"
+
+
+def test_секунды_различают_записи_внутри_минуты(tmp_path):
+    """Две записи в одну минуту получают разные штампы сами по себе.
+
+    Это сценарий аудита в чистом виде: две выгрузки Zoom с разницей в
+    секунды. Суффикс коллизии `-N` здесь не нужен и не должен появляться —
+    он страховка для совсем уж одинакового mtime, а не основной механизм.
+    """
+    import subprocess
+
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text(
+        "log: {transcripts_dir: transcripts}\nsufler: {graph_dir: ''}\n",
+        encoding="utf-8")
+
+    env = dict(os.environ, CHAROITE_ROOT=str(tmp_path))
+    for name, when in (("первая.txt", 1_780_000_000), ("вторая.txt", 1_780_000_007)):
+        f = tmp_path / name
+        f.write_text("х" * 300, encoding="utf-8")
+        os.utime(f, (when, when))                      # одна минута, разные секунды
+        subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "import_meeting.py"), str(f)],
+            capture_output=True, text=True, timeout=120, env=env)
+
+    names = sorted(p.stem for p in tdir.glob("*.md"))
+    assert len(names) == 2, f"вторая встреча потеряна: {names}"
+    assert not any("-" in n.split("_")[-1] for n in names), (
+        f"понадобился суффикс коллизии — значит штамп снова поминутный: {names}")
