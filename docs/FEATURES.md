@@ -460,6 +460,11 @@ it signals degradation, it does not break the loop.
   stream only when it is alive — otherwise it honestly falls back to
   BlackHole. New installs no longer need the driver, Audio MIDI Setup or a
   Multi-Output Device.
+- **The second window renders like the first** — the sidebar column width is
+  set explicitly, so windows of the same scene no longer diverge in layout:
+  the second window used to open with a collapsed sidebar, section labels
+  vanished and the record button and recent-meetings column slid off the edge.
+  Panes now shrink by priority instead of being clipped by the window.
 - **The meeting toolbar never hides buttons** — when width runs short the
   header scrolls horizontally, and meeting actions sit right after the record
   button: they used to slide off the right edge the moment recording started.
