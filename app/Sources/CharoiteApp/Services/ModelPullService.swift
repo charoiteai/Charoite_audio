@@ -62,7 +62,7 @@ final class ModelPullService: ObservableObject {
         let root = AppSettings.charoiteRoot
         Task.detached {
             let task = Process()
-            task.executableURL = root.appendingPathComponent(".venv/bin/python")
+            task.executableURL = AppSettings.pythonExecutable(root: root)
             task.arguments = ["scripts/get_models.py", "--diar"]
             task.currentDirectoryURL = root
             let pipe = Pipe()
