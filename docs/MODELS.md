@@ -32,6 +32,11 @@ speed.
 - **Our benchmark on a real meeting transcript**: first token in 0.27 s,
   full answer in 2.2 s — vs 1.08 s / 4.5 s for dense gemma4:26b, while
   holding the assistant role more reliably (gemma confused who said what).
+- **Generation speed** (M1 Max, 32 GB, `num_ctx: 8192`, two identical runs
+  on 2026-08-08): ~27 tok/s for `qwen3.6:35b-a3b` and ~32 tok/s for the
+  light `qwen3.5:4b`. Speech is 4–5 tokens per second, so both stay ahead
+  of the conversation — the throughput that matters is per hint, not per
+  hour.
 - **The 30B class is the floor for structured/graph extraction** — not our
   preference but an industry observation:
   [LightRAG](https://github.com/hkuds/lightrag) names Qwen3-30B-A3B a
