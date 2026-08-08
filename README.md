@@ -137,8 +137,8 @@ Without it Charoite still works, but labels follow channels (you vs. the other s
 
 The phone is the microphone on the table, the Mac stays the brain. The
 SwiftUI companion ([app-ios/](app-ios)) records meetings, voice notes
-and diary entries (background-safe, with a Live Activity timer in the
-Dynamic Island), drops files into a user-chosen iCloud Drive folder with
+and diary entries (background-safe, with a Live Activity timer and a Stop
+button in the Dynamic Island), drops files into a user-chosen iCloud Drive folder with
 an on-device outbox queue — and reads the graph back: a meetings feed
 and task checkboxes straight from the same markdown files Obsidian and
 the Mac app see. Build with XcodeGen: `cd app-ios && xcodegen generate`,

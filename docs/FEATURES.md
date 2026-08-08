@@ -531,9 +531,16 @@ it signals degradation, it does not break the loop.
   extracts tasks → a file in the graph (`Notes/`) + remembered in memory.
   The raw text is kept alongside ("As spoken").
 
-- **English documents** — `sufler.language: en` switches minutes,
-  summary, instant answers and graph node content to English (validated on an English
-  transcript); hints speak the language of your role.
+- **Documents in your language** — `sufler.language: ru|en|zh` switches minutes,
+  summary, instant answers and graph node content; hints speak the language of
+  your role. The archive summary used to be the exception: it was written in
+  Russian whatever the setting, so an English meeting got English minutes and a
+  Russian digest on top of them. Reading is separate from writing: new documents
+  follow the config, existing ones are parsed in all three languages at once —
+  otherwise switching the language would break the archive retroactively, and
+  old meetings would stop opening. The meeting card reads all three too: before,
+  an English meeting showed empty «Decisions» and «Action items» while the file
+  had both.
 - **Night cycle in one click** — Settings installs the 04:15 launchd
   job (core revision with backups, morning brief, memory bench);
   the same button removes it.

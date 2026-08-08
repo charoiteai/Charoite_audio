@@ -13,7 +13,8 @@ runs on your Mac.
 - **Record** — three kinds: Meeting / Note / Diary. Background-safe
   recording (start from the screen, then lock the phone or switch apps),
   live level meter, a Live Activity timer in the Dynamic Island and on
-  the lock screen.
+  the lock screen — with a **Stop** button right there: the phone can stay
+  face down on the table and the recording still ends when the meeting does.
 - **Stalled-recording watchdog** — if the file's duration stops growing
   for more than three seconds (a call, an interruption, a stolen
   microphone), the screen says so in orange. An earlier build measured
