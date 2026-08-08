@@ -48,7 +48,8 @@ Charoite 倾听您的会议（麦克风 + 系统声音，无需机器人入会�
 - Apple Silicon Mac（M1 及以上），默认模型建议 32 GB 内存
 - [Ollama](https://ollama.com) — 哪些模型放得下，见下方内存表
 - Python 3.11+
-- 可选：[BlackHole](https://existential.audio/blackhole/) 捕获系统声音（线上会议），[Obsidian](https://obsidian.md) 浏览图谱
+- 通话声音通过 macOS 自身（ScreenCaptureKit）捕获，无需设置：系统只会请求一次权限。仅在 macOS 13 之前或权限被拒绝时才需要 [BlackHole](https://existential.audio/blackhole/)
+- 可选：[Obsidian](https://obsidian.md) 浏览图谱
 
 ## 按内存选模型
 
@@ -67,11 +68,38 @@ Charoite 倾听您的会议（麦克风 + 系统声音，无需机器人入会�
 
 ## 快速开始
 
+**方式 A — macOS 应用（推荐）。** Python 已内置于应用中：无需 `git clone`、
+`venv` 或 `pip`。只需安装语言模型：
+
+```bash
+brew install ollama            # 具体用哪些模型由应用建议
+```
+
+从[最新发布](https://github.com/charoiteai/Charoite_audio/releases/latest)下载
+`Charoite.app.zip`。应用使用 Developer ID 签名但未经公证，因此首次启动会被
+macOS 拦截：系统设置 → 隐私与安全性 → *仍要打开*（或执行
+`xattr -d com.apple.quarantine /Applications/Charoite.app`）。macOS 15+ 上
+右键 → 打开已失效。
+
+其余步骤都在界面中完成：首次运行向导询问姓名与图谱文件夹，展示匹配本机内存的
+模型方案并一键安装；麦克风与系统音频权限由 macOS 自行询问。
+
+实时逐字稿、要点与提示、档案问答与简报、带图谱记忆的本地聊天、听写（⌥⌘D）
+和语音笔记（⌥⌘N）。在提供录制按钮前，应用会检查真实会议链路：python 运行
+环境、守护进程与配置、依赖、麦克风与音频输入、Ollama 模型以及图谱文件夹。
+缺少 `bge-m3` 或可选图谱会明确显示为功能限制，而不会伪装成原因不明的“故障”。
+
+**方式 B — 从源码运行**（开发、自定义构建）：
+
 ```bash
 git clone https://github.com/charoiteai/Charoite_audio && cd Charoite_audio
 python3 -m venv .venv && .venv/bin/pip install .
 cp config/config.example.zh.yaml config/config.yaml   # 填入 user_name 和 graph_dir
+.venv/bin/python src/main.py     # 终端里的实时逐字稿 + 提示
 ```
+
+自行构建带内置运行环境的应用包：
+`scripts/build_embedded_python.sh && app/make_app.sh`。
 
 哪里不工作？一条命令告诉你缺什么、怎么修：
 
@@ -79,24 +107,6 @@ cp config/config.example.zh.yaml config/config.yaml   # 填入 user_name 和 gra
 python3 scripts/doctor.py
 ```
 
-**方式 A — macOS 应用（推荐）：**
-
-从[最新发布](https://github.com/charoiteai/Charoite_audio/releases/latest)下载 `Charoite.app.zip`（ad-hoc 签名，未经公证 — 首次启动会被 macOS 拦截：
-执行 `xattr -d com.apple.quarantine /Applications/Charoite.app`，或前往
-系统设置 → 隐私与安全性，点击 *仍要打开*。macOS 15+ 上右键 → 打开已失效），或自行构建：
-
-```bash
-./app/make_app.sh && open app/build/Charoite.app
-```
-
-实时逐字稿、要点与提示、档案问答与简报、带图谱记忆的本地聊天、听写（⌥⌘D）和语音笔记（⌥⌘N）。
-首次启动时，应用会在提供录制按钮前检查真实会议链路：`.venv`、守护进程与配置、Python 依赖、麦克风与音频输入、Ollama 模型以及图谱文件夹。缺少 BlackHole、`bge-m3` 或可选图谱会明确显示为功能限制，而不会伪装成原因不明的“故障”。
-
-**方式 B — 命令行：**
-
-```bash
-.venv/bin/python src/main.py     # 终端里的实时逐字稿 + 提示
-```
 
 **还没有会议？** 把 `graph_dir` 指向内置[英文演示图谱](../../demo)（demo/graph_en），问一句 "what did we decide about the payment provider?" ——录音之前就能看到产品的样子。一条命令验证整个检索闭环：`.venv/bin/python scripts/memory_bench.py --demo`。已有旧录音？一条命令把会议文件（音频/文本/Zoom字幕）导入档案和图谱：`.venv/bin/python scripts/import_meeting.py 文件 --date 2026-07-15`。或在应用里指定导入文件夹（设置 → 导入）——放进去的录音自动成为会议。替换词典（`sufler.vocabulary`）可修正 STT 总写错的术语——一处声明，处处生效。
 
@@ -113,7 +123,7 @@ STT 模型首次运行自动下载。实时说话人分离（按声音区分的�
 - [路线图](../../ROADMAP.md) · [参与贡献](../../CONTRIBUTING.md)
 
 - [宣言](MANIFESTO.md) — 为什么流水线交给本地模型、图谱交给强模型
-- [安装](SETUP.md) — 依赖、线上会议用 BlackHole、权限、首次运行
+- [安装](SETUP.md) — 依赖、系统音频权限、首次运行
 - [用户实用指南](USER_GUIDE.md) — 从就绪检查到结果卡片与重试的完整流程
 - [数据与恢复](DATA_AND_RECOVERY.md) — 存储位置、保留期、备份与安全恢复
 - [功能](FEATURES.md) — Charoite 在会议中和会后能做的一切
