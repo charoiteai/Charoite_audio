@@ -141,7 +141,11 @@ final class GraphStore: ObservableObject {
                 stamp: Self.stamp(from: name), sortKey: name, manifest: nil))
         }
         meetings = out.sorted { $0.sortKey > $1.sortKey }
-        status = pending > 0 ? "Ещё скачивается из iCloud: \(pending)" : nil
+        status = pending > 0
+            ? L.t("Ещё скачивается из iCloud: \(pending)",
+                  "Still downloading from iCloud: \(pending)",
+                  "仍在从 iCloud 下载：\(pending)")
+            : nil
     }
 
     /// Задачи `- [ ]` по всему графу — как на Mac, но щадяще к телефону:
@@ -244,7 +248,8 @@ final class GraphStore: ObservableObject {
         guard let root = graphRoot() else { return "" }
         let scoped = root.startAccessingSecurityScopedResource()
         defer { if scoped { root.stopAccessingSecurityScopedResource() } }
-        return localizedText(of: meeting.url) ?? "Скачивается из iCloud…"
+        return localizedText(of: meeting.url)
+            ?? L.t("Скачивается из iCloud…", "Downloading from iCloud…", "正在从 iCloud 下载…")
     }
 
     nonisolated static func manifest(from text: String) -> MeetingManifest? {

@@ -17,7 +17,7 @@ struct RecordView: View {
 
     var body: some View {
         VStack(spacing: 24) {
-            Picker("Тип записи", selection: $kind) {
+            Picker(L.t("Тип записи", "Recording kind", "录音类型"), selection: $kind) {
                 ForEach(Recorder.Kind.allCases) { k in
                     // Именно title: rawValue — технический идентификатор, он
                     // уходит в имя файла и Live Activity. На экране он давал
@@ -46,7 +46,9 @@ struct RecordView: View {
                         .animation(.spring(response: 0.3), value: rec.isRecording)
                 }
             }
-            .accessibilityLabel(rec.isRecording ? "Остановить запись" : "Начать запись")
+            .accessibilityLabel(rec.isRecording
+                                ? L.t("Остановить запись", "Stop recording", "停止录音")
+                                : L.t("Начать запись", "Start recording", "开始录音"))
 
             Text(timeString(rec.elapsed))
                 .font(.system(size: 34, weight: .thin, design: .default))
@@ -62,13 +64,17 @@ struct RecordView: View {
             // Тревога о вставшей записи — не мелким серым в общей строке:
             // именно её человек должен увидеть, не вглядываясь в таймер.
             if rec.stalled {
-                Label(rec.lastResult ?? "Запись остановилась", systemImage: "exclamationmark.triangle.fill")
+                Label(rec.lastResult ?? L.t("Запись остановилась", "Recording stalled", "录音已中断"),
+                      systemImage: "exclamationmark.triangle.fill")
                     .font(.callout.weight(.medium))
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
             } else {
-                Text(rec.lastResult ?? "Стоп — и запись уедет на Mac через iCloud.\nДальше он сам: стенограмма, минутки, граф.")
+                Text(rec.lastResult ?? L.t(
+                    "Стоп — и запись уедет на Mac через iCloud.\nДальше он сам: стенограмма, минутки, граф.",
+                    "Stop, and the recording travels to the Mac over iCloud.\nThe rest is on it: transcript, minutes, graph.",
+                    "按停止，录音便经 iCloud 送往 Mac。\n之后由它接手：逐字稿、纪要、图谱。"))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -80,7 +86,8 @@ struct RecordView: View {
             // встречи, и достать его из приложения было нечем.
             if !rec.isRecording, let last = rec.lastRecording {
                 ShareLink(item: last) {
-                    Label("Поделиться записью · \(Inbox.sizeText(last))",
+                    Label(L.t("Поделиться записью", "Share recording", "分享录音")
+                          + " · \(Inbox.sizeText(last))",
                           systemImage: "square.and.arrow.up")
                         .font(.footnote)
                 }
@@ -95,8 +102,12 @@ struct RecordView: View {
                     sheet = .queue
                 } label: {
                     Label(stuckInQueue > 0
-                          ? "В очереди \(queued) · \(stuckInQueue) ждёт дольше суток"
-                          : "В очереди записей: \(queued)",
+                          ? L.t("В очереди \(queued) · \(stuckInQueue) ждёт дольше суток",
+                                "\(queued) queued · \(stuckInQueue) waiting over a day",
+                                "队列中 \(queued) 个 · \(stuckInQueue) 个已等待超过一天")
+                          : L.t("В очереди записей: \(queued)",
+                                "Recordings queued: \(queued)",
+                                "排队中的录音：\(queued)"),
                           systemImage: stuckInQueue > 0
                           ? "exclamationmark.triangle.fill" : "tray.full")
                         .font(.footnote)
@@ -106,7 +117,7 @@ struct RecordView: View {
             }
         }
         .padding(.vertical)
-        .navigationTitle("Запись")
+        .navigationTitle(L.t("Запись", "Record", "录音"))
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -120,7 +131,7 @@ struct RecordView: View {
                           ? "tray.and.arrow.up.fill" : "tray.and.arrow.up")
                         .foregroundStyle(Inbox.folderChosen ? Theme.accent : .orange)
                 }
-                .accessibilityLabel("Папка доставки записей")
+                .accessibilityLabel(L.t("Папка доставки записей", "Delivery folder", "投递文件夹"))
             }
         }
         // Один sheet на все листы: два `.sheet` на одном элементе SwiftUI не
@@ -132,10 +143,14 @@ struct RecordView: View {
                 FolderPicker { url in
                     do {
                         try Inbox.saveFolder(url)
-                        rec.lastResult = "Папка выбрана: \(url.lastPathComponent)"
+                        rec.lastResult = L.t("Папка выбрана: \(url.lastPathComponent)",
+                                             "Folder set: \(url.lastPathComponent)",
+                                             "已选择文件夹：\(url.lastPathComponent)")
                         Task { await Inbox.flush { msg in rec.lastResult = msg } }
                     } catch {
-                        rec.lastResult = "Не удалось запомнить папку: \(error.localizedDescription)"
+                        rec.lastResult = L.t("Не удалось запомнить папку: \(error.localizedDescription)",
+                                             "Could not remember the folder: \(error.localizedDescription)",
+                                             "无法记住该文件夹：\(error.localizedDescription)")
                     }
                 }
             case .queue:
@@ -143,6 +158,10 @@ struct RecordView: View {
             }
         }
         .task {
+            // Кнопка «Стоп» в Live Activity выполняется в процессе приложения
+            // (LiveActivityIntent), но про сам рекордер она ничего не знает —
+            // виджету он недоступен и не должен быть. Здесь и связываем.
+            RecordingControl.onStop = { [weak rec] in rec?.stop() }
             await Inbox.flush { msg in rec.lastResult = msg }
             rec.refreshLastRecording()
             refreshQueue()
