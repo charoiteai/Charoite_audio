@@ -307,3 +307,22 @@ regression.
 The older `scripts/memory_bench.py` measures a different implementation (the
 brain server, or its own Python fallback), so it cannot answer questions about
 the app's search.
+
+## Where code and data live
+
+The shipped code and the working files are deliberately separated.
+
+- **Code** — `src/`, `scripts/`, the config example. In the app it lives inside
+  the bundle (`Charoite.app/Contents/Resources/charoite`) next to the python
+  runtime; in development, in the cloned repository.
+- **Data** — recordings, transcripts, logs, models, `config/config.yaml`. These
+  belong to the user and live in the working folder.
+
+`CHAROITE_ROOT` names the working folder: the app passes it to the daemon on
+launch and every python module reads the root from there
+(`src/charoite_paths.py`). Without the variable the root is derived from the
+file location, so running from a repository behaves exactly as before.
+
+The reason is simple: the bundle is signed and read-only. Meeting recordings
+cannot be written into it, and keeping the code in a user folder would mean
+cloning it by hand — the install would start with a terminal again.
