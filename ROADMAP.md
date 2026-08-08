@@ -67,7 +67,7 @@ merging happens in memory during a single recording and is discarded.
   (August 2026)
 - Model sets sized to the machine's RAM, offered and installed from the
   first-run wizard instead of a config comment (August 2026)
-- One button scale across the app (six roles, three sizes) and a second
+- One button scale across the app (seven roles, three sizes) and a second
   window that renders exactly like the first (August 2026)
 - macOS meeting lifecycle in the UI: recording timer and menu-bar state,
   honest post-processing stages, retry without duplicate runs, a 14-day

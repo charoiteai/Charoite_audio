@@ -475,8 +475,8 @@ it signals degradation, it does not break the loop.
   header scrolls horizontally, and meeting actions sit right after the record
   button: they used to slide off the right edge the moment recording started.
   Button labels never shrink or get clipped.
-- **A single button scale** — six roles (prominent, regular, quiet, link,
-  destructive, filled destructive — confirmation only) and three sizes instead
+- **A single button scale** — seven roles (prominent, regular, quiet, link,
+  destructive, filled destructive — confirmation only, icon) and three sizes instead
   of four system styles in 48 places. Exactly one prominent button per pane;
   deletion is red, not the overdue orange; a button never changes size or
   position in any state. Spec: docs/design/BUTTONS_2026-08.md.

@@ -57,7 +57,7 @@ that sits next to your work, not a showcase.
   when; no illustrations.
 - **Delivery/queue statuses**: a single line at the bottom of the
   screen, in plain language; no modal dialogs.
-- **One button scale** (`CharoiteButton`, macOS): six roles — prominent,
+- **One button scale** (`CharoiteButton`, macOS): seven roles — prominent,
   regular, quiet, link, destructive, destructiveFilled, icon — and three
   sizes (s/m/l, 21/26/32 pt tall). One prominent button per pane; no system
   blue (prominent is `brand`, a link is `accent`); a button with no label
