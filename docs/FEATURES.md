@@ -434,6 +434,12 @@ it signals degradation, it does not break the loop.
   point to different meetings in the same minute, rebuild refuses them instead
   of producing a mixed transcript. The silent format drift of 28.07 cost every meeting its final
   transcript — the naming contract is now held by end-to-end tests.
+- **Models sized to your Mac** — the first-run wizard reads the machine's
+  memory and offers three sets ("Full", "Balanced", "Light") with model names
+  and the recommended one marked; the chosen set is written to the config and
+  downloaded with one button. Presets used to live as a config comment and
+  people had to find their own line — a silent mistake: an oversized model
+  does not fail, it swaps, and the product merely feels slow.
 - **Python runtime inside the app** — Charoite.app ships a portable CPython
   with the runtime dependencies (346 MB; heavy optional STT presets are left
   out). `git clone`, `venv` and `pip` disappear from the install: the terminal
