@@ -135,7 +135,8 @@ def test_конвертация_публикует_wav_одним_движени
         "который пересборка примет за готовую запись")
     assert out.exists() and out == target
     assert not pcm.exists(), "исходник должен уйти после успешной конвертации"
-    assert not list(rec_dir.glob("*.rebuild*")), "временный файл не убран"
+    assert sorted(p.name for p in rec_dir.iterdir()) == ["s_mic.wav"], (
+        f"в recordings/ остался мусор: {sorted(p.name for p in rec_dir.iterdir())}")
 
 
 def test_converts_pcm_itself_when_daemon_is_gone(rec_dir, monkeypatch):
