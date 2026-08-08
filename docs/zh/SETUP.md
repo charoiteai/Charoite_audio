@@ -27,7 +27,7 @@ cp config/config.example.yaml config/config.yaml
 应用优先使用内置运行环境，若不存在则使用仓库旁的 `.venv`。自行构建带运行环境的
 应用包：`scripts/build_embedded_python.sh && app/make_app.sh`。
 
-在 16 GB 内存上请选择更轻量的模型——预设见配置注释与 [MODELS.md](MODELS.md)。
+具体使用哪些模型由应用建议：首次运行向导会读取本机内存，展示三套现成方案（「完整」「均衡」「轻量」）并标注推荐项，选定后写入配置并一键下载。模型详情见 [MODELS.md](MODELS.md)。
 
 ## 2. 配置：两个必填字段
 

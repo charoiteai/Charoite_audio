@@ -27,6 +27,12 @@ struct FirstRunView: View {
     @State private var ownerName = AppSettings.configValue("user_name") ?? ""
     @State private var graphPath = AppSettings.configValue("graph_dir") ?? ""
     @State private var configSaved = false
+    /// Выбранный набор моделей. По умолчанию — тот, что уже в конфиге, а
+    /// если конфиг ещё не тронут, рекомендованный под память этой машины.
+    @State private var presetID: String = ModelPresetPolicy.current(
+        model: AppSettings.configValue("model"),
+        smallModel: AppSettings.configValue("small_model")
+    )?.id ?? ModelPresetPolicy.recommended(forGB: ModelPresetPolicy.machineMemoryGB).id
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -40,13 +46,17 @@ struct FirstRunView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     stepsBlock
                     configPanel
+                    modelsPanel
                     readinessPanel
                 }
             }
             footer
         }
         .padding(28)
-        .frame(width: 580, height: 720)
+        // 860, а не 720: с блоком выбора моделей нижняя кнопка уходила под
+        // край — человек её не видел и не прокручивал, потому что не знал,
+        // что там что-то есть. Экран 13" (1117 pt) держит 860 с запасом.
+        .frame(width: 580, height: 860)
         .onAppear {
             warmUpFolderAccess()
             readiness.refresh()
@@ -125,6 +135,97 @@ struct FirstRunView: View {
             }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    /// Набор моделей под память ЭТОЙ машины.
+    ///
+    /// Раньше пресеты лежали комментарием в config.example.yaml, и человек
+    /// сам узнавал объём своей памяти и переносил строчки. Ошибка была
+    /// молчаливой: тяжёлая модель не падает, она уходит в своп — и вывод
+    /// делается «продукт медленный», а не «модель не по машине».
+    private var modelsPanel: some View {
+        let memory = ModelPresetPolicy.machineMemoryGB
+        let advised = ModelPresetPolicy.recommended(forGB: memory)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text(L.t("Модели под вашу машину", "Models for your Mac", "适配本机的模型"))
+                    .font(.system(size: 13, weight: .semibold))
+                Text(L.t("\(memory) ГБ памяти", "\(memory) GB of memory", "\(memory) GB 内存"))
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            ForEach(ModelPresetPolicy.all) { preset in
+                Button { presetID = preset.id } label: {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: presetID == preset.id
+                              ? "largecircle.fill.circle" : "circle")
+                            .foregroundStyle(presetID == preset.id ? Theme.accent : .secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(preset.title).font(.system(size: 12, weight: .medium))
+                                if preset.id == advised.id {
+                                    Text(L.t("рекомендуем", "recommended", "推荐"))
+                                        .font(.system(size: 10, weight: .medium))
+                                        .padding(.horizontal, 5).padding(.vertical, 1)
+                                        .background(Capsule().fill(Theme.accent.opacity(0.14)))
+                                        .foregroundStyle(Theme.accent)
+                                }
+                                // Честно говорим, если вариант тяжелее машины:
+                                // спрятать его значило бы решить за человека,
+                                // а он может знать, что делает.
+                                if preset.needsGB > memory {
+                                    Text(L.t("нужно ~\(preset.needsGB) ГБ",
+                                             "needs ~\(preset.needsGB) GB",
+                                             "需要约 \(preset.needsGB) GB"))
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(Theme.overdue)
+                                }
+                            }
+                            Text(preset.note)
+                                .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                            Text("\(preset.model) · \(preset.smallModel)")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            HStack(spacing: 8) {
+                Button(L.t("Записать в конфиг и скачать", "Save and download", "保存并下载")) {
+                    applyPreset()
+                }
+                .charoite(.regular, .m)
+                .disabled(pulls.isPulling(selectedPreset.model)
+                          || pulls.isPulling(selectedPreset.smallModel))
+                ForEach(selectedPreset.models, id: \.self) { model in
+                    if let status = pulls.progress[model] {
+                        HStack(spacing: 4) {
+                            ProgressView().controlSize(.small)
+                            Text("\(model): \(status)")
+                                .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            if let err = selectedPreset.models.compactMap({ pulls.failed[$0] }).first {
+                Text(err).font(.system(size: 10)).foregroundStyle(.red).lineLimit(2)
+            }
+        }
+    }
+
+    private var selectedPreset: ModelPreset {
+        ModelPresetPolicy.preset(id: presetID) ?? ModelPresetPolicy.all[1]
+    }
+
+    /// Записать выбор в конфиг и поставить недостающие модели.
+    private func applyPreset() {
+        let preset = selectedPreset
+        AppSettings.setConfigValue("model", preset.model)
+        AppSettings.setConfigValue("small_model", preset.smallModel)
+        for model in preset.models { pulls.pull(model) }
+        readiness.refresh()
     }
 
     /// Имя и папка графа — то, что раньше правили в YAML руками.

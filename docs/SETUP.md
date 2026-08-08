@@ -30,7 +30,10 @@ The app uses the embedded runtime when present and the `.venv` next to the
 repository otherwise. To build a bundle with the runtime yourself:
 `scripts/build_embedded_python.sh && app/make_app.sh`.
 
-On 16 GB RAM pick lighter models — presets are in the config comments and
+Which models exactly — the app suggests itself: the first-run wizard reads
+your machine's memory and shows three ready sets ("Full", "Balanced",
+"Light") with the recommended one marked, writes the chosen one into the
+config and downloads it with a single button. Model details are in
 [MODELS.md](MODELS.md).
 
 ## 2. Config: two required fields
