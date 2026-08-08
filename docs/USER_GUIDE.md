@@ -34,7 +34,9 @@ anything on its own.
 ## Before every meeting
 
 - Look for **Ready to record** in the menu bar, not “Ollama is not responding”.
-- For a call, make the Multi-Output Device containing BlackHole the current
+- Charoite picks the audio source itself and shows it after the start:
+  "System audio (ScreenCaptureKit)" is the normal path, "BlackHole" the
+  fallback. There is no need to switch the system output. (Fallback only.) For a call over BlackHole, make the Multi-Output Device containing BlackHole the current
   macOS output. Charoite reports active sources after start.
 - Tell participants that the meeting is being recorded. Charoite joins no bot
   and cannot do this for you.

@@ -142,4 +142,15 @@ python3 scripts/doctor.py
 - 不要指望删除搜索索引能恢复缺失的 Markdown；索引是派生数据，不含完整图谱副本。
 
 日常只需记住三层：`recordings/` 让你能重新识别，`transcripts/` 让你能重跑
-流水线，`graph_dir` 保存长期记忆。
+流水线，`graph_dir` 保存长期记忆。> **安装的是应用而非仓库？** 解释器与代码位于应用包内，因此请这样运行下面的
+> 命令，并指向你的数据文件夹：
+>
+> ```bash
+> APP=~/Applications/Чароит.app/Contents/Resources
+> export CHAROITE_ROOT=~/Library/Application\ Support/Charoite
+> cd "$APP/charoite" && "$APP/python/bin/python3" src/rebuild_transcript.py …
+> ```
+>
+> 下面命令中的 `.venv/bin/python` 假设你克隆了仓库。
+
+
