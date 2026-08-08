@@ -270,15 +270,39 @@ struct TaskDue: Equatable {
         case later
     }
 
+    /// Маркеры срока, после которых идёт дата. Замер по рабочему графу
+    /// (111 открытых поручений, 08.08): «до ДД.ММ» — 1 штука, «к ДД.ММ» — 1,
+    /// «дедлайн ДД.ММ» — 1. Три формы вместо одной стоят три строки и
+    /// втрое увеличивают покрытие; ради одной формы чип не окупался бы.
+    ///
+    /// Чего здесь намеренно нет: «до конца августа» — самая частая живая
+    /// форма (16 из 111). Её нельзя превратить в дату, не додумав за
+    /// человека, а срок в интерфейсе, который врёт, хуже отсутствующего.
+    private static let markers = ["до ", "к ", "дедлайн ", "дедлайну "]
+
     static func parse(_ text: String) -> TaskDue? {
-        guard let marker = text.range(of: "до ") else { return nil }
-        let tail = text[marker.upperBound...].prefix(5)
-        let parts = tail.split(separator: ".")
-        guard parts.count == 2,
-              let day = Int(parts[0]), let month = Int(parts[1]),
-              (1...31).contains(day), (1...12).contains(month)
-        else { return nil }
-        return TaskDue(day: day, month: month)
+        for marker in markers {
+            var searchFrom = text.startIndex
+            while let range = text.range(of: marker, range: searchFrom..<text.endIndex) {
+                searchFrom = range.upperBound
+                // Маркер обязан быть отдельным словом. Без этой проверки «к »
+                // совпадает с концом любого слова на «к»: живое поручение
+                // «повторить установку в понедельни|к 10.08|» получало срок
+                // 10.08, хотя это дата установки, а не дедлайн. Поймано
+                // живьём на графе 08.08, не тестом.
+                if range.lowerBound > text.startIndex {
+                    let before = text[text.index(before: range.lowerBound)]
+                    guard !before.isLetter, !before.isNumber else { continue }
+                }
+                let parts = text[range.upperBound...].prefix(5).split(separator: ".")
+                guard parts.count == 2,
+                      let day = Int(parts[0]), let month = Int(parts[1]),
+                      (1...31).contains(day), (1...12).contains(month)
+                else { continue }
+                return TaskDue(day: day, month: month)
+            }
+        }
+        return nil
     }
 
     func status(now: Date = Date(), calendar: Calendar = .current) -> Status {
