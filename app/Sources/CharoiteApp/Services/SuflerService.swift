@@ -299,7 +299,7 @@ final class SuflerService: ObservableObject {
     /// поднимается асинхронно, а демон обязан стартовать ПОСЛЕ него.
     private func launchDaemon(preserveUI: Bool) {
         let p = Process()
-        p.executableURL = suflerRoot.appendingPathComponent(".venv/bin/python")
+        p.executableURL = AppSettings.pythonExecutable
         p.arguments = ["src/daemon.py"]
         p.currentDirectoryURL = suflerRoot
 

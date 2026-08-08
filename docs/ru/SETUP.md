@@ -4,16 +4,31 @@
 
 ## 1. Зависимости
 
+**Из готового приложения (рекомендуется).** Charoite.app из
+[релиза](https://github.com/charoiteai/Charoite_audio/releases) несёт
+python-контур внутри: ни git clone, ни venv, ни pip. Нужна только языковая
+модель — Ollama:
+
 ```bash
-# Ollama + модели (основная и лёгкая)
 brew install ollama
 ollama pull qwen3.6:35b-a3b && ollama pull qwen3.5:4b && ollama pull gemma4:latest
+```
 
-# Charoite
+Всё остальное приложение спросит и сделает само: имя и папку графа — в мастере
+первого запуска, модель разделения голосов — кнопкой, разрешения — системными
+диалогами.
+
+**Из исходников** (разработка, своя сборка, не-Apple Silicon):
+
+```bash
 git clone https://github.com/charoiteai/Charoite_audio && cd Charoite_audio
 python3 -m venv .venv && .venv/bin/pip install .
 cp config/config.example.yaml config/config.yaml
 ```
+
+Приложение берёт вложенный контур, если он есть, и `.venv` рядом с
+репозиторием — если нет. Своя сборка бандла с контуром:
+`scripts/build_embedded_python.sh && app/make_app.sh`.
 
 На 16 GB RAM возьмите модели полегче — пресеты в комментариях конфига
 и [MODELS.ru.md](MODELS.md).

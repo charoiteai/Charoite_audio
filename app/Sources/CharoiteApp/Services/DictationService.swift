@@ -112,7 +112,7 @@ final class DictationService: ObservableObject {
         self.noteMode = note
         self.onResult = onResult
         let p = Process()
-        p.executableURL = suflerRoot.appendingPathComponent(".venv/bin/python")
+        p.executableURL = AppSettings.pythonExecutable
         p.arguments = [script] + args
         p.currentDirectoryURL = suflerRoot
         let inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()

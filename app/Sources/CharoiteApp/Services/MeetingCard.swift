@@ -319,7 +319,7 @@ enum MeetingCardLoader {
 /// Команда переименования — venv-питон и скрипт, как у повтора обработки.
 enum MeetingRenameCommand {
     static func build(root: URL, meetingID: String, title: String) -> (exec: URL, args: [String]) {
-        let python = root.appendingPathComponent(".venv/bin/python").path
+        let python = AppSettings.pythonExecutable(root: root).path
         let script = root.appendingPathComponent("scripts/rename_meeting.py").path
         return (
             exec: URL(fileURLWithPath: python),

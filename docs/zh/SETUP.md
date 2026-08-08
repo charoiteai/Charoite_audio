@@ -4,16 +4,30 @@
 
 ## 1. 依赖
 
+**使用预编译应用（推荐）。** 从[发布页](https://github.com/charoiteai/Charoite_audio/releases)
+下载的 Charoite.app 内置 python 运行环境：无需 git clone、venv 或 pip。只需安装
+语言模型 Ollama：
+
 ```bash
 brew install ollama
 ollama pull qwen3.6:35b-a3b && ollama pull qwen3.5:4b && ollama pull gemma4:latest
+```
 
+其余一切由应用询问并自动完成：姓名与图谱文件夹在首次运行向导中设置，声纹分离
+模型一键安装，权限通过系统对话框授予。
+
+**从源码安装**（开发、自定义构建、非 Apple Silicon）：
+
+```bash
 git clone https://github.com/charoiteai/Charoite_audio && cd Charoite_audio
 python3 -m venv .venv && .venv/bin/pip install .
 cp config/config.example.yaml config/config.yaml
 ```
 
-16 GB 内存的机器请选择更轻量的模型——预设见配置文件注释和 [MODELS.md](../MODELS.md)。
+应用优先使用内置运行环境，若不存在则使用仓库旁的 `.venv`。自行构建带运行环境的
+应用包：`scripts/build_embedded_python.sh && app/make_app.sh`。
+
+在 16 GB 内存上请选择更轻量的模型——预设见配置注释与 [MODELS.md](MODELS.md)。
 
 ## 2. 配置：两个必填字段
 

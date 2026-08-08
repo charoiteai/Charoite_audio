@@ -37,7 +37,9 @@ concurrency:
 jobs:
   build-app:
     name: build and attach Charoite.app
-    runs-on: macos-14
+    # macos-15: тот же SDK, что и в swift-tests — API микрофона
+    # ScreenCaptureKit не компилируется на 14.
+    runs-on: macos-15
     timeout-minutes: 30
     # workflow_run: types: [completed] приходит и после УПАВШЕГО
     # release-please — собирать по нему нечего.
@@ -91,6 +93,10 @@ jobs:
           path: app/.build
           key: spm-release-${{ runner.os }}-${{ hashFiles('app/Package.swift') }}
           restore-keys: spm-release-${{ runner.os }}-
+      # Контур собирается ДО бандла: релизное приложение должно работать
+      # без терминала, а make_app.sh вкладывает контур, только если он готов.
+      - name: Build embedded python runtime
+        run: ./scripts/build_embedded_python.sh
       - name: Build bundle
         if: steps.resolve.outputs.build == 'true'
         working-directory: app

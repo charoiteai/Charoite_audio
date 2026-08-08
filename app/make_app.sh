@@ -21,6 +21,23 @@ mkdir -p "$APP/Contents/Resources/ru.lproj"
 printf '/* русская локаль — AppKit берёт русские системные меню */\n' \
     > "$APP/Contents/Resources/ru.lproj/InfoPlist.strings"
 
+# Python-контур внутрь бандла: с ним установка перестаёт начинаться с
+# терминала (git clone → venv → pip). Кладём, если он собран
+# scripts/build_embedded_python.sh; без него приложение работает по-старому
+# от .venv рядом с репозиторием — сборка не должна падать из-за того, что
+# кто-то не собрал контур.
+EMBEDDED="build/embedded-python"
+if [ -x "$EMBEDDED/bin/python3" ]; then
+    echo "вкладываю python-контур ($(du -sh "$EMBEDDED" | cut -f1))…"
+    # -c: APFS-клон вместо копии — мгновенно и без второго гигабайта на диске.
+    cp -Rc "$EMBEDDED" "$APP/Contents/Resources/python"
+    # Байт-кеш чужих машин в поставке не нужен: это мегабайты мусора и
+    # лишние отличия между сборками.
+    find "$APP/Contents/Resources/python" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
+else
+    echo "python-контур не собран (scripts/build_embedded_python.sh) — бандл без него"
+fi
+
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -95,7 +112,24 @@ BUILD="${BUILD:-1}"
 # становится «identifier + команда» и переживает пересборки.
 SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
     | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
+# Вложенные бинарники подписываются ПЕРВЫМИ и по одному.
+#
+# codesign --deep для такого дерева официально не поддерживается и молча
+# оставляет часть .so неподписанными: приложение запускается, а первый же
+# импорт numpy падает с «code signature invalid» — уже у пользователя.
+sign_embedded() {
+    local id="$1" root="$APP/Contents/Resources/python"
+    [ -d "$root" ] || return 0
+    echo "подписываю вложенный контур…"
+    # Порядок важен: сначала библиотеки, потом исполняемые файлы.
+    find "$root" \( -name "*.so" -o -name "*.dylib" \) -type f -print0 \
+        | xargs -0 -P 8 -n 20 codesign --force --timestamp=none --sign "$id" 2>/dev/null || true
+    find "$root/bin" -type f -perm -111 -print0 \
+        | xargs -0 -n 10 codesign --force --timestamp=none --sign "$id" 2>/dev/null || true
+}
+
 if [ -n "$SIGN_ID" ]; then
+    sign_embedded "$SIGN_ID"
     # Без --options runtime: hardened runtime ломает наследование доступа
     # дочерними процессами, а микрофон у нас читает python-демон отдельным
     # процессом — при жёстком рантайме он получает тишину без единой ошибки.
@@ -103,6 +137,7 @@ if [ -n "$SIGN_ID" ]; then
     codesign --force --sign "$SIGN_ID" --timestamp=none "$APP"
     echo "подписано: $SIGN_ID"
 else
+    sign_embedded -
     codesign --force --sign - "$APP"
     echo "ВНИМАНИЕ: Developer ID не найден, подпись ad-hoc —"
     echo "  доступ к микрофону и системному звуку будет слетать при каждой сборке."

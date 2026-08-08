@@ -346,7 +346,7 @@ struct RetryExpectation: Equatable, Sendable {
 /// демонского запуска той же встречи.
 enum MeetingRetryCommand {
     static func build(root: URL, transcriptPath: String) -> (exec: URL, args: [String], log: URL) {
-        let python = root.appendingPathComponent(".venv/bin/python").path
+        let python = AppSettings.pythonExecutable(root: root).path
         let script = root.appendingPathComponent("src/rebuild_transcript.py").path
         let stem = URL(fileURLWithPath: transcriptPath)
             .deletingPathExtension().lastPathComponent
