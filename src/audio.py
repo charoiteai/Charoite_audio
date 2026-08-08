@@ -546,8 +546,11 @@ class AudioHub:
         # числа в record_keep_days выключали запись НА ВСЮ ВСТРЕЧУ, причём молча.
         # Отказывала ровно та страховка, ради которой всё это писалось.
         try:
-            self.prune_recordings(self.record_dir, self.record_keep_days,
-                                  protect=self.protect_stamps)
+            held = self.prune_recordings(self.record_dir, self.record_keep_days,
+                                         protect=self.protect_stamps)
+            if held:
+                self._say(f"ретеншн придержал {held} записей: встречи ещё "
+                          "восстанавливаются")
         except Exception as e:  # noqa: BLE001 — уборка не должна мешать записи
             self._say(f"чистка старых записей не удалась: {e}")
         try:
@@ -577,10 +580,12 @@ class AudioHub:
         интерпретатор. Возвращаем, сколько файлов придержали, — задержка сверх
         обещанного срока обязана быть видимой, а не тихой.
 
-        `.wav.part` тоже сметаем: обрыв демона посреди финализации оставлял
-        осиротевший .part, который никто никогда не удалял, а пересборка при
-        живом .part отказывалась конвертировать .pcm — канал встречи пропадал
-        молча (аудит 0.46.0, P0-3).
+        Что считать записью, решает `meeting_stamp`, а не список суффиксов
+        здесь. Временные имена конвертации (`.wav.part` у демона,
+        `.wav.part<pid>` у пересборки) — тоже записи: обрыв посреди
+        финализации оставлял их на диске навсегда, а это полный несжатый WAV
+        часовой встречи, то есть молчаливое нарушение обещания PRIVACY об
+        удалении через record_keep_days (аудит 0.46.0, P0-3).
         """
         if not record_dir.exists():
             return 0
@@ -589,11 +594,12 @@ class AudioHub:
         held = 0
         for old in record_dir.iterdir():
             try:
-                if old.suffix not in (".pcm", ".wav", ".part"):
-                    continue
+                stamp = meeting_stamp.stamp_of_recording(old.name)
+                if stamp is None:
+                    continue                    # не запись — не наша забота
                 if old.stat().st_mtime >= cutoff:
                     continue
-                if meeting_stamp.stamp_of_recording(old.name) in protected:
+                if stamp in protected:
                     held += 1
                     continue
                 old.unlink(missing_ok=True)

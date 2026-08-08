@@ -181,21 +181,32 @@ def subs_to_transcript(entries: list[tuple[str, str, str]], stamp: str, src: str
     return "\n".join(lines) + "\n"
 
 
-def same_source(transcript: pathlib.Path, src_name: str) -> bool:
-    """Та же ли запись породила эту стенограмму.
+#: Заголовок импортированной стенограммы: «# Встреча <штамп> — импорт файл.txt»
+#: (текст и субтитры) либо «— запись файл.m4a» (транскрибация аудио).
+_HEAD_SOURCE = re.compile(r"^#\s+Встреча\s+\S+\s+—\s+(?:импорт|запись)\s+(.+?)\s*$")
 
-    Имя исходника конвейер уже пишет в первую строку — «# Встреча <штамп> —
-    импорт файл.txt», «— запись файл.m4a», субтитры туда же. Отдельного
-    журнала импортов заводить не надо: данные есть, их просто никто не читал.
 
-    Стенограмма демона имени исходника не содержит вовсе — и это правильный
-    ответ «нет»: встречу, записанную вживую, импорт затирать не должен.
+def source_of(transcript: pathlib.Path) -> str | None:
+    """Имя записи, из которой сделана эта стенограмма, — или None.
+
+    Имя исходника конвейер уже пишет в первую строку, отдельного журнала
+    импортов заводить не надо: данные есть, их просто никто не читал.
+
+    None для стенограммы демона — правильный ответ: встречу, записанную
+    вживую, импорт не должен считать своим повтором и затирать.
+
+    Сравнение потом ТОЧНОЕ, не подстрокой. Подстрока выглядит безобиднее и
+    ровно на этом ломается: диктофон называет файлы `1.m4a` и `11.m4a`, и
+    «1.m4a» находится внутри «11.m4a» — вторая встреча объявлялась бы
+    повтором первой и пропадала бы совсем.
     """
     try:
-        head = transcript.read_text(encoding="utf-8", errors="ignore")[:400]
+        with transcript.open(encoding="utf-8", errors="ignore") as f:
+            first = f.readline()
     except OSError:
-        return False
-    return src_name in head
+        return None
+    m = _HEAD_SOURCE.match(first.strip())
+    return m.group(1) if m else None
 
 
 def main() -> None:
@@ -263,23 +274,40 @@ def main() -> None:
     hhmm = clean_time(args.time) if args.time else f"{mt:%H%M%S}"
     stamp = f"{day}_{hhmm}"
     slug = re.sub(r"[^\wА-Яа-яЁё-]+", "_", args.title).strip("_")[:40]
+
     # Повтор ищем глобом, а не по голому имени: конвейер переименовывает
     # стенограмму в `<stamp>_Тема.md`, и проверка только `<stamp>.md`
     # переставала видеть уже обработанную встречу — повторный импорт той же
     # записи создавал дубль рядом с titled-файлом и гонял по нему полный
     # LLM-конвейер (найдено 06.08 регрессионным тестом).
-    already = next(iter(sorted(tdir.glob(f"{stamp}*.md"))), None)
-    if already is not None and not args.time and not same_source(already, src.name):
-        # Секунда совпала, а запись другая (файлы, скопированные одной пачкой,
-        # получают один mtime до секунды). Это две разные встречи, и вторую
-        # нельзя проглотить: разводим штамп суффиксом коллизии — тем же, что
-        # ставит Transcript у демона, и его понимает meeting_stamp.
-        base, n = stamp, 1
-        while sorted(tdir.glob(f"{base}-{n}*.md")):
-            n += 1
-        stamp = f"{base}-{n}"
-        print(f"в {base} уже лежит другая запись ({already.name}) — "
-              f"импортирую как {stamp}")
+    #
+    # Смотрим ВСЕ совпадения, а не первое по сортировке: после развода штампов
+    # в минуте живёт несколько встреч, и «своей» может оказаться любая.
+    def taken() -> list[pathlib.Path]:
+        return sorted(tdir.glob(f"{stamp}*.md"))
+
+    def mine() -> pathlib.Path | None:
+        return next((p for p in taken() if source_of(p) == src.name), None)
+
+    already = mine() or (taken()[0] if taken() else None)
+    if already is not None and not args.time and mine() is None:
+        # Секунда совпала, а запись другая: файлы, скопированные одной пачкой,
+        # получают один mtime до секунды. Это две разные встречи, и вторую
+        # проглатывать нельзя. Двигаем штамп на свободную секунду вперёд, а не
+        # вешаем суффикс `-N`: шестизначный штамп понимает весь конвейер
+        # целиком, а `-N` у импорта разбирал бы только meeting_stamp —
+        # graph_updater строил бы по нему кривое имя в графе.
+        moved = mt
+        for _ in range(60):
+            moved += dt.timedelta(seconds=1)
+            stamp = f"{day}_{moved:%H%M%S}"
+            if not taken():
+                break
+        else:
+            sys.exit(f"в минуте {day}_{mt:%H%M} нет свободной секунды — "
+                     "укажите время вручную: --time ЧЧ:ММ")
+        print(f"в {day}_{mt:%H%M%S} уже лежит другая запись "
+              f"({already.name}) — импортирую как {stamp}")
         already = None
     if already is not None:
         # Код 0, а не sys.exit(строка): выход строкой возвращает 1, скан
@@ -293,9 +321,13 @@ def main() -> None:
 
     ext = src.suffix.lower()
     if ext in AUDIO:
-        # транскрибация пишет transcripts/<stamp>.md сама
+        # Транскрибация пишет transcripts/<stamp>.md сама, и штамп собирает
+        # из этих двух аргументов. Поэтому даём их ИЗ `stamp`, а не из `day` и
+        # `hhmm`, из которых он когда-то собран: при разводе секунд выше стамп
+        # уезжает, а переменные — нет, и запись легла бы поверх соседней
+        # встречи. Одна переменная-источник вместо трёх согласованных.
         r = subprocess.run([sys.executable, str(CODE / "src" / "transcribe_file.py"),
-                            str(src), hhmm, day])
+                            str(src), stamp.split("_", 1)[1], stamp[:10]])
         if r.returncode != 0:
             sys.exit("транскрибация не удалась")
         tpath = tdir / f"{stamp}.md"

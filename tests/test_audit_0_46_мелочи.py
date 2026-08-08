@@ -103,7 +103,11 @@ def test_ни_один_потомок_демона_не_наследует_stdin
             continue
         if getattr(getattr(node.func, "value", None), "id", None) != "subprocess":
             continue
-        if not any(kw.arg == "stdin" for kw in node.keywords):
+        stdin = next((kw.value for kw in node.keywords if kw.arg == "stdin"), None)
+        # Мало потребовать сам аргумент: `stdin=pipe` формально есть и ничего
+        # не закрывает. Требуем именно DEVNULL — других правильных значений
+        # здесь нет, ни один потомок демона со stdin не работает.
+        if not (isinstance(stdin, ast.Attribute) and stdin.attr == "DEVNULL"):
             naked.append(node.lineno)
     assert not naked, (
         f"строки {naked}: потомок наследует командный пайп приложения — он "
