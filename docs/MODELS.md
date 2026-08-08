@@ -92,6 +92,10 @@ The default STT targets Russian. For English audiences:
   instead of a server-side streaming STT.
 - `whisper-large-v3-turbo` — the multilingual fallback (100+ languages).
 
+Chinese meetings run on `whisper-large-v3-turbo` (`stt.backend: whisper`,
+`language: zh`); the main LLM, Qwen, is native in Chinese. A Chinese SOTA
+backend (SenseVoice/Paraformer) is on the roadmap.
+
 ## Phones (roadmap)
 
 Memory budget: a 6 GB phone realistically gives a model ~3–3.5 GB. The

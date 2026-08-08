@@ -38,6 +38,11 @@ config and downloads it with a single button. Model details are in
 
 ## 2. Config: two required fields
 
+**The easy way is in the app.** The first-run wizard asks for your name and
+graph folder and writes them into `config/config.yaml` itself; the folder is
+picked from a panel. Editing the file by hand, below, is for installs without
+the interface.
+
 In `config/config.yaml`:
 
 - `sufler.user_name` — your name: labels your microphone in the transcript
@@ -132,7 +137,7 @@ ollama pull bge-m3   # ~1.2 GB; without it search is lexical-only
 
 The index builds in the background on first search and updates
 incrementally as the graph changes (stored in
-`~/Library/Application Support/Charoite/semantic_index.json`).
+`~/Library/Application Support/Charoite/semantic_index_v2.bin`).
 
 ## Diagnosis
 

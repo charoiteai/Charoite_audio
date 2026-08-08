@@ -31,6 +31,10 @@ cp config/config.example.yaml config/config.yaml
 
 ## 2. 配置：两个必填字段
 
+**最简单的方式是在应用里完成。** 首次运行向导会询问你的姓名和图谱文件夹，
+并自行写入 `config/config.yaml`；文件夹通过面板选择。下面手动编辑文件的做法，
+是给不使用界面安装的人准备的。
+
 在 `config/config.yaml` 中：
 
 - `sufler.user_name`——你的名字：在逐字稿中标记你的麦克风，且绝不会被分配给其他声音。
@@ -107,11 +111,20 @@ Charoite 自行选择音源：优先 ScreenCaptureKit，其次 BlackHole。会�
 ollama pull bge-m3   # ~1.2 GB; without it search is lexical-only
 ```
 
-索引在首次搜索时于后台构建，并随图谱变化增量更新（存储于 `~/Library/Application Support/Charoite/semantic_index.json`）。
+索引在首次搜索时于后台构建，并随图谱变化增量更新（存储于 `~/Library/Application Support/Charoite/semantic_index_v2.bin`）。
 
 ## 诊断
 
 `python3 scripts/doctor.py` 会检查 Python、依赖、配置键、图谱文件夹、Ollama 及其模型（含 `bge-m3`）以及说话人分离——并为每个问题给出确切的修复方法。
+
+报告的后半部分关心的是运行，而不是安装：模型能否响应一次**生成**探测（卡住的
+Ollama 会瞬间返回模型列表，而推理原地不动——这是区分两者的唯一方法）、有没有
+会议卡在通往图谱的路上、导入文件夹里还有多少文件在排队、磁盘还剩多少空间。
+任何「Charoite 没反应」都从这里开始查。
+
+doctor 是唯一一个用任何 Python 都能跑的脚本：它刻意写成零依赖，好在依赖装好
+之前就能回答问题。其余脚本都通过 `.venv/bin/python` 运行——若用系统 Python
+启动，得到的会是一行修复建议，而不是一段堆栈回溯（`src/deps.py`）。
 
 ## 夜间循环（可选）
 
