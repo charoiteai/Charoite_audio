@@ -23,7 +23,9 @@ import shutil
 import stat as _stat
 import sys
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+from charoite_paths import resolve_root
+
+ROOT = resolve_root(__file__)
 ARCHIVE_DIR = "Встречи-архив"
 # суффикс исходника → человеческое имя в папке встречи
 NICE = [

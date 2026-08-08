@@ -11,7 +11,9 @@
    `sufler.user_name` 与 `sufler.graph_dir`。
 2. 在应用的**设置**中选择仓库文件夹。就绪检查应找到 Python 环境、配置、
    Ollama、模型、麦克风和图谱文件夹。
-3. 线上通话需要配置 BlackHole。没有它，线下会议能录到，但 Zoom、Meet 或
+3. 线上通话无需任何配置：首次录制时 macOS 会请求「屏幕与系统音频录制」权限，
+   点击「允许」即可。没有它只能录到您的麦克风。BlackHole 仅在 macOS 13
+   之前作为备用方案。此前需要 BlackHole 时：没有它，线下会议能录到，但 Zoom、Meet 或
    Teams 中对方的声音不会进入录音。
 4. 先做一段短测试录音，并等到结果卡片出现。这一次会同时验证声音采集、
    识别、Ollama 和图谱写入。
@@ -28,7 +30,8 @@ python3 scripts/doctor.py
 ## 每场会议之前
 
 - 菜单栏应显示**“可以录音”**，而不是“Ollama 无响应”。
-- 线上通话时，确认 macOS 当前输出是包含 BlackHole 的 Multi-Output Device。
+- 音源由 Charoite 自行选择并在开始后显示：「系统音频（ScreenCaptureKit）」
+  为常规路径，「BlackHole」为备用。无需切换系统输出设备。
   开始后 Charoite 会显示正在使用的声音来源。
 - 告知参会者正在录音。Charoite 不会让机器人加入会议，也无法代替你完成告知。
 - 启用日历集成后，应用会询问是否开始录音，但绝不会自动开启录音。

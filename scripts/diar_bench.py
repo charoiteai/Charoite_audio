@@ -29,11 +29,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import subprocess
 import sys
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or
+                    pathlib.Path(__file__).resolve().parent.parent).expanduser()
 sys.path.insert(0, str(ROOT / "src"))
 import deps  # noqa: E402
 

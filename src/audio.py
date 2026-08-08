@@ -12,7 +12,9 @@ import sounddevice as sd
 
 import meeting_stamp
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+from charoite_paths import resolve_root
+
+ROOT = resolve_root(__file__)
 
 
 def list_devices() -> list[dict]:

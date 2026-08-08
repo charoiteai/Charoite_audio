@@ -347,7 +347,7 @@ struct RetryExpectation: Equatable, Sendable {
 enum MeetingRetryCommand {
     static func build(root: URL, transcriptPath: String) -> (exec: URL, args: [String], log: URL) {
         let python = AppSettings.pythonExecutable(root: root).path
-        let script = root.appendingPathComponent("src/rebuild_transcript.py").path
+        let script = AppSettings.scriptPath("src/rebuild_transcript.py", root: root)
         let stem = URL(fileURLWithPath: transcriptPath)
             .deletingPathExtension().lastPathComponent
         let stamp = String(stem.prefix(15))
@@ -510,7 +510,12 @@ final class MeetingProcessingService: ObservableObject {
         let p = Process()
         p.executableURL = cmd.exec
         p.arguments = cmd.args
-        p.currentDirectoryURL = AppSettings.charoiteRoot
+        // Запускаем рядом с кодом, а данные адресуем переменной: код может
+        // лежать в подписанном бандле, писать в который нельзя.
+        p.currentDirectoryURL = AppSettings.codeRoot
+        var env = ProcessInfo.processInfo.environment
+        env["CHAROITE_ROOT"] = AppSettings.charoiteRoot.path
+        p.environment = env
         // лог — тот же файл, что у демонского запуска этой встречи, но append:
         // прошлый трейсбек — единственный след первой ошибки, затирать нельзя
         try? FileManager.default.createDirectory(
@@ -558,7 +563,10 @@ final class MeetingProcessingService: ObservableObject {
             let p = Process()
             p.executableURL = cmd.exec
             p.arguments = cmd.args
-            p.currentDirectoryURL = AppSettings.charoiteRoot
+            p.currentDirectoryURL = AppSettings.codeRoot
+            var env = ProcessInfo.processInfo.environment
+            env["CHAROITE_ROOT"] = AppSettings.charoiteRoot.path
+            p.environment = env
             p.terminationHandler = { proc in
                 cont.resume(returning: proc.terminationStatus == 0)
             }

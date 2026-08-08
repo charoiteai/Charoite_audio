@@ -33,13 +33,15 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
 import pathlib
 import re
 import shutil
 import sys
 import uuid
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or
+                    pathlib.Path(__file__).resolve().parent.parent).expanduser()
 sys.path.insert(0, str(ROOT / "src"))
 
 MOC = "_MOC.md"

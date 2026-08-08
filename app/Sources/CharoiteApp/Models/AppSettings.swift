@@ -6,12 +6,81 @@ import Foundation
 /// суфлёра — из папки установки Charoite_audio, граф — из config.yaml суфлёра.
 enum AppSettings {
     /// Папка установки Charoite_audio (там .venv, src/daemon.py, config/).
+    ///
+    /// Порядок: путь, выбранный человеком в Настройках → склонированный
+    /// репозиторий в домашней папке → рабочая папка приложения рядом с
+    /// вложенным кодом. Последний случай — установка «из коробки»: код
+    /// лежит в бандле, а данные человеку писать всё равно куда-то надо.
     static var charoiteRoot: URL {
         if let s = UserDefaults.standard.string(forKey: "charoite.root"), !s.isEmpty {
             return URL(fileURLWithPath: (s as NSString).expandingTildeInPath)
         }
-        return FileManager.default.homeDirectoryForCurrentUser
+        let cloned = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Charoite_audio")
+        if FileManager.default.fileExists(atPath: cloned.appendingPathComponent("src/daemon.py").path) {
+            return cloned
+        }
+        return codeIsEmbedded ? workspaceRoot : cloned
+    }
+
+    /// Код демона, вложенный в бандл: `Resources/charoite/src/daemon.py`.
+    ///
+    /// Без него вложенный python бесполезен — демон запускается как
+    /// `src/daemon.py`, и папку репозитория пришлось бы клонировать, то есть
+    /// «установка без терминала» осталась бы обещанием.
+    static var embeddedCodeRoot: URL {
+        Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/charoite")
+    }
+
+    static var codeIsEmbedded: Bool {
+        FileManager.default.fileExists(
+            atPath: embeddedCodeRoot.appendingPathComponent("src/daemon.py").path)
+    }
+
+    /// Куда писать данные, когда код лежит в подписанном бандле.
+    ///
+    /// Бандл доступен только на чтение, а записи, стенограммы, логи и модели
+    /// принадлежат человеку. Application Support — штатное место для такого
+    /// на macOS, и оно переживает переустановку приложения.
+    static var workspaceRoot: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                            in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support")
+        let root = base.appendingPathComponent("Charoite", isDirectory: true)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    /// Откуда запускать код: вложенный в бандл, если рядом с данными его нет.
+    static func codeRoot(dataRoot: URL? = nil) -> URL {
+        let data = dataRoot ?? charoiteRoot
+        let localCode = data.appendingPathComponent("src/daemon.py").path
+        if FileManager.default.fileExists(atPath: localCode) { return data }
+        return codeIsEmbedded ? embeddedCodeRoot : data
+    }
+
+    static var codeRoot: URL { codeRoot(dataRoot: nil) }
+
+    /// Подготовить процесс python: интерпретатор, рабочий каталог кода и
+    /// корень данных в окружении.
+    ///
+    /// Собрано в одну функцию намеренно: запусков python шесть, и раньше
+    /// каждый сам склеивал путь — они разъезжались при первой же правке.
+    /// С разведёнными корнями цена расхождения выше: процесс, запущенный из
+    /// бандла без CHAROITE_ROOT, попытается писать в подписанную папку.
+    static func preparePython(_ process: Process, root: URL? = nil) {
+        let dataRoot = root ?? charoiteRoot
+        process.executableURL = pythonExecutable(root: dataRoot)
+        process.currentDirectoryURL = codeRoot(dataRoot: dataRoot)
+        var env = ProcessInfo.processInfo.environment
+        env["CHAROITE_ROOT"] = dataRoot.path
+        process.environment = env
+    }
+
+    /// Путь к скрипту поставки — он лежит рядом с кодом, а не с данными.
+    static func scriptPath(_ relative: String, root: URL? = nil) -> String {
+        codeRoot(dataRoot: root).appendingPathComponent(relative).path
     }
 
     static var ollamaURL: String {

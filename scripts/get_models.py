@@ -32,13 +32,15 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import os
 import pathlib
 import shutil
 import sys
 import urllib.error
 import urllib.request
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or
+                    pathlib.Path(__file__).resolve().parent.parent).expanduser()
 
 # Минимальный разумный размер: ERes2Net в ONNX — десятки мегабайт. Всё, что
 # меньше, — обрыв закачки, HTML-страница или подсунутый не тот файл.

@@ -29,7 +29,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import privacy  # noqa: E402
 from stt import STT  # noqa: E402
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+from charoite_paths import resolve_root
+
+ROOT = resolve_root(__file__)
 
 
 def _cfg_text(root):

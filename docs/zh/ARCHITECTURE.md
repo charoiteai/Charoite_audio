@@ -7,7 +7,8 @@
 ```
 mic ───────┐                        ┌─ live transcript (per-voice paragraphs)
            ├─ AudioHub ─ STT ─ daemon ┼─ loops: ⚡ answers · theses · minutes
-BlackHole ─┘   (3s chunks)          │   · déjà vu · names · dialogue markup
+system audio ┘  (3s chunks)         │   · déjà vu · names · dialogue markup
+（ScreenCaptureKit；BlackHole 为备用路径）
                                     └─ NDJSON stdout ←→ stdin commands (UI)
 
 Stop → recording rebuild → graph update → archive + Summary → [Claude debrief]
@@ -158,3 +159,20 @@ Ollama 仍会在约 12 300 字符处静默截断输入——经二分查找验�
 **开销。** 文件仅在 mtime 变化时重新读取与归一化；关键词按 UTF-8 字节匹配，而不
 经过带 unicode 归一化的 `String.range(of:)`；片段只为仍有机会进入答案的候选提取。
 在工作图谱上，单次查询耗时 0.6-1.1 秒，此前为 1.8-2.5 秒。
+
+## 代码与数据各自的位置
+
+发行代码与工作文件被有意分开。
+
+- **代码** — `src/`、`scripts/`、配置示例。在应用中它与 python 运行环境一起
+  位于应用包内（`Charoite.app/Contents/Resources/charoite`）；开发时则位于
+  克隆的仓库中。
+- **数据** — 录音、逐字稿、日志、模型、`config/config.yaml`。它们属于用户，
+  存放在工作文件夹中。
+
+工作文件夹由 `CHAROITE_ROOT` 指定：应用在启动守护进程时传入，每个 python
+模块从那里读取根路径（`src/charoite_paths.py`）。未设置该变量时，根路径仍由
+文件位置推导——从仓库运行的行为与此前完全一致。
+
+原因很简单：应用包已签名且只读。会议录音无法写入其中；而把代码放在用户文件夹
+则意味着需要手动克隆——安装又会从终端开始。

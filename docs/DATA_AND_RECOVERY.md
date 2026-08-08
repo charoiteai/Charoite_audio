@@ -97,6 +97,18 @@ Baseline diagnosis:
 python3 scripts/doctor.py
 ```
 
+> **Installed the app rather than the repository?** The interpreter and the
+> code live inside the bundle, so prefix the commands below and point them at
+> your data folder:
+>
+> ```bash
+> APP=~/Applications/Charoite.app/Contents/Resources
+> export CHAROITE_ROOT=~/Library/Application\ Support/Charoite
+> cd "$APP/charoite" && "$APP/python/bin/python3" src/rebuild_transcript.py …
+> ```
+>
+> `.venv/bin/python` in the commands below assumes a cloned repository.
+
 Manual rebuild from an existing transcript:
 
 ```bash
