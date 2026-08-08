@@ -127,6 +127,21 @@ schema。8 GB 以下只在本地保留 STT。`small_model` 始终与主模型并
 这一切都保持可配置 — 手机是客户端,只要能连上 Mac,就可以借用
 Mac 的模型。
 
+## 云端模型（当该层开启时）
+
+云层默认完全关闭——哪个开关启用什么，见 [PRIVACY.zh.md](PRIVACY.md)。本节
+只谈模型选择。
+
+| 配置键 | 默认值 | 在哪里运行 |
+|----|----|----|
+| `cloud_model` | `claude-opus-5` | 会后复盘、每夜的核心与档案修订——不在对话速度下运行，因此值得用最强的模型 |
+| `cloud_live_model` | `claude-haiku-4-5` | 会议进行中回答问题：速度更重要 |
+| `cloud_hints_model` | `claude-haiku-4-5` | 提示润色：同理，但更频繁 |
+
+默认值只写在一个地方——`src/cloud.py`——并与示例配置保持一致；不一致会导致
+测试失败。此前这些字面量散落在每个调用点，其中一个键（`cloud_model`）有两个
+不同的默认值：配置被精简后，会后复盘与夜间修订会走向不同的模型。
+
 ## 更换模型
 
 所有设置都在 `config/config.yaml` 中:`stt.backend`、`llm.model`、

@@ -8,6 +8,7 @@
 
 Макет: `docs/design/ui-revision-mockup.html` (открывается в браузере,
 все экраны в одном файле). Готовые вью: `app/Sources/CharoiteApp/DesignKit.swift`.
+Пути к экранам ниже сокращены от `app/Sources/CharoiteApp/`.
 
 ---
 

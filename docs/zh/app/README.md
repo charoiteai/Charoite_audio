@@ -18,14 +18,16 @@ open build/Charoite.app
 
 ## 首次设置
 
-1. 先安装 Charoite_audio 本体（仓库根目录）：venv、模型、
-   `config/config.yaml` — 见根目录 README。
-2. 启动应用 → 设置（⌘,）：
-   - **Charoite_audio 文件夹** — 仓库克隆到的位置（默认 `~/Charoite_audio`）；
+1. 安装 Ollama，其余交给首次运行向导：它会询问你的姓名与图谱文件夹，
+   推荐匹配本机内存的模型方案并直接安装。Python 运行环境和守护进程的
+   代码都在应用包内——不需要 `git clone`、venv 或 `pip`。
+2. 需要改动时再进设置（⌘,）：
+   - **Charoite_audio 文件夹** — 仅在从源码运行时使用：指向克隆的仓库，
+     应用便会运行那份代码；
    - **Ollama** — 服务器地址（默认 `http://localhost:11434`）；
    - 「检查」按钮会验证守护进程、Ollama 和图谱是否就绪。
-3. 图谱路径从 `config/config.yaml`（`sufler.graph_dir`）读取——
-   为守护进程配置一次，应用自动继承。
+3. 图谱路径写在你工作文件夹内的 `config/config.yaml`（`sufler.graph_dir`）
+   里——由向导写入，守护进程读取。
 
 首次「聆听会议」时 macOS 会请求麦克风权限；若需听写自动插入当前输入框，
 请授予应用辅助功能（Accessibility）权限。

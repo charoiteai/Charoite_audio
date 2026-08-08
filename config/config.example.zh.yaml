@@ -22,7 +22,13 @@ stt:
 
 llm:
   base_url: http://localhost:11434   # Ollama
+  # allow_remote: true   # 明确允许把请求发往本机之外：
+  #                      # 逐字稿会跟随 base_url，因此另一台机器是隐私决定，
+  #                      # 而不是调优旋钮。CHAROITE_NO_CLOUD=1 连这个也拒绝。
+  #                      # 详见 PRIVACY.md
   model: qwen3.6:35b-a3b             # 主模型（提示、纪要、姓名）——中文原生
+  # 预设（见 docs/MODELS.md）：
+  #  16GB 内存：model: gemma4:latest · small_model: qwen3.5:2b
   small_model: qwen3.5:4b            # 轻量模型（要点、分类）— 3.4GB
   fallback_model: gemma4:latest
   max_context_chars: 6000
@@ -72,6 +78,11 @@ sufler:
   embed_model: bge-m3:latest
   meeting_brief: true     # 会议开始时自动简报：按主题提取档案上下文
   tier3_auto_apply: false
+  # 用硬链接把逐字节相同的会议文档副本（原件在「Документация」，供 Finder
+  # 打开的副本在「Встречи-архив」）连接起来：磁盘占用与 iCloud 同步不再翻倍，
+  # 两个路径都照常可用。默认关闭：内容不会改变，但编辑归档副本就等于编辑原件，
+  # 这对以为二者独立的人来说是个意外。
+  dedup_files: false
 
   # --- 云层（可选；保持关闭 = 一切留在本地） ---
   cloud_enrich: false     # 会后由云端 Claude 复盘（需要 claude CLI）
@@ -101,6 +112,10 @@ sufler:
     2) 以第一人称写好的现成回答；3) 需要澄清的事项。
     用中文，不说废话。
   hotkey_hint: "Enter — 按最近2分钟提示；s — 摘要；q — 退出"
+
+  # 自定义会议纪要模板：按你们的会议规范设定章节及其顺序。
+  # 留空 — 使用内置格式（议题 → 决定 → 行动项 → 待解决）。
+  minutes_template: ""
 
 log:
   transcripts_dir: transcripts

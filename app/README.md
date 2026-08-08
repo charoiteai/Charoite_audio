@@ -19,15 +19,17 @@ Requirements: macOS 14+, Xcode Command Line Tools (`xcode-select --install`).
 
 ## First-time setup
 
-1. Install Charoite_audio itself (the repository root): venv, models,
-   `config/config.yaml` — see the root README.
-2. Launch the app → Settings (⌘,):
-   - **Charoite_audio folder** — where you cloned the repository
-     (default `~/Charoite_audio`);
+1. Install Ollama and let the first-run wizard do the rest: it asks for your
+   name and graph folder, offers the model set that fits this Mac's memory
+   and installs it. The python runtime and the daemon's code travel inside
+   the bundle — no `git clone`, no venv, no `pip`.
+2. Settings (⌘,) if you need to change something:
+   - **Charoite_audio folder** — only when you run from sources: point it at
+     the cloned repository and the app runs that code instead of its own;
    - **Ollama** — server address (default `http://localhost:11434`);
    - the "Check" button verifies the daemon, Ollama and the graph.
-3. The graph path is read from `config/config.yaml` (`sufler.graph_dir`)
-   — configured once for the daemon, the app picks it up.
+3. The graph path lives in `config/config.yaml` (`sufler.graph_dir`) inside
+   your working folder — the wizard writes it, the daemon reads it.
 
 On the first "Listen to meeting" macOS asks for microphone access; for
 dictation auto-insert into the active field grant the app Accessibility

@@ -28,11 +28,13 @@ final class ModelPresetTests: XCTestCase {
         XCTAssertEqual(needs, needs.sorted(by: >), "порядок в списке — это порядок выбора")
     }
 
-    func testКаждыйПресетНесётДвеМодели() {
+    func testСписокСкачиванияБезДублей() {
         for preset in ModelPresetPolicy.all {
-            XCTAssertEqual(preset.models.count, 2, preset.id)
             XCTAssertFalse(preset.model.isEmpty)
             XCTAssertFalse(preset.smallModel.isEmpty)
+            XCTAssertEqual(preset.models.count, Set(preset.models).count,
+                           "\(preset.id): одну и ту же модель нельзя качать дважды")
+            XCTAssertEqual(preset.models.count, preset.isSingleModel ? 1 : 2, preset.id)
         }
     }
 
@@ -43,7 +45,8 @@ final class ModelPresetTests: XCTestCase {
         let light = ModelPresetPolicy.recommended(forGB: 8)
         XCTAssertEqual(light.model, "qwen3.5:4b",
                        "основная модель для 8 ГБ не должна быть тяжелее ~4 ГБ")
-        XCTAssertEqual(light.smallModel, "qwen3.5:2b")
+        XCTAssertTrue(light.isSingleModel,
+                      "README и MODELS.md обещают на 8 ГБ одну модель на обе роли")
         XCTAssertFalse(light.models.contains("gemma4:latest"),
                        "gemma4:latest просит 9.6 ГБ — в 8 ГБ это своп")
     }
@@ -54,7 +57,7 @@ final class ModelPresetTests: XCTestCase {
         let expected = [
             (32, "qwen3.6:35b-a3b", "qwen3.5:4b"),
             (16, "gemma4:latest", "qwen3.5:2b"),
-            (8, "qwen3.5:4b", "qwen3.5:2b"),
+            (8, "qwen3.5:4b", "qwen3.5:4b"),   // «Light LLM: same model»
         ]
         for (memory, model, small) in expected {
             let preset = ModelPresetPolicy.recommended(forGB: memory)

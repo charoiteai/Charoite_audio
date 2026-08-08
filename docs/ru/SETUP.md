@@ -84,7 +84,7 @@ cp config/config.example.yaml config/config.yaml
 ## 5. Диаризация голосов (опционально)
 
 Положите ERes2Net-эмбеддер в `models/diar/embedding.onnx` —
-инструкция в [DIARIZATION.md](../DIARIZATION.md). Без него метки идут
+инструкция в [DIARIZATION.ru.md](DIARIZATION.md). Без него метки идут
 по каналам (вы/собеседник), с ним — по голосам («Собеседник 1/2/…»).
 
 ## 6. Запуск

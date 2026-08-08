@@ -57,6 +57,18 @@ merging happens in memory during a single recording and is discarded.
 - **Packaged graph viewer** — browse the meeting graph without Obsidian.
 ## Done (recent)
 
+- Install without a terminal: the app carries a portable CPython **and the
+  daemon's own code** inside the bundle, while `CHAROITE_ROOT` keeps
+  recordings, transcripts and the config in the user's folder; the first-run
+  wizard writes the config and installs the models (August 2026)
+- System audio through ScreenCaptureKit: no driver, no Multi-Output Device,
+  no aggregate devices — one system permission. The Core Audio tap stays a
+  disabled reserve after it wedged `coreaudiod` four times on macOS 26.5
+  (August 2026)
+- Model sets sized to the machine's RAM, offered and installed from the
+  first-run wizard instead of a config comment (August 2026)
+- One button scale across the app (six roles, three sizes) and a second
+  window that renders exactly like the first (August 2026)
 - macOS meeting lifecycle in the UI: recording timer and menu-bar state,
   honest post-processing stages, retry without duplicate runs, a 14-day
   recent-meetings list and an in-app result card with copy and coherent rename

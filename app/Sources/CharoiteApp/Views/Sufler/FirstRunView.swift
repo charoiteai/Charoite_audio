@@ -182,7 +182,7 @@ struct FirstRunView: View {
                             }
                             Text(preset.note)
                                 .font(.system(size: 10.5)).foregroundStyle(.secondary)
-                            Text("\(preset.model) · \(preset.smallModel)")
+                            Text(preset.models.joined(separator: " · "))
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundStyle(.tertiary)
                         }

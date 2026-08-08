@@ -7,8 +7,10 @@
 - **A nudge to record** — the most expensive mistake in a meeting is a
   forgotten button: with no audio there is no transcript, no minutes, no graph
   nodes. With the calendar enabled (the same opt-in toggle as the brief), the
-  app shows a bar: “«Планёрка» has started — start recording?” with two
-  buttons. **Recording never starts on its own** — only when you press it; a
+  app shows a system notification and an in-window bar: “«Weekly sync» has
+  started — start recording?” with two buttons. Optional launch at login uses
+  the standard macOS Login Items, so the reminder works even before the window
+  is opened. **Recording never starts on its own** — only when you press it; a
   “Not now” is remembered and that meeting is not offered again. The window is
   from two minutes before the start to ten minutes after — later than that the
   offer is pointless, and a bar popping up mid-conversation costs more than it
@@ -535,11 +537,6 @@ it signals degradation, it does not break the loop.
 - **Night cycle in one click** — Settings installs the 04:15 launchd
   job (core revision with backups, morning brief, memory bench);
   the same button removes it.
-- **Recording reminder** (opt-in) — the calendar toggle shows a system
-  notification and an in-window bar when a meeting starts, with explicit
-  **Start recording** and **Not now** actions. Recording never starts on its
-  own. Optional launch at login uses macOS Login Items so the reminder works
-  before the window is opened.
 - **Calendar brief** (opt-in) — a Settings toggle: before your next
   meeting the bar shows a button with its title, one click builds an
   archive brief. Only the title and time of the nearest event are

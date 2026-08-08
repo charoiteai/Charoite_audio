@@ -59,11 +59,13 @@ Charoite 自行选择音源：优先 ScreenCaptureKit，其次 BlackHole。会�
 ## 4. macOS 权限
 
 - **麦克风**——首次运行时请求授权。
+- **屏幕与系统音频录制**——首次录制会议时请求授权；没有它只能听到麦克风
+  （或你已配置的 BlackHole）。
 - **辅助功能（Universal Access）**（可选）——仅用于听写自动粘贴；没有该权限，文本只会留在剪贴板里。
 
 ## 5. 声纹说话人分离（可选）
 
-将 ERes2Net 嵌入模型放到 `models/diar/embedding.onnx`——参见 [DIARIZATION.md](../DIARIZATION.md)。没有它时按声道标注（你/对方），有它时按声音标注（“Speaker 1/2/…”）。
+将 ERes2Net 嵌入模型放到 `models/diar/embedding.onnx`——参见 [DIARIZATION.zh.md](DIARIZATION.md)。没有它时按声道标注（你/对方），有它时按声音标注（“Speaker 1/2/…”）。
 
 ## 6. 运行
 
@@ -74,11 +76,28 @@ Charoite 自行选择音源：优先 ScreenCaptureKit，其次 BlackHole。会�
 
 首次运行会下载 STT 模型（约 1 分钟）。
 
+第一次成功的录音应当以一张会议卡片收尾，而不仅仅是一个逐字稿文件。请按
+[用户实用指南](USER_GUIDE.md)里的端到端检查走一遍。临时音频、逐字稿、图谱
+文档与保留期的完整地图见[数据与恢复](DATA_AND_RECOVERY.md)。
+
+## 7. 各文件的位置
+
+- `transcripts/` — 逐字稿与会议的工作文件
+- `recordings/` — 完整录音（按 `record_keep_days` 自动删除）
+- `<graph_dir>/Встречи-архив/` — 每场会议一个「日期 — 标题」文件夹：
+  摘要、纪要、逐字稿、问答、复盘
+
+这只是一张简图。凡是涉及删除期限、事实来源和故障后的恢复顺序，请使用
+[完整的数据地图](DATA_AND_RECOVERY.md)。
+
 ## 故障排查
 
 - **逐字稿为空**——检查输入设备：`python -c "import sounddevice as sd; print(sd.query_devices())"`。
 - **回答慢**——`ollama ps`：模型必须常驻内存；配置中保持 `num_ctx: 8192`。
-- **没有系统音频**——macOS 的输出必须是多输出设备。
+- **没有系统音频**——检查权限：系统设置 → 隐私与安全性 → 屏幕与系统音频录制，
+  Charoite 必须在列表中并处于开启状态。更换应用版本后有时需要重新授权：取消
+  勾选再重新勾选。若你把 BlackHole 用作备用路径，则 macOS 的输出必须是多输出
+  设备，而不是直接输出到扬声器。
 
 ## 语义搜索（推荐）
 

@@ -72,6 +72,9 @@ meeting status shows which channel is in use.
 ## 4. macOS permissions
 
 - **Microphone** — requested on first run.
+- **Screen & System Audio Recording** — requested on the first meeting
+  recording; without it only the microphone is heard (or BlackHole, if you
+  set it up).
 - **Universal Access** (optional) — only for dictation auto-paste; without
   it the text simply stays in the clipboard.
 
@@ -95,6 +98,17 @@ transcript file. Follow the end-to-end check in the
 [practical user guide](USER_GUIDE.md). A complete map of temporary audio,
 transcripts, graph documents and retention lives in
 [Data and recovery](DATA_AND_RECOVERY.md).
+
+## 7. Where things live
+
+- `transcripts/` — transcripts and the meeting's working files
+- `recordings/` — full recordings (auto-deleted after `record_keep_days`)
+- `<graph_dir>/Встречи-архив/` — a "date — title" folder per meeting:
+  summary, minutes, transcript, questions and answers, debrief
+
+This is the short map. Wherever retention, the source of truth or the recovery
+order after a failure matter, use the
+[full data map](DATA_AND_RECOVERY.md).
 
 ## Troubleshooting
 
