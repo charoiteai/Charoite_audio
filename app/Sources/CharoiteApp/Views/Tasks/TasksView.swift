@@ -183,7 +183,20 @@ struct TasksView: View {
             Text(MarkdownLine.render(item.text))
                 .strikethrough(item.done)
                 .foregroundStyle(item.done ? .secondary : .primary)
-            Spacer()
+            Spacer(minLength: 8)
+            // Срок читается из самой строки markdown (TaskDue), файл не
+            // меняется. Просрочка в общем потоке текста не видна — глаз
+            // цепляется за форму, а не за «до 24.07» в конце фразы. У
+            // сделанного чип не показываем: сроку нечего требовать.
+            if !item.done, let due = TaskDue.parse(item.text) {
+                // fixedSize + приоритет: без них длинный текст поручения
+                // забирает всю ширину строки, чипу достаётся ноль, и он
+                // просто не рисуется — ровно так он и не появился на первой
+                // проверке живьём. Переносится текст, срок остаётся целым.
+                DueChip(due: due)
+                    .fixedSize()
+                    .layoutPriority(1)
+            }
         }
         .padding(.vertical, 2)
         .contextMenu {
