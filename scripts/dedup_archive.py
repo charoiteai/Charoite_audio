@@ -26,7 +26,8 @@ import re
 import shutil
 import sys
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or
+                    pathlib.Path(__file__).resolve().parent.parent).expanduser()
 sys.path.insert(0, str(ROOT / "src"))
 import deps  # noqa: E402
 

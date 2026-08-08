@@ -7,7 +7,8 @@
 ```
 mic ───────┐                        ┌─ live transcript (per-voice paragraphs)
            ├─ AudioHub ─ STT ─ daemon ┼─ loops: ⚡ answers · theses · minutes
-BlackHole ─┘   (3s chunks)          │   · déjà vu · names · dialogue markup
+system audio ┘  (3s chunks)         │   · déjà vu · names · dialogue markup
+(ScreenCaptureKit; BlackHole is the fallback)
                                     └─ NDJSON stdout ←→ stdin commands (UI)
 
 Stop → recording rebuild → graph update → archive + Summary → [Claude debrief]

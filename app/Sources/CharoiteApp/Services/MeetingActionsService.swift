@@ -14,7 +14,7 @@ struct MeetingActionCommand: Equatable, Sendable {
         MeetingActionCommand(
             executable: AppSettings.pythonExecutable(root: root),
             arguments: [
-                root.appendingPathComponent("scripts/protocol.py").path,
+                AppSettings.scriptPath("scripts/protocol.py", root: root),
                 archiveTarget(meetingID),
                 "--graph", graph.path,
                 "--style", "plain",
@@ -28,7 +28,7 @@ struct MeetingActionCommand: Equatable, Sendable {
         apply: Bool
     ) -> MeetingActionCommand {
         var args = [
-            root.appendingPathComponent("scripts/forget_meeting.py").path,
+            AppSettings.scriptPath("scripts/forget_meeting.py", root: root),
             String(meetingID.prefix(15)),
             "--graph", graph.path,
         ]
@@ -117,7 +117,10 @@ enum MeetingActionsService {
         let output = Pipe()
         process.executableURL = command.executable
         process.arguments = command.arguments
-        process.currentDirectoryURL = AppSettings.charoiteRoot
+        process.currentDirectoryURL = AppSettings.codeRoot
+        var env = ProcessInfo.processInfo.environment
+        env["CHAROITE_ROOT"] = AppSettings.charoiteRoot.path
+        process.environment = env
         process.standardOutput = output
         process.standardError = output
         do {

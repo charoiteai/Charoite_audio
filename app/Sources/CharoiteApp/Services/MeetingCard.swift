@@ -320,7 +320,7 @@ enum MeetingCardLoader {
 enum MeetingRenameCommand {
     static func build(root: URL, meetingID: String, title: String) -> (exec: URL, args: [String]) {
         let python = AppSettings.pythonExecutable(root: root).path
-        let script = root.appendingPathComponent("scripts/rename_meeting.py").path
+        let script = AppSettings.scriptPath("scripts/rename_meeting.py", root: root)
         return (
             exec: URL(fileURLWithPath: python),
             args: [script, String(meetingID.prefix(15)), title, "--yes"]

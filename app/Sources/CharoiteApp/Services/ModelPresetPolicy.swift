@@ -53,20 +53,25 @@ enum ModelPresetPolicy {
             id: "balanced",
             title: L.t("Сбалансированный", "Balanced", "均衡"),
             model: "gemma4:latest",
-            smallModel: "qwen3.5:4b",
+            smallModel: "qwen3.5:2b",
             needsGB: 16,
             note: L.t("Заметно легче, качество близкое на коротких встречах.",
                       "Much lighter, close quality on short meetings.",
                       "明显更轻量，短会议质量接近。")),
+        // 8 ГБ — не «gemma полегче», а другая основная модель.
+        // Ручная сверка с таблицей RAM в README 08.08 поймала ошибку: здесь
+        // стояла gemma4:latest (9.6 ГБ), то есть на 8-гигабайтной машине
+        // гарантированный своп. Граф знаний на этом наборе выключается —
+        // модели меньше 30B ломают JSON-схему, и честнее сказать это здесь.
         ModelPreset(
             id: "light",
             title: L.t("Лёгкий", "Light", "轻量"),
-            model: "gemma4:latest",
+            model: "qwen3.5:4b",
             smallModel: "qwen3.5:2b",
             needsGB: 8,
-            note: L.t("Для 8–16 ГБ: тезисы и протокол, подсказки короче.",
-                      "For 8–16 GB: theses and minutes, shorter hints.",
-                      "适用于 8–16 GB：要点与纪要，提示更简短。")),
+            note: L.t("Для 8 ГБ: стенограмма, тезисы, минутки. Граф знаний выключен.",
+                      "For 8 GB: transcript, theses, minutes. Knowledge graph off.",
+                      "适用于 8 GB：逐字稿、要点、纪要。知识图谱关闭。")),
     ]
 
     /// Память машины в гигабайтах.

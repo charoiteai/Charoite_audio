@@ -32,7 +32,8 @@ import sys
 
 import yaml
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or
+                    pathlib.Path(__file__).resolve().parent.parent).expanduser()
 ARCHIVE_DIR = "Встречи-архив"
 # Файлы мельче этого дедуплицировать бессмысленно: выигрыш меньше, чем риск
 # запутать человека жёсткими ссылками на мелочь.

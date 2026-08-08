@@ -12,7 +12,9 @@ understand post-processing, take the result and recover from a failure.
    `sufler.graph_dir` in `config/config.yaml`.
 2. In the app's **Settings**, select the repository folder. Readiness should
    find the Python environment, config, Ollama, models, microphone and graph.
-3. Configure BlackHole for calls. Without it an in-person meeting records, but
+3. Calls need no setup: on the first recording macOS asks for "Screen & System
+   Audio Recording" — press Allow. Without it only your microphone is captured.
+   (Legacy note.) Configuring BlackHole is only needed as a fallback; without it an in-person meeting records, but
    the other side of Zoom, Meet or Teams does not.
 4. Make a short test recording and wait for its result card. That exercises
    audio capture, transcription, Ollama and the graph in one pass.

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import sys
 import time
@@ -27,7 +28,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import dossier  # noqa: E402
 import yaml  # noqa: E402
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or
+                    pathlib.Path(__file__).resolve().parent.parent).expanduser()
 VAULT = pathlib.Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents"
 # Потолок на ночь: если тем изменилось много, лучше растянуть на две ночи,
 # чем занять машину до утра.
