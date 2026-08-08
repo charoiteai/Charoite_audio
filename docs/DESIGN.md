@@ -57,6 +57,14 @@ that sits next to your work, not a showcase.
   when; no illustrations.
 - **Delivery/queue statuses**: a single line at the bottom of the
   screen, in plain language; no modal dialogs.
+- **One button scale** (`CharoiteButton`, macOS): seven roles — prominent,
+  regular, quiet, link, destructive, destructiveFilled, icon — and three
+  sizes (s/m/l, 21/26/32 pt tall). One prominent button per pane; no system
+  blue (prominent is `brand`, a link is `accent`); a button with no label
+  must carry `.help` and an accessibility label. The button radius follows
+  its height rather than the surface radii above — a 21 pt control with a
+  12 pt radius is a capsule, not a button. Full rules and the handoff
+  package: [BUTTONS_2026-08.md](design/BUTTONS_2026-08.md).
 
 ## UI copy tone
 

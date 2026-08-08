@@ -31,6 +31,10 @@ cp config/config.example.yaml config/config.yaml
 
 ## 2. 配置：两个必填字段
 
+**最简单的方式是在应用里完成。** 首次运行向导会询问你的姓名和图谱文件夹，
+并自行写入 `config/config.yaml`；文件夹通过面板选择。下面手动编辑文件的做法，
+是给不使用界面安装的人准备的。
+
 在 `config/config.yaml` 中：
 
 - `sufler.user_name`——你的名字：在逐字稿中标记你的麦克风，且绝不会被分配给其他声音。
@@ -59,11 +63,13 @@ Charoite 自行选择音源：优先 ScreenCaptureKit，其次 BlackHole。会�
 ## 4. macOS 权限
 
 - **麦克风**——首次运行时请求授权。
+- **屏幕与系统音频录制**——首次录制会议时请求授权；没有它只能听到麦克风
+  （或你已配置的 BlackHole）。
 - **辅助功能（Universal Access）**（可选）——仅用于听写自动粘贴；没有该权限，文本只会留在剪贴板里。
 
 ## 5. 声纹说话人分离（可选）
 
-将 ERes2Net 嵌入模型放到 `models/diar/embedding.onnx`——参见 [DIARIZATION.md](../DIARIZATION.md)。没有它时按声道标注（你/对方），有它时按声音标注（“Speaker 1/2/…”）。
+将 ERes2Net 嵌入模型放到 `models/diar/embedding.onnx`——参见 [DIARIZATION.zh.md](DIARIZATION.md)。没有它时按声道标注（你/对方），有它时按声音标注（“Speaker 1/2/…”）。
 
 ## 6. 运行
 
@@ -74,11 +80,28 @@ Charoite 自行选择音源：优先 ScreenCaptureKit，其次 BlackHole。会�
 
 首次运行会下载 STT 模型（约 1 分钟）。
 
+第一次成功的录音应当以一张会议卡片收尾，而不仅仅是一个逐字稿文件。请按
+[用户实用指南](USER_GUIDE.md)里的端到端检查走一遍。临时音频、逐字稿、图谱
+文档与保留期的完整地图见[数据与恢复](DATA_AND_RECOVERY.md)。
+
+## 7. 各文件的位置
+
+- `transcripts/` — 逐字稿与会议的工作文件
+- `recordings/` — 完整录音（按 `record_keep_days` 自动删除）
+- `<graph_dir>/Встречи-архив/` — 每场会议一个「日期 — 标题」文件夹：
+  摘要、纪要、逐字稿、问答、复盘
+
+这只是一张简图。凡是涉及删除期限、事实来源和故障后的恢复顺序，请使用
+[完整的数据地图](DATA_AND_RECOVERY.md)。
+
 ## 故障排查
 
 - **逐字稿为空**——检查输入设备：`python -c "import sounddevice as sd; print(sd.query_devices())"`。
 - **回答慢**——`ollama ps`：模型必须常驻内存；配置中保持 `num_ctx: 8192`。
-- **没有系统音频**——macOS 的输出必须是多输出设备。
+- **没有系统音频**——检查权限：系统设置 → 隐私与安全性 → 屏幕与系统音频录制，
+  Charoite 必须在列表中并处于开启状态。更换应用版本后有时需要重新授权：取消
+  勾选再重新勾选。若你把 BlackHole 用作备用路径，则 macOS 的输出必须是多输出
+  设备，而不是直接输出到扬声器。
 
 ## 语义搜索（推荐）
 
@@ -88,11 +111,20 @@ Charoite 自行选择音源：优先 ScreenCaptureKit，其次 BlackHole。会�
 ollama pull bge-m3   # ~1.2 GB; without it search is lexical-only
 ```
 
-索引在首次搜索时于后台构建，并随图谱变化增量更新（存储于 `~/Library/Application Support/Charoite/semantic_index.json`）。
+索引在首次搜索时于后台构建，并随图谱变化增量更新（存储于 `~/Library/Application Support/Charoite/semantic_index_v2.bin`）。
 
 ## 诊断
 
 `python3 scripts/doctor.py` 会检查 Python、依赖、配置键、图谱文件夹、Ollama 及其模型（含 `bge-m3`）以及说话人分离——并为每个问题给出确切的修复方法。
+
+报告的后半部分关心的是运行，而不是安装：模型能否响应一次**生成**探测（卡住的
+Ollama 会瞬间返回模型列表，而推理原地不动——这是区分两者的唯一方法）、有没有
+会议卡在通往图谱的路上、导入文件夹里还有多少文件在排队、磁盘还剩多少空间。
+任何「Charoite 没反应」都从这里开始查。
+
+doctor 是唯一一个用任何 Python 都能跑的脚本：它刻意写成零依赖，好在依赖装好
+之前就能回答问题。其余脚本都通过 `.venv/bin/python` 运行——若用系统 Python
+启动，得到的会是一行修复建议，而不是一段堆栈回溯（`src/deps.py`）。
 
 ## 夜间循环（可选）
 

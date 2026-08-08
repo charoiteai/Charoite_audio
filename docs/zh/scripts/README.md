@@ -17,6 +17,13 @@
 - `nightly_dossier.py` — 增量重建主题档案，或用 `--find` 查看检索结果。
 - `morning_brief.py` — 由图谱和夜间复盘组装晨报。
 - `nightly.sh`、`nightly_claude_cores.py` — 夜间循环：tier3 + 可选的云端核心复盘（云层未开启时不运行）。
+- `nightly_dossier_review.py` — 对本地模型写好的档案做云端复核：Opus 能看出转述看不出的东西（某个决定被后来的推翻、期限已过、两个节点互相矛盾）。`--dry` 只显示不写入。
+- `cloud_review.py` — 带超时和明确边界地运行会议的云端复盘，而不是把 `claude` 丢到后台就算完事。崩溃或截断的回答不再留下一个看起来像真的复盘文件。
+- `get_models.py` — 一条命令装好说话人分离的嵌入模型（`--diar`、`--list`、`--check`、`--url`）；没有它就无法开启按声音的实时标注。
+- `diar_bench.py` — 说话人分离的 DER：被错误标注的语音时间占比。`--make` 在本地生成合成测试样本——本仓库不可能存放会议录音。
+- `fix_action_items.py` — 一次性规范化守护进程开始规范化之前写下的纪要中的行动项格式；只改格式。默认为空跑。
+- `check_private_markers.py` — 去标识化守卫（pre-commit 钩子）：同时检查新增的行与整个被跟踪的文件树，只打印位置、绝不打印标记本身。见[参与贡献](../CONTRIBUTING.md)。
+- `build_embedded_python.sh` — 组装随 `Charoite.app` 一同发布的可移植 python 运行环境；自行构建应用包时先运行它，再运行 `app/make_app.sh`。
 
 有依赖的脚本应通过 `.venv/bin/python` 运行；`doctor.py` 是特意设计的例外，
 安装前也能用系统 `python3` 运行。任务流程与恢复顺序见

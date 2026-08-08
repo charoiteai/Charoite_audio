@@ -16,7 +16,10 @@ name = "charoite"
 # поэтому здесь константа.
 version = "0.0.0"
 description = "Charoite: local-first meeting conveyor (STT, diarization, graph)"
-requires-python = ">=3.10"
+# 3.11 — та же граница, что проверяет scripts/doctor.py и обещает README.
+# Раньше здесь стояло >=3.10: pip ставил пакет на 3.10, а doctor тут же
+# требовал 3.11 — противоречие, которое человек видит уже после установки.
+requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26,<3",
     "sounddevice>=0.4.6",

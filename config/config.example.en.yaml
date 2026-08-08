@@ -22,6 +22,10 @@ stt:
 
 llm:
   base_url: http://localhost:11434   # Ollama
+  # allow_remote: true   # EXPLICIT permission to send requests off this machine:
+  #                      # transcripts follow base_url, so another machine is a
+  #                      # privacy decision, not a tuning knob.
+  #                      # CHAROITE_NO_CLOUD=1 refuses even this. See PRIVACY.md
   model: qwen3.6:35b-a3b             # main model (hints, summaries, names)
   small_model: qwen3.5:4b            # light model (theses, classification) — 3.4GB
   fallback_model: gemma4:latest
@@ -94,6 +98,13 @@ sufler:
   # so by default a human runs it: scripts/tier3_cores.py --apply.
   # true merges only high-confidence pairs.
   tier3_auto_apply: false
+  # Link byte-identical copies of meeting documents (the original under
+  # "Документация", the copy under "Встречи-архив" for Finder) with hard
+  # links: disk space and iCloud sync stop doubling, both paths keep
+  # working. Off by default: the content does not change, but editing the
+  # archived copy becomes editing the original — a surprise for anyone who
+  # believed it was independent.
+  dedup_files: false
 
   # --- cloud layer (optional; keep off — everything stays local) ---
   cloud_enrich: false     # post-meeting review by cloud Claude (needs claude CLI)
@@ -123,6 +134,10 @@ sufler:
     addressed to the user; 2) a ready first-person answer; 3) what to clarify.
     In English, no filler.
   hotkey_hint: "Enter — hint on the last 2 minutes; s — summary; q — quit"
+
+  # Your own minutes template: sections and their order, to your team's rules.
+  # Empty — the built-in format (topics → decisions → action items → open).
+  minutes_template: ""
 
 log:
   transcripts_dir: transcripts

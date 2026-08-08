@@ -46,9 +46,9 @@ and every meeting makes the next one smarter.
 
 ## Requirements
 
-- Apple Silicon Mac (M1 or newer), 32 GB RAM recommended for the default models
+- Apple Silicon Mac (M1 or newer), macOS 14+ for the app, 32 GB RAM recommended for the default models
 - [Ollama](https://ollama.com) — see the RAM table below for which models fit
-- Python 3.11+
+- Python 3.11+ (only for running from sources — the app ships its own runtime)
 - Call audio — through macOS itself (ScreenCaptureKit), nothing to set up: the system asks for permission once. [BlackHole](https://existential.audio/blackhole/) is only needed on macOS before 13 or when permission is denied
 - Optional: [Obsidian](https://obsidian.md) to browse the graph
 
@@ -160,7 +160,7 @@ Build: `cd app-android && ./gradlew assembleDebug`.
 - [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md)
 
 - [Manifesto](MANIFESTO.md) — why local models run the conveyor and a strong model runs the graph
-- [Setup](docs/SETUP.md) — install, BlackHole for calls, permissions, first run
+- [Setup](docs/SETUP.md) — install, config, system audio, permissions, first run
 - [Practical user guide](docs/USER_GUIDE.md) — the complete path from readiness to a result card and retry
 - [Data and recovery](docs/DATA_AND_RECOVERY.md) — storage, retention, backups and safe recovery
 - [Features](docs/FEATURES.md) — everything Charoite does, live and post-meeting

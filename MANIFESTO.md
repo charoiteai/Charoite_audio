@@ -37,8 +37,10 @@ Everything below runs on an ordinary laptop, fully offline:
 - **Archive search.** One embedder, bge-m3 (93% Top-1 on our corpus),
   fused with lexical search through RRF. Semantics closes the
   vocabulary gap, lexical matching catches internal jargon.
-- **Live theses and hints.** A 35B MoE model produces ~60 tokens per
-  second — enough to listen to a meeting and prompt as it goes.
+- **Live theses and hints.** A 35B MoE model produces ~27 tokens per
+  second on an M1 Max (measured 08.08.2026, `num_ctx: 8192`) — several
+  times faster than speech, so it listens to a meeting and prompts as it
+  goes.
 
 None of this is a compromise. On these tasks local models are not worse
 than cloud ones — they are sufficient, and privacy plus zero latency

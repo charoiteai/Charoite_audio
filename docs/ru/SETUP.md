@@ -42,7 +42,6 @@ cp config/config.example.yaml config/config.yaml
 графа и сам пишет их в `config/config.yaml`; папка выбирается панелью. Правка
 файла руками ниже — для тех, кто ставит без интерфейса.
 
-
 В `config/config.yaml`:
 
 - `sufler.user_name` — ваше имя. Им подписывается ваш микрофон в стенограмме,
@@ -84,7 +83,7 @@ cp config/config.example.yaml config/config.yaml
 ## 5. Диаризация голосов (опционально)
 
 Положите ERes2Net-эмбеддер в `models/diar/embedding.onnx` —
-инструкция в [DIARIZATION.md](../DIARIZATION.md). Без него метки идут
+инструкция в [DIARIZATION.ru.md](DIARIZATION.md). Без него метки идут
 по каналам (вы/собеседник), с ним — по голосам («Собеседник 1/2/…»).
 
 ## 6. Запуск
@@ -137,7 +136,7 @@ ollama pull bge-m3   # ~1.2 ГБ; без неё поиск чисто лекси
 ```
 
 Индекс строится фоном при первом поиске и обновляется инкрементально
-(хранится в `~/Library/Application Support/Charoite/semantic_index.json`).
+(хранится в `~/Library/Application Support/Charoite/semantic_index_v2.bin`).
 
 ## Диагностика
 

@@ -89,6 +89,17 @@ Charoite 不代替 Time Machine，也不会为任意手工编辑自动做版本�
 python3 scripts/doctor.py
 ```
 
+> **装的是应用而不是仓库？** 解释器和代码都在应用包内，因此下面的命令要加上
+> 前缀，并指向你自己的数据文件夹：
+>
+> ```bash
+> APP=~/Applications/Charoite.app/Contents/Resources
+> export CHAROITE_ROOT=~/Library/Application\ Support/Charoite
+> cd "$APP/charoite" && "$APP/python/bin/python3" src/rebuild_transcript.py …
+> ```
+>
+> 下面命令里的 `.venv/bin/python` 假设你克隆了仓库。
+
 从已有逐字稿手动重建：
 
 ```bash
