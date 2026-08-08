@@ -36,6 +36,33 @@ final class ModelPresetTests: XCTestCase {
         }
     }
 
+    /// Ручная сверка с таблицей RAM в README 08.08: в «Лёгком» стояла
+    /// gemma4:latest на 9.6 ГБ — для 8-гигабайтной машины это своп, а не
+    /// «полегче». Набор для 8 ГБ обязан помещаться в 8 ГБ.
+    func testЛёгкийНаборРеальноЛёгкий() {
+        let light = ModelPresetPolicy.recommended(forGB: 8)
+        XCTAssertEqual(light.model, "qwen3.5:4b",
+                       "основная модель для 8 ГБ не должна быть тяжелее ~4 ГБ")
+        XCTAssertEqual(light.smallModel, "qwen3.5:2b")
+        XCTAssertFalse(light.models.contains("gemma4:latest"),
+                       "gemma4:latest просит 9.6 ГБ — в 8 ГБ это своп")
+    }
+
+    func testНаборыСогласованыСТаблицейRAM() {
+        // README, раздел «Какие модели под вашу RAM» — единственный источник
+        // правды для этих пар; расхождение здесь человек увидит как тормоза.
+        let expected = [
+            (32, "qwen3.6:35b-a3b", "qwen3.5:4b"),
+            (16, "gemma4:latest", "qwen3.5:2b"),
+            (8, "qwen3.5:4b", "qwen3.5:2b"),
+        ]
+        for (memory, model, small) in expected {
+            let preset = ModelPresetPolicy.recommended(forGB: memory)
+            XCTAssertEqual(preset.model, model, "\(memory) ГБ: основная модель")
+            XCTAssertEqual(preset.smallModel, small, "\(memory) ГБ: лёгкая модель")
+        }
+    }
+
     func testТекущийПресетУзнаётсяПоОбеимМоделям() {
         let full = ModelPresetPolicy.all[0]
         XCTAssertEqual(ModelPresetPolicy.current(model: full.model,

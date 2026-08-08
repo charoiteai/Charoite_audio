@@ -23,7 +23,9 @@ try:
 except ModuleNotFoundError:  # pragma: no cover — ветка зависит от версии пакета
     from mcp.server import MCPServer as FastMCP     # mcp 2.x
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+from charoite_paths import resolve_root
+
+ROOT = resolve_root(__file__)
 TRANSCRIPTS = ROOT / "transcripts"
 
 

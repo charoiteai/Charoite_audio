@@ -112,9 +112,8 @@ final class DictationService: ObservableObject {
         self.noteMode = note
         self.onResult = onResult
         let p = Process()
-        p.executableURL = AppSettings.pythonExecutable
         p.arguments = [script] + args
-        p.currentDirectoryURL = suflerRoot
+        AppSettings.preparePython(p, root: suflerRoot)
         let inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()
         p.standardInput = inPipe
         p.standardOutput = outPipe

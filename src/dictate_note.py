@@ -28,7 +28,9 @@ import requests
 import sounddevice as sd
 import yaml
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+from charoite_paths import resolve_root
+
+ROOT = resolve_root(__file__)
 
 
 def _cfg_text(root):

@@ -104,6 +104,18 @@ iCloud, исходник также может попасть в iCloud.
 python3 scripts/doctor.py
 ```
 
+> **Поставили приложение, а не репозиторий?** Интерпретатор и код лежат
+> внутри бандла, поэтому команды ниже запускайте так, указав свою папку
+> данных:
+>
+> ```bash
+> APP=~/Applications/Чароит.app/Contents/Resources
+> export CHAROITE_ROOT=~/Library/Application\ Support/Charoite
+> cd "$APP/charoite" && "$APP/python/bin/python3" src/rebuild_transcript.py …
+> ```
+>
+> `.venv/bin/python` в командах ниже подразумевает склонированный репозиторий.
+
 Ручная пересборка существующей стенограммы:
 
 ```bash

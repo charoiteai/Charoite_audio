@@ -21,7 +21,8 @@ import pathlib
 import re
 import sys
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or
+                    pathlib.Path(__file__).resolve().parent.parent).expanduser()
 sys.path.insert(0, str(ROOT / "src"))
 
 from meeting_archive import ARCHIVE_DIR, _safe  # noqa: E402

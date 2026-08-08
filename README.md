@@ -49,7 +49,8 @@ and every meeting makes the next one smarter.
 - Apple Silicon Mac (M1 or newer), 32 GB RAM recommended for the default models
 - [Ollama](https://ollama.com) — see the RAM table below for which models fit
 - Python 3.11+
-- Optional: [BlackHole](https://existential.audio/blackhole/) to capture system audio (calls), [Obsidian](https://obsidian.md) to browse the graph
+- Call audio — through macOS itself (ScreenCaptureKit), nothing to set up: the system asks for permission once. [BlackHole](https://existential.audio/blackhole/) is only needed on macOS before 13 or when permission is denied
+- Optional: [Obsidian](https://obsidian.md) to browse the graph
 
 ## Which models for your RAM
 
@@ -73,52 +74,49 @@ theses for free. Full macOS/iOS tables and the reasoning: [docs/MODELS.md](docs/
 
 ## Quick start
 
+**Option A — the macOS app (recommended).** Python ships inside the app: no
+`git clone`, no `venv`, no `pip`. All you need is the language model:
+
+```bash
+brew install ollama            # which models — the app suggests them itself
+```
+
+Download `Charoite.app.zip` from the [latest release](https://github.com/charoiteai/Charoite_audio/releases/latest).
+The app is signed with a Developer ID but not notarised, so macOS blocks the
+first launch: System Settings → Privacy & Security → *Open Anyway* (or
+`xattr -d com.apple.quarantine /Applications/Charoite.app`). Right-click →
+Open no longer works on macOS 15+.
+
+Everything else happens in the interface: the first-run wizard asks for your
+name and graph folder, shows model sets sized to your machine's memory and
+installs them with a button; macOS asks for microphone and system-audio
+permissions itself.
+
+Live transcript, theses and hints, questions and briefs over the archive, a
+local chat with graph memory, dictation (⌥⌘D) and voice notes (⌥⌘N). Before
+offering to record, the app checks the real meeting path: python runtime,
+daemon and config, dependencies, microphone and audio inputs, Ollama models
+and the graph folder. A missing `bge-m3` or the optional graph is shown as a
+limitation, not as an indistinguishable "failure".
+
+**Option B — from source** (development, custom build):
+
 ```bash
 git clone https://github.com/charoiteai/Charoite_audio && cd Charoite_audio
 python3 -m venv .venv && .venv/bin/pip install .
-cp config/config.example.yaml config/config.yaml   # then set user_name & graph_dir
+cp config/config.example.yaml config/config.yaml   # fill in user_name and graph_dir
+.venv/bin/python src/main.py     # live transcript + hints in the terminal
 ```
 
-Working in English or Chinese? Use a language preset instead — English gets
-Parakeet STT (English SOTA on Apple Silicon), Chinese gets Whisper STT with
-Qwen (native Chinese) as the LLM, both get meeting documents and a copilot
-role in your language:
+To build the app with the embedded runtime yourself:
+`scripts/build_embedded_python.sh && app/make_app.sh`.
 
-```bash
-cp config/config.example.en.yaml config/config.yaml   # English
-cp config/config.example.zh.yaml config/config.yaml   # 中文
-```
-
-Something not working? One command shows what's missing and how to fix it:
+Something not working? One command shows what is missing and how to fix it:
 
 ```bash
 python3 scripts/doctor.py
 ```
 
-**Option A — the macOS app (recommended):**
-
-Download `Charoite.app.zip` from the [latest release](https://github.com/charoiteai/Charoite_audio/releases/latest)
-(the bundle is ad-hoc signed, not notarized — on first launch macOS blocks it:
-run `xattr -d com.apple.quarantine /Applications/Charoite.app`, or open
-System Settings → Privacy & Security and press *Open Anyway*. Right-click → Open
-no longer works on macOS 15+), or build it yourself:
-
-```bash
-./app/make_app.sh && open app/build/Charoite.app
-```
-
-Live transcript, theses and hints, archive questions and briefs, local
-chat with graph memory, dictation (⌥⌘D) and voice notes (⌥⌘N).
-On the first launch the app checks the actual meeting path before offering to
-record: `.venv`, daemon and config, Python dependencies, microphone and audio
-inputs, Ollama models and the graph folder. Missing BlackHole, `bge-m3` or an
-optional graph is shown as a limitation, not confused with a fatal failure.
-
-**Option B — CLI:**
-
-```bash
-.venv/bin/python src/main.py     # live transcript + hints in the terminal
-```
 
 **No meetings yet?** Point `graph_dir` at the bundled [demo graph](demo)
 (Russian) or [demo/graph_en](demo) (English) and ask

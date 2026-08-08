@@ -27,7 +27,9 @@ import sys
 import time
 import wave
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+from charoite_paths import resolve_root
+
+ROOT = resolve_root(__file__)
 sys.path.insert(0, str(ROOT / "src"))
 import deps  # noqa: E402
 

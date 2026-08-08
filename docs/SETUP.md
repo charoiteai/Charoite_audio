@@ -101,7 +101,11 @@ transcripts, graph documents and retention lives in
 - **Empty transcript** — check inputs: `python -c "import sounddevice as sd; print(sd.query_devices())"`.
 - **Slow answers** — `ollama ps`: the model must stay in RAM; keep
   `num_ctx: 8192` in the config.
-- **No system audio** — macOS output must be the Multi-Output device.
+- **No system audio** — check the permission: System Settings → Privacy →
+  Screen & System Audio Recording, Charoite must be listed and enabled. After
+  an app update the permission sometimes has to be re-granted: untick and tick
+  it again. If you use BlackHole as the fallback, the macOS output must be the
+  Multi-Output device rather than the speakers directly.
 
 ## Semantic search (recommended)
 

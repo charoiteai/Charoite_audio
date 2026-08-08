@@ -62,9 +62,8 @@ final class ModelPullService: ObservableObject {
         let root = AppSettings.charoiteRoot
         Task.detached {
             let task = Process()
-            task.executableURL = AppSettings.pythonExecutable(root: root)
             task.arguments = ["scripts/get_models.py", "--diar"]
-            task.currentDirectoryURL = root
+            AppSettings.preparePython(task, root: root)
             let pipe = Pipe()
             task.standardOutput = pipe
             task.standardError = pipe

@@ -59,10 +59,9 @@ final class ImportService: ObservableObject {
         status = "импорт: \(todo.count) файл(ов)…"
         let p = Process()
         let root = AppSettings.charoiteRoot
-        p.executableURL = AppSettings.pythonExecutable(root: root)
-        p.arguments = [root.appendingPathComponent("scripts/import_meeting.py").path,
+        p.arguments = [AppSettings.scriptPath("scripts/import_meeting.py", root: root),
                        "--scan", folder.path]
-        p.currentDirectoryURL = root
+        AppSettings.preparePython(p, root: root)
         p.standardOutput = Pipe()
         p.standardError = Pipe()
         p.terminationHandler = { [weak self] proc in

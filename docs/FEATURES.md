@@ -457,15 +457,13 @@ it signals degradation, it does not break the loop.
   CoreAudio (taps did it four times). On macOS 15+ the microphone arrives in
   the same stream and PortAudio never opens — taking the whole "dead stream
   hangs on close" class of failures with it. BlackHole remains a fallback.
-- **System audio without BlackHole (native tap)** — on macOS 14.4+ the app
-  captures call audio itself via a Core Audio process tap: it reads the tap
-  with its own IOProc (the system grants system-audio recording to the
-  reading process only; the child daemon never inherits it) and hands the
-  daemon a PCM stream through `data/tap_stream.raw` plus a manifest. The
-  manifest is written only after real frames arrive, so the daemon picks the
-  stream only when it is alive — otherwise it honestly falls back to
-  BlackHole. New installs no longer need the driver, Audio MIDI Setup or a
-  Multi-Output Device.
+- **Core Audio tap — a disabled reserve** — the second native route to system
+  audio: the app reads the tap with its own IOProc and hands the daemon a PCM
+  stream. The scheme was proven in the field (38.9 s recorded), but the very
+  cycle of creating and destroying the tap aggregate wedges CoreAudio on
+  macOS 26.5: after a meeting the machine's speakers go silent until the
+  audio subsystem is restarted. The code stays in the package and is enabled
+  by editing one line — in case ScreenCaptureKit is unavailable.
 - **The second window renders like the first** — the sidebar column width is
   set explicitly, so windows of the same scene no longer diverge in layout:
   the second window used to open with a collapsed sidebar, section labels

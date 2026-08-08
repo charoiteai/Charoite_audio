@@ -38,6 +38,22 @@ else
     echo "python-контур не собран (scripts/build_embedded_python.sh) — бандл без него"
 fi
 
+# Код демона — тоже в бандл. Без него вложенный python бесполезен: демон
+# запускается как src/daemon.py, и папку репозитория всё равно пришлось бы
+# клонировать. Это 2 МБ на фоне 300 МБ контура.
+#
+# Данные при этом остаются у человека: приложение передаёт демону
+# CHAROITE_ROOT — бандл подписан и доступен только на чтение.
+CODE="$APP/Contents/Resources/charoite"
+mkdir -p "$CODE"
+cp -Rc ../src "$CODE/src"
+cp -Rc ../scripts "$CODE/scripts"
+mkdir -p "$CODE/config"
+cp ../config/config.example.yaml "$CODE/config/config.example.yaml"
+cp ../pyproject.toml "$CODE/pyproject.toml"
+find "$CODE" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
+echo "код демона вложен ($(du -sh "$CODE" | cut -f1))"
+
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

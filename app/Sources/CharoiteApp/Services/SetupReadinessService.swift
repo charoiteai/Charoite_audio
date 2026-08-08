@@ -170,7 +170,7 @@ final class SetupReadinessService: ObservableObject {
             (AppSettings.pythonIsEmbedded
                 ? L.t("python в бандле", "python in the bundle", "捆绑包中的 python")
                 : ".venv/bin/python", python),
-            ("src/daemon.py", root.appendingPathComponent("src/daemon.py")),
+            ("src/daemon.py", AppSettings.codeRoot(dataRoot: root).appendingPathComponent("src/daemon.py")),
             ("config/config.yaml", root.appendingPathComponent("config/config.yaml")),
         ]
         let missing = required.compactMap { label, url in

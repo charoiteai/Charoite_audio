@@ -299,9 +299,10 @@ final class SuflerService: ObservableObject {
     /// поднимается асинхронно, а демон обязан стартовать ПОСЛЕ него.
     private func launchDaemon(preserveUI: Bool) {
         let p = Process()
-        p.executableURL = AppSettings.pythonExecutable
+        // Код — из бандла (если он там), данные — в рабочую папку человека:
+        // бандл подписан и доступен только на чтение.
         p.arguments = ["src/daemon.py"]
-        p.currentDirectoryURL = suflerRoot
+        AppSettings.preparePython(p, root: suflerRoot)
 
         let outPipe = Pipe()
         let inPipe = Pipe()
