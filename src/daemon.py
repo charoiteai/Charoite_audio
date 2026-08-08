@@ -296,6 +296,7 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
                 ["nice", "-n", "10", sys.executable,
                  str(CODE / "src" / "rebuild_transcript.py"), str(live)],
                 start_new_session=True,
+                stdin=subprocess.DEVNULL,   # командный пайп приложения — не его дело
                 stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
             )
         except Exception as e:  # noqa: BLE001 — восстановление должно быть видимым
@@ -681,6 +682,13 @@ def main():
                      "Только правки существующих строк, ничего нового не добавляй, "
                      "не комментируй. Всё точно — ответь ровно: NONE",
                      "--model", model],
+                    # stdin=DEVNULL обязателен: без него потомок наследует
+                    # командный пайп от приложения. Claude на унаследованном
+                    # fifo ждёт EOF (см. соседний вызов ниже, там это уже
+                    # учтено) — ревизия висит до таймаута и молча гибнет, а
+                    # выпитые из пайпа байты — это команды UI, которых демон
+                    # уже не увидит.
+                    stdin=subprocess.DEVNULL,
                     capture_output=True, text=True, timeout=60, env=env)
                 out = (r.stdout or "").strip()
             except Exception:  # noqa: BLE001 — ревизия не критична, тишина честнее
@@ -1623,7 +1631,8 @@ def main():
             subprocess.Popen(
                 ["nice", "-n", "10", sys.executable,
                  str(pathlib.Path(__file__).parent / "rebuild_transcript.py"), str(tr.path)],
-                start_new_session=True, stdout=glog, stderr=subprocess.STDOUT,
+                start_new_session=True, stdin=subprocess.DEVNULL,
+                stdout=glog, stderr=subprocess.STDOUT,
             )
             # Не константа «2-4 мин»: живые встречи считаются и по пять минут,
             # и по двадцать — обещание расходилось с правдой в разы, и человек

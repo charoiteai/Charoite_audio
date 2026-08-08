@@ -164,11 +164,8 @@ class TapStreamCapture:
         carry = b""   # нечётный хвост чтения: пол-сэмпла до дозаписи писателем
         while not self._stop_flag.is_set():
             data = stream.read(chunk_bytes)
-            self._pos = stream.tell()
-            if not data:
-                time.sleep(0.05)
-                continue
-            if carry:
+            here = stream.tell()
+            if data and carry:
                 data = carry + data
                 carry = b""
             if len(data) % 2:
@@ -177,8 +174,16 @@ class TapStreamCapture:
                 # канал глохнет до вмешательства сторожа.
                 carry = data[-1:]
                 data = data[:-1]
-                if not data:
-                    continue
+            # Позиция для рестарта — граница ЦЕЛОГО сэмпла, а не место, где
+            # остановилось чтение. `carry` живёт в этой нити и после stop()
+            # гибнет вместе с ней; запомнив нечётную позицию, сторожевой
+            # рестарт сделал бы seek на середину сэмпла, и дальше каждая пара
+            # байт собиралась бы из половинок соседних — канал до конца
+            # встречи превратился бы в шум (аудит 0.46.0).
+            self._pos = here - len(carry)
+            if not data:
+                time.sleep(0.05)
+                continue
             block = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
             if down is not None:
                 block = down.process(block)

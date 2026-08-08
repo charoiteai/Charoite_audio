@@ -115,8 +115,22 @@ def sufler_make_minutes() -> str:
         },
         timeout=600,
     )
-    out = r.json().get("message", {}).get("content", "")
     mpath = f.with_name(f.stem + "_minutes.md")
+    # Ни статус, ни непустоту раньше никто не проверял: удалённая или
+    # переименованная модель давала 404, `.get("message", {})` превращал ошибку
+    # в пустую строку, и она безусловно ложилась ПОВЕРХ готовых минуток — а
+    # инструмент отвечал «Минутки сохранены». Дальше пустышку подхватывал
+    # архив, и документ встречи пропадал до ручного повторного прогона.
+    # Пустой ответ модели — это неудача, а не новые минутки.
+    if r.status_code != 200:
+        return (f"Ollama ответила {r.status_code} — минутки НЕ тронуты "
+                f"({mpath.name}). Проверьте модель {MODEL}: {r.text[:200]}")
+    try:
+        out = ((r.json() or {}).get("message") or {}).get("content") or ""
+    except ValueError:
+        return f"Ollama вернула не JSON — минутки НЕ тронуты ({mpath.name})"
+    if not out.strip():
+        return f"Модель вернула пустой ответ — минутки НЕ тронуты ({mpath.name})"
     mpath.write_text(out, encoding="utf-8")
     return f"Минутки сохранены: {mpath}\n\n{out[:2000]}"
 
