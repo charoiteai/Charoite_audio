@@ -6,6 +6,7 @@ import queue
 import threading
 import time
 import wave
+from collections import abc
 
 import numpy as np
 import sounddevice as sd
@@ -417,6 +418,11 @@ class AudioHub:
         self.vad_db = float(a["vad_energy_db"])
         self.record_on = bool(a.get("record", True))
         self.record_keep_days = a.get("record_keep_days", 2)
+        # Штампы встреч, которые прямо сейчас пересобираются: их записи ретеншн
+        # не трогает. Заполняет демон из _recover_orphans — он один знает, кого
+        # догоняет; здесь по умолчанию пусто, чтобы AudioHub оставался
+        # самодостаточным в тестах и в CLI.
+        self.protect_stamps: abc.Collection[str] = frozenset()
         self.record_dir = ROOT / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings")
         self.captures: list[Capture] = []
         self.sources: list[str] = []
@@ -535,7 +541,8 @@ class AudioHub:
         # числа в record_keep_days выключали запись НА ВСЮ ВСТРЕЧУ, причём молча.
         # Отказывала ровно та страховка, ради которой всё это писалось.
         try:
-            self.prune_recordings(self.record_dir, self.record_keep_days)
+            self.prune_recordings(self.record_dir, self.record_keep_days,
+                                  protect=self.protect_stamps)
         except Exception as e:  # noqa: BLE001 — уборка не должна мешать записи
             self._say(f"чистка старых записей не удалась: {e}")
         try:
@@ -551,21 +558,43 @@ class AudioHub:
             self._say(f"ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: {e} — после сбоя встречу будет не восстановить")
 
     @staticmethod
-    def prune_recordings(record_dir: pathlib.Path, keep_days) -> None:
+    def prune_recordings(record_dir: pathlib.Path, keep_days,
+                         protect: abc.Collection[str] = ()) -> int:
         """Аудио встреч — чувствительный носитель (из него извлекаются голосовые
         эмбеддинги), держим не дольше страхового окна. Вызывается и на старте
         демона: раньше чистка жила только внутри _open_sinks, поэтому при
         record: false или простое в неделю записи не удалялись вовсе, хотя
-        PRIVACY обещает удаление через record_keep_days."""
+        PRIVACY обещает удаление через record_keep_days.
+
+        `protect` — штампы встреч, которые прямо сейчас пересобираются. Их
+        записи не трогаем: это единственный источник финальной стенограммы, а
+        пересборка идёт отдельным процессом и к моменту чистки ещё грузит
+        интерпретатор. Возвращаем, сколько файлов придержали, — задержка сверх
+        обещанного срока обязана быть видимой, а не тихой.
+
+        `.wav.part` тоже сметаем: обрыв демона посреди финализации оставлял
+        осиротевший .part, который никто никогда не удалял, а пересборка при
+        живом .part отказывалась конвертировать .pcm — канал встречи пропадал
+        молча (аудит 0.46.0, P0-3).
+        """
         if not record_dir.exists():
-            return
+            return 0
         cutoff = time.time() - float(keep_days) * 86400
+        protected = set(protect)
+        held = 0
         for old in record_dir.iterdir():
             try:
-                if old.suffix in (".pcm", ".wav") and old.stat().st_mtime < cutoff:
-                    old.unlink(missing_ok=True)
+                if old.suffix not in (".pcm", ".wav", ".part"):
+                    continue
+                if old.stat().st_mtime >= cutoff:
+                    continue
+                if meeting_stamp.stamp_of_recording(old.name) in protected:
+                    held += 1
+                    continue
+                old.unlink(missing_ok=True)
             except FileNotFoundError:
                 continue  # файл убрали параллельно — не наша забота
+        return held
 
     def _finalize_recordings(self):
         """.pcm → .wav при штатном стопе; при крэше остаётся .pcm — его дотранскрибирует

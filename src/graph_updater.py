@@ -19,9 +19,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import llm_health  # noqa: E402
 import privacy  # noqa: E402
 
-from charoite_paths import resolve_root
+from charoite_paths import code_root, resolve_root
 
 ROOT = resolve_root(__file__)
+CODE = code_root(__file__)
 
 
 def load_cfg() -> dict:
@@ -833,7 +834,7 @@ def main():
             # то, что трогать было нельзя. Раньше здесь был Popen на claude без
             # присмотра: «запущен фоном» значило только «процесс стартовал».
             _sp.Popen(
-                [sys.executable, str(ROOT / "scripts" / "cloud_review.py"),
+                [sys.executable, str(CODE / "scripts" / "cloud_review.py"),
                  "--stamp", stamp, "--transcript", str(tpath),
                  "--graph", str(graph), "--rev", str(rev), "--log", str(log)],
                 cwd=str(ROOT), stdin=_sp.DEVNULL,

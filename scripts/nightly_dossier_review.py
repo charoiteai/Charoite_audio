@@ -31,9 +31,11 @@ import sys
 
 import yaml
 
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or
-                    pathlib.Path(__file__).resolve().parent.parent).expanduser()
-sys.path.insert(0, str(ROOT / "src"))
+# Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
+CODE = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
+sys.path.insert(0, str(CODE / "src"))
 import cloud  # noqa: E402
 import dossier  # noqa: E402
 import privacy  # noqa: E402

@@ -88,6 +88,29 @@ def recording_path(rec_dir: pathlib.Path, stamp: str, label: str,
     return rec_dir / f"{stamp}_{label}.{ext}"
 
 
+def stamp_of_recording(name: str) -> str | None:
+    """Штамп встречи по имени файла канала — обратная к `recording_path`.
+
+    Нужна ретеншну: чтобы не удалить запись встречи, которая прямо сейчас
+    пересобирается, чистка обязана понимать, к какой встрече файл относится.
+    Разбирать имя на месте она не вправе — формат живёт здесь, и ровно его
+    расхождение уже дважды стоило проекту встреч.
+
+    `.wav.part` разбираем наравне с готовыми: осиротевший `.part` — тоже
+    запись встречи, и его судьбу решает тот же штамп.
+    """
+    for ext in (".wav.part", ".pcm", ".wav"):
+        if name.endswith(ext):
+            core = name[: -len(ext)]
+            break
+    else:
+        return None
+    head, sep, _label = core.rpartition("_")
+    if not sep:
+        return None
+    return head if _RE.match(head) else None
+
+
 def resolve_stamp(rec_dir: pathlib.Path, stamp: str,
                   labels: tuple[str, ...] = RECORDING_LABELS) -> str:
     """Единый штамп, под которым лежат каналы одной встречи.

@@ -44,9 +44,10 @@ from llm import LLM  # noqa: E402
 from main import NOISE, Transcript  # noqa: E402
 from stt import STT  # noqa: E402
 
-from charoite_paths import resolve_root
+from charoite_paths import code_root, resolve_root
 
-ROOT = resolve_root(__file__)
+ROOT = resolve_root(__file__)      # данные пользователя
+CODE = code_root(__file__)         # src/ и scripts/ — рядом с этим файлом
 THESIS_EVERY = 40.0     # автотезисы: раз в N секунд по новым фразам
 HINT_EVERY = 75.0       # автоподсказки: не чаще, чем раз в N секунд
 HINT_MIN_NEW = 220      # и только если накопилось столько новых знаков разговора
@@ -244,8 +245,9 @@ def _prune_graph_logs(cfg: dict) -> None:
             continue
 
 
-def _recover_orphans(cfg: dict, current_stamp: str) -> None:
-    """Добить встречи, оборванные аварийно.
+def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
+    """Добить встречи, оборванные аварийно. Возвращает штампы, которые
+    пересобираются прямо сейчас, — их записи ретеншну трогать нельзя.
 
     SIGKILL (watchdog приложения на 12-й секунде, OOM, паника) не исполняет
     finally — значит rebuild_transcript не запускался, и остаются сырые .pcm
@@ -255,12 +257,23 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> None:
 
     Здесь мы, наоборот, запускаем пересборку для каждой чужой записи —
     ровно то, что сделал бы штатный стоп.
+
+    Почему возвращаем множество, а не просто спавним. Комментарий в `main`
+    обещал «добиваем ДО чистки», но `Popen` — это запуск, а не завершение:
+    ретеншн в том же потоке успевал удалить .pcm за миллисекунды, пока
+    потомок ещё грузил интерпретатор. Гонка была не вероятностной, а
+    выигранной заранее — пересборка по конструкции не трогает .pcm, пока жив
+    лок демона, то есть ждёт своих 45 секунд, а prune к тому моменту давно
+    отработал. Сценарий: краш в пятницу, старт в понедельник, записи старше
+    record_keep_days — восстановление объявлено, а восстанавливать уже нечего
+    (аудит 0.46.0, P0-1).
     """
     _prune_graph_logs(cfg)
+    recovering: set[str] = set()
     rec_dir = ROOT / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings")
     tdir = ROOT / cfg["log"]["transcripts_dir"]
     if not rec_dir.is_dir():
-        return
+        return recovering
     stamps = sorted({p.stem.rsplit("_", 1)[0] for p in rec_dir.glob("*.pcm")})
     for stamp in stamps:
         if stamp == current_stamp:
@@ -268,6 +281,9 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> None:
         live = tdir / f"{stamp}.md"
         if not live.exists():
             continue                      # без стенограммы пересобирать нечего
+        # Помечаем ДО запуска, а не после: даже неудавшийся спавн означает, что
+        # встреча ждёт восстановления, и удалять её звук нельзя тем более.
+        recovering.add(stamp)
         emit({"type": "status",
               "text": f"Догоняю прерванную встречу {stamp} — пересборка фоном"})
         statuses = MeetingStatusStore(ROOT)
@@ -278,12 +294,13 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> None:
         try:
             subprocess.Popen(
                 ["nice", "-n", "10", sys.executable,
-                 str(ROOT / "src" / "rebuild_transcript.py"), str(live)],
+                 str(CODE / "src" / "rebuild_transcript.py"), str(live)],
                 start_new_session=True,
                 stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
             )
         except Exception as e:  # noqa: BLE001 — восстановление должно быть видимым
             statuses.failed(live, f"не удалось запустить восстановление: {e}")
+    return recovering
 
 
 def main():
@@ -309,17 +326,26 @@ def main():
     # пропущенную финальную пересборку.
     hub = AudioHub(cfg, stamp=tr.stamp)
     hub.on_status = lambda t: emit({"type": "status", "text": t})
-    # Встречи, оборванные аварийно, добиваем ДО чистки — иначе ретеншн
-    # удалит единственную запись раньше, чем кто-то её пересоберёт.
-    _recover_orphans(cfg, tr.stamp)
+    # Встречи, оборванные аварийно, запускаем ДО чистки и говорим ретеншну их
+    # не трогать: «до» тут не про порядок строк, а про то, что запись обязана
+    # дожить до конца пересборки. Порядка строк было мало — Popen возвращается
+    # мгновенно, и чистка успевала съесть .pcm первой.
+    hub.protect_stamps = _recover_orphans(cfg, tr.stamp)
     # Ретеншн аудио не должен зависеть от того, началась ли новая встреча:
     # раньше чистка жила внутри _open_sinks, поэтому при record: false или
     # недельном простое записи лежали дольше обещанного в PRIVACY.
     try:
-        AudioHub.prune_recordings(
+        held = AudioHub.prune_recordings(
             ROOT / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings"),
             cfg["audio"].get("record_keep_days", 2),
+            protect=hub.protect_stamps,
         )
+        if held:
+            # Вслух: задержка сверх обещанного в PRIVACY срока — это исключение,
+            # и человек должен видеть, что оно случилось и почему.
+            emit({"type": "status",
+                  "text": f"Ретеншн придержал {held} записей: встречи ещё "
+                          "восстанавливаются"})
     except Exception as e:  # noqa: BLE001 — уборка не повод не начать встречу
         print(f"чистка записей: {e}", file=sys.stderr, flush=True)
     system_base = llm.system   # без памяти: живой контекст пересобирает поверх

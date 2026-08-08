@@ -39,8 +39,10 @@ import sys
 import urllib.error
 import urllib.request
 
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or
-                    pathlib.Path(__file__).resolve().parent.parent).expanduser()
+# Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
+CODE = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 
 # Минимальный разумный размер: ERes2Net в ONNX — десятки мегабайт. Всё, что
 # меньше, — обрыв закачки, HTML-страница или подсунутый не тот файл.

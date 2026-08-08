@@ -23,9 +23,10 @@ try:
 except ModuleNotFoundError:  # pragma: no cover — ветка зависит от версии пакета
     from mcp.server import MCPServer as FastMCP     # mcp 2.x
 
-from charoite_paths import resolve_root
+from charoite_paths import code_root, resolve_root
 
 ROOT = resolve_root(__file__)
+CODE = code_root(__file__)
 TRANSCRIPTS = ROOT / "transcripts"
 
 
@@ -136,7 +137,7 @@ def sufler_update_graph() -> str:
     import sys as _sys
 
     r = subprocess.run(
-        [_sys.executable, str(ROOT / "src" / "graph_updater.py")],
+        [_sys.executable, str(CODE / "src" / "graph_updater.py")],
         capture_output=True, text=True, timeout=600,
     )
     return (r.stdout + r.stderr).strip() or "готово"

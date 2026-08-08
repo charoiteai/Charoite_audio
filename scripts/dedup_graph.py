@@ -32,8 +32,10 @@ import sys
 
 import yaml
 
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or
-                    pathlib.Path(__file__).resolve().parent.parent).expanduser()
+# Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
+CODE = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 ARCHIVE_DIR = "Встречи-архив"
 # Файлы мельче этого дедуплицировать бессмысленно: выигрыш меньше, чем риск
 # запутать человека жёсткими ссылками на мелочь.
