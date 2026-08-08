@@ -24,12 +24,23 @@ struct WorkspaceView: View {
                 .padding(.top, 8)
             }
             .navigationTitle("Charoite")
-            .frame(minWidth: 170)
+            // Ширину колонки задаём явно. Без неё второе окно той же сцены
+            // открывалось со схлопнутым сайдбаром, а detail оставался
+            // нарисованным по прежней ширине: подписи разделов пропадали, а
+            // кнопка и правая колонка уезжали за край окна (найдено живым
+            // сравнением двух окон 08.08).
+            .navigationSplitViewColumnWidth(min: 170, ideal: 200, max: 260)
         } detail: {
             detail
                 .navigationTitle((navigation.selection ?? .today).title)
+                // Detail не должен требовать больше, чем ему дали: иначе
+                // содержимое не сжимается, а выпирает за границу окна.
+                .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 980, minHeight: 640)
+        .navigationSplitViewStyle(.balanced)
+        // 900, а не 980: с сайдбаром в 200 прежний минимум требовал окна
+        // шире 1180 — ровно того, в котором приложение и открывается.
+        .frame(minWidth: 900, minHeight: 620)
         .onAppear {
             tasks.rescan()
             MeetingProcessingService.shared.startMonitoring()

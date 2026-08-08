@@ -17,9 +17,13 @@ struct TodayWorkspaceView: View {
             Divider()
             HSplitView {
                 PrepView()
-                    .frame(minWidth: 500, maxWidth: .infinity)
+                    .frame(minWidth: 380, maxWidth: .infinity)
                 recent
-                    .frame(minWidth: 260, idealWidth: 300, maxWidth: 340)
+                    // Колонка недавних встреч сжимается первой: подготовка к
+                    // встрече важнее списка, а раньше сумма минимумов не
+                    // влезала в окно и обе колонки резались краем.
+                    .frame(minWidth: 210, idealWidth: 300, maxWidth: 340)
+                    .layoutPriority(-1)
             }
         }
     }
