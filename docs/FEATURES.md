@@ -434,6 +434,11 @@ it signals degradation, it does not break the loop.
   point to different meetings in the same minute, rebuild refuses them instead
   of producing a mixed transcript. The silent format drift of 28.07 cost every meeting its final
   transcript — the naming contract is now held by end-to-end tests.
+- **Python runtime inside the app** — Charoite.app ships a portable CPython
+  with the runtime dependencies (346 MB; heavy optional STT presets are left
+  out). `git clone`, `venv` and `pip` disappear from the install: the terminal
+  is only needed for Ollama. Running from source is unchanged — the app uses
+  the embedded runtime when present and the neighbouring `.venv` otherwise.
 - **Setup without a terminal or YAML** — the first-run wizard asks for your
   name and the graph folder and writes them into the config itself (the folder
   is picked in a panel); the voice-separation model installs with a button,

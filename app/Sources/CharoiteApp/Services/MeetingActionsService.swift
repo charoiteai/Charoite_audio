@@ -12,7 +12,7 @@ struct MeetingActionCommand: Equatable, Sendable {
         graph: URL
     ) -> MeetingActionCommand {
         MeetingActionCommand(
-            executable: root.appendingPathComponent(".venv/bin/python"),
+            executable: AppSettings.pythonExecutable(root: root),
             arguments: [
                 root.appendingPathComponent("scripts/protocol.py").path,
                 archiveTarget(meetingID),
@@ -34,7 +34,7 @@ struct MeetingActionCommand: Equatable, Sendable {
         ]
         if apply { args.append("--yes") }
         return MeetingActionCommand(
-            executable: root.appendingPathComponent(".venv/bin/python"),
+            executable: AppSettings.pythonExecutable(root: root),
             arguments: args)
     }
 

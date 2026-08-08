@@ -161,8 +161,15 @@ final class SetupReadinessService: ObservableObject {
         var isDirectory: ObjCBool = false
         let rootExists = fm.fileExists(atPath: root.path, isDirectory: &isDirectory)
             && isDirectory.boolValue
+        // Интерпретатор ищем там же, где его запускает приложение: с
+        // вложенным контуром .venv рядом с репозиторием может не быть вовсе,
+        // и требовать его значило бы показывать красную ошибку на рабочей
+        // установке.
+        let python = AppSettings.pythonExecutable
         let required = [
-            (".venv/bin/python", root.appendingPathComponent(".venv/bin/python")),
+            (AppSettings.pythonIsEmbedded
+                ? L.t("python в бандле", "python in the bundle", "捆绑包中的 python")
+                : ".venv/bin/python", python),
             ("src/daemon.py", root.appendingPathComponent("src/daemon.py")),
             ("config/config.yaml", root.appendingPathComponent("config/config.yaml")),
         ]
@@ -171,7 +178,6 @@ final class SetupReadinessService: ObservableObject {
         }
         let configURL = root.appendingPathComponent("config/config.yaml")
         let configText = try? String(contentsOf: configURL, encoding: .utf8)
-        let python = root.appendingPathComponent(".venv/bin/python")
         guard fm.isExecutableFile(atPath: python.path) else {
             return LocalSetupProbe(
                 rootExists: rootExists,

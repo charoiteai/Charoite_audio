@@ -12,6 +12,8 @@ CLAUDE.md
 .env
 app/.build/
 app/build/
+# скачанные сборки CPython для вложенного контура
+.cache/
 app-ios/*.xcodeproj
 app-ios/Info.plist
 app-ios/WidgetsInfo.plist

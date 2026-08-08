@@ -59,7 +59,7 @@ final class ImportService: ObservableObject {
         status = "импорт: \(todo.count) файл(ов)…"
         let p = Process()
         let root = AppSettings.charoiteRoot
-        p.executableURL = root.appendingPathComponent(".venv/bin/python")
+        p.executableURL = AppSettings.pythonExecutable(root: root)
         p.arguments = [root.appendingPathComponent("scripts/import_meeting.py").path,
                        "--scan", folder.path]
         p.currentDirectoryURL = root

@@ -65,6 +65,34 @@ enum AppSettings {
         return parseValue(key, in: text)
     }
 
+    /// Интерпретатор, которым запускается python-контур.
+    ///
+    /// Порядок осознанный:
+    /// 1. **Вложенный в бандл** (`Contents/Resources/python`) — с ним
+    ///    установка не начинается с терминала: ни git clone, ни venv, ни pip.
+    ///    Переносимая сборка CPython, независимая от Homebrew.
+    /// 2. **`.venv` рядом с репозиторием** — как было раньше. Разработчик и
+    ///    тот, кто ставил руками, не должны ничего замечать.
+    ///
+    /// Возвращаем путь, а не факт наличия: вызывающих десять штук, и каждый
+    /// раньше собирал `.venv/bin/python` сам — расходились бы по одному.
+    /// `root` передают те вызовы, которые уже принимают корень параметром —
+    /// им подменяют путь тесты. Игнорировать его значило бы сделать их
+    /// непроверяемыми: поймано тестами при переходе на вложенный контур.
+    static func pythonExecutable(root: URL? = nil) -> URL {
+        let embedded = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Resources/python/bin/python3")
+        if FileManager.default.isExecutableFile(atPath: embedded.path) { return embedded }
+        return (root ?? charoiteRoot).appendingPathComponent(".venv/bin/python")
+    }
+
+    static var pythonExecutable: URL { pythonExecutable(root: nil) }
+
+    /// Контур взят из бандла — то есть терминал при установке не понадобился.
+    static var pythonIsEmbedded: Bool {
+        pythonExecutable.path.contains("Contents/Resources/python")
+    }
+
     /// Записать значение в `config/config.yaml` — без YAML-зависимости.
     ///
     /// До этого приложение конфиг только читало, и два обязательных поля —

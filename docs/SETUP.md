@@ -4,17 +4,34 @@
 
 ## 1. Dependencies
 
+**From the prebuilt app (recommended).** Charoite.app from the
+[releases](https://github.com/charoiteai/Charoite_audio/releases) ships a
+python runtime inside: no git clone, no venv, no pip. All you need is the
+language model — Ollama:
+
 ```bash
 brew install ollama
 ollama pull qwen3.6:35b-a3b && ollama pull qwen3.5:4b && ollama pull gemma4:latest
+```
 
+Everything else the app asks for and does itself: your name and graph folder in
+the first-run wizard, the voice-separation model with a button, permissions
+through system dialogs.
+
+**From source** (development, custom build, non-Apple-Silicon):
+
+```bash
 git clone https://github.com/charoiteai/Charoite_audio && cd Charoite_audio
 python3 -m venv .venv && .venv/bin/pip install .
 cp config/config.example.yaml config/config.yaml
 ```
 
-On 16 GB RAM pick lighter models — presets are in the config comments
-and [MODELS.md](MODELS.md).
+The app uses the embedded runtime when present and the `.venv` next to the
+repository otherwise. To build a bundle with the runtime yourself:
+`scripts/build_embedded_python.sh && app/make_app.sh`.
+
+On 16 GB RAM pick lighter models — presets are in the config comments and
+[MODELS.md](MODELS.md).
 
 ## 2. Config: two required fields
 

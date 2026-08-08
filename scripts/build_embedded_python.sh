@@ -1,0 +1,89 @@
+#!/bin/bash
+# Переносимый python-контур внутрь бандла приложения.
+#
+# Зачем: до этого установка начиналась с терминала — git clone, python -m venv,
+# pip install. Приложение уже умеет всё остальное (конфиг, модели, разрешения),
+# и только интерпретатор оставался снаружи. Вложенный контур убирает из
+# инструкции последние три шага, требующие консоли.
+#
+# Что кладём: CPython от python-build-standalone (релокатабельный — в отличие
+# от Homebrew, чьи бинарники прибиты к /opt/homebrew абсолютными путями) плюс
+# рантайм-зависимости из pyproject.
+#
+# Чего НЕ кладём:
+#   • mlx-whisper и parakeet-mlx — опциональные пресеты STT, тянут torch на
+#     529 МБ ради языков, которые дефолту не нужны (русский идёт gigaam);
+#   • инструменты разработки (ruff, pytest, semgrep) — им в поставке не место.
+# Кто выберет whisper-пресет, доставит его в свой контур сам: `--extras`.
+#
+#   scripts/build_embedded_python.sh [--extras]
+#
+# Итог: app/build/embedded-python/ — каталог, который make_app.sh копирует
+# в Charoite.app/Contents/Resources/python. Каталог кэшируется между
+# сборками: пересобирать его каждый раз незачем.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+PY_VERSION="3.12.13"
+BUILD_TAG="20260807"
+ARCH="aarch64-apple-darwin"
+OUT="app/build/embedded-python"
+CACHE=".cache/python-standalone"
+ASSET="cpython-${PY_VERSION}+${BUILD_TAG}-${ARCH}-install_only_stripped.tar.gz"
+URL="https://github.com/astral-sh/python-build-standalone/releases/download/${BUILD_TAG}/${ASSET//+/%2B}"
+
+WITH_EXTRAS=0
+[ "${1:-}" = "--extras" ] && WITH_EXTRAS=1
+
+if [ -x "$OUT/bin/python3" ] && "$OUT/bin/python3" -c "import numpy, onnxruntime, sounddevice" 2>/dev/null; then
+    echo "контур уже собран: $OUT ($(du -sh "$OUT" | cut -f1))"
+    exit 0
+fi
+
+mkdir -p "$CACHE"
+if [ ! -f "$CACHE/$ASSET" ]; then
+    echo "качаю CPython ${PY_VERSION} (~24 МБ)…"
+    # Адрес печатаем до соединения — как это делает scripts/get_models.py:
+    # сеть в этом продукте всегда явная.
+    echo "  $URL"
+    curl -fL --retry 3 --connect-timeout 20 -o "$CACHE/$ASSET.part" "$URL"
+    mv "$CACHE/$ASSET.part" "$CACHE/$ASSET"
+fi
+
+rm -rf "$OUT"
+mkdir -p "$(dirname "$OUT")"
+tar -xzf "$CACHE/$ASSET" -C "$(dirname "$OUT")"
+mv "$(dirname "$OUT")/python" "$OUT"
+
+echo "ставлю рантайм-зависимости…"
+# --no-cache-dir: колёса на 300 МБ в кэше пользователя никому не нужны.
+"$OUT/bin/python3" -m pip install --no-cache-dir --quiet --upgrade pip >/dev/null
+if [ "$WITH_EXTRAS" = "1" ]; then
+    "$OUT/bin/python3" -m pip install --no-cache-dir --quiet .
+else
+    # Ставим сам проект без опциональных пресетов: список зависимостей
+    # берётся из pyproject, чтобы не разъезжаться с ним по мере правок.
+    "$OUT/bin/python3" - <<'PY' > /tmp/charoite-runtime-deps.txt
+import re, pathlib
+text = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+block = re.search(r"dependencies = \[(.*?)\n\]", text, re.S).group(1)
+skip = ("mlx-whisper", "parakeet-mlx")
+for line in block.splitlines():
+    m = re.search(r'"([^"]+)"', line)
+    if not m:
+        continue
+    dep = m.group(1)
+    if any(dep.startswith(s) for s in skip):
+        continue
+    print(dep.split(";")[0].strip())
+PY
+    "$OUT/bin/python3" -m pip install --no-cache-dir --quiet -r /tmp/charoite-runtime-deps.txt
+fi
+
+# Проверяем то, без чего демон не стартует, — а не факт «pip не упал».
+"$OUT/bin/python3" - <<'PY'
+import sys
+import numpy, yaml, requests, sounddevice, onnxruntime  # noqa: F401
+print(f"контур готов: python {sys.version.split()[0]}, numpy {numpy.__version__}")
+PY
+echo "размер: $(du -sh "$OUT" | cut -f1) → $OUT"
