@@ -97,9 +97,27 @@ The default STT targets Russian. For English audiences:
   instead of a server-side streaming STT.
 - `whisper-large-v3-turbo` — the multilingual fallback (100+ languages).
 
-Chinese meetings run on `whisper-large-v3-turbo` (`stt.backend: whisper`,
-`language: zh`); the main LLM, Qwen, is native in Chinese. A Chinese SOTA
-backend (SenseVoice/Paraformer) is on the roadmap.
+## Chinese meetings
+
+- **SenseVoice Small** (`stt.backend: sensevoice`) — the specialized path:
+  Chinese plus four more East Asian languages in one 228 MB int8 model,
+  run through the same sherpa-onnx that is already installed for diarization
+  — no new dependency. Text normalization is on (`use_itn`), so numbers and
+  times arrive as digits («3点15分» → «3:15») rather than spelled out; for
+  minutes and action items that is the difference between usable and
+  rewrite-by-hand. Install: `scripts/get_models.py --stt sensevoice`.
+- `whisper-large-v3-turbo` (`stt.backend: whisper`, `language: zh`) remains
+  the fallback — multilingual, heavier, and a generalist on Chinese.
+
+**What we measured (10.08, `scripts/stt_bench.py --compare`).** On English
+synthesized phrases Whisper is more accurate: CER 0.064 against SenseVoice's
+0.149 — so do not switch to SenseVoice for English «just in case». The
+Chinese half of the comparison is still missing: the macOS Chinese voice is
+listed but not downloaded on our machine, and `say` returns silence instead
+of speech. Until that number exists, «SenseVoice is better on Chinese» is a
+reasonable expectation from its design, not a result we can show.
+
+The main LLM, Qwen, is native in Chinese either way.
 
 ## Phones (roadmap)
 

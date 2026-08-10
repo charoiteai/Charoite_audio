@@ -19,8 +19,9 @@
 - `nightly.sh`、`nightly_claude_cores.py` — 夜间循环：tier3 + 可选的云端核心复盘（云层未开启时不运行）。
 - `nightly_dossier_review.py` — 对本地模型写好的档案做云端复核：Opus 能看出转述看不出的东西（某个决定被后来的推翻、期限已过、两个节点互相矛盾）。`--dry` 只显示不写入。
 - `cloud_review.py` — 带超时和明确边界地运行会议的云端复盘，而不是把 `claude` 丢到后台就算完事。崩溃或截断的回答不再留下一个看起来像真的复盘文件。
-- `get_models.py` — 一条命令装好说话人分离的嵌入模型（`--diar`、`--list`、`--check`、`--url`）；没有它就无法开启按声音的实时标注。
+- `get_models.py` — 一条命令装模型：`--diar`（说话人分离嵌入，没有它就无法按声音实时标注）、`--segmentation`、`--stt sensevoice`（中文识别，228 MB）。另有 `--list`、`--check`、`--url`。
 - `diar_bench.py` — 说话人分离的 DER：被错误标注的语音时间占比。`--make` 在本地生成合成测试样本——本仓库不可能存放会议录音。
+- `stt_bench.py` — 识别的 CER：识别错误的字符占比。`--compare` 用同一批合成语句把 SenseVoice 与 Whisper 跑一遍对比。与说话人分离同样的提醒：合成语音比真实语音干净，这是下限而非基准。
 - `fix_action_items.py` — 一次性规范化守护进程开始规范化之前写下的纪要中的行动项格式；只改格式。默认为空跑。
 - `check_private_markers.py` — 去标识化守卫（pre-commit 钩子）：同时检查新增的行与整个被跟踪的文件树，只打印位置、绝不打印标记本身。见[参与贡献](../CONTRIBUTING.md)。
 - `build_embedded_python.sh` — 组装随 `Charoite.app` 一同发布的可移植 python 运行环境；自行构建应用包时先运行它，再运行 `app/make_app.sh`。

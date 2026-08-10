@@ -138,6 +138,29 @@ def check_ollama(cfg: dict) -> None:
              "ollama pull bge-m3   # ~1.2 ГБ")
 
 
+def check_stt(cfg: dict) -> None:
+    """Выбранный бэкенд распознавания должен иметь чем распознавать.
+
+    gigaam, parakeet и whisper тянут веса сами при первом запуске, а
+    SenseVoice — файл, который ставится отдельной командой. Без этой проверки
+    человек, выбравший `sensevoice` по совету docs/MODELS.md, узнавал о
+    недостающей модели от демона в момент старта встречи.
+    """
+    backend = str((cfg.get("stt") or {}).get("backend", "")).strip()
+    if backend != "sensevoice":
+        return
+    model = pathlib.Path((cfg.get("stt") or {}).get(
+        "sensevoice_model", "models/stt/sensevoice.onnx"))
+    if not model.is_absolute():
+        model = ROOT / model
+    if model.exists() and model.with_name("tokens.txt").exists():
+        line(OK, f"распознавание: {model.name} (SenseVoice)")
+    else:
+        line(FAIL, "stt.backend: sensevoice, но модели нет",
+             ".venv/bin/python scripts/get_models.py --stt sensevoice — "
+             "228 МБ, качается один раз")
+
+
 def check_models() -> None:
     diar = ROOT / "models" / "diar" / "embedding.onnx"
     if diar.exists():
@@ -273,6 +296,7 @@ def main() -> None:
     check_deps()
     cfg = check_config()
     check_ollama(cfg)
+    check_stt(cfg)
     check_models()
     print("\nРабочее состояние")
     check_llm_alive(cfg)
