@@ -84,8 +84,12 @@ MoE 架构:总参数约 35B,激活参数约 3B — 以小模型的速度提供 3
   27 MB)— 可替代服务端流式 STT、用于提前检测提问的候选方案。
 - `whisper-large-v3-turbo` — 多语言后备方案(100+ 种语言)。
 
-中文会议使用 whisper-large-v3-turbo(`stt.backend: whisper`,
-`language: zh`),而主 LLM Qwen 本身原生支持中文。
+## 中文会议
+
+- **SenseVoice Small**（`stt.backend: sensevoice`）— 专用路径：中文及另外四种东亚语言共用一个 228 MB 的 int8 模型，通过已为说话人分离安装的同一套 sherpa-onnx 运行——不引入新依赖。已开启文本反规范化（`use_itn`）：数字与时间以数字形式给出（「3点15分」→「3:15」），而不是写成汉字；对纪要和行动项而言，这就是「可用」与「得手动重写」的区别。安装：`scripts/get_models.py --stt sensevoice`。
+- `whisper-large-v3-turbo`（`stt.backend: whisper`、`language: zh`）作为备用：多语言、更重，在中文上是通才。
+
+无论选哪个，主 LLM Qwen 的中文都是母语级。
 
 ## 手机(路线图)
 

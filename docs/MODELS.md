@@ -97,9 +97,19 @@ The default STT targets Russian. For English audiences:
   instead of a server-side streaming STT.
 - `whisper-large-v3-turbo` — the multilingual fallback (100+ languages).
 
-Chinese meetings run on `whisper-large-v3-turbo` (`stt.backend: whisper`,
-`language: zh`); the main LLM, Qwen, is native in Chinese. A Chinese SOTA
-backend (SenseVoice/Paraformer) is on the roadmap.
+## Chinese meetings
+
+- **SenseVoice Small** (`stt.backend: sensevoice`) — the specialized path:
+  Chinese plus four more East Asian languages in one 228 MB int8 model,
+  run through the same sherpa-onnx that is already installed for diarization
+  — no new dependency. Text normalization is on (`use_itn`), so numbers and
+  times arrive as digits («3点15分» → «3:15») rather than spelled out; for
+  minutes and action items that is the difference between usable and
+  rewrite-by-hand. Install: `scripts/get_models.py --stt sensevoice`.
+- `whisper-large-v3-turbo` (`stt.backend: whisper`, `language: zh`) remains
+  the fallback — multilingual, heavier, and a generalist on Chinese.
+
+The main LLM, Qwen, is native in Chinese either way.
 
 ## Phones (roadmap)
 

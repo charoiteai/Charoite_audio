@@ -18,6 +18,7 @@ stt:
   gigaam_model: gigaam-v3-e2e-rnnt
   parakeet_model: mlx-community/parakeet-tdt-0.6b-v3
   whisper_model: mlx-community/whisper-large-v3-turbo
+  # sensevoice_model: models/stt/sensevoice.onnx   # for stt.backend: sensevoice
   language: en
 
 llm:
