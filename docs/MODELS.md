@@ -109,6 +109,14 @@ The default STT targets Russian. For English audiences:
 - `whisper-large-v3-turbo` (`stt.backend: whisper`, `language: zh`) remains
   the fallback — multilingual, heavier, and a generalist on Chinese.
 
+**What we measured (10.08, `scripts/stt_bench.py --compare`).** On English
+synthesized phrases Whisper is more accurate: CER 0.064 against SenseVoice's
+0.149 — so do not switch to SenseVoice for English «just in case». The
+Chinese half of the comparison is still missing: the macOS Chinese voice is
+listed but not downloaded on our machine, and `say` returns silence instead
+of speech. Until that number exists, «SenseVoice is better on Chinese» is a
+reasonable expectation from its design, not a result we can show.
+
 The main LLM, Qwen, is native in Chinese either way.
 
 ## Phones (roadmap)

@@ -89,6 +89,8 @@ MoE 架构:总参数约 35B,激活参数约 3B — 以小模型的速度提供 3
 - **SenseVoice Small**（`stt.backend: sensevoice`）— 专用路径：中文及另外四种东亚语言共用一个 228 MB 的 int8 模型，通过已为说话人分离安装的同一套 sherpa-onnx 运行——不引入新依赖。已开启文本反规范化（`use_itn`）：数字与时间以数字形式给出（「3点15分」→「3:15」），而不是写成汉字；对纪要和行动项而言，这就是「可用」与「得手动重写」的区别。安装：`scripts/get_models.py --stt sensevoice`。
 - `whisper-large-v3-turbo`（`stt.backend: whisper`、`language: zh`）作为备用：多语言、更重，在中文上是通才。
 
+**我们实测了什么（08-10，`scripts/stt_bench.py --compare`）。** 在英文合成语句上 Whisper 更准：CER 0.064，SenseVoice 为 0.149——所以不要为了英文而「以防万一」切换到 SenseVoice。中文那一半对比目前还缺：本机 macOS 的中文语音在列表中可见却尚未下载，`say` 返回的是静音而不是语音。在这个数字出现之前，「SenseVoice 在中文上更好」只是基于其设计的合理预期，而不是我们能拿出的结果。
+
 无论选哪个，主 LLM Qwen 的中文都是母语级。
 
 ## 手机(路线图)

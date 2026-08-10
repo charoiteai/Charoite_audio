@@ -36,24 +36,61 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 # Фразы рабочей встречи, а не скороговорки: цифры, время, термины — то, на чём
 # распознавание ломается и то, ради чего его вообще читают.
+# Пара «что произносим — что ждём в ответ». Разделять их пришлось из-за
+# нормализации: у бэкенда включён ITN, и «two point eight percent» он
+# возвращает как «2.8%» — то есть ровно так, как нужно минуткам. Пока эталон
+# был записан прописью, метрика штрафовала за правильное поведение (замер
+# 10.08: CER 0.363, из них почти всё — цифры против слов).
 PHRASES_ZH = [
-    "我们决定选择 YuPay，费率百分之二点八。",
-    "玛丽亚在七月二十二日之前签好合同。",
-    "下周一上午十点开会讨论集成方案。",
-    "认证还没有通过，风险在于时间表。",
+    ("我们决定选择 YuPay，费率百分之二点八。", "我们决定选择YuPay，费率2.8%。"),
+    ("玛丽亚在七月二十二日之前签好合同。", "玛丽亚在7月22日之前签好合同。"),
+    ("下周一上午十点开会讨论集成方案。", "下周一上午10点开会讨论集成方案。"),
+    ("认证还没有通过，风险在于时间表。", "认证还没有通过，风险在于时间表。"),
 ]
 PHRASES_EN = [
-    "We decided to go with YuPay, the fee is two point eight percent.",
-    "Maria signs the contract before July twenty second.",
-    "The next meeting is Monday at ten in the morning.",
+    ("We decided to go with YuPay, the fee is two point eight percent.",
+     "We decided to go with YuPay, the fee is 2.8%."),
+    ("Maria signs the contract before July twenty second.",
+     "Maria signs the contract before July 22nd."),
+    ("The next meeting is Monday at ten in the morning.",
+     "The next meeting is Monday at 10 in the morning."),
 ]
-VOICES = {"zh": "Eddy (Chinese (China mainland))", "en": "Samantha"}
+LOCALES = {"zh": "zh_CN", "en": "en_US"}
+
+
+def voice_for(lang: str) -> str | None:
+    """Имя системного голоса для языка — из `say -v '?'`, а не из константы.
+
+    Первая версия задавала голос строкой «Eddy (Chinese (China mainland))».
+    На русской системе он называется иначе, `say` голос не нашёл, молча взял
+    английский по умолчанию и наговорил китайский текст латиницей. Ошибки при
+    этом не было — был CER 1.0 и вывод «右背。» вместо фразы. Синтез должен
+    падать громко или брать существующий голос; берём существующий.
+    """
+    locale = LOCALES.get(lang, "en_US")
+    try:
+        out = subprocess.run(["say", "-v", "?"], capture_output=True, text=True,
+                             check=True).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    for line in out.splitlines():
+        if f" {locale} " not in line and not line.split("#")[0].rstrip().endswith(locale):
+            continue
+        # «Eddy (Китайский (Китай континентальный)) zh_CN  # …» → «Eddy»
+        name = line.split("(")[0].strip() if "(" in line else line.split()[0]
+        if name:
+            return name
+    return None
 
 
 def synth(text: str, lang: str, dest: pathlib.Path) -> bool:
     """Наговорить фразу системным синтезатором в 16 кГц mono wav."""
     aiff = dest.with_suffix(".aiff")
-    voice = VOICES.get(lang, "Samantha")
+    voice = voice_for(lang)
+    if not voice:
+        print(f"нет системного голоса для {lang} — поставьте его в "
+              "Системных настройках → Универсальный доступ → Речь")
+        return False
     try:
         subprocess.run(["say", "-v", voice, "-o", str(aiff), text],
                        check=True, capture_output=True)
@@ -91,7 +128,7 @@ def cer(reference: str, hypothesis: str) -> float:
     return prev[-1] / len(ref)
 
 
-def run(backend: str, lang: str, phrases: list[str]) -> tuple[float, int]:
+def run(backend: str, lang: str, phrases: list[tuple[str, str]]) -> tuple[float, int]:
     """Прогнать фразы через бэкенд. Возвращает средний CER и число фраз."""
     from stt import STT
 
@@ -105,16 +142,25 @@ def run(backend: str, lang: str, phrases: list[str]) -> tuple[float, int]:
 
     total, done = 0.0, 0
     with tempfile.TemporaryDirectory() as tmp:
-        for i, phrase in enumerate(phrases):
+        for i, (spoken, expected) in enumerate(phrases):
             wav = pathlib.Path(tmp) / f"p{i}.wav"
-            if not synth(phrase, lang, wav):
+            if not synth(spoken, lang, wav):
                 continue
             with wave.open(str(wav), "rb") as w:
                 rate = w.getframerate()
                 audio = np.frombuffer(w.readframes(w.getnframes()),
                                       dtype=np.int16).astype("float32") / 32768.0
+            # Тишина — не плохое распознавание, а ненаговоренная фраза.
+            # macOS показывает голоса, которые ещё не скачаны: `say` отдаёт
+            # заголовок без звука и не жалуется, а бенч насчитывал CER 1.0 и
+            # выглядело это как «модель не понимает китайский».
+            if audio.size < rate * 0.2 or float(np.abs(audio).max()) < 1e-4:
+                print(f"  пропуск: голос «{voice_for(lang)}» не наговорил фразу "
+                      "(голос виден в списке, но не скачан — Системные настройки "
+                      "→ Универсальный доступ → Речь)")
+                continue
             text = engine.transcribe(audio, rate)
-            score = cer(phrase, text)
+            score = cer(expected, text)
             total += score
             done += 1
             print(f"  CER {score:5.3f}  ← {text[:58]}")
@@ -125,7 +171,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--backend", default="sensevoice",
                     help="sensevoice | whisper | parakeet | gigaam")
-    ap.add_argument("--lang", default="zh", choices=sorted(VOICES),
+    ap.add_argument("--lang", default="zh", choices=sorted(LOCALES),
                     help="язык фикстуры (zh — китайский, en — английский)")
     ap.add_argument("--compare", action="store_true",
                     help="прогнать sensevoice и whisper подряд и сравнить")
