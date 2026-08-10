@@ -19,8 +19,9 @@ Operational helpers. All local, all optional.
 - `nightly.sh`, `nightly_claude_cores.py` — the night cycle: tier3 + an optional cloud review of graph cores (off unless the cloud layer is enabled).
 - `nightly_dossier_review.py` — the cloud pass over dossiers the local model wrote: Opus sees what a retelling misses (a decision overruled later, an expired deadline, two nodes disagreeing). `--dry` shows without writing.
 - `cloud_review.py` — runs the cloud debrief of a meeting with a timeout and explicit limits, instead of firing `claude` into the background and calling it done. A crash or a truncated answer no longer leaves a review file that merely looks real.
-- `get_models.py` — the diarization embedding model in one command (`--diar`, `--list`, `--check`, `--url`); without it live per-voice labels stay off.
+- `get_models.py` — models in one command: `--diar` (diarization embeddings, without it live per-voice labels stay off), `--segmentation`, `--stt sensevoice` (Chinese recognition, 228 MB). Also `--list`, `--check`, `--url`.
 - `diar_bench.py` — DER for diarization: the share of speech time labelled wrongly. `--make` builds a synthetic fixture locally, because no meeting recordings can live in this repository.
+- `stt_bench.py` — CER for recognition: the share of characters that came back wrong. `--compare` runs SenseVoice against Whisper on the same synthetic phrases. Same caveat as diarization: synthesized speech is cleaner than live, so this is a floor, not a benchmark.
 - `fix_action_items.py` — a one-off normalization of action-item formatting in minutes written before the daemon started normalizing them; only the format changes. Dry-run by default.
 - `check_private_markers.py` — the de-identification guard (a pre-commit hook): checks both the added lines and the whole tracked tree, prints places and never the marker itself. See [Contributing](../CONTRIBUTING.md).
 - `build_embedded_python.sh` — assembles the portable python runtime that ships inside `Charoite.app`; run it before `app/make_app.sh` when building your own bundle.

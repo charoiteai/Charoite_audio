@@ -11,19 +11,18 @@ merging happens in memory during a single recording and is discarded.
 
 ## Near
 
-- **Full English and Chinese faces** — the engine and macOS UI speak all three
-  (Parakeet/Whisper STT, `language: en|zh` documents, graph content, hints
-  and minutes; Qwen is native in Chinese; `config.example.{en,zh}.yaml`;
-  README ×3 and translated docs as front doors). What's left is the last
-  mile: consistent non-Russian summary/card section parsing, iOS string
-  catalogs and per-language screenshots for the READMEs.
+- **Full English and Chinese faces** — the engine, the macOS UI and the phone
+  speak all three; the archive summary follows `sufler.language`, and reading
+  is separate from writing, so switching the language no longer breaks the
+  archive retroactively. What's left is per-language screenshots for the
+  READMEs.
 - **Chinese SOTA STT backend** — SenseVoice/Paraformer (FunASR) via
   sherpa-onnx as a `stt.backend` option: noticeably lower CER on Chinese
   than Whisper, same local-only story as GigaAM for Russian.
 
-- **iPhone companion, v1 completion** — the recorder is shipped
-  (app-ios/): meetings feed and task checkboxes from the graph, a Live
-  Activity in the Dynamic Island (timer + stop from anywhere), TestFlight.
+- **iPhone companion, v1 completion** — recorder, meetings feed, task
+  checkboxes and a Live Activity with a Stop button are shipped (app-ios/).
+  What's left is TestFlight.
 - **Direct Wi-Fi delivery to the Mac** — the phone hands recordings to
   the Mac daemon over the local network (Bonjour, pairing code); iCloud
   becomes the optional fallback, not the default path.

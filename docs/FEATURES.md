@@ -531,6 +531,13 @@ it signals degradation, it does not break the loop.
   extracts tasks → a file in the graph (`Notes/`) + remembered in memory.
   The raw text is kept alongside ("As spoken").
 
+- **Chinese recognition without Whisper** — `stt.backend: sensevoice` runs
+  SenseVoice Small through the same sherpa-onnx that is already installed for
+  diarization: no new dependency, 228 MB, and text normalization on, so numbers
+  and times arrive as digits rather than spelled out. Whisper stays as the
+  multilingual fallback. Install: `scripts/get_models.py --stt sensevoice`;
+  measure with `scripts/stt_bench.py --compare` (synthetic speech — a floor,
+  not a benchmark).
 - **Documents in your language** — `sufler.language: ru|en|zh` switches minutes,
   summary, instant answers and graph node content; hints speak the language of
   your role. The archive summary used to be the exception: it was written in

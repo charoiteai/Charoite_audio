@@ -8,9 +8,9 @@
 
 ## 近期
 
-- **完整的英文与中文面孔** — 引擎与 macOS 界面已经支持全部三种语言（Parakeet/Whisper STT、`language: en|zh` 文档、图谱内容、提示与会议纪要；Qwen 的中文是母语级；`config.example.{en,zh}.yaml`；README ×3 与翻译版文档作为门面）。剩下的是最后一公里：非俄语摘要与卡片的统一分段解析、iOS 字符串目录，以及 README 的分语言截图。
+- **完整的英文与中文面孔** — 引擎、macOS 界面和手机都已支持全部三种语言；归档摘要按 `sufler.language` 生成，且读与写已分开，因此切换语言不再追溯性地弄坏归档。剩下的是：README 的分语言截图。
 - **中文 SOTA STT 后端** — 通过 sherpa-onnx 接入 SenseVoice/Paraformer（FunASR），作为 `stt.backend` 选项：中文 CER 明显低于 Whisper，并且与俄语的 GigaAM 一样，纯本地运行。
-- **iPhone 伴侣应用 v1 收官** — 录音器已交付（app-ios/）：还差来自图谱的会议信息流与任务勾选框、灵动岛里的实时活动（Live Activity，计时器 + 随处可停止）、TestFlight。
+- **iPhone 伴侣应用 v1 收官** — 录音器、会议信息流、任务勾选框以及带「停止」按钮的实时活动（Live Activity）均已交付（app-ios/）。剩下的是 TestFlight。
 - **直连 Wi-Fi 传输到 Mac** — 手机通过局域网把录音交给 Mac 守护进程（Bonjour、配对码）；iCloud 变成可选的回退方案，而非默认路径。
 - **图谱感知的档案问答** — 把命中节点的 1 跳邻居（人 → 其会议 → 决策）拉进回答上下文，并对头部候选加一层本地重排序器。
 - **说话人分离碎片合并调优** — 单次录音内的同声合并已交付（一场真实线下会议上 30 个聚类 → 12 个）；在更多实际数据上收紧阈值。

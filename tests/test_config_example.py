@@ -167,7 +167,8 @@ def test_every_preset_starts():
             f"(известны: {sorted(backends)}) — пресет не запустится")
         # у выбранного бэкенда должно быть чем грузить модель
         need = {"gigaam": "gigaam_model", "parakeet": "parakeet_model",
-                "whisper": "whisper_model", "mlx_whisper": "whisper_model"}[backend]
+                "whisper": "whisper_model", "mlx_whisper": "whisper_model",
+                "sensevoice": "sensevoice_model"}[backend]
         assert cfg["stt"].get(need), f"{preset.name}: нет stt.{need} для backend={backend}"
 
 

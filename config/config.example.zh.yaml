@@ -14,7 +14,11 @@ audio:
   record_keep_days: 2     # 录音 N 天后自动删除（隐私）
 
 stt:
-  backend: whisper        # whisper（多语言，含中文） | parakeet（英语） | gigaam（俄语）
+  # whisper 开箱即用（模型首次运行自动下载）。中文质量更好的路径是 SenseVoice：
+  #   .venv/bin/python scripts/get_models.py --stt sensevoice
+  # 然后把 backend 改成 sensevoice。详见 docs/MODELS.zh.md。
+  backend: whisper        # sensevoice（中文专用） | whisper（多语言） | parakeet（英语） | gigaam（俄语）
+  sensevoice_model: models/stt/sensevoice.onnx
   gigaam_model: gigaam-v3-e2e-rnnt
   parakeet_model: mlx-community/parakeet-tdt-0.6b-v3
   whisper_model: mlx-community/whisper-large-v3-turbo

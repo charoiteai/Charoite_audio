@@ -107,10 +107,39 @@ SEGMENTATION = {
 }
 SEG_DEFAULT = "pyannote-3.0"
 
+# Распознавание речи для языков, где Whisper не лучший выбор.
+#
+# GigaAM закрывает русский, Parakeet — английский, а китайские встречи до сих
+# пор шли на whisper-large-v3-turbo: мультиязычная модель, которая на китайском
+# уступает специализированным. SenseVoice Small работает через тот же
+# sherpa-onnx, что уже стоит ради диаризации, — новой зависимости не появляется.
+#
+# Качаем два файла напрямую, а не архив релиза: в нём лежат и fp32, и int8, и
+# тестовые wav — гигабайт вместо 239 МБ ради того же самого.
+STT_MIRROR = ("https://huggingface.co/csukuangfj/"
+              "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main")
+STT_UPSTREAM = "https://github.com/FunAudioLLM/SenseVoice"
+
+STT_MODELS = {
+    "sensevoice": Model(
+        url=f"{STT_MIRROR}/model.int8.onnx",
+        size_mb=228,
+        note="SenseVoice Small (int8): китайский и ещё четыре восточноазиатских "
+             "языка одной моделью; ставится вместе с tokens.txt",
+        source=STT_UPSTREAM,
+    ),
+}
+STT_DEFAULT = "sensevoice"
+
 
 def seg_target(root: pathlib.Path = ROOT) -> pathlib.Path:
     """Куда кладём модель сегментации."""
     return root / "models" / "diar" / "segmentation.onnx"
+
+
+def stt_target(root: pathlib.Path = ROOT) -> pathlib.Path:
+    """Куда кладём модель распознавания (рядом ляжет tokens.txt)."""
+    return root / "models" / "stt" / "sensevoice.onnx"
 
 
 def diar_target(root: pathlib.Path = ROOT) -> pathlib.Path:
@@ -167,18 +196,55 @@ def _extract_onnx(archive: pathlib.Path, dest: pathlib.Path) -> None:
             _sh.move(str(pathlib.Path(tmp) / best.name), str(dest))
 
 
-def download(url: str, dest: pathlib.Path, expect_mb: int) -> None:
-    """Скачать модель. Печатает адрес ДО соединения — это единственный выход в сеть."""
+def download(url: str, dest: pathlib.Path, expect_mb: int, onnx: bool = True) -> None:
+    """Скачать модель. Печатает адрес ДО соединения — это единственный выход в сеть.
+
+    `onnx=False` — для файлов-спутников вроде `tokens.txt`: они текстовые, и
+    проверка на ONNX-магию отвергла бы их как «скачанную HTML-страницу».
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_suffix(dest.suffix + ".part")
     print(f"качаю {expect_mb} МБ:\n  {url}")
+    # Зеркало рвёт длинные закачки на середине — на модели в 239 МБ приходило
+    # 25 МБ без единой ошибки, и файл молча оказывался битым. Поэтому качаем с
+    # докачкой: сверяем размер с Content-Length и дотягиваем хвост по Range.
+    # Первая же попытка обычно и последняя; цикл нужен ровно для этого случая.
     try:
-        # nosemgrep — адрес из константы MODELS, не пользовательский ввод
-        with urllib.request.urlopen(url, timeout=120) as resp, part.open("wb") as out:
-            shutil.copyfileobj(resp, out, length=1024 * 256)
+        total = 0
+        for attempt in range(1, 7):
+            done = part.stat().st_size if part.exists() else 0
+            if total and done >= total:
+                break
+            req = urllib.request.Request(url)
+            if done:
+                req.add_header("Range", f"bytes={done}-")
+                print(f"  докачиваю с {done // 1024 // 1024} МБ (попытка {attempt})")
+            # nosemgrep — адрес из константы MODELS, не пользовательский ввод
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                if not total:
+                    length = resp.headers.get("Content-Length")
+                    total = int(length) + done if length else 0
+                with part.open("ab" if done else "wb") as out:
+                    shutil.copyfileobj(resp, out, length=1024 * 256)
+            if not total:      # сервер не сказал размер — верим одной попытке
+                break
+        if total and part.stat().st_size < total:
+            got, want = part.stat().st_size, total
+            part.unlink(missing_ok=True)
+            raise SystemExit(
+                f"не докачалось: {got} из {want} байт за шесть попыток.\n"
+                "проверьте сеть или укажите своё зеркало через --url")
     except (urllib.error.URLError, OSError) as e:
-        part.unlink(missing_ok=True)
-        raise SystemExit(f"не скачалось: {e}\nповторите позже или укажите свой --url")
+        # Недокачанное НЕ удаляем: следующий запуск продолжит с этого места.
+        # Первая версия чистила .part на любой ошибке — и каждая попытка
+        # начиналась с нуля, хотя сервер поддерживает Range. На модели в
+        # 228 МБ по рвущемуся каналу это означало «никогда».
+        done = part.stat().st_size // 1024 // 1024 if part.exists() else 0
+        raise SystemExit(
+            f"не скачалось: {e}\n"
+            + (f"на диске уже {done} МБ — повторите ту же команду, докачается "
+               "с этого места\n" if done else "")
+            + "или укажите своё зеркало через --url")
     if url.endswith((".tar.bz2", ".tar.gz")):
         _extract_onnx(part, dest)
         part.unlink(missing_ok=True)
@@ -186,11 +252,16 @@ def download(url: str, dest: pathlib.Path, expect_mb: int) -> None:
         if problem:
             dest.unlink(missing_ok=True)
             raise SystemExit(f"распакованная модель не годится: {problem}")
-    else:
+    elif onnx:
         problem = check(part, min_bytes=max(1, expect_mb // 2) * 1024 * 1024)
         if problem:
             part.unlink(missing_ok=True)
             raise SystemExit(f"скачанный файл не годится: {problem}")
+        part.replace(dest)
+    else:
+        if part.stat().st_size < 1024:
+            part.unlink(missing_ok=True)
+            raise SystemExit(f"скачанный файл пуст: {url}")
         part.replace(dest)
     print(f"готово: {dest} ({dest.stat().st_size // 1024 // 1024} МБ)")
 
@@ -204,9 +275,15 @@ def list_models() -> None:
     for key, m in SEGMENTATION.items():
         mark = " (по умолчанию)" if key == SEG_DEFAULT else ""
         print(f"  {key}{mark}\n    {m.size_mb} МБ · {m.note}\n    {m.url}")
-    print(f"\nUpstream: {UPSTREAM} и {SEG_UPSTREAM}. Лицензии моделей принимаете вы.")
+    print("\nМодели распознавания речи:\n")
+    for key, m in STT_MODELS.items():
+        mark = " (по умолчанию)" if key == STT_DEFAULT else ""
+        print(f"  {key}{mark}\n    {m.size_mb} МБ · {m.note}\n    {m.url}")
+    print(f"\nUpstream: {UPSTREAM}, {SEG_UPSTREAM} и {STT_UPSTREAM}. "
+          "Лицензии моделей принимаете вы.")
     print("Поставить: .venv/bin/python scripts/get_models.py --diar [--model КЛЮЧ]")
     print("           .venv/bin/python scripts/get_models.py --segmentation")
+    print("           .venv/bin/python scripts/get_models.py --stt sensevoice")
 
 
 def main() -> int:
@@ -214,6 +291,8 @@ def main() -> int:
     ap.add_argument("--diar", action="store_true", help="модель живой диаризации")
     ap.add_argument("--segmentation", action="store_true",
                     help="модель сегментации речи (нужна полной диаризации sherpa-onnx)")
+    ap.add_argument("--stt", nargs="?", const=STT_DEFAULT, choices=sorted(STT_MODELS),
+                    help="модель распознавания речи (sensevoice — китайский и ещё 4 языка)")
     ap.add_argument("--model", default=DEFAULT, choices=sorted(MODELS),
                     help=f"какую модель брать (по умолчанию {DEFAULT})")
     ap.add_argument("--url", default=None, help="своя ссылка на .onnx вместо известных")
@@ -227,9 +306,30 @@ def main() -> int:
     if args.list:
         list_models()
         return 0
-    if not args.diar and not args.segmentation:
+    if not args.diar and not args.segmentation and not args.stt:
         ap.print_help()
         return 0
+
+    if args.stt:
+        stt_dest = args.dest or stt_target()
+        tokens = stt_dest.with_name("tokens.txt")
+        # Модель без словаря не работает, поэтому «на месте» — это оба файла.
+        stt_problem = check(stt_dest, min_bytes=100 * 1024 * 1024)
+        if not stt_problem and not tokens.exists():
+            stt_problem = f"нет словаря токенов рядом с моделью: {tokens}"
+        if args.check:
+            print(stt_problem or f"модель распознавания на месте: {stt_dest}")
+            return 1 if stt_problem else 0
+        if stt_problem:
+            print(stt_problem.split(" — ")[0])
+            stt = STT_MODELS[args.stt]
+            download(args.url or stt.url, stt_dest, stt.size_mb)
+            download(f"{STT_MIRROR}/tokens.txt", tokens, 1, onnx=False)
+            print("включить: stt.backend: sensevoice в config/config.yaml")
+        else:
+            print(f"модель распознавания уже стоит: {stt_dest}")
+        if not args.diar and not args.segmentation:
+            return 0
 
     if args.segmentation:
         seg_dest = args.dest or seg_target()

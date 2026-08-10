@@ -24,6 +24,39 @@ class STT:
             from parakeet_mlx import from_pretrained
 
             self._model = from_pretrained(s["parakeet_model"])
+        elif self.backend == "sensevoice":
+            # Китайский путь. Whisper тянет мультиязычность и на китайском
+            # уступает специализированным моделям; SenseVoice Small — 234 МБ
+            # ONNX, работает через тот же sherpa-onnx, что уже стоит ради
+            # диаризации, то есть новой зависимости не появляется.
+            #
+            # `use_itn=True` — обратная нормализация текста: числа и даты
+            # приходят цифрами («3点15分» → «3:15»), а не прописью. Для
+            # минуток и поручений это разница между «пригодно» и «переписать
+            # руками».
+            import pathlib
+
+            import sherpa_onnx
+
+            model = pathlib.Path(s.get("sensevoice_model", "models/stt/sensevoice.onnx"))
+            if not model.is_absolute():
+                from charoite_paths import ROOT
+                model = ROOT / model
+            tokens = model.with_name("tokens.txt")
+            if not model.exists() or not tokens.exists():
+                raise FileNotFoundError(
+                    f"модель SenseVoice не найдена: {model}\n"
+                    "поставьте её одной командой: "
+                    ".venv/bin/python scripts/get_models.py --stt sensevoice")
+            self._model = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+                model=str(model),
+                tokens=str(tokens),
+                # Язык задаётся конфигом: SenseVoice знает пять языков,
+                # пустая строка — автоопределение по аудио.
+                language="" if self.language in ("auto", "") else self.language,
+                use_itn=True,
+                num_threads=2,
+            )
         elif self.backend in ("mlx_whisper", "whisper"):
             # Оба имени: движок — mlx_whisper, но и комментарий в
             # config.example.yaml, и китайский пресет пишут просто «whisper».
@@ -36,7 +69,7 @@ class STT:
         else:
             raise ValueError(
                 f"неизвестный stt.backend: {self.backend} "
-                f"(ожидается gigaam | parakeet | whisper)")
+                f"(ожидается gigaam | parakeet | sensevoice | whisper)")
 
     def transcribe(self, audio: np.ndarray, samplerate: int) -> str:
         """float32 mono 16kHz → текст. Пустую/шумовую отдачу чистим снаружи."""
@@ -49,6 +82,13 @@ class STT:
     def _transcribe_raw(self, audio: np.ndarray, samplerate: int) -> str:
         if self.backend == "gigaam":
             return (self._model.recognize(audio, sample_rate=samplerate) or "").strip()
+        if self.backend == "sensevoice":
+            # sherpa-onnx работает через поток: создать → накормить → декодировать.
+            # Поток одноразовый, поэтому новый на каждый вызов; модель общая.
+            stream = self._model.create_stream()
+            stream.accept_waveform(samplerate, audio)
+            self._model.decode_stream(stream)
+            return (stream.result.text or "").strip()
         if self.backend == "parakeet":
             # parakeet_mlx.transcribe принимает только путь к файлу → временный wav
             import tempfile
