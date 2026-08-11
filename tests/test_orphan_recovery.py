@@ -143,3 +143,52 @@ def test_main_передаёт_чистке_защищённые_штампы():
         assert any(kw.arg == "protect" for kw in call.keywords), (
             f"строка {call.lineno}: чистка вызвана без protect — она снова "
             "может удалить запись встречи, которая в этот момент пересобирается")
+
+
+def test_преемник_убирает_осиротевший_part_прежнего_демона(data_root, monkeypatch):
+    """Автоперезапуск — а не «демон умер и не поднялся» — главный сценарий краша.
+
+    Watchdog приложения поднимает демона за 2 секунды. Лок переходит к
+    преемнику, и для пересборки «демон жив»: осиротевший `.wav.part` прежнего
+    демона она уважала бы до таймаута, а затем навсегда отказалась бы трогать
+    целый .pcm — канал собеседника терялся, и его же штамп мы сами защищали
+    от ретеншна бессрочно. Единственный, кто ЗНАЕТ, что автор `.part` мёртв, —
+    преемник: лок в его руках. Значит, убирать огрызок — его работа.
+    """
+    import daemon
+
+    monkeypatch.setattr(daemon.subprocess, "Popen", lambda *a, **k: None)
+    _orphan(data_root, "2026-08-07_181500", age_days=0.1)
+    stale = data_root / "recordings" / "2026-08-07_181500_blackhole.wav.part"
+    stale.write_bytes(b"")            # огрызок финализации убитого демона
+
+    protect = daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000")
+
+    assert "2026-08-07_181500" in protect
+    assert not stale.exists(), (
+        "осиротевший .part пережил преемника: пересборка увидит «живого» "
+        "писателя по нашему локу и навсегда откажется трогать целый .pcm")
+
+
+def test_ретеншн_не_родня_retry_пересборке():
+    """Retry из приложения защищается возрастом файла, а не связью с демоном.
+
+    `protect` знает только штампы со старта демона. Retry по «позавчерашней»
+    встрече приходит мимо него — единственная защита от чистки, идущей
+    параллельно, — свежий mtime, который пересборка ставит записям на входе.
+    Проверяем сам механизм: rebuild трогает mtime до ожидания каналов.
+    """
+    import ast as _ast
+    import pathlib as _pl
+
+    src = (_pl.Path(__file__).resolve().parent.parent / "src"
+           / "rebuild_transcript.py").read_text(encoding="utf-8")
+    tree = _ast.parse(src)
+    rebuild = next(n for n in tree.body
+                   if isinstance(n, _ast.FunctionDef) and n.name == "rebuild")
+    calls = [n for n in _ast.walk(rebuild)
+             if isinstance(n, _ast.Call)
+             and getattr(getattr(n, "func", None), "attr", None) == "utime"]
+    assert calls, (
+        "rebuild больше не столбит записи свежим mtime: retry по старой "
+        "встрече снова проигрывает гонку ретеншну (вход мимо protect)")

@@ -44,6 +44,8 @@ from llm import LLM  # noqa: E402
 from main import NOISE, Transcript  # noqa: E402
 from stt import STT  # noqa: E402
 
+import meeting_stamp  # noqa: E402
+
 from charoite_paths import code_root, resolve_root
 
 ROOT = resolve_root(__file__)      # данные пользователя
@@ -188,7 +190,13 @@ def start_brief(cfg: dict) -> str:
     if not meetings:
         return ""
     last = meetings[-1]
-    text = last.read_text(encoding="utf-8", errors="ignore")
+    try:
+        text = last.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        # Файл графа может быть нечитаем ровно на старте: iCloud отдал
+        # placeholder, права, битый диск. Бриф — украшение, а не условие
+        # запуска: демон обязан подняться и без него (аудит 0.46.0).
+        return ""
     title = last.stem
     for line in text.splitlines():
         if line.startswith("# "):
@@ -274,7 +282,11 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
     tdir = ROOT / cfg["log"]["transcripts_dir"]
     if not rec_dir.is_dir():
         return recovering
-    stamps = sorted({p.stem.rsplit("_", 1)[0] for p in rec_dir.glob("*.pcm")})
+    # Формат имени знает meeting_stamp: rsplit здесь был бы четвёртым местом
+    # со своим знанием формата — а расхождение формата уже дважды стоило
+    # проекту встреч (см. докстринг meeting_stamp).
+    stamps = sorted({s for p in rec_dir.glob("*.pcm")
+                     if (s := meeting_stamp.stamp_of_recording(p.name))})
     for stamp in stamps:
         if stamp == current_stamp:
             continue                      # наша встреча, она только началась
@@ -284,6 +296,23 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
         # Помечаем ДО запуска, а не после: даже неудавшийся спавн означает, что
         # встреча ждёт восстановления, и удалять её звук нельзя тем более.
         recovering.add(stamp)
+        # Осиротевшие .wav.part прежнего демона убираем МЫ, а не пересборка.
+        # Пересборка отличает живого писателя от мёртвого по локу демона — но
+        # после автоперезапуска (watchdog поднимает нас за 2 секунды) лок
+        # держим уже мы, и для неё «демон жив», хотя автор .part убит. Она
+        # честно не мешала бы ему до таймаута, а затем отказывалась бы трогать
+        # .pcm — канал терялся бы навсегда, причём его же штамп мы только что
+        # защитили от ретеншна: файлы зависали бессрочно. Мы — единственные,
+        # кто ЗНАЕТ, что прежний писатель мёртв: лок в наших руках.
+        for label in meeting_stamp.RECORDING_LABELS:
+            stale = meeting_stamp.recording_path(rec_dir, stamp, label, "wav.part")
+            try:
+                if stale.exists():
+                    emit({"type": "status",
+                          "text": f"Убираю осиротевший {stale.name} прежнего демона"})
+                    stale.unlink(missing_ok=True)
+            except OSError:
+                pass                      # не смогли убрать — пересборка дождётся таймаута
         emit({"type": "status",
               "text": f"Догоняю прерванную встречу {stamp} — пересборка фоном"})
         statuses = MeetingStatusStore(ROOT)
@@ -1369,6 +1398,14 @@ def main():
                     )
                 )
                 if out.strip():
+                    # Маркер перепроверяем ПЕРЕД записью, а не только на входе
+                    # в итерацию: генерация выше занимает десятки секунд, и
+                    # если за это время человек нажал «Протокол», финальные
+                    # минутки (26b, без маркера) уже лежат на диске — черновик
+                    # лёгкой модели затирал их молча (аудит 0.46.0).
+                    if mpath.exists() and not mpath.read_text(
+                            encoding="utf-8").startswith("<!-- черновик"):
+                        continue
                     mpath.write_text("<!-- черновик, встреча идёт -->\n" + out, encoding="utf-8")
                     emit({"type": "status", "text": f"🗒 минутки-черновик обновлены ({dt.datetime.now():%H:%M})"})
             except Exception as e:  # noqa: BLE001
