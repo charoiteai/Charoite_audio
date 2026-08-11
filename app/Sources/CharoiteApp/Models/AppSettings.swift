@@ -83,10 +83,83 @@ enum AppSettings {
         codeRoot(dataRoot: root).appendingPathComponent(relative).path
     }
 
+    static let defaultOllamaURL = "http://localhost:11434"
+
+    /// Решение по адресу LLM-сервера: тот же договор, что у `privacy.py`.
+    ///
+    /// Приложение — второй путь наружу, которого питоновские правила не
+    /// видели. Поле в настройках принимало любой адрес с хостом, и на него
+    /// уходили чанки семантического индекса (весь архив встреч) и живая
+    /// стенограмма — при том, что демон на этом же конфиге отказывается
+    /// работать через `privacy.llm_base_url`. Обещание «ничего не уходит с
+    /// этой машины» держал один слой из двух (аудиты 0.45.0 P1-5,
+    /// 0.46.0 P0-6).
+    ///
+    /// Правило повторяет питон дословно: loopback проходит всегда,
+    /// остальное — только при явном `llm.allow_remote: true` в
+    /// `config/config.yaml`, и никогда под рубильником `CHAROITE_NO_CLOUD`
+    /// / `SUFLER_NO_CLOUD`. Молчание конфига — это «нет».
+    enum RemoteHostDecision: Equatable {
+        /// Адрес разрешён — им и пользуемся.
+        case allowed(String)
+        /// Адрес отвергнут: работаем локально, но человек должен это увидеть.
+        /// В параметрах — сам адрес и причина, чтобы показать их в настройках.
+        case rejected(url: String, reason: String)
+    }
+
+    static var ollamaURLDecision: RemoteHostDecision {
+        let raw = (UserDefaults.standard.string(forKey: "charoite.ollama") ?? "")
+            .trimmingCharacters(in: .whitespaces)
+        guard let u = URL(string: raw), let host = u.host, !host.isEmpty else {
+            return .allowed(defaultOllamaURL)      // поле пустое или мусор — дефолт
+        }
+        let url = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+        if isLoopbackHost(host) { return .allowed(url) }
+
+        let env = ProcessInfo.processInfo.environment
+        for key in ["CHAROITE_NO_CLOUD", "SUFLER_NO_CLOUD"] where !(env[key] ?? "").isEmpty {
+            return .rejected(
+                url: url,
+                reason: "адрес указывает не на эту машину, а рубильник \(key) "
+                      + "запрещает любой выход наружу")
+        }
+        if configValue("allow_remote")?.lowercased() == "true" {
+            return .allowed(url)
+        }
+        return .rejected(
+            url: url,
+            reason: "адрес указывает не на эту машину. Чароит локальный по "
+                  + "умолчанию: чтобы обращаться к другому хосту, поставьте в "
+                  + "config/config.yaml явное llm.allow_remote: true")
+    }
+
+    /// Адрес, по которому реально ходим. Отвергнутый адрес не подменяем молча —
+    /// причина доступна через `ollamaURLRejection` и показывается в настройках.
     static var ollamaURL: String {
-        let s = UserDefaults.standard.string(forKey: "charoite.ollama") ?? ""
-        if let u = URL(string: s), u.host != nil { return s }
-        return "http://localhost:11434"
+        switch ollamaURLDecision {
+        case .allowed(let url): return url
+        case .rejected: return defaultOllamaURL
+        }
+    }
+
+    /// Непустое, если адрес из настроек отвергнут: (адрес, причина).
+    static var ollamaURLRejection: (url: String, reason: String)? {
+        if case .rejected(let url, let reason) = ollamaURLDecision {
+            return (url, reason)
+        }
+        return nil
+    }
+
+    /// Указывает ли хост на эту машину. Повторяет `privacy._is_loopback`:
+    /// имена + разбор IP, всё остальное (имя машины, .local, домен) — не сюда.
+    static func isLoopbackHost(_ host: String) -> Bool {
+        let h = host.lowercased()
+        if ["localhost", "127.0.0.1", "::1", "0.0.0.0", "[::1]"].contains(h) { return true }
+        if h.hasPrefix("127.") {
+            let parts = h.split(separator: ".")
+            return parts.count == 4 && parts.allSatisfy { UInt8($0) != nil }
+        }
+        return false
     }
 
     /// Папка графа Obsidian — читается из config/config.yaml суфлёра
