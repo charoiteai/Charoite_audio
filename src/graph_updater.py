@@ -349,7 +349,15 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
     # Искать по bare: в шапке посекундной стенограммы штамп с секундами,
     # и замена по короткому штампу оставляла бы хвост «19» после темы.
     body = body.replace(f"# Встреча {bare}", f"# Встреча {stamp} — {title}", 1)
-    tpath.write_text(body, encoding="utf-8")
+    # Через временное имя: это ЕДИНСТВЕННЫЙ экземпляр стенограммы, обрыв
+    # голого write_text (kill ночного цикла, полный диск) оставлял бы вместо
+    # встречи усечённый файл — восстанавливать неоткуда (аудит 0.46.0).
+    tmp = tpath.with_name(tpath.name + f".tmp{os.getpid()}")
+    try:
+        tmp.write_text(body, encoding="utf-8")
+        tmp.replace(tpath)
+    finally:
+        tmp.unlink(missing_ok=True)
     return tpath
 
 

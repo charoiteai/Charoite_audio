@@ -7,11 +7,13 @@
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import subprocess
 
 import requests
 
+import meeting_stamp
 import privacy
 
 # pyproject разрешает mcp>=1.0, а в 2.0 класс переехал: FastMCP из
@@ -46,8 +48,11 @@ MODEL = _LLM.get("model", "qwen3.6:35b-a3b")  # боевая модель из �
 mcp = FastMCP("sufler")
 
 
-# производные файлы, которые пишутся ПОЗЖЕ стенограммы и не должны считаться «последней»
-_DERIVED = ("_minutes.md", "_hints.md", "_разбор.md", "_ревизия_claude.md")
+# Производные файлы, которые пишутся ПОЗЖЕ стенограммы и не должны считаться
+# «последней». Список НЕ свой: формат хвостов живёт в meeting_stamp, и этот
+# кортеж уже отставал от него (не знал _live/_debrief/_спикеры — «последней
+# встречей» мог оказаться файл разбора; аудит 0.46.0).
+_DERIVED = tuple(f"{s}.md" for s in meeting_stamp.AUX_SUFFIXES)
 
 
 def _latest(pattern: str = "*.md") -> pathlib.Path | None:
@@ -131,7 +136,14 @@ def sufler_make_minutes() -> str:
         return f"Ollama вернула не JSON — минутки НЕ тронуты ({mpath.name})"
     if not out.strip():
         return f"Модель вернула пустой ответ — минутки НЕ тронуты ({mpath.name})"
-    mpath.write_text(out, encoding="utf-8")
+    # Через временное имя: обрыв посреди write_text оставлял бы усечённые
+    # минутки ПОВЕРХ готовых — тот же класс, что у .wav в pcm_to_wav.
+    tmp = mpath.with_name(mpath.name + f".tmp{os.getpid()}")
+    try:
+        tmp.write_text(out, encoding="utf-8")
+        tmp.replace(mpath)
+    finally:
+        tmp.unlink(missing_ok=True)   # после replace его нет; страховка на обрыв
     return f"Минутки сохранены: {mpath}\n\n{out[:2000]}"
 
 

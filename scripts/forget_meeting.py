@@ -171,6 +171,15 @@ def plan(stamp: str, root: pathlib.Path,
         if d.is_dir():
             p.delete += sorted(f for f in d.glob(f"{stamp}*") if f.is_file())
 
+    # Логи графа этой встречи: в logs/graph_<штамп>*.log попадают имена
+    # участников и куски цитат — «забыть» обязано дойти и до них, иначе
+    # содержимое встречи переживает саму встречу (аудит 0.46.0: «забыть»
+    # не доходит до логов). Исходник в папке импорта done/ сюда не входит:
+    # её путь знает только вызов --scan, у скрипта его нет — см. README.
+    logs = root / "logs"
+    if logs.is_dir():
+        p.delete += sorted(f for f in logs.glob(f"graph_{stamp}*.log") if f.is_file())
+
     if keep_graph:
         return p
 

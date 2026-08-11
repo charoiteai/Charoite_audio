@@ -90,8 +90,20 @@ def main() -> None:
         "Внутри — маркированные пункты со ссылками [[Ядра/…]]. Не выдумывай."
     )
     try:
-        r = subprocess.run([claude, "-p", prompt, "--model", model],
-                           capture_output=True, text=True, timeout=600, env=env)
+        # Тот же контракт, что у облачного разбора (graph_updater.FORBIDDEN_TOOLS):
+        # ревизия ядер — чтение и текст, ей не положены ни шелл, ни сеть, ни
+        # правки; неразрешённый инструмент в headless — вечный пермишен-запрос,
+        # а пользовательские hooks/MCP не дают процессу завершиться. Раньше
+        # ночной вызов шёл голым `claude -p` вопреки собственному правилу
+        # репозитория (аудит 0.46.0).
+        r = subprocess.run(
+            [claude, "-p", prompt, "--model", model,
+             "--allowedTools", "Read,Grep,Glob",
+             "--disallowedTools",
+             "Bash,WebFetch,WebSearch,Task,NotebookEdit,AskUserQuestion,Edit,Write",
+             "--setting-sources", "", "--strict-mcp-config"],
+            capture_output=True, text=True, timeout=600, env=env,
+            stdin=subprocess.DEVNULL)
         out = (r.stdout or "").strip()
     except Exception as e:  # noqa: BLE001
         print(f"claude не отработал: {e}")
