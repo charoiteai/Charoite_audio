@@ -6,6 +6,7 @@ import queue
 import threading
 import time
 import wave
+from collections import abc
 
 import numpy as np
 import sounddevice as sd
@@ -163,11 +164,8 @@ class TapStreamCapture:
         carry = b""   # нечётный хвост чтения: пол-сэмпла до дозаписи писателем
         while not self._stop_flag.is_set():
             data = stream.read(chunk_bytes)
-            self._pos = stream.tell()
-            if not data:
-                time.sleep(0.05)
-                continue
-            if carry:
+            here = stream.tell()
+            if data and carry:
                 data = carry + data
                 carry = b""
             if len(data) % 2:
@@ -176,8 +174,16 @@ class TapStreamCapture:
                 # канал глохнет до вмешательства сторожа.
                 carry = data[-1:]
                 data = data[:-1]
-                if not data:
-                    continue
+            # Позиция для рестарта — граница ЦЕЛОГО сэмпла, а не место, где
+            # остановилось чтение. `carry` живёт в этой нити и после stop()
+            # гибнет вместе с ней; запомнив нечётную позицию, сторожевой
+            # рестарт сделал бы seek на середину сэмпла, и дальше каждая пара
+            # байт собиралась бы из половинок соседних — канал до конца
+            # встречи превратился бы в шум (аудит 0.46.0).
+            self._pos = here - len(carry)
+            if not data:
+                time.sleep(0.05)
+                continue
             block = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
             if down is not None:
                 block = down.process(block)
@@ -417,6 +423,11 @@ class AudioHub:
         self.vad_db = float(a["vad_energy_db"])
         self.record_on = bool(a.get("record", True))
         self.record_keep_days = a.get("record_keep_days", 2)
+        # Штампы встреч, которые прямо сейчас пересобираются: их записи ретеншн
+        # не трогает. Заполняет демон из _recover_orphans — он один знает, кого
+        # догоняет; здесь по умолчанию пусто, чтобы AudioHub оставался
+        # самодостаточным в тестах и в CLI.
+        self.protect_stamps: abc.Collection[str] = frozenset()
         self.record_dir = ROOT / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings")
         self.captures: list[Capture] = []
         self.sources: list[str] = []
@@ -535,7 +546,11 @@ class AudioHub:
         # числа в record_keep_days выключали запись НА ВСЮ ВСТРЕЧУ, причём молча.
         # Отказывала ровно та страховка, ради которой всё это писалось.
         try:
-            self.prune_recordings(self.record_dir, self.record_keep_days)
+            held = self.prune_recordings(self.record_dir, self.record_keep_days,
+                                         protect=self.protect_stamps)
+            if held:
+                self._say(f"ретеншн придержал {held} записей: встречи ещё "
+                          "восстанавливаются")
         except Exception as e:  # noqa: BLE001 — уборка не должна мешать записи
             self._say(f"чистка старых записей не удалась: {e}")
         try:
@@ -551,21 +566,53 @@ class AudioHub:
             self._say(f"ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: {e} — после сбоя встречу будет не восстановить")
 
     @staticmethod
-    def prune_recordings(record_dir: pathlib.Path, keep_days) -> None:
+    def prune_recordings(record_dir: pathlib.Path, keep_days,
+                         protect: abc.Collection[str] = ()) -> int:
         """Аудио встреч — чувствительный носитель (из него извлекаются голосовые
         эмбеддинги), держим не дольше страхового окна. Вызывается и на старте
         демона: раньше чистка жила только внутри _open_sinks, поэтому при
         record: false или простое в неделю записи не удалялись вовсе, хотя
-        PRIVACY обещает удаление через record_keep_days."""
+        PRIVACY обещает удаление через record_keep_days.
+
+        `protect` — штампы встреч, которые прямо сейчас пересобираются. Их
+        записи не трогаем: это единственный источник финальной стенограммы, а
+        пересборка идёт отдельным процессом и к моменту чистки ещё грузит
+        интерпретатор. Возвращаем, сколько файлов придержали, — задержка сверх
+        обещанного срока обязана быть видимой, а не тихой.
+
+        Что считать записью, решает `meeting_stamp`, а не список суффиксов
+        здесь. Временные имена конвертации (`.wav.part` у демона,
+        `.wav.part<pid>` у пересборки) — тоже записи: обрыв посреди
+        финализации оставлял их на диске навсегда, а это полный несжатый WAV
+        часовой встречи, то есть молчаливое нарушение обещания PRIVACY об
+        удалении через record_keep_days (аудит 0.46.0, P0-3).
+
+        Осознанный трейд-офф: файл, чьё имя `meeting_stamp` не признал
+        записью, не удаляется ВООБЩЕ — раньше сметался любой старый
+        `*.pcm`/`*.wav`. Чужое имя означает чужой файл: удалять то, чего мы
+        не создавали, страшнее, чем передержать. Плата — ручные копии и
+        нестандартные имена в recordings/ живут дольше обещанного; кто кладёт
+        файлы в эту папку руками, отвечает за них сам.
+        """
         if not record_dir.exists():
-            return
+            return 0
         cutoff = time.time() - float(keep_days) * 86400
+        protected = set(protect)
+        held = 0
         for old in record_dir.iterdir():
             try:
-                if old.suffix in (".pcm", ".wav") and old.stat().st_mtime < cutoff:
-                    old.unlink(missing_ok=True)
+                stamp = meeting_stamp.stamp_of_recording(old.name)
+                if stamp is None:
+                    continue                    # не запись — не наша забота
+                if old.stat().st_mtime >= cutoff:
+                    continue
+                if stamp in protected:
+                    held += 1
+                    continue
+                old.unlink(missing_ok=True)
             except FileNotFoundError:
                 continue  # файл убрали параллельно — не наша забота
+        return held
 
     def _finalize_recordings(self):
         """.pcm → .wav при штатном стопе; при крэше остаётся .pcm — его дотранскрибирует

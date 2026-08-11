@@ -88,6 +88,31 @@ def recording_path(rec_dir: pathlib.Path, stamp: str, label: str,
     return rec_dir / f"{stamp}_{label}.{ext}"
 
 
+#: Файл канала встречи: `<штамп>_<метка>.pcm|.wav`, плюс временные имена
+#: конвертации — `.wav.part` у демона и `.wav.part<pid>` у пересборки.
+_RE_RECORDING = re.compile(r"^(?P<stamp>.+)_(?P<label>[^_]+)\.(?:pcm|wav)(?:\.part\d*)?$")
+
+
+def stamp_of_recording(name: str) -> str | None:
+    """Штамп встречи по имени файла канала — обратная к `recording_path`.
+
+    Нужна ретеншну дважды. Во-первых, чтобы не удалить запись встречи,
+    которая прямо сейчас пересобирается: чистка обязана понимать, к какой
+    встрече файл относится. Во-вторых, чтобы вообще понять, что перед ней
+    запись, — и не оставить на диске навсегда временный файл конвертации,
+    пережив который, полный несжатый WAV часовой встречи молча нарушил бы
+    обещание PRIVACY об удалении через record_keep_days.
+
+    Разбирать имя на месте вызывающий не вправе: формат живёт здесь, и ровно
+    его расхождение уже дважды стоило проекту встреч.
+    """
+    m = _RE_RECORDING.match(name)
+    if not m:
+        return None
+    head = m.group("stamp")
+    return head if _RE.match(head) else None
+
+
 def resolve_stamp(rec_dir: pathlib.Path, stamp: str,
                   labels: tuple[str, ...] = RECORDING_LABELS) -> str:
     """Единый штамп, под которым лежат каналы одной встречи.

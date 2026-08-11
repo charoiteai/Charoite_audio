@@ -27,8 +27,10 @@ import sys
 import time
 import urllib.request
 
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or
-                    pathlib.Path(__file__).resolve().parent.parent).expanduser()
+# Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
+CODE = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 
 OK, WARN, FAIL = "✓", "–", "✗"
 issues = 0
@@ -58,7 +60,7 @@ def llm_url(cfg: dict) -> str | None:
     печатался бы дважды, а счётчик проблем показывал бы две.
     """
     global llm_url_refused
-    sys.path.insert(0, str(ROOT / "src"))
+    sys.path.insert(0, str(CODE / "src"))
     try:
         import privacy
     except Exception as e:  # noqa: BLE001
@@ -196,7 +198,7 @@ def check_llm_alive(cfg: dict) -> None:
     base = llm_url(cfg)
     if base is None:
         return                      # адрес уже отвергнут выше, диагноз назван
-    sys.path.insert(0, str(ROOT / "src"))
+    sys.path.insert(0, str(CODE / "src"))
     try:
         import llm_health
     except Exception as e:  # noqa: BLE001 — модуль вспомогательный
@@ -215,7 +217,7 @@ def check_llm_alive(cfg: dict) -> None:
 
 def check_pipeline() -> None:
     """Не застряли ли встречи и сколько обычно занимает обработка."""
-    sys.path.insert(0, str(ROOT / "src"))
+    sys.path.insert(0, str(CODE / "src"))
     try:
         from meeting_processing import MeetingStatusStore
     except Exception as e:  # noqa: BLE001

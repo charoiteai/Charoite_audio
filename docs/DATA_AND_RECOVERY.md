@@ -43,12 +43,23 @@ meeting's layers through the provided UI and commands rather than separately.
 
 Automatic cleanup is limited to data documented as temporary:
 
-- PCM/WAV files in `recordings/` older than `audio.record_keep_days`;
+- PCM/WAV files in `recordings/` older than `audio.record_keep_days`,
+  including `*.wav.part*` conversion temporaries;
 - `logs/graph_*.log` diagnostic logs on the same retention window;
 - processing status records older than 14 days.
 
 Audio cleanup runs when the daemon starts. A file may therefore remain beyond
 its nominal age while Charoite is not run, then disappear on the next launch.
+
+One exception is deliberate: **a recording that is being rebuilt right now is
+never deleted, even past its retention date.** On startup the daemon finds
+interrupted meetings, launches their rebuild and holds their recordings out of
+cleanup for the duration; a retry started from the app protects its own files.
+The delay is not silent — Charoite reports it in the status line.
+
+Files whose names the pipeline does not recognise are never removed: cleanup
+deletes only what it created. Anything you drop into `recordings/` by hand is
+yours to remove by hand.
 Transcripts, summaries, minutes, tasks and graph nodes are not deleted by that
 retention setting.
 

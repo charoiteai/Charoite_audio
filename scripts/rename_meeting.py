@@ -21,9 +21,11 @@ import pathlib
 import re
 import sys
 
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or
-                    pathlib.Path(__file__).resolve().parent.parent).expanduser()
-sys.path.insert(0, str(ROOT / "src"))
+# Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
+CODE = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
+sys.path.insert(0, str(CODE / "src"))
 
 from meeting_archive import ARCHIVE_DIR, _safe  # noqa: E402
 

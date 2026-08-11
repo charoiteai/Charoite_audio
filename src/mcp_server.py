@@ -7,11 +7,13 @@
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import subprocess
 
 import requests
 
+import meeting_stamp
 import privacy
 
 # pyproject разрешает mcp>=1.0, а в 2.0 класс переехал: FastMCP из
@@ -23,9 +25,10 @@ try:
 except ModuleNotFoundError:  # pragma: no cover — ветка зависит от версии пакета
     from mcp.server import MCPServer as FastMCP     # mcp 2.x
 
-from charoite_paths import resolve_root
+from charoite_paths import code_root, resolve_root
 
 ROOT = resolve_root(__file__)
+CODE = code_root(__file__)
 TRANSCRIPTS = ROOT / "transcripts"
 
 
@@ -45,8 +48,11 @@ MODEL = _LLM.get("model", "qwen3.6:35b-a3b")  # боевая модель из �
 mcp = FastMCP("sufler")
 
 
-# производные файлы, которые пишутся ПОЗЖЕ стенограммы и не должны считаться «последней»
-_DERIVED = ("_minutes.md", "_hints.md", "_разбор.md", "_ревизия_claude.md")
+# Производные файлы, которые пишутся ПОЗЖЕ стенограммы и не должны считаться
+# «последней». Список НЕ свой: формат хвостов живёт в meeting_stamp, и этот
+# кортеж уже отставал от него (не знал _live/_debrief/_спикеры — «последней
+# встречей» мог оказаться файл разбора; аудит 0.46.0).
+_DERIVED = tuple(f"{s}.md" for s in meeting_stamp.AUX_SUFFIXES)
 
 
 def _latest(pattern: str = "*.md") -> pathlib.Path | None:
@@ -114,9 +120,30 @@ def sufler_make_minutes() -> str:
         },
         timeout=600,
     )
-    out = r.json().get("message", {}).get("content", "")
     mpath = f.with_name(f.stem + "_minutes.md")
-    mpath.write_text(out, encoding="utf-8")
+    # Ни статус, ни непустоту раньше никто не проверял: удалённая или
+    # переименованная модель давала 404, `.get("message", {})` превращал ошибку
+    # в пустую строку, и она безусловно ложилась ПОВЕРХ готовых минуток — а
+    # инструмент отвечал «Минутки сохранены». Дальше пустышку подхватывал
+    # архив, и документ встречи пропадал до ручного повторного прогона.
+    # Пустой ответ модели — это неудача, а не новые минутки.
+    if r.status_code != 200:
+        return (f"Ollama ответила {r.status_code} — минутки НЕ тронуты "
+                f"({mpath.name}). Проверьте модель {MODEL}: {r.text[:200]}")
+    try:
+        out = ((r.json() or {}).get("message") or {}).get("content") or ""
+    except ValueError:
+        return f"Ollama вернула не JSON — минутки НЕ тронуты ({mpath.name})"
+    if not out.strip():
+        return f"Модель вернула пустой ответ — минутки НЕ тронуты ({mpath.name})"
+    # Через временное имя: обрыв посреди write_text оставлял бы усечённые
+    # минутки ПОВЕРХ готовых — тот же класс, что у .wav в pcm_to_wav.
+    tmp = mpath.with_name(mpath.name + f".tmp{os.getpid()}")
+    try:
+        tmp.write_text(out, encoding="utf-8")
+        tmp.replace(mpath)
+    finally:
+        tmp.unlink(missing_ok=True)   # после replace его нет; страховка на обрыв
     return f"Минутки сохранены: {mpath}\n\n{out[:2000]}"
 
 
@@ -136,7 +163,7 @@ def sufler_update_graph() -> str:
     import sys as _sys
 
     r = subprocess.run(
-        [_sys.executable, str(ROOT / "src" / "graph_updater.py")],
+        [_sys.executable, str(CODE / "src" / "graph_updater.py")],
         capture_output=True, text=True, timeout=600,
     )
     return (r.stdout + r.stderr).strip() or "готово"

@@ -24,9 +24,11 @@ import re
 import subprocess
 import sys
 
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or
-                    pathlib.Path(__file__).resolve().parent.parent).expanduser()
-sys.path.insert(0, str(ROOT / "src"))
+# Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
+CODE = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
+sys.path.insert(0, str(CODE / "src"))
 import deps  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
@@ -251,7 +253,7 @@ def main() -> None:
     ext = src.suffix.lower()
     if ext in AUDIO:
         # транскрибация пишет transcripts/<stamp>.md сама
-        r = subprocess.run([sys.executable, str(ROOT / "src" / "transcribe_file.py"),
+        r = subprocess.run([sys.executable, str(CODE / "src" / "transcribe_file.py"),
                             str(src), hhmm, day])
         if r.returncode != 0:
             sys.exit("транскрибация не удалась")
@@ -285,7 +287,7 @@ def main() -> None:
     # единый хвост: граф → минутки/разбор/тезисы/архив (идемпотентно)
     print("— обновляю граф…")
     graph_run = subprocess.run(
-        [sys.executable, str(ROOT / "src" / "graph_updater.py"), str(tpath)])
+        [sys.executable, str(CODE / "src" / "graph_updater.py"), str(tpath)])
     # = graph_updater.EXIT_NO_SPEECH. Именно копия, не импорт: верхний уровень
     # модуля тянет requests/llm_health — дорого и с сайд-эффектами для обвязки.
     no_speech = 3
@@ -297,7 +299,7 @@ def main() -> None:
         print(f"готово: пустая запись {stamp} — стенограмма сохранена, конвейер не нужен")
         return
     print("— догенерирую минутки/разбор/тезисы и раскладываю архив…")
-    subprocess.run([sys.executable, str(ROOT / "src" / "retro_fill.py")])
+    subprocess.run([sys.executable, str(CODE / "src" / "retro_fill.py")])
     # исходник — рядом с материалами встречи (APFS-клон: без лишнего места)
     graph = pathlib.Path(str((cfg.get("sufler") or {}).get("graph_dir", ""))).expanduser()
     day = stamp[:10]
@@ -320,7 +322,7 @@ def import_voice_note(src: pathlib.Path, diary: bool) -> None:
     import subprocess as sp
     import tempfile
 
-    sys.path.insert(0, str(ROOT / "src"))
+    sys.path.insert(0, str(CODE / "src"))
     import soundfile as sf
     from stt import STT
 
@@ -340,7 +342,7 @@ def import_voice_note(src: pathlib.Path, diary: bool) -> None:
     if len(text) < 3:
         sys.exit("в записи не расслышалось ни слова")
     mode = ["--diary"] if diary else []
-    r = sp.run([sys.executable, str(ROOT / "src" / "dictate_note.py"), "--text", *mode],
+    r = sp.run([sys.executable, str(CODE / "src" / "dictate_note.py"), "--text", *mode],
                input=text, text=True)
     if r.returncode != 0:
         sys.exit("конвейер заметки завершился с ошибкой")

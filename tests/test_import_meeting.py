@@ -199,3 +199,4 @@ def test_повтор_импорта_успех_а_не_отказ(tmp_path):
         f"titled-встреча {titled.name} не распознана как повтор:\n{run.stdout}")
     assert run.returncode == 0, (
         f"код {run.returncode}: повтор считается отказом, файл застрянет в импорте")
+
