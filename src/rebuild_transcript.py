@@ -324,6 +324,25 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     base = meeting_stamp.started_at(recording_stamp)
     if base is None:
         return None
+
+    # Столбим записи свежим mtime. Ретеншн щадит только штампы, о которых
+    # знает демон (_recover_orphans на его старте), а сюда приходит и retry из
+    # приложения — по встрече любого возраста: «позавчерашняя ошибка так же…».
+    # Пока мы ждём канал (до 45 с на каждый), демон новой встречи успевает
+    # провести чистку — и запись старше record_keep_days исчезает из-под ног:
+    # тот же исход, что у P0-1, только через другой вход. Канала связи с
+    # демоном у нас нет, а возраст файла — ровно тот язык, на котором ретеншн
+    # принимает решения; touch честно продлевает жизнь на keep_days от старта
+    # пересборки.
+    for _label in meeting_stamp.RECORDING_LABELS:
+        for _ext in ("pcm", "wav", "wav.part"):
+            _p = meeting_stamp.recording_path(rec_dir, recording_stamp, _label, _ext)
+            try:
+                if _p.exists():
+                    os.utime(_p)
+            except OSError:
+                pass          # не продлили — ретеншн решит по старому mtime
+
     mic_p = wait_recording(rec_dir, recording_stamp, "mic", sr_cfg)
     bh_p = wait_recording(rec_dir, recording_stamp, "blackhole", sr_cfg)
     if mic_p is None and bh_p is None:
