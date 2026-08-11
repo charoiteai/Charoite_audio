@@ -5,6 +5,39 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.47.0](https://github.com/charoiteai/Charoite_audio/compare/v0.46.0...v0.47.0) (2026-08-11)
+
+
+### Features
+
+* **app:** native macOS integration + import pipeline fixes ([#251](https://github.com/charoiteai/Charoite_audio/issues/251)) ([c82c4c4](https://github.com/charoiteai/Charoite_audio/commit/c82c4c430fa495bac68b8792e619975bafffdd06))
+* **app:** python-контур внутри бандла — установка без терминала ([#261](https://github.com/charoiteai/Charoite_audio/issues/261)) ([4d829a9](https://github.com/charoiteai/Charoite_audio/commit/4d829a963ba7758ded5d09505ab59a02a4d7b2ed))
+* **app:** код демона в бандле + документация приведена к реальности ([#264](https://github.com/charoiteai/Charoite_audio/issues/264)) ([95a0b2b](https://github.com/charoiteai/Charoite_audio/commit/95a0b2bd55d5e00574dcd4c16a6a917355ccb302))
+* **app:** наборы моделей под память машины — выбор в мастере ([#263](https://github.com/charoiteai/Charoite_audio/issues/263)) ([9cbbf18](https://github.com/charoiteai/Charoite_audio/commit/9cbbf18a128c87801ae7d90376a9382bed296c30))
+* **app:** подробный протокол в карточке встречи и задачи по дате встречи ([#247](https://github.com/charoiteai/Charoite_audio/issues/247)) ([6380b3a](https://github.com/charoiteai/Charoite_audio/commit/6380b3a1b7b0bc85d177c17ad30061878541c0b1))
+* **app:** срок поручения чипом на экране задач ([#266](https://github.com/charoiteai/Charoite_audio/issues/266)) ([99a5d17](https://github.com/charoiteai/Charoite_audio/commit/99a5d17ded07b31f2f40410f5e0aeed50415e265))
+* **app:** экран «Календарь» — события дня с отметками записанных встреч ([#240](https://github.com/charoiteai/Charoite_audio/issues/240)) ([3c94bf2](https://github.com/charoiteai/Charoite_audio/commit/3c94bf266c4189feebb5682de79d9ae5fe6b61ab))
+* **audio:** Core Audio tap infrastructure (disabled), orphan cleanup, config ladder ([#248](https://github.com/charoiteai/Charoite_audio/issues/248)) ([06061d6](https://github.com/charoiteai/Charoite_audio/commit/06061d6ad3c83b3a880071f1cbf1f6d2ae98b92a))
+* **audio:** системный звук из коробки через ScreenCaptureKit ([#260](https://github.com/charoiteai/Charoite_audio/issues/260)) ([a853b12](https://github.com/charoiteai/Charoite_audio/commit/a853b12616c280e489464d35aab717f783679c31))
+* **stt:** SenseVoice — китайское распознавание без Whisper ([#268](https://github.com/charoiteai/Charoite_audio/issues/268)) ([4d94bbf](https://github.com/charoiteai/Charoite_audio/commit/4d94bbf80611d3fdc26a49028acda1b5e792938c))
+* **sufler:** имя спикера при смене голоса; облако правит нить, а не комментирует ([#244](https://github.com/charoiteai/Charoite_audio/issues/244)) ([55c78d5](https://github.com/charoiteai/Charoite_audio/commit/55c78d58a9503329e69bd1fefad9d8726ee8428a))
+* саммари, карточка и телефон говорят на всех трёх языках ([#267](https://github.com/charoiteai/Charoite_audio/issues/267)) ([c24533c](https://github.com/charoiteai/Charoite_audio/commit/c24533c6d38ffec03f608eea60d9d9a6f800133e))
+
+
+### Bug Fixes
+
+* **app:** meeting thread stays on screen after Stop ([#255](https://github.com/charoiteai/Charoite_audio/issues/255)) ([9868df4](https://github.com/charoiteai/Charoite_audio/commit/9868df4a3659541f65a5293c6c5745a2366d2c5c))
+* **app:** второе окно рисовалось криво — ширина колонки сайдбара не задана ([#262](https://github.com/charoiteai/Charoite_audio/issues/262)) ([1768f82](https://github.com/charoiteai/Charoite_audio/commit/1768f82b8fd32bc25078866cd88381dc6821f4ef))
+* **audio:** disable tap by default — its lifecycle wedges CoreAudio on 26.5 ([#256](https://github.com/charoiteai/Charoite_audio/issues/256)) ([6fcabbe](https://github.com/charoiteai/Charoite_audio/commit/6fcabbe201679c457fdd884fdd71799a2d97ca98))
+* **audio:** tap stream survives odd reads and resumes after restart ([#252](https://github.com/charoiteai/Charoite_audio/issues/252)) ([9d632e7](https://github.com/charoiteai/Charoite_audio/commit/9d632e749f464f1eab96d87d1953fda954064419))
+* **audio:** конвейер переживает мёртвый канал — не встаёт вместе с ним ([#249](https://github.com/charoiteai/Charoite_audio/issues/249)) ([f918a2a](https://github.com/charoiteai/Charoite_audio/commit/f918a2a6d09e248783ebf79d1c6ae0f6b0554639))
+* **design:** buttons never shrink; meeting toolbar scrolls instead of hiding ([#258](https://github.com/charoiteai/Charoite_audio/issues/258)) ([6a56a8f](https://github.com/charoiteai/Charoite_audio/commit/6a56a8ffecf70fe3525446aa46b34a6a4c0b62c0))
+* **ios:** a call is a pause, not a failure — keep the file, resume after ([#253](https://github.com/charoiteai/Charoite_audio/issues/253)) ([745c756](https://github.com/charoiteai/Charoite_audio/commit/745c75619c65fc2ebf3356d4cfb819aba7eafb0f))
+* **ios:** reject non-iCloud delivery folder, forget local bookmarks ([#250](https://github.com/charoiteai/Charoite_audio/issues/250)) ([d9adf45](https://github.com/charoiteai/Charoite_audio/commit/d9adf457b67b3fb2b6e52dfc042953e24ba53866))
+* **sufler:** подсказка — имя при передаче слова, без отчётных глаголов ([#245](https://github.com/charoiteai/Charoite_audio/issues/245)) ([2d42788](https://github.com/charoiteai/Charoite_audio/commit/2d427886d7406d54a4fe9434d2eddf81f0768e58))
+* аудит 0.46.0 — встреча переживает аварию, ретеншн мирится с восстановлением ([#269](https://github.com/charoiteai/Charoite_audio/issues/269)) ([a28ac5d](https://github.com/charoiteai/Charoite_audio/commit/a28ac5d23d2e741e11364e030cf3b5874de1eb36))
+* целостность пересборки, privacy и календаря ([#246](https://github.com/charoiteai/Charoite_audio/issues/246)) ([580625d](https://github.com/charoiteai/Charoite_audio/commit/580625d83343c1fbef4934be64bff6a1c1057523))
+
 ## [0.46.0](https://github.com/charoiteai/Charoite_audio/compare/v0.45.0...v0.46.0) (2026-08-04)
 
 
