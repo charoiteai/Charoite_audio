@@ -31,6 +31,25 @@ struct SettingsView: View {
                 TextField("Ollama",
                           text: $ollama,
                           prompt: Text("http://localhost:11434"))
+                // Адрес не на этой машине отвергнут — но молча подменить его
+                // значило бы сделать вид, что настройка применена. Человек
+                // должен видеть, что запросы идут локально и почему.
+                if let rejected = AppSettings.ollamaURLRejection {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(L.t("Адрес \(rejected.url) не используется — работаем локально",
+                                     "Address \(rejected.url) is not used — running locally",
+                                     "地址 \(rejected.url) 未使用 — 本地运行"))
+                                .font(.callout)
+                            Text(rejected.reason)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                }
                 LabeledContent(L.t("Граф встреч", "Meeting graph", "会议图谱")) {
                     Text(AppSettings.graphDir?.path ?? L.t("не задан (graph_dir в config.yaml)", "not set (graph_dir in config.yaml)", "未设置（config.yaml 中的 graph_dir）"))
                         .foregroundStyle(.secondary)
