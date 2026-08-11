@@ -52,7 +52,7 @@ def test_неудача_модели_не_затирает_готовые_мин
     live = tmp_path / "2026-08-07_181500.md"
     live.write_text("стенограмма", encoding="utf-8")
     minutes = tmp_path / "2026-08-07_181500_minutes.md"
-    minutes.write_text("# Минутки\n- **Антон** — выпустить релиз — пятница\n",
+    minutes.write_text("# Минутки\n- **Инженер** — выпустить релиз — пятница\n",
                        encoding="utf-8")
     before = minutes.read_text(encoding="utf-8")
 
