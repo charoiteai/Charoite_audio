@@ -28,8 +28,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import dossier  # noqa: E402
 import yaml  # noqa: E402
 
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or
-                    pathlib.Path(__file__).resolve().parent.parent).expanduser()
+# Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
+CODE = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 VAULT = pathlib.Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents"
 # Потолок на ночь: если тем изменилось много, лучше растянуть на две ночи,
 # чем занять машину до утра.
@@ -59,7 +61,7 @@ def generate(theme: str, members: list[str], files: dict, c: dict,
              temperature: float = 0.2) -> str:
     """Сводка локальной моделью. Думать не просим: на структурной задаче
     рассуждение съедает бюджет генерации и документ выходит беднее."""
-    sys.path.insert(0, str(ROOT / "src"))
+    sys.path.insert(0, str(CODE / "src"))
     from llm import LLM  # noqa: PLC0415
 
     llm = LLM(c)

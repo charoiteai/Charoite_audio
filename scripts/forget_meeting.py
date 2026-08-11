@@ -51,9 +51,11 @@ import re
 import shutil
 import sys
 
-ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or
-                    pathlib.Path(__file__).resolve().parent.parent).expanduser()
-sys.path.insert(0, str(ROOT / "src"))
+# Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
+# всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
+CODE = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
+sys.path.insert(0, str(CODE / "src"))
 import deps  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
@@ -168,6 +170,15 @@ def plan(stamp: str, root: pathlib.Path,
         d = root / folder
         if d.is_dir():
             p.delete += sorted(f for f in d.glob(f"{stamp}*") if f.is_file())
+
+    # Логи графа этой встречи: в logs/graph_<штамп>*.log попадают имена
+    # участников и куски цитат — «забыть» обязано дойти и до них, иначе
+    # содержимое встречи переживает саму встречу (аудит 0.46.0: «забыть»
+    # не доходит до логов). Исходник в папке импорта done/ сюда не входит:
+    # её путь знает только вызов --scan, у скрипта его нет — см. README.
+    logs = root / "logs"
+    if logs.is_dir():
+        p.delete += sorted(f for f in logs.glob(f"graph_{stamp}*.log") if f.is_file())
 
     if keep_graph:
         return p

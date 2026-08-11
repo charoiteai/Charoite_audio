@@ -28,9 +28,10 @@ import requests
 import sounddevice as sd
 import yaml
 
-from charoite_paths import resolve_root
+from charoite_paths import code_root, resolve_root
 
 ROOT = resolve_root(__file__)
+CODE = code_root(__file__)
 
 
 def _cfg_text(root):
@@ -86,7 +87,7 @@ def main():
     stt_holder: dict = {}
 
     def warm():
-        sys.path.insert(0, str(ROOT / "src"))
+        sys.path.insert(0, str(CODE / "src"))
         from stt import STT
         stt_holder["stt"] = STT(cfg)
 

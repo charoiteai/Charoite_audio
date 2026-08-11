@@ -27,10 +27,11 @@ import sys
 import time
 import wave
 
-from charoite_paths import resolve_root
+from charoite_paths import code_root, resolve_root
 
 ROOT = resolve_root(__file__)
-sys.path.insert(0, str(ROOT / "src"))
+CODE = code_root(__file__)
+sys.path.insert(0, str(CODE / "src"))
 import deps  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
@@ -62,13 +63,33 @@ def load_wav(p: pathlib.Path) -> tuple[np.ndarray, int]:
 
 
 def pcm_to_wav(pcm: pathlib.Path, sr: int) -> pathlib.Path:
+    """.pcm → .wav через временное имя, как это делает и сам демон.
+
+    Прямая запись в целевой .wav означала вот что: обрыв посреди конвертации
+    (kill, полный диск, паника) оставляет усечённый .wav, а `wait_recording`
+    при следующем заходе видит его и принимает за готовый — финальная
+    стенограмма собирается из огрызка, хотя целый .pcm ещё лежал рядом.
+    Час чужой встречи не переснять, поэтому tmp + переименование.
+
+    Имя временного файла с pid: две пересборки одной встречи (спавн
+    восстановления и ручной запуск) не должны писать в один буфер. И оно
+    намеренно НЕ совпадает с голым `.wav.part` демона — тот суффикс означает
+    «идёт штатная финализация», занимать его посторонним писателем нельзя.
+    При этом ретеншн узнаёт его наравне с прочими (`meeting_stamp`): иначе
+    обрыв конвертации оставлял бы на диске полный WAV встречи навсегда.
+    """
     out = pcm.with_suffix(".wav")
-    with wave.open(str(out), "wb") as w, pcm.open("rb") as f:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(sr)
-        while chunk := f.read(1 << 20):
-            w.writeframes(chunk)
+    tmp = out.with_name(f"{out.name}.part{os.getpid()}")
+    try:
+        with wave.open(str(tmp), "wb") as w, pcm.open("rb") as f:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            while chunk := f.read(1 << 20):
+                w.writeframes(chunk)
+        tmp.replace(out)
+    finally:
+        tmp.unlink(missing_ok=True)   # после replace его уже нет; страховка на обрыв
     pcm.unlink(missing_ok=True)
     return out
 
@@ -83,6 +104,14 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int) -> pa
     в тот же .wav параллельно ему. Два писателя давали кашу из перемежающихся
     блоков, после чего оба делали unlink исходника: финальная стенограмма
     собиралась из битого звука, а восстановить было уже нечего.
+
+    Обратная сторона того же признака: `.part` от УБИТОГО демона — не работа,
+    а огрызок, и ждать его бессмысленно. Раньше он держал канал вечно (ждём
+    45 секунд, потом отказываемся трогать .pcm «потому что кто-то пишет»), и
+    удалять его было некому: чистка сметала только .pcm и .wav. Итог — звонок
+    без реплик собеседника в финальной стенограмме, а через record_keep_days
+    и .pcm уходил (аудит 0.46.0, P0-3). Живой демон и мёртвый демон различаются
+    локом, поэтому решение принимается по нему, а не по наличию файла.
     """
     # stamp уже разрешён ОДИН РАЗ на пару каналов в rebuild(). Делать это
     # здесь по label нельзя: две встречи в одну минуту способны отдать mic
@@ -90,20 +119,30 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int) -> pa
     name = meeting_stamp.recording_path
     wav, pcm = name(rec_dir, stamp, label, "wav"), name(rec_dir, stamp, label, "pcm")
     part = name(rec_dir, stamp, label, "wav.part")
+
+    def drop_stale_part() -> None:
+        if part.exists():
+            log(f"{label}: осиротевший {part.name} от убитого демона — убираю")
+            part.unlink(missing_ok=True)
+
     deadline = time.time() + WAIT_WAV_S
     while time.time() < deadline:
         if wav.exists():
             return wav
-        if part.exists():
+        alive = _daemon_alive()
+        if part.exists() and alive:
             time.sleep(2)          # демон сейчас конвертирует — не мешаем
             continue
-        if pcm.exists() and not _daemon_alive():
+        if pcm.exists() and not alive:
+            drop_stale_part()
             log(f"{label}: демон мёртв и не финализировал — конвертирую .pcm сам")
             return pcm_to_wav(pcm, sr)
         time.sleep(2)
     if wav.exists():
         return wav
-    # Вышло время: конвертируем сами, но только если никто не пишет .part.
+    # Вышло время. Осиротевший .part сюда не доберётся: цикл выше убирает его
+    # на первом же заходе, где демон оказался мёртв. Значит, если .part всё
+    # ещё на месте — его пишет живой демон, и трогать .pcm нельзя.
     if pcm.exists() and not part.exists():
         log(f"{label}: ожидание истекло — конвертирую .pcm сам")
         return pcm_to_wav(pcm, sr)
@@ -285,6 +324,25 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     base = meeting_stamp.started_at(recording_stamp)
     if base is None:
         return None
+
+    # Столбим записи свежим mtime. Ретеншн щадит только штампы, о которых
+    # знает демон (_recover_orphans на его старте), а сюда приходит и retry из
+    # приложения — по встрече любого возраста: «позавчерашняя ошибка так же…».
+    # Пока мы ждём канал (до 45 с на каждый), демон новой встречи успевает
+    # провести чистку — и запись старше record_keep_days исчезает из-под ног:
+    # тот же исход, что у P0-1, только через другой вход. Канала связи с
+    # демоном у нас нет, а возраст файла — ровно тот язык, на котором ретеншн
+    # принимает решения; touch честно продлевает жизнь на keep_days от старта
+    # пересборки.
+    for _label in meeting_stamp.RECORDING_LABELS:
+        for _ext in ("pcm", "wav", "wav.part"):
+            _p = meeting_stamp.recording_path(rec_dir, recording_stamp, _label, _ext)
+            try:
+                if _p.exists():
+                    os.utime(_p)
+            except OSError:
+                pass          # не продлили — ретеншн решит по старому mtime
+
     mic_p = wait_recording(rec_dir, recording_stamp, "mic", sr_cfg)
     bh_p = wait_recording(rec_dir, recording_stamp, "blackhole", sr_cfg)
     if mic_p is None and bh_p is None:

@@ -19,9 +19,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import llm_health  # noqa: E402
 import privacy  # noqa: E402
 
-from charoite_paths import resolve_root
+from charoite_paths import code_root, resolve_root
 
 ROOT = resolve_root(__file__)
+CODE = code_root(__file__)
 
 
 def load_cfg() -> dict:
@@ -348,7 +349,15 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
     # Искать по bare: в шапке посекундной стенограммы штамп с секундами,
     # и замена по короткому штампу оставляла бы хвост «19» после темы.
     body = body.replace(f"# Встреча {bare}", f"# Встреча {stamp} — {title}", 1)
-    tpath.write_text(body, encoding="utf-8")
+    # Через временное имя: это ЕДИНСТВЕННЫЙ экземпляр стенограммы, обрыв
+    # голого write_text (kill ночного цикла, полный диск) оставлял бы вместо
+    # встречи усечённый файл — восстанавливать неоткуда (аудит 0.46.0).
+    tmp = tpath.with_name(tpath.name + f".tmp{os.getpid()}")
+    try:
+        tmp.write_text(body, encoding="utf-8")
+        tmp.replace(tpath)
+    finally:
+        tmp.unlink(missing_ok=True)
     return tpath
 
 
@@ -833,7 +842,7 @@ def main():
             # то, что трогать было нельзя. Раньше здесь был Popen на claude без
             # присмотра: «запущен фоном» значило только «процесс стартовал».
             _sp.Popen(
-                [sys.executable, str(ROOT / "scripts" / "cloud_review.py"),
+                [sys.executable, str(CODE / "scripts" / "cloud_review.py"),
                  "--stamp", stamp, "--transcript", str(tpath),
                  "--graph", str(graph), "--rev", str(rev), "--log", str(log)],
                 cwd=str(ROOT), stdin=_sp.DEVNULL,
