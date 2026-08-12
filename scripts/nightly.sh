@@ -11,6 +11,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.." || exit 1
 PY=.venv/bin/python
+# Ночью держим в памяти одну модель вместо трёх по кругу: см. комментарий в
+# src/llm.py. Днём переменная не выставлена, и мелкие задачи по-прежнему
+# уходят на маленькую модель.
+export CHAROITE_ONE_MODEL=1
 rc=0
 STARTED=$(date '+%F %T')
 # Куда кладём машиночитаемый итог. Логи launchd живут в /tmp и исчезают при
@@ -43,6 +47,10 @@ trap '[ "$STATUS_DONE" = 1 ] || { rc=1; write_status failed; }' EXIT
 write_status running
 
 echo "=== nightly $(date '+%F %T') ==="
+# Разбор вечерней встречи вполне может идти и в 04:15. Вместе с ночным
+# циклом они делят одну память и одну локальную модель — и оба буксуют.
+# Ждём с потолком: пропустить ночь целиком хуже, чем поработать в тесноте.
+$PY scripts/wait_for_idle.py --timeout "${NIGHTLY_WAIT:-3600}" || true
 # право на слияние — у конфига (sufler.tier3_auto_apply), не у cron:
 # --auto сливает только при true, иначе обратимые пометки (--mark)
 $PY scripts/tier3_cores.py --all-graphs --auto || { echo "❌ РЕВИЗИЯ ЯДЕР УПАЛА (код $?)"; rc=1; FAILED="$FAILED ревизия-ядер"; }

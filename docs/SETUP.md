@@ -185,7 +185,15 @@ error. Don't want it: `sufler.check_updates: false` in the config; the
 `scripts/nightly.sh` keeps the graph tidy while you sleep: Tier-3 core
 revision (duplicates, merges — with backups), the morning brief
 `_Сегодня.md` (ready-made context for the day), and the memory bench
-(quality regression signal). Schedule it with launchd:
+(quality regression signal). The pass waits for meeting processing to finish and runs on a single model.
+On Aug 12 the two collided: transcription, core revision and dossier building
+at once — 14 GB free out of 64 with 17 GB already compressed. The local server
+started swapping models in and out (41 loads in one pass), requests began to
+hang for 2-6 minutes, and then it died outright: 258 topics went unanalysed.
+The wait is capped at an hour (`NIGHTLY_WAIT`, seconds): missing a night
+entirely is worse than working in a crowded machine.
+
+Schedule it with launchd:
 
 ```xml
 <!-- ~/Library/LaunchAgents/ai.charoite.nightly.plist -->
