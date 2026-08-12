@@ -144,6 +144,12 @@ and task checkboxes straight from the same markdown files Obsidian and
 the Mac app see. Build with XcodeGen: `cd app-ios && xcodegen generate`,
 then open `CharoiteiOS.xcodeproj`.
 
+A call mid-recording is a pause, not a loss: the microphone goes to the
+call and the same file continues afterwards. If the system never reports
+the end of the call (iOS does not guarantee it), the app checks the input
+itself — every half a minute after the first one — and resumes as soon as
+the microphone is free.
+
 ## Android companion (app-android/)
 
 The same role for a tablet or an Android phone
