@@ -10,6 +10,9 @@ struct TodayWorkspaceView: View {
     @ObservedObject private var calendar = CalendarService.shared
     @ObservedObject private var navigation = WorkspaceNavigation.shared
     @ObservedObject private var tasks = TasksService.shared
+    @ObservedObject private var nightly = NightlyStatusService.shared
+    @ObservedObject private var version = VersionStatusService.shared
+    @ObservedObject private var updater = UpdateService.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -89,8 +92,88 @@ struct TodayWorkspaceView: View {
                 }
                 Spacer()
             }
+            Divider()
+            nightlyRow
+            if version.needsAttention { versionRow }
         }
         .padding(14)
+        .onAppear {
+            nightly.refresh()
+            version.refresh()
+        }
+    }
+
+    /// Прошла ли ночная обработка графа.
+    ///
+    /// Ночью Чароит правит ядра, собирает досье и пишет утренний бриф —
+    /// работа по определению невидимая. Раньше о том, что она перестала
+    /// выполняться, можно было узнать только через месяц по несвежему
+    /// графу или заглянув в лог в /tmp. Успешный прогон — одна спокойная
+    /// строка, всё остальное подсвечено.
+    private var nightlyRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: nightly.icon)
+                .font(.caption)
+                .foregroundStyle(nightly.needsAttention ? Color.orange : Color.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(nightly.title)
+                    .font(.caption.weight(nightly.needsAttention ? .medium : .regular))
+                Text(nightly.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .help(nightly.detail)
+    }
+
+    /// Что происходит с обновлением прямо сейчас — вместо описания версии.
+    /// Отказ и ошибку показываем на месте: диалог поверх экрана ради строки
+    /// «идёт запись» человек закрывает не читая.
+    private var updateNote: String? {
+        switch updater.stage {
+        case .idle: return nil
+        case .downloading(let percent):
+            return L.t("Скачиваю… \(percent)%", "Downloading… \(percent)%", "下载中… \(percent)%")
+        case .verifying:
+            return L.t("Проверяю контрольную сумму", "Verifying checksum", "正在校验")
+        case .installing:
+            return L.t("Ставлю и перезапускаюсь", "Installing and restarting", "正在安装并重启")
+        case .refused(let reason), .failed(let reason):
+            return reason
+        }
+    }
+
+    /// Та ли версия работает.
+    ///
+    /// Показывается, только когда есть расхождение: приложение отстало от
+    /// выпуска или — что хуже — код в рабочей папке не той версии, что
+    /// приложение. Совпадение версий это норма, и напоминать о норме
+    /// каждый день значит приучить не читать строку вовсе.
+    private var versionRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: version.icon)
+                .font(.caption)
+                .foregroundStyle(Color.orange)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(version.title).font(.caption.weight(.medium))
+                Text(updateNote ?? version.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            if case .updateAvailable(_, let latest) = version.status.state, !updater.isBusy {
+                Button(L.t("Обновить", "Update", "更新")) {
+                    Task { await updater.install(tag: "v\(latest)") }
+                }
+                .charoite(.link, .s)
+            }
+        }
+        .help(version.detail)
     }
 
     private var lifecycleIcon: String {

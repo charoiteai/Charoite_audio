@@ -78,10 +78,16 @@ brew install ollama            # 具体用哪些模型由应用建议
 ```
 
 从[最新发布](https://github.com/charoiteai/Charoite_audio/releases/latest)下载
-`Charoite.app.zip`。应用使用 Developer ID 签名但未经公证，因此首次启动会被
-macOS 拦截：系统设置 → 隐私与安全性 → *仍要打开*（或执行
+`Charoite.dmg`，把应用拖入「应用程序」—— 映像窗口会指明位置。应用使用
+Developer ID 签名但未经公证，因此首次启动会被 macOS 拦截：系统设置 →
+隐私与安全性 → *仍要打开*（或执行
 `xattr -d com.apple.quarantine /Applications/Charoite.app`）。macOS 15+ 上
 右键 → 打开已失效。
+
+之后应用会自行更新：有新版本时，「今天」标签页会出现一行带按钮的提示。下载内容
+会与发布中的校验和比对，旧副本在替换成功前一直保留；而在录制会议期间更新根本
+不会开始 —— 重启会中断录音。映像旁边还有 `Charoite.app.zip`：应用更新用的就是它，
+也可以手动解压。
 
 其余步骤都在界面中完成：首次运行向导询问姓名与图谱文件夹，展示匹配本机内存的
 模型方案并一键安装；麦克风与系统音频权限由 macOS 自行询问。
