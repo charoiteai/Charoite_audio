@@ -129,6 +129,10 @@ iCloud Drive 文件夹——同时把图谱读回来：会议动态与任务复�
 Obsidian 和 Mac 应用所看到的同一批 markdown 文件。使用 XcodeGen 构建：
 `cd app-ios && xcodegen generate`，然后打开 `CharoiteiOS.xcodeproj`。
 
+录音途中来电是暂停而非丢失：麦克风暂时交给通话，通话结束后继续写入同一个文件。
+若系统没有通知通话结束（iOS 并不保证），应用会自行检查输入——第一分钟之后每半分钟
+一次——并在麦克风空闲时立即恢复录音。
+
 ## Android 伴侣应用（app-android/）
 
 平板或 Android 手机上的同一角色（[app-android/](../../app-android)）：通过

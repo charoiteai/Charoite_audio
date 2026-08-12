@@ -99,6 +99,39 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     nonisolated static func shouldAutoResume(stalled: Bool, interrupted: Bool) -> Bool {
         stalled && !interrupted
     }
+
+    /// Когда началось прерывание. nil — прерывания нет.
+    private var interruptedAt: Date?
+    /// Когда последний раз проверяли, не вернулся ли вход.
+    private var lastInterruptionProbe: Date?
+
+    /// Через сколько после начала прерывания начинаем проверять вход.
+    nonisolated static let probeAfterInterruption: TimeInterval = 60
+    /// Как часто проверяем дальше.
+    nonisolated static let probeEvery: TimeInterval = 30
+
+    /// Пора ли проверить, освободился ли микрофон.
+    ///
+    /// `.ended` от iOS **не гарантирован** — это записано в документации
+    /// Apple и подтверждается соседним комментарием в этом же файле («iOS
+    /// далеко не всегда присылает `.ended`»). Но флаг `interrupted` снимался
+    /// только по нему: не пришло — и сторож застоя молчит вечно, потому что
+    /// считает застой законной паузой. Таймер при этом идёт, плашка на
+    /// локскрине показывает запись, а файл не растёт. Человек узнаёт об этом
+    /// после встречи (аудит 0.46.0, P0-9).
+    ///
+    /// Ждать первую минуту осмысленно: короткий звонок закончится сам, и
+    /// `.ended` придёт штатно. Дальше пробуем редко — проба не бесплатна по
+    /// смыслу, хотя и безвредна: во время живого звонка `record()` просто
+    /// вернёт false.
+    nonisolated static func shouldProbeInterruption(
+        interruptedFor: TimeInterval,
+        sinceLastProbe: TimeInterval?
+    ) -> Bool {
+        guard interruptedFor >= probeAfterInterruption else { return false }
+        guard let sinceLastProbe else { return true }
+        return sinceLastProbe >= probeEvery
+    }
     /// Что пишем сейчас — нужно, чтобы продолжить тем же типом после ротации.
     private var currentKind: Kind = .meeting
 
@@ -269,11 +302,15 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         switch type {
         case .began:
             interrupted = true
+            interruptedAt = Date()
+            lastInterruptionProbe = nil
             lastResult = L.t("Пауза: идёт звонок — микрофон у него. Запись продолжится после",
                              "Paused: a call owns the microphone. Recording resumes after it",
                              "已暂停：通话占用麦克风。通话结束后继续录音")
         case .ended:
             interrupted = false
+            interruptedAt = nil
+            lastInterruptionProbe = nil
             resumeAfterCall(attempt: 1)
         @unknown default:
             break
@@ -323,6 +360,8 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         isRecording = false
         stalled = false
         interrupted = false   // флаг не должен пережить запись
+        interruptedAt = nil
+        lastInterruptionProbe = nil
         lastGrowth = nil
         level = 0
         let url = r.url
@@ -354,6 +393,33 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         // отпустить вход через секунду, а может через минуту. Но не во время
         // звонка: там застой — это пауза, и попытки лишь исчерпают лимит.
         if Self.shouldAutoResume(stalled: stalled, interrupted: interrupted) { tryResume() }
+        probeInterruptionIfNeeded()
+    }
+
+    /// Проверить, не кончилось ли прерывание, о конце которого нам не сказали.
+    ///
+    /// Отдельно от `tryResume()` намеренно: тот считает попытки и на третьей
+    /// ротирует файл. Во время живого звонка это резало бы встречу на куски
+    /// — ровно та беда, ради которой прерывание и стало паузой. Проба ничего
+    /// не тратит: не вышло — просто ждём дальше.
+    private func probeInterruptionIfNeeded() {
+        guard isRecording, interrupted, let since = interruptedAt, let r = recorder else { return }
+        guard Self.shouldProbeInterruption(
+            interruptedFor: Date().timeIntervalSince(since),
+            sinceLastProbe: lastInterruptionProbe.map { Date().timeIntervalSince($0) }
+        ) else { return }
+
+        lastInterruptionProbe = Date()
+        try? AVAudioSession.sharedInstance().setActive(true)
+        guard r.record() else { return }      // звонок ещё идёт — ждём дальше
+
+        interrupted = false
+        interruptedAt = nil
+        lastInterruptionProbe = nil
+        stalled = false
+        lastResult = L.t("Запись продолжается — звонок закончился",
+                         "Recording resumed — the call has ended",
+                         "录音已继续 — 通话已结束")
     }
 
     /// Растёт ли файл. Сравниваем длительность с прошлым тиком: замерла — значит
