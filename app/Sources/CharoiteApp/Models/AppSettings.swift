@@ -201,6 +201,19 @@ enum AppSettings {
     /// Лёгкий разбор одной строки config.yaml, без YAML-зависимости.
     /// Ключ ищется по всему файлу (stt.language и sufler.language совпадают
     /// по имени — берём последнее вхождение: sufler-секция ниже stt).
+    /// Спрашивать ли GitHub о последнем выпуске.
+    ///
+    /// Единственный исходящий запрос, который делает приложение само:
+    /// публичный GET за номером версии, без токена и без данных о человеке.
+    /// Выключается `sufler.check_updates: false` в конфиге и общим рубильником
+    /// `CHAROITE_NO_CLOUD` — тем же, что запрещает облачные шаги: кто выключил
+    /// облако целиком, не ждёт от приложения похода в сеть за версией.
+    static var checkUpdates: Bool {
+        let env = ProcessInfo.processInfo.environment
+        if env["CHAROITE_NO_CLOUD"] != nil || env["SUFLER_NO_CLOUD"] != nil { return false }
+        return configValue("check_updates")?.lowercased() != "false"
+    }
+
     static func configValue(_ key: String) -> String? {
         let cfg = charoiteRoot.appendingPathComponent("config/config.yaml")
         guard let text = try? String(contentsOf: cfg, encoding: .utf8) else { return nil }
