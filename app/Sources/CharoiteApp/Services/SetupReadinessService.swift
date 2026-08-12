@@ -86,6 +86,32 @@ enum SetupReadinessPolicy {
     static func hasMicrophoneInput(_ names: [String]) -> Bool {
         names.contains { !$0.localizedCaseInsensitiveContains("blackhole") }
     }
+
+    /// Состояние права «Запись экрана и системного звука» для нативного захвата.
+    ///
+    /// Готовность знала про микрофон и BlackHole, но молчала про это право —
+    /// хотя без него ScreenCaptureKit не поднимется и вторая сторона разговора
+    /// в запись не попадёт. Человек узнавал об этом после встречи, по пустому
+    /// каналу собеседника (аудит 0.46.0, P0-10).
+    ///
+    /// Отдельный случай — `grantedNeedsRestart`. macOS применяет выданное
+    /// право к УЖЕ ЗАПУЩЕННОМУ процессу только после перезапуска приложения:
+    /// человек нажимает «Разрешить», видит галочку в системных настройках и
+    /// уверен, что всё готово, — а захват продолжает падать до конца сессии.
+    /// Об этом не говорил ни SETUP, ни интерфейс.
+    enum ScreenCaptureAccess: Equatable {
+        case granted
+        case grantedNeedsRestart
+        case denied
+    }
+
+    static func screenCaptureAccess(
+        preflight: Bool,
+        grantedInThisSession: Bool
+    ) -> ScreenCaptureAccess {
+        if grantedInThisSession { return .grantedNeedsRestart }
+        return preflight ? .granted : .denied
+    }
 }
 
 private struct LocalSetupProbe: Sendable {
@@ -320,6 +346,7 @@ print(json.dumps({"missing": missing, "inputs": inputs, "audio_error": audio_err
         if let audioCheck = audioCheck(local: local) {
             checks.append(audioCheck)
         }
+        checks.append(screenCaptureCheck())
         checks.append(contentsOf: ollamaChecks(local: local, ollama: ollama))
         checks.append(graphCheck(root: root, local: local))
         return SetupReadinessSnapshot(checks: checks)
@@ -414,6 +441,39 @@ print(json.dumps({"missing": missing, "inputs": inputs, "audio_error": audio_err
                 state: .ready,
                 title: L.t("Микрофон", "Microphone", "麦克风"),
                 detail: L.t("Доступ разрешён", "Access allowed", "已允许访问"))
+        }
+    }
+
+    /// Право на нативный захват системного звука — то, о чём готовность молчала.
+    private static func screenCaptureCheck() -> SetupCheck {
+        switch SetupReadinessPolicy.screenCaptureAccess(
+            preflight: CGPreflightScreenCaptureAccess(),
+            grantedInThisSession: SystemAudioCapture.accessGrantedInThisSession
+        ) {
+        case .granted:
+            return SetupCheck(
+                id: "screen-capture",
+                state: .ready,
+                title: L.t("Системный звук", "System audio", "系统音频"),
+                detail: L.t("Разрешение «Запись экрана» выдано — звук звонка пишется без BlackHole",
+                            "Screen Recording permission granted — call audio is captured without BlackHole",
+                            "已授予「屏幕录制」权限 — 无需 BlackHole 即可录制通话声音"))
+        case .grantedNeedsRestart:
+            return SetupCheck(
+                id: "screen-capture",
+                state: .warning,
+                title: L.t("Перезапустите Чароит", "Restart Charoite", "请重启 Charoite"),
+                detail: L.t("Разрешение выдано, но macOS применит его только к новому запуску приложения",
+                            "Permission granted, but macOS applies it only to a fresh app launch",
+                            "权限已授予，但 macOS 仅对重新启动后的应用生效"))
+        case .denied:
+            return SetupCheck(
+                id: "screen-capture",
+                state: .warning,
+                title: L.t("Нет разрешения на системный звук", "No system audio permission", "缺少系统音频权限"),
+                detail: L.t("Системные настройки › Конфиденциальность › Запись экрана — и перезапустите приложение. Без него вторая сторона звонка пишется только через BlackHole",
+                            "System Settings › Privacy › Screen Recording, then restart the app. Without it the far side of a call is captured only via BlackHole",
+                            "系统设置 › 隐私与安全性 › 屏幕录制，然后重启应用。否则通话对方的声音只能通过 BlackHole 录制"))
         }
     }
 

@@ -59,11 +59,19 @@ In `config/config.yaml`:
 Also worth filling: `sufler.user_context` (1-2 sentences about your work) —
 context for instant answers.
 
-## 3. System audio (calls) — nothing to do
+## 3. System audio (calls) — one permission and a restart
 
 The app captures meeting audio with macOS itself (ScreenCaptureKit). On the
 first recording the system asks once for "Screen & System Audio Recording" —
-press Allow. That's it: no drivers, no Audio MIDI Setup, no switching the
+press Allow, **then restart Charoite**.
+
+The restart is not our whim: macOS applies the granted permission only to a
+fresh launch of the process. Until the app is restarted the checkbox in System
+Settings is already on while capture still fails — that meeting gets recorded
+without the far side. The first-run readiness panel shows a separate line when
+a restart is pending.
+
+After the restart that's it: no drivers, no Audio MIDI Setup, no switching the
 output device. Sound keeps going to your speakers as usual, and on macOS 15+
 the microphone arrives in the same stream.
 

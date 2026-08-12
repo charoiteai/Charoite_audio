@@ -48,6 +48,14 @@ final class SystemAudioCapture: NSObject {
     /// STT всё равно работает на 16 кГц.
     static let sampleRate = 16_000
 
+    /// Право «Запись экрана» выдано, пока приложение уже работало.
+    ///
+    /// macOS применяет его только к новому запуску процесса, поэтому сам факт
+    /// выдачи ничего не меняет для текущей сессии — но человеку про это надо
+    /// сказать, иначе он видит галочку в системных настройках и не понимает,
+    /// почему собеседника по-прежнему нет в записи. Читает готовность.
+    private(set) static var accessGrantedInThisSession = false
+
     private var stream: SCStream?
     private var sink: Sink?
 
@@ -62,11 +70,21 @@ final class SystemAudioCapture: NSObject {
         // Проверяем ДО захвата: без него SCShareableContent бросает, а
         // человеку нужен внятный откат, а не тишина.
         if !CGPreflightScreenCaptureAccess() {
-            _ = CGRequestScreenCaptureAccess()
-            guard CGPreflightScreenCaptureAccess() else {
+            // Диалог показываем, но на ответ не рассчитываем: macOS применяет
+            // выданное право только к НОВОМУ запуску процесса. Человек нажимает
+            // «Разрешить», видит галочку в системных настройках и уверен, что
+            // готово, — а захват молча падает до конца сессии (аудит P0-10).
+            // Поэтому запоминаем факт выдачи и говорим о перезапуске вслух:
+            // готовность покажет это отдельной строкой.
+            let granted = CGRequestScreenCaptureAccess()
+            if granted || CGPreflightScreenCaptureAccess() {
+                Self.accessGrantedInThisSession = true
+                log("разрешение на системный звук выдано — начнёт действовать "
+                  + "после перезапуска приложения; сейчас остаёмся на BlackHole")
+            } else {
                 log("нет разрешения на запись системного звука — остаёмся на BlackHole")
-                return false
             }
+            return false
         }
 
         let content: SCShareableContent
