@@ -23,6 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          persist-credentials: false
           fetch-depth: 0   # нужен merge-base для диапазона изменений
 
       - name: Документация обновлена вместе с кодом?
