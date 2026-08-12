@@ -14,6 +14,14 @@ import Foundation
 /// Поэтому `scripts/nightly.sh` пишет машиночитаемый итог в
 /// `logs/nightly.json` рядом с данными, а этот сервис его читает.
 enum NightlyState: Equatable {
+    /// Идёт прямо сейчас.
+    ///
+    /// Цикл не всегда быстрый: ревизия ядер и досье по всем графам — это
+    /// локальная модель на каждой теме, а облачный проход добавляет по
+    /// вызову на досье. Первый же прогон занял больше часа, и без этого
+    /// состояния приложение всё это время честно докладывало бы, что
+    /// ночная обработка не запускалась.
+    case running(started: Date)
     /// Отработал этой ночью без ошибок.
     case ok(finished: Date)
     /// Отработал, но какие-то шаги упали.
@@ -50,6 +58,16 @@ struct NightlyStatus: Equatable {
 
         if state == "interrupted" {
             return NightlyStatus(state: .interrupted(started: started ?? now))
+        }
+        if state == "running" {
+            let began = started ?? now
+            // Шесть часов — заведомо больше любого честного прогона. Дольше
+            // — значит процесс убили так, что записать «прервано» он не
+            // успел (kill -9, отключение питания): вечное «идёт» скрывало бы
+            // ровно ту поломку, ради которой всё это и заведено.
+            return NightlyStatus(state: now.timeIntervalSince(began) > 6 * 3600
+                                 ? .interrupted(started: began)
+                                 : .running(started: began))
         }
         guard let finished else { return NightlyStatus(state: .never) }
 
@@ -145,6 +163,8 @@ final class NightlyStatusService: ObservableObject {
 
     var title: String {
         switch status.state {
+        case .running:
+            return L.t("Ночная обработка идёт", "Nightly pass is running", "夜间处理进行中")
         case .ok:
             return L.t("Ночная обработка пройдена", "Nightly pass completed", "夜间处理已完成")
         case .failed:
@@ -170,6 +190,10 @@ final class NightlyStatusService: ObservableObject {
         day.locale = L.locale
 
         switch status.state {
+        case .running(let started):
+            return L.t("Начата \(time.string(from: started)) — ядра, досье, бриф",
+                       "Started at \(time.string(from: started)) — cores, dossiers, brief",
+                       "\(time.string(from: started)) 开始 —— 内核、档案、简报")
         case .ok(let finished):
             return L.t("Граф причёсан в \(time.string(from: finished))",
                        "Graph tidied at \(time.string(from: finished))",
@@ -202,13 +226,14 @@ final class NightlyStatusService: ObservableObject {
     /// одной спокойной строки; всё остальное требует внимания.
     var needsAttention: Bool {
         switch status.state {
-        case .ok: return false
+        case .ok, .running: return false
         case .failed, .interrupted, .stale, .never, .foreignScript: return true
         }
     }
 
     var icon: String {
         switch status.state {
+        case .running: return "moon.stars"
         case .ok: return "moon.stars.fill"
         case .failed: return "exclamationmark.triangle.fill"
         case .interrupted: return "pause.circle.fill"
