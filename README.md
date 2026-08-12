@@ -81,11 +81,19 @@ theses for free. Full macOS/iOS tables and the reasoning: [docs/MODELS.md](docs/
 brew install ollama            # which models — the app suggests them itself
 ```
 
-Download `Charoite.app.zip` from the [latest release](https://github.com/charoiteai/Charoite_audio/releases/latest).
+Download `Charoite.dmg` from the [latest release](https://github.com/charoiteai/Charoite_audio/releases/latest)
+and drag the app into Applications — the disk image window shows where.
 The app is signed with a Developer ID but not notarised, so macOS blocks the
 first launch: System Settings → Privacy & Security → *Open Anyway* (or
 `xattr -d com.apple.quarantine /Applications/Charoite.app`). Right-click →
 Open no longer works on macOS 15+.
+
+After that the app updates itself: when a new version is out, a line with a
+button appears on the Today tab. The download is checked against the
+release's checksum, your old copy stays in place until the swap succeeds,
+and an update will not even start while a meeting is being recorded — the
+restart would cut the recording short. `Charoite.app.zip` sits next to the
+image: it is what the app updates from, and you can unpack it by hand.
 
 Everything else happens in the interface: the first-run wizard asks for your
 name and graph folder, shows model sets sized to your machine's memory and

@@ -74,7 +74,8 @@ jobs:
           # ручной запуск пересобирает всегда (--clobber заменит кривой ассет);
           # автоматический — только если ассета ещё нет
           if [ "$EVENT_NAME" != "workflow_dispatch" ] \
-            && gh release view "$TAG" --repo "$REPO" --json assets -q '.assets[].name' | grep -qx 'Charoite.app.zip'; then
+            && gh release view "$TAG" --repo "$REPO" --json assets -q '.assets[].name' \
+                 | grep -qx 'Charoite.dmg'; then
             echo "у $TAG уже есть артефакт — сборка не нужна"
             echo "build=false" >> "$GITHUB_OUTPUT"
           else
@@ -110,10 +111,26 @@ jobs:
         if: steps.resolve.outputs.build == 'true'
         working-directory: app/build
         run: ditto -c -k --keepParent Charoite.app Charoite.app.zip
+      # DMG — для первой установки: окно с приложением и стрелкой в
+      # «Программы». Из zip половина пользователей запускает приложение прямо
+      # из «Загрузок», а оттуда оно теряет выданные права при первой же
+      # чистке папки. Zip при этом остаётся: им обновляется уже
+      # установленное приложение, распаковка не требует монтирования тома.
+      #
+      # Суммы кладём рядом обязательно: обновление внутри приложения
+      # сверяет с ними скачанное и отказывается ставить при расхождении.
+      - name: DMG and checksums
+        if: steps.resolve.outputs.build == 'true'
+        run: ./scripts/make_dmg.sh
       - name: Attach to release
         if: steps.resolve.outputs.build == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.resolve.outputs.tag }}
           REPO: ${{ github.repository }}
-        run: gh release upload "$TAG" app/build/Charoite.app.zip --repo "$REPO" --clobber
+        run: |
+          gh release upload "$TAG" --repo "$REPO" --clobber \
+            app/build/Charoite.dmg \
+            app/build/Charoite.dmg.sha256 \
+            app/build/Charoite.app.zip \
+            app/build/Charoite.app.zip.sha256

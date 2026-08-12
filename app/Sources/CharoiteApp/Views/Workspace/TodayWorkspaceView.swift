@@ -12,6 +12,7 @@ struct TodayWorkspaceView: View {
     @ObservedObject private var tasks = TasksService.shared
     @ObservedObject private var nightly = NightlyStatusService.shared
     @ObservedObject private var version = VersionStatusService.shared
+    @ObservedObject private var updater = UpdateService.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -128,6 +129,23 @@ struct TodayWorkspaceView: View {
         .help(nightly.detail)
     }
 
+    /// Что происходит с обновлением прямо сейчас — вместо описания версии.
+    /// Отказ и ошибку показываем на месте: диалог поверх экрана ради строки
+    /// «идёт запись» человек закрывает не читая.
+    private var updateNote: String? {
+        switch updater.stage {
+        case .idle: return nil
+        case .downloading(let percent):
+            return L.t("Скачиваю… \(percent)%", "Downloading… \(percent)%", "下载中… \(percent)%")
+        case .verifying:
+            return L.t("Проверяю контрольную сумму", "Verifying checksum", "正在校验")
+        case .installing:
+            return L.t("Ставлю и перезапускаюсь", "Installing and restarting", "正在安装并重启")
+        case .refused(let reason), .failed(let reason):
+            return reason
+        }
+    }
+
     /// Та ли версия работает.
     ///
     /// Показывается, только когда есть расхождение: приложение отстало от
@@ -141,13 +159,19 @@ struct TodayWorkspaceView: View {
                 .foregroundStyle(Color.orange)
             VStack(alignment: .leading, spacing: 1) {
                 Text(version.title).font(.caption.weight(.medium))
-                Text(version.detail)
+                Text(updateNote ?? version.detail)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
+            if case .updateAvailable(_, let latest) = version.status.state, !updater.isBusy {
+                Button(L.t("Обновить", "Update", "更新")) {
+                    Task { await updater.install(tag: "v\(latest)") }
+                }
+                .charoite(.link, .s)
+            }
         }
         .help(version.detail)
     }
