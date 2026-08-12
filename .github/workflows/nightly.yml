@@ -10,6 +10,11 @@ on:
   schedule:
     - cron: "15 1 * * *"   # 04:15 МСК — в такт ночному циклу приложения
   workflow_dispatch: {}
+# Токену здесь нужно только читать репозиторий. Без этой строки
+# он получает права по умолчанию на всё, что настроено в репозитории.
+permissions:
+  contents: read
+
 jobs:
   pytest:
     # macOS, а не ubuntu как в ci.yml: продукт живёт на macOS, и ночная
@@ -18,6 +23,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -40,6 +47,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       # Без пайпа: `swift test | tail` возвращал код `tail`, то есть всегда 0.
       # Джоба, заведённая ловить гниение зависимостей, была зелёной при любом
       # падении Swift-тестов — ровно ту аварию, ради которой её сделали, она
@@ -54,6 +63,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen >/dev/null
       - name: Generate project
         working-directory: app-ios

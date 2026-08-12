@@ -22,6 +22,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref_name }}
   cancel-in-progress: true
 
+# Токену здесь нужно только читать репозиторий. Без этой строки
+# он получает права по умолчанию на всё, что настроено в репозитории.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: swift test (app)
@@ -33,6 +38,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: SwiftLint (errors — гейт, пороги в .swiftlint.yml)
         shell: bash
         run: |
@@ -69,6 +76,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen >/dev/null
       - name: Generate project
         working-directory: app-ios

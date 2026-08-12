@@ -16,6 +16,11 @@ name: release-app
 on:
   release:
     types: [published]
+  # zizmor: ignore[dangerous-triggers]
+  # Триггер опасен, когда слушает чужие workflow: код запускается с правами
+  # основного репозитория. Здесь источник ровно один и наш собственный —
+  # release-please из этого же репозитория, форки его не запускают. Без
+  # workflow_run бандл к релизу не прикладывался бы вовсе (см. выше).
   workflow_run:
     workflows: [release-please]
     types: [completed]
@@ -86,16 +91,13 @@ jobs:
       - uses: actions/checkout@v7
         if: steps.resolve.outputs.build == 'true'
         with:
+          persist-credentials: false
           ref: refs/tags/${{ steps.resolve.outputs.tag }}
           fetch-depth: 0   # вся история + теги, иначе git describe слепнет
-      - uses: actions/cache@v6
-        if: steps.resolve.outputs.build == 'true'
-        with:
-          path: app/.build
-          key: spm-release-${{ runner.os }}-${{ hashFiles('app/Package.swift') }}
-          restore-keys: spm-release-${{ runner.os }}-
-      # Контур собирается ДО бандла: релизное приложение должно работать
-      # без терминала, а make_app.sh вкладывает контур, только если он готов.
+      # Кэш сборки здесь убран осознанно: релизный бинарь мы подписываем
+      # и раздаём людям, а восстановленный кэш — это чужие артефакты в
+      # нашей поставке (zizmor: cache-poisoning). Релиз идёт раз в выпуск,
+      # лишние минуты сборки дешевле такого риска.
       - name: Build embedded python runtime
         # Условие как у соседей: без него шаг выполнялся ВСЕГДА, в том числе
         # когда собирать нечего — а checkout тега под тем же условием не

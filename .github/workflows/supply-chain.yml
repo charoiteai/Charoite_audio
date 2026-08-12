@@ -1,0 +1,61 @@
+# Проверки цепочки поставки: чужой код и собственные workflow.
+#
+# Обе бесплатны для публичных репозиториев и закрывают то, чего у нас не
+# проверял никто. Зависимости приходят автоматическими PR от бота, и до
+# сегодня решение «мёржить или нет» принималось по зелёным галочкам сборки —
+# то есть по тому, что код собрался, а не по тому, что он безопасен.
+#
+# Второе — про нас самих: workflow пишем мы, и в них ходят токены. Сегодня
+# три файла из девяти были без явных `permissions`, то есть с правами по
+# умолчанию на весь репозиторий.
+name: supply-chain
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  dependencies:
+    name: dependency review
+    runs-on: ubuntu-latest
+    # На push сравнивать не с чем: action работает по диапазону PR.
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@v4
+        with:
+          # Уязвимости уровня high и выше валят PR. Ниже — комментарием:
+          # шум из-за low в транзитивной зависимости приучает не читать
+          # отчёт вовсе, а это хуже, чем его отсутствие.
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+
+  workflows:
+    name: zizmor (безопасность workflow)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip -q install zizmor
+      # Гейт с первого дня: все находки на девяти существующих файлах уже
+      # разобраны — права токена сужены, credentials не остаются в .git,
+      # кэш убран из релизной сборки. Осознанные исключения записаны в
+      # .github/zizmor.yml и inline-комментарием, каждое с причиной.
+      - name: Разбор workflow
+        run: zizmor --config .github/zizmor.yml --format plain .github/workflows/
