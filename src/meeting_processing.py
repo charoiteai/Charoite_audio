@@ -207,6 +207,32 @@ class MeetingStatusStore:
             out.append(data)
         return sorted(out, key=lambda d: float(d.get("updated_at", 0)), reverse=True)
 
+    def busy(self, *, stale_after: float = STALE_PROCESSING) -> list[str]:
+        """Встречи, которые обрабатываются прямо сейчас.
+
+        Нужно ночному циклу: 12.08 он совпал с разбором встречи, и на 64 ГБ
+        одновременно не поместились транскрипция, ревизия ядер и досье.
+        Локальный сервер начал выгружать и грузить модели по кругу — 41 раз
+        за прогон, — запросы стали висеть минутами, а потом он лёг совсем:
+        258 тем ушли без разбора.
+
+        Брошенный `processing` (процесс умер, не дописав итог) занятостью не
+        считается — иначе одна мёртвая запись отменяла бы ночи навсегда.
+        """
+        now = float(self._now())
+        out: list[str] = []
+        for path in sorted(self.directory.glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict) or data.get("state") != "processing":
+                continue
+            if now - float(data.get("updated_at", 0)) >= stale_after:
+                continue
+            out.append(str(data.get("stage") or path.stem))
+        return out
+
     def typical_duration(self, *, minimum_samples: int = 3) -> float | None:
         """Сколько обычно занимает обработка — по прошлым встречам, в секундах.
 
