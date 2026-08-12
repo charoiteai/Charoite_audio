@@ -29,6 +29,17 @@ contributions that keep it local-first are very welcome.
    for purely technical changes).
 5. PR description: what changed, why, before/after where visible.
 
+### What CI checks
+
+| When | What |
+|---|---|
+| every PR | lint, python tests, app Swift tests, iOS build, CodeQL, docs guard |
+| nightly | the same python and Swift tests on macOS plus **iOS tests in the simulator** |
+
+iOS tests live in the nightly run on purpose: the simulator takes a while
+to boot, and keeping that in the fast PR check would teach everyone to wait.
+At night there is time.
+
 ## Where to start
 
 - [ROADMAP.md](ROADMAP.md) — what we plan next

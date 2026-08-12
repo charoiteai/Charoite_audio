@@ -96,6 +96,11 @@ jobs:
       # Контур собирается ДО бандла: релизное приложение должно работать
       # без терминала, а make_app.sh вкладывает контур, только если он готов.
       - name: Build embedded python runtime
+        # Условие как у соседей: без него шаг выполнялся ВСЕГДА, в том числе
+        # когда собирать нечего — а checkout тега под тем же условием не
+        # выполнялся, и шаг падал на отсутствующем файле. release-app краснел
+        # на каждом пуше в main, приучая не смотреть на красное (аудит 0.46.0).
+        if: steps.resolve.outputs.build == 'true'
         run: ./scripts/build_embedded_python.sh
       - name: Build bundle
         if: steps.resolve.outputs.build == 'true'
