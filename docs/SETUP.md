@@ -40,8 +40,13 @@ config and downloads it with a single button. Model details are in
 
 **The easy way is in the app.** The first-run wizard asks for your name and
 graph folder and writes them into `config/config.yaml` itself; the folder is
-picked from a panel. Editing the file by hand, below, is for installs without
-the interface.
+picked from a panel. If the file does not exist yet, the wizard creates it
+from the bundled example and lays out the `config/` directory on its own.
+When writing fails (no permission on the data folder, a broken install with
+no example), the wizard says so with the reason instead of showing "Saved":
+a silent refusal here would mean the person configured into the void and hit
+a permanently red readiness. Editing the file by hand, below, is for installs
+without the interface.
 
 In `config/config.yaml`:
 

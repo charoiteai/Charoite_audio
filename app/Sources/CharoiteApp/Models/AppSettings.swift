@@ -244,18 +244,47 @@ enum AppSettings {
     ///
     /// Возвращает false, если файла нет и создать его не удалось: молчаливый
     /// отказ здесь означал бы «настроил, а ничего не изменилось».
+    ///
+    /// Две поправки после аудита 0.46.0 (P0-7), из-за которых на чистой
+    /// машине не работало вообще ничего:
+    ///
+    /// 1. **Образец искали в папке ДАННЫХ.** В бандловой установке он лежит
+    ///    в поставке (`Contents/Resources/charoite/config/`), то есть в
+    ///    корне КОДА — у нового пользователя в папке данных нет ни его, ни
+    ///    самого конфига. Копирование падало, мастер молча ничего не
+    ///    сохранял. Теперь смотрим оба корня: сначала данные (ручная
+    ///    установка), потом код (бандл).
+    /// 2. **Каталог `config/` никто не создавал.** `copyItem` в
+    ///    несуществующую папку — ошибка, и на свежей установке она случалась
+    ///    всегда, потому что папку данных до первого запуска никто не
+    ///    размечает.
     @discardableResult
     static func setConfigValue(_ key: String, _ value: String) -> Bool {
         let cfg = charoiteRoot.appendingPathComponent("config/config.yaml")
         let fm = FileManager.default
         if !fm.fileExists(atPath: cfg.path) {
-            // Первый запуск: конфига ещё нет — берём образец из поставки.
-            let example = charoiteRoot.appendingPathComponent("config/config.example.yaml")
-            guard (try? fm.copyItem(at: example, to: cfg)) != nil else { return false }
+            // Папка данных на первом запуске пуста — размечаем сами.
+            guard (try? fm.createDirectory(at: cfg.deletingLastPathComponent(),
+                                           withIntermediateDirectories: true)) != nil else {
+                return false
+            }
+            guard let example = configExampleURL,
+                  (try? fm.copyItem(at: example, to: cfg)) != nil else { return false }
         }
         guard let text = try? String(contentsOf: cfg, encoding: .utf8) else { return false }
         let updated = replacing(key, with: value, in: text)
         return (try? updated.write(to: cfg, atomically: true, encoding: .utf8)) != nil
+    }
+
+    /// Образец конфига из поставки: в ручной установке лежит рядом с данными,
+    /// в бандловой — внутри приложения. Ищем в обоих корнях, потому что
+    /// «код в поставке, данные у человека» — это две разные папки.
+    static var configExampleURL: URL? {
+        let candidates = [
+            charoiteRoot.appendingPathComponent("config/config.example.yaml"),
+            codeRoot.appendingPathComponent("config/config.example.yaml"),
+        ]
+        return candidates.first { FileManager.default.fileExists(atPath: $0.path) }
     }
 
     /// Замена значения ключа в тексте конфига. Чистая функция — под тестом.

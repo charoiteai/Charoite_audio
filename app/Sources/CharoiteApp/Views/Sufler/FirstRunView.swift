@@ -27,6 +27,8 @@ struct FirstRunView: View {
     @State private var ownerName = AppSettings.configValue("user_name") ?? ""
     @State private var graphPath = AppSettings.configValue("graph_dir") ?? ""
     @State private var configSaved = false
+    /// Текст отказа записи конфига; nil — отказа не было.
+    @State private var configSaveFailure: String?
     /// Выбранный набор моделей. По умолчанию — тот, что уже в конфиге, а
     /// если конфиг ещё не тронут, рекомендованный под память этой машины.
     @State private var presetID: String = ModelPresetPolicy.current(
@@ -255,6 +257,19 @@ struct FirstRunView: View {
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                         .transition(.opacity)
                 }
+                // Отказ записи виден человеку. Раньше «Сохранено» показывалось
+                // безусловно: на свежей установке конфиг не создавался, готовность
+                // оставалась красной, и понять причину было неоткуда (аудит P0-7).
+                if let failure = configSaveFailure {
+                    Label {
+                        Text(failure)
+                            .font(.system(size: 11))
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                    .transition(.opacity)
+                }
             }
             Text(L.t("Имя — метка вашего микрофона в стенограмме. Папка пустая = граф выключен, работает только расшифровка.",
                      "The name labels your microphone in the transcript. An empty folder means the graph is off and only transcription runs.",
@@ -302,11 +317,33 @@ struct FirstRunView: View {
     private func saveConfig() {
         let name = ownerName.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return }
-        AppSettings.setConfigValue("user_name", name)
-        AppSettings.setConfigValue("graph_dir", graphPath.trimmingCharacters(in: .whitespaces))
-        withAnimation { configSaved = true }
+        // Результат записи проверяем: раньше «Сохранено» показывалось даже
+        // тогда, когда config.yaml не создавался вовсе, и новый пользователь
+        // упирался в красную готовность без единой подсказки (аудит P0-7).
+        let ok = AppSettings.setConfigValue("user_name", name)
+            && AppSettings.setConfigValue("graph_dir",
+                                          graphPath.trimmingCharacters(in: .whitespaces))
+        withAnimation {
+            configSaved = ok
+            configSaveFailure = ok ? nil : Self.saveFailureHint()
+        }
         // Проверка готовности читает конфиг — пусть увидит новые значения.
         readiness.refresh()
+    }
+
+    /// Что именно сказать человеку, когда запись не удалась. Причина всегда
+    /// одна из двух: папка данных недоступна для записи или в поставке не
+    /// нашёлся образец конфига — и обе чинятся по-разному.
+    private static func saveFailureHint() -> String {
+        let root = AppSettings.charoiteRoot.path
+        if AppSettings.configExampleURL == nil {
+            return L.t("Не найден образец config.example.yaml в поставке — переустановите приложение",
+                       "config.example.yaml is missing from the bundle — reinstall the app",
+                       "安装包中缺少 config.example.yaml — 请重新安装应用")
+        }
+        return L.t("Не удалось записать config.yaml в \(root) — проверьте доступ к папке",
+                   "Could not write config.yaml to \(root) — check folder permissions",
+                   "无法将 config.yaml 写入 \(root) — 请检查文件夹权限")
     }
 
     private var readinessPanel: some View {
