@@ -88,6 +88,8 @@ def scan_files(pattern: re.Pattern[str], files: list[pathlib.Path]) -> list[str]
 # Синтетические имена («a», «user», «test») пропускаем: примеры и тесты
 # обязаны показывать пути, а страж, который ругается на документацию,
 # начинает восприниматься как шум.
+# Пометка строки, которой разрешено выглядеть как утечка.
+PUBLIC_ALLOW = "приватный-образец"
 FAKE_USER = r"(?!a/|x/|user/|test/|someone/|you/|me/|ПУТЬ/)"
 PUBLIC_PATTERNS: dict[str, str] = {
     "внутренний хост": r"[\w.-]+\.(corp|intranet|internal|lan)\b|[\w-]+-gw-[\w.-]+",
@@ -110,6 +112,12 @@ def scan_public(files: list[pathlib.Path]) -> list[str]:
             except (OSError, UnicodeDecodeError):
                 continue
             for i, line in enumerate(text.splitlines(), 1):
+                # Явная пометка в самой строке, а не исключённый файл: тесты
+                # этого стража обязаны содержать образцы утечек, но глушить
+                # файл целиком — значит открыть место, где можно спрятать
+                # что угодно. Пометка видна в ревью построчно.
+                if PUBLIC_ALLOW in line:
+                    continue
                 if rx.search(line):
                     hits.append(f"{f}:{i}: {name}")
     return hits

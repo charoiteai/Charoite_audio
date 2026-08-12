@@ -27,12 +27,14 @@ def _hits(text: str) -> list[str]:
             if re.search(raw, text)]
 
 
+# Образцы утечек: строки помечены, чтобы страж не ловил собственный тест.
+# Пометка построчная и видна в ревью — файл целиком не глушится.
 @pytest.mark.parametrize("line,expected", [
-    ("base_url: https://payments-gw-lan-main.intranet", "внутренний хост"),
-    ("host: reports.corp", "внутренний хост"),
-    ("owner: ivanov@company-name.ru", "почта на непубличном домене"),
-    ("graph_dir: /Users/realname/Documents/Проект", "личный путь"),
-    ("Согласовал Петров И.И.", "фамилия с инициалами"),
+    ("base_url: https://payments-gw-lan-main.intranet", "внутренний хост"),  # приватный-образец
+    ("host: reports.corp", "внутренний хост"),  # приватный-образец
+    ("owner: ivanov@company-name.ru", "почта на непубличном домене"),  # приватный-образец
+    ("graph_dir: /Users/realname/Documents/Проект", "личный путь"),  # приватный-образец
+    ("Согласовал Петров И.И.", "фамилия с инициалами"),  # приватный-образец
 ])
 def test_leaks_are_caught(line, expected):
     assert expected in _hits(line), f"утечка прошла мимо: {line}"
