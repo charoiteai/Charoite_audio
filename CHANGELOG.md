@@ -5,6 +5,22 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.48.0](https://github.com/charoiteai/Charoite_audio/compare/v0.47.0...v0.48.0) (2026-08-12)
+
+
+### Features
+
+* **ci:** сторож conventional-заголовков PR ([#281](https://github.com/charoiteai/Charoite_audio/issues/281)) ([e894c6e](https://github.com/charoiteai/Charoite_audio/commit/e894c6eb6cd5e8e742e93d63df5d557646f3cf2d))
+
+
+### Bug Fixes
+
+* **app:** адрес LLM в приложении подчиняется privacy — P0-6 закрыт ([#273](https://github.com/charoiteai/Charoite_audio/issues/273)) ([5ad7074](https://github.com/charoiteai/Charoite_audio/commit/5ad70749806f97d26cca52c4749995a1a9fad3dc))
+* **app:** готовность знает про «Запись экрана» и требует перезапуска — P0-10 ([#276](https://github.com/charoiteai/Charoite_audio/issues/276)) ([d108605](https://github.com/charoiteai/Charoite_audio/commit/d108605084f6ee11530d87688850dcb52a16753a))
+* **app:** мастер первого запуска создаёт config.yaml и не врёт «Сохранено» — P0-7 ([#275](https://github.com/charoiteai/Charoite_audio/issues/275)) ([4c90e31](https://github.com/charoiteai/Charoite_audio/commit/4c90e317ee050e5226f9394644a106b43cc00620))
+* **app:** остановка захвата не стирает файлы следующей встречи — P0-5 ([#277](https://github.com/charoiteai/Charoite_audio/issues/277)) ([e236f58](https://github.com/charoiteai/Charoite_audio/commit/e236f58a08fd8e9c550c7231cde165720b0d54a5))
+* **ios:** прерывание без `.ended` больше не вечное — P0-9 ([#278](https://github.com/charoiteai/Charoite_audio/issues/278)) ([3be0234](https://github.com/charoiteai/Charoite_audio/commit/3be02346ffb88dfc8e6c2d9538bcbfa967c3c9a8))
+
 ## [0.47.0](https://github.com/charoiteai/Charoite_audio/compare/v0.46.0...v0.47.0) (2026-08-11)
 
 
