@@ -5,6 +5,15 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.48.1](https://github.com/charoiteai/Charoite_audio/compare/v0.48.0...v0.48.1) (2026-08-12)
+
+
+### Bug Fixes
+
+* **app:** ночь с молчащей моделью больше не считается успешной ([#282](https://github.com/charoiteai/Charoite_audio/issues/282)) ([b3c70fa](https://github.com/charoiteai/Charoite_audio/commit/b3c70fa0c6707cec3bf67da1123afb9414e9bd58))
+* **nightly:** цикл ждёт разбор встречи и работает на одной модели ([#284](https://github.com/charoiteai/Charoite_audio/issues/284)) ([0defaf9](https://github.com/charoiteai/Charoite_audio/commit/0defaf9b27c5356e68f0969f26f72370f1b5e523))
+* **rebuild:** пересборка встречи не запускается второй раз поверх идущей ([#285](https://github.com/charoiteai/Charoite_audio/issues/285)) ([42fe950](https://github.com/charoiteai/Charoite_audio/commit/42fe9504c8fbe356654d08e98621bd574303c592))
+
 ## [0.48.0](https://github.com/charoiteai/Charoite_audio/compare/v0.47.0...v0.48.0) (2026-08-12)
 
 
