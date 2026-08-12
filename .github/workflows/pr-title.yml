@@ -1,0 +1,54 @@
+# Требует conventional-заголовок у PR.
+#
+# При squash-мёрже сообщением коммита становится ЗАГОЛОВОК PR, а не то, что
+# написано в коммитах ветки. Локальный commitizen проверяет только коммиты и
+# до заголовка не достаёт: PR #280 уехал в main как ««Сегодня» показывает…»,
+# release-please не нашёл ни одного feat/fix, и целая работа не попала ни в
+# changelog, ни в версию — при том что каждый коммит внутри ветки был
+# оформлен верно.
+#
+# Безопасность: заголовок — текст, написанный человеком снаружи. В оболочку
+# интерполяцией не подставляем, читаем через переменную окружения
+# (github.blog про workflow injection).
+name: pr-title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  conventional:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Заголовок PR оформлен как conventional commit?
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+
+          # Типы — те же, что понимает release-please: только feat и fix
+          # поднимают версию, остальные попадают в историю без релиза.
+          types='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
+
+          if printf '%s' "$PR_TITLE" | grep -qE "^($types)(\([a-z0-9._/-]+\))?!?: .+"; then
+            echo "заголовок в порядке: $PR_TITLE"
+            exit 0
+          fi
+
+          cat <<EOF
+          Заголовок PR не по conventional commits:
+
+            $PR_TITLE
+
+          При squash-мёрже он становится сообщением коммита в main, и по нему
+          release-please решает, что войдёт в changelog и какой будет версия.
+          Заголовок без типа = работа исчезает из истории релизов.
+
+          Ожидается: <тип>(<область>): <что сделано>
+          Типы: $types
+          Пример: feat(app): «Сегодня» показывает статус ночной обработки
+          EOF
+          exit 1
