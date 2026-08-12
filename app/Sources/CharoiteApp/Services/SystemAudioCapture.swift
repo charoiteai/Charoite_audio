@@ -56,6 +56,10 @@ final class SystemAudioCapture: NSObject {
     /// почему собеседника по-прежнему нет в записи. Читает готовность.
     private(set) static var accessGrantedInThisSession = false
 
+    /// Метка этого захвата в манифесте: по ней при остановке отличаем свои
+    /// файлы от файлов уже начавшейся следующей встречи.
+    private let sessionID = UUID().uuidString
+
     private var stream: SCStream?
     private var sink: Sink?
 
@@ -164,14 +168,37 @@ final class SystemAudioCapture: NSObject {
         stream = nil
         sink?.close()
         sink = nil
-        // Манифест умирает вместе с потоком: демон следующей встречи не
-        // должен выбрать замороженный файл вместо живого источника.
+
+        // Убираем ТОЛЬКО свои файлы.
+        //
+        // Пути статические и общие для всех экземпляров, а гасим захват через
+        // 13 секунд после «Стоп» — демон в это время дописывает хвост. Если в
+        // эти секунды начать следующую встречу (штатный сценарий: одна за
+        // другой), новый экземпляр уже перезапишет манифест и потоки, а
+        // отложенный `stop()` прежнего сносил их под ним. Вторая встреча
+        // оставалась без системного звука — а на macOS 15+, где микрофон идёт
+        // тем же потоком, без обоих каналов (аудит 0.46.0, P0-5).
+        //
+        // Владение определяем по манифесту: он наш, пока в нём наш sessionID.
+        guard Self.manifestSession() == sessionID else {
+            log("файлы принадлежат новой встрече — не трогаем")
+            return
+        }
         try? FileManager.default.removeItem(at: Self.manifestURL)
         // Сами потоки — тоже: они уже переписаны в recordings/ штатной
         // записью встречи, а на диске это сотни мегабайт, которые никто
         // никогда не откроет.
         try? FileManager.default.removeItem(at: Self.systemURL)
         try? FileManager.default.removeItem(at: Self.micURL)
+    }
+
+    /// Идентификатор сессии из манифеста на диске; nil — манифеста нет или он
+    /// от версии без поля (тогда владение недоказуемо и удалять нельзя).
+    static func manifestSession() -> String? {
+        guard let data = try? Data(contentsOf: manifestURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return json["session"] as? String
     }
 
     private func writeManifest(micInStream: Bool) {
@@ -181,6 +208,9 @@ final class SystemAudioCapture: NSObject {
             "format": "s16le",
             "system": Self.systemURL.path,
             "system_rate": Self.sampleRate,
+            // Кто именно владеет этими файлами прямо сейчас. Демон поле
+            // игнорирует, а нам оно нужно при остановке — см. `stop()`.
+            "session": sessionID,
         ]
         if micInStream {
             manifest["mic"] = Self.micURL.path
