@@ -163,6 +163,23 @@ dependencies so that it can answer *before* they are installed. Everything else
 runs via `.venv/bin/python` — and if you start it with the system Python, the
 answer is a one-line recipe instead of a traceback (`src/deps.py`).
 
+## Versions: the app, the code and the release
+
+A repository install holds three separate things, and they drift apart
+quietly: the app (`.app` in `~/Applications`), the code in your working
+folder — what the daemon and the nightly pass actually run — and the latest
+release on GitHub. An app at 0.46.0 when 0.47.0 is already out looks
+perfectly normal; so does a folder ten commits behind. You find out when you
+spend half a day fixing a bug that no longer exists upstream.
+
+The app compares all three and says so on the Today tab when they diverge.
+Matching versions are the norm and get no line: a reminder about normality
+stops being read within a week. The code version comes from the git tag in
+your folder; the release number from a single GET to GitHub's public API
+once a day — no token, not a byte about you, and silent on any network
+error. Don't want it: `sufler.check_updates: false` in the config; the
+`CHAROITE_NO_CLOUD` switch turns this off too.
+
 ## Night cycle (optional)
 
 `scripts/nightly.sh` keeps the graph tidy while you sleep: Tier-3 core
@@ -187,3 +204,18 @@ revision (duplicates, merges — with backups), the morning brief
 ```bash
 launchctl load ~/Library/LaunchAgents/ai.charoite.nightly.plist
 ```
+
+Whether the pass actually ran shows up in the app on the Today tab, at the
+bottom of the recent meetings column. Nightly work is invisible by
+definition: you are asleep, and in the morning a tidied graph looks exactly
+like an untouched one. So the script writes its outcome to
+`logs/nightly.json` next to your data (the launchd log lives in `/tmp` and
+disappears on reboot, which makes "never ran" indistinguishable from "the
+file is gone"), and the app reads it. A successful pass is one calm line
+with the time; failed steps, an interrupted run and a skipped night are
+highlighted.
+
+Check separately which path the agent points at: if the repository has
+moved, the `plist` keeps launching the script from the old location — the
+graph gets edited nightly by an older version of the code, and without the
+status file there is no way to notice.

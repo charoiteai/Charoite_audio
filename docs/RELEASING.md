@@ -61,7 +61,10 @@ the PAT is in place.
 
 ## App bundle on every release
 
-`release-app` builds `Charoite.app.zip` on a macos runner and attaches
+`release-app` builds `Charoite.dmg` (the installer for a first install),
+`Charoite.app.zip` (what the installed app updates from) and a `.sha256` for
+both — without a published checksum the in-app update refuses to install
+what it downloaded. It builds them on a macos runner and attaches
 it to the release. Three triggers:
 
 - `workflow_run` after the `release-please` workflow — the main path.

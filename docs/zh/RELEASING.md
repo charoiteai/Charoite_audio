@@ -37,7 +37,9 @@ secret 缺失时工作流会回退到 `GITHUB_TOKEN`，所以在此期间什么�
 
 ## 每次发布都附带应用包
 
-`release-app` 在 macos runner 上构建 `Charoite.app.zip` 并把它附加到发布上。共三个触发器：
+`release-app` 在 macos runner 上构建 `Charoite.dmg`（首次安装用的安装器）、
+`Charoite.app.zip`（已安装应用据此更新）以及两者的 `.sha256` —— 没有已发布的校验和，
+应用内更新会拒绝安装下载到的文件。构建完成后全部附加到发布上。共三个触发器：
 
 - `release-please` 工作流之后的 `workflow_run` — 主路径。release-please 用 `GITHUB_TOKEN` 发布 release，而 GitHub 的防递归机制意味着这类事件不会在其他工作流里触发 `release: published`（v0.19.0 最初发布时就没带应用包 — 我们由此学到教训）。该 job 只在 release-please **成功**时才继续（失败的运行同样会发出 `completed`）。
 - `release: published` — 保留给人工创建的发布。
