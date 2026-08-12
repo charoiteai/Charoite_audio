@@ -48,6 +48,27 @@ FAIL_ONLY_TIER3 = (
     "esac\n"
 )
 ALL_OK = "#!/bin/sh\nexit 0\n"
+# Модель молчала: скрипт досье отработал, но темы остались без разбора.
+DOSSIER_WITHOUT_MODEL = (
+    "#!/bin/sh\n"
+    'case "$1" in\n'
+    "  *nightly_dossier.py*) exit 2 ;;\n"
+    "  *) exit 0 ;;\n"
+    "esac\n"
+)
+# Заглушка, подглядывающая в статус прямо во время прогона.
+PEEK_STATUS = (
+    "#!/bin/sh\n"
+    'case "$1" in\n'
+    "  *tier3_cores*) cat logs/nightly.json ;;\n"
+    "esac\n"
+    "exit 0\n"
+)
+
+
+def _status(tmp_path):
+    import json
+    return json.loads((tmp_path / "logs" / "nightly.json").read_text())
 
 
 def _run(tmp_path: pathlib.Path, stub: str) -> subprocess.CompletedProcess:
@@ -127,3 +148,43 @@ def test_vault_is_the_folder_above_the_configured_graph(tmp_path, monkeypatch):
         (g / "Ядра").mkdir(parents=True)
     monkeypatch.setattr(graphs, "configured_graph", lambda: work)
     assert graphs.all_graphs("Ядра") == [home, work], "граф из vault не найден"
+
+
+def test_status_file_is_written(tmp_path):
+    """Итог прогона обязан лечь рядом с данными.
+
+    Логи launchd живут в /tmp и исчезают при перезагрузке: по ним «ночью
+    ничего не делалось» неотличимо от «файл стёрся». Статус читает
+    приложение и показывает на «Сегодня».
+    """
+    _run(tmp_path, ALL_OK)
+    assert _status(tmp_path)["state"] == "ok"
+
+
+def test_running_is_visible_while_the_pass_is_going(tmp_path):
+    """Прогон занимает до часа с лишним — всё это время «не запускалось»
+    было бы прямой ложью."""
+    r = _run(tmp_path, PEEK_STATUS)
+    assert '"state":"running"' in r.stdout, r.stdout
+
+
+def test_silent_model_is_not_a_success(tmp_path):
+    """12.08: локальный сервер лёг посреди прогона, 258 тем ушли без
+    разбора — и ночь отчиталась как успешная."""
+    _run(tmp_path, DOSSIER_WITHOUT_MODEL)
+    s = _status(tmp_path)
+    assert s["state"] == "failed", s
+    assert "модель-молчала" in s["failed"], s
+
+
+def test_sudden_death_leaves_a_failure_not_a_forever_running(tmp_path):
+    """set -e выносит скрипт из любой необработанной команды: статус не
+    должен остаться «идёт» навсегда — это поломка под видом работы."""
+    (tmp_path / "scripts").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".venv" / "bin").mkdir(parents=True, exist_ok=True)
+    shutil.copy(NIGHTLY, tmp_path / "scripts" / "nightly.sh")
+    # Питона нет вовсе — первая же строка с $PY валит скрипт по set -e.
+    r = subprocess.run(["bash", str(tmp_path / "scripts" / "nightly.sh")],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode != 0
+    assert _status(tmp_path)["state"] == "failed", _status(tmp_path)

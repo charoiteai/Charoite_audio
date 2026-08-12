@@ -82,11 +82,12 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
     folder = graph / dossier.DOSSIER_DIR
     files, backlinks = dossier.scan(graph)
     if not files:
-        return {"граф": graph.name, "тем": 0, "собрано": 0, "пропущено": 0}
+        return {"граф": graph.name, "тем": 0, "собрано": 0, "пропущено": 0, "отказы": 0}
 
     cl = dossier.clusters(files, backlinks)
     today = date.today().isoformat()
     entries, built, skipped = [], 0, 0
+    отказы = 0   # модель не ответила: тема осталась без разбора
 
     for theme, members in sorted(cl.items(), key=lambda kv: -len(kv[1])):
         path = folder / f"{theme}.md"
@@ -123,6 +124,7 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
             except Exception as e:  # noqa: BLE001
                 print(f"  ⚠️ {theme}: модель не ответила ({type(e).__name__}: {e})")
                 body = ""
+                отказы += 1
                 break
             if dossier.looks_valid(body):
                 break
@@ -152,7 +154,8 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
     if not dry and entries:
         dossier.write_index(folder, entries)
 
-    return {"граф": graph.name, "тем": len(cl), "собрано": built, "пропущено": skipped}
+    return {"граф": graph.name, "тем": len(cl), "собрано": built,
+            "пропущено": skipped, "отказы": отказы}
 
 
 def _собрано(path: pathlib.Path) -> str:
@@ -191,16 +194,32 @@ def main() -> int:
         pathlib.Path(args.graph).expanduser() if args.graph else default_graph(c)]
 
     total = 0
+    тем = 0
+    отказов = 0
     for g in graphs:
         if not g.is_dir():
             print(f"{g}: нет такой папки")
             continue
         print(f"=== {g.name}")
         r = run(g, c, full=args.full, dry=args.dry, limit=args.limit)
-        print(f"    тем: {r['тем']}, собрано: {r['собрано']}, без изменений: {r['пропущено']}")
+        print(f"    тем: {r['тем']}, собрано: {r['собрано']}, без изменений: {r['пропущено']}"
+              + (f", отказов модели: {r['отказы']}" if r.get("отказы") else ""))
         total += r["собрано"]
+        тем += r["тем"]
+        отказов += r.get("отказы", 0)
 
     print(f"итого собрано досье: {total}")
+    if отказов:
+        print(f"отказов модели: {отказов} из {тем} тем")
+    # Молчащая модель — это не успех.
+    #
+    # 12.08 локальный сервер лёг посреди прогона: 258 тем ушли без разбора,
+    # а шаг закончился нулём — и статус ночи получился «ok». Досье не
+    # собрались, граф черствел, и заметить это можно было только вручную
+    # читая лог. Единичный отказ случается и на живой модели, поэтому порог,
+    # а не «любой отказ».
+    if отказов >= max(3, тем // 10):
+        return 2
     return 0
 
 

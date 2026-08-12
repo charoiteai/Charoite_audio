@@ -212,8 +212,14 @@ like an untouched one. So the script writes its outcome to
 `logs/nightly.json` next to your data (the launchd log lives in `/tmp` and
 disappears on reboot, which makes "never ran" indistinguishable from "the
 file is gone"), and the app reads it. A successful pass is one calm line
-with the time; failed steps, an interrupted run and a skipped night are
-highlighted.
+with the time; a pass in progress, failed steps, an interrupted run and a
+skipped night are highlighted.
+
+Only a night where nothing went wrong counts as a success. A silent model is
+caught separately: if the local server dies mid-pass, dossiers are built with
+nothing to build from — topics stay unanalysed while the step still exits
+zero. Such a night is marked `досье(модель-молчала)`, otherwise the graph
+goes stale unnoticed.
 
 Check separately which path the agent points at: if the repository has
 moved, the `plist` keeps launching the script from the old location — the
