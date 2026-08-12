@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterator
 
 import requests
@@ -16,6 +17,18 @@ class LLM:
         self.model = l["model"]
         self.small = l.get("small_model", self.model)
         self.fallback = l.get("fallback_model", self.small)
+        # Ночью — одна модель на всё.
+        #
+        # Днём мелкие задачи уходят на маленькую модель, и это правильно: они
+        # быстрее и не занимают большую. Ночью же шаги идут подряд, большая и
+        # маленькая чередуются, и на занятой памяти сервер начинает выгружать
+        # одну ради другой: 12.08 за один прогон модель грузилась 41 раз,
+        # запросы висели по 2-6 минут, а потом сервер лёг совсем. Держать в
+        # памяти одну — дешевле, чем экономить на её размере: у 35B-A3B
+        # активны те же 3B, что и у маленькой.
+        if os.environ.get("CHAROITE_ONE_MODEL"):
+            self.small = self.model
+            self.fallback = self.model
         self.temperature = float(l.get("temperature", 0.4))
         # num_ctx ЯВНО: без него Ollama грузит модель с контекстом из Modelfile
         # (qwen3.6 — 262144), KV-кэш раздувается и генерации медленнее в разы
