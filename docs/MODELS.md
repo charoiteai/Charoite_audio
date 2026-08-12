@@ -24,7 +24,7 @@ a Russian ASR model by [Sber](https://github.com/salute-developers/GigaAM), MIT.
 Config alternatives: `whisper` (mlx, 100+ languages) and `parakeet`
 (English, extremely fast) for non-Russian meetings.
 
-## Main LLM: qwen3.6:35b-a3b
+## Main LLM: qwen3.6:35b-mlx (same MoE, MLX engine)
 
 MoE: ~35B total, ~3B active parameters — 30B-class quality at small-model
 speed.
@@ -49,6 +49,49 @@ speed.
   an option.
 - `think: false` everywhere: reasoning mode moves output into the thinking
   field (empty content) and adds ~10 s of latency.
+
+## Engine: MLX build instead of GGUF (measured 2026-08-12)
+
+Ollama ships the same MoE under two tags: `qwen3.6:35b-a3b` (GGUF,
+llama.cpp, 23 GB, Q4_K_M) and `qwen3.6:35b-mlx` (Apple's MLX engine, 21 GB).
+Architecture and capabilities match: completion, vision, tools, thinking.
+No migration needed — it is one tag in `llm.model`.
+
+Measured on M1 Max, 64 GB, three runs, median over warm ones
+(`scripts/bench_models.py`):
+
+| Case | `35b-a3b` (GGUF) | `35b-mlx` (MLX) | Muse Glimmer 30B (MLX) |
+|---|---|---|---|
+| short prompt | 0.3 s / 40.6 tok/s | **0.1 s / 49.5** | 5.7 s / 15.8 |
+| text extraction | 0.3 s / 13.6 | **0.1 s / 46.7** | 13.3 s / 16.4 |
+| long context (20k chars) | 0.4 s / 31.2 | **0.1 s / 50.8** | 10.1 s / 15.3 |
+| cold start (weight load) | 9.2 s | 21 s | 72 s |
+
+MLX won. Russian was checked separately on a real transcript: minutes of
+comparable quality, clean language.
+
+**Honest caveats.** Three ~21 GB models shared 64 GB during the run and
+evicted each other — the "text extraction" row (13.6 vs 46.7) almost
+certainly caught a GGUF reload; a 3.4× gap does not come from an engine
+swap. A realistic estimate of the win is 20–30%. Quantisation differs too
+(23 GB vs 21 GB), and quality was compared on a single task.
+
+**What it costs.** Cold start doubles: 21 s against 9. After a long idle the
+first prompt on a meeting arrives later; afterwards the model stays resident
+via `keep_alive`.
+
+**Rollback** is one line: put `qwen3.6:35b-a3b` back into `llm.model` and
+`think_model`. The previous value is kept as a comment next to it.
+
+**Muse Glimmer 30B** (the first open-weight model from Meta Superintelligence
+Labs, Apache 2.0) is not usable as the chat model: 15–16 tok/s and 5 to 13
+seconds to the first token. The reason is architectural — a dense 30B hits
+memory bandwidth where an MoE computes with three billion active parameters.
+We keep it in mind for agentic work (strict function calling, 131K context),
+where format discipline matters more than latency.
+
+Requires Ollama 0.32+: on 0.20 the MLX tags return 412 "requires a newer
+version".
 
 ## Light model: qwen3.5:4b
 
