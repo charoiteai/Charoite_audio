@@ -59,3 +59,27 @@ jobs:
       # .github/zizmor.yml и inline-комментарием, каждое с причиной.
       - name: Разбор workflow
         run: zizmor --config .github/zizmor.yml --format plain .github/workflows/
+
+  privacy:
+    name: обезличивание (форматы)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # Второй рубеж, а не замена первому.
+      #
+      # Поимённый список маркеров живёт только на машине автора: перечень
+      # того, что мы прячем, сам по себе чувствителен, а секреты GitHub не
+      # отдаются в PR из форков — проверка не сработала бы ровно в самом
+      # опасном случае. Здесь ловятся форматы: внутренние хосты, почты на
+      # непубличных доменах, личные пути, фамилии с инициалами. То есть
+      # самый частый способ утечки — скопированный кусок конфига или лога.
+      #
+      # Имя коллеги в комментарии поймает только локальный хук. Он остаётся
+      # главным, и CONTRIBUTING требует его поставить.
+      - name: Публичные шаблоны приватных данных
+        run: python3 scripts/check_private_markers.py --public-only

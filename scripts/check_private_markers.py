@@ -73,8 +73,70 @@ def scan_files(pattern: re.Pattern[str], files: list[pathlib.Path]) -> list[str]
     return hits
 
 
+# Второй рубеж: форматы, а не имена.
+#
+# Список поимённых маркеров приватен и живёт только на машине автора — в CI
+# его нет и быть не должно: перечень того, что мы прячем, сам по себе
+# чувствителен, а секреты GitHub вдобавок не отдаются в PR из форков, то
+# есть проверка не сработала бы ровно в самом опасном случае.
+#
+# Поэтому здесь — публичные шаблоны, которые ничего не выдают своим видом,
+# но ловят самый частый способ утечки: скопированный кусок конфига, лога или
+# пути с рабочей машины. Это ВТОРОЙ рубеж, а не замена первому: фамилию
+# коллеги в комментарии поймает только локальный хук.
+#
+# Синтетические имена («a», «user», «test») пропускаем: примеры и тесты
+# обязаны показывать пути, а страж, который ругается на документацию,
+# начинает восприниматься как шум.
+# Пометка строки, которой разрешено выглядеть как утечка.
+PUBLIC_ALLOW = "приватный-образец"
+FAKE_USER = r"(?!a/|x/|user/|test/|someone/|you/|me/|ПУТЬ/)"
+PUBLIC_PATTERNS: dict[str, str] = {
+    "внутренний хост": r"[\w.-]+\.(corp|intranet|internal|lan)\b|[\w-]+-gw-[\w.-]+",
+    "почта на непубличном домене": r"[\w.+-]+@[\w-]+\.(ru|local|corp|lan)\b",
+    "личный путь": rf"/Users/{FAKE_USER}[a-z][\w-]*/",
+    "фамилия с инициалами": r"[А-ЯЁ][а-яё]{2,}\s+[А-ЯЁ]\.\s?[А-ЯЁ]\.",
+}
+
+
+def scan_public(files: list[pathlib.Path]) -> list[str]:
+    """Находки по публичным шаблонам — «путь:строка: чем сработало»."""
+    hits: list[str] = []
+    for name, raw in PUBLIC_PATTERNS.items():
+        rx = re.compile(raw)
+        for f in files:
+            if f.suffix.lower() in SKIP_SUFFIX:
+                continue
+            try:
+                text = f.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            for i, line in enumerate(text.splitlines(), 1):
+                # Явная пометка в самой строке, а не исключённый файл: тесты
+                # этого стража обязаны содержать образцы утечек, но глушить
+                # файл целиком — значит открыть место, где можно спрятать
+                # что угодно. Пометка видна в ревью построчно.
+                if PUBLIC_ALLOW in line:
+                    continue
+                if rx.search(line):
+                    hits.append(f"{f}:{i}: {name}")
+    return hits
+
+
 def main() -> int:
     full_only = "--all" in sys.argv
+    # Режим CI: только публичные шаблоны, приватного списка там нет.
+    if "--public-only" in sys.argv:
+        hits = scan_public(tracked_files())
+        if hits:
+            print("❌ похоже на приватные данные в публичном дереве:", file=sys.stderr)
+            for h in hits:
+                print(f"  {h}", file=sys.stderr)
+            print("Это проверка ФОРМАТОВ. Имена и внутренние названия ловит "
+                  "локальный хук — он остаётся главным рубежом.", file=sys.stderr)
+            return 1
+        print("публичные шаблоны: чисто")
+        return 0
     path = markers_path()
     if not path.exists():
         # fail-closed на машине автора и мягкий пропуск в CI и у контрибьюторов:
