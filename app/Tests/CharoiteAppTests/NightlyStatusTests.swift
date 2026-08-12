@@ -81,6 +81,29 @@ final class NightlyStatusTests: XCTestCase {
         }
     }
 
+    /// Прогон, который идёт прямо сейчас. Первый же занял больше часа —
+    /// всё это время «не запускалось» было бы прямой ложью.
+    func testRunningRightNow() {
+        let now = Date()
+        var j = json(state: "running", finishedAgo: 0, now: now)
+        j["finished"] = ""
+        j["started"] = fmt.string(from: now.addingTimeInterval(-40 * 60))
+        guard case .running = NightlyStatus.from(json: j, now: now).state else {
+            return XCTFail("идущий прогон выдан за отсутствующий")
+        }
+    }
+
+    /// Процесс убили так, что записать «прервано» он не успел: вечное «идёт»
+    /// скрывало бы ровно ту поломку, ради которой всё это заведено.
+    func testRunningForeverIsInterrupted() {
+        let now = Date()
+        var j = json(state: "running", finishedAgo: 0, now: now)
+        j["started"] = fmt.string(from: now.addingTimeInterval(-9 * 3600))
+        guard case .interrupted = NightlyStatus.from(json: j, now: now).state else {
+            return XCTFail("девятичасовой «прогон» всё ещё считается идущим")
+        }
+    }
+
     func testNoStatusAtAll() {
         guard case .never = NightlyStatus.from(json: [:]).state else {
             return XCTFail("пустой статус должен читаться как «не запускалось»")

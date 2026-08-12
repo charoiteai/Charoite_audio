@@ -20,16 +20,27 @@ STARTED=$(date '+%F %T')
 STATUS_DIR="${CHAROITE_ROOT:-$PWD}/logs"
 STATUS="$STATUS_DIR/nightly.json"
 FAILED=""
+STATUS_DONE=0
 mkdir -p "$STATUS_DIR"
 
 # Пишем статус в любом случае — в том числе если прогон оборвут на середине:
 # незавершённый прогон это тоже факт, и человек должен его увидеть.
 write_status() {
   local state="$1"
+  # «идёт» — не итог: после него статус ещё обязан быть переписан.
+  [ "$state" = running ] || STATUS_DONE=1
   printf '{"started":"%s","finished":"%s","state":"%s","rc":%s,"failed":"%s"}\n' \
     "$STARTED" "$(date '+%F %T')" "$state" "$rc" "$FAILED" > "$STATUS"
 }
 trap 'write_status interrupted' INT TERM
+# set -e выносит скрипт из любой необработанной команды, и статус остался бы
+# «идёт» навсегда — поломка, замаскированная под работу.
+trap '[ "$STATUS_DONE" = 1 ] || { rc=1; write_status failed; }' EXIT
+
+# Пишем «идёт» сразу: прогон занимает от четверти часа до часа с лишним
+# (ревизия ядер и досье — это локальная модель на каждой теме), и всё это
+# время на экране не должно висеть «не запускалось».
+write_status running
 
 echo "=== nightly $(date '+%F %T') ==="
 # право на слияние — у конфига (sufler.tier3_auto_apply), не у cron:
@@ -38,7 +49,17 @@ $PY scripts/tier3_cores.py --all-graphs --auto || { echo "❌ РЕВИЗИЯ Я�
 echo "--- dossiers ---"
 # Сводки по темам поверх ядер + индекс для поиска. Инкрементально:
 # пересобираются только темы, у которых изменился хоть один источник.
-$PY scripts/nightly_dossier.py --all-graphs || { echo "⚠️ сборка досье не отработала"; FAILED="$FAILED досье"; }
+# Код 2 — особый: скрипт отработал, но модель массово не отвечала, и темы
+# остались без разбора. Снаружи это выглядит как успешная ночь, поэтому
+# различаем: «шаг упал» и «шаг прошёл вхолостую» — разные беды, и вторая
+# опаснее, её не видно.
+$PY scripts/nightly_dossier.py --all-graphs || {
+  case $? in
+    2) echo "⚠️ досье собирались без модели — темы остались без разбора"
+       FAILED="$FAILED досье(модель-молчала)" ;;
+    *) echo "⚠️ сборка досье не отработала"; FAILED="$FAILED досье" ;;
+  esac
+}
 echo "--- dossier review (cloud, optional) ---"
 # Второй проход по свежим досье: облако видит связи между источниками,
 # которых локальная модель не замечает. Правит сам только при
@@ -62,5 +83,9 @@ echo "--- memory bench ---"
 $PY scripts/memory_bench.py || echo "⚠️ БЕНЧ ПАМЯТИ ПРОСЕЛ — смотри выше"
 echo "=== done $(date '+%F %T'), rc=$rc ==="
 FAILED="${FAILED# }"
-if [ "$rc" -eq 0 ]; then write_status ok; else write_status failed; fi
+# «ok» — только когда не отвалилось НИЧЕГО. Код возврата мягче: им мы
+# сообщаем launchd об авариях, а человеку на экране важно и то, что дедуп
+# файлов не отработал или досье собрались без модели, — при rc=0 такая ночь
+# выглядела бы полностью успешной.
+if [ "$rc" -eq 0 ] && [ -z "$FAILED" ]; then write_status ok; else write_status failed; fi
 exit $rc
