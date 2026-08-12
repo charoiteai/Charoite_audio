@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import atexit
 import fcntl
 import json
 import os
@@ -517,12 +518,79 @@ def retry_unfinished(status: MeetingStatusStore) -> None:
     )
 
 
+def _pid_file(stamp: str) -> pathlib.Path:
+    return ROOT / "logs" / f"rebuild-{stamp}.pid"
+
+
+def running_elsewhere(live: pathlib.Path) -> int | None:
+    """Pid живой пересборки этой же встречи, если она уже идёт.
+
+    12.08: обновление приложения посреди разбора дало два прогона на одну
+    встречу. Первый осиротел (его демона закрыли), но продолжил работать;
+    новый демон при старте увидел прерванную встречу и запустил пересборку
+    заново — он проверяет ЛОК ДЕМОНА, а осиротевшая пересборка лока не
+    держит вовсе. Два процесса по 100% CPU диаризовали одно и то же и
+    дрались за финальный файл: чей `replace` последний, того и результат.
+
+    Отметка живёт весь прогон, а не отдельный его шаг. Пробовать опознать
+    работу по временному `<имя>.wav.part<pid>` бесполезно: он существует
+    только в окне конвертации, а дубль случился на диаризации — то есть
+    ровно там, где такого файла уже нет.
+
+    Мёртвую отметку (машину выключили посреди пересборки) убираем сами:
+    иначе одна аварийная ночь запретила бы пересборку встречи навсегда.
+    """
+    stamp = meeting_stamp.stamp_of(live.stem)
+    if not stamp:
+        return None
+    f = _pid_file(stamp)
+    try:
+        pid = int(f.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    if pid == os.getpid():
+        return None
+    try:
+        os.kill(pid, 0)          # 0 — только проверка, сигнал не шлём
+    except ProcessLookupError:
+        f.unlink(missing_ok=True)
+        return None
+    except PermissionError:
+        return pid               # чужой пользователь, но процесс есть
+    return pid
+
+
+def mark_running(live: pathlib.Path) -> pathlib.Path | None:
+    """Отметить, что пересборка этой встречи идёт под нашим pid."""
+    stamp = meeting_stamp.stamp_of(live.stem)
+    if not stamp:
+        return None
+    f = _pid_file(stamp)
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        return None
+    return f
+
+
 def main():
     live = pathlib.Path(sys.argv[1]).expanduser()
     if not live.exists():
         sys.exit(f"нет файла: {live}")
+    # Второй прогон той же встречи — не помощь, а вред: та же работа вдвое,
+    # та же память вдвое и гонка за финальный файл.
+    busy = running_elsewhere(live)
+    if busy:
+        log(f"пересборка этой встречи уже идёт (pid {busy}) — выхожу")
+        return
+    mark = mark_running(live)
     status = MeetingStatusStore(ROOT)
     pipeline_started = time.time()
+    # Снимаем отметку при любом выходе, включая аварийный: иначе одна
+    # оборванная пересборка запретила бы повтор этой встречи навсегда.
+    if mark:
+        atexit.register(lambda: mark.unlink(missing_ok=True))
 
     def publish(method, *args):
         try:
