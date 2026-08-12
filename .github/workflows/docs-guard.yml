@@ -54,7 +54,13 @@ jobs:
           # Поднятая версия зависимости — не изменение поведения, и требовать
           # под неё абзац в README значит либо плодить пустые абзацы, либо
           # держать вечно красным каждый PR бота. Сам код при этом под стражем.
-          touches_code="$(echo "$touches_code" | grep -vE '(^|/)(libs\.versions\.toml|gradle-wrapper\.properties|Package\.resolved)$' || true)"
+          # Сюда же вся обёртка gradle: dependabot при поднятии версии меняет
+          # не только .properties, но и gradlew, gradlew.bat и сам .jar —
+          # то есть страж краснел на каждом таком PR (12.08, #270), хотя
+          # поведения продукта эти файлы не касаются и абзаца в README не
+          # заслуживают. Обходить это меткой руками каждый раз — способ
+          # приучить ставить skip-docs не глядя, а вот это уже опасно.
+          touches_code="$(echo "$touches_code" | grep -vE '(^|/)(libs\.versions\.toml|gradle-wrapper\.properties|gradle-wrapper\.jar|gradlew|gradlew\.bat|Package\.resolved)$' || true)"
           # Документацией — только то, что человек правда читает как документацию.
           # Переводы (README.zh.md и прочие) из списка убраны: опечатка в
           # китайском переводе закрывала требование задокументировать демон.
