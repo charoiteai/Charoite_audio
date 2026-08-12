@@ -1,5 +1,10 @@
 # Ночной прогон тестов: ловим гниение (зависимости, окружение, флаки),
 # пока никто не смотрит. Красный — увидим утром в Actions.
+#
+# Обе джобы были красными пять ночей подряд, и обе — не по делу: pytest не
+# добирал зависимости, swift собирался на SDK без нужного API. Хронически
+# красная оборона хуже отсутствующей: она приучает не смотреть на красное,
+# и настоящее гниение утонет в этом фоне (аудит 0.46.0).
 name: nightly
 on:
   schedule:
@@ -7,15 +12,32 @@ on:
   workflow_dispatch: {}
 jobs:
   pytest:
-    runs-on: macos-14
+    # macOS, а не ubuntu как в ci.yml: продукт живёт на macOS, и ночная
+    # проверка обязана ловить именно то, что ломается на боевой платформе.
+    runs-on: macos-15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
-        with: {python-version: "3.12"}
-      - run: python -m pip install -q pytest pyyaml requests numpy soundfile
+        with:
+          python-version: "3.12"
+          cache: pip
+      # sounddevice тянется на импорте main/daemon и без PortAudio валит СБОР
+      # тестов целиком — не один тест, а весь прогон.
+      - name: PortAudio
+        run: brew list portaudio >/dev/null 2>&1 || brew install portaudio >/dev/null
+      # `pip install .` вместо ручного списка пакетов: перечисление руками и
+      # было причиной пятидневного красного — в нём не хватало sounddevice, а
+      # список зависимостей живёт в pyproject и меняется без оглядки на CI.
+      - name: Deps
+        run: pip -q install . pytest
       - run: python -m pytest tests/ -q
   swift:
-    runs-on: macos-14
+    # macos-15, а не 14: SystemAudioCapture использует API микрофона
+    # ScreenCaptureKit (captureMicrophone, SCStreamOutputType.microphone),
+    # которых нет в SDK 14 — компиляция падала до единого теста.
+    runs-on: macos-15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
       # Без пайпа: `swift test | tail` возвращал код `tail`, то есть всегда 0.
@@ -23,3 +45,34 @@ jobs:
       # падении Swift-тестов — ровно ту аварию, ради которой её сделали, она
       # и не видела.
       - run: swift test --package-path app
+  ios:
+    # iOS-тесты существовали, но не гонялись нигде: в PR-проверке только
+    # сборка. Правка в app-ios/ уезжала в main непроверенной — ночью есть
+    # время на симулятор, которого нет в быстрой PR-проверке.
+    name: ios tests
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen >/dev/null
+      - name: Generate project
+        working-directory: app-ios
+        run: xcodegen generate
+      - name: Test
+        working-directory: app-ios
+        run: |
+          # Имя симулятора не прибиваем: список на раннере меняется от образа
+          # к образу, и захардкоженный «iPhone 15» однажды просто исчезнет —
+          # джоба покраснеет по причине, не имеющей отношения к коду. Берём
+          # первый доступный iPhone.
+          DEVICE=$(xcrun simctl list devices available \
+            | grep -o 'iPhone [^(]*' | head -1 | sed 's/ *$//')
+          if [ -z "$DEVICE" ]; then
+            echo "на раннере нет ни одного симулятора iPhone"
+            exit 1
+          fi
+          echo "симулятор: $DEVICE"
+          xcodebuild -project CharoiteiOS.xcodeproj -scheme CharoiteiOS \
+            -destination "platform=iOS Simulator,name=$DEVICE" \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO test
