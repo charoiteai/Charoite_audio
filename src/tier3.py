@@ -84,6 +84,27 @@ def _meeting_overlap(a: dict, b: dict) -> float:
     return len(common) / min(len(a["meetings"]), len(b["meetings"]))
 
 
+def changed_since(folder: pathlib.Path, since: float) -> list[str]:
+    """Имена ядер, изменённых после отметки времени — фокус ночного инкремента.
+
+    Полный прогон квадратичен по числу ядер, и на выросшем графе это часы:
+    293 файла ядер — уже сорок тысяч пар, каждую кандидатскую судит NLI в один
+    поток. Ночью такой прогон съедает всё окно и до утреннего брифа очередь не
+    доходит. Между тем свежих ядер за сутки — единицы, а revise(only_names=...)
+    умеет сравнивать именно их против всех (O(k×n)).
+
+    Отметка берётся на НАЧАЛЕ прогона, а не в конце: за время ревизии встреча
+    могла обновить ядро, и метка «конец» такую правку потеряла бы навсегда.
+    Плата — собственные пометки прошлой ночи попадают в фокус ещё один раз;
+    это самоограничивается, потому что _mark_dup/_link идемпотентны и второй
+    раз файл не трогают.
+    """
+    if not folder.is_dir():
+        return []
+    return [p.stem for p in sorted(folder.glob("*.md"))
+            if not p.name.startswith("_") and p.stat().st_mtime > since]
+
+
 def load_cores(folder: pathlib.Path) -> list[dict]:
     cores = []
     for p in sorted(folder.glob("*.md")):
@@ -257,6 +278,12 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
     НЕ исключение: ревизия — уборка, она не имеет права валить пайплайн встречи.
     """
     out: dict = {"dups": [], "nests": [], "border": [], "log": [],
+                 # отработала ли ревизия на самом деле. Пустой результат
+                 # означает и «чисто», и «нет NLI-модели / лежит Ollama», а для
+                 # ночного инкремента разница решающая: сдвинуть отметку
+                 # времени после несостоявшегося прогона — значит навсегда
+                 # потерять из фокуса ядра, которые он должен был разобрать
+                 "ran": False,
                  # пары, которые слил бы прогон с apply=True, а этот не слил.
                  # По этому полю (а не по факту находки) вызывающий решает,
                  # советовать ли человеку `tier3_cores.py --apply`: совет,
@@ -274,6 +301,7 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
         embs = _embed_all(cores)
     except Exception:
         return out  # Ollama лежит — не мешаем пайплайну
+    out["ran"] = True
 
     pairs = []
     for i in range(len(cores)):
