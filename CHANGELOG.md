@@ -5,6 +5,19 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.49.0](https://github.com/charoiteai/Charoite_audio/compare/v0.48.1...v0.49.0) (2026-08-13)
+
+
+### Features
+
+* **app:** встреча с неразобранными именами не выглядит готовой до конца ([#293](https://github.com/charoiteai/Charoite_audio/issues/293)) ([748d840](https://github.com/charoiteai/Charoite_audio/commit/748d8406b418f96b7bf883f8bf47058b8dd952bc))
+
+
+### Bug Fixes
+
+* **nightly:** бриф к утру, а ревизия ядер — по свежим ядрам ([#290](https://github.com/charoiteai/Charoite_audio/issues/290)) ([f9046ca](https://github.com/charoiteai/Charoite_audio/commit/f9046ca03a4c93e6f117967b8c17a51a34998302))
+* **rebuild:** молчание модели на именах — не успешный прогон ([#292](https://github.com/charoiteai/Charoite_audio/issues/292)) ([d2736aa](https://github.com/charoiteai/Charoite_audio/commit/d2736aad9b46629a157c1c14ba3fcdf364a3a0c7))
+
 ## [0.48.1](https://github.com/charoiteai/Charoite_audio/compare/v0.48.0...v0.48.1) (2026-08-12)
 
 
