@@ -137,7 +137,14 @@ def main() -> None:
         graph = pathlib.Path(os.environ.get("SUFLER_GRAPH_DIR") or cfg["sufler"]["graph_dir"]).expanduser()
         bench_file = ROOT / "config" / "memory_bench.yaml"  # см. memory_bench.example.yaml
     if not bench_file.exists():
-        sys.exit(f"нет файла бенча: {bench_file}")
+        # Не настроен — не то же самое, что провален. Раньше здесь был выход с
+        # ошибкой, и ночная джоба каждую ночь печатала «БЕНЧ ПАМЯТИ ПРОСЕЛ» у
+        # всех, кто бенч не заводил. Вечно горящее предупреждение приучает не
+        # смотреть на предупреждения — той же болезнью болел CI до аудита.
+        print(f"бенч памяти не настроен: нет {bench_file.name}. "
+              f"Чтобы включить — скопируйте {bench_file.with_name('memory_bench.example.yaml').name} "
+              f"и впишите свои вопросы")
+        return
     cases = yaml.safe_load(bench_file.read_text(encoding="utf-8")) or []
     if args.limit:
         cases = cases[:args.limit]
