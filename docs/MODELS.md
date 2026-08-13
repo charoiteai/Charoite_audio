@@ -70,6 +70,17 @@ Measured on M1 Max, 64 GB, three runs, median over warm ones
 MLX won. Russian was checked separately on a real transcript: minutes of
 comparable quality, clean language.
 
+Speed is half the answer, and `bench_models.py` measures only that half. The
+other half is `scripts/bench_extract.py`: it runs the very extraction function
+that feeds the graph over the same transcripts with different models. Beyond
+volume (decisions, cores, people) it checks what a model gets wrong quietly —
+**the share of core quotes that are actually found in the transcript** (by the
+same search that anchors them in the graph) and the share of timestamps that
+really occur in the text. An invented quote is an invented basis for a node:
+the node itself looks fine, and there is no other way to catch the swap.
+Substantive completeness ("did it catch the action items") is read by a human —
+raw extractions land in `logs/bench_extract/`.
+
 **Honest caveats.** Three ~21 GB models shared 64 GB during the run and
 evicted each other — the "text extraction" row (13.6 vs 46.7) almost
 certainly caught a GGUF reload; a 3.4× gap does not come from an engine
