@@ -210,10 +210,25 @@ final class UpdateService: ObservableObject {
         let session = URLSession(configuration: .default, delegate: watcher, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
 
-        let (temp, _) = try await session.download(from: url)
+        // Делегат передаём В ВЫЗОВ, а не только в сессию: асинхронный
+        // `download(from:)` ведёт задачу сам и делегата сессии не спрашивает,
+        // поэтому проценты не считал никто. 13.08 архив в 91 МБ тянулся через
+        // прокси полчаса, и всё это время на экране висело «Скачиваю… 0%» —
+        // неотличимо от зависшей загрузки.
+        let (temp, _) = try await session.download(from: url, delegate: watcher)
         try? FileManager.default.removeItem(at: file)
         try FileManager.default.moveItem(at: temp, to: file)
         return try Self.sha256(of: file)
+    }
+
+    /// Сколько процентов показать — или `nil`, если показывать нечего.
+    ///
+    /// Размер приходит из заголовка ответа; сервер вправе его не прислать
+    /// (`-1`), и тогда честнее не показывать ничего, чем рисовать ноль:
+    /// ноль на экране читается как «загрузка встала».
+    nonisolated static func percent(written: Int64, total: Int64) -> Int? {
+        guard total > 0, written >= 0 else { return nil }
+        return min(100, Int(Double(written) / Double(total) * 100))
     }
 
     nonisolated static func sha256(of file: URL) throws -> String {
@@ -252,9 +267,8 @@ private final class DownloadProgress: NSObject, URLSessionDownloadDelegate {
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                     didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
                     totalBytesExpectedToWrite total: Int64) {
-        guard total > 0 else { return }
-        let percent = Int(Double(totalBytesWritten) / Double(total) * 100)
-        guard percent != lastShown else { return }
+        guard let percent = UpdateService.percent(written: totalBytesWritten, total: total),
+              percent != lastShown else { return }
         lastShown = percent
         onPercent(percent)
     }
