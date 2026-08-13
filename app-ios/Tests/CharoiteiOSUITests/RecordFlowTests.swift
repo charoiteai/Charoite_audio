@@ -1,11 +1,25 @@
 import XCTest
 
+/// Приложение под тестом всегда говорит по-русски.
+///
+/// Подписи в сценариях — русские, а раннер CI живёт на английской локали:
+/// ночная джоба падала на «нет кнопки Заметка», хотя приложение работало.
+/// Язык задаём тем же механизмом, которым его выбирает человек в настройках
+/// (ключ `ui.language` в UserDefaults) — через аргумент запуска, а не правкой
+/// системной локали симулятора: так тест проверяет приложение, а не образ
+/// раннера, и остаётся честным на машине с любым языком.
+private func launchInRussian() -> XCUIApplication {
+    let app = XCUIApplication()
+    app.launchArguments += ["-ui.language", "ru"]
+    app.launch()
+    return app
+}
+
 /// Сквозной сценарий v1: выбрать тип → записать → остановить → файл создан.
 /// Микрофон выдаётся заранее (simctl privacy grant) — алертов нет.
 final class RecordFlowTests: XCTestCase {
     func testRecordNoteCreatesFile() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchInRussian()
 
         app.buttons["Заметка"].firstMatch.tap()
 
@@ -31,8 +45,7 @@ final class RecordFlowTests: XCTestCase {
     /// Тур по вкладкам: без выбранной папки графа обе показывают честное
     /// пустое состояние с подсказкой, что сделать. Скрины — в отчёт теста.
     func testTabsShowEmptyStatesWithoutGraphFolder() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchInRussian()
 
         app.tabBars.buttons["Встречи"].tap()
         XCTAssertTrue(app.staticTexts["Выберите папку графа"].waitForExistence(timeout: 5),
@@ -64,8 +77,7 @@ final class RecordFlowTests: XCTestCase {
 /// уверен, что она давно на Mac.
 final class QueueFlowTests: XCTestCase {
     func testQueueOpensFromTheRecordScreen() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchInRussian()
 
         let entry = app.buttons.matching(
             NSPredicate(format: "label CONTAINS[c] 'очеред'")).firstMatch
@@ -82,8 +94,7 @@ final class QueueFlowTests: XCTestCase {
     func testDatesSpeakTheSameLanguageAsTheRestOfTheScreen() throws {
         // Подписи берутся из L.t, а даты — из системного форматтера: под
         // заголовком «Заметка» выходило «July 28».
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchInRussian()
 
         let entry = app.buttons.matching(
             NSPredicate(format: "label CONTAINS[c] 'очеред'")).firstMatch
