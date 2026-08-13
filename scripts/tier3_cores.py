@@ -6,6 +6,8 @@
     .venv/bin/python scripts/tier3_cores.py --apply        # + слить уверенные дубли
     .venv/bin/python scripts/tier3_cores.py --all-graphs --auto    # ночной режим:
         # слияние ТОЛЬКО при sufler.tier3_auto_apply: true, иначе --mark
+    .venv/bin/python scripts/tier3_cores.py --all-graphs --auto --since-last
+        # то же, но судятся только ядра, изменившиеся с прошлого прогона
     .venv/bin/python scripts/tier3_cores.py --graph /путь  # конкретный граф
 
 Инкрементальная ревизия после каждой встречи уже встроена в graph_updater —
@@ -14,26 +16,72 @@
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
 import sys
+import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
 import tier3  # noqa: E402
 
+# Отметки последнего прогона по графам. Лежат рядом с nightly.json: читает их
+# только этот скрипт, но человеку, который разбирается, почему ночь молчала,
+# они нужны там же, где остальные следы ночного цикла.
+STAMPS = pathlib.Path(__file__).resolve().parent.parent / "logs" / "tier3_last_run.json"
 
-def run(graph: pathlib.Path, apply: bool, mark: bool = False) -> None:
-    r = tier3.revise(graph, apply=apply, mark=mark)
+
+def _stamps() -> dict:
+    try:
+        return json.loads(STAMPS.read_text(encoding="utf-8"))
+    except Exception:
+        # нет файла или он покорёжен — ведём себя как при первом запуске:
+        # полный прогон честнее, чем тихо ничего не разобрать
+        return {}
+
+
+def _save_stamp(graph: pathlib.Path, ts: float) -> None:
+    data = _stamps()
+    data[str(graph)] = ts
+    STAMPS.parent.mkdir(parents=True, exist_ok=True)
+    STAMPS.write_text(json.dumps(data, ensure_ascii=False, indent=1),
+                      encoding="utf-8")
+
+
+def run(graph: pathlib.Path, apply: bool, mark: bool = False,
+        since_last: bool = False) -> None:
+    started = time.time()
+    only = None
+    if since_last:
+        prev = _stamps().get(str(graph))
+        if prev is None:
+            print(f"=== {graph.name}: отметки нет — полный прогон", flush=True)
+        else:
+            only = tier3.changed_since(graph / "Ядра", prev)
+            if not only:
+                print(f"{graph.name}: свежих ядер нет — пропуск", flush=True)
+                _save_stamp(graph, started)
+                return
+            print(f"=== {graph.name}: инкремент, свежих ядер {len(only)}",
+                  flush=True)
+    r = tier3.revise(graph, only_names=only, apply=apply, mark=mark)
+    # Отметку двигаем только после состоявшегося прогона: без NLI-модели или с
+    # лежащей Ollama ревизия молча возвращает пустой результат, и сдвинутая
+    # отметка вычеркнула бы эти ядра из фокуса навсегда.
+    if r["ran"]:
+        _save_stamp(graph, started)
     n = sum(len(r[k]) for k in ("dups", "nests", "border"))
+    took = time.time() - started
     if not n and not r["log"]:
-        print(f"{graph.name}: чисто")
+        print(f"{graph.name}: чисто ({took:.0f} с)", flush=True)
         return
-    print(f"=== {graph.name}")
+    print(f"=== {graph.name} ({took:.0f} с)")
     for k, title in (("dups", "ДУБЛИ"), ("nests", "ВЛОЖЕНИЯ"), ("border", "ГРАНИЦА")):
         for line in r[k]:
             print(f"  [{title}] {line}")
     for line in r["log"]:
         print(f"  {line}")
+    sys.stdout.flush()
 
 
 def main() -> None:
@@ -49,6 +97,11 @@ def main() -> None:
                     help="режим из конфига: слияние только при sufler.tier3_auto_apply: true, "
                          "иначе только --mark. Для ночной джобы: право на необратимое — "
                          "у пользователя в конфиге, не у cron")
+    ap.add_argument("--since-last", action="store_true",
+                    help="судить только ядра, изменившиеся с прошлого прогона (O(k×n) "
+                         "вместо O(n²)): полный прогон на выросшем графе съедает всю "
+                         "ночь, а свежих ядер за сутки — единицы. Первый запуск и "
+                         "потерянная отметка = полный прогон")
     args = ap.parse_args()
 
     apply_mode = args.apply
@@ -66,10 +119,10 @@ def main() -> None:
             print(f"нет графов с папкой «Ядра» — искал в {graphs.where()}")
             return
         for g in found:
-            run(g, apply_mode, mark_mode)
+            run(g, apply_mode, mark_mode, args.since_last)
         return
     run(args.graph or graphs.configured_graph() or pathlib.Path.cwd(),
-        apply_mode, mark_mode)
+        apply_mode, mark_mode, args.since_last)
 
 
 if __name__ == "__main__":

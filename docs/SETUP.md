@@ -193,6 +193,14 @@ hang for 2-6 minutes, and then it died outright: 258 topics went unanalysed.
 The wait is capped at an hour (`NIGHTLY_WAIT`, seconds): missing a night
 entirely is worse than working in a crowded machine.
 
+The step order exists so that the brief is ready by morning no matter what: it
+is written right away, before the heavy steps, and once more at the end on top
+of tidied cores. On Aug 13 that cost a whole morning — the graph had grown to
+three hundred cores, the full revision was in its fifth hour, and the brief was
+still waiting last in line. On weekdays the revision now runs incrementally
+(`--since-last`: only cores changed since the previous pass); the full sweep
+happens on Sundays or by hand with `NIGHTLY_TIER3_FULL=1`.
+
 Schedule it with launchd:
 
 ```xml
