@@ -35,6 +35,10 @@ struct MeetingProcessingSnapshot: Decodable, Equatable, Sendable {
     /// Какая часть длинной стенограммы разбирается и сколько их всего.
     let part: Int?
     let parts: Int?
+    /// Разбор прошёл, но модель молчала на именах — метки остались
+    /// «Собеседник N». Готовность и полнота это разные вещи: граф обновлён,
+    /// повторять конвейер незачем, но встречу стоит пересобрать.
+    let namesPending: Bool?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -48,6 +52,7 @@ struct MeetingProcessingSnapshot: Decodable, Equatable, Sendable {
         case error
         case part
         case parts
+        case namesPending = "names_pending"
     }
 
     /// Свой init с умолчаниями вместо memberwise: прогресс есть только у
@@ -56,7 +61,7 @@ struct MeetingProcessingSnapshot: Decodable, Equatable, Sendable {
     init(schemaVersion: Int, meetingID: String, state: State, stage: String,
          startedAt: TimeInterval, updatedAt: TimeInterval, transcriptPath: String,
          notePath: String?, error: String?,
-         part: Int? = nil, parts: Int? = nil) {
+         part: Int? = nil, parts: Int? = nil, namesPending: Bool? = nil) {
         self.schemaVersion = schemaVersion
         self.meetingID = meetingID
         self.state = state
@@ -68,6 +73,7 @@ struct MeetingProcessingSnapshot: Decodable, Equatable, Sendable {
         self.error = error
         self.part = part
         self.parts = parts
+        self.namesPending = namesPending
     }
 }
 
@@ -124,6 +130,21 @@ enum MeetingProcessingPolicy {
         case .processing, .unknown:
             return nil
         }
+    }
+
+    /// «Готово» — или «готово, но не целиком».
+    ///
+    /// Отдельная функция, потому что разница видна только человеку: состояние
+    /// остаётся `ready`, и без строки встреча с метками «Собеседник N»
+    /// выглядит ровно так же, как разобранная до конца. Рядом в ленте живёт
+    /// кнопка «Повторить» — она и есть ответ на эту строку.
+    static func readyText(for snapshot: MeetingProcessingSnapshot) -> String {
+        guard snapshot.namesPending == true else {
+            return L.t("Готово", "Ready", "已完成")
+        }
+        return L.t("Готово, имена не определены",
+                   "Ready, speakers unnamed",
+                   "已完成，未识别出姓名")
     }
 
     /// Чем занят конвейер прямо сейчас — словами, а не кодом стадии.

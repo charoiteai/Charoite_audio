@@ -303,3 +303,48 @@ final class MeetingDurationCacheTests: XCTestCase {
         XCTAssertNil(MeetingDurationCache.durationText(for: meeting(updated: 6, path: t.path)))
     }
 }
+
+/// Разбор прошёл, но модель молчала на именах — это видно человеку.
+///
+/// 12.08 встреча ушла с метками «Собеседник 1..5», а статус был неотличим от
+/// полностью удачного. Python теперь пишет `names_pending`; состояние
+/// остаётся `ready` (граф обновлён, конвейер повторять незачем), и вся
+/// разница — в строке, которую читает человек, и в кнопке «Повторить» рядом.
+final class NamesPendingTests: XCTestCase {
+    private func decode(_ extra: String) throws -> MeetingProcessingSnapshot {
+        let json = """
+        {"schema_version":1,"meeting_id":"m","state":"ready","stage":"complete",
+         "started_at":1,"updated_at":2,"transcript_path":"/t/2026-08-12_1532.md"\(extra)}
+        """
+        return try JSONDecoder().decode(MeetingProcessingSnapshot.self,
+                                        from: Data(json.utf8))
+    }
+
+    func testFlagIsDecoded() throws {
+        XCTAssertEqual(try decode(",\"names_pending\":true").namesPending, true)
+    }
+
+    func testOldStatusWithoutTheFieldStillDecodes() throws {
+        // Статус, написанный прежней версией конвейера, обязан читаться:
+        // обратная совместимость здесь — не вежливость, а условие того, что
+        // встреча не исчезнет из окна после обновления.
+        XCTAssertNil(try decode("").namesPending)
+    }
+
+    func testReadyTextSaysWhatIsMissing() throws {
+        let pending = try decode(",\"names_pending\":true")
+        let complete = try decode("")
+
+        XCTAssertNotEqual(MeetingProcessingPolicy.readyText(for: pending),
+                          MeetingProcessingPolicy.readyText(for: complete),
+                          "неполный разбор выглядит как полный")
+        XCTAssertFalse(MeetingProcessingPolicy.readyText(for: complete).isEmpty)
+    }
+
+    func testMeetingStaysReady() throws {
+        // Не ошибка и не «обрабатывается»: граф обновлён, повторять весь
+        // конвейер незачем — человек сам решает, пересобирать ли имена.
+        XCTAssertEqual(MeetingProcessingPolicy.resolvedState(
+            try decode(",\"names_pending\":true")), .ready)
+    }
+}

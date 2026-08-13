@@ -264,7 +264,7 @@ struct RecentMeetingsView: View {
     ) -> String {
         switch state {
         case .ready:
-            return L.t("Готово", "Ready", "已完成")
+            return MeetingProcessingPolicy.readyText(for: meeting)
         case .processing:
             return L.t("Обрабатывается…", "Processing…", "处理中…")
         case .error:
