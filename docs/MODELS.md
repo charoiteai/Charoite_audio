@@ -70,6 +70,24 @@ Measured on M1 Max, 64 GB, three runs, median over warm ones
 MLX won. Russian was checked separately on a real transcript: minutes of
 comparable quality, clean language.
 
+**Quality was measured on Aug 13, and the first run looked like a verdict
+against MLX.** Across six meetings, the share of core quotes actually found in
+the transcript: MLX 22 of 43 (51%), GGUF 35 of 43 (81%) — with an identical
+volume of findings. Reading the raw output showed why: MLX stitched a quote out
+of two distant fragments joined by an ellipsis (11 of 15 in the first run;
+GGUF, none). Such a "quote" is never found by the anchor search, so the core
+ends up without a verifiable basis while looking perfectly ordinary.
+
+The cause was the wording, not the build. After tightening the prompt — "a
+VERBATIM CONTIGUOUS fragment, 5-15 words in a row… you may not stitch pieces
+from different places with an ellipsis" — across three meetings: **MLX 16 of 17
+(94%)**, GGUF 16 of 20 (80%), same volume (21 decisions vs 19), median 52
+seconds vs 107. So MLX is both better grounded and twice as fast.
+
+**We stay on MLX.** Caveat on the numbers: the second run is three meetings and
+seventeen cores; the effect is large and has a clear cause, but it is not ten
+meetings.
+
 Speed is half the answer, and `bench_models.py` measures only that half. The
 other half is `scripts/bench_extract.py`: it runs the very extraction function
 that feeds the graph over the same transcripts with different models. Beyond
