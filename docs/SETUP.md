@@ -11,8 +11,23 @@ language model — Ollama:
 
 ```bash
 brew install ollama
-ollama pull qwen3.6:35b-a3b && ollama pull qwen3.5:4b && ollama pull gemma4:latest
+brew services start ollama
+ollama pull qwen3.6:35b-mlx && ollama pull qwen3.5:4b && ollama pull gemma4:e4b
 ```
+
+**Install one of the two: brew or Ollama.app — never both.** The app starts its
+own server and takes port 11434; the brew service then fails to start and sits
+silently in `error`, and a brew upgrade never takes effect — the running server
+stays old. The symptom looks harmless: `ollama --version` prints a client/server
+version mismatch warning. If the app is already installed and you want brew:
+quit it, disable its autostart (`launchctl disable gui/$(id -u)/com.ollama.ollama`)
+and remove it — the service will come up on its own.
+
+⚠️ **Proxies.** Ollama reads `HTTP_PROXY`/`HTTPS_PROXY` from the environment,
+not from macOS system settings. A service started by `brew services` does not
+inherit them and goes out directly — measured on Aug 13: 6.8 MB/s versus
+39 KB/s through a local proxy, a 170-fold difference. If you run `ollama serve`
+by hand from a shell with a proxy configured, model downloads will take hours.
 
 Everything else the app asks for and does itself: your name and graph folder in
 the first-run wizard, the voice-separation model with a button, permissions
