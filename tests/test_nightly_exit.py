@@ -92,9 +92,25 @@ def test_failed_step_is_reported_to_launchd(tmp_path):
 
 
 def test_failed_step_does_not_cancel_the_rest(tmp_path):
-    """Шаги независимы: упавшая ревизия не отменяет утренний бриф."""
+    """Шаги независимы: упавшая ревизия не отменяет утренний бриф.
+
+    Проверяем именно ПОСЛЕДНИЙ бриф: с 13.08 их два, и ранний идёт до
+    ревизии — по одному вхождению строки нельзя понять, дожил ли прогон до
+    конца.
+    """
     r = _run(tmp_path, FAIL_ONLY_TIER3)
-    assert "morning brief" in r.stdout, r.stdout
+    assert r.stdout.rindex("morning brief") > r.stdout.index("tier3 cores"), r.stdout
+
+
+def test_brief_is_written_before_the_heavy_steps(tmp_path):
+    """Бриф пишется дважды, и первый раз — до ревизии ядер.
+
+    Ревизия на большом графе идёт часами (13.08 — пять с лишним), а бриф
+    стоит секунды и модель не зовёт. Когда он был только последним шагом,
+    ночь без брифа означала, что человек утром читает вчерашний файл.
+    """
+    r = _run(tmp_path, ALL_OK)
+    assert r.stdout.index("morning brief") < r.stdout.index("tier3 cores"), r.stdout
 
 
 def test_sagging_bench_is_a_warning_not_a_failure(tmp_path):

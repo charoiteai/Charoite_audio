@@ -114,7 +114,15 @@ embedding prefilter (bge-m3) → an NLI judge — and runs itself:
 incrementally after every meeting (this meeting's cores against all), and
 as a full sweep via `scripts/tier3_cores.py --all-graphs --auto` (cron it
 if you like — `--auto` merges only when `tier3_auto_apply: true`, else it
-only marks; `--apply` remains for hands-on manual runs). Two levels of permission, because the edits differ in price.
+only marks; `--apply` remains for hands-on manual runs).
+The full sweep is quadratic: three hundred cores mean forty thousand pairs and
+hours of NLI, so at night it runs with `--since-last` — only cores changed since
+the previous pass are judged (per-graph stamps in `logs/tier3_last_run.json`),
+and everything-against-everything is checked once a week, on Sundays. The stamp
+moves only after a pass that actually happened: with no NLI model or a dead
+Ollama the revision returns an empty result, and moving the stamp would drop
+those cores from the focus for good.
+Two levels of permission, because the edits differ in price.
 Reversible ones always run: mid-confidence pairs get a "possible duplicate"
 note (the morning brief collects those into "Tier3 asks you to merge"), and
 nestings ("episode ⊂ process") are cross-linked, never merged. The
@@ -194,8 +202,14 @@ alive are backed up into `.forget_backup/<stamp>/` — we delete a meeting, not
 someone's notes. Transcript and recording only, leaving the graph alone:
 `--keep-graph`.
 
-**Nightly loop** (`scripts/nightly.sh`, cron/launchd it): Tier3 revision →
-**morning brief** → **memory bench**. The nightly revision merges cores
+**Nightly loop** (`scripts/nightly.sh`, cron/launchd it): **morning brief**
+(early) → Tier3 revision → **dossiers** → *(optional)* **cloud dossier review**
+→ file dedup → **morning brief** again → **memory bench**. The brief is written
+twice: it takes seconds and never calls the model, while the revision on a large
+graph runs for hours — and one night ended before it did, leaving yesterday's
+`_Сегодня.md` on screen in the morning. The early pass guarantees a brief; the
+late one rewrites it on top of tidied cores and fresh dossiers.
+The nightly revision merges cores
 only when `sufler.tier3_auto_apply: true`; without the key it stops at
 reversible marks — the right to irreversible edits lives in the config,
 not in the schedule. The morning brief
