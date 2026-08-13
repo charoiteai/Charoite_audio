@@ -50,6 +50,14 @@ from stt import STT  # noqa: E402
 
 SEG_S, OVERLAP_S = 25.0, 1.0
 WAIT_WAV_S = 45  # демон финализирует .wav параллельно нашему старту
+# Строка в шапке стенограммы, когда имена не разобраны из-за молчащей модели.
+# Живёт в самом файле, а не только в логе: человек открывает стенограмму, а не
+# logs/, и «Собеседник 1..5» без объяснения читается как «программа не умеет».
+NAMES_PENDING_NOTE = (
+    "> ⚠️ Имена участников не определены: модель не ответила на разборе. "
+    "Метки остались «Собеседник N» — пересоберите встречу, когда модель "
+    "свободна (кнопка «Пересобрать» или src/rebuild_transcript.py)."
+)
 
 
 def log(msg: str):
@@ -202,8 +210,15 @@ def overlap_frac(a: tuple[float, float], b: tuple[float, float]) -> float:
     return inter / max(1e-6, a[1] - a[0])
 
 
-def name_speakers(cfg: dict, lines: list[tuple[str, str]]) -> dict[str, str]:
-    """qwen: «Собеседник N» ↔ имена из разговора; владельца не трогаем."""
+def name_speakers(cfg: dict, lines: list[tuple[str, str]]) -> tuple[dict[str, str], bool]:
+    """qwen: «Собеседник N» ↔ имена из разговора; владельца не трогаем.
+
+    Возвращает (имена, ответила ли модель). Второе — не педантизм: пустой
+    словарь означает и «имён в разговоре не звучало», и «модель молчала, ответ
+    не разобрался». 12.08 случилось второе, стенограмма ушла с «Собеседник
+    1..5», а прогон записался успешным — та же тихая деградация, которую
+    чинили в ночных досье. Различаем: первое нормально, второе стоит показать.
+    """
     import requests
     _owner = ((cfg.get("sufler") or {}).get("user_name") or "").strip().lower()
     sample = "\n".join(f"[{spk}] {text}" for spk, text in lines if text)[:7000]
@@ -232,10 +247,10 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]]) -> dict[str, str]:
         return {k: v.strip() for k, v in data.items()
                 if isinstance(v, str) and v.strip() and v.strip() != "?"
                 and k.startswith("Собеседник")
-                and v.strip().lower() != _owner}  # владелец уже определён каналом
+                and v.strip().lower() != _owner}, True  # владелец определён каналом
     except Exception as e:  # noqa: BLE001
         log(f"имена: не удалось ({e})")
-        return {}
+        return {}, False
 
 
 def live_meta(live: pathlib.Path) -> dict:
@@ -460,15 +475,26 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     if names:
         log("имена из живой сессии: " + ", ".join(f"{k}→{v}" for k, v in names.items()))
     rest = {spk for _, _, spk, _ in lines} - set(names)
+    model_answered = True
     if rest:
-        guessed = name_speakers(cfg, [(spk, txt) for _, _, spk, txt in lines if spk in rest])
+        guessed, model_answered = name_speakers(
+            cfg, [(spk, txt) for _, _, spk, txt in lines if spk in rest])
         for k, v in guessed.items():
             if k in rest and v not in names.values():  # одно имя — одной метке
                 names[k] = v
         if guessed:
             log("имена от модели: " + ", ".join(f"{k}→{v}" for k, v in guessed.items()))
+    # Молчащая модель + оставшиеся безымянные метки = встреча, которую стоит
+    # пересобрать. Пустой ответ модели при полностью названных участниках
+    # ничего не стоит: помечаем только когда потеря видна в самом файле.
+    unnamed = {spk for _, _, spk, _ in lines} - set(names)
+    names_pending = not model_answered and bool(unnamed)
+    if names_pending:
+        log(f"⚠️ имена не разобраны: модель молчала, безымянных меток {len(unnamed)}")
     fmt = lambda sec: (base + dt.timedelta(seconds=sec)).strftime("%H:%M")
     body = [f"# Встреча {stamp}", ""]
+    if names_pending:
+        body += [NAMES_PENDING_NOTE, ""]
     for s, e, spk, text in lines:
         spk = names.get(spk, spk)
         span = fmt(s) if fmt(s) == fmt(e) else f"{fmt(s)}–{fmt(e)}"
@@ -485,6 +511,14 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     live.write_text("\n".join(body).rstrip() + "\n", encoding="utf-8")
     log(f"финальная стенограмма записана: {live.name} (живой черновик → {live_copy.name})")
     return live
+
+
+def names_pending(live: pathlib.Path) -> bool:
+    """Осталась ли в стенограмме пометка «имена не определены»."""
+    try:
+        return NAMES_PENDING_NOTE in live.read_text(encoding="utf-8")
+    except Exception:  # noqa: BLE001 — статус не должен ломать пайплайн
+        return False
 
 
 def retry_unfinished(status: MeetingStatusStore) -> None:
@@ -625,7 +659,11 @@ def main():
             raise RuntimeError("заметка встречи не создана")
         if not status.has_transcript(live):
             raise RuntimeError("финальная стенограмма не найдена")
-        publish(status.ready, live, note)
+        # Пометку читаем из готового файла, а не носим флагом через пайплайн:
+        # так она честна и после падения пересборки (граф пошёл по живой
+        # версии — пометки нет), и после повторного прогона, где стенограмма
+        # переписывается целиком и метка исчезает сама, если имена нашлись.
+        publish(status.ready, live, note, names_pending(live))
         # Своя встреча готова — значит конвейер жив и LLM отвечает. Лучший
         # момент вернуться к тем, кому в прошлый раз не повезло.
         if os.environ.get("CHAROITE_NO_RETRY") != "1":

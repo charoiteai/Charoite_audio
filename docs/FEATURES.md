@@ -50,6 +50,15 @@
   addressing someone else (saying "Sash, could you…" does not make the
   speaker Sasha); grammatical cases are folded onto known people of the
   graph.
+- **A silent model on the name pass is not passed off as success.** "No names
+  were spoken" and "the model never answered" produce an equally empty result,
+  and one meeting shipped with "Собеседник 1..5" labels while the run was
+  recorded as fully successful. The two are now told apart: if the model stayed
+  silent and unnamed labels remain, the transcript gets a warning line in its
+  header and the meeting status gets a `names_pending` field. The state stays
+  `ready` — the graph is updated, there is nothing to redo in the pipeline —
+  but it is visible that the meeting is worth rebuilding once the model is
+  free. The mark clears itself: a repeat run rewrites the transcript in full.
 - **Instant answer (⚡)** — the other side's question is detected via STT
   punctuation and lead words; a ready first-person answer arrives in ~2-3 s,
   with the question shown above it.

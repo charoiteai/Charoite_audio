@@ -135,7 +135,15 @@ class MeetingStatusStore:
         self._prune(now)
         return self._write(transcript, payload)
 
-    def ready(self, transcript: pathlib.Path, note: pathlib.Path) -> pathlib.Path:
+    def ready(self, transcript: pathlib.Path, note: pathlib.Path,
+              names_pending: bool = False) -> pathlib.Path:
+        """Встреча разобрана. names_pending — разбор прошёл, но не целиком.
+
+        12.08 модель молчала на разборе имён, стенограмма ушла с «Собеседник
+        1..5», и статус был неотличим от полностью удачного. Готовность и
+        полнота — разные вещи: граф обновлён (значит ready, повторять весь
+        конвейер незачем), но человеку есть что доделать.
+        """
         transcript = pathlib.Path(transcript)
         current = self._read(transcript)
         now = float(self._now())
@@ -149,6 +157,10 @@ class MeetingStatusStore:
             "transcript_path": str(find_final_transcript(transcript)),
             "note_path": str(pathlib.Path(note).resolve()),
         }
+        # Поле появляется только когда есть что сказать: старые читатели
+        # статуса (и приложение до обновления) видят прежний документ.
+        if names_pending:
+            payload["names_pending"] = True
         return self._write(transcript, payload)
 
     def failed(self, transcript: pathlib.Path, error: object) -> pathlib.Path:
