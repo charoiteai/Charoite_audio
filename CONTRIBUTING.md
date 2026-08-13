@@ -40,6 +40,13 @@ iOS tests live in the nightly run on purpose: the simulator takes a while
 to boot, and keeping that in the fast PR check would teach everyone to wait.
 At night there is time.
 
+The scenarios tap Russian labels while the runner lives in an English locale,
+so UI tests launch the app with `-ui.language ru` — the same key a person uses
+to pick the language in settings. Not by changing the simulator's locale: this
+way the test checks the app rather than the runner image, and stays honest on a
+machine with any language. Unit tests compare against `L.t` instead of Russian
+literals: the test is about behaviour, not about the interface language.
+
 ## Where to start
 
 - [ROADMAP.md](ROADMAP.md) — what we plan next

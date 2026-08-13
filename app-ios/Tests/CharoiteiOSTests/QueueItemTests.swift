@@ -15,10 +15,17 @@ final class QueueItemTests: XCTestCase {
     }
 
     func testKindIsReadFromThePrefixTheMacUses() {
-        // тот же префикс, по которому Mac выбирает конвейер
-        XCTAssertEqual(item("iphone_2026-08-03_1332.caf").name, "Встреча")
-        XCTAssertEqual(item("note_iphone_2026-08-03_1332.caf").name, "Заметка")
-        XCTAssertEqual(item("diary_iphone_2026-08-03_1332.caf").name, "Дневник")
+        // тот же префикс, по которому Mac выбирает конвейер.
+        // Ожидания через L.t, а не русскими строками: тест про то, что вид
+        // записи читается из префикса, а не про язык интерфейса. С русскими
+        // литералами он падал на любом нерусском раннере — пять ночей подряд
+        // ночная джоба краснела ровно на этом.
+        XCTAssertEqual(item("iphone_2026-08-03_1332.caf").name,
+                       L.t("Встреча", "Meeting", "会议"))
+        XCTAssertEqual(item("note_iphone_2026-08-03_1332.caf").name,
+                       L.t("Заметка", "Note", "笔记"))
+        XCTAssertEqual(item("diary_iphone_2026-08-03_1332.caf").name,
+                       L.t("Дневник", "Diary", "日记"))
     }
 
     func testFreshRecordingIsNotAnAlarm() {
