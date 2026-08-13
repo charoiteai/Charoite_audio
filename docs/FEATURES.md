@@ -58,7 +58,9 @@
   header and the meeting status gets a `names_pending` field. The state stays
   `ready` — the graph is updated, there is nothing to redo in the pipeline —
   but it is visible that the meeting is worth rebuilding once the model is
-  free. The mark clears itself: a repeat run rewrites the transcript in full.
+  free. In the recent meetings list "Ready" becomes "Ready, speakers unnamed",
+  right next to the "Retry" button that answers that line. The mark clears
+  itself: a repeat run rewrites the transcript in full.
 - **Instant answer (⚡)** — the other side's question is detected via STT
   punctuation and lead words; a ready first-person answer arrives in ~2-3 s,
   with the question shown above it.
