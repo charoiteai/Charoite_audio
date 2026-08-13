@@ -10,8 +10,13 @@
 
 ```bash
 brew install ollama
-ollama pull qwen3.6:35b-a3b && ollama pull qwen3.5:4b && ollama pull gemma4:latest
+brew services start ollama
+ollama pull qwen3.6:35b-mlx && ollama pull qwen3.5:4b && ollama pull gemma4:e4b
 ```
+
+**两者只装其一：要么用 brew，要么用 Ollama.app，不要同时装。** 应用会启动自己的服务端并占用 11434 端口；此后 brew 服务无法启动，只会悄悄停在 `error` 状态，而 brew 的升级也形同虚设——真正在跑的仍是旧版服务端。症状看上去人畜无害：`ollama --version` 会提示客户端与服务端版本不一致。若已装了应用而你想用 brew：退出应用，关掉它的开机自启（`launchctl disable gui/$(id -u)/com.ollama.ollama`）并删除它——服务会自行起来。
+
+⚠️ **代理。** Ollama 读取环境变量 `HTTP_PROXY`/`HTTPS_PROXY`，而不是 macOS 的系统设置。由 `brew services` 启动的服务不会继承这些变量，因此直连——8 月 13 日实测：直连 6.8 MB/s，走本地代理 39 KB/s，相差一百七十倍。如果你在配置了代理的终端里手动运行 `ollama serve`，下载模型会花上几个小时。
 
 其余一切由应用询问并自动完成：姓名与图谱文件夹在首次运行向导中设置，声纹分离
 模型一键安装，权限通过系统对话框授予。
