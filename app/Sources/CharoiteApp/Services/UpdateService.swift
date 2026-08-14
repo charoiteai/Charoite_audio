@@ -112,7 +112,7 @@ final class UpdateService: ObservableObject {
     func install(tag: String) async {
         guard !isBusy else { return }
         let bundle = Bundle.main.bundleURL
-        if let reason = Self.refusalReason(recording: SuflerService.shared.isRunning,
+        if let reason = Self.refusalReason(recording: SuflerService.shared.hasActiveLifecycle,
                                            bundlePath: bundle.path) {
             stage = .refused(reason: reason)
             return

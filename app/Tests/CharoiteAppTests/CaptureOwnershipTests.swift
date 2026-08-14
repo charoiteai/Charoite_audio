@@ -3,10 +3,9 @@ import XCTest
 
 /// Отложенная остановка захвата стирала файлы следующей встречи.
 ///
-/// Пути к манифесту и потокам статические — общие для всех экземпляров.
-/// Захват гасится через 13 секунд после «Стоп»: демон в это время дописывает
-/// хвост записи, и снимать устройство раньше нельзя (тот самый обрыв, что
-/// 05.08 стоил сорока минут встречи).
+/// Раньше пути к манифесту и потокам были статическими — общими для всех
+/// экземпляров. Захват гасится после демона: тот в это время дописывает хвост,
+/// и снимать источник раньше нельзя.
 ///
 /// Но если в эти 13 секунд начать следующую встречу — а это штатный сценарий,
 /// встречи идут одна за другой, — новый экземпляр уже создаёт манифест и
@@ -14,7 +13,8 @@ import XCTest
 /// Вторая встреча остаётся без системного звука, а на macOS 15+, где микрофон
 /// приходит тем же потоком, — без обоих каналов (аудит 0.46.0, P0-5).
 ///
-/// Владение определяется по идентификатору сессии в манифесте.
+/// Теперь общий только манифест-указатель, а PCM живёт в отдельном каталоге
+/// сессии. Владение манифестом по-прежнему определяется по session ID.
 @MainActor
 final class CaptureOwnershipTests: XCTestCase {
 
@@ -37,10 +37,11 @@ final class CaptureOwnershipTests: XCTestCase {
     }
 
     private func writeManifest(session: String?) throws {
+        let paths = SystemAudioCapture.sessionPaths(sessionID: UUID())
         var manifest: [String: Any] = [
             "engine": "screencapturekit",
             "format": "s16le",
-            "system": SystemAudioCapture.systemURL.path,
+            "system": paths.systemURL.path,
         ]
         if let session { manifest["session"] = session }
         let data = try JSONSerialization.data(withJSONObject: manifest)
@@ -72,6 +73,17 @@ final class CaptureOwnershipTests: XCTestCase {
         XCTAssertNil(SystemAudioCapture.manifestSession())
     }
 
+    func testEveryCaptureGetsUniqueStreamFiles() {
+        let first = SystemAudioCapture.sessionPaths(sessionID: UUID())
+        let second = SystemAudioCapture.sessionPaths(sessionID: UUID())
+
+        XCTAssertNotEqual(first.directory, second.directory)
+        XCTAssertNotEqual(first.systemURL, second.systemURL)
+        XCTAssertNotEqual(first.micURL, second.micURL)
+        XCTAssertEqual(first.systemURL.lastPathComponent, "system.raw")
+        XCTAssertEqual(first.micURL.lastPathComponent, "mic.raw")
+    }
+
     /// Сторож проводки: удаление обязано стоять за проверкой владения.
     ///
     /// Логику легко починить и потерять при следующей правке `stop()` —
@@ -86,8 +98,9 @@ final class CaptureOwnershipTests: XCTestCase {
         let text = try String(contentsOf: source, encoding: .utf8)
 
         guard let stopRange = text.range(of: "func stop() async {"),
-              let guardRange = text.range(of: "Self.manifestSession() == sessionID"),
-              let removeRange = text.range(of: "removeItem(at: Self.manifestURL)")
+              let guardRange = text.range(of: "Self.manifestSession() == sessionID.uuidString"),
+              let removeRange = text.range(of: "removeItem(at: Self.manifestURL)"),
+              let cleanupRange = text.range(of: "cleanupSessionFiles()", range: stopRange.lowerBound..<text.endIndex)
         else {
             return XCTFail("stop() потерял проверку владения — файлы новой встречи снова под ударом")
         }
@@ -95,5 +108,7 @@ final class CaptureOwnershipTests: XCTestCase {
                       "проверка владения должна быть внутри stop()")
         XCTAssertTrue(guardRange.upperBound < removeRange.lowerBound,
                       "удаление стоит РАНЬШЕ проверки владения — это и есть дефект")
+        XCTAssertTrue(removeRange.upperBound < cleanupRange.lowerBound,
+                      "уникальный каталог сессии должен очищаться после проверки общего манифеста")
     }
 }
