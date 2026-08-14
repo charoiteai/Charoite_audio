@@ -29,6 +29,28 @@ final class UpdateServiceTests: XCTestCase {
                                                  bundlePath: "/Applications/Charoite.app"))
     }
 
+    /// Первая проверка не защищает от встречи, начавшейся во время загрузки.
+    /// Вторая обязана стоять после последнего await и до запуска helper; тогда
+    /// MainActor не пропустит Start внутрь критического синхронного участка.
+    func testInstallRechecksRecordingImmediatelyBeforeReplacement() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent(
+            "app/Sources/CharoiteApp/Services/UpdateService.swift"), encoding: .utf8)
+        let lastAwait = try XCTUnwrap(source.range(of: "let published = try? await string"))
+        let afterAwait = source[lastAwait.upperBound...]
+        let preflight = try XCTUnwrap(afterAwait.range(of:
+            "Self.refusalReason(recording: SuflerService.shared.hasActiveLifecycle"))
+        let launch = try XCTUnwrap(afterAwait.range(of: "try replace.run()"))
+
+        XCTAssertLessThan(preflight.lowerBound, launch.lowerBound)
+        XCTAssertFalse(afterAwait[preflight.lowerBound..<launch.upperBound].contains("await"),
+                       "между повторным preflight и helper снова появилось окно для Start")
+    }
+
     // MARK: - Что именно ставим
 
     /// Файл приезжает по сети и через секунду становится приложением,
@@ -81,22 +103,50 @@ final class UpdateServiceTests: XCTestCase {
     /// Скрипт обязан пережить наш собственный выход и не оставить человека
     /// без приложения, если распаковка оборвётся на середине.
     func testReplacementScriptKeepsOldCopyUntilSuccess() {
-        let s = UpdateService.replacementScript(pid: 4242,
-                                                newApp: "/tmp/new/Charoite.app",
-                                                target: "/Applications/Charoite.app")
-        XCTAssertTrue(s.contains("kill -0 4242"), "подмена начинается до выхода приложения")
-        XCTAssertTrue(s.contains("mv \"/Applications/Charoite.app\" \"/Applications/Charoite.app.old\""),
+        let s = UpdateService.replacementScript()
+        XCTAssertTrue(s.contains("kill -0 \"$pid\""), "подмена начинается до выхода приложения")
+        XCTAssertTrue(s.contains("mv \"$target\" \"${target}.old\""),
                       "старая копия должна уцелеть до успеха ditto")
-        XCTAssertTrue(s.contains("mv \"/Applications/Charoite.app.old\" \"/Applications/Charoite.app\""),
+        XCTAssertTrue(s.contains("mv \"${target}.old\" \"$target\""),
                       "нет отката: сорвавшаяся установка оставит человека без приложения")
-        XCTAssertTrue(s.contains("open \"/Applications/Charoite.app\""),
+        XCTAssertTrue(s.contains("open \"$target\""),
                       "после подмены приложение должно вернуться само")
+    }
+
+    /// Истечение десяти секунд не доказывает смерть приложения. При живом
+    /// PID helper обязан выйти ДО первой операции с установленным бандлом.
+    func testReplacementScriptFailsClosedWhileAppIsAlive() throws {
+        let s = UpdateService.replacementScript()
+        let guardRange = try XCTUnwrap(s.range(of: """
+        if kill -0 "$pid" 2>/dev/null; then
+          exit 75
+        fi
+        """))
+        let replaceRange = try XCTUnwrap(s.range(of: "mv \"$target\" \"${target}.old\""))
+
+        XCTAssertLessThan(guardRange.lowerBound, replaceRange.lowerBound,
+                          "helper меняет бандл до повторной проверки PID")
+    }
+
+    /// Пути передаются отдельными argv: bash не должен повторно разбирать
+    /// кавычки, `$()` или перевод строки внутри имени приложения.
+    func testReplacementArgumentsKeepPathsAsData() {
+        let newApp = "/tmp/new/Charoite$(open -a Calculator).app"
+        let target = "/Applications/Charoite \"Work\".app\ncopy"
+
+        XCTAssertEqual(UpdateService.replacementArguments(
+            script: "/tmp/replace.sh",
+            pid: 4242,
+            newApp: newApp,
+            target: target
+        ), ["/tmp/replace.sh", "4242", newApp, target])
+        XCTAssertFalse(UpdateService.replacementScript().contains("Calculator"))
     }
 
     /// Карантин снимаем: без этого macOS встретит обновление тем же
     /// «неизвестный разработчик», через который человек уже проходил.
     func testQuarantineIsCleared() {
-        let s = UpdateService.replacementScript(pid: 1, newApp: "/tmp/a.app", target: "/tmp/b.app")
+        let s = UpdateService.replacementScript()
         XCTAssertTrue(s.contains("xattr -dr com.apple.quarantine"))
     }
 

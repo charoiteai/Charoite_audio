@@ -245,6 +245,14 @@ it signals degradation, it does not break the loop.
 
 ## Outside meetings
 
+- **In-app update, fail-closed around recordings** — the update button
+  downloads the release, verifies its sha256 and re-checks for a live
+  recording right before swapping the bundle: a meeting that started while
+  the update was downloading cancels the install, not the recording. The
+  replacement helper independently re-checks that the app really exited
+  (a 10-second timeout is not proof) and gives up otherwise; the old copy
+  survives until the new one is fully in place; paths travel as arguments,
+  so quotes or `$()` in an .app name stay data, not shell.
 - **First run without a terminal** — the onboarding screen shows the
   readiness check (environment, config, Ollama, models, microphone, graph
   folder), and a failed item is fixed in place: a missing model is pulled by
