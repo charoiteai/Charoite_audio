@@ -146,7 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Выход посреди встречи — самая дорогая случайность: цена промаха —
     /// оборванная запись, которую уже не переснять.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard SuflerService.shared.isRunning else { return .terminateNow }
+        guard SuflerService.shared.hasActiveLifecycle else { return .terminateNow }
         let alert = NSAlert()
         // Самый дорогой диалог приложения — и он был только на русском:
         // англоязычный пользователь читал две кириллические кнопки наугад,
@@ -174,7 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        if SuflerService.shared.isRunning { SuflerService.shared.stop() }
+        if SuflerService.shared.hasActiveLifecycle { SuflerService.shared.stop() }
         // Тап не должен переживать приложение: живой агрегат без хозяина —
         // это подвешенный CoreAudio (дважды за 06.08). stop() выше гасит
         // его только при идущей записи — добираем оставшееся всегда.
@@ -202,9 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 SuflerService.shared.stop()
             case ("record", "toggle"):
                 Self.showMainWindow()
-                SuflerService.shared.isRunning
-                    ? SuflerService.shared.stop()
-                    : SuflerService.shared.start()
+                SuflerService.shared.toggle()
             case ("meeting", let id) where !id.isEmpty:
                 WorkspaceNavigation.shared.open(.meeting, meetingID: id)
             case ("tasks", _):

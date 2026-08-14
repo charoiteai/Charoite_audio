@@ -569,7 +569,7 @@ struct SuflerView: View {
     private var headerRow: some View {
         HStack(spacing: 12) {
             Button {
-                sufler.isRunning ? sufler.stop() : sufler.start()
+                sufler.toggle()
             } label: {
                 Label {
                     Text(sufler.isRunning ? L.t("Стоп", "Stop", "停止") : L.t("Слушать встречу", "Listen to meeting", "聆听会议"))
@@ -600,6 +600,7 @@ struct SuflerView: View {
                 )
             }
             .buttonStyle(.plain)
+            .disabled(sufler.isTransitioning)
             .keyboardShortcut(.space, modifiers: [.command, .shift])
 
             // Часы записи. Пульсирующая волна говорит «работает», но не

@@ -32,13 +32,29 @@ import ScreenCaptureKit
 @MainActor
 final class SystemAudioCapture: NSObject {
 
-    /// Куда пишем потоки и манифест. Демон читает их по манифесту.
+    /// Манифест общий только как указатель на текущую сессию. Сами потоки
+    /// обязаны быть уникальны: прошлый capture закрывается после демона и ещё
+    /// несколько секунд может писать, пока следующая встреча уже запускается.
     private static var dir: URL {
         AppSettings.charoiteRoot.appendingPathComponent("data", isDirectory: true)
     }
     static var manifestURL: URL { dir.appendingPathComponent("sck_stream.json") }
-    static var systemURL: URL { dir.appendingPathComponent("sck_system.raw") }
-    static var micURL: URL { dir.appendingPathComponent("sck_mic.raw") }
+
+    struct SessionPaths: Equatable {
+        let directory: URL
+        let systemURL: URL
+        let micURL: URL
+    }
+
+    static func sessionPaths(sessionID: UUID) -> SessionPaths {
+        let directory = dir
+            .appendingPathComponent("sck", isDirectory: true)
+            .appendingPathComponent(sessionID.uuidString, isDirectory: true)
+        return SessionPaths(
+            directory: directory,
+            systemURL: directory.appendingPathComponent("system.raw"),
+            micURL: directory.appendingPathComponent("mic.raw"))
+    }
 
     /// Частота потоков — сразу целевая для конвейера.
     ///
@@ -56,12 +72,22 @@ final class SystemAudioCapture: NSObject {
     /// почему собеседника по-прежнему нет в записи. Читает готовность.
     private(set) static var accessGrantedInThisSession = false
 
-    /// Метка этого захвата в манифесте: по ней при остановке отличаем свои
-    /// файлы от файлов уже начавшейся следующей встречи.
-    private let sessionID = UUID().uuidString
+    /// Метка и отдельный каталог конкретного захвата.
+    private let sessionID: UUID
+    private let paths: SessionPaths
 
     private var stream: SCStream?
     private var sink: Sink?
+
+    override convenience init() {
+        self.init(sessionID: UUID())
+    }
+
+    init(sessionID: UUID) {
+        self.sessionID = sessionID
+        self.paths = Self.sessionPaths(sessionID: sessionID)
+        super.init()
+    }
 
     var isActive: Bool { stream != nil }
 
@@ -70,6 +96,7 @@ final class SystemAudioCapture: NSObject {
     @discardableResult
     func start() async -> Bool {
         guard stream == nil else { return true }
+        guard !Task.isCancelled else { return false }
         // Право то же, что у тапов: «Запись экрана и системного звука».
         // Проверяем ДО захвата: без него SCShareableContent бросает, а
         // человеку нужен внятный откат, а не тишина.
@@ -99,6 +126,7 @@ final class SystemAudioCapture: NSObject {
             log("контент недоступен: \(error.localizedDescription)")
             return false
         }
+        guard !Task.isCancelled else { return false }
         guard let display = content.displays.first else {
             log("дисплеев нет — захват невозможен")
             return false
@@ -130,7 +158,7 @@ final class SystemAudioCapture: NSObject {
             micInStream = true
         }
 
-        let sink = Sink(systemURL: Self.systemURL, micURL: Self.micURL)
+        let sink = Sink(systemURL: paths.systemURL, micURL: paths.micURL)
         let stream = SCStream(filter: filter, configuration: cfg, delegate: sink)
         let queue = DispatchQueue(label: "ai.charoite.sck", qos: .userInitiated)
         do {
@@ -142,6 +170,13 @@ final class SystemAudioCapture: NSObject {
         } catch {
             log("захват не стартовал: \(error.localizedDescription)")
             sink.close()
+            cleanupSessionFiles()
+            return false
+        }
+        guard !Task.isCancelled else {
+            try? await stream.stopCapture()
+            sink.close()
+            cleanupSessionFiles()
             return false
         }
         self.stream = stream
@@ -149,7 +184,12 @@ final class SystemAudioCapture: NSObject {
 
         // Манифест выписываем только ПОСЛЕ первых реальных кадров: его
         // наличие для демона означает «поток жив», а не «мы попытались».
-        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        do {
+            try await Task.sleep(nanoseconds: 1_200_000_000)
+        } catch {
+            await stop()
+            return false
+        }
         guard sink.systemFrames > 0 else {
             log("кадров нет за секунду — остаёмся на BlackHole")
             await stop()
@@ -169,27 +209,15 @@ final class SystemAudioCapture: NSObject {
         sink?.close()
         sink = nil
 
-        // Убираем ТОЛЬКО свои файлы.
-        //
-        // Пути статические и общие для всех экземпляров, а гасим захват через
-        // 13 секунд после «Стоп» — демон в это время дописывает хвост. Если в
-        // эти секунды начать следующую встречу (штатный сценарий: одна за
-        // другой), новый экземпляр уже перезапишет манифест и потоки, а
-        // отложенный `stop()` прежнего сносил их под ним. Вторая встреча
-        // оставалась без системного звука — а на macOS 15+, где микрофон идёт
-        // тем же потоком, без обоих каналов (аудит 0.46.0, P0-5).
-        //
-        // Владение определяем по манифесту: он наш, пока в нём наш sessionID.
-        guard Self.manifestSession() == sessionID else {
+        // Общий манифест удаляем только пока он указывает на нас. Каталог
+        // сессии уникален, поэтому его можно убрать независимо от уже
+        // стартовавшей следующей встречи.
+        if Self.manifestSession() == sessionID.uuidString {
+            try? FileManager.default.removeItem(at: Self.manifestURL)
+        } else {
             log("файлы принадлежат новой встрече — не трогаем")
-            return
         }
-        try? FileManager.default.removeItem(at: Self.manifestURL)
-        // Сами потоки — тоже: они уже переписаны в recordings/ штатной
-        // записью встречи, а на диске это сотни мегабайт, которые никто
-        // никогда не откроет.
-        try? FileManager.default.removeItem(at: Self.systemURL)
-        try? FileManager.default.removeItem(at: Self.micURL)
+        cleanupSessionFiles()
     }
 
     /// Идентификатор сессии из манифеста на диске; nil — манифеста нет или он
@@ -206,20 +234,24 @@ final class SystemAudioCapture: NSObject {
             "engine": "screencapturekit",
             "samplerate": Self.sampleRate,      // системный поток
             "format": "s16le",
-            "system": Self.systemURL.path,
+            "system": paths.systemURL.path,
             "system_rate": Self.sampleRate,
             // Кто именно владеет этими файлами прямо сейчас. Демон поле
             // игнорирует, а нам оно нужно при остановке — см. `stop()`.
-            "session": sessionID,
+            "session": sessionID.uuidString,
         ]
         if micInStream {
-            manifest["mic"] = Self.micURL.path
+            manifest["mic"] = paths.micURL.path
             // Частота микрофона — фактическая, а не запрошенная.
             manifest["mic_rate"] = sink?.micSampleRate ?? Self.sampleRate
         }
         guard let data = try? JSONSerialization.data(withJSONObject: manifest) else { return }
         try? FileManager.default.createDirectory(at: Self.dir, withIntermediateDirectories: true)
-        try? data.write(to: Self.manifestURL)
+        try? data.write(to: Self.manifestURL, options: .atomic)
+    }
+
+    private func cleanupSessionFiles() {
+        try? FileManager.default.removeItem(at: paths.directory)
     }
 
     private func log(_ message: String) {

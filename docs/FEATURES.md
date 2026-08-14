@@ -484,6 +484,11 @@ it signals degradation, it does not break the loop.
   CoreAudio (taps did it four times). On macOS 15+ the microphone arrives in
   the same stream and PortAudio never opens — taking the whole "dead stream
   hangs on close" class of failures with it. BlackHole remains a fallback.
+  Start and Stop are serialized through an explicit lifecycle: repeated Start
+  commands are single-flight, and the next meeting cannot begin until the
+  previous capture has closed. Every capture writes to a session-specific PCM
+  directory, so even a delayed ScreenCaptureKit callback cannot mix two
+  back-to-back meetings or truncate the newer one's audio.
 - **Core Audio tap — a disabled reserve** — the second native route to system
   audio: the app reads the tap with its own IOProc and hands the daemon a PCM
   stream. The scheme was proven in the field (38.9 s recorded), but the very

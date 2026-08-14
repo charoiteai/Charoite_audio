@@ -62,6 +62,7 @@ struct MenuBarView: View {
                     } label: {
                         Label(L.t("Остановить", "Stop", "停止"), systemImage: "stop.circle")
                     }
+                    .disabled(sufler.isTransitioning)
                 } else {
                     Button {
                         navigation.open(.meeting)
@@ -70,7 +71,7 @@ struct MenuBarView: View {
                         Label(L.t("Начать запись", "Start recording", "开始录音"),
                               systemImage: "record.circle")
                     }
-                    .disabled(processing.isProcessing)
+                    .disabled(processing.isProcessing || sufler.isTransitioning)
                 }
                 if !sufler.isRunning, let title = processing.actionTitle {
                     Button(title) {
