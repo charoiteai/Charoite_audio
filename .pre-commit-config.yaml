@@ -13,7 +13,12 @@ repos:
     hooks:
       - id: swiftlint
         name: swiftlint (errors)
-        entry: bash -c 'swiftlint lint --quiet | grep error && exit 1 || exit 0'
+        # Прежний однострочник был всегда зелёным при неустановленном или
+        # упавшем swiftlint: пайп без pipefail глотал его код выхода, а grep
+        # без совпадений давал exit 0 (аудит 14.08; тот же паттерн уже чинили
+        # в swift-tests.yml). Теперь: нет бинаря — красный; упал — красный;
+        # error-нарушения — красный с их списком; только warnings — зелёный.
+        entry: bash -c 'command -v swiftlint >/dev/null || { echo "swiftlint не установлен (brew install swiftlint)"; exit 1; }; out=$(swiftlint lint --quiet 2>&1); code=$?; if [ $code -gt 1 ]; then echo "$out" | tail -5; exit 1; fi; if echo "$out" | grep -q " error:"; then echo "$out" | grep " error:"; exit 1; fi; exit 0'
         language: system
         files: \.swift$
         pass_filenames: false
