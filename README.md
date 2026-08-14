@@ -77,13 +77,18 @@ theses for free. Full macOS/iOS tables and the reasoning: [docs/MODELS.md](docs/
 **Option A — the macOS app (recommended).** Python ships inside the app: no
 `git clone`, no `venv`, no `pip`. All you need is the language model:
 
+The app installs the model runtime and the models **itself**: on first launch
+it shows what is missing and offers a button — no terminal needed.
+
+If you prefer doing it by hand:
+
 ```bash
-brew install ollama && brew services start ollama   # models: the app suggests them itself
+brew install ollama && brew services start ollama
 ```
 
-Install **either brew or Ollama.app, never both**. The app starts its own
-server and takes port 11434; the brew service then sits silently in `error`
-and its upgrades never take effect — see [SETUP.md](docs/SETUP.md).
+Then install **either brew or Ollama.app, never both**. The Ollama app starts
+its own server and takes port 11434; the brew service then sits silently in
+`error` and its upgrades never take effect — see [SETUP.md](docs/SETUP.md).
 
 Download `Charoite.dmg` from the [latest release](https://github.com/charoiteai/Charoite_audio/releases/latest)
 and drag the app into Applications — the disk image window shows where.
