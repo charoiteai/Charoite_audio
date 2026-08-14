@@ -122,6 +122,47 @@ where format discipline matters more than latency.
 Requires Ollama 0.32+: on 0.20 the MLX tags return 412 "requires a newer
 version".
 
+## Tested, not adopted: Qwen3.8-27B (measured 2026-08-14)
+
+The first open dense model of the Qwen3.8 family — hybrid attention (linear
+on 48 of 64 layers), native VL, an MTP draft head, 262K context, Apache 2.0;
+the `qwen3.8:27b-mlx` tag needs Ollama ≥ 0.32.12. Measured the day the
+weights landed, same methodology as everything above: `bench_extract.py`
+runs the production graph-extraction function over three real meetings
+(147k / 35k / 25k chars), both models as MLX 4-bit under one runtime.
+
+| | qwen3.6:35b-mlx | qwen3.8:27b-mlx |
+|---|---|---|
+| decisions / cores | 42 / 39 | 47 / 31 |
+| core quotes found in the transcript | 36/39 (92%) | 30/31 (96%) |
+| timestamps that exist in the text | 35/39 (89%) | 29/31 (93%) |
+| median per meeting | **57 s** | 224 s |
+| the 147k-char meeting | **254 s** | 931 s |
+
+Better anchors — and still not the default:
+
+- **3.7–3.9× slower end to end.** A dense 27B pays memory bandwidth where
+  the MoE computes with three billion active parameters (the Muse Glimmer
+  lesson again). Extraction chunks ran at the edge of the 300-second
+  per-request timeout, and one chunk's JSON did not parse at all — half a
+  meeting silently missing (the 31-vs-39 core gap is partly that, so the
+  precision win is paid for with completeness).
+- **Prefix caching does not work on it.** Three requests sharing a
+  ~6.2k-token prefix through `mlx_lm.server`: 77.2 / 74.7 / 75.9 s — a
+  1.0× "speedup", against the 88× measured on our full-attention MoE.
+  Linear-attention layers carry recurrent state instead of a KV cache, so
+  the server cannot resume from a prefix; a live meeting thread would
+  re-read its whole history on every update.
+- Prefill is slow today too: ~95 tok/s against ~520 on the MoE — likely in
+  part an immature hybrid-attention implementation in current runtimes.
+
+Where it may still land: at 16.1 GB the 4-bit build leaves noticeably more
+headroom on a 32 GB machine than the 21 GB default, so it stays a candidate
+for the tighter presets — to be compared against full-attention 8–14B
+models (which keep the caching win) before any preset changes. Re-measure
+when runtimes learn its MTP draft head (speculative decoding may change the
+speed verdict) or when `mlx_lm` learns to cache hybrid-attention state.
+
 ## Light model: qwen3.5:4b
 
 Live theses, classification, draft minutes — everything that must run every
