@@ -16,6 +16,7 @@ struct FirstRunView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var readiness = SetupReadinessService.shared
     @ObservedObject private var pulls = ModelPullService.shared
+    @ObservedObject private var runtime = OllamaRuntimeService.shared
     @State private var requestingMicrophone = false
     let onStart: () -> Void
 
@@ -62,6 +63,10 @@ struct FirstRunView: View {
         .onAppear {
             warmUpFolderAccess()
             readiness.refresh()
+            // Состояние движка спрашиваем отдельно: проверка готовности видит
+            // только «порт не отвечает», а человеку нужно знать, установлен
+            // ли он вообще и что нажать.
+            Task { await runtime.refresh() }
         }
     }
 
@@ -413,7 +418,28 @@ struct FirstRunView: View {
     private func fixActions(_ check: SetupCheck) -> some View {
         if check.state != .ready {
             let models = SetupReadinessPolicy.pullableModels(in: check.detail)
-            if !models.isEmpty {
+            // Движок моделей — единственное, что раньше уводило в терминал:
+            // «запустите Ollama» человек читал, уже перетащив приложение в
+            // «Программы», и дальше шёл искать команды. Теперь это кнопка.
+            if check.id == "ollama", models.isEmpty {
+                HStack(spacing: 8) {
+                    if let busy = runtime.busy {
+                        ProgressView().controlSize(.mini)
+                        Text(busy).font(.system(size: 10.5)).foregroundStyle(.secondary)
+                    } else {
+                        let title = OllamaRuntimeService.actionTitle(for: runtime.state)
+                        if !title.isEmpty {
+                            Button(title) { Task { await runtime.fix() } }
+                                .charoite(.regular, .s)
+                        }
+                        Text(OllamaRuntimeService.explanation(for: runtime.state))
+                            .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                    }
+                }
+                if let err = runtime.failure {
+                    Text(err).font(.system(size: 10)).foregroundStyle(.red)
+                }
+            } else if !models.isEmpty {
                 HStack(spacing: 10) {
                     ForEach(models, id: \.self) { model in
                         if let status = pulls.progress[model] {
