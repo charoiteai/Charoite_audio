@@ -18,6 +18,31 @@ enum RecordingLifecycle: Equatable, Sendable {
     var isActive: Bool { self != .idle }
 }
 
+/// Что делать после очередной проверки daemon во время остановки.
+///
+/// `blocked` намеренно не означает `finish`: живой процесс всё ещё держит
+/// ресурсы встречи, поэтому публиковать `idle` и разрешать новый Start нельзя.
+enum DaemonShutdownAction: Equatable, Sendable {
+    case retry
+    case blocked
+    case finish
+}
+
+enum RecordingLifecyclePolicy {
+    static func isActive(_ lifecycle: RecordingLifecycle, daemonAlive: Bool) -> Bool {
+        lifecycle.isActive || daemonAlive
+    }
+}
+
+enum DaemonShutdownPolicy {
+    static let maxWaits = 30   // 15 секунд polling после fallback на 13-й
+
+    static func action(alive: Bool, waits: Int) -> DaemonShutdownAction {
+        guard alive else { return .finish }
+        return waits < maxWaits ? .retry : .blocked
+    }
+}
+
 /// Token gate не даёт устаревшему async completion изменить новую сессию.
 ///
 /// MainActor-владелец (`SuflerService`) сериализует доступ к структуре; UUID
@@ -54,8 +79,11 @@ struct RecordingLifecycleGate {
         return next
     }
 
-    mutating func finishStop(_ candidate: UUID) -> Bool {
-        guard owns(candidate, in: .stopping) else { return false }
+    /// `idle` допустим только после фактической смерти daemon. Параметр делает
+    /// эту проверку обязательной для каждого caller; production передаёт сюда
+    /// актуальный `Process.isRunning`.
+    mutating func finishStop(_ candidate: UUID, daemonAlive: Bool) -> Bool {
+        guard !daemonAlive, owns(candidate, in: .stopping) else { return false }
         state = .idle
         token = nil
         return true

@@ -146,18 +146,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Выход посреди встречи — самая дорогая случайность: цена промаха —
     /// оборванная запись, которую уже не переснять.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard SuflerService.shared.hasActiveLifecycle else { return .terminateNow }
+        let sufler = SuflerService.shared
+        guard sufler.hasActiveLifecycle else { return .terminateNow }
         let alert = NSAlert()
-        // Самый дорогой диалог приложения — и он был только на русском:
-        // англоязычный пользователь читал две кириллические кнопки наугад,
-        // а ценой промаха была оборванная запись встречи.
-        alert.messageText = L.t("Идёт запись встречи", "A meeting is being recorded", "正在录制会议")
-        alert.informativeText = L.t(
-            "Если выйти сейчас, запись прервётся. Стенограмма сохранится, но всё, что скажут дальше, потеряется.",
-            "Quitting now stops the recording. The transcript is kept, but everything said after this is lost.",
-            "现在退出会中断录音。逐字稿会保留，但此后所说的内容都会丢失。")
-        alert.addButton(withTitle: L.t("Продолжить встречу", "Keep recording", "继续录制"))
-        alert.addButton(withTitle: L.t("Выйти и остановить запись", "Quit and stop recording", "退出并停止录音"))
+        if sufler.lifecycle == .stopping {
+            // Capture уже закрыт, поэтому обещать «продолжить встречу» нельзя.
+            // Живой daemon всё ещё держит ресурсы и требует явного решения.
+            alert.messageText = L.t(
+                "Завершение записи ещё не закончено",
+                "The recording is still stopping",
+                "录音仍在停止中"
+            )
+            alert.informativeText = L.t(
+                "Если выйти сейчас, процесс записи может остаться незавершённым.",
+                "Quitting now may leave the recording process unfinished.",
+                "现在退出可能会使录音进程未完成。"
+            )
+            alert.addButton(withTitle: L.t("Остаться и подождать", "Stay and wait", "留下并等待"))
+            alert.addButton(withTitle: L.t("Выйти всё равно", "Quit anyway", "仍然退出"))
+        } else {
+            // Самый дорогой диалог приложения — и он был только на русском:
+            // англоязычный пользователь читал две кириллические кнопки наугад,
+            // а ценой промаха была оборванная запись встречи.
+            alert.messageText = L.t("Идёт запись встречи", "A meeting is being recorded", "正在录制会议")
+            alert.informativeText = L.t(
+                "Если выйти сейчас, запись прервётся. Стенограмма сохранится, но всё, что скажут дальше, потеряется.",
+                "Quitting now stops the recording. The transcript is kept, but everything said after this is lost.",
+                "现在退出会中断录音。逐字稿会保留，但此后所说的内容都会丢失。")
+            alert.addButton(withTitle: L.t("Продолжить встречу", "Keep recording", "继续录制"))
+            alert.addButton(withTitle: L.t("Выйти и остановить запись", "Quit and stop recording", "退出并停止录音"))
+        }
         alert.buttons.last?.hasDestructiveAction = true
         if alert.runModal() == .alertFirstButtonReturn { return .terminateCancel }
         // Демону нужно успеть закрыть аудио-стримы и дописать граф встречи.
@@ -166,7 +184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // добивающих таймера умирали вместе с процессом на третьей секунде,
         // и зависший демон оставался сиротой — держал flock, из-за чего
         // следующий запуск приложения молча отскакивал.
-        SuflerService.shared.stop()
+        sufler.stop()
         DispatchQueue.main.asyncAfter(deadline: .now() + 14.0) {
             NSApp.reply(toApplicationShouldTerminate: true)
         }
