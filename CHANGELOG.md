@@ -5,6 +5,25 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.50.0](https://github.com/charoiteai/Charoite_audio/compare/v0.49.0...v0.50.0) (2026-08-14)
+
+
+### Features
+
+* **app:** движок моделей ставится кнопкой, а не двумя командами в терминале ([#300](https://github.com/charoiteai/Charoite_audio/issues/300)) ([a1ac2e5](https://github.com/charoiteai/Charoite_audio/commit/a1ac2e5c5137c1be9da92d6816815ee709df2d7f))
+* **bench:** сравнение моделей на разборе встречи, а не на скорости ([#296](https://github.com/charoiteai/Charoite_audio/issues/296)) ([2f54c75](https://github.com/charoiteai/Charoite_audio/commit/2f54c75e33eb612e5e7598ffd828c716e1bc0b6f))
+
+
+### Bug Fixes
+
+* **app:** keep stuck daemon lifecycle active ([#304](https://github.com/charoiteai/Charoite_audio/issues/304)) ([ad32348](https://github.com/charoiteai/Charoite_audio/commit/ad323487ee576d2b2c78a93abe6c642be7372c3d))
+* **app:** serialize recording lifecycle and isolate capture files ([#301](https://github.com/charoiteai/Charoite_audio/issues/301)) ([4d0c1df](https://github.com/charoiteai/Charoite_audio/commit/4d0c1df08e84714cf9c17be74ab786fc7a0b8bb5))
+* **bench:** ненастроенный бенч памяти — не провал, а подсказка ([#299](https://github.com/charoiteai/Charoite_audio/issues/299)) ([9d3193d](https://github.com/charoiteai/Charoite_audio/commit/9d3193d16eed4100b332534d974dad1de5b90fde))
+* **ci:** ночные iOS-тесты падали не по делу — из-за языка раннера ([#294](https://github.com/charoiteai/Charoite_audio/issues/294)) ([5c8f7cb](https://github.com/charoiteai/Charoite_audio/commit/5c8f7cbc8d31db6be622d466a178165df1ed5af5))
+* **diar:** короткие «да» и «угу» — один голос, а не восемь собеседников ([#303](https://github.com/charoiteai/Charoite_audio/issues/303)) ([3844cd5](https://github.com/charoiteai/Charoite_audio/commit/3844cd5fb414683a109a00dc68450b5f499d9f70))
+* **diar:** порог склейки голосов измерен, а участники больше не дробятся ([#302](https://github.com/charoiteai/Charoite_audio/issues/302)) ([fcb7ec3](https://github.com/charoiteai/Charoite_audio/commit/fcb7ec3da0de25368c45721d0a2d728cdc19e504))
+* **graph:** цитата ядра — непрерывный отрезок, а не склейка через многоточие ([#297](https://github.com/charoiteai/Charoite_audio/issues/297)) ([bea6f3b](https://github.com/charoiteai/Charoite_audio/commit/bea6f3b76f9d4af11a200aa0ead0c76512b7501c))
+
 ## [0.49.0](https://github.com/charoiteai/Charoite_audio/compare/v0.48.1...v0.49.0) (2026-08-13)
 
 
