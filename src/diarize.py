@@ -108,11 +108,58 @@ def diarize(audio: np.ndarray, sr: int, num_speakers: int = -1, threshold: float
     return segs
 
 
-def _merge_shards(audio: np.ndarray, sr: int, segs, threshold: float = 0.72):
+MIN_SPEAKER_S = 30.0   # меньше этого суммарной речи — не участник, а осколок
+WEAK_THRESHOLD = 0.50  # планка для приписывания осколка к ближайшему голосу
+
+
+def assign_shards(talk: dict[int, float], sim: dict[tuple[int, int], float],
+                  min_speaker_s: float = MIN_SPEAKER_S,
+                  weak_threshold: float = WEAK_THRESHOLD) -> dict[int, int]:
+    """Куда приписать кластеры, слишком тихие для отдельного участника.
+
+    13.08 встреча на троих дала тринадцать лишних «собеседников»: реальные
+    участники держали 92% текста, а осколки — по 26-193 знака, то есть
+    реплики в секунду-две («да», «угу», «согласен»). Строгий порог их не
+    склеивает: с короткого сигнала эмбеддинг шумный и до 0.72 не дотягивает.
+
+    Разрыв между участником и осколком — два порядка, поэтому правило
+    безопасное: кто наговорил меньше `min_speaker_s`, тот не человек, а
+    кусок чужого голоса. Такой кластер уходит к ближайшему по косинусу —
+    но не любой ценой: ниже `weak_threshold` оставляем как есть, иначе
+    приписали бы чужую реплику к первому попавшемуся.
+
+    Возвращает {осколок: к кому приписать}; кластеры, которым пары не
+    нашлось, в ответе отсутствуют.
+    """
+    strong = [k for k, t in talk.items() if t >= min_speaker_s]
+    weak = [k for k, t in talk.items() if t < min_speaker_s]
+    if not strong:
+        # Все кластеры тихие — короткая запись или обмен репликами. Слипать
+        # их между собой наугад опаснее, чем оставить как есть.
+        return {}
+    out: dict[int, int] = {}
+    for w in weak:
+        best, score = None, weak_threshold
+        for s in strong:
+            v = sim.get((w, s), sim.get((s, w), 0.0))
+            if v > score:
+                best, score = s, v
+        if best is not None:
+            out[w] = best
+    return out
+
+
+def _merge_shards(audio: np.ndarray, sr: int, segs, threshold: float = 0.60):
     """Осколки одного голоса → один кластер (очная встреча в один микрофон
     давала 30 «голосов» на четверых, 27.07). Средние эмбеддинги кластеров
-    сравниваются по косинусу; ≥ threshold — это один человек. Пороги из
-    прототипа 27.07: свой голос 0.83–0.91, чужие ≤0.58 — середина с запасом.
+    сравниваются по косинусу; ≥ threshold — это один человек.
+
+    Порог измерен 14.08 на очной встрече (65 минут, один микрофон, трое
+    говорящих). Попарная похожесть крупных кластеров разделилась начисто:
+    куски одного голоса 0.68-0.89, разные люди 0.11-0.46. Между 0.46 и
+    0.68 — пустая зона, и граница должна стоять там. Прежние 0.72 стояли
+    ВНУТРИ диапазона своих: пара с похожестью 0.68 не склеивалась, и один
+    человек уходил в стенограмму двумя «собеседниками».
 
     Биометрию НЕ храним (решение владельца 27.07): эмбеддинги живут только
     внутри этого вызова и выбрасываются.
@@ -120,7 +167,11 @@ def _merge_shards(audio: np.ndarray, sr: int, segs, threshold: float = 0.72):
     import sherpa_onnx
     by: dict[int, list[tuple[float, float, float]]] = {}
     for s, e, k in segs:
-        if e - s >= 2.0:
+        # Раньше порог был 2.0 с, и кластер из одних коротких реплик не
+        # получал эмбеддинга вовсе — значит не участвовал в склейке и жил
+        # отдельным «собеседником» до конца встречи. Секунды хватает на
+        # шумный, но пригодный вектор; сравнение с ним идёт по мягкой планке.
+        if e - s >= 1.0:
             by.setdefault(k, []).append((e - s, s, e))
     if len(by) <= 1:
         return segs
@@ -148,12 +199,31 @@ def _merge_shards(audio: np.ndarray, sr: int, segs, threshold: float = 0.72):
         return x
 
     ks = sorted(embs)
+    sim: dict[tuple[int, int], float] = {}
     for i, a in enumerate(ks):
         for b in ks[i + 1:]:
-            if float(np.dot(embs[a], embs[b])) >= threshold:
+            v = float(np.dot(embs[a], embs[b]))
+            sim[(a, b)] = v
+            if v >= threshold:
                 parent[find(b)] = find(a)
     # канон группы — кластер с наибольшей суммарной речью (стабильные метки)
     talk = {k: sum(d for d, _s, _e in items) for k, items in by.items()}
+
+    # Второй проход: кластеры, слишком тихие для отдельного участника,
+    # уходят к ближайшему голосу по мягкой планке. Считаем речь по группам
+    # после первого прохода — иначе два осколка одного человека выглядят
+    # тихими порознь, хотя вместе это уже минута речи.
+    group_talk: dict[int, float] = {}
+    for k in by:
+        group_talk[find(k)] = group_talk.get(find(k), 0.0) + talk[k]
+    group_sim: dict[tuple[int, int], float] = {}
+    for (a, b), v in sim.items():
+        ga, gb = find(a), find(b)
+        if ga != gb:
+            key = (ga, gb)
+            group_sim[key] = max(group_sim.get(key, 0.0), v)
+    for weak, host in assign_shards(group_talk, group_sim).items():
+        parent[find(weak)] = find(host)
     canon: dict[int, int] = {}
     for k in by:
         r = find(k)
