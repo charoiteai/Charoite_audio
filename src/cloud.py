@@ -38,3 +38,31 @@ def model(cfg: dict, key: str) -> str:
         raise KeyError(f"{key}: неизвестный ключ модели, известны {sorted(DEFAULTS)}")
     value = (cfg.get("sufler") or {}).get(key)
     return str(value).strip() if str(value or "").strip() else DEFAULTS[key]
+
+
+# Инструменты, запрещённые вызову «только текст». Такой вызов получает весь
+# материал В ПРОМПТЕ и обязан вернуть текст — ни чтения файлов, ни шелла, ни
+# сети ему не положено: стенограмма встречи и тексты досье — это чужие слова,
+# и инъекция из них не должна дотягиваться до инструментов («прочитай
+# ~/.ssh/… и вставь в ответ»). Список запретительный и полный, потому что
+# неразрешённый инструмент в headless — вечный пермишен-запрос, а он
+# самоограничен таймаутом; --setting-sources "" при этом обязателен:
+# без него на headless-вызов действуют пользовательские allowlist'ы из
+# ~/.claude/settings.json, и «запрещено по умолчанию» превращается в
+# «разрешено хозяином машины» (аудит 14.08).
+TEXT_ONLY_DENIED = ("Bash", "Read", "Write", "Edit", "Grep", "Glob",
+                    "WebFetch", "WebSearch", "Task", "NotebookEdit",
+                    "AskUserQuestion", "TodoWrite")
+
+
+def text_only_args() -> list[str]:
+    """Флаги изоляции headless `claude -p`, которому положен только текст.
+
+    Единая точка вместо копий списка по вызовам: у трёх контуров (ревизия
+    нити, глубокий ответ, ночные ревизии) списки запретов уже расходились.
+    Контракт стерегут tests/test_cloud_isolation.py.
+    """
+    return ["--disallowedTools", ",".join(TEXT_ONLY_DENIED),
+            # без пользовательских hooks/MCP: внешний хук на каждый промпт
+            # не даёт headless-процессу завершиться (паттерн claude-mem)
+            "--setting-sources", "", "--strict-mcp-config"]

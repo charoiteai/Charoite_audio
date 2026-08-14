@@ -90,18 +90,13 @@ def main() -> None:
         "Внутри — маркированные пункты со ссылками [[Ядра/…]]. Не выдумывай."
     )
     try:
-        # Тот же контракт, что у облачного разбора (graph_updater.FORBIDDEN_TOOLS):
-        # ревизия ядер — чтение и текст, ей не положены ни шелл, ни сеть, ни
-        # правки; неразрешённый инструмент в headless — вечный пермишен-запрос,
-        # а пользовательские hooks/MCP не дают процессу завершиться. Раньше
-        # ночной вызов шёл голым `claude -p` вопреки собственному правилу
-        # репозитория (аудит 0.46.0).
+        # Ревизии не положено НИ ОДНОГО инструмента: ядра и индекс уже в
+        # промпте (blob выше), а Read/Grep/Glob, разрешённые прежним
+        # контрактом, были вектором инъекции — строка в ядре могла заставить
+        # ревизора прочитать произвольный файл и вписать его в отчёт
+        # (аудит 14.08). Единый контракт «только текст» — cloud.text_only_args.
         r = subprocess.run(
-            [claude, "-p", prompt, "--model", model,
-             "--allowedTools", "Read,Grep,Glob",
-             "--disallowedTools",
-             "Bash,WebFetch,WebSearch,Task,NotebookEdit,AskUserQuestion,Edit,Write",
-             "--setting-sources", "", "--strict-mcp-config"],
+            [claude, "-p", prompt, "--model", model, *cloud.text_only_args()],
             capture_output=True, text=True, timeout=600, env=env,
             stdin=subprocess.DEVNULL)
         out = (r.stdout or "").strip()
