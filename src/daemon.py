@@ -26,7 +26,6 @@ import deps  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
-import requests  # noqa: E402
 import yaml  # noqa: E402
 
 import action_items  # noqa: E402
@@ -40,7 +39,7 @@ import speaker_names  # noqa: E402
 import thesis_rules  # noqa: E402
 import voice_pitch  # noqa: E402
 from audio import AudioHub  # noqa: E402
-from llm import LLM  # noqa: E402
+from llm import LLM, embed as llm_embed  # noqa: E402
 from main import NOISE, Transcript  # noqa: E402
 from stt import STT  # noqa: E402
 
@@ -96,35 +95,37 @@ def looks_question(text: str) -> bool:
     return ask_question_model(text)
 
 
+# Клиент модели для классификатора спорных реплик. Ставит main(): до него
+# консервативный ответ «вопрос» (см. ask_question_model).
+_llm_client: LLM | None = None
+
+
 def ask_question_model(text: str) -> bool:
     """Спорную реплику (вопросное слово, но без «?») классифицирует модель.
 
     AI-first вместо чёрного списка союзов: модель понимает, что «когда мы
-    вставляли» — придаточное, а «когда релиз» — вопрос. Лёгкая qwen3.5:4b,
-    num_predict 3, температура 0 — ответ за ~0.4с. Сеть недоступна или таймаут
-    — консервативно считаем вопросом (лучше лишняя подсказка, чем пропуск).
+    вставляли» — придаточное, а «когда релиз» — вопрос. Лёгкая модель из
+    конфига (llm.small_model), num_predict 3, температура 0 — ответ за ~0.4с.
+    Сеть недоступна или таймаут — консервативно считаем вопросом (лучше
+    лишняя подсказка, чем пропуск). До main() клиента ещё нет — тот же
+    консервативный ответ.
     """
+    if _llm_client is None:
+        return True
     try:
-        r = requests.post(
-            "http://127.0.0.1:11434/api/chat",
-            json={
-                "model": "qwen3.5:4b", "stream": False, "think": False,
-                "options": {"num_ctx": 2048, "num_predict": 3, "temperature": 0},
-                "messages": [
-                    {"role": "system", "content":
-                     "Реплика с рабочей встречи начинается с вопросного слова, но без «?». "
-                     "Это настоящий ВОПРОС, на который собеседник ждёт ответа, "
-                     "или придаточное предложение внутри утверждения?\n"
-                     "«Когда мы вставляли партицию, были ключи» — придаточное, ответь: нет.\n"
-                     "«Когда релиз» — вопрос, ответь: да.\n"
-                     "Ответь одним словом: да или нет."},
-                    {"role": "user", "content": text},
-                ],
-            },
-            timeout=5,
-        )
-        ans = r.json().get("message", {}).get("content", "").strip().lower()
-        return ans.startswith("да")
+        ans = _llm_client.complete(
+            text,
+            system=(
+                "Реплика с рабочей встречи начинается с вопросного слова, но без «?». "
+                "Это настоящий ВОПРОС, на который собеседник ждёт ответа, "
+                "или придаточное предложение внутри утверждения?\n"
+                "«Когда мы вставляли партицию, были ключи» — придаточное, ответь: нет.\n"
+                "«Когда релиз» — вопрос, ответь: да.\n"
+                "Ответь одним словом: да или нет."),
+            model=_llm_client.small, think=False,
+            num_ctx=2048, num_predict=3, temperature=0,
+            timeout=5)
+        return ans.lower().startswith("да")
     except Exception:  # noqa: BLE001 — модель недоступна: не глотаем вопрос
         return True
 
@@ -346,6 +347,8 @@ def main():
     emit({"type": "status", "text": "Загружаю модели…"})
     stt = STT(cfg)
     llm = LLM(cfg)
+    global _llm_client
+    _llm_client = llm  # классификатору спорных реплик (ask_question_model)
     # env-override для тестов: стенограммы в песочницу, не в боевую папку
     tdir = os.environ.get("SUFLER_TRANSCRIPTS_DIR")
     tr = Transcript(pathlib.Path(tdir) if tdir else ROOT / cfg["log"]["transcripts_dir"])
@@ -1081,9 +1084,7 @@ def main():
             # 20с, не 120: эмбеддинг занимает ~0.2с, и если Ollama занят тяжёлой
             # генерацией — лучше пропустить проход дежавю, чем держать поток
             # заблокированным две минуты
-            r = requests.post(privacy.llm_base_url(cfg) + "/api/embed",
-                              json={"model": emb_model, "input": texts}, timeout=20)
-            return r.json().get("embeddings", []) or []
+            return llm_embed(cfg, texts, model=emb_model, timeout=20)
 
         def cosine(a: list[float], b: list[float]) -> float:
             num = sum(x * y for x, y in zip(a, b))

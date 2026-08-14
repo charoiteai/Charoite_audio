@@ -26,7 +26,6 @@ import numpy as np
 import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-import privacy  # noqa: E402
 from stt import STT  # noqa: E402
 
 from charoite_paths import resolve_root
@@ -277,24 +276,21 @@ def _merge_shards(audio: np.ndarray, sr: int, segs, threshold: float = 0.60):
 
 def name_speakers(cfg: dict, lines: list[tuple[str, float, float, str]]) -> dict[str, str]:
     """qwen сопоставляет Speaker N ↔ имена (обращения/представления в речи)."""
-    import requests
+    from llm import LLM
     sample = "\n".join(f"[{spk}] {text}" for spk, _s, _e, text in lines[:80] if text)[:7000]
     try:
-        r = requests.post(
-            privacy.llm_base_url(cfg) + "/api/chat",
-            json={"model": cfg["llm"]["model"], "stream": False, "think": False,
-                  "format": "json",
-                  "messages": [
-                      {"role": "system", "content": (
-                          "По репликам определи имена говорящих: кто как представился, "
-                          "к кому как обращались. Верни СТРОГО JSON вида "
-                          '{"speaker_0":"Имя","speaker_1":"?"} — «?» если имя не звучало. '
-                          "Не выдумывай имён.")},
-                      {"role": "user", "content": sample},
-                  ]},
-            timeout=180,
-        )
-        data = json.loads(r.json().get("message", {}).get("content", "{}"))
+        raw = LLM(cfg).complete(
+            sample,
+            system=(
+                "По репликам определи имена говорящих: кто как представился, "
+                "к кому как обращались. Верни СТРОГО JSON вида "
+                '{"speaker_0":"Имя","speaker_1":"?"} — «?» если имя не звучало. '
+                "Не выдумывай имён."),
+            model=cfg["llm"]["model"], json_format=True, think=False,
+            # num_ctx теперь явный (правило llm.py): раньше поле не задавалось
+            # и модель грузилась с контекстом из Modelfile — раздутый KV-кэш
+            num_ctx=8192, timeout=180)
+        data = json.loads(raw or "{}")
         return {k: v for k, v in data.items() if isinstance(v, str)}
     except Exception as e:  # noqa: BLE001
         print(f"имена: не удалось ({e})")

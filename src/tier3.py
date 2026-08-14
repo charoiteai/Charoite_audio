@@ -31,12 +31,11 @@
 from __future__ import annotations
 
 import datetime as _dt
-import json
 import pathlib
 import re
 import shutil
-import urllib.request
 
+import llm
 import nli
 
 REPR_LIMIT = 350          # NLI держит 512 токенов на пару — имя+суть с запасом
@@ -56,7 +55,6 @@ MERGE_T_WEAK = 0.92
 CHRON_OVERLAP = 0.5       # доля общих встреч, после которой пару не сливаем
 NEST_HI, NEST_LO = 0.85, 0.5
 HUB_LIMIT = 3             # ≥ стольких вложений в одно ядро → хаб, не трогаем
-OLLAMA = "http://127.0.0.1:11434"
 BACKUP_KEEP = 20          # держим столько последних бэкап-папок
 
 
@@ -142,16 +140,11 @@ def load_cores(folder: pathlib.Path) -> list[dict]:
     return cores
 
 
-def _embed_all(cores: list[dict]) -> list[list[float]]:
-    # nosemgrep — адрес локального brain/Ollama из конфига, не внешний ввод
-    req = urllib.request.Request(
-        f"{OLLAMA}/api/embed",
-        data=json.dumps({"model": "bge-m3", "input": [c["repr"] for c in cores],
-                         "keep_alive": "60m"}).encode(),
-        headers={"Content-Type": "application/json"})
-    # nosemgrep — адрес локального brain/Ollama из конфига, не внешний ввод
-    with urllib.request.urlopen(req, timeout=120) as r:
-        return json.load(r)["embeddings"]
+def _embed_all(cores: list[dict], cfg: dict) -> list[list[float]]:
+    # Адрес и транспорт — через llm.embed (единая точка): прежний хардкод
+    # 127.0.0.1:11434 игнорировал llm.base_url из конфига (аудит 14.08).
+    return llm.embed(cfg, [c["repr"] for c in cores],
+                     model="bge-m3", keep_alive="60m", timeout=120)
 
 
 def _cos(a: list[float], b: list[float]) -> float:
@@ -250,7 +243,8 @@ def auto_apply_allowed(cfg: dict) -> bool:
 
 
 def revise(graph: pathlib.Path, only_names: list[str] | None = None,
-           apply: bool = False, mark: bool = False) -> dict:
+           apply: bool = False, mark: bool = False,
+           cfg: dict | None = None) -> dict:
     """Ревизия ядер графа. only_names — инкрементально (ядра этой встречи).
 
     Два права, а не одно, потому что цена у правок разная:
@@ -298,7 +292,9 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
     focus = ({c["name"] for c in cores} if not only_names
              else {n for n in only_names})
     try:
-        embs = _embed_all(cores)
+        # cfg передаёт graph_updater; CLI без конфига падает на дефолт
+        # privacy.llm_base_url({}) — тот же локальный адрес, что раньше.
+        embs = _embed_all(cores, cfg or {})
     except Exception:
         return out  # Ollama лежит — не мешаем пайплайну
     out["ran"] = True
