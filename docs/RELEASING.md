@@ -90,6 +90,12 @@ which on a tag checkout is exactly the tag, so `CFBundleShortVersionString`
 matches the release. A full checkout (`fetch-depth: 0`) is required for
 `git describe` to see tags.
 
+The embedded CPython that ships inside the bundle is downloaded from
+python-build-standalone with a pinned version and build tag, and its sha256
+is verified against the release's published `SHA256SUMS` before unpacking —
+a mismatch (including a poisoned local cache) fails the build instead of
+shipping an unverified interpreter.
+
 Validation after changing any of this: download the asset, `ditto -x -k`,
 `codesign -dv`, check `CFBundleShortVersionString` matches the tag.
 

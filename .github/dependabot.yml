@@ -4,6 +4,12 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: {interval: weekly}
+  # pip — самая большая поверхность проекта (onnxruntime, requests,
+  # websockets…); без этой секции за её CVE следил только dependency-review
+  # на PR, которых без dependabot не возникает (аудит 14.08)
+  - package-ecosystem: pip
+    directory: /
+    schedule: {interval: weekly}
   - package-ecosystem: swift
     directory: /app
     schedule: {interval: weekly}
