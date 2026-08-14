@@ -18,6 +18,7 @@ import yaml
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import llm_health  # noqa: E402
 import privacy  # noqa: E402
+from llm import LLM, LLMHTTPError  # noqa: E402
 
 from charoite_paths import code_root, resolve_root
 
@@ -117,23 +118,6 @@ def _project_rule(known: list[str], default: str) -> str:
               "(дом, здоровье, личные дела).")
 
 
-def _chat(cfg: dict, payload: dict, timeout: float = LLM_TIMEOUT):
-    """POST /api/chat с одной попыткой поднять вставшую модель.
-
-    Проба перед разбором ловит Ollama, которая уже стоит; эта обёртка — ту,
-    что встала посреди работы. Для длинной стенограммы это разные события:
-    между частями проходят минуты.
-    """
-    url = privacy.llm_base_url(cfg) + "/api/chat"
-    try:
-        return requests.post(url, json=payload, timeout=timeout)
-    except requests.RequestException as e:
-        print(f"граф: запрос к модели не прошёл ({type(e).__name__}) — пробую оживить")
-        if not llm_health.ensure_alive(cfg, lambda m: print(f"граф: {m}")):
-            raise
-        return requests.post(url, json=payload, timeout=timeout)
-
-
 def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     """LLM → JSON: сущности, связи, решения, темы.
 
@@ -212,22 +196,18 @@ def _dedup(items: list) -> list:
 
 
 def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
-    r = _chat(
-        cfg,
-        {
-            "model": cfg["llm"]["model"],
-            "stream": False,
-            "format": "json",
-            # think=false обязателен: у qwen3.6 рассуждение включено по умолчанию
-            # и делит бюджет с ответом. На разборе стенограммы модель уходила
-            # думать на тысячи знаков — и JSON приходил пустым или обрывался.
-            "think": False,
-            # num_ctx 8192 не хватало: 12000 знаков стенограммы съедали почти
-            # весь контекст, и модель обрывала JSON на полуслове — граф молча
-            # не обновлялся. 16384 оставляет место и на вход, и на ответ.
-            "options": {"num_ctx": 16384, "num_predict": 3000},
-            "messages": [
-                {"role": "system", "content": (
+    # think=false обязателен: у qwen3.6 рассуждение включено по умолчанию
+    # и делит бюджет с ответом. На разборе стенограммы модель уходила
+    # думать на тысячи знаков — и JSON приходил пустым или обрывался.
+    #
+    # num_ctx 8192 не хватало: 12000 знаков стенограммы съедали почти
+    # весь контекст, и модель обрывала JSON на полуслове — граф молча
+    # не обновлялся. 16384 оставляет место и на вход, и на ответ.
+    #
+    # revive=True — одна попытка поднять модель, вставшую ПОСРЕДИ разбора:
+    # проба до разбора ловит ту, что стояла с самого начала, а для длинной
+    # стенограммы между частями проходят минуты.
+    system = (
                     "Ты строишь граф знаний по стенограмме встречи. Верни СТРОГО JSON:\n"
                     '{"название":"2-3 слова, о чём встреча (не больше трёх!)",'
                     '"проект":"строго рабочий проект для ЛЮБОЙ рабочей/рабочей встречи — проект, витрины, '
@@ -268,26 +248,29 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
                               "as spoken). Keep the JSON KEYS exactly as specified above. "
                               "The «цитата» field stays VERBATIM from the transcript."}
                        .get(str(cfg.get("sufler", {}).get("language", "ru")).lower(), ""))
-                )},
-                {"role": "user", "content": f"Стенограмма:\n\n{transcript}"},
-            ],
-        },
     )
-    # Сетевая ошибка здесь стоила всего пост-процессинга: исключение летело
+    # Ошибка сервера здесь стоила всего пост-процессинга: исключение летело
     # наружу, main() падал с трейсбеком в logs/graph_*.log, и не выполнялось
     # НИЧЕГО из дальнейшего — ни заметки встречи, ни ядер, ни разбора, ни
     # архивной папки, ни post-hook. А приложение к этому моменту уже сказало
     # «граф будет готов через 2-4 минуты». Типовой повод: Ollama выгрузила
     # модель или не запущена после перезагрузки.
-    if r.status_code != 200:
-        print(f"граф: Ollama ответила HTTP {r.status_code} — модель "
-              f"{cfg['llm']['model']} установлена? (ollama pull)")
+    try:
+        raw = LLM(cfg).complete(
+            f"Стенограмма:\n\n{transcript}",
+            system=system,
+            model=cfg["llm"]["model"],
+            json_format=True, think=False,
+            num_ctx=16384, num_predict=3000,
+            timeout=LLM_TIMEOUT, revive=True,
+        )
+    except LLMHTTPError as e:
+        if e.status != 200:
+            print(f"граф: Ollama ответила HTTP {e.status} — модель "
+                  f"{cfg['llm']['model']} установлена? (ollama pull)")
+        else:
+            print(f"граф: Ollama вернула ошибку: {e.detail}")
         return None
-    body = r.json()
-    if isinstance(body, dict) and body.get("error"):
-        print(f"граф: Ollama вернула ошибку: {body['error']}")
-        return None
-    raw = body.get("message", {}).get("content", "")
     raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.M).strip()
     try:
         return json.loads(raw)
@@ -691,7 +674,7 @@ def main():
             import tier3
             auto = tier3.auto_apply_allowed(cfg)
             rep = tier3.revise(graph, only_names=[safe_name(c["имя"]) for c in cores],
-                               mark=True, apply=auto)
+                               mark=True, apply=auto, cfg=cfg)
             # печатаем СДЕЛАННОЕ (log) и осознанно пропущенное (skipped).
             # dups/nests — тот же список вторым слоем: он нужен отчёту CLI,
             # а здесь был бы двойным эхом каждой правки
@@ -771,36 +754,29 @@ def main():
         for m in sorted((graph / "Встречи").glob("*.md"))[-3:-1]:
             gctx_parts.append(m.read_text(encoding="utf-8")[:800])
         gctx = "\n---\n".join(gctx_parts)[:2500]
-        r2 = _chat(
-            cfg,
-            {
-                "model": cfg["llm"]["model"],
-                "stream": False,
-                "options": {"num_ctx": 8192},  # без него qwen3.6 на 262144 → раздутый KV-кэш
-                "messages": [
-                    {"role": "system", "content": (
-                        # позитивные формулировки вместо «не выдумывай / БЕЗ таблиц»:
-                        # локальная модель следует им заметно точнее
-                        "Ты аналитик после рабочей встречи. Пиши по-русски, сухо, markdown. "
-                        "Опирайся строго на стенограмму и память прошлых встреч; в разделах "
-                        "решений и рекомендаций помечай свои варианты словом «предложение». "
-                        "Оформляй всё списками «- …» с жирным ключом в начале пункта: "
-                        "так документ читается в любом plain-тексте."
-                    )},
-                    {"role": "user", "content": (
-                        (f"Память прошлых встреч (граф):\n{gctx}\n\n" if gctx else "")
-                        + f"Стенограмма встречи:\n{transcript[:11000]}\n\n"
-                        "Составь разбор строго по разделам:\n"
-                        "# Разбор встречи\n"
-                        "## Вопросы встречи и ответы\n(каждый прозвучавший вопрос → ответ, если прозвучал; если нет — «открыт»)\n"
-                        "## Задачи\n(список «- **Кто** — что — срок»)\n"
-                        "## Возможные решения открытых вопросов\n(варианты с плюсами/минусами, кратко)\n"
-                        "## Рекомендации: что проработать до следующей встречи\n(конкретные шаги)"
-                    )},
-                ],
-            },
+        debrief = LLM(cfg).complete(
+            (f"Память прошлых встреч (граф):\n{gctx}\n\n" if gctx else "")
+            + f"Стенограмма встречи:\n{transcript[:11000]}\n\n"
+            "Составь разбор строго по разделам:\n"
+            "# Разбор встречи\n"
+            "## Вопросы встречи и ответы\n(каждый прозвучавший вопрос → ответ, если прозвучал; если нет — «открыт»)\n"
+            "## Задачи\n(список «- **Кто** — что — срок»)\n"
+            "## Возможные решения открытых вопросов\n(варианты с плюсами/минусами, кратко)\n"
+            "## Рекомендации: что проработать до следующей встречи\n(конкретные шаги)",
+            system=(
+                # позитивные формулировки вместо «не выдумывай / БЕЗ таблиц»:
+                # локальная модель следует им заметно точнее
+                "Ты аналитик после рабочей встречи. Пиши по-русски, сухо, markdown. "
+                "Опирайся строго на стенограмму и память прошлых встреч; в разделах "
+                "решений и рекомендаций помечай свои варианты словом «предложение». "
+                "Оформляй всё списками «- …» с жирным ключом в начале пункта: "
+                "так документ читается в любом plain-тексте."
+            ),
+            model=cfg["llm"]["model"],
+            think=None,  # умолчание модели, как было до рефакторинга
+            num_ctx=8192,  # без него qwen3.6 на 262144 → раздутый KV-кэш
+            timeout=LLM_TIMEOUT, revive=True,
         )
-        debrief = r2.json().get("message", {}).get("content", "")
         if debrief.strip():
             slug2 = re.sub(r"[,;:!?.]", "", safe_name(title)).replace(" ", "_")[:50] if title else ""
             dpath = tpath.with_name(f"{stamp}_{slug2}_разбор.md" if slug2 else f"{stamp}_разбор.md")

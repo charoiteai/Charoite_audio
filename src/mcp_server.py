@@ -15,6 +15,7 @@ import requests
 
 import meeting_stamp
 import privacy
+from llm import LLM, LLMHTTPError
 
 # pyproject разрешает mcp>=1.0, а в 2.0 класс переехал: FastMCP из
 # mcp.server.fastmcp стал MCPServer в mcp.server. Оба дают .tool() и .run(),
@@ -44,6 +45,18 @@ _CFG = _cfg()
 _LLM = _CFG.get("llm", {})
 OLLAMA = privacy.llm_base_url(_CFG)
 MODEL = _LLM.get("model", "qwen3.6:35b-a3b")  # боевая модель из конфига, не хардкод
+
+
+def _client() -> LLM:
+    """LLM-клиент по конфигу; свежий клон без config.yaml — собираем минимум.
+
+    LLM.__init__ требует llm.model и sufler.role, а _cfg() на свежем клоне
+    возвращает {} — дефолты здесь те же, что видны в константах выше.
+    """
+    base = dict(_CFG)
+    base["llm"] = {"model": MODEL, **_LLM}
+    base["sufler"] = {"role": "", **(base.get("sufler") or {})}
+    return LLM(base)
 
 mcp = FastMCP("sufler")
 
@@ -107,19 +120,6 @@ def sufler_make_minutes() -> str:
     if not f:
         return "Стенограмм нет."
     transcript = f.read_text(encoding="utf-8")
-    r = requests.post(
-        OLLAMA + "/api/chat",
-        json={
-            "model": MODEL,  # из конфига: не тянем вторую тяжёлую модель поверх резидентной
-            "stream": False,
-            "options": {"num_ctx": 8192, "num_predict": 420},
-            "messages": [
-                {"role": "system", "content": "Ты секретарь встречи. Пишешь точные, сухие минутки по-русски, markdown. Оформляешь всё списками «- …» с жирным ключом."},
-                {"role": "user", "content": f"Стенограмма:\n\n{transcript}\n\nСоставь минутки: дата, участники, темы, решения, поручения списком «- **Кто** — что — срок», открытые вопросы, риски. Только факты. ЖЁСТКИЙ ЛИМИТ: не длиннее 900 знаков, максимум 3 пункта в разделе, каждый — одна строка."},
-            ],
-        },
-        timeout=600,
-    )
     mpath = f.with_name(f.stem + "_minutes.md")
     # Ни статус, ни непустоту раньше никто не проверял: удалённая или
     # переименованная модель давала 404, `.get("message", {})` превращал ошибку
@@ -127,14 +127,23 @@ def sufler_make_minutes() -> str:
     # инструмент отвечал «Минутки сохранены». Дальше пустышку подхватывал
     # архив, и документ встречи пропадал до ручного повторного прогона.
     # Пустой ответ модели — это неудача, а не новые минутки.
-    if r.status_code != 200:
-        return (f"Ollama ответила {r.status_code} — минутки НЕ тронуты "
-                f"({mpath.name}). Проверьте модель {MODEL}: {r.text[:200]}")
     try:
-        out = ((r.json() or {}).get("message") or {}).get("content") or ""
+        out = _client().complete(
+            f"Стенограмма:\n\n{transcript}\n\nСоставь минутки: дата, участники, темы, решения, поручения списком «- **Кто** — что — срок», открытые вопросы, риски. Только факты. ЖЁСТКИЙ ЛИМИТ: не длиннее 900 знаков, максимум 3 пункта в разделе, каждый — одна строка.",
+            system="Ты секретарь встречи. Пишешь точные, сухие минутки по-русски, markdown. Оформляешь всё списками «- …» с жирным ключом.",
+            model=MODEL,  # из конфига: не тянем вторую тяжёлую модель поверх резидентной
+            think=None,   # умолчание модели — как исторически у этого инструмента
+            num_ctx=8192, num_predict=420,
+            timeout=600)
+    except LLMHTTPError as e:
+        return (f"Ollama ответила {e.status} — минутки НЕ тронуты "
+                f"({mpath.name}). Проверьте модель {MODEL}: {e.detail[:200]}")
     except ValueError:
         return f"Ollama вернула не JSON — минутки НЕ тронуты ({mpath.name})"
-    if not out.strip():
+    except requests.RequestException as e:
+        return (f"Ollama недоступна ({type(e).__name__}) — минутки НЕ тронуты "
+                f"({mpath.name})")
+    if not out:
         return f"Модель вернула пустой ответ — минутки НЕ тронуты ({mpath.name})"
     # Через временное имя: обрыв посреди write_text оставлял бы усечённые
     # минутки ПОВЕРХ готовых — тот же класс, что у .wav в pcm_to_wav.

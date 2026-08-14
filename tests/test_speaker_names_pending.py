@@ -17,7 +17,8 @@
 4) статус встречи несёт names_pending, и поле появляется только когда есть
    что сказать — читатели старого документа не ломаются.
 
-Ollama здесь не поднимается: HTTP-слой подменён.
+Ollama здесь не поднимается: подменён клиент llm.LLM — единственная точка,
+через которую name_speakers ходит в модель после консолидации транспорта.
 """
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ import sys
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
+import llm as llm_mod  # noqa: E402
 import rebuild_transcript as rt  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
 
@@ -35,21 +37,23 @@ CFG = {"llm": {"model": "тест"}, "sufler": {"user_name": "Владелец"}
 LINES = [("Собеседник 1", "Привет, я Сергей"), ("Собеседник 2", "А я Юля")]
 
 
-class _Response:
-    def __init__(self, content: str):
-        self._content = content
+class _FakeLLM:
+    """Клиент, отвечающий заготовкой; поднимать Ollama тестам не нужно."""
 
-    def json(self) -> dict:
-        return {"message": {"content": self._content}}
+    answer: str = ""
+
+    def __init__(self, cfg: dict):
+        pass
+
+    def complete(self, *a, **k) -> str:
+        return self.answer
 
 
 def test_model_answered_without_names_is_not_a_failure(monkeypatch):
     """«Имён не звучало» — законный ответ, а не потеря."""
-    monkeypatch.setattr(rt, "privacy", type("P", (), {
-        "llm_base_url": staticmethod(lambda cfg: "http://127.0.0.1:1")})())
-    sys.modules["requests"] = type("R", (), {
-        "post": staticmethod(lambda *a, **k: _Response(
-            '{"Собеседник 1": "?", "Собеседник 2": "?"}'))})()
+    fake = type("F", (_FakeLLM,), {
+        "answer": '{"Собеседник 1": "?", "Собеседник 2": "?"}'})
+    monkeypatch.setattr(llm_mod, "LLM", fake)
 
     names, answered = rt.name_speakers(CFG, LINES)
 
@@ -58,13 +62,11 @@ def test_model_answered_without_names_is_not_a_failure(monkeypatch):
 
 
 def test_silent_model_is_reported_as_such(monkeypatch):
-    monkeypatch.setattr(rt, "privacy", type("P", (), {
-        "llm_base_url": staticmethod(lambda cfg: "http://127.0.0.1:1")})())
+    class _Silent(_FakeLLM):
+        def complete(self, *a, **k) -> str:
+            raise TimeoutError("модель молчит")
 
-    def boom(*a, **k):
-        raise TimeoutError("модель молчит")
-
-    sys.modules["requests"] = type("R", (), {"post": staticmethod(boom)})()
+    monkeypatch.setattr(llm_mod, "LLM", _Silent)
 
     names, answered = rt.name_speakers(CFG, LINES)
 

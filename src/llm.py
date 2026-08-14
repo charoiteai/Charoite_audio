@@ -1,8 +1,16 @@
-"""Клиент Ollama: стриминг подсказок суфлёра."""
+"""Клиент модели: ЕДИНСТВЕННАЯ точка разговора с LLM-сервером.
+
+Весь транспорт (сегодня — Ollama API) живёт здесь: стриминг подсказок,
+не-стриминговые документы (complete) и эмбеддинги (embed). Модули конвейера
+не собирают HTTP-запросы сами — иначе смена сервера (Ollama → mlx_lm.server)
+превращается в правку тринадцати файлов, а модель из конфига подменяется
+захардкоженной (аудит 14.08: Саммари и заметки месяц звали старую модель).
+"""
 from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Iterator
 
 import requests
@@ -10,9 +18,59 @@ import requests
 import privacy
 
 
+class LLMHTTPError(RuntimeError):
+    """Сервер ответил, но не результатом: HTTP-статус ≠ 200 или поле error.
+
+    Отдельный класс, а не голый None: вызывающему коду нужны и статус
+    (404 → «модель установлена?»), и текст ошибки — сообщения пользователю
+    в mcp_server и graph_updater различают эти случаи.
+    """
+
+    def __init__(self, status: int, detail: str = ""):
+        super().__init__(f"HTTP {status}: {detail[:200]}")
+        self.status = status
+        self.detail = detail
+
+
+def parse_json_block(text: str) -> dict | None:
+    """Первый JSON-объект из ответа модели.
+
+    Модели заворачивают JSON в прозу и ```-заборы даже при прямом запрете;
+    берём первый блок в фигурных скобках. None — разобрать нечего.
+    """
+    m = re.search(r"\{.*\}", text or "", re.DOTALL)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def embed(cfg: dict, texts: list[str], model: str | None = None,
+          keep_alive: str | None = None, timeout: float = 20) -> list[list[float]]:
+    """Эмбеддинги через /api/embed. Пустой список — сервер не ответил векторами.
+
+    Таймаут по умолчанию короткий (20с): эмбеддинг занимает ~0.2с, и если
+    сервер занят тяжёлой генерацией, вызывающему контуру дешевле пропустить
+    проход, чем стоять заблокированным (замер дежавю).
+    """
+    payload: dict = {
+        "model": model or (cfg.get("sufler") or {}).get("embed_model", "bge-m3:latest"),
+        "input": texts,
+    }
+    if keep_alive:
+        payload["keep_alive"] = keep_alive
+    r = requests.post(privacy.llm_base_url(cfg) + "/api/embed",
+                      json=payload, timeout=timeout)
+    return r.json().get("embeddings", []) or []
+
+
 class LLM:
     def __init__(self, cfg: dict):
         l = cfg["llm"]
+        self._cfg = cfg          # для оживления вставшей модели в complete()
         self.base = privacy.llm_base_url(cfg)
         self.model = l["model"]
         self.small = l.get("small_model", self.model)
@@ -106,6 +164,68 @@ class LLM:
                 break
         except Exception:
             pass  # ollama может быть не поднят — не валим старт
+
+    def complete(self, prompt: str, *, system: str | None = None,
+                 model: str | None = None, think: bool | None = False,
+                 json_format: bool = False, num_predict: int | None = None,
+                 num_ctx: int | None = None, temperature: float | None = None,
+                 timeout: float = 300, revive: bool = False) -> str:
+        """Не-стриминговый чат: документы, разборы, классификация.
+
+        Возвращает текст ответа модели («» — модель промолчала).
+        LLMHTTPError — сервер ответил статусом ≠ 200 или полем error;
+        requests.RequestException — сеть; ValueError — тело не JSON.
+        Обработка у вызывающего: у минуток, графа и заметок разная цена
+        ошибки, и превращать её здесь в пустую строку — та самая тихая
+        деградация (пустышка ложилась поверх готовых минуток, аудит 0.46.0).
+
+        revive=True — одна попытка поднять вставшую посреди работы модель
+        через llm_health: для длинной стенограммы между частями проходят
+        минуты, и «стояла с самого начала» ловит проба ДО разбора, а этот
+        флаг — падение посреди.
+
+        num_ctx без явного значения берётся из конфига (см. __init__:
+        без явного num_ctx Ollama грузит модель с контекстом из Modelfile
+        и KV-кэш раздувается в разы).
+
+        think=None — поле не передаётся вовсе, действует умолчание модели
+        (у qwen3.6 это ВКЛючённое рассуждение): так исторически работают
+        разбор встречи и минутки через MCP, и выключать им рассуждение —
+        отдельное решение с замером, а не побочный эффект рефакторинга.
+        """
+        options: dict = {
+            "temperature": self.temperature if temperature is None else temperature,
+            "num_ctx": num_ctx or self.num_ctx,
+        }
+        if num_predict:
+            options["num_predict"] = num_predict
+        payload: dict = {
+            "model": model or self.resolve_model(),
+            "messages": ([{"role": "system", "content": system}] if system else [])
+                        + [{"role": "user", "content": prompt}],
+            "stream": False,
+            "options": options,
+        }
+        if think is not None:
+            payload["think"] = think
+        if json_format:
+            payload["format"] = "json"
+        try:
+            r = requests.post(f"{self.base}/api/chat", json=payload, timeout=timeout)
+        except requests.RequestException:
+            if not revive:
+                raise
+            import llm_health
+            print("llm: запрос к модели не прошёл — пробую оживить")
+            if not llm_health.ensure_alive(self._cfg, lambda m: print(f"llm: {m}")):
+                raise
+            r = requests.post(f"{self.base}/api/chat", json=payload, timeout=timeout)
+        if r.status_code != 200:
+            raise LLMHTTPError(r.status_code, r.text[:500])
+        body = r.json()
+        if isinstance(body, dict) and body.get("error"):
+            raise LLMHTTPError(r.status_code, str(body["error"]))
+        return ((body.get("message") or {}).get("content") or "").strip()
 
     # Формат подсказки живёт в коде, а не в роли из конфига. Роль отвечает на
     # вопрос «кто ты и в каком контексте», формат — общий для всех и проверяем

@@ -41,7 +41,6 @@ import numpy as np  # noqa: E402
 import yaml  # noqa: E402
 
 import meeting_stamp  # noqa: E402
-import privacy  # noqa: E402
 from diarize import diarize  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
 from main import NOISE, Transcript  # noqa: E402
 from graph_updater import EXIT_NO_SPEECH  # noqa: E402
@@ -219,31 +218,25 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]]) -> tuple[dict[str, st
     1..5», а прогон записался успешным — та же тихая деградация, которую
     чинили в ночных досье. Различаем: первое нормально, второе стоит показать.
     """
-    import requests
+    from llm import LLM
     _owner = ((cfg.get("sufler") or {}).get("user_name") or "").strip().lower()
     sample = "\n".join(f"[{spk}] {text}" for spk, text in lines if text)[:7000]
     try:
-        r = requests.post(
-            privacy.llm_base_url(cfg) + "/api/chat",
-            json={"model": cfg["llm"]["model"], "stream": False, "think": False,
-                  "format": "json",
-                  "options": {"num_ctx": 8192},
-                  "messages": [
-                      {"role": "system", "content": (
-                          "По репликам определи ЛИЧНЫЕ имена говорящих (Сергей, Юля). "
-                          "КРИТИЧНО: имя внутри реплики — почти всегда ОБРАЩЕНИЕ к ДРУГОМУ "
-                          "(«Саш, а ты…» говорит НЕ Саша; Саша — тот, кто отвечает следом). "
-                          "Имя присваивается говорящему только если он представился сам или "
-                          "ответил сразу после обращения к нему. Имена — в именительном "
-                          "падеже (Таня, не Тань). Обращения («коллеги», «ребята»), "
-                          "должности, названия компаний и междометия именем НЕ являются — "
-                          "для них «?». Верни СТРОГО JSON {\"Собеседник 1\":\"Имя\","
-                          "\"Собеседник 2\":\"?\"} — «?» если имя не звучало. Не выдумывай.")},
-                      {"role": "user", "content": sample},
-                  ]},
-            timeout=240,
-        )
-        data = json.loads(r.json().get("message", {}).get("content", "{}"))
+        raw = LLM(cfg).complete(
+            sample,
+            system=(
+                "По репликам определи ЛИЧНЫЕ имена говорящих (Сергей, Юля). "
+                "КРИТИЧНО: имя внутри реплики — почти всегда ОБРАЩЕНИЕ к ДРУГОМУ "
+                "(«Саш, а ты…» говорит НЕ Саша; Саша — тот, кто отвечает следом). "
+                "Имя присваивается говорящему только если он представился сам или "
+                "ответил сразу после обращения к нему. Имена — в именительном "
+                "падеже (Таня, не Тань). Обращения («коллеги», «ребята»), "
+                "должности, названия компаний и междометия именем НЕ являются — "
+                "для них «?». Верни СТРОГО JSON {\"Собеседник 1\":\"Имя\","
+                "\"Собеседник 2\":\"?\"} — «?» если имя не звучало. Не выдумывай."),
+            model=cfg["llm"]["model"], json_format=True, think=False,
+            num_ctx=8192, timeout=240)
+        data = json.loads(raw or "{}")
         return {k: v.strip() for k, v in data.items()
                 if isinstance(v, str) and v.strip() and v.strip() != "?"
                 and k.startswith("Собеседник")

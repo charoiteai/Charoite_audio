@@ -45,8 +45,12 @@ SR = 16000
 
 cfg = yaml.safe_load(_cfg_text(ROOT))
 GRAPH = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser()
-OLLAMA = "http://127.0.0.1:11434"
-MODEL = cfg["sufler"].get("model", "qwen3.6:35b-a3b")
+# Модель и адрес — из llm.py по конфигу, а не свои: прежний хардкод читал
+# несуществующий ключ sufler.model и после переезда конфига на mlx-сборку
+# продолжал звать старую модель (аудит 14.08).
+from llm import LLM, parse_json_block  # noqa: E402
+
+_llm = LLM(cfg)
 
 import os  # noqa: E402
 
@@ -127,20 +131,16 @@ def main():
     # qwen: заголовок + причёсанный текст + задачи. Фолбэк — сырой текст.
     title, body, tasks = "", raw, []
     try:
-        r = requests.post(f"{OLLAMA}/api/chat", json={
-            "model": MODEL, "stream": False, "think": False,
-            "messages": [{"role": "user", "content":
-                "Это голосовая заметка (сырой текст с распознавания речи). Верни ТОЛЬКО JSON:\n"
-                '{"заголовок":"2-3 слова","текст":"тот же текст, но с пунктуацией и абзацами, '
-                'ничего не выдумывай и не сокращай","задачи":["..."]}\n'
-                "Задачи — только если в заметке есть явные «надо/сделать/не забыть», иначе [].\n\n"
-                f"Заметка:\n{raw}"}],
-            "options": {"temperature": 0.2, "num_predict": 1200, "num_ctx": 8192},
-        }, timeout=90)
-        content = r.json().get("message", {}).get("content", "")
-        m = re.search(r"\{.*\}", content, re.DOTALL)
-        if m:
-            data = json.loads(m.group(0))
+        content = _llm.complete(
+            "Это голосовая заметка (сырой текст с распознавания речи). Верни ТОЛЬКО JSON:\n"
+            '{"заголовок":"2-3 слова","текст":"тот же текст, но с пунктуацией и абзацами, '
+            'ничего не выдумывай и не сокращай","задачи":["..."]}\n'
+            "Задачи — только если в заметке есть явные «надо/сделать/не забыть», иначе [].\n\n"
+            f"Заметка:\n{raw}",
+            think=False, temperature=0.2, num_predict=1200, num_ctx=8192,
+            timeout=90)
+        data = parse_json_block(content)
+        if data:
             title = " ".join(str(data.get("заголовок", "")).split()[:3]).strip('",;: ')
             body = str(data.get("текст", "")).strip() or raw
             tasks = [str(t) for t in data.get("задачи", []) if str(t).strip()]
@@ -196,25 +196,21 @@ def diary_entry(raw: str) -> None:
     body, ideas, tasks, about_meeting = raw, [], [], False
     meet_hint = (f"Сегодня была встреча «{meeting[1]}». " if meeting else "")
     try:
-        r = requests.post(f"{OLLAMA}/api/chat", json={
-            "model": MODEL, "stream": False, "think": False,
-            "messages": [{"role": "user", "content":
-                "Это надиктованная дневниковая запись (сырой текст с распознавания). "
-                + meet_hint +
-                "Верни ТОЛЬКО JSON:\n"
-                '{"текст":"тот же текст от первого лица: пунктуация и абзацы, ход мысли '
-                'и интонацию сохранить, ничего не выдумывать и не сокращать",'
-                '"идеи":["отдельные идеи, если прозвучали"],'
-                '"задачи":["явные надо/сделать/не забыть"],'
-                '"о_встрече":true/false}\n'
-                "о_встрече = true только если запись явно про сегодняшнюю встречу.\n\n"
-                f"Запись:\n{raw}"}],
-            "options": {"temperature": 0.2, "num_predict": 1600, "num_ctx": 8192},
-        }, timeout=120)
-        content = r.json().get("message", {}).get("content", "")
-        m = re.search(r"\{.*\}", content, re.DOTALL)
-        if m:
-            data = json.loads(m.group(0))
+        content = _llm.complete(
+            "Это надиктованная дневниковая запись (сырой текст с распознавания). "
+            + meet_hint +
+            "Верни ТОЛЬКО JSON:\n"
+            '{"текст":"тот же текст от первого лица: пунктуация и абзацы, ход мысли '
+            'и интонацию сохранить, ничего не выдумывать и не сокращать",'
+            '"идеи":["отдельные идеи, если прозвучали"],'
+            '"задачи":["явные надо/сделать/не забыть"],'
+            '"о_встрече":true/false}\n'
+            "о_встрече = true только если запись явно про сегодняшнюю встречу.\n\n"
+            f"Запись:\n{raw}",
+            think=False, temperature=0.2, num_predict=1600, num_ctx=8192,
+            timeout=120)
+        data = parse_json_block(content)
+        if data:
             body = str(data.get("текст", "")).strip() or raw
             ideas = [str(i).strip() for i in data.get("идеи", []) if str(i).strip()]
             tasks = [str(x).strip() for x in data.get("задачи", []) if str(x).strip()]
