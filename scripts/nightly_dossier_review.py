@@ -134,8 +134,15 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
     env.update(_proxy_env())
     try:
-        r = subprocess.run([claude, "-p", prompt, "--model", model],
-                           capture_output=True, text=True, timeout=600, env=env)
+        # Досье и все источники уже В ПРОМПТЕ — инструментов этому вызову не
+        # положено вовсе: инъекция из стенограммы/досье не должна читать
+        # произвольные файлы и вносить их в переписанный текст (аудит 14.08).
+        # stdin=DEVNULL — по правилу соседних вызовов: унаследованный поток
+        # заставляет headless-claude ждать EOF до таймаута.
+        r = subprocess.run([claude, "-p", prompt, "--model", model,
+                            *cloud.text_only_args()],
+                           capture_output=True, text=True, timeout=600, env=env,
+                           stdin=subprocess.DEVNULL)
     except Exception as e:  # noqa: BLE001
         print(f"  ⚠️ {theme}: claude не отработал ({e})")
         return None
