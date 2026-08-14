@@ -29,6 +29,14 @@ inherit them and goes out directly — measured on Aug 13: 6.8 MB/s versus
 39 KB/s through a local proxy, a 170-fold difference. If you run `ollama serve`
 by hand from a shell with a proxy configured, model downloads will take hours.
 
+**The runtime installs with a button.** The first-run readiness check tells
+three states apart: running, installed but not started, not installed at all.
+In the first two cases the app starts it itself (`brew services start` for a
+brew install, launching the app for Ollama.app); in the third it installs via
+Homebrew when available, otherwise opens the download page. When both are
+present it starts the brew service rather than a second instance — otherwise
+they fight over the port again.
+
 Everything else the app asks for and does itself: your name and graph folder in
 the first-run wizard, the voice-separation model with a button, permissions
 through system dialogs.
