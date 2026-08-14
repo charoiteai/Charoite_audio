@@ -50,6 +50,24 @@ if [ ! -f "$CACHE/$ASSET" ]; then
     mv "$CACHE/$ASSET.part" "$CACHE/$ASSET"
 fi
 
+# Проверка sha256 против SHA256SUMS, который python-build-standalone
+# публикует на весь релиз (per-asset .sha256 у них нет). Этот интерпретатор
+# уезжает пользователям внутри бандла — скачивание без верификации было
+# дырой supply-chain (аудит 14.08). Проверяем и свежескачанный, и
+# КЭШИРОВАННЫЙ файл: отравленный кэш ничем не лучше отравленной загрузки.
+SUMS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${BUILD_TAG}/SHA256SUMS"
+expected=$(curl -fsL --retry 3 --connect-timeout 20 "$SUMS_URL" \
+    | awk -v a="$ASSET" '$2 == a {print $1}')
+actual=$(shasum -a 256 "$CACHE/$ASSET" | awk '{print $1}')
+if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+    echo "sha256 НЕ СОВПАЛ для $ASSET" >&2
+    echo "  ожидали: ${expected:-<пусто>}" >&2
+    echo "  получили: $actual" >&2
+    rm -f "$CACHE/$ASSET"
+    exit 1
+fi
+echo "sha256 сошёлся: $actual"
+
 rm -rf "$OUT"
 mkdir -p "$(dirname "$OUT")"
 tar -xzf "$CACHE/$ASSET" -C "$(dirname "$OUT")"
