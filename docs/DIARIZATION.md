@@ -82,3 +82,37 @@ boundaries, and the embedding is computed per utterance.
 A chunk still gets one label — it carries one piece of recognised text, so the
 voice that spoke longest in it wins. If recognition also goes per utterance,
 errors halve again: the measured DER of per-utterance labelling is 0.090.
+
+
+## The merge threshold is measured, not guessed
+
+Segmentation often splits one person's speech across several clusters —
+especially in a room recorded by a single microphone: someone turns away,
+leans back, drops their voice. The merge step compares average cluster
+embeddings by cosine and joins the close ones.
+
+On Aug 14 the threshold was measured on a real recording: 65 minutes, one
+microphone, three speakers. Pairwise similarity split cleanly:
+
+| Compared | Similarity |
+|---|---|
+| pieces of the same voice | 0.68 – 0.89 |
+| different people | 0.11 – 0.46 |
+
+Between 0.46 and 0.68 there is an empty band, and that is where the line
+belongs. The previous **0.72 sat inside the "same voice" range**: a pair at
+0.68 was never merged, and one person reached the transcript as two
+"speakers". The threshold is now **0.60**, clear of both edges.
+
+**Quiet clusters are handled separately.** Fillers like "yeah" and "mhm" give
+a short signal, the embedding from it is noisy, and it never reaches the main
+threshold. Such clusters are obvious by volume: on that same meeting three
+participants held 92% of the text while thirteen shards had a second or two
+each — two orders of magnitude apart. So a cluster with less than **30
+seconds** of speech is not treated as a separate participant and goes to the
+nearest voice at a softer **0.50** — above the maximum for strangers, so a
+stranger's line is never handed to a participant.
+
+What the merge never does: it never joins two speakers who both cleared the
+speech minimum, however similar they sound, and never attaches a shard that
+resembles nobody present. An extra label is honester than a wrong author.
