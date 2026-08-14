@@ -81,27 +81,46 @@ final class UpdateService: ObservableObject {
     /// подмену. Поэтому её делает отдельный процесс: ждёт выхода по PID,
     /// подменяет через `ditto` (сохраняет подпись и права, в отличие от `cp`),
     /// снимает карантин со скачанного и запускает приложение обратно.
-    nonisolated static func replacementScript(pid: Int32, newApp: String, target: String) -> String {
+    nonisolated static func replacementScript() -> String {
         """
         #!/bin/bash
         set -euo pipefail
+        pid=$1
+        new_app=$2
+        target=$3
         for _ in $(seq 1 100); do
-          kill -0 \(pid) 2>/dev/null || break
+          kill -0 "$pid" 2>/dev/null || break
           sleep 0.1
         done
+        # Таймаут не означает, что приложение завершилось. Если PID всё ещё
+        # жив, подмена бандла запрещена: она может разорвать текущую запись.
+        if kill -0 "$pid" 2>/dev/null; then
+          exit 75
+        fi
         # Старую копию не удаляем до успеха: если ditto оборвётся на середине,
         # у человека должно остаться рабочее приложение, а не половина.
-        rm -rf "\(target).old"
-        mv "\(target)" "\(target).old"
-        if ditto "\(newApp)" "\(target)"; then
-          xattr -dr com.apple.quarantine "\(target)" 2>/dev/null || true
-          rm -rf "\(target).old"
+        rm -rf "${target}.old"
+        mv "$target" "${target}.old"
+        if ditto "$new_app" "$target"; then
+          xattr -dr com.apple.quarantine "$target" 2>/dev/null || true
+          rm -rf "${target}.old"
         else
-          rm -rf "\(target)"
-          mv "\(target).old" "\(target)"
+          rm -rf "$target"
+          mv "${target}.old" "$target"
         fi
-        open "\(target)"
+        open "$target"
         """
+    }
+
+    /// Значения идут в argv, а не вставляются в shell-код. Пробелы, кавычки,
+    /// `$()` и переводы строк в пути остаются данными и не исполняются bash.
+    nonisolated static func replacementArguments(
+        script: String,
+        pid: Int32,
+        newApp: String,
+        target: String
+    ) -> [String] {
+        [script, String(pid), newApp, target]
     }
 
     // MARK: - Сама установка
@@ -145,6 +164,15 @@ final class UpdateService: ObservableObject {
                                "校验和不匹配 —— 已取消安装"))
             }
 
+            // Загрузка могла идти минуты, и за это время могла начаться
+            // встреча. Это последний await перед синхронным запуском helper,
+            // поэтому повторный preflight закрывает окно check/use.
+            if let reason = Self.refusalReason(recording: SuflerService.shared.hasActiveLifecycle,
+                                               bundlePath: bundle.path) {
+                stage = .refused(reason: reason)
+                return
+            }
+
             stage = .installing
             try run("/usr/bin/ditto", ["-x", "-k", file.path, work.path])
             let newApp = work.appendingPathComponent("Charoite.app")
@@ -155,9 +183,7 @@ final class UpdateService: ObservableObject {
             }
 
             let script = work.appendingPathComponent("replace.sh")
-            try Self.replacementScript(pid: ProcessInfo.processInfo.processIdentifier,
-                                       newApp: newApp.path,
-                                       target: bundle.path)
+            try Self.replacementScript()
                 .write(to: script, atomically: true, encoding: .utf8)
             try run("/bin/chmod", ["+x", script.path])
 
@@ -165,7 +191,12 @@ final class UpdateService: ObservableObject {
             // выход, иначе процесс-родитель утащит её за собой.
             let replace = Process()
             replace.executableURL = URL(fileURLWithPath: "/usr/bin/nohup")
-            replace.arguments = [script.path]
+            replace.arguments = Self.replacementArguments(
+                script: script.path,
+                pid: ProcessInfo.processInfo.processIdentifier,
+                newApp: newApp.path,
+                target: bundle.path
+            )
             replace.standardOutput = FileHandle.nullDevice
             replace.standardError = FileHandle.nullDevice
             try replace.run()
