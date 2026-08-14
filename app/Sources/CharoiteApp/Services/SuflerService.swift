@@ -151,6 +151,19 @@ final class SuflerService: ObservableObject {
     private var captureStartTask: Task<Void, Never>?
     private var stopFallbackTask: Task<Void, Never>?
     private var captureShutdownToken: UUID?
+    /// Сколько раз ждали смерти демона по полсекунды. Предел нужен затем,
+    /// чтобы застрявший процесс не запер приложение в stopping навсегда.
+    private var shutdownWaits = 0
+    static let maxShutdownWaits = 30   // 15 секунд поверх SIGKILL на 12-й
+
+    /// Ждать ли ещё смерти демона перед тем, как открыть idle.
+    ///
+    /// Отдельная функция, потому что решение опасно в обе стороны: открыть
+    /// рано — получить два процесса на одну встречу, ждать бесконечно —
+    /// запереть приложение в stopping до перезапуска.
+    nonisolated static func shouldWaitForDaemon(alive: Bool, waits: Int) -> Bool {
+        alive && waits < maxShutdownWaits
+    }
 
     private enum CleanupDisposition {
         case stopped
@@ -497,7 +510,9 @@ final class SuflerService: ObservableObject {
             // может прийти чуть позже. Не открываем idle, пока старый daemon
             // действительно жив: иначе следующий Start снова получит два
             // процесса, несмотря на исправленный capture.
-            if self.process?.isRunning == true {
+            if Self.shouldWaitForDaemon(alive: self.process?.isRunning == true,
+                                        waits: self.shutdownWaits) {
+                self.shutdownWaits += 1
                 self.captureShutdownToken = nil
                 self.stopFallbackTask = Task { @MainActor [weak self] in
                     try? await Task.sleep(nanoseconds: 500_000_000)
@@ -506,11 +521,29 @@ final class SuflerService: ObservableObject {
                 }
                 return
             }
+            // Ждать вечно нельзя. SIGKILL уходит на 12-й секунде и в норме
+            // решает всё, но если процесс застрял в непрерываемом ожидании,
+            // бесконечный цикл запер бы приложение в stopping: кнопка мертва,
+            // новую встречу не начать до перезапуска. Потерять возможность
+            // записывать хуже, чем оставить висящий процесс, поэтому через
+            // 15 секунд открываем idle и говорим об этом прямо.
+            let stuck = self.process?.isRunning == true
             guard self.lifecycleGate.finishStop(token) else { return }
             self.captureStartTask = nil
             self.captureShutdownToken = nil
+            self.shutdownWaits = 0
             if self.process?.isRunning != true { self.process = nil }
             self.publishLifecycle()
+
+            if stuck {
+                // Прошлая встреча уже разбирается своим процессом; сказать об
+                // этом честно важнее, чем показать бодрое «Остановлен».
+                self.status = L.t("Прошлая запись ещё закрывается — новая встреча начнётся поверх",
+                                  "The previous recording is still closing — a new meeting will start on top",
+                                  "上一次录音仍在收尾——新会议将在其之上开始")
+                self.statusIsError = true
+                return
+            }
 
             switch self.cleanupDisposition {
             case .stopped:

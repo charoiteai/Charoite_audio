@@ -49,3 +49,35 @@ final class RecordingLifecycleTests: XCTestCase {
         XCTAssertTrue(gate.owns(secondStop, in: .stopping))
     }
 }
+
+/// Застрявший демон не должен запирать запись навсегда.
+///
+/// Ожидание смерти процесса было бесконечным: повтор каждые полсекунды без
+/// предела. В норме SIGKILL на 12-й секунде решает всё, но если процесс
+/// окажется в непрерываемом ожидании, приложение осталось бы в `stopping` —
+/// кнопка мертва, новую встречу не начать до перезапуска. Потерять
+/// возможность записывать хуже, чем оставить висящий процесс.
+final class ShutdownWaitLimitTests: XCTestCase {
+    func testWaitsWhileDaemonIsAlive() {
+        XCTAssertTrue(SuflerService.shouldWaitForDaemon(alive: true, waits: 0))
+        XCTAssertTrue(SuflerService.shouldWaitForDaemon(alive: true,
+                                                        waits: SuflerService.maxShutdownWaits - 1))
+    }
+
+    func testDeadDaemonNeedsNoWaiting() {
+        XCTAssertFalse(SuflerService.shouldWaitForDaemon(alive: false, waits: 0))
+    }
+
+    func testGivesUpAtTheLimit() {
+        XCTAssertFalse(SuflerService.shouldWaitForDaemon(alive: true,
+                                                         waits: SuflerService.maxShutdownWaits),
+                       "бесконечное ожидание запирает запись до перезапуска приложения")
+    }
+
+    func testLimitOutlivesTheSigkill() {
+        // SIGKILL уходит на 12-й секунде, шаг ожидания — полсекунды. Предел
+        // обязан быть заметно больше, иначе сдадимся раньше, чем система
+        // добьёт процесс, и получим два демона на одну встречу.
+        XCTAssertGreaterThan(Double(SuflerService.maxShutdownWaits) * 0.5, 12.0)
+    }
+}
