@@ -113,6 +113,19 @@ seconds** of speech is not treated as a separate participant and goes to the
 nearest voice at a softer **0.50** — above the maximum for strangers, so a
 stranger's line is never handed to a participant.
 
+**Clusters the merge cannot see at all.** An embedding needs at least a second
+of continuous speech. A cluster without such a piece is never compared to
+anything — no threshold can reach it, there is simply nothing to compare. On
+that same recording **8** clusters out of 74 turned out this way: 6.9 seconds
+of speech between them out of 1432 (half a percent of the time), usually a
+single 0.6–1.0 s remark. A live participant does not fit into that, yet they
+spawn labels on par with people.
+
+Such clusters go into **one shared voice** rather than being spread across
+participants. We do not know who exactly said "yeah", and handing it to a
+specific person would swap the author; a shared label honestly says "short
+remarks, voice unidentified".
+
 What the merge never does: it never joins two speakers who both cleared the
 speech minimum, however similar they sound, and never attaches a shard that
 resembles nobody present. An extra label is honester than a wrong author.
