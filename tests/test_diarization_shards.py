@@ -21,7 +21,13 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import diarize  # noqa: E402
-from diarize import MIN_SPEAKER_S, WEAK_THRESHOLD, assign_shards  # noqa: E402
+from diarize import (  # noqa: E402
+    EMB_MIN_SEG_S,
+    MIN_SPEAKER_S,
+    WEAK_THRESHOLD,
+    assign_shards,
+    pool_voiceless,
+)
 
 
 def test_merge_threshold_sits_between_measured_ranges():
@@ -93,3 +99,47 @@ def test_thirty_seconds_is_the_line_between_person_and_shard():
     assert assign_shards({1: 300.0, 2: MIN_SPEAKER_S - 0.1}, sim) == {2: 1}
     assert assign_shards({1: 300.0, 2: MIN_SPEAKER_S}, sim) == {}, \
         "полминуты речи — уже участник, склеивать нельзя"
+
+
+# --- Кластеры, слепые для склейки: сравнивать нечего -------------------------
+#
+# Замер 14.08 на той же записи: из 74 кластеров 8 не имели ни одного сегмента
+# длиннее секунды — эмбеддинг с них не снять, в склейке они не участвуют вовсе
+# и доживают до стенограммы отдельными «собеседниками». Все вместе — 6.9 секунды
+# из 1432 (полпроцента времени), обычно одна реплика на 0.6-1.0 с.
+
+
+def test_voiceless_clusters_share_one_voice():
+    segs = [(0.0, 40.0, 1),          # участник
+            (41.0, 41.6, 7),         # «да»
+            (50.0, 50.5, 12),        # «угу»
+            (60.0, 60.9, 30)]        # «согласен»
+    assert pool_voiceless(segs) == {12: 7, 30: 7}, "все короткие — под один канон"
+
+
+def test_voiceless_never_touches_a_speaking_cluster():
+    # У кластера 2 есть кусок в полторы секунды — с него эмбеддинг снимется,
+    # и он идёт обычным путём. Забрать его в «прочие» значило бы потерять
+    # человека, который говорил мало, но говорил.
+    segs = [(0.0, 40.0, 1), (41.0, 42.5, 2), (43.0, 43.4, 2), (50.0, 50.5, 9)]
+    assert 2 not in pool_voiceless(segs)
+
+
+def test_single_voiceless_cluster_stays_as_is():
+    # Сливать не с чем: одна метка «Собеседник» и так одна.
+    segs = [(0.0, 40.0, 1), (41.0, 41.5, 5)]
+    assert pool_voiceless(segs) == {}
+
+
+def test_voiceless_boundary_is_the_embedding_minimum():
+    # Ровно секунда — эмбеддинг снимается, кластер не «слепой».
+    assert pool_voiceless([(0.0, EMB_MIN_SEG_S, 1), (5.0, 5.4, 2), (6.0, 6.4, 3)]) == {3: 2}
+    assert pool_voiceless([(0.0, EMB_MIN_SEG_S - 0.01, 1),
+                           (5.0, 5.4, 2), (6.0, 6.4, 3)]) == {2: 1, 3: 1}
+
+
+def test_voiceless_canon_is_stable_across_runs():
+    # Канон — наименьший номер, а не «первый попавшийся в словаре»: метки
+    # не должны прыгать между пересборками одной и той же встречи.
+    segs = [(0.0, 40.0, 1), (5.0, 5.4, 88), (6.0, 6.4, 4), (7.0, 7.4, 40)]
+    assert pool_voiceless(segs) == {40: 4, 88: 4}
