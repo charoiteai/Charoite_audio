@@ -713,7 +713,9 @@ def main():
                      "FIX: <строка нити как есть> => <исправленная, до 14 слов>\n"
                      "Только правки существующих строк, ничего нового не добавляй, "
                      "не комментируй. Всё точно — ответь ровно: NONE",
-                     "--model", model],
+                     # нить и реплики — чужие слова в промпте: инструментов
+                     # этому вызову не положено (см. cloud.text_only_args)
+                     "--model", model, *cloud.text_only_args()],
                     # stdin=DEVNULL обязателен: без него потомок наследует
                     # командный пайп от приложения. Claude на унаследованном
                     # fifo ждёт EOF (см. соседний вызов ниже, там это уже
@@ -943,10 +945,9 @@ def main():
                      "скажи («по повестке уточню») или отвечай без них. "
                      "Только текст ответа — без преамбул, без markdown-заголовков.",
                      "--model", model,
-                     "--disallowedTools", "Bash,Read,Write,Edit,Grep,Glob,WebFetch,WebSearch,Task,NotebookEdit,AskUserQuestion,TodoWrite",
-                     # без пользовательских hooks/MCP: внешний хук на каждый промпт
-                     # лезет в Ollama, занятую instant-ответом → вызов висел (паттерн claude-mem)
-                     "--setting-sources", "", "--strict-mcp-config"],
+                     # изоляция «только текст» — единый контракт всех
+                     # headless-вызовов (список запретов жил здесь копией)
+                     *cloud.text_only_args()],
                     capture_output=True, text=True, timeout=90, env=env,
                     stdin=subprocess.DEVNULL,  # иначе claude наследует fifo демона и ждёт EOF вечно
                 )
