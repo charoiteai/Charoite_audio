@@ -124,6 +124,14 @@ def main() -> None:
         # демо-режим работает и до настройки: дефолтная модель Ollama
         cfg = {"llm": {"base_url": "http://127.0.0.1:11434", "model": "qwen3.5:4b"},
                "sufler": {"role": "Ассистент по архиву встреч."}}
+    elif not cfg_path.exists():
+        # Свежий клон репозитория: config.yaml личный и в git не лежит.
+        # Раньше здесь падал FileNotFoundError, и ночная джоба показывала
+        # трейсбек вместо «не настроено». Не настроено — не поломка.
+        print(f"Чароит не настроен: нет {cfg_path.name}. "
+              f"Скопируйте config.example.yaml и заполните свои значения, "
+              f"либо запустите бенч на демо-графе: --demo")
+        return
     else:
         cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     if args.demo_en:
@@ -137,7 +145,14 @@ def main() -> None:
         graph = pathlib.Path(os.environ.get("SUFLER_GRAPH_DIR") or cfg["sufler"]["graph_dir"]).expanduser()
         bench_file = ROOT / "config" / "memory_bench.yaml"  # см. memory_bench.example.yaml
     if not bench_file.exists():
-        sys.exit(f"нет файла бенча: {bench_file}")
+        # Не настроен — не то же самое, что провален. Раньше здесь был выход с
+        # ошибкой, и ночная джоба каждую ночь печатала «БЕНЧ ПАМЯТИ ПРОСЕЛ» у
+        # всех, кто бенч не заводил. Вечно горящее предупреждение приучает не
+        # смотреть на предупреждения — той же болезнью болел CI до аудита.
+        print(f"бенч памяти не настроен: нет {bench_file.name}. "
+              f"Чтобы включить — скопируйте {bench_file.with_name('memory_bench.example.yaml').name} "
+              f"и впишите свои вопросы")
+        return
     cases = yaml.safe_load(bench_file.read_text(encoding="utf-8")) or []
     if args.limit:
         cases = cases[:args.limit]

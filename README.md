@@ -78,8 +78,12 @@ theses for free. Full macOS/iOS tables and the reasoning: [docs/MODELS.md](docs/
 `git clone`, no `venv`, no `pip`. All you need is the language model:
 
 ```bash
-brew install ollama            # which models — the app suggests them itself
+brew install ollama && brew services start ollama   # models: the app suggests them itself
 ```
+
+Install **either brew or Ollama.app, never both**. The app starts its own
+server and takes port 11434; the brew service then sits silently in `error`
+and its upgrades never take effect — see [SETUP.md](docs/SETUP.md).
 
 Download `Charoite.dmg` from the [latest release](https://github.com/charoiteai/Charoite_audio/releases/latest)
 and drag the app into Applications — the disk image window shows where.

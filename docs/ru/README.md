@@ -78,8 +78,13 @@
 ни `git clone`, ни `venv`, ни `pip`. Нужна только языковая модель:
 
 ```bash
-brew install ollama            # какие модели — приложение предложит само
+brew install ollama && brew services start ollama   # модели приложение предложит само
 ```
+
+Ставьте что-то одно: **либо brew, либо Ollama.app**. Приложение поднимает
+свой сервер и занимает порт 11434, после чего brew-сервис молча висит в
+`error`, а его обновления не применяются — подробности в
+[SETUP.ru.md](SETUP.md).
 
 Скачайте `Charoite.dmg` из [последнего релиза](https://github.com/charoiteai/Charoite_audio/releases/latest)
 и перетащите приложение в «Программы» — окно образа показывает, куда именно.

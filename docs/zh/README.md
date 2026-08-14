@@ -74,8 +74,12 @@ Charoite 倾听您的会议（麦克风 + 系统声音，无需机器人入会�
 `venv` 或 `pip`。只需安装语言模型：
 
 ```bash
-brew install ollama            # 具体用哪些模型由应用建议
+brew install ollama && brew services start ollama   # 具体用哪些模型由应用建议
 ```
+
+**要么装 brew，要么装 Ollama.app，不要同时装。** 应用会启动自己的服务端并占用
+11434 端口，此后 brew 服务只会悄悄停在 `error` 状态，其升级也不会生效——
+详见 [SETUP.zh.md](SETUP.md)。
 
 从[最新发布](https://github.com/charoiteai/Charoite_audio/releases/latest)下载
 `Charoite.dmg`，把应用拖入「应用程序」—— 映像窗口会指明位置。应用使用
