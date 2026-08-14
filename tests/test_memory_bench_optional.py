@@ -33,7 +33,9 @@ def test_missing_bench_file_is_not_a_failure():
 
 
 def test_it_says_how_to_turn_the_bench_on():
-    if (ROOT / "config" / "memory_bench.yaml").exists():
+    # Сценарий именно про бенч: Чароит настроен, а бенч — нет. Без config.yaml
+    # скрипт выходит раньше и говорит про конфиг — это другой тест ниже.
+    if (ROOT / "config" / "memory_bench.yaml").exists() or not (ROOT / "config" / "config.yaml").exists():
         return
     out = _run([]).stdout
     assert "memory_bench.example.yaml" in out, \
@@ -43,3 +45,19 @@ def test_it_says_how_to_turn_the_bench_on():
 def test_example_file_exists_to_copy():
     # Подсказка бесполезна, если копировать нечего.
     assert (ROOT / "config" / "memory_bench.example.yaml").exists()
+
+
+def test_fresh_clone_without_config_says_so(tmp_path, monkeypatch):
+    """Свежий клон: нет config.yaml — это «не настроено», а не трейсбек.
+
+    CI ловит это на каждом прогоне: config.yaml личный и в git не лежит.
+    До правки скрипт падал FileNotFoundError ещё до проверки бенч-файла,
+    и ночная джоба показывала трейсбек вместо внятной причины.
+    """
+    if (ROOT / "config" / "config.yaml").exists():
+        # На настроенной машине сценарий не воспроизвести — он про чужую
+        # установку; в CI конфига нет, и там тест работает по-настоящему.
+        return
+    r = _run([])
+    assert r.returncode == 0, f"без конфига код {r.returncode}: {r.stdout}{r.stderr}"
+    assert "config.example.yaml" in r.stdout, "не сказано, откуда взять конфиг"
