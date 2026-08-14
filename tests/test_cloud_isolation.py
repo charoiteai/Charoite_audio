@@ -6,9 +6,9 @@
 и один с разрешённым чтением файлов при полностью инлайновом материале
 (ревизия ядер). Правило одно: вызов «только текст» несёт
 cloud.text_only_args(), а вызов с осознанным доступом (облачный разбор
-встречи, где право писать выдаёт privacy) — как минимум --setting-sources ""
-и --strict-mcp-config: без них на headless действуют пользовательские
-allowlist'ы из ~/.claude/settings.json.
+встречи, где право писать выдаёт privacy) получает только path-scoped
+Read/Edit внутри cwd=graph и режим dontAsk: абсолютный путь наружу не должен
+превращаться в интерактивный запрос или молчаливое разрешение.
 
 Тест сканирует исходники: новый голый вызов провалит его, а не ревью.
 """
@@ -22,6 +22,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 import cloud  # noqa: E402
+import graph_updater  # noqa: E402
 
 # [claude..., "-p"  — начало сборки argv любого headless-вызова;
 # имя переменной бывает claude / claude_bin.
@@ -29,6 +30,19 @@ _CALL = re.compile(r"\[\s*claude\w*\s*,\s*\"-p\"")
 # Окно после начала вызова, в котором обязаны стоять флаги изоляции:
 # сборка команды с промптом длиннее короткой, но конечной.
 _WINDOW = 2600
+
+
+def _values(args: list[str], flag: str) -> list[str]:
+    """Значения variadic CLI-флага до следующего `--...`."""
+    if flag not in args:
+        return []
+    start = args.index(flag) + 1
+    out = []
+    for item in args[start:]:
+        if item.startswith("--"):
+            break
+        out.append(item)
+    return out
 
 
 def _call_blocks() -> list[tuple[str, str]]:
@@ -44,15 +58,31 @@ def _call_blocks() -> list[tuple[str, str]]:
 def test_text_only_args_contract():
     """Контракт «только текст»: полный запрет инструментов + отрез настроек."""
     args = cloud.text_only_args()
-    joined = " ".join(args)
+    assert _values(args, "--tools") == [""], \
+        "denylist не ограничивает будущие built-in tools; нужен пустой --tools"
     assert "--disallowedTools" in args
-    denied = args[args.index("--disallowedTools") + 1]
+    denied = set(_values(args, "--disallowedTools"))
     for tool in ("Bash", "Read", "Write", "Edit", "Grep", "Glob",
-                 "WebFetch", "WebSearch", "Task"):
+                 "WebFetch", "WebSearch", "Task", "mcp__*"):
         assert tool in denied, f"{tool} выпал из запретительного списка"
+    assert _values(args, "--permission-mode") == ["dontAsk"]
     assert "--setting-sources" in args, "без него действуют пользовательские allowlist'ы"
     assert args[args.index("--setting-sources") + 1] == ""
-    assert "--strict-mcp-config" in joined
+    assert "--strict-mcp-config" in args
+
+
+def test_post_meeting_file_access_is_path_scoped_and_noninteractive():
+    """Privacy-тумблер не разрешает абсолютные пути вне cwd=graph."""
+    cmd = graph_updater.cloud_enrich_command(
+        {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}},
+        claude_bin="claude", prompt="prompt", model="model", env={})
+    assert set(_values(cmd, "--allowedTools")) == {
+        "Read(/**)", "Edit(/**)",
+    }
+    assert _values(cmd, "--permission-mode") == ["dontAsk"]
+    assert "Read" not in _values(cmd, "--allowedTools")
+    assert "Edit" not in _values(cmd, "--allowedTools")
+    assert "mcp__*" in _values(cmd, "--disallowedTools")
 
 
 def test_every_headless_claude_call_is_isolated():
@@ -71,7 +101,7 @@ def test_every_headless_claude_call_is_isolated():
 
 
 def test_no_call_grants_tools_silently():
-    """Разрешение инструментов — только в graph_updater (его выдаёт privacy)."""
+    """Разрешение инструментов — только в path-scoped graph_updater."""
     for where, block in _call_blocks():
         if "--allowedTools" in block:
             assert where == "src/graph_updater.py", (

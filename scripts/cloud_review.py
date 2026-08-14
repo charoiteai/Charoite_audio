@@ -227,7 +227,11 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     if not privacy.cloud_enrich_enabled(cfg):
         print("облако выключено рубильником или конфигом — разбор не запускается")
         return 1
-    may_edit = privacy.cloud_edit_graph_enabled(cfg)
+    graph_available = graph_updater.cloud_graph_available(graph)
+    # Право править имеет смысл только вместе с узкой cwd=graph. При
+    # отсутствующем/слишком широком графе команда уйдёт в text-only режим:
+    # папка стенограмм не должна случайно получить файловые инструменты.
+    may_edit = privacy.cloud_edit_graph_enabled(cfg) and graph_available
     context, sent = graph_updater.cloud_enrich_context(transcript.parent, stamp)
     prompt = graph_updater.cloud_enrich_prompt(
         transcript_name=transcript.name, folder=transcript.parent, graph=graph,
@@ -235,7 +239,8 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         context=context)
     cmd = graph_updater.cloud_enrich_command(
         cfg, claude_bin=shutil.which("claude") or "/opt/homebrew/bin/claude",
-        prompt=prompt, model=cloud.model(cfg, "cloud_model"))
+        prompt=prompt, model=cloud.model(cfg, "cloud_model"),
+        graph_available=graph_available)
 
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
     before, backup = {}, None
@@ -245,10 +250,13 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
 
     tmp = rev.with_suffix(rev.suffix + ".part")
     work_dir = graph_updater.cloud_enrich_workdir(cfg, graph, transcript.parent)
+    mode = ("правка графа" if may_edit else
+            "только чтение графа" if graph_available else
+            "только текст (граф недоступен)")
     with tmp.open("w", encoding="utf-8") as out, log.open("a", encoding="utf-8") as lf:
         lf.write(f"[cloud-review] {stamp}: файлов в запросе {len(sent)} "
                  f"({', '.join(sent)}), {len(context)} знаков, "
-                 f"режим {'правка графа' if may_edit else 'только чтение'}\n")
+                 f"режим {mode}\n")
         lf.flush()
         try:
             code = subprocess.run(cmd, cwd=str(work_dir), env=env,

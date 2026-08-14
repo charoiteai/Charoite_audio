@@ -8,14 +8,14 @@ local HTTP calls are still security-relevant.
 
 **Cloud calls are prompt-injection-aware.** Meeting transcripts, cores and
 dossiers are other people's words, so every headless `claude -p` the app
-spawns is isolated: text-only calls carry a full tool denylist plus
-`--setting-sources ""` and `--strict-mcp-config` (`cloud.text_only_args()`),
-so injected instructions cannot read files, run commands or reach the
-network — even when the machine owner's own `~/.claude/settings.json`
-allowlists those tools. The one call that legitimately touches files (the
-post-meeting cloud review) gets its rights from an explicit privacy key and
-the same settings isolation; `tests/test_cloud_isolation.py` fails on any
-new non-isolated call site.
+spawns is isolated. Text-only calls use an empty built-in tool set, deny all
+MCP tools, and ignore user/project settings. The post-meeting review is the
+only call that legitimately touches files: its visible tools are explicit,
+`Read(/**)` and optional `Edit(/**)` are anchored to `cwd=graph`, and
+`dontAsk` rejects paths outside that graph instead of prompting. Shell,
+network and MCP tools remain absent. `tests/test_cloud_isolation.py` and
+`tests/test_cloud_enrich_permissions.py` fail on a broad or non-isolated
+grant.
 
 **Report vulnerabilities privately** via GitHub: Security → Report a
 vulnerability (private advisory), or email charoiteai@gmail.com.

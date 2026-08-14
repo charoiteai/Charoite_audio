@@ -52,7 +52,7 @@ def model(cfg: dict, key: str) -> str:
 # «разрешено хозяином машины» (аудит 14.08).
 TEXT_ONLY_DENIED = ("Bash", "Read", "Write", "Edit", "Grep", "Glob",
                     "WebFetch", "WebSearch", "Task", "NotebookEdit",
-                    "AskUserQuestion", "TodoWrite")
+                    "AskUserQuestion", "TodoWrite", "mcp__*")
 
 
 def text_only_args() -> list[str]:
@@ -62,7 +62,13 @@ def text_only_args() -> list[str]:
     нити, глубокий ответ, ночные ревизии) списки запретов уже расходились.
     Контракт стерегут tests/test_cloud_isolation.py.
     """
-    return ["--disallowedTools", ",".join(TEXT_ONLY_DENIED),
+    return [  # --allowedTools не ограничивает видимый набор инструментов.
+            # Пустой --tools убирает все built-in, mcp__* ниже — все MCP.
+            "--tools", "",
+            "--disallowedTools", *TEXT_ONLY_DENIED,
+            # Всё, что не выдано явно, headless-вызов отклоняет, а не ждёт
+            # невозможного интерактивного подтверждения.
+            "--permission-mode", "dontAsk",
             # без пользовательских hooks/MCP: внешний хук на каждый промпт
             # не даёт headless-процессу завершиться (паттерн claude-mem)
             "--setting-sources", "", "--strict-mcp-config"]
