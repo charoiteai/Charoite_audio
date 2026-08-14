@@ -140,7 +140,7 @@ tags: [ядро, авто]
 def _judge(monkeypatch, p: float):
     """NLI и Ollama подменены: каждая пара следует друг из друга с силой p."""
     monkeypatch.setattr(nli, "is_available", lambda: True)
-    monkeypatch.setattr(tier3, "_embed_all", lambda cores: [[1.0, 0.0]] * len(cores))
+    monkeypatch.setattr(tier3, "_embed_all", lambda cores, cfg: [[1.0, 0.0]] * len(cores))
     monkeypatch.setattr(nli, "entail_prob", lambda a, b: p)
 
 
@@ -232,7 +232,7 @@ def test_mark_marks_nesting_too(tmp_path, monkeypatch):
     (folder / "Целое.md").write_text(
         "# Целое\n\n## Суть\nбольшая сквозная тема\n", encoding="utf-8")
     monkeypatch.setattr(nli, "is_available", lambda: True)
-    monkeypatch.setattr(tier3, "_embed_all", lambda cores: [[1.0, 0.0]] * len(cores))
+    monkeypatch.setattr(tier3, "_embed_all", lambda cores, cfg: [[1.0, 0.0]] * len(cores))
     # часть ⊂ целое: одна сторона уверенно следует, обратно — нет
     monkeypatch.setattr(nli, "entail_prob",
                         lambda a, b: 0.95 if a.startswith("Часть") else 0.1)

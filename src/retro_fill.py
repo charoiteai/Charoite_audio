@@ -17,11 +17,10 @@ import pathlib
 import re
 import sys
 
-import requests
 import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-import privacy  # noqa: E402
+from llm import LLM, LLMHTTPError  # noqa: E402
 from meeting_archive import archive_meeting  # noqa: E402
 
 from charoite_paths import resolve_root
@@ -58,17 +57,16 @@ THESES_PROMPT = (
 
 
 def gen(cfg: dict, system: str, transcript: str, task: str) -> str:
-    r = requests.post(
-        privacy.llm_base_url(cfg) + "/api/chat",
-        json={"model": cfg["llm"]["model"], "stream": False, "think": False,
-              "options": {"temperature": 0.3, "num_ctx": 16384},
-              "messages": [
-                  {"role": "system", "content": system},
-                  {"role": "user", "content": f"Стенограмма встречи:\n\n{transcript[:24000]}\n\n{task}"},
-              ]},
-        timeout=900,
-    )
-    return (r.json().get("message", {}).get("content", "") or "").strip()
+    try:
+        return LLM(cfg).complete(
+            f"Стенограмма встречи:\n\n{transcript[:24000]}\n\n{task}",
+            system=system, model=cfg["llm"]["model"], think=False,
+            temperature=0.3, num_ctx=16384, timeout=900)
+    except LLMHTTPError as e:
+        # как и раньше: ошибка сервера не валит весь ретро-прогон,
+        # файл этого артефакта просто не создаётся
+        print(f"ретро: {e}", file=sys.stderr)
+        return ""
 
 
 def main():

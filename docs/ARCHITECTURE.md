@@ -135,6 +135,12 @@ lives in RAM alongside it, `num_ctx` is always explicit.
 - **Files are the source of truth.** No graph DB or vector store as the
   primary carrier: plain Markdown the user owns. Every chronicle fact
   carries provenance (who, when, verbatim transcript quote).
+- **One LLM gateway — src/llm.py.** Every chat and embedding call in the
+  python pipeline goes through it; no module speaks the wire format itself.
+  Swapping the inference server (Ollama → an OpenAI-compatible one) is a
+  change in one file, and the model always comes from the config: the 14.08
+  audit found four modules still calling a hardcoded model long after the
+  config had moved on.
 - **One embedder — bge-m3** (Ollama): semantic search and the core-revision
   prefilter. There is deliberately no second embedding model.
 - **Precision — local NLI** (src/nli.py, ONNX): thesis dedup and the
