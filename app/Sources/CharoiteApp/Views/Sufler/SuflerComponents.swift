@@ -46,31 +46,4 @@ struct SuflerEmptyState: View {
     }
 }
 
-/// Карточка тезиса: решения тёплые, архивный контекст бирюзовый, мысли
-/// нейтральные. Старый знак 💎 всё ещё рендерится для прежних записей.
-struct SuflerThesisCard: View {
-    let text: String
-
-    var body: some View {
-        let tint: Color = text.hasPrefix("📌") ? .orange
-            : text.hasPrefix("💎") ? Theme.accent
-            : text.hasPrefix("⏮") ? .teal
-            : .gray
-        Text(text)
-            .font(.callout)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(tint.opacity(0.08),
-                        in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
-            .overlay(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 1.5)
-                    .fill(tint.opacity(0.55))
-                    .frame(width: 3)
-                    .padding(.vertical, 5)
-            }
-    }
-}
-
 #endif

@@ -1339,7 +1339,15 @@ def main():
                             lines.append(f"• {p.stem} — {bst or 'без статуса'} (обсуждалось {bwhen})")
                             shown.add(p.stem)
                         line = "\n".join(lines)
-                        emit({"type": "thesis", "text": line})
+                        # в НИТЬ, не в мёртвый канал: события type:"thesis"
+                        # с 04.08 падали в массив, который UI не читает.
+                        # into_current: тема-якорь «Контекст…» стала бы
+                        # последней и магнитила живые строки (ревью 15.08 ×2);
+                        # имена ядер уже внутри строк брифа
+                        if thread.add_archive(
+                                "", [ln.lstrip("• ") for ln in lines[1:]],
+                                into_current=True):
+                            emit({"type": "thread", "text": thread.render()})
                         tr.note(line)
                         continue
                     if len(full) > 3000:
@@ -1356,7 +1364,14 @@ def main():
                 st = re.sub(r"_\(.*?\)_", "", m.group(1)).strip() if m else ""
                 shown.add(top.stem)
                 line = f"⏮ {top.stem} — уже обсуждалось {when}." + (f" Статус: {st}" if st else "")
-                emit({"type": "thesis", "text": line})
+                # точечное дежавю — в текущую тему нити, как сверка узлов:
+                # своя тема с именем ядра приклеивала бы живые строки к нему
+                if thread.add_archive(
+                        top.stem,
+                        [f"{top.stem} · уже обсуждалось {when}."
+                         + (f" Статус: {st}" if st else "")],
+                        into_current=True):
+                    emit({"type": "thread", "text": thread.render()})
                 tr.note(line)
             except Exception as e:  # noqa: BLE001 — дежавю вспомогательно
                 warn_deja(e)
@@ -1640,11 +1655,18 @@ def main():
                         if manual_evt.is_set():
                             break  # ⌘⏎ во время deep — уступаем, не держим lock
                         out += tok
+                    deep_added = 0
                     for line in out.strip().splitlines():
                         line = line.strip()
                         if line and line != "NONE" and line.startswith("🔬"):
-                            emit({"type": "thesis", "text": line})
+                            # глубокая мысль — строкой 💭 в нить (канал
+                            # type:"thesis" мёртв с 04.08); знак 🔬 остаётся
+                            # в файле-логе через tr.note
+                            deep_added += thread.add_thesis(
+                                "💭 " + line.lstrip("🔬 ").strip())
                             tr.note(line)
+                    if deep_added:
+                        emit({"type": "thread", "text": thread.render()})
                 except Exception as e:  # noqa: BLE001
                     emit({"type": "status", "text": f"глубокий контур: {e}"})
 
