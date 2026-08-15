@@ -143,9 +143,12 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   and `mlx-server` — the OpenAI-compatible `mlx_lm.server`, whose prefix
   cache turns the live thread's prefill from ~30 s into ~0.3 s on a long
   meeting (measured 2026-08-14). Embeddings stay on Ollama under either
-  engine (mlx_lm.server serves none), and the production default stays
-  `ollama` until bench_extract clears JSON extraction quality on the new
-  transport — it has no strict JSON mode.
+  engine (mlx_lm.server serves none). Measured head-to-head on 2026-08-15:
+  the new transport kept anchors high but reproduced a JSON-chunk failure
+  on the long meeting (no strict JSON mode there) and won no time for the
+  live thread — its prompt is small by construction — so the production
+  default stays `ollama`; the engine remains a config option for
+  long-document Q&A (details in MODELS.md).
 - **One embedder — bge-m3** (Ollama): semantic search and the core-revision
   prefilter. There is deliberately no second embedding model.
 - **Precision — local NLI** (src/nli.py, ONNX): thesis dedup and the

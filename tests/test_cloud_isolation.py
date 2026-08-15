@@ -48,7 +48,10 @@ def test_text_only_args_contract():
     assert "--disallowedTools" in args
     denied = args[args.index("--disallowedTools") + 1]
     for tool in ("Bash", "Read", "Write", "Edit", "Grep", "Glob",
-                 "WebFetch", "WebSearch", "Task"):
+                 "WebFetch", "WebSearch", "Task",
+                 # обходные дороги к файлам и командам (ревью 15.08):
+                 # скиллы исполняют шелл, BashOutput читает фоновые процессы
+                 "Skill", "SlashCommand", "BashOutput", "KillShell"):
         assert tool in denied, f"{tool} выпал из запретительного списка"
     assert "--setting-sources" in args, "без него действуют пользовательские allowlist'ы"
     assert args[args.index("--setting-sources") + 1] == ""

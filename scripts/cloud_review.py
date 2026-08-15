@@ -228,6 +228,24 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         print("облако выключено рубильником или конфигом — разбор не запускается")
         return 1
     may_edit = privacy.cloud_edit_graph_enabled(cfg)
+    # Право правки живо только вместе со страховкой: нет каталога графа
+    # (несмонтированный iCloud-том) или не получился бэкап — режим чтения.
+    # Раньше бэкап тихо пропускался, а Edit/Write всё равно выдавались —
+    # ровно то, чего PRIVACY обещает не допускать (ревью 15.08). Понижаем
+    # ДО сборки промпта и команды: и задание, и права должны совпадать.
+    before, backup = {}, None
+    if may_edit:
+        if not graph.is_dir():
+            print("право правки есть, а каталога графа нет — бэкап невозможен, "
+                  "работаю на чтение")
+            may_edit = False
+        else:
+            before = snapshot(graph)
+            try:
+                backup = backup_graph(graph, stamp)
+            except OSError as e:
+                print(f"бэкап графа не удался ({e}) — работаю на чтение")
+                may_edit = False
     context, sent = graph_updater.cloud_enrich_context(transcript.parent, stamp)
     prompt = graph_updater.cloud_enrich_prompt(
         transcript_name=transcript.name, folder=transcript.parent, graph=graph,
@@ -235,13 +253,9 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         context=context)
     cmd = graph_updater.cloud_enrich_command(
         cfg, claude_bin=shutil.which("claude") or "/opt/homebrew/bin/claude",
-        prompt=prompt, model=cloud.model(cfg, "cloud_model"))
+        prompt=prompt, model=cloud.model(cfg, "cloud_model"), may_edit=may_edit)
 
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-    before, backup = {}, None
-    if may_edit and graph.is_dir():
-        before = snapshot(graph)
-        backup = backup_graph(graph, stamp)
 
     tmp = rev.with_suffix(rev.suffix + ".part")
     work_dir = graph_updater.cloud_enrich_workdir(cfg, graph, transcript.parent)

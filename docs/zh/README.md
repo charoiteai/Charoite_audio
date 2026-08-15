@@ -87,8 +87,8 @@ brew install ollama && brew services start ollama
 生效——详见 [SETUP.zh.md](SETUP.md)。
 
 从[最新发布](https://github.com/charoiteai/Charoite_audio/releases/latest)下载
-`Charoite.dmg`，把应用拖入「应用程序」—— 映像窗口会指明位置。应用使用
-Developer ID 签名但未经公证，因此首次启动会被 macOS 拦截：系统设置 →
+`Charoite.dmg`，把应用拖入「应用程序」—— 映像窗口会指明位置。应用目前为
+ad-hoc 签名（Developer ID 与公证在路线图上），因此首次启动会被 macOS 拦截：系统设置 →
 隐私与安全性 → *仍要打开*（或执行
 `xattr -d com.apple.quarantine /Applications/Charoite.app`）。macOS 15+ 上
 右键 → 打开已失效。
@@ -168,6 +168,7 @@ Obsidian 和 Mac 应用所看到的同一批 markdown 文件。使用 XcodeGen �
 - [功能](FEATURES.md) — Charoite 在会议中和会后能做的一切
 - [架构](ARCHITECTURE.md) — 守护进程、两遍说话人分离、图谱流水线
 - [模型](MODELS.md) — 为什么是这些默认值，附基准测试；**macOS（4/8/16/32 GB）与 iOS 的内存预设**
+- [安全](SECURITY.md) — 威胁模型：什么会离开本机、prompt injection 隔离、供应链
 - [说话人分离](DIARIZATION.md) — 声纹模型的安装与调优
 - [设计](DESIGN.md) — macOS 与 iOS 共用的设计令牌和界面约定
 

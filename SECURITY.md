@@ -23,40 +23,55 @@ destroy a recording locally. Each gets its own defenses below.
 
 ## What leaves the machine
 
-- **Nothing, by default.** STT, diarization, the LLM and embeddings run on
-  localhost; `src/privacy.py` is the single authority for every network
-  exit and treats only an explicit `true` in the config as consent.
-- **The cloud layer is opt-in per capability** — live answers, hint
-  refinement, the post-meeting review and graph edits each have their own
-  key; graph edits additionally back files up first and enforce boundaries
-  on what the model may touch. `CHAROITE_NO_CLOUD=1` is a kill-switch that
-  overrides any config on every path.
+- **One request by default: the daily version check.** A public GET to
+  api.github.com for the latest release number — no token, no data about
+  you or your meetings; `sufler.check_updates: false` turns it off, and
+  the `CHAROITE_NO_CLOUD` kill-switch covers it too. Everything else runs
+  on localhost: STT, diarization, the LLM and embeddings. `src/privacy.py`
+  is the single authority for every exit that can carry meeting data, and
+  it treats only an explicit `true` in the config as consent.
+- **The cloud layer is opt-in per capability, and the keys nest.**
+  `cloud_live` gates mid-meeting answers (`cloud_hints` works only on top
+  of it). `cloud_enrich` gates the post-meeting review — and the nightly
+  graph reviews run under the same key: the cores revision and the dossier
+  review send graph-derived text to Anthropic overnight. `cloud_edit_graph`
+  (on top of `cloud_enrich`) is the only key that grants writing; files
+  are backed up first and boundaries enforced afterwards, and the write
+  right is dropped whenever that backup cannot be taken. `CHAROITE_NO_CLOUD=1`
+  is a kill-switch that overrides any config on every path. The full key
+  table: [PRIVACY.md](PRIVACY.md).
 - The subscription CLI runs with `ANTHROPIC_API_KEY` scrubbed from its
-  environment. The exact key table and guarantees: [PRIVACY.md](PRIVACY.md).
+  environment.
 
 ## Prompt injection
 
 Meeting transcripts, cores and dossiers are other people's words, so every
 headless `claude -p` the app spawns is isolated. Text-only calls carry a
-full tool denylist plus `--setting-sources ""` and `--strict-mcp-config`
-(`cloud.text_only_args()`), so injected instructions cannot read files,
-run commands or reach the network — even when the machine owner's own
-`~/.claude/settings.json` allowlists those tools. The one call that
-legitimately touches files (the post-meeting cloud review) gets its rights
-from an explicit privacy key and the same settings isolation.
-`tests/test_cloud_isolation.py` scans the sources and fails on any new
-non-isolated call site.
+tool denylist covering every file, command and network tool the CLI ships
+today, plus `--setting-sources ""` and `--strict-mcp-config`
+(`cloud.text_only_args()`) — the latter matters because without it the
+machine owner's own `~/.claude/settings.json` allowlists would apply to
+these calls. Honest limits: it is a denylist, extended as the CLI grows,
+not an allowlist-grade guarantee. The one call that legitimately touches
+files (the post-meeting cloud review) gets its rights from an explicit
+privacy key and the same settings isolation — and drops the write right
+whenever the pre-edit backup cannot be taken.
+`tests/test_cloud_isolation.py` scans `src/` and `scripts/` for
+identifier-style call sites — a safety net for the common case, not a
+proof.
 
 ## Recordings are fail-closed
 
 A recording in progress is the most valuable local asset, so operations
 around it fail closed: the in-app updater re-checks for a live recording
 right before swapping the bundle, and its replacement helper refuses to
-touch the install while the app process is still alive; recording sinks
-open exclusively (`"xb"`), so a filename collision is a visible error
-rather than a silent overwrite; on stop the audio is handed over through
-atomic renames. Mechanics: [ARCHITECTURE.md](docs/ARCHITECTURE.md),
-"Surviving a crash".
+touch the install while the app process is still alive; the desktop
+daemon's recording sinks open exclusively (`"xb"`), so a filename
+collision is a visible error rather than a silent overwrite; on stop the
+audio is handed over through atomic renames. The iOS and Android
+companions use their platforms' recorders and do not yet make the
+exclusive-open guarantee. Mechanics:
+[ARCHITECTURE.md](docs/ARCHITECTURE.md), "Surviving a crash".
 
 ## Supply chain and release integrity
 
@@ -64,7 +79,8 @@ atomic renames. Mechanics: [ARCHITECTURE.md](docs/ARCHITECTURE.md),
   `persist-credentials: false`; user-controlled input reaches scripts via
   environment variables, not interpolation. In CI, zizmor gates workflow
   security, dependency review gates high-severity advisories, CodeQL runs
-  on every push.
+  on pushes to `main`, pull requests and a weekly cron (Python only for
+  now).
 - Actions are pinned to versioned tags under a documented policy
   (`.github/zizmor.yml`); dependabot updates actions, swift, gradle and
   pip weekly.
@@ -73,11 +89,12 @@ atomic renames. Mechanics: [ARCHITECTURE.md](docs/ARCHITECTURE.md),
   `SHA256SUMS`; `Charoite.app.zip` and `Charoite.dmg` ship with published
   sha256 files, and the in-app updater verifies the checksum before
   installing anything.
-- **Known limitation:** builds are ad-hoc signed for now (first install
-  needs right-click → Open; documented in the README). Developer ID
-  signing and notarization are on the roadmap — the blocker is
-  hardened-runtime entitlements for the embedded python daemon's
-  microphone access.
+- **Known limitation:** builds are ad-hoc signed for now, so macOS blocks
+  the first launch — System Settings → Privacy & Security → *Open Anyway*
+  (right-click → Open no longer works on macOS 15+; details in the
+  README). Developer ID signing and notarization are on the roadmap — the
+  blocker is hardened-runtime entitlements for the embedded python
+  daemon's microphone access.
 
 ## Anonymization of this repository
 
