@@ -269,7 +269,7 @@ model and blow up RAM).
 | **8 GB** | `qwen3.5:4b` (3.4 GB) | same model | GigaAM | Transcript, theses, draft minutes, basic suggestions. One model serves both roles; no parallel Claude layer. Skip the graph (30B floor). |
 | **16 GB** | `gemma4:latest` (9.6 GB) | `qwen3.5:2b` | GigaAM | Full live loop: suggestions + theses + minutes in parallel. Graph extraction works but is slower. Recommended entry point. |
 | **32 GB** | `qwen3.6:35b-mlx` (21 GB) | `qwen3.5:4b` (3.4 GB) | GigaAM | The default config (the MLX build of the same MoE; `35b-a3b`, 23 GB GGUF, is the one-line rollback). Big-model suggestions, light model for theses in parallel, reliable graph extraction. Benchmarked here. |
-| **64 GB+** | `qwen3.6:35b-a3b` | `qwen3.5:4b` | GigaAM | Same models, but headroom for the optional cloud Claude layer, longer meetings, and offline transcript rebuild without eviction. |
+| **64 GB+** | `qwen3.6:35b-mlx` | `qwen3.5:4b` | GigaAM | Same models, but headroom for the optional cloud Claude layer, longer meetings, and offline transcript rebuild without eviction. |
 
 Rules of thumb: below 16 GB, drop the knowledge graph — sub-30B models break
 the JSON schema. Below 8 GB, keep only STT locally. The `small_model` always
