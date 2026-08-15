@@ -899,7 +899,8 @@ FORBIDDEN_TOOLS = ("Bash", "WebFetch", "WebSearch", "Task", "NotebookEdit",
 
 
 def cloud_enrich_command(cfg: dict, *, claude_bin: str, prompt: str, model: str,
-                         env: dict | None = None) -> list[str]:
+                         env: dict | None = None,
+                         may_edit: bool | None = None) -> list[str]:
     """Команда запуска облачного разбора. Право писать — только от privacy.
 
     Раньше инструменты записи и `--permission-mode acceptEdits` стояли в
@@ -910,8 +911,16 @@ def cloud_enrich_command(cfg: dict, *, claude_bin: str, prompt: str, model: str,
 
     Теперь так и есть: без него модель работает на чтение, а свой отчёт
     отдаёт в stdout, который вызывающий кладёт в файл ревизии.
+
+    may_edit может только СУЗИТЬ право, не расширить: privacy-ключ — потолок,
+    а вызывающий понижает его, когда бэкап невозможен (несмонтированный
+    iCloud-том — штатная среда графа). Раньше право выдавалось по одному
+    ключу, а snapshot/backup тихо пропускались при отсутствующем каталоге —
+    модель получала Edit/Write без страховки, которую обещает PRIVACY
+    (ревью 15.08).
     """
-    may_edit = privacy.cloud_edit_graph_enabled(cfg, env)
+    allowed = privacy.cloud_edit_graph_enabled(cfg, env)
+    may_edit = allowed if may_edit is None else (allowed and may_edit)
     tools = list(READ_TOOLS) + (list(EDIT_TOOLS) if may_edit else [])
     cmd = [claude_bin, "-p", prompt,
            "--model", model,

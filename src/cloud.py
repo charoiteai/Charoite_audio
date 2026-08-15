@@ -52,7 +52,11 @@ def model(cfg: dict, key: str) -> str:
 # «разрешено хозяином машины» (аудит 14.08).
 TEXT_ONLY_DENIED = ("Bash", "Read", "Write", "Edit", "Grep", "Glob",
                     "WebFetch", "WebSearch", "Task", "NotebookEdit",
-                    "AskUserQuestion", "TodoWrite")
+                    "AskUserQuestion", "TodoWrite",
+                    # пути к файлам/командам в обход основной шестёрки:
+                    # скиллы исполняют шелл, BashOutput читает фоновые
+                    # процессы (ревью 15.08 — списка не хватало)
+                    "Skill", "SlashCommand", "BashOutput", "KillShell")
 
 
 def text_only_args() -> list[str]:
