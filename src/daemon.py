@@ -471,7 +471,8 @@ def main():
     emb_model = ROOT / "models" / "diar" / "embedding.onnx"
     seg_model = ROOT / "models" / "diar" / "segmentation.onnx"
     try:
-        from diarize_live import SegmentTracker, SpeakerTracker, availability_note, tracker_kind
+        from diarize_live import (SegmentTracker, SpeakerTracker,
+                                  availability_note, jobs_for, tracker_kind)
         # сначала честный ответ: почему диаризации не будет или почему она
         # будет хуже обещанной. Модели в поставку не входят, и раньше этот
         # случай проходил вообще без сообщения
@@ -483,7 +484,11 @@ def main():
             # эмбеддинг по кускам речи, а не по трёхсекундному чанку: на
             # границе реплик чанк смешивает голоса, и трекер залипал на первом
             # (замер: DER 0.725 и один голос из четырёх против 0.246 и всех)
-            spk_tracker = SegmentTracker(seg_model, emb_model, sample_rate=hub.sr)
+            spk_tracker = SegmentTracker(
+                seg_model, emb_model, sample_rate=hub.sr,
+                # шаг нарезки чанков берётся из конфига хаба, а не константой:
+                # от него зависит правило придержки на правой границе
+                step_s=max(0.5, hub.chunk_s - hub.overlap_s))
             emit({"type": "status", "text": "👥 живая диаризация голосов включена"})
         elif kind == "chunks":
             spk_tracker = SpeakerTracker(
@@ -509,6 +514,14 @@ def main():
             vals.append(f0)
             del vals[:-40]      # держим последние — голос за встречу не меняется
 
+    def _voice_name(n: int) -> str:
+        """Имя нейтрального голоса по номеру трекера (с заведением нового)."""
+        name = voice_names.get(n)
+        if name is None:
+            name = f"Собеседник {len(voice_names) + 1}"
+            voice_names[n] = name
+        return name
+
     def voice_label(channel_speaker: str, chunk) -> str:
         """Метка голоса для чанка. Живая разметка НЕ угадывает владельца (решение
         20.07: «первый голос mic» ловил лектора из видео, «доминирование» тоже
@@ -523,10 +536,7 @@ def main():
             return channel_speaker
         if n is None:
             return channel_speaker
-        name = voice_names.get(n)
-        if name is None:
-            name = f"Собеседник {len(voice_names) + 1}"
-            voice_names[n] = name
+        name = _voice_name(n)
         _note_pitch(name, chunk)
         return name
 
@@ -553,21 +563,72 @@ def main():
                 time.sleep(0.1)
                 continue
             for speaker, chunk in batch:
-                try:
-                    text = stt.transcribe(chunk, hub.sr)
-                except Exception as e:  # noqa: BLE001
-                    emit({"type": "status", "text": f"STT: {e}"})
-                    continue
-                if not text or text.lower().strip(" .!») ") in NOISE:
-                    continue
-                speaker = voice_label(speaker, chunk)
-                try:
-                    added = tr.add(text, speaker=speaker)
-                except Exception as e:  # noqa: BLE001 — стенограмма не должна убивать STT-тред
-                    emit({"type": "status", "text": f"стенограмма: {e}"})
-                    continue
-                if added:  # полностью съеденные дедупом не эмитим
-                    disp = tr.display_name(speaker)
+                # Позиционная раскладка (ревью 15.08): если в чанке говорили
+                # несколько человек кусками от секунды, распознаём по кускам —
+                # текст на границе реплик перестаёт уходить чужому голосу
+                # (замер сегментного пути: DER 0.246 → 0.090). Раскладка идёт
+                # ДО STT, потому что решает, что именно распознавать.
+                # Контракт трекера трёхсостоянный: None-pieces — распознавать
+                # чанк целиком (раскладка не сказала ничего или голос один и
+                # покрыт весь чанк); [] — не распознавать вовсе (вся речь
+                # исключена политикой: придержанный хвост, микро-куски —
+                # STT целого чанка подписал бы их слова не тому); окна —
+                # распознавать по окнам. Голос в jobs — номером: имя
+                # заводится только после непустого текста, чтобы пустое
+                # распознавание не плодило «Собеседника-призрака».
+                jobs: list[tuple[object, int | None, object | None]] | None
+                if spk_tracker is not None and hasattr(spk_tracker, "split"):
+                    try:
+                        res = spk_tracker.split(chunk, channel=speaker)
+                    except Exception:  # noqa: BLE001 — диаризация вспомогательна
+                        res = None  # jobs_for даст канальную метку без
+                        # voice_label: повторный вызов трекера учил бы
+                        # центроиды тем же звуком дважды (ревью 15.08 ×2)
+                    jobs = jobs_for(res, chunk)
+                    if jobs is None:
+                        continue  # вся речь чанка исключена — пропуск
+                else:
+                    jobs = [(chunk, None, None)]  # None: метку решит voice_label
+
+                # сначала все распознавания, потом все добавления: упавший STT
+                # посреди чанка не оставляет в стенограмме половину с дублем
+                # при откате (замечание ревью 15.08)
+                rows: list[tuple[str, str]] = []
+                pitch_best: dict[str, tuple[int, object]] = {}
+                for piece, n, raw_piece in jobs:
+                    try:
+                        text = stt.transcribe(piece, hub.sr)
+                    except Exception as e:  # noqa: BLE001
+                        emit({"type": "status", "text": f"STT: {e}"})
+                        continue
+                    if not text or text.lower().strip(" .!») ") in NOISE:
+                        continue
+                    if n is None:
+                        name = voice_label(speaker, piece)
+                    elif n < 0:
+                        name = speaker
+                        _note_pitch(name, piece)
+                    else:
+                        name = _voice_name(n)
+                        # высота голоса — по самому длинному сырому куску
+                        # каждого голоса, без pad-запаса: в запас попадает
+                        # сосед (ревью 15.08)
+                        cand = raw_piece if raw_piece is not None else piece
+                        best = pitch_best.get(name)
+                        if best is None or len(cand) > best[0]:
+                            pitch_best[name] = (len(cand), cand)
+                    rows.append((name, text))
+                for name, (_n, cand) in pitch_best.items():
+                    _note_pitch(name, cand)
+                for name, text in rows:
+                    try:
+                        added = tr.add(text, speaker=name)
+                    except Exception as e:  # noqa: BLE001 — стенограмма не должна убивать STT-тред
+                        emit({"type": "status", "text": f"стенограмма: {e}"})
+                        continue
+                    if not added:  # полностью съеденные дедупом не эмитим
+                        continue
+                    disp = tr.display_name(name)
                     emit({
                         "type": "transcript",
                         "ts": f"{dt.datetime.now():%H:%M:%S}",
@@ -581,7 +642,7 @@ def main():
                     # глушил их с момента, когда name_loop опознавал собеседника
                     # по имени (аудит 14.08). Сверка — speaker_names.is_counterpart.
                     if instant_on and toggles["hints"] \
-                            and speaker_names.is_counterpart(speaker, owner_name) \
+                            and speaker_names.is_counterpart(name, owner_name) \
                             and looks_question(added):
                         fire_question(added)
 

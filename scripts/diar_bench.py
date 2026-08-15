@@ -163,22 +163,56 @@ def _live_tracker(sr: int, legacy: bool, cfg_threshold: float):
 
 
 def run_live(wav: pathlib.Path, cfg_threshold: float = 0.45,
-             legacy: bool = False) -> list[dict]:
-    """Живой режим целиком: чанки по 3 секунды, как их получает демон."""
+             legacy: bool = False, split: bool = False,
+             overlap: bool = False) -> list[dict]:
+    """Живой режим целиком: чанки по 3 секунды, как их получает демон.
+
+    overlap — продакшен-нарезка (шаг 2.5 с при чанке 3.0, audio.py): без неё
+    бенч льстил себе, потому что не видел сегментов, разрезанных границей и
+    приходящих дважды. split — позиционная раскладка (ревью 15.08): гипотеза
+    строится по кускам-окнам внутри чанка, а не одной меткой на чанк.
+    """
     audio, sr = sf.read(wav, dtype="float32")
     tracker = _live_tracker(sr, legacy, cfg_threshold)
-    step = int(3.0 * sr)
+    need = int(3.0 * sr)
+    step = int(2.5 * sr) if overlap else need
     out: list[dict] = []
     for i in range(0, len(audio), step):
-        chunk = audio[i:i + step]
+        chunk = audio[i:i + need]
         if len(chunk) < int(0.3 * sr):
             break
-        n = tracker.label(chunk)
+        if split and hasattr(tracker, "split"):
+            res = tracker.split(chunk)
+            # тот же трёхсостоянный контракт, что у демона: [] — чанк
+            # пропускается, а не красится main целиком (бенч, красивший
+            # skip-чанки, завышал качество — ревью 15.08 ×2)
+            if res.pieces is not None and not res.pieces:
+                continue
+            if res.pieces:
+                for p in res.pieces:
+                    out.append({"start": (i + p.start) / sr,
+                                "end": (i + p.end) / sr,
+                                "speaker": f"voice{p.voice}"})
+                continue
+            if res.main is None:
+                # как в демоне: fail-open с канальной меткой, а не пропуск
+                out.append({"start": i / sr, "end": (i + len(chunk)) / sr,
+                            "speaker": "channel"})
+                continue
+            n = res.main
+        else:
+            n = tracker.label(chunk)
         if n is None:
             continue
         out.append({"start": i / sr, "end": (i + len(chunk)) / sr,
                     "speaker": f"voice{n}"})
     return out
+
+
+def switches(events: list[dict]) -> int:
+    """Смены говорящего в гипотезе — метрика «мельтешения» стенограммы."""
+    order = [e["speaker"] for e in sorted(events, key=lambda e: e["start"])]
+    return sum(1 for a, b in zip(order, order[1:]) if a != b)
 
 
 def run_sherpa(wav: pathlib.Path, num_speakers: int = -1) -> list[dict]:
@@ -220,10 +254,15 @@ def main() -> int:
     ap.add_argument("--make", action="store_true", help="собрать синтетику и выйти")
     ap.add_argument("--fixture", type=pathlib.Path, default=FIXTURE)
     ap.add_argument("--engine",
-                    choices=("live", "live-legacy", "sherpa", "both", "all"),
+                    choices=("live", "live-split", "live-legacy", "sherpa",
+                             "both", "all"),
                     default="both",
-                    help="live — как сейчас работает демон, live-legacy — прежний "
-                         "трекер по чанкам, sherpa — проход после встречи")
+                    help="live — метка на чанк, live-split — позиционная "
+                         "раскладка по кускам, live-legacy — прежний трекер "
+                         "по чанкам, sherpa — проход после встречи")
+    ap.add_argument("--overlap", action="store_true",
+                    help="продакшен-нарезка: чанк 3.0 с шагом 2.5 (перекрытие "
+                         "0.5), как режет audio.py")
     ap.add_argument("--speakers", type=int, default=-1,
                     help="сколько голосов ждать (-1 — решает кластеризация)")
     args = ap.parse_args()
@@ -245,10 +284,17 @@ def main() -> int:
           f"{len({s['speaker'] for s in data['segments']})}\n")
 
     if args.engine in ("live", "both", "all"):
-        report("live", der(data["segments"], run_live(wav), total))
+        hyp = run_live(wav, overlap=args.overlap)
+        report("live", der(data["segments"], hyp, total))
+        print(f"             смен говорящего: {switches(hyp)}")
+    if args.engine in ("live-split", "all"):
+        hyp = run_live(wav, split=True, overlap=args.overlap)
+        report("live-split", der(data["segments"], hyp, total))
+        print(f"             смен говорящего: {switches(hyp)}")
     if args.engine in ("live-legacy", "all"):
         report("live-legacy",
-               der(data["segments"], run_live(wav, legacy=True), total))
+               der(data["segments"], run_live(wav, legacy=True,
+                                              overlap=args.overlap), total))
     if args.engine in ("sherpa", "both", "all"):
         report("sherpa", der(data["segments"], run_sherpa(wav, args.speakers), total))
     print("\nDER — доля времени речи, подписанная неверно. Меньше лучше.")
