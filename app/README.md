@@ -3,7 +3,7 @@
 *[**English**] · [Русский](../docs/ru/app/README.md) · [中文](../docs/zh/app/README.md)*
 
 A native SwiftUI shell over the Charoite Python daemon: live transcript
-with diarization, thesis cards, hints and the Claude pane, archive
+with diarization, the meeting thread, hints and the Claude pane, archive
 questions and briefs, local chat with graph memory, dictation (⌥⌘D) and
 voice notes (⌥⌘N), menu bar. Everything local — just like the daemon.
 
