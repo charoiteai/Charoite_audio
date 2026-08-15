@@ -31,7 +31,31 @@ import sys
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
-from speaker_names import trustworthy_name  # noqa: E402
+from speaker_names import is_counterpart, trustworthy_name  # noqa: E402
+
+
+def test_мгновенные_ответы_не_гаснут_после_опознания_имени():
+    """Гейт ⚡ — «не владелец», а не «метка начинается с Собеседник».
+
+    Как только name_loop опознавал собеседника («Собеседник 1» → имя),
+    прежний гейт в демоне гас, и мгновенные ответы для этого человека
+    умирали до конца встречи (аудит 14.08).
+    """
+    assert is_counterpart("Собеседник 1", "Игорь Ветров")
+    assert is_counterpart("Полина", "Игорь Ветров"), \
+        "опознанный собеседник перестал считаться «той стороной»"
+
+
+def test_владелец_не_считается_той_стороной():
+    assert not is_counterpart("Игорь", "Игорь Ветров")
+    assert not is_counterpart("Игорь Ветров", "Игорь Ветров")
+    assert not is_counterpart("", "Игорь Ветров"), "пустая метка — не вопрос"
+
+
+def test_без_имени_владельца_гейт_открыт_для_всех():
+    """user_name не настроен — отсечь владельца не по чему: лучше лишняя
+    подсказка у свежей установки, чем мёртвые ⚡."""
+    assert is_counterpart("Собеседник 1", "")
 
 OWNER = "Игорь Ветров"
 
