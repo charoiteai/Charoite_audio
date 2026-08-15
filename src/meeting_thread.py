@@ -259,18 +259,27 @@ class Thread:
         kind = "decision" if mark == "📌" else "thought"
         return self.add(kind, rest)
 
-    def add_archive(self, topic_title: str, lines: list[str]) -> int:
+    def add_archive(self, topic_title: str, lines: list[str],
+                    into_current: bool = False) -> int:
         """Строки «что было раньше» (⏮) — в названную тему, не в хвост нити.
 
         Разбор просят по конкретной теме; если модель успела открыть новую,
         дописывать архив в неё значило бы приклеить прошлое чужой темы.
         Темы нет в нити — открываем её: просьба «что было по X» сама по себе
         делает X темой разговора. Дедуп тот же, что у обычных строк.
+
+        into_current — автоматическая сверка с узлами графа (ревью 15.08):
+        она не смеет открывать тему с именем узла — узел стал бы «текущей
+        темой» и живые строки клеились бы к нему. Строки идут в последнюю
+        тему разговора, имя узла — внутри самой строки.
         """
         topic_title = topic_title.strip()
         with self._mutex:
-            topic = next((t for t in reversed(self.topics)
-                          if _same_title(t.title, topic_title)), None)
+            if into_current:
+                topic = self.topics[-1] if self.topics else self.open_topic("Разговор")
+            else:
+                topic = next((t for t in reversed(self.topics)
+                              if _same_title(t.title, topic_title)), None)
             if topic is None:
                 topic = self.open_topic(topic_title or "Разговор")
             added = 0

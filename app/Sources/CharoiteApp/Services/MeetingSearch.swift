@@ -11,6 +11,8 @@ import Foundation
 /// сознательно: они в десятки раз больше, а решения и поручения к моменту
 /// поиска уже вынесены в верхние слои.
 enum MeetingSearch {
+    enum Kind: Sendable { case meeting, node }
+
     struct Hit: Identifiable, Equatable, Sendable {
         let file: URL
         /// Человеческое имя места: тема встречи из имени папки или файла.
@@ -18,7 +20,11 @@ enum MeetingSearch {
         /// Строка, где совпало, — обрезанная до читаемой.
         let snippet: String
         /// Дата из имени папки/файла — для сортировки новые первыми.
+        /// У узлов графа пустая: они не датированы.
         let day: String
+        /// Встреча или узел графа: потребители day и открытие карточки
+        /// не должны гадать по пустой строке (ревью 15.08).
+        var kind: Kind = .meeting
 
         var id: String { file.path + snippet }
     }
@@ -26,10 +32,27 @@ enum MeetingSearch {
     /// Какие файлы встречи стоят прочтения при поиске.
     static let layers = ["Саммари.md", "Минутки.md", "Разбор.md"]
 
-    static func search(_ query: String, graph: URL, limit: Int = 30) -> [Hit] {
+    /// Папки узлов графа: русские пишет конвейер, английские — демо-граф.
+    static let nodeFolders = ["Люди", "Команды", "Системы", "Модели",
+                              "Блокеры", "Ядра", "People", "Teams", "Systems",
+                              "Models", "Blockers", "Cores"]
+
+    static func search(_ query: String, graph: URL, limit: Int = 30,
+                       includeNodes: Bool = false) -> [Hit] {
         let tokens = tokens(of: query)
         guard !tokens.isEmpty else { return [] }
         var hits: [Hit] = []
+
+        // Узлы графа — канонические точки входа в историю сущности (ревью
+        // 15.08): совпадение по ИМЕНИ узла идёт первым, совпадение в теле —
+        // после встреч (свежая встреча ценнее строки старой хроники).
+        // Имя-ярус не съедает общий limit целиком (ревью ×3).
+        var bodyHits: [Hit] = []
+        if includeNodes {
+            let (byName, byBody) = nodeHits(tokens: tokens, graph: graph)
+            hits.append(contentsOf: byName.prefix(min(6, max(1, limit - 1))))
+            bodyHits = Array(byBody.prefix(5))
+        }
 
         let archive = graph.appendingPathComponent("Встречи-архив")
         let folders = ((try? FileManager.default.contentsOfDirectory(
@@ -55,7 +78,9 @@ enum MeetingSearch {
             at: notes, includingPropertiesForKeys: nil)) ?? [])
             .filter { $0.pathExtension == "md" }
             .sorted { $0.lastPathComponent > $1.lastPathComponent }
-        let seenDays = Set(hits.map(\.day))
+        // дедуп заметок против архива — только по встречам: у узлов day
+        // пустой, и общий Set схлопнул бы их в один «день» (ревью 15.08)
+        let seenDays = Set(hits.filter { $0.kind == .meeting }.map(\.day))
         for note in noteFiles {
             guard !Task.isCancelled else { return [] }
             guard hits.count < limit else { break }
@@ -66,7 +91,70 @@ enum MeetingSearch {
                 hits.append(hit)
             }
         }
+        // текстовые совпадения в теле узлов — слабейший ярус, добираются
+        // до общего лимита после встреч
+        if !bodyHits.isEmpty, hits.count < limit {
+            hits.append(contentsOf: bodyHits.prefix(limit - hits.count))
+        }
         return hits
+    }
+
+    /// Узлы графа по запросу: (совпадения по имени, совпадения в теле).
+    ///
+    /// Имя сравнивается токенами через стемы ArchiveSearch («платежный» ↔
+    /// «Платёжный», «Мироненкой» ↔ «Мироненко»), а не подстроками сырого
+    /// filename. Служебные агрегаты (`_ЯДРА.md`, dot-файлы) — не узлы.
+    /// Порядок каталога не определён — внутри яруса сортировка по имени.
+    static func nodeHits(tokens: [String], graph: URL) -> ([Hit], [Hit]) {
+        let want = Set(tokens.map { ArchiveSearch.stem($0) })
+        guard !want.isEmpty else { return ([], []) }
+        var byName: [Hit] = []
+        var byBody: [Hit] = []
+        for folder in nodeFolders {
+            let dir = graph.appendingPathComponent(folder)
+            let files = ((try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: nil)) ?? [])
+                .filter { $0.pathExtension == "md" }
+                .filter { !$0.lastPathComponent.hasPrefix("_")
+                    && !$0.lastPathComponent.hasPrefix(".") }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            let isPeople = folder == "Люди" || folder == "People"
+            for file in files {
+                guard !Task.isCancelled else { return (byName, byBody) }
+                let name = file.deletingPathExtension().lastPathComponent
+                let nameTokens = self.tokens(of: name)
+                let nameStems = Set(nameTokens.map { ArchiveSearch.stem($0) })
+                // Люди: стеммер режет «Иванов» до «иван», и запрос «Иван»
+                // поднимал бы чужой узел верхним ярусом. Токен запроса обязан
+                // быть не короче совпавшего токена имени (падежные формы
+                // длиннее, чужое короткое имя — нет) — зеркало Python-правила.
+                let surfaceOK = !isPeople || tokens.allSatisfy { qt in
+                    let qs = ArchiveSearch.stem(qt)
+                    let qn = ArchiveSearch.norm(qt)
+                    return nameTokens.contains { nt in
+                        ArchiveSearch.stem(nt) == qs &&
+                        (ArchiveSearch.norm(nt) == qn ||
+                         qn.count >= ArchiveSearch.norm(nt).count)
+                    }
+                }
+                if want.isSubset(of: nameStems), surfaceOK {
+                    let firstLine = (try? String(contentsOf: file, encoding: .utf8))?
+                        .split(separator: "\n")
+                        .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty
+                            && !$0.hasPrefix("#") && !$0.hasPrefix("---") }
+                        .map { snippet(String($0)) } ?? ""
+                    byName.append(Hit(file: file, title: "\(name) · \(folder)",
+                                      snippet: firstLine, day: "",
+                                      kind: .node))
+                } else if let hit = match(file: file, tokens: tokens,
+                                          title: "\(name) · \(folder)") {
+                    byBody.append(Hit(file: hit.file, title: hit.title,
+                                      snippet: hit.snippet, day: "",
+                                      kind: .node))
+                }
+            }
+        }
+        return (byName, byBody)
     }
 
     /// Чтение архива для SwiftUI: файловый обход выполняется не на главном
@@ -75,9 +163,10 @@ enum MeetingSearch {
     /// Сам `search` остаётся синхронным для тестов и служебных вызовов. UI
     /// использует только эту обёртку: на большом графе ввод в поле поиска не
     /// должен ждать чтения десятков файлов.
-    static func searchAsync(_ query: String, graph: URL, limit: Int = 30) async -> [Hit] {
+    static func searchAsync(_ query: String, graph: URL, limit: Int = 30,
+                            includeNodes: Bool = false) async -> [Hit] {
         let worker = Task.detached(priority: .userInitiated) {
-            search(query, graph: graph, limit: limit)
+            search(query, graph: graph, limit: limit, includeNodes: includeNodes)
         }
         return await withTaskCancellationHandler {
             await worker.value
