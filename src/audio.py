@@ -663,7 +663,16 @@ class AudioHub:
                     except Exception:  # noqa: BLE001 — диск кончился: живём без записи
                         self._sinks.pop(c.label, None)
                 with self._lock:
-                    self._bufs[c.label] = np.concatenate([self._bufs[c.label], part])
+                    buf = self._bufs[c.label]
+                    # Потолок буфера STT (~60с): живой потребитель забирает
+                    # звук каждые ~3с, а если поток STT умер — звук копился бы
+                    # в памяти до конца встречи (запись на диск идёт отдельно,
+                    # sink выше; аудит 14.08). Урезаем до половины потолка,
+                    # чтобы не резать по чуть-чуть на каждом чанке.
+                    cap = self.sr * 60
+                    if len(buf) >= cap:
+                        buf = buf[-(cap // 2):]
+                    self._bufs[c.label] = np.concatenate([buf, part])
                 if self.on_frame is not None:
                     try:
                         self.on_frame(c.label, part)

@@ -67,7 +67,7 @@ def test_ретеншн_не_съедает_запись_которую_сейч
     import audio
     import daemon
 
-    monkeypatch.setattr(daemon.subprocess, "Popen", lambda *a, **k: None)
+    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
     pcm = _orphan(data_root, "2026-08-07_181500", age_days=3)
 
     protect = daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000")
@@ -108,14 +108,21 @@ def test_восстановление_запускает_существующи�
     """
     import daemon
 
-    argv: list[list[str]] = []
-    monkeypatch.setattr(daemon.subprocess, "Popen",
-                        lambda cmd, **k: argv.append([str(x) for x in cmd]))
+    chains: list[list[pathlib.Path]] = []
+    monkeypatch.setattr(daemon, "_start_orphan_chain",
+                        lambda lives: chains.append(list(lives)))
     _orphan(data_root, "2026-08-07_181500", age_days=0.1)
 
     daemon._recover_orphans(CFG, current_stamp="2026-08-10_090000")
 
-    assert argv, "оборванная встреча не запустила пересборку вовсе"
+    assert chains and chains[0], "оборванная встреча не попала в цепочку пересборки"
+
+    argv: list[list[str]] = []
+    monkeypatch.setattr(daemon.subprocess, "run",
+                        lambda cmd, **k: argv.append([str(x) for x in cmd]))
+    daemon._rebuild_orphans_sequentially(chains[0])
+
+    assert argv, "цепочка не запустила пересборку вовсе"
     scripts = [pathlib.Path(a) for a in argv[0] if a.endswith(".py")]
     assert scripts, f"в команде пересборки нет питон-файла: {argv[0]}"
     for path in scripts:
@@ -157,7 +164,7 @@ def test_преемник_убирает_осиротевший_part_прежн�
     """
     import daemon
 
-    monkeypatch.setattr(daemon.subprocess, "Popen", lambda *a, **k: None)
+    monkeypatch.setattr(daemon, "_start_orphan_chain", lambda lives: None)
     _orphan(data_root, "2026-08-07_181500", age_days=0.1)
     stale = data_root / "recordings" / "2026-08-07_181500_blackhole.wav.part"
     stale.write_bytes(b"")            # огрызок финализации убитого демона
@@ -168,6 +175,40 @@ def test_преемник_убирает_осиротевший_part_прежн�
     assert not stale.exists(), (
         "осиротевший .part пережил преемника: пересборка увидит «живого» "
         "писателя по нашему локу и навсегда откажется трогать целый .pcm")
+
+
+def test_цепочка_пересборок_последовательна_и_не_рвётся_на_ошибке(data_root, monkeypatch):
+    """Сироты после аварийных выходных пересобираются ПО ОДНОЙ.
+
+    Параллельный залп Popen по всем сиротам — это несколько одновременных
+    diarize+STT+LLM: memory-thrash класса 12.08 (модель за прогон грузилась
+    41 раз, сервер лёг). Очередь держит одну пересборку за раз — run вместо
+    Popen; ошибка запуска одной встречи не хоронит остальные.
+    """
+    import daemon
+
+    lives = [data_root / "transcripts" / f"2026-08-0{i}_120000.md" for i in (1, 2, 3)]
+    for p in lives:
+        p.write_text("черновик", encoding="utf-8")
+
+    launched: list[str] = []
+
+    def fake_run(cmd, **kw):
+        target = pathlib.Path([a for a in cmd if str(a).endswith(".md")][0]).stem
+        if target == "2026-08-02_120000":
+            raise OSError("нет интерпретатора")
+        launched.append(target)
+
+    monkeypatch.setattr(daemon.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        daemon.subprocess, "Popen",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError(
+            "цепочка обязана ЖДАТЬ каждую пересборку (run), а не залпить Popen")))
+
+    daemon._rebuild_orphans_sequentially(lives)
+
+    assert launched == ["2026-08-01_120000", "2026-08-03_120000"], (
+        "очередь потеряла встречу после ошибки соседней или перепутала порядок")
 
 
 def test_ретеншн_не_родня_retry_пересборке():
