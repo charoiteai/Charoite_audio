@@ -281,95 +281,144 @@ struct DueChip: View {
 
 // MARK: - Готовность и запись
 
-/// Одна строка готовности вместо серой подписи у кнопки.
+/// Одна строка готовности вместо серой подписи у кнопки — от РЕАЛЬНЫХ
+/// проверок SetupReadinessService (Python, конфиг, микрофон, системный
+/// звук, Ollama, модели, граф), а не от самочувствия интерфейса: прежний
+/// вариант с ручными isReady/«N проверки» врал бы до первой попытки
+/// запуска (ревью 15.08).
 struct ReadinessLine: View {
-    let isReady: Bool
-    let checksPassed: Int
-    var limitation: String?
+    let snapshot: SetupReadinessSnapshot?
+    var isChecking: Bool = false
+
+    private var dot: Color {
+        guard let snapshot else { return .secondary }
+        if snapshot.problems > 0 { return Theme.overdue }
+        if snapshot.warnings > 0 { return .orange }
+        return Theme.ok
+    }
+
+    private var title: String {
+        guard let snapshot else {
+            return L.t("Проверяю готовность…", "Checking readiness…", "正在检查就绪状态…")
+        }
+        if snapshot.problems > 0 { return L.t("Не готов", "Not ready", "尚未就绪") }
+        if snapshot.warnings > 0 {
+            return L.t("Готов, с оговорками", "Ready, with warnings", "可以录音（有警告）")
+        }
+        return L.t("Готов записывать", "Ready to record", "可以录音")
+    }
+
+    /// Что именно мешает: заголовок первой блокирующей проверки, иначе
+    /// первого предупреждения. Warning — оранжевый, не красный.
+    private var limitation: (text: String, tint: Color)? {
+        guard let snapshot else { return nil }
+        if let blocked = snapshot.checks.first(where: { $0.state == .blocked }) {
+            return (blocked.title, Theme.overdue)
+        }
+        if let warning = snapshot.checks.first(where: { $0.state == .warning }) {
+            return (warning.title, .orange)
+        }
+        return nil
+    }
 
     var body: some View {
         HStack(spacing: 8) {
-            Circle()
-                .fill(isReady ? Theme.ok : Theme.overdue)
-                .frame(width: 7, height: 7)
-            Text(isReady
-                 ? L.t("Готов записывать", "Ready to record", "可以录音")
-                 : L.t("Не готов", "Not ready", "尚未就绪"))
-                .font(.system(size: 13, weight: .medium))
-            Text(L.t("\(checksPassed) проверки", "\(checksPassed) checks", "\(checksPassed) 项检查"))
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+            if isChecking && snapshot == nil {
+                ProgressView().controlSize(.mini)
+            } else {
+                Circle().fill(dot).frame(width: 7, height: 7)
+            }
+            Text(title).font(.system(size: 13, weight: .medium))
+            if let snapshot {
+                let passed = snapshot.checks.filter { $0.state == .ready }.count
+                Text(L.t("\(passed) из \(snapshot.checks.count) проверок",
+                         "\(passed) of \(snapshot.checks.count) checks",
+                         "\(passed)/\(snapshot.checks.count) 项检查"))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
             if let limitation {
-                Text(limitation)
+                Text(limitation.text)
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(Theme.overdue)
+                    .foregroundStyle(limitation.tint)
+                    .lineLimit(1)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(Capsule().fill(Theme.overdue.opacity(0.13)))
+                    .background(Capsule().fill(limitation.tint.opacity(0.13)))
             }
         }
     }
 }
 
-/// Кнопка записи, которая показывает, что вас слышно.
+/// Кнопка записи для экрана «Сегодня».
 ///
-/// До записи — фирменный градиент с тенью; во время — системный красный
-/// без тени, моноширинный таймер и метр уровня входа.
+/// До записи — фирменный градиент с тенью и честный хоткей; во время —
+/// системный красный, живая волна и моноширинный таймер; в переходах —
+/// «Запускаю…»/«Останавливаю…» с блокировкой повторного клика. Показывает
+/// состояние ЗАПИСИ, а не наличие входного сигнала: метр уровня удалён —
+/// уровень входа нигде не публикуется, и полоски были бы вечно пустым
+/// враньём; настоящий метр — отдельная задача (ревью 15.08).
 struct RecordCapsule: View {
     let isRecording: Bool
+    var isTransitioning: Bool = false
     let clock: String
-    /// Уровни входа 0…1, обычно 5–7 значений.
-    let levels: [CGFloat]
     let action: () -> Void
 
-    var body: some View {
-        HStack(spacing: 12) {
-            Button(action: action) {
-                HStack(spacing: 9) {
-                    if isRecording {
-                        Circle().fill(.white).frame(width: 8, height: 8)
-                        Text(clock)
-                            .font(.system(size: 14, weight: .light))
-                            .monospacedDigit()
-                        Divider().frame(height: 14).overlay(Color.white.opacity(0.35))
-                        Text(L.t("Стоп", "Stop", "停止")).font(.caption.weight(.semibold))
-                    } else {
-                        Image(systemName: "mic")
-                        Text(L.t("Слушать встречу", "Listen to the meeting", "旁听会议"))
-                            .font(.system(size: 13.5, weight: .semibold))
-                        Text("⌥⌘R")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.white.opacity(0.66))
-                    }
-                }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 9)
-                .background {
-                    if isRecording {
-                        Capsule().fill(Color.red)
-                    } else {
-                        Capsule().fill(Theme.brand)
-                    }
-                }
-                .shadow(color: isRecording ? .clear : Theme.accent.opacity(0.45),
-                        radius: 9, y: 4)
-                .contentShape(Capsule())
-            }
-            .buttonStyle(.plain)
+    /// Один источник для надписи и системного шортката: разъедутся — капсула
+    /// снова начнёт рисовать несуществующую комбинацию (до ревью 15.08 на
+    /// ней годами висел «⌥⌘R», которого в приложении нет; реальный шорткат
+    /// живой кнопки — ⌘⇧Space).
+    static let shortcutKey: KeyEquivalent = .space
+    static let shortcutModifiers: EventModifiers = [.command, .shift]
+    static let shortcutLabel = "⌘⇧␣"
 
-            if isRecording {
-                HStack(alignment: .bottom, spacing: 2) {
-                    ForEach(Array(levels.enumerated()), id: \.offset) { _, level in
-                        Capsule()
-                            .fill(level > 0.55 ? Theme.ok : Color.secondary.opacity(0.55))
-                            .frame(width: 3, height: max(4, level * 17))
-                    }
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                if isTransitioning {
+                    ProgressView().controlSize(.small).tint(.white)
+                    Text(isRecording
+                         ? L.t("Останавливаю…", "Stopping…", "正在停止…")
+                         : L.t("Запускаю…", "Starting…", "正在启动…"))
+                        .font(.caption.weight(.semibold))
+                } else if isRecording {
+                    Image(systemName: "waveform")
+                        // живая волна, как у кнопки суфлёра: видно СРАЗУ,
+                        // что слушаем, без мигающих лампочек
+                        .symbolEffect(.variableColor.iterative,
+                                      options: .repeating, isActive: true)
+                    Text(clock)
+                        .font(.system(size: 14, weight: .light))
+                        .monospacedDigit()
+                    Divider().frame(height: 14).overlay(Color.white.opacity(0.35))
+                    Text(L.t("Стоп", "Stop", "停止")).font(.caption.weight(.semibold))
+                } else {
+                    Image(systemName: "mic")
+                    Text(L.t("Слушать встречу", "Listen to the meeting", "旁听会议"))
+                        .font(.system(size: 13.5, weight: .semibold))
+                    Text(Self.shortcutLabel)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.66))
                 }
-                .frame(height: 18)
-                .accessibilityLabel(L.t("Уровень входа", "Input level", "输入电平"))
             }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            .background {
+                if isRecording || isTransitioning {
+                    Capsule().fill(Color.red.opacity(isTransitioning ? 0.75 : 1))
+                } else {
+                    Capsule().fill(Theme.brand)
+                }
+            }
+            .shadow(color: isRecording || isTransitioning
+                    ? .clear : Theme.accent.opacity(0.45),
+                    radius: 9, y: 4)
+            .contentShape(Capsule())
         }
+        .buttonStyle(.plain)
+        .disabled(isTransitioning)
+        .keyboardShortcut(Self.shortcutKey, modifiers: Self.shortcutModifiers)
     }
 }
 

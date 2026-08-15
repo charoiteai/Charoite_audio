@@ -28,7 +28,7 @@ final class ModelPullService: ObservableObject {
             do {
                 try await stream(model)
                 progress[model] = nil
-                SetupReadinessService.shared.refresh()
+                SetupReadinessService.shared.refresh(force: true)
             } catch {
                 progress[model] = nil
                 failed[model] = error.localizedDescription
@@ -86,7 +86,7 @@ final class ModelPullService: ObservableObject {
                 let service = ModelPullService.shared
                 service.progress[key] = nil
                 if ok, ModelPullService.diarizationInstalled {
-                    SetupReadinessService.shared.refresh()
+                    SetupReadinessService.shared.refresh(force: true)
                 } else {
                     // Последняя строка вывода — то, на чём скрипт остановился;
                     // молчаливый отказ здесь читается как «кнопка не работает».
