@@ -438,7 +438,10 @@ struct MeetingLibraryView: View {
             if debounced {
                 do { try await Task.sleep(nanoseconds: 350_000_000) } catch { return }
             }
-            let found = await MeetingSearch.searchAsync(submitted, graph: graph)
+            // окно библиотеки ищет и по узлам графа: запрос «имя человека»
+            // ведёт к его узлу со всей историей, а не только к встречам
+            let found = await MeetingSearch.searchAsync(submitted, graph: graph,
+                                                        includeNodes: true)
             guard !Task.isCancelled,
                   submitted == query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
             hits = found
@@ -454,6 +457,12 @@ struct MeetingLibraryView: View {
     }
 
     private func open(_ hit: MeetingSearch.Hit) {
+        // узел графа не встреча: пустой day не должен даже теоретически
+        // сматчить карточку записи (ревью 15.08) — сразу файлом
+        if hit.kind == .node {
+            NSWorkspace.shared.open(hit.file)
+            return
+        }
         if let record = repository.record(matching: hit) {
             navigation.selectedMeetingID = record.id
         } else {

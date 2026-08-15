@@ -310,6 +310,18 @@ it signals degradation, it does not break the loop.
   hints, instant answers and Q&A see old agreements on the CURRENT
   topic, not just the two latest meetings. Local, on by default
   (`sufler.live_context`).
+- **Graph-node cross-check during a live meeting** — when a person,
+  system or core with a node in the graph comes up in conversation, its
+  history (top of «## Meetings»/«## History», status line) arrives as ⏮
+  lines in the current thread topic: old agreements are visible while
+  the talk is still going. No brain server, no LLM — name stems against
+  graph files (`src/graph_nodes.py`). The automatic path is strict: a
+  multi-word name must assemble fully, a single-word one must be heard
+  twice (except digit codes and already-identified speakers), an
+  ambiguous name stays silent, at most four nodes per meeting. The ⚡
+  question path is looser: nodes mentioned in the question itself are
+  added to the instant-answer prompt. The same nodes back up live
+  context and the manual ⏮ when the brain server is down.
 - **Cloud-refined hints** — the ladder pattern for hints: the local
   model answers instantly, then a cloud model (Claude CLI, default
   Haiku) appends «☁️ …» right into the SAME hint card (stale
@@ -377,7 +389,10 @@ it signals degradation, it does not break the loop.
   search over the archive's summaries, minutes and debriefs (plus graph notes
   for meetings that never reached the archive), newest first, click opens the
   document. Transcripts are deliberately not scanned: by then decisions live
-  in the upper layers.
+  in the upper layers. Library search also sees graph NODES: a person's
+  name leads to their node with the whole history (name matches come
+  first, by stems — "payments" finds "Payment provider"), matches inside
+  node bodies follow the meetings; a node opens as a graph file.
 - **The meeting card** — a ready meeting opens on click: topic, date,
   duration (from transcript timecodes), participants, the one-line gist,
   decisions and action items. By default the card shows the **detailed

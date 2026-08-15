@@ -452,6 +452,19 @@ def main():
     _people_dir = pathlib.Path(str(cfg["sufler"].get("graph_dir", ""))).expanduser() / "Люди"
     known_people = sorted(q.stem for q in _people_dir.glob("*.md")) if _people_dir.exists() else []
     known_first = sorted({n.split()[0] for n in known_people if n and not n.startswith("Собеседник")})
+    # сверка разговора с узлами графа (ревью 15.08): старые договорённости
+    # находятся локально, без brain-сервера — индекс живёт в памяти демона
+    node_index = None
+    try:
+        _gdir = pathlib.Path(str(cfg["sufler"].get("graph_dir", ""))).expanduser()
+        if _gdir.exists():
+            import graph_nodes
+            node_index = graph_nodes.NodeIndex(_gdir)
+            node_index.refresh()
+            emit({"type": "status",
+                  "text": f"Сверка с узлами графа: {node_index.size} узлов"})
+    except Exception as e:  # noqa: BLE001 — сверка вспомогательна
+        print(f"узлы графа: {e}", file=sys.stderr, flush=True)
     threading.Thread(target=llm.warmup, daemon=True).start()
     emit({"type": "status", "text": f"Слушаю: {' + '.join(hub.sources)} · LLM: {llm.resolve_model()}"})
 
@@ -933,17 +946,44 @@ def main():
             if not title:
                 emit({"type": "status", "text": "⏮ нить пуста — разбирать нечего"})
                 return
+            def _nodes_direct() -> int:
+                """Фолбэк ручного ⏮ (ревью 15.08): узлы графа отвечают и без
+                brain-сервера — их история читается напрямую из файлов."""
+                if node_index is None:
+                    return 0
+                try:
+                    node_index.refresh()
+                    found = node_index.lookup(title, strict=False, limit=1)
+                except Exception:  # noqa: BLE001
+                    return 0
+                if not found:
+                    return 0
+                lines = node_index.digest(found[0], with_name=False)
+                return thread.add_archive(found[0].name, lines)
+
             try:
                 import requests as _rq
                 _folder = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser().name
                 v = _rq.post("http://127.0.0.1:8100/vault_search",
                              json={"query": title, "limit": 3, "folder": _folder,
                                    "snippet_chars": 700}, timeout=8).json().get("text", "")
-            except Exception:  # noqa: BLE001 — brain лежит: честный статус, не тишина
-                emit({"type": "status", "text": "⏮ архив недоступен (brain не отвечает)"})
+            except Exception:  # noqa: BLE001 — brain лежит: сначала узлы, потом честный статус
+                added = _nodes_direct()
+                if added:
+                    emit({"type": "thread", "text": thread.render()})
+                    append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ⏮ {title} (узлы)",
+                                thread.full())
+                else:
+                    emit({"type": "status", "text": "⏮ архив недоступен (brain не отвечает)"})
                 return
             if not v or v.startswith("⚠") or "не найдено" in v.lower():
-                emit({"type": "status", "text": f"⏮ в архиве по «{title}» пусто"})
+                added = _nodes_direct()
+                if added:
+                    emit({"type": "thread", "text": thread.render()})
+                    append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ⏮ {title} (узлы)",
+                                thread.full())
+                else:
+                    emit({"type": "status", "text": f"⏮ в архиве по «{title}» пусто"})
                 return
             try:
                 with hint_lock:   # не толкаться с подсказкой на одной модели
@@ -1001,16 +1041,36 @@ def main():
                 continue
             instant_evt.clear()
             manual_evt.set()  # авто-подсказка уступает мгновенному ответу
+            # Снимок (вопрос, хвост) берётся ЗДЕСЬ и не перечитывается под
+            # локом: пока поток ждал hint_lock, мог прийти второй вопрос — и
+            # модель отвечала бы на него с узлами первого, а ответ ложился
+            # под чужим вопросом в нить и лог (ревью 15.08 ×3).
+            q = _pending_q["text"]
+            tail = tr.tail(1600)
+            # сверка вопроса с узлами графа — ДО hint_lock и вне STT-пути:
+            # файловый лукап не смеет держать ни распознавание, ни очередь
+            # подсказок. Явный вопрос — чувствительный режим. Опознанные
+            # спикеры — только реально прозвучавшие на ЭТОЙ встрече: весь
+            # список людей графа делал бы «опознанным» любого (ревью ×3).
+            nodes_block = ""
+            if node_index is not None and q:
+                try:
+                    node_index.refresh()
+                    found = node_index.lookup(q, strict=False,
+                                              known_names=set(voice_names.values()),
+                                              limit=2)
+                    nodes_block = "\n".join(
+                        ln for n in found for ln in node_index.digest(n))[:600]
+                except Exception:  # noqa: BLE001
+                    nodes_block = ""
             with hint_lock:
                 manual_evt.clear()
-                tail = tr.tail(1600)
                 if not tail:
                     continue
-                q = _pending_q["text"]
                 emit({"type": "status", "text": f"⚡ отвечаю: {q[:60]}" if q else "⚡ отвечаю"})
                 parts: list[str] = []
                 try:
-                    for tok in llm.instant(tail):
+                    for tok in llm.instant(tail, nodes=nodes_block):
                         parts.append(tok)
                 except Exception as e:  # noqa: BLE001
                     emit({"type": "status", "text": f"⚡ ответ не собрался: {e}"})
@@ -1718,6 +1778,8 @@ def main():
         interval = int(cfg["sufler"].get("live_context_interval", 600))
         seen_bytes = 0
         first = True
+        shown_nodes: set[str] = set()   # авто-⏮: узел показывается раз за встречу
+        NODE_CAP = 4                    # и не больше четырёх узлов на встречу
         while not stop.is_set():
             stop.wait(75 if first else interval)
             if stop.is_set():
@@ -1748,6 +1810,47 @@ def main():
                 pass
             if not query:
                 query = tail[-400:]
+
+            # Сверка хвоста разговора с узлами графа (ревью 15.08): старые
+            # договорённости видны В НИТИ строками ⏮, а не только в промпте.
+            # Строгий режим: авто-вставка требует точности — ложный узел в
+            # нити дороже пропущенного. Опознанные спикеры — только реально
+            # прозвучавшие на встрече (не весь список людей графа). Выборка
+            # контекста НЕ ограничена капом показа: кап стережёт нить, а не
+            # невидимую память промпта (ревью ×3). Показанным узел считается
+            # только после реально добавленной строки; уже показанный или
+            # пустой верхний кандидат не блокирует следующего.
+            node_hits = []
+            if node_index is not None:
+                try:
+                    node_index.refresh()
+                    # выборка шире капа показа: три показанных узла не должны
+                    # навсегда заслонять четвёртого (ревью 15.08 ×4)
+                    node_hits = node_index.lookup(
+                        tail, strict=True,
+                        known_names=set(voice_names.values()),
+                        limit=NODE_CAP + 1)
+                except Exception:  # noqa: BLE001
+                    node_hits = []
+            if len(shown_nodes) < NODE_CAP:
+                for node in node_hits:
+                    if node.name in shown_nodes:
+                        continue
+                    lines = node_index.digest(node)
+                    if not lines:
+                        continue
+                    added = thread.add_archive(node.name, lines, into_current=True)
+                    if not added:
+                        continue
+                    shown_nodes.add(node.name)
+                    emit({"type": "thread", "text": thread.render()})
+                    emit({"type": "status",
+                          "text": f"⏮ из графа: {node.name} ({added})"})
+                    append_hint(tr.path,
+                                f"[{dt.datetime.now():%H:%M}] ⏮ авто: {node.name}",
+                                "\n".join(lines))
+                    break   # одна вставка за такт: нить не заливается
+
             try:
                 import requests as _rq
                 _folder = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser().name
@@ -1755,9 +1858,15 @@ def main():
                              json={"query": query, "limit": 4, "folder": _folder,
                                    "snippet_chars": 500}, timeout=6).json().get("text", "")
             except Exception:  # noqa: BLE001
-                continue   # brain лежит — остаёмся на стартовом контексте
+                # brain лежит — память собирается из узлов графа (ревью
+                # 15.08): деградация мягкая, а не «архива нет вовсе»
+                v = ""
             if not v or v.startswith("⚠") or "не найдено" in v.lower():
-                continue   # запрос мимо архива — не портим то, что есть
+                fallback = "\n".join(
+                    ln for n in (node_hits or []) for ln in node_index.digest(n))
+                if not fallback:
+                    continue   # ни brain, ни узлов — не портим то, что есть
+                v = "Из узлов графа проекта:\n" + fallback
             llm.system = (system_base +
                           "\n\nПамять прошлых встреч (подобрано по теме идущей "
                           "встречи; договорённости и решения оттуда можно "
