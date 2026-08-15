@@ -92,8 +92,9 @@ its own server and takes port 11434; the brew service then sits silently in
 
 Download `Charoite.dmg` from the [latest release](https://github.com/charoiteai/Charoite_audio/releases/latest)
 and drag the app into Applications — the disk image window shows where.
-The app is signed with a Developer ID but not notarised, so macOS blocks the
-first launch: System Settings → Privacy & Security → *Open Anyway* (or
+The app is ad-hoc signed for now (Developer ID and notarisation are on the
+roadmap), so macOS blocks the first launch: System Settings → Privacy &
+Security → *Open Anyway* (or
 `xattr -d com.apple.quarantine /Applications/Charoite.app`). Right-click →
 Open no longer works on macOS 15+.
 
@@ -189,6 +190,7 @@ Build: `cd app-android && ./gradlew assembleDebug`.
 - [Features](docs/FEATURES.md) — everything Charoite does, live and post-meeting
 - [Architecture](docs/ARCHITECTURE.md) — the daemon, two-pass diarization, graph pipeline
 - [Models](docs/MODELS.md) — why these defaults, with benchmarks; **RAM presets for macOS (4/8/16/32 GB) and iOS**
+- [Security](SECURITY.md) — the threat model: what leaves the machine, prompt-injection isolation, supply chain
 - [Diarization](docs/DIARIZATION.md) — embedding model setup and tuning
 - [Design](docs/DESIGN.md) — shared tokens and UI conventions for macOS and iOS
 

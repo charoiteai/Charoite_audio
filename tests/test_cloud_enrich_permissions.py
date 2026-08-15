@@ -101,6 +101,30 @@ def test_read_only_command_still_lets_the_model_read():
     assert allowed == {"Read", "Grep", "Glob"}, allowed
 
 
+def test_caller_can_only_narrow_the_edit_right():
+    """may_edit понижает право, когда страховка невозможна, — и не поднимает.
+
+    Privacy-ключ — потолок. cloud_review снимает право при несмонтированном
+    каталоге графа или неудавшемся бэкапе: Edit/Write без snapshot/backup —
+    ровно то, чего PRIVACY обещает не допускать (ревью 15.08). Обратной
+    дороги нет: параметр не заменяет privacy-ключ.
+    """
+    downgraded = graph_updater.cloud_enrich_command(
+        FULL, claude_bin="/usr/bin/claude", prompt="p", model="m", env={},
+        may_edit=False)
+    for tool in WRITE_TOOLS:
+        assert tool not in _allowed(downgraded), \
+            f"понижение не сработало: {tool} разрешён"
+    assert "--permission-mode" not in _flags(downgraded), \
+        "понижение оставило автоприём правок"
+
+    escalated = graph_updater.cloud_enrich_command(
+        READ_ONLY, claude_bin="/usr/bin/claude", prompt="p", model="m", env={},
+        may_edit=True)
+    assert _allowed(escalated) == {"Read", "Grep", "Glob"}, \
+        "параметр расширил право записи мимо privacy-ключа"
+
+
 def test_edit_mode_works_when_both_toggles_are_explicit():
     cmd = _command(FULL)
     assert _allowed(cmd) == {"Read", "Grep", "Glob", "Edit", "Write"}, _allowed(cmd)
