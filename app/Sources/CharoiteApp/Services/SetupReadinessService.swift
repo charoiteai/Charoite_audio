@@ -158,7 +158,19 @@ final class SetupReadinessService: ObservableObject {
 
     private init() {}
 
-    func refresh() {
+    /// Свежесть, при которой повторная проверка — трата: probe дёргает
+    /// Python, аудиоустройства и Ollama, и каждый показ «Сегодня» запускал
+    /// бы всё заново, включая время записи (ревью 15.08 ×2).
+    private static let freshFor: TimeInterval = 60
+    private var lastRefreshAt: Date?
+
+    func refresh(force: Bool = false) {
+        if !force {
+            if isChecking { return }   // in-flight guard: probe уже идёт
+            if let last = lastRefreshAt, snapshot != nil,
+               Date().timeIntervalSince(last) < Self.freshFor { return }
+        }
+        lastRefreshAt = Date()
         let token = UUID()
         generation = token
         isChecking = true

@@ -62,7 +62,7 @@ struct FirstRunView: View {
         .frame(width: 580, height: 860)
         .onAppear {
             warmUpFolderAccess()
-            readiness.refresh()
+            readiness.refresh(force: true)
             // Состояние движка спрашиваем отдельно: проверка готовности видит
             // только «порт не отвечает», а человеку нужно знать, установлен
             // ли он вообще и что нажать.
@@ -232,7 +232,7 @@ struct FirstRunView: View {
         AppSettings.setConfigValue("model", preset.model)
         AppSettings.setConfigValue("small_model", preset.smallModel)
         for model in preset.models { pulls.pull(model) }
-        readiness.refresh()
+        readiness.refresh(force: true)
     }
 
     /// Имя и папка графа — то, что раньше правили в YAML руками.
@@ -333,7 +333,7 @@ struct FirstRunView: View {
             configSaveFailure = ok ? nil : Self.saveFailureHint()
         }
         // Проверка готовности читает конфиг — пусть увидит новые значения.
-        readiness.refresh()
+        readiness.refresh(force: true)
     }
 
     /// Что именно сказать человеку, когда запись не удалась. Причина всегда
@@ -361,7 +361,7 @@ struct FirstRunView: View {
                     ProgressView().controlSize(.small)
                 } else {
                     Button(L.t("Проверить снова", "Check again", "再次检查")) {
-                        readiness.refresh()
+                        readiness.refresh(force: true)
                     }
                     .charoite(.quiet, .s)
                 }
@@ -535,12 +535,12 @@ struct FirstRunView: View {
                     if granted {
                         finishFirstMeetingStart()
                     } else {
-                        readiness.refresh()
+                        readiness.refresh(force: true)
                     }
                 }
             }
         default:
-            readiness.refresh()
+            readiness.refresh(force: true)
         }
     }
 

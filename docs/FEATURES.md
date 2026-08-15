@@ -393,6 +393,7 @@ it signals degradation, it does not break the loop.
   name leads to their node with the whole history (name matches come
   first, by stems — "payments" finds "Payment provider"), matches inside
   node bodies follow the meetings; a node opens as a graph file.
+- **Recording from the Today screen** — a capsule button in the spirit of the sufler one: start/stop with a timer and a live waveform, an honest ⌘⇧␣ shortcut and a readiness line fed by the real setup checks (Python, microphone, system audio, Ollama, models, graph) with the passed-checks count and the first problem as a chip. Yesterday's ready result no longer hides the next-recording button: “Open result” and the capsule live side by side. During processing the capsule is deliberately absent: recording and the pipeline compete for local models. First launch routes to onboarding, not straight to recording.
 - **The meeting card** — a ready meeting opens on click: topic, date,
   duration (from transcript timecodes), participants, the one-line gist,
   decisions and action items. By default the card shows the **detailed

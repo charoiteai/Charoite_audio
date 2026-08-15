@@ -13,6 +13,10 @@ struct TodayWorkspaceView: View {
     @ObservedObject private var nightly = NightlyStatusService.shared
     @ObservedObject private var version = VersionStatusService.shared
     @ObservedObject private var updater = UpdateService.shared
+    @ObservedObject private var readiness = SetupReadinessService.shared
+    // онбординг живёт sheet'ом в суфлёре: прямой старт с «Сегодня» до него
+    // обходил бы первый запуск (ревью 15.08) — капсула тогда ведёт в Meeting
+    @AppStorage("charoit.firstRunSeen") private var firstRunSeen = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,6 +35,40 @@ struct TodayWorkspaceView: View {
         }
     }
 
+    /// Фаза жизненного цикла — чистой функцией ради тестов: сочетание
+    /// «готовый результат + можно начать следующую» без теста уже терялось
+    /// (ready-снимок висит сутки и прятал бы запись с «Сегодня» — ревью 15.08).
+    enum LifecyclePhase: Equatable {
+        case record            // капсула-старт + строка готовности
+        /// Направление перехода — из машины состояний, а не из isRunning:
+        /// при остановке isRunning уже false, и капсула показывала бы
+        /// «Запускаю…» на живой остановке (ревью 15.08 ×2).
+        case transitioning(stopping: Bool)
+        case recording         // капсула «Стоп» + ссылка «Открыть встречу»
+        case processing        // статус + «Показать статус», капсулы нет:
+                               // запись и конвейер конкурируют за модели
+        case readyPlusRecord   // «Открыть результат» И капсула следующей записи
+    }
+
+    static func lifecyclePhase(recording: RecordingLifecycle,
+                               isProcessing: Bool, hasReadyResult: Bool) -> LifecyclePhase {
+        switch recording {
+        case .starting: return .transitioning(stopping: false)
+        case .stopping: return .transitioning(stopping: true)
+        case .recording: return .recording
+        case .idle:
+            if isProcessing { return .processing }
+            if hasReadyResult { return .readyPlusRecord }
+            return .record
+        }
+    }
+
+    private var phase: LifecyclePhase {
+        Self.lifecyclePhase(recording: sufler.lifecycle,
+                            isProcessing: processing.isProcessing,
+                            hasReadyResult: processing.snapshot?.state == .ready)
+    }
+
     private var lifecycle: some View {
         HStack(spacing: 14) {
             Image(systemName: lifecycleIcon)
@@ -41,12 +79,78 @@ struct TodayWorkspaceView: View {
                 Text(lifecycleDetail).font(.callout).foregroundStyle(.secondary).lineLimit(2)
             }
             Spacer()
-            if processing.isProcessing { ProgressView().controlSize(.small) }
-            Button(lifecycleActionTitle) { lifecycleAction() }
+            switch phase {
+            case .record:
+                capsuleWithReadiness
+            case .transitioning(let stopping):
+                RecordCapsule(isRecording: stopping,
+                              isTransitioning: true,
+                              clock: "", action: {})
+            case .recording:
+                Button(L.t("Открыть встречу", "Open meeting", "打开会议")) {
+                    navigation.open(.meeting)
+                }
+                .charoite(.link)
+                VStack(alignment: .trailing, spacing: 6) {
+                    RecordCapsule(isRecording: true,
+                                  clock: SuflerService.clockText(sufler.recordingElapsed),
+                                  action: { sufler.toggle() })
+                    if sufler.stopConfirmPending {
+                        // двухшаговый стоп короткой записи: подтверждение
+                        // видно там, где нажали, а не в статусе суфлёра
+                        Text(L.t("«Стоп» ещё раз, чтобы точно остановить",
+                                 "Press Stop again to confirm",
+                                 "再按一次停止以确认"))
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.orange)
+                    }
+                }
+            case .processing:
+                ProgressView().controlSize(.small)
+                Button(L.t("Показать статус", "Show status", "查看状态")) {
+                    navigation.open(.meeting)
+                }
                 .charoite(.prominent)
+            case .readyPlusRecord:
+                Button(L.t("Открыть результат", "Open result", "打开结果")) {
+                    if let ready = processing.snapshot {
+                        navigation.open(.meetings, meetingID: ready.meetingID)
+                    }
+                }
+                .charoite(.regular)
+                capsuleWithReadiness
+            }
         }
         .padding(.horizontal, 18).padding(.vertical, 14)
         .background(Theme.accent.opacity(0.055))
+        .onAppear { refreshReadinessIfIdle() }
+        // onAppear не срабатывает при смене фазы внутри открытого «Сегодня»:
+        // запись остановилась — статус готовности не должен остаться
+        // вчерашним (ревью 15.08 ×3); от лишних probe защищает TTL сервиса
+        .onChange(of: phase) { _, _ in refreshReadinessIfIdle() }
+    }
+
+    /// Готовность нужна только там, где есть капсула старта; во время
+    /// записи/обработки лишние probe-проверки (Python, Ollama) не нужны.
+    private func refreshReadinessIfIdle() {
+        switch phase {
+        case .record, .readyPlusRecord: readiness.refresh()
+        default: break
+        }
+    }
+
+    /// Капсула старта со строкой готовности под ней — от реальных проверок
+    /// SetupReadinessService, а не от самочувствия интерфейса.
+    private var capsuleWithReadiness: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            RecordCapsule(isRecording: false, clock: "") {
+                navigation.open(.meeting)
+                // первый запуск: онбординг-sheet суфлёра сам предложит старт
+                if firstRunSeen { sufler.toggle() }
+            }
+            ReadinessLine(snapshot: readiness.snapshot,
+                          isChecking: readiness.isChecking)
+        }
     }
 
     private var recent: some View {
@@ -205,26 +309,6 @@ struct TodayWorkspaceView: View {
         return L.t("Новых встреч в календаре сегодня нет.",
                    "No more calendar meetings today.",
                    "今天日历中没有更多会议。")
-    }
-
-    private var lifecycleActionTitle: String {
-        if sufler.isRunning { return L.t("Открыть встречу", "Open meeting", "打开会议") }
-        if processing.isProcessing { return L.t("Показать статус", "Show status", "查看状态") }
-        if let ready = processing.snapshot, ready.state == .ready {
-            return L.t("Открыть результат", "Open result", "打开结果")
-        }
-        return L.t("Начать запись", "Start recording", "开始录音")
-    }
-
-    private func lifecycleAction() {
-        if sufler.isRunning || processing.isProcessing {
-            navigation.open(.meeting)
-        } else if let ready = processing.snapshot, ready.state == .ready {
-            navigation.open(.meetings, meetingID: ready.meetingID)
-        } else {
-            navigation.open(.meeting)
-            sufler.start()
-        }
     }
 
     private func compactState(_ state: MeetingProcessingSnapshot.State) -> String {
