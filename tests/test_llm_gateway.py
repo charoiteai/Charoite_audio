@@ -166,3 +166,129 @@ def test_parse_json_block_digs_json_out_of_prose():
     assert parse_json_block("слова без JSON") is None
     assert parse_json_block("{битый json") is None
     assert parse_json_block("[1, 2]") is None, "нужен объект, а не список"
+
+
+# ── Движок mlx-server ────────────────────────────────────────────────────
+# Контракт OpenAI-совместимого транспорта. Дефолт остаётся ollama: смена
+# боевого движка — отдельное решение после bench_extract на mlx_lm.server
+# и замера на живой встрече, а не побочный эффект этого кода.
+
+CFG_MLX = {
+    "llm": {"engine": "mlx-server", "model": "тест-модель",
+            "small_model": "тест-мелкая", "mlx_model": "mlx-community/тест",
+            "num_ctx": 8192, "temperature": 0.4},
+    "sufler": {"role": "тестовая роль", "embed_model": "тест-эмбеддер"},
+}
+
+
+class _SSEResp:
+    """Стриминговый ответ mlx-сервера: SSE-строки + контекстный менеджер."""
+
+    status_code = 200
+
+    def __init__(self, lines: list[bytes]):
+        self._lines = lines
+
+    def iter_lines(self):
+        return iter(self._lines)
+
+    def raise_for_status(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_mlx_complete_speaks_openai_and_collapses_models(monkeypatch):
+    """/v1/chat/completions; переданный ollama-тег схлопывается в mlx_model.
+
+    Вызовы шага 1 передают small/fallback-теги явно — mlx-сервер их не
+    знает, он обслуживает одну модель, с которой запущен.
+    """
+    wire = _wire(monkeypatch, _Resp(
+        {"choices": [{"message": {"content": " Ответ "}}]}))
+
+    out = LLM(CFG_MLX).complete("вопрос", system="роль",
+                                model="тест-мелкая", num_predict=7)
+
+    assert out == "Ответ"
+    body = wire.sent["json"]
+    assert wire.sent["url"].endswith("/v1/chat/completions")
+    assert body["model"] == "mlx-community/тест"
+    assert body["max_tokens"] == 7
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    for alien in ("options", "format", "keep_alive", "think"):
+        assert alien not in body, f"поле Ollama-протокола {alien} утекло в mlx"
+
+
+def test_mlx_max_tokens_cap_is_always_explicit(monkeypatch):
+    """Без num_predict уходит НАШ потолок: у сервера есть свой молчаливый
+    дефолт из аргументов запуска, и он резал бы длинные ответы на полуслове —
+    внешне неотличимо от короткого ответа модели."""
+    wire = _wire(monkeypatch, _Resp({"choices": [{"message": {"content": "х"}}]}))
+
+    LLM(CFG_MLX).complete("в")
+
+    assert wire.sent["json"]["max_tokens"] == llm_mod.MLX_MAX_TOKENS_DEFAULT
+
+
+def test_mlx_think_none_omits_template_kwargs(monkeypatch):
+    """think=None — умолчание модели: kwargs шаблона не передаются вовсе."""
+    wire = _wire(monkeypatch, _Resp({"choices": [{"message": {"content": "х"}}]}))
+
+    LLM(CFG_MLX).complete("в", think=None)
+
+    assert "chat_template_kwargs" not in wire.sent["json"]
+
+
+def test_mlx_stream_parses_sse(monkeypatch):
+    """SSE-стрим: «data: {…delta…}», keepalive-комментарии, [DONE].
+
+    Комментарий «: keepalive …» сервер шлёт во время префилла — живой smoke
+    15.08 уронил на нём первый вариант парсера (json.loads на не-data строке).
+    """
+    fake = _Requests(_SSEResp([
+        b": keepalive 1/1",
+        b'data: {"choices":[{"delta":{"content":"\xd0\x9f\xd1\x80\xd0\xb8"}}]}',
+        b"",
+        b'data: {"choices":[{"delta":{"content":"\xd0\xb2\xd0\xb5\xd1\x82"}}]}',
+        b"data: [DONE]",
+        b'data: {"choices":[{"delta":{"content":"\xd1\x85\xd0\xb2\xd0\xbe\xd1\x81\xd1\x82"}}]}',
+    ]))
+    monkeypatch.setattr(llm_mod, "requests", fake)
+
+    chunks = list(LLM(CFG_MLX).stream("вопрос"))
+
+    assert "".join(chunks) == "Привет", "хвост после [DONE] читать нельзя"
+    assert fake.sent["json"]["stream"] is True
+    assert fake.sent["url"].endswith("/v1/chat/completions")
+
+
+def test_mlx_embeddings_stay_on_ollama(monkeypatch):
+    """Эмбеддинги движка не выбирают: bge-m3 живёт на Ollama при любом engine."""
+    wire = _wire(monkeypatch, _Resp({"embeddings": [[0.5]]}))
+
+    llm_mod.embed(CFG_MLX, ["т"])
+
+    assert wire.sent["url"].endswith("/api/embed")
+    assert "11434" in wire.sent["url"], "эмбеддинги уехали с Ollama вслед за чатом"
+
+
+def test_unknown_engine_is_rejected():
+    """Опечатка в llm.engine — ошибка вслух, а не молчаливый откат на ollama."""
+    with pytest.raises(RuntimeError, match="неизвестный движок"):
+        LLM({"llm": {"engine": "vllm", "model": "х"}, "sufler": {"role": ""}})
+
+
+def test_mlx_base_url_holds_the_privacy_line():
+    """Второй движок — не второй немой путь наружу: чужой адрес в mlx_base_url
+    требует того же явного llm.allow_remote, что и llm.base_url."""
+    import privacy
+
+    cfg = {"llm": {"engine": "mlx-server", "model": "х",
+                   "mlx_base_url": "http://10.0.0.5:8080"}, "sufler": {"role": ""}}
+    with pytest.raises(RuntimeError, match="allow_remote"):
+        privacy.mlx_base_url(cfg, env={})
