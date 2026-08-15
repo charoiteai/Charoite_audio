@@ -53,7 +53,6 @@ final class SuflerService: ObservableObject {
         statusIsError = true
     }
     @Published var lines: [TranscriptLine] = []
-    @Published var theses: [String] = []
     @Published var hint = ""
 
     /// Нить встречи: то, что читают, пока разговор идёт.
@@ -271,7 +270,6 @@ final class SuflerService: ObservableObject {
         }
         if !preserveUI {                 // авто-рестарт не должен стирать встречу с экрана
             lines = []
-            theses = []
             hint = ""
             cloud = ""
             // Нить прошлой встречи держится на экране до старта следующей —
@@ -753,9 +751,6 @@ final class SuflerService: ObservableObject {
                 isExpanding = true
             case "expand_done":
                 isExpanding = false
-            case "thesis":
-                theses.append(text)
-                if theses.count > 200 { theses.removeFirst(theses.count - 200) }
             case "hint":
                 // троттл ~30fps: hint растёт по токену, растущий Text = O(n²)
                 _hintBuf += text

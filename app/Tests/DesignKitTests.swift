@@ -70,13 +70,5 @@ final class DesignKitTests: XCTestCase {
         }
     }
 
-    func testThesisKindReadsEmojiButStripsIt() {
-        XCTAssertEqual(ThesisKind(text: "📌 Решили выпустить в пятницу").label,
-                       ThesisKind.decision.label)
-        XCTAssertEqual(ThesisKind.strip("📌 Решили выпустить в пятницу"),
-                       "Решили выпустить в пятницу")
-        XCTAssertEqual(ThesisKind(text: "⏮ Об этом говорили 24.07").label,
-                       ThesisKind.memory.label)
-    }
 }
 #endif
