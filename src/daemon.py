@@ -155,6 +155,28 @@ def emit(obj: dict):
             _stop_event.set()
 
 
+def quiet_loop_warn(tag: str):
+    """Голос для вспомогательного контура, который раньше молчал.
+
+    deja_vu/разметка/имена глотали ЛЮБОЕ исключение через pass: отказ
+    name_loop (имена не появятся всю встречу) снаружи неотличим от «имён
+    не звучало» — тот же класс тихой деградации, что чинили в пересборке
+    (names_pending, аудит 14.08). Совсем убрать except нельзя — контуры
+    вспомогательные и не должны ронять встречу; поэтому статус. Эмитим при
+    СМЕНЕ текста ошибки, а не каждый проход 40-90-секундного цикла: одна
+    и та же беда (модель встала) сыпала бы статусами до конца встречи.
+    """
+    last: dict[str, str | None] = {"msg": None}
+
+    def warn(e: Exception) -> None:
+        msg = f"{tag}: {type(e).__name__}: {e}"
+        if msg != last["msg"]:
+            last["msg"] = msg
+            emit({"type": "status", "text": f"{msg} — контур продолжает"})
+
+    return warn
+
+
 def append_hint(tr_path: pathlib.Path, header: str, body: str):
     """Дозапись в _hints.md. Полный диск/недоступная папка не должны молча
     убивать вечный тред (open стоял вне try в трёх контурах)."""
@@ -265,7 +287,11 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
     вместе с последним шансом восстановить встречу.
 
     Здесь мы, наоборот, запускаем пересборку для каждой чужой записи —
-    ровно то, что сделал бы штатный стоп.
+    ровно то, что сделал бы штатный стоп. Пересборки идут ПО ОДНОЙ, цепочкой
+    в фоновом потоке (см. _rebuild_orphans_sequentially): параллельный залп
+    Popen по всем сиротам после аварийных выходных — это несколько
+    одновременных diarize+STT+LLM, ровно тот memory-thrash, что 12.08
+    положил сервер (аудит 14.08).
 
     Почему возвращаем множество, а не просто спавним. Комментарий в `main`
     обещал «добиваем ДО чистки», но `Popen` — это запуск, а не завершение:
@@ -279,6 +305,7 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
     """
     _prune_graph_logs(cfg)
     recovering: set[str] = set()
+    pending: list[pathlib.Path] = []   # очередь цепочки, в порядке штампов
     rec_dir = ROOT / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings")
     tdir = ROOT / cfg["log"]["transcripts_dir"]
     if not rec_dir.is_dir():
@@ -314,24 +341,51 @@ def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
                     stale.unlink(missing_ok=True)
             except OSError:
                 pass                      # не смогли убрать — пересборка дождётся таймаута
+        pending.append(live)
+    if pending:
+        _start_orphan_chain(pending)
+    return recovering
+
+
+def _start_orphan_chain(lives: list[pathlib.Path]) -> None:
+    """Фоновый поток цепочки: старт демона не ждёт часовых пересборок."""
+    threading.Thread(target=_rebuild_orphans_sequentially, args=(lives,),
+                     daemon=True, name="orphan-rebuild-chain").start()
+
+
+def _rebuild_orphans_sequentially(lives: list[pathlib.Path]) -> None:
+    """Пересборка сирот по одной: следующая стартует после завершения текущей.
+
+    Одна пересборка держит модель и память, остальные ждут своей очереди —
+    вместо залпа параллельных процессов (memory-thrash класса 12.08).
+    Статус «recovering» ставится непосредственно перед запуском, а не всем
+    сразу: иначе retry_unfinished из завершившейся пересборки увидел бы
+    очередь «незавершённых» и запустил бы дубль (гвард running_elsewhere
+    его отсёк бы, но и провоцировать гонку незачем). Демон умер посреди
+    цепочки — не страшно: .pcm и стенограммы живы, protect-набор уже
+    отработал на этот запуск, следующий старт найдёт хвост заново.
+    """
+    statuses = MeetingStatusStore(ROOT)
+    for live in lives:
         emit({"type": "status",
-              "text": f"Догоняю прерванную встречу {stamp} — пересборка фоном"})
-        statuses = MeetingStatusStore(ROOT)
+              "text": f"Догоняю прерванную встречу {live.stem} — пересборка фоном"})
         try:
             statuses.processing(live, "recovering")
         except Exception:  # статус вспомогателен; запись всё равно восстанавливаем
             pass
         try:
-            subprocess.Popen(
+            # start_new_session: пересборка переживает смерть демона (как и
+            # раньше); run вместо Popen — это и есть очередь.
+            subprocess.run(
                 ["nice", "-n", "10", sys.executable,
                  str(CODE / "src" / "rebuild_transcript.py"), str(live)],
                 start_new_session=True,
                 stdin=subprocess.DEVNULL,   # командный пайп приложения — не его дело
                 stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                check=False,
             )
         except Exception as e:  # noqa: BLE001 — восстановление должно быть видимым
             statuses.failed(live, f"не удалось запустить восстановление: {e}")
-    return recovering
 
 
 def main():
@@ -476,9 +530,25 @@ def main():
         _note_pitch(name, chunk)
         return name
 
+    # Имя владельца — для гейта мгновенных ответов: ⚡ стреляет по вопросу
+    # «той стороны», а владелец отсекается пословной сверкой user_name.
+    owner_name = (cfg["sufler"].get("user_name") or "").strip()
+
+    # Голоса вспомогательных контуров: их отказ больше не немой (см. quiet_loop_warn)
+    warn_deja = quiet_loop_warn("дежавю")
+    warn_markup = quiet_loop_warn("разметка реплик")
+    warn_names = quiet_loop_warn("имена")
+
     def stt_loop():
         while not stop.is_set():
-            batch = hub.pull_labeled()
+            try:
+                batch = hub.pull_labeled()
+            except Exception as e:  # noqa: BLE001 — смерть этого потока «тихая»:
+                # heartbeat живёт, а стенограмма просто молчит (профиль 20.07);
+                # в трёх соседних местах это уже чинили, вызов остался вне try
+                emit({"type": "status", "text": f"звук: {e} — поток STT живёт"})
+                time.sleep(1)
+                continue
             if not batch:
                 time.sleep(0.1)
                 continue
@@ -506,9 +576,12 @@ def main():
                         "text": f"{disp}: {added}",  # совместимость со старым UI
                     })
                     # режим собеседования: вопрос с той стороны → мгновенный ответ.
-                    # startswith: живая диаризация метит «Собеседник N» — строгое
-                    # равенство оставляло ⚡/☁️ мёртвыми всю встречу
-                    if instant_on and toggles["hints"] and speaker.startswith("Собеседник") \
+                    # «Не владелец» вместо startswith(«Собеседник»): строгое
+                    # равенство оставляло ⚡/☁️ мёртвыми всю встречу, а startswith
+                    # глушил их с момента, когда name_loop опознавал собеседника
+                    # по имени (аудит 14.08). Сверка — speaker_names.is_counterpart.
+                    if instant_on and toggles["hints"] \
+                            and speaker_names.is_counterpart(speaker, owner_name) \
                             and looks_question(added):
                         fire_question(added)
 
@@ -1164,8 +1237,8 @@ def main():
                 line = f"⏮ {top.stem} — уже обсуждалось {when}." + (f" Статус: {st}" if st else "")
                 emit({"type": "thesis", "text": line})
                 tr.note(line)
-            except Exception:  # noqa: BLE001 — дежавю вспомогательно
-                pass
+            except Exception as e:  # noqa: BLE001 — дежавю вспомогательно
+                warn_deja(e)
 
     def dialog_markup_loop():
         """Семантические реплики в живом окне: e4b расставляет диалоговые «—»
@@ -1208,8 +1281,8 @@ def main():
                 if tr.update_block_text(idx, text, out):
                     emit({"type": "transcript_markup", "speaker": tr.display_name(spk),
                           "text": out})
-            except Exception:  # noqa: BLE001 — разметка вспомогательна
-                pass
+            except Exception as e:  # noqa: BLE001 — разметка вспомогательна
+                warn_markup(e)
 
     def _median_f0(label: str) -> float | None:
         """Медианная частота основного тона этой метки за встречу.
@@ -1365,8 +1438,9 @@ def main():
                         listed = names
                         tr.set_participants(names)
                         emit({"type": "status", "text": f"👥 Звучали: {', '.join(names)}"})
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001 — имена вспомогательны, но их
+                # отказ до конца встречи неотличим от «имён не звучало»
+                warn_names(e)
 
     def minutes_loop():
         """Живые минутки: черновик _minutes.md дорабатывается по ходу встречи.
@@ -1527,7 +1601,15 @@ def main():
                 # из 138 файлов минуток чекбоксы нашлись в двух, и окно задач
                 # стояло пустым при живых поручениях на каждой встрече.
                 doc = action_items.normalize(doc)
-                mpath.write_text(doc, encoding="utf-8")
+                # Через временное имя: обрыв посреди write_text оставлял бы
+                # усечённые минутки поверх готовых (mcp_server это уже чинил,
+                # здесь оставался прямой write_text — аудит 14.08)
+                tmp = mpath.with_name(mpath.name + f".tmp{os.getpid()}")
+                try:
+                    tmp.write_text(doc, encoding="utf-8")
+                    tmp.replace(mpath)
+                finally:
+                    tmp.unlink(missing_ok=True)
                 emit({"type": "status", "text": f"Минутки: {mpath}"})
 
     def stdin_loop():

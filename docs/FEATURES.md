@@ -63,7 +63,9 @@
   itself: a repeat run rewrites the transcript in full.
 - **Instant answer (⚡)** — the other side's question is detected via STT
   punctuation and lead words; a ready first-person answer arrives in ~2-3 s,
-  with the question shown above it.
+  with the question shown above it. The gate is "anyone but the owner"
+  (word-level match against `user_name`), so answers keep firing after a
+  counterpart gets recognised by name mid-meeting.
 - **Cloud answer (☁️, opt-in)** — the same question goes to Claude in
   parallel (your subscription, `claude` CLI): local is instant, cloud is
   deeper 10-20 s later. Off by default — and off on every path: the switch
