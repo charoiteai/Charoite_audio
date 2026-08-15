@@ -79,9 +79,27 @@ rather than at utterance boundaries: one chunk holds the end of one phrase and
 the start of another, and the embedding comes out mixed. Segmentation gives the
 boundaries, and the embedding is computed per utterance.
 
-A chunk still gets one label — it carries one piece of recognised text, so the
-voice that spoke longest in it wins. If recognition also goes per utterance,
-errors halve again: the measured DER of per-utterance labelling is 0.090.
+Since 2026-08-15 recognition goes per utterance too — positional layout
+(`SegmentTracker.split`). When several people spoke inside one chunk in pieces
+of at least a second, the daemon transcribes the pieces separately and each
+gets its own author; text at utterance boundaries stops leaking to the wrong
+voice. Three rules guard against "micro-labels": a foreign piece shorter than
+a second is attributed to no one (losing a half-second "yes" is more honest
+than faking its author — the short-shard rule of the post-meeting pass),
+neighbouring pieces of the same voice merge into one window, and window
+padding never crosses the midpoint of the gap to another voice's speech.
+A segment clipped by the right chunk edge that lives entirely inside the
+overlap zone is deferred — the next chunk brings it whole.
+
+Measured on the same fixture but with production slicing (3.0 s chunks,
+2.5 s step, `--overlap` — the old bench cut end-to-end and flattered itself):
+
+| Live mode | DER | Confusion | Voices |
+|---|---|---|---|
+| one label per chunk (`--engine live`) | 0.270 | 0.162 | 4 of 4 |
+| positional layout (`--engine live-split`) | **0.167** | **0.054** | 4 of 4 |
+
+Speaker switches are equal in both modes — the transcript did not flicker.
 
 
 ## The merge threshold is measured, not guessed
