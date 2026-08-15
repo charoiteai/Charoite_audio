@@ -27,6 +27,14 @@ llm:
   #                      # transcripts follow base_url, so another machine is a
   #                      # privacy decision, not a tuning knob.
   #                      # CHAROITE_NO_CLOUD=1 refuses even this. See PRIVACY.md
+  # Chat engine: ollama (default) or mlx-server — the OpenAI-compatible
+  # mlx_lm.server with prefix caching: the live meeting thread gets 0.3s
+  # prefill instead of 30s (measured 2026-08-14). The server serves the one
+  # model it was started with (mlx_model, a HF repo name); small/fallback
+  # collapse into it. Embeddings (bge-m3) stay on Ollama either way.
+  # engine: ollama
+  # mlx_base_url: http://127.0.0.1:8080
+  # mlx_model: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
   model: qwen3.6:35b-a3b             # main model (hints, summaries, names)
   small_model: qwen3.5:4b            # light model (theses, classification) — 3.4GB
   fallback_model: gemma4:latest

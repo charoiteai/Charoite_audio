@@ -1,10 +1,25 @@
 """Клиент модели: ЕДИНСТВЕННАЯ точка разговора с LLM-сервером.
 
-Весь транспорт (сегодня — Ollama API) живёт здесь: стриминг подсказок,
-не-стриминговые документы (complete) и эмбеддинги (embed). Модули конвейера
-не собирают HTTP-запросы сами — иначе смена сервера (Ollama → mlx_lm.server)
-превращается в правку тринадцати файлов, а модель из конфига подменяется
-захардкоженной (аудит 14.08: Саммари и заметки месяц звали старую модель).
+Весь транспорт живёт здесь: стриминг подсказок, не-стриминговые документы
+(complete) и эмбеддинги (embed). Модули конвейера не собирают HTTP-запросы
+сами — иначе смена сервера превращается в правку тринадцати файлов, а модель
+из конфига подменяется захардкоженной (аудит 14.08: Саммари и заметки месяц
+звали старую модель).
+
+Движка два, выбирает llm.engine в конфиге (см. privacy.llm_engine):
+
+  ollama      — умолчание, Ollama API (/api/chat, NDJSON-стрим);
+  mlx-server  — OpenAI-совместимый mlx_lm.server (/v1/chat/completions, SSE).
+                Зачем: у него кэш префикса (LRUPromptCache/fetch_nearest_cache),
+                и растущая нить встречи получает префилл 0.3с вместо 30с
+                (замер 14.08, 88×). Ограничения честно: строгого JSON-режима
+                (format:"json") у него нет — complete(json_format=True) там
+                полагается на промпт и разбор текста; сервер обслуживает ОДНУ
+                модель, с которой запущен, поэтому small/fallback-лестница
+                схлопывается в неё же (семантика CHAROITE_ONE_MODEL).
+
+Эмбеддинги движка не выбирают: bge-m3 живёт на Ollama при любом engine —
+mlx_lm.server эмбеддингов не отдаёт.
 """
 from __future__ import annotations
 
@@ -48,9 +63,24 @@ def parse_json_block(text: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+# Дефолтные веса для mlx-server: тот же MoE, что боевой ollama-тег, только
+# именем HF-репозитория — mlx_lm.server грузит модели из huggingface-кэша.
+DEFAULT_MLX_MODEL = "mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit"
+
+# Явный потолок ответа для mlx-server, когда вызывающий не задал num_predict.
+# У Ollama отсутствие num_predict означает «без потолка», а mlx_lm.server
+# молча применяет СВОЙ дефолт из аргументов запуска (обычно 512) — живой тред
+# и разбор графа резались бы на полуслове, внешне неотличимо от короткого
+# ответа модели.
+MLX_MAX_TOKENS_DEFAULT = 4096
+
+
 def embed(cfg: dict, texts: list[str], model: str | None = None,
           keep_alive: str | None = None, timeout: float = 20) -> list[list[float]]:
     """Эмбеддинги через /api/embed. Пустой список — сервер не ответил векторами.
+
+    Всегда Ollama (privacy.llm_base_url), независимо от llm.engine:
+    mlx_lm.server эмбеддингов не отдаёт, bge-m3 остаётся здесь.
 
     Таймаут по умолчанию короткий (20с): эмбеддинг занимает ~0.2с, и если
     сервер занят тяжёлой генерацией, вызывающему контуру дешевле пропустить
@@ -71,7 +101,13 @@ class LLM:
     def __init__(self, cfg: dict):
         l = cfg["llm"]
         self._cfg = cfg          # для оживления вставшей модели в complete()
-        self.base = privacy.llm_base_url(cfg)
+        self.engine = privacy.llm_engine(cfg)
+        # У каждого движка свой адрес: у Ollama — llm.base_url (:11434),
+        # у mlx_lm.server — llm.mlx_base_url (:8080). Оба под одной
+        # privacy-дисциплиной loopback/allow_remote.
+        self.base = (privacy.mlx_base_url(cfg) if self.engine == "mlx-server"
+                     else privacy.llm_base_url(cfg))
+        self.mlx_model = str(l.get("mlx_model") or DEFAULT_MLX_MODEL)
         self.model = l["model"]
         self.small = l.get("small_model", self.model)
         self.fallback = l.get("fallback_model", self.small)
@@ -107,7 +143,13 @@ class LLM:
             return set()
 
     def resolve_model(self) -> str:
-        """Основная, если скачана; иначе fallback (чтобы прототип работал сразу)."""
+        """Основная, если скачана; иначе fallback (чтобы прототип работал сразу).
+
+        На mlx-server лестницы нет: сервер обслуживает одну модель, с которой
+        запущен, — возвращаем её имя (HF-репо), не спрашивая /api/tags.
+        """
+        if self.engine == "mlx-server":
+            return self.mlx_model
         have = self._models_available()
         for m in (self.model, self.fallback, self.small):
             if m in have:
@@ -128,6 +170,15 @@ class LLM:
         # 500 и 1600, а при 4000 — 83с против 10с и документ вдвое беднее.
         # Для документов рассуждение не включать; при think=True num_predict
         # либо не задавать вовсе (как в deep_loop), либо давать с запасом ×8.
+        messages = [
+            {"role": "system", "content": system or self.system},
+            {"role": "user", "content": prompt},
+        ]
+        if self.engine == "mlx-server":
+            yield from self._stream_mlx(messages, think=think,
+                                        num_predict=num_predict,
+                                        temperature=temperature)
+            return
         options: dict = {
             "temperature": self.temperature if temperature is None else temperature,
             "num_ctx": self.num_ctx,
@@ -136,10 +187,7 @@ class LLM:
             options["num_predict"] = num_predict
         payload = {
             "model": model or self.resolve_model(),
-            "messages": [
-                {"role": "system", "content": system or self.system},
-                {"role": "user", "content": prompt},
-            ],
+            "messages": messages,
             "stream": True,
             "think": think,
             "keep_alive": "90m",  # держать модель в памяти всю встречу
@@ -156,6 +204,57 @@ class LLM:
                     yield chunk
                 if data.get("done"):
                     break
+
+    def _mlx_payload(self, messages: list[dict], *, think: bool | None,
+                     num_predict: int | None, temperature: float | None,
+                     stream: bool) -> dict:
+        """Тело запроса к mlx_lm.server (/v1/chat/completions).
+
+        Модель всегда self.mlx_model: сервер обслуживает ту одну, с которой
+        запущен, и переданные ollama-теги (small/fallback из вызовов) сюда
+        не транслируются — лестница схлопывается осознанно (докстринг модуля).
+        num_ctx не передаётся: контекст — параметр старта сервера, проблемы
+        «Modelfile раздувает KV-кэш» у этого движка нет.
+        """
+        payload: dict = {
+            "model": self.mlx_model,
+            "messages": messages,
+            "stream": stream,
+            "temperature": self.temperature if temperature is None else temperature,
+            # потолок ВСЕГДА явный: без него сервер молча применяет свой
+            # дефолт из аргументов запуска, и длинный ответ режется на
+            # полуслове — внешне неотличимо от короткого ответа модели
+            "max_tokens": num_predict or MLX_MAX_TOKENS_DEFAULT,
+        }
+        if think is not None:
+            # enable_thinking — kwarg chat-шаблона qwen; сервер пробрасывает
+            # его через chat_template_kwargs (mlx_lm 0.31: server.py:545)
+            payload["chat_template_kwargs"] = {"enable_thinking": bool(think)}
+        return payload
+
+    def _stream_mlx(self, messages: list[dict], *, think: bool | None,
+                    num_predict: int | None,
+                    temperature: float | None) -> Iterator[str]:
+        payload = self._mlx_payload(messages, think=think, num_predict=num_predict,
+                                    temperature=temperature, stream=True)
+        with requests.post(f"{self.base}/v1/chat/completions", json=payload,
+                           stream=True, timeout=300) as r:
+            r.raise_for_status()
+            # SSE: полезная нагрузка ТОЛЬКО в строках «data: …», терминатор
+            # «data: [DONE]». Всё остальное пропускаем по спецификации: во
+            # время префилла сервер шлёт keepalive-комментарии «: keepalive
+            # 1/1» — живой smoke 15.08 упал ровно на такой строке.
+            for line in r.iter_lines():
+                if not line or not line.startswith(b"data: "):
+                    continue
+                line = line[6:]
+                if line.strip() == b"[DONE]":
+                    break
+                data = json.loads(line)
+                chunk = (((data.get("choices") or [{}])[0].get("delta") or {})
+                         .get("content") or "")
+                if chunk:
+                    yield chunk
 
     def warmup(self):
         """Гоним модель в память заранее — иначе первая подсказка ждёт ~20с загрузки."""
@@ -193,16 +292,29 @@ class LLM:
         разбор встречи и минутки через MCP, и выключать им рассуждение —
         отдельное решение с замером, а не побочный эффект рефакторинга.
         """
+        messages = ([{"role": "system", "content": system}] if system else []) \
+                   + [{"role": "user", "content": prompt}]
+        if self.engine == "mlx-server":
+            # Строгого JSON-режима у mlx-server нет: json_format здесь
+            # полагается на промпт и разбор текста вызывающим (докстринг
+            # модуля). Перед сменой боевого движка это меряет bench_extract.
+            payload = self._mlx_payload(messages, think=think,
+                                        num_predict=num_predict,
+                                        temperature=temperature, stream=False)
+            r = self._post_with_revive(f"{self.base}/v1/chat/completions",
+                                       payload, timeout, revive)
+            body = self._checked_body(r)
+            msg = ((body.get("choices") or [{}])[0].get("message") or {})
+            return (msg.get("content") or "").strip()
         options: dict = {
             "temperature": self.temperature if temperature is None else temperature,
             "num_ctx": num_ctx or self.num_ctx,
         }
         if num_predict:
             options["num_predict"] = num_predict
-        payload: dict = {
+        payload = {
             "model": model or self.resolve_model(),
-            "messages": ([{"role": "system", "content": system}] if system else [])
-                        + [{"role": "user", "content": prompt}],
+            "messages": messages,
             "stream": False,
             "options": options,
         }
@@ -210,8 +322,15 @@ class LLM:
             payload["think"] = think
         if json_format:
             payload["format"] = "json"
+        r = self._post_with_revive(f"{self.base}/api/chat", payload, timeout, revive)
+        body = self._checked_body(r)
+        return ((body.get("message") or {}).get("content") or "").strip()
+
+    def _post_with_revive(self, url: str, payload: dict, timeout: float,
+                          revive: bool):
+        """POST с одной попыткой поднять модель, вставшую посреди работы."""
         try:
-            r = requests.post(f"{self.base}/api/chat", json=payload, timeout=timeout)
+            return requests.post(url, json=payload, timeout=timeout)
         except requests.RequestException:
             if not revive:
                 raise
@@ -219,13 +338,17 @@ class LLM:
             print("llm: запрос к модели не прошёл — пробую оживить")
             if not llm_health.ensure_alive(self._cfg, lambda m: print(f"llm: {m}")):
                 raise
-            r = requests.post(f"{self.base}/api/chat", json=payload, timeout=timeout)
+            return requests.post(url, json=payload, timeout=timeout)
+
+    @staticmethod
+    def _checked_body(r) -> dict:
+        """Тело ответа или LLMHTTPError — общая часть обоих движков."""
         if r.status_code != 200:
             raise LLMHTTPError(r.status_code, r.text[:500])
         body = r.json()
         if isinstance(body, dict) and body.get("error"):
             raise LLMHTTPError(r.status_code, str(body["error"]))
-        return ((body.get("message") or {}).get("content") or "").strip()
+        return body
 
     # Формат подсказки живёт в коде, а не в роли из конфига. Роль отвечает на
     # вопрос «кто ты и в каком контексте», формат — общий для всех и проверяем

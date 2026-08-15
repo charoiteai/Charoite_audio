@@ -24,6 +24,14 @@ llm:
   #                      # стенограммы уходят по адресу base_url, поэтому чужая
   #                      # машина — решение о приватности, а не тюнинг.
   #                      # CHAROITE_NO_CLOUD=1 запрещает и это. См. PRIVACY.md
+  # Движок чата: ollama (умолчание) или mlx-server — OpenAI-совместимый
+  # mlx_lm.server с кэшем префикса: живая нить встречи получает префилл
+  # 0.3с вместо 30с (замер 14.08). Сервер обслуживает одну модель
+  # (mlx_model, имя HF-репозитория); small/fallback на нём схлопываются в
+  # неё же. Эмбеддинги (bge-m3) при любом движке остаются на Ollama.
+  # engine: ollama
+  # mlx_base_url: http://127.0.0.1:8080
+  # mlx_model: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
   model: qwen3.6:35b-a3b             # основная модель (подсказки, саммари, имена)
   small_model: qwen3.5:4b            # лёгкая (тезисы, классификация) — 3.4GB
   fallback_model: gemma4:latest

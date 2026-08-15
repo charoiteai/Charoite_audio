@@ -137,10 +137,15 @@ lives in RAM alongside it, `num_ctx` is always explicit.
   carries provenance (who, when, verbatim transcript quote).
 - **One LLM gateway — src/llm.py.** Every chat and embedding call in the
   python pipeline goes through it; no module speaks the wire format itself.
-  Swapping the inference server (Ollama → an OpenAI-compatible one) is a
-  change in one file, and the model always comes from the config: the 14.08
-  audit found four modules still calling a hardcoded model long after the
-  config had moved on.
+  The model always comes from the config: the 14.08 audit found four modules
+  still calling a hardcoded model long after the config had moved on. The
+  gateway speaks two engines, picked by `llm.engine`: `ollama` (the default)
+  and `mlx-server` — the OpenAI-compatible `mlx_lm.server`, whose prefix
+  cache turns the live thread's prefill from ~30 s into ~0.3 s on a long
+  meeting (measured 2026-08-14). Embeddings stay on Ollama under either
+  engine (mlx_lm.server serves none), and the production default stays
+  `ollama` until bench_extract clears JSON extraction quality on the new
+  transport — it has no strict JSON mode.
 - **One embedder — bge-m3** (Ollama): semantic search and the core-revision
   prefilter. There is deliberately no second embedding model.
 - **Precision — local NLI** (src/nli.py, ONNX): thesis dedup and the

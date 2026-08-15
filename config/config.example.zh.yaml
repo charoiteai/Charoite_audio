@@ -30,6 +30,13 @@ llm:
   #                      # 逐字稿会跟随 base_url，因此另一台机器是隐私决定，
   #                      # 而不是调优旋钮。CHAROITE_NO_CLOUD=1 连这个也拒绝。
   #                      # 详见 PRIVACY.md
+  # 聊天引擎：ollama（默认）或 mlx-server —— 带前缀缓存的 OpenAI 兼容
+  # mlx_lm.server：会议实时脉络的预填充从 30 秒降到 0.3 秒（2026-08-14 实测）。
+  # 该服务只提供启动时加载的那一个模型（mlx_model，HF 仓库名）；small/fallback
+  # 在其上折叠为同一模型。向量嵌入（bge-m3）无论哪个引擎都留在 Ollama。
+  # engine: ollama
+  # mlx_base_url: http://127.0.0.1:8080
+  # mlx_model: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
   model: qwen3.6:35b-a3b             # 主模型（提示、纪要、姓名）——中文原生
   # 预设（见 docs/MODELS.md）：
   #  16GB 内存：model: gemma4:latest · small_model: qwen3.5:2b
