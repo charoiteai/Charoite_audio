@@ -93,6 +93,21 @@ def cloud_edit_graph_enabled(cfg: dict, env: dict | None = None) -> bool:
 
 
 DEFAULT_LLM_URL = "http://127.0.0.1:11434"
+DEFAULT_MLX_URL = "http://127.0.0.1:8080"
+
+
+def llm_engine(cfg: dict) -> str:
+    """Движок инференса чата: «ollama» (умолчание) или «mlx-server».
+
+    Единая точка, как и адреса: llm.py и llm_health спрашивают здесь, а не
+    разбирают конфиг каждый по-своему. Эмбеддинги движка НЕ выбирают — bge-m3
+    живёт на Ollama при любом значении (mlx_lm.server эмбеддинги не отдаёт).
+    """
+    raw = str((cfg.get("llm") or {}).get("engine") or "ollama").strip().lower()
+    if raw not in ("ollama", "mlx-server"):
+        raise RuntimeError(
+            f"llm.engine = {raw!r}: неизвестный движок, знаю ollama и mlx-server")
+    return raw
 
 # localhost — не IP, ip_address() его не разбирает, а это самый частый адрес
 # в конфиге. Остальное решает is_loopback: 127.0.0.0/8 целиком и ::1.
@@ -129,21 +144,33 @@ def llm_base_url(cfg: dict, env: dict | None = None) -> str:
     Отказ — исключение, а не тихий откат на localhost: молча подменить
     адрес значит сделать вид, что настройка применена.
     """
+    return _guarded_url(cfg, env, key="base_url", default=DEFAULT_LLM_URL)
+
+
+def mlx_base_url(cfg: dict, env: dict | None = None) -> str:
+    """Адрес OpenAI-совместимого mlx_lm.server — та же дисциплина, что у
+    llm_base_url: loopback свободно, чужая машина — только под явным
+    llm.allow_remote и никогда под рубильником. Второй движок не должен
+    стать вторым немым путём стенограммы наружу."""
+    return _guarded_url(cfg, env, key="mlx_base_url", default=DEFAULT_MLX_URL)
+
+
+def _guarded_url(cfg: dict, env: dict | None, *, key: str, default: str) -> str:
     env = os.environ if env is None else env
-    raw = str((cfg.get("llm") or {}).get("base_url") or DEFAULT_LLM_URL)
+    raw = str((cfg.get("llm") or {}).get(key) or default)
     url = raw.rstrip("/")
     host = urllib.parse.urlsplit(url).hostname
     if _is_loopback(host):
         return url
     if any(env.get(k) for k in KILL_SWITCHES):
         raise RuntimeError(
-            f"llm.base_url = {raw} указывает не на эту машину, а рубильник "
+            f"llm.{key} = {raw} указывает не на эту машину, а рубильник "
             f"{'/'.join(k for k in KILL_SWITCHES if env.get(k))} запрещает "
             "любой выход наружу")
     if (cfg.get("llm") or {}).get("allow_remote") is True:
         return url
     raise RuntimeError(
-        f"llm.base_url = {raw} указывает не на эту машину. Чароит локальный "
+        f"llm.{key} = {raw} указывает не на эту машину. Чароит локальный "
         "по умолчанию: чтобы слать запросы на другой адрес, поставьте в "
         "config.yaml явное llm.allow_remote: true")
 
