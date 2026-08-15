@@ -27,7 +27,7 @@ issue。
   自己的开关；图谱修改还会先备份文件并限定模型可触碰的边界。
   `CHAROITE_NO_CLOUD=1` 是总闸，在任何路径上覆盖任何配置。
 - 订阅 CLI 启动时会从环境中清除 `ANTHROPIC_API_KEY`。开关明细与承诺：
-  [PRIVACY.md](../../PRIVACY.md)。
+  [PRIVACY.zh.md](PRIVACY.md)。
 
 ## Prompt injection
 
@@ -45,7 +45,7 @@ issue。
 内置更新器在替换 bundle 之前会再次检查是否有正在进行的录音，替换 helper
 在应用进程仍然存活时拒绝动安装目录；录音文件以独占方式打开（`"xb"`），
 文件名冲突是可见的错误而不是静默覆盖；停止时音频通过原子重命名交接。
-机制详见 [ARCHITECTURE.md](ARCHITECTURE.md) 的「Surviving a crash」。
+机制详见 [ARCHITECTURE.md](ARCHITECTURE.md) 的「会议如何挺过崩溃」。
 
 ## 供应链与发布完整性
 
