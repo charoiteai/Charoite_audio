@@ -245,11 +245,47 @@ final class SuflerService: ObservableObject {
         }
     }
 
+    /// Двухшаговый стоп короткой записи. Константа tooShortToStop годами
+    /// описывала защиту от промаха по кнопке, но нигде не применялась
+    /// (ревью 15.08 ×2): случайный клик в первые секунды молча убивал
+    /// запись. Первый «Стоп» на короткой записи взводит подтверждение и
+    /// говорит об этом строкой статуса; второй в течение пяти секунд —
+    /// останавливает. Программный stop() защиту не проходит — она про
+    /// кнопки, не про автоматизацию.
+    private var stopArmedAt: Date?
+    /// Взведение видно экранам, а не только строке статуса суфлёра: человек,
+    /// нажавший «Стоп» на «Сегодня», должен увидеть подтверждение там же
+    /// (ревью 15.08 ×4).
+    @Published private(set) var stopConfirmPending = false
+
     func toggle() {
         switch lifecycle {
         case .idle:
+            stopArmedAt = nil
+            stopConfirmPending = false
             start()
         case .recording:
+            if recordingElapsed < Self.tooShortToStop {
+                let armed = stopArmedAt.map { Date().timeIntervalSince($0) <= 5 } ?? false
+                if !armed {
+                    stopArmedAt = Date()
+                    stopConfirmPending = true
+                    status = L.t("Запись только началась — «Стоп» ещё раз, чтобы точно остановить",
+                                 "Recording just started — press Stop again to confirm",
+                                 "录音刚开始——再按一次停止以确认")
+                    Task { [weak self] in   // взведение гаснет само через 5 с
+                        try? await Task.sleep(nanoseconds: 5_200_000_000)
+                        await MainActor.run { [weak self] in
+                            guard let self, let at = self.stopArmedAt,
+                                  Date().timeIntervalSince(at) > 5 else { return }
+                            self.stopConfirmPending = false
+                        }
+                    }
+                    return
+                }
+            }
+            stopArmedAt = nil
+            stopConfirmPending = false
             stop()
         case .starting, .stopping:
             break
