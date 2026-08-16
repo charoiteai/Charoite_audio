@@ -179,6 +179,11 @@ def plan(stamp: str, root: pathlib.Path,
     logs = root / "logs"
     if logs.is_dir():
         p.delete += sorted(f for f in logs.glob(f"graph_{stamp}*.log") if f.is_file())
+        # Лог облачной ревизии называется иначе и потому переживал забывание:
+        # внутри — имена файлов встречи (а тема встречи стоит в имени),
+        # счётчики и stderr CLI (аудит 16.08).
+        p.delete += sorted(f for f in logs.glob(f"cloud_review_{stamp}*.log")
+                           if f.is_file())
 
     if keep_graph:
         return p

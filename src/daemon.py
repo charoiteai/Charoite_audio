@@ -277,7 +277,10 @@ def _prune_graph_logs(cfg: dict) -> None:
         return
     keep_days = float(cfg.get("audio", {}).get("record_keep_days", 2))
     cutoff = time.time() - max(keep_days, 1) * 86400
-    for old in logs.glob("graph_*.log"):
+    # cloud_review_*.log — тот же класс: имена файлов встречи (тема стоит в
+    # имени), счётчики и stderr CLI. Имя другое, поэтому ретеншн его не
+    # видел (аудит 16.08).
+    for old in [*logs.glob("graph_*.log"), *logs.glob("cloud_review_*.log")]:
         try:
             if old.stat().st_mtime < cutoff:
                 old.unlink(missing_ok=True)
