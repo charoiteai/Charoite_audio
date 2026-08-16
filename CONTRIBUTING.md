@@ -5,6 +5,10 @@
 Thanks for your interest! Charoite is a fully local meeting assistant —
 contributions that keep it local-first are very welcome.
 
+How the project is maintained day to day — the AI-maintainer pipeline,
+review gates, and who answers for what — is documented in
+[MAINTENANCE.md](MAINTENANCE.md).
+
 ## Ground rules
 
 - **Local-first is non-negotiable.** No cloud calls, no telemetry, no
