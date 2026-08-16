@@ -5,22 +5,88 @@ import Foundation
 /// Никаких удалённых серверов по умолчанию: Ollama на этой машине, демон
 /// суфлёра — из папки установки Charoite_audio, граф — из config.yaml суфлёра.
 enum AppSettings {
-    /// Папка установки Charoite_audio (там .venv, src/daemon.py, config/).
+    /// Папка данных: config/, transcripts/, recordings/, models/, logs/.
     ///
-    /// Порядок: путь, выбранный человеком в Настройках → склонированный
-    /// репозиторий в домашней папке → рабочая папка приложения рядом с
-    /// вложенным кодом. Последний случай — установка «из коробки»: код
-    /// лежит в бандле, а данные человеку писать всё равно куда-то надо.
+    /// Порядок: путь, выбранный человеком в Настройках → без вложенного кода
+    /// (запуск из клона) — сам клон в домашней папке → при вложенном коде —
+    /// рабочая папка приложения в Application Support.
+    ///
+    /// Клон `~/Charoite_audio` при вложенном коде больше НЕ подхватывается
+    /// сам по наличию `src/daemon.py`. Папка данных — это ещё и
+    /// `config/config.yaml` с `sufler.post_meeting_hook` (команда, которую
+    /// демон запускает после каждой встречи через shell) и `models/`. Пока
+    /// корень данных брался по первому попавшемуся клону, любой процесс без
+    /// TCC-прав подкладывал пустой `~/Charoite_audio/src/daemon.py` и свой
+    /// `config.yaml` — и подписанное приложение выполняло его команду после
+    /// первой же встречи со своими правами на микрофон и экран. #328 закрыл
+    /// эту дверь для кода, а для данных она оставалась (второе мнение по
+    /// #328, 16.08). Тот, у кого данные в клоне, выбирает его явно — см.
+    /// `legacyCloneAwaitsChoice` и предложение на экране «Сегодня».
     static var charoiteRoot: URL {
-        if let s = UserDefaults.standard.string(forKey: "charoite.root"), !s.isEmpty {
-            return URL(fileURLWithPath: (s as NSString).expandingTildeInPath)
-        }
-        let cloned = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Charoite_audio")
-        if FileManager.default.fileExists(atPath: cloned.appendingPathComponent("src/daemon.py").path) {
-            return cloned
-        }
-        return codeIsEmbedded ? workspaceRoot : cloned
+        if let chosen = explicitRoot { return chosen }
+        return codeIsEmbedded ? workspaceRoot : legacyCloneRoot
+    }
+
+    /// Папка, выбранная человеком в Настройках (`charoite.root`); пусто — не выбрана.
+    static var explicitRoot: URL? {
+        guard let s = UserDefaults.standard.string(forKey: "charoite.root"), !s.isEmpty else { return nil }
+        return URL(fileURLWithPath: (s as NSString).expandingTildeInPath)
+    }
+
+    /// Клон репозитория в домашней папке — установка через терминал.
+    static var legacyCloneRoot: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Charoite_audio")
+    }
+
+    /// В клоне есть данные или код: раньше приложение брало такую папку само.
+    static var legacyCloneLooksUsed: Bool {
+        let fm = FileManager.default
+        return fm.fileExists(atPath: legacyCloneRoot.appendingPathComponent("config/config.yaml").path)
+            || fm.fileExists(atPath: legacyCloneRoot.appendingPathComponent("src/daemon.py").path)
+    }
+
+    /// Откуда берётся папка данных — чистой функцией ради тестов и текста в интерфейсе.
+    enum DataSource: Equatable {
+        case chosenByHuman     // путь из Настроек
+        case workspace         // Application Support: код в бандле, данные — человеку
+        case legacyClone       // запуск из клона: данные рядом с кодом
+    }
+
+    static func dataSource(embedded: Bool, explicitRoot: Bool) -> DataSource {
+        if explicitRoot { return .chosenByHuman }
+        return embedded ? .workspace : .legacyClone
+    }
+
+    /// Клон в домашней папке выглядит рабочим, но при вложенном коде сам не
+    /// берётся — решить должен человек, один раз и видимо.
+    static func legacyCloneAwaitsChoice(embedded: Bool, explicitRoot: Bool,
+                                        cloneLooksUsed: Bool) -> Bool {
+        embedded && !explicitRoot && cloneLooksUsed
+    }
+
+    static var legacyCloneAwaitsChoice: Bool {
+        legacyCloneAwaitsChoice(embedded: codeIsEmbedded, explicitRoot: explicitRoot != nil,
+                                cloneLooksUsed: legacyCloneLooksUsed)
+    }
+
+    /// Разрешение запускать код демона из явно выбранной папки (разработка).
+    ///
+    /// Ключ `charoite.codeFromRoot`. Отсутствие ключа — прежний договор
+    /// (#328): явный путь с `src/daemon.py` = код оттуда, это видно в
+    /// Настройках. Предложение миграции папки данных пишет `false` явно:
+    /// человек выбирает, ГДЕ ДАННЫЕ, а не чей код исполнять с правами
+    /// приложения — эти два решения не должны склеиваться.
+    static var codeFromRootAllowed: Bool {
+        let d = UserDefaults.standard
+        return d.object(forKey: "charoite.codeFromRoot") == nil ? true : d.bool(forKey: "charoite.codeFromRoot")
+    }
+
+    /// Человек согласился взять клон как папку данных: путь пишем явно, а
+    /// разрешение на код из него — явно НЕ даём (см. `codeFromRootAllowed`).
+    static func adoptLegacyCloneAsDataRoot() {
+        let d = UserDefaults.standard
+        d.set(false, forKey: "charoite.codeFromRoot")
+        d.set("~/Charoite_audio", forKey: "charoite.root")
     }
 
     /// Код демона, вложенный в бандл: `Resources/charoite/src/daemon.py`.
@@ -69,12 +135,14 @@ enum AppSettings {
     /// в интерфейсе, а не подхватывается сам.
     static func codeRoot(dataRoot: URL? = nil) -> URL {
         let data = dataRoot ?? charoiteRoot
-        let chosen = (UserDefaults.standard.string(forKey: "charoite.root") ?? "")
-            .isEmpty == false
-        if codeIsEmbedded && !chosen { return embeddedCodeRoot }
         let localCode = data.appendingPathComponent("src/daemon.py").path
-        if FileManager.default.fileExists(atPath: localCode) { return data }
-        return codeIsEmbedded ? embeddedCodeRoot : data
+        let source = codeSource(embedded: codeIsEmbedded, explicitRoot: explicitRoot != nil,
+                                localCodeExists: FileManager.default.fileExists(atPath: localCode),
+                                codeFromRoot: codeFromRootAllowed)
+        switch source {
+        case .embedded: return embeddedCodeRoot
+        case .chosenByHuman, .besideData: return data
+        }
     }
 
     /// Решение о корне кода без обращения к диску и настройкам — для тестов
@@ -86,8 +154,10 @@ enum AppSettings {
     }
 
     static func codeSource(embedded: Bool, explicitRoot: Bool,
-                           localCodeExists: Bool) -> CodeSource {
+                           localCodeExists: Bool, codeFromRoot: Bool = true) -> CodeSource {
         if embedded && !explicitRoot { return .embedded }
+        // явная папка данных ещё не разрешение исполнять её код: тумблер отдельный
+        if embedded && !codeFromRoot { return .embedded }
         if localCodeExists { return explicitRoot ? .chosenByHuman : .besideData }
         return embedded ? .embedded : .besideData
     }
