@@ -10,14 +10,7 @@ struct SuflerView: View {
     @ObservedObject private var tasksSvc = TasksService.shared
     @ObservedObject private var calendar = CalendarService.shared
     @ObservedObject private var navigation = WorkspaceNavigation.shared
-    @AppStorage("charoite.calendarBriefs") private var calendarBriefs = false
     @State private var question = ""
-    @State private var archiveAnswer = ""      // ответ по архиву, когда встреча не идёт
-    @State private var lastArchiveQuestion = ""  // для «сохранить в граф»
-    // прошлые ответы: раньше стирались новым вопросом, потом жили только
-    // до перезапуска — теперь персист на диске (Application Support)
-    @ObservedObject private var history = ArchiveHistoryStore.shared
-    @State private var isSearchingArchive = false
     @State private var showFirstRun = false
     @AppStorage("charoit.firstRunSeen") private var firstRunSeen = false
     // чат встроен в суфлёр (панель справа); видимость запоминается
@@ -80,14 +73,18 @@ struct SuflerView: View {
             // человек нажмёт «Слушать встречу» и получит системный запрос.
             if !firstRunSeen { showFirstRun = true }
             TasksService.shared.rescan()   // бейдж «Задачи · N» актуален сразу
-            ArchiveHistoryStore.shared.load()
             CalendarService.shared.recording(sufler.isRunning)
             // Dev-хуки скринов/смоков: на живой машине владельца клавиатурный
             // ввод в чужое окно проигрывает гонку за фокус — вопрос и окна
             // задаются окружением и выполняются сами.
             let env = ProcessInfo.processInfo.environment
             if let q = env["CHAROITE_ASK"], !q.isEmpty {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { askArchive(q) }
+                // архивный контур суфлёра вычищен (№22): вопрос уходит в
+                // живой раздел «Память» — тот же ответ по графу и архиву
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    navigation.open(.memory)
+                    LocalChatService.shared.send(q)
+                }
             }
             if env["CHAROITE_OPEN_TASKS"] == "1" {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { navigation.open(.tasks) }
@@ -95,13 +92,6 @@ struct SuflerView: View {
         }
     }
 
-    // Вопрос работает ВСЕГДА, а не только во время встречи.
-    //
-    // Раньше кнопка блокировалась при остановленном демоне — и самый частый
-    // вопрос («что обсуждали вчера?») было физически не задать: ради ответа про
-    // вчерашнюю встречу приходилось запускать запись сегодняшней. Теперь идёт
-    // живая встреча — спрашиваем демона (он видит стенограмму), не идёт —
-    // ищем по архиву встреч и графу через Чароит.
     private var tasksOpen: Int { tasksSvc.openCount }
 
     /// «Встреча началась — начать запись?» Полоса вместо системного
@@ -143,175 +133,31 @@ struct SuflerView: View {
             Image(systemName: "questionmark.bubble")
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)   // декоративная, рядом есть поле с подписью
-            TextField(sufler.isRunning
-                      ? L.t("Спросить по этой встрече и графу…", "Ask about this meeting and the graph…", "就本次会议和图谱提问…")
-                      : L.t("Что обсуждали на встрече вчера?  ·  спросить по архиву встреч", "What did we discuss yesterday?  ·  ask the meeting archive", "昨天的会议讨论了什么？ · 向会议档案提问"),
+            TextField(L.t("Спросить по этой встрече и графу…",
+                          "Ask about this meeting and the graph…",
+                          "就本次会议和图谱提问…"),
                       text: $question)
                 .textFieldStyle(.plain)
                 .onSubmit { submitQuestion() }
             DictationButton(text: $question)
-            if isSearchingArchive {
-                ProgressView().controlSize(.small)
-            }
-            // календарь: одна кнопка — бриф к ближайшему событию по архиву
-            if !sufler.isRunning, calendarBriefs, let ev = calendar.nextEventTitle {
-                Button {
-                    askArchive(ev, brief: true)
-                } label: {
-                    Label(String(ev.prefix(28)), systemImage: "calendar")
-                }
-                .help(L.t("Бриф к ближайшей встрече: «\(ev)»", "Brief for the next event: “\(ev)”", "下一场会议的简报：「\(ev)」"))
-            }
-            // Подготовка ко встрече: та же архивная механика, но бриф-формат
-            // (статус, решено, открыто, люди) вместо ответа на вопрос.
-            if !sufler.isRunning {
-                Button(L.t("К встрече", "Prep", "备会")) { submitBrief() }
-                    .charoite(.regular)
-                    .disabled(question.trimmingCharacters(in: .whitespaces).isEmpty || isSearchingArchive)
-                    .help(L.t("Бриф для подготовки: статус темы, что решено, что открыто, кто вовлечён", "Prep brief: topic status, what's decided, what's open, who's involved", "备会简报：主题状态、已决定、待解决、相关人员"))
-            }
             Button(L.t("Спросить", "Ask", "提问")) { submitQuestion() }
                 .charoite(.prominent)
-                .disabled(question.trimmingCharacters(in: .whitespaces).isEmpty || isSearchingArchive)
+                // при идущей подсказке вопрос отбрасывает guard в ask
+                // (демон-то принял бы, отказ живёт на стороне приложения),
+                // а поле уже очистилось — текст терялся (ревью 16.08)
+                .disabled(question.trimmingCharacters(in: .whitespaces).isEmpty
+                          || sufler.isHinting)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
     }
 
-    private func submitBrief() {
-        let topic = question.trimmingCharacters(in: .whitespaces)
-        guard !topic.isEmpty else { return }
-        question = ""
-        askArchive(topic, brief: true)
-    }
-
     private func submitQuestion() {
         let q = question.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return }
+        guard !q.isEmpty, sufler.isRunning, !sufler.isHinting else { return }
         question = ""
-        if sufler.isRunning {
-            sufler.ask(q)
-        } else {
-            askArchive(q)
-        }
+        sufler.ask(q)
     }
-
-    /// Ответ по архиву встреч: ищем в графе и показываем в той же панели
-    /// «Подсказка», чтобы результат появлялся там же, где во время встречи.
-    ///
-    /// Двухшаговый: vault_search достаёт сырьё (жирные сниппеты — ТОЛЬКО для
-    /// модели), qwen пишет структурный ответ. Человеку сырые куски графа с
-    /// YAML-frontmatter не показываются вовсе — по опыту это «каша»: финал =
-    /// прямой ответ → факты по датам → нерешённое → список источников.
-    ///
-    /// brief: тот же контур, но формат «подготовка ко встрече» — статус темы,
-    /// решено, открыто, люди. Один и тот же поиск, разные инструкции синтеза.
-    private func askArchive(_ q: String, brief: Bool = false) {
-        if !archiveAnswer.isEmpty, !lastArchiveQuestion.isEmpty,
-           !archiveAnswer.hasPrefix(L.t("Нашёл источников", "Sources found", "已找到来源")) {
-            history.append(q: lastArchiveQuestion, a: archiveAnswer)
-        }
-        isSearchingArchive = true
-        archiveAnswer = ""
-        lastArchiveQuestion = q
-        Task {
-            defer { Task { @MainActor in isSearchingArchive = false } }
-            // 1200 знаков на файл: модель отвечает по содержимому, а не по
-            // обрезкам (на коротких сниппетах честно пишет «информации нет»)
-            var found = await ArchiveSearch.search(query: q, limit: 5, snippet: 1200,
-                                                   budget: ArchiveSearch.defaultBudget)
-            // маркер слабых совпадений: показываем честно и просим модель
-            // не сочинять — «в архиве об этом нет» лучше выдуманного ответа
-            let lowConfidence = found.hasPrefix(ArchiveSearch.lowConfidenceMarker)
-            if lowConfidence { found.removeFirst() }
-            guard !found.isEmpty else {
-                await MainActor.run {
-                    archiveAnswer = L.t("В графе ничего не нашлось по запросу. ", "Nothing matched in the graph. ", "图谱中没有匹配结果。")
-                        + L.t("Проверь путь установки в Настройках (graph_dir в config.yaml).", "Check the install path in Settings (graph_dir in config.yaml).", "请在设置中检查安装路径（config.yaml 的 graph_dir）。")
-                }
-                return
-            }
-            // компактный список источников: строки выдачи «• путь/файл.md»
-            let sources = found.split(separator: "\n")
-                .filter { $0.hasPrefix("• ") }
-                .map { String($0.dropFirst(2)).replacingOccurrences(of: ".md", with: "") }
-            let sourceBlock = sources.isEmpty ? "" : L.t("\n\nИсточники:\n", "\n\nSources:\n", "\n\n来源：\n")
-                + sources.map { "· \($0)" }.joined(separator: "\n")
-            // прогресс: человек видит, ЧТО нашлось, но не сырые куски
-            let confNote = lowConfidence
-                ? L.t("⚠ Совпадения слабые — возможно, в архиве этого нет.\n",
-                  "⚠ Weak matches — this may not be in the archive.\n",
-                  "⚠ 匹配较弱——档案中可能没有这条。\n") : ""
-            await MainActor.run {
-                archiveAnswer = confNote
-                    + L.t("Нашёл источников: \(sources.count) — формулирую ответ…", "Sources found: \(sources.count) — composing the answer…", "已找到来源：\(sources.count) — 正在组织回答…") + sourceBlock
-            }
-            let instruction = brief
-                ? L.t("Готовлюсь к встрече по теме: \(q)\n\nФрагменты из архива встреч:\n\(found)\n\n", "Preparing for a meeting on: \(q)\n\nFragments from the meeting archive:\n\(found)\n\n", "正在为会议做准备，主题：\(q)\n\n会议档案片段：\n\(found)\n\n")
-                    + L.t("Собери бриф для подготовки, по-русски, телеграфно, строго блоками. ", "Build a prep brief, in English, telegraphic, strictly in blocks. ", "编写备会简报，用中文，电报式，严格分块。")
-                    + L.t("«Статус:» — 1-2 строки, где тема сейчас. ", "\"Status:\" — 1-2 lines, where the topic stands. ", "「状态：」——1-2 行，主题现状。")
-                    + L.t("«Решено:» — пункты «— дата: что» от старого к новому. ", "\"Decided:\" — items \"— date: what\", oldest to newest. ", "「已决定：」——条目「— 日期：内容」，从旧到新。")
-                    + L.t("«Открыто:» — нерешённые вопросы и риски, пункты. ", "\"Open:\" — unresolved questions and risks, items. ", "「待解决：」——未决问题与风险，条目。")
-                    + L.t("«Люди:» — кто вовлечён и чем занят, из фрагментов, одной строкой на человека; никого нет — блок не пиши. Только факты из фрагментов, ничего не выдумывай, без вступлений и воды. Если фрагменты не про эту тему — одна строка: по теме в архиве пусто.", "\"People:\" — who is involved and doing what, from the fragments, one line per person; nobody — skip the block. Only facts from the fragments, invent nothing, no intros or filler. If the fragments are off-topic — one line: nothing on this topic in the archive.", "「相关人员：」——谁在参与、在做什么，出自片段，每人一行；没有人就不写该块。只用片段中的事实，不得编造，不要开场白和废话。若片段与主题无关——用一行说明：档案中没有该主题。")
-                : L.t("Вопрос: \(q)\n\nФрагменты из архива встреч:\n\(found)\n\n", "Question: \(q)\n\nFragments from the meeting archive:\n\(found)\n\n", "问题：\(q)\n\n会议档案片段：\n\(found)\n\n")
-                    + L.t("Составь ответ строго такой структуры, по-русски, телеграфно. ", "Compose the answer in exactly this structure, in English, telegraphic. ", "严格按此结构作答，用中文，电报式。")
-                    + L.t("Первая строка — прямой ответ на вопрос, 1-2 предложения, без ", "First line — a direct answer, 1-2 sentences, without ", "第一行——直接回答，1-2 句，不要")
-                    + L.t("нумерации и префиксов. Затем блок «Факты:» — пункты вида «— дата: что решили/что случилось (кто)», хронологически от старого к новому; даты бери из фрагментов. Если по фрагментам что-то осталось нерешённым — блок «Открыто:» с пунктами, иначе ", "numbering or prefixes. Then a \"Facts:\" block — items like \"— date: what was decided/what happened (who)\", oldest to newest; take dates from the fragments. If something remains unresolved — an \"Open:\" block with items, otherwise ", "编号和前缀。然后是「事实：」块——条目形如「— 日期：决定了什么/发生了什么（谁）」，从旧到新；日期取自片段。若仍有未决事项——写「待解决：」块，否则")
-                    + L.t("его не пиши. Только факты из фрагментов, ничего не выдумывай. ", "don't write it. Only facts from the fragments, invent nothing. ", "就不要写。只用片段中的事实，不得编造。")
-
-                    + L.t("Без вступлений, без воды, без markdown-заголовков. Если ответа ", "No intros, no filler, no markdown headings. If the answer is ", "不要开场白、废话和 markdown 标题。如果答案")
-                    + L.t("во фрагментах нет — одна строка: чего именно не хватает.", "not in the fragments — one line: what exactly is missing.", "片段中没有——用一行说明缺什么。")
-            // стрим: токены сразу в панель (троттлинг кадров — в StreamThrottler-стиле
-            // не нужен: панель обновляется снапшотом полного текста, ~разы в сек)
-            var lastPaint = Date.distantPast
-            let answer = await ArchiveSearch.ask(
-                question: instruction,
-                system: L.t("Ты — ассистент по архиву рабочих встреч. ", "You are an assistant over a work-meeting archive. Answer in English. ", "你是工作会议档案助手。用中文回答。")
-                    + L.t("Отвечаешь только по приведённым фрагментам, без домыслов, телеграфно.", "Answer only from the given fragments, no speculation, telegraphic style.", "只依据给出的片段回答，不臆测，电报式简洁。"),
-                model: LocalChatService.shared.model,
-                ollama: AppSettings.ollamaURL) { partial in
-                let now = Date()
-                guard now.timeIntervalSince(lastPaint) > 0.12 else { return }
-                lastPaint = now
-                Task { @MainActor in
-                    archiveAnswer = confNote + partial + "▌"
-                }
-            }
-            let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else {
-                // синтез не удался — хотя бы сырьё, лучше каша, чем пустота
-                await MainActor.run { archiveAnswer = confNote + found }
-                return
-            }
-            // плашка неуверенности живёт и в ФИНАЛЬНОМ ответе: раньше она
-            // показывалась только в прогрессе и исчезала после синтеза
-            await MainActor.run { archiveAnswer = confNote + trimmed + sourceBlock }
-        }
-    }
-
-    /// Ответ по архиву → заметка в графе: Заметки/YYYY-MM-DD_HHMM_Вопрос.md.
-    /// Обратные [[ссылки]]源 из текста сохраняются — узлы графа свяжутся сами.
-    private func saveAnswerToGraph() {
-        guard let graph = AppSettings.graphDir else { return }
-        let dir = graph.appendingPathComponent(L.t("Заметки", "Notes", "笔记"))
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd_HHmm"
-        let stamp = fmt.string(from: Date())
-        let safeQ = lastArchiveQuestion
-            .replacingOccurrences(of: "[/\\:*?\"<>|]", with: "-", options: .regularExpression)
-            .prefix(60)
-        let name = safeQ.isEmpty ? L.t("Ответ по архиву", "Archive answer", "档案回答") : String(safeQ)
-        let url = dir.appendingPathComponent("\(stamp)_\(name).md")
-        let body = "# \(lastArchiveQuestion.isEmpty ? L.t("Ответ по архиву", "Archive answer", "档案回答") : lastArchiveQuestion)\n\n"
-            + L.t("*Сохранено из Charoite \(stamp.replacingOccurrences(of: "_", with: " "))*\n\n",
-                    "*Saved from Charoite \(stamp.replacingOccurrences(of: "_", with: " "))*\n\n",
-                    "*由 Charoite 保存 \(stamp.replacingOccurrences(of: "_", with: " "))*\n\n")
-            + archiveAnswer + "\n"
-        try? body.write(to: url, atomically: true, encoding: .utf8)
-        NSWorkspace.shared.activateFileViewerSelecting([url])
-    }
-
     /// Открыть чат и ВЫНЕСТИ ЕГО ВПЕРЁД.
     ///
     /// `openWindow` только создаёт окно; если оно уже открыто и лежит за окном
@@ -402,64 +248,56 @@ struct SuflerView: View {
     }
 
     /// Откуда панель берёт текст прямо сейчас.
-    enum PaneSource: Equatable { case hint, thread, archive, placeholder }
+    /// Политика правой панели — стопка, не взаимоисключение (ревью 16.08):
+    /// подсказка живёт КАРТОЧКОЙ над нитью и гаснет со следующим обновлением
+    /// нити, а нить видна всегда, пока в ней есть текст, — и во время
+    /// встречи, и после «Стоп» (регрессия #255: обёртка if isRunning прятала
+    /// итог встречи, а одна пришедшая подсказка закрывала нить навсегда).
+    struct PaneStack: Equatable {
+        let showHintCard: Bool
+        let showThread: Bool
+        let placeholder: String?
+    }
 
-    /// Правило выбора источника — чистой функцией, чтобы его держал тест.
-    ///
-    /// 07.08: «Стоп» стирал итог встречи с экрана. Панель была привязана к
-    /// isRunning, и остановка мгновенно подменяла нить приглашением спросить
-    /// про архив — при том что текст оставался жив в памяти. Теперь после
-    /// встречи нить и подсказка остаются, пока не спросят про архив или не
-    /// начнётся следующая встреча.
-    static func paneSource(running: Bool,
-                           hasHint: Bool,
-                           hasThread: Bool,
-                           hasArchive: Bool) -> PaneSource {
-        if running {
-            if hasHint { return .hint }
-            if hasThread { return .thread }
-            return .placeholder
+    static func paneStack(hasHint: Bool, hinting: Bool, hasThread: Bool,
+                          running: Bool, hintsOn: Bool = true,
+                          thesesOn: Bool = true) -> PaneStack {
+        let hint = hasHint || hinting
+        let thread = hasThread
+        var placeholder: String?
+        if !hint && !thread {
+            if running && !hintsOn && !thesesOn {
+                // Нить растёт только под тумблерами (демон: toggles["hints"]
+                // для нити, toggles["theses"] для вставок) — с выключенными
+                // обоими обещание «появится через минуту» было бы враньём.
+                placeholder = L.t(
+                    "Подсказки и тезисы выключены — нить не растёт. Включи плашки сверху.",
+                    "Hints and theses are off — the thread won't grow. Turn the chips on above.",
+                    "提示和要点已关闭——脉络不会生长。请打开上方开关。")
+            } else if running {
+                placeholder = L.t(
+                    "Нить встречи появится через минуту разговора · ⌘⏎ — подсказка сейчас",
+                    "The meeting thread appears after a minute of talk · ⌘⏎ — hint now",
+                    "会议脉络将在交谈一分钟后出现 · ⌘⏎ — 立即提示")
+            } else {
+                placeholder = L.t(
+                    "Нить прошлой встречи останется здесь после «Стоп». Вопросы по архиву — в разделе «Память».",
+                    "The last meeting's thread stays here after Stop. Archive questions live in Memory.",
+                    "上一场会议的脉络会在停止后保留在这里。档案问题请前往「记忆」。")
+            }
         }
-        if hasArchive { return .archive }   // спросили про архив — он и главный
-        if hasHint { return .hint }
-        if hasThread { return .thread }
-        return .placeholder
+        return PaneStack(showHintCard: hint, showThread: thread,
+                         placeholder: placeholder)
     }
 
-    private var currentPaneSource: PaneSource {
-        Self.paneSource(running: sufler.isRunning,
-                        hasHint: !sufler.hint.isEmpty,
-                        hasThread: !sufler.thread.isEmpty,
-                        hasArchive: !archiveAnswer.isEmpty)
+    private var pane: PaneStack {
+        Self.paneStack(hasHint: !sufler.hint.isEmpty,
+                       hinting: sufler.isHinting,
+                       hasThread: !sufler.thread.isEmpty,
+                       running: sufler.isRunning,
+                       hintsOn: sufler.hintsOn,
+                       thesesOn: sufler.thesesOn)
     }
-
-    /// Что показывать в панели: во время встречи — подсказку демона, вне
-    /// встречи — ответ по архиву. Пусто — приглашение спросить.
-    private var paneText: AttributedString {
-        switch currentPaneSource {
-        case .hint:
-            // Ручная подсказка (⌘⏎): её просят, когда ждут ответ прямо сейчас,
-            // и она гаснет со следующим обновлением нити.
-            return withBoldQuestions(sufler.hint)
-        case .thread:
-            // Нить — основное во время встречи: ответы и тезисы демон
-            // вплетает в неё сам. После «Стоп» остаётся на экране.
-            return withThreadMarks(sufler.thread)
-        case .archive:
-            return withBoldQuestions(archiveAnswer)
-        case .placeholder where sufler.isRunning:
-            return AttributedString(L.t("Нить встречи появится через минуту разговора · ⌘⏎ — подсказка сейчас",
-                                        "The meeting thread appears after a minute of talk · ⌘⏎ — hint now",
-                                        "会议脉络将在交谈一分钟后出现 · ⌘⏎ — 立即提示"))
-        case .placeholder:
-            // при открытом чате нижнего поля нет — не отправляем в никуда
-            return AttributedString(showChat
-                ? L.t("Ответы по архиву появятся здесь. Спросить — в чате справа или закрой Чат для поля внизу", "Archive answers appear here. Ask in the chat on the right, or close Chat for the field below", "档案回答会显示在这里。在右侧聊天提问，或关闭聊天使用下方输入框")
-                : L.t("Спроси про прошлые встречи в поле внизу — найду по архиву и графу", "Ask about past meetings in the field below — I'll search the archive and graph", "在下方输入框询问过往会议——我会检索档案与图谱"))
-        }
-    }
-
-    private var paneIsPlaceholder: Bool { currentPaneSource == .placeholder }
 
     /// ==Фрагменты==, которые внесла облачная ревизия нити, — небесным фоном:
     /// правка видна в самой строке, отдельного блока «☁️ уточнения» больше нет.
@@ -812,118 +650,103 @@ struct SuflerView: View {
     // ниже sky-карточкой — граница «что ушло с машины» видна цветом,
     // а не отдельным окном. Пустых мёртвых панелей на экране нет.
     private var rightPane: some View {
-        VSplitView {
-            // Одно полотно вместо трёх панелей: тезисы, ответы ⚡/☁ и хвосты
-            // архива вплетает в нить сам демон (src/meeting_thread.py). Пока
-            // они жили порознь, автоответ раз в полминуты держал панель
-            // подсказки непустой — и нить, главное на встрече, не показывалась
-            // вовсе: 04.08 на экране была лента «вопрос — вопрос — уточните
-            // вопрос», а разговора не было видно.
-
-            // Архивные вопросы переехали в единый раздел «Память»; эта панель
-            // теперь принадлежит только живому разговору. Нить видна всю
-            // встречу независимо от тумблеров ⚡/☁ — демон вплетает в неё
-            // и тезисы, и хвосты архива (решение 04.08, PR #232).
-            if sufler.isRunning {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    // подсказки выключены, облако включено — панель честно
-                    // называется по единственному жильцу
-                    paneTitle(sufler.isRunning
-                                  ? L.t("Нить встречи", "Meeting thread", "会议脉络")
-                                  : L.t("Ответ по архиву", "Archive answer", "档案回答"),
-                              systemImage: sufler.isRunning
-                                  ? "text.line.first.and.arrowtriangle.forward"
-                                  : "clock.arrow.circlepath",
-                              copy: { sufler.isRunning ? sufler.thread : archiveAnswer })
-                    if sufler.isHinting || isSearchingArchive
-                        || (sufler.isRunning && sufler.isClouding) {
-                        ProgressView().controlSize(.small).padding(.trailing, 10)
-                    }
-                    // хороший ответ жалко терять: одной кнопкой — заметкой в граф
-                    if !sufler.isRunning && !archiveAnswer.isEmpty && !isSearchingArchive {
-                        Button {
-                            saveAnswerToGraph()
-                        } label: {
-                            Image(systemName: "square.and.arrow.down.on.square")
-                        }
-                        .charoite(.icon, .s)
-                        .help(L.t("Сохранить ответ заметкой в граф (Заметки/)", "Save the answer as a graph note (Notes/)", "将回答保存为图谱笔记（Заметки/）"))
-                        .padding(.trailing, 10)
-                    }
+        // Панель НЕ привязана к isRunning: «Стоп» не смеет стирать итог
+        // встречи с экрана (регрессия #255 — второй раз). Архивные вопросы
+        // живут в разделе «Память», здесь — только живой разговор и его нить.
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                paneTitle(L.t("Нить встречи", "Meeting thread", "会议脉络"),
+                          systemImage: "text.line.first.and.arrowtriangle.forward",
+                          copy: { sufler.thread })
+                if sufler.isHinting || (sufler.isRunning && sufler.isClouding) {
+                    ProgressView().controlSize(.small).padding(.trailing, 10)
                 }
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 0) {
-                            Color.clear.frame(height: 1).id("hintTop")
-                            if !sufler.isRunning || sufler.hintsOn {
-                                Text(paneText)
+            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Color.clear.frame(height: 1).id("hintTop")
+                        // Подсказка — карточкой НАД нитью, а не вместо неё:
+                        // прежний взаимоисключающий выбор давал одной
+                        // подсказке закрыть нить до конца встречи. Авто-бриф
+                        // гаснет со следующим обновлением нити, ручной ответ —
+                        // только крестиком (сервис, hintIsManual).
+                        if pane.showHintCard {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(L.t("Подсказка", "Hint", "提示"))
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    // Ручной ответ нить не гасит (см. сервис) —
+                                    // убрать карточку может только человек.
+                                    // Во время живого стрима крестик спрятан:
+                                    // клик посреди авто-стрима чистил буфер, а
+                                    // следующий токен воскрешал карточку (п.3
+                                    // ревью 16.08) — no-op не предлагаем.
+                                    if !sufler.isHinting && !sufler.isAutoHinting {
+                                        Button {
+                                            sufler.dismissHint()
+                                        } label: {
+                                            Image(systemName: "xmark")
+                                                .font(.caption2.weight(.semibold))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .help(L.t("Убрать подсказку", "Dismiss hint", "关闭提示"))
+                                    }
+                                }
+                                Text(withBoldQuestions(sufler.hint))
                                     .font(.callout)
-                                    .foregroundStyle(paneIsPlaceholder ? .tertiary : .primary)
                                     .textSelection(.enabled)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                            // облачная лента — в той же панели, sky-карточкой:
-                            // видно, ЧТО ушло с машины, без отдельного окна
-                            if sufler.isRunning && sufler.cloudOn {
-                                cloudCard
-                                    .padding(.top, sufler.hintsOn ? 10 : 0)
-                            }
-                            // прошлые вопросы — свёрнуты, свежие сверху (персист)
-                            if !sufler.isRunning && !history.entries.isEmpty {
-                                Divider().padding(.vertical, 8)
-                                ForEach(Array(history.entries.enumerated().reversed()), id: \.offset) { _, qa in
-                                    DisclosureGroup {
-                                        Text(withBoldQuestions(qa.a))
-                                            .font(.callout)
-                                            .textSelection(.enabled)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .padding(.top, 4)
-                                    } label: {
-                                        Text(qa.q)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                    }
-                                }
-                            }
-                            Color.clear.frame(height: 1).id("hintBottom")
+                            .padding(10)
+                            .background(RoundedRectangle(cornerRadius: Theme.radius)
+                                .fill(Theme.accent.opacity(0.07)))
+                            .padding(.bottom, 10)
                         }
-                        .padding(12)
+                        if pane.showThread {
+                            Text(withThreadMarks(sufler.thread))
+                                .font(.callout)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else if let placeholder = pane.placeholder {
+                            Text(placeholder)
+                                .font(.callout)
+                                .foregroundStyle(.tertiary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        // облачная лента — в той же панели, sky-карточкой:
+                        // видно, ЧТО ушло с машины, без отдельного окна
+                        if sufler.isRunning && sufler.cloudOn {
+                            cloudCard
+                                .padding(.top, 10)
+                        }
+                        Color.clear.frame(height: 1).id("hintBottom")
                     }
-                    // стрим токенов: держимся за низ, без анимации — иначе дёргается
-                    .onChange(of: sufler.hint) { _, _ in
-                        DispatchQueue.main.async {
-                            proxy.scrollTo("hintBottom", anchor: .bottom)
-                        }
+                    .padding(12)
+                }
+                // Стрим токенов, без анимации — иначе дёргается. Подсказка
+                // теперь КАРТОЧКА НАД нитью: держаться за низ панели значит
+                // мотать читателя мимо неё — при видимой карточке держимся
+                // за её верх (ревью 16.08, №22).
+                .onChange(of: sufler.hint) { _, _ in
+                    DispatchQueue.main.async {
+                        proxy.scrollTo(pane.showHintCard ? "hintTop" : "hintBottom",
+                                       anchor: pane.showHintCard ? .top : .bottom)
                     }
-                    // лента Claude растёт вниз — держимся за низ и для неё
-                    .onChange(of: sufler.cloud) { _, _ in
-                        DispatchQueue.main.async {
-                            proxy.scrollTo("hintBottom", anchor: .bottom)
-                        }
-                    }
-                    // ответ по архиву — НЕ стрим: приходит целиком, ответ сверху,
-                    // источники под ним. Скролл вниз (как у подсказок) оставлял
-                    // на экране хвост источников, а сам ответ приходилось мотать.
-                    .onChange(of: archiveAnswer) { _, _ in
-                        DispatchQueue.main.async {
-                            proxy.scrollTo("hintTop", anchor: .top)
-                        }
+                }
+                // лента Claude растёт вниз — держимся за низ и для неё
+                .onChange(of: sufler.cloud) { _, _ in
+                    DispatchQueue.main.async {
+                        proxy.scrollTo("hintBottom", anchor: .bottom)
                     }
                 }
             }
-            .frame(minHeight: 140)
-            .background(Theme.accent.opacity(0.05))
-            }
-
-            if !sufler.thesesOn && !sufler.hintsOn && !sufler.cloudOn {
-                Text(L.t("Все панели выключены — включи плашки сверху", "All panes are off — enable the chips above", "所有面板均已关闭——请启用上方开关"))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
         }
+        .frame(minHeight: 140)
+        .background(Theme.accent.opacity(0.05))
     }
 
     /// Строка стенограммы — отдельной функцией: конкатенация Text со стилями

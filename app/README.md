@@ -64,9 +64,8 @@ failure recovery.
   straight into the markdown; open-count badge in the toolbar.
 - **Chat with memory** — a local model + graph facts; live model list
   from Ollama; markdown in bubbles; one-button answer copy.
-- Archive answers stream token by token; past session questions collapse
-  under the current answer; a good answer saves into the graph as a note
-  with one button.
+- Archive answers live in the Memory section (chat with the graph); the
+  sufler's own archive pane was retired in #22 — one place for one question.
 
 The menu bar remains useful with the main window closed: it shows the recording
 timer, processing, ready and failed states, and exposes Start/Stop, the latest

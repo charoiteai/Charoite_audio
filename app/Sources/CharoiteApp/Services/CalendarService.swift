@@ -10,7 +10,6 @@ import Foundation
 final class CalendarService: ObservableObject {
     static let shared = CalendarService()
 
-    @Published private(set) var nextEventTitle: String?
     /// Меняется после каждого обновления EventKit. Виды произвольного дня
     /// перечитывают свой срез, а не держат снимок до повторного открытия.
     @Published private(set) var eventsRevision = 0
@@ -49,7 +48,6 @@ final class CalendarService: ObservableObject {
             Task { @MainActor in
                 self.accessGranted = granted
                 guard granted else {
-                    self.nextEventTitle = nil
                     self.today = []
                     self.eventsRevision &+= 1
                     return
@@ -74,7 +72,6 @@ final class CalendarService: ObservableObject {
     func disable() {
         timer?.invalidate()
         timer = nil
-        nextEventTitle = nil
         if let id = cue?.id { MeetingNotificationService.shared.remove(cueID: id) }
         cue = nil
         today = []
@@ -141,7 +138,6 @@ final class CalendarService: ObservableObject {
     private func refresh() {
         guard accessGranted == true else {
             today = []
-            nextEventTitle = nil
             cue = nil
             eventsRevision &+= 1
             return
@@ -170,7 +166,6 @@ final class CalendarService: ObservableObject {
         let raw = store.events(matching: predicate)
             .filter { !$0.isAllDay && !($0.title ?? "").isEmpty && $0.startDate != nil }
             .sorted { $0.startDate < $1.startDate }
-        nextEventTitle = raw.first?.title
         // Число участников кроме владельца: событие без людей — напоминание,
         // а не встреча. EventKit отдаёт attendees только когда приглашение
         // пришло из календарной системы, поэтому одиночная встреча в звонке

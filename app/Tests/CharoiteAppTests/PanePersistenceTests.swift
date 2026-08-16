@@ -1,55 +1,102 @@
 import XCTest
 @testable import CharoiteApp
 
-/// Панель подсказки после «Стоп» (жалоба 07.08).
-///
-/// Раньше содержимое панели было привязано к тому, идёт ли запись: остановка
-/// встречи мгновенно подменяла нить приглашением спросить про архив. Текст при
-/// этом никуда не девался — его просто переставали показывать. Именно в первую
-/// минуту после встречи итог дочитывают и копируют, поэтому правило проверяется
-/// тестом, а не следующей встречей.
+/// Правая панель суфлёра — стопка, не взаимоисключение (№22, регрессия #255
+/// ловилась дважды: прежние тесты проверяли ВЫБОР текста, а панель целиком
+/// прятала обёртка if isRunning, и все тесты оставались зелёными).
 final class PanePersistenceTests: XCTestCase {
-
-    func testНитьОстаётсяПослеОстановкиВстречи() {
-        XCTAssertEqual(
-            SuflerView.paneSource(running: false, hasHint: false,
-                                  hasThread: true, hasArchive: false),
-            .thread,
-            "после «Стоп» нить обязана остаться на экране")
+    func testНитьВиднаПослеОстановкиВстречи() {
+        let pane = SuflerView.paneStack(hasHint: false, hinting: false,
+                                        hasThread: true, running: false)
+        XCTAssertTrue(pane.showThread)
+        XCTAssertNil(pane.placeholder)
     }
 
-    func testПодсказкаОстаётсяПослеОстановкиВстречи() {
-        XCTAssertEqual(
-            SuflerView.paneSource(running: false, hasHint: true,
-                                  hasThread: true, hasArchive: false),
-            .hint,
-            "свежая подсказка важнее нити и после остановки")
+    func testПодсказкаНеЗакрываетНить() {
+        // прежний выбор «hint ИЛИ thread» позволял одной подсказке спрятать
+        // нить до конца встречи — теперь оба видны одновременно
+        let pane = SuflerView.paneStack(hasHint: true, hinting: false,
+                                        hasThread: true, running: true)
+        XCTAssertTrue(pane.showHintCard)
+        XCTAssertTrue(pane.showThread)
     }
 
-    func testВопросПоАрхивуЗамещаетИтогВстречи() {
-        XCTAssertEqual(
-            SuflerView.paneSource(running: false, hasHint: true,
-                                  hasThread: true, hasArchive: true),
-            .archive,
-            "спросили про архив — ответ главнее прошлой встречи")
+    func testИдущаяГенерацияПоказываетКарточкуБезТекста() {
+        let pane = SuflerView.paneStack(hasHint: false, hinting: true,
+                                        hasThread: true, running: true)
+        XCTAssertTrue(pane.showHintCard)
     }
 
-    func testВоВремяВстречиАрхивНеПеребиваетНить() {
-        XCTAssertEqual(
-            SuflerView.paneSource(running: true, hasHint: false,
-                                  hasThread: true, hasArchive: true),
-            .thread,
-            "идёт встреча — на экране разговор, а не архивная выдача")
+    func testПустаяПанельПослеСтопаВедётВПамять() {
+        let pane = SuflerView.paneStack(hasHint: false, hinting: false,
+                                        hasThread: false, running: false)
+        XCTAssertNotNil(pane.placeholder)
+        XCTAssertTrue(pane.placeholder?.contains("Память") == true
+                      || pane.placeholder?.contains("Memory") == true
+                      || pane.placeholder?.contains("记忆") == true)
     }
 
-    func testПустоЕстьПусто() {
-        XCTAssertEqual(
-            SuflerView.paneSource(running: true, hasHint: false,
-                                  hasThread: false, hasArchive: false),
-            .placeholder)
-        XCTAssertEqual(
-            SuflerView.paneSource(running: false, hasHint: false,
-                                  hasThread: false, hasArchive: false),
-            .placeholder)
+    func testПустаяПанельНаВстречеОбещаетНить() {
+        let pane = SuflerView.paneStack(hasHint: false, hinting: false,
+                                        hasThread: false, running: true)
+        XCTAssertNotNil(pane.placeholder)
+    }
+
+    func testВыключенныеТумблерыНеОбещаютНить() {
+        // Нить растёт только под toggles["hints"]/["theses"] демона: с
+        // выключенными обоими «появится через минуту» — обещание, которое
+        // не сбудется никогда. Панель обязана назвать причину.
+        let pane = SuflerView.paneStack(hasHint: false, hinting: false,
+                                        hasThread: false, running: true,
+                                        hintsOn: false, thesesOn: false)
+        XCTAssertNotNil(pane.placeholder)
+        XCTAssertFalse(pane.placeholder?.contains("минуту") == true,
+                       "обещание нити при выключенных контурах — враньё")
+        // Уже накопленную нить выключенные тумблеры прятать не смеют.
+        let with = SuflerView.paneStack(hasHint: false, hinting: false,
+                                        hasThread: true, running: true,
+                                        hintsOn: false, thesesOn: false)
+        XCTAssertTrue(with.showThread)
+    }
+
+    /// Политика гашения карточки нитью — вторая слепая зона №22 (ревью
+    /// 16.08): стирание только что запрошенного ручного ответа и ампутация
+    /// идущего авто-стрима жили в приватном consume и тестами не ловились.
+    func testНитьГаситТолькоЗавершённыйАвтоконтент() {
+        // бриф или отгоревшая авто-подсказка — гаснут
+        XCTAssertTrue(SuflerService.threadClearsHint(
+            isHinting: false, isAutoHinting: false, hintIsManual: false))
+        // ручной стрим в полёте — не трогать
+        XCTAssertFalse(SuflerService.threadClearsHint(
+            isHinting: true, isAutoHinting: false, hintIsManual: false))
+        // авто-стрим в полёте — не резать пополам
+        XCTAssertFalse(SuflerService.threadClearsHint(
+            isHinting: false, isAutoHinting: true, hintIsManual: false))
+        // завершённый ручной ответ — живёт до крестика или новой подсказки
+        XCTAssertFalse(SuflerService.threadClearsHint(
+            isHinting: false, isAutoHinting: false, hintIsManual: true))
+    }
+
+    /// Регрессия #255 оба раза приходила одним и тем же движением: панель
+    /// целиком заворачивали в `if sufler.isRunning` — и юнит-тесты чистой
+    /// функции оставались зелёными. Инвариант «панель не привязана к
+    /// isRunning» юнитом не выражается, поэтому сторожим сам исходник:
+    /// между объявлением rightPane и его заголовком не должно появиться
+    /// ветвление по isRunning (внутри тела оно легитимно — облачная лента).
+    func testПанельНеОбёрнутаВIsRunning() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent(
+            "app/Sources/CharoiteApp/Views/Sufler/SuflerView.swift"), encoding: .utf8)
+        let decl = try XCTUnwrap(source.range(of: "private var rightPane: some View {"))
+        let head = source[decl.upperBound...]
+        let title = try XCTUnwrap(head.range(of: "paneTitle("))
+        // Шапка — от объявления до заголовка панели; комментарий там про
+        // isRunning как раз говорит, поэтому ловим конструкцию, не слово.
+        XCTAssertFalse(head[..<title.lowerBound].contains("if sufler.isRunning"),
+                       "шапка rightPane снова гейтится по isRunning — регрессия #255, третий заход")
     }
 }

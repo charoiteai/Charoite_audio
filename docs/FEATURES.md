@@ -305,6 +305,19 @@ it signals degradation, it does not break the loop.
   (`src/llm.py`, `HINT_FORMAT`) and is the same for everyone: the role in
   the config describes context and terminology, not layout. The ready
   first-person answer is still there — on its own hotkey. A speaker is named only when the voice changes, with no reporting verbs — substance, not paraphrase.
+  **On screen the hint is a card ABOVE the thread, not instead of it**
+  (#255 fixed twice, then #22): the old either/or pane let one hint hide
+  the thread until the meeting ended, and a Stop used to wipe the
+  meeting's outcome off the screen — now the thread stays put, the
+  opening brief dims with the next thread update, while an answer the
+  person ASKED for stays until the next hint replaces it or they dismiss
+  it with the card's ✕ (a thread tick lands seconds after the answer —
+  it must not eat it). A hint mid-stream is never cut by a thread event
+  either; the daemon marks streams as manual/auto so the app can tell.
+  While streaming, the view anchors to the top of the card so tokens do
+  not scroll past the reader. If both hint and thesis contours are toggled
+  off, the empty pane says so instead of promising a thread that will
+  never grow.
 
 - **Live meeting context** — the topic emerges a few minutes into the
   call; the daemon distills it from the live transcript, searches the
@@ -378,15 +391,16 @@ it signals degradation, it does not break the loop.
   transcript stays openable, and the pipeline will not re-process silence.
   A state from a newer pipeline also survives — it used to break decoding of
   the whole status, and the meeting vanished from the window entirely.
-- **The "Recent meetings" window** — twenty meetings from the last two
+- **The Meetings section (former "Recent meetings" window)** — twenty meetings from the last two
   weeks: state as a colored dot, "Open" and "Transcript" on every row, a
   "Retry" button on failed ones. A ready meeting's row shows its duration
   (from transcript timecodes, cached — the file is re-read only when the
   meeting was re-processed). While one meeting is being retried, the
   "working" indicator shows only on that row: ready meetings are not
-  concerned with someone else's retry. The menu-bar button is visible even
-  with an empty history — the window explains its own emptiness; and it is
-  called "Recent", not "All": the full archive lives in the archive folder.
+  concerned with someone else's retry. The menu-bar "Recent meetings" item
+  opens this workspace section and is visible even with an empty history —
+  the list explains its own emptiness; the separate window is gone (#22),
+  the full archive lives in the archive folder.
   The search field in the header answers "where did we decide X": lexical
   search over the archive's summaries, minutes and debriefs (plus graph notes
   for meetings that never reached the archive), newest first, click opens the
@@ -543,8 +557,9 @@ it signals degradation, it does not break the loop.
   are read to the end, copied into chats and checked against action items.
   The pane used to be tied to whether recording was running, so Stop instantly
   replaced the conversation with an invitation to ask about the archive, even
-  though the text was still in memory. Only the next meeting or an archive
-  question clears the pane.
+  though the text was still in memory. Only the next meeting clears the pane;
+  the hint card above the thread fades by its own rules (see the hint card
+  paragraph) — the archive question flow moved to the Memory section (#22).
 - **A dead channel no longer takes the meeting with it** — when a source stops
   delivering frames, the watchdog tries to recreate its stream, but does so off
   to the side and with a time limit: closing a dead PortAudio stream can hang
