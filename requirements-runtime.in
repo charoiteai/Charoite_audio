@@ -1,0 +1,14 @@
+# Сгенерировано scripts/lock_runtime_deps.py из pyproject.toml.
+# Правьте pyproject, не этот файл.
+numpy>=1.26,<3
+sounddevice>=0.4.6
+pyyaml>=6.0
+requests>=2.31
+websockets>=12.0
+rich>=13.0
+onnx-asr>=0.3
+onnxruntime>=1.17
+mcp>=1.0
+tokenizers>=0.15
+soundfile>=0.12
+sherpa-onnx>=1.10

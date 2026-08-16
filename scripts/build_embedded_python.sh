@@ -79,23 +79,21 @@ echo "ставлю рантайм-зависимости…"
 if [ "$WITH_EXTRAS" = "1" ]; then
     "$OUT/bin/python3" -m pip install --no-cache-dir --quiet .
 else
-    # Ставим сам проект без опциональных пресетов: список зависимостей
-    # берётся из pyproject, чтобы не разъезжаться с ним по мере правок.
-    "$OUT/bin/python3" - <<'PY' > /tmp/charoite-runtime-deps.txt
-import re, pathlib
-text = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
-block = re.search(r"dependencies = \[(.*?)\n\]", text, re.S).group(1)
-skip = ("mlx-whisper", "parakeet-mlx")
-for line in block.splitlines():
-    m = re.search(r'"([^"]+)"', line)
-    if not m:
-        continue
-    dep = m.group(1)
-    if any(dep.startswith(s) for s in skip):
-        continue
-    print(dep.split(";")[0].strip())
-PY
-    "$OUT/bin/python3" -m pip install --no-cache-dir --quiet -r /tmp/charoite-runtime-deps.txt
+    # Только из lock-файла и только с хешами. Раньше здесь стояли диапазоны
+    # из pyproject («numpy>=1.26,<3»), то есть в подписанный бандл уезжало
+    # то, что лежало на PyPI в минуту сборки, вместе с транзитивными
+    # пакетами, которых не видит ни dependabot, ни dependency-review.
+    # Целостность CPython этот же скрипт сверяет с 14.08 — до пакетов урок
+    # дошёл 16.08. Пересобрать lock:
+    #   .venv/bin/python scripts/lock_runtime_deps.py
+    LOCK="$(dirname "$0")/../requirements-runtime.lock"
+    if [ ! -f "$LOCK" ]; then
+        echo "нет requirements-runtime.lock — соберите его:" >&2
+        echo "  .venv/bin/python scripts/lock_runtime_deps.py" >&2
+        exit 1
+    fi
+    "$OUT/bin/python3" -m pip install --no-cache-dir --quiet \
+        --require-hashes -r "$LOCK"
 fi
 
 # Проверяем то, без чего демон не стартует, — а не факт «pip не упал».

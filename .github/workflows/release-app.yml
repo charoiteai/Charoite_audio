@@ -88,7 +88,10 @@ jobs:
           fi
       # Собираем КОД ТЕГА. make_app.sh штампует версию из git describe —
       # на checkout тега это ровно сам тег, Info.plist совпадает с релизом.
-      - uses: actions/checkout@v7
+      # SHA-пин: workflow держит contents: write и собирает то, что
+      # уезжает пользователям (аудит 16.08). Остальные workflow
+      # read-only — там ref-pin остаётся осознанным (.github/zizmor.yml).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         if: steps.resolve.outputs.build == 'true'
         with:
           persist-credentials: false
