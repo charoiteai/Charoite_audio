@@ -109,3 +109,57 @@ final class SemanticChunkTests: XCTestCase {
                       "косинус посчитан по обрезку вектора — тихо заниженные похожести")
     }
 }
+
+/// Забытая встреча обязана исчезать и из семантического индекса.
+///
+/// `forget_meeting` вычищает стенограмму, архив, узлы графа и даже снимки
+/// облачных ревизий — а индекс хранит по 700 знаков превью на каждый блок
+/// каждого файла и удалять записи не умел вовсе. Текст «забытой» встречи
+/// продолжал жить в Application Support (аудит 16.08).
+extension SemanticChunkTests {
+
+    func testЗабытаяВстречаУходитИзИндекса() async {
+        let vocab = ["бюджет", "перенос", "подрядчик"]
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("charoite-forget-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: store) }
+        await SemanticIndex.shared.useForTests(store: store, embedder: fakeEmbedder(vocab))
+
+        let forgotten = "Встречи/2026-07-24.md"
+        let kept = "Встречи/2026-07-25.md"
+        await SemanticIndex.shared.refresh(files: [
+            (forgotten, 1, "# Встреча\n\nРешили: бюджет режем, подрядчик уходит."),
+            (kept, 1, "# Встреча\n\nПеренос сроков согласован."),
+        ])
+        let before = await SemanticIndex.shared.chunkCount(of: forgotten)
+        XCTAssertGreaterThan(before, 0)
+
+        // следующий поиск после forget_meeting: файла на диске больше нет
+        await SemanticIndex.shared.refresh(files: [(kept, 1, "# Встреча\n\nПеренос сроков согласован.")],
+                                           pruneMissing: true)
+
+        let goneCount = await SemanticIndex.shared.chunkCount(of: forgotten)
+        let keptCount = await SemanticIndex.shared.chunkCount(of: kept)
+        XCTAssertEqual(goneCount, 0, "текст забытой встречи остался в индексе")
+        XCTAssertGreaterThan(keptCount, 0, "заодно снесли живую встречу")
+    }
+
+    /// Без флага чистки частичный снимок не смеет выбрасывать чужие файлы.
+    func testБезФлагаЧисткиИндексНеТеряетФайлы() async {
+        let vocab = ["бюджет", "перенос"]
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("charoite-nopr-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: store) }
+        await SemanticIndex.shared.useForTests(store: store, embedder: fakeEmbedder(vocab))
+
+        await SemanticIndex.shared.refresh(files: [
+            ("a.md", 1, "# A\n\nбюджет обсудили"),
+            ("b.md", 1, "# B\n\nперенос согласован"),
+        ])
+        await SemanticIndex.shared.refresh(files: [("a.md", 1, "# A\n\nбюджет обсудили")])
+
+        let bCount = await SemanticIndex.shared.chunkCount(of: "b.md")
+        XCTAssertGreaterThan(bCount, 0,
+                             "частичный снимок вычистил файл без флага pruneMissing")
+    }
+}

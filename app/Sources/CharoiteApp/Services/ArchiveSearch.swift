@@ -336,7 +336,10 @@ enum ArchiveSearch {
         // при правке, и правленый файл никогда не переиндексировался бы
         let snapshot = all.map { (path: $0.rel, mtime: $0.mtime, text: $0.text) }
         Task.detached(priority: .background) {
-            await SemanticIndex.shared.refresh(files: snapshot)
+            // pruneMissing: снимок здесь — ВЕСЬ граф, поэтому чего в нём нет,
+            // того больше нет и на диске. Так забытая встреча уходит и из
+            // индекса, а не живёт там превью-блоками (аудит 16.08).
+            await SemanticIndex.shared.refresh(files: snapshot, pruneMissing: true)
         }
 
         // разнообразие: одна встреча (заметка+архив+стенограмма) ≤ 1-2 слота

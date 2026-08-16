@@ -391,7 +391,10 @@ final class SuflerService: ObservableObject {
         guard lifecycleGate.owns(token, in: .starting) else { return }
         let p = Process()
         // Код — из бандла (если он там), данные — в рабочую папку человека:
-        // бандл подписан и доступен только на чтение.
+        // бандл подписан и доступен только на чтение. Обещание держится
+        // кодом с 16.08: `codeRoot` больше не подхватывает записываемую
+        // копию молча — иначе процесс без прав на микрофон подкладывал бы
+        // свой daemon.py и исполнялся с нашими (см. AppSettings.codeRoot).
         p.arguments = ["src/daemon.py"]
         AppSettings.preparePython(p, root: suflerRoot)
 

@@ -171,12 +171,31 @@ actor SemanticIndex {
 
     /// Фоновая доиндексация изменившихся файлов: режем на блоки, эмбеддим
     /// пачками, персист ОДИН раз в конце.
-    func refresh(files: [(path: String, mtime: Double, text: String)]) async {
+    ///
+    /// `pruneMissing` — выбросить из индекса пути, которых нет в `files`.
+    /// Индекс хранит по 700 знаков превью на каждый блок каждого файла,
+    /// включая стенограммы, а удаления не было вовсе: `forget_meeting`
+    /// вычищал транскрипт, архив, граф и даже снимки облачных ревизий — а
+    /// текст «забытой» встречи продолжал жить в
+    /// `Application Support/Charoite/semantic_index_v2.bin` (аудит 16.08).
+    /// Флаг обязателен: звать с частичным списком и чистить «остальное»
+    /// значит стереть индекс целиком.
+    func refresh(files: [(path: String, mtime: Double, text: String)],
+                 pruneMissing: Bool = false) async {
         loadIfNeeded()
         guard !indexing else { return }
         indexing = true
         defer { indexing = false }
         let gen = generation
+
+        if pruneMissing {
+            let alive = Set(files.map(\.path))
+            let gone = index.keys.filter { !alive.contains($0) }
+            if !gone.isEmpty {
+                for path in gone { index.removeValue(forKey: path) }
+                persist()
+            }
+        }
 
         let pending = files.filter { index[$0.path]?.mtime != $0.mtime }
         guard !pending.isEmpty else { return }
