@@ -296,3 +296,63 @@ def test_a_stamp_with_seconds_is_its_own_meeting(tmp_path):
     twin_plan = forget.plan(seconds, root, graph)
     assert twin in twin_plan.delete
     assert (root / "transcripts" / f"{STAMP}.md") not in twin_plan.delete
+
+
+def test_forget_reaches_the_retry_log(tmp_path):
+    """`logs/retry_<штамп>.log` — stdout повторной пересборки с маппингом
+    имён участников. Ни ретеншн, ни «забыть» его не видели (аудит DeepSeek 16.08)."""
+    root, graph = _world(tmp_path)
+    logs = root / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    mine = logs / f"retry_{STAMP}.log"
+    mine.write_text("имена: Мария Соколова\n", encoding="utf-8")
+    theirs = logs / f"retry_{OTHER}.log"
+    theirs.write_text("имена: кто-то ещё\n", encoding="utf-8")
+
+    plan = forget.plan(STAMP, root, graph)
+
+    assert mine in plan.delete, "лог повторной пересборки переживает забывание"
+    assert theirs not in plan.delete
+
+
+def test_edited_nodes_keep_their_permissions(tmp_path):
+    """Конвейер пишет граф под harden_umask (0600). Перезапись узла через
+    write_text давала 0644 по umask вызывающего — поправленный узел
+    становился читаемым для всех (аудит DeepSeek 16.08)."""
+    import os
+    import stat
+
+    root, graph = _world(tmp_path)
+    core = graph / "Ядра" / "Выбор платёжного провайдера.md"
+    core.chmod(0o600)
+    old_umask = os.umask(0o022)  # Finder-овский umask кнопки «Забыть»
+    try:
+        forget.apply(forget.plan(STAMP, root, graph), yes=True)
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE(core.stat().st_mode) == 0o600
+
+
+def test_forget_reaches_the_status_named_after_the_live_transcript(tmp_path):
+    """Файл статуса назван по живой стенограмме с секундами, а штамп встречи
+    после наката темы минутный — по имени с границей штампа его не найти;
+    его выдаёт transcript_path внутри (найдено тестом rename 16.08)."""
+    import json
+
+    root, graph = _world(tmp_path)
+    status = root / "logs" / "meeting-status"
+    status.mkdir(parents=True)
+    mine = status / f"{STAMP}30.json"          # 2026-07-15_140030 — живое имя
+    mine.write_text(json.dumps({"transcript_path": str(
+        root / "transcripts" / f"{STAMP}_Платёжный_провайдер.md")}), encoding="utf-8")
+    theirs = status / f"{STAMP}45.json"        # соседняя встреча той же минуты
+    theirs.write_text(json.dumps({"transcript_path": str(
+        root / "transcripts" / f"{STAMP}45.md")}), encoding="utf-8")
+    broken = status / "мусор.json"
+    broken.write_text("не json", encoding="utf-8")
+
+    plan = forget.plan(STAMP, root, graph)
+
+    assert mine in plan.delete, "статус, названный по живой стенограмме, переживает забывание"
+    assert theirs not in plan.delete
+    assert broken not in plan.delete

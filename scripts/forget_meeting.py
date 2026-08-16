@@ -49,6 +49,7 @@ import os
 import pathlib
 import re
 import shutil
+import stat
 import sys
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
@@ -60,7 +61,9 @@ import deps  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
+import charoite_paths  # noqa: E402
 import graphs  # noqa: E402
+import meeting_stamp  # noqa: E402
 
 ARCHIVE_DIR = "Встречи-архив"
 MEETINGS_DIR = "Встречи"
@@ -112,21 +115,37 @@ STATUS_DIR = pathlib.Path("logs") / "meeting-status"
 
 def _with_stamp(directory: pathlib.Path, stamp: str, *, prefix: str = "",
                 suffix: str = "") -> list[pathlib.Path]:
-    """Файлы «<prefix><штамп>…<suffix>» этой встречи — и только её.
+    """Файлы этой встречи с границей штампа — правило живёт в meeting_stamp."""
+    return meeting_stamp.files_with_stamp(directory, stamp, prefix=prefix,
+                                          suffix=suffix)
 
-    Штамп с секундами (`2026-07-15_140030`, 17 знаков) начинается с штампа
-    без секунд (`2026-07-15_1400`): голый глоб `{stamp}*` при забывании
-    первой встречи уносил и файлы второй. Граница — после штампа не цифра.
+
+def _status_files(status_dir: pathlib.Path, stamp: str) -> list[pathlib.Path]:
+    """Статусы конвейера этой встречи.
+
+    Файл статуса назван по ЖИВОЙ стенограмме — с секундами
+    (`2026-08-03_113012.json`), а штамп встречи после наката темы минутный
+    (`2026-08-03_1130`): по одному имени с границей штампа такой файл не
+    найти. Поэтому второй признак — `transcript_path` внутри: чей файл
+    стенограммы он описывает (найдено тестом rename при переносе правила
+    границы в meeting_stamp, 16.08).
     """
-    if not directory.is_dir():
+    if not status_dir.is_dir():
         return []
-    out = []
-    for f in directory.glob(f"{prefix}{stamp}*{suffix}"):
-        rest = f.name[len(prefix) + len(stamp):]
-        if rest[:1].isdigit() or not f.is_file():
+    import json
+    found = set(_with_stamp(status_dir, stamp, suffix=".json"))
+    for f in status_dir.glob("*.json"):
+        if f in found:
             continue
-        out.append(f)
-    return sorted(out)
+        try:
+            tp = json.loads(f.read_text(encoding="utf-8")).get("transcript_path", "")
+        except (OSError, ValueError, AttributeError):
+            continue
+        name = pathlib.Path(str(tp)).name
+        rest = name[len(stamp):]
+        if name.startswith(stamp) and not rest[:1].isdigit():
+            found.add(f)
+    return sorted(found)
 
 
 def stamps(root: pathlib.Path, graph: pathlib.Path | None = None) -> list[str]:
@@ -206,11 +225,15 @@ def plan(stamp: str, root: pathlib.Path,
     # внутри — имена файлов встречи (а тема встречи стоит в имени),
     # счётчики и stderr CLI (аудит 16.08).
     p.delete += _with_stamp(logs, stamp, prefix="cloud_review_", suffix=".log")
+    # Лог повторной пересборки (retry_<штамп>.log): stdout rebuild_transcript
+    # с маппингом имён участников и темой — третий класс, который ни ретеншн,
+    # ни «забыть» не видели (аудит DeepSeek 16.08).
+    p.delete += _with_stamp(logs, stamp, prefix="retry_", suffix=".log")
     # Статус конвейера (logs/meeting-status/<стенограмма>.json): путь к
     # стенограмме — с темой в имени, этап, текст ошибки; его же читает
     # список «Недавние встречи». Чистится сам через 14 дней, но «забыть»
     # обязано дойти сразу (второе мнение по #324–#328, 16.08).
-    p.delete += _with_stamp(root / STATUS_DIR, stamp, suffix=".json")
+    p.delete += _status_files(root / STATUS_DIR, stamp)
 
     if keep_graph:
         return p
@@ -312,6 +335,13 @@ def apply(p: Plan, yes: bool = False) -> bool:
             _backup(path, p.stamp)
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(text, encoding="utf-8")
+        # Права узла — как были: конвейер пишет граф под harden_umask (0600),
+        # а write_text давал 0644 по umask вызывающего — поправленный узел
+        # становился читаемым для всех (аудит DeepSeek 16.08).
+        try:
+            tmp.chmod(stat.S_IMODE(path.stat().st_mode))
+        except OSError:
+            pass
         tmp.replace(path)
     print(f"\nзабыто: удалено {len(p.delete)}, поправлено {len(p.edit)}"
           f" (копии поправленных — в {BACKUP_DIR}/{p.stamp})")
@@ -321,6 +351,10 @@ def apply(p: Plan, yes: bool = False) -> bool:
 
 
 def main() -> int:
+    # Как все точки записи конвейера: новые файлы (копии в .forget_backup,
+    # временные .tmp) — только владельцу. Скрипт запускает и кнопка «Забыть»
+    # в приложении, а его umask — 022 из Finder.
+    charoite_paths.harden_umask()
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("target", help="дата ГГГГ-ММ-ДД или штамп ГГГГ-ММ-ДД_ЧЧММ")
     ap.add_argument("--yes", action="store_true", help="выполнить (без него — только план)")

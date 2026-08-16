@@ -37,7 +37,7 @@ jobs:
       # было причиной пятидневного красного — в нём не хватало sounddevice, а
       # список зависимостей живёт в pyproject и меняется без оглядки на CI.
       - name: Deps
-        run: pip -q install . pytest
+        run: pip -q install . "pytest==9.1.1"
       - run: python -m pytest tests/ -q
   swift:
     # macos-15, а не 14: SystemAudioCapture использует API микрофона

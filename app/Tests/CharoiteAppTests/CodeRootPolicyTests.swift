@@ -84,4 +84,35 @@ final class CodeRootPolicyTests: XCTestCase {
                                    localCodeExists: false),
             .embedded)
     }
+
+    /// Апгрейд со старого идентификатора бандла переносит `charoite.root`,
+    /// а ключа `codeFromRoot` в старом домене нет — и его отсутствие
+    /// читалось как «можно»: код демона снова шёл из записываемого клона с
+    /// правами приложения (аудит DeepSeek 16.08). Миграция обязана
+    /// перенести папку как данные и явно закрыть код.
+    func testМиграцияПереноситПапкуКакДанныеБезПраваНаКод() throws {
+        let suite = "ai.charoite.tests.migration.\(UUID().uuidString)"
+        let d = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { d.removePersistentDomain(forName: suite) }
+
+        let moved = AppDelegate.migrateSettings(
+            from: ["charoite.root": "~/Charoite_audio", "sufler.language": "ru",
+                   "NSWindow Frame main": "0 0 100 100"], into: d)
+
+        XCTAssertEqual(moved, 2, "переносятся только ключи приложения")
+        XCTAssertEqual(d.string(forKey: "charoite.root"), "~/Charoite_audio")
+        XCTAssertNotNil(d.object(forKey: "charoite.codeFromRoot"),
+                        "тумблер кода обязан быть записан явно, а не читаться из умолчания")
+        XCTAssertFalse(d.bool(forKey: "charoite.codeFromRoot"),
+                       "перенесённая папка — данные; код из неё — только по явному тумблеру")
+    }
+
+    /// Пустой или чужой домен — переносить нечего, ничего не пишем.
+    func testМиграцияЧужогоДоменаНичегоНеПишет() throws {
+        let suite = "ai.charoite.tests.migration.\(UUID().uuidString)"
+        let d = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { d.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(AppDelegate.migrateSettings(from: ["foo": 1], into: d), 0)
+        XCTAssertNil(d.object(forKey: "charoite.codeFromRoot"))
+    }
 }

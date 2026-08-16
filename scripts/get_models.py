@@ -241,6 +241,14 @@ def download(url: str, dest: pathlib.Path, expect_mb: int, onnx: bool = True,
                 print(f"  докачиваю с {done // 1024 // 1024} МБ (попытка {attempt})")
             # nosemgrep — адрес из константы MODELS, не пользовательский ввод
             with urllib.request.urlopen(req, timeout=120) as resp:
+                # Докачка законна только на 206: сервер, не знающий Range,
+                # отдаёт 200 и файл целиком — дописывать его к хвосту значило
+                # бы удвоить файл; по размеру он проходил проверку, а при
+                # своём зеркале (--url, без суммы) битым и оставался
+                # (аудит DeepSeek 16.08). Тогда начинаем с нуля.
+                if done and resp.status != 206:
+                    done = 0
+                    total = 0
                 if not total:
                     length = resp.headers.get("Content-Length")
                     total = int(length) + done if length else 0

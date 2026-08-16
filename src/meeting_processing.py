@@ -50,8 +50,12 @@ def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
     stamp = short_stamp(original)
     candidates = []
     for path in original.parent.glob(f"{stamp}_*.md"):
-        suffix = path.stem[len(stamp):]
-        if any(aux in suffix for aux in _AUX_SUFFIXES):
+        # По ХВОСТУ имени, как meeting_stamp.stamp_of и rename_meeting: проверка
+        # подстрокой вычёркивала главный файл встречи «План_разбора» (тема со
+        # словом «разбор» внутри) и статус получал несуществующий путь
+        # (аудит DeepSeek 16.08).
+        suffix = path.stem[len(stamp):].lower()
+        if any(suffix.endswith(aux) for aux in _AUX_SUFFIXES):
             continue
         candidates.append(path)
     if not candidates:

@@ -62,7 +62,7 @@ Charoite 倾听您的会议（麦克风 + 系统声音，无需机器人入会�
 | **32 GB** | `qwen3.6:35b-a3b` | `qwen3.5:4b` | 有 | 默认配置，基准测试即在此配置 |
 | **64 GB+** | `qwen3.6:35b-a3b` | `qwen3.5:4b` | 有 | 云端 Claude 层 + 超长会议的余量 |
 
-16 GB 以下知识图谱关闭（30B 以下的模型会破坏 JSON 结构）；4 GB 只跑 STT，`llm.base_url` 指向另一台机器即可。
+16 GB 以下知识图谱关闭（30B 以下的模型会破坏 JSON 结构）；4 GB 只跑 STT；`llm.base_url` 指向你自己的另一台机器仅在显式设置 `llm.allow_remote: true` 时有效（逐字稿会离开本机；`CHAROITE_NO_CLOUD` 下被拒绝，见 `docs/MODELS.md`）。
 
 **iOS/iPadOS**：手机负责 STT 和轻量生成，更重的任务通过 REST API 交给 Mac。
 在 iOS 26+ 上，内置的约 3B Foundation Models 免费承担要点提取。

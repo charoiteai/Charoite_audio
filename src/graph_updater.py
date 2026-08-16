@@ -21,6 +21,7 @@ import privacy  # noqa: E402
 from llm import LLM, LLMHTTPError  # noqa: E402
 
 from charoite_paths import code_root, harden_umask, resolve_root
+from meeting_stamp import files_with_stamp
 
 ROOT = resolve_root(__file__)
 CODE = code_root(__file__)
@@ -803,7 +804,11 @@ def main():
     arch_folder = None
     try:
         from meeting_archive import archive_meeting
-        arch_folder = archive_meeting(graph, tpath.parent, stamp, title)
+        # Ключ файлов — стем стенограммы: у посекундной встречи без темы это
+        # «…113012», и минутный глоб взял бы файлы соседней встречи той же
+        # минуты (аудит DeepSeek 16.08); после наката темы — «штамп_тема».
+        arch_folder = archive_meeting(graph, tpath.parent, stamp, title,
+                                      files_key=tpath.stem)
         print(f"архив встречи: {arch_folder.name}")
     except Exception as e:  # noqa: BLE001
         print(f"архив встречи не удался: {e}")
@@ -871,11 +876,17 @@ def cloud_enrich_context(folder: pathlib.Path, stamp: str,
     Раньше модель читала их с диска сама, и ради этого ей открывали папку со
     всеми встречами. Теперь набор собираем мы: что именно ушло в облако, видно
     из кода, а не из того, куда модель решила заглянуть.
+
+    `stamp` — стем главного файла встречи (после наката темы «штамп_тема»,
+    у посекундной без темы — «…113012»): берутся `<стем>.md` и `<стем>_*.md`,
+    с границей — соседняя встреча той же минуты не подмешивается.
     """
     parts: list[str] = []
     names: list[str] = []
     room = limit
-    for path in sorted(folder.glob(f"{stamp}*.md")):
+    # Граница штампа обязательна: без неё в облако уехали бы файлы соседней
+    # встречи той же минуты (аудит DeepSeek 16.08).
+    for path in files_with_stamp(folder, stamp, suffix=".md"):
         if room <= 0:
             break
         try:

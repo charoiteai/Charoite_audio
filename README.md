@@ -66,7 +66,7 @@ Semantic search adds `bge-m3` (~1.2 GB) — recommended at 16 GB+.
 | **64 GB+** | `qwen3.6:35b-a3b` | `qwen3.5:4b` | yes | Headroom for the cloud Claude layer + long meetings |
 
 Below 16 GB the knowledge graph is off (sub-30B models break the JSON schema);
-on 4 GB run STT only and point `llm.base_url` at another machine.
+on 4 GB run STT only; `llm.base_url` may point at another machine you own only with an explicit `llm.allow_remote: true` (transcripts leave this device; refused under `CHAROITE_NO_CLOUD` — see `docs/MODELS.md`).
 
 **iOS/iPadOS**: the phone does STT + light generation, anything heavier goes to
 a Mac over the REST API. On iOS 26+ the built-in ~3B Foundation Models handle

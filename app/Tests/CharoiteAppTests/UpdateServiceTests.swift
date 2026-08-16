@@ -131,6 +131,30 @@ final class UpdateServiceTests: XCTestCase {
                           "маркер пишется внутри guard'а, до подмены бандла")
     }
 
+    /// Папка приложения без права записи: раньше helper падал на `mv` уже
+    /// после выхода приложения — ни маркера, ни перезапуска, человек видел
+    /// просто закрывшееся окно (аудит DeepSeek 16.08).
+    func testUnwritableParentIsRefusedBeforeQuitting() {
+        XCTAssertNotNil(UpdateService.refusalReason(recording: false,
+                                                    bundlePath: "/Applications/Charoite.app",
+                                                    parentWritable: false))
+        XCTAssertNil(UpdateService.refusalReason(recording: false,
+                                                 bundlePath: "/Applications/Charoite.app",
+                                                 parentWritable: true))
+    }
+
+    func testReplacementScriptRelaunchesAndLeavesMarkerOnAnyFailure() throws {
+        let s = UpdateService.replacementScript()
+        let trap = try XCTUnwrap(s.range(of: "trap '"), "нет ловушки на сбой после выхода приложения")
+        XCTAssertTrue(s[trap.lowerBound...].hasPrefix("trap 'echo") || s.contains("' ERR"),
+                      "ловушка обязана и оставить маркер, и вернуть приложение")
+        let guardRange = try XCTUnwrap(s.range(of: "[ ! -w \"$(dirname \"$target\")\" ]"))
+        let replaceRange = try XCTUnwrap(s.range(of: "mv \"$target\" \"${target}.old\""))
+        XCTAssertLessThan(trap.lowerBound, replaceRange.lowerBound, "ловушка ставится до подмены")
+        XCTAssertLessThan(guardRange.lowerBound, replaceRange.lowerBound,
+                          "право писать в папку проверяется до переименования бандла")
+    }
+
     /// Пути передаются отдельными argv: bash не должен повторно разбирать
     /// кавычки, `$()` или перевод строки внутри имени приложения.
     func testReplacementArgumentsKeepPathsAsData() {

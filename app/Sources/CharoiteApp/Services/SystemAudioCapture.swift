@@ -2,6 +2,7 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import ScreenCaptureKit
+import os
 
 #if os(macOS)
 
@@ -266,14 +267,29 @@ final class SystemAudioCapture: NSObject {
     private final class Sink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
         private let systemHandle: FileHandle?
         private let micHandle: FileHandle?
-        private(set) var systemFrames = 0
-        private(set) var micFrames = 0
+        /// Счётчики и частота пишутся на очереди SCStream, читаются с
+        /// MainActor (`start`, `writeManifest`): без замка это гонка данных
+        /// по модели памяти Swift — на arm64 практически безобидная, но
+        /// `@unchecked Sendable` её лишь прятал (аудит DeepSeek 16.08, две
+        /// зоны независимо). Тот же замок закрывает файлы: буфер, пришедший
+        /// с очереди после `close()`, писал в закрытый FileHandle —
+        /// ObjC-исключение и падение приложения на остановке.
+        private struct Counters {
+            var systemFrames = 0
+            var micFrames = 0
+            var micSampleRate = 0
+            var closed = false
+        }
+        private let state = OSAllocatedUnfairLock(initialState: Counters())
+
+        var systemFrames: Int { state.withLock { $0.systemFrames } }
+        var micFrames: Int { state.withLock { $0.micFrames } }
         /// Реальная частота микрофона. ScreenCaptureKit применяет
         /// SCStreamConfiguration.sampleRate только к системному звуку —
         /// микрофон приходит в родном формате устройства (обычно 48 кГц).
         /// Проверено живым тестом 07.08: файл микрофона рос втрое быстрее
         /// системного, и демон растянул бы его по частоте из манифеста.
-        private(set) var micSampleRate = 0
+        var micSampleRate: Int { state.withLock { $0.micSampleRate } }
 
         init(systemURL: URL, micURL: URL) {
             let fm = FileManager.default
@@ -291,17 +307,22 @@ final class SystemAudioCapture: NSObject {
             switch type {
             case .audio:
                 if let pcm = mono(from: sb) {
-                    systemFrames += pcm.count
-                    write(pcm, to: systemHandle)
+                    state.withLock { st in
+                        guard !st.closed else { return }
+                        st.systemFrames += pcm.count
+                        write(pcm, to: systemHandle)
+                    }
                 }
             case .microphone:
-                if micSampleRate == 0,
-                   let rate = sb.formatDescription?.audioStreamBasicDescription?.mSampleRate {
-                    micSampleRate = Int(rate)
-                }
-                if let pcm = mono(from: sb) {
-                    micFrames += pcm.count
-                    write(pcm, to: micHandle)
+                let rate = sb.formatDescription?.audioStreamBasicDescription?.mSampleRate
+                let pcm = mono(from: sb)
+                state.withLock { st in
+                    guard !st.closed else { return }
+                    if st.micSampleRate == 0, let rate { st.micSampleRate = Int(rate) }
+                    if let pcm {
+                        st.micFrames += pcm.count
+                        write(pcm, to: micHandle)
+                    }
                 }
             default:
                 break
@@ -340,14 +361,22 @@ final class SystemAudioCapture: NSObject {
             }
         }
 
+        /// Вызывать только под `state`: так запись и `close()` не пересекаются.
         private func write(_ pcm: [Int16], to handle: FileHandle?) {
             guard let handle else { return }
-            pcm.withUnsafeBufferPointer { handle.write(Data(buffer: $0)) }
+            // Бросающий API вместо `write(_:)`: ошибка записи (диск кончился,
+            // дескриптор закрыт) — ошибка Swift, а не ObjC-исключение,
+            // которое роняет процесс целиком.
+            pcm.withUnsafeBufferPointer { try? handle.write(contentsOf: Data(buffer: $0)) }
         }
 
         func close() {
-            try? systemHandle?.close()
-            try? micHandle?.close()
+            state.withLock { st in
+                guard !st.closed else { return }
+                st.closed = true
+                try? systemHandle?.close()
+                try? micHandle?.close()
+            }
         }
     }
 }

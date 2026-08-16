@@ -79,6 +79,41 @@ final class RemoteHostPolicyTests: XCTestCase {
                       "причина должна называть способ разрешить, а не просто отказывать")
     }
 
+    // MARK: - allow_remote читается так же, как его читает демон
+
+    /// PyYAML отдаёт булево только для голого токена; `"true"` в кавычках —
+    /// строка, и `privacy.py` (`is True`) отказывает. Приложение снимало
+    /// кавычки и разрешало удалённый хост там, где демон падал на старте:
+    /// расхождение ровно того рода, которое этот тест-класс сторожит
+    /// (аудит DeepSeek 16.08). Мастер конфига пишет значения в кавычках
+    /// всегда, так что случай не экзотика.
+    func testQuotedTrueIsNotPermission() {
+        for quoted in ["llm:\n  allow_remote: \"true\"\n", "llm:\n  allow_remote: 'true'\n",
+                       "llm:\n  allow_remote: \"yes\"  # в кавычках\n"] {
+            XCTAssertNil(AppSettings.parseBool("allow_remote", in: quoted),
+                         "в кавычках для PyYAML это строка, а не разрешение: \(quoted)")
+        }
+    }
+
+    func testBareYamlBooleansMatchPyYAML() {
+        for token in ["true", "True", "TRUE", "yes", "Yes", "on", "ON"] {
+            XCTAssertEqual(AppSettings.parseBool("allow_remote", in: "llm:\n  allow_remote: \(token)\n"),
+                           true, token)
+        }
+        for token in ["false", "False", "no", "off", "OFF"] {
+            XCTAssertEqual(AppSettings.parseBool("allow_remote", in: "llm:\n  allow_remote: \(token)\n"),
+                           false, token)
+        }
+        // «1», регистр вне списка PyYAML, пусто, комментарий вместо значения — не булево
+        for junk in ["1", "tRUE", "", "# позже", "truely"] {
+            XCTAssertNil(AppSettings.parseBool("allow_remote", in: "llm:\n  allow_remote: \(junk)\n"), junk)
+        }
+        XCTAssertEqual(AppSettings.parseBool("allow_remote", in: "llm:\n  allow_remote: true   # свой сервер\n"),
+                       true, "комментарий после значения — не часть значения")
+        XCTAssertNil(AppSettings.parseBool("allow_remote", in: "llm:\n  base_url: http://x\n"),
+                     "ключа нет — решения нет")
+    }
+
     /// Сторож проводки: все восемь мест ходят через `ollamaURL`, и если кто-то
     /// начнёт читать UserDefaults напрямую, дыра откроется заново.
     func testNoDirectDefaultsReadsOutsideAppSettings() throws {

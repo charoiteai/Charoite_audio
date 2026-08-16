@@ -230,6 +230,34 @@ def test_context_carries_the_meeting_and_nothing_else(tmp_path):
     assert f"{stamp}.md" in names and len(names) == 2, names
 
 
+def test_context_stops_at_the_stamp_boundary(tmp_path):
+    """Минутный штамп — префикс секундного: встреча `…_113012` (крэш-рестарт
+    в ту же минуту) уезжала в облако вместе с `…_1130` (аудит DeepSeek 16.08)."""
+    stamp = "2026-08-03_1130"
+    (tmp_path / f"{stamp}_Планёрка.md").write_text("моя встреча", encoding="utf-8")
+    (tmp_path / "2026-08-03_113012.md").write_text("СОСЕДНЯЯ ВСТРЕЧА", encoding="utf-8")
+    (tmp_path / "2026-08-03_113012_minutes.md").write_text("СОСЕДНИЕ МИНУТКИ", encoding="utf-8")
+
+    context, names = graph_updater.cloud_enrich_context(tmp_path, stamp)
+    assert "моя встреча" in context
+    assert "СОСЕДН" not in context, names
+    assert names == [f"{stamp}_Планёрка.md"]
+
+
+def test_context_of_untitled_meeting_is_keyed_by_its_stem(tmp_path):
+    """Посекундная встреча без темы: ключ — стем стенограммы; соседка той же
+    минуты и переименованная другая встреча в контекст не попадают."""
+    (tmp_path / "2026-08-03_113012.md").write_text("моя встреча", encoding="utf-8")
+    (tmp_path / "2026-08-03_113012_minutes.md").write_text("мои минутки", encoding="utf-8")
+    (tmp_path / "2026-08-03_113045.md").write_text("СОСЕДНЯЯ", encoding="utf-8")
+    (tmp_path / "2026-08-03_1130_Планёрка.md").write_text("ДРУГАЯ", encoding="utf-8")
+
+    context, names = graph_updater.cloud_enrich_context(tmp_path, "2026-08-03_113012")
+    assert "моя встреча" in context and "мои минутки" in context
+    assert "СОСЕДНЯЯ" not in context and "ДРУГАЯ" not in context, names
+    assert names == ["2026-08-03_113012.md", "2026-08-03_113012_minutes.md"]
+
+
 def test_context_truncation_is_visible(tmp_path):
     """Усечение длинной встречи должно быть видно, а не молчаливо."""
     stamp = "2026-07-15_1400"
