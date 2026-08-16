@@ -103,3 +103,15 @@ def test_релизные_workflow_пиннуты_по_sha():
             action, ref = m.group(1), m.group(2)
             assert re.fullmatch(r"[0-9a-f]{40}", ref), (
                 f"{name}: {action}@{ref} — нужен SHA-пин, а не тег")
+
+
+def test_сборка_не_докачивает_pip_мимо_lock():
+    """`pip install --upgrade pip` перед установкой из lock тянул свежий pip
+    с PyPI без пина и без хешей — прямо в подписанный бандл, в обход той
+    самой гарантии «ровно пиннутые артефакты» (второе мнение по #325,
+    16.08). Комментарии не считаются — только команды."""
+    script = (ROOT / "scripts/build_embedded_python.sh").read_text(encoding="utf-8")
+    commands = [line for line in script.splitlines()
+                if line.strip() and not line.lstrip().startswith("#")]
+    assert not [line for line in commands if "--upgrade pip" in line], (
+        "сборка снова обновляет pip мимо lock-файла")

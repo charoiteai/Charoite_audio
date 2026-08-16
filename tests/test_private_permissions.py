@@ -148,6 +148,19 @@ def test_рубильник_запрещает_докачку_весов(monkeyp
         "STT снова качает веса мимо рубильника")
 
 
+def test_рубильник_перебивает_заранее_выставленный_ноль():
+    """`HF_HUB_OFFLINE=0` в окружении (профиль терминала, родительский
+    скрипт) переживал рубильник: `setdefault` уважал чужое значение, и
+    библиотека уходила в сеть (второе мнение по #324, 16.08). Рубильник —
+    последнее слово."""
+    import privacy
+
+    env = {"CHAROITE_NO_CLOUD": "1", "HF_HUB_OFFLINE": "0", "TRANSFORMERS_OFFLINE": "0"}
+    privacy.enforce_offline_downloads(env)
+    assert env["HF_HUB_OFFLINE"] == "1"
+    assert env["TRANSFORMERS_OFFLINE"] == "1"
+
+
 def test_swift_честно_описывает_расхождение_с_питоном():
     """0.0.0.0 Swift разрешает, python — нет, и это осознанно.
 

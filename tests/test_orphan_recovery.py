@@ -285,3 +285,27 @@ def test_свежие_потоки_ретеншн_не_трогает(tmp_path, 
 
     assert audio.AudioHub.prune_stream_files(data, 2) == 0
     assert fresh.exists()
+
+
+def test_пустой_свежий_каталог_сессии_не_удаляется(tmp_path, monkeypatch):
+    """Приложение создаёт `sck/<uuid>/` и только потом пишет туда `.raw`;
+    prune идёт на старте демона — то есть ровно при старте записи. Пустой
+    каталог обходил обе защиты (обе смотрят на файлы, которых ещё нет) и
+    удалялся из-под живой сессии (второе мнение по #324, 16.08). Старый
+    пустой каталог — мусор, свежий — не трогать."""
+    import audio
+
+    data = tmp_path / "data"
+    fresh_dir = data / "sck" / "только-что"
+    fresh_dir.mkdir(parents=True)
+    stale_dir = data / "sck" / "давно-пустая"
+    stale_dir.mkdir(parents=True)
+    week_ago = time.time() - 7 * 86400
+    os.utime(stale_dir, (week_ago, week_ago))
+    monkeypatch.setattr(audio, "fresh_sck_manifest", lambda: None)
+    monkeypatch.setattr(audio, "fresh_tap_manifest", lambda: None)
+
+    audio.AudioHub.prune_stream_files(data, 2)
+
+    assert fresh_dir.exists(), "каталог только что стартовавшей сессии удалён"
+    assert not stale_dir.exists(), "давно пустой каталог должен уйти"

@@ -232,3 +232,67 @@ def test_meeting_known_only_to_the_graph_is_still_found(tmp_path):
     assert forget.resolve("2026-07-15", root, graph) == [STAMP]
     plan = forget.plan(STAMP, root, graph)
     assert plan.delete, "план пуст, хотя узел встречи и архив на месте"
+
+
+def test_forget_reaches_the_pipeline_status(tmp_path):
+    """`logs/meeting-status/<стенограмма>.json` — путь к стенограмме с темой
+    в имени, этап, текст ошибки; его же читает список «Недавние встречи».
+    Забывание до него не доходило (второе мнение 16.08)."""
+    root, graph = _world(tmp_path)
+    status = root / "logs" / "meeting-status"
+    status.mkdir(parents=True)
+    mine = status / f"{STAMP}_Платёжный_провайдер.json"
+    mine.write_text("{}", encoding="utf-8")
+    theirs = status / f"{OTHER}_Каталог.json"
+    theirs.write_text("{}", encoding="utf-8")
+
+    plan = forget.plan(STAMP, root, graph)
+
+    assert mine in plan.delete, "статус конвейера переживает забывание"
+    assert theirs not in plan.delete
+
+
+def test_forget_reaches_the_suffixed_copies_in_the_graph(tmp_path):
+    """graph_updater кладёт в «Стенограммы встреч» все `{штамп}_*.md`
+    (минутки, подсказки, живая нить), а не один `{штамп}.md`, — и то же
+    самое лежит в каждом снимке .cloud_backup. Забывание удаляло только
+    точное имя, то есть копии стенограммы жили дальше (второе мнение 16.08)."""
+    root, graph = _world(tmp_path)
+    docs = graph / "Документация" / "Стенограммы встреч"
+    minutes = docs / f"{STAMP}_minutes.md"
+    minutes.write_text("минутки\n", encoding="utf-8")
+    other_minutes = docs / f"{OTHER}_minutes.md"
+    other_minutes.write_text("минутки\n", encoding="utf-8")
+    snap_docs = graph / ".cloud_backup" / "2026-07-16_0300" / "Документация" / "Стенограммы встреч"
+    snap_docs.mkdir(parents=True)
+    snap_copy = snap_docs / f"{STAMP}_hints.md"
+    snap_copy.write_text("подсказки\n", encoding="utf-8")
+
+    plan = forget.plan(STAMP, root, graph)
+
+    assert minutes in plan.delete, "копия минуток в графе переживает забывание"
+    assert snap_copy in plan.delete, "копия в снимке облачной ревизии переживает забывание"
+    assert other_minutes not in plan.delete
+
+
+def test_a_stamp_with_seconds_is_its_own_meeting(tmp_path):
+    """Штампы с секундами (`_140030`) реальны. Срез в 15 знаков резал их до
+    `_1400`, а глоб `{штамп}*` при забывании встречи 14:00 уносил и файлы
+    встречи 14:00:30 (второе мнение 16.08)."""
+    root, graph = _world(tmp_path)
+    seconds = "2026-07-15_140030"
+    twin = root / "transcripts" / f"{seconds}_Другая_тема.md"
+    twin.write_text("# другая встреча\n", encoding="utf-8")
+    (graph / "Встречи" / f"{seconds}.md").write_text("# узел\n", encoding="utf-8")
+
+    known = forget.stamps(root, graph)
+    assert seconds in known, "штамп с секундами обрезан"
+    assert STAMP in known
+
+    plan = forget.plan(STAMP, root, graph)
+    assert twin not in plan.delete, "забывание 14:00 унесло встречу 14:00:30"
+    assert (graph / "Встречи" / f"{seconds}.md") not in plan.delete
+
+    twin_plan = forget.plan(seconds, root, graph)
+    assert twin in twin_plan.delete
+    assert (root / "transcripts" / f"{STAMP}.md") not in twin_plan.delete

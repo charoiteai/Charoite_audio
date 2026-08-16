@@ -660,7 +660,15 @@ class AudioHub:
                 files = list(session.glob("*.raw"))
                 if any(str(f.resolve()) in alive for f in files):
                     continue  # идёт прямо сейчас
-                if files and not all(_old_enough(f) for f in files):
+                # Пустой каталог — не «мусор»: приложение только что создало
+                # его под сессию, файлов ещё нет, а prune идёт на старте
+                # демона — то есть ровно в момент старта записи. Обе защиты
+                # выше смотрят на файлы, которых нет; судим по возрасту
+                # самого каталога (второе мнение по #324, 16.08).
+                if not files:
+                    if not _old_enough(session):
+                        continue
+                elif not all(_old_enough(f) for f in files):
                     continue
                 for f in files:
                     f.unlink(missing_ok=True)

@@ -106,6 +106,29 @@ def _graph_roots(graph: pathlib.Path | None) -> list[pathlib.Path]:
     return graphs.all_graphs(MEETINGS_DIR) or graphs.all_graphs(ARCHIVE_DIR)
 
 
+_STAMP_RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{4,6})(?!\d)")
+STATUS_DIR = pathlib.Path("logs") / "meeting-status"
+
+
+def _with_stamp(directory: pathlib.Path, stamp: str, *, prefix: str = "",
+                suffix: str = "") -> list[pathlib.Path]:
+    """Файлы «<prefix><штамп>…<suffix>» этой встречи — и только её.
+
+    Штамп с секундами (`2026-07-15_140030`, 17 знаков) начинается с штампа
+    без секунд (`2026-07-15_1400`): голый глоб `{stamp}*` при забывании
+    первой встречи уносил и файлы второй. Граница — после штампа не цифра.
+    """
+    if not directory.is_dir():
+        return []
+    out = []
+    for f in directory.glob(f"{prefix}{stamp}*{suffix}"):
+        rest = f.name[len(prefix) + len(stamp):]
+        if rest[:1].isdigit() or not f.is_file():
+            continue
+        out.append(f)
+    return sorted(out)
+
+
 def stamps(root: pathlib.Path, graph: pathlib.Path | None = None) -> list[str]:
     """Штампы всех известных встреч: по стенограммам и по узлам графа.
 
@@ -114,7 +137,10 @@ def stamps(root: pathlib.Path, graph: pathlib.Path | None = None) -> list[str]:
     """
     found: set[str] = set()
     for p in (root / "transcripts").glob("*.md"):
-        found.add(p.name[:15] if len(p.stem) > 15 else p.stem)
+        # Срез в 15 знаков резал штампы с секундами (`_140030` → `_1400`):
+        # такие файлы реальны, и «забыть» тогда искал не ту встречу.
+        m = _STAMP_RE.match(p.stem)
+        found.add(m.group(1) if m else p.stem)
     for g in _graph_roots(graph):
         for p in (g / MEETINGS_DIR).glob("*.md"):
             if not p.name.startswith("_"):
@@ -167,9 +193,7 @@ def plan(stamp: str, root: pathlib.Path,
     p = Plan(stamp=stamp)
 
     for folder in ("transcripts", "recordings"):
-        d = root / folder
-        if d.is_dir():
-            p.delete += sorted(f for f in d.glob(f"{stamp}*") if f.is_file())
+        p.delete += _with_stamp(root / folder, stamp)
 
     # Логи графа этой встречи: в logs/graph_<штамп>*.log попадают имена
     # участников и куски цитат — «забыть» обязано дойти и до них, иначе
@@ -177,13 +201,16 @@ def plan(stamp: str, root: pathlib.Path,
     # не доходит до логов). Исходник в папке импорта done/ сюда не входит:
     # её путь знает только вызов --scan, у скрипта его нет — см. README.
     logs = root / "logs"
-    if logs.is_dir():
-        p.delete += sorted(f for f in logs.glob(f"graph_{stamp}*.log") if f.is_file())
-        # Лог облачной ревизии называется иначе и потому переживал забывание:
-        # внутри — имена файлов встречи (а тема встречи стоит в имени),
-        # счётчики и stderr CLI (аудит 16.08).
-        p.delete += sorted(f for f in logs.glob(f"cloud_review_{stamp}*.log")
-                           if f.is_file())
+    p.delete += _with_stamp(logs, stamp, prefix="graph_", suffix=".log")
+    # Лог облачной ревизии называется иначе и потому переживал забывание:
+    # внутри — имена файлов встречи (а тема встречи стоит в имени),
+    # счётчики и stderr CLI (аудит 16.08).
+    p.delete += _with_stamp(logs, stamp, prefix="cloud_review_", suffix=".log")
+    # Статус конвейера (logs/meeting-status/<стенограмма>.json): путь к
+    # стенограмме — с темой в имени, этап, текст ошибки; его же читает
+    # список «Недавние встречи». Чистится сам через 14 дней, но «забыть»
+    # обязано дойти сразу (второе мнение по #324–#328, 16.08).
+    p.delete += _with_stamp(root / STATUS_DIR, stamp, suffix=".json")
 
     if keep_graph:
         return p
@@ -193,9 +220,10 @@ def plan(stamp: str, root: pathlib.Path,
         node = g / MEETINGS_DIR / f"{stamp}.md"
         if node.exists():
             p.delete.append(node)
-        doc = g / DOCS_DIR / f"{stamp}.md"
-        if doc.exists():
-            p.delete.append(doc)
+        # graph_updater копирует в «Стенограммы встреч» все артефакты
+        # `{штамп}_*.md` (минутки, подсказки, живая нить), а не один
+        # `{штамп}.md` — иначе копии стенограммы переживали забывание.
+        p.delete += _with_stamp(g / DOCS_DIR, stamp, suffix=".md")
         p.delete += _archive_folders(g, stamp)
 
         # Снимки облачной ревизии копируют граф целиком, то есть каждая из
@@ -205,10 +233,10 @@ def plan(stamp: str, root: pathlib.Path,
         cloud = g / CLOUD_BACKUP_DIR
         if cloud.is_dir():
             for snap in sorted(d for d in cloud.iterdir() if d.is_dir()):
-                for trace in (snap / MEETINGS_DIR / f"{stamp}.md",
-                              snap / DOCS_DIR / f"{stamp}.md"):
-                    if trace.exists():
-                        p.delete.append(trace)
+                node_copy = snap / MEETINGS_DIR / f"{stamp}.md"
+                if node_copy.exists():
+                    p.delete.append(node_copy)
+                p.delete += _with_stamp(snap / DOCS_DIR, stamp, suffix=".md")
                 p.delete += _archive_folders(snap, stamp)
 
         # Файлы внутри удаляемой папки править не нужно и нельзя: папка уйдёт

@@ -198,8 +198,11 @@ def enforce_offline_downloads(env: dict | None = None) -> None:
     target = os.environ if env is None else env
     if not offline_required(target):
         return
-    target.setdefault("HF_HUB_OFFLINE", "1")
-    target.setdefault("TRANSFORMERS_OFFLINE", "1")
+    # Присваиваем, не setdefault: заранее выставленный в окружении
+    # `HF_HUB_OFFLINE=0` переживал рубильник, и библиотека уходила в сеть
+    # (второе мнение по #324, 16.08). Рубильник — последнее слово.
+    target["HF_HUB_OFFLINE"] = "1"
+    target["TRANSFORMERS_OFFLINE"] = "1"
 
 
 def is_loopback_url(url: str) -> bool:
