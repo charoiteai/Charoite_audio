@@ -178,7 +178,7 @@ final class SuflerService: ObservableObject {
         guard sleepGuard == nil else { return }
         sleepGuard = ProcessInfo.processInfo.beginActivity(
             options: [.idleSystemSleepDisabled, .userInitiated],
-            reason: "Идёт запись встречи")
+            reason: L.t("Идёт запись встречи", "Meeting recording in progress", "会议录音进行中"))
     }
 
     private func endSleepGuard() {
@@ -644,7 +644,9 @@ final class SuflerService: ObservableObject {
             // снимаем: иначе провалившаяся запись навсегда запрещала маку
             // спать — до перезапуска приложения.
             endSleepGuard()
-            fail("⛔️ Запись остановилась и не восстановилась. Нажмите «Слушать встречу» ещё раз")
+            fail(L.t("⛔️ Запись остановилась и не восстановилась. Нажмите «Слушать встречу» ещё раз",
+                     "⛔️ Recording stopped and did not recover. Press \u{201C}Listen to the meeting\u{201D} again",
+                     "⛔️ 录音已停止且未能恢复。请再次点击「旁听会议」"))
             guard let token = lifecycleGate.beginStop() else { return }
             cleanupDisposition = .preserveFailure
             publishLifecycle()

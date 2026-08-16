@@ -220,8 +220,21 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
 
         // Секунды в штампе: без них две заметки внутри одной минуты давали
         // одно имя, и вторая физически затирала первую в папке на Mac.
-        let name = "\(kind.prefix)iphone_\(Self.stamp(Date())).caf"
-        let url = Inbox.inProgress.appendingPathComponent(name)
+        // Секунда — не гарантия: старт-стоп-старт в одну секунду коллидирует,
+        // а AVAudioRecorder молча перезаписывает существующий файл (ревью
+        // 15.08) — имя уникализируется суффиксом до свободного.
+        let base = "\(kind.prefix)iphone_\(Self.stamp(Date()))"
+        var url = Inbox.inProgress.appendingPathComponent(base + ".caf")
+        var attempt = 2
+        while FileManager.default.fileExists(atPath: url.path), attempt < 100 {
+            url = Inbox.inProgress.appendingPathComponent("\(base)_\(attempt).caf")
+            attempt += 1
+        }
+        if FileManager.default.fileExists(atPath: url.path) {
+            // и сотый занят: UUID-хвост вместо тихой перезаписи последнего
+            url = Inbox.inProgress.appendingPathComponent(
+                "\(base)_\(UUID().uuidString.prefix(8)).caf")
+        }
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: 44_100,

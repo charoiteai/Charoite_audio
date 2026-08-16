@@ -99,6 +99,15 @@ final class ModelPullService: ObservableObject {
         }
     }
 
+    /// Ollama живёт на этой машине — системный прокси для него не судья:
+    /// корп-прокси 13.08 душил загрузку весов до 53 КБ/с, а грабля чинилась
+    /// точечно в трёх сервисах и здесь была пропущена (аудит 14.08).
+    private static let localSession: URLSession = {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.connectionProxyDictionary = [:]
+        return URLSession(configuration: cfg)
+    }()
+
     private func stream(_ model: String) async throws {
         guard let url = URL(string: AppSettings.ollamaURL + "/api/pull") else {
             throw URLError(.badURL)
@@ -108,7 +117,7 @@ final class ModelPullService: ObservableObject {
         req.httpBody = try JSONSerialization.data(withJSONObject: ["name": model])
         // Модель качается минутами — обычный таймаут запроса здесь не судья.
         req.timeoutInterval = 3600
-        let (bytes, response) = try await URLSession.shared.bytes(for: req)
+        let (bytes, response) = try await Self.localSession.bytes(for: req)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }

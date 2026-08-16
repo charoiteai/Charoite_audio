@@ -28,6 +28,7 @@ struct FirstRunView: View {
     @State private var ownerName = AppSettings.configValue("user_name") ?? ""
     @State private var graphPath = AppSettings.configValue("graph_dir") ?? ""
     @State private var configSaved = false
+    @State private var presetSaveFailed = false
     /// Текст отказа записи конфига; nil — отказа не было.
     @State private var configSaveFailure: String?
     /// Выбранный набор моделей. По умолчанию — тот, что уже в конфиге, а
@@ -206,6 +207,13 @@ struct FirstRunView: View {
                 .charoite(.regular, .m)
                 .disabled(pulls.isPulling(selectedPreset.model)
                           || pulls.isPulling(selectedPreset.smallModel))
+                if presetSaveFailed {
+                    Text(L.t("Не удалось записать пресет в config.yaml — проверьте путь установки",
+                             "Could not write the preset to config.yaml — check the install path",
+                             "无法将预设写入 config.yaml——请检查安装路径"))
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
                 ForEach(selectedPreset.models, id: \.self) { model in
                     if let status = pulls.progress[model] {
                         HStack(spacing: 4) {
@@ -229,8 +237,15 @@ struct FirstRunView: View {
     /// Записать выбор в конфиг и поставить недостающие модели.
     private func applyPreset() {
         let preset = selectedPreset
-        AppSettings.setConfigValue("model", preset.model)
-        AppSettings.setConfigValue("small_model", preset.smallModel)
+        // результат записи не игнорируется (аудит 14.08): пресет, тихо не
+        // доехавший до config.yaml, оставлял модели по умолчанию без слова
+        let saved = AppSettings.setConfigValue("model", preset.model)
+            && AppSettings.setConfigValue("small_model", preset.smallModel)
+        if !saved {
+            presetSaveFailed = true
+            return
+        }
+        presetSaveFailed = false
         for model in preset.models { pulls.pull(model) }
         readiness.refresh(force: true)
     }

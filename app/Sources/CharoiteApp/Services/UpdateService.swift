@@ -31,7 +31,19 @@ final class UpdateService: ObservableObject {
 
     @Published private(set) var stage: UpdateStage = .idle
 
-    private init() {}
+    private init() {
+        // Прошлый запуск мог кончиться молчаливым exit 75 helper'а
+        // (приложение не завершилось — подмена отменена): маркер делает
+        // отказ видимым при следующем старте, а не «версия почему-то та же»
+        let marker = Bundle.main.bundleURL.path + ".update-refused"
+        if let text = try? String(contentsOfFile: marker, encoding: .utf8) {
+            try? FileManager.default.removeItem(atPath: marker)
+            stage = .refused(reason: L.t(
+                "Прошлое обновление не установилось: \(text.trimmingCharacters(in: .whitespacesAndNewlines)). Повторите обновление.",
+                "The previous update was not installed: \(text.trimmingCharacters(in: .whitespacesAndNewlines)). Try updating again.",
+                "上次更新未安装：\(text.trimmingCharacters(in: .whitespacesAndNewlines))。请重试更新。"))
+        }
+    }
 
     var isBusy: Bool {
         switch stage {
@@ -94,9 +106,15 @@ final class UpdateService: ObservableObject {
         done
         # Таймаут не означает, что приложение завершилось. Если PID всё ещё
         # жив, подмена бандла запрещена: она может разорвать текущую запись.
+        # Отказ оставляет маркер: helper отвязан и его exit 75 никто не
+        # видит — раньше обновление молча не устанавливалось (аудит 14.08),
+        # человек узнавал только по не изменившейся версии.
         if kill -0 "$pid" 2>/dev/null; then
+          echo "приложение не завершилось за 10 секунд — подмена бандла отменена" \
+            > "${target}.update-refused" 2>/dev/null || true
           exit 75
         fi
+        rm -f "${target}.update-refused" 2>/dev/null || true
         # Старую копию не удаляем до успеха: если ditto оборвётся на середине,
         # у человека должно остаться рабочее приложение, а не половина.
         rm -rf "${target}.old"

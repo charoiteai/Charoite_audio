@@ -172,7 +172,21 @@ class RecorderService : Service() {
             return
         }
 
-        val file = File(Outbox.inProgress(this), "${kind.prefix}android_${stamp(Date())}.wav")
+        // Секундный штамп — не гарантия уникальности: старт-стоп-старт в одну
+        // секунду коллидирует, и WavWriter молча перезаписал бы прошлую
+        // запись (ревью 15.08) — имя уникализируется суффиксом до свободного.
+        val base = "${kind.prefix}android_${stamp(Date())}"
+        var file = File(Outbox.inProgress(this), "$base.wav")
+        var attempt = 2
+        while (file.exists() && attempt < 100) {
+            file = File(Outbox.inProgress(this), "${base}_$attempt.wav")
+            attempt++
+        }
+        if (file.exists()) {
+            // и сотый занят: UUID-хвост вместо тихой перезаписи последнего
+            file = File(Outbox.inProgress(this),
+                        "${base}_${java.util.UUID.randomUUID().toString().take(8)}.wav")
+        }
         val w = WavWriter(file)
         recorder = rec
         writer = w
