@@ -77,7 +77,9 @@ issue。
   交给人；`--url`（你自己的镜像）会跳过校验，因为我们的摘要不适用于别人的文件。
 - Dependabot 每周更新 actions、swift、gradle 和 pip。
 - 发布严格从发布标签构建。内嵌的 CPython 固定版本并对照上游发布的
-  `SHA256SUMS` 校验 sha256；`Charoite.app.zip` 和 `Charoite.dmg` 附带公开的
+  `SHA256SUMS` 校验 sha256，且构建不会从 PyPI 升级自身的 pip——应用包只从带
+  哈希的锁定文件安装（16.08 之前，锁定安装前曾运行未固定版本的
+  `pip install --upgrade pip`）；`Charoite.app.zip` 和 `Charoite.dmg` 附带公开的
   sha256，内置更新器在安装前先核对校验和。
 - **已知限制：** 目前构建为 ad-hoc 签名，macOS 会拦截首次启动 —
   系统设置 → 隐私与安全性 → *仍要打开*（macOS 15+ 上「右键 → 打开」

@@ -101,7 +101,10 @@ exclusive-open guarantee. Mechanics:
 - Dependabot updates actions, swift, gradle and pip weekly.
 - Releases build strictly from the release tag. The embedded CPython is
   version-pinned and sha256-verified against upstream's published
-  `SHA256SUMS`; `Charoite.app.zip` and `Charoite.dmg` ship with published
+  `SHA256SUMS`, and the build does not upgrade its pip from PyPI — the
+  bundle installs only from the hash-locked requirements (until 16.08 an
+  unpinned `pip install --upgrade pip` ran right before the locked
+  install); `Charoite.app.zip` and `Charoite.dmg` ship with published
   sha256 files, and the in-app updater verifies the checksum before
   installing anything.
 - **Known limitation:** builds are ad-hoc signed for now, so macOS blocks
