@@ -58,6 +58,23 @@ issue。
 独占打开的保证。机制详见 [ARCHITECTURE.md](ARCHITECTURE.md) 的
 「会议如何挺过崩溃」。
 
+## 已签名应用在本机信任什么
+
+macOS 应用持有用户授予的麦克风与屏幕录制权限，Python 守护进程作为子进程
+继承它们。因此运行*哪一份*守护进程代码、读取*哪一个*数据文件夹，是权限边界，
+而非路径偏好。
+
+- **代码**只要包内存在就从已签名的应用包运行。仅当用户在设置中选择了本地
+  目录*并且*开启「从此文件夹运行守护进程代码（开发）」时才使用本地检出。
+  在 16.08 审计之前，任何没有 TCC 权限的进程都可以放置
+  `~/Charoite_audio/src/daemon.py`，并让它以应用的权限执行。
+- **数据**（`config/config.yaml`、`models/`、逐字稿）在代码内置时来自
+  Application Support，否则来自设置中选择的文件夹。主目录中的克隆不再被
+  自动采用：`config.yaml` 含有 `sufler.post_meeting_hook`——每次会议后执行的
+  shell 命令，因此静默采用一个可写文件夹与运行未签名代码是同一扇门
+  （#328 的第二意见评审）。数据位于 `~/Charoite_audio` 的用户会被明确询问
+  一次并记住答案；无论如何守护进程代码仍来自应用包。
+
 ## 供应链与发布完整性
 
 - 所有 workflow 以最小权限 `permissions:` 和 `persist-credentials: false`

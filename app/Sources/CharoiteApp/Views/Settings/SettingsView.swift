@@ -5,6 +5,9 @@ import SwiftUI
 /// Настройки: путь установки Charoite_audio и адрес Ollama. Всё локальное.
 struct SettingsView: View {
     @AppStorage("charoite.root") private var root = ""
+    // Отсутствие ключа = прежний договор #328 (явный путь с кодом = код оттуда),
+    // поэтому дефолт true; тумблер показывается только там, где есть выбор.
+    @AppStorage("charoite.codeFromRoot") private var codeFromRoot = true
     @AppStorage("charoite.ollama") private var ollama = ""
     @AppStorage("charoite.calendarBriefs") private var calendarBriefs = false
     @AppStorage("charoite.importDir") private var importDir = ""
@@ -21,13 +24,43 @@ struct SettingsView: View {
     // файлов) выполнялся на КАЖДЫЙ символ, набранный в поле пути.
     @State private var graphStats = ""
 
+    /// В выбранной папке лежит код демона — тогда и только тогда есть что решать.
+    private var localCodeAtRoot: Bool {
+        guard let chosen = AppSettings.explicitRoot else { return false }
+        return FileManager.default.fileExists(atPath: chosen.appendingPathComponent("src/daemon.py").path)
+    }
+
     var body: some View {
         Form {
             Section(L.t("Подключение", "Connection", "连接")) {
-                TextField(L.t("Папка Charoite_audio", "Charoite_audio folder", "Charoite_audio 文件夹"),
+                TextField(L.t("Папка данных", "Data folder", "数据文件夹"),
                           text: $root,
                           prompt: Text("~/Charoite_audio"))
-                    .help(L.t("Где лежит установка: .venv, src/daemon.py, config/config.yaml", "Where the install lives: .venv, src/daemon.py, config/config.yaml", "安装位置：.venv、src/daemon.py、config/config.yaml"))
+                    .help(L.t("Где лежат данные: config/config.yaml, transcripts/, models/ (для установки из клона — сам клон с .venv и src/daemon.py)", "Where the data lives: config/config.yaml, transcripts/, models/ (for a cloned install — the clone itself with .venv and src/daemon.py)", "数据所在位置：config/config.yaml、transcripts/、models/（克隆安装则为含 .venv 与 src/daemon.py 的克隆目录）"))
+                // Пустое поле — не «нигде»: при коде в приложении данные идут в
+                // Application Support, при запуске из клона — в сам клон.
+                // Человек должен видеть, куда именно, не заглядывая в код.
+                Text(L.t("Сейчас: \(AppSettings.charoiteRoot.path)", "Now: \(AppSettings.charoiteRoot.path)", "当前：\(AppSettings.charoiteRoot.path)"))
+                    .font(.caption).foregroundStyle(.secondary)
+                if AppSettings.legacyCloneAwaitsChoice {
+                    HStack(spacing: 8) {
+                        Text(L.t("Найден клон ~/Charoite_audio — при коде в приложении он не берётся сам", "Found the ~/Charoite_audio clone — with bundled code it is not adopted automatically", "发现 ~/Charoite_audio 克隆 — 内置代码时不会自动采用"))
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button(L.t("Использовать для данных", "Use for data", "用作数据")) {
+                            AppSettings.adoptLegacyCloneAsDataRoot()
+                            root = "~/Charoite_audio"
+                        }
+                        .charoite(.link, .s)
+                    }
+                }
+                // Явная папка данных ещё не разрешение исполнять её код с
+                // правами приложения — это отдельное, видимое решение.
+                if AppSettings.codeIsEmbedded, !root.isEmpty, localCodeAtRoot {
+                    Toggle(isOn: $codeFromRoot) {
+                        Text(L.t("Запускать код демона из этой папки (разработка)", "Run the daemon code from this folder (development)", "从此文件夹运行守护进程代码（开发）"))
+                    }
+                    .help(L.t("Выключено — код из приложения (подписанный бандл). Включено — src/daemon.py из выбранной папки, с правами приложения на микрофон и экран.", "Off — code from the app (signed bundle). On — src/daemon.py from the chosen folder, with the app's microphone and screen permissions.", "关闭 — 使用应用（已签名包）内的代码。开启 — 使用所选文件夹中的 src/daemon.py，并拥有应用的麦克风与屏幕权限。"))
+                }
                 TextField("Ollama",
                           text: $ollama,
                           prompt: Text("http://localhost:11434"))
@@ -338,7 +371,9 @@ struct SettingsView: View {
 
     private func runCheck() async {
         var parts: [String] = []
-        let daemon = AppSettings.charoiteRoot.appendingPathComponent("src/daemon.py")
+        // Демон живёт у корня КОДА (бандл или выбранная папка), а не данных:
+        // при коде в приложении проверка по папке данных всегда была красной.
+        let daemon = AppSettings.codeRoot.appendingPathComponent("src/daemon.py")
         parts.append(FileManager.default.fileExists(atPath: daemon.path)
                      ? L.t("✓ демон", "✓ daemon", "✓ 守护进程") : L.t("✗ демон не найден", "✗ daemon not found", "✗ 未找到守护进程"))
         if let url = URL(string: AppSettings.ollamaURL + "/api/tags") {
