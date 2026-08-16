@@ -64,8 +64,18 @@ issue。
   运行；用户可控输入通过环境变量而非字符串插值进入脚本。CI 里 zizmor
   把关 workflow 安全，dependency review 拦截高危通告，CodeQL 在推送到
   `main`、PR 和每周定时任务上运行（目前仅覆盖 Python）。
-- Actions 按成文政策（`.github/zizmor.yml`）固定到版本标签；dependabot
-  每周更新 actions、swift、gradle 和 pip。
+- Actions 按成文政策（`.github/zizmor.yml`）固定到版本标签，但有一个例外：
+  两个持有 `contents: write` 的工作流——`release-please`（管理员 PAT）和
+  `release-app`（发布资产）——按提交 SHA 固定。在那里劫持可变标签会波及
+  用户实际安装的产物，代价与只读任务完全不同。
+- 内嵌 Python 从 `requirements-runtime.lock` 以 `--require-hashes` 安装：
+  签名包中的内容正是仓库中记录的那些包（含传递依赖），而不是构建当刻
+  PyPI 提供的版本。改动依赖后请用 `scripts/lock_runtime_deps.py` 重建 lock。
+- 模型权重按 `scripts/get_models.py` 中记录的 sha256 校验。下载地址指向可变
+  引用（`resolve/main`、发布资产）：镜像所有者可以在不改 URL 的情况下替换
+  文件——而该文件随后会听到你的每一场会议。校验和不符会中止安装并把决定权
+  交给人；`--url`（你自己的镜像）会跳过校验，因为我们的摘要不适用于别人的文件。
+- Dependabot 每周更新 actions、swift、gradle 和 pip。
 - 发布严格从发布标签构建。内嵌的 CPython 固定版本并对照上游发布的
   `SHA256SUMS` 校验 sha256；`Charoite.app.zip` 和 `Charoite.dmg` 附带公开的
   sha256，内置更新器在安装前先核对校验和。

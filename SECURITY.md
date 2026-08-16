@@ -82,8 +82,23 @@ exclusive-open guarantee. Mechanics:
   on pushes to `main`, pull requests and a weekly cron (Python only for
   now).
 - Actions are pinned to versioned tags under a documented policy
-  (`.github/zizmor.yml`); dependabot updates actions, swift, gradle and
-  pip weekly.
+  (`.github/zizmor.yml`), with one exception: the two workflows that hold
+  `contents: write` — `release-please` (admin PAT) and `release-app`
+  (release assets) — pin actions by commit SHA. A hijacked mutable tag
+  there would reach the artifacts users install, which is a different
+  price from a read-only job.
+- The embedded Python runtime installs from `requirements-runtime.lock`
+  with `--require-hashes`, so the signed bundle contains exactly the
+  packages recorded in the repository — not whatever PyPI served during
+  the build, transitive dependencies included. Rebuild the lock with
+  `scripts/lock_runtime_deps.py` after changing dependencies.
+- Model weights are verified by sha256 recorded in `scripts/get_models.py`.
+  The download URLs point at mutable refs (`resolve/main`, release
+  assets), so a mirror owner could swap a file without changing the URL —
+  and that file then listens to every meeting. A mismatch aborts the
+  install and asks a human to decide; `--url` (your own mirror) skips the
+  check, since our digest cannot apply to someone else's file.
+- Dependabot updates actions, swift, gradle and pip weekly.
 - Releases build strictly from the release tag. The embedded CPython is
   version-pinned and sha256-verified against upstream's published
   `SHA256SUMS`; `Charoite.app.zip` and `Charoite.dmg` ship with published

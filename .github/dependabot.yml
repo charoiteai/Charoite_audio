@@ -7,6 +7,9 @@ updates:
   # pip — самая большая поверхность проекта (onnxruntime, requests,
   # websockets…); без этой секции за её CVE следил только dependency-review
   # на PR, которых без dependabot не возникает (аудит 14.08)
+  # pip видит и pyproject (диапазоны), и requirements-runtime.lock
+  # (пины с хешами — то, что реально уезжает в бандл пользователям).
+  # При обновлении lock пересобирается: scripts/lock_runtime_deps.py
   - package-ecosystem: pip
     directory: /
     schedule: {interval: weekly}
