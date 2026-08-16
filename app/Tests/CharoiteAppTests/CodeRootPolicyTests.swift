@@ -41,10 +41,39 @@ final class CodeRootPolicyTests: XCTestCase {
 
     /// Ни бандла, ни локального кода — падать некуда, но и молча брать
     /// чужое неоткуда: остаётся папка данных, и демон честно не стартует.
+    /// (16.08: тест передавал explicitRoot: true вопреки собственному
+    /// описанию — сценарий по умолчанию оставался непокрытым.)
     func testНичегоНетОстаётсяПапкаДанных() {
         XCTAssertEqual(
-            AppSettings.codeSource(embedded: false, explicitRoot: true,
+            AppSettings.codeSource(embedded: false, explicitRoot: false,
                                    localCodeExists: false),
+            .besideData)
+    }
+
+    /// Явная папка данных — не разрешение исполнять её код: без тумблера
+    /// `charoite.codeFromRoot` код остаётся из бандла, даже если рядом с
+    /// данными лежит src/daemon.py. Иначе предложение «взять клон как папку
+    /// данных» тянуло бы за собой запуск чужого кода с правами приложения.
+    func testПапкаДанныхБезРазрешенияНаКодОстаётсяБандл() {
+        XCTAssertEqual(
+            AppSettings.codeSource(embedded: true, explicitRoot: true,
+                                   localCodeExists: true, codeFromRoot: false),
+            .embedded)
+    }
+
+    /// Тумблер включён — разработческий режим, как и раньше.
+    func testТумблерКодаВключаетКодИзПапки() {
+        XCTAssertEqual(
+            AppSettings.codeSource(embedded: true, explicitRoot: true,
+                                   localCodeExists: true, codeFromRoot: true),
+            .chosenByHuman)
+    }
+
+    /// Без бандла тумблер не имеет смысла: код и так рядом с данными.
+    func testТумблерНеМешаетЗапускуИзКлона() {
+        XCTAssertEqual(
+            AppSettings.codeSource(embedded: false, explicitRoot: false,
+                                   localCodeExists: true, codeFromRoot: false),
             .besideData)
     }
 

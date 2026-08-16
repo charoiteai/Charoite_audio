@@ -73,6 +73,28 @@ companions use their platforms' recorders and do not yet make the
 exclusive-open guarantee. Mechanics:
 [ARCHITECTURE.md](docs/ARCHITECTURE.md), "Surviving a crash".
 
+## What the signed app trusts locally
+
+The macOS app holds the microphone and screen-recording permissions the
+person granted, and the Python daemon inherits them as a child process.
+So *which* daemon code runs and *which* data folder it reads is a
+privilege boundary, not a path preference.
+
+- **Code** runs from the signed bundle whenever the bundle contains it.
+  A local checkout is used only when a person picks that folder in
+  Settings *and* switches on "Run the daemon code from this folder
+  (development)". Before the 16.08 audit any process without TCC rights
+  could drop `~/Charoite_audio/src/daemon.py` and have it executed with
+  the app's permissions.
+- **Data** (`config/config.yaml`, `models/`, transcripts) comes from
+  Application Support when the code is bundled, or from the folder chosen
+  in Settings. The clone in the home folder is no longer adopted
+  automatically: `config.yaml` carries `sufler.post_meeting_hook`, a shell
+  command run after every meeting, so a silently adopted writable folder
+  was the same door as unsigned code (second-opinion review of #328).
+  People whose data lives in `~/Charoite_audio` are asked once, visibly,
+  and the answer is remembered; the daemon code stays bundled either way.
+
 ## Supply chain and release integrity
 
 - All workflows run with least-privilege `permissions:` blocks and

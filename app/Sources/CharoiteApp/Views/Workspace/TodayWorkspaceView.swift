@@ -17,6 +17,11 @@ struct TodayWorkspaceView: View {
     // онбординг живёт sheet'ом в суфлёре: прямой старт с «Сегодня» до него
     // обходил бы первый запуск (ревью 15.08) — капсула тогда ведёт в Meeting
     @AppStorage("charoit.firstRunSeen") private var firstRunSeen = false
+    // Клон ~/Charoite_audio при вложенном коде больше не берётся сам (см.
+    // AppSettings.charoiteRoot). Тем, у кого данные уже там, предлагаем
+    // выбрать его явно — один раз, ответ помним; передумать можно в Настройках.
+    @AppStorage("charoite.legacyRootPrompted") private var legacyRootPrompted = false
+    @State private var showLegacyRootPrompt = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -32,6 +37,26 @@ struct TodayWorkspaceView: View {
                     .frame(minWidth: 210, idealWidth: 300, maxWidth: 340)
                     .layoutPriority(-1)
             }
+        }
+        .onAppear {
+            if !legacyRootPrompted && AppSettings.legacyCloneAwaitsChoice {
+                showLegacyRootPrompt = true
+            }
+        }
+        .alert(L.t("Найдена папка ~/Charoite_audio", "Found the ~/Charoite_audio folder", "发现 ~/Charoite_audio 文件夹"),
+               isPresented: $showLegacyRootPrompt) {
+            Button(L.t("Использовать её для данных", "Use it for data", "用作数据文件夹")) {
+                AppSettings.adoptLegacyCloneAsDataRoot()
+                legacyRootPrompted = true
+            }
+            Button(L.t("Оставить Application Support", "Keep Application Support", "保留 Application Support"),
+                   role: .cancel) {
+                legacyRootPrompted = true
+            }
+        } message: {
+            Text(L.t("Раньше приложение брало эту папку как папку данных само. Теперь — только по явному выбору: в ней лежит config.yaml с командой после встречи, и подхватывать её молча небезопасно. Код демона в любом случае остаётся из приложения; изменить выбор можно в Настройках.",
+                     "The app used to pick this folder as its data folder automatically. Now it takes it only when you choose it explicitly: the folder holds config.yaml with the post-meeting command, and adopting it silently is unsafe. The daemon code stays the bundled one either way; you can change this in Settings.",
+                     "此前应用会自动把该文件夹当作数据文件夹。现在只有在您明确选择时才会使用：其中的 config.yaml 含有会后命令，静默采用并不安全。无论如何守护进程代码仍来自应用本身；可随时在设置中更改。"))
         }
     }
 
