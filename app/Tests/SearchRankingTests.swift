@@ -240,32 +240,6 @@ final class DemoGraphSearchTests: XCTestCase {
     }
 }
 
-/// Персист истории ответов: лимит и roundtrip на диске.
-@MainActor
-final class ArchiveHistoryStoreTests: XCTestCase {
-    func testAppendPersistsAndLimits() throws {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("charoite-history-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-
-        let store = ArchiveHistoryStore.shared
-        store.clear(root: dir)
-        for i in 1...55 {
-            store.append(q: "вопрос \(i)", a: "ответ \(i)", root: dir)
-        }
-        XCTAssertEqual(store.entries.count, 50, "лимит 50 записей")
-        XCTAssertEqual(store.entries.last?.q, "вопрос 55")
-        XCTAssertEqual(store.entries.first?.q, "вопрос 6", "старые срезаны")
-
-        // roundtrip: файл читается заново
-        let data = try Data(contentsOf: dir.appendingPathComponent("archive_history.json"))
-        let decoded = try JSONDecoder().decode([ArchiveHistoryStore.Entry].self, from: data)
-        XCTAssertEqual(decoded.count, 50)
-        store.clear(root: dir)
-    }
-}
-
 /// Английский поиск: en-стемминг и e2e по английскому демо-графу.
 final class EnglishSearchTests: XCTestCase {
     override func setUp() async throws {

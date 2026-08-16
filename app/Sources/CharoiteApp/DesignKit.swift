@@ -70,48 +70,6 @@ extension PaneHeader where Trailing == EmptyView {
     }
 }
 
-// MARK: - Пустое состояние
-
-/// Что здесь появится, когда — и что нажать сейчас.
-///
-/// Прижато к верху и выровнено по левому краю: в панели высотой 800
-/// точек иконка с одной строкой по центру читалась как «ничего нет»,
-/// а не «ещё не началось».
-struct CharoiteEmptyState<Action: View>: View {
-    let title: String
-    let explanation: String
-    var shortcut: String?
-    @ViewBuilder var action: () -> Action
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.primary)
-            Text(explanation)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if let shortcut {
-                Text(shortcut)
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(Theme.accent)
-            }
-            action()
-        }
-        .frame(maxWidth: 520, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 18)
-        .padding(.top, 20)
-    }
-}
-
-extension CharoiteEmptyState where Action == EmptyView {
-    init(title: String, explanation: String, shortcut: String? = nil) {
-        self.init(title: title, explanation: explanation, shortcut: shortcut) { EmptyView() }
-    }
-}
-
 // MARK: - Слои встречи
 
 /// Чип слоя вместо системного свитча.

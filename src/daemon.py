@@ -1,7 +1,10 @@
 """Суфлёр-демон для UI: события NDJSON в stdout, команды из stdin.
 
 События:  {"type":"status","text":...} | {"type":"transcript","ts":"HH:MM:SS","text":...}
-          {"type":"thesis","text":...}  | {"type":"hint","text":...} | {"type":"hint_done"}
+          {"type":"thesis","text":...}  | {"type":"hint","text":...,"manual":bool}
+          {"type":"hint_done","manual":bool} — manual: стрим запрошен человеком
+          (вопрос/⌘⏎/протокол), не авто-циклом; панель по нему решает, что
+          вправе гасить карточку (старый UI поле просто не читает)
 Команды (stdin, по строке): hint | summary | expand [тема] | stop
 """
 from __future__ import annotations
@@ -444,8 +447,10 @@ def main():
     # генерации — кладём туда бриф последней встречи (тема, решения, задачи)
     brief = start_brief(cfg)
     if brief:
-        emit({"type": "hint", "text": brief})
-        emit({"type": "hint_done"})
+        # manual: панель различает стримы — авто-контент (бриф, автоподсказки)
+        # уступает место и гаснет с нитью, ручной ответ живёт до крестика
+        emit({"type": "hint", "text": brief, "manual": False})
+        emit({"type": "hint_done", "manual": False})
         append_hint(tr.path, "стартовый бриф (архив)", brief)   # аудит: бриф был
     # канон имён: узлы Люди/ графа — чтобы «Андрюха/Света/Полин» подписывались
     # каноничной формой, а не плодили дубли узлов
@@ -792,23 +797,23 @@ def main():
                 manual_evt.clear()
             tail = tr.tail(max_ctx)
             if not tail:
-                emit({"type": "hint", "text": "Стенограмма пока пуста."})
-                emit({"type": "hint_done"})
+                emit({"type": "hint", "text": "Стенограмма пока пуста.", "manual": manual})
+                emit({"type": "hint_done", "manual": manual})
                 return
             if header:
-                emit({"type": "hint", "text": header})
+                emit({"type": "hint", "text": header, "manual": manual})
             parts: list[str] = []
             try:
                 for tok in llm.hint(tail, model=model):
                     if not manual and manual_evt.is_set():
-                        emit({"type": "hint", "text": " …⏸"})
+                        emit({"type": "hint", "text": " …⏸", "manual": manual})
                         parts.append(" …⏸")
                         break  # уступаем ручному запросу
-                    emit({"type": "hint", "text": tok})
+                    emit({"type": "hint", "text": tok, "manual": manual})
                     parts.append(tok)
             except Exception as e:  # noqa: BLE001
-                emit({"type": "hint", "text": f"[LLM: {e}]"})
-            emit({"type": "hint_done"})
+                emit({"type": "hint", "text": f"[LLM: {e}]", "manual": manual})
+            emit({"type": "hint_done", "manual": manual})
             if parts:  # подсказки тоже сохраняем — лог полного разговора
                 kind = "ручная" if manual else "авто"
                 append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] подсказка ({kind})", "".join(parts))
@@ -1677,7 +1682,7 @@ def main():
         мгновенно (до lock), vault не дольше 2.5с, ответ каплен 220 токенами
         на лёгкой модели — итого первые слова ~1-2с, полный ответ ~4-6с.
         """
-        emit({"type": "hint", "text": f"\n\n❓ {question}\n"})
+        emit({"type": "hint", "text": f"\n\n❓ {question}\n", "manual": True})
         manual_evt.set()  # авто-контуры уступают
         with hint_lock:
             manual_evt.clear()
@@ -1715,11 +1720,11 @@ def main():
                     model=llm.small,
                     num_predict=220,
                 ):
-                    emit({"type": "hint", "text": tok})
+                    emit({"type": "hint", "text": tok, "manual": True})
                     parts.append(tok)
             except Exception as e:  # noqa: BLE001
-                emit({"type": "hint", "text": f"[LLM: {e}]"})
-            emit({"type": "hint_done"})
+                emit({"type": "hint", "text": f"[LLM: {e}]", "manual": True})
+            emit({"type": "hint_done", "manual": True})
             if parts:
                 append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ❓ {question}", "".join(parts))
 
@@ -1729,10 +1734,10 @@ def main():
             try:
                 for tok in llm.minutes(tr.full() or "(пусто)"):
                     chunks.append(tok)
-                    emit({"type": "hint", "text": tok})
+                    emit({"type": "hint", "text": tok, "manual": True})
             except Exception as e:  # noqa: BLE001
-                emit({"type": "hint", "text": f"[LLM: {e}]"})
-            emit({"type": "hint_done"})
+                emit({"type": "hint", "text": f"[LLM: {e}]", "manual": True})
+            emit({"type": "hint_done", "manual": True})
             if chunks:  # минутки — отдельным файлом рядом со стенограммой
                 mpath = tr.path.with_name(tr.path.stem + "_minutes.md")
                 # сверка номеров задач и дат со стенограммой: выдуманный
