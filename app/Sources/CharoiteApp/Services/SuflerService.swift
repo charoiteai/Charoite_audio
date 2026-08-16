@@ -401,7 +401,7 @@ final class SuflerService: ObservableObject {
         p.standardInput = inPipe
         // stderr — в лог: без него сбои демона невидимы (logs/daemon.err.log)
         let logDir = suflerRoot.appendingPathComponent("logs")
-        try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+        FileManager.default.createPrivateDirectory(at: logDir)  // логи демона несут куски стенограмм
         let errURL = logDir.appendingPathComponent("daemon.err.log")
         // append, не пересоздание: авто-рестарт после крэша затирал трейсбек
         // ровно в момент, когда он нужен для диагноза

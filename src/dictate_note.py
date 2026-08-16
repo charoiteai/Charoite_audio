@@ -28,7 +28,7 @@ import requests
 import sounddevice as sd
 import yaml
 
-from charoite_paths import code_root, resolve_root
+from charoite_paths import code_root, harden_umask, resolve_root
 
 ROOT = resolve_root(__file__)
 CODE = code_root(__file__)
@@ -86,6 +86,7 @@ def last_meeting_today() -> tuple[str, str] | None:
 
 
 def main():
+    harden_umask()  # данные встреч — только владельцу (аудит 16.08)
     diary = "--diary" in sys.argv
     text_mode = "--text" in sys.argv
     stt_holder: dict = {}

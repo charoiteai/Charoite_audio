@@ -614,6 +614,63 @@ class AudioHub:
                 continue  # файл убрали параллельно — не наша забота
         return held
 
+    @staticmethod
+    def prune_stream_files(data_dir: pathlib.Path, keep_days) -> int:
+        """Сырые потоки приложения — под тот же срок, что и записи.
+
+        Системный звук пишет приложение (демону права не наследуются), и эти
+        файлы жили ВНЕ ретеншна: `tap_stream.raw` усекался только следующим
+        стартом тапа, а каталоги `sck/<uuid>/` убирались лишь при штатном
+        стопе своей сессии — краш, SIGKILL или перезагрузка оставляли полное
+        аудио встречи навсегда. На рабочей машине так пролежал 61 МБ
+        системного звука девять дней при обещанных двух (аудит 16.08).
+        PRIVACY.md обещает «записи временны» — обещание должно покрывать и
+        этот слой.
+
+        Живую сессию не трогаем: её каталог назван в свежем манифесте.
+        Возвращает число удалённых путей.
+        """
+        if not data_dir.exists():
+            return 0
+        cutoff = time.time() - float(keep_days) * 86400
+        alive: set[str] = set()
+        for manifest in (fresh_sck_manifest(), fresh_tap_manifest()):
+            for key in ("system", "mic", "path"):
+                p = (manifest or {}).get(key)
+                if p:
+                    alive.add(str(pathlib.Path(p).resolve()))
+        removed = 0
+
+        def _old_enough(p: pathlib.Path) -> bool:
+            try:
+                return p.stat().st_mtime < cutoff
+            except OSError:
+                return False
+
+        raw = data_dir / "tap_stream.raw"
+        if (raw.exists() and str(raw.resolve()) not in alive and _old_enough(raw)):
+            raw.unlink(missing_ok=True)
+            removed += 1
+
+        sck = data_dir / "sck"
+        if sck.is_dir():
+            for session in sck.iterdir():
+                if not session.is_dir():
+                    continue
+                files = list(session.glob("*.raw"))
+                if any(str(f.resolve()) in alive for f in files):
+                    continue  # идёт прямо сейчас
+                if files and not all(_old_enough(f) for f in files):
+                    continue
+                for f in files:
+                    f.unlink(missing_ok=True)
+                    removed += 1
+                try:
+                    session.rmdir()
+                except OSError:
+                    pass  # в каталоге осталось чужое — пусть лежит
+        return removed
+
     def _finalize_recordings(self):
         """.pcm → .wav при штатном стопе; при крэше остаётся .pcm — его дотранскрибирует
         transcribe_file.py. Почти пустые записи (нет встречи) убираем.

@@ -23,7 +23,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from main import NOISE, Transcript  # noqa: E402
 from stt import STT  # noqa: E402
 
-from charoite_paths import resolve_root
+from charoite_paths import harden_umask, resolve_root
 
 ROOT = resolve_root(__file__)
 
@@ -72,6 +72,7 @@ def to_wav16k(src: pathlib.Path, pcm_rate: int = 16000) -> pathlib.Path:
 
 
 def main():
+    harden_umask()  # данные встреч — только владельцу (аудит 16.08)
     src = pathlib.Path(sys.argv[1]).expanduser()
     if not src.exists():
         sys.exit(f"нет файла: {src}")
