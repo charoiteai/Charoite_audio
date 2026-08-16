@@ -233,8 +233,8 @@ GET к публичному API GitHub раз в сутки: без токена
   <key>ProgramArguments</key>
   <array><string>/bin/bash</string><string>/ПУТЬ/К/Charoite_audio/scripts/nightly.sh</string></array>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>15</integer></dict>
-  <key>StandardOutPath</key><string>/PATH/TO/Charoite_audio/logs/nightly.log</string>
-  <key>StandardErrorPath</key><string>/PATH/TO/Charoite_audio/logs/nightly.log</string>
+  <key>StandardOutPath</key><string>/ПУТЬ/К/Charoite_audio/logs/nightly.log</string>
+  <key>StandardErrorPath</key><string>/ПУТЬ/К/Charoite_audio/logs/nightly.log</string>
 </dict></plist>
 ```
 

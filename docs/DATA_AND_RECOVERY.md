@@ -162,7 +162,11 @@ Forget a meeting completely:
 ```
 
 The first run only lists affected files. `--yes` removes the meeting from
-transcripts, recordings, archive and graph; surviving nodes are copied to
+transcripts, recordings, archive and graph — including its pipeline status
+under `logs/meeting-status/`, its graph and cloud-review logs and every
+`<stamp>_*.md` copy under Documentation; a stamp with seconds
+(`2026-07-15_140030`) is a separate meeting and is not swept along with
+`2026-07-15_1400`. Surviving nodes are copied to
 `.forget_backup/` before their references are edited. That directory is not a
 trash can for the deleted meeting — after confirmation, its own files should
 be considered removed.

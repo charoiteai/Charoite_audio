@@ -241,8 +241,12 @@ struct SettingsView: View {
         do {
             let data = try PropertyListSerialization.data(
                 fromPropertyList: job, format: .xml, options: 0)
-            FileManager.default.createPrivateDirectory(
-                at: nightlyPlistURL.deletingLastPathComponent())
+            // ~/Library/LaunchAgents — общий каталог всех агентов пользователя,
+            // не наш: создать при отсутствии, но права не ужимать (0700 ему
+            // ставил createPrivateDirectory — второе мнение по #324, 16.08).
+            try? FileManager.default.createDirectory(
+                at: nightlyPlistURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true)
             try data.write(to: nightlyPlistURL, options: .atomic)
             launchctl(["load", nightlyPlistURL.path])
             nightlyNote = L.t("готово — первый прогон сегодня в 04:15", "done — first run today at 04:15", "完成 — 今天 04:15 首次运行")

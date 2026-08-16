@@ -75,7 +75,11 @@ mv "$(dirname "$OUT")/python" "$OUT"
 
 echo "ставлю рантайм-зависимости…"
 # --no-cache-dir: колёса на 300 МБ в кэше пользователя никому не нужны.
-"$OUT/bin/python3" -m pip install --no-cache-dir --quiet --upgrade pip >/dev/null
+# pip НЕ обновляем: `pip install --upgrade pip` тянул свежий pip с PyPI без
+# пина и без хешей — прямо в подписанный бандл, в обход lock-файла, который
+# как раз обещает «ровно пиннутые артефакты» (второе мнение по #325, 16.08).
+# Штатный pip из python-build-standalone уже проверен по SHA256SUMS выше и
+# `--require-hashes` умеет.
 if [ "$WITH_EXTRAS" = "1" ]; then
     "$OUT/bin/python3" -m pip install --no-cache-dir --quiet .
 else
