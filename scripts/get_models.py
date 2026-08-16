@@ -63,23 +63,33 @@ class Model:
     size_mb: int
     note: str
     source: str = UPSTREAM
+    #: sha256 файла по этому URL. Ссылки указывают на `resolve/main` и на
+    #: релизы — то есть на подвижные цели: владелец зеркала (или тот, кто
+    #: увёл его аккаунт) подменяет файл, не меняя URL. Модель потом слушает
+    #: все встречи, а проверка формата ловит только обрыв закачки. Тот же
+    #: урок уже применён к интерпретатору (build_embedded_python.sh),
+    #: моделей он не коснулся — аудит 16.08.
+    sha256: str = ""
 
 
 MODELS = {
     "eres2net-base": Model(
         url=f"{MIRROR}/3dspeaker_speech_eres2net_base_200k_sv_zh-cn_16k-common.onnx",
+        sha256="e2d2048292e055f7b61cdec3db010503f35369b245bf0b3bbad021c9a91e4053",
         size_mb=40,
         note="дефолт: ERes2Net base, обучена на 200k говорящих — ровнее всего "
              "держит смешанные встречи",
     ),
     "eres2net-en": Model(
         url=f"{MIRROR}/3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx",
+        sha256="c59158379255ad66e161679cca6af8d52d51e389e3224ab7d7a7baae295c2db5",
         size_mb=27,
         note="легче и быстрее, VoxCeleb (английский корпус); брать, если "
              "мало памяти или встречи в основном англоязычные",
     ),
     "eres2netv2": Model(
         url=f"{MIRROR}/3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx",
+        sha256="bf1a75b9930474cf3389ef415e6e5d38ca96fea4a3a00f7e301d080a58ee2239",
         size_mb=71,
         note="v2, крупнее и точнее на близких голосах; медленнее на чанк",
     ),
@@ -93,15 +103,10 @@ DEFAULT = "eres2net-base"
 SEGMENTATION = {
     "pyannote-3.0": Model(
         url=f"{SEG_MIRROR}/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
+        sha256="24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488",
         size_mb=7,
         note="pyannote segmentation 3.0 в экспорте sherpa-onnx: границы речи и "
              "перекрытия говорящих",
-        source=SEG_UPSTREAM,
-    ),
-    "pyannote-3.0-int8": Model(
-        url=f"{SEG_MIRROR}/sherpa-onnx-pyannote-segmentation-3-0-int8.tar.bz2",
-        size_mb=3,
-        note="та же модель квантованная — вчетверо меньше, для слабых машин",
         source=SEG_UPSTREAM,
     ),
 }
@@ -119,10 +124,13 @@ SEG_DEFAULT = "pyannote-3.0"
 STT_MIRROR = ("https://huggingface.co/csukuangfj/"
               "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main")
 STT_UPSTREAM = "https://github.com/FunAudioLLM/SenseVoice"
+#: sha256 спутника tokens.txt (не LFS, сумма снята вручную 16.08)
+TOKENS_SHA256 = "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc"
 
 STT_MODELS = {
     "sensevoice": Model(
         url=f"{STT_MIRROR}/model.int8.onnx",
+        sha256="c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51",
         size_mb=228,
         note="SenseVoice Small (int8): китайский и ещё четыре восточноазиатских "
              "языка одной моделью; ставится вместе с tokens.txt",
@@ -173,6 +181,17 @@ def check(path: pathlib.Path, min_bytes: int = MIN_BYTES) -> str | None:
     return None
 
 
+def _digest(path: pathlib.Path) -> str:
+    """sha256 файла кусками: модели весят сотни мегабайт."""
+    import hashlib
+
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def _extract_onnx(archive: pathlib.Path, dest: pathlib.Path) -> None:
     """Достать единственную .onnx-модель из архива релиза sherpa-onnx.
 
@@ -196,7 +215,8 @@ def _extract_onnx(archive: pathlib.Path, dest: pathlib.Path) -> None:
             _sh.move(str(pathlib.Path(tmp) / best.name), str(dest))
 
 
-def download(url: str, dest: pathlib.Path, expect_mb: int, onnx: bool = True) -> None:
+def download(url: str, dest: pathlib.Path, expect_mb: int, onnx: bool = True,
+             sha256: str = "") -> None:
     """Скачать модель. Печатает адрес ДО соединения — это единственный выход в сеть.
 
     `onnx=False` — для файлов-спутников вроде `tokens.txt`: они текстовые, и
@@ -245,6 +265,20 @@ def download(url: str, dest: pathlib.Path, expect_mb: int, onnx: bool = True) ->
             + (f"на диске уже {done} МБ — повторите ту же команду, докачается "
                "с этого места\n" if done else "")
             + "или укажите своё зеркало через --url")
+    if sha256:
+        got = _digest(part)
+        if got != sha256:
+            # Файл под тем же URL стал другим. Это либо подмена на зеркале,
+            # либо законное обновление модели — различить их отсюда нельзя,
+            # поэтому решает человек, а не скрипт (аудит 16.08).
+            part.unlink(missing_ok=True)
+            raise SystemExit(
+                f"контрольная сумма не сошлась:\n  ждали {sha256}\n"
+                f"  получили {got}\n"
+                "файл по этому адресу изменился. Если это ожидаемое обновление "
+                "модели — обновите sha256 в scripts/get_models.py; если нет — "
+                "не ставьте его: модель слушает все ваши встречи.")
+
     if url.endswith((".tar.bz2", ".tar.gz")):
         _extract_onnx(part, dest)
         part.unlink(missing_ok=True)
@@ -323,8 +357,10 @@ def main() -> int:
         if stt_problem:
             print(stt_problem.split(" — ")[0])
             stt = STT_MODELS[args.stt]
-            download(args.url or stt.url, stt_dest, stt.size_mb)
-            download(f"{STT_MIRROR}/tokens.txt", tokens, 1, onnx=False)
+            download(args.url or stt.url, stt_dest, stt.size_mb,
+                     sha256="" if args.url else stt.sha256)
+            download(f"{STT_MIRROR}/tokens.txt", tokens, 1, onnx=False,
+                     sha256=TOKENS_SHA256)
             print("включить: stt.backend: sensevoice в config/config.yaml")
         else:
             print(f"модель распознавания уже стоит: {stt_dest}")
@@ -341,7 +377,8 @@ def main() -> int:
         if seg_problem:
             print(seg_problem.split(" — ")[0])
             seg = SEGMENTATION[SEG_DEFAULT]
-            download(args.url or seg.url, seg_dest, seg.size_mb)
+            download(args.url or seg.url, seg_dest, seg.size_mb,
+                     sha256="" if args.url else seg.sha256)
         else:
             print(f"модель сегментации уже стоит: {seg_dest}")
         if not args.diar:
@@ -358,7 +395,8 @@ def main() -> int:
 
     print(problem.split(" — ")[0])
     model = MODELS[args.model]
-    download(args.url or model.url, dest, model.size_mb)
+    download(args.url or model.url, dest, model.size_mb,
+             sha256="" if args.url else model.sha256)
     print("живая диаризация включится при следующем старте встречи "
           "(sufler.live_diarize уже true по умолчанию)")
     return 0
