@@ -108,7 +108,7 @@ actor SemanticIndex {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory,
                                            in: .userDomainMask)[0]
             .appendingPathComponent("Charoite", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        FileManager.default.createPrivateDirectory(at: dir)  // индекс хранит текст встреч
         // v2: формат сменился с «вектор на файл» на «векторы блоков».
         // Старый semantic_index.json просто перестаёт читаться — индекс
         // соберётся заново фоном, ломать нечего.

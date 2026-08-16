@@ -175,6 +175,33 @@ def _guarded_url(cfg: dict, env: dict | None, *, key: str, default: str) -> str:
         "config.yaml явное llm.allow_remote: true")
 
 
+def offline_required(env: dict | None = None) -> bool:
+    """Рубильник «ничего не покидает машину» взведён?
+
+    Отдельный вопрос от облачных тумблеров: те про стенограммы, а этот —
+    про любой выход наружу, включая докачку весов моделей. Веса тянутся
+    лениво, при первом же распознавании: с пустым `models/` демон уходил
+    на huggingface.co посреди встречи, и рубильник этого не видел
+    (аудит 16.08).
+    """
+    env = os.environ if env is None else env
+    return any(env.get(k) for k in KILL_SWITCHES)
+
+
+def enforce_offline_downloads(env: dict | None = None) -> None:
+    """Запретить библиотекам докачивать веса, когда взведён рубильник.
+
+    Hugging Face (transformers, onnx-asr, mlx-whisper, parakeet-mlx) читает
+    эти переменные сам: с ними библиотека берёт только локальный кэш и
+    честно падает, если модели нет, — вместо тихого выхода в сеть.
+    """
+    target = os.environ if env is None else env
+    if not offline_required(target):
+        return
+    target.setdefault("HF_HUB_OFFLINE", "1")
+    target.setdefault("TRANSFORMERS_OFFLINE", "1")
+
+
 def is_loopback_url(url: str) -> bool:
     """Указывает ли адрес на эту машину.
 

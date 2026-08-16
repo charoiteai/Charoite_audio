@@ -20,7 +20,7 @@ import llm_health  # noqa: E402
 import privacy  # noqa: E402
 from llm import LLM, LLMHTTPError  # noqa: E402
 
-from charoite_paths import code_root, resolve_root
+from charoite_paths import code_root, harden_umask, resolve_root
 
 ROOT = resolve_root(__file__)
 CODE = code_root(__file__)
@@ -561,6 +561,7 @@ def rebuild_cores_moc(graph: pathlib.Path):
 
 
 def main():
+    harden_umask()  # данные встреч — только владельцу (аудит 16.08)
     global _progress
     cfg = load_cfg()
     tpath = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else latest_transcript()

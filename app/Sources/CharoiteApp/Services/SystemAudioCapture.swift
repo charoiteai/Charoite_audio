@@ -246,7 +246,7 @@ final class SystemAudioCapture: NSObject {
             manifest["mic_rate"] = sink?.micSampleRate ?? Self.sampleRate
         }
         guard let data = try? JSONSerialization.data(withJSONObject: manifest) else { return }
-        try? FileManager.default.createDirectory(at: Self.dir, withIntermediateDirectories: true)
+        FileManager.default.createPrivateDirectory(at: Self.dir)
         try? data.write(to: Self.manifestURL, options: .atomic)
     }
 
@@ -277,9 +277,10 @@ final class SystemAudioCapture: NSObject {
 
         init(systemURL: URL, micURL: URL) {
             let fm = FileManager.default
-            try? fm.createDirectory(at: systemURL.deletingLastPathComponent(),
-                                    withIntermediateDirectories: true)
-            for url in [systemURL, micURL] { fm.createFile(atPath: url.path, contents: nil) }
+            // 0700/0600: сырой звук встречи не должен читаться другими
+            // учётками машины (аудит 16.08, см. PrivateFiles)
+            fm.createPrivateDirectory(at: systemURL.deletingLastPathComponent())
+            for url in [systemURL, micURL] { fm.createPrivateFile(atPath: url.path) }
             systemHandle = try? FileHandle(forWritingTo: systemURL)
             micHandle = try? FileHandle(forWritingTo: micURL)
         }

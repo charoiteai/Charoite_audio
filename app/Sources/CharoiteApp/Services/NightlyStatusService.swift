@@ -8,8 +8,9 @@ import Foundation
 /// Ночью Чароит причёсывает граф: ревизия ядер, досье, дедуп файлов,
 /// утренний бриф. Работа невидимая по определению — человек спит. Узнать,
 /// что она не выполняется, раньше можно было только заглянув в
-/// `/tmp/charoite_nightly.log`, который к тому же стирается перезагрузкой:
-/// «лога нет» и «ночью ничего не делалось» выглядели одинаково.
+/// `logs/nightly.log` (до 16.08 — общий `/tmp`, где его читала любая
+/// учётка машины и стирала перезагрузка): «лога нет» и «ночью ничего не
+/// делалось» выглядели одинаково.
 ///
 /// Поэтому `scripts/nightly.sh` пишет машиночитаемый итог в
 /// `logs/nightly.json` рядом с данными, а этот сервис его читает.
@@ -200,9 +201,9 @@ final class NightlyStatusService: ObservableObject {
                        "图谱已于 \(time.string(from: finished)) 整理完毕")
         case .failed(_, let steps):
             let list = steps.joined(separator: ", ")
-            return L.t("Не отработало: \(list). Подробности — в /tmp/charoite_nightly.log",
-                       "Failed steps: \(list). Details in /tmp/charoite_nightly.log",
-                       "失败步骤：\(list)。详情见 /tmp/charoite_nightly.log")
+            return L.t("Не отработало: \(list). Подробности — в logs/nightly.log",
+                       "Failed steps: \(list). Details in logs/nightly.log",
+                       "失败步骤：\(list)。详情见 logs/nightly.log")
         case .interrupted(let started):
             return L.t("Начата \(time.string(from: started)) и не завершилась — машину усыпили или перезагрузили",
                        "Started at \(time.string(from: started)) and never finished — the machine slept or rebooted",

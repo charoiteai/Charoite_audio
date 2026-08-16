@@ -48,7 +48,7 @@ enum AppSettings {
             ?? FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library/Application Support")
         let root = base.appendingPathComponent("Charoite", isDirectory: true)
-        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        FileManager.default.createPrivateDirectory(at: root)
         return root
     }
 
@@ -150,8 +150,15 @@ enum AppSettings {
         return nil
     }
 
-    /// Указывает ли хост на эту машину. Повторяет `privacy._is_loopback`:
-    /// имена + разбор IP, всё остальное (имя машины, .local, домен) — не сюда.
+    /// Указывает ли хост на эту машину: имена + разбор IP, всё остальное
+    /// (имя машины, .local, домен) — не сюда.
+    ///
+    /// Строже питона ровно в одном месте, и это осознанно (аудит 16.08):
+    /// `privacy._is_loopback` отвергает `0.0.0.0`, потому что
+    /// `ipaddress` не считает его петлёй, — а как адрес НАЗНАЧЕНИЯ он
+    /// ведёт на эту же машину, и запрос никуда не уходит. Здесь он
+    /// разрешён; расхождение не про приватность, а про строгость разбора,
+    /// и раньше комментарий обещал дословное повторение питона — врал.
     static func isLoopbackHost(_ host: String) -> Bool {
         let h = host.lowercased()
         if ["localhost", "127.0.0.1", "::1", "0.0.0.0", "[::1]"].contains(h) { return true }

@@ -48,7 +48,13 @@ from stt import STT  # noqa: E402
 
 import meeting_stamp  # noqa: E402
 
-from charoite_paths import code_root, resolve_root
+from charoite_paths import (
+    code_root,
+    harden_existing,
+    harden_umask,
+    resolve_root,
+    secure_dir,
+)
 
 ROOT = resolve_root(__file__)      # данные пользователя
 CODE = code_root(__file__)         # src/ и scripts/ — рядом с этим файлом
@@ -392,8 +398,13 @@ def _rebuild_orphans_sequentially(lives: list[pathlib.Path]) -> None:
 
 
 def main():
+    # Стенограмма — и есть чувствительные данные продукта: пишем её и всё
+    # остальное закрытым от других учёток машины (аудит 16.08). Разово
+    # чиним уже созданное — установки до правки лежат с правами 0644.
+    harden_umask()
+    harden_existing(ROOT)
     # single-instance: второй демон устроил бы битую стенограмму (один .tmp-путь)
-    (ROOT / "logs").mkdir(exist_ok=True)
+    secure_dir(ROOT / "logs")
     lockf = open(ROOT / "logs" / "daemon.lock", "w")
     try:
         fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -425,11 +436,18 @@ def main():
     # раньше чистка жила внутри _open_sinks, поэтому при record: false или
     # недельном простое записи лежали дольше обещанного в PRIVACY.
     try:
+        keep_days = cfg["audio"].get("record_keep_days", 2)
         held = AudioHub.prune_recordings(
             ROOT / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings"),
-            cfg["audio"].get("record_keep_days", 2),
+            keep_days,
             protect=hub.protect_stamps,
         )
+        # Сырые потоки приложения (data/sck/*, tap_stream.raw) жили вне
+        # ретеншна: краш оставлял полное аудио встречи навсегда (аудит 16.08).
+        dropped = AudioHub.prune_stream_files(ROOT / "data", keep_days)
+        if dropped:
+            emit({"type": "status",
+                  "text": f"Убраны сырые потоки прошлых встреч: {dropped}"})
         if held:
             # Вслух: задержка сверх обещанного в PRIVACY срока — это исключение,
             # и человек должен видеть, что оно случилось и почему.

@@ -27,7 +27,7 @@ from audio import AudioHub, list_devices  # noqa: E402
 from llm import LLM  # noqa: E402
 from stt import STT  # noqa: E402
 
-from charoite_paths import resolve_root
+from charoite_paths import harden_umask, resolve_root
 
 ROOT = resolve_root(__file__)
 console = Console()
@@ -297,6 +297,7 @@ def stt_loop(hub: AudioHub, stt: STT, tr: Transcript, stop: threading.Event):
 
 
 def main():
+    harden_umask()  # данные встреч — только владельцу (аудит 16.08)
     cfg = load_cfg()
     console.print(Panel.fit("[bold]Суфлёр v1[/bold] — локально, ничего не покидает машину", style="cyan"))
 
