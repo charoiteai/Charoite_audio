@@ -220,15 +220,22 @@ def plan(stamp: str, root: pathlib.Path,
     # не доходит до логов). Исходник в папке импорта done/ сюда не входит:
     # её путь знает только вызов --scan, у скрипта его нет — см. README.
     logs = root / "logs"
-    p.delete += _with_stamp(logs, stamp, prefix="graph_", suffix=".log")
+    # Все три класса логов названы МИНУТНЫМ штампом (daemon: `stem[:15]`,
+    # graph_updater: parse_stem, rebuild: `stem[:15]`), а штамп посекундной
+    # встречи без темы — с секундами: по нему логи не находились и переживали
+    # забывание (второе мнение DeepSeek по партии 16.08). Две встречи одной
+    # минуты пишут в один и тот же лог — он общий, и удалить его при
+    # забывании любой из них честнее, чем оставить.
+    log_stamp = stamp[:15]
+    p.delete += _with_stamp(logs, log_stamp, prefix="graph_", suffix=".log")
     # Лог облачной ревизии называется иначе и потому переживал забывание:
     # внутри — имена файлов встречи (а тема встречи стоит в имени),
     # счётчики и stderr CLI (аудит 16.08).
-    p.delete += _with_stamp(logs, stamp, prefix="cloud_review_", suffix=".log")
+    p.delete += _with_stamp(logs, log_stamp, prefix="cloud_review_", suffix=".log")
     # Лог повторной пересборки (retry_<штамп>.log): stdout rebuild_transcript
     # с маппингом имён участников и темой — третий класс, который ни ретеншн,
     # ни «забыть» не видели (аудит DeepSeek 16.08).
-    p.delete += _with_stamp(logs, stamp, prefix="retry_", suffix=".log")
+    p.delete += _with_stamp(logs, log_stamp, prefix="retry_", suffix=".log")
     # Статус конвейера (logs/meeting-status/<стенограмма>.json): путь к
     # стенограмме — с темой в имени, этап, текст ошибки; его же читает
     # список «Недавние встречи». Чистится сам через 14 дней, но «забыть»

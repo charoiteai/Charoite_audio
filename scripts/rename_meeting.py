@@ -78,8 +78,13 @@ def retitled(name: str, stamp: str, slug: str) -> str | None:
       встречи, разобранные до фикса, остались голыми — переименовываем в
       короткий штамп со слагом, как назвал бы сам конвейер.
 
-    ПРОИЗВОДНЫЕ посекундные файлы («…113012_hints.md») не трогаем: темы в их
-    именах нет, а по полному стему их находит конвейер.
+    ПРОИЗВОДНЫЕ посекундные файлы («…113012_hints.md») получают то же имя,
+    что дал бы им сам конвейер (`graph_updater.retitle`: `{bare}_*` →
+    `{stamp}_{slug}{suffix}`). Раньше их не трогали — «по полному стему их
+    находит конвейер», — но после переименования главного файла полный стем
+    встречи другой: архив, облачный контекст и повторные прогоны ищут файлы
+    по стему главного файла и посекундные производные больше не видели
+    (второе мнение DeepSeek по партии 16.08). Незнакомый хвост не трогаем.
     """
     stem, dot, ext = name.partition(".md")
     if not dot or ext:                      # .md.live.json и прочие — не трогаем
@@ -89,6 +94,10 @@ def retitled(name: str, stamp: str, slug: str) -> str | None:
     rest = stem[len(stamp):]
     if rest == "" or re.fullmatch(r"\d\d", rest):
         return f"{stamp}_{slug}.md"         # главный файл без темы
+    m_sec = re.fullmatch(r"\d\d(_.+)", rest)
+    if m_sec:                               # посекундный производный: «12_hints»
+        suffix = m_sec.group(1)
+        return f"{stamp}_{slug}{suffix}.md" if suffix in SUFFIXES else None
     m = re.match(r"^_(?!\d)(.+)$", rest)
     if not m:
         return None

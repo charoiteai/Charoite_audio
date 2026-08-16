@@ -356,3 +356,26 @@ def test_forget_reaches_the_status_named_after_the_live_transcript(tmp_path):
     assert mine in plan.delete, "статус, названный по живой стенограмме, переживает забывание"
     assert theirs not in plan.delete
     assert broken not in plan.delete
+
+
+def test_logs_of_a_seconds_stamped_meeting_are_found_by_the_minute(tmp_path):
+    """Логи названы минутным штампом (`stem[:15]`), а штамп посекундной
+    встречи без темы — с секундами: по нему логи не находились и
+    переживали забывание (второе мнение DeepSeek по партии 16.08)."""
+    root, graph = _world(tmp_path)
+    sec = f"{STAMP}30"                       # 2026-07-15_140030
+    (root / "transcripts" / f"{sec}.md").write_text("стенограмма", encoding="utf-8")
+    logs = root / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    mine = [logs / f"graph_{STAMP}.log", logs / f"cloud_review_{STAMP}.log",
+            logs / f"retry_{STAMP}.log"]
+    for f in mine:
+        f.write_text("имена: Мария Соколова\n", encoding="utf-8")
+    theirs = logs / f"graph_{OTHER}.log"
+    theirs.write_text("другая", encoding="utf-8")
+
+    plan = forget.plan(sec, root, graph)
+
+    for f in mine:
+        assert f in plan.delete, f"{f.name} переживает забывание посекундной встречи"
+    assert theirs not in plan.delete
