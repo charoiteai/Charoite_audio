@@ -53,11 +53,43 @@ enum AppSettings {
     }
 
     /// Откуда запускать код: вложенный в бандл, если рядом с данными его нет.
+    ///
+    /// Молчаливого предпочтения записываемой копии здесь больше нет.
+    /// Приложение подписано и держит выданные ему права на микрофон и запись
+    /// экрана; демон наследует их, запускаясь дочерним процессом. Пока код
+    /// брался из первой попавшейся папки с `src/daemon.py`, любой процесс без
+    /// TCC-прав мог подложить `~/Charoite_audio/src/daemon.py` — и Charoite
+    /// выполнил бы его со своими разрешениями (аудит 16.08). Комментарий у
+    /// запуска демона всё это время обещал обратное: «бандл подписан и
+    /// доступен только на чтение».
+    ///
+    /// Правило: есть вложенный код — идём из бандла. Локальный код нужен
+    /// разработчику, и это остаётся возможным: путь, ЯВНО выбранный
+    /// человеком в Настройках (`charoite.root`), уважается — но он виден
+    /// в интерфейсе, а не подхватывается сам.
     static func codeRoot(dataRoot: URL? = nil) -> URL {
         let data = dataRoot ?? charoiteRoot
+        let chosen = (UserDefaults.standard.string(forKey: "charoite.root") ?? "")
+            .isEmpty == false
+        if codeIsEmbedded && !chosen { return embeddedCodeRoot }
         let localCode = data.appendingPathComponent("src/daemon.py").path
         if FileManager.default.fileExists(atPath: localCode) { return data }
         return codeIsEmbedded ? embeddedCodeRoot : data
+    }
+
+    /// Решение о корне кода без обращения к диску и настройкам — для тестов
+    /// и для внятного объяснения в интерфейсе.
+    enum CodeSource: Equatable {
+        case embedded          // подписанный бандл, только на чтение
+        case chosenByHuman     // путь из Настроек: разработческая установка
+        case besideData        // код лежит рядом с данными (клон репозитория)
+    }
+
+    static func codeSource(embedded: Bool, explicitRoot: Bool,
+                           localCodeExists: Bool) -> CodeSource {
+        if embedded && !explicitRoot { return .embedded }
+        if localCodeExists { return explicitRoot ? .chosenByHuman : .besideData }
+        return embedded ? .embedded : .besideData
     }
 
     static var codeRoot: URL { codeRoot(dataRoot: nil) }
