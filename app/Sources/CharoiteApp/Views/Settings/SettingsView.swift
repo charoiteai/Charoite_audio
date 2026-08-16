@@ -221,22 +221,29 @@ struct SettingsView: View {
             nightlyNote = L.t("scripts/nightly.sh не найден — проверьте путь установки", "scripts/nightly.sh not found — check the install path", "未找到 scripts/nightly.sh — 请检查安装路径")
             return
         }
-        let plist = """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0"><dict>
-          <key>Label</key><string>ai.charoite.nightly</string>
-          <key>ProgramArguments</key>
-          <array><string>/bin/bash</string><string>\(script.path)</string></array>
-          <key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>15</integer></dict>
-          <key>StandardOutPath</key><string>/tmp/charoite_nightly.log</string>
-          <key>StandardErrorPath</key><string>/tmp/charoite_nightly.log</string>
-        </dict></plist>
-        """
+        // Лог ночного прогона — рядом с данными, а не в общем /tmp: туда
+        // печатаются вопросы бенча памяти, названия ядер и куски ответов из
+        // архива встреч, а /tmp читает любая учётка машины (аудит 16.08).
+        let logDir = AppSettings.charoiteRoot.appendingPathComponent("logs")
+        FileManager.default.createPrivateDirectory(at: logDir)
+        let logPath = logDir.appendingPathComponent("nightly.log").path
+        FileManager.default.createPrivateFile(atPath: logPath)
+
+        // Пути — настоящими узлами plist, а не интерполяцией в XML: каталог
+        // установки с «&» или «<» в имени иначе ломает или подменяет файл.
+        let job: [String: Any] = [
+            "Label": "ai.charoite.nightly",
+            "ProgramArguments": ["/bin/bash", script.path],
+            "StartCalendarInterval": ["Hour": 4, "Minute": 15],
+            "StandardOutPath": logPath,
+            "StandardErrorPath": logPath,
+        ]
         do {
-            try FileManager.default.createDirectory(
-                at: nightlyPlistURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try plist.write(to: nightlyPlistURL, atomically: true, encoding: .utf8)
+            let data = try PropertyListSerialization.data(
+                fromPropertyList: job, format: .xml, options: 0)
+            FileManager.default.createPrivateDirectory(
+                at: nightlyPlistURL.deletingLastPathComponent())
+            try data.write(to: nightlyPlistURL, options: .atomic)
             launchctl(["load", nightlyPlistURL.path])
             nightlyNote = L.t("готово — первый прогон сегодня в 04:15", "done — first run today at 04:15", "完成 — 今天 04:15 首次运行")
         } catch {

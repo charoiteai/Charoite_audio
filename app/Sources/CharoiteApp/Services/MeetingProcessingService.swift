@@ -539,10 +539,9 @@ final class MeetingProcessingService: ObservableObject {
         p.environment = env
         // лог — тот же файл, что у демонского запуска этой встречи, но append:
         // прошлый трейсбек — единственный след первой ошибки, затирать нельзя
-        try? FileManager.default.createDirectory(
-            at: cmd.log.deletingLastPathComponent(), withIntermediateDirectories: true)
+        FileManager.default.createPrivateDirectory(at: cmd.log.deletingLastPathComponent())
         if !FileManager.default.fileExists(atPath: cmd.log.path) {
-            FileManager.default.createFile(atPath: cmd.log.path, contents: nil)
+            FileManager.default.createPrivateFile(atPath: cmd.log.path)
         }
         if let fh = try? FileHandle(forWritingTo: cmd.log) {
             fh.seekToEndOfFile()

@@ -6,6 +6,15 @@ import numpy as np
 
 class STT:
     def __init__(self, cfg: dict):
+        import privacy
+
+        # Веса STT качаются лениво, при первом распознавании — то есть
+        # посреди встречи. Рубильник «ничего не покидает машину» этого не
+        # видел: с пустым кэшем демон уходил на huggingface.co, несмотря на
+        # CHAROITE_NO_CLOUD (аудит 16.08). Теперь библиотека знает про
+        # офлайн и падает внятно, вместо тихого выхода в сеть.
+        privacy.enforce_offline_downloads()
+
         from vocabulary import compile_rules
         self._vocab_rules = compile_rules(cfg)  # словарь замен на все распознавания
         s = cfg["stt"]

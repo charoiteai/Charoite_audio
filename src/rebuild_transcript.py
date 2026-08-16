@@ -28,7 +28,7 @@ import sys
 import time
 import wave
 
-from charoite_paths import code_root, resolve_root
+from charoite_paths import code_root, harden_umask, resolve_root
 
 ROOT = resolve_root(__file__)
 CODE = code_root(__file__)
@@ -602,6 +602,7 @@ def mark_running(live: pathlib.Path) -> pathlib.Path | None:
 
 
 def main():
+    harden_umask()  # данные встреч — только владельцу (аудит 16.08)
     live = pathlib.Path(sys.argv[1]).expanduser()
     if not live.exists():
         sys.exit(f"нет файла: {live}")
