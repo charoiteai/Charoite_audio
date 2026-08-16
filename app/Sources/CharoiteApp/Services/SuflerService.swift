@@ -140,6 +140,16 @@ final class SuflerService: ObservableObject {
     private var systemAudioCapture: Any?
     private var stdoutBuffer = Data()
     private var _hintBuf = ""            // буфер троттла подсказки (см. consume)
+    // Панель различает содержимое подсказки: авто-контент (бриф, автоподсказки
+    // раз в 75с) нить вправе вытеснить, а ответ на РУЧНОЙ вопрос/подсказку —
+    // нет: демон эмитит thread сразу после отпускания hint_lock, то есть через
+    // секунды после hint_done ручного ответа (ревью 16.08, №22). Ручной ответ
+    // живёт до крестика или до следующей авто-подсказки — та вытесняет.
+    private var hintIsManual = false
+    // Живой НЕзапрошенный стрим (авто-цикл демона): isHinting его не видит
+    // (тот взводится только ручными запросами), а thread-событие посреди
+    // авто-стрима резало буфер пополам — хвост рисовался с середины фразы.
+    @Published private(set) var isAutoHinting = false
     private var _lastHintUI = Date.distantPast
     // Watchdog: демон шлёт hb каждые 30с из главного цикла; тишина 100с на живом
     // процессе = завис (20.07: встреча шла, транскрипция молча стояла 20 минут)
@@ -320,9 +330,11 @@ final class SuflerService: ObservableObject {
             restartAttempts = 0
         }
         _hintBuf = ""; _lastHintUI = .distantPast
+        hintIsManual = false
         // демон мог умереть посреди генерации — hint_done уже не придёт,
         // без сброса кнопки Подсказка/Claude/Протокол залипали заблокированными
         isHinting = false
+        isAutoHinting = false
         isExpanding = false
         isClouding = false
 
@@ -706,6 +718,7 @@ final class SuflerService: ObservableObject {
         hint = ""
         _hintBuf = ""; _lastHintUI = .distantPast
         isHinting = true
+        hintIsManual = true
         armHintTimeout()
         send("hint")
     }
@@ -715,8 +728,32 @@ final class SuflerService: ObservableObject {
         hint = ""
         _hintBuf = ""; _lastHintUI = .distantPast
         isHinting = true
+        hintIsManual = true
         armHintTimeout()
         send("summary")
+    }
+
+    /// Крестик на карточке подсказки: ручной ответ нить не гасит (он может
+    /// быть нужен до конца встречи), поэтому убрать его с экрана может
+    /// только сам человек — или вытеснить следующая авто-подсказка.
+    func dismissHint() {
+        // посреди ЛЮБОГО живого стрима (ручного или авто) токены через ≤33мс
+        // воскресят карточку — крестик в UI в это время спрятан, guard —
+        // оборона от гонки «стрим начался между кадром и кликом»
+        guard !isHinting, !isAutoHinting else { return }
+        hint = ""
+        _hintBuf = ""
+        hintIsManual = false
+    }
+
+    /// Гасит ли обновление нити карточку подсказки. Чистая функция — обе
+    /// критические ошибки ревью 16.08 (стирание ручного ответа, ампутация
+    /// идущего авто-стрима) прошли бы мимо тестов, живи решение в consume.
+    /// Гаснет только ЗАВЕРШЁННЫЙ авто-контент (бриф, старая авто-подсказка);
+    /// живые стримы и ручной ответ нить не трогает.
+    nonisolated static func threadClearsHint(isHinting: Bool, isAutoHinting: Bool,
+                                             hintIsManual: Bool) -> Bool {
+        !isHinting && !isAutoHinting && !hintIsManual
     }
 
     /// ⏮: хвосты прошлых встреч по текущей теме нити — из графа в нить.
@@ -747,6 +784,7 @@ final class SuflerService: ObservableObject {
         hint = ""
         _hintBuf = ""; _lastHintUI = .distantPast
         isHinting = true
+        hintIsManual = true
         send("ask " + q)
     }
 
@@ -785,11 +823,37 @@ final class SuflerService: ObservableObject {
                 restartAttempts = 0  // транскрипция реально идёт — лимит рестартов обнуляем
             case "thread":
                 thread = text
+                if Self.threadClearsHint(isHinting: isHinting,
+                                         isAutoHinting: isAutoHinting,
+                                         hintIsManual: hintIsManual) {
+                    // буфер чистим вместе с hint: иначе первый токен следующей
+                    // генерации воскрешал стёртое (ревью 16.08, №22)
+                    hint = ""; _hintBuf = ""
+                }
             case "expand_started":
                 isExpanding = true
             case "expand_done":
                 isExpanding = false
             case "hint":
+                // Демон помечает стрим: manual — запрошен человеком, иначе
+                // авто-цикл. Старый демон поля не шлёт — тогда считаем токен
+                // ручным, пока ждём ручной стрим, и авто — когда не ждём.
+                let manual = obj["manual"] as? Bool ?? isHinting
+                if !manual && isHinting {
+                    // хвост уступающего авто-стрима («…⏸»), пока ждём ручной
+                    // ответ: раньше вклеивался в его начало — теперь мимо
+                    // карточки (демон сам пишет его в лог подсказок)
+                    isAutoHinting = true  // его hint_done ещё придёт
+                    break
+                }
+                if !manual && !isAutoHinting {
+                    // первый токен нового авто-стрима: карточка уступает —
+                    // прежний контент (бриф или прочитанный ручной ответ)
+                    // вытесняется свежей подсказкой, а не копится лентой
+                    isAutoHinting = true
+                    hintIsManual = false
+                    _hintBuf = ""; _lastHintUI = .distantPast
+                }
                 // троттл ~30fps: hint растёт по токену, растущий Text = O(n²)
                 _hintBuf += text
                 if Date().timeIntervalSince(_lastHintUI) >= 0.033 {
@@ -806,6 +870,13 @@ final class SuflerService: ObservableObject {
                     }
                 }
             case "hint_done":
+                let manual = obj["manual"] as? Bool ?? isHinting
+                if !manual {
+                    isAutoHinting = false
+                    // done уступившего авто, пока ждём ручной ответ: не
+                    // флашить чужой хвост и не сбрасывать ручной isHinting
+                    if isHinting { break }
+                }
                 hint = _hintBuf  // финальный флаш хвоста
                 isHinting = false
                 disarmHintTimeout()

@@ -21,7 +21,7 @@ the only input for a retry.
 | `~/Library/Application Support/Charoite/semantic_index_v2.bin` | Derived search index | Rebuildable | Search acceleration, not a backup |
 
 `record_keep_days` deletes audio, not meeting documents. Disappearing from the
-Recent meetings window also deletes nothing; only the status record expired.
+Meetings section also deletes nothing; only the status record expired.
 
 ## Sources of truth
 

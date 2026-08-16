@@ -4,7 +4,10 @@ import XCTest
 /// Список последних встреч: раньше приложение показывало ровно одну — ту,
 /// что случилась последней. Вчерашняя ошибка исчезала с экрана в ту секунду,
 /// когда начиналась новая запись, хотя статусы лежат на диске две недели.
-final class RecentMeetingsTests: XCTestCase {
+// Имя исторически было RecentMeetingsTests — окно «Последние встречи»
+// удалено (№22), но политика истории (границы, лимит, подписи этапов)
+// живёт в MeetingProcessingPolicy — её тесты и проверяют.
+final class MeetingHistoryPolicyTests: XCTestCase {
     private func snapshot(
         id: String,
         state: MeetingProcessingSnapshot.State = .ready,

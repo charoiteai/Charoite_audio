@@ -84,7 +84,7 @@
 7. **`DesignKit.swift`** — `RecordCapsule` и `LayerChip` переводим на общий стиль вместо своих заливок; `LayerChip` остаётся капсулой (это переключатель, не кнопка).
 
 Отдельно проверить: `.plain` на строках-контейнерах (`MeetingCardView:102/117/131`,
-`RecentMeetingsView:86/174`, `MeetingLibraryView:125/213`) — это нажимаемые **строки
+`MeetingLibraryView:125/213`; RecentMeetingsView удалён в №22) — это нажимаемые **строки
 списка**, а не кнопки. Им нужен не `CharoiteButtonStyle`, а подсветка строки при
 наведении. В таблице ролей их нет намеренно.
 
