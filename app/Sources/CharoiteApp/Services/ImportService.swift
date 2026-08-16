@@ -56,7 +56,7 @@ final class ImportService: ObservableObject {
         let todo = pending.filter { Self.supported.contains($0.pathExtension.lowercased()) }
         guard !todo.isEmpty else { return }
 
-        status = "импорт: \(todo.count) файл(ов)…"
+        status = L.t("импорт: \(todo.count) файл(ов)…", "importing \(todo.count) file(s)…", "正在导入 \(todo.count) 个文件…")
         let p = Process()
         let root = AppSettings.charoiteRoot
         p.arguments = [AppSettings.scriptPath("scripts/import_meeting.py", root: root),
@@ -69,14 +69,14 @@ final class ImportService: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.proc = nil
-                self.status = code == 0 ? "импорт завершён" : "импорт: часть файлов не прошла"
+                self.status = code == 0 ? L.t("импорт завершён", "import finished", "导入完成") : L.t("импорт: часть файлов не прошла", "import: some files failed", "导入：部分文件失败")
             }
         }
         do {
             try p.run()
             proc = p
         } catch {
-            status = "импорт не запустился: \(error.localizedDescription)"
+            status = L.t("импорт не запустился: \(error.localizedDescription)", "import failed to start: \(error.localizedDescription)", "导入未能启动：\(error.localizedDescription)")
         }
     }
 }

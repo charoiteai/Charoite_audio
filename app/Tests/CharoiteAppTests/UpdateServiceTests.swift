@@ -117,15 +117,18 @@ final class UpdateServiceTests: XCTestCase {
     /// PID helper обязан выйти ДО первой операции с установленным бандлом.
     func testReplacementScriptFailsClosedWhileAppIsAlive() throws {
         let s = UpdateService.replacementScript()
-        let guardRange = try XCTUnwrap(s.range(of: """
-        if kill -0 "$pid" 2>/dev/null; then
-          exit 75
-        fi
-        """))
+        let guardRange = try XCTUnwrap(s.range(of: "if kill -0 \"$pid\" 2>/dev/null; then"))
         let replaceRange = try XCTUnwrap(s.range(of: "mv \"$target\" \"${target}.old\""))
 
         XCTAssertLessThan(guardRange.lowerBound, replaceRange.lowerBound,
                           "helper меняет бандл до повторной проверки PID")
+        // отказ больше не молчалив: helper оставляет маркер, приложение
+        // показывает его при следующем старте (аудит 14.08, «exit75 молчалив»)
+        let markerWrite = try XCTUnwrap(
+            s.range(of: "> \"${target}.update-refused\""))
+        XCTAssertLessThan(guardRange.lowerBound, markerWrite.lowerBound)
+        XCTAssertLessThan(markerWrite.lowerBound, replaceRange.lowerBound,
+                          "маркер пишется внутри guard'а, до подмены бандла")
     }
 
     /// Пути передаются отдельными argv: bash не должен повторно разбирать

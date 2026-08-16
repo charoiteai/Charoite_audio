@@ -161,7 +161,7 @@ final class LocalChatService: ObservableObject {
                     ? "\n\n[ГРАФ ВСТРЕЧ — совпадения СЛАБЫЕ, вероятно не про вопрос; не выдавай за факт]\n" + vault
                     : "\n\n[ГРАФ ВСТРЕЧ — люди, системы, решения, документация]\n" + vault
             }
-            status = vault.isEmpty ? "в графе пусто по теме" : (lowConf ? "граф: слабые совпадения" : "🧠 граф подмешан")
+            status = vault.isEmpty ? L.t("в графе пусто по теме", "graph has nothing on the topic", "图谱中无相关内容") : (lowConf ? L.t("граф: слабые совпадения", "graph: weak matches", "图谱：弱匹配") : L.t("🧠 граф подмешан", "🧠 graph mixed in", "🧠 已加入图谱"))
         }
         var msgs: [[String: String]] = [["role": "system", "content": system]]
         // Окно истории: не хвост в N сообщений, а бюджет в знаках — длинные
@@ -182,7 +182,7 @@ final class LocalChatService: ObservableObject {
         var effModel = model
         if SuflerService.shared.isRunning, model == "qwen3.6:35b-a3b" {
             effModel = "qwen3.5:4b"
-            status = "встреча идёт — отвечает лёгкая модель (qwen3.5:4b)"
+            status = L.t("встреча идёт — отвечает лёгкая модель (qwen3.5:4b)", "meeting in progress — the light model answers (qwen3.5:4b)", "会议进行中——由轻量模型回答（qwen3.5:4b）")
         }
 
         guard let url = URL(string: ollamaBase + "/api/chat") else { return }

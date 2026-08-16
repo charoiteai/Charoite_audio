@@ -247,6 +247,8 @@ it signals degradation, it does not break the loop.
 
 ## Outside meetings
 
+- **Update refusal is visible, not silent** — the bundle-replacement helper refuses to run while the app is alive (recording protection), but its exit 75 went to /dev/null: the update silently did not install. The refusal now leaves a marker and the next launch shows what happened and what to do. Companion recordings (iPhone/Android) can no longer silently overwrite each other on a same-second name collision; calendar events without a date no longer crash the list; dictation, import and chat statuses are localized; Ollama model pulls bypass the system proxy — the fourth and last spot of the 13.08 rake.
+
 - **In-app update, fail-closed around recordings** — the update button
   downloads the release, verifies its sha256 and re-checks for a live
   recording right before swapping the bundle: a meeting that started while
