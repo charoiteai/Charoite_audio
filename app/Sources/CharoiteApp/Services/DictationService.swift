@@ -131,7 +131,7 @@ final class DictationService: ObservableObject {
                 guard let self else { return }
                 self.errTail = String((self.errTail + chunk).suffix(500))
                 if chunk.contains("REC"), self.isRecording {
-                    self.status = "🎙 запись пошла — говори (⌥⌘D — стоп)"
+                    self.status = L.t("🎙 запись пошла — говори (⌥⌘D — стоп)", "🎙 recording — speak (⌥⌘D to stop)", "🎙 录音中——请讲话（⌥⌘D 停止）")
                 }
             }
         }
@@ -148,9 +148,9 @@ final class DictationService: ObservableObject {
             stdinPipe = inPipe
             isRecording = true
             status = noteMode
-                ? (args.contains("--diary") ? "🎙 дневник… говори (⌥⌘J — стоп)"
-                                            : "🎙 заметка… говори (⌥⌘N — стоп)")
-                : "🎙 диктовка… (⌥⌘D — стоп)"
+                ? (args.contains("--diary") ? L.t("🎙 дневник… говори (⌥⌘J — стоп)", "🎙 diary… speak (⌥⌘J to stop)", "🎙 日记…请讲话（⌥⌘J 停止）")
+                                            : L.t("🎙 заметка… говори (⌥⌘N — стоп)", "🎙 note… speak (⌥⌘N to stop)", "🎙 笔记…请讲话（⌥⌘N 停止）"))
+                : L.t("🎙 диктовка… (⌥⌘D — стоп)", "🎙 dictation… (⌥⌘D to stop)", "🎙 听写…（⌥⌘D 停止）")
             NSSound(named: "Pop")?.play()
             // глобальный хоткей легко забыть: не даём писать вечно — часовой
             // wav всё равно не распознается, а микрофон «висит» открытым
@@ -158,10 +158,10 @@ final class DictationService: ObservableObject {
                 try? await Task.sleep(for: .seconds(600))
                 guard let self, self.isRecording, !Task.isCancelled else { return }
                 self.stop()
-                self.status = "диктовка остановлена сама через 10 минут — распознаю…"
+                self.status = L.t("диктовка остановлена сама через 10 минут — распознаю…", "dictation auto-stopped after 10 minutes — transcribing…", "听写已在 10 分钟后自动停止——正在识别…")
             }
         } catch {
-            status = "диктовка не запустилась: \(error.localizedDescription)"
+            status = L.t("диктовка не запустилась: \(error.localizedDescription)", "dictation failed to start: \(error.localizedDescription)", "听写未能启动：\(error.localizedDescription)")
             // залипший колбэк уводил бы следующую ГЛОБАЛЬНУЮ диктовку в невидимый биндинг
             // (self. — параметр onResult затеняет свойство)
             self.onResult = nil
@@ -172,7 +172,7 @@ final class DictationService: ObservableObject {
     private func stop() {
         autoStop?.cancel()
         autoStop = nil
-        status = "распознаю…"
+        status = L.t("распознаю…", "transcribing…", "正在识别…")
         isRecording = false
         try? stdinPipe?.fileHandleForWriting.close()  // EOF = стоп записи
         // Распознавание короткое; зависший процесс добьём — и обязательно
@@ -216,8 +216,8 @@ final class DictationService: ObservableObject {
         let wasNote = noteMode
         noteMode = false
         guard !text.isEmpty else {
-            status = exit == 0 ? "тишина — ничего не распознано"
-                               : "ошибка распознавания: \(String(errTail.suffix(120)))"
+            status = exit == 0 ? L.t("тишина — ничего не распознано", "silence — nothing recognized", "静音——未识别到内容")
+                               : L.t("ошибка распознавания: \(String(errTail.suffix(120)))", "recognition error: \(String(errTail.suffix(120)))", "识别错误：\(String(errTail.suffix(120)))")
             return
         }
         if wasNote {
@@ -225,14 +225,14 @@ final class DictationService: ObservableObject {
             if let data = text.data(using: .utf8),
                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let title = obj["title"] as? String {
-                status = "📝 заметка «\(title)» — в графе и памяти"
+                status = L.t("📝 заметка «\(title)» — в графе и памяти", "📝 note \u{201C}\(title)\u{201D} — in the graph and memory", "📝 笔记「\(title)」——已入图谱与记忆")
             } else {
-                status = "📝 заметка сохранена"
+                status = L.t("📝 заметка сохранена", "📝 note saved", "📝 笔记已保存")
             }
             NSSound(named: "Glass")?.play()
         } else if let handler {
             handler(text)
-            status = "распознано: \(String(text.prefix(60)))"
+            status = L.t("распознано: \(String(text.prefix(60)))", "recognized: \(String(text.prefix(60)))", "已识别：\(String(text.prefix(60)))")
             NSSound(named: "Glass")?.play()
         } else {
             insert(text: text)
@@ -264,7 +264,7 @@ final class DictationService: ObservableObject {
             vUp?.flags = .maskCommand
             vDown?.post(tap: .cghidEventTap)
             vUp?.post(tap: .cghidEventTap)
-            status = "вставлено: \(String(text.prefix(60)))"
+            status = L.t("вставлено: \(String(text.prefix(60)))", "inserted: \(String(text.prefix(60)))", "已插入：\(String(text.prefix(60)))")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                 // если буфер уже сменил кто-то другой (юзер успел скопировать) — не трогаем
                 guard pb.changeCount == ourChange else { return }
@@ -274,7 +274,7 @@ final class DictationService: ObservableObject {
         } else {
             // без права Accessibility печатать за пользователя нельзя —
             // текст в буфере, один ⌘V руками
-            status = "в буфере — нажми ⌘V (дай Чароиту право Universal Access для автовставки)"
+            status = L.t("в буфере — нажми ⌘V (дай Чароиту право Universal Access для автовставки)", "copied — press ⌘V (grant Charoite the Accessibility right for auto-paste)", "已复制——按 ⌘V（授予 Charoite 辅助功能权限可自动粘贴）")
         }
         NSSound(named: "Glass")?.play()
     }
@@ -297,7 +297,7 @@ struct DictationButton: View {
                 .foregroundStyle(dictation.isRecording ? Color.red : Color.secondary)
         }
         .buttonStyle(.plain)
-        .help(dictation.isRecording ? "Стоп — распознать и вставить" : "Диктовка (локально, GigaAM)")
+        .help(dictation.isRecording ? L.t("Стоп — распознать и вставить", "Stop — transcribe and insert", "停止——识别并插入") : L.t("Диктовка (локально, GigaAM)", "Dictation (local, GigaAM)", "听写（本地，GigaAM）"))
     }
 }
 

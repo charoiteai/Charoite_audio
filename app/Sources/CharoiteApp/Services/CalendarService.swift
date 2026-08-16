@@ -126,10 +126,10 @@ final class CalendarService: ObservableObject {
             ?? start.addingTimeInterval(24 * 3600)
         let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
         return store.events(matching: predicate)
-            .filter { !$0.isAllDay && !($0.title ?? "").isEmpty }
+            .filter { !$0.isAllDay && !($0.title ?? "").isEmpty && $0.startDate != nil }
             .sorted { $0.startDate < $1.startDate }
             .map { ev in
-                DayEvent(id: ev.eventIdentifier ?? (ev.title ?? "") + "\(ev.startDate!)",
+                DayEvent(id: ev.eventIdentifier ?? (ev.title ?? "") + "\(ev.startDate ?? .distantPast)",
                          title: ev.title ?? "",
                          start: ev.startDate,
                          end: ev.endDate,
@@ -153,10 +153,10 @@ final class CalendarService: ObservableObject {
         let dayPredicate = store.predicateForEvents(
             withStart: now.addingTimeInterval(-5 * 60), end: dayEnd, calendars: nil)
         today = store.events(matching: dayPredicate)
-            .filter { !$0.isAllDay && !($0.title ?? "").isEmpty }
+            .filter { !$0.isAllDay && !($0.title ?? "").isEmpty && $0.startDate != nil }
             .sorted { $0.startDate < $1.startDate }
             .map { ev in
-                DayEvent(id: ev.eventIdentifier ?? (ev.title ?? "") + "\(ev.startDate!)",
+                DayEvent(id: ev.eventIdentifier ?? (ev.title ?? "") + "\(ev.startDate ?? .distantPast)",
                          title: ev.title ?? "",
                          start: ev.startDate,
                          end: ev.endDate,
@@ -168,7 +168,7 @@ final class CalendarService: ObservableObject {
             end: now.addingTimeInterval(60 * 60),
             calendars: nil)
         let raw = store.events(matching: predicate)
-            .filter { !$0.isAllDay && !($0.title ?? "").isEmpty }
+            .filter { !$0.isAllDay && !($0.title ?? "").isEmpty && $0.startDate != nil }
             .sorted { $0.startDate < $1.startDate }
         nextEventTitle = raw.first?.title
         // Число участников кроме владельца: событие без людей — напоминание,
@@ -177,7 +177,7 @@ final class CalendarService: ObservableObject {
         // без приглашения подсказки не получит — так честнее, чем предлагать
         // запись на «сходить к врачу».
         let events = raw.map { ev in
-            MeetingCue.Event(id: ev.eventIdentifier ?? (ev.title ?? "") + "\(ev.startDate!)",
+            MeetingCue.Event(id: ev.eventIdentifier ?? (ev.title ?? "") + "\(ev.startDate ?? .distantPast)",
                              title: ev.title ?? "",
                              start: ev.startDate,
                              end: ev.endDate,
