@@ -43,7 +43,7 @@ import yaml  # noqa: E402
 import meeting_stamp  # noqa: E402
 from diarize import diarize  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
 from main import NOISE, Transcript  # noqa: E402
-from graph_updater import EXIT_NO_SPEECH  # noqa: E402
+from graph_updater import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
 from stt import STT  # noqa: E402
 
@@ -646,6 +646,11 @@ def main():
             log("в записи нет речи — граф не трогаем")
             publish(status.no_speech, live)
             return
+        if result.returncode == EXIT_NO_GRAPH:
+            # Архив, копии и хук собраны, а узлов графа нет: статус — ошибка,
+            # чтобы retry_unfinished вернулся, когда модель оживёт.
+            raise RuntimeError("модель не дала разбор — граф не обновлён "
+                               "(архив встречи собран, повторим позже)")
         if result.returncode:
             raise RuntimeError(f"graph_updater завершился с кодом {result.returncode}")
         note = find_meeting_note(cfg, live, newer_than=pipeline_started - 2)

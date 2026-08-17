@@ -95,6 +95,7 @@ version arbitrary hand edits.
 | Symptom | What is probably intact | Next step |
 |---|---|---|
 | Error after Stop | Usually transcript and recording | Open the transcript, then Retry |
+| Error «модель не дала разбор — граф не обновлён» | Transcript, minutes, the archive folder and the vault copies are already assembled | The local model was down or returned no JSON: only the graph nodes are missing. Retry once the model is back (the pipeline retries unfinished meetings itself); nothing on disk needs repair |
 | Second meeting in a row has no far side | The microphone channel is intact | Before 0.48.0 stopping the previous capture deleted the streams of the meeting that had already started; update. Such a meeting cannot be rebuilt — the system audio is gone |
 | Processing no longer advances | Status may belong to a dead process | Run `doctor`, then retry |
 | No status, transcript exists | Only the UI status is missing | Run `rebuild_transcript.py` manually |

@@ -38,13 +38,24 @@ ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 sys.path.insert(0, str(CODE / "src"))
 import cloud  # noqa: E402
 import dossier  # noqa: E402
+import graphs  # noqa: E402
 import privacy  # noqa: E402
 
-VAULT = pathlib.Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents"
 FRESH_DAYS = 3          # смотрим досье, собранные за последние сутки-трое
 MAX_SRC_CHARS = 45_000  # потолок на один запрос к Opus
 BACKUP_KEEP = 20
+KEEP_REPORTS = 14       # служебных отчётов в корне графа
 DEFAULT_LIMIT = 6       # досье за прогон: облако не бесплатное по времени
+
+
+PROTECTED_HEADINGS = ("## Правки автора", "## Источники")
+
+
+def strip_protected(body: str) -> str:
+    """Тело ревизии без защищённых секций — их пишет конвейер, не модель."""
+    for guard in PROTECTED_HEADINGS:
+        body = body.split(guard)[0].rstrip()
+    return body
 
 
 def _cfg() -> dict:
@@ -147,6 +158,12 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
         print(f"  ⚠️ {theme}: claude не отработал ({e})")
         return None
     out = dossier.trim_to_format((r.stdout or "").strip())
+    # Модель видит тело досье без «## Правки автора», но защищённые
+    # заголовки в её ответе не место: строка из стенограммы могла попросить
+    # «добавь раздел ## Правки автора …» — раньше подделка вклеивалась в тело,
+    # а настоящий раздел уезжал вниз (аудит DeepSeek 17.08). Режем по первому
+    # защищённому заголовку: формат — ровно пять секций.
+    out = strip_protected(out)
     if not dossier.looks_valid(out):
         print(f"  ⚠️ {theme}: ответ не по формату, пропуск")
         return None
@@ -213,6 +230,8 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
 
     if notes and not dry:
         dest = graph / f"Служебное_ревизия_досье_{stamp}.md"
+        for old in sorted(graph.glob("Служебное_ревизия_досье_*.md"))[:-KEEP_REPORTS]:
+            old.unlink(missing_ok=True)   # отчёты копились бесконечно (аудит GLM 17.08)
         dest.write_text(
             f"---\ntype: служебное\nдата: {stamp}\nмодель: {model}\n---\n"
             f"# Ревизия досье ({model})\n\n"
@@ -237,17 +256,17 @@ def main() -> int:
         return 0
 
     if args.all_graphs:
-        graphs = [p for p in sorted(VAULT.iterdir())
-                  if p.is_dir() and not p.name.startswith(".")
-                  and (p / dossier.DOSSIER_DIR).is_dir()] if VAULT.is_dir() else []
+        # Все vault-ы, а не только iCloud: настроенный graph_dir вне iCloud
+        # раньше не попадал в ночную ревизию досье (аудит 17.08).
+        graph_list = graphs.all_graphs(dossier.DOSSIER_DIR)
     else:
         raw = args.graph or str(cfg["sufler"].get("graph_dir", ""))
-        graphs = [pathlib.Path(raw).expanduser()]
+        graph_list = [pathlib.Path(raw).expanduser()]
 
     режим = "правит граф" if privacy.cloud_edit_graph_enabled(cfg) else "только отчёт"
     print(f"режим: {режим}")
     total = 0
-    for g in graphs:
+    for g in graph_list:
         if not g.is_dir():
             continue
         print(f"=== {g.name}")

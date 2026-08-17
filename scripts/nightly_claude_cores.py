@@ -47,6 +47,39 @@ def _proxy_env() -> dict:
         return {}
 
 
+REPORT_SECTIONS = ("## Противоречия", "## Протухшее", "## Слияния",
+                   "## Потерянные хвосты", "## Три риска недели")
+KEEP_REPORTS = 14
+
+
+def report_problem(returncode: int, out: str) -> str:
+    """Почему ответ облака НЕ ревизия — пусто, если всё в порядке.
+
+    Контракт промпта: пять секций со строгими заголовками, «по ним парсит
+    утренний бриф». Ответ без них — отказ модели, обрыв или сообщение об
+    ошибке CLI; код возврата ≠ 0 — тем более.
+    """
+    if returncode:
+        return f"CLI облака завершился с кодом {returncode}"
+    if not out.strip():
+        return "пустой ответ"
+    missing = [h for h in REPORT_SECTIONS if h not in out]
+    if missing:
+        return "нет секций: " + ", ".join(missing)
+    return ""
+
+
+def prune_reports(graph: pathlib.Path, prefix: str, keep: int = KEEP_REPORTS) -> None:
+    """Служебные отчёты копились в корне графа бесконечно (аудит GLM 17.08):
+    держим последние keep, старые убираем."""
+    reports = sorted(graph.glob(f"{prefix}*.md"))
+    for old in reports[:-keep] if len(reports) > keep else []:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+
 def main() -> None:
     cfg = _cfg()
     # Решение об отправке принимает только src/privacy.py. Своя проверка,
@@ -103,15 +136,20 @@ def main() -> None:
     except Exception as e:  # noqa: BLE001
         print(f"claude не отработал: {e}")
         return
-    if not out:
-        print(f"пустой ответ ({(r.stderr or '')[:200]})")
-        return
+    problem = report_problem(r.returncode, out)
+    if problem:
+        # Отказ, лимит или обрыв — не ревизия: раньше любой непустой stdout
+        # ложился в граф как «ночная ревизия», а бриф молча терял разделы
+        # (аудит 17.08). Не пишем, говорим вслух, код ≠ 0 — ночь увидит.
+        print(f"ревизия не принята: {problem} ({(r.stderr or '')[:200]})")
+        sys.exit(2)
     day = dt.date.today().isoformat()
     dest = graph / f"Служебное_ночная_ревизия_{day}.md"
     dest.write_text(
         f"---\ntype: служебное\nдата: {day}\nмодель: {model}\n---\n"
         f"# Ночная ревизия ядер ({model})\n\n{out}\n", encoding="utf-8")
     print(f"отчёт: {dest.name} ({len(out)} зн., ядер {len(fresh)})")
+    prune_reports(graph, "Служебное_ночная_ревизия_")
 
 
 if __name__ == "__main__":
