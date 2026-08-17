@@ -24,6 +24,7 @@ import stat as _stat
 import sys
 
 from charoite_paths import resolve_root
+from meeting_stamp import files_with_stamp
 
 ROOT = resolve_root(__file__)
 ARCHIVE_DIR = "Встречи-архив"
@@ -95,8 +96,16 @@ def _folders_for(graph: pathlib.Path, stamp: str) -> list[pathlib.Path]:
     return sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)
 
 
-def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: str) -> pathlib.Path | None:
-    """Собирает/обновляет папку встречи; возвращает её путь (None — исключена)."""
+def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: str,
+                    files_key: str | None = None) -> pathlib.Path | None:
+    """Собирает/обновляет папку встречи; возвращает её путь (None — исключена).
+
+    `files_key` — стем главного файла встречи («2026-08-03_113012» у ещё не
+    переименованной посекундной встречи, «2026-08-03_1130_Планёрка» после
+    наката темы): её файлы — ровно `<стем>.md` и `<стем>_*.md`. Без ключа
+    ищем по минутному штампу с границей — так зовут retro-прогоны, где стем
+    и есть минутный штамп с темой.
+    """
     if stamp in _excluded(graph):
         return None
     pretty = (title or "").replace("_", " ").strip() or "встреча"
@@ -119,7 +128,11 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
                 old.rename(folder)
                 break
     folder.mkdir(parents=True, exist_ok=True)
-    for f in sorted(tdir.glob(f"{stamp}*.md")):
+    # Только файлы ЭТОЙ встречи: минутный штамп — префикс секундного, и голый
+    # глоб `{stamp}*.md` тянул в папку файлы второй встречи той же минуты
+    # (крэш-рестарт), причём с перезаписью по одноимённому назначению
+    # (аудит DeepSeek 16.08). Правило границы — одно, в meeting_stamp.
+    for f in files_with_stamp(tdir, files_key or stamp, suffix=".md"):
         dest = "Стенограмма.md"
         for suf, nice in NICE:
             if f.name.endswith(suf):
@@ -696,7 +709,7 @@ def migrate_all(graph: pathlib.Path, tdir: pathlib.Path) -> int:
         if not m:
             continue
         stamp, slug = m.group(1), m.group(2) or ""
-        archive_meeting(graph, tdir, stamp, slug)
+        archive_meeting(graph, tdir, stamp, slug, files_key=f.stem)
         done += 1
     return done
 

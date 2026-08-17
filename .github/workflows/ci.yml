@@ -20,6 +20,17 @@ concurrency:
 permissions:
   contents: read
 
+# Инструменты проверок — с пинами: гейт, который ставится «последней
+# версией» с PyPI, ломается или молчит в тот день, когда меняется сам
+# инструмент, а не наш код (аудит DeepSeek 16.08). Обновлять руками и
+# осознанно, вместе с проверкой прогона.
+env:
+  RUFF_VERSION: "0.16.3"
+  SEMGREP_VERSION: "1.173.0"
+  MYPY_VERSION: "2.3.1"
+  PYYAML_VERSION: "6.0.3"
+  PYTEST_VERSION: "9.1.1"
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -31,7 +42,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Ruff (errors only — style is not gated)
-        run: pipx run ruff check --select E9,F src/
+        run: pipx run "ruff==${RUFF_VERSION}" check --select E9,F src/
       - name: Byte-compile all sources
         run: python -m compileall -q src/
       - name: Shellcheck (все .sh)
@@ -40,16 +51,16 @@ jobs:
           shellcheck scripts/*.sh
       - name: Semgrep (security-правила; nosemgrep — только с обоснованием)
         run: |
-          pip -q install semgrep
+          pip -q install "semgrep==${SEMGREP_VERSION}"
           semgrep --config auto --error --quiet src/ scripts/
       - name: Mypy (советник — не гейт, смотреть в логах)
         continue-on-error: true
         run: |
-          pip -q install mypy
+          pip -q install "mypy==${MYPY_VERSION}"
           mypy --ignore-missing-imports --no-strict-optional src/
       - name: Example config is valid YAML with required keys
         run: |
-          pip -q install pyyaml
+          pip -q install "pyyaml==${PYYAML_VERSION}"
           python - <<'EOF'
           import yaml
           cfg = yaml.safe_load(open("config/config.example.yaml"))
@@ -82,6 +93,6 @@ jobs:
       - name: PortAudio
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libportaudio2
       - name: Deps
-        run: pip -q install . pytest
+        run: pip -q install . "pytest==${PYTEST_VERSION}"
       - name: pytest
         run: python -m pytest tests/ -q

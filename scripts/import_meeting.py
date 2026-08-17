@@ -35,6 +35,9 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 
 import yaml  # noqa: E402
 
+import charoite_paths  # noqa: E402
+from meeting_stamp import files_with_stamp  # noqa: E402
+
 AUDIO = {".m4a", ".wav", ".mp3", ".aif", ".aiff", ".caf"}
 TEXT = {".txt", ".md"}
 SUBS = {".vtt", ".srt"}
@@ -181,7 +184,27 @@ def subs_to_transcript(entries: list[tuple[str, str, str]], stamp: str, src: str
     return "\n".join(lines) + "\n"
 
 
+def archive_folder_for(graph: pathlib.Path, stamp: str) -> pathlib.Path | None:
+    """Папка архива ИМЕННО этой встречи — в этом графе или соседних графах vault.
+
+    Имя папки: «ГГГГ-ММ-ДД ЧЧ-ММ — Тема» (meeting_archive) или старый формат
+    «<штамп> — Тема». Раньше глоб шёл по одной дате и брал первую папку дня —
+    исходник второй встречи ложился к первой, а при занятом имени молча не
+    копировался вовсе (аудит DeepSeek 16.08).
+    """
+    patterns = (f"{stamp[:10]} {stamp[11:13]}-{stamp[13:15]} *", f"{stamp} — *")
+    for pat in patterns:
+        found = [f for f in sorted(graph.parent.glob(f"*/Встречи-архив/{pat}"))
+                 + sorted(graph.glob(f"Встречи-архив/{pat}")) if f.is_dir()]
+        if found:
+            return found[0]
+    return None
+
+
 def main() -> None:
+    # Импорт пишет стенограмму, записи и архивную папку — те же данные, что
+    # демон, и с теми же правами: только владельцу (аудит DeepSeek 16.08).
+    charoite_paths.harden_umask()
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("file", help="аудио/текст/субтитры записанной встречи")
     ap.add_argument("--date", help="дата встречи ГГГГ-ММ-ДД, разделитель любой "
@@ -240,7 +263,10 @@ def main() -> None:
     # переставала видеть уже обработанную встречу — повторный импорт той же
     # записи создавал дубль рядом с titled-файлом и гонял по нему полный
     # LLM-конвейер (найдено 06.08 регрессионным тестом).
-    already = next(iter(sorted(tdir.glob(f"{stamp}*.md"))), None)
+    # …но с границей штампа: минутный «2026-08-03_1130» — префикс секундного
+    # «2026-08-03_113012» соседней встречи демона, и голый глоб объявлял
+    # импорт «повтором» чужой встречи (аудит DeepSeek 16.08).
+    already = next(iter(files_with_stamp(tdir, stamp, suffix=".md")), None)
     if already is not None:
         # Код 0, а не sys.exit(строка): выход строкой возвращает 1, скан
         # считал повтор ОТКАЗОМ и не переносил файл в done/ — тот застревал
@@ -302,14 +328,14 @@ def main() -> None:
     subprocess.run([sys.executable, str(CODE / "src" / "retro_fill.py")])
     # исходник — рядом с материалами встречи (APFS-клон: без лишнего места)
     graph = pathlib.Path(str((cfg.get("sufler") or {}).get("graph_dir", ""))).expanduser()
-    day = stamp[:10]
-    for folder in sorted(graph.parent.glob(f"*/Встречи-архив/{day}*")) + \
-                  sorted(graph.glob(f"Встречи-архив/{day}*")):
+    folder = archive_folder_for(graph, stamp)
+    if folder is None:
+        print(f"папка архива встречи {stamp} не найдена — исходник в архив не скопирован")
+    else:
         dest = folder / f"Исходник{src.suffix.lower()}"
         if not dest.exists():
             subprocess.run(["cp", "-c", str(src), str(dest)],
                            capture_output=True)
-        break
     print(f"готово: встреча {stamp} в архиве и графе")
 
 

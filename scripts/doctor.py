@@ -107,6 +107,13 @@ def check_config() -> dict:
              "контур — scripts/memory_bench.py --demo")
     elif not gdir.exists():
         line(FAIL, f"graph_dir не существует: {gdir}", "создайте папку или поправьте путь")
+    elif not gdir.is_absolute():
+        # Приложение считает относительный путь от папки данных, а демон и
+        # скрипты — от своего рабочего каталога (в бандле это сам .app):
+        # граф пишется в одно место, а ищется в другом (аудит DeepSeek 16.08).
+        line(WARN, f"graph_dir относительный: {gdir}",
+             "укажите абсолютный путь или ~/…; относительный работает только "
+             "при запуске из клона")
     else:
         n = sum(1 for _ in gdir.rglob("*.md"))
         line(OK, f"graph_dir: {gdir} ({n} заметок)")

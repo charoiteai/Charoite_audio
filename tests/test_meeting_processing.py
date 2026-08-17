@@ -109,6 +109,18 @@ def test_review_file_is_not_mistaken_for_renamed_transcript(tmp_path):
     assert find_final_transcript(live) == renamed.resolve()
 
 
+def test_review_word_inside_the_title_does_not_hide_the_transcript(tmp_path):
+    """Тема «План разбора» содержит «_разбор» подстрокой, но не хвостом:
+    проверка `in` вычёркивала главный файл, статус получал несуществующий
+    путь, встреча помечалась ошибкой (аудит DeepSeek 16.08)."""
+    live = _transcript(tmp_path)
+    live.unlink()
+    renamed = live.with_name("2026-07-31_1415_План_разбора.md")
+    renamed.write_text("стенограмма", encoding="utf-8")
+
+    assert find_final_transcript(live) == renamed.resolve()
+
+
 def test_note_is_found_in_project_graph(tmp_path):
     configured = tmp_path / "vault" / "Рабочий"
     configured.mkdir(parents=True)

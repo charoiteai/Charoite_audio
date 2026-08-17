@@ -45,7 +45,7 @@ Automatic cleanup is limited to data documented as temporary:
 
 - PCM/WAV files in `recordings/` older than `audio.record_keep_days`,
   including `*.wav.part*` conversion temporaries;
-- `logs/graph_*.log` diagnostic logs on the same retention window;
+- `logs/graph_*.log`, `logs/cloud_review_*.log` and `logs/retry_*.log` diagnostic logs on the same retention window;
 - processing status records older than 14 days.
 
 Audio cleanup runs when the daemon starts. A file may therefore remain beyond
@@ -163,7 +163,7 @@ Forget a meeting completely:
 
 The first run only lists affected files. `--yes` removes the meeting from
 transcripts, recordings, archive and graph — including its pipeline status
-under `logs/meeting-status/`, its graph and cloud-review logs and every
+under `logs/meeting-status/`, its graph, cloud-review and retry logs and every
 `<stamp>_*.md` copy under Documentation; a stamp with seconds
 (`2026-07-15_140030`) is a separate meeting and is not swept along with
 `2026-07-15_1400`. Surviving nodes are copied to

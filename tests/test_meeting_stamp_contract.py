@@ -188,3 +188,24 @@ def test_retry_не_смешивает_каналы_двух_встреч_в_о�
 def test_штамп_до_28_июля_ещё_читается(tmp_path):
     """Старые встречи пятнадцатизначны — руками пересобрать их можно."""
     assert meeting_stamp.started_at("2026-07-20_1830") is not None
+
+
+def test_files_with_stamp_stops_at_the_stamp_boundary(tmp_path):
+    """Минутный штамп — префикс секундного: `2026-08-03_1130*` хватал файлы
+    встречи `2026-08-03_113012` (крэш-рестарт в ту же минуту). Правило границы
+    одно на forget, archive и облачный контекст (аудит DeepSeek 16.08)."""
+    d = tmp_path
+    mine = [d / "2026-08-03_1130.md", d / "2026-08-03_1130_Планёрка.md",
+            d / "2026-08-03_1130_minutes.md"]
+    theirs = [d / "2026-08-03_113012.md", d / "2026-08-03_113012_разбор.md",
+              d / "2026-08-03_11300.md"]
+    for f in mine + theirs:
+        f.write_text("x", encoding="utf-8")
+    (d / "2026-08-03_1130_dir.md").mkdir()   # каталог с похожим именем — не файл
+
+    got = meeting_stamp.files_with_stamp(d, "2026-08-03_1130", suffix=".md")
+
+    assert got == sorted(mine)
+    assert meeting_stamp.files_with_stamp(d / "нет", "2026-08-03_1130") == []
+    assert meeting_stamp.files_with_stamp(
+        d, "2026-08-03_1130", prefix="graph_", suffix=".log") == []

@@ -123,6 +123,13 @@ def main() -> int:
 
     by_hash: dict[str, list[pathlib.Path]] = {}
     for p in graph.rglob("*.md"):
+        # Скрытые каталоги — снимки (.cloud_backup, .tier3_backup,
+        # .forget_backup, .obsidian): rglob, в отличие от шелл-глоба, в них
+        # заходит, и побайтовая копия из снимка попадала в одну группу с живым
+        # файлом → жёсткая ссылка на тот же inode → правка живого файла
+        # меняет «бэкап», откат из него становится пустым (аудит DeepSeek 16.08).
+        if any(part.startswith(".") for part in p.relative_to(graph).parts):
+            continue
         try:
             if p.is_symlink() or p.stat().st_size < MIN_SIZE:
                 continue

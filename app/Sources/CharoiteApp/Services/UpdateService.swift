@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import CryptoKit
 import Foundation
+import Security
 
 #if os(macOS)
 
@@ -60,7 +61,8 @@ final class UpdateService: ObservableObject {
     /// стоит. Приложение из образа (том смонтирован только на чтение) тоже
     /// не обновляем: заменять нужно копию в «Программах», а не содержимое
     /// установщика.
-    nonisolated static func refusalReason(recording: Bool, bundlePath: String) -> String? {
+    nonisolated static func refusalReason(recording: Bool, bundlePath: String,
+                                          parentWritable: Bool = true) -> String? {
         if recording {
             return L.t("идёт запись встречи — обновим после остановки",
                        "a meeting is being recorded — we'll update after you stop",
@@ -71,7 +73,54 @@ final class UpdateService: ObservableObject {
                        "the app is running from a disk image: drag it to Applications first",
                        "应用正从磁盘映像运行：请先将其拖入「应用程序」")
         }
+        // Helper переименовывает бандл в его же папке; без права писать в
+        // неё `mv` падает под `set -e` уже ПОСЛЕ выхода приложения — ни
+        // маркера, ни перезапуска, человек видит просто закрывшееся окно
+        // (аудит DeepSeek 16.08). Проверяем до того, как завершиться.
+        if !parentWritable {
+            return L.t("папка приложения недоступна для записи — обновите вручную, скопировав новую версию в «Программы»",
+                       "the app's folder is not writable — update by hand: copy the new version into Applications",
+                       "应用所在文件夹不可写 —— 请手动更新：将新版本复制到「应用程序」")
+        }
         return nil
+    }
+
+    /// Папка, в которой лежит бандл, доступна для записи? Именно там helper
+    /// переименовывает и подменяет приложение.
+    nonisolated static func parentIsWritable(bundlePath: String) -> Bool {
+        let parent = (bundlePath as NSString).deletingLastPathComponent
+        return FileManager.default.isWritableFile(atPath: parent)
+    }
+
+    /// Идентификатор команды в подписи бандла; `nil` — подпись ad-hoc (или
+    /// её нет). У ad-hoc подписи designated requirement — хеш конкретного
+    /// бинаря, поэтому после подмены бандла macOS считает приложение другим
+    /// и выданные доступы к микрофону и записи экрана пропадают
+    /// (make_app.sh описывает то же для локальных пересборок; CI-сборки без
+    /// Developer ID — такие же). Обновление от этого не отказывается —
+    /// человек должен знать заранее, что доступы придётся выдать заново
+    /// (аудит DeepSeek 16.08).
+    nonisolated static func signingTeamIdentifier(of url: URL) -> String? {
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess,
+              let code else { return nil }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation),
+                                            &info) == errSecSuccess,
+              let dict = info as? [String: Any] else { return nil }
+        let team = dict[kSecCodeInfoTeamIdentifier as String] as? String
+        return (team?.isEmpty ?? true) ? nil : team
+    }
+
+    nonisolated static let bundleIsAdHocSigned: Bool =
+        signingTeamIdentifier(of: Bundle.main.bundleURL) == nil
+
+    /// Предупреждение к кнопке «Обновить» для сборки без Developer ID.
+    nonisolated static var adHocSignatureNote: String? {
+        guard bundleIsAdHocSigned else { return nil }
+        return L.t("сборка без Developer ID: после обновления macOS попросит заново разрешить микрофон и запись экрана",
+                   "build without Developer ID: after the update macOS will ask you to allow the microphone and screen recording again",
+                   "未使用 Developer ID 签名的构建：更新后 macOS 会要求重新授权麦克风和屏幕录制")
     }
 
     /// Совпадает ли скачанное с тем, что опубликовано.
@@ -115,6 +164,19 @@ final class UpdateService: ObservableObject {
           exit 75
         fi
         rm -f "${target}.update-refused" 2>/dev/null || true
+        # Любой сбой ниже — приложение уже завершено, и без этого человек
+        # остался бы перед закрывшимся окном: возвращаем то, что есть на
+        # диске, и оставляем маркер (аудит DeepSeek 16.08).
+        trap 'echo "подмена бандла сорвалась на шаге: $BASH_COMMAND" > "${target}.update-refused" 2>/dev/null || true; open "$target" 2>/dev/null || true' ERR
+        # Папка приложения должна существовать и быть записываемой: иначе
+        # mv упадёт уже после выхода приложения. Preflight в приложении это
+        # проверяет до завершения; здесь — страховка.
+        if [ ! -e "$target" ] || [ ! -w "$(dirname "$target")" ]; then
+          echo "папка приложения недоступна для записи — подмена бандла отменена" \
+            > "${target}.update-refused" 2>/dev/null || true
+          open "$target" 2>/dev/null || true
+          exit 75
+        fi
         # Старую копию не удаляем до успеха: если ditto оборвётся на середине,
         # у человека должно остаться рабочее приложение, а не половина.
         rm -rf "${target}.old"
@@ -150,7 +212,8 @@ final class UpdateService: ObservableObject {
         guard !isBusy else { return }
         let bundle = Bundle.main.bundleURL
         if let reason = Self.refusalReason(recording: SuflerService.shared.hasActiveLifecycle,
-                                           bundlePath: bundle.path) {
+                                           bundlePath: bundle.path,
+                                           parentWritable: Self.parentIsWritable(bundlePath: bundle.path)) {
             stage = .refused(reason: reason)
             return
         }
@@ -186,7 +249,8 @@ final class UpdateService: ObservableObject {
             // встреча. Это последний await перед синхронным запуском helper,
             // поэтому повторный preflight закрывает окно check/use.
             if let reason = Self.refusalReason(recording: SuflerService.shared.hasActiveLifecycle,
-                                               bundlePath: bundle.path) {
+                                               bundlePath: bundle.path,
+                                               parentWritable: Self.parentIsWritable(bundlePath: bundle.path)) {
                 stage = .refused(reason: reason)
                 return
             }
