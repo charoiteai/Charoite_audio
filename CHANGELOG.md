@@ -5,6 +5,34 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.0](https://github.com/charoiteai/Charoite_audio/compare/v0.50.0...v0.51.0) (2026-08-17)
+
+
+### Features
+
+* **app:** record capsule with readiness on the Today screen ([#320](https://github.com/charoiteai/Charoite_audio/issues/320)) ([c67b01a](https://github.com/charoiteai/Charoite_audio/commit/c67b01a729fdee0d34c6693bd80eea3aa9728b83))
+* **diarize:** positional live diarization — per-piece STT windows ([#317](https://github.com/charoiteai/Charoite_audio/issues/317)) ([0575471](https://github.com/charoiteai/Charoite_audio/commit/05754714cd881a53ec9fc204e570dc33d546c8be))
+* **graph:** live cross-check of the meeting against graph nodes ([#318](https://github.com/charoiteai/Charoite_audio/issues/318)) ([a853715](https://github.com/charoiteai/Charoite_audio/commit/a853715e5b3810a54435c8d9936fca32aceff163))
+* **llm:** второй движок mlx-server — кэш префикса для живой нити ([#314](https://github.com/charoiteai/Charoite_audio/issues/314)) ([8031cf5](https://github.com/charoiteai/Charoite_audio/commit/8031cf57019228e2a0c1a0908415355070dabb32))
+
+
+### Bug Fixes
+
+* **app:** audit 14.08 hotfixes — silent exit 75, name collisions, proxy, unwraps, l10n ([#321](https://github.com/charoiteai/Charoite_audio/issues/321)) ([aada229](https://github.com/charoiteai/Charoite_audio/commit/aada229076a7dafee53343b8100140628cfdbdb3))
+* **app:** fail closed before replacing updater bundle ([#306](https://github.com/charoiteai/Charoite_audio/issues/306)) ([76130a8](https://github.com/charoiteai/Charoite_audio/commit/76130a8c7a07d78ef67a68c69ad2d4dc9c13102d))
+* **app:** панель суфлёра стопкой вместо или-или, вычистка архивного контура ([#322](https://github.com/charoiteai/Charoite_audio/issues/322)) ([855c09b](https://github.com/charoiteai/Charoite_audio/commit/855c09b5840317ef1357a8940af7d1f8932f6583))
+* **audit:** партия по аудиту DeepSeek 16.08 — граница штампа, права, allow_remote, апдейтер, пины CI ([#331](https://github.com/charoiteai/Charoite_audio/issues/331)) ([7a74573](https://github.com/charoiteai/Charoite_audio/commit/7a745739afaf64fed32d4f5ed804257eb197b5cb))
+* **cloud:** изоляция headless-вызовов claude от инъекций из стенограмм ([#308](https://github.com/charoiteai/Charoite_audio/issues/308)) ([16338df](https://github.com/charoiteai/Charoite_audio/commit/16338dfefea593c84b2ee5206063edbe2a80074e))
+* **cloud:** инструменты разбора встречи ограничены рабочим графом ([#332](https://github.com/charoiteai/Charoite_audio/issues/332)) ([6ba6a63](https://github.com/charoiteai/Charoite_audio/commit/6ba6a635e1f4d5f58f5ccfa30bc9c3b19632c260))
+* **daemon:** ⚡ живёт после опознания имени, сироты пересобираются по одной ([#313](https://github.com/charoiteai/Charoite_audio/issues/313)) ([14bffe4](https://github.com/charoiteai/Charoite_audio/commit/14bffe408c223026a6b85bef1d992e5883b85530))
+* **privacy:** данные встреч закрыты от других учёток, сырые потоки под ретеншн ([#324](https://github.com/charoiteai/Charoite_audio/issues/324)) ([d10686f](https://github.com/charoiteai/Charoite_audio/commit/d10686f4fb52230ac761d741a62078ad87254343))
+* **privacy:** демон только из бандла, забытая встреча уходит из индекса ([#328](https://github.com/charoiteai/Charoite_audio/issues/328)) ([c114389](https://github.com/charoiteai/Charoite_audio/commit/c1143898013008577c2a2864bb6fb1ae9c6e0e9b))
+* **privacy:** папка данных не подхватывается из записываемого клона — вторая дверь TCC ([#329](https://github.com/charoiteai/Charoite_audio/issues/329)) ([e83ade7](https://github.com/charoiteai/Charoite_audio/commit/e83ade775c8c1da965b6e327fa79fc9c3d116d99))
+* **privacy:** хвосты второго мнения по [#324](https://github.com/charoiteai/Charoite_audio/issues/324)–[#328](https://github.com/charoiteai/Charoite_audio/issues/328) — рубильник, pip мимо lock, забывание, пустая сессия ([#330](https://github.com/charoiteai/Charoite_audio/issues/330)) ([b626d00](https://github.com/charoiteai/Charoite_audio/commit/b626d0078e8d8ff4406d96d56bf7a8994681f19b))
+* **release:** sha256 у встроенного CPython, dependabot pip, честный swiftlint-хук ([#310](https://github.com/charoiteai/Charoite_audio/issues/310)) ([0193a9f](https://github.com/charoiteai/Charoite_audio/commit/0193a9f63e112647763375873a7cf4ef0ed4564e))
+* **security:** право правки живёт только с бэкапом, документы говорят правду ([#316](https://github.com/charoiteai/Charoite_audio/issues/316)) ([283d2f1](https://github.com/charoiteai/Charoite_audio/commit/283d2f1383e62fbe38c0ae88d4f1de7a6d8cdbc4))
+* **supply:** lock с хешами для бандла, суммы моделей, SHA-пины релизных workflow ([#325](https://github.com/charoiteai/Charoite_audio/issues/325)) ([4f095bf](https://github.com/charoiteai/Charoite_audio/commit/4f095bf51647eda102ae2f7a149f6349ab688d34))
+
 ## [0.50.0](https://github.com/charoiteai/Charoite_audio/compare/v0.49.0...v0.50.0) (2026-08-14)
 
 
