@@ -931,6 +931,8 @@ FORBIDDEN_TOOLS = ("Bash", "WebFetch", "WebSearch", "Task", "NotebookEdit",
 # команду с cwd=graph, поэтому эти правила дают доступ только внутрь графа.
 # `dontAsk` ниже отклоняет абсолютный путь наружу вместо запроса разрешения.
 GRAPH_READ_RULE = "Read(/**)"
+# Правило Edit покрывает и Write (семейство правок CLI): проверено живым
+# запуском 17.08 — Write внутри cwd проходит, вне cwd отклоняется под dontAsk.
 GRAPH_EDIT_RULE = "Edit(/**)"
 
 
