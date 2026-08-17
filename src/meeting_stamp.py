@@ -78,6 +78,30 @@ def stamp_of(name: str) -> str | None:
     return m.group(1)
 
 
+def files_with_stamp(directory: pathlib.Path, stamp: str, *, prefix: str = "",
+                     suffix: str = "") -> list[pathlib.Path]:
+    """Файлы «<prefix><штамп>…<suffix>» этой встречи — и только её.
+
+    Штамп с секундами (`2026-07-15_140030`, 17 знаков) начинается с штампа
+    без секунд (`2026-07-15_1400`): голый глоб `{stamp}*` при забывании
+    первой встречи уносил и файлы второй, а при архивации и сборке облачного
+    контекста подмешивал их к чужой встрече (крэш-рестарт в ту же минуту —
+    штатный сценарий, аудит 16.08). Граница — после штампа не цифра.
+
+    Единственное место, где живёт это правило: forget, archive и облачный
+    контекст обязаны звать его, а не писать глоб заново.
+    """
+    if not directory.is_dir():
+        return []
+    out = []
+    for f in directory.glob(f"{prefix}{stamp}*{suffix}"):
+        rest = f.name[len(prefix) + len(stamp):]
+        if rest[:1].isdigit() or not f.is_file():
+            continue
+        out.append(f)
+    return sorted(out)
+
+
 def recording_path(rec_dir: pathlib.Path, stamp: str, label: str,
                    ext: str) -> pathlib.Path:
     """Файл канала встречи: демон пишет по этому имени, пересборка по нему ищет.

@@ -107,3 +107,25 @@ def test_config_switch_is_strictly_true(tmp_path, monkeypatch):
                            ("", False), (1, False), (None, False)]:
         monkeypatch.setattr(d, "_cfg", lambda v=value: {"sufler": {"dedup_files": v}})
         assert d._allowed_by_config() is allowed, f"значение {value!r} трактовано неверно"
+
+
+def test_snapshots_in_hidden_folders_are_never_linked(tmp_path):
+    """Копия в .cloud_backup — снимок «как было до правки облаком». Жёсткая
+    ссылка на живой файл превратила бы откат из снимка в пустую операцию:
+    правка живого файла меняет тот же inode (аудит DeepSeek 16.08)."""
+    a, b = _graph(tmp_path)
+    snap = tmp_path / ".cloud_backup" / "2026-07-25_0300" / "Документация" / "Стенограммы встреч"
+    snap.mkdir(parents=True)
+    c = snap / "2026-07-24_0911_hints.md"
+    c.write_text(BODY, encoding="utf-8")
+    deep = tmp_path / "Ядра" / ".tier3_backup" / "2026-07-25"
+    deep.mkdir(parents=True)
+    e = deep / "Ядро.md"
+    e.write_text(BODY, encoding="utf-8")
+
+    sys.argv = ["dedup_graph", "--graph", str(tmp_path), "--apply"]
+    d.main()
+
+    assert a.stat().st_ino == b.stat().st_ino, "живая копия по-прежнему связывается"
+    assert c.stat().st_ino != a.stat().st_ino, "снимок .cloud_backup связан с живым файлом"
+    assert e.stat().st_ino != a.stat().st_ino, "снимок Ядра/.tier3_backup связан с живым файлом"

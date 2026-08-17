@@ -41,7 +41,7 @@ Charoite 的 local-first 不只表示模型在本机运行。它的工作状态�
 
 - `recordings/` 中早于 `audio.record_keep_days` 的 PCM/WAV，包括转换临时文件
   `*.wav.part*`；
-- 同一保留期之外的 `logs/graph_*.log` 诊断日志；
+- 同一保留期之外的 `logs/graph_*.log`、`logs/cloud_review_*.log` 与 `logs/retry_*.log` 诊断日志；
 - 早于 14 天的处理状态。
 
 音频清理在守护进程启动时发生。因此 Charoite 长时间未运行时，文件可能超过名义
@@ -151,7 +151,7 @@ python3 scripts/doctor.py
 ```
 
 第一次运行只列出受影响文件。`--yes` 会从逐字稿、录音、归档和图谱中删除会议——包括
-`logs/meeting-status/` 中的处理状态、图谱与云端复核日志，以及「文档」下的全部
+`logs/meeting-status/` 中的处理状态、图谱、云端复核与重试日志，以及「文档」下的全部
 `<时间戳>_*.md` 副本；带秒的时间戳（`2026-07-15_140030`）是另一场会议，不会随
 `2026-07-15_1400` 一起被删除；
 仍需保留但要去掉引用的节点，会先复制到 `.forget_backup/`。这个文件夹不是被删

@@ -52,7 +52,11 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - run: pip -q install zizmor
+      # Пин: гейт безопасности workflow сам не должен приезжать «последней
+      # версией» с PyPI (аудит DeepSeek 16.08); обновлять осознанно.
+      - run: pip -q install "zizmor==${ZIZMOR_VERSION}"
+        env:
+          ZIZMOR_VERSION: "1.29.0"
       # Гейт с первого дня: все находки на девяти существующих файлах уже
       # разобраны — права токена сужены, credentials не остаются в .git,
       # кэш убран из релизной сборки. Осознанные исключения записаны в

@@ -279,8 +279,11 @@ def _prune_graph_logs(cfg: dict) -> None:
     cutoff = time.time() - max(keep_days, 1) * 86400
     # cloud_review_*.log — тот же класс: имена файлов встречи (тема стоит в
     # имени), счётчики и stderr CLI. Имя другое, поэтому ретеншн его не
-    # видел (аудит 16.08).
-    for old in [*logs.glob("graph_*.log"), *logs.glob("cloud_review_*.log")]:
+    # видел (аудит 16.08). retry_*.log — stdout повторной пересборки:
+    # маппинг имён участников, тема, stderr LLM — тоже жил вечно
+    # (аудит DeepSeek 16.08).
+    for old in [*logs.glob("graph_*.log"), *logs.glob("cloud_review_*.log"),
+                *logs.glob("retry_*.log")]:
         try:
             if old.stat().st_mtime < cutoff:
                 old.unlink(missing_ok=True)

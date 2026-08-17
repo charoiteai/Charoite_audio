@@ -60,14 +60,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // не добавляем — публичной сборке они ни к чему.
         for old in ["ai.charoite.sufler"] {
             guard let src = UserDefaults(suiteName: old) else { continue }
-            let moved = src.dictionaryRepresentation().filter {
-                $0.key.hasPrefix("charoit") || $0.key.hasPrefix("sufler.")
-            }
-            guard !moved.isEmpty else { continue }
-            for (k, v) in moved { d.set(v, forKey: k) }
-            NSLog("Charoite: перенесено настроек из %@: %d", old, moved.count)
+            let moved = migrateSettings(from: src.dictionaryRepresentation(), into: d)
+            guard moved > 0 else { continue }
+            NSLog("Charoite: перенесено настроек из %@: %d", old, moved)
             return
         }
+    }
+
+    /// Перенос ключей из старого домена. Возвращает число перенесённых;
+    /// 0 — переносить было нечего, домен не наш.
+    ///
+    /// Перенесённый `charoite.root` — это ПАПКА ДАННЫХ, а не разрешение
+    /// исполнять её код: у старого домена ключа `charoite.codeFromRoot` не
+    /// было, а его отсутствие читается как «можно» (договор #328 для явно
+    /// выбранного пути). Значит апгрейд молча возвращал исполнение
+    /// `src/daemon.py` из записываемого клона с правами приложения — та же
+    /// дверь TCC, что закрывали #328/#329 (аудит DeepSeek 16.08). Пишем
+    /// `false` явно, зеркально `adoptLegacyCloneAsDataRoot`; разработчик
+    /// включит тумблер сам, в Настройках, где это видно.
+    @discardableResult
+    static func migrateSettings(from old: [String: Any], into d: UserDefaults) -> Int {
+        let moved = old.filter { $0.key.hasPrefix("charoit") || $0.key.hasPrefix("sufler.") }
+        guard !moved.isEmpty else { return 0 }
+        for (k, v) in moved { d.set(v, forKey: k) }
+        if moved["charoite.root"] != nil, moved["charoite.codeFromRoot"] == nil {
+            d.set(false, forKey: "charoite.codeFromRoot")
+        }
+        return moved.count
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {

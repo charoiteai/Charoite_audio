@@ -15,6 +15,10 @@ on:
 permissions:
   contents: read
 
+# Пин pytest — тот же, что в ci.yml (обновлять парой; аудит DeepSeek 16.08).
+env:
+  PYTEST_VERSION: "9.1.1"
+
 jobs:
   pytest:
     # macOS, а не ubuntu как в ci.yml: продукт живёт на macOS, и ночная
@@ -37,7 +41,7 @@ jobs:
       # было причиной пятидневного красного — в нём не хватало sounddevice, а
       # список зависимостей живёт в pyproject и меняется без оглядки на CI.
       - name: Deps
-        run: pip -q install . pytest
+        run: pip -q install . "pytest==${PYTEST_VERSION}"
       - run: python -m pytest tests/ -q
   swift:
     # macos-15, а не 14: SystemAudioCapture использует API микрофона

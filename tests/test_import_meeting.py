@@ -200,3 +200,22 @@ def test_повтор_импорта_успех_а_не_отказ(tmp_path):
     assert run.returncode == 0, (
         f"код {run.returncode}: повтор считается отказом, файл застрянет в импорте")
 
+
+
+def test_source_goes_to_the_folder_of_its_own_meeting(tmp_path):
+    """Две встречи в день: исходник второй ложился в папку первой (глоб по
+    дате брал первую папку дня), а при занятом имени молча не копировался
+    (аудит DeepSeek 16.08)."""
+    from import_meeting import archive_folder_for
+
+    graph = tmp_path / "vault" / "Работа"
+    first = graph / "Встречи-архив" / "2026-08-03 11-30 — Планёрка"
+    second = graph / "Встречи-архив" / "2026-08-03 14-00 — Ретро"
+    other_graph = tmp_path / "vault" / "Личное" / "Встречи-архив" / "2026-08-03 09-00 — Врач"
+    for d in (first, second, other_graph):
+        d.mkdir(parents=True)
+
+    assert archive_folder_for(graph, "2026-08-03_1400") == second
+    assert archive_folder_for(graph, "2026-08-03_1130") == first
+    assert archive_folder_for(graph, "2026-08-03_0900") == other_graph
+    assert archive_folder_for(graph, "2026-08-03_1700") is None

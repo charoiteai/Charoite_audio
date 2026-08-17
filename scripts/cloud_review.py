@@ -71,6 +71,13 @@ def may_write(path: pathlib.Path, graph: pathlib.Path) -> bool:
         rel = path.resolve().relative_to(graph.resolve())
     except (ValueError, OSError):
         return False
+    # Скрытые каталоги графа — снимки (.cloud_backup, .forget_backup,
+    # Ядра/.tier3_backup) и служебное Obsidian (.obsidian, .trash). Снимок и
+    # откат их не видят (snapshot пропускает dot-пути), значит и писать туда
+    # облаку нельзя: правка бэкап-истории была бы незаметной и необратимой
+    # (аудит DeepSeek 16.08).
+    if any(part.startswith(".") for part in rel.parts):
+        return False
     as_posix = rel.as_posix()
     return not any(as_posix.startswith(p) for p in PROTECTED_DIRS)
 
@@ -246,7 +253,9 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             except OSError as e:
                 print(f"бэкап графа не удался ({e}) — работаю на чтение")
                 may_edit = False
-    context, sent = graph_updater.cloud_enrich_context(transcript.parent, stamp)
+    # Файлы встречи — по стему её стенограммы, а не по минутному штампу:
+    # посекундная соседка той же минуты в контекст не попадает (аудит 16.08).
+    context, sent = graph_updater.cloud_enrich_context(transcript.parent, transcript.stem)
     prompt = graph_updater.cloud_enrich_prompt(
         transcript_name=transcript.name, folder=transcript.parent, graph=graph,
         rev_name=rev.name, stamp=stamp, arch_folder=None, may_edit=may_edit,

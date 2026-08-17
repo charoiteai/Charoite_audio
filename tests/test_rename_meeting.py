@@ -42,10 +42,15 @@ def test_titled_files_get_the_new_slug():
         == f"{STAMP}_Инцидент_загрузки_разбор.md"
 
 
-def test_derived_files_with_seconds_stay():
-    """«…113012_hints.md» — производный файл: темы в имени нет, а по полному
-    стему его находит конвейер. Трогать нельзя."""
-    assert rm.retitled("2026-08-03_113012_hints.md", STAMP, "Тема") is None
+def test_derived_files_with_seconds_follow_the_title():
+    """«…113012_hints.md» — производный файл посекундной встречи. После
+    наката темы главный файл — «{штамп}_Тема», и всё, что ищет файлы встречи
+    по его стему (архив, облачный контекст, повторные прогоны), посекундные
+    производные больше не видит: переименовываем их так же, как сам
+    конвейер (`graph_updater.retitle`). Незнакомый хвост не трогаем."""
+    assert rm.retitled("2026-08-03_113012_hints.md", STAMP, "Тема") == f"{STAMP}_Тема_hints.md"
+    assert rm.retitled("2026-08-03_113012_minutes.md", STAMP, "Тема") == f"{STAMP}_Тема_minutes.md"
+    assert rm.retitled("2026-08-03_113012_что-то.md", STAMP, "Тема") is None
 
 
 def test_bare_main_transcript_finally_gets_its_title():
@@ -127,10 +132,11 @@ def test_apply_renames_all_five_places(world):
     pretty, slug = rm.pretty_and_slug("Инцидент загрузки")
     rm.apply(rm.plan(graph, tdir, STAMP, pretty, slug), graph, STAMP, pretty)
 
-    # transcripts: тема заменена, посекундный файл нетронут
+    # transcripts: тема заменена, посекундный производный файл получил её же
     assert (tdir / f"{STAMP}_Инцидент_загрузки.md").exists()
     assert (tdir / f"{STAMP}_Инцидент_загрузки_разбор.md").exists()
-    assert (tdir / "2026-08-03_113012_hints.md").exists()
+    assert (tdir / f"{STAMP}_Инцидент_загрузки_hints.md").exists()
+    assert not (tdir / "2026-08-03_113012_hints.md").exists()
 
     # архивная папка и ссылки внутри неё
     new_folder = graph / rm.ARCHIVE_DIR / "2026-08-03 11-30 — Инцидент загрузки"

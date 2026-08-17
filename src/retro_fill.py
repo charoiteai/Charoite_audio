@@ -23,7 +23,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from llm import LLM, LLMHTTPError  # noqa: E402
 from meeting_archive import archive_meeting  # noqa: E402
 
-from charoite_paths import resolve_root
+from charoite_paths import harden_umask, resolve_root
 
 ROOT = resolve_root(__file__)
 import datetime as _dt
@@ -70,6 +70,7 @@ def gen(cfg: dict, system: str, transcript: str, task: str) -> str:
 
 
 def main():
+    harden_umask()   # минутки, разбор, архив — данные встреч, только владельцу
     cfg_p = ROOT / "config" / "config.yaml"
     if not cfg_p.exists():  # свежий клон: пример вместо жёсткого падения
         cfg_p = ROOT / "config" / "config.example.yaml"
@@ -104,7 +105,7 @@ def main():
                 dpath.write_text(NOTE + out + "\n", encoding="utf-8")
                 made.append("разбор")
 
-        folder = archive_meeting(graph, tdir, stamp, slug)
+        folder = archive_meeting(graph, tdir, stamp, slug, files_key=f.stem)
         if folder is not None:
             tpath = folder / "Тезисы.md"
             if not tpath.exists():

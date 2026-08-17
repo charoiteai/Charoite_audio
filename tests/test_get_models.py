@@ -104,3 +104,38 @@ def test_doctor_points_at_the_command():
     doctor = (REPO / "scripts" / "doctor.py").read_text(encoding="utf-8")
     assert "get_models.py" in doctor, \
         "doctor всё ещё отправляет читать docs вместо одной команды"
+
+
+def test_resume_restarts_when_the_server_ignores_range(monkeypatch, tmp_path):
+    """Докачка законна только на 206. Сервер, не знающий Range, отдаёт 200 и
+    файл целиком — дописанный к хвосту .part он удваивал файл; по размеру
+    тот проходил, а при своём зеркале (--url, без суммы) битым и оставался
+    (аудит DeepSeek 16.08)."""
+    import io
+
+    body = b"x" * 3000
+    dest = tmp_path / "tokens.txt"
+    part = dest.with_suffix(dest.suffix + ".part")
+    part.write_bytes(body[:1000])         # оборванная прошлая закачка
+
+    class FakeResponse(io.BytesIO):
+        status = 200                       # Range проигнорирован
+        headers = {"Content-Length": str(len(body))}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):            # noqa: ANN002
+            self.close()
+
+    seen: list[str | None] = []
+
+    def fake_urlopen(req, timeout=0):      # noqa: ANN001, ARG001
+        seen.append(req.get_header("Range"))
+        return FakeResponse(body)
+
+    monkeypatch.setattr(get_models.urllib.request, "urlopen", fake_urlopen)
+    get_models.download("https://example.invalid/tokens.txt", dest, expect_mb=1, onnx=False)
+
+    assert seen and seen[0] == "bytes=1000-", "докачка не запросила Range"
+    assert dest.read_bytes() == body, "файл удвоен или не докачан"

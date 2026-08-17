@@ -27,6 +27,7 @@ CODE = pathlib.Path(__file__).resolve().parent.parent
 ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 sys.path.insert(0, str(CODE / "src"))
 
+import charoite_paths  # noqa: E402
 from meeting_archive import ARCHIVE_DIR, _safe  # noqa: E402
 
 # Хвосты производных файлов. Слаг стоит между штампом и хвостом:
@@ -77,8 +78,13 @@ def retitled(name: str, stamp: str, slug: str) -> str | None:
       встречи, разобранные до фикса, остались голыми — переименовываем в
       короткий штамп со слагом, как назвал бы сам конвейер.
 
-    ПРОИЗВОДНЫЕ посекундные файлы («…113012_hints.md») не трогаем: темы в их
-    именах нет, а по полному стему их находит конвейер.
+    ПРОИЗВОДНЫЕ посекундные файлы («…113012_hints.md») получают то же имя,
+    что дал бы им сам конвейер (`graph_updater.retitle`: `{bare}_*` →
+    `{stamp}_{slug}{suffix}`). Раньше их не трогали — «по полному стему их
+    находит конвейер», — но после переименования главного файла полный стем
+    встречи другой: архив, облачный контекст и повторные прогоны ищут файлы
+    по стему главного файла и посекундные производные больше не видели
+    (второе мнение DeepSeek по партии 16.08). Незнакомый хвост не трогаем.
     """
     stem, dot, ext = name.partition(".md")
     if not dot or ext:                      # .md.live.json и прочие — не трогаем
@@ -88,6 +94,10 @@ def retitled(name: str, stamp: str, slug: str) -> str | None:
     rest = stem[len(stamp):]
     if rest == "" or re.fullmatch(r"\d\d", rest):
         return f"{stamp}_{slug}.md"         # главный файл без темы
+    m_sec = re.fullmatch(r"\d\d(_.+)", rest)
+    if m_sec:                               # посекундный производный: «12_hints»
+        suffix = m_sec.group(1)
+        return f"{stamp}_{slug}{suffix}.md" if suffix in SUFFIXES else None
     m = re.match(r"^_(?!\d)(.+)$", rest)
     if not m:
         return None
@@ -190,6 +200,9 @@ def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
     if status_dir.exists():
         import json
         mapping = {str(old): str(new) for old, new in p["moves"]}
+        # Глоб по минутному префиксу намеренно: файл статуса назван по ЖИВОЙ
+        # стенограмме с секундами (2026-08-03_113012.json), а стамп встречи
+        # минутный; чью встречу файл описывает, решает transcript_path.
         for sf in status_dir.glob(f"{stamp}*.json"):
             try:
                 data = json.loads(sf.read_text(encoding="utf-8"))
@@ -208,6 +221,9 @@ def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
 
 
 def main() -> None:
+    # Переименование переписывает стенограмму и узлы графа: права как у
+    # конвейера, а не по umask вызывающего (аудит DeepSeek 16.08).
+    charoite_paths.harden_umask()
     args = [a for a in sys.argv[1:] if a != "--yes"]
     do_apply = "--yes" in sys.argv
     if len(args) != 2:

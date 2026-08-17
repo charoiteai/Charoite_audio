@@ -263,7 +263,11 @@ struct TodayWorkspaceView: View {
     /// «идёт запись» человек закрывает не читая.
     private var updateNote: String? {
         switch updater.stage {
-        case .idle: return nil
+        case .idle:
+            // Сборка без Developer ID: обновление сбросит доступы к микрофону
+            // и экрану — сказать до кнопки, а не после перезапуска.
+            if case .updateAvailable = version.status.state { return UpdateService.adHocSignatureNote }
+            return nil
         case .downloading(let percent):
             return L.t("Скачиваю… \(percent)%", "Downloading… \(percent)%", "下载中… \(percent)%")
         case .verifying:

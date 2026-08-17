@@ -94,6 +94,19 @@ privilege boundary, not a path preference.
   was the same door as unsigned code (second-opinion review of #328).
   People whose data lives in `~/Charoite_audio` are asked once, visibly,
   and the answer is remembered; the daemon code stays bundled either way.
+  Settings migrated from an older bundle identifier keep the chosen
+  folder as *data* only: running daemon code from it has to be switched
+  on again explicitly (DeepSeek audit, 16.08).
+- **The data folder is a trust boundary, whichever one it is.** Its
+  `config.yaml` is read by a process that holds the app's permissions,
+  and `sufler.post_meeting_hook` is a shell command by design. Anything
+  that can write into that folder — Application Support included, it is
+  not protected by TCC — can therefore run a command with the microphone
+  and screen-recording grants. Charoite keeps the folder `0700`
+  (`harden_existing` on every start) and never adopts a folder silently;
+  it does not, and cannot, defend against another process running as you
+  with write access to your own files. Leave the hook empty if you do not
+  use it.
 
 ## Supply chain and release integrity
 

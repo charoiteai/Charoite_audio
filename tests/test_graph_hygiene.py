@@ -100,8 +100,15 @@ def test_graph_logs_expire(tmp_path, monkeypatch):
     fresh = logs / "graph_now.log"
     fresh.write_text("сегодняшняя встреча", encoding="utf-8")
 
+    # retry_<штамп>.log — stdout повторной пересборки с именами участников;
+    # третий класс логов, который ретеншн не видел (аудит DeepSeek 16.08)
+    retry_old = logs / "retry_2020-01-01_1200.log"
+    retry_old.write_text("имена: Дмитрий", encoding="utf-8")
+    os.utime(retry_old, (stale, stale))
+
     monkeypatch.setattr(d, "ROOT", tmp_path)
     d._prune_graph_logs({"audio": {"record_keep_days": 2}})
 
     assert not old.exists(), "старый лог с содержимым встречи остался"
+    assert not retry_old.exists(), "старый retry-лог с именами участников остался"
     assert fresh.exists(), "свежий лог удалён — диагностику потеряли"

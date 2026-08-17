@@ -53,6 +53,18 @@ def test_allowed_paths_cover_the_graph_and_nothing_outside(tmp_path):
     assert not cloud_review.may_write(graph.parent / "Дневник" / "2026-07-15.md", graph)
 
 
+def test_snapshot_and_obsidian_folders_are_off_limits(tmp_path):
+    """Скрытые каталоги графа — снимки (.cloud_backup, .forget_backup,
+    Ядра/.tier3_backup) и служебное Obsidian. snapshot их не видит, значит
+    правка там была бы незаметной и необратимой (аудит DeepSeek 16.08)."""
+    graph = _graph(tmp_path)
+    for hidden in (graph / cloud_review.BACKUP_DIR / "2026-07-14_0300" / "Ядра" / "Х.md",
+                   graph / ".forget_backup" / "2026-07-15_1400" / "Х.md",
+                   graph / "Ядра" / ".tier3_backup" / "2026-07-14" / "Х.md",
+                   graph / ".obsidian" / "workspace.json"):
+        assert not cloud_review.may_write(hidden, graph), hidden
+
+
 def test_transcripts_inside_the_graph_are_untouchable(tmp_path):
     """Копии стенограмм лежат в графе, но правит их конвейер, а не облако."""
     graph = _graph(tmp_path)

@@ -225,7 +225,7 @@ enum AppSettings {
                 reason: "адрес указывает не на эту машину, а рубильник \(key) "
                       + "запрещает любой выход наружу")
         }
-        if configValue("allow_remote")?.lowercased() == "true" {
+        if configFlag("allow_remote") {
             return .allowed(url)
         }
         return .rejected(
@@ -491,7 +491,39 @@ enum AppSettings {
     /// тумблер в UI не имеет права показывать «включено» там, где демон
     /// скажет «нет».
     static func configFlag(_ key: String) -> Bool {
-        ["true", "yes", "on"].contains((configValue(key) ?? "").lowercased())
+        let cfg = charoiteRoot.appendingPathComponent("config/config.yaml")
+        guard let text = try? String(contentsOf: cfg, encoding: .utf8) else { return false }
+        return parseBool(key, in: text) == true
+    }
+
+    /// Ровно те токены, которые PyYAML читает как булево (регистр — как у
+    /// PyYAML, без «tRUE»). Всё остальное для питона — строка или число.
+    private static let yamlTrue: Set<String> = ["true", "True", "TRUE", "yes", "Yes", "YES", "on", "On", "ON"]
+    private static let yamlFalse: Set<String> = ["false", "False", "FALSE", "no", "No", "NO", "off", "Off", "OFF"]
+
+    /// Логическое значение ключа так, как его прочитает демон: `true` только
+    /// для ГОЛОГО булева токена. `allow_remote: "true"` — в кавычках — для
+    /// PyYAML строка, и `privacy.py` (`is True`) отказывает; `parseValue`
+    /// кавычки снимает, и приложение по нему разрешало удалённый хост там,
+    /// где демон падал на старте (аудит DeepSeek 16.08). Мастер конфига
+    /// пишет значения в кавычках всегда — расхождение было штатным.
+    /// Отсутствие, кавычки, «1», мусор — `nil`.
+    static func parseBool(_ key: String, in text: String) -> Bool? {
+        var found: Bool?
+        var seen = false
+        for rawLine in text.split(whereSeparator: \.isNewline) {
+            let t = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard t.hasPrefix(key + ":") else { continue }
+            var v = t.dropFirst(key.count + 1).trimmingCharacters(in: .whitespacesAndNewlines)
+            if let hash = v.range(of: " #") { v = String(v[..<hash.lowerBound]) }
+            if v.hasPrefix("#") { v = "" }
+            v = v.trimmingCharacters(in: .whitespacesAndNewlines)
+            seen = true
+            if yamlTrue.contains(v) { found = true }
+            else if yamlFalse.contains(v) { found = false }
+            else { found = nil }          // кавычки, число, пусто — не булево
+        }
+        return seen ? found : nil
     }
 
     /// Переписать логический ключ в config.yaml суфлёра.

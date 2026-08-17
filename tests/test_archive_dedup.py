@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import dedup_archive as dd  # noqa: E402
-from meeting_archive import ARCHIVE_DIR, _folders_for  # noqa: E402
+from meeting_archive import ARCHIVE_DIR, _folders_for, archive_meeting  # noqa: E402
 
 
 @pytest.fixture()
@@ -114,3 +114,44 @@ def test_dry_run_touches_nothing(graph):
 
     assert moved == ["Разбор.md"], "показать — да"
     assert not (keep / "Разбор.md").exists(), "сделать — нет"
+
+
+def test_archive_takes_only_files_of_this_meeting(graph, tmp_path):
+    """Минутный штамп — префикс секундного: `archive_meeting` собирал в папку
+    файлы обеих встреч одной минуты и перезаписывал «Стенограмма.md» чужой
+    (аудит DeepSeek 16.08)."""
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    (tdir / "2026-08-03_1130_Планёрка.md").write_text("моя стенограмма", encoding="utf-8")
+    (tdir / "2026-08-03_1130_minutes.md").write_text("мои минутки", encoding="utf-8")
+    (tdir / "2026-08-03_113012.md").write_text("СОСЕДНЯЯ", encoding="utf-8")
+    (tdir / "2026-08-03_113012_minutes.md").write_text("СОСЕДНИЕ МИНУТКИ", encoding="utf-8")
+
+    folder = archive_meeting(graph, tdir, "2026-08-03_1130", "Планёрка")
+
+    assert folder is not None
+    assert (folder / "Стенограмма.md").read_text(encoding="utf-8") == "моя стенограмма"
+    assert (folder / "Минутки.md").read_text(encoding="utf-8") == "мои минутки"
+    for f in folder.iterdir():
+        assert "СОСЕДН" not in f.read_text(encoding="utf-8", errors="ignore"), f
+
+
+def test_untitled_meeting_with_seconds_archives_its_own_files(graph, tmp_path):
+    """Посекундная встреча без темы («…113012»): ключ файлов — стем
+    стенограммы, иначе минутный глоб брал бы файлы соседки, а граница
+    штампа — не брала бы свои."""
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    (tdir / "2026-08-03_113012.md").write_text("моя стенограмма", encoding="utf-8")
+    (tdir / "2026-08-03_113012_minutes.md").write_text("мои минутки", encoding="utf-8")
+    (tdir / "2026-08-03_113045.md").write_text("СОСЕДНЯЯ", encoding="utf-8")
+    (tdir / "2026-08-03_1130_Планёрка.md").write_text("ДРУГАЯ", encoding="utf-8")
+
+    folder = archive_meeting(graph, tdir, "2026-08-03_1130", "", files_key="2026-08-03_113012")
+
+    assert folder is not None
+    assert (folder / "Стенограмма.md").read_text(encoding="utf-8") == "моя стенограмма"
+    assert (folder / "Минутки.md").read_text(encoding="utf-8") == "мои минутки"
+    for f in folder.iterdir():
+        text = f.read_text(encoding="utf-8", errors="ignore")
+        assert "СОСЕДНЯЯ" not in text and "ДРУГАЯ" not in text, f
