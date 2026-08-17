@@ -297,6 +297,17 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
         embs = _embed_all(cores, cfg or {})
     except Exception:
         return out  # Ollama лежит — не мешаем пайплайну
+    # llm.embed при ошибке сервера отдаёт `[]`, а не исключение (404 «модель
+    # не найдена»): раньше это доезжало до IndexError в цикле пар и валило
+    # CLI ночи (аудит DeepSeek 17.08). Неполный ответ = прогон не состоялся.
+    if len(embs) != len(cores):
+        return out
+    # Сессию NLI поднимаем ДО того, как объявить прогон состоявшимся: при
+    # битой ONNX-модели entail_prob тихо возвращает 0.0, суд «ничего не
+    # находит», а ran=True двигал отметку --since-last — и свежие ядра
+    # навсегда выпадали из инкремента (аудит DeepSeek 17.08).
+    if not nli.ready():
+        return out
     out["ran"] = True
 
     pairs = []

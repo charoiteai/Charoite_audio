@@ -151,3 +151,87 @@ def test_битый_индекс_не_роняет_поиск(tmp_path):
     (folder / dossier.INDEX_JSON).write_text("{это не json", encoding="utf-8")
     assert dossier.load_index(folder) == []
     assert dossier.lookup(folder, "любой запрос") == []
+
+
+def test_заглушка_tier3_не_становится_темой(tmp_path):
+    """После слияния дубль остаётся файлом-редиректом с входящими ссылками;
+    раньше кластер вокруг него был «жив», и ночь собирала досье по мёртвой
+    теме рядом с каноном (аудит GLM 17.08)."""
+    g = _граф(tmp_path)
+    (g / "Ядра" / "Доступ и токены.md").write_text(
+        "---\ntype: ядро\ntags: [дубль, redirect, tier3-nli]\n---\n"
+        "# Доступ и токены → [[Ядра/Настройка доступа]]\n\n"
+        "⚠️ **Дубль. Смерджен Tier3-NLI.** Хроника перенесена в "
+        "[[Ядра/Настройка доступа|Настройка доступа]].\n", encoding="utf-8")
+    (g / "Встречи" / "2026-07-25_0900.md").write_text(
+        "# Встреча\nСнова про [[Ядра/Доступ и токены]].\n", encoding="utf-8")
+
+    files, backlinks = dossier.scan(g)
+    assert "Доступ и токены" not in files
+    cl = dossier.clusters(files, backlinks, min_size=2)
+    assert "Доступ и токены" not in cl
+
+
+def test_индекс_не_теряет_досье_сверх_лимита_и_при_браке(tmp_path, monkeypatch):
+    """Индекс — карта всех досье на диске: темы сверх лимита ночи и темы с
+    отказом раньше выпадали из _index/_ИНДЕКС, а --full оставлял 12 записей;
+    брак формата дважды не считался отказом — ночь «ok» (аудит 17.08)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "nightly_dossier", pathlib.Path(__file__).resolve().parent.parent / "scripts" / "nightly_dossier.py")
+    nd = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(nd)
+
+    g = _граф(tmp_path)
+    # вторая тема-ядро с двумя источниками
+    (g / "Ядра" / "Отчётность.md").write_text(
+        "---\ntype: ядро\n---\n# Отчётность\n## Статус\nв работе\n## Хроника\n- [[Встречи/2026-07-22_1000]]\n",
+        encoding="utf-8")
+    (g / "Встречи" / "2026-07-26_1200.md").write_text(
+        "# Встреча\nПро [[Ядра/Отчётность]] и [[Люди/Пётр]].\n", encoding="utf-8")
+    (g / "Люди" / "Пётр.md").write_text(
+        "# Пётр\nВедёт [[Ядра/Настройка доступа]] и [[Ядра/Отчётность]].\n", encoding="utf-8")
+    folder = g / dossier.DOSSIER_DIR
+    folder.mkdir()
+    # у обеих тем уже есть досье на диске (с чужим отпечатком → «изменилось»)
+    for theme in ("Настройка доступа", "Отчётность"):
+        (folder / f"{theme}.md").write_text(
+            f"---\nтема: {theme}\nотпечаток: старый\nсобрано: 2026-07-20\n---\n# {theme}\n"
+            "## Сейчас\nбыло\n## Как пришли\n—\n## Решено\n—\n## Открыто\n—\n## Кто в теме\n—\n"
+            "## Источники\n- x\n## Правки автора\n\n—\n", encoding="utf-8")
+
+    good = ("## Сейчас\nвсё в порядке\n## Как пришли\nт\n## Решено\nт\n"
+            "## Открыто\nт\n## Кто в теме\nт")
+    calls = {"n": 0}
+
+    def fake_generate(theme, *a, **k):
+        calls["n"] += 1
+        return good if theme == "Настройка доступа" else "Принято, что дальше?"
+
+    monkeypatch.setattr(nd, "generate", fake_generate)
+    # limit=1: первая тема пересобирается, вторая упирается в лимит ночи
+    r = nd.run(g, {"sufler": {}}, full=False, dry=False, limit=1)
+    idx = dossier.load_index(folder)
+    assert {e["тема"] for e in idx} == {"Настройка доступа", "Отчётность"}, \
+        "тема сверх лимита выпала из индекса"
+    assert r["собрано"] == 1 and r["отказы"] == 0
+
+    # брак формата дважды на теме — отказ, досье остаётся в индексе
+    (folder / "Настройка доступа.md").write_text(
+        (folder / "Настройка доступа.md").read_text(encoding="utf-8").replace("отпечаток:", "отпечаток: старый2 #"),
+        encoding="utf-8")
+    monkeypatch.setattr(nd, "generate", lambda *a, **k: "Принято, что дальше?")
+    r = nd.run(g, {"sufler": {}}, full=True, dry=False, limit=5)
+    idx = dossier.load_index(folder)
+    assert {e["тема"] for e in idx} == {"Настройка доступа", "Отчётность"}, \
+        "тема с браком выпала из индекса"
+    assert r["отказы"] == 2, "брак формата дважды — это отказ, а не тишина"
+
+    # исключение из модели — ОДИН отказ на тему, а не два (ревью 17.08)
+    def boom(*a, **k):
+        raise RuntimeError("сервер лёг")
+
+    monkeypatch.setattr(nd, "generate", boom)
+    r = nd.run(g, {"sufler": {}}, full=True, dry=False, limit=5)
+    assert r["отказы"] == 2, "исключение считается один раз на тему"
+    assert {e["тема"] for e in dossier.load_index(folder)} == {"Настройка доступа", "Отчётность"}

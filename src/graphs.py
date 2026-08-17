@@ -61,6 +61,8 @@ def all_graphs(marker: str) -> list[pathlib.Path]:
         if not root.is_dir():
             continue
         for d in sorted(root.iterdir()):
+            if d.name.startswith("."):
+                continue      # скрытое — не граф (снимки, .obsidian, .trash)
             if d.is_dir() and (d / marker).is_dir() and d not in seen:
                 seen.add(d)
                 out.append(d)

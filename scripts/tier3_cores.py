@@ -72,6 +72,14 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
         _save_stamp(graph, started)
     n = sum(len(r[k]) for k in ("dups", "nests", "border"))
     took = time.time() - started
+    if not r["ran"]:
+        # «Чисто» и «не состоялась» — разные ночи: без NLI-модели, с лежащей
+        # Ollama или пустыми эмбеддингами ревизия ничего не смотрела, и лог,
+        # печатавший «чисто», врал (аудит DeepSeek 17.08).
+        print(f"{graph.name}: ревизия не состоялась — нет NLI-модели, "
+              f"лежит Ollama или пустые эмбеддинги; отметка не сдвинута ({took:.0f} с)",
+              flush=True)
+        return
     if not n and not r["log"]:
         print(f"{graph.name}: чисто ({took:.0f} с)", flush=True)
         return

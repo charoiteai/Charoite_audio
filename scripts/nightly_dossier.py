@@ -26,13 +26,13 @@ from datetime import date
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import dossier  # noqa: E402
+import graphs  # noqa: E402
 import yaml  # noqa: E402
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
 CODE = pathlib.Path(__file__).resolve().parent.parent
 ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
-VAULT = pathlib.Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents"
 # Потолок на ночь: если тем изменилось много, лучше растянуть на две ночи,
 # чем занять машину до утра.
 MAX_PER_NIGHT = 12
@@ -51,10 +51,24 @@ def default_graph(c: dict) -> pathlib.Path:
 
 
 def all_graphs() -> list[pathlib.Path]:
-    if not VAULT.is_dir():
-        return []
-    return [p for p in sorted(VAULT.iterdir())
-            if p.is_dir() and not p.name.startswith(".") and (p / "Ядра").is_dir()]
+    """Графы всех vault-ов, а не только iCloud: настроенный graph_dir вне
+    iCloud (`~/Documents/Charoite/Work` из примера конфига) раньше молча
+    оставался без досье — шаг ночи «ok», собрано 0 (аудит 17.08). Единая
+    точка — src/graphs.py, как у tier3 и брифа."""
+    return graphs.all_graphs("Ядра")
+
+
+def _index_entry_from_disk(theme: str, members: list[str], path: pathlib.Path,
+                           fp: str, today: str) -> dict:
+    """Запись индекса для темы, которую этот прогон не пересобирал: досье
+    на диске живо — в индексе оно должно остаться (отпечаток — фактический)."""
+    return {
+        "тема": theme, "файл": f"{dossier.DOSSIER_DIR}/{theme}.md",
+        "источников": len(members),
+        "собрано": _собрано(path) or today,
+        "отпечаток": dossier.read_fingerprint(path) or fp,
+        "ключи": dossier.keywords(theme + " " + " ".join(members)),
+    }
 
 
 def generate(theme: str, members: list[str], files: dict, c: dict,
@@ -107,6 +121,8 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
 
         if built >= limit:
             skipped += 1
+            if path.exists():   # новую тему сверх лимита в индекс не выдумываем
+                entries.append(_index_entry_from_disk(theme, members, path, fp, today))
             continue
 
         if dry:
@@ -124,13 +140,19 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
             except Exception as e:  # noqa: BLE001
                 print(f"  ⚠️ {theme}: модель не ответила ({type(e).__name__}: {e})")
                 body = ""
-                отказы += 1
-                break
+                break          # отказ считается ниже, в ветке `if not body`
             if dossier.looks_valid(body):
                 break
             print(f"  … {theme}: попытка {attempt} — ответ не по формату, повтор")
             body = ""
         if not body:
+            # Брак дважды подряд — тот же отказ, что и исключение: тема
+            # осталась без разбора. Раньше он не считался, ночь при
+            # «Принято, что дальше?» на всех темах выходила с кодом 0 и
+            # статусом «ok» (аудит 17.08). Прежнее досье в индексе оставляем.
+            отказы += 1
+            if path.exists():
+                entries.append(_index_entry_from_disk(theme, members, path, fp, today))
             continue
 
         manual = dossier.preserve_manual(path.read_text(encoding="utf-8")) if path.exists() else None
@@ -152,6 +174,10 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
         })
 
     if not dry and entries:
+        # Индекс — карта ВСЕХ досье на диске, а не только тех, что посетил
+        # этот прогон: темы сверх лимита ночи и темы с отказом раньше
+        # выпадали из _index/_ИНДЕКС, поиск деградировал, а --full на
+        # большом графе оставлял в индексе 12 записей (аудит 17.08).
         dossier.write_index(folder, entries)
 
     return {"граф": graph.name, "тем": len(cl), "собрано": built,
