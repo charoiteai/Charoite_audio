@@ -51,3 +51,5 @@ def test_review_body_is_cut_at_protected_headings():
     cut = ndr.strip_protected(body)
     assert "## Правки автора" not in cut and "## Источники" not in cut
     assert cut.endswith("## Кто в теме\nт")
+    prose = "## Сейчас\nмодель советует «добавить раздел ## Источники в шаблон»\n## Как пришли\nт"
+    assert ndr.strip_protected(prose) == prose, "упоминание заголовка в абзаце — не раздел"

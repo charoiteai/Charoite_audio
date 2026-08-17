@@ -239,8 +239,15 @@ def deliver_review(rev: pathlib.Path, transcript: pathlib.Path, graph: pathlib.P
     try:
         from meeting_archive import archive_meeting
         slug = transcript.stem[len(stamp):].lstrip("_") if transcript.stem.startswith(stamp) else ""
+        if slug[:1].isdigit():
+            slug = ""   # остаток «30» у посекундного стема — секунды, не тема (ревью 17.08)
         folder = archive_meeting(graph, transcript.parent, stamp, slug.replace("_", " "),
                                  files_key=transcript.stem)
+        # Имя ревизии строится от минутного штампа, а ключ файлов архива — от
+        # стема стенограммы (у посекундной без темы они расходятся): кладём
+        # копию в папку явно, а не надеемся на глоб.
+        if folder is not None:
+            shutil.copy2(rev, folder / "Ревизия Claude.md")
         vdocs = graph / "Документация" / "Стенограммы встреч"
         if vdocs.is_dir():
             shutil.copy2(rev, vdocs / rev.name)

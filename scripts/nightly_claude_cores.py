@@ -134,8 +134,8 @@ def main() -> None:
             stdin=subprocess.DEVNULL)
         out = (r.stdout or "").strip()
     except Exception as e:  # noqa: BLE001
-        print(f"claude не отработал: {e}")
-        return
+        print(f"CLI облака не отработал: {e}")
+        sys.exit(2)          # авария облака — тоже не ревизия (ревью 17.08)
     problem = report_problem(r.returncode, out)
     if problem:
         # Отказ, лимит или обрыв — не ревизия: раньше любой непустой stdout

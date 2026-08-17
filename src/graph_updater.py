@@ -899,8 +899,12 @@ def main():
             # Повтор обработки — не повод гонять облако второй раз: если
             # ревизия уже есть и она моложе стенограммы, оставляем её
             # (аудит GLM 17.08 — дубли запросов Opus при ретрае).
-            if rev.exists() and rev.stat().st_mtime >= tpath.stat().st_mtime:
-                print(f"cloud-enrich: ревизия уже есть ({rev.name}) — повтор не запускаем")
+            # Ключ дедупа — штамп, не тема: при ретрае модель может дать другую
+            # тему, и имя ревизии сменится (ревью 17.08).
+            fresh = [r for r in files_with_stamp(tpath.parent, stamp, suffix="_ревизия_claude.md")
+                     if r.stat().st_mtime >= tpath.stat().st_mtime]
+            if fresh:
+                print(f"cloud-enrich: ревизия уже есть ({fresh[0].name}) — повтор не запускаем")
                 run_post_hook(cfg, tpath, stamp)
                 if not graph_ok:
                     sys.exit(EXIT_NO_GRAPH)

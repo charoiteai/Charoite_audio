@@ -25,6 +25,7 @@ import datetime as dt
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -51,11 +52,16 @@ DEFAULT_LIMIT = 6       # досье за прогон: облако не бес
 PROTECTED_HEADINGS = ("## Правки автора", "## Источники")
 
 
+_PROTECTED_RE = re.compile(r"(?m)^##\s+(?:Правки автора|Источники)\s*$")
+
+
 def strip_protected(body: str) -> str:
-    """Тело ревизии без защищённых секций — их пишет конвейер, не модель."""
-    for guard in PROTECTED_HEADINGS:
-        body = body.split(guard)[0].rstrip()
-    return body
+    """Тело ревизии без защищённых секций — их пишет конвейер, не модель.
+
+    Режем по СТРОКЕ-заголовку, а не по подстроке: упоминание «## Источники»
+    внутри абзаца — не раздел (ревью 17.08).
+    """
+    return _PROTECTED_RE.split(body, maxsplit=1)[0].rstrip()
 
 
 def _cfg() -> dict:
@@ -230,8 +236,6 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
 
     if notes and not dry:
         dest = graph / f"Служебное_ревизия_досье_{stamp}.md"
-        for old in sorted(graph.glob("Служебное_ревизия_досье_*.md"))[:-KEEP_REPORTS]:
-            old.unlink(missing_ok=True)   # отчёты копились бесконечно (аудит GLM 17.08)
         dest.write_text(
             f"---\ntype: служебное\nдата: {stamp}\nмодель: {model}\n---\n"
             f"# Ревизия досье ({model})\n\n"
@@ -239,6 +243,9 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
             "Включите тумблер, если хотите, чтобы облако правило граф само.\n\n"
             + "\n".join(notes), encoding="utf-8")
         print(f"  отчёт: {dest.name}")
+        # ретеншн ПОСЛЕ записи: отчёты копились бесконечно (аудит GLM 17.08)
+        for old in sorted(graph.glob("Служебное_ревизия_досье_*.md"))[:-KEEP_REPORTS]:
+            old.unlink(missing_ok=True)
     return done
 
 

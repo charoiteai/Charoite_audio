@@ -140,8 +140,7 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
             except Exception as e:  # noqa: BLE001
                 print(f"  ⚠️ {theme}: модель не ответила ({type(e).__name__}: {e})")
                 body = ""
-                отказы += 1
-                break
+                break          # отказ считается ниже, в ветке `if not body`
             if dossier.looks_valid(body):
                 break
             print(f"  … {theme}: попытка {attempt} — ответ не по формату, повтор")
