@@ -234,7 +234,11 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     if not privacy.cloud_enrich_enabled(cfg):
         print("облако выключено рубильником или конфигом — разбор не запускается")
         return 1
-    may_edit = privacy.cloud_edit_graph_enabled(cfg)
+    graph_available = graph_updater.cloud_graph_available(graph)
+    # Право править имеет смысл только вместе с узкой cwd=graph. При
+    # отсутствующем/слишком широком графе команда уйдёт в text-only режим:
+    # папка стенограмм не должна случайно получить файловые инструменты.
+    may_edit = privacy.cloud_edit_graph_enabled(cfg) and graph_available
     # Право правки живо только вместе со страховкой: нет каталога графа
     # (несмонтированный iCloud-том) или не получился бэкап — режим чтения.
     # Раньше бэкап тихо пропускался, а Edit/Write всё равно выдавались —
@@ -262,16 +266,20 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         context=context)
     cmd = graph_updater.cloud_enrich_command(
         cfg, claude_bin=shutil.which("claude") or "/opt/homebrew/bin/claude",
-        prompt=prompt, model=cloud.model(cfg, "cloud_model"), may_edit=may_edit)
+        prompt=prompt, model=cloud.model(cfg, "cloud_model"), may_edit=may_edit,
+        graph_available=graph_available)
 
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
 
     tmp = rev.with_suffix(rev.suffix + ".part")
     work_dir = graph_updater.cloud_enrich_workdir(cfg, graph, transcript.parent)
+    mode = ("правка графа" if may_edit else
+            "только чтение графа" if graph_available else
+            "только текст (граф недоступен)")
     with tmp.open("w", encoding="utf-8") as out, log.open("a", encoding="utf-8") as lf:
         lf.write(f"[cloud-review] {stamp}: файлов в запросе {len(sent)} "
                  f"({', '.join(sent)}), {len(context)} знаков, "
-                 f"режим {'правка графа' if may_edit else 'только чтение'}\n")
+                 f"режим {mode}\n")
         lf.flush()
         try:
             code = subprocess.run(cmd, cwd=str(work_dir), env=env,

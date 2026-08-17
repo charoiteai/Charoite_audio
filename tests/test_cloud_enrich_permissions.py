@@ -21,14 +21,15 @@
 
 Что держит этот файл:
 
-    1. Read-only по умолчанию: при `cloud_edit_graph: false` в команде нет ни
-       Edit, ни Write, ни acceptEdits — ни в каком виде.
+    1. Read-only по умолчанию: при `cloud_edit_graph: false` модель видит
+       только Read/Grep/Glob, а разрешение чтения привязано к cwd=graph.
     2. Право берётся ровно у `privacy.cloud_edit_graph_enabled`, а не у
        соседнего ключа и не у «истинности» значения.
     3. Рубильник `CHAROITE_NO_CLOUD` отбирает право записи, даже когда оба
        тумблера в конфиге стоят `true`.
     4. Разрешённый режим не сломан: с двумя явными `true` инструменты записи
-       на месте.
+       на месте, но только по `Edit(/**)` внутри cwd=graph; абсолютный путь
+       наружу отклоняет `dontAsk`.
     5. Стенограмма в промпте обрамлена как данные, а не как инструкции.
 
 Тесты смотрят на СОБРАННУЮ КОМАНДУ, а не на текст файла: подмена формы записи
@@ -49,10 +50,11 @@ READ_ONLY = {"sufler": {"cloud_enrich": True}}
 FULL = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
 
 
-def _command(cfg: dict, env: dict | None = None) -> list[str]:
+def _command(cfg: dict, env: dict | None = None,
+             graph_available: bool = True) -> list[str]:
     return graph_updater.cloud_enrich_command(
         cfg, claude_bin="/usr/bin/claude", prompt="prompt", model="claude-opus-5",
-        env=env if env is not None else {})
+        env=env if env is not None else {}, graph_available=graph_available)
 
 
 def _flags(cmd: list[str]) -> dict[str, str]:
@@ -66,12 +68,29 @@ def _flags(cmd: list[str]) -> dict[str, str]:
     return out
 
 
-def _allowed(cmd: list[str]) -> set[str]:
-    return {t for t in _flags(cmd).get("--allowedTools", "").split(",") if t}
+def _values(cmd: list[str], flag: str) -> list[str]:
+    if flag not in cmd:
+        return []
+    start = cmd.index(flag) + 1
+    out = []
+    for item in cmd[start:]:
+        if item.startswith("--"):
+            break
+        out.append(item)
+    return out
+
+
+def _tools(cmd: list[str]) -> set[str]:
+    values = _values(cmd, "--tools")
+    return {t for value in values for t in value.split(",") if t}
+
+
+def _allowed_rules(cmd: list[str]) -> set[str]:
+    return set(_values(cmd, "--allowedTools"))
 
 
 def _forbidden(cmd: list[str]) -> set[str]:
-    return {t for t in _flags(cmd).get("--disallowedTools", "").split(",") if t}
+    return set(_values(cmd, "--disallowedTools"))
 
 
 def test_without_the_edit_toggle_there_is_no_write_permission():
@@ -83,9 +102,9 @@ def test_without_the_edit_toggle_there_is_no_write_permission():
     """
     cmd = _command(READ_ONLY)
     for tool in WRITE_TOOLS:
-        assert tool not in _allowed(cmd), f"read-only разрешает {tool}: {cmd}"
-    assert "--permission-mode" not in _flags(cmd), \
-        "автоприём правок в режиме без права записи"
+        assert tool not in _tools(cmd), f"read-only показывает {tool}: {cmd}"
+    assert _flags(cmd).get("--permission-mode") == "dontAsk", \
+        "внешний путь должен отклоняться без интерактивного запроса"
     assert {"Edit", "Write"} <= _forbidden(cmd), \
         "инструменты записи не запрещены явно — headless попросит разрешение"
 
@@ -97,8 +116,11 @@ def test_read_only_command_still_lets_the_model_read():
     Проверка «нужные инструменты на месте» пропустила бы случайно добавленный
     пятый — а каждый инструмент здесь это ещё одна дорога наружу.
     """
-    allowed = _allowed(_command(READ_ONLY))
-    assert allowed == {"Read", "Grep", "Glob"}, allowed
+    cmd = _command(READ_ONLY)
+    assert _tools(cmd) == {"Read", "Grep", "Glob"}, _tools(cmd)
+    assert _allowed_rules(cmd) == {"Read(/**)"}, _allowed_rules(cmd)
+    assert "Read" not in _allowed_rules(cmd), \
+        "голый Read разрешает абсолютные пути вне рабочего графа"
 
 
 def test_caller_can_only_narrow_the_edit_right():
@@ -113,23 +135,27 @@ def test_caller_can_only_narrow_the_edit_right():
         FULL, claude_bin="/usr/bin/claude", prompt="p", model="m", env={},
         may_edit=False)
     for tool in WRITE_TOOLS:
-        assert tool not in _allowed(downgraded), \
-            f"понижение не сработало: {tool} разрешён"
-    assert "--permission-mode" not in _flags(downgraded), \
-        "понижение оставило автоприём правок"
+        assert tool not in _tools(downgraded), \
+            f"понижение не сработало: {tool} виден"
+    assert _allowed_rules(downgraded) == {"Read(/**)"}, \
+        "понижение оставило правило записи"
+    assert "Edit" in _forbidden(downgraded) and "Write" in _forbidden(downgraded), \
+        "понижение не запретило инструменты записи явно"
 
     escalated = graph_updater.cloud_enrich_command(
         READ_ONLY, claude_bin="/usr/bin/claude", prompt="p", model="m", env={},
         may_edit=True)
-    assert _allowed(escalated) == {"Read", "Grep", "Glob"}, \
+    assert _tools(escalated) == {"Read", "Grep", "Glob"}, \
         "параметр расширил право записи мимо privacy-ключа"
+    assert _allowed_rules(escalated) == {"Read(/**)"}, _allowed_rules(escalated)
 
 
 def test_edit_mode_works_when_both_toggles_are_explicit():
     cmd = _command(FULL)
-    assert _allowed(cmd) == {"Read", "Grep", "Glob", "Edit", "Write"}, _allowed(cmd)
-    assert _flags(cmd).get("--permission-mode") == "acceptEdits", \
-        "разрешённый режим потерял автоприём правок"
+    assert _tools(cmd) == {"Read", "Grep", "Glob", "Edit", "Write"}, _tools(cmd)
+    assert _allowed_rules(cmd) == {"Read(/**)", "Edit(/**)"}, _allowed_rules(cmd)
+    assert _flags(cmd).get("--permission-mode") == "dontAsk", \
+        "доступ вне графа не должен запрашиваться или приниматься"
     # инструмент, одновременно разрешённый и запрещённый, — это спор двух
     # флагов, который разрешает CLI, а не мы. Такого быть не должно.
     assert not ({"Edit", "Write"} & _forbidden(cmd)), \
@@ -140,7 +166,7 @@ def test_the_right_comes_from_privacy_not_from_a_neighbouring_key():
     """Мусор в значении — не разрешение, как и везде в privacy.py."""
     for value in ("true", 1, "yes", [], None, "false"):
         cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": value}}
-        assert "Write" not in _allowed(_command(cfg)), \
+        assert "Write" not in _tools(_command(cfg)), \
             f"значение {value!r} выдало право записи"
 
 
@@ -148,17 +174,26 @@ def test_kill_switch_takes_the_write_permission_away():
     """«Этот запуск строго офлайн» — сильнее любого «да» в конфиге."""
     for switch in ("CHAROITE_NO_CLOUD", "SUFLER_NO_CLOUD"):
         cmd = _command(FULL, env={switch: "1"})
-        assert "Write" not in _allowed(cmd), switch
-        assert "--permission-mode" not in _flags(cmd), switch
+        assert "Write" not in _tools(cmd), switch
+        assert "Edit(/**)" not in _allowed_rules(cmd), switch
 
 
 def test_dangerous_tools_stay_forbidden_in_both_modes():
     for cfg in (READ_ONLY, FULL):
         cmd = _command(cfg)
         forbidden = _forbidden(cmd)
-        for tool in ("Bash", "WebFetch", "WebSearch", "Task"):
+        for tool in ("Bash", "WebFetch", "WebSearch", "Task", "mcp__*"):
             assert tool in forbidden, f"{tool} не запрещён: {cmd}"
-            assert tool not in _allowed(cmd), f"{tool} разрешён: {cmd}"
+            assert tool not in _tools(cmd), f"{tool} доступен модели: {cmd}"
+
+
+def test_missing_graph_is_text_only_even_when_edit_was_requested():
+    """Fallback в transcripts не получает права читать соседние встречи."""
+    cmd = _command(FULL, graph_available=False)
+    assert _tools(cmd) == set(), cmd
+    assert _allowed_rules(cmd) == set(), cmd
+    assert {"Read", "Edit", "Write", "mcp__*"} <= _forbidden(cmd)
+    assert _flags(cmd).get("--permission-mode") == "dontAsk"
 
 
 def test_transcript_is_framed_as_data_not_as_instructions():
@@ -199,13 +234,19 @@ def test_read_only_prompt_does_not_ask_for_writes():
 # он нужен для кросс-ссылок и его человек уже доверил продукту.
 
 
-def test_workdir_is_the_graph_not_the_repository():
+def test_workdir_is_the_graph_not_the_repository(tmp_path):
     """Корень репозитория облаку не рабочая папка ни в одном режиме."""
-    graph = pathlib.Path("/tmp/vault/Работа")
+    graph = tmp_path / "vault" / "Работа"
+    graph.mkdir(parents=True)
     for cfg in (READ_ONLY, FULL):
         work = graph_updater.cloud_enrich_workdir(cfg, graph)
-        assert work == graph, work
-        assert "charoite" not in str(work).lower() or str(work).startswith("/tmp"), work
+        assert work == graph.resolve(), work
+
+
+def test_filesystem_root_and_home_are_not_accepted_as_graphs():
+    """`Read(/**)` не должен случайно раскрыть весь диск или домашнюю папку."""
+    assert not graph_updater.cloud_graph_available(pathlib.Path("/"))
+    assert not graph_updater.cloud_graph_available(pathlib.Path.home())
 
 
 def test_workdir_falls_back_when_there_is_no_graph():
