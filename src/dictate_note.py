@@ -54,6 +54,8 @@ _llm = LLM(cfg)
 
 import os  # noqa: E402
 
+import meeting_stamp  # noqa: E402
+
 # Дневник — отдельная граф-сфера РЯДОМ с рабочей (личное не всплывает в
 # рабочем поиске), но в том же Obsidian-vault: ссылки и backlinks между
 # сферами работают нативно. env — для тестов.
@@ -71,9 +73,10 @@ def last_meeting_today() -> tuple[str, str] | None:
     if not tdir.exists():
         return None
     today = f"{dt.datetime.now():%Y-%m-%d}"
-    cands = sorted(p for p in tdir.glob(f"{today}_*.md")
-                   if "_minutes" not in p.name and "_hints" not in p.name
-                   and "_live" not in p.name)
+    # Только главные файлы встреч: список производных знает meeting_stamp
+    # (`_разбор`, `_ревизия_claude`, `_спикеры` тоже) — раньше три исключения
+    # руками, и ссылка дневника вела в файл разбора (аудит DeepSeek 17.08).
+    cands = sorted(p for p in tdir.glob(f"{today}_*.md") if meeting_stamp.stamp_of(p.stem))
     if not cands:
         return None
     stamp = cands[-1].stem

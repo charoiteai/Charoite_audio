@@ -226,6 +226,37 @@ def publish(tmp: pathlib.Path, rev: pathlib.Path, ok: bool) -> bool:
     return True
 
 
+def deliver_review(rev: pathlib.Path, transcript: pathlib.Path, graph: pathlib.Path,
+                   stamp: str, lf) -> None:
+    """Довезти ревизию туда, где человек её увидит: архив встречи и vault.
+
+    Воркер публикует `<стем>_ревизия_claude.md` ПОЗЖЕ архива и копий в
+    Документацию, а повторно их никто не собирал — в read-only режиме вывод
+    облака оставался в служебном transcripts/, невидимом ни в Finder-архиве,
+    ни в графе (аудит GLM 17.08). Архив идемпотентен: зовём его ещё раз с тем
+    же ключом файлов, копию в Документацию кладём рядом с остальными.
+    """
+    try:
+        from meeting_archive import archive_meeting
+        slug = transcript.stem[len(stamp):].lstrip("_") if transcript.stem.startswith(stamp) else ""
+        if slug[:1].isdigit():
+            slug = ""   # остаток «30» у посекундного стема — секунды, не тема (ревью 17.08)
+        folder = archive_meeting(graph, transcript.parent, stamp, slug.replace("_", " "),
+                                 files_key=transcript.stem)
+        # Имя ревизии строится от минутного штампа, а ключ файлов архива — от
+        # стема стенограммы (у посекундной без темы они расходятся): кладём
+        # копию в папку явно, а не надеемся на глоб.
+        if folder is not None:
+            shutil.copy2(rev, folder / "Ревизия Claude.md")
+        vdocs = graph / "Документация" / "Стенограммы встреч"
+        if vdocs.is_dir():
+            shutil.copy2(rev, vdocs / rev.name)
+        lf.write(f"[cloud-review] ревизия доставлена: архив {folder.name if folder else '—'}"
+                 f"{', vault' if vdocs.is_dir() else ''}\n")
+    except Exception as e:  # noqa: BLE001 — доставка не важнее самой ревизии
+        lf.write(f"[cloud-review] ревизия не доставлена в архив: {e}\n")
+
+
 def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         rev: pathlib.Path, log: pathlib.Path, cfg: dict) -> int:
     # Разрешение спрашиваем ЗДЕСЬ, а не полагаемся на вызывающего: воркер —
@@ -306,6 +337,10 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                         if reverted else "")
                      + (f", удалено созданных в защищённых: {', '.join(removed)}"
                         if removed else "") + "\n")
+        # Доставка — ПОСЛЕ сверки границ: архив и Документация — защищённые
+        # папки, и созданную здесь копию сверка приняла бы за правку облака.
+        if published:
+            deliver_review(rev, transcript, graph, stamp, lf)
     return 0 if published else 1
 
 

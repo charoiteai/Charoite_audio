@@ -107,7 +107,15 @@ $PY scripts/nightly_dossier_review.py --all-graphs || echo "⚠️ ревизи�
 step "claude cores review"
 # облачный взгляд на ядра (Opus): отчёт-рекомендации, ничего не правит.
 # Выключено sufler.cloud_enrich/SUFLER_NO_CLOUD — шаг молчит.
-$PY scripts/nightly_claude_cores.py || echo "⚠️ облачная ревизия не отработала"
+# Код 2 — «ответ облака не принят» (отказ, лимит, нет секций): раньше любой
+# ненулевой код гасился эхом, и ночь писала «ok» без файла ревизии, а бриф
+# молча терял разделы (аудит 17.08). rc не трогаем: шаг необязательный.
+$PY scripts/nightly_claude_cores.py || {
+  case $? in
+    2) echo "⚠️ облачная ревизия ядер не принята"; FAILED="$FAILED claude-cores(не-принята)" ;;
+    *) echo "⚠️ облачная ревизия не отработала"; FAILED="$FAILED claude-cores" ;;
+  esac
+}
 step "dedup graph files"
 # Побайтовые копии документов встречи (оригинал в «Документация», копия в
 # «Встречи-архив» для Finder) связываются жёсткими ссылками: место и

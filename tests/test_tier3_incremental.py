@@ -132,3 +132,28 @@ def test_revise_reports_that_it_ran(tmp_path, monkeypatch):
     monkeypatch.setattr(tier3.nli, "is_available", lambda: False)
 
     assert tier3.revise(graph)["ran"] is False
+
+
+def test_ran_is_false_when_the_judge_did_not_come(tmp_path, monkeypatch):
+    """Файлы NLI на месте, но сессия не собралась (битый ONNX): entail_prob
+    тихо отдаёт 0.0, суд «ничего не находит» — раньше ran=True двигал отметку
+    --since-last, и свежие ядра навсегда выпадали из инкремента
+    (аудит DeepSeek 17.08)."""
+    graph = _graph(tmp_path, "Одно", "Другое")
+    monkeypatch.setattr(tier3.nli, "is_available", lambda: True)
+    monkeypatch.setattr(tier3.nli, "ready", lambda: False)
+    monkeypatch.setattr(tier3, "_embed_all", lambda cores, cfg: [[1.0, 0.0]] * len(cores))
+
+    assert tier3.revise(graph)["ran"] is False
+
+
+def test_incomplete_embeddings_do_not_crash_and_do_not_count_as_a_run(tmp_path, monkeypatch):
+    """llm.embed при ошибке сервера отдаёт `[]` — раньше IndexError валил CLI
+    ночи (аудит DeepSeek 17.08); теперь — «прогон не состоялся»."""
+    graph = _graph(tmp_path, "Одно", "Другое")
+    monkeypatch.setattr(tier3.nli, "is_available", lambda: True)
+    monkeypatch.setattr(tier3.nli, "ready", lambda: True)
+    monkeypatch.setattr(tier3, "_embed_all", lambda cores, cfg: [])
+
+    r = tier3.revise(graph)
+    assert r["ran"] is False and r["dups"] == []

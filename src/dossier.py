@@ -137,6 +137,13 @@ def scan(graph: pathlib.Path) -> tuple[dict[str, dict], dict[str, set[str]]]:
             text = p.read_text(encoding="utf-8")
         except OSError:
             continue
+        # Redirect-заглушка после tier3-слияния — не тема: она сохраняет
+        # входящие ссылки заметок и ссылку на канон, кластер вокруг неё
+        # «жив», и ночь собирала досье по мёртвому дублю рядом с каноном,
+        # тратя на него запросы облака (аудит GLM 17.08). tier3.load_cores и
+        # morning_brief её уже пропускают — теперь и здесь.
+        if "Дубль. Смерджен" in text:
+            continue
         t = _title(p)
         kind = rel.parts[0] if len(rel.parts) > 1 else "Прочее"
         files[t] = {"path": p, "rel": str(rel), "text": text,

@@ -24,14 +24,30 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
+import meeting_archive  # noqa: E402
 
 
 def sect(text: str, title: str) -> list[str]:
     """Пункты '- ...' из секции '## title' саммари."""
-    m = re.search(rf"## {title}\n(.*?)(?=\n## |\n---|\Z)", text, re.S)
+    m = re.search(rf"## {re.escape(title)}\n(.*?)(?=\n## |\n---|\Z)", text, re.S)
     if not m:
         return []
     return [ln.strip() for ln in m.group(1).splitlines() if ln.strip().startswith("- ")]
+
+
+def sect_any(text: str, key: str) -> list[str]:
+    """Секция саммари на любом из языков архива (ru/en/zh + исторические).
+
+    Саммари пишется на языке конфига, а бриф читал только русские заголовки:
+    при `sufler.language: en` (или для старых en/zh встреч после смены языка)
+    он терял суть, решения, поручения и вопросы (аудит 17.08). Разбор — по
+    всем написаниям сразу, как это делает сам архив (`section_names`).
+    """
+    for name in meeting_archive.section_names(key):
+        found = sect(text, name)
+        if found:
+            return found
+    return []
 
 
 def build_brief(graph: pathlib.Path) -> str | None:
@@ -70,11 +86,10 @@ def build_brief(graph: pathlib.Path) -> str | None:
         gist = ""
         if summary.exists():
             text = summary.read_text(encoding="utf-8")
-            gm = re.search(r"\*\*Суть одной строкой:\*\*\s*(.+)", text)
-            gist = gm.group(1).strip() if gm else ""
-            decided += [f"{ln}  ·  {title}" for ln in sect(text, "Решили")]
-            tasks += [f"{ln}  ·  {title}" for ln in sect(text, "Поручения")]
-            open_q += [f"{ln}  ·  {title}" for ln in sect(text, "Открытые вопросы")]
+            gist = meeting_archive.summary_gist(text) or ""
+            decided += [f"{ln}  ·  {title}" for ln in sect_any(text, "decisions")]
+            tasks += [f"{ln}  ·  {title}" for ln in sect_any(text, "tasks")]
+            open_q += [f"{ln}  ·  {title}" for ln in sect_any(text, "questions")]
         link = f"[[Встречи-архив/{mdir.name}/Саммари|{title}]]"
         lines.append(f"- {link}" + (f" — {gist}" if gist else ""))
     lines.append("")

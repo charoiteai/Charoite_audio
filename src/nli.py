@@ -66,6 +66,19 @@ def _load():
             _failed = True
 
 
+def ready() -> bool:
+    """Модель на месте И сессия поднимается: то, что нужно знать до суда.
+
+    `is_available()` смотрит только на файлы; `entail_prob` при не собравшейся
+    сессии молча отдаёт 0.0 — вызывающему не отличить «не дубль» от «судья не
+    пришёл». Здесь — честный ответ.
+    """
+    if not is_available():
+        return False
+    _load()
+    return _session is not None
+
+
 def entail_prob(premise: str, hypothesis: str) -> float:
     """P(entailment): насколько из premise СЛЕДУЕТ hypothesis. 0.0 если слой недоступен."""
     if not is_available():

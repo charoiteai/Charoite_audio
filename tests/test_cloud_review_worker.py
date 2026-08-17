@@ -220,3 +220,73 @@ def test_publish_is_atomic_and_keeps_a_partial_answer(tmp_path):
     assert cloud_review.publish(tmp, rev, ok=True)
     assert rev.read_text(encoding="utf-8").startswith("- **Решение:**")
     assert not tmp.exists()
+
+
+def test_published_review_reaches_the_archive_and_the_vault(tmp_path, monkeypatch):
+    """Ревизия облака публиковалась позже архива и копий в Документацию, а
+    повторно их никто не собирал — в read-only режиме она оставалась в
+    transcripts/, невидимой ни в Finder-архиве, ни в графе (аудит GLM 17.08)."""
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    (graph / "Встречи-архив").mkdir()
+    (graph / "Документация" / "Стенограммы встреч").mkdir(parents=True, exist_ok=True)
+    transcripts = tmp_path / "transcripts"
+    transcripts.mkdir()
+    transcript = transcripts / f"{stamp}_Платёжный_провайдер.md"
+    transcript.write_text("стенограмма\n", encoding="utf-8")
+    rev = transcripts / f"{stamp}_Платёжный_провайдер_ревизия_claude.md"
+    log = tmp_path / "cloud.log"
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        kwargs["stdout"].write("# Ревизия\n\n- **Решение:** ЮPay\n- **Поручение:** договор\n- **Риск:** сроки\n")
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    import meeting_archive
+    monkeypatch.setattr(meeting_archive, "_gen_summary", lambda *a, **k: None)  # без локальной модели
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False}}
+    code = cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+
+    assert code == 0 and rev.exists()
+    folder = graph / "Встречи-архив" / "2026-07-15 14-00 — Платёжный провайдер"
+    assert (folder / "Ревизия Claude.md").exists(), "ревизия не доехала до архива встречи"
+    assert (folder / "Стенограмма.md").exists()
+    assert (graph / "Документация" / "Стенограммы встреч" / rev.name).exists(), \
+        "ревизия не доехала до Документации"
+    assert "ревизия доставлена" in log.read_text(encoding="utf-8")
+
+
+def test_review_of_an_untitled_meeting_lands_in_its_own_folder(tmp_path, monkeypatch):
+    """Посекундная встреча без темы: остаток стема «30» — секунды, а не тема
+    (ревью 17.08); ревизия названа минутным штампом и в папку кладётся явно."""
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    (graph / "Встречи-архив").mkdir()
+    existing = graph / "Встречи-архив" / "2026-07-15 14-00 — встреча"
+    existing.mkdir()
+    transcripts = tmp_path / "transcripts"
+    transcripts.mkdir()
+    transcript = transcripts / f"{stamp}30.md"
+    transcript.write_text("стенограмма\n", encoding="utf-8")
+    rev = transcripts / f"{stamp}_ревизия_claude.md"
+    log = tmp_path / "cloud.log"
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        kwargs["stdout"].write("# Ревизия\n\n- **Решение:** да\n- **Поручение:** нет\n- **Риск:** есть\n")
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    import meeting_archive
+    monkeypatch.setattr(meeting_archive, "_gen_summary", lambda *a, **k: None)
+    code = cloud_review.run(stamp, transcript, graph, rev, log,
+                            {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False}})
+
+    assert code == 0
+    assert not (graph / "Встречи-архив" / "2026-07-15 14-00 — 30").exists(), "секунды стали темой папки"
+    assert (existing / "Ревизия Claude.md").exists(), "ревизия не легла в папку встречи"

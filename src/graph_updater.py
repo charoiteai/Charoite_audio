@@ -22,7 +22,7 @@ import privacy  # noqa: E402
 from llm import LLM, LLMHTTPError  # noqa: E402
 
 from charoite_paths import code_root, harden_umask, resolve_root
-from meeting_stamp import files_with_stamp
+from meeting_stamp import files_with_stamp, stamp_of
 
 ROOT = resolve_root(__file__)
 CODE = code_root(__file__)
@@ -33,7 +33,15 @@ def load_cfg() -> dict:
 
 
 def latest_transcript() -> pathlib.Path | None:
-    files = [p for p in (ROOT / "transcripts").glob("*.md") if not p.name.endswith("_minutes.md")]
+    """Свежая ГЛАВНАЯ стенограмма — не производный файл.
+
+    Раньше исключалось только `_minutes`, а конвейер кладёт рядом `_разбор`,
+    `_ревизия_claude`, `_hints`, `_live`, `_спикеры` — и они моложе
+    стенограммы: запуск без аргумента брал разбор за стенограмму и
+    перезаписывал заметку встречи (аудит 17.08). Что считать главным
+    файлом, знает meeting_stamp.stamp_of.
+    """
+    files = [p for p in (ROOT / "transcripts").glob("*.md") if stamp_of(p.stem)]
     return max(files, key=lambda p: p.stat().st_mtime) if files else None
 
 
@@ -52,6 +60,10 @@ LLM_TIMEOUT = 300
 # «В записи нет речи» — не ошибка конвейера, а его честный результат.
 # Вызывающий отличает это от падения по коду возврата и не ставит повтор.
 EXIT_NO_SPEECH = 3
+# Модель не дала JSON: узлы графа не обновлены, но архив, копии в vault,
+# облачный разбор и хук собраны. Пересборка по этому коду помечает встречу
+# ошибкой и вернётся к ней (retry_unfinished), а не пишет «готово».
+EXIT_NO_GRAPH = 4
 
 
 # Куда докладывать о прогрессе. Ставится в main(), когда известна стенограмма:
@@ -510,13 +522,42 @@ def _closest_span(quote: str, transcript: str, threshold: float = 0.75) -> str:
     return " ".join(transcript[start:end].split())
 
 
+_REDIRECT_RE = re.compile(r"^# .+? → \[\[Ядра/(.+?)(?:\|.*?)?\]\]", re.M)
+
+
+def resolve_core_path(d: pathlib.Path, name: str, hops: int = 3) -> pathlib.Path:
+    """Файл ядра по имени — с учётом redirect-заглушек tier3.
+
+    После слияния дубль остаётся файлом «`# дубль → [[Ядра/канон]]` … Дубль.
+    Смерджен», и модель на следующей встрече может назвать ядро прежним
+    именем. Раньше upsert писал в заглушку: в ней нет «## Статус» — свежий
+    статус пропадал, а хроника копилась в файле, который tier3 и бриф
+    пропускают (аудит DeepSeek 17.08). Идём по стрелке до канона (≤3 шага).
+    """
+    p = d / f"{safe_name(name)}.md"
+    for _ in range(hops):
+        if not p.exists():
+            return p
+        text = p.read_text(encoding="utf-8")
+        if "Дубль. Смерджен" not in text:
+            return p
+        m = _REDIRECT_RE.search(text)
+        if not m:
+            return p
+        target = d / f"{safe_name(m.group(1))}.md"
+        if target == p or not target.exists():
+            return p
+        p = target
+    return p
+
+
 def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
                 transcript: str = ""):
     """Ядро — сквозная тема/задача: статус ПЕРЕЗАПИСЫВАЕТСЯ каждой встречей,
     хроника копится. В графе Obsidian ядра становятся хабами над-уровня."""
     d = graph / "Ядра"
     d.mkdir(parents=True, exist_ok=True)
-    p = d / f"{safe_name(core['имя'])}.md"
+    p = resolve_core_path(d, core["имя"])
     status = (core.get("статус") or "").strip()
     upd = (core.get("обновление") or "").strip()
     anchor = core_anchor(core, transcript) if transcript else ""
@@ -597,9 +638,18 @@ def main():
 
     known = [] if os.environ.get("SUFLER_GRAPH_DIR") else known_graphs(graph)
     data = extract(cfg, transcript, _project_rule(known, graph.name))
-    if not data:
-        print("LLM не вернула валидный JSON")
-        return
+    # None — «граф не обновляем», но НЕ «ничего не делаем»: докстринг extract
+    # обещает архив со стенограммой и минутками и без графа. Раньше здесь
+    # стоял return — ни заметки, ни архива, ни хука, а пересборка трижды
+    # гоняла полный ретрай (аудит 17.08). Теперь узлы/заметку/память/разбор
+    # пропускаем (модель молчит или врёт), а всё, что от модели не зависит,
+    # делаем и выходим кодом EXIT_NO_GRAPH — статус остаётся «ошибка», ретрай
+    # придёт, когда модель оживёт.
+    graph_ok = bool(data)
+    if not graph_ok:
+        print("LLM не вернула валидный JSON — узлы графа не обновляем; "
+              "архив, копии и хук собираем")
+        data = {}
 
     # Мультиграф: каждая сфера — свой граф в iCloud-vault; рабочий дефолт — рабочий проект.
     # SUFLER_GRAPH_DIR (тесты) выбор отключает — путь принудительный.
@@ -695,7 +745,9 @@ def main():
         except Exception as e:  # noqa: BLE001
             print(f"tier3: пропущен ({e})")
 
-    # 2) заметка встречи
+    # 2) заметка встречи — только когда есть чем её наполнить: без разбора
+    # модели заметка была бы пустышкой, а её наличие переводит статус в
+    # «готово» и отменяет ретрай (см. EXIT_NO_GRAPH).
     md = [f"---\ntype: встреча\nдата: {stamp}\nтеги: [встреча, авто]"
           + (f"\naliases: [\"{title}\"]" if title else "") + "\n---",
           f"# Встреча {stamp}" + (f" — {title}" if title else ""), ""]
@@ -713,12 +765,13 @@ def main():
         md += ["## Связи"] + [f"- {canon_link(graph, l['от'])} → {canon_link(graph, l['к'])}: {l.get('тип','')}" for l in links] + [""]
     md += [f"Стенограмма: `{tpath}`"]
     vdir = graph / "Встречи"
-    vdir.mkdir(parents=True, exist_ok=True)
-    (vdir / f"{stamp}.md").write_text("\n".join(md), encoding="utf-8")
+    if graph_ok:
+        vdir.mkdir(parents=True, exist_ok=True)
+        (vdir / f"{stamp}.md").write_text("\n".join(md), encoding="utf-8")
 
     # 3) строка в MOC
     moc = graph / "_MOC.md"
-    if moc.exists():
+    if graph_ok and moc.exists():
         text = moc.read_text(encoding="utf-8")
         line = f"- [[{meeting_link}|{title or stamp}]] — {', '.join(topics[:2]) if topics else 'встреча'}"
         if meeting_link not in text:
@@ -728,28 +781,42 @@ def main():
                 text += f"\n## 🗓 Встречи\n{line}\n"
             moc.write_text(text, encoding="utf-8")
 
-    print(f"граф обновлён: встреча {stamp}, людей {len(people)}, сущностей {len(ents)}, решений {len(decisions)}")
+    if graph_ok:
+        print(f"граф обновлён: встреча {stamp}, людей {len(people)}, сущностей {len(ents)}, решений {len(decisions)}")
 
     # 3б) решения встречи → память Чароита (ChromaDB/PG, brain :8100), чтобы
-    # recall в чате/сессиях знал о встречах, а не только vault_search
-    try:
-        # 15с: brain ждёт эмбеддинг bge-m3 из Ollama, занятой нашим же extract —
-        # 5с не хватало (20.07: «memory недоступна», решения не попали в recall)
-        who = ", ".join(p["имя"] for p in people[:6])
-        requests.post("http://127.0.0.1:8100/remember", json={
-            "text": f"Встреча {stamp} «{title or 'без названия'}» ({who}): темы — "
-                    + "; ".join(topics[:4]),
-            "category": "learned", "importance": 0.6}, timeout=15)
-        for d in decisions[:6]:
+    # recall в чате/сессиях знал о встречах, а не только vault_search.
+    # Один раз на встречу: повтор обработки («Повторить обработку» в
+    # приложении, ретрай) снова слал те же факты, и память дублировалась
+    # (аудит GLM 17.08) — отметка в logs/brain_sent/<штамп>.
+    brain_mark = ROOT / "logs" / "brain_sent" / f"{stamp}.txt"
+    if graph_ok and brain_mark.exists():
+        print("память Чароита: факты этой встречи уже отправлены — повтор пропущен")
+    elif graph_ok:
+        try:
+            # 15с: brain ждёт эмбеддинг bge-m3 из Ollama, занятой нашим же extract —
+            # 5с не хватало (20.07: «memory недоступна», решения не попали в recall)
+            who = ", ".join(p["имя"] for p in people[:6])
             requests.post("http://127.0.0.1:8100/remember", json={
-                "text": f"Решение встречи {stamp} «{title}»: {d}",
-                "category": "decision", "importance": 0.7}, timeout=15)
-        print(f"память Чароита: +{1 + min(len(decisions), 6)} фактов")
-    except Exception as e:  # noqa: BLE001 — brain может быть выключен, не валим граф
-        print(f"память Чароита недоступна: {e}")
+                "text": f"Встреча {stamp} «{title or 'без названия'}» ({who}): темы — "
+                        + "; ".join(topics[:4]),
+                "category": "learned", "importance": 0.6}, timeout=15)
+            for d in decisions[:6]:
+                requests.post("http://127.0.0.1:8100/remember", json={
+                    "text": f"Решение встречи {stamp} «{title}»: {d}",
+                    "category": "decision", "importance": 0.7}, timeout=15)
+            print(f"память Чароита: +{1 + min(len(decisions), 6)} фактов")
+            brain_mark.parent.mkdir(parents=True, exist_ok=True)
+            brain_mark.write_text(f"{title}\n", encoding="utf-8")
+        except Exception as e:  # noqa: BLE001 — brain может быть выключен, не валим граф
+            print(f"память Чароита недоступна: {e}")
 
-    # 4) пост-встречный разбор: вопросы→ответы, задачи, решения, рекомендации
+    # 4) пост-встречный разбор: вопросы→ответы, задачи, решения, рекомендации.
+    # Без разбора модели (graph_ok=False) не пробуем: та же модель, что
+    # только что промолчала, а таймаут разбора — минуты.
     try:
+        if not graph_ok:
+            raise RuntimeError("модель не отвечала — разбор пропущен")
         gctx_parts = []
         moc2 = graph / "_MOC.md"
         if moc2.exists():
@@ -759,7 +826,7 @@ def main():
         gctx = "\n---\n".join(gctx_parts)[:2500]
         debrief = LLM(cfg).complete(
             (f"Память прошлых встреч (граф):\n{gctx}\n\n" if gctx else "")
-            + f"Стенограмма встречи:\n{transcript[:11000]}\n\n"
+            + f"Стенограмма встречи:\n{debrief_excerpt(transcript)}\n\n"
             "Составь разбор строго по разделам:\n"
             "# Разбор встречи\n"
             "## Вопросы встречи и ответы\n(каждый прозвучавший вопрос → ответ, если прозвучал; если нет — «открыт»)\n"
@@ -794,7 +861,10 @@ def main():
         if vdocs.parent.exists():
             vdocs.mkdir(exist_ok=True)
             import shutil as _sh2
-            for f in tpath.parent.glob(f"{stamp}_*.md"):
+            # Файлы ЭТОЙ встречи — по стему стенограммы с границей штампа: у
+            # посекундной встречи без темы это «…113012*», а минутный глоб брал
+            # файлы соседки той же минуты (аудит GLM 17.08).
+            for f in files_with_stamp(tpath.parent, tpath.stem, suffix=".md"):
                 _sh2.copy2(f, vdocs / f.name)
             print(f"артефакты скопированы в vault: {vdocs}")
     except Exception as e:  # noqa: BLE001
@@ -826,6 +896,19 @@ def main():
             rev = tpath.with_name(f"{stamp}_{slug3}_ревизия_claude.md" if slug3 else f"{stamp}_ревизия_claude.md")
             log = ROOT / "logs" / f"cloud_review_{stamp}.log"
             log.parent.mkdir(exist_ok=True)
+            # Повтор обработки — не повод гонять облако второй раз: если
+            # ревизия уже есть и она моложе стенограммы, оставляем её
+            # (аудит GLM 17.08 — дубли запросов Opus при ретрае).
+            # Ключ дедупа — штамп, не тема: при ретрае модель может дать другую
+            # тему, и имя ревизии сменится (ревью 17.08).
+            fresh = [r for r in files_with_stamp(tpath.parent, stamp, suffix="_ревизия_claude.md")
+                     if r.stat().st_mtime >= tpath.stat().st_mtime]
+            if fresh:
+                print(f"cloud-enrich: ревизия уже есть ({fresh[0].name}) — повтор не запускаем")
+                run_post_hook(cfg, tpath, stamp)
+                if not graph_ok:
+                    sys.exit(EXIT_NO_GRAPH)
+                return
             # Фоном уходит НЕ сам claude, а воркер: он ждёт разбор с таймаутом,
             # проверяет код возврата и то, что ответ похож на ревизию, кладёт
             # файл атомарно, а в режиме правки снимает бэкап графа и откатывает
@@ -843,6 +926,26 @@ def main():
             print(f"cloud-enrich не запустился: {e}")
 
     run_post_hook(cfg, tpath, stamp)
+    if not graph_ok:
+        sys.exit(EXIT_NO_GRAPH)
+
+
+def debrief_excerpt(transcript: str, limit: int = 11000, head: int = 5500) -> str:
+    """Что из стенограммы видит разбор встречи.
+
+    Раньше — первые 11000 знаков: у часовой встречи это первые 15–20 минут,
+    а решения принимают в конце («ну что, договорились: релиз 15-го») —
+    ровно та ошибка, что уже чинилась для извлечения графа чанками
+    (аудит 17.08). Голова + хвост с честной пометкой о пропуске середины:
+    начало даёт контекст и повестку, конец — решения и поручения.
+    """
+    if len(transcript) <= limit:
+        return transcript
+    tail = limit - head
+    skipped = len(transcript) - head - tail
+    return (transcript[:head]
+            + f"\n\n[…середина стенограммы опущена: {skipped} знаков…]\n\n"
+            + transcript[-tail:])
 
 
 
