@@ -16,6 +16,7 @@ import requests
 import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import cloud  # noqa: E402
 import llm_health  # noqa: E402
 import privacy  # noqa: E402
 from llm import LLM, LLMHTTPError  # noqa: E402
@@ -853,6 +854,24 @@ def main():
 CONTEXT_LIMIT = 200_000
 
 
+def cloud_graph_available(graph: pathlib.Path) -> bool:
+    """Граф существует и не раскрывает файловую систему целиком.
+
+    `cwd=/` или `cwd=$HOME` превратил бы аккуратное правило `Read(/**)` в
+    разрешение читать почти всё. Для обычного графа (`~/Vault/Работа`) это
+    не ограничение, а для ошибочной конфигурации — fail closed.
+    """
+    if str(graph) in ("", "."):
+        return False
+    try:
+        resolved = graph.expanduser().resolve()
+        root = pathlib.Path(resolved.anchor)
+        home = pathlib.Path.home().resolve()
+        return resolved.is_dir() and resolved not in (root, home)
+    except (OSError, RuntimeError):
+        return False
+
+
 def cloud_enrich_workdir(cfg: dict, graph: pathlib.Path,
                          folder: pathlib.Path | None = None) -> pathlib.Path:
     """Рабочая папка облачного разбора: граф, а не корень репозитория.
@@ -864,8 +883,8 @@ def cloud_enrich_workdir(cfg: dict, graph: pathlib.Path,
     """
     # pathlib.Path("") — это Path("."), то есть «текущая папка», а не пустота:
     # проверка на истинность строки здесь пропустила бы ненастроенный граф.
-    if graph is not None and str(graph) not in ("", "."):
-        return graph
+    if cloud_graph_available(graph):
+        return graph.expanduser().resolve()
     return folder if folder is not None else ROOT
 
 
@@ -901,19 +920,27 @@ def cloud_enrich_context(folder: pathlib.Path, stamp: str,
     return "\n\n".join(parts), names
 
 
-# Инструменты, которые облачный разбор получает ВСЕГДА: только чтение.
+# Инструменты, которые облачный разбор ВИДИТ при настроенном графе.
 READ_TOOLS = ("Read", "Grep", "Glob")
 # Добавляются, лишь когда владелец явно разрешил правку графа.
 EDIT_TOOLS = ("Edit", "Write")
 # Запрещены в любом режиме: сеть, шелл, подпроцессы, интерактивные запросы.
 FORBIDDEN_TOOLS = ("Bash", "WebFetch", "WebSearch", "Task", "NotebookEdit",
-                   "AskUserQuestion")
+                   "AskUserQuestion", "TodoWrite", "mcp__*")
+# CLI permission rules с одним `/` привязаны к исходной cwd. Воркер запускает
+# команду с cwd=graph, поэтому эти правила дают доступ только внутрь графа.
+# `dontAsk` ниже отклоняет абсолютный путь наружу вместо запроса разрешения.
+GRAPH_READ_RULE = "Read(/**)"
+# Правило Edit покрывает и Write (семейство правок CLI): проверено живым
+# запуском 17.08 — Write внутри cwd проходит, вне cwd отклоняется под dontAsk.
+GRAPH_EDIT_RULE = "Edit(/**)"
 
 
 def cloud_enrich_command(cfg: dict, *, claude_bin: str, prompt: str, model: str,
                          env: dict | None = None,
-                         may_edit: bool | None = None) -> list[str]:
-    """Команда запуска облачного разбора. Право писать — только от privacy.
+                         may_edit: bool | None = None,
+                         graph_available: bool = True) -> list[str]:
+    """Команда облачного разбора: доступ только к его рабочему графу.
 
     Раньше инструменты записи и `--permission-mode acceptEdits` стояли в
     команде безусловно: согласие «разбери мою встречу» (cloud_enrich) молча
@@ -922,7 +949,11 @@ def cloud_enrich_command(cfg: dict, *, claude_bin: str, prompt: str, model: str,
     обещает, что запись разрешает ровно один ключ — cloud_edit_graph.
 
     Теперь так и есть: без него модель работает на чтение, а свой отчёт
-    отдаёт в stdout, который вызывающий кладёт в файл ревизии.
+    отдаёт в stdout, который вызывающий кладёт в файл ревизии. И чтение, и
+    запись выданы path-rule `/**`, привязанным Claude CLI к cwd=graph;
+    `dontAsk` запрещает всё за этой границей. Голые `Read`/`Edit` здесь
+    недопустимы: они разрешили бы абсолютный путь вроде ~/.ssh/id_ed25519,
+    а инъекция из стенограммы — ровно тот, кто такой путь попросит.
 
     may_edit может только СУЗИТЬ право, не расширить: privacy-ключ — потолок,
     а вызывающий понижает его, когда бэкап невозможен (несмонтированный
@@ -930,20 +961,33 @@ def cloud_enrich_command(cfg: dict, *, claude_bin: str, prompt: str, model: str,
     ключу, а snapshot/backup тихо пропускались при отсутствующем каталоге —
     модель получала Edit/Write без страховки, которую обещает PRIVACY
     (ревью 15.08).
+
+    Если граф не настроен или исчез (`graph_available=False`), файловых
+    инструментов нет вовсе: файлы встречи уже вложены в prompt, а
+    fallback-папка со стенограммами не должна становиться случайной
+    песочницей с правом чтения/записи.
     """
+    if not graph_available:
+        return [claude_bin, "-p", prompt, "--model", model,
+                *cloud.text_only_args()]
+
     allowed = privacy.cloud_edit_graph_enabled(cfg, env)
     may_edit = allowed if may_edit is None else (allowed and may_edit)
     tools = list(READ_TOOLS) + (list(EDIT_TOOLS) if may_edit else [])
+    rules = [GRAPH_READ_RULE] + ([GRAPH_EDIT_RULE] if may_edit else [])
     cmd = [claude_bin, "-p", prompt,
            "--model", model,
-           "--allowedTools", ",".join(tools),
-           # неразрешённый инструмент в headless = вечный пермишен-запрос
-           "--disallowedTools", ",".join(FORBIDDEN_TOOLS + tuple(
-               [] if may_edit else EDIT_TOOLS)),
+           # --tools определяет видимый набор, а path-scoped allowedTools —
+           # какие обращения проходят без интерактивного подтверждения.
+           "--tools", ",".join(tools),
+           "--allowedTools", *rules,
+           "--disallowedTools", *FORBIDDEN_TOOLS,
+           *(() if may_edit else EDIT_TOOLS),
+           # Всё вне path-rules отклоняется. acceptEdits здесь небезопасен:
+           # он принимает правки в cwd без явного правила и сложнее для аудита.
+           "--permission-mode", "dontAsk",
            # без пользовательских hooks/MCP — иначе процесс не завершается
            "--setting-sources", "", "--strict-mcp-config"]
-    if may_edit:
-        cmd += ["--permission-mode", "acceptEdits"]
     return cmd
 
 

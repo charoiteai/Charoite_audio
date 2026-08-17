@@ -65,6 +65,43 @@ def test_snapshot_and_obsidian_folders_are_off_limits(tmp_path):
         assert not cloud_review.may_write(hidden, graph), hidden
 
 
+def test_missing_graph_runs_text_only_instead_of_exposing_transcripts(
+        tmp_path, monkeypatch):
+    """Wiring: edit=true не выдаёт файловые tools fallback-папке."""
+    stamp = "2026-07-15_1400"
+    transcripts = tmp_path / "transcripts"
+    transcripts.mkdir()
+    transcript = transcripts / f"{stamp}.md"
+    transcript.write_text("чужой текст встречи\n", encoding="utf-8")
+    rev = transcripts / f"{stamp}_ревизия.md"
+    log = tmp_path / "cloud.log"
+    captured = {}
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["cwd"] = kwargs["cwd"]
+        kwargs["stdout"].write(
+            "- **Решение:** оставить граф закрытым\n"
+            "- **Поручение:** проверить настройку\n"
+            "- **Риск:** файловый доступ не выдавался\n")
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    code = cloud_review.run(stamp, transcript, tmp_path / "missing-graph",
+                            rev, log, cfg)
+
+    assert code == 0
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--tools") + 1] == ""
+    assert "--allowedTools" not in cmd
+    assert captured["cwd"] == str(transcripts)
+    assert "только текст (граф недоступен)" in log.read_text(encoding="utf-8")
+
+
 def test_transcripts_inside_the_graph_are_untouchable(tmp_path):
     """Копии стенограмм лежат в графе, но правит их конвейер, а не облако."""
     graph = _graph(tmp_path)
