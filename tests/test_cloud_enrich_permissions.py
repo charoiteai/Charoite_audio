@@ -135,16 +135,19 @@ def test_caller_can_only_narrow_the_edit_right():
         FULL, claude_bin="/usr/bin/claude", prompt="p", model="m", env={},
         may_edit=False)
     for tool in WRITE_TOOLS:
-        assert tool not in _allowed(downgraded), \
-            f"понижение не сработало: {tool} разрешён"
-    assert "--permission-mode" not in _flags(downgraded), \
-        "понижение оставило автоприём правок"
+        assert tool not in _tools(downgraded), \
+            f"понижение не сработало: {tool} виден"
+    assert _allowed_rules(downgraded) == {"Read(/**)"}, \
+        "понижение оставило правило записи"
+    assert "Edit" in _forbidden(downgraded) and "Write" in _forbidden(downgraded), \
+        "понижение не запретило инструменты записи явно"
 
     escalated = graph_updater.cloud_enrich_command(
         READ_ONLY, claude_bin="/usr/bin/claude", prompt="p", model="m", env={},
         may_edit=True)
-    assert _allowed(escalated) == {"Read", "Grep", "Glob"}, \
+    assert _tools(escalated) == {"Read", "Grep", "Glob"}, \
         "параметр расширил право записи мимо privacy-ключа"
+    assert _allowed_rules(escalated) == {"Read(/**)"}, _allowed_rules(escalated)
 
 
 def test_edit_mode_works_when_both_toggles_are_explicit():
