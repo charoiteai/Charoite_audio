@@ -65,6 +65,12 @@ that sits next to your work, not a showcase.
   its height rather than the surface radii above — a 21 pt control with a
   12 pt radius is a capsule, not a button. Full rules and the handoff
   package: [BUTTONS_2026-08.md](design/BUTTONS_2026-08.md).
+- **Phone companion** (iPhone, August 2026): recording, meetings, the meeting
+  card, tasks and the delivery queue — the same tokens and rules as on the
+  Mac, minus sky: the companion talks to nothing but iCloud folders. Plus the
+  three macOS screens the revision marked "not started": Memory, Tasks,
+  Meeting library. Spec and mockup:
+  [MOBILE_2026-08.md](design/MOBILE_2026-08.md).
 
 ## UI copy tone
 
