@@ -54,8 +54,10 @@ jobs:
     # macos-15: тот же SDK, что и в swift-tests — API микрофона
     # ScreenCaptureKit не компилируется на 14.
     runs-on: macos-15
-    # Нотаризация ждёт Apple: обычно минуты, в плохой день — десятки.
-    timeout-minutes: 60
+    # Нотаризация ждёт Apple дважды (zip и DMG), каждая — до 35 минут
+    # (scripts/notarize.sh): в плохой день второе ожидание должно успеть
+    # упасть само и с журналом Apple, а не по обрыву джоба.
+    timeout-minutes: 90
     env:
       # Флаги режима — булевы строки, не сами секреты: значения секретов
       # уходят только в env конкретных шагов, где они нужны.
@@ -141,6 +143,7 @@ jobs:
           security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          umask 077   # приватный ключ на диске — только владельцу, пусть и на секунды
           printf '%s' "$P12_B64" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
           security import "$RUNNER_TEMP/developer-id.p12" -P "$P12_PASSWORD" \
             -A -t cert -f pkcs12 -k "$KEYCHAIN"
@@ -148,9 +151,15 @@ jobs:
           # codesign не должен спрашивать пароль в неинтерактивном прогоне
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
             -k "$KEYCHAIN_PW" "$KEYCHAIN" > /dev/null
-          # временная связка — в список поиска, иначе find-identity её не видит
-          security list-keychains -d user -s "$KEYCHAIN" \
-            $(security list-keychains -d user | tr -d '"')
+          # временная связка — в список поиска, иначе find-identity её не видит;
+          # существующие связки читаем построчно: путь с пробелом не должен
+          # разваливать список
+          existing=()
+          while IFS= read -r k; do
+            k="${k#"${k%%[![:space:]]*}"}"; k="${k%\"}"; k="${k#\"}"
+            [ -n "$k" ] && existing+=("$k")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$KEYCHAIN" ${existing[@]+"${existing[@]}"}
           IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" \
             | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
           if [ -z "$IDENTITY" ]; then

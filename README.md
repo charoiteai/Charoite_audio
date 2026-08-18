@@ -95,8 +95,8 @@ and drag the app into Applications — the disk image window shows where.
 Release builds are signed with a Developer ID certificate and notarised by
 Apple, so the app opens with a plain double click. If you build the app
 yourself (or a release was cut without the signing secrets — the release
-notes say so), the bundle is ad-hoc signed and macOS blocks the first
-launch: System Settings → Privacy & Security → *Open Anyway* (or
+notes say so), the bundle is ad-hoc signed — or signed but not notarised —
+and macOS blocks the first launch: System Settings → Privacy & Security → *Open Anyway* (or
 `xattr -d com.apple.quarantine /Applications/Charoite.app`). Right-click →
 Open no longer works on macOS 15+.
 

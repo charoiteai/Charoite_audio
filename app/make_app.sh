@@ -162,17 +162,17 @@ is_macho() {
         *) return 1 ;;
     esac
 }
-# Списки Mach-O, NUL-разделённые: библиотеки (.so/.dylib) и исполняемые
-# файлы bin/ (вложенное подписывается раньше того, что его грузит).
-# `|| true`: последний файл списка может оказаться не Mach-O, и статус цикла
-# уронил бы весь скрипт под set -e — а это фильтр, а не проверка.
+# Все Mach-O дерева, NUL-разделённые, — по магии, а не по имени или битам
+# исполнения: `libfoo.so.1` с режимом 644 — тоже Mach-O, и нотаризация
+# отвергнет бандл из-за него (второе мнение DeepSeek). Заведомо не бинарные
+# расширения отсекаются до чтения заголовка — иначе это 5000 файлов вместо
+# 900. `|| true`: последний файл может оказаться не Mach-O, а статус фильтра
+# не должен ронять скрипт под set -e; ошибка обхода find — тоже.
 only_macho() { while IFS= read -r -d '' f; do is_macho "$f" && printf '%s\0' "$f" || true; done; }
-list_macho_libs() { find "$1" -type f \( -name '*.so' -o -name '*.dylib' \) -print0 2>/dev/null | only_macho; }
-list_macho_bins() { find "$1/bin" -type f -perm -111 -print0 2>/dev/null | only_macho; }
-# Исполняемые Mach-O вне bin/ (утилиты внутри колёс): нотаризация требует
-# hardened runtime и у них, но собственных entitlements им не нужно.
-list_macho_other() {
-    find "$1" -type f -perm -111 ! -name '*.so' ! -name '*.dylib' ! -path "$1/bin/*" -print0 2>/dev/null | only_macho
+list_macho_all() {
+    { find "$1" -type f ! \( -name '*.py' -o -name '*.pyc' -o -name '*.pyi' -o -name '*.txt' \
+        -o -name '*.json' -o -name '*.md' -o -name '*.h' -o -name '*.rst' -o -name '*.pem' \
+        -o -name '*.typed' \) -print0 2>/dev/null || true; } | only_macho
 }
 
 # Вложенные бинарники подписываются ПЕРВЫМИ и по одному.
@@ -192,28 +192,28 @@ sign_embedded() {
         ent_opts=(--entitlements "$ENT_DIR/embedded-python.entitlements")
     fi
     echo "подписываю вложенный контур…"
-    local libs bins other
-    libs="$(mktemp)"; bins="$(mktemp)"; other="$(mktemp)"
-    list_macho_libs "$root" > "$libs"
-    # bin/: интерпретатор и всё исполняемое рядом (симлинки не трогаем —
-    # подписывается файл, на который они указывают)
-    list_macho_bins "$root" > "$bins"
-    list_macho_other "$root" > "$other"
+    local all libs bins
+    all="$(mktemp)"; libs="$(mktemp)"; bins="$(mktemp)"
+    list_macho_all "$root" > "$all"
+    # bin/ — интерпретатор и соседи: им entitlements. Всё остальное —
+    # библиотеки и утилиты из колёс — без entitlements, hardened runtime тот
+    # же. Симлинки не трогаем: подписывается файл, на который они указывают.
+    while IFS= read -r -d '' f; do
+        case "$f" in
+            "$root"/bin/*) printf '%s\0' "$f" >> "$bins" ;;
+            *) printf '%s\0' "$f" >> "$libs" ;;
+        esac
+    done < "$all"
     # ${arr[@]+"${arr[@]}"} — раскрытие пустого массива, которое не роняет
     # bash 3.2 (/bin/bash macOS) под set -u: у ad-hoc опций рантайма нет.
     if [ -s "$libs" ]; then
         xargs -0 -P 8 -n 20 codesign --force ${runtime_opts[@]+"${runtime_opts[@]}"} --sign "$id" < "$libs"
     fi
-    if [ -s "$other" ]; then
-        xargs -0 -n 10 codesign --force ${runtime_opts[@]+"${runtime_opts[@]}"} --sign "$id" < "$other"
-    fi
     if [ -s "$bins" ]; then
-        # Entitlements — только интерпретатору и его соседям по bin/: у
-        # библиотек их нет, утилитам из колёс микрофон не нужен.
         xargs -0 -n 10 codesign --force ${runtime_opts[@]+"${runtime_opts[@]}"} ${ent_opts[@]+"${ent_opts[@]}"} --sign "$id" < "$bins"
     fi
-    echo "  библиотек: $(tr -cd '\0' < "$libs" | wc -c | tr -d ' '), исполняемых: $(tr -cd '\0' < "$bins" | wc -c | tr -d ' '), прочих Mach-O: $(tr -cd '\0' < "$other" | wc -c | tr -d ' ')"
-    rm -f "$libs" "$bins" "$other"
+    echo "  библиотек и утилит: $(tr -cd '\0' < "$libs" | wc -c | tr -d ' '), исполняемых в bin/: $(tr -cd '\0' < "$bins" | wc -c | tr -d ' ')"
+    rm -f "$all" "$libs" "$bins"
 }
 
 if [ -n "$SIGN_ID" ]; then

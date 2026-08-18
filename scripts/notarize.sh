@@ -31,11 +31,13 @@ OUT="$(mktemp)"
 trap 'rm -f "$OUT"' EXIT
 
 echo "нотаризация $(basename "$SUBMIT"): отправляю Apple и жду вердикт…"
-# Таймаут меньше таймаута job: упасть с журналом лучше, чем оборваться молча.
+# 35 минут на ожидание: два таких ожидания (zip и DMG) плюс сборка должны
+# укладываться в таймаут job (90 минут) — упасть с журналом лучше, чем
+# оборваться молча по лимиту раннера.
 set +e
 xcrun notarytool submit "$SUBMIT" \
     --key "$KEY" --key-id "$KEY_ID" --issuer "$ISSUER" \
-    --wait --timeout 40m --output-format json > "$OUT"
+    --wait --timeout 35m --output-format json > "$OUT"
 rc=$?
 set -e
 ID="$(jq -r '.id // empty' < "$OUT" 2>/dev/null || true)"
