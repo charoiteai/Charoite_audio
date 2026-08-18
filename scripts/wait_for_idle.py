@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import sys
 import time
@@ -55,7 +56,10 @@ def wait(store: MeetingStatusStore, *, timeout: float, poll: float,
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--root", default=".", help="корень с logs/meeting-status")
+    # корень ДАННЫХ: лок демона и статусы живут там, а не рядом с кодом
+    # (вложенная установка: CHAROITE_ROOT указывает на папку данных)
+    ap.add_argument("--root", default=os.environ.get("CHAROITE_ROOT") or ".",
+                    help="корень данных с logs/ (по умолчанию $CHAROITE_ROOT или .)")
     ap.add_argument("--timeout", type=float, default=3600,
                     help="сколько ждать, секунд (0 — не ждать)")
     ap.add_argument("--poll", type=float, default=60)

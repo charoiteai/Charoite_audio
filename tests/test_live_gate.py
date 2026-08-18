@@ -38,6 +38,36 @@ def test_held_lock_means_meeting_is_live(tmp_path):
     assert live_gate.daemon_alive(tmp_path) is False, "лок отпущен — встреча кончилась"
 
 
+def test_unreadable_or_odd_lock_file_is_not_a_meeting(tmp_path):
+    """Права 0000, каталог вместо файла — судить не по чему: фон не должен
+    вставать навечно (ревью 18.08: любая OSError считалась «встреча идёт»)."""
+    (tmp_path / "logs").mkdir()
+    lock = tmp_path / "logs" / "daemon.lock"
+    lock.write_text("")
+    lock.chmod(0)
+    try:
+        assert live_gate.daemon_alive(tmp_path) is False
+    finally:
+        lock.chmod(0o600)
+    lock.unlink()
+    lock.mkdir()
+    assert live_gate.daemon_alive(tmp_path) is False
+
+
+def test_checker_does_not_evict_another_checker(tmp_path):
+    """Два проверяющих (пересборка и ночь) не мешают друг другу: разделяемый лок."""
+    (tmp_path / "logs").mkdir()
+    lock = (tmp_path / "logs" / "daemon.lock")
+    lock.write_text("")
+    other = lock.open("r")
+    fcntl.flock(other, fcntl.LOCK_SH | fcntl.LOCK_NB)   # сосед сейчас проверяет
+    try:
+        assert live_gate.daemon_alive(tmp_path) is False
+    finally:
+        fcntl.flock(other, fcntl.LOCK_UN)
+        other.close()
+
+
 class Clock:
     def __init__(self):
         self.t = 0.0

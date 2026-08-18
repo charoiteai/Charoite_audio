@@ -351,9 +351,13 @@ class Thread:
             text = "\n".join(t.render() for t in self.topics[-topics:])
             if len(text) <= max_chars:
                 return text
-            head = self.topics[-1].render(full=False)
             tail = text[-max_chars:]
             tail = tail[tail.find("\n") + 1:] if "\n" in tail else tail   # с целой строки
+            last = self.topics[-1]
+            if last.render(full=True) in text[-max_chars:] or tail.startswith(TOPIC + " "):
+                # последняя тема целиком в хвосте — заголовок уже там, не дублируем
+                return f"  … (ранние темы опущены)\n{tail}"
+            head = last.render(full=False)
             return f"{head}\n  … (ранние строки темы опущены)\n{tail}"
 
     # --- показ --------------------------------------------------------------

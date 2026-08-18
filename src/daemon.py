@@ -134,7 +134,7 @@ def ask_question_model(text: str) -> bool:
                 "Ответь одним словом: да или нет."),
             model=_llm_client.small, think=False,
             num_ctx=2048, num_predict=3, temperature=0,
-            timeout=5)
+            timeout=5, busy_wait=0)   # горячий путь STT: занята — сразу «вопрос», не ждём
         return ans.lower().startswith("да")
     except Exception:  # noqa: BLE001 — модель недоступна: не глотаем вопрос
         return True
@@ -214,8 +214,21 @@ def short_error(e: BaseException) -> str:
     return f"{type(e).__name__}: {s[:80]}"
 
 
+_last_error: dict[str, float] = {}
+_ERROR_REPEAT_S = 300.0
+
+
 def emit_error(text: str):
-    """Статус о сбое: приложение красит его как отказ, обычный статус — нет."""
+    """Статус о сбое: приложение красит его как отказ, обычный статус — нет.
+
+    Один и тот же текст не чаще раза в пять минут: с мёртвой моделью нить
+    ретраит каждый тик и слала бы «модель занята» до конца встречи (тот же
+    приём, что quiet_loop_warn — «на смене текста»).
+    """
+    now = time.monotonic()
+    if now - _last_error.get(text, -_ERROR_REPEAT_S) < _ERROR_REPEAT_S:
+        return
+    _last_error[text] = now
     emit({"type": "status", "text": text, "error": True})
 
 
@@ -434,11 +447,19 @@ def main():
     # single-instance: второй демон устроил бы битую стенограмму (один .tmp-путь)
     secure_dir(ROOT / "logs")
     lockf = open(ROOT / "logs" / "daemon.lock", "w")
-    try:
-        fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        emit({"type": "status", "text": "⚠️ Суфлёр уже слушает в другом окне — второй запуск отменён"})
-        return
+    # Несколько попыток: фоновые проверяющие (пересборка, ночь — live_gate)
+    # держат разделяемый лок микросекунды, и одна неудачная попытка в это
+    # окно отменяла бы встречу с ложным «уже слушает в другом окне». Второй
+    # живой демон держит лок постоянно — его пять попыток не пропустят.
+    for attempt in range(5):
+        try:
+            fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            if attempt == 4:
+                emit({"type": "status", "text": "⚠️ Суфлёр уже слушает в другом окне — второй запуск отменён"})
+                return
+            time.sleep(0.1)
     cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
     emit({"type": "status", "text": "Загружаю модели…"})
     stt = STT(cfg)
@@ -883,6 +904,9 @@ def main():
                 if manual:   # человек ждёт ответа: короткая строка в карточку
                     emit({"type": "hint", "text": f"\n⚠ {short_error(e)} — попробуйте ещё раз",
                           "manual": True})
+                elif parts:  # авто оборвалась после токенов: обрезок не должен выглядеть целым
+                    emit({"type": "hint", "text": " …⚠", "manual": False})
+                    parts.append(" …⚠")
             emit({"type": "hint_done", "manual": manual})
             if parts:  # подсказки тоже сохраняем — лог полного разговора
                 kind = "ручная" if manual else "авто"
@@ -1703,7 +1727,7 @@ def main():
             full = tr.full()
             if len(full) - seen < 400:
                 continue
-            seen = len(full)
+            grown = len(full)   # seen двигаем после удачной генерации (см. thread_loop)
             # Вся стенограмма в промпт не влезает: num_ctx 8192 — это ~25 000
             # знаков, и Ollama молча режет ГОЛОВУ. Черновику отдаём начало
             # (повестка, участники) и хвост (свежие решения) — тот же приём,
@@ -1723,6 +1747,7 @@ def main():
                                "таблицы нечитаемы в plain-тексте.",
                     )
                 )
+                seen = grown
                 if out.strip():
                     # Маркер перепроверяем ПЕРЕД записью, а не только на входе
                     # в итерацию: генерация выше занимает десятки секунд, и
@@ -1841,7 +1866,9 @@ def main():
                 append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ❓ {question}", "".join(parts))
 
     def _do_summary():
+        manual_evt.set()   # фон (нить, тезисы, авто-подсказка) уступает, как ручной подсказке
         with hint_lock:
+            manual_evt.clear()
             chunks: list[str] = []
             ok = True
             try:

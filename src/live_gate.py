@@ -31,17 +31,28 @@ def lock_path(root: pathlib.Path) -> pathlib.Path:
 
 
 def daemon_alive(root: pathlib.Path) -> bool:
-    """Держит ли кто-то лок демона — то есть идёт ли сейчас живая встреча."""
-    lock = lock_path(root)
-    if not lock.exists():
-        return False
+    """Держит ли кто-то лок демона — то есть идёт ли сейчас живая встреча.
+
+    «Встреча идёт» — только когда flock честно отказал ИЗ-ЗА ЧУЖОГО лока
+    (BlockingIOError). Нет файла, нет прав, том без flock (SMB/NFS) — судить
+    не по чему, и фон вставать не должен: ревью 18.08 ×2 — `except OSError:
+    return True` превращал права 0400 или сетевой корень в вечное «уступаю».
+    Проверяем разделяемым локом (LOCK_SH): с эксклюзивным локом демона он
+    конфликтует, с такими же проверяющими — нет.
+    """
     try:
-        with lock.open("r+") as f:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fcntl.flock(f, fcntl.LOCK_UN)
-        return False      # взяли лок — демона нет
+        f = lock_path(root).open("r")   # flock не требует записи
     except OSError:
-        return True       # лок занят — демон жив
+        return False
+    with f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True       # лок держит демон — встреча идёт
+        except OSError:
+            return False      # flock не поддержан — не блокируем фон
+        fcntl.flock(f, fcntl.LOCK_UN)
+        return False          # взяли — демона нет
 
 
 def wait_while_live(root: pathlib.Path, log: Callable[[str], None] = print, *,

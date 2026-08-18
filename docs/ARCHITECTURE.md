@@ -43,8 +43,13 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
   lives exactly as long as the recording. Background work (`graph_updater`,
   `rebuild_transcript`, nightly `wait_for_idle`/dossiers) tests it with a
   non-blocking `flock` and waits while it is held — between chunks of a
-  long extraction too. The rebuild waits as long as needed; the night waits
-  with a cap (a morning meeting must not eat the night).
+  long extraction too. The rebuild waits as long as needed (as a whole,
+  STT and diarization included); the night waits with a cap (a morning
+  meeting must not eat the night). Rebuilds run one at a time per machine
+  (`logs/rebuild.lock`): an orphan released by the gate and the fresh
+  recording after "Stop" never start together. "A meeting is on" means only
+  an honest `flock` refusal caused by someone else's lock; a missing file,
+  missing permissions or a volume without `flock` never stall the background.
 - **Busy ≠ dead.** `llm.stream`/`complete` retry `503/429` with growing
   pauses within the caller's budget (live loops up to 30 s, graph extraction
   up to 10 min); `llm_health.probe` distinguishes `BUSY` and never restarts

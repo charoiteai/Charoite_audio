@@ -304,6 +304,8 @@ def test_mlx_base_url_holds_the_privacy_line():
 class _StreamResp:
     """NDJSON-стрим Ollama: строки + контекстный менеджер + статус."""
 
+    text = "busy"
+
     def __init__(self, lines: list[bytes], status: int = 200):
         self._lines = lines
         self.status_code = status
@@ -338,9 +340,8 @@ class _BusyThenOk:
 
     def post(self, url, json=None, timeout=None, **kw):
         self.calls += 1
-        if self.calls <= self.busy:
-            return _StreamResp([], status=503)
-        return self.then
+        self.last = _StreamResp([], status=503) if self.calls <= self.busy else self.then
+        return self.last
 
     def get(self, url, timeout=None, **kw):
         return _Resp({"models": []})
@@ -369,9 +370,11 @@ def test_stream_gives_up_when_busy_outlasts_budget(monkeypatch):
     monkeypatch.setattr(llm_mod, "requests", fake)
     _no_sleep(monkeypatch)
 
-    with pytest.raises(RuntimeError, match="503"):
+    with pytest.raises(LLMHTTPError) as e:   # контракт модуля, не голый requests.HTTPError
         list(LLM(CFG).stream("в", model="м", busy_wait=5))
+    assert e.value.status == 503
     assert fake.calls <= 4, "бюджет 5 с: 1+2 с пауз, дальше честная ошибка"
+    assert fake.last.closed, "стрим-ответ с ошибкой закрыт до raise, а не оставлен GC"
 
 
 def test_error_line_inside_stream_is_an_exception(monkeypatch):
@@ -463,7 +466,7 @@ def test_fit_survives_a_failed_part_and_keeps_head_and_tail(monkeypatch):
     l.num_ctx = 2000                       # limit = 4000
     calls = {"n": 0}
 
-    def summary(part):
+    def summary(part, busy_wait=None):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("503 busy")
@@ -474,7 +477,27 @@ def test_fit_survives_a_failed_part_and_keeps_head_and_tail(monkeypatch):
     out = l._fit(text)
     assert "[Часть 2" in out and "[Часть 1" not in out
 
-    monkeypatch.setattr(l, "summary", lambda part: iter([""]))
+    monkeypatch.setattr(l, "summary", lambda part, busy_wait=None: iter([""]))
     out = l._fit(text)
     assert out.startswith("АААА") and out.endswith("ЯЯЯЯ"), "хвост встречи (решения) не теряем"
     assert "опущена" in out
+
+
+def test_fit_stops_after_two_failed_parts_in_a_row(monkeypatch):
+    """Минутки идут под hint_lock: 70 частей по 30 с ожидания занятой модели
+    держали бы весь живой контур полчаса. Две части подряд не сжались — отказ
+    наружу, а не тихий перебор всех частей (ревью 18.08)."""
+    l = LLM(CFG)
+    l.num_ctx = 2000
+    calls = {"n": 0, "budgets": []}
+
+    def summary(part, busy_wait=None):
+        calls["n"] += 1
+        calls["budgets"].append(busy_wait)
+        raise RuntimeError("503 busy")
+
+    monkeypatch.setattr(l, "summary", summary)
+    with pytest.raises(RuntimeError, match="503"):
+        l._fit("А" * 40_000)
+    assert calls["n"] == 2, "после двух отказов подряд остальные части не мучаем"
+    assert all(b == llm_mod.FIT_PART_BUSY_WAIT for b in calls["budgets"]), "у сводок частей маленький бюджет"

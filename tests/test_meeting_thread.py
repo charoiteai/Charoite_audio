@@ -391,3 +391,19 @@ def test_as_context_is_capped_but_keeps_current_topic_title():
     assert f"{word(299)} {word(1299)}" in ctx, "хвост — самое свежее — на месте"
     assert f"{word(1)} {word(1001)}" not in ctx, "ранние строки срезаны"
     assert "опущены" in ctx
+
+
+def test_as_context_does_not_duplicate_title_when_last_topic_fits_in_tail():
+    """Длинная старая тема + короткая новая: хвост уже содержит заголовок
+    новой темы целиком — второй раз его не приклеиваем (ревью 18.08)."""
+    t = Thread()
+    letters = "абвгдежзиклмнопрстуфхцчшщэюя"
+    def word(i):
+        return letters[i // 28 % 28] + letters[i % 28] + letters[(i * 7) % 28]
+    t.ingest(f"{TOPIC} Долгая старая тема\n" + "\n".join(
+        f"{SAY} {word(i)} {word(i + 1000)}" for i in range(300)), at="10:00")
+    t.ingest(f"{TOPIC} Новая короткая тема\n{SAY} Коля: переходим к релизу", at="11:00")
+    ctx = t.as_context()
+    assert ctx.count("Новая короткая тема") == 1
+    assert "переходим к релизу" in ctx
+    assert len(ctx) <= Thread.CONTEXT_CHARS + 200

@@ -42,6 +42,7 @@ import privacy
 BUSY_STATUSES = frozenset({429, 502, 503})
 BUSY_WAIT_LIVE = 30.0
 BUSY_BACKOFF = (1.0, 2.0, 4.0, 8.0, 15.0)
+FIT_PART_BUSY_WAIT = 5.0   # сводка одной части длинных минуток (под hint_lock)
 
 
 class LLMHTTPError(RuntimeError):
@@ -250,7 +251,12 @@ class LLM:
                 r.close()
                 time.sleep(delay)
                 continue
-            r.raise_for_status()
+            if r.status_code != 200:
+                # закрыть до raise: with-блок вызывающего сюда не дойдёт, а
+                # ответ открыт как стрим; ошибка — в контракте модуля LLMHTTPError
+                detail = r.text[:500]
+                r.close()
+                raise LLMHTTPError(r.status_code, detail)
             return r
         raise RuntimeError("unreachable")  # pragma: no cover
 
@@ -622,7 +628,7 @@ class LLM:
         "每个标题后空一行。简洁，不说废话。"
     )
 
-    def summary(self, transcript: str) -> Iterator[str]:
+    def summary(self, transcript: str, busy_wait: float = BUSY_WAIT_LIVE) -> Iterator[str]:
         if self.lang == "zh":
             return self.stream(
                 f"会议记录：\n\n{transcript}\n\n"
@@ -633,6 +639,7 @@ class LLM:
                 system="你把工作会议记录压缩成清晰的纪要。不说废话。" + self.STYLE_ZH,
                 num_predict=320,
                 temperature=0.0,
+                busy_wait=busy_wait,
             )
         if self.lang == "en":
             return self.stream(
@@ -644,6 +651,7 @@ class LLM:
                 system="You compress work-meeting transcripts into a crisp protocol. No filler. " + self.STYLE_EN,
                 num_predict=320,
                 temperature=0.0,
+                busy_wait=busy_wait,
             )
         return self.stream(
             f"Стенограмма встречи:\n\n{transcript}\n\n"
@@ -671,12 +679,22 @@ class LLM:
         step = limit // 2
         parts = [transcript[i:i + step] for i in range(0, len(transcript), step)]
         digests = []
+        failures = 0
         for n, part in enumerate(parts, 1):
             try:
-                text = "".join(self.summary(part)).strip()
+                # бюджет на «занято» — маленький: минутки идут под hint_lock,
+                # и 70 частей по 30 с ожидания держали бы весь живой контур
+                # полчаса без единого токена (ревью 18.08)
+                text = "".join(self.summary(part, busy_wait=FIT_PART_BUSY_WAIT)).strip()
+                failures = 0
             except Exception:  # noqa: BLE001 — одна упавшая часть не роняет документ
                 # как в graph_updater._extract_long: часть пропускаем, остальное
-                # собираем; сводки помечены номерами — дыра видна по нумерации
+                # собираем; сводки помечены номерами — дыра видна по нумерации.
+                # Две подряд — модель лежит или занята надолго: дальше не
+                # мучаем ни её, ни очередь за локом — отказ наружу
+                failures += 1
+                if failures >= 2:
+                    raise
                 text = ""
             if text:
                 digests.append(f"[Часть {n} из {len(parts)}]\n{text}")

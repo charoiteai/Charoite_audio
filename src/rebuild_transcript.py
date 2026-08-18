@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import atexit
+import fcntl
 import json
 import os
 import pathlib
@@ -164,7 +165,36 @@ def _daemon_alive() -> bool:
 
 def _yield_to_live(what: str) -> None:
     """Пока идёт живая встреча, тяжёлую модель не трогаем — см. live_gate."""
-    live_gate.wait_while_live(ROOT, log, what=what)
+    live_gate.wait_while_live(ROOT, log, what=what, poll=10)
+
+
+def _take_rebuild_queue():
+    """Одна пересборка за раз на машину: лок logs/rebuild.lock до конца процесса.
+
+    Без него Стоп встречи запускал две пересборки разом: сирота, отпущенная
+    гейтом живой встречи, просыпалась в ту же секунду, что и свежая — два
+    полных конвейера STT+диаризация+модель параллельно, тот самый залп,
+    от которого строилась цепочка сирот (12.08; ревью 18.08). Ждём молча
+    не дольше секунды, дальше — с записью в лог.
+    """
+    path = ROOT / "logs" / "rebuild.lock"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        f = path.open("a")
+    except OSError as e:
+        log(f"очередь пересборок недоступна ({type(e).__name__}) — иду без неё")
+        return None
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return f
+    except BlockingIOError:
+        log("другая пересборка ещё идёт — жду своей очереди")
+    except OSError:
+        return f          # flock не поддержан (сетевой том) — не блокируемся
+    started = time.time()
+    fcntl.flock(f, fcntl.LOCK_EX)     # блокирующе: очередь, а не отказ
+    log(f"очередь пересборок подошла (ждал {int(time.time() - started)} с)")
+    return f
 
 
 def stt_segment(stt: STT, audio: np.ndarray, sr: int) -> str:
@@ -626,6 +656,10 @@ def main():
             return None
 
     publish(status.processing, live, "waiting_for_audio")
+    # Живая встреча важнее пересборки целиком, включая STT и диаризацию:
+    # 18.08 пересборка держала модель, а Whisper — GPU, пока шла встреча.
+    _yield_to_live("пересборка")
+    queue = _take_rebuild_queue()   # держим до выхода процесса — это и есть очередь
     try:
         cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
         publish(status.processing, live, "rebuilding_transcript")
@@ -670,6 +704,9 @@ def main():
         log(f"обработка не завершена ({type(e).__name__}: {e})")
         publish(status.failed, live, f"{type(e).__name__}: {e}")
         raise
+    finally:
+        if queue is not None:
+            queue.close()   # отпускаем очередь: следующая пересборка может стартовать
 
 
 if __name__ == "__main__":
