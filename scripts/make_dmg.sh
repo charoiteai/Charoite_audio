@@ -36,12 +36,20 @@ hdiutil create -volname "Charoite $VERSION" \
 rm -rf "$STAGE"
 
 # Подпись образа, если есть Developer ID: без неё Gatekeeper ругается на сам
-# DMG ещё до того, как человек доберётся до приложения внутри.
-SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
-    | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
+# DMG ещё до того, как человек доберётся до приложения внутри. Идентичность
+# — та же, что у make_app.sh (CHAROITE_SIGN_IDENTITY из CI или Developer ID
+# из связки). Метка времени обязательна: без неё нотаризация отвергает образ.
+SIGN_ID="${CHAROITE_SIGN_IDENTITY:-}"
+if [ -z "$SIGN_ID" ]; then
+    SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
+        | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
+fi
 if [ -n "$SIGN_ID" ]; then
-    codesign --force --sign "$SIGN_ID" --timestamp=none "$DMG"
-    echo "образ подписан: $SIGN_ID"
+    codesign --force --timestamp --sign "$SIGN_ID" "$DMG"
+    codesign --verify --verbose=1 "$DMG"
+    echo "образ подписан: Developer ID Application"
+else
+    echo "образ не подписан (нет Developer ID) — первый запуск через «Открыть всё равно»"
 fi
 
 for f in "$DMG" "$OUT/Charoite.app.zip"; do

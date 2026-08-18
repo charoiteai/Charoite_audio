@@ -99,6 +99,75 @@ shipping an unverified interpreter.
 Validation after changing any of this: download the asset, `ditto -x -k`,
 `codesign -dv`, check `CFBundleShortVersionString` matches the tag.
 
+## Signing and notarization
+
+`release-app` signs and notarizes when — and only when — the secrets below
+exist. Without them it builds ad-hoc exactly as before and prints a notice;
+with the certificate but without notary secrets it prints a warning (a signed
+but un-notarized bundle still trips Gatekeeper). Nothing turns red just
+because the secrets are missing.
+
+| Secret | What |
+|---|---|
+| `APPLE_DEVELOPER_ID_P12` | the *Developer ID Application* certificate with its private key, exported from Keychain Access as `.p12`, base64-encoded: `base64 -i developer-id.p12 \| pbcopy` |
+| `APPLE_DEVELOPER_ID_P12_PASSWORD` | the password set on export |
+| `APPLE_NOTARY_KEY_P8` | App Store Connect API key (`AuthKey_XXXXXXXXXX.p8`, Users and Access → Integrations → App Store Connect API → *Team keys*, role Developer is enough), base64-encoded |
+| `APPLE_NOTARY_KEY_ID` | its Key ID |
+| `APPLE_NOTARY_ISSUER_ID` | the Issuer ID shown on the same page |
+
+Settings → Secrets and variables → Actions → New repository secret. The
+certificate lands in a temporary keychain with a random password for the
+duration of the run and is deleted in an `always()` step; the API key lives
+in `$RUNNER_TEMP` and is removed the same way. The identity name is passed to
+the build scripts through the environment (`CHAROITE_SIGN_IDENTITY`) and is
+not printed — CI logs are public.
+
+What the pipeline does with them (`app/make_app.sh`, `scripts/make_dmg.sh`,
+`scripts/notarize.sh`):
+
+1. every Mach-O inside the embedded python (`.so`, `.dylib`, `bin/*`) is
+   signed one by one — libraries first, then executables — with hardened
+   runtime and a secure timestamp; the interpreter gets
+   `app/Resources/entitlements/embedded-python.entitlements` (audio input,
+   unsigned executable memory, library validation off). A single signing
+   failure fails the build: an unsigned `.so` is a Gatekeeper rejection on
+   the user's Mac, not a warning;
+2. the bundle is signed with `app/Resources/entitlements/Charoite.entitlements`
+   (audio input, calendars) and verified `--deep --strict`;
+3. `Charoite.app.zip` is submitted with `notarytool submit --wait`, the ticket
+   is stapled to the `.app`, and the zip is rebuilt from the stapled bundle
+   (that zip is what the in-app updater installs — it must work offline);
+4. `Charoite.dmg` is built, signed with a timestamp, notarized and stapled
+   separately, then both `.sha256` files are recomputed — stapling changes
+   the DMG, and the updater checks the published sums;
+5. `spctl --assess` on the app and the DMG — the check Gatekeeper runs on
+   the user's Mac.
+
+A rejected notarization prints Apple's log: it names the file and the reason
+(unsigned binary, no hardened runtime, no timestamp).
+
+Why hardened runtime needs the python entitlements: notarization requires
+hardened runtime on *every* executable in the bundle, and under it a child
+process inherits nothing from the app — the daemon that reads the microphone
+would get silence without a single error. Verified on a signed build:
+`Contents/Resources/python/bin/python3` with `audio-input` records sound.
+The first signed release still deserves a manual microphone check in the app.
+
+Two things to know before adding the certificate:
+
+- the owner name of the certificate is public — `codesign -dv` on the
+  downloaded app shows «Developer ID Application: <name> (<team>)», and so do
+  some system dialogs. An individual Apple Developer account puts a person's
+  name there; an organization account puts the organization's;
+- ad-hoc signed builds carry a designated requirement of `cdhash H"…"`, so
+  every rebuild is a different app to macOS and permissions (microphone,
+  system audio, calendar) are lost. Developer ID makes the requirement
+  «identifier + team» — permissions survive updates.
+
+Local builds behave the same: `app/make_app.sh` picks the Developer ID from
+the login keychain if there is one, ad-hoc otherwise; `CHAROITE_SIGN_IDENTITY`
+overrides the choice.
+
 ## Postmortem: the v0.19.0 double
 
 Two defects met on one release:

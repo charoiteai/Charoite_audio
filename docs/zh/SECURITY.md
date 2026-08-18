@@ -108,10 +108,13 @@ macOS 应用持有用户授予的麦克风与屏幕录制权限，Python 守护�
   哈希的锁定文件安装（16.08 之前，锁定安装前曾运行未固定版本的
   `pip install --upgrade pip`）；`Charoite.app.zip` 和 `Charoite.dmg` 附带公开的
   sha256，内置更新器在安装前先核对校验和。
-- **已知限制：** 目前构建为 ad-hoc 签名，macOS 会拦截首次启动 —
-  系统设置 → 隐私与安全性 → *仍要打开*（macOS 15+ 上「右键 → 打开」
-  已失效；详见 README）。Developer ID 签名与公证在路线图上 — 阻碍是
-  内嵌 python 守护进程麦克风权限所需的 hardened runtime entitlements。
+- **签名与公证：** 发布版本以 Developer ID 证书签名，包内每个可执行文件都
+  启用 hardened runtime（内嵌 python 解释器带有自己的 entitlements —— 音频输入、
+  未签名可执行内存、关闭库校验 —— 守护进程因此仍能听到麦克风），带时间戳，经
+  `notarytool` 公证并装订；DMG 单独签名并公证。每个嵌套 Mach-O 逐一签名 ——
+  任一签名失败都会让构建失败，而不是把会被 Gatekeeper 拒绝的包发给用户。
+  没有签名密钥时流水线以 ad-hoc 构建并在日志中说明；这样的构建首次启动需要
+  *仍要打开*（见 README）。详情：docs/RELEASING.md「Signing and notarization」。
 
 ## 本仓库的匿名化
 
