@@ -118,9 +118,11 @@ because the secrets are missing.
 Settings → Secrets and variables → Actions → New repository secret. The
 certificate lands in a temporary keychain with a random password for the
 duration of the run and is deleted in an `always()` step; the API key lives
-in `$RUNNER_TEMP` and is removed the same way. The identity name is passed to
-the build scripts through the environment (`CHAROITE_SIGN_IDENTITY`) and is
-not printed — CI logs are public.
+in `$RUNNER_TEMP` and is removed the same way. The identity name («Developer
+ID Application: <owner> (<team>)») is registered as a log mask and handed to
+the build scripts through a file in `$RUNNER_TEMP` (`CHAROITE_SIGN_IDENTITY`
+in their environment) — CI logs are public, and `spctl -vv` would otherwise
+print the owner's name in them. It stays readable in the signature itself.
 
 What the pipeline does with them (`app/make_app.sh`, `scripts/make_dmg.sh`,
 `scripts/notarize.sh`):
