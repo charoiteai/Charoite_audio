@@ -17,6 +17,7 @@ import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import cloud  # noqa: E402
+import live_gate  # noqa: E402
 import llm_health  # noqa: E402
 import privacy  # noqa: E402
 from llm import LLM, LLMHTTPError  # noqa: E402
@@ -56,6 +57,11 @@ CHUNK_OVERLAP = 1_000
 # не спасали: столько ждут только вставшую модель, и всё это время человек видит
 # обещанное «граф будет готов через 2-4 минуты» и ни строчки правды.
 LLM_TIMEOUT = 300
+
+# Сколько фон терпит «модель занята» (503/429 от Ollama с MLX-раннером, факт
+# 18.08) прежде чем сдаться. Разбор никуда не спешит: десять минут ожидания
+# дешевле, чем встреча без графа и повтор через час.
+BUSY_WAIT = 600
 
 # «В записи нет речи» — не ошибка конвейера, а его честный результат.
 # Вызывающий отличает это от падения по коду возврата и не ставит повтор.
@@ -144,6 +150,11 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     None означает «граф не обновляем», но остальной пост-процессинг обязан
     продолжиться: папка встречи со стенограммой и минутками ценна и без графа.
     """
+    # Живая встреча важнее разбора: пока суфлёр слушает, тяжёлую модель не
+    # трогаем — 18.08 пересборка держала её промптами по 12 тыс. токенов, и
+    # подсказки встречи 45 минут падали с 503. Ждём сколько нужно: разбор
+    # никто не ждёт, а встречу ждать не заставишь.
+    _yield_to_live()
     # Проба до разбора, а не выяснение после: вставшая Ollama отвечает на
     # /api/tags мгновенно и держит настоящий запрос до самого таймаута. 03.08
     # так ушли десять минут, после которых не выполнился весь пост-процессинг.
@@ -160,6 +171,12 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
         return None
 
 
+def _yield_to_live() -> None:
+    """Пауза, пока идёт живая встреча (см. live_gate). Между частями длинного
+    разбора — тоже: встреча может начаться посреди 18-часовой пересборки."""
+    live_gate.wait_while_live(ROOT, lambda m: print(f"граф: {m}"), what="разбор")
+
+
 def _extract_long(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     """Разбор по частям со слиянием: длинная встреча целиком, а не её начало."""
     step = CHUNK_CHARS - CHUNK_OVERLAP
@@ -171,6 +188,8 @@ def _extract_long(cfg: dict, transcript: str, project_rule: str = "") -> dict | 
         # Номер части — в статус: на длинной встрече эта стадия висит минутами
         # и внешне ничем не отличается от зависшего процесса.
         _report(n, len(parts))
+        if n > 1:
+            _yield_to_live()
         got = _extract(cfg, part, project_rule)
         if not got:
             print(f"граф: часть {n}/{len(parts)} не разобралась — продолжаю")
@@ -277,9 +296,13 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
             json_format=True, think=False,
             num_ctx=16384, num_predict=3000,
             timeout=LLM_TIMEOUT, revive=True,
+            busy_wait=BUSY_WAIT,   # фон: занятую модель ждём, а не роняем разбор
         )
     except LLMHTTPError as e:
-        if e.status != 200:
+        if e.status in (429, 502, 503):
+            print(f"граф: модель занята (HTTP {e.status}) дольше {BUSY_WAIT // 60:.0f} мин — "
+                  "часть пропущена; повтор подберёт незавершённую встречу")
+        elif e.status != 200:
             print(f"граф: Ollama ответила HTTP {e.status} — модель "
                   f"{cfg['llm']['model']} установлена? (ollama pull)")
         else:
@@ -725,6 +748,7 @@ def main():
         # а нем — находка остаётся в логе прогона, которого никто не видит.
         try:
             import tier3
+            _yield_to_live()   # ревизия ядер тянет эмбеддер — не под живую встречу
             auto = tier3.auto_apply_allowed(cfg)
             rep = tier3.revise(graph, only_names=[safe_name(c["имя"]) for c in cores],
                                mark=True, apply=auto, cfg=cfg)
@@ -824,6 +848,7 @@ def main():
         for m in sorted((graph / "Встречи").glob("*.md"))[-3:-1]:
             gctx_parts.append(m.read_text(encoding="utf-8")[:800])
         gctx = "\n---\n".join(gctx_parts)[:2500]
+        _yield_to_live()   # разбор после встречи — тяжёлая модель, живая встреча важнее
         debrief = LLM(cfg).complete(
             (f"Память прошлых встреч (граф):\n{gctx}\n\n" if gctx else "")
             + f"Стенограмма встречи:\n{debrief_excerpt(transcript)}\n\n"
@@ -845,7 +870,7 @@ def main():
             model=cfg["llm"]["model"],
             think=None,  # умолчание модели, как было до рефакторинга
             num_ctx=8192,  # без него qwen3.6 на 262144 → раздутый KV-кэш
-            timeout=LLM_TIMEOUT, revive=True,
+            timeout=LLM_TIMEOUT, revive=True, busy_wait=BUSY_WAIT,
         )
         if debrief.strip():
             slug2 = re.sub(r"[,;:!?.]", "", safe_name(title)).replace(" ", "_")[:50] if title else ""

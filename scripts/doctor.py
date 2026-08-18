@@ -212,8 +212,16 @@ def check_llm_alive(cfg: dict) -> None:
         line(WARN, f"проба генерации недоступна ({type(e).__name__})")
         return
     started = time.monotonic()
-    if llm_health.probe(cfg, timeout=90):
+    state = llm_health.probe(cfg, timeout=90)
+    if state is True:
         line(OK, f"модель отвечает ({time.monotonic() - started:.1f} с)")
+        return
+    if state == llm_health.BUSY:
+        # 503/429: сервер жив, модель занята другим запросом (пересборка,
+        # ночной цикл, соседняя встреча) — перезапуск тут навредил бы
+        line(WARN, "модель занята другим запросом (сервер жив, ответил 503/429)",
+             "перезапускать не нужно: дождитесь конца разбора встречи или "
+             "ночного цикла — конвейер сам ждёт занятую модель")
         return
     port_owner = llm_health.listener_path(base)
     line(FAIL, "модель не отвечает на генерацию"

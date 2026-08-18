@@ -209,3 +209,39 @@ def test_privacy_owns_the_locality_question():
     # сторож не должен заводить собственное представление о «нашей машине»
     assert privacy.is_loopback_url("http://127.0.0.1:11434") is True
     assert privacy.is_loopback_url("http://192.168.1.50:11434") is False
+
+
+# ---------------------------------------------------------- занята ≠ встала
+# Ollama 0.32 с MLX-раннером на занятой модели отвечает 503 за ~250 мс (факт
+# 18.08). Раньше проба считала это смертью и ensure_alive перезапускала сервер —
+# убивая ту генерацию, которая его и занимала (граф 12.08 трижды ронял Ollama
+# под соседней пересборкой).
+
+
+def test_probe_reports_busy_on_503_not_dead(monkeypatch):
+    monkeypatch.setattr(llm_health.requests, "post", lambda *a, **kw: _Resp(503))
+    assert llm_health.probe(LOCAL) == llm_health.BUSY
+    monkeypatch.setattr(llm_health.requests, "post", lambda *a, **kw: _Resp(429))
+    assert llm_health.probe(LOCAL) == llm_health.BUSY
+
+
+def test_busy_model_is_waited_for_not_restarted(monkeypatch):
+    answers = iter([llm_health.BUSY, llm_health.BUSY, True])
+    monkeypatch.setattr(llm_health, "probe", lambda cfg, timeout=None: next(answers))
+    monkeypatch.setattr(llm_health, "_restart",
+                        lambda cfg, log: pytest.fail("занятую модель перезапускать нельзя"))
+    monkeypatch.setattr(llm_health.time, "sleep", lambda s: None)
+    said: list[str] = []
+    assert llm_health.ensure_alive(LOCAL, log=said.append) is True
+    assert any("занята" in m for m in said) and any("освободилась" in m for m in said)
+
+
+def test_still_busy_after_wait_is_alive_not_broken(monkeypatch):
+    """Не дождались — сервер всё равно жив: очередь отстоит вызывающий."""
+    monkeypatch.setattr(llm_health, "probe", lambda cfg, timeout=None: llm_health.BUSY)
+    monkeypatch.setattr(llm_health, "_restart",
+                        lambda cfg, log: pytest.fail("занятую модель перезапускать нельзя"))
+    monkeypatch.setattr(llm_health.time, "sleep", lambda s: None)
+    said: list[str] = []
+    assert llm_health.ensure_alive(LOCAL, log=said.append, wait=1) is True
+    assert any("всё ещё занята" in m for m in said)

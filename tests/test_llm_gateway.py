@@ -292,3 +292,212 @@ def test_mlx_base_url_holds_the_privacy_line():
                    "mlx_base_url": "http://10.0.0.5:8080"}, "sufler": {"role": ""}}
     with pytest.raises(RuntimeError, match="allow_remote"):
         privacy.mlx_base_url(cfg, env={})
+
+
+# ---------------------------------------------------------------- занятая модель
+# Факт 18.08: Ollama 0.32 с MLX-раннером на занятой модели отвечает 503 за
+# ~250 мс вместо очереди; подсказки живой встречи 45 минут падали с
+# «[LLM: 503 …]». Клиент обязан переждать «занято», а ошибку внутри стрима и
+# обрыв без терминатора — не выдавать за ответ.
+
+
+class _StreamResp:
+    """NDJSON-стрим Ollama: строки + контекстный менеджер + статус."""
+
+    text = "busy"
+
+    def __init__(self, lines: list[bytes], status: int = 200):
+        self._lines = lines
+        self.status_code = status
+        self.closed = False
+
+    def iter_lines(self):
+        return iter(self._lines)
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise llm_mod.requests.HTTPError(f"{self.status_code} busy")
+
+    def close(self):
+        self.closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _BusyThenOk:
+    """Первые N ответов — 503, потом настоящий стрим. Считает попытки."""
+
+    RequestException = Exception
+    ConnectionError = ConnectionError
+    HTTPError = RuntimeError
+
+    def __init__(self, busy: int, then):
+        self.busy, self.then, self.calls = busy, then, 0
+
+    def post(self, url, json=None, timeout=None, **kw):
+        self.calls += 1
+        self.last = _StreamResp([], status=503) if self.calls <= self.busy else self.then
+        return self.last
+
+    def get(self, url, timeout=None, **kw):
+        return _Resp({"models": []})
+
+
+def _no_sleep(monkeypatch):
+    slept: list[float] = []
+    monkeypatch.setattr(llm_mod.time, "sleep", slept.append)
+    return slept
+
+
+def test_stream_waits_out_a_busy_model(monkeypatch):
+    ok = _StreamResp([b'{"message":{"content":"a"},"done":false}',
+                      b'{"message":{"content":"b"},"done":true}'])
+    fake = _BusyThenOk(2, ok)
+    monkeypatch.setattr(llm_mod, "requests", fake)
+    slept = _no_sleep(monkeypatch)
+
+    assert "".join(LLM(CFG).stream("в", model="м")) == "ab"
+    assert fake.calls == 3, "две занятые попытки, третья удалась"
+    assert slept == [1.0, 2.0], "растущая пауза, а не долбёжка"
+
+
+def test_stream_gives_up_when_busy_outlasts_budget(monkeypatch):
+    fake = _BusyThenOk(100, _StreamResp([]))
+    monkeypatch.setattr(llm_mod, "requests", fake)
+    _no_sleep(monkeypatch)
+
+    with pytest.raises(LLMHTTPError) as e:   # контракт модуля, не голый requests.HTTPError
+        list(LLM(CFG).stream("в", model="м", busy_wait=5))
+    assert e.value.status == 503
+    assert fake.calls <= 4, "бюджет 5 с: 1+2 с пауз, дальше честная ошибка"
+    assert fake.last.closed, "стрим-ответ с ошибкой закрыт до raise, а не оставлен GC"
+
+
+def test_error_line_inside_stream_is_an_exception(monkeypatch):
+    """Ollama шлёт ошибку строкой {"error": …} внутри 200-стрима: раньше поток
+    заканчивался «нормально» пустым, и подсказка тихо не приходила."""
+    fake = _BusyThenOk(0, _StreamResp([b'{"message":{"content":"a"},"done":false}',
+                                       b'{"error":"model runner has unexpectedly stopped"}']))
+    monkeypatch.setattr(llm_mod, "requests", fake)
+
+    with pytest.raises(LLMHTTPError, match="runner"):
+        list(LLM(CFG).stream("в", model="м"))
+
+
+def test_stream_without_terminator_is_not_a_full_answer(monkeypatch):
+    """Соединение закрылось без done: усечённые минутки не должны выглядеть готовыми."""
+    fake = _BusyThenOk(0, _StreamResp(['{"message":{"content":"половина"},"done":false}'
+                                       .encode("utf-8")]))
+    monkeypatch.setattr(llm_mod, "requests", fake)
+
+    got: list[str] = []
+    with pytest.raises(LLMHTTPError, match="оборван"):
+        for tok in LLM(CFG).stream("в", model="м"):
+            got.append(tok)
+    assert got == ["половина"], "что успело прийти — пришло; но это не полный ответ"
+
+
+def test_mlx_stream_error_and_missing_done(monkeypatch):
+    fake = _Requests(_SSEResp([b'data: {"error":{"message":"oom"}}']))
+    monkeypatch.setattr(llm_mod, "requests", fake)
+    with pytest.raises(LLMHTTPError, match="oom"):
+        list(LLM(CFG_MLX).stream("в"))
+
+    fake = _Requests(_SSEResp([b'data: {"choices":[{"delta":{"content":"x"}}]}']))
+    monkeypatch.setattr(llm_mod, "requests", fake)
+    with pytest.raises(LLMHTTPError, match="оборван"):
+        list(LLM(CFG_MLX).stream("в"))
+
+
+def test_complete_waits_out_a_busy_model_within_budget(monkeypatch):
+    class _Busy503:
+        RequestException = Exception
+
+        def __init__(self):
+            self.calls = 0
+
+        def post(self, url, json=None, timeout=None, **kw):
+            self.calls += 1
+            if self.calls < 3:
+                return _Resp({}, status=503, text="busy")
+            return _Resp({"message": {"content": "готово"}})
+
+        def get(self, url, timeout=None, **kw):
+            return _Resp({"models": []})
+
+    fake = _Busy503()
+    monkeypatch.setattr(llm_mod, "requests", fake)
+    slept = _no_sleep(monkeypatch)
+
+    assert LLM(CFG).complete("в", model="м", busy_wait=60) == "готово"
+    assert fake.calls == 3 and slept == [1.0, 2.0]
+
+
+def test_complete_busy_beyond_budget_is_http_error_not_revive(monkeypatch):
+    """503 — ответ сервера, не сеть: revive (перезапуск) на него не идёт."""
+    fake = _Requests(_Resp({}, status=503, text="busy"))
+    monkeypatch.setattr(llm_mod, "requests", fake)
+    _no_sleep(monkeypatch)
+    import llm_health
+    monkeypatch.setattr(llm_health, "ensure_alive",
+                        lambda *a, **k: pytest.fail("занятую модель не оживляют перезапуском"))
+
+    with pytest.raises(LLMHTTPError) as e:
+        LLM(CFG).complete("в", model="м", timeout=5, revive=True)
+    assert e.value.status == 503
+
+
+def test_embed_on_busy_server_returns_empty_not_valueerror(monkeypatch):
+    class _Busy(_Resp):
+        def json(self):
+            raise ValueError("not json")
+
+    _wire(monkeypatch, _Busy({}, status=503, text="busy"))
+    assert llm_mod.embed(CFG, ["текст"]) == []
+
+
+def test_fit_survives_a_failed_part_and_keeps_head_and_tail(monkeypatch):
+    """Одна упавшая часть не роняет минутки; все пустые — голова+хвост, не голова."""
+    l = LLM(CFG)
+    l.num_ctx = 2000                       # limit = 4000
+    calls = {"n": 0}
+
+    def summary(part, busy_wait=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("503 busy")
+        return iter(["сводка"])
+
+    monkeypatch.setattr(l, "summary", summary)
+    text = "А" * 5000 + "Я" * 5000
+    out = l._fit(text)
+    assert "[Часть 2" in out and "[Часть 1" not in out
+
+    monkeypatch.setattr(l, "summary", lambda part, busy_wait=None: iter([""]))
+    out = l._fit(text)
+    assert out.startswith("АААА") and out.endswith("ЯЯЯЯ"), "хвост встречи (решения) не теряем"
+    assert "опущена" in out
+
+
+def test_fit_stops_after_two_failed_parts_in_a_row(monkeypatch):
+    """Минутки идут под hint_lock: 70 частей по 30 с ожидания занятой модели
+    держали бы весь живой контур полчаса. Две части подряд не сжались — отказ
+    наружу, а не тихий перебор всех частей (ревью 18.08)."""
+    l = LLM(CFG)
+    l.num_ctx = 2000
+    calls = {"n": 0, "budgets": []}
+
+    def summary(part, busy_wait=None):
+        calls["n"] += 1
+        calls["budgets"].append(busy_wait)
+        raise RuntimeError("503 busy")
+
+    monkeypatch.setattr(l, "summary", summary)
+    with pytest.raises(RuntimeError, match="503"):
+        l._fit("А" * 40_000)
+    assert calls["n"] == 2, "после двух отказов подряд остальные части не мучаем"
+    assert all(b == llm_mod.FIT_PART_BUSY_WAIT for b in calls["budgets"]), "у сводок частей маленький бюджет"
