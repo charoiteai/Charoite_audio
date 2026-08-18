@@ -145,8 +145,9 @@ jobs:
           security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
           umask 077   # приватный ключ на диске — только владельцу, пусть и на секунды
           printf '%s' "$P12_B64" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          # ключ доступен только codesign и security — не любому процессу (-A)
           security import "$RUNNER_TEMP/developer-id.p12" -P "$P12_PASSWORD" \
-            -A -t cert -f pkcs12 -k "$KEYCHAIN"
+            -T /usr/bin/codesign -T /usr/bin/security -t cert -f pkcs12 -k "$KEYCHAIN"
           rm -f "$RUNNER_TEMP/developer-id.p12"
           # codesign не должен спрашивать пароль в неинтерактивном прогоне
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
@@ -255,6 +256,20 @@ jobs:
             app/build/Charoite.dmg.sha256 \
             app/build/Charoite.app.zip \
             app/build/Charoite.app.zip.sha256
+          # Режим подписи — в заметки релиза, а не только в лог прогона:
+          # README отсылает именно туда. Строка одна, при перезаливке
+          # (--clobber) не дублируется.
+          if [ "$SIGNING" = "true" ] && [ "$NOTARY" = "true" ]; then
+            line="Сборка подписана Developer ID и нотаризована Apple — открывается двойным кликом. / Signed with Developer ID and notarized by Apple — opens with a double click."
+          else
+            line="Сборка подписана ad-hoc (без нотаризации): первый запуск — Системные настройки → Конфиденциальность и безопасность → «Открыть всё равно». / Ad-hoc signed (not notarized): first launch via System Settings → Privacy & Security → Open Anyway."
+          fi
+          body="$(gh release view "$TAG" --repo "$REPO" --json body -q .body)"
+          case "$body" in
+            *"Сборка подписана"*) ;;   # уже есть
+            *) printf '%s\n\n---\n%s\n' "$body" "$line" > "$RUNNER_TEMP/notes.md"
+               gh release edit "$TAG" --repo "$REPO" --notes-file "$RUNNER_TEMP/notes.md" ;;
+          esac
       # Временная связка и ключ нотаризации живут ровно один прогон.
       - name: Remove signing material
         if: always()

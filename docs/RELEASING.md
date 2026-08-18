@@ -125,9 +125,10 @@ not printed — CI logs are public.
 What the pipeline does with them (`app/make_app.sh`, `scripts/make_dmg.sh`,
 `scripts/notarize.sh`):
 
-1. every Mach-O inside the embedded python (`.so`, `.dylib`, `bin/*`) is
-   signed one by one — libraries first, then executables — with hardened
-   runtime and a secure timestamp; the interpreter gets
+1. every Mach-O inside the embedded python — found by header magic, not by
+   file name or executable bit, so a `libfoo.so.1` with mode 644 is not
+   missed — is signed one by one, libraries and wheel utilities first, then
+   `bin/*`, with hardened runtime and a secure timestamp; the interpreter gets
    `app/Resources/entitlements/embedded-python.entitlements` (audio input,
    unsigned executable memory, library validation off). A single signing
    failure fails the build: an unsigned `.so` is a Gatekeeper rejection on
@@ -166,7 +167,11 @@ Two things to know before adding the certificate:
 
 Local builds behave the same: `app/make_app.sh` picks the Developer ID from
 the login keychain if there is one, ad-hoc otherwise; `CHAROITE_SIGN_IDENTITY`
-overrides the choice.
+overrides the choice. A Developer ID build needs the network — every
+signature fetches a timestamp from Apple; offline, build ad-hoc with
+`CHAROITE_SIGN_IDENTITY=- app/make_app.sh`. The signing mode of each release
+is appended to its release notes by the workflow — that is the line the
+README refers to.
 
 ## Postmortem: the v0.19.0 double
 

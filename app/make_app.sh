@@ -143,6 +143,10 @@ BUILD="${BUILD:-1}"
 # временную связку и передаёт имя). Пусто → ищем Developer ID в связках,
 # нет → ad-hoc.
 ENT_DIR="$(pwd)/Resources/entitlements"
+# Списки файлов на подпись — во временном каталоге, который убирается и при
+# сбое (set -e выходит до любого rm в теле функции).
+SIGN_TMP="$(mktemp -d)"
+trap 'rm -rf "$SIGN_TMP"' EXIT
 SIGN_ID="${CHAROITE_SIGN_IDENTITY:-}"
 # «-» / adhoc — явный запрос ad-hoc даже при сертификате в связке (проверка
 # запасного пути на машине разработчика).
@@ -193,7 +197,8 @@ sign_embedded() {
     fi
     echo "подписываю вложенный контур…"
     local all libs bins
-    all="$(mktemp)"; libs="$(mktemp)"; bins="$(mktemp)"
+    all="$SIGN_TMP/all"; libs="$SIGN_TMP/libs"; bins="$SIGN_TMP/bins"
+    : > "$libs"; : > "$bins"
     list_macho_all "$root" > "$all"
     # bin/ — интерпретатор и соседи: им entitlements. Всё остальное —
     # библиотеки и утилиты из колёс — без entitlements, hardened runtime тот
@@ -213,7 +218,6 @@ sign_embedded() {
         xargs -0 -n 10 codesign --force ${runtime_opts[@]+"${runtime_opts[@]}"} ${ent_opts[@]+"${ent_opts[@]}"} --sign "$id" < "$bins"
     fi
     echo "  библиотек и утилит: $(tr -cd '\0' < "$libs" | wc -c | tr -d ' '), исполняемых в bin/: $(tr -cd '\0' < "$bins" | wc -c | tr -d ' ')"
-    rm -f "$all" "$libs" "$bins"
 }
 
 if [ -n "$SIGN_ID" ]; then
