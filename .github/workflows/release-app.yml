@@ -167,10 +167,13 @@ jobs:
             echo "в APPLE_DEVELOPER_ID_P12 нет сертификата Developer ID Application" >&2
             exit 1
           fi
-          # Имя идентичности — скриптам сборки через output шага, а не через
-          # env-файл GitHub: zizmor считает запись в него опасной при
-          # workflow_run-триггере. В лог не печатаем.
-          echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
+          # Имя владельца сертификата — не для публичных логов: маскируем всю
+          # строку идентичности (её печатают spctl/codesign -dvv), а скриптам
+          # сборки передаём файлом в $RUNNER_TEMP — output шага с замаскированным
+          # значением GitHub молча пропускает, env-файл zizmor считает опасным
+          # при workflow_run-триггере.
+          echo "::add-mask::$IDENTITY"
+          printf '%s' "$IDENTITY" > "$RUNNER_TEMP/sign-identity"
           echo "сертификат Developer ID Application импортирован во временную связку"
       - name: Signing mode
         if: steps.resolve.outputs.build == 'true'
@@ -185,10 +188,10 @@ jobs:
       - name: Build bundle
         if: steps.resolve.outputs.build == 'true'
         working-directory: app
-        env:
+        run: |
           # пусто без сертификата → make_app.sh собирает ad-hoc
-          CHAROITE_SIGN_IDENTITY: ${{ steps.import-cert.outputs.identity }}
-        run: ./make_app.sh
+          export CHAROITE_SIGN_IDENTITY="$(cat "$RUNNER_TEMP/sign-identity" 2>/dev/null || true)"
+          ./make_app.sh
       - name: Zip
         if: steps.resolve.outputs.build == 'true'
         working-directory: app/build
@@ -223,9 +226,9 @@ jobs:
       # сверяет с ними скачанное и отказывается ставить при расхождении.
       - name: DMG and checksums
         if: steps.resolve.outputs.build == 'true'
-        env:
-          CHAROITE_SIGN_IDENTITY: ${{ steps.import-cert.outputs.identity }}
-        run: ./scripts/make_dmg.sh
+        run: |
+          export CHAROITE_SIGN_IDENTITY="$(cat "$RUNNER_TEMP/sign-identity" 2>/dev/null || true)"
+          ./scripts/make_dmg.sh
       # Образ нотаризуем отдельно (нотаризация приложения на DMG не
       # распространяется), прошиваем и ПЕРЕСЧИТЫВАЕМ суммы: staple меняет
       # файл, а обновление внутри приложения сверяет скачанное с .sha256.
@@ -276,4 +279,4 @@ jobs:
         run: |
           KEYCHAIN="$RUNNER_TEMP/charoite-signing.keychain-db"
           [ -f "$KEYCHAIN" ] && security delete-keychain "$KEYCHAIN" || true
-          rm -f "$RUNNER_TEMP/notary-key.p8" "$RUNNER_TEMP/developer-id.p12"
+          rm -f "$RUNNER_TEMP/notary-key.p8" "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/sign-identity"
