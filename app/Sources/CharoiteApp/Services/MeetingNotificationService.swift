@@ -136,6 +136,49 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
             trigger: nil))
     }
 
+    /// Запись остановилась сама (тишина или потолок длительности).
+    ///
+    /// Баннер здесь важнее, чем у напоминания о встрече, и показывается всегда:
+    /// смысл автостопа — что человека НЕТ у экрана. Полосу статуса в окне он
+    /// увидит, когда вернётся, а уведомление останется в центре уведомлений.
+    func presentAutostop(reason: String, detail: String) {
+        let content = UNMutableNotificationContent()
+        content.title = L.t("Запись остановлена", "Recording stopped", "录音已停止")
+        content.body = reason == "limit"
+            ? L.t("Достигнут потолок длительности — встреча сохранена и разбирается",
+                  "Duration ceiling reached — the meeting is saved and being processed",
+                  "已达到时长上限——会议已保存并正在处理")
+            : L.t("Тишина: встречу никто не ведёт — она сохранена и разбирается",
+                  "Silence: nobody is talking — the meeting is saved and being processed",
+                  "静音：无人发言——会议已保存并正在处理")
+        content.subtitle = detail
+        content.sound = .default
+        center.add(UNNotificationRequest(identifier: "charoite.autostop." + reason,
+                                         content: content, trigger: nil))
+    }
+
+    /// Предупреждение перед автостопом — только когда окна не видно.
+    ///
+    /// У человека минута, чтобы сказать что-нибудь и продолжить запись, а
+    /// строку статуса в окне перебивают соседние контуры. Если окно на
+    /// экране и приложение активно — баннер лишний, полосы достаточно.
+    func presentAutostopWarning(_ detail: String) {
+        let visible = NSApplication.shared.windows.contains {
+            $0.isVisible && $0.identifier?.rawValue.hasPrefix("main") == true
+        }
+        guard MeetingNotificationPolicy.shouldPresent(
+            appActive: NSApplication.shared.isActive,
+            mainWindowVisible: visible
+        ) else { return }
+        let content = UNMutableNotificationContent()
+        content.title = L.t("Запись скоро остановится", "Recording is about to stop",
+                            "录音即将停止")
+        content.body = detail
+        content.sound = .default
+        center.add(UNNotificationRequest(identifier: "charoite.autostop.warning",
+                                         content: content, trigger: nil))
+    }
+
     func remove(cueID: String) {
         let id = Self.requestID(for: cueID)
         center.removePendingNotificationRequests(withIdentifiers: [id])
