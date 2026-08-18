@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.53.0](https://github.com/charoiteai/Charoite_audio/compare/v0.52.2...v0.53.0) (2026-08-18)
+
+
+### Features
+
+* **record:** забытая запись останавливается сама — тишина и потолок длительности ([#342](https://github.com/charoiteai/Charoite_audio/issues/342)) ([98989ff](https://github.com/charoiteai/Charoite_audio/commit/98989ff092f0210c018feaddc4a1b5ccc699ff91))
+
 ## [0.52.2](https://github.com/charoiteai/Charoite_audio/compare/v0.52.1...v0.52.2) (2026-08-18)
 
 
