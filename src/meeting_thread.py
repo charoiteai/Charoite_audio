@@ -333,14 +333,32 @@ class Thread:
         with self._mutex:
             return self.topics[-1].title if self.topics else ""
 
-    def as_context(self, topics: int = 2) -> str:
+    # Потолок контекста нити для модели: одна тема на длинной встрече копит
+    # сотни строк («Тема 0» не сменяется часами), промпт переваливал num_ctx,
+    # Ollama молча резала НАЧАЛО — уходили инструкции формата, модель отвечала
+    # NONE, и нить «переставала расти» без единой ошибки (аудит 18.08 ×2).
+    CONTEXT_CHARS = 3_500
+
+    def as_context(self, topics: int = 2, max_chars: int = CONTEXT_CHARS) -> str:
         """Что показать модели как «уже собрано».
 
         Не вся нить: длинная встреча выест контекст, а дописывать надо к концу.
-        Последние темы целиком — этого хватает, чтобы не повторяться.
+        Последние темы, срезанные до max_chars с начала (заголовок последней
+        темы сохраняем: модели важно знать, о чём сейчас), — этого хватает,
+        чтобы не повторяться.
         """
         with self._mutex:
-            return "\n".join(t.render() for t in self.topics[-topics:])
+            text = "\n".join(t.render() for t in self.topics[-topics:])
+            if len(text) <= max_chars:
+                return text
+            tail = text[-max_chars:]
+            tail = tail[tail.find("\n") + 1:] if "\n" in tail else tail   # с целой строки
+            last = self.topics[-1]
+            if last.render(full=True) in text[-max_chars:] or tail.startswith(TOPIC + " "):
+                # последняя тема целиком в хвосте — заголовок уже там, не дублируем
+                return f"  … (ранние темы опущены)\n{tail}"
+            head = last.render(full=False)
+            return f"{head}\n  … (ранние строки темы опущены)\n{tail}"
 
     # --- показ --------------------------------------------------------------
 

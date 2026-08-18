@@ -26,6 +26,38 @@ stdout as line-JSON (`{"type": "transcript"|"thesis"|"hint"|…}`); commands
 arrive on stdin (`hint`, `ask <question>`, `summary`, `stop`). Any UI can
 sit on top of this protocol; a second instance is blocked via flock.
 
+Daemon statuses carry a failure flag (`{"type": "status", "error": true}`):
+the app renders those as errors and a plain status clears the flag. A model
+failure never becomes hint text — only a status — so the last good hint
+stays on screen.
+
+### The live meeting outranks the background (src/live_gate.py)
+
+There is one local model and several claimants: rebuilding an earlier
+recording, graph extraction, the nightly cycle — and the live meeting.
+Ollama with the MLX runner answers `503` within a quarter of a second on a
+busy model instead of queueing; without a guard, rebuilding an 18-hour
+recording (18.08) left a meeting without hints for 45 minutes. Three rules:
+
+- **"A meeting is on" = the daemon lock** `logs/daemon.lock`: the daemon
+  lives exactly as long as the recording. Background work (`graph_updater`,
+  `rebuild_transcript`, nightly `wait_for_idle`/dossiers) tests it with a
+  non-blocking `flock` and waits while it is held — between chunks of a
+  long extraction too. The rebuild waits as long as needed (as a whole,
+  STT and diarization included); the night waits with a cap (a morning
+  meeting must not eat the night). Rebuilds run one at a time per machine
+  (`logs/rebuild.lock`): an orphan released by the gate and the fresh
+  recording after "Stop" never start together. "A meeting is on" means only
+  an honest `flock` refusal caused by someone else's lock; a missing file,
+  missing permissions or a volume without `flock` never stall the background.
+- **Busy ≠ dead.** `llm.stream`/`complete` retry `503/429` with growing
+  pauses within the caller's budget (live loops up to 30 s, graph extraction
+  up to 10 min); `llm_health.probe` distinguishes `BUSY` and never restarts
+  the server under someone else's generation.
+- **An error inside a stream is an error.** An `{"error": …}` line inside a
+  200 response, or a stream that ends without its terminator, raises: a
+  truncated set of minutes is never passed off as complete.
+
 ## Diarization: two passes
 
 1. **Live**: each chunk is embedded (ERes2Net, 512-dim) → a voice tracker

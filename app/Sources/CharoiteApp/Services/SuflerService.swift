@@ -697,6 +697,7 @@ final class SuflerService: ObservableObject {
     /// «Подсказка» и «Протокол» оставались заблокированными до конца встречи,
     /// и спросить было нельзя ровно тогда, когда это нужнее всего.
     private var hintDeadline: Timer?
+    private var _lastHintRearm = Date.distantPast
 
     private func armHintTimeout() {
         hintDeadline?.invalidate()
@@ -788,6 +789,9 @@ final class SuflerService: ObservableObject {
         _hintBuf = ""; _lastHintUI = .distantPast
         isHinting = true
         hintIsManual = true
+        // тот же предохранитель, что у «Подсказки»/«Протокола»: без него зависший
+        // ответ держал поле «Спросить» и кнопки отключёнными до конца встречи
+        armHintTimeout()
         send("ask " + q)
     }
 
@@ -809,6 +813,10 @@ final class SuflerService: ObservableObject {
             switch type {
             case "status":
                 status = text
+                // Признак сбоя приходит от демона (`error: true`), обычный статус
+                // его снимает: раньше флаг был липким — после одного таймаута
+                // все дальнейшие «⚡ отвечаю» и «минутки обновлены» шли красным
+                statusIsError = obj["error"] as? Bool ?? false
             case "transcript":
                 let spk = obj["speaker"] as? String ?? ""
                 let plain = obj["plain"] as? String ?? ""
@@ -861,6 +869,15 @@ final class SuflerService: ObservableObject {
                 _hintBuf += text
                 if Date().timeIntervalSince(_lastHintUI) >= 0.033 {
                     hint = _hintBuf; _lastHintUI = Date()
+                }
+                // Идущая генерация — не зависшая: пока токены приходят, дедлайн
+                // отодвигается. Иначе медленный протокол на длинной встрече
+                // ловил «Модель не ответила» на 150-й секунде, а токены потом
+                // сыпались поверх ошибки (аудит 18.08).
+                if manual && isHinting && hintDeadline != nil,
+                   Date().timeIntervalSince(_lastHintRearm) >= 5 {
+                    _lastHintRearm = Date()
+                    armHintTimeout()
                 }
             case "transcript_markup":
                 // e4b разметил реплики диалога внутри последнего абзаца этого голоса
