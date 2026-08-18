@@ -157,6 +157,28 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
                                          content: content, trigger: nil))
     }
 
+    /// Предупреждение перед автостопом — только когда окна не видно.
+    ///
+    /// У человека минута, чтобы сказать что-нибудь и продолжить запись, а
+    /// строку статуса в окне перебивают соседние контуры. Если окно на
+    /// экране и приложение активно — баннер лишний, полосы достаточно.
+    func presentAutostopWarning(_ detail: String) {
+        let visible = NSApplication.shared.windows.contains {
+            $0.isVisible && $0.identifier?.rawValue.hasPrefix("main") == true
+        }
+        guard MeetingNotificationPolicy.shouldPresent(
+            appActive: NSApplication.shared.isActive,
+            mainWindowVisible: visible
+        ) else { return }
+        let content = UNMutableNotificationContent()
+        content.title = L.t("Запись скоро остановится", "Recording is about to stop",
+                            "录音即将停止")
+        content.body = detail
+        content.sound = .default
+        center.add(UNNotificationRequest(identifier: "charoite.autostop.warning",
+                                         content: content, trigger: nil))
+    }
+
     func remove(cueID: String) {
         let id = Self.requestID(for: cueID)
         center.removePendingNotificationRequests(withIdentifiers: [id])

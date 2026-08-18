@@ -31,6 +31,17 @@ final class AutostopTests: XCTestCase {
             .giveUp, "краш-луп надо назвать вслух, а не крутить бесконечно")
     }
 
+    func testStoppedStatusKeepsTheReason() {
+        // Раньше причину затирало безусловное «Остановлен», и автостоп был
+        // неотличим от собственного Стопа человека.
+        XCTAssertTrue(SuflerService.stoppedStatus(autostopReason: "silence")
+                        .contains("автоматически"))
+        XCTAssertTrue(SuflerService.stoppedStatus(autostopReason: "limit")
+                        .contains("потолок"))
+        XCTAssertFalse(SuflerService.stoppedStatus(autostopReason: nil)
+                        .contains("автоматически"), "ручной Стоп — обычный статус")
+    }
+
     func testIdleDaemonDeathIsNotARecordingFailure() {
         XCTAssertEqual(
             SuflerService.restartDecision(wasRecording: false, userStopped: false, attempts: 0),

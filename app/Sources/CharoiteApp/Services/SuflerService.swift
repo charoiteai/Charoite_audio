@@ -242,6 +242,10 @@ final class SuflerService: ObservableObject {
         publishLifecycle()
         userStopped = false
         autostopReason = nil
+        // Автостоп извещает баннером того, кого нет у экрана. Разрешение
+        // раньше запрашивал только календарь — у всех остальных единственный
+        // канал оповещения молча не существовал (ревью 18.08 ×2).
+        MeetingNotificationService.shared.requestAuthorization()
         status = L.t("Запускаю…", "Starting…", "启动中…")
         statusIsError = false
 
@@ -595,7 +599,11 @@ final class SuflerService: ObservableObject {
 
             switch self.cleanupDisposition {
             case .stopped:
-                self.status = L.t("Остановлен", "Stopped", "已停止")
+                // Причина автостопа обязана пережить очистку: раньше здесь
+                // безусловно писалось «Остановлен», и человек, вернувшийся к
+                // ноутбуку, не отличал автостоп от собственного Стопа
+                // (ревью 18.08 ×2).
+                self.status = Self.stoppedStatus(autostopReason: self.autostopReason)
                 self.statusIsError = false
             case .preserveFailure:
                 break
@@ -655,9 +663,7 @@ final class SuflerService: ObservableObject {
                                     attempts: restartAttempts) {
         case .none:
             endSleepGuard()   // записи больше нет — маку можно спать
-            status = autostopReason == nil
-                ? L.t("Остановлен", "Stopped", "已停止")
-                : L.t("Остановлен автоматически", "Stopped automatically", "已自动停止")
+            status = Self.stoppedStatus(autostopReason: autostopReason)
             statusIsError = false
             return
         case .giveUp:
@@ -757,6 +763,22 @@ final class SuflerService: ObservableObject {
         hint = ""
         _hintBuf = ""
         hintIsManual = false
+    }
+
+    /// Статус завершённой записи: ручной Стоп или автостоп с причиной.
+    nonisolated static func stoppedStatus(autostopReason: String?) -> String {
+        switch autostopReason {
+        case "limit":
+            return L.t("Остановлена автоматически: потолок длительности",
+                       "Stopped automatically: duration ceiling",
+                       "已自动停止：已达时长上限")
+        case .some:
+            return L.t("Остановлена автоматически: тишина",
+                       "Stopped automatically: silence",
+                       "已自动停止：静音")
+        default:
+            return L.t("Остановлен", "Stopped", "已停止")
+        }
     }
 
     /// Что делать со смертью демона: поднимать запись заново или нет.
@@ -867,6 +889,9 @@ final class SuflerService: ObservableObject {
                     hint = ""; _hintBuf = ""
                 }
             case "autostop":
+                // Человек мог нажать «Стоп» за мгновение до события: тогда это
+                // его остановка, а не наша — ни баннера, ни чужого статуса.
+                guard lifecycle == .recording else { break }
                 // Демон решил, что запись пора закончить (тишина или потолок
                 // длительности), и ЖДЁТ нашей команды: сам он не выходит —
                 // иначе смерть демона выглядела бы крахом записи и мы подняли
@@ -886,7 +911,11 @@ final class SuflerService: ObservableObject {
             case "autostop_warning":
                 // Предупреждение перед автостопом: любая речь его снимает, и
                 // тогда демон пришлёт обычный статус «автостоп отменён».
+                // Строку статуса перебивают соседние контуры («⚡ отвечаю»,
+                // «Минутки…»), а минута на ответ — короткая: когда окна не
+                // видно, шлём ещё и баннер (ревью 18.08, GLM).
                 status = text
+                MeetingNotificationService.shared.presentAutostopWarning(text)
             case "expand_started":
                 isExpanding = true
             case "expand_done":

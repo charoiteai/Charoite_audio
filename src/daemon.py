@@ -18,6 +18,7 @@ import pathlib
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -542,17 +543,21 @@ def main():
     emit({"type": "status", "text": f"Слушаю: {' + '.join(hub.sources)} · LLM: {llm.resolve_model()}"})
 
     stop = threading.Event()
-    # Живая речь для автостопа: когда в стенограмму последний раз попал текст и
-    # сколько РАЗНЫХ голосов звучало за встречу. По распознанному тексту, а не
-    # по громкости: энергетический гейт срабатывает на кулер и клавиатуру, и
-    # «тишины» не наступает никогда (см. src/autostop.py).
-    heard = {"at": None, "voices": set()}
+    # Живая речь для автостопа: когда в стенограмму последний раз лёг НОВЫЙ
+    # текст и звучала ли речь за эту запись вообще. По распознанному тексту, а
+    # не по громкости: энергетический гейт срабатывает на кулер и клавиатуру, и
+    # «тишины» не наступало бы никогда (см. src/autostop.py).
+    heard = {"at": None, "spoke": False}
     global _stop_event
     _stop_event = stop          # emit сможет остановить нас при обрыве пайпа
     # SIGTERM (Swift terminate по грейсу) → штатный стоп с finally, а не убийство
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     hub.start()
-    record_started = time.monotonic()   # точка отсчёта автостопа
+    # Возраст записи — по СТЕННЫМ часам (потолок длительности обязан быть
+    # шестью часами, а не шестью часами бодрствования: монотонные часы macOS
+    # во сне стоят), тишина — по монотонным (сон — не тишина в комнате).
+    record_started = time.monotonic()
+    record_started_wall = time.time()
 
     # Живая диаризация ОБОИХ каналов: звонок кладёт чужие голоса в BlackHole,
     # очная встреча — все голоса в микрофон. Трекер один, метки по маппингу:
@@ -713,8 +718,6 @@ def main():
                 for name, (_n, cand) in pitch_best.items():
                     _note_pitch(name, cand)
                 for name, text in rows:
-                    heard["at"] = time.monotonic()
-                    heard["voices"].add(name)
                     try:
                         added = tr.add(text, speaker=name)
                     except Exception as e:  # noqa: BLE001 — стенограмма не должна убивать STT-тред
@@ -722,6 +725,13 @@ def main():
                         continue
                     if not added:  # полностью съеденные дедупом не эмитим
                         continue
+                    # Речь для автостопа отмечаем ЗДЕСЬ, после дедупа: на шуме
+                    # STT повторяет одну и ту же фантомную фразу, дедуп её
+                    # съедает — но таймер тишины она сбрасывала бы, и в шумной
+                    # пустой комнате автостоп не сработал бы никогда (ревью
+                    # 18.08, GLM).
+                    heard["at"] = time.monotonic()
+                    heard["spoke"] = True
                     disp = tr.display_name(name)
                     emit({
                         "type": "transcript",
@@ -2074,43 +2084,49 @@ def main():
         limits = autostop_rules.limits_from_cfg(cfg)
         if not limits.any_rule:
             return
-        headless = sys.stdin.isatty()   # терминал: команду `stop` слать некому
-        ACK_S, MUTE_S = 90.0, 1800.0
-        warned = ""
-        asked_at = 0.0
+        # Приложение подключает демона пайпом; терминал и /dev/null — это
+        # запуск без UI, где команду `stop` слать некому. isatty() этого не
+        # различает: `python daemon.py < /dev/null` — не терминал и не UI.
+        try:
+            ui_attached = stat.S_ISFIFO(os.fstat(sys.stdin.fileno()).st_mode)
+        except OSError:
+            ui_attached = False
+        ACK_S = 90.0
+        watch = autostop_rules.Watch(limits)
+        logged = False
         while not stop.is_set():
             time.sleep(5)
             if stop.is_set():
                 return
             now = time.monotonic()
-            if asked_at and now - asked_at < MUTE_S:
-                continue        # уже просили и не дождались — не сыплем статусами
-            d = autostop_rules.decide(
-                now=now, started_at=record_started, last_speech_at=heard["at"],
-                voices=len(heard["voices"]), limits=limits)
+            spoken_at = heard["at"]
+            d = watch.tick(now=now,
+                           age_s=time.time() - record_started_wall,
+                           quiet_s=now - (spoken_at if spoken_at is not None else record_started),
+                           spoke=bool(heard["spoke"]),
+                           last_speech_at=spoken_at)
             if not d:
-                if warned:
-                    warned = ""
-                    emit({"type": "status", "text": "автостоп отменён — снова слышу разговор"})
+                continue
+            if d.action == "resumed":
+                emit({"type": "status", "text": d.text})
                 continue
             if d.action == "warn":
-                if warned != d.reason:
-                    warned = d.reason
-                    emit({"type": "autostop_warning", "reason": d.reason,
-                          "text": d.text, "seconds": round(d.seconds_left)})
-                    emit({"type": "status", "text": f"⏳ {d.text}"})
+                emit({"type": "autostop_warning", "reason": d.reason,
+                      "text": d.text, "seconds": round(d.seconds_left)})
+                emit({"type": "status", "text": f"⏳ {d.text}"})
                 continue
-            # стоп
-            warned = ""
+            if stop.is_set():
+                return      # человек нажал «Стоп» между решением и просьбой
             emit({"type": "status", "text": f"⏹ Автостоп: {d.text}"})
             emit({"type": "autostop", "reason": d.reason, "text": d.text})
-            append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] автостоп записи", d.text)
-            if headless:
+            if not logged:   # повторные просьбы лог не засоряют
+                logged = True
+                append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] запрошен автостоп", d.text)
+            if not ui_attached:
                 time.sleep(3)   # дать событию уйти в stdout
                 stop.set()
                 return
-            asked_at = now
-            deadline = now + ACK_S
+            deadline = time.monotonic() + ACK_S
             while not stop.is_set() and time.monotonic() < deadline:
                 time.sleep(1)
             if stop.is_set():

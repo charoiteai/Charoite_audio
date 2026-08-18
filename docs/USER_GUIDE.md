@@ -59,12 +59,15 @@ Check the first transcript lines as well as the timer:
 The main window may be closed; state remains in the menu bar. Quitting the app
 during a recording asks for confirmation because it stops the meeting.
 
-Forgetting to stop is not a problem: the recording ends by itself — on silence
-(5 minutes if only one voice was heard, 15 if two or more people were talking)
-and on a duration ceiling (6 hours). A warning appears in the status line a
-minute before — say something and the recording continues. The stop goes the
-usual way, as if you pressed Stop: the meeting is saved and processed, nothing
-is lost. Thresholds live in `config/config.yaml` under `sufler.autostop`.
+Forgetting to stop is not a problem: the recording ends by itself — after 5
+minutes if nobody ever spoke, after 15 once the conversation goes quiet, and
+after 6 hours in any case. A warning appears a minute before (in the status
+line, and as a banner if the window is not visible) — say something and the
+recording continues. The stop goes the usual way, as if you pressed Stop: the
+meeting is saved and processed, nothing is lost, and the status keeps the
+reason. What autostop does not catch: a TV or music left on in the room — that
+speech counts as talking for us, and only the six-hour ceiling stops such a
+recording. Thresholds live in `config/config.yaml` under `sufler.autostop`.
 
 ## After Stop
 
