@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import atexit
-import fcntl
 import json
 import os
 import pathlib
@@ -40,6 +39,7 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 import numpy as np  # noqa: E402
 import yaml  # noqa: E402
 
+import live_gate  # noqa: E402
 import meeting_stamp  # noqa: E402
 from diarize import diarize  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
 from main import NOISE, Transcript  # noqa: E402
@@ -159,16 +159,12 @@ def wait_recording(rec_dir: pathlib.Path, stamp: str, label: str, sr: int) -> pa
 
 def _daemon_alive() -> bool:
     """Держит ли кто-то лок демона. Пока держит — записи финализирует он."""
-    lock = ROOT / "logs" / "daemon.lock"
-    if not lock.exists():
-        return False
-    try:
-        with lock.open("r+") as f:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fcntl.flock(f, fcntl.LOCK_UN)
-        return False      # взяли лок — значит демона нет
-    except OSError:
-        return True       # лок занят — демон жив
+    return live_gate.daemon_alive(ROOT)
+
+
+def _yield_to_live(what: str) -> None:
+    """Пока идёт живая встреча, тяжёлую модель не трогаем — см. live_gate."""
+    live_gate.wait_while_live(ROOT, log, what=what)
 
 
 def stt_segment(stt: STT, audio: np.ndarray, sr: int) -> str:
@@ -221,6 +217,7 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]]) -> tuple[dict[str, st
     from llm import LLM
     _owner = ((cfg.get("sufler") or {}).get("user_name") or "").strip().lower()
     sample = "\n".join(f"[{spk}] {text}" for spk, text in lines if text)[:7000]
+    _yield_to_live("имена")
     try:
         raw = LLM(cfg).complete(
             sample,
@@ -533,6 +530,7 @@ def retry_unfinished(status: MeetingStatusStore) -> None:
         return
     if not pending:
         return
+    _yield_to_live("повтор незавершённой")
     target = pathlib.Path(pending[0]["transcript_path"])
     log(f"повтор незавершённой встречи: {target.name} "
         f"(в очереди {len(pending)}, попытка {int(pending[0].get('attempts', 0)) + 1})")
@@ -636,6 +634,7 @@ def main():
         except Exception as e:  # noqa: BLE001 — граф важнее идеальной пересборки
             log(f"пересборка не удалась ({type(e).__name__}: {e}) — граф по живой версии")
         publish(status.processing, live, "updating_graph")
+        _yield_to_live("разбор графа")   # graph_updater ждёт и сам — здесь ради честного лога
         result = subprocess.run(
             [sys.executable, str(pathlib.Path(__file__).parent / "graph_updater.py"), str(live)],
             check=False,

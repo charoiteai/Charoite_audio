@@ -371,3 +371,23 @@ def test_parse_edits_tolerates_noise():
     edits = parse_edits(out)
     assert len(edits) == 2
     assert edits[0][1].endswith("типов дат")
+
+
+def test_as_context_is_capped_but_keeps_current_topic_title():
+    """Одна тема на длинной встрече копит сотни строк; промпт переваливал
+    num_ctx, Ollama молча резала начало — инструкции формата уходили, модель
+    отвечала NONE, нить «переставала расти» (аудит 18.08)."""
+    t = Thread()
+    # короткие строки из разных букв — иначе дедуп нити сочтёт их повторами
+    letters = "абвгдежзиклмнопрстуфхцчшщэюя"
+    def word(i):
+        return letters[i // 28 % 28] + letters[i % 28] + letters[(i * 7) % 28]
+    added = t.ingest(f"{TOPIC} Долгая тема без смены\n" + "\n".join(
+        f"{SAY} {word(i)} {word(i + 1000)}" for i in range(300)), at="10:00")
+    assert added > 100
+    ctx = t.as_context()
+    assert len(ctx) <= Thread.CONTEXT_CHARS + 200
+    assert ctx.startswith(f"{TOPIC} Долгая тема без смены"), "заголовок текущей темы остаётся"
+    assert f"{word(299)} {word(1299)}" in ctx, "хвост — самое свежее — на месте"
+    assert f"{word(1)} {word(1001)}" not in ctx, "ранние строки срезаны"
+    assert "опущены" in ctx

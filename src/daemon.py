@@ -61,6 +61,7 @@ CODE = code_root(__file__)         # src/ и scripts/ — рядом с этим
 THESIS_EVERY = 40.0     # автотезисы: раз в N секунд по новым фразам
 HINT_EVERY = 75.0       # автоподсказки: не чаще, чем раз в N секунд
 HINT_MIN_NEW = 220      # и только если накопилось столько новых знаков разговора
+HINT_RETRY = 20.0       # сорвалась (модель занята) — следующая попытка раньше, а не через 75 с
 THREAD_TICK = 30.0      # нить встречи: как часто СМОТРИМ, набежал ли разговор
 THREAD_MIN_NEW = 900    # и сколько новых знаков нужно, чтобы позвать модель
 
@@ -186,15 +187,36 @@ def quiet_loop_warn(tag: str):
     return warn
 
 
+_hint_file_lock = threading.Lock()   # шесть контуров пишут в один файл
+
+
 def append_hint(tr_path: pathlib.Path, header: str, body: str):
     """Дозапись в _hints.md. Полный диск/недоступная папка не должны молча
     убивать вечный тред (open стоял вне try в трёх контурах)."""
     try:
         hpath = tr_path.with_name(tr_path.stem + "_hints.md")
-        with hpath.open("a", encoding="utf-8") as f:
+        with _hint_file_lock, hpath.open("a", encoding="utf-8") as f:
             f.write(f"\n## {header}\n{body}\n")
     except Exception as e:  # noqa: BLE001
         emit({"type": "status", "text": f"запись подсказок: {e}"})
+
+
+def short_error(e: BaseException) -> str:
+    """Ошибка модели одной строкой для человека: «занята», «не отвечает», а не
+    стек requests с URL и портом на пол-экрана."""
+    s = str(e)
+    if "503" in s or "429" in s or "502" in s:
+        return "модель занята"
+    if "Connection" in type(e).__name__ or "Max retries" in s or "refused" in s:
+        return "сервер модели не отвечает"
+    if "Timeout" in type(e).__name__ or "timed out" in s:
+        return "модель не ответила вовремя"
+    return f"{type(e).__name__}: {s[:80]}"
+
+
+def emit_error(text: str):
+    """Статус о сбое: приложение красит его как отказ, обычный статус — нет."""
+    emit({"type": "status", "text": text, "error": True})
 
 
 def load_claude_proxy_env() -> dict:
@@ -735,16 +757,23 @@ def main():
             fresh = full[seen:]
             if len(fresh) < 120:  # мало нового — не гонять модель
                 continue
-            seen = len(full)
             try:
-                out = "".join(
-                    llm.stream(
+                parts: list[str] = []
+                yielded = False
+                for tok in llm.stream(
                         (f"Контекст (уже обработано):\n{context_tail}\n\n" if context_tail else "")
                         + f"НОВЫЙ фрагмент стенограммы:\n{fresh}",
                         model=cfg["sufler"].get("think_model", llm.small),
                         system=thesis_rules.THINK_SYSTEM,
-                    )
-                )
+                ):
+                    if manual_evt.is_set():
+                        yielded = True   # человек задал вопрос — тяжёлая модель ему нужнее
+                        break
+                    parts.append(tok)
+                if yielded:
+                    continue   # seen не двигаем: фрагмент разберём следующим тиком
+                seen = len(full)
+                out = "".join(parts)
                 context_tail = fresh[-800:]
                 # Строки без живого префикса отбрасываются целиком: вступления
                 # («Вот что важно:») и отставной 💎 в ленте выглядели репликами.
@@ -785,6 +814,8 @@ def main():
         строки (04.08). Проверка структурная, без списков фраз —
         src/question_filter.py.
         """
+        if not toggles["hints"]:
+            return   # тумблер «Подсказки» выключен: ни ⚡, ни ☁️ — из любого триггера
         now = time.time()
         if now - _last_fire[0] < 8:
             return
@@ -810,12 +841,19 @@ def main():
     if quiet:
         emit({"type": "status", "text": f"🔇 тихий режим: фон на {llm.small}, 26b — только точечно"})
 
-    _hint_gen = [0]   # поколение подсказки: облачное уточнение к устаревшей — в файл, не в UI
+    def gen_hint(header: str | None = None, manual: bool = False,
+                 model: str | None = None) -> bool:
+        """Одна подсказка. Возвращает True, если подсказка дошла до конца (не сорвалась и не уступила).
 
-    def gen_hint(header: str | None = None, manual: bool = False, model: str | None = None):
+        Сбой модели — статус, а не текст подсказки. Раньше `[LLM: 503 …]`
+        уходил событием hint: заголовок «━━ авто ━━» уже сбросил карточку, и
+        ошибка ЗАМЕНЯЛА последнюю хорошую подсказку — 18.08 панель 45 минут
+        показывала стек-текст вместо конспекта. Теперь заголовок эмитится
+        с первым настоящим токеном, при сбое карточка не трогается, а человеку
+        (ручной запрос — он ждёт) приходит короткое «модель занята».
+        """
         if manual:
             manual_evt.set()  # сигнал авто-генерации уступить
-        _hint_gen[0] += 1
         with hint_lock:
             if manual:
                 manual_evt.clear()
@@ -823,24 +861,35 @@ def main():
             if not tail:
                 emit({"type": "hint", "text": "Стенограмма пока пуста.", "manual": manual})
                 emit({"type": "hint_done", "manual": manual})
-                return
-            if header:
-                emit({"type": "hint", "text": header, "manual": manual})
+                return True
             parts: list[str] = []
+            failed: Exception | None = None
+            yielded = False
             try:
                 for tok in llm.hint(tail, model=model):
                     if not manual and manual_evt.is_set():
-                        emit({"type": "hint", "text": " …⏸", "manual": manual})
-                        parts.append(" …⏸")
+                        yielded = True
+                        if parts:   # уже начали показывать — честно оборвать на экране
+                            emit({"type": "hint", "text": " …⏸", "manual": manual})
+                            parts.append(" …⏸")
                         break  # уступаем ручному запросу
+                    if header is not None and not parts:
+                        emit({"type": "hint", "text": header, "manual": manual})
                     emit({"type": "hint", "text": tok, "manual": manual})
                     parts.append(tok)
             except Exception as e:  # noqa: BLE001
-                emit({"type": "hint", "text": f"[LLM: {e}]", "manual": manual})
+                failed = e
+                emit_error(f"{'подсказка' if manual else 'авто-подсказка'}: {short_error(e)}")
+                if manual:   # человек ждёт ответа: короткая строка в карточку
+                    emit({"type": "hint", "text": f"\n⚠ {short_error(e)} — попробуйте ещё раз",
+                          "manual": True})
             emit({"type": "hint_done", "manual": manual})
             if parts:  # подсказки тоже сохраняем — лог полного разговора
                 kind = "ручная" if manual else "авто"
+                if failed is not None:
+                    kind += f", сорвалась: {short_error(failed)}"
                 append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] подсказка ({kind})", "".join(parts))
+            return failed is None and not yielded   # уступила — вернёмся к этому куску раньше
 
 
     _refine_last = {"len": 0}
@@ -859,12 +908,16 @@ def main():
         if not (cloud_hints and toggles["cloud"]):
             return
         tail = tr.tail(max_ctx)
-        if len(tail) - _refine_last["len"] < 1200:
+        # Прирост меряем по ПОЛНОЙ стенограмме: хвост обрезан до max_ctx, и
+        # после насыщения его длина не растёт — ревизия срабатывала один раз
+        # в начале встречи и больше никогда (аудит 18.08 ×3).
+        grown = len(tr.full())
+        if grown - _refine_last["len"] < 1200:
             return   # разговор не набежал — ревизору не на чем ловить неточности
-        _refine_last["len"] = len(tail)
         woven = thread.as_context(topics=2)
         if not woven.strip():
-            return
+            return   # нити ещё нет — счётчик не двигаем, иначе первая ревизия уедет вдвое дальше
+        _refine_last["len"] = grown
 
         def cloud_thread_refine():
             # Проверка дублирует внешний cheap-gate намеренно: именно эта
@@ -938,14 +991,26 @@ def main():
             need = THREAD_MIN_NEW * (1 + min(quiet_rounds, 3))
             if len(full) - seen < need:
                 continue
-            seen = len(full)
             tail = tr.tail(3500)
             if len(tail) < 400:
+                seen = len(full)
                 continue
             try:
                 with hint_lock:
-                    answer = "".join(llm.thread(tail, thread.as_context(),
-                                                model=auto_model))
+                    parts: list[str] = []
+                    yielded = False
+                    for tok in llm.thread(tail, thread.as_context(), model=auto_model):
+                        if manual_evt.is_set():
+                            yielded = True   # ручной вопрос важнее: бросаем, кусок дождётся
+                            break
+                        parts.append(tok)
+                if yielded:
+                    continue   # seen не двигаем — этот кусок разговора разберём в следующий тик
+                answer = "".join(parts)
+                # seen — только ПОСЛЕ удачного ответа: сбой модели раньше
+                # выкидывал кусок из нити навсегда (нить дописывает лишь
+                # новое, повторного покрытия, как у подсказок, у неё нет)
+                seen = len(full)
                 added = thread.ingest(answer, at=f"{dt.datetime.now():%H:%M}")
                 quiet_rounds = 0 if added else quiet_rounds + 1
                 if added:
@@ -954,7 +1019,7 @@ def main():
                                 thread.full())
                     _cloud_refine_thread()
             except Exception as e:  # noqa: BLE001 — поток не должен умирать молча
-                emit({"type": "status", "text": f"нить встречи сорвалась: {e}"})
+                emit_error(f"нить встречи: {short_error(e)}")
 
     expand_lock = threading.Lock()
 
@@ -1042,23 +1107,32 @@ def main():
                 expand_lock.release()
 
     def auto_hint_loop():
-        """Подсказки в реальном времени: сами, по мере накопления разговора."""
+        """Подсказки в реальном времени: сами, по мере накопления разговора.
+
+        Сорвалась (модель занята) — следующая попытка через HINT_RETRY, а не
+        через полный интервал, и без требования новых HINT_MIN_NEW знаков:
+        разговор, на котором сорвались, ещё не законспектирован.
+        """
         seen = 0
+        wait = HINT_EVERY
         while not stop.is_set():
-            time.sleep(HINT_EVERY)
+            time.sleep(wait)
+            wait = HINT_EVERY
             if not toggles["hints"]:
                 continue
             full = tr.full()
             if len(full) - seen < HINT_MIN_NEW:
                 continue  # разговор не набежал — молчим
-            seen = len(full)
             try:
-                gen_hint(header=f"\n\n━━ авто {dt.datetime.now():%H:%M} ━━\n", model=auto_model)
+                if gen_hint(header=f"\n\n━━ авто {dt.datetime.now():%H:%M} ━━\n", model=auto_model):
+                    seen = len(full)
+                else:
+                    wait = HINT_RETRY
             except Exception as e:  # noqa: BLE001 — единственный поток без своего try:
                 # сбой вне внутреннего try gen_hint (например, запись подсказки в
                 # файл на недоступном iCloud) убивал поток НАВСЕГДА, а heartbeat
                 # главного треда продолжал идти — UI считал, что всё живо
-                emit({"type": "status", "text": f"авто-подсказка сорвалась: {e}"})
+                emit_error(f"авто-подсказка сорвалась: {e}")
 
     def instant_loop():
         """Режим собеседования: вопрос от собеседника → готовый ответ без задержки.
@@ -1102,7 +1176,7 @@ def main():
                     for tok in llm.instant(tail, nodes=nodes_block):
                         parts.append(tok)
                 except Exception as e:  # noqa: BLE001
-                    emit({"type": "status", "text": f"⚡ ответ не собрался: {e}"})
+                    emit_error(f"⚡ ответ не собрался: {short_error(e)}")
                 answer = "".join(parts)
                 # Отказ модели («вопроса не вижу, уточните») — не ответ, и в
                 # полотно он не идёт: раньше такие абзацы занимали пол-панели.
@@ -1617,14 +1691,25 @@ def main():
         mpath = tr.path.with_name(tr.path.stem + "_minutes.md")
         while not stop.is_set():
             time.sleep(150)
-            # кнопка «Протокол» пишет ФИНАЛЬНЫЕ минутки (26b) без маркера черновика —
-            # авточерновик лёгкой модели не должен их затирать
-            if mpath.exists() and not mpath.read_text(encoding="utf-8").startswith("<!-- черновик"):
+            try:
+                # кнопка «Протокол» пишет ФИНАЛЬНЫЕ минутки (26b) без маркера черновика —
+                # авточерновик лёгкой модели не должен их затирать. Чтение — в try:
+                # iCloud-заглушка или права убивали поток до конца встречи молча.
+                if mpath.exists() and not mpath.read_text(encoding="utf-8").startswith("<!-- черновик"):
+                    continue
+            except Exception as e:  # noqa: BLE001
+                emit_error(f"минутки: {short_error(e)}")
                 continue
             full = tr.full()
             if len(full) - seen < 400:
                 continue
             seen = len(full)
+            # Вся стенограмма в промпт не влезает: num_ctx 8192 — это ~25 000
+            # знаков, и Ollama молча режет ГОЛОВУ. Черновику отдаём начало
+            # (повестка, участники) и хвост (свежие решения) — тот же приём,
+            # что у финальных минуток (_fit) и debrief_excerpt.
+            if len(full) > 18_000:
+                full = full[:3_000] + "\n\n[… середина опущена …]\n\n" + full[-14_000:]
             try:
                 out = "".join(
                     llm.stream(
@@ -1650,7 +1735,7 @@ def main():
                     mpath.write_text("<!-- черновик, встреча идёт -->\n" + out, encoding="utf-8")
                     emit({"type": "status", "text": f"🗒 минутки-черновик обновлены ({dt.datetime.now():%H:%M})"})
             except Exception as e:  # noqa: BLE001
-                emit({"type": "status", "text": f"минутки: {e}"})
+                emit_error(f"минутки: {short_error(e)}")
 
     def deep_loop():
         """Глубокая проработка: 26b пересматривает заметки быстрой модели.
@@ -1708,27 +1793,29 @@ def main():
         """
         emit({"type": "hint", "text": f"\n\n❓ {question}\n", "manual": True})
         manual_evt.set()  # авто-контуры уступают
+        # vault ищем ДО лока: HTTP на 2.5с не смеет держать очередь подсказок
+        # (⚡ и авто ждут тот же lock), а сам поиск в модели не нуждается
+        extra = ""
+        try:  # граф и документы через brain Чароита (если поднят)
+            import requests as _rq
+            # folder: искать в ГРАФЕ проекта, не по всему Obsidian-vault —
+            # соседние личные папки не должны попадать в ответы на встрече
+            _folder = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser().name
+            v = _rq.post("http://127.0.0.1:8100/vault_search",
+                         json={"query": question, "limit": 4, "folder": _folder,
+                               "snippet_chars": 600}, timeout=2.5).json().get("text", "")
+            if v and "не найдено" not in v.lower():
+                # «⚠» — гейт уверенности brain: совпадения слабые, модель
+                # обязана честно сказать «в архиве нет», а не сочинять
+                if v.startswith("⚠"):
+                    extra = ("\n\nИз графа и документов (vault) — СОВПАДЕНИЯ "
+                             "СЛАБЫЕ, скорее всего в архиве ответа нет:\n" + v[:2000])
+                else:
+                    extra = "\n\nИз графа и документов (vault):\n" + v[:2000]
+        except Exception:  # noqa: BLE001
+            pass
         with hint_lock:
             manual_evt.clear()
-            extra = ""
-            try:  # граф и документы через brain Чароита (если поднят)
-                import requests as _rq
-                # folder: искать в ГРАФЕ проекта, не по всему Obsidian-vault —
-                # соседние личные папки не должны попадать в ответы на встрече
-                _folder = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser().name
-                v = _rq.post("http://127.0.0.1:8100/vault_search",
-                             json={"query": question, "limit": 4, "folder": _folder,
-                                   "snippet_chars": 600}, timeout=2.5).json().get("text", "")
-                if v and "не найдено" not in v.lower():
-                    # «⚠» — гейт уверенности brain: совпадения слабые, модель
-                    # обязана честно сказать «в архиве нет», а не сочинять
-                    if v.startswith("⚠"):
-                        extra = ("\n\nИз графа и документов (vault) — СОВПАДЕНИЯ "
-                                 "СЛАБЫЕ, скорее всего в архиве ответа нет:\n" + v[:2000])
-                    else:
-                        extra = "\n\nИз графа и документов (vault):\n" + v[:2000]
-            except Exception:  # noqa: BLE001
-                pass
             parts: list[str] = []
             try:
                 for tok in llm.stream(
@@ -1747,7 +1834,8 @@ def main():
                     emit({"type": "hint", "text": tok, "manual": True})
                     parts.append(tok)
             except Exception as e:  # noqa: BLE001
-                emit({"type": "hint", "text": f"[LLM: {e}]", "manual": True})
+                emit_error(f"ответ на вопрос: {short_error(e)}")
+                emit({"type": "hint", "text": f"\n⚠ {short_error(e)} — попробуйте ещё раз", "manual": True})
             emit({"type": "hint_done", "manual": True})
             if parts:
                 append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ❓ {question}", "".join(parts))
@@ -1755,14 +1843,21 @@ def main():
     def _do_summary():
         with hint_lock:
             chunks: list[str] = []
+            ok = True
             try:
                 for tok in llm.minutes(tr.full() or "(пусто)"):
                     chunks.append(tok)
                     emit({"type": "hint", "text": tok, "manual": True})
             except Exception as e:  # noqa: BLE001
-                emit({"type": "hint", "text": f"[LLM: {e}]", "manual": True})
+                ok = False
+                emit_error(f"протокол: {short_error(e)}")
+                emit({"type": "hint", "text": f"\n⚠ {short_error(e)} — протокол не сохранён, "
+                                             "нажмите ещё раз", "manual": True})
             emit({"type": "hint_done", "manual": True})
-            if chunks:  # минутки — отдельным файлом рядом со стенограммой
+            # Усечённый документ не пишем как готовый: обрыв стрима на длинной
+            # встрече оставлял минутки без решений из хвоста, и внешне они
+            # выглядели полными (аудит 18.08). Файл — только с полного ответа.
+            if chunks and ok:  # минутки — отдельным файлом рядом со стенограммой
                 mpath = tr.path.with_name(tr.path.stem + "_minutes.md")
                 # сверка номеров задач и дат со стенограммой: выдуманный
                 # номер внешне неотличим от настоящего, но в тексте его нет

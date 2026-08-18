@@ -8,6 +8,9 @@
 прогон), запросы стали висеть по 2-6 минут, а в 11:22 он лёг совсем — 258
 тем ушли без разбора, и ночь при этом отчиталась как успешная.
 
+Живая запись — тоже занятость (18.08): суфлёр слушает, а фон держит модель —
+подсказки встречи падают. Пока лок демона занят, ждём наравне с разбором.
+
 Ждём с потолком: пропустить ночь целиком хуже, чем поработать в тесноте.
 Дождались или нет — код возврата нулевой, а сказать об этом должен лог.
 """
@@ -20,15 +23,27 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
+import live_gate  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
+
+LIVE = "живая запись"
+
+
+def busy_now(store: MeetingStatusStore, root: pathlib.Path | None = None) -> list[str]:
+    """Чем занята машина: стадии разбора встреч + живая запись, если идёт."""
+    busy = list(store.busy())
+    if root is not None and live_gate.daemon_alive(root):
+        busy.append(LIVE)
+    return busy
 
 
 def wait(store: MeetingStatusStore, *, timeout: float, poll: float,
-         sleep=time.sleep, now=time.monotonic) -> list[str]:
+         sleep=time.sleep, now=time.monotonic,
+         root: pathlib.Path | None = None) -> list[str]:
     """Ждать освобождения; вернуть то, что осталось занятым к концу срока."""
     deadline = now() + timeout
     while True:
-        busy = store.busy()
+        busy = busy_now(store, root)
         if not busy:
             return []
         if now() >= deadline:
@@ -46,14 +61,15 @@ def main() -> int:
     ap.add_argument("--poll", type=float, default=60)
     a = ap.parse_args()
 
-    store = MeetingStatusStore(pathlib.Path(a.root).expanduser())
-    busy = store.busy()
+    root = pathlib.Path(a.root).expanduser()
+    store = MeetingStatusStore(root)
+    busy = busy_now(store, root)
     if not busy:
         return 0
 
-    print(f"разбор встречи идёт ({', '.join(busy)}) — жду до "
-          f"{int(a.timeout // 60)} мин, чтобы не делить память")
-    left = wait(store, timeout=a.timeout, poll=a.poll)
+    print(f"машина занята ({', '.join(busy)}) — жду до "
+          f"{int(a.timeout // 60)} мин, чтобы не делить память и модель")
+    left = wait(store, timeout=a.timeout, poll=a.poll, root=root)
     if left:
         print(f"⚠️ не дождался ({', '.join(left)}) — иду работать в тесноте")
     else:

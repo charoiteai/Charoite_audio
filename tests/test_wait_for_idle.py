@@ -125,3 +125,24 @@ def test_nightly_script_asks_for_one_model():
     text = (REPO / "scripts" / "nightly.sh").read_text(encoding="utf-8")
     assert "CHAROITE_ONE_MODEL" in text, \
         "ночной цикл снова гоняет три модели по кругу"
+
+
+def test_live_recording_counts_as_busy(monkeypatch, tmp_path):
+    """18.08: суфлёр слушал, а ночь/пересборка держали модель — подсказки
+    падали. Живая запись (лок демона) — такая же занятость, как разбор."""
+    c = Clock()
+    store = FakeStore([[], [], []])
+    answers = iter([True, True, False])
+    monkeypatch.setattr(wait_for_idle.live_gate, "daemon_alive", lambda root: next(answers))
+    assert wait_for_idle.wait(store, timeout=3600, poll=60,
+                              sleep=c.sleep, now=c.now, root=tmp_path) == []
+    assert c.slept == [60, 60]
+
+
+def test_live_recording_is_named_when_not_waited_out(monkeypatch, tmp_path):
+    c = Clock()
+    store = FakeStore([["updating_graph"]] * 5)
+    monkeypatch.setattr(wait_for_idle.live_gate, "daemon_alive", lambda root: True)
+    left = wait_for_idle.wait(store, timeout=120, poll=60,
+                              sleep=c.sleep, now=c.now, root=tmp_path)
+    assert left == ["updating_graph", wait_for_idle.LIVE]

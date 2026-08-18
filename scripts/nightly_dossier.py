@@ -27,6 +27,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 import dossier  # noqa: E402
 import graphs  # noqa: E402
+import live_gate  # noqa: E402
 import yaml  # noqa: E402
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
@@ -131,6 +132,9 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
             built += 1
             continue
 
+        # Утренняя встреча посреди хвоста ночи: пока суфлёр слушает, модель
+        # его — досье подождёт (с потолком, чтобы ночь не стала днём).
+        live_gate.wait_while_live(ROOT, what="досье", cap=3600)
         t0 = time.time()
         body = ""
         for attempt in (1, 2):          # вторая попытка чуть холоднее

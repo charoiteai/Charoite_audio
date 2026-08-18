@@ -26,11 +26,22 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from collections.abc import Iterator
 
 import requests
 
 import privacy
+
+# «Модель занята» — не сбой, а очередь без очереди. Ollama 0.32 с MLX-раннером
+# на занятой модели отвечает 503 за ~250 мс вместо того, чтобы поставить
+# запрос в очередь (факт 18.08: подсказки живой встречи 45 минут подряд
+# падали, пока фон держал тяжёлую модель). Такие ответы повторяем с растущей
+# паузой в пределах бюджета вызывающего — живой контур ждёт недолго
+# (BUSY_WAIT_LIVE), фоновый может и подольше.
+BUSY_STATUSES = frozenset({429, 502, 503})
+BUSY_WAIT_LIVE = 30.0
+BUSY_BACKOFF = (1.0, 2.0, 4.0, 8.0, 15.0)
 
 
 class LLMHTTPError(RuntimeError):
@@ -94,6 +105,10 @@ def embed(cfg: dict, texts: list[str], model: str | None = None,
         payload["keep_alive"] = keep_alive
     r = requests.post(privacy.llm_base_url(cfg) + "/api/embed",
                       json=payload, timeout=timeout)
+    if r.status_code != 200:
+        # 503 на занятом сервере приходит с не-JSON телом — раньше здесь
+        # падал ValueError из r.json(), а не честное «векторов нет»
+        return []
     return r.json().get("embeddings", []) or []
 
 
@@ -158,7 +173,8 @@ class LLM:
 
     def stream(self, prompt: str, model: str | None = None, system: str | None = None,
                think: bool = False, num_predict: int | None = None,
-               temperature: float | None = None) -> Iterator[str]:
+               temperature: float | None = None,
+               busy_wait: float = BUSY_WAIT_LIVE) -> Iterator[str]:
         # think=False КРИТИЧЕН для live-контуров: дефолтный thinking у gemma4
         # молча съедает ~10с до первого слова (замер 17.07: TTFT 10.4с → 0.5с).
         # think=True — только для глубоких фоновых проходов (deep_loop).
@@ -177,7 +193,8 @@ class LLM:
         if self.engine == "mlx-server":
             yield from self._stream_mlx(messages, think=think,
                                         num_predict=num_predict,
-                                        temperature=temperature)
+                                        temperature=temperature,
+                                        busy_wait=busy_wait)
             return
         options: dict = {
             "temperature": self.temperature if temperature is None else temperature,
@@ -193,17 +210,49 @@ class LLM:
             "keep_alive": "90m",  # держать модель в памяти всю встречу
             "options": options,
         }
-        with requests.post(f"{self.base}/api/chat", json=payload, stream=True, timeout=300) as r:
-            r.raise_for_status()
+        with self._open_stream(f"{self.base}/api/chat", payload, busy_wait) as r:
+            done = False
             for line in r.iter_lines():
                 if not line:
                     continue
                 data = json.loads(line)
+                if data.get("error"):
+                    # ошибка ПОСРЕДИ 200-стрима приходит строкой {"error": …}:
+                    # без этой проверки поток заканчивался «нормально» пустым,
+                    # и подсказка тихо не приходила (аудит 18.08)
+                    raise LLMHTTPError(r.status_code, str(data["error"]))
                 chunk = data.get("message", {}).get("content", "")
                 if chunk:
                     yield chunk
                 if data.get("done"):
+                    done = True
                     break
+            if not done:
+                # соединение закрылось без терминатора: сервер упал или сеть
+                # оборвалась. Усечённый ответ не выдаём за целый — минутки
+                # без хвоста встречи внешне неотличимы от готовых.
+                raise LLMHTTPError(r.status_code, "стрим оборван без завершения")
+
+    def _open_stream(self, url: str, payload: dict, busy_wait: float,
+                     timeout: float = 300):
+        """POST со стримом; занятый сервер (503/429, отказ соединения) —
+        повторяем с растущей паузой, пока не выйдем за busy_wait."""
+        deadline = time.monotonic() + max(0.0, busy_wait)
+        for n, delay in enumerate(BUSY_BACKOFF + (BUSY_BACKOFF[-1],) * 1000):
+            try:
+                r = requests.post(url, json=payload, stream=True, timeout=timeout)
+            except requests.ConnectionError:
+                if time.monotonic() + delay > deadline:
+                    raise
+                time.sleep(delay)
+                continue
+            if r.status_code in BUSY_STATUSES and time.monotonic() + delay <= deadline:
+                r.close()
+                time.sleep(delay)
+                continue
+            r.raise_for_status()
+            return r
+        raise RuntimeError("unreachable")  # pragma: no cover
 
     def _mlx_payload(self, messages: list[dict], *, think: bool | None,
                      num_predict: int | None, temperature: float | None,
@@ -234,27 +283,32 @@ class LLM:
 
     def _stream_mlx(self, messages: list[dict], *, think: bool | None,
                     num_predict: int | None,
-                    temperature: float | None) -> Iterator[str]:
+                    temperature: float | None,
+                    busy_wait: float = BUSY_WAIT_LIVE) -> Iterator[str]:
         payload = self._mlx_payload(messages, think=think, num_predict=num_predict,
                                     temperature=temperature, stream=True)
-        with requests.post(f"{self.base}/v1/chat/completions", json=payload,
-                           stream=True, timeout=300) as r:
-            r.raise_for_status()
+        with self._open_stream(f"{self.base}/v1/chat/completions", payload, busy_wait) as r:
             # SSE: полезная нагрузка ТОЛЬКО в строках «data: …», терминатор
             # «data: [DONE]». Всё остальное пропускаем по спецификации: во
             # время префилла сервер шлёт keepalive-комментарии «: keepalive
             # 1/1» — живой smoke 15.08 упал ровно на такой строке.
+            done = False
             for line in r.iter_lines():
                 if not line or not line.startswith(b"data: "):
                     continue
                 line = line[6:]
                 if line.strip() == b"[DONE]":
+                    done = True
                     break
                 data = json.loads(line)
+                if isinstance(data, dict) and data.get("error"):
+                    raise LLMHTTPError(r.status_code, str(data["error"]))
                 chunk = (((data.get("choices") or [{}])[0].get("delta") or {})
                          .get("content") or "")
                 if chunk:
                     yield chunk
+            if not done:
+                raise LLMHTTPError(r.status_code, "стрим оборван без завершения")
 
     def warmup(self):
         """Гоним модель в память заранее — иначе первая подсказка ждёт ~20с загрузки."""
@@ -268,7 +322,8 @@ class LLM:
                  model: str | None = None, think: bool | None = False,
                  json_format: bool = False, num_predict: int | None = None,
                  num_ctx: int | None = None, temperature: float | None = None,
-                 timeout: float = 300, revive: bool = False) -> str:
+                 timeout: float = 300, revive: bool = False,
+                 busy_wait: float | None = None) -> str:
         """Не-стриминговый чат: документы, разборы, классификация.
 
         Возвращает текст ответа модели («» — модель промолчала).
@@ -291,7 +346,14 @@ class LLM:
         (у qwen3.6 это ВКЛючённое рассуждение): так исторически работают
         разбор встречи и минутки через MCP, и выключать им рассуждение —
         отдельное решение с замером, а не побочный эффект рефакторинга.
+
+        busy_wait — сколько секунд терпеть «модель занята» (503/429, отказ
+        соединения) с растущей паузой, прежде чем отдать ошибку. По умолчанию
+        не дольше самого timeout и не дольше минуты; фон (разбор графа) вправе
+        ждать дольше — ему некуда спешить, а живой контур ждёт мало.
         """
+        if busy_wait is None:
+            busy_wait = min(60.0, float(timeout))
         messages = ([{"role": "system", "content": system}] if system else []) \
                    + [{"role": "user", "content": prompt}]
         if self.engine == "mlx-server":
@@ -302,7 +364,7 @@ class LLM:
                                         num_predict=num_predict,
                                         temperature=temperature, stream=False)
             r = self._post_with_revive(f"{self.base}/v1/chat/completions",
-                                       payload, timeout, revive)
+                                       payload, timeout, revive, busy_wait)
             body = self._checked_body(r)
             msg = ((body.get("choices") or [{}])[0].get("message") or {})
             return (msg.get("content") or "").strip()
@@ -322,15 +384,30 @@ class LLM:
             payload["think"] = think
         if json_format:
             payload["format"] = "json"
-        r = self._post_with_revive(f"{self.base}/api/chat", payload, timeout, revive)
+        r = self._post_with_revive(f"{self.base}/api/chat", payload, timeout, revive, busy_wait)
         body = self._checked_body(r)
         return ((body.get("message") or {}).get("content") or "").strip()
 
+    def _post_busy(self, url: str, payload: dict, timeout: float, busy_wait: float):
+        """POST без стрима; «занято» (503/429) повторяем с паузой в бюджете busy_wait.
+
+        Отказ соединения и таймаут наружу не глотаем — их различает
+        _post_with_revive: там решается, поднимать ли модель.
+        """
+        deadline = time.monotonic() + max(0.0, busy_wait)
+        for delay in BUSY_BACKOFF + (BUSY_BACKOFF[-1],) * 1000:
+            r = requests.post(url, json=payload, timeout=timeout)
+            if r.status_code in BUSY_STATUSES and time.monotonic() + delay <= deadline:
+                time.sleep(delay)
+                continue
+            return r
+        raise RuntimeError("unreachable")  # pragma: no cover
+
     def _post_with_revive(self, url: str, payload: dict, timeout: float,
-                          revive: bool):
+                          revive: bool, busy_wait: float = 0.0):
         """POST с одной попыткой поднять модель, вставшую посреди работы."""
         try:
-            return requests.post(url, json=payload, timeout=timeout)
+            return self._post_busy(url, payload, timeout, busy_wait)
         except requests.RequestException:
             if not revive:
                 raise
@@ -338,7 +415,7 @@ class LLM:
             print("llm: запрос к модели не прошёл — пробую оживить")
             if not llm_health.ensure_alive(self._cfg, lambda m: print(f"llm: {m}")):
                 raise
-            return requests.post(url, json=payload, timeout=timeout)
+            return self._post_busy(url, payload, timeout, busy_wait)
 
     @staticmethod
     def _checked_body(r) -> dict:
@@ -595,10 +672,20 @@ class LLM:
         parts = [transcript[i:i + step] for i in range(0, len(transcript), step)]
         digests = []
         for n, part in enumerate(parts, 1):
-            text = "".join(self.summary(part)).strip()
+            try:
+                text = "".join(self.summary(part)).strip()
+            except Exception:  # noqa: BLE001 — одна упавшая часть не роняет документ
+                # как в graph_updater._extract_long: часть пропускаем, остальное
+                # собираем; сводки помечены номерами — дыра видна по нумерации
+                text = ""
             if text:
                 digests.append(f"[Часть {n} из {len(parts)}]\n{text}")
-        return "\n\n".join(digests) if digests else transcript[:limit]
+        if digests:
+            return "\n\n".join(digests)
+        # все сводки пустые: не резать молча голову — отдать голову и хвост,
+        # где обычно и решения (конец встречи), и повестка (начало)
+        half = limit // 2
+        return transcript[:half] + "\n\n[… середина встречи опущена …]\n\n" + transcript[-half:]
 
     def minutes(self, transcript: str) -> Iterator[str]:
         """Полноценные минутки встречи (markdown, сохраняются файлом)."""

@@ -83,12 +83,24 @@ def is_local(cfg: dict) -> bool:
     return privacy.is_loopback_url(url)
 
 
-def probe(cfg: dict, timeout: float = PROBE_TIMEOUT) -> bool:
+# Ответ пробы «сервер жив, но модель занята другим запросом»: Ollama 0.32 с
+# MLX-раннером отдаёт 503 за четверть секунды вместо очереди (факт 18.08).
+# Это НЕ повод перезапускать сервер — перезапуск убил бы ровно ту генерацию,
+# которая его и занимает (так граф 12.08 трижды ронял Ollama под соседней
+# пересборкой: «LLM не отвечает на пробу — перезапускаю»).
+BUSY = "busy"
+BUSY_STATUSES = (429, 502, 503)
+
+
+def probe(cfg: dict, timeout: float = PROBE_TIMEOUT) -> bool | str:
     """Отвечает ли модель хоть чем-нибудь.
 
     Именно генерация, а не `/api/tags` (или `/v1/models` у mlx): у вставшего
     сервера список моделей отдаётся мгновенно, и проба по нему говорит
     «здорова» ровно в том случае, который мы ловим.
+
+    True — ответила; False — не ответила (сеть, таймаут, HTTP-ошибка);
+    BUSY — сервер жив, но модель занята (503/429): не чинить, а подождать.
     """
     try:
         if privacy.llm_engine(cfg) == "mlx-server":
@@ -118,6 +130,8 @@ def probe(cfg: dict, timeout: float = PROBE_TIMEOUT) -> bool:
             )
     except (requests.RequestException, RuntimeError, KeyError):
         return False
+    if r.status_code in BUSY_STATUSES:
+        return BUSY
     return r.status_code == 200
 
 
@@ -260,9 +274,29 @@ def ensure_alive(cfg: dict, log: Callable[[str], None] = print,
 
     Возвращает False честно: вызывающий должен знать, что дальше идти незачем,
     а не выяснять это через таймаут на длинном запросе.
+
+    Занятая модель (BUSY) — не поломка: ждём до `wait` секунд, пока она
+    освободится, и НЕ перезапускаем. Не дождались — всё равно True: сервер
+    жив, а очередь за занятой моделью вызывающий отстоит сам (busy_wait в
+    llm.complete/stream).
     """
-    if probe(cfg):
+    state = probe(cfg)
+    if state is True:
         return True
+    if state == BUSY:
+        log("LLM занята другим запросом — жду, не перезапускаю")
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            time.sleep(RESTART_POLL)
+            state = probe(cfg, timeout=min(60, wait))
+            if state is True:
+                log("LLM освободилась")
+                return True
+            if state is False:
+                break          # была занята, а теперь молчит — дальше обычный путь
+        else:
+            log(f"LLM всё ещё занята после {int(wait)} с — иду в очередь за ней")
+            return True
     if not is_local(cfg):
         log("LLM не отвечает, но адрес не локальный — перезапуск не наше дело")
         return False
@@ -275,7 +309,7 @@ def ensure_alive(cfg: dict, log: Callable[[str], None] = print,
     deadline = time.monotonic() + wait
     while time.monotonic() < deadline:
         time.sleep(RESTART_POLL)
-        if probe(cfg, timeout=min(60, wait)):
+        if probe(cfg, timeout=min(60, wait)):   # True или BUSY — сервер поднялся
             log("LLM ожила после перезапуска")
             return True
     log(f"LLM не ответила за {int(wait)} с после перезапуска")
