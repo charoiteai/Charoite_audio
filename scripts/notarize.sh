@@ -40,6 +40,10 @@ rc=$?
 set -e
 ID="$(jq -r '.id // empty' < "$OUT" 2>/dev/null || true)"
 STATUS="$(jq -r '.status // empty' < "$OUT" 2>/dev/null || true)"
+# Если в stdout затесалось что-то кроме JSON (прогресс --wait), jq промолчит —
+# достаём поля грубее, чтобы не объявить принятую отправку отказом.
+[ -n "$STATUS" ] || STATUS="$(grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' "$OUT" | tail -1 | sed 's/.*"\([^"]*\)"$/\1/')"
+[ -n "$ID" ] || ID="$(grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' "$OUT" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')"
 echo "  submission ${ID:-<нет id>}: ${STATUS:-<нет статуса>} (rc=$rc)"
 
 if [ "$rc" -ne 0 ] || [ "$STATUS" != "Accepted" ]; then

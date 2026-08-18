@@ -144,7 +144,10 @@ BUILD="${BUILD:-1}"
 # нет → ad-hoc.
 ENT_DIR="$(pwd)/Resources/entitlements"
 SIGN_ID="${CHAROITE_SIGN_IDENTITY:-}"
-if [ -z "$SIGN_ID" ]; then
+# «-» / adhoc — явный запрос ad-hoc даже при сертификате в связке (проверка
+# запасного пути на машине разработчика).
+case "$SIGN_ID" in -|adhoc|ad-hoc) SIGN_ID=""; FORCE_ADHOC=1 ;; *) FORCE_ADHOC=0 ;; esac
+if [ -z "$SIGN_ID" ] && [ "$FORCE_ADHOC" = 0 ]; then
     SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
         | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
 fi
@@ -196,16 +199,18 @@ sign_embedded() {
     # подписывается файл, на который они указывают)
     list_macho_bins "$root" > "$bins"
     list_macho_other "$root" > "$other"
+    # ${arr[@]+"${arr[@]}"} — раскрытие пустого массива, которое не роняет
+    # bash 3.2 (/bin/bash macOS) под set -u: у ad-hoc опций рантайма нет.
     if [ -s "$libs" ]; then
-        xargs -0 -P 8 -n 20 codesign --force "${runtime_opts[@]}" --sign "$id" < "$libs"
+        xargs -0 -P 8 -n 20 codesign --force ${runtime_opts[@]+"${runtime_opts[@]}"} --sign "$id" < "$libs"
     fi
     if [ -s "$other" ]; then
-        xargs -0 -n 10 codesign --force "${runtime_opts[@]}" --sign "$id" < "$other"
+        xargs -0 -n 10 codesign --force ${runtime_opts[@]+"${runtime_opts[@]}"} --sign "$id" < "$other"
     fi
     if [ -s "$bins" ]; then
         # Entitlements — только интерпретатору и его соседям по bin/: у
         # библиотек их нет, утилитам из колёс микрофон не нужен.
-        xargs -0 -n 10 codesign --force "${runtime_opts[@]}" "${ent_opts[@]}" --sign "$id" < "$bins"
+        xargs -0 -n 10 codesign --force ${runtime_opts[@]+"${runtime_opts[@]}"} ${ent_opts[@]+"${ent_opts[@]}"} --sign "$id" < "$bins"
     fi
     echo "  библиотек: $(tr -cd '\0' < "$libs" | wc -c | tr -d ' '), исполняемых: $(tr -cd '\0' < "$bins" | wc -c | tr -d ' '), прочих Mach-O: $(tr -cd '\0' < "$other" | wc -c | tr -d ' ')"
     rm -f "$libs" "$bins" "$other"
