@@ -5,6 +5,14 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.52.1](https://github.com/charoiteai/Charoite_audio/compare/v0.52.0...v0.52.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* **app:** байткод вложенного python — в кэш пользователя, не в подписанный бандл ([#338](https://github.com/charoiteai/Charoite_audio/issues/338)) ([ebac0dd](https://github.com/charoiteai/Charoite_audio/commit/ebac0dd9b0a43f88c36dda46cbd8da3fb532f2e6))
+* **release:** имя владельца сертификата — маска в логах CI ([#336](https://github.com/charoiteai/Charoite_audio/issues/336)) ([04e29aa](https://github.com/charoiteai/Charoite_audio/commit/04e29aa23bb6eed6aee0e1555b92682a9724c990))
+
 ## [0.52.0](https://github.com/charoiteai/Charoite_audio/compare/v0.51.0...v0.52.0) (2026-08-18)
 
 
