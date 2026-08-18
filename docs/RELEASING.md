@@ -156,6 +156,14 @@ would get silence without a single error. Verified on a signed build:
 `Contents/Resources/python/bin/python3` with `audio-input` records sound.
 The first signed release still deserves a manual microphone check in the app.
 
+The bundle must stay byte-for-byte what was notarized. The only thing that
+used to write into it at runtime was the embedded python's `__pycache__`;
+`AppDelegate.keepBundleSealed()` points `PYTHONPYCACHEPREFIX` at
+`~/Library/Caches/ai.charoite.app/pycache` before the first child process
+starts (regression test `BundleSealTests`). Check after any change that runs
+python from the bundle: `codesign --verify --deep --strict` on an installed
+copy that has been used — it must still pass.
+
 Two things to know before adding the certificate:
 
 - the owner name of the certificate is public — `codesign -dv` on the

@@ -163,6 +163,12 @@ privilege boundary, not a path preference.
   failure fails the build instead of shipping a bundle Gatekeeper rejects.
   Without the signing secrets the pipeline builds ad-hoc and says so in the
   log; such a build needs *Open Anyway* on first launch (see README).
+  The app never writes into its own bundle: the embedded python keeps its
+  bytecode in `~/Library/Caches/ai.charoite.app/pycache`
+  (`PYTHONPYCACHEPREFIX`, set at launch and inherited by every child
+  process) — writing `__pycache__` into a notarized bundle breaks its
+  resource seal and Gatekeeper reports the app as damaged on the next launch
+  (found on 0.52.0, fixed in 0.52.1).
   Details: docs/RELEASING.md, «Signing and notarization».
 
 ## Anonymization of this repository

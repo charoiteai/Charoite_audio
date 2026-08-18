@@ -89,7 +89,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return moved.count
     }
 
+    /// Каталог для байткода вложенного python вне бандла: подписанный .app
+    /// должен оставаться ровно таким, каким его нотаризовали. Возвращает путь
+    /// (тесты проверяют, что он вне бандла и создан).
+    @discardableResult
+    static func keepBundleSealed(cachesBase: URL? = nil) -> String {
+        let base = cachesBase
+            ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        let dir = base.appendingPathComponent("ai.charoite.app/pycache", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        setenv("PYTHONPYCACHEPREFIX", dir.path, 1)
+        return dir.path
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Байткод вложенного python — в кэш пользователя, а не в бандл. Без
+        // этого первый же запуск демона пишет __pycache__/*.pyc внутрь
+        // подписанного .app, печать ресурсов ломается, и у скачавшего DMG
+        // второй запуск Gatekeeper встречает «повреждено» (18.08, первый
+        // подписанный релиз 0.52.0). Переменную наследуют все дочерние
+        // процессы: демон, обработка встреч, ревизии, доктор.
+        Self.keepBundleSealed()
         // запись в лопнувший pipe демона (умер между send и daemonDied) без
         // этого валила всё приложение сигналом 13
         signal(SIGPIPE, SIG_IGN)
