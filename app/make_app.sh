@@ -158,7 +158,7 @@ fi
 # глушился `|| true`, вместе со всеми настоящими сбоями подписи.
 is_macho() {
     case "$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" in
-        feedface|feedfacf|cefaedfe|cffaedfe|cafebabe|bebafeca) return 0 ;;
+        feedface|feedfacf|cefaedfe|cffaedfe|cafebabe|bebafeca|cafebabf|bfbafeca) return 0 ;;
         *) return 1 ;;
     esac
 }

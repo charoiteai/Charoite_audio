@@ -128,6 +128,7 @@ jobs:
       # печатаем: логи публичного репозитория читают все, а подпись и так
       # покажет его тем, кому нужно (codesign -dv).
       - name: Import Developer ID certificate
+        id: import-cert
         if: steps.resolve.outputs.build == 'true' && env.SIGNING == 'true'
         env:
           P12_B64: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
@@ -156,9 +157,10 @@ jobs:
             echo "в APPLE_DEVELOPER_ID_P12 нет сертификата Developer ID Application" >&2
             exit 1
           fi
-          # имя идентичности — скриптам сборки через env, не в лог
-          echo "CHAROITE_SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
-          echo "CHAROITE_SIGN_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          # Имя идентичности — скриптам сборки через output шага, а не через
+          # env-файл GitHub: zizmor считает запись в него опасной при
+          # workflow_run-триггере. В лог не печатаем.
+          echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
           echo "сертификат Developer ID Application импортирован во временную связку"
       - name: Signing mode
         if: steps.resolve.outputs.build == 'true'
@@ -173,6 +175,9 @@ jobs:
       - name: Build bundle
         if: steps.resolve.outputs.build == 'true'
         working-directory: app
+        env:
+          # пусто без сертификата → make_app.sh собирает ad-hoc
+          CHAROITE_SIGN_IDENTITY: ${{ steps.import-cert.outputs.identity }}
         run: ./make_app.sh
       - name: Zip
         if: steps.resolve.outputs.build == 'true'
@@ -208,6 +213,8 @@ jobs:
       # сверяет с ними скачанное и отказывается ставить при расхождении.
       - name: DMG and checksums
         if: steps.resolve.outputs.build == 'true'
+        env:
+          CHAROITE_SIGN_IDENTITY: ${{ steps.import-cert.outputs.identity }}
         run: ./scripts/make_dmg.sh
       # Образ нотаризуем отдельно (нотаризация приложения на DMG не
       # распространяется), прошиваем и ПЕРЕСЧИТЫВАЕМ суммы: staple меняет
@@ -243,5 +250,6 @@ jobs:
       - name: Remove signing material
         if: always()
         run: |
-          [ -n "${CHAROITE_SIGN_KEYCHAIN:-}" ] && security delete-keychain "$CHAROITE_SIGN_KEYCHAIN" || true
+          KEYCHAIN="$RUNNER_TEMP/charoite-signing.keychain-db"
+          [ -f "$KEYCHAIN" ] && security delete-keychain "$KEYCHAIN" || true
           rm -f "$RUNNER_TEMP/notary-key.p8" "$RUNNER_TEMP/developer-id.p12"
