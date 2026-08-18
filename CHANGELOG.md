@@ -5,6 +5,18 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.52.0](https://github.com/charoiteai/Charoite_audio/compare/v0.51.0...v0.52.0) (2026-08-18)
+
+
+### Features
+
+* **release:** Developer ID подпись, hardened runtime и нотаризация в CI ([#335](https://github.com/charoiteai/Charoite_audio/issues/335)) ([4de5d8b](https://github.com/charoiteai/Charoite_audio/commit/4de5d8b4a15575fdd1ea6e39fa3a0709f304240e))
+
+
+### Bug Fixes
+
+* **nightly:** партия A по аудиту ночного конвейера — граф без модели, tier3, досье, Opus-шаги, бриф, доставка ревизии ([#333](https://github.com/charoiteai/Charoite_audio/issues/333)) ([7e2fbd7](https://github.com/charoiteai/Charoite_audio/commit/7e2fbd7dfaf6a499eec0facae383f31fdd0ba409))
+
 ## [0.51.0](https://github.com/charoiteai/Charoite_audio/compare/v0.50.0...v0.51.0) (2026-08-17)
 
 
