@@ -92,9 +92,11 @@ its own server and takes port 11434; the brew service then sits silently in
 
 Download `Charoite.dmg` from the [latest release](https://github.com/charoiteai/Charoite_audio/releases/latest)
 and drag the app into Applications — the disk image window shows where.
-The app is ad-hoc signed for now (Developer ID and notarisation are on the
-roadmap), so macOS blocks the first launch: System Settings → Privacy &
-Security → *Open Anyway* (or
+Release builds are signed with a Developer ID certificate and notarised by
+Apple, so the app opens with a plain double click. If you build the app
+yourself (or a release was cut without the signing secrets — the release
+notes say so), the bundle is ad-hoc signed — or signed but not notarised —
+and macOS blocks the first launch: System Settings → Privacy & Security → *Open Anyway* (or
 `xattr -d com.apple.quarantine /Applications/Charoite.app`). Right-click →
 Open no longer works on macOS 15+.
 

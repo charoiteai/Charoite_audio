@@ -153,12 +153,17 @@ privilege boundary, not a path preference.
   install); `Charoite.app.zip` and `Charoite.dmg` ship with published
   sha256 files, and the in-app updater verifies the checksum before
   installing anything.
-- **Known limitation:** builds are ad-hoc signed for now, so macOS blocks
-  the first launch — System Settings → Privacy & Security → *Open Anyway*
-  (right-click → Open no longer works on macOS 15+; details in the
-  README). Developer ID signing and notarization are on the roadmap — the
-  blocker is hardened-runtime entitlements for the embedded python
-  daemon's microphone access.
+- **Signing and notarization:** release builds are signed with a
+  Developer ID certificate, hardened runtime enabled for every executable
+  in the bundle (the embedded python interpreter carries its own
+  entitlements — audio input, unsigned executable memory, library
+  validation off — so the daemon keeps hearing the microphone), timestamped,
+  notarized with `notarytool` and stapled; the DMG is signed and notarized
+  separately. Every nested Mach-O is signed one by one — a single signing
+  failure fails the build instead of shipping a bundle Gatekeeper rejects.
+  Without the signing secrets the pipeline builds ad-hoc and says so in the
+  log; such a build needs *Open Anyway* on first launch (see README).
+  Details: docs/RELEASING.md, «Signing and notarization».
 
 ## Anonymization of this repository
 

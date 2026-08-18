@@ -87,9 +87,10 @@ brew install ollama && brew services start ollama
 生效——详见 [SETUP.zh.md](SETUP.md)。
 
 从[最新发布](https://github.com/charoiteai/Charoite_audio/releases/latest)下载
-`Charoite.dmg`，把应用拖入「应用程序」—— 映像窗口会指明位置。应用目前为
-ad-hoc 签名（Developer ID 与公证在路线图上），因此首次启动会被 macOS 拦截：系统设置 →
-隐私与安全性 → *仍要打开*（或执行
+`Charoite.dmg`，把应用拖入「应用程序」—— 映像窗口会指明位置。发布版本已用
+Developer ID 证书签名并经 Apple 公证，双击即可打开。若你自行构建应用（或某个
+发布在没有签名密钥的情况下产出 —— 发布说明会注明），则为 ad-hoc 签名（或已签名
+但未公证），首次启动会被 macOS 拦截：系统设置 → 隐私与安全性 → *仍要打开*（或执行
 `xattr -d com.apple.quarantine /Applications/Charoite.app`）。macOS 15+ 上
 右键 → 打开已失效。
 
