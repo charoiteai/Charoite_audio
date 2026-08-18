@@ -114,7 +114,11 @@ macOS 应用持有用户授予的麦克风与屏幕录制权限，Python 守护�
   `notarytool` 公证并装订；DMG 单独签名并公证。每个嵌套 Mach-O 逐一签名 ——
   任一签名失败都会让构建失败，而不是把会被 Gatekeeper 拒绝的包发给用户。
   没有签名密钥时流水线以 ad-hoc 构建并在日志中说明；这样的构建首次启动需要
-  *仍要打开*（见 README）。详情：docs/RELEASING.md「Signing and notarization」。
+  *仍要打开*（见 README）。应用从不写入自身的包：内嵌 python 的字节码放在
+  `~/Library/Caches/ai.charoite.app/pycache`（启动时设置 `PYTHONPYCACHEPREFIX`，
+  所有子进程继承）—— 在已公证的包内写入 `__pycache__` 会破坏资源封印，下次启动
+  时 Gatekeeper 会报告应用已损坏（0.52.0 发现，0.52.1 修复）。
+  详情：docs/RELEASING.md「Signing and notarization」。
 
 ## 本仓库的匿名化
 
