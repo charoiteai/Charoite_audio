@@ -1,6 +1,7 @@
 #!/bin/bash
 # Сборка Charoite.app из SPM-бинаря: swift build -c release → минимальный
-# бандл с Info.plist и иконкой → ad-hoc подпись. Итог: ./build/Charoite.app
+# бандл с Info.plist и иконкой → подпись (Developer ID + hardened runtime,
+# если сертификат есть, иначе ad-hoc). Итог: ./build/Charoite.app
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -118,44 +119,123 @@ BUILD="$(git rev-list --count HEAD 2>/dev/null || true)"
 BUILD="${BUILD:-1}"
 /usr/bin/sed -i '' "s/__BUILD__/$BUILD/" "$APP/Contents/Info.plist"
 
-# Подпись: Developer ID, если он есть в связке, иначе ad-hoc.
+# Подпись: Developer ID, если он есть в связке (или задан явно), иначе ad-hoc.
 #
-# Это не про дистрибуцию, а про разрешения. У ad-hoc подписи designated
-# requirement — это `cdhash H"…"`, то есть привязка к точному хешу бинаря:
-# любая пересборка меняет хеш, и macOS считает приложение ДРУГИМ. Выданные
-# доступы (микрофон, а с переходом на Core Audio tap — и системный звук)
-# после каждой сборки приходится выдавать заново. С Developer ID requirement
-# становится «identifier + команда» и переживает пересборки.
-SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
-    | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
+# Два разных зачем.
+#   1) Разрешения. У ad-hoc подписи designated requirement — это
+#      `cdhash H"…"`, привязка к точному хешу бинаря: любая пересборка
+#      меняет хеш, и macOS считает приложение ДРУГИМ — доступы (микрофон,
+#      системный звук, календарь) приходится выдавать заново. С Developer ID
+#      requirement становится «identifier + команда» и переживает пересборки.
+#   2) Дистрибуция. Релиз из CI с Developer ID + hardened runtime + метка
+#      времени → нотаризация Apple → у пользователя приложение открывается
+#      двойным кликом, без «Открыть всё равно» и xattr.
+#
+# Hardened runtime включаем ТОЛЬКО с настоящей подписью: нотаризация без него
+# невозможна. Под ним дочерний процесс ничего не наследует от приложения,
+# а микрофон у нас читает python-демон отдельным процессом — поэтому у
+# вложенного интерпретатора СВОЙ набор entitlements (audio-input и т.д.),
+# см. Resources/entitlements/embedded-python.entitlements. Без них демон
+# получает тишину без единой ошибки. Проверка микрофона на первом
+# подписанном релизе — руками, автоматом это не ловится.
+#
+# CHAROITE_SIGN_IDENTITY — явный выбор идентичности (CI кладёт сертификат во
+# временную связку и передаёт имя). Пусто → ищем Developer ID в связках,
+# нет → ad-hoc.
+ENT_DIR="$(pwd)/Resources/entitlements"
+# Списки файлов на подпись — во временном каталоге, который убирается и при
+# сбое (set -e выходит до любого rm в теле функции).
+SIGN_TMP="$(mktemp -d)"
+trap 'rm -rf "$SIGN_TMP"' EXIT
+SIGN_ID="${CHAROITE_SIGN_IDENTITY:-}"
+# «-» / adhoc — явный запрос ad-hoc даже при сертификате в связке (проверка
+# запасного пути на машине разработчика).
+case "$SIGN_ID" in -|adhoc|ad-hoc) SIGN_ID=""; FORCE_ADHOC=1 ;; *) FORCE_ADHOC=0 ;; esac
+if [ -z "$SIGN_ID" ] && [ "$FORCE_ADHOC" = 0 ]; then
+    SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
+        | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
+fi
+
+# Mach-O ли файл: по магии заголовка. Подписывать надо ВСЕ бинарники
+# (нотаризация отвергает бандл с одним неподписанным .so), но только их —
+# скрипты, .py, .h и заголовки .a codesign не примет, а раньше сбой на них
+# глушился `|| true`, вместе со всеми настоящими сбоями подписи.
+is_macho() {
+    case "$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" in
+        feedface|feedfacf|cefaedfe|cffaedfe|cafebabe|bebafeca|cafebabf|bfbafeca) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+# Все Mach-O дерева, NUL-разделённые, — по магии, а не по имени или битам
+# исполнения: `libfoo.so.1` с режимом 644 — тоже Mach-O, и нотаризация
+# отвергнет бандл из-за него (второе мнение DeepSeek). Заведомо не бинарные
+# расширения отсекаются до чтения заголовка — иначе это 5000 файлов вместо
+# 900. `|| true`: последний файл может оказаться не Mach-O, а статус фильтра
+# не должен ронять скрипт под set -e; ошибка обхода find — тоже.
+only_macho() { while IFS= read -r -d '' f; do is_macho "$f" && printf '%s\0' "$f" || true; done; }
+list_macho_all() {
+    { find "$1" -type f ! \( -name '*.py' -o -name '*.pyc' -o -name '*.pyi' -o -name '*.txt' \
+        -o -name '*.json' -o -name '*.md' -o -name '*.h' -o -name '*.rst' -o -name '*.pem' \
+        -o -name '*.typed' \) -print0 2>/dev/null || true; } | only_macho
+}
+
 # Вложенные бинарники подписываются ПЕРВЫМИ и по одному.
 #
 # codesign --deep для такого дерева официально не поддерживается и молча
 # оставляет часть .so неподписанными: приложение запускается, а первый же
 # импорт numpy падает с «code signature invalid» — уже у пользователя.
+#
+# Любой сбой подписи валит сборку: неподписанный бинарь в поставке —
+# это отказ Gatekeeper у пользователя, а не «предупреждение».
 sign_embedded() {
     local id="$1" root="$APP/Contents/Resources/python"
+    local runtime_opts=() ent_opts=()
     [ -d "$root" ] || return 0
+    if [ "$id" != "-" ]; then
+        runtime_opts=(--options runtime --timestamp)
+        ent_opts=(--entitlements "$ENT_DIR/embedded-python.entitlements")
+    fi
     echo "подписываю вложенный контур…"
-    # Порядок важен: сначала библиотеки, потом исполняемые файлы.
-    find "$root" \( -name "*.so" -o -name "*.dylib" \) -type f -print0 \
-        | xargs -0 -P 8 -n 20 codesign --force --timestamp=none --sign "$id" 2>/dev/null || true
-    find "$root/bin" -type f -perm -111 -print0 \
-        | xargs -0 -n 10 codesign --force --timestamp=none --sign "$id" 2>/dev/null || true
+    local all libs bins
+    all="$SIGN_TMP/all"; libs="$SIGN_TMP/libs"; bins="$SIGN_TMP/bins"
+    : > "$libs"; : > "$bins"
+    list_macho_all "$root" > "$all"
+    # bin/ — интерпретатор и соседи: им entitlements. Всё остальное —
+    # библиотеки и утилиты из колёс — без entitlements, hardened runtime тот
+    # же. Симлинки не трогаем: подписывается файл, на который они указывают.
+    while IFS= read -r -d '' f; do
+        case "$f" in
+            "$root"/bin/*) printf '%s\0' "$f" >> "$bins" ;;
+            *) printf '%s\0' "$f" >> "$libs" ;;
+        esac
+    done < "$all"
+    # ${arr[@]+"${arr[@]}"} — раскрытие пустого массива, которое не роняет
+    # bash 3.2 (/bin/bash macOS) под set -u: у ad-hoc опций рантайма нет.
+    if [ -s "$libs" ]; then
+        xargs -0 -P 8 -n 20 codesign --force ${runtime_opts[@]+"${runtime_opts[@]}"} --sign "$id" < "$libs"
+    fi
+    if [ -s "$bins" ]; then
+        xargs -0 -n 10 codesign --force ${runtime_opts[@]+"${runtime_opts[@]}"} ${ent_opts[@]+"${ent_opts[@]}"} --sign "$id" < "$bins"
+    fi
+    echo "  библиотек и утилит: $(tr -cd '\0' < "$libs" | wc -c | tr -d ' '), исполняемых в bin/: $(tr -cd '\0' < "$bins" | wc -c | tr -d ' ')"
 }
 
 if [ -n "$SIGN_ID" ]; then
     sign_embedded "$SIGN_ID"
-    # Без --options runtime: hardened runtime ломает наследование доступа
-    # дочерними процессами, а микрофон у нас читает python-демон отдельным
-    # процессом — при жёстком рантайме он получает тишину без единой ошибки.
-    # Нотаризация нам не нужна, а стабильность requirement даёт сам Developer ID.
-    codesign --force --sign "$SIGN_ID" --timestamp=none "$APP"
-    echo "подписано: $SIGN_ID"
+    codesign --force --options runtime --timestamp \
+        --entitlements "$ENT_DIR/Charoite.entitlements" \
+        --sign "$SIGN_ID" "$APP"
+    # Имя владельца сертификата в лог не печатаем: логи CI публичны, а в
+    # самой подписи оно и так есть для тех, кому нужно (codesign -dv).
+    echo "подписано: Developer ID Application, hardened runtime, метка времени"
 else
     sign_embedded -
     codesign --force --sign - "$APP"
     echo "ВНИМАНИЕ: Developer ID не найден, подпись ad-hoc —"
-    echo "  доступ к микрофону и системному звуку будет слетать при каждой сборке."
+    echo "  доступ к микрофону и системному звуку будет слетать при каждой сборке,"
+    echo "  а первый запуск потребует «Открыть всё равно» в настройках macOS."
 fi
+# --strict --deep: цельность подписи всего дерева. Сломанная подпись здесь
+# дешевле, чем у пользователя после скачивания.
+codesign --verify --deep --strict --verbose=1 "$APP"
 echo "готово: $APP"

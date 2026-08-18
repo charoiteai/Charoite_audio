@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+Hardened runtime вложенного интерпретатора (Contents/Resources/python/bin/*).
+Нотаризация требует hardened runtime у КАЖДОГО исполняемого файла в
+бандле, а под ним дочерний процесс не наследует ничего от приложения —
+микрофон ему нужен собственным ключом, иначе демон получает тишину без
+единой ошибки (урок ad-hoc-эпохи, карточка №13).
+  • audio-input — демон пишет микрофон через sounddevice/PortAudio;
+  • allow-unsigned-executable-memory — cffi/ctypes-трамплины и JIT-подобные
+    куски в колёсах (PortAudio, onnxruntime, mlx) под hardened runtime
+    без этого падают на mprotect;
+  • disable-library-validation — .so из колёс мы переподписываем своим
+    Developer ID, но у части библиотек внутри есть вложенные dylib с чужой
+    командой (например, gfortran в numpy) — без ослабления dyld отказывает
+    в загрузке.
+Всё это — стандартный набор для встроенного CPython (py2app/PyInstaller),
+Apple его нотаризует.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>

@@ -11,7 +11,7 @@ voice notes (⌥⌘N), menu bar. Everything local — just like the daemon.
 
 ```bash
 cd app
-./make_app.sh          # swift build -c release + bundle + ad-hoc signing
+./make_app.sh          # swift build -c release + bundle + signing (Developer ID if present, else ad-hoc)
 open build/Charoite.app
 ```
 
