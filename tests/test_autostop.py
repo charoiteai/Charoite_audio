@@ -1,0 +1,146 @@
+"""Автостоп записи: когда останавливаем сами, а когда молчим.
+
+17.08 запись шла 18 ч 25 мин в пустой комнате. Здесь проверяется правило,
+которое это закрывает, и — важнее — что оно не срывает живую встречу: пауза
+на чтение документа, тихое демо, первые минуты записи, очная встреча без
+моделей диаризации (все реплики одной меткой).
+"""
+from __future__ import annotations
+
+import pathlib
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+import autostop  # noqa: E402
+
+L = autostop.limits_from_cfg({})       # дефолты: 5 мин без речи, 15 тишины, 6 ч
+MIN = 60.0
+
+
+def d(*, age: float, quiet: float, spoke: bool = True, limits=L):
+    return autostop.decide(age_s=age, quiet_s=quiet, spoke=spoke, limits=limits)
+
+
+def test_forgotten_recording_in_an_empty_room_stops():
+    """Ровно случай 17.08: включили, ушли, речи не было вовсе."""
+    stop = d(age=6 * MIN, quiet=6 * MIN, spoke=False)
+    assert stop.action == "stop" and stop.reason == autostop.NO_SPEECH
+    assert "речи не было" in stop.text
+
+
+def test_room_that_went_quiet_gets_fifteen_minutes():
+    """Говорили и замолчали: пауза на чтение документа не повод останавливать."""
+    assert not d(age=40 * MIN, quiet=10 * MIN)
+    assert d(age=40 * MIN, quiet=14.5 * MIN).action == "warn", "сначала предупреждение"
+    stop = d(age=40 * MIN, quiet=16 * MIN)
+    assert stop.action == "stop" and stop.reason == autostop.SILENCE
+
+
+def test_single_label_meeting_is_not_punished():
+    """Очная встреча без моделей диаризации: все реплики идут одной меткой
+    канала. Порог по числу «голосов» резал бы такой живой разговор через пять
+    минут паузы — поэтому решает только факт речи (ревью 18.08, DeepSeek)."""
+    assert not d(age=60 * MIN, quiet=12 * MIN, spoke=True)
+
+
+def test_first_minutes_are_never_touched():
+    """«Включил, пока все собираются» — запись не должна умереть на старте."""
+    assert not d(age=1 * MIN, quiet=1 * MIN, spoke=False)
+    assert not d(age=1.9 * MIN, quiet=1.9 * MIN, spoke=False)
+
+
+def test_warning_says_how_to_cancel_and_never_promises_zero_minutes():
+    warn = d(age=20 * MIN, quiet=15 * MIN - 30)
+    assert warn.action == "warn" and 0 < warn.seconds_left <= 60
+    assert "скажите" in warn.text
+    assert "0 минут" not in warn.text, "«через 0 минут» — не срок, а недоразумение"
+    assert not d(age=21 * MIN, quiet=2.0), "заговорили — предупреждение снимается"
+
+
+def test_duration_ceiling_stops_even_a_live_meeting():
+    assert not d(age=5.9 * 3600, quiet=10.0)
+    assert d(age=6 * 3600 - 30, quiet=10.0).action == "warn"
+    stop = d(age=6 * 3600 + 1, quiet=10.0)
+    assert stop.action == "stop" and stop.reason == autostop.LIMIT
+
+
+def test_ceiling_wins_over_silence_when_both_fire():
+    """Обе причины сразу — называем потолок: он безусловен, тишина обсуждаема."""
+    assert d(age=7 * 3600, quiet=7 * 3600, spoke=False).reason == autostop.LIMIT
+
+
+def test_switches_are_honest():
+    off = autostop.limits_from_cfg({"sufler": {"autostop": {"enabled": False}}})
+    assert not d(age=10 * 3600, quiet=10 * 3600, spoke=False, limits=off)
+
+    for value in (False, "false", "нет", 0):
+        lim = autostop.limits_from_cfg({"sufler": {"autostop": value}})
+        assert not lim.any_rule, f"autostop: {value!r} должен выключать"
+
+    only_meeting = autostop.limits_from_cfg({"sufler": {"autostop": {
+        "no_speech_minutes": 0, "max_hours": 0}}})
+    assert not d(age=3 * 3600, quiet=3 * 3600, spoke=False, limits=only_meeting)
+    assert d(age=3 * 3600, quiet=20 * MIN, limits=only_meeting).action == "stop", \
+        "выключенное правило «речи не было» не смеет глушить тишину после разговора"
+
+    only_idle = autostop.limits_from_cfg({"sufler": {"autostop": {
+        "silence_minutes": 0, "max_hours": 0}}})
+    assert not d(age=3 * 3600, quiet=60 * MIN, limits=only_idle)
+    assert d(age=10 * MIN, quiet=6 * MIN, spoke=False, limits=only_idle).action == "stop"
+
+    no_cap = autostop.limits_from_cfg({"sufler": {"autostop": {"max_hours": 0}}})
+    assert not d(age=20 * 3600, quiet=10.0, limits=no_cap), "потолок выключен"
+
+
+def test_silence_threshold_never_stricter_than_the_empty_room():
+    """Значения перепутали местами — живой разговор не должен резаться раньше
+    пустой комнаты."""
+    lim = autostop.limits_from_cfg({"sufler": {"autostop": {
+        "no_speech_minutes": 20, "silence_minutes": 5}}})
+    assert lim.silence_s == lim.no_speech_s == 20 * MIN
+    assert not d(age=60 * MIN, quiet=18 * MIN, limits=lim)
+
+
+def test_broken_config_falls_back_to_defaults():
+    lim = autostop.limits_from_cfg({"sufler": {"autostop": {
+        "no_speech_minutes": "пять", "max_hours": None, "warn_seconds": -10}}})
+    assert lim.no_speech_s == 5 * MIN and lim.max_s == 6 * 3600
+    assert lim.warn_s == 0.0, "отрицательное — это ноль, а не сюрприз"
+
+
+# --------------------------------------------------------------- Watch (состояние)
+
+def test_watch_warns_once_and_takes_it_back_when_talk_resumes():
+    w = autostop.Watch(L)
+    first = w.tick(now=100.0, age_s=20 * MIN, quiet_s=15 * MIN - 30, spoke=True)
+    assert first.action == "warn"
+    again = w.tick(now=105.0, age_s=20 * MIN, quiet_s=15 * MIN - 25, spoke=True)
+    assert not again, "предупреждение не повторяется каждые пять секунд"
+    back = w.tick(now=110.0, age_s=21 * MIN, quiet_s=3.0, spoke=True)
+    assert back.action == "resumed", "заговорили — сказать, что автостоп снят"
+    assert not w.tick(now=115.0, age_s=21 * MIN, quiet_s=8.0, spoke=True)
+
+
+def test_watch_does_not_nag_after_an_unanswered_request():
+    """Приложение не ответило (старая версия): просим один раз, потом молчим."""
+    w = autostop.Watch(L, mute_s=1800.0)
+    asked = w.tick(now=1000.0, age_s=40 * MIN, quiet_s=16 * MIN, spoke=True)
+    assert asked.action == "stop"
+    assert not w.tick(now=1100.0, age_s=42 * MIN, quiet_s=18 * MIN, spoke=True)
+    assert not w.tick(now=2500.0, age_s=65 * MIN, quiet_s=40 * MIN, spoke=True)
+    # прошли полчаса — пробуем ещё раз
+    assert w.tick(now=2900.0, age_s=72 * MIN, quiet_s=48 * MIN, spoke=True).action == "stop"
+
+
+def test_watch_wakes_up_as_soon_as_the_talk_returns():
+    """Поговорили после неудачной просьбы и снова ушли — ждать полчаса нельзя."""
+    w = autostop.Watch(L, mute_s=1800.0)
+    assert w.tick(now=1000.0, age_s=40 * MIN, quiet_s=16 * MIN, spoke=True).action == "stop"
+    # в 1200 прозвучала речь
+    assert not w.tick(now=1210.0, age_s=44 * MIN, quiet_s=10.0, spoke=True,
+                      last_speech_at=1200.0)
+    stop = w.tick(now=2200.0, age_s=60 * MIN, quiet_s=16 * MIN, spoke=True,
+                  last_speech_at=1200.0)
+    assert stop.action == "stop", "новая тишина — новая просьба, а не остаток мута"

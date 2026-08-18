@@ -18,6 +18,7 @@ import pathlib
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -32,6 +33,7 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 import yaml  # noqa: E402
 
 import action_items  # noqa: E402
+import autostop as autostop_rules  # noqa: E402
 import cloud  # noqa: E402
 import fact_check  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
@@ -541,11 +543,21 @@ def main():
     emit({"type": "status", "text": f"Слушаю: {' + '.join(hub.sources)} · LLM: {llm.resolve_model()}"})
 
     stop = threading.Event()
+    # Живая речь для автостопа: когда в стенограмму последний раз лёг НОВЫЙ
+    # текст и звучала ли речь за эту запись вообще. По распознанному тексту, а
+    # не по громкости: энергетический гейт срабатывает на кулер и клавиатуру, и
+    # «тишины» не наступало бы никогда (см. src/autostop.py).
+    heard = {"at": None, "spoke": False}
     global _stop_event
     _stop_event = stop          # emit сможет остановить нас при обрыве пайпа
     # SIGTERM (Swift terminate по грейсу) → штатный стоп с finally, а не убийство
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     hub.start()
+    # Возраст записи — по СТЕННЫМ часам (потолок длительности обязан быть
+    # шестью часами, а не шестью часами бодрствования: монотонные часы macOS
+    # во сне стоят), тишина — по монотонным (сон — не тишина в комнате).
+    record_started = time.monotonic()
+    record_started_wall = time.time()
 
     # Живая диаризация ОБОИХ каналов: звонок кладёт чужие голоса в BlackHole,
     # очная встреча — все голоса в микрофон. Трекер один, метки по маппингу:
@@ -713,6 +725,13 @@ def main():
                         continue
                     if not added:  # полностью съеденные дедупом не эмитим
                         continue
+                    # Речь для автостопа отмечаем ЗДЕСЬ, после дедупа: на шуме
+                    # STT повторяет одну и ту же фантомную фразу, дедуп её
+                    # съедает — но таймер тишины она сбрасывала бы, и в шумной
+                    # пустой комнате автостоп не сработал бы никогда (ревью
+                    # 18.08, GLM).
+                    heard["at"] = time.monotonic()
+                    heard["spoke"] = True
                     disp = tr.display_name(name)
                     emit({
                         "type": "transcript",
@@ -2047,10 +2066,78 @@ def main():
             topic = query.split(",")[0][:60]
             emit({"type": "status", "text": f"🧠 Контекст по теме «{topic}»: архив подтянут"})
 
+    def autostop_loop():
+        """Останавливает забытую запись: тишина или потолок длительности.
+
+        17.08 запись шла 18 ч 25 мин в пустой комнате. Правило и пороги — в
+        src/autostop.py (там же, почему считаем по распознанной речи, а не по
+        громкости, и почему у встречи с двумя голосами порог втрое больше).
+
+        Останавливаемся НЕ сами: просим приложение — событие `autostop`, оно
+        отвечает командой `stop`, и дальше идёт ровно тот же путь, что по
+        кнопке «Стоп» (финализация .pcm → .wav, пересборка, граф). Своим
+        `stop.set()` пользуемся только без UI (запуск из терминала): старое
+        приложение сочло бы самостоятельный выход демона крахом записи и
+        подняло бы новую встречу — вместо одной забытой записи получились бы
+        три пустых.
+        """
+        limits = autostop_rules.limits_from_cfg(cfg)
+        if not limits.any_rule:
+            return
+        # Приложение подключает демона пайпом; терминал и /dev/null — это
+        # запуск без UI, где команду `stop` слать некому. isatty() этого не
+        # различает: `python daemon.py < /dev/null` — не терминал и не UI.
+        try:
+            ui_attached = stat.S_ISFIFO(os.fstat(sys.stdin.fileno()).st_mode)
+        except OSError:
+            ui_attached = False
+        ACK_S = 90.0
+        watch = autostop_rules.Watch(limits)
+        logged = False
+        while not stop.is_set():
+            time.sleep(5)
+            if stop.is_set():
+                return
+            now = time.monotonic()
+            spoken_at = heard["at"]
+            d = watch.tick(now=now,
+                           age_s=time.time() - record_started_wall,
+                           quiet_s=now - (spoken_at if spoken_at is not None else record_started),
+                           spoke=bool(heard["spoke"]),
+                           last_speech_at=spoken_at)
+            if not d:
+                continue
+            if d.action == "resumed":
+                emit({"type": "status", "text": d.text})
+                continue
+            if d.action == "warn":
+                emit({"type": "autostop_warning", "reason": d.reason,
+                      "text": d.text, "seconds": round(d.seconds_left)})
+                emit({"type": "status", "text": f"⏳ {d.text}"})
+                continue
+            if stop.is_set():
+                return      # человек нажал «Стоп» между решением и просьбой
+            emit({"type": "status", "text": f"⏹ Автостоп: {d.text}"})
+            emit({"type": "autostop", "reason": d.reason, "text": d.text})
+            if not logged:   # повторные просьбы лог не засоряют
+                logged = True
+                append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] запрошен автостоп", d.text)
+            if not ui_attached:
+                time.sleep(3)   # дать событию уйти в stdout
+                stop.set()
+                return
+            deadline = time.monotonic() + ACK_S
+            while not stop.is_set() and time.monotonic() < deadline:
+                time.sleep(1)
+            if stop.is_set():
+                return
+            emit_error("автостоп: приложение не ответило (старая версия?) — "
+                       "запись продолжается, остановите её кнопкой «Стоп»")
+
     threads = [threading.Thread(target=f, daemon=True) for f in (
         stt_loop, think_loop, thread_loop, auto_hint_loop, instant_loop, cloud_loop,
         fast_trigger_loop, deja_vu_loop, dialog_markup_loop, name_loop,
-        minutes_loop, deep_loop, live_context_loop, stdin_loop,
+        minutes_loop, deep_loop, live_context_loop, stdin_loop, autostop_loop,
     )]
     for t in threads:
         t.start()
