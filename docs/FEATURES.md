@@ -386,6 +386,19 @@ it signals degradation, it does not break the loop.
   longer just sits there: the next successful meeting retries the freshest
   leftover (up to three attempts, never touching a run in progress).
   A failure used to mean silence — the meeting simply never appeared.
+- **A forgotten recording stops itself** — on 17.08 a meeting ended, nobody
+  pressed Stop, and the laptop recorded an empty room for 18 hours 25 minutes.
+  Recording now ends on its own in two cases: silence and a duration ceiling
+  (6 hours). Silence is measured by RECOGNIZED speech, not by loudness — a fan,
+  a keyboard and street noise are not a conversation; the threshold depends on
+  whether this is a meeting or a forgotten recording: one voice heard (or none)
+  — 5 minutes, two or more — 15, because a pause to read a document or a silent
+  demo is normal in a live conversation. A warning arrives a minute before, and
+  any remark cancels it. The recording stops the same way the Stop button stops
+  it: the file is finalized, the transcript is rebuilt, the graph is updated —
+  nothing is lost. The first two minutes are never touched ("I started it while
+  everyone was gathering"); everything is configurable under `sufler.autostop`,
+  and `autostop: false` turns it off entirely.
 - **A recording without speech is called that** — forty seconds of silence
   is not a "processing error" but a result: the status says so, the
   transcript stays openable, and the pipeline will not re-process silence.

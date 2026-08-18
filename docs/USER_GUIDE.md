@@ -59,6 +59,13 @@ Check the first transcript lines as well as the timer:
 The main window may be closed; state remains in the menu bar. Quitting the app
 during a recording asks for confirmation because it stops the meeting.
 
+Forgetting to stop is not a problem: the recording ends by itself — on silence
+(5 minutes if only one voice was heard, 15 if two or more people were talking)
+and on a duration ceiling (6 hours). A warning appears in the status line a
+minute before — say something and the recording continues. The stop goes the
+usual way, as if you pressed Stop: the meeting is saved and processed, nothing
+is lost. Thresholds live in `config/config.yaml` under `sufler.autostop`.
+
 ## After Stop
 
 Processing is independent of the window. The app reads actual pipeline state;

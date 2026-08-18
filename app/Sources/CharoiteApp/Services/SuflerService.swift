@@ -157,6 +157,8 @@ final class SuflerService: ObservableObject {
     private var watchdog: Timer?
     private var clock: Timer?
     private var userStopped = false
+    /// Причина последнего автостопа («silence» | «limit»), пока встреча на экране.
+    @Published private(set) var autostopReason: String?
     private var restartAttempts = 0      // защита от краш-лупа: максимум 3 подряд
     private var lifecycleGate = RecordingLifecycleGate()
     private var captureStartTask: Task<Void, Never>?
@@ -239,6 +241,7 @@ final class SuflerService: ObservableObject {
         guard let token = lifecycleGate.beginStart() else { return }
         publishLifecycle()
         userStopped = false
+        autostopReason = nil
         status = L.t("Запускаю…", "Starting…", "启动中…")
         statusIsError = false
 
@@ -647,13 +650,17 @@ final class SuflerService: ObservableObject {
         // Статусы читает человек на встрече, а не разработчик в логах. «Демон
         // умер», «нет heartbeat» ему ничего не говорят — важно другое: пишется
         // ли встреча прямо сейчас и надо ли что-то делать руками.
-        guard wasRecording, !userStopped else {
+        switch Self.restartDecision(wasRecording: wasRecording,
+                                    userStopped: userStopped,
+                                    attempts: restartAttempts) {
+        case .none:
             endSleepGuard()   // записи больше нет — маку можно спать
-            status = L.t("Остановлен", "Stopped", "已停止")
+            status = autostopReason == nil
+                ? L.t("Остановлен", "Stopped", "已停止")
+                : L.t("Остановлен автоматически", "Stopped automatically", "已自动停止")
             statusIsError = false
             return
-        }
-        guard restartAttempts < 3 else {
+        case .giveUp:
             // Три попытки подряд не помогли — молчать нельзя: человек уверен,
             // что встреча пишется, а запись давно встала. Страж сна тоже
             // снимаем: иначе провалившаяся запись навсегда запрещала маку
@@ -667,6 +674,8 @@ final class SuflerService: ObservableObject {
             publishLifecycle()
             beginCaptureShutdown(token: token)
             return
+        case .restart:
+            break
         }
         restartAttempts += 1
         fail(L.t("Запись прервалась — восстанавливаю (\(restartAttempts) из 3)", "Recording dropped — recovering (\(restartAttempts) of 3)", "录音中断——恢复中（第 \(restartAttempts)/3 次）"))
@@ -748,6 +757,22 @@ final class SuflerService: ObservableObject {
         hint = ""
         _hintBuf = ""
         hintIsManual = false
+    }
+
+    /// Что делать со смертью демона: поднимать запись заново или нет.
+    ///
+    /// Чистая функция, потому что цена ошибки здесь максимальная в обе
+    /// стороны. Не поднять после краха — человек уверен, что встреча пишется,
+    /// а её нет (профиль 20.07). Поднять после ШТАТНОГО стопа — новая пустая
+    /// встреча поверх законченной; именно так автостоп (тишина/потолок)
+    /// превратился бы в конвейер пустых записей каждые пять минут, поэтому
+    /// автостоп и идёт через обычный stop(), выставляющий userStopped.
+    enum RestartDecision { case none, restart, giveUp }
+
+    nonisolated static func restartDecision(wasRecording: Bool, userStopped: Bool,
+                                            attempts: Int) -> RestartDecision {
+        guard wasRecording, !userStopped else { return .none }
+        return attempts < 3 ? .restart : .giveUp
     }
 
     /// Гасит ли обновление нити карточку подсказки. Чистая функция — обе
@@ -841,6 +866,27 @@ final class SuflerService: ObservableObject {
                     // генерации воскрешал стёртое (ревью 16.08, №22)
                     hint = ""; _hintBuf = ""
                 }
+            case "autostop":
+                // Демон решил, что запись пора закончить (тишина или потолок
+                // длительности), и ЖДЁТ нашей команды: сам он не выходит —
+                // иначе смерть демона выглядела бы крахом записи и мы подняли
+                // бы новую встречу поверх забытой. Останавливаем штатно, тем
+                // же путём, что кнопка «Стоп».
+                let reason = obj["reason"] as? String ?? "silence"
+                autostopReason = reason
+                MeetingNotificationService.shared.presentAutostop(reason: reason, detail: text)
+                stop()
+                status = reason == "limit"
+                    ? L.t("⏹ Запись остановлена: \(text)",
+                          "⏹ Recording stopped: \(text)",
+                          "⏹ 录音已停止：\(text)")
+                    : L.t("⏹ Запись остановлена автоматически: \(text)",
+                          "⏹ Recording stopped automatically: \(text)",
+                          "⏹ 录音已自动停止：\(text)")
+            case "autostop_warning":
+                // Предупреждение перед автостопом: любая речь его снимает, и
+                // тогда демон пришлёт обычный статус «автостоп отменён».
+                status = text
             case "expand_started":
                 isExpanding = true
             case "expand_done":
