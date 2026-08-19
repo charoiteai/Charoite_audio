@@ -556,14 +556,22 @@ final class SuflerService: ObservableObject {
     /// системе нет, а это хуже отсутствия теста. Пока подача события и
     /// исполнение действия были разнесены по коду, ловушка воспроизводилась
     /// снова и снова (ревью 19.08, круги 1 и 2).
+    /// `closingCapture` — признак «нас позвали ИЗНУТРИ закрытия захвата».
+    /// Тогда действия, которые сами ведут в это закрытие, не выполняются
+    /// повторно, а возвращаются наружу: иначе получилась бы рекурсия. Токен
+    /// при этом передаётся обязательно — на нём держится планирование
+    /// следующего опроса, и с `nil` цикл ожидания обрывался бы на первом
+    /// шаге, оставляя встречу незакрытой.
     @discardableResult
-    private func applyShutdown(_ event: ShutdownEvent, token: UUID?) -> ShutdownAction {
+    private func applyShutdown(_ event: ShutdownEvent, token: UUID?,
+                               closingCapture: Bool = false) -> ShutdownAction {
         let (phase, action) = ShutdownMachine.next(shutdownPhase, on: event)
         shutdownPhase = phase
         switch action {
         case .nothing:
             break
         case .closeCapture, .finish:
+            guard !closingCapture else { break }   // уже внутри — вернём наружу
             if let token { beginCaptureShutdown(token: token) }
         case .pollAgain(let delay):
             captureShutdownToken = nil
@@ -629,11 +637,12 @@ final class SuflerService: ObservableObject {
             // остальное (ещё подождать, объявить застревание) машина уже
             // исполнила внутри applyShutdown.
             //
-            // Флаг важен: applyShutdown для `.finish` зовёт beginCaptureShutdown,
-            // а мы уже внутри него — второй заход отсечёт guard по токену,
-            // но полагаться на это не стоит.
+            // `closingCapture: true` — мы уже внутри закрытия захвата, поэтому
+            // машина не зовёт его повторно, а отдаёт действие наружу. Токен
+            // передаётся: на нём держится планирование следующего опроса.
             let action = self.applyShutdown(
-                .pollTick(daemonAlive: self.process?.isRunning == true), token: nil)
+                .pollTick(daemonAlive: self.process?.isRunning == true),
+                token: token, closingCapture: true)
             guard action == .finish else { return }
 
             guard self.lifecycleGate.finishStop(
