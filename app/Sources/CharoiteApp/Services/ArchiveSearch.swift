@@ -59,6 +59,44 @@ enum ArchiveSearch {
     /// Английские окончания — porter-lite: ing/ed/es/s (остаток ≥ 4).
     private static let enSuffixes = ["ing", "ed", "es", "s"]
 
+    /// Иероглифические куски запроса — скользящими биграммами.
+    ///
+    /// В китайском, японском и корейском слова не отделяются пробелами, и
+    /// `CharacterSet.alphanumerics` их не режет: вопрос 支付服务商最后定了哪一家？
+    /// приходил сюда ОДНИМ «словом», которого в тексте графа нет, и выдача
+    /// выходила пустой. Пользователь при этом видит не ошибку, а «в архиве
+    /// ничего нет» — худший вид отказа. Биграммы (支付服务商 → 支付, 付服,
+    /// 服务, 务商) — стандартный приём для языков без пробелов.
+    static func cjkGrams(_ text: String) -> [String] {
+        var out: [String] = []
+        var run: [Character] = []
+        func flush() {
+            if run.count == 1 {
+                out.append(String(run[0]))
+            } else if run.count > 1 {
+                for i in 0..<(run.count - 1) { out.append(String(run[i...(i + 1)])) }
+            }
+            run.removeAll()
+        }
+        for ch in text {
+            if ch.unicodeScalars.allSatisfy(isCJK) { run.append(ch) } else { flush() }
+        }
+        flush()
+        return out
+    }
+
+    private static func isCJK(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x4E00...0x9FFF,    // китайский (основной блок)
+             0x3400...0x4DBF,    // расширение A
+             0x3040...0x30FF,    // японские каны
+             0xAC00...0xD7AF:    // корейский хангыль
+            return true
+        default:
+            return false
+        }
+    }
+
     static func stem(_ word: String) -> String {
         let w = norm(word)
         guard w.count > 4 else { return w }
@@ -146,12 +184,17 @@ enum ArchiveSearch {
         // enumerator отдаёт канонический путь, и строковый срез graph.path
         // иначе оставляет мусорный префикс в rel — ключи индекса расходятся
         graph = graph.resolvingSymlinksInPath()
+        let grams = cjkGrams(query)
         let words = query
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { $0.count >= 3 && !stop.contains(norm($0)) }
-        guard !words.isEmpty else { return "" }
+            // Слово целиком из иероглифов заменяют его биграммы: как игла оно
+            // бесполезно (в тексте такой фразы нет), а в покрытии запроса
+            // весит наравне с настоящими словами и портит скоринг.
+            .filter { $0.count >= 3 && !stop.contains(norm($0)) && cjkGrams($0).isEmpty }
+        guard !words.isEmpty || !grams.isEmpty else { return "" }
         var needles: [String] = []
         for w in words.map(stem) where !needles.contains(w) { needles.append(w) }
+        for g in grams where !needles.contains(g) { needles.append(g) }
         // Байтовые копии игл считаем ОДИН раз на запрос, а не на каждый файл.
         let needleBytes = needles.map { Array($0.utf8) }
 
