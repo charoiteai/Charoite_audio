@@ -192,7 +192,7 @@ few seconds in parallel with the main model.
   more accurate question classification (e4b failed a direct question),
   theses in 2.9 s vs 3.3 s without filler preambles, and 3.4 GB RAM vs
   9.6 GB — almost 3x lighter next to the main model.
-- The exception is **dialogue markup** (`markup_model: gemma4:latest`):
+- The exception is **dialogue markup** (`markup_model`):
   words must stay verbatim there, and qwen3.5:4b tends to slightly polish
   them; gemma keeps the text exact.
 - Very low RAM — `qwen3.5:2b` (edge-class model of the same family).
@@ -337,4 +337,4 @@ post-meeting debrief and the nightly review went to different models.
 Everything lives in `config/config.yaml`: `stt.backend`, `llm.model`,
 `llm.small_model`; the embedding model is just the file
 `models/diar/embedding.onnx`. On 16 GB machines start with
-`llm.model: gemma4:latest` and a lighter STT backend.
+`llm.model: qwen3.5:4b` (see the profile table above) and a lighter STT backend.

@@ -150,7 +150,7 @@ full-attention 的 8–14B 模型比一轮（它们保留缓存优势）。当�
 - **我们对比 gemma4:e4b 的基准测试**(2026 年 7 月,真实助手任务):
   问题分类更准确(e4b 答错了一个直接提问),要点生成 2.9 秒对 3.3 秒
   且没有客套开场白,内存 3.4 GB 对 9.6 GB — 与主模型并行时轻了近 3 倍。
-- 例外是**对话标注**(`markup_model: gemma4:latest`):那里要求逐字保留
+- 例外是**对话标注**(`markup_model`):那里要求逐字保留
   原文,而 qwen3.5:4b 倾向于轻微润色;gemma 能保持文本原样。
 - 内存非常有限时 — `qwen3.5:2b`(同家族的 edge 级模型)。
 
@@ -268,4 +268,4 @@ Mac 的模型。
 
 所有设置都在 `config/config.yaml` 中:`stt.backend`、`llm.model`、
 `llm.small_model`;嵌入模型就是文件 `models/diar/embedding.onnx`。
-16 GB 的机器建议从 `llm.model: gemma4:latest` 和更轻的 STT 后端开始。
+16 GB 的机器建议从 `llm.model: qwen3.5:4b`（见上文配置表）和更轻的 STT 后端开始。
