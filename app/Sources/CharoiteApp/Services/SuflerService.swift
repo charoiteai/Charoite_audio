@@ -488,6 +488,12 @@ final class SuflerService: ObservableObject {
         let wasRecording = lifecycle == .recording
         guard let token = lifecycleGate.beginStop() else { return }
         cleanupDisposition = .stopped
+        // Фазу заводим ЗДЕСЬ, а не при первой проверке процесса: иначе она
+        // остаётся `.idle`, и повторный Стоп во время обычного ожидания
+        // попадает в переход «начать остановку» и сбрасывает счётчик
+        // ожиданий, удлиняя закрытие встречи.
+        shutdownPhase = ShutdownMachine.next(
+            .idle, on: .stopRequested(daemonAlive: process?.isRunning == true)).0
         publishLifecycle()
 
         if wasRecording { MeetingProcessingService.shared.expectResult() }

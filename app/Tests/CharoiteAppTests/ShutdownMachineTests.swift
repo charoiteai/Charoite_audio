@@ -116,3 +116,26 @@ final class ShutdownMachineTests: XCTestCase {
         XCTAssertEqual(action, .finish)
     }
 }
+
+/// Отдельно — про то, как машина стыкуется с сервисом.
+extension ShutdownMachineTests {
+
+    func testПовторныйСтопНеСбрасываетНакопленноеОжидание() {
+        // Сервис заводит фазу в момент Стопа. Если бы он этого не делал и
+        // фаза оставалась .idle до первой проверки процесса, повторный Стоп
+        // попадал бы в переход «начать остановку» и обнулял счётчик —
+        // человек, нажавший кнопку дважды, ЗАМЕДЛЯЛ бы закрытие встречи.
+        var (phase, _) = ShutdownMachine.next(
+            ShutdownPhase.idle, on: ShutdownEvent.stopRequested(daemonAlive: true))
+        for _ in 0..<10 {
+            (phase, _) = ShutdownMachine.next(phase, on: ShutdownEvent.pollTick(daemonAlive: true))
+        }
+        XCTAssertEqual(phase, ShutdownPhase.waitingDaemon(waits: 10))
+
+        let (afterSecondStop, action) = ShutdownMachine.next(
+            phase, on: ShutdownEvent.stopRequested(daemonAlive: true))
+        XCTAssertEqual(afterSecondStop, ShutdownPhase.waitingDaemon(waits: 10),
+                       "прогресс сохранён")
+        XCTAssertEqual(action, ShutdownAction.nothing)
+    }
+}
