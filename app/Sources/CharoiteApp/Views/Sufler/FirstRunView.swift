@@ -239,15 +239,13 @@ struct FirstRunView: View {
         let preset = selectedPreset
         // результат записи не игнорируется (аудит 14.08): пресет, тихо не
         // доехавший до config.yaml, оставлял модели по умолчанию без слова
-        // Профиль — это не только две модели: на лёгком наборе он ещё и
-        // выключает граф знаний и дежавю. Раньше об этом была фраза в
-        // описании, а конвейер всё равно звал разбор — и каждая встреча
-        // кончалась «ошибкой обработки» на сломанном JSON.
-        var saved = AppSettings.setConfigValue("model", preset.model)
-            && AppSettings.setConfigValue("small_model", preset.smallModel)
-        for flag in preset.configFlags where saved {
-            saved = AppSettings.setConfigValue(flag.key, flag.value)
-        }
+        // Профиль — это не только две модели: он ещё и решает, какие контуры
+        // машина тянет (граф, дежавю, ревизия ядер, модель тезисов). Пишем
+        // одной операцией: по ключу за раз конфиг оставался наполовину новым,
+        // наполовину старым, и это ничем себя не выдавало.
+        let saved = AppSettings.setConfigValues(
+            [("model", preset.model), ("small_model", preset.smallModel)]
+            + preset.configFlags)
         if !saved {
             presetSaveFailed = true
             return

@@ -60,8 +60,8 @@ Semantic search adds `bge-m3` (~1.2 GB) — recommended at 16 GB+.
 
 | RAM | Main LLM | Light LLM | Graph | Notes |
 |----|----|----|----|----|
-| **8 GB** | `qwen3.5:4b` (3.2 GB) | same | yes | One model for both roles; déjà vu off — `bge-m3` does not fit alongside |
-| **16 GB** | `gemma4:12b` (7.0 GB) | `qwen3.5:4b` | yes | Every quote checks out (100%), the live thread keeps its prompt cache |
+| **8 GB** | `qwen3.5:4b` (3.2 GB) | same | yes | One model for both roles; déjà vu and core revision off — both pull in `bge-m3`, which does not fit alongside |
+| **16 GB** | `qwen3.5:4b` (3.2 GB) | same | yes | The same model as on 8 GB plus semantic memory: déjà vu and core revision (`bge-m3` fits) |
 | **32 GB** | `qwen3.8:27b-mlx` (16.9 GB) | `qwen3.5:4b` | yes | More accurate quotes (96%); extraction is three times slower, and it runs in the background |
 | **64 GB+** | `qwen3.6:35b-mlx` (20.4 GB) | `qwen3.5:4b` | yes | The working set: 42 decisions and 39 cores per meeting, 57 s median |
 

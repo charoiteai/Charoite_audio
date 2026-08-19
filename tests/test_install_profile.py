@@ -22,6 +22,16 @@ def test_default_is_everything_on():
     assert install_profile.graph_enabled({}) is True
     assert install_profile.graph_enabled({"sufler": {}}) is True
     assert install_profile.deja_vu_enabled({"sufler": {"graph": False}}) is True
+    assert install_profile.tier3_enabled({}) is True
+
+
+def test_embedding_loops_have_their_own_switch():
+    """Ревизия ядер поднимает bge-m3 так же, как дежавю: без своего
+    выключателя обещание «на 8 ГБ эмбеддера нет» ломалось на первой встрече."""
+    light = {"sufler": {"deja_vu": "false", "tier3": "false"}}
+    assert install_profile.deja_vu_enabled(light) is False
+    assert install_profile.tier3_enabled(light) is False
+    assert install_profile.graph_enabled(light) is True, "узлы при этом строятся"
 
 
 def test_boolean_false_turns_the_graph_off():
@@ -59,3 +69,29 @@ def test_ready_status_survives_without_a_graph_note(tmp_path):
     assert data["state"] == "ready" and data["stage"] == "complete"
     assert "note_path" not in data, "заметки графа нет — и поля быть не должно"
     assert data["transcript_path"].endswith("2026-08-19_1000.md")
+
+
+def test_graph_off_does_not_disable_the_rest_of_the_pipeline():
+    """Выключен граф — выключены только узлы.
+
+    Первый вариант правки выходил из graph_updater сразу, и вместе с узлами
+    пропадали архив встречи, копии в vault и post_meeting_hook — то есть всё,
+    что от модели не зависит (ревью 19.08, Gemini). Проверяем по коду: гейт
+    стоит вокруг extract, а не вокруг main, и путь к архиву остаётся общим с
+    веткой «модель молчала».
+    """
+    source = (ROOT / "src" / "graph_updater.py").read_text(encoding="utf-8")
+    gate = source.index("graph_off = not install_profile.graph_enabled(cfg)")
+    archive = source.index("from meeting_archive import archive_meeting")
+    hook = source.rindex("run_post_hook(cfg, tpath, stamp)")
+    assert gate < archive < hook, "архив и хук обязаны идти ПОСЛЕ гейта, а не мимо"
+    assert "if not graph_ok and not graph_off:" in source, \
+        "выключенный профилем граф — код 0, а не EXIT_NO_GRAPH с ретраем"
+
+
+def test_pipeline_asks_for_a_note_only_when_the_graph_is_on():
+    """Заметку встречи создаёт разбор в узлы: без него требовать её нельзя,
+    иначе готовая встреча падает в «ошибку обработки»."""
+    source = (ROOT / "src" / "rebuild_transcript.py").read_text(encoding="utf-8")
+    assert "if graph_on and note is None:" in source
+    assert "publish(status.ready, live, note, names_pending(live))" in source

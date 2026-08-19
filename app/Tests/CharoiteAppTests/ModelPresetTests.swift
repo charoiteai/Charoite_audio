@@ -80,7 +80,7 @@ final class ModelPresetTests: XCTestCase {
         let expected = [
             (64, "qwen3.6:35b-mlx", "qwen3.5:4b"),
             (32, "qwen3.8:27b-mlx", "qwen3.5:4b"),
-            (16, "gemma4:12b", "qwen3.5:4b"),
+            (16, "qwen3.5:4b", "qwen3.5:4b"),
             (8, "qwen3.5:4b", "qwen3.5:4b"),   // «Light LLM: same model»
         ]
         for (memory, model, small) in expected {
@@ -110,8 +110,33 @@ final class ModelPresetTests: XCTestCase {
         for preset in ModelPresetPolicy.all where preset.needsGB >= 16 {  // 16, 32, 64
             XCTAssertTrue(preset.graph, "\(preset.id): граф — смысл продукта")
             XCTAssertTrue(preset.dejaVu, "\(preset.id): дежавю укладывается в память")
-            XCTAssertEqual(preset.configFlags.count, 2, preset.id)
+            XCTAssertTrue(preset.tier3, "\(preset.id): ревизия ядер тоже")
         }
+    }
+
+    /// Тезисы и черновик минуток идут каждые 40–150 секунд всю встречу.
+    /// Оставить там тяжёлую модель — держать её в памяти постоянно, а на
+    /// 8–32 ГБ это ровно та память, ради которой профиль и выбирают.
+    func testМодельТезисовЛёгкаяВездеКромеСамойБольшойМашины() {
+        for preset in ModelPresetPolicy.all where preset.needsGB < 64 {
+            XCTAssertEqual(preset.thinkModel, preset.smallModel, preset.id)
+        }
+        XCTAssertEqual(ModelPresetPolicy.recommended(forGB: 64).thinkModel,
+                       "qwen3.6:35b-mlx", "на 64 ГБ тезисы могут идти на большой")
+    }
+
+    /// Эмбеддер bge-m3 поднимают два контура: живое дежавю и ночная ревизия
+    /// ядер. Выключить один и оставить другой — обещать экономию, которой нет
+    /// (ревью 19.08, DeepSeek).
+    func testЭмбеддерныеКонтурыВыключаютсяВместе() {
+        for preset in ModelPresetPolicy.all {
+            XCTAssertEqual(preset.dejaVu, preset.tier3, preset.id)
+        }
+        let flags = Dictionary(uniqueKeysWithValues:
+            ModelPresetPolicy.recommended(forGB: 8).configFlags.map { ($0.key, $0.value) })
+        XCTAssertEqual(flags["deja_vu"], "false")
+        XCTAssertEqual(flags["tier3"], "false")
+        XCTAssertEqual(flags["think_model"], "qwen3.5:4b")
     }
 
     func testТекущийПресетУзнаётсяПоОбеимМоделям() {
@@ -123,6 +148,17 @@ final class ModelPresetTests: XCTestCase {
         XCTAssertNil(ModelPresetPolicy.current(model: full.model,
                                                smallModel: "qwen3.5:2b"))
         XCTAssertNil(ModelPresetPolicy.current(model: nil, smallModel: nil))
+    }
+
+    /// 12B выигрывает у 4B только 4% цитат, а стоит 3.8 лишних гигабайта:
+    /// вместе с эмбеддером, STT и системой связка 12b+4b упиралась в 17–19 ГБ
+    /// на 16-гигабайтной машине — в тот самый своп, от которого профиль и
+    /// защищает (ревью 19.08, GLM).
+    func testНа16ГбНеТянемМодельРадиЧетырёхПроцентов() {
+        let preset = ModelPresetPolicy.recommended(forGB: 16)
+        XCTAssertFalse(preset.models.contains("gemma4:12b"))
+        XCTAssertTrue(preset.isSingleModel, "одна модель на обе роли — и та лёгкая")
+        XCTAssertTrue(preset.dejaVu, "разница с 8 ГБ именно в семантической памяти")
     }
 
     func testПамятьМашиныОпределяется() {

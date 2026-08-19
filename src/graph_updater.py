@@ -640,11 +640,6 @@ def main():
         _progress = (MeetingStatusStore(ROOT), tpath)
     except Exception as e:  # noqa: BLE001 — без прогресса разбор всё равно идёт
         print(f"граф: статус недоступен ({type(e).__name__}: {e})")
-    if not install_profile.graph_enabled(cfg):
-        # Второй рубеж рядом с первым (rebuild_transcript): скрипт зовут и
-        # руками, и из ретраев, и профиль обязан действовать в обоих путях.
-        print("граф выключен профилем (sufler.graph: false) — разбор не запускаю")
-        return
     graph_raw = os.environ.get("SUFLER_GRAPH_DIR") or cfg["sufler"].get("graph_dir", "")
     graph = pathlib.Path(graph_raw).expanduser()
     # проверять исходную строку: str(Path("")) == "." — пустой конфиг молча
@@ -666,7 +661,12 @@ def main():
         sys.exit(EXIT_NO_SPEECH)
 
     known = [] if os.environ.get("SUFLER_GRAPH_DIR") else known_graphs(graph)
-    data = extract(cfg, transcript, _project_rule(known, graph.name))
+    # Профиль может выключить именно УЗЛЫ (`sufler.graph: false`, лёгкая
+    # установка), а не весь пост-процессинг: архив встречи, копии в vault и
+    # post_meeting_hook нужны и без графа — ровно как при молчащей модели
+    # ниже. Ранний выход отсюда стоил бы человеку архива и хука (ревью 19.08).
+    graph_off = not install_profile.graph_enabled(cfg)
+    data = None if graph_off else extract(cfg, transcript, _project_rule(known, graph.name))
     # None — «граф не обновляем», но НЕ «ничего не делаем»: докстринг extract
     # обещает архив со стенограммой и минутками и без графа. Раньше здесь
     # стоял return — ни заметки, ни архива, ни хука, а пересборка трижды
@@ -675,7 +675,11 @@ def main():
     # делаем и выходим кодом EXIT_NO_GRAPH — статус остаётся «ошибка», ретрай
     # придёт, когда модель оживёт.
     graph_ok = bool(data)
-    if not graph_ok:
+    if graph_off:
+        print("граф выключен профилем (sufler.graph: false) — узлы не строим; "
+              "архив, копии и хук собираем")
+        data = {}
+    elif not graph_ok:
         print("LLM не вернула валидный JSON — узлы графа не обновляем; "
               "архив, копии и хук собираем")
         data = {}
@@ -753,6 +757,11 @@ def main():
         # читает morning_brief, и без них выключенный автомат не осторожен,
         # а нем — находка остаётся в логе прогона, которого никто не видит.
         try:
+            # Профиль может выключить ревизию (`sufler.tier3: false`): она
+            # судит ядра эмбеддингами и поднимает рядом bge-m3 (+1.2 ГБ).
+            # Узлы при этом строятся как обычно — выключается только ревизия.
+            if not install_profile.tier3_enabled(cfg):
+                raise RuntimeError("выключена профилем (sufler.tier3: false)")
             import tier3
             _yield_to_live()   # ревизия ядер тянет эмбеддер — не под живую встречу
             auto = tier3.auto_apply_allowed(cfg)
@@ -937,7 +946,7 @@ def main():
             if fresh:
                 print(f"cloud-enrich: ревизия уже есть ({fresh[0].name}) — повтор не запускаем")
                 run_post_hook(cfg, tpath, stamp)
-                if not graph_ok:
+                if not graph_ok and not graph_off:
                     sys.exit(EXIT_NO_GRAPH)
                 return
             # Фоном уходит НЕ сам claude, а воркер: он ждёт разбор с таймаутом,
@@ -957,7 +966,9 @@ def main():
             print(f"cloud-enrich не запустился: {e}")
 
     run_post_hook(cfg, tpath, stamp)
-    if not graph_ok:
+    # Выключенный профилем граф — не отказ модели: код 0, статус «готово».
+    # EXIT_NO_GRAPH означал бы ошибку и повтор каждой встречи по кругу.
+    if not graph_ok and not graph_off:
         sys.exit(EXIT_NO_GRAPH)
 
 

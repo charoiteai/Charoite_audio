@@ -23,6 +23,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
+import install_profile  # noqa: E402
 import tier3  # noqa: E402
 
 # Отметки последнего прогона по графам. Лежат рядом с nightly.json: читает их
@@ -111,6 +112,14 @@ def main() -> None:
                          "ночь, а свежих ядер за сутки — единицы. Первый запуск и "
                          "потерянная отметка = полный прогон")
     args = ap.parse_args()
+
+    # Профиль мог выключить ревизию (`sufler.tier3: false`): она судит ядра
+    # эмбеддингами и поднимает bge-m3 (+1.2 ГБ). Гейт в graph_updater закрывал
+    # только путь «после встречи», а ночь ходит сюда и подняла бы эмбеддер по
+    # всем графам (ревью 19.08, GLM).
+    if not install_profile.tier3_enabled(graphs.load_config()):
+        print("ревизия ядер выключена профилем (sufler.tier3: false)")
+        return
 
     apply_mode = args.apply
     mark_mode = args.mark

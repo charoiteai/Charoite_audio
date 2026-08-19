@@ -668,15 +668,13 @@ def main():
             rebuild(live, cfg)
         except Exception as e:  # noqa: BLE001 — граф важнее идеальной пересборки
             log(f"пересборка не удалась ({type(e).__name__}: {e}) — граф по живой версии")
-        if not install_profile.graph_enabled(cfg):
-            # Лёгкий профиль (8 ГБ): моделей для разбора в узлы тут нет, и
-            # запускать его — значит каждую встречу получать сломанный JSON,
-            # статус ошибки и повтор. Стенограмма, минутки и архив уже
-            # собраны — это готовность, а не отказ.
+        # Профиль мог выключить узлы графа (`sufler.graph: false`). Сам
+        # graph_updater при этом всё равно нужен: архив встречи, копии в
+        # vault и post_meeting_hook живут там же и от модели не зависят.
+        graph_on = install_profile.graph_enabled(cfg)
+        if not graph_on:
             log("граф выключен профилем (sufler.graph: false) — "
-                "стенограмма и минутки готовы, узлы не строим")
-            publish(status.ready, live, None, names_pending(live))
-            return
+                "узлы не строим, архив и копии собираем")
         publish(status.processing, live, "updating_graph")
         _yield_to_live("разбор графа")   # graph_updater ждёт и сам — здесь ради честного лога
         result = subprocess.run(
@@ -696,8 +694,10 @@ def main():
                                "(архив встречи собран, повторим позже)")
         if result.returncode:
             raise RuntimeError(f"graph_updater завершился с кодом {result.returncode}")
-        note = find_meeting_note(cfg, live, newer_than=pipeline_started - 2)
-        if note is None:
+        # Заметку встречи создаёт разбор в узлы: выключен профилем — её нет
+        # и быть не должно, и требовать её значило бы ронять готовую встречу.
+        note = find_meeting_note(cfg, live, newer_than=pipeline_started - 2) if graph_on else None
+        if graph_on and note is None:
             raise RuntimeError("заметка встречи не создана")
         if not status.has_transcript(live):
             raise RuntimeError("финальная стенограмма не найдена")

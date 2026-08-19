@@ -71,10 +71,13 @@ enum MeetingCardLoader {
             card.participants = participants(fromTranscript: transcript)
             card.durationText = durationText(fromTranscript: transcript)
         }
-        guard let notePath = snapshot.notePath else { return card }
-        let note = URL(fileURLWithPath: notePath)
-        let graph = note.deletingLastPathComponent().deletingLastPathComponent()
-        card.obsidianURL = obsidianURL(noteURL: note)
+        // Путь к графу берём от заметки, а если её нет (граф выключен
+        // профилем) — из настроек: архив встречи собирается в обоих случаях,
+        // и карточка без него выглядит как «разобрали в пустоту».
+        let note = snapshot.notePath.map { URL(fileURLWithPath: $0) }
+        guard let graph = note.map({ $0.deletingLastPathComponent().deletingLastPathComponent() })
+                ?? AppSettings.graphDir else { return card }
+        card.obsidianURL = note.flatMap { obsidianURL(noteURL: $0) }
         let stamp = String(snapshot.meetingID.prefix(15))
         card.archiveFolder = archiveFolder(graph: graph, stamp: stamp)
         if let folder = card.archiveFolder {
