@@ -116,23 +116,34 @@ def owner_voice(heard: Heard, *, min_seconds: float = MIN_MIC_SECONDS,
     """
     if not heard.call:
         return None                     # очная встреча: различать некого
-    total = sum(heard.mic.values())
-    if total < min_seconds:
-        return None                     # рано решать
     # Голоса, слышные и в системном канале, — это эхо собеседников.
     candidates = {v: s for v, s in heard.mic.items()
                   if heard.bh.get(v, 0.0) <= echo_seconds}
     if not candidates:
+        return None
+    # Доля считается от речи ЛЮДЕЙ в комнате, а не от всего, что попало в
+    # микрофон. Раньше эхо сидело в знаменателе, и в звонке с громкими
+    # динамиками владелец — единственный живой голос — не набирал 0.6 и
+    # оставался неподписанным, а человеку сообщалось «в микрофоне слышно
+    # несколько человек», хотя второй «человек» — его же колонки
+    # (ревью 19.08, второй круг).
+    total = sum(candidates.values())
+    if total <= 0:
         return None
     ranked = sorted(candidates.items(), key=lambda kv: -kv[1])
     voice, seconds = ranked[0]
     share = seconds / total
     second = ranked[1][1] / total if len(ranked) > 1 else 0.0
     if voice == current:
-        # решение уже принято — держим, пока перевес не развалился
+        # Решение уже принято — держим, пока перевес не развалился. Проверка
+        # идёт ДО порога «накопилось речи»: счётчики затухают, и после
+        # десятиминутной паузы владелец переставал быть подписанным, пока
+        # заново не наговорит пятнадцать секунд (ревью 19.08, второй круг).
         if share >= KEEP_SHARE and share - second >= KEEP_LEAD:
             return voice
         return None
+    if total < min_seconds:
+        return None                     # для НОВОГО решения речи ещё мало
     if share < min_share or share - second < min_lead:
         return None                     # в микрофоне не один человек
     return voice
