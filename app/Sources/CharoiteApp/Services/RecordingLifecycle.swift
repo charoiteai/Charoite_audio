@@ -18,28 +18,9 @@ enum RecordingLifecycle: Equatable, Sendable {
     var isActive: Bool { self != .idle }
 }
 
-/// Что делать после очередной проверки daemon во время остановки.
-///
-/// `blocked` намеренно не означает `finish`: живой процесс всё ещё держит
-/// ресурсы встречи, поэтому публиковать `idle` и разрешать новый Start нельзя.
-enum DaemonShutdownAction: Equatable, Sendable {
-    case retry
-    case blocked
-    case finish
-}
-
 enum RecordingLifecyclePolicy {
     static func isActive(_ lifecycle: RecordingLifecycle, daemonAlive: Bool) -> Bool {
         lifecycle.isActive || daemonAlive
-    }
-}
-
-enum DaemonShutdownPolicy {
-    static let maxWaits = 30   // 15 секунд polling после fallback на 13-й
-
-    static func action(alive: Bool, waits: Int) -> DaemonShutdownAction {
-        guard alive else { return .finish }
-        return waits < maxWaits ? .retry : .blocked
     }
 }
 

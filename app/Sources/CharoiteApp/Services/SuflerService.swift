@@ -164,10 +164,10 @@ final class SuflerService: ObservableObject {
     private var captureStartTask: Task<Void, Never>?
     private var stopFallbackTask: Task<Void, Never>?
     private var captureShutdownToken: UUID?
-    /// Сколько раз ждали смерти демона по полсекунды. После предела перестаём
-    /// опрашивать процесс, но остаёмся в stopping: живой daemon несовместим с
-    /// idle и не должен пропускать новый Start, обновление или быстрый выход.
-    private var shutdownWaits = 0
+    /// Фаза остановки — подмашина из ShutdownMachine.swift. Раньше здесь был
+    /// счётчик ожиданий, а остальное состояние жило в соседних полях и
+    /// согласовывалось прозой; теперь переходы проверяются тестами без UI.
+    private var shutdownPhase: ShutdownPhase = .idle
 
     private enum CleanupDisposition {
         case stopped
@@ -470,6 +470,19 @@ final class SuflerService: ObservableObject {
         userStopped = true
         if lifecycle == .stopping {
             cleanupDisposition = .stopped
+            // Стоп по ЗАСТРЯВШЕМУ демону — просьба добить его ещё раз.
+            // Раньше метод здесь просто выходил, и человек жал кнопку впустую
+            // (аудит 14.08: «.blocked без выходных дуг»).
+            let (phase, action) = ShutdownMachine.next(
+                shutdownPhase, on: .stopRequested(daemonAlive: process?.isRunning == true))
+            shutdownPhase = phase
+            if action == .forceKill, let p = process, p.isRunning,
+               let token = lifecycleGate.token {
+                status = L.t("Добиваю процесс записи…", "Force-stopping the recorder…",
+                             "正在强制停止录音进程…")
+                kill(p.processIdentifier, SIGKILL)
+                scheduleShutdownPoll(token: token, after: ShutdownMachine.fastPoll)
+            }
             return
         }
         let wasRecording = lifecycle == .recording
@@ -533,6 +546,17 @@ final class SuflerService: ObservableObject {
     /// Закрывает сначала незавершённый startCapture, затем сам capture.
     /// Один token может войти сюда и из terminationHandler, и из fallback —
     /// `captureShutdownToken` делает операцию идемпотентной.
+    /// Следующая проверка процесса. Интервал приходит из подмашины: частый
+    /// пока ждём, редкий — когда демон уже признан застрявшим.
+    private func scheduleShutdownPoll(token: UUID, after delay: TimeInterval) {
+        stopFallbackTask?.cancel()
+        stopFallbackTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard let self, self.lifecycleGate.owns(token, in: .stopping) else { return }
+            self.beginCaptureShutdown(token: token)
+        }
+    }
+
     private func beginCaptureShutdown(token: UUID) {
         guard lifecycleGate.owns(token, in: .stopping),
               captureShutdownToken != token
@@ -559,32 +583,34 @@ final class SuflerService: ObservableObject {
             // может прийти чуть позже. Не открываем idle, пока старый daemon
             // действительно жив: иначе следующий Start снова получит два
             // процесса, несмотря на исправленный capture.
-            switch DaemonShutdownPolicy.action(alive: self.process?.isRunning == true,
-                                               waits: self.shutdownWaits) {
-            case .retry:
-                self.shutdownWaits += 1
+            let (phase, action) = ShutdownMachine.next(
+                self.shutdownPhase,
+                on: .pollTick(daemonAlive: self.process?.isRunning == true))
+            self.shutdownPhase = phase
+            switch action {
+            case .pollAgain(let delay):
                 self.captureShutdownToken = nil
-                self.stopFallbackTask = Task { @MainActor [weak self] in
-                    try? await Task.sleep(nanoseconds: 500_000_000)
-                    guard let self, self.lifecycleGate.owns(token, in: .stopping) else { return }
-                    self.beginCaptureShutdown(token: token)
-                }
+                self.scheduleShutdownPoll(token: token, after: delay)
                 return
-            case .blocked:
-                // Capture уже закрыт. Частый polling больше не нужен, но
-                // lifecycle остаётся active: иначе updater/quit потеряют
-                // живой daemon, а новый Start попадёт в ложный idle.
+            case .reportStuck:
+                // Capture уже закрыт, частый опрос прекращён — но lifecycle
+                // остаётся активным (живой демон несовместим с idle), и
+                // редкая проверка продолжается: демон, зависший в finally,
+                // рано или поздно отпускает ресурсы, и приложение обязано
+                // заметить это само (аудит 14.08).
                 self.captureStartTask = nil
                 self.captureShutdownToken = nil
-                self.shutdownWaits = 0
                 self.fail(L.t(
-                    "Процесс записи не завершился — дождитесь его остановки или перезапустите приложение",
-                    "The recording process did not stop — wait for it to exit or restart the app",
-                    "录音进程未能停止——请等待其退出或重新启动应用"
+                    "Процесс записи не завершился — жду его, можно нажать «Стоп» ещё раз",
+                    "The recording process did not stop — still waiting; press Stop again to force it",
+                    "录音进程未能停止——仍在等待；可再次点击「停止」强制结束"
                 ))
+                self.scheduleShutdownPoll(token: token, after: ShutdownMachine.slowPoll)
                 return
             case .finish:
                 break
+            case .nothing, .closeCapture, .forceKill:
+                return
             }
 
             guard self.lifecycleGate.finishStop(
@@ -593,7 +619,7 @@ final class SuflerService: ObservableObject {
             ) else { return }
             self.captureStartTask = nil
             self.captureShutdownToken = nil
-            self.shutdownWaits = 0
+            self.shutdownPhase = .done
             self.process = nil
             self.publishLifecycle()
 
