@@ -696,6 +696,21 @@ def main():
     #: не мигала на границе долей (ревью 19.08).
     owner_state: dict[str, int | None] = {"voice": None}
 
+    def _is_owner_line(name: str) -> bool:
+        """Реплика владельца? Гейт мгновенных ответов спрашивает это.
+
+        Метка СВОЕГО канала — владелец по определению, как бы она ни
+        называлась: это устройство захвата, а не догадка об имени. Сверка
+        только по `user_name` ломалась дважды: при незаданном имени метка
+        «Я» считалась чужой, а при имени, совпавшем с нейтральной меткой,
+        захват подставлял «Я», и ⚡ снова отвечала на собственные вопросы
+        хозяина встречи (ревью 19.08, круги 4 и 7).
+        """
+        own = hub.SPEAKER.get("mic", "")
+        if own and name == own:
+            return True
+        return speaker_names.is_owner(name, owner_name)
+
     def _owner_label(voice: int | None, speaker: str, neutral: str) -> str:
         is_mic = speaker == mic_label
         label = owner_voice.label_for(voice, is_mic=is_mic,
@@ -735,10 +750,11 @@ def main():
             note = ("собеседников в динамиках не слышно — похоже на очную "
                     "встречу, где микрофон один на всех: реплики остаются "
                     "нейтральными")
-        elif not mic_label:
-            # Имя не задано вовсе. Про коллизию человеку уже сказано в точке
-            # нормализации: сюда эта ветка не доходит, потому что метка
-            # микрофона там же и обнуляется (ревью 19.08, шестой круг).
+        elif not owner_name:
+            # Имя не задано вовсе — проверяем КОНФИГ, а не обнулённую
+            # переменную: `mic_label` при незаданном имени равен «Я» и
+            # непуст, поэтому прежняя ветка не срабатывала никогда, а при
+            # коллизии сюда и не доходит (ревью 19.08, седьмой круг).
             note = ("задайте своё имя в настройках (sufler.user_name), "
                     "чтобы ваши реплики подписывались")
         else:
@@ -877,8 +893,7 @@ def main():
                     # глушил их с момента, когда name_loop опознавал собеседника
                     # по имени (аудит 14.08). Сверка — speaker_names.is_counterpart.
                     if instant_on and toggles["hints"] \
-                            and speaker_names.is_counterpart(
-                                name, owner_name or mic_label) \
+                            and not _is_owner_line(name) \
                             and looks_question(added):
                         fire_question(added)
 
