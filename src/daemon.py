@@ -36,6 +36,7 @@ import action_items  # noqa: E402
 import autostop as autostop_rules  # noqa: E402
 import cloud  # noqa: E402
 import install_profile  # noqa: E402
+import owner_voice  # noqa: E402
 import fact_check  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
 from meeting_thread import Thread as MeetingThread  # noqa: E402
@@ -561,8 +562,10 @@ def main():
     record_started_wall = time.time()
 
     # Живая диаризация ОБОИХ каналов: звонок кладёт чужие голоса в BlackHole,
-    # очная встреча — все голоса в микрофон. Трекер один, метки по маппингу:
-    # первый голос из mic = владелец (его микрофон), остальные — «Собеседник N».
+    # очная встреча — все голоса в микрофон. Трекер один и различает голоса
+    # между собой; ЧЕЙ голос владельца, решает не трекер, а канал захвата —
+    # см. src/owner_voice.py (угадывать голос внутри канала пробовали 20.07,
+    # «первый голос mic» ловил лектора из видео).
     spk_tracker = None
     voice_names: dict[int, str] = {}
     diarize_on = bool(cfg["sufler"].get("live_diarize", True))
@@ -621,10 +624,17 @@ def main():
         return name
 
     def voice_label(channel_speaker: str, chunk) -> str:
-        """Метка голоса для чанка. Живая разметка НЕ угадывает владельца (решение
-        20.07: «первый голос mic» ловил лектора из видео, «доминирование» тоже
-        ошибалось) — все голоса нейтральные «Собеседник N». Имена расставляют
-        name_loop (из разговора) и финальная пересборка записи после Стопа."""
+        """Метка голоса для чанка.
+
+        Голос владельца определяет КАНАЛ: микрофон — его аппаратный вход,
+        системный звук — удалённые собеседники. Угадывать голос ВНУТРИ
+        канала перестали 20.07 («первый голос mic» ловил лектора из видео),
+        и сюда это не возвращается: owner_voice решает по каналу, отбрасывая
+        эхо и очные встречи, где в микрофоне вся комната.
+
+        Имена собеседникам по-прежнему расставляют name_loop (из разговора)
+        и финальная пересборка после Стопа.
+        """
         if spk_tracker is None:
             _note_pitch(channel_speaker, chunk)
             return channel_speaker  # без трекера канальные метки честны в звонке
@@ -632,15 +642,71 @@ def main():
             n = spk_tracker.label(chunk)
         except Exception:  # noqa: BLE001
             return channel_speaker
+        heard_by_channel.note(n, len(chunk) / hub.sr,
+                              is_mic=channel_speaker == mic_label,
+                              now=time.monotonic())
         if n is None:
             return channel_speaker
-        name = _voice_name(n)
+        name = _owner_label(n, channel_speaker, _voice_name(n))
         _note_pitch(name, chunk)
         return name
 
     # Имя владельца — для гейта мгновенных ответов: ⚡ стреляет по вопросу
     # «той стороны», а владелец отсекается пословной сверкой user_name.
     owner_name = (cfg["sufler"].get("user_name") or "").strip()
+
+    # Кто владелец — по КАНАЛУ, а не по догадке о голосе. Счётчики секунд
+    # речи по номеру голоса живут здесь, в памяти встречи, и умирают вместе
+    # с процессом: это производное от голоса, и обещание «ничего голосового
+    # на диск» распространяется и на них.
+    #
+    # Побочно это чинит гейт мгновенных ответов: пока реплики владельца были
+    # «Собеседник N», `is_counterpart` считал их чужими, и ⚡ отвечала на
+    # вопросы самого хозяина встречи (ревью 19.08, DeepSeek).
+    heard_by_channel = owner_voice.Heard()
+    mic_label = hub.SPEAKER.get("mic", "")
+    other_label = hub.SPEAKER.get("blackhole", "")
+
+    #: Что уже сказали человеку про подпись: статус меняется по ходу встречи
+    #: (сначала решать не на чем, потом появляется имя), но повторять одно и
+    #: то же каждые три секунды нельзя.
+    owner_note = {"said": ""}
+
+    def _owner_label(voice: int | None, speaker: str, neutral: str) -> str:
+        label = owner_voice.label_for(voice, is_mic=speaker == mic_label,
+                                      heard=heard_by_channel,
+                                      owner_label=mic_label,
+                                      other_label=other_label, neutral=neutral)
+        _say_owner_state(label != neutral)
+        return label
+
+    def _say_owner_state(signed: bool) -> None:
+        """Сказать вслух, подписываются реплики владельца или нет.
+
+        Молчаливое «Собеседник 1» на собственных словах человек читает как
+        поломку — и не может знать, что это осознанный отказ: в микрофоне
+        несколько голосов или встреча очная.
+        """
+        if signed:
+            note = ""
+        elif not heard_by_channel.call:
+            note = ("очная встреча: в микрофоне говорят все, кто в комнате — "
+                    "реплики остаются нейтральными")
+        elif not mic_label or mic_label == other_label:
+            note = ("задайте своё имя в настройках (sufler.user_name), "
+                    "чтобы ваши реплики подписывались")
+        elif sum(heard_by_channel.mic.values()) >= owner_voice.MIN_MIC_SECONDS:
+            note = ("в микрофоне слышно несколько человек — ваши реплики "
+                    "оставляю нейтральными, чтобы не приписать вам чужие слова")
+        else:
+            return          # ещё копим речь, говорить рано
+        if note and note != owner_note["said"]:
+            owner_note["said"] = note
+            emit({"type": "status", "text": note})
+        elif not note and owner_note["said"] != "signed":
+            owner_note["said"] = "signed"
+            emit({"type": "status", "text":
+                  f"ваши реплики подписываются как «{mic_label}» (канал микрофона)"})
 
     # Голоса вспомогательных контуров: их отказ больше не немой (см. quiet_loop_warn)
     warn_deja = quiet_loop_warn("дежавю")
@@ -694,6 +760,14 @@ def main():
                 rows: list[tuple[str, str]] = []
                 pitch_best: dict[str, tuple[int, object]] = {}
                 for piece, n, raw_piece in jobs:
+                    # Секунды речи по голосам — сырыми границами куска, без
+                    # pad-запаса: в запас попадает сосед, и «преобладание в
+                    # микрофоне» считалось бы по чужой речи тоже.
+                    if n is not None and n >= 0:
+                        heard = raw_piece if raw_piece is not None else piece
+                        heard_by_channel.note(n, len(heard) / hub.sr,
+                                              is_mic=speaker == mic_label,
+                                              now=time.monotonic())
                     try:
                         text = stt.transcribe(piece, hub.sr)
                     except Exception as e:  # noqa: BLE001
@@ -707,7 +781,11 @@ def main():
                         name = speaker
                         _note_pitch(name, piece)
                     else:
-                        name = _voice_name(n)
+                        # тот же канальный признак, что и в voice_label: без
+                        # него метка владельца мигала бы между именем (ветка
+                        # n < 0, когда раскладка не решила) и «Собеседник N»,
+                        # разрывая его абзац надвое (ревью 19.08, DeepSeek)
+                        name = _owner_label(n, speaker, _voice_name(n))
                         # высота голоса — по самому длинному сырому куску
                         # каждого голоса, без pad-запаса: в запас попадает
                         # сосед (ревью 15.08)

@@ -440,11 +440,18 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
                 durs[k] = durs.get(k, 0.0) + (e - s)
             # голос с максимальным суммарным временем в СВОЁМ микрофоне = владелец
             owner_voice = max(durs, key=durs.get) if durs else None
+            # Имя — из настроек, а не литерал: живая лента подписывает
+            # владельца его именем (по каналу), и финальная стенограмма
+            # обязана говорить то же самое. Раньше здесь стояло слово
+            # «владелец», и после Стопа человек в своей же встрече
+            # переименовывался (ревью 19.08, DeepSeek). Пустое имя —
+            # по-прежнему «владелец»: выдумывать нечего.
+            owner_label = (cfg.get("sufler", {}).get("user_name") or "").strip() or "владелец"
             mapping = {}
             for s, e, k in mic_segs:
                 if k not in mapping:
                     if k == owner_voice:
-                        mapping[k] = "владелец"
+                        mapping[k] = owner_label
                     else:
                         mapping[k] = f"Собеседник {next_n}"
                         next_n += 1
