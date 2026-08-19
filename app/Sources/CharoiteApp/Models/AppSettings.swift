@@ -380,22 +380,42 @@ enum AppSettings {
     ///    несуществующую папку — ошибка, и на свежей установке она случалась
     ///    всегда, потому что папку данных до первого запуска никто не
     ///    размечает.
+    /// Несколько ключей одной записью файла.
+    ///
+    /// По ключу за раз профиль ложился в конфиг частями: модели записались,
+    /// флаги нет — и человек оставался с гибридом старого и нового набора,
+    /// который ничем себя не выдаёт (ревью 19.08, DeepSeek). Пишем всё или
+    /// ничего.
     @discardableResult
-    static func setConfigValue(_ key: String, _ value: String) -> Bool {
+    static func setConfigValues(_ pairs: [(key: String, value: String)]) -> Bool {
+        guard !pairs.isEmpty else { return true }
+        guard let cfg = ensureConfigExists(),
+              var text = try? String(contentsOf: cfg, encoding: .utf8) else { return false }
+        for pair in pairs {
+            text = replacing(pair.key, with: pair.value, in: text)
+        }
+        return (try? text.write(to: cfg, atomically: true, encoding: .utf8)) != nil
+    }
+
+    /// Путь к config.yaml, создавая его из образца при первом запуске.
+    private static func ensureConfigExists() -> URL? {
         let cfg = charoiteRoot.appendingPathComponent("config/config.yaml")
         let fm = FileManager.default
         if !fm.fileExists(atPath: cfg.path) {
             // Папка данных на первом запуске пуста — размечаем сами.
             guard (try? fm.createDirectory(at: cfg.deletingLastPathComponent(),
                                            withIntermediateDirectories: true)) != nil else {
-                return false
+                return nil
             }
             guard let example = configExampleURL,
-                  (try? fm.copyItem(at: example, to: cfg)) != nil else { return false }
+                  (try? fm.copyItem(at: example, to: cfg)) != nil else { return nil }
         }
-        guard let text = try? String(contentsOf: cfg, encoding: .utf8) else { return false }
-        let updated = replacing(key, with: value, in: text)
-        return (try? updated.write(to: cfg, atomically: true, encoding: .utf8)) != nil
+        return cfg
+    }
+
+    @discardableResult
+    static func setConfigValue(_ key: String, _ value: String) -> Bool {
+        setConfigValues([(key, value)])
     }
 
     /// Образец конфига из поставки: в ручной установке лежит рядом с данными,

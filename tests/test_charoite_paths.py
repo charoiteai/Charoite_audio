@@ -105,3 +105,27 @@ def test_за_кодом_никто_не_ходит_через_корень_да
     assert not offenders, (
         "путь к коду строится от корня данных — во вложенной установке этого "
         f"файла там нет: {offenders}. Берите CODE (code_root), не ROOT")
+
+
+def test_ночные_скрипты_пишут_в_корень_данных(tmp_path):
+    """Конфиг и отметки ночного цикла — у человека, а не в бандле.
+
+    Оба места нашлись ревью 19.08 в одной ветке: `graphs.CONFIG` вёл к
+    config.yaml рядом с кодом (во вложенной установке его там нет — ночь
+    читала бы дефолты и игнорировала выключатели профиля), а
+    `tier3_cores.STAMPS` писал отметку прогона в read-only бандл — то есть
+    падал бы PermissionError на первой же ночи. Проверяем в отдельном
+    процессе: пути считаются на импорте.
+    """
+    env = dict(os.environ, CHAROITE_ROOT=str(tmp_path))
+    code = (
+        "import sys; sys.path.insert(0, 'src'); sys.path.insert(0, 'scripts')\n"
+        "import graphs, tier3_cores\n"
+        "print(graphs.CONFIG); print(tier3_cores.STAMPS)\n"
+    )
+    out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env,
+                         capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr[-400:]
+    config, stamps = out.stdout.strip().splitlines()
+    assert pathlib.Path(config) == tmp_path.resolve() / "config" / "config.yaml"
+    assert pathlib.Path(stamps).parent == tmp_path.resolve() / "logs"

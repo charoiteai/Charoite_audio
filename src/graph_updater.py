@@ -17,6 +17,7 @@ import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import cloud  # noqa: E402
+import install_profile  # noqa: E402
 import live_gate  # noqa: E402
 import llm_health  # noqa: E402
 import privacy  # noqa: E402
@@ -641,15 +642,14 @@ def main():
         print(f"граф: статус недоступен ({type(e).__name__}: {e})")
     graph_raw = os.environ.get("SUFLER_GRAPH_DIR") or cfg["sufler"].get("graph_dir", "")
     graph = pathlib.Path(graph_raw).expanduser()
-    # проверять исходную строку: str(Path("")) == "." — пустой конфиг молча
-    # лил бы граф в cwd
-    if not graph_raw or not graph.parent.exists():
-        print(f"graph_dir не настроен/не существует: {graph}")
-        return
     transcript = tpath.read_text(encoding="utf-8")
     minutes_p = tpath.with_name(tpath.stem + "_minutes.md")
     if minutes_p.exists():
         transcript += "\n\n[МИНУТКИ]\n" + minutes_p.read_text(encoding="utf-8")
+    # «В записи нет речи» решается ДО вопроса о папке графа: этот факт от
+    # графа не зависит, а раньше при пустом graph_dir пустая запись получала
+    # «готово» вместо честного empty — и хук отрабатывал на тишине
+    # (ревью 19.08, второй круг GLM).
     if len(transcript) < 300:
         # Отдельный код возврата, а не тихий выход: для вызывающего это не
         # ошибка обработки, а факт — в записи нет речи. Разница практическая:
@@ -658,9 +658,24 @@ def main():
         # ушла бы в три бесполезных прогона.
         print("стенограмма слишком короткая — граф не трогаем")
         sys.exit(EXIT_NO_SPEECH)
+    # проверять исходную строку: str(Path("")) == "." — пустой конфиг молча
+    # лил бы граф в cwd. `strip()` — потому что пробельная строка ("   ")
+    # проходила эту проверку и архив уезжал в папку с именем из пробелов
+    # рядом с рабочим каталогом (третий круг, DeepSeek).
+    if not str(graph_raw).strip() or not graph.parent.is_dir():
+        # Без папки графа узлов не будет, но всё остальное встречу не теряет:
+        # хук пользователя обязан отработать и здесь (ревью 19.08).
+        print(f"graph_dir не настроен/не существует: {graph}")
+        run_post_hook(cfg, tpath, parse_stem(tpath.stem)[0])
+        return
 
     known = [] if os.environ.get("SUFLER_GRAPH_DIR") else known_graphs(graph)
-    data = extract(cfg, transcript, _project_rule(known, graph.name))
+    # Профиль может выключить именно УЗЛЫ (`sufler.graph: false`, лёгкая
+    # установка), а не весь пост-процессинг: архив встречи, копии в vault и
+    # post_meeting_hook нужны и без графа — ровно как при молчащей модели
+    # ниже. Ранний выход отсюда стоил бы человеку архива и хука (ревью 19.08).
+    graph_off = not install_profile.graph_enabled(cfg)
+    data = None if graph_off else extract(cfg, transcript, _project_rule(known, graph.name))
     # None — «граф не обновляем», но НЕ «ничего не делаем»: докстринг extract
     # обещает архив со стенограммой и минутками и без графа. Раньше здесь
     # стоял return — ни заметки, ни архива, ни хука, а пересборка трижды
@@ -669,7 +684,11 @@ def main():
     # делаем и выходим кодом EXIT_NO_GRAPH — статус остаётся «ошибка», ретрай
     # придёт, когда модель оживёт.
     graph_ok = bool(data)
-    if not graph_ok:
+    if graph_off:
+        print("граф выключен профилем (sufler.graph: false) — узлы не строим; "
+              "архив, копии и хук собираем")
+        data = {}
+    elif not graph_ok:
         print("LLM не вернула валидный JSON — узлы графа не обновляем; "
               "архив, копии и хук собираем")
         data = {}
@@ -747,6 +766,11 @@ def main():
         # читает morning_brief, и без них выключенный автомат не осторожен,
         # а нем — находка остаётся в логе прогона, которого никто не видит.
         try:
+            # Профиль может выключить ревизию (`sufler.tier3: false`): она
+            # судит ядра эмбеддингами и поднимает рядом bge-m3 (+1.2 ГБ).
+            # Узлы при этом строятся как обычно — выключается только ревизия.
+            if not install_profile.tier3_enabled(cfg):
+                raise RuntimeError("выключена профилем (sufler.tier3: false)")
             import tier3
             _yield_to_live()   # ревизия ядер тянет эмбеддер — не под живую встречу
             auto = tier3.auto_apply_allowed(cfg)
@@ -931,7 +955,7 @@ def main():
             if fresh:
                 print(f"cloud-enrich: ревизия уже есть ({fresh[0].name}) — повтор не запускаем")
                 run_post_hook(cfg, tpath, stamp)
-                if not graph_ok:
+                if not graph_ok and not graph_off:
                     sys.exit(EXIT_NO_GRAPH)
                 return
             # Фоном уходит НЕ сам claude, а воркер: он ждёт разбор с таймаутом,
@@ -951,7 +975,9 @@ def main():
             print(f"cloud-enrich не запустился: {e}")
 
     run_post_hook(cfg, tpath, stamp)
-    if not graph_ok:
+    # Выключенный профилем граф — не отказ модели: код 0, статус «готово».
+    # EXIT_NO_GRAPH означал бы ошибку и повтор каждой встречи по кругу.
+    if not graph_ok and not graph_off:
         sys.exit(EXIT_NO_GRAPH)
 
 

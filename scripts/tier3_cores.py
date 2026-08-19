@@ -17,18 +17,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
+import install_profile  # noqa: E402
 import tier3  # noqa: E402
 
 # Отметки последнего прогона по графам. Лежат рядом с nightly.json: читает их
 # только этот скрипт, но человеку, который разбирается, почему ночь молчала,
 # они нужны там же, где остальные следы ночного цикла.
-STAMPS = pathlib.Path(__file__).resolve().parent.parent / "logs" / "tier3_last_run.json"
+# CHAROITE_ROOT: в бандловой установке код лежит в read-only .app, и запись
+# отметок рядом с ним падала бы PermissionError (ревью 19.08, третий круг).
+STAMPS = (pathlib.Path(os.environ.get("CHAROITE_ROOT")
+                       or pathlib.Path(__file__).resolve().parent.parent)
+          / "logs" / "tier3_last_run.json")
 
 
 def _stamps() -> dict:
@@ -111,6 +117,16 @@ def main() -> None:
                          "ночь, а свежих ядер за сутки — единицы. Первый запуск и "
                          "потерянная отметка = полный прогон")
     args = ap.parse_args()
+
+    # Профиль мог выключить ревизию (`sufler.tier3: false`): она судит ядра
+    # эмбеддингами и поднимает bge-m3 (+1.2 ГБ). Гейт в graph_updater закрывал
+    # только путь «после встречи», а ночь ходит сюда и подняла бы эмбеддер по
+    # всем графам (ревью 19.08, GLM). Гейтим ровно ночной путь (`--auto`):
+    # ручной запуск человек делает осознанно и вправе получить ревизию, даже
+    # если фоновая выключена (третий круг, Gemini).
+    if args.auto and not install_profile.tier3_enabled(graphs.load_config()):
+        print("ревизия ядер выключена профилем (sufler.tier3: false)")
+        return
 
     apply_mode = args.apply
     mark_mode = args.mark

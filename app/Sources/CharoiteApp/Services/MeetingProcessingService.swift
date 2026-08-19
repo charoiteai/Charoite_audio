@@ -122,7 +122,9 @@ enum MeetingProcessingPolicy {
     ) -> String? {
         switch resolvedState(snapshot, now: now) {
         case .ready:
-            return snapshot.notePath
+            // Заметки нет, когда граф выключен профилем — открываем то, что
+            // есть: стенограмму. Кнопка обязана что-то открывать.
+            return snapshot.notePath ?? snapshot.transcriptPath
         case .error, .empty:
             // И у ошибки, и у записи без речи полезен один и тот же ответ:
             // показать саму стенограмму — по ней видно, что там на самом деле.
@@ -681,7 +683,12 @@ final class MeetingProcessingService: ObservableObject {
         guard let snapshot else { return nil }
         switch MeetingProcessingPolicy.resolvedState(snapshot) {
         case .ready:
-            return L.t("Открыть встречу", "Open meeting", "打开会议")
+            // Заметки может не быть: профиль выключил разбор в узлы
+            // (`sufler.graph: false`). Кнопка «Открыть встречу», которая
+            // ничего не открывает, — худший вариант из возможных.
+            return snapshot.notePath == nil
+                ? L.t("Открыть стенограмму", "Open transcript", "打开逐字稿")
+                : L.t("Открыть встречу", "Open meeting", "打开会议")
         case .error, .empty:
             return L.t("Открыть стенограмму", "Open transcript", "打开逐字稿")
         case .processing, .unknown:
@@ -761,9 +768,10 @@ final class MeetingProcessingService: ObservableObject {
     }
 
     private func notifyIfReady() {
-        guard let snapshot,
-              snapshot.state == .ready,
-              snapshot.notePath != nil else { return }
+        // Заметки может не быть: профиль выключил разбор в узлы. Встреча от
+        // этого не перестаёт быть готовой, а уведомление — единственный
+        // сигнал человеку, что обработка кончилась (ревью 19.08, GLM).
+        guard let snapshot, snapshot.state == .ready else { return }
         let defaults = UserDefaults.standard
         // ключ различает прогоны: после успешного повтора meetingID тот же,
         // но updated_at новый — «встреча готова» обязана прозвучать снова
