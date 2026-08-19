@@ -62,8 +62,9 @@ CJK = (r"\u4e00-\u9fff"      # китайский, основной блок
        r"\u3040-\u30ff"      # японские каны
        r"\uff66-\uff9f"      # полуширинная катакана
        r"\uac00-\ud7af"      # корейский хангыль
-       r"\U00020000-\U0002ee5f"      # расширения B–I
-       r"\U0002f800-\U0002fa1f")  # совместимость, дополнение
+       r"\U00020000-\U0002ee5f"      # расширения B–F и I
+       r"\U0002f800-\U0002fa1f"      # совместимость, дополнение
+       r"\U00030000-\U000323af")  # расширения G и H — отдельный остров
 
 
 # Пробел рядом с иероглифом. Сжимать всю строку было нельзя: тогда
@@ -212,7 +213,12 @@ def search(graph: pathlib.Path, query: str) -> str:
             "или", "чем", "кто", "было", "быть", "по", "мы", "решили"}
     words, grams = needles(query, stop)
     words = words + grams
-    rx = re.compile("|".join(re.escape(w) for w in words), re.I) if words else re.compile(re.escape(query), re.I)
+    # Гейт и скоринг обязаны смотреть на текст ОДИНАКОВО. Раньше rx искал по
+    # сырому тексту, а счёт считался по norm() — после того, как norm научился
+    # схлопывать полноширинные формы, запрос «ＹｕＰａｙ» выбрасывал файл с
+    # «YuPay» ещё до скоринга, который его бы засчитал (ревью 20.08, DeepSeek).
+    rx = (re.compile("|".join(re.escape(norm(w)) for w in words), re.I) if words
+          else re.compile(re.escape(norm(query)), re.I))
     scored: list[tuple[int, str]] = []
     for p in graph.rglob("*.md"):
         if any(part.startswith(".") for part in p.parts):
@@ -221,10 +227,14 @@ def search(graph: pathlib.Path, query: str) -> str:
             text = p.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        m = rx.search(text)
+        low = norm(text)
+        m = rx.search(low)
         if not m:
             continue
-        low = norm(text)
+        # norm() почти всегда сохраняет длину, но lower() у отдельных символов
+        # её меняет («İ» → два кодпоинта). Тогда позиции из low к оригиналу не
+        # приложить — режем сниппет из нормализованной копии.
+        source = text if len(low) == len(text) else low
         rel = str(p.relative_to(graph))
         score = sum(1 for w in words if norm(w) in low)
         # Буст за попадание в ПУТЬ у биграмм слабее: двух иероглифов слишком
@@ -234,7 +244,7 @@ def search(graph: pathlib.Path, query: str) -> str:
         score += sum(3 for w in words if w not in grams and norm(w) in norm(rel))
         score += sum(1 for w in grams if norm(w) in norm(rel))
         start = max(0, m.start() - 150)
-        frag = " ".join(text[start:m.end() + SNIPPET].split())
+        frag = " ".join(source[start:m.end() + SNIPPET].split())
         scored.append((score, f"• {rel}\n  …{frag}…"))
     scored.sort(key=lambda x: -x[0])
     return "\n\n".join(h for _, h in scored[:LIMIT_FILES])

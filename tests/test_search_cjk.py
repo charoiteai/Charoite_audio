@@ -149,3 +149,33 @@ def test_перенос_строки_не_склеивает_соседние_а
     а не дата (ревью 20.08, локальная голова)."""
     assert not memory_bench.contains("9月", "срок 9\n月报告 отдельно")
     assert memory_bench.contains("9月", "срок 9 月 1 日")
+
+
+def test_расширения_G_и_H_тоже_режутся():
+    """G и H лежат отдельным островом выше 0x30000: диапазон «B–I» их не
+    покрывал, а лейбл утверждал обратное (ревью 20.08, DeepSeek)."""
+    assert memory_bench.cjk_grams("\U00030000") == ["\U00030000"]
+    assert memory_bench.cjk_grams("\U000323AF") == ["\U000323AF"]
+
+
+def test_полноширинный_запрос_находит_обычный_текст(tmp_path):
+    """Гейт файла и скоринг смотрят на текст одинаково: раньше rx искал по
+    сырому тексту и выбрасывал файл, который скоринг бы засчитал."""
+    graph = tmp_path / "g"
+    graph.mkdir()
+    (graph / "a.md").write_text("выбрали YuPay\n", encoding="utf-8")
+
+    assert "YuPay" in memory_bench.search(graph, "ＹｕＰａｙ")
+
+
+def test_ранжирование_сквозняком(tmp_path):
+    """Сквозная проверка порядка выдачи, а не только состава игл: файл с
+    точным совпадением обязан быть выше файла с частой биграммой."""
+    graph = tmp_path / "g"
+    graph.mkdir()
+    (graph / "частая.md").write_text("服务服务服务服务\n", encoding="utf-8")
+    (graph / "точная.md").write_text("服务商选型：YuPay\n", encoding="utf-8")
+
+    out = memory_bench.search(graph, "服务商选型")
+
+    assert out.index("точная.md") < out.index("частая.md")
