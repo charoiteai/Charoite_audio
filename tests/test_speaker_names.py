@@ -31,7 +31,7 @@ import sys
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
-from speaker_names import is_counterpart, trustworthy_name  # noqa: E402
+from speaker_names import is_counterpart, is_owner, trustworthy_name  # noqa: E402
 
 
 def test_мгновенные_ответы_не_гаснут_после_опознания_имени():
@@ -176,3 +176,16 @@ def test_метка_своего_канала_закрывает_гейт_люб
     assert not is_counterpart("Я", "Я")
     assert not is_counterpart("Игорь Ветров", "Игорь Ветров")
     assert is_counterpart("Собеседник 2", "Игорь Ветров")
+
+
+def test_коллизионное_имя_не_делает_владельцем_всех_собеседников():
+    """`is_owner` сравнивает по четырёхбуквенному префиксу, и имя
+    «Собеседник 2» в настройках делает владельцем КАЖДОГО «Собеседник N».
+    В гейте мгновенных ответов это глушило ⚡ для всех собеседников разом
+    на всю встречу (ревью 19.08, девятый круг). Демон такое имя в сверку
+    по имени не пускает; здесь закреплено само свойство `is_owner`, из-за
+    которого пускать нельзя."""
+    assert is_owner("Собеседник 1", "Собеседник 2"), \
+        "префиксное правило срабатывает — поэтому демон и обходит его"
+    assert is_owner("Собеседник 3", "Собеседник")
+    assert not is_owner("Мария", "Собеседник 2")

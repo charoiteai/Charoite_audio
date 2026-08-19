@@ -709,6 +709,14 @@ def main():
         own = hub.SPEAKER.get("mic", "")
         if own and name == own:
             return True
+        if owner_voice.collides_with_neutral(owner_name):
+            # Имя, неотличимое от нейтральной метки, в сверку по ИМЕНИ не
+            # пускаем: `is_owner` сравнивает по четырёхбуквенному префиксу,
+            # и «Собеседник 2» из настроек делает владельцем КАЖДОГО
+            # «Собеседник N» — гейт глохнет для всех собеседников разом
+            # (ревью 19.08, девятый круг). Подпись таким именем и так
+            # выключена, сверять нечем.
+            return False
         return speaker_names.is_owner(name, owner_name)
 
     def _owner_label(voice: int | None, speaker: str, neutral: str) -> str:
@@ -891,7 +899,8 @@ def main():
                     # «Не владелец» вместо startswith(«Собеседник»): строгое
                     # равенство оставляло ⚡/☁️ мёртвыми всю встречу, а startswith
                     # глушил их с момента, когда name_loop опознавал собеседника
-                    # по имени (аудит 14.08). Сверка — speaker_names.is_counterpart.
+                    # по имени (аудит 14.08). Сверка — _is_owner_line: сперва
+                    # метка своего канала, затем имя из настроек.
                     if instant_on and toggles["hints"] \
                             and not _is_owner_line(name) \
                             and looks_question(added):
