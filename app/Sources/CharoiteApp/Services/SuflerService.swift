@@ -473,24 +473,8 @@ final class SuflerService: ObservableObject {
             // Стоп по ЗАСТРЯВШЕМУ демону — просьба добить его ещё раз.
             // Раньше метод здесь просто выходил, и человек жал кнопку впустую
             // (аудит 14.08: «.blocked без выходных дуг»).
-            let (phase, action) = ShutdownMachine.next(
-                shutdownPhase, on: .stopRequested(daemonAlive: process?.isRunning == true))
-            shutdownPhase = phase
-            switch action {
-            case .forceKill:
-                guard let p = process, p.isRunning, let token = lifecycleGate.token else { break }
-                status = L.t("Добиваю процесс записи…", "Force-stopping the recorder…",
-                             "正在强制停止录音进程…")
-                kill(p.processIdentifier, SIGKILL)
-                scheduleShutdownPoll(token: token, after: ShutdownMachine.fastPoll)
-            case .finish:
-                // Демон умер, пока мы ждали: повторный Стоп обязан закрыть
-                // встречу, а не молча выйти — иначе lifecycle висит до
-                // прихода terminationHandler (ревью 19.08).
-                if let token = lifecycleGate.token { beginCaptureShutdown(token: token) }
-            case .nothing, .closeCapture, .pollAgain, .reportStuck:
-                break
-            }
+            applyShutdown(.stopRequested(daemonAlive: process?.isRunning == true),
+                          token: lifecycleGate.token)
             return
         }
         let wasRecording = lifecycle == .recording
@@ -500,8 +484,7 @@ final class SuflerService: ObservableObject {
         // остаётся `.idle`, и повторный Стоп во время обычного ожидания
         // попадает в переход «начать остановку» и сбрасывает счётчик
         // ожиданий, удлиняя закрытие встречи.
-        shutdownPhase = ShutdownMachine.next(
-            .idle, on: .stopRequested(daemonAlive: process?.isRunning == true)).0
+        shutdownPhase = .idle
         publishLifecycle()
 
         if wasRecording { MeetingProcessingService.shared.expectResult() }
@@ -556,15 +539,54 @@ final class SuflerService: ObservableObject {
             // Через машину, а не мимо неё: иначе событие «запасной таймер»
             // остаётся объявленным и оттестированным, но недостижимым в
             // проде (ревью 19.08).
-            let (phase, action) = ShutdownMachine.next(self.shutdownPhase, on: .killTimeout)
-            self.shutdownPhase = phase
-            if action == .closeCapture { self.beginCaptureShutdown(token: token) }
+            self.applyShutdown(.killTimeout, token: token)
         }
     }
 
     /// Закрывает сначала незавершённый startCapture, затем сам capture.
     /// Один token может войти сюда и из terminationHandler, и из fallback —
     /// `captureShutdownToken` делает операцию идемпотентной.
+    /// Единственный вход в подмашину остановки: событие внутрь, действие
+    /// наружу — и оно СРАЗУ исполняется.
+    ///
+    /// Отдельным методом, потому что дважды на ревью всплыл один и тот же
+    /// класс дефекта: событие объявлено в машине, покрыто зелёным тестом —
+    /// и не подаётся из сервиса; либо действие возвращается и молча
+    /// выбрасывается. Тест при этом закрепляет поведение, которого в
+    /// системе нет, а это хуже отсутствия теста. Пока подача события и
+    /// исполнение действия были разнесены по коду, ловушка воспроизводилась
+    /// снова и снова (ревью 19.08, круги 1 и 2).
+    @discardableResult
+    private func applyShutdown(_ event: ShutdownEvent, token: UUID?) -> ShutdownAction {
+        let (phase, action) = ShutdownMachine.next(shutdownPhase, on: event)
+        shutdownPhase = phase
+        switch action {
+        case .nothing:
+            break
+        case .closeCapture, .finish:
+            if let token { beginCaptureShutdown(token: token) }
+        case .pollAgain(let delay):
+            captureShutdownToken = nil
+            if let token { scheduleShutdownPoll(token: token, after: delay) }
+        case .reportStuck:
+            captureStartTask = nil
+            captureShutdownToken = nil
+            fail(L.t(
+                "Процесс записи не завершился — жду его, можно нажать «Стоп» ещё раз",
+                "The recording process did not stop — still waiting; press Stop again to force it",
+                "录音进程未能停止——仍在等待；可再次点击「停止」强制结束"
+            ))
+            if let token { scheduleShutdownPoll(token: token, after: ShutdownMachine.slowPoll) }
+        case .forceKill:
+            guard let p = process, p.isRunning, let token else { break }
+            status = L.t("Добиваю процесс записи…", "Force-stopping the recorder…",
+                         "正在强制停止录音进程…")
+            kill(p.processIdentifier, SIGKILL)
+            scheduleShutdownPoll(token: token, after: ShutdownMachine.fastPoll)
+        }
+        return action
+    }
+
     /// Следующая проверка процесса. Интервал приходит из подмашины: частый
     /// пока ждём, редкий — когда демон уже признан застрявшим.
     private func scheduleShutdownPoll(token: UUID, after delay: TimeInterval) {
@@ -602,35 +624,17 @@ final class SuflerService: ObservableObject {
             // может прийти чуть позже. Не открываем idle, пока старый daemon
             // действительно жив: иначе следующий Start снова получит два
             // процесса, несмотря на исправленный capture.
-            let (phase, action) = ShutdownMachine.next(
-                self.shutdownPhase,
-                on: .pollTick(daemonAlive: self.process?.isRunning == true))
-            self.shutdownPhase = phase
-            switch action {
-            case .pollAgain(let delay):
-                self.captureShutdownToken = nil
-                self.scheduleShutdownPoll(token: token, after: delay)
-                return
-            case .reportStuck:
-                // Capture уже закрыт, частый опрос прекращён — но lifecycle
-                // остаётся активным (живой демон несовместим с idle), и
-                // редкая проверка продолжается: демон, зависший в finally,
-                // рано или поздно отпускает ресурсы, и приложение обязано
-                // заметить это само (аудит 14.08).
-                self.captureStartTask = nil
-                self.captureShutdownToken = nil
-                self.fail(L.t(
-                    "Процесс записи не завершился — жду его, можно нажать «Стоп» ещё раз",
-                    "The recording process did not stop — still waiting; press Stop again to force it",
-                    "录音进程未能停止——仍在等待；可再次点击「停止」强制结束"
-                ))
-                self.scheduleShutdownPoll(token: token, after: ShutdownMachine.slowPoll)
-                return
-            case .finish:
-                break
-            case .nothing, .closeCapture, .forceKill:
-                return
-            }
+            // Опрос идёт через тот же единственный вход. `.finish` — это
+            // «закрывать встречу», и обрабатывается ниже по коду; всё
+            // остальное (ещё подождать, объявить застревание) машина уже
+            // исполнила внутри applyShutdown.
+            //
+            // Флаг важен: applyShutdown для `.finish` зовёт beginCaptureShutdown,
+            // а мы уже внутри него — второй заход отсечёт guard по токену,
+            // но полагаться на это не стоит.
+            let action = self.applyShutdown(
+                .pollTick(daemonAlive: self.process?.isRunning == true), token: nil)
+            guard action == .finish else { return }
 
             guard self.lifecycleGate.finishStop(
                 token,
@@ -696,7 +700,10 @@ final class SuflerService: ObservableObject {
         // фактической смерти читателя, можно закрывать capture и разрешать
         // следующую встречу.
         if lifecycle == .stopping, let token = lifecycleGate.token {
-            beginCaptureShutdown(token: token)
+            // Через машину: `daemonExited` было объявлено и оттестировано,
+            // но сервис его не слал — ровно тот же класс дефекта, что с
+            // `killTimeout` кругом раньше (ревью 19.08).
+            applyShutdown(.daemonExited, token: token)
             return
         }
 
