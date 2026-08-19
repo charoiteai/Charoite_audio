@@ -48,7 +48,7 @@ final class SuflerService: ObservableObject {
     @Published var statusIsError = false
 
     /// Ставит статус и помечает его как сообщение об отказе.
-    private func fail(_ text: String) {
+    func fail(_ text: String) {
         status = text
         statusIsError = true
     }
@@ -106,7 +106,7 @@ final class SuflerService: ObservableObject {
         }
     }
 
-    private func stopClock() {
+    func stopClock() {
         clock?.invalidate()
         clock = nil
         recordingStartedAt = nil
@@ -126,18 +126,18 @@ final class SuflerService: ObservableObject {
     /// Слишком короткая запись — скорее всего промах по кнопке.
     nonisolated static let tooShortToStop: TimeInterval = 20
 
-    private var process: Process?
+    var process: Process?
     private var stdinPipe: Pipe?
     private var stdoutHandle: FileHandle?  // для снятия readabilityHandler при смерти демона
     private var errHandle: FileHandle?     // daemon.err.log — закрывать, иначе fd-утечка на рестартах
     /// Системный звук без BlackHole. Живёт ровно столько же, сколько демон:
     /// поднимается перед стартом, гасится в stop() и при смерти демона —
     /// иначе устройство останется висеть в системе.
-    private var systemAudioTap: Any?
+    var systemAudioTap: Any?
     /// Захват ScreenCaptureKit — основной путь к системному звуку с 07.08.
     /// Живёт столько же, сколько демон: поднимается перед стартом, гаснет
     /// в stop() и при смерти демона.
-    private var systemAudioCapture: Any?
+    var systemAudioCapture: Any?
     private var stdoutBuffer = Data()
     private var _hintBuf = ""            // буфер троттла подсказки (см. consume)
     // Панель различает содержимое подсказки: авто-контент (бриф, автоподсказки
@@ -154,27 +154,42 @@ final class SuflerService: ObservableObject {
     // Watchdog: демон шлёт hb каждые 30с из главного цикла; тишина 100с на живом
     // процессе = завис (20.07: встреча шла, транскрипция молча стояла 20 минут)
     private var lastEventAt = Date()
-    private var watchdog: Timer?
+    var watchdog: Timer?
     private var clock: Timer?
-    private var userStopped = false
+    var userStopped = false
     /// Причина последнего автостопа («silence» | «limit»), пока встреча на экране.
     @Published private(set) var autostopReason: String?
     private var restartAttempts = 0      // защита от краш-лупа: максимум 3 подряд
     private var lifecycleGate = RecordingLifecycleGate()
-    private var captureStartTask: Task<Void, Never>?
-    private var stopFallbackTask: Task<Void, Never>?
-    private var captureShutdownToken: UUID?
-    /// Сколько раз ждали смерти демона по полсекунды. После предела перестаём
-    /// опрашивать процесс, но остаёмся в stopping: живой daemon несовместим с
-    /// idle и не должен пропускать новый Start, обновление или быстрый выход.
-    private var shutdownWaits = 0
 
-    private enum CleanupDisposition {
+    // Gate остаётся закрытым, а подсистема остановки (соседний файл) ходит к
+    // нему через эти обёртки. Иначе поле пришлось бы открыть модулю целиком —
+    // и любой код смог бы ПЕРЕУСТАНОВИТЬ его (`gate = RecordingLifecycleGate()`),
+    // то есть сбросить идущую остановку в idle мимо всех проверок. Struct
+    // с mutating-методами закрыть через `private(set)` нельзя: мутация — это
+    // запись (ревью 19.08, пятый круг, DeepSeek).
+    var stopToken: UUID? { lifecycleGate.token }
+    func gateOwns(_ token: UUID, in phase: RecordingLifecycle) -> Bool {
+        lifecycleGate.owns(token, in: phase)
+    }
+    func gateBeginStop() -> UUID? { lifecycleGate.beginStop() }
+    func gateFinishStop(_ token: UUID, daemonAlive: Bool) -> Bool {
+        lifecycleGate.finishStop(token, daemonAlive: daemonAlive)
+    }
+    var captureStartTask: Task<Void, Never>?
+    var stopFallbackTask: Task<Void, Never>?
+    var captureShutdownToken: UUID?
+    /// Фаза остановки — подмашина из ShutdownMachine.swift. Раньше здесь был
+    /// счётчик ожиданий, а остальное состояние жило в соседних полях и
+    /// согласовывалось прозой; теперь переходы проверяются тестами без UI.
+    var shutdownPhase: ShutdownPhase = .idle
+
+    enum CleanupDisposition {
         case stopped
         case preserveFailure
         case restart
     }
-    private var cleanupDisposition: CleanupDisposition = .stopped
+    var cleanupDisposition: CleanupDisposition = .stopped
 
     private var suflerRoot: URL { AppSettings.charoiteRoot }
 
@@ -186,6 +201,10 @@ final class SuflerService: ObservableObject {
     /// должно: закрыл ноутбук — закончил встречу.
     private var sleepGuard: NSObjectProtocol?
 
+    /// Схлопнуть панель разбора. Отдельным методом, чтобы `isExpanding`
+    /// остался `private(set)`: писать в него вправе только сервис.
+    func collapseExpansion() { isExpanding = false }
+
     private func beginSleepGuard() {
         guard sleepGuard == nil else { return }
         sleepGuard = ProcessInfo.processInfo.beginActivity(
@@ -193,7 +212,7 @@ final class SuflerService: ObservableObject {
             reason: L.t("Идёт запись встречи", "Meeting recording in progress", "会议录音进行中"))
     }
 
-    private func endSleepGuard() {
+    func endSleepGuard() {
         if let guardToken = sleepGuard {
             ProcessInfo.processInfo.endActivity(guardToken)
             sleepGuard = nil
@@ -230,7 +249,7 @@ final class SuflerService: ObservableObject {
         }
     }
 
-    private func publishLifecycle() {
+    func publishLifecycle() {
         lifecycle = lifecycleGate.state
         isRunning = lifecycle == .recording
     }
@@ -464,158 +483,6 @@ final class SuflerService: ObservableObject {
         }
     }
 
-    func stop() {
-        // Stop во время уже идущей очистки отменяет запланированный
-        // auto-restart, даже если нового state transition не требуется.
-        userStopped = true
-        if lifecycle == .stopping {
-            cleanupDisposition = .stopped
-            return
-        }
-        let wasRecording = lifecycle == .recording
-        guard let token = lifecycleGate.beginStop() else { return }
-        cleanupDisposition = .stopped
-        publishLifecycle()
-
-        if wasRecording { MeetingProcessingService.shared.expectResult() }
-        watchdog?.invalidate()
-        watchdog = nil
-        if wasRecording { send("stop") }
-        captureStartTask?.cancel()
-
-        // Демону нужно успеть: запустить graph_updater и закрыть аудио-стримы.
-        // 1.5с не хватало на длинной встрече — обновление графа терялось.
-        let p = process  // сильный захват: добить именно ЭТОТ демон, не преемника
-        if let p, p.isRunning {
-            DispatchQueue.global().asyncAfter(deadline: .now() + 8.0) {
-                if p.isRunning { p.terminate() }
-            }
-            // Зависший в finally демон держит daemon.lock. Добиваем именно
-            // захваченный Process; lifecycle до его смерти остаётся stopping.
-            DispatchQueue.global().asyncAfter(deadline: .now() + 12.0) {
-                if p.isRunning { kill(p.processIdentifier, SIGKILL) }
-            }
-            scheduleStopFallback(token: token)
-        } else {
-            beginCaptureShutdown(token: token)
-        }
-        isExpanding = false
-        endSleepGuard()
-        stopClock()
-        status = L.t("Останавливаю…", "Stopping…", "停止中…")
-    }
-
-    private func beginFailedStartCleanup(token: UUID) {
-        guard lifecycleGate.owns(token, in: .starting),
-              let stopToken = lifecycleGate.beginStop()
-        else { return }
-        cleanupDisposition = .preserveFailure
-        publishLifecycle()
-        beginCaptureShutdown(token: stopToken)
-    }
-
-    /// Последняя страховка: если terminationHandler почему-то не пришёл,
-    /// через 13 секунд capture всё равно закроется. В idle переходим только
-    /// после await stop(), поэтому новая встреча не перекрывает старую.
-    private func scheduleStopFallback(token: UUID) {
-        stopFallbackTask?.cancel()
-        stopFallbackTask = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: 13_000_000_000)
-            } catch {
-                return
-            }
-            guard let self, self.lifecycleGate.owns(token, in: .stopping) else { return }
-            self.beginCaptureShutdown(token: token)
-        }
-    }
-
-    /// Закрывает сначала незавершённый startCapture, затем сам capture.
-    /// Один token может войти сюда и из terminationHandler, и из fallback —
-    /// `captureShutdownToken` делает операцию идемпотентной.
-    private func beginCaptureShutdown(token: UUID) {
-        guard lifecycleGate.owns(token, in: .stopping),
-              captureShutdownToken != token
-        else { return }
-        captureShutdownToken = token
-        stopFallbackTask?.cancel()
-        stopFallbackTask = nil
-
-        let startTask = captureStartTask
-        startTask?.cancel()
-        let capture = systemAudioCapture
-        systemAudioCapture = nil
-        let tap = systemAudioTap
-        systemAudioTap = nil
-
-        Task { @MainActor [weak self] in
-            _ = await startTask?.value
-            if #available(macOS 14.4, *) { (tap as? SystemAudioTap)?.stop() }
-            if #available(macOS 13.0, *) {
-                await (capture as? SystemAudioCapture)?.stop()
-            }
-            guard let self else { return }
-            // SIGKILL запланирован на 12-ю секунду, но termination notification
-            // может прийти чуть позже. Не открываем idle, пока старый daemon
-            // действительно жив: иначе следующий Start снова получит два
-            // процесса, несмотря на исправленный capture.
-            switch DaemonShutdownPolicy.action(alive: self.process?.isRunning == true,
-                                               waits: self.shutdownWaits) {
-            case .retry:
-                self.shutdownWaits += 1
-                self.captureShutdownToken = nil
-                self.stopFallbackTask = Task { @MainActor [weak self] in
-                    try? await Task.sleep(nanoseconds: 500_000_000)
-                    guard let self, self.lifecycleGate.owns(token, in: .stopping) else { return }
-                    self.beginCaptureShutdown(token: token)
-                }
-                return
-            case .blocked:
-                // Capture уже закрыт. Частый polling больше не нужен, но
-                // lifecycle остаётся active: иначе updater/quit потеряют
-                // живой daemon, а новый Start попадёт в ложный idle.
-                self.captureStartTask = nil
-                self.captureShutdownToken = nil
-                self.shutdownWaits = 0
-                self.fail(L.t(
-                    "Процесс записи не завершился — дождитесь его остановки или перезапустите приложение",
-                    "The recording process did not stop — wait for it to exit or restart the app",
-                    "录音进程未能停止——请等待其退出或重新启动应用"
-                ))
-                return
-            case .finish:
-                break
-            }
-
-            guard self.lifecycleGate.finishStop(
-                token,
-                daemonAlive: self.process?.isRunning == true
-            ) else { return }
-            self.captureStartTask = nil
-            self.captureShutdownToken = nil
-            self.shutdownWaits = 0
-            self.process = nil
-            self.publishLifecycle()
-
-            switch self.cleanupDisposition {
-            case .stopped:
-                // Причина автостопа обязана пережить очистку: раньше здесь
-                // безусловно писалось «Остановлен», и человек, вернувшийся к
-                // ноутбуку, не отличал автостоп от собственного Стопа
-                // (ревью 18.08 ×2).
-                self.status = Self.stoppedStatus(autostopReason: self.autostopReason)
-                self.statusIsError = false
-            case .preserveFailure:
-                break
-            case .restart:
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-                    guard let self, !self.userStopped, self.lifecycle == .idle else { return }
-                    self.start(preserveUI: true)
-                }
-            }
-        }
-    }
-
     /// Поднять системный звук через Core Audio tap.
     ///
     /// До macOS 14.4 API нет, разрешение может быть не выдано, устройство
@@ -651,7 +518,10 @@ final class SuflerService: ObservableObject {
         // фактической смерти читателя, можно закрывать capture и разрешать
         // следующую встречу.
         if lifecycle == .stopping, let token = lifecycleGate.token {
-            beginCaptureShutdown(token: token)
+            // Через машину: `daemonExited` было объявлено и оттестировано,
+            // но сервис его не слал — ровно тот же класс дефекта, что с
+            // `killTimeout` кругом раньше (ревью 19.08).
+            applyShutdown(.daemonExited, token: token)
             return
         }
 
@@ -810,7 +680,10 @@ final class SuflerService: ObservableObject {
         send("ask " + q)
     }
 
-    private func send(_ cmd: String) {
+    /// Команда демону в stdin. Открыта модулю только потому, что `stop()`
+    /// живёт в соседнем файле: снаружи сервиса звать её нельзя — она минует
+    /// и lifecycle-гейт, и подтверждение остановки короткой записи.
+    func send(_ cmd: String) {
         guard let fh = stdinPipe?.fileHandleForWriting,
               let data = (cmd + "\n").data(using: .utf8) else { return }
         try? fh.write(contentsOf: data)
