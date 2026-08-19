@@ -139,9 +139,15 @@ class MeetingStatusStore:
         self._prune(now)
         return self._write(transcript, payload)
 
-    def ready(self, transcript: pathlib.Path, note: pathlib.Path,
+    def ready(self, transcript: pathlib.Path, note: pathlib.Path | None,
               names_pending: bool = False) -> pathlib.Path:
         """Встреча разобрана. names_pending — разбор прошёл, но не целиком.
+
+        note=None — заметки нет и не будет: на лёгком профиле граф знаний
+        выключен (`sufler.graph: false`), стенограмма и минутки собраны, а
+        узлов никто не строил. Это готовность, а не ошибка: повторять
+        конвейер незачем. Поле `note_path` в таком статусе отсутствует —
+        читатели уже умеют его не находить (в приложении оно опционально).
 
         12.08 модель молчала на разборе имён, стенограмма ушла с «Собеседник
         1..5», и статус был неотличим от полностью удачного. Готовность и
@@ -159,8 +165,9 @@ class MeetingStatusStore:
             "started_at": current.get("started_at", now),
             "updated_at": now,
             "transcript_path": str(find_final_transcript(transcript)),
-            "note_path": str(pathlib.Path(note).resolve()),
         }
+        if note is not None:
+            payload["note_path"] = str(pathlib.Path(note).resolve())
         # Поле появляется только когда есть что сказать: старые читатели
         # статуса (и приложение до обновления) видят прежний документ.
         if names_pending:

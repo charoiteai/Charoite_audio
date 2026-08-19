@@ -60,13 +60,18 @@ Semantic search adds `bge-m3` (~1.2 GB) — recommended at 16 GB+.
 
 | RAM | Main LLM | Light LLM | Graph | Notes |
 |----|----|----|----|----|
-| **8 GB** | `qwen3.5:4b` | same | no | Transcript, theses, minutes, basic suggestions |
-| **16 GB** | `gemma4:latest` | `qwen3.5:2b` | slow | Full live loop — recommended entry point |
-| **32 GB** | `qwen3.6:35b-a3b` | `qwen3.5:4b` | yes | The default config, benchmarked here |
-| **64 GB+** | `qwen3.6:35b-a3b` | `qwen3.5:4b` | yes | Headroom for the cloud Claude layer + long meetings |
+| **8 GB** | `qwen3.5:4b` (3.2 GB) | same | yes | One model for both roles; déjà vu off — `bge-m3` does not fit alongside |
+| **16 GB** | `gemma4:12b` (7.0 GB) | `qwen3.5:4b` | yes | Every quote checks out (100%), the live thread keeps its prompt cache |
+| **32 GB** | `qwen3.8:27b-mlx` (16.9 GB) | `qwen3.5:4b` | yes | More accurate quotes (96%); extraction is three times slower, and it runs in the background |
+| **64 GB+** | `qwen3.6:35b-mlx` (20.4 GB) | `qwen3.5:4b` | yes | The working set: 42 decisions and 39 cores per meeting, 57 s median |
 
-Below 16 GB the knowledge graph is off (sub-30B models break the JSON schema);
-on 4 GB run STT only; `llm.base_url` may point at another machine you own only with an explicit `llm.allow_remote: true` (transcripts leave this device; refused under `CHAROITE_NO_CLOUD` — see `docs/MODELS.md`).
+The numbers come from the 19.08 benchmark on three real meetings
+(`scripts/bench_extract.py`, the 14.08 method). It also retired the old rule
+"below 16 GB the graph is off": `qwen3.5:4b` parsed all three meetings
+(31 decisions, 30 cores, 96% quotes) — more findings than `gemma4:12b`, and
+three times faster. What breaks the JSON schema is not the size class but
+particular models: `GigaChat3.1-10B` returned no parse in five parts out of
+six and did not make the table. On 4 GB run STT only; `llm.base_url` may point at another machine you own only with an explicit `llm.allow_remote: true` (transcripts leave this device; refused under `CHAROITE_NO_CLOUD` — see `docs/MODELS.md`).
 
 **iOS/iPadOS**: the phone does STT + light generation, anything heavier goes to
 a Mac over the REST API. On iOS 26+ the built-in ~3B Foundation Models handle

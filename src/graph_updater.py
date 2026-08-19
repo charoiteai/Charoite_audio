@@ -17,6 +17,7 @@ import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import cloud  # noqa: E402
+import install_profile  # noqa: E402
 import live_gate  # noqa: E402
 import llm_health  # noqa: E402
 import privacy  # noqa: E402
@@ -639,6 +640,11 @@ def main():
         _progress = (MeetingStatusStore(ROOT), tpath)
     except Exception as e:  # noqa: BLE001 — без прогресса разбор всё равно идёт
         print(f"граф: статус недоступен ({type(e).__name__}: {e})")
+    if not install_profile.graph_enabled(cfg):
+        # Второй рубеж рядом с первым (rebuild_transcript): скрипт зовут и
+        # руками, и из ретраев, и профиль обязан действовать в обоих путях.
+        print("граф выключен профилем (sufler.graph: false) — разбор не запускаю")
+        return
     graph_raw = os.environ.get("SUFLER_GRAPH_DIR") or cfg["sufler"].get("graph_dir", "")
     graph = pathlib.Path(graph_raw).expanduser()
     # проверять исходную строку: str(Path("")) == "." — пустой конфиг молча

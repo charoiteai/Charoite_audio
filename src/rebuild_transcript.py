@@ -40,6 +40,7 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 import numpy as np  # noqa: E402
 import yaml  # noqa: E402
 
+import install_profile  # noqa: E402
 import live_gate  # noqa: E402
 import meeting_stamp  # noqa: E402
 from diarize import diarize  # noqa: E402 — pyannote-сегментация + эмбеддинги, весь файл
@@ -667,6 +668,15 @@ def main():
             rebuild(live, cfg)
         except Exception as e:  # noqa: BLE001 — граф важнее идеальной пересборки
             log(f"пересборка не удалась ({type(e).__name__}: {e}) — граф по живой версии")
+        if not install_profile.graph_enabled(cfg):
+            # Лёгкий профиль (8 ГБ): моделей для разбора в узлы тут нет, и
+            # запускать его — значит каждую встречу получать сломанный JSON,
+            # статус ошибки и повтор. Стенограмма, минутки и архив уже
+            # собраны — это готовность, а не отказ.
+            log("граф выключен профилем (sufler.graph: false) — "
+                "стенограмма и минутки готовы, узлы не строим")
+            publish(status.ready, live, None, names_pending(live))
+            return
         publish(status.processing, live, "updating_graph")
         _yield_to_live("разбор графа")   # graph_updater ждёт и сам — здесь ради честного лога
         result = subprocess.run(
