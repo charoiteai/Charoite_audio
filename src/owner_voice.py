@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import re
 
 #: Сколько секунд речи в микрофоне нужно накопить, прежде чем вообще решать.
 #: На двух фразах «преобладание» — это шум, а не факт.
@@ -103,6 +104,18 @@ KEEP_SHARE = 0.5
 KEEP_LEAD = 0.05
 
 
+def human_seconds(heard: Heard, *, echo_seconds: float = ECHO_SECONDS) -> float:
+    """Сколько в микрофоне речи ЛЮДЕЙ — без эха из динамиков.
+
+    Ровно та величина, по которой решает `owner_voice`. Отдельной функцией
+    потому, что по ней же демон решает, говорить ли человеку «в микрофоне
+    слышно несколько человек»: считая эхо, он сообщал это в звонке, где
+    второй «человек» — колонки владельца (ревью 19.08, третий круг).
+    """
+    return sum(s for v, s in heard.mic.items()
+               if heard.bh.get(v, 0.0) <= echo_seconds)
+
+
 def owner_voice(heard: Heard, *, min_seconds: float = MIN_MIC_SECONDS,
                 min_share: float = MIN_SHARE, min_lead: float = MIN_LEAD,
                 echo_seconds: float = ECHO_SECONDS,
@@ -128,8 +141,6 @@ def owner_voice(heard: Heard, *, min_seconds: float = MIN_MIC_SECONDS,
     # несколько человек», хотя второй «человек» — его же колонки
     # (ревью 19.08, второй круг).
     total = sum(candidates.values())
-    if total <= 0:
-        return None
     ranked = sorted(candidates.items(), key=lambda kv: -kv[1])
     voice, seconds = ranked[0]
     share = seconds / total
@@ -149,6 +160,23 @@ def owner_voice(heard: Heard, *, min_seconds: float = MIN_MIC_SECONDS,
     return voice
 
 
+def collides_with_neutral(owner_label: str, other_label: str) -> bool:
+    """Имя владельца неотличимо от нейтральной метки?
+
+    Нейтральные метки генерируются С НОМЕРОМ («Собеседник 1», «Собеседник
+    2»), поэтому проверять одно лишь равенство с `other_label` мало:
+    человек, написавший в настройках «Собеседник 2», получил бы две разные
+    физические метки с одним текстом. В стенограмме по метке склеиваются
+    абзацы, а в пересборке по ней же выбирается дорожка для распознавания —
+    и реплики удалённого собеседника поехали бы из микрофонного аудио
+    (ревью 19.08, третий круг).
+    """
+    if not owner_label:
+        return True
+    return (owner_label == other_label
+            or bool(re.fullmatch(rf"{re.escape(other_label)} ?\d+", owner_label)))
+
+
 def label_for(voice: int | None, *, is_mic: bool, heard: Heard,
               owner_label: str, other_label: str, neutral: str,
               current: int | None = None) -> str:
@@ -157,10 +185,10 @@ def label_for(voice: int | None, *, is_mic: bool, heard: Heard,
     `owner_label` — метка микрофонного канала (имя из настроек), `other_label`
     — метка системного, `neutral` — нейтральное «Собеседник N» от трекера.
 
-    Совпадение меток каналов (в настройках написали «Собеседник») делает
-    признак канала бессмысленным — тогда владельца не подписываем вовсе.
+    Имя, неотличимое от нейтральной метки, делает признак канала
+    бессмысленным — тогда владельца не подписываем вовсе.
     """
-    if not is_mic or owner_label == other_label or not owner_label:
+    if not is_mic or collides_with_neutral(owner_label, other_label):
         return neutral
     if voice is None:
         return neutral

@@ -711,7 +711,7 @@ def main():
         """
         if signed:
             note = ""
-        elif sum(heard_by_channel.mic.values()) < owner_voice.MIN_MIC_SECONDS:
+        elif owner_voice.human_seconds(heard_by_channel) < owner_voice.MIN_MIC_SECONDS:
             return          # ещё копим речь: объяснять нечего и рано
         elif not heard_by_channel.call:
             note = ("собеседников в динамиках не слышно — похоже на очную "
