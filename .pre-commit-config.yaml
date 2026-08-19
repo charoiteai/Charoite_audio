@@ -1,0 +1,32 @@
+# Локальные проверки до коммита: pre-commit install
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        args: [--select, "E9,F"]
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+  - repo: local
+    hooks:
+      - id: swiftlint
+        name: swiftlint (errors)
+        # Прежний однострочник был всегда зелёным при неустановленном или
+        # упавшем swiftlint: пайп без pipefail глотал его код выхода, а grep
+        # без совпадений давал exit 0 (аудит 14.08; тот же паттерн уже чинили
+        # в swift-tests.yml). Теперь: нет бинаря — красный; упал — красный;
+        # error-нарушения — красный с их списком; только warnings — зелёный.
+        entry: bash -c 'command -v swiftlint >/dev/null || { echo "swiftlint не установлен (brew install swiftlint)"; exit 1; }; out=$(swiftlint lint --quiet 2>&1); code=$?; if [ $code -gt 1 ]; then echo "$out" | tail -5; exit 1; fi; if echo "$out" | grep -q " error:"; then echo "$out" | grep " error:"; exit 1; fi; exit 0'
+        language: system
+        files: \.swift$
+        pass_filenames: false
+      # Страж обезличивания: раньше жил в .git/hooks и не переносился с
+      # репозиторием — на новой машине защиты не было вовсе.
+      - id: private-markers
+        name: приватные маркеры (обезличивание публичного репо)
+        entry: python3 scripts/check_private_markers.py
+        language: system
+        pass_filenames: false
+        always_run: true
