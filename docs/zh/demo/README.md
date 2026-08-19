@@ -25,6 +25,7 @@ sufler:
 ```bash
 .venv/bin/python scripts/memory_bench.py --demo      # 俄语演示图谱
 .venv/bin/python scripts/memory_bench.py --demo-en   # 英语演示图谱
+.venv/bin/python scripts/memory_bench.py --demo-zh   # 中文演示图谱
 ```
 
 体验完把 `graph_dir` 换回您真实的 vault。`demo/graph` 里的一切都是虚构的。
@@ -36,3 +37,12 @@ sufler:
 
 - "what did we decide about the payment provider?"
 - "what are the current blockers?"
+
+## 中文演示
+
+`demo/graph_zh` 是同一虚构项目的中文版，团队成员也是中文名。把
+`graph_dir` 指向它，设置 `sufler.language: zh`，然后提问：
+
+- 支付服务商最后定了哪一家？
+- 现在有哪些阻碍？
+- 网店计划什么时候上线？

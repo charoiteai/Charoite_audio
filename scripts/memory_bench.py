@@ -45,6 +45,54 @@ def norm(s: str) -> str:
     return s.lower().replace("ё", "е")
 
 
+# Иероглифы пробелами не разделяются, поэтому «слова» из них не нарезать:
+# запрос 支付服务商最后定了哪一家？ давал ПУСТОЙ список слов, поиск скатывался
+# на поиск всей фразы целиком и не находил ничего (замер 19.08: 0/3 на
+# китайском демо-графе против 2/3 на английском). Берём скользящие биграммы —
+# стандартный приём для языков без пробелов: 支付服务商 → 支付, 付服, 服务, 务商.
+CJK = r"\u4e00-\u9fff\u3400-\u4dbf\u3040-\u30ff\uac00-\ud7af"
+
+
+def cjk_grams(query: str) -> list[str]:
+    """Биграммы из иероглифических кусков запроса (китайский, японский, корейский)."""
+    grams: list[str] = []
+    for run in re.findall(f"[{CJK}]+", query):
+        if len(run) == 1:
+            grams.append(run)
+        else:
+            grams += [run[i:i + 2] for i in range(len(run) - 1)]
+    return grams
+
+
+# Промпт синтеза на языке кейсов. Раньше он был только русским, и на
+# английском/китайском демо-графе модель отвечала по-русски: кейс с «September»
+# падал не потому, что факт потерян, а потому, что в ответе стояло «1 сентября»
+# (замер 19.08 — по одному ложному провалу на каждом нерусском графе). Бенч
+# обязан мерить то, что увидит пользователь на СВОЁМ языке.
+SYNTH = {
+    "ru": (
+        "Вопрос: {q}\n\nФрагменты из архива встреч:\n{found}\n\n"
+        "Ответь на вопрос по фрагментам: кратко, с конкретными фактами "
+        "(имена, числа, идентификаторы) из фрагментов. Ничего не выдумывай.",
+        "Ты — ассистент по архиву рабочих встреч. Только факты из фрагментов.",
+    ),
+    "en": (
+        "Question: {q}\n\nFragments from the meeting archive:\n{found}\n\n"
+        "Answer the question from the fragments: briefly, with the concrete "
+        "facts (names, numbers, identifiers) they contain. Invent nothing. "
+        "Answer in English.",
+        "You are an assistant over an archive of work meetings. "
+        "Only facts from the fragments. Answer in English.",
+    ),
+    "zh": (
+        "问题：{q}\n\n会议档案片段：\n{found}\n\n"
+        "请根据片段回答问题：简洁，并给出片段中的具体事实"
+        "（姓名、数字、编号）。不要编造。请用中文回答。",
+        "你是会议档案助手。只使用片段中的事实，请用中文回答。",
+    ),
+}
+
+
 def search_brain(graph: pathlib.Path, query: str) -> str | None:
     """Боевой контур: vault_search на brain :8100 (тот же, что в приложении).
 
@@ -87,6 +135,7 @@ def search(graph: pathlib.Path, query: str) -> str:
             "или", "чем", "кто", "было", "быть", "по", "мы", "решили"}
     words = [w for w in re.findall(r"[А-Яа-яЁёA-Za-z0-9_-]{3,}", query)
              if norm(w) not in stop]
+    words += cjk_grams(query)
     rx = re.compile("|".join(re.escape(w) for w in words), re.I) if words else re.compile(re.escape(query), re.I)
     scored: list[tuple[int, str]] = []
     for p in graph.rglob("*.md"):
@@ -117,10 +166,12 @@ def main() -> None:
                     help="демо-граф из репозитория вместо вашего: проверка контура без встреч")
     ap.add_argument("--demo-en", action="store_true",
                     help="английский демо-граф (demo/graph_en) и английские кейсы")
+    ap.add_argument("--demo-zh", action="store_true",
+                    help="китайский демо-граф (demo/graph_zh) и китайские кейсы")
     args = ap.parse_args()
 
     cfg_path = ROOT / "config" / "config.yaml"
-    if not cfg_path.exists() and (args.demo or args.demo_en):
+    if not cfg_path.exists() and (args.demo or args.demo_en or args.demo_zh):
         # демо-режим работает и до настройки: дефолтная модель Ollama
         cfg = {"llm": {"base_url": "http://127.0.0.1:11434", "model": "qwen3.5:4b"},
                "sufler": {"role": "Ассистент по архиву встреч."}}
@@ -134,7 +185,12 @@ def main() -> None:
         return
     else:
         cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    if args.demo_en:
+    lang = "zh" if args.demo_zh else "en" if args.demo_en else "ru"
+    if args.demo_zh:
+        args.demo = True
+        graph = ROOT / "demo" / "graph_zh"
+        bench_file = ROOT / "config" / "memory_bench_demo_zh.yaml"
+    elif args.demo_en:
         args.demo = True
         graph = ROOT / "demo" / "graph_en"
         bench_file = ROOT / "config" / "memory_bench_demo_en.yaml"
@@ -174,11 +230,10 @@ def main() -> None:
         # диагностика: чей провал — ПОИСКА (факт не в выдаче) или СИНТЕЗА
         # (факт в выдаче, LLM не включил в ответ). Лечатся по-разному.
         retr_missing = [m for m in must if norm(m) not in norm(found)]
+        prompt_tpl, system_msg = SYNTH[lang]
         answer = "".join(llm.stream(
-            f"Вопрос: {q}\n\nФрагменты из архива встреч:\n{found}\n\n"
-            "Ответь на вопрос по фрагментам: кратко, с конкретными фактами "
-            "(имена, числа, идентификаторы) из фрагментов. Ничего не выдумывай.",
-            system="Ты — ассистент по архиву рабочих встреч. Только факты из фрагментов.",
+            prompt_tpl.format(q=q, found=found),
+            system=system_msg,
             temperature=0.0,  # бенч — регрессия, не творчество: убираем флап
         ))
         missing = [m for m in must if norm(m) not in norm(answer)]

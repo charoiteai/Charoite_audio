@@ -1,0 +1,7 @@
+# Chinese demo bench cases — run with --demo-zh against demo/graph_zh.
+- q: "支付服务商最后定了哪一家？"
+  must: ["YuPay"]
+- q: "现在有哪些阻碍？"
+  must: ["PCI"]
+- q: "网店计划什么时候上线？"
+  must: ["9"]

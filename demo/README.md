@@ -26,6 +26,7 @@ before `config.yaml` exists):
 ```bash
 .venv/bin/python scripts/memory_bench.py --demo      # Russian demo graph
 .venv/bin/python scripts/memory_bench.py --demo-en   # English demo graph
+.venv/bin/python scripts/memory_bench.py --demo-zh   # Chinese demo graph
 ```
 
 Switch `graph_dir` back to your real vault when done. Everything in
@@ -38,3 +39,12 @@ Switch `graph_dir` back to your real vault when done. Everything in
 
 - "what did we decide about the payment provider?"
 - "what are the current blockers?"
+
+## Chinese demo
+
+`demo/graph_zh` is the same fictional project in Chinese, with a Chinese
+team. Point `graph_dir` at it, set `sufler.language: zh`, and ask:
+
+- 支付服务商最后定了哪一家？
+- 现在有哪些阻碍？
+- 网店计划什么时候上线？
