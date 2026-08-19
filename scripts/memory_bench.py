@@ -217,8 +217,12 @@ def search(graph: pathlib.Path, query: str) -> str:
     # сырому тексту, а счёт считался по norm() — после того, как norm научился
     # схлопывать полноширинные формы, запрос «ＹｕＰａｙ» выбрасывал файл с
     # «YuPay» ещё до скоринга, который его бы засчитал (ревью 20.08, DeepSeek).
-    rx = (re.compile("|".join(re.escape(norm(w)) for w in words), re.I) if words
-          else re.compile(re.escape(norm(query)), re.I))
+    # Без re.I намеренно: обе стороны уже прошли norm() с lower(), и флаг был
+    # единственным местом, где гейт структурно отличался от скоринга. Пока его
+    # нет, гейт — буквально тот же предикат «norm(игла) в norm(тексте)»
+    # (ревью 20.08, четвёртый круг).
+    rx = (re.compile("|".join(re.escape(norm(w)) for w in words)) if words
+          else re.compile(re.escape(norm(query))))
     scored: list[tuple[int, str]] = []
     for p in graph.rglob("*.md"):
         if any(part.startswith(".") for part in p.parts):
@@ -227,6 +231,10 @@ def search(graph: pathlib.Path, query: str) -> str:
             text = p.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
+        # norm() теперь считается для КАЖДОГО файла, а не только для прошедших
+        # гейт: это принятая цена того, что гейт и скоринг смотрят на текст
+        # одинаково. Не «оптимизировать» обратно на сырой текст — вернётся
+        # расхождение, из-за которого полноширинный запрос терял файлы.
         low = norm(text)
         m = rx.search(low)
         if not m:

@@ -179,3 +179,23 @@ def test_ранжирование_сквозняком(tmp_path):
     out = memory_bench.search(graph, "服务商选型")
 
     assert out.index("точная.md") < out.index("частая.md")
+
+
+def test_щели_между_блоками_не_считаются_иероглифами():
+    """Границы снаружи диапазонов: «не ловят лишнего» должно быть проверено,
+    а не заявлено (ревью 20.08, четвёртый круг)."""
+    assert memory_bench.cjk_grams("\U0002EE60") == []   # щель после I
+    assert memory_bench.cjk_grams("\U0002FA20") == []   # щель после дополнения
+    assert memory_bench.cjk_grams("\U000323B0") == []   # сразу после H
+
+
+def test_полноширинный_текст_находится_обычным_запросом(tmp_path):
+    """Основной путь гейта — по СЛОВАМ, а не через фолбэк «вся фраза»:
+    смешанный запрос против файла с полноширинными буквами."""
+    graph = tmp_path / "g"
+    graph.mkdir()
+    (graph / "a.md").write_text("выбрали ＹｕＰａｙ для оплаты\n", encoding="utf-8")
+
+    out = memory_bench.search(graph, "YuPay 支付")
+
+    assert "a.md" in out
