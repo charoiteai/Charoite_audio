@@ -12,6 +12,7 @@ import numpy as np
 import sounddevice as sd
 
 import meeting_stamp
+import owner_voice
 
 from charoite_paths import resolve_root
 
@@ -413,9 +414,16 @@ class AudioHub:
         # после чего rebuild_transcript не находил записи и молча пропускал
         # финальную пересборку — пользователь оставался с черновиком чанков.
         self.stamp = stamp or meeting_stamp.now()
-        # метка своего канала — имя владельца из конфига
+        # Метка своего канала — имя владельца из конфига. Имя, неотличимое
+        # от нейтральной метки собеседников («Собеседник», «Собеседник 2»),
+        # сюда не пускаем: по метке склеиваются абзацы, выбирается дорожка
+        # для распознавания и работает переименование по имени из
+        # разговора — слитая метка увела бы реплики владельца чужому.
+        # Проверка стоит ЗДЕСЬ, в источнике: демон подменял метку уже после
+        # старта захвата, и между стартом и подменой чанки успевали уйти со
+        # старой (ревью 19.08, седьмой круг, локальная голова).
         own = (cfg.get("sufler", {}).get("user_name") or "").strip()
-        if own:
+        if own and not owner_voice.collides_with_neutral(own, self.SPEAKER["blackhole"]):
             self.SPEAKER = {**self.SPEAKER, "mic": own}
         self.sr = int(a["samplerate"])
         self.chunk_s = float(a["chunk_seconds"])
