@@ -46,7 +46,11 @@ length into it.
 
 ## Build and install
 
-Requires JDK 17 and the Android SDK (compileSdk 35). The SDK path lives
+Requires JDK 17 and the Android SDK (compileSdk 37 — Compose from bom
+2026.08 is built against that API level and fails `checkDebugAarMetadata`
+on anything older; `targetSdk` deliberately stays at 35, since 36 and 37
+change background-service rules and force edge-to-edge, and the companion
+records audio in the background). The SDK path lives
 in `app-android/local.properties` (`sdk.dir=...`), which is not in the
 repository. The toolchain is AGP 9 on Gradle 9.5 (the wrapper downloads it
 on first run); AGP 9 ships Kotlin support itself, so the project declares
