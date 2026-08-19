@@ -19,8 +19,7 @@ from meeting_processing import MeetingStatusStore  # noqa: E402
 
 
 def test_default_is_everything_on():
-    assert install_profile.graph_enabled({}) is True
-    assert install_profile.graph_enabled({"sufler": {}}) is True
+    assert install_profile.graph_enabled({"sufler": {"graph_dir": "~/V"}}) is True
     assert install_profile.deja_vu_enabled({"sufler": {"graph": False}}) is True
     assert install_profile.tier3_enabled({}) is True
 
@@ -28,32 +27,52 @@ def test_default_is_everything_on():
 def test_embedding_loops_have_their_own_switch():
     """Ревизия ядер поднимает bge-m3 так же, как дежавю: без своего
     выключателя обещание «на 8 ГБ эмбеддера нет» ломалось на первой встрече."""
-    light = {"sufler": {"deja_vu": "false", "tier3": "false"}}
+    light = {"sufler": {"deja_vu": "false", "tier3": "false", "graph_dir": "~/V"}}
     assert install_profile.deja_vu_enabled(light) is False
     assert install_profile.tier3_enabled(light) is False
     assert install_profile.graph_enabled(light) is True, "узлы при этом строятся"
 
 
+def test_graph_dir_not_set_means_no_graph():
+    """`graph_dir: ""` — законный режим «только расшифровка». Раньше конвейер
+    доходил до конца, не находил заметку (её некуда класть) и ронял ГОТОВУЮ
+    встречу в «ошибку обработки», а повтор проходил тот же путь трижды
+    (ревью 19.08, второй круг Gemini)."""
+    assert install_profile.graph_enabled({"sufler": {"graph_dir": "", "graph": True}}) is False
+    assert install_profile.graph_enabled({"sufler": {"graph_dir": "   "}}) is False
+    assert install_profile.graph_enabled({"sufler": {"graph_dir": "~/Vault/Work"}}) is True
+
+
+def test_graph_dir_from_env_counts_too(monkeypatch):
+    """Тесты и разовые прогоны задают путь через SUFLER_GRAPH_DIR."""
+    monkeypatch.setenv("SUFLER_GRAPH_DIR", "/tmp/graph")
+    assert install_profile.graph_enabled({"sufler": {"graph_dir": ""}}) is True
+
+
 def test_boolean_false_turns_the_graph_off():
-    assert install_profile.graph_enabled({"sufler": {"graph": False}}) is False
+    assert install_profile.graph_enabled(
+        {"sufler": {"graph": False, "graph_dir": "~/Vault/Work"}}) is False
 
 
 def test_string_false_also_turns_it_off():
     """Приложение пишет значения в кавычках (`graph: "false"`), и строгая
     проверка `is True` считала бы такую строку включённым флагом."""
     for value in ("false", "False", " no ", "off", "0", "нет"):
-        assert install_profile.graph_enabled({"sufler": {"graph": value}}) is False, value
+        assert install_profile.graph_enabled(
+            {"sufler": {"graph": value, "graph_dir": "~/V"}}) is False, value
 
 
 def test_string_true_keeps_it_on():
     for value in ("true", "True", "yes", "on", "1", "да"):
-        assert install_profile.graph_enabled({"sufler": {"graph": value}}) is True, value
+        assert install_profile.graph_enabled(
+            {"sufler": {"graph": value, "graph_dir": "~/V"}}) is True, value
 
 
 def test_garbage_keeps_the_default():
     """Опечатка в конфиге не должна молча отключать граф на рабочей машине."""
-    assert install_profile.graph_enabled({"sufler": {"graph": "может быть"}}) is True
-    assert install_profile.graph_enabled({"sufler": {"graph": None}}) is True
+    assert install_profile.graph_enabled(
+        {"sufler": {"graph": "может быть", "graph_dir": "~/V"}}) is True
+    assert install_profile.graph_enabled({"sufler": {"graph": None, "graph_dir": "~/V"}}) is True
 
 
 def test_ready_status_survives_without_a_graph_note(tmp_path):

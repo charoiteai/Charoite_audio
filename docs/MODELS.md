@@ -274,6 +274,13 @@ model and blow up RAM).
 Rules of thumb: below 8 GB, keep only STT locally. The `small_model` always
 runs next to the main one, so budget for both at once.
 
+**Dialogue markup and the light profiles.** The loop that splits a paragraph
+into replies needs verbatim output: validation compares the words and drops
+any answer where the model changed something. A 4B edits more often than
+gemma, so on the 8 and 16 GB profiles markup fires less often — that is the
+price of a light set, not a breakage. On 32 and 64 GB the profile puts the
+main model here, the one that is resident anyway.
+
 **The 30B floor is retired (benchmark 19.08).** The same
 `scripts/bench_extract.py` on three real meetings (24–106k characters) gave:
 `qwen3.5:4b` — 3/3 parsed, 31 decisions, 30 cores, 96% quotes, 113 s median;

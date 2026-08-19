@@ -35,7 +35,8 @@ struct FirstRunView: View {
     /// если конфиг ещё не тронут, рекомендованный под память этой машины.
     @State private var presetID: String = ModelPresetPolicy.current(
         model: AppSettings.configValue("model"),
-        smallModel: AppSettings.configValue("small_model")
+        smallModel: AppSettings.configValue("small_model"),
+        dejaVu: ModelPresetPolicy.flagIsOn(AppSettings.configValue("deja_vu"))
     )?.id ?? ModelPresetPolicy.recommended(forGB: ModelPresetPolicy.machineMemoryGB).id
 
     var body: some View {

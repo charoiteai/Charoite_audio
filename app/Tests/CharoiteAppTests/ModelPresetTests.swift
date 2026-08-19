@@ -161,6 +161,21 @@ final class ModelPresetTests: XCTestCase {
         XCTAssertTrue(preset.dejaVu, "разница с 8 ГБ именно в семантической памяти")
     }
 
+    /// У «Сбалансированного» и «Лёгкого» одна и та же 4B — различает их
+    /// только семантическая память. Без сверки флага мастер на 8 ГБ показывал
+    /// бы «Сбалансированный», а сохранение включало бы bge-m3 и своп
+    /// (ревью 19.08, второй круг Gemini).
+    func testПрофилиСОдинаковымиМоделямиРазличаютсяПоФлагу() {
+        let light = ModelPresetPolicy.current(model: "qwen3.5:4b",
+                                              smallModel: "qwen3.5:4b", dejaVu: false)
+        XCTAssertEqual(light?.id, "light")
+        let balanced = ModelPresetPolicy.current(model: "qwen3.5:4b",
+                                                 smallModel: "qwen3.5:4b", dejaVu: true)
+        XCTAssertEqual(balanced?.id, "balanced")
+        // без флага — прежнее поведение (первый подходящий по моделям)
+        XCTAssertNotNil(ModelPresetPolicy.current(model: "qwen3.5:4b", smallModel: "qwen3.5:4b"))
+    }
+
     func testПамятьМашиныОпределяется() {
         XCTAssertGreaterThan(ModelPresetPolicy.machineMemoryGB, 0,
                              "без объёма памяти рекомендация становится гаданием")

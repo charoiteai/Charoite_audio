@@ -46,6 +46,8 @@ struct ModelPreset: Identifiable, Equatable {
     /// 40–150 секунд всю встречу, поэтому на лёгких машинах это лёгкая
     /// модель, а не «та же, что основная».
     var thinkModel: String { needsGB >= 64 ? model : smallModel }
+    /// Модель разметки реплик (`sufler.markup_model`) — см. configFlags.
+    var markupModel: String { needsGB >= 32 ? model : smallModel }
     /// Чем этот вариант отличается — одной фразой.
     let note: String
 
@@ -68,10 +70,14 @@ struct ModelPreset: Identifiable, Equatable {
          ("deja_vu", dejaVu ? "true" : "false"),
          ("tier3", tier3 ? "true" : "false"),
          ("think_model", thinkModel),
-         // Разметка реплик — тоже лёгкая модель профиля: в примере конфига
-         // стоял тег, которого не качает ни один набор, и контур молча
-         // отсутствовал на любой свежей установке.
-         ("markup_model", smallModel)]
+         // Разметка реплик требует ДОСЛОВНОСТИ: валидация сверяет слова и
+         // режет любой ответ, где модель хоть что-то поправила (бенч 21.07 —
+         // 4B правит, gemma держит). В примере конфига стоял gemma4:latest,
+         // которого не качает ни один профиль, — контур молча отсутствовал у
+         // всех. Пишем модель, которая на этой машине и так резидентна: на
+         // тяжёлых профилях основную, на лёгких — ту же лёгкую, и в доках
+         // честно сказано, что там разметка срабатывает реже.
+         ("markup_model", markupModel)]
     }
 }
 
@@ -174,6 +180,19 @@ enum ModelPresetPolicy {
         return all[3]                        // «Лёгкий»: одна 4B на обе роли
     }
 
+    /// Значение флага из конфига: выключено или нет.
+    ///
+    /// Зеркало `install_profile.flag` на стороне Python — конфиг человек
+    /// правит руками и пишет туда «нет» или «off» так же охотно, как false.
+    /// Живёт здесь, а не во вью: в Views русские литералы мимо `L.t`
+    /// запрещены (LocalizationTests), а это не текст интерфейса.
+    static func flagIsOn(_ value: String?) -> Bool? {
+        guard let value = value?.trimmingCharacters(in: .whitespaces).lowercased(),
+              !value.isEmpty else { return nil }
+        let off = ["false", "no", "off", "0", "\u{043D}\u{0435}\u{0442}"]   // «нет»
+        return !off.contains(value)
+    }
+
     /// Пресет по ключу — для восстановления выбора из конфига.
     static func preset(id: String) -> ModelPreset? {
         all.first { $0.id == id }
@@ -183,9 +202,19 @@ enum ModelPresetPolicy {
     ///
     /// Сверяем обе модели: человек мог поправить одну строку руками, и
     /// показывать ему «Полный» с лёгкой моделью было бы неправдой.
-    static func current(model: String?, smallModel: String?) -> ModelPreset? {
+    ///
+    /// И флаги семантической памяти: у «Сбалансированного» и «Лёгкого» одна
+    /// и та же 4B (бенч 19.08), различает их только `deja_vu`. Без этого на
+    /// 8-гигабайтной машине мастер показывал бы «Сбалансированный», а
+    /// сохранение молча включало бы дежавю и ревизию ядер — то есть bge-m3
+    /// и своп (ревью 19.08, второй круг Gemini).
+    static func current(model: String?, smallModel: String?,
+                        dejaVu: Bool? = nil) -> ModelPreset? {
         guard let model, let smallModel else { return nil }
-        return all.first { $0.model == model && $0.smallModel == smallModel }
+        return all.first {
+            $0.model == model && $0.smallModel == smallModel
+                && (dejaVu == nil || $0.dejaVu == dejaVu)
+        }
     }
 }
 

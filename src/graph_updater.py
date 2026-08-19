@@ -645,7 +645,10 @@ def main():
     # проверять исходную строку: str(Path("")) == "." — пустой конфиг молча
     # лил бы граф в cwd
     if not graph_raw or not graph.parent.exists():
+        # Без папки графа узлов не будет, но всё остальное встречу не теряет:
+        # хук пользователя обязан отработать и здесь (ревью 19.08).
         print(f"graph_dir не настроен/не существует: {graph}")
+        run_post_hook(cfg, tpath, parse_stem(tpath.stem)[0])
         return
     transcript = tpath.read_text(encoding="utf-8")
     minutes_p = tpath.with_name(tpath.stem + "_minutes.md")
