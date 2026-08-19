@@ -95,9 +95,18 @@ class Heard:
                     del acc[voice]
 
 
+#: Пока голос УЖЕ признан владельцем, отпускаем его мягче, чем брали. Без
+#: этого доля, колеблющаяся около 0.6 (двое в комнате говорят почти поровну),
+#: заставляла метку мигать кусок за куском: абзац рвался надвое, а на
+#: нейтральном куске открывался гейт мгновенных ответов (ревью 19.08).
+KEEP_SHARE = 0.5
+KEEP_LEAD = 0.05
+
+
 def owner_voice(heard: Heard, *, min_seconds: float = MIN_MIC_SECONDS,
                 min_share: float = MIN_SHARE, min_lead: float = MIN_LEAD,
-                echo_seconds: float = ECHO_SECONDS) -> int | None:
+                echo_seconds: float = ECHO_SECONDS,
+                current: int | None = None) -> int | None:
     """Номер голоса владельца — или None, если решать не на чем.
 
     None здесь означает «оставить нейтральные метки», а не «ошибка». Цена
@@ -119,14 +128,19 @@ def owner_voice(heard: Heard, *, min_seconds: float = MIN_MIC_SECONDS,
     voice, seconds = ranked[0]
     share = seconds / total
     second = ranked[1][1] / total if len(ranked) > 1 else 0.0
+    if voice == current:
+        # решение уже принято — держим, пока перевес не развалился
+        if share >= KEEP_SHARE and share - second >= KEEP_LEAD:
+            return voice
+        return None
     if share < min_share or share - second < min_lead:
         return None                     # в микрофоне не один человек
     return voice
 
 
 def label_for(voice: int | None, *, is_mic: bool, heard: Heard,
-              owner_label: str, other_label: str,
-              neutral: str) -> str:
+              owner_label: str, other_label: str, neutral: str,
+              current: int | None = None) -> str:
     """Метка для куска речи.
 
     `owner_label` — метка микрофонного канала (имя из настроек), `other_label`
@@ -137,4 +151,6 @@ def label_for(voice: int | None, *, is_mic: bool, heard: Heard,
     """
     if not is_mic or owner_label == other_label or not owner_label:
         return neutral
-    return owner_label if voice is not None and voice == owner_voice(heard) else neutral
+    if voice is None:
+        return neutral
+    return owner_label if voice == owner_voice(heard, current=current) else neutral

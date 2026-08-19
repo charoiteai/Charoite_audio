@@ -21,7 +21,7 @@ OWNER, OTHER = "Игорь Ветров", "Собеседник"
 def _call(mic: dict[int, float], bh: dict[int, float] | None = None) -> ov.Heard:
     """Звонок: в системном канале была речь."""
     heard = ov.Heard()
-    for voice, seconds in (bh or {1: 30.0}).items():
+    for voice, seconds in (bh if bh is not None else {1: 30.0}).items():
         heard.note(voice, seconds, is_mic=False)
     for voice, seconds in mic.items():
         heard.note(voice, seconds, is_mic=True)
@@ -124,3 +124,47 @@ def test_смена_говорящего_не_переписывает_прош�
     heard.note(7, 60.0, is_mic=True, now=0.0)
     heard.note(8, 30.0, is_mic=True, now=60.0)
     assert ov.owner_voice(heard) is None, "двое говорят сопоставимо — молчим"
+
+
+def test_решение_липкое_и_не_мигает_на_границе():
+    """Двое в комнате говорят почти поровну: без гистерезиса метка
+    чередовалась бы кусок за куском — абзац владельца рвался надвое, а на
+    нейтральном куске открывался гейт мгновенных ответов (ревью 19.08)."""
+    heard = _call(mic={7: 62.0, 8: 38.0})       # доля 0.62, отрыв 0.24
+    assert ov.owner_voice(heard) == 7, "берём строго"
+
+    edge = _call(mic={7: 56.0, 8: 44.0})        # доля 0.56 — ниже порога входа
+    assert ov.owner_voice(edge) is None, "без прошлого решения не начинаем"
+    assert ov.owner_voice(edge, current=7) == 7, "а начатое держим"
+
+    lost = _call(mic={7: 45.0, 8: 55.0})        # перевес развалился
+    assert ov.owner_voice(lost, current=7) is None
+
+
+def test_эхо_не_становится_владельцем_даже_по_инерции():
+    """Липкость не должна пережить эхо-гвард: голос, зазвучавший в системном
+    канале, перестаёт быть владельцем немедленно."""
+    heard = _call(mic={3: 80.0}, bh={3: 40.0})
+    assert ov.owner_voice(heard, current=3) is None
+
+
+def test_гибрид_в_офлайне_не_отдаёт_имя_владельца_коллеге():
+    """Пересборка после Стопа берёт то же правило, что живая лента.
+
+    Раньше офлайн подписывал владельцем «самый долгий голос микрофона» —
+    ровно то доминирование, от которого отказались 20.07. В гибридной
+    встрече коллега рядом говорит в тот же микрофон дольше владельца, и
+    финальная стенограмма присваивала ему имя владельца — причём настоящее
+    имя из настроек, а не безобидное слово «владелец» (ревью 19.08).
+    """
+    # длительности голосов в микрофоне, как их считает rebuild_transcript
+    durs = {7: 120.0, 8: 100.0}
+    heard = ov.Heard(mic=dict(durs), call=True)
+    assert ov.owner_voice(heard) is None, "сопоставимые голоса — не подписываем"
+
+    alone = ov.Heard(mic={7: 200.0, 8: 20.0}, call=True)
+    assert ov.owner_voice(alone) == 7, "явное преобладание — подписываем"
+
+    offline_only = ov.Heard(mic={7: 200.0}, call=False)
+    assert ov.owner_voice(offline_only) is None, \
+        "в записи без системной дорожки владельца не назначаем"

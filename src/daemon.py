@@ -653,6 +653,9 @@ def main():
 
     # Имя владельца — для гейта мгновенных ответов: ⚡ стреляет по вопросу
     # «той стороны», а владелец отсекается пословной сверкой user_name.
+    # Имя не задано — сверяем с меткой своего канала («Я»): иначе гейт
+    # открыт на собственные вопросы у всех, кто не заполнил настройку
+    # (ревью 19.08, DeepSeek).
     owner_name = (cfg["sufler"].get("user_name") or "").strip()
 
     # Кто владелец — по КАНАЛУ, а не по догадке о голосе. Счётчики секунд
@@ -671,12 +674,24 @@ def main():
     #: (сначала решать не на чем, потом появляется имя), но повторять одно и
     #: то же каждые три секунды нельзя.
     owner_note = {"said": ""}
+    #: Последнее решение о том, чей голос владельца: держим его, чтобы метка
+    #: не мигала на границе долей (ревью 19.08).
+    owner_state: dict[str, int | None] = {"voice": None}
 
     def _owner_label(voice: int | None, speaker: str, neutral: str) -> str:
-        label = owner_voice.label_for(voice, is_mic=speaker == mic_label,
+        is_mic = speaker == mic_label
+        label = owner_voice.label_for(voice, is_mic=is_mic,
                                       heard=heard_by_channel,
                                       owner_label=mic_label,
-                                      other_label=other_label, neutral=neutral)
+                                      other_label=other_label, neutral=neutral,
+                                      current=owner_state["voice"])
+        if not is_mic:
+            # Реплика собеседника ничего не говорит о том, подписан ли
+            # владелец: раньше она уводила статус в «в микрофоне несколько
+            # человек», и на каждой смене говорящего лента получала пару
+            # противоречащих сообщений (ревью 19.08).
+            return label
+        owner_state["voice"] = voice if label == mic_label else None
         _say_owner_state(label != neutral)
         return label
 
@@ -689,17 +704,18 @@ def main():
         """
         if signed:
             note = ""
+        elif sum(heard_by_channel.mic.values()) < owner_voice.MIN_MIC_SECONDS:
+            return          # ещё копим речь: объяснять нечего и рано
         elif not heard_by_channel.call:
-            note = ("очная встреча: в микрофоне говорят все, кто в комнате — "
-                    "реплики остаются нейтральными")
+            note = ("собеседников в динамиках не слышно — похоже на очную "
+                    "встречу, где микрофон один на всех: реплики остаются "
+                    "нейтральными")
         elif not mic_label or mic_label == other_label:
             note = ("задайте своё имя в настройках (sufler.user_name), "
                     "чтобы ваши реплики подписывались")
-        elif sum(heard_by_channel.mic.values()) >= owner_voice.MIN_MIC_SECONDS:
+        else:
             note = ("в микрофоне слышно несколько человек — ваши реплики "
                     "оставляю нейтральными, чтобы не приписать вам чужие слова")
-        else:
-            return          # ещё копим речь, говорить рано
         if note and note != owner_note["said"]:
             owner_note["said"] = note
             emit({"type": "status", "text": note})
@@ -760,14 +776,6 @@ def main():
                 rows: list[tuple[str, str]] = []
                 pitch_best: dict[str, tuple[int, object]] = {}
                 for piece, n, raw_piece in jobs:
-                    # Секунды речи по голосам — сырыми границами куска, без
-                    # pad-запаса: в запас попадает сосед, и «преобладание в
-                    # микрофоне» считалось бы по чужой речи тоже.
-                    if n is not None and n >= 0:
-                        heard = raw_piece if raw_piece is not None else piece
-                        heard_by_channel.note(n, len(heard) / hub.sr,
-                                              is_mic=speaker == mic_label,
-                                              now=time.monotonic())
                     try:
                         text = stt.transcribe(piece, hub.sr)
                     except Exception as e:  # noqa: BLE001
@@ -775,10 +783,24 @@ def main():
                         continue
                     if not text or text.lower().strip(" .!») ") in NOISE:
                         continue
+                    # Секунды речи по голосам — ПОСЛЕ отсева: клавиатура и
+                    # шум комнаты добирали порог «15 секунд речи» вместо
+                    # голоса, а в чанковом режиме учёт и так шёл после
+                    # фильтра — две ветки считали по-разному (ревью 19.08).
+                    # Границы — сырые, без pad-запаса: в запас попадает сосед.
+                    if n is not None and n >= 0:
+                        heard = raw_piece if raw_piece is not None else piece
+                        heard_by_channel.note(n, len(heard) / hub.sr,
+                                              is_mic=speaker == mic_label,
+                                              now=time.monotonic())
                     if n is None:
                         name = voice_label(speaker, piece)
                     elif n < 0:
-                        name = speaker
+                        # Раскладка не решила: голос неизвестен, поэтому метка
+                        # — через ту же политику с voice=None. Прямая канальная
+                        # метка здесь давала имя владельца ДО того, как решение
+                        # принято, и оно мигало с «Собеседник N» (ревью 19.08).
+                        name = _owner_label(None, speaker, speaker)
                         _note_pitch(name, piece)
                     else:
                         # тот же канальный признак, что и в voice_label: без
@@ -825,7 +847,8 @@ def main():
                     # глушил их с момента, когда name_loop опознавал собеседника
                     # по имени (аудит 14.08). Сверка — speaker_names.is_counterpart.
                     if instant_on and toggles["hints"] \
-                            and speaker_names.is_counterpart(name, owner_name) \
+                            and speaker_names.is_counterpart(
+                                name, owner_name or mic_label) \
                             and looks_question(added):
                         fire_question(added)
 
