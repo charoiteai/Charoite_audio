@@ -47,6 +47,13 @@ MIN_LEAD = 0.15
 #: Не ноль: короткий всплеск может быть шумом нарезки, а не голосом.
 ECHO_SECONDS = 1.0
 
+#: Префикс нейтральных меток. Их генерируют В ТРЁХ местах (демон, живая
+#: пересборка, офлайн), и до этой константы правильность гварда держалась на
+#: совпадении трёх независимых литералов: поменяй метку канала — и живой
+#: гвард молча перестал бы ловить «Собеседник N», а офлайн продолжил бы
+#: (ревью 19.08, четвёртый круг).
+NEUTRAL_BASE = "Собеседник"
+
 #: Окно, за которое считается преобладание. Экспоненциальное затухание:
 #: формат встречи меняется по ходу (коллега подсел, ушёл), и решение обязано
 #: следовать за этим, а не за первыми минутами.
@@ -160,7 +167,7 @@ def owner_voice(heard: Heard, *, min_seconds: float = MIN_MIC_SECONDS,
     return voice
 
 
-def collides_with_neutral(owner_label: str, other_label: str) -> bool:
+def collides_with_neutral(owner_label: str, other_label: str = NEUTRAL_BASE) -> bool:
     """Имя владельца неотличимо от нейтральной метки?
 
     Нейтральные метки генерируются С НОМЕРОМ («Собеседник 1», «Собеседник
@@ -173,8 +180,11 @@ def collides_with_neutral(owner_label: str, other_label: str) -> bool:
     """
     if not owner_label:
         return True
-    return (owner_label == other_label
-            or bool(re.fullmatch(rf"{re.escape(other_label)} ?\d+", owner_label)))
+    if owner_label == other_label:
+        return True
+    # База — НЕ параметр, а константа: нумерованные метки генерируются от неё
+    # независимо от того, как названы каналы.
+    return bool(re.fullmatch(rf"{re.escape(NEUTRAL_BASE)} ?\d+", owner_label))
 
 
 def label_for(voice: int | None, *, is_mic: bool, heard: Heard,

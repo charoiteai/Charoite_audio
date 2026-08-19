@@ -465,7 +465,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
             # хабе захвата (audio.py), а не «владелец»: иначе безымянный
             # переименовывается по-прежнему.
             owner_label = (cfg.get("sufler", {}).get("user_name") or "").strip() or "Я"
-            if owner_voice_rules.collides_with_neutral(owner_label, "Собеседник"):
+            if owner_voice_rules.collides_with_neutral(owner_label):
                 # Одно правило с живой лентой, и оно знает про НОМЕР:
                 # нейтральные метки здесь — «Собеседник 1», «Собеседник 2».
                 # Имя владельца, совпавшее с такой меткой, дало бы две
