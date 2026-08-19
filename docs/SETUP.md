@@ -74,7 +74,14 @@ without the interface.
 In `config/config.yaml`:
 
 - `sufler.user_name` — your name: labels your microphone in the transcript
-  and is never assigned to another voice.
+  and is never assigned to another voice. In a call your lines are signed
+  with it, because your microphone is a separate track from the system
+  audio your interlocutors arrive on. Three cases where the name is *not*
+  applied, and Charoite says so out loud: an in-person meeting (no sound in
+  the speakers — one microphone hears the whole room, so there is nobody to
+  tell apart), several distinct voices in your microphone (a colleague next
+  to you), and a name indistinguishable from the neutral label
+  («Собеседник», «Собеседник 2»), which is rejected outright.
 - `sufler.graph_dir` — knowledge-graph folder (empty **or pointing at a
   folder whose parent does not exist** = graph off, transcription still
   works — a typo in the path leaves you with transcripts, not with failed
