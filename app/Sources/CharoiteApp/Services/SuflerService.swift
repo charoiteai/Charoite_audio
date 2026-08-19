@@ -160,7 +160,22 @@ final class SuflerService: ObservableObject {
     /// Причина последнего автостопа («silence» | «limit»), пока встреча на экране.
     @Published private(set) var autostopReason: String?
     private var restartAttempts = 0      // защита от краш-лупа: максимум 3 подряд
-    var lifecycleGate = RecordingLifecycleGate()
+    private var lifecycleGate = RecordingLifecycleGate()
+
+    // Gate остаётся закрытым, а подсистема остановки (соседний файл) ходит к
+    // нему через эти обёртки. Иначе поле пришлось бы открыть модулю целиком —
+    // и любой код смог бы ПЕРЕУСТАНОВИТЬ его (`gate = RecordingLifecycleGate()`),
+    // то есть сбросить идущую остановку в idle мимо всех проверок. Struct
+    // с mutating-методами закрыть через `private(set)` нельзя: мутация — это
+    // запись (ревью 19.08, пятый круг, DeepSeek).
+    var stopToken: UUID? { lifecycleGate.token }
+    func gateOwns(_ token: UUID, in phase: RecordingLifecycle) -> Bool {
+        lifecycleGate.owns(token, in: phase)
+    }
+    func gateBeginStop() -> UUID? { lifecycleGate.beginStop() }
+    func gateFinishStop(_ token: UUID, daemonAlive: Bool) -> Bool {
+        lifecycleGate.finishStop(token, daemonAlive: daemonAlive)
+    }
     var captureStartTask: Task<Void, Never>?
     var stopFallbackTask: Task<Void, Never>?
     var captureShutdownToken: UUID?
@@ -665,6 +680,9 @@ final class SuflerService: ObservableObject {
         send("ask " + q)
     }
 
+    /// Команда демону в stdin. Открыта модулю только потому, что `stop()`
+    /// живёт в соседнем файле: снаружи сервиса звать её нельзя — она минует
+    /// и lifecycle-гейт, и подтверждение остановки короткой записи.
     func send(_ cmd: String) {
         guard let fh = stdinPipe?.fileHandleForWriting,
               let data = (cmd + "\n").data(using: .utf8) else { return }

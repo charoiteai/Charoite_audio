@@ -25,11 +25,11 @@ extension SuflerService {
             // Раньше метод здесь просто выходил, и человек жал кнопку впустую
             // (аудит 14.08: «.blocked без выходных дуг»).
             applyShutdown(.stopRequested(daemonAlive: process?.isRunning == true),
-                          token: lifecycleGate.token)
+                          token: stopToken)
             return
         }
         let wasRecording = lifecycle == .recording
-        guard let token = lifecycleGate.beginStop() else { return }
+        guard let token = gateBeginStop() else { return }
         cleanupDisposition = .stopped
         // Фазу заводим ЗДЕСЬ, через машину, а не при первой проверке
         // процесса. Иначе она остаётся `.idle`, и тогда: повторный Стоп
@@ -71,8 +71,8 @@ extension SuflerService {
     }
 
     func beginFailedStartCleanup(token: UUID) {
-        guard lifecycleGate.owns(token, in: .starting),
-              let stopToken = lifecycleGate.beginStop()
+        guard gateOwns(token, in: .starting),
+              let stopToken = gateBeginStop()
         else { return }
         cleanupDisposition = .preserveFailure
         publishLifecycle()
@@ -90,7 +90,7 @@ extension SuflerService {
             } catch {
                 return
             }
-            guard let self, self.lifecycleGate.owns(token, in: .stopping) else { return }
+            guard let self, self.gateOwns(token, in: .stopping) else { return }
             // Через машину, а не мимо неё: иначе событие «запасной таймер»
             // остаётся объявленным и оттестированным, но недостижимым в
             // проде (ревью 19.08).
@@ -156,13 +156,13 @@ extension SuflerService {
         stopFallbackTask?.cancel()
         stopFallbackTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            guard let self, self.lifecycleGate.owns(token, in: .stopping) else { return }
+            guard let self, self.gateOwns(token, in: .stopping) else { return }
             self.beginCaptureShutdown(token: token)
         }
     }
 
     func beginCaptureShutdown(token: UUID) {
-        guard lifecycleGate.owns(token, in: .stopping),
+        guard gateOwns(token, in: .stopping),
               captureShutdownToken != token
         else { return }
         captureShutdownToken = token
@@ -201,7 +201,7 @@ extension SuflerService {
                 token: token, closingCapture: true)
             guard action == .finish else { return }
 
-            guard self.lifecycleGate.finishStop(
+            guard self.gateFinishStop(
                 token,
                 daemonAlive: self.process?.isRunning == true
             ) else { return }
