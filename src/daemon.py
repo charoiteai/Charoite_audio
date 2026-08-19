@@ -35,6 +35,7 @@ import yaml  # noqa: E402
 import action_items  # noqa: E402
 import autostop as autostop_rules  # noqa: E402
 import cloud  # noqa: E402
+import install_profile  # noqa: E402
 import fact_check  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
 from meeting_thread import Thread as MeetingThread  # noqa: E402
@@ -1403,9 +1404,18 @@ def main():
         на живом графе: 0.33…0.45), поэтому абсолютная отсечка не работает.
         Берём лидера, только если он заметно оторвался от медианы.
         """
-        if not bool(cfg["sufler"].get("deja_vu", True)):
+        # Через install_profile, а не bool(): приложение пишет значения
+        # строкой в кавычках, и bool("false") == True — контур остался бы
+        # включённым вместе с эмбеддером на 1.2 ГБ (ревью 19.08).
+        if not install_profile.deja_vu_enabled(cfg):
             return
-        gdir = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser()
+        # Пустой graph_dir — это Path("."), и «Ядра» искались бы в рабочем
+        # каталоге демона: случайная папка с таким именем подсунула бы живой
+        # встрече чужие темы (третий круг, DeepSeek).
+        graph_raw = str(cfg["sufler"].get("graph_dir", "") or "").strip()
+        if not graph_raw:
+            return
+        gdir = pathlib.Path(graph_raw).expanduser()
         cores_dir = gdir / "Ядра"
         emb_model = cfg["sufler"].get("embed_model", "bge-m3:latest")
         margin = float(cfg["sufler"].get("deja_vu_margin", 0.04))

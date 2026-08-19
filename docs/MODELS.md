@@ -45,8 +45,13 @@ speed.
   models break the JSON schema; on the schema-guided KG benchmark
   [OSKGC](https://ceur-ws.org/Vol-4041/paper1.pdf) 7–8B models lose
   ~0.1 Micro F1 vs frontier and struggle most with ontology compliance.
-  Charoite builds a knowledge graph, so going below the 30B class is not
-  an option.
+  That is how the main model for the full profile was chosen, and on 64 GB
+  it is still 35B. As a hard floor, though, the rule did not hold: our own
+  benchmark on 19.08 across three real meetings showed `qwen3.5:4b`
+  extracting the graph better than `gemma4:12b` (31 decisions against 28,
+  96% against 100% verifiable quotes), and what breaks the JSON is a
+  particular model (`GigaChat3.1-10B` — five parts out of six), not the size
+  class. See "The 30B floor is retired" below.
 - `think: false` everywhere: reasoning mode moves output into the thinking
   field (empty content) and adds ~10 s of latency.
 
@@ -187,7 +192,7 @@ few seconds in parallel with the main model.
   more accurate question classification (e4b failed a direct question),
   theses in 2.9 s vs 3.3 s without filler preambles, and 3.4 GB RAM vs
   9.6 GB — almost 3x lighter next to the main model.
-- The exception is **dialogue markup** (`markup_model: gemma4:latest`):
+- The exception is **dialogue markup** (`markup_model`):
   words must stay verbatim there, and qwen3.5:4b tends to slightly polish
   them; gemma keeps the text exact.
 - Very low RAM — `qwen3.5:2b` (edge-class model of the same family).
@@ -266,14 +271,30 @@ model and blow up RAM).
 | RAM | Main LLM | Light LLM | STT | What you get |
 |----|----|----|----|----|
 | **4 GB** | — | — | GigaAM | Not enough for a local LLM. Run STT only (live transcript + saved minutes). Suggestions can go to Ollama on another machine you own — but that sends transcripts off this device, so it requires an explicit `llm.allow_remote: true` in the config and is refused under `CHAROITE_NO_CLOUD` (see PRIVACY.md). |
-| **8 GB** | `qwen3.5:4b` (3.4 GB) | same model | GigaAM | Transcript, theses, draft minutes, basic suggestions. One model serves both roles; no parallel Claude layer. Skip the graph (30B floor). |
-| **16 GB** | `gemma4:latest` (9.6 GB) | `qwen3.5:2b` | GigaAM | Full live loop: suggestions + theses + minutes in parallel. Graph extraction works but is slower. Recommended entry point. |
-| **32 GB** | `qwen3.6:35b-mlx` (21 GB) | `qwen3.5:4b` (3.4 GB) | GigaAM | The default config (the MLX build of the same MoE; `35b-a3b`, 23 GB GGUF, is the one-line rollback). Big-model suggestions, light model for theses in parallel, reliable graph extraction. Benchmarked here. |
-| **64 GB+** | `qwen3.6:35b-mlx` | `qwen3.5:4b` | GigaAM | Same models, but headroom for the optional cloud Claude layer, longer meetings, and offline transcript rebuild without eviction. |
+| **8 GB** | `qwen3.5:4b` (3.2 GB) | same model | GigaAM | Transcript, theses, draft minutes, basic suggestions. One model serves both roles; no parallel Claude layer. The graph works — see the 19.08 benchmark below — but déjà vu and the core revision are off: both pull in `bge-m3`, another 1.2 GB next to the system. |
+| **16 GB** | `qwen3.5:4b` (3.2 GB) | same model | GigaAM | Full live loop: suggestions + theses + minutes in parallel, plus semantic memory (déjà vu and core revision: `bge-m3`, +1.2 GB). Same model as on 8 GB — in the benchmark it finds more than `gemma4:12b`, while 12b together with the embedder would hit 17–19 GB on a 16 GB machine. Recommended entry point. |
+| **32 GB** | `qwen3.8:27b-mlx` (16.9 GB) | `qwen3.5:4b` | GigaAM | More accurate quotes (96%) at the price of a three-times-slower extraction — which is background work and now yields to a live meeting. 35B is not here on purpose: 20.4 GB of weights plus STT, the embedder and the system is 27–30 GB out of 32, i.e. swap on the first long extraction. |
+| **64 GB+** | `qwen3.6:35b-mlx` (20.4 GB) | `qwen3.5:4b` | GigaAM | The working set: 42 decisions and 39 cores per meeting, 57 s median. Headroom for the optional cloud Claude layer, longer meetings, and offline transcript rebuild without eviction. |
 
-Rules of thumb: below 16 GB, drop the knowledge graph — sub-30B models break
-the JSON schema. Below 8 GB, keep only STT locally. The `small_model` always
+Rules of thumb: below 8 GB, keep only STT locally. The `small_model` always
 runs next to the main one, so budget for both at once.
+
+**Dialogue markup and the light profiles.** The loop that splits a paragraph
+into replies needs verbatim output: validation compares the words and drops
+any answer where the model changed something. A 4B edits more often than
+gemma, so on the 8 and 16 GB profiles markup fires less often — that is the
+price of a light set, not a breakage. On 32 and 64 GB the profile puts the
+main model here, the one that is resident anyway.
+
+**The 30B floor is retired (benchmark 19.08).** The same
+`scripts/bench_extract.py` on three real meetings (24–106k characters) gave:
+`qwen3.5:4b` — 3/3 parsed, 31 decisions, 30 cores, 96% quotes, 113 s median;
+`gemma4:12b` — 3/3, 28 decisions, 24 cores, 100% quotes, 353 s;
+`gemma4:latest` (e4b) — 3/3, 16 decisions, 23 cores, 95%, 152 s;
+`GigaChat3.1-10B` — 2/3, broken JSON in five parts out of six. So a 4B model
+extracts the graph better than a 12B one, and what breaks the schema is a
+particular model rather than the size class. `gemma4:latest` left the 16 GB
+row for the same reason: it is heavier (8.9 GB against 7.0) and finds less.
 
 ## Presets by RAM — iOS / iPadOS
 
@@ -316,4 +337,4 @@ post-meeting debrief and the nightly review went to different models.
 Everything lives in `config/config.yaml`: `stt.backend`, `llm.model`,
 `llm.small_model`; the embedding model is just the file
 `models/diar/embedding.onnx`. On 16 GB machines start with
-`llm.model: gemma4:latest` and a lighter STT backend.
+`llm.model: qwen3.5:4b` (see the profile table above) and a lighter STT backend.

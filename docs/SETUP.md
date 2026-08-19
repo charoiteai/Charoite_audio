@@ -75,8 +75,10 @@ In `config/config.yaml`:
 
 - `sufler.user_name` — your name: labels your microphone in the transcript
   and is never assigned to another voice.
-- `sufler.graph_dir` — knowledge-graph folder (empty = graph off,
-  transcription still works). Point it inside your Obsidian vault, e.g.
+- `sufler.graph_dir` — knowledge-graph folder (empty **or pointing at a
+  folder whose parent does not exist** = graph off, transcription still
+  works — a typo in the path leaves you with transcripts, not with failed
+  meetings). Point it inside your Obsidian vault, e.g.
   `~/Documents/Obsidian/Work` — Charoite creates the structure itself.
 
 Also worth filling: `sufler.user_context` (1-2 sentences about your work) —

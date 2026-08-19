@@ -32,11 +32,15 @@ struct FirstRunView: View {
     /// Текст отказа записи конфига; nil — отказа не было.
     @State private var configSaveFailure: String?
     /// Выбранный набор моделей. По умолчанию — тот, что уже в конфиге, а
-    /// если конфиг ещё не тронут, рекомендованный под память этой машины.
-    @State private var presetID: String = ModelPresetPolicy.current(
-        model: AppSettings.configValue("model"),
-        smallModel: AppSettings.configValue("small_model")
-    )?.id ?? ModelPresetPolicy.recommended(forGB: ModelPresetPolicy.machineMemoryGB).id
+    /// если конфиг ещё не тронут или не влезает в память — рекомендованный.
+    ///
+    /// Про «не влезает»: на первом запуске конфиг копируется из шаблона, а
+    /// там лёгкие модели с включённым дежавю — это набор 16 ГБ. На
+    /// восьмигигабайтной машине мастер молча предвыбирал его, и «Применить»
+    /// включало эмбеддер (+1.2 ГБ) ровно там, где профиль от него защищает
+    /// (третий круг, DeepSeek). Конфиг человека уважаем, но не тот, который
+    /// он не выбирал.
+    @State private var presetID: String = ModelPresetPolicy.startingPresetID()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -239,8 +243,13 @@ struct FirstRunView: View {
         let preset = selectedPreset
         // результат записи не игнорируется (аудит 14.08): пресет, тихо не
         // доехавший до config.yaml, оставлял модели по умолчанию без слова
-        let saved = AppSettings.setConfigValue("model", preset.model)
-            && AppSettings.setConfigValue("small_model", preset.smallModel)
+        // Профиль — это не только две модели: он ещё и решает, какие контуры
+        // машина тянет (граф, дежавю, ревизия ядер, модель тезисов). Пишем
+        // одной операцией: по ключу за раз конфиг оставался наполовину новым,
+        // наполовину старым, и это ничем себя не выдавало.
+        let saved = AppSettings.setConfigValues(
+            [("model", preset.model), ("small_model", preset.smallModel)]
+            + preset.configFlags)
         if !saved {
             presetSaveFailed = true
             return

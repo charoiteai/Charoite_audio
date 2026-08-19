@@ -10,17 +10,31 @@ import XCTest
 final class ModelPresetTests: XCTestCase {
 
     func testРекомендацияПоПамяти() {
+        XCTAssertEqual(ModelPresetPolicy.recommended(forGB: 128).id, "full")
         XCTAssertEqual(ModelPresetPolicy.recommended(forGB: 64).id, "full")
-        XCTAssertEqual(ModelPresetPolicy.recommended(forGB: 32).id, "full")
+        XCTAssertEqual(ModelPresetPolicy.recommended(forGB: 48).id, "precise")
+        XCTAssertEqual(ModelPresetPolicy.recommended(forGB: 32).id, "precise")
         XCTAssertEqual(ModelPresetPolicy.recommended(forGB: 24).id, "balanced")
         XCTAssertEqual(ModelPresetPolicy.recommended(forGB: 16).id, "balanced")
         XCTAssertEqual(ModelPresetPolicy.recommended(forGB: 8).id, "light")
+        XCTAssertEqual(ModelPresetPolicy.recommended(forGB: 4).id, "light")
     }
 
     func testНа16ГбНеПредлагаемСамыйТяжёлый() {
         // Формально 20 ГБ весов в 16 ГБ «влезают» — но вместе с системой,
         // браузером и созвоном это своп посреди встречи.
         XCTAssertNotEqual(ModelPresetPolicy.recommended(forGB: 16).id, "full")
+    }
+
+    /// 35B просит 20.4 ГБ весов, и вместе с STT, эмбеддером и системой это
+    /// 27–30 ГБ из 32 — своп на первом же длинном разборе. На 32 ГБ идёт
+    /// 27B (16.9 ГБ): по бенчу она точнее по цитатам, а медленный разбор —
+    /// фоновая работа, которая теперь ещё и уступает живой встрече.
+    func testНа32ГбНеСамаяТяжёлаяМодель() {
+        let preset = ModelPresetPolicy.recommended(forGB: 32)
+        XCTAssertEqual(preset.id, "precise")
+        XCTAssertFalse(preset.models.contains("qwen3.6:35b-mlx"),
+                       "35B на 32 ГБ уходит в своп вместе с системой и STT")
     }
 
     func testПресетыИдутОтТяжёлогоКЛёгкому() {
@@ -48,15 +62,25 @@ final class ModelPresetTests: XCTestCase {
         XCTAssertTrue(light.isSingleModel,
                       "README и MODELS.md обещают на 8 ГБ одну модель на обе роли")
         XCTAssertFalse(light.models.contains("gemma4:latest"),
-                       "gemma4:latest просит 9.6 ГБ — в 8 ГБ это своп")
+                       "gemma4:latest просит 8.9 ГБ — в 8 ГБ это своп")
+    }
+
+    /// Бенч 19.08 снял правило «меньше 30B ломают JSON-схему»: qwen3.5:4b
+    /// разобрала все три встречи (31 решение, 30 ядер, 96% цитат) — больше
+    /// находок, чем у 12B. Значит на 8 ГБ граф не выключают, он работает.
+    func testНа8ГбГрафРаботает() {
+        let light = ModelPresetPolicy.recommended(forGB: 8)
+        XCTAssertTrue(light.graph, "4B разбирает граф — выключать его нет причины")
+        XCTAssertFalse(light.dejaVu, "а вот bge-m3 рядом с системой в 8 ГБ не живёт")
     }
 
     func testНаборыСогласованыСТаблицейRAM() {
         // README, раздел «Какие модели под вашу RAM» — единственный источник
         // правды для этих пар; расхождение здесь человек увидит как тормоза.
         let expected = [
-            (32, "qwen3.6:35b-a3b", "qwen3.5:4b"),
-            (16, "gemma4:latest", "qwen3.5:2b"),
+            (64, "qwen3.6:35b-mlx", "qwen3.5:4b"),
+            (32, "qwen3.8:27b-mlx", "qwen3.5:4b"),
+            (16, "qwen3.5:4b", "qwen3.5:4b"),
             (8, "qwen3.5:4b", "qwen3.5:4b"),   // «Light LLM: same model»
         ]
         for (memory, model, small) in expected {
@@ -64,6 +88,55 @@ final class ModelPresetTests: XCTestCase {
             XCTAssertEqual(preset.model, model, "\(memory) ГБ: основная модель")
             XCTAssertEqual(preset.smallModel, small, "\(memory) ГБ: лёгкая модель")
         }
+    }
+
+    /// «Граф знаний выключен» в описании лёгкого набора было обещанием без
+    /// выключателя: конвейер всё равно звал разбор после каждой встречи.
+    /// Теперь профиль пишет флаги в config.yaml, и их читает Python
+    /// (install_profile.flag) — что выключено, то выключено.
+    func testПрофильПишетСвоиВыключателиВКонфиг() {
+        let light = ModelPresetPolicy.recommended(forGB: 8)
+        let flags = Dictionary(uniqueKeysWithValues: light.configFlags.map { ($0.key, $0.value) })
+        XCTAssertEqual(flags["graph"], "true", "4B разбирает граф — бенч 19.08")
+        XCTAssertEqual(flags["deja_vu"], "false", "bge-m3 в 8 ГБ рядом с системой не живёт")
+
+        let full = ModelPresetPolicy.recommended(forGB: 64)
+        let fullFlags = Dictionary(uniqueKeysWithValues: full.configFlags.map { ($0.key, $0.value) })
+        XCTAssertEqual(fullFlags["graph"], "true")
+        XCTAssertEqual(fullFlags["deja_vu"], "true")
+    }
+
+    func testТяжёлыеПрофилиНичегоНеОтключают() {
+        for preset in ModelPresetPolicy.all where preset.needsGB >= 16 {  // 16, 32, 64
+            XCTAssertTrue(preset.graph, "\(preset.id): граф — смысл продукта")
+            XCTAssertTrue(preset.dejaVu, "\(preset.id): дежавю укладывается в память")
+            XCTAssertTrue(preset.tier3, "\(preset.id): ревизия ядер тоже")
+        }
+    }
+
+    /// Тезисы и черновик минуток идут каждые 40–150 секунд всю встречу.
+    /// Оставить там тяжёлую модель — держать её в памяти постоянно, а на
+    /// 8–32 ГБ это ровно та память, ради которой профиль и выбирают.
+    func testМодельТезисовЛёгкаяВездеКромеСамойБольшойМашины() {
+        for preset in ModelPresetPolicy.all where preset.needsGB < 64 {
+            XCTAssertEqual(preset.thinkModel, preset.smallModel, preset.id)
+        }
+        XCTAssertEqual(ModelPresetPolicy.recommended(forGB: 64).thinkModel,
+                       "qwen3.6:35b-mlx", "на 64 ГБ тезисы могут идти на большой")
+    }
+
+    /// Эмбеддер bge-m3 поднимают два контура: живое дежавю и ночная ревизия
+    /// ядер. Выключить один и оставить другой — обещать экономию, которой нет
+    /// (ревью 19.08, DeepSeek).
+    func testЭмбеддерныеКонтурыВыключаютсяВместе() {
+        for preset in ModelPresetPolicy.all {
+            XCTAssertEqual(preset.dejaVu, preset.tier3, preset.id)
+        }
+        let flags = Dictionary(uniqueKeysWithValues:
+            ModelPresetPolicy.recommended(forGB: 8).configFlags.map { ($0.key, $0.value) })
+        XCTAssertEqual(flags["deja_vu"], "false")
+        XCTAssertEqual(flags["tier3"], "false")
+        XCTAssertEqual(flags["think_model"], "qwen3.5:4b")
     }
 
     func testТекущийПресетУзнаётсяПоОбеимМоделям() {
@@ -77,8 +150,73 @@ final class ModelPresetTests: XCTestCase {
         XCTAssertNil(ModelPresetPolicy.current(model: nil, smallModel: nil))
     }
 
+    /// 12B выигрывает у 4B только 4% цитат, а стоит 3.8 лишних гигабайта:
+    /// вместе с эмбеддером, STT и системой связка 12b+4b упиралась в 17–19 ГБ
+    /// на 16-гигабайтной машине — в тот самый своп, от которого профиль и
+    /// защищает (ревью 19.08, GLM).
+    func testНа16ГбНеТянемМодельРадиЧетырёхПроцентов() {
+        let preset = ModelPresetPolicy.recommended(forGB: 16)
+        XCTAssertFalse(preset.models.contains("gemma4:12b"))
+        XCTAssertTrue(preset.isSingleModel, "одна модель на обе роли — и та лёгкая")
+        XCTAssertTrue(preset.dejaVu, "разница с 8 ГБ именно в семантической памяти")
+    }
+
+    /// У «Сбалансированного» и «Лёгкого» одна и та же 4B — различает их
+    /// только семантическая память. Без сверки флага мастер на 8 ГБ показывал
+    /// бы «Сбалансированный», а сохранение включало бы bge-m3 и своп
+    /// (ревью 19.08, второй круг Gemini).
+    func testПрофилиСОдинаковымиМоделямиРазличаютсяПоФлагу() {
+        let light = ModelPresetPolicy.current(model: "qwen3.5:4b",
+                                              smallModel: "qwen3.5:4b", dejaVu: false)
+        XCTAssertEqual(light?.id, "light")
+        let balanced = ModelPresetPolicy.current(model: "qwen3.5:4b",
+                                                 smallModel: "qwen3.5:4b", dejaVu: true)
+        XCTAssertEqual(balanced?.id, "balanced")
+        // без флага — прежнее поведение (первый подходящий по моделям)
+        XCTAssertNotNil(ModelPresetPolicy.current(model: "qwen3.5:4b", smallModel: "qwen3.5:4b"))
+    }
+
     func testПамятьМашиныОпределяется() {
         XCTAssertGreaterThan(ModelPresetPolicy.machineMemoryGB, 0,
                              "без объёма памяти рекомендация становится гаданием")
+    }
+
+    /// Свежая установка на 8 ГБ: config.yaml копируется из шаблона (лёгкие
+    /// модели + `deja_vu: true`), и мастер предвыбирал «Сбалансированный» —
+    /// профиль 16 ГБ, чьё «Применить» включает эмбеддер на машине, которая
+    /// его не тянет (третий круг, DeepSeek).
+    func testМастерНеПредлагаетПрофильТяжелееМашины() {
+        let onEight = ModelPresetPolicy.startingPresetID(
+            model: "qwen3.5:4b", smallModel: "qwen3.5:4b", dejaVuRaw: "true", memoryGB: 8)
+        XCTAssertEqual(onEight, "light", "на 8 ГБ — «Лёгкий», даже если в конфиге дежавю")
+
+        let onSixteen = ModelPresetPolicy.startingPresetID(
+            model: "qwen3.5:4b", smallModel: "qwen3.5:4b", dejaVuRaw: "true", memoryGB: 16)
+        XCTAssertEqual(onSixteen, "balanced", "16 ГБ этот набор тянет — уважаем конфиг")
+    }
+
+    func testВыборЧеловекаУважаемЕслиОнВлезает() {
+        // Скромнее рекомендации — это осознанное решение, не ошибка.
+        let modest = ModelPresetPolicy.startingPresetID(
+            model: "qwen3.5:4b", smallModel: "qwen3.5:4b", dejaVuRaw: "false", memoryGB: 64)
+        XCTAssertEqual(modest, "light")
+        // Незнакомый набор моделей (правил руками) — падаем на рекомендацию.
+        let unknown = ModelPresetPolicy.startingPresetID(
+            model: "llama9:70b", smallModel: "llama9:8b", dejaVuRaw: nil, memoryGB: 16)
+        XCTAssertEqual(unknown, "balanced")
+    }
+
+    /// Список «выключено» — зеркало `install_profile._FALSE`: разъехавшись,
+    /// он даёт приложению и демону разное мнение об одном конфиге.
+    func testПарсерФлаговЗеркалитPython() {
+        for off in ["false", "FALSE", " no ", "off", "0",
+                    "\u{043D}\u{0435}\u{0442}", "\u{0432}\u{044B}\u{043A}\u{043B}"] {
+            XCTAssertEqual(ModelPresetPolicy.flagIsOn(off), false, off)
+        }
+        for on in ["true", "yes", "on", "1"] {
+            XCTAssertEqual(ModelPresetPolicy.flagIsOn(on), true, on)
+        }
+        XCTAssertNil(ModelPresetPolicy.flagIsOn(nil))
+        XCTAssertNil(ModelPresetPolicy.flagIsOn("  "))
     }
 }

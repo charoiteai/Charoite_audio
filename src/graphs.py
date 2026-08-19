@@ -12,7 +12,13 @@ import os
 import pathlib
 
 ICLOUD = pathlib.Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents"
-CONFIG = pathlib.Path(__file__).resolve().parent.parent / "config" / "config.yaml"
+# Конфиг живёт в корне ДАННЫХ, а не рядом с кодом: в бандловой установке код
+# лежит в read-only .app, и чтение «рядом с собой» давало пустой словарь —
+# то есть дефолты вместо настроек человека. Ночная ревизия ядер так не видела
+# бы выключатель профиля (ревью 19.08, второй круг DeepSeek).
+CONFIG = (pathlib.Path(os.environ.get("CHAROITE_ROOT")
+                       or pathlib.Path(__file__).resolve().parent.parent)
+          / "config" / "config.yaml")
 
 
 def load_config() -> dict:
