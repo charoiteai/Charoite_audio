@@ -90,8 +90,22 @@ jobs:
           python-version: "3.12"
           cache: pip
       # main/daemon тянут sounddevice на импорте — без PortAudio падает сбор тестов
+      #
+      # Через timeout и повтор: 19.08 шаг дважды завис на apt (зеркало или
+      # фоновый apt-daily держит замок) и оба раза убил джоб по 10-минутному
+      # потолку — повтор того же прогона проходил за две минуты. Обычный
+      # случай — 15 секунд; висящая попытка теперь стоит полторы минуты,
+      # а не весь бюджет джоба.
       - name: PortAudio
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libportaudio2
+        timeout-minutes: 6
+        run: |
+          for try in 1 2 3; do
+            sudo timeout 90 apt-get update -qq || echo "apt-get update: попытка $try мимо"
+            if sudo timeout 120 apt-get install -y -qq libportaudio2; then exit 0; fi
+            echo "libportaudio2: попытка $try не прошла, ждём 15 с"
+            sleep 15
+          done
+          exit 1
       - name: Deps
         run: pip -q install . "pytest==${PYTEST_VERSION}"
       - name: pytest
