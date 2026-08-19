@@ -139,3 +139,27 @@ extension ShutdownMachineTests {
         XCTAssertEqual(action, ShutdownAction.nothing)
     }
 }
+
+extension ShutdownMachineTests {
+
+    func testСтопПоЗастрявшемуНоУжеУмершемуДемонуЗакрываетВстречу() {
+        // Демон мог умереть между редкими опросами. Тогда повторный Стоп —
+        // это не «добей», а «закрывай»: слать SIGKILL мёртвому процессу и
+        // ждать нового опроса значило бы держать lifecycle до прихода
+        // terminationHandler (ревью 19.08).
+        let (phase, action) = ShutdownMachine.next(
+            ShutdownPhase.stuck, on: ShutdownEvent.stopRequested(daemonAlive: false))
+        XCTAssertEqual(phase, ShutdownPhase.done)
+        XCTAssertEqual(action, ShutdownAction.finish)
+    }
+
+    func testЗапасныйТаймерДоводитДоЗакрытияЗахвата() {
+        // Событие killTimeout должно быть достижимым в проде, а не только в
+        // тестах: сервис подаёт его из запасного таймера и обрабатывает
+        // возвращённое действие.
+        let (phase, action) = ShutdownMachine.next(
+            ShutdownPhase.waitingDaemon(waits: 0), on: ShutdownEvent.killTimeout)
+        XCTAssertEqual(phase, ShutdownPhase.waitingDaemon(waits: 0))
+        XCTAssertEqual(action, ShutdownAction.closeCapture)
+    }
+}

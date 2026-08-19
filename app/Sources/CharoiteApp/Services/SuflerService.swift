@@ -476,12 +476,20 @@ final class SuflerService: ObservableObject {
             let (phase, action) = ShutdownMachine.next(
                 shutdownPhase, on: .stopRequested(daemonAlive: process?.isRunning == true))
             shutdownPhase = phase
-            if action == .forceKill, let p = process, p.isRunning,
-               let token = lifecycleGate.token {
+            switch action {
+            case .forceKill:
+                guard let p = process, p.isRunning, let token = lifecycleGate.token else { break }
                 status = L.t("Добиваю процесс записи…", "Force-stopping the recorder…",
                              "正在强制停止录音进程…")
                 kill(p.processIdentifier, SIGKILL)
                 scheduleShutdownPoll(token: token, after: ShutdownMachine.fastPoll)
+            case .finish:
+                // Демон умер, пока мы ждали: повторный Стоп обязан закрыть
+                // встречу, а не молча выйти — иначе lifecycle висит до
+                // прихода terminationHandler (ревью 19.08).
+                if let token = lifecycleGate.token { beginCaptureShutdown(token: token) }
+            case .nothing, .closeCapture, .pollAgain, .reportStuck:
+                break
             }
             return
         }
@@ -545,7 +553,12 @@ final class SuflerService: ObservableObject {
                 return
             }
             guard let self, self.lifecycleGate.owns(token, in: .stopping) else { return }
-            self.beginCaptureShutdown(token: token)
+            // Через машину, а не мимо неё: иначе событие «запасной таймер»
+            // остаётся объявленным и оттестированным, но недостижимым в
+            // проде (ревью 19.08).
+            let (phase, action) = ShutdownMachine.next(self.shutdownPhase, on: .killTimeout)
+            self.shutdownPhase = phase
+            if action == .closeCapture { self.beginCaptureShutdown(token: token) }
         }
     }
 

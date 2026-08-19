@@ -87,7 +87,8 @@ enum ShutdownMachine {
 
         // А вот повторный Стоп по ЗАСТРЯВШЕМУ демону — это просьба человека
         // добить его ещё раз. Раньше она молча игнорировалась.
-        case (.stuck, .stopRequested):
+        case (.stuck, .stopRequested(let alive)):
+            guard alive else { return (.done, .finish) }
             return (.waitingDaemon(waits: 0), .forceKill)
 
         // --- процесс умер
