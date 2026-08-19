@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.54.0](https://github.com/charoiteai/Charoite_audio/compare/v0.53.0...v0.54.0) (2026-08-19)
+
+
+### Features
+
+* **install:** профили под 8/16/32/64 ГБ по замерам, а не по правилу «30B» ([#345](https://github.com/charoiteai/Charoite_audio/issues/345)) ([ab988a7](https://github.com/charoiteai/Charoite_audio/commit/ab988a76146673b2e36166fc7cd6a867ac00477b))
+
 ## [0.53.0](https://github.com/charoiteai/Charoite_audio/compare/v0.52.2...v0.53.0) (2026-08-18)
 
 
