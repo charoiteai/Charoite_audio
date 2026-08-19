@@ -56,7 +56,10 @@ CJK = (r"\u4e00-\u9fff"      # китайский, основной блок
        r"\u3040-\u30ff"      # японские каны
        r"\uff66-\uff9f"      # полуширинная катакана
        r"\uac00-\ud7af"      # корейский хангыль
-       r"\U00020000-\U0002ebef")  # расширения B+ (редкие иероглифы)
+       r"\U00020000-\U0002ebef")  # расширения B–F (редкие иероглифы)
+
+
+SPACES = re.compile(r"\s+")
 
 
 def contains(needle: str, text: str) -> bool:
@@ -71,8 +74,7 @@ def contains(needle: str, text: str) -> bool:
     if norm(needle) in norm(text):
         return True
     if re.search(f"[{CJK}]", needle):
-        squeeze = re.compile(r"\s+")
-        return squeeze.sub("", norm(needle)) in squeeze.sub("", norm(text))
+        return SPACES.sub("", norm(needle)) in SPACES.sub("", norm(text))
     return False
 
 
@@ -114,6 +116,30 @@ SYNTH = {
         "你是会议档案助手。只使用片段中的事实，请用中文回答。",
     ),
 }
+
+
+def resolve_lang(cfg, *, demo_zh: bool, demo_en: bool, demo: bool) -> str:
+    """Язык промпта синтеза.
+
+    Каждый демо-флаг называет язык своего графа сам: спрашивать русский
+    демо-граф английским промптом бессмысленно, даже если в конфиге стоит `en`.
+    В обычном прогоне язык берётся ОТТУДА ЖЕ, откуда его берёт приложение —
+    `sufler.language`. Иначе владелец нерусского vault получал русский промпт,
+    ответ на русском и ложные провалы ночной джобы (ревью 19.08, DeepSeek).
+
+    `cfg` бывает `None`: пустой config.yaml проходит `yaml.safe_load` молча,
+    и обращение к нему падало бы AttributeError вместо честной работы по
+    умолчанию (ревью 19.08, второй круг, локальная голова).
+    """
+    if demo_zh:
+        return "zh"
+    if demo_en:
+        return "en"
+    if demo:
+        return "ru"
+    value = ((cfg or {}).get("sufler") or {}).get("language", "ru")
+    lang = str(value).strip().lower()
+    return lang if lang in SYNTH else "ru"
 
 
 def search_brain(graph: pathlib.Path, query: str) -> str | None:
@@ -217,19 +243,7 @@ def main() -> None:
         return
     else:
         cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    # Демо-флаг задаёт язык сам; в обычном прогоне берём его ОТТУДА ЖЕ, откуда
-    # приложение (sufler.language). Иначе владелец английского или китайского
-    # vault получал русский промпт синтеза, ответ на русском и ложные провалы
-    # ночной джобы — ровно та болезнь, ради которой промпты и локализованы
-    # (ревью 19.08, DeepSeek).
-    if args.demo_zh:
-        lang = "zh"
-    elif args.demo_en:
-        lang = "en"
-    else:
-        lang = str((cfg.get("sufler") or {}).get("language", "ru")).strip().lower()
-        if lang not in SYNTH:
-            lang = "ru"
+    lang = resolve_lang(cfg, demo_zh=args.demo_zh, demo_en=args.demo_en, demo=args.demo)
     if args.demo_zh:
         args.demo = True
         graph = ROOT / "demo" / "graph_zh"

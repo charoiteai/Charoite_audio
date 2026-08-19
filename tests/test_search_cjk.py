@@ -94,3 +94,27 @@ def test_у_латиницы_сверка_осталась_строгой():
     """Сжатие включается только для иероглифов: «pay ment» — не «payment»."""
     assert memory_bench.contains("YuPay", "we take YuPay")
     assert not memory_bench.contains("YuPay", "we take Yu Pay")
+
+
+def test_демо_флаг_называет_язык_своего_графа():
+    """Русский демо-граф спрашивается по-русски, даже если в конфиге стоит en:
+    язык графа задаёт флаг, а не настройка чужого vault."""
+    cfg = {"sufler": {"language": "en"}}
+    assert memory_bench.resolve_lang(cfg, demo_zh=True, demo_en=False, demo=True) == "zh"
+    assert memory_bench.resolve_lang(cfg, demo_zh=False, demo_en=True, demo=True) == "en"
+    assert memory_bench.resolve_lang(cfg, demo_zh=False, demo_en=False, demo=True) == "ru"
+
+
+def test_обычный_прогон_берёт_язык_из_конфига():
+    for value, expect in [("en", "en"), ("ZH", "zh"), (" ru ", "ru")]:
+        cfg = {"sufler": {"language": value}}
+        assert memory_bench.resolve_lang(cfg, demo_zh=False, demo_en=False, demo=False) == expect
+
+
+def test_мусор_и_пустой_конфиг_дают_русский():
+    """Пустой config.yaml проходит yaml.safe_load как None — и падал бы
+    AttributeError вместо честной работы по умолчанию."""
+    for cfg in [None, {}, {"sufler": None}, {"sufler": {}},
+                {"sufler": {"language": "клингонский"}},
+                {"sufler": {"language": 42}}]:
+        assert memory_bench.resolve_lang(cfg, demo_zh=False, demo_en=False, demo=False) == "ru", cfg
