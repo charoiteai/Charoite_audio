@@ -180,3 +180,17 @@ extension ShutdownMachineTests {
         XCTAssertEqual(action, ShutdownAction.closeCapture)
     }
 }
+
+extension ShutdownMachineTests {
+
+    func testПовторныйСтопПоУмершемуДемонуЗакрываетВстречуИзЛюбойФазы() {
+        // Контракт одинаков в обеих фазах ожидания: демон мёртв — закрываем,
+        // а не ждём следующего опроса.
+        for phase in [ShutdownPhase.waitingDaemon(waits: 3), .stuck] {
+            let (next, action) = ShutdownMachine.next(
+                phase, on: ShutdownEvent.stopRequested(daemonAlive: false))
+            XCTAssertEqual(next, ShutdownPhase.done, "\(phase)")
+            XCTAssertEqual(action, ShutdownAction.finish, "\(phase)")
+        }
+    }
+}
