@@ -52,7 +52,7 @@ cp config/config.example.yaml config/config.yaml
 在 `config/config.yaml` 中：
 
 - `sufler.user_name`——你的名字：在逐字稿中标记你的麦克风，且绝不会被分配给其他声音。
-- `sufler.graph_dir`——知识图谱文件夹（留空 = 图谱关闭，转写仍正常工作）。指向你的 Obsidian 仓库内的目录，例如 `~/Documents/Obsidian/Work`——目录结构由 Charoite 自行创建。
+- `sufler.graph_dir`——知识图谱文件夹（留空**或上级目录不存在** = 图谱关闭，转写仍正常工作：路径写错只会少了图谱，不会让会议变成处理失败）。指向你的 Obsidian 仓库内的目录，例如 `~/Documents/Obsidian/Work`——目录结构由 Charoite 自行创建。
 
 建议同时填写：`sufler.user_context`（用 1-2 句话介绍你的工作）——即时回答所用的上下文。
 
