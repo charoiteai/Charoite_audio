@@ -15,10 +15,27 @@ final class ShutdownMachineTests: XCTestCase {
         ShutdownMachine.next(phase, on: event)
     }
 
-    func testОстановкаЖивогоДемонаНачинаетсяСЗакрытияЗахвата() {
+    func testЖивомуДемонуДаютДоработать() {
+        // Захват при живом демоне не закрывается сразу: демон дописывает
+        // хвост аудио и запускает разбор встречи. Закрытие приходит от
+        // `daemonExited` или от страховочного таймера.
         let (phase, action) = run(.idle, .stopRequested(daemonAlive: true))
         XCTAssertEqual(phase, .waitingDaemon(waits: 0))
-        XCTAssertEqual(action, .closeCapture)
+        XCTAssertEqual(action, .nothing)
+    }
+
+    func testСтраховочныйТаймерРаботаетИменноПотомуЧтоФазаЗаведена() {
+        // Ровно тот дефект: пока первичный Стоп оставлял фазу `.idle`,
+        // 13-секундный таймер вырождался в «ничего не делать», и при
+        // демоне, пережившем SIGKILL, выхода из остановки не оставалось.
+        let (idlePhase, idleAction) = run(.idle, .killTimeout)
+        XCTAssertEqual(idlePhase, .idle)
+        XCTAssertEqual(idleAction, .nothing, "на .idle таймеру делать нечего")
+
+        let (started, _) = run(.idle, .stopRequested(daemonAlive: true))
+        let (phase, action) = run(started, .killTimeout)
+        XCTAssertEqual(phase, .waitingDaemon(waits: 0))
+        XCTAssertEqual(action, .closeCapture, "а на заведённой фазе — закрывает захват")
     }
 
     func testМёртвыйДемонЗакрываетВстречуСразу() {

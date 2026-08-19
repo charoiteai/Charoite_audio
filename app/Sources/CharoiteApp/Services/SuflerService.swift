@@ -480,11 +480,15 @@ final class SuflerService: ObservableObject {
         let wasRecording = lifecycle == .recording
         guard let token = lifecycleGate.beginStop() else { return }
         cleanupDisposition = .stopped
-        // Фазу заводим ЗДЕСЬ, а не при первой проверке процесса: иначе она
-        // остаётся `.idle`, и повторный Стоп во время обычного ожидания
-        // попадает в переход «начать остановку» и сбрасывает счётчик
-        // ожиданий, удлиняя закрытие встречи.
+        // Фазу заводим ЗДЕСЬ, через машину, а не при первой проверке
+        // процесса. Иначе она остаётся `.idle`, и тогда: повторный Стоп
+        // попадает в переход «начать остановку» и гасит страховочный
+        // таймер, а сам таймер на `.idle` вырождается в «ничего не делать»
+        // — то есть при демоне, пережившем SIGKILL, выхода из остановки не
+        // остаётся вовсе (ревью 19.08, круги 2 и 3).
         shutdownPhase = .idle
+        applyShutdown(.stopRequested(daemonAlive: process?.isRunning == true),
+                      token: token)
         publishLifecycle()
 
         if wasRecording { MeetingProcessingService.shared.expectResult() }
@@ -635,11 +639,12 @@ final class SuflerService: ObservableObject {
             // Опрос идёт через тот же единственный вход. `.finish` — это
             // «закрывать встречу», и обрабатывается ниже по коду; всё
             // остальное (ещё подождать, объявить застревание) машина уже
-            // исполнила внутри applyShutdown.
+            // исполнила внутри applyShutdown — с ТЕМ ЖЕ токеном, на котором
+            // держится планирование следующего опроса.
             //
-            // `closingCapture: true` — мы уже внутри закрытия захвата, поэтому
-            // машина не зовёт его повторно, а отдаёт действие наружу. Токен
-            // передаётся: на нём держится планирование следующего опроса.
+            // `closingCapture: true` — мы уже внутри закрытия захвата,
+            // поэтому действия, ведущие обратно сюда, машина не выполняет, а
+            // возвращает наружу.
             let action = self.applyShutdown(
                 .pollTick(daemonAlive: self.process?.isRunning == true),
                 token: token, closingCapture: true)
