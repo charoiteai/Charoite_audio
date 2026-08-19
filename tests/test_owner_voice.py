@@ -244,3 +244,18 @@ def test_пустая_метка_выключает_подпись_целико�
     assert ov.label_for(7, is_mic=True, heard=heard, owner_label="",
                         other_label=OTHER, neutral="Собеседник 1") == "Собеседник 1"
     assert ov.collides_with_neutral(""), "пустое имя — тоже коллизия"
+
+
+def test_коллизионное_имя_не_попадает_в_метку_канала(tmp_path):
+    """Проверка стоит в ИСТОЧНИКЕ — в AudioHub, где метка и рождается.
+
+    Демон правил её уже после старта захвата, и между стартом и правкой
+    чанки успевали уйти со старой меткой (ревью 19.08, седьмой круг).
+    Здесь проверяется само правило отбора: что именно попадёт в SPEAKER.
+    """
+    neutral = "Собеседник"
+    for name, expected in [("Собеседник", "Я"), ("Собеседник 2", "Я"),
+                           ("Собеседник Иванов", "Собеседник Иванов"),
+                           (OWNER, OWNER), ("", "Я")]:
+        label = name if name and not ov.collides_with_neutral(name, neutral) else "Я"
+        assert label == expected, f"{name!r} → {label!r}, ожидалось {expected!r}"
