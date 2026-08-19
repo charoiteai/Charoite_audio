@@ -221,14 +221,26 @@ enum ModelPresetPolicy {
         }
     }
 
+    /// Набор, с которым `config.yaml` приезжает из шаблона.
+    ///
+    /// Его человек не выбирал — он просто скопировался при первом запуске,
+    /// поэтому только его и можно молча переопределить рекомендацией.
+    static var templateDefault: ModelPreset { all[2] }   // «Сбалансированный»
+
     /// С каким пресетом открывать мастер на этой машине.
     ///
     /// Конфиг главнее рекомендации — но только пока он про эту машину. На
     /// первом запуске config.yaml копируется из шаблона (лёгкие модели,
     /// дежавю включено = набор 16 ГБ), и на 8 ГБ мастер предвыбирал бы
     /// профиль тяжелее машины, а «Применить» включало бы эмбеддер (третий
-    /// круг, DeepSeek). Не влезает — показываем рекомендованный; человек
-    /// по-прежнему волен выбрать любой руками.
+    /// круг, DeepSeek).
+    ///
+    /// Заменяем при этом ТОЛЬКО шаблонный набор. Первая версия правки
+    /// перетирала любой профиль тяжелее памяти — включая осознанно
+    /// выбранный «Полный» на 32 ГБ (конфиг, перенесённый с большой машины):
+    /// мастер предлагал «Точный», и «Применить» молча забирало у человека
+    /// его 35B (четвёртый круг, DeepSeek). Выбор человека — не ошибка,
+    /// которую надо чинить за него.
     static func startingPresetID(
         model: String? = AppSettings.configValue("model"),
         smallModel: String? = AppSettings.configValue("small_model"),
@@ -238,7 +250,8 @@ enum ModelPresetPolicy {
         let advised = recommended(forGB: memoryGB)
         guard let current = current(model: model, smallModel: smallModel,
                                     dejaVu: flagIsOn(dejaVuRaw)) else { return advised.id }
-        return current.needsGB <= memoryGB ? current.id : advised.id
+        let untouchedTemplate = current.id == templateDefault.id
+        return current.needsGB > memoryGB && untouchedTemplate ? advised.id : current.id
     }
 }
 

@@ -43,6 +43,16 @@ final class MeetingCardArchiveTests: XCTestCase {
         XCTAssertFalse(MeetingCardLoader.isOurArchive(dir, "- Коля: начали\n- Оля: по релизу\n"))
     }
 
+    func testПравкаЗаголовкаНеПрячетСвойАрхив() throws {
+        // Шапку человек правит в Obsidian чаще всего; реплики после
+        // архивации не меняются — сверяем по ним.
+        let archived = "# Встреча 19.08\n- Коля: начали\n- Оля: по релизу всё\n"
+        let dir = try folder(withTranscript: archived)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let edited = "# Планёрка по релизу 0.53\n\n- Коля: начали\n- Оля: по релизу всё\n"
+        XCTAssertTrue(MeetingCardLoader.isOurArchive(dir, edited))
+    }
+
     func testСомнениеТрактуетсяВПользуПоказа() throws {
         let empty = try folder(withTranscript: nil)
         defer { try? FileManager.default.removeItem(at: empty) }

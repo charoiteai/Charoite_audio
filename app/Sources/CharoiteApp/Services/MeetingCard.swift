@@ -160,12 +160,16 @@ enum MeetingCardLoader {
         return Array(ours.prefix(depth)) == Array(theirs.prefix(depth))
     }
 
-    /// Непустые строки без хвостовых пробелов — устойчиво к разнице
-    /// переводов строк и к правке отступов.
+    /// Реплики стенограммы: непустые строки без заголовков и фронтматтера.
+    ///
+    /// Шапку (`# Встреча…`, `---`) человек правит руками в Obsidian чаще
+    /// всего, и сравнение по ней прятало бы разбор своей же встречи после
+    /// невинного переименования заголовка (четвёртый круг, DeepSeek).
+    /// Реплики же после архивации не меняются.
     private static func lines(_ text: String) -> [String] {
         text.split(separator: "\n", omittingEmptySubsequences: true)
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") && $0 != "---" }
     }
 
     static func manifest(in folder: URL) -> MeetingManifest? {
