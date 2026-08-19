@@ -87,10 +87,13 @@ enum ArchiveSearch {
 
     private static func isCJK(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {
-        case 0x4E00...0x9FFF,    // китайский (основной блок)
-             0x3400...0x4DBF,    // расширение A
-             0x3040...0x30FF,    // японские каны
-             0xAC00...0xD7AF:    // корейский хангыль
+        case 0x4E00...0x9FFF,        // китайский (основной блок)
+             0x3400...0x4DBF,        // расширение A
+             0xF900...0xFAFF,        // совместимость (иероглифы из старых кодировок)
+             0x3040...0x30FF,        // японские каны
+             0xFF66...0xFF9F,        // полуширинная катакана
+             0xAC00...0xD7AF,        // корейский хангыль
+             0x20000...0x2EBEF:      // расширения B+ (редкие иероглифы)
             return true
         default:
             return false

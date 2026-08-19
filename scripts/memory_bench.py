@@ -50,7 +50,30 @@ def norm(s: str) -> str:
 # на поиск всей фразы целиком и не находил ничего (замер 19.08: 0/3 на
 # китайском демо-графе против 2/3 на английском). Берём скользящие биграммы —
 # стандартный приём для языков без пробелов: 支付服务商 → 支付, 付服, 服务, 务商.
-CJK = r"\u4e00-\u9fff\u3400-\u4dbf\u3040-\u30ff\uac00-\ud7af"
+CJK = (r"\u4e00-\u9fff"      # китайский, основной блок
+       r"\u3400-\u4dbf"      # расширение A
+       r"\uf900-\ufaff"      # совместимость (иероглифы из старых кодировок)
+       r"\u3040-\u30ff"      # японские каны
+       r"\uff66-\uff9f"      # полуширинная катакана
+       r"\uac00-\ud7af"      # корейский хангыль
+       r"\U00020000-\U0002ebef")  # расширения B+ (редкие иероглифы)
+
+
+def contains(needle: str, text: str) -> bool:
+    """Есть ли ожидаемый факт в ответе.
+
+    Прямое вхождение — как раньше. Для иероглифов добавлена сверка по сжатой
+    форме: модель расставляет пробелы между знаками произвольно («9 月 1 日»
+    против «9月1日»), в китайском они не значимы, и строгая сверка давала
+    ложный провал на верном ответе (замер 19.08). Русский и английский путь
+    не меняется: сжатие включается только когда в ожидании есть иероглифы.
+    """
+    if norm(needle) in norm(text):
+        return True
+    if re.search(f"[{CJK}]", needle):
+        squeeze = re.compile(r"\s+")
+        return squeeze.sub("", norm(needle)) in squeeze.sub("", norm(text))
+    return False
 
 
 def cjk_grams(query: str) -> list[str]:
@@ -135,7 +158,11 @@ def search(graph: pathlib.Path, query: str) -> str:
             "или", "чем", "кто", "было", "быть", "по", "мы", "решили"}
     words = [w for w in re.findall(r"[А-Яа-яЁёA-Za-z0-9_-]{3,}", query)
              if norm(w) not in stop]
-    words += cjk_grams(query)
+    grams = cjk_grams(query)
+    # Дедуп: повтор иглы удваивал её вклад в счёт («服务服务商» → «服务» дважды).
+    words = list(dict.fromkeys(words))
+    grams = list(dict.fromkeys(g for g in grams if g not in words))
+    words += grams
     rx = re.compile("|".join(re.escape(w) for w in words), re.I) if words else re.compile(re.escape(query), re.I)
     scored: list[tuple[int, str]] = []
     for p in graph.rglob("*.md"):
@@ -151,7 +178,12 @@ def search(graph: pathlib.Path, query: str) -> str:
         low = norm(text)
         rel = str(p.relative_to(graph))
         score = sum(1 for w in words if norm(w) in low)
-        score += sum(3 for w in words if norm(w) in norm(rel))
+        # Буст за попадание в ПУТЬ у биграмм слабее: двух иероглифов слишком
+        # мало, чтобы считать совпадение с именем файла осмысленным — частая
+        # биграмма («现在», «我们») иначе перевешивает редкое точное слово
+        # (ревью 19.08, DeepSeek).
+        score += sum(3 for w in words if w not in grams and norm(w) in norm(rel))
+        score += sum(1 for w in grams if norm(w) in norm(rel))
         start = max(0, m.start() - 150)
         frag = " ".join(text[start:m.end() + SNIPPET].split())
         scored.append((score, f"• {rel}\n  …{frag}…"))
@@ -185,7 +217,19 @@ def main() -> None:
         return
     else:
         cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    lang = "zh" if args.demo_zh else "en" if args.demo_en else "ru"
+    # Демо-флаг задаёт язык сам; в обычном прогоне берём его ОТТУДА ЖЕ, откуда
+    # приложение (sufler.language). Иначе владелец английского или китайского
+    # vault получал русский промпт синтеза, ответ на русском и ложные провалы
+    # ночной джобы — ровно та болезнь, ради которой промпты и локализованы
+    # (ревью 19.08, DeepSeek).
+    if args.demo_zh:
+        lang = "zh"
+    elif args.demo_en:
+        lang = "en"
+    else:
+        lang = str((cfg.get("sufler") or {}).get("language", "ru")).strip().lower()
+        if lang not in SYNTH:
+            lang = "ru"
     if args.demo_zh:
         args.demo = True
         graph = ROOT / "demo" / "graph_zh"
@@ -229,14 +273,14 @@ def main() -> None:
             continue
         # диагностика: чей провал — ПОИСКА (факт не в выдаче) или СИНТЕЗА
         # (факт в выдаче, LLM не включил в ответ). Лечатся по-разному.
-        retr_missing = [m for m in must if norm(m) not in norm(found)]
+        retr_missing = [m for m in must if not contains(m, found)]
         prompt_tpl, system_msg = SYNTH[lang]
         answer = "".join(llm.stream(
             prompt_tpl.format(q=q, found=found),
             system=system_msg,
             temperature=0.0,  # бенч — регрессия, не творчество: убираем флап
         ))
-        missing = [m for m in must if norm(m) not in norm(answer)]
+        missing = [m for m in must if not contains(m, answer)]
         if missing:
             stage = "ПОИСК" if retr_missing else "синтез"
             failures.append((q, missing, f"[{stage}] " + answer[:160]))

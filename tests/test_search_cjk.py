@@ -51,3 +51,46 @@ def test_поиск_находит_файл_по_иероглифам(tmp_path):
     found = memory_bench.search(graph, "支付服务商最后定了哪一家？")
 
     assert "YuPay" in found, "поиск обязан найти файл по иероглифам запроса"
+
+
+def test_редкие_блоки_тоже_режутся():
+    """Расширения B+ и совместимость: иначе редкий иероглиф проваливал весь
+    запрос в фолбэк «искать всю фразу целиком» (ревью 19.08, DeepSeek)."""
+    assert memory_bench.cjk_grams("𠀀𠀁") == ["𠀀𠀁"]
+    assert memory_bench.cjk_grams("City") == []
+
+
+def test_повтор_иглы_не_удваивает_счёт(tmp_path):
+    """«服务服务商» давал биграмму «服务» дважды, и файл с ней обгонял
+    релевантный (ревью 19.08, DeepSeek)."""
+    graph = tmp_path / "g"
+    graph.mkdir()
+    (graph / "a.md").write_text("服务服务服务\n", encoding="utf-8")
+    (graph / "b.md").write_text("服务商选型：YuPay\n", encoding="utf-8")
+
+    out = memory_bench.search(graph, "服务商")
+
+    assert out.index("b.md") < out.index("a.md"), "точное совпадение должно быть выше"
+
+
+def test_язык_синтеза_задан_для_всех_трёх():
+    """Обычный прогон бенча спрашивает на языке vault (sufler.language),
+    а не всегда по-русски."""
+    assert set(memory_bench.SYNTH) == {"ru", "en", "zh"}
+    for lang, (prompt, system) in memory_bench.SYNTH.items():
+        assert "{q}" in prompt and "{found}" in prompt, lang
+        assert system.strip(), lang
+
+
+def test_пробелы_между_иероглифами_не_ломают_сверку():
+    """Модель пишет «9 月 1 日» и «9月1日» вперемешку — в китайском пробел
+    не значим, и строгая сверка давала ложный провал на верном ответе."""
+    assert memory_bench.contains("9月", "网店计划于 **9 月 1 日** 上线")
+    assert memory_bench.contains("9月", "9月1日上线")
+    assert not memory_bench.contains("9月", "十月一日上线")
+
+
+def test_у_латиницы_сверка_осталась_строгой():
+    """Сжатие включается только для иероглифов: «pay ment» — не «payment»."""
+    assert memory_bench.contains("YuPay", "we take YuPay")
+    assert not memory_bench.contains("YuPay", "we take Yu Pay")
