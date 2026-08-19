@@ -66,8 +66,8 @@ enum MeetingCardLoader {
     /// (суть, решения, поручения), заметка графа (куда вести Obsidian).
     static func load(for snapshot: MeetingProcessingSnapshot) -> MeetingCard {
         var card = MeetingCard()
-        if let transcript = try? String(
-            contentsOfFile: snapshot.transcriptPath, encoding: .utf8) {
+        let transcript = try? String(contentsOfFile: snapshot.transcriptPath, encoding: .utf8)
+        if let transcript {
             card.participants = participants(fromTranscript: transcript)
             card.durationText = durationText(fromTranscript: transcript)
         }
@@ -85,8 +85,15 @@ enum MeetingCardLoader {
         // минут — и карточка показала бы чужие решения. При наличии заметки
         // путь идёт от самого файла, поэтому сверка нужна только здесь
         // (ревью 19.08, второй круг GLM).
-        if note == nil, let folder = card.archiveFolder,
-           let id = manifest(in: folder)?.meetingID, id != snapshot.meetingID {
+        //
+        // Сверяем по СТЕНОГРАММЕ, а не по meeting_id из манифеста: там
+        // минутный штамп, а у снимка — посекундный, и сравнение «минуты
+        // против секунд» было ложным ВСЕГДА — карточка без заметки теряла
+        // архив целиком, то есть ровно тот случай, ради которого пять строк
+        // выше берут папку из настроек (третий круг, DeepSeek). Стенограмма
+        // в архив копируется дословно, поэтому сравнение по её началу
+        // отличает свою встречу от чужой той же минуты.
+        if note == nil, let folder = card.archiveFolder, !isOurArchive(folder, transcript) {
             card.archiveFolder = nil
         }
         if let folder = card.archiveFolder {
@@ -131,6 +138,34 @@ enum MeetingCardLoader {
             card.cloudReview = cloudReview(fromLog: text)
         }
         return card
+    }
+
+    /// Наша ли это папка архива: начало стенограммы совпадает.
+    ///
+    /// Сомнение трактуем в пользу показа (файла нет, не читается, локальной
+    /// стенограммы нет): молча спрятать разбор своей же встречи хуже, чем
+    /// редкий шанс показать чужую — а чужая в настроенном графе появляется
+    /// только после смены `graph_dir` на граф с встречей той же минуты.
+    static func isOurArchive(_ folder: URL, _ transcript: String?) -> Bool {
+        guard let transcript else { return true }
+        let file = folder.appendingPathComponent("Стенограмма.md")
+        guard let archived = try? String(contentsOf: file, encoding: .utf8) else { return true }
+        let ours = lines(transcript), theirs = lines(archived)
+        // Сравниваем по КОРОТКОЙ из двух: копия в архиве снимается один раз,
+        // а живой файл после этого может дорасти (повторная обработка,
+        // накат темы). Требовать одинаковой длины значило бы прятать разбор
+        // своей же встречи — та самая болезнь, от которой лечим.
+        let depth = min(5, min(ours.count, theirs.count))
+        guard depth > 0 else { return true }
+        return Array(ours.prefix(depth)) == Array(theirs.prefix(depth))
+    }
+
+    /// Непустые строки без хвостовых пробелов — устойчиво к разнице
+    /// переводов строк и к правке отступов.
+    private static func lines(_ text: String) -> [String] {
+        text.split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     static func manifest(in folder: URL) -> MeetingManifest? {

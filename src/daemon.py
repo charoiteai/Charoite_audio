@@ -1409,7 +1409,13 @@ def main():
         # включённым вместе с эмбеддером на 1.2 ГБ (ревью 19.08).
         if not install_profile.deja_vu_enabled(cfg):
             return
-        gdir = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser()
+        # Пустой graph_dir — это Path("."), и «Ядра» искались бы в рабочем
+        # каталоге демона: случайная папка с таким именем подсунула бы живой
+        # встрече чужие темы (третий круг, DeepSeek).
+        graph_raw = str(cfg["sufler"].get("graph_dir", "") or "").strip()
+        if not graph_raw:
+            return
+        gdir = pathlib.Path(graph_raw).expanduser()
         cores_dir = gdir / "Ядра"
         emb_model = cfg["sufler"].get("embed_model", "bge-m3:latest")
         margin = float(cfg["sufler"].get("deja_vu_margin", 0.04))

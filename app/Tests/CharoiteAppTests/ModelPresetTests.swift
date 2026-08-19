@@ -180,4 +180,43 @@ final class ModelPresetTests: XCTestCase {
         XCTAssertGreaterThan(ModelPresetPolicy.machineMemoryGB, 0,
                              "без объёма памяти рекомендация становится гаданием")
     }
+
+    /// Свежая установка на 8 ГБ: config.yaml копируется из шаблона (лёгкие
+    /// модели + `deja_vu: true`), и мастер предвыбирал «Сбалансированный» —
+    /// профиль 16 ГБ, чьё «Применить» включает эмбеддер на машине, которая
+    /// его не тянет (третий круг, DeepSeek).
+    func testМастерНеПредлагаетПрофильТяжелееМашины() {
+        let onEight = ModelPresetPolicy.startingPresetID(
+            model: "qwen3.5:4b", smallModel: "qwen3.5:4b", dejaVuRaw: "true", memoryGB: 8)
+        XCTAssertEqual(onEight, "light", "на 8 ГБ — «Лёгкий», даже если в конфиге дежавю")
+
+        let onSixteen = ModelPresetPolicy.startingPresetID(
+            model: "qwen3.5:4b", smallModel: "qwen3.5:4b", dejaVuRaw: "true", memoryGB: 16)
+        XCTAssertEqual(onSixteen, "balanced", "16 ГБ этот набор тянет — уважаем конфиг")
+    }
+
+    func testВыборЧеловекаУважаемЕслиОнВлезает() {
+        // Скромнее рекомендации — это осознанное решение, не ошибка.
+        let modest = ModelPresetPolicy.startingPresetID(
+            model: "qwen3.5:4b", smallModel: "qwen3.5:4b", dejaVuRaw: "false", memoryGB: 64)
+        XCTAssertEqual(modest, "light")
+        // Незнакомый набор моделей (правил руками) — падаем на рекомендацию.
+        let unknown = ModelPresetPolicy.startingPresetID(
+            model: "llama9:70b", smallModel: "llama9:8b", dejaVuRaw: nil, memoryGB: 16)
+        XCTAssertEqual(unknown, "balanced")
+    }
+
+    /// Список «выключено» — зеркало `install_profile._FALSE`: разъехавшись,
+    /// он даёт приложению и демону разное мнение об одном конфиге.
+    func testПарсерФлаговЗеркалитPython() {
+        for off in ["false", "FALSE", " no ", "off", "0",
+                    "\u{043D}\u{0435}\u{0442}", "\u{0432}\u{044B}\u{043A}\u{043B}"] {
+            XCTAssertEqual(ModelPresetPolicy.flagIsOn(off), false, off)
+        }
+        for on in ["true", "yes", "on", "1"] {
+            XCTAssertEqual(ModelPresetPolicy.flagIsOn(on), true, on)
+        }
+        XCTAssertNil(ModelPresetPolicy.flagIsOn(nil))
+        XCTAssertNil(ModelPresetPolicy.flagIsOn("  "))
+    }
 }

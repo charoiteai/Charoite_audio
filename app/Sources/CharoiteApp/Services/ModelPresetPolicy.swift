@@ -189,7 +189,11 @@ enum ModelPresetPolicy {
     static func flagIsOn(_ value: String?) -> Bool? {
         guard let value = value?.trimmingCharacters(in: .whitespaces).lowercased(),
               !value.isEmpty else { return nil }
-        let off = ["false", "no", "off", "0", "\u{043D}\u{0435}\u{0442}"]   // «нет»
+        // Список — зеркало `install_profile._FALSE`; разъехавшись, он даёт
+        // приложению и демону разное мнение об одном конфиге (третий круг).
+        let off = ["false", "no", "off", "0",
+                   "\u{043D}\u{0435}\u{0442}",                       // «нет»
+                   "\u{0432}\u{044B}\u{043A}\u{043B}"]              // «выкл»
         return !off.contains(value)
     }
 
@@ -215,6 +219,26 @@ enum ModelPresetPolicy {
             $0.model == model && $0.smallModel == smallModel
                 && (dejaVu == nil || $0.dejaVu == dejaVu)
         }
+    }
+
+    /// С каким пресетом открывать мастер на этой машине.
+    ///
+    /// Конфиг главнее рекомендации — но только пока он про эту машину. На
+    /// первом запуске config.yaml копируется из шаблона (лёгкие модели,
+    /// дежавю включено = набор 16 ГБ), и на 8 ГБ мастер предвыбирал бы
+    /// профиль тяжелее машины, а «Применить» включало бы эмбеддер (третий
+    /// круг, DeepSeek). Не влезает — показываем рекомендованный; человек
+    /// по-прежнему волен выбрать любой руками.
+    static func startingPresetID(
+        model: String? = AppSettings.configValue("model"),
+        smallModel: String? = AppSettings.configValue("small_model"),
+        dejaVuRaw: String? = AppSettings.configValue("deja_vu"),
+        memoryGB: Int = machineMemoryGB
+    ) -> String {
+        let advised = recommended(forGB: memoryGB)
+        guard let current = current(model: model, smallModel: smallModel,
+                                    dejaVu: flagIsOn(dejaVuRaw)) else { return advised.id }
+        return current.needsGB <= memoryGB ? current.id : advised.id
     }
 }
 

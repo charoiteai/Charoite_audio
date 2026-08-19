@@ -42,7 +42,8 @@ def test_graph_dir_not_set_means_no_graph():
     (ревью 19.08, второй круг Gemini)."""
     assert install_profile.graph_enabled({"sufler": {"graph_dir": "", "graph": True}}) is False
     assert install_profile.graph_enabled({"sufler": {"graph_dir": "   "}}) is False
-    assert install_profile.graph_enabled({"sufler": {"graph_dir": "~/Vault/Work"}}) is True
+    assert install_profile.graph_enabled(
+        {"sufler": {"graph_dir": str(pathlib.Path.home())}}) is True
 
 
 def test_graph_dir_from_env_counts_too(monkeypatch):
@@ -163,3 +164,36 @@ def test_silence_is_reported_even_without_a_graph_dir(tmp_path):
 
     assert result.returncode == 3, "EXIT_NO_SPEECH (3), а не 0"
     assert not hook.exists(), "хук на тишине не запускаем"
+
+
+def test_несуществующая_папка_графа_это_не_ошибка(tmp_path):
+    """`~/Vault/Работа`, когда `~/Vault` ещё нет — опечатка, несинхронизированный
+    iCloud, «папку заведу потом». graph_updater там выходит рано, заметки нет —
+    и без этой проверки готовая встреча падала в «ошибку» с тремя повторами,
+    ровно как с пустой строкой (третий круг, DeepSeek)."""
+    missing = tmp_path / "нет-такой" / "Граф"
+    assert install_profile.graph_enabled({"sufler": {"graph_dir": str(missing)}}) is False
+
+
+def test_папка_графа_создаётся_на_первом_запуске(tmp_path):
+    """Родителя достаточно: сам граф Чароит создаёт сам, и требовать его
+    существования значило бы не создать его никогда."""
+    graph = tmp_path / "Граф"
+    assert not graph.exists()
+    assert install_profile.graph_enabled({"sufler": {"graph_dir": str(graph)}}) is True
+
+
+def test_пробельный_graph_dir_не_льёт_архив_в_рабочую_папку(tmp_path):
+    """`graph_dir: "   "` проходил ранний выход graph_updater (`Path("   ").parent`
+    — это `.`), и архив встречи уезжал в папку с именем из пробелов рядом с
+    рабочим каталогом (третий круг, DeepSeek)."""
+    hook = tmp_path / "hook-ran"
+    live, env = _pipeline_sandbox(tmp_path, graph="true", graph_dir="   ", hook=hook,
+                                  transcript_text="- Коля: " + "разговор про релиз. " * 40)
+
+    result = _run_graph_updater(live, env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert hook.exists(), "хук отрабатывает и здесь"
+    assert not (tmp_path / "   ").exists(), "папка из пробелов не создаётся"
+    assert not list(tmp_path.glob("*/Встречи-архив")), "архив никуда не уехал"

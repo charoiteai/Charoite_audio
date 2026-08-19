@@ -32,8 +32,9 @@ llm:
   # engine: ollama
   # mlx_base_url: http://127.0.0.1:8080
   # mlx_model: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
-  # Шаблон стартует с того же набора, что профиль 8/16 ГБ: одна лёгкая модель
-  # на все роли. Раньше здесь стоял qwen3.6:35b-a3b (23 ГБ), и установка
+  # Шаблон стартует с моделей профиля 8/16 ГБ: одна лёгкая на все роли.
+  # Семантические контуры (deja_vu, tier3) ниже включены — это набор 16 ГБ;
+  # на 8 ГБ выключите их или примените профиль «Лёгкий» в приложении. Раньше здесь стоял qwen3.6:35b-a3b (23 ГБ), и установка
   # «способом B» — cp config.example.yaml config.yaml — уходила в своп ещё до
   # того, как человек доходил до выбора профиля. Первая правка 19.08 поставила
   # сюда gemma4:12b, но вместе с think_model и эмбеддером это те же 17–19 ГБ
@@ -44,6 +45,7 @@ llm:
   fallback_model: qwen3.5:4b
   # Профили по памяти (см. docs/MODELS.md, таблица «Какие модели под вашу RAM»):
   #   8 ГБ:  model: qwen3.5:4b · small_model: qwen3.5:4b · deja_vu: false · tier3: false
+  #  16 ГБ:  model: qwen3.5:4b · small_model: qwen3.5:4b (набор этого шаблона)
   #  32 ГБ:  model: qwen3.8:27b-mlx · small_model: qwen3.5:4b
   #  64 ГБ:  model: qwen3.6:35b-mlx · small_model: qwen3.5:4b
   #  English:   stt.backend: parakeet · промпты в sufler.role — на английский

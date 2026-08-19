@@ -24,6 +24,7 @@ config.yaml строкой в кавычках (`graph: "false"`), и строг
 from __future__ import annotations
 
 import os
+import pathlib
 
 _FALSE = {"false", "no", "off", "0", "нет", "выкл"}
 _TRUE = {"true", "yes", "on", "1", "да", "вкл"}
@@ -56,9 +57,18 @@ def graph_enabled(cfg: dict) -> bool:
     и ронял ГОТОВУЮ встречу в «ошибку обработки», а `retry_unfinished`
     повторял этот путь трижды (ревью 19.08, второй круг Gemini; в main
     поведение было таким же).
+
+    То же и для НЕСУЩЕСТВУЮЩЕГО пути (`~/Vault/Работа`, когда `~/Vault` ещё
+    нет: опечатка, iCloud не скачан, папку только планируют): graph_updater
+    там выходит рано, заметки нет — и без этой проверки встреча снова падала
+    бы в «ошибку» с тремя повторами (третий круг, DeepSeek). Проверяем
+    РОДИТЕЛЯ, а не саму папку: граф на первом запуске создаётся, и требовать
+    его существования значило бы не создать его никогда.
     """
     graph_dir = os.environ.get("SUFLER_GRAPH_DIR") or (cfg.get("sufler") or {}).get("graph_dir") or ""
     if not str(graph_dir).strip():
+        return False
+    if not pathlib.Path(str(graph_dir)).expanduser().parent.is_dir():
         return False
     return flag(cfg, "graph", True)
 

@@ -32,12 +32,15 @@ struct FirstRunView: View {
     /// Текст отказа записи конфига; nil — отказа не было.
     @State private var configSaveFailure: String?
     /// Выбранный набор моделей. По умолчанию — тот, что уже в конфиге, а
-    /// если конфиг ещё не тронут, рекомендованный под память этой машины.
-    @State private var presetID: String = ModelPresetPolicy.current(
-        model: AppSettings.configValue("model"),
-        smallModel: AppSettings.configValue("small_model"),
-        dejaVu: ModelPresetPolicy.flagIsOn(AppSettings.configValue("deja_vu"))
-    )?.id ?? ModelPresetPolicy.recommended(forGB: ModelPresetPolicy.machineMemoryGB).id
+    /// если конфиг ещё не тронут или не влезает в память — рекомендованный.
+    ///
+    /// Про «не влезает»: на первом запуске конфиг копируется из шаблона, а
+    /// там лёгкие модели с включённым дежавю — это набор 16 ГБ. На
+    /// восьмигигабайтной машине мастер молча предвыбирал его, и «Применить»
+    /// включало эмбеддер (+1.2 ГБ) ровно там, где профиль от него защищает
+    /// (третий круг, DeepSeek). Конфиг человека уважаем, но не тот, который
+    /// он не выбирал.
+    @State private var presetID: String = ModelPresetPolicy.startingPresetID()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
