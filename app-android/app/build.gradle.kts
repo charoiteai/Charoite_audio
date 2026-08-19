@@ -7,12 +7,19 @@ plugins {
 
 android {
     namespace = "ai.charoite.companion"
-    compileSdk = 35
+    // 37 — против чего КОМПИЛИРУЕМ: свежая Compose (bom 2026.08) собрана под
+    // этот уровень API и без него роняет сборку на checkDebugAarMetadata.
+    // Поведение приложения от этого не меняется — за него отвечает targetSdk.
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "ai.charoite.companion"
         // 26 (Android 8) — ниже нет ни SAF-дерева, ни адекватных foreground-сервисов.
         minSdk = 26
+        // Под какое поведение системы приложение подписалось. Поднимать вместе
+        // с compileSdk нельзя вслепую: 36 и 37 меняют правила фоновых сервисов
+        // и обязательный edge-to-edge, а компаньон пишет звук в фоне — это
+        // отдельная задача с проверкой на живом планшете.
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
