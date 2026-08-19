@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
+import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -90,27 +92,74 @@ def test_ready_status_survives_without_a_graph_note(tmp_path):
     assert data["transcript_path"].endswith("2026-08-19_1000.md")
 
 
-def test_graph_off_does_not_disable_the_rest_of_the_pipeline():
+def _pipeline_sandbox(tmp_path, *, graph: str, graph_dir: str, hook: pathlib.Path,
+                      transcript_text: str) -> tuple[pathlib.Path, dict]:
+    """Песочница конвейера: корень данных, конфиг, стенограмма, хук."""
+    (tmp_path / "config").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "logs").mkdir(exist_ok=True)
+    (tmp_path / "config" / "config.yaml").write_text(
+        "llm:\n  model: нет-такой\n  small_model: нет-такой\n"
+        "sufler:\n"
+        f"  graph: \"{graph}\"\n"
+        f"  graph_dir: \"{graph_dir}\"\n"
+        f"  post_meeting_hook: \"touch {hook}\"\n",
+        encoding="utf-8")
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir(exist_ok=True)
+    live = tdir / "2026-08-19_1200.md"
+    live.write_text(transcript_text, encoding="utf-8")
+    env = dict(os.environ, CHAROITE_ROOT=str(tmp_path))
+    env.pop("SUFLER_GRAPH_DIR", None)
+    return live, env
+
+
+def _run_graph_updater(live: pathlib.Path, env: dict):
+    return subprocess.run([sys.executable, str(ROOT / "src" / "graph_updater.py"), str(live)],
+                          capture_output=True, text=True, env=env, timeout=120)
+
+
+def test_graph_off_still_runs_the_hook(tmp_path):
     """Выключен граф — выключены только узлы.
 
-    Первый вариант правки выходил из graph_updater сразу, и вместе с узлами
-    пропадали архив встречи, копии в vault и post_meeting_hook — то есть всё,
-    что от модели не зависит (ревью 19.08, Gemini). Проверяем по коду: гейт
-    стоит вокруг extract, а не вокруг main, и путь к архиву остаётся общим с
-    веткой «модель молчала».
+    Первая версия правки выходила из graph_updater сразу, и вместе с узлами
+    пропадали архив встречи, копии в vault и post_meeting_hook — всё, что от
+    модели не зависит (ревью 19.08, все три головы). Проверяем поведением, а
+    не текстом файла: хук обязан отработать, а модель — не позваться (её тут
+    и нет: в конфиге несуществующий тег).
     """
-    source = (ROOT / "src" / "graph_updater.py").read_text(encoding="utf-8")
-    gate = source.index("graph_off = not install_profile.graph_enabled(cfg)")
-    archive = source.index("from meeting_archive import archive_meeting")
-    hook = source.rindex("run_post_hook(cfg, tpath, stamp)")
-    assert gate < archive < hook, "архив и хук обязаны идти ПОСЛЕ гейта, а не мимо"
-    assert "if not graph_ok and not graph_off:" in source, \
-        "выключенный профилем граф — код 0, а не EXIT_NO_GRAPH с ретраем"
+    graph = tmp_path / "Граф"
+    (graph / "Встречи").mkdir(parents=True)
+    hook = tmp_path / "hook-ran"
+    live, env = _pipeline_sandbox(tmp_path, graph="false", graph_dir=str(graph), hook=hook,
+                                  transcript_text="- Коля: " + "разговор про релиз. " * 40)
+
+    result = _run_graph_updater(live, env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert hook.exists(), "post_meeting_hook обязан отработать и без графа"
+    assert "узлы не строим" in result.stdout
 
 
-def test_pipeline_asks_for_a_note_only_when_the_graph_is_on():
-    """Заметку встречи создаёт разбор в узлы: без него требовать её нельзя,
-    иначе готовая встреча падает в «ошибку обработки»."""
-    source = (ROOT / "src" / "rebuild_transcript.py").read_text(encoding="utf-8")
-    assert "if graph_on and note is None:" in source
-    assert "publish(status.ready, live, note, names_pending(live))" in source
+def test_no_graph_dir_is_not_an_error_and_keeps_the_hook(tmp_path):
+    """`graph_dir: ""` — законный режим «только расшифровка»: не ошибка."""
+    hook = tmp_path / "hook-ran"
+    live, env = _pipeline_sandbox(tmp_path, graph="true", graph_dir="", hook=hook,
+                                  transcript_text="- Коля: " + "разговор про релиз. " * 40)
+
+    result = _run_graph_updater(live, env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert hook.exists(), "хук не должен теряться из-за ненастроенной папки графа"
+
+
+def test_silence_is_reported_even_without_a_graph_dir(tmp_path):
+    """Запись без речи — это `empty`, а не «готово»: проверка длины
+    стенограммы обязана стоять выше вопроса о папке графа (ревью 19.08, GLM)."""
+    hook = tmp_path / "hook-ran"
+    live, env = _pipeline_sandbox(tmp_path, graph="true", graph_dir="", hook=hook,
+                                  transcript_text="- Коля: угу\n")
+
+    result = _run_graph_updater(live, env)
+
+    assert result.returncode == 3, "EXIT_NO_SPEECH (3), а не 0"
+    assert not hook.exists(), "хук на тишине не запускаем"

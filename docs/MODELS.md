@@ -45,8 +45,13 @@ speed.
   models break the JSON schema; on the schema-guided KG benchmark
   [OSKGC](https://ceur-ws.org/Vol-4041/paper1.pdf) 7–8B models lose
   ~0.1 Micro F1 vs frontier and struggle most with ontology compliance.
-  Charoite builds a knowledge graph, so going below the 30B class is not
-  an option.
+  That is how the main model for the full profile was chosen, and on 64 GB
+  it is still 35B. As a hard floor, though, the rule did not hold: our own
+  benchmark on 19.08 across three real meetings showed `qwen3.5:4b`
+  extracting the graph better than `gemma4:12b` (31 decisions against 28,
+  96% against 100% verifiable quotes), and what breaks the JSON is a
+  particular model (`GigaChat3.1-10B` — five parts out of six), not the size
+  class. See "The 30B floor is retired" below.
 - `think: false` everywhere: reasoning mode moves output into the thinking
   field (empty content) and adds ~10 s of latency.
 

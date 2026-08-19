@@ -176,7 +176,7 @@ enum ModelPresetPolicy {
     static func recommended(forGB memory: Int) -> ModelPreset {
         if memory >= 64 { return all[0] }   // «Полный»: 35B просит ~21 ГБ весов
         if memory >= 32 { return all[1] }   // «Точный»: 27B, ~17 ГБ
-        if memory >= 16 { return all[2] }   // «Сбалансированный»: 12B, ~7 ГБ
+        if memory >= 16 { return all[2] }   // «Сбалансированный»: та же 4B + семантическая память
         return all[3]                        // «Лёгкий»: одна 4B на обе роли
     }
 

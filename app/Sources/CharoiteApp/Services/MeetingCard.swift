@@ -80,6 +80,15 @@ enum MeetingCardLoader {
         card.obsidianURL = note.flatMap { obsidianURL(noteURL: $0) }
         let stamp = String(snapshot.meetingID.prefix(15))
         card.archiveFolder = archiveFolder(graph: graph, stamp: stamp)
+        // Папку ищем по «дата чч-мм» в НАСТРОЕННОМ графе: если человек сменил
+        // graph_dir после обработки, там может лежать другая встреча тех же
+        // минут — и карточка показала бы чужие решения. При наличии заметки
+        // путь идёт от самого файла, поэтому сверка нужна только здесь
+        // (ревью 19.08, второй круг GLM).
+        if note == nil, let folder = card.archiveFolder,
+           let id = manifest(in: folder)?.meetingID, id != snapshot.meetingID {
+            card.archiveFolder = nil
+        }
         if let folder = card.archiveFolder {
             if let manifest = manifest(in: folder) {
                 if card.participants.isEmpty { card.participants = manifest.participants }

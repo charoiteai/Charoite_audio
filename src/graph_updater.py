@@ -642,18 +642,14 @@ def main():
         print(f"граф: статус недоступен ({type(e).__name__}: {e})")
     graph_raw = os.environ.get("SUFLER_GRAPH_DIR") or cfg["sufler"].get("graph_dir", "")
     graph = pathlib.Path(graph_raw).expanduser()
-    # проверять исходную строку: str(Path("")) == "." — пустой конфиг молча
-    # лил бы граф в cwd
-    if not graph_raw or not graph.parent.exists():
-        # Без папки графа узлов не будет, но всё остальное встречу не теряет:
-        # хук пользователя обязан отработать и здесь (ревью 19.08).
-        print(f"graph_dir не настроен/не существует: {graph}")
-        run_post_hook(cfg, tpath, parse_stem(tpath.stem)[0])
-        return
     transcript = tpath.read_text(encoding="utf-8")
     minutes_p = tpath.with_name(tpath.stem + "_minutes.md")
     if minutes_p.exists():
         transcript += "\n\n[МИНУТКИ]\n" + minutes_p.read_text(encoding="utf-8")
+    # «В записи нет речи» решается ДО вопроса о папке графа: этот факт от
+    # графа не зависит, а раньше при пустом graph_dir пустая запись получала
+    # «готово» вместо честного empty — и хук отрабатывал на тишине
+    # (ревью 19.08, второй круг GLM).
     if len(transcript) < 300:
         # Отдельный код возврата, а не тихий выход: для вызывающего это не
         # ошибка обработки, а факт — в записи нет речи. Разница практическая:
@@ -662,6 +658,14 @@ def main():
         # ушла бы в три бесполезных прогона.
         print("стенограмма слишком короткая — граф не трогаем")
         sys.exit(EXIT_NO_SPEECH)
+    # проверять исходную строку: str(Path("")) == "." — пустой конфиг молча
+    # лил бы граф в cwd
+    if not graph_raw or not graph.parent.exists():
+        # Без папки графа узлов не будет, но всё остальное встречу не теряет:
+        # хук пользователя обязан отработать и здесь (ревью 19.08).
+        print(f"graph_dir не настроен/не существует: {graph}")
+        run_post_hook(cfg, tpath, parse_stem(tpath.stem)[0])
+        return
 
     known = [] if os.environ.get("SUFLER_GRAPH_DIR") else known_graphs(graph)
     # Профиль может выключить именно УЗЛЫ (`sufler.graph: false`, лёгкая
