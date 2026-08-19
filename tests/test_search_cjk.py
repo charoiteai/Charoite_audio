@@ -60,19 +60,6 @@ def test_редкие_блоки_тоже_режутся():
     assert memory_bench.cjk_grams("City") == []
 
 
-def test_повтор_иглы_не_удваивает_счёт(tmp_path):
-    """«服务服务商» давал биграмму «服务» дважды, и файл с ней обгонял
-    релевантный (ревью 19.08, DeepSeek)."""
-    graph = tmp_path / "g"
-    graph.mkdir()
-    (graph / "a.md").write_text("服务服务服务\n", encoding="utf-8")
-    (graph / "b.md").write_text("服务商选型：YuPay\n", encoding="utf-8")
-
-    out = memory_bench.search(graph, "服务商")
-
-    assert out.index("b.md") < out.index("a.md"), "точное совпадение должно быть выше"
-
-
 def test_язык_синтеза_задан_для_всех_трёх():
     """Обычный прогон бенча спрашивает на языке vault (sufler.language),
     а не всегда по-русски."""
@@ -118,3 +105,35 @@ def test_мусор_и_пустой_конфиг_дают_русский():
                 {"sufler": {"language": "клингонский"}},
                 {"sufler": {"language": 42}}]:
         assert memory_bench.resolve_lang(cfg, demo_zh=False, demo_en=False, demo=False) == "ru", cfg
+
+
+def test_иглы_не_дублируются():
+    """«服务服务商» даёт «服务» дважды: без дедупа игла весила вдвое, и файл с
+    одной частой биграммой обгонял релевантный (ревью 19.08, DeepSeek)."""
+    words, grams = memory_bench.needles("服务服务商", set())
+    assert grams == ["服务", "务服", "务商"]
+    assert words == []
+
+
+def test_слова_тоже_дедуплицируются_и_стоп_слова_режутся():
+    words, grams = memory_bench.needles("бюджет бюджет проекта это", {"это"})
+    assert words == ["бюджет", "проекта"]
+    assert grams == []
+
+
+def test_полноширинные_цифры_совпадают_с_обычными():
+    """Китайские модели пишут «９月１日» наравне с «9月1日»."""
+    assert memory_bench.contains("9月", "９月１日上线")
+    assert memory_bench.contains("YuPay", "选了 ＹｕＰａｙ")
+
+
+def test_сжатие_пробелов_не_склеивает_латиницу():
+    """Один случайный иероглиф рядом не должен менять вердикт по латинскому
+    факту: «YuPay» и «Yu Pay» — разные строки (ревью 19.08, второй круг)."""
+    assert not memory_bench.contains("YuPay 支付", "Yu Pay 支付")
+    assert memory_bench.contains("YuPay 支付", "YuPay 支 付")
+
+
+def test_редкие_расширения_и_дополнение_совместимости():
+    assert memory_bench.cjk_grams("\U0002EBF0") == ["\U0002EBF0"]
+    assert memory_bench.cjk_grams("\U0002F800") == ["\U0002F800"]

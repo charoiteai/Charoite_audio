@@ -41,8 +41,14 @@ SNIPPET = 1200   # как в боевом RAG приложения
 LIMIT_FILES = 5
 
 
+# Полноширинный ASCII (U+FF01–U+FF5E) — обычный: китайские модели пишут «９月»
+# и «９月１日» наравне с «9月», и строгая сверка давала ложный провал на верном
+# ответе (ревью 19.08, второй круг).
+FULLWIDTH = {code: code - 0xFEE0 for code in range(0xFF01, 0xFF5F)}
+
+
 def norm(s: str) -> str:
-    return s.lower().replace("ё", "е")
+    return s.lower().replace("ё", "е").translate(FULLWIDTH)
 
 
 # Иероглифы пробелами не разделяются, поэтому «слова» из них не нарезать:
@@ -56,10 +62,28 @@ CJK = (r"\u4e00-\u9fff"      # китайский, основной блок
        r"\u3040-\u30ff"      # японские каны
        r"\uff66-\uff9f"      # полуширинная катакана
        r"\uac00-\ud7af"      # корейский хангыль
-       r"\U00020000-\U0002ebef")  # расширения B–F (редкие иероглифы)
+       r"\U00020000-\U0002ee5f"      # расширения B–I
+       r"\U0002f800-\U0002fa1f")  # совместимость, дополнение
 
 
-SPACES = re.compile(r"\s+")
+# Пробел рядом с иероглифом. Сжимать всю строку было нельзя: тогда
+# contains("YuPay 支付", "Yu Pay 支付") давал True — латиница склеивалась заодно,
+# и один случайный иероглиф рядом менял вердикт по совсем другому факту
+# (ревью 19.08, второй круг).
+CJK_SPACE = re.compile(f"(?<=[{CJK}])\\s+|\\s+(?=[{CJK}])")
+
+
+def needles(query: str, stop: set[str]) -> tuple[list[str], list[str]]:
+    """Иглы запроса: слова и биграммы иероглифов, каждая по одному разу.
+
+    Дедуп обязателен: повтор удваивал вклад иглы в счёт («服务服务商» даёт
+    «服务» дважды), и файл с одной частой биграммой обгонял релевантный.
+    Пересечься списки не могут по построению — слова собираются из латиницы,
+    кириллицы и цифр, граммы только из иероглифов.
+    """
+    words = [w for w in re.findall(r"[А-Яа-яЁёA-Za-z0-9_-]{3,}", query)
+             if norm(w) not in stop]
+    return list(dict.fromkeys(words)), list(dict.fromkeys(cjk_grams(query)))
 
 
 def contains(needle: str, text: str) -> bool:
@@ -74,7 +98,7 @@ def contains(needle: str, text: str) -> bool:
     if norm(needle) in norm(text):
         return True
     if re.search(f"[{CJK}]", needle):
-        return SPACES.sub("", norm(needle)) in SPACES.sub("", norm(text))
+        return CJK_SPACE.sub("", norm(needle)) in CJK_SPACE.sub("", norm(text))
     return False
 
 
@@ -182,13 +206,8 @@ def search(graph: pathlib.Path, query: str) -> str:
     """Локальный фолбэк: та же механика, что vault_search: слова → скоринг файлов → сниппеты."""
     stop = {"что", "как", "где", "когда", "это", "нас", "есть", "про", "для",
             "или", "чем", "кто", "было", "быть", "по", "мы", "решили"}
-    words = [w for w in re.findall(r"[А-Яа-яЁёA-Za-z0-9_-]{3,}", query)
-             if norm(w) not in stop]
-    grams = cjk_grams(query)
-    # Дедуп: повтор иглы удваивал её вклад в счёт («服务服务商» → «服务» дважды).
-    words = list(dict.fromkeys(words))
-    grams = list(dict.fromkeys(g for g in grams if g not in words))
-    words += grams
+    words, grams = needles(query, stop)
+    words = words + grams
     rx = re.compile("|".join(re.escape(w) for w in words), re.I) if words else re.compile(re.escape(query), re.I)
     scored: list[tuple[int, str]] = []
     for p in graph.rglob("*.md"):
