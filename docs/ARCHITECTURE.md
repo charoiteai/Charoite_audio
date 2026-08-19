@@ -223,6 +223,31 @@ A broken stdout pipe (the app quit or restarted) sets the same stop event the
 UI would: the daemon finishes normally with graph and minutes written, instead
 of losing the STT thread silently while heartbeats keep the watchdog calm.
 
+## Stopping a recording
+
+Stop is not one action but a wait: the daemon has to flush audio, run the
+post-meeting pipeline and release its lock, and the app must not open a new
+meeting until the old process is actually gone. That wait used to live in five
+scattered flags, which is how a daemon surviving `SIGKILL` could leave the app
+in "stopping" forever, with the Stop button doing nothing.
+
+The transitions now live in one pure type, `ShutdownMachine` — phases
+(`idle`, `waitingDaemon`, `stuck`, `done`), events (Stop pressed, daemon
+exited, poll tick, kill timeout) and actions (close the capture, poll again,
+report, force-kill, finish). It has no reference to the service, so every arc
+is testable without a running process.
+
+Timings: `terminate()` at 8 seconds, `SIGKILL` at 12, a backup timer at 13,
+then polling twice a second. After 30 waits the phase becomes `stuck` — the
+app says so in plain words and keeps polling every 5 seconds, and a second
+press of Stop is a request to force-kill rather than a no-op.
+
+One rule holds the design together: events go into the machine and actions
+come out through a single entry point in the service. Twice during review the
+same defect appeared — an event declared in the machine, covered by a green
+test, and never actually sent by the service. A test like that pins down
+behaviour the system does not have, which is worse than no test at all.
+
 ## Two kinds of duplicates
 
 The graph accumulates duplicates of two different natures, and they are handled
