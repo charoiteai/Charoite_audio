@@ -26,6 +26,7 @@ sufler:
 ```bash
 .venv/bin/python scripts/memory_bench.py --demo      # русский демо-граф
 .venv/bin/python scripts/memory_bench.py --demo-en   # английский демо-граф
+.venv/bin/python scripts/memory_bench.py --demo-zh   # китайский демо-граф
 ```
 
 Закончили — верните `graph_dir` на свой vault. Всё в `demo/graph` —
@@ -38,3 +39,13 @@ sufler:
 
 - "what did we decide about the payment provider?"
 - "what are the current blockers?"
+
+## Китайское демо
+
+`demo/graph_zh` — тот же вымышленный проект по-китайски, с китайской
+командой. Наведите на него `graph_dir`, поставьте `sufler.language: zh`
+и спросите:
+
+- 支付服务商最后定了哪一家？
+- 现在有哪些阻碍？
+- 网店计划什么时候上线？

@@ -41,8 +41,134 @@ SNIPPET = 1200   # как в боевом RAG приложения
 LIMIT_FILES = 5
 
 
+# Полноширинный ASCII (U+FF01–U+FF5E) — обычный: китайские модели пишут «９月»
+# и «９月１日» наравне с «9月», и строгая сверка давала ложный провал на верном
+# ответе (ревью 19.08, второй круг).
+FULLWIDTH = {code: code - 0xFEE0 for code in range(0xFF01, 0xFF5F)}
+
+
 def norm(s: str) -> str:
-    return s.lower().replace("ё", "е")
+    return s.lower().replace("ё", "е").translate(FULLWIDTH)
+
+
+# Иероглифы пробелами не разделяются, поэтому «слова» из них не нарезать:
+# запрос 支付服务商最后定了哪一家？ давал ПУСТОЙ список слов, поиск скатывался
+# на поиск всей фразы целиком и не находил ничего (замер 19.08: 0/3 на
+# китайском демо-графе против 2/3 на английском). Берём скользящие биграммы —
+# стандартный приём для языков без пробелов: 支付服务商 → 支付, 付服, 服务, 务商.
+CJK = (r"\u4e00-\u9fff"      # китайский, основной блок
+       r"\u3400-\u4dbf"      # расширение A
+       r"\uf900-\ufaff"      # совместимость (иероглифы из старых кодировок)
+       r"\u3040-\u30ff"      # японские каны
+       r"\uff66-\uff9f"      # полуширинная катакана
+       r"\uac00-\ud7af"      # корейский хангыль
+       r"\U00020000-\U0002ee5f"      # расширения B–F и I
+       r"\U0002f800-\U0002fa1f"      # совместимость, дополнение
+       r"\U00030000-\U000323af")  # расширения G и H — отдельный остров
+
+
+# Пробел рядом с иероглифом. Сжимать всю строку было нельзя: тогда
+# contains("YuPay 支付", "Yu Pay 支付") давал True — латиница склеивалась заодно,
+# и один случайный иероглиф рядом менял вердикт по совсем другому факту
+# (ревью 19.08, второй круг).
+# Пробелы и идеографический пробел U+3000 (в китайском тексте он обычный),
+# но НЕ переносы строк: перенос — граница абзаца, склеивать через него
+# значит выдавать «конец одной мысли + начало другой» за совпадение
+# (ревью 20.08, локальная голова).
+CJK_SPACE = re.compile(f"(?<=[{CJK}])[ \\t\\u3000]+|[ \\t\\u3000]+(?=[{CJK}])")
+
+
+def needles(query: str, stop: set[str]) -> tuple[list[str], list[str]]:
+    """Иглы запроса: слова и биграммы иероглифов, каждая по одному разу.
+
+    Дедуп обязателен: повтор удваивал вклад иглы в счёт («服务服务商» даёт
+    «服务» дважды), и файл с одной частой биграммой обгонял релевантный.
+    Пересечься списки не могут по построению — слова собираются из латиницы,
+    кириллицы и цифр, граммы только из иероглифов.
+    """
+    words = [w for w in re.findall(r"[А-Яа-яЁёA-Za-z0-9_-]{3,}", query)
+             if norm(w) not in stop]
+    return list(dict.fromkeys(words)), list(dict.fromkeys(cjk_grams(query)))
+
+
+def contains(needle: str, text: str) -> bool:
+    """Есть ли ожидаемый факт в ответе.
+
+    Прямое вхождение — как раньше. Для иероглифов добавлена сверка по сжатой
+    форме: модель расставляет пробелы между знаками произвольно («9 月 1 日»
+    против «9月1日»), в китайском они не значимы, и строгая сверка давала
+    ложный провал на верном ответе (замер 19.08). Русский и английский путь
+    не меняется: сжатие включается только когда в ожидании есть иероглифы.
+    """
+    if norm(needle) in norm(text):
+        return True
+    if re.search(f"[{CJK}]", needle):
+        return CJK_SPACE.sub("", norm(needle)) in CJK_SPACE.sub("", norm(text))
+    return False
+
+
+def cjk_grams(query: str) -> list[str]:
+    """Биграммы из иероглифических кусков запроса (китайский, японский, корейский)."""
+    grams: list[str] = []
+    for run in re.findall(f"[{CJK}]+", query):
+        if len(run) == 1:
+            grams.append(run)
+        else:
+            grams += [run[i:i + 2] for i in range(len(run) - 1)]
+    return grams
+
+
+# Промпт синтеза на языке кейсов. Раньше он был только русским, и на
+# английском/китайском демо-графе модель отвечала по-русски: кейс с «September»
+# падал не потому, что факт потерян, а потому, что в ответе стояло «1 сентября»
+# (замер 19.08 — по одному ложному провалу на каждом нерусском графе). Бенч
+# обязан мерить то, что увидит пользователь на СВОЁМ языке.
+SYNTH = {
+    "ru": (
+        "Вопрос: {q}\n\nФрагменты из архива встреч:\n{found}\n\n"
+        "Ответь на вопрос по фрагментам: кратко, с конкретными фактами "
+        "(имена, числа, идентификаторы) из фрагментов. Ничего не выдумывай.",
+        "Ты — ассистент по архиву рабочих встреч. Только факты из фрагментов.",
+    ),
+    "en": (
+        "Question: {q}\n\nFragments from the meeting archive:\n{found}\n\n"
+        "Answer the question from the fragments: briefly, with the concrete "
+        "facts (names, numbers, identifiers) they contain. Invent nothing. "
+        "Answer in English.",
+        "You are an assistant over an archive of work meetings. "
+        "Only facts from the fragments. Answer in English.",
+    ),
+    "zh": (
+        "问题：{q}\n\n会议档案片段：\n{found}\n\n"
+        "请根据片段回答问题：简洁，并给出片段中的具体事实"
+        "（姓名、数字、编号）。不要编造。请用中文回答。",
+        "你是会议档案助手。只使用片段中的事实，请用中文回答。",
+    ),
+}
+
+
+def resolve_lang(cfg, *, demo_zh: bool, demo_en: bool, demo: bool) -> str:
+    """Язык промпта синтеза.
+
+    Каждый демо-флаг называет язык своего графа сам: спрашивать русский
+    демо-граф английским промптом бессмысленно, даже если в конфиге стоит `en`.
+    В обычном прогоне язык берётся ОТТУДА ЖЕ, откуда его берёт приложение —
+    `sufler.language`. Иначе владелец нерусского vault получал русский промпт,
+    ответ на русском и ложные провалы ночной джобы (ревью 19.08, DeepSeek).
+
+    `cfg` бывает `None`: пустой config.yaml проходит `yaml.safe_load` молча,
+    и обращение к нему падало бы AttributeError вместо честной работы по
+    умолчанию (ревью 19.08, второй круг, локальная голова).
+    """
+    if demo_zh:
+        return "zh"
+    if demo_en:
+        return "en"
+    if demo:
+        return "ru"
+    value = ((cfg or {}).get("sufler") or {}).get("language", "ru")
+    lang = str(value).strip().lower()
+    return lang if lang in SYNTH else "ru"
 
 
 def search_brain(graph: pathlib.Path, query: str) -> str | None:
@@ -85,9 +211,25 @@ def search(graph: pathlib.Path, query: str) -> str:
     """Локальный фолбэк: та же механика, что vault_search: слова → скоринг файлов → сниппеты."""
     stop = {"что", "как", "где", "когда", "это", "нас", "есть", "про", "для",
             "или", "чем", "кто", "было", "быть", "по", "мы", "решили"}
-    words = [w for w in re.findall(r"[А-Яа-яЁёA-Za-z0-9_-]{3,}", query)
-             if norm(w) not in stop]
-    rx = re.compile("|".join(re.escape(w) for w in words), re.I) if words else re.compile(re.escape(query), re.I)
+    words, grams = needles(query, stop)
+    words = words + grams
+    # Гейт и скоринг обязаны смотреть на текст ОДИНАКОВО. Раньше rx искал по
+    # сырому тексту, а счёт считался по norm() — после того, как norm научился
+    # схлопывать полноширинные формы, запрос «ＹｕＰａｙ» выбрасывал файл с
+    # «YuPay» ещё до скоринга, который его бы засчитал (ревью 20.08, DeepSeek).
+    # Без re.I намеренно: обе стороны уже прошли norm() с lower(), и флаг был
+    # единственным местом, где гейт структурно отличался от скоринга. Пока его
+    # нет, гейт — буквально тот же предикат «norm(игла) в norm(тексте)»
+    # (ревью 20.08, четвёртый круг).
+    #
+    # Цена замерена: IGNORECASE в Python шире, чем lower(), на двух парах —
+    # греческая конечная сигма (ς против σ) и турецкая İ против i. Для них
+    # гейт стал строже. Это осознанно: скоринг такие пары и раньше не
+    # засчитывал, то есть файл проходил гейт и выводился со счётом 0.
+    # Согласованность гейта и счёта важнее, чем совпадение, которое всё равно
+    # не влияло на ранжирование.
+    rx = (re.compile("|".join(re.escape(norm(w)) for w in words)) if words
+          else re.compile(re.escape(norm(query))))
     scored: list[tuple[int, str]] = []
     for p in graph.rglob("*.md"):
         if any(part.startswith(".") for part in p.parts):
@@ -96,15 +238,28 @@ def search(graph: pathlib.Path, query: str) -> str:
             text = p.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        m = rx.search(text)
+        # norm() теперь считается для КАЖДОГО файла, а не только для прошедших
+        # гейт: это принятая цена того, что гейт и скоринг смотрят на текст
+        # одинаково. Не «оптимизировать» обратно на сырой текст — вернётся
+        # расхождение, из-за которого полноширинный запрос терял файлы.
+        low = norm(text)
+        m = rx.search(low)
         if not m:
             continue
-        low = norm(text)
+        # norm() почти всегда сохраняет длину, но lower() у отдельных символов
+        # её меняет («İ» → два кодпоинта). Тогда позиции из low к оригиналу не
+        # приложить — режем сниппет из нормализованной копии.
+        source = text if len(low) == len(text) else low
         rel = str(p.relative_to(graph))
         score = sum(1 for w in words if norm(w) in low)
-        score += sum(3 for w in words if norm(w) in norm(rel))
+        # Буст за попадание в ПУТЬ у биграмм слабее: двух иероглифов слишком
+        # мало, чтобы считать совпадение с именем файла осмысленным — частая
+        # биграмма («现在», «我们») иначе перевешивает редкое точное слово
+        # (ревью 19.08, DeepSeek).
+        score += sum(3 for w in words if w not in grams and norm(w) in norm(rel))
+        score += sum(1 for w in grams if norm(w) in norm(rel))
         start = max(0, m.start() - 150)
-        frag = " ".join(text[start:m.end() + SNIPPET].split())
+        frag = " ".join(source[start:m.end() + SNIPPET].split())
         scored.append((score, f"• {rel}\n  …{frag}…"))
     scored.sort(key=lambda x: -x[0])
     return "\n\n".join(h for _, h in scored[:LIMIT_FILES])
@@ -117,10 +272,12 @@ def main() -> None:
                     help="демо-граф из репозитория вместо вашего: проверка контура без встреч")
     ap.add_argument("--demo-en", action="store_true",
                     help="английский демо-граф (demo/graph_en) и английские кейсы")
+    ap.add_argument("--demo-zh", action="store_true",
+                    help="китайский демо-граф (demo/graph_zh) и китайские кейсы")
     args = ap.parse_args()
 
     cfg_path = ROOT / "config" / "config.yaml"
-    if not cfg_path.exists() and (args.demo or args.demo_en):
+    if not cfg_path.exists() and (args.demo or args.demo_en or args.demo_zh):
         # демо-режим работает и до настройки: дефолтная модель Ollama
         cfg = {"llm": {"base_url": "http://127.0.0.1:11434", "model": "qwen3.5:4b"},
                "sufler": {"role": "Ассистент по архиву встреч."}}
@@ -134,7 +291,12 @@ def main() -> None:
         return
     else:
         cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    if args.demo_en:
+    lang = resolve_lang(cfg, demo_zh=args.demo_zh, demo_en=args.demo_en, demo=args.demo)
+    if args.demo_zh:
+        args.demo = True
+        graph = ROOT / "demo" / "graph_zh"
+        bench_file = ROOT / "config" / "memory_bench_demo_zh.yaml"
+    elif args.demo_en:
         args.demo = True
         graph = ROOT / "demo" / "graph_en"
         bench_file = ROOT / "config" / "memory_bench_demo_en.yaml"
@@ -173,15 +335,14 @@ def main() -> None:
             continue
         # диагностика: чей провал — ПОИСКА (факт не в выдаче) или СИНТЕЗА
         # (факт в выдаче, LLM не включил в ответ). Лечатся по-разному.
-        retr_missing = [m for m in must if norm(m) not in norm(found)]
+        retr_missing = [m for m in must if not contains(m, found)]
+        prompt_tpl, system_msg = SYNTH[lang]
         answer = "".join(llm.stream(
-            f"Вопрос: {q}\n\nФрагменты из архива встреч:\n{found}\n\n"
-            "Ответь на вопрос по фрагментам: кратко, с конкретными фактами "
-            "(имена, числа, идентификаторы) из фрагментов. Ничего не выдумывай.",
-            system="Ты — ассистент по архиву рабочих встреч. Только факты из фрагментов.",
+            prompt_tpl.format(q=q, found=found),
+            system=system_msg,
             temperature=0.0,  # бенч — регрессия, не творчество: убираем флап
         ))
-        missing = [m for m in must if norm(m) not in norm(answer)]
+        missing = [m for m in must if not contains(m, answer)]
         if missing:
             stage = "ПОИСК" if retr_missing else "синтез"
             failures.append((q, missing, f"[{stage}] " + answer[:160]))
