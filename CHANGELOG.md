@@ -5,6 +5,14 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.55.0](https://github.com/charoiteai/Charoite_audio/compare/v0.54.0...v0.55.0) (2026-08-19)
+
+
+### Features
+
+* **diarize:** имя владельца по каналу захвата, без голосовой биометрии ([#349](https://github.com/charoiteai/Charoite_audio/issues/349)) ([b870c2d](https://github.com/charoiteai/Charoite_audio/commit/b870c2dc914f56f8fbd04db7095f4638a4908c96))
+* **lifecycle:** подмашина остановки — у застревания появился выход ([#351](https://github.com/charoiteai/Charoite_audio/issues/351)) ([047cf43](https://github.com/charoiteai/Charoite_audio/commit/047cf43c64dab0d2f55f6be2aa5ea48626dd002b))
+
 ## [0.54.0](https://github.com/charoiteai/Charoite_audio/compare/v0.53.0...v0.54.0) (2026-08-19)
 
 
