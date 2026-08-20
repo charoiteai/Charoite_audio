@@ -35,6 +35,12 @@ CMP_SWAP = {ast.Gt: ast.GtE, ast.GtE: ast.Gt, ast.Lt: ast.LtE, ast.LtE: ast.Lt,
             ast.Is: ast.IsNot, ast.IsNot: ast.Is,
             ast.In: ast.NotIn, ast.NotIn: ast.In}
 BOOL_SWAP = {ast.And: ast.Or, ast.Or: ast.And}
+# Арифметика — там, где живут ошибки на единицу: размеры чанков, перехлёст,
+# индексы, окна. Без них мутатор не трогает целый класс кода, в котором
+# «тесты зелёные, а баг живёт» (ревью 20.08, DeepSeek).
+BIN_SWAP = {ast.Add: ast.Sub, ast.Sub: ast.Add,
+            ast.Mult: ast.FloorDiv, ast.FloorDiv: ast.Mult,
+            ast.Div: ast.Mult}
 
 
 class Mutation:
@@ -82,6 +88,23 @@ def changed_lines(root: pathlib.Path, rng: str) -> dict[pathlib.Path, set[int]]:
     return {p: ls for p, ls in result.items() if ls and p.suffix == ".py"}
 
 
+def _module_constants(tree: ast.Module) -> set[int]:
+    """Строки с константами уровня модуля.
+
+    Их мутация почти всегда эквивалентна: тест читает ту же константу, что и
+    код (`ov.MIN_MIC_SECONDS`), и остаётся зелёным при любом её значении.
+    Такие выжившие неотличимы в отчёте от настоящих дыр, а их в проекте
+    десятки — гейт «ноль выживших» стал бы недостижим (ревью 20.08, DeepSeek).
+    """
+    out: set[int] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            for n in ast.walk(node.value):
+                if isinstance(n, ast.Constant):
+                    out.add(getattr(n, "lineno", -1))
+    return out
+
+
 def mutations_for(path: pathlib.Path, lines: set[int],
                   source: str | None = None) -> list[Mutation]:
     """Что можно сломать в этих строках."""
@@ -90,15 +113,17 @@ def mutations_for(path: pathlib.Path, lines: set[int],
                          else path.read_text(encoding="utf-8"))
     except SyntaxError:
         return []
+    lines = lines - _module_constants(tree)
     found: list[Mutation] = []
     for node in ast.walk(tree):
         ln = getattr(node, "lineno", None)
         if ln is None or ln not in lines:
             continue
-        if isinstance(node, ast.Compare) and len(node.ops) == 1:
+        if isinstance(node, ast.Compare) and node.ops:
             op = type(node.ops[0])
             if op in CMP_SWAP:
-                found.append(Mutation(path, ln, f"{op.__name__} → {CMP_SWAP[op].__name__}",
+                found.append(Mutation(path, ln,
+                                      f"{op.__name__} → {CMP_SWAP[op].__name__}",
                                       _swap_cmp(node)))
         elif isinstance(node, ast.BoolOp) and type(node.op) in BOOL_SWAP:
             found.append(Mutation(path, ln, f"{type(node.op).__name__} → "
@@ -111,6 +136,10 @@ def mutations_for(path: pathlib.Path, lines: set[int],
             elif isinstance(node.value, (int, float)) and node.value not in (0,):
                 found.append(Mutation(path, ln, f"{node.value} → 0",
                                       _swap_const(node, 0)))
+        elif isinstance(node, ast.BinOp) and type(node.op) in BIN_SWAP:
+            found.append(Mutation(path, ln, f"{type(node.op).__name__} → "
+                                            f"{BIN_SWAP[type(node.op)].__name__}",
+                                  _swap_bin(node)))
         elif isinstance(node, ast.Return) and node.value is not None:
             found.append(Mutation(path, ln, "return X → return None",
                                   _drop_return(node)))
@@ -121,7 +150,17 @@ def _swap_cmp(target):
     def apply(tree):
         for n in ast.walk(tree):
             if isinstance(n, ast.Compare) and _same(n, target):
-                n.ops = [CMP_SWAP[type(n.ops[0])]()]
+                n.ops = [CMP_SWAP[type(n.ops[0])]()] + list(n.ops[1:])
+                return True
+        return False
+    return apply
+
+
+def _swap_bin(target):
+    def apply(tree):
+        for n in ast.walk(tree):
+            if isinstance(n, ast.BinOp) and _same(n, target):
+                n.op = BIN_SWAP[type(n.op)]()
                 return True
         return False
     return apply
@@ -174,9 +213,14 @@ def tests_for(root: pathlib.Path, module: pathlib.Path) -> list[str]:
     # файлы, где имя модуля просто упомянуто в строке или комментарии.
     imported = re.compile(rf"^\s*(?:import\s+{name}\b|from\s+{name}\s+import)",
                           re.M)
+    # Часть модулей живёт только через подпроцесс (CLI-вход): импорта нет, а
+    # тест их гоняет. Без этого весь набор шёл бы на каждого мутанта — часы
+    # вместо минут (ревью 20.08, DeepSeek).
+    spawned = re.compile(rf"['\"][^'\"]*{name}\.py['\"]")
     hits = [str(p.relative_to(root))
             for p in sorted((root / "tests").rglob("test_*.py"))
-            if imported.search(p.read_text(encoding="utf-8"))]
+            if imported.search(t := p.read_text(encoding="utf-8"))
+            or spawned.search(t)]
     # Пусто — не значит «никто не проверяет»: модуль мог приехать через
     # чужой импорт. Берём весь набор: честно и медленно лучше, чем быстро
     # и мимо.
@@ -186,7 +230,9 @@ def tests_for(root: pathlib.Path, module: pathlib.Path) -> list[str]:
 def run_tests(cwd: pathlib.Path, targets: list[str], timeout: int) -> bool:
     """True — прогон зелёный (мутант выжил, тесты его не заметили)."""
     try:
-        r = subprocess.run([sys.executable, "-m", "pytest", *targets, "-x", "-q",
+        # Без `-x`: он останавливал прогон на первой ошибке, и упавший по
+        # окружению тест выдавал бы «мутант убит» независимо от мутации.
+        r = subprocess.run([sys.executable, "-m", "pytest", *targets, "-q",
                             "-p", "no:cacheprovider", "--timeout", str(timeout)],
                            cwd=cwd, capture_output=True, text=True,
                            timeout=timeout * 4)
@@ -237,6 +283,9 @@ def main(argv: list[str]) -> int:
     print(f"Мутантов к проверке: {len(plan)}"
           + (f" (СРЕЗАНО {dropped} — потолок --max={args.max})" if dropped else ""))
 
+    # Убитый на полпути прогон оставляет зарегистрированное дерево; без
+    # уборки git будет считать его живым и мешать следующим запускам.
+    subprocess.run(["git", "worktree", "prune"], cwd=root, capture_output=True)
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="mutate-"))
     work = tmp / "tree"
     rev = head_of(args.range)
@@ -245,6 +294,19 @@ def main(argv: list[str]) -> int:
     survivors: list[Mutation] = []
     skipped: list[Mutation] = []
     try:
+        # СНАЧАЛА чистый прогон. В отдельном дереве нет файлов из .gitignore —
+        # ни моделей, ни конфига, ни данных, — и тесты там могут быть красными
+        # сами по себе. Тогда КАЖДЫЙ мутант считается убитым, отчёт говорит
+        # «выжило 0», и гейт проходит, не проверив ничего: инструмент врёт в
+        # самую опасную сторону (ревью 20.08, DeepSeek).
+        base_targets = sorted({t for m in plan for t in tests_for(work, m.path)})
+        print("Базовый прогон (без мутаций)…")
+        if not run_tests(work, base_targets, args.timeout):
+            print("\nБАЗА КРАСНАЯ: тесты падают и БЕЗ мутаций — в отдельном "
+                  "дереве нет того, что лежит в .gitignore (модели, конфиг, "
+                  "данные).\nРезультат мутаций был бы бессмысленным: каждый "
+                  "мутант засчитался бы убитым.")
+            return 2
         for i, mut in enumerate(plan, 1):
             rel = mut.path.relative_to(root)
             target = work / rel
@@ -259,7 +321,7 @@ def main(argv: list[str]) -> int:
             target.write_text(ast.unparse(ast.fix_missing_locations(tree)),
                               encoding="utf-8")
             try:
-                alive = run_tests(work, tests_for(root, mut.path), args.timeout)
+                alive = run_tests(work, tests_for(work, mut.path), args.timeout)
             finally:
                 target.write_text(original, encoding="utf-8")
             mark = "ВЫЖИЛ" if alive else "убит"
@@ -289,6 +351,7 @@ def main(argv: list[str]) -> int:
     report = "\n".join(lines)
     print("\n" + report)
     if args.report:
+        args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(report + "\n", encoding="utf-8")
     return 1 if survivors else 0
 

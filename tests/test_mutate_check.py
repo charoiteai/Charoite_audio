@@ -90,9 +90,32 @@ def test_тесты_ищутся_по_имени_модуля():
     assert any("owner_voice" in t for t in found)
 
 
-def test_неизвестный_модуль_даёт_весь_набор():
-    """«Не нашли тестов» не значит «его никто не проверяет» — берём всё."""
-    assert mc.tests_for(REPO, REPO / "src" / "нет_такого_модуля.py") == ["tests"]
+def test_неизвестный_модуль_даёт_весь_набор(tmp_path):
+    """«Не нашли тестов» не значит «его никто не проверяет» — берём всё.
+
+    Дерево здесь своё, пустое: если звать по настоящему репозиторию, поиск
+    находит сам этот файл — имя модуля написано в нём же. На эту ловушку
+    инструмент уже попадался, теперь она закрыта тестом.
+    """
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_stub.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8")
+
+    assert mc.tests_for(tmp_path, tmp_path / "src" / "lonely.py") == ["tests"]
+
+
+def test_модуль_запускаемый_подпроцессом_находится(tmp_path):
+    """CLI-вход живёт без импорта: тест гоняет его как отдельный процесс.
+    Без этого на такой модуль шёл бы весь набор — часы вместо минут."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_cli.py").write_text(
+        'import subprocess, sys\n'
+        'def test_runs():\n'
+        '    subprocess.run([sys.executable, "src/dictate_note.py"])\n'
+        '    assert True\n', encoding="utf-8")
+
+    found = mc.tests_for(tmp_path, tmp_path / "src" / "dictate_note.py")
+    assert found == ["tests/test_cli.py"], found
 
 
 def test_зависший_прогон_считается_убитым(tmp_path, monkeypatch):
@@ -106,3 +129,26 @@ def test_зависший_прогон_считается_убитым(tmp_path,
 
     monkeypatch.setattr(subprocess, "run", hang)
     assert mc.run_tests(tmp_path, ["tests"], timeout=1) is False
+
+
+def test_арифметика_ломается(tmp_path):
+    """Ошибки на единицу и на множитель живут в размерах чанков, окнах,
+    индексах — без этих мутаций целый класс кода не проверяется."""
+    muts = _mutate(tmp_path, "def f(sr, s):\n    return int(sr * s)\n", {2})
+    assert any("Mult" in m.what for m in muts)
+
+
+def test_цепочка_сравнений_не_пропускается(tmp_path):
+    """`a < b < c` раньше не мутировалась вовсе — фильтр требовал ровно один
+    оператор."""
+    muts = _mutate(tmp_path, "def f(a, b, c):\n    return a < b < c\n", {2})
+    assert any("Lt" in m.what for m in muts)
+
+
+def test_константы_уровня_модуля_не_мутируются(tmp_path):
+    """Тест читает ту же константу, что и код, — мутация эквивалентна и в
+    отчёте неотличима от настоящей дыры."""
+    code = "POROG = 15.0\n\n\ndef f(x):\n    return x < POROG\n"
+    muts = _mutate(tmp_path, code, {1, 5})
+    assert not any("15.0" in m.what for m in muts), [m.what for m in muts]
+    assert any("Lt" in m.what for m in muts), "сравнение мутировать надо"
