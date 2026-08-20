@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.56.0](https://github.com/charoiteai/Charoite_audio/compare/v0.55.2...v0.56.0) (2026-08-20)
+
+
+### Features
+
+* **tests:** мутатор — ломает изменённые строки и требует, чтобы тесты упали ([#360](https://github.com/charoiteai/Charoite_audio/issues/360)) ([b9d9082](https://github.com/charoiteai/Charoite_audio/commit/b9d9082ed414154dd1f5bcfc84e07382688f7a5d))
+
 ## [0.55.2](https://github.com/charoiteai/Charoite_audio/compare/v0.55.1...v0.55.2) (2026-08-20)
 
 
