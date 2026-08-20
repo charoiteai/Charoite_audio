@@ -88,23 +88,26 @@ def changed_lines(root: pathlib.Path, rng: str) -> dict[pathlib.Path, set[int]]:
     return {p: ls for p, ls in result.items() if ls and p.suffix == ".py"}
 
 
-# Пары «оператор + операнд», где подмена оператора не меняет смысла.
-# Шире фильтровать нельзя: `x - 1` → `x + 1` — это ошибка на двойку, то есть
-# ровно тот класс, ради которого арифметику и добавляли. Первая версия
-# душила его вместе с настоящим шумом (ревью 20.08, круг 3, DeepSeek).
-_NEUTRAL = {(ast.Mult, 1), (ast.Div, 1), (ast.FloorDiv, 1),
-            (ast.Add, 0), (ast.Sub, 0)}
+# Пары «оператор + ПРАВЫЙ операнд», где подмена оператора тождественна для
+# любых чисел. Список короткий намеренно, каждое исключение куплено разбором
+# (ревью 20.08, круги 3 и 4):
+#   — `x * 1` → `x // 1` НЕ тождество: для 2.5 выйдет 2.0 вместо 2.5;
+#   — константа СЛЕВА меняет всё: `0 + n` → `0 - n` переворачивает знак;
+#   — `x - 1` → `x + 1` — ошибка на двойку, тот самый ценный класс.
+_NEUTRAL = {(ast.Div, 1), (ast.Add, 0), (ast.Sub, 0)}
 
 
 def _neutral(node: ast.BinOp) -> bool:
-    """`x * 1`, `x + 0`: подмена оператора здесь ничего не меняет."""
-    for side in (node.left, node.right):
-        if (isinstance(side, ast.Constant)
-                and isinstance(side.value, int)
-                and not isinstance(side.value, bool)
-                and (type(node.op), side.value) in _NEUTRAL):
-            return True
-    return False
+    """`x / 1`, `x + 0`, `x - 0`: подмена оператора здесь ничего не меняет.
+
+    Только правый операнд: при левой константе порядок операндов сохраняется,
+    а смысл — нет.
+    """
+    right = node.right
+    return (isinstance(right, ast.Constant)
+            and isinstance(right.value, int)
+            and not isinstance(right.value, bool)
+            and (type(node.op), right.value) in _NEUTRAL)
 
 
 def _module_constants(tree: ast.Module) -> set[int]:

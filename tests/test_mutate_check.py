@@ -182,12 +182,14 @@ def test_меняется_только_мутированный_узел(tmp_pat
     assert '"models" / "diar"' in changed, "кавычки переписаны — текстовые тесты упадут"
 
 
-def test_нейтральная_арифметика_не_мутируется(tmp_path):
-    """`x * 1` и `x + 0` выживают всегда: мутация ничего не меняет по смыслу,
-    а отчёт засоряет."""
-    muts = _mutate(tmp_path, "def f(x):\n    return x * 1 + 0\n", {2})
-    assert not any(m.what.startswith("Mult") or m.what.startswith("Add")
-                   for m in muts), [m.what for m in muts]
+def test_тождества_не_мутируются(tmp_path):
+    """`x + 0`, `x - 0`, `x / 1` — подмена оператора тождественна для любых
+    чисел, такие мутанты выживают всегда и засоряют отчёт."""
+    muts = _mutate(tmp_path, "def f(x):\n    return x + 0\n", {2})
+    assert not any(m.what.startswith("Add") for m in muts), [m.what for m in muts]
+
+    muts = _mutate(tmp_path, "def f(x):\n    return x / 1\n", {2})
+    assert not any(m.what.startswith("Div") for m in muts), [m.what for m in muts]
 
 
 def test_имя_модуля_в_комментарии_не_тянет_тест(tmp_path):
@@ -228,9 +230,16 @@ def test_кириллица_не_ломает_замену(tmp_path):
 
 
 def test_кириллица_перед_узлом_тоже_учтена(tmp_path):
-    """Не-ASCII ДО мутируемого узла сдвигает головной срез."""
+    """Не-ASCII ДО мутируемого узла сдвигает ГОЛОВНОЙ срез.
+
+    Первая версия теста называлась так же, но кириллица в ней стояла ВНУТРИ
+    узла: до него шёл чистый ASCII, и посимвольный срез совпадал с байтовым —
+    тест проходил и на сломанном коде (ревью 20.08, круг 4, DeepSeek).
+    Теперь не-ASCII действительно предшествует узлу, и хвост достаточно
+    длинный, чтобы сдвиг было видно.
+    """
     code = ('def f(res):\n'
-            '    return res["точность"] > 0.9\n')
+            '    порог = 0.9; return res["x"] > порог  # хвост нужен длинный\n')
     f = tmp_path / "sample.py"
     f.write_text(code, encoding="utf-8")
     mut = next(m for m in mc.mutations_for(f, {2}) if "Gt" in m.what)
@@ -238,7 +247,8 @@ def test_кириллица_перед_узлом_тоже_учтена(tmp_path
     changed = mc.patch_source(code, mut.apply(ast.parse(code)))
 
     ast.parse(changed)
-    assert "точность" in changed and ">= 0.9" in changed, changed
+    assert ">= порог" in changed, changed
+    assert "# хвост нужен длинный" in changed, "хвост уехал — срез посимвольный"
 
 
 def test_ошибка_на_единицу_не_считается_шумом(tmp_path):
@@ -249,6 +259,16 @@ def test_ошибка_на_единицу_не_считается_шумом(tmp
     assert any(m.what.startswith("Sub") for m in muts), [m.what for m in muts]
 
 
-def test_умножение_на_единицу_остаётся_шумом(tmp_path):
+def test_умножение_на_единицу_мутируется(tmp_path):
+    """`x * 1` → `x // 1` тождеством НЕ является: для 2.5 выйдет 2.0 вместо
+    2.5. Прежний фильтр молча выбрасывал эту мутацию везде, где через
+    выражение течёт нецелое число (ревью 20.08, круг 4, DeepSeek)."""
     muts = _mutate(tmp_path, "def f(n):\n    return n * 1\n", {2})
-    assert not any(m.what.startswith("Mult") for m in muts), [m.what for m in muts]
+    assert any(m.what.startswith("Mult") for m in muts), [m.what for m in muts]
+
+
+def test_константа_слева_не_считается_шумом(tmp_path):
+    """`0 + n` → `0 - n` переворачивает знак: при левой константе порядок
+    операндов сохраняется, а смысл — нет."""
+    muts = _mutate(tmp_path, "def f(n):\n    return 0 + n\n", {2})
+    assert any(m.what.startswith("Add") for m in muts), [m.what for m in muts]
