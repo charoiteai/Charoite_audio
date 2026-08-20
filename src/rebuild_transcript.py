@@ -408,6 +408,14 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
             return min(bigsegs, key=lambda x: min(abs(x[0] - e), abs(s - x[1])))[2]
         return [(s, e, k if k in big else nearest_big(s, e)) for s, e, k in segs]
 
+    # Объявляем ДО ветки: на mic-only машине (нет BlackHole или не выдано
+    # разрешение на системный звук) блок ниже не выполняется, а `bh_segs`
+    # читается дальше в `call=bool(bh_segs)`. Без объявления там NameError,
+    # который `main()` глотает как «пересборка не удалась» — и встреча молча
+    # остаётся без разбора по голосам, распознавания по абзацам и имён, а
+    # через record_keep_days запись удаляется и вернуть качество уже нечем
+    # (ревью 20.08, GLM).
+    bh_segs: list[tuple[float, float, int]] = []
     if bh_p is not None:
         bh, sr = load_wav(bh_p)
         if len(bh) > sr * 20:
