@@ -28,6 +28,17 @@ review gates, and who answers for what — is documented in
   `return`, where execution never arrives. The subtle ones — a tautology, a
   mock that replaced the very logic under test — no static check will find;
   only a restored defect will.
+- **When in doubt about a test, break the code.**
+  `scripts/mutate_check.py --range main...HEAD` puts defects back into the
+  changed lines and demands that the tests go red. A surviving mutant is a
+  behaviour change nobody noticed: either the test for that place exists but
+  holds nothing, or there is no test at all. Only lines from the diff are
+  mutated — a whole-file pass means thousands of mutants and hours instead of
+  minutes. The mutation lands in a separate git worktree, so test subprocesses
+  see the same broken code the imports do. An equivalent mutant (a threshold
+  that both code and test read from one constant) need not be fixed — but is
+  worth a look: on 20.08 one such survivor revealed that behaviour exactly at
+  the threshold was tested by nobody.
 - **No pattern blacklists.** Classification decisions go through the
   local model, not through hardcoded word lists — patterns rot, models
   understand context.
