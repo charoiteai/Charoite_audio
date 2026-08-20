@@ -18,6 +18,16 @@ review gates, and who answers for what — is documented in
 - **Russian-first UI, English-friendly code.** UI strings are Russian
   today (English STT works; English prompts are on the roadmap). Code,
   comments and commit messages are in English.
+- **A test must be able to fail.** Not "covers the lines" — fails when the
+  behaviour breaks. Check it by hand: put the defect back and make sure the
+  test turns red. Coverage does not catch this: a test with no assertion at
+  all covers the code fully and stays green, while the green check reads as
+  proof the place is guarded. The crude cases are caught by
+  `scripts/check_test_assertions.py` (CI and pre-commit): a test with no
+  `assert`/`pytest.raises`/`raise ...Error`, and assertions placed after a
+  `return`, where execution never arrives. The subtle ones — a tautology, a
+  mock that replaced the very logic under test — no static check will find;
+  only a restored defect will.
 - **No pattern blacklists.** Classification decisions go through the
   local model, not through hardcoded word lists — patterns rot, models
   understand context.
