@@ -104,10 +104,14 @@ def _neutral(node: ast.BinOp) -> bool:
     а смысл — нет.
     """
     right = node.right
-    return (isinstance(right, ast.Constant)
-            and isinstance(right.value, int)
-            and not isinstance(right.value, bool)
-            and (type(node.op), right.value) in _NEUTRAL)
+    if not isinstance(right, ast.Constant) or isinstance(right.value, bool):
+        return False
+    # И `0.0`/`1.0` тоже: `x + 0.0` — то же тождество, что и `x + 0`, а
+    # проверка на int их пропускала мимо фильтра (ревью 20.08, круг 4:
+    # DeepSeek и локальная голова независимо).
+    if not isinstance(right.value, (int, float)):
+        return False
+    return (type(node.op), int(right.value)) in _NEUTRAL and right.value in (0, 1)
 
 
 def _module_constants(tree: ast.Module) -> set[int]:

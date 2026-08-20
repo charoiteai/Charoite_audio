@@ -272,3 +272,10 @@ def test_константа_слева_не_считается_шумом(tmp_pa
     операндов сохраняется, а смысл — нет."""
     muts = _mutate(tmp_path, "def f(n):\n    return 0 + n\n", {2})
     assert any(m.what.startswith("Add") for m in muts), [m.what for m in muts]
+
+
+def test_тождества_с_плавающей_точкой_тоже_шум(tmp_path):
+    """`x + 0.0` — то же тождество, что и `x + 0`. Проверка только на целые
+    пропускала их мимо фильтра (ревью 20.08, круг 4: обе головы независимо)."""
+    muts = _mutate(tmp_path, "def f(x):\n    return x + 0.0\n", {2})
+    assert not any(m.what.startswith("Add") for m in muts), [m.what for m in muts]
