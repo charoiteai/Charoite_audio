@@ -52,15 +52,39 @@ def _rebound_names(fn: ast.FunctionDef) -> set[str]:
 
 
 def _state_dicts(fn: ast.FunctionDef, skip: ast.FunctionDef) -> set[str]:
-    """Словари состояния внешней функции: `x = {...}` вне вложенного потока."""
+    """Состояние внешней функции: словари и накопители, живущие между тактами.
+
+    Признак — ЧЕМ имя инициализировано, а не как используется. «Читается по
+    ключу» брать нельзя: под него попадают обычные локальные `parts`, `tail`,
+    `text`, которые внутри присваиваются раньше употребления, и тест краснеет
+    без единого бага (замер 20.08: 34 ложных).
+
+    Ловим три формы: литерал (`heard = {...}`), аннотацию
+    (`voice_names: dict[int, str] = {}`) и конструктор накопителя
+    (`heard_by_channel = owner_voice.Heard()`) — именно они держат состояние,
+    ради которого вложенный поток и обращается к внешнему имени.
+    """
+    ACCUMULATORS = {"Heard", "defaultdict", "dict", "Counter", "deque"}
     inner = {id(n) for n in ast.walk(skip)}
     out: set[str] = set()
     for node in ast.walk(fn):
-        if id(node) in inner or not isinstance(node, ast.Assign):
+        if id(node) in inner:
             continue
-        if not isinstance(node.value, ast.Dict):
+        if isinstance(node, ast.AnnAssign):
+            targets, value = [node.target], node.value
+        elif isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        else:
             continue
-        for tgt in node.targets:
+        holds_state = isinstance(value, ast.Dict)
+        if isinstance(value, ast.Call):
+            called = value.func
+            name = (called.attr if isinstance(called, ast.Attribute)
+                    else called.id if isinstance(called, ast.Name) else "")
+            holds_state = holds_state or name in ACCUMULATORS
+        if not holds_state:
+            continue
+        for tgt in targets:
             if isinstance(tgt, ast.Name):
                 out.add(tgt.id)
     return out

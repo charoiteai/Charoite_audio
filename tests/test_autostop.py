@@ -152,13 +152,14 @@ def test_один_без_собеседников_режется_коротки�
     """Говорил только владелец, системный канал молчал всю запись: пятнадцать
     минут — перестраховка под паузу в разговоре, которого не было."""
     limits = autostop.limits_from_cfg({})
-    d = autostop.decide(age_s=600, quiet_s=310, spoke=True, limits=limits, alone=True)
+    d = autostop.decide(age_s=900, quiet_s=610, spoke=True, limits=limits, alone=True)
     assert d.action == "stop" and d.reason == autostop.ALONE
+    assert "собеседников не слышно" in d.text, "человек должен понять, почему раньше"
 
 
 def test_тот_же_случай_с_собеседниками_ждёт_пятнадцать_минут():
     limits = autostop.limits_from_cfg({})
-    d = autostop.decide(age_s=600, quiet_s=310, spoke=True, limits=limits, alone=False)
+    d = autostop.decide(age_s=900, quiet_s=610, spoke=True, limits=limits, alone=False)
     assert not d, "разговор двоих не должен резаться на пятиминутной паузе"
     late = autostop.decide(age_s=1200, quiet_s=910, spoke=True, limits=limits, alone=False)
     assert late.action == "stop" and late.reason == autostop.SILENCE
@@ -168,18 +169,34 @@ def test_очную_встречу_можно_вернуть_одной_стро
     """Канал не отличает очную встречу от диктофона — у кого встречи очные,
     поднимает порог обратно."""
     limits = autostop.limits_from_cfg({"sufler": {"autostop": {"alone_minutes": 15}}})
-    d = autostop.decide(age_s=600, quiet_s=310, spoke=True, limits=limits, alone=True)
+    d = autostop.decide(age_s=900, quiet_s=610, spoke=True, limits=limits, alone=True)
     assert not d
     assert limits.alone_s == 900
 
 
-def test_ноль_выключает_только_своё_правило():
+def test_ноль_выключает_своё_правило_но_не_соседнее():
+    """Мой первый тест кодировал ДЕФЕКТ: проверял, что при alone_minutes: 0
+    решения нет — и пропускал, что вместе с ним пропадала обычная тишина.
+    Человек, вернувший себе пятнадцать минут нулём, получал ноль автостопа
+    вовсе (ревью 20.08, DeepSeek C1)."""
     limits = autostop.limits_from_cfg({"sufler": {"autostop": {"alone_minutes": 0}}})
     assert limits.alone_s == 0
-    assert autostop.decide(age_s=600, quiet_s=310, spoke=True,
-                           limits=limits, alone=True).action == ""
-    # соседние правила живы
     assert limits.silence_s == 900 and limits.no_speech_s == 300
+    # пятиминутная пауза — рано для всех
+    assert not autostop.decide(age_s=600, quiet_s=310, spoke=True,
+                               limits=limits, alone=True)
+    # а пятнадцать минут тишины обязаны сработать по обычному правилу
+    late = autostop.decide(age_s=1200, quiet_s=910, spoke=True, limits=limits, alone=True)
+    assert late.action == "stop" and late.reason == autostop.SILENCE
+
+
+def test_выключенная_тишина_не_включает_alone_втихую():
+    """Старый конфиг с silence_minutes: 0 не должен молча получить новое
+    правило, которого владелец не просил (ревью 20.08, DeepSeek I3)."""
+    limits = autostop.limits_from_cfg(
+        {"sufler": {"autostop": {"silence_minutes": 0, "no_speech_minutes": 0,
+                                 "max_hours": 0}}})
+    assert limits.alone_s == 0 and not limits.any_rule
 
 
 def test_одинокая_запись_не_режется_раньше_пустой_комнаты():

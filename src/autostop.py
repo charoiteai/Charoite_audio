@@ -12,10 +12,13 @@
 2. **Тишина после разговора** (`silence_s`, 15 минут): люди говорили и
    замолчали. Порог втрое больше, потому что в живой встрече пауза на чтение
    документа, тихое демо и раздумье — норма.
-3. **Тишина, когда собеседников не было слышно** (`alone_s`, 5 минут):
+3. **Тишина, когда собеседников не было слышно** (`alone_s`, 10 минут):
    системный канал молчал всю запись, говорил только владелец. Пятнадцать
    минут тут — перестраховка: если второй стороны нет, запись почти наверняка
-   забыта, а не «пауза на чтение документа».
+   забыта, а не «пауза на чтение документа». Но и не пять: очную встречу канал
+   не отличает от диктофона, а пауза на чтение документа в комнате — норма
+   (ревью 20.08, DeepSeek I2). Десять — середина, которую видно и можно
+   подвинуть.
 4. **Потолок длительности** (`max_s`, 6 часов): страховка от «забыл
    выключить». Записанное к этому моменту уже сохранено и разобрано, а
    продолжить можно новой кнопкой.
@@ -56,7 +59,7 @@ DEFAULTS = {
     "enabled": True,
     "no_speech_minutes": 5.0,   # речи не было ни разу с начала записи
     "silence_minutes": 15.0,    # тишина после того, как разговор был
-    "alone_minutes": 5.0,       # то же, но собеседников не было слышно ни разу
+    "alone_minutes": 10.0,      # то же, но собеседников не было слышно ни разу
     "max_hours": 6.0,           # потолок длительности (0 — без потолка)
     "warn_seconds": 60.0,       # предупреждение перед стопом
     "min_minutes": 2.0,         # раньше этого не трогаем запись вовсе
@@ -129,7 +132,11 @@ def limits_from_cfg(cfg: dict) -> Limits:
         silence_s=max(silence, no_speech) if silence else 0.0,
         # Тот же порядок, что у silence_s: одинокая запись не должна резаться
         # раньше пустой комнаты, а ноль по-прежнему выключает своё правило.
-        alone_s=max(alone, no_speech) if alone else 0.0,
+        # `alone` — частный случай тишины после разговора, поэтому живёт только
+        # вместе с ней: конфиг, где silence_minutes: 0 (тишину не считаем),
+        # иначе молча получил бы новое включённое правило, которого владелец
+        # никогда не просил (ревью 20.08, DeepSeek I3).
+        alone_s=max(alone, no_speech) if (alone and silence) else 0.0,
         max_s=num("max_hours") * 3600,
         warn_s=num("warn_seconds"),
         min_s=num("min_minutes") * 60,
@@ -139,7 +146,7 @@ def limits_from_cfg(cfg: dict) -> Limits:
 @dataclass(frozen=True)
 class Decision:
     action: str = ""      # "" | "warn" | "stop" | "resumed"
-    reason: str = ""      # NO_SPEECH | SILENCE | LIMIT
+    reason: str = ""      # NO_SPEECH | SILENCE | ALONE | LIMIT
     text: str = ""        # строка человеку
     seconds_left: float = 0.0
 
@@ -193,22 +200,25 @@ def decide(*, age_s: float, quiet_s: float, spoke: bool, limits: Limits,
     reason = SILENCE if spoke else NO_SPEECH
     if not spoke:
         threshold = limits.no_speech_s
-    elif alone:
+    elif alone and limits.alone_s > 0:
         # Говорил только владелец: пятнадцать минут silence_s рассчитаны на
         # паузу в разговоре, которого тут не было (правило 3, по умолчанию
-        # 5 минут — см. DEFAULTS["alone_minutes"]).
+        # 10 минут — см. DEFAULTS["alone_minutes"]).
         reason = ALONE
         threshold = limits.alone_s
     else:
         threshold = limits.silence_s
     if threshold > 0:
         left = threshold - quiet_s
+        # Причина видна человеку: стоп на десятой минуте вместо пятнадцатой
+        # без объяснения выглядит поломкой (ревью 20.08, DeepSeek M3).
+        alone_note = ", собеседников не слышно" if reason == ALONE else ""
         if left <= 0:
-            heard = (f"тишина {_minutes(quiet_s)}" if spoke
+            heard = (f"тишина {_minutes(quiet_s)}{alone_note}" if spoke
                      else "речи не было с начала записи")
             return Decision("stop", reason, f"{heard} — останавливаю запись")
         if left <= limits.warn_s:
-            heard = (f"тишина {_minutes(quiet_s)}" if spoke
+            heard = (f"тишина {_minutes(quiet_s)}{alone_note}" if spoke
                      else "речи не было с начала записи")
             return Decision("warn", reason,
                             f"{heard}; через {_minutes(left)} остановлю запись — "
