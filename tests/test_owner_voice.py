@@ -259,3 +259,45 @@ def test_коллизионное_имя_не_попадает_в_метку_к�
                            (OWNER, OWNER), ("", "Я")]:
         label = name if name and not ov.collides_with_neutral(name, neutral) else "Я"
         assert label == expected, f"{name!r} → {label!r}, ожидалось {expected!r}"
+
+
+# --- Владелец в звонке — весь микрофон, кроме эха (решение 20.08) -----------
+
+def test_дробление_трекера_не_мешает_подписи():
+    """Живой трекер дробит одного человека на несколько меток. Раньше ни один
+    осколок не набирал 60% и владелец оставался неподписанным всю встречу
+    (замер 20.08: 7 меток в live, имя только в офлайн-пересборке)."""
+    heard = ov.Heard(mic={1: 9.0, 7: 8.0, 3: 6.0}, call=True)
+    assert ov.owner_voices(heard) == {1, 7, 3}
+
+
+def test_эхо_собеседника_владельцем_не_становится():
+    """Голос, слышный и в системном канале, — это динамики, а не человек."""
+    heard = ov.Heard(mic={1: 20.0, 2: 12.0}, bh={2: 30.0}, call=True)
+    assert ov.owner_voices(heard) == {1}
+
+
+def test_очная_встреча_остаётся_без_имени():
+    """`call` не взведён — различать некого, метки нейтральные."""
+    heard = ov.Heard(mic={1: 60.0, 2: 40.0}, call=False)
+    assert ov.owner_voices(heard) == set()
+
+
+def test_случайный_звук_не_подписывается():
+    """Порог накопления остаётся: кашель и «алло» на старте — не основание."""
+    heard = ov.Heard(mic={1: 3.0, 2: 2.0}, call=True)
+    assert ov.owner_voices(heard) == set()
+    heard.mic[1] = 14.0
+    assert ov.owner_voices(heard) == {1, 2}
+
+
+def test_метка_ставится_любому_микрофонному_голосу_в_звонке():
+    heard = ov.Heard(mic={1: 10.0, 5: 9.0}, bh={9: 40.0}, call=True)
+    for voice in (1, 5):
+        assert ov.label_for(voice, is_mic=True, heard=heard,
+                                     owner_label=OWNER, other_label="Собеседник",
+                                     neutral="Собеседник 3") == OWNER
+    # системный канал по-прежнему нейтрален
+    assert ov.label_for(9, is_mic=False, heard=heard,
+                                 owner_label=OWNER, other_label="Собеседник",
+                                 neutral="Собеседник 4") == "Собеседник 4"

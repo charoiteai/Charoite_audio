@@ -123,6 +123,35 @@ def human_seconds(heard: Heard, *, echo_seconds: float = ECHO_SECONDS) -> float:
                if heard.bh.get(v, 0.0) <= echo_seconds)
 
 
+def owner_voices(heard: Heard, *, min_seconds: float = MIN_MIC_SECONDS,
+                 echo_seconds: float = ECHO_SECONDS) -> set[int]:
+    """Голоса владельца в ЗВОНКЕ — все микрофонные, кроме эха.
+
+    В удалённой встрече микрофон несёт одного человека: собеседники приходят
+    системным каналом. Требовать, чтобы один голос набрал 60% микрофонной
+    речи, здесь нечего — дробление на «Собеседника 1» и «Собеседника 7» это
+    артефакт лёгкого live-трекера, а не второй человек в комнате. Ровно из-за
+    него живая стенограмма 20.08 не подписала владельца ни разу, хотя офлайн
+    после «Стоп» опознал его уверенно (замер: 7 меток в live против имени в
+    финале).
+
+    Очных встреч правило не касается: там `call` не взводится, и метки
+    остаются нейтральными.
+
+    ⚠️ Цена решения — ГИБРИДНАЯ встреча: если рядом с владельцем у того же
+    микрофона говорит коллега, его слова уйдут под именем владельца. Это
+    осознанный размен: продукт рассчитан на удалённые встречи (решение
+    владельца 20.08 — «очные встречи не нужны»).
+    """
+    if not heard.call:
+        return set()
+    mine = {v: s for v, s in heard.mic.items()
+            if heard.bh.get(v, 0.0) <= echo_seconds}
+    if sum(mine.values()) < min_seconds:
+        return set()        # речи ещё мало: случайный кашель не подписываем
+    return set(mine)
+
+
 def owner_voice(heard: Heard, *, min_seconds: float = MIN_MIC_SECONDS,
                 min_share: float = MIN_SHARE, min_lead: float = MIN_LEAD,
                 echo_seconds: float = ECHO_SECONDS,
@@ -202,4 +231,4 @@ def label_for(voice: int | None, *, is_mic: bool, heard: Heard,
         return neutral
     if voice is None:
         return neutral
-    return owner_label if voice == owner_voice(heard, current=current) else neutral
+    return owner_label if voice in owner_voices(heard) else neutral
