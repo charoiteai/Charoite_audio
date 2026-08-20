@@ -11,7 +11,6 @@ import ast
 import pathlib
 import sys
 
-import pytest
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
@@ -152,3 +151,51 @@ def test_константы_уровня_модуля_не_мутируются(
     muts = _mutate(tmp_path, code, {1, 5})
     assert not any("15.0" in m.what for m in muts), [m.what for m in muts]
     assert any("Lt" in m.what for m in muts), "сравнение мутировать надо"
+
+
+def test_меняется_только_мутированный_узел(tmp_path):
+    """Ключевая проверка достоверности.
+
+    Раньше файл переписывался целиком через `ast.unparse`: комментарии
+    исчезали, кавычки менялись на свои. Тест, который проверяет ИСХОДНИК по
+    тексту (такой у нас есть), падал на мутантном файле из-за
+    переформатирования — и все мутанты модуля отчитывались «убит»
+    независимо от мутации (ревью 20.08, DeepSeek).
+    """
+    code = ('# важный комментарий\n'
+            'PATH = "models" / "diar" / "embedding.onnx"\n'
+            '\n'
+            '\n'
+            'def f(x):\n'
+            '    return x > 5  # хвостовой комментарий\n')
+    f = tmp_path / "sample.py"
+    f.write_text(code, encoding="utf-8")
+    mut = next(m for m in mc.mutations_for(f, {6}) if "Gt" in m.what)
+
+    node = mut.apply(ast.parse(code))
+    changed = mc.patch_source(code, node)
+
+    assert changed is not None
+    assert "x >= 5" in changed, changed
+    assert "# важный комментарий" in changed, "комментарий потерян"
+    assert "# хвостовой комментарий" in changed, "хвостовой комментарий потерян"
+    assert '"models" / "diar"' in changed, "кавычки переписаны — текстовые тесты упадут"
+
+
+def test_нейтральная_арифметика_не_мутируется(tmp_path):
+    """`x * 1` и `x + 0` выживают всегда: мутация ничего не меняет по смыслу,
+    а отчёт засоряет."""
+    muts = _mutate(tmp_path, "def f(x):\n    return x * 1 + 0\n", {2})
+    assert not any(m.what.startswith("Mult") or m.what.startswith("Add")
+                   for m in muts), [m.what for m in muts]
+
+
+def test_имя_модуля_в_комментарии_не_тянет_тест(tmp_path):
+    """Раньше упоминание пути в комментарии добавляло файл в набор — лишние
+    минуты на каждого мутанта."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_mention.py").write_text(
+        '# когда-нибудь проверим src/dictate_note.py\n'
+        'def test_stub():\n    assert True\n', encoding="utf-8")
+
+    assert mc.tests_for(tmp_path, tmp_path / "src" / "dictate_note.py") == ["tests"]

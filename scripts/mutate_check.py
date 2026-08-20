@@ -88,6 +88,19 @@ def changed_lines(root: pathlib.Path, rng: str) -> dict[pathlib.Path, set[int]]:
     return {p: ls for p, ls in result.items() if ls and p.suffix == ".py"}
 
 
+def _neutral(node: ast.BinOp) -> bool:
+    """`x * 1`, `x + 0` и подобное: мутация ничего не меняет по смыслу.
+
+    Такие мутанты выживают всегда и засоряют отчёт — то есть инструмент сам
+    добавляет себе шум, ради борьбы с которым и написан (ревью 20.08,
+    локальная голова).
+    """
+    for side in (node.left, node.right):
+        if isinstance(side, ast.Constant) and side.value in (0, 1):
+            return True
+    return False
+
+
 def _module_constants(tree: ast.Module) -> set[int]:
     """Строки с константами уровня модуля.
 
@@ -136,7 +149,8 @@ def mutations_for(path: pathlib.Path, lines: set[int],
             elif isinstance(node.value, (int, float)) and node.value not in (0,):
                 found.append(Mutation(path, ln, f"{node.value} → 0",
                                       _swap_const(node, 0)))
-        elif isinstance(node, ast.BinOp) and type(node.op) in BIN_SWAP:
+        elif isinstance(node, ast.BinOp) and type(node.op) in BIN_SWAP \
+                and not _neutral(node):
             found.append(Mutation(path, ln, f"{type(node.op).__name__} → "
                                             f"{BIN_SWAP[type(node.op)].__name__}",
                                   _swap_bin(node)))
@@ -151,8 +165,8 @@ def _swap_cmp(target):
         for n in ast.walk(tree):
             if isinstance(n, ast.Compare) and _same(n, target):
                 n.ops = [CMP_SWAP[type(n.ops[0])]()] + list(n.ops[1:])
-                return True
-        return False
+                return n
+        return None
     return apply
 
 
@@ -161,8 +175,8 @@ def _swap_bin(target):
         for n in ast.walk(tree):
             if isinstance(n, ast.BinOp) and _same(n, target):
                 n.op = BIN_SWAP[type(n.op)]()
-                return True
-        return False
+                return n
+        return None
     return apply
 
 
@@ -171,8 +185,8 @@ def _swap_bool(target):
         for n in ast.walk(tree):
             if isinstance(n, ast.BoolOp) and _same(n, target):
                 n.op = BOOL_SWAP[type(n.op)]()
-                return True
-        return False
+                return n
+        return None
     return apply
 
 
@@ -181,8 +195,8 @@ def _swap_const(target, value):
         for n in ast.walk(tree):
             if isinstance(n, ast.Constant) and _same(n, target):
                 n.value = value
-                return True
-        return False
+                return n
+        return None
     return apply
 
 
@@ -191,9 +205,32 @@ def _drop_return(target):
         for n in ast.walk(tree):
             if isinstance(n, ast.Return) and _same(n, target):
                 n.value = None
-                return True
-        return False
+                return n
+        return None
     return apply
+
+
+def patch_source(text: str, node: ast.AST) -> str | None:
+    """Заменить в тексте ровно один узел, не трогая остальной файл.
+
+    Раньше файл переписывался целиком через `ast.unparse`: тот выбрасывает
+    комментарии и перевыпускает литералы в своих кавычках. Тест, который
+    проверяет ИСХОДНИК по тексту (у нас такой есть), падал на мутантном файле
+    из-за переформатирования — и все мутанты модуля отчитывались «убит»
+    независимо от мутации (ревью 20.08, DeepSeek).
+    """
+    lines = text.splitlines(keepends=True)
+    start, end = getattr(node, "lineno", None), getattr(node, "end_lineno", None)
+    col, end_col = getattr(node, "col_offset", None), getattr(node, "end_col_offset", None)
+    if None in (start, end, col, end_col) or end > len(lines):
+        return None
+    head = "".join(lines[:start - 1]) + lines[start - 1][:col]
+    tail = lines[end - 1][end_col:] + "".join(lines[end:])
+    try:
+        piece = ast.unparse(node)
+    except Exception:                            # noqa: BLE001
+        return None
+    return head + piece + tail
 
 
 def _same(a, b) -> bool:
@@ -216,7 +253,11 @@ def tests_for(root: pathlib.Path, module: pathlib.Path) -> list[str]:
     # Часть модулей живёт только через подпроцесс (CLI-вход): импорта нет, а
     # тест их гоняет. Без этого весь набор шёл бы на каждого мутанта — часы
     # вместо минут (ревью 20.08, DeepSeek).
-    spawned = re.compile(rf"['\"][^'\"]*{name}\.py['\"]")
+    # Рядом с запуском, а не просто где-то в тексте: имя модуля в
+    # комментарии тянуло за собой лишний файл (ревью 20.08, локальная).
+    spawned = re.compile(
+        rf"(?:subprocess\.\w+|Popen|check_call|check_output|run)\s*\("
+        rf"[^)]*['\"][^'\"]*{name}\.py['\"]", re.S)
     hits = [str(p.relative_to(root))
             for p in sorted((root / "tests").rglob("test_*.py"))
             if imported.search(t := p.read_text(encoding="utf-8"))
@@ -277,8 +318,18 @@ def main(argv: list[str]) -> int:
 
     dropped = 0
     if len(plan) > args.max:
-        dropped = len(plan) - args.max
-        plan = plan[:args.max]
+        # По кругу между файлами: срез подряд забирал всех мутантов одного
+        # файла, а остальные не проверялись вовсе (ревью 20.08, локальная).
+        by_file: dict[pathlib.Path, list[Mutation]] = {}
+        for m in plan:
+            by_file.setdefault(m.path, []).append(m)
+        picked: list[Mutation] = []
+        while len(picked) < args.max and any(by_file.values()):
+            for queue in by_file.values():
+                if queue and len(picked) < args.max:
+                    picked.append(queue.pop(0))
+        dropped = len(plan) - len(picked)
+        plan = picked
 
     print(f"Мутантов к проверке: {len(plan)}"
           + (f" (СРЕЗАНО {dropped} — потолок --max={args.max})" if dropped else ""))
@@ -299,27 +350,37 @@ def main(argv: list[str]) -> int:
         # сами по себе. Тогда КАЖДЫЙ мутант считается убитым, отчёт говорит
         # «выжило 0», и гейт проходит, не проверив ничего: инструмент врёт в
         # самую опасную сторону (ревью 20.08, DeepSeek).
-        base_targets = sorted({t for m in plan for t in tests_for(work, m.path)})
-        print("Базовый прогон (без мутаций)…")
-        if not run_tests(work, base_targets, args.timeout):
-            print("\nБАЗА КРАСНАЯ: тесты падают и БЕЗ мутаций — в отдельном "
-                  "дереве нет того, что лежит в .gitignore (модели, конфиг, "
-                  "данные).\nРезультат мутаций был бы бессмысленным: каждый "
-                  "мутант засчитался бы убитым.")
+        # Проверяем КАЖДОЕ подмножество, на котором будет судиться мутант, а
+        # не только их объединение: тест, зелёный в общей куче, в одиночку
+        # может падать — и тогда мутанты его модуля «убиты» без участия
+        # мутации (ревью 20.08, DeepSeek).
+        subsets = {tuple(tests_for(work, m.path)) for m in plan}
+        print(f"Базовый прогон (без мутаций), наборов: {len(subsets)}…")
+        broken = [ts for ts in sorted(subsets)
+                  if not run_tests(work, list(ts), args.timeout)]
+        if broken:
+            print("\nБАЗА КРАСНАЯ: без единой мутации падают наборы:")
+            for ts in broken:
+                print("  " + " ".join(ts))
+            print("В отдельном дереве нет того, что лежит в .gitignore "
+                  "(модели, конфиг, данные).\nМутанты этих модулей "
+                  "засчитались бы убитыми — считать их бессмысленно.")
             return 2
         for i, mut in enumerate(plan, 1):
             rel = mut.path.relative_to(root)
             target = work / rel
             original = target.read_text(encoding="utf-8")
             tree = ast.parse(original)
-            if not mut.apply(tree):
-                # Не применилась — значит узел не нашёлся: расхождение версий
-                # файла. Молчать нельзя: «0 выживших» из-за того, что ничего
-                # не ломали, читается как «всё проверено».
+            node = mut.apply(tree)
+            mutated = patch_source(original, node) if node is not None else None
+            if mutated is None or mutated == original:
+                # Не применилась — узел не нашёлся или замена ничего не дала:
+                # расхождение версий файла. Молчать нельзя: «0 выживших»
+                # из-за того, что ничего не ломали, читается как «всё
+                # проверено».
                 skipped.append(mut)
                 continue
-            target.write_text(ast.unparse(ast.fix_missing_locations(tree)),
-                              encoding="utf-8")
+            target.write_text(mutated, encoding="utf-8")
             try:
                 alive = run_tests(work, tests_for(work, mut.path), args.timeout)
             finally:
