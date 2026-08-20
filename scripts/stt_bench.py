@@ -14,6 +14,11 @@
     .venv/bin/python scripts/stt_bench.py --backend whisper --lang zh
     .venv/bin/python scripts/stt_bench.py --compare          # оба, одним заходом
 
+Замер 20.08 (macOS, голос Tingting, 4 фразы про встречи): SenseVoice CER
+0.050, Whisper CER 0.147 — на китайском SenseVoice точнее почти втрое.
+Ошибки Whisper содержательные, а не косметические: «下周以上50点» вместо
+«下周一上午10点» — время встречи из десяти часов превратилось в пятьдесят.
+
 Синтетика. Записей встреч в репозитории нет и быть не может — это чужие
 разговоры. Фикстура собирается на месте системным синтезатором macOS: голос
 читает фразы, эталон известен точно, потому что мы сами его и написали.
@@ -26,6 +31,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import pathlib
 import subprocess
 import sys
@@ -58,28 +64,58 @@ PHRASES_EN = [
 LOCALES = {"zh": "zh_CN", "en": "en_US"}
 
 
-def voice_for(lang: str) -> str | None:
-    """Имя системного голоса для языка — из `say -v '?'`, а не из константы.
+# Пустой aiff от несклачанного голоса весит ~4.8 КБ заголовка. Реальная
+# фраза — десятки килобайт; порог с запасом отделяет одно от другого.
+_SILENT_AIFF = 8_000
+
+
+def voices_for(lang: str) -> list[str]:
+    """Все системные голоса языка — из `say -v '?'`, а не из константы.
 
     Первая версия задавала голос строкой «Eddy (Chinese (China mainland))».
     На русской системе он называется иначе, `say` голос не нашёл, молча взял
     английский по умолчанию и наговорил китайский текст латиницей. Ошибки при
-    этом не было — был CER 1.0 и вывод «右背。» вместо фразы. Синтез должен
-    падать громко или брать существующий голос; берём существующий.
+    этом не было — был CER 1.0 и вывод «右背。» вместо фразы.
     """
     locale = LOCALES.get(lang, "en_US")
     try:
         out = subprocess.run(["say", "-v", "?"], capture_output=True, text=True,
                              check=True).stdout
     except (subprocess.CalledProcessError, FileNotFoundError):
-        return None
+        return []
+    found: list[str] = []
     for line in out.splitlines():
         if f" {locale} " not in line and not line.split("#")[0].rstrip().endswith(locale):
             continue
         # «Eddy (Китайский (Китай континентальный)) zh_CN  # …» → «Eddy»
         name = line.split("(")[0].strip() if "(" in line else line.split()[0]
-        if name:
-            return name
+        if name and name not in found:
+            found.append(name)
+    return found
+
+
+@functools.lru_cache(maxsize=8)
+def voice_for(lang: str) -> str | None:
+    """Первый голос языка, который РЕАЛЬНО говорит.
+
+    Голос может быть в списке и при этом не скачан: `say` отрабатывает с
+    кодом 0 и пишет файл из одного заголовка. Скрипт брал первый по списку
+    (у китайского это Eddy — как раз такой), три фразы из четырёх
+    пропускались, четвёртая давала CER 1.0 — и «бенч» показывал ничью двух
+    движков на пустом месте. Проверяем делом: короткая фраза должна дать
+    звук (замер 20.08: Eddy и Flo молчат, Tingting, Meijia и Sinji говорят).
+    """
+    probe = pathlib.Path(tempfile.gettempdir()) / "stt_bench_probe.aiff"
+    for name in voices_for(lang):
+        try:
+            subprocess.run(["say", "-v", name, "-o", str(probe), "你好" if lang == "zh" else "hello"],
+                           check=True, capture_output=True)
+            if probe.exists() and probe.stat().st_size > _SILENT_AIFF:
+                return name
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+        finally:
+            probe.unlink(missing_ok=True)
     return None
 
 
@@ -88,8 +124,10 @@ def synth(text: str, lang: str, dest: pathlib.Path) -> bool:
     aiff = dest.with_suffix(".aiff")
     voice = voice_for(lang)
     if not voice:
-        print(f"нет системного голоса для {lang} — поставьте его в "
-              "Системных настройках → Универсальный доступ → Речь")
+        names = ", ".join(voices_for(lang)) or "ни одного"
+        print(f"нет ГОВОРЯЩЕГО голоса для {lang} (в списке: {names}) — "
+              "скачайте его в Системных настройках → Универсальный доступ → "
+              "Речь → Системный голос → Управление голосами")
         return False
     try:
         subprocess.run(["say", "-v", voice, "-o", str(aiff), text],
