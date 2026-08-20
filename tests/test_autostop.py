@@ -144,3 +144,112 @@ def test_watch_wakes_up_as_soon_as_the_talk_returns():
     stop = w.tick(now=2200.0, age_s=60 * MIN, quiet_s=16 * MIN, spoke=True,
                   last_speech_at=1200.0)
     assert stop.action == "stop", "новая тишина — новая просьба, а не остаток мута"
+
+
+# --- Правило 3: тишина, когда собеседников не было слышно (20.08) ------------
+
+def test_один_без_собеседников_режется_коротким_порогом():
+    """Говорил только владелец, системный канал молчал всю запись: пятнадцать
+    минут — перестраховка под паузу в разговоре, которого не было."""
+    limits = autostop.limits_from_cfg({})
+    d = autostop.decide(age_s=900, quiet_s=610, spoke=True, limits=limits, alone=True)
+    assert d.action == "stop" and d.reason == autostop.ALONE
+    assert "собеседников не слышно" in d.text, "человек должен понять, почему раньше"
+
+
+def test_тот_же_случай_с_собеседниками_ждёт_пятнадцать_минут():
+    limits = autostop.limits_from_cfg({})
+    d = autostop.decide(age_s=900, quiet_s=610, spoke=True, limits=limits, alone=False)
+    assert not d, "разговор двоих не должен резаться на пятиминутной паузе"
+    late = autostop.decide(age_s=1200, quiet_s=910, spoke=True, limits=limits, alone=False)
+    assert late.action == "stop" and late.reason == autostop.SILENCE
+
+
+def test_очную_встречу_можно_вернуть_одной_строкой_конфига():
+    """Канал не отличает очную встречу от диктофона — у кого встречи очные,
+    поднимает порог обратно."""
+    limits = autostop.limits_from_cfg({"sufler": {"autostop": {"alone_minutes": 15}}})
+    d = autostop.decide(age_s=900, quiet_s=610, spoke=True, limits=limits, alone=True)
+    assert not d
+    assert limits.alone_s == 900
+
+
+def test_ноль_выключает_своё_правило_но_не_соседнее():
+    """Мой первый тест кодировал ДЕФЕКТ: проверял, что при alone_minutes: 0
+    решения нет — и пропускал, что вместе с ним пропадала обычная тишина.
+    Человек, вернувший себе пятнадцать минут нулём, получал ноль автостопа
+    вовсе (ревью 20.08, DeepSeek C1)."""
+    limits = autostop.limits_from_cfg({"sufler": {"autostop": {"alone_minutes": 0}}})
+    assert limits.alone_s == 0
+    assert limits.silence_s == 900 and limits.no_speech_s == 300
+    # пятиминутная пауза — рано для всех
+    assert not autostop.decide(age_s=600, quiet_s=310, spoke=True,
+                               limits=limits, alone=True)
+    # а пятнадцать минут тишины обязаны сработать по обычному правилу
+    late = autostop.decide(age_s=1200, quiet_s=910, spoke=True, limits=limits, alone=True)
+    assert late.action == "stop" and late.reason == autostop.SILENCE
+
+
+def test_выключенная_тишина_не_включает_alone_втихую():
+    """Старый конфиг с silence_minutes: 0 не должен молча получить новое
+    правило, которого владелец не просил (ревью 20.08, DeepSeek I3)."""
+    limits = autostop.limits_from_cfg(
+        {"sufler": {"autostop": {"silence_minutes": 0, "no_speech_minutes": 0,
+                                 "max_hours": 0}}})
+    assert limits.alone_s == 0 and not limits.any_rule
+
+
+def test_одинокая_запись_не_режется_раньше_пустой_комнаты():
+    """Перепутанные местами значения не должны давать порог строже, чем
+    «речи не было ни разу» — тот же порядок, что у silence_s."""
+    limits = autostop.limits_from_cfg(
+        {"sufler": {"autostop": {"alone_minutes": 1, "no_speech_minutes": 5}}})
+    assert limits.alone_s == 300
+
+
+def test_молчание_вообще_остаётся_за_правилом_один():
+    """Никто не говорил и собеседников нет — это по-прежнему no_speech,
+    отдельная причина для человека в статусе."""
+    limits = autostop.limits_from_cfg({})
+    d = autostop.decide(age_s=400, quiet_s=310, spoke=False, limits=limits, alone=True)
+    assert d.action == "stop" and d.reason == autostop.NO_SPEECH
+
+
+def test_признак_звонка_не_зависит_от_трекера_голосов():
+    """Модель диаризации в поставку не входит. Если признак «слышно
+    собеседников» ставить только когда трекер определил голос, обычная
+    удалённая встреча выглядит как разговор с самим собой — и правило alone
+    режет её втрое раньше срока (ревью 20.08, локальная голова)."""
+    from owner_voice import Heard
+
+    heard = Heard()
+    # трекер не определился: голоса нет, но канал известен
+    heard.note(None, 0.0, is_mic=False)
+    assert heard.call, "речь с системного канала — это собеседник, даже без трекера"
+
+    свой = Heard()
+    свой.note(None, 0.0, is_mic=True)
+    assert not свой.call, "собственный микрофон признаком звонка не является"
+
+
+def test_явный_alone_работает_даже_при_выключенной_тишине():
+    """Гвард против «воскрешения по умолчанию» не должен глушить просьбу.
+
+    Конфиг `silence_minutes: 0, alone_minutes: 10` — это «обычную тишину не
+    считай, а диктофон обрывай». Первая версия гварда давала на нём ноль
+    автостопа вовсе (ревью 20.08, второй круг, DeepSeek I1).
+    """
+    limits = autostop.limits_from_cfg(
+        {"sufler": {"autostop": {"silence_minutes": 0, "alone_minutes": 10}}})
+    assert limits.alone_s == 600 and limits.silence_s == 0
+
+    d = autostop.decide(age_s=1800, quiet_s=611, spoke=True, limits=limits, alone=True)
+    assert d.action == "stop" and d.reason == autostop.ALONE
+    # а разговор с собеседниками при выключенной тишине по-прежнему не трогаем
+    assert not autostop.decide(age_s=1800, quiet_s=611, spoke=True,
+                               limits=limits, alone=False)
+
+
+def test_дефолт_limits_совпадает_с_конфигом():
+    """Две точки истины разошлись бы молча: DEFAULTS подняли, датакласс нет."""
+    assert autostop.Limits().alone_s == autostop.DEFAULTS["alone_minutes"] * 60

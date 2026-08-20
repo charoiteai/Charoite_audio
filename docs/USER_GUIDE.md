@@ -61,7 +61,13 @@ during a recording asks for confirmation because it stops the meeting.
 
 Forgetting to stop is not a problem: the recording ends by itself — after 5
 minutes if nobody ever spoke, after 15 once the conversation goes quiet, and
-after 6 hours in any case. A warning appears a minute before (in the status
+after 6 hours in any case. There is a fourth case: if nothing was ever heard
+from the far side — system audio stayed silent the whole recording and only you
+were talking — quiet time is cut to 10 minutes instead of 15. Note that an
+in-person meeting looks the same to us: everyone sits in one room and lands in
+the microphone, so the far side is "silent" by definition. If your meetings are
+in-person, set `alone_minutes: 15` and the rule stops changing anything;
+`0` turns it off. A warning appears a minute before (in the status
 line, and as a banner if the window is not visible) — say something and the
 recording continues. The stop goes the usual way, as if you pressed Stop: the
 meeting is saved and processed, nothing is lost, and the status keeps the

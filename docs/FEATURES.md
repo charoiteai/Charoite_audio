@@ -398,7 +398,17 @@ it signals degradation, it does not break the loop.
   honestly: loud background speech — a TV, a radio, a video — counts as talking
   for us, and only the ceiling stops such a recording. The number of speakers is
   deliberately not part of the rule: without diarization models every line of an
-  in-person meeting carries the same label, so "one voice" means nothing. A
+  in-person meeting carries the same label, so "one voice" means nothing. What
+  the rule does use is the CHANNEL: if system audio never carried speech during
+  the whole recording — only you were talking — quiet time is cut to 10 minutes
+  (`alone_minutes`). That signal needs no models, but it cannot tell an
+  in-person meeting from a dictaphone: set `alone_minutes: 15` and the rule
+  changes nothing, `0` disables it. Two more honest limits: the signal comes
+  from VAD energy, so a notification chime counts as "someone is there" (safe —
+  you keep the 15 minutes), while a quiet speaker or a missing capture device
+  reads as "alone" (that is the case the threshold exists for); and with
+  `silence_minutes: 0` the rule stays silent by default, though an explicitly
+  set `alone_minutes` still works. A
   warning arrives a minute before (a banner too, if the window is not visible),
   and any remark cancels it. The recording stops the same way the Stop button
   stops it: the file is finalized, the transcript is rebuilt, the graph is
