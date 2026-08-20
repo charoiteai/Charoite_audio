@@ -702,7 +702,6 @@ def main():
     owner_note = {"said": ""}
     #: Последнее решение о том, чей голос владельца: держим его, чтобы метка
     #: не мигала на границе долей (ревью 19.08).
-    owner_state: dict[str, int | None] = {"voice": None}
 
     def _is_owner_line(name: str) -> bool:
         """Реплика владельца? Гейт мгновенных ответов спрашивает это.
@@ -732,8 +731,7 @@ def main():
         label = owner_voice.label_for(voice, is_mic=is_mic,
                                       heard=heard_by_channel,
                                       owner_label=mic_label,
-                                      other_label=other_label, neutral=neutral,
-                                      current=owner_state["voice"])
+                                      other_label=other_label, neutral=neutral)
         if not is_mic:
             # Реплика собеседника ничего не говорит о том, подписан ли
             # владелец: раньше она уводила статус в «в микрофоне несколько
@@ -747,7 +745,6 @@ def main():
             # статусом «в микрофоне несколько человек» сразу после «реплики
             # подписываются» (ревью 19.08, второй круг).
             return label
-        owner_state["voice"] = voice if label == mic_label else None
         _say_owner_state(label != neutral)
         return label
 
@@ -2311,7 +2308,7 @@ def main():
                            # по звуку, а не по факту, что канал существует.
                            # Тихий собеседник и отсутствующий канал захвата
                            # дадут ложное «я один»: для таких случаев порог и
-                           # вынесен в `alone_minutes` (15 — как раньше).
+                           # вынесен в `alone_minutes` (по умолчанию 10, см. autostop.py).
                            alone=not heard_by_channel.call)
             if not d:
                 continue

@@ -70,6 +70,17 @@ class Heard:
     bh: dict[int, float] = dataclasses.field(default_factory=dict)
     #: Нёс ли системный канал речь хоть раз: признак звонка.
     call: bool = False
+    #: Порог накопления уже взят: дальше владелец подписывается без него.
+    #: Счётчики тают по WINDOW_S, и после паузы сумма опускалась ниже 15
+    #: секунд — метка гасла и загоралась снова, мигая посреди встречи.
+    owner_ready: bool = False
+    #: Голоса, хоть раз прозвучавшие в системном канале дольше ECHO_SECONDS.
+    #: Множество ЛИПКОЕ и затуханию не подлежит: счётчики bh тают по WINDOW_S,
+    #: и после нескольких минут молчания бывшее эхо опускалось ниже порога —
+    #: голос собеседника, попавший в микрофон через динамики, становился
+    #: «владельцем», и его реплики уходили под именем хозяина встречи
+    #: (ревью 20.08, локальная голова).
+    echoed: set[int] = dataclasses.field(default_factory=set)
     #: Момент последнего затухания. Именно None, а не 0.0: нулевая отметка
     #: времени — законное значение (тесты, монотонные часы с нуля), и
     #: `if not self._last` съедал бы первое затухание молча.
@@ -86,6 +97,8 @@ class Heard:
             self._decay(now)
         acc = self.mic if is_mic else self.bh
         acc[voice] = acc.get(voice, 0.0) + seconds
+        if not is_mic and acc[voice] > ECHO_SECONDS:
+            self.echoed.add(voice)      # раз собеседник — навсегда собеседник
 
     def _decay(self, now: float) -> None:
         if self._last is None:
@@ -121,6 +134,48 @@ def human_seconds(heard: Heard, *, echo_seconds: float = ECHO_SECONDS) -> float:
     """
     return sum(s for v, s in heard.mic.items()
                if heard.bh.get(v, 0.0) <= echo_seconds)
+
+
+def owner_voices(heard: Heard, *, min_seconds: float = MIN_MIC_SECONDS,
+                 echo_seconds: float = ECHO_SECONDS) -> set[int]:
+    """Голоса владельца в ЗВОНКЕ — все микрофонные, кроме эха.
+
+    В удалённой встрече микрофон несёт одного человека: собеседники приходят
+    системным каналом. Требовать, чтобы один голос набрал 60% микрофонной
+    речи, здесь нечего — дробление на «Собеседника 1» и «Собеседника 7» это
+    артефакт лёгкого live-трекера, а не второй человек в комнате. Ровно из-за
+    него живая стенограмма 20.08 не подписала владельца ни разу, хотя офлайн
+    после «Стоп» опознал его уверенно (замер: 7 меток в live против имени в
+    финале).
+
+    Очных встреч правило не касается: там `call` не взводится, и метки
+    остаются нейтральными.
+
+    Это ЖИВОЙ путь. Офлайн-пересборка после «Стоп» по-прежнему зовёт
+    `owner_voice()` с долей и отрывом: там диаризация идёт по всей записи,
+    метки устойчивы, и выбрать один голос можно честно. Два режима, а не два
+    источника истины.
+
+    ⚠️ Цена вторая: устойчивая ФОНОВАЯ речь в комнате (телевизор, радио,
+    видео) копит секунды наравне с владельцем — счётчики питаются
+    распознанным текстом, и после порога такой голос тоже подпишется его
+    именем. Старое правило доли отсекало оба голоса разом; новое подписывает
+    оба (ревью 20.08, DeepSeek).
+
+    ⚠️ Цена первая — ГИБРИДНАЯ встреча: если рядом с владельцем у того же
+    микрофона говорит коллега, его слова уйдут под именем владельца. Это
+    осознанный размен: продукт рассчитан на удалённые встречи (решение
+    владельца 20.08 — «очные встречи не нужны»).
+    """
+    if not heard.call:
+        return set()
+    mine = {v: s for v, s in heard.mic.items()
+            if v not in heard.echoed and heard.bh.get(v, 0.0) <= echo_seconds}
+    if not heard.owner_ready:
+        if sum(mine.values()) < min_seconds:
+            return set()    # речи ещё мало: случайный кашель не подписываем
+        heard.owner_ready = True
+    return set(mine)
 
 
 def owner_voice(heard: Heard, *, min_seconds: float = MIN_MIC_SECONDS,
@@ -188,8 +243,7 @@ def collides_with_neutral(owner_label: str, other_label: str = NEUTRAL_BASE) -> 
 
 
 def label_for(voice: int | None, *, is_mic: bool, heard: Heard,
-              owner_label: str, other_label: str, neutral: str,
-              current: int | None = None) -> str:
+              owner_label: str, other_label: str, neutral: str) -> str:
     """Метка для куска речи.
 
     `owner_label` — метка микрофонного канала (имя из настроек), `other_label`
@@ -197,9 +251,15 @@ def label_for(voice: int | None, *, is_mic: bool, heard: Heard,
 
     Имя, неотличимое от нейтральной метки, делает признак канала
     бессмысленным — тогда владельца не подписываем вовсе.
+
+    Параметра `current` здесь нет намеренно: гистерезис «решение принято —
+    держим» нужен там, где владелец ОДИН голос и его перевес может
+    развалиться, то есть в офлайн-пути `owner_voice()`. В живом множество
+    голосов и так липкое — оно только растёт по мере накопления речи
+    (ревью 20.08, локальная голова: параметр остался бы мёртвым).
     """
     if not is_mic or collides_with_neutral(owner_label, other_label):
         return neutral
     if voice is None:
         return neutral
-    return owner_label if voice == owner_voice(heard, current=current) else neutral
+    return owner_label if voice in owner_voices(heard) else neutral

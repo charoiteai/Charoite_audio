@@ -41,6 +41,40 @@ Tuning (`config/config.yaml`):
   to a known voice; raise it if different people get merged, lower it if one
   person keeps splitting into two.
 
+
+## Which voice is the owner
+
+The live transcript and the final one answer this differently, on purpose.
+
+**In a call the microphone belongs to the owner entirely.** The other side
+arrives on the system channel, so every non-echo microphone voice is the
+owner — no matter how many fragments the lightweight tracker split them
+into. The live path used to require a voice to be *dominant* in the
+microphone; the tracker splits one person across several labels (measured
+21.07: 8 voices live, 14 unnamed in the final), no fragment reached the
+threshold, and the name went to nobody. People saw themselves as "Speaker 1"
+for the whole conversation and got their name only in the final file.
+
+Three caveats, each paid for with a bug:
+
+- **Echo is sticky.** A voice once recognised as speaker bleed stays that way
+  until the end. Counters decay, and without this the echo would "bleach" into
+  the owner after a few minutes.
+- **The decision is sticky.** The threshold is taken once; otherwise the label
+  flickers between the name and "Speaker" on every pause.
+- **The call flag does not depend on the tracker.** The diarization model is
+  not bundled, and previously, without it, the flag was never raised — so on a
+  remote meeting the rule never applied at all.
+
+**An in-person meeting looks exactly like "no call"**: everyone sits in one
+room and lands in the microphone, the system channel stays silent. That is why
+the rule only engages when there is speech on the system channel.
+
+**The rebuild decides independently**, over the whole recording at once,
+rather than repeating the live decision: it has all the audio, the live path
+has a sliding window and inertia. On a call both agree; on a meeting that
+changes format mid-way they may differ, and the one with more data is right.
+
 ## How to measure it
 
 "It confuses speakers" stays an opinion until there is a number.
