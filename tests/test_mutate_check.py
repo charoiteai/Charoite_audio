@@ -199,3 +199,56 @@ def test_имя_модуля_в_комментарии_не_тянет_тест(
         'def test_stub():\n    assert True\n', encoding="utf-8")
 
     assert mc.tests_for(tmp_path, tmp_path / "src" / "dictate_note.py") == ["tests"]
+
+
+def test_кириллица_не_ломает_замену(tmp_path):
+    """Проект русскоязычный, и `ast` отдаёт смещения в БАЙТАХ.
+
+    Первая версия резала строку по символам: на любой строке с кириллицей
+    счёт расходился, хвост уезжал за конец узла, файл становился
+    синтаксически битым — и мутант засчитывался убитым из-за поломки, а не
+    из-за мутации. Ровно та ложь, которую предыдущая правка закрывала
+    (ревью 20.08, круг 3, DeepSeek). Все прежние примеры были на латинице,
+    поэтому дефект и не ловился.
+    """
+    code = ('def f(text):\n'
+            '    if "## Ко-мышление" not in text:\n'
+            '        return "нет раздела"\n'
+            '    return "есть"\n')
+    f = tmp_path / "sample.py"
+    f.write_text(code, encoding="utf-8")
+    mut = next(m for m in mc.mutations_for(f, {2}) if "NotIn" in m.what)
+
+    changed = mc.patch_source(code, mut.apply(ast.parse(code)))
+
+    assert changed is not None
+    ast.parse(changed)                       # главное: файл остался валидным
+    assert "Ко-мышление" in changed and " in text" in changed, changed
+    assert "нет раздела" in changed, "хвост строки потерян"
+
+
+def test_кириллица_перед_узлом_тоже_учтена(tmp_path):
+    """Не-ASCII ДО мутируемого узла сдвигает головной срез."""
+    code = ('def f(res):\n'
+            '    return res["точность"] > 0.9\n')
+    f = tmp_path / "sample.py"
+    f.write_text(code, encoding="utf-8")
+    mut = next(m for m in mc.mutations_for(f, {2}) if "Gt" in m.what)
+
+    changed = mc.patch_source(code, mut.apply(ast.parse(code)))
+
+    ast.parse(changed)
+    assert "точность" in changed and ">= 0.9" in changed, changed
+
+
+def test_ошибка_на_единицу_не_считается_шумом(tmp_path):
+    """`x - 1` → `x + 1` меняет поведение всегда — это самый ценный класс
+    мутаций, ради которого арифметику и добавляли. Первый фильтр душил его
+    вместе с настоящим шумом."""
+    muts = _mutate(tmp_path, "def f(n):\n    return n - 1\n", {2})
+    assert any(m.what.startswith("Sub") for m in muts), [m.what for m in muts]
+
+
+def test_умножение_на_единицу_остаётся_шумом(tmp_path):
+    muts = _mutate(tmp_path, "def f(n):\n    return n * 1\n", {2})
+    assert not any(m.what.startswith("Mult") for m in muts), [m.what for m in muts]

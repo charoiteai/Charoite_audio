@@ -88,15 +88,21 @@ def changed_lines(root: pathlib.Path, rng: str) -> dict[pathlib.Path, set[int]]:
     return {p: ls for p, ls in result.items() if ls and p.suffix == ".py"}
 
 
-def _neutral(node: ast.BinOp) -> bool:
-    """`x * 1`, `x + 0` и подобное: мутация ничего не меняет по смыслу.
+# Пары «оператор + операнд», где подмена оператора не меняет смысла.
+# Шире фильтровать нельзя: `x - 1` → `x + 1` — это ошибка на двойку, то есть
+# ровно тот класс, ради которого арифметику и добавляли. Первая версия
+# душила его вместе с настоящим шумом (ревью 20.08, круг 3, DeepSeek).
+_NEUTRAL = {(ast.Mult, 1), (ast.Div, 1), (ast.FloorDiv, 1),
+            (ast.Add, 0), (ast.Sub, 0)}
 
-    Такие мутанты выживают всегда и засоряют отчёт — то есть инструмент сам
-    добавляет себе шум, ради борьбы с которым и написан (ревью 20.08,
-    локальная голова).
-    """
+
+def _neutral(node: ast.BinOp) -> bool:
+    """`x * 1`, `x + 0`: подмена оператора здесь ничего не меняет."""
     for side in (node.left, node.right):
-        if isinstance(side, ast.Constant) and side.value in (0, 1):
+        if (isinstance(side, ast.Constant)
+                and isinstance(side.value, int)
+                and not isinstance(side.value, bool)
+                and (type(node.op), side.value) in _NEUTRAL):
             return True
     return False
 
@@ -218,14 +224,28 @@ def patch_source(text: str, node: ast.AST) -> str | None:
     проверяет ИСХОДНИК по тексту (у нас такой есть), падал на мутантном файле
     из-за переформатирования — и все мутанты модуля отчитывались «убит»
     независимо от мутации (ревью 20.08, DeepSeek).
+
+    Осознанное ограничение: ВНУТРИ заменяемого узла форматирование всё равно
+    перевыпускается — `res["точность"]` станет `res['точность']`. Гнаться за
+    побайтовой точностью внутри узла значило бы вырезать позиции оператора
+    руками (в дереве их нет) ради случая, когда текстовый тест читает строку
+    из самого мутируемого выражения. Такого у нас нет; появится — доработаем.
     """
     lines = text.splitlines(keepends=True)
     start, end = getattr(node, "lineno", None), getattr(node, "end_lineno", None)
     col, end_col = getattr(node, "col_offset", None), getattr(node, "end_col_offset", None)
     if None in (start, end, col, end_col) or end > len(lines):
         return None
-    head = "".join(lines[:start - 1]) + lines[start - 1][:col]
-    tail = lines[end - 1][end_col:] + "".join(lines[end:])
+    # По БАЙТАМ: `ast` отдаёт col_offset в utf-8 байтах, а срез строки идёт
+    # по символам. На кириллице счёт расходится, хвост уезжает за конец узла
+    # и файл становится синтаксически битым — мутант «убит» из-за поломки, а
+    # не из-за мутации. Проект русскоязычный, промах был бы массовым
+    # (ревью 20.08, круг 3, DeepSeek). Границы токенов всегда на границе
+    # символов, поэтому decode не оборвётся.
+    head = ("".join(lines[:start - 1])
+            + lines[start - 1].encode("utf-8")[:col].decode("utf-8"))
+    tail = (lines[end - 1].encode("utf-8")[end_col:].decode("utf-8")
+            + "".join(lines[end:]))
     try:
         piece = ast.unparse(node)
     except Exception:                            # noqa: BLE001
