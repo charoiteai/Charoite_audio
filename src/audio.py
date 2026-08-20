@@ -824,14 +824,17 @@ class AudioHub:
         кусками, не всю речь» (ревью 20.08, DeepSeek).
         """
         with self._lock:
-            buf = self._bufs[label]
             cap = self.sr * self.BUF_CAP_S
+            merged = np.concatenate([self._bufs[label], part])
             dropped = 0.0
-            if len(buf) + len(part) > cap:
-                n = min(len(buf), len(buf) + len(part) - cap)
-                buf = buf[n:]
-                dropped = n / self.sr
-            self._bufs[label] = np.concatenate([buf, part])
+            if len(merged) > cap:
+                # Срез, а не «выбросить из старого буфера»: кусок длиннее
+                # потолка иначе оставил бы буфер выше лимита, а излишек
+                # внутри самого куска не попал бы в счётчик потерь (ревью
+                # 20.08 — нашли и локальная голова, и DeepSeek).
+                dropped = (len(merged) - cap) / self.sr
+                merged = merged[-cap:]
+            self._bufs[label] = merged
         return dropped
 
     _DROP_REPORT_S = 30.0     # чаще — спам в ленте: отставание длится минутами
@@ -844,15 +847,20 @@ class AudioHub:
         Запись на диск идёт отдельным sink и не страдает, поэтому финальная
         стенограмма будет полной; ровно это и говорим.
         """
-        st = self._drops.setdefault(label, [0.0, 0.0])
+        st = self._drops.setdefault(label, [0.0, 0.0, 0.0])
         st[0] += seconds
+        st[2] += seconds
         now = time.time()
         if now - st[1] < self._DROP_REPORT_S:
             return
         st[1] = now
-        self._say(f"⚠️ подсказки отстают: потеряно {st[0]:.0f}с живого звука "
-                  f"({label}). Запись на диск не пострадала — финальная "
-                  f"стенограмма будет полной")
+        # Копящаяся сумма без сброса не даёт прочитать, отстаём ли ПРЯМО
+        # сейчас: строки «потеряно 300с / 600с / 900с» описывают одно и то
+        # же отставание. Говорим интервал, итог — справочно.
+        recent, st[0] = st[0], 0.0
+        self._say(f"⚠️ подсказки отстают: потеряно {recent:.0f}с живого звука "
+                  f"({label}, всего за встречу {st[2]:.0f}с). Запись на диск "
+                  f"не пострадала — финальная стенограмма будет полной")
 
     def _say(self, msg: str) -> None:
         """Статус в UI. Отказ страховочной записи пользователь обязан увидеть

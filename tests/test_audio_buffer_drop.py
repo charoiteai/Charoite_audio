@@ -22,22 +22,17 @@ import audio  # noqa: E402
 SR = 16000
 
 
-class Hub:
-    """Голый буфер хаба: устройства и потоки для этой логики не нужны."""
-
-    _append = audio.AudioHub._append
-    _note_drop = audio.AudioHub._note_drop
-    _say = audio.AudioHub._say
-    BUF_CAP_S = audio.AudioHub.BUF_CAP_S
-    _DROP_REPORT_S = audio.AudioHub._DROP_REPORT_S
-
-    def __init__(self):
-        self.sr = SR
-        self._bufs = {"mic": np.zeros(0, dtype=np.float32)}
-        self._drops = {}
-        self._lock = threading.Lock()
-        self.said = []
-        self.on_status = self.said.append
+def Hub():
+    """Настоящий AudioHub без __init__: устройства и потоки этой логике не
+    нужны, а методы берём те же, что работают на встрече."""
+    hub = audio.AudioHub.__new__(audio.AudioHub)
+    hub.sr = SR
+    hub._bufs = {"mic": np.zeros(0, dtype=np.float32)}
+    hub._drops = {}
+    hub._lock = threading.Lock()
+    hub.said = []
+    hub.on_status = hub.said.append
+    return hub
 
 
 def _sec(n: float) -> np.ndarray:
@@ -86,4 +81,27 @@ def test_статус_не_спамит_на_каждом_чанке():
         hub._note_drop("mic", hub._append("mic", _sec(0.5)))
 
     assert len(hub.said) == 1, f"статусов {len(hub.said)} вместо одного"
-    assert hub._drops["mic"][0] == pytest.approx(25.0), "счётчик потерь врёт"
+    assert hub._drops["mic"][2] == pytest.approx(25.0), "итог потерь врёт"
+
+
+def test_кусок_длиннее_потолка_не_раздувает_буфер():
+    """Аномально длинный кусок обязан обрезаться сам, а не оставлять буфер
+    выше лимита с недосчитанной потерей (ревью 20.08: локальная и DeepSeek)."""
+    hub = Hub()
+    dropped = hub._append("mic", _sec(hub.BUF_CAP_S + 10))
+
+    assert len(hub._bufs["mic"]) == SR * hub.BUF_CAP_S
+    assert dropped == pytest.approx(10.0), f"потеря посчитана как {dropped:.1f}с"
+
+
+def test_статус_говорит_свежую_потерю_а_не_сумму_с_начала():
+    """Копящаяся сумма не даёт понять, отстаём ли ПРЯМО сейчас."""
+    hub = Hub()
+    hub._append("mic", _sec(hub.BUF_CAP_S))
+    hub._note_drop("mic", hub._append("mic", _sec(5.0)))
+    hub._drops["mic"][1] = 0.0                    # окно тишины прошло
+    hub._note_drop("mic", hub._append("mic", _sec(3.0)))
+
+    assert len(hub.said) == 2
+    assert "3с" in hub.said[1], f"вторая строка врёт про свежую потерю: {hub.said[1]}"
+    assert "8с" in hub.said[1], f"итог за встречу потерян: {hub.said[1]}"
