@@ -13,12 +13,12 @@ on:
       - ".github/workflows/pages.yml"
   workflow_dispatch:      # руками — когда надо пересобрать без правок
 
-# Токену здесь нужно ровно два права: прочитать репозиторий и опубликовать
-# страницу. Ни contents:write, ни pull-requests.
+# Права — на уровне ЗАДАЧ, а не всего файла: сборке достаточно чтения, а
+# публиковать умеет только вторая. Глобальный `pages: write` давал бы это
+# право и шагу, который гоняет чужой код из rubygems (zizmor: overly broad
+# permissions).
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # Одна публикация за раз. Отменять идущую нельзя: оборванный деплой оставит
 # страницу в половинчатом состоянии.
@@ -30,6 +30,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
         with:
@@ -62,6 +64,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      pages: write        # собственно публикация
+      id-token: write     # OIDC-токен, которым deploy-pages подтверждает себя
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
