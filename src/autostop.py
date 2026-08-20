@@ -88,7 +88,7 @@ class Limits:
     no_speech_s: float = 300.0
     silence_s: float = 900.0
     #: Тишина, когда системный канал молчал всю запись (собеседников не слышно).
-    alone_s: float = 300.0
+    alone_s: float = 600.0
     max_s: float = 21_600.0
     warn_s: float = 60.0
     min_s: float = 120.0
@@ -132,11 +132,13 @@ def limits_from_cfg(cfg: dict) -> Limits:
         silence_s=max(silence, no_speech) if silence else 0.0,
         # Тот же порядок, что у silence_s: одинокая запись не должна резаться
         # раньше пустой комнаты, а ноль по-прежнему выключает своё правило.
-        # `alone` — частный случай тишины после разговора, поэтому живёт только
-        # вместе с ней: конфиг, где silence_minutes: 0 (тишину не считаем),
-        # иначе молча получил бы новое включённое правило, которого владелец
-        # никогда не просил (ревью 20.08, DeepSeek I3).
-        alone_s=max(alone, no_speech) if (alone and silence) else 0.0,
+        # Дефолтное правило не воскресает само: конфиг, где тишину выключили
+        # (`silence_minutes: 0`), не должен молча получить новое включённое
+        # правило (ревью 20.08, DeepSeek I3). Но ЯВНО заданный `alone_minutes`
+        # — это просьба, и глушить её нулём соседнего ключа значит оставить
+        # человека вообще без автостопа по тишине (второй круг, DeepSeek I1).
+        alone_s=(max(alone, no_speech)
+                 if (alone and (silence or "alone_minutes" in raw)) else 0.0),
         max_s=num("max_hours") * 3600,
         warn_s=num("warn_seconds"),
         min_s=num("min_minutes") * 60,

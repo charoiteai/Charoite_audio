@@ -230,3 +230,26 @@ def test_признак_звонка_не_зависит_от_трекера_г�
     свой = Heard()
     свой.note(None, 0.0, is_mic=True)
     assert not свой.call, "собственный микрофон признаком звонка не является"
+
+
+def test_явный_alone_работает_даже_при_выключенной_тишине():
+    """Гвард против «воскрешения по умолчанию» не должен глушить просьбу.
+
+    Конфиг `silence_minutes: 0, alone_minutes: 10` — это «обычную тишину не
+    считай, а диктофон обрывай». Первая версия гварда давала на нём ноль
+    автостопа вовсе (ревью 20.08, второй круг, DeepSeek I1).
+    """
+    limits = autostop.limits_from_cfg(
+        {"sufler": {"autostop": {"silence_minutes": 0, "alone_minutes": 10}}})
+    assert limits.alone_s == 600 and limits.silence_s == 0
+
+    d = autostop.decide(age_s=1800, quiet_s=611, spoke=True, limits=limits, alone=True)
+    assert d.action == "stop" and d.reason == autostop.ALONE
+    # а разговор с собеседниками при выключенной тишине по-прежнему не трогаем
+    assert not autostop.decide(age_s=1800, quiet_s=611, spoke=True,
+                               limits=limits, alone=False)
+
+
+def test_дефолт_limits_совпадает_с_конфигом():
+    """Две точки истины разошлись бы молча: DEFAULTS подняли, датакласс нет."""
+    assert autostop.Limits().alone_s == autostop.DEFAULTS["alone_minutes"] * 60
