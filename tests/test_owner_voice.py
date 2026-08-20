@@ -301,3 +301,51 @@ def test_метка_ставится_любому_микрофонному_го�
     assert ov.label_for(9, is_mic=False, heard=heard,
                                  owner_label=OWNER, other_label="Собеседник",
                                  neutral="Собеседник 4") == "Собеседник 4"
+
+
+def test_эхо_не_отбеливается_затуханием():
+    """Счётчики тают по WINDOW_S. Без липкого признака голос собеседника,
+    прилетевший в микрофон через динамики, через несколько минут молчания
+    опускался ниже порога эха и становился «владельцем» — его реплики уходили
+    под именем хозяина встречи (ревью 20.08, локальная голова)."""
+    heard = ov.Heard(call=True)
+    heard.note(2, 5.0, is_mic=False, now=0.0)      # собеседник в системном канале
+    heard.note(2, 4.0, is_mic=True, now=0.0)       # он же прилетел в микрофон
+    heard.note(1, 20.0, is_mic=True, now=0.0)      # владелец
+    assert ov.owner_voices(heard) == {1}
+
+    # десять минут спустя счётчики bh практически истаяли
+    heard.note(1, 20.0, is_mic=True, now=600.0)
+    assert heard.bh.get(2, 0.0) < ov.ECHO_SECONDS, "затухание сделало своё дело"
+    assert 2 in heard.echoed, "но признак эха липкий"
+    assert ov.owner_voices(heard) == {1}, "собеседник не становится владельцем"
+
+
+def test_офлайн_путь_остался_со_своей_логикой():
+    """rebuild_transcript зовёт owner_voice() с долей: там метки устойчивые."""
+    heard = ov.Heard(mic={7: 40.0, 3: 5.0}, call=True)
+    assert ov.owner_voice(heard) == 7
+    assert ov.owner_voices(heard) == {7, 3}
+
+
+def test_метка_не_мигает_после_паузы():
+    """Счётчики тают по WINDOW_S: после паузы сумма падала ниже порога, и
+    подпись владельца гасла, чтобы через реплику загореться снова. Решение
+    липкое — раз порог взят, держим (ревью 20.08, DeepSeek)."""
+    heard = ov.Heard(call=True)
+    heard.note(1, 16.0, is_mic=True, now=0.0)
+    assert ov.owner_voices(heard) == {1}, "порог взят"
+
+    # десять минут тишины: накопленное истаяло
+    heard.note(1, 0.5, is_mic=True, now=600.0)
+    assert sum(heard.mic.values()) < ov.MIN_MIC_SECONDS, "затухание сработало"
+    assert ov.owner_voices(heard) == {1}, "но метка не гаснет"
+
+
+def test_до_порога_решения_нет_и_после_паузы_тоже():
+    """Липкость включается только после первого взятия порога."""
+    heard = ov.Heard(call=True)
+    heard.note(1, 3.0, is_mic=True, now=0.0)
+    assert ov.owner_voices(heard) == set()
+    heard.note(1, 2.0, is_mic=True, now=300.0)
+    assert ov.owner_voices(heard) == set(), "накопленное истаяло, порог не взят"
