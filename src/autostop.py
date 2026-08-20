@@ -12,13 +12,26 @@
 2. **Тишина после разговора** (`silence_s`, 15 минут): люди говорили и
    замолчали. Порог втрое больше, потому что в живой встрече пауза на чтение
    документа, тихое демо и раздумье — норма.
-3. **Потолок длительности** (`max_s`, 6 часов): страховка от «забыл
+3. **Тишина, когда собеседников не было слышно** (`alone_s`, 5 минут):
+   системный канал молчал всю запись, говорил только владелец. Пятнадцать
+   минут тут — перестраховка: если второй стороны нет, запись почти наверняка
+   забыта, а не «пауза на чтение документа».
+4. **Потолок длительности** (`max_s`, 6 часов): страховка от «забыл
    выключить». Записанное к этому моменту уже сохранено и разобрано, а
    продолжить можно новой кнопкой.
 
-Различать «один голос» и «двое и больше» мы пробовали и отказались (ревью
-18.08, DeepSeek): число голосов у нас — это число диаризационных МЕТОК, а не
-людей. В очной встрече без моделей диаризации все реплики идут одной меткой
+⚠️ **Граница правила 3 — очная встреча.** Признак «собеседников нет» берётся
+из КАНАЛА (системный звук молчал), и очный разговор, где все сидят в одной
+комнате и попадают в микрофон, для него выглядит так же, как диктофон. Порог
+поэтому не равен `no_speech_s`, а задаётся отдельно и поднимается одной
+строкой конфига: тем, у кого встречи очные, `alone_minutes: 15` возвращает
+прежнее поведение.
+
+Различать «один голос» и «двое и больше» по ДИАРИЗАЦИИ мы пробовали и
+отказались (ревью 18.08, DeepSeek): число голосов у нас — это число
+диаризационных МЕТОК, а не людей. Правило 3 стоит на другом признаке —
+канальном: системный звук либо нёс речь, либо нет, и это известно точно, без
+моделей. В очной встрече без моделей диаризации все реплики идут одной меткой
 канала, и живой разговор двоих выглядел бы как «один голос» — то есть получал
 бы самый агрессивный порог. Надёжно известно только одно: звучала речь или
 нет, — на этом и стоим.
@@ -43,6 +56,7 @@ DEFAULTS = {
     "enabled": True,
     "no_speech_minutes": 5.0,   # речи не было ни разу с начала записи
     "silence_minutes": 15.0,    # тишина после того, как разговор был
+    "alone_minutes": 5.0,       # то же, но собеседников не было слышно ни разу
     "max_hours": 6.0,           # потолок длительности (0 — без потолка)
     "warn_seconds": 60.0,       # предупреждение перед стопом
     "min_minutes": 2.0,         # раньше этого не трогаем запись вовсе
@@ -50,6 +64,7 @@ DEFAULTS = {
 
 NO_SPEECH = "no_speech"
 SILENCE = "silence"
+ALONE = "alone"
 LIMIT = "limit"
 
 
@@ -69,6 +84,8 @@ class Limits:
     enabled: bool = True
     no_speech_s: float = 300.0
     silence_s: float = 900.0
+    #: Тишина, когда системный канал молчал всю запись (собеседников не слышно).
+    alone_s: float = 300.0
     max_s: float = 21_600.0
     warn_s: float = 60.0
     min_s: float = 120.0
@@ -76,7 +93,7 @@ class Limits:
     @property
     def any_rule(self) -> bool:
         return self.enabled and (self.no_speech_s > 0 or self.silence_s > 0
-                                 or self.max_s > 0)
+                                 or self.alone_s > 0 or self.max_s > 0)
 
 
 def limits_from_cfg(cfg: dict) -> Limits:
@@ -102,6 +119,7 @@ def limits_from_cfg(cfg: dict) -> Limits:
 
     no_speech = num("no_speech_minutes") * 60
     silence = num("silence_minutes") * 60
+    alone = num("alone_minutes") * 60
     return Limits(
         enabled=not _falsy(raw.get("enabled", DEFAULTS["enabled"])),
         no_speech_s=no_speech,
@@ -109,6 +127,9 @@ def limits_from_cfg(cfg: dict) -> Limits:
         # перепутанные местами значения молча резали бы живой разговор раньше
         # пустой комнаты.
         silence_s=max(silence, no_speech) if silence else 0.0,
+        # Тот же порядок, что у silence_s: одинокая запись не должна резаться
+        # раньше пустой комнаты, а ноль по-прежнему выключает своё правило.
+        alone_s=max(alone, no_speech) if alone else 0.0,
         max_s=num("max_hours") * 3600,
         warn_s=num("warn_seconds"),
         min_s=num("min_minutes") * 60,
@@ -142,12 +163,15 @@ def _hours(seconds: float) -> str:
     return f"{h:.0f}" if abs(h - round(h)) < 0.05 else f"{h:.1f}"
 
 
-def decide(*, age_s: float, quiet_s: float, spoke: bool, limits: Limits) -> Decision:
+def decide(*, age_s: float, quiet_s: float, spoke: bool, limits: Limits,
+           alone: bool = False) -> Decision:
     """Пора ли предупредить или остановить запись.
 
     age_s — возраст записи по стенным часам; quiet_s — сколько длится тишина
     (по монотонным; если речи не было ни разу — с начала записи);
-    spoke — звучала ли распознанная речь за эту запись хоть раз.
+    spoke — звучала ли распознанная речь за эту запись хоть раз;
+    alone — за всю запись системный канал не нёс речи ни разу, то есть
+    собеседников слышно не было (признак канальный, диаризация не нужна).
     """
     if not limits.any_rule:
         return Decision()
@@ -167,7 +191,15 @@ def decide(*, age_s: float, quiet_s: float, spoke: bool, limits: Limits) -> Deci
                             f"идёт {_hours(limits.max_s)} ч", left)
 
     reason = SILENCE if spoke else NO_SPEECH
-    threshold = limits.silence_s if spoke else limits.no_speech_s
+    if not spoke:
+        threshold = limits.no_speech_s
+    elif alone:
+        # Говорил только владелец: пятнадцать минут тут — перестраховка,
+        # рассчитанная на паузу в разговоре, которого не было (правило 3).
+        reason = ALONE
+        threshold = limits.alone_s
+    else:
+        threshold = limits.silence_s
     if threshold > 0:
         left = threshold - quiet_s
         if left <= 0:
@@ -199,7 +231,7 @@ class Watch:
         self.asked_at: float | None = None
 
     def tick(self, *, now: float, age_s: float, quiet_s: float, spoke: bool,
-             last_speech_at: float | None = None) -> Decision:
+             last_speech_at: float | None = None, alone: bool = False) -> Decision:
         """Что делать на этом такте. now/last_speech_at — монотонные секунды."""
         if self.asked_at is not None:
             # Просили остановиться и не дождались ответа. Молчим mute_s, но
@@ -212,7 +244,8 @@ class Watch:
             else:
                 self.asked_at = None
 
-        d = decide(age_s=age_s, quiet_s=quiet_s, spoke=spoke, limits=self.limits)
+        d = decide(age_s=age_s, quiet_s=quiet_s, spoke=spoke, limits=self.limits,
+                   alone=alone)
         if d.action == "warn":
             if self.warned == d.reason:
                 return Decision()      # уже предупредили — не повторяемся

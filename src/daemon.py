@@ -841,8 +841,15 @@ def main():
                     # фильтра — две ветки считали по-разному (ревью 19.08).
                     # Границы — сырые, без pad-запаса: в запас попадает сосед.
                     if n is not None and n >= 0:
-                        heard = raw_piece if raw_piece is not None else piece
-                        heard_by_channel.note(n, len(heard) / hub.sr,
+                        # НЕ `heard`: этим именем выше по функции назван словарь
+                        # автостопа, и локальная переменная его затеняла. Питон
+                        # делает `heard` локальной для всего stt_loop — отметка
+                        # речи `heard["at"]` ниже падала UnboundLocalError, поток
+                        # STT умирал на первой же реплике, а автостоп через пять
+                        # минут глушил живую встречу, считая, что речи не было
+                        # (инцидент 20.08: встреча 08:57 обрезана на 09:02).
+                        voiced = raw_piece if raw_piece is not None else piece
+                        heard_by_channel.note(n, len(voiced) / hub.sr,
                                               is_mic=speaker == mic_label,
                                               now=time.monotonic())
                     if n is None:
@@ -2269,7 +2276,11 @@ def main():
                            age_s=time.time() - record_started_wall,
                            quiet_s=now - (spoken_at if spoken_at is not None else record_started),
                            spoke=bool(heard["spoke"]),
-                           last_speech_at=spoken_at)
+                           last_speech_at=spoken_at,
+                           # Собеседников слышно не было ни разу: канальный
+                           # признак, не диаризация. `call` ставится на первом
+                           # же куске речи с системного канала.
+                           alone=not heard_by_channel.call)
             if not d:
                 continue
             if d.action == "resumed":
