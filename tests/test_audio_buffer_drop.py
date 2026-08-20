@@ -32,6 +32,8 @@ def Hub(recording: bool = True, chunk_s: float = 3.0, overlap_s: float = 0.5):
     hub._sinks = {"mic": object()} if recording else {}
     hub.chunk_s = chunk_s
     hub.overlap_s = overlap_s
+    hub._running = True
+    hub.captures = []
     hub._lock = threading.Lock()
     hub.said = []
     hub.on_status = hub.said.append
@@ -179,3 +181,58 @@ def test_вытеснение_не_рвёт_порядок_для_потреби
     assert chunk is not None
     assert chunk[0] == SR * 5, "голова буфера не совпала с границей вытеснения"
     assert np.all(np.diff(chunk) == 1), "вытеснение разорвало порядок сэмплов"
+
+
+def test_четверть_секунды_не_повод_для_тревоги():
+    """Буфер дозревает кратно куску захвата, поэтому первое переполнение —
+    доли секунды. Строка «потеряно 0с», а тем более «звук не вернуть» из-за
+    неё — шум, который учит не читать предупреждения (ревью 20.08, GLM)."""
+    hub = Hub(recording=False)
+    hub._append("mic", _sec(hub.BUF_CAP_S))
+    hub._note_drop("mic", hub._append("mic", _sec(0.25)))
+
+    assert not hub.said, f"тревога из-за четверти секунды: {hub.said}"
+    assert hub._drops["mic"][0] == pytest.approx(0.25), "потеря должна копиться"
+
+
+def test_потери_копятся_до_заметного_и_тогда_сообщаются():
+    hub = Hub()
+    hub._append("mic", _sec(hub.BUF_CAP_S))
+    for _ in range(8):
+        hub._note_drop("mic", hub._append("mic", _sec(0.25)))
+
+    # Отчёт уходит, как только накопилась секунда, — остальное копится дальше
+    # и попадёт в следующее окно или в досказ на стопе.
+    assert len(hub.said) == 1, f"ожидали одну строку, получили {hub.said}"
+    assert "до 1с" in hub.said[0], hub.said[0]
+    assert hub._drops["mic"][2] == pytest.approx(2.0), "итог за встречу недосчитан"
+
+
+def test_хвост_потерь_доскажут_на_стопе(monkeypatch):
+    """Окно отчёта — полминуты; всё, что накопилось после последней строки,
+    иначе исчезает вместе со встречей."""
+    hub = Hub()
+    monkeypatch.setattr(hub, "_finalize_recordings", lambda: None)
+    hub._append("mic", _sec(hub.BUF_CAP_S))
+    hub._note_drop("mic", hub._append("mic", _sec(4.0)))
+    hub.said.clear()
+    hub._note_drop("mic", hub._append("mic", _sec(6.0)))   # в окно не попало
+
+    hub.stop()
+
+    assert hub.said, "хвост потерь исчез вместе со встречей"
+    assert "6с" in hub.said[0], hub.said[0]
+
+
+def test_на_стопе_не_пугаем_потерей_записи(monkeypatch):
+    """`stop()` обнуляет sink'и, а `_pump` домалывает хвостовой кусок: без
+    проверки `_running` человек получал бы «звук не вернуть» поверх успешно
+    закрытой записи."""
+    hub = Hub(recording=True)
+    hub._append("mic", _sec(hub.BUF_CAP_S))
+    hub._running = False
+    hub._sinks = {}                      # так делает _finalize_recordings
+    hub._note_drop("mic", hub._append("mic", _sec(3.0)))
+
+    assert hub.said
+    assert "не вернуть" not in hub.said[0], f"ложная тревога на стопе: {hub.said[0]}"
