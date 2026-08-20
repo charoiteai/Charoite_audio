@@ -54,7 +54,15 @@ Check the first transcript lines as well as the timer:
 - missing system audio must be fixed now — it cannot be reconstructed later
   from the microphone alone;
 - a “disk recording disabled” warning means the live transcript continues,
-  but there is no safety audio for an accurate rebuild.
+  but there is no safety audio for an accurate rebuild;
+- a “hints are falling behind: up to N s of live audio lost” line means
+  recognition cannot keep up with the conversation and the live transcript
+  missed part of the speech. While disk recording is on, the meeting itself is
+  safe: the final transcript is rebuilt from the audio and will be complete —
+  only the in-meeting hints suffer. If the same line says recording is not
+  running, that audio is gone for good and needs attention right away: free up
+  disk space, close heavy apps. Falling behind usually means a busy machine —
+  another model resident in memory, a build, a video export.
 
 The main window may be closed; state remains in the menu bar. Quitting the app
 during a recording asks for confirmation because it stops the meeting.
