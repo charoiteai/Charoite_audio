@@ -14,13 +14,39 @@ def test_hook_runs_with_env(tmp_path):
     assert out.read_text().strip() == "2026-07-27_0900"
 
 
-def test_hook_absent_is_noop(tmp_path):
+def test_hook_absent_is_noop(tmp_path, monkeypatch):
+    """Хук не задан — процесс не запускается вовсе.
+
+    Раньше тест просто звал функцию и ничего не проверял: он был зелёным и
+    при `subprocess.run("")`, то есть не держал ни одного обещания.
+    """
+    started: list = []
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: started.append(a))
+
     graph_updater.run_post_hook({"sufler": {}}, tmp_path / "t.txt", "s")
+
+    assert not started, "без команды в конфиге запускать нечего"
 
 
 def test_hook_failure_does_not_raise(tmp_path):
+    """Ненулевой код хука не валит конвейер — встреча уже обработана."""
     cfg = {"sufler": {"post_meeting_hook": "exit 7"}}
-    graph_updater.run_post_hook(cfg, tmp_path / "t.txt", "s")
+
+    assert graph_updater.run_post_hook(cfg, tmp_path / "t.txt", "s") is None
+
+
+def test_hook_timeout_does_not_hang_the_pipeline(tmp_path, monkeypatch):
+    """Зависший хук обязан быть прибит по таймауту, а не держать конвейер."""
+    import subprocess as _sp
+
+    def boom(*a, **k):
+        assert k.get("timeout"), "хук без таймаута повесил бы конвейер навсегда"
+        raise _sp.TimeoutExpired(cmd="hook", timeout=k["timeout"])
+
+    monkeypatch.setattr("subprocess.run", boom)
+    cfg = {"sufler": {"post_meeting_hook": "sleep 99999"}}
+
+    assert graph_updater.run_post_hook(cfg, tmp_path / "t.txt", "s") is None
 
 
 def test_hook_does_not_get_the_api_key(tmp_path, monkeypatch):
