@@ -10,6 +10,7 @@
 import pathlib
 import sys
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -29,6 +30,10 @@ def Hub(recording: bool = True, chunk_s: float = 3.0, overlap_s: float = 0.5):
     hub.sr = SR
     hub._bufs = {"mic": np.zeros(0, dtype=np.float32)}
     hub._drops = {}
+    hub._sys_speech_until = 0.0
+    hub.on_frame = None
+    hub._last_frame = {}
+    hub._watch_streams = lambda: None
     hub._sinks = {"mic": object()} if recording else {}
     hub.chunk_s = chunk_s
     hub.overlap_s = overlap_s
@@ -261,3 +266,51 @@ def test_незаписанный_хвост_на_стопе_честно_объ
 
     assert hub.said
     assert "не вернуть" in hub.said[0], f"потеря выдана за сохранённую: {hub.said[0]}"
+
+
+def test_хвост_после_остановки_договаривает_сам_поток():
+    """Досказ в `stop()` не покрывает то, что поток захвата домолол уже
+    ПОСЛЕ него: окно отчёта — полминуты, и такая потеря не звучала никогда.
+    Теперь досказ есть и в конце `_pump` (ревью 20.08, круг 4).
+
+    Ключ теста — окно: обычный отчёт обязан ПРОМОЛЧАТЬ про хвост, иначе
+    проверяли бы не досказ, а рядовое сообщение.
+    """
+    import queue as _q
+    import threading as _th
+
+    hub = Hub()
+    hub._append("mic", _sec(hub.BUF_CAP_S))
+    hub._note_drop("mic", hub._append("mic", _sec(3.0)))   # первый отчёт
+    assert len(hub.said) == 1
+    hub.said.clear()
+
+    class Cap:
+        label = "mic"
+
+        def __init__(self):
+            self.q = _q.Queue()
+
+    cap = Cap()
+    cap.q.put(_sec(4.0))          # хвост: попадёт в окно отчёта и промолчит
+    hub.captures = [cap]
+    hub._running = True
+
+    t = _th.Thread(target=hub._pump, daemon=True)
+    t.start()
+    for _ in range(300):
+        if hub._drops["mic"][0] >= 4.0:
+            break
+        time.sleep(0.01)
+    assert not hub.said, "хвост попал в окно — рядовой отчёт обязан молчать"
+
+    hub._running = False          # так делает stop()
+    t.join(timeout=3)
+
+    assert not t.is_alive(), "поток захвата не завершился"
+    assert hub.said, "хвост, домолотый после остановки, не озвучен"
+    assert len(hub.said) == 1, f"досказ продублировался: {hub.said}"
+    assert "4с" in hub.said[0], hub.said[0]
+
+    hub._say_last_drops()         # повторный вызов из stop()
+    assert len(hub.said) == 1, "второй досказ выдал строку на пустом остатке"
