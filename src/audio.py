@@ -444,6 +444,7 @@ class AudioHub:
         self._last_frame: dict[str, float] = {}
         self._last_check = 0.0
         self._hung: set[str] = set()   # каналы, чей перезапуск завис — больше не трогаем
+        self._drops: dict[str, list[float]] = {}   # label → [всего секунд, когда сказали]
         self._sys_speech_until = 0.0   # окно эха: до этого момента динамики недавно звучали
         self._lock = threading.Lock()
         self._running = False
@@ -735,17 +736,11 @@ class AudioHub:
                         sink.write((np.clip(part, -1, 1) * 32767).astype("<i2").tobytes())
                     except Exception:  # noqa: BLE001 — диск кончился: живём без записи
                         self._sinks.pop(c.label, None)
-                with self._lock:
-                    buf = self._bufs[c.label]
-                    # Потолок буфера STT (~60с): живой потребитель забирает
-                    # звук каждые ~3с, а если поток STT умер — звук копился бы
-                    # в памяти до конца встречи (запись на диск идёт отдельно,
-                    # sink выше; аудит 14.08). Урезаем до половины потолка,
-                    # чтобы не резать по чуть-чуть на каждом чанке.
-                    cap = self.sr * 60
-                    if len(buf) >= cap:
-                        buf = buf[-(cap // 2):]
-                    self._bufs[c.label] = np.concatenate([buf, part])
+                dropped = self._append(c.label, part)
+                if dropped:
+                    # Вне лока: статус уходит в UI через колбэк демона, и
+                    # держать на нём аудиопоток нельзя.
+                    self._note_drop(c.label, dropped)
                 if self.on_frame is not None:
                     try:
                         self.on_frame(c.label, part)
@@ -813,6 +808,51 @@ class AudioHub:
                     self.on_status(msg)
                 except Exception:  # noqa: BLE001
                     pass
+
+    BUF_CAP_S = 60            # сколько живого звука держим в памяти на канал
+
+    def _append(self, label: str, part: np.ndarray) -> float:
+        """Дописать кусок в буфер STT; вернуть, сколько секунд пришлось выбросить.
+
+        Потолок нужен на случай мёртвого потребителя: запись на диск идёт
+        отдельным sink, а буфер иначе рос бы до конца встречи (аудит 14.08).
+
+        Режем РОВНО излишек. Прежнее «урезать до половины потолка»
+        выбрасывало полминуты чужой речи из-за одного медленного чанка —
+        молча, без строки в логе: офлайн-пересборка звук возвращала (он на
+        диске), а живая лента шла кусками. Это и была жалоба «переводит
+        кусками, не всю речь» (ревью 20.08, DeepSeek).
+        """
+        with self._lock:
+            buf = self._bufs[label]
+            cap = self.sr * self.BUF_CAP_S
+            dropped = 0.0
+            if len(buf) + len(part) > cap:
+                n = min(len(buf), len(buf) + len(part) - cap)
+                buf = buf[n:]
+                dropped = n / self.sr
+            self._bufs[label] = np.concatenate([buf, part])
+        return dropped
+
+    _DROP_REPORT_S = 30.0     # чаще — спам в ленте: отставание длится минутами
+
+    def _note_drop(self, label: str, seconds: float) -> None:
+        """Живая лента отстала — звук из буфера потерян безвозвратно.
+
+        Молчать здесь нельзя: человек видит рваные подсказки и считает, что
+        сломалось распознавание, хотя причина — медленный потребитель.
+        Запись на диск идёт отдельным sink и не страдает, поэтому финальная
+        стенограмма будет полной; ровно это и говорим.
+        """
+        st = self._drops.setdefault(label, [0.0, 0.0])
+        st[0] += seconds
+        now = time.time()
+        if now - st[1] < self._DROP_REPORT_S:
+            return
+        st[1] = now
+        self._say(f"⚠️ подсказки отстают: потеряно {st[0]:.0f}с живого звука "
+                  f"({label}). Запись на диск не пострадала — финальная "
+                  f"стенограмма будет полной")
 
     def _say(self, msg: str) -> None:
         """Статус в UI. Отказ страховочной записи пользователь обязан увидеть
