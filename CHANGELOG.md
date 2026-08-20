@@ -5,6 +5,14 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.55.2](https://github.com/charoiteai/Charoite_audio/compare/v0.55.1...v0.55.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* **diarize:** в звонке владелец — весь микрофон, а не доминирующий голос ([#356](https://github.com/charoiteai/Charoite_audio/issues/356)) ([04c4396](https://github.com/charoiteai/Charoite_audio/commit/04c43964bd710e8cacf6286150c27ffe89638dd5))
+* три Critical конвейера и потеря живого звука ([#355](https://github.com/charoiteai/Charoite_audio/issues/355)) ([3cfe6a3](https://github.com/charoiteai/Charoite_audio/commit/3cfe6a3eebdc8931916bfa56a15ff524ff8dba86))
+
 ## [0.55.1](https://github.com/charoiteai/Charoite_audio/compare/v0.55.0...v0.55.1) (2026-08-20)
 
 
