@@ -52,6 +52,23 @@ PHRASES_ZH = [
     ("玛丽亚在七月二十二日之前签好合同。", "玛丽亚在7月22日之前签好合同。"),
     ("下周一上午十点开会讨论集成方案。", "下周一上午10点开会讨论集成方案。"),
     ("认证还没有通过，风险在于时间表。", "认证还没有通过，风险在于时间表。"),
+    # Ниже — расширение до статистически осмысленного объёма (ревью 20.08:
+    # на четырёх фразах уровень значимости 0.05 недостижим в принципе, а
+    # удаление одной фразы переворачивает ранжирование движков).
+    ("预算增加了百分之十五，需要总监批准。", "预算增加了15%，需要总监批准。"),
+    ("服务器迁移安排在十月三号的晚上。", "服务器迁移安排在10月3号的晚上。"),
+    ("这个功能推迟到第四季度再上线。", "这个功能推迟到第四季度再上线。"),
+    ("客户要求延长试用期到三十天。", "客户要求延长试用期到30天。"),
+    ("我们需要重新评估这个方案的成本。", "我们需要重新评估这个方案的成本。"),
+    ("测试环境昨天下午两点崩溃了。", "测试环境昨天下午2点崩溃了。"),
+    ("请把会议纪要发给所有的参与者。", "请把会议纪要发给所有的参与者。"),
+    ("接口文档还差两个章节没有写完。", "接口文档还差2个章节没有写完。"),
+    ("第一阶段的目标是降低百分之二十的延迟。", "第一阶段的目标是降低20%的延迟。"),
+    ("安全审计报告下周三之前提交。", "安全审计报告下周三之前提交。"),
+    ("新员工的培训计划已经确定下来了。", "新员工的培训计划已经确定下来了。"),
+    ("这次故障影响了大约五千个用户。", "这次故障影响了大约5000个用户。"),
+    ("我们把并发数从一百提高到五百。", "我们把并发数从100提高到500。"),
+    ("产品经理希望在发布前再做一轮评审。", "产品经理希望在发布前再做一轮评审。"),
 ]
 PHRASES_EN = [
     ("We decided to go with YuPay, the fee is two point eight percent.",
@@ -142,6 +159,18 @@ def synth(text: str, lang: str, dest: pathlib.Path) -> bool:
     return dest.exists()
 
 
+def cer_best(spoken: str, expected: str, hypothesis: str) -> float:
+    """Лучший CER против ОБЕИХ форм эталона: цифровой и прописной.
+
+    Иначе бенч сравнивает не движки, а их настройки: у SenseVoice включён
+    ITN — он сам пишет «10点», — а Whisper отдаёт сырой декод «十点». Эталон
+    записан цифрами, и Whisper штрафовался за то, что распознал ПРАВИЛЬНО,
+    но не переписал числа. Одна такая фраза даёт CER 0.125 — больше, чем
+    весь наблюдавшийся разрыв между движками (ревью 20.08, DeepSeek).
+    """
+    return min(cer(expected, hypothesis), cer(spoken, hypothesis))
+
+
 def cer(reference: str, hypothesis: str) -> float:
     """Расстояние Левенштейна по символам, нормированное на длину эталона.
 
@@ -151,8 +180,17 @@ def cer(reference: str, hypothesis: str) -> float:
     import unicodedata
 
     def norm(s: str) -> str:
-        return "".join(c.lower() for c in s
-                       if not unicodedata.category(c).startswith(("P", "Z")))
+        # NFKC: полноширинные цифры и латиница («０», «Ａ») иначе не равны
+        # обычным, и движок получал бы штраф за форму знака.
+        s = unicodedata.normalize("NFKC", s)
+        out: list[str] = []
+        for i, c in enumerate(s):
+            if c == "." and 0 < i < len(s) - 1 and s[i - 1].isdigit() and s[i + 1].isdigit():
+                out.append(c)          # «2.8» ≠ «28»: десятичная точка — смысл,
+                continue               # а не пунктуация (ставка 2.8% против 28%)
+            if not unicodedata.category(c).startswith(("P", "Z")):
+                out.append(c.lower())
+        return "".join(out)
 
     ref, hyp = norm(reference), norm(hypothesis)
     if not ref:
@@ -198,7 +236,7 @@ def run(backend: str, lang: str, phrases: list[tuple[str, str]]) -> tuple[float,
                       "→ Универсальный доступ → Речь)")
                 continue
             text = engine.transcribe(audio, rate)
-            score = cer(expected, text)
+            score = cer_best(spoken, expected, text)
             total += score
             done += 1
             print(f"  CER {score:5.3f}  ← {text[:58]}")
