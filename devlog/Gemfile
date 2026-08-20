@@ -1,0 +1,10 @@
+# Зависимости девлога объявлены здесь, а не ставятся `gem install` в шаге
+# workflow: установка «на ходу» прячет, чем именно собирается страница, и
+# ломается в день, когда на rubygems выходит новая версия (zizmor:
+# adhoc-packages).
+source "https://rubygems.org"
+
+gem "jekyll", "4.3.4"
+gem "minima", "2.5.2"
+gem "jekyll-feed", "0.17.0"
+gem "jekyll-seo-tag", "2.8.0"

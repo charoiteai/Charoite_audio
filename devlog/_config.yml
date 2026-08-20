@@ -1,0 +1,19 @@
+title: Charoite devlog
+description: >-
+  Notes from building a fully local meeting assistant for macOS: speaker
+  diarization, on-device models, a knowledge graph that survives crashes.
+url: "https://charoiteai.github.io"
+baseurl: "/Charoite_audio"
+theme: minima
+plugins:
+  - jekyll-feed
+  - jekyll-seo-tag
+minima:
+  skin: auto
+  social_links:
+    - title: Source code
+      url: "https://github.com/charoiteai/Charoite_audio"
+      icon: github
+header_pages:
+  - about.md
+show_excerpts: true
