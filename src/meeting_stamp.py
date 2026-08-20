@@ -163,7 +163,17 @@ def resolve_stamp(rec_dir: pathlib.Path, stamp: str,
     core = _RE.match(stamp)
     if core is None or not rec_dir.is_dir():
         return stamp
-    minute = core.group(1)[:15]
+    head = core.group(1)
+    if len(head) != 15:
+        # Штамп посекундный — секунда встречи известна ТОЧНО, приблизительное
+        # имя искать незачем. Раньше сюда проваливался и он: своей записи нет
+        # (ретеншн удалил или крэш не дал дописать), в минуте остаётся одна
+        # чужая — и `len(found) == 1` объявлял её однозначной. Демон после
+        # краха поднимается за две секунды, то есть внутри той же минуты:
+        # разговор соседней встречи молча уезжал в чужую стенограмму, оттуда
+        # в граф и в память, без единого вопроса человеку (ревью 20.08, GLM).
+        return stamp
+    minute = head[:15]
     found: set[str] = set()
     for label in labels:
         for ext in extensions:
