@@ -1,0 +1,70 @@
+# Девлог собирается ИЗ main, а не лежит готовым в ветке gh-pages.
+#
+# Раньше источником была ветка со собранным сайтом: правишь в одном месте,
+# публикуется копия из другого, и разойтись они могут молча. Теперь правка
+# в devlog/ идёт обычным PR и после мёржа публикуется сама.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "devlog/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:      # руками — когда надо пересобрать без правок
+
+# Токену здесь нужно ровно два права: прочитать репозиторий и опубликовать
+# страницу. Ни contents:write, ни pull-requests.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Одна публикация за раз. Отменять идущую нельзя: оборванный деплой оставит
+# страницу в половинчатом состоянии.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: false
+      - name: Jekyll и плагины из _config.yml
+        run: |
+          gem install --no-document \
+            "jekyll:${JEKYLL_VERSION}" \
+            "minima:${MINIMA_VERSION}" \
+            "jekyll-feed:${JEKYLL_FEED_VERSION}" \
+            "jekyll-seo-tag:${JEKYLL_SEO_VERSION}"
+        env:
+          # Пины, как у всех гейтов проекта: сборка, которая тянет «последнее»
+          # с rubygems, ломается в день, когда меняется не наш код.
+          JEKYLL_VERSION: "4.3.4"
+          MINIMA_VERSION: "2.5.2"
+          JEKYLL_FEED_VERSION: "0.17.0"
+          JEKYLL_SEO_VERSION: "2.8.0"
+      - name: Сборка
+        run: jekyll build --source devlog --destination _site
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
