@@ -196,3 +196,20 @@ def test_молчание_вообще_остаётся_за_правилом_о
     limits = autostop.limits_from_cfg({})
     d = autostop.decide(age_s=400, quiet_s=310, spoke=False, limits=limits, alone=True)
     assert d.action == "stop" and d.reason == autostop.NO_SPEECH
+
+
+def test_признак_звонка_не_зависит_от_трекера_голосов():
+    """Модель диаризации в поставку не входит. Если признак «слышно
+    собеседников» ставить только когда трекер определил голос, обычная
+    удалённая встреча выглядит как разговор с самим собой — и правило alone
+    режет её впятеро раньше срока (ревью 20.08, локальная голова)."""
+    from owner_voice import Heard
+
+    heard = Heard()
+    # трекер не определился: голоса нет, но канал известен
+    heard.note(None, 0.0, is_mic=False)
+    assert heard.call, "речь с системного канала — это собеседник, даже без трекера"
+
+    свой = Heard()
+    свой.note(None, 0.0, is_mic=True)
+    assert not свой.call, "собственный микрофон признаком звонка не является"

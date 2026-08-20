@@ -20,11 +20,10 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "src" / "daemon.py"
 
 
-def _nested(fn: ast.FunctionDef, name: str) -> ast.FunctionDef | None:
-    for node in ast.walk(fn):
-        if isinstance(node, ast.FunctionDef) and node.name == name:
-            return node
-    return None
+def _nested_functions(fn: ast.FunctionDef) -> list[ast.FunctionDef]:
+    """Функции, определённые внутри данной (на любой глубине)."""
+    return [n for n in ast.walk(fn)
+            if isinstance(n, ast.FunctionDef) and n is not fn]
 
 
 def _rebound_names(fn: ast.FunctionDef) -> set[str]:
@@ -67,19 +66,41 @@ def _state_dicts(fn: ast.FunctionDef, skip: ast.FunctionDef) -> set[str]:
     return out
 
 
-def test_stt_loop_не_затеняет_состояние_внешней_функции():
+def test_вложенные_потоки_не_затеняют_состояние_внешней_функции():
+    """Проверяются ВСЕ вложенные функции, а не только stt_loop.
+
+    Ограничить проверку одним потоком значило бы ловить ровно тот случай,
+    который уже случился, и пропустить следующий в соседней функции
+    (ревью 20.08, локальная голова).
+    """
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
-    outer = next((f for f in ast.walk(tree)
-                  if isinstance(f, ast.FunctionDef) and _nested(f, "stt_loop")), None)
-    assert outer is not None, "не нашёл функцию, внутри которой живёт stt_loop"
-    loop = _nested(outer, "stt_loop")
+    outers = [f for f in ast.walk(tree)
+              if isinstance(f, ast.FunctionDef) and _nested_functions(f)]
+    assert outers, "не нашёл ни одной функции с вложенными"
 
-    state = _state_dicts(outer, loop)
-    assert "heard" in state, "словарь автостопа `heard` исчез — тест потерял предмет"
+    checked, bad = 0, []
+    for outer in outers:
+        for inner in _nested_functions(outer):
+            state = _state_dicts(outer, inner)
+            if not state:
+                continue
+            checked += 1
+            for name in sorted(state & _rebound_names(inner)):
+                bad.append(f"{outer.name} → {inner.name}: {name}")
 
-    collisions = sorted(state & _rebound_names(loop))
-    assert not collisions, (
-        "во вложенном stt_loop переприсвоены словари состояния внешней функции "
-        f"{collisions}: Python сделает эти имена локальными для всего потока, и "
+    assert checked, "тест потерял предмет: словарей состояния не нашлось"
+    assert not bad, (
+        "вложенная функция переприсваивает словарь состояния внешней: "
+        f"{bad}. Python сделает имя локальным для всей вложенной функции, и "
         "обращение по ключу упадёт UnboundLocalError — поток умрёт на первой "
-        "реплике (инцидент 20.08 с `heard`, встреча обрезана автостопом)")
+        "же итерации (инцидент 20.08 с `heard`: живая встреча обрезана "
+        "автостопом через пять минут)")
+
+
+def test_словарь_автостопа_на_месте():
+    """Страховка от того, что тест переживёт предмет проверки."""
+    tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
+    main = next(f for f in ast.walk(tree)
+                if isinstance(f, ast.FunctionDef) and f.name == "main")
+    loop = next(f for f in _nested_functions(main) if f.name == "stt_loop")
+    assert "heard" in _state_dicts(main, loop)

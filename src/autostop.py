@@ -194,8 +194,9 @@ def decide(*, age_s: float, quiet_s: float, spoke: bool, limits: Limits,
     if not spoke:
         threshold = limits.no_speech_s
     elif alone:
-        # Говорил только владелец: пятнадцать минут тут — перестраховка,
-        # рассчитанная на паузу в разговоре, которого не было (правило 3).
+        # Говорил только владелец: пятнадцать минут silence_s рассчитаны на
+        # паузу в разговоре, которого тут не было (правило 3, по умолчанию
+        # 5 минут — см. DEFAULTS["alone_minutes"]).
         reason = ALONE
         threshold = limits.alone_s
     else:
