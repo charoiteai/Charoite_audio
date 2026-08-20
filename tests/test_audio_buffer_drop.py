@@ -22,7 +22,7 @@ import audio  # noqa: E402
 SR = 16000
 
 
-def Hub(recording: bool = True):
+def Hub(recording: bool = True, chunk_s: float = 3.0, overlap_s: float = 0.5):
     """Настоящий AudioHub без __init__: устройства и потоки этой логике не
     нужны, а методы берём те же, что работают на встрече."""
     hub = audio.AudioHub.__new__(audio.AudioHub)
@@ -30,6 +30,8 @@ def Hub(recording: bool = True):
     hub._bufs = {"mic": np.zeros(0, dtype=np.float32)}
     hub._drops = {}
     hub._sinks = {"mic": object()} if recording else {}
+    hub.chunk_s = chunk_s
+    hub.overlap_s = overlap_s
     hub._lock = threading.Lock()
     hub.said = []
     hub.on_status = hub.said.append
@@ -139,3 +141,41 @@ def test_с_записью_на_диск_статус_успокаивает():
     hub._note_drop("mic", hub._append("mic", _sec(4.0)))
 
     assert "стенограмма будет полной" in hub.said[0]
+
+
+def test_потребитель_читает_буфер_без_дыр_и_перестановок():
+    """Единственная связка, которую не проверял никто: `_append` дописывает
+    в хвост, `_cut` режет с головы. Регрессия вроде «дописывать в голову»
+    или «резать с хвоста» прошла бы мимо обоих наборов тестов, а на встрече
+    дала бы перепутанные во времени реплики (ревью 20.08, DeepSeek)."""
+    hub = Hub()
+    # Пронумерованные сэмплы: по значению видно, какой кусок записи прочитан.
+    hub._append("mic", np.arange(SR * 10, dtype=np.float32))
+
+    first = hub._cut("mic")
+    second = hub._cut("mic")
+
+    assert first is not None and second is not None
+    need = int(SR * hub.chunk_s)
+    keep = int(SR * hub.overlap_s)
+    assert first[0] == 0, "первый чанк обязан начинаться с головы буфера"
+    assert np.all(np.diff(first) == 1), "порядок сэмплов внутри чанка нарушен"
+    # Хвост первого чанка обязан повториться в начале второго — это перехлёст,
+    # на нём держится склейка слов между чанками.
+    assert np.array_equal(first[need - keep:], second[:keep]), "перехлёст разъехался"
+    assert second[0] == need - keep, "между чанками дыра в записи"
+
+
+def test_вытеснение_не_рвёт_порядок_для_потребителя():
+    """После переполнения потребитель читает непрерывный кусок — пусть и без
+    самого старого звука."""
+    hub = Hub()
+    hub._append("mic", np.arange(SR * hub.BUF_CAP_S, dtype=np.float32))
+    dropped = hub._append("mic", np.arange(SR * hub.BUF_CAP_S,
+                                          SR * (hub.BUF_CAP_S + 5), dtype=np.float32))
+
+    assert dropped == pytest.approx(5.0)
+    chunk = hub._cut("mic")
+    assert chunk is not None
+    assert chunk[0] == SR * 5, "голова буфера не совпала с границей вытеснения"
+    assert np.all(np.diff(chunk) == 1), "вытеснение разорвало порядок сэмплов"
