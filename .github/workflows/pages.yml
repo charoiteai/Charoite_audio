@@ -39,23 +39,14 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.3"
-          bundler-cache: false
-      - name: Jekyll и плагины из _config.yml
-        run: |
-          gem install --no-document \
-            "jekyll:${JEKYLL_VERSION}" \
-            "minima:${MINIMA_VERSION}" \
-            "jekyll-feed:${JEKYLL_FEED_VERSION}" \
-            "jekyll-seo-tag:${JEKYLL_SEO_VERSION}"
-        env:
-          # Пины, как у всех гейтов проекта: сборка, которая тянет «последнее»
-          # с rubygems, ломается в день, когда меняется не наш код.
-          JEKYLL_VERSION: "4.3.4"
-          MINIMA_VERSION: "2.5.2"
-          JEKYLL_FEED_VERSION: "0.17.0"
-          JEKYLL_SEO_VERSION: "2.8.0"
+          # Версии объявлены в devlog/Gemfile — пинами, как все гейты
+          # проекта: сборка на «последнем с rubygems» ломается в тот день,
+          # когда меняется не наш код.
+          working-directory: devlog
+          bundler-cache: true
       - name: Сборка
-        run: jekyll build --source devlog --destination _site
+        working-directory: devlog
+        run: bundle exec jekyll build --destination ../_site
       - uses: actions/upload-pages-artifact@v4
         with:
           path: _site
