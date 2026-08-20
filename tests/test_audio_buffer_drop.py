@@ -130,7 +130,7 @@ def test_без_записи_на_диск_статус_не_утешает():
     полную стенограмму в этот момент хуже, чем молчать (ревью 20.08, GLM)."""
     hub = Hub(recording=False)
     hub._append("mic", _sec(hub.BUF_CAP_S))
-    hub._note_drop("mic", hub._append("mic", _sec(4.0)))
+    hub._note_drop("mic", hub._append("mic", _sec(4.0)), written=False)
 
     assert hub.said, "потеря звука обязана быть озвучена и без записи"
     assert "не вернуть" in hub.said[0], f"статус утешает впустую: {hub.said[0]}"
@@ -189,7 +189,7 @@ def test_четверть_секунды_не_повод_для_тревоги()
     неё — шум, который учит не читать предупреждения (ревью 20.08, GLM)."""
     hub = Hub(recording=False)
     hub._append("mic", _sec(hub.BUF_CAP_S))
-    hub._note_drop("mic", hub._append("mic", _sec(0.25)))
+    hub._note_drop("mic", hub._append("mic", _sec(0.25)), written=False)
 
     assert not hub.said, f"тревога из-за четверти секунды: {hub.said}"
     assert hub._drops["mic"][0] == pytest.approx(0.25), "потеря должна копиться"
@@ -198,13 +198,19 @@ def test_четверть_секунды_не_повод_для_тревоги()
 def test_потери_копятся_до_заметного_и_тогда_сообщаются():
     hub = Hub()
     hub._append("mic", _sec(hub.BUF_CAP_S))
-    for _ in range(8):
+    said_after = []
+    for i in range(8):
         hub._note_drop("mic", hub._append("mic", _sec(0.25)))
+        if i < 3:                         # накоплено меньше секунды
+            said_after.append(len(hub.said))
+    said_after = [max(said_after)] if said_after else [0]
 
     # Отчёт уходит, как только накопилась секунда, — остальное копится дальше
-    # и попадёт в следующее окно или в досказ на стопе.
+    # и попадёт в следующее окно или в досказ на стопе. Без порога первая же
+    # четверть секунды дала бы строку СРАЗУ: проверяем, что до неё молчали.
     assert len(hub.said) == 1, f"ожидали одну строку, получили {hub.said}"
     assert "до 1с" in hub.said[0], hub.said[0]
+    assert said_after[0] == 0, "строка ушла раньше, чем накопилась секунда"
     assert hub._drops["mic"][2] == pytest.approx(2.0), "итог за встречу недосчитан"
 
 
@@ -224,15 +230,34 @@ def test_хвост_потерь_доскажут_на_стопе(monkeypatch):
     assert "6с" in hub.said[0], hub.said[0]
 
 
-def test_на_стопе_не_пугаем_потерей_записи(monkeypatch):
-    """`stop()` обнуляет sink'и, а `_pump` домалывает хвостовой кусок: без
-    проверки `_running` человек получал бы «звук не вернуть» поверх успешно
-    закрытой записи."""
+def test_записанный_кусок_не_пугает_даже_после_финализации():
+    """`_finalize_recordings` обнуляет sink'и, но кусок, который УЖЕ записан,
+    в финальной стенограмме будет — пугать им нельзя.
+
+    Первая попытка закрыть эту ложную тревогу гардом по `_running` вышла
+    хуже болезни: она молчала и в обратном случае — когда `_pump` домолол
+    кусок ПОСЛЕ обнуления sink'ов, то есть на диск он не попал, а человек
+    читал «стенограмма будет полной» (ревью 20.08, круг 3, DeepSeek).
+    Поэтому судим по факту записи этого куска, а не по состоянию словаря.
+    """
     hub = Hub(recording=True)
     hub._append("mic", _sec(hub.BUF_CAP_S))
     hub._running = False
     hub._sinks = {}                      # так делает _finalize_recordings
-    hub._note_drop("mic", hub._append("mic", _sec(3.0)))
+    hub._note_drop("mic", hub._append("mic", _sec(3.0)), written=True)
 
     assert hub.said
-    assert "не вернуть" not in hub.said[0], f"ложная тревога на стопе: {hub.said[0]}"
+    assert "не вернуть" not in hub.said[0], f"ложная тревога: {hub.said[0]}"
+
+
+def test_незаписанный_хвост_на_стопе_честно_объявлен():
+    """Обратная сторона: кусок, домолотый после обнуления sink'ов, на диск не
+    попал — молчать о нём нельзя."""
+    hub = Hub(recording=True)
+    hub._append("mic", _sec(hub.BUF_CAP_S))
+    hub._running = False
+    hub._sinks = {}
+    hub._note_drop("mic", hub._append("mic", _sec(3.0)), written=False)
+
+    assert hub.said
+    assert "не вернуть" in hub.said[0], f"потеря выдана за сохранённую: {hub.said[0]}"

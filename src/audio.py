@@ -556,13 +556,19 @@ class AudioHub:
         встал STT на семьдесят секунд, ожил — человек так и не узнал, что
         десять секунд разговора живая лента не увидела (ревью 20.08, GLM).
         """
-        for label, st in self._drops.items():
-            if st[0] < 1.0:
-                continue
+        with self._lock:
+            # Снимок под локом, разговор с человеком — после: `_pump` ещё жив
+            # (его останавливает вызывающий сразу за нами), а `_say` уходит в
+            # UI через колбэк демона, и держать на нём захват нельзя.
+            tail = []
+            for label, st in self._drops.items():
+                if st[0] >= 1.0:
+                    tail.append((label, st[0], st[2]))
+                    st[0] = 0.0
+        for label, recent, total in tail:
             self._say(f"⚠️ подсказки отставали и в конце встречи: не увидено "
-                      f"ещё до {math.ceil(st[0])}с ({label}, всего за встречу "
-                      f"до {math.ceil(st[2])}с)")
-            st[0] = 0.0
+                      f"ещё до {math.ceil(recent)}с ({label}, всего за встречу "
+                      f"до {math.ceil(total)}с)")
 
     def _open_sinks(self):
         """Сырое аудио каждого канала — на диск сразу: обрыв STT/демона больше не
@@ -749,16 +755,22 @@ class AudioHub:
                 got = True
                 self._last_frame[c.label] = time.time()
                 sink = self._sinks.get(c.label)
+                written = sink is not None
                 if sink is not None:
                     try:
                         sink.write((np.clip(part, -1, 1) * 32767).astype("<i2").tobytes())
                     except Exception:  # noqa: BLE001 — диск кончился: живём без записи
                         self._sinks.pop(c.label, None)
+                        written = False
                 dropped = self._append(c.label, part)
                 if dropped:
                     # Вне лока: статус уходит в UI через колбэк демона, и
-                    # держать на нём аудиопоток нельзя.
-                    self._note_drop(c.label, dropped)
+                    # держать на нём аудиопоток нельзя. Факт записи берём
+                    # ОТСЮДА, а не из `_sinks` позже: между этим местом и
+                    # отчётом стоп успевает обнулить словарь, и правдивое
+                    # «не вернуть» превращалось бы в ложное «будет полной»
+                    # (ревью 20.08, круг 3, DeepSeek).
+                    self._note_drop(c.label, dropped, written)
                 if self.on_frame is not None:
                     try:
                         self.on_frame(c.label, part)
@@ -767,6 +779,11 @@ class AudioHub:
             self._watch_streams()
             if not got:
                 continue
+        # Хвост, домолотый уже после `stop()`, иначе не озвучивает никто:
+        # окно отчёта — полминуты, а досказ в `stop()` к этому моменту уже
+        # отработал. Метод идемпотентен, двойной строки не будет
+        # (ревью 20.08, круг 3, DeepSeek).
+        self._say_last_drops()
 
     def _restart_guarded(self, c):
         """Перезапустить канал, не подставив под удар конвейер.
@@ -857,7 +874,7 @@ class AudioHub:
 
     _DROP_REPORT_S = 30.0     # чаще — спам в ленте: отставание длится минутами
 
-    def _note_drop(self, label: str, seconds: float) -> None:
+    def _note_drop(self, label: str, seconds: float, written: bool = True) -> None:
         """Живая лента отстала — звук из буфера потерян.
 
         Молчать здесь нельзя: человек видит рваные подсказки и считает, что
@@ -870,10 +887,14 @@ class AudioHub:
         выброшенный звук потерян НАВСЕГДА, и человеку надо действовать сейчас,
         а не читать успокоительную строку (ревью 20.08, GLM).
         """
-        st = self._drops.setdefault(label, [0.0, 0.0, 0.0])
-        st[0] += seconds
-        st[2] += seconds
         now = time.time()
+        with self._lock:
+            # Под локом: `_say_last_drops` читает и обнуляет те же счётчики из
+            # потока `stop()`, пока `_pump` ещё жив, — без замка хвост потерь
+            # мог потеряться или удвоиться (ревью 20.08, локальная голова).
+            st = self._drops.setdefault(label, [0.0, 0.0, 0.0])
+            st[0] += seconds
+            st[2] += seconds
         if now - st[1] < self._DROP_REPORT_S:
             return
         if st[0] < 1.0:
@@ -886,18 +907,20 @@ class AudioHub:
         # Копящаяся сумма без сброса не даёт прочитать, отстаём ли ПРЯМО
         # сейчас: строки «потеряно 300с / 600с / 900с» описывают одно и то
         # же отставание. Говорим интервал, итог — справочно.
-        recent, st[0] = st[0], 0.0
+        with self._lock:
+            recent, st[0] = st[0], 0.0
+            total = st[2]
         # «до Xс», а не «Xс»: часть вытесненного — перехлёст, который `_cut`
         # уже отдал потребителю в прошлом чанке, так что цифра сверху.
         # Округление ВВЕРХ: первое переполнение выбрасывает четверть секунды,
         # и «потеряно 0с» — предупреждение, отрицающее само себя
         # (ревью 20.08, DeepSeek).
         head = (f"⚠️ подсказки отстают: потеряно до {math.ceil(recent)}с живого "
-                f"звука ({label}, всего за встречу до {math.ceil(st[2])}с). ")
-        if self._running and self._sinks.get(label) is None:
-            # `self._running` обязателен: `stop()` обнуляет `_sinks`, а `_pump`
-            # успевает домолоть хвостовой кусок — и человек получал бы «звук не
-            # вернуть» поверх успешно закрытой записи (ревью 20.08, GLM).
+                f"звука ({label}, всего за встречу до {math.ceil(total)}с). ")
+        if not written:
+            # По факту записи ЭТОГО куска, а не по состоянию `_sinks` сейчас.
+            # Гард по `_running` (первая попытка закрыть ту же ложную тревогу)
+            # был хуже: он молчал и там, где кусок действительно не записан.
             self._say(head + "ЗАПИСЬ НА ДИСК НЕ ИДЁТ — этот звук не вернуть "
                              "ни пересборкой, ни повтором")
         else:
