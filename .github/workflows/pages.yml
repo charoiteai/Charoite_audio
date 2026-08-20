@@ -1,0 +1,66 @@
+# Девлог собирается ИЗ main, а не лежит готовым в ветке gh-pages.
+#
+# Раньше источником была ветка со собранным сайтом: правишь в одном месте,
+# публикуется копия из другого, и разойтись они могут молча. Теперь правка
+# в devlog/ идёт обычным PR и после мёржа публикуется сама.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "devlog/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:      # руками — когда надо пересобрать без правок
+
+# Права — на уровне ЗАДАЧ, а не всего файла: сборке достаточно чтения, а
+# публиковать умеет только вторая. Глобальный `pages: write` давал бы это
+# право и шагу, который гоняет чужой код из rubygems (zizmor: overly broad
+# permissions).
+permissions:
+  contents: read
+
+# Одна публикация за раз. Отменять идущую нельзя: оборванный деплой оставит
+# страницу в половинчатом состоянии.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          # Версии объявлены в devlog/Gemfile — пинами, как все гейты
+          # проекта: сборка на «последнем с rubygems» ломается в тот день,
+          # когда меняется не наш код.
+          working-directory: devlog
+          bundler-cache: true
+      - name: Сборка
+        working-directory: devlog
+        run: bundle exec jekyll build --destination ../_site
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write        # собственно публикация
+      id-token: write     # OIDC-токен, которым deploy-pages подтверждает себя
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
