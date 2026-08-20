@@ -48,6 +48,14 @@ def _rebound_names(fn: ast.FunctionDef) -> set[str]:
                 for sub in tgt.elts:
                     if isinstance(sub, ast.Name) and sub.id not in freed:
                         out.add(sub.id)
+    # Локальным имя делает не только присваивание: `if (heard := ...)` и
+    # `except E as heard` — тот же эффект (ревью 20.08, GLM M5).
+    for node in ast.walk(fn):
+        if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+            if node.target.id not in freed:
+                out.add(node.target.id)
+        elif isinstance(node, ast.ExceptHandler) and node.name and node.name not in freed:
+            out.add(node.name)
     return out
 
 
@@ -65,7 +73,12 @@ def _state_dicts(fn: ast.FunctionDef, skip: ast.FunctionDef) -> set[str]:
     ради которого вложенный поток и обращается к внешнему имени.
     """
     ACCUMULATORS = {"Heard", "defaultdict", "dict", "Counter", "deque"}
-    inner = {id(n) for n in ast.walk(skip)}
+    # Исключаем тела ВСЕХ вложенных функций, а не только проверяемой:
+    # локальный словарь соседнего потока — не состояние внешней, и засчитывать
+    # его значило бы красить тест на первой же коллизии имён между потоками
+    # (ревью 20.08, GLM M5).
+    nested = [n for n in ast.walk(fn) if isinstance(n, ast.FunctionDef) and n is not fn]
+    inner = {id(n) for f in nested for n in ast.walk(f)}
     out: set[str] = set()
     for node in ast.walk(fn):
         if id(node) in inner:
