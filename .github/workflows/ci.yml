@@ -30,6 +30,9 @@ env:
   MYPY_VERSION: "2.3.1"
   PYYAML_VERSION: "6.0.3"
   PYTEST_VERSION: "9.1.1"
+  # Тесты поднимают настоящие потоки и ждут их join: один зависший
+  # съедал бы весь потолок джоба, а в логе не было бы видно, какой.
+  PYTEST_TIMEOUT_VERSION: "2.4.0"
 
 jobs:
   lint:
@@ -45,6 +48,11 @@ jobs:
         run: pipx run "ruff==${RUFF_VERSION}" check --select E9,F src/
       - name: Byte-compile all sources
         run: python -m compileall -q src/
+      # Покрытие такого не ловит: тест без единой проверки покрывает строки
+      # на сто процентов и зелёный всегда — и именно поэтому опаснее дыры,
+      # он гасит тревогу видом галочки в CI.
+      - name: Тест обязан быть способен упасть
+        run: python scripts/check_test_assertions.py tests
       - name: Shellcheck (все .sh)
         run: |
           sudo apt-get install -y -q shellcheck >/dev/null
@@ -107,6 +115,6 @@ jobs:
           done
           exit 1
       - name: Deps
-        run: pip -q install . "pytest==${PYTEST_VERSION}"
+        run: pip -q install . "pytest==${PYTEST_VERSION}" "pytest-timeout==${PYTEST_TIMEOUT_VERSION}"
       - name: pytest
         run: python -m pytest tests/ -q

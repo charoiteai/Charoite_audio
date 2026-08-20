@@ -18,6 +18,9 @@ permissions:
 # Пин pytest — тот же, что в ci.yml (обновлять парой; аудит DeepSeek 16.08).
 env:
   PYTEST_VERSION: "9.1.1"
+  # Тесты поднимают настоящие потоки и ждут их join: один зависший
+  # съедал бы весь потолок джоба, а в логе не было бы видно, какой.
+  PYTEST_TIMEOUT_VERSION: "2.4.0"
 
 jobs:
   pytest:
@@ -41,7 +44,7 @@ jobs:
       # было причиной пятидневного красного — в нём не хватало sounddevice, а
       # список зависимостей живёт в pyproject и меняется без оглядки на CI.
       - name: Deps
-        run: pip -q install . "pytest==${PYTEST_VERSION}"
+        run: pip -q install . "pytest==${PYTEST_VERSION}" "pytest-timeout==${PYTEST_TIMEOUT_VERSION}"
       - run: python -m pytest tests/ -q
   swift:
     # macos-15, а не 14: SystemAudioCapture использует API микрофона
