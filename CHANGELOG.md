@@ -5,6 +5,14 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.55.1](https://github.com/charoiteai/Charoite_audio/compare/v0.55.0...v0.55.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **search:** китайский запрос не находил ничего — ни в бенче, ни в приложении ([#352](https://github.com/charoiteai/Charoite_audio/issues/352)) ([7c53007](https://github.com/charoiteai/Charoite_audio/commit/7c53007ac41b28b5e873010316aec744ae01a630))
+* **stt:** поток умирал на первой реплике — имя heard затенило словарь автостопа ([#354](https://github.com/charoiteai/Charoite_audio/issues/354)) ([5dbd1bc](https://github.com/charoiteai/Charoite_audio/commit/5dbd1bc160bd95c2431f52bcb77eec655ac6a845))
+
 ## [0.55.0](https://github.com/charoiteai/Charoite_audio/compare/v0.54.0...v0.55.0) (2026-08-19)
 
 
