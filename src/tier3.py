@@ -36,6 +36,7 @@ import re
 import shutil
 
 import llm
+import live_gate
 import nli
 
 REPR_LIMIT = 350          # NLI держит 512 токенов на пару — имя+суть с запасом
@@ -309,6 +310,7 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
     if not nli.ready():
         return out
     out["ran"] = True
+    out["stopped"] = False
 
     pairs = []
     for i in range(len(cores)):
@@ -322,6 +324,15 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
 
     dups, maybe_dups, nests = [], [], []
     for c, a, b in pairs:
+        # Потолок ночи — внутри суда, а не только между графами: у типовой
+        # установки граф ОДИН, и полный воскресный прогон (десятки тысяч
+        # пар, NLI в один поток) шёл бы часами мимо потолка (круг-2 по
+        # PR #363, GLM). Каждая пара — отдельный вызов NLI, естественная
+        # точка останова; частичный результат помечается stopped, и
+        # вызывающий не двигает отметку --since-last.
+        if live_gate.night_is_over():
+            out["stopped"] = True
+            break
         try:
             ab = nli.entail_prob(a["repr"], b["repr"])
             ba = nli.entail_prob(b["repr"], a["repr"])

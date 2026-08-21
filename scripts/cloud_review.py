@@ -26,6 +26,8 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import functools
 import hashlib
 import os
 import pathlib
@@ -42,12 +44,15 @@ import deps  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
+import charoite_paths  # noqa: E402
 import cloud  # noqa: E402
 import graph_updater  # noqa: E402
 import privacy  # noqa: E402
 
 BACKUP_DIR = ".cloud_backup"
-BACKUP_KEEP = 10            # столько последних бэкапов держим (как в tier3)
+# Снимков держим ровно один — срез ТЕКУЩЕЙ правки (решение владельца 21.08:
+# «хранить 1 срез»; десять полных копий графа не пригодились ни разу, а
+# весили 1.7 ГБ и 48K файлов). Ротация — в backup_graph, без констант.
 TIMEOUT = 30 * 60           # разбор длинной встречи идёт минуты, но не часы
 MIN_REPORT = 60             # страховка от «ok» и пустой строки
 
@@ -127,9 +132,49 @@ def changed_since(before: dict[str, str], graph: pathlib.Path) -> list[pathlib.P
     return touched
 
 
+def backup_root(graph: pathlib.Path) -> pathlib.Path:
+    """Каталог со снимками этого графа — в данных Чароита, не в графе."""
+    # root — корень ДАННЫХ этой установки (CHAROITE_ROOT), а не папка кода:
+    # у вложенной установки они разные, и снимки обязаны лечь к данным.
+    return charoite_paths.graph_backups(graph, BACKUP_DIR.lstrip("."), root=ROOT)
+
+
+def _clone(src: pathlib.Path, dst: pathlib.Path) -> bool:
+    """Скопировать файл клоном APFS: copy-on-write, ноль байт на диске.
+
+    Снимок берётся с графа целиком, а меняет облако единицы файлов — то есть
+    девять десятых каждой копии байт в байт повторяют предыдущую. На APFS за
+    это платить не нужно: `clonefile` делает независимый файл, который делит
+    блоки с оригиналом, пока кто-то из двоих не изменится. Правка графа идёт
+    через `tmp.replace()`, то есть создаёт новый inode, — снимок она не
+    трогает даже теоретически. Жёсткие ссылки такой гарантии не дают: они бы
+    протекли, запиши кто-нибудь заметку на месте.
+
+    False — клон не вышел (не APFS, другой том, старая система): вызывающий
+    делает обычную копию.
+    """
+    try:
+        rc = _libsystem().clonefile(os.fsencode(str(src)), os.fsencode(str(dst)), 0)
+    except (OSError, AttributeError):
+        return False
+    return rc == 0
+
+
+@functools.lru_cache(maxsize=1)
+def _libsystem():
+    """libSystem с clonefile; None-безопасно — AttributeError поймает _clone."""
+    return ctypes.CDLL("libSystem.dylib", use_errno=True)
+
+
 def backup_graph(graph: pathlib.Path, stamp: str) -> pathlib.Path:
-    """Копия файлов графа перед правкой. Обещание PRIVACY — кодом."""
-    dest = graph / BACKUP_DIR / stamp
+    """Копия файлов графа перед правкой. Обещание PRIVACY — кодом.
+
+    Снимок лежит ВНЕ графа: граф живёт в iCloud, и полная копия на каждую
+    правку превращалась в десятки тысяч файлов, которые система гоняла в
+    облако вместо того, чтобы отдать процессор живой записи (21.08).
+    """
+    root = charoite_paths.secure_dir(backup_root(graph))
+    dest = root / stamp
     dest.mkdir(parents=True, exist_ok=True)
     for p in graph.rglob("*"):
         if not p.is_file():
@@ -138,11 +183,28 @@ def backup_graph(graph: pathlib.Path, stamp: str) -> pathlib.Path:
             continue
         target = dest / p.resolve().relative_to(graph.resolve())
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(p, target)
-    old = sorted((graph / BACKUP_DIR).iterdir(), reverse=True)[BACKUP_KEEP:]
-    for stale in old:
-        shutil.rmtree(stale, ignore_errors=True)
+        if not _clone(p, target):
+            shutil.copy2(p, target)
     return dest
+
+
+def rotate_snapshots(root: pathlib.Path, keep: pathlib.Path) -> None:
+    """Один срез: удалить все снимки, кроме своего. Зовётся В КОНЦЕ run().
+
+    В backup_graph ротации больше нет намеренно: два воркера одного графа
+    (встречи ближе 30-минутного TIMEOUT) иначе съедали снимки друг друга —
+    сортировка по имени убивала свежий при штампе новее, «все кроме dest» —
+    чужой живой (круг-1 и круг-2 по PR #363: GLM + DeepSeek). Пока сверка
+    границ воркера не закончилась, его снимок не трогает никто, включая
+    соседей: каждый ротирует только ПОСЛЕ собственного enforce. Полная
+    защита от конкуренции — замок графа, карточка №40.
+    """
+    if not root.is_dir():
+        return
+    for stale in root.iterdir():
+        if stale == keep or not stale.is_dir():
+            continue        # чужие файлы в каталоге — не наши, не трогаем
+        shutil.rmtree(stale, ignore_errors=True)
 
 
 def restore(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path) -> bool:
@@ -168,6 +230,10 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
     обязаны убрать, иначе запрет действует только на то, что существовало
     до запуска.
     """
+    # Снимок мог исчезнуть между созданием и сверкой (конкурентный воркер
+    # до карточки №40): без копии «откат» превращается в unlink. Не судим.
+    if not backup.is_dir():
+        return [], [], -1
     reverted, removed = [], []
     touched = changed_since(before, graph)
     for path in touched:
@@ -188,7 +254,9 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
             continue
         if restore(path, graph, backup):
             reverted.append(path.name)
-        elif path.exists():
+        elif path.exists() and backup.is_dir():
+            # вторая проверка — TOCTOU: снимок мог исчезнуть уже ПОСРЕДИ
+            # сверки; без копии удалять нельзя (круг-2 по PR #363, DS)
             path.unlink()
             removed.append(path.name)
     return reverted, removed, len(touched)
@@ -330,7 +398,14 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         else:
             lf.write(f"[cloud-review] ревизия НЕ сохранена (код {code}, "
                      f"{len(text)} знаков) — см. {rev.name}.partial\n")
-        if may_edit and backup is not None:
+        if may_edit and backup is not None and not backup.exists():
+            # Снимок исчез (конкурентная ротация соседнего воркера — замок
+            # графа это №40). Без копии enforce не откатывает, а УДАЛЯЕТ:
+            # restore видит пустоту и path.unlink(). Честнее не трогать
+            # файлы вовсе и сказать об этом громко.
+            lf.write("[cloud-review] СНИМОК ИСЧЕЗ — границы не сверяю, "
+                     "файлы не трогаю; проверь правки руками\n")
+        elif may_edit and backup is not None:
             reverted, removed, touched = enforce_boundaries(before, graph, backup)
             lf.write(f"[cloud-review] правок графа: {touched}"
                      + (f", откатано запрещённых: {', '.join(reverted)}"
@@ -341,6 +416,9 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # папки, и созданную здесь копию сверка приняла бы за правку облака.
         if published:
             deliver_review(rev, transcript, graph, stamp, lf)
+        if backup is not None:
+            # ротация — самым последним: свой снимок жил до конца сверки
+            rotate_snapshots(backup_root(graph), keep=backup)
     return 0 if published else 1
 
 

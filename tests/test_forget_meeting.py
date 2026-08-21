@@ -379,3 +379,29 @@ def test_logs_of_a_seconds_stamped_meeting_are_found_by_the_minute(tmp_path):
     for f in mine:
         assert f in plan.delete, f"{f.name} переживает забывание посекундной встречи"
     assert theirs not in plan.delete
+
+def test_new_place_snapshot_copies_are_forgotten_too(tmp_path, monkeypatch):
+    """Снимки уехали из графа в данные (21.08) — «забыть» обязано дойти и
+    туда: и файлы встречи, и строки хроники в копиях Ядер. Круг-2 по
+    PR #363 (GLM): фикс был закорочен на глобальный ROOT и не имел ни
+    одного теста, способного упасть."""
+    import charoite_paths
+    root, graph = _world(tmp_path)
+    monkeypatch.setattr(forget, "ROOT", root)
+    snap = charoite_paths.graph_backups(
+        graph, "cloud_backup", root=root) / "2026-07-16_0300"
+    (snap / "Встречи").mkdir(parents=True)
+    (snap / "Встречи" / f"{STAMP}.md").write_text("копия узла", encoding="utf-8")
+    (snap / "Ядра").mkdir()
+    (snap / "Ядра" / "Тема.md").write_text(
+        f"# Тема\n\n## Хроника\n- [[Встречи/{STAMP}]] — решение\n",
+        encoding="utf-8")
+
+    forget.apply(forget.plan(STAMP, root, graph), yes=True)
+
+    assert not (snap / "Встречи" / f"{STAMP}.md").exists(), \
+        "узел встречи остался в снимке нового места"
+    core = (snap / "Ядра" / "Тема.md").read_text(encoding="utf-8")
+    assert f"Встречи/{STAMP}" not in core, \
+        "строка хроники осталась в копии Ядра нового места"
+

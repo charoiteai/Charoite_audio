@@ -109,3 +109,22 @@ def test_cap_lets_night_go_to_work_in_cramped_conditions(tmp_path):
     assert waited is True
     assert sum(c.slept) == 180
     assert any("в тесноте" in m for m in said), "о работе в тесноте должен сказать лог"
+
+
+def test_no_deadline_means_night_never_ends(monkeypatch):
+    """Переменной нет — потолка нет: ручной прогон не должен обрываться."""
+    monkeypatch.delenv(live_gate.NIGHTLY_UNTIL_ENV, raising=False)
+    assert live_gate.night_is_over() is False
+
+
+def test_night_is_over_after_the_deadline(monkeypatch):
+    """Ночная работа обязана кончаться ночью (21.08: прогон 04:16 → 11:36)."""
+    monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, "1000")
+    assert live_gate.night_is_over(now=lambda: 1001.0) is True
+    assert live_gate.night_is_over(now=lambda: 999.0) is False
+
+
+def test_garbage_deadline_does_not_break_the_run(monkeypatch):
+    """Мусор в переменной — не повод рвать ночь на середине."""
+    monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, "завтра")
+    assert live_gate.night_is_over() is False

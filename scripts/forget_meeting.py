@@ -25,7 +25,9 @@
     <граф>/.cloud_backup/*/…        те же файлы встречи в снимках облачной
                                     ревизии: бэкап графа копирует его целиком,
                                     и без этой строки «забыть» оставляло бы
-                                    стенограмму лежать в десяти копиях рядом
+                                    стенограмму лежать в копиях рядом
+    backups/<граф>-<хеш>/cloud_backup/  те же снимки в НОВОМ месте (вне
+                                    iCloud, с 21.08) — и файлы, и строки хроники
 
 Что правится (не удаляется):
     строки хроники в Ядрах, которые ссылались на эту встречу, — уходят вместе
@@ -71,6 +73,26 @@ DOCS_DIR = pathlib.Path("Документация") / "Стенограммы в
 BACKUP_DIR = ".forget_backup"
 CLOUD_BACKUP_DIR = ".cloud_backup"      # снимки графа перед облачной правкой
 REMOVED_NOTE = "(встреча удалена)"
+
+
+def _in_cloud_snapshot(path: pathlib.Path) -> bool:
+    """Лежит ли файл внутри снимка облачной ревизии.
+
+    Мест два: до 21.08 снимки жили в графе (`.cloud_backup`), теперь — в
+    данных (`backups/<граф>-<хеш>/cloud_backup`); старые каталоги внешних
+    установок переносятся один раз вручную (см. заметки релиза). Признак —
+    принадлежность известным корням, а не имя сегмента: пользовательская
+    папка `cloud_backup` в графе не должна лишать файлы страховочной копии
+    (круг по PR #363: qwen + GLM + DeepSeek).
+    """
+    if CLOUD_BACKUP_DIR in path.parts:          # старое место, имя с точкой
+        return True
+    try:
+        return path.resolve().is_relative_to(
+            (ROOT / charoite_paths.BACKUPS_DIR).resolve())
+    except (OSError, ValueError):
+        return False
+
 
 # «- [[Встречи/2026-07-15_1400]] — выбрали ЮPay» — строка хроники целиком.
 _LINE = "- "
@@ -259,12 +281,19 @@ def plan(stamp: str, root: pathlib.Path,
         p.delete += _with_stamp(g / DOCS_DIR, stamp, suffix=".md")
         p.delete += _archive_folders(g, stamp)
 
-        # Снимки облачной ревизии копируют граф целиком, то есть каждая из
-        # последних десяти правок держит свою копию узла, стенограммы и
-        # архива этой встречи. «Забыть» обязано дойти и туда — иначе оно
+        # Снимки облачной ревизии копируют граф целиком; срез теперь один,
+        # но у установок до переноса каталогов может быть несколько — обходим
+        # все, что найдём. «Забыть» обязано дойти и туда — иначе оно
         # переименовывает файл, а не убирает встречу.
-        cloud = g / CLOUD_BACKUP_DIR
-        if cloud.is_dir():
+        # Мест два: снимки уехали из графа в данные (21.08, чтобы iCloud не
+        # гонял их в облако), но у установок, где перенос ещё не сделан, они
+        # лежат по-старому внутри графа. Забывание обязано дойти до обоих —
+        # молча пропустить старое место значит оставить встречу в копиях.
+        for cloud in (charoite_paths.graph_backups(
+                          g, CLOUD_BACKUP_DIR.lstrip("."), root=root),
+                      g / CLOUD_BACKUP_DIR):
+            if not cloud.is_dir():
+                continue
             for snap in sorted(d for d in cloud.iterdir() if d.is_dir()):
                 node_copy = snap / MEETINGS_DIR / f"{stamp}.md"
                 if node_copy.exists():
@@ -276,7 +305,15 @@ def plan(stamp: str, root: pathlib.Path,
         # целиком, а запись в неё после удаления — FileNotFoundError.
         doomed = {q.resolve() for q in p.delete}
         doomed_dirs = [q.resolve() for q in p.delete if q.is_dir()]
-        for f in sorted(g.rglob("*.md")):
+        # Хроники правим и в СНИМКАХ нового места: rglob по графу их больше
+        # не видит (снимки уехали из графа), а строка «[[Встречи/…]] — …»
+        # в копии ядра — такой же след встречи, как в самом ядре (круг по
+        # PR #363, GLM+DeepSeek: старое место правилось, новое — нет).
+        snap = charoite_paths.graph_backups(
+            g, CLOUD_BACKUP_DIR.lstrip("."), root=root)
+        editable = sorted(g.rglob("*.md")) + (
+            sorted(snap.rglob("*.md")) if snap.is_dir() else [])
+        for f in editable:
             real = f.resolve()
             if real in doomed or BACKUP_DIR in f.parts:
                 continue
@@ -339,9 +376,11 @@ def apply(p: Plan, yes: bool = False) -> bool:
         elif path.exists():
             path.unlink()
     for path, text in p.edit.items():
-        # копии внутри .cloud_backup правим (там те же строки хроники), но
-        # бэкап бэкапа не снимаем: он воскресил бы то, что человек забывает
-        if CLOUD_BACKUP_DIR not in path.parts:
+        # копии внутри снимка правим (там те же строки хроники), но бэкап
+        # бэкапа не снимаем: он воскресил бы то, что человек забывает.
+        # Имён два: старое `.cloud_backup` внутри графа и новое `cloud_backup`
+        # в данных — снимки уехали из iCloud 21.08.
+        if not _in_cloud_snapshot(path):
             _backup(path, p.stamp)
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(text, encoding="utf-8")

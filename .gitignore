@@ -29,3 +29,5 @@ app-android/.kotlin/
 # репозитории нет. Дважды уезжал в коммит вместе с `git add tests/` и ронял
 # сбор тестов в CI. Лежит на диске, в историю не попадает.
 tests/test_questions.py
+backups/
+app-ios/build/

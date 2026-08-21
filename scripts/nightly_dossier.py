@@ -104,7 +104,8 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
     entries, built, skipped = [], 0, 0
     отказы = 0   # модель не ответила: тема осталась без разбора
 
-    for theme, members in sorted(cl.items(), key=lambda kv: -len(kv[1])):
+    themes = sorted(cl.items(), key=lambda kv: -len(kv[1]))
+    for ti, (theme, members) in enumerate(themes):
         path = folder / f"{theme}.md"
         fp = dossier.fingerprint(members, files)
         old_fp = dossier.read_fingerprint(path)
@@ -135,6 +136,20 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
         # Утренняя встреча посреди хвоста ночи: пока суфлёр слушает, модель
         # его — досье подождёт (с потолком, чтобы ночь не стала днём).
         live_gate.wait_while_live(ROOT, what="досье", cap=3600)
+        if live_gate.night_is_over():
+            print("  ⏹ время ночного прогона вышло — остальные темы завтра")
+            # Индекс от потолка не худеет: оставшиеся темы остаются в нём
+            # записями с диска — как темы сверх лимита. Голый break отдавал
+            # write_index посещённый префикс, и _index/_ИНДЕКС терял темы —
+            # регресс бага 17.08 (круг по PR #363, GLM).
+            skipped += len(themes) - ti   # сводка не врёт про хвост (круг-2, DS)
+            for late_theme, late_members in themes[ti:]:
+                late_path = folder / f"{late_theme}.md"
+                if late_path.exists():
+                    entries.append(_index_entry_from_disk(
+                        late_theme, late_members, late_path,
+                        dossier.fingerprint(late_members, files), today))
+            break
         t0 = time.time()
         body = ""
         for attempt in (1, 2):          # вторая попытка чуть холоднее
