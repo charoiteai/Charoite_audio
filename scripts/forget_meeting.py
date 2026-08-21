@@ -90,7 +90,7 @@ def _in_cloud_snapshot(path: pathlib.Path) -> bool:
     try:
         return path.resolve().is_relative_to(
             (ROOT / charoite_paths.BACKUPS_DIR).resolve())
-    except OSError:
+    except (OSError, ValueError):
         return False
 
 
@@ -281,16 +281,16 @@ def plan(stamp: str, root: pathlib.Path,
         p.delete += _with_stamp(g / DOCS_DIR, stamp, suffix=".md")
         p.delete += _archive_folders(g, stamp)
 
-        # Снимки облачной ревизии копируют граф целиком, то есть каждая из
-        # последних десяти правок держит свою копию узла, стенограммы и
-        # архива этой встречи. «Забыть» обязано дойти и туда — иначе оно
+        # Снимки облачной ревизии копируют граф целиком; срез теперь один,
+        # но у установок до переноса каталогов может быть несколько — обходим
+        # все, что найдём. «Забыть» обязано дойти и туда — иначе оно
         # переименовывает файл, а не убирает встречу.
         # Мест два: снимки уехали из графа в данные (21.08, чтобы iCloud не
         # гонял их в облако), но у установок, где перенос ещё не сделан, они
         # лежат по-старому внутри графа. Забывание обязано дойти до обоих —
         # молча пропустить старое место значит оставить встречу в копиях.
         for cloud in (charoite_paths.graph_backups(
-                          g, CLOUD_BACKUP_DIR.lstrip("."), root=ROOT),
+                          g, CLOUD_BACKUP_DIR.lstrip("."), root=root),
                       g / CLOUD_BACKUP_DIR):
             if not cloud.is_dir():
                 continue
@@ -310,7 +310,7 @@ def plan(stamp: str, root: pathlib.Path,
         # в копии ядра — такой же след встречи, как в самом ядре (круг по
         # PR #363, GLM+DeepSeek: старое место правилось, новое — нет).
         snap = charoite_paths.graph_backups(
-            g, CLOUD_BACKUP_DIR.lstrip("."), root=ROOT)
+            g, CLOUD_BACKUP_DIR.lstrip("."), root=root)
         editable = sorted(g.rglob("*.md")) + (
             sorted(snap.rglob("*.md")) if snap.is_dir() else [])
         for f in editable:

@@ -142,6 +142,7 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
             # записями с диска — как темы сверх лимита. Голый break отдавал
             # write_index посещённый префикс, и _index/_ИНДЕКС терял темы —
             # регресс бага 17.08 (круг по PR #363, GLM).
+            skipped += len(themes) - ti   # сводка не врёт про хвост (круг-2, DS)
             for late_theme, late_members in themes[ti:]:
                 late_path = folder / f"{late_theme}.md"
                 if late_path.exists():

@@ -185,17 +185,26 @@ def backup_graph(graph: pathlib.Path, stamp: str) -> pathlib.Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         if not _clone(p, target):
             shutil.copy2(p, target)
-    # Ротация: всё, кроме ТОЛЬКО ЧТО созданного, и только каталоги.
-    # Прежняя сортировка по имени штампа с KEEP=1 удаляла свежий снимок,
-    # если рядом лежал штамп новее (импорт старой встречи, ретрай, два
-    # воркера), — и enforce_boundaries оставался без копии: вместо отката
-    # файлы УДАЛЯЛИСЬ (круг по PR #363: GLM и DeepSeek независимо, Critical).
-    # Семантика «один срез» = «срез текущей правки», без арифметики.
+    return dest
+
+
+def rotate_snapshots(root: pathlib.Path, keep: pathlib.Path) -> None:
+    """Один срез: удалить все снимки, кроме своего. Зовётся В КОНЦЕ run().
+
+    В backup_graph ротации больше нет намеренно: два воркера одного графа
+    (встречи ближе 30-минутного TIMEOUT) иначе съедали снимки друг друга —
+    сортировка по имени убивала свежий при штампе новее, «все кроме dest» —
+    чужой живой (круг-1 и круг-2 по PR #363: GLM + DeepSeek). Пока сверка
+    границ воркера не закончилась, его снимок не трогает никто, включая
+    соседей: каждый ротирует только ПОСЛЕ собственного enforce. Полная
+    защита от конкуренции — замок графа, карточка №40.
+    """
+    if not root.is_dir():
+        return
     for stale in root.iterdir():
-        if stale == dest or not stale.is_dir():
+        if stale == keep or not stale.is_dir():
             continue        # чужие файлы в каталоге — не наши, не трогаем
         shutil.rmtree(stale, ignore_errors=True)
-    return dest
 
 
 def restore(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path) -> bool:
@@ -221,6 +230,10 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
     обязаны убрать, иначе запрет действует только на то, что существовало
     до запуска.
     """
+    # Снимок мог исчезнуть между созданием и сверкой (конкурентный воркер
+    # до карточки №40): без копии «откат» превращается в unlink. Не судим.
+    if not backup.is_dir():
+        return [], [], -1
     reverted, removed = [], []
     touched = changed_since(before, graph)
     for path in touched:
@@ -241,7 +254,9 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
             continue
         if restore(path, graph, backup):
             reverted.append(path.name)
-        elif path.exists():
+        elif path.exists() and backup.is_dir():
+            # вторая проверка — TOCTOU: снимок мог исчезнуть уже ПОСРЕДИ
+            # сверки; без копии удалять нельзя (круг-2 по PR #363, DS)
             path.unlink()
             removed.append(path.name)
     return reverted, removed, len(touched)
@@ -401,6 +416,9 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # папки, и созданную здесь копию сверка приняла бы за правку облака.
         if published:
             deliver_review(rev, transcript, graph, stamp, lf)
+        if backup is not None:
+            # ротация — самым последним: свой снимок жил до конца сверки
+            rotate_snapshots(backup_root(graph), keep=backup)
     return 0 if published else 1
 
 

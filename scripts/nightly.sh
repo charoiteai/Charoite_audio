@@ -36,6 +36,8 @@ export PYTHONUNBUFFERED=1
 # (круг по PR #363, GLM). Не число — молча берём дефолт.
 NIGHTLY_MAX_H=${NIGHTLY_MAX_H:-4}
 case "$NIGHTLY_MAX_H" in (""|*[!0-9]*) NIGHTLY_MAX_H=4;; esac
+# 08/09 — все цифры, но bash счёл бы их восьмеричными и упал; 10# — десятичное
+NIGHTLY_MAX_H=$((10#$NIGHTLY_MAX_H))
 export CHAROITE_NIGHTLY_UNTIL=$(( $(date +%s) + NIGHTLY_MAX_H * 3600 ))
 rc=0
 STARTED=$(date '+%F %T')

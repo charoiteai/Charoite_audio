@@ -122,20 +122,42 @@ def test_same_name_graphs_from_different_vaults_do_not_mix(tmp_path):
     assert a != b
 
 
-def test_rotation_never_eats_current_snapshot_or_foreign_files(tmp_path, monkeypatch):
-    """Круг по PR #363 (GLM + DeepSeek, Critical): сортировка по имени штампа
-    при «одном срезе» удаляла ТОЛЬКО ЧТО созданный снимок, если рядом лежал
-    штамп новее (импорт старой встречи, ретрай), — enforce_boundaries
-    оставался без копии и вместо отката УДАЛЯЛ файлы."""
+def test_backup_graph_does_not_rotate_and_rotation_is_separate(tmp_path, monkeypatch):
+    """Круг-1 и круг-2 по PR #363 (GLM + DeepSeek, Critical): ротация внутри
+    backup_graph съедала снимок соседнего воркера, чья сверка ещё шла, —
+    без копии enforce_boundaries вместо отката УДАЛЯЛ файлы. Теперь
+    backup_graph только создаёт, а rotate_snapshots зовётся в конце run()
+    и не трогает ни свой срез, ни чужие файлы."""
     g = _graph(tmp_path)
     monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
     root = cloud_review.backup_root(g)
-    root.mkdir(parents=True)
-    (root / "2026-12-31_2359").mkdir()          # «более новый» штамп соседа
-    (root / "заметка-пользователя.txt").write_text("не снимок", encoding="utf-8")
 
+    first = cloud_review.backup_graph(g, "2026-12-31_2359")   # «сосед» со штампом новее
+    (root / "заметка-пользователя.txt").write_text("не снимок", encoding="utf-8")
     dest = cloud_review.backup_graph(g, "2026-08-21_1200")
 
-    assert dest.exists(), "ротация съела только что созданный снимок"
-    assert not (root / "2026-12-31_2359").exists(), "чужой срез не ротирован"
+    assert first.exists() and dest.exists(), (
+        "backup_graph не смеет ротировать: чужая сверка ещё идёт")
+
+    cloud_review.rotate_snapshots(root, keep=dest)
+    assert dest.exists(), "ротация съела свой срез"
+    assert not first.exists(), "чужой срез не ротирован после сверки"
     assert (root / "заметка-пользователя.txt").exists(), "ротация трогает не-каталоги"
+
+
+def test_enforce_without_snapshot_refuses_to_judge(tmp_path, monkeypatch):
+    """Снимок исчез (конкурентная ротация до карточки №40) — сверка обязана
+    отказаться, а не удалять: restore видит пустоту, и «откат» превращался
+    в unlink файлов графа (круг-2 по PR #363, DeepSeek — TOCTOU)."""
+    g = _graph(tmp_path)
+    before = cloud_review.snapshot(g)
+    protected = g / "Встречи-архив"
+    protected.mkdir()
+    created = protected / "подделка.md"
+    created.write_text("создано облаком в защищённой папке", encoding="utf-8")
+
+    reverted, removed, touched = cloud_review.enforce_boundaries(
+        before, g, tmp_path / "нет-такого-снимка")
+
+    assert (reverted, removed, touched) == ([], [], -1)
+    assert created.exists(), "без снимка сверка удалила файл — ровно старый Critical"

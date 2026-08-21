@@ -75,8 +75,13 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
     # Отметку двигаем только после состоявшегося прогона: без NLI-модели или с
     # лежащей Ollama ревизия молча возвращает пустой результат, и сдвинутая
     # отметка вычеркнула бы эти ядра из фокуса навсегда.
-    if r["ran"]:
+    if r["ran"] and not r.get("stopped"):
         _save_stamp(graph, started)
+    elif r.get("stopped"):
+        # Ревизию оборвал потолок ночи: судимое досмотрено, отметка стоит
+        # на месте — завтра инкремент возьмёт те же свежие ядра заново.
+        print(f"{graph.name}: ревизия остановлена потолком ночи — "
+              "отметка не сдвинута", flush=True)
     n = sum(len(r[k]) for k in ("dups", "nests", "border"))
     took = time.time() - started
     if not r["ran"]:
