@@ -19,11 +19,37 @@
 from __future__ import annotations
 
 import fcntl
+import os
 import pathlib
 import time
 from typing import Callable
 
 LOCK_NAME = "daemon.lock"
+
+#: До какого момента (unix-время) ночному прогону разрешено работать.
+#: Выставляет `scripts/nightly.sh`; пусто — потолка нет.
+NIGHTLY_UNTIL_ENV = "CHAROITE_NIGHTLY_UNTIL"
+
+
+def night_is_over(now: Callable[[], float] = time.time) -> bool:
+    """Вышло ли время, отведённое ночному прогону.
+
+    Ночная работа обязана кончаться ночью. 21.08 прогон стартовал в 04:16 и
+    в 11:36 всё ещё держал машину: `wait_for_idle` спрашивают один раз на
+    старте, когда всё свободно, а дальше семь часов никто не смотрит на
+    часы. Шаги идут по темам, и прерваться между ними ничего не стоит:
+    несделанное соберётся следующей ночью, а недобранная встреча — нет.
+
+    Пауза на живую запись (`wait_while_live`) сюда не входит: она не
+    двигает потолок, потому что и она сама, и он считаются от одних часов.
+    """
+    raw = os.environ.get(NIGHTLY_UNTIL_ENV)
+    if not raw:
+        return False
+    try:
+        return now() > float(raw)
+    except ValueError:
+        return False        # мусор в переменной — не повод рвать прогон
 
 
 def lock_path(root: pathlib.Path) -> pathlib.Path:
