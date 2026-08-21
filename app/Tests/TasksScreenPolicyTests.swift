@@ -1,0 +1,39 @@
+import XCTest
+@testable import CharoiteApp
+
+/// Экран задач по макету MOBILE_2026-08: сводка и корзины сроков.
+final class TasksScreenPolicyTests: XCTestCase {
+
+    // 20 августа: «до 13.08» просрочено, «до 25.08» — ближайшая неделя.
+    private var now: Date {
+        var c = DateComponents(); c.year = 2026; c.month = 8; c.day = 20
+        return Calendar.current.date(from: c)!
+    }
+
+    func testSummarySplitsOverdueOpenDone() {
+        let s = TasksScreenPolicy.summary([
+            ("Прислать список — до 13.08", false),   // просрочено
+            ("Согласовать доступ — до 25.08", false), // открыто (скоро)
+            ("Собрать статистику", false),            // открыто (без срока)
+            ("Завести ветку", true),                  // сделано
+        ], now: now)
+        XCTAssertEqual(s, .init(overdue: 1, open: 2, done: 1),
+                       "три числа обязаны не пересекаться")
+    }
+
+    func testBucketsFollowDueStatusAndDoneGoesLast() {
+        func b(_ text: String, done: Bool = false) -> TasksScreenPolicy.DueBucket {
+            TasksScreenPolicy.bucket(text: text, done: done, now: now)
+        }
+        XCTAssertEqual(b("отчёт — до 13.08"), .overdue)
+        XCTAssertEqual(b("созвон — до 25.08"), .week)
+        XCTAssertEqual(b("ревизия — до 15.01"), .later,
+                       "январь из августа — следующий год, не просрочка")
+        XCTAssertEqual(b("без даты вовсе"), .undated)
+        XCTAssertEqual(b("сделано — до 13.08", done: true), .done,
+                       "сделанному сроку нечего требовать — корзина одна")
+        // порядок секций на экране = порядок кейсов: горящее сверху
+        XCTAssertLessThan(TasksScreenPolicy.DueBucket.overdue,
+                          TasksScreenPolicy.DueBucket.done)
+    }
+}
