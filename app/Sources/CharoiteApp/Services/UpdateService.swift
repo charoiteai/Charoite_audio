@@ -238,11 +238,29 @@ final class UpdateService: ObservableObject {
             }
 
             stage = .verifying
-            let published = try? await string(assets["Charoite.app.zip.sha256"])
+            // Манифест берём СЫРЫМИ байтами: подпись владельца стоит на файле
+            // как он есть, и любой trim до проверки разошёлся бы с ней.
+            let manifest = try? await raw(assets["Charoite.app.zip.sha256"])
+            let published = manifest.flatMap { String(data: $0, encoding: .utf8) }
             guard Self.checksumMatches(expected: published, actual: sum) else {
                 throw Fail(L.t("контрольная сумма не совпала — установку отменил",
                                "checksum mismatch — installation cancelled",
                                "校验和不匹配 —— 已取消安装"))
+            }
+            // Якорь №1 (карточка №24): сумма из того же релиза ловит битую
+            // загрузку, но не подмену — кто дотянулся до релиза, подписал бы
+            // и её. Манифест обязан нести подпись ключом владельца, которого
+            // нет ни в репозитории, ни в секретах CI.
+            guard let manifest,
+                  let sigAsset = assets["Charoite.app.zip.sha256.sig"],
+                  let sigRaw = try? await raw(sigAsset),
+                  let sig = UpdateAuthenticity.decodeSignature(sigRaw),
+                  UpdateAuthenticity.manifestSignatureValid(manifest: manifest,
+                                                            signature: sig) else {
+                throw Fail(L.t(
+                    "у выпуска нет верной подписи манифеста — установку отменил",
+                    "the release has no valid manifest signature — installation cancelled",
+                    "该发布缺少有效的清单签名 —— 已取消安装"))
             }
 
             // Загрузка могла идти минуты, и за это время могла начаться
@@ -262,6 +280,14 @@ final class UpdateService: ObservableObject {
                 throw Fail(L.t("в архиве нет приложения",
                                "no app inside the archive",
                                "压缩包内没有应用"))
+            }
+            // Якорь №2: подпись Apple нашей командой. Собрать бандл с ней
+            // нельзя даже с полным доступом к CI — сертификат выдаёт Apple.
+            guard UpdateAuthenticity.bundleSignatureValid(at: newApp) else {
+                throw Fail(L.t(
+                    "подпись скачанного приложения не наша — установку отменил",
+                    "the downloaded app is not signed by us — installation cancelled",
+                    "下载的应用签名不符 —— 已取消安装"))
             }
 
             let script = work.appendingPathComponent("replace.sh")
@@ -305,10 +331,10 @@ final class UpdateService: ObservableObject {
         return out
     }
 
-    private func string(_ url: URL?) async throws -> String? {
+    private func raw(_ url: URL?) async throws -> Data? {
         guard let url else { return nil }
         let (data, _) = try await URLSession.shared.data(from: url)
-        return String(data: data, encoding: .utf8)
+        return data
     }
 
     /// Скачивание с процентом и подсчёт суммы отдельным проходом.
