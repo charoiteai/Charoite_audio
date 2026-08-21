@@ -75,3 +75,30 @@ one-time; security-scoped bookmarks survive restarts.
 The app talks to nothing but your own iCloud Drive folders. No
 accounts, no telemetry, no third-party services. Recordings you delete
 from the folders are gone — there is no hidden copy.
+
+## TestFlight
+
+Сборка и загрузка — облачной подписью через ключ App Store Connect API
+(роль App Manager; ключ НЕ в репозитории):
+
+    export DEVELOPMENT_TEAM=<team id>
+    xcodegen generate
+    xcodebuild -project CharoiteiOS.xcodeproj -scheme CharoiteiOS \
+      -destination 'generic/platform=iOS' \
+      -archivePath build/CharoiteiOS.xcarchive archive \
+      -allowProvisioningUpdates \
+      -authenticationKeyPath ~/.config/charoite/AuthKey_<KEY_ID>.p8 \
+      -authenticationKeyID <KEY_ID> -authenticationKeyIssuerID <ISSUER_ID>
+    xcodebuild -exportArchive -archivePath build/CharoiteiOS.xcarchive \
+      -exportOptionsPlist ExportOptions.plist -exportPath build/export \
+      -allowProvisioningUpdates \
+      -authenticationKeyPath ~/.config/charoite/AuthKey_<KEY_ID>.p8 \
+      -authenticationKeyID <KEY_ID> -authenticationKeyIssuerID <ISSUER_ID>
+
+`destination: upload` в ExportOptions.plist грузит билд прямо в TestFlight.
+Разовые предварительные шаги: bundle id регистрируется через ASC API
+(POST /v1/bundleIds — нужен ключ с ролью App Manager, ключ роли Developer
+получает 403), а ЗАПИСЬ ПРИЛОЖЕНИЯ создаётся только руками в ASC
+(App Store Connect → Apps → «+» → New App); без неё экспорт падает с
+«Error Downloading App Information». `ITSAppUsesNonExemptEncryption: false`
+в Info.plist избавляет каждый билд от ручного ответа про шифрование.
