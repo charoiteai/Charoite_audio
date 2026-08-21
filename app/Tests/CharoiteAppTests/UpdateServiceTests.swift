@@ -40,7 +40,9 @@ final class UpdateServiceTests: XCTestCase {
             .deletingLastPathComponent()
         let source = try String(contentsOf: root.appendingPathComponent(
             "app/Sources/CharoiteApp/Services/UpdateService.swift"), encoding: .utf8)
-        let lastAwait = try XCTUnwrap(source.range(of: "let published = try? await string"))
+        // последний await перед preflight теперь — скачивание архива: манифест
+        // и подпись читаются ДО него (круг по PR #366)
+        let lastAwait = try XCTUnwrap(source.range(of: "let sum = try await download("))
         let afterAwait = source[lastAwait.upperBound...]
         let preflight = try XCTUnwrap(afterAwait.range(of:
             "Self.refusalReason(recording: SuflerService.shared.hasActiveLifecycle"))
