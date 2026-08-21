@@ -26,7 +26,43 @@ enum UpdateAuthenticity {
     static let teamRequirement =
         "anchor apple generic and certificate leaf[subject.OU] = \"AR7PDJQNR4\""
 
-    /// Подписан ли манифест (сырые байты .sha256-файла) ключом владельца.
+    /// Версия, которую удостоверяет подписанный манифест: первая строка
+    /// формата "<version>  <sha256>". nil — формат не тот (старый голый хеш
+    /// больше не принимается: он не привязан к версии и позволял реплей
+    /// старого релиза под новым тегом — круг по PR #366, GLM + DeepSeek).
+    static func manifestVersion(_ manifest: Data) -> String? {
+        guard let text = String(data: manifest, encoding: .utf8) else { return nil }
+        let line = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        let cols = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        guard cols.count == 2, cols[1].count == 64 else { return nil }
+        return String(cols[0])
+    }
+
+    /// Хеш, который удостоверяет манифест: второй столбец первой строки.
+    static func manifestChecksum(_ manifest: Data) -> String? {
+        guard let text = String(data: manifest, encoding: .utf8) else { return nil }
+        let line = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        let cols = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        guard cols.count == 2, cols[1].count == 64 else { return nil }
+        return cols[1].lowercased()
+    }
+
+    /// Держит ли связка версий против даунгрейда и реплея.
+    ///
+    /// Круг по PR #366 (GLM + DeepSeek независимо): подпись над голым хешом
+    /// позволяла реплей — атакующий с правом записи в релизы кладёт СТАРУЮ
+    /// честную тройку (zip + манифест + подпись) под НОВЫЙ тег, isNewer
+    /// смотрит на тег, и клиент откатывается на версию без якорей. Теперь
+    /// подписанный манифест несёт версию, и она обязана совпасть с тегом
+    /// и быть новее установленной.
+    static func versionBindingOK(manifestVersion: String?,
+                                 tag: String, current: String) -> Bool {
+        guard let manifestVersion else { return false }
+        return manifestVersion == VersionStatus.normalize(tag)
+            && VersionStatus.isNewer(manifestVersion, than: current)
+    }
+
+    /// Подписан ли манифест (сырые байты .manifest-файла) ключом владельца.
     static func manifestSignatureValid(
         manifest: Data, signature: Data,
         publicKeyBase64: String = manifestKeyBase64
@@ -54,7 +90,14 @@ enum UpdateAuthenticity {
         var req: SecRequirement?
         guard SecRequirementCreateWithString(requirement as CFString, [], &req) == errSecSuccess,
               let requirementRef = req else { return false }
-        let flags = SecCSFlags(rawValue: kSecCSCheckAllArchitectures | kSecCSCheckNestedCode)
+        // kSecCSStrictValidate обязателен: без него сверяются только Mach-O
+        // (все архитектуры, вложенные бинарники), а конверт ресурсов — нет.
+        // Демон — это .py в Contents/Resources/charoite/, не Mach-O: подмена
+        // daemon.py в подписанном бандле иначе проходит проверку (круг по
+        // PR #366, DeepSeek). Совпадает со строгостью самой сборки
+        // (make_app.sh: codesign --verify --deep --strict).
+        let flags = SecCSFlags(rawValue: kSecCSStrictValidate
+                               | kSecCSCheckAllArchitectures | kSecCSCheckNestedCode)
         return SecStaticCodeCheckValidity(code, flags, requirementRef) == errSecSuccess
     }
 }

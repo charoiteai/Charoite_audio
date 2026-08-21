@@ -237,6 +237,7 @@ jobs:
         env:
           NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          TAG: ${{ steps.resolve.outputs.tag }}   # версия для манифеста обновления
         run: |
           set -euo pipefail
           ./scripts/notarize.sh app/build/Charoite.dmg app/build/Charoite.dmg \
@@ -244,6 +245,13 @@ jobs:
           for f in app/build/Charoite.dmg app/build/Charoite.app.zip; do
             shasum -a 256 "$f" | awk '{print $1}' > "$f.sha256"
           done
+          # Манифест обновления: «<версия>  <хеш>» одной строкой. Версию несёт
+          # сам подписанный файл — голый хеш позволял реплей старой честной
+          # тройки под новым тегом (PR #366). Подпись кладёт владелец локально
+          # (scripts/sign_release_manifest.py) — ключа в CI нет.
+          printf '%s  %s\n' "${TAG#v}" \
+            "$(shasum -a 256 app/build/Charoite.app.zip | awk '{print $1}')" \
+            > app/build/Charoite.app.zip.manifest
           # Финальная проверка глазами Gatekeeper: так увидит файл пользователь.
           spctl --assess --type execute --verbose=2 app/build/Charoite.app
           spctl --assess --type open --context context:primary-signature --verbose=2 app/build/Charoite.dmg
@@ -258,7 +266,8 @@ jobs:
             app/build/Charoite.dmg \
             app/build/Charoite.dmg.sha256 \
             app/build/Charoite.app.zip \
-            app/build/Charoite.app.zip.sha256
+            app/build/Charoite.app.zip.sha256 \
+            app/build/Charoite.app.zip.manifest
           # Режим подписи — в заметки релиза, а не только в лог прогона:
           # README отсылает именно туда. Строка одна, при перезаливке
           # (--clobber) не дублируется.

@@ -26,7 +26,10 @@ import sys
 import tempfile
 
 KEY = pathlib.Path.home() / ".config" / "charoite" / "update_manifest_ed25519.pem"
-ASSET = "Charoite.app.zip.sha256"
+ZIP = "Charoite.app.zip"
+ASSET = ZIP + ".manifest"
+TEAM_REQUIREMENT = ('anchor apple generic and '
+                    'certificate leaf[subject.OU] = "AR7PDJQNR4"')
 REPO = "charoiteai/Charoite_audio"
 
 
@@ -43,6 +46,35 @@ def public_key_base64(key_path: pathlib.Path = KEY) -> str:
     key = s.load_pem_private_key(key_path.read_bytes(), password=None)
     raw = key.public_key().public_bytes(s.Encoding.Raw, s.PublicFormat.Raw)
     return base64.b64encode(raw).decode("ascii")
+
+
+def build_manifest(tag: str, zip_path: pathlib.Path) -> bytes:
+    """«<версия>  <sha256>\n» — версию несёт сам подписанный файл.
+
+    Голый хеш позволял реплей: старая честная тройка под новым тегом
+    проходила все проверки (круг по PR #366, GLM + DeepSeek).
+    """
+    import hashlib
+    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    version = tag[1:] if tag.startswith("v") else tag
+    return f"{version}  {digest}\n".encode("ascii")
+
+
+def verify_zip_is_ours(zip_path: pathlib.Path, workdir: pathlib.Path) -> None:
+    """Codesign-сверка АРХИВА до подписи манифеста.
+
+    Скрипт подписывал то, что лежит на релизе, не глядя: подменённый до
+    шага подписи архив получил бы честную подпись владельца (круг по
+    PR #366, DeepSeek). Распаковываем и требуем строгую подпись нашей
+    команды — чужой бандл сюда не проходит.
+    """
+    subprocess.run(["/usr/bin/ditto", "-x", "-k", str(zip_path), str(workdir)],
+                   check=True)
+    app = workdir / "Charoite.app"
+    if not app.is_dir():
+        raise SystemExit("в архиве нет Charoite.app — подписывать нечего")
+    subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict",
+                    "-R", "=" + TEAM_REQUIREMENT, str(app)], check=True)
 
 
 def main() -> int:
@@ -69,15 +101,23 @@ def main() -> int:
     token = (pathlib.Path.home() / ".config" / "charoite" / "gh_token").read_text().strip()
     env = dict(os.environ, GH_TOKEN=token)
     with tempfile.TemporaryDirectory() as td:
-        m = pathlib.Path(td) / ASSET
+        tdp = pathlib.Path(td)
+        zip_path = tdp / ZIP
         subprocess.run(["gh", "release", "download", a.tag, "--repo", REPO,
-                        "-p", ASSET, "-O", str(m), "--clobber"],
+                        "-p", ZIP, "-O", str(zip_path), "--clobber"],
                        check=True, env=env)
-        sig_path = pathlib.Path(td) / f"{ASSET}.sig"
-        sig_path.write_text(sign_bytes(m.read_bytes(), key) + "\n", encoding="ascii")
+        # чужому бандлу — отказ ДО подписи; манифест строим сами из архива
+        verify_zip_is_ours(zip_path, tdp / "unpacked")
+        manifest = build_manifest(a.tag, zip_path)
+        m = tdp / ASSET
+        m.write_bytes(manifest)
+        print("подписываю:", manifest.decode("ascii").strip())
+        sig_path = tdp / f"{ASSET}.sig"
+        sig_path.write_text(sign_bytes(manifest, key) + "\n", encoding="ascii")
         subprocess.run(["gh", "release", "upload", a.tag, "--repo", REPO,
-                        str(sig_path), "--clobber"], check=True, env=env)
-    print(f"{a.tag}: манифест подписан, {ASSET}.sig загружен")
+                        str(m), str(sig_path), "--clobber"], check=True, env=env)
+    print(f"{a.tag}: архив сверен по codesign, манифест подписан, "
+          f"{ASSET} и {ASSET}.sig загружены")
     return 0
 
 

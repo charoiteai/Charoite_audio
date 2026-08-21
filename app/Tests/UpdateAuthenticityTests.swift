@@ -61,4 +61,32 @@ final class UpdateAuthenticityTests: XCTestCase {
             at: calc, requirement: "anchor apple"),
             "живая подпись Apple не прошла мягкое требование")
     }
+
+    func testManifestCarriesVersionAndChecksum() {
+        let good = Data("0.57.0  ".utf8) + Data(String(repeating: "a", count: 64).utf8)
+        XCTAssertEqual(UpdateAuthenticity.manifestVersion(good), "0.57.0")
+        XCTAssertEqual(UpdateAuthenticity.manifestChecksum(good),
+                       String(repeating: "a", count: 64))
+        // прежний формат — голый хеш — больше не принимается: он не привязан
+        // к версии и позволял реплей старого релиза под новым тегом
+        let bare = Data(String(repeating: "b", count: 64).utf8)
+        XCTAssertNil(UpdateAuthenticity.manifestVersion(bare))
+        XCTAssertNil(UpdateAuthenticity.manifestChecksum(bare))
+        XCTAssertNil(UpdateAuthenticity.manifestVersion(Data("мусор".utf8)))
+    }
+
+    func testVersionBindingStopsDowngradeReplay() {
+        // реплей: старая честная тройка (манифест говорит 0.56.0) под тегом v0.99.0
+        XCTAssertFalse(UpdateAuthenticity.versionBindingOK(
+            manifestVersion: "0.56.0", tag: "v0.99.0", current: "0.57.0"))
+        // даунгрейд под честным тегом: версия манифеста не новее текущей
+        XCTAssertFalse(UpdateAuthenticity.versionBindingOK(
+            manifestVersion: "0.56.0", tag: "v0.56.0", current: "0.57.0"))
+        // манифест без версии (старый формат) — отказ
+        XCTAssertFalse(UpdateAuthenticity.versionBindingOK(
+            manifestVersion: nil, tag: "v0.58.0", current: "0.57.0"))
+        // честное обновление проходит
+        XCTAssertTrue(UpdateAuthenticity.versionBindingOK(
+            manifestVersion: "0.58.0", tag: "v0.58.0", current: "0.57.0"))
+    }
 }

@@ -78,3 +78,30 @@ def test_built_in_swift_constant_matches_owner_key_format():
     m = re.search(r'manifestKeyBase64 = "([^"]+)"', swift)
     assert m, "константа ключа не найдена"
     assert len(base64.b64decode(m.group(1))) == 32
+
+def test_manifest_binds_version_to_content(tmp_path):
+    """«<версия>  <хеш>» — голый хеш позволял реплей старой тройки под новым
+    тегом (круг по PR #366, GLM + DeepSeek)."""
+    z = tmp_path / "Charoite.app.zip"
+    z.write_bytes(b"zip-bytes")
+    m = srm.build_manifest("v0.57.0", z)
+    version, digest = m.decode("ascii").split()
+    assert version == "0.57.0"
+    import hashlib
+    assert digest == hashlib.sha256(b"zip-bytes").hexdigest()
+    assert m.endswith(b"\n")
+
+
+def test_foreign_bundle_is_refused_before_signing(tmp_path):
+    """Подменённый до шага подписи архив не должен получить подпись владельца:
+    codesign-сверка обязана отказать на неподписанном/чужом бандле."""
+    import io
+    import subprocess
+    import zipfile
+    z = tmp_path / "Charoite.app.zip"
+    with zipfile.ZipFile(z, "w") as f:
+        f.writestr("Charoite.app/Contents/Info.plist", "<plist/>")
+    import pytest
+    with pytest.raises((subprocess.CalledProcessError, SystemExit)):
+        srm.verify_zip_is_ours(z, tmp_path / "u")
+
