@@ -8,13 +8,6 @@ import Foundation
 enum TasksGrouping: String, CaseIterable {
     case byMeeting
     case byDue
-
-    var title: String {
-        switch self {
-        case .byMeeting: return L.t("По встрече", "By meeting", "按会议")
-        case .byDue: return L.t("По сроку", "By due date", "按期限")
-        }
-    }
 }
 
 /// Чистая политика экрана задач (макет docs/design/MOBILE_2026-08.md,
@@ -46,8 +39,10 @@ enum TasksScreenPolicy {
     }
 
     /// Корзины режима «По сроку». Порядок — это и порядок секций на экране:
-    /// горящее сверху, бессрочное ниже, сделанное — в самом низу, приглушённым
-    /// и зачёркнутым, но на месте (правило ревизии: у каждого числа — срок).
+    /// горящее сверху, бессрочное ниже, «Сделанные» — в самом низу, и секция
+    /// подчиняется тумблеру «Сделанные», как и в режиме по встречам: скрыто —
+    /// значит скрыто везде (круг по PR #367, DeepSeek — прежний комментарий
+    /// обещал «на месте», чего код осознанно не делает).
     enum DueBucket: Int, CaseIterable, Comparable {
         case overdue
         case week
@@ -57,15 +52,6 @@ enum TasksScreenPolicy {
 
         static func < (a: DueBucket, b: DueBucket) -> Bool { a.rawValue < b.rawValue }
 
-        var title: String {
-            switch self {
-            case .overdue: return L.t("Просрочено", "Overdue", "已逾期")
-            case .week: return L.t("Ближайшие 7 дней", "Next 7 days", "未来 7 天")
-            case .later: return L.t("Позже", "Later", "更晚")
-            case .undated: return L.t("Без срока", "No due date", "无期限")
-            case .done: return L.t("Сделанные", "Completed", "已完成")
-            }
-        }
     }
 
     static func bucket(text: String, done: Bool,

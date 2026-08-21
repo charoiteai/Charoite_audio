@@ -3,6 +3,27 @@ import SwiftUI
 #if os(macOS)
 
 /// Единый список поручений из Markdown с обратной связью к встречам.
+extension TasksGrouping {
+    var title: String {
+        switch self {
+        case .byMeeting: return L.t("По встрече", "By meeting", "按会议")
+        case .byDue: return L.t("По сроку", "By due date", "按期限")
+        }
+    }
+}
+
+extension TasksScreenPolicy.DueBucket {
+    var title: String {
+        switch self {
+        case .overdue: return L.t("Просрочено", "Overdue", "已逾期")
+        case .week: return L.t("Ближайшие 7 дней", "Next 7 days", "未来 7 天")
+        case .later: return L.t("Позже", "Later", "更晚")
+        case .undated: return L.t("Без срока", "No due date", "无期限")
+        case .done: return L.t("Сделанные", "Completed", "已完成")
+        }
+    }
+}
+
 struct TasksView: View {
     @ObservedObject private var tasks = TasksService.shared
     @ObservedObject private var repository = MeetingRepository.shared
@@ -25,8 +46,17 @@ struct TasksView: View {
             Divider()
             content
         }
-        .frame(minWidth: 520, minHeight: 360)
-        .onAppear { tasks.rescan() }
+        // 640, не 520: шапка с сводкой и переключателем режима при 520
+        // обрезала правые контролы (круг по PR #367, DeepSeek)
+        .frame(minWidth: 640, minHeight: 360)
+        .onAppear {
+            tasks.rescan()
+            // мусор в UserDefaults рендерился дефолтом, но Picker не
+            // подсвечивал ни один сегмент — контрол и логика расходились
+            if TasksGrouping(rawValue: groupingRaw) == nil {
+                groupingRaw = TasksGrouping.byMeeting.rawValue
+            }
+        }
     }
 
     private var header: some View {
@@ -46,7 +76,6 @@ struct TasksView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .fixedSize()
                 TextField(L.t("Найти поручение", "Find an action item", "查找任务"), text: $query)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 210)
@@ -137,6 +166,11 @@ struct TasksView: View {
     }
 
     private var summaryLine: some View {
+        // Сводка — статус ВСЕЙ выборки встречи, поиск — временная линза:
+        // та же семантика, что у прежнего «N открытых» (scopedOpenCount не
+        // знал query). Считать по visible значило бы обнулять «сделано»
+        // при выключенном тумблере (круг по PR #367: qwen + DeepSeek,
+        // решение зафиксировано).
         let s = TasksScreenPolicy.summary(scoped.map { ($0.text, $0.done) })
         return HStack(spacing: 4) {
             if s.overdue > 0 {
