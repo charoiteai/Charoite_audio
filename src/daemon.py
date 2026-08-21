@@ -1,6 +1,8 @@
 """Суфлёр-демон для UI: события NDJSON в stdout, команды из stdin.
 
 События:  {"type":"status","text":...} | {"type":"transcript","ts":"HH:MM:SS","text":...}
+          {"type":"stt_progress","backlog_seconds":...} — пульс именно STT,
+          отдельно от heartbeat главного потока
           {"type":"thesis","text":...}  | {"type":"hint","text":...,"manual":bool}
           {"type":"hint_done","manual":bool} — manual: стрим запрошен человеком
           (вопрос/⌘⏎/протокол), не авто-циклом; панель по нему решает, что
@@ -43,6 +45,7 @@ from meeting_thread import Thread as MeetingThread  # noqa: E402
 import privacy  # noqa: E402
 import question_filter  # noqa: E402
 import speaker_names  # noqa: E402
+import stt_runtime  # noqa: E402
 import thesis_rules  # noqa: E402
 import voice_pitch  # noqa: E402
 from audio import AudioHub  # noqa: E402
@@ -68,80 +71,12 @@ HINT_MIN_NEW = 220      # и только если накопилось стол
 HINT_RETRY = 20.0       # сорвалась (модель занята) — следующая попытка раньше, а не через 75 с
 THREAD_TICK = 30.0      # нить встречи: как часто СМОТРИМ, набежал ли разговор
 THREAD_MIN_NEW = 900    # и сколько новых знаков нужно, чтобы позвать модель
-
-# Гейт мгновенного ответа. «?» ставит сама GigaAM (нейро-пунктуация) — это основной
-# AI-сигнал; стартовые слова лишь страхуют, когда STT не дорисовала знак.
-# Классификатор здесь не вариант: цена — лишние секунды задержки на каждой реплике.
-_Q_START = {
-    "как", "что", "чем", "почему", "зачем", "сколько", "когда", "кто", "куда",
-    "где", "какой", "какая", "какие", "каким", "какую", "расскажи", "расскажите",
-    "объясни", "объясните", "опиши", "опишите", "поясни", "поясните", "можешь", "можете",
-}
-_Q_PAIRS = {"есть ли", "правда ли", "верно ли", "был ли", "будет ли", "а вы", "а ты"}
-
+STT_PROGRESS_EVERY = 5.0   # отдельный пульс потребителя; главный hb его не заменяет
+STT_LAG_LOG_EVERY = 30.0   # цифры отставания в daemon.err.log без спама
 
 def looks_question(text: str) -> bool:
-    """Есть ли в реплике вопрос — не обязательно в самом конце.
-
-    Замер по 1989 репликам (23.07): 250 реплик содержали «?» НЕ последним
-    символом, и 237 из них прежний детектор пропускал — 43% всех вопросов
-    встречи оставались без подсказки. Живая речь не заканчивается вопросом:
-    «Да, есть. Можно я вопросик задам? Всем привет» — знак в середине, дальше
-    обычный текст. STT (GigaAM) ставит «?» по интонации, поэтому наличие знака
-    где угодно в реплике — надёжный и мгновенный признак.
-
-    Спорный случай один: реплика начинается вопросным словом, но знака нет
-    («когда мы вставляли партицию…» — придаточное, не вопрос). Раньше здесь
-    рос чёрный список «как бы / когда мы / что бы», что прямо запрещено
-    правилом проекта (никакого хардкода паттернов). Замер показал: таких
-    случаев ~1 на встречу — решает их модель через ask_question_model(),
-    вызывается редко и латентность некритична.
-    """
-    if "?" in text:
-        return True
-    words = text.strip().lower().split()
-    if not words:
-        return False
-    starts_like_q = words[0] in _Q_START or " ".join(words[:2]) in _Q_PAIRS
-    if not starts_like_q:
-        return False
-    # спорно: вопросное слово без «?». Спрашиваем модель, а не список паразитов.
-    return ask_question_model(text)
-
-
-# Клиент модели для классификатора спорных реплик. Ставит main(): до него
-# консервативный ответ «вопрос» (см. ask_question_model).
-_llm_client: LLM | None = None
-
-
-def ask_question_model(text: str) -> bool:
-    """Спорную реплику (вопросное слово, но без «?») классифицирует модель.
-
-    AI-first вместо чёрного списка союзов: модель понимает, что «когда мы
-    вставляли» — придаточное, а «когда релиз» — вопрос. Лёгкая модель из
-    конфига (llm.small_model), num_predict 3, температура 0 — ответ за ~0.4с.
-    Сеть недоступна или таймаут — консервативно считаем вопросом (лучше
-    лишняя подсказка, чем пропуск). До main() клиента ещё нет — тот же
-    консервативный ответ.
-    """
-    if _llm_client is None:
-        return True
-    try:
-        ans = _llm_client.complete(
-            text,
-            system=(
-                "Реплика с рабочей встречи начинается с вопросного слова, но без «?». "
-                "Это настоящий ВОПРОС, на который собеседник ждёт ответа, "
-                "или придаточное предложение внутри утверждения?\n"
-                "«Когда мы вставляли партицию, были ключи» — придаточное, ответь: нет.\n"
-                "«Когда релиз» — вопрос, ответь: да.\n"
-                "Ответь одним словом: да или нет."),
-            model=_llm_client.small, think=False,
-            num_ctx=2048, num_predict=3, temperature=0,
-            timeout=5, busy_wait=0)   # горячий путь STT: занята — сразу «вопрос», не ждём
-        return ans.lower().startswith("да")
-    except Exception:  # noqa: BLE001 — модель недоступна: не глотаем вопрос
-        return True
+    """Совместимое имя; детектор живёт рядом с остальными фильтрами вопроса."""
+    return question_filter.looks_question(text)
 
 _out_lock = threading.Lock()
 # Общий стоп: emit ставит его, когда приложение закрыло свой конец пайпа.
@@ -468,8 +403,6 @@ def main():
     emit({"type": "status", "text": "Загружаю модели…"})
     stt = STT(cfg)
     llm = LLM(cfg)
-    global _llm_client
-    _llm_client = llm  # классификатору спорных реплик (ask_question_model)
     # env-override для тестов: стенограммы в песочницу, не в боевую папку
     tdir = os.environ.get("SUFLER_TRANSCRIPTS_DIR")
     tr = Transcript(pathlib.Path(tdir) if tdir else ROOT / cfg["log"]["transcripts_dir"])
@@ -786,9 +719,77 @@ def main():
     warn_markup = quiet_loop_warn("разметка реплик")
     warn_names = quiet_loop_warn("имена")
 
+    # Последняя стадия STT читается главным потоком. Если native inference
+    # зависнет, сам STT уже ничего не залогирует, а main-thread останется жив:
+    # отдельная метка позволяет написать в daemon.err.log, ГДЕ и сколько он
+    # стоит, до того как приложение применит 100-секундный watchdog.
+    stt_probe_lock = threading.Lock()
+    stt_probe: dict[str, object] = {"stage": "starting", "at": time.monotonic()}
+
+    def mark_stt_stage(stage: str) -> None:
+        with stt_probe_lock:
+            stt_probe["stage"] = stage
+            stt_probe["at"] = time.monotonic()
+
+    def stt_stage_snapshot() -> tuple[str, float]:
+        with stt_probe_lock:
+            stage = str(stt_probe["stage"])
+            age = time.monotonic() - float(stt_probe["at"])
+        return stage, max(0.0, age)
+
     def stt_loop():
+        # Главный heartbeat доказывает только жизнь main-thread. Этот пульс
+        # испускает сам единственный потребитель аудио: блокировка native STT
+        # или необработанное исключение остановят события, и приложение
+        # сможет отличить их от обычной тишины на встрече.
+        last_progress_emit = 0.0
+        last_lag_log = 0.0
+        last_cycle_ms = 0.0
+        last_diarization_ms = 0.0
+        last_transcription_ms = 0.0
+        lagging = False
+
+        def report_progress(*, force: bool = False) -> None:
+            nonlocal last_progress_emit, last_lag_log
+            now_mono = time.monotonic()
+            if not force and now_mono - last_progress_emit < STT_PROGRESS_EVERY:
+                return
+            health = hub.health_snapshot()
+            backlog = float(health["backlog_seconds"])
+            input_age = health["input_age_seconds"]
+            stage, stage_age = stt_stage_snapshot()
+            emit({
+                "type": "stt_progress",
+                "state": "lagging" if lagging else "healthy",
+                "stage": stage,
+                "stage_age_seconds": round(stage_age, 2),
+                "backlog_seconds": round(backlog, 2),
+                "input_age_seconds": (round(float(input_age), 2)
+                                      if input_age is not None else None),
+                "cycle_ms": round(last_cycle_ms),
+                "diarization_ms": round(last_diarization_ms),
+                "transcription_ms": round(last_transcription_ms),
+                "recording_ok": health["recording_ok"],
+                "channels": health["channels"],
+            })
+            last_progress_emit = now_mono
+            if lagging and now_mono - last_lag_log >= STT_LAG_LOG_EVERY:
+                age_text = "unknown" if input_age is None else f"{float(input_age):.1f}"
+                print(f"stt-health state=lagging backlog_s={backlog:.1f} "
+                      f"cycle_ms={last_cycle_ms:.0f} "
+                      f"diarization_ms={last_diarization_ms:.0f} "
+                      f"transcription_ms={last_transcription_ms:.0f} "
+                      f"input_age_s={age_text}",
+                      file=sys.stderr, flush=True)
+                last_lag_log = now_mono
+
+        mark_stt_stage("idle")
+        report_progress(force=True)
         while not stop.is_set():
+            cycle_started = time.monotonic()
             try:
+                mark_stt_stage("audio_pull")
+                queued_before_pull = hub.health_snapshot()
                 batch = hub.pull_labeled()
             except Exception as e:  # noqa: BLE001 — смерть этого потока «тихая»:
                 # heartbeat живёт, а стенограмма просто молчит (профиль 20.07);
@@ -796,9 +797,40 @@ def main():
                 emit({"type": "status", "text": f"звук: {e} — поток STT живёт"})
                 time.sleep(1)
                 continue
+            health_after_pull = hub.health_snapshot()
+            # На входе считаем всю очередь, чтобы включить разгрузку уже на
+            # двух чанках. На выходе — остаток, иначе активный режим никогда
+            # не увидит порог восстановления: сам текущий чанк всегда >= 3с.
+            backlog = float((health_after_pull if lagging else queued_before_pull)
+                            ["backlog_seconds"])
+            next_lagging = stt_runtime.should_shed_diarization(
+                backlog_seconds=backlog,
+                active=lagging,
+                chunk_seconds=hub.chunk_s,
+            )
+            if next_lagging != lagging:
+                lagging = next_lagging
+                if lagging:
+                    suffix = (" — временно отключаю live-диаризацию"
+                              if spk_tracker is not None and hasattr(spk_tracker, "split")
+                              else "")
+                    emit({"type": "status", "text":
+                          f"⚠️ STT отстаёт на {backlog:.1f}с{suffix}; "
+                          "запись на диск продолжается"})
+                    last_lag_log = 0.0
+                else:
+                    emit({"type": "status", "text":
+                          f"✅ STT догнал живой звук (очередь {backlog:.1f}с)"})
+                    print(f"stt-health state=healthy backlog_s={backlog:.1f}",
+                          file=sys.stderr, flush=True)
+                report_progress(force=True)
             if not batch:
+                mark_stt_stage("idle")
+                report_progress()
                 time.sleep(0.1)
                 continue
+            cycle_diarization_ms = 0.0
+            cycle_transcription_ms = 0.0
             for speaker, chunk in batch:
                 # Признак «собеседников слышно» — ЗДЕСЬ, до STT и до любых
                 # отсевов. Раньше он стоял после распознавания, и короткие
@@ -834,13 +866,25 @@ def main():
                 # заводится только после непустого текста, чтобы пустое
                 # распознавание не плодило «Собеседника-призрака».
                 jobs: list[tuple[object, int | None, object | None]] | None
-                if spk_tracker is not None and hasattr(spk_tracker, "split"):
+                if lagging and spk_tracker is not None and hasattr(spk_tracker, "split"):
+                    # Позиционная раскладка может породить несколько STT-задач
+                    # из одного чанка. Когда очередь уже растёт, важнее один
+                    # непрерывный текст с честной канальной меткой; финальный
+                    # offline rebuild вернёт точных говорящих по записи.
+                    jobs = [(chunk, -1, None)]
+                elif spk_tracker is not None and hasattr(spk_tracker, "split"):
+                    mark_stt_stage("diarization")
+                    diarization_started = time.monotonic()
                     try:
                         res = spk_tracker.split(chunk, channel=speaker)
                     except Exception:  # noqa: BLE001 — диаризация вспомогательна
                         res = None  # jobs_for даст канальную метку без
                         # voice_label: повторный вызов трекера учил бы
                         # центроиды тем же звуком дважды (ревью 15.08 ×2)
+                    finally:
+                        cycle_diarization_ms += (
+                            time.monotonic() - diarization_started) * 1000
+                        mark_stt_stage("planning")
                     jobs = jobs_for(res, chunk)
                     if jobs is None:
                         continue  # вся речь чанка исключена — пропуск
@@ -853,11 +897,17 @@ def main():
                 rows: list[tuple[str, str]] = []
                 pitch_best: dict[str, tuple[int, object]] = {}
                 for piece, n, raw_piece in jobs:
+                    mark_stt_stage("transcription")
+                    transcription_started = time.monotonic()
                     try:
                         text = stt.transcribe(piece, hub.sr)
                     except Exception as e:  # noqa: BLE001
                         emit({"type": "status", "text": f"STT: {e}"})
                         continue
+                    finally:
+                        cycle_transcription_ms += (
+                            time.monotonic() - transcription_started) * 1000
+                        mark_stt_stage("postprocess")
                     if not text or text.lower().strip(" .!») ") in NOISE:
                         continue
                     # Секунды речи по голосам — ПОСЛЕ отсева: клавиатура и
@@ -937,6 +987,11 @@ def main():
                             and not _is_owner_line(name) \
                             and looks_question(added):
                         fire_question(added)
+            last_cycle_ms = (time.monotonic() - cycle_started) * 1000
+            last_diarization_ms = cycle_diarization_ms
+            last_transcription_ms = cycle_transcription_ms
+            mark_stt_stage("idle")
+            report_progress()
 
     # Промпт и фильтр тезисов — в src/thesis_rules.py (тестируются без аудио).
     # 💎 убран 03.08: факты ведёт нить, тезисам остались 📌 и 💭.
@@ -2348,13 +2403,25 @@ def main():
         t.start()
     try:
         last_hb = 0.0
+        last_stt_stall_log = 0.0
         while not stop.is_set():
             time.sleep(0.3)
             # heartbeat для watchdog UI: главный тред жив → hb каждые 30с;
             # тишина 100с при живом процессе = зависание, UI перезапустит демон
-            if time.time() - last_hb > 30:
-                last_hb = time.time()
-                emit({"type": "hb"})
+            now_mono = time.monotonic()
+            if now_mono - last_hb > 30:
+                last_hb = now_mono
+                stage, stage_age = stt_stage_snapshot()
+                emit({"type": "hb", "stt_stage": stage,
+                      "stt_stage_age_seconds": round(stage_age, 1)})
+                # Пишет ГЛАВНЫЙ поток: если STT висит внутри ONNX, он сам не
+                # способен оставить строку. 30с — только диагностика; решение
+                # о рестарте остаётся за 100-секундным watchdog приложения.
+                if stage_age >= 30 and now_mono - last_stt_stall_log >= 30:
+                    print(f"stt-health state=stalled stage={stage} "
+                          f"stage_age_s={stage_age:.1f}",
+                          file=sys.stderr, flush=True)
+                    last_stt_stall_log = now_mono
     except KeyboardInterrupt:
         pass
     finally:

@@ -151,9 +151,12 @@ final class SuflerService: ObservableObject {
     // авто-стрима резало буфер пополам — хвост рисовался с середины фразы.
     @Published private(set) var isAutoHinting = false
     private var _lastHintUI = Date.distantPast
-    // Watchdog: демон шлёт hb каждые 30с из главного цикла; тишина 100с на живом
-    // процессе = завис (20.07: встреча шла, транскрипция молча стояла 20 минут)
+    // Три независимых пульса: daemon main-thread, сам STT consumer и входные
+    // аудиокадры. Раньше первый продолжал слать hb при мёртвом STT, поэтому
+    // приложение двадцать минут считало замершую стенограмму здоровой.
     private var lastEventAt = Date()
+    private var lastSTTProgressAt: Date?
+    private var lastAudioInputAt: Date?
     var watchdog: Timer?
     private var clock: Timer?
     var userStopped = false
@@ -473,6 +476,8 @@ final class SuflerService: ObservableObject {
                 send("set \(key) off")
             }
             lastEventAt = Date()
+            lastSTTProgressAt = nil
+            lastAudioInputAt = nil
             watchdog?.invalidate()
             watchdog = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.checkAlive() }
@@ -513,6 +518,8 @@ final class SuflerService: ObservableObject {
         isClouding = false
         watchdog?.invalidate()
         watchdog = nil
+        lastSTTProgressAt = nil
+        lastAudioInputAt = nil
 
         // Штатный Stop уже перевёл gate в stopping. Только теперь, после
         // фактической смерти читателя, можно закрывать capture и разрешать
@@ -561,12 +568,33 @@ final class SuflerService: ObservableObject {
         beginCaptureShutdown(token: token)
     }
 
-    /// Процесс жив, но heartbeat молчит 100с (hb идёт раз в 30с) — демон завис.
-    /// Раньше это требовало ручного Стоп/Старт посреди встречи.
+    /// Процесс жив, но один из обязательных контуров молчит 100с.
+    /// Главный hb, STT и аудиовход проверяются отдельно: живой daemon больше
+    /// не может прикрыть умершее распознавание зелёным heartbeat.
     private func checkAlive() {
         guard isRunning, let p = process, p.isRunning else { return }
-        guard Date().timeIntervalSince(lastEventAt) > 100 else { return }
-        fail(L.t("Запись замерла — перезапускаю", "Recording stalled — restarting", "录音停滞——正在重启"))
+        let now = Date()
+        let daemonAge = now.timeIntervalSince(lastEventAt)
+        let sttAge = lastSTTProgressAt.map { now.timeIntervalSince($0) }
+        let audioAge = lastAudioInputAt.map { now.timeIntervalSince($0) }
+        guard PipelineWatchdog.shouldRestart(
+            daemonEventAge: daemonAge,
+            sttProgressAge: sttAge,
+            audioInputAge: audioAge
+        ) else { return }
+        if let sttAge, sttAge > PipelineWatchdog.timeout {
+            fail(L.t("Распознавание замерло — перезапускаю запись",
+                     "Transcription stalled — restarting recording",
+                     "转写已停滞——正在重启录音"))
+        } else if let audioAge, audioAge > PipelineWatchdog.timeout {
+            fail(L.t("Аудиопоток замер — перезапускаю запись",
+                     "Audio input stalled — restarting recording",
+                     "音频输入已停滞——正在重启录音"))
+        } else {
+            fail(L.t("Запись замерла — перезапускаю",
+                     "Recording stalled — restarting",
+                     "录音停滞——正在重启"))
+        }
         p.terminate()
         DispatchQueue.global().asyncAfter(deadline: .now() + 5.0) {
             if p.isRunning { kill(p.processIdentifier, SIGKILL) }  // SIGTERM дедлок не берёт
@@ -689,6 +717,16 @@ final class SuflerService: ObservableObject {
         try? fh.write(contentsOf: data)
     }
 
+    private func noteSTTProgress(_ obj: [String: Any]) {
+        let now = Date()
+        lastSTTProgressAt = now
+        if let age = (obj["input_age_seconds"] as? NSNumber)?.doubleValue {
+            // Python присылает возраст последнего кадра, а не свои настенные
+            // часы: смена часового пояса не превращается в ложное зависание.
+            lastAudioInputAt = now.addingTimeInterval(-max(0, age))
+        }
+    }
+
     private func consume(_ data: Data) {
         stdoutBuffer.append(data)
         lastEventAt = Date()  // любое событие (включая hb) = демон жив
@@ -699,6 +737,8 @@ final class SuflerService: ObservableObject {
                   let type = obj["type"] as? String else { continue }
             let text = obj["text"] as? String ?? ""
             switch type {
+            case "stt_progress":
+                noteSTTProgress(obj)
             case "status":
                 status = text
                 // Признак сбоя приходит от демона (`error: true`), обычный статус

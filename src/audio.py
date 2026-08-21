@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import pathlib
 import queue
+import sys
 import threading
 import time
 import wave
@@ -763,6 +764,7 @@ class AudioHub:
                 self._last_frame[c.label] = time.time()
                 sink = self._sinks.get(c.label)
                 written = sink is not None
+                sink_error = None
                 if sink is not None:
                     try:
                         sink.write((np.clip(part, -1, 1) * 32767).astype("<i2").tobytes())
@@ -771,10 +773,19 @@ class AudioHub:
                         # где исключение глотается, — и мы бы уже пообещали
                         # полную стенограмму (ревью 20.08, круг 4, DeepSeek).
                         sink.flush()
-                    except Exception:  # noqa: BLE001 — диск кончился: живём без записи
+                    except Exception as e:  # noqa: BLE001 — диск кончился: живём без записи
                         self._sinks.pop(c.label, None)
                         written = False
+                        sink_error = e
                 dropped = self._append(c.label, part)
+                if sink_error is not None:
+                    # Не ждём переполнения минутного STT-буфера, чтобы сказать
+                    # о смерти страховочной записи. После pop эта ветка для
+                    # канала больше не повторится, то есть статус не спамит.
+                    msg = (f"ЗАПИСЬ НА ДИСК ОСТАНОВИЛАСЬ ({c.label}: {sink_error}) — "
+                           "после сбоя этот звук будет не восстановить")
+                    print(msg, file=sys.stderr, flush=True)
+                    self._say(msg)
                 if dropped:
                     # Вне лока: статус уходит в UI через колбэк демона, и
                     # держать на нём аудиопоток нельзя. Факт записи берём
@@ -883,6 +894,45 @@ class AudioHub:
                 merged = merged[-cap:]
             self._bufs[label] = merged
         return dropped
+
+    def health_snapshot(self, *, now: float | None = None) -> dict[str, object]:
+        """Cheap live-pipeline gauges; never consumes or copies audio.
+
+        ``input_age_seconds`` is the freshest channel age, so it grows only
+        when *all* capture sources stop delivering frames.  Per-channel ages
+        remain in ``channels`` for diagnosis.  The STT thread emits this
+        snapshot as NDJSON; absence of that event is itself its liveness
+        signal.  Buffer lengths are read under the same lock as append/cut.
+        """
+        now = time.time() if now is None else now
+        with self._lock:
+            backlog = {
+                label: max(0.0, len(buf) / self.sr)
+                for label, buf in self._bufs.items()
+            }
+        labels = list(backlog)
+        ages = {
+            label: (max(0.0, now - seen) if (seen := self._last_frame.get(label)) is not None
+                    else None)
+            for label in labels
+        }
+        seen_ages = [age for age in ages.values() if age is not None]
+        sinks = set(self._sinks)
+        channels = {
+            label: {
+                "backlog_seconds": backlog[label],
+                "input_age_seconds": ages[label],
+                "recording": label in sinks,
+            }
+            for label in labels
+        }
+        return {
+            "backlog_seconds": max(backlog.values(), default=0.0),
+            "input_age_seconds": min(seen_ages, default=None),
+            "recording_ok": (not self.record_on
+                             or all(label in sinks for label in labels)),
+            "channels": channels,
+        }
 
     _DROP_REPORT_S = 30.0     # чаще — спам в ленте: отставание длится минутами
 
