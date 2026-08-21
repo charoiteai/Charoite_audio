@@ -9,6 +9,8 @@ struct TasksView: View {
     @ObservedObject private var navigation = WorkspaceNavigation.shared
     @State private var showDone = false
     @State private var query = ""
+    @AppStorage("tasks.grouping") private var groupingRaw = TasksGrouping.byMeeting.rawValue
+    private var grouping: TasksGrouping { TasksGrouping(rawValue: groupingRaw) ?? .byMeeting }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -33,11 +35,18 @@ struct TasksView: View {
                 Image(systemName: "checklist").foregroundStyle(Theme.accent)
                 Text(L.t("Задачи со встреч", "Meeting tasks", "会议任务"))
                     .font(.headline).fixedSize()
-                Text(L.t("\(scopedOpenCount) открытых",
-                         "\(scopedOpenCount) open",
-                         "\(scopedOpenCount) 项未完成"))
-                    .font(.caption).foregroundStyle(.secondary)
+                // Сводка вместо голого счётчика (макет MOBILE_2026-08):
+                // просрочка оранжевым, три числа не пересекаются.
+                summaryLine
                 Spacer()
+                Picker("", selection: $groupingRaw) {
+                    ForEach(TasksGrouping.allCases, id: \.rawValue) { mode in
+                        Text(mode.title).tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
                 TextField(L.t("Найти поручение", "Find an action item", "查找任务"), text: $query)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 210)
@@ -96,6 +105,23 @@ struct TasksView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if grouping == .byDue {
+            List {
+                ForEach(dueGroups, id: \.bucket) { group in
+                    Section {
+                        // Источник — в строке: в корзинах срока встречи
+                        // перемешаны, и без подписи поручение безлико.
+                        ForEach(group.items) { item in row(item, showSource: true) }
+                    } header: {
+                        Text(group.bucket.title)
+                            .font(.caption)
+                            .foregroundStyle(group.bucket == .overdue
+                                             ? AnyShapeStyle(Theme.overdue)
+                                             : AnyShapeStyle(.secondary))
+                    }
+                }
+            }
+            .listStyle(.inset)
         } else {
             List {
                 ForEach(groups, id: \.rel) { group in
@@ -107,6 +133,39 @@ struct TasksView: View {
                 }
             }
             .listStyle(.inset)
+        }
+    }
+
+    private var summaryLine: some View {
+        let s = TasksScreenPolicy.summary(scoped.map { ($0.text, $0.done) })
+        return HStack(spacing: 4) {
+            if s.overdue > 0 {
+                Text(L.t("\(s.overdue) просрочено", "\(s.overdue) overdue",
+                         "\(s.overdue) 已逾期"))
+                    .foregroundStyle(Theme.overdue)
+                Text("·").foregroundStyle(.quaternary)
+            }
+            Text(L.t("\(s.open) открыто", "\(s.open) open", "\(s.open) 未完成"))
+                .foregroundStyle(.secondary)
+            if s.done > 0 {
+                Text("·").foregroundStyle(.quaternary)
+                Text(L.t("\(s.done) сделано", "\(s.done) done", "\(s.done) 已完成"))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .font(.caption)
+        .fixedSize()
+    }
+
+    private var dueGroups: [(bucket: TasksScreenPolicy.DueBucket, items: [TasksService.Item])] {
+        var byBucket: [TasksScreenPolicy.DueBucket: [TasksService.Item]] = [:]
+        for item in visible {
+            byBucket[TasksScreenPolicy.bucket(text: item.text, done: item.done),
+                     default: []].append(item)
+        }
+        return TasksScreenPolicy.DueBucket.allCases.compactMap { bucket in
+            guard let items = byBucket[bucket], !items.isEmpty else { return nil }
+            return (bucket: bucket, items: items)
         }
     }
 
@@ -168,7 +227,7 @@ struct TasksView: View {
         }
     }
 
-    private func row(_ item: TasksService.Item) -> some View {
+    private func row(_ item: TasksService.Item, showSource: Bool = false) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Button { tasks.toggle(item) } label: {
                 if tasks.isUpdating(item) {
@@ -184,6 +243,12 @@ struct TasksView: View {
                 .strikethrough(item.done)
                 .foregroundStyle(item.done ? .secondary : .primary)
             Spacer(minLength: 8)
+            if showSource {
+                Text(TasksService.sourceTitle(item.rel))
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .layoutPriority(0.5)
+            }
             // Срок читается из самой строки markdown (TaskDue), файл не
             // меняется. Просрочка в общем потоке текста не видна — глаз
             // цепляется за форму, а не за «до 24.07» в конце фразы. У
