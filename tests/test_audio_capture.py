@@ -34,6 +34,7 @@ def _hub(sr=16000, chunk_s=3.0, overlap_s=0.5, vad_db=-45.0):
     # иначе тест падает на AttributeError вместо проверки поведения.
     hub._hung = set()
     hub._last_frame = {}
+    hub._last_try = {}
     hub._last_check = 0.0
     hub._running = False
     hub.captures = []
@@ -673,3 +674,82 @@ def test_манифест_screencapturekit_живой_только_с_расту
     old = time.time() - 60
     os.utime(sysraw, (old, old))
     assert a.fresh_sck_manifest() is None, "труп прошлой встречи прошёл за живого"
+
+
+class _FailingCapture:
+    """Канал, чей restart() падает — выдернутое устройство: PortAudio бросает."""
+
+    label = "blackhole"
+
+    def __init__(self):
+        self.restarts = 0
+
+    def restart(self):
+        self.restarts += 1
+        raise RuntimeError("device unplugged")
+
+
+class _RevivableCapture:
+    """Канал, который перезапускается успешно."""
+
+    label = "blackhole"
+
+    def __init__(self):
+        self.restarts = 0
+
+    def restart(self):
+        self.restarts += 1
+
+
+def test_неудачный_рестарт_не_омолаживает_возраст_и_гейтится_антищтормом():
+    """Круг 3, GLM: главную правку — «возраст сбрасывается только при удачном
+    рестарте» — не держал ни один тест. Мутация «вернуть безусловный сброс»
+    делала третий контур watchdog слепым при зелёном прогоне.
+
+    Возраст мёртвого канала растёт монотонно: никакие ПОПЫТКИ рестарта его
+    не трогают (инвариант И-2). Повторная попытка — не раньше, чем через
+    30с (_last_try), но и не позже: канал не бросается навсегда.
+    """
+    hub = _hub()
+    hub.RESTART_TIMEOUT = 1.0
+    dead = _FailingCapture()
+    hub.captures = [dead]
+    died_at = time.time() - 60
+    hub._last_frame = {"blackhole": died_at}
+    hub._last_check = 0.0
+    hub.on_status = lambda _msg: None
+
+    hub._watch_streams()
+    assert dead.restarts == 1
+    assert hub._last_frame["blackhole"] == died_at, (
+        "неудачный рестарт омолодил возраст — третий контур watchdog ослеп")
+
+    # немедленный повтор гейтится анти-штормом, возраст всё ещё честный
+    hub._last_check = 0.0
+    hub._watch_streams()
+    assert dead.restarts == 1, "анти-шторм не сработал — рестарты каждые 5с"
+
+    # состарился гейт попыток — попытка повторяется (канал не брошен)
+    hub._last_try["blackhole"] = time.time() - 31
+    hub._last_check = 0.0
+    hub._watch_streams()
+    assert dead.restarts == 2, "канал брошен навсегда — повторной попытки нет"
+    assert hub._last_frame["blackhole"] == died_at
+
+
+def test_удачный_рестарт_сбрасывает_возраст():
+    """Обратная сторона: после успешного перезапуска канал не должен тут же
+    считаться молчащим — возраст обнуляется до прихода первых кадров."""
+    hub = _hub()
+    hub.RESTART_TIMEOUT = 1.0
+    cap = _RevivableCapture()
+    hub.captures = [cap]
+    hub._last_frame = {"blackhole": time.time() - 60}
+    hub._last_check = 0.0
+    hub.on_status = lambda _msg: None
+
+    hub._watch_streams()
+
+    assert cap.restarts == 1
+    assert time.time() - hub._last_frame["blackhole"] < 5, (
+        "возраст не сброшен после удачного рестарта — немедленный повторный цикл")

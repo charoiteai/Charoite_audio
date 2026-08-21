@@ -16,6 +16,36 @@ from __future__ import annotations
 import difflib
 import re
 
+# GigaAM's neural punctuation is the primary signal: a question mark may sit
+# in the middle of a live utterance, because the speaker keeps talking after
+# the question.  Opening words are a conservative fallback when punctuation
+# is missing.  This check deliberately stays local and deterministic: it runs
+# in the sole STT consumer and may never wait for Ollama or the network.
+_QUESTION_START = {
+    "как", "что", "чем", "почему", "зачем", "сколько", "когда", "кто",
+    "куда", "где", "какой", "какая", "какие", "каким", "какую", "расскажи",
+    "расскажите", "объясни", "объясните", "опиши", "опишите", "поясни",
+    "поясните", "можешь", "можете",
+}
+_QUESTION_PAIRS = {
+    "есть ли", "правда ли", "верно ли", "был ли", "будет ли", "а вы", "а ты",
+}
+
+
+def looks_question(text: str) -> bool:
+    """Fast, fail-open question candidate check for the live STT path.
+
+    A false positive only schedules a hint that ``is_worth_asking`` may still
+    reject.  A model call here is worse: a busy local model stalls recognition
+    for every ambiguous utterance and lets the audio backlog grow.
+    """
+    if "?" in text:
+        return True
+    words = text.strip().lower().split()
+    if not words:
+        return False
+    return words[0] in _QUESTION_START or " ".join(words[:2]) in _QUESTION_PAIRS
+
 # Короче трёх значимых слов вопрос не несёт предмета: «Что?», «А он?»,
 # «С какого бы?» — это переспрос внутри чужой реплики, а не запрос к нам.
 MIN_MEANINGFUL = 3

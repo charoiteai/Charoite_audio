@@ -2,11 +2,12 @@
 
 20.08, ревью DeepSeek: при переполнении буфер урезался до ПОЛОВИНЫ потолка —
 `buf = buf[-(cap // 2):]`. Один медленный чанк (а классификатор спорных
-вопросов ходит к модели прямо в горячем цикле) выбрасывал ~30 секунд чужой
+вопросов тогда ходил к модели прямо в горячем цикле) выбрасывал ~30 секунд чужой
 речи. Ни лога, ни статуса: на диск звук пишется отдельным sink, поэтому
 офлайн-пересборка его возвращала, а живая лента шла кусками — жалоба
 «переводит кусками, не всю речь в онлайне».
 """
+import io
 import pathlib
 import sys
 import threading
@@ -34,7 +35,11 @@ def Hub(recording: bool = True, chunk_s: float = 3.0, overlap_s: float = 0.5):
     hub.on_frame = None
     hub._last_frame = {}
     hub._watch_streams = lambda: None
-    hub._sinks = {"mic": object()} if recording else {}
+    # Настоящий file-like sink: `_pump` пишет и flush'ит его ровно как .pcm.
+    # Голый object раньше был достаточен, пока тесты не проверяли немедленную
+    # видимость смерти записи, но реальным состоянием runtime он не является.
+    hub._sinks = {"mic": io.BytesIO()} if recording else {}
+    hub.record_on = recording
     hub.chunk_s = chunk_s
     hub.overlap_s = overlap_s
     hub._running = True
@@ -64,6 +69,70 @@ def test_буфер_не_переполняется():
         hub._append("mic", _sec(1.0))
 
     assert len(hub._bufs["mic"]) <= SR * hub.BUF_CAP_S
+
+
+def test_health_snapshot_measures_backlog_and_freshest_input_without_consuming():
+    hub = Hub()
+    hub._bufs["blackhole"] = _sec(7.0)
+    hub._last_frame = {"mic": 99.0, "blackhole": 91.0}
+    hub._sinks["blackhole"] = object()
+    before = {label: buf.copy() for label, buf in hub._bufs.items()}
+
+    health = hub.health_snapshot(now=100.0)
+
+    assert health["backlog_seconds"] == pytest.approx(7.0)
+    assert health["input_age_seconds"] == pytest.approx(1.0), (
+        "пока хотя бы один канал приносит кадры, общий аудиовход жив")
+    assert health["channels"]["blackhole"]["input_age_seconds"] == pytest.approx(9.0)
+    assert health["recording_ok"] is True
+    for label, buf in before.items():
+        assert np.array_equal(hub._bufs[label], buf), "сенсор не вправе потреблять звук"
+
+
+def test_health_snapshot_reports_missing_recording_sink():
+    hub = Hub(recording=True)
+    hub._sinks = {}
+
+    assert hub.health_snapshot(now=100.0)["recording_ok"] is False
+
+
+def test_sink_failure_is_reported_before_buffer_overflow(capsys):
+    """Смерть .pcm раньше была видна только через минуту, когда переполнялся
+    STT-буфер. Сенсор записи обязан сказать сразу на первом failed write."""
+    import queue as _q
+
+    class BrokenSink:
+        def write(self, _data):
+            raise OSError("disk full")
+
+        def flush(self):
+            raise AssertionError("flush after failed write")
+
+    class Cap:
+        label = "mic"
+
+        def __init__(self):
+            self.q = _q.Queue()
+
+    hub = Hub(recording=True)
+    cap = Cap()
+    cap.q.put(_sec(0.25))
+    hub.captures = [cap]
+    hub._sinks = {"mic": BrokenSink()}
+    worker = threading.Thread(target=hub._pump, daemon=True)
+    worker.start()
+    for _ in range(100):
+        if hub.said:
+            break
+        time.sleep(0.01)
+    hub._running = False
+    worker.join(timeout=2)
+
+    assert hub.said, "ошибка страховочной записи осталась невидимой"
+    assert "disk full" in hub.said[0]
+    assert "не восстановить" in hub.said[0]
+    assert "mic" not in hub._sinks
+    assert "disk full" in capsys.readouterr().err, "цифры/причина нужны и в логе"
 
 
 def test_теряется_ровно_излишек_а_не_полминуты():

@@ -10,9 +10,39 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import question_filter as qf  # noqa: E402
+
+
+class TestQuestionCandidate:
+    def test_question_mark_anywhere_is_enough(self):
+        assert qf.looks_question("Можно я задам вопрос? Потом продолжу")
+
+    def test_opening_word_without_punctuation_stays_fail_open(self):
+        assert qf.looks_question("Когда переносим витрину")
+        assert qf.looks_question("Есть ли окно на выходных")
+
+    def test_statement_and_empty_text_do_not_schedule_hint(self):
+        assert not qf.looks_question("Переносим витрину в субботу")
+        assert not qf.looks_question("   ")
+
+    def test_detector_has_no_model_or_io_dependency(self, monkeypatch):
+        """Горячий STT-путь должен работать, даже если любой LLM запрещён.
+
+        Подмена ``open`` ловит и случай, когда вместо модели сюда случайно
+        протащат файловый вызов: детектор обязан быть чистой функцией.
+        """
+        monkeypatch.setattr("builtins.open", lambda *_a, **_kw: pytest.fail("I/O in detector"))
+        assert qf.looks_question("Почему релиз задержался")
+
+    def test_daemon_hot_path_has_no_question_model_call(self):
+        daemon = (Path(__file__).resolve().parent.parent / "src" / "daemon.py") \
+            .read_text(encoding="utf-8")
+        assert "ask_question_model" not in daemon
+        assert "return question_filter.looks_question(text)" in daemon
 
 
 class TestWorthAsking:
