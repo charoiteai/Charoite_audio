@@ -70,7 +70,10 @@ CODE_ROOT = code_root(__file__)
 DATA_UMASK = 0o077
 
 #: Каталоги данных, которые обязаны быть закрыты (относительно корня данных).
-PRIVATE_DIRS = ("transcripts", "recordings", "logs", "data", "config")
+PRIVATE_DIRS = ("transcripts", "recordings", "logs", "data", "config", "backups")
+
+#: Имя каталога со снимками графов внутри корня данных.
+BACKUPS_DIR = "backups"
 
 
 def harden_umask() -> int:
@@ -101,6 +104,26 @@ def secure_dir(path: pathlib.Path) -> pathlib.Path:
     except OSError:
         pass  # каталог может лежать на ФС без прав (iCloud, сетевой том)
     return path
+
+
+def graph_backups(graph: pathlib.Path, kind: str = "cloud_backup",
+                  root: pathlib.Path | None = None) -> pathlib.Path:
+    """Куда класть служебные снимки графа — ВНЕ синхронизируемой папки.
+
+    Раньше снимок ложился внутрь самого графа (`<граф>/.cloud_backup/`), а
+    граф живёт в iCloud. Каждая облачная правка копирует граф целиком, и к
+    21.08 в хранилище Обсидиана лежало 48 122 служебных файла на 1.7 ГБ —
+    из 58 260 файлов и 1.9 ГБ всего архива. Синхронизировать этот балласт
+    круглосуточно пытались `fileproviderd` (127% CPU), `bird`, `fseventsd`
+    и `filecoordination`: больше двух ядер уходило в никуда, а живой записи
+    в это время не хватало процессора — стенограмма отставала и рвалась.
+
+    Снимок — служебные данные конвейера, ему место рядом с `logs` и `data`:
+    те же права 0700, никакой отправки в облако. Имя графа берём у самой
+    папки, чтобы снимки разных графов не смешались.
+    """
+    base = (root or ROOT) / BACKUPS_DIR / pathlib.Path(graph).resolve().name
+    return base / kind
 
 
 def harden_existing(root: pathlib.Path | None = None) -> int:

@@ -26,6 +26,8 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import functools
 import hashlib
 import os
 import pathlib
@@ -42,6 +44,7 @@ import deps  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
+import charoite_paths  # noqa: E402
 import cloud  # noqa: E402
 import graph_updater  # noqa: E402
 import privacy  # noqa: E402
@@ -127,9 +130,49 @@ def changed_since(before: dict[str, str], graph: pathlib.Path) -> list[pathlib.P
     return touched
 
 
+def backup_root(graph: pathlib.Path) -> pathlib.Path:
+    """Каталог со снимками этого графа — в данных Чароита, не в графе."""
+    # root — корень ДАННЫХ этой установки (CHAROITE_ROOT), а не папка кода:
+    # у вложенной установки они разные, и снимки обязаны лечь к данным.
+    return charoite_paths.graph_backups(graph, BACKUP_DIR.lstrip("."), root=ROOT)
+
+
+def _clone(src: pathlib.Path, dst: pathlib.Path) -> bool:
+    """Скопировать файл клоном APFS: copy-on-write, ноль байт на диске.
+
+    Снимок берётся с графа целиком, а меняет облако единицы файлов — то есть
+    девять десятых каждой копии байт в байт повторяют предыдущую. На APFS за
+    это платить не нужно: `clonefile` делает независимый файл, который делит
+    блоки с оригиналом, пока кто-то из двоих не изменится. Правка графа идёт
+    через `tmp.replace()`, то есть создаёт новый inode, — снимок она не
+    трогает даже теоретически. Жёсткие ссылки такой гарантии не дают: они бы
+    протекли, запиши кто-нибудь заметку на месте.
+
+    False — клон не вышел (не APFS, другой том, старая система): вызывающий
+    делает обычную копию.
+    """
+    try:
+        rc = _libsystem().clonefile(os.fsencode(str(src)), os.fsencode(str(dst)), 0)
+    except (OSError, AttributeError):
+        return False
+    return rc == 0
+
+
+@functools.lru_cache(maxsize=1)
+def _libsystem():
+    """libSystem с clonefile; None-безопасно — AttributeError поймает _clone."""
+    return ctypes.CDLL("libSystem.dylib", use_errno=True)
+
+
 def backup_graph(graph: pathlib.Path, stamp: str) -> pathlib.Path:
-    """Копия файлов графа перед правкой. Обещание PRIVACY — кодом."""
-    dest = graph / BACKUP_DIR / stamp
+    """Копия файлов графа перед правкой. Обещание PRIVACY — кодом.
+
+    Снимок лежит ВНЕ графа: граф живёт в iCloud, и полная копия на каждую
+    правку превращалась в десятки тысяч файлов, которые система гоняла в
+    облако вместо того, чтобы отдать процессор живой записи (21.08).
+    """
+    root = charoite_paths.secure_dir(backup_root(graph))
+    dest = root / stamp
     dest.mkdir(parents=True, exist_ok=True)
     for p in graph.rglob("*"):
         if not p.is_file():
@@ -138,8 +181,9 @@ def backup_graph(graph: pathlib.Path, stamp: str) -> pathlib.Path:
             continue
         target = dest / p.resolve().relative_to(graph.resolve())
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(p, target)
-    old = sorted((graph / BACKUP_DIR).iterdir(), reverse=True)[BACKUP_KEEP:]
+        if not _clone(p, target):
+            shutil.copy2(p, target)
+    old = sorted(root.iterdir(), reverse=True)[BACKUP_KEEP:]
     for stale in old:
         shutil.rmtree(stale, ignore_errors=True)
     return dest

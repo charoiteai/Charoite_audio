@@ -135,6 +135,9 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
         # Утренняя встреча посреди хвоста ночи: пока суфлёр слушает, модель
         # его — досье подождёт (с потолком, чтобы ночь не стала днём).
         live_gate.wait_while_live(ROOT, what="досье", cap=3600)
+        if live_gate.night_is_over():
+            print("  ⏹ время ночного прогона вышло — остальные темы завтра")
+            break
         t0 = time.time()
         body = ""
         for attempt in (1, 2):          # вторая попытка чуть холоднее
