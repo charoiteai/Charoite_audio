@@ -71,8 +71,12 @@ def verify_zip_is_ours(zip_path: pathlib.Path, workdir: pathlib.Path) -> None:
     subprocess.run(["/usr/bin/ditto", "-x", "-k", str(zip_path), str(workdir)],
                    check=True)
     app = workdir / "Charoite.app"
-    if not app.is_dir():
-        raise SystemExit("в архиве нет Charoite.app — подписывать нечего")
+    # is_dir() и codesign идут за симлинком — подписали бы хеш чужого архива,
+    # сверив ЦЕЛЬ ссылки, например уже установленный /Applications/Charoite.app
+    # (круг-2 по PR #366, DeepSeek).
+    if app.is_symlink() or not app.is_dir():
+        raise SystemExit("в архиве Charoite.app — не каталог приложения "
+                         "(симлинк?) — подписывать нечего")
     subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict",
                     "-R", "=" + TEAM_REQUIREMENT, str(app)], check=True)
 

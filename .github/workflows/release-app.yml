@@ -262,12 +262,14 @@ jobs:
           TAG: ${{ steps.resolve.outputs.tag }}
           REPO: ${{ github.repository }}
         run: |
-          gh release upload "$TAG" --repo "$REPO" --clobber \
-            app/build/Charoite.dmg \
-            app/build/Charoite.dmg.sha256 \
-            app/build/Charoite.app.zip \
-            app/build/Charoite.app.zip.sha256 \
-            app/build/Charoite.app.zip.manifest
+          # Манифест рождается только в нотаризационном шаге: ad-hoc-прогон
+          # без секретов не должен ронять Attach на несуществующем файле
+          # (круг-2 по PR #366, DeepSeek).
+          UPLOAD="app/build/Charoite.dmg app/build/Charoite.dmg.sha256 \
+            app/build/Charoite.app.zip app/build/Charoite.app.zip.sha256"
+          [ -f app/build/Charoite.app.zip.manifest ] && \
+            UPLOAD="$UPLOAD app/build/Charoite.app.zip.manifest"
+          gh release upload "$TAG" --repo "$REPO" --clobber $UPLOAD
           # Режим подписи — в заметки релиза, а не только в лог прогона:
           # README отсылает именно туда. Строка одна, при перезаливке
           # (--clobber) не дублируется.

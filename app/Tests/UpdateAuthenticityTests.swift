@@ -89,4 +89,16 @@ final class UpdateAuthenticityTests: XCTestCase {
         XCTAssertTrue(UpdateAuthenticity.versionBindingOK(
             manifestVersion: "0.58.0", tag: "v0.58.0", current: "0.57.0"))
     }
+
+    func testManifestSurvivesCRLFAndVersionPrefix() {
+        // CRLF оставлял \r на хвосте хеша — 65 знаков, честный отказ на
+        // валидном манифесте (круг-2, qwen)
+        let crlf = Data(("0.57.0  " + String(repeating: "a", count: 64) + "\r\n").utf8)
+        XCTAssertEqual(UpdateAuthenticity.manifestChecksum(crlf),
+                       String(repeating: "a", count: 64))
+        XCTAssertEqual(UpdateAuthenticity.manifestVersion(crlf), "0.57.0")
+        // «v»-префикс в манифесте нормализуется при связке версий
+        XCTAssertTrue(UpdateAuthenticity.versionBindingOK(
+            manifestVersion: "v0.58.0", tag: "v0.58.0", current: "0.57.0"))
+    }
 }

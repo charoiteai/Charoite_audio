@@ -291,6 +291,16 @@ final class UpdateService: ObservableObject {
                                "no app inside the archive",
                                "压缩包内没有应用"))
             }
+            // Симлинк вместо каталога приложения — обход всех проверок ниже:
+            // Info.plist, codesign и ditto пошли бы по ЦЕЛИ ссылки, а не по
+            // содержимому архива (круг-2 по PR #366, DeepSeek).
+            if (try? newApp.resourceValues(forKeys: [.isSymbolicLinkKey]))?
+                .isSymbolicLink == true {
+                throw Fail(L.t(
+                    "в архиве вместо приложения — ссылка, установку отменил",
+                    "the archive contains a symlink instead of the app — installation cancelled",
+                    "压缩包内是符号链接而非应用 —— 已取消安装"))
+            }
             // Версия распакованного бандла обязана совпасть с подписанной:
             // ловит и ошибку подписанта, и архив, подложенный до подписи
             // (круг по PR #366, DeepSeek — скрипт теперь тоже сверяет, это
@@ -299,7 +309,8 @@ final class UpdateService: ObservableObject {
                 .appendingPathComponent("Contents/Info.plist"))?
                 .object(forKey: "CFBundleShortVersionString") as? String)
                 .map(VersionStatus.normalize)
-            guard let shipped, shipped == manifestVersion else {
+            guard let shipped,
+                  shipped == manifestVersion.map(VersionStatus.normalize) else {
                 throw Fail(L.t(
                     "версия приложения в архиве не совпала с подписанной — установку отменил",
                     "the app version inside the archive does not match the signed one — installation cancelled",

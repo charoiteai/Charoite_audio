@@ -31,20 +31,25 @@ enum UpdateAuthenticity {
     /// больше не принимается: он не привязан к версии и позволял реплей
     /// старого релиза под новым тегом — круг по PR #366, GLM + DeepSeek).
     static func manifestVersion(_ manifest: Data) -> String? {
+        manifestColumns(manifest)?.version
+    }
+
+    /// Одна точка разбора: CRLF-перевод строки оставлял \r на хвосте хеша,
+    /// и guard на 64 знака честно отвергал валидный манифест (круг-2 по
+    /// PR #366, qwen).
+    private static func manifestColumns(_ manifest: Data)
+        -> (version: String, checksum: String)? {
         guard let text = String(data: manifest, encoding: .utf8) else { return nil }
-        let line = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        let line = (text.split(whereSeparator: \.isNewline).first.map(String.init) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let cols = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
         guard cols.count == 2, cols[1].count == 64 else { return nil }
-        return String(cols[0])
+        return (String(cols[0]), cols[1].lowercased())
     }
 
     /// Хеш, который удостоверяет манифест: второй столбец первой строки.
     static func manifestChecksum(_ manifest: Data) -> String? {
-        guard let text = String(data: manifest, encoding: .utf8) else { return nil }
-        let line = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
-        let cols = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-        guard cols.count == 2, cols[1].count == 64 else { return nil }
-        return cols[1].lowercased()
+        manifestColumns(manifest)?.checksum
     }
 
     /// Держит ли связка версий против даунгрейда и реплея.
@@ -58,8 +63,11 @@ enum UpdateAuthenticity {
     static func versionBindingOK(manifestVersion: String?,
                                  tag: String, current: String) -> Bool {
         guard let manifestVersion else { return false }
-        return manifestVersion == VersionStatus.normalize(tag)
-            && VersionStatus.isNewer(manifestVersion, than: current)
+        // normalize с обеих сторон: «v»-префикс в манифесте (ручная правка,
+        // ошибка сборки) — не повод отвергнуть честный выпуск (круг-2, qwen)
+        let v = VersionStatus.normalize(manifestVersion)
+        return v == VersionStatus.normalize(tag)
+            && VersionStatus.isNewer(v, than: current)
     }
 
     /// Подписан ли манифест (сырые байты .manifest-файла) ключом владельца.

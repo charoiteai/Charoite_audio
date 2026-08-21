@@ -105,3 +105,17 @@ def test_foreign_bundle_is_refused_before_signing(tmp_path):
     with pytest.raises((subprocess.CalledProcessError, SystemExit)):
         srm.verify_zip_is_ours(z, tmp_path / "u")
 
+def test_symlink_app_in_zip_is_refused(tmp_path):
+    """Симлинк вместо Charoite.app обходил codesign-сверку: проверялась ЦЕЛЬ
+    ссылки, а хеш подписывался от чужого архива (круг-2 по PR #366, DS)."""
+    import stat
+    import zipfile
+    z = tmp_path / "Charoite.app.zip"
+    with zipfile.ZipFile(z, "w") as f:
+        zi = zipfile.ZipInfo("Charoite.app")
+        zi.external_attr = (stat.S_IFLNK | 0o755) << 16
+        f.writestr(zi, "/Applications/Charoite.app")
+    import pytest
+    with pytest.raises(SystemExit, match="симлинк"):
+        srm.verify_zip_is_ours(z, tmp_path / "u")
+
