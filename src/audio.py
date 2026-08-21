@@ -761,7 +761,10 @@ class AudioHub:
                 except queue.Empty:
                     continue
                 got = True
-                self._last_frame[c.label] = time.time()
+                # под тем же локом, что и снапшот: новый ключ в словаре во
+                # время его копирования — та же гонка, что и pop у _sinks
+                with self._lock:
+                    self._last_frame[c.label] = time.time()
                 sink = self._sinks.get(c.label)
                 written = sink is not None
                 sink_error = None
@@ -774,7 +777,12 @@ class AudioHub:
                         # полную стенограмму (ревью 20.08, круг 4, DeepSeek).
                         sink.flush()
                     except Exception as e:  # noqa: BLE001 — диск кончился: живём без записи
-                        self._sinks.pop(c.label, None)
+                        # pop — под локом: health_snapshot из STT-потока в это
+                        # же время итерирует _sinks, и смена размера словаря на
+                        # середине итерации роняла бы сам STT RuntimeError'ом
+                        # (ревью 21.08, Gemini + локальная).
+                        with self._lock:
+                            self._sinks.pop(c.label, None)
                         written = False
                         sink_error = e
                 dropped = self._append(c.label, part)
@@ -902,7 +910,10 @@ class AudioHub:
         when *all* capture sources stop delivering frames.  Per-channel ages
         remain in ``channels`` for diagnosis.  The STT thread emits this
         snapshot as NDJSON; absence of that event is itself its liveness
-        signal.  Buffer lengths are read under the same lock as append/cut.
+        signal.  All three dicts are read under the same lock the audio
+        thread mutates them with: iterating ``_sinks`` while ``_pump`` pops a
+        dead one raised RuntimeError and killed the STT thread — the very
+        failure this telemetry exists to expose (review 21.08).
         """
         now = time.time() if now is None else now
         with self._lock:
@@ -910,14 +921,15 @@ class AudioHub:
                 label: max(0.0, len(buf) / self.sr)
                 for label, buf in self._bufs.items()
             }
+            last_frame = dict(self._last_frame)
+            sinks = set(self._sinks)
         labels = list(backlog)
         ages = {
-            label: (max(0.0, now - seen) if (seen := self._last_frame.get(label)) is not None
+            label: (max(0.0, now - seen) if (seen := last_frame.get(label)) is not None
                     else None)
             for label in labels
         }
         seen_ages = [age for age in ages.values() if age is not None]
-        sinks = set(self._sinks)
         channels = {
             label: {
                 "backlog_seconds": backlog[label],
