@@ -162,6 +162,9 @@ final class SuflerService: ObservableObject {
     // «зависли» — см. PipelineWatchdog.sleptBetweenTicks.
     private var lastTickWall = Date()
     private var lastTickUptime = ProcessInfo.processInfo.systemUptime
+    // Первый stt_progress после сна несёт стенной input_age ≈ длительности
+    // сна и надул бы только что перевзведённый якорь обратно (круг 3, GLM).
+    private var discardNextInputAge = false
     var watchdog: Timer?
     private var clock: Timer?
     var userStopped = false
@@ -595,6 +598,7 @@ final class SuflerService: ObservableObject {
             lastEventAt = now
             if lastSTTProgressAt != nil { lastSTTProgressAt = now }
             if lastAudioInputAt != nil { lastAudioInputAt = now }
+            discardNextInputAge = true
             return
         }
         let daemonAge = now.timeIntervalSince(lastEventAt)
@@ -746,7 +750,13 @@ final class SuflerService: ObservableObject {
     private func noteSTTProgress(_ obj: [String: Any]) {
         let now = Date()
         lastSTTProgressAt = now
-        if let age = (obj["input_age_seconds"] as? NSNumber)?.doubleValue {
+        if discardNextInputAge {
+            // тик сна уже перевзвёл якорь; стенной возраст этого события —
+            // эхо сна, не смерть входа. Один пропуск: следующий stt_progress
+            // принесёт честный возраст.
+            discardNextInputAge = false
+            lastAudioInputAt = now
+        } else if let age = (obj["input_age_seconds"] as? NSNumber)?.doubleValue {
             // Python присылает возраст последнего кадра, а не свои настенные
             // часы: смена часового пояса не превращается в ложное зависание.
             lastAudioInputAt = now.addingTimeInterval(-max(0, age))

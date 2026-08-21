@@ -54,6 +54,9 @@ def test_daemon_measures_and_sheds_before_positional_split():
     split = loop.index("res = spk_tracker.split")
     assert policy < split
     assert "jobs = [(chunk, -1, None)]" in loop[policy:split]
+    # полюсность вызова: «убрать not» переворачивает выбор ветки, а
+    # поведенческие тесты держат функцию, не точку применения (круг 3, DS)
+    assert "not stt_runtime.use_positional_split" in loop[policy:split]
     assert '"type": "stt_progress"' in loop
     for metric in ("backlog_seconds", "diarization_ms", "transcription_ms",
                    "input_age_seconds", "recording_ok"):

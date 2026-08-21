@@ -728,7 +728,12 @@ class AudioHub:
         transcribe_file.py. Почти пустые записи (нет встречи) убираем.
         Готовые .wav — в self.finalized[label]: демон отдаёт их диаризации."""
         self.finalized: dict[str, pathlib.Path] = {}
-        sinks, self._sinks = dict(self._sinks), {}
+        # под локом: _pump может ещё жить между _running=False и выходом
+        # потока и делать pop умершего sink — копия словаря на смене размера
+        # уронила бы весь стоп-путь, и .pcm остались бы без финализации
+        # (круг 3, GLM)
+        with self._lock:
+            sinks, self._sinks = dict(self._sinks), {}
         for label, f in sinks.items():
             try:
                 f.close()
