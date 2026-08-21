@@ -12,6 +12,8 @@ import pathlib
 import subprocess
 import sys
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
@@ -92,6 +94,8 @@ def test_manifest_binds_version_to_content(tmp_path):
     assert m.endswith(b"\n")
 
 
+@pytest.mark.skipif(sys.platform != "darwin",
+                    reason="ditto/codesign — только macOS; скрипт подписи владельческий и живёт на маке")
 def test_foreign_bundle_is_refused_before_signing(tmp_path):
     """Подменённый до шага подписи архив не должен получить подпись владельца:
     codesign-сверка обязана отказать на неподписанном/чужом бандле."""
@@ -105,6 +109,8 @@ def test_foreign_bundle_is_refused_before_signing(tmp_path):
     with pytest.raises((subprocess.CalledProcessError, SystemExit)):
         srm.verify_zip_is_ours(z, tmp_path / "u")
 
+@pytest.mark.skipif(sys.platform != "darwin",
+                    reason="ditto/codesign — только macOS; скрипт подписи владельческий и живёт на маке")
 def test_symlink_app_in_zip_is_refused(tmp_path):
     """Симлинк вместо Charoite.app обходил codesign-сверку: проверялась ЦЕЛЬ
     ссылки, а хеш подписывался от чужого архива (круг-2 по PR #366, DS)."""
