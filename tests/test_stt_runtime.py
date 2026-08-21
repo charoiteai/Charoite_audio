@@ -61,3 +61,31 @@ def test_daemon_measures_and_sheds_before_positional_split():
     assert "mark_stt_stage(\"diarization\")" in loop
     assert "mark_stt_stage(\"transcription\")" in loop
     assert "stt-health state=stalled" in source
+
+
+def test_шестисекундный_этаж_входа_держится_при_мелком_чанке():
+    """Докстринг обещает «не раньше шести секунд» — при chunk=2 порог обязан
+    остаться 6.0, а не 2*chunk=4 (ревью 21.08, GLM: мутация 6.0→0 выживала,
+    все прежние тесты звали функцию с chunk>=3, где этаж не работал)."""
+    assert stt_runtime.should_shed_diarization(
+        backlog_seconds=5.9, active=False, chunk_seconds=2.0) is False
+    assert stt_runtime.should_shed_diarization(
+        backlog_seconds=6.0, active=False, chunk_seconds=2.0) is True
+
+
+def test_секундный_этаж_восстановления_держится_при_мелком_чанке():
+    """recover = max(1.0, chunk/2): при chunk=1.5 порог — 1.0, не 0.75."""
+    assert stt_runtime.should_shed_diarization(
+        backlog_seconds=0.8, active=True, chunk_seconds=1.5) is False
+    assert stt_runtime.should_shed_diarization(
+        backlog_seconds=1.1, active=True, chunk_seconds=1.5) is True
+
+
+def test_выбор_ветки_разгрузки_закреплён_поведением():
+    """and→or в инлайновом условии выключал живую диаризацию навсегда при
+    зелёных строковых ассертах (ревью 21.08, GLM) — теперь выбор ветки живёт
+    чистой функцией и держится этими четырьмя случаями."""
+    assert stt_runtime.use_positional_split(lagging=False, has_split=True) is True
+    assert stt_runtime.use_positional_split(lagging=True, has_split=True) is False
+    assert stt_runtime.use_positional_split(lagging=False, has_split=False) is False
+    assert stt_runtime.use_positional_split(lagging=True, has_split=False) is False

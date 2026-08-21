@@ -412,7 +412,12 @@ def main():
     # по имени .md, и разъехавшиеся на границе минуты штампы означали молча
     # пропущенную финальную пересборку.
     hub = AudioHub(cfg, stamp=tr.stamp)
-    hub.on_status = lambda t: emit({"type": "status", "text": t})
+    # Смерть записи на диск — не серый статус, который затрёт следующий же
+    # «⚡ отвечаю»: флаг error красит строку как отказ, и человек видит её
+    # до конца встречи (ревью 21.08, GLM).
+    hub.on_status = lambda t: emit(
+        {"type": "status", "text": t,
+         "error": t.startswith("ЗАПИСЬ НА ДИСК")})
     # Встречи, оборванные аварийно, запускаем ДО чистки и говорим ретеншну их
     # не трогать: «до» тут не про порядок строк, а про то, что запись обязана
     # дожить до конца пересборки. Порядка строк было мало — Popen возвращается
@@ -750,11 +755,19 @@ def main():
         lagging = False
 
         def report_progress(*, force: bool = False) -> None:
+            # Телеметрия не смеет ронять распознавание: любой её сбой — строка
+            # в stderr, а не смерть stt_loop (ревью 21.08, Gemini).
             nonlocal last_progress_emit, last_lag_log
             now_mono = time.monotonic()
             if not force and now_mono - last_progress_emit < STT_PROGRESS_EVERY:
                 return
-            health = hub.health_snapshot()
+            try:
+                health = hub.health_snapshot()
+            except Exception as e:  # noqa: BLE001
+                print(f"stt-health: снапшот не отработал ({e!r})",
+                      file=sys.stderr, flush=True)
+                last_progress_emit = now_mono
+                return
             backlog = float(health["backlog_seconds"])
             input_age = health["input_age_seconds"]
             stage, stage_age = stt_stage_snapshot()
@@ -797,7 +810,12 @@ def main():
                 emit({"type": "status", "text": f"звук: {e} — поток STT живёт"})
                 time.sleep(1)
                 continue
-            health_after_pull = hub.health_snapshot()
+            try:
+                health_after_pull = hub.health_snapshot()
+            except Exception as e:  # noqa: BLE001 — телеметрия не роняет STT
+                print(f"stt-health: снапшот не отработал ({e!r})",
+                      file=sys.stderr, flush=True)
+                health_after_pull = queued_before_pull
             # На входе считаем всю очередь, чтобы включить разгрузку уже на
             # двух чанках. На выходе — остаток, иначе активный режим никогда
             # не увидит порог восстановления: сам текущий чанк всегда >= 3с.
@@ -819,8 +837,17 @@ def main():
                           "запись на диск продолжается"})
                     last_lag_log = 0.0
                 else:
-                    emit({"type": "status", "text":
-                          f"✅ STT догнал живой звук (очередь {backlog:.1f}с)"})
+                    # Пустая очередь при мёртвом входе — не «догнал»: кадры
+                    # перестали приходить, и буфер просто выело (ревью 21.08,
+                    # DeepSeek). Хвалимся только при живом аудио.
+                    input_age = health_after_pull["input_age_seconds"]
+                    if input_age is not None and float(input_age) < 30:
+                        emit({"type": "status", "text":
+                              f"✅ STT догнал живой звук (очередь {backlog:.1f}с)"})
+                    else:
+                        emit({"type": "status", "text":
+                              "STT: очередь пуста, но аудиовход молчит — "
+                              "жду кадров"})
                     print(f"stt-health state=healthy backlog_s={backlog:.1f}",
                           file=sys.stderr, flush=True)
                 report_progress(force=True)
@@ -866,13 +893,18 @@ def main():
                 # заводится только после непустого текста, чтобы пустое
                 # распознавание не плодило «Собеседника-призрака».
                 jobs: list[tuple[object, int | None, object | None]] | None
-                if lagging and spk_tracker is not None and hasattr(spk_tracker, "split"):
+                # выбор ветки — чистой функцией: инлайновое условие мутатор
+                # ломал в «диаризация выключена навсегда» без единого красного
+                # теста (ревью 21.08, GLM)
+                has_split = spk_tracker is not None and hasattr(spk_tracker, "split")
+                if has_split and not stt_runtime.use_positional_split(
+                        lagging=lagging, has_split=has_split):
                     # Позиционная раскладка может породить несколько STT-задач
                     # из одного чанка. Когда очередь уже растёт, важнее один
                     # непрерывный текст с честной канальной меткой; финальный
                     # offline rebuild вернёт точных говорящих по записи.
                     jobs = [(chunk, -1, None)]
-                elif spk_tracker is not None and hasattr(spk_tracker, "split"):
+                elif has_split:
                     mark_stt_stage("diarization")
                     diarization_started = time.monotonic()
                     try:

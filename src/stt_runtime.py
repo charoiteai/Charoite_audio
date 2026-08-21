@@ -26,3 +26,14 @@ def should_shed_diarization(*, backlog_seconds: float, active: bool,
     if active:
         return backlog_seconds > recover
     return backlog_seconds >= enter
+
+
+def use_positional_split(*, lagging: bool, has_split: bool) -> bool:
+    """Whether this chunk goes through live positional diarization.
+
+    Kept as a pure function so both branches of the daemon's job planning
+    are pinned by behavioural tests: a survived ``and``/``or`` mutation in
+    the inline condition meant "diarization silently off forever" while
+    every string-based assertion stayed green (review 21.08, GLM).
+    """
+    return has_split and not lagging

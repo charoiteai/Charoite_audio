@@ -444,6 +444,9 @@ class AudioHub:
         self._bufs: dict[str, np.ndarray] = {}
         self._sinks: dict = {}          # label → открытый .pcm (сырая запись встречи)
         self._last_frame: dict[str, float] = {}
+        # когда канал в последний раз ПЫТАЛИСЬ перезапустить — анти-шторм
+        # отдельно от возраста кадров: см. _watch_streams (ревью 21.08)
+        self._last_try: dict[str, float] = {}
         self._last_check = 0.0
         self._hung: set[str] = set()   # каналы, чей перезапуск завис — больше не трогаем
         # label → [потеря с прошлого отчёта, время отчёта,
@@ -854,6 +857,9 @@ class AudioHub:
                 continue
             if c.label in self._hung:
                 continue        # перезапуск этого канала уже завис — не трогаем повторно
+            if now - self._last_try.get(c.label, 0.0) < 30:
+                continue        # анти-шторм: между попытками — пауза, но возраст честный
+            self._last_try[c.label] = now
             outcome = self._restart_guarded(c)
             if outcome is None:
                 msg = f"🎙 канал {c.label} молчал {int(silent)}с — аудио-стрим перезапущен"
@@ -866,9 +872,16 @@ class AudioHub:
                        "встреча пишется остальными")
             else:
                 msg = f"🎙 канал {c.label}: рестарт стрима не удался ({outcome}), попробую через 30с"
-            # обновляем в обоих исходах: выдернутое устройство иначе даёт
-            # рестарт-шторм с миганием статуса каждые 5 секунд
-            self._last_frame[c.label] = time.time()
+            if outcome is None:
+                # Возраст кадров сбрасываем ТОЛЬКО при удачном перезапуске.
+                # Раньше он сбрасывался «в обоих исходах» как анти-шторм, и у
+                # выдернутого устройства возраст канала колебался 0..35с —
+                # третий контур watchdog (аудиовход, порог 100с) не срабатывал
+                # НИКОГДА, ровно в своём главном сценарии (ревью 21.08,
+                # GLM + DeepSeek независимо). Анти-шторм теперь держит
+                # _last_try, а _last_frame говорит правду.
+                with self._lock:
+                    self._last_frame[c.label] = time.time()
             if self.on_status is not None:
                 try:
                     self.on_status(msg)

@@ -34,6 +34,7 @@ def _hub(sr=16000, chunk_s=3.0, overlap_s=0.5, vad_db=-45.0):
     # иначе тест падает на AttributeError вместо проверки поведения.
     hub._hung = set()
     hub._last_frame = {}
+    hub._last_try = {}
     hub._last_check = 0.0
     hub._running = False
     hub.captures = []

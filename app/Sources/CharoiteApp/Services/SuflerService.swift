@@ -157,6 +157,11 @@ final class SuflerService: ObservableObject {
     private var lastEventAt = Date()
     private var lastSTTProgressAt: Date?
     private var lastAudioInputAt: Date?
+    // Пара часов прошлого тика watchdog: по расхождению стенных и uptime
+    // (во сне стоит, как time.monotonic демона) отличаем «проспали» от
+    // «зависли» — см. PipelineWatchdog.sleptBetweenTicks.
+    private var lastTickWall = Date()
+    private var lastTickUptime = ProcessInfo.processInfo.systemUptime
     var watchdog: Timer?
     private var clock: Timer?
     var userStopped = false
@@ -478,6 +483,8 @@ final class SuflerService: ObservableObject {
             lastEventAt = Date()
             lastSTTProgressAt = nil
             lastAudioInputAt = nil
+            lastTickWall = Date()
+            lastTickUptime = ProcessInfo.processInfo.systemUptime
             watchdog?.invalidate()
             watchdog = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.checkAlive() }
@@ -574,6 +581,22 @@ final class SuflerService: ObservableObject {
     private func checkAlive() {
         guard isRunning, let p = process, p.isRunning else { return }
         let now = Date()
+        let uptime = ProcessInfo.processInfo.systemUptime
+        let wallDelta = now.timeIntervalSince(lastTickWall)
+        let uptimeDelta = uptime - lastTickUptime
+        lastTickWall = now
+        lastTickUptime = uptime
+        if PipelineWatchdog.sleptBetweenTicks(wallDelta: wallDelta,
+                                              uptimeDelta: uptimeDelta) {
+            // Мак спал: все якоря — стенные, после пробуждения каждый из них
+            // равен длительности сна, и здоровый демон улетел бы в рестарт
+            // (три сна подряд — в giveUp). Перевзводим якоря и даём демону
+            // один тик на первый живой hb (ревью 21.08, DeepSeek).
+            lastEventAt = now
+            if lastSTTProgressAt != nil { lastSTTProgressAt = now }
+            if lastAudioInputAt != nil { lastAudioInputAt = now }
+            return
+        }
         let daemonAge = now.timeIntervalSince(lastEventAt)
         let sttAge = lastSTTProgressAt.map { now.timeIntervalSince($0) }
         let audioAge = lastAudioInputAt.map { now.timeIntervalSince($0) }
@@ -582,18 +605,21 @@ final class SuflerService: ObservableObject {
             sttProgressAge: sttAge,
             audioInputAge: audioAge
         ) else { return }
-        if let sttAge, sttAge > PipelineWatchdog.timeout {
-            fail(L.t("Распознавание замерло — перезапускаю запись",
-                     "Transcription stalled — restarting recording",
-                     "转写已停滞——正在重启录音"))
-        } else if let audioAge, audioAge > PipelineWatchdog.timeout {
-            fail(L.t("Аудиопоток замер — перезапускаю запись",
-                     "Audio input stalled — restarting recording",
-                     "音频输入已停滞——正在重启录音"))
-        } else {
+        // Порядок веток: полный молчок демона — первым. sttAge всегда не
+        // меньше daemonAge, и прежний порядок при зависании всего процесса
+        // валил вину на распознавание (ревью 21.08, Gemini).
+        if daemonAge > PipelineWatchdog.timeout {
             fail(L.t("Запись замерла — перезапускаю",
                      "Recording stalled — restarting",
                      "录音停滞——正在重启"))
+        } else if let sttAge, sttAge > PipelineWatchdog.timeout {
+            fail(L.t("Распознавание замерло — перезапускаю запись",
+                     "Transcription stalled — restarting recording",
+                     "转写已停滞——正在重启录音"))
+        } else {
+            fail(L.t("Аудиопоток замер — перезапускаю запись",
+                     "Audio input stalled — restarting recording",
+                     "音频输入已停滞——正在重启录音"))
         }
         p.terminate()
         DispatchQueue.global().asyncAfter(deadline: .now() + 5.0) {
