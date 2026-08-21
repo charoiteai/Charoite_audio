@@ -227,6 +227,33 @@ final class UpdateService: ObservableObject {
                                "该发布中没有 Charoite.app.zip"))
             }
 
+            // Якорь №1 (карточка №24) — ДО скачивания архива: манифест
+            // «<версия>  <хеш>» подписан ключом владельца, которого нет ни
+            // в репозитории, ни в секретах CI. Сумма из релиза ловит битую
+            // загрузку, но не подмену — кто дотянулся до релиза, подписал бы
+            // и её. Байты манифеста — сырые: подпись стоит на файле как есть.
+            guard let manifest = try? await raw(assets["Charoite.app.zip.manifest"]),
+                  let sigRaw = try? await raw(assets["Charoite.app.zip.manifest.sig"]),
+                  let sig = UpdateAuthenticity.decodeSignature(sigRaw),
+                  UpdateAuthenticity.manifestSignatureValid(manifest: manifest,
+                                                            signature: sig) else {
+                throw Fail(L.t(
+                    "у выпуска нет верной подписи манифеста — установку отменил",
+                    "the release has no valid manifest signature — installation cancelled",
+                    "该发布缺少有效的清单签名 —— 已取消安装"))
+            }
+            // Связка версий — против даунгрейда: реплей старой честной
+            // тройки под новым тегом (круг по PR #366, GLM + DeepSeek).
+            let manifestVersion = UpdateAuthenticity.manifestVersion(manifest)
+            guard UpdateAuthenticity.versionBindingOK(
+                manifestVersion: manifestVersion,
+                tag: tag, current: VersionStatusService.appVersion) else {
+                throw Fail(L.t(
+                    "версия в подписанном манифесте не сходится с выпуском — установку отменил",
+                    "signed manifest version does not match the release — installation cancelled",
+                    "签名清单中的版本与该发布不符 —— 已取消安装"))
+            }
+
             let work = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("charoite-update-\(tag)")
             try? FileManager.default.removeItem(at: work)
@@ -238,8 +265,9 @@ final class UpdateService: ObservableObject {
             }
 
             stage = .verifying
-            let published = try? await string(assets["Charoite.app.zip.sha256"])
-            guard Self.checksumMatches(expected: published, actual: sum) else {
+            guard Self.checksumMatches(
+                expected: UpdateAuthenticity.manifestChecksum(manifest),
+                actual: sum) else {
                 throw Fail(L.t("контрольная сумма не совпала — установку отменил",
                                "checksum mismatch — installation cancelled",
                                "校验和不匹配 —— 已取消安装"))
@@ -262,6 +290,39 @@ final class UpdateService: ObservableObject {
                 throw Fail(L.t("в архиве нет приложения",
                                "no app inside the archive",
                                "压缩包内没有应用"))
+            }
+            // Симлинк вместо каталога приложения — обход всех проверок ниже:
+            // Info.plist, codesign и ditto пошли бы по ЦЕЛИ ссылки, а не по
+            // содержимому архива (круг-2 по PR #366, DeepSeek).
+            if (try? newApp.resourceValues(forKeys: [.isSymbolicLinkKey]))?
+                .isSymbolicLink == true {
+                throw Fail(L.t(
+                    "в архиве вместо приложения — ссылка, установку отменил",
+                    "the archive contains a symlink instead of the app — installation cancelled",
+                    "压缩包内是符号链接而非应用 —— 已取消安装"))
+            }
+            // Версия распакованного бандла обязана совпасть с подписанной:
+            // ловит и ошибку подписанта, и архив, подложенный до подписи
+            // (круг по PR #366, DeepSeek — скрипт теперь тоже сверяет, это
+            // второй пояс того же ремня).
+            let shipped = (NSDictionary(contentsOf: newApp
+                .appendingPathComponent("Contents/Info.plist"))?
+                .object(forKey: "CFBundleShortVersionString") as? String)
+                .map(VersionStatus.normalize)
+            guard let shipped,
+                  shipped == manifestVersion.map(VersionStatus.normalize) else {
+                throw Fail(L.t(
+                    "версия приложения в архиве не совпала с подписанной — установку отменил",
+                    "the app version inside the archive does not match the signed one — installation cancelled",
+                    "压缩包内的应用版本与签名版本不符 —— 已取消安装"))
+            }
+            // Якорь №2: подпись Apple нашей командой. Собрать бандл с ней
+            // нельзя даже с полным доступом к CI — сертификат выдаёт Apple.
+            guard UpdateAuthenticity.bundleSignatureValid(at: newApp) else {
+                throw Fail(L.t(
+                    "подпись скачанного приложения не наша — установку отменил",
+                    "the downloaded app is not signed by us — installation cancelled",
+                    "下载的应用签名不符 —— 已取消安装"))
             }
 
             let script = work.appendingPathComponent("replace.sh")
@@ -305,10 +366,10 @@ final class UpdateService: ObservableObject {
         return out
     }
 
-    private func string(_ url: URL?) async throws -> String? {
+    private func raw(_ url: URL?) async throws -> Data? {
         guard let url else { return nil }
         let (data, _) = try await URLSession.shared.data(from: url)
-        return String(data: data, encoding: .utf8)
+        return data
     }
 
     /// Скачивание с процентом и подсчёт суммы отдельным проходом.
