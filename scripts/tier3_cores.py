@@ -24,6 +24,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
+import live_gate  # noqa: E402
 import install_profile  # noqa: E402
 import tier3  # noqa: E402
 
@@ -143,6 +144,9 @@ def main() -> None:
             print(f"нет графов с папкой «Ядра» — искал в {graphs.where()}")
             return
         for g in found:
+            if live_gate.night_is_over():
+                print("⏹ время ночного прогона вышло — остальные графы завтра")
+                break
             run(g, apply_mode, mark_mode, args.since_last)
         return
     run(args.graph or graphs.configured_graph() or pathlib.Path.cwd(),

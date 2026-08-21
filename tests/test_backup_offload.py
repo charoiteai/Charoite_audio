@@ -16,6 +16,8 @@ from __future__ import annotations
 import pathlib
 import sys
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -38,7 +40,9 @@ def test_snapshot_path_is_outside_the_graph(tmp_path):
     g = _graph(tmp_path)
     dest = charoite_paths.graph_backups(g, "cloud_backup", root=tmp_path / "data")
     assert not dest.is_relative_to(g), "снимок остался внутри графа"
-    assert dest.parts[-2:] == ("рабочий_граф", "cloud_backup"), dest
+    assert dest.name == "cloud_backup", dest
+    # имя + хеш полного пути: одноимённые графы из разных vault не смешиваются
+    assert dest.parent.name.startswith("рабочий_граф-"), dest
 
 
 def test_snapshots_of_different_graphs_do_not_mix(tmp_path):
@@ -79,6 +83,9 @@ def test_snapshot_survives_rewrite_of_the_original(tmp_path, monkeypatch):
     assert (dest / "Встречи" / "2026-08-21_1103.md").read_text(encoding="utf-8") == "узел встречи"
 
 
+@pytest.mark.skipif(sys.platform != "darwin",
+                    reason="clonefile — только macOS/APFS; откат на copy2 "
+                           "покрыт соседним тестом")
 def test_clone_is_used_and_gives_an_independent_file(tmp_path):
     """Клон обязан отработать на APFS — иначе снимок опять платит за байты.
 
@@ -105,3 +112,30 @@ def test_copy_is_the_fallback_when_clone_fails(tmp_path, monkeypatch):
 
     assert (dest / "Встречи" / "2026-08-21_1103.md").read_text(encoding="utf-8") == "узел встречи"
     assert (dest / "Ядра" / "Оплата.md").read_text(encoding="utf-8") == "ядро темы"
+
+
+def test_same_name_graphs_from_different_vaults_do_not_mix(tmp_path):
+    """Круг по PR #363 (DeepSeek): ключ только по имени папки смешивал снимки
+    одноимённых графов — ротация одного стирала срез другого."""
+    a = charoite_paths.graph_backups(tmp_path / "v1" / "Работа", root=tmp_path / "d")
+    b = charoite_paths.graph_backups(tmp_path / "v2" / "Работа", root=tmp_path / "d")
+    assert a != b
+
+
+def test_rotation_never_eats_current_snapshot_or_foreign_files(tmp_path, monkeypatch):
+    """Круг по PR #363 (GLM + DeepSeek, Critical): сортировка по имени штампа
+    при «одном срезе» удаляла ТОЛЬКО ЧТО созданный снимок, если рядом лежал
+    штамп новее (импорт старой встречи, ретрай), — enforce_boundaries
+    оставался без копии и вместо отката УДАЛЯЛ файлы."""
+    g = _graph(tmp_path)
+    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    root = cloud_review.backup_root(g)
+    root.mkdir(parents=True)
+    (root / "2026-12-31_2359").mkdir()          # «более новый» штамп соседа
+    (root / "заметка-пользователя.txt").write_text("не снимок", encoding="utf-8")
+
+    dest = cloud_review.backup_graph(g, "2026-08-21_1200")
+
+    assert dest.exists(), "ротация съела только что созданный снимок"
+    assert not (root / "2026-12-31_2359").exists(), "чужой срез не ротирован"
+    assert (root / "заметка-пользователя.txt").exists(), "ротация трогает не-каталоги"

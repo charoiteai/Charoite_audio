@@ -30,6 +30,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import pathlib
 
@@ -122,7 +123,12 @@ def graph_backups(graph: pathlib.Path, kind: str = "cloud_backup",
     те же права 0700, никакой отправки в облако. Имя графа берём у самой
     папки, чтобы снимки разных графов не смешались.
     """
-    base = (root or ROOT) / BACKUPS_DIR / pathlib.Path(graph).resolve().name
+    g = pathlib.Path(graph).resolve()
+    # Имя + хеш ПОЛНОГО пути: два графа «Работа» из разных vault иначе
+    # делили бы один каталог — ротация одного стирала бы снимок другого,
+    # а restore возвращал бы файлы чужого графа (круг по PR #363, DeepSeek).
+    digest = hashlib.sha256(str(g).encode("utf-8")).hexdigest()[:8]
+    base = (root or ROOT) / BACKUPS_DIR / f"{g.name}-{digest}"
     return base / kind
 
 

@@ -30,3 +30,4 @@ app-android/.kotlin/
 # сбор тестов в CI. Лежит на диске, в историю не попадает.
 tests/test_questions.py
 backups/
+app-ios/build/

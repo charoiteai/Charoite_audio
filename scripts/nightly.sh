@@ -31,7 +31,12 @@ export PYTHONUNBUFFERED=1
 # 11:03 шла поверх ночного цикла, и стенограмма рвалась. Потолок видят и шаги
 # (через live_gate.night_is_over), поэтому длинный шаг прервётся между темами,
 # а не только на границе шагов. Несделанное соберётся следующей ночью.
-export CHAROITE_NIGHTLY_UNTIL=$(( $(date +%s) + ${NIGHTLY_MAX_H:-4} * 3600 ))
+# Мусор в NIGHTLY_MAX_H (например «4h») валил арифметику, а set -e выносил
+# скрипт ДО раннего брифа — вопреки правилу «бриф и статус идут всегда»
+# (круг по PR #363, GLM). Не число — молча берём дефолт.
+NIGHTLY_MAX_H=${NIGHTLY_MAX_H:-4}
+case "$NIGHTLY_MAX_H" in (""|*[!0-9]*) NIGHTLY_MAX_H=4;; esac
+export CHAROITE_NIGHTLY_UNTIL=$(( $(date +%s) + NIGHTLY_MAX_H * 3600 ))
 rc=0
 STARTED=$(date '+%F %T')
 # Куда кладём машиночитаемый итог. Логи launchd живут в /tmp и исчезают при
@@ -98,7 +103,15 @@ if [ "$(date +%u)" = "7" ] || [ "${NIGHTLY_TIER3_FULL:-0}" = "1" ]; then
   TIER3_MODE=""
   echo "полная ревизия (воскресенье или NIGHTLY_TIER3_FULL=1)"
 fi
-$PY scripts/tier3_cores.py --all-graphs --auto $TIER3_MODE || { echo "❌ РЕВИЗИЯ ЯДЕР УПАЛА (код $?)"; rc=1; FAILED="$FAILED ревизия-ядер"; }
+# Самый долгий шаг ночи обязан слушаться потолка так же, как остальные:
+# воскресный полный прогон квадратичен и шёл бы часами (круг по PR #363,
+# GLM + DeepSeek — «инвариант ночи не выполняется для шага, который дольше
+# всех»). Вторая граница — внутри tier3_cores, между графами.
+if overdue; then
+  skip_late "ревизия ядер" "tier3(поздно)"
+else
+  $PY scripts/tier3_cores.py --all-graphs --auto $TIER3_MODE || { echo "❌ РЕВИЗИЯ ЯДЕР УПАЛА (код $?)"; rc=1; FAILED="$FAILED ревизия-ядер"; }
+fi
 step "dossiers"
 # Сводки по темам поверх ядер + индекс для поиска. Инкрементально:
 # пересобираются только темы, у которых изменился хоть один источник.

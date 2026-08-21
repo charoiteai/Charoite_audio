@@ -50,9 +50,9 @@ import graph_updater  # noqa: E402
 import privacy  # noqa: E402
 
 BACKUP_DIR = ".cloud_backup"
-BACKUP_KEEP = 1             # один срез: откатить последнюю облачную правку.
-# Было 10 «как в tier3» — десять полных копий графа не пригодились ни разу,
-# а весили 1.7 ГБ и 48K файлов (решение владельца 21.08: «хранить 1 срез»).
+# Снимков держим ровно один — срез ТЕКУЩЕЙ правки (решение владельца 21.08:
+# «хранить 1 срез»; десять полных копий графа не пригодились ни разу, а
+# весили 1.7 ГБ и 48K файлов). Ротация — в backup_graph, без констант.
 TIMEOUT = 30 * 60           # разбор длинной встречи идёт минуты, но не часы
 MIN_REPORT = 60             # страховка от «ok» и пустой строки
 
@@ -185,8 +185,15 @@ def backup_graph(graph: pathlib.Path, stamp: str) -> pathlib.Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         if not _clone(p, target):
             shutil.copy2(p, target)
-    old = sorted(root.iterdir(), reverse=True)[BACKUP_KEEP:]
-    for stale in old:
+    # Ротация: всё, кроме ТОЛЬКО ЧТО созданного, и только каталоги.
+    # Прежняя сортировка по имени штампа с KEEP=1 удаляла свежий снимок,
+    # если рядом лежал штамп новее (импорт старой встречи, ретрай, два
+    # воркера), — и enforce_boundaries оставался без копии: вместо отката
+    # файлы УДАЛЯЛИСЬ (круг по PR #363: GLM и DeepSeek независимо, Critical).
+    # Семантика «один срез» = «срез текущей правки», без арифметики.
+    for stale in root.iterdir():
+        if stale == dest or not stale.is_dir():
+            continue        # чужие файлы в каталоге — не наши, не трогаем
         shutil.rmtree(stale, ignore_errors=True)
     return dest
 
@@ -376,7 +383,14 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         else:
             lf.write(f"[cloud-review] ревизия НЕ сохранена (код {code}, "
                      f"{len(text)} знаков) — см. {rev.name}.partial\n")
-        if may_edit and backup is not None:
+        if may_edit and backup is not None and not backup.exists():
+            # Снимок исчез (конкурентная ротация соседнего воркера — замок
+            # графа это №40). Без копии enforce не откатывает, а УДАЛЯЕТ:
+            # restore видит пустоту и path.unlink(). Честнее не трогать
+            # файлы вовсе и сказать об этом громко.
+            lf.write("[cloud-review] СНИМОК ИСЧЕЗ — границы не сверяю, "
+                     "файлы не трогаю; проверь правки руками\n")
+        elif may_edit and backup is not None:
             reverted, removed, touched = enforce_boundaries(before, graph, backup)
             lf.write(f"[cloud-review] правок графа: {touched}"
                      + (f", откатано запрещённых: {', '.join(reverted)}"
