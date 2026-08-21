@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import os
 import pathlib
 import re
 import shutil
@@ -297,12 +298,20 @@ def tests_for(root: pathlib.Path, module: pathlib.Path) -> list[str]:
 
 def run_tests(cwd: pathlib.Path, targets: list[str], timeout: int) -> bool:
     """True — прогон зелёный (мутант выжил, тесты его не заметили)."""
+    # Без байткода. Python сверяет .pyc с исходником по mtime (секунды) и
+    # размеру: два мутанта одной длины, записанные в одну секунду, для него
+    # один файл — второй исполняется байткодом первого, и вердикт достаётся
+    # чужому коду. Так 21.08 «выжил» мутант 6.0→0 в stt_runtime, под который
+    # тест написан и который вручную падает. Врёт в обе стороны: убитый сосед
+    # прикрывает выжившего и наоборот. Переменная окружения, а не только
+    # `-B`: тесты запускают демон подпроцессом, ему тоже нельзя писать .pyc.
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     try:
         # Без `-x`: он останавливал прогон на первой ошибке, и упавший по
         # окружению тест выдавал бы «мутант убит» независимо от мутации.
-        r = subprocess.run([sys.executable, "-m", "pytest", *targets, "-q",
+        r = subprocess.run([sys.executable, "-B", "-m", "pytest", *targets, "-q",
                             "-p", "no:cacheprovider", "--timeout", str(timeout)],
-                           cwd=cwd, capture_output=True, text=True,
+                           cwd=cwd, env=env, capture_output=True, text=True,
                            timeout=timeout * 4)
     except subprocess.TimeoutExpired:
         return False          # завис — считаем убитым: поведение изменилось
@@ -382,6 +391,10 @@ def main(argv: list[str]) -> int:
         # может падать — и тогда мутанты его модуля «убиты» без участия
         # мутации (ревью 20.08, DeepSeek).
         subsets = {tuple(tests_for(work, m.path)) for m in plan}
+        # Свежий worktree байткода не содержит, но запрет записи не мешает
+        # ЧТЕНИЮ уже лежащего .pyc — на всякий случай выметаем.
+        for cache in work.rglob("__pycache__"):
+            shutil.rmtree(cache, ignore_errors=True)
         print(f"Базовый прогон (без мутаций), наборов: {len(subsets)}…")
         broken = [ts for ts in sorted(subsets)
                   if not run_tests(work, list(ts), args.timeout)]
