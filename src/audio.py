@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import pathlib
 import queue
+import sys
 import threading
 import time
 import wave
@@ -443,6 +444,9 @@ class AudioHub:
         self._bufs: dict[str, np.ndarray] = {}
         self._sinks: dict = {}          # label → открытый .pcm (сырая запись встречи)
         self._last_frame: dict[str, float] = {}
+        # когда канал в последний раз ПЫТАЛИСЬ перезапустить — анти-шторм
+        # отдельно от возраста кадров: см. _watch_streams (ревью 21.08)
+        self._last_try: dict[str, float] = {}
         self._last_check = 0.0
         self._hung: set[str] = set()   # каналы, чей перезапуск завис — больше не трогаем
         # label → [потеря с прошлого отчёта, время отчёта,
@@ -724,7 +728,12 @@ class AudioHub:
         transcribe_file.py. Почти пустые записи (нет встречи) убираем.
         Готовые .wav — в self.finalized[label]: демон отдаёт их диаризации."""
         self.finalized: dict[str, pathlib.Path] = {}
-        sinks, self._sinks = dict(self._sinks), {}
+        # под локом: _pump может ещё жить между _running=False и выходом
+        # потока и делать pop умершего sink — копия словаря на смене размера
+        # уронила бы весь стоп-путь, и .pcm остались бы без финализации
+        # (круг 3, GLM)
+        with self._lock:
+            sinks, self._sinks = dict(self._sinks), {}
         for label, f in sinks.items():
             try:
                 f.close()
@@ -760,9 +769,13 @@ class AudioHub:
                 except queue.Empty:
                     continue
                 got = True
-                self._last_frame[c.label] = time.time()
+                # под тем же локом, что и снапшот: новый ключ в словаре во
+                # время его копирования — та же гонка, что и pop у _sinks
+                with self._lock:
+                    self._last_frame[c.label] = time.time()
                 sink = self._sinks.get(c.label)
                 written = sink is not None
+                sink_error = None
                 if sink is not None:
                     try:
                         sink.write((np.clip(part, -1, 1) * 32767).astype("<i2").tobytes())
@@ -771,10 +784,24 @@ class AudioHub:
                         # где исключение глотается, — и мы бы уже пообещали
                         # полную стенограмму (ревью 20.08, круг 4, DeepSeek).
                         sink.flush()
-                    except Exception:  # noqa: BLE001 — диск кончился: живём без записи
-                        self._sinks.pop(c.label, None)
+                    except Exception as e:  # noqa: BLE001 — диск кончился: живём без записи
+                        # pop — под локом: health_snapshot из STT-потока в это
+                        # же время итерирует _sinks, и смена размера словаря на
+                        # середине итерации роняла бы сам STT RuntimeError'ом
+                        # (ревью 21.08, Gemini + локальная).
+                        with self._lock:
+                            self._sinks.pop(c.label, None)
                         written = False
+                        sink_error = e
                 dropped = self._append(c.label, part)
+                if sink_error is not None:
+                    # Не ждём переполнения минутного STT-буфера, чтобы сказать
+                    # о смерти страховочной записи. После pop эта ветка для
+                    # канала больше не повторится, то есть статус не спамит.
+                    msg = (f"ЗАПИСЬ НА ДИСК ОСТАНОВИЛАСЬ ({c.label}: {sink_error}) — "
+                           "после сбоя этот звук будет не восстановить")
+                    print(msg, file=sys.stderr, flush=True)
+                    self._say(msg)
                 if dropped:
                     # Вне лока: статус уходит в UI через колбэк демона, и
                     # держать на нём аудиопоток нельзя. Факт записи берём
@@ -835,6 +862,9 @@ class AudioHub:
                 continue
             if c.label in self._hung:
                 continue        # перезапуск этого канала уже завис — не трогаем повторно
+            if now - self._last_try.get(c.label, 0.0) < 30:
+                continue        # анти-шторм: между попытками — пауза, но возраст честный
+            self._last_try[c.label] = now
             outcome = self._restart_guarded(c)
             if outcome is None:
                 msg = f"🎙 канал {c.label} молчал {int(silent)}с — аудио-стрим перезапущен"
@@ -847,9 +877,16 @@ class AudioHub:
                        "встреча пишется остальными")
             else:
                 msg = f"🎙 канал {c.label}: рестарт стрима не удался ({outcome}), попробую через 30с"
-            # обновляем в обоих исходах: выдернутое устройство иначе даёт
-            # рестарт-шторм с миганием статуса каждые 5 секунд
-            self._last_frame[c.label] = time.time()
+            if outcome is None:
+                # Возраст кадров сбрасываем ТОЛЬКО при удачном перезапуске.
+                # Раньше он сбрасывался «в обоих исходах» как анти-шторм, и у
+                # выдернутого устройства возраст канала колебался 0..35с —
+                # третий контур watchdog (аудиовход, порог 100с) не срабатывал
+                # НИКОГДА, ровно в своём главном сценарии (ревью 21.08,
+                # GLM + DeepSeek независимо). Анти-шторм теперь держит
+                # _last_try, а _last_frame говорит правду.
+                with self._lock:
+                    self._last_frame[c.label] = time.time()
             if self.on_status is not None:
                 try:
                     self.on_status(msg)
@@ -883,6 +920,49 @@ class AudioHub:
                 merged = merged[-cap:]
             self._bufs[label] = merged
         return dropped
+
+    def health_snapshot(self, *, now: float | None = None) -> dict[str, object]:
+        """Cheap live-pipeline gauges; never consumes or copies audio.
+
+        ``input_age_seconds`` is the freshest channel age, so it grows only
+        when *all* capture sources stop delivering frames.  Per-channel ages
+        remain in ``channels`` for diagnosis.  The STT thread emits this
+        snapshot as NDJSON; absence of that event is itself its liveness
+        signal.  All three dicts are read under the same lock the audio
+        thread mutates them with: iterating ``_sinks`` while ``_pump`` pops a
+        dead one raised RuntimeError and killed the STT thread — the very
+        failure this telemetry exists to expose (review 21.08).
+        """
+        now = time.time() if now is None else now
+        with self._lock:
+            backlog = {
+                label: max(0.0, len(buf) / self.sr)
+                for label, buf in self._bufs.items()
+            }
+            last_frame = dict(self._last_frame)
+            sinks = set(self._sinks)
+        labels = list(backlog)
+        ages = {
+            label: (max(0.0, now - seen) if (seen := last_frame.get(label)) is not None
+                    else None)
+            for label in labels
+        }
+        seen_ages = [age for age in ages.values() if age is not None]
+        channels = {
+            label: {
+                "backlog_seconds": backlog[label],
+                "input_age_seconds": ages[label],
+                "recording": label in sinks,
+            }
+            for label in labels
+        }
+        return {
+            "backlog_seconds": max(backlog.values(), default=0.0),
+            "input_age_seconds": min(seen_ages, default=None),
+            "recording_ok": (not self.record_on
+                             or all(label in sinks for label in labels)),
+            "channels": channels,
+        }
 
     _DROP_REPORT_S = 30.0     # чаще — спам в ленте: отставание длится минутами
 
