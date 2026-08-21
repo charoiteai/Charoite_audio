@@ -37,6 +37,9 @@ targets:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         CFBundleVersion: "6"
+        # Стандартное шифрование (HTTPS) — экспортных ограничений нет; без
+        # этого ключа каждый TestFlight-билд ждёт ручного ответа в ASC.
+        ITSAppUsesNonExemptEncryption: false
         # NSUbiquitousContainers убран 03.08: собственный iCloud-контейнер
         # приложения (iCloud.ai.charoite.inbox) в доставке не участвует с
         # 27.07 — он неделями не материализовался на Mac, и доставка ушла в

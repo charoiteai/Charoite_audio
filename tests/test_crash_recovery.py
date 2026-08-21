@@ -158,6 +158,9 @@ def test_finalize_publishes_wav_atomically(tmp_path):
 
     hub = object.__new__(audio.AudioHub)
     hub.sr = 16000
+    # в бою лок ставит конструктор; _finalize_recordings забирает _sinks
+    # под ним (круг 3, GLM) — стаб обязан повторять боевые поля
+    hub._lock = __import__("threading").Lock()
     pcm = tmp_path / "s_mic.pcm"
     pcm.write_bytes(b"\0" * (16000 * 2 * 6))       # 6 секунд, больше порога мусора
     hub._sinks = {"mic": pcm.open("ab")}

@@ -24,6 +24,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
+import live_gate  # noqa: E402
 import install_profile  # noqa: E402
 import tier3  # noqa: E402
 
@@ -74,8 +75,13 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
     # Отметку двигаем только после состоявшегося прогона: без NLI-модели или с
     # лежащей Ollama ревизия молча возвращает пустой результат, и сдвинутая
     # отметка вычеркнула бы эти ядра из фокуса навсегда.
-    if r["ran"]:
+    if r["ran"] and not r.get("stopped"):
         _save_stamp(graph, started)
+    elif r.get("stopped"):
+        # Ревизию оборвал потолок ночи: судимое досмотрено, отметка стоит
+        # на месте — завтра инкремент возьмёт те же свежие ядра заново.
+        print(f"{graph.name}: ревизия остановлена потолком ночи — "
+              "отметка не сдвинута", flush=True)
     n = sum(len(r[k]) for k in ("dups", "nests", "border"))
     took = time.time() - started
     if not r["ran"]:
@@ -143,6 +149,9 @@ def main() -> None:
             print(f"нет графов с папкой «Ядра» — искал в {graphs.where()}")
             return
         for g in found:
+            if live_gate.night_is_over():
+                print("⏹ время ночного прогона вышло — остальные графы завтра")
+                break
             run(g, apply_mode, mark_mode, args.since_last)
         return
     run(args.graph or graphs.configured_graph() or pathlib.Path.cwd(),
