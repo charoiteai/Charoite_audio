@@ -7,6 +7,7 @@
 офлайн-пересборка его возвращала, а живая лента шла кусками — жалоба
 «переводит кусками, не всю речь в онлайне».
 """
+import io
 import pathlib
 import sys
 import threading
@@ -34,7 +35,10 @@ def Hub(recording: bool = True, chunk_s: float = 3.0, overlap_s: float = 0.5):
     hub.on_frame = None
     hub._last_frame = {}
     hub._watch_streams = lambda: None
-    hub._sinks = {"mic": object()} if recording else {}
+    # Настоящий file-like sink: `_pump` пишет и flush'ит его ровно как .pcm.
+    # Голый object раньше был достаточен, пока тесты не проверяли немедленную
+    # видимость смерти записи, но реальным состоянием runtime он не является.
+    hub._sinks = {"mic": io.BytesIO()} if recording else {}
     hub.record_on = recording
     hub.chunk_s = chunk_s
     hub.overlap_s = overlap_s
