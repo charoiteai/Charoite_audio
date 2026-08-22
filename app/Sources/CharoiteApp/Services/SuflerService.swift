@@ -446,8 +446,10 @@ final class SuflerService: ObservableObject {
         // append, не пересоздание: авто-рестарт после крэша затирал трейсбек
         // ровно в момент, когда он нужен для диагноза
         if !FileManager.default.fileExists(atPath: errURL.path) {
-            FileManager.default.createFile(atPath: errURL.path, contents: nil)
+            FileManager.default.createPrivateFile(atPath: errURL.path)   // 0600 сразу, не по umask
         }
+        FileManager.default.makePrivate(atPath: errURL.path)   // лог старой установки
+        LogTrim.trim(errURL)   // потолок: хвост остаётся, гигабайты — нет
         let errFH = try? FileHandle(forWritingTo: errURL)
         errFH?.seekToEndOfFile()
         p.standardError = errFH ?? FileHandle.nullDevice

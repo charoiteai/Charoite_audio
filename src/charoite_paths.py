@@ -154,3 +154,47 @@ def harden_existing(root: pathlib.Path | None = None) -> int:
             except OSError:
                 continue
     return fixed
+
+
+# Бессрочные append-логи (mlx_server.log, daemon.err.log) росли без потолка:
+# у долгоживущей установки это гигабайты кусков стенограмм на диске (аудит
+# 16.08, п.7). Потолок — при старте, хвост сохраняется: именно он нужен для
+# диагноза последнего сбоя.
+LOG_MAX_BYTES = 20 * 1024 * 1024
+LOG_KEEP_BYTES = 2 * 1024 * 1024
+
+
+def trim_log(path: pathlib.Path, max_bytes: int = LOG_MAX_BYTES,
+             keep_bytes: int = LOG_KEEP_BYTES) -> bool:
+    """Усечь лог до хвоста, если он перерос max_bytes. True — усекали.
+
+    Хвост режется по границе строки, чтобы первая строка не была
+    обрывком; права файла не трогаются (он уже 0600). Ошибки — не повод
+    ронять запуск: лог важнее отсутствия лога, но встреча важнее лога.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    if size <= max_bytes:
+        return False
+    try:
+        with path.open("rb") as f:
+            f.seek(size - keep_bytes)
+            tail = f.read()
+        cut = tail.find(b"\n")
+        if 0 <= cut < len(tail) - 1:
+            tail = tail[cut + 1:]
+        # Через временный файл и rename: упасть между truncate и записью —
+        # остаться без хвоста, ради которого всё и затевалось (круг-1 по
+        # PR #377, qwen). Права — 0600 явно, не по umask вызывающего.
+        tmp = path.with_name(path.name + ".trim")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(f"[лог усечён при старте: было {size} байт]\n".encode("utf-8"))
+            f.write(tail)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+

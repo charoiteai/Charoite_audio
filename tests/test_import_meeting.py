@@ -1,11 +1,14 @@
 """Импорт встреч: парсер vtt/srt и сборка стенограммы конвейера."""
+import os
 import struct
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 from import_meeting import (  # noqa: E402
+    WAV_SETTLE_SECONDS,
     clean_date,
     clean_time,
     parse_subs,
@@ -110,9 +113,94 @@ def test_streaming_header_does_not_freeze_file_forever(tmp_path):
     zeroed = tmp_path / "zero_size.wav"
     zeroed.write_bytes(b"RIFF" + struct.pack("<I", 0) + streaming[8:])
 
+    # ...но и не в секунду появления: пока писатель ещё пишет, импорт
+    # забрал бы половину записи. Готов — когда РАЗМЕР не менялся
+    # WAV_SETTLE_SECONDS между сканами (сайдкар .<имя>.import-seen).
+    assert not wav_complete(unknown) and not wav_complete(zeroed)
+    assert sorted(postponed_files(tmp_path)) == [unknown, zeroed]
+    # mtime никакой роли не играет: ни touch от синка, ни часы в будущем
+    future = time.time() + 600
+    os.utime(unknown, (future, future))
+    _age_markers(tmp_path, WAV_SETTLE_SECONDS + 1)
     assert wav_complete(unknown)
     assert wav_complete(zeroed)
     assert sorted(scan_candidates(tmp_path)) == [unknown, zeroed]
+    # прямой импорт выбранного руками файла — без ожидания
+    fresh = tmp_path / "fresh.wav"
+    fresh.write_bytes(b"RIFF" + struct.pack("<I", 0) + streaming[8:])
+    assert wav_complete(fresh, settle=False)
+
+
+def _age_markers(folder, seconds: float) -> None:
+    """Сдвинуть время первого наблюдения в сайдкарах в прошлое."""
+    for m in folder.glob(".*.import-seen"):
+        size, seen = m.read_text(encoding="ascii").split()
+        m.write_text(f"{size} {float(seen) - seconds:.0f}\n", encoding="ascii")
+
+
+def test_growing_unknown_size_wav_resets_the_clock(tmp_path):
+    """Размер вырос между сканами — писатель жив, отсчёт заново; старый
+    mtime, сохранённый провайдером, этого не скроет (круг-1, Codex)."""
+    streaming = _wav(declared_data=32_000, actual_data=32_000)
+    f = tmp_path / "grow.wav"
+    f.write_bytes(b"RIFF" + struct.pack("<I", 0xFFFFFFFF) + streaming[8:])
+    old = time.time() - 3600
+    os.utime(f, (old, old))
+    assert not wav_complete(f)
+    _age_markers(tmp_path, WAV_SETTLE_SECONDS + 1)
+    with f.open("ab") as fh:
+        fh.write(b"\0" * 4000)
+    os.utime(f, (old, old))
+    assert not wav_complete(f), "рост размера обязан сбросить отсчёт"
+    _age_markers(tmp_path, WAV_SETTLE_SECONDS + 1)
+    assert wav_complete(f)
+
+
+def test_scan_refuses_symlinked_done_folder(tmp_path):
+    """done/ как симлинк увёл бы импортированные файлы в чужую папку, а
+    битая ссылка роняла скан на mkdir (круг-1, Codex)."""
+    import subprocess as sp
+    folder = tmp_path / "import"
+    folder.mkdir()
+    (folder / "done").symlink_to(tmp_path / "elsewhere")
+    r = sp.run([sys.executable, str(ROOT / "scripts" / "import_meeting.py"),
+                "--scan", "--", str(folder)], capture_output=True, text=True)
+    assert r.returncode != 0
+    assert "обычный каталог" in (r.stderr + r.stdout)
+
+
+def test_double_dash_is_honoured_by_the_parser():
+    """Не только текст Swift-файла, но и сам argparse: путь с дефиса после
+    `--` — позиционный аргумент (круг-1, Sonnet)."""
+    from import_meeting import build_parser
+    ns = build_parser().parse_args(["--scan", "--", "-x"])
+    assert ns.scan is True and ns.file == "-x"
+
+
+def test_symlink_in_import_folder_is_skipped(tmp_path):
+    """Симлинк в папке импорта втягивал бы произвольный файл в граф и в
+    LLM-конвейер: is_file() разыменовывает ссылку (аудит 16.08, п.3)."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.txt"
+    secret.write_text("чужой файл", encoding="utf-8")
+    folder = tmp_path / "import"
+    folder.mkdir()
+    (folder / "link.txt").symlink_to(secret)
+    real_wav = folder / "real.wav"
+    real_wav.write_bytes(_wav(declared_data=32_000, actual_data=32_000))
+    (folder / "link.wav").symlink_to(real_wav)
+
+    assert scan_candidates(folder) == [real_wav]
+    assert postponed_files(folder) == []
+
+
+def test_app_passes_folder_after_double_dash():
+    """Путь папки выбирает человек: имя с дефиса argparse прочёл бы как
+    флаг (аудит 16.08, п.5) — приложение ставит `--` перед путём."""
+    swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services"
+             / "ImportService.swift").read_text(encoding="utf-8")
+    assert '"--scan", "--", folder.path' in swift
 
 
 def test_scan_reports_files_it_postponed(tmp_path):
@@ -219,3 +307,13 @@ def test_source_goes_to_the_folder_of_its_own_meeting(tmp_path):
     assert archive_folder_for(graph, "2026-08-03_1130") == first
     assert archive_folder_for(graph, "2026-08-03_0900") == other_graph
     assert archive_folder_for(graph, "2026-08-03_1700") is None
+
+
+def test_seen_marker_is_owner_only(tmp_path):
+    """Сайдкар покоя создаётся 0600 явно, а не по umask вызывающего."""
+    streaming = _wav(declared_data=32_000, actual_data=32_000)
+    f = tmp_path / "m.wav"
+    f.write_bytes(b"RIFF" + struct.pack("<I", 0) + streaming[8:])
+    assert not wav_complete(f)
+    marker = tmp_path / ".m.wav.import-seen"
+    assert marker.exists() and (marker.stat().st_mode & 0o777) == 0o600

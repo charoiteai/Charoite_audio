@@ -23,6 +23,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import time
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
@@ -46,9 +47,50 @@ SUBS = {".vtt", ".srt"}
 # Размеры, которыми потоковые писатели (ffmpeg в pipe, часть диктофонов)
 # помечают «длину не знаю»: ноль и «все единицы».
 RIFF_SIZE_UNKNOWN = {0, 0xFFFFFFFF}
+# WAV без честного размера в заголовке готов, когда его перестали писать:
+# столько секунд РАЗМЕР файла должен стоять на месте (аудит 16.08, п.4).
+# Не mtime: провайдер синка трогает mtime без записи (файл завис бы
+# навсегда), часы устройства впереди (то же), старый mtime сохранён при
+# ещё идущем копировании (импорт половины) — круг-1 по PR #377, три головы.
+# Память между сканами — скрытый сайдкар рядом с файлом.
+WAV_SETTLE_SECONDS = 30
 
 
-def wav_complete(path: pathlib.Path) -> bool:
+def _seen_marker(path: pathlib.Path) -> pathlib.Path:
+    return path.with_name(f".{path.name}.import-seen")
+
+
+def _size_settled(path: pathlib.Path, size: int) -> bool:
+    """Размер не менялся WAV_SETTLE_SECONDS с момента, когда его впервые
+    увидели таким. Первое наблюдение (или рост) пишет сайдкар и отвечает
+    «ещё нет»; следующий скан сравнивает."""
+    marker = _seen_marker(path)
+    now = time.time()
+    try:
+        prev_size, prev_t = marker.read_text(encoding="ascii").split()
+        if int(prev_size) == size:
+            return now - float(prev_t) >= WAV_SETTLE_SECONDS
+    except (OSError, ValueError):
+        pass
+    try:
+        # 0600 явно, не по umask: папка импорта — у человека, не у демона
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="ascii") as f:
+            f.write(f"{size} {now:.0f}\n")
+    except OSError:
+        pass
+    return False
+
+
+def forget_seen_marker(path: pathlib.Path) -> None:
+    """Файл импортирован или исчез — сайдкар больше не нужен."""
+    try:
+        _seen_marker(path).unlink()
+    except OSError:
+        pass
+
+
+def wav_complete(path: pathlib.Path, *, settle: bool = True) -> bool:
     """RIFF уже дописан до длины, объявленной в заголовке.
 
     Некоторые SAF/sync-провайдеры не умеют атомарный rename: тогда Android
@@ -58,10 +100,18 @@ def wav_complete(path: pathlib.Path) -> bool:
 
     Заголовок без честного размера — не приговор файлу. Такие WAV читаются
     и импортировались годами; судить по их заголовку нельзя, а запирать
-    запись в папке импорта навсегда — хуже, чем импортировать лишнее.
+    запись в папке импорта навсегда — хуже, чем импортировать лишнее. Но и
+    считать такой файл готовым в момент появления нельзя: пока его ещё
+    копируют, импорт забрал бы половину записи (аудит 16.08). Критерий —
+    покой размера между сканами (_size_settled); settle=False — для файла,
+    который человек выбрал руками: он заведомо готов, ждать нечего.
+    Оборотная сторона принята сознательно: писатель, замолчавший больше
+    WAV_SETTLE_SECONDS посреди копирования, будет импортирован неполным —
+    этого без его участия не отличить от готового файла.
     """
     try:
-        actual = path.stat().st_size
+        st = path.stat()
+        actual = st.st_size
         if actual < 44:
             return False
         with path.open("rb") as stream:
@@ -72,7 +122,7 @@ def wav_complete(path: pathlib.Path) -> bool:
         return False
     riff = int.from_bytes(header[4:8], "little")
     if riff in RIFF_SIZE_UNKNOWN:
-        return True
+        return _size_settled(path, actual) if settle else True
     declared = riff + 8
     return declared >= 44 and actual >= declared
 
@@ -81,6 +131,12 @@ def scan_candidates(folder: pathlib.Path) -> list[pathlib.Path]:
     """Поддерживаемые и уже полностью опубликованные файлы папки импорта."""
     out = []
     for path in sorted(folder.iterdir()):
+        # Симлинк в папке импорта — чужой файл в графе и в LLM-конвейере:
+        # is_file() разыменовывает ссылку, поэтому проверка отдельно
+        # (аудит 16.08, п.3). Папка импорта — для файлов, не для ссылок.
+        if path.is_symlink():
+            print(f"импорт: симлинк пропущен — {path.name}")
+            continue
         if not path.is_file() or path.suffix.lower() not in (AUDIO | TEXT | SUBS):
             continue
         if path.suffix.lower() == ".wav" and not wav_complete(path):
@@ -98,7 +154,8 @@ def postponed_files(folder: pathlib.Path) -> list[pathlib.Path]:
     return [
         path
         for path in sorted(folder.iterdir())
-        if path.is_file() and path.suffix.lower() == ".wav" and not wav_complete(path)
+        if not path.is_symlink() and path.is_file()
+        and path.suffix.lower() == ".wav" and not wav_complete(path)
     ]
 
 
@@ -201,10 +258,7 @@ def archive_folder_for(graph: pathlib.Path, stamp: str) -> pathlib.Path | None:
     return None
 
 
-def main() -> None:
-    # Импорт пишет стенограмму, записи и архивную папку — те же данные, что
-    # демон, и с теми же правами: только владельцу (аудит DeepSeek 16.08).
-    charoite_paths.harden_umask()
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("file", help="аудио/текст/субтитры записанной встречи")
     ap.add_argument("--date", help="дата встречи ГГГГ-ММ-ДД, разделитель любой "
@@ -215,6 +269,14 @@ def main() -> None:
     ap.add_argument("--scan", action="store_true",
                     help="файл = ПАПКА-вход: импортировать все поддерживаемые "
                          "файлы из неё, успешные переносить в done/")
+    return ap
+
+
+def main() -> None:
+    # Импорт пишет стенограмму, записи и архивную папку — те же данные, что
+    # демон, и с теми же правами: только владельцу (аудит DeepSeek 16.08).
+    charoite_paths.harden_umask()
+    ap = build_parser()
     args = ap.parse_args()
 
     if args.scan:
@@ -222,7 +284,15 @@ def main() -> None:
         if not folder.is_dir():
             sys.exit(f"--scan ждёт папку: {folder}")
         done = folder / "done"
+        # done/ — только настоящий каталог: симлинк увёл бы импортированные
+        # файлы в чужую папку, а битая ссылка ронила бы весь скан на
+        # mkdir (круг-1 по PR #377, Codex).
+        if done.is_symlink() or (done.exists() and not done.is_dir()):
+            sys.exit(f"{done}: ожидается обычный каталог, а не ссылка или файл")
         done.mkdir(exist_ok=True)
+        for marker in folder.glob(".*.import-seen"):
+            if not (folder / marker.name[1:-len(".import-seen")]).exists():
+                forget_seen_marker(folder / marker.name[1:-len(".import-seen")])
         todo = scan_candidates(folder)
         for waiting in postponed_files(folder):
             print(f"ещё копируется, отложен до следующего скана: {waiting.name}")
@@ -234,12 +304,14 @@ def main() -> None:
             r = subprocess.run([sys.executable, __file__, str(f)])
             if r.returncode == 0:
                 f.rename(done / f.name)
+                forget_seen_marker(f)
         return
 
     src = pathlib.Path(args.file).expanduser()
     if not src.exists():
         sys.exit(f"нет файла: {src}")
-    if src.suffix.lower() == ".wav" and not wav_complete(src):
+    # Прямой импорт: файл выбрал человек — ждать покоя размера незачем
+    if src.suffix.lower() == ".wav" and not wav_complete(src, settle=False):
         sys.exit(f"WAV ещё дописывается или повреждён: {src}")
 
     # записи с телефона: note_*/diary_* — это НЕ встречи, а голосовые заметки

@@ -105,10 +105,14 @@ class Plan:
     stamp: str
     delete: list[pathlib.Path] = dataclasses.field(default_factory=list)
     edit: dict[pathlib.Path, str] = dataclasses.field(default_factory=dict)
+    # Куда «забыть» не дотягивается, но человек должен знать (аудит 16.08,
+    # п.1): тема и решения встречи уходят в память Чароита (brain :8100,
+    # /remember), а /forget у неё нет.
+    beyond_reach: list[str] = dataclasses.field(default_factory=list)
 
     def describe(self) -> str:
         out = [f"Встреча {self.stamp}"]
-        if not self.delete and not self.edit:
+        if not self.delete and not self.edit and not self.beyond_reach:
             return out[0] + ": следов не найдено — забывать нечего"
         if self.delete:
             out.append(f"  удалить ({len(self.delete)}):")
@@ -116,6 +120,9 @@ class Plan:
         if self.edit:
             out.append(f"  поправить ({len(self.edit)}):")
             out += [f"    {p}" for p in self.edit]
+        if self.beyond_reach:
+            out.append("  не дотянется:")
+            out += [f"    {line}" for line in self.beyond_reach]
         return "\n".join(out)
 
 
@@ -260,7 +267,16 @@ def plan(stamp: str, root: pathlib.Path,
     p.delete += _with_stamp(logs, log_stamp, prefix="retry_", suffix=".log")
     # Отметка «факты встречи отправлены в память Чароита» (graph_updater):
     # без неё повторный разбор той же встречи после забывания молчал бы.
-    p.delete += _with_stamp(logs / "brain_sent", log_stamp, suffix=".txt")
+    sent = _with_stamp(logs / "brain_sent", log_stamp, suffix=".txt")
+    p.delete += sent
+    if sent:
+        # Сами факты (тема, участники, решения) живут в памяти-компаньоне
+        # (brain :8100), у которой нет /forget: сказать вслух, а не делать
+        # вид, что забыто всё (аудит 16.08, п.1; как для iCloud в PRIVACY).
+        p.beyond_reach.append(
+            "память Чароита (brain :8100): тема, участники и решения встречи "
+            "отправлены туда при разборе; /forget у неё нет — чистить её "
+            "инструментами самой памяти")
     # Статус конвейера (logs/meeting-status/<стенограмма>.json): путь к
     # стенограмме — с темой в имени, этап, текст ошибки; его же читает
     # список «Недавние встречи». Чистится сам через 14 дней, но «забыть»
@@ -396,6 +412,8 @@ def apply(p: Plan, yes: bool = False) -> bool:
           f" (копии поправленных — в {BACKUP_DIR}/{p.stamp})")
     print("Что осталось вне досягаемости: копии в iCloud и бэкапах Time Machine,"
           " файлы у других участников — см. PRIVACY.md")
+    for line in p.beyond_reach:
+        print(f"  и ещё: {line}")
     return True
 
 

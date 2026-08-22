@@ -405,3 +405,24 @@ def test_new_place_snapshot_copies_are_forgotten_too(tmp_path, monkeypatch):
     assert f"Встречи/{STAMP}" not in core, \
         "строка хроники осталась в копии Ядра нового места"
 
+
+
+def test_forget_says_aloud_what_it_cannot_reach_in_the_brain(tmp_path):
+    """Тема и решения встречи уходят в память Чароита (brain :8100,
+    /remember), а /forget у неё нет. Отметка brain_sent удаляется, но
+    делать вид, что забыто всё, нельзя — план говорит об этом вслух
+    (аудит 16.08, п.1; та же честность, что про iCloud в PRIVACY)."""
+    root, graph = _world(tmp_path)
+    sent_dir = root / "logs" / "brain_sent"
+    sent_dir.mkdir(parents=True, exist_ok=True)
+    mark = sent_dir / f"{STAMP}.txt"
+    mark.write_text("тема\n", encoding="utf-8")
+
+    plan = forget.plan(STAMP, root, graph)
+
+    assert mark in plan.delete
+    assert any("brain :8100" in line for line in plan.beyond_reach)
+    assert "не дотянется" in plan.describe()
+
+    quiet = forget.plan(OTHER, root, graph)
+    assert not quiet.beyond_reach, "без отметки — ничего в память не уходило"
