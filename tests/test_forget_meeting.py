@@ -453,15 +453,38 @@ def test_cloud_quarantine_of_the_meeting_is_forgotten_too(tmp_path, monkeypatch)
     assert (other / "Ядра" / "Другая.md").exists(), "чужой карантин тронут"
 
 
-def test_seconds_stamp_reaches_the_minute_stamped_quarantine(tmp_path, monkeypatch):
-    """Разбор зовётся по минутному штампу, забыть просят посекундным
-    (круг-2 по PR #381, Codex)."""
+def test_quarantine_is_matched_by_exact_stem_not_minute_prefix(tmp_path, monkeypatch):
+    """Каталог запуска назван точным стемом стенограммы: посекундная встреча
+    находит свой, а сестринская встреча той же минуты остаётся нетронутой —
+    минутный префикс сносил оба (круг-3 по PR #381, Codex + DS)."""
     import charoite_paths
     root, graph = _world(tmp_path)
     monkeypatch.setattr(forget, "ROOT", root)
     q = charoite_paths.graph_backups(graph, "cloud_quarantine", root=root)
-    run_dir = q / f"{STAMP}-101500"
-    (run_dir / "Ядра").mkdir(parents=True)
-    (run_dir / "Ядра" / "Тема.md").write_text("версия облака", encoding="utf-8")
+    mine = q / f"{STAMP}30-101500123456"
+    sibling = q / f"{STAMP}45-103000000000"
+    for d in (mine, sibling):
+        (d / "Ядра").mkdir(parents=True)
+        (d / "Ядра" / "Тема.md").write_text("версия облака", encoding="utf-8")
     forget.apply(forget.plan(STAMP + "30", root, graph), yes=True)
-    assert not run_dir.exists()
+    assert not mine.exists() and sibling.exists()
+
+
+def test_apply_reports_what_it_could_not_delete(tmp_path, monkeypatch, capsys):
+    """PermissionError на одном пути не обрывает цикл и не прячется за
+    «забыто» (круг-3 по PR #381, Codex)."""
+    import os
+    root, graph = _world(tmp_path)
+    monkeypatch.setattr(forget, "ROOT", root)
+    locked = tmp_path / "закрыто"; locked.mkdir()
+    victim = locked / "x.md"; victim.write_text("x", encoding="utf-8")
+    os.chmod(locked, 0o500)
+    try:
+        p = forget.plan(STAMP, root, graph)
+        p.delete.insert(0, victim)
+        forget.apply(p, yes=True)
+    finally:
+        os.chmod(locked, 0o700)
+    out = capsys.readouterr().out
+    assert "НЕ удалено" in out and "x.md" in out
+    assert not (graph / "Встречи" / f"{STAMP}.md").exists(), "цикл оборвался на первом пути"

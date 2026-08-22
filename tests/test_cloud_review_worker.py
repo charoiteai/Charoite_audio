@@ -787,7 +787,39 @@ def test_quarantine_rotation_spares_the_current_run(tmp_path):
         "2026-07-01_0900-1", "2026-08-02_1000-1", "2026-08-03_1000-1"]
 
 
-def test_redirect_stub_allows_a_comment_before_the_heading():
-    assert cloud_review.is_redirect_stub(
-        "---\ntype: ядро\n---\n<!-- Дубль -->\n# Дубль → [[Ядра/Канон]]\n\nДубль. Смерджен.\n")
-    assert cloud_review.is_redirect_stub("---\nнастроение: ---\n---\n# Д → [[Ядра/К]]\n")
+def test_redirect_stub_allows_a_comment_before_the_heading_but_not_prose():
+    stub = cloud_review.is_redirect_stub
+    assert stub("---\ntype: ядро\n---\n<!-- Дубль -->\n# Дубль → [[Ядра/Канон]]\n\nДубль. Смерджен.\n")
+    assert stub("---\nнастроение: ---\n---\n# Д → [[Ядра/К]]\n")
+    assert stub("---\r\ntype: ядро\r\n---\r\n# Д → [[Ядра/К]]\r\n")
+    # проза, код-фенс или YAML-комментарий перед стрелкой — не заглушка
+    assert not stub("Пояснение.\n# X → [[Ядра/Канон]]\n")
+    assert not stub("```md\n# X → [[Ядра/Канон]]\n```\nпереписано\n")
+    assert not stub("---\n# X → [[Ядра/Канон]]\ntype: ядро\n---\nпереписано\n")
+
+
+def test_delivery_does_not_depend_on_the_log_and_quarantine_names_the_stem(tmp_path, monkeypatch):
+    """Недоступный лог не отменяет доставку опубликованной ревизии; каталог
+    карантина — по точному стему стенограммы (круг-3 по #381)."""
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path, stamp + "30")
+    doc = graph / "Документация" / "Стенограммы встреч" / f"{stamp}.md"
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        doc.write_text("переписано", encoding="utf-8")
+        kwargs["stdout"].write(_REPORT)
+        log.unlink(); log.mkdir()
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 0
+    assert doc.read_text(encoding="utf-8") == "стенограмма\n"
+    assert (graph / "Документация" / "Стенограммы встреч" / rev.name).exists(), "доставка не состоялась"
+    runs = [p.name for p in cloud_review.quarantine_root(graph).iterdir()]
+    assert len(runs) == 1 and runs[0].startswith(stamp + "30-"), runs

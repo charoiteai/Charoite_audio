@@ -34,6 +34,7 @@ import datetime as dt
 import fcntl
 import functools
 import hashlib
+import io
 import os
 import re
 import pathlib
@@ -126,12 +127,15 @@ def is_redirect_stub(text: str) -> bool:
     """Заглушка после слияния: короткий файл, чей ПЕРВЫЙ заголовок (после
     frontmatter) — стрелка на канон. Стрелка где-то в середине переписанного
     узла заглушкой не делает (круг-1 по PR #381, Codex + DeepSeek)."""
-    body = (text or "").strip()
+    body = (text or "").replace("\r\n", "\n").strip()
     if not body or len(body) > 1200:
         return False
     body = re.sub(r"\A---\n.*?\n---\n", "", body, count=1, flags=re.S)   # frontmatter
-    first = next((ln for ln in body.splitlines() if ln.lstrip().startswith("#")), "")
-    return _REDIRECT_RE.fullmatch(first.strip()) is not None
+    # перед заголовком допустимы только пустые строки и HTML-комментарии:
+    # проза или код-фенс перед стрелкой — уже не заглушка (круг-3 по #381)
+    body = re.sub(r"\A(?:\s*<!--.*?-->\s*)*", "", body, flags=re.S).lstrip()
+    first = body.split("\n", 1)[0].strip()
+    return _REDIRECT_RE.fullmatch(first) is not None
 
 
 def _norm(line: str) -> str:
@@ -708,12 +712,17 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     mode = ("правка графа" if may_edit else
             "только чтение графа" if graph_available else
             "только текст (граф недоступен)")
-    with tmp.open("w", encoding="utf-8") as out, log.open("a", encoding="utf-8") as lf:
-        lf.write(f"[cloud-review] {stamp}: файлов в запросе {len(sent)} "
-                 f"({', '.join(sent)}), {len(context)} знаков, "
-                 f"режим {mode}"
-                 + (f", закрыто для записи путей: {len(denied)}" if may_edit else "")
-                 + "\n")
+    head = (f"[cloud-review] {stamp}: файлов в запросе {len(sent)} "
+            f"({', '.join(sent)}), {len(context)} знаков, режим {mode}"
+            + (f", закрыто для записи путей: {len(denied)}" if may_edit else "") + "\n")
+    try:
+        lf = log.open("a", encoding="utf-8")
+    except OSError as e:
+        # лог — каталог или без прав: разбор важнее лога, stderr — в никуда
+        print(f"лог недоступен ({e}): {head}", end="")
+        lf = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115 — закрывается ниже
+    with tmp.open("w", encoding="utf-8") as out, lf:
+        lf.write(head)
         lf.flush()
         try:
             code = subprocess.run(cmd, cwd=str(work_dir), env=env,
@@ -747,30 +756,38 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             lines.append("[cloud-review] СНИМОК ИСЧЕЗ — границы не сверяю, "
                          "файлы не трогаю; проверь правки руками\n")
         elif may_edit and backup is not None:
-            # Карантин — по штампу и времени до микросекунд: два запуска
-            # одного штампа (крэш-рестарт) не затирают версии друг друга.
-            qdir = quarantine_root(graph) / f"{stamp}-{dt.datetime.now():%H%M%S%f}"
+            # Карантин — по ТОЧНОМУ стему стенограммы (с секундами, если они
+            # есть) и времени до микросекунд: две встречи одной минуты и два
+            # запуска одной встречи не делят каталог, а forget_meeting
+            # находит свой без префиксных догадок (круг-3 по #381).
+            qdir = quarantine_root(graph) / f"{transcript.stem}-{dt.datetime.now():%H%M%S%f}"
             try:
                 # Невалидный или неопубликованный ответ — откат всего: без
                 # отчёта правки графа — неизвестной степени готовности
                 # (слияние до середины), и объяснить их человеку нечем.
                 v = enforce_boundaries(before, graph, backup, qdir,
                                        rollback=not (ok and published))
-                checked = v.touched >= 0 and not v.failed
+                # не сверено, если что-то упало ИЛИ осталось как есть без копии
+                checked = v.touched >= 0 and not v.failed and not v.unrestorable
                 lines.append(_verdict_line(v, qdir))
-                if qdir.is_dir():
-                    rotate_quarantine(quarantine_root(graph), current=qdir)
             except Exception as e:  # noqa: BLE001 — сказать и дойти до ротации
                 lines.append(f"[cloud-review] СВЕРКА УПАЛА ({e}) — проверь правки руками\n")
+            try:
+                if qdir.is_dir():
+                    rotate_quarantine(quarantine_root(graph), current=qdir)
+            except OSError as e:
+                lines.append(f"[cloud-review] ротация карантина не удалась ({e})\n")
         # Доставка — ПОСЛЕ сверки границ и только после ПОЛНОЙ сверки: архив
         # и Документация — защищённые папки, и созданную здесь копию сверка
         # приняла бы за правку облака. Без графа (text-only) доставлять
-        # некуда, без замка — нельзя (сосед сверяет).
+        # некуда, без замка — нельзя (сосед сверяет). От лога не зависит.
+        if published and deliver and (not may_edit or checked):
+            buf = io.StringIO()
+            deliver_review(rev, transcript, graph, stamp, buf)
+            lines.append(buf.getvalue())
         try:
             with log.open("a", encoding="utf-8") as lf:
                 lf.writelines(lines)
-                if published and deliver and (not may_edit or checked):
-                    deliver_review(rev, transcript, graph, stamp, lf)
         except OSError as e:
             print(f"лог недоступен ({e}): " + "".join(lines))
         if backup is not None:

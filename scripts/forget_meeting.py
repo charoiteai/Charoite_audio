@@ -325,14 +325,14 @@ def plan(stamp: str, root: pathlib.Path,
         # Карантин облачного разбора: каталог запуска ЭТОЙ встречи — целиком
         # (в нём версии облака, сделанные по её стенограмме), в карантинах
         # остальных запусков — файлы с её штампом (круг-1 по PR #381, Codex).
-        # Разбор зовётся по МИНУТНОМУ штампу (как узел встречи), а забыть
-        # просят и посекундным: «…_140030» → каталог «…_1400-<время>».
-        minute = stamp[:15] if len(stamp) > 15 else stamp
+        # Каталог запуска назван ТОЧНЫМ стемом стенограммы (с секундами,
+        # если они есть) — совпадение только по нему: минутный префикс
+        # задевал бы карантин сестринской встречи той же минуты (круг-3 по
+        # PR #381). Для чужих запусков — точечно, по файлам со штампом.
         quarantine = charoite_paths.graph_backups(g, CLOUD_QUARANTINE, root=root)
         if quarantine.is_dir():
             for run_dir in sorted(d for d in quarantine.iterdir() if d.is_dir()):
-                if run_dir.name in (stamp, minute) or run_dir.name.startswith(
-                        (stamp + "-", minute + "-")):
+                if run_dir.name == stamp or run_dir.name.startswith(stamp + "-"):
                     p.delete.append(run_dir)
                     continue
                 node_copy = run_dir / MEETINGS_DIR / f"{stamp}.md"
@@ -412,11 +412,14 @@ def apply(p: Plan, yes: bool = False) -> bool:
 
     left = []
     for path in p.delete:
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-        elif path.exists():
-            path.unlink()
-        if path.exists():
+        try:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path, ignore_errors=True)
+            elif os.path.lexists(path):
+                path.unlink()
+        except OSError:
+            pass
+        if os.path.lexists(path):
             left.append(path)      # права/занятый том — сказать, а не «забыто»
     if left:
         print("НЕ удалено (проверь права и повтори): "
@@ -438,7 +441,7 @@ def apply(p: Plan, yes: bool = False) -> bool:
         except OSError:
             pass
         tmp.replace(path)
-    print(f"\nзабыто: удалено {len(p.delete)}, поправлено {len(p.edit)}"
+    print(f"\nзабыто: удалено {len(p.delete) - len(left)}, поправлено {len(p.edit)}"
           f" (копии поправленных — в {BACKUP_DIR}/{p.stamp})")
     print("Что осталось вне досягаемости: копии в iCloud и бэкапах Time Machine,"
           " файлы у других участников — см. PRIVACY.md")
