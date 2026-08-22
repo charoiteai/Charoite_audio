@@ -84,9 +84,9 @@ struct FirstRunView: View {
                          "采集麦克风声音，并在配置 BlackHole 后采集通话声音。不会有机器人加入；请告知参与者正在录音。"))
                 step("lock.laptopcomputer",
                      L.t("Всё остаётся на этом Mac", "Everything stays on this Mac", "一切都留在这台 Mac 上"),
-                     L.t("Распознавание речи и разбор идут локально. Записи, стенограммы и тезисы никуда не отправляются.",
-                         "Speech recognition and analysis run locally. Recordings, transcripts and theses are never sent anywhere.",
-                         "语音识别与分析均在本地进行。录音、逐字稿与要点不会发送到任何地方。"))
+                     L.t("Распознавание речи и разбор идут локально; записи и стенограммы остаются здесь. В облако уходит только то, что вы включите сами — слой Claude на встрече.",
+                         "Speech recognition and analysis run locally; recordings and transcripts stay here. Only what you turn on yourself goes to the cloud — the Claude layer during a meeting.",
+                         "语音识别与分析在本地进行；录音与逐字稿留在本机。只有你自己开启的内容才会上云——会议中的 Claude 层。"))
                 step("list.bullet.rectangle",
                      L.t("После встречи — сам напишет", "Writes it up afterwards", "会后自动整理"),
                      L.t("Стенограмма, тезисы, минутки и решения складываются в папку встреч. Потом можно спросить: «что обсуждали вчера?»",
@@ -134,14 +134,14 @@ struct FirstRunView: View {
     private func step(_ icon: String, _ title: String, _ text: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: icon)
-                .font(.system(size: 17))
+                .font(.title2)
                 .foregroundStyle(Theme.accent)
                 .frame(width: 24)
                 .accessibilityHidden(true)      // смысл несёт текст рядом
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.system(size: 13, weight: .semibold))
+                Text(title).font(.headline)
                 Text(text)
-                    .font(.system(size: 12))
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -161,9 +161,9 @@ struct FirstRunView: View {
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Text(L.t("Модели под вашу машину", "Models for your Mac", "适配本机的模型"))
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.headline)
                 Text(L.t("\(memory) ГБ памяти", "\(memory) GB of memory", "\(memory) GB 内存"))
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .font(.subheadline).foregroundStyle(.secondary)
             }
             ForEach(ModelPresetPolicy.all) { preset in
                 Button { presetID = preset.id } label: {
@@ -173,10 +173,10 @@ struct FirstRunView: View {
                             .foregroundStyle(presetID == preset.id ? Theme.accent : .secondary)
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 6) {
-                                Text(preset.title).font(.system(size: 12, weight: .medium))
+                                Text(preset.title).font(.callout.weight(.medium))
                                 if preset.id == advised.id {
                                     Text(L.t("рекомендуем", "recommended", "推荐"))
-                                        .font(.system(size: 10, weight: .medium))
+                                        .font(.caption.weight(.medium))
                                         .padding(.horizontal, 5).padding(.vertical, 1)
                                         .background(Capsule().fill(Theme.accent.opacity(0.14)))
                                         .foregroundStyle(Theme.accent)
@@ -188,14 +188,14 @@ struct FirstRunView: View {
                                     Text(L.t("нужно ~\(preset.needsGB) ГБ",
                                              "needs ~\(preset.needsGB) GB",
                                              "需要约 \(preset.needsGB) GB"))
-                                        .font(.system(size: 10))
+                                        .font(.caption)
                                         .foregroundStyle(Theme.overdue)
                                 }
                             }
                             Text(preset.note)
-                                .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                                .font(.caption).foregroundStyle(.secondary)
                             Text(preset.models.joined(separator: " · "))
-                                .font(.system(size: 10, design: .monospaced))
+                                .font(.caption.monospaced())
                                 .foregroundStyle(.tertiary)
                         }
                         Spacer(minLength: 0)
@@ -223,13 +223,13 @@ struct FirstRunView: View {
                         HStack(spacing: 4) {
                             ProgressView().controlSize(.small)
                             Text("\(model): \(status)")
-                                .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
             }
             if let err = selectedPreset.models.compactMap({ pulls.failed[$0] }).first {
-                Text(err).font(.system(size: 10)).foregroundStyle(.red).lineLimit(2)
+                Text(err).font(.caption).foregroundStyle(.red).lineLimit(2)
             }
         }
     }
@@ -265,7 +265,7 @@ struct FirstRunView: View {
             Text(L.t("Как к вам обращаться и где хранить знания",
                      "Your name and where to keep the knowledge",
                      "您的称呼与知识存放位置"))
-                .font(.system(size: 13, weight: .semibold))
+                .font(.headline)
             HStack(spacing: 8) {
                 TextField(L.t("Ваше имя", "Your name", "您的姓名"), text: $ownerName)
                     .textFieldStyle(.roundedBorder)
@@ -283,7 +283,7 @@ struct FirstRunView: View {
                     .disabled(ownerName.trimmingCharacters(in: .whitespaces).isEmpty)
                 if configSaved {
                     Text(L.t("Сохранено в config.yaml", "Saved to config.yaml", "已保存到 config.yaml"))
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .font(.subheadline).foregroundStyle(.secondary)
                         .transition(.opacity)
                 }
                 // Отказ записи виден человеку. Раньше «Сохранено» показывалось
@@ -292,10 +292,10 @@ struct FirstRunView: View {
                 if let failure = configSaveFailure {
                     Label {
                         Text(failure)
-                            .font(.system(size: 11))
+                            .font(.subheadline)
                     } icon: {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(Theme.warning)
                     }
                     .transition(.opacity)
                 }
@@ -303,7 +303,7 @@ struct FirstRunView: View {
             Text(L.t("Имя — метка вашего микрофона в стенограмме. Папка пустая = граф выключен, работает только расшифровка.",
                      "The name labels your microphone in the transcript. An empty folder means the graph is off and only transcription runs.",
                      "姓名用于在逐字稿中标记您的麦克风。留空文件夹表示关闭图谱，仅进行转写。"))
-                .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(.secondary)
 
             // Разделение голосов: единственный шаг установки, ради которого
             // раньше приходилось открывать терминал уже после того, как
@@ -312,7 +312,7 @@ struct FirstRunView: View {
                 HStack(spacing: 8) {
                     if let status = pulls.progress[ModelPullService.diarizationKey] {
                         ProgressView().controlSize(.small)
-                        Text(status).font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text(status).font(.subheadline).foregroundStyle(.secondary)
                     } else {
                         Button(L.t("Различать голоса собеседников",
                                    "Tell speakers apart",
@@ -321,11 +321,11 @@ struct FirstRunView: View {
                         Text(L.t("модель ~80 МБ, ставится один раз",
                                  "~80 MB model, installed once",
                                  "约 80 MB 模型，仅需安装一次"))
-                            .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 if let err = pulls.failed[ModelPullService.diarizationKey] {
-                    Text(err).font(.system(size: 10)).foregroundStyle(.red).lineLimit(2)
+                    Text(err).font(.caption).foregroundStyle(.red).lineLimit(2)
                 }
             }
         }
@@ -379,7 +379,7 @@ struct FirstRunView: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
                 Text(L.t("Готовность к первой встрече", "Ready for the first meeting", "首次会议准备情况"))
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.headline)
                 Spacer()
                 if readiness.isChecking {
                     ProgressView().controlSize(.small)
@@ -419,9 +419,9 @@ struct FirstRunView: View {
                 .frame(width: 16)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
-                Text(check.title).font(.system(size: 12, weight: .medium))
+                Text(check.title).font(.callout.weight(.medium))
                 Text(check.detail)
-                    .font(.system(size: 10.5))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -449,7 +449,7 @@ struct FirstRunView: View {
                 HStack(spacing: 8) {
                     if let busy = runtime.busy {
                         ProgressView().controlSize(.mini)
-                        Text(busy).font(.system(size: 10.5)).foregroundStyle(.secondary)
+                        Text(busy).font(.caption).foregroundStyle(.secondary)
                     } else {
                         let title = OllamaRuntimeService.actionTitle(for: runtime.state)
                         if !title.isEmpty {
@@ -457,11 +457,11 @@ struct FirstRunView: View {
                                 .charoite(.regular, .s)
                         }
                         Text(OllamaRuntimeService.explanation(for: runtime.state))
-                            .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 if let err = runtime.failure {
-                    Text(err).font(.system(size: 10)).foregroundStyle(.red)
+                    Text(err).font(.caption).foregroundStyle(.red)
                 }
             } else if !models.isEmpty {
                 HStack(spacing: 10) {
@@ -469,7 +469,7 @@ struct FirstRunView: View {
                         if let status = pulls.progress[model] {
                             HStack(spacing: 4) {
                                 ProgressView().controlSize(.mini)
-                                Text("\(model): \(status)").font(.system(size: 10.5))
+                                Text("\(model): \(status)").font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                         } else {
@@ -481,7 +481,7 @@ struct FirstRunView: View {
                     }
                 }
                 if let err = models.compactMap({ pulls.failed[$0] }).first {
-                    Text(err).font(.system(size: 10)).foregroundStyle(.red)
+                    Text(err).font(.caption).foregroundStyle(.red)
                 }
             } else if let cmd = SetupReadinessPolicy.copyableCommand(in: check.detail) {
                 Button(L.t("Скопировать команду", "Copy command", "复制命令")) {
@@ -495,8 +495,8 @@ struct FirstRunView: View {
 
     private func readinessColor(_ state: SetupCheck.State) -> Color {
         switch state {
-        case .ready: return .green
-        case .warning: return .orange
+        case .ready: return Theme.ok
+        case .warning: return Theme.warning
         case .blocked: return .red
         }
     }
@@ -509,14 +509,14 @@ struct FirstRunView: View {
                       "On first run macOS will ask for microphone access — without it there is nothing to listen to.",
                       "首次运行时 macOS 会请求麦克风权限——没有它就无从旁听。"),
                   systemImage: "info.circle")
-                .font(.system(size: 11))
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
             // новичку без встреч есть что пощупать: демо-граф в комплекте
             Label(L.t("Нет встреч? В комплекте демо-граф (папка demo/) — наведи на него graph_dir и спроси «что решили по платёжному провайдеру?»",
                       "No meetings yet? A demo graph ships in demo/ — point graph_dir at it and ask \"what did we decide about the payment provider?\"",
                       "还没有会议？随附示例图谱（demo/ 文件夹）——把 graph_dir 指向它，然后问「支付服务商的事定了什么？」"),
                   systemImage: "sparkles")
-                .font(.system(size: 11))
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
 
             HStack {

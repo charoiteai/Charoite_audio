@@ -127,7 +127,7 @@ struct TodayWorkspaceView: View {
                                  "Press Stop again to confirm",
                                  "再按一次停止以确认"))
                             .font(.caption.weight(.medium))
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(Theme.warning)
                     }
                 }
             case .processing:
@@ -243,7 +243,7 @@ struct TodayWorkspaceView: View {
         HStack(spacing: 8) {
             Image(systemName: nightly.icon)
                 .font(.caption)
-                .foregroundStyle(nightly.needsAttention ? Color.orange : Color.secondary)
+                .foregroundStyle(nightly.needsAttention ? Theme.warning : Color.secondary)
             VStack(alignment: .leading, spacing: 1) {
                 Text(nightly.title)
                     .font(.caption.weight(nightly.needsAttention ? .medium : .regular))
@@ -289,7 +289,7 @@ struct TodayWorkspaceView: View {
         HStack(spacing: 8) {
             Image(systemName: version.icon)
                 .font(.caption)
-                .foregroundStyle(Color.orange)
+                .foregroundStyle(Theme.warning)
             VStack(alignment: .leading, spacing: 1) {
                 Text(version.title).font(.caption.weight(.medium))
                 Text(updateNote ?? version.detail)
