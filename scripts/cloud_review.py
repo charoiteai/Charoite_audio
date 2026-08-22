@@ -715,13 +715,14 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     head = (f"[cloud-review] {stamp}: файлов в запросе {len(sent)} "
             f"({', '.join(sent)}), {len(context)} знаков, режим {mode}"
             + (f", закрыто для записи путей: {len(denied)}" if may_edit else "") + "\n")
-    try:
-        lf = log.open("a", encoding="utf-8")
-    except OSError as e:
-        # лог — каталог или без прав: разбор важнее лога, stderr — в никуда
-        print(f"лог недоступен ({e}): {head}", end="")
-        lf = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115 — закрывается ниже
-    with tmp.open("w", encoding="utf-8") as out, lf:
+    with tmp.open("w", encoding="utf-8") as out, contextlib.ExitStack() as files:
+        # .part открывается первым: не откроется — лог и не нужен (и не течёт)
+        try:
+            lf = files.enter_context(log.open("a", encoding="utf-8"))
+        except OSError as e:
+            # лог — каталог или без прав: разбор важнее лога, stderr — в никуда
+            print(f"лог недоступен ({e}): {head}", end="")
+            lf = files.enter_context(open(os.devnull, "w", encoding="utf-8"))
         lf.write(head)
         lf.flush()
         try:

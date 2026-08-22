@@ -154,6 +154,20 @@ def _with_stamp(directory: pathlib.Path, stamp: str, *, prefix: str = "",
                                           suffix=suffix)
 
 
+def _quarantine_of(name: str, stamp: str) -> bool:
+    """Каталог карантина `<стем>-<время>` принадлежит встрече штампа.
+
+    `2026-07-15_1400-…` и `2026-07-15_1400_тема-…` — да; `2026-07-15_140030-…`
+    (посекундная сестра той же минуты) — нет: после штампа стоит цифра.
+    """
+    if not name.startswith(stamp):
+        return False
+    rest = name[len(stamp):]
+    if rest[:1].isdigit():
+        return False
+    return rest.startswith("-") or (rest.startswith("_") and "-" in rest)
+
+
 def _status_files(status_dir: pathlib.Path, stamp: str) -> list[pathlib.Path]:
     """Статусы конвейера этой встречи.
 
@@ -325,14 +339,16 @@ def plan(stamp: str, root: pathlib.Path,
         # Карантин облачного разбора: каталог запуска ЭТОЙ встречи — целиком
         # (в нём версии облака, сделанные по её стенограмме), в карантинах
         # остальных запусков — файлы с её штампом (круг-1 по PR #381, Codex).
-        # Каталог запуска назван ТОЧНЫМ стемом стенограммы (с секундами,
-        # если они есть) — совпадение только по нему: минутный префикс
-        # задевал бы карантин сестринской встречи той же минуты (круг-3 по
-        # PR #381). Для чужих запусков — точечно, по файлам со штампом.
+        # Каталог запуска назван стемом стенограммы (`<штамп>`, с секундами
+        # или с темой после «_») плюс «-<время>». Граница — та же, что у всех
+        # файлов встречи (meeting_stamp): после штампа не цифра, иначе
+        # забывание минутной встречи уносило бы посекундную сестру (круг-3 и
+        # круг-4 по PR #381). Для чужих запусков — точечно, по файлам со
+        # штампом.
         quarantine = charoite_paths.graph_backups(g, CLOUD_QUARANTINE, root=root)
         if quarantine.is_dir():
             for run_dir in sorted(d for d in quarantine.iterdir() if d.is_dir()):
-                if run_dir.name == stamp or run_dir.name.startswith(stamp + "-"):
+                if _quarantine_of(run_dir.name, stamp):
                     p.delete.append(run_dir)
                     continue
                 node_copy = run_dir / MEETINGS_DIR / f"{stamp}.md"

@@ -470,6 +470,19 @@ def test_quarantine_is_matched_by_exact_stem_not_minute_prefix(tmp_path, monkeyp
     assert not mine.exists() and sibling.exists()
 
 
+def test_quarantine_of_a_retitled_meeting_is_found_by_its_minute_stamp():
+    """После наката темы стем — `<штамп>_тема`, а забыть просят по штампу
+    (круг-4 по PR #381, Codex). Граница — как у всех файлов встречи:
+    после штампа не цифра."""
+    q = forget._quarantine_of
+    assert q("2026-07-15_1400-101500123456", "2026-07-15_1400")
+    assert q("2026-07-15_1400_тема-101500123456", "2026-07-15_1400")
+    assert q("2026-07-15_140030-101500123456", "2026-07-15_140030")
+    assert not q("2026-07-15_140030-101500123456", "2026-07-15_1400")
+    assert not q("2026-07-15_1400-101500123456", "2026-07-15_140030")
+    assert not q("2026-07-15_1400", "2026-07-15_1400")        # без времени — не наш формат
+
+
 def test_apply_reports_what_it_could_not_delete(tmp_path, monkeypatch, capsys):
     """PermissionError на одном пути не обрывает цикл и не прячется за
     «забыто» (круг-3 по PR #381, Codex)."""
