@@ -190,6 +190,7 @@ def trim_log(path: pathlib.Path, max_bytes: int = LOG_MAX_BYTES,
         # PR #377, qwen). Права — 0600 явно, не по umask вызывающего.
         tmp = path.with_name(path.name + ".trim")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)   # режим в os.open действует только при создании
         with os.fdopen(fd, "wb") as f:
             f.write(f"[лог усечён при старте: было {size} байт]\n".encode("utf-8"))
             f.write(tail)
