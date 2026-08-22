@@ -29,7 +29,8 @@ FRESH_DAYS = 7
 MAX_CHARS = 60_000
 
 sys.path.insert(0, str(CODE / "src"))
-import cloud  # noqa: E402 — путь к src задаётся строкой выше
+import charoite_paths  # noqa: E402 — путь к src задаётся строкой выше
+import cloud  # noqa: E402
 import privacy  # noqa: E402
 
 
@@ -65,11 +66,25 @@ def _seen_all() -> dict:
         return {}
 
 
-def _seen(graph: pathlib.Path) -> dict:
+def _migrate(entry: dict) -> dict:
     """Карта графа в актуальном формате: число (старая запись) → {mtime, shown: 0}."""
-    entry = _seen_all().get(_graph_key(graph), {})
     return {k: (v if isinstance(v, dict) else {"mtime": float(v or 0), "shown": 0})
             for k, v in entry.items()}
+
+
+def _seen(graph: pathlib.Path) -> dict:
+    return _migrate(_seen_all().get(_graph_key(graph), {}))
+
+
+def _graph_gone(key: str) -> bool:
+    """Граф удалён — а не временно недоступен: родитель на месте, папки нет.
+
+    Отмонтированный диск или не подтянувшийся iCloud выглядят как «папки
+    нет», и стирать по ним единственную память ротации нельзя (круг-3
+    по PR #380, DeepSeek).
+    """
+    p = pathlib.Path(key)
+    return not p.is_dir() and p.parent.exists()
 
 
 def _save_seen(graph: pathlib.Path, sent: dict, current_stems: set[str]) -> None:
@@ -77,12 +92,20 @@ def _save_seen(graph: pathlib.Path, sent: dict, current_stems: set[str]) -> None
 
     Файл — 0600 и через временный + rename: логи несут темы встреч, а
     обрыв между truncate и записью обнулил бы курсор (круг-1 по PR #380).
+    Файл читается ОДИН раз: чужие графы и свой — из одного снимка, иначе
+    параллельный прогон, записавший карту между двумя чтениями, терял
+    свой граф (круг-3, DeepSeek).
     """
-    data = {k: v for k, v in _seen_all().items() if pathlib.Path(k).is_dir()}  # осиротевшие графы — вон
-    entry = _seen(graph)
+    all_data = _seen_all()
+    data = {k: v for k, v in all_data.items() if not _graph_gone(k)}   # удалённые графы — вон
+    key = _graph_key(graph)
+    entry = _migrate(all_data.get(key, {}))
     entry.update(sent)
-    data[_graph_key(graph)] = {k: v for k, v in entry.items() if k in current_stems}
-    SEEN.parent.mkdir(parents=True, exist_ok=True)
+    if pathlib.Path(key).is_dir():          # граф исчез во время запроса — не воскрешать ключ
+        data[key] = {k: v for k, v in entry.items() if k in current_stems}
+    else:
+        data.pop(key, None)
+    charoite_paths.secure_dir(SEEN.parent)  # 0700 и для уже существующего каталога
     tmp = SEEN.with_name(SEEN.name + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.fchmod(fd, 0o600)   # режим в os.open действует только при создании файла
@@ -92,17 +115,23 @@ def _save_seen(graph: pathlib.Path, sent: dict, current_stems: set[str]) -> None
 
 
 def select_cores(fresh: list[pathlib.Path], seen: dict, budget: int,
-                 index_text: str = "") -> tuple[list[pathlib.Path], str, dict, list[pathlib.Path]]:
-    """Какие ядра уходят в промпт: (выбранные, текст, партия для курсора, не влезшие).
+                 index_text: str = "",
+                 ) -> tuple[list[pathlib.Path], str, dict, list[tuple[pathlib.Path, bool]]]:
+    """Какие ядра уходят в промпт: (выбранные, текст, партия для курсора,
+    не влезшие как (ядро, не влезло бы и в одиночку)).
 
     Порядок: сначала ядра, которых курсор не видел или которые изменились
     после показа (mtime новее записанного) — по убыванию свежести; потом
-    остальные — по давности показа, самые давние первыми, чтобы ни одно
-    неизменившееся ядро не голодало. Бюджет считается по целым ядрам:
-    следующее не помещается — пропускаем и пробуем дальше (короткие ещё
-    влезут), но ни одно не режется посередине. mtime для курсора берётся
-    здесь же, в момент чтения: изменится файл во время запроса к облаку —
-    следующая ночь увидит его как новый, а не как показанный.
+    остальные — по давности показа, самые давние первыми. Одно место —
+    второе, сразу за первым ПРИНЯТЫМ изменившимся ядром — всегда у самого
+    давно показанного неизменившегося: иначе при постоянном притоке новых
+    неизменившиеся не доходят до облака никогда (круг-2 по PR #380, Codex;
+    «за принятым, а не за кандидатом» — круг-3: первое изменившееся могло
+    не влезть, и резерв обходил влезающее). Бюджет считается по целым
+    ядрам: следующее не помещается — пропускаем и пробуем дальше (короткие
+    ещё влезут), но ни одно не режется посередине. mtime для курсора
+    берётся здесь же, в момент чтения: изменится файл во время запроса к
+    облаку — следующая ночь увидит его как новый, а не как показанный.
     Раньше: алфавит и blob[:60_000] — ревизия видела ~4% ядер, всегда
     «А–В», последнее — обрывком.
     """
@@ -112,20 +141,22 @@ def select_cores(fresh: list[pathlib.Path], seen: dict, budget: int,
         rec = seen.get(p.stem) or {}
         changed = mtime > float(rec.get("mtime", 0))
         stamped.append((p, mtime, changed, float(rec.get("shown", 0))))
-    stamped.sort(key=lambda s: (0, -s[1]) if s[2] else (1, s[3]))
-    # Одно место — самому давно показанному неизменившемуся ядру, раньше
-    # всех изменившихся: иначе при постоянном притоке новых неизменившиеся
-    # не доходят до облака никогда (круг-2 по PR #380, Codex).
-    unchanged = [s for s in stamped if not s[2]]
-    if unchanged and stamped[0][2]:                # есть новости — они первыми,
-        stamped.remove(unchanged[0])               # давно показанное — вторым
-        stamped.insert(1, unchanged[0])
+    queue = sorted((s for s in stamped if s[2]), key=lambda s: -s[1])
+    rest = sorted((s for s in stamped if not s[2]), key=lambda s: s[3])
+    reserve = rest.pop(0) if queue and rest else None
     parts = [f"## ИНДЕКС\n{index_text[:INDEX_CHARS]}"] if index_text else []
     base = sum(len(x) + 2 for x in parts)
     total = base
     chosen, sent, skipped = [], {}, []
     now = time.time()
-    for p, mtime, _changed, _shown in stamped:
+    while queue or reserve or rest:
+        if reserve and (chosen or not queue):    # сразу за первым принятым
+            s, reserve = reserve, None
+        elif queue:
+            s = queue.pop(0)
+        else:
+            s = rest.pop(0)
+        p, mtime = s[0], s[1]
         block = f"## ЯДРО: {p.stem}\n{p.read_text(encoding='utf-8')}"
         if total + len(block) + 2 > budget:
             # too_big — тем же расчётом: в одиночку с индексом не влезает

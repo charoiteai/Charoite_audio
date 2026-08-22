@@ -126,8 +126,49 @@ def test_old_cursor_format_is_migrated_not_crashed(tmp_path, monkeypatch):
     ncc.SEEN.write_text(json.dumps({ncc._graph_key(graph): {"A": 300.0}}), encoding="utf-8")
     seen = ncc._seen(graph)
     assert seen == {"A": {"mtime": 300.0, "shown": 0}}
-    chosen, _, _, _ = ncc.select_cores([a], seen, budget=500)
+    chosen, _, sent, _ = ncc.select_cores([a], seen, budget=500)
     assert chosen == [a]
+    # и на диск уходит уже новый формат (круг-3, DS)
+    ncc._save_seen(graph, sent, {"A"})
+    saved = json.loads(ncc.SEEN.read_text(encoding="utf-8"))[ncc._graph_key(graph)]
+    assert isinstance(saved["A"], dict) and saved["A"]["shown"] > 0
+
+
+def test_reserve_follows_the_first_accepted_core_not_the_first_candidate(tmp_path):
+    """Первое изменившееся не влезло — резерв не должен обходить то
+    изменившееся, которое влезает (круг-3, Codex)."""
+    ncc = _load("nightly_claude_cores")
+    huge = _core(tmp_path, "Огромное", 5000, 900)
+    small = _core(tmp_path, "Малое", 100, 800)
+    old = _core(tmp_path, "Старое", 100, 100)
+    seen = {"Старое": {"mtime": 100, "shown": 1}}
+    chosen, _, _, skipped = ncc.select_cores([huge, small, old], seen, budget=150)
+    assert chosen == [small], [p.stem for p in chosen]
+    assert [p.stem for p, _ in skipped] == ["Огромное", "Старое"]
+
+
+def test_save_seen_keeps_unmounted_graphs_and_drops_the_deleted_one(tmp_path, monkeypatch):
+    """Отмонтированный диск — не удалённый граф: его курсор остаётся; а
+    граф, исчезнувший во время запроса, ключом не воскрешается (круг-3)."""
+    import json
+    ncc = _load("nightly_claude_cores")
+    monkeypatch.setattr(ncc, "SEEN", tmp_path / "logs" / "seen.json")
+    graph = tmp_path / "g"; (graph / "Ядра").mkdir(parents=True)
+    unmounted = str(tmp_path / "Volumes" / "Диск" / "Граф")      # родителя нет
+    deleted = tmp_path / "Другой"                                 # родитель есть, папки нет
+    ncc.SEEN.parent.mkdir()
+    ncc.SEEN.write_text(json.dumps({unmounted: {"X": {"mtime": 1, "shown": 1}},
+                                    str(deleted): {"Y": {"mtime": 1, "shown": 1}}}),
+                        encoding="utf-8")
+    ncc._save_seen(graph, {"A": {"mtime": 2, "shown": 2}}, {"A"})
+    data = json.loads(ncc.SEEN.read_text(encoding="utf-8"))
+    assert unmounted in data and str(deleted) not in data
+    assert (ncc.SEEN.parent.stat().st_mode & 0o777) == 0o700
+    # сам граф исчез во время запроса — ключ не возвращается
+    import shutil
+    shutil.rmtree(graph)
+    ncc._save_seen(graph, {"A": {"mtime": 3, "shown": 3}}, {"A"})
+    assert ncc._graph_key(graph) not in json.loads(ncc.SEEN.read_text(encoding="utf-8"))
 
 
 def test_one_slot_is_reserved_for_the_longest_waiting_unchanged_core(tmp_path):
