@@ -116,27 +116,51 @@ def test_no_call_grants_tools_silently():
 
 # --- прокси для headless claude: одна точка, и разбор встречи её использует ---
 
-def test_proxy_env_reads_only_proxy_keys(tmp_path):
-    """cloud.proxy_env берёт из settings.json только прокси-ключи: токены и
-    прочее окружение headless-вызову не достаются."""
+def test_proxy_env_is_an_allowlist(tmp_path):
+    """cloud.proxy_env отдаёт только известные прокси-переменные (в любом
+    регистре): токены, PROXY_PASSWORD и прочее из env-секции settings.json
+    в словарь не попадают (круг-1 по PR #379, Codex)."""
     import json
     s = tmp_path / "settings.json"
-    s.write_text(json.dumps({"env": {"HTTPS_PROXY": "http://p:1", "NO_PROXY": "localhost",
-                                     "ANTHROPIC_AUTH_TOKEN": "secret", "FOO": "bar"}}),
-                 encoding="utf-8")
-    assert cloud.proxy_env(s) == {"HTTPS_PROXY": "http://p:1", "NO_PROXY": "localhost"}
+    s.write_text(json.dumps({"env": {"HTTPS_PROXY": "http://p:1", "no_proxy": "localhost",
+                                     "PROXY_PASSWORD": "secret", "ANTHROPIC_AUTH_TOKEN": "t",
+                                     "FOO": "bar"}}), encoding="utf-8")
+    assert cloud.proxy_env(s) == {"HTTPS_PROXY": "http://p:1", "no_proxy": "localhost"}
     assert cloud.proxy_env(tmp_path / "нет.json") == {}
 
 
-def test_every_cloud_exit_applies_the_proxy():
+def test_add_proxy_is_a_fallback_not_an_override(tmp_path):
+    """Прокси из окружения важнее настроек (ручной прогон из shell с рабочим
+    VPN-прокси), а NO_PROXY/no_proxy — одна переменная: второй копии с
+    другим значением ребёнку не достаётся (круг-1 по PR #379, DS/Codex)."""
+    import json
+    s = tmp_path / "settings.json"
+    s.write_text(json.dumps({"env": {"HTTPS_PROXY": "http://settings:1",
+                                     "no_proxy": "api.example"}}), encoding="utf-8")
+    # GUI-запуск: прокси в окружении нет — берём из настроек целиком
+    env = {"PATH": "/x"}
+    cloud.add_proxy(env, s)
+    assert env == {"PATH": "/x", "HTTPS_PROXY": "http://settings:1", "no_proxy": "api.example"}
+    # shell с рабочим прокси: свой HTTPS_PROXY и свой NO_PROXY остаются
+    env = {"HTTPS_PROXY": "http://shell:1", "NO_PROXY": "localhost"}
+    cloud.add_proxy(env, s)
+    assert env == {"HTTPS_PROXY": "http://shell:1", "NO_PROXY": "localhost"}
+
+
+def test_every_cloud_exit_passes_the_proxied_env_to_claude():
     """21.08 все разборы встреч дня упали с «403 Request not allowed»: у
     cloud_review.py не было прокси, который демон и ночные скрипты уже
-    подкладывали каждый своей копией. Одна точка — и у каждого выхода."""
-    root = ROOT
+    подкладывали каждый своей копией. Одна точка — и у каждого выхода: в
+    том же блоке вызова, что и `env=env` (иначе прокси построен, но до
+    процесса не доходит — ровно поломка 21.08)."""
     for rel in ("scripts/cloud_review.py", "scripts/nightly_claude_cores.py",
-                "scripts/nightly_dossier_review.py"):
-        src = (root / rel).read_text(encoding="utf-8")
-        assert "env.update(cloud.proxy_env())" in src, rel
-        assert "def _proxy_env" not in src, f"{rel}: своя копия вместо cloud.proxy_env"
-    daemon_src = (root / "src" / "daemon.py").read_text(encoding="utf-8")
-    assert "return cloud.proxy_env()" in daemon_src
+                "scripts/nightly_dossier_review.py", "src/daemon.py"):
+        src = (ROOT / rel).read_text(encoding="utf-8")
+        assert "def _proxy_env" not in src and "def load_claude_proxy_env" not in src, \
+            f"{rel}: своя копия вместо cloud.add_proxy"
+        uses = src.count("cloud.add_proxy(env)")
+        assert uses >= 1, rel
+        # каждое применение — перед subprocess с env=env в том же блоке
+        for m in re.finditer(r"cloud\.add_proxy\(env\)", src):
+            tail = src[m.end():m.end() + 4000]
+            assert "env=env" in tail, f"{rel}: прокси построен, но до процесса не доходит"

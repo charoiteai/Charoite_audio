@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import json
 import os
 import pathlib
 import re
@@ -143,7 +142,7 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
     prompt = PROMPT.format(theme=theme, current=body, sources="\n".join(parts))
     claude = shutil.which("claude") or "/opt/homebrew/bin/claude"
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-    env.update(cloud.proxy_env())
+    cloud.add_proxy(env)
     try:
         # Досье и все источники уже В ПРОМПТЕ — инструментов этому вызову не
         # положено вовсе: инъекция из стенограммы/досье не должна читать

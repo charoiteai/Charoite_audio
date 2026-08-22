@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import json
 import os
 import pathlib
 import shutil
@@ -105,7 +104,7 @@ def main() -> None:
     model = cloud.model(cfg, "cloud_model")
     claude = shutil.which("claude") or "/opt/homebrew/bin/claude"
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-    env.update(cloud.proxy_env())
+    cloud.add_proxy(env)
     prompt = (
         "Ты ночной ревизор графа знаний рабочих встреч. Ниже ядра (сквозные "
         f"темы) за последние {FRESH_DAYS} дней и индекс.\n\n" + blob + "\n\n"

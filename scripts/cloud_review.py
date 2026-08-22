@@ -372,7 +372,7 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     # Прокси из settings.json — иначе из GUI-запуска без shell-окружения
     # `claude` идёт напрямую и получает «403 Request not allowed» (регион):
     # 21.08 так упали все разборы дня, пока демон с прокси работал.
-    env.update(cloud.proxy_env())
+    cloud.add_proxy(env)
 
     tmp = rev.with_suffix(rev.suffix + ".part")
     work_dir = graph_updater.cloud_enrich_workdir(cfg, graph, transcript.parent)

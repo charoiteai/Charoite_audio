@@ -175,11 +175,6 @@ def emit_error(text: str):
     emit({"type": "status", "text": text, "error": True})
 
 
-def load_claude_proxy_env() -> dict:
-    """Прокси для headless `claude -p` — см. cloud.proxy_env (единая точка)."""
-    return cloud.proxy_env()
-
-
 def start_brief(cfg: dict) -> str:
     """Компактный бриф последней встречи для стартовой карточки подсказок.
 
@@ -1255,7 +1250,7 @@ def main():
             claude_bin = shutil.which("claude") or "/opt/homebrew/bin/claude"
             model = cloud.model(cfg, "cloud_hints_model")
             env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-            env.update(load_claude_proxy_env())
+            cloud.add_proxy(env)
             short = model.split("-")[1] if model.count("-") else model
             try:
                 r = subprocess.run(
@@ -1526,7 +1521,7 @@ def main():
         claude_bin = shutil.which("claude") or "/opt/homebrew/bin/claude"
         model = cloud.model(cfg, "cloud_live_model")
         env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-        env.update(load_claude_proxy_env())  # без прокси из GUI-запуска — 403 по региону
+        cloud.add_proxy(env)  # без прокси из GUI-запуска — 403 по региону
         while not stop.is_set():
             if not cloud_evt.wait(timeout=0.5):
                 continue
