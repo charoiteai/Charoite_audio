@@ -146,8 +146,13 @@ def _fake_gh(calls: list, state: dict, fail_on: str | None = None):
         out = ""
         if sub == "view":
             if argv[3] == "--repo":                       # без тега — latest
-                if state["latest"] is None:
-                    return subprocess.CompletedProcess(argv, 1, "", "no latest")
+                if state.get("api_down"):
+                    return subprocess.CompletedProcess(
+                        argv, 1, "", "error connecting to api.github.com")
+                if state["latest"] is None:               # как у gh: 404
+                    return subprocess.CompletedProcess(
+                        argv, 1, "", "HTTP 404: Not Found (https://api.github.com/"
+                        "repos/x/y/releases/latest)")
                 out = state["latest"] + "\n"
             else:
                 out = json.dumps({"isPrerelease": state["pre"],
@@ -161,6 +166,8 @@ def _fake_gh(calls: list, state: dict, fail_on: str | None = None):
             tag = argv[3]
             if "--prerelease" in argv:
                 state["pre"] = True
+                if state["latest"] == tag:                # спрятан — не latest
+                    state["latest"] = state.get("prev_latest")
             if "--prerelease=false" in argv:
                 state["pre"] = False
             if "--latest" in argv:
@@ -215,7 +222,7 @@ def test_failed_signature_upload_leaves_release_as_prerelease(
     key = _ephemeral_key(tmp_path)
     calls, state = [], {"pre": True, "assets": set(), "latest": None}
     _wire_main(monkeypatch, tmp_path, key, calls, state, fail_on="upload")
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(SystemExit, match="повтори: sign_release_manifest.py v0.1.0"):
         srm.main()
     assert not _edits(calls)
     assert state["pre"] is True and state["latest"] is None
@@ -257,7 +264,7 @@ def test_resigning_latest_release_hides_it_while_assets_change(
     """Повторная подпись latest-релиза: два upload не атомарны — между ними
     апдейтер видел бы манифест с чужой подписью (круг-1, Codex I1)."""
     key = _ephemeral_key(tmp_path)
-    calls, state = [], {"pre": False, "latest": "v0.1.0",
+    calls, state = [], {"pre": False, "latest": "v0.1.0", "prev_latest": "v0.0.9",
                         "assets": {"Charoite.app.zip", srm.ASSET, f"{srm.ASSET}.sig"}}
     _wire_main(monkeypatch, tmp_path, key, calls, state)
     assert srm.main() == 0
@@ -278,10 +285,59 @@ def test_signing_older_tag_does_not_move_latest_backwards(tmp_path, monkeypatch)
                      "assets": {srm.ASSET, f"{srm.ASSET}.sig"}}
 
 
+def test_failed_hide_is_loud_and_release_stays_as_it_was(tmp_path, monkeypatch):
+    """Гейт не сработал, а спрятать релиз не вышло — сказать об этом, а не
+    трейсбек; ничего не качать и не заливать (круг-2, Codex I6)."""
+    key = _ephemeral_key(tmp_path)
+    calls, state = [], {"pre": False, "assets": {"Charoite.app.zip"}, "latest": "v0.1.0"}
+    _wire_main(monkeypatch, tmp_path, key, calls, state, fail_on="edit")
+    with pytest.raises(SystemExit, match="остался latest"):
+        srm.main()
+    assert "download" not in _subs(calls) and "upload" not in _subs(calls)
+
+
+def test_api_error_on_latest_lookup_is_not_treated_as_no_latest(
+        tmp_path, monkeypatch):
+    """Сеть/токен/5xx при чтении latest — не «latest нет»: иначе исторический
+    тег получил бы --latest (круг-2, Codex I5). 404 — честное «нет»."""
+    key = _ephemeral_key(tmp_path)
+    calls, state = [], {"pre": True, "assets": set(), "latest": "v0.2.0", "api_down": True}
+    _wire_main(monkeypatch, tmp_path, key, calls, state)
+    with pytest.raises(SystemExit, match="не удалось узнать нынешний latest"):
+        srm.main()
+    assert not _edits(calls) and state["pre"] is True
+
+
+def test_prerelease_suffix_never_becomes_latest(tmp_path, monkeypatch):
+    """v0.1.0-rc.1 при latest v0.1.0: числа равны, но RC ниже релиза —
+    стабильным станет, latest — нет (круг-2, Codex I7)."""
+    key = _ephemeral_key(tmp_path)
+    calls, state = [], {"pre": True, "assets": set(), "latest": "v0.1.0"}
+    _wire_main(monkeypatch, tmp_path, key, calls, state, tag="v0.1.0-rc.1")
+    assert srm.main() == 0
+    (edit,) = _edits(calls)
+    assert "--prerelease=false" in edit and "--latest" not in edit
+    assert state["latest"] == "v0.1.0"
+
+
+def test_half_a_pair_counts_as_unsigned(tmp_path, monkeypatch, capsys):
+    """Стабильный релиз с одним .sig без .manifest — не подписан: приложению
+    нужны оба файла (круг-2, Codex I3)."""
+    key = _ephemeral_key(tmp_path)
+    calls, state = [], {"pre": False, "latest": "v0.1.0",
+                        "assets": {"Charoite.app.zip", f"{srm.ASSET}.sig"}}
+    _wire_main(monkeypatch, tmp_path, key, calls, state)
+    assert srm.main() == 3
+    assert "ГЕЙТ НЕ СРАБОТАЛ" in capsys.readouterr().err
+    assert state["assets"] >= {srm.ASSET, f"{srm.ASSET}.sig"}
+
+
 def test_version_tuple_orders_tags():
     vt = srm.version_tuple
     assert vt("v0.58.0") == (0, 58, 0) and vt("0.58.0") == (0, 58, 0)
     assert vt("v0.9.1") < vt("v0.10.0") < vt("v1.0.0")
+    assert srm.has_prerelease_suffix("v0.58.0-rc.1")
+    assert not srm.has_prerelease_suffix("v0.58.0")
 
 
 def test_release_please_config_requests_prereleases():
@@ -303,12 +359,21 @@ def test_release_app_workflow_keeps_unsigned_release_prerelease():
     запустить, но молча потерять шаги нельзя."""
     yml = (ROOT / ".github" / "workflows" / "release-app.yml").read_text(encoding="utf-8")
     assert "types: [published, released]" in yml
-    assert yml.count('gh release edit "$TAG" --repo "$REPO" --prerelease\n') == 2, \
-        "гейт и в Resolve (ручной стабильный), и в Attach (после сборки)"
-    assert 'gh release delete-asset "$TAG" "$stale"' in yml
+    hide = 'gh release edit "$TAG" --repo "$REPO" --prerelease\n'
+    resolve = yml[yml.index("name: Resolve tag and decide"):yml.index("name: Build bundle")]
+    attach = yml[yml.index("name: Attach to release"):yml.index("name: Remove signing material")]
+    assert hide in resolve, "гейт в Resolve: ручной стабильный без подписи"
+    # Attach: спрятать ДО замены архива — упадёт upload/delete, релиз
+    # останется pre-release, а не стабильным с битой парой (круг-2, DS I1)
+    assert attach.index(hide) < attach.index("gh release upload"), \
+        "в Attach pre-release ставится до upload"
+    assert 'gh release delete-asset "$TAG" "$stale"' in attach
     assert "> app/build/Charoite.app.zip.manifest" not in yml, \
         "манифест без подписи CI класть не должен"
-    assert "Charoite.app.zip.manifest.sig" in yml
+    # подписан = оба файла пары, точные имена; проверки без pipe (pipefail)
+    assert "has Charoite.app.zip.manifest && has Charoite.app.zip.manifest.sig" in resolve
+    import re
+    assert not re.search(r"\|\s*grep", resolve + attach), "pipe в grep под pipefail"
 
 
 def test_release_gate_tripwire_pre_major_versions_only():

@@ -73,10 +73,20 @@ it to the release. Three triggers:
   in other workflows (v0.19.0 initially shipped without the bundle —
   that's how we learned). The job only proceeds when release-please
   **succeeded** (`completed` also arrives after a failed run).
-- `release: published` — kept for human-created releases.
+- `release: published` — kept for human-created releases. With
+  `RELEASE_PLEASE_TOKEN` (a PAT) in place, release-please's own releases
+  fire it too, so one release produces two runs: `concurrency` serialises
+  them and the second one sees `Charoite.dmg` and exits with
+  `build=false`. `released` is listened to as well — a pre-release turned
+  stable (by the signing script or by hand in the web UI) is re-checked by
+  the signature gate below; after each signing that is one more short no-op
+  run.
 - `workflow_dispatch` with a `tag` input — manual re-upload for an old
   release (see the v0.19.0 postmortem below). Manual runs always rebuild
-  and `--clobber` the asset.
+  and `--clobber` the asset; since PR #375 a rebuilt release becomes a
+  pre-release until the owner signs the new archive — including historical
+  releases that were never signed (they stay pre-release for good; nobody is
+  affected, they are not latest).
 
 The order inside the job is deliberate: the **first** step resolves which
 tag needs an asset and whether one already exists — before anything is
@@ -250,63 +260,65 @@ CI не воспроизводит ни живые устройства, ни к
 Что именно смотрелось — одной строкой в описание релизного PR. Изменения,
 не трогающие экран/звук (доки, конвейер, скрипты), приёмки не требуют.
 
-## Подпись манифеста обновлений (после каждого релиза)
+## Signing the update manifest (after every release)
 
-Апдейтер не ставит выпуск без подписи манифеста ключом владельца — якоря,
-независимого от GitHub (карточка №24): контрольная сумма лежит рядом с
-архивом, и кто дотянулся до релиза, подписал бы и её. Ключ в CI не бывает.
+The updater refuses any build whose manifest is not signed with the owner's
+key — an anchor independent of GitHub (card #24): the checksum sits next to
+the archive, and whoever could replace the archive could replace the checksum
+too. The key never enters CI.
 
-После публикации релиза (release-please + release-app) — одна команда с
-машины владельца (нужен `gh` ≥ 2.28 — флаг `--latest`):
+After a release is published (release-please + release-app), one command on
+the owner's machine (`gh` ≥ 2.28 — the `--latest` flag):
 
     .venv/bin/python scripts/sign_release_manifest.py vX.Y.Z
 
-Она смотрит состояние релиза, скачивает `Charoite.app.zip`, распаковывает
-и СВЕРЯЕТ подпись бандла (codesign --strict, команда AR7PDJQNR4) —
-подложенный до подписи чужой архив получает отказ, а не подпись владельца.
-Затем строит манифест `<версия>  <sha256>` САМА (версию несёт подписанный
-файл — голый хеш позволял реплей старой тройки под новым тегом),
-подписывает его сырые байты (raw ed25519 → base64) ключом
-`~/.config/charoite/update_manifest_ed25519.pem`, прикладывает
-`Charoite.app.zip.manifest` + `.manifest.sig` к релизу и последним шагом
-снимает флаг pre-release (`gh release edit --prerelease=false --latest`).
+It reads the release state, downloads `Charoite.app.zip`, unpacks it and
+VERIFIES the bundle signature (codesign --strict, team AR7PDJQNR4) — an
+archive swapped before signing is refused, not signed. It then builds the
+manifest `<version>  <sha256>` ITSELF (the signed file carries the version —
+a bare hash allowed replaying an old honest triple under a new tag), signs
+its raw bytes (raw ed25519 → base64) with
+`~/.config/charoite/update_manifest_ed25519.pem`, attaches
+`Charoite.app.zip.manifest` + `.manifest.sig` to the release and, as the last
+step, clears the pre-release flag (`gh release edit --prerelease=false`, plus
+`--latest` when the tag is not older than the current latest).
 
-### Гейт: выпуск без подписи не бывает latest (PR #375)
+### The gate: an unsigned release is never latest (PR #375)
 
-Апдейтер спрашивает `/releases/latest`, куда GitHub pre-release не отдаёт.
-Поэтому релиз держится pre-release, пока владелец не подписал, — с двух
-сторон:
+The updater asks `/releases/latest`, and GitHub never returns a pre-release
+there. So a release stays pre-release until the owner has signed it — enforced
+from two sides:
 
-- **release-please** создаёт каждый выпуск как pre-release
-  (`"prerelease": true` в `.github/release-please-config.json`) — окна
-  нет вовсе. Формула release-please: `prerelease && (суффикс версии ||
-  major == 0)` — на 0.x работает сама, с 1.0.0 перестанет; тест-растяжка
-  `test_release_gate_tripwire_pre_major_versions_only` упадёт на первой
-  версии ≥ 1.0, чтобы это решили осознанно (остаётся CI-гейт с окном в
-  латентность Actions), а не потеряли молча.
-- **release-app** (CI) — страховка на всё остальное. В начале прогона:
-  стабильный релиз без `.manifest.sig` переводится в pre-release
-  (ручной релиз, снятый рукой флаг, 1.0+); триггер слушает и `released`,
-  чтобы поймать флаг, снятый в веб-интерфейсе. После каждой сборки:
-  прежние `.manifest`/`.manifest.sig` снимаются (они подписывали ДРУГОЙ
-  архив и больше не сходятся), релиз — pre-release до новой подписи.
-  `.manifest` CI не кладёт: без подписи он приложению бесполезен.
-- **Скрипт подписи** ведёт себя по состоянию релиза. Pre-release и не
-  подписан — обычный путь. Стабильный и подписанный — повторная подпись:
-  на время замены пары релиз прячется в pre-release (два upload не
-  атомарны, между ними апдейтер увидел бы манифест с чужой подписью).
-  Стабильный и НЕ подписанный — гейт не сработал: скрипт всё равно
-  подписывает (пользователи и так заблокированы), но кричит в stderr и
-  выходит с кодом 3 — разобраться, откуда релиз. `--latest` ставится
-  только если тег не старше нынешнего latest: подпись исторического
-  v0.57.0 после v0.58.0 не откатывает `/releases/latest`.
+- **release-please** creates every release as a pre-release
+  (`"prerelease": true` in `.github/release-please-config.json`) — no window
+  at all. release-please's rule is `prerelease && (version suffix || major ==
+  0)`: it works by itself on 0.x and stops at 1.0.0; the tripwire test
+  `test_release_gate_tripwire_pre_major_versions_only` fails on the first
+  version ≥ 1.0 so that this is decided deliberately (the CI gate remains,
+  with a window equal to Actions latency) rather than lost silently.
+- **release-app** (CI) backs everything else. At the start of a run a stable
+  release without `.manifest.sig` is turned into a pre-release (manual
+  release, flag cleared by hand, 1.0+); the trigger also listens to
+  `released` to catch a flag cleared in the web UI. After every build the
+  previous `.manifest`/`.manifest.sig` are removed (they signed a DIFFERENT
+  archive and no longer match) and the release is pre-release until signed
+  again. CI does not upload `.manifest`: unsigned, it is useless to the app.
+- **The signing script** acts on the release state. Pre-release and unsigned
+  — the normal path. Stable and signed — a re-sign: the release is hidden as
+  pre-release while the pair is replaced (two uploads are not atomic; in
+  between the updater would see a manifest with a foreign signature). Stable
+  and NOT signed — the gate failed: the script still signs (users are blocked
+  anyway) but shouts to stderr and exits with code 3 — find out where the
+  release came from. `--latest` is set only when the tag is not older than
+  the current latest: signing a historical v0.57.0 after v0.58.0 must not
+  roll `/releases/latest` back.
 
-Пока владелец не подписал — пользователи остаются на предыдущем выпуске;
-упала загрузка подписи или снятие флага — релиз остаётся pre-release,
-скрипт печатает команду для повтора. Ручной `gh release edit --latest` в
-обход скрипта — ровно то, от чего гейт защищает: не делать (CI вернёт
-pre-release при следующем событии, но окно до этого — ваше).
+Until the owner signs, users stay on the previous release; if the signature
+upload or the flag change fails, the release stays pre-release and the script
+prints the command to retry. A manual `gh release edit --latest` around the
+script is exactly what the gate protects against: don't (CI restores
+pre-release on the next event, but the window until then is yours).
 
-Потерян приватный ключ — обновления встанут у всех: новую пару генерирует
-владелец, публичная половина меняется в `UpdateAuthenticity.swift`
-(константа `manifestKeyBase64`), выпускается новый релиз.
+A lost private key stalls updates for everyone: the owner generates a new
+pair, the public half goes into `UpdateAuthenticity.swift` (constant
+`manifestKeyBase64`), and a new release is published.

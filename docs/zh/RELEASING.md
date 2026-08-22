@@ -42,7 +42,7 @@ secret 缺失时工作流会回退到 `GITHUB_TOKEN`，所以在此期间什么�
 应用内更新会拒绝安装下载到的文件。构建完成后全部附加到发布上。共三个触发器：
 
 - `release-please` 工作流之后的 `workflow_run` — 主路径。release-please 用 `GITHUB_TOKEN` 发布 release，而 GitHub 的防递归机制意味着这类事件不会在其他工作流里触发 `release: published`（v0.19.0 最初发布时就没带应用包 — 我们由此学到教训）。该 job 只在 release-please **成功**时才继续（失败的运行同样会发出 `completed`）。
-- `release: published` — 保留给人工创建的发布。
+- `release: published` — 保留给人工创建的发布。配置了 `RELEASE_PLEASE_TOKEN`（PAT）后，release-please 自己创建的发布也会触发它，因此一次发布会有两次运行：`concurrency` 把它们串行化，第二次看到 `Charoite.dmg` 就以 `build=false` 退出。同时也监听 `released`——pre-release 变为稳定版（由签名脚本或在网页里手动操作）时，会再次经过下文的签名门禁。
 - 带 `tag` 输入的 `workflow_dispatch` — 给旧发布手动重新上传（见下文 v0.19.0 事后复盘）。手动运行总是重新构建并用 `--clobber` 覆盖资产。
 
 job 内部的顺序是刻意安排的：**第一步**先解析哪个标签需要资产、以及资产是否已存在 — 然后才开始任何构建。`release-please` 在每次向 `main` 推送时都会跑完，但通常并不创建发布，所以绝大多数链式运行必须在解析步骤上几秒内结束，而不是跑完一整趟 macOS 构建。
@@ -99,7 +99,7 @@ job 内部的顺序是刻意安排的：**第一步**先解析哪个标签需要
 会被拒绝，而不是被签名），自己生成清单 `<版本>  <sha256>`，用
 `~/.config/charoite/update_manifest_ed25519.pem` 做 raw ed25519 签名，把
 `Charoite.app.zip.manifest` 和 `.manifest.sig` 附加到 release，最后取消
-pre-release 标记（`gh release edit --prerelease=false --latest`）。
+pre-release 标记（`gh release edit --prerelease=false`；只有当标签不早于当前 latest 时才加 `--latest`）。
 
 ### 门禁：没有签名的版本不会成为 latest（PR #375）
 
