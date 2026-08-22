@@ -118,6 +118,13 @@ privilege boundary, not a path preference.
   it does not, and cannot, defend against another process running as you
   with write access to your own files. Leave the hook empty if you do not
   use it.
+- **`charoite://record/start` is a front door, not a back door.** The URL
+  scheme exists for Shortcuts and the terminal, and any local process or
+  web page can open it. What it cannot do is record quietly: every call
+  brings the window to the front with the status and the timer, a browser
+  asks before opening the scheme, and `stop` is one click away. A
+  confirmation dialog would break the hands-free start the scheme is for,
+  so the defence is visibility, not a prompt (audit 16.08, item 6).
 
 ## Supply chain and release integrity
 

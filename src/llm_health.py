@@ -48,7 +48,7 @@ from pathlib import Path
 import requests
 
 import privacy
-from charoite_paths import resolve_root
+from charoite_paths import resolve_root, trim_log
 from llm import DEFAULT_MLX_MODEL
 
 ROOT = resolve_root(__file__)
@@ -251,6 +251,7 @@ def _restart_mlx(cfg: dict, log: Callable[[str], None]) -> bool:
     model = str((cfg.get("llm") or {}).get("mlx_model") or DEFAULT_MLX_MODEL)
     port = urllib.parse.urlsplit(url).port or 8080
     (ROOT / "logs").mkdir(exist_ok=True)
+    trim_log(ROOT / "logs" / "mlx_server.log")   # потолок append-лога
     logf = (ROOT / "logs" / "mlx_server.log").open("a")
     try:
         subprocess.Popen(

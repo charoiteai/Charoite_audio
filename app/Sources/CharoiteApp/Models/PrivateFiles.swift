@@ -45,3 +45,47 @@ extension FileManager {
         try? setAttributes([.posixPermissions: PrivateFiles.fileMode], ofItemAtPath: path)
     }
 }
+
+/// Потолок для бессрочных append-логов демона (аудит 16.08, п.7).
+///
+/// `daemon.err.log` дописывается при каждом старте и никогда не
+/// пересоздаётся — так трейсбек после крэша не теряется, но у
+/// долгоживущей установки файл с кусками стенограмм растёт без предела.
+/// При старте, если лог перерос `maxBytes`, остаётся только хвост
+/// `keepBytes` (по границе строки): именно хвост нужен для диагноза.
+/// Зеркало `charoite_paths.trim_log` на стороне Python (mlx_server.log).
+enum LogTrim {
+    static let maxBytes = 20 * 1024 * 1024
+    static let keepBytes = 2 * 1024 * 1024
+
+    /// Возвращает true, если усекали. Ошибки глотаются: лог важнее
+    /// отсутствия лога, но запуск записи важнее лога.
+    @discardableResult
+    static func trim(_ url: URL, maxBytes: Int = maxBytes, keepBytes: Int = keepBytes) -> Bool {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size64 = (attrs[.size] as? NSNumber)?.int64Value, size64 > Int64(maxBytes),
+              let size = Int(exactly: size64),
+              let fh = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? fh.close() }
+        guard (try? fh.seek(toOffset: UInt64(max(0, size - keepBytes)))) != nil,
+              var tail = try? fh.readToEnd() else { return false }
+        if let nl = tail.firstIndex(of: 0x0A), nl < tail.endIndex - 1 {
+            tail = tail[tail.index(after: nl)...]
+        }
+        var out = Data("[лог усечён при старте: было \(size) байт]\n".utf8)
+        out.append(tail)
+        // Через временный файл и атомарную замену: упасть между truncate и
+        // записью — остаться без хвоста, ради которого всё и затевалось
+        // (круг-1 по PR #377, qwen). Временный файл — сразу 0600.
+        let fm = FileManager.default
+        let tmp = url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + ".trim")
+        guard fm.createFile(atPath: tmp.path, contents: out,
+                            attributes: [.posixPermissions: PrivateFiles.fileMode]),
+              (try? fm.replaceItemAt(url, withItemAt: tmp)) != nil else {
+            try? fm.removeItem(at: tmp)
+            return false
+        }
+        return true
+    }
+}
+
