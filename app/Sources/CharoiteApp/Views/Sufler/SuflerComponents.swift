@@ -26,23 +26,19 @@ struct SuflerCopyButton: View {
 }
 
 /// Единое пустое состояние панелей: иконка и спокойная поясняющая строка.
+/// Пустая нить встречи — через общий `EmptyState` (правило 2 ревизии):
+/// заголовок, что появится, и что нажать. Сигнатура прежняя, вызов в
+/// SuflerView не тронут.
 struct SuflerEmptyState: View {
     let symbol: String
     let text: String
 
     var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: symbol)
-                .font(.title2)
-                .foregroundStyle(.quaternary)
-            Text(text)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 28)
-        .padding(.horizontal, 16)
+        EmptyState(text,
+                   text: L.t("Стенограмма, тезисы и подсказки появятся здесь по ходу разговора.",
+                             "Transcript, theses and hints show up here as the conversation goes.",
+                             "逐字稿、要点与提示会随着对话出现在这里。"),
+                   systemImage: symbol)
     }
 }
 
