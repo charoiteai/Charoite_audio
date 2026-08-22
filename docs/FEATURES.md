@@ -168,9 +168,24 @@ local model builds dossiers in bulk and cheaply, but misses the links: that a
 decision has been superseded, that a deadline expired, that two sources
 contradict each other. Opus sees those, and runs as a second pass. With
 `sufler.cloud_edit_graph: true` it edits directly; **off by default**, in which
-case it writes `Service_dossier_review_<date>.md` and a human applies the
-fixes. Transcripts, minutes and `## Author edits` are untouched in either mode;
-every edit is backed up to `Dossiers/.backup/<date>/` first.
+case it writes `Служебное_ревизия_досье_<date_time>.md` ("Service: dossier
+review" — file names in the graph are Russian) and a human applies the fixes.
+The report is written in both modes, in three sections: applied (+/− lines,
+number of ⚠️ marks, links before/after, path of the backup copy), rejected
+(with the reason) and proposed-but-not-applied when editing is off. Before
+anything is written the cloud's answer passes a real check, not a "looks like a
+dossier" one: exactly five headings in the given order and nothing else that
+starts with `#` (so a `### Author edits` smuggled in from a transcript is
+rejected, not pasted), exit code 0, no shorter than 60% of the previous body
+and not a single lost `[[link]]` to a source — a missing link means a dropped
+fact, and the whole revision is rejected, so the prompt tells the model to mark
+cancelled items with ⚠️ instead of deleting them. Links are compared the way
+the graph resolves them (`[[People/Name]]`, `[[Name.md]]` and `[[name]]` are
+one node). A dossier without a `## Sources` section was assembled by hand and
+is never touched. Transcripts, minutes and `## Author edits` are untouched in
+either mode; every edit is backed up to `Досье/.backup/<date_time>/` first
+(seconds in the name: a second run never overwrites the copy taken before the
+first).
 
 **Protocol for participants** (`scripts/protocol.py`) — what you actually
 send people after a meeting: the bottom line, decisions, action items, open

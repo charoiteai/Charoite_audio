@@ -21,6 +21,7 @@ Opus это видит. Поэтому он идёт вторым проходо
 from __future__ import annotations
 
 import argparse
+import collections
 import datetime as dt
 import os
 import pathlib
@@ -47,12 +48,23 @@ MAX_SRC_CHARS = 45_000  # потолок на один запрос к Opus
 BACKUP_KEEP = 20
 KEEP_REPORTS = 14       # служебных отчётов в корне графа
 DEFAULT_LIMIT = 6       # досье за прогон: облако не бесплатное по времени
+SECTIONS = ("## Сейчас", "## Как пришли", "## Решено", "## Открыто", "## Кто в теме")
+# Ревизия короче 60% прежнего тела — не правка, а потеря: модель ответила
+# обрывком, «подытожила» или выбросила разделы. Вверх не ограничиваем —
+# настоящая ревизия растёт (замер 22.08: 4,2 → 11,4 КБ, 25 пометок ⚠️).
+MIN_KEEP = 0.6
 
 
 PROTECTED_HEADINGS = ("## Правки автора", "## Источники")
 
 
-_PROTECTED_RE = re.compile(r"(?m)^##\s+(?:Правки автора|Источники)\s*$")
+# Заголовок любого уровня и без пробела тоже: «### Правки автора» и
+# «##Правки автора» строка из стенограммы подсунет так же легко, как «## »,
+# а старый регэксп их пропускал (круг-1 по PR #382, DeepSeek Critical).
+_PROTECTED_RE = re.compile(r"(?m)^#{1,6}\s*(?:Правки автора|Источники)\s*$")
+_SOURCES_RE = re.compile(r"(?m)^#{1,6}\s*Источники\s*$")
+_MANUAL_RE = re.compile(r"(?m)^#{1,6}\s*Правки автора\s*$")
+_HEADING_RE = re.compile(r"(?m)^\s*#.*$")
 
 
 def strip_protected(body: str) -> str:
@@ -62,6 +74,80 @@ def strip_protected(body: str) -> str:
     внутри абзаца — не раздел (ревью 17.08).
     """
     return _PROTECTED_RE.split(body, maxsplit=1)[0].rstrip()
+
+
+def split_dossier(text: str) -> tuple[str, str, str | None, str | None]:
+    """(шапка до «## Сейчас», тело пяти разделов, источники, правки автора).
+
+    Всё — по якорным заголовкам-строкам, не по подстрокам: цитата
+    «## Правки автора» в пункте резала тело пополам, и проверка видела
+    только префикс (круг-1 по PR #382, Codex Critical). Источники — None,
+    если раздела нет: такое досье собрано руками, и трогать его нельзя.
+    """
+    m = dossier.VALID_RE.search(text or "")
+    if not m:
+        return text or "", "", None, None
+    # VALID_RE допускает пробелы и переводы строк перед «## Сейчас» — они
+    # остаются в шапке, тело начинается с самого заголовка
+    start = m.start() + (m.group(0).index("#"))
+    head, rest = text[:start], text[start:]
+    ms = _SOURCES_RE.search(rest)
+    mm = _MANUAL_RE.search(rest)
+    body_end = min(x.start() for x in (ms, mm) if x) if (ms or mm) else len(rest)
+    body = rest[:body_end].rstrip()
+    sources = manual = None
+    if ms:
+        s_end = mm.start() if mm and mm.start() > ms.start() else len(rest)
+        sources = rest[ms.end():s_end].strip("\n").rstrip()
+    if mm:
+        manual = rest[mm.end():].strip()
+    return head, body, sources, manual
+
+
+def _link_key(target: str) -> str:
+    """Ссылка как её резолвит граф: последний сегмент, без .md, без регистра
+    — `[[Люди/Иванов]]`, `[[Иванов.md]]` и `[[иванов]]` ведут в один узел
+    (dossier.scan делает то же; круг-1 по PR #382, DeepSeek)."""
+    return target.strip().split("/")[-1].removesuffix(".md").strip().lower()
+
+
+def links(body: str) -> set[str]:
+    return {_link_key(x) for x in dossier.LINK_RE.findall(body or "")}
+
+
+def check_revision(old_body: str, new_body: str) -> str | None:
+    """Почему переписанное досье нельзя класть на место старого — или None.
+
+    До этого на запись пускал `looks_valid`: «## Сейчас» где-то есть и четыре
+    заголовка из пяти, — то есть проходили ответ без «## Кто в теме», ответ с
+    лишним разделом и ответ, растерявший половину ссылок. Источники досье —
+    это [[ссылки]] в конце пунктов; пропавшая ссылка означает выброшенный
+    факт, а промпт просит ничего не выбрасывать без причины (карточка №87).
+    """
+    # Любая строка, начинающаяся с «#», — заголовок: «# Важное», «###
+    # Правки автора» и «##Сейчас» считаются наравне с «## …».
+    heads = [re.sub(r"\s+", " ", h.strip()) for h in _HEADING_RE.findall(new_body)]
+    want = [h.strip() for h in SECTIONS]
+    if heads != want:
+        return f"разделы не по формату: {', '.join(heads) or 'нет заголовков'}"
+    if len(new_body) < MIN_KEEP * len(old_body):
+        return f"ответ короче {int(MIN_KEEP * 100)}% прежнего ({len(new_body)} из {len(old_body)} зн.)"
+    lost = sorted(links(old_body) - links(new_body))
+    if lost:
+        shown = ", ".join(f"[[{x}]]" for x in lost[:5]) + (" …" if len(lost) > 5 else "")
+        return (f"потеряны ссылки на источники ({len(lost)}): {shown} — "
+                "ревизия целиком не применена")
+    return None
+
+
+def revision_stats(old_body: str, new_body: str) -> str:
+    """Одна строка про то, что изменилось: для утреннего отчёта владельцу."""
+    before = collections.Counter(ln.strip() for ln in old_body.splitlines() if ln.strip())
+    after = collections.Counter(ln.strip() for ln in new_body.splitlines() if ln.strip())
+    removed = sum((before - after).values())
+    added = sum((after - before).values())
+    return (f"+{added}/−{removed} строк, ⚠️ {new_body.count('⚠️')}, "
+            f"ссылок {len(links(old_body))}→{len(links(new_body))}")
 
 
 def _cfg() -> dict:
@@ -108,9 +194,11 @@ PROMPT = """Ниже досье по теме «{theme}» и его источн
 
 Правила:
 - Только факты из источников. Не додумывать.
-- Ссылки [[Имя файла]] в конце пунктов сохранять и добавлять к новым.
+- Ссылки [[Имя файла]] в конце пунктов сохранять ВСЕ и добавлять к новым.
 - Спорное помечай «⚠️» с указанием, что с чем расходится.
-- Ничего не выбрасывай без причины: если пункт верен — оставь как есть.
+- Пункты не удалять: отменённое, просроченное или опровергнутое помечай
+  «⚠️» с пояснением и оставляй вместе со ссылкой. Досье, потерявшее хотя бы
+  одну ссылку, будет отклонено целиком.
 - Русский язык, короткие фразы, без обращений к читателю.
 
 Ответ начни СРАЗУ со строки «## Сейчас». Никаких предисловий.
@@ -118,15 +206,21 @@ PROMPT = """Ниже досье по теме «{theme}» и его источн
 
 
 def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
-           files: dict, members: list[str], model: str, cfg: dict) -> str | None:
+           files: dict, members: list[str], model: str, cfg: dict,
+           ) -> tuple[str | None, str]:
+    """(исправленное тело, '') — или (None, почему отклонено)."""
     # Сетевой выход держит собственную границу. main уже проверяет её ради
     # дешёвого раннего выхода всего прогона, но review можно вызвать отдельно
     # из теста, будущего воркера или после рефакторинга call graph.
     if not privacy.cloud_enrich_enabled(cfg):
-        return None
+        return None, "облако выключено"
     current = path.read_text(encoding="utf-8")
+    head, old_body, sources, _manual = split_dossier(current)
+    if sources is None:
+        # собрано руками или старым форматом — облаку не сверять и не трогать
+        return None, "в досье нет раздела «## Источники» — не трогаем"
     # раздел «Правки автора» в запрос не отдаём и не даём его переписать
-    body = current.split("## Правки автора")[0]
+    body = f"{old_body}\n\n## Источники\n{sources}\n"
 
     parts, total = [], 0
     for m in members[: dossier.MAX_SOURCES]:
@@ -154,8 +248,15 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
                            capture_output=True, text=True, timeout=600, env=env,
                            stdin=subprocess.DEVNULL)
     except Exception as e:  # noqa: BLE001
-        print(f"  ⚠️ {theme}: claude не отработал ({e})")
-        return None
+        why = f"claude не отработал ({e})"
+        print(f"  ⚠️ {theme}: {why}")
+        return None, why
+    if r.returncode != 0:
+        # Код ≠ 0 с текстом в stdout — сообщение CLI об ошибке или обрывок,
+        # а не ревизия; раньше он шёл в парсер наравне с ответом.
+        why = f"claude вернул код {r.returncode}: {(r.stderr or r.stdout or '').strip()[:160]}"
+        print(f"  ⚠️ {theme}: {why}")
+        return None, why
     out = dossier.trim_to_format((r.stdout or "").strip())
     # Модель видит тело досье без «## Правки автора», но защищённые
     # заголовки в её ответе не место: строка из стенограммы могла попросить
@@ -163,10 +264,11 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
     # а настоящий раздел уезжал вниз (аудит DeepSeek 17.08). Режем по первому
     # защищённому заголовку: формат — ровно пять секций.
     out = strip_protected(out)
-    if not dossier.looks_valid(out):
-        print(f"  ⚠️ {theme}: ответ не по формату, пропуск")
-        return None
-    return out
+    why = check_revision(old_body, out)
+    if why:
+        print(f"  ⚠️ {theme}: отклонено — {why}")
+        return None, why
+    return out, ""
 
 
 def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
@@ -192,8 +294,10 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
         print("  свежих автособранных досье нет — пропуск")
         return 0
 
-    stamp = dt.date.today().isoformat()
-    done, notes = 0, []
+    # Штамп с секундами: два прогона за день (ручной поверх ночного) иначе
+    # клали бэкап в один каталог, и копия до первого прогона терялась.
+    stamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    done, notes, applied, rejected = 0, [], [], []
 
     for path in fresh[:limit]:
         theme = path.stem
@@ -212,8 +316,9 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
         if live_gate.night_is_over():
             print("  ⏹ время ночного прогона вышло — остальные досье завтра")
             break
-        fixed = review(theme, path, graph, files, members, model, cfg)
+        fixed, why = review(theme, path, graph, files, members, model, cfg)
         if not fixed:
+            rejected.append(f"- **{theme}** — {why}")
             continue
 
         if not may_edit:
@@ -223,27 +328,40 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
             continue
 
         old = path.read_text(encoding="utf-8")
-        manual = dossier.preserve_manual(old)
-        head = old.split("## Сейчас")[0]        # frontmatter и шапка как были
-        text = head + fixed + "\n\n## Источники\n" + \
-            old.split("## Источники\n", 1)[1].split("## Правки автора")[0].rstrip() + \
-            "\n\n## Правки автора\n\n" + (manual or "—") + "\n"
+        head, old_body, sources, manual = split_dossier(old)   # шапка как была
+        if sources is None:
+            rejected.append(f"- **{theme}** — в досье нет раздела «## Источники» — не трогаем")
+            continue
+        manual = manual if manual and manual != "—" else None
+        text = (head + fixed + "\n\n## Источники\n" + sources
+                + "\n\n## Правки автора\n\n" + (manual or "—") + "\n")
 
         _backup(folder, stamp, path)
         tmp = path.with_suffix(".md.tmp")
         tmp.write_text(text, encoding="utf-8")
         tmp.replace(path)
         done += 1
-        print(f"  ✓ {theme}: правки применены ({len(fixed)} зн.)")
+        stats = revision_stats(old_body, fixed)
+        applied.append(f"- **{theme}** — {stats}; копия до правки — "
+                       f"`{dossier.DOSSIER_DIR}/.backup/{stamp}/`")
+        print(f"  ✓ {theme}: правки применены ({stats})")
 
-    if notes and not dry:
+    if (notes or applied or rejected) and not dry:
+        # Отчёт пишется в ОБОИХ режимах: с включённой правкой владелец раньше
+        # узнавал о переписанном досье только из строки в логе (карточка №87).
         dest = graph / f"Служебное_ревизия_досье_{stamp}.md"
-        dest.write_text(
-            f"---\ntype: служебное\nдата: {stamp}\nмодель: {model}\n---\n"
-            f"# Ревизия досье ({model})\n\n"
-            "Правки предложены, но не применены: `sufler.cloud_edit_graph: false`.\n"
-            "Включите тумблер, если хотите, чтобы облако правило граф само.\n\n"
-            + "\n".join(notes), encoding="utf-8")
+        report = (f"---\ntype: служебное\nдата: {stamp}\nмодель: {model}\n---\n"
+                  f"# Ревизия досье ({model})\n\n")
+        if applied:
+            report += "## Применено\n\n" + "\n".join(applied) + "\n\n"
+        if rejected:
+            report += "## Отклонено\n\n" + "\n".join(rejected) + "\n\n"
+        if notes:
+            report += ("## Предложено, но не применено\n\n"
+                       "Запись выключена: `sufler.cloud_edit_graph: false`. Включите "
+                       "тумблер, если хотите, чтобы облако правило граф само.\n\n"
+                       + "\n".join(notes))
+        dest.write_text(report.rstrip() + "\n", encoding="utf-8")
         print(f"  отчёт: {dest.name}")
         # ретеншн ПОСЛЕ записи: отчёты копились бесконечно (аудит GLM 17.08)
         for old in sorted(graph.glob("Служебное_ревизия_досье_*.md"))[:-KEEP_REPORTS]:
