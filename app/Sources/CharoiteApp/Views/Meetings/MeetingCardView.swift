@@ -28,9 +28,14 @@ struct MeetingCardView: View {
     /// Глубина чтения — привычка, а не разовый фильтр: помним между
     /// запусками (сегмент Резюме · Минутки · Разбор · Стенограмма).
     @AppStorage("meetingCardDepth") var depthRaw = MeetingCardDepth.summary.rawValue
-    /// Разбор и стенограмма читаются с диска по требованию.
-    @State var fileText: String?
+    /// Разбор и стенограмма читаются с диска по требованию — строками, чтобы
+    /// не резать мегабайтный текст на каждом рендере. Привязаны к встрече:
+    /// встроенная карточка живёт одной вью на все встречи, и без
+    /// fileMeetingID текст встречи A показывался под заголовком B до конца
+    /// чтения (ревью 22.08, DeepSeek — Critical).
+    @State var fileLines: [String]?
     @State var fileDepth: MeetingCardDepth?
+    @State var fileMeetingID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -82,6 +87,8 @@ struct MeetingCardView: View {
             tasks.rescan()
         }
         .task(id: depth.rawValue + meeting.meetingID) { await loadDepthFile() }
+        // Привычка «Подробно» из прежнего ключа — в «Минутки», один раз.
+        .onAppear { Self.migrateDepthPreference() }
         .sheet(isPresented: $showForget) { forgetSheet }
     }
 

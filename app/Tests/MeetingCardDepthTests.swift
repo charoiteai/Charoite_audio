@@ -52,3 +52,38 @@ final class MeetingCardDepthTests: XCTestCase {
     }
 }
 #endif
+
+#if os(macOS)
+extension MeetingCardDepthTests {
+    /// Прежняя привычка «Подробно» переезжает в «Минутки» один раз и только
+    /// если была выставлена явно; новый ключ не перетирается.
+    func testDetailedPreferenceMigratesOnce() {
+        let defaults = UserDefaults(suiteName: "card-depth-\(UUID().uuidString)")!
+        MeetingCardView.migrateDepthPreference(defaults: defaults)
+        XCTAssertNil(defaults.object(forKey: "meetingCardDepth"), "без старого ключа ничего не пишем")
+
+        defaults.set(true, forKey: "meetingCardDetailed")
+        MeetingCardView.migrateDepthPreference(defaults: defaults)
+        XCTAssertEqual(defaults.string(forKey: "meetingCardDepth"), "minutes")
+
+        defaults.set("transcript", forKey: "meetingCardDepth")
+        MeetingCardView.migrateDepthPreference(defaults: defaults)
+        XCTAssertEqual(defaults.string(forKey: "meetingCardDepth"), "transcript", "явный выбор не перетирается")
+    }
+
+    /// Источник — путь от графа, иначе от папки данных, иначе два звена.
+    func testSourceLineIsRelativeToGraphThenRoot() {
+        let graph = URL(fileURLWithPath: "/tmp/graph")
+        let root = URL(fileURLWithPath: "/tmp/data")
+        XCTAssertTrue(MeetingCardView.sourceLine(
+            for: URL(fileURLWithPath: "/tmp/graph/Встречи/2026-08-04_1120.md"), graph: graph, root: root)
+            .hasPrefix("Встречи/2026-08-04_1120.md"))
+        XCTAssertTrue(MeetingCardView.sourceLine(
+            for: URL(fileURLWithPath: "/tmp/data/transcripts/2026-08-04_11-20.md"), graph: graph, root: root)
+            .hasPrefix("transcripts/2026-08-04_11-20.md"))
+        XCTAssertTrue(MeetingCardView.sourceLine(
+            for: URL(fileURLWithPath: "/elsewhere/a/b.md"), graph: nil, root: root)
+            .hasPrefix("a/b.md"))
+    }
+}
+#endif

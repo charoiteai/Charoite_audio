@@ -72,14 +72,15 @@ extension MeetingCardView {
     var depthPicker: some View {
         let available = MeetingCardDepth.available(card: card, meeting: meeting)
         if available.count > 1 {
-            HStack(spacing: 8) {
+            // Метка черновика — под сегментом, не рядом: четыре русских
+            // сегмента плюс метка в одном ряду не влезали в панель 440.
+            VStack(alignment: .leading, spacing: 4) {
                 Picker("", selection: Binding(
                     get: { depth },
                     set: { depthRaw = $0.rawValue })) {
                     ForEach(available) { Text($0.title).tag($0) }
                 }
                 .pickerStyle(.segmented).labelsHidden()
-                .fixedSize()
                 .accessibilityLabel(L.t("Глубина чтения", "Reading depth", "阅读深度"))
                 if depth == .minutes, card.minutes?.isDraft == true {
                     Text(L.t("черновик: встреча ещё шла",
@@ -87,7 +88,6 @@ extension MeetingCardView {
                              "草稿：会议仍在进行"))
                         .font(.caption).foregroundStyle(Theme.warning)
                 }
-                Spacer()
             }
         }
     }
@@ -112,25 +112,22 @@ extension MeetingCardView {
     /// Стенограмма длинной встречи — сотни абзацев: LazyVStack, не один Text.
     @ViewBuilder
     private var fileView: some View {
-        if fileDepth != depth || fileText == nil {
+        if fileDepth != depth || fileMeetingID != meeting.meetingID || fileLines == nil {
             HStack(spacing: 7) {
                 ProgressView().controlSize(.small)
                 Text(L.t("Читаю…", "Reading…", "正在读取…"))
                     .font(.callout).foregroundStyle(.secondary)
             }
-        } else if let fileText, fileText.isEmpty {
+        } else if let fileLines, fileLines.isEmpty {
             Text(L.t("Файл пуст.", "The file is empty.", "文件为空。"))
                 .font(.callout).foregroundStyle(.secondary)
-        } else if let fileText {
+        } else if let fileLines {
             LazyVStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(fileText.components(separatedBy: "\n").enumerated()),
-                        id: \.offset) { _, line in
-                    if !line.trimmingCharacters(in: .whitespaces).isEmpty {
-                        Text(MarkdownLine.render(line))
-                            .font(.callout)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                ForEach(Array(fileLines.enumerated()), id: \.offset) { _, line in
+                    Text(MarkdownLine.render(line))
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
@@ -143,29 +140,53 @@ extension MeetingCardView {
     @MainActor
     func loadDepthFile() async {
         let wanted = depth
+        let meetingID = meeting.meetingID
         guard wanted == .analysis || wanted == .transcript,
               let url = wanted.file(card: card, meeting: meeting) else { return }
-        let text = await Task.detached(priority: .userInitiated) {
-            (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        // Режем на непустые строки в фоне один раз: рендер получает готовый
+        // массив, а не мегабайтную строку на каждый проход тела.
+        let lines = await Task.detached(priority: .userInitiated) {
+            ((try? String(contentsOf: url, encoding: .utf8)) ?? "")
+                .components(separatedBy: "\n")
+                .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         }.value
-        // .task(id:) отменяет прежнюю задачу при смене глубины; второй
-        // сторож — на случай, если глубина сменилась между await и записью.
-        guard !Task.isCancelled, depth == wanted else { return }
-        fileText = text
+        // .task(id:) отменяет прежнюю задачу при смене глубины или встречи;
+        // второй сторож — на случай смены между await и записью.
+        guard !Task.isCancelled, depth == wanted, meeting.meetingID == meetingID else { return }
+        fileLines = lines
         fileDepth = wanted
+        fileMeetingID = meetingID
     }
 
-    /// Откуда это: путь заметки от папки графа и время последней записи.
-    /// У каждого числа и текста есть источник (правило 3 ревизии).
+    /// Прежний ключ meetingCardDetailed (Bool, «Подробно») — в глубину
+    /// «Минутки», только если человек его явно выставлял; новая привычка
+    /// по умолчанию — Резюме, как в макете.
+    static func migrateDepthPreference(defaults: UserDefaults = .standard) {
+        guard defaults.object(forKey: "meetingCardDepth") == nil,
+              defaults.object(forKey: "meetingCardDetailed") != nil else { return }
+        let wanted: MeetingCardDepth = defaults.bool(forKey: "meetingCardDetailed") ? .minutes : .summary
+        defaults.set(wanted.rawValue, forKey: "meetingCardDepth")
+    }
+
+    /// Откуда это: файл ОТКРЫТОЙ глубины и время его последней записи —
+    /// у каждого текста есть источник (правило 3 ревизии). Путь — от папки
+    /// графа, иначе от папки данных, иначе последние два звена.
     var sourceLine: String? {
-        guard let note = meeting.notePath else { return nil }
-        let url = URL(fileURLWithPath: note)
-        let graph = url.deletingLastPathComponent().deletingLastPathComponent()
-        let rel = url.path.hasPrefix(graph.path + "/")
-            ? String(url.path.dropFirst(graph.path.count + 1))
-            : url.lastPathComponent
+        guard let url = depth.file(card: card, meeting: meeting) else { return nil }
+        return Self.sourceLine(for: url, graph: AppSettings.graphDir, root: AppSettings.charoiteRoot)
+    }
+
+    static func sourceLine(for url: URL, graph: URL?, root: URL, now: Date = Date()) -> String {
+        let rel: String
+        if let graph, url.path.hasPrefix(graph.path + "/") {
+            rel = String(url.path.dropFirst(graph.path.count + 1))
+        } else if url.path.hasPrefix(root.path + "/") {
+            rel = String(url.path.dropFirst(root.path.count + 1))
+        } else {
+            rel = url.pathComponents.suffix(2).joined(separator: "/")
+        }
         var stamp = ""
-        if let date = (try? FileManager.default.attributesOfItem(atPath: note))?[.modificationDate] as? Date {
+        if let date = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date {
             let f = DateFormatter()
             f.locale = L.locale
             f.setLocalizedDateFormatFromTemplate("d MMM HH:mm")
