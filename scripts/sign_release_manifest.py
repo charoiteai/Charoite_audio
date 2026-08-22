@@ -113,7 +113,12 @@ def main() -> int:
     # манифест с чужой подписью. Стабильный и НЕподписанный — гейт не
     # сработал (ручной релиз, флаг снят рукой): подписываем всё равно —
     # пользователи и так заблокированы, — но кричим и выходим с кодом 3.
-    prerelease, signed = release_state(a.tag, env)
+    try:
+        prerelease, signed = release_state(a.tag, env)
+    except subprocess.CalledProcessError as e:
+        raise SystemExit(
+            f"{a.tag}: не удалось прочитать состояние релиза (gh release view: "
+            f"код {e.returncode}): {(e.stderr or '').strip()}") from e
     gate_failed = False
     if not prerelease:
         if signed:
@@ -207,7 +212,8 @@ def latest_stable_tag(env: dict) -> str | None:
     if "404" in r.stderr or "not found" in r.stderr.lower():
         return None
     raise SystemExit(f"не удалось узнать нынешний latest (gh release view: "
-                     f"код {r.returncode}): {r.stderr.strip()}")
+                     f"код {r.returncode}): {r.stderr.strip()}; повтори: "
+                     f"sign_release_manifest.py <тег>")
 
 
 def version_tuple(tag: str) -> tuple[int, ...]:

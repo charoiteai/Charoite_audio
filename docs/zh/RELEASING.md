@@ -114,7 +114,7 @@ pre-release 标记（`gh release edit --prerelease=false`；只有当标签不�
   pre-release 直到重新签名。CI 不再上传 `.manifest`。
 - 签名脚本按 release 状态行事：对已签名的稳定版重新签名时会先临时隐藏为
   pre-release；遇到未签名的稳定版会照样签名，但以退出码 3 报警；只有当标签不早于
-  当前 latest 时才加 `--latest`。
+  当前 latest 且不带版本后缀（v0.58.0-rc.1 不会超过 v0.58.0）时才加 `--latest`。
 
 不要绕过脚本手动执行 `gh release edit --latest`——门禁防的正是这个。
 私钥丢失意味着所有用户的更新都会停止：由所有者生成新密钥对，把公钥写入

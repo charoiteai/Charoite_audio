@@ -332,6 +332,18 @@ def test_half_a_pair_counts_as_unsigned(tmp_path, monkeypatch, capsys):
     assert state["assets"] >= {srm.ASSET, f"{srm.ASSET}.sig"}
 
 
+def test_unknown_tag_is_a_loud_refusal(tmp_path, monkeypatch):
+    """Опечатка в теге — причина от gh, а не трейсбек с потерянным stderr
+    (круг-2, Sonnet)."""
+    key = _ephemeral_key(tmp_path)
+    calls, state = [], {"pre": True, "assets": set(), "latest": None}
+    _wire_main(monkeypatch, tmp_path, key, calls, state, fail_on="view",
+               tag="v9.9.9")
+    with pytest.raises(SystemExit, match="не удалось прочитать состояние релиза"):
+        srm.main()
+    assert _subs(calls) == ["view"]
+
+
 def test_version_tuple_orders_tags():
     vt = srm.version_tuple
     assert vt("v0.58.0") == (0, 58, 0) and vt("0.58.0") == (0, 58, 0)
@@ -360,7 +372,7 @@ def test_release_app_workflow_keeps_unsigned_release_prerelease():
     yml = (ROOT / ".github" / "workflows" / "release-app.yml").read_text(encoding="utf-8")
     assert "types: [published, released]" in yml
     hide = 'gh release edit "$TAG" --repo "$REPO" --prerelease\n'
-    resolve = yml[yml.index("name: Resolve tag and decide"):yml.index("name: Build bundle")]
+    resolve = yml[yml.index("name: Resolve tag and decide"):yml.index("uses: actions/checkout@")]
     attach = yml[yml.index("name: Attach to release"):yml.index("name: Remove signing material")]
     assert hide in resolve, "гейт в Resolve: ручной стабильный без подписи"
     # Attach: спрятать ДО замены архива — упадёт upload/delete, релиз

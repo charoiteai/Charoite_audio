@@ -310,8 +310,9 @@ from two sides:
   and NOT signed — the gate failed: the script still signs (users are blocked
   anyway) but shouts to stderr and exits with code 3 — find out where the
   release came from. `--latest` is set only when the tag is not older than
-  the current latest: signing a historical v0.57.0 after v0.58.0 must not
-  roll `/releases/latest` back.
+  the current latest and carries no version suffix: signing a historical
+  v0.57.0 after v0.58.0 must not roll `/releases/latest` back, and
+  v0.58.0-rc.1 must not overtake v0.58.0.
 
 Until the owner signs, users stay on the previous release; if the signature
 upload or the flag change fails, the release stays pre-release and the script
