@@ -307,3 +307,13 @@ def test_source_goes_to_the_folder_of_its_own_meeting(tmp_path):
     assert archive_folder_for(graph, "2026-08-03_1130") == first
     assert archive_folder_for(graph, "2026-08-03_0900") == other_graph
     assert archive_folder_for(graph, "2026-08-03_1700") is None
+
+
+def test_seen_marker_is_owner_only(tmp_path):
+    """Сайдкар покоя создаётся 0600 явно, а не по umask вызывающего."""
+    streaming = _wav(declared_data=32_000, actual_data=32_000)
+    f = tmp_path / "m.wav"
+    f.write_bytes(b"RIFF" + struct.pack("<I", 0) + streaming[8:])
+    assert not wav_complete(f)
+    marker = tmp_path / ".m.wav.import-seen"
+    assert marker.exists() and (marker.stat().st_mode & 0o777) == 0o600

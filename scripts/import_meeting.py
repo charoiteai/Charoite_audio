@@ -73,7 +73,10 @@ def _size_settled(path: pathlib.Path, size: int) -> bool:
     except (OSError, ValueError):
         pass
     try:
-        marker.write_text(f"{size} {now:.0f}\n", encoding="ascii")
+        # 0600 явно, не по umask: папка импорта — у человека, не у демона
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="ascii") as f:
+            f.write(f"{size} {now:.0f}\n")
     except OSError:
         pass
     return False
