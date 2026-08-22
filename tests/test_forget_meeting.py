@@ -426,3 +426,28 @@ def test_forget_says_aloud_what_it_cannot_reach_in_the_brain(tmp_path):
 
     quiet = forget.plan(OTHER, root, graph)
     assert not quiet.beyond_reach, "без отметки — ничего в память не уходило"
+
+
+def test_cloud_quarantine_of_the_meeting_is_forgotten_too(tmp_path, monkeypatch):
+    """Карантин разбора встречи — версии облака, убранные сверкой, — тот же
+    след встречи, что и снимок: забывание обязано дойти и туда (круг-1 по
+    PR #381, Codex Critical). Каталог запуска этой встречи — целиком, в
+    карантинах других встреч — файлы с её штампом."""
+    import charoite_paths
+    root, graph = _world(tmp_path)
+    monkeypatch.setattr(forget, "ROOT", root)
+    q = charoite_paths.graph_backups(graph, "cloud_quarantine", root=root)
+    mine = q / f"{STAMP}-101500"
+    (mine / "Ядра").mkdir(parents=True)
+    (mine / "Ядра" / "Тема.md").write_text("версия облака", encoding="utf-8")
+    other = q / "2026-07-20_1500-090000"
+    (other / "Встречи").mkdir(parents=True)
+    (other / "Встречи" / f"{STAMP}.md").write_text("копия узла", encoding="utf-8")
+    (other / "Ядра").mkdir()
+    (other / "Ядра" / "Другая.md").write_text("чужая версия", encoding="utf-8")
+
+    forget.apply(forget.plan(STAMP, root, graph), yes=True)
+
+    assert not mine.exists(), "карантин запуска этой встречи остался"
+    assert not (other / "Встречи" / f"{STAMP}.md").exists()
+    assert (other / "Ядра" / "Другая.md").exists(), "чужой карантин тронут"

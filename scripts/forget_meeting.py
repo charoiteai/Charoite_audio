@@ -28,6 +28,10 @@
                                     стенограмму лежать в копиях рядом
     backups/<граф>-<хеш>/cloud_backup/  те же снимки в НОВОМ месте (вне
                                     iCloud, с 21.08) — и файлы, и строки хроники
+    backups/<граф>-<хеш>/cloud_quarantine/<штамп>-*/  карантин разбора ЭТОЙ
+                                    встречи целиком (версии облака, убранные
+                                    сверкой), а в карантинах других встреч —
+                                    файлы с этим штампом
 
 Что правится (не удаляется):
     строки хроники в Ядрах, которые ссылались на эту встречу, — уходят вместе
@@ -72,6 +76,7 @@ MEETINGS_DIR = "Встречи"
 DOCS_DIR = pathlib.Path("Документация") / "Стенограммы встреч"
 BACKUP_DIR = ".forget_backup"
 CLOUD_BACKUP_DIR = ".cloud_backup"      # снимки графа перед облачной правкой
+CLOUD_QUARANTINE = "cloud_quarantine"   # версии облака, убранные сверкой (№88)
 REMOVED_NOTE = "(встреча удалена)"
 
 
@@ -316,6 +321,21 @@ def plan(stamp: str, root: pathlib.Path,
                     p.delete.append(node_copy)
                 p.delete += _with_stamp(snap / DOCS_DIR, stamp, suffix=".md")
                 p.delete += _archive_folders(snap, stamp)
+
+        # Карантин облачного разбора: каталог запуска ЭТОЙ встречи — целиком
+        # (в нём версии облака, сделанные по её стенограмме), в карантинах
+        # остальных запусков — файлы с её штампом (круг-1 по PR #381, Codex).
+        quarantine = charoite_paths.graph_backups(g, CLOUD_QUARANTINE, root=root)
+        if quarantine.is_dir():
+            for run_dir in sorted(d for d in quarantine.iterdir() if d.is_dir()):
+                if run_dir.name == stamp or run_dir.name.startswith(stamp + "-"):
+                    p.delete.append(run_dir)
+                    continue
+                node_copy = run_dir / MEETINGS_DIR / f"{stamp}.md"
+                if node_copy.exists():
+                    p.delete.append(node_copy)
+                p.delete += _with_stamp(run_dir / DOCS_DIR, stamp, suffix=".md")
+                p.delete += _archive_folders(run_dir, stamp)
 
         # Файлы внутри удаляемой папки править не нужно и нельзя: папка уйдёт
         # целиком, а запись в неё после удаления — FileNotFoundError.

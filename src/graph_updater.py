@@ -1090,10 +1090,29 @@ GRAPH_READ_RULE = "Read(/**)"
 GRAPH_EDIT_RULE = "Edit(/**)"
 
 
+def deny_rules(paths) -> list[str]:
+    """Path-rules запрета записи для `--disallowedTools`: каталог — с `/**`.
+
+    Deny у CLI старше allow, и правило с одним `/` привязано к cwd=graph —
+    проверено живым запуском 22.08: `Edit(/.obsidian/**)`,
+    `Edit(/Встречи-архив/**)` и `Edit(/link_out/**)` (симлинк наружу)
+    отклонены под dontAsk, соседний `Ядра/b.md` записан. Это первый слой
+    границы; снимок и сверка после запуска — второй.
+    """
+    rules = []
+    for rel, is_dir in paths:
+        rel = str(rel).strip("/")
+        if not rel:
+            continue
+        rules.append(f"Edit(/{rel}/**)" if is_dir else f"Edit(/{rel})")
+    return rules
+
+
 def cloud_enrich_command(cfg: dict, *, claude_bin: str, prompt: str, model: str,
                          env: dict | None = None,
                          may_edit: bool | None = None,
-                         graph_available: bool = True) -> list[str]:
+                         graph_available: bool = True,
+                         deny_paths=()) -> list[str]:
     """Команда облачного разбора: доступ только к его рабочему графу.
 
     Раньше инструменты записи и `--permission-mode acceptEdits` стояли в
@@ -1137,6 +1156,11 @@ def cloud_enrich_command(cfg: dict, *, claude_bin: str, prompt: str, model: str,
            "--allowedTools", *rules,
            "--disallowedTools", *FORBIDDEN_TOOLS,
            *(() if may_edit else EDIT_TOOLS),
+           # Внутри графа запись закрыта там, куда сверка после запуска
+           # дотянуться не может или не должна: защищённые папки, скрытые
+           # каталоги, симлинки (rglob их не обходит, а цель может лежать
+           # вне графа). Список собирает cloud_review перед запуском.
+           *(deny_rules(deny_paths) if may_edit else ()),
            # Всё вне path-rules отклоняется. acceptEdits здесь небезопасен:
            # он принимает правки в cwd без явного правила и сложнее для аудита.
            "--permission-mode", "dontAsk",
