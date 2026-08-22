@@ -86,7 +86,7 @@ struct MeetingCardView: View {
             card = MeetingCardLoader.load(for: meeting)
             tasks.rescan()
         }
-        .task(id: depth.rawValue + meeting.meetingID) { await loadDepthFile() }
+        .task(id: depth.rawValue + "|" + meeting.meetingID) { await loadDepthFile() }
         // Привычка «Подробно» из прежнего ключа — в «Минутки», один раз.
         .onAppear { Self.migrateDepthPreference() }
         .sheet(isPresented: $showForget) { forgetSheet }
