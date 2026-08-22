@@ -53,3 +53,41 @@ def test_review_body_is_cut_at_protected_headings():
     assert cut.endswith("## Кто в теме\nт")
     prose = "## Сейчас\nмодель советует «добавить раздел ## Источники в шаблон»\n## Как пришли\nт"
     assert ndr.strip_protected(prose) == prose, "упоминание заголовка в абзаце — не раздел"
+
+
+def _core(folder: pathlib.Path, name: str, size: int, mtime: float) -> pathlib.Path:
+    import os
+    p = folder / f"{name}.md"
+    p.write_text("x" * size, encoding="utf-8")
+    os.utime(p, (mtime, mtime))
+    return p
+
+
+def test_selection_prefers_fresh_and_never_cuts_a_core_in_half(tmp_path):
+    """Разбор 22.08: sorted() по алфавиту и blob[:60_000] — при 161 свежем
+    ядре в промпт попадали 20, всегда «А–В», последнее обрывком. Теперь —
+    по свежести, бюджет по целым ядрам."""
+    ncc = _load("nightly_claude_cores")
+    a = _core(tmp_path, "Аврал", 3000, 1000)      # старое, первое по алфавиту
+    b = _core(tmp_path, "Ядро Я", 3000, 3000)     # самое свежее, последнее по алфавиту
+    c = _core(tmp_path, "Большое", 9000, 2000)    # не влезает
+    d = _core(tmp_path, "Мелкое", 500, 1500)      # влезет после пропуска большого
+    chosen, blob = ncc.select_cores([a, b, c, d], seen={}, budget=7000, index_text="ИНДЕКС")
+    assert chosen == [b, d, a]                    # свежее первым, большое пропущено
+    assert "## ЯДРО: Большое" not in blob
+    assert blob.startswith("## ИНДЕКС\nИНДЕКС")
+    for p in chosen:
+        assert f"## ЯДРО: {p.stem}\n" + "x" * (p.stat().st_size) in blob, "ядро целиком"
+
+
+def test_selection_rotates_by_what_changed_since_last_run(tmp_path):
+    """Курсор: ядра, изменившиеся с прошлого прогона, идут первыми — иначе
+    одни и те же свежие ядра ночь за ночью занимали бы весь бюджет."""
+    ncc = _load("nightly_claude_cores")
+    a = _core(tmp_path, "А", 1000, 5000)
+    b = _core(tmp_path, "Б", 1000, 4000)
+    seen = {"А": 5000.0}                          # А уже показывали в этом виде
+    chosen, _ = ncc.select_cores([a, b], seen=seen, budget=1500)
+    assert chosen == [b], "изменившееся с прошлого раза — первым, А не поместилось"
+    chosen, _ = ncc.select_cores([a, b], seen={}, budget=2500)
+    assert chosen == [a, b]                       # без курсора — по свежести
