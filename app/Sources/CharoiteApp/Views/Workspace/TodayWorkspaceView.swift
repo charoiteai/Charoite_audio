@@ -188,10 +188,11 @@ struct TodayWorkspaceView: View {
                     .charoite(.link, .s)
             }
             if repository.records.isEmpty {
-                Text(L.t("Здесь появятся три последних результата.",
-                         "Your three latest results appear here.",
-                         "最近三项结果会显示在这里。"))
-                    .font(.callout).foregroundStyle(.secondary)
+                EmptyState(L.t("Результатов пока нет", "No results yet", "还没有结果"),
+                           text: L.t("Три последние встречи появятся здесь, когда закончится обработка первой записи.",
+                                     "Your three latest meetings appear here once the first recording is processed.",
+                                     "第一条录音处理完成后，最近三场会议会显示在这里。"),
+                           inset: false)
                 Spacer()
             } else {
                 ForEach(repository.records.prefix(3)) { record in
@@ -335,9 +336,20 @@ struct TodayWorkspaceView: View {
                        "Next meeting · \(Self.time(event.start))",
                        "下一场会议 · \(Self.time(event.start))")
         }
-        return L.t("Новых встреч в календаре сегодня нет.",
-                   "No more calendar meetings today.",
-                   "今天日历中没有更多会议。")
+        switch calendar.accessGranted {
+        case nil:
+            return L.t("Календарь не подключён — подготовка к встречам выключена.",
+                       "Calendar is not connected — meeting prep is off.",
+                       "日历未连接——会前准备已关闭。")
+        case false:
+            return L.t("Доступа к календарю нет — подготовка к встречам выключена.",
+                       "No calendar access — meeting prep is off.",
+                       "没有日历访问权限——会前准备已关闭。")
+        case true:
+            return L.t("Новых встреч в календаре сегодня нет.",
+                       "No more calendar meetings today.",
+                       "今天日历中没有更多会议。")
+        }
     }
 
     private func compactState(_ state: MeetingProcessingSnapshot.State) -> String {
