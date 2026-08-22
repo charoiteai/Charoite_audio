@@ -170,9 +170,10 @@ contradict each other. Opus sees those, and runs as a second pass. With
 `sufler.cloud_edit_graph: true` it edits directly; **off by default**, in which
 case it writes `Служебное_ревизия_досье_<date_time>.md` ("Service: dossier
 review" — file names in the graph are Russian) and a human applies the fixes.
-The report is written in both modes, in three sections: applied (+/− lines,
-number of ⚠️ marks, links before/after, path of the backup copy), rejected
-(with the reason) and proposed-but-not-applied when editing is off. Before
+The report is written in both modes, in sections: applied (+/− lines, number
+of ⚠️ marks, links before/after, path of the backup copy), rejected (with the
+reason), step failures (network, limit, exit code — not a content rejection)
+and proposed-but-not-applied when editing is off. Before
 anything is written the cloud's answer passes a real check, not a "looks like a
 dossier" one: exactly five headings in the given order and nothing else that
 starts with `#` (so a `### Author edits` smuggled in from a transcript is

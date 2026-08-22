@@ -233,6 +233,13 @@ def test_split_dossier_uses_anchored_headings_and_keeps_quotes():
     assert sources == "- [[2026-07-15_1400]]" and manual == "моё"
     # без «## Источники» — собрано руками: источников нет, правок нет
     assert ndr.split_dossier(_DOSSIER)[2] is None
+    # «Правки автора» раньше «Источников»: правки кончаются на соседнем
+    # заголовке, источники не уезжают внутрь (круг-2, DS + Codex)
+    swapped = _DOSSIER + "\n## Правки автора\n\nмоё\n\n## Источники\n- [[A]]\n"
+    _, _, s2, m2 = ndr.split_dossier(swapped)
+    assert s2 == "- [[A]]" and m2 == "моё"
+    # пустые ссылки — не ссылки
+    assert ndr.links("[[ ]] [[.md]] [[Иванов]]") == {"иванов"}
     assert ndr.check_revision(body, body.replace("- Цитата: «## Правки автора» в минутках [[B]]\n", "")) \
         is not None, "потеря пункта после цитаты не замечена"
 
@@ -251,7 +258,7 @@ def test_review_rejects_nonzero_exit_with_a_reason(tmp_path, monkeypatch):
     monkeypatch.setattr(ndr.subprocess, "run", lambda *a, **k: R())
     cfg = {"sufler": {"cloud_enrich": True}}
     fixed, why = ndr.review("Платёжный провайдер", path, tmp_path, {}, [], "m", cfg)
-    assert fixed is None and "код 1" in why and "rate limit" in why
+    assert fixed is None and why.startswith("сбой:") and "код 1" in why and "rate limit" in why
 
 
 def test_edit_mode_writes_report_with_stats_and_timed_backup(tmp_path, monkeypatch):
@@ -317,11 +324,11 @@ def test_read_only_mode_report_lists_proposed_and_rejected(tmp_path, monkeypatch
     monkeypatch.setattr(ndr.live_gate, "night_is_over", lambda *a, **k: False)
     body = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1])
     monkeypatch.setattr(ndr, "review", lambda theme, *a, **k:
-                        (body, "") if theme == "Одно" else (None, "claude вернул код 1"))
+                        (body, "") if theme == "Одно" else (None, "сбой: claude вернул код 1:\nrate\nlimit"))
     cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False}}
     assert ndr.run(graph, cfg, dry=False, limit=6) == 1
     report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
-    assert "## Предложено, но не применено" in report and "### Одно" in report
-    assert "## Отклонено\n\n- **Два** — claude вернул код 1" in report
-    assert "## Применено" not in report
+    assert "## Предложено, но не применено" in report and "### Одно\n#### Сейчас" in report
+    assert "## Сбои шага (не отказ по содержанию)\n\n- **Два** — сбой: claude вернул код 1: rate limit" in report
+    assert "## Применено" not in report and "## Отклонено" not in report
     assert (folder / "Одно.md").read_text(encoding="utf-8").endswith("—\n")   # файл не тронут
