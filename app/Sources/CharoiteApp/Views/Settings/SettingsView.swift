@@ -30,6 +30,24 @@ struct SettingsView: View {
     // файлов) выполнялся на КАЖДЫЙ символ, набранный в поле пути.
     @State private var graphStats = ""
 
+    /// Тумблер, чьё состояние живёт в config.yaml: меняется только после
+    /// удачной записи, иначе — заметка и прежнее положение.
+    private func configBinding(_ state: Binding<Bool>, key: String,
+                               note: Binding<String>) -> Binding<Bool> {
+        Binding(
+            get: { state.wrappedValue },
+            set: { on in
+                if AppSettings.setConfigFlag(key, on) {
+                    state.wrappedValue = on
+                    note.wrappedValue = ""
+                } else {
+                    note.wrappedValue = L.t("не нашёл ключ \(key) в config.yaml",
+                                            "\(key) key not found in config.yaml",
+                                            "在 config.yaml 中未找到 \(key) 键")
+                }
+            })
+    }
+
     /// В выбранной папке лежит код демона — тогда и только тогда есть что решать.
     private var localCodeAtRoot: Bool {
         guard let chosen = AppSettings.explicitRoot else { return false }
@@ -135,26 +153,16 @@ struct SettingsView: View {
                 // происхождение) — единственный тумблер экрана, который меняет
                 // обещание приватности, не должен выглядеть как остальные.
                 CloudSurface {
+                    // Binding, а не onChange с откатом: откат сам менял состояние
+                    // и снова звал обработчик — при отсутствии ключа в файле
+                    // запись падала по кругу, окно зависало (ревью 22.08,
+                    // DeepSeek и локальная голова независимо). Setter зовёт
+                    // только человек; состояние меняется после удачной записи.
                     Toggle(L.t("Разрешить облаку править досье",
                                "Let the cloud edit dossiers",
-                               "允许云端修改档案"), isOn: $cloudEditGraph)
-                        .onChange(of: cloudEditGraph) { _, on in
-                            // Откат ниже сам меняет состояние и снова зовёт этот
-                            // обработчик: без выхода «уже как в конфиге» запись
-                            // падала бы по кругу при отсутствии ключа в файле
-                            // (ревью 22.08, локальная голова).
-                            guard on != AppSettings.configFlag("cloud_edit_graph") else { return }
-                            // Пишем в config.yaml, а не в UserDefaults: разрешение
-                            // спрашивает ночной скрипт, и знать он должен одно место.
-                            if !AppSettings.setConfigFlag("cloud_edit_graph", on) {
-                                cloudEditNote = L.t("не нашёл ключ в config.yaml",
-                                                    "key not found in config.yaml",
-                                                    "在 config.yaml 中未找到该键")
-                                cloudEditGraph = !on
-                            } else {
-                                cloudEditNote = ""
-                            }
-                        }
+                               "允许云端修改档案"),
+                           isOn: configBinding($cloudEditGraph, key: "cloud_edit_graph",
+                                               note: $cloudEditNote))
                     if !cloudEditNote.isEmpty {
                         Text(cloudEditNote).font(.caption).foregroundStyle(Theme.warning)
                     }
@@ -231,23 +239,14 @@ struct SettingsView: View {
                          "默认一切在本地：音频、识别、模型、图谱。只有你自己开启的内容才会上云：会议中的 Claude 层（一段逐字稿）以及上面的云端档案修改。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                // Тот же договор, что у облачного тумблера: источник правды —
+                // config.yaml, его же читает VersionStatusService.
                 Toggle(L.t("Раз в сутки спрашивать GitHub о новой версии",
                            "Ask GitHub about a new version once a day",
-                           "每天向 GitHub 查询一次新版本"), isOn: $checkUpdates)
+                           "每天向 GitHub 查询一次新版本"),
+                       isOn: configBinding($checkUpdates, key: "check_updates",
+                                           note: $checkUpdatesNote))
                     .disabled(AppSettings.cloudForbiddenByEnvironment)
-                    .onChange(of: checkUpdates) { _, on in
-                        guard on != AppSettings.checkUpdates else { return }
-                        // Тот же договор, что у облачного тумблера: источник
-                        // правды — config.yaml, его же читает VersionStatusService.
-                        if !AppSettings.setConfigFlag("check_updates", on) {
-                            checkUpdatesNote = L.t("не нашёл ключ check_updates в config.yaml",
-                                                   "check_updates key not found in config.yaml",
-                                                   "在 config.yaml 中未找到 check_updates 键")
-                            checkUpdates = !on
-                        } else {
-                            checkUpdatesNote = ""
-                        }
-                    }
                 if !checkUpdatesNote.isEmpty {
                     Text(checkUpdatesNote).font(.caption).foregroundStyle(Theme.warning)
                 }
@@ -269,6 +268,10 @@ struct SettingsView: View {
         .onAppear {
             cloudEditGraph = AppSettings.configFlag("cloud_edit_graph")
             checkUpdates = AppSettings.checkUpdates
+            // Заметка об ошибке записи — про прошлую попытку: конфиг могли
+            // починить, и висеть она не должна (ревью 22.08).
+            cloudEditNote = ""
+            checkUpdatesNote = ""
             launchAtLogin.refresh()
         }
         // Пересчёт только когда путь установки действительно сменился, и не

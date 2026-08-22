@@ -326,8 +326,11 @@ enum AppSettings {
     /// состояние рядом с тумблером проверки версии, а не притворяется, что
     /// тумблер что-то решает, когда решение уже принято снаружи.
     static var cloudForbiddenByEnvironment: Bool {
+        // Непустое значение, как у демона (src/privacy.py): `CHAROITE_NO_CLOUD=`
+        // там облако не запрещает, и приложение не должно спорить с ним.
         let env = ProcessInfo.processInfo.environment
-        return env["CHAROITE_NO_CLOUD"] != nil || env["SUFLER_NO_CLOUD"] != nil
+        return ["CHAROITE_NO_CLOUD", "SUFLER_NO_CLOUD"]
+            .contains { !(env[$0] ?? "").isEmpty }
     }
 
     static func configValue(_ key: String) -> String? {

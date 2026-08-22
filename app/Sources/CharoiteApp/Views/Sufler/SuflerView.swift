@@ -777,7 +777,7 @@ struct SuflerView: View {
     /// заметно цветом (DESIGN.md), тумблер ☁️ остаётся единственным
     /// выключателем отправки стенограммы с машины.
     private var cloudCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        CloudSurface {
             HStack(spacing: 6) {
                 Image(systemName: "cloud.fill")
                     .font(.caption2)
@@ -802,13 +802,6 @@ struct SuflerView: View {
                 .foregroundStyle(sufler.cloud.isEmpty ? .tertiary : .primary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(10)
-        .background(Theme.surfaceCloud,
-                    in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(Theme.borderCloud, lineWidth: 1)
         }
     }
 

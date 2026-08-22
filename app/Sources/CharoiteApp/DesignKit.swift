@@ -38,6 +38,8 @@ extension Theme {
 /// лаванда в двух вью рисовалась своим `accent.opacity(…)` и читалась как
 /// случайность. Контейнер — одно место, где цвет и рамка заданы вместе.
 struct MemorySurface<Content: View>: View {
+    /// 8 — панель и карточка, 12 — пузырь ответа (геометрия DESIGN.md).
+    var radius: CGFloat = Theme.radius
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -45,9 +47,9 @@ struct MemorySurface<Content: View>: View {
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Theme.surfaceMemory,
-                        in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+                        in: RoundedRectangle(cornerRadius: radius, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
                     .strokeBorder(Theme.borderMemory, lineWidth: 1)
             }
     }
@@ -298,7 +300,7 @@ struct ReadinessLine: View {
     private var dot: Color {
         guard let snapshot else { return .secondary }
         if snapshot.problems > 0 { return Theme.overdue }
-        if snapshot.warnings > 0 { return .orange }
+        if snapshot.warnings > 0 { return Theme.warning }
         return Theme.ok
     }
 
@@ -321,7 +323,7 @@ struct ReadinessLine: View {
             return (blocked.title, Theme.overdue)
         }
         if let warning = snapshot.checks.first(where: { $0.state == .warning }) {
-            return (warning.title, .orange)
+            return (warning.title, Theme.warning)
         }
         return nil
     }
@@ -333,7 +335,7 @@ struct ReadinessLine: View {
             } else {
                 Circle().fill(dot).frame(width: 7, height: 7)
             }
-            Text(title).font(.system(size: 13, weight: .medium))
+            Text(title).font(.body.weight(.medium))
             if let snapshot {
                 let passed = snapshot.checks.filter { $0.state == .ready }.count
                 Text(L.t("\(passed) из \(snapshot.checks.count) проверок",
@@ -393,14 +395,14 @@ struct RecordCapsule: View {
                         .symbolEffect(.variableColor.iterative,
                                       options: .repeating, isActive: true)
                     Text(clock)
-                        .font(.system(size: 14, weight: .light))
+                        .font(.body.weight(.light))
                         .monospacedDigit()
                     Divider().frame(height: 14).overlay(Color.white.opacity(0.35))
                     Text(L.t("Стоп", "Stop", "停止")).font(.caption.weight(.semibold))
                 } else {
                     Image(systemName: "mic")
                     Text(L.t("Слушать встречу", "Listen to the meeting", "旁听会议"))
-                        .font(.system(size: 13.5, weight: .semibold))
+                        .font(.headline)
                     Text(Self.shortcutLabel)
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.white.opacity(0.66))

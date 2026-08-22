@@ -83,12 +83,15 @@ struct LocalChatView: View {
                 // Честная строка происхождения: адрес Ollama не на этой
                 // машине приложение отвергает (AppSettings.ollamaURLRejection),
                 // поэтому «на этой машине» — факт, а не обещание.
+                // Живёт в слоте статуса и ужимается первой: в панели 430
+                // жёсткая капсула выталкивала корзину за край (ревью 22.08).
                 Text(L.t("на этой машине", "on this Mac", "在本机"))
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(Theme.ok)
+                    .lineLimit(1).truncationMode(.tail)
                     .padding(.horizontal, 7).padding(.vertical, 2)
                     .background(Capsule().fill(Theme.ok.opacity(0.12)))
-                    .fixedSize()
+                    .layoutPriority(-1)
             }
             Spacer(minLength: 4)
             if chat.isStreaming {
@@ -109,25 +112,20 @@ struct LocalChatView: View {
         HStack(alignment: .top) {
             if m.role == "user" { Spacer(minLength: 60) }
             // markdown вместо сырых звёздочек: модели пишут **жирное** и `код`
-            Text(m.text.isEmpty ? AttributedString("…") : MarkdownLine.render(text: m.text))
+            let body = Text(m.text.isEmpty ? AttributedString("…") : MarkdownLine.render(text: m.text))
                 .font(.callout)
                 .textSelection(.enabled)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+            if m.role == "user" {
+                body
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: Theme.radiusCard)
+                        .fill(Theme.accent.opacity(0.14)))
+            } else {
                 // Ответ — на лавандовой поверхности памяти (правило ревизии:
                 // поверхность обозначает происхождение), вопрос — на индиго.
-                .background(
-                    RoundedRectangle(cornerRadius: Theme.radiusCard)
-                        .fill(m.role == "user"
-                              ? Theme.accent.opacity(0.14)
-                              : Theme.surfaceMemory)
-                )
-                .overlay {
-                    if m.role != "user" {
-                        RoundedRectangle(cornerRadius: Theme.radiusCard)
-                            .strokeBorder(Theme.borderMemory, lineWidth: 1)
-                    }
-                }
+                MemorySurface(radius: Theme.radiusCard) { body }
+            }
             if m.role != "user" {
                 // копирование целиком: textSelection хорош для куска, кнопка — для всего
                 Button {

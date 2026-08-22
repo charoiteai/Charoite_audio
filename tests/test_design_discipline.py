@@ -20,8 +20,10 @@ import re
 import pytest
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-VIEWS = REPO / "app" / "Sources" / "CharoiteApp" / "Views"
-DESIGN_KIT = REPO / "app" / "Sources" / "CharoiteApp" / "DesignKit.swift"
+APP = REPO / "app" / "Sources" / "CharoiteApp"
+VIEWS = APP / "Views"
+# Шкала кнопок задаёт размер параметром — это спека, а не размер по месту.
+SCALE_FILES = {"CharoiteButton.swift"}
 
 # `.orange`/`.green` как цвет: и `Color.orange`, и `.foregroundStyle(.orange)`,
 # и `return .orange`. Слово внутри идентификатора (`isGreen`) не считается.
@@ -36,11 +38,26 @@ def _views() -> list[pathlib.Path]:
     return files
 
 
+def _sources() -> list[pathlib.Path]:
+    """Всё приложение, не только Views/: ReadinessLine и RecordCapsule живут
+    в DesignKit, и первый прогон сторожа их не видел — «вылеченная» болезнь
+    сидела в самом наборе (ревью 22.08, DeepSeek)."""
+    files = sorted(p for p in APP.rglob("*.swift") if p.name not in SCALE_FILES)
+    assert files, "исходники приложения не найдены — тест смотрит не туда"
+    return files
+
+
 def _offenders(pattern: re.Pattern[str]) -> list[str]:
+    """Границы проверки осознанные: строка режется по `//` (URL в литерале
+    уводит хвост строки из скана), строковые литералы не разбираются,
+    `NSColor.green` не ловится — это сторож дисциплины, не парсер Swift."""
     out: list[str] = []
-    for path in _views():
+    for path in _sources():
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             code = line.split("//", 1)[0]
+            # объявление самого токена (`static let warning = Color.orange`)
+            if "static let" in code:
+                continue
             if pattern.search(code):
                 out.append(f"{path.relative_to(REPO)}:{n}: {line.strip()}")
     return out
@@ -59,11 +76,12 @@ def test_размер_шрифта_только_из_системной_шкал
 
 
 def test_поверхности_происхождения_используются():
-    """Токены без вызовов — правило на бумаге. Правило ревизии 08.08 обязано
-    жить хотя бы на трёх экранах: память, встреча, настройки."""
+    """Контейнер без вызовов — правило на бумаге (22.08 MemorySurface был
+    объявлен и нигде не вызван, а поверхности рисовались вручную). Считаем
+    ВЫЗОВЫ контейнеров, а не вхождения токенов."""
     text = "\n".join(p.read_text(encoding="utf-8") for p in _views())
-    assert text.count("surfaceMemory") >= 2, "лаванда памяти не применена"
-    assert text.count("surfaceCloud") + text.count("CloudSurface") >= 2, (
+    assert text.count("MemorySurface(") >= 1, "лаванда памяти не применена"
+    assert text.count("CloudSurface {") + text.count("CloudSurface(") >= 2, (
         "небо облака не применено"
     )
 
