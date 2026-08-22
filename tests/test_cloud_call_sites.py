@@ -37,7 +37,8 @@ NETWORK_EXITS = (
     # тот ждёт claude с таймаутом, проверяет ответ и держит границы правок.
     # graph_updater теперь запускает питон, а не claude, — выходом в сеть быть
     # перестал, и держать его в списке значило бы охранять пустое место.
-    ("cloud_review.py", "run"),
+    # run() берёт замок графа и решает режим; сам вызов claude — в _run_locked.
+    ("cloud_review.py", "_run_locked"),
     ("nightly_claude_cores.py", "main"),
     ("nightly_dossier_review.py", "review"),
 )
