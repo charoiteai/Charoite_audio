@@ -70,8 +70,10 @@ struct PrepView: View {
                 // Три разных состояния — три разных действия. Одна строка
                 // «больше нет — или доступ не дан» не говорила, что нажать
                 // (правило 2 ревизии; дизайн-аудит 21.08).
+                // .none/.some явно: Swift 5.10 на раннере CI не считает
+                // `case nil / false / true` по Bool? исчерпывающим.
                 switch calendar.accessGranted {
-                case nil:
+                case .none:
                     EmptyState(title: L.t("Календарь не подключён", "Calendar is not connected", "日历未连接"),
                                text: L.t("Charoite читает только названия и время событий — чтобы за минуту до встречи собрать, что было по теме и что вы обещали. Локально, ничего не пишет.",
                                          "Charoite reads only event titles and times — to gather, a minute before the meeting, what happened on the topic and what you promised. Local, write-free.",
@@ -83,7 +85,7 @@ struct PrepView: View {
                         }
                         .charoite(.regular, .s)
                     }
-                case false:
+                case .some(false):
                     EmptyState(title: L.t("Доступа к календарю нет", "No calendar access", "没有日历访问权限"),
                                text: L.t("macOS отклонил запрос. Разрешите доступ в Системных настройках → Конфиденциальность и безопасность → Календари — и вернитесь сюда.",
                                          "macOS declined the request. Allow access in System Settings → Privacy & Security → Calendars, then come back.",
@@ -96,7 +98,7 @@ struct PrepView: View {
                         }
                         .charoite(.regular, .s)
                     }
-                case true:
+                case .some(true):
                     Text(L.t("Встреч в календаре больше нет — день вокруг того, что вы обещали.",
                              "No more meetings today — the day is about what you promised.",
                              "今天没有更多会议——这一天围绕你的承诺。"))
