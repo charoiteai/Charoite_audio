@@ -74,7 +74,7 @@ def test_selection_prefers_fresh_and_never_cuts_a_core_in_half(tmp_path):
     d = _core(tmp_path, "Мелкое", 500, 1500)      # влезет после пропуска большого
     chosen, blob, sent, skipped = ncc.select_cores([a, b, c, d], seen={}, budget=7000, index_text="ИНДЕКС")
     assert chosen == [b, d, a]                    # свежее первым, большое пропущено
-    assert skipped == [c]
+    assert skipped == [(c, True)]                 # и в одиночку не влезло бы
     assert "## ЯДРО: Большое" not in blob
     assert blob.startswith("## ИНДЕКС\nИНДЕКС")
     for p in chosen:
@@ -113,3 +113,29 @@ def test_cursor_rotates_across_nights_and_keeps_memory(tmp_path, monkeypatch):
     # ядро исчезло из графа — выпадает из карты
     ncc._save_seen(graph, {}, {"A", "B"})
     assert "C" not in json.loads(ncc.SEEN.read_text(encoding="utf-8"))[ncc._graph_key(graph)]
+
+
+def test_old_cursor_format_is_migrated_not_crashed(tmp_path, monkeypatch):
+    """Запись прежнего вида {ядро: mtime} (число) читается как
+    {mtime, shown: 0}, а не роняет select_cores на .get() (круг-2, DS)."""
+    import json
+    ncc = _load("nightly_claude_cores")
+    monkeypatch.setattr(ncc, "SEEN", tmp_path / "seen.json")
+    graph = tmp_path / "g"; (graph / "Ядра").mkdir(parents=True)
+    a = _core(graph / "Ядра", "A", 100, 300)
+    ncc.SEEN.write_text(json.dumps({ncc._graph_key(graph): {"A": 300.0}}), encoding="utf-8")
+    seen = ncc._seen(graph)
+    assert seen == {"A": {"mtime": 300.0, "shown": 0}}
+    chosen, _, _, _ = ncc.select_cores([a], seen, budget=500)
+    assert chosen == [a]
+
+
+def test_one_slot_is_reserved_for_the_longest_waiting_unchanged_core(tmp_path):
+    """Поток новых ядер не должен вытеснять неизменившиеся навсегда: второе
+    место — самому давно показанному (круг-2, Codex)."""
+    ncc = _load("nightly_claude_cores")
+    old = _core(tmp_path, "Старое", 100, 100)
+    new1 = _core(tmp_path, "Новое1", 100, 900); new2 = _core(tmp_path, "Новое2", 100, 800)
+    seen = {"Старое": {"mtime": 100, "shown": 1}}
+    chosen, _, _, _ = ncc.select_cores([old, new1, new2], seen, budget=260)
+    assert chosen == [new1, old], "новость первой, но одно место — давно показанному"

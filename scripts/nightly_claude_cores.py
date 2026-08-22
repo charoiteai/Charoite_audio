@@ -66,7 +66,10 @@ def _seen_all() -> dict:
 
 
 def _seen(graph: pathlib.Path) -> dict:
-    return _seen_all().get(_graph_key(graph), {})
+    """Карта графа в актуальном формате: число (старая запись) → {mtime, shown: 0}."""
+    entry = _seen_all().get(_graph_key(graph), {})
+    return {k: (v if isinstance(v, dict) else {"mtime": float(v or 0), "shown": 0})
+            for k, v in entry.items()}
 
 
 def _save_seen(graph: pathlib.Path, sent: dict, current_stems: set[str]) -> None:
@@ -75,13 +78,14 @@ def _save_seen(graph: pathlib.Path, sent: dict, current_stems: set[str]) -> None
     Файл — 0600 и через временный + rename: логи несут темы встреч, а
     обрыв между truncate и записью обнулил бы курсор (круг-1 по PR #380).
     """
-    data = _seen_all()
-    entry = data.get(_graph_key(graph), {})
+    data = {k: v for k, v in _seen_all().items() if pathlib.Path(k).is_dir()}  # осиротевшие графы — вон
+    entry = _seen(graph)
     entry.update(sent)
     data[_graph_key(graph)] = {k: v for k, v in entry.items() if k in current_stems}
-    SEEN.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    SEEN.parent.mkdir(parents=True, exist_ok=True)
     tmp = SEEN.with_name(SEEN.name + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)   # режим в os.open действует только при создании файла
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(json.dumps(data, ensure_ascii=False, indent=1))
     os.replace(tmp, SEEN)
@@ -109,14 +113,23 @@ def select_cores(fresh: list[pathlib.Path], seen: dict, budget: int,
         changed = mtime > float(rec.get("mtime", 0))
         stamped.append((p, mtime, changed, float(rec.get("shown", 0))))
     stamped.sort(key=lambda s: (0, -s[1]) if s[2] else (1, s[3]))
+    # Одно место — самому давно показанному неизменившемуся ядру, раньше
+    # всех изменившихся: иначе при постоянном притоке новых неизменившиеся
+    # не доходят до облака никогда (круг-2 по PR #380, Codex).
+    unchanged = [s for s in stamped if not s[2]]
+    if unchanged and stamped[0][2]:                # есть новости — они первыми,
+        stamped.remove(unchanged[0])               # давно показанное — вторым
+        stamped.insert(1, unchanged[0])
     parts = [f"## ИНДЕКС\n{index_text[:INDEX_CHARS]}"] if index_text else []
-    total = sum(len(x) + 2 for x in parts)
+    base = sum(len(x) + 2 for x in parts)
+    total = base
     chosen, sent, skipped = [], {}, []
     now = time.time()
     for p, mtime, _changed, _shown in stamped:
         block = f"## ЯДРО: {p.stem}\n{p.read_text(encoding='utf-8')}"
         if total + len(block) + 2 > budget:
-            skipped.append(p)
+            # too_big — тем же расчётом: в одиночку с индексом не влезает
+            skipped.append((p, base + len(block) + 2 > budget))
             continue
         parts.append(block)
         total += len(block) + 2
@@ -184,8 +197,7 @@ def main() -> None:
           f"{len(blob)} из {total_chars} знаков")
     # Пропущенное по размеру — отдельно: такое ядро не увидит ни одна ночь,
     # и молчать об этом нельзя (круг-1 по PR #380, DeepSeek).
-    too_big = [p.stem for p in skipped
-               if len(p.read_text(encoding="utf-8")) > MAX_CHARS - INDEX_CHARS - 64]
+    too_big = [p.stem for p, alone in skipped if alone]
     if too_big:
         print("не влезают целиком ни в одну ночь: " + ", ".join(too_big))
     if not chosen:
@@ -228,11 +240,16 @@ def main() -> None:
         sys.exit(2)
     day = dt.date.today().isoformat()
     dest = graph / f"Служебное_ночная_ревизия_{day}.md"
-    dest.write_text(
-        f"---\ntype: служебное\nдата: {day}\nмодель: {model}\n---\n"
-        f"# Ночная ревизия ядер ({model})\n\n{out}\n", encoding="utf-8")
+    # 0600: отчёт несёт темы встреч, как и логи (круг-2 по PR #380, DS).
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(f"---\ntype: служебное\nдата: {day}\nмодель: {model}\n---\n"
+                f"# Ночная ревизия ядер ({model})\n\n{out}\n")
     print(f"отчёт: {dest.name} ({len(out)} зн., ядер в ревизии {len(chosen)} из {len(fresh)})")
-    _save_seen(graph, sent, {p.stem for p in fresh})
+    # Чистка карты — по всем ядрам графа, не только свежим: несвежее, но
+    # живое ядро память о показе не теряет (круг-2 по PR #380, Codex).
+    _save_seen(graph, sent, {p.stem for p in cores.glob("*.md") if not p.name.startswith("_")})
     prune_reports(graph, "Служебное_ночная_ревизия_")
 
 
