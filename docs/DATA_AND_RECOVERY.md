@@ -19,6 +19,7 @@ the only input for a retry.
 | `<graph_dir>/Документация/` | Document copies referenced by graph nodes | Persistent | Graph sources |
 | `logs/meeting-status/` | Processing state, transcript path and error | 14 days | App state and Recent meetings |
 | `~/Library/Application Support/Charoite/semantic_index_v2.bin` | Derived search index, holds ~700-character previews of every block — including transcripts | Rebuildable; entries for files that disappeared are dropped on the next search | Search acceleration, not a backup |
+| `~/Library/Application Support/CharoiteApp/chat_history.json` | Local chat: the last 200 messages with the graph quotes they cite | Until the chat's **Clear**; not touched by `forget_meeting.py` | Conversation continuity, nothing else reads it |
 
 `record_keep_days` deletes audio, not meeting documents. Disappearing from the
 Meetings section also deletes nothing; only the status record expired.

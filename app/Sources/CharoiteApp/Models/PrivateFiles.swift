@@ -45,3 +45,40 @@ extension FileManager {
         try? setAttributes([.posixPermissions: PrivateFiles.fileMode], ofItemAtPath: path)
     }
 }
+
+/// Потолок для бессрочных append-логов демона (аудит 16.08, п.7).
+///
+/// `daemon.err.log` дописывается при каждом старте и никогда не
+/// пересоздаётся — так трейсбек после крэша не теряется, но у
+/// долгоживущей установки файл с кусками стенограмм растёт без предела.
+/// При старте, если лог перерос `maxBytes`, остаётся только хвост
+/// `keepBytes` (по границе строки): именно хвост нужен для диагноза.
+/// Зеркало `charoite_paths.trim_log` на стороне Python (mlx_server.log).
+enum LogTrim {
+    static let maxBytes = 20 * 1024 * 1024
+    static let keepBytes = 2 * 1024 * 1024
+
+    /// Возвращает true, если усекали. Ошибки глотаются: лог важнее
+    /// отсутствия лога, но запуск записи важнее лога.
+    @discardableResult
+    static func trim(_ url: URL, maxBytes: Int = maxBytes, keepBytes: Int = keepBytes) -> Bool {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = (attrs[.size] as? NSNumber)?.intValue, size > maxBytes,
+              let fh = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? fh.close() }
+        guard (try? fh.seek(toOffset: UInt64(max(0, size - keepBytes)))) != nil,
+              var tail = try? fh.readToEnd() else { return false }
+        if let nl = tail.firstIndex(of: 0x0A), nl < tail.endIndex - 1 {
+            tail = tail[tail.index(after: nl)...]
+        }
+        var out = Data("[лог усечён при старте: было \(size) байт]\n".utf8)
+        out.append(tail)
+        // Запись на месте: права файла (0600) и владелец не меняются.
+        guard let w = try? FileHandle(forWritingTo: url) else { return false }
+        defer { try? w.close() }
+        guard (try? w.truncate(atOffset: 0)) != nil else { return false }
+        w.write(out)
+        return true
+    }
+}
+

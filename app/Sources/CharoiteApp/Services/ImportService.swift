@@ -59,8 +59,10 @@ final class ImportService: ObservableObject {
         status = L.t("импорт: \(todo.count) файл(ов)…", "importing \(todo.count) file(s)…", "正在导入 \(todo.count) 个文件…")
         let p = Process()
         let root = AppSettings.charoiteRoot
+        // `--`: путь папки выбирает человек, и argparse не должен прочитать
+        // его как флаг, если имя начинается с дефиса (аудит 16.08, п.5).
         p.arguments = [AppSettings.scriptPath("scripts/import_meeting.py", root: root),
-                       "--scan", folder.path]
+                       "--scan", "--", folder.path]
         AppSettings.preparePython(p, root: root)
         p.standardOutput = Pipe()
         p.standardError = Pipe()

@@ -23,6 +23,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import time
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
@@ -46,6 +47,9 @@ SUBS = {".vtt", ".srt"}
 # Размеры, которыми потоковые писатели (ffmpeg в pipe, часть диктофонов)
 # помечают «длину не знаю»: ноль и «все единицы».
 RIFF_SIZE_UNKNOWN = {0, 0xFFFFFFFF}
+# WAV без честного размера в заголовке готов, когда его перестали писать:
+# столько секунд файл должен простоять без изменений (аудит 16.08, п.4).
+WAV_SETTLE_SECONDS = 30
 
 
 def wav_complete(path: pathlib.Path) -> bool:
@@ -58,10 +62,14 @@ def wav_complete(path: pathlib.Path) -> bool:
 
     Заголовок без честного размера — не приговор файлу. Такие WAV читаются
     и импортировались годами; судить по их заголовку нельзя, а запирать
-    запись в папке импорта навсегда — хуже, чем импортировать лишнее.
+    запись в папке импорта навсегда — хуже, чем импортировать лишнее. Но и
+    считать такой файл готовым в момент появления нельзя: пока его ещё
+    копируют, импорт забрал бы половину записи (аудит 16.08). Критерий —
+    покой: файл не менялся WAV_SETTLE_SECONDS, значит, писатель закончил.
     """
     try:
-        actual = path.stat().st_size
+        st = path.stat()
+        actual = st.st_size
         if actual < 44:
             return False
         with path.open("rb") as stream:
@@ -72,7 +80,7 @@ def wav_complete(path: pathlib.Path) -> bool:
         return False
     riff = int.from_bytes(header[4:8], "little")
     if riff in RIFF_SIZE_UNKNOWN:
-        return True
+        return time.time() - st.st_mtime >= WAV_SETTLE_SECONDS
     declared = riff + 8
     return declared >= 44 and actual >= declared
 
@@ -81,6 +89,12 @@ def scan_candidates(folder: pathlib.Path) -> list[pathlib.Path]:
     """Поддерживаемые и уже полностью опубликованные файлы папки импорта."""
     out = []
     for path in sorted(folder.iterdir()):
+        # Симлинк в папке импорта — чужой файл в графе и в LLM-конвейере:
+        # is_file() разыменовывает ссылку, поэтому проверка отдельно
+        # (аудит 16.08, п.3). Папка импорта — для файлов, не для ссылок.
+        if path.is_symlink():
+            print(f"импорт: симлинк пропущен — {path.name}")
+            continue
         if not path.is_file() or path.suffix.lower() not in (AUDIO | TEXT | SUBS):
             continue
         if path.suffix.lower() == ".wav" and not wav_complete(path):
@@ -98,7 +112,8 @@ def postponed_files(folder: pathlib.Path) -> list[pathlib.Path]:
     return [
         path
         for path in sorted(folder.iterdir())
-        if path.is_file() and path.suffix.lower() == ".wav" and not wav_complete(path)
+        if not path.is_symlink() and path.is_file()
+        and path.suffix.lower() == ".wav" and not wav_complete(path)
     ]
 
 

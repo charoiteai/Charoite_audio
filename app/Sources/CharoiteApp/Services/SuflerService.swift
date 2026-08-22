@@ -448,6 +448,7 @@ final class SuflerService: ObservableObject {
         if !FileManager.default.fileExists(atPath: errURL.path) {
             FileManager.default.createFile(atPath: errURL.path, contents: nil)
         }
+        LogTrim.trim(errURL)   // потолок: хвост остаётся, гигабайты — нет
         let errFH = try? FileHandle(forWritingTo: errURL)
         errFH?.seekToEndOfFile()
         p.standardError = errFH ?? FileHandle.nullDevice

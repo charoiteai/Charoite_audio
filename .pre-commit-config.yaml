@@ -1,9 +1,9 @@
 # Локальные проверки до коммита: pre-commit install
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
+    rev: v0.16.3
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: [--select, "E9,F"]
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.10.0.1

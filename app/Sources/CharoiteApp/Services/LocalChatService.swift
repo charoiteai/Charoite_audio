@@ -26,7 +26,9 @@ final class LocalChatService: ObservableObject {
     private var historyURL: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("CharoiteApp")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // История цитирует граф — те же права, что у данных встреч: 0700/0600
+        // (аудит 16.08, п.2: файл не был ни в карте данных, ни под маской).
+        FileManager.default.createPrivateDirectory(at: dir)
         return dir.appendingPathComponent("chat_history.json")
     }
 
@@ -41,6 +43,7 @@ final class LocalChatService: ObservableObject {
         let tail = Array(messages.suffix(200))  // истории хватает, файл не пухнет
         if let data = try? JSONEncoder().encode(tail) {
             try? data.write(to: historyURL)
+            FileManager.default.makePrivate(atPath: historyURL.path)
         }
     }
     @Published var isStreaming = false

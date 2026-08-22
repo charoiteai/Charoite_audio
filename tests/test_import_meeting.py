@@ -1,11 +1,14 @@
 """Импорт встреч: парсер vtt/srt и сборка стенограммы конвейера."""
+import os
 import struct
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 from import_meeting import (  # noqa: E402
+    WAV_SETTLE_SECONDS,
     clean_date,
     clean_time,
     parse_subs,
@@ -110,9 +113,42 @@ def test_streaming_header_does_not_freeze_file_forever(tmp_path):
     zeroed = tmp_path / "zero_size.wav"
     zeroed.write_bytes(b"RIFF" + struct.pack("<I", 0) + streaming[8:])
 
+    # ...но и не в секунду появления: пока писатель ещё пишет, импорт
+    # забрал бы половину записи. Готов — когда WAV_SETTLE_SECONDS не менялся.
+    assert not wav_complete(unknown) and not wav_complete(zeroed)
+    assert sorted(postponed_files(tmp_path)) == [unknown, zeroed]
+    settled = time.time() - WAV_SETTLE_SECONDS - 1
+    for f in (unknown, zeroed):
+        os.utime(f, (settled, settled))
     assert wav_complete(unknown)
     assert wav_complete(zeroed)
     assert sorted(scan_candidates(tmp_path)) == [unknown, zeroed]
+
+
+def test_symlink_in_import_folder_is_skipped(tmp_path):
+    """Симлинк в папке импорта втягивал бы произвольный файл в граф и в
+    LLM-конвейер: is_file() разыменовывает ссылку (аудит 16.08, п.3)."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.txt"
+    secret.write_text("чужой файл", encoding="utf-8")
+    folder = tmp_path / "import"
+    folder.mkdir()
+    (folder / "link.txt").symlink_to(secret)
+    real_wav = folder / "real.wav"
+    real_wav.write_bytes(_wav(declared_data=32_000, actual_data=32_000))
+    (folder / "link.wav").symlink_to(real_wav)
+
+    assert scan_candidates(folder) == [real_wav]
+    assert postponed_files(folder) == []
+
+
+def test_app_passes_folder_after_double_dash():
+    """Путь папки выбирает человек: имя с дефиса argparse прочёл бы как
+    флаг (аудит 16.08, п.5) — приложение ставит `--` перед путём."""
+    swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services"
+             / "ImportService.swift").read_text(encoding="utf-8")
+    assert '"--scan", "--", folder.path' in swift
 
 
 def test_scan_reports_files_it_postponed(tmp_path):
