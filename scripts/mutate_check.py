@@ -168,7 +168,11 @@ def mutations_for(path: pathlib.Path, lines: set[int],
             found.append(Mutation(path, ln, f"{type(node.op).__name__} → "
                                             f"{BIN_SWAP[type(node.op)].__name__}",
                                   _swap_bin(node)))
-        elif isinstance(node, ast.Return) and node.value is not None:
+        elif isinstance(node, ast.Return) and node.value is not None \
+                and not (isinstance(node.value, ast.Constant)
+                         and node.value.value is None):
+            # `return None` → `return None` — мутант-тождество, в отчёте он
+            # неотличим от настоящей дыры (прогон партии D, 22.08)
             found.append(Mutation(path, ln, "return X → return None",
                                   _drop_return(node)))
     return found

@@ -312,3 +312,10 @@ def test_устаревший_байткод_не_судит_мутанта_по
     os.utime(mod, (stamp, stamp))
     assert mc.run_tests(tmp_path, ["tests/test_mod.py"], timeout=60) is False
     assert not list(src.glob("__pycache__/*")), "мутатор оставил байткод в дереве"
+
+
+def test_явный_return_none_не_мутируется(tmp_path):
+    """`return None` → `return None` — тождество; в отчёте оно читалось как
+    выживший мутант и тонуло среди настоящих (партия D, 22.08)."""
+    muts = _mutate(tmp_path, "def f(x):\n    if x is None:\n        return None\n    return x\n", {3, 4})
+    assert [m.line for m in muts if m.what.startswith("return")] == [4], [str(m) for m in muts]
