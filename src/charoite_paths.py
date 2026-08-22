@@ -185,9 +185,15 @@ def trim_log(path: pathlib.Path, max_bytes: int = LOG_MAX_BYTES,
         cut = tail.find(b"\n")
         if 0 <= cut < len(tail) - 1:
             tail = tail[cut + 1:]
-        with path.open("wb") as f:
+        # Через временный файл и rename: упасть между truncate и записью —
+        # остаться без хвоста, ради которого всё и затевалось (круг-1 по
+        # PR #377, qwen). Права — 0600 явно, не по umask вызывающего.
+        tmp = path.with_name(path.name + ".trim")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
             f.write(f"[лог усечён при старте: было {size} байт]\n".encode("utf-8"))
             f.write(tail)
+        os.replace(tmp, path)
         return True
     except OSError:
         return False

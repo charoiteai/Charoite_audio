@@ -49,3 +49,15 @@ def test_swift_mirror_is_wired_before_daemon_log_opens():
     health = (ROOT / "src" / "llm_health.py").read_text(encoding="utf-8")
     assert health.index('trim_log(ROOT / "logs" / "mlx_server.log")') \
         < health.index('(ROOT / "logs" / "mlx_server.log").open("a")')
+
+
+def test_trim_keeps_owner_only_permissions_and_leaves_no_temp(tmp_path):
+    """Усечение идёт через временный файл: права итогового файла — 0600
+    (явно в os.open, не по umask), хвоста .trim после успеха не остаётся
+    (круг-1 по PR #377, qwen)."""
+    log = tmp_path / "x.log"
+    log.write_bytes(b"line\n" * 5000)
+    size = log.stat().st_size
+    assert trim_log(log, max_bytes=size // 2, keep_bytes=size // 10)
+    assert (log.stat().st_mode & 0o777) == 0o600
+    assert not (tmp_path / "x.log.trim").exists()

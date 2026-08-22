@@ -42,6 +42,13 @@ final class LocalChatService: ObservableObject {
     private func saveHistory() {
         let tail = Array(messages.suffix(200))  // истории хватает, файл не пухнет
         if let data = try? JSONEncoder().encode(tail) {
+            // Файл создаётся сразу 0600: write(to:) без .atomic пишет в тот
+            // же inode и права не трогает — окна с 0644 по umask нет
+            // (круг-1 по PR #377, qwen). makePrivate — для истории,
+            // созданной до этой правки.
+            if !FileManager.default.fileExists(atPath: historyURL.path) {
+                FileManager.default.createPrivateFile(atPath: historyURL.path)
+            }
             try? data.write(to: historyURL)
             FileManager.default.makePrivate(atPath: historyURL.path)
         }

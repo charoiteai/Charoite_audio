@@ -73,11 +73,17 @@ enum LogTrim {
         }
         var out = Data("[лог усечён при старте: было \(size) байт]\n".utf8)
         out.append(tail)
-        // Запись на месте: права файла (0600) и владелец не меняются.
-        guard let w = try? FileHandle(forWritingTo: url) else { return false }
-        defer { try? w.close() }
-        guard (try? w.truncate(atOffset: 0)) != nil else { return false }
-        w.write(out)
+        // Через временный файл и атомарную замену: упасть между truncate и
+        // записью — остаться без хвоста, ради которого всё и затевалось
+        // (круг-1 по PR #377, qwen). Временный файл — сразу 0600.
+        let fm = FileManager.default
+        let tmp = url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + ".trim")
+        guard fm.createFile(atPath: tmp.path, contents: out,
+                            attributes: [.posixPermissions: PrivateFiles.fileMode]),
+              (try? fm.replaceItemAt(url, withItemAt: tmp)) != nil else {
+            try? fm.removeItem(at: tmp)
+            return false
+        }
         return true
     }
 }
