@@ -29,6 +29,13 @@ inherit them and goes out directly — measured on Aug 13: 6.8 MB/s versus
 39 KB/s through a local proxy, a 170-fold difference. If you run `ollama serve`
 by hand from a shell with a proxy configured, model downloads will take hours.
 
+The cloud layer is the opposite case: `claude -p` launched from the app has
+no shell environment, so Charoite injects the proxy itself from the `env`
+section of `~/.claude/settings.json` (one place for the post-meeting review,
+the nightly reviews and live answers). If a post-meeting review fails with
+«403 Request not allowed», the request went to api.anthropic.com directly:
+check `HTTPS_PROXY` there.
+
 **The runtime installs with a button.** The first-run readiness check tells
 three states apart: running, installed but not started, not installed at all.
 In the first two cases the app starts it itself (`brew services start` for a

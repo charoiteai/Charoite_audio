@@ -369,6 +369,10 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         graph_available=graph_available)
 
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    # Прокси из settings.json — иначе из GUI-запуска без shell-окружения
+    # `claude` идёт напрямую и получает «403 Request not allowed» (регион):
+    # 21.08 так упали все разборы дня, пока демон с прокси работал.
+    cloud.add_proxy(env)
 
     tmp = rev.with_suffix(rev.suffix + ".part")
     work_dir = graph_updater.cloud_enrich_workdir(cfg, graph, transcript.parent)
