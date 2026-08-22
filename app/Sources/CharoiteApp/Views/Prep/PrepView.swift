@@ -55,7 +55,13 @@ struct PrepView: View {
             loadTopicTrail()
             recomputeDebts()
         }
-        .onChange(of: calendar.today) { _, _ in loadTopicTrail() }
+        .onChange(of: calendar.today) { _, _ in
+            loadTopicTrail()
+            // nextTopic зависит от календаря напрямую: опустел — секция
+            // становится «Что вы обещали», и горящие нужны даже если
+            // topicHits не изменился (второй круг 22.08, Gemini + локальная).
+            recomputeDebts()
+        }
         .onChange(of: tasks.items) { _, _ in recomputeDebts() }
         .onChange(of: topicHits) { _, _ in recomputeDebts() }
         .onDisappear { cancelTopicLoad() }
