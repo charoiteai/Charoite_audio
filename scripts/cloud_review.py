@@ -129,10 +129,8 @@ def is_redirect_stub(text: str) -> bool:
     body = (text or "").strip()
     if not body or len(body) > 1200:
         return False
-    if body.startswith("---"):
-        _, _, rest = body[3:].partition("\n---")
-        body = rest.strip()
-    first = next((ln for ln in body.splitlines() if ln.strip()), "")
+    body = re.sub(r"\A---\n.*?\n---\n", "", body, count=1, flags=re.S)   # frontmatter
+    first = next((ln for ln in body.splitlines() if ln.lstrip().startswith("#")), "")
     return _REDIRECT_RE.fullmatch(first.strip()) is not None
 
 
@@ -152,10 +150,10 @@ def retention(old: str, new: str) -> float:
     с кратностью (одна уцелевшая строка не засчитывается за четыре
     одинаковых старых).
     """
-    before = collections.Counter(_norm(ln) for ln in old.splitlines() if _norm(ln))
+    before = collections.Counter(n for ln in old.splitlines() if (n := _norm(ln)))
     if not before:
         return 1.0
-    after = collections.Counter(_norm(ln) for ln in new.splitlines() if _norm(ln))
+    after = collections.Counter(n for ln in new.splitlines() if (n := _norm(ln)))
     kept = sum((before & after).values())
     return kept / sum(before.values())
 
@@ -221,7 +219,8 @@ def deny_paths(graph: pathlib.Path) -> list[tuple[str, bool]]:
     """
     out = [(d, True) for d in PROTECTED_DIRS]
     root = graph.resolve()
-    for dirpath, dirnames, filenames in os.walk(graph):
+    unreadable: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(graph, onerror=lambda e: unreadable.append(str(e))):
         base = pathlib.Path(dirpath)
         try:
             rel_base = base.resolve().relative_to(root)
@@ -239,6 +238,11 @@ def deny_paths(graph: pathlib.Path) -> list[tuple[str, bool]]:
         for f in sorted(filenames):
             if f.startswith(".") or (base / f).is_symlink():
                 out.append(((rel_base / f).as_posix(), False))
+    if unreadable:
+        # Нечитаемый подкаталог — неполный список запретов И неполный снимок
+        # (rglob молча пропускает то же место): правке в таком графе не
+        # место (круг-2 по PR #381, Codex).
+        raise OSError(f"нечитаемые каталоги графа: {unreadable[0]}")
     return out
 
 
@@ -312,6 +316,8 @@ def backup_graph(graph: pathlib.Path, stamp: str) -> pathlib.Path:
         # Повтор с тем же штампом: старый снимок хранил бы файлы, которых в
         # графе уже нет, и restore воскрешал бы их (круг-1 по PR #381, Codex).
         shutil.rmtree(dest, ignore_errors=True)
+        if dest.exists():
+            raise OSError(f"старый снимок {dest.name} не удаляется — не пересоздаю")
     dest.mkdir(parents=True, exist_ok=True)
     for p in graph_files(graph):
         target = dest / p.resolve().relative_to(graph.resolve())
@@ -381,11 +387,14 @@ def quarantine(path: pathlib.Path, graph: pathlib.Path, qdir: pathlib.Path, *,
         shutil.copy2(path, target)
 
 
-def rotate_quarantine(root: pathlib.Path, keep: int = QUARANTINE_KEEP) -> None:
-    """Карантин не растёт бесконечно: десять последних запусков по штампу."""
+def rotate_quarantine(root: pathlib.Path, keep: int = QUARANTINE_KEEP,
+                      current: pathlib.Path | None = None) -> None:
+    """Карантин не растёт бесконечно: десять последних запусков по штампу.
+    Свой каталог не трогается, даже если штамп старой встречи сортируется
+    в хвост (круг-2 по PR #381, DeepSeek)."""
     if not root.is_dir():
         return
-    runs = sorted(p for p in root.iterdir() if p.is_dir())
+    runs = sorted(p for p in root.iterdir() if p.is_dir() and p != current)
     for stale in runs[:-keep] if keep > 0 else runs:
         shutil.rmtree(stale, ignore_errors=True)
 
@@ -647,13 +656,26 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     # (контракт tests/test_cloud_call_sites.py), а не только в run() выше.
     if not privacy.cloud_enrich_enabled(cfg):
         return 1
+    # Граф могли отмонтировать, пока ждали замок: с graph_available=True
+    # команда получила бы Edit при cwd=папка стенограмм (круг-2 по PR #381,
+    # Codex Critical). Перепроверяем уже под замком.
+    if graph_available and not graph_updater.cloud_graph_available(graph):
+        print("граф исчез, пока ждали замок — работаю только текстом")
+        graph_available = may_edit = deliver = False
+        unlock()
     before, backup, denied = {}, None, []
     if may_edit:
-        denied = deny_paths(graph)
-        if len(denied) > DENY_MAX:
-            print(f"в графе {len(denied)} скрытых путей и симлинков — больше "
-                  f"{DENY_MAX}, правила не влезут; работаю на чтение")
-            may_edit = False
+        try:
+            denied = deny_paths(graph)
+            if len(denied) > DENY_MAX:
+                raise OSError(f"в графе {len(denied)} скрытых путей и симлинков — "
+                              f"больше {DENY_MAX}, правила не влезут")
+        except OSError as e:
+            # понижение отпускает замок и выключает доставку: без замка
+            # сосед принял бы нашу доставку за правки облака (круг-2, DS)
+            print(f"{e} — работаю на чтение")
+            may_edit = deliver = False
+            denied = []
             unlock()
     if may_edit:
         before = snapshot(graph)
@@ -661,7 +683,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             backup = backup_graph(graph, stamp)
         except OSError as e:
             print(f"бэкап графа не удался ({e}) — работаю на чтение")
-            may_edit = False
+            may_edit = deliver = False
             unlock()                   # замок нужен только правящему
     # Файлы встречи — по стему её стенограммы, а не по минутному штампу:
     # посекундная соседка той же минуты в контекст не попадает (аудит 16.08).
@@ -702,6 +724,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             code = -1
 
     ok = published = checked = False
+    lines: list[str] = []          # лог пишется в конце, best-effort
     try:
         # Битый stdout (не UTF-8, исчезнувший файл) — это невалидный ответ,
         # а не исключение поверх сверки: сверка идёт в finally всегда.
@@ -711,42 +734,48 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             text = ""
         ok = code == 0 and looks_like_report(text)
         published = publish(tmp, rev, ok)
-        with log.open("a", encoding="utf-8") as lf:
-            if published:
-                lf.write(f"[cloud-review] ревизия сохранена: {rev.name}\n")
-            else:
-                lf.write(f"[cloud-review] ревизия НЕ сохранена (код {code}, "
-                         f"{len(text)} знаков) — см. {rev.name}.partial\n")
+        lines.append(f"[cloud-review] ревизия сохранена: {rev.name}\n" if published else
+                     f"[cloud-review] ревизия НЕ сохранена (код {code}, "
+                     f"{len(text)} знаков) — см. {rev.name}.partial\n")
     finally:
-        with log.open("a", encoding="utf-8") as lf:
-            if may_edit and backup is not None and not backup.exists():
-                # Снимок исчез — с замком графа так может только внешняя
-                # рука. Без копии enforce не откатывает, а УДАЛЯЕТ: restore
-                # видит пустоту. Честнее не трогать файлы и сказать громко.
-                lf.write("[cloud-review] СНИМОК ИСЧЕЗ — границы не сверяю, "
+        # Сверка — раньше всего и без зависимости от лога: падение log.open
+        # (права, ENOSPC, EMFILE) не должно обходить откат (круг-2, DS+Codex).
+        if may_edit and backup is not None and not backup.is_dir():
+            # Снимок исчез — с замком графа так может только внешняя рука.
+            # Без копии enforce не откатывает, а УДАЛЯЕТ: restore видит
+            # пустоту. Честнее не трогать файлы и сказать громко.
+            lines.append("[cloud-review] СНИМОК ИСЧЕЗ — границы не сверяю, "
                          "файлы не трогаю; проверь правки руками\n")
-            elif may_edit and backup is not None:
-                # Карантин — по штампу и времени: два запуска одного штампа
-                # (крэш-рестарт) не затирают версии друг друга.
-                qdir = quarantine_root(graph) / f"{stamp}-{dt.datetime.now():%H%M%S}"
+        elif may_edit and backup is not None:
+            # Карантин — по штампу и времени до микросекунд: два запуска
+            # одного штампа (крэш-рестарт) не затирают версии друг друга.
+            qdir = quarantine_root(graph) / f"{stamp}-{dt.datetime.now():%H%M%S%f}"
+            try:
                 # Невалидный или неопубликованный ответ — откат всего: без
                 # отчёта правки графа — неизвестной степени готовности
                 # (слияние до середины), и объяснить их человеку нечем.
                 v = enforce_boundaries(before, graph, backup, qdir,
                                        rollback=not (ok and published))
-                checked = not v.failed
-                lf.write(_verdict_line(v, qdir))
+                checked = v.touched >= 0 and not v.failed
+                lines.append(_verdict_line(v, qdir))
                 if qdir.is_dir():
-                    rotate_quarantine(quarantine_root(graph))
-            # Доставка — ПОСЛЕ сверки границ: архив и Документация —
-            # защищённые папки, и созданную здесь копию сверка приняла бы за
-            # правку облака. Без графа (text-only) доставлять некуда: archive
-            # создал бы папки в несуществующем или слишком широком «графе».
-            if published and deliver:
-                deliver_review(rev, transcript, graph, stamp, lf)
-            if backup is not None:
-                # ротация — самым последним: свой снимок жил до конца сверки
-                rotate_snapshots(backup_root(graph), keep=backup)
+                    rotate_quarantine(quarantine_root(graph), current=qdir)
+            except Exception as e:  # noqa: BLE001 — сказать и дойти до ротации
+                lines.append(f"[cloud-review] СВЕРКА УПАЛА ({e}) — проверь правки руками\n")
+        # Доставка — ПОСЛЕ сверки границ и только после ПОЛНОЙ сверки: архив
+        # и Документация — защищённые папки, и созданную здесь копию сверка
+        # приняла бы за правку облака. Без графа (text-only) доставлять
+        # некуда, без замка — нельзя (сосед сверяет).
+        try:
+            with log.open("a", encoding="utf-8") as lf:
+                lf.writelines(lines)
+                if published and deliver and (not may_edit or checked):
+                    deliver_review(rev, transcript, graph, stamp, lf)
+        except OSError as e:
+            print(f"лог недоступен ({e}): " + "".join(lines))
+        if backup is not None:
+            # ротация — самым последним: свой снимок жил до конца сверки
+            rotate_snapshots(backup_root(graph), keep=backup)
     if may_edit and backup is not None and not checked:
         return 1                   # ревизия, может, и есть, но граф не сверен
     return 0 if published else 1

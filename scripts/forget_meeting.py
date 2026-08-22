@@ -325,10 +325,14 @@ def plan(stamp: str, root: pathlib.Path,
         # Карантин облачного разбора: каталог запуска ЭТОЙ встречи — целиком
         # (в нём версии облака, сделанные по её стенограмме), в карантинах
         # остальных запусков — файлы с её штампом (круг-1 по PR #381, Codex).
+        # Разбор зовётся по МИНУТНОМУ штампу (как узел встречи), а забыть
+        # просят и посекундным: «…_140030» → каталог «…_1400-<время>».
+        minute = stamp[:15] if len(stamp) > 15 else stamp
         quarantine = charoite_paths.graph_backups(g, CLOUD_QUARANTINE, root=root)
         if quarantine.is_dir():
             for run_dir in sorted(d for d in quarantine.iterdir() if d.is_dir()):
-                if run_dir.name == stamp or run_dir.name.startswith(stamp + "-"):
+                if run_dir.name in (stamp, minute) or run_dir.name.startswith(
+                        (stamp + "-", minute + "-")):
                     p.delete.append(run_dir)
                     continue
                 node_copy = run_dir / MEETINGS_DIR / f"{stamp}.md"
@@ -406,11 +410,17 @@ def apply(p: Plan, yes: bool = False) -> bool:
               "  удаление стенограмм, записи, папки архива и узла встречи необратимо")
         return False
 
+    left = []
     for path in p.delete:
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
         elif path.exists():
             path.unlink()
+        if path.exists():
+            left.append(path)      # права/занятый том — сказать, а не «забыто»
+    if left:
+        print("НЕ удалено (проверь права и повтори): "
+              + ", ".join(str(q) for q in left))
     for path, text in p.edit.items():
         # копии внутри снимка правим (там те же строки хроники), но бэкап
         # бэкапа не снимаем: он воскресил бы то, что человек забывает.

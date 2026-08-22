@@ -451,3 +451,17 @@ def test_cloud_quarantine_of_the_meeting_is_forgotten_too(tmp_path, monkeypatch)
     assert not mine.exists(), "карантин запуска этой встречи остался"
     assert not (other / "Встречи" / f"{STAMP}.md").exists()
     assert (other / "Ядра" / "Другая.md").exists(), "чужой карантин тронут"
+
+
+def test_seconds_stamp_reaches_the_minute_stamped_quarantine(tmp_path, monkeypatch):
+    """Разбор зовётся по минутному штампу, забыть просят посекундным
+    (круг-2 по PR #381, Codex)."""
+    import charoite_paths
+    root, graph = _world(tmp_path)
+    monkeypatch.setattr(forget, "ROOT", root)
+    q = charoite_paths.graph_backups(graph, "cloud_quarantine", root=root)
+    run_dir = q / f"{STAMP}-101500"
+    (run_dir / "Ядра").mkdir(parents=True)
+    (run_dir / "Ядра" / "Тема.md").write_text("версия облака", encoding="utf-8")
+    forget.apply(forget.plan(STAMP + "30", root, graph), yes=True)
+    assert not run_dir.exists()

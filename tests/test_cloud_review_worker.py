@@ -665,3 +665,129 @@ def test_entrypoint_hardens_umask():
                 if isinstance(n, ast.FunctionDef) and n.name == "main")
     assert any(isinstance(n, ast.Attribute) and n.attr == "harden_umask"
                for n in ast.walk(main))
+
+
+def _meeting(tmp_path, stamp="2026-07-15_1400"):
+    transcripts = tmp_path / "transcripts"; transcripts.mkdir(exist_ok=True)
+    transcript = transcripts / f"{stamp}.md"
+    transcript.write_text("текст\n", encoding="utf-8")
+    return transcript, transcripts / f"{stamp}_ревизия.md", tmp_path / "cloud.log"
+
+
+_REPORT = ("- **Решение:** оставить граф закрытым\n"
+           "- **Поручение:** проверить настройку\n"
+           "- **Риск:** файловый доступ не выдавался\n")
+
+
+def test_graph_gone_while_waiting_for_the_lock_means_text_only(tmp_path, monkeypatch):
+    """graph_available считался ДО ожидания замка: исчезнувший граф давал
+    Edit при cwd=папка стенограмм (круг-2 по #381, Codex Critical)."""
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    captured = {}
+    avail = iter([True, False])          # до замка — есть, под замком — нет
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available",
+                        lambda g: next(avail, False))
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"], captured["cwd"] = cmd, kwargs["cwd"]
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 0
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--tools") + 1] == "" and "--allowedTools" not in cmd
+    assert "только текст" in log.read_text(encoding="utf-8")
+    assert not (graph / "Встречи-архив").exists(), "доставка в исчезнувший граф"
+
+
+def test_check_and_rollback_survive_an_unwritable_log(tmp_path, monkeypatch):
+    """Сверка стояла за log.open в finally — лог без прав отменял откат
+    (круг-2 по #381, DS + Codex Critical)."""
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    doc = graph / "Документация" / "Стенограммы встреч" / f"{stamp}.md"
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        doc.write_text("переписано облаком", encoding="utf-8")
+        kwargs["stdout"].write(_REPORT)
+        log.unlink(); log.parent.joinpath("cloud.log").mkdir()   # лог стал каталогом
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+    assert doc.read_text(encoding="utf-8") == "стенограмма\n", "нарушение пережило сбой лога"
+
+
+def test_unreadable_subfolder_downgrades_to_read_only(tmp_path, monkeypatch):
+    """os.walk молча пропускал нечитаемый подкаталог: список запретов и
+    снимок становились неполными (круг-2 по #381, Codex)."""
+    import os
+    graph = _graph(tmp_path)
+    closed = graph / "Закрытое"; closed.mkdir()
+    (closed / ".secret.md").write_text("x", encoding="utf-8")
+    os.chmod(closed, 0o000)
+    try:
+        import pytest
+        with pytest.raises(OSError):
+            cloud_review.deny_paths(graph)
+    finally:
+        os.chmod(closed, 0o700)
+    assert dict(cloud_review.deny_paths(graph)).get("Закрытое/.secret.md") is False
+
+
+def test_failed_check_blocks_delivery_and_returns_error(tmp_path, monkeypatch):
+    """Неполная сверка (Verdict.failed) — не повод доставлять ревизию в
+    защищённые папки (круг-2 по #381, Codex)."""
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    doc = graph / "Документация" / "Стенограммы встреч" / f"{stamp}.md"
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        doc.write_text("переписано", encoding="utf-8")
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    monkeypatch.setattr(cloud_review, "quarantine",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError(28, "ENOSPC")))
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 1
+    assert rev.exists(), "ревизия всё равно сохранена рядом со стенограммой"
+    assert not (graph / "Встречи-архив").exists(), "доставлено после неполной сверки"
+    assert "СВЕРКА НЕ СМОГЛА" in log.read_text(encoding="utf-8")
+
+
+def test_quarantine_rotation_spares_the_current_run(tmp_path):
+    root = tmp_path / "q"
+    for s in ("2026-08-01_1000-1", "2026-08-02_1000-1", "2026-08-03_1000-1"):
+        (root / s).mkdir(parents=True)
+    current = root / "2026-07-01_0900-1"          # старая встреча разобрана сегодня
+    current.mkdir()
+    cloud_review.rotate_quarantine(root, keep=2, current=current)
+    assert current.exists()
+    assert sorted(p.name for p in root.iterdir()) == [
+        "2026-07-01_0900-1", "2026-08-02_1000-1", "2026-08-03_1000-1"]
+
+
+def test_redirect_stub_allows_a_comment_before_the_heading():
+    assert cloud_review.is_redirect_stub(
+        "---\ntype: ядро\n---\n<!-- Дубль -->\n# Дубль → [[Ядра/Канон]]\n\nДубль. Смерджен.\n")
+    assert cloud_review.is_redirect_stub("---\nнастроение: ---\n---\n# Д → [[Ядра/К]]\n")
