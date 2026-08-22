@@ -337,15 +337,15 @@ struct TodayWorkspaceView: View {
                        "下一场会议 · \(Self.time(event.start))")
         }
         switch calendar.accessGranted {
-        case nil:
+        case .none:
             return L.t("Календарь не подключён — подготовка к встречам выключена.",
                        "Calendar is not connected — meeting prep is off.",
                        "日历未连接——会前准备已关闭。")
-        case false:
+        case .some(false):
             return L.t("Доступа к календарю нет — подготовка к встречам выключена.",
                        "No calendar access — meeting prep is off.",
                        "没有日历访问权限——会前准备已关闭。")
-        case true:
+        case .some(true):
             return L.t("Новых встреч в календаре сегодня нет.",
                        "No more calendar meetings today.",
                        "今天日历中没有更多会议。")
