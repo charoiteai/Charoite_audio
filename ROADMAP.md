@@ -16,46 +16,82 @@ merging happens in memory during a single recording and is discarded.
   is separate from writing, so switching the language no longer breaks the
   archive retroactively. What's left is per-language screenshots for the
   READMEs.
-- **Chinese SOTA STT backend** — SenseVoice/Paraformer (FunASR) via
-  sherpa-onnx as a `stt.backend` option: noticeably lower CER on Chinese
-  than Whisper, same local-only story as GigaAM for Russian.
-
-- **iPhone companion, v1 completion** — recorder, meetings feed, task
-  checkboxes and a Live Activity with a Stop button are shipped (app-ios/).
-  What's left is TestFlight.
 - **Direct Wi-Fi delivery to the Mac** — the phone hands recordings to
   the Mac daemon over the local network (Bonjour, pairing code); iCloud
-  becomes the optional fallback, not the default path.
-- **Graph-aware archive answers** — pull 1-hop neighbours of matched
-  nodes (person → their meetings → decisions) into the answer context,
-  plus a local reranker over the top candidates.
-- **Diarization shard-merge tuning** — same-voice merging within a
-  recording shipped (30 clusters → 12 on a real in-person meeting);
-  tighten thresholds on more live data.
+  becomes the optional fallback. Measurement first: how long a recording
+  actually takes through iCloud across ten meetings. Minutes — we build
+  it; seconds — a second transport is not worth its attack surface.
+- **Graph-aware archive answers** — one hop over explicit `[[links]]`
+  from matched nodes (person → their meetings → decisions) into the
+  answer context, deduplicated; sources and the honesty gate stay as they
+  are. Today search returns the best block of each file and never follows
+  a link.
+- **A local reranker over the top candidates** — separately, and only
+  after numbers: `AnswerQualityProbe` is an observation on three questions,
+  not a measurement, and nobody has measured how often the RRF top-5
+  misses. The SenseVoice lesson: benchmark first, model in the bundle
+  second.
+- **Diarization: merge thresholds by evidence, not by one meeting** — the
+  0.60 threshold was calibrated on a single in-person meeting (65 minutes,
+  three speakers) and is already the third value; it moves only on
+  labelled live recordings with different microphones and speaker counts,
+  measured separately for offline and live. An observation status, not a
+  dated item.
+- **iPhone companion in the App Store** — TestFlight is done. Before
+  submission: the privacy manifest (`PrivacyInfo.xcprivacy` is missing
+  while the delivery queue already uses file-timestamp APIs from the
+  required-reason list), a privacy policy page and App Privacy answers, a
+  background-audio justification for App Review, and lock/background/
+  interruption runs on a real iPhone.
 
 ## Mid
 
-- **Windows port** — the daemon is Python + ONNX and the delivery protocol
-  is platform-neutral (mDNS + TLS); the work is a native shell and an
-  audio-capture story to replace BlackHole.
-- **Android companion: direct delivery** — the companion core has shipped
-  (app-android/): recording, meetings feed, tasks, delivery into a folder
-  you pick. What is left is the LAN upload to the Mac (NsdManager + TLS,
-  the protocol shared with the iPhone); until then Syncthing keeps the
-  folder in step.
-- **Android: compileSdk 36** — the build targets API 35, while current
-  androidx (activity 1.13, lifecycle 2.11, Compose BOM 2026) needs 36. The
-  bump makes sense — tablets already run Android 16 — but it has to come
-  with background recording verified on a device, not as a bot's dependency
-  bump.
+- **Android companion: direct delivery** — the companion core shipped
+  (app-android/): recording, meetings feed, tasks, delivery into a chosen
+  folder. Local-network delivery to the Mac comes after the protocol
+  exists on the iPhone side (see Near): today it exists on neither phone
+  nor Mac — the daemon listens on no non-loopback port. Until then
+  Syncthing keeps the folder in sync.
+- **Graph nodes inside the app** — separate from the Memory screen (that
+  one answers questions, it does not show links). The meetings library
+  exists; what is missing is opening a node of any kind (person, system,
+  core), seeing its digest and its outgoing `[[links]]` as a list. Stop
+  there: a graph canvas is not planned.
 
-- **Companion live mode** — the phone streams meeting audio to the Mac
-  and mirrors the live transcript and hints on its screen.
-- **App Store release** — after the meetings feed makes v1 feel complete
-  (TestFlight first).
-- **Packaged graph viewer** — browse the meeting graph without Obsidian.
+## Not in this cycle
+
+Better to say it than to keep it in "Mid" for years:
+
+- **Windows port.** The daemon and audio intake are abstracted (manifest +
+  raw PCM; a WASAPI-loopback producer on Windows could speak the same
+  protocol), but diarization and transcript assembly still address the far
+  side by the literal `blackhole` in several files, and above all the UI
+  would have to be written again: SwiftUI does not port, and it is larger
+  than both mobile companions together. Not without a second developer or
+  explicit demand.
+- **Companion live mode** (the phone streams meeting audio to the Mac and
+  mirrors the transcript). The companion has no live audio capture (it
+  records to a file), the Mac has no network listener at all; this is a
+  separate low-latency system on top of a delivery path that does not
+  exist yet.
 ## Done (recent)
 
+- Update manifests signed with an owner key that never enters CI, and a
+  release gate: an unsigned release never becomes `latest`, so the updater
+  never sees it (August 2026)
+- UI revision against Rams' ten principles: honesty about the network,
+  memory and cloud surfaces, empty states, a meeting card with four depths;
+  the vocabulary lives in `docs/DESIGN.md` (August 2026)
+- Recording auto-stop: silence on both channels and a duration ceiling —
+  with a notification, not silently (August 2026)
+- The owner's name in the transcript comes from the capture channel, with
+  no voice print stored (August 2026)
+- iPhone companion on TestFlight; Android on compileSdk 37 and Compose BOM
+  2026.08 (August 2026)
+- SenseVoice as a `stt.backend` option for Chinese (sherpa-onnx,
+  `scripts/get_models.py --stt sensevoice`). The benchmark is honest: on
+  synthesized Chinese phrases Whisper is more accurate (CER 0.064 vs
+  0.149) — SenseVoice stays an option, not a replacement (August 2026)
 - Install without a terminal: the app carries a portable CPython **and the
   daemon's own code** inside the bundle, while `CHAROITE_ROOT` keeps
   recordings, transcripts and the config in the user's folder; the first-run
