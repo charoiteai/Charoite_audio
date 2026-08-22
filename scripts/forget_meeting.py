@@ -412,6 +412,8 @@ def apply(p: Plan, yes: bool = False) -> bool:
           f" (копии поправленных — в {BACKUP_DIR}/{p.stamp})")
     print("Что осталось вне досягаемости: копии в iCloud и бэкапах Time Machine,"
           " файлы у других участников — см. PRIVACY.md")
+    for line in p.beyond_reach:
+        print(f"  и ещё: {line}")
     return True
 
 

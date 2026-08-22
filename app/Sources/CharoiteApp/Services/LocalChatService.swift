@@ -29,7 +29,13 @@ final class LocalChatService: ObservableObject {
         // История цитирует граф — те же права, что у данных встреч: 0700/0600
         // (аудит 16.08, п.2: файл не был ни в карте данных, ни под маской).
         FileManager.default.createPrivateDirectory(at: dir)
-        return dir.appendingPathComponent("chat_history.json")
+        let url = dir.appendingPathComponent("chat_history.json")
+        // История старой установки — закрыть при первом же обращении, а не
+        // ждать следующего сохранения (круг-1 по PR #377, Codex).
+        if FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.makePrivate(atPath: url.path)
+        }
+        return url
     }
 
     init() {

@@ -114,15 +114,67 @@ def test_streaming_header_does_not_freeze_file_forever(tmp_path):
     zeroed.write_bytes(b"RIFF" + struct.pack("<I", 0) + streaming[8:])
 
     # ...но и не в секунду появления: пока писатель ещё пишет, импорт
-    # забрал бы половину записи. Готов — когда WAV_SETTLE_SECONDS не менялся.
+    # забрал бы половину записи. Готов — когда РАЗМЕР не менялся
+    # WAV_SETTLE_SECONDS между сканами (сайдкар .<имя>.import-seen).
     assert not wav_complete(unknown) and not wav_complete(zeroed)
     assert sorted(postponed_files(tmp_path)) == [unknown, zeroed]
-    settled = time.time() - WAV_SETTLE_SECONDS - 1
-    for f in (unknown, zeroed):
-        os.utime(f, (settled, settled))
+    # mtime никакой роли не играет: ни touch от синка, ни часы в будущем
+    future = time.time() + 600
+    os.utime(unknown, (future, future))
+    _age_markers(tmp_path, WAV_SETTLE_SECONDS + 1)
     assert wav_complete(unknown)
     assert wav_complete(zeroed)
     assert sorted(scan_candidates(tmp_path)) == [unknown, zeroed]
+    # прямой импорт выбранного руками файла — без ожидания
+    fresh = tmp_path / "fresh.wav"
+    fresh.write_bytes(b"RIFF" + struct.pack("<I", 0) + streaming[8:])
+    assert wav_complete(fresh, settle=False)
+
+
+def _age_markers(folder, seconds: float) -> None:
+    """Сдвинуть время первого наблюдения в сайдкарах в прошлое."""
+    for m in folder.glob(".*.import-seen"):
+        size, seen = m.read_text(encoding="ascii").split()
+        m.write_text(f"{size} {float(seen) - seconds:.0f}\n", encoding="ascii")
+
+
+def test_growing_unknown_size_wav_resets_the_clock(tmp_path):
+    """Размер вырос между сканами — писатель жив, отсчёт заново; старый
+    mtime, сохранённый провайдером, этого не скроет (круг-1, Codex)."""
+    streaming = _wav(declared_data=32_000, actual_data=32_000)
+    f = tmp_path / "grow.wav"
+    f.write_bytes(b"RIFF" + struct.pack("<I", 0xFFFFFFFF) + streaming[8:])
+    old = time.time() - 3600
+    os.utime(f, (old, old))
+    assert not wav_complete(f)
+    _age_markers(tmp_path, WAV_SETTLE_SECONDS + 1)
+    with f.open("ab") as fh:
+        fh.write(b"\0" * 4000)
+    os.utime(f, (old, old))
+    assert not wav_complete(f), "рост размера обязан сбросить отсчёт"
+    _age_markers(tmp_path, WAV_SETTLE_SECONDS + 1)
+    assert wav_complete(f)
+
+
+def test_scan_refuses_symlinked_done_folder(tmp_path):
+    """done/ как симлинк увёл бы импортированные файлы в чужую папку, а
+    битая ссылка роняла скан на mkdir (круг-1, Codex)."""
+    import subprocess as sp
+    folder = tmp_path / "import"
+    folder.mkdir()
+    (folder / "done").symlink_to(tmp_path / "elsewhere")
+    r = sp.run([sys.executable, str(ROOT / "scripts" / "import_meeting.py"),
+                "--scan", "--", str(folder)], capture_output=True, text=True)
+    assert r.returncode != 0
+    assert "обычный каталог" in (r.stderr + r.stdout)
+
+
+def test_double_dash_is_honoured_by_the_parser():
+    """Не только текст Swift-файла, но и сам argparse: путь с дефиса после
+    `--` — позиционный аргумент (круг-1, Sonnet)."""
+    from import_meeting import build_parser
+    ns = build_parser().parse_args(["--scan", "--", "-x"])
+    assert ns.scan is True and ns.file == "-x"
 
 
 def test_symlink_in_import_folder_is_skipped(tmp_path):

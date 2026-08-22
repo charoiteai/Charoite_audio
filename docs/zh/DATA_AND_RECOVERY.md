@@ -17,7 +17,7 @@ Charoite 的 local-first 不只表示模型在本机运行。它的工作状态�
 | `<graph_dir>/Документация/` | 图谱节点引用的文档副本 | 长期保留 | 图谱来源 |
 | `logs/meeting-status/` | 处理状态、逐字稿路径和错误 | 14 天 | 应用状态与“近期会议” |
 | `~/Library/Application Support/Charoite/semantic_index_v2.bin` | 派生搜索索引 | 可重建 | 加速搜索，不是备份 |
-| `~/Library/Application Support/CharoiteApp/chat_history.json` | 本地聊天：最近 200 条消息及其引用的图谱片段 | 直到在聊天里按**清除**；`forget_meeting.py` 不会动它 | 对话连续性，没有其他读者 |
+| `~/Library/Application Support/CharoiteApp/chat_history.json` | 本地聊天：对话的最近 200 条消息（回答可能复述图谱；图谱片段本身不存储） | 直到在聊天里按**清除**；`forget_meeting.py` 不会动它 | 对话连续性，没有其他读者 |
 
 `record_keep_days` 删除的是音频，不是会议文档。某条记录从“近期会议”中消失也
 不会删除会议，只是状态记录过期。

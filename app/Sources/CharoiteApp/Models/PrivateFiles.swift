@@ -63,7 +63,8 @@ enum LogTrim {
     @discardableResult
     static func trim(_ url: URL, maxBytes: Int = maxBytes, keepBytes: Int = keepBytes) -> Bool {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = (attrs[.size] as? NSNumber)?.intValue, size > maxBytes,
+              let size64 = (attrs[.size] as? NSNumber)?.int64Value, size64 > Int64(maxBytes),
+              let size = Int(exactly: size64),
               let fh = try? FileHandle(forReadingFrom: url) else { return false }
         defer { try? fh.close() }
         guard (try? fh.seek(toOffset: UInt64(max(0, size - keepBytes)))) != nil,
