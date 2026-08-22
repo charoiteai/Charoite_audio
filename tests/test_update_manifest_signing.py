@@ -99,7 +99,6 @@ def test_manifest_binds_version_to_content(tmp_path):
 def test_foreign_bundle_is_refused_before_signing(tmp_path):
     """Подменённый до шага подписи архив не должен получить подпись владельца:
     codesign-сверка обязана отказать на неподписанном/чужом бандле."""
-    import io
     import subprocess
     import zipfile
     z = tmp_path / "Charoite.app.zip"
@@ -125,3 +124,85 @@ def test_symlink_app_in_zip_is_refused(tmp_path):
     with pytest.raises(SystemExit, match="симлинк"):
         srm.verify_zip_is_ours(z, tmp_path / "u")
 
+
+
+# --- гейт неподписанного выпуска (проработка бэклога 22.08, Codex luna) ---
+# Релиз рождается pre-release (release-please-config) и становится latest
+# только рукой владельца — после подписи. Апдейтер спрашивает /releases/latest,
+# GitHub не отдаёт туда pre-release: выпуск без .manifest.sig для приложения
+# не существует, вместо «у выпуска нет верной подписи» в рантайме.
+
+def _fake_gh(calls: list, fail_on: str | None = None):
+    def run(argv, **kw):
+        calls.append(list(argv))
+        sub = argv[2] if argv[:2] == ["gh", "release"] else argv[0]
+        if sub == fail_on:
+            raise subprocess.CalledProcessError(1, argv)
+        if sub == "download":
+            pathlib.Path(argv[argv.index("-O") + 1]).write_bytes(b"zip")
+        return subprocess.CompletedProcess(argv, 0)
+    return run
+
+
+def _wire_main(monkeypatch, tmp_path, key, calls, fail_on=None):
+    home = tmp_path / "home"
+    (home / ".config" / "charoite").mkdir(parents=True)
+    (home / ".config" / "charoite" / "gh_token").write_text("t\n")
+    monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(srm.subprocess, "run", _fake_gh(calls, fail_on))
+    monkeypatch.setattr(srm, "verify_zip_is_ours", lambda z, u: None)
+    monkeypatch.setattr(srm, "build_manifest", lambda tag, z: b"0.1.0  ab\n")
+    monkeypatch.setattr(sys, "argv", ["sign_release_manifest.py", "v0.1.0",
+                                      "--key", str(key)])
+
+
+def test_release_is_promoted_to_latest_only_after_signature_upload(
+        tmp_path, monkeypatch):
+    key = _ephemeral_key(tmp_path)
+    calls: list = []
+    _wire_main(monkeypatch, tmp_path, key, calls)
+    assert srm.main() == 0
+    subs = [c[2] for c in calls if c[:2] == ["gh", "release"]]
+    assert subs == ["download", "upload", "edit"], subs
+    edit = calls[-1]
+    assert edit[:3] == ["gh", "release", "edit"] and "v0.1.0" in edit
+    assert "--prerelease=false" in edit and "--latest" in edit
+    upload = next(c for c in calls if c[:3] == ["gh", "release", "upload"])
+    assert any(p.endswith(f"{srm.ASSET}.sig") for p in upload), upload
+
+
+def test_failed_signature_upload_leaves_release_as_prerelease(
+        tmp_path, monkeypatch):
+    """Упала загрузка подписи — релиз НЕ становится latest: иначе апдейтер
+    увидит выпуск без .sig и откажет каждому пользователю."""
+    key = _ephemeral_key(tmp_path)
+    calls: list = []
+    _wire_main(monkeypatch, tmp_path, key, calls, fail_on="upload")
+    with pytest.raises(subprocess.CalledProcessError):
+        srm.main()
+    assert not any(c[:3] == ["gh", "release", "edit"] for c in calls)
+
+
+def test_release_please_creates_prereleases():
+    """Вторая половина гейта: без prerelease в конфиге release-please выпуск
+    сразу становится latest — до подписи — и скрипт ничего не гейтит."""
+    import json
+    cfg = json.loads((ROOT / ".github" / "release-please-config.json")
+                     .read_text(encoding="utf-8"))
+    assert cfg["packages"]["."]["prerelease"] is True
+
+
+def test_release_gate_tripwire_pre_major_versions_only():
+    """Растяжка. release-please помечает выпуск pre-release по формуле
+    `config.prerelease && (version.preRelease || version.major == 0)`
+    (src/manifest.ts, buildReleases). На 0.x гейт держится на флаге конфига;
+    с 1.0.0 флаг перестаёт действовать без prerelease-суффикса в версии, и
+    неподписанный релиз снова станет latest до подписи. Тест падает на первой
+    версии ≥ 1.0 — чтобы гейт переделали, а не потеряли молча."""
+    import json
+    manifest = json.loads((ROOT / ".github" / ".release-please-manifest.json")
+                          .read_text(encoding="utf-8"))
+    major = int(manifest["."].split(".")[0])
+    assert major == 0, ("с 1.0 release-please перестанет помечать выпуск "
+                        "pre-release — гейт подписи нужно перенести "
+                        "(см. docs/RELEASING.md, «Подпись манифеста»)")

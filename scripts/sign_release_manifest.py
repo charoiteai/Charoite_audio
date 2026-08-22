@@ -120,9 +120,22 @@ def main() -> int:
         sig_path.write_text(sign_bytes(manifest, key) + "\n", encoding="ascii")
         subprocess.run(["gh", "release", "upload", a.tag, "--repo", REPO,
                         str(m), str(sig_path), "--clobber"], check=True, env=env)
+        # Релиз рождается pre-release (release-please-config: prerelease) и
+        # становится latest только здесь, вместе с подписью: апдейтер
+        # спрашивает /releases/latest, а GitHub не отдаёт туда pre-release —
+        # неподписанный выпуск для приложения не существует (ревью 22.08,
+        # Codex: workflow не может приложить .sig, ключ вне CI, и релиз без
+        # подписи висел «готовым»).
+        promote_release(a.tag, env)
     print(f"{a.tag}: архив сверен по codesign, манифест подписан, "
-          f"{ASSET} и {ASSET}.sig загружены")
+          f"{ASSET} и {ASSET}.sig загружены, релиз переведён в latest")
     return 0
+
+
+def promote_release(tag: str, env: dict) -> None:
+    """Снять pre-release и объявить выпуск latest — только после подписи."""
+    subprocess.run(["gh", "release", "edit", tag, "--repo", REPO,
+                    "--prerelease=false", "--latest"], check=True, env=env)
 
 
 if __name__ == "__main__":
