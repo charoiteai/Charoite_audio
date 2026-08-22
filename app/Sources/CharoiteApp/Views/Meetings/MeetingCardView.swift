@@ -162,7 +162,7 @@ struct MeetingCardView: View {
                             "Claude 复审：图谱修改 \(review.edits) 处，复审文件未保存"),
                       systemImage: "cloud")
                     .font(.caption)
-                    .foregroundStyle(review.saved ? Color.secondary : .orange)
+                    .foregroundStyle(review.saved ? Color.secondary : Theme.warning)
             }
         }
     }
@@ -221,7 +221,7 @@ struct MeetingCardView: View {
                     }
                 }
                 if let error = tasks.mutationError {
-                    Text(error).font(.caption).foregroundStyle(.orange)
+                    Text(error).font(.caption).foregroundStyle(Theme.warning)
                 }
             }
         }
@@ -297,7 +297,7 @@ struct MeetingCardView: View {
         VStack(alignment: .leading, spacing: 12) {
             Label(L.t("Забыть встречу", "Forget meeting", "忘记会议"),
                   systemImage: "trash")
-                .font(.headline).foregroundStyle(.red)
+                .font(.headline).foregroundStyle(Theme.danger)
             Text(L.t("Будут удалены перечисленные ниже следы. Это действие нельзя отменить.",
                      "The traces listed below will be deleted. This cannot be undone.",
                      "下列痕迹将被删除。此操作无法撤销。"))

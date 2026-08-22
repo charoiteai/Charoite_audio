@@ -79,6 +79,16 @@ struct LocalChatView: View {
                 Text(chat.status)
                     .font(.caption).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.tail)
+            } else {
+                // Честная строка происхождения: адрес Ollama не на этой
+                // машине приложение отвергает (AppSettings.ollamaURLRejection),
+                // поэтому «на этой машине» — факт, а не обещание.
+                Text(L.t("на этой машине", "on this Mac", "在本机"))
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Theme.ok)
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(Capsule().fill(Theme.ok.opacity(0.12)))
+                    .fixedSize()
             }
             Spacer(minLength: 4)
             if chat.isStreaming {
@@ -104,12 +114,20 @@ struct LocalChatView: View {
                 .textSelection(.enabled)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
+                // Ответ — на лавандовой поверхности памяти (правило ревизии:
+                // поверхность обозначает происхождение), вопрос — на индиго.
                 .background(
                     RoundedRectangle(cornerRadius: Theme.radiusCard)
                         .fill(m.role == "user"
                               ? Theme.accent.opacity(0.14)
-                              : Color(nsColor: .quaternarySystemFill))
+                              : Theme.surfaceMemory)
                 )
+                .overlay {
+                    if m.role != "user" {
+                        RoundedRectangle(cornerRadius: Theme.radiusCard)
+                            .strokeBorder(Theme.borderMemory, lineWidth: 1)
+                    }
+                }
             if m.role != "user" {
                 // копирование целиком: textSelection хорош для куска, кнопка — для всего
                 Button {

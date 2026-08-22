@@ -334,7 +334,7 @@ struct SuflerView: View {
                 piece.font = .callout.bold()
             } else if trimmed.hasPrefix("⚑") || trimmed.hasPrefix("📌") {
                 piece.font = .callout.weight(.medium)
-                piece.foregroundColor = .orange
+                piece.foregroundColor = Theme.warning
             } else if trimmed.hasPrefix("⚡") {
                 piece.font = .callout.weight(.medium)
             } else if trimmed.hasPrefix("?") {
@@ -418,7 +418,7 @@ struct SuflerView: View {
                         .symbolEffect(.variableColor.iterative, options: .repeating,
                                       isActive: sufler.isRunning)
                 }
-                .font(.system(size: 13.5, weight: .semibold))
+                .font(.headline)
                 // не переносить: в тесном тулбаре главная кнопка ломалась
                 // в «Слу-шать встр ечу» на три строки
                 .fixedSize()
@@ -746,7 +746,9 @@ struct SuflerView: View {
             }
         }
         .frame(minHeight: 140)
-        .background(Theme.accent.opacity(0.05))
+        // Ответы по архиву и графу — лавандовая поверхность памяти
+        // (токен, а не accent.opacity по месту: дизайн-аудит 21.08).
+        .background(Theme.surfaceMemory)
     }
 
     /// Строка стенограммы — отдельной функцией: конкатенация Text со стилями
@@ -781,6 +783,12 @@ struct SuflerView: View {
                     .font(.caption2)
                 Text("Claude")
                     .font(.caption2.weight(.semibold))
+                // Единственный слой, который покидает машину, — сказано
+                // словами рядом с цветом: цвет не должен быть единственным
+                // сигналом (DESIGN.md, доступность).
+                Text("· " + L.t("уходит с машины", "leaves this Mac", "离开本机"))
+                    .font(.caption2)
+                    .foregroundStyle(Theme.sky.opacity(0.8))
                 Spacer()
                 if !sufler.cloud.isEmpty {
                     SuflerCopyButton(text: { sufler.cloud })
@@ -796,11 +804,11 @@ struct SuflerView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(10)
-        .background(Theme.sky.opacity(0.07),
+        .background(Theme.surfaceCloud,
                     in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(Theme.sky.opacity(0.25), lineWidth: 1)
+                .strokeBorder(Theme.borderCloud, lineWidth: 1)
         }
     }
 

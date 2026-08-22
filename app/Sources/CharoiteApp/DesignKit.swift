@@ -20,8 +20,55 @@ extension Theme {
     static let surfaceCloud = sky.opacity(0.06)
     static let borderCloud = sky.opacity(0.22)
 
-    /// Просрочка — системный оранжевый, а не фирменный цвет.
-    static let overdue = Color.orange
+    /// Предупреждение — системный оранжевый, а не фирменный цвет:
+    /// «обрати внимание», но ничего не сломано. Просрочка — его частный
+    /// случай; один токен вместо `.orange` по месту в одиннадцати вью
+    /// (дизайн-аудит 21.08: цвет «по месту» — первый признак, что система
+    /// живёт на бумаге, а не в коде).
+    static let warning = Color.orange
+    static let overdue = warning
+}
+
+// MARK: - Поверхности происхождения
+
+/// Лавандовая поверхность памяти: всё, что пришло из архива, графа, досье.
+///
+/// Правило ревизии 08.08 «поверхность обозначает происхождение» три недели
+/// жило только в токенах: `surfaceMemory` не имел ни одного вызова, а
+/// лаванда в двух вью рисовалась своим `accent.opacity(…)` и читалась как
+/// случайность. Контейнер — одно место, где цвет и рамка заданы вместе.
+struct MemorySurface<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) { content() }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.surfaceMemory,
+                        in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+                    .strokeBorder(Theme.borderMemory, lineWidth: 1)
+            }
+    }
+}
+
+/// Небесная поверхность облака: всё, что уходит с машины. «Локальное
+/// молчит, облачное видно» — видно цветом, а не только подписью.
+struct CloudSurface<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) { content() }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.surfaceCloud,
+                        in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+                    .strokeBorder(Theme.borderCloud, lineWidth: 1)
+            }
+    }
 }
 
 // MARK: - Заголовок панели
