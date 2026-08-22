@@ -73,6 +73,14 @@ THREAD_TICK = 30.0      # нить встречи: как часто СМОТР�
 THREAD_MIN_NEW = 900    # и сколько новых знаков нужно, чтобы позвать модель
 STT_PROGRESS_EVERY = 5.0   # отдельный пульс потребителя; главный hb его не заменяет
 STT_LAG_LOG_EVERY = 30.0   # цифры отставания в daemon.err.log без спама
+# heartbeat для watchdog UI: главный тред жив → hb каждые 30с; тишина 100с
+# при живом процессе = зависание, UI перезапустит демон. Порог stalled —
+# только диагностика; решение о рестарте остаётся за 100-секундным
+# watchdog приложения. Цифры живут здесь, рядом с объяснением, а не
+# дефолтами в stt_runtime (ревью 22.08, Sonnet 5).
+MAIN_HB_EVERY = 30.0
+STT_STALL_THRESHOLD = 30.0
+STT_STALL_LOG_EVERY = 30.0
 
 _out_lock = threading.Lock()
 # Общий стоп: emit ставит его, когда приложение закрыло свой конец пайпа.
@@ -2450,7 +2458,7 @@ def main():
             # heartbeat для watchdog UI: главный тред жив → hb каждые 30с;
             # тишина 100с при живом процессе = зависание, UI перезапустит демон
             now_mono = time.monotonic()
-            if stt_runtime.heartbeat_due(now=now_mono, last=last_hb):
+            if stt_runtime.heartbeat_due(now=now_mono, last=last_hb, every=MAIN_HB_EVERY):
                 last_hb = now_mono
                 stage, stage_age = stt_stage_snapshot()
                 emit({"type": "hb", "stt_stage": stage,
@@ -2459,7 +2467,9 @@ def main():
                 # способен оставить строку. 30с — только диагностика; решение
                 # о рестарте остаётся за 100-секундным watchdog приложения.
                 if stt_runtime.stall_log_due(stage_age_s=stage_age, now=now_mono,
-                                             last=last_stt_stall_log):
+                                             last=last_stt_stall_log,
+                                             threshold=STT_STALL_THRESHOLD,
+                                             every=STT_STALL_LOG_EVERY):
                     print(f"stt-health state=stalled stage={stage} "
                           f"stage_age_s={stage_age:.1f}",
                           file=sys.stderr, flush=True)

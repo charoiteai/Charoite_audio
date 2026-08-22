@@ -166,10 +166,17 @@ def test_full_run_is_not_marked_stopped(tmp_path, monkeypatch):
     graph = _graph(tmp_path, "Одно", "Другое")
     monkeypatch.setattr(tier3.nli, "is_available", lambda: True)
     monkeypatch.setattr(tier3.nli, "ready", lambda: True)
-    monkeypatch.setattr(tier3, "_embed_all", lambda cores, cfg: [[1.0, 0.0], [0.0, 1.0]])
-    monkeypatch.setattr(tier3.live_gate, "night_is_over", lambda: False)
+    # Одинаковые эмбеддинги: пара проходит префильтр, суд реально идёт по
+    # циклу и спрашивает потолок ночи; с ортогональными пара отсекалась до
+    # цикла и stopped=False держалось инициализацией, а не прогоном
+    # (ревью 22.08: Sonnet 5 и DeepSeek независимо).
+    monkeypatch.setattr(tier3, "_embed_all", lambda cores, cfg: [[1.0, 0.0], [1.0, 0.0]])
+    monkeypatch.setattr(tier3.nli, "entail_prob", lambda a, b: 0.0)
+    asked = []
+    monkeypatch.setattr(tier3.live_gate, "night_is_over", lambda: asked.append(1) or False)
 
     r = tier3.revise(graph)
+    assert asked, "суд не дошёл до цикла пар — тест держал бы инициализацию"
     assert r["ran"] is True and r["stopped"] is False
 
 

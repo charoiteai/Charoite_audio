@@ -56,6 +56,11 @@ def test_daemon_measures_and_sheds_before_positional_split():
     # Ветка разгрузки: план целиком из чистой функции, метка — константа, а
     # не литерал -1 (n=0 — валидный индекс голоса; ревью 21.08, DeepSeek).
     assert "stt_runtime.diarization_plan(" in loop[policy:split]
+    # проводка аргументов без инверсии: `lagging=not lagging` прошёл бы
+    # все строковые ассерты и чистые тесты (ревью 22.08, Codex)
+    plan_call = loop[loop.index("stt_runtime.diarization_plan("):]
+    plan_call = plan_call[:plan_call.index(")")]
+    assert "lagging=lagging," in plan_call and "has_split=stt_runtime.has_split_tracker(spk_tracker)" in plan_call
     assert 'if plan == "shed":' in loop[policy:split]
     assert "jobs = [(chunk, stt_runtime.CHANNEL_LABEL_ONLY, None)]" in loop[policy:split]
     assert 'elif plan == "diarize":' in loop[policy:split]
