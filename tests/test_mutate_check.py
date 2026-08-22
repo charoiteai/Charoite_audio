@@ -279,3 +279,36 @@ def test_тождества_с_плавающей_точкой_тоже_шум(t
     пропускала их мимо фильтра (ревью 20.08, круг 4: обе головы независимо)."""
     muts = _mutate(tmp_path, "def f(x):\n    return x + 0.0\n", {2})
     assert not any(m.what.startswith("Add") for m in muts), [m.what for m in muts]
+
+
+def test_устаревший_байткод_не_судит_мутанта_по_чужому_коду(tmp_path):
+    """Python сверяет .pyc с исходником по mtime в секундах и размеру. Два
+    мутанта одной длины, записанные в одну секунду, для него один файл:
+    второй исполнялся байткодом первого и получал ЕГО вердикт. Так 21.08
+    «выжил» мутант 6.0→0 в stt_runtime, под который тест написан и который
+    руками падает (DeepSeek независимо: «отчёт пережил этот тест»)."""
+    import os
+
+    src = tmp_path / "src"
+    tests = tmp_path / "tests"
+    src.mkdir()
+    tests.mkdir()
+    (tests / "test_mod.py").write_text(
+        "import pathlib, sys\n"
+        "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'src'))\n"
+        "import mod\n"
+        "def test_value():\n"
+        "    assert mod.value() == 1\n", encoding="utf-8")
+    mod = src / "mod.py"
+    mod.write_text("def value():\n    return 1\n", encoding="utf-8")
+    assert mc.run_tests(tmp_path, ["tests/test_mod.py"], timeout=60) is True
+    stamp = int(mod.stat().st_mtime) + 5
+    # Первый мутант зелёный (`+1` — та же единица), второй — красный (`-1`);
+    # длина файла одинаковая, mtime подгоняем в одну секунду.
+    mod.write_text("def value():\n    return +1\n", encoding="utf-8")
+    os.utime(mod, (stamp, stamp))
+    assert mc.run_tests(tmp_path, ["tests/test_mod.py"], timeout=60) is True
+    mod.write_text("def value():\n    return -1\n", encoding="utf-8")
+    os.utime(mod, (stamp, stamp))
+    assert mc.run_tests(tmp_path, ["tests/test_mod.py"], timeout=60) is False
+    assert not list(src.glob("__pycache__/*")), "мутатор оставил байткод в дереве"
