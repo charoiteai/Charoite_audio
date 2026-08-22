@@ -614,7 +614,7 @@ struct SuflerView: View {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         if sufler.lines.isEmpty {
                             SuflerEmptyState(symbol: sufler.isRunning ? "waveform" : "waveform.circle",
-                                             text: sufler.isRunning ? L.t("Слушаю…", "Listening…", "聆听中…") : L.t("Нажми «Слушать встречу»", "Press “Listen to meeting”", "点按「聆听会议」"))
+                                             running: sufler.isRunning)
                         }
                         // Ритм чтения: реплики одного спикера идут плотно, смена
                         // спикера даёт воздух — глаз находит границы разговора

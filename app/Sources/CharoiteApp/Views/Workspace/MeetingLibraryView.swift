@@ -354,15 +354,17 @@ struct MeetingLibraryView: View {
     }
 
     private var emptyList: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "rectangle.stack").font(.largeTitle).foregroundStyle(.quaternary)
-            Text(L.t("После первой записи здесь появится история встреч.",
-                     "Your meeting history appears here after the first recording.",
-                     "首次录音后，会议历史会显示在这里。"))
-                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        EmptyState(title: L.t("Встреч пока нет", "No meetings yet", "还没有会议"),
+                   text: L.t("После первой записи здесь появится история: резюме, минутки, поручения и стенограмма каждой встречи.",
+                             "After the first recording the history appears here: summary, minutes, action items and the transcript of every meeting.",
+                             "首次录音后，这里会出现历史：每次会议的摘要、纪要、任务与逐字稿。"),
+                   systemImage: "rectangle.stack") {
+            Button(L.t("Записать первую встречу", "Record the first meeting", "录制第一场会议")) {
+                navigation.open(.meeting)
+            }
+            .charoite(.regular, .s)
         }
-        .padding()
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder

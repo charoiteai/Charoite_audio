@@ -17,17 +17,23 @@ struct LocalChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         if chat.messages.isEmpty {
-                            VStack(spacing: 10) {
-                                Image(systemName: "brain.head.profile")
-                                    .font(.largeTitle)
-                                    .foregroundStyle(.quaternary)
-                                Text(L.t("Локальная модель на этой машине. Спроси про проекты, встречи, код —\nс включённой памятью ответ обогащается фактами Чароита.", "A local model on this machine. Ask about projects, meetings, code —\nwith memory on, answers are enriched with Charoite's facts.", "运行在本机的本地模型。询问项目、会议、代码——\n开启记忆后，回答会引入 Charoite 的事实。"))
-                                    .font(.subheadline)
-                                    .foregroundStyle(.tertiary)
-                                    .multilineTextAlignment(.center)
+                            // Три вопроса-подсказки сразу показывают жанр: чем
+                            // это отличается от разового вопроса по архиву.
+                            EmptyState(title: L.t("Память Чароита", "Charoite memory", "Charoite 记忆"),
+                                       text: L.t("Локальная модель на этой машине. С включённой памятью ответ опирается на встречи, граф и досье.",
+                                                 "A local model on this Mac. With memory on, answers lean on meetings, the graph and dossiers.",
+                                                 "运行在本机的本地模型。开启记忆后，回答会依据会议、图谱与档案。"),
+                                       systemImage: "brain.head.profile") {
+                                HStack(spacing: 8) {
+                                    ForEach(Self.starterQuestions, id: \.self) { q in
+                                        Button(q) {
+                                            draft = q
+                                            inputFocused = true
+                                        }
+                                        .charoite(.regular, .s)
+                                    }
+                                }
                             }
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 40)
                         }
                         ForEach(chat.messages) { m in
                             bubble(m)
@@ -160,6 +166,13 @@ struct LocalChatView: View {
         }
         .padding(12)
         .onAppear { inputFocused = true }
+    }
+
+    /// Вопросы, которые показывают жанр экрана (ревизия 08.08, экран 5).
+    static var starterQuestions: [String] {
+        [L.t("Что просрочено?", "What is overdue?", "哪些已逾期？"),
+         L.t("Бриф на утро", "Morning brief", "晨间简报"),
+         L.t("О чём молчим третью встречу?", "What have we dodged for three meetings?", "连续三次会议都在回避什么？")]
     }
 
     private func submit() {

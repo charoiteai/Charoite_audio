@@ -73,6 +73,51 @@ struct CloudSurface<Content: View>: View {
     }
 }
 
+// MARK: - Пустое состояние
+
+/// Пустое состояние говорит, что появится и что нажать.
+///
+/// Правило 2 ревизии 08.08. До него на пяти экранах жили пять самодельных
+/// «иконка `.quaternary` + строка по центру» — ни одно не называло
+/// действие. Заголовок, объяснение и одно действие, прижатые к верху и
+/// левому краю: пустота читается как начало, а не как поломка.
+/// Иконка остаётся маленькой и рядом с заголовком — не плакат.
+struct EmptyState<Action: View>: View {
+    let title: String
+    let text: String
+    var systemImage: String?
+    /// Внутри секции с собственным заголовком внешний отступ лишний.
+    var inset: Bool = true
+    @ViewBuilder var action: () -> Action
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.headline)
+                        .foregroundStyle(Theme.accent)
+                }
+                Text(title).font(.headline)
+            }
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            action()
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(.horizontal, inset ? 16 : 0)
+        .padding(.top, inset ? 16 : 0)
+    }
+}
+
+extension EmptyState where Action == EmptyView {
+    init(_ title: String, text: String, systemImage: String? = nil, inset: Bool = true) {
+        self.init(title: title, text: text, systemImage: systemImage, inset: inset) { EmptyView() }
+    }
+}
+
 // MARK: - Заголовок панели
 
 /// Иконка, капсовое имя, счётчик и место под одно действие.
