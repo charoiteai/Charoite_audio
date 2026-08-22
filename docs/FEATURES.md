@@ -168,9 +168,17 @@ local model builds dossiers in bulk and cheaply, but misses the links: that a
 decision has been superseded, that a deadline expired, that two sources
 contradict each other. Opus sees those, and runs as a second pass. With
 `sufler.cloud_edit_graph: true` it edits directly; **off by default**, in which
-case it writes `Service_dossier_review_<date>.md` and a human applies the
-fixes. Transcripts, minutes and `## Author edits` are untouched in either mode;
-every edit is backed up to `Dossiers/.backup/<date>/` first.
+case it writes `Service_dossier_review_<date_time>.md` and a human applies the
+fixes. The report is written in both modes: with editing on it lists what was
+applied (+/− lines, number of ⚠️ marks, links before/after, path of the backup
+copy) and what was rejected, with the reason. Before anything is written the
+cloud's answer passes a real check, not a "looks like a dossier" one: exactly
+five sections in the given order, exit code 0, no shorter than 60% of the
+previous body and not a single lost `[[link]]` to a source — a missing link
+means a dropped fact. Transcripts, minutes and `## Author edits` are untouched
+in either mode; every edit is backed up to `Dossiers/.backup/<date_time>/`
+first (time in the name: a second run on the same day does not overwrite the
+copy taken before the first).
 
 **Protocol for participants** (`scripts/protocol.py`) — what you actually
 send people after a meeting: the bottom line, decisions, action items, open

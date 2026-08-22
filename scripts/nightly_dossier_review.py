@@ -47,6 +47,11 @@ MAX_SRC_CHARS = 45_000  # потолок на один запрос к Opus
 BACKUP_KEEP = 20
 KEEP_REPORTS = 14       # служебных отчётов в корне графа
 DEFAULT_LIMIT = 6       # досье за прогон: облако не бесплатное по времени
+SECTIONS = ("## Сейчас", "## Как пришли", "## Решено", "## Открыто", "## Кто в теме")
+# Ревизия короче 60% прежнего тела — не правка, а потеря: модель ответила
+# обрывком, «подытожила» или выбросила разделы. Вверх не ограничиваем —
+# настоящая ревизия растёт (замер 22.08: 4,2 → 11,4 КБ, 25 пометок ⚠️).
+MIN_KEEP = 0.6
 
 
 PROTECTED_HEADINGS = ("## Правки автора", "## Источники")
@@ -62,6 +67,40 @@ def strip_protected(body: str) -> str:
     внутри абзаца — не раздел (ревью 17.08).
     """
     return _PROTECTED_RE.split(body, maxsplit=1)[0].rstrip()
+
+
+def check_revision(old_body: str, new_body: str) -> str | None:
+    """Почему переписанное досье нельзя класть на место старого — или None.
+
+    До этого на запись пускал `looks_valid`: «## Сейчас» где-то есть и четыре
+    заголовка из пяти, — то есть проходили ответ без «## Кто в теме», ответ с
+    лишним разделом и ответ, растерявший половину ссылок. Источники досье —
+    это [[ссылки]] в конце пунктов; пропавшая ссылка означает выброшенный
+    факт, а промпт просит ничего не выбрасывать без причины (карточка №87).
+    """
+    heads = re.findall(r"(?m)^##\s+.*$", new_body)
+    want = [h.strip() for h in SECTIONS]
+    got = [re.sub(r"\s+", " ", h.strip()) for h in heads]
+    if got != want:
+        return f"разделы не по формату: {', '.join(got) or 'нет заголовков'}"
+    if len(new_body) < MIN_KEEP * len(old_body):
+        return f"ответ короче {int(MIN_KEEP * 100)}% прежнего ({len(new_body)} из {len(old_body)} зн.)"
+    lost = sorted(set(dossier.LINK_RE.findall(old_body)) - set(dossier.LINK_RE.findall(new_body)))
+    if lost:
+        shown = ", ".join(f"[[{x}]]" for x in lost[:5]) + (" …" if len(lost) > 5 else "")
+        return f"потеряны ссылки на источники ({len(lost)}): {shown}"
+    return None
+
+
+def revision_stats(old_body: str, new_body: str) -> str:
+    """Одна строка про то, что изменилось: для утреннего отчёта владельцу."""
+    before = [ln.strip() for ln in old_body.splitlines() if ln.strip()]
+    after = [ln.strip() for ln in new_body.splitlines() if ln.strip()]
+    removed = sum(1 for ln in before if ln not in set(after))
+    added = sum(1 for ln in after if ln not in set(before))
+    return (f"+{added}/−{removed} строк, ⚠️ {new_body.count('⚠️')}, "
+            f"ссылок {len(set(dossier.LINK_RE.findall(old_body)))}→"
+            f"{len(set(dossier.LINK_RE.findall(new_body)))}")
 
 
 def _cfg() -> dict:
@@ -118,12 +157,14 @@ PROMPT = """Ниже досье по теме «{theme}» и его источн
 
 
 def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
-           files: dict, members: list[str], model: str, cfg: dict) -> str | None:
+           files: dict, members: list[str], model: str, cfg: dict,
+           ) -> tuple[str | None, str]:
+    """(исправленное тело, '') — или (None, почему отклонено)."""
     # Сетевой выход держит собственную границу. main уже проверяет её ради
     # дешёвого раннего выхода всего прогона, но review можно вызвать отдельно
     # из теста, будущего воркера или после рефакторинга call graph.
     if not privacy.cloud_enrich_enabled(cfg):
-        return None
+        return None, "облако выключено"
     current = path.read_text(encoding="utf-8")
     # раздел «Правки автора» в запрос не отдаём и не даём его переписать
     body = current.split("## Правки автора")[0]
@@ -154,8 +195,15 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
                            capture_output=True, text=True, timeout=600, env=env,
                            stdin=subprocess.DEVNULL)
     except Exception as e:  # noqa: BLE001
-        print(f"  ⚠️ {theme}: claude не отработал ({e})")
-        return None
+        why = f"claude не отработал ({e})"
+        print(f"  ⚠️ {theme}: {why}")
+        return None, why
+    if r.returncode != 0:
+        # Код ≠ 0 с текстом в stdout — сообщение CLI об ошибке или обрывок,
+        # а не ревизия; раньше он шёл в парсер наравне с ответом.
+        why = f"claude вернул код {r.returncode}: {(r.stderr or r.stdout or '').strip()[:160]}"
+        print(f"  ⚠️ {theme}: {why}")
+        return None, why
     out = dossier.trim_to_format((r.stdout or "").strip())
     # Модель видит тело досье без «## Правки автора», но защищённые
     # заголовки в её ответе не место: строка из стенограммы могла попросить
@@ -163,10 +211,11 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
     # а настоящий раздел уезжал вниз (аудит DeepSeek 17.08). Режем по первому
     # защищённому заголовку: формат — ровно пять секций.
     out = strip_protected(out)
-    if not dossier.looks_valid(out):
-        print(f"  ⚠️ {theme}: ответ не по формату, пропуск")
-        return None
-    return out
+    why = check_revision(strip_protected(dossier.trim_to_format(body)), out)
+    if why:
+        print(f"  ⚠️ {theme}: отклонено — {why}")
+        return None, why
+    return out, ""
 
 
 def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
@@ -192,8 +241,10 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
         print("  свежих автособранных досье нет — пропуск")
         return 0
 
-    stamp = dt.date.today().isoformat()
-    done, notes = 0, []
+    # Штамп с временем: два прогона за день (ручной поверх ночного) иначе
+    # клали бэкап в один каталог, и копия до первого прогона терялась.
+    stamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M")
+    done, notes, applied = 0, [], []
 
     for path in fresh[:limit]:
         theme = path.stem
@@ -212,8 +263,9 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
         if live_gate.night_is_over():
             print("  ⏹ время ночного прогона вышло — остальные досье завтра")
             break
-        fixed = review(theme, path, graph, files, members, model, cfg)
+        fixed, why = review(theme, path, graph, files, members, model, cfg)
         if not fixed:
+            applied.append(f"- **{theme}** — отклонено: {why}")
             continue
 
         if not may_edit:
@@ -234,16 +286,22 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
         tmp.write_text(text, encoding="utf-8")
         tmp.replace(path)
         done += 1
-        print(f"  ✓ {theme}: правки применены ({len(fixed)} зн.)")
+        stats = revision_stats(strip_protected(dossier.trim_to_format(old)), fixed)
+        applied.append(f"- **{theme}** — применено: {stats}; копия до правки — "
+                       f"`{dossier.DOSSIER_DIR}/.backup/{stamp}/`")
+        print(f"  ✓ {theme}: правки применены ({stats})")
 
-    if notes and not dry:
+    if (notes or applied) and not dry:
+        # Отчёт пишется в ОБОИХ режимах: с включённой правкой владелец раньше
+        # узнавал о переписанном досье только из строки в логе (карточка №87).
         dest = graph / f"Служебное_ревизия_досье_{stamp}.md"
-        dest.write_text(
-            f"---\ntype: служебное\nдата: {stamp}\nмодель: {model}\n---\n"
-            f"# Ревизия досье ({model})\n\n"
-            "Правки предложены, но не применены: `sufler.cloud_edit_graph: false`.\n"
-            "Включите тумблер, если хотите, чтобы облако правило граф само.\n\n"
-            + "\n".join(notes), encoding="utf-8")
+        head = (f"---\ntype: служебное\nдата: {stamp}\nмодель: {model}\n---\n"
+                f"# Ревизия досье ({model})\n\n")
+        if notes:
+            head += ("Правки предложены, но не применены: `sufler.cloud_edit_graph: false`.\n"
+                     "Включите тумблер, если хотите, чтобы облако правило граф само.\n\n")
+        dest.write_text(head + "\n".join(applied) + ("\n\n" if applied and notes else "")
+                        + "\n".join(notes), encoding="utf-8")
         print(f"  отчёт: {dest.name}")
         # ретеншн ПОСЛЕ записи: отчёты копились бесконечно (аудит GLM 17.08)
         for old in sorted(graph.glob("Служебное_ревизия_досье_*.md"))[:-KEEP_REPORTS]:
