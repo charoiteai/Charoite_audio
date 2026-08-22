@@ -122,15 +122,15 @@ struct TasksView: View {
     @ViewBuilder
     private var content: some View {
         if visible.isEmpty {
-            VStack(spacing: 10) {
-                Image(systemName: emptyIcon).font(.largeTitle).foregroundStyle(.quaternary)
-                Text(emptyText)
-                    .font(.subheadline).foregroundStyle(.tertiary)
-                    .multilineTextAlignment(.center)
+            EmptyState(title: emptyTitle, text: emptyText, systemImage: emptyIcon) {
                 if navigation.selectedTaskMeetingID != nil {
                     Button(L.t("Показать все задачи", "Show all tasks", "显示全部任务")) {
                         navigation.selectedTaskMeetingID = nil
                     }
+                    .charoite(.regular, .s)
+                } else if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button(L.t("Сбросить поиск", "Clear search", "清除搜索")) { query = "" }
+                        .charoite(.regular, .s)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -315,18 +315,30 @@ struct TasksView: View {
             ? "checkmark.circle" : "magnifyingglass"
     }
 
-    private var emptyText: String {
+    private var emptyTitle: String {
         if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return L.t("По этому запросу поручений нет.",
-                       "No action items match this search.",
-                       "没有符合搜索条件的任务。")
+            return L.t("Ничего не нашлось", "Nothing found", "未找到")
         }
         if scopedOpenCount == 0 && !scoped.isEmpty {
             return L.t("Всё сделано", "All done", "全部完成")
         }
-        return L.t("Поручения из минуток появятся здесь.\nMarkdown остаётся источником истины.",
-                   "Action items from minutes appear here.\nMarkdown remains the source of truth.",
-                   "纪要中的任务会显示在这里。\nMarkdown 仍是真实来源。")
+        return L.t("Поручений пока нет", "No action items yet", "还没有任务")
+    }
+
+    private var emptyText: String {
+        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return L.t("По этому запросу поручений нет — попробуйте другое слово или сбросьте поиск.",
+                       "No action items match this search — try another word or clear the search.",
+                       "没有符合搜索条件的任务——换个词或清除搜索。")
+        }
+        if scopedOpenCount == 0 && !scoped.isEmpty {
+            return L.t("Открытых поручений не осталось; сделанные — по тумблеру «Сделанные».",
+                       "No open action items left; finished ones are behind the “Done” toggle.",
+                       "没有未完成任务；已完成的在「已完成」开关后。")
+        }
+        return L.t("Поручения из минуток появятся здесь после первой встречи. Markdown остаётся источником истины: галочка здесь — галочка в файле.",
+                   "Action items from minutes appear here after the first meeting. Markdown remains the source of truth: a tick here is a tick in the file.",
+                   "首次会议后，纪要中的任务会显示在这里。Markdown 仍是真实来源：这里打勾即文件中打勾。")
     }
 
     private func copyVisibleOpen() {
