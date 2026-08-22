@@ -5,6 +5,18 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.1](https://github.com/charoiteai/Charoite_audio/compare/v0.58.0...v0.58.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* **cloud:** гейты режима правки графа — удаление, переписывание, скрытые пути, откат, замок, карантин ([#381](https://github.com/charoiteai/Charoite_audio/issues/381)) ([9b8220c](https://github.com/charoiteai/Charoite_audio/commit/9b8220c8bcf9d99d64298e7581b4be72206ce1c2))
+* **cloud:** прокси для headless claude — одна точка, запас-не-перекрытие, и у разбора встречи тоже ([#379](https://github.com/charoiteai/Charoite_audio/issues/379)) ([85910ca](https://github.com/charoiteai/Charoite_audio/commit/85910ca62445ec2f0a18670e5cdc1773f1bbf8e5))
+* **nightly:** ревизия досье — проверка ответа до записи, код возврата, отчёт в обоих режимах, бэкап с временем ([#382](https://github.com/charoiteai/Charoite_audio/issues/382)) ([37393a9](https://github.com/charoiteai/Charoite_audio/commit/37393a9cec8b3408fd97497aa72c2137eb0d6ed8))
+* **nightly:** ревизия ядер — свежесть и курсор вместо алфавита, бюджет по целым ядрам ([#380](https://github.com/charoiteai/Charoite_audio/issues/380)) ([9388ab0](https://github.com/charoiteai/Charoite_audio/commit/9388ab077f02d8fecb689ed346c4e83ee54d1f94))
+* **privacy:** хвосты аудита 16.08 — симлинки импорта, покой WAV по размеру, потолок логов, чат 0600 ([#377](https://github.com/charoiteai/Charoite_audio/issues/377)) ([8b26643](https://github.com/charoiteai/Charoite_audio/commit/8b266436daff05466960222b1a1981fd2f73652f))
+* **release:** гейт подписи — неподписанный выпуск не бывает latest ([#375](https://github.com/charoiteai/Charoite_audio/issues/375)) ([6605195](https://github.com/charoiteai/Charoite_audio/commit/6605195d14cc6b1556e6dd72cbb724dd00c9fc27))
+
 ## [0.58.0](https://github.com/charoiteai/Charoite_audio/compare/v0.57.0...v0.58.0) (2026-08-22)
 
 
