@@ -156,8 +156,7 @@ def test_enforce_without_snapshot_refuses_to_judge(tmp_path, monkeypatch):
     created = protected / "подделка.md"
     created.write_text("создано облаком в защищённой папке", encoding="utf-8")
 
-    reverted, removed, touched = cloud_review.enforce_boundaries(
-        before, g, tmp_path / "нет-такого-снимка")
+    v = cloud_review.enforce_boundaries(before, g, tmp_path / "нет-такого-снимка")
 
-    assert (reverted, removed, touched) == ([], [], -1)
+    assert (v.reverted, v.removed, v.touched) == ([], [], -1)
     assert created.exists(), "без снимка сверка удалила файл — ровно старый Critical"
