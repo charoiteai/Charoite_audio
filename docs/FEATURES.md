@@ -225,7 +225,13 @@ late one rewrites it on top of tidied cores and fresh dossiers.
 The nightly revision merges cores
 only when `sufler.tier3_auto_apply: true`; without the key it stops at
 reversible marks — the right to irreversible edits lives in the config,
-not in the schedule. The morning brief
+not in the schedule. The cloud review of the cores (`nightly_claude_cores.py`) no longer takes
+"the first ones alphabetically": cores changed since the last run go first,
+then the rest by how long ago they were shown, the longest-waiting first
+(one slot is always theirs) — whole, never cut mid-file; what went to the
+cloud is remembered in `logs/nightly_cores_seen.json`, and the night's log
+states the real coverage ("cores 35 of 161"). Until 22.08, with hundreds of
+fresh cores, the review saw ~4% of the corpus, the same ~4% every night. The morning brief
 (`scripts/morning_brief.py`) writes `_Сегодня.md` into each graph — the
 latest meetings with one-line gists, Decided/Tasks/Open from summaries,
 live Cores and merge notes; assembled from ready-made graph lines, no LLM —
