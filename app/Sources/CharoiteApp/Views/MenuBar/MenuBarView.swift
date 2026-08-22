@@ -26,16 +26,16 @@ struct MenuBarView: View {
         if processing.isError {
             return (L.t("Ошибка — исходник сохранён",
                         "Failed — source kept",
-                        "处理失败——原始文件已保留"), .orange)
+                        "处理失败——原始文件已保留"), Theme.warning)
         }
         if processing.isProcessing {
             return (L.t("Обрабатываю встречу…", "Processing…", "正在处理…"), .accentColor)
         }
         if processing.actionTitle != nil {
-            return (L.t("Встреча готова", "Meeting ready", "会议已就绪"), .green)
+            return (L.t("Встреча готова", "Meeting ready", "会议已就绪"), Theme.ok)
         }
-        if !stackNote.isEmpty { return (stackNote, .orange) }
-        return (L.t("Готов к записи", "Ready to record", "可以录音"), .green)
+        if !stackNote.isEmpty { return (stackNote, Theme.warning) }
+        return (L.t("Готов к записи", "Ready to record", "可以录音"), Theme.ok)
     }
 
     var body: some View {

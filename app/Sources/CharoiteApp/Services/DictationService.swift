@@ -293,7 +293,7 @@ struct DictationButton: View {
             }
         } label: {
             Image(systemName: dictation.isRecording ? "mic.fill" : "mic")
-                .font(.system(size: 14))
+                .font(.body)
                 .foregroundStyle(dictation.isRecording ? Color.red : Color.secondary)
         }
         .buttonStyle(.plain)

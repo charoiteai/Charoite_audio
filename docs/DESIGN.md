@@ -17,10 +17,30 @@ human-readable description and the agreements behind it — code wins.
 | `brand` | accent→violet gradient | "live" action: recording, first run |
 | `sky` | `#0EA5E9` | the Claude cloud pane — distinct from local |
 | `ok` | `#059669` | success, green statuses |
+| `warning` | system orange | attention without breakage; `overdue` is its special case |
+| `surfaceMemory` / `borderMemory` | accent at 5 % / 14 % | lavender: anything that came from the archive, graph or dossiers |
+| `surfaceCloud` / `borderCloud` | sky at 6 % / 22 % | everything that leaves the machine: the Claude pane, cloud toggles |
 
 Semantic colors (recording/error red) are system colors, not brand ones.
 Backgrounds and text use the platform's system materials (`.bar`,
 `.background`, `secondary`): dark mode comes for free and stays honest.
+
+Colors and sizes are never set "in place": views take `Theme.warning`
+rather than `.orange`, `Theme.ok` rather than `.green`, and text styles
+(`.caption`, `.callout`, `.headline`, `.title2`) rather than
+`.system(size:)`. `tests/test_design_discipline.py` fails the run on the
+first exception — the August 2026 audit found 21 in-place colors and 13
+hard-coded sizes, and a system that lives on paper only drifts.
+
+### Surface means origin
+
+White system surface — now and local. Lavender (`MemorySurface`) —
+memory: the archive answer pane on the meeting screen, the model's
+replies in Memory. Sky (`CloudSurface`) — everything that leaves the Mac:
+the Claude card, the cloud dossier toggle in Settings. The rule "local is
+quiet, cloud is visible" becomes visible rather than declared; color is
+never the only signal — every cloud surface also says it in words
+("leaves this Mac").
 
 ## Typography
 

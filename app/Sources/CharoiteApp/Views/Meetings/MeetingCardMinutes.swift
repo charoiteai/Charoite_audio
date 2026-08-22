@@ -22,7 +22,7 @@ extension MeetingCardView {
                     Text(L.t("черновик: встреча ещё шла",
                              "draft: the meeting was still running",
                              "草稿：会议仍在进行"))
-                        .font(.caption).foregroundStyle(.orange)
+                        .font(.caption).foregroundStyle(Theme.warning)
                 }
                 Spacer()
             }

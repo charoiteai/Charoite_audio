@@ -318,9 +318,19 @@ enum AppSettings {
     /// `CHAROITE_NO_CLOUD` — тем же, что запрещает облачные шаги: кто выключил
     /// облако целиком, не ждёт от приложения похода в сеть за версией.
     static var checkUpdates: Bool {
-        let env = ProcessInfo.processInfo.environment
-        if env["CHAROITE_NO_CLOUD"] != nil || env["SUFLER_NO_CLOUD"] != nil { return false }
+        if cloudForbiddenByEnvironment { return false }
         return configValue("check_updates")?.lowercased() != "false"
+    }
+
+    /// Общий рубильник облака из окружения: экран настроек показывает его
+    /// состояние рядом с тумблером проверки версии, а не притворяется, что
+    /// тумблер что-то решает, когда решение уже принято снаружи.
+    static var cloudForbiddenByEnvironment: Bool {
+        // Непустое значение, как у демона (src/privacy.py): `CHAROITE_NO_CLOUD=`
+        // там облако не запрещает, и приложение не должно спорить с ним.
+        let env = ProcessInfo.processInfo.environment
+        return ["CHAROITE_NO_CLOUD", "SUFLER_NO_CLOUD"]
+            .contains { !(env[$0] ?? "").isEmpty }
     }
 
     static func configValue(_ key: String) -> String? {

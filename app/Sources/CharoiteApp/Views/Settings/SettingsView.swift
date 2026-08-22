@@ -16,6 +16,12 @@ struct SettingsView: View {
     /// Здесь только отражение, начальное значение берётся из файла в onAppear.
     @State private var cloudEditGraph = false
     @State private var cloudEditNote = ""
+    /// Тоже из config.yaml (`sufler.check_updates`): единственный поход
+    /// приложения в интернет — раз в сутки спросить GitHub номер выпуска.
+    /// До этого тумблера о нём знал только config.yaml, а экран обещал
+    /// «ничего не покидает этот Mac» (дизайн-аудит 21.08, честность).
+    @State private var checkUpdates = true
+    @State private var checkUpdatesNote = ""
     @ObservedObject private var importer = ImportService.shared
     @ObservedObject private var launchAtLogin = LaunchAtLoginService.shared
     @State private var check = ""
@@ -23,6 +29,24 @@ struct SettingsView: View {
     // свойство, и полный обход графа (в iCloud — с докачкой выгруженных
     // файлов) выполнялся на КАЖДЫЙ символ, набранный в поле пути.
     @State private var graphStats = ""
+
+    /// Тумблер, чьё состояние живёт в config.yaml: меняется только после
+    /// удачной записи, иначе — заметка и прежнее положение.
+    private func configBinding(_ state: Binding<Bool>, key: String,
+                               note: Binding<String>) -> Binding<Bool> {
+        Binding(
+            get: { state.wrappedValue },
+            set: { on in
+                if AppSettings.setConfigFlag(key, on) {
+                    state.wrappedValue = on
+                    note.wrappedValue = ""
+                } else {
+                    note.wrappedValue = L.t("не нашёл ключ \(key) в config.yaml",
+                                            "\(key) key not found in config.yaml",
+                                            "在 config.yaml 中未找到 \(key) 键")
+                }
+            })
+    }
 
     /// В выбранной папке лежит код демона — тогда и только тогда есть что решать.
     private var localCodeAtRoot: Bool {
@@ -80,7 +104,7 @@ struct SettingsView: View {
                         }
                     } icon: {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(Theme.warning)
                     }
                 }
                 LabeledContent(L.t("Граф встреч", "Meeting graph", "会议图谱")) {
@@ -125,28 +149,28 @@ struct SettingsView: View {
                          "在 04:15 安装 launchd 任务：图谱核心的 Tier-3 复审（含备份）、主题档案、_Today.md 简报与记忆质量基准。全部本地运行；日志见 /tmp/charoite_nightly.log。"))
                     .font(.caption).foregroundStyle(.secondary)
 
-                Toggle(L.t("Разрешить облаку править досье",
-                           "Let the cloud edit dossiers",
-                           "允许云端修改档案"), isOn: $cloudEditGraph)
-                    .onChange(of: cloudEditGraph) { _, on in
-                        // Пишем в config.yaml, а не в UserDefaults: разрешение
-                        // спрашивает ночной скрипт, и знать он должен одно место.
-                        if !AppSettings.setConfigFlag("cloud_edit_graph", on) {
-                            cloudEditNote = L.t("не нашёл ключ в config.yaml",
-                                                "key not found in config.yaml",
-                                                "在 config.yaml 中未找到该键")
-                            cloudEditGraph = !on
-                        } else {
-                            cloudEditNote = ""
-                        }
+                // Облачная поверхность (правило ревизии: поверхность обозначает
+                // происхождение) — единственный тумблер экрана, который меняет
+                // обещание приватности, не должен выглядеть как остальные.
+                CloudSurface {
+                    // Binding, а не onChange с откатом: откат сам менял состояние
+                    // и снова звал обработчик — при отсутствии ключа в файле
+                    // запись падала по кругу, окно зависало (ревью 22.08,
+                    // DeepSeek и локальная голова независимо). Setter зовёт
+                    // только человек; состояние меняется после удачной записи.
+                    Toggle(L.t("Разрешить облаку править досье",
+                               "Let the cloud edit dossiers",
+                               "允许云端修改档案"),
+                           isOn: configBinding($cloudEditGraph, key: "cloud_edit_graph",
+                                               note: $cloudEditNote))
+                    if !cloudEditNote.isEmpty {
+                        Text(cloudEditNote).font(.caption).foregroundStyle(Theme.warning)
                     }
-                if !cloudEditNote.isEmpty {
-                    Text(cloudEditNote).font(.caption).foregroundStyle(.orange)
+                    Text(L.t("Ночью локальная модель собирает досье по темам. С этой галочкой облачная модель проходит вторым и правит их сама: замечает отменённые решения, истёкшие сроки, расхождения между источниками. Без галочки — только пишет отчёт, а правите вы. Стенограммы, минутки и раздел «Правки автора» не трогаются никогда; перед каждой правкой — бэкап. Уходит с машины: текст досье.",
+                             "At night a local model builds topic dossiers. With this on, a cloud model makes a second pass and edits them itself: it spots superseded decisions, expired deadlines, contradictions between sources. Off — it only writes a report and you apply the fixes. Transcripts, minutes and the “Author edits” section are never touched; every edit is backed up first. Leaves the machine: the dossier text.",
+                             "夜间由本地模型生成主题档案。开启后，云端模型会进行第二遍并自行修改：发现被推翻的决定、已过期的期限、来源之间的矛盾。关闭时只写报告，由你来修改。会议记录、纪要和“作者修改”小节永不触碰；每次修改前先备份。离开本机的内容：档案文本。"))
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                Text(L.t("Ночью локальная модель собирает досье по темам. С этой галочкой облачная модель проходит вторым и правит их сама: замечает отменённые решения, истёкшие сроки, расхождения между источниками. Без галочки — только пишет отчёт, а правите вы. Стенограммы, минутки и раздел «Правки автора» не трогаются никогда; перед каждой правкой — бэкап.",
-                         "At night a local model builds topic dossiers. With this on, a cloud model makes a second pass and edits them itself: it spots superseded decisions, expired deadlines, contradictions between sources. Off — it only writes a report and you apply the fixes. Transcripts, minutes and the “Author edits” section are never touched; every edit is backed up first.",
-                         "夜间由本地模型生成主题档案。开启后，云端模型会进行第二遍并自行修改：发现被推翻的决定、已过期的期限、来源之间的矛盾。关闭时只写报告，由你来修改。会议记录、纪要和“作者修改”小节永不触碰；每次修改前先备份。"))
-                    .font(.caption).foregroundStyle(.secondary)
             }
             Section(L.t("Импорт записей", "Recording import", "录音导入")) {
                 TextField(L.t("Папка импорта", "Import folder", "导入文件夹"),
@@ -191,7 +215,7 @@ struct SettingsView: View {
                 if !launchAtLogin.note.isEmpty {
                     Text(launchAtLogin.note)
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Theme.warning)
                 }
                 Toggle(L.t("Бриф и напоминание о записи", "Brief and a nudge to record", "简报与录制提醒"), isOn: $calendarBriefs)
                     .onChange(of: calendarBriefs) { _, on in
@@ -204,12 +228,36 @@ struct SettingsView: View {
                          "仅读取日程的标题与时间——用于「简报」按钮、系统通知和窗口内提示条。录制不会自动开始：我们询问并等待你的选择，选择「暂不」后不再就该会议询问。本地运行，不做任何写入。"))
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section {
-                Text(L.t("Всё работает локально: аудио, распознавание, модели, граф. Ничего не покидает этот Mac.",
-                         "Everything runs locally: audio, recognition, models, graph. Nothing leaves this Mac.",
-                         "一切都在本地运行：音频、识别、模型、图谱。没有任何内容离开这台 Mac。"))
+            Section(L.t("Что уходит с машины", "What leaves this Mac", "离开本机的内容")) {
+                // Честная сводка вместо прежнего «ничего не покидает этот Mac»:
+                // на этом же экране живёт облачный тумблер, на встрече — слой
+                // Claude, а раз в сутки приложение спрашивает GitHub о версии.
+                // Человек решает, записывать ли совещания, именно по этим
+                // словам (дизайн-аудит 21.08).
+                Text(L.t("По умолчанию всё локально: аудио, распознавание, модели, граф. В облако уходит только то, что вы включите сами: слой Claude на встрече (кусок стенограммы) и правка досье облаком выше.",
+                         "By default everything is local: audio, recognition, models, graph. Only what you turn on yourself goes to the cloud: the Claude layer during a meeting (a slice of the transcript) and cloud dossier edits above.",
+                         "默认一切在本地：音频、识别、模型、图谱。只有你自己开启的内容才会上云：会议中的 Claude 层（一段逐字稿）以及上面的云端档案修改。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                // Тот же договор, что у облачного тумблера: источник правды —
+                // config.yaml, его же читает VersionStatusService.
+                Toggle(L.t("Раз в сутки спрашивать GitHub о новой версии",
+                           "Ask GitHub about a new version once a day",
+                           "每天向 GitHub 查询一次新版本"),
+                       isOn: configBinding($checkUpdates, key: "check_updates",
+                                           note: $checkUpdatesNote))
+                    .disabled(AppSettings.cloudForbiddenByEnvironment)
+                if !checkUpdatesNote.isEmpty {
+                    Text(checkUpdatesNote).font(.caption).foregroundStyle(Theme.warning)
+                }
+                Text(AppSettings.cloudForbiddenByEnvironment
+                     ? L.t("Выключено рубильником CHAROITE_NO_CLOUD вместе со всем облачным.",
+                           "Turned off by the CHAROITE_NO_CLOUD switch along with everything cloud.",
+                           "已由 CHAROITE_NO_CLOUD 开关连同所有云端功能一起关闭。")
+                     : L.t("Обычный GET к публичному API GitHub без токена и без данных о вас — чтобы заметить, что приложение и выпуск разошлись. Выключено — сверяемся только с рабочей папкой.",
+                           "A plain GET to GitHub's public API, no token and nothing about you — so you notice when the app and the release drift apart. Off — we only compare with the working folder.",
+                           "对 GitHub 公共 API 的普通 GET 请求，无令牌、不含你的任何数据——用于发现应用与发布版本不一致。关闭后只与工作目录比对。"))
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -219,6 +267,11 @@ struct SettingsView: View {
         // поправить руками, и тогда UI обязан показать то, что там лежит.
         .onAppear {
             cloudEditGraph = AppSettings.configFlag("cloud_edit_graph")
+            checkUpdates = AppSettings.checkUpdates
+            // Заметка об ошибке записи — про прошлую попытку: конфиг могли
+            // починить, и висеть она не должна (ревью 22.08).
+            cloudEditNote = ""
+            checkUpdatesNote = ""
             launchAtLogin.refresh()
         }
         // Пересчёт только когда путь установки действительно сменился, и не

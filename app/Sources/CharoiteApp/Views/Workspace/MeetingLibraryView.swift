@@ -477,9 +477,9 @@ struct MeetingLibraryView: View {
 
     private func stateColor(_ state: MeetingProcessingSnapshot.State) -> Color {
         switch state {
-        case .ready: return .green
+        case .ready: return Theme.ok
         case .processing: return Theme.accent
-        case .error: return .orange
+        case .error: return Theme.warning
         case .empty, .unknown: return .secondary
         }
     }

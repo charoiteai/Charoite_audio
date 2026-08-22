@@ -20,8 +20,57 @@ extension Theme {
     static let surfaceCloud = sky.opacity(0.06)
     static let borderCloud = sky.opacity(0.22)
 
-    /// Просрочка — системный оранжевый, а не фирменный цвет.
-    static let overdue = Color.orange
+    /// Предупреждение — системный оранжевый, а не фирменный цвет:
+    /// «обрати внимание», но ничего не сломано. Просрочка — его частный
+    /// случай; один токен вместо `.orange` по месту в одиннадцати вью
+    /// (дизайн-аудит 21.08: цвет «по месту» — первый признак, что система
+    /// живёт на бумаге, а не в коде).
+    static let warning = Color.orange
+    static let overdue = warning
+}
+
+// MARK: - Поверхности происхождения
+
+/// Лавандовая поверхность памяти: всё, что пришло из архива, графа, досье.
+///
+/// Правило ревизии 08.08 «поверхность обозначает происхождение» три недели
+/// жило только в токенах: `surfaceMemory` не имел ни одного вызова, а
+/// лаванда в двух вью рисовалась своим `accent.opacity(…)` и читалась как
+/// случайность. Контейнер — одно место, где цвет и рамка заданы вместе.
+struct MemorySurface<Content: View>: View {
+    /// 8 — панель и карточка, 12 — пузырь ответа (геометрия DESIGN.md).
+    var radius: CGFloat = Theme.radius
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) { content() }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.surfaceMemory,
+                        in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(Theme.borderMemory, lineWidth: 1)
+            }
+    }
+}
+
+/// Небесная поверхность облака: всё, что уходит с машины. «Локальное
+/// молчит, облачное видно» — видно цветом, а не только подписью.
+struct CloudSurface<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) { content() }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.surfaceCloud,
+                        in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+                    .strokeBorder(Theme.borderCloud, lineWidth: 1)
+            }
+    }
 }
 
 // MARK: - Заголовок панели
@@ -251,7 +300,7 @@ struct ReadinessLine: View {
     private var dot: Color {
         guard let snapshot else { return .secondary }
         if snapshot.problems > 0 { return Theme.overdue }
-        if snapshot.warnings > 0 { return .orange }
+        if snapshot.warnings > 0 { return Theme.warning }
         return Theme.ok
     }
 
@@ -274,7 +323,7 @@ struct ReadinessLine: View {
             return (blocked.title, Theme.overdue)
         }
         if let warning = snapshot.checks.first(where: { $0.state == .warning }) {
-            return (warning.title, .orange)
+            return (warning.title, Theme.warning)
         }
         return nil
     }
@@ -286,7 +335,7 @@ struct ReadinessLine: View {
             } else {
                 Circle().fill(dot).frame(width: 7, height: 7)
             }
-            Text(title).font(.system(size: 13, weight: .medium))
+            Text(title).font(.body.weight(.medium))
             if let snapshot {
                 let passed = snapshot.checks.filter { $0.state == .ready }.count
                 Text(L.t("\(passed) из \(snapshot.checks.count) проверок",
@@ -346,14 +395,14 @@ struct RecordCapsule: View {
                         .symbolEffect(.variableColor.iterative,
                                       options: .repeating, isActive: true)
                     Text(clock)
-                        .font(.system(size: 14, weight: .light))
+                        .font(.body.weight(.light))
                         .monospacedDigit()
                     Divider().frame(height: 14).overlay(Color.white.opacity(0.35))
                     Text(L.t("Стоп", "Stop", "停止")).font(.caption.weight(.semibold))
                 } else {
                     Image(systemName: "mic")
                     Text(L.t("Слушать встречу", "Listen to the meeting", "旁听会议"))
-                        .font(.system(size: 13.5, weight: .semibold))
+                        .font(.headline)
                     Text(Self.shortcutLabel)
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.white.opacity(0.66))
