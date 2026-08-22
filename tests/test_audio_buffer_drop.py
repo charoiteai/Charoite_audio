@@ -383,3 +383,19 @@ def test_хвост_после_остановки_договаривает_са�
 
     hub._say_last_drops()         # повторный вызов из stop()
     assert len(hub.said) == 1, "второй досказ выдал строку на пустом остатке"
+
+
+def test_health_snapshot_reports_recording_per_channel():
+    """Флаг `channels[].recording` — то, по чему UI рисует «канал не пишется».
+    Мутация In→NotIn переворачивала его при зелёном наборе: проверялся
+    только общий recording_ok (мутационный прогон 21.08)."""
+    hub = Hub()
+    # каналы снимка — это буферы: у Hub по умолчанию только mic
+    hub._bufs["blackhole"] = _sec(0.5)
+    hub._last_frame = {"mic": 99.0, "blackhole": 99.0}
+    hub._sinks = {"mic": object()}
+
+    channels = hub.health_snapshot(now=100.0)["channels"]
+
+    assert channels["mic"]["recording"] is True
+    assert channels["blackhole"]["recording"] is False

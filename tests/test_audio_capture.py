@@ -753,3 +753,30 @@ def test_удачный_рестарт_сбрасывает_возраст():
     assert cap.restarts == 1
     assert time.time() - hub._last_frame["blackhole"] < 5, (
         "возраст не сброшен после удачного рестарта — немедленный повторный цикл")
+
+
+def test_анти_шторм_отпускает_ровно_на_тридцатой_секунде():
+    """Граница `< 30`: ровно через 30с после попытки канал перезапускается,
+    а не молчит ещё один такт. Мутация Lt→LtE выживала — прежний тест
+    использовал −31 (мутационный прогон 21.08)."""
+    import audio as a
+    hub = _hub()
+    hub.RESTART_TIMEOUT = 1.0
+    dead = _FailingCapture()
+    hub.captures = [dead]
+    clock = [1000.0]
+    monkeypatch_time = a.time.time
+    a.time.time = lambda: clock[0]
+    try:
+        hub._last_frame = {"blackhole": 900.0}       # молчит 100с
+        hub._last_try = {"blackhole": 970.0}         # попытка 30с назад — ровно
+        hub._last_check = 0.0
+        hub.on_status = lambda _msg: None
+        hub._watch_streams()
+        assert dead.restarts == 1, "ровно 30с — попытка обязана повториться"
+        hub._last_try["blackhole"] = 1000.0 - 29.9
+        hub._last_check = 0.0
+        hub._watch_streams()
+        assert dead.restarts == 1, "29.9с — ещё анти-шторм"
+    finally:
+        a.time.time = monkeypatch_time
