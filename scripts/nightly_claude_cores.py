@@ -39,13 +39,6 @@ def _cfg() -> dict:
     return yaml.safe_load(p.read_text(encoding="utf-8"))
 
 
-def _proxy_env() -> dict:
-    try:
-        s = json.loads((pathlib.Path.home() / ".claude" / "settings.json").read_text(encoding="utf-8"))
-        return {k: v for k, v in s.get("env", {}).items() if "proxy" in k.lower()}
-    except Exception:  # noqa: BLE001
-        return {}
-
 
 REPORT_SECTIONS = ("## Противоречия", "## Протухшее", "## Слияния",
                    "## Потерянные хвосты", "## Три риска недели")
@@ -112,7 +105,7 @@ def main() -> None:
     model = cloud.model(cfg, "cloud_model")
     claude = shutil.which("claude") or "/opt/homebrew/bin/claude"
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-    env.update(_proxy_env())
+    env.update(cloud.proxy_env())
     prompt = (
         "Ты ночной ревизор графа знаний рабочих встреч. Ниже ядра (сквозные "
         f"темы) за последние {FRESH_DAYS} дней и индекс.\n\n" + blob + "\n\n"

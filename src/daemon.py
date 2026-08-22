@@ -176,17 +176,8 @@ def emit_error(text: str):
 
 
 def load_claude_proxy_env() -> dict:
-    """Прокси из ~/.claude/settings.json (env-секция).
-
-    Демон из desktop-приложения стартует без shell-окружения, а `--setting-sources ""`
-    отрезает env настроек — headless `claude -p` шёл к api.anthropic.com напрямую
-    и ловил 403 Request not allowed (регион). Подкладываем прокси явно.
-    """
-    try:
-        s = json.loads((pathlib.Path.home() / ".claude" / "settings.json").read_text(encoding="utf-8"))
-        return {k: v for k, v in s.get("env", {}).items() if "proxy" in k.lower()}
-    except Exception:  # noqa: BLE001
-        return {}
+    """Прокси для headless `claude -p` — см. cloud.proxy_env (единая точка)."""
+    return cloud.proxy_env()
 
 
 def start_brief(cfg: dict) -> str:

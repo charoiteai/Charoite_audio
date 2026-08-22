@@ -15,6 +15,9 @@ test_cloud_model_defaults.py держит это), и точки выхода с
 """
 from __future__ import annotations
 
+import json
+import pathlib
+
 # Ключ конфига → модель по умолчанию. Меняется ВМЕСТЕ с примерами конфига,
 # иначе тест валится: пример — это документация, а не пожелание.
 DEFAULTS = {
@@ -77,3 +80,22 @@ def text_only_args() -> list[str]:
             # без пользовательских hooks/MCP: внешний хук на каждый промпт
             # не даёт headless-процессу завершиться (паттерн claude-mem)
             "--setting-sources", "", "--strict-mcp-config"]
+
+
+def proxy_env(settings: pathlib.Path | None = None) -> dict:
+    """Прокси из ~/.claude/settings.json (env-секция) для headless `claude -p`.
+
+    Процесс из desktop-приложения стартует без shell-окружения, а
+    `--setting-sources ""` отрезает env настроек — вызов шёл к
+    api.anthropic.com напрямую и ловил «403 Request not allowed» (регион).
+    Одна точка вместо трёх копий: у разбора встречи (cloud_review.py) своей
+    копии не было, и 21.08 все шесть разборов дня упали с 403, пока демон и
+    ночные скрипты с той же сети работали.
+    """
+    path = settings or (pathlib.Path.home() / ".claude" / "settings.json")
+    try:
+        s = json.loads(path.read_text(encoding="utf-8"))
+        return {k: v for k, v in s.get("env", {}).items() if "proxy" in k.lower()}
+    except Exception:  # noqa: BLE001 — нет файла/битый JSON: просто без прокси
+        return {}
+

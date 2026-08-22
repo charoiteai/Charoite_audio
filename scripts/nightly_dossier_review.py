@@ -72,13 +72,6 @@ def _cfg() -> dict:
     return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
 
 
-def _proxy_env() -> dict:
-    try:
-        s = json.loads((pathlib.Path.home() / ".claude" / "settings.json").read_text(encoding="utf-8"))
-        return {k: v for k, v in s.get("env", {}).items() if "proxy" in k.lower()}
-    except Exception:  # noqa: BLE001
-        return {}
-
 
 def _backup(folder: pathlib.Path, stamp: str, path: pathlib.Path) -> None:
     """Автомат без бэкапа — не автомат, а рулетка (то же правило, что в tier3)."""
@@ -150,7 +143,7 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
     prompt = PROMPT.format(theme=theme, current=body, sources="\n".join(parts))
     claude = shutil.which("claude") or "/opt/homebrew/bin/claude"
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-    env.update(_proxy_env())
+    env.update(cloud.proxy_env())
     try:
         # Досье и все источники уже В ПРОМПТЕ — инструментов этому вызову не
         # положено вовсе: инъекция из стенограммы/досье не должна читать

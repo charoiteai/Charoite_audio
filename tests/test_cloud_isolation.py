@@ -112,3 +112,31 @@ def test_no_call_grants_tools_silently():
                 "новому контуру инструменты выдаются только через "
                 "осознанный контракт с privacy-ключом"
             )
+
+
+# --- прокси для headless claude: одна точка, и разбор встречи её использует ---
+
+def test_proxy_env_reads_only_proxy_keys(tmp_path):
+    """cloud.proxy_env берёт из settings.json только прокси-ключи: токены и
+    прочее окружение headless-вызову не достаются."""
+    import json
+    s = tmp_path / "settings.json"
+    s.write_text(json.dumps({"env": {"HTTPS_PROXY": "http://p:1", "NO_PROXY": "localhost",
+                                     "ANTHROPIC_AUTH_TOKEN": "secret", "FOO": "bar"}}),
+                 encoding="utf-8")
+    assert cloud.proxy_env(s) == {"HTTPS_PROXY": "http://p:1", "NO_PROXY": "localhost"}
+    assert cloud.proxy_env(tmp_path / "нет.json") == {}
+
+
+def test_every_cloud_exit_applies_the_proxy():
+    """21.08 все разборы встреч дня упали с «403 Request not allowed»: у
+    cloud_review.py не было прокси, который демон и ночные скрипты уже
+    подкладывали каждый своей копией. Одна точка — и у каждого выхода."""
+    root = ROOT
+    for rel in ("scripts/cloud_review.py", "scripts/nightly_claude_cores.py",
+                "scripts/nightly_dossier_review.py"):
+        src = (root / rel).read_text(encoding="utf-8")
+        assert "env.update(cloud.proxy_env())" in src, rel
+        assert "def _proxy_env" not in src, f"{rel}: своя копия вместо cloud.proxy_env"
+    daemon_src = (root / "src" / "daemon.py").read_text(encoding="utf-8")
+    assert "return cloud.proxy_env()" in daemon_src
