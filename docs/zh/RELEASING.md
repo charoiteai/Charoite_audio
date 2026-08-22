@@ -84,3 +84,39 @@ job 内部的顺序是刻意安排的：**第一步**先解析哪个标签需要
 
 **`swift test (app)` 与 `build (app-ios)` 保持参考性**，只要其工作流仍带 `paths:`
 过滤器。一个在没有 Swift 改动的 PR 上永不启动的必需检查，会像 `analyze` 一样把它挂死。
+
+## 更新清单签名（每次发布之后）
+
+更新器不会安装没有所有者密钥签名的版本：校验和就放在压缩包旁边，能改压缩包的人
+也能改校验和，所以需要一个独立于 GitHub 的锚点。私钥永远不进 CI。
+
+发布（release-please + release-app）完成后，在所有者的机器上执行一条命令
+（需要 `gh` ≥ 2.28）：
+
+    .venv/bin/python scripts/sign_release_manifest.py vX.Y.Z
+
+脚本下载 `Charoite.app.zip`，用 `codesign --strict` 核对 bundle 签名（陌生的压缩包
+会被拒绝，而不是被签名），自己生成清单 `<版本>  <sha256>`，用
+`~/.config/charoite/update_manifest_ed25519.pem` 做 raw ed25519 签名，把
+`Charoite.app.zip.manifest` 和 `.manifest.sig` 附加到 release，最后取消
+pre-release 标记（`gh release edit --prerelease=false --latest`）。
+
+### 门禁：没有签名的版本不会成为 latest（PR #375）
+
+更新器查询 `/releases/latest`，GitHub 不会把 pre-release 放进去。因此在所有者
+签名之前，release 一直保持 pre-release：
+
+- release-please 把每个版本创建为 pre-release（`.github/release-please-config.json`
+  中的 `"prerelease": true`；该规则只对 0.x 生效，1.0 之后由测试
+  `test_release_gate_tripwire_pre_major_versions_only` 提醒重新决定）。
+- release-app（CI）：未签名的稳定版会被改回 pre-release；每次重新构建后，旧的
+  `.manifest`/`.manifest.sig` 会被删除（它们签的是另一个压缩包），release 保持
+  pre-release 直到重新签名。CI 不再上传 `.manifest`。
+- 签名脚本按 release 状态行事：对已签名的稳定版重新签名时会先临时隐藏为
+  pre-release；遇到未签名的稳定版会照样签名，但以退出码 3 报警；只有当标签不早于
+  当前 latest 时才加 `--latest`。
+
+不要绕过脚本手动执行 `gh release edit --latest`——门禁防的正是这个。
+私钥丢失意味着所有用户的更新都会停止：由所有者生成新密钥对，把公钥写入
+`UpdateAuthenticity.swift`（常量 `manifestKeyBase64`），再发布新版本。
+

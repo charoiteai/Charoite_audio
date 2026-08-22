@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -104,6 +106,26 @@ def main() -> int:
         ap.error("нужен тег релиза или --file")
     token = (pathlib.Path.home() / ".config" / "charoite" / "gh_token").read_text().strip()
     env = dict(os.environ, GH_TOKEN=token)
+    # Гейт (PR #375): latest без подписи для приложения существовать не
+    # должен. Нормальный путь — релиз уже pre-release (release-please +
+    # release-app). Стабильный и подписанный — повторная подпись: на время
+    # замены пары прячем, иначе между двумя загрузками апдейтер видит
+    # манифест с чужой подписью. Стабильный и НЕподписанный — гейт не
+    # сработал (ручной релиз, флаг снят рукой): подписываем всё равно —
+    # пользователи и так заблокированы, — но кричим и выходим с кодом 3.
+    prerelease, signed = release_state(a.tag, env)
+    gate_failed = False
+    if not prerelease:
+        if signed:
+            print(f"{a.tag}: уже latest и подписан — повторная подпись, "
+                  "на время загрузки прячу в pre-release")
+        else:
+            print(f"ГЕЙТ НЕ СРАБОТАЛ: {a.tag} опубликован стабильным без подписи "
+                  "манифеста — до этой минуты апдейтер отдавал его пользователям. "
+                  "Подписываю, но разберись, откуда релиз (ручной? флаг снят?)",
+                  file=sys.stderr)
+            gate_failed = True
+        hide_release(a.tag, env)
     with tempfile.TemporaryDirectory() as td:
         tdp = pathlib.Path(td)
         zip_path = tdp / ZIP
@@ -120,22 +142,61 @@ def main() -> int:
         sig_path.write_text(sign_bytes(manifest, key) + "\n", encoding="ascii")
         subprocess.run(["gh", "release", "upload", a.tag, "--repo", REPO,
                         str(m), str(sig_path), "--clobber"], check=True, env=env)
-        # Релиз рождается pre-release (release-please-config: prerelease) и
-        # становится latest только здесь, вместе с подписью: апдейтер
-        # спрашивает /releases/latest, а GitHub не отдаёт туда pre-release —
-        # неподписанный выпуск для приложения не существует (ревью 22.08,
-        # Codex: workflow не может приложить .sig, ключ вне CI, и релиз без
-        # подписи висел «готовым»).
-        promote_release(a.tag, env)
+    # Подпись на месте — релиз становится стабильным. latest — только если
+    # тег не старше нынешнего latest: подпись исторического v0.57.0 после
+    # v0.58.0 не должна откатывать /releases/latest назад (круг-1, DeepSeek
+    # и Codex).
+    newest = latest_stable_tag(env)
+    make_latest = newest is None or version_tuple(a.tag) >= version_tuple(newest)
+    try:
+        promote_release(a.tag, env, make_latest=make_latest)
+    except subprocess.CalledProcessError as e:
+        raise SystemExit(
+            f"{a.tag}: подпись загружена, но снять pre-release не удалось "
+            f"(gh release edit: код {e.returncode}); релиз остался pre-release — "
+            f"повтори: gh release edit {a.tag} --repo {REPO} --prerelease=false"
+            f"{' --latest' if make_latest else ''}") from e
     print(f"{a.tag}: архив сверен по codesign, манифест подписан, "
-          f"{ASSET} и {ASSET}.sig загружены, релиз переведён в latest")
-    return 0
+          f"{ASSET} и {ASSET}.sig загружены, релиз стабильный"
+          + (", latest" if make_latest else f" (latest остаётся {newest})"))
+    return 3 if gate_failed else 0
 
 
-def promote_release(tag: str, env: dict) -> None:
-    """Снять pre-release и объявить выпуск latest — только после подписи."""
+def release_state(tag: str, env: dict) -> tuple[bool, bool]:
+    """(pre-release?, подпись манифеста уже приложена?) по данным GitHub."""
+    r = subprocess.run(["gh", "release", "view", tag, "--repo", REPO,
+                        "--json", "isPrerelease,assets"],
+                       check=True, env=env, capture_output=True, text=True)
+    d = json.loads(r.stdout)
+    names = {a.get("name") for a in d.get("assets", [])}
+    return bool(d.get("isPrerelease")), f"{ASSET}.sig" in names
+
+
+def latest_stable_tag(env: dict) -> str | None:
+    """Тег нынешнего /releases/latest; None — стабильных релизов нет."""
+    r = subprocess.run(["gh", "release", "view", "--repo", REPO,
+                        "--json", "tagName", "-q", ".tagName"],
+                       check=False, env=env, capture_output=True, text=True)
+    return (r.stdout.strip() or None) if r.returncode == 0 else None
+
+
+def version_tuple(tag: str) -> tuple[int, ...]:
+    """v0.58.0 → (0, 58, 0); всё нечисловое после цифр отбрасывается."""
+    return tuple(int(x) for x in re.findall(r"\d+", tag)[:3])
+
+
+def hide_release(tag: str, env: dict) -> None:
+    """Перевести релиз в pre-release — убрать из /releases/latest."""
     subprocess.run(["gh", "release", "edit", tag, "--repo", REPO,
-                    "--prerelease=false", "--latest"], check=True, env=env)
+                    "--prerelease"], check=True, env=env)
+
+
+def promote_release(tag: str, env: dict, make_latest: bool = True) -> None:
+    """Снять pre-release (и объявить latest) — только после подписи."""
+    cmd = ["gh", "release", "edit", tag, "--repo", REPO, "--prerelease=false"]
+    if make_latest:
+        cmd.append("--latest")
+    subprocess.run(cmd, check=True, env=env)
 
 
 if __name__ == "__main__":

@@ -24,7 +24,9 @@ name: release-app
 # ассета старому релизу с его собственного тега (например, v0.19.0).
 on:
   release:
-    types: [published]
+    # released: pre-release переведён в стабильный — рукой в веб-интерфейсе
+    # или скриптом подписи; гейт ниже перепроверяет, что подпись на месте.
+    types: [published, released]
   # zizmor: ignore[dangerous-triggers]
   # Триггер опасен, когда слушает чужие workflow: код запускается с правами
   # основного репозитория. Здесь источник ровно один и наш собственный —
@@ -93,6 +95,21 @@ jobs:
             exit 0
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # Гейт подписи (PR #375): стабильный релиз без .manifest.sig для
+          # приложения существовать не должен — /releases/latest отдал бы
+          # его, и апдейтер у всех отказал бы «нет верной подписи».
+          # release-please создаёт 0.x как pre-release сам (config), а сюда
+          # попадают ручной стабильный релиз, снятый рукой флаг и 1.0+
+          # (release-please помечает pre-release только major == 0).
+          # Без pipe в условии: bash здесь с pipefail, и grep -q, закрыв трубу
+          # раньше gh, дал бы ложный «не подписан» на подписанном релизе.
+          pre="$(gh release view "$TAG" --repo "$REPO" --json isPrerelease -q .isPrerelease)"
+          assets="$(gh release view "$TAG" --repo "$REPO" --json assets -q '.assets[].name')"
+          case "$assets" in *Charoite.app.zip.manifest.sig*) signed=true ;; *) signed=false ;; esac
+          if [ "$pre" != "true" ] && [ "$signed" != "true" ]; then
+            gh release edit "$TAG" --repo "$REPO" --prerelease
+            echo "::warning::$TAG был стабильным без подписи манифеста — переведён в pre-release; подпись: scripts/sign_release_manifest.py $TAG"
+          fi
           # ручной запуск пересобирает всегда (--clobber заменит кривой ассет);
           # автоматический — только если ассета ещё нет
           if [ "$EVENT_NAME" != "workflow_dispatch" ] \
@@ -245,13 +262,11 @@ jobs:
           for f in app/build/Charoite.dmg app/build/Charoite.app.zip; do
             shasum -a 256 "$f" | awk '{print $1}' > "$f.sha256"
           done
-          # Манифест обновления: «<версия>  <хеш>» одной строкой. Версию несёт
-          # сам подписанный файл — голый хеш позволял реплей старой честной
-          # тройки под новым тегом (PR #366). Подпись кладёт владелец локально
-          # (scripts/sign_release_manifest.py) — ключа в CI нет.
-          printf '%s  %s\n' "${TAG#v}" \
-            "$(shasum -a 256 app/build/Charoite.app.zip | awk '{print $1}')" \
-            > app/build/Charoite.app.zip.manifest
+          # Манифест обновления («<версия>  <хеш>») CI НЕ строит: его
+          # собирает и подписывает владелец локально
+          # (scripts/sign_release_manifest.py, ключа в CI нет), а манифест
+          # без подписи приложению бесполезен и при пересборке оставался бы
+          # рядом с подписью от прежнего архива (PR #375).
           # Финальная проверка глазами Gatekeeper: так увидит файл пользователь.
           spctl --assess --type execute --verbose=2 app/build/Charoite.app
           spctl --assess --type open --context context:primary-signature --verbose=2 app/build/Charoite.dmg
@@ -262,14 +277,21 @@ jobs:
           TAG: ${{ steps.resolve.outputs.tag }}
           REPO: ${{ github.repository }}
         run: |
-          # Манифест рождается только в нотаризационном шаге: ad-hoc-прогон
-          # без секретов не должен ронять Attach на несуществующем файле
-          # (круг-2 по PR #366, DeepSeek).
           UPLOAD="app/build/Charoite.dmg app/build/Charoite.dmg.sha256 \
             app/build/Charoite.app.zip app/build/Charoite.app.zip.sha256"
-          [ -f app/build/Charoite.app.zip.manifest ] && \
-            UPLOAD="$UPLOAD app/build/Charoite.app.zip.manifest"
           gh release upload "$TAG" --repo "$REPO" --clobber $UPLOAD
+          # Архив заменён — прежние .manifest/.manifest.sig (если были)
+          # подписывали другой архив и больше не сходятся: снимаем их и
+          # держим релиз pre-release, пока владелец не подпишет новый
+          # (sign_release_manifest.py снимет флаг сам). Гейт PR #375.
+          assets="$(gh release view "$TAG" --repo "$REPO" --json assets -q '.assets[].name')"
+          for stale in Charoite.app.zip.manifest Charoite.app.zip.manifest.sig; do
+            case "$assets" in *"$stale"*)
+              gh release delete-asset "$TAG" "$stale" --repo "$REPO" --yes ;;
+            esac
+          done
+          gh release edit "$TAG" --repo "$REPO" --prerelease
+          echo "::warning::$TAG: архив собран, подписи манифеста нет — релиз pre-release до scripts/sign_release_manifest.py $TAG"
           # Режим подписи — в заметки релиза, а не только в лог прогона:
           # README отсылает именно туда. Строка одна, при перезаливке
           # (--clobber) не дублируется.
