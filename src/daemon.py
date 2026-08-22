@@ -73,10 +73,14 @@ THREAD_TICK = 30.0      # нить встречи: как часто СМОТР�
 THREAD_MIN_NEW = 900    # и сколько новых знаков нужно, чтобы позвать модель
 STT_PROGRESS_EVERY = 5.0   # отдельный пульс потребителя; главный hb его не заменяет
 STT_LAG_LOG_EVERY = 30.0   # цифры отставания в daemon.err.log без спама
-
-def looks_question(text: str) -> bool:
-    """Совместимое имя; детектор живёт рядом с остальными фильтрами вопроса."""
-    return question_filter.looks_question(text)
+# heartbeat для watchdog UI: главный тред жив → hb каждые 30с; тишина 100с
+# при живом процессе = зависание, UI перезапустит демон. Порог stalled —
+# только диагностика; решение о рестарте остаётся за 100-секундным
+# watchdog приложения. Цифры живут здесь, рядом с объяснением, а не
+# дефолтами в stt_runtime (ревью 22.08, Sonnet 5).
+MAIN_HB_EVERY = 30.0
+STT_STALL_THRESHOLD = 30.0
+STT_STALL_LOG_EVERY = 30.0
 
 _out_lock = threading.Lock()
 # Общий стоп: emit ставит его, когда приложение закрыло свой конец пайпа.
@@ -421,7 +425,7 @@ def main():
          # вернуть» из _note_drop/_say_last_drops начинается с «⚠️ подсказки
          # отстают», и префикс красил только 2 сообщения из 4 (круг 3:
          # GLM + DeepSeek нашли независимо)
-         "error": "ЗАПИСЬ НА ДИСК" in t})
+         "error": stt_runtime.is_recording_failure(t)})
     # Встречи, оборванные аварийно, запускаем ДО чистки и говорим ретеншну их
     # не трогать: «до» тут не про порядок строк, а про то, что запись обязана
     # дожить до конца пересборки. Порядка строк было мало — Popen возвращается
@@ -743,8 +747,8 @@ def main():
     def stt_stage_snapshot() -> tuple[str, float]:
         with stt_probe_lock:
             stage = str(stt_probe["stage"])
-            age = time.monotonic() - float(stt_probe["at"])
-        return stage, max(0.0, age)
+            age = stt_runtime.stage_age(time.monotonic(), float(stt_probe["at"]))
+        return stage, age
 
     def stt_loop():
         # Главный heartbeat доказывает только жизнь main-thread. Этот пульс
@@ -763,7 +767,9 @@ def main():
             # в stderr, а не смерть stt_loop (ревью 21.08, Gemini).
             nonlocal last_progress_emit, last_lag_log
             now_mono = time.monotonic()
-            if not force and now_mono - last_progress_emit < STT_PROGRESS_EVERY:
+            if stt_runtime.progress_throttled(force=force, now=now_mono,
+                                              last=last_progress_emit,
+                                              every=STT_PROGRESS_EVERY):
                 return
             try:
                 health = hub.health_snapshot()
@@ -781,8 +787,7 @@ def main():
                 "stage": stage,
                 "stage_age_seconds": round(stage_age, 2),
                 "backlog_seconds": round(backlog, 2),
-                "input_age_seconds": (round(float(input_age), 2)
-                                      if input_age is not None else None),
+                "input_age_seconds": stt_runtime.input_age_value(input_age),
                 "cycle_ms": round(last_cycle_ms),
                 "diarization_ms": round(last_diarization_ms),
                 "transcription_ms": round(last_transcription_ms),
@@ -790,7 +795,8 @@ def main():
                 "channels": health["channels"],
             })
             last_progress_emit = now_mono
-            if lagging and now_mono - last_lag_log >= STT_LAG_LOG_EVERY:
+            if stt_runtime.lag_log_due(lagging=lagging, now=now_mono,
+                                       last=last_lag_log, every=STT_LAG_LOG_EVERY):
                 age_text = "unknown" if input_age is None else f"{float(input_age):.1f}"
                 print(f"stt-health state=lagging backlog_s={backlog:.1f} "
                       f"cycle_ms={last_cycle_ms:.0f} "
@@ -830,11 +836,11 @@ def main():
                 active=lagging,
                 chunk_seconds=hub.chunk_s,
             )
-            if next_lagging != lagging:
+            if stt_runtime.lag_transition(lagging, next_lagging):
                 lagging = next_lagging
                 if lagging:
                     suffix = (" — временно отключаю live-диаризацию"
-                              if spk_tracker is not None and hasattr(spk_tracker, "split")
+                              if stt_runtime.has_split_tracker(spk_tracker)
                               else "")
                     emit({"type": "status", "text":
                           f"⚠️ STT отстаёт на {backlog:.1f}с{suffix}; "
@@ -851,7 +857,7 @@ def main():
                     # «догнал»: после смерти входа быстрый STT доедал буфер
                     # за 2-20с, и возраст ещё не дорастал до порога (круг 3,
                     # DeepSeek).
-                    if input_age is not None and float(input_age) < hub.chunk_s:
+                    if stt_runtime.live_input_young_enough(input_age, hub.chunk_s):
                         emit({"type": "status", "text":
                               f"✅ STT догнал живой звук (очередь {backlog:.1f}с)"})
                     else:
@@ -906,15 +912,16 @@ def main():
                 # выбор ветки — чистой функцией: инлайновое условие мутатор
                 # ломал в «диаризация выключена навсегда» без единого красного
                 # теста (ревью 21.08, GLM)
-                has_split = spk_tracker is not None and hasattr(spk_tracker, "split")
-                if has_split and not stt_runtime.use_positional_split(
-                        lagging=lagging, has_split=has_split):
+                plan = stt_runtime.diarization_plan(
+                    lagging=lagging,
+                    has_split=stt_runtime.has_split_tracker(spk_tracker))
+                if plan == "shed":
                     # Позиционная раскладка может породить несколько STT-задач
                     # из одного чанка. Когда очередь уже растёт, важнее один
                     # непрерывный текст с честной канальной меткой; финальный
                     # offline rebuild вернёт точных говорящих по записи.
-                    jobs = [(chunk, -1, None)]
-                elif has_split:
+                    jobs = [(chunk, stt_runtime.CHANNEL_LABEL_ONLY, None)]
+                elif plan == "diarize":
                     mark_stt_stage("diarization")
                     diarization_started = time.monotonic()
                     try:
@@ -1027,7 +1034,7 @@ def main():
                     # метка своего канала, затем имя из настроек.
                     if instant_on and toggles["hints"] \
                             and not _is_owner_line(name) \
-                            and looks_question(added):
+                            and question_filter.looks_question(added):
                         fire_question(added)
             last_cycle_ms = (time.monotonic() - cycle_started) * 1000
             last_diarization_ms = cycle_diarization_ms
@@ -1658,7 +1665,7 @@ def main():
                         if d.get("type") != "final":
                             continue
                         recent = (recent + " " + (d.get("text") or "")).strip()[-160:]
-                        if looks_question(recent):
+                        if question_filter.looks_question(recent):
                             fire_question(recent)
                             recent = ""
             except Exception as e:  # noqa: BLE001
@@ -2451,7 +2458,7 @@ def main():
             # heartbeat для watchdog UI: главный тред жив → hb каждые 30с;
             # тишина 100с при живом процессе = зависание, UI перезапустит демон
             now_mono = time.monotonic()
-            if now_mono - last_hb > 30:
+            if stt_runtime.heartbeat_due(now=now_mono, last=last_hb, every=MAIN_HB_EVERY):
                 last_hb = now_mono
                 stage, stage_age = stt_stage_snapshot()
                 emit({"type": "hb", "stt_stage": stage,
@@ -2459,7 +2466,10 @@ def main():
                 # Пишет ГЛАВНЫЙ поток: если STT висит внутри ONNX, он сам не
                 # способен оставить строку. 30с — только диагностика; решение
                 # о рестарте остаётся за 100-секундным watchdog приложения.
-                if stage_age >= 30 and now_mono - last_stt_stall_log >= 30:
+                if stt_runtime.stall_log_due(stage_age_s=stage_age, now=now_mono,
+                                             last=last_stt_stall_log,
+                                             threshold=STT_STALL_THRESHOLD,
+                                             every=STT_STALL_LOG_EVERY):
                     print(f"stt-health state=stalled stage={stage} "
                           f"stage_age_s={stage_age:.1f}",
                           file=sys.stderr, flush=True)

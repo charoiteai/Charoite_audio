@@ -157,3 +157,37 @@ def test_incomplete_embeddings_do_not_crash_and_do_not_count_as_a_run(tmp_path, 
 
     r = tier3.revise(graph)
     assert r["ran"] is False and r["dups"] == []
+
+
+def test_full_run_is_not_marked_stopped(tmp_path, monkeypatch):
+    """Состоявшийся полный прогон — ran=True, stopped=False: иначе
+    tier3_cores никогда не сдвинет отметку --since-last и каждая ночь
+    пересуживает всё с нуля (мутационный прогон 21.08)."""
+    graph = _graph(tmp_path, "Одно", "Другое")
+    monkeypatch.setattr(tier3.nli, "is_available", lambda: True)
+    monkeypatch.setattr(tier3.nli, "ready", lambda: True)
+    # Одинаковые эмбеддинги: пара проходит префильтр, суд реально идёт по
+    # циклу и спрашивает потолок ночи; с ортогональными пара отсекалась до
+    # цикла и stopped=False держалось инициализацией, а не прогоном
+    # (ревью 22.08: Sonnet 5 и DeepSeek независимо).
+    monkeypatch.setattr(tier3, "_embed_all", lambda cores, cfg: [[1.0, 0.0], [1.0, 0.0]])
+    monkeypatch.setattr(tier3.nli, "entail_prob", lambda a, b: 0.0)
+    asked = []
+    monkeypatch.setattr(tier3.live_gate, "night_is_over", lambda: asked.append(1) or False)
+
+    r = tier3.revise(graph)
+    assert asked, "суд не дошёл до цикла пар — тест держал бы инициализацию"
+    assert r["ran"] is True and r["stopped"] is False
+
+
+def test_run_cut_by_the_night_ceiling_is_marked_stopped(tmp_path, monkeypatch):
+    """Обрыв потолком ночи — stopped=True: недосуженные ядра остаются в
+    инкременте на следующую ночь, отметка не двигается."""
+    graph = _graph(tmp_path, "Одно", "Другое")
+    monkeypatch.setattr(tier3.nli, "is_available", lambda: True)
+    monkeypatch.setattr(tier3.nli, "ready", lambda: True)
+    monkeypatch.setattr(tier3, "_embed_all", lambda cores, cfg: [[1.0, 0.0], [1.0, 0.0]])
+    monkeypatch.setattr(tier3.live_gate, "night_is_over", lambda: True)
+
+    r = tier3.revise(graph)
+    assert r["ran"] is True and r["stopped"] is True
