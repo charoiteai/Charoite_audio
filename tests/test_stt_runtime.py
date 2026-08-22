@@ -120,12 +120,18 @@ def test_принудительный_пульс_не_глушится_а_обы
     assert stt_runtime.progress_throttled(force=True, now=1.0, last=0.0, every=5.0) is False
     assert stt_runtime.progress_throttled(force=False, now=1.0, last=0.0, every=5.0) is True
     assert stt_runtime.progress_throttled(force=False, now=5.0, last=0.0, every=5.0) is False
+    # last ≠ 0: с нулём `now - last` и `now + last` неотличимы — мутант
+    # Sub→Add пережил первый прогон партии D
+    assert stt_runtime.progress_throttled(force=False, now=10.0, last=8.0, every=5.0) is True
+    assert stt_runtime.progress_throttled(force=False, now=13.0, last=8.0, every=5.0) is False
 
 
 def test_лог_отставания_только_при_отставании_и_не_чаще_периода():
     assert stt_runtime.lag_log_due(lagging=False, now=100.0, last=0.0, every=30.0) is False
     assert stt_runtime.lag_log_due(lagging=True, now=29.0, last=0.0, every=30.0) is False
     assert stt_runtime.lag_log_due(lagging=True, now=30.0, last=0.0, every=30.0) is True
+    assert stt_runtime.lag_log_due(lagging=True, now=100.0, last=90.0, every=30.0) is False
+    assert stt_runtime.lag_log_due(lagging=True, now=120.0, last=90.0, every=30.0) is True
 
 
 def test_переход_разгрузки_только_при_смене_состояния():
@@ -161,9 +167,13 @@ def test_план_диаризации_по_четырём_случаям():
 def test_пульс_и_stalled_по_порогам():
     assert stt_runtime.heartbeat_due(now=30.0, last=0.0) is False
     assert stt_runtime.heartbeat_due(now=30.1, last=0.0) is True
+    assert stt_runtime.heartbeat_due(now=100.0, last=80.0) is False
+    assert stt_runtime.heartbeat_due(now=111.0, last=80.0) is True
     assert stt_runtime.stall_log_due(stage_age_s=29.9, now=100.0, last=0.0) is False
     assert stt_runtime.stall_log_due(stage_age_s=30.0, now=100.0, last=0.0) is True
     assert stt_runtime.stall_log_due(stage_age_s=30.0, now=100.0, last=80.0) is False
+    # ровно период — пишем (>=), а не ждём ещё такт
+    assert stt_runtime.stall_log_due(stage_age_s=30.0, now=130.0, last=100.0) is True
 
 
 def test_отказ_записи_на_диск_красится_по_подстроке():
