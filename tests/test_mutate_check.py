@@ -281,24 +281,33 @@ def test_тождества_с_плавающей_точкой_тоже_шум(t
     assert not any(m.what.startswith("Add") for m in muts), [m.what for m in muts]
 
 
-def test_устаревший_байткод_не_судит_мутанта_по_чужому_коду(tmp_path):
+def test_устаревший_байткод_не_судит_мутанта_по_чужому_коду(tmp_path, monkeypatch):
     """Python сверяет .pyc с исходником по mtime в секундах и размеру. Два
     мутанта одной длины, записанные в одну секунду, для него один файл:
     второй исполнялся байткодом первого и получал ЕГО вердикт. Так 21.08
     «выжил» мутант 6.0→0 в stt_runtime, под который тест написан и который
-    руками падает (DeepSeek независимо: «отчёт пережил этот тест»)."""
+    руками падает (DeepSeek независимо: «отчёт пережил этот тест»).
+
+    Мутанта здесь исполняет ПОДПРОЦЕСС теста, как демона в живом наборе:
+    `-B` у pytest до него не доходит, работает только переменная окружения —
+    и первая версия теста страховала не её, а избыточный флаг (DeepSeek
+    по #368). Переменную из внешнего окружения снимаем: с ней и старый код
+    не писал бы байткод, и регрессия прошла бы незамеченной."""
     import os
 
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
     src = tmp_path / "src"
     tests = tmp_path / "tests"
     src.mkdir()
     tests.mkdir()
     (tests / "test_mod.py").write_text(
-        "import pathlib, sys\n"
-        "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'src'))\n"
-        "import mod\n"
+        "import pathlib, subprocess, sys\n"
+        "SRC = pathlib.Path(__file__).resolve().parents[1] / 'src'\n"
         "def test_value():\n"
-        "    assert mod.value() == 1\n", encoding="utf-8")
+        "    out = subprocess.run([sys.executable, '-c',\n"
+        "        'import mod; print(mod.value())'], cwd=SRC,\n"
+        "        capture_output=True, text=True, check=True).stdout\n"
+        "    assert out.strip() == '1'\n", encoding="utf-8")
     mod = src / "mod.py"
     mod.write_text("def value():\n    return 1\n", encoding="utf-8")
     assert mc.run_tests(tmp_path, ["tests/test_mod.py"], timeout=60) is True
@@ -311,7 +320,7 @@ def test_устаревший_байткод_не_судит_мутанта_по
     mod.write_text("def value():\n    return -1\n", encoding="utf-8")
     os.utime(mod, (stamp, stamp))
     assert mc.run_tests(tmp_path, ["tests/test_mod.py"], timeout=60) is False
-    assert not list(src.glob("__pycache__/*")), "мутатор оставил байткод в дереве"
+    assert not list(tmp_path.rglob("__pycache__")), "мутатор оставил байткод в дереве"
 
 
 def test_явный_return_none_не_мутируется(tmp_path):
