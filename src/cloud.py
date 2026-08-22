@@ -15,6 +15,9 @@ test_cloud_model_defaults.py держит это), и точки выхода с
 """
 from __future__ import annotations
 
+import json
+import pathlib
+
 # Ключ конфига → модель по умолчанию. Меняется ВМЕСТЕ с примерами конфига,
 # иначе тест валится: пример — это документация, а не пожелание.
 DEFAULTS = {
@@ -77,3 +80,45 @@ def text_only_args() -> list[str]:
             # без пользовательских hooks/MCP: внешний хук на каждый промпт
             # не даёт headless-процессу завершиться (паттерн claude-mem)
             "--setting-sources", "", "--strict-mcp-config"]
+
+
+# Только известные прокси-переменные: «proxy в имени» пропускал бы
+# PROXY_PASSWORD и подобное в окружение headless-вызова (круг-1 по PR #379).
+PROXY_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+
+
+def proxy_env(settings: pathlib.Path | None = None) -> dict:
+    """Прокси из ~/.claude/settings.json (env-секция) для headless `claude -p`.
+
+    Процесс из desktop-приложения стартует без shell-окружения, а
+    `--setting-sources ""` отрезает env настроек — вызов шёл к
+    api.anthropic.com напрямую и ловил «403 Request not allowed» (регион).
+    Одна точка вместо трёх копий: у разбора встречи (cloud_review.py) своей
+    копии не было, и 21.08 все шесть разборов дня упали с 403, пока демон и
+    ночные скрипты с той же сети работали. Возвращает только PROXY_KEYS (в
+    любом регистре); остальное из env-секции сюда не попадает.
+    """
+    path = settings or (pathlib.Path.home() / ".claude" / "settings.json")
+    try:
+        s = json.loads(path.read_text(encoding="utf-8"))
+        return {k: v for k, v in s.get("env", {}).items() if k.upper() in PROXY_KEYS}
+    except Exception:  # noqa: BLE001 — нет файла/битый JSON: просто без прокси
+        return {}
+
+
+def add_proxy(env: dict, settings: pathlib.Path | None = None) -> None:
+    """Дописать в окружение headless-вызова прокси из настроек — только как запас.
+
+    Мутирует на месте: AST-сторож tests/test_cloud_call_sites.py требует,
+    чтобы каждое присваивание `env` было фильтром без ANTHROPIC_API_KEY, —
+    перепривязка обошла бы его. Прокси, уже пришедший из окружения (ручной
+    прогон из shell с рабочим VPN-прокси), важнее записи в settings.json:
+    раньше `env.update` молча перетирал его. Сравнение имён — без учёта
+    регистра: NO_PROXY в окружении и no_proxy в настройках — одна
+    переменная, второй копии с другим значением ребёнку не достаётся.
+    """
+    present = {k.upper() for k in env}
+    for k, v in proxy_env(settings).items():
+        if k.upper() not in present:
+            env[k] = v
+            present.add(k.upper())
