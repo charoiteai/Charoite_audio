@@ -5,6 +5,22 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.0](https://github.com/charoiteai/Charoite_audio/compare/v0.56.0...v0.57.0) (2026-08-22)
+
+
+### Features
+
+* **ios:** TestFlight-доставка компаньона — ExportOptions и ключ шифрования ([#365](https://github.com/charoiteai/Charoite_audio/issues/365)) ([3b11c72](https://github.com/charoiteai/Charoite_audio/commit/3b11c72c65547182d0af13ff5812bd355f539c88))
+* **tasks:** сводка «просрочено · открыто · сделано» и режим «По сроку» ([#367](https://github.com/charoiteai/Charoite_audio/issues/367)) ([273498c](https://github.com/charoiteai/Charoite_audio/commit/273498ca3878d682e87e326152e39f9057e99c6c))
+* **update:** два якоря подлинности обновления, независимые от GitHub ([#366](https://github.com/charoiteai/Charoite_audio/issues/366)) ([014b45f](https://github.com/charoiteai/Charoite_audio/commit/014b45f060cde6a84723501ae168c5e697d2315a))
+
+
+### Bug Fixes
+
+* keep live STT ahead of audio ([#362](https://github.com/charoiteai/Charoite_audio/issues/362)) ([1c304de](https://github.com/charoiteai/Charoite_audio/commit/1c304deddc811d12dc8734adc5e652ef67bcc230))
+* **tests:** мутатор судил мутанта по байткоду соседа — запрет .pyc в дереве ([#368](https://github.com/charoiteai/Charoite_audio/issues/368)) ([aff65c8](https://github.com/charoiteai/Charoite_audio/commit/aff65c8afa15461988297b21d6e01f0149276f92))
+* снимки графов вне iCloud (клоны APFS) + потолок ночного прогона ([#363](https://github.com/charoiteai/Charoite_audio/issues/363)) ([3424e41](https://github.com/charoiteai/Charoite_audio/commit/3424e41364033a217d83231fd7f3c45abfae7f89))
+
 ## [0.56.0](https://github.com/charoiteai/Charoite_audio/compare/v0.55.2...v0.56.0) (2026-08-20)
 
 
