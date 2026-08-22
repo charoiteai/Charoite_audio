@@ -39,6 +39,17 @@ review gates, and who answers for what — is documented in
   that both code and test read from one constant) need not be fixed — but is
   worth a look: on 20.08 one such survivor revealed that behaviour exactly at
   the threshold was tested by nobody.
+- **Decisions live in pure functions, loops only apply them.** The live
+  contour (`stt_loop`, the heartbeat loop) is a closure inside
+  `daemon.main()` — no unit test reaches it, and a mutation run on 21.08 put
+  a number on that: 53 of 53 mutants in `daemon.py` survived while the
+  policies already extracted to `src/stt_runtime.py` killed 14 of 15. So
+  every threshold, hysteresis and branch choice of the live contour is a
+  named function in `stt_runtime` with an invariant in
+  `tests/test_stt_runtime.py` (`progress_throttled`, `lag_transition`,
+  `diarization_plan`, `live_input_young_enough`, …); the loop calls it and
+  does nothing else. Boundary tests take a non-zero `last`: with zero,
+  `now - last` and `now + last` are indistinguishable — the mutator showed it.
 - **No pattern blacklists.** Classification decisions go through the
   local model, not through hardcoded word lists — patterns rot, models
   understand context.

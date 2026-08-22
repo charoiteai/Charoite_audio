@@ -42,7 +42,12 @@ class TestQuestionCandidate:
         daemon = (Path(__file__).resolve().parent.parent / "src" / "daemon.py") \
             .read_text(encoding="utf-8")
         assert "ask_question_model" not in daemon
-        assert "return question_filter.looks_question(text)" in daemon
+        # Шим daemon.looks_question убран (партия D, 22.08): мутация
+        # `return X → return None` на строке-обёртке выживала при зелёных
+        # текстовых тестах. Горячие пути зовут фильтр напрямую.
+        assert "question_filter.looks_question(added)" in daemon
+        assert "question_filter.looks_question(recent)" in daemon
+        assert "def looks_question(" not in daemon
 
 
 class TestWorthAsking:

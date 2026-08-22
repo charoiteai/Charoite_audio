@@ -128,3 +128,11 @@ def test_garbage_deadline_does_not_break_the_run(monkeypatch):
     """Мусор в переменной — не повод рвать ночь на середине."""
     monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, "завтра")
     assert live_gate.night_is_over() is False
+
+
+def test_deadline_second_itself_is_still_night(monkeypatch):
+    """Граница `>`: ровно в секунду дедлайна ночь ещё идёт — мутация Gt→GtE
+    срывала последнюю тему на секунду раньше (мутационный прогон 21.08)."""
+    monkeypatch.setenv(live_gate.NIGHTLY_UNTIL_ENV, "1000")
+    assert live_gate.night_is_over(now=lambda: 1000.0) is False
+    assert live_gate.night_is_over(now=lambda: 1000.001) is True
