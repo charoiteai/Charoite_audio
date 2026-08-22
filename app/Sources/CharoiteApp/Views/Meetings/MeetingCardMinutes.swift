@@ -138,6 +138,9 @@ extension MeetingCardView {
 
     /// Чтение файла — не на главном потоке: стенограмма двухчасовой
     /// встречи это мегабайты, и карточка не должна замирать при переключении.
+    /// Сама функция — на главном акторе: после await она возвращается туда же,
+    /// и @State пишется с главного потока (ревью 22.08, локальная голова).
+    @MainActor
     func loadDepthFile() async {
         let wanted = depth
         guard wanted == .analysis || wanted == .transcript,
@@ -145,7 +148,9 @@ extension MeetingCardView {
         let text = await Task.detached(priority: .userInitiated) {
             (try? String(contentsOf: url, encoding: .utf8)) ?? ""
         }.value
-        guard !Task.isCancelled else { return }
+        // .task(id:) отменяет прежнюю задачу при смене глубины; второй
+        // сторож — на случай, если глубина сменилась между await и записью.
+        guard !Task.isCancelled, depth == wanted else { return }
         fileText = text
         fileDepth = wanted
     }
