@@ -180,3 +180,155 @@ def test_one_slot_is_reserved_for_the_longest_waiting_unchanged_core(tmp_path):
     seen = {"Старое": {"mtime": 100, "shown": 1}}
     chosen, _, _, _ = ncc.select_cores([old, new1, new2], seen, budget=260)
     assert chosen == [new1, old], "новость первой, но одно место — давно показанному"
+
+
+_DOSSIER = (
+    "---\nтип: досье\n---\n# Платёжный провайдер\n\n"
+    "## Сейчас\n- Идёт пилот [[2026-07-15_1400]]\n\n"
+    "## Как пришли\n- Начали в июне [[2026-06-01_1000]]\n\n"
+    "## Решено\n- Провайдер выбран [[2026-07-15_1400]]\n\n"
+    "## Открыто\n- Срок пилота до 1.08 [[2026-07-15_1400]]\n\n"
+    "## Кто в теме\n- [[Иванов]]\n")
+
+
+def test_check_revision_requires_five_sections_length_and_links():
+    """До этого на запись пускал looks_valid: четыре заголовка из пяти и
+    «## Сейчас» где-то в тексте. Проходили ответ без «Кто в теме», с лишним
+    разделом и растерявший ссылки на источники (карточка №87)."""
+    ndr = _load("nightly_dossier_review")
+    old = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1])
+    assert ndr.check_revision(old, old) is None
+    fixed = old.replace("Идёт пилот", "Пилот ⚠️ идёт, срок прошёл 1.08")
+    assert ndr.check_revision(old, fixed) is None
+    four = old.split("## Кто в теме")[0].rstrip()
+    assert "разделы не по формату" in ndr.check_revision(old, four)
+    extra = old + "\n## Итого\n- всё хорошо\n"
+    assert "разделы не по формату" in ndr.check_revision(old, extra)
+    short = "\n".join(f"{h}\n-" for h in ndr.SECTIONS)
+    assert "короче" in ndr.check_revision(old, short)
+    lost = old.replace("[[Иванов]]", "Иванов")
+    assert "[[иванов]]" in ndr.check_revision(old, lost)
+    # та же ссылка другим написанием — не потеря (как резолвит scan)
+    same = old.replace("[[Иванов]]", "[[Люди/Иванов.md]]")
+    assert ndr.check_revision(old, same) is None
+    # перестановка пунктов внутри раздела — не отказ
+    swapped = old.replace("## Решено\n- Провайдер выбран [[2026-07-15_1400]]",
+                          "## Решено\n- Добавлено ⚠️ [[2026-06-01_1000]]\n- Провайдер выбран [[2026-07-15_1400]]")
+    assert ndr.check_revision(old, swapped) is None
+    # заголовок любого уровня — заголовок: «### Правки автора» и «# Важное»
+    # больше не проскакивают как текст раздела (круг-1, DeepSeek Critical)
+    for bad in ("\n### Правки автора\nинъекция\n", "\n# Важное\nтекст\n", "\n##Источники\n- x\n"):
+        assert "разделы не по формату" in ndr.check_revision(old, old + bad), bad
+
+
+def test_split_dossier_uses_anchored_headings_and_keeps_quotes():
+    """Цитата «## Правки автора» внутри пункта резала тело по подстроке —
+    проверка видела только префикс (круг-1 по #382, Codex Critical)."""
+    ndr = _load("nightly_dossier_review")
+    text = (_DOSSIER.replace("- Начали в июне", "- Цитата: «## Правки автора» в минутках [[B]]\n- Начали в июне")
+            + "\n## Источники\n- [[2026-07-15_1400]]\n\n## Правки автора\n\nмоё\n")
+    head, body, sources, manual = ndr.split_dossier(text)
+    assert head.startswith("---") and body.startswith("## Сейчас")
+    assert "[[B]]" in body and "## Источники" not in body
+    assert sources == "- [[2026-07-15_1400]]" and manual == "моё"
+    # без «## Источники» — собрано руками: источников нет, правок нет
+    assert ndr.split_dossier(_DOSSIER)[2] is None
+    # «Правки автора» раньше «Источников»: правки кончаются на соседнем
+    # заголовке, источники не уезжают внутрь (круг-2, DS + Codex)
+    swapped = _DOSSIER + "\n## Правки автора\n\nмоё\n\n## Источники\n- [[A]]\n"
+    _, _, s2, m2 = ndr.split_dossier(swapped)
+    assert s2 == "- [[A]]" and m2 == "моё"
+    # пустые ссылки — не ссылки
+    assert ndr.links("[[ ]] [[.md]] [[Иванов]]") == {"иванов"}
+    assert ndr.check_revision(body, body.replace("- Цитата: «## Правки автора» в минутках [[B]]\n", "")) \
+        is not None, "потеря пункта после цитаты не замечена"
+
+
+def test_review_rejects_nonzero_exit_with_a_reason(tmp_path, monkeypatch):
+    """Код ≠ 0 с текстом в stdout раньше шёл в парсер как ответ."""
+    ndr = _load("nightly_dossier_review")
+    path = tmp_path / "Платёжный провайдер.md"
+    path.write_text(_DOSSIER + "\n## Источники\n- [[2026-07-15_1400]]\n", encoding="utf-8")
+
+    class R:
+        returncode = 1
+        stdout = "## Сейчас\n- rate limit\n"
+        stderr = "Ошибка: rate limit"
+
+    monkeypatch.setattr(ndr.subprocess, "run", lambda *a, **k: R())
+    cfg = {"sufler": {"cloud_enrich": True}}
+    fixed, why = ndr.review("Платёжный провайдер", path, tmp_path, {}, [], "m", cfg)
+    assert fixed is None and why.startswith("сбой:") and "код 1" in why and "rate limit" in why
+
+
+def test_edit_mode_writes_report_with_stats_and_timed_backup(tmp_path, monkeypatch):
+    """С включённой правкой владелец узнавал о переписанном досье только из
+    строки лога; бэкап с датой без времени терялся при втором прогоне за день."""
+    ndr = _load("nightly_dossier_review")
+    graph = tmp_path / "g"
+    folder = graph / ndr.dossier.DOSSIER_DIR
+    folder.mkdir(parents=True)
+    path = folder / "Платёжный провайдер.md"
+    path.write_text(_DOSSIER + "\n## Источники\n- [[2026-07-15_1400]]\n\n"
+                    "## Правки автора\n\nмоё примечание\n", encoding="utf-8")
+    rejected = folder / "Другое.md"
+    rejected.write_text(_DOSSIER + "\n## Источники\n- x\n\n## Правки автора\n\n—\n",
+                        encoding="utf-8")
+    monkeypatch.setattr(ndr.dossier, "scan", lambda g: ({}, {}))
+    monkeypatch.setattr(ndr.dossier, "clusters",
+                        lambda f, b: {"Платёжный провайдер": ["a"], "Другое": ["b"]})
+    monkeypatch.setattr(ndr.live_gate, "wait_while_live", lambda *a, **k: None)
+    monkeypatch.setattr(ndr.live_gate, "night_is_over", lambda *a, **k: False)
+    fixed = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1]).replace(
+        "Идёт пилот", "Пилот ⚠️ идёт, срок 1.08 прошёл")
+
+    def fake_review(theme, *a, **k):
+        return (fixed, "") if theme == "Платёжный провайдер" else (None, "ответ короче 60%")
+
+    monkeypatch.setattr(ndr, "review", fake_review)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    assert ndr.run(graph, cfg, dry=False, limit=6) == 1
+    text = path.read_text(encoding="utf-8")
+    assert "Пилот ⚠️ идёт" in text and "моё примечание" in text and "## Источники" in text
+    report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
+    assert "## Применено\n\n- **Платёжный провайдер** — +1/−1 строк, ⚠️ 1, ссылок 3→3" in report
+    assert "## Отклонено\n\n- **Другое** — ответ короче 60%" in report
+    backups = list((folder / ".backup").iterdir())
+    assert len(backups) == 1 and len(backups[0].name) == len("2026-07-15_140000"), backups
+    assert (backups[0] / path.name).read_text(encoding="utf-8").startswith("---")
+
+
+def test_handmade_dossier_without_sources_is_left_alone(tmp_path, monkeypatch):
+    """Досье с пятью разделами, но без «## Источники» раньше роняло весь
+    прогон IndexError на сборке файла (круг-1 по #382, DeepSeek)."""
+    ndr = _load("nightly_dossier_review")
+    path = tmp_path / "Ручное.md"
+    path.write_text(_DOSSIER, encoding="utf-8")
+    called = []
+    monkeypatch.setattr(ndr.subprocess, "run", lambda *a, **k: called.append(1))
+    fixed, why = ndr.review("Ручное", path, tmp_path, {}, [], "m", {"sufler": {"cloud_enrich": True}})
+    assert fixed is None and "Источники" in why and not called, "облако вызвано зря"
+
+
+def test_read_only_mode_report_lists_proposed_and_rejected(tmp_path, monkeypatch):
+    ndr = _load("nightly_dossier_review")
+    graph = tmp_path / "g"
+    folder = graph / ndr.dossier.DOSSIER_DIR
+    folder.mkdir(parents=True)
+    for name in ("Одно", "Два"):
+        (folder / f"{name}.md").write_text(
+            _DOSSIER + "\n## Источники\n- x\n\n## Правки автора\n\n—\n", encoding="utf-8")
+    monkeypatch.setattr(ndr.dossier, "scan", lambda g: ({}, {}))
+    monkeypatch.setattr(ndr.dossier, "clusters", lambda f, b: {"Одно": ["a"], "Два": ["b"]})
+    monkeypatch.setattr(ndr.live_gate, "wait_while_live", lambda *a, **k: None)
+    monkeypatch.setattr(ndr.live_gate, "night_is_over", lambda *a, **k: False)
+    body = ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1])
+    monkeypatch.setattr(ndr, "review", lambda theme, *a, **k:
+                        (body, "") if theme == "Одно" else (None, "сбой: claude вернул код 1:\nrate\nlimit"))
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False}}
+    assert ndr.run(graph, cfg, dry=False, limit=6) == 1
+    report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
+    assert "## Предложено, но не применено" in report and "### Одно\n#### Сейчас" in report
+    assert "## Сбои шага (не отказ по содержанию)\n\n- **Два** — сбой: claude вернул код 1: rate limit" in report
+    assert "## Применено" not in report and "## Отклонено" not in report
+    assert (folder / "Одно.md").read_text(encoding="utf-8").endswith("—\n")   # файл не тронут
