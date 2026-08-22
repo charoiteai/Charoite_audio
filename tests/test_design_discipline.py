@@ -55,8 +55,10 @@ def _offenders(pattern: re.Pattern[str]) -> list[str]:
     for path in _sources():
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             code = line.split("//", 1)[0]
-            # объявление самого токена (`static let warning = Color.orange`)
-            if "static let" in code:
+            # объявление самого токена (`static let warning = Color.orange`) —
+            # только там, где токены и живут; `static let` во вью — та же
+            # болезнь под другим именем (второй круг 22.08, Gemini)
+            if "static let" in code and path.name in {"DesignKit.swift", "Theme.swift"}:
                 continue
             if pattern.search(code):
                 out.append(f"{path.relative_to(REPO)}:{n}: {line.strip()}")
@@ -80,7 +82,9 @@ def test_поверхности_происхождения_используют�
     объявлен и нигде не вызван, а поверхности рисовались вручную). Считаем
     ВЫЗОВЫ контейнеров, а не вхождения токенов."""
     text = "\n".join(p.read_text(encoding="utf-8") for p in _views())
-    assert text.count("MemorySurface(") >= 1, "лаванда памяти не применена"
+    assert text.count("MemorySurface {") + text.count("MemorySurface(") >= 1, (
+        "лаванда памяти не применена"
+    )
     assert text.count("CloudSurface {") + text.count("CloudSurface(") >= 2, (
         "небо облака не применено"
     )
