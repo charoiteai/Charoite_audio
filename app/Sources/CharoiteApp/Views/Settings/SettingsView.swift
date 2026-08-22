@@ -139,6 +139,11 @@ struct SettingsView: View {
                                "Let the cloud edit dossiers",
                                "允许云端修改档案"), isOn: $cloudEditGraph)
                         .onChange(of: cloudEditGraph) { _, on in
+                            // Откат ниже сам меняет состояние и снова зовёт этот
+                            // обработчик: без выхода «уже как в конфиге» запись
+                            // падала бы по кругу при отсутствии ключа в файле
+                            // (ревью 22.08, локальная голова).
+                            guard on != AppSettings.configFlag("cloud_edit_graph") else { return }
                             // Пишем в config.yaml, а не в UserDefaults: разрешение
                             // спрашивает ночной скрипт, и знать он должен одно место.
                             if !AppSettings.setConfigFlag("cloud_edit_graph", on) {
@@ -231,6 +236,7 @@ struct SettingsView: View {
                            "每天向 GitHub 查询一次新版本"), isOn: $checkUpdates)
                     .disabled(AppSettings.cloudForbiddenByEnvironment)
                     .onChange(of: checkUpdates) { _, on in
+                        guard on != AppSettings.checkUpdates else { return }
                         // Тот же договор, что у облачного тумблера: источник
                         // правды — config.yaml, его же читает VersionStatusService.
                         if !AppSettings.setConfigFlag("check_updates", on) {
