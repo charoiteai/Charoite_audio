@@ -17,6 +17,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import time
 
 import yaml
 
@@ -44,56 +45,84 @@ REPORT_SECTIONS = ("## Противоречия", "## Протухшее", "## �
                    "## Потерянные хвосты", "## Три риска недели")
 KEEP_REPORTS = 14
 INDEX_CHARS = 4000
-# Что ушло в облако в прошлый раз: {граф: {ядро: mtime}}. Нужно, чтобы ночь
-# за ночью показывать НЕ одни и те же ядра (разбор 22.08: при 161 свежем
-# ядре на 636 КБ в 60 КБ промпта помещалось 20, и по алфавиту — всегда те же).
+# Что ушло в облако и когда: {граф: {ядро: {"mtime": …, "shown": …}}}.
+# Нужно, чтобы ночь за ночью показывать НЕ одни и те же ядра (разбор 22.08:
+# при 161 свежем ядре на 636 КБ в 60 КБ промпта помещалось 20, и по
+# алфавиту — всегда те же). Карта копится и сливается, а не заменяется
+# партией ночи (круг-1 по PR #380: замена ломала ротацию — показанное
+# позавчера считалось «новым» и вытесняло никогда не показанное).
 SEEN = ROOT / "logs" / "nightly_cores_seen.json"
 
 
-def _seen(graph: pathlib.Path) -> dict:
+def _graph_key(graph: pathlib.Path) -> str:
+    return str(pathlib.Path(graph).expanduser().resolve())
+
+
+def _seen_all() -> dict:
     try:
-        return json.loads(SEEN.read_text(encoding="utf-8")).get(str(graph), {})
+        return json.loads(SEEN.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 — нет файла/битый: как первый запуск
         return {}
 
 
-def _save_seen(graph: pathlib.Path, sent: dict) -> None:
-    try:
-        data = json.loads(SEEN.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        data = {}
-    data[str(graph)] = sent
-    SEEN.parent.mkdir(parents=True, exist_ok=True)
-    SEEN.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+def _seen(graph: pathlib.Path) -> dict:
+    return _seen_all().get(_graph_key(graph), {})
+
+
+def _save_seen(graph: pathlib.Path, sent: dict, current_stems: set[str]) -> None:
+    """Слить партию ночи с картой и выбросить ядра, которых больше нет.
+
+    Файл — 0600 и через временный + rename: логи несут темы встреч, а
+    обрыв между truncate и записью обнулил бы курсор (круг-1 по PR #380).
+    """
+    data = _seen_all()
+    entry = data.get(_graph_key(graph), {})
+    entry.update(sent)
+    data[_graph_key(graph)] = {k: v for k, v in entry.items() if k in current_stems}
+    SEEN.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = SEEN.with_name(SEEN.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(data, ensure_ascii=False, indent=1))
+    os.replace(tmp, SEEN)
 
 
 def select_cores(fresh: list[pathlib.Path], seen: dict, budget: int,
-                 index_text: str = "") -> tuple[list[pathlib.Path], str]:
-    """Какие ядра уходят в промпт и сам текст промпта (без хвоста задания).
+                 index_text: str = "") -> tuple[list[pathlib.Path], str, dict, list[pathlib.Path]]:
+    """Какие ядра уходят в промпт: (выбранные, текст, партия для курсора, не влезшие).
 
-    Порядок: сначала ядра, изменившиеся с прошлого прогона (их mtime новее
-    записанного), потом остальные — и те и другие по убыванию свежести.
-    Бюджет считается по целым ядрам: следующее не помещается — пропускаем его
-    и пробуем дальше (короткие ещё влезут), но ни одно не режется посередине.
-    Раньше: алфавит и blob[:60_000] — ревизия видела ~4% ядер, всегда «А–В»,
-    последнее — обрывком.
+    Порядок: сначала ядра, которых курсор не видел или которые изменились
+    после показа (mtime новее записанного) — по убыванию свежести; потом
+    остальные — по давности показа, самые давние первыми, чтобы ни одно
+    неизменившееся ядро не голодало. Бюджет считается по целым ядрам:
+    следующее не помещается — пропускаем и пробуем дальше (короткие ещё
+    влезут), но ни одно не режется посередине. mtime для курсора берётся
+    здесь же, в момент чтения: изменится файл во время запроса к облаку —
+    следующая ночь увидит его как новый, а не как показанный.
+    Раньше: алфавит и blob[:60_000] — ревизия видела ~4% ядер, всегда
+    «А–В», последнее — обрывком.
     """
-    def key(p: pathlib.Path):
+    stamped = []
+    for p in fresh:
         mtime = p.stat().st_mtime
-        changed = mtime > float(seen.get(p.stem, 0))
-        return (0 if changed else 1, -mtime)
-    ordered = sorted(fresh, key=key)
+        rec = seen.get(p.stem) or {}
+        changed = mtime > float(rec.get("mtime", 0))
+        stamped.append((p, mtime, changed, float(rec.get("shown", 0))))
+    stamped.sort(key=lambda s: (0, -s[1]) if s[2] else (1, s[3]))
     parts = [f"## ИНДЕКС\n{index_text[:INDEX_CHARS]}"] if index_text else []
     total = sum(len(x) + 2 for x in parts)
-    chosen = []
-    for p in ordered:
+    chosen, sent, skipped = [], {}, []
+    now = time.time()
+    for p, mtime, _changed, _shown in stamped:
         block = f"## ЯДРО: {p.stem}\n{p.read_text(encoding='utf-8')}"
         if total + len(block) + 2 > budget:
+            skipped.append(p)
             continue
         parts.append(block)
         total += len(block) + 2
         chosen.append(p)
-    return chosen, "\n\n".join(parts)
+        sent[p.stem] = {"mtime": mtime, "shown": now}
+    return chosen, "\n\n".join(parts), sent, skipped
 
 
 def report_problem(returncode: int, out: str) -> str:
@@ -147,12 +176,18 @@ def main() -> None:
         return
     index = cores / "_ЯДРА.md"
     index_text = index.read_text(encoding="utf-8") if index.exists() else ""
-    chosen, blob = select_cores(fresh, _seen(graph), MAX_CHARS, index_text)
+    chosen, blob, sent, skipped = select_cores(fresh, _seen(graph), MAX_CHARS, index_text)
     total_chars = sum(len(p.read_text(encoding="utf-8")) for p in fresh)
     # Честный охват в лог: раньше печаталось len(fresh) — число кандидатов,
     # и «ядер 249» читалось как «ревизия видела все 249».
     print(f"в промпт: ядер {len(chosen)} из {len(fresh)} свежих, "
           f"{len(blob)} из {total_chars} знаков")
+    # Пропущенное по размеру — отдельно: такое ядро не увидит ни одна ночь,
+    # и молчать об этом нельзя (круг-1 по PR #380, DeepSeek).
+    too_big = [p.stem for p in skipped
+               if len(p.read_text(encoding="utf-8")) > MAX_CHARS - INDEX_CHARS - 64]
+    if too_big:
+        print("не влезают целиком ни в одну ночь: " + ", ".join(too_big))
     if not chosen:
         print("ни одно ядро не поместилось в бюджет — пропуск")
         return
@@ -197,7 +232,7 @@ def main() -> None:
         f"---\ntype: служебное\nдата: {day}\nмодель: {model}\n---\n"
         f"# Ночная ревизия ядер ({model})\n\n{out}\n", encoding="utf-8")
     print(f"отчёт: {dest.name} ({len(out)} зн., ядер в ревизии {len(chosen)} из {len(fresh)})")
-    _save_seen(graph, {p.stem: p.stat().st_mtime for p in chosen})
+    _save_seen(graph, sent, {p.stem for p in fresh})
     prune_reports(graph, "Служебное_ночная_ревизия_")
 
 

@@ -72,22 +72,44 @@ def test_selection_prefers_fresh_and_never_cuts_a_core_in_half(tmp_path):
     b = _core(tmp_path, "Ядро Я", 3000, 3000)     # самое свежее, последнее по алфавиту
     c = _core(tmp_path, "Большое", 9000, 2000)    # не влезает
     d = _core(tmp_path, "Мелкое", 500, 1500)      # влезет после пропуска большого
-    chosen, blob = ncc.select_cores([a, b, c, d], seen={}, budget=7000, index_text="ИНДЕКС")
+    chosen, blob, sent, skipped = ncc.select_cores([a, b, c, d], seen={}, budget=7000, index_text="ИНДЕКС")
     assert chosen == [b, d, a]                    # свежее первым, большое пропущено
+    assert skipped == [c]
     assert "## ЯДРО: Большое" not in blob
     assert blob.startswith("## ИНДЕКС\nИНДЕКС")
     for p in chosen:
         assert f"## ЯДРО: {p.stem}\n" + "x" * (p.stat().st_size) in blob, "ядро целиком"
+    assert set(sent) == {"Ядро Я", "Мелкое", "Аврал"} and sent["Аврал"]["mtime"] == 1000
 
 
-def test_selection_rotates_by_what_changed_since_last_run(tmp_path):
-    """Курсор: ядра, изменившиеся с прошлого прогона, идут первыми — иначе
-    одни и те же свежие ядра ночь за ночью занимали бы весь бюджет."""
+def test_cursor_rotates_across_nights_and_keeps_memory(tmp_path, monkeypatch):
+    """Несколько ночей подряд с настоящим сохранением: показанное не
+    считается новым через ночь, никогда не показанное доходит до облака,
+    изменившееся после показа — снова первым (круг-1 по PR #380: замена
+    карты партией ночи ломала ротацию — A и B чередовались, C не попадало)."""
+    import json
     ncc = _load("nightly_claude_cores")
-    a = _core(tmp_path, "А", 1000, 5000)
-    b = _core(tmp_path, "Б", 1000, 4000)
-    seen = {"А": 5000.0}                          # А уже показывали в этом виде
-    chosen, _ = ncc.select_cores([a, b], seen=seen, budget=1500)
-    assert chosen == [b], "изменившееся с прошлого раза — первым, А не поместилось"
-    chosen, _ = ncc.select_cores([a, b], seen={}, budget=2500)
-    assert chosen == [a, b]                       # без курсора — по свежести
+    monkeypatch.setattr(ncc, "SEEN", tmp_path / "logs" / "seen.json")
+    graph = tmp_path / "graph"; cores = graph / "Ядра"; cores.mkdir(parents=True)
+    a = _core(cores, "A", 900, 300); b = _core(cores, "B", 900, 200); c = _core(cores, "C", 900, 100)
+    stems = {"A", "B", "C"}
+    order = []
+    for _night in range(3):                       # бюджет — ровно одно ядро
+        chosen, _, sent, _ = ncc.select_cores([a, b, c], ncc._seen(graph), budget=920)
+        order.append(chosen[0].stem)
+        ncc._save_seen(graph, sent, stems)
+    assert order == ["A", "B", "C"], order         # каждое — по одному разу
+    saved = json.loads(ncc.SEEN.read_text(encoding="utf-8"))[ncc._graph_key(graph)]
+    assert set(saved) == stems, "карта копится, а не заменяется партией"
+    assert (ncc.SEEN.stat().st_mode & 0o777) == 0o600
+    # четвёртая ночь: ничего не менялось — первым идёт самое давно показанное (A)
+    chosen, _, _, _ = ncc.select_cores([a, b, c], ncc._seen(graph), budget=920)
+    assert chosen[0].stem == "A"
+    # B изменилось после показа — снова первым, раньше давно показанного A
+    import os
+    os.utime(b, (5000, 5000))
+    chosen, _, _, _ = ncc.select_cores([a, b, c], ncc._seen(graph), budget=920)
+    assert chosen[0].stem == "B"
+    # ядро исчезло из графа — выпадает из карты
+    ncc._save_seen(graph, {}, {"A", "B"})
+    assert "C" not in json.loads(ncc.SEEN.read_text(encoding="utf-8"))[ncc._graph_key(graph)]
