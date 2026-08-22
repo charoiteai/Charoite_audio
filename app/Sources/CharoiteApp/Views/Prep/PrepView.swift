@@ -21,6 +21,17 @@ struct PrepView: View {
     @State private var topicHits: [MeetingSearch.Hit] = []
     @State private var topicSearchTask: Task<Void, Never>?
     @State private var isLoadingTopic = false
+    /// Сводка долгов и три горящих — считаются при изменении поручений или
+    /// темы, а не в теле вью: три прохода с разбором срока по сотням строк
+    /// на каждый рендер — лишняя работа на главном потоке (ревью 22.08,
+    /// DeepSeek).
+    @State private var debts = Debts()
+
+    struct Debts: Equatable {
+        var summary = ""
+        var urgent: [TasksService.Item] = []
+        var isEmpty: Bool { summary.isEmpty }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -42,8 +53,11 @@ struct PrepView: View {
         .task {
             tasks.rescan()
             loadTopicTrail()
+            recomputeDebts()
         }
         .onChange(of: calendar.today) { _, _ in loadTopicTrail() }
+        .onChange(of: tasks.items) { _, _ in recomputeDebts() }
+        .onChange(of: topicHits) { _, _ in recomputeDebts() }
         .onDisappear { cancelTopicLoad() }
     }
 
@@ -219,7 +233,6 @@ struct PrepView: View {
     /// отсутствующего события (дизайн-аудит 21.08, ход 3).
     @ViewBuilder
     private var debtsSection: some View {
-        let debts = otherOpenTasks
         if !debts.isEmpty {
             section(nextTopic == nil
                         ? L.t("Что вы обещали", "What you promised", "你的承诺")
@@ -229,7 +242,7 @@ struct PrepView: View {
                     navigation.openTasks()
                 } label: {
                     HStack(spacing: 6) {
-                        Text(Self.debtsSummary(debts.map(\.text)))
+                        Text(debts.summary)
                         Image(systemName: "chevron.right")
                             .font(.caption2).foregroundStyle(.tertiary)
                     }
@@ -237,7 +250,7 @@ struct PrepView: View {
                 .buttonStyle(.plain)
                 .font(.callout)
                 if nextTopic == nil {
-                    ForEach(Self.mostUrgent(debts, limit: 3)) { item in
+                    ForEach(debts.urgent) { item in
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Button { tasks.toggle(item) } label: {
                                 if tasks.isUpdating(item) {
@@ -255,6 +268,12 @@ struct PrepView: View {
                 }
             }
         }
+    }
+
+    private func recomputeDebts() {
+        let open = otherOpenTasks
+        debts = Debts(summary: open.isEmpty ? "" : Self.debtsSummary(open.map(\.text)),
+                      urgent: nextTopic == nil ? Self.mostUrgent(open, limit: 3) : [])
     }
 
     /// «2 просрочено · 6 на этой неделе · 15 без срока» — нули не пишем.
@@ -286,8 +305,10 @@ struct PrepView: View {
             if case .overdue(let d)? = TaskDue.parse(item.text)?.status(now: now) { days = -d }
             return (bucket, days, item)
         }
+        // Третий ключ — стабильность: при равных корзинах порядок файла,
+        // а не произвол нестабильной сортировки (ревью 22.08, DeepSeek).
         return ranked
-            .sorted { ($0.0, $0.1) < ($1.0, $1.1) }
+            .sorted { ($0.0, $0.1, $0.2.id) < ($1.0, $1.1, $1.2.id) }
             .prefix(limit)
             .map(\.2)
     }

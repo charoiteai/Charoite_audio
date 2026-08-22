@@ -31,13 +31,19 @@ struct SuflerCopyButton: View {
 /// SuflerView не тронут.
 struct SuflerEmptyState: View {
     let symbol: String
-    let text: String
+    let running: Bool
 
     var body: some View {
-        EmptyState(text,
-                   text: L.t("Стенограмма, тезисы и подсказки появятся здесь по ходу разговора.",
+        EmptyState(running
+                       ? L.t("Слушаю…", "Listening…", "聆听中…")
+                       : L.t("Встреча ещё не началась", "The meeting has not started", "会议尚未开始"),
+                   text: running
+                       ? L.t("Стенограмма, тезисы и подсказки появятся здесь по ходу разговора.",
                              "Transcript, theses and hints show up here as the conversation goes.",
-                             "逐字稿、要点与提示会随着对话出现在这里。"),
+                             "逐字稿、要点与提示会随着对话出现在这里。")
+                       : L.t("Нажмите «Слушать встречу» (⌘⇧␣) — стенограмма, тезисы и подсказки появятся здесь.",
+                             "Press “Listen to the meeting” (⌘⇧␣) — transcript, theses and hints appear here.",
+                             "点按「旁听会议」(⌘⇧␣)——逐字稿、要点与提示会出现在这里。"),
                    systemImage: symbol)
     }
 }
