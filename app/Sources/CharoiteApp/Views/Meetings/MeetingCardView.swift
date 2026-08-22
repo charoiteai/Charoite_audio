@@ -25,9 +25,17 @@ struct MeetingCardView: View {
     @State private var actionMessage = ""
     @State private var forgetPlan = ""
     @State private var showForget = false
-    /// Подробный протокол — вид по умолчанию: за ним человек и приходит в
-    /// карточку. Короткая выжимка остаётся на переключателе.
-    @AppStorage("meetingCardDetailed") var detailed = true
+    /// Глубина чтения — привычка, а не разовый фильтр: помним между
+    /// запусками (сегмент Резюме · Минутки · Разбор · Стенограмма).
+    @AppStorage("meetingCardDepth") var depthRaw = MeetingCardDepth.summary.rawValue
+    /// Разбор и стенограмма читаются с диска по требованию — строками, чтобы
+    /// не резать мегабайтный текст на каждом рендере. Привязаны к встрече:
+    /// встроенная карточка живёт одной вью на все встречи, и без
+    /// fileMeetingID текст встречи A показывался под заголовком B до конца
+    /// чтения (ревью 22.08, DeepSeek — Critical).
+    @State var fileLines: [String]?
+    @State var fileDepth: MeetingCardDepth?
+    @State var fileMeetingID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -35,27 +43,29 @@ struct MeetingCardView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    if let gist = card.gist {
-                        Text(gist).font(.body)
-                    } else if card.summaryMissing {
-                        Text(L.t("Саммари ещё не готово — открой стенограмму.",
-                                 "The summary is not ready yet — open the transcript.",
-                                 "摘要尚未生成——请打开逐字稿。"))
-                            .font(.callout).foregroundStyle(.secondary)
+                    depthPicker
+                    if depth == .summary || depth == .minutes {
+                        if let gist = card.gist {
+                            Text(gist).font(.body)
+                        } else if card.summaryMissing {
+                            Text(L.t("Саммари ещё не готово — откройте стенограмму.",
+                                     "The summary is not ready yet — open the transcript.",
+                                     "摘要尚未生成——请打开逐字稿。"))
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
                     }
-                    detailPicker
-                    if let minutes = card.minutes, detailed {
-                        minutesSections(minutes)
-                    } else {
-                        section(L.t("Решили", "Decided", "决定"), mark: "⚑",
-                                items: card.decisions)
-                        taskSection
-                        section(L.t("Открытые вопросы", "Open questions", "待解决问题"), mark: "?",
-                                items: card.openQuestions)
-                    }
+                    depthContent
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 2)
+            }
+            // Откуда это: путь заметки от графа и время последней записи.
+            if let source = sourceLine {
+                Text(source)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1).truncationMode(.middle)
+                    .textSelection(.enabled)
             }
             if !actionMessage.isEmpty {
                 Text(actionMessage)
@@ -76,6 +86,9 @@ struct MeetingCardView: View {
             card = MeetingCardLoader.load(for: meeting)
             tasks.rescan()
         }
+        .task(id: depth.rawValue + "|" + meeting.meetingID) { await loadDepthFile() }
+        // Привычка «Подробно» из прежнего ключа — в «Минутки», один раз.
+        .onAppear { Self.migrateDepthPreference() }
         .sheet(isPresented: $showForget) { forgetSheet }
     }
 
@@ -168,7 +181,7 @@ struct MeetingCardView: View {
     }
 
     @ViewBuilder
-    private func section(_ title: String, mark: String, items: [String]) -> some View {
+    func section(_ title: String, mark: String, items: [String]) -> some View {
         if !items.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(.subheadline.weight(.semibold))
@@ -218,6 +231,12 @@ struct MeetingCardView: View {
                             .font(.callout)
                             .strikethrough(item.done)
                             .foregroundStyle(item.done ? .secondary : .primary)
+                        // Те же чипы срока, что на экране задач: просрочка
+                        // видна в карточке, а не только в общем списке.
+                        if !item.done, let due = TaskDue.parse(item.text) {
+                            Spacer(minLength: 4)
+                            DueChip(due: due)
+                        }
                     }
                 }
                 if let error = tasks.mutationError {
@@ -234,19 +253,29 @@ struct MeetingCardView: View {
 
     private var actions: some View {
         HStack(spacing: 10) {
-            if meeting.notePath != nil {
-                Button(L.t("Открыть", "Open", "打开")) { processing.open(meeting) }
-                    .charoite(.prominent, .s)
+            // Одна дверь во внешний редактор — для той глубины, что открыта.
+            // Раньше «Открыть», «Стенограмма» и «Исправить стенограмму…»
+            // стояли рядом, и две из них звали одно и то же.
+            if let file = depth.file(card: card, meeting: meeting),
+               FileManager.default.fileExists(atPath: file.path) {
+                Button(L.t("Открыть в редакторе", "Open in editor", "在编辑器中打开")) {
+                    NSWorkspace.shared.open(file)
+                }
+                .charoite(.regular, .s)
+                .help(depth == .transcript
+                      ? L.t("Исправьте стенограмму и нажмите «Пересобрать результат»",
+                            "Fix the transcript, then “Rebuild result”",
+                            "修正逐字稿后点按「重建结果」")
+                      : file.lastPathComponent)
             }
-            Button(L.t("Стенограмма", "Transcript", "逐字稿")) {
-                processing.openTranscript(meeting)
-            }
-            .charoite(.regular, .s)
             Menu(L.t("Ещё", "More", "更多")) {
                 if let url = card.obsidianURL {
                     Button("Obsidian") { NSWorkspace.shared.open(url) }
                 }
-                Button(L.t("Протокол участникам", "Participant protocol", "参会者纪要")) {
+                // «Участникам» обещало доставку; действие — копирование.
+                Button(L.t("Скопировать протокол для участников",
+                           "Copy the protocol for participants",
+                           "复制参会者纪要")) {
                     copyParticipantProtocol()
                 }
                 Divider()
@@ -262,9 +291,6 @@ struct MeetingCardView: View {
                         title: meeting.title, dateText: dateText, card: card))
                 }
                 Divider()
-                Button(L.t("Исправить стенограмму…", "Edit transcript…", "编辑逐字稿…")) {
-                    processing.openTranscript(meeting)
-                }
                 Button(L.t("Пересобрать результат", "Rebuild result", "重建结果")) {
                     processing.rebuild(meeting)
                     actionMessage = L.t("Пересборка запущена",
