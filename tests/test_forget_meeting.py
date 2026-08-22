@@ -426,3 +426,82 @@ def test_forget_says_aloud_what_it_cannot_reach_in_the_brain(tmp_path):
 
     quiet = forget.plan(OTHER, root, graph)
     assert not quiet.beyond_reach, "без отметки — ничего в память не уходило"
+
+
+def test_cloud_quarantine_of_the_meeting_is_forgotten_too(tmp_path, monkeypatch):
+    """Карантин разбора встречи — версии облака, убранные сверкой, — тот же
+    след встречи, что и снимок: забывание обязано дойти и туда (круг-1 по
+    PR #381, Codex Critical). Каталог запуска этой встречи — целиком, в
+    карантинах других встреч — файлы с её штампом."""
+    import charoite_paths
+    root, graph = _world(tmp_path)
+    monkeypatch.setattr(forget, "ROOT", root)
+    q = charoite_paths.graph_backups(graph, "cloud_quarantine", root=root)
+    mine = q / f"{STAMP}-101500"
+    (mine / "Ядра").mkdir(parents=True)
+    (mine / "Ядра" / "Тема.md").write_text("версия облака", encoding="utf-8")
+    other = q / "2026-07-20_1500-090000"
+    (other / "Встречи").mkdir(parents=True)
+    (other / "Встречи" / f"{STAMP}.md").write_text("копия узла", encoding="utf-8")
+    (other / "Ядра").mkdir()
+    (other / "Ядра" / "Другая.md").write_text("чужая версия", encoding="utf-8")
+
+    forget.apply(forget.plan(STAMP, root, graph), yes=True)
+
+    assert not mine.exists(), "карантин запуска этой встречи остался"
+    assert not (other / "Встречи" / f"{STAMP}.md").exists()
+    assert (other / "Ядра" / "Другая.md").exists(), "чужой карантин тронут"
+
+
+def test_quarantine_is_matched_by_exact_stem_not_minute_prefix(tmp_path, monkeypatch):
+    """Каталог запуска назван точным стемом стенограммы: посекундная встреча
+    находит свой, а сестринская встреча той же минуты остаётся нетронутой —
+    минутный префикс сносил оба (круг-3 по PR #381, Codex + DS)."""
+    import charoite_paths
+    root, graph = _world(tmp_path)
+    monkeypatch.setattr(forget, "ROOT", root)
+    q = charoite_paths.graph_backups(graph, "cloud_quarantine", root=root)
+    mine = q / f"{STAMP}30-101500123456"
+    sibling = q / f"{STAMP}45-103000000000"
+    for d in (mine, sibling):
+        (d / "Ядра").mkdir(parents=True)
+        (d / "Ядра" / "Тема.md").write_text("версия облака", encoding="utf-8")
+    forget.apply(forget.plan(STAMP + "30", root, graph), yes=True)
+    assert not mine.exists() and sibling.exists()
+
+
+def test_quarantine_of_a_retitled_meeting_is_found_by_its_minute_stamp():
+    """После наката темы стем — `<штамп>_тема`, а забыть просят по штампу
+    (круг-4 по PR #381, Codex). Граница — как у всех файлов встречи:
+    после штампа не цифра."""
+    q = forget._quarantine_of
+    assert q("2026-07-15_1400-101500123456", "2026-07-15_1400")
+    assert q("2026-07-15_1400_тема-101500123456", "2026-07-15_1400")
+    assert q("2026-07-15_140030-101500123456", "2026-07-15_140030")
+    assert not q("2026-07-15_140030-101500123456", "2026-07-15_1400")
+    assert not q("2026-07-15_1400-101500123456", "2026-07-15_140030")
+    assert not q("2026-07-15_1400", "2026-07-15_1400")        # без времени — не наш формат
+    # дефис внутри темы — не суффикс времени; неполный штамп — не штамп (круг-5)
+    assert q("2026-07-15_1400_тема-с-дефисом-101500123456", "2026-07-15_1400")
+    assert not q("2026-07-15_1400_тема-с-дефисом", "2026-07-15_1400")
+    assert not q("2026-07-15_14_тема-101500", "2026-07-15_14")
+
+
+def test_apply_reports_what_it_could_not_delete(tmp_path, monkeypatch, capsys):
+    """PermissionError на одном пути не обрывает цикл и не прячется за
+    «забыто» (круг-3 по PR #381, Codex)."""
+    import os
+    root, graph = _world(tmp_path)
+    monkeypatch.setattr(forget, "ROOT", root)
+    locked = tmp_path / "закрыто"; locked.mkdir()
+    victim = locked / "x.md"; victim.write_text("x", encoding="utf-8")
+    os.chmod(locked, 0o500)
+    try:
+        p = forget.plan(STAMP, root, graph)
+        p.delete.insert(0, victim)
+        forget.apply(p, yes=True)
+    finally:
+        os.chmod(locked, 0o700)
+    out = capsys.readouterr().out
+    assert "НЕ удалено" in out and "x.md" in out
+    assert not (graph / "Встречи" / f"{STAMP}.md").exists(), "цикл оборвался на первом пути"

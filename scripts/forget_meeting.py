@@ -28,6 +28,10 @@
                                     стенограмму лежать в копиях рядом
     backups/<граф>-<хеш>/cloud_backup/  те же снимки в НОВОМ месте (вне
                                     iCloud, с 21.08) — и файлы, и строки хроники
+    backups/<граф>-<хеш>/cloud_quarantine/<штамп>-*/  карантин разбора ЭТОЙ
+                                    встречи целиком (версии облака, убранные
+                                    сверкой), а в карантинах других встреч —
+                                    файлы с этим штампом
 
 Что правится (не удаляется):
     строки хроники в Ядрах, которые ссылались на эту встречу, — уходят вместе
@@ -72,6 +76,7 @@ MEETINGS_DIR = "Встречи"
 DOCS_DIR = pathlib.Path("Документация") / "Стенограммы встреч"
 BACKUP_DIR = ".forget_backup"
 CLOUD_BACKUP_DIR = ".cloud_backup"      # снимки графа перед облачной правкой
+CLOUD_QUARANTINE = "cloud_quarantine"   # версии облака, убранные сверкой (№88)
 REMOVED_NOTE = "(встреча удалена)"
 
 
@@ -147,6 +152,25 @@ def _with_stamp(directory: pathlib.Path, stamp: str, *, prefix: str = "",
     """Файлы этой встречи с границей штампа — правило живёт в meeting_stamp."""
     return meeting_stamp.files_with_stamp(directory, stamp, prefix=prefix,
                                           suffix=suffix)
+
+
+_QUARANTINE_TIME_RE = re.compile(r"-\d{6,12}$")   # «-HHMMSS» или «-HHMMSSffffff»
+
+
+def _quarantine_of(name: str, stamp: str) -> bool:
+    """Каталог карантина `<стем>-<время>` принадлежит встрече штампа.
+
+    `2026-07-15_1400-…` и `2026-07-15_1400_тема-…` — да; `2026-07-15_140030-…`
+    (посекундная сестра той же минуты) — нет: после штампа стоит цифра.
+    Суффикс времени проверяется именно как суффикс: дефис внутри темы —
+    не разделитель (круг-5 по PR #381), а штамп должен быть полным.
+    """
+    if not _STAMP_RE.fullmatch(stamp) or not name.startswith(stamp):
+        return False
+    rest = name[len(stamp):]
+    if rest[:1].isdigit() or not _QUARANTINE_TIME_RE.search(rest):
+        return False
+    return rest.startswith("-") or rest.startswith("_")
 
 
 def _status_files(status_dir: pathlib.Path, stamp: str) -> list[pathlib.Path]:
@@ -317,6 +341,27 @@ def plan(stamp: str, root: pathlib.Path,
                 p.delete += _with_stamp(snap / DOCS_DIR, stamp, suffix=".md")
                 p.delete += _archive_folders(snap, stamp)
 
+        # Карантин облачного разбора: каталог запуска ЭТОЙ встречи — целиком
+        # (в нём версии облака, сделанные по её стенограмме), в карантинах
+        # остальных запусков — файлы с её штампом (круг-1 по PR #381, Codex).
+        # Каталог запуска назван стемом стенограммы (`<штамп>`, с секундами
+        # или с темой после «_») плюс «-<время>». Граница — та же, что у всех
+        # файлов встречи (meeting_stamp): после штампа не цифра, иначе
+        # забывание минутной встречи уносило бы посекундную сестру (круг-3 и
+        # круг-4 по PR #381). Для чужих запусков — точечно, по файлам со
+        # штампом.
+        quarantine = charoite_paths.graph_backups(g, CLOUD_QUARANTINE, root=root)
+        if quarantine.is_dir():
+            for run_dir in sorted(d for d in quarantine.iterdir() if d.is_dir()):
+                if _quarantine_of(run_dir.name, stamp):
+                    p.delete.append(run_dir)
+                    continue
+                node_copy = run_dir / MEETINGS_DIR / f"{stamp}.md"
+                if node_copy.exists():
+                    p.delete.append(node_copy)
+                p.delete += _with_stamp(run_dir / DOCS_DIR, stamp, suffix=".md")
+                p.delete += _archive_folders(run_dir, stamp)
+
         # Файлы внутри удаляемой папки править не нужно и нельзя: папка уйдёт
         # целиком, а запись в неё после удаления — FileNotFoundError.
         doomed = {q.resolve() for q in p.delete}
@@ -386,11 +431,20 @@ def apply(p: Plan, yes: bool = False) -> bool:
               "  удаление стенограмм, записи, папки архива и узла встречи необратимо")
         return False
 
+    left = []
     for path in p.delete:
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-        elif path.exists():
-            path.unlink()
+        try:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path, ignore_errors=True)
+            elif os.path.lexists(path):
+                path.unlink()
+        except OSError:
+            pass
+        if os.path.lexists(path):
+            left.append(path)      # права/занятый том — сказать, а не «забыто»
+    if left:
+        print("НЕ удалено (проверь права и повтори): "
+              + ", ".join(str(q) for q in left))
     for path, text in p.edit.items():
         # копии внутри снимка правим (там те же строки хроники), но бэкап
         # бэкапа не снимаем: он воскресил бы то, что человек забывает.
@@ -408,7 +462,7 @@ def apply(p: Plan, yes: bool = False) -> bool:
         except OSError:
             pass
         tmp.replace(path)
-    print(f"\nзабыто: удалено {len(p.delete)}, поправлено {len(p.edit)}"
+    print(f"\nзабыто: удалено {len(p.delete) - len(left)}, поправлено {len(p.edit)}"
           f" (копии поправленных — в {BACKUP_DIR}/{p.stamp})")
     print("Что осталось вне досягаемости: копии в iCloud и бэкапах Time Machine,"
           " файлы у других участников — см. PRIVACY.md")
