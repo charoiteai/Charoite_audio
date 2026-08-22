@@ -154,18 +154,23 @@ def _with_stamp(directory: pathlib.Path, stamp: str, *, prefix: str = "",
                                           suffix=suffix)
 
 
+_QUARANTINE_TIME_RE = re.compile(r"-\d{6,12}$")   # «-HHMMSS» или «-HHMMSSffffff»
+
+
 def _quarantine_of(name: str, stamp: str) -> bool:
     """Каталог карантина `<стем>-<время>` принадлежит встрече штампа.
 
     `2026-07-15_1400-…` и `2026-07-15_1400_тема-…` — да; `2026-07-15_140030-…`
     (посекундная сестра той же минуты) — нет: после штампа стоит цифра.
+    Суффикс времени проверяется именно как суффикс: дефис внутри темы —
+    не разделитель (круг-5 по PR #381), а штамп должен быть полным.
     """
-    if not name.startswith(stamp):
+    if not _STAMP_RE.fullmatch(stamp) or not name.startswith(stamp):
         return False
     rest = name[len(stamp):]
-    if rest[:1].isdigit():
+    if rest[:1].isdigit() or not _QUARANTINE_TIME_RE.search(rest):
         return False
-    return rest.startswith("-") or (rest.startswith("_") and "-" in rest)
+    return rest.startswith("-") or rest.startswith("_")
 
 
 def _status_files(status_dir: pathlib.Path, stamp: str) -> list[pathlib.Path]:
