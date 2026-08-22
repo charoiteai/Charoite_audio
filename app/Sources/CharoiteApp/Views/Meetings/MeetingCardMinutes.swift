@@ -2,23 +2,86 @@ import SwiftUI
 
 #if os(macOS)
 
-/// Подробный протокол в карточке встречи: переключатель и разделы Минуток.
-/// Вынесено из MeetingCardView — там и без того больше четырёхсот строк.
+/// Четыре глубины чтения одной встречи: Резюме · Минутки · Разбор ·
+/// Стенограмма. Вынесено из MeetingCardView — там и без того больше
+/// четырёхсот строк.
+///
+/// До ревизии карточка отдавала слои кнопками во внешние приложения
+/// («Открыть», «Стенограмма», «Исправить стенограмму…» — два последних
+/// звали одно и то же), хотя это одна встреча на четырёх глубинах чтения
+/// (ревизия 08.08, экран 4; дизайн-аудит 21.08, ход 5). Теперь глубины —
+/// сегмент, текст показывается на месте, во внешний редактор ведёт одна
+/// кнопка для той глубины, что открыта.
+enum MeetingCardDepth: String, CaseIterable, Identifiable {
+    case summary
+    case minutes
+    case analysis
+    case transcript
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .summary: return L.t("Резюме", "Summary", "摘要")
+        case .minutes: return L.t("Минутки", "Minutes", "纪要")
+        case .analysis: return L.t("Разбор", "Analysis", "分析")
+        case .transcript: return L.t("Стенограмма", "Transcript", "逐字稿")
+        }
+    }
+
+    /// Какие глубины есть у этой встречи: пустой сегмент — кнопка в никуда.
+    static func available(card: MeetingCard, meeting: MeetingProcessingSnapshot) -> [MeetingCardDepth] {
+        var out: [MeetingCardDepth] = [.summary]
+        if let minutes = card.minutes, !minutes.isEmpty { out.append(.minutes) }
+        if let note = meeting.notePath, FileManager.default.fileExists(atPath: note) {
+            out.append(.analysis)
+        }
+        if FileManager.default.fileExists(atPath: meeting.transcriptPath) {
+            out.append(.transcript)
+        }
+        return out
+    }
+
+    /// Файл этой глубины для внешнего редактора: резюме и минутки живут в
+    /// архиве встречи, разбор — заметка графа, стенограмма — она сама.
+    func file(card: MeetingCard, meeting: MeetingProcessingSnapshot) -> URL? {
+        let note = meeting.notePath.map { URL(fileURLWithPath: $0) }
+        switch self {
+        case .summary:
+            return card.archiveFolder?.appendingPathComponent("Саммари.md") ?? note
+        case .minutes:
+            return card.archiveFolder?.appendingPathComponent("Минутки.md") ?? note
+        case .analysis:
+            return note
+        case .transcript:
+            return URL(fileURLWithPath: meeting.transcriptPath)
+        }
+    }
+}
+
 extension MeetingCardView {
-    /// Переключатель показывается, только когда есть что показывать подробно:
-    /// у встреч без Минуток он был бы кнопкой в никуда.
+    var depth: MeetingCardDepth {
+        let wanted = MeetingCardDepth(rawValue: depthRaw) ?? .summary
+        let available = MeetingCardDepth.available(card: card, meeting: meeting)
+        return available.contains(wanted) ? wanted : .summary
+    }
+
+    /// Сегмент глубин показывается, когда глубин больше одной: у встречи
+    /// без минуток и стенограммы выбирать нечего.
     @ViewBuilder
-    var detailPicker: some View {
-        if let minutes = card.minutes, !minutes.isEmpty {
+    var depthPicker: some View {
+        let available = MeetingCardDepth.available(card: card, meeting: meeting)
+        if available.count > 1 {
             HStack(spacing: 8) {
-                Picker("", selection: $detailed) {
-                    Text(L.t("Подробно", "Detailed", "详细")).tag(true)
-                    Text(L.t("Коротко", "Brief", "简要")).tag(false)
+                Picker("", selection: Binding(
+                    get: { depth },
+                    set: { depthRaw = $0.rawValue })) {
+                    ForEach(available) { Text($0.title).tag($0) }
                 }
-                .pickerStyle(.segmented).labelsHidden().frame(width: 190)
-                .accessibilityLabel(L.t("Подробность протокола",
-                                        "Level of detail", "记录详细程度"))
-                if minutes.isDraft && detailed {
+                .pickerStyle(.segmented).labelsHidden()
+                .fixedSize()
+                .accessibilityLabel(L.t("Глубина чтения", "Reading depth", "阅读深度"))
+                if depth == .minutes, card.minutes?.isDraft == true {
                     Text(L.t("черновик: встреча ещё шла",
                              "draft: the meeting was still running",
                              "草稿：会议仍在进行"))
@@ -27,6 +90,85 @@ extension MeetingCardView {
                 Spacer()
             }
         }
+    }
+
+    /// Содержимое выбранной глубины.
+    @ViewBuilder
+    var depthContent: some View {
+        switch depth {
+        case .summary:
+            section(L.t("Решили", "Decided", "决定"), mark: "⚑", items: card.decisions)
+            taskSection
+            section(L.t("Открытые вопросы", "Open questions", "待解决问题"), mark: "?",
+                    items: card.openQuestions)
+        case .minutes:
+            if let minutes = card.minutes { minutesSections(minutes) }
+        case .analysis, .transcript:
+            fileView
+        }
+    }
+
+    /// Разбор и стенограмма читаются с диска лениво и показываются на месте.
+    /// Стенограмма длинной встречи — сотни абзацев: LazyVStack, не один Text.
+    @ViewBuilder
+    private var fileView: some View {
+        if fileDepth != depth || fileText == nil {
+            HStack(spacing: 7) {
+                ProgressView().controlSize(.small)
+                Text(L.t("Читаю…", "Reading…", "正在读取…"))
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        } else if let fileText, fileText.isEmpty {
+            Text(L.t("Файл пуст.", "The file is empty.", "文件为空。"))
+                .font(.callout).foregroundStyle(.secondary)
+        } else if let fileText {
+            LazyVStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(fileText.components(separatedBy: "\n").enumerated()),
+                        id: \.offset) { _, line in
+                    if !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                        Text(MarkdownLine.render(line))
+                            .font(.callout)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Чтение файла — не на главном потоке: стенограмма двухчасовой
+    /// встречи это мегабайты, и карточка не должна замирать при переключении.
+    func loadDepthFile() async {
+        let wanted = depth
+        guard wanted == .analysis || wanted == .transcript,
+              let url = wanted.file(card: card, meeting: meeting) else { return }
+        let text = await Task.detached(priority: .userInitiated) {
+            (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        }.value
+        guard !Task.isCancelled else { return }
+        fileText = text
+        fileDepth = wanted
+    }
+
+    /// Откуда это: путь заметки от папки графа и время последней записи.
+    /// У каждого числа и текста есть источник (правило 3 ревизии).
+    var sourceLine: String? {
+        guard let note = meeting.notePath else { return nil }
+        let url = URL(fileURLWithPath: note)
+        let graph = url.deletingLastPathComponent().deletingLastPathComponent()
+        let rel = url.path.hasPrefix(graph.path + "/")
+            ? String(url.path.dropFirst(graph.path.count + 1))
+            : url.lastPathComponent
+        var stamp = ""
+        if let date = (try? FileManager.default.attributesOfItem(atPath: note))?[.modificationDate] as? Date {
+            let f = DateFormatter()
+            f.locale = L.locale
+            f.setLocalizedDateFormatFromTemplate("d MMM HH:mm")
+            stamp = " · " + L.t("обновлено \(f.string(from: date))",
+                                 "updated \(f.string(from: date))",
+                                 "更新于 \(f.string(from: date))")
+        }
+        return rel + stamp
     }
 
     @ViewBuilder
