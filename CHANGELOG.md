@@ -5,6 +5,15 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.0](https://github.com/charoiteai/Charoite_audio/compare/v0.57.0...v0.58.0) (2026-08-22)
+
+
+### Features
+
+* **design:** карточка встречи — четыре глубины чтения на месте, одна дверь в редактор ([#371](https://github.com/charoiteai/Charoite_audio/issues/371)) ([220ab81](https://github.com/charoiteai/Charoite_audio/commit/220ab81cd13b0a85359b196a21c9649c646ee56d))
+* **design:** пустые состояния говорят, что нажать; «Сегодня» без календаря ([#373](https://github.com/charoiteai/Charoite_audio/issues/373)) ([c570b05](https://github.com/charoiteai/Charoite_audio/commit/c570b05066380aa9544477426c4c894f8f021831))
+* **design:** честность о сети, поверхности происхождения и дисциплина токенов ([#369](https://github.com/charoiteai/Charoite_audio/issues/369)) ([8272874](https://github.com/charoiteai/Charoite_audio/commit/82728740c17ee6e76ea950c89e15d9f73b64d203))
+
 ## [0.57.0](https://github.com/charoiteai/Charoite_audio/compare/v0.56.0...v0.57.0) (2026-08-22)
 
 
