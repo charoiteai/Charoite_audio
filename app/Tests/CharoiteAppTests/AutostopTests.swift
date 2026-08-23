@@ -48,3 +48,32 @@ final class AutostopTests: XCTestCase {
             .none)
     }
 }
+
+@MainActor
+final class FinalStatusTests: XCTestCase {
+    /// Закрытие по захвату: причина переживает финальные статусы демона
+    /// (круг-5 по PR #383, Codex); кнопка — «Остановлен»/автостоп; перезапуск
+    /// статус не трогает.
+    func testPreserveFailureRestoresReason() {
+        let final = SuflerService.finalStatus(disposition: .preserveFailure,
+                                              preservedFailure: "Захват звука потерян снова",
+                                              autostopReason: nil)
+        XCTAssertEqual(final?.text, "Захват звука потерян снова")
+        XCTAssertEqual(final?.isError, true)
+    }
+
+    func testPreserveFailureWithoutTextLeavesStatus() {
+        XCTAssertNil(SuflerService.finalStatus(disposition: .preserveFailure,
+                                               preservedFailure: nil, autostopReason: nil))
+    }
+
+    func testStoppedKeepsAutostopReasonAndRestartIsSilent() {
+        let stopped = SuflerService.finalStatus(disposition: .stopped,
+                                                preservedFailure: "не должно попасть",
+                                                autostopReason: "silence")
+        XCTAssertEqual(stopped?.text, SuflerService.stoppedStatus(autostopReason: "silence"))
+        XCTAssertEqual(stopped?.isError, false)
+        XCTAssertNil(SuflerService.finalStatus(disposition: .restart,
+                                               preservedFailure: "x", autostopReason: nil))
+    }
+}

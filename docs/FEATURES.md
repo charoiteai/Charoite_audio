@@ -582,7 +582,31 @@ it signals degradation, it does not break the loop.
   commands are single-flight, and the next meeting cannot begin until the
   previous capture has closed. Every capture writes to a session-specific PCM
   directory, so even a delayed ScreenCaptureKit callback cannot mix two
-  back-to-back meetings or truncate the newer one's audio.
+  back-to-back meetings or truncate the newer one's audio. A stream that
+  stops on its own — sleep, a display change while docking, a broken
+  connection to the capture service (−3805), "Stop" in the system screen
+  recording indicator (−3817) — is recreated automatically: onto the same
+  files, with a 2→32 s backoff, up to five attempts (usually ~1.5 minutes,
+  about two in the worst case with five 10-second build timeouts; the app
+  watchdog does not count audio silence as a failure while a recreation is
+  in progress, while the daemon itself and the STT pulse stay under its
+  watch); the daemon tails those files and resumes from its last
+  position without a single change on its side. Frames are counted per
+  stream, not on a shared counter; the system calls that build a stream are
+  capped at 10 s, so a hung capture service cannot hold "Stop" hostage. A
+  second "Stop" by the person within two minutes is respected: the meeting
+  is closed the same way the Stop button closes it (recording and graph
+  preserved) rather than left running without audio. If recovery
+  fails, the status line and a system notification say "meeting audio lost"
+  and the recording restarts immediately along the watchdog's path (a fresh
+  capture, falling back to BlackHole if ScreenCaptureKit is still gone; no
+  more than two such restarts per meeting — a third loss closes the meeting
+  along the Stop button's path, with the recording preserved and the reason
+  in the status line) instead of silence until the end of the meeting (previously
+  `didStopWithError` was only logged, and on macOS 15 the microphone left
+  with the stream). Verified live on 2026-08-23: SIGKILL of `replayd`
+  mid-capture → −3805 → the stream was recreated in ~4 s (2 s pause + build
+  + one second of frame check) and frames resumed.
 - **Core Audio tap — a disabled reserve** — the second native route to system
   audio: the app reads the tap with its own IOProc and hands the daemon a PCM
   stream. The scheme was proven in the field (38.9 s recorded), but the very
