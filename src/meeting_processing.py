@@ -13,6 +13,7 @@ import re
 import tempfile
 import time
 from typing import Any
+import graphs
 
 
 SCHEMA_VERSION = 1
@@ -70,11 +71,10 @@ def find_meeting_note(
     newer_than: float | None = None,
 ) -> pathlib.Path | None:
     """Find the exact note created in the configured graph or a project graph."""
-    override = os.environ.get("SUFLER_GRAPH_DIR")
-    raw = override or (cfg.get("sufler") or {}).get("graph_dir", "")
-    if not raw:
+    override = bool(os.environ.get(graphs.ENV_GRAPH, "").strip())
+    configured = graphs.graph_dir(cfg)
+    if configured is None:
         return None
-    configured = pathlib.Path(raw).expanduser()
     stamp = short_stamp(transcript)
     roots = [configured]
     # graph_updater may route a meeting to ``configured.parent/<project>``.

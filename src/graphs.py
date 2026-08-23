@@ -30,23 +30,53 @@ def load_config() -> dict:
         return {}
 
 
-def configured_graph() -> pathlib.Path | None:
-    """sufler.graph_dir из конфига. None — не настроен или конфига нет.
+# Корень ДАННЫХ: от него считается относительный graph_dir — так же, как
+# это делает приложение (`AppSettings.resolvePath(_:relativeTo: charoiteRoot)`).
+DATA_ROOT = CONFIG.parent.parent
+ENV_GRAPH = "SUFLER_GRAPH_DIR"
 
-    SUFLER_GRAPH_DIR перекрывает конфиг: тестовый прогон любого инструмента
-    не должен дотягиваться до рабочего графа (аудит 04.08 — rename_meeting
-    делал ровно это).
+
+def resolve(raw, root: pathlib.Path | None = None) -> pathlib.Path | None:
+    """Строка из конфига → путь графа. None — пусто.
+
+    `~` раскрывается; относительный путь считается от корня данных, а не от
+    текущего каталога процесса. До этого 24 места в Python читали ключ сами:
+    документированный `graph_dir: demo/graph` работал у демона (приложение
+    запускает его из корня данных) и ломался у ночных скриптов и launchd —
+    граф писался в одно место, а искался в другом (аудит DeepSeek 16.08,
+    карточка №36).
     """
-    env = os.environ.get("SUFLER_GRAPH_DIR", "").strip()
-    if env:
-        return pathlib.Path(env).expanduser()
-    try:
-        import yaml
-        cfg = yaml.safe_load(CONFIG.read_text(encoding="utf-8")) or {}
-        gd = ((cfg.get("sufler") or {}).get("graph_dir") or "").strip()
-    except Exception:
+    s = str(raw or "").strip()
+    if not s:
         return None
-    return pathlib.Path(gd).expanduser() if gd else None
+    p = pathlib.Path(s).expanduser()
+    if not p.is_absolute():
+        p = (root or DATA_ROOT) / p
+    return p
+
+
+def graph_dir(cfg: dict | None = None, *, env: bool = True) -> pathlib.Path | None:
+    """Единственная точка ответа «где граф».
+
+    Порядок: SUFLER_GRAPH_DIR → `sufler.graph_dir` из переданного конфига
+    (или config.yaml, если конфиг не передан) → None. Переменная перекрывает
+    конфиг: тестовый прогон любого инструмента не должен дотягиваться до
+    рабочего графа (аудит 04.08 — rename_meeting делал ровно это).
+    """
+    if env:
+        raw = os.environ.get(ENV_GRAPH, "")
+        if raw.strip():
+            return resolve(raw)
+    if cfg is None:
+        cfg = load_config()
+    if not isinstance(cfg, dict):
+        cfg = {}
+    return resolve((cfg.get("sufler") or {}).get("graph_dir"))
+
+
+def configured_graph() -> pathlib.Path | None:
+    """sufler.graph_dir из конфига (или SUFLER_GRAPH_DIR). None — не настроен."""
+    return graph_dir()
 
 
 def roots() -> list[pathlib.Path]:

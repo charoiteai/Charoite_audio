@@ -405,8 +405,17 @@ def main() -> int:
         # раньше не попадал в ночную ревизию досье (аудит 17.08).
         graph_list = graphs.all_graphs(dossier.DOSSIER_DIR)
     else:
-        raw = args.graph or str(cfg["sufler"].get("graph_dir", ""))
-        graph_list = [pathlib.Path(raw).expanduser()]
+        # --graph: путь (относительный — от корня данных) или имя папки рядом
+        # с настроенным графом; без него — единая точка src/graphs.py.
+        chosen = graphs.resolve(args.graph) if args.graph else graphs.graph_dir(cfg)
+        if args.graph and chosen is not None and not chosen.is_dir():
+            base = graphs.graph_dir(cfg)
+            if base is not None and (base.parent / args.graph).is_dir():
+                chosen = base.parent / args.graph
+        if chosen is None or not chosen.is_dir():
+            print(f"граф не найден: {args.graph or cfg['sufler'].get('graph_dir', '')}")
+            return 1
+        graph_list = [chosen]
 
     режим = "правит граф" if privacy.cloud_edit_graph_enabled(cfg) else "только отчёт"
     print(f"режим: {режим}")

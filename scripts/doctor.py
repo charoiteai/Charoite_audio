@@ -100,23 +100,22 @@ def check_config() -> dict:
     suf = cfg.get("sufler", {})
     if not suf.get("user_name"):
         line(WARN, "sufler.user_name пуст", "суфлёр не сможет отличать вас от собеседников")
-    gdir = pathlib.Path(str(suf.get("graph_dir", ""))).expanduser()
-    if not suf.get("graph_dir"):
+    sys.path.insert(0, str(CODE / "src"))
+    import graphs
+    raw = str(suf.get("graph_dir", "") or "").strip()
+    gdir = graphs.graph_dir(cfg, env=False)
+    if gdir is None:
         line(WARN, "sufler.graph_dir пуст",
              "граф не будет писаться; для пробы: demo/graph, а проверить весь "
              "контур — scripts/memory_bench.py --demo")
     elif not gdir.exists():
         line(FAIL, f"graph_dir не существует: {gdir}", "создайте папку или поправьте путь")
-    elif not gdir.is_absolute():
-        # Приложение считает относительный путь от папки данных, а демон и
-        # скрипты — от своего рабочего каталога (в бандле это сам .app):
-        # граф пишется в одно место, а ищется в другом (аудит DeepSeek 16.08).
-        line(WARN, f"graph_dir относительный: {gdir}",
-             "укажите абсолютный путь или ~/…; относительный работает только "
-             "при запуске из клона")
     else:
         n = sum(1 for _ in gdir.rglob("*.md"))
-        line(OK, f"graph_dir: {gdir} ({n} заметок)")
+        # Относительный путь и приложение, и Python считают от папки данных
+        # (единая точка src/graphs.py, карточка №36) — показываем, от чего.
+        note = f" (относительно {graphs.DATA_ROOT})" if not pathlib.Path(raw).expanduser().is_absolute() else ""
+        line(OK, f"graph_dir: {gdir} ({n} заметок){note}")
     return cfg
 
 

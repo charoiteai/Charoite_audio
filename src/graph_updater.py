@@ -25,6 +25,7 @@ from llm import LLM, LLMHTTPError  # noqa: E402
 
 from charoite_paths import code_root, harden_umask, resolve_root
 from meeting_stamp import files_with_stamp, stamp_of
+import graphs
 
 ROOT = resolve_root(__file__)
 CODE = code_root(__file__)
@@ -640,8 +641,7 @@ def main():
         _progress = (MeetingStatusStore(ROOT), tpath)
     except Exception as e:  # noqa: BLE001 — без прогресса разбор всё равно идёт
         print(f"граф: статус недоступен ({type(e).__name__}: {e})")
-    graph_raw = os.environ.get("SUFLER_GRAPH_DIR") or cfg["sufler"].get("graph_dir", "")
-    graph = pathlib.Path(graph_raw).expanduser()
+    graph = graphs.graph_dir(cfg)   # None — не настроен (пустая/пробельная строка)
     transcript = tpath.read_text(encoding="utf-8")
     minutes_p = tpath.with_name(tpath.stem + "_minutes.md")
     if minutes_p.exists():
@@ -658,18 +658,17 @@ def main():
         # ушла бы в три бесполезных прогона.
         print("стенограмма слишком короткая — граф не трогаем")
         sys.exit(EXIT_NO_SPEECH)
-    # проверять исходную строку: str(Path("")) == "." — пустой конфиг молча
-    # лил бы граф в cwd. `strip()` — потому что пробельная строка ("   ")
-    # проходила эту проверку и архив уезжал в папку с именем из пробелов
-    # рядом с рабочим каталогом (третий круг, DeepSeek).
-    if not str(graph_raw).strip() or not graph.parent.is_dir():
+    # Пустой или пробельный graph_dir — это None из единой точки (раньше
+    # str(Path("")) == "." молча лил граф в cwd, а пробельная строка уезжала
+    # в папку из пробелов — третий круг, DeepSeek).
+    if graph is None or not graph.parent.is_dir():
         # Без папки графа узлов не будет, но всё остальное встречу не теряет:
         # хук пользователя обязан отработать и здесь (ревью 19.08).
         print(f"graph_dir не настроен/не существует: {graph}")
         run_post_hook(cfg, tpath, parse_stem(tpath.stem)[0])
         return
 
-    known = [] if os.environ.get("SUFLER_GRAPH_DIR") else known_graphs(graph)
+    known = [] if os.environ.get(graphs.ENV_GRAPH) else known_graphs(graph)
     # Профиль может выключить именно УЗЛЫ (`sufler.graph: false`, лёгкая
     # установка), а не весь пост-процессинг: архив встречи, копии в vault и
     # post_meeting_hook нужны и без графа — ровно как при молчащей модели

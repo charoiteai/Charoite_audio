@@ -30,6 +30,7 @@ import time
 CODE = pathlib.Path(__file__).resolve().parent.parent
 ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 sys.path.insert(0, str(CODE / "src"))
+import graphs  # noqa: E402
 import deps  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
@@ -405,7 +406,7 @@ def main() -> None:
     print("— догенерирую минутки/разбор/тезисы и раскладываю архив…")
     subprocess.run([sys.executable, str(CODE / "src" / "retro_fill.py")])
     # исходник — рядом с материалами встречи (APFS-клон: без лишнего места)
-    graph = pathlib.Path(str((cfg.get("sufler") or {}).get("graph_dir", ""))).expanduser()
+    graph = graphs.graph_dir(cfg) or pathlib.Path("")
     folder = archive_folder_for(graph, stamp)
     if folder is None:
         print(f"папка архива встречи {stamp} не найдена — исходник в архив не скопирован")
