@@ -109,8 +109,8 @@ def graph_key(tdir: pathlib.Path, stem: str,
     minute = minute_of(bare)
     if bare == minute:                 # встреча до 28.07: секунд не было
         return minute
-    if stem != bare:                   # тема уже накатана — ключ в имени
-        return bare if stem.startswith(bare + "_") else minute
+    if stem != bare:                   # тема уже накатана: «<bare>_Тема» — ключ в имени
+        return bare
     if graph is not None:
         notes = graph / "Встречи"
         if (notes / f"{bare}.md").is_file():
@@ -146,29 +146,24 @@ def note_is_ours(note_text: str, stamp: str,
     """Заметка `Встречи/<минута>.md` принадлежит встрече со штампом `stamp`?
 
     Заметка кончается строкой «Стенограмма: `<путь>`»; по штампу в имени
-    этого файла и решаем. Другая минута — чужая. Если у одной из сторон
-    секунд нет (встреча до 28.07, владелец минуты уже с темой в минутном
-    имени) — спорить нечем, считаем своей. Обе с секундами — только точное
-    совпадение: минутную заметку могла написать соседка той же минуты
-    (крэш-рестарт), и «забыть»/переименовать по чужой заметке нельзя.
-    Заметка без строки (наследие) при посекундном штампе — наша, только
-    если в transcripts/ нет главного файла, названного самой минутой
-    («<минута>.md», «<минута>_Тема.md»): он и есть хозяин такой заметки.
+    этого файла и решаем. Другая минута — чужая. Файл в строке посекундный —
+    только точное совпадение: минутную заметку могла написать соседка той
+    же минуты (крэш-рестарт), и «забыть»/переименовать по чужой заметке
+    нельзя. Файл в строке назван минутой (владелец уже с темой) или строки
+    нет (наследие): минута принадлежит встрече, чей главный файл так и
+    назван, — посекундный штамп наш, только если в transcripts/ НЕТ файла с
+    этим штампом (наш файл и есть тот минутный); есть — мы соседка. Без
+    transcripts/ спорить нечем — считаем своей (круг-1 по PR #388, DeepSeek).
     """
     m = _TRANSCRIPT_LINE.search(note_text)
-    if not m:
-        if stamp == minute_of(stamp) or tdir is None or not tdir.is_dir():
-            return True
-        minute = minute_of(stamp)
-        return not any(stamp_of(p.stem) == minute for p in tdir.glob(f"{minute}*.md"))
-    its = stamp_of(pathlib.Path(m.group(1)).stem)
-    if its is None:
-        return True
-    if minute_of(its) != minute_of(stamp):
+    its = stamp_of(pathlib.Path(m.group(1)).stem) if m else None
+    if its is not None and minute_of(its) != minute_of(stamp):
         return False
-    if its == minute_of(its) or stamp == minute_of(stamp):
+    if its is not None and its != minute_of(its):          # посекундный владелец
+        return stamp == minute_of(stamp) or its == stamp
+    if stamp == minute_of(stamp) or tdir is None or not tdir.is_dir():
         return True
-    return its == stamp
+    return not any(stamp_of(p.stem) == stamp for p in tdir.glob(f"{minute_of(stamp)}*.md"))
 
 
 def find_note(graph: pathlib.Path, stamp: str,

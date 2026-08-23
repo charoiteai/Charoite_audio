@@ -151,3 +151,51 @@ def test_forget_second_meeting_leaves_the_first_untouched(tmp_path, monkeypatch)
     assert f"{SECOND}.md" in doomed and "2026-08-21 12-58-12 — Вторая" in doomed
     assert f"{FIRST}.md" not in doomed and f"{MIN}.md" not in doomed
     assert "2026-08-21 12-58 — Первая" not in doomed
+
+
+def test_unprocessed_neighbour_does_not_claim_the_owners_note(tmp_path):
+    """Сценарий DeepSeek (круг-1 по PR #388): A разобрана и названа минутой,
+    B записана, но не разобрана; «забыть B» по посекундному штампу не должно
+    брать заметку A — владелец минуты тот, чей файл назван минутой."""
+    tdir = _transcripts(tmp_path, SECOND)
+    (tdir / f"{MIN}_Первая.md").write_text("# a", encoding="utf-8")
+    graph = tmp_path / "graph"
+    (graph / "Встречи").mkdir(parents=True)
+    note = graph / "Встречи" / f"{MIN}.md"
+    note.write_text(f"# a\n\nСтенограмма: `{tdir / MIN}_Первая.md`\n", encoding="utf-8")
+    assert ms.find_note(graph, SECOND, tdir) is None
+    assert ms.find_note(graph, FIRST, tdir) == note          # у владельца файла с секундами нет
+    # заметка без строки (наследие): то же правило
+    note.write_text("# a\n", encoding="utf-8")
+    assert ms.find_note(graph, SECOND, tdir) is None
+    assert ms.find_note(graph, FIRST, tdir) == note
+    assert ms.find_note(graph, MIN, tdir) == note
+
+
+def test_import_repeat_is_recognised_for_audio_header_too(tmp_path):
+    import import_meeting as im
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    (tdir / f"{MIN}.md").write_text(f"# Встреча {MIN} — запись Recording.m4a\n\n**Голос**\n", encoding="utf-8")
+    assert im.import_stamp(tdir, MIN, "Recording.m4a", "10")[1] is not None
+    stamp, already = im.import_stamp(tdir, MIN, "Recording 2.m4a", "40")
+    assert (stamp, already) == (f"{MIN}40", None)
+
+
+def test_same_file_name_but_different_recording_is_not_a_repeat(tmp_path):
+    """Диктофон экспортирует всё как Recording.m4a (Sonnet, круг-1): повтор —
+    то же имя И тот же размер; другой размер — другая запись, секунды."""
+    import import_meeting as im
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    (tdir / f"{MIN}_Планёрка.md").write_text(
+        f"# Встреча {MIN} — Планёрка — импорт Recording.m4a (1000 Б)\n", encoding="utf-8")
+    assert im.import_stamp(tdir, MIN, "Recording.m4a", "41", 1000)[1] is not None   # та же
+    assert im.import_stamp(tdir, MIN, "Recording.m4a", "41", 2000) == (f"{MIN}41", None)
+    # шапка до 23.08 без размера — сравнение только по имени, как раньше
+    (tdir / f"{MIN}_Планёрка.md").write_text(
+        f"# Встреча {MIN} — Планёрка — импорт Recording.m4a\n", encoding="utf-8")
+    assert im.import_stamp(tdir, MIN, "Recording.m4a", "41", 2000)[1] is not None
+    assert im.source_mark("a.m4a", 5) == "a.m4a (5 Б)" and im.source_mark("a.m4a", None) == "a.m4a"
+    assert im.same_source("# Встреча x — запись a b.m4a (7 Б)", "a b.m4a", 7)
+    assert not im.same_source("# Встреча x — запись a b.m4a (7 Б)", "a b.m4a", 8)

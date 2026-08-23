@@ -229,6 +229,29 @@ def parse_subs(text: str) -> list[tuple[str, str, str]]:
     return out
 
 
+def source_mark(name: str, size: int | None) -> str:
+    """«Recording.m4a (123456 Б)» — исходник в шапке стенограммы импорта.
+
+    Размер отличает две РАЗНЫЕ записи с одним именем: диктофон на телефоне
+    экспортирует всё как Recording.m4a, и по одному имени вторая запись той
+    же минуты считалась бы повтором первой (круг-1 по PR #388, Sonnet и
+    DeepSeek)."""
+    return f"{name} ({size} Б)" if size is not None else name
+
+
+_SOURCE_MARK = re.compile(r"— (?:импорт|запись) (?P<name>.+?)(?: \((?P<size>\d+) Б\))?\s*$")
+
+
+def same_source(head: str, name: str, size: int | None) -> bool:
+    """Шапка стенограммы — про этот исходник? Имя совпасть обязано; размер
+    сравнивается, когда записан в обеих сторонах (шапки до 23.08 — без него)."""
+    m = _SOURCE_MARK.search(head)
+    if not m or m.group("name") != name:
+        return False
+    theirs = m.group("size")
+    return theirs is None or size is None or int(theirs) == size
+
+
 def subs_to_transcript(entries: list[tuple[str, str, str]], stamp: str, src: str) -> str:
     lines = [f"# Встреча {stamp} — импорт {src}", ""]
     prev_key = None
@@ -274,7 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def import_stamp(tdir: pathlib.Path, minute: str, src_name: str,
-                 seconds: str) -> tuple[str, pathlib.Path | None]:
+                 seconds: str, src_size: int | None = None) -> tuple[str, pathlib.Path | None]:
     """Штамп импорта и найденный повтор.
 
     Повтор — та же ЗАПИСЬ, а не та же минута: шапка стенограммы импорта
@@ -296,7 +319,10 @@ def import_stamp(tdir: pathlib.Path, minute: str, src_name: str,
                 head = fh.readline()
         except OSError:
             head = ""
-        if f"— импорт {src_name}" in head:
+        # Шапка текста/субтитров — «— импорт <файл> (<размер> Б)», аудио
+        # (transcribe_file) — «— запись …»: повтор узнаём по обеим, с
+        # размером, когда он есть.
+        if same_source(head, src_name, src_size):
             return s, p
         taken = True
     if not taken:
@@ -365,7 +391,8 @@ def main() -> None:
     day = clean_date(args.date) if args.date else f"{mt:%Y-%m-%d}"
     hhmm = clean_time(args.time) if args.time else f"{mt:%H%M}"
     stamp, already = import_stamp(tdir, f"{day}_{hhmm}", src.name,
-                                  f"{mt:%S}" if not args.time else "00")
+                                  f"{mt:%S}" if not args.time else "00",
+                                  src.stat().st_size)
     if already is not None:
         # Код 0, а не sys.exit(строка): выход строкой возвращает 1, скан
         # считал повтор ОТКАЗОМ и не переносил файл в done/ — тот застревал
@@ -381,9 +408,12 @@ def main() -> None:
 
     ext = src.suffix.lower()
     if ext in AUDIO:
-        # транскрибация пишет transcripts/<stamp>.md сама
+        # транскрибация пишет transcripts/<stamp>.md сама; время отдаём
+        # целиком — с секундами и суффиксом у соседки в занятой минуте,
+        # иначе она ложилась в минутный файл поверх первой (круг-1 по
+        # PR #388, DeepSeek).
         r = subprocess.run([sys.executable, str(CODE / "src" / "transcribe_file.py"),
-                            str(src), hhmm, day])
+                            str(src), stamp[11:], day])
         if r.returncode != 0:
             sys.exit("транскрибация не удалась")
         tpath = tdir / f"{stamp}.md"
@@ -397,7 +427,7 @@ def main() -> None:
                                     compile_rules(cfg)))
         if not entries:
             sys.exit("в субтитрах не нашлось реплик")
-        tpath.write_text(subs_to_transcript(entries, stamp, src.name), encoding="utf-8")
+        tpath.write_text(subs_to_transcript(entries, stamp, source_mark(src.name, src.stat().st_size)), encoding="utf-8")
         speakers = sorted({sp for _, sp, _ in entries if sp})
         print(f"стенограмма из субтитров: {tpath}"
               + (f" · спикеры: {', '.join(speakers)}" if speakers else ""))
@@ -407,7 +437,7 @@ def main() -> None:
                       compile_rules(cfg))
         if len(body) < 200:
             sys.exit("текст слишком короткий для встречи")
-        tpath.write_text(f"# Встреча {stamp} — импорт {src.name}\n\n{body}\n",
+        tpath.write_text(f"# Встреча {stamp} — импорт {source_mark(src.name, src.stat().st_size)}\n\n{body}\n",
                          encoding="utf-8")
         print(f"стенограмма из текста: {tpath}")
     else:
