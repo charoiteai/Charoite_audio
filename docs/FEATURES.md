@@ -586,18 +586,20 @@ it signals degradation, it does not break the loop.
   stops on its own — sleep, a display change while docking, a broken
   connection to the capture service (−3805), "Stop" in the system screen
   recording indicator (−3817) — is recreated automatically: onto the same
-  files, with a 2→32 s backoff, up to five attempts (≈1.5 minutes — under
-  the app watchdog, which restarts the meeting after 100 s of audio silence
-  and does not count silence as a failure while a recreation is in
-  progress); the daemon tails those files and resumes from its last
+  files, with a 2→32 s backoff, up to five attempts (usually ~1.5 minutes,
+  about two in the worst case with five 10-second build timeouts; the app
+  watchdog does not count audio silence as a failure while a recreation is
+  in progress, while the daemon itself and the STT pulse stay under its
+  watch); the daemon tails those files and resumes from its last
   position without a single change on its side. Frames are counted per
   stream, not on a shared counter; the system calls that build a stream are
   capped at 10 s, so a hung capture service cannot hold "Stop" hostage. A
   second "Stop" by the person within two minutes is respected. If recovery
   fails, the status line and a system notification say "meeting audio lost"
   and the recording restarts immediately along the watchdog's path (a fresh
-  capture, falling back to BlackHole if ScreenCaptureKit is still gone)
-  instead of silence until the end of the meeting (previously
+  capture, falling back to BlackHole if ScreenCaptureKit is still gone; no
+  more than two such restarts per meeting — a third loss stays in the status
+  line and waits for the person) instead of silence until the end of the meeting (previously
   `didStopWithError` was only logged, and on macOS 15 the microphone left
   with the stream). Verified live on 2026-08-23: SIGKILL of `replayd`
   mid-capture → −3805 → the stream was recreated in ~4 s (2 s pause + build

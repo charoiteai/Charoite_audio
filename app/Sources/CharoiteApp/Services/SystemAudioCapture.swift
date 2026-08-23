@@ -196,28 +196,41 @@ final class SystemAudioCapture: NSObject {
     /// `SCShareableContent` и `startCapture` не отменяются и могут не
     /// вернуться, если сервис захвата подвис; без потолка `stop()`, ждущий
     /// цикл пересоздания, не заканчивался бы, и следующая встреча не
-    /// стартовала бы. Сборка идёт в отдельной задаче, гонка с таймером —
-    /// в группе; опоздавший поток, если всё же родится, гасится.
+    /// стартовала бы. Гонка — на continuation с одноразовым резюмом: сборка
+    /// и таймер — две независимые задачи на главном акторе, кто первый, тот
+    /// и отвечает. Структурированная группа здесь не годится: `await
+    /// work.value` в дочерней задаче не отменяется, и группа ждала бы
+    /// зависший вызов до конца (круг-2 по PR #383, Codex). Поток, родившийся
+    /// после таймаута, помечается отпущенным и гасится.
     private func openStream(sink: Sink) async throws -> SCStream {
-        // SCStream не Sendable; через границы задач он едет в коробке и
-        // распаковывается только на главном акторе, где и живёт.
-        struct Box: @unchecked Sendable { let stream: SCStream }
-        let work = Task { @MainActor [self] in Box(stream: try await openStreamNow(sink: sink)) }
-        return try await withThrowingTaskGroup(of: Box?.self) { group in
-            group.addTask { try await work.value }
-            group.addTask {
-                try await Task.sleep(nanoseconds: Self.openTimeout)
-                return nil
+        final class Once: @unchecked Sendable { var done = false }   // только с MainActor
+        let once = Once()
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<SCStream, Error>) in
+            let work = Task { @MainActor [weak self] in
+                guard let self else { cont.resume(throwing: CancellationError()); return }
+                do {
+                    let fresh = try await self.openStreamNow(sink: sink)
+                    if once.done {                    // опоздал к таймеру
+                        self.retired.insert(ObjectIdentifier(fresh))
+                        sink.forget(ObjectIdentifier(fresh))
+                        try? await fresh.stopCapture()
+                        return
+                    }
+                    once.done = true
+                    cont.resume(returning: fresh)
+                } catch {
+                    guard !once.done else { return }
+                    once.done = true
+                    cont.resume(throwing: error)
+                }
             }
-            defer { group.cancelAll() }
-            if case .some(.some(let box)) = try await group.next() {
-                return box.stream
-            }
-            work.cancel()
             Task { @MainActor in
-                if let late = try? await work.value { try? await late.stream.stopCapture() }
+                try? await Task.sleep(nanoseconds: Self.openTimeout)
+                guard !once.done else { return }
+                once.done = true
+                work.cancel()
+                cont.resume(throwing: CaptureError.timeout)
             }
-            throw CaptureError.timeout
         }
     }
 
@@ -304,9 +317,43 @@ final class SystemAudioCapture: NSObject {
         }
     }
 
+    /// Частота микрофона у нового потока своя: за паузу могло смениться
+    /// устройство входа. Первый буфер микрофона может прийти позже секунды
+    /// проверки — тогда смотрим ещё раз через несколько секунд. Манифест
+    /// переписываем, чтобы демон после перезапуска читал правильную; живой
+    /// демон манифест не перечитывает — расхождение говорим вслух.
+    private func syncMicRate(of fresh: SCStream, sink: Sink, attempt: Int = 0) {
+        guard let rate = sink.micRate(of: fresh) else {
+            if attempt < 3 {
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    guard let self, self.stream === fresh else { return }
+                    self.syncMicRate(of: fresh, sink: sink, attempt: attempt + 1)
+                }
+            }
+            return
+        }
+        if rate != sink.micSampleRate {
+            log("микрофон после пересоздания \(rate) Гц вместо \(sink.micSampleRate) — "
+              + "демон узнает после перезапуска")
+            sink.adoptMicRate(rate)
+            writeManifest(micInStream: true)
+        }
+    }
+
     private var stopDuringRestart: Error?
     /// Потоки, которые мы уже отпустили: их сигналы больше не считаются.
     private var retired: Set<ObjectIdentifier> = []
+
+    /// Отпустить поток: запомнить, забыть его счётчики, остановить.
+    /// Карты по ObjectIdentifier не растут за долгую встречу с флапающим
+    /// захватом, а переиспользованный адрес не наследует чужие кадры.
+    private func retire(_ dead: SCStream) async {
+        let id = ObjectIdentifier(dead)
+        retired.insert(id)
+        sink?.forget(id)
+        try? await dead.stopCapture()
+    }
 
     private static func isUserStop(_ error: Error) -> Bool {
         let ns = error as NSError
@@ -334,9 +381,11 @@ final class SystemAudioCapture: NSObject {
             // Старый поток отпускаем (он уже мёртв), новый — на те же файлы.
             if let dead = stream {
                 stream = nil
-                retired.insert(ObjectIdentifier(dead))
-                try? await dead.stopCapture()
+                await retire(dead)
             }
+            // Флаг «свежий умер» взводится ДО сборки: сигнал нового потока
+            // может прийти раньше, чем openStream вернёт его нам (Codex).
+            stopDuringRestart = nil
             let fresh: SCStream
             do {
                 fresh = try await openStream(sink: sink)
@@ -349,16 +398,16 @@ final class SystemAudioCapture: NSObject {
                 try? await fresh.stopCapture()              // stop() успел раньше
                 return
             }
-            stopDuringRestart = nil
             stream = fresh
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            if stopDuringRestart == nil {
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+            }
             if stopping || Task.isCancelled { return }
             if let again = stopDuringRestart {
                 stopDuringRestart = nil
-                log("свежий поток умер за первую секунду — ещё попытка")
+                log("свежий поток умер, не успев начать — ещё попытка")
                 stream = nil
-                retired.insert(ObjectIdentifier(fresh))
-                try? await fresh.stopCapture()
+                await retire(fresh)
                 userStopped = Self.isUserStop(again)
                 continue
             }
@@ -371,19 +420,13 @@ final class SystemAudioCapture: NSObject {
                 // смениться устройство входа. Манифест переписываем, чтобы
                 // демон после перезапуска читал правильную; живой демон
                 // манифест не перечитывает — расхождение говорим вслух.
-                if let rate = sink.micRate(of: fresh), rate != sink.micSampleRate {
-                    log("микрофон после пересоздания \(rate) Гц вместо "
-                      + "\(sink.micSampleRate) — демон узнает после перезапуска")
-                    sink.adoptMicRate(rate)
-                    writeManifest(micInStream: true)
-                }
+                syncMicRate(of: fresh, sink: sink)
                 onCaptureRecovered?(original)
                 return
             }
             log("после пересоздания кадров нет — ещё попытка")
             stream = nil
-            retired.insert(ObjectIdentifier(fresh))
-            try? await fresh.stopCapture()
+            await retire(fresh)
             userStopped = false
         }
     }
@@ -497,6 +540,12 @@ final class SystemAudioCapture: NSObject {
         }
         func adoptMicRate(_ rate: Int) {
             state.withLock { $0.micSampleRate = rate }
+        }
+        func forget(_ id: ObjectIdentifier) {
+            state.withLock { st in
+                st.framesByStream[id] = nil
+                st.micRateByStream[id] = nil
+            }
         }
 
         init(systemURL: URL, micURL: URL,

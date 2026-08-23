@@ -20,10 +20,9 @@ final class CaptureRestartPolicyTests: XCTestCase {
             delays.append(after)
         }
         XCTAssertEqual(delays, [2, 4, 8, 16, 32], "пауза растёт вдвое")
-        // Весь цикл — под сторожем приложения (100 с тишины аудиовхода):
-        // паузы + до 10 с сборки и 1,2 с проверки на попытку.
-        let worst = delays.reduce(0, +) + Double(delays.count) * (10 + 1.2)
-        XCTAssertLessThan(worst, 100 + 30, "цикл обязан закончиться до второго тика сторожа")
+        // Паузы сами по себе — под сторожем приложения (100 с): даже без
+        // подавления ветки аудиовхода обычный цикл (сборка ~1 с) укладывается.
+        XCTAssertLessThan(delays.reduce(0, +) + Double(delays.count) * 2.2, PipelineWatchdog.timeout)
         guard case .giveUp(let reason) = p.decide(userStopped: false, now: t0.addingTimeInterval(600))
         else { return XCTFail("после потолка попыток — сдаёмся и говорим человеку") }
         XCTAssertTrue(reason.contains("попыток"), reason)

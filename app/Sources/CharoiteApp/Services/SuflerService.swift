@@ -171,6 +171,15 @@ final class SuflerService: ObservableObject {
     /// Причина последнего автостопа («silence» | «limit»), пока встреча на экране.
     @Published private(set) var autostopReason: String?
     private var restartAttempts = 0      // защита от краш-лупа: максимум 3 подряд
+    /// Потери захвата за одну встречу — отдельный потолок: restartAttempts
+    /// обнуляется первой же строкой стенограммы, и цикл «потеря → рестарт →
+    /// резервный микрофон → снова потеря» был бы бесконечным (Codex, круг-2
+    /// по PR #383). Сбрасывается только ручным стартом.
+    private var captureLossCount = 0
+    static let captureLossLimit = 2
+    /// Причина ближайшего перезапуска из-за потери захвата — чтобы
+    /// daemonDied не затирал её общим «Запись прервалась».
+    private var captureLossReason: String?
     private var lifecycleGate = RecordingLifecycleGate()
 
     // Gate остаётся закрытым, а подсистема остановки (соседний файл) ходит к
@@ -365,6 +374,8 @@ final class SuflerService: ObservableObject {
             // держал flock) навсегда выключала автовосстановление: человек жал
             // «Слушать встречу» и мгновенно получал то же ⛔️ без объяснения.
             restartAttempts = 0
+            captureLossCount = 0
+            captureLossReason = nil
         }
         _hintBuf = ""; _lastHintUI = .distantPast
         hintIsManual = false
@@ -407,17 +418,27 @@ final class SuflerService: ObservableObject {
             // стенограммы — на macOS 15 с ним уходит и микрофон.
             capture.onCaptureLost = { [weak self] reason in
                 guard let self, self.isRunning, let p = self.process, p.isRunning else { return }
+                MeetingNotificationService.shared.presentCaptureLost(reason)
+                self.captureLossCount += 1
+                if self.captureLossCount > Self.captureLossLimit {
+                    // Третья потеря за встречу: перезапуски не лечат — запись
+                    // идёт тем, что осталось, а человек знает, что звука нет.
+                    self.fail(L.t("Захват звука потерян снова (\(reason)) — перезапуски не помогают; остановите и начните запись заново",
+                                  "Audio capture lost again (\(reason)) — restarts do not help; stop and start the recording again",
+                                  "音频捕获再次丢失（\(reason)）——重启无效；请停止并重新开始录音"))
+                    return
+                }
                 // Не ждём 100-секундного сторожа: та же дорога, что у него, —
                 // демон гасится, daemonDied перезапускает встречу с новым
                 // захватом (и откатом на BlackHole, если ScreenCaptureKit
-                // так и не вернулся). Иначе человек получал бы две разные
-                // строки об одной причине с паузой в полторы минуты.
+                // так и не вернулся). Демон при этом ЖИВОЙ — ему дают те же
+                // 12 с на штатное завершение, что и кнопке Стоп.
+                self.captureLossReason = reason
                 self.fail(L.t("Захват звука встречи потерян (\(reason)) — перезапускаю запись",
                               "Meeting audio capture lost (\(reason)) — restarting the recording",
                               "会议音频捕获已丢失（\(reason)）——正在重启录音"))
-                MeetingNotificationService.shared.presentCaptureLost(reason)
                 p.terminate()
-                DispatchQueue.global().asyncAfter(deadline: .now() + 5.0) {
+                DispatchQueue.global().asyncAfter(deadline: .now() + 12.0) {
                     if p.isRunning { kill(p.processIdentifier, SIGKILL) }
                 }
             }
@@ -598,7 +619,14 @@ final class SuflerService: ObservableObject {
             break
         }
         restartAttempts += 1
-        fail(L.t("Запись прервалась — восстанавливаю (\(restartAttempts) из 3)", "Recording dropped — recovering (\(restartAttempts) of 3)", "录音中断——恢复中（第 \(restartAttempts)/3 次）"))
+        if let reason = captureLossReason {
+            captureLossReason = nil
+            fail(L.t("Захват звука потерян (\(reason)) — восстанавливаю запись (\(restartAttempts) из 3)",
+                     "Audio capture lost (\(reason)) — recovering the recording (\(restartAttempts) of 3)",
+                     "音频捕获已丢失（\(reason)）——正在恢复录音（\(restartAttempts)/3）"))
+        } else {
+            fail(L.t("Запись прервалась — восстанавливаю (\(restartAttempts) из 3)", "Recording dropped — recovering (\(restartAttempts) of 3)", "录音中断——恢复中（第 \(restartAttempts)/3 次）"))
+        }
         guard let token = lifecycleGate.beginStop() else { return }
         cleanupDisposition = .restart
         publishLifecycle()
