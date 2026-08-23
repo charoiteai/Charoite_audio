@@ -18,6 +18,10 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/arm64-apple-macosx/release/CharoiteApp "$APP/Contents/MacOS/CharoiteApp"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+# Assets.car — иконка нового формата (Icon Composer) для macOS 26+: без неё
+# Tahoe показывает старый .icns в серой плитке. Собирается
+# scripts/build_app_icon.sh (нужен Xcode 26), лежит в репозитории.
+if [ -f Resources/Assets.car ]; then cp Resources/Assets.car "$APP/Contents/Resources/Assets.car"; fi
 mkdir -p "$APP/Contents/Resources/ru.lproj"
 printf '/* русская локаль — AppKit берёт русские системные меню */\n' \
     > "$APP/Contents/Resources/ru.lproj/InfoPlist.strings"
@@ -65,6 +69,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleExecutable</key>
 	<string>CharoiteApp</string>
 	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIconName</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>ai.charoite.app</string>
@@ -172,7 +178,7 @@ is_macho() {
 # расширения отсекаются до чтения заголовка — иначе это 5000 файлов вместо
 # 900. `|| true`: последний файл может оказаться не Mach-O, а статус фильтра
 # не должен ронять скрипт под set -e; ошибка обхода find — тоже.
-only_macho() { while IFS= read -r -d '' f; do is_macho "$f" && printf '%s\0' "$f" || true; done; }
+only_macho() { while IFS= read -r -d '' f; do if is_macho "$f"; then printf '%s\0' "$f"; fi; done; }
 list_macho_all() {
     { find "$1" -type f ! \( -name '*.py' -o -name '*.pyc' -o -name '*.pyi' -o -name '*.txt' \
         -o -name '*.json' -o -name '*.md' -o -name '*.h' -o -name '*.rst' -o -name '*.pem' \

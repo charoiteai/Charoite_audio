@@ -25,6 +25,7 @@ Operational helpers. All local, all optional.
 - `fix_action_items.py` — a one-off normalization of action-item formatting in minutes written before the daemon started normalizing them; only the format changes. Dry-run by default.
 - `check_private_markers.py` — the de-identification guard (a pre-commit hook): checks both the added lines and the whole tracked tree, prints places and never the marker itself. See [Contributing](../CONTRIBUTING.md).
 - `build_embedded_python.sh` — assembles the portable python runtime that ships inside `Charoite.app`; run it before `app/make_app.sh` when building your own bundle.
+- `build_app_icon.sh` — macOS app icon from the Icon Composer document `app/Resources/AppIcon.icon`: `actool` (Xcode 26+) produces `Assets.car` for macOS 26 (without it Tahoe draws the old `.icns` inside a grey tile) and the legacy `AppIcon.icns` for macOS ≤ 15; both are committed, CI on macos-15 does not rebuild them.
 
 Run dependency-bearing scripts with `.venv/bin/python`; `doctor.py` is the
 intentional exception and works with system `python3` before installation.
