@@ -20,6 +20,10 @@ permissions:
 jobs:
   docs-updated:
     runs-on: ubuntu-latest
+    # release-please вешает ярлык «autorelease: tagged» на уже слитый PR —
+    # событие labeled приходит, когда ветки и её head-коммита больше нет,
+    # и git diff base...head падает (23.08, PR #389). Слитый PR не проверяем.
+    if: github.event.pull_request.merged == false
     steps:
       - uses: actions/checkout@v7
         with:
