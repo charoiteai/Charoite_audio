@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import re
@@ -29,21 +30,47 @@ sys.path.insert(0, str(CODE / "src"))
 import graphs  # noqa: E402
 
 import charoite_paths  # noqa: E402
+import meeting_stamp  # noqa: E402
 from meeting_archive import ARCHIVE_DIR, _safe  # noqa: E402
 
 # Хвосты производных файлов. Слаг стоит между штампом и хвостом:
 # 2026-08-03_1130_Обновление_ОС_разбор.md
 SUFFIXES = ("_minutes", "_hints", "_разбор", "_ревизия_claude", "_live", "_спикеры")
 
-STAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{4}")
+STAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{4}(?:\d{2}(?:-\d+)?)?")
 
 
 def short_stamp(raw: str) -> str:
-    """«2026-08-03_113012» и «2026-08-03_1130_Тема» → «2026-08-03_1130»."""
+    """«2026-08-03_113012» → «2026-08-03_113012», «2026-08-03_1130_Тема» → «2026-08-03_1130».
+
+    Секунды, если человек их дал, сохраняются: так выбирается вторая встреча
+    той же минуты (карточка №39). Без секунд — минутный штамп.
+    """
     m = STAMP_RE.match(raw.strip())
     if not m:
         sys.exit(f"это не штамп встречи: {raw!r} — нужен вид 2026-08-03_1130")
     return m.group(0)
+
+
+def resolve_key(tdir: pathlib.Path, stamp: str, graph: pathlib.Path | None = None) -> str:
+    """Ключ встречи в графе по штампу от человека.
+
+    Посекундный штамп — ключ той самой встречи (`graph_key` по её главному
+    файлу). Минутный — владелец минуты; если в минуте несколько встреч без
+    владельца, просим уточнить секундами, а не переименовываем первую
+    попавшуюся.
+    """
+    mains = [p for p in tdir.glob(f"{meeting_stamp.minute_of(stamp)}*.md")
+             if (s := meeting_stamp.stamp_of(p.stem)) and meeting_stamp.minute_of(s) == meeting_stamp.minute_of(stamp)] \
+        if tdir.is_dir() else []
+    if stamp != meeting_stamp.minute_of(stamp):
+        mine = [p for p in mains if meeting_stamp.stamp_of(p.stem) == stamp]
+        return meeting_stamp.graph_key(tdir, mine[0].stem, graph) if mine else stamp
+    keys = {meeting_stamp.graph_key(tdir, p.stem, graph) for p in mains}
+    if len(keys) > 1 and stamp not in keys:
+        sys.exit(f"в минуте {stamp} несколько встреч ({', '.join(sorted(keys))}) — "
+                 "укажите штамп с секундами")
+    return stamp
 
 
 def pretty_and_slug(title: str) -> tuple[str, str]:
@@ -102,6 +129,8 @@ def retitled(name: str, stamp: str, slug: str) -> str | None:
     if not m:
         return None
     body = m.group(1)
+    if f"_{body}" in SUFFIXES:              # производный посекундного ключа: «…125812_hints»
+        return f"{stamp}_{slug}_{body}.md"
     suffix = next((s for s in SUFFIXES if body.endswith(s)), "")
     old_slug = body[: len(body) - len(suffix)] if suffix else body
     if not old_slug or old_slug == slug:
@@ -114,10 +143,38 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
     """Что переименуется и что перепишется. Считается без единой записи."""
     moves: list[tuple[pathlib.Path, pathlib.Path]] = []
     taken: set[pathlib.Path] = set()
+    # Файлы ИМЕННО этой встречи: главные файлы, чей ключ графа — наш stamp,
+    # и их производные. Минутный ключ раньше захватывал голые посекундные
+    # файлы соседки («…125812.md» → «…1258_Тема.md»), а настоящий владелец
+    # пропускался как «имя занято» (круг-1 по PR #388, Codex).
+    minute = meeting_stamp.minute_of(stamp)
+    mains = {meeting_stamp.stamp_of(p.stem): p
+             for p in (tdir.glob(f"{minute}*.md") if tdir.is_dir() else ())
+             if meeting_stamp.stamp_of(p.stem)}
+    mine = {b for b, p in mains.items() if meeting_stamp.graph_key(tdir, p.stem, graph) == stamp}
+    if stamp == minute and tdir.is_dir():
+        # Бесхозные посекундные производные («…113012_hints.md» без главного
+        # файла «…113012») — владельца минуты: так их оставлял конвейер до
+        # наката темы.
+        docs = graph / "Документация" / "Стенограммы встреч"
+        for f in tdir.glob(f"{minute}[0-9][0-9]_*.md"):
+            b = f.name[:17]
+            if b in mains:
+                continue
+            # След соседки в графе — заметка под её ключом или копии её
+            # файлов в Документации: тогда производная её, а не бесхозная
+            # (круг-2 по PR #388, Sonnet).
+            if (graph / "Встречи" / f"{b}.md").exists() or \
+                    meeting_stamp.files_with_stamp(docs, b, suffix=".md"):
+                continue             # с границей штампа: «…812-1_*» — не её копии
+            mine.add(b)
     for folder in (tdir, graph / "Документация" / "Стенограммы встреч"):
         if not folder.exists():
             continue
         for f in sorted(folder.iterdir()):
+            if not any(f.name.startswith(b) and not f.name[len(b):len(b) + 1].isdigit()
+                       and not re.match(r"-\d", f.name[len(b):]) for b in mine):
+                continue
             new = retitled(f.name, stamp, slug)
             if not new:
                 continue
@@ -131,18 +188,51 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
             taken.add(target)
             moves.append((f, target))
 
-    day, hhmm = stamp[:10], f"{stamp[11:13]}-{stamp[13:15]}"
-    arch_prefix = f"{day} {hhmm} "
-    old_folder = next((d for d in sorted((graph / ARCHIVE_DIR).iterdir())
-                       if d.is_dir() and d.name.startswith(arch_prefix)), None) \
-        if (graph / ARCHIVE_DIR).exists() else None
+    day, hhmm = stamp[:10], meeting_stamp.archive_time(stamp)
+    old_folder = archive_folder(graph, stamp)
     new_folder = (old_folder.with_name(f"{day} {hhmm} — {pretty}")
                   if old_folder is not None else None)
     if old_folder is not None and old_folder == new_folder:
         old_folder = new_folder = None
 
     return {"moves": moves, "old_folder": old_folder, "new_folder": new_folder,
-            "note": graph / "Встречи" / f"{stamp}.md"}
+            "note": meeting_stamp.find_note(graph, stamp, tdir) or graph / "Встречи" / f"{stamp}.md"}
+
+
+def archive_folder(graph: pathlib.Path, stamp: str) -> pathlib.Path | None:
+    """Папка архива этой встречи: время в имени целиком («12-58 — », «12-58-12 — »),
+    и не чужая по манифесту — у второй встречи той же минуты своя папка."""
+    root = graph / ARCHIVE_DIR
+    if not root.exists():
+        return None
+    head = f"{stamp[:10]} {meeting_stamp.archive_time(stamp)}"
+    for d in sorted(root.iterdir()):
+        if not d.is_dir() or not (d.name == head or d.name.startswith(head + " ")):
+            continue
+        try:
+            owner = json.loads((d / "meeting.meta.json").read_text(encoding="utf-8")).get("meeting_id")
+        except (OSError, ValueError, AttributeError):
+            owner = None
+        if owner is None or owner == stamp:
+            return d
+    return None
+
+
+BRAIN = "http://127.0.0.1:8100"
+
+
+def brain_rename(stamp: str, pretty: str) -> str:
+    """Новая тема — и в фактах памяти Чароита (brain /rename, карточка №41).
+    brain выключен — сказать, как повторить, а не молчать."""
+    try:
+        import requests
+        r = requests.post(f"{BRAIN}/rename", json={"meeting": stamp, "title": pretty}, timeout=60)
+        text = (r.json() or {}).get("text", "") if r.headers.get("content-type", "").startswith("application/json") else r.text
+        return text if r.status_code == 200 else f"отказ ({r.status_code}): {text[:160]}"
+    except Exception as e:  # noqa: BLE001
+        return (f"недоступна ({type(e).__name__}) — тема в памяти осталась старой; повторить: "
+                f"curl -X POST {BRAIN}/rename -H 'content-type: application/json' "
+                f"-d '{{\"meeting\":\"{stamp}\",\"title\":\"{pretty}\"}}'")
 
 
 def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
@@ -166,11 +256,8 @@ def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
     # из свежих Markdown возвращает манифесту правду (и создаёт его старым
     # встречам, которых архивация до манифестов не застала).
     folder = new_folder
-    if folder is None and (graph / ARCHIVE_DIR).exists():
-        day, hhmm = stamp[:10], f"{stamp[11:13]}-{stamp[13:15]}"
-        prefix = f"{day} {hhmm} "
-        folder = next((d for d in sorted((graph / ARCHIVE_DIR).iterdir())
-                       if d.is_dir() and d.name.startswith(prefix)), None)
+    if folder is None:
+        folder = archive_folder(graph, stamp)
     if folder is not None:
         try:
             from meeting_archive import _write_manifest
@@ -229,13 +316,13 @@ def main() -> None:
     if len(args) != 2:
         sys.exit(__doc__.strip().splitlines()[0]
                  + "\nиспользование: rename_meeting.py <штамп> <новая тема> [--yes]")
-    stamp = short_stamp(args[0])
     pretty, slug = pretty_and_slug(args[1])
 
     import yaml
     cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
     graph = resolve_graph(cfg)
     tdir = ROOT / cfg["log"]["transcripts_dir"]
+    stamp = resolve_key(tdir, short_stamp(args[0]), graph)
 
     p = plan(graph, tdir, stamp, pretty, slug)
     if not p["moves"] and p["old_folder"] is None and not p["note"].exists():
@@ -252,6 +339,7 @@ def main() -> None:
         print("\nЭто был план. Применить: --yes")
         return
     apply(p, graph, stamp, pretty)
+    print(f"память Чароита: {brain_rename(stamp, pretty)}")
     print(f"готово: {stamp} — «{pretty}»")
 
 

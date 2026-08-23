@@ -49,6 +49,7 @@ Time Machine, и вычистить чужие устройства. Об это
 """
 from __future__ import annotations
 
+import json
 import argparse
 import dataclasses
 import os
@@ -111,9 +112,12 @@ class Plan:
     delete: list[pathlib.Path] = dataclasses.field(default_factory=list)
     edit: dict[pathlib.Path, str] = dataclasses.field(default_factory=dict)
     # Куда «забыть» не дотягивается, но человек должен знать (аудит 16.08,
-    # п.1): тема и решения встречи уходят в память Чароита (brain :8100,
-    # /remember), а /forget у неё нет.
+    # п.1): копии в iCloud, Time Machine, у других участников.
     beyond_reach: list[str] = dataclasses.field(default_factory=list)
+    # Ключи, под которыми факты встречи лежат в памяти Чароита (brain :8100):
+    # ключ графа (минутный у владельца минуты, посекундный у соседки) и сам
+    # штамп, если отличается. /forget у brain есть с 23.08 (карточка №41).
+    brain_keys: list[str] = dataclasses.field(default_factory=list)
 
     def describe(self) -> str:
         out = [f"Встреча {self.stamp}"]
@@ -143,7 +147,9 @@ def _graph_roots(graph: pathlib.Path | None) -> list[pathlib.Path]:
     return graphs.all_graphs(MEETINGS_DIR) or graphs.all_graphs(ARCHIVE_DIR)
 
 
-_STAMP_RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{4,6})(?!\d)")
+# Суффикс коллизии «-N» — часть штампа: «2026-08-21_125812-1» — другая встреча,
+# не «…125812» (круг-1 по PR #388, Codex).
+_STAMP_RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{4,6}(?:-\d+)?)(?![\d-])")
 STATUS_DIR = pathlib.Path("logs") / "meeting-status"
 
 
@@ -196,8 +202,8 @@ def _status_files(status_dir: pathlib.Path, stamp: str) -> list[pathlib.Path]:
             continue
         name = pathlib.Path(str(tp)).name
         rest = name[len(stamp):]
-        if name.startswith(stamp) and not rest[:1].isdigit():
-            found.add(f)
+        if name.startswith(stamp) and not rest[:1].isdigit() and not re.match(r"-\d", rest):
+            found.add(f)                 # «-N» — соседка, как в files_with_stamp
     return sorted(found)
 
 
@@ -217,7 +223,7 @@ def stamps(root: pathlib.Path, graph: pathlib.Path | None = None) -> list[str]:
         for p in (g / MEETINGS_DIR).glob("*.md"):
             if not p.name.startswith("_"):
                 found.add(p.stem)
-    return sorted(s for s in found if re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{4,6}", s))
+    return sorted(s for s in found if re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{4,6}(?:-\d+)?", s))
 
 
 def resolve(target: str, root: pathlib.Path,
@@ -230,33 +236,76 @@ def resolve(target: str, root: pathlib.Path,
     return [s for s in known if s == target]
 
 
-def _archive_folders(g: pathlib.Path, stamp: str) -> list[pathlib.Path]:
-    """Папка встречи в архиве: имя несёт дату и время, а форматов было три."""
-    arch = g / ARCHIVE_DIR
-    if not arch.is_dir():
-        return []
-    day, hhmm = stamp[:10], f"{stamp[11:13]}-{stamp[13:15]}"
+_DAY_FOLDER_RE = re.compile(
+    r"^(?P<day>\d{4}-\d{2}-\d{2})(?:"
+    r" (?P<hm>\d{2}-\d{2}(?:-\d{2})?(?:-\d+)?)"      # «2026-07-15 14-00[-30][-1] — Тема»
+    r"|_(?P<raw>\d{4}(?:\d{2})?(?:-\d+)?)"          # «2026-07-15_1400[30][-1] — Тема»
+    r")?[ \t]+—[ \t]+")                              # пробелы вокруг тире — любые
+
+
+def _day_folders(arch: pathlib.Path, day: str) -> list[tuple[pathlib.Path, str | None]]:
+    """Папки архива этого дня во всех трёх форматах имени с их временем в
+    нормальном виде («14-00», «14-00-30», «14-00-30-1»); None — папка без
+    времени («дата — тема»). Один разбор на все форматы: две правки подряд
+    с перечислением форматов по месту дали два Critical подряд (круг-1 и
+    круг-2 по PR #388) — правило теперь одно."""
     out = []
     for d in sorted(arch.iterdir()):
         if not d.is_dir() or d.name.startswith("."):
             continue
-        # «2026-07-15 14-00 — Тема» (текущий), «2026-07-15_1400 — Тема» и
-        # «2026-07-15 — Тема» (наследие meeting_archive.py)
-        if d.name.startswith(f"{day} {hhmm} ") or d.name.startswith(f"{stamp} "):
-            out.append(d)
-        elif d.name.startswith(f"{day} —") and not _other_time(arch, day, hhmm):
-            out.append(d)
+        m = _DAY_FOLDER_RE.match(d.name)
+        if not m or m.group("day") != day:
+            continue
+        if m.group("hm"):
+            out.append((d, m.group("hm")))
+        elif m.group("raw"):
+            out.append((d, meeting_stamp.archive_time(f"{day}_{m.group('raw')}")))
+        else:
+            out.append((d, None))
     return out
 
 
-def _other_time(arch: pathlib.Path, day: str, hhmm: str) -> bool:
-    """Есть ли в архиве папка этого дня с ДРУГИМ временем.
+def _archive_folders(g: pathlib.Path, stamp: str) -> list[pathlib.Path]:
+    """Папки архива этой встречи.
 
-    Старый формат «дата — тема» не различает встречи внутри дня, поэтому
-    трогать его можно только когда сомнений нет: одна встреча за день.
+    Время сравнивается целиком и в нормальном виде для всех трёх форматов
+    имени: минутный ключ не забирает папку посекундной соседки («14-00-12»),
+    суффикс «-N» — отдельная встреча. Папка с манифестом чужой встречи
+    (meeting_id другой) — не наша. Папка без времени («дата — тема») —
+    только когда сомнений нет: она единственная за день.
     """
-    return any(d.is_dir() and d.name.startswith(f"{day} ") and not d.name.startswith(f"{day} {hhmm} ")
-               for d in arch.iterdir())
+    arch = g / ARCHIVE_DIR
+    if not arch.is_dir():
+        return []
+    day = stamp[:10]
+    mine_time = meeting_stamp.archive_time(stamp)
+    folders = _day_folders(arch, day)
+    out = []
+    for d, when in folders:
+        owner = meeting_archive_id(d)
+        if owner == stamp:            # манифест называет нас — формат имени не важен
+            out.append(d)
+            continue
+        if when != mine_time or owner is not None:
+            continue                  # другое время или чужая встреча по манифесту
+        out.append(d)
+    if out:
+        return out
+    if len(folders) == 1 and folders[0][1] is None:
+        # Единственная папка без времени — наша, если манифест не говорит
+        # обратного (круг-3 по PR #388, Codex).
+        owner = meeting_archive_id(folders[0][0])
+        if owner is None or owner == stamp:
+            return [folders[0][0]]
+    return []
+
+
+def meeting_archive_id(folder: pathlib.Path) -> str | None:
+    """meeting_id из манифеста папки архива; None — манифеста нет или бит."""
+    try:
+        return json.loads((folder / "meeting.meta.json").read_text(encoding="utf-8")).get("meeting_id")
+    except (OSError, ValueError, AttributeError):
+        return None
 
 
 def plan(stamp: str, root: pathlib.Path,
@@ -280,27 +329,29 @@ def plan(stamp: str, root: pathlib.Path,
     # минуты пишут в один и тот же лог — он общий, и удалить его при
     # забывании любой из них честнее, чем оставить.
     log_stamp = stamp[:15]
-    p.delete += _with_stamp(logs, log_stamp, prefix="graph_", suffix=".log")
+    # Вторая встреча той же минуты живёт под посекундным ключом — её
+    # облачный лог и отметка brain названы им; минутный префикс с границей
+    # штампа их не видит (живая проверка 23.08, карточка №39).
+    log_stamps = [log_stamp] + ([stamp] if stamp != log_stamp else [])
+    for ls_ in log_stamps:
+        p.delete += _with_stamp(logs, ls_, prefix="graph_", suffix=".log")
     # Лог облачной ревизии называется иначе и потому переживал забывание:
     # внутри — имена файлов встречи (а тема встречи стоит в имени),
     # счётчики и stderr CLI (аудит 16.08).
-    p.delete += _with_stamp(logs, log_stamp, prefix="cloud_review_", suffix=".log")
+    for ls_ in log_stamps:
+        p.delete += _with_stamp(logs, ls_, prefix="cloud_review_", suffix=".log")
     # Лог повторной пересборки (retry_<штамп>.log): stdout rebuild_transcript
     # с маппингом имён участников и темой — третий класс, который ни ретеншн,
     # ни «забыть» не видели (аудит DeepSeek 16.08).
-    p.delete += _with_stamp(logs, log_stamp, prefix="retry_", suffix=".log")
+    for ls_ in log_stamps:
+        p.delete += _with_stamp(logs, ls_, prefix="retry_", suffix=".log")
     # Отметка «факты встречи отправлены в память Чароита» (graph_updater):
     # без неё повторный разбор той же встречи после забывания молчал бы.
-    sent = _with_stamp(logs / "brain_sent", log_stamp, suffix=".txt")
-    p.delete += sent
-    if sent:
-        # Сами факты (тема, участники, решения) живут в памяти-компаньоне
-        # (brain :8100), у которой нет /forget: сказать вслух, а не делать
-        # вид, что забыто всё (аудит 16.08, п.1; как для iCloud в PRIVACY).
-        p.beyond_reach.append(
-            "память Чароита (brain :8100): тема, участники и решения встречи "
-            "отправлены туда при разборе; /forget у неё нет — чистить её "
-            "инструментами самой памяти")
+    # Отметка «факты отправлены» (logs/brain_sent/<ключ графа>.txt) и сами
+    # факты в памяти-компаньоне (brain :8100) — по ключу графа, который
+    # станет известен ниже, по узлу встречи; минутная отметка соседки той
+    # же минуты — не наша (карточка №39).
+    p.brain_keys = [stamp]
     # Статус конвейера (logs/meeting-status/<стенограмма>.json): путь к
     # стенограмме — с темой в имени, этап, текст ошибки; его же читает
     # список «Недавние встречи». Чистится сам через 14 дней, но «забыть»
@@ -308,13 +359,19 @@ def plan(stamp: str, root: pathlib.Path,
     p.delete += _status_files(root / STATUS_DIR, stamp)
 
     if keep_graph:
+        p.brain_keys = []          # граф остаётся — остаётся и память о встрече
         return p
 
-    link = _link_re(stamp)
     for g in _graph_roots(graph):
-        node = g / MEETINGS_DIR / f"{stamp}.md"
-        if node.exists():
+        # Узел — по ключу графа: у второй встречи той же минуты он посекундный,
+        # у первой минутный; минутную заметку берём только если она наша
+        # (meeting_stamp.find_note, карточка №39).
+        node = meeting_stamp.find_note(g, stamp, root / "transcripts")
+        link = _link_re(node.stem if node else stamp)
+        if node is not None:
             p.delete.append(node)
+            if node.stem not in p.brain_keys:
+                p.brain_keys.append(node.stem)
         # graph_updater копирует в «Стенограммы встреч» все артефакты
         # `{штамп}_*.md` (минутки, подсказки, живая нить), а не один
         # `{штамп}.md` — иначе копии стенограммы переживали забывание.
@@ -389,6 +446,13 @@ def plan(stamp: str, root: pathlib.Path,
             fixed = _strip_meeting(text, link)
             if fixed != text:
                 p.edit[f] = fixed
+    # Сами факты (тема, участники, решения) живут в памяти-компаньоне
+    # (brain :8100): забываем их там по ключу, а не говорим «вне
+    # досягаемости» (аудит 16.08 п.1 → карточка №41). Отметка brain_sent
+    # названа ключом графа; без отметки тоже пробуем — отметки появились
+    # позже фактов.
+    for key in p.brain_keys:
+        p.delete += _with_stamp(logs / "brain_sent", key, suffix=".txt")
     return p
 
 
@@ -464,11 +528,36 @@ def apply(p: Plan, yes: bool = False) -> bool:
         tmp.replace(path)
     print(f"\nзабыто: удалено {len(p.delete) - len(left)}, поправлено {len(p.edit)}"
           f" (копии поправленных — в {BACKUP_DIR}/{p.stamp})")
+    for key in p.brain_keys:
+        print(f"  память Чароита: {brain_forget(key)}")
     print("Что осталось вне досягаемости: копии в iCloud и бэкапах Time Machine,"
           " файлы у других участников — см. PRIVACY.md")
     for line in p.beyond_reach:
         print(f"  и ещё: {line}")
     return True
+
+
+BRAIN = "http://127.0.0.1:8100"
+
+
+def brain_forget(key: str) -> str:
+    """POST /forget в память Чароита; строка для человека, не исключение.
+
+    brain может быть выключен — «забыть» файлы от этого не зависит, но
+    молчать нельзя: человек должен знать, что память не чищена и как
+    повторить (раньше это место честно говорило «/forget у неё нет»).
+    """
+    try:
+        import requests
+        r = requests.post(f"{BRAIN}/forget", json={"meeting": key}, timeout=30)
+        text = (r.json() or {}).get("text", "") if r.headers.get("content-type", "").startswith("application/json") else r.text
+        if r.status_code == 200:
+            return text or f"забыто: {key}"
+        return f"отказ ({r.status_code}): {text[:160]}"
+    except Exception as e:  # noqa: BLE001 — brain выключен или не отвечает
+        return (f"недоступна ({type(e).__name__}) — факты встречи {key} остались; "
+                f"повторить, когда brain поднимется: curl -X POST {BRAIN}/forget "
+                f"-H 'content-type: application/json' -d '{{\"meeting\":\"{key}\"}}'")
 
 
 def main() -> int:

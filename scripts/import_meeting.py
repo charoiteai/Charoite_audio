@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import os
 import pathlib
 import re
@@ -31,6 +32,7 @@ CODE = pathlib.Path(__file__).resolve().parent.parent
 ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 sys.path.insert(0, str(CODE / "src"))
 import graphs  # noqa: E402
+import meeting_stamp  # noqa: E402
 import deps  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
@@ -38,7 +40,6 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 import yaml  # noqa: E402
 
 import charoite_paths  # noqa: E402
-from meeting_stamp import files_with_stamp  # noqa: E402
 
 AUDIO = {".m4a", ".wav", ".mp3", ".aif", ".aiff", ".caf"}
 TEXT = {".txt", ".md"}
@@ -229,6 +230,37 @@ def parse_subs(text: str) -> list[tuple[str, str, str]]:
     return out
 
 
+def source_mark(name: str, size: int | None) -> str:
+    """«Recording.m4a (123456 Б)» — исходник в шапке стенограммы импорта.
+
+    Размер отличает две РАЗНЫЕ записи с одним именем: диктофон на телефоне
+    экспортирует всё как Recording.m4a, и по одному имени вторая запись той
+    же минуты считалась бы повтором первой (круг-1 по PR #388, Sonnet и
+    DeepSeek)."""
+    return f"{name} ({size} Б)" if size is not None else name
+
+
+_SOURCE_HEAD_RE = re.compile(r"— (?:импорт|запись) (?P<tail>.+?)\s*$")
+
+
+def same_source(head: str, name: str, size: int | None) -> bool:
+    """Шапка стенограммы — про этот исходник? Хвост шапки сравнивается с
+    именем БЕЗ разбора регэкспом: имя вроде «memo (7 Б).m4a» иначе теряло
+    хвост за «размер» (круг-2 по PR #388, Codex и Sonnet). Хвост равен имени
+    (шапка без размера, до 23.08) — повтор; равен «имя (N Б)» — повтор, если
+    размер совпал или неизвестен."""
+    m = _SOURCE_HEAD_RE.search(head)
+    if not m:
+        return False
+    tail = m.group("tail")
+    if tail == name:
+        return True
+    if not tail.startswith(name + " (") or not tail.endswith(" Б)"):
+        return False
+    theirs = tail[len(name) + 2:-3]
+    return theirs.isdigit() and (size is None or int(theirs) == size)
+
+
 def subs_to_transcript(entries: list[tuple[str, str, str]], stamp: str, src: str) -> str:
     lines = [f"# Встреча {stamp} — импорт {src}", ""]
     prev_key = None
@@ -250,12 +282,20 @@ def archive_folder_for(graph: pathlib.Path, stamp: str) -> pathlib.Path | None:
     исходник второй встречи ложился к первой, а при занятом имени молча не
     копировался вовсе (аудит DeepSeek 16.08).
     """
-    patterns = (f"{stamp[:10]} {stamp[11:13]}-{stamp[13:15]} *", f"{stamp} — *")
+    # Время целиком («12-58 — », «12-58-12 — ») и meeting_id манифеста: минутный
+    # глоб брал папку соседки той же минуты (круг-1 по PR #388, Codex).
+    head = f"{stamp[:10]} {meeting_stamp.archive_time(stamp)}"
+    patterns = (f"{head} — *", f"{stamp} — *")
     for pat in patterns:
-        found = [f for f in sorted(graph.parent.glob(f"*/Встречи-архив/{pat}"))
-                 + sorted(graph.glob(f"Встречи-архив/{pat}")) if f.is_dir()]
-        if found:
-            return found[0]
+        for f in sorted(graph.parent.glob(f"*/Встречи-архив/{pat}")) + sorted(graph.glob(f"Встречи-архив/{pat}")):
+            if not f.is_dir():
+                continue
+            try:
+                owner = json.loads((f / "meeting.meta.json").read_text(encoding="utf-8")).get("meeting_id")
+            except (OSError, ValueError, AttributeError):
+                owner = None
+            if owner is None or owner == stamp:
+                return f
     return None
 
 
@@ -271,6 +311,45 @@ def build_parser() -> argparse.ArgumentParser:
                     help="файл = ПАПКА-вход: импортировать все поддерживаемые "
                          "файлы из неё, успешные переносить в done/")
     return ap
+
+
+def import_stamp(tdir: pathlib.Path, minute: str, src_name: str,
+                 seconds: str, src_size: int | None = None) -> tuple[str, pathlib.Path | None]:
+    """Штамп импорта и найденный повтор.
+
+    Повтор — та же ЗАПИСЬ, а не та же минута: шапка стенограммы импорта
+    хранит имя исходника («— импорт <файл>»), по нему и узнаём. Раньше
+    повтором считалась любая встреча той же минуты — вторая запись с
+    телефона в ту же минуту (или рядом со встречей демона) молча уезжала
+    в done/ без импорта (аудит 17.08, карточка №41). Чужая встреча в этой
+    минуте — импортируем под посекундным штампом (секунды — от mtime записи,
+    «00» при времени от человека), как демон при крэш-рестарте: граф даст
+    ей свой ключ (meeting_stamp.graph_key). Занятые секунды — суффикс «-N».
+    """
+    taken = False
+    for p in sorted(tdir.glob(f"{minute}*.md")) if tdir.is_dir() else ():
+        s = meeting_stamp.stamp_of(p.stem)
+        if s is None or meeting_stamp.minute_of(s) != minute:
+            continue
+        try:
+            with p.open(encoding="utf-8", errors="replace") as fh:
+                head = fh.readline()
+        except OSError:
+            head = ""
+        # Шапка текста/субтитров — «— импорт <файл> (<размер> Б)», аудио
+        # (transcribe_file) — «— запись …»: повтор узнаём по обеим, с
+        # размером, когда он есть.
+        if same_source(head, src_name, src_size):
+            return s, p
+        taken = True
+    if not taken:
+        return minute, None
+    stamp = f"{minute}{seconds}"
+    n = 1
+    while any(meeting_stamp.stamp_of(p.stem) == stamp for p in tdir.glob(f"{stamp}*.md")):
+        stamp = f"{minute}{seconds}-{n}"
+        n += 1
+    return stamp, None
 
 
 def main() -> None:
@@ -328,32 +407,30 @@ def main() -> None:
     mt = dt.datetime.fromtimestamp(src.stat().st_mtime)
     day = clean_date(args.date) if args.date else f"{mt:%Y-%m-%d}"
     hhmm = clean_time(args.time) if args.time else f"{mt:%H%M}"
-    stamp = f"{day}_{hhmm}"
-    slug = re.sub(r"[^\wА-Яа-яЁё-]+", "_", args.title).strip("_")[:40]
-    tpath = tdir / (f"{stamp}_{slug}.md" if slug else f"{stamp}.md")
-    # Повтор ищем глобом, а не по голому имени: конвейер переименовывает
-    # стенограмму в `<stamp>_Тема.md`, и проверка только `<stamp>.md`
-    # переставала видеть уже обработанную встречу — повторный импорт той же
-    # записи создавал дубль рядом с titled-файлом и гонял по нему полный
-    # LLM-конвейер (найдено 06.08 регрессионным тестом).
-    # …но с границей штампа: минутный «2026-08-03_1130» — префикс секундного
-    # «2026-08-03_113012» соседней встречи демона, и голый глоб объявлял
-    # импорт «повтором» чужой встречи (аудит DeepSeek 16.08).
-    already = next(iter(files_with_stamp(tdir, stamp, suffix=".md")), None)
+    stamp, already = import_stamp(tdir, f"{day}_{hhmm}", src.name,
+                                  f"{mt:%S}" if not args.time else "00",
+                                  src.stat().st_size)
     if already is not None:
         # Код 0, а не sys.exit(строка): выход строкой возвращает 1, скан
         # считал повтор ОТКАЗОМ и не переносил файл в done/ — тот застревал
         # в папке импорта навсегда и пересканировался каждые две минуты
         # (найдено 06.08: три файла с телефона молотились по кругу).
         # Повтор — это успех: встреча уже в архиве.
-        print(f"встреча {stamp} уже импортирована: {already} — повтор не нужен")
+        print(f"встреча {already.name} уже импортирована — повтор не нужен")
         return
+    if stamp != f"{day}_{hhmm}":
+        print(f"в минуте {day}_{hhmm} уже есть другая встреча — импорт под штампом {stamp}")
+    slug = re.sub(r"[^\wА-Яа-яЁё-]+", "_", args.title).strip("_")[:40]
+    tpath = tdir / (f"{stamp}_{slug}.md" if slug else f"{stamp}.md")
 
     ext = src.suffix.lower()
     if ext in AUDIO:
-        # транскрибация пишет transcripts/<stamp>.md сама
+        # транскрибация пишет transcripts/<stamp>.md сама; время отдаём
+        # целиком — с секундами и суффиксом у соседки в занятой минуте,
+        # иначе она ложилась в минутный файл поверх первой (круг-1 по
+        # PR #388, DeepSeek).
         r = subprocess.run([sys.executable, str(CODE / "src" / "transcribe_file.py"),
-                            str(src), hhmm, day])
+                            str(src), stamp[11:], day])
         if r.returncode != 0:
             sys.exit("транскрибация не удалась")
         tpath = tdir / f"{stamp}.md"
@@ -367,7 +444,7 @@ def main() -> None:
                                     compile_rules(cfg)))
         if not entries:
             sys.exit("в субтитрах не нашлось реплик")
-        tpath.write_text(subs_to_transcript(entries, stamp, src.name), encoding="utf-8")
+        tpath.write_text(subs_to_transcript(entries, stamp, source_mark(src.name, src.stat().st_size)), encoding="utf-8")
         speakers = sorted({sp for _, sp, _ in entries if sp})
         print(f"стенограмма из субтитров: {tpath}"
               + (f" · спикеры: {', '.join(speakers)}" if speakers else ""))
@@ -377,7 +454,7 @@ def main() -> None:
                       compile_rules(cfg))
         if len(body) < 200:
             sys.exit("текст слишком короткий для встречи")
-        tpath.write_text(f"# Встреча {stamp} — импорт {src.name}\n\n{body}\n",
+        tpath.write_text(f"# Встреча {stamp} — импорт {source_mark(src.name, src.stat().st_size)}\n\n{body}\n",
                          encoding="utf-8")
         print(f"стенограмма из текста: {tpath}")
     else:

@@ -24,6 +24,7 @@ import privacy  # noqa: E402
 from llm import LLM, LLMHTTPError  # noqa: E402
 
 from charoite_paths import code_root, harden_umask, resolve_root
+import meeting_stamp
 from meeting_stamp import files_with_stamp, stamp_of
 import graphs
 
@@ -715,7 +716,11 @@ def main():
         else:
             print(f"граф проекта: {graph.name}")
 
-    stamp, bare, already_titled = parse_stem(tpath.stem)
+    _minute, bare, already_titled = parse_stem(tpath.stem)
+    # Ключ встречи в графе — минутный штамп, пока минуту не занимает другая
+    # встреча (крэш-рестарт в ту же минуту); тогда посекундный. Правило —
+    # в meeting_stamp.graph_key, его же зовут архив, forget и rename.
+    stamp = meeting_stamp.graph_key(tpath.parent, tpath.stem, graph)
     title = (data.get("название") or "").strip()
     # правило 20.07: имя встречи = дата + 2-3 слова, длиннее не бывает
     tw = title.split()[:3]
@@ -795,7 +800,7 @@ def main():
     # 2) заметка встречи — только когда есть чем её наполнить: без разбора
     # модели заметка была бы пустышкой, а её наличие переводит статус в
     # «готово» и отменяет ретрай (см. EXIT_NO_GRAPH).
-    md = [f"---\ntype: встреча\nдата: {stamp}\nтеги: [встреча, авто]"
+    md = [f"---\ntype: встреча\nдата: {_minute}\nтеги: [встреча, авто]"
           + (f"\naliases: [\"{title}\"]" if title else "") + "\n---",
           f"# Встреча {stamp}" + (f" — {title}" if title else ""), ""]
     if topics:
@@ -844,14 +849,16 @@ def main():
             # 15с: brain ждёт эмбеддинг bge-m3 из Ollama, занятой нашим же extract —
             # 5с не хватало (20.07: «memory недоступна», решения не попали в recall)
             who = ", ".join(p["имя"] for p in people[:6])
+            # meeting — ключ графа: по нему «забыть» и переименование доходят
+            # до памяти (brain /forget, /rename с 23.08, карточка №41).
             requests.post("http://127.0.0.1:8100/remember", json={
                 "text": f"Встреча {stamp} «{title or 'без названия'}» ({who}): темы — "
                         + "; ".join(topics[:4]),
-                "category": "learned", "importance": 0.6}, timeout=15)
+                "category": "learned", "importance": 0.6, "meeting": stamp}, timeout=15)
             for d in decisions[:6]:
                 requests.post("http://127.0.0.1:8100/remember", json={
                     "text": f"Решение встречи {stamp} «{title}»: {d}",
-                    "category": "decision", "importance": 0.7}, timeout=15)
+                    "category": "decision", "importance": 0.7, "meeting": stamp}, timeout=15)
             print(f"память Чароита: +{1 + min(len(decisions), 6)} фактов")
             brain_mark.parent.mkdir(parents=True, exist_ok=True)
             brain_mark.write_text(f"{title}\n", encoding="utf-8")

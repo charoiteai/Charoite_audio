@@ -24,7 +24,7 @@ import stat as _stat
 import sys
 
 from charoite_paths import resolve_root
-from meeting_stamp import files_with_stamp
+from meeting_stamp import archive_time, files_with_stamp, graph_key, stamp_of
 import graphs
 
 ROOT = resolve_root(__file__)
@@ -82,18 +82,37 @@ def _excluded(graph: pathlib.Path) -> set[str]:
     return set(re.findall(r"\d{4}-\d{2}-\d{2}_\d{4}", f.read_text(encoding="utf-8")))
 
 
+def _manifest_id(folder: pathlib.Path) -> str | None:
+    """meeting_id из манифеста папки; None — манифеста нет (наследие) или он бит."""
+    try:
+        return json.loads((folder / "meeting.meta.json").read_text(encoding="utf-8")).get("meeting_id")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def _folders_for(graph: pathlib.Path, stamp: str) -> list[pathlib.Path]:
     """Все папки архива, относящиеся к этой встрече, — свежие первыми.
 
     Ищем по дате и времени в начале имени: тема в хвосте меняется, встреча —
-    нет. Свежие первыми, потому что при склейке дублей выживать должна та
-    папка, куда писали последней.
+    нет. Время сравнивается целиком («12-58 — », а не префиксом «12-58»):
+    вторая встреча той же минуты лежит как «12-58-12 — …», и минутный ключ
+    не должен её захватывать — раньше `_folders_for` переименовывал чужую
+    папку под новую тему (аудит 17.08, карточка №39). Папка с манифестом,
+    чей meeting_id — другая встреча, тоже чужая. Свежие первыми, потому что
+    при склейке дублей выживать должна та папка, куда писали последней.
     """
-    prefix = f"{stamp[:10]} {stamp[11:13]}-{stamp[13:15]} "
+    head = f"{stamp[:10]} {archive_time(stamp)}"
     root = graph / ARCHIVE_DIR
     if not root.exists():
         return []
-    found = [d for d in root.iterdir() if d.is_dir() and d.name.startswith(prefix)]
+    found = []
+    for d in root.iterdir():
+        if not d.is_dir() or not (d.name == head or d.name.startswith(head + " ")):
+            continue
+        owner = _manifest_id(d)
+        if owner is not None and owner != stamp:
+            continue
+        found.append(d)
     return sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)
 
 
@@ -113,7 +132,9 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
     # время в имени папки: 5 встреч в день неотличимы по «дата — тема»,
     # а mtime врёт после доработок (ревизии дописывают файлы). Двоеточие
     # в имени нельзя (Finder/Windows/синк) — «11-30» читаемо и безопасно
-    nice_time = f"{stamp[11:13]}-{stamp[13:15]}"
+    # Посекундный ключ (вторая встреча той же минуты) — «12-58-12», чтобы
+    # в Finder две встречи лежали рядом, но порознь.
+    nice_time = archive_time(stamp)
     folder = graph / ARCHIVE_DIR / f"{stamp[:10]} {nice_time} — {_safe(pretty)}"
     for legacy in (graph / ARCHIVE_DIR / f"{stamp} — {_safe(pretty)}",
                    graph / ARCHIVE_DIR / f"{stamp[:10]} — {_safe(pretty)}"):
@@ -706,10 +727,13 @@ def migrate_all(graph: pathlib.Path, tdir: pathlib.Path) -> int:
             continue  # это артефакт, не стенограмма
         if f.stat().st_size < 600:
             continue  # пустышка (тест старт/стоп) — не встреча
-        m = re.match(r"(\d{4}-\d{2}-\d{2}_\d{4})(?:_(.+))?\.md$", f.name)
-        if not m:
+        bare = stamp_of(f.stem)
+        if bare is None:
             continue
-        stamp, slug = m.group(1), m.group(2) or ""
+        # Ключ — как у graph_updater: минута у владельца, секунды у соседки;
+        # минутный регэксп пропускал посекундные стенограммы целиком.
+        stamp = graph_key(tdir, f.stem, graph)
+        slug = f.stem[len(bare) + 1:] if f.stem != bare else ""
         archive_meeting(graph, tdir, stamp, slug, files_key=f.stem)
         done += 1
     return done

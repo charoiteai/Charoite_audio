@@ -407,11 +407,12 @@ def test_new_place_snapshot_copies_are_forgotten_too(tmp_path, monkeypatch):
 
 
 
-def test_forget_says_aloud_what_it_cannot_reach_in_the_brain(tmp_path):
-    """Тема и решения встречи уходят в память Чароита (brain :8100,
-    /remember), а /forget у неё нет. Отметка brain_sent удаляется, но
-    делать вид, что забыто всё, нельзя — план говорит об этом вслух
-    (аудит 16.08, п.1; та же честность, что про iCloud в PRIVACY)."""
+def test_forget_reaches_the_brain_by_key_and_reports_when_it_is_down(tmp_path, monkeypatch):
+    """Тема и решения встречи уходят в память Чароита (brain :8100) под ключом
+    встречи; с 23.08 у brain есть /forget, и план забывает факты там по
+    ключу графа (отметка brain_sent) и по штампу — вместо прежнего «вне
+    досягаемости» (карточка №41). brain выключен — не авария, но и не
+    молчание: человек получает строку с тем, как повторить."""
     root, graph = _world(tmp_path)
     sent_dir = root / "logs" / "brain_sent"
     sent_dir.mkdir(parents=True, exist_ok=True)
@@ -419,13 +420,43 @@ def test_forget_says_aloud_what_it_cannot_reach_in_the_brain(tmp_path):
     mark.write_text("тема\n", encoding="utf-8")
 
     plan = forget.plan(STAMP, root, graph)
-
     assert mark in plan.delete
-    assert any("brain :8100" in line for line in plan.beyond_reach)
-    assert "не дотянется" in plan.describe()
+    assert plan.brain_keys == [STAMP]
+    assert not any("brain" in line for line in plan.beyond_reach)
 
-    quiet = forget.plan(OTHER, root, graph)
-    assert not quiet.beyond_reach, "без отметки — ничего в память не уходило"
+    calls = []
+
+    class Resp:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+
+        def json(self):
+            return {"text": "Забыто: PG OK: 2; Chroma удалено 2"}
+
+    class FakeRequests:
+        @staticmethod
+        def post(url, json=None, timeout=None):
+            calls.append((url, json))
+            return Resp()
+
+    monkeypatch.setitem(sys.modules, "requests", FakeRequests)
+    assert "Забыто" in forget.brain_forget(STAMP)
+    assert calls == [(f"{forget.BRAIN}/forget", {"meeting": STAMP})]
+
+    class Down:
+        @staticmethod
+        def post(url, json=None, timeout=None):
+            raise ConnectionError("refused")
+
+    monkeypatch.setitem(sys.modules, "requests", Down)
+    msg = forget.brain_forget(STAMP)
+    assert "недоступна" in msg and "/forget" in msg and STAMP in msg
+
+    # у посекундной соседки ключей два: ключ графа из отметки и её штамп
+    (sent_dir / "2026-07-15_140012.txt").write_text("тема\n", encoding="utf-8")
+    (root / "transcripts" / "2026-07-15_140012.md").write_text("# Встреча\n", encoding="utf-8")
+    second = forget.plan("2026-07-15_140012", root, graph)
+    assert second.brain_keys == ["2026-07-15_140012"]
 
 
 def test_cloud_quarantine_of_the_meeting_is_forgotten_too(tmp_path, monkeypatch):

@@ -78,6 +78,139 @@ def stamp_of(name: str) -> str | None:
     return m.group(1)
 
 
+def minute_of(stamp: str) -> str:
+    """«2026-08-03_113012-1» → «2026-08-03_1130»; не штамп — как есть."""
+    m = _RE.match(stamp)
+    return m.group(1)[:15] if m else stamp
+
+
+def graph_key(tdir: pathlib.Path, stem: str,
+              graph: pathlib.Path | None = None) -> str:
+    """Ключ встречи в графе: имя заметки `Встречи/<ключ>.md`, ссылка
+    `[[Встречи/<ключ>]]`, папка архива, отметка brain.
+
+    По умолчанию — минутный штамп: ссылки в графе читают люди, и «12:58»
+    там уместнее «12:58:12». Посекундный штамп ключом становится только
+    когда минута уже принадлежит ДРУГОЙ встрече: демон после краха
+    поднимается через две секунды, то есть внутри той же минуты, и вторая
+    встреча минутным ключом затирала заметку первой, а архив переименовывал
+    её папку под себя (аудит 16–17.08, карточка №39). Владение минутой
+    читается из transcripts/: главный файл «<минута>_<тема>.md» — владелец;
+    среди голых посекундных владелец — самый ранний. Правило детерминировано
+    состоянием каталога, поэтому повтор обработки даёт тот же ключ. Если
+    передан граф, уже существующая заметка весит больше каталога: встреча,
+    однажды записанная под посекундным ключом, остаётся под ним и после
+    того, как соседку забыли, — иначе повтор разбора завёл бы ей вторую
+    заметку под минутой.
+    """
+    bare = stamp_of(stem)
+    if bare is None:
+        return stem
+    minute = minute_of(bare)
+    if bare == minute:                 # встреча до 28.07: секунд не было
+        return minute
+    if stem != bare:                   # тема уже накатана: «<bare>_Тема» — ключ в имени
+        return bare
+    if graph is not None:
+        notes = graph / "Встречи"
+        if (notes / f"{bare}.md").is_file():
+            return bare
+        minute_note = notes / f"{minute}.md"
+        if minute_note.is_file():
+            try:
+                if not note_is_ours(minute_note.read_text(encoding="utf-8"), bare, tdir):
+                    return bare
+            except OSError:
+                pass
+    for p in tdir.glob(f"{minute}*.md") if tdir.is_dir() else ():
+        other = p.stem
+        if other == stem:
+            continue
+        o_bare = stamp_of(other)
+        if o_bare is None or minute_of(o_bare) != minute:
+            continue
+        if other != o_bare:            # чужой главный файл с темой
+            if not other.startswith(o_bare + "_") or o_bare == minute:
+                return bare            # он назван минутой — минута занята
+            continue                   # назван секундами — минуту не держит
+        if o_bare < bare:              # голая соседка раньше нас
+            return bare
+    return minute
+
+
+_TRANSCRIPT_LINE = re.compile(r"^Стенограмма: `([^`]+)`", re.M)
+
+
+def note_is_ours(note_text: str, stamp: str,
+                 tdir: pathlib.Path | None = None) -> bool:
+    """Заметка `Встречи/<минута>.md` принадлежит встрече со штампом `stamp`?
+
+    Заметка кончается строкой «Стенограмма: `<путь>`»; по штампу в имени
+    этого файла и решаем. Другая минута — чужая. Файл в строке посекундный —
+    только точное совпадение: минутную заметку могла написать соседка той
+    же минуты (крэш-рестарт), и «забыть»/переименовать по чужой заметке
+    нельзя. Файл в строке назван минутой (владелец уже с темой): наш
+    посекундный штамп чужой, если его собственный файл ещё лежит в
+    transcripts/ — владелец минуты тот, чей файл так и назван, а наш —
+    соседка; нет своего файла — мы и есть переименованный владелец.
+    Строки нет (наследие): чужая только когда рядом и наш посекундный
+    файл, и минутно названный владелец. Без transcripts/ спорить нечем —
+    считаем своей (круг-1 по PR #388, DeepSeek и Codex).
+    """
+    m = _TRANSCRIPT_LINE.search(note_text)
+    its = stamp_of(pathlib.Path(m.group(1)).stem) if m else None
+    if its is not None and minute_of(its) != minute_of(stamp):
+        return False
+    if its is not None and its != minute_of(its):          # посекундный владелец
+        return stamp == minute_of(stamp) or its == stamp
+    if stamp == minute_of(stamp) or tdir is None or not tdir.is_dir():
+        return True
+    minute = minute_of(stamp)
+    mains = [stamp_of(p.stem) for p in tdir.glob(f"{minute}*.md")]
+    own = stamp in mains
+    if its is not None:                                     # владелец назван минутой
+        return not own
+    return not (own and minute in mains)
+
+
+def find_note(graph: pathlib.Path, stamp: str,
+              tdir: pathlib.Path | None = None) -> pathlib.Path | None:
+    """Заметка встречи по штампу (с секундами, если они известны).
+
+    Кандидаты: посекундный ключ — он однозначен, затем минутный — с
+    проверкой владения (`note_is_ours`). Это путь forget/rename, где есть
+    только штамп; конвейер с живым файлом зовёт `graph_key`.
+    """
+    minute = minute_of(stamp)
+    keys = [stamp, minute] if stamp != minute else [minute]
+    for key in keys:
+        note = graph / "Встречи" / f"{key}.md"
+        if not note.is_file():
+            continue
+        if key == minute and stamp != minute:
+            try:
+                if not note_is_ours(note.read_text(encoding="utf-8"), stamp, tdir):
+                    continue
+            except OSError:
+                continue
+        return note
+    return None
+
+
+def archive_time(key: str) -> str:
+    """Время в имени папки архива: «12-58» у минутного ключа, «12-58-12» у
+    посекундного, «12-58-12-1» у ключа с суффиксом коллизии — две встречи
+    одной минуты (и одной секунды) лежат в Finder рядом, но порознь."""
+    m = _RE.match(key)
+    if not m:
+        return f"{key[11:13]}-{key[13:15]}"
+    core = m.group(1)
+    hhmm = f"{core[11:13]}-{core[13:15]}"
+    if len(core) == 17:
+        hhmm = f"{hhmm}-{core[15:17]}"
+    return hhmm + key[len(core):]          # «-1» суффикса коллизии, если был
+
+
 def files_with_stamp(directory: pathlib.Path, stamp: str, *, prefix: str = "",
                      suffix: str = "") -> list[pathlib.Path]:
     """Файлы «<prefix><штамп>…<suffix>» этой встречи — и только её.
@@ -96,7 +229,9 @@ def files_with_stamp(directory: pathlib.Path, stamp: str, *, prefix: str = "",
     out = []
     for f in directory.glob(f"{prefix}{stamp}*{suffix}"):
         rest = f.name[len(prefix) + len(stamp):]
-        if rest[:1].isdigit() or not f.is_file():
+        # Цифра — посекундная соседка, «-1» — суффикс коллизии другой встречи
+        # (Transcript.__init__, импорт в занятую секунду): оба не наши.
+        if rest[:1].isdigit() or re.match(r"-\d", rest) or not f.is_file():
             continue
         out.append(f)
     return sorted(out)
