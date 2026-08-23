@@ -32,16 +32,22 @@ final class LibraryScreenPolicyTests: XCTestCase {
         XCTAssertEqual(LibraryScreenPolicy.bucket(of: day(16), now: now, calendar: cal), .earlier,
                        "воскресенье прошлой недели — «раньше»")
         XCTAssertEqual(LibraryScreenPolicy.bucket(of: day(23, hour: 23), now: now, calendar: cal), .today,
-                       "запись из будущего — не «раньше»")
+                       "позже сегодня — всё ещё «сегодня»")
+        XCTAssertEqual(LibraryScreenPolicy.bucket(of: day(24, hour: 10), now: now, calendar: cal), .upcoming,
+                       "завтра (уже следующая неделя) — «впереди», а не «сегодня»")
+        XCTAssertEqual(LibraryScreenPolicy.bucket(of: day(20), now: day(18), calendar: cal), .week,
+                       "будущее внутри этой недели — «на этой неделе»")
+        XCTAssertEqual(LibraryScreenPolicy.bucket(of: day(5, month: 9), now: now, calendar: cal), .upcoming)
     }
 
     func testSectionsDropEmptyBucketsAndSortNewestFirst() {
         let cal = monday
-        let items = [day(17), day(23, hour: 9), day(23, hour: 15), day(2, month: 7)]
+        let items = [day(17), day(23, hour: 9), day(23, hour: 15), day(2, month: 7), day(9, month: 9)]
         let sections = LibraryScreenPolicy.sections(items, date: { $0 }, now: now, calendar: cal)
-        XCTAssertEqual(sections.map(\.bucket), [.today, .week, .earlier])
-        XCTAssertEqual(sections[0].items, [day(23, hour: 15), day(23, hour: 9)], "внутри секции новое первым")
-        XCTAssertEqual(sections[1].items, [day(17)])
+        XCTAssertEqual(sections.map(\.bucket), [.upcoming, .today, .week, .earlier])
+        XCTAssertEqual(sections[0].items, [day(9, month: 9)], "будущее за неделей — сверху, отдельной корзиной")
+        XCTAssertEqual(sections[1].items, [day(23, hour: 15), day(23, hour: 9)], "внутри секции новое первым")
+        XCTAssertEqual(sections[2].items, [day(17)])
         let onlyOld = LibraryScreenPolicy.sections([day(2, month: 7)], date: { $0 }, now: now, calendar: cal)
         XCTAssertEqual(onlyOld.map(\.bucket), [.earlier], "пустые корзины не показываем")
     }

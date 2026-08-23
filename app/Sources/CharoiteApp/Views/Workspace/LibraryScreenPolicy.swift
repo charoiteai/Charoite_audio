@@ -8,8 +8,12 @@ import Foundation
 /// `TasksScreenPolicy` у экрана задач.
 enum LibraryScreenPolicy {
 
-    /// Порядок — это и порядок секций ленты: свежее сверху.
+    /// Порядок — это и порядок секций ленты: свежее сверху. «Впереди» —
+    /// запись с датой за пределами этой недели в будущем: импорт с чужим
+    /// временем или разъехавшиеся часы; такое должно быть видно сверху, а не
+    /// тонуть в «Раньше» и не выдавать себя за сегодняшнее (Codex, круг-1).
     enum Bucket: Int, CaseIterable, Comparable {
+        case upcoming
         case today
         case week
         case earlier
@@ -18,6 +22,7 @@ enum LibraryScreenPolicy {
 
         var title: String {
             switch self {
+            case .upcoming: return L.t("Впереди", "Upcoming", "未来")
             case .today: return L.t("Сегодня", "Today", "今天")
             case .week: return L.t("На этой неделе", "This week", "本周")
             case .earlier: return L.t("Раньше", "Earlier", "更早")
@@ -26,16 +31,15 @@ enum LibraryScreenPolicy {
     }
 
     /// «Сегодня» — тот же календарный день; «На этой неделе» — та же
-    /// календарная неделя, что у `now` (как полоса недели над лентой);
-    /// остальное — «Раньше». Запись из будущего (часы разъехались) — не
-    /// «раньше»: кладём в «Сегодня», иначе свежая встреча уезжает вниз.
+    /// календарная неделя, что у `now` (как полоса недели над лентой), в
+    /// обе стороны; будущее за её пределами — «Впереди»; остальное — «Раньше».
     static func bucket(of date: Date, now: Date = Date(),
                        calendar: Calendar = .current) -> Bucket {
-        if calendar.isDate(date, inSameDayAs: now) || date > now { return .today }
+        if calendar.isDate(date, inSameDayAs: now) { return .today }
         if let week = calendar.dateInterval(of: .weekOfYear, for: now), week.contains(date) {
             return .week
         }
-        return .earlier
+        return date > now ? .upcoming : .earlier
     }
 
     /// Секции ленты: пустые корзины не показываем, внутри — новое первым.

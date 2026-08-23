@@ -174,6 +174,8 @@ struct MeetingLibraryView: View {
                     cancelSearch()
                 } label: { Image(systemName: "xmark.circle.fill") }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .help(L.t("Сбросить поиск", "Clear search", "清除搜索"))
+                    .accessibilityLabel(Text(L.t("Сбросить поиск", "Clear search", "清除搜索")))
             }
         }
         .padding(11)
@@ -196,7 +198,9 @@ struct MeetingLibraryView: View {
 
     /// Кнопки в ScrollView, а не List с selection: List в этом окне молча
     /// терял и подсветку, и клики (сайдбар, 04.08), а карточке нужна своя
-    /// рамка выбора вместо системной заливки строки.
+    /// рамка выбора вместо системной заливки строки. Осознанная плата —
+    /// стрелки ↑/↓ по ленте не ходят (Tab по карточкам остаётся); результаты
+    /// поиска живут в List, как и раньше, там клики не терялись.
     private var archiveFeed: some View {
         let sections = LibraryScreenPolicy.sections(repository.records, date: \.startedAt)
         return ScrollView {
@@ -355,19 +359,45 @@ struct MeetingLibraryView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .none:
+                // Записи и события вперемешку по времени: событие 09:00 стоит
+                // выше записи 15:00, как в дне и было (Codex, круг-1).
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4) {
-                        ForEach(records) { record in
-                            recordCard(record, bucket: .today)
-                        }
-                        ForEach(missed) { event in
-                            eventRow(event)
+                        ForEach(dayItems(records: records, events: missed)) { item in
+                            switch item {
+                            case .record(let record): recordCard(record, bucket: .today)
+                            case .event(let event): eventRow(event)
+                            }
                         }
                     }
                     .padding(8)
                 }
             }
         }
+    }
+
+    /// Элемент ленты дня: запись или событие без записи, в одном порядке времени.
+    private enum DayItem: Identifiable {
+        case record(MeetingRecord)
+        case event(CalendarService.DayEvent)
+
+        var id: String {
+            switch self {
+            case .record(let record): return "record:" + record.id
+            case .event(let event): return "event:" + event.id
+            }
+        }
+
+        var time: Date {
+            switch self {
+            case .record(let record): return record.startedAt
+            case .event(let event): return event.start
+            }
+        }
+    }
+
+    private func dayItems(records: [MeetingRecord], events: [CalendarService.DayEvent]) -> [DayItem] {
+        (records.map(DayItem.record) + events.map(DayItem.event)).sorted { $0.time < $1.time }
     }
 
     private var calendarUnavailableDay: some View {
@@ -561,14 +591,14 @@ struct MeetingLibraryView: View {
 
     static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.locale = .current
+        f.locale = L.locale
         f.dateFormat = "HH:mm"
         return f
     }()
 
     private static let weekdayFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.locale = .current
+        f.locale = L.locale
         f.setLocalizedDateFormatFromTemplate("EE")
         return f
     }()
@@ -582,7 +612,7 @@ struct MeetingLibraryView: View {
 
     private static let fullDayFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.locale = .current
+        f.locale = L.locale
         f.setLocalizedDateFormatFromTemplate("EEEE d MMMM")
         return f
     }()

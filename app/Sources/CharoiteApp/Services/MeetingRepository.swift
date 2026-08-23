@@ -11,19 +11,6 @@ import Foundation
 struct MeetingRecord: Identifiable, Equatable {
     let snapshot: MeetingProcessingSnapshot
     let card: MeetingCard
-    /// Какие глубины чтения у встречи есть (Резюме · Минутки · Разбор ·
-    /// Стенограмма). Считается один раз при сборке записи: проверка — это
-    /// stat двух файлов, а лента библиотеки перерисовывается при каждом
-    /// выборе, и двадцать карточек × два stat на главном потоке — лишнее.
-    let depths: [MeetingCardDepth]
-
-    init(snapshot: MeetingProcessingSnapshot, card: MeetingCard) {
-        self.snapshot = snapshot
-        self.card = card
-        self.depths = MeetingProcessingPolicy.resolvedState(snapshot) == .ready
-            ? MeetingCardDepth.available(card: card, meeting: snapshot)
-            : []
-    }
 
     var id: String { snapshot.meetingID }
     var title: String { snapshot.title }

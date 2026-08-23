@@ -7,38 +7,46 @@ import SwiftUI
 /// и вместе с карточкой файл уходил за 750 строк.
 extension MeetingLibraryView {
 
+    /// Карточка — VStack с рамкой; кнопка выбора оборачивает заголовок и
+    /// тело, а чипы глубин и «Повторить обработку» стоят рядом, не внутри её
+    /// label: кнопка в label другой кнопки — неопределённый случай SwiftUI,
+    /// и клик по чипу мог бы уходить во внешнюю (DeepSeek, круг-1).
     func recordCard(_ record: MeetingRecord, bucket: LibraryScreenPolicy.Bucket) -> some View {
         let isSelected = navigation.selectedMeetingID == record.id
         let shape = RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-        return Button {
-            navigation.selectedMeetingID = record.id
-        } label: {
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 7) {
-                    stateDot(record.state)
-                    Text(record.title).font(.callout.weight(.medium)).lineLimit(1)
-                    Spacer(minLength: 4)
-                    Text(when(record.startedAt, bucket: bucket))
-                        .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+        return VStack(alignment: .leading, spacing: 5) {
+            Button {
+                navigation.selectedMeetingID = record.id
+            } label: {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 7) {
+                        stateDot(record.state)
+                        Text(record.title).font(.callout.weight(.medium)).lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text(when(record.startedAt, bucket: bucket))
+                            .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                    }
+                    cardBody(record)
                 }
-                cardBody(record)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(shape.fill(Color(nsColor: .controlBackgroundColor)))
-            .overlay(shape.strokeBorder(isSelected ? Theme.accent.opacity(0.45) : Color.primary.opacity(0.06),
-                                        lineWidth: 1))
-            .contentShape(shape)
-            .opacity(record.state == .empty ? 0.75 : 1)
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+            cardActions(record)
         }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(shape.fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(shape.strokeBorder(isSelected ? Theme.accent.opacity(0.45) : Color.primary.opacity(0.06),
+                                    lineWidth: 1))
+        .opacity(record.state == .empty ? 0.75 : 1)
     }
 
-    /// Тело карточки по состоянию: готовой — числа с источником, суть и
-    /// глубины; собирающейся — стадия конвейера; упавшей — ошибка словами и
-    /// повтор на месте; без речи — результат, не ошибка.
+    /// Тело карточки по состоянию: готовой — числа с источником и суть;
+    /// собирающейся — стадия конвейера; упавшей — ошибка словами и причина;
+    /// без речи — результат, не ошибка.
     @ViewBuilder
     func cardBody(_ record: MeetingRecord) -> some View {
         switch record.state {
@@ -51,45 +59,62 @@ extension MeetingLibraryView {
             }
             if let gist = record.card.gist {
                 Text(gist).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            }
-            if record.depths.count > 1 {
-                depthChips(record)
+            } else if meta.isEmpty {
+                // Карточка без единого слова — одна точка: состояние обязано
+                // быть и словом, для глаз и для VoiceOver.
+                Text(stateText(.ready)).font(.caption).foregroundStyle(.secondary)
             }
         case .processing:
             Text(MeetingProcessingPolicy.stageText(for: record.snapshot))
                 .font(.caption).foregroundStyle(Theme.accent)
         case .error:
-            Text(errorText(record))
-                .font(.caption).foregroundStyle(Theme.warning)
-                .fixedSize(horizontal: false, vertical: true)
-            if processing.canRetry(record.snapshot) {
-                HStack {
-                    Spacer(minLength: 0)
-                    Button(L.t("Повторить обработку", "Retry processing", "重试处理")) {
-                        processing.retry(record.snapshot)
-                    }
-                    .charoite(.link, .s)
-                }
+            Text(stateText(.error)).font(.caption).foregroundStyle(Theme.warning)
+            // Причина — как её записал конвейер, отдельной строкой: она
+            // приходит на языке конвейера, а не интерфейса.
+            if let reason = record.snapshot.error?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !reason.isEmpty {
+                Text(reason).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         case .empty, .unknown:
             Text(stateText(record.state)).font(.caption).foregroundStyle(.secondary)
         }
     }
 
-    /// «Ошибка — исходник сохранён: <что случилось>» — словами, а не точкой.
-    func errorText(_ record: MeetingRecord) -> String {
-        let head = stateText(.error)
-        guard let reason = record.snapshot.error?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !reason.isEmpty else { return head }
-        return head + ": " + reason
+    /// Действия под телом: мини-сегмент глубин у готовой встречи, повтор —
+    /// у упавшей. Глубины считаются здесь, по живому диску: заметку мог
+    /// убрать forget_meeting.py при неизменном статусе, а кэш врал бы.
+    @ViewBuilder
+    func cardActions(_ record: MeetingRecord) -> some View {
+        switch record.state {
+        case .ready:
+            let depths = MeetingCardDepth.available(card: record.card, meeting: record.snapshot)
+            if depths.count > 1 {
+                depthChips(record, available: depths)
+            }
+        case .error:
+            if processing.canRetry(record.snapshot) {
+                HStack {
+                    Spacer(minLength: 0)
+                    // Тихая, не ссылка: повтор запускает конвейер, а ссылка по
+                    // шкале кнопок ничего не меняет.
+                    Button(L.t("Повторить обработку", "Retry processing", "重试处理")) {
+                        processing.retry(record.snapshot)
+                    }
+                    .charoite(.quiet, .s)
+                }
+            }
+        case .processing, .empty, .unknown:
+            EmptyView()
+        }
     }
 
     /// Мини-сегмент глубин: есть — индиго, нет — пунктир без клика. Клик
     /// выбирает встречу и открывает карточку сразу на этой глубине.
-    func depthChips(_ record: MeetingRecord) -> some View {
+    func depthChips(_ record: MeetingRecord, available: [MeetingCardDepth]) -> some View {
         HStack(spacing: 3) {
             ForEach(MeetingCardDepth.allCases) { depth in
-                let has = record.depths.contains(depth)
+                let has = available.contains(depth)
                 Button {
                     depthRaw = depth.rawValue
                     navigation.selectedMeetingID = record.id
@@ -136,10 +161,12 @@ extension MeetingLibraryView {
         switch bucket {
         case .today: return Self.timeFormatter.string(from: date)
         case .week: return Self.weekDayDateFormatter.string(from: date)
-        case .earlier: return Self.shortDateFormatter.string(from: date)
+        case .earlier, .upcoming: return Self.shortDateFormatter.string(from: date)
         }
     }
 
+    /// Локаль продукта, как у всех дат в приложении (L10n): под русским
+    /// заголовком системный форматтер писал бы «Sat 17.08».
     static let weekDayDateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = L.locale
