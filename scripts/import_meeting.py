@@ -31,6 +31,7 @@ CODE = pathlib.Path(__file__).resolve().parent.parent
 ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 sys.path.insert(0, str(CODE / "src"))
 import graphs  # noqa: E402
+import meeting_stamp  # noqa: E402
 import deps  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
@@ -38,7 +39,6 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 import yaml  # noqa: E402
 
 import charoite_paths  # noqa: E402
-from meeting_stamp import files_with_stamp  # noqa: E402
 
 AUDIO = {".m4a", ".wav", ".mp3", ".aif", ".aiff", ".caf"}
 TEXT = {".txt", ".md"}
@@ -273,6 +273,42 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def import_stamp(tdir: pathlib.Path, minute: str, src_name: str,
+                 seconds: str) -> tuple[str, pathlib.Path | None]:
+    """Штамп импорта и найденный повтор.
+
+    Повтор — та же ЗАПИСЬ, а не та же минута: шапка стенограммы импорта
+    хранит имя исходника («— импорт <файл>»), по нему и узнаём. Раньше
+    повтором считалась любая встреча той же минуты — вторая запись с
+    телефона в ту же минуту (или рядом со встречей демона) молча уезжала
+    в done/ без импорта (аудит 17.08, карточка №41). Чужая встреча в этой
+    минуте — импортируем под посекундным штампом (секунды — от mtime записи,
+    «00» при времени от человека), как демон при крэш-рестарте: граф даст
+    ей свой ключ (meeting_stamp.graph_key). Занятые секунды — суффикс «-N».
+    """
+    taken = False
+    for p in sorted(tdir.glob(f"{minute}*.md")) if tdir.is_dir() else ():
+        s = meeting_stamp.stamp_of(p.stem)
+        if s is None or meeting_stamp.minute_of(s) != minute:
+            continue
+        try:
+            with p.open(encoding="utf-8", errors="replace") as fh:
+                head = fh.readline()
+        except OSError:
+            head = ""
+        if f"— импорт {src_name}" in head:
+            return s, p
+        taken = True
+    if not taken:
+        return minute, None
+    stamp = f"{minute}{seconds}"
+    n = 1
+    while any(meeting_stamp.stamp_of(p.stem) == stamp for p in tdir.glob(f"{stamp}*.md")):
+        stamp = f"{minute}{seconds}-{n}"
+        n += 1
+    return stamp, None
+
+
 def main() -> None:
     # Импорт пишет стенограмму, записи и архивную папку — те же данные, что
     # демон, и с теми же правами: только владельцу (аудит DeepSeek 16.08).
@@ -328,26 +364,20 @@ def main() -> None:
     mt = dt.datetime.fromtimestamp(src.stat().st_mtime)
     day = clean_date(args.date) if args.date else f"{mt:%Y-%m-%d}"
     hhmm = clean_time(args.time) if args.time else f"{mt:%H%M}"
-    stamp = f"{day}_{hhmm}"
-    slug = re.sub(r"[^\wА-Яа-яЁё-]+", "_", args.title).strip("_")[:40]
-    tpath = tdir / (f"{stamp}_{slug}.md" if slug else f"{stamp}.md")
-    # Повтор ищем глобом, а не по голому имени: конвейер переименовывает
-    # стенограмму в `<stamp>_Тема.md`, и проверка только `<stamp>.md`
-    # переставала видеть уже обработанную встречу — повторный импорт той же
-    # записи создавал дубль рядом с titled-файлом и гонял по нему полный
-    # LLM-конвейер (найдено 06.08 регрессионным тестом).
-    # …но с границей штампа: минутный «2026-08-03_1130» — префикс секундного
-    # «2026-08-03_113012» соседней встречи демона, и голый глоб объявлял
-    # импорт «повтором» чужой встречи (аудит DeepSeek 16.08).
-    already = next(iter(files_with_stamp(tdir, stamp, suffix=".md")), None)
+    stamp, already = import_stamp(tdir, f"{day}_{hhmm}", src.name,
+                                  f"{mt:%S}" if not args.time else "00")
     if already is not None:
         # Код 0, а не sys.exit(строка): выход строкой возвращает 1, скан
         # считал повтор ОТКАЗОМ и не переносил файл в done/ — тот застревал
         # в папке импорта навсегда и пересканировался каждые две минуты
         # (найдено 06.08: три файла с телефона молотились по кругу).
         # Повтор — это успех: встреча уже в архиве.
-        print(f"встреча {stamp} уже импортирована: {already} — повтор не нужен")
+        print(f"встреча {already.name} уже импортирована — повтор не нужен")
         return
+    if stamp != f"{day}_{hhmm}":
+        print(f"в минуте {day}_{hhmm} уже есть другая встреча — импорт под штампом {stamp}")
+    slug = re.sub(r"[^\wА-Яа-яЁё-]+", "_", args.title).strip("_")[:40]
+    tpath = tdir / (f"{stamp}_{slug}.md" if slug else f"{stamp}.md")
 
     ext = src.suffix.lower()
     if ext in AUDIO:

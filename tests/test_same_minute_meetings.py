@@ -1,0 +1,153 @@
+"""Две встречи одной минуты (крэш-рестарт демона) живут в графе порознь.
+
+Демон после краха поднимается через две секунды — внутри той же минуты.
+Стенограммы и записи уже различались секундами, но граф ключевал встречу
+МИНУТОЙ: вторая затирала заметку первой, архив переименовывал её папку под
+новую тему, «забыть» и переименование брали чужую заметку (аудит 16–17.08,
+карточка №39). Правило одно — meeting_stamp.graph_key: минута у владельца
+(самая ранняя в минуте), секунды у соседки; архив, поиск заметки, forget и
+rename ходят через него.
+"""
+import json
+import pathlib
+import sys
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(REPO / "scripts"))
+import meeting_stamp as ms  # noqa: E402
+import meeting_processing as mp  # noqa: E402
+from meeting_archive import ARCHIVE_DIR, _folders_for  # noqa: E402
+import forget_meeting as forget  # noqa: E402
+import rename_meeting as rm  # noqa: E402
+
+MIN = "2026-08-21_1258"
+FIRST, SECOND = "2026-08-21_125810", "2026-08-21_125812"
+
+
+def _transcripts(tmp_path, *stems):
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir(parents=True, exist_ok=True)
+    for s in stems:
+        (tdir / f"{s}.md").write_text(f"# Встреча {s}\n", encoding="utf-8")
+    return tdir
+
+
+def test_owner_is_the_earliest_and_the_neighbour_keeps_seconds(tmp_path):
+    tdir = _transcripts(tmp_path, FIRST, SECOND)
+    assert ms.graph_key(tdir, FIRST) == MIN
+    assert ms.graph_key(tdir, SECOND) == SECOND
+    # порядок обработки не важен: вторая, разобранная первой, тоже получает секунды
+    assert ms.graph_key(tdir, SECOND) == ms.graph_key(tdir, SECOND)
+
+
+def test_key_survives_retitle_and_retry(tmp_path):
+    tdir = _transcripts(tmp_path, FIRST, SECOND)
+    (tdir / f"{FIRST}.md").rename(tdir / f"{MIN}_Первая.md")          # владелец с темой
+    (tdir / f"{SECOND}.md").rename(tdir / f"{SECOND}_Вторая.md")      # соседка с темой
+    assert ms.graph_key(tdir, f"{MIN}_Первая") == MIN
+    assert ms.graph_key(tdir, f"{SECOND}_Вторая") == SECOND
+    # ретрай соседки до наката темы, когда владелец уже назван минутой
+    (tdir / f"{SECOND}_Вторая.md").rename(tdir / f"{SECOND}.md")
+    assert ms.graph_key(tdir, SECOND) == SECOND
+
+
+def test_legacy_minute_stamp_and_single_meeting_keep_minute(tmp_path):
+    tdir = _transcripts(tmp_path, "2026-07-10_1130", SECOND)
+    assert ms.graph_key(tdir, "2026-07-10_1130") == "2026-07-10_1130"
+    assert ms.graph_key(tdir, SECOND) == MIN                            # одна в минуте
+
+
+def test_existing_note_outweighs_the_directory(tmp_path):
+    tdir = _transcripts(tmp_path, SECOND)                                # соседку забыли
+    graph = tmp_path / "graph"
+    (graph / "Встречи").mkdir(parents=True)
+    (graph / "Встречи" / f"{SECOND}.md").write_text("# b", encoding="utf-8")
+    assert ms.graph_key(tdir, SECOND, graph) == SECOND
+    # минутная заметка чужой встречи (по строке «Стенограмма:») — тоже в секунды
+    (graph / "Встречи" / f"{SECOND}.md").unlink()
+    (graph / "Встречи" / f"{MIN}.md").write_text(
+        f"# a\n\nСтенограмма: `{tdir / FIRST}.md`\n", encoding="utf-8")
+    assert ms.graph_key(tdir, SECOND, graph) == SECOND
+    # своя минутная заметка (ретрай владельца) — минута
+    (graph / "Встречи" / f"{MIN}.md").write_text(
+        f"# a\n\nСтенограмма: `{tdir / SECOND}.md`\n", encoding="utf-8")
+    assert ms.graph_key(tdir, SECOND, graph) == MIN
+
+
+def test_find_note_does_not_take_the_neighbours_note(tmp_path):
+    graph = tmp_path / "graph"
+    (graph / "Встречи").mkdir(parents=True)
+    note = graph / "Встречи" / f"{MIN}.md"
+    note.write_text(f"# a\n\nСтенограмма: `/t/{FIRST}_Первая.md`\n", encoding="utf-8")
+    assert ms.find_note(graph, FIRST) == note
+    assert ms.find_note(graph, SECOND) is None
+    own = graph / "Встречи" / f"{SECOND}.md"
+    own.write_text("# b", encoding="utf-8")
+    assert ms.find_note(graph, SECOND) == own
+    # владелец, уже названный минутой: в строке нет секунд — спорить нечем
+    note.write_text(f"# a\n\nСтенограмма: `/t/{MIN}_Первая.md`\n", encoding="utf-8")
+    assert ms.find_note(graph, FIRST) == note
+
+
+def test_archive_folders_are_separate_and_not_hijacked(tmp_path):
+    graph = tmp_path / "graph"
+    arch = graph / ARCHIVE_DIR
+    arch.mkdir(parents=True)
+    first = arch / "2026-08-21 12-58 — Первая"
+    first.mkdir()
+    (first / "meeting.meta.json").write_text(json.dumps({"meeting_id": MIN}), encoding="utf-8")
+    second = arch / "2026-08-21 12-58-12 — Вторая"
+    second.mkdir()
+    (second / "meeting.meta.json").write_text(json.dumps({"meeting_id": SECOND}), encoding="utf-8")
+    assert _folders_for(graph, MIN) == [first]
+    assert _folders_for(graph, SECOND) == [second]
+    assert ms.archive_time(SECOND) == "12-58-12" and ms.archive_time(MIN) == "12-58"
+    # forget и rename видят те же границы
+    assert forget._archive_folders(graph, MIN) == [first]
+    assert forget._archive_folders(graph, SECOND) == [second]
+    assert rm.archive_folder(graph, MIN) == first
+    assert rm.archive_folder(graph, SECOND) == second
+
+
+def test_find_meeting_note_uses_the_current_file_and_key(tmp_path, monkeypatch):
+    tdir = _transcripts(tmp_path, FIRST, SECOND)
+    graph = tmp_path / "vault" / "Работа"
+    (graph / "Встречи").mkdir(parents=True)
+    (graph / "Встречи" / f"{MIN}.md").write_text(
+        f"# a\n\nСтенограмма: `{tdir / MIN}_Первая.md`\n", encoding="utf-8")
+    (graph / "Встречи" / f"{SECOND}.md").write_text("# b", encoding="utf-8")
+    (tdir / f"{FIRST}.md").rename(tdir / f"{MIN}_Первая.md")
+    (tdir / f"{SECOND}.md").rename(tdir / f"{SECOND}_Вторая.md")
+    monkeypatch.delenv("SUFLER_GRAPH_DIR", raising=False)
+    monkeypatch.delenv("CHAROITE_GRAPH_DIR", raising=False)
+    cfg = {"sufler": {"graph_dir": str(graph)}}
+    # статус знает старые (голые) имена — как retry из приложения
+    assert mp.find_meeting_note(cfg, tdir / f"{FIRST}.md") == (graph / "Встречи" / f"{MIN}.md").resolve()
+    assert mp.find_meeting_note(cfg, tdir / f"{SECOND}.md") == (graph / "Встречи" / f"{SECOND}.md").resolve()
+    assert mp.find_final_transcript(tdir / f"{SECOND}.md").name == f"{SECOND}_Вторая.md"
+    assert mp.find_final_transcript(tdir / f"{FIRST}.md").name == f"{MIN}_Первая.md"
+
+
+def test_forget_second_meeting_leaves_the_first_untouched(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    tdir = _transcripts(root, FIRST, SECOND)
+    (root / "recordings").mkdir()
+    (root / "logs").mkdir()
+    graph = tmp_path / "vault" / "Работа"
+    (graph / "Встречи").mkdir(parents=True)
+    first_note = graph / "Встречи" / f"{MIN}.md"
+    first_note.write_text(f"# a\n\nСтенограмма: `{tdir / FIRST}.md`\n", encoding="utf-8")
+    second_note = graph / "Встречи" / f"{SECOND}.md"
+    second_note.write_text("# b", encoding="utf-8")
+    arch = graph / ARCHIVE_DIR
+    (arch / "2026-08-21 12-58 — Первая").mkdir(parents=True)
+    (arch / "2026-08-21 12-58 — Первая" / "meeting.meta.json").write_text(
+        json.dumps({"meeting_id": MIN}), encoding="utf-8")
+    (arch / "2026-08-21 12-58-12 — Вторая").mkdir()
+    monkeypatch.setattr(forget, "ROOT", root, raising=False)
+    p = forget.plan(SECOND, root, graph)
+    doomed = {d.name for d in p.delete}
+    assert f"{SECOND}.md" in doomed and "2026-08-21 12-58-12 — Вторая" in doomed
+    assert f"{FIRST}.md" not in doomed and f"{MIN}.md" not in doomed
+    assert "2026-08-21 12-58 — Первая" not in doomed

@@ -14,6 +14,7 @@ import tempfile
 import time
 from typing import Any
 import graphs
+import meeting_stamp
 
 
 SCHEMA_VERSION = 1
@@ -48,20 +49,24 @@ def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
     """Return the transcript even if graph_updater renamed it to its title."""
     if original.exists():
         return original.resolve()
-    stamp = short_stamp(original)
-    candidates = []
-    for path in original.parent.glob(f"{stamp}_*.md"):
-        # По ХВОСТУ имени, как meeting_stamp.stamp_of и rename_meeting: проверка
-        # подстрокой вычёркивала главный файл встречи «План_разбора» (тема со
-        # словом «разбор» внутри) и статус получал несуществующий путь
-        # (аудит DeepSeek 16.08).
-        suffix = path.stem[len(stamp):].lower()
-        if any(suffix.endswith(aux) for aux in _AUX_SUFFIXES):
-            continue
-        candidates.append(path)
-    if not candidates:
-        return original.resolve()
-    return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
+    # Сначала посекундное имя («…125812_Тема»), потом минутное: вторая
+    # встреча той же минуты носит тему при посекундном штампе, и минутный
+    # глоб находил бы файл соседки (карточка №39).
+    bare = meeting_stamp.stamp_of(original.stem) or short_stamp(original)
+    for stamp in dict.fromkeys((bare, short_stamp(original))):
+        candidates = []
+        for path in original.parent.glob(f"{stamp}_*.md"):
+            # По ХВОСТУ имени, как meeting_stamp.stamp_of и rename_meeting: проверка
+            # подстрокой вычёркивала главный файл встречи «План_разбора» (тема со
+            # словом «разбор» внутри) и статус получал несуществующий путь
+            # (аудит DeepSeek 16.08).
+            suffix = path.stem[len(stamp):].lower()
+            if any(suffix.endswith(aux) for aux in _AUX_SUFFIXES):
+                continue
+            candidates.append(path)
+        if candidates:
+            return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
+    return original.resolve()
 
 
 def find_meeting_note(
@@ -75,7 +80,10 @@ def find_meeting_note(
     configured = graphs.graph_dir(cfg)
     if configured is None:
         return None
-    stamp = short_stamp(transcript)
+    # Ключ заметки — как его выбрал graph_updater по ТЕКУЩЕМУ имени файла:
+    # минутный у владельца минуты, посекундный у второй встречи той же
+    # минуты (meeting_stamp.graph_key, карточка №39).
+    current = find_final_transcript(transcript)
     roots = [configured]
     # graph_updater may route a meeting to ``configured.parent/<project>``.
     if not override:
@@ -92,6 +100,7 @@ def find_meeting_note(
         if resolved in seen:
             continue
         seen.add(resolved)
+        stamp = meeting_stamp.graph_key(current.parent, current.stem, root)
         note = root / "Встречи" / f"{stamp}.md"
         try:
             if note.is_file() and (newer_than is None or note.stat().st_mtime >= newer_than):

@@ -257,38 +257,39 @@ def test_impossible_date_is_refused():
             clean_date(bad)
 
 
-def test_повтор_импорта_успех_а_не_отказ(tmp_path):
-    """Повтор обязан (1) вернуть 0 и (2) видеть titled-встречи.
+def test_повтор_импорта_та_же_запись_а_не_та_же_минута(tmp_path):
+    """Повтор — та же запись, и код 0; соседка в той же минуте — не повтор.
 
     Скан переносит файл в done/ только при нулевом коде: выход строкой
     (= код 1) оставлял файл в папке импорта навсегда — три записи с
-    телефона молотились каждые две минуты. А проверка по голому
-    `<stamp>.md` не видела встреч, переименованных конвейером в
-    `<stamp>_Тема.md`, и повторный импорт гонял по дублю полный
-    LLM-конвейер (оба найдены 06.08 — второй как раз этим тестом).
+    телефона молотились каждые две минуты. Проверка «та же минута = повтор»
+    глотала вторую запись той же минуты (карточка №41), а проверка только
+    по голому `<stamp>.md` не видела titled-встреч. Решение — import_stamp,
+    по шапке «— импорт <файл>»; каталог — временный, реальные данные
+    тест не трогает.
     """
-    import subprocess
+    import import_meeting as im
 
-    import pytest
-
-    titled = next((p for p in sorted((ROOT / "transcripts").glob("2026-*_*.md"))
-                   if len(p.name) > len("2026-08-03_1314.md")
-                   and not (p.parent / (p.name[:15] + ".md")).exists()), None)
-    if titled is None:
-        pytest.skip("нет titled-встречи без голой пары — не на чем проверять")
-    stamp = titled.name[:15]                          # 2026-08-05_1334
-    src = tmp_path / "повтор.txt"
-    src.write_text("х" * 300, encoding="utf-8")
-    run = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "import_meeting.py"), str(src),
-         "--date", stamp[:10], "--time", stamp[11:13] + ":" + stamp[13:15]],
-        capture_output=True, text=True, timeout=60)
-    assert "повтор не нужен" in run.stdout, (
-        f"titled-встреча {titled.name} не распознана как повтор:\n{run.stdout}")
-    assert run.returncode == 0, (
-        f"код {run.returncode}: повтор считается отказом, файл застрянет в импорте")
-
-
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    minute = "2026-08-05_1334"
+    (tdir / f"{minute}_Тема.md").write_text(
+        f"# Встреча {minute} — Тема — импорт запись.m4a\n\nтекст\n", encoding="utf-8")
+    # та же запись → повтор (titled-файл виден)
+    stamp, already = im.import_stamp(tdir, minute, "запись.m4a", "17")
+    assert already is not None and already.name == f"{minute}_Тема.md"
+    # другая запись той же минуты → посекундный штамп, не повтор
+    stamp, already = im.import_stamp(tdir, minute, "другая.m4a", "17")
+    assert (stamp, already) == (f"{minute}17", None)
+    (tdir / f"{minute}17_Другая.md").write_text(
+        f"# Встреча {minute}17 — Другая — импорт другая.m4a\n", encoding="utf-8")
+    assert im.import_stamp(tdir, minute, "другая.m4a", "17")[1].name == f"{minute}17_Другая.md"
+    # третья запись с теми же секундами (время от человека → «00») — суффикс
+    (tdir / f"{minute}00_Третья.md").write_text(
+        f"# Встреча {minute}00 — Третья — импорт третья.m4a\n", encoding="utf-8")
+    assert im.import_stamp(tdir, minute, "четвёртая.m4a", "00")[0] == f"{minute}00-1"
+    # свободная минута — минутный штамп, как всегда
+    assert im.import_stamp(tdir, "2026-08-05_1400", "x.m4a", "05") == ("2026-08-05_1400", None)
 
 def test_source_goes_to_the_folder_of_its_own_meeting(tmp_path):
     """Две встречи в день: исходник второй ложился в папку первой (глоб по

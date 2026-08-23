@@ -492,8 +492,13 @@ it signals degradation, it does not break the loop.
   transcripts are named by the pipeline itself: seconds in the file name
   are not a topic, so the main file and its derivatives get the
   minute-form name with the slug (files of a neighbour meeting in the
-  same minute are neither picked up nor overwritten). The old topic stays
-  in aliases — search by it keeps
+  same minute are neither picked up nor overwritten). Two meetings in one
+  minute (the daemon restarts after a crash within the same minute) live
+  apart in the graph: the minute key goes to the earliest one, the second
+  gets a second-precision key (`Встречи/2026-08-21_125812`, archive folder
+  "12-58-12 — …"); one rule — `meeting_stamp.graph_key` — shared by note
+  lookup, forgetting and renaming (a stamp with seconds selects the second
+  one). The old topic stays in aliases — search by it keeps
   working; `[[Встречи/stamp]]` links never break, the topic is not part of
   them. Without `--yes` the script prints a plan and touches nothing.
 - **Prep screen** (menu bar → Today) — help BEFORE the meeting, not
