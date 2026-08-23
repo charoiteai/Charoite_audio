@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.2](https://github.com/charoiteai/Charoite_audio/compare/v0.58.1...v0.58.2) (2026-08-23)
+
+
+### Bug Fixes
+
+* **app:** захват ScreenCaptureKit пересоздаётся после didStopWithError ([#383](https://github.com/charoiteai/Charoite_audio/issues/383)) ([4145896](https://github.com/charoiteai/Charoite_audio/commit/4145896871bcd068fe43c24e5ce43722a6678311))
+
 ## [0.58.1](https://github.com/charoiteai/Charoite_audio/compare/v0.58.0...v0.58.1) (2026-08-22)
 
 
