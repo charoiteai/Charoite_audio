@@ -178,7 +178,7 @@ is_macho() {
 # расширения отсекаются до чтения заголовка — иначе это 5000 файлов вместо
 # 900. `|| true`: последний файл может оказаться не Mach-O, а статус фильтра
 # не должен ронять скрипт под set -e; ошибка обхода find — тоже.
-only_macho() { while IFS= read -r -d '' f; do is_macho "$f" && printf '%s\0' "$f" || true; done; }
+only_macho() { while IFS= read -r -d '' f; do if is_macho "$f"; then printf '%s\0' "$f"; fi; done; }
 list_macho_all() {
     { find "$1" -type f ! \( -name '*.py' -o -name '*.pyc' -o -name '*.pyi' -o -name '*.txt' \
         -o -name '*.json' -o -name '*.md' -o -name '*.h' -o -name '*.rst' -o -name '*.pem' \
