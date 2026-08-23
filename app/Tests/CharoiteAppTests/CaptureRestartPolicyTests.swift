@@ -19,7 +19,11 @@ final class CaptureRestartPolicyTests: XCTestCase {
             else { return XCTFail("попытка \(i + 1) должна быть повтором") }
             delays.append(after)
         }
-        XCTAssertEqual(delays, [2, 4, 8, 16, 32, 60, 60, 60], "пауза растёт вдвое до потолка 60 с")
+        XCTAssertEqual(delays, [2, 4, 8, 16, 32], "пауза растёт вдвое")
+        // Весь цикл — под сторожем приложения (100 с тишины аудиовхода):
+        // паузы + до 10 с сборки и 1,2 с проверки на попытку.
+        let worst = delays.reduce(0, +) + Double(delays.count) * (10 + 1.2)
+        XCTAssertLessThan(worst, 100 + 30, "цикл обязан закончиться до второго тика сторожа")
         guard case .giveUp(let reason) = p.decide(userStopped: false, now: t0.addingTimeInterval(600))
         else { return XCTFail("после потолка попыток — сдаёмся и говорим человеку") }
         XCTAssertTrue(reason.contains("попыток"), reason)

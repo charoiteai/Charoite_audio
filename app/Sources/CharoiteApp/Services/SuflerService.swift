@@ -406,11 +406,20 @@ final class SuflerService: ObservableObject {
             // (карточка №35): человек должен узнать сразу, а не из пустой
             // стенограммы — на macOS 15 с ним уходит и микрофон.
             capture.onCaptureLost = { [weak self] reason in
-                guard let self, self.isRunning else { return }
-                self.fail(L.t("Захват звука встречи потерян (\(reason)) — остановите и начните запись заново",
-                              "Meeting audio capture lost (\(reason)) — stop and start the recording again",
-                              "会议音频捕获已丢失（\(reason)）——请停止并重新开始录音"))
+                guard let self, self.isRunning, let p = self.process, p.isRunning else { return }
+                // Не ждём 100-секундного сторожа: та же дорога, что у него, —
+                // демон гасится, daemonDied перезапускает встречу с новым
+                // захватом (и откатом на BlackHole, если ScreenCaptureKit
+                // так и не вернулся). Иначе человек получал бы две разные
+                // строки об одной причине с паузой в полторы минуты.
+                self.fail(L.t("Захват звука встречи потерян (\(reason)) — перезапускаю запись",
+                              "Meeting audio capture lost (\(reason)) — restarting the recording",
+                              "会议音频捕获已丢失（\(reason)）——正在重启录音"))
                 MeetingNotificationService.shared.presentCaptureLost(reason)
+                p.terminate()
+                DispatchQueue.global().asyncAfter(deadline: .now() + 5.0) {
+                    if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+                }
             }
             capture.onCaptureRecovered = { [weak self] _ in
                 guard let self, self.isRunning else { return }
@@ -621,7 +630,14 @@ final class SuflerService: ObservableObject {
         }
         let daemonAge = now.timeIntervalSince(lastEventAt)
         let sttAge = lastSTTProgressAt.map { now.timeIntervalSince($0) }
-        let audioAge = lastAudioInputAt.map { now.timeIntervalSince($0) }
+        var audioAge = lastAudioInputAt.map { now.timeIntervalSince($0) }
+        if #available(macOS 13.0, *),
+           (systemAudioCapture as? SystemAudioCapture)?.isRestarting == true {
+            // Источник пересоздаётся после сбоя ScreenCaptureKit: демон жив,
+            // тишина ожидаема, и перезапуск встречи только оборвал бы цикл
+            // (круг-1 по PR #383, DeepSeek). Сдастся — сам перезапустит.
+            audioAge = nil
+        }
         guard PipelineWatchdog.shouldRestart(
             daemonEventAge: daemonAge,
             sttProgressAge: sttAge,

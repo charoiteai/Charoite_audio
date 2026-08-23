@@ -586,15 +586,22 @@ it signals degradation, it does not break the loop.
   stops on its own — sleep, a display change while docking, a broken
   connection to the capture service (−3805), "Stop" in the system screen
   recording indicator (−3817) — is recreated automatically: onto the same
-  files, with a 2→60 s backoff, up to eight attempts (≈4 minutes); the daemon
-  tails those files and resumes from its last position without a single
-  change on its side. A second "Stop" by the person within two minutes is
-  respected. If recovery fails, the status line and a system notification say
-  "meeting audio lost" instead of silence until the end of the meeting
-  (previously `didStopWithError` was only logged, and on macOS 15 the
-  microphone left with the stream). Verified live on 2026-08-23: SIGKILL of
-  `replayd` mid-capture → −3805 → the stream was recreated in 2 s and frames
-  resumed.
+  files, with a 2→32 s backoff, up to five attempts (≈1.5 minutes — under
+  the app watchdog, which restarts the meeting after 100 s of audio silence
+  and does not count silence as a failure while a recreation is in
+  progress); the daemon tails those files and resumes from its last
+  position without a single change on its side. Frames are counted per
+  stream, not on a shared counter; the system calls that build a stream are
+  capped at 10 s, so a hung capture service cannot hold "Stop" hostage. A
+  second "Stop" by the person within two minutes is respected. If recovery
+  fails, the status line and a system notification say "meeting audio lost"
+  and the recording restarts immediately along the watchdog's path (a fresh
+  capture, falling back to BlackHole if ScreenCaptureKit is still gone)
+  instead of silence until the end of the meeting (previously
+  `didStopWithError` was only logged, and on macOS 15 the microphone left
+  with the stream). Verified live on 2026-08-23: SIGKILL of `replayd`
+  mid-capture → −3805 → the stream was recreated in ~4 s (2 s pause + build
+  + one second of frame check) and frames resumed.
 - **Core Audio tap — a disabled reserve** — the second native route to system
   audio: the app reads the tap with its own IOProc and hands the daemon a PCM
   stream. The scheme was proven in the field (38.9 s recorded), but the very
