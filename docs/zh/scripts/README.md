@@ -25,6 +25,7 @@
 - `fix_action_items.py` — 一次性规范化守护进程开始规范化之前写下的纪要中的行动项格式；只改格式。默认为空跑。
 - `check_private_markers.py` — 去标识化守卫（pre-commit 钩子）：同时检查新增的行与整个被跟踪的文件树，只打印位置、绝不打印标记本身。见[参与贡献](../CONTRIBUTING.md)。
 - `build_embedded_python.sh` — 组装随 `Charoite.app` 一同发布的可移植 python 运行环境；自行构建应用包时先运行它，再运行 `app/make_app.sh`。
+- `build_app_icon.sh` — 由 Icon Composer 文档 `app/Resources/AppIcon.icon` 生成 macOS 应用图标：`actool`（Xcode 26+）输出供 macOS 26 使用的 `Assets.car`（没有它，Tahoe 会把旧 `.icns` 画在灰色底板里）和供 macOS ≤ 15 使用的旧版 `AppIcon.icns`；两者均已提交到仓库，macos-15 上的 CI 不会重新生成。
 
 有依赖的脚本应通过 `.venv/bin/python` 运行；`doctor.py` 是特意设计的例外，
 安装前也能用系统 `python3` 运行。任务流程与恢复顺序见
