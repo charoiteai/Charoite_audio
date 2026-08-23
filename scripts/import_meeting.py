@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import os
 import pathlib
 import re
@@ -273,12 +274,20 @@ def archive_folder_for(graph: pathlib.Path, stamp: str) -> pathlib.Path | None:
     исходник второй встречи ложился к первой, а при занятом имени молча не
     копировался вовсе (аудит DeepSeek 16.08).
     """
-    patterns = (f"{stamp[:10]} {stamp[11:13]}-{stamp[13:15]} *", f"{stamp} — *")
+    # Время целиком («12-58 — », «12-58-12 — ») и meeting_id манифеста: минутный
+    # глоб брал папку соседки той же минуты (круг-1 по PR #388, Codex).
+    head = f"{stamp[:10]} {meeting_stamp.archive_time(stamp)}"
+    patterns = (f"{head} — *", f"{stamp} — *")
     for pat in patterns:
-        found = [f for f in sorted(graph.parent.glob(f"*/Встречи-архив/{pat}"))
-                 + sorted(graph.glob(f"Встречи-архив/{pat}")) if f.is_dir()]
-        if found:
-            return found[0]
+        for f in sorted(graph.parent.glob(f"*/Встречи-архив/{pat}")) + sorted(graph.glob(f"Встречи-архив/{pat}")):
+            if not f.is_dir():
+                continue
+            try:
+                owner = json.loads((f / "meeting.meta.json").read_text(encoding="utf-8")).get("meeting_id")
+            except (OSError, ValueError, AttributeError):
+                owner = None
+            if owner is None or owner == stamp:
+                return f
     return None
 
 

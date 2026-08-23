@@ -199,3 +199,47 @@ def test_same_file_name_but_different_recording_is_not_a_repeat(tmp_path):
     assert im.source_mark("a.m4a", 5) == "a.m4a (5 Б)" and im.source_mark("a.m4a", None) == "a.m4a"
     assert im.same_source("# Встреча x — запись a b.m4a (7 Б)", "a b.m4a", 7)
     assert not im.same_source("# Встреча x — запись a b.m4a (7 Б)", "a b.m4a", 8)
+
+
+def test_rename_of_the_owner_leaves_the_neighbours_files_alone(tmp_path):
+    """Codex, круг-1 по PR #388: переименование минутного владельца брало
+    «…125812.md»/«…125812_hints.md» соседки как свои и «занимало» ими целевое
+    имя. Файлы соседки не трогаются; бесхозные посекундные производные без
+    главного файла — по-прежнему владельца."""
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    graph = tmp_path / "graph"
+    (graph / "Встречи").mkdir(parents=True)
+    (tdir / f"{MIN}_Первая.md").write_text("# a", encoding="utf-8")
+    (tdir / f"{SECOND}.md").write_text("# b", encoding="utf-8")
+    (tdir / f"{SECOND}_hints.md").write_text("подсказки b", encoding="utf-8")
+    (tdir / f"{MIN}30_hints.md").write_text("бесхозные подсказки владельца", encoding="utf-8")
+    pretty, slug = rm.pretty_and_slug("Новая")
+    p = rm.plan(graph, tdir, MIN, pretty, slug)
+    moved = {old.name: new.name for old, new in p["moves"]}
+    assert moved == {f"{MIN}_Первая.md": f"{MIN}_Новая.md",
+                     f"{MIN}30_hints.md": f"{MIN}_Новая_hints.md"}
+    # а соседку можно переименовать отдельно, её же посекундным ключом
+    p2 = rm.plan(graph, tdir, SECOND, *rm.pretty_and_slug("Вторая"))
+    assert {o.name for o, _ in p2["moves"]} == {f"{SECOND}.md", f"{SECOND}_hints.md"}
+
+
+def test_collision_suffix_is_part_of_the_identity(tmp_path):
+    """«…125812-1» — другая встреча, не «…125812» (Codex, круг-1 по PR #388):
+    своя папка архива, свои файлы у forget/archive, свой штамп в списке."""
+    assert ms.archive_time(f"{SECOND}-1") == "12-58-12-1"
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    for n in (f"{SECOND}.md", f"{SECOND}_minutes.md", f"{SECOND}-1.md", f"{SECOND}-1_minutes.md"):
+        (tdir / n).write_text("x", encoding="utf-8")
+    assert {p.name for p in ms.files_with_stamp(tdir, SECOND, suffix=".md")} == {f"{SECOND}.md", f"{SECOND}_minutes.md"}
+    assert {p.name for p in ms.files_with_stamp(tdir, f"{SECOND}-1", suffix=".md")} == {f"{SECOND}-1.md", f"{SECOND}-1_minutes.md"}
+    root = tmp_path
+    (root / "recordings").mkdir()
+    assert f"{SECOND}-1" in forget.stamps(root, tmp_path / "graph")
+    graph = tmp_path / "graph"
+    arch = graph / ARCHIVE_DIR
+    (arch / "2026-08-21 12-58-12 — A").mkdir(parents=True)
+    (arch / "2026-08-21 12-58-12-1 — B").mkdir()
+    assert [d.name for d in _folders_for(graph, SECOND)] == ["2026-08-21 12-58-12 — A"]
+    assert [d.name for d in _folders_for(graph, f"{SECOND}-1")] == ["2026-08-21 12-58-12-1 — B"]

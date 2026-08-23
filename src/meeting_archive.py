@@ -24,7 +24,7 @@ import stat as _stat
 import sys
 
 from charoite_paths import resolve_root
-from meeting_stamp import archive_time, files_with_stamp
+from meeting_stamp import archive_time, files_with_stamp, graph_key, stamp_of
 import graphs
 
 ROOT = resolve_root(__file__)
@@ -727,10 +727,13 @@ def migrate_all(graph: pathlib.Path, tdir: pathlib.Path) -> int:
             continue  # это артефакт, не стенограмма
         if f.stat().st_size < 600:
             continue  # пустышка (тест старт/стоп) — не встреча
-        m = re.match(r"(\d{4}-\d{2}-\d{2}_\d{4})(?:_(.+))?\.md$", f.name)
-        if not m:
+        bare = stamp_of(f.stem)
+        if bare is None:
             continue
-        stamp, slug = m.group(1), m.group(2) or ""
+        # Ключ — как у graph_updater: минута у владельца, секунды у соседки;
+        # минутный регэксп пропускал посекундные стенограммы целиком.
+        stamp = graph_key(tdir, f.stem, graph)
+        slug = f.stem[len(bare) + 1:] if f.stem != bare else ""
         archive_meeting(graph, tdir, stamp, slug, files_key=f.stem)
         done += 1
     return done

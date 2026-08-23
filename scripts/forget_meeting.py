@@ -148,7 +148,9 @@ def _graph_roots(graph: pathlib.Path | None) -> list[pathlib.Path]:
     return graphs.all_graphs(MEETINGS_DIR) or graphs.all_graphs(ARCHIVE_DIR)
 
 
-_STAMP_RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{4,6})(?!\d)")
+# Суффикс коллизии «-N» — часть штампа: «2026-08-21_125812-1» — другая встреча,
+# не «…125812» (круг-1 по PR #388, Codex).
+_STAMP_RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{4,6}(?:-\d+)?)(?![\d-])")
 STATUS_DIR = pathlib.Path("logs") / "meeting-status"
 
 
@@ -222,7 +224,7 @@ def stamps(root: pathlib.Path, graph: pathlib.Path | None = None) -> list[str]:
         for p in (g / MEETINGS_DIR).glob("*.md"):
             if not p.name.startswith("_"):
                 found.add(p.stem)
-    return sorted(s for s in found if re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{4,6}", s))
+    return sorted(s for s in found if re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{4,6}(?:-\d+)?", s))
 
 
 def resolve(target: str, root: pathlib.Path,
@@ -280,7 +282,9 @@ def _other_time(arch: pathlib.Path, day: str, hhmm: str) -> bool:
     Старый формат «дата — тема» не различает встречи внутри дня, поэтому
     трогать его можно только когда сомнений нет: одна встреча за день.
     """
-    return any(d.is_dir() and d.name.startswith(f"{day} ") and not d.name.startswith(f"{day} {hhmm} ")
+    return any(d.is_dir() and d.name.startswith(f"{day} ")
+               and not d.name.startswith(f"{day} {hhmm} ")
+               and not d.name.startswith(f"{day} —")      # сама папка без времени
                for d in arch.iterdir())
 
 

@@ -143,10 +143,30 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
     """Что переименуется и что перепишется. Считается без единой записи."""
     moves: list[tuple[pathlib.Path, pathlib.Path]] = []
     taken: set[pathlib.Path] = set()
+    # Файлы ИМЕННО этой встречи: главные файлы, чей ключ графа — наш stamp,
+    # и их производные. Минутный ключ раньше захватывал голые посекундные
+    # файлы соседки («…125812.md» → «…1258_Тема.md»), а настоящий владелец
+    # пропускался как «имя занято» (круг-1 по PR #388, Codex).
+    minute = meeting_stamp.minute_of(stamp)
+    mains = {meeting_stamp.stamp_of(p.stem): p
+             for p in (tdir.glob(f"{minute}*.md") if tdir.is_dir() else ())
+             if meeting_stamp.stamp_of(p.stem)}
+    mine = {b for b, p in mains.items() if meeting_stamp.graph_key(tdir, p.stem, graph) == stamp}
+    if stamp == minute and tdir.is_dir():
+        # Бесхозные посекундные производные («…113012_hints.md» без главного
+        # файла «…113012») — владельца минуты: так их оставлял конвейер до
+        # наката темы.
+        for f in tdir.glob(f"{minute}[0-9][0-9]_*.md"):
+            b = f.name[:17]
+            if b not in mains:
+                mine.add(b)
     for folder in (tdir, graph / "Документация" / "Стенограммы встреч"):
         if not folder.exists():
             continue
         for f in sorted(folder.iterdir()):
+            if not any(f.name.startswith(b) and not f.name[len(b):len(b) + 1].isdigit()
+                       and not re.match(r"-\d", f.name[len(b):]) for b in mine):
+                continue
             new = retitled(f.name, stamp, slug)
             if not new:
                 continue
