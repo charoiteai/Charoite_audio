@@ -28,9 +28,21 @@ extension SuflerService {
                           token: stopToken)
             return
         }
-        let wasRecording = lifecycle == .recording
         guard let token = gateBeginStop() else { return }
         cleanupDisposition = .stopped
+        beginDaemonStop(token: token)
+        status = L.t("Останавливаю…", "Stopping…", "停止中…")
+    }
+
+    /// Остановка встречи с ЖИВЫМ демоном: «stop» в stdin, страховочные
+    /// terminate/SIGKILL, запасной таймер, закрытие захвата после смерти
+    /// читателя. Общий путь кнопки «Стоп» и закрытия встречи по потере
+    /// захвата: прямой `beginCaptureShutdown` при живом демоне закрывал
+    /// только ScreenCaptureKit, а демон и lifecycle `.stopping` оставались
+    /// навсегда (круг-4 по PR #383, Codex). Диспозицию и статус ставит
+    /// вызывающий: кнопка — `.stopped`, потеря захвата — `.preserveFailure`.
+    func beginDaemonStop(token: UUID) {
+        let wasRecording = lifecycle == .recording
         // Фазу заводим ЗДЕСЬ, через машину, а не при первой проверке
         // процесса. Иначе она остаётся `.idle`, и тогда: повторный Стоп
         // попадает в переход «начать остановку» и гасит страховочный
@@ -67,7 +79,6 @@ extension SuflerService {
         collapseExpansion()
         endSleepGuard()
         stopClock()
-        status = L.t("Останавливаю…", "Stopping…", "停止中…")
     }
 
     func beginFailedStartCleanup(token: UUID) {
@@ -211,22 +222,39 @@ extension SuflerService {
             self.process = nil
             self.publishLifecycle()
 
-            switch self.cleanupDisposition {
-            case .stopped:
-                // Причина автостопа обязана пережить очистку: раньше здесь
-                // безусловно писалось «Остановлен», и человек, вернувшийся к
-                // ноутбуку, не отличал автостоп от собственного Стопа
-                // (ревью 18.08 ×2).
-                self.status = Self.stoppedStatus(autostopReason: self.autostopReason)
-                self.statusIsError = false
-            case .preserveFailure:
-                break
-            case .restart:
+            if let final = Self.finalStatus(disposition: self.cleanupDisposition,
+                                            preservedFailure: self.preservedFailure,
+                                            autostopReason: self.autostopReason) {
+                self.status = final.text
+                self.statusIsError = final.isError
+            }
+            self.preservedFailure = nil
+            if case .restart = self.cleanupDisposition {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
                     guard let self, !self.userStopped, self.lifecycle == .idle else { return }
                     self.start(preserveUI: true)
                 }
             }
+        }
+    }
+
+    /// Статус после очистки. Кнопка — «Остановлен» или причина автостопа:
+    /// раньше здесь безусловно писалось «Остановлен», и человек, вернувшийся
+    /// к ноутбуку, не отличал автостоп от своего Стопа (ревью 18.08 ×2).
+    /// Закрытие по захвату — сохранённая причина: по пути остановки демон
+    /// шлёт свои статусы («Финальная стенограмма…»), и `consume` затирает
+    /// ими текст потери; без восстановления человек видел бы обычный финал
+    /// вместо «захват потерян» (круг-5 по PR #383, Codex). Перезапуск —
+    /// статус не трогаем.
+    static func finalStatus(disposition: CleanupDisposition, preservedFailure: String?,
+                            autostopReason: String?) -> (text: String, isError: Bool)? {
+        switch disposition {
+        case .stopped:
+            return (stoppedStatus(autostopReason: autostopReason), false)
+        case .preserveFailure:
+            return preservedFailure.map { ($0, true) }
+        case .restart:
+            return nil
         }
     }
 

@@ -164,6 +164,23 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
                                          content: content, trigger: nil))
     }
 
+    /// Системный захват звука умер посреди встречи и не восстановился.
+    ///
+    /// Показывается всегда, как и автостоп: запись формально идёт, а на деле
+    /// с macOS 15 в ней нет ни собеседника, ни микрофона — человек у экрана
+    /// другой программы этого не заметит до конца встречи.
+    func presentCaptureLost(_ reason: String) {
+        let content = UNMutableNotificationContent()
+        content.title = L.t("Звук встречи потерян", "Meeting audio lost", "会议音频已丢失")
+        content.body = L.t("Системный захват остановился и не восстановился — остановите и начните запись заново",
+                           "System capture stopped and could not be restored — stop and start the recording again",
+                           "系统捕获已停止且无法恢复——请停止并重新开始录音")
+        content.subtitle = reason
+        content.sound = .default
+        center.add(UNNotificationRequest(identifier: "charoite.capture-lost",
+                                         content: content, trigger: nil))
+    }
+
     /// Предупреждение перед автостопом — только когда окна не видно.
     ///
     /// У человека минута, чтобы сказать что-нибудь и продолжить запись, а
