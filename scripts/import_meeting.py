@@ -240,17 +240,25 @@ def source_mark(name: str, size: int | None) -> str:
     return f"{name} ({size} Б)" if size is not None else name
 
 
-_SOURCE_MARK = re.compile(r"— (?:импорт|запись) (?P<name>.+?)(?: \((?P<size>\d+) Б\))?\s*$")
+_SOURCE_HEAD_RE = re.compile(r"— (?:импорт|запись) (?P<tail>.+?)\s*$")
 
 
 def same_source(head: str, name: str, size: int | None) -> bool:
-    """Шапка стенограммы — про этот исходник? Имя совпасть обязано; размер
-    сравнивается, когда записан в обеих сторонах (шапки до 23.08 — без него)."""
-    m = _SOURCE_MARK.search(head)
-    if not m or m.group("name") != name:
+    """Шапка стенограммы — про этот исходник? Хвост шапки сравнивается с
+    именем БЕЗ разбора регэкспом: имя вроде «memo (7 Б).m4a» иначе теряло
+    хвост за «размер» (круг-2 по PR #388, Codex и Sonnet). Хвост равен имени
+    (шапка без размера, до 23.08) — повтор; равен «имя (N Б)» — повтор, если
+    размер совпал или неизвестен."""
+    m = _SOURCE_HEAD_RE.search(head)
+    if not m:
         return False
-    theirs = m.group("size")
-    return theirs is None or size is None or int(theirs) == size
+    tail = m.group("tail")
+    if tail == name:
+        return True
+    if not tail.startswith(name + " (") or not tail.endswith(" Б)"):
+        return False
+    theirs = tail[len(name) + 2:-3]
+    return theirs.isdigit() and (size is None or int(theirs) == size)
 
 
 def subs_to_transcript(entries: list[tuple[str, str, str]], stamp: str, src: str) -> str:

@@ -71,7 +71,6 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 import charoite_paths  # noqa: E402
 import graphs  # noqa: E402
 import meeting_stamp  # noqa: E402
-from meeting_stamp import minute_of  # noqa: E402
 
 ARCHIVE_DIR = "Встречи-архив"
 MEETINGS_DIR = "Встречи"
@@ -203,8 +202,8 @@ def _status_files(status_dir: pathlib.Path, stamp: str) -> list[pathlib.Path]:
             continue
         name = pathlib.Path(str(tp)).name
         rest = name[len(stamp):]
-        if name.startswith(stamp) and not rest[:1].isdigit():
-            found.add(f)
+        if name.startswith(stamp) and not rest[:1].isdigit() and not re.match(r"-\d", rest):
+            found.add(f)                 # «-N» — соседка, как в files_with_stamp
     return sorted(found)
 
 
@@ -237,35 +236,63 @@ def resolve(target: str, root: pathlib.Path,
     return [s for s in known if s == target]
 
 
-def _archive_folders(g: pathlib.Path, stamp: str) -> list[pathlib.Path]:
-    """Папка встречи в архиве: имя несёт дату и время, а форматов было три.
+_DAY_FOLDER_RE = re.compile(
+    r"^(?P<day>\d{4}-\d{2}-\d{2})(?:"
+    r" (?P<hm>\d{2}-\d{2}(?:-\d{2})?(?:-\d+)?)"      # «2026-07-15 14-00[-30][-1] — Тема»
+    r"|_(?P<raw>\d{4}(?:\d{2})?(?:-\d+)?)"          # «2026-07-15_1400[30][-1] — Тема»
+    r")? — ")
 
-    Посекундный штамп (вторая встреча той же минуты) лежит как
-    «2026-07-15 14-00-12 — Тема»; минутный — «14-00 — Тема», и время
-    сравнивается целиком, чтобы минутная встреча не забирала папку
-    посекундной соседки (карточка №39). Папка с манифестом чужой встречи
-    (meeting_id другой) — не наша.
-    """
-    arch = g / ARCHIVE_DIR
-    if not arch.is_dir():
-        return []
-    day, hhmm = stamp[:10], f"{stamp[11:13]}-{stamp[13:15]}"
-    head = f"{day} {meeting_stamp.archive_time(stamp)}"
+
+def _day_folders(arch: pathlib.Path, day: str) -> list[tuple[pathlib.Path, str | None]]:
+    """Папки архива этого дня во всех трёх форматах имени с их временем в
+    нормальном виде («14-00», «14-00-30», «14-00-30-1»); None — папка без
+    времени («дата — тема»). Один разбор на все форматы: две правки подряд
+    с перечислением форматов по месту дали два Critical подряд (круг-1 и
+    круг-2 по PR #388) — правило теперь одно."""
     out = []
     for d in sorted(arch.iterdir()):
         if not d.is_dir() or d.name.startswith("."):
             continue
-        owner = meeting_archive_id(d)
-        if owner is not None and owner != stamp and minute_of(owner) == minute_of(stamp) \
-                and owner != minute_of(stamp):
-            continue   # посекундная соседка той же минуты
-        # «2026-07-15 14-00 — Тема» (текущий), «2026-07-15_1400 — Тема» и
-        # «2026-07-15 — Тема» (наследие meeting_archive.py)
-        if d.name == head or d.name.startswith(head + " ") or d.name.startswith(f"{stamp} "):
-            out.append(d)
-        elif d.name.startswith(f"{day} —") and not _other_time(arch, day, hhmm):
-            out.append(d)
+        m = _DAY_FOLDER_RE.match(d.name)
+        if not m or m.group("day") != day:
+            continue
+        if m.group("hm"):
+            out.append((d, m.group("hm")))
+        elif m.group("raw"):
+            out.append((d, meeting_stamp.archive_time(f"{day}_{m.group('raw')}")))
+        else:
+            out.append((d, None))
     return out
+
+
+def _archive_folders(g: pathlib.Path, stamp: str) -> list[pathlib.Path]:
+    """Папки архива этой встречи.
+
+    Время сравнивается целиком и в нормальном виде для всех трёх форматов
+    имени: минутный ключ не забирает папку посекундной соседки («14-00-12»),
+    суффикс «-N» — отдельная встреча. Папка с манифестом чужой встречи
+    (meeting_id другой) — не наша. Папка без времени («дата — тема») —
+    только когда сомнений нет: она единственная за день.
+    """
+    arch = g / ARCHIVE_DIR
+    if not arch.is_dir():
+        return []
+    day = stamp[:10]
+    mine_time = meeting_stamp.archive_time(stamp)
+    folders = _day_folders(arch, day)
+    out = []
+    for d, when in folders:
+        if when != mine_time:
+            continue
+        owner = meeting_archive_id(d)
+        if owner is not None and owner != stamp:
+            continue   # чужая встреча по манифесту
+        out.append(d)
+    if out:
+        return out
+    if len(folders) == 1 and folders[0][1] is None:
+        return [folders[0][0]]
+    return []
 
 
 def meeting_archive_id(folder: pathlib.Path) -> str | None:
@@ -274,18 +301,6 @@ def meeting_archive_id(folder: pathlib.Path) -> str | None:
         return json.loads((folder / "meeting.meta.json").read_text(encoding="utf-8")).get("meeting_id")
     except (OSError, ValueError, AttributeError):
         return None
-
-
-def _other_time(arch: pathlib.Path, day: str, hhmm: str) -> bool:
-    """Есть ли в архиве папка этого дня с ДРУГИМ временем.
-
-    Старый формат «дата — тема» не различает встречи внутри дня, поэтому
-    трогать его можно только когда сомнений нет: одна встреча за день.
-    """
-    return any(d.is_dir() and d.name.startswith(f"{day} ")
-               and not d.name.startswith(f"{day} {hhmm} ")
-               and not d.name.startswith(f"{day} —")      # сама папка без времени
-               for d in arch.iterdir())
 
 
 def plan(stamp: str, root: pathlib.Path,

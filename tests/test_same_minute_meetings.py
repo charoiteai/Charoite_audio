@@ -243,3 +243,59 @@ def test_collision_suffix_is_part_of_the_identity(tmp_path):
     (arch / "2026-08-21 12-58-12-1 — B").mkdir()
     assert [d.name for d in _folders_for(graph, SECOND)] == ["2026-08-21 12-58-12 — A"]
     assert [d.name for d in _folders_for(graph, f"{SECOND}-1")] == ["2026-08-21 12-58-12-1 — B"]
+
+
+def test_legacy_date_folder_of_another_meeting_survives_forget(tmp_path):
+    """DeepSeek, круг-2 по PR #388: папка «дата — тема» ДРУГОЙ встречи того же
+    дня — сомнение, её не трогаем; единственная за день — наша."""
+    graph = tmp_path / "graph"
+    arch = graph / ARCHIVE_DIR
+    (arch / "2026-08-21 12-58 — A").mkdir(parents=True)
+    (arch / "2026-08-21 — Совещание").mkdir()
+    assert [d.name for d in forget._archive_folders(graph, MIN)] == ["2026-08-21 12-58 — A"]
+    (arch / "2026-08-21 12-58 — A").rmdir()
+    assert [d.name for d in forget._archive_folders(graph, MIN)] == ["2026-08-21 — Совещание"]
+    (arch / "2026-08-21 — Другое").mkdir()
+    assert forget._archive_folders(graph, MIN) == []          # две legacy — обе под сомнением
+
+
+def test_day_folders_in_all_three_formats_and_the_dateless_rule(tmp_path):
+    """Codex/Sonnet, круг-2 по PR #388: «дата_время — тема» и вторая папка
+    «дата — тема» — сомнение; папка без времени — только единственная за день."""
+    graph = tmp_path / "graph"
+    arch = graph / ARCHIVE_DIR
+    (arch / "2026-08-21 — Безвременная").mkdir(parents=True)
+    (arch / "2026-08-21_1400 — Другая").mkdir()
+    assert forget._archive_folders(graph, MIN) == []                       # есть другая встреча дня
+    assert [d.name for d in forget._archive_folders(graph, "2026-08-21_1400")] == ["2026-08-21_1400 — Другая"]
+    (arch / "2026-08-21_1400 — Другая").rmdir()
+    assert [d.name for d in forget._archive_folders(graph, MIN)] == ["2026-08-21 — Безвременная"]
+    (arch / "2026-08-21 — Вечерняя").mkdir()
+    assert forget._archive_folders(graph, "2026-08-21_0900") == []         # две без времени — обе под сомнением
+    # посекундная и с суффиксом в старом формате имени
+    (arch / "2026-08-21_125812 — Вторая").mkdir()
+    (arch / "2026-08-21_125812-1 — Третья").mkdir()
+    assert [d.name for d in forget._archive_folders(graph, SECOND)] == ["2026-08-21_125812 — Вторая"]
+    assert [d.name for d in forget._archive_folders(graph, f"{SECOND}-1")] == ["2026-08-21_125812-1 — Третья"]
+
+
+def test_same_source_with_size_like_tail_in_the_name():
+    import import_meeting as im
+    assert im.same_source("# Встреча x — запись memo (7 Б).m4a", "memo (7 Б).m4a", 100)      # шапка без размера
+    assert im.same_source("# Встреча x — запись memo (7 Б).m4a (100 Б)", "memo (7 Б).m4a", 100)
+    assert not im.same_source("# Встреча x — запись memo (7 Б).m4a (100 Б)", "memo (7 Б).m4a", 101)
+    assert not im.same_source("# Встреча x — импорт other.m4a (100 Б)", "memo.m4a", 100)
+
+
+def test_orphan_derivative_with_a_graph_trace_stays_with_the_neighbour(tmp_path):
+    """Sonnet, круг-2: главный файл соседки унесли, а «…125812_hints.md»
+    остался — при заметке соседки в графе он не переходит владельцу."""
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    graph = tmp_path / "graph"
+    (graph / "Встречи").mkdir(parents=True)
+    (tdir / f"{MIN}_Первая.md").write_text("# a", encoding="utf-8")
+    (tdir / f"{SECOND}_hints.md").write_text("подсказки соседки", encoding="utf-8")
+    (graph / "Встречи" / f"{SECOND}.md").write_text("# b", encoding="utf-8")
+    p = rm.plan(graph, tdir, MIN, *rm.pretty_and_slug("Новая"))
+    assert {o.name for o, _ in p["moves"]} == {f"{MIN}_Первая.md"}

@@ -156,10 +156,18 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
         # Бесхозные посекундные производные («…113012_hints.md» без главного
         # файла «…113012») — владельца минуты: так их оставлял конвейер до
         # наката темы.
+        docs = graph / "Документация" / "Стенограммы встреч"
         for f in tdir.glob(f"{minute}[0-9][0-9]_*.md"):
             b = f.name[:17]
-            if b not in mains:
-                mine.add(b)
+            if b in mains:
+                continue
+            # След соседки в графе — заметка под её ключом или копии её
+            # файлов в Документации: тогда производная её, а не бесхозная
+            # (круг-2 по PR #388, Sonnet).
+            if (graph / "Встречи" / f"{b}.md").exists() or \
+                    (docs.is_dir() and any(docs.glob(f"{b}*.md"))):
+                continue
+            mine.add(b)
     for folder in (tdir, graph / "Документация" / "Стенограммы встреч"):
         if not folder.exists():
             continue
