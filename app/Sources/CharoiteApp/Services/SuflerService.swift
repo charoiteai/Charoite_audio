@@ -424,11 +424,15 @@ final class SuflerService: ObservableObject {
                 MeetingNotificationService.shared.presentCaptureLost(reason)
                 if userStopped {
                     // Человек сам дважды остановил захват в системном
-                    // индикаторе — это не сбой: бюджет потерь не тратим,
-                    // но и молчать нельзя, звука встречи больше нет.
-                    self.fail(L.t("Захват звука остановлен вами (\(reason)) — начните запись заново, если это не нарочно",
-                                  "You stopped the audio capture (\(reason)) — start the recording again if that was not intentional",
-                                  "音频捕获已被您停止（\(reason)）——若非有意，请重新开始录音"))
+                    // индикаторе — это не сбой: бюджет потерь не тратим, а
+                    // встречу закрываем с сохранением. Оставить её «идущей»
+                    // без звука нельзя: через 100 с сторож перезапустил бы
+                    // запись и поднял захват против воли человека (круг-4
+                    // по PR #383, Codex).
+                    self.fail(L.t("Захват звука остановлен вами (\(reason)) — запись завершена; начните заново, если это не нарочно",
+                                  "You stopped the audio capture (\(reason)) — the recording is finished; start again if that was not intentional",
+                                  "音频捕获已被您停止（\(reason)）——录音已结束；若非有意，请重新开始"))
+                    self.closeMeetingAfterCaptureLoss()
                     return
                 }
                 self.captureLossCount += 1
@@ -438,14 +442,10 @@ final class SuflerService: ObservableObject {
                     // 100 с молча перезапустил бы её ещё раз, а человек читал
                     // бы «перезапуски не помогают» поверх нового старта
                     // (круг-3 по PR #383, DS + Codex).
-                    self.captureLossExhausted = true
                     self.fail(L.t("Захват звука потерян снова (\(reason)) — перезапуски не помогают; запись остановлена, начните заново",
                                   "Audio capture lost again (\(reason)) — restarts do not help; the recording is stopped, start it again",
                                   "音频捕获再次丢失（\(reason)）——重启无效；录音已停止，请重新开始"))
-                    guard let token = self.lifecycleGate.beginStop() else { return }
-                    self.cleanupDisposition = .preserveFailure
-                    self.publishLifecycle()
-                    self.beginCaptureShutdown(token: token)
+                    self.closeMeetingAfterCaptureLoss()
                     return
                 }
                 // Не ждём 100-секундного сторожа: та же дорога, что у него, —
@@ -581,6 +581,17 @@ final class SuflerService: ObservableObject {
 
     /// Демон-процесс умер (крэш или наш terminate). Если это не ручной Стоп —
     /// поднимаем свежий, не стирая встречу с экрана (стенограмма-файл цел).
+    /// Встреча закрывается из-за захвата (третья потеря или сознательный
+    /// стоп человека): демон жив, поэтому идём дорогой кнопки «Стоп» —
+    /// «stop» в stdin, страховочные таймеры, закрытие захвата после смерти
+    /// читателя. Запись и граф сохраняются; сторож дальше не перезапускает.
+    private func closeMeetingAfterCaptureLoss() {
+        captureLossExhausted = true
+        guard let token = lifecycleGate.beginStop() else { return }
+        cleanupDisposition = .preserveFailure
+        beginDaemonStop(token: token)
+    }
+
     private func daemonDied(_ proc: Process) {
         guard proc === process else { return }  // умер прошлый демон, не текущий
         process = nil

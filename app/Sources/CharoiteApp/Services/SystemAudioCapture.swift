@@ -242,6 +242,8 @@ final class SystemAudioCapture: NSObject {
                 }
                 // stop() отменил ожидание — резюмируем сразу, а не через таймер
                 // (иначе «Стоп» ждал бы до 10 с зависший системный вызов).
+                // Отмена, пришедшая раньше этой строки, не теряется: коробка
+                // запоминает её и вызывает обработчик при установке.
                 workBox.onCancel = {
                     guard !once.done else { return }
                     once.done = true
@@ -251,15 +253,26 @@ final class SystemAudioCapture: NSObject {
             }
         }
         return try await withTaskCancellationHandler(operation: open) {
-            Task { @MainActor in workBox.onCancel?() }
+            Task { @MainActor in workBox.cancel() }
         }.stream
     }
 
     /// Коробка для задачи сборки и реакции на отмену: сама задача
     /// рождается внутри continuation, а обработчик отмены — снаружи.
+    /// Защёлка: отмена до установки обработчика запоминается и срабатывает
+    /// при установке (круг-4 по PR #383, Codex) — иначе ожидание жило бы до
+    /// 10-секундного таймера.
+    @MainActor
     private final class TaskBox: @unchecked Sendable {
         var task: Task<Void, Never>?
-        var onCancel: (@MainActor () -> Void)?
+        private(set) var cancelled = false
+        var onCancel: (@MainActor () -> Void)? {
+            didSet { if cancelled { onCancel?() } }
+        }
+        func cancel() {
+            cancelled = true
+            onCancel?()
+        }
     }
 
     /// Одна и та же дорога для первого старта и для пересоздания: контент и

@@ -594,12 +594,15 @@ it signals degradation, it does not break the loop.
   position without a single change on its side. Frames are counted per
   stream, not on a shared counter; the system calls that build a stream are
   capped at 10 s, so a hung capture service cannot hold "Stop" hostage. A
-  second "Stop" by the person within two minutes is respected. If recovery
+  second "Stop" by the person within two minutes is respected: the meeting
+  is closed the same way the Stop button closes it (recording and graph
+  preserved) rather than left running without audio. If recovery
   fails, the status line and a system notification say "meeting audio lost"
   and the recording restarts immediately along the watchdog's path (a fresh
   capture, falling back to BlackHole if ScreenCaptureKit is still gone; no
-  more than two such restarts per meeting — a third loss stays in the status
-  line and waits for the person) instead of silence until the end of the meeting (previously
+  more than two such restarts per meeting — a third loss closes the meeting
+  along the Stop button's path, with the recording preserved and the reason
+  in the status line) instead of silence until the end of the meeting (previously
   `didStopWithError` was only logged, and on macOS 15 the microphone left
   with the stream). Verified live on 2026-08-23: SIGKILL of `replayd`
   mid-capture → −3805 → the stream was recreated in ~4 s (2 s pause + build

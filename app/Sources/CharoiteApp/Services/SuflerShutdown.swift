@@ -28,9 +28,21 @@ extension SuflerService {
                           token: stopToken)
             return
         }
-        let wasRecording = lifecycle == .recording
         guard let token = gateBeginStop() else { return }
         cleanupDisposition = .stopped
+        beginDaemonStop(token: token)
+        status = L.t("Останавливаю…", "Stopping…", "停止中…")
+    }
+
+    /// Остановка встречи с ЖИВЫМ демоном: «stop» в stdin, страховочные
+    /// terminate/SIGKILL, запасной таймер, закрытие захвата после смерти
+    /// читателя. Общий путь кнопки «Стоп» и закрытия встречи по потере
+    /// захвата: прямой `beginCaptureShutdown` при живом демоне закрывал
+    /// только ScreenCaptureKit, а демон и lifecycle `.stopping` оставались
+    /// навсегда (круг-4 по PR #383, Codex). Диспозицию и статус ставит
+    /// вызывающий: кнопка — `.stopped`, потеря захвата — `.preserveFailure`.
+    func beginDaemonStop(token: UUID) {
+        let wasRecording = lifecycle == .recording
         // Фазу заводим ЗДЕСЬ, через машину, а не при первой проверке
         // процесса. Иначе она остаётся `.idle`, и тогда: повторный Стоп
         // попадает в переход «начать остановку» и гасит страховочный
@@ -67,7 +79,6 @@ extension SuflerService {
         collapseExpansion()
         endSleepGuard()
         stopClock()
-        status = L.t("Останавливаю…", "Stopping…", "停止中…")
     }
 
     func beginFailedStartCleanup(token: UUID) {
