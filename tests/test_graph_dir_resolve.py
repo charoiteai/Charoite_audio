@@ -53,3 +53,19 @@ def test_config_shapes(monkeypatch):
 def test_configured_graph_is_the_same_entry_point(monkeypatch):
     monkeypatch.setenv(graphs.ENV_GRAPH, "/env/only")
     assert graphs.configured_graph() == pathlib.Path("/env/only")
+
+
+def test_both_env_names_same_priority(monkeypatch):
+    # Приложение читает CHAROITE_GRAPH_DIR, Python — SUFLER_GRAPH_DIR; демон
+    # наследует окружение приложения, поэтому оба имени обязаны совпадать по
+    # приоритету (круг-1 по PR #385, DeepSeek).
+    monkeypatch.delenv("SUFLER_GRAPH_DIR", raising=False)
+    monkeypatch.setenv("CHAROITE_GRAPH_DIR", "/app/g")
+    assert graphs.graph_dir({"sufler": {"graph_dir": "/cfg"}}) == pathlib.Path("/app/g")
+    monkeypatch.setenv("SUFLER_GRAPH_DIR", "/py/g")
+    assert graphs.graph_dir({}) == pathlib.Path("/app/g")      # первое имя важнее
+    monkeypatch.setenv("CHAROITE_GRAPH_DIR", " ")
+    assert graphs.graph_dir({}) == pathlib.Path("/py/g")       # пробельное = не задано
+    assert graphs.env_override() == "/py/g"
+    monkeypatch.setenv("SUFLER_GRAPH_DIR", "")
+    assert graphs.env_override() is None

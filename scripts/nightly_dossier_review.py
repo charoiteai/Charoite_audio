@@ -413,7 +413,7 @@ def main() -> int:
             if base is not None and (base.parent / args.graph).is_dir():
                 chosen = base.parent / args.graph
         if chosen is None or not chosen.is_dir():
-            print(f"граф не найден: {args.graph or cfg['sufler'].get('graph_dir', '')}")
+            print(f"граф не найден: {args.graph or (cfg.get('sufler') or {}).get('graph_dir', '')}")
             return 1
         graph_list = [chosen]
 

@@ -71,7 +71,7 @@ def find_meeting_note(
     newer_than: float | None = None,
 ) -> pathlib.Path | None:
     """Find the exact note created in the configured graph or a project graph."""
-    override = bool(os.environ.get(graphs.ENV_GRAPH, "").strip())
+    override = graphs.env_override() is not None
     configured = graphs.graph_dir(cfg)
     if configured is None:
         return None

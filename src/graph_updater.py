@@ -668,7 +668,7 @@ def main():
         run_post_hook(cfg, tpath, parse_stem(tpath.stem)[0])
         return
 
-    known = [] if os.environ.get(graphs.ENV_GRAPH) else known_graphs(graph)
+    known = [] if graphs.env_override() else known_graphs(graph)
     # Профиль может выключить именно УЗЛЫ (`sufler.graph: false`, лёгкая
     # установка), а не весь пост-процессинг: архив встречи, копии в vault и
     # post_meeting_hook нужны и без графа — ровно как при молчащей модели
@@ -695,7 +695,7 @@ def main():
     # Мультиграф: каждая сфера — свой граф в iCloud-vault; рабочий дефолт — рабочий проект.
     # SUFLER_GRAPH_DIR (тесты) выбор отключает — путь принудительный.
     project = (data.get("проект") or "").strip()
-    if not os.environ.get("SUFLER_GRAPH_DIR") and project and \
+    if not graphs.env_override() and project and \
             safe_name(project).casefold() not in (graph.name.casefold(), "рабочий проект"):
         # Сначала ищем среди существующих: «Проект Альфа» и «Проект_Альфа» —
         # один граф, и заводить второй из-за пробела значит расколоть проект.

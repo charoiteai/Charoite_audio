@@ -273,11 +273,18 @@ enum AppSettings {
 
     /// Папка графа Obsidian — читается из config/config.yaml суфлёра
     /// (sufler.graph_dir), чтобы не настраивать одно и то же дважды.
-    /// CHAROITE_GRAPH_DIR перекрывает конфиг (скрины/тесты на демо-графе).
+    /// CHAROITE_GRAPH_DIR или SUFLER_GRAPH_DIR перекрывает конфиг (скрины и
+    /// тесты на демо-графе). Оба имени — с тем же приоритетом, что у Python
+    /// (`src/graphs.py`): демон получает окружение приложения, и одно имя на
+    /// одной стороне давало бы UI на одном графе, а запись — на другом.
+    static let graphDirEnvNames = ["CHAROITE_GRAPH_DIR", "SUFLER_GRAPH_DIR"]
+
     static var graphDir: URL? {
-        if let env = ProcessInfo.processInfo.environment["CHAROITE_GRAPH_DIR"],
-           !env.isEmpty {
-            return URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
+        for name in graphDirEnvNames {
+            if let env = ProcessInfo.processInfo.environment[name],
+               !env.trimmingCharacters(in: .whitespaces).isEmpty {
+                return resolvePath(env, relativeTo: charoiteRoot)
+            }
         }
         if let v = configValue("graph_dir") {
             return resolvePath(v, relativeTo: charoiteRoot)

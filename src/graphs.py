@@ -33,7 +33,13 @@ def load_config() -> dict:
 # Корень ДАННЫХ: от него считается относительный graph_dir — так же, как
 # это делает приложение (`AppSettings.resolvePath(_:relativeTo: charoiteRoot)`).
 DATA_ROOT = CONFIG.parent.parent
+# Два имени одной переменной: приложение исторически читало CHAROITE_GRAPH_DIR
+# (скрины и тесты на демо-графе), Python — SUFLER_GRAPH_DIR. Демон получает
+# окружение приложения, поэтому обе стороны обязаны понимать оба имени с
+# одним приоритетом — иначе UI показывал бы один граф, а демон писал в
+# другой (круг-1 по PR #385, DeepSeek).
 ENV_GRAPH = "SUFLER_GRAPH_DIR"
+ENV_GRAPH_NAMES = ("CHAROITE_GRAPH_DIR", "SUFLER_GRAPH_DIR")
 
 
 def resolve(raw, root: pathlib.Path | None = None) -> pathlib.Path | None:
@@ -55,17 +61,27 @@ def resolve(raw, root: pathlib.Path | None = None) -> pathlib.Path | None:
     return p
 
 
+def env_override() -> str | None:
+    """Значение CHAROITE_GRAPH_DIR / SUFLER_GRAPH_DIR; пробельное = не задано."""
+    for name in ENV_GRAPH_NAMES:
+        raw = os.environ.get(name, "")
+        if raw.strip():
+            return raw
+    return None
+
+
 def graph_dir(cfg: dict | None = None, *, env: bool = True) -> pathlib.Path | None:
     """Единственная точка ответа «где граф».
 
-    Порядок: SUFLER_GRAPH_DIR → `sufler.graph_dir` из переданного конфига
-    (или config.yaml, если конфиг не передан) → None. Переменная перекрывает
-    конфиг: тестовый прогон любого инструмента не должен дотягиваться до
-    рабочего графа (аудит 04.08 — rename_meeting делал ровно это).
+    Порядок: CHAROITE_GRAPH_DIR / SUFLER_GRAPH_DIR → `sufler.graph_dir` из
+    переданного конфига (или config.yaml, если конфиг не передан) → None.
+    Переменная перекрывает конфиг: тестовый прогон любого инструмента не
+    должен дотягиваться до рабочего графа (аудит 04.08 — rename_meeting
+    делал ровно это).
     """
     if env:
-        raw = os.environ.get(ENV_GRAPH, "")
-        if raw.strip():
+        raw = env_override()
+        if raw is not None:
             return resolve(raw)
     if cfg is None:
         cfg = load_config()

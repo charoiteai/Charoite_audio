@@ -129,8 +129,10 @@ enum ArchiveSearch {
     /// машины индексирует ДРУГОЙ граф и молча отвечал бы не по подменённому.
     static func search(query: String, limit: Int = 5, snippet: Int = 1200,
                        budget: Int = defaultBudget) async -> String {
-        let graphOverridden = !(ProcessInfo.processInfo
-            .environment["CHAROITE_GRAPH_DIR"] ?? "").isEmpty
+        let graphOverridden = AppSettings.graphDirEnvNames.contains { name in
+            !(ProcessInfo.processInfo.environment[name] ?? "")
+                .trimmingCharacters(in: .whitespaces).isEmpty
+        }
         if !graphOverridden,
            let viaBrain = await brainSearch(query: query, limit: limit, snippet: snippet) {
             return viaBrain

@@ -103,8 +103,12 @@ def check_config() -> dict:
     sys.path.insert(0, str(CODE / "src"))
     import graphs
     raw = str(suf.get("graph_dir", "") or "").strip()
-    gdir = graphs.graph_dir(cfg, env=False)
-    if gdir is None:
+    gdir = graphs.graph_dir(cfg)
+    override = graphs.env_override()
+    if override:
+        line(WARN, f"graph_dir перекрыт переменной окружения: {gdir}",
+             "конвейер пишет туда, а не в sufler.graph_dir из конфига")
+    elif gdir is None:
         line(WARN, "sufler.graph_dir пуст",
              "граф не будет писаться; для пробы: demo/graph, а проверить весь "
              "контур — scripts/memory_bench.py --demo")
