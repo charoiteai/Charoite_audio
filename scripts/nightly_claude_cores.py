@@ -29,6 +29,7 @@ FRESH_DAYS = 7
 MAX_CHARS = 60_000
 
 sys.path.insert(0, str(CODE / "src"))
+import graphs  # noqa: E402
 import charoite_paths  # noqa: E402 — путь к src задаётся строкой выше
 import cloud  # noqa: E402
 import privacy  # noqa: E402
@@ -207,7 +208,10 @@ def main() -> None:
     if not privacy.cloud_enrich_enabled(cfg):
         print("облако выключено (cloud_enrich / kill-switch) — пропуск")
         return
-    graph = pathlib.Path(str(cfg["sufler"].get("graph_dir", ""))).expanduser()
+    graph = graphs.graph_dir(cfg)
+    if graph is None:
+        print("sufler.graph_dir не задан — пропуск")
+        return
     cores = graph / "Ядра"
     if not cores.is_dir():
         print("ядер нет — пропуск")

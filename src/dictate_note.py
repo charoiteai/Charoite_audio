@@ -43,8 +43,10 @@ def _cfg_text(root):
 
 SR = 16000
 
+import graphs  # noqa: E402
+
 cfg = yaml.safe_load(_cfg_text(ROOT))
-GRAPH = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser()
+GRAPH = graphs.graph_dir(cfg) or pathlib.Path("")
 # Модель и адрес — из llm.py по конфигу, а не свои: прежний хардкод читал
 # несуществующий ключ sufler.model и после переезда конфига на mlx-сборку
 # продолжал звать старую модель (аудит 14.08).

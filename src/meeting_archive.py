@@ -25,6 +25,7 @@ import sys
 
 from charoite_paths import resolve_root
 from meeting_stamp import files_with_stamp
+import graphs
 
 ROOT = resolve_root(__file__)
 ARCHIVE_DIR = "Встречи-архив"
@@ -717,7 +718,7 @@ def migrate_all(graph: pathlib.Path, tdir: pathlib.Path) -> int:
 if __name__ == "__main__":
     import yaml
     cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
-    graph = pathlib.Path(os.environ.get("SUFLER_GRAPH_DIR") or cfg["sufler"]["graph_dir"]).expanduser()
+    graph = graphs.graph_dir(cfg) or sys.exit("sufler.graph_dir не задан")
     tdir = ROOT / cfg["log"]["transcripts_dir"]
     if "--all" in sys.argv:
         n = migrate_all(graph, tdir)

@@ -405,8 +405,23 @@ def main() -> int:
         # раньше не попадал в ночную ревизию досье (аудит 17.08).
         graph_list = graphs.all_graphs(dossier.DOSSIER_DIR)
     else:
-        raw = args.graph or str(cfg["sufler"].get("graph_dir", ""))
-        graph_list = [pathlib.Path(raw).expanduser()]
+        # --graph: голое имя («Работа») — сначала папка рядом с настроенным
+        # графом, потом путь от корня данных; путь с «/», «~» или «.» — как
+        # путь. Порядок важен: при совпадении имени с папкой в корне данных
+        # брался бы не тот граф (круг-1 по PR #385, Sonnet).
+        chosen = None
+        if args.graph:
+            base = graphs.graph_dir(cfg)
+            bare = "/" not in args.graph and not args.graph.startswith(("~", "."))
+            candidates = [base.parent / args.graph] if bare and base is not None else []
+            candidates.append(graphs.resolve(args.graph))
+            chosen = next((c for c in candidates if c is not None and c.is_dir()), None)
+        else:
+            chosen = graphs.graph_dir(cfg)
+        if chosen is None or not chosen.is_dir():
+            print(f"граф не найден: {args.graph or (cfg.get('sufler') or {}).get('graph_dir', '')}")
+            return 1
+        graph_list = [chosen]
 
     режим = "правит граф" if privacy.cloud_edit_graph_enabled(cfg) else "только отчёт"
     print(f"режим: {режим}")
