@@ -69,3 +69,17 @@ def test_both_env_names_same_priority(monkeypatch):
     assert graphs.env_override() == "/py/g"
     monkeypatch.setenv("SUFLER_GRAPH_DIR", "")
     assert graphs.env_override() is None
+
+
+def test_data_root_ignores_blank_charoite_root(monkeypatch):
+    # CHAROITE_ROOT=" " — не задан (как в charoite_paths.resolve_root), а не
+    # относительный корень, от которого graph_dir снова зависел бы от cwd.
+    import importlib
+    monkeypatch.setenv("CHAROITE_ROOT", " ")
+    g = importlib.reload(graphs)
+    assert g.DATA_ROOT.is_absolute() and g.DATA_ROOT == pathlib.Path(g.__file__).resolve().parent.parent
+    monkeypatch.setenv("CHAROITE_ROOT", "~/charoite-data")
+    g = importlib.reload(graphs)
+    assert g.DATA_ROOT == (pathlib.Path.home() / "charoite-data").resolve()
+    monkeypatch.delenv("CHAROITE_ROOT")
+    importlib.reload(graphs)

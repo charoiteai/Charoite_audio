@@ -391,6 +391,12 @@ def main():
                 return
             time.sleep(0.1)
     cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
+    # Граф перекрыт переменной окружения (тесты, демо): сказать об этом в
+    # логе сразу, а не обнаруживать по пути записи после встречи (круг-1 по
+    # PR #385, Sonnet и DeepSeek).
+    if graphs.env_override():
+        print(f"граф перекрыт переменной окружения: {graphs.graph_dir(cfg)}",
+              file=sys.stderr, flush=True)
     emit({"type": "status", "text": "Загружаю модели…"})
     stt = STT(cfg)
     llm = LLM(cfg)

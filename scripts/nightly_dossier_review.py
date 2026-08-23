@@ -405,13 +405,19 @@ def main() -> int:
         # раньше не попадал в ночную ревизию досье (аудит 17.08).
         graph_list = graphs.all_graphs(dossier.DOSSIER_DIR)
     else:
-        # --graph: путь (относительный — от корня данных) или имя папки рядом
-        # с настроенным графом; без него — единая точка src/graphs.py.
-        chosen = graphs.resolve(args.graph) if args.graph else graphs.graph_dir(cfg)
-        if args.graph and chosen is not None and not chosen.is_dir():
+        # --graph: голое имя («Работа») — сначала папка рядом с настроенным
+        # графом, потом путь от корня данных; путь с «/», «~» или «.» — как
+        # путь. Порядок важен: при совпадении имени с папкой в корне данных
+        # брался бы не тот граф (круг-1 по PR #385, Sonnet).
+        chosen = None
+        if args.graph:
             base = graphs.graph_dir(cfg)
-            if base is not None and (base.parent / args.graph).is_dir():
-                chosen = base.parent / args.graph
+            bare = "/" not in args.graph and not args.graph.startswith(("~", "."))
+            candidates = [base.parent / args.graph] if bare and base is not None else []
+            candidates.append(graphs.resolve(args.graph))
+            chosen = next((c for c in candidates if c is not None and c.is_dir()), None)
+        else:
+            chosen = graphs.graph_dir(cfg)
         if chosen is None or not chosen.is_dir():
             print(f"граф не найден: {args.graph or (cfg.get('sufler') or {}).get('graph_dir', '')}")
             return 1

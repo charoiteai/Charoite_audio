@@ -11,14 +11,19 @@ from __future__ import annotations
 import os
 import pathlib
 
+from charoite_paths import resolve_root
+
 ICLOUD = pathlib.Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents"
 # Конфиг живёт в корне ДАННЫХ, а не рядом с кодом: в бандловой установке код
 # лежит в read-only .app, и чтение «рядом с собой» давало пустой словарь —
 # то есть дефолты вместо настроек человека. Ночная ревизия ядер так не видела
 # бы выключатель профиля (ревью 19.08, второй круг DeepSeek).
-CONFIG = (pathlib.Path(os.environ.get("CHAROITE_ROOT")
-                       or pathlib.Path(__file__).resolve().parent.parent)
-          / "config" / "config.yaml")
+# Корень данных — через канонический resolve_root: своя копия логики без
+# strip()/expanduser() делала CHAROITE_ROOT=" " относительным корнем, и
+# относительный graph_dir снова зависел бы от cwd (круг-1 по PR #385,
+# Sonnet).
+DATA_ROOT = resolve_root(__file__)
+CONFIG = DATA_ROOT / "config" / "config.yaml"
 
 
 def load_config() -> dict:
@@ -30,9 +35,8 @@ def load_config() -> dict:
         return {}
 
 
-# Корень ДАННЫХ: от него считается относительный graph_dir — так же, как
-# это делает приложение (`AppSettings.resolvePath(_:relativeTo: charoiteRoot)`).
-DATA_ROOT = CONFIG.parent.parent
+# Относительный graph_dir считается от DATA_ROOT — так же, как это делает
+# приложение (`AppSettings.resolvePath(_:relativeTo: charoiteRoot)`).
 # Два имени одной переменной: приложение исторически читало CHAROITE_GRAPH_DIR
 # (скрины и тесты на демо-графе), Python — SUFLER_GRAPH_DIR. Демон получает
 # окружение приложения, поэтому обе стороны обязаны понимать оба имени с
