@@ -26,8 +26,35 @@ STAMP = "2026-08-03_1130"
 
 def test_short_stamp_accepts_any_spelling():
     assert rm.short_stamp("2026-08-03_1130") == STAMP
-    assert rm.short_stamp("2026-08-03_113012") == STAMP, "посекундный стем — та же встреча"
+    # Секунды сохраняются: ими выбирается вторая встреча той же минуты
+    # (карточка №39); ключ графа дальше решает resolve_key.
+    assert rm.short_stamp("2026-08-03_113012") == "2026-08-03_113012"
     assert rm.short_stamp("2026-08-03_1130_Старая_тема") == STAMP
+
+
+def test_resolve_key_owner_and_second_meeting(tmp_path):
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    (tdir / "2026-08-03_113010.md").write_text("# a", encoding="utf-8")
+    (tdir / "2026-08-03_113012.md").write_text("# b", encoding="utf-8")
+    assert rm.resolve_key(tdir, "2026-08-03_113010") == STAMP          # владелец минуты
+    assert rm.resolve_key(tdir, "2026-08-03_113012") == "2026-08-03_113012"
+    assert rm.resolve_key(tdir, STAMP) == STAMP                        # минута = владелец
+    # Соседку забыли: по каталогу вторая встреча стала бы владельцем минуты,
+    # но заметка под посекундным ключом уже есть — граф весит больше.
+    (tdir / "2026-08-03_113010.md").unlink()
+    assert rm.resolve_key(tdir, "2026-08-03_113012") == STAMP
+    graph = tmp_path / "graph"
+    (graph / "Встречи").mkdir(parents=True)
+    (graph / "Встречи" / "2026-08-03_113012.md").write_text("# b", encoding="utf-8")
+    assert rm.resolve_key(tdir, "2026-08-03_113012", graph) == "2026-08-03_113012"
+
+
+def test_retitled_handles_seconds_key_derivatives():
+    key = "2026-08-03_113012"
+    assert rm.retitled("2026-08-03_113012.md", key, "Тема") == f"{key}_Тема.md"
+    assert rm.retitled("2026-08-03_113012_hints.md", key, "Тема") == f"{key}_Тема_hints.md"
+    assert rm.retitled("2026-08-03_113012_Старая_minutes.md", key, "Тема") == f"{key}_Тема_minutes.md"
 
 
 def test_garbage_stamp_is_refused():

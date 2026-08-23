@@ -20,6 +20,7 @@ import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from llm import LLM, LLMHTTPError  # noqa: E402
+import meeting_stamp  # noqa: E402
 from meeting_archive import archive_meeting  # noqa: E402
 
 from charoite_paths import harden_umask, resolve_root
@@ -81,10 +82,13 @@ def main():
     for f in sorted(tdir.glob("*.md")):
         if re.search(r"_(minutes|hints|разбор|ревизия_claude|спикеры)\.md$", f.name):
             continue
-        m = re.match(r"(\d{4}-\d{2}-\d{2}_\d{4})(?:_(.+))?\.md$", f.name)
-        if not m or f.stat().st_size < 600:
+        # Посекундные стенограммы (с 28.07) минутный регэксп пропускал
+        # целиком (круг-1 по PR #388, Codex); ключ — как у graph_updater.
+        bare = meeting_stamp.stamp_of(f.stem)
+        if bare is None or f.stat().st_size < 600:
             continue
-        stamp, slug = m.group(1), m.group(2) or ""
+        stamp = meeting_stamp.graph_key(tdir, f.stem, graph)
+        slug = f.stem[len(bare) + 1:] if f.stem != bare else ""
         text = f.read_text(encoding="utf-8")
         base = f.with_suffix("")
         made = []

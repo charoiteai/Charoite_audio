@@ -40,7 +40,9 @@ import yaml  # noqa: E402
 
 from meeting_archive import ARCHIVE_DIR  # noqa: E402
 
-STAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}) (\d{2})-(\d{2}) ")
+# Время целиком: «12-58», «12-58-12», «12-58-12-1» — папки разных встреч
+# одной минуты не считаются дублями друг друга (круг-1 по PR #388, Codex).
+STAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}) (\d{2})-(\d{2})((?:-\d{2})?(?:-\d+)?) ")
 KEEP_DIR = "_дубли"
 
 
@@ -52,7 +54,7 @@ def groups(archive: pathlib.Path) -> dict[str, list[pathlib.Path]]:
             continue
         m = STAMP_RE.match(d.name)
         if m:
-            by_stamp[f"{m.group(1)}_{m.group(2)}{m.group(3)}"].append(d)
+            by_stamp[f"{m.group(1)}_{m.group(2)}{m.group(3)}{m.group(4).replace('-', '', 1)}"].append(d)
     return {k: v for k, v in by_stamp.items() if len(v) > 1}
 
 

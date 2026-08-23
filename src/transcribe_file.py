@@ -87,6 +87,10 @@ def main():
 
     # штамп: время записи файла (когда встреча была), не время расшифровки
     mt = dt.datetime.fromtimestamp(src.stat().st_mtime)
+    # Вторым аргументом — время как есть: «1258», «125812» или «125812-1»
+    # (импорт второй записи в занятую минуту, карточка №41) — штамп
+    # склеивается без разбора, файл получает ровно то имя, которое ждёт
+    # import_meeting.
     hhmm = sys.argv[2] if len(sys.argv) > 2 else f"{mt:%H%M}"
     # дата встречи третьим аргументом: у старой записи mtime может быть
     # датой копирования, а recency и имя файла живут на дате встречи
@@ -116,7 +120,9 @@ def main():
     took = (dt.datetime.now() - t0).total_seconds()
     print(f"\nраспознано за {took:.0f}с (RTF {dur/max(took,0.1):.0f}x)")
 
-    body = (f"# Встреча {stamp} — запись {src.name}\n\n"
+    # Размер в шапке: по нему import_meeting отличает вторую запись с тем
+    # же именем (Recording.m4a у диктофона) от повтора той же записи.
+    body = (f"# Встреча {stamp} — запись {src.name} ({src.stat().st_size} Б)\n\n"
             "**Голос** [запись, спикеры не разделены]:\n" + " ".join(parts) + "\n")
     tpath.write_text(body, encoding="utf-8")
     print(f"стенограмма: {tpath} ({len(body)} зн.)")
