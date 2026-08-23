@@ -240,7 +240,7 @@ _DAY_FOLDER_RE = re.compile(
     r"^(?P<day>\d{4}-\d{2}-\d{2})(?:"
     r" (?P<hm>\d{2}-\d{2}(?:-\d{2})?(?:-\d+)?)"      # «2026-07-15 14-00[-30][-1] — Тема»
     r"|_(?P<raw>\d{4}(?:\d{2})?(?:-\d+)?)"          # «2026-07-15_1400[30][-1] — Тема»
-    r")? — ")
+    r")?[ \t]+—[ \t]+")                              # пробелы вокруг тире — любые
 
 
 def _day_folders(arch: pathlib.Path, day: str) -> list[tuple[pathlib.Path, str | None]]:
@@ -282,16 +282,21 @@ def _archive_folders(g: pathlib.Path, stamp: str) -> list[pathlib.Path]:
     folders = _day_folders(arch, day)
     out = []
     for d, when in folders:
-        if when != mine_time:
-            continue
         owner = meeting_archive_id(d)
-        if owner is not None and owner != stamp:
-            continue   # чужая встреча по манифесту
+        if owner == stamp:            # манифест называет нас — формат имени не важен
+            out.append(d)
+            continue
+        if when != mine_time or owner is not None:
+            continue                  # другое время или чужая встреча по манифесту
         out.append(d)
     if out:
         return out
     if len(folders) == 1 and folders[0][1] is None:
-        return [folders[0][0]]
+        # Единственная папка без времени — наша, если манифест не говорит
+        # обратного (круг-3 по PR #388, Codex).
+        owner = meeting_archive_id(folders[0][0])
+        if owner is None or owner == stamp:
+            return [folders[0][0]]
     return []
 
 

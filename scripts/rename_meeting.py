@@ -165,8 +165,8 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
             # файлов в Документации: тогда производная её, а не бесхозная
             # (круг-2 по PR #388, Sonnet).
             if (graph / "Встречи" / f"{b}.md").exists() or \
-                    (docs.is_dir() and any(docs.glob(f"{b}*.md"))):
-                continue
+                    meeting_stamp.files_with_stamp(docs, b, suffix=".md"):
+                continue             # с границей штампа: «…812-1_*» — не её копии
             mine.add(b)
     for folder in (tdir, graph / "Документация" / "Стенограммы встреч"):
         if not folder.exists():

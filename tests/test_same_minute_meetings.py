@@ -299,3 +299,28 @@ def test_orphan_derivative_with_a_graph_trace_stays_with_the_neighbour(tmp_path)
     (graph / "Встречи" / f"{SECOND}.md").write_text("# b", encoding="utf-8")
     p = rm.plan(graph, tdir, MIN, *rm.pretty_and_slug("Новая"))
     assert {o.name for o, _ in p["moves"]} == {f"{MIN}_Первая.md"}
+
+
+def test_dateless_folder_with_foreign_manifest_and_odd_spacing(tmp_path):
+    """Codex, круг-3 по PR #388: единственная папка «дата — тема» с чужим
+    meeting_id — не наша; лишние пробелы вокруг тире не прячут папку."""
+    graph = tmp_path / "graph"
+    arch = graph / ARCHIVE_DIR
+    (arch / "2026-08-21 — Чужая").mkdir(parents=True)
+    (arch / "2026-08-21 — Чужая" / "meeting.meta.json").write_text(
+        json.dumps({"meeting_id": "2026-08-21_1400"}), encoding="utf-8")
+    assert forget._archive_folders(graph, MIN) == []
+    assert [d.name for d in forget._archive_folders(graph, "2026-08-21_1400")] == ["2026-08-21 — Чужая"]
+    (arch / "2026-08-21 12-58  —  Тема").mkdir()
+    assert [d.name for d in forget._archive_folders(graph, MIN)] == ["2026-08-21 12-58  —  Тема"]
+
+
+def test_manifest_owner_wins_regardless_of_folder_name(tmp_path):
+    """DeepSeek, круг-3: две папки «дата — тема», у одной манифест с нашим
+    meeting_id — её забываем, вторую нет."""
+    graph = tmp_path / "graph"
+    arch = graph / ARCHIVE_DIR
+    (arch / "2026-08-21 — Наша").mkdir(parents=True)
+    (arch / "2026-08-21 — Наша" / "meeting.meta.json").write_text(json.dumps({"meeting_id": MIN}), encoding="utf-8")
+    (arch / "2026-08-21 — Другая").mkdir()
+    assert [d.name for d in forget._archive_folders(graph, MIN)] == ["2026-08-21 — Наша"]
