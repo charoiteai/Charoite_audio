@@ -80,6 +80,21 @@ final class SystemAudioCapture: NSObject {
     private var stream: SCStream?
     private var sink: Sink?
 
+    /// Пересоздание после `didStopWithError` (карточка №35).
+    ///
+    /// Поток пересоздаётся на ТЕ ЖЕ файлы: демон читает их хвостом и после
+    /// паузы продолжит с последней позиции — ни манифест, ни демон менять не
+    /// нужно. Пока идёт пересоздание, `isActive` остаётся true: с точки
+    /// зрения встречи источник жив, просто молчит.
+    private var restartPolicy = CaptureRestartPolicy()
+    private var restartTask: Task<Void, Never>?
+    private var stopping = false
+    /// Захват потерян окончательно (исчерпаны попытки или человек дважды
+    /// остановил поток сам). Аргумент — причина для строки статуса.
+    var onCaptureLost: ((String) -> Void)?
+    /// Поток пересоздан и снова отдаёт кадры. Аргумент — какой была ошибка.
+    var onCaptureRecovered: ((String) -> Void)?
+
     override convenience init() {
         self.init(sessionID: UUID())
     }
@@ -90,7 +105,7 @@ final class SystemAudioCapture: NSObject {
         super.init()
     }
 
-    var isActive: Bool { stream != nil }
+    var isActive: Bool { stream != nil || restartTask != nil }
 
     /// Поднять захват. Возвращает false, если система отказала — вызывающий
     /// обязан откатиться на BlackHole, а не остаться без второй стороны.
@@ -119,55 +134,17 @@ final class SystemAudioCapture: NSObject {
             return false
         }
 
-        let content: SCShareableContent
-        do {
-            content = try await SCShareableContent.excludingDesktopWindows(
-                false, onScreenWindowsOnly: false)
-        } catch {
-            log("контент недоступен: \(error.localizedDescription)")
-            return false
-        }
-        guard !Task.isCancelled else { return false }
-        guard let display = content.displays.first else {
-            log("дисплеев нет — захват невозможен")
-            return false
-        }
-
-        // Себя исключаем дважды: фильтром и excludesCurrentProcessAudio.
-        // Иначе собственные звуки приложения окажутся в записи встречи.
-        let me = content.applications.first {
-            $0.processID == ProcessInfo.processInfo.processIdentifier
-        }
-        let filter = SCContentFilter(display: display,
-                                     excludingApplications: me.map { [$0] } ?? [],
-                                     exceptingWindows: [])
-
-        let cfg = SCStreamConfiguration()
-        cfg.capturesAudio = true
-        cfg.sampleRate = Self.sampleRate
-        cfg.channelCount = 2
-        cfg.excludesCurrentProcessAudio = true
-        // Картинка не нужна, но поток обязан её иметь: минимальный кадр и
-        // одна секунда между кадрами — это доли процента CPU.
-        cfg.width = 2
-        cfg.height = 2
-        cfg.minimumFrameInterval = CMTime(value: 1, timescale: 1)
-        cfg.queueDepth = 6
         var micInStream = false
-        if #available(macOS 15.0, *) {
-            cfg.captureMicrophone = true
-            micInStream = true
-        }
+        if #available(macOS 15.0, *) { micInStream = true }
 
-        let sink = Sink(systemURL: paths.systemURL, micURL: paths.micURL)
-        let stream = SCStream(filter: filter, configuration: cfg, delegate: sink)
-        let queue = DispatchQueue(label: "ai.charoite.sck", qos: .userInitiated)
+        let sink = Sink(systemURL: paths.systemURL, micURL: paths.micURL) { [weak self] dead, error in
+            // Очередь ScreenCaptureKit → главный актор: решение о пересоздании
+            // живёт там же, где `stream` и `stop()`.
+            Task { @MainActor [weak self] in self?.streamDidStop(dead, error) }
+        }
+        let stream: SCStream
         do {
-            try stream.addStreamOutput(sink, type: .audio, sampleHandlerQueue: queue)
-            if #available(macOS 15.0, *) {
-                try stream.addStreamOutput(sink, type: .microphone, sampleHandlerQueue: queue)
-            }
-            try await stream.startCapture()
+            stream = try await openStream(sink: sink)
         } catch {
             log("захват не стартовал: \(error.localizedDescription)")
             sink.close()
@@ -202,7 +179,153 @@ final class SystemAudioCapture: NSObject {
         return true
     }
 
+    /// Собрать и запустить поток под уже открытый приёмник.
+    ///
+    /// Одна и та же дорога для первого старта и для пересоздания: контент и
+    /// дисплей запрашиваются заново каждый раз — после докинга или сна
+    /// прежний `SCContentFilter` может указывать на исчезнувший дисплей.
+    private func openStream(sink: Sink) async throws -> SCStream {
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false, onScreenWindowsOnly: false)
+        guard let display = content.displays.first else {
+            throw CaptureError.noDisplay
+        }
+        // Себя исключаем дважды: фильтром и excludesCurrentProcessAudio.
+        // Иначе собственные звуки приложения окажутся в записи встречи.
+        let me = content.applications.first {
+            $0.processID == ProcessInfo.processInfo.processIdentifier
+        }
+        let filter = SCContentFilter(display: display,
+                                     excludingApplications: me.map { [$0] } ?? [],
+                                     exceptingWindows: [])
+
+        let cfg = SCStreamConfiguration()
+        cfg.capturesAudio = true
+        cfg.sampleRate = Self.sampleRate
+        cfg.channelCount = 2
+        cfg.excludesCurrentProcessAudio = true
+        // Картинка не нужна, но поток обязан её иметь: минимальный кадр и
+        // одна секунда между кадрами — это доли процента CPU.
+        cfg.width = 2
+        cfg.height = 2
+        cfg.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+        cfg.queueDepth = 6
+        if #available(macOS 15.0, *) {
+            cfg.captureMicrophone = true
+        }
+
+        let stream = SCStream(filter: filter, configuration: cfg, delegate: sink)
+        let queue = DispatchQueue(label: "ai.charoite.sck", qos: .userInitiated)
+        try stream.addStreamOutput(sink, type: .audio, sampleHandlerQueue: queue)
+        if #available(macOS 15.0, *) {
+            try stream.addStreamOutput(sink, type: .microphone, sampleHandlerQueue: queue)
+        }
+        try await stream.startCapture()
+        return stream
+    }
+
+    enum CaptureError: LocalizedError {
+        case noDisplay
+        var errorDescription: String? { "дисплеев нет — захват невозможен" }
+    }
+
+    /// Поток остановился сам — не по `stop()`.
+    ///
+    /// Раньше это только логировалось, и на macOS 15 встреча до конца
+    /// оставалась без собеседника и микрофона (они идут одним потоком).
+    /// Теперь — пересоздание по политике `CaptureRestartPolicy`.
+    private func streamDidStop(_ dead: SCStream, _ error: Error) {
+        // Запоздалый сигнал от уже отпущенного потока — не про нас: делегат
+        // один на все потоки сессии, сравниваем по самому объекту.
+        guard !stopping, dead === stream else { return }
+        let ns = error as NSError
+        log("поток остановлен не нами (\(ns.domain) \(ns.code): "
+          + "\(error.localizedDescription)) — пересоздаю")
+        if restartTask != nil {
+            // Свежий поток умер, пока цикл считал кадры: цикл увидит это
+            // сам и пойдёт на следующую попытку, а не объявит победу.
+            stopDuringRestart = error
+            return
+        }
+        let reason = error.localizedDescription
+        restartTask = Task { @MainActor [weak self] in
+            await self?.restartLoop(userStopped: Self.isUserStop(error), original: reason)
+        }
+    }
+
+    private var stopDuringRestart: Error?
+
+    private static func isUserStop(_ error: Error) -> Bool {
+        let ns = error as NSError
+        return ns.domain == SCStreamErrorDomain
+            && ns.code == SCStreamError.Code.userStopped.rawValue
+    }
+
+    private func restartLoop(userStopped firstUserStopped: Bool, original: String) async {
+        defer { restartTask = nil }
+        var userStopped = firstUserStopped
+        while !stopping, !Task.isCancelled {
+            switch restartPolicy.decide(userStopped: userStopped, now: Date()) {
+            case .giveUp(let reason):
+                log("захват не восстановлен: \(reason)")
+                onCaptureLost?(reason)
+                return
+            case .retry(let delay):
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                } catch {
+                    return                                  // stop() отменил ожидание
+                }
+            }
+            guard !stopping, !Task.isCancelled, let sink else { return }
+            // Старый поток отпускаем (он уже мёртв), новый — на те же файлы.
+            if let dead = stream {
+                stream = nil
+                try? await dead.stopCapture()
+            }
+            let before = sink.systemFrames
+            let fresh: SCStream
+            do {
+                fresh = try await openStream(sink: sink)
+            } catch {
+                log("пересоздание не удалось: \(error.localizedDescription)")
+                userStopped = false
+                continue
+            }
+            if stopping || Task.isCancelled {
+                try? await fresh.stopCapture()              // stop() успел раньше
+                return
+            }
+            stopDuringRestart = nil
+            stream = fresh
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            if stopping || Task.isCancelled { return }
+            if let again = stopDuringRestart {
+                stopDuringRestart = nil
+                log("свежий поток умер за первую секунду — ещё попытка")
+                stream = nil
+                try? await fresh.stopCapture()
+                userStopped = Self.isUserStop(again)
+                continue
+            }
+            if sink.systemFrames > before {
+                restartPolicy.recovered()
+                log("захват пересоздан, кадры идут (было: \(original))")
+                onCaptureRecovered?(original)
+                return
+            }
+            log("после пересоздания кадров нет — ещё попытка")
+            stream = nil
+            try? await fresh.stopCapture()
+            userStopped = false
+        }
+    }
+
     func stop() async {
+        stopping = true
+        restartTask?.cancel()
+        _ = await restartTask?.value              // не оставить поток, созданный после stop()
+        restartTask = nil
         if let stream {
             try? await stream.stopCapture()
         }
@@ -281,6 +404,11 @@ final class SystemAudioCapture: NSObject {
             var closed = false
         }
         private let state = OSAllocatedUnfairLock(initialState: Counters())
+        /// Поток остановился сам; зовётся с очереди ScreenCaptureKit.
+        /// Первый аргумент — какой именно поток: делегат общий для всех
+        /// потоков сессии, и запоздалый сигнал мёртвого не должен
+        /// ронять живой.
+        private let onStop: @Sendable (SCStream, Error) -> Void
 
         var systemFrames: Int { state.withLock { $0.systemFrames } }
         var micFrames: Int { state.withLock { $0.micFrames } }
@@ -291,7 +419,9 @@ final class SystemAudioCapture: NSObject {
         /// системного, и демон растянул бы его по частоте из манифеста.
         var micSampleRate: Int { state.withLock { $0.micSampleRate } }
 
-        init(systemURL: URL, micURL: URL) {
+        init(systemURL: URL, micURL: URL,
+             onStop: @escaping @Sendable (SCStream, Error) -> Void) {
+            self.onStop = onStop
             let fm = FileManager.default
             // 0700/0600: сырой звук встречи не должен читаться другими
             // учётками машины (аудит 16.08, см. PrivateFiles)
@@ -331,6 +461,7 @@ final class SystemAudioCapture: NSObject {
 
         func stream(_ stream: SCStream, didStopWithError error: Error) {
             NSLog("[SystemAudioCapture] поток остановлен: %@", error.localizedDescription)
+            onStop(stream, error)
         }
 
         /// float32-кадры любого числа каналов → моно s16le.

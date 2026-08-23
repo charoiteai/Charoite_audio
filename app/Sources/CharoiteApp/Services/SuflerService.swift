@@ -402,6 +402,22 @@ final class SuflerService: ObservableObject {
         // источники, иначе встреча уйдёт на BlackHole.
         if #available(macOS 13.0, *), systemAudioCapture == nil {
             let capture = SystemAudioCapture()
+            // Поток ScreenCaptureKit умер посреди встречи и не пересоздался
+            // (карточка №35): человек должен узнать сразу, а не из пустой
+            // стенограммы — на macOS 15 с ним уходит и микрофон.
+            capture.onCaptureLost = { [weak self] reason in
+                guard let self, self.isRunning else { return }
+                self.fail(L.t("Захват звука встречи потерян (\(reason)) — остановите и начните запись заново",
+                              "Meeting audio capture lost (\(reason)) — stop and start the recording again",
+                              "会议音频捕获已丢失（\(reason)）——请停止并重新开始录音"))
+                MeetingNotificationService.shared.presentCaptureLost(reason)
+            }
+            capture.onCaptureRecovered = { [weak self] _ in
+                guard let self, self.isRunning else { return }
+                self.status = L.t("Захват звука восстановлен после сбоя",
+                                  "Audio capture recovered after a failure",
+                                  "音频捕获在故障后已恢复")
+            }
             systemAudioCapture = capture
             let task = Task { @MainActor [weak self] in
                 let ready = await capture.start()
