@@ -222,22 +222,39 @@ extension SuflerService {
             self.process = nil
             self.publishLifecycle()
 
-            switch self.cleanupDisposition {
-            case .stopped:
-                // Причина автостопа обязана пережить очистку: раньше здесь
-                // безусловно писалось «Остановлен», и человек, вернувшийся к
-                // ноутбуку, не отличал автостоп от собственного Стопа
-                // (ревью 18.08 ×2).
-                self.status = Self.stoppedStatus(autostopReason: self.autostopReason)
-                self.statusIsError = false
-            case .preserveFailure:
-                break
-            case .restart:
+            if let final = Self.finalStatus(disposition: self.cleanupDisposition,
+                                            preservedFailure: self.preservedFailure,
+                                            autostopReason: self.autostopReason) {
+                self.status = final.text
+                self.statusIsError = final.isError
+            }
+            self.preservedFailure = nil
+            if case .restart = self.cleanupDisposition {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
                     guard let self, !self.userStopped, self.lifecycle == .idle else { return }
                     self.start(preserveUI: true)
                 }
             }
+        }
+    }
+
+    /// Статус после очистки. Кнопка — «Остановлен» или причина автостопа:
+    /// раньше здесь безусловно писалось «Остановлен», и человек, вернувшийся
+    /// к ноутбуку, не отличал автостоп от своего Стопа (ревью 18.08 ×2).
+    /// Закрытие по захвату — сохранённая причина: по пути остановки демон
+    /// шлёт свои статусы («Финальная стенограмма…»), и `consume` затирает
+    /// ими текст потери; без восстановления человек видел бы обычный финал
+    /// вместо «захват потерян» (круг-5 по PR #383, Codex). Перезапуск —
+    /// статус не трогаем.
+    static func finalStatus(disposition: CleanupDisposition, preservedFailure: String?,
+                            autostopReason: String?) -> (text: String, isError: Bool)? {
+        switch disposition {
+        case .stopped:
+            return (stoppedStatus(autostopReason: autostopReason), false)
+        case .preserveFailure:
+            return preservedFailure.map { ($0, true) }
+        case .restart:
+            return nil
         }
     }
 

@@ -182,6 +182,9 @@ final class SuflerService: ObservableObject {
     /// Причина ближайшего перезапуска из-за потери захвата — чтобы
     /// daemonDied не затирал её общим «Запись прервалась».
     private var captureLossReason: String?
+    /// Текст сбоя, который обязан пережить остановку с `.preserveFailure`:
+    /// демон по пути остановки шлёт свои статусы и затирает его.
+    var preservedFailure: String?
     private var lifecycleGate = RecordingLifecycleGate()
 
     // Gate остаётся закрытым, а подсистема остановки (соседний файл) ходит к
@@ -379,6 +382,7 @@ final class SuflerService: ObservableObject {
             captureLossCount = 0
             captureLossReason = nil
             captureLossExhausted = false
+            preservedFailure = nil
         }
         _hintBuf = ""; _lastHintUI = .distantPast
         hintIsManual = false
@@ -429,10 +433,10 @@ final class SuflerService: ObservableObject {
                     // без звука нельзя: через 100 с сторож перезапустил бы
                     // запись и поднял захват против воли человека (круг-4
                     // по PR #383, Codex).
-                    self.fail(L.t("Захват звука остановлен вами (\(reason)) — запись завершена; начните заново, если это не нарочно",
-                                  "You stopped the audio capture (\(reason)) — the recording is finished; start again if that was not intentional",
-                                  "音频捕获已被您停止（\(reason)）——录音已结束；若非有意，请重新开始"))
-                    self.closeMeetingAfterCaptureLoss()
+                    self.closeMeetingAfterCaptureLoss(
+                        L.t("Захват звука остановлен вами (\(reason)) — запись завершена; начните заново, если это не нарочно",
+                            "You stopped the audio capture (\(reason)) — the recording is finished; start again if that was not intentional",
+                            "音频捕获已被您停止（\(reason)）——录音已结束；若非有意，请重新开始"))
                     return
                 }
                 self.captureLossCount += 1
@@ -442,10 +446,10 @@ final class SuflerService: ObservableObject {
                     // 100 с молча перезапустил бы её ещё раз, а человек читал
                     // бы «перезапуски не помогают» поверх нового старта
                     // (круг-3 по PR #383, DS + Codex).
-                    self.fail(L.t("Захват звука потерян снова (\(reason)) — перезапуски не помогают; запись остановлена, начните заново",
-                                  "Audio capture lost again (\(reason)) — restarts do not help; the recording is stopped, start it again",
-                                  "音频捕获再次丢失（\(reason)）——重启无效；录音已停止，请重新开始"))
-                    self.closeMeetingAfterCaptureLoss()
+                    self.closeMeetingAfterCaptureLoss(
+                        L.t("Захват звука потерян снова (\(reason)) — перезапуски не помогают; запись остановлена, начните заново",
+                            "Audio capture lost again (\(reason)) — restarts do not help; the recording is stopped, start it again",
+                            "音频捕获再次丢失（\(reason)）——重启无效；录音已停止，请重新开始"))
                     return
                 }
                 // Не ждём 100-секундного сторожа: та же дорога, что у него, —
@@ -585,7 +589,11 @@ final class SuflerService: ObservableObject {
     /// стоп человека): демон жив, поэтому идём дорогой кнопки «Стоп» —
     /// «stop» в stdin, страховочные таймеры, закрытие захвата после смерти
     /// читателя. Запись и граф сохраняются; сторож дальше не перезапускает.
-    private func closeMeetingAfterCaptureLoss() {
+    /// Причина показывается сразу и восстанавливается после финальных
+    /// статусов демона.
+    private func closeMeetingAfterCaptureLoss(_ text: String) {
+        fail(text)
+        preservedFailure = text
         captureLossExhausted = true
         guard let token = lifecycleGate.beginStop() else { return }
         cleanupDisposition = .preserveFailure
