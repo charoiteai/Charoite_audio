@@ -31,6 +31,7 @@ import sys
 CODE = pathlib.Path(__file__).resolve().parent.parent
 ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 sys.path.insert(0, str(CODE / "src"))
+import graphs  # noqa: E402
 import deps  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
@@ -98,7 +99,7 @@ def merge(keep: pathlib.Path, extra: pathlib.Path, apply: bool) -> list[str]:
 def main() -> None:
     apply = "--apply" in sys.argv
     cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
-    graph = pathlib.Path(os.environ.get("SUFLER_GRAPH_DIR") or cfg["sufler"]["graph_dir"]).expanduser()
+    graph = graphs.graph_dir(cfg) or sys.exit("sufler.graph_dir не задан")
     archive = graph / ARCHIVE_DIR
     if not archive.exists():
         sys.exit(f"нет архива встреч: {archive}")

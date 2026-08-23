@@ -26,6 +26,7 @@ import sys
 CODE = pathlib.Path(__file__).resolve().parent.parent
 ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 sys.path.insert(0, str(CODE / "src"))
+import graphs  # noqa: E402
 
 import charoite_paths  # noqa: E402
 from meeting_archive import ARCHIVE_DIR, _safe  # noqa: E402
@@ -63,8 +64,7 @@ def resolve_graph(cfg: dict) -> pathlib.Path:
     графе. «Готово» при полдела — и рука в проде, куда тестовый запуск не
     должен дотягиваться вовсе.
     """
-    raw = os.environ.get("SUFLER_GRAPH_DIR") or cfg["sufler"]["graph_dir"]
-    return pathlib.Path(raw).expanduser()
+    return graphs.graph_dir(cfg) or sys.exit("sufler.graph_dir не задан")
 
 
 def retitled(name: str, stamp: str, slug: str) -> str | None:

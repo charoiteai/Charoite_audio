@@ -93,7 +93,11 @@ In `config/config.yaml`:
   folder whose parent does not exist** = graph off, transcription still
   works — a typo in the path leaves you with transcripts, not with failed
   meetings). Point it inside your Obsidian vault, e.g.
-  `~/Documents/Obsidian/Work` — Charoite creates the structure itself.
+  `~/Documents/Obsidian/Work` — Charoite creates the structure itself. A
+  relative path (`demo/graph`) is resolved by the app and by every script
+  from the Charoite data folder (the one holding `config/`), never from the
+  directory a script happens to be launched from; `SUFLER_GRAPH_DIR` in the
+  environment overrides the setting for trial runs on another graph.
 
 Also worth filling: `sufler.user_context` (1-2 sentences about your work) —
 context for instant answers.

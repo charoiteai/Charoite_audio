@@ -53,6 +53,7 @@ from llm import LLM, embed as llm_embed  # noqa: E402
 from main import NOISE, Transcript  # noqa: E402
 from stt import STT  # noqa: E402
 
+import graphs  # noqa: E402
 import meeting_stamp  # noqa: E402
 
 from charoite_paths import (
@@ -181,8 +182,8 @@ def start_brief(cfg: dict) -> str:
     Файловый парс без моделей: старт должен быть мгновенным. Только основной
     граф — соседние сферы vault (личные) в рабочий бриф не подмешиваются.
     """
-    gdir = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser()
-    meetings = sorted((gdir / "Встречи").glob("*.md")) if (gdir / "Встречи").exists() else []
+    gdir = graphs.graph_dir(cfg)
+    meetings = sorted((gdir / "Встречи").glob("*.md")) if gdir and (gdir / "Встречи").exists() else []
     if not meetings:
         return ""
     last = meetings[-1]
@@ -213,9 +214,9 @@ def start_brief(cfg: dict) -> str:
 
 def load_graph_context(cfg: dict) -> str:
     """Память прошлых встреч из Obsidian-графа: MOC + две последние встречи."""
-    gdir = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser()
+    gdir = graphs.graph_dir(cfg)
     limit = int(cfg["sufler"].get("graph_context_chars", 2500))
-    if not gdir.exists():
+    if gdir is None or not gdir.exists():
         return ""
     parts: list[str] = []
     moc = gdir / "_MOC.md"
@@ -390,6 +391,12 @@ def main():
                 return
             time.sleep(0.1)
     cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
+    # Граф перекрыт переменной окружения (тесты, демо): сказать об этом в
+    # логе сразу, а не обнаруживать по пути записи после встречи (круг-1 по
+    # PR #385, Sonnet и DeepSeek).
+    if graphs.env_override():
+        print(f"граф перекрыт переменной окружения: {graphs.graph_dir(cfg)}",
+              file=sys.stderr, flush=True)
     emit({"type": "status", "text": "Загружаю модели…"})
     stt = STT(cfg)
     llm = LLM(cfg)
@@ -457,14 +464,14 @@ def main():
         append_hint(tr.path, "стартовый бриф (архив)", brief)   # аудит: бриф был
     # канон имён: узлы Люди/ графа — чтобы «Андрюха/Света/Полин» подписывались
     # каноничной формой, а не плодили дубли узлов
-    _people_dir = pathlib.Path(str(cfg["sufler"].get("graph_dir", ""))).expanduser() / "Люди"
+    _people_dir = (graphs.graph_dir(cfg) or pathlib.Path("")) / "Люди"
     known_people = sorted(q.stem for q in _people_dir.glob("*.md")) if _people_dir.exists() else []
     known_first = sorted({n.split()[0] for n in known_people if n and not n.startswith("Собеседник")})
     # сверка разговора с узлами графа (ревью 15.08): старые договорённости
     # находятся локально, без brain-сервера — индекс живёт в памяти демона
     node_index = None
     try:
-        _gdir = pathlib.Path(str(cfg["sufler"].get("graph_dir", ""))).expanduser()
+        _gdir = graphs.graph_dir(cfg) or pathlib.Path("")
         if _gdir.exists():
             import graph_nodes
             node_index = graph_nodes.NodeIndex(_gdir)
@@ -1378,7 +1385,7 @@ def main():
 
             try:
                 import requests as _rq
-                _folder = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser().name
+                _folder = (graphs.graph_dir(cfg) or pathlib.Path("")).name
                 v = _rq.post("http://127.0.0.1:8100/vault_search",
                              json={"query": title, "limit": 3, "folder": _folder,
                                    "snippet_chars": 700}, timeout=8).json().get("text", "")
@@ -1686,13 +1693,12 @@ def main():
         # включённым вместе с эмбеддером на 1.2 ГБ (ревью 19.08).
         if not install_profile.deja_vu_enabled(cfg):
             return
-        # Пустой graph_dir — это Path("."), и «Ядра» искались бы в рабочем
-        # каталоге демона: случайная папка с таким именем подсунула бы живой
-        # встрече чужие темы (третий круг, DeepSeek).
-        graph_raw = str(cfg["sufler"].get("graph_dir", "") or "").strip()
-        if not graph_raw:
+        # Пустой graph_dir — None из единой точки (раньше Path(".") — и «Ядра»
+        # искались бы в рабочем каталоге демона: случайная папка с таким
+        # именем подсунула бы живой встрече чужие темы; третий круг, DeepSeek).
+        gdir = graphs.graph_dir(cfg)
+        if gdir is None:
             return
-        gdir = pathlib.Path(graph_raw).expanduser()
         cores_dir = gdir / "Ядра"
         emb_model = cfg["sufler"].get("embed_model", "bge-m3:latest")
         margin = float(cfg["sufler"].get("deja_vu_margin", 0.04))
@@ -2131,7 +2137,7 @@ def main():
             import requests as _rq
             # folder: искать в ГРАФЕ проекта, не по всему Obsidian-vault —
             # соседние личные папки не должны попадать в ответы на встрече
-            _folder = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser().name
+            _folder = (graphs.graph_dir(cfg) or pathlib.Path("")).name
             v = _rq.post("http://127.0.0.1:8100/vault_search",
                          json={"query": question, "limit": 4, "folder": _folder,
                                "snippet_chars": 600}, timeout=2.5).json().get("text", "")
@@ -2332,7 +2338,7 @@ def main():
 
             try:
                 import requests as _rq
-                _folder = pathlib.Path(cfg["sufler"].get("graph_dir", "")).expanduser().name
+                _folder = (graphs.graph_dir(cfg) or pathlib.Path("")).name
                 v = _rq.post("http://127.0.0.1:8100/vault_search",
                              json={"query": query, "limit": 4, "folder": _folder,
                                    "snippet_chars": 500}, timeout=6).json().get("text", "")

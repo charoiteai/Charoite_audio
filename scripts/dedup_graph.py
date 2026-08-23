@@ -32,6 +32,9 @@ import sys
 
 import yaml
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import graphs  # noqa: E402
+
 ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or
                     pathlib.Path(__file__).resolve().parent.parent).expanduser()
 ARCHIVE_DIR = "Встречи-архив"
@@ -53,14 +56,13 @@ def _allowed_by_config() -> bool:
 
 
 def graph_dir(explicit: str | None) -> pathlib.Path | None:
+    """Явный аргумент — как есть (относительный от корня данных); иначе —
+    единая точка src/graphs.py (SUFLER_GRAPH_DIR → config.yaml)."""
     if explicit:
-        return pathlib.Path(explicit).expanduser()
-    cfg_path = ROOT / "config" / "config.yaml"
-    if not cfg_path.exists():
+        return graphs.resolve(explicit)
+    if not (ROOT / "config" / "config.yaml").exists():
         return None
-    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-    raw = str((cfg.get("sufler") or {}).get("graph_dir", "")).strip()
-    return pathlib.Path(raw).expanduser() if raw else None
+    return graphs.graph_dir()
 
 
 def digest(path: pathlib.Path) -> str:

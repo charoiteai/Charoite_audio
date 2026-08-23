@@ -47,8 +47,7 @@ def cfg() -> dict:
 
 
 def default_graph(c: dict) -> pathlib.Path:
-    raw = str((c.get("sufler") or {}).get("graph_dir", "")).strip()
-    return pathlib.Path(raw).expanduser() if raw else pathlib.Path.cwd()
+    return graphs.graph_dir(c) or pathlib.Path.cwd()
 
 
 def all_graphs() -> list[pathlib.Path]:

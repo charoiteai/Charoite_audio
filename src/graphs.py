@@ -11,14 +11,19 @@ from __future__ import annotations
 import os
 import pathlib
 
+from charoite_paths import resolve_root
+
 ICLOUD = pathlib.Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents"
 # Конфиг живёт в корне ДАННЫХ, а не рядом с кодом: в бандловой установке код
 # лежит в read-only .app, и чтение «рядом с собой» давало пустой словарь —
 # то есть дефолты вместо настроек человека. Ночная ревизия ядер так не видела
 # бы выключатель профиля (ревью 19.08, второй круг DeepSeek).
-CONFIG = (pathlib.Path(os.environ.get("CHAROITE_ROOT")
-                       or pathlib.Path(__file__).resolve().parent.parent)
-          / "config" / "config.yaml")
+# Корень данных — через канонический resolve_root: своя копия логики без
+# strip()/expanduser() делала CHAROITE_ROOT=" " относительным корнем, и
+# относительный graph_dir снова зависел бы от cwd (круг-1 по PR #385,
+# Sonnet).
+DATA_ROOT = resolve_root(__file__)
+CONFIG = DATA_ROOT / "config" / "config.yaml"
 
 
 def load_config() -> dict:
@@ -30,23 +35,68 @@ def load_config() -> dict:
         return {}
 
 
-def configured_graph() -> pathlib.Path | None:
-    """sufler.graph_dir из конфига. None — не настроен или конфига нет.
+# Относительный graph_dir считается от DATA_ROOT — так же, как это делает
+# приложение (`AppSettings.resolvePath(_:relativeTo: charoiteRoot)`).
+# Два имени одной переменной: приложение исторически читало CHAROITE_GRAPH_DIR
+# (скрины и тесты на демо-графе), Python — SUFLER_GRAPH_DIR. Демон получает
+# окружение приложения, поэтому обе стороны обязаны понимать оба имени с
+# одним приоритетом — иначе UI показывал бы один граф, а демон писал в
+# другой (круг-1 по PR #385, DeepSeek).
+ENV_GRAPH = "SUFLER_GRAPH_DIR"
+ENV_GRAPH_NAMES = ("CHAROITE_GRAPH_DIR", "SUFLER_GRAPH_DIR")
 
-    SUFLER_GRAPH_DIR перекрывает конфиг: тестовый прогон любого инструмента
-    не должен дотягиваться до рабочего графа (аудит 04.08 — rename_meeting
+
+def resolve(raw, root: pathlib.Path | None = None) -> pathlib.Path | None:
+    """Строка из конфига → путь графа. None — пусто.
+
+    `~` раскрывается; относительный путь считается от корня данных, а не от
+    текущего каталога процесса. До этого 24 места в Python читали ключ сами:
+    документированный `graph_dir: demo/graph` работал у демона (приложение
+    запускает его из корня данных) и ломался у ночных скриптов и launchd —
+    граф писался в одно место, а искался в другом (аудит DeepSeek 16.08,
+    карточка №36).
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    p = pathlib.Path(s).expanduser()
+    if not p.is_absolute():
+        p = (root or DATA_ROOT) / p
+    return p
+
+
+def env_override() -> str | None:
+    """Значение CHAROITE_GRAPH_DIR / SUFLER_GRAPH_DIR; пробельное = не задано."""
+    for name in ENV_GRAPH_NAMES:
+        raw = os.environ.get(name, "")
+        if raw.strip():
+            return raw
+    return None
+
+
+def graph_dir(cfg: dict | None = None, *, env: bool = True) -> pathlib.Path | None:
+    """Единственная точка ответа «где граф».
+
+    Порядок: CHAROITE_GRAPH_DIR / SUFLER_GRAPH_DIR → `sufler.graph_dir` из
+    переданного конфига (или config.yaml, если конфиг не передан) → None.
+    Переменная перекрывает конфиг: тестовый прогон любого инструмента не
+    должен дотягиваться до рабочего графа (аудит 04.08 — rename_meeting
     делал ровно это).
     """
-    env = os.environ.get("SUFLER_GRAPH_DIR", "").strip()
     if env:
-        return pathlib.Path(env).expanduser()
-    try:
-        import yaml
-        cfg = yaml.safe_load(CONFIG.read_text(encoding="utf-8")) or {}
-        gd = ((cfg.get("sufler") or {}).get("graph_dir") or "").strip()
-    except Exception:
-        return None
-    return pathlib.Path(gd).expanduser() if gd else None
+        raw = env_override()
+        if raw is not None:
+            return resolve(raw)
+    if cfg is None:
+        cfg = load_config()
+    if not isinstance(cfg, dict):
+        cfg = {}
+    return resolve((cfg.get("sufler") or {}).get("graph_dir"))
+
+
+def configured_graph() -> pathlib.Path | None:
+    """sufler.graph_dir из конфига (или SUFLER_GRAPH_DIR). None — не настроен."""
+    return graph_dir()
 
 
 def roots() -> list[pathlib.Path]:

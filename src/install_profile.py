@@ -23,8 +23,7 @@ config.yaml строкой в кавычках (`graph: "false"`), и строг
 """
 from __future__ import annotations
 
-import os
-import pathlib
+import graphs
 
 _FALSE = {"false", "no", "off", "0", "нет", "выкл"}
 _TRUE = {"true", "yes", "on", "1", "да", "вкл"}
@@ -65,10 +64,10 @@ def graph_enabled(cfg: dict) -> bool:
     РОДИТЕЛЯ, а не саму папку: граф на первом запуске создаётся, и требовать
     его существования значило бы не создать его никогда.
     """
-    graph_dir = os.environ.get("SUFLER_GRAPH_DIR") or (cfg.get("sufler") or {}).get("graph_dir") or ""
-    if not str(graph_dir).strip():
+    graph_dir = graphs.graph_dir(cfg)
+    if graph_dir is None:
         return False
-    if not pathlib.Path(str(graph_dir)).expanduser().parent.is_dir():
+    if not graph_dir.parent.is_dir():
         return False
     return flag(cfg, "graph", True)
 

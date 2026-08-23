@@ -21,27 +21,26 @@ import pathlib
 import re
 import sys
 
-import yaml
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
 CODE = pathlib.Path(__file__).resolve().parent.parent
 ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 sys.path.insert(0, str(CODE / "src"))
+import graphs  # noqa: E402
 from action_items import normalize  # noqa: E402
 
 CHECKBOX = re.compile(r"^\s*[-*] \[[ xX]\] ", re.M)
 
 
 def graph_dir(explicit: str | None) -> pathlib.Path | None:
+    """Явный аргумент — как есть (относительный от корня данных); иначе —
+    единая точка src/graphs.py (SUFLER_GRAPH_DIR → config.yaml)."""
     if explicit:
-        return pathlib.Path(explicit).expanduser()
-    cfg_path = ROOT / "config" / "config.yaml"
-    if not cfg_path.exists():
+        return graphs.resolve(explicit)
+    if not (ROOT / "config" / "config.yaml").exists():
         return None
-    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-    raw = str((cfg.get("sufler") or {}).get("graph_dir", "")).strip()
-    return pathlib.Path(raw).expanduser() if raw else None
+    return graphs.graph_dir()
 
 
 def main() -> int:

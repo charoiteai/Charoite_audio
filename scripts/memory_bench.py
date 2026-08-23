@@ -30,6 +30,7 @@ import sys
 CODE = pathlib.Path(__file__).resolve().parent.parent
 ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 sys.path.insert(0, str(CODE / "src"))
+import graphs  # noqa: E402
 import deps  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
@@ -304,7 +305,7 @@ def main() -> None:
         graph = ROOT / "demo" / "graph"
         bench_file = ROOT / "config" / "memory_bench_demo.yaml"
     else:
-        graph = pathlib.Path(os.environ.get("SUFLER_GRAPH_DIR") or cfg["sufler"]["graph_dir"]).expanduser()
+        graph = graphs.graph_dir(cfg) or sys.exit("sufler.graph_dir не задан")
         bench_file = ROOT / "config" / "memory_bench.yaml"  # см. memory_bench.example.yaml
     if not bench_file.exists():
         # Не настроен — не то же самое, что провален. Раньше здесь был выход с
