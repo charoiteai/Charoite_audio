@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.4](https://github.com/charoiteai/Charoite_audio/compare/v0.58.3...v0.58.4) (2026-08-23)
+
+
+### Bug Fixes
+
+* **graph:** две встречи одной минуты порознь; brain забывает и переименовывает по ключу (№39, №41) ([#388](https://github.com/charoiteai/Charoite_audio/issues/388)) ([5e2d246](https://github.com/charoiteai/Charoite_audio/commit/5e2d24691f4c671c8f9c0b6161e03de929cc3c31))
+
 ## [0.58.3](https://github.com/charoiteai/Charoite_audio/compare/v0.58.2...v0.58.3) (2026-08-23)
 
 
