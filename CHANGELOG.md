@@ -5,6 +5,14 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.3](https://github.com/charoiteai/Charoite_audio/compare/v0.58.2...v0.58.3) (2026-08-23)
+
+
+### Bug Fixes
+
+* **app:** иконка macOS без серой плитки на Tahoe — Icon Composer + Assets.car ([#386](https://github.com/charoiteai/Charoite_audio/issues/386)) ([ca295bb](https://github.com/charoiteai/Charoite_audio/commit/ca295bbaeabd80f5eb61c701e64a6b7ff462672d))
+* **paths:** единая точка «где граф» — относительный graph_dir от папки данных (№36) ([#385](https://github.com/charoiteai/Charoite_audio/issues/385)) ([87d8d6b](https://github.com/charoiteai/Charoite_audio/commit/87d8d6bd1422291a81bfe04fc3baf89a9171ac47))
+
 ## [0.58.2](https://github.com/charoiteai/Charoite_audio/compare/v0.58.1...v0.58.2) (2026-08-23)
 
 
