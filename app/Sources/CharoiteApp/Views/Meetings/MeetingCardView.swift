@@ -35,6 +35,8 @@ struct MeetingCardView: View {
     /// чтения (ревью 22.08, DeepSeek — Critical).
     @State var fileLines: [String]?
     @State var fileDepth: MeetingCardDepth?
+    /// Минутки, распарсенные из файла, когда кэша карточки нет (см. loadDepthFile).
+    @State var fileMinutes: MeetingMinutes?
     @State var fileMeetingID: String?
 
     var body: some View {

@@ -30,9 +30,20 @@ enum MeetingCardDepth: String, CaseIterable, Identifiable {
     }
 
     /// Какие глубины есть у этой встречи: пустой сегмент — кнопка в никуда.
+    /// Минутки — по файлу на диске: card.minutes живёт в кэше репозитория по
+    /// равенству снимка и не видит Минутки.md, появившиеся или удалённые при
+    /// неизменном статусе (Codex, круг-2 по #391). Ветка без archiveFolder —
+    /// на случай карточки, собранной не через MeetingCardLoader (в проде
+    /// минуток без папки архива не бывает — только в тестах и превью).
     static func available(card: MeetingCard, meeting: MeetingProcessingSnapshot) -> [MeetingCardDepth] {
         var out: [MeetingCardDepth] = [.summary]
-        if let minutes = card.minutes, !minutes.isEmpty { out.append(.minutes) }
+        if let folder = card.archiveFolder {
+            if FileManager.default.fileExists(atPath: folder.appendingPathComponent("Минутки.md").path) {
+                out.append(.minutes)
+            }
+        } else if let minutes = card.minutes, !minutes.isEmpty {
+            out.append(.minutes)
+        }
         if let note = meeting.notePath, FileManager.default.fileExists(atPath: note) {
             out.append(.analysis)
         }
@@ -102,7 +113,19 @@ extension MeetingCardView {
             section(L.t("Открытые вопросы", "Open questions", "待解决问题"), mark: "?",
                     items: card.openQuestions)
         case .minutes:
-            if let minutes = card.minutes { minutesSections(minutes) }
+            // Кэш карточки — когда он есть; иначе — файл, прочитанный лениво:
+            // чип решает по диску (круг-2 по #391), и панель обязана уметь
+            // показать Минутки.md, которых кэш ещё не видел (круг-3, DS+Codex).
+            if let minutes = card.minutes, !minutes.isEmpty {
+                minutesSections(minutes)
+            } else if fileDepth == depth, fileMeetingID == meeting.meetingID,
+                      let fileMinutes, !fileMinutes.isEmpty {
+                minutesSections(fileMinutes)
+            } else {
+                // Файл не парсится в минутки — показываем его строками, как
+                // стенограмму: содержимое честнее пустоты.
+                fileView
+            }
         case .analysis, .transcript:
             fileView
         }
@@ -141,19 +164,25 @@ extension MeetingCardView {
     func loadDepthFile() async {
         let wanted = depth
         let meetingID = meeting.meetingID
-        guard wanted == .analysis || wanted == .transcript,
+        let needsMinutesFile = wanted == .minutes
+            && (card.minutes?.isEmpty ?? true)
+        guard wanted == .analysis || wanted == .transcript || needsMinutesFile,
               let url = wanted.file(card: card, meeting: meeting) else { return }
         // Режем на непустые строки в фоне один раз: рендер получает готовый
-        // массив, а не мегабайтную строку на каждый проход тела.
-        let lines = await Task.detached(priority: .userInitiated) {
-            ((try? String(contentsOf: url, encoding: .utf8)) ?? "")
+        // массив, а не мегабайтную строку на каждый проход тела. Минутки там
+        // же и парсим — чтобы панель могла показать файл, которого нет в кэше.
+        let (lines, minutes) = await Task.detached(priority: .userInitiated) {
+            let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+            let lines = text
                 .components(separatedBy: "\n")
                 .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            return (lines, needsMinutesFile ? MeetingMinutes.parse(text) : nil)
         }.value
         // .task(id:) отменяет прежнюю задачу при смене глубины или встречи;
         // второй сторож — на случай смены между await и записью.
         guard !Task.isCancelled, depth == wanted, meeting.meetingID == meetingID else { return }
         fileLines = lines
+        fileMinutes = minutes
         fileDepth = wanted
         fileMeetingID = meetingID
     }
