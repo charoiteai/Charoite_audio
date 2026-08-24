@@ -30,30 +30,11 @@ extension Theme {
 }
 
 // MARK: - Поверхности происхождения
-
-/// Лавандовая поверхность памяти: всё, что пришло из архива, графа, досье.
-///
-/// Правило ревизии 08.08 «поверхность обозначает происхождение» три недели
-/// жило только в токенах: `surfaceMemory` не имел ни одного вызова, а
-/// лаванда в двух вью рисовалась своим `accent.opacity(…)` и читалась как
-/// случайность. Контейнер — одно место, где цвет и рамка заданы вместе.
-struct MemorySurface<Content: View>: View {
-    /// 8 — панель и карточка, 12 — пузырь ответа (геометрия DESIGN.md).
-    var radius: CGFloat = Theme.radius
-    @ViewBuilder var content: () -> Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) { content() }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.surfaceMemory,
-                        in: RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(Theme.borderMemory, lineWidth: 1)
-            }
-    }
-}
+//
+// Лавандовый контейнер MemorySurface удалён 24.08: владелец выбрал для
+// экрана «Память» гамму библиотеки встреч (белая карточка, волосяная
+// рамка), происхождение из памяти несут чипы источников и строка мета.
+// Токен surfaceMemory остаётся — панель «Ответ по архиву» в суфлёре.
 
 /// Небесная поверхность облака: всё, что уходит с машины. «Локальное
 /// молчит, облачное видно» — видно цветом, а не только подписью.

@@ -528,6 +528,22 @@ it signals degradation, it does not break the loop.
   scroll view rather than a List with selection — the same choice as the
   sidebar, which lost clicks inside a List. Grouping, summary and plurals are
   a pure `LibraryScreenPolicy`, tested without UI.
+- **Memory screen shows where an answer came from** (August 2026 revision,
+  screen 5; palette follows the meeting library by the owner's call) — a
+  model answer is a white hairline-bordered card, and under the text sit
+  source chips parsed from the archive-search context: meetings as filled
+  indigo capsules (a click opens that meeting's card in the library), nodes
+  and dossiers as outlined ones (a click opens the file). Below the chips a
+  provenance line: "local · model · seconds · N meetings in context" — or
+  "memory off" when the graph toggle was off for that answer, and a "⚠ weak
+  graph matches" chip instead of chips when the search itself flagged low
+  confidence (no invented sources). The header carries a live "Ollama
+  responds · 0 network requests" chip that turns into a warning when the
+  local runtime is silent. On windows ≥760 pt a right column "What memory
+  knows" shows meeting/node/dossier counts and the freshest cores with a
+  status line each — counted from the graph on disk, refreshed at most once
+  a minute. Source parsing, labels and the meta line are a pure
+  `MemoryScreenPolicy`, tested without UI.
 - **A copilot panel without extra words** (owner's package, Aug 24) — the
   ⚡ answer to the other side's question is a single highlighted thread line
   (semibold, action color) with no question line: the question stays in the

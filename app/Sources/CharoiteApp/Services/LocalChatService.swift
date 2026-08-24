@@ -15,6 +15,12 @@ final class LocalChatService: ObservableObject {
         var id = UUID()
         let role: String   // "user" | "assistant"
         var text: String
+        // Экран «Память» (макет MOBILE_2026-08): что подмешали и откуда ответ.
+        // Опциональны с дефолтом nil — старая история декодируется как раньше.
+        var sources: [MemoryScreenPolicy.Source]?
+        var meta: String?
+        var memoryUsed: Bool?
+        var weakMatches: Bool?
     }
 
     @Published var messages: [Message] = []
@@ -68,6 +74,10 @@ final class LocalChatService: ObservableObject {
     // из трёх имён превращал пикер в лотерею «есть ли такая». Фолбэк — прежний.
     @Published var models = ["qwen3.6:35b-a3b", "gemma4:26b", "gemma4:latest"]
 
+    /// nil — ещё не спрашивали; true/false — Ollama ответила/нет. Питает
+    /// честную строку шапки «Ollama отвечает · 0 запросов в сеть».
+    @Published private(set) var ollamaAlive: Bool?
+
     func refreshModels() async {
         guard let url = URL(string: ollamaBase + "/api/tags") else { return }
         let cfg = URLSessionConfiguration.ephemeral
@@ -75,7 +85,11 @@ final class LocalChatService: ObservableObject {
         cfg.timeoutIntervalForRequest = 3
         guard let (data, _) = try? await URLSession(configuration: cfg).data(from: url),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let list = obj["models"] as? [[String: Any]] else { return }
+              let list = obj["models"] as? [[String: Any]] else {
+            ollamaAlive = false
+            return
+        }
+        ollamaAlive = true
         // эмбеддинг-модели в чате бессмысленны — прячем
         let names = list.compactMap { $0["name"] as? String }
             .filter { !$0.contains("bge") && !$0.contains("embed") }
@@ -159,6 +173,9 @@ final class LocalChatService: ObservableObject {
         分歧以及随时间发生的变化，并附上图谱资料块中的日期与来源。\
         被问「你是谁」时回答「Charoite，本地助手」，不要提模型厂商。
         """)
+        let startedAt = Date()
+        var chipSources: [MemoryScreenPolicy.Source] = []
+        var weakMatches = false
         if useMemory {
             // Поиск по одной последней реплике («а что дальше?») находил мусор:
             // тему разговора несут ПОСЛЕДНИЕ вопросы вместе, свежий — главный
@@ -172,6 +189,11 @@ final class LocalChatService: ObservableObject {
             // маркер слабых совпадений: модель предупреждена, что граф скорее не про это
             let lowConf = vault.hasPrefix(ArchiveSearch.lowConfidenceMarker)
             if lowConf { vault.removeFirst() }
+            // Чипы под ответом — из блока РЕАЛЬНОГО поиска, не из текста
+            // модели: показываем, что подмешали. Слабые совпадения чипами не
+            // выдаём — их нельзя показывать как опору ответа.
+            weakMatches = lowConf
+            chipSources = lowConf ? [] : MemoryScreenPolicy.sources(from: vault)
             if !vault.isEmpty {
                 system += lowConf
                     ? "\n\n[ГРАФ ВСТРЕЧ — совпадения СЛАБЫЕ, вероятно не про вопрос; не выдавай за факт]\n" + vault
@@ -237,6 +259,19 @@ final class LocalChatService: ObservableObject {
             }
             let finalText = await throttler.finalText()
             if !finalText.isEmpty { setText(bubbleId, finalText) }
+            // Строка происхождения и чипы — по факту завершения: у каждого
+            // числа источник (модель — какая отвечала, время — замер, встречи
+            // — счёт подмешанных источников-встреч).
+            if let idx = messages.firstIndex(where: { $0.id == bubbleId }) {
+                let secs = max(1, Int(Date().timeIntervalSince(startedAt).rounded()))
+                messages[idx].sources = chipSources.isEmpty ? nil : chipSources
+                messages[idx].memoryUsed = useMemory
+                messages[idx].weakMatches = weakMatches ? true : nil
+                messages[idx].meta = MemoryScreenPolicy.metaLine(
+                    model: effModel, seconds: secs,
+                    meetingsInContext: chipSources.filter { $0.kind == .meeting }.count,
+                    memoryOn: useMemory, weakMatches: weakMatches)
+            }
         } catch {
             if !Task.isCancelled, let idx = messages.firstIndex(where: { $0.id == bubbleId }) {
                 messages[idx].text += "\n[ошибка: \(error.localizedDescription) — Ollama запущена?]"
