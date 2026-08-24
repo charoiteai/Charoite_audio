@@ -54,9 +54,14 @@ enum LibraryScreenPolicy {
         }
         return Bucket.allCases.compactMap { bucket in
             guard let group = byBucket[bucket], !group.isEmpty else { return nil }
-            let sorted = bucket == .upcoming
-                ? group.sorted { date($0) < date($1) }
-                : group.sorted { date($0) > date($1) }
+            // Явный tie-breaker по исходному индексу: sorted не обещает
+            // стабильности, и равные даты не должны меняться местами от
+            // перерисовки к перерисовке (Codex, круг-3).
+            let sorted = group.enumerated().sorted { a, b in
+                let da = date(a.element), db = date(b.element)
+                if da == db { return a.offset < b.offset }
+                return bucket == .upcoming ? da < db : da > db
+            }.map(\.element)
             return (bucket, sorted)
         }
     }
