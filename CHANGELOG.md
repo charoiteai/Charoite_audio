@@ -5,6 +5,14 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.0](https://github.com/charoiteai/Charoite_audio/compare/v0.59.0...v0.60.0) (2026-08-24)
+
+
+### Features
+
+* **app:** memory screen — source chips, provenance line, inventory column ([#396](https://github.com/charoiteai/Charoite_audio/issues/396)) ([580083f](https://github.com/charoiteai/Charoite_audio/commit/580083f4a78e9bff8747a5a3f03d1b30fe7e65ff))
+* **sufler:** hint layer observability + self-healing guard ([#398](https://github.com/charoiteai/Charoite_audio/issues/398)) ([745c6d0](https://github.com/charoiteai/Charoite_audio/commit/745c6d0bbb94f05f352016bac308a35dd466cef4))
+
 ## [0.59.0](https://github.com/charoiteai/Charoite_audio/compare/v0.58.4...v0.59.0) (2026-08-24)
 
 
