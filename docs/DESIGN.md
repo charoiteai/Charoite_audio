@@ -18,7 +18,7 @@ human-readable description and the agreements behind it — code wins.
 | `sky` | `#0EA5E9` | the Claude cloud pane — distinct from local |
 | `ok` | `#059669` | success, green statuses |
 | `warning` | system orange | attention without breakage; `overdue` is its special case |
-| `surfaceMemory` / `borderMemory` | accent at 5 % / 14 % | lavender: anything that came from the archive, graph or dossiers |
+| `surfaceMemory` | accent at 5 % | lavender: the archive answer pane on the meeting screen |
 | `surfaceCloud` / `borderCloud` | sky at 6 % / 22 % | everything that leaves the machine: the Claude pane, cloud toggles |
 
 Semantic colors (recording/error red) are system colors, not brand ones.
@@ -34,9 +34,12 @@ hard-coded sizes, and a system that lives on paper only drifts.
 
 ### Surface means origin
 
-White system surface — now and local. Lavender (`MemorySurface`) —
-memory: the archive answer pane on the meeting screen, the model's
-replies in Memory. Sky (`CloudSurface`) — everything that leaves the Mac:
+White system surface — now and local. Lavender (`Theme.surfaceMemory`)
+— memory: the archive answer pane on the meeting screen. On the Memory
+screen the owner chose the meeting-library palette (24.08): model replies
+are white hairline-bordered cards, and provenance is carried by source
+chips and the meta line, not by surface color; the `MemorySurface`
+container is gone. Sky (`CloudSurface`) — everything that leaves the Mac:
 the Claude card, the cloud dossier toggle in Settings. The rule "local is
 quiet, cloud is visible" becomes visible rather than declared; color is
 never the only signal — every cloud surface also says it in words
