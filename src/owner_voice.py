@@ -80,9 +80,6 @@ TEXT_ECHO_MIN_WORDS = 5
 #: (круг-1 по PR #401, GLM).
 TEXT_ECHO_PAIR_S = 8.0
 
-
-
-
 def norm_words(text: str) -> tuple[str, ...]:
     """Слова фразы для сверки эха: нижний регистр, ё=е, только буквы.
 
@@ -106,7 +103,10 @@ def text_echo_match(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
     """
     sa, sb = set(a), set(b)
     short = min(len(sa), len(sb))
-    if min(len(a), len(b)) < TEXT_ECHO_MIN_WORDS or short == 0:
+    # Минимум — тоже по УНИКАЛЬНЫМ словам: «спасибо»×5 — это одно слово,
+    # а не пять, и с уникальным знаменателем оно матчилось бы с любой
+    # фразой, где есть «спасибо» (круг-3, DS).
+    if short < TEXT_ECHO_MIN_WORDS:
         return False
     return len(sa & sb) / short >= TEXT_ECHO_OVERLAP
 
@@ -145,7 +145,7 @@ class Heard:
         dataclasses.field(default_factory=list)
     _bh_texts: list[tuple[float, tuple[str, ...]]] = \
         dataclasses.field(default_factory=list)
-    #: Счёт текстовых совпадений на голос: липкая пометка — со второго.
+    #: Счёт текстовых пар на голос — ТОЛЬКО телеметрия для owner-pulse.
     _text_hits: dict[int, int] = dataclasses.field(default_factory=dict)
 
     def note(self, voice: int | None, seconds: float, *, is_mic: bool,
@@ -189,7 +189,7 @@ class Heard:
         обе стороны и сверяем в обе (№93).
         """
         words = norm_words(text)
-        if len(words) < TEXT_ECHO_MIN_WORDS:
+        if len(set(words)) < TEXT_ECHO_MIN_WORDS:
             return False
         fresh = now - TEXT_ECHO_WINDOW_S
         self._mic_texts = [x for x in self._mic_texts if x[0] >= fresh]
@@ -205,14 +205,16 @@ class Heard:
             if not matched:
                 self._mic_texts.append((now, voice, words))
         else:
-            # Все совпавшие голоса, не только первый: одна фраза из
-            # динамиков могла отозваться эхом в нескольких mic-кусках
-            # (круг-1 по PR #401, Codex).
+            # Один зачёт на bh-фразу (первое совпадение): счёт «на каждый
+            # mic-кусок» делал text_pairs зависимым от порядка прихода и
+            # нарезки STT — телеметрия становилась неинтерпретируемой
+            # (круг-3, DS; симметрично mic-ветке).
             for mic_t, mic_voice, mic_words in self._mic_texts:
                 if abs(now - mic_t) <= TEXT_ECHO_PAIR_S \
                         and text_echo_match(words, mic_words):
                     matched = True
                     self._text_hit(mic_voice)
+                    break
             self._bh_texts.append((now, words))
         return matched
 

@@ -971,10 +971,10 @@ def main():
                         heard_by_channel.note(n, len(voiced) / hub.sr,
                                               is_mic=speaker == mic_label,
                                               now=time.monotonic())
-                    # Текстовая сверка эха (№93): фраза, совпавшая с
-                    # недавней фразой другого канала, — эхо динамиков, её
-                    # голос липко исключается из кандидатов владельца.
-                    # Сверка по словам, id каналов не нужны.
+                    # Текстовые пары (№93): фраза, совпавшая с недавней
+                    # фразой другого канала, считается в ТЕЛЕМЕТРИЮ
+                    # owner-pulse; на подпись не влияет — включение пометки
+                    # отдельным решением по полевым данным.
                     heard_by_channel.note_text(
                         n if n is not None and n >= 0 else None, text,
                         is_mic=speaker == mic_label, now=time.monotonic())
@@ -2637,22 +2637,27 @@ def main():
                         # Снимки ДО итерации (гонка со stt_loop не смеет
                         # ронять демон — DS+Codex, круг-1 #401) и ТОЛЬКО
                         # агрегаты: пер-голосовые секунды и id — производное
-                        # голоса, а err-лог персистентен; обещание PRIVACY
-                        # «ничего голосового на диск» распространяется и на
-                        # них (GLM, круг-1 #401). Вердикт — _owner_set без
-                        # побочного owner_ready.
+                        # голоса, а err-лог персистентен (PRIVACY: «ничего
+                        # голосового на диск», GLM круг-1). signed — по
+                        # ЖИВОМУ пути (ready + не-эховый mic-голос), а не по
+                        # офлайн-функции с долей/отрывом: на гибридной
+                        # встрече они расходятся (круг-3, DS).
                         hb = heard_by_channel
                         mic, bh = dict(hb.mic), dict(hb.bh)
+                        echoed = set(hb.echoed)
                         mic_total = sum(mic.values())
                         top_share = (max(mic.values()) / mic_total
                                      if mic_total > 0 else 0.0)
                         pairs = sum(dict(hb._text_hits).values())  # noqa: SLF001
+                        live_signed = hb.owner_ready and any(
+                            v not in echoed and bh.get(v, 0.0) <= owner_voice.ECHO_SECONDS
+                            for v in mic)
                         print(f"owner-pulse: call={hb.call} ready={hb.owner_ready} "
                               f"mic_voices={len(mic)} bh_voices={len(bh)} "
                               f"top_share={top_share:.2f} "
-                              f"echoed_n={len(set(hb.echoed))} "
+                              f"echoed_n={len(echoed)} "
                               f"text_pairs={pairs} "
-                              f"signed={owner_voice.owner_voice(hb) is not None}",
+                              f"signed={live_signed}",
                               file=sys.stderr, flush=True)
                     except Exception as e:  # noqa: BLE001
                         print(f"owner-pulse: сбой ({e})", file=sys.stderr, flush=True)
