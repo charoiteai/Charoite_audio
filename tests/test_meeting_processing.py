@@ -121,7 +121,9 @@ def test_review_word_inside_the_title_does_not_hide_the_transcript(tmp_path):
     assert find_final_transcript(live) == renamed.resolve()
 
 
-def test_note_is_found_in_project_graph(tmp_path):
+def test_note_is_found_in_project_graph(tmp_path, monkeypatch):
+    for name in ("CHAROITE_GRAPH_DIR", "SUFLER_GRAPH_DIR"):
+        monkeypatch.delenv(name, raising=False)
     configured = tmp_path / "vault" / "Рабочий"
     configured.mkdir(parents=True)
     project = configured.parent / "Charoite"
@@ -141,6 +143,8 @@ def test_graph_env_override_wins(tmp_path, monkeypatch):
     note = override / "Встречи" / "2026-07-31_1415.md"
     note.parent.mkdir(parents=True)
     note.write_text("note", encoding="utf-8")
+    for name in ("CHAROITE_GRAPH_DIR", "SUFLER_GRAPH_DIR"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("SUFLER_GRAPH_DIR", str(override))
 
     found = find_meeting_note({"sufler": {"graph_dir": str(configured)}}, _transcript(tmp_path))

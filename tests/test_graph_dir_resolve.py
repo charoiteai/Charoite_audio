@@ -33,6 +33,8 @@ def test_resolve_empty_is_none_not_dot(raw):
 
 
 def test_env_overrides_config(monkeypatch):
+    for name in graphs.ENV_GRAPH_NAMES:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(graphs.ENV_GRAPH, "rel/test-graph")
     got = graphs.graph_dir({"sufler": {"graph_dir": "/cfg/graph"}})
     assert got == graphs.DATA_ROOT / "rel" / "test-graph"
@@ -41,7 +43,10 @@ def test_env_overrides_config(monkeypatch):
 
 
 def test_config_shapes(monkeypatch):
-    monkeypatch.delenv(graphs.ENV_GRAPH, raising=False)
+    # env_override читает CHAROITE_GRAPH_DIR ПЕРВЫМ — без сброса обоих имён
+    # машинная переменная решает исход теста (круг-2 по #405, DS).
+    for name in graphs.ENV_GRAPH_NAMES:
+        monkeypatch.delenv(name, raising=False)
     assert graphs.graph_dir({"sufler": {"graph_dir": "~/g"}}) == pathlib.Path.home() / "g"
     assert graphs.graph_dir({"sufler": None}) is None
     assert graphs.graph_dir({}) is None
@@ -51,6 +56,8 @@ def test_config_shapes(monkeypatch):
 
 
 def test_configured_graph_is_the_same_entry_point(monkeypatch):
+    for name in graphs.ENV_GRAPH_NAMES:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(graphs.ENV_GRAPH, "/env/only")
     assert graphs.configured_graph() == pathlib.Path("/env/only")
 
