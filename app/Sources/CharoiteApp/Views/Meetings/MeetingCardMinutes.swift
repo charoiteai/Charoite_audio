@@ -32,8 +32,9 @@ enum MeetingCardDepth: String, CaseIterable, Identifiable {
     /// Какие глубины есть у этой встречи: пустой сегмент — кнопка в никуда.
     /// Минутки — по файлу на диске: card.minutes живёт в кэше репозитория по
     /// равенству снимка и не видит Минутки.md, появившиеся или удалённые при
-    /// неизменном статусе (Codex, круг-2 по #391); распарсенные минутки без
-    /// archiveFolder остаются запасным признаком.
+    /// неизменном статусе (Codex, круг-2 по #391). Ветка без archiveFolder —
+    /// на случай карточки, собранной не через MeetingCardLoader (в проде
+    /// минуток без папки архива не бывает — только в тестах и превью).
     static func available(card: MeetingCard, meeting: MeetingProcessingSnapshot) -> [MeetingCardDepth] {
         var out: [MeetingCardDepth] = [.summary]
         if let folder = card.archiveFolder {
