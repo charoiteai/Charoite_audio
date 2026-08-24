@@ -544,6 +544,18 @@ it signals degradation, it does not break the loop.
   status line each — counted from the graph on disk, refreshed at most once
   a minute. Source parsing, labels and the meta line are a pure
   `MemoryScreenPolicy`, tested without UI.
+- **Heavy background work coordinates instead of colliding** (24.08) — the
+  night of 23→24.08 a manual test-mutation run shared the one local model
+  with a live meeting and then with the nightly cycle: dossiers caught 35
+  ReadTimeouts of 300 s each. The heavyweights now share one vocabulary
+  (busy_signals): the mutator refuses to start while a meeting is being
+  recorded or processed or the night is running (honest exit, --force to
+  insist), holds an exclusive flock for the whole run — the same kernel
+  mechanism as the daemon's meeting lock, so a killed process releases it
+  instantly — and yields between mutants the moment a recording or the
+  night starts; the night, in turn, waits for the mutation lock exactly
+  like it waits for meeting processing, and refreshes its running status
+  on every step so a long night never turns invisible.
 - **The hint layer explains its own silence** (24.08) — three meetings in
   a row the auto-hint layer was silent while minutes and deja-vu worked,
   and a dead loop was indistinguishable from "nothing to say". The daemon

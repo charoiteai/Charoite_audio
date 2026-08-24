@@ -24,17 +24,25 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
+import busy_signals  # noqa: E402
 import live_gate  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
 
 LIVE = "живая запись"
+MUTATION = "мутация тестов"
 
 
 def busy_now(store: MeetingStatusStore, root: pathlib.Path | None = None) -> list[str]:
-    """Чем занята машина: стадии разбора встреч + живая запись, если идёт."""
+    """Чем занята машина: разбор встреч, живая запись, мутация тестов.
+
+    Мутатор добавлен после ночи 23→24.08: он делил модель с досье — 35
+    ReadTimeout по 300 с; теперь его лок ночь ждёт наравне с разбором.
+    """
     busy = list(store.busy())
     if root is not None and live_gate.daemon_alive(root):
         busy.append(LIVE)
+    if root is not None and busy_signals.mutation_running(root):
+        busy.append(MUTATION)
     return busy
 
 
