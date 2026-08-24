@@ -129,15 +129,45 @@ enum ArchiveSearch {
     /// машины индексирует ДРУГОЙ граф и молча отвечал бы не по подменённому.
     static func search(query: String, limit: Int = 5, snippet: Int = 1200,
                        budget: Int = defaultBudget) async -> String {
+        await searchStructured(query: query, limit: limit, snippet: snippet,
+                               budget: budget).text
+    }
+
+    /// Результат поиска для потребителей, которым важно «ЧТО подмешали», а
+    /// не только текст. `rels` — точный список хитов, реально вошедших в
+    /// текст (в порядке выдачи); nil — структуры нет (brain-ветка отдаёт
+    /// только текст), потребитель падает на разбор текста.
+    /// Круг-1 по PR #396: DS, Codex и GLM независимо указали, что чипы
+    /// источников из regex по склеенной строке ловят упоминания из сниппетов
+    /// и молча ломаются о форматирование packContext.
+    struct Outcome {
+        let text: String
+        let rels: [String]?
+    }
+
+    static func searchStructured(query: String, limit: Int = 5,
+                                 snippet: Int = 1200,
+                                 budget: Int = defaultBudget) async -> Outcome {
         let graphOverridden = AppSettings.graphDirEnvNames.contains { name in
             !(ProcessInfo.processInfo.environment[name] ?? "")
                 .trimmingCharacters(in: .whitespaces).isEmpty
         }
         if !graphOverridden,
            let viaBrain = await brainSearch(query: query, limit: limit, snippet: snippet) {
-            return viaBrain
+            // Brain отдаёт тот же формат блоков «• путь\n  …фрагмент…»:
+            // берём rels ТОЛЬКО из строк-заголовков — упоминание пути в теле
+            // сниппета источником не становится и на brain-пути (круг-2,
+            // GLM). Ни одного заголовка — rels=nil, честный фолбэк текста.
+            let headerRels = viaBrain.split(separator: "\n", omittingEmptySubsequences: false)
+                .compactMap { line -> String? in
+                    let s = line.trimmingCharacters(in: .whitespaces)
+                    guard s.hasPrefix("• "), s.hasSuffix(".md") else { return nil }
+                    return String(s.dropFirst(2))
+                }
+            return Outcome(text: viaBrain, rels: headerRels.isEmpty ? nil : headerRels)
         }
-        return await localSearch(query: query, limit: limit, snippet: snippet)
+        return await localSearchOutcome(query: query, limit: limit,
+                                        snippet: snippet, budget: budget)
     }
 
     /// Поиск через локальный brain-сервер; nil — сервер не поднят/не ответил.
@@ -185,8 +215,17 @@ enum ArchiveSearch {
     static func localSearch(query: String, limit: Int = 5, snippet: Int = 1200,
                             budget: Int = defaultBudget,
                             root: URL? = nil) async -> String {
+        await localSearchOutcome(query: query, limit: limit, snippet: snippet,
+                                 budget: budget, root: root).text
+    }
+
+    static func localSearchOutcome(query: String, limit: Int = 5,
+                                   snippet: Int = 1200,
+                                   budget: Int = defaultBudget,
+                                   root: URL? = nil) async -> Outcome {
         guard var graph = root ?? AppSettings.graphDir,
-              FileManager.default.fileExists(atPath: graph.path) else { return "" }
+              FileManager.default.fileExists(atPath: graph.path)
+        else { return Outcome(text: "", rels: []) }
         // канонизация: /var/… и /private/var/… — один каталог через симлинк;
         // enumerator отдаёт канонический путь, и строковый срез graph.path
         // иначе оставляет мусорный префикс в rel — ключи индекса расходятся
@@ -198,7 +237,7 @@ enum ArchiveSearch {
             // бесполезно (в тексте такой фразы нет), а в покрытии запроса
             // весит наравне с настоящими словами и портит скоринг.
             .filter { $0.count >= 3 && !stop.contains(norm($0)) && cjkGrams($0).isEmpty }
-        guard !words.isEmpty || !grams.isEmpty else { return "" }
+        guard !words.isEmpty || !grams.isEmpty else { return Outcome(text: "", rels: []) }
         var needles: [String] = []
         for w in words.map(stem) where !needles.contains(w) { needles.append(w) }
         for g in grams where !needles.contains(g) { needles.append(g) }
@@ -229,7 +268,8 @@ enum ArchiveSearch {
         // Скрытое по НАМЕРЕНИЮ (.obsidian, .trash, .git) отсекаем по имени —
         // это надёжнее флага, который ставит не пользователь.
         guard let walker = FileManager.default.enumerator(
-            at: graph, includingPropertiesForKeys: keys) else { return "" }
+            at: graph, includingPropertiesForKeys: keys)
+        else { return Outcome(text: "", rels: []) }
         // Конвейер намеренно кладёт документы встречи ДВАЖДЫ: оригинал в
         // «Документация/Стенограммы встреч», побайтовая копия — в
         // «Встречи-архив/<дата — название>», чтобы папку можно было открыть
@@ -279,7 +319,7 @@ enum ArchiveSearch {
         }
         // Переименованные и удалённые файлы не должны занимать память вечно.
         await GraphCache.shared.retain(keys: liveKeys)
-        guard !all.isEmpty else { return "" }
+        guard !all.isEmpty else { return Outcome(text: "", rels: []) }
         let files = all.filter { f in
             f.tHits.contains(where: { $0 > 0 }) || f.pHits.contains(where: { $0 > 0 })
         }
@@ -406,14 +446,19 @@ enum ArchiveSearch {
             if shown.count >= limit { shown.removeLast() }
             shown.append(topHit)
         }
-        let body = packContext(shown, budget: budget)
+        let (body, keptHits) = packContextKept(shown, budget: budget)
         // Гейт честности: оба сигнала слабые → пометка, синтез не сочиняет.
         // Порог 0.66, а не 0.67: «две иглы из трёх» — это 0.6667, и с прежним
         // числом правило требовало на самом деле три из трёх.
+        // «Что подмешали» — данными из packContextKept, в порядке текста
+        // (лучший первым, второй — последним): выброшенный по бюджету хит
+        // источником не является, а подстрочный поиск по телу ловил
+        // путь-префикс чужого заголовка (круг-2, Codex).
+        let rels = keptHits.map(\.rel)
         if bestSim < 0.47 && bestCov < 0.66 && !body.isEmpty {
-            return lowConfidenceMarker + body
+            return Outcome(text: lowConfidenceMarker + body, rels: rels)
         }
-        return body
+        return Outcome(text: body, rels: rels)
     }
 
     // MARK: - Бюджет контекста
@@ -441,9 +486,19 @@ enum ArchiveSearch {
     ///   модели распределено по краям контекста, и середина проседает; так
     ///   два сильнейших попадают в оба сильных места.
     static func packContext(_ hits: [Hit], budget: Int) -> String {
-        guard budget > 0 else { return hits.map(\.block).joined(separator: "\n\n") }
+        packContextKept(hits, budget: budget).text
+    }
+
+    /// То же + СПИСОК выживших хитов ДАННЫМИ, в порядке текста: чипы «что
+    /// подмешали» больше не восстанавливаются подстрокой из отрендеренного
+    /// блока (круг-2: DS, Codex и GLM сошлись — contains ловил путь-префикс
+    /// чужого заголовка и молча ломался о любое будущее форматирование).
+    static func packContextKept(_ hits: [Hit], budget: Int) -> (text: String, kept: [Hit]) {
+        guard budget > 0 else {
+            return (hits.map(\.block).joined(separator: "\n\n"), hits)
+        }
         let perSource = max(600, budget * 2 / 5)
-        var kept: [String] = []
+        var kept: [(String, Hit)] = []
         var spent = 0
         for hit in hits {
             let room = min(perSource, budget - spent)
@@ -451,13 +506,15 @@ enum ArchiveSearch {
             let block = hit.block.count <= room
                 ? hit.block
                 : String(hit.block.prefix(room)) + "…"
-            kept.append(block)
+            kept.append((block, hit))
             spent += block.count + 2
         }
-        guard kept.count > 2 else { return kept.joined(separator: "\n\n") }
+        guard kept.count > 2 else {
+            return (kept.map(\.0).joined(separator: "\n\n"), kept.map(\.1))
+        }
         // [1-й, 3-й, 4-й, …, 2-й]
         let reordered = [kept[0]] + kept.dropFirst(2) + [kept[1]]
-        return reordered.joined(separator: "\n\n")
+        return (reordered.map(\.0).joined(separator: "\n\n"), reordered.map(\.1))
     }
 
     // MARK: - Ранжирование

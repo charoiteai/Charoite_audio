@@ -82,12 +82,17 @@ def test_поверхности_происхождения_используют�
     объявлен и нигде не вызван, а поверхности рисовались вручную). Считаем
     ВЫЗОВЫ контейнеров, а не вхождения токенов."""
     text = "\n".join(p.read_text(encoding="utf-8") for p in _views())
-    assert text.count("MemorySurface {") + text.count("MemorySurface(") >= 1, (
-        "лаванда памяти не применена"
-    )
     assert text.count("CloudSurface {") + text.count("CloudSurface(") >= 2, (
         "небо облака не применено"
     )
+    # 24.08: MemorySurface удалён (гамма библиотеки для «Памяти» — решение
+    # владельца); вернуть можно только вместе с вызовами, не объявлением.
+    # Сканируем ВСЕ исходники приложения: объявление жило в DesignKit,
+    # которого в _views() нет (круг-1, GLM: ассерт не мог покраснеть).
+    everything = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in (REPO / "app" / "Sources" / "CharoiteApp").rglob("*.swift"))
+    assert "struct MemorySurface" not in everything
 
 
 @pytest.mark.parametrize("token", ["warning", "ok", "surfaceMemory", "surfaceCloud"])
