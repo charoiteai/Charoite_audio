@@ -89,7 +89,8 @@
 - **Déjà vu (⏮)** — when the conversation touches a "Core" (a cross-meeting
   topic from your graph), a thesis arrives: "⏮ discussed on Jul 15,
   status was …". Semantic match (bge-m3 embeddings, relative threshold),
-  not literal words.
+  not literal words. Since Aug 24 the theses layer is unconditionally off
+  in the app (owner's package) — déjà vu lives only in headless daemon runs.
 - **Auto-brief at meeting start (⏮)** — once the first utterances reveal
   the topic, the daemon pulls archive context once: top Cores with their
   status and last-discussed dates. Assembled from ready-made graph lines,
@@ -306,11 +307,10 @@ it signals degradation, it does not break the loop.
   heading with a counter — a thread is for reading, not scrolling. A restated
   thought is dropped by code: both character similarity and overlap of
   meaningful words are checked. The model is called by how much talk piled up,
-  not by the clock: silence in the room produces no new lines. **The thread is the only canvas on screen**: answers (⚡ instant, ☁ cloud) and theses (📌 decision, 💭 thought) are woven into it as lines by the daemon instead of living in panes of their own. While those panes were separate, an auto-answer arrived every half a minute, the hint pane never went empty — and the thread, the whole point of the screen, never showed at all. `⌘⇧E` (the ⏮
-  toolbar button) expands the current topic from the archive: a graph search
-  turns into 2-3 facts from past meetings (decision, status, who owns it)
-  appended as ⏮ lines right into the topic that was asked about — the hint
-  pane stays free, so a hint can be requested in parallel. **A speaker's name
+  not by the clock: silence in the room produces no new lines. **The thread is the only canvas on screen**: answers (⚡ instant, ☁ cloud) and theses (📌 decision, 💭 thought) are woven into it as lines by the daemon instead of living in panes of their own. While those panes were separate, an auto-answer arrived every half a minute, the hint pane never went empty — and the thread, the whole point of the screen, never showed at all. The ⏮ button and the `⌘⇧E`
+  hotkey left the panel together with the theses contour (owner's package,
+  Aug 24); ⏮ archive lines remain part of the thread format for headless
+  runs. **A speaker's name
   appears only when the voice changes**: "Speaker 4:" on every line read like
   an interrogation protocol; now consecutive lines of the same person flow
   without the prefix. **The cloud edits the thread instead of commenting next
@@ -337,9 +337,8 @@ it signals degradation, it does not break the loop.
   it must not eat it). A hint mid-stream is never cut by a thread event
   either; the daemon marks streams as manual/auto so the app can tell.
   While streaming, the view anchors to the top of the card so tokens do
-  not scroll past the reader. If both hint and thesis contours are toggled
-  off, the empty pane says so instead of promising a thread that will
-  never grow.
+  not scroll past the reader. If hints are toggled off, the
+  empty pane says so instead of promising a thread that will never grow.
 
 - **Live meeting context** — the topic emerges a few minutes into the
   call; the daemon distills it from the live transcript, searches the
@@ -529,6 +528,15 @@ it signals degradation, it does not break the loop.
   scroll view rather than a List with selection — the same choice as the
   sidebar, which lost clicks inside a List. Grouping, summary and plurals are
   a pure `LibraryScreenPolicy`, tested without UI.
+- **A copilot panel without extra words** (owner's package, Aug 24) — the
+  ⚡ answer to the other side's question is a single highlighted thread line
+  (semibold, action color) with no question line: the question stays in the
+  `_hints.md` audit, the canvas does not need it. The theses contour left
+  the panel (the chip and the ⏮ button; the daemon layer is muted
+  unconditionally), the manual request button was renamed to "Digest" —
+  the "Hints" layer chip lives next to it and two identical labels read as
+  a duplicate. The digest writes tighter: up to two lines per topic,
+  12 words each.
 - **The hint engine never dies silently** (Aug 24) — the auto-hint loop
   wraps its whole iteration step in try (an exception before the inner try
   used to kill the thread forever: the Aug 24 meeting went without a single

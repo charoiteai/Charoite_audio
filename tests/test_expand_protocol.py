@@ -33,9 +33,15 @@ def test_daemon_serializes_expand_and_always_finishes_protocol():
     assert "expand_lock.release()" in body
 
 
-def test_macos_blocks_second_expand_and_consumes_lifecycle_events():
-    source = SERVICE.read_text(encoding="utf-8")
-    assert "guard isRunning, !isExpanding else { return }" in source
-    assert 'case "expand_started":' in source
-    assert 'case "expand_done":' in source
-    assert "@Published private(set) var isExpanding" in source
+def test_macos_expand_protocol_stays_removed():
+    """Кнопка ⏮ и её протокол убраны из приложения (пакет владельца 24.08,
+    PR #394): сервис не держит isExpanding и не потребляет expand-события.
+    Демонная половина протокола жива для headless — тест выше."""
+    # Комментарии срезаем: упоминание «expand_done намеренно игнорируется»
+    # в комментарии не должно ронять тест (круг-3 по #394, Codex Minor).
+    source = "\n".join(
+        line.split("//", 1)[0] for line in SERVICE.read_text(encoding="utf-8").splitlines())
+    assert "isExpanding" not in source
+    assert "expand_started" not in source
+    assert "expand_done" not in source
+    assert "requestExpand" not in source

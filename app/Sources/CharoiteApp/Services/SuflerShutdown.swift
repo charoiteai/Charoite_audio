@@ -76,7 +76,6 @@ extension SuflerService {
         } else {
             beginCaptureShutdown(token: token)
         }
-        collapseExpansion()
         endSleepGuard()
         stopClock()
     }

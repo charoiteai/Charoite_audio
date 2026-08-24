@@ -263,16 +263,16 @@ def test_parse_archive_facts_drops_none_and_markers():
 
 # --- одно полотно: ответы и тезисы вплетаются в нить -------------------------
 
-def test_answer_lands_in_thread_under_its_question():
-    """Ответ ⚡ — строка нити, а не отдельная лента поверх полотна."""
+def test_answer_lands_in_thread_without_question_line():
+    """Ответ ⚡ — одна строка нити, без строки вопроса (пакет владельца 24.08:
+    «вопрос убери, оставь символ молнии и выделенный ответ»). Сам вопрос
+    остаётся в аудите _hints.md."""
     t = Thread()
     t.ingest(f"{TOPIC} Перенос витрины\n{SAY} обсуждают окно миграции")
     assert t.add_answer("Когда переносим витрину?", "В субботу ночью, окно четыре часа.")
     text = t.full()
-    assert "? Когда переносим витрину?" in text
     assert "⚡ В субботу ночью, окно четыре часа." in text
-    # вопрос стоит выше ответа — читается сверху вниз
-    assert text.index("Когда переносим") < text.index("В субботу ночью")
+    assert "Когда переносим витрину?" not in text, "вопрос полотну не нужен"
 
 
 def test_answer_without_text_is_ignored():
@@ -282,11 +282,13 @@ def test_answer_without_text_is_ignored():
     assert not t.add_answer("Вопрос?", "   ")
 
 
-def test_repeated_question_is_not_duplicated_in_thread():
+def test_repeated_question_adds_only_answers():
     t = Thread()
     t.add_answer("Кто ведёт график дежурств?", "Аналитик, таблица к пятнице.")
     t.add_answer("Кто ведёт график дежурств?", "Он же готовит замены.")
-    assert t.full().count("Кто ведёт график дежурств?") == 1
+    text = t.full()
+    assert "Кто ведёт график дежурств?" not in text
+    assert text.count("⚡") == 2
 
 
 def test_thesis_becomes_thread_line_keeping_its_weight():
