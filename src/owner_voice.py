@@ -68,15 +68,33 @@ TEXT_ECHO_WINDOW_S = 30.0
 #: эха, и требовать полное равенство значит не поймать ничего.
 TEXT_ECHO_OVERLAP = 0.8
 #: Минимум слов в короткой фразе пары: «да», «ага, понял» совпадают у всех
-#: участников постоянно — это не эхо, а живая речь.
-TEXT_ECHO_MIN_WORDS = 4
+#: участников постоянно — это не эхо, а живая речь. 5, а не 4: у 4-словных
+#: ритуальных формул («всем спасибо за участие») порог 0.8 означал полное
+#: равенство — и они его давали (круг-1 по PR #401, DS+GLM).
+TEXT_ECHO_MIN_WORDS = 5
+
+#: Насколько эхо может отстоять от оригинала. Акустическое эхо синхронно
+#: (секунды на границы чанков), цитата и согласие запаздывают на десятки
+#: секунд — узкое окно ПАРЫ отделяет одно от другого; буфер
+#: TEXT_ECHO_WINDOW_S остаётся широким ради обратного порядка распознавания
+#: (круг-1 по PR #401, GLM).
+TEXT_ECHO_PAIR_S = 8.0
+
+#: Со скольких независимых совпадений пометка становится липкой: настоящее
+#: эхо повторяется на каждой реплике собеседника, пересказ и readback —
+#: разовые (круг-1 по PR #401, все три головы).
+TEXT_ECHO_HITS = 2
 
 
 def norm_words(text: str) -> tuple[str, ...]:
-    """Слова фразы для сверки эха: нижний регистр, ё=е, без пунктуации."""
+    """Слова фразы для сверки эха: нижний регистр, ё=е, только буквы.
+
+    Числа выброшены: время, даты и номера — общий словарь обоих каналов,
+    лишняя поверхность ложных совпадений (круг-1 по PR #401, DS).
+    """
     out = []
     for raw in text.lower().replace("ё", "е").split():
-        w = "".join(ch for ch in raw if ch.isalnum())
+        w = "".join(ch for ch in raw if ch.isalpha())
         if w:
             out.append(w)
     return tuple(out)
@@ -124,6 +142,8 @@ class Heard:
         dataclasses.field(default_factory=list)
     _bh_texts: list[tuple[float, tuple[str, ...]]] = \
         dataclasses.field(default_factory=list)
+    #: Счёт текстовых совпадений на голос: липкая пометка — со второго.
+    _text_hits: dict[int, int] = dataclasses.field(default_factory=dict)
 
     def note(self, voice: int | None, seconds: float, *, is_mic: bool,
              now: float | None = None) -> None:
@@ -139,14 +159,41 @@ class Heard:
         if not is_mic and acc[voice] > ECHO_SECONDS:
             self.echoed.add(voice)      # раз собеседник — навсегда собеседник
 
+    def _text_hit(self, voice: int | None) -> None:
+        """Зачесть текстовое совпадение голосу; липко — со второго.
+
+        Три предохранителя против ложного эха (круг-1 по PR #401, DS +
+        Codex + GLM единогласно): (1) уже решённый владелец текстом не
+        помечается — согласие и readback сохраняют его слова, и разовое
+        совпадение снимало подпись до конца встречи; (2) нужна пара
+        совпадений — настоящее эхо повторяется каждой репликой, цитата
+        разовая; (3) окно пары узкое (см. note_text).
+        """
+        if voice is None or voice in self._owner_set():
+            return
+        self._text_hits[voice] = self._text_hits.get(voice, 0) + 1
+        if self._text_hits[voice] >= TEXT_ECHO_HITS:
+            self.echoed.add(voice)
+
+    def _owner_set(self) -> set[int]:
+        """Текущие голоса-владельцы БЕЗ побочных эффектов.
+
+        `owner_voices` взводит `owner_ready` — диагностике и гвардам
+        менять решение о подписи нельзя (круг-1 по PR #401, DS Minor).
+        """
+        if not self.call or not self.owner_ready:
+            return set()
+        return {v for v, s in self.mic.items()
+                if v not in self.echoed and self.bh.get(v, 0.0) <= ECHO_SECONDS}
+
     def note_text(self, voice: int | None, text: str, *, is_mic: bool,
                   now: float) -> bool:
         """Сверить фразу с недавними фразами ДРУГОГО канала.
 
-        Совпадение → голос микрофона из пары помечается эхом (липко, как в
-        `note`). Порядок распознавания каналов неизвестен — эхо в микрофоне
-        может прийти и раньше оригинала, поэтому помним обе стороны и
-        сверяем в обе (круг-1 дизайна №93).
+        Совпадение в узком окне пары зачитывается голосу микрофона; липкая
+        пометка эхом — со второго зачёта. Порядок распознавания каналов
+        неизвестен — эхо в микрофоне может прийти и раньше оригинала,
+        поэтому помним обе стороны и сверяем в обе (№93).
         """
         words = norm_words(text)
         if len(words) < TEXT_ECHO_MIN_WORDS:
@@ -156,21 +203,23 @@ class Heard:
         self._bh_texts = [x for x in self._bh_texts if x[0] >= fresh]
         matched = False
         if is_mic:
-            for _, bh_words in self._bh_texts:
-                if text_echo_match(words, bh_words):
+            for bh_t, bh_words in self._bh_texts:
+                if abs(now - bh_t) <= TEXT_ECHO_PAIR_S \
+                        and text_echo_match(words, bh_words):
                     matched = True
-                    if voice is not None:
-                        self.echoed.add(voice)
+                    self._text_hit(voice)
                     break
             if not matched:
                 self._mic_texts.append((now, voice, words))
         else:
-            for _, mic_voice, mic_words in self._mic_texts:
-                if text_echo_match(words, mic_words):
+            # Все совпавшие голоса, не только первый: одна фраза из
+            # динамиков могла отозваться эхом в нескольких mic-кусках
+            # (круг-1 по PR #401, Codex).
+            for mic_t, mic_voice, mic_words in self._mic_texts:
+                if abs(now - mic_t) <= TEXT_ECHO_PAIR_S \
+                        and text_echo_match(words, mic_words):
                     matched = True
-                    if mic_voice is not None:
-                        self.echoed.add(mic_voice)
-                    break
+                    self._text_hit(mic_voice)
             self._bh_texts.append((now, words))
         return matched
 

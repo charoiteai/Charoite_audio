@@ -2632,14 +2632,23 @@ def main():
                 # на репликах владельца цифрами, а не догадками.
                 if now_mono - hint_state.get("owner_said", 0.0) > 60.0:
                     hint_state["owner_said"] = now_mono
-                    hb = heard_by_channel
-                    top = lambda d: {v: round(s, 1) for v, s in  # noqa: E731
-                                     sorted(d.items(), key=lambda kv: -kv[1])[:4]}
-                    print(f"owner-pulse: call={hb.call} ready={hb.owner_ready} "
-                          f"mic={top(hb.mic)} bh={top(hb.bh)} "
-                          f"echoed={sorted(hb.echoed)} "
-                          f"owners={sorted(owner_voice.owner_voices(hb))}",
-                          file=sys.stderr, flush=True)
+                    try:
+                        # Снимки ДО итерации: stt_loop мутирует эти же
+                        # структуры, и итератор по живому dict/set ронял бы
+                        # RuntimeError весь демон; вердикт — _owner_set, без
+                        # побочного owner_ready (круг-1 по PR #401,
+                        # DS + Codex). Диагностика не смеет ронять процесс.
+                        hb = heard_by_channel
+                        mic, bh = dict(hb.mic), dict(hb.bh)
+                        top = lambda d: {v: round(s, 1) for v, s in  # noqa: E731
+                                         sorted(d.items(), key=lambda kv: -kv[1])[:4]}
+                        print(f"owner-pulse: call={hb.call} ready={hb.owner_ready} "
+                              f"mic={top(mic)} bh={top(bh)} "
+                              f"echoed={sorted(set(hb.echoed))} "
+                              f"owners={sorted(hb._owner_set())}",  # noqa: SLF001
+                              file=sys.stderr, flush=True)
+                    except Exception as e:  # noqa: BLE001
+                        print(f"owner-pulse: сбой ({e})", file=sys.stderr, flush=True)
                 # Затык ЖИВОГО потока (главный сценарий 24.08: висит в
                 # модели/замке — is_alive() True, пульс из самого потока не
                 # печатается, лог просто обрывается). Судим по возрасту
