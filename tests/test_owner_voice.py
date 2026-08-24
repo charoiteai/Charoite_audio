@@ -371,3 +371,98 @@ def test_чуть_меньше_порога_ещё_рано():
     heard = _call(mic={7: ov.MIN_MIC_SECONDS - 0.5})
 
     assert ov.owner_voices(heard) == set()
+
+
+# --- Текстовое эхо (№93, 24.08): ТЕЛЕМЕТРИЯ, не приговор ---
+#
+# Два круга по PR #401 (DS+Codex+GLM): и одиночная пометка, и «2 хита», и
+# гвард владельца оказались дырявыми с одной из сторон времени. По правилу
+# «упрощать, а не латать» текстовый путь пишет ТОЛЬКО счётчики пар
+# (owner-pulse); на echoed и подпись он не влияет — включение отдельным
+# решением по полевым данным.
+
+def test_text_pair_is_counted_but_does_not_mark():
+    h = ov.Heard()
+    h.note(7, 5.0, is_mic=False)
+    h.note_text(None, "мы договорились перенести релиз на этот четверг",
+                is_mic=False, now=100.0)
+    assert h.note_text(3, "мы договорились перенести релиз на этот четверг",
+                       is_mic=True, now=101.0)
+    assert h._text_hits.get(3) == 1
+    assert 3 not in h.echoed          # телеметрия — не приговор
+
+
+def test_text_pairs_match_in_both_arrival_orders():
+    h = ov.Heard()
+    assert not h.note_text(3, "давайте посмотрим логи за прошлую неделю",
+                           is_mic=True, now=50.0)
+    assert h.note_text(None, "давайте посмотрим логи за прошлую неделю",
+                       is_mic=False, now=51.0)
+    assert h._text_hits.get(3) == 1 and 3 not in h.echoed
+
+
+def test_text_pair_survives_stt_edge_cuts():
+    h = ov.Heard()
+    h.note_text(None, "итак коллеги предлагаю закрыть вопрос по бэкапам сегодня",
+                is_mic=False, now=10.0)
+    assert h.note_text(9, "предлагаю закрыть вопрос по бэкапам",
+                       is_mic=True, now=11.0)
+
+
+def test_short_universal_phrases_are_not_pairs():
+    h = ov.Heard()
+    h.note_text(None, "да ага понял", is_mic=False, now=10.0)
+    assert not h.note_text(3, "да ага понял", is_mic=True, now=11.0)
+    h.note_text(None, "всем спасибо за участие", is_mic=False, now=20.0)
+    assert not h.note_text(3, "всем спасибо за участие", is_mic=True, now=21.0)
+    assert h._text_hits.get(3) is None
+
+
+def test_text_pair_needs_narrow_time_window():
+    h = ov.Heard()
+    h.note_text(None, "мы переносим релиз на четверг после обеда",
+                is_mic=False, now=10.0)
+    # цитата спустя десятки секунд — вне окна пары (эхо синхронно)
+    assert not h.note_text(3, "ты сказал мы переносим релиз на четверг после обеда",
+                           is_mic=True, now=10.0 + ov.TEXT_ECHO_PAIR_S + 5)
+    assert h._text_hits.get(3) is None
+
+
+def test_repeated_words_do_not_raise_the_bar():
+    h = ov.Heard()
+    # Различающий случай (круг-3, DS): при сыром знаменателе 5 сырых слов
+    # против 3 уникальных давали 3/5=0.6 → False даже для точной копии.
+    # Минимум слов — тоже по уникальным: сама фраза из повторов короче
+    # пяти уникальных и парой не считается вовсе.
+    h.note_text(None, "начнём начнём начнём обсуждение наших планов на квартал",
+                is_mic=False, now=10.0)
+    assert h.note_text(4, "начнём начнём обсуждение наших планов на квартал",
+                       is_mic=True, now=11.0)
+    # «спасибо»×5 — одно уникальное слово, гейт ≥5 уникальных не пройден
+    h.note_text(None, "спасибо спасибо спасибо спасибо спасибо",
+                is_mic=False, now=20.0)
+    assert not h.note_text(4, "спасибо коллеги за содержательную сегодняшнюю встречу",
+                           is_mic=True, now=21.0)
+
+
+def test_text_path_never_touches_signature():
+    h = ov.Heard()
+    h.note(1, 20.0, is_mic=True)
+    h.note(7, 5.0, is_mic=False)
+    assert ov.owner_voices(h) == {1}
+    for k in range(4):
+        h.note_text(None, f"давайте зафиксируем решение по пункту номер {k} прямо сейчас",
+                    is_mic=False, now=100.0 + k * 3)
+        h.note_text(1, f"давайте зафиксируем решение по пункту номер {k} прямо сейчас",
+                    is_mic=True, now=101.0 + k * 3)
+    assert 1 not in h.echoed
+    assert ov.owner_voices(h) == {1}   # сколько бы пар ни насчитала телеметрия
+
+
+def test_human_seconds_excludes_echoed_voices():
+    h = ov.Heard()
+    h.note(1, 20.0, is_mic=True)
+    h.note(2, 8.0, is_mic=True)
+    h.echoed.add(2)                    # id-путь пометил (текстовый — нет)
+    # статус «в микрофоне несколько человек» не должен считать эхо (Codex)
+    assert ov.human_seconds(h) == 20.0

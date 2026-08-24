@@ -544,6 +544,23 @@ it signals degradation, it does not break the loop.
   status line each — counted from the graph on disk, refreshed at most once
   a minute. Source parsing, labels and the meta line are a pure
   `MemoryScreenPolicy`, tested without UI.
+- **Text-pair telemetry for the owner's signature** (24.08) — with the
+  meeting playing through speakers, the interlocutors' echo lands in the
+  microphone and the owner stayed «Собеседник N» on every live speaker
+  meeting: the id cross-check is blind (the live tracker labels each
+  channel independently, so the echo's mic id never matches the
+  speaker's system-channel id). The daemon now DETECTS text pairs —
+  a phrase whose unique words overlap ≥0.8 of a recent phrase from the
+  other channel, five-plus words, an 8 s pair window, either arrival
+  order — and counts them per voice. Two review rounds showed that
+  auto-marking on top of this (single hit, double hit, owner guard) is
+  false-positive-prone from one side of the timeline or the other, so
+  the counters deliberately do NOT touch the signature yet: they feed
+  the once-a-minute owner-pulse line (aggregates only — voice counts,
+  top share, echoed count, text pairs, signed verdict; per-voice numbers
+  never reach the disk, keeping the "nothing voice-derived on disk"
+  promise). Enabling the marking is a separate decision on top of field
+  data from real meetings. Phrase buffers live only in process memory.
 - **Heavy background work coordinates instead of colliding** (24.08) — the
   night of 23→24.08 a manual test-mutation run shared the one local model
   with a live meeting and then with the nightly cycle: dossiers caught 35
