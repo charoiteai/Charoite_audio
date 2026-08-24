@@ -1581,11 +1581,15 @@ def main():
                 out = "[cloud: таймаут 90с]"
             except Exception as e:  # noqa: BLE001
                 out = f"[cloud: {e}]"
-            if q:  # ответ в панели начинается с вопроса, на который отвечает
-                out = f"❓ {q}\n\n{out}"
+            # В нить — только сам ответ: строка ⚡ теперь подсвечена, и
+            # вклеенный «❓ вопрос» стал бы самым ярким текстом полотна —
+            # ровно то, что владелец просил убрать (круг-1 по #394, DS+Codex).
+            # Вопрос остаётся в аудите (label ниже) и в облачной ленте панели.
             if out and not question_filter.is_refusal(out):
                 if thread.add_answer(q, question_filter.squeeze(out, max_lines=3, max_chars=380)):
                     emit({"type": "thread", "text": thread.render()})
+            if q:  # лента облака в панели начинается с вопроса, на который отвечает
+                out = f"❓ {q}\n\n{out}"
             emit({"type": "cloud_done"})
             label = f"☁️ {model} — на: {q[:120]}" if q else f"☁️ {model}"
             append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] {label}", out)
@@ -2243,10 +2247,17 @@ def main():
             elif cmd.startswith("set "):
                 parts = cmd.split()
                 if len(parts) == 3 and parts[1] in toggles and parts[2] in ("on", "off"):
-                    toggles[parts[1]] = parts[2] == "on"
-                    ru = {"hints": "подсказки", "theses": "тезисы", "cloud": "Claude"}
-                    state = "включены" if toggles[parts[1]] else "выключены"
-                    emit({"type": "status", "text": f"⚙️ {ru[parts[1]]} {state}"})
+                    wanted = parts[2] == "on"
+                    changed = toggles[parts[1]] != wanted
+                    toggles[parts[1]] = wanted
+                    # Статус — только на реальную смену: стартовый безусловный
+                    # «set theses off» (панель без чипа) иначе затирал строку
+                    # «Запись прервалась — восстанавливаю» при каждом
+                    # авто-рестарте (круг-1 по #394, Codex).
+                    if changed:
+                        ru = {"hints": "подсказки", "theses": "тезисы", "cloud": "Claude"}
+                        state = "включены" if wanted else "выключены"
+                        emit({"type": "status", "text": f"⚙️ {ru[parts[1]]} {state}"})
         stop.set()  # stdin закрылся — родитель умер
 
     def live_context_loop():

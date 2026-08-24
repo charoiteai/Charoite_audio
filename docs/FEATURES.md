@@ -89,7 +89,8 @@
 - **Déjà vu (⏮)** — when the conversation touches a "Core" (a cross-meeting
   topic from your graph), a thesis arrives: "⏮ discussed on Jul 15,
   status was …". Semantic match (bge-m3 embeddings, relative threshold),
-  not literal words.
+  not literal words. Since Aug 24 the theses layer is unconditionally off
+  in the app (owner's package) — déjà vu lives only in headless daemon runs.
 - **Auto-brief at meeting start (⏮)** — once the first utterances reveal
   the topic, the daemon pulls archive context once: top Cores with their
   status and last-discussed dates. Assembled from ready-made graph lines,
@@ -306,11 +307,10 @@ it signals degradation, it does not break the loop.
   heading with a counter — a thread is for reading, not scrolling. A restated
   thought is dropped by code: both character similarity and overlap of
   meaningful words are checked. The model is called by how much talk piled up,
-  not by the clock: silence in the room produces no new lines. **The thread is the only canvas on screen**: answers (⚡ instant, ☁ cloud) and theses (📌 decision, 💭 thought) are woven into it as lines by the daemon instead of living in panes of their own. While those panes were separate, an auto-answer arrived every half a minute, the hint pane never went empty — and the thread, the whole point of the screen, never showed at all. `⌘⇧E` (the ⏮
-  toolbar button) expands the current topic from the archive: a graph search
-  turns into 2-3 facts from past meetings (decision, status, who owns it)
-  appended as ⏮ lines right into the topic that was asked about — the hint
-  pane stays free, so a hint can be requested in parallel. **A speaker's name
+  not by the clock: silence in the room produces no new lines. **The thread is the only canvas on screen**: answers (⚡ instant, ☁ cloud) and theses (📌 decision, 💭 thought) are woven into it as lines by the daemon instead of living in panes of their own. While those panes were separate, an auto-answer arrived every half a minute, the hint pane never went empty — and the thread, the whole point of the screen, never showed at all. The ⏮ button and the `⌘⇧E`
+  hotkey left the panel together with the theses contour (owner's package,
+  Aug 24); ⏮ archive lines remain part of the thread format for headless
+  runs. **A speaker's name
   appears only when the voice changes**: "Speaker 4:" on every line read like
   an interrogation protocol; now consecutive lines of the same person flow
   without the prefix. **The cloud edits the thread instead of commenting next
