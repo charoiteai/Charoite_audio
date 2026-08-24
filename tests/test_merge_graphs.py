@@ -103,6 +103,8 @@ def test_configured_graph_honours_env(tmp_path, monkeypatch):
     """Все инструменты резолвят граф через graphs.configured_graph —
     и тестовый прогон не должен дотягиваться до рабочего графа."""
     import graphs
+    for name in ("CHAROITE_GRAPH_DIR", "SUFLER_GRAPH_DIR"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("SUFLER_GRAPH_DIR", str(tmp_path))
     assert graphs.configured_graph() == tmp_path
 
