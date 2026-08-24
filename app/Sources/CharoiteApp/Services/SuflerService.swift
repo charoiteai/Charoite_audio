@@ -501,14 +501,18 @@ final class SuflerService: ObservableObject {
             publishLifecycle()
             beginSleepGuard()
             startClock()
-            // сохранённые дефолты — новому демону (stdin буферизуется до готовности)
+            // Сохранённые дефолты — новому демону (stdin буферизуется до
+            // готовности). Метка quiet: это синхронизация, не живой клик —
+            // без неё каждый авто-рестарт демона рождал «⚙️ … выключены» и
+            // затирал строку «Запись прервалась — восстанавливаю» (круги
+            // 1-2 по #394). Статус остаётся только у переключений человеком.
             for (key, on) in [("hints", hintsOn), ("cloud", cloudOn)] where !on {
-                send("set \(key) off")
+                send("set \(key) off quiet")
             }
             // Тезисный контур из панели убран (пакет владельца 24.08): чипа нет,
             // включить его некому — глушим безусловно, даже если в старых
             // UserDefaults остался thesesOn = true.
-            send("set theses off")
+            send("set theses off quiet")
             lastEventAt = Date()
             lastSTTProgressAt = nil
             lastAudioInputAt = nil

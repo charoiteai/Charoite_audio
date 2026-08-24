@@ -1351,6 +1351,8 @@ def main():
 
     expand_lock = threading.Lock()
 
+    # headless-only с 24.08: кнопка ⏮ и её протокол убраны из приложения
+    # (пакет владельца, PR #394); команда «expand» остаётся для CLI/stdin.
     def expand_topic(title: str = ""):
         """⏮ по клавише: что было по теме раньше — из графа прямо в нить.
 
@@ -2250,20 +2252,21 @@ def main():
                 threading.Thread(target=_do_summary, daemon=True).start()
             elif cmd.startswith("set "):
                 parts = cmd.split()
-                if len(parts) == 3 and parts[1] in toggles and parts[2] in ("on", "off"):
+                if len(parts) in (3, 4) and parts[1] in toggles and parts[2] in ("on", "off"):
                     wanted = parts[2] == "on"
                     changed = toggles[parts[1]] != wanted
                     toggles[parts[1]] = wanted
-                    # Статус — только на реальную смену И не для тезисов:
-                    # тумблеры не переживают рестарт процесса, а приложение
-                    # шлёт «set theses off» безусловно при каждом запуске —
-                    # «изменение» с захардкоженного True случалось на любом
-                    # авто-рестарте и затирало строку «Запись прервалась —
-                    # восстанавливаю» (круг-2 по #394, DS+Codex). Чипа тезисов
-                    # в панели нет — сообщать «выключены» некому и незачем;
-                    # дефолт True в toggles не трогаем — он для headless.
-                    if changed and parts[1] != "theses":
-                        ru = {"hints": "подсказки", "cloud": "Claude"}
+                    # «quiet» — стартовая синхронизация дефолтов: тумблеры не
+                    # переживают рестарт процесса, и приложение шлёт свои
+                    # «set … off» при каждом запуске — без метки любой
+                    # авто-рестарт рождал «⚙️ … выключены» и затирал строку
+                    # «Запись прервалась — восстанавливаю» (круги 1-2 по #394:
+                    # Codex — про theses, Sonnet — что то же верно для
+                    # hints/cloud, сохранённых выключенными). Статус — только
+                    # на живое переключение, без метки quiet.
+                    quiet_sync = len(parts) == 4 and parts[3] == "quiet"
+                    if changed and not quiet_sync:
+                        ru = {"hints": "подсказки", "theses": "тезисы", "cloud": "Claude"}
                         state = "включены" if wanted else "выключены"
                         emit({"type": "status", "text": f"⚙️ {ru[parts[1]]} {state}"})
         stop.set()  # stdin закрылся — родитель умер
