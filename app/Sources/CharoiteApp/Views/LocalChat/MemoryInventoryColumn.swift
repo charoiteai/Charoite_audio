@@ -11,7 +11,10 @@ struct MemoryInventoryColumn: View {
     // Раз в минуту — как раз шаг троттлинга сервиса: без внешнего пинка
     // «свежие ядра» застывали на весь сеанс (круг-1, DS: refresh только
     // на появление вью, троттлинг не успевал сработать ни разу).
-    private let pulse = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+    // @State: структура вью пересоздаётся каждой перерисовкой родителя
+    // (каждый токен стрима), и let-паблишер стартовал бы отсчёт заново —
+    // тик не наступал бы никогда (круг-2, DS + GLM).
+    @State private var pulse = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -72,7 +75,7 @@ struct MemoryInventoryColumn: View {
                 Button {
                     if let graph = AppSettings.graphDir {
                         NSWorkspace.shared.open(
-                            graph.appendingPathComponent("Ядра/\(core.name).md"))
+                            graph.appendingPathComponent("\(core.folder)/\(core.name).md"))
                     }
                 } label: {
                     VStack(alignment: .leading, spacing: 3) {

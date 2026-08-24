@@ -18,7 +18,7 @@ human-readable description and the agreements behind it — code wins.
 | `sky` | `#0EA5E9` | the Claude cloud pane — distinct from local |
 | `ok` | `#059669` | success, green statuses |
 | `warning` | system orange | attention without breakage; `overdue` is its special case |
-| `surfaceMemory` / `borderMemory` | accent at 5 % / 14 % | lavender: anything that came from the archive, graph or dossiers |
+| `surfaceMemory` | accent at 5 % | lavender: the archive answer pane on the meeting screen |
 | `surfaceCloud` / `borderCloud` | sky at 6 % / 22 % | everything that leaves the machine: the Claude pane, cloud toggles |
 
 Semantic colors (recording/error red) are system colors, not brand ones.

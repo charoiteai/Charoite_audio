@@ -86,11 +86,22 @@ final class MemoryScreenPolicyTests: XCTestCase {
         // Тема в стеме не мешает точному штампу.
         XCTAssertEqual(MemoryScreenPolicy.matchRecord(stem: "2026-08-21_1202_Тема встречи", ids: ids),
                        "2026-08-21_1202")
-        // Архивный суффикс «-2» из #388 тоже каноничен по штампу.
-        XCTAssertEqual(MemoryScreenPolicy.matchRecord(stem: "2026-08-21_120245-2_Тема", ids: ids),
+        // Коллизионный суффикс «-N» — ОТДЕЛЬНАЯ встреча (meeting_stamp.py):
+        // канонизация не смеет отдавать базовую запись за «-2» и наоборот
+        // (круг-2, Codex).
+        let collided = ["2026-08-21_120245-2", "2026-08-21_120245"]
+        XCTAssertEqual(MemoryScreenPolicy.matchRecord(stem: "2026-08-21_120245_Тема", ids: collided),
                        "2026-08-21_120245")
+        XCTAssertEqual(MemoryScreenPolicy.matchRecord(stem: "2026-08-21_120245-2_Тема", ids: collided),
+                       "2026-08-21_120245-2")
         // Чужая минута — не матч.
         XCTAssertNil(MemoryScreenPolicy.matchRecord(stem: "2026-08-21_1203", ids: ids))
+        // Единственная запись пары: минутный стем НЕ матчится на секундную
+        // запись и наоборот — продолжение цифрами не граница (круг-2, DS).
+        XCTAssertNil(MemoryScreenPolicy.matchRecord(
+            stem: "2026-08-21_1202_Тема", ids: ["2026-08-21_120245"]))
+        XCTAssertNil(MemoryScreenPolicy.matchRecord(
+            stem: "2026-08-21_120245", ids: ["2026-08-21_1202"]))
     }
 
     func testSourcesKeepParenthesesAndHonorLimitZero() {

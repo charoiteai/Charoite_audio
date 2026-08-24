@@ -203,8 +203,11 @@ final class LocalChatService: ObservableObject {
             let found = outcome.rels.map { rels in
                 rels.map { MemoryScreenPolicy.Source(rel: $0, kind: MemoryScreenPolicy.kind(of: $0)) }
             } ?? MemoryScreenPolicy.sources(from: vault)
+            // Чипы и счёт — ОДИН список: потолок задаёт лимит поиска (8),
+            // отдельный потолок чипов давал мете «7 источников» при шести
+            // видимых (круг-2, DS).
             sourcesInContext = lowConf ? 0 : found.count
-            chipSources = lowConf ? [] : Array(found.prefix(6))
+            chipSources = lowConf ? [] : found
             if !vault.isEmpty {
                 system += lowConf
                     ? "\n\n[ГРАФ ВСТРЕЧ — совпадения СЛАБЫЕ, вероятно не про вопрос; не выдавай за факт]\n" + vault
@@ -254,7 +257,14 @@ final class LocalChatService: ObservableObject {
         ] as [String: Any])
 
         do {
-            let (bytes, _) = try await Self.localSession.bytes(for: req)
+            let (bytes, resp) = try await Self.localSession.bytes(for: req)
+            // 404/500 Ollama — это тело ошибки без «done», и EOF выглядел
+            // как успех: пустой пузырь получал мету и зелёный чип (круг-2,
+            // Codex). Ошибка HTTP — ошибка, а не тихий конец стрима.
+            if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
+                throw URLError(.badServerResponse)
+            }
+            var sawDone = false
             let throttler = StreamThrottler()  // ~30fps: без него растущий Text = O(n²), 100% CPU
             for try await line in bytes.lines {
                 if Task.isCancelled { break }
@@ -266,9 +276,12 @@ final class LocalChatService: ObservableObject {
                         setText(bubbleId, snapshot)
                     }
                 }
-                if obj["done"] as? Bool == true { break }
+                if obj["done"] as? Bool == true { sawDone = true; break }
             }
             let finalText = await throttler.finalText()
+            // Мета ниже описывает запрос (модель, время, что подмешали) и
+            // честна и для оборванного потока; успех/здоровье гейтится
+            // отдельно по sawDone.
             if !finalText.isEmpty { setText(bubbleId, finalText) }
             // Строка происхождения и чипы — по факту завершения: у каждого
             // числа источник (модель — какая отвечала, время — замер, встречи
@@ -283,11 +296,13 @@ final class LocalChatService: ObservableObject {
                     sourcesInContext: sourcesInContext,
                     memoryOn: memoryOn, weakMatches: weakMatches)
             }
-            // Ответ дошёл — Ollama жива; статус графа отработал своё, слот
-            // возвращается честному чипу здоровья (круг-1, Codex: строка
-            // «граф подмешан» прятала чип до следующего запроса).
-            ollamaAlive = true
-            status = ""
+            // Ответ дошёл ЦЕЛИКОМ (done) — Ollama жива; статус графа
+            // отработал своё, слот возвращается честному чипу здоровья
+            // (круг-1, Codex). Оборванный без done поток успехом не считаем.
+            if sawDone {
+                ollamaAlive = true
+                status = ""
+            }
         } catch {
             if !Task.isCancelled, let idx = messages.firstIndex(where: { $0.id == bubbleId }) {
                 messages[idx].text += "\n[ошибка: \(error.localizedDescription) — Ollama запущена?]"

@@ -42,29 +42,13 @@ enum MemoryScreenPolicy {
         }
     }
 
-    /// Контракт верхних папок графа — ЕДИНАЯ таблица для чипов источников и
-    /// инвентаря правой колонки (круг-1 по PR #396: Codex и GLM независимо
-    /// поймали, что политика знала только русские имена — на en/zh-графе
-    /// чипов встреч не было вовсе, а две частные таблицы уже разошлись).
-    /// Имена — ровно те, что пишет graph_updater трёх языков (demo/graph_en,
-    /// demo/graph_zh) плюс архив встреч.
-    enum GraphContract {
-        static let meetings = ["Встречи", "Встречи-архив", "Meetings", "Meetings-archive", "会议", "会议归档"]
-        static let nodes = ["Люди", "Системы", "Команды", "Блокеры", "Модели", "Ядра",
-                            "People", "Systems", "Teams", "Blockers", "Models", "Cores",
-                            "人物", "系统", "团队", "阻碍", "模型", "核心"]
-        static let dossiers = ["Досье", "Dossiers", "档案"]
-        static let docs = ["Документация", "Docs", "文档"]
-        static var all: [String] { meetings + nodes + dossiers + docs }
-    }
-
     /// Папка графа → вид источника. Ядра — тоже узлы сквозных тем;
     /// всё вне контракта — документы.
     static func kind(of rel: String) -> Source.Kind {
         let top = rel.split(separator: "/").first.map(String.init) ?? ""
-        if GraphContract.meetings.contains(top) { return .meeting }
-        if GraphContract.nodes.contains(top) { return .node }
-        if GraphContract.dossiers.contains(top) { return .dossier }
+        if GraphFolders.meetings.contains(top) { return .meeting }
+        if GraphFolders.nodes.contains(top) { return .node }
+        if GraphFolders.dossiers.contains(top) { return .dossier }
         return .doc
     }
 
@@ -94,7 +78,7 @@ enum MemoryScreenPolicy {
         // Скобки в имени файла легальны («Отчёт (черновик).md») — исключаем
         // только перевод строки, «]» ([[ссылки]]) и бэктик (круг-1, DS и GLM:
         // путь со скобкой молча терял чип и портил счёт контекста).
-        let folders = GraphContract.all.joined(separator: "|")
+        let folders = GraphFolders.all.joined(separator: "|")
         let pattern = "(?:" + folders + #")/[^\n\]`]*?\.md"#
         guard let re = try? NSRegularExpression(pattern: pattern) else { return [] }
         var seen: Set<String> = []
@@ -110,10 +94,12 @@ enum MemoryScreenPolicy {
         return out
     }
 
-    /// Каноничный штамп встречи из стема имени файла: «2026-08-21_1202_Тема»
-    /// → «2026-08-21_1202», «2026-08-21_120245-2» → «2026-08-21_120245».
+    /// Полный штамп встречи из стема имени файла, С коллизионным суффиксом:
+    /// «2026-08-21_120245-2_Тема» → «2026-08-21_120245-2». Суффикс «-N» —
+    /// ОТДЕЛЬНАЯ встреча-коллизия (meeting_stamp.py), его нельзя срезать при
+    /// точном сопоставлении (круг-2, Codex).
     static func stamp(of stem: String) -> String? {
-        let pattern = #"^(\d{4}-\d{2}-\d{2}_\d{4,6})"#
+        let pattern = #"^(\d{4}-\d{2}-\d{2}_\d{4,6}(?:-\d+)?)"#
         guard let re = try? NSRegularExpression(pattern: pattern),
               let m = re.firstMatch(in: stem, range: NSRange(stem.startIndex..., in: stem)),
               let r = Range(m.range(at: 1), in: stem) else { return nil }
@@ -131,7 +117,10 @@ enum MemoryScreenPolicy {
         func onBoundary(_ shorter: String, _ longer: String) -> Bool {
             guard longer.hasPrefix(shorter), longer.count > shorter.count else { return false }
             let next = longer[longer.index(longer.startIndex, offsetBy: shorter.count)]
-            return next == "_" || next == "-" || next.isNumber
+            // Цифра — НЕ граница: «_1202» и «_120245» — всегда РАЗНЫЕ встречи
+            // (#388), и при единственной записи пары голое продолжение цифрами
+            // снова скрещивало их (круг-2, DS).
+            return next == "_" || next == "-"
         }
         return ids.filter { onBoundary(want, $0) || onBoundary($0, want) }
             .max { $0.count < $1.count }

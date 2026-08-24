@@ -14,9 +14,10 @@ final class GraphInventoryService: ObservableObject {
 
     struct Core: Identifiable, Equatable, Sendable {
         let name: String
+        let folder: String   // папка контракта («Ядра»/«Cores»/«核心») — для клика
         let status: String   // первая содержательная строка ядра; пусто — нет
         let updated: Date
-        var id: String { name }
+        var id: String { folder + "/" + name }
     }
 
     struct Snapshot: Equatable, Sendable {
@@ -39,12 +40,12 @@ final class GraphInventoryService: ObservableObject {
         if let at = scannedAt, Date().timeIntervalSince(at) < 60 { return }
         guard !scanning, let graph = AppSettings.graphDir else { return }
         scanning = true
+        scannedAt = Date()   // метка на старте: тик пульса не холостит через раз
         Task.detached(priority: .utility) {
             let snap = Self.scan(graph: graph)
             await MainActor.run {
                 let service = GraphInventoryService.shared
                 service.snapshot = snap
-                service.scannedAt = Date()
                 service.scanning = false
             }
         }
@@ -52,36 +53,38 @@ final class GraphInventoryService: ObservableObject {
 
     nonisolated private static func mdCount(_ dir: URL) -> Int {
         (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil))?
-            .filter { $0.pathExtension == "md" && !$0.lastPathComponent.hasPrefix(".") }
+            .filter { $0.pathExtension == "md" && !$0.lastPathComponent.hasPrefix(".")
+                && !$0.lastPathComponent.hasPrefix("_") }
             .count ?? 0
     }
 
     /// Папки ядер по контракту — свежие «сквозные темы» для нижнего блока.
-    nonisolated private static let coreFolders = ["Ядра", "Cores", "核心"]
+    nonisolated private static let coreFolders = GraphFolders.cores
 
     nonisolated static func scan(graph: URL, coreLimit: Int = 4) -> Snapshot {
         // Имена папок — ЕДИНЫЙ контракт с политикой источников (круг-1,
         // Codex+GLM: две частные таблицы разошлись, en/zh-граф давал нули).
-        typealias GC = MemoryScreenPolicy.GraphContract
+        typealias GC = GraphFolders
         var snap = Snapshot()
         snap.meetings = GC.meetings.map { mdCount(graph.appendingPathComponent($0)) }.reduce(0, +)
         let plainNodes = GC.nodes.filter { !coreFolders.contains($0) }
         snap.nodes = plainNodes.map { mdCount(graph.appendingPathComponent($0)) }.reduce(0, +)
         snap.dossiers = GC.dossiers.map { mdCount(graph.appendingPathComponent($0)) }.reduce(0, +)
         // Ядра — узлы сквозных тем; в счёт узлов входят тоже.
-        let coreFiles = coreFolders.flatMap { folder -> [URL] in
-            (try? FileManager.default.contentsOfDirectory(
+        let coreFiles = coreFolders.flatMap { folder -> [(String, URL)] in
+            ((try? FileManager.default.contentsOfDirectory(
                 at: graph.appendingPathComponent(folder),
                 includingPropertiesForKeys: [.contentModificationDateKey]))?
-                .filter { $0.pathExtension == "md" && !$0.lastPathComponent.hasPrefix(".") } ?? []
+                .filter { $0.pathExtension == "md" && !$0.lastPathComponent.hasPrefix(".") } ?? [])
+                .map { (folder, $0) }
         }
         snap.nodes += coreFiles.count
-        let dated: [(URL, Date)] = coreFiles.map {
-            ($0, (try? $0.resourceValues(forKeys: [.contentModificationDateKey])
+        let dated: [(String, URL, Date)] = coreFiles.map { folder, url in
+            (folder, url, (try? url.resourceValues(forKeys: [.contentModificationDateKey])
                 .contentModificationDate) ?? .distantPast)
         }
-        snap.cores = dated.sorted { $0.1 > $1.1 }.prefix(coreLimit).map { url, date in
-            Core(name: url.deletingPathExtension().lastPathComponent,
+        snap.cores = dated.sorted { $0.2 > $1.2 }.prefix(coreLimit).map { folder, url, date in
+            Core(name: url.deletingPathExtension().lastPathComponent, folder: folder,
                  status: coreStatus(of: url), updated: date)
         }
         return snap
