@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import fcntl
 import json
@@ -1115,6 +1116,28 @@ def main():
 
     hint_lock = threading.Lock()   # подсказки/минутки на 26b — по одной за раз
     manual_evt = threading.Event()  # ручной запрос прерывает авто-генерацию
+
+    @contextlib.contextmanager
+    def hint_slot(who: str, timeout: float = 240.0, *, clear_manual_on_busy: bool = False):
+        """hint_lock с потолком ожидания вместо вечного with (круг-1 по #393).
+
+        Зависший держатель обездвиживал ВСЕХ соседей по замку до конца
+        встречи. Не взяли за timeout — честный emit_error и ok=False, тело
+        решает само (continue/return). clear_manual_on_busy — для путей,
+        которые перед ожиданием взводят manual_evt: сигнал «уступи» обязан
+        быть транзиентным, иначе после таймаута авто-генерация вечно уступает
+        несуществующему ручному запросу (Critical круга-1, DS+Codex).
+        """
+        ok = hint_lock.acquire(timeout=timeout)
+        if not ok:
+            if clear_manual_on_busy:
+                manual_evt.clear()
+            emit_error(f"{who}: подсказчик занят — прежняя генерация не отпустила замок")
+        try:
+            yield ok
+        finally:
+            if ok:
+                hint_lock.release()
     max_ctx = int(cfg["llm"]["max_context_chars"])
     quiet = bool(cfg["sufler"].get("quiet", True))
     instant_on = bool(cfg["sufler"].get("instant", True))
@@ -1167,8 +1190,11 @@ def main():
         emit({"type": "status", "text": f"🔇 тихий режим: фон на {llm.small}, 26b — только точечно"})
 
     def gen_hint(header: str | None = None, manual: bool = False,
-                 model: str | None = None) -> bool:
-        """Одна подсказка. Возвращает True, если подсказка дошла до конца (не сорвалась и не уступила).
+                 model: str | None = None) -> str:
+        """Одна подсказка. Возвращает код: «done» — дошла до конца, «yielded» —
+        уступила ручному запросу, «failed» — модель упала, «busy» — замок занят.
+        Коды, а не bool: авто-циклу нужно отличать сбой (считается в серию
+        «три подряд») от вежливой уступки (не считается) — круг-1 по #393.
 
         Сбой модели — статус, а не текст подсказки. Раньше `[LLM: 503 …]`
         уходил событием hint: заголовок «━━ авто ━━» уже сбросил карточку, и
@@ -1179,14 +1205,27 @@ def main():
         """
         if manual:
             manual_evt.set()  # сигнал авто-генерации уступить
-        with hint_lock:
+        # Замок — с потолком ожидания, не навсегда: 24.08 (встреча 10:14)
+        # зависший держатель hint_lock обездвижил и авто-цикл, и ручную
+        # кнопку до конца встречи, панель молчала без единого слова. Человек
+        # нажал — человек должен получить либо подсказку, либо честное
+        # «занято», а не тишину.
+        with hint_slot("ручная подсказка" if manual else "авто-подсказка",
+                       timeout=45.0 if manual else 240.0,
+                       clear_manual_on_busy=manual) as got:
+            if not got:
+                if manual:
+                    emit({"type": "hint", "text": "\n⚠ подсказчик занят — попробуйте ещё раз",
+                          "manual": True})
+                    emit({"type": "hint_done", "manual": True})
+                return "busy"
             if manual:
                 manual_evt.clear()
             tail = tr.tail(max_ctx)
             if not tail:
                 emit({"type": "hint", "text": "Стенограмма пока пуста.", "manual": manual})
                 emit({"type": "hint_done", "manual": manual})
-                return True
+                return "done"
             parts: list[str] = []
             failed: Exception | None = None
             yielded = False
@@ -1217,7 +1256,9 @@ def main():
                 if failed is not None:
                     kind += f", сорвалась: {short_error(failed)}"
                 append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] подсказка ({kind})", "".join(parts))
-            return failed is None and not yielded   # уступила — вернёмся к этому куску раньше
+            if failed is not None:
+                return "failed"
+            return "yielded" if yielded else "done"   # уступила — вернёмся к куску раньше
 
 
     _refine_last = {"len": 0}
@@ -1324,7 +1365,9 @@ def main():
                 seen = len(full)
                 continue
             try:
-                with hint_lock:
+                with hint_slot("нить") as got:
+                    if not got:
+                        continue
                     parts: list[str] = []
                     yielded = False
                     for tok in llm.thread(tail, thread.as_context(), model=auto_model):
@@ -1410,7 +1453,9 @@ def main():
                     emit({"type": "status", "text": f"⏮ в архиве по «{title}» пусто"})
                 return
             try:
-                with hint_lock:   # не толкаться с подсказкой на одной модели
+                with hint_slot("⏮ прошлые встречи") as got:  # не толкаться на одной модели
+                    if not got:
+                        return
                     out = "".join(llm.stream(
                         f"Выдержки из архива прошлых встреч по теме «{title}»:\n\n{v}\n\n"
                         "Выпиши 2-3 самых важных факта прошлых встреч по этой теме: "
@@ -1442,27 +1487,51 @@ def main():
         Сорвалась (модель занята) — следующая попытка через HINT_RETRY, а не
         через полный интервал, и без требования новых HINT_MIN_NEW знаков:
         разговор, на котором сорвались, ещё не законспектирован.
+
+        Под try — ВЕСЬ шаг итерации, а не только gen_hint: tr.full() стоял до
+        try, и исключение в нём убивало поток навсегда — панель молчала, а
+        heartbeat шёл (встреча 24.08 10:14: 40 минут без единой авто-подсказки,
+        тот же класс, что смерть потока 18.08). Три сбоя подряд — статус
+        человеку: молчание не должно выглядеть как «нечего сказать».
         """
         seen = 0
         wait = HINT_EVERY
+        failures = 0
         while not stop.is_set():
             time.sleep(wait)
             wait = HINT_EVERY
-            if not toggles["hints"]:
-                continue
-            full = tr.full()
-            if len(full) - seen < HINT_MIN_NEW:
-                continue  # разговор не набежал — молчим
             try:
-                if gen_hint(header=f"\n\n━━ авто {dt.datetime.now():%H:%M} ━━\n", model=auto_model):
+                if not toggles["hints"]:
+                    continue
+                full = tr.full()
+                if len(full) - seen < HINT_MIN_NEW:
+                    continue  # разговор не набежал — молчим
+                outcome = gen_hint(header=f"\n\n━━ авто {dt.datetime.now():%H:%M} ━━\n",
+                                   model=auto_model)
+                if outcome == "done":
                     seen = len(full)
-                else:
-                    wait = HINT_RETRY
-            except Exception as e:  # noqa: BLE001 — единственный поток без своего try:
-                # сбой вне внутреннего try gen_hint (например, запись подсказки в
-                # файл на недоступном iCloud) убивал поток НАВСЕГДА, а heartbeat
-                # главного треда продолжал идти — UI считал, что всё живо
+                    failures = 0
+                    continue
+                wait = HINT_RETRY
+                if outcome == "yielded":
+                    # Уступка ручному запросу рвёт серию: подсказки идут,
+                    # просто не авто. Иначе три старых сбоя + активные ручные
+                    # запросы давали бы «не выходят» каждые 20 секунд при
+                    # работающих подсказках (круг-2, DS + Codex).
+                    failures = 0
+                    continue
+                # Осталось failed/busy — настоящие сбои инцидента 24.08.
+                failures += 1
+            except Exception as e:  # noqa: BLE001 — поток обязан пережить любой шаг
+                failures += 1
                 emit_error(f"авто-подсказка сорвалась: {e}")
+            # Напоминание на каждой полной тройке НОВЫХ сбоев — и только в
+            # итерации, где счётчик вырос: клин может начаться и на двадцатой
+            # минуте встречи, но чинить нечего, пока серия не копится.
+            if failures % 3 == 0:
+                emit({"type": "status",
+                      "text": "⚠️ авто-подсказки не выходят три раза подряд — "
+                              "жива ручная кнопка; подробности в статусах"})
 
     def instant_loop():
         """Режим собеседования: вопрос от собеседника → готовый ответ без задержки.
@@ -1496,7 +1565,12 @@ def main():
                         ln for n in found for ln in node_index.digest(n))[:600]
                 except Exception:  # noqa: BLE001
                     nodes_block = ""
-            with hint_lock:
+            # 45 с, как у ручных путей: ⚡ отвечает на прозвучавший вопрос,
+            # ответ через четыре минуты никому не нужен, а взведённый
+            # manual_evt всё это время глушил бы авто-подсказки (круг-2, DS).
+            with hint_slot("⚡ ответ", timeout=45.0, clear_manual_on_busy=True) as got:
+                if not got:
+                    continue
                 manual_evt.clear()
                 if not tail:
                     continue
@@ -2096,10 +2170,14 @@ def main():
             notes = tr.notes()
             if len(notes) - seen_notes < 3:
                 continue  # мало новых заметок — глубокому нечего пересматривать
-            seen_notes = len(notes)
             if manual_evt.is_set():
                 continue  # ручной запрос ждёт lock — не занимаем 26b на минуту
-            with hint_lock:  # 26b — не сталкиваться с подсказчиком
+            with hint_slot("глубокий разбор") as got:  # 26b — не сталкиваться с подсказчиком
+                if not got:
+                    continue
+                # Заметки «обработаны» только после взятого замка: занятый
+                # слот не должен навсегда съедать этот прирост (круг-2, Codex).
+                seen_notes = len(notes)
                 try:
                     out = ""
                     for tok in llm.stream(
@@ -2159,7 +2237,11 @@ def main():
                     extra = "\n\nИз графа и документов (vault):\n" + v[:2000]
         except Exception:  # noqa: BLE001
             pass
-        with hint_lock:
+        with hint_slot("ответ на вопрос", timeout=45.0, clear_manual_on_busy=True) as got:
+            if not got:
+                emit({"type": "hint", "text": "\n⚠ подсказчик занят — попробуйте ещё раз", "manual": True})
+                emit({"type": "hint_done", "manual": True})
+                return
             manual_evt.clear()
             parts: list[str] = []
             try:
@@ -2187,7 +2269,11 @@ def main():
 
     def _do_summary():
         manual_evt.set()   # фон (нить, тезисы, авто-подсказка) уступает, как ручной подсказке
-        with hint_lock:
+        with hint_slot("минутки", timeout=45.0, clear_manual_on_busy=True) as got:
+            if not got:
+                emit({"type": "hint", "text": "\n⚠ подсказчик занят — попробуйте ещё раз", "manual": True})
+                emit({"type": "hint_done", "manual": True})
+                return
             manual_evt.clear()
             chunks: list[str] = []
             ok = True
@@ -2300,10 +2386,14 @@ def main():
                 continue
             if size - seen_bytes < 1500:
                 continue
-            seen_bytes = size
             query = ""
             try:
-                with hint_lock:   # не толкаться с подсказкой на одной модели
+                with hint_slot("тема для архива") as got:  # не толкаться на одной модели
+                    if not got:
+                        continue
+                    # Прирост «израсходован» только со взятым замком: busy не
+                    # должен терять эти 1500 байт навсегда (круг-2, Codex).
+                    seen_bytes = size
                     query = "".join(llm.stream(
                         "Стенограмма идущей встречи (хвост):\n\n" + tail +
                         "\n\nНазови тему встречи и 6-8 ключевых терминов, "

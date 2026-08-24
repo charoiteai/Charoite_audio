@@ -537,6 +537,16 @@ it signals degradation, it does not break the loop.
   the "Hints" layer chip lives next to it and two identical labels read as
   a duplicate. The digest writes tighter: up to two lines per topic,
   12 words each.
+- **The hint engine never dies silently** (Aug 24) — the auto-hint loop
+  wraps its whole iteration step in try (an exception before the inner try
+  used to kill the thread forever: the Aug 24 meeting went without a single
+  auto hint while the heartbeat looked alive), three failures in a row are
+  reported as a status; all eight holders of the hint lock (auto, manual, ⚡, minutes, thread, ⏮,
+  deep analysis, archive topic) acquire it with a waiting ceiling — a wedged
+  neighbour no longer freezes the rest forever, the person gets "the hinter
+  is busy" instead of silence; the manual request's "yield" signal is
+  cleared on timeout too, otherwise auto hints would forever yield to a
+  manual request that no longer exists.
 - **Calendar inside the meeting library** — the week strip lives on top of
   the Meetings list: dots mark days that have recordings, one click turns
   the list into that day's feed — recordings as usual selectable rows plus
