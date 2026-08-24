@@ -12,14 +12,14 @@ import Foundation
 final class GraphInventoryService: ObservableObject {
     static let shared = GraphInventoryService()
 
-    struct Core: Identifiable, Equatable {
+    struct Core: Identifiable, Equatable, Sendable {
         let name: String
         let status: String   // первая содержательная строка ядра; пусто — нет
         let updated: Date
         var id: String { name }
     }
 
-    struct Snapshot: Equatable {
+    struct Snapshot: Equatable, Sendable {
         var meetings = 0
         var nodes = 0
         var dossiers = 0
@@ -27,15 +27,15 @@ final class GraphInventoryService: ObservableObject {
     }
 
     @Published private(set) var snapshot = Snapshot()
+    /// nil — граф не настроен: колонка обязана сказать это словами, а не
+    /// рисовать «0 встреч» (круг-1, GLM: нули читаются как «память пуста»).
+    @Published private(set) var configured = AppSettings.graphDir != nil
     private var scannedAt: Date?
     private var scanning = false
 
-    /// Узловые папки графа — те же, что в MemoryScreenPolicy.kind(of:).
-    nonisolated private static let nodeFolders = ["Люди", "Системы", "Команды", "Блокеры", "Модели"]
-    nonisolated private static let dossierFolders = ["Досье", "Dossiers"]
-
     /// Освежить не чаще раза в минуту: appear/переключения дешёвые.
     func refresh() {
+        configured = AppSettings.graphDir != nil
         if let at = scannedAt, Date().timeIntervalSince(at) < 60 { return }
         guard !scanning, let graph = AppSettings.graphDir else { return }
         scanning = true
@@ -56,16 +56,25 @@ final class GraphInventoryService: ObservableObject {
             .count ?? 0
     }
 
+    /// Папки ядер по контракту — свежие «сквозные темы» для нижнего блока.
+    nonisolated private static let coreFolders = ["Ядра", "Cores", "核心"]
+
     nonisolated static func scan(graph: URL, coreLimit: Int = 4) -> Snapshot {
+        // Имена папок — ЕДИНЫЙ контракт с политикой источников (круг-1,
+        // Codex+GLM: две частные таблицы разошлись, en/zh-граф давал нули).
+        typealias GC = MemoryScreenPolicy.GraphContract
         var snap = Snapshot()
-        snap.meetings = mdCount(graph.appendingPathComponent("Встречи"))
-        snap.nodes = nodeFolders.map { mdCount(graph.appendingPathComponent($0)) }.reduce(0, +)
-        snap.dossiers = dossierFolders.map { mdCount(graph.appendingPathComponent($0)) }.reduce(0, +)
+        snap.meetings = GC.meetings.map { mdCount(graph.appendingPathComponent($0)) }.reduce(0, +)
+        let plainNodes = GC.nodes.filter { !coreFolders.contains($0) }
+        snap.nodes = plainNodes.map { mdCount(graph.appendingPathComponent($0)) }.reduce(0, +)
+        snap.dossiers = GC.dossiers.map { mdCount(graph.appendingPathComponent($0)) }.reduce(0, +)
         // Ядра — узлы сквозных тем; в счёт узлов входят тоже.
-        let coresDir = graph.appendingPathComponent("Ядра")
-        let coreFiles = (try? FileManager.default.contentsOfDirectory(
-            at: coresDir, includingPropertiesForKeys: [.contentModificationDateKey]))?
-            .filter { $0.pathExtension == "md" && !$0.lastPathComponent.hasPrefix(".") } ?? []
+        let coreFiles = coreFolders.flatMap { folder -> [URL] in
+            (try? FileManager.default.contentsOfDirectory(
+                at: graph.appendingPathComponent(folder),
+                includingPropertiesForKeys: [.contentModificationDateKey]))?
+                .filter { $0.pathExtension == "md" && !$0.lastPathComponent.hasPrefix(".") } ?? []
+        }
         snap.nodes += coreFiles.count
         let dated: [(URL, Date)] = coreFiles.map {
             ($0, (try? $0.resourceValues(forKeys: [.contentModificationDateKey])
@@ -83,12 +92,20 @@ final class GraphInventoryService: ObservableObject {
     nonisolated static func coreStatus(of url: URL) -> String {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return "" }
         defer { try? handle.close() }
-        let data = (try? handle.read(upToCount: 4096)) ?? Data()
-        guard let head = String(data: data, encoding: .utf8) else { return "" }
+        // 16 КБ и потерпимое декодирование: 4 КБ могли кончиться посреди
+        // UTF-8-символа, и String(data:encoding:) молча отдавал nil
+        // (круг-1, Codex); фронтматтер открывается только ПЕРВОЙ строкой
+        // файла — «---» в теле это горизонтальная линейка, а не начало
+        // фронтматтера (круг-1, GLM: статус ядра пустел).
+        let data = (try? handle.read(upToCount: 16384)) ?? Data()
+        let head = String(decoding: data, as: UTF8.self)
         var inFrontmatter = false
-        for raw in head.components(separatedBy: "\n") {
+        for (i, raw) in head.components(separatedBy: "\n").enumerated() {
             let line = raw.trimmingCharacters(in: .whitespaces)
-            if line == "---" { inFrontmatter.toggle(); continue }
+            if line == "---" {
+                if i == 0 { inFrontmatter = true } else if inFrontmatter { inFrontmatter = false }
+                continue
+            }
             if inFrontmatter || line.isEmpty || line.hasPrefix("#") { continue }
             let clean = line
                 .replacingOccurrences(of: "**", with: "")

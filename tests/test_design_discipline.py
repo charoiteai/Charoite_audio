@@ -87,7 +87,12 @@ def test_поверхности_происхождения_используют�
     )
     # 24.08: MemorySurface удалён (гамма библиотеки для «Памяти» — решение
     # владельца); вернуть можно только вместе с вызовами, не объявлением.
-    assert "struct MemorySurface" not in text
+    # Сканируем ВСЕ исходники приложения: объявление жило в DesignKit,
+    # которого в _views() нет (круг-1, GLM: ассерт не мог покраснеть).
+    everything = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in (REPO / "app" / "Sources" / "CharoiteApp").rglob("*.swift"))
+    assert "struct MemorySurface" not in everything
 
 
 @pytest.mark.parametrize("token", ["warning", "ok", "surfaceMemory", "surfaceCloud"])

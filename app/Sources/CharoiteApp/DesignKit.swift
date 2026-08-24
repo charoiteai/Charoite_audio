@@ -14,7 +14,6 @@ import SwiftUI
 extension Theme {
     /// Память: архив встреч, граф, досье.
     static let surfaceMemory = accent.opacity(0.05)
-    static let borderMemory = accent.opacity(0.14)
 
     /// Облако: панель Claude и всё, что покидает машину.
     static let surfaceCloud = sky.opacity(0.06)

@@ -19,7 +19,7 @@ struct LocalChatView: View {
                 chatColumn
                 if geo.size.width >= 760 {
                     Divider()
-                    MemoryInventoryColumn(snapshot: inventory.snapshot)
+                    MemoryInventoryColumn(snapshot: inventory.snapshot, configured: inventory.configured)
                         .frame(width: 250)
                 }
             }
@@ -107,7 +107,9 @@ struct LocalChatView: View {
                 Text(chat.status)
                     .font(.caption).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.tail)
-            } else {
+            } else if chat.ollamaAlive != nil {
+                // До первого ответа /api/tags состояние неизвестно — чип
+                // молчит, а не обещает «отвечает» (круг-1, DS/Codex/GLM).
                 // Честная строка происхождения (макет: «Ollama отвечает ·
                 // 0 запросов в сеть»): «отвечает» — по факту живого списка
                 // моделей, «0 запросов в сеть» — факт, а не обещание: чужой

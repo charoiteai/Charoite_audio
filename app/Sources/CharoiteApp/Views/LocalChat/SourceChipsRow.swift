@@ -57,12 +57,12 @@ struct SourceChipsRow: View {
         if source.kind == .meeting {
             let stem = (source.rel as NSString).lastPathComponent
                 .replacingOccurrences(of: ".md", with: "")
-            // Карточка в библиотеке, если запись ещё в истории конвейера;
-            // id записей бывают с секундами — совпадение по префиксу минуты.
-            if let record = MeetingRepository.shared.records.first(where: {
-                $0.id == stem || $0.id.hasPrefix(stem) || stem.hasPrefix($0.id)
-            }) {
-                WorkspaceNavigation.shared.open(.meetings, meetingID: record.id)
+            // Карточка в библиотеке, если запись ещё в истории конвейера.
+            // Матчинг — в политике: точный штамп, затем префикс на границе
+            // сегмента (голый префикс путал пары «одной минуты», #388).
+            let ids = MeetingRepository.shared.records.map(\.id)
+            if let id = MemoryScreenPolicy.matchRecord(stem: stem, ids: ids) {
+                WorkspaceNavigation.shared.open(.meetings, meetingID: id)
                 return
             }
         }

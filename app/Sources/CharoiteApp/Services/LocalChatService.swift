@@ -19,7 +19,6 @@ final class LocalChatService: ObservableObject {
         // Опциональны с дефолтом nil — старая история декодируется как раньше.
         var sources: [MemoryScreenPolicy.Source]?
         var meta: String?
-        var memoryUsed: Bool?
         var weakMatches: Bool?
     }
 
@@ -174,9 +173,14 @@ final class LocalChatService: ObservableObject {
         被问「你是谁」时回答「Charoite，本地助手」，不要提模型厂商。
         """)
         let startedAt = Date()
+        // Тумблер снят ОДИН раз на старте: переключение памяти во время
+        // генерации не должно переписывать происхождение уже собранного
+        // контекста (круг-1, Codex).
+        let memoryOn = useMemory
         var chipSources: [MemoryScreenPolicy.Source] = []
+        var sourcesInContext = 0
         var weakMatches = false
-        if useMemory {
+        if memoryOn {
             // Поиск по одной последней реплике («а что дальше?») находил мусор:
             // тему разговора несут ПОСЛЕДНИЕ вопросы вместе, свежий — главный
             let topic = (messages.filter { $0.role == "user" }.suffix(3).map(\.text)
@@ -184,16 +188,23 @@ final class LocalChatService: ObservableObject {
             // Бюджет задаётся поиску, а не срезается по хвосту: prefix(5000) резал
             // ПОСЛЕДНИЙ источник на полуслове и мог оставить от него огрызок,
             // при этом первый источник имел право занять сколько угодно.
-            var vault = await ArchiveSearch.search(query: String(topic), limit: 8,
-                                                   snippet: 800, budget: 5000)
+            let outcome = await ArchiveSearch.searchStructured(
+                query: String(topic), limit: 8, snippet: 800, budget: 5000)
+            var vault = outcome.text
             // маркер слабых совпадений: модель предупреждена, что граф скорее не про это
             let lowConf = vault.hasPrefix(ArchiveSearch.lowConfidenceMarker)
             if lowConf { vault.removeFirst() }
-            // Чипы под ответом — из блока РЕАЛЬНОГО поиска, не из текста
-            // модели: показываем, что подмешали. Слабые совпадения чипами не
+            // Чипы под ответом — точный список хитов поиска (Outcome.rels);
+            // упоминание пути в чужом сниппете источником не считается
+            // (круг-1: DS/Codex/GLM). Brain-ветка структуры не отдаёт —
+            // честный запасной разбор текста. Слабые совпадения чипами не
             // выдаём — их нельзя показывать как опору ответа.
             weakMatches = lowConf
-            chipSources = lowConf ? [] : MemoryScreenPolicy.sources(from: vault)
+            let found = outcome.rels.map { rels in
+                rels.map { MemoryScreenPolicy.Source(rel: $0, kind: MemoryScreenPolicy.kind(of: $0)) }
+            } ?? MemoryScreenPolicy.sources(from: vault)
+            sourcesInContext = lowConf ? 0 : found.count
+            chipSources = lowConf ? [] : Array(found.prefix(6))
             if !vault.isEmpty {
                 system += lowConf
                     ? "\n\n[ГРАФ ВСТРЕЧ — совпадения СЛАБЫЕ, вероятно не про вопрос; не выдавай за факт]\n" + vault
@@ -265,16 +276,22 @@ final class LocalChatService: ObservableObject {
             if let idx = messages.firstIndex(where: { $0.id == bubbleId }) {
                 let secs = max(1, Int(Date().timeIntervalSince(startedAt).rounded()))
                 messages[idx].sources = chipSources.isEmpty ? nil : chipSources
-                messages[idx].memoryUsed = useMemory
                 messages[idx].weakMatches = weakMatches ? true : nil
                 messages[idx].meta = MemoryScreenPolicy.metaLine(
                     model: effModel, seconds: secs,
                     meetingsInContext: chipSources.filter { $0.kind == .meeting }.count,
-                    memoryOn: useMemory, weakMatches: weakMatches)
+                    sourcesInContext: sourcesInContext,
+                    memoryOn: memoryOn, weakMatches: weakMatches)
             }
+            // Ответ дошёл — Ollama жива; статус графа отработал своё, слот
+            // возвращается честному чипу здоровья (круг-1, Codex: строка
+            // «граф подмешан» прятала чип до следующего запроса).
+            ollamaAlive = true
+            status = ""
         } catch {
             if !Task.isCancelled, let idx = messages.firstIndex(where: { $0.id == bubbleId }) {
                 messages[idx].text += "\n[ошибка: \(error.localizedDescription) — Ollama запущена?]"
+                ollamaAlive = false
             }
         }
         // отменённый стрим не должен разблокировать кнопку под живым новым стримом

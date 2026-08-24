@@ -7,6 +7,11 @@ import SwiftUI
 /// GraphInventoryService, колонка сама диск не трогает.
 struct MemoryInventoryColumn: View {
     let snapshot: GraphInventoryService.Snapshot
+    var configured = true
+    // Раз в минуту — как раз шаг троттлинга сервиса: без внешнего пинка
+    // «свежие ядра» застывали на весь сеанс (круг-1, DS: refresh только
+    // на появление вью, троттлинг не успевал сработать ни разу).
+    private let pulse = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -14,15 +19,23 @@ struct MemoryInventoryColumn: View {
                        systemImage: "brain.head.profile")
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    counters
-                    if !snapshot.cores.isEmpty {
-                        cores
+                    if configured {
+                        counters
+                        if !snapshot.cores.isEmpty {
+                            cores
+                        }
+                    } else {
+                        // Нули при ненастроенном графе врали бы «память
+                        // пуста» (круг-1, GLM) — честная строка вместо них.
+                        Text(L.t("Граф не настроен", "Graph is not configured", "图谱未配置"))
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 .padding(12)
             }
         }
-            }
+        .onReceive(pulse) { _ in GraphInventoryService.shared.refresh() }
+    }
 
     private var counters: some View {
         // Числа с источником: это счёт файлов графа, не самочувствие UI.

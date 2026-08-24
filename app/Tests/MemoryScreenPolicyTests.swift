@@ -59,5 +59,58 @@ final class MemoryScreenPolicyTests: XCTestCase {
                                                   memoryOn: true, weakMatches: false)
             .hasSuffix("граф не в контексте"))
     }
+
+    // Круг-1 по PR #396: ветка «источники без встреч» (DS Critical),
+    // граница матчинга пар одной минуты, скобки в пути, контракт en/zh.
+
+    func testMetaLineNodesOnlyCountsSources() {
+        let line = MemoryScreenPolicy.metaLine(
+            model: "qwen", seconds: 3, meetingsInContext: 0,
+            sourcesInContext: 2, memoryOn: true, weakMatches: false)
+        XCTAssertTrue(line.contains("2 источника в контексте"), line)
+        XCTAssertFalse(line.contains("граф не в контексте"), line)
+        let empty = MemoryScreenPolicy.metaLine(
+            model: "qwen", seconds: 3, meetingsInContext: 0,
+            sourcesInContext: 0, memoryOn: true, weakMatches: false)
+        XCTAssertTrue(empty.contains("граф не в контексте"), empty)
+    }
+
+    func testMatchRecordPrefersExactStampOverMinutePrefix() {
+        // Пара «одной минуты» (#388): владельцу минутный штамп, соседке
+        // секундный. Голый префикс отдавал чужую карточку.
+        let ids = ["2026-08-21_120245", "2026-08-21_1202"]
+        XCTAssertEqual(MemoryScreenPolicy.matchRecord(stem: "2026-08-21_1202", ids: ids),
+                       "2026-08-21_1202")
+        XCTAssertEqual(MemoryScreenPolicy.matchRecord(stem: "2026-08-21_120245", ids: ids),
+                       "2026-08-21_120245")
+        // Тема в стеме не мешает точному штампу.
+        XCTAssertEqual(MemoryScreenPolicy.matchRecord(stem: "2026-08-21_1202_Тема встречи", ids: ids),
+                       "2026-08-21_1202")
+        // Архивный суффикс «-2» из #388 тоже каноничен по штампу.
+        XCTAssertEqual(MemoryScreenPolicy.matchRecord(stem: "2026-08-21_120245-2_Тема", ids: ids),
+                       "2026-08-21_120245")
+        // Чужая минута — не матч.
+        XCTAssertNil(MemoryScreenPolicy.matchRecord(stem: "2026-08-21_1203", ids: ids))
+    }
+
+    func testSourcesKeepParenthesesAndHonorLimitZero() {
+        let block = "• Люди/Анна (эксперт).md\n  …профиль…\n• Встречи/2026-08-21_1202_Тема (важно).md\n  …решения…"
+        let got = MemoryScreenPolicy.sources(from: block)
+        XCTAssertEqual(got.map(\.rel),
+                       ["Люди/Анна (эксперт).md", "Встречи/2026-08-21_1202_Тема (важно).md"])
+        XCTAssertTrue(MemoryScreenPolicy.sources(from: block, limit: 0).isEmpty)
+    }
+
+    func testGraphContractCoversEnglishAndChineseFolders() {
+        XCTAssertEqual(MemoryScreenPolicy.kind(of: "Meetings/2026-08-21_1202.md"), .meeting)
+        XCTAssertEqual(MemoryScreenPolicy.kind(of: "People/Anna.md"), .node)
+        XCTAssertEqual(MemoryScreenPolicy.kind(of: "Cores/Release.md"), .node)
+        XCTAssertEqual(MemoryScreenPolicy.kind(of: "会议/2026-08-21_1202.md"), .meeting)
+        XCTAssertEqual(MemoryScreenPolicy.kind(of: "人物/王伟.md"), .node)
+        XCTAssertEqual(MemoryScreenPolicy.kind(of: "Встречи-архив/2026-07-01_1000.md"), .meeting)
+        XCTAssertEqual(MemoryScreenPolicy.kind(of: "Dossiers/Signing.md"), .dossier)
+        XCTAssertEqual(MemoryScreenPolicy.kind(of: "Документация/Отчёт.md"), .doc)
+        XCTAssertEqual(MemoryScreenPolicy.kind(of: "Неизвестное/файл.md"), .doc)
+    }
 }
 #endif

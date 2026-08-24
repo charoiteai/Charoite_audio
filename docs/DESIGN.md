@@ -34,9 +34,12 @@ hard-coded sizes, and a system that lives on paper only drifts.
 
 ### Surface means origin
 
-White system surface — now and local. Lavender (`MemorySurface`) —
-memory: the archive answer pane on the meeting screen, the model's
-replies in Memory. Sky (`CloudSurface`) — everything that leaves the Mac:
+White system surface — now and local. Lavender (`Theme.surfaceMemory`)
+— memory: the archive answer pane on the meeting screen. On the Memory
+screen the owner chose the meeting-library palette (24.08): model replies
+are white hairline-bordered cards, and provenance is carried by source
+chips and the meta line, not by surface color; the `MemorySurface`
+container is gone. Sky (`CloudSurface`) — everything that leaves the Mac:
 the Claude card, the cloud dossier toggle in Settings. The rule "local is
 quiet, cloud is visible" becomes visible rather than declared; color is
 never the only signal — every cloud surface also says it in words
