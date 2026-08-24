@@ -1394,6 +1394,8 @@ def main():
 
     expand_lock = threading.Lock()
 
+    # headless-only с 24.08: кнопка ⏮ и её протокол убраны из приложения
+    # (пакет владельца, PR #394); команда «expand» остаётся для CLI/stdin.
     def expand_topic(title: str = ""):
         """⏮ по клавише: что было по теме раньше — из графа прямо в нить.
 
@@ -1655,11 +1657,17 @@ def main():
                 out = "[cloud: таймаут 90с]"
             except Exception as e:  # noqa: BLE001
                 out = f"[cloud: {e}]"
-            if q:  # ответ в панели начинается с вопроса, на который отвечает
-                out = f"❓ {q}\n\n{out}"
+            # В нить — только сам ответ: строка ⚡ теперь подсвечена, и
+            # вклеенный «❓ вопрос» стал бы самым ярким текстом полотна —
+            # ровно то, что владелец просил убрать (круг-1 по #394, DS+Codex).
+            # Вопрос остаётся в аудите (label ниже) и в облачной ленте панели.
             if out and not question_filter.is_refusal(out):
                 if thread.add_answer(q, question_filter.squeeze(out, max_lines=3, max_chars=380)):
                     emit({"type": "thread", "text": thread.render()})
+            # Вопрос в живом UI больше не показывается (пакет владельца 24.08):
+            # в нить идёт чистый ответ, аудит несёт вопрос в label «на: {q}».
+            # Прежний префикс «❓ {q}» уходил в события cloud, которых демон
+            # давно не эмитит, — мёртвый код убран (круг-3 по #394, DS).
             emit({"type": "cloud_done"})
             label = f"☁️ {model} — на: {q[:120]}" if q else f"☁️ {model}"
             append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] {label}", out)
@@ -2328,11 +2336,24 @@ def main():
                 threading.Thread(target=_do_summary, daemon=True).start()
             elif cmd.startswith("set "):
                 parts = cmd.split()
-                if len(parts) == 3 and parts[1] in toggles and parts[2] in ("on", "off"):
-                    toggles[parts[1]] = parts[2] == "on"
-                    ru = {"hints": "подсказки", "theses": "тезисы", "cloud": "Claude"}
-                    state = "включены" if toggles[parts[1]] else "выключены"
-                    emit({"type": "status", "text": f"⚙️ {ru[parts[1]]} {state}"})
+                if (len(parts) == 3 or (len(parts) == 4 and parts[3] == "quiet")) \
+                        and parts[1] in toggles and parts[2] in ("on", "off"):
+                    wanted = parts[2] == "on"
+                    changed = toggles[parts[1]] != wanted
+                    toggles[parts[1]] = wanted
+                    # «quiet» — стартовая синхронизация дефолтов: тумблеры не
+                    # переживают рестарт процесса, и приложение шлёт свои
+                    # «set … off» при каждом запуске — без метки любой
+                    # авто-рестарт рождал «⚙️ … выключены» и затирал строку
+                    # «Запись прервалась — восстанавливаю» (круги 1-2 по #394:
+                    # Codex — про theses, Sonnet — что то же верно для
+                    # hints/cloud, сохранённых выключенными). Статус — только
+                    # на живое переключение, без метки quiet.
+                    quiet_sync = len(parts) == 4 and parts[3] == "quiet"
+                    if changed and not quiet_sync:
+                        ru = {"hints": "подсказки", "theses": "тезисы", "cloud": "Claude"}
+                        state = "включены" if wanted else "выключены"
+                        emit({"type": "status", "text": f"⚙️ {ru[parts[1]]} {state}"})
         stop.set()  # stdin закрылся — родитель умер
 
     def live_context_loop():

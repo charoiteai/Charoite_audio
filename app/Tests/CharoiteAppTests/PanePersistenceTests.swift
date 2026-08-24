@@ -43,19 +43,20 @@ final class PanePersistenceTests: XCTestCase {
     }
 
     func testВыключенныеТумблерыНеОбещаютНить() {
-        // Нить растёт только под toggles["hints"]/["theses"] демона: с
-        // выключенными обоими «появится через минуту» — обещание, которое
-        // не сбудется никогда. Панель обязана назвать причину.
+        // Нить растёт только под toggles["hints"] демона: с выключенным
+        // тумблером «появится через минуту» — обещание, которое не сбудется
+        // никогда. Панель обязана назвать причину. Тезисный контур из панели
+        // убран (пакет 24.08) — его тумблер в раскладке больше не участвует.
         let pane = SuflerView.paneStack(hasHint: false, hinting: false,
                                         hasThread: false, running: true,
-                                        hintsOn: false, thesesOn: false)
+                                        hintsOn: false)
         XCTAssertNotNil(pane.placeholder)
         XCTAssertFalse(pane.placeholder?.contains("минуту") == true,
-                       "обещание нити при выключенных контурах — враньё")
-        // Уже накопленную нить выключенные тумблеры прятать не смеют.
+                       "обещание нити при выключенных подсказках — враньё")
+        // Уже накопленную нить выключенный тумблер прятать не смеет.
         let with = SuflerView.paneStack(hasHint: false, hinting: false,
                                         hasThread: true, running: true,
-                                        hintsOn: false, thesesOn: false)
+                                        hintsOn: false)
         XCTAssertTrue(with.showThread)
     }
 

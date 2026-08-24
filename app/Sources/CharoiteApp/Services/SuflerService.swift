@@ -65,7 +65,6 @@ final class SuflerService: ObservableObject {
     /// Идёт явный поиск прошлого контекста по кнопке ⏮.
     /// Отдельно от isHinting: подсказка и архив могут выполняться параллельно,
     /// но два архивных разбора одной темы одновременно не нужны.
-    @Published private(set) var isExpanding = false
     @Published var cloud = ""          // ответ Claude (Sonnet) — третья панель
     @Published var isClouding = false
 
@@ -226,9 +225,6 @@ final class SuflerService: ObservableObject {
     /// должно: закрыл ноутбук — закончил встречу.
     private var sleepGuard: NSObjectProtocol?
 
-    /// Схлопнуть панель разбора. Отдельным методом, чтобы `isExpanding`
-    /// остался `private(set)`: писать в него вправе только сервис.
-    func collapseExpansion() { isExpanding = false }
 
     private func beginSleepGuard() {
         guard sleepGuard == nil else { return }
@@ -390,7 +386,6 @@ final class SuflerService: ObservableObject {
         // без сброса кнопки Подсказка/Claude/Протокол залипали заблокированными
         isHinting = false
         isAutoHinting = false
-        isExpanding = false
         isClouding = false
 
         // 🔴 ВЫКЛЮЧЕНО 06.08 по итогам боевого теста. Тап создаётся, виден
@@ -506,10 +501,18 @@ final class SuflerService: ObservableObject {
             publishLifecycle()
             beginSleepGuard()
             startClock()
-            // сохранённые дефолты — новому демону (stdin буферизуется до готовности)
-            for (key, on) in [("hints", hintsOn), ("theses", thesesOn), ("cloud", cloudOn)] where !on {
-                send("set \(key) off")
+            // Сохранённые дефолты — новому демону (stdin буферизуется до
+            // готовности). Метка quiet: это синхронизация, не живой клик —
+            // без неё каждый авто-рестарт демона рождал «⚙️ … выключены» и
+            // затирал строку «Запись прервалась — восстанавливаю» (круги
+            // 1-2 по #394). Статус остаётся только у переключений человеком.
+            for (key, on) in [("hints", hintsOn), ("cloud", cloudOn)] where !on {
+                send("set \(key) off quiet")
             }
+            // Тезисный контур из панели убран (пакет владельца 24.08): чипа нет,
+            // включить его некому — глушим безусловно, даже если в старых
+            // UserDefaults остался thesesOn = true.
+            send("set theses off quiet")
             lastEventAt = Date()
             lastSTTProgressAt = nil
             lastAudioInputAt = nil
@@ -550,7 +553,6 @@ final class SuflerService: ObservableObject {
         let wasRecording = lifecycle == .recording
         stopClock()
         isHinting = false   // ждать hint_done/cloud_done от мёртвого демона бессмысленно
-        isExpanding = false
         disarmHintTimeout()
         isClouding = false
         watchdog?.invalidate()
@@ -762,11 +764,6 @@ final class SuflerService: ObservableObject {
     /// поэтому isHinting не трогаем — подсказку можно просить параллельно.
     /// Состояние ставим до отправки команды: два быстрых клика не успеют
     /// положить в очередь две одинаковые генерации до ответа демона.
-    func requestExpand() {
-        guard isRunning, !isExpanding else { return }
-        isExpanding = true
-        send("expand")
-    }
 
     func requestCloud() {
         // cloudOn — единственный тумблер, отправляющий стенограмму с машины.
@@ -887,10 +884,6 @@ final class SuflerService: ObservableObject {
                 // видно, шлём ещё и баннер (ревью 18.08, GLM).
                 status = text
                 MeetingNotificationService.shared.presentAutostopWarning(text)
-            case "expand_started":
-                isExpanding = true
-            case "expand_done":
-                isExpanding = false
             case "hint":
                 // Демон помечает стрим: manual — запрошен человеком, иначе
                 // авто-цикл. Старый демон поля не шлёт — тогда считаем токен

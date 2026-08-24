@@ -66,8 +66,8 @@ that sits next to your work, not a showcase.
 - **Pane**: icon + caps title (`PaneHeader` from DesignKit), secondary
   color, `.bar` background; a copy button only where content is one-shot
   (Hint, Claude), not on feeds.
-- **Layer chips**: the meeting screen's layers (Hints, Theses, Claude)
-  are `LayerChip`s in a `LayerBar`, not system toggles — an active layer
+- **Layer chips**: the meeting screen's layers (Hints, Claude) are
+  `LayerChip`s in a `LayerBar`, not system toggles — an active layer
   is an indigo fill, Claude is a `sky` outline because it is the only
   layer that leaves the machine. Each chip exposes its On/Off value and
   selected trait to VoiceOver; color is never the only state signal.
