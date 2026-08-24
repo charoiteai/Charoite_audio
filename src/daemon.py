@@ -1590,15 +1590,13 @@ def main():
             if out and not question_filter.is_refusal(out):
                 if thread.add_answer(q, question_filter.squeeze(out, max_lines=3, max_chars=380)):
                     emit({"type": "thread", "text": thread.render()})
-            # Лента облака в панели начинается с вопроса; в аудит label уже
-            # несёт «на: {q}» — тело пишем без префикса, чтобы вопрос не
-            # задваивался (круг-2 по #394, DS Minor).
-            body_for_audit = out
-            if q:
-                out = f"❓ {q}\n\n{out}"
+            # Вопрос в живом UI больше не показывается (пакет владельца 24.08):
+            # в нить идёт чистый ответ, аудит несёт вопрос в label «на: {q}».
+            # Прежний префикс «❓ {q}» уходил в события cloud, которых демон
+            # давно не эмитит, — мёртвый код убран (круг-3 по #394, DS).
             emit({"type": "cloud_done"})
             label = f"☁️ {model} — на: {q[:120]}" if q else f"☁️ {model}"
-            append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] {label}", body_for_audit)
+            append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] {label}", out)
 
     def fast_trigger_loop():
         """Быстрый триггер вопросов через gigastt-стрим: partial ~0.8с вместо чанка 3с.
@@ -2252,7 +2250,8 @@ def main():
                 threading.Thread(target=_do_summary, daemon=True).start()
             elif cmd.startswith("set "):
                 parts = cmd.split()
-                if len(parts) in (3, 4) and parts[1] in toggles and parts[2] in ("on", "off"):
+                if (len(parts) == 3 or (len(parts) == 4 and parts[3] == "quiet")) \
+                        and parts[1] in toggles and parts[2] in ("on", "off"):
                     wanted = parts[2] == "on"
                     changed = toggles[parts[1]] != wanted
                     toggles[parts[1]] = wanted
