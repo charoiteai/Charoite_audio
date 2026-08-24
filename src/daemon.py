@@ -1511,17 +1511,22 @@ def main():
                     failures = 0
                     continue
                 wait = HINT_RETRY
-                # Уступка ручному запросу — не сбой; занятый замок и упавшая
-                # модель — сбой: именно они молчали весь инцидент 24.08, а
-                # старый счётчик видел только необработанные исключения.
-                if outcome in ("failed", "busy"):
-                    failures += 1
+                if outcome == "yielded":
+                    # Уступка ручному запросу рвёт серию: подсказки идут,
+                    # просто не авто. Иначе три старых сбоя + активные ручные
+                    # запросы давали бы «не выходят» каждые 20 секунд при
+                    # работающих подсказках (круг-2, DS + Codex).
+                    failures = 0
+                    continue
+                # Осталось failed/busy — настоящие сбои инцидента 24.08.
+                failures += 1
             except Exception as e:  # noqa: BLE001 — поток обязан пережить любой шаг
                 failures += 1
                 emit_error(f"авто-подсказка сорвалась: {e}")
-            # Каждая полная тройка подряд — напоминание, не только первая:
-            # клин может начаться и на двадцатой минуте встречи.
-            if failures and failures % 3 == 0:
+            # Напоминание на каждой полной тройке НОВЫХ сбоев — и только в
+            # итерации, где счётчик вырос: клин может начаться и на двадцатой
+            # минуте встречи, но чинить нечего, пока серия не копится.
+            if failures % 3 == 0:
                 emit({"type": "status",
                       "text": "⚠️ авто-подсказки не выходят три раза подряд — "
                               "жива ручная кнопка; подробности в статусах"})
@@ -1558,7 +1563,10 @@ def main():
                         ln for n in found for ln in node_index.digest(n))[:600]
                 except Exception:  # noqa: BLE001
                     nodes_block = ""
-            with hint_slot("⚡ ответ", clear_manual_on_busy=True) as got:
+            # 45 с, как у ручных путей: ⚡ отвечает на прозвучавший вопрос,
+            # ответ через четыре минуты никому не нужен, а взведённый
+            # manual_evt всё это время глушил бы авто-подсказки (круг-2, DS).
+            with hint_slot("⚡ ответ", timeout=45.0, clear_manual_on_busy=True) as got:
                 if not got:
                     continue
                 manual_evt.clear()
@@ -2154,12 +2162,14 @@ def main():
             notes = tr.notes()
             if len(notes) - seen_notes < 3:
                 continue  # мало новых заметок — глубокому нечего пересматривать
-            seen_notes = len(notes)
             if manual_evt.is_set():
                 continue  # ручной запрос ждёт lock — не занимаем 26b на минуту
             with hint_slot("глубокий разбор") as got:  # 26b — не сталкиваться с подсказчиком
                 if not got:
                     continue
+                # Заметки «обработаны» только после взятого замка: занятый
+                # слот не должен навсегда съедать этот прирост (круг-2, Codex).
+                seen_notes = len(notes)
                 try:
                     out = ""
                     for tok in llm.stream(
@@ -2355,12 +2365,14 @@ def main():
                 continue
             if size - seen_bytes < 1500:
                 continue
-            seen_bytes = size
             query = ""
             try:
                 with hint_slot("тема для архива") as got:  # не толкаться на одной модели
                     if not got:
                         continue
+                    # Прирост «израсходован» только со взятым замком: busy не
+                    # должен терять эти 1500 байт навсегда (круг-2, Codex).
+                    seen_bytes = size
                     query = "".join(llm.stream(
                         "Стенограмма идущей встречи (хвост):\n\n" + tail +
                         "\n\nНазови тему встречи и 6-8 ключевых терминов, "
