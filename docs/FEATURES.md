@@ -587,7 +587,9 @@ it signals degradation, it does not break the loop.
   for two cycles — the hung-in-generation case a liveness check cannot
   see. State only, no transcript content; deploys itself on the next
   meeting start since the daemon lives exactly one meeting.
-- **A copilot panel without extra words** (owner's package, Aug 24) — the
+- **A copilot panel without extra words** (owner's package, Aug 24; the
+  same evening batch G-П1 of the overhaul map removed the dead thesesOn
+  toggle itself — the layer is silenced by the load-bearing quiet sync) — the
   ⚡ answer to the other side's question is a single highlighted thread line
   (semibold, action color) with no question line: the question stays in the
   `_hints.md` audit, the canvas does not need it. The theses contour left
