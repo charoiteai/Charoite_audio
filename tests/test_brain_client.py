@@ -32,6 +32,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
 
 def test_vault_search_contract(tmp_path, monkeypatch):
+    # graphs.graph_dir читает env ДО конфига — машинные переменные не
+    # должны решать исход теста (круг-1 по #405, DS).
+    monkeypatch.delenv("CHAROITE_GRAPH_DIR", raising=False)
+    monkeypatch.delenv("SUFLER_GRAPH_DIR", raising=False)
     srv = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
@@ -49,6 +53,7 @@ def test_vault_search_contract(tmp_path, monkeypatch):
                         "folder": "проект", "snippet_chars": 700}
     finally:
         srv.shutdown()
+        srv.server_close()
 
 
 def test_network_failure_propagates(monkeypatch):

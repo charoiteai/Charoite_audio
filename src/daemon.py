@@ -1180,7 +1180,10 @@ def main():
             return
         _last_fire[0] = now
         if q.strip():  # панели показывают, НА ЧТО отвечают — без этого ответ висел без вопроса
-            _pending_q["text"] = " ".join(q.split())[:200]
+            # 400 — потолок ИСТОЧНИКА: обрезка здесь каскадом ограничивала
+            # все аудит-подписи, и «поднять label до 400» было фикцией
+            # (№95; круг-1 по #405, DS).
+            _pending_q["text"] = " ".join(q.split())[:400]
         instant_evt.set()
         if not (cloud_live and toggles["cloud"]):
             return
@@ -1708,7 +1711,7 @@ def main():
             # Прежний префикс «❓ {q}» уходил в события cloud, которых демон
             # давно не эмитит, — мёртвый код убран (круг-3 по #394, DS).
             emit({"type": "cloud_done"})
-            label = f"☁️ {model} — на: {q[:120]}" if q else f"☁️ {model}"
+            label = f"☁️ {model} — на: {q[:400]}" if q else f"☁️ {model}"
             append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] {label}", out)
 
     def fast_trigger_loop():
