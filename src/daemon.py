@@ -2613,6 +2613,7 @@ def main():
     try:
         last_hb = 0.0
         last_stt_stall_log = 0.0
+        owner_pulse_at = [0.0]   # своя метка: пульс владельца — не слой подсказок
         while not stop.is_set():
             time.sleep(0.3)
             # heartbeat для watchdog UI: главный тред жив → hb каждые 30с;
@@ -2630,22 +2631,28 @@ def main():
                 # Пульс владельца (№93): счётчики каналов и вердикт подписи
                 # раз в минуту — следующая встреча объяснит «Собеседник N»
                 # на репликах владельца цифрами, а не догадками.
-                if now_mono - hint_state.get("owner_said", 0.0) > 60.0:
-                    hint_state["owner_said"] = now_mono
+                if now_mono - owner_pulse_at[0] > 60.0:
+                    owner_pulse_at[0] = now_mono
                     try:
-                        # Снимки ДО итерации: stt_loop мутирует эти же
-                        # структуры, и итератор по живому dict/set ронял бы
-                        # RuntimeError весь демон; вердикт — _owner_set, без
-                        # побочного owner_ready (круг-1 по PR #401,
-                        # DS + Codex). Диагностика не смеет ронять процесс.
+                        # Снимки ДО итерации (гонка со stt_loop не смеет
+                        # ронять демон — DS+Codex, круг-1 #401) и ТОЛЬКО
+                        # агрегаты: пер-голосовые секунды и id — производное
+                        # голоса, а err-лог персистентен; обещание PRIVACY
+                        # «ничего голосового на диск» распространяется и на
+                        # них (GLM, круг-1 #401). Вердикт — _owner_set без
+                        # побочного owner_ready.
                         hb = heard_by_channel
                         mic, bh = dict(hb.mic), dict(hb.bh)
-                        top = lambda d: {v: round(s, 1) for v, s in  # noqa: E731
-                                         sorted(d.items(), key=lambda kv: -kv[1])[:4]}
+                        mic_total = sum(mic.values())
+                        top_share = (max(mic.values()) / mic_total
+                                     if mic_total > 0 else 0.0)
+                        pairs = sum(dict(hb._text_hits).values())  # noqa: SLF001
                         print(f"owner-pulse: call={hb.call} ready={hb.owner_ready} "
-                              f"mic={top(mic)} bh={top(bh)} "
-                              f"echoed={sorted(set(hb.echoed))} "
-                              f"owners={sorted(hb._owner_set())}",  # noqa: SLF001
+                              f"mic_voices={len(mic)} bh_voices={len(bh)} "
+                              f"top_share={top_share:.2f} "
+                              f"echoed_n={len(set(hb.echoed))} "
+                              f"text_pairs={pairs} "
+                              f"signed={owner_voice.owner_voice(hb) is not None}",
                               file=sys.stderr, flush=True)
                     except Exception as e:  # noqa: BLE001
                         print(f"owner-pulse: сбой ({e})", file=sys.stderr, flush=True)

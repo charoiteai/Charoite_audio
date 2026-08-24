@@ -80,10 +80,7 @@ TEXT_ECHO_MIN_WORDS = 5
 #: (круг-1 по PR #401, GLM).
 TEXT_ECHO_PAIR_S = 8.0
 
-#: Со скольких независимых совпадений пометка становится липкой: настоящее
-#: эхо повторяется на каждой реплике собеседника, пересказ и readback —
-#: разовые (круг-1 по PR #401, все три головы).
-TEXT_ECHO_HITS = 2
+
 
 
 def norm_words(text: str) -> tuple[str, ...]:
@@ -101,11 +98,17 @@ def norm_words(text: str) -> tuple[str, ...]:
 
 
 def text_echo_match(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
-    """Одна ли это фраза в двух каналах — по пересечению слов."""
-    short = min(len(a), len(b))
-    if short < TEXT_ECHO_MIN_WORDS:
+    """Одна ли это фраза в двух каналах — по пересечению слов.
+
+    Знаменатель — УНИКАЛЬНЫЕ слова короткой стороны, как и числитель:
+    повторы («ладно, ладно, давайте…») поднимали фактический порог выше
+    заявленного, и точная копия фразы могла не сматчиться (круг-1, GLM).
+    """
+    sa, sb = set(a), set(b)
+    short = min(len(sa), len(sb))
+    if min(len(a), len(b)) < TEXT_ECHO_MIN_WORDS or short == 0:
         return False
-    return len(set(a) & set(b)) / short >= TEXT_ECHO_OVERLAP
+    return len(sa & sb) / short >= TEXT_ECHO_OVERLAP
 
 
 @dataclasses.dataclass
@@ -160,40 +163,30 @@ class Heard:
             self.echoed.add(voice)      # раз собеседник — навсегда собеседник
 
     def _text_hit(self, voice: int | None) -> None:
-        """Зачесть текстовое совпадение голосу; липко — со второго.
+        """Зачесть текстовое совпадение голосу — ТОЛЬКО телеметрия.
 
-        Три предохранителя против ложного эха (круг-1 по PR #401, DS +
-        Codex + GLM единогласно): (1) уже решённый владелец текстом не
-        помечается — согласие и readback сохраняют его слова, и разовое
-        совпадение снимало подпись до конца встречи; (2) нужна пара
-        совпадений — настоящее эхо повторяется каждой репликой, цитата
-        разовая; (3) окно пары узкое (см. note_text).
+        В `echoed` текстовый путь НЕ пишет. Два круга по PR #401 (DS,
+        Codex, GLM) показали: любой гвард дыряв с одной из сторон времени
+        — до owner_ready ранний readback банил владельца навсегда, после
+        owner_ready гвард накрывал и свежие эхо-id, глуша саму фичу; а
+        счёт «2 хитов» засчитывал один пересказ дважды (STT режет фразу).
+        По правилу «упрощать, а не латать» боевое влияние выключено:
+        счётчики пар уходят в owner-pulse, включение пометки — отдельным
+        решением по полевым данным нескольких встреч.
         """
-        if voice is None or voice in self._owner_set():
+        if voice is None:
             return
         self._text_hits[voice] = self._text_hits.get(voice, 0) + 1
-        if self._text_hits[voice] >= TEXT_ECHO_HITS:
-            self.echoed.add(voice)
-
-    def _owner_set(self) -> set[int]:
-        """Текущие голоса-владельцы БЕЗ побочных эффектов.
-
-        `owner_voices` взводит `owner_ready` — диагностике и гвардам
-        менять решение о подписи нельзя (круг-1 по PR #401, DS Minor).
-        """
-        if not self.call or not self.owner_ready:
-            return set()
-        return {v for v, s in self.mic.items()
-                if v not in self.echoed and self.bh.get(v, 0.0) <= ECHO_SECONDS}
 
     def note_text(self, voice: int | None, text: str, *, is_mic: bool,
                   now: float) -> bool:
         """Сверить фразу с недавними фразами ДРУГОГО канала.
 
-        Совпадение в узком окне пары зачитывается голосу микрофона; липкая
-        пометка эхом — со второго зачёта. Порядок распознавания каналов
-        неизвестен — эхо в микрофоне может прийти и раньше оригинала,
-        поэтому помним обе стороны и сверяем в обе (№93).
+        Совпадение в узком окне пары зачитывается голосу микрофона в
+        ТЕЛЕМЕТРИЮ (_text_hits → owner-pulse); на подпись текст пока не
+        влияет — см. _text_hit. Порядок распознавания каналов неизвестен —
+        эхо в микрофоне может прийти и раньше оригинала, поэтому помним
+        обе стороны и сверяем в обе (№93).
         """
         words = norm_words(text)
         if len(words) < TEXT_ECHO_MIN_WORDS:
@@ -256,7 +249,8 @@ def human_seconds(heard: Heard, *, echo_seconds: float = ECHO_SECONDS) -> float:
     второй «человек» — колонки владельца (ревью 19.08, третий круг).
     """
     return sum(s for v, s in heard.mic.items()
-               if heard.bh.get(v, 0.0) <= echo_seconds)
+               if v not in heard.echoed
+               and heard.bh.get(v, 0.0) <= echo_seconds)
 
 
 def owner_voices(heard: Heard, *, min_seconds: float = MIN_MIC_SECONDS,

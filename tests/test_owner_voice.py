@@ -373,106 +373,88 @@ def test_чуть_меньше_порога_ещё_рано():
     assert ov.owner_voices(heard) == set()
 
 
-# --- Текстовое эхо (№93, 24.08): сверка каналов по фразе, не по voice id ---
+# --- Текстовое эхо (№93, 24.08): ТЕЛЕМЕТРИЯ, не приговор ---
+#
+# Два круга по PR #401 (DS+Codex+GLM): и одиночная пометка, и «2 хита», и
+# гвард владельца оказались дырявыми с одной из сторон времени. По правилу
+# «упрощать, а не латать» текстовый путь пишет ТОЛЬКО счётчики пар
+# (owner-pulse); на echoed и подпись он не влияет — включение отдельным
+# решением по полевым данным.
 
-def test_text_echo_marks_mic_voice_after_two_hits():
+def test_text_pair_is_counted_but_does_not_mark():
     h = ov.Heard()
-    h.note(7, 5.0, is_mic=False)                       # собеседник в динамиках
+    h.note(7, 5.0, is_mic=False)
     h.note_text(None, "мы договорились перенести релиз на этот четверг",
                 is_mic=False, now=100.0)
-    # эхо той же фразы в микрофоне: live-трекер дал ему СВОЙ id 3
     assert h.note_text(3, "мы договорились перенести релиз на этот четверг",
                        is_mic=True, now=101.0)
-    assert 3 not in h.echoed          # одно совпадение — ещё не приговор
-    h.note_text(None, "тогда фиксируем демо во вторник после обеда коллеги",
-                is_mic=False, now=110.0)
-    assert h.note_text(3, "фиксируем демо во вторник после обеда коллеги",
-                       is_mic=True, now=112.0)
-    assert 3 in h.echoed              # эхо повторилось — липкая пометка
+    assert h._text_hits.get(3) == 1
+    assert 3 not in h.echoed          # телеметрия — не приговор
 
 
-def test_text_echo_matches_in_reverse_order_too():
+def test_text_pairs_match_in_both_arrival_orders():
     h = ov.Heard()
-    # конвейер чанков распознал микрофонное эхо РАНЬШЕ оригинала — дважды
     assert not h.note_text(3, "давайте посмотрим логи за прошлую неделю",
                            is_mic=True, now=50.0)
     assert h.note_text(None, "давайте посмотрим логи за прошлую неделю",
                        is_mic=False, now=51.0)
-    assert 3 not in h.echoed
-    h.note_text(3, "и сразу проверим метрики за прошлый месяц",
-                is_mic=True, now=60.0)
-    h.note_text(None, "и сразу проверим метрики за прошлый месяц",
-                is_mic=False, now=61.0)
-    assert 3 in h.echoed
+    assert h._text_hits.get(3) == 1 and 3 not in h.echoed
 
 
-def test_text_echo_survives_stt_edge_cuts():
+def test_text_pair_survives_stt_edge_cuts():
     h = ov.Heard()
     h.note_text(None, "итак коллеги предлагаю закрыть вопрос по бэкапам сегодня",
                 is_mic=False, now=10.0)
-    # STT отрезал начало эха — совпадение по доле короткой стороны
     assert h.note_text(9, "предлагаю закрыть вопрос по бэкапам",
                        is_mic=True, now=11.0)
 
 
-def test_short_universal_phrases_are_not_echo():
+def test_short_universal_phrases_are_not_pairs():
     h = ov.Heard()
     h.note_text(None, "да ага понял", is_mic=False, now=10.0)
     assert not h.note_text(3, "да ага понял", is_mic=True, now=11.0)
-    # и 4-словные ритуальные формулы — тоже не эхо (порог 5 слов)
     h.note_text(None, "всем спасибо за участие", is_mic=False, now=20.0)
     assert not h.note_text(3, "всем спасибо за участие", is_mic=True, now=21.0)
-    assert 3 not in h.echoed
+    assert h._text_hits.get(3) is None
 
 
-def test_text_echo_window_expires():
-    h = ov.Heard()
-    h.note_text(None, "перенесём обсуждение витрин на следующую встречу",
-                is_mic=False, now=10.0)
-    late = 10.0 + ov.TEXT_ECHO_WINDOW_S + 1
-    # владелец ПОВТОРИЛ мысль собеседника через минуту — это речь, не эхо
-    assert not h.note_text(3, "перенесём обсуждение витрин на следующую встречу",
-                           is_mic=True, now=late)
-    assert 3 not in h.echoed
-
-
-def test_quote_outside_pair_window_is_not_echo():
+def test_text_pair_needs_narrow_time_window():
     h = ov.Heard()
     h.note_text(None, "мы переносим релиз на четверг после обеда",
                 is_mic=False, now=10.0)
-    # цитата через 20 с — в буфере, но ВНЕ узкого окна пары (эхо синхронно)
+    # цитата спустя десятки секунд — вне окна пары (эхо синхронно)
     assert not h.note_text(3, "ты сказал мы переносим релиз на четверг после обеда",
                            is_mic=True, now=10.0 + ov.TEXT_ECHO_PAIR_S + 5)
-    assert 3 not in h.echoed and h._text_hits.get(3) is None
+    assert h._text_hits.get(3) is None
 
 
-def test_signed_owner_is_immune_to_text_marking():
+def test_repeated_words_do_not_raise_the_bar():
+    h = ov.Heard()
+    h.note_text(None, "ладно ладно давайте начнём обсуждение планов",
+                is_mic=False, now=10.0)
+    # знаменатель — уникальные слова короткой стороны (круг-1, GLM)
+    assert h.note_text(4, "ладно давайте начнём обсуждение планов",
+                       is_mic=True, now=11.0)
+
+
+def test_text_path_never_touches_signature():
     h = ov.Heard()
     h.note(1, 20.0, is_mic=True)
     h.note(7, 5.0, is_mic=False)
-    assert ov.owner_voices(h) == {1}          # владелец решён
-    for k in range(3):
+    assert ov.owner_voices(h) == {1}
+    for k in range(4):
         h.note_text(None, f"давайте зафиксируем решение по пункту номер {k} прямо сейчас",
-                    is_mic=False, now=100.0 + k)
+                    is_mic=False, now=100.0 + k * 3)
         h.note_text(1, f"давайте зафиксируем решение по пункту номер {k} прямо сейчас",
-                    is_mic=True, now=101.0 + k)
-    # согласие и readback сохраняют слова собеседника — подпись не снимается
+                    is_mic=True, now=101.0 + k * 3)
     assert 1 not in h.echoed
-    assert ov.owner_voices(h) == {1}
+    assert ov.owner_voices(h) == {1}   # сколько бы пар ни насчитала телеметрия
 
 
-def test_text_echoed_voice_is_excluded_from_owners():
+def test_human_seconds_excludes_echoed_voices():
     h = ov.Heard()
-    h.note(1, 20.0, is_mic=True)      # владелец наговорил порог
-    h.note(2, 8.0, is_mic=True)       # эхо динамиков в микрофоне (свой id)
-    h.note(5, 4.0, is_mic=False)      # собеседник в системном канале
-    h.note_text(None, "по цифрам за квартал вопросов больше нет",
-                is_mic=False, now=100.0)
-    h.note_text(2, "по цифрам за квартал вопросов больше нет",
-                is_mic=True, now=101.0)
-    h.note_text(None, "коллеги предлагаю двигаться дальше по повестке дня",
-                is_mic=False, now=105.0)
-    h.note_text(2, "коллеги предлагаю двигаться дальше по повестке дня",
-                is_mic=True, now=106.0)
-    assert ov.owner_voices(h) == {1}
-
+    h.note(1, 20.0, is_mic=True)
+    h.note(2, 8.0, is_mic=True)
+    h.echoed.add(2)                    # id-путь пометил (текстовый — нет)
+    # статус «в микрофоне несколько человек» не должен считать эхо (Codex)
+    assert ov.human_seconds(h) == 20.0
