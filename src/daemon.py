@@ -54,6 +54,7 @@ from llm import LLM, embed as llm_embed  # noqa: E402
 from main import NOISE, Transcript  # noqa: E402
 from stt import STT  # noqa: E402
 
+import brain  # noqa: E402
 import graphs  # noqa: E402
 import hint_guard  # noqa: E402
 import meeting_stamp  # noqa: E402
@@ -1437,11 +1438,8 @@ def main():
                 return thread.add_archive(found[0].name, lines)
 
             try:
-                import requests as _rq
-                _folder = (graphs.graph_dir(cfg) or pathlib.Path("")).name
-                v = _rq.post("http://127.0.0.1:8100/vault_search",
-                             json={"query": title, "limit": 3, "folder": _folder,
-                                   "snippet_chars": 700}, timeout=8).json().get("text", "")
+                v = brain.vault_search(cfg, title, limit=3,
+                                       snippet_chars=700, timeout=8)
             except Exception:  # noqa: BLE001 — brain лежит: сначала узлы, потом честный статус
                 added = _nodes_direct()
                 if added:
@@ -1626,7 +1624,9 @@ def main():
                 if answer and not question_filter.is_refusal(answer):
                     if thread.add_answer(q, question_filter.squeeze(answer)):
                         emit({"type": "thread", "text": thread.render()})
-                    label = f"⚡ ответ на: {q[:120]}" if q else "⚡ мгновенный ответ"
+                    # 400, не 120: реальные вопросы владельца длиннее, и
+                    # аудит терял хвост (№95, находка Ox Alpha 24.08).
+                    label = f"⚡ ответ на: {q[:400]}" if q else "⚡ мгновенный ответ"
                     append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] {label}", answer)
 
     def cloud_loop():
@@ -2259,13 +2259,8 @@ def main():
         # (⚡ и авто ждут тот же lock), а сам поиск в модели не нуждается
         extra = ""
         try:  # граф и документы через brain Чароита (если поднят)
-            import requests as _rq
-            # folder: искать в ГРАФЕ проекта, не по всему Obsidian-vault —
-            # соседние личные папки не должны попадать в ответы на встрече
-            _folder = (graphs.graph_dir(cfg) or pathlib.Path("")).name
-            v = _rq.post("http://127.0.0.1:8100/vault_search",
-                         json={"query": question, "limit": 4, "folder": _folder,
-                               "snippet_chars": 600}, timeout=2.5).json().get("text", "")
+            v = brain.vault_search(cfg, question, limit=4,
+                                   snippet_chars=600, timeout=2.5)
             if v and "не найдено" not in v.lower():
                 # «⚠» — гейт уверенности brain: совпадения слабые, модель
                 # обязана честно сказать «в архиве нет», а не сочинять
@@ -2500,11 +2495,8 @@ def main():
                     break   # одна вставка за такт: нить не заливается
 
             try:
-                import requests as _rq
-                _folder = (graphs.graph_dir(cfg) or pathlib.Path("")).name
-                v = _rq.post("http://127.0.0.1:8100/vault_search",
-                             json={"query": query, "limit": 4, "folder": _folder,
-                                   "snippet_chars": 500}, timeout=6).json().get("text", "")
+                v = brain.vault_search(cfg, query, limit=4,
+                                       snippet_chars=500, timeout=6)
             except Exception:  # noqa: BLE001
                 # brain лежит — память собирается из узлов графа (ревью
                 # 15.08): деградация мягкая, а не «архива нет вовсе»

@@ -561,6 +561,12 @@ it signals degradation, it does not break the loop.
   never reach the disk, keeping the "nothing voice-derived on disk"
   promise). Enabling the marking is a separate decision on top of field
   data from real meetings. Phrase buffers live only in process memory.
+- **Graph memory has one client** (24.08, overhaul batch D-П3) — the
+  daemon's three hand-rolled POSTs to the brain server are merged into
+  src/brain.py: one request body, the project-graph folder resolved in
+  one place; timeouts and degradation stay with the loops (⚡ 2.5 s,
+  deja-vu 8 s, deep 6 s). The owner's question in the audit label is no
+  longer cut at 120 chars — the cap is 400 (№95).
 - **Heavy background work coordinates instead of colliding** (24.08) — the
   night of 23→24.08 a manual test-mutation run shared the one local model
   with a live meeting and then with the nightly cycle: dossiers caught 35
