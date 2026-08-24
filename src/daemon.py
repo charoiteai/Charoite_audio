@@ -1484,7 +1484,8 @@ def main():
 
     # Состояние слоя авто-подсказок, живущее ПОВЕРХ потока: сторож
     # пересоздаёт поток, а прочитанное (seen) и счётчик рестартов остаются.
-    hint_state = {"thread": None, "restarts": 0, "seen": 0}
+    hint_state = {"thread": None, "restarts": 0, "seen": 0,
+                  "pulse_mono": time.monotonic()}
 
     def auto_hint_loop():
         """Подсказки в реальном времени: сами, по мере накопления разговора.
@@ -1519,10 +1520,14 @@ def main():
                 # а сбой счётчика печатается как «?», не роняя строку.
                 if time.monotonic() - last_pulse >= 60.0:
                     last_pulse = time.monotonic()
-                    try:
-                        new_chars = str(len(tr.full()) - hint_state["seen"])
-                    except Exception:  # noqa: BLE001 — пульс живучее счётчика
-                        new_chars = "?"
+                    hint_state["pulse_mono"] = last_pulse  # для stall-детектора main
+                    if not toggles["hints"]:
+                        new_chars = "-"   # seen стоит при off — число врало бы бэклогом
+                    else:
+                        try:
+                            new_chars = str(len(tr.full()) - hint_state["seen"])
+                        except Exception:  # noqa: BLE001 — пульс живучее счётчика
+                            new_chars = "?"
                     print("hint-pulse: on=" + str(toggles["hints"]) +
                           f" new={new_chars} last={last_outcome} fails={failures}",
                           file=sys.stderr, flush=True)
@@ -2350,7 +2355,11 @@ def main():
             # владельца (ask/expand) — только слово и длина: err-лог чаще
             # прочих уезжает в баг-репорт (круг-1 по PR #398, DS).
             head = cmd.split(" ", 1)[0]
-            safe = cmd[:40] if head in {"stop", "hint", "cloud", "summary", "set"} \
+            # Красным — ПО ПРИЗНАКУ аргументов, не по списку имён: будущая
+            # команда с payload не утечёт в err-лог по чьей-то забывчивости
+            # (круг-2 по PR #398, DS). Единственное исключение — set: его
+            # аргументы — служебные токены слоёв (hints/theses on/off quiet).
+            safe = cmd[:40] if " " not in cmd or head == "set" \
                 else f"{head} len={len(cmd)}"
             print(f"cmd-in: {safe}", file=sys.stderr, flush=True)
             if cmd == "stop":
@@ -2611,6 +2620,27 @@ def main():
                 # честная строка человеку (класс утреннего краша stt_loop:
                 # 40 минут тишины без единого слова). Потолок — три
                 # перезапуска: дальше причина системная, крутить бессмысленно.
+                # Затык ЖИВОГО потока (главный сценарий 24.08: висит в
+                # модели/замке — is_alive() True, пульс из самого потока не
+                # печатается, лог просто обрывается). Судим по возрасту
+                # последнего пульса из главного цикла (круг-2 по #398, DS).
+                pulse_age = now_mono - hint_state["pulse_mono"]
+                if (hint_state["thread"].is_alive()
+                        and pulse_age > 2 * HINT_EVERY
+                        and now_mono - hint_state.get("stall_said", 0.0) > 150.0):
+                    hint_state["stall_said"] = now_mono
+                    print(f"hint-stall: поток жив, но не тикает {pulse_age:.0f} с "
+                          "(похоже, висит в генерации или на замке)",
+                          file=sys.stderr, flush=True)
+                # Слой сдался (потолок рестартов) — напоминание раз в 5 минут:
+                # лог, открытый через час, не должен выглядеть здоровым.
+                if (hint_state["restarts"] > hint_guard.RESTART_CAP
+                        and not hint_state["thread"].is_alive()
+                        and now_mono - hint_state.get("down_said", 0.0) > 300.0):
+                    hint_state["down_said"] = now_mono
+                    print("hint-guard: слой авто-подсказок лежит (после "
+                          f"{hint_guard.RESTART_CAP} рестартов)",
+                          file=sys.stderr, flush=True)
                 if not stop.is_set():
                     action, hint_state["restarts"] = hint_guard.hint_guard_step(
                         hint_state["restarts"], hint_state["thread"].is_alive())
