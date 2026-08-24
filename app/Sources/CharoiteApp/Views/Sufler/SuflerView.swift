@@ -260,20 +260,20 @@ struct SuflerView: View {
     }
 
     static func paneStack(hasHint: Bool, hinting: Bool, hasThread: Bool,
-                          running: Bool, hintsOn: Bool = true,
-                          thesesOn: Bool = true) -> PaneStack {
+                          running: Bool, hintsOn: Bool = true) -> PaneStack {
         let hint = hasHint || hinting
         let thread = hasThread
         var placeholder: String?
         if !hint && !thread {
-            if running && !hintsOn && !thesesOn {
-                // Нить растёт только под тумблерами (демон: toggles["hints"]
-                // для нити, toggles["theses"] для вставок) — с выключенными
-                // обоими обещание «появится через минуту» было бы враньём.
+            if running && !hintsOn {
+                // Нить растёт только под тумблером подсказок (демон:
+                // toggles["hints"]) — с выключенным обещание «появится через
+                // минуту» было бы враньём. Тезисный контур из панели убран
+                // (пакет владельца 24.08), его тумблер больше не участвует.
                 placeholder = L.t(
-                    "Подсказки и тезисы выключены — нить не растёт. Включи плашки сверху.",
-                    "Hints and theses are off — the thread won't grow. Turn the chips on above.",
-                    "提示和要点已关闭——脉络不会生长。请打开上方开关。")
+                    "Подсказки выключены — нить не растёт. Включи плашку сверху.",
+                    "Hints are off — the thread won't grow. Turn the chip on above.",
+                    "提示已关闭——脉络不会生长。请打开上方开关。")
             } else if running {
                 placeholder = L.t(
                     "Нить встречи появится через минуту разговора · ⌘⏎ — подсказка сейчас",
@@ -295,8 +295,7 @@ struct SuflerView: View {
                        hinting: sufler.isHinting,
                        hasThread: !sufler.thread.isEmpty,
                        running: sufler.isRunning,
-                       hintsOn: sufler.hintsOn,
-                       thesesOn: sufler.thesesOn)
+                       hintsOn: sufler.hintsOn)
     }
 
     /// ==Фрагменты==, которые внесла облачная ревизия нити, — небесным фоном:
@@ -336,7 +335,11 @@ struct SuflerView: View {
                 piece.font = .callout.weight(.medium)
                 piece.foregroundColor = Theme.warning
             } else if trimmed.hasPrefix("⚡") {
-                piece.font = .callout.weight(.medium)
+                // Ответ без строки вопроса (пакет 24.08): сама строка и есть
+                // подсказка — полужирно и цветом действия, чтобы находилась
+                // боковым зрением.
+                piece.font = .callout.weight(.semibold)
+                piece.foregroundColor = Theme.accent
             } else if trimmed.hasPrefix("?") {
                 piece.foregroundColor = .secondary
             } else if trimmed.hasPrefix("⏮") || trimmed.hasPrefix("💭") {
@@ -487,11 +490,14 @@ struct SuflerView: View {
             // время записи это главные кнопки и они обязаны быть видны первыми.
             if sufler.isRunning {
                 CharoiteSegment {
-                    Button(L.t("Подсказка", "Hint", "提示")) { sufler.requestHint() }
+                    // «Конспект», не «Подсказка»: рядом в LayerBar живёт чип
+                    // «Подсказки», и две одинаковые надписи читались как дубль
+                    // (слова владельца 24.08: «почему сверху две кнопки подсказки»).
+                    Button(L.t("Конспект", "Digest", "纪要")) { sufler.requestHint() }
                         .charoite(.quiet, .m)
                         .keyboardShortcut(.return, modifiers: .command)
                         .disabled(sufler.isHinting)
-                        .help(L.t("Подсказка по последним минутам (⌘⏎)", "Hint on the last minutes (⌘⏎)", "按最近几分钟提示（⌘⏎）"))
+                        .help(L.t("Конспект последних минут разговора (⌘⏎)", "A digest of the last minutes (⌘⏎)", "最近几分钟的纪要（⌘⏎）"))
 
                     Button("Claude") { sufler.requestCloud() }
                         .charoite(.quiet, .m)
@@ -500,19 +506,6 @@ struct SuflerView: View {
                         .help(sufler.cloudOn
                               ? L.t("Спросить Claude по ходу встречи — кусок стенограммы уйдёт в облако (⌘⇧⏎)", "Ask Claude mid-meeting — a transcript slice goes to the cloud (⌘⇧⏎)", "会议中问 Claude — 一段逐字稿将发送至云端（⌘⇧⏎）")
                               : L.t("Облако выключено: включите «Claude» в тулбаре. Стенограмма не покидает машину", "Cloud is off: enable “Claude” in the toolbar. The transcript never leaves this machine", "云端已关闭：在工具栏开启「Claude」。逐字稿不会离开本机"))
-
-                    Button { sufler.requestExpand() } label: {
-                        HStack(spacing: 4) {
-                            if sufler.isExpanding { ProgressView().controlSize(.small) }
-                            Text("⏮")
-                        }
-                    }
-                        .charoite(.quiet, .m)
-                        .keyboardShortcut("e", modifiers: [.command, .shift])
-                        .disabled(sufler.isExpanding)
-                        .help(L.t("Что было по текущей теме на прошлых встречах — из архива в нить (⌘⇧E)",
-                                  "What past meetings said on the current topic — from the archive into the thread (⌘⇧E)",
-                                  "过往会议对当前话题的讨论——从档案写入脉络（⌘⇧E）"))
 
                     Button(L.t("Протокол", "Minutes", "纪要")) { sufler.requestSummary() }
                         .charoite(.quiet, .m)
@@ -537,10 +530,6 @@ struct SuflerView: View {
                     .help(L.t("Подсказки и мгновенные ответы на вопросы собеседника", "Hints and instant answers to the other side's questions", "提示与对方提问的即时回答"))
                     .accessibilityLabel(L.t("Подсказки во время встречи", "Hints during the meeting", "会议期间的提示"))
                     .accessibilityHint(L.t("Мгновенные ответы на вопросы собеседника", "Instant answers to the other side's questions", "对方提问的即时回答"))
-                LayerChip(title: L.t("Тезисы", "Theses", "要点"), isOn: $sufler.thesesOn)
-                    .help(L.t("Автотезисы 📌💭 и дежавю ⏮ по ходу встречи", "Auto-theses 📌💭 and déjà vu ⏮ during the meeting", "会议中的自动要点 📌💭 与似曾相识 ⏮"))
-                    .accessibilityLabel(L.t("Автотезисы", "Auto-theses", "自动要点"))
-                    .accessibilityHint(L.t("Ключевые мысли и повторы по ходу встречи", "Key thoughts and repetitions during the meeting", "会议中的关键想法与重复内容"))
                 LayerChip(title: "Claude", isOn: $sufler.cloudOn, tint: Theme.sky)
                     .help(L.t("Параллельные ответы Claude на вопросы собеседника", "Parallel Claude answers to the other side's questions", "Claude 并行回答对方的提问"))
                     .accessibilityLabel(L.t("Ответы Claude", "Claude answers", "Claude 回答"))

@@ -529,6 +529,15 @@ it signals degradation, it does not break the loop.
   scroll view rather than a List with selection — the same choice as the
   sidebar, which lost clicks inside a List. Grouping, summary and plurals are
   a pure `LibraryScreenPolicy`, tested without UI.
+- **A copilot panel without extra words** (owner's package, Aug 24) — the
+  ⚡ answer to the other side's question is a single highlighted thread line
+  (semibold, action color) with no question line: the question stays in the
+  `_hints.md` audit, the canvas does not need it. The theses contour left
+  the panel (the chip and the ⏮ button; the daemon layer is muted
+  unconditionally), the manual request button was renamed to "Digest" —
+  the "Hints" layer chip lives next to it and two identical labels read as
+  a duplicate. The digest writes tighter: up to two lines per topic,
+  12 words each.
 - **Calendar inside the meeting library** — the week strip lives on top of
   the Meetings list: dots mark days that have recordings, one click turns
   the list into that day's feed — recordings as usual selectable rows plus

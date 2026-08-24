@@ -507,9 +507,13 @@ final class SuflerService: ObservableObject {
             beginSleepGuard()
             startClock()
             // сохранённые дефолты — новому демону (stdin буферизуется до готовности)
-            for (key, on) in [("hints", hintsOn), ("theses", thesesOn), ("cloud", cloudOn)] where !on {
+            for (key, on) in [("hints", hintsOn), ("cloud", cloudOn)] where !on {
                 send("set \(key) off")
             }
+            // Тезисный контур из панели убран (пакет владельца 24.08): чипа нет,
+            // включить его некому — глушим безусловно, даже если в старых
+            // UserDefaults остался thesesOn = true.
+            send("set theses off")
             lastEventAt = Date()
             lastSTTProgressAt = nil
             lastAudioInputAt = nil
