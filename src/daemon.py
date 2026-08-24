@@ -55,6 +55,7 @@ from main import NOISE, Transcript  # noqa: E402
 from stt import STT  # noqa: E402
 
 import graphs  # noqa: E402
+import hint_guard  # noqa: E402
 import meeting_stamp  # noqa: E402
 
 from charoite_paths import (
@@ -1481,6 +1482,11 @@ def main():
             finally:
                 expand_lock.release()
 
+    # Состояние слоя авто-подсказок, живущее ПОВЕРХ потока: сторож
+    # пересоздаёт поток, а прочитанное (seen) и счётчик рестартов остаются.
+    hint_state = {"thread": None, "restarts": 0, "seen": 0,
+                  "pulse_mono": time.monotonic()}
+
     def auto_hint_loop():
         """Подсказки в реальном времени: сами, по мере накопления разговора.
 
@@ -1494,22 +1500,47 @@ def main():
         тот же класс, что смерть потока 18.08). Три сбоя подряд — статус
         человеку: молчание не должно выглядеть как «нечего сказать».
         """
-        seen = 0
+        # seen — в hint_state: перезапуск стражем наследует прочитанное, а
+        # не считает всю стенограмму «новой» и не генерит внеплановый рекап
+        # (круг-1 по PR #398, DS Minor-3).
         wait = HINT_EVERY
         failures = 0
+        last_outcome = "-"
+        last_pulse = 0.0
         while not stop.is_set():
             time.sleep(wait)
             wait = HINT_EVERY
             try:
+                # Пульс наблюдаемости (инцидент 24.08: слой молчал три
+                # встречи подряд, а жив ли цикл и почему — проверить нечем:
+                # py-spy к hardened-релизу не подключается даже под root).
+                # Каждый такт цикла (~75 с), в err-лог, состояние — не
+                # контент. Под try: пульс не смеет убивать наблюдаемый поток
+                # (круг-1 по PR #398, DS Critical — tr.full() вне брони),
+                # а сбой счётчика печатается как «?», не роняя строку.
+                if time.monotonic() - last_pulse >= 60.0:
+                    last_pulse = time.monotonic()
+                    hint_state["pulse_mono"] = last_pulse  # для stall-детектора main
+                    if not toggles["hints"]:
+                        new_chars = "-"   # seen стоит при off — число врало бы бэклогом
+                    else:
+                        try:
+                            new_chars = str(len(tr.full()) - hint_state["seen"])
+                        except Exception:  # noqa: BLE001 — пульс живучее счётчика
+                            new_chars = "?"
+                    print("hint-pulse: on=" + str(toggles["hints"]) +
+                          f" new={new_chars} last={last_outcome} fails={failures}",
+                          file=sys.stderr, flush=True)
                 if not toggles["hints"]:
                     continue
                 full = tr.full()
-                if len(full) - seen < HINT_MIN_NEW:
+                if len(full) - hint_state["seen"] < HINT_MIN_NEW:
                     continue  # разговор не набежал — молчим
                 outcome = gen_hint(header=f"\n\n━━ авто {dt.datetime.now():%H:%M} ━━\n",
                                    model=auto_model)
+                last_outcome = outcome
                 if outcome == "done":
-                    seen = len(full)
+                    hint_state["seen"] = len(full)
                     failures = 0
                     continue
                 wait = HINT_RETRY
@@ -1524,6 +1555,7 @@ def main():
                 failures += 1
             except Exception as e:  # noqa: BLE001 — поток обязан пережить любой шаг
                 failures += 1
+                last_outcome = "failed"
                 emit_error(f"авто-подсказка сорвалась: {e}")
             # Напоминание на каждой полной тройке НОВЫХ сбоев — и только в
             # итерации, где счётчик вырос: клин может начаться и на двадцатой
@@ -2317,6 +2349,19 @@ def main():
         # блокировала чтение stop → Swift терминейтил демона без finally (потеря графа)
         for raw in sys.stdin:
             cmd = raw.strip().lower()
+            # Аудит доставки: 24.08 команды панели (hint/set) не давали
+            # видимого эффекта, и нечем было отличить «панель не шлёт» от
+            # «демон не слышит». Пишем ФАКТ получения. Команды с payload
+            # владельца (ask/expand) — только слово и длина: err-лог чаще
+            # прочих уезжает в баг-репорт (круг-1 по PR #398, DS).
+            head = cmd.split(" ", 1)[0]
+            # Красным — ПО ПРИЗНАКУ аргументов, не по списку имён: будущая
+            # команда с payload не утечёт в err-лог по чьей-то забывчивости
+            # (круг-2 по PR #398, DS). Единственное исключение — set: его
+            # аргументы — служебные токены слоёв (hints/theses on/off quiet).
+            safe = cmd[:40] if " " not in cmd or head == "set" \
+                else f"{head} len={len(cmd)}"
+            print(f"cmd-in: {safe}", file=sys.stderr, flush=True)
             if cmd == "stop":
                 stop.set()
                 return
@@ -2547,10 +2592,15 @@ def main():
                        "запись продолжается, остановите её кнопкой «Стоп»")
 
     threads = [threading.Thread(target=f, daemon=True) for f in (
-        stt_loop, think_loop, thread_loop, auto_hint_loop, instant_loop, cloud_loop,
+        stt_loop, think_loop, thread_loop, instant_loop, cloud_loop,
         fast_trigger_loop, deja_vu_loop, dialog_markup_loop, name_loop,
         minutes_loop, deep_loop, live_context_loop, stdin_loop, autostop_loop,
     )]
+    # Авто-подсказки — под именем и сторожем: 24.08 слой молчал три встречи
+    # подряд, и мёртвый поток был неотличим от «нечего сказать». Сторож в
+    # главном цикле перезапускает умершего и говорит об этом вслух.
+    hint_state["thread"] = threading.Thread(target=auto_hint_loop, daemon=True)
+    hint_state["thread"].start()
     for t in threads:
         t.start()
     try:
@@ -2566,6 +2616,46 @@ def main():
                 stage, stage_age = stt_stage_snapshot()
                 emit({"type": "hb", "stt_stage": stage,
                       "stt_stage_age_seconds": round(stage_age, 1)})
+                # Сторож слоя авто-подсказок: умерший поток — перезапуск и
+                # честная строка человеку (класс утреннего краша stt_loop:
+                # 40 минут тишины без единого слова). Потолок — три
+                # перезапуска: дальше причина системная, крутить бессмысленно.
+                # Затык ЖИВОГО потока (главный сценарий 24.08: висит в
+                # модели/замке — is_alive() True, пульс из самого потока не
+                # печатается, лог просто обрывается). Судим по возрасту
+                # последнего пульса из главного цикла (круг-2 по #398, DS).
+                pulse_age = now_mono - hint_state["pulse_mono"]
+                if (hint_state["thread"].is_alive()
+                        and pulse_age > 2 * HINT_EVERY
+                        and now_mono - hint_state.get("stall_said", 0.0) > 150.0):
+                    hint_state["stall_said"] = now_mono
+                    print(f"hint-stall: поток жив, но не тикает {pulse_age:.0f} с "
+                          "(похоже, висит в генерации или на замке)",
+                          file=sys.stderr, flush=True)
+                # Слой сдался (потолок рестартов) — напоминание раз в 5 минут:
+                # лог, открытый через час, не должен выглядеть здоровым.
+                if (hint_state["restarts"] > hint_guard.RESTART_CAP
+                        and not hint_state["thread"].is_alive()
+                        and now_mono - hint_state.get("down_said", 0.0) > 300.0):
+                    hint_state["down_said"] = now_mono
+                    print("hint-guard: слой авто-подсказок лежит (после "
+                          f"{hint_guard.RESTART_CAP} рестартов)",
+                          file=sys.stderr, flush=True)
+                if not stop.is_set():
+                    action, hint_state["restarts"] = hint_guard.hint_guard_step(
+                        hint_state["restarts"], hint_state["thread"].is_alive())
+                    if action == "restart":
+                        print(f"hint-guard: auto_hint_loop мёртв — перезапуск "
+                              f"#{hint_state['restarts']}", file=sys.stderr, flush=True)
+                        emit_error("слой авто-подсказок упал — перезапускаю "
+                                   f"(#{hint_state['restarts']})")
+                        hint_state["thread"] = threading.Thread(
+                            target=auto_hint_loop, daemon=True)
+                        hint_state["thread"].start()
+                    elif action == "gave_up":
+                        emit_error("слой авто-подсказок падает повторно — "
+                                   "оставляю до конца встречи, минутки и "
+                                   "дежавю работают")
                 # Пишет ГЛАВНЫЙ поток: если STT висит внутри ONNX, он сам не
                 # способен оставить строку. 30с — только диагностика; решение
                 # о рестарте остаётся за 100-секундным watchdog приложения.
