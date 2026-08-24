@@ -2,6 +2,7 @@
 (ночь 23→24.08: мутатор делил модель с досье — 35 ReadTimeout по 300 с;
 круг-1 по PR #399: pid+mtime-велосипед заменён flock по образцу live_gate)."""
 import json
+import os
 import pathlib
 import sys
 import time
@@ -51,7 +52,9 @@ def test_night_running_reads_status(tmp_path):
 
 
 def test_stale_night_status_does_not_block(tmp_path):
-    import os
+    # Связка с nightly.sh: mtime running обновляется на КАЖДОЙ границе
+    # шага (step()), поэтому протухание NIGHT_STALE_S означает именно
+    # «брошено» (ребут), а не «длинная живая ночь» (круг-2 по #399, DS).
     path = tmp_path / "logs" / "nightly.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({"state": "running"}), encoding="utf-8")

@@ -331,7 +331,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--timeout", type=int, default=120, help="секунд на прогон")
     ap.add_argument("--report", type=pathlib.Path, help="куда сложить отчёт")
     ap.add_argument("--force", action="store_true",
-                    help="стартовать, даже если машина занята встречей/разбором")
+                    help="стартовать, даже если машина занята встречей, разбором "
+                         "или ночным циклом (чужой лок мутатора не обходится)")
     args = ap.parse_args(argv[1:])
 
     root = pathlib.Path(subprocess.run(["git", "rev-parse", "--show-toplevel"],
@@ -395,6 +396,13 @@ def main(argv: list[str]) -> int:
     print(f"Мутантов к проверке: {len(plan)}"
           + (f" (СРЕЗАНО {dropped} — потолок --max={args.max})" if dropped else ""))
 
+    # Лок — ДО подготовки дерева: отказ не должен оставлять сиротой
+    # зарегистрированный worktree (круг-2 по PR #399, DS Minor).
+    lock = busy_signals.MutationLock(data_root)
+    if not lock.acquire():
+        print("другой мутатор уже держит лок — не стартую (--force не поможет: "
+              "два прогона на одной модели бессмысленны)")
+        return 3
     # Убитый на полпути прогон оставляет зарегистрированное дерево; без
     # уборки git будет считать его живым и мешать следующим запускам.
     subprocess.run(["git", "worktree", "prune"], cwd=root, capture_output=True)
@@ -405,11 +413,6 @@ def main(argv: list[str]) -> int:
                    cwd=root, capture_output=True, check=True)
     survivors: list[Mutation] = []
     skipped: list[Mutation] = []
-    lock = busy_signals.MutationLock(data_root)
-    if not lock.acquire():
-        print("другой мутатор уже держит лок — не стартую (--force не поможет: "
-              "два прогона на одной модели бессмысленны)")
-        return 3
     tested = 0
     aborted = ""
     try:
@@ -448,7 +451,7 @@ def main(argv: list[str]) -> int:
                 elif busy_signals.night_running(data_root):
                     aborted = "ночной цикл"
                 if aborted:
-                    print(f"⏹ {aborted} — прерываюсь ({i - 1}/{len(plan)} "
+                    print(f"⏹ {aborted} — прерываюсь ({tested}/{len(plan)} "
                           "проверено, остальное не судилось)")
                     break
             rel = mut.path.relative_to(root)
