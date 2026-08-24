@@ -42,7 +42,9 @@ enum LibraryScreenPolicy {
         return date > now ? .upcoming : .earlier
     }
 
-    /// Секции ленты: пустые корзины не показываем, внутри — новое первым.
+    /// Секции ленты: пустые корзины не показываем; внутри — новое первым,
+    /// а во «Впереди» — ближайшее первым, иначе сверху стояла бы самая
+    /// дальняя дата.
     static func sections<T>(_ items: [T], date: (T) -> Date,
                             now: Date = Date(),
                             calendar: Calendar = .current) -> [(bucket: Bucket, items: [T])] {
@@ -52,7 +54,10 @@ enum LibraryScreenPolicy {
         }
         return Bucket.allCases.compactMap { bucket in
             guard let group = byBucket[bucket], !group.isEmpty else { return nil }
-            return (bucket, group.sorted { date($0) > date($1) })
+            let sorted = bucket == .upcoming
+                ? group.sorted { date($0) < date($1) }
+                : group.sorted { date($0) > date($1) }
+            return (bucket, sorted)
         }
     }
 

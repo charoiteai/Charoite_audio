@@ -42,10 +42,11 @@ final class LibraryScreenPolicyTests: XCTestCase {
 
     func testSectionsDropEmptyBucketsAndSortNewestFirst() {
         let cal = monday
-        let items = [day(17), day(23, hour: 9), day(23, hour: 15), day(2, month: 7), day(9, month: 9)]
+        let items = [day(17), day(23, hour: 9), day(23, hour: 15), day(2, month: 7), day(9, month: 9), day(1, month: 9)]
         let sections = LibraryScreenPolicy.sections(items, date: { $0 }, now: now, calendar: cal)
         XCTAssertEqual(sections.map(\.bucket), [.upcoming, .today, .week, .earlier])
-        XCTAssertEqual(sections[0].items, [day(9, month: 9)], "будущее за неделей — сверху, отдельной корзиной")
+        XCTAssertEqual(sections[0].items, [day(1, month: 9), day(9, month: 9)],
+                       "будущее за неделей — сверху, ближайшее первым")
         XCTAssertEqual(sections[1].items, [day(23, hour: 15), day(23, hour: 9)], "внутри секции новое первым")
         XCTAssertEqual(sections[2].items, [day(17)])
         let onlyOld = LibraryScreenPolicy.sections([day(2, month: 7)], date: { $0 }, now: now, calendar: cal)

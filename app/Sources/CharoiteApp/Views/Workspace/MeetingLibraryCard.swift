@@ -41,6 +41,11 @@ extension MeetingLibraryView {
         .background(shape.fill(Color(nsColor: .controlBackgroundColor)))
         .overlay(shape.strokeBorder(isSelected ? Theme.accent.opacity(0.45) : Color.primary.opacity(0.06),
                                     lineWidth: 1))
+        // Вся рамка — зона выбора: поля и пустое место в строке действий
+        // тоже выбирают встречу (DeepSeek, круг-2). Кнопки внутри стоят
+        // глубже и забирают свои клики сами; вложенных кнопок нет.
+        .contentShape(shape)
+        .onTapGesture { navigation.selectedMeetingID = record.id }
         .opacity(record.state == .empty ? 0.75 : 1)
     }
 
@@ -57,7 +62,8 @@ extension MeetingLibraryView {
             if !meta.isEmpty {
                 Text(meta.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
             }
-            if let gist = record.card.gist {
+            let gist = record.card.gist?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !gist.isEmpty {
                 Text(gist).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             } else if meta.isEmpty {
                 // Карточка без единого слова — одна точка: состояние обязано
@@ -99,6 +105,9 @@ extension MeetingLibraryView {
                     // Тихая, не ссылка: повтор запускает конвейер, а ссылка по
                     // шкале кнопок ничего не меняет.
                     Button(L.t("Повторить обработку", "Retry processing", "重试处理")) {
+                        // Повтор и выбирает встречу: человек смотрит на то,
+                        // что перезапустил, а не на прежнюю карточку.
+                        navigation.selectedMeetingID = record.id
                         processing.retry(record.snapshot)
                     }
                     .charoite(.quiet, .s)
@@ -156,7 +165,7 @@ extension MeetingLibraryView {
         }
     }
 
-    /// Сегодня — время; на этой неделе — день недели и число; раньше — дата.
+    /// Сегодня — время; на этой неделе — день недели и число; раньше и впереди — дата.
     func when(_ date: Date, bucket: LibraryScreenPolicy.Bucket) -> String {
         switch bucket {
         case .today: return Self.timeFormatter.string(from: date)
