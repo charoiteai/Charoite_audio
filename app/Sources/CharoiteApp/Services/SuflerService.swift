@@ -73,9 +73,6 @@ final class SuflerService: ObservableObject {
     @Published var hintsOn = UserDefaults.standard.object(forKey: "sufler.hints") as? Bool ?? true {
         didSet { applyToggle("hints", hintsOn) }
     }
-    @Published var thesesOn = UserDefaults.standard.object(forKey: "sufler.theses") as? Bool ?? true {
-        didSet { applyToggle("theses", thesesOn) }
-    }
     // Облако — единственный тумблер, который отправляет стенограмму с машины,
     // поэтому его дефолт «выключено», а не «включено», как у локальных
     // контуров: PRIVACY.md обещает opt-in, и первое включение делает человек.
@@ -509,9 +506,10 @@ final class SuflerService: ObservableObject {
             for (key, on) in [("hints", hintsOn), ("cloud", cloudOn)] where !on {
                 send("set \(key) off quiet")
             }
-            // Тезисный контур из панели убран (пакет владельца 24.08): чипа нет,
-            // включить его некому — глушим безусловно, даже если в старых
-            // UserDefaults остался thesesOn = true.
+            // Тезисный контур убран целиком (пакет владельца 24.08, свойство
+            // thesesOn удалено партией G-П1 карты #402): включить слой некому
+            // — глушим безусловно; посылка НЕСУЩАЯ, демон иначе поднимет
+            // слой дефолтом.
             send("set theses off quiet")
             lastEventAt = Date()
             lastSTTProgressAt = nil
