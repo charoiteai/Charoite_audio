@@ -971,6 +971,13 @@ def main():
                         heard_by_channel.note(n, len(voiced) / hub.sr,
                                               is_mic=speaker == mic_label,
                                               now=time.monotonic())
+                    # Текстовая сверка эха (№93): фраза, совпавшая с
+                    # недавней фразой другого канала, — эхо динамиков, её
+                    # голос липко исключается из кандидатов владельца.
+                    # Сверка по словам, id каналов не нужны.
+                    heard_by_channel.note_text(
+                        n if n is not None and n >= 0 else None, text,
+                        is_mic=speaker == mic_label, now=time.monotonic())
                     if n is None:
                         name = voice_label(speaker, piece)
                     elif n < 0:
@@ -2620,6 +2627,19 @@ def main():
                 # честная строка человеку (класс утреннего краша stt_loop:
                 # 40 минут тишины без единого слова). Потолок — три
                 # перезапуска: дальше причина системная, крутить бессмысленно.
+                # Пульс владельца (№93): счётчики каналов и вердикт подписи
+                # раз в минуту — следующая встреча объяснит «Собеседник N»
+                # на репликах владельца цифрами, а не догадками.
+                if now_mono - hint_state.get("owner_said", 0.0) > 60.0:
+                    hint_state["owner_said"] = now_mono
+                    hb = heard_by_channel
+                    top = lambda d: {v: round(s, 1) for v, s in  # noqa: E731
+                                     sorted(d.items(), key=lambda kv: -kv[1])[:4]}
+                    print(f"owner-pulse: call={hb.call} ready={hb.owner_ready} "
+                          f"mic={top(hb.mic)} bh={top(hb.bh)} "
+                          f"echoed={sorted(hb.echoed)} "
+                          f"owners={sorted(owner_voice.owner_voices(hb))}",
+                          file=sys.stderr, flush=True)
                 # Затык ЖИВОГО потока (главный сценарий 24.08: висит в
                 # модели/замке — is_alive() True, пульс из самого потока не
                 # печатается, лог просто обрывается). Судим по возрасту

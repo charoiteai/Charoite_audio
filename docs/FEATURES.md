@@ -544,6 +544,20 @@ it signals degradation, it does not break the loop.
   status line each — counted from the graph on disk, refreshed at most once
   a minute. Source parsing, labels and the meta line are a pure
   `MemoryScreenPolicy`, tested without UI.
+- **The owner's voice survives speakers** (24.08) — with the meeting
+  playing through speakers, the interlocutors' echo lands in the
+  microphone, and the owner-signing logic used to see "several people in
+  the mic" and honestly refuse to sign anyone: on real speaker meetings
+  the owner was «Собеседник N» every time. Voice-id cross-checking could
+  not catch this — the live tracker labels each channel independently,
+  so the echo's id in the mic never matches the speaker's id in the
+  system channel. Echo is now also recognized by TEXT: a phrase whose
+  words match a recent phrase from the other channel (0.8 overlap of the
+  shorter side, four-plus words, half-minute window, either arrival
+  order) marks that microphone voice as echo — stickily, like the id
+  path — and the remaining live microphone voice is the owner. Phrase
+  buffers live only in process memory; an owner-pulse line in the error
+  log shows the channel counters and the signing verdict once a minute.
 - **Heavy background work coordinates instead of colliding** (24.08) — the
   night of 23→24.08 a manual test-mutation run shared the one local model
   with a live meeting and then with the nightly cycle: dossiers caught 35

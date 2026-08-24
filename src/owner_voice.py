@@ -59,6 +59,36 @@ NEUTRAL_BASE = "Собеседник"
 #: следовать за этим, а не за первыми минутами.
 WINDOW_S = 180.0
 
+#: Текстовое эхо: сколько секунд помним недавние реплики каждого канала.
+#: Эхо в микрофон и оригинал в системный канал распознаются в соседних
+#: чанках — окна в полминуты хватает с запасом.
+TEXT_ECHO_WINDOW_S = 30.0
+#: Совпадение слов, начиная с которого фраза микрофона считается эхом
+#: реплики из динамиков. Доля — от КОРОТКОЙ из двух фраз: STT режет края
+#: эха, и требовать полное равенство значит не поймать ничего.
+TEXT_ECHO_OVERLAP = 0.8
+#: Минимум слов в короткой фразе пары: «да», «ага, понял» совпадают у всех
+#: участников постоянно — это не эхо, а живая речь.
+TEXT_ECHO_MIN_WORDS = 4
+
+
+def norm_words(text: str) -> tuple[str, ...]:
+    """Слова фразы для сверки эха: нижний регистр, ё=е, без пунктуации."""
+    out = []
+    for raw in text.lower().replace("ё", "е").split():
+        w = "".join(ch for ch in raw if ch.isalnum())
+        if w:
+            out.append(w)
+    return tuple(out)
+
+
+def text_echo_match(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
+    """Одна ли это фраза в двух каналах — по пересечению слов."""
+    short = min(len(a), len(b))
+    if short < TEXT_ECHO_MIN_WORDS:
+        return False
+    return len(set(a) & set(b)) / short >= TEXT_ECHO_OVERLAP
+
 
 @dataclasses.dataclass
 class Heard:
@@ -85,6 +115,15 @@ class Heard:
     #: времени — законное значение (тесты, монотонные часы с нуля), и
     #: `if not self._last` съедал бы первое затухание молча.
     _last: float | None = None
+    #: Недавние фразы каналов для ТЕКСТОВОЙ сверки эха (№93, 24.08: сверка
+    #: по voice id слепа — live-трекер размечает каналы независимо, и id
+    #: эха в микрофоне не совпадает с id собеседника в динамиках; текст
+    #: одной фразы совпадает в обоих каналах независимо от id). Только в
+    #: памяти процесса, на диск не попадает, окно TEXT_ECHO_WINDOW_S.
+    _mic_texts: list[tuple[float, int | None, tuple[str, ...]]] = \
+        dataclasses.field(default_factory=list)
+    _bh_texts: list[tuple[float, tuple[str, ...]]] = \
+        dataclasses.field(default_factory=list)
 
     def note(self, voice: int | None, seconds: float, *, is_mic: bool,
              now: float | None = None) -> None:
@@ -99,6 +138,41 @@ class Heard:
         acc[voice] = acc.get(voice, 0.0) + seconds
         if not is_mic and acc[voice] > ECHO_SECONDS:
             self.echoed.add(voice)      # раз собеседник — навсегда собеседник
+
+    def note_text(self, voice: int | None, text: str, *, is_mic: bool,
+                  now: float) -> bool:
+        """Сверить фразу с недавними фразами ДРУГОГО канала.
+
+        Совпадение → голос микрофона из пары помечается эхом (липко, как в
+        `note`). Порядок распознавания каналов неизвестен — эхо в микрофоне
+        может прийти и раньше оригинала, поэтому помним обе стороны и
+        сверяем в обе (круг-1 дизайна №93).
+        """
+        words = norm_words(text)
+        if len(words) < TEXT_ECHO_MIN_WORDS:
+            return False
+        fresh = now - TEXT_ECHO_WINDOW_S
+        self._mic_texts = [x for x in self._mic_texts if x[0] >= fresh]
+        self._bh_texts = [x for x in self._bh_texts if x[0] >= fresh]
+        matched = False
+        if is_mic:
+            for _, bh_words in self._bh_texts:
+                if text_echo_match(words, bh_words):
+                    matched = True
+                    if voice is not None:
+                        self.echoed.add(voice)
+                    break
+            if not matched:
+                self._mic_texts.append((now, voice, words))
+        else:
+            for _, mic_voice, mic_words in self._mic_texts:
+                if text_echo_match(words, mic_words):
+                    matched = True
+                    if mic_voice is not None:
+                        self.echoed.add(mic_voice)
+                    break
+            self._bh_texts.append((now, words))
+        return matched
 
     def _decay(self, now: float) -> None:
         if self._last is None:

@@ -371,3 +371,67 @@ def test_чуть_меньше_порога_ещё_рано():
     heard = _call(mic={7: ov.MIN_MIC_SECONDS - 0.5})
 
     assert ov.owner_voices(heard) == set()
+
+
+# --- Текстовое эхо (№93, 24.08): сверка каналов по фразе, не по voice id ---
+
+def test_text_echo_marks_mic_voice_when_original_came_first():
+    h = ov.Heard()
+    h.note(7, 5.0, is_mic=False)                       # собеседник в динамиках
+    h.note_text(None, "мы договорились перенести релиз на четверг",
+                is_mic=False, now=100.0)
+    # эхо той же фразы в микрофоне: live-трекер дал ему СВОЙ id 3
+    assert h.note_text(3, "мы договорились перенести релиз на четверг",
+                       is_mic=True, now=101.0)
+    assert 3 in h.echoed
+
+
+def test_text_echo_matches_in_reverse_order_too():
+    h = ov.Heard()
+    # конвейер чанков распознал микрофонное эхо РАНЬШЕ оригинала
+    assert not h.note_text(3, "давайте посмотрим логи за прошлую неделю",
+                           is_mic=True, now=50.0)
+    assert h.note_text(None, "давайте посмотрим логи за прошлую неделю",
+                       is_mic=False, now=51.0)
+    assert 3 in h.echoed
+
+
+def test_text_echo_survives_stt_edge_cuts():
+    h = ov.Heard()
+    h.note_text(None, "итак коллеги предлагаю закрыть вопрос по бэкапам сегодня",
+                is_mic=False, now=10.0)
+    # STT отрезал начало эха и потерял слово — совпадение по доле короткой
+    assert h.note_text(9, "предлагаю закрыть вопрос по бэкапам",
+                       is_mic=True, now=11.0)
+    assert 9 in h.echoed
+
+
+def test_short_universal_phrases_are_not_echo():
+    h = ov.Heard()
+    h.note_text(None, "да ага понял", is_mic=False, now=10.0)
+    assert not h.note_text(3, "да ага понял", is_mic=True, now=11.0)
+    assert 3 not in h.echoed
+
+
+def test_text_echo_window_expires():
+    h = ov.Heard()
+    h.note_text(None, "перенесём обсуждение витрин на следующую встречу",
+                is_mic=False, now=10.0)
+    late = 10.0 + ov.TEXT_ECHO_WINDOW_S + 1
+    # владелец ПОВТОРИЛ мысль собеседника через минуту — это речь, не эхо
+    assert not h.note_text(3, "перенесём обсуждение витрин на следующую встречу",
+                           is_mic=True, now=late)
+    assert 3 not in h.echoed
+
+
+def test_text_echoed_voice_is_excluded_from_owners():
+    h = ov.Heard()
+    h.note(1, 20.0, is_mic=True)      # владелец наговорил порог
+    h.note(2, 8.0, is_mic=True)       # эхо динамиков в микрофоне (свой id)
+    h.note(5, 4.0, is_mic=False)      # собеседник в системном канале
+    h.note_text(None, "по цифрам за квартал вопросов больше нет",
+                is_mic=False, now=100.0)
+    h.note_text(2, "по цифрам за квартал вопросов больше нет",
+                is_mic=True, now=101.0)
+    assert ov.owner_voices(h) == {1}
+
