@@ -5,6 +5,19 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.59.0](https://github.com/charoiteai/Charoite_audio/compare/v0.58.4...v0.59.0) (2026-08-24)
+
+
+### Features
+
+* **design:** библиотека встреч — лента карточек по дням, мини-сегмент глубин, ошибка словами (№55, экран 3) ([#391](https://github.com/charoiteai/Charoite_audio/issues/391)) ([3babea0](https://github.com/charoiteai/Charoite_audio/commit/3babea024ea7c1447b40188bfb319081774a034f))
+* **sufler:** панель без лишних слов — ⚡ без строки вопроса, тезисы убраны из панели, «Конспект» вместо второй «Подсказки» ([#394](https://github.com/charoiteai/Charoite_audio/issues/394)) ([1ac6b29](https://github.com/charoiteai/Charoite_audio/commit/1ac6b29ddcd4e9ed7c82749a8e9c44ff1b81cc6e))
+
+
+### Bug Fixes
+
+* **sufler:** подсказчик не умирает молча — весь шаг авто-цикла под try, замок с потолком ожидания ([#393](https://github.com/charoiteai/Charoite_audio/issues/393)) ([40c942d](https://github.com/charoiteai/Charoite_audio/commit/40c942d5a68adb853bc3a7ed6c9d04ba5410c666))
+
 ## [0.58.4](https://github.com/charoiteai/Charoite_audio/compare/v0.58.3...v0.58.4) (2026-08-23)
 
 
