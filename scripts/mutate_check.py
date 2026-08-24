@@ -330,11 +330,29 @@ def main(argv: list[str]) -> int:
                     help="потолок мутантов (срезанное объявляется вслух)")
     ap.add_argument("--timeout", type=int, default=120, help="секунд на прогон")
     ap.add_argument("--report", type=pathlib.Path, help="куда сложить отчёт")
+    ap.add_argument("--force", action="store_true",
+                    help="стартовать, даже если машина занята встречей/разбором")
     args = ap.parse_args(argv[1:])
 
     root = pathlib.Path(subprocess.run(["git", "rev-parse", "--show-toplevel"],
                                        capture_output=True, text=True,
                                        check=True).stdout.strip())
+    # Координация с живым контуром (ночь 23→24.08: мутатор делил qwen35b со
+    # встречей и с ночным циклом — 35 ReadTimeout по 300 с у досье, прогон
+    # оборван руками в 10:28). Правила: (1) на старте машина занята встречей
+    # или разбором — честный отказ, не тихая толкотня; (2) на время прогона
+    # лежит logs/mutation.lock — ночь (wait_for_idle) видит нас и ждёт;
+    # (3) началась живая встреча — прерываемся между мутантами.
+    sys.path.insert(0, str(root / "src"))
+    import busy_signals  # noqa: E402
+    # Корень ДАННЫХ — как у ночи: env или сам репо (вложенные установки).
+    data_root = pathlib.Path(os.environ.get("CHAROITE_ROOT") or root)
+    if not args.force:
+        busy = busy_signals.machine_busy(data_root)
+        if busy:
+            print(f"машина занята ({', '.join(busy)}) — мутатор не стартует "
+                  "(--force, чтобы настоять)")
+            return 3
     targets = changed_lines(root, args.range)
     if not targets:
         print(f"В {args.range} нет изменённых строк в src/ — ломать нечего.")
@@ -384,6 +402,8 @@ def main(argv: list[str]) -> int:
                    cwd=root, capture_output=True, check=True)
     survivors: list[Mutation] = []
     skipped: list[Mutation] = []
+    lock = busy_signals.MutationLock(data_root)
+    lock.acquire()
     try:
         # СНАЧАЛА чистый прогон. В отдельном дереве нет файлов из .gitignore —
         # ни моделей, ни конфига, ни данных, — и тесты там могут быть красными
@@ -411,6 +431,13 @@ def main(argv: list[str]) -> int:
                   "засчитались бы убитыми — считать их бессмысленно.")
             return 2
         for i, mut in enumerate(plan, 1):
+            # Живая встреча важнее метрики: началась запись — прерываемся
+            # между мутантами, несделанное честно объявляется срезанным.
+            if not args.force and busy_signals.live_recording(data_root):
+                print(f"⏹ живая встреча — прерываюсь ({i - 1}/{len(plan)} "
+                      "проверено, остальное не судилось)")
+                break
+            lock.beat()
             rel = mut.path.relative_to(root)
             target = work / rel
             original = target.read_text(encoding="utf-8")
@@ -434,6 +461,7 @@ def main(argv: list[str]) -> int:
             if alive:
                 survivors.append(mut)
     finally:
+        lock.release()
         subprocess.run(["git", "worktree", "remove", "--force", str(work)],
                        cwd=root, capture_output=True)
         shutil.rmtree(tmp, ignore_errors=True)
