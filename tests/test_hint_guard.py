@@ -1,37 +1,38 @@
 """Сторож слоя авто-подсказок (инцидент 24.08: слой молчал три встречи).
 
-Логика стража живёт в главном цикле демона; здесь фиксируем контракт
-кусочков, из которых он собран: мёртвый поток перезапускается с честной
-строкой, потолок перезапусков не превышается, живой поток не трогается.
-Сам цикл в тесте не крутим — воспроизводим шаг стража как в daemon.py.
+Тестируем ТУ ЖЕ функцию, что исполняет главный цикл демона, — не копию
+(круг-1 по PR #398, DS: копия молча рассинхронится).
 """
-import threading
+import pathlib
+import sys
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "src"))
+
+from hint_guard import hint_guard_step  # noqa: E402
 
 
-def guard_step(hint_state, alive: bool, said: list):
-    """Один шаг стража — копия ветки из daemon.py (держать в синхроне)."""
-    if not alive:
-        if hint_state["restarts"] < 3:
-            hint_state["restarts"] += 1
-            said.append(f"restart #{hint_state['restarts']}")
-            hint_state["thread"] = threading.Thread(target=lambda: None, daemon=True)
-        elif hint_state["restarts"] == 3:
-            hint_state["restarts"] += 1
-            said.append("gave up")
+def run(steps_alive):
+    said, restarts = [], 0
+    for alive in steps_alive:
+        action, restarts = hint_guard_step(restarts, alive)
+        if action:
+            said.append(action if action == "gave_up" else f"restart #{restarts}")
+    return said, restarts
 
 
 def test_dead_thread_restarts_up_to_three_times():
-    state = {"thread": None, "restarts": 0}
-    said: list = []
-    for _ in range(6):
-        guard_step(state, alive=False, said=said)
-    assert said == ["restart #1", "restart #2", "restart #3", "gave up"]
-    assert state["restarts"] == 4  # счётчик замер: «сдался» не повторяется
+    said, restarts = run([False] * 6)
+    assert said == ["restart #1", "restart #2", "restart #3", "gave_up"]
+    assert restarts == 4  # счётчик замер: «сдался» не повторяется
 
 
 def test_alive_thread_is_left_alone():
-    state = {"thread": None, "restarts": 0}
-    said: list = []
-    for _ in range(5):
-        guard_step(state, alive=True, said=said)
-    assert said == [] and state["restarts"] == 0
+    said, restarts = run([True] * 5)
+    assert said == [] and restarts == 0
+
+
+def test_revived_thread_keeps_budget():
+    # Ожил после первого рестарта — бюджет не тратится, пока снова не умрёт.
+    said, _ = run([False, True, True, False, False, False, False])
+    assert said == ["restart #1", "restart #2", "restart #3", "gave_up"]
