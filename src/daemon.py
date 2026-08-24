@@ -1588,11 +1588,15 @@ def main():
             if out and not question_filter.is_refusal(out):
                 if thread.add_answer(q, question_filter.squeeze(out, max_lines=3, max_chars=380)):
                     emit({"type": "thread", "text": thread.render()})
-            if q:  # лента облака в панели начинается с вопроса, на который отвечает
+            # Лента облака в панели начинается с вопроса; в аудит label уже
+            # несёт «на: {q}» — тело пишем без префикса, чтобы вопрос не
+            # задваивался (круг-2 по #394, DS Minor).
+            body_for_audit = out
+            if q:
                 out = f"❓ {q}\n\n{out}"
             emit({"type": "cloud_done"})
             label = f"☁️ {model} — на: {q[:120]}" if q else f"☁️ {model}"
-            append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] {label}", out)
+            append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] {label}", body_for_audit)
 
     def fast_trigger_loop():
         """Быстрый триггер вопросов через gigastt-стрим: partial ~0.8с вместо чанка 3с.
@@ -2250,12 +2254,16 @@ def main():
                     wanted = parts[2] == "on"
                     changed = toggles[parts[1]] != wanted
                     toggles[parts[1]] = wanted
-                    # Статус — только на реальную смену: стартовый безусловный
-                    # «set theses off» (панель без чипа) иначе затирал строку
-                    # «Запись прервалась — восстанавливаю» при каждом
-                    # авто-рестарте (круг-1 по #394, Codex).
-                    if changed:
-                        ru = {"hints": "подсказки", "theses": "тезисы", "cloud": "Claude"}
+                    # Статус — только на реальную смену И не для тезисов:
+                    # тумблеры не переживают рестарт процесса, а приложение
+                    # шлёт «set theses off» безусловно при каждом запуске —
+                    # «изменение» с захардкоженного True случалось на любом
+                    # авто-рестарте и затирало строку «Запись прервалась —
+                    # восстанавливаю» (круг-2 по #394, DS+Codex). Чипа тезисов
+                    # в панели нет — сообщать «выключены» некому и незачем;
+                    # дефолт True в toggles не трогаем — он для headless.
+                    if changed and parts[1] != "theses":
+                        ru = {"hints": "подсказки", "cloud": "Claude"}
                         state = "включены" if wanted else "выключены"
                         emit({"type": "status", "text": f"⚙️ {ru[parts[1]]} {state}"})
         stop.set()  # stdin закрылся — родитель умер

@@ -337,9 +337,8 @@ it signals degradation, it does not break the loop.
   it must not eat it). A hint mid-stream is never cut by a thread event
   either; the daemon marks streams as manual/auto so the app can tell.
   While streaming, the view anchors to the top of the card so tokens do
-  not scroll past the reader. If both hint and thesis contours are toggled
-  off, the empty pane says so instead of promising a thread that will
-  never grow.
+  not scroll past the reader. If hints are toggled off, the
+  empty pane says so instead of promising a thread that will never grow.
 
 - **Live meeting context** — the topic emerges a few minutes into the
   call; the daemon distills it from the live transcript, searches the
