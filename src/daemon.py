@@ -1179,7 +1179,19 @@ def main():
         """
         if manual:
             manual_evt.set()  # сигнал авто-генерации уступить
-        with hint_lock:
+        # Замок — с потолком ожидания, не навсегда: 24.08 (встреча 10:14)
+        # зависший держатель hint_lock обездвижил и авто-цикл, и ручную
+        # кнопку до конца встречи, панель молчала без единого слова. Человек
+        # нажал — человек должен получить либо подсказку, либо честное
+        # «занято», а не тишину.
+        if not hint_lock.acquire(timeout=45.0 if manual else 240.0):
+            emit_error("подсказчик занят: прежняя генерация не отпустила замок")
+            if manual:
+                emit({"type": "hint", "text": "\n⚠ подсказчик занят — попробуйте ещё раз",
+                      "manual": True})
+                emit({"type": "hint_done", "manual": True})
+            return False
+        try:
             if manual:
                 manual_evt.clear()
             tail = tr.tail(max_ctx)
@@ -1218,6 +1230,8 @@ def main():
                     kind += f", сорвалась: {short_error(failed)}"
                 append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] подсказка ({kind})", "".join(parts))
             return failed is None and not yielded   # уступила — вернёмся к этому куску раньше
+        finally:
+            hint_lock.release()
 
 
     _refine_last = {"len": 0}
@@ -1440,27 +1454,37 @@ def main():
         Сорвалась (модель занята) — следующая попытка через HINT_RETRY, а не
         через полный интервал, и без требования новых HINT_MIN_NEW знаков:
         разговор, на котором сорвались, ещё не законспектирован.
+
+        Под try — ВЕСЬ шаг итерации, а не только gen_hint: tr.full() стоял до
+        try, и исключение в нём убивало поток навсегда — панель молчала, а
+        heartbeat шёл (встреча 24.08 10:14: 40 минут без единой авто-подсказки,
+        тот же класс, что смерть потока 18.08). Три сбоя подряд — статус
+        человеку: молчание не должно выглядеть как «нечего сказать».
         """
         seen = 0
         wait = HINT_EVERY
+        failures = 0
         while not stop.is_set():
             time.sleep(wait)
             wait = HINT_EVERY
-            if not toggles["hints"]:
-                continue
-            full = tr.full()
-            if len(full) - seen < HINT_MIN_NEW:
-                continue  # разговор не набежал — молчим
             try:
+                if not toggles["hints"]:
+                    continue
+                full = tr.full()
+                if len(full) - seen < HINT_MIN_NEW:
+                    continue  # разговор не набежал — молчим
                 if gen_hint(header=f"\n\n━━ авто {dt.datetime.now():%H:%M} ━━\n", model=auto_model):
                     seen = len(full)
+                    failures = 0
                 else:
                     wait = HINT_RETRY
-            except Exception as e:  # noqa: BLE001 — единственный поток без своего try:
-                # сбой вне внутреннего try gen_hint (например, запись подсказки в
-                # файл на недоступном iCloud) убивал поток НАВСЕГДА, а heartbeat
-                # главного треда продолжал идти — UI считал, что всё живо
+            except Exception as e:  # noqa: BLE001 — поток обязан пережить любой шаг
+                failures += 1
                 emit_error(f"авто-подсказка сорвалась: {e}")
+                if failures == 3:
+                    emit({"type": "status",
+                          "text": "⚠️ авто-подсказки не выходят три раза подряд — "
+                                  "жива ручная кнопка; подробности в статусах"})
 
     def instant_loop():
         """Режим собеседования: вопрос от собеседника → готовый ответ без задержки.

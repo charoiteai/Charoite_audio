@@ -529,6 +529,13 @@ it signals degradation, it does not break the loop.
   scroll view rather than a List with selection — the same choice as the
   sidebar, which lost clicks inside a List. Grouping, summary and plurals are
   a pure `LibraryScreenPolicy`, tested without UI.
+- **The hint engine never dies silently** (Aug 24) — the auto-hint loop
+  wraps its whole iteration step in try (an exception before the inner try
+  used to kill the thread forever: the Aug 24 meeting went without a single
+  auto hint while the heartbeat looked alive), three failures in a row are
+  reported as a status; the hint lock is acquired with a ceiling — a wedged
+  holder no longer freezes the manual button, the person gets "the hinter is
+  busy" instead of silence.
 - **Calendar inside the meeting library** — the week strip lives on top of
   the Meetings list: dots mark days that have recordings, one click turns
   the list into that day's feed — recordings as usual selectable rows plus
