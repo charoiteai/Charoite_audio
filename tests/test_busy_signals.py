@@ -1,6 +1,7 @@
-"""Координация тяжеловесов: лок мутатора и сигналы занятости (ночь 23→24.08:
-мутатор делил модель с досье — 35 ReadTimeout по 300 с)."""
-import os
+"""Координация тяжеловесов: flock-лок мутатора и сигналы занятости
+(ночь 23→24.08: мутатор делил модель с досье — 35 ReadTimeout по 300 с;
+круг-1 по PR #399: pid+mtime-велосипед заменён flock по образцу live_gate)."""
+import json
 import pathlib
 import sys
 import time
@@ -14,32 +15,47 @@ import busy_signals  # noqa: E402
 def test_lock_lifecycle(tmp_path):
     lock = busy_signals.MutationLock(tmp_path)
     assert not busy_signals.mutation_running(tmp_path)
-    lock.acquire()
+    assert lock.acquire()
     assert busy_signals.mutation_running(tmp_path)
     lock.release()
     assert not busy_signals.mutation_running(tmp_path)
     lock.release()  # повторный release — не ошибка
 
 
-def test_dead_pid_does_not_hold_the_night(tmp_path):
-    path = tmp_path / "logs" / "mutation.lock"
-    path.parent.mkdir(parents=True)
-    # pid из времён до ребута: свежий mtime, но процесса нет
-    path.write_text("999999 0\n", encoding="utf-8")
-    assert not busy_signals.mutation_running(tmp_path)
+def test_second_mutator_is_refused(tmp_path):
+    first = busy_signals.MutationLock(tmp_path)
+    assert first.acquire()
+    second = busy_signals.MutationLock(tmp_path)
+    # эксклюзивность атомарна: второй прогон не перезапишет чужой лок
+    assert not second.acquire()
+    first.release()
+    assert second.acquire()
+    second.release()
 
 
-def test_stale_lock_expires(tmp_path):
+def test_lock_file_is_private(tmp_path):
     lock = busy_signals.MutationLock(tmp_path)
-    lock.acquire()
-    old = time.time() - busy_signals.STALE_S - 60
-    os.utime(lock.path, (old, old))
-    # брошенный kill -9 лок (сердцебиение умерло) ночь не держит
-    assert not busy_signals.mutation_running(tmp_path)
+    assert lock.acquire()
+    assert (lock.path.stat().st_mode & 0o777) == 0o600
+    lock.release()
 
 
-def test_unreadable_but_fresh_lock_is_busy(tmp_path):
-    path = tmp_path / "logs" / "mutation.lock"
+def test_night_running_reads_status(tmp_path):
+    path = tmp_path / "logs" / "nightly.json"
     path.parent.mkdir(parents=True)
-    path.write_text("мусор\n", encoding="utf-8")
-    assert busy_signals.mutation_running(tmp_path)
+    assert not busy_signals.night_running(tmp_path)
+    path.write_text(json.dumps({"state": "running"}), encoding="utf-8")
+    assert busy_signals.night_running(tmp_path)
+    path.write_text(json.dumps({"state": "ok"}), encoding="utf-8")
+    assert not busy_signals.night_running(tmp_path)
+
+
+def test_stale_night_status_does_not_block(tmp_path):
+    import os
+    path = tmp_path / "logs" / "nightly.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"state": "running"}), encoding="utf-8")
+    old = time.time() - busy_signals.NIGHT_STALE_S - 60
+    os.utime(path, (old, old))
+    # ребут посреди ночи оставил running навсегда — мутатор не заложник
+    assert not busy_signals.night_running(tmp_path)
