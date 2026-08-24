@@ -514,6 +514,21 @@ it signals degradation, it does not break the loop.
   side, and a search hit opens that card instead of a raw Markdown file.
   Menu-bar actions and prep navigate to the same workspace; the separate
   memory chat remains available only as an optional pop-out.
+- **Meeting library as a card feed** (August 2026 revision, screen 3 of the
+  macOS mockup) — the Meetings column is grouped by day: Today · This week ·
+  Earlier, with a summary line above ("8 meetings · 1 processing · 1 failed",
+  every number sourced from the pipeline state). Each card carries a state
+  dot (a processing meeting pulses indigo), duration, participants and
+  action items as counts with a source, the gist, and a mini segment of
+  reading depths — Summary · Minutes · Analysis · Transcript: a click opens
+  the card straight at that depth, a missing depth is a dashed chip. A
+  failed meeting says what happened in words ("Failed — source kept: Ollama
+  did not answer in 300 s") and offers "Retry processing" in place; a
+  recording without speech is a result, not an error. A search with no hits
+  is the shared EmptyState with "Clear search". The feed is buttons in a
+  scroll view rather than a List with selection — the same choice as the
+  sidebar, which lost clicks inside a List. Grouping, summary and plurals are
+  a pure `LibraryScreenPolicy`, tested without UI.
 - **Calendar inside the meeting library** — the week strip lives on top of
   the Meetings list: dots mark days that have recordings, one click turns
   the list into that day's feed — recordings as usual selectable rows plus

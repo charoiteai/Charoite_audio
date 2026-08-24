@@ -85,5 +85,27 @@ extension MeetingCardDepthTests {
             for: URL(fileURLWithPath: "/elsewhere/a/b.md"), graph: nil, root: root)
             .hasPrefix("a/b.md"))
     }
+
+    func testMinutesFollowTheFileWhenArchiveFolderKnown() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("card-depth-live-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let transcript = dir.appendingPathComponent("t.md")
+        try "текст".write(to: transcript, atomically: true, encoding: .utf8)
+        let meeting = snapshot(note: nil, transcript: transcript.path)
+
+        // Файл есть, кэш минуток пуст (появились после сборки записи) — глубина есть.
+        var card = MeetingCard()
+        card.archiveFolder = dir
+        try "## Темы".write(to: dir.appendingPathComponent("Минутки.md"), atomically: true, encoding: .utf8)
+        XCTAssertTrue(MeetingCardDepth.available(card: card, meeting: meeting).contains(.minutes),
+                      "Минутки.md на диске — чип есть, даже если кэш ещё не перечитан")
+
+        // Файл убрали (forget/rename), кэш ещё помнит минутки — глубины нет.
+        try FileManager.default.removeItem(at: dir.appendingPathComponent("Минутки.md"))
+        card.minutes = MeetingMinutes(topics: [.init(text: "тема", level: 0)])
+        XCTAssertFalse(MeetingCardDepth.available(card: card, meeting: meeting).contains(.minutes),
+                       "файла нет — устаревший кэш не делает чип кликабельным")
+    }
 }
 #endif

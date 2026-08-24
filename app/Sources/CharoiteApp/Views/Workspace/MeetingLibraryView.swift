@@ -2,8 +2,15 @@ import SwiftUI
 
 #if os(macOS)
 
-/// Библиотека встреч в master-detail: список и результат живут рядом.
-/// Поисковая находка выбирает ту же карточку, что строка истории.
+/// Библиотека встреч в master-detail: лента и результат живут рядом.
+/// Поисковая находка выбирает ту же карточку, что карточка ленты.
+///
+/// Лента — карточки по дням (макет MOBILE_2026-08, macOS-экран 3): группы
+/// «Сегодня · На этой неделе · Раньше», у карточки точка состояния,
+/// длительность, участники и поручения с источником, мини-сегмент глубин
+/// (Резюме · Минутки · Разбор · Стенограмма — клик открывает карточку сразу
+/// на этой глубине), «собирается» — пульс, ошибка обработки — словами и с
+/// повтором на месте. Разбивка и подписи — `LibraryScreenPolicy`.
 ///
 /// Сверху — полоса недели: точки на днях с записями, клик по дню
 /// превращает список в ленту дня (записи + события календаря без записи).
@@ -11,10 +18,14 @@ import SwiftUI
 /// «что было во вторник?» решается одним кликом, а не поиском.
 struct MeetingLibraryView: View {
     @ObservedObject private var repository = MeetingRepository.shared
-    @ObservedObject private var navigation = WorkspaceNavigation.shared
-    @ObservedObject private var processing = MeetingProcessingService.shared
+    @ObservedObject var navigation = WorkspaceNavigation.shared
+    @ObservedObject var processing = MeetingProcessingService.shared
     @ObservedObject private var calendar = CalendarService.shared
     @AppStorage("charoite.calendarBriefs") private var calendarBriefs = false
+    /// Тот же ключ, что у карточки: чип глубины в ленте открывает карточку
+    /// сразу на выбранной глубине.
+    @AppStorage("meetingCardDepth") var depthRaw = MeetingCardDepth.summary.rawValue
+    @Environment(\.accessibilityReduceMotion) var reduceMotion
     @State private var query = ""
     @State private var hits: [MeetingSearch.Hit] = []
     @State private var isSearching = false
@@ -163,12 +174,14 @@ struct MeetingLibraryView: View {
                     cancelSearch()
                 } label: { Image(systemName: "xmark.circle.fill") }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .help(L.t("Сбросить поиск", "Clear search", "清除搜索"))
+                    .accessibilityLabel(Text(L.t("Сбросить поиск", "Clear search", "清除搜索")))
             }
         }
         .padding(11)
     }
 
-    // MARK: - Список
+    // MARK: - Лента
 
     @ViewBuilder
     private var resultList: some View {
@@ -179,29 +192,99 @@ struct MeetingLibraryView: View {
         } else if repository.records.isEmpty {
             emptyList
         } else {
-            // selection: String? — тег тоже обязан быть Optional, иначе
-            // строка не выбирается кликом (та же ловушка, что в сайдбаре).
-            List(selection: $navigation.selectedMeetingID) {
-                ForEach(repository.records) { record in
-                    recordRow(record).tag(record.id as String?)
+            archiveFeed
+        }
+    }
+
+    /// Кнопки в ScrollView, а не List с selection: List в этом окне молча
+    /// терял и подсветку, и клики (сайдбар, 04.08), а карточке нужна своя
+    /// рамка выбора вместо системной заливки строки. Осознанная плата —
+    /// стрелки ↑/↓ по ленте не ходят (Tab по карточкам остаётся); результаты
+    /// поиска живут в List, как и раньше, там клики не терялись.
+    private var archiveFeed: some View {
+        let sections = LibraryScreenPolicy.sections(repository.records, date: \.startedAt)
+        return ScrollView {
+            LazyVStack(alignment: .leading, spacing: 4) {
+                summaryLine
+                ForEach(sections, id: \.bucket) { section in
+                    sectionHeader(section.bucket.title, count: section.items.count)
+                    ForEach(section.items) { record in
+                        recordCard(record, bucket: section.bucket)
+                    }
                 }
             }
-            .listStyle(.sidebar)
+            .padding(.horizontal, 8)
+            .padding(.bottom, 8)
         }
+    }
+
+    /// «8 встреч · 1 собирается · 1 с ошибкой» — у каждого числа источник:
+    /// состояние конвейера. Нули не пишем.
+    private var summaryLine: some View {
+        let s = LibraryScreenPolicy.summary(repository.records.map(\.state))
+        return HStack(spacing: 4) {
+            Text(LibraryScreenPolicy.meetings(s.total)).foregroundStyle(.secondary)
+            if s.processing > 0 {
+                Text("·").foregroundStyle(.quaternary)
+                Text(L.t("\(s.processing) собирается", "\(s.processing) processing", "\(s.processing) 处理中"))
+                    .foregroundStyle(Theme.accent)
+            }
+            if s.failed > 0 {
+                Text("·").foregroundStyle(.quaternary)
+                Text(L.t("\(s.failed) с ошибкой", "\(s.failed) failed", "\(s.failed) 失败"))
+                    .foregroundStyle(Theme.warning)
+            }
+        }
+        .font(.caption)
+        .padding(.horizontal, 4)
+        .padding(.top, 8)
+    }
+
+    private func sectionHeader(_ title: String, count: Int) -> some View {
+        HStack(spacing: 8) {
+            Text(title.uppercased())
+                .font(.caption2.weight(.semibold))
+                .kerning(0.8)
+                .foregroundStyle(.secondary)
+            Text("\(count)")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(Theme.accent)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(Theme.accent.opacity(0.10)))
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 4)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder
     private var searchResults: some View {
         if hits.isEmpty {
-            VStack(spacing: 9) {
-                if isSearching { ProgressView().controlSize(.small) }
-                Image(systemName: "magnifyingglass").foregroundStyle(.quaternary)
-                Text(isSearching
-                     ? L.t("Ищу в материалах встреч…", "Searching meeting materials…", "正在搜索会议资料…")
-                     : L.t("Ничего не найдено", "Nothing found", "未找到结果"))
-                    .font(.callout).foregroundStyle(.secondary)
+            if isSearching {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(L.t("Ищу в материалах встреч…", "Searching meeting materials…", "正在搜索会议资料…"))
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            } else {
+                EmptyState(title: L.t("Ничего не найдено", "Nothing found", "未找到结果"),
+                           text: L.t("Искал «\(query.trimmingCharacters(in: .whitespacesAndNewlines))» в резюме, минутках, стенограммах и узлах графа. Попробуйте одно слово или имя участника.",
+                                     "Searched “\(query.trimmingCharacters(in: .whitespacesAndNewlines))” in summaries, minutes, transcripts and graph nodes. Try a single word or a participant's name.",
+                                     "已在摘要、纪要、逐字稿和图谱节点中搜索“\(query.trimmingCharacters(in: .whitespacesAndNewlines))”。试试单个词或参会者姓名。"),
+                           systemImage: "magnifyingglass") {
+                    Button(L.t("Сбросить поиск", "Clear search", "清除搜索")) {
+                        query = ""
+                        cancelSearch()
+                    }
+                    .charoite(.quiet, .s)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             List(hits) { hit in
                 Button { open(hit) } label: {
@@ -276,17 +359,45 @@ struct MeetingLibraryView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .none:
-                List(selection: $navigation.selectedMeetingID) {
-                    ForEach(records) { record in
-                        recordRow(record, timeOfDay: true).tag(record.id as String?)
+                // Записи и события вперемешку по времени: событие 09:00 стоит
+                // выше записи 15:00, как в дне и было (Codex, круг-1).
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        ForEach(dayItems(records: records, events: missed)) { item in
+                            switch item {
+                            case .record(let record): recordCard(record, bucket: .today)
+                            case .event(let event): eventRow(event)
+                            }
+                        }
                     }
-                    ForEach(missed) { event in
-                        eventRow(event)
-                    }
+                    .padding(8)
                 }
-                .listStyle(.sidebar)
             }
         }
+    }
+
+    /// Элемент ленты дня: запись или событие без записи, в одном порядке времени.
+    private enum DayItem: Identifiable {
+        case record(MeetingRecord)
+        case event(CalendarService.DayEvent)
+
+        var id: String {
+            switch self {
+            case .record(let record): return "record:" + record.id
+            case .event(let event): return "event:" + event.id
+            }
+        }
+
+        var time: Date {
+            switch self {
+            case .record(let record): return record.startedAt
+            case .event(let event): return event.start
+            }
+        }
+    }
+
+    private func dayItems(records: [MeetingRecord], events: [CalendarService.DayEvent]) -> [DayItem] {
+        (records.map(DayItem.record) + events.map(DayItem.event)).sorted { $0.time < $1.time }
     }
 
     private var calendarUnavailableDay: some View {
@@ -348,9 +459,9 @@ struct MeetingLibraryView: View {
                     .font(.caption2).foregroundStyle(.tertiary)
             }
         }
-        .padding(.vertical, 3)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
         .opacity(isFuture || isLive ? 1 : 0.62)
-        .selectionDisabled()
     }
 
     private var emptyList: some View {
@@ -383,26 +494,6 @@ struct MeetingLibraryView: View {
                                       "Recordings and decision search are on the left.",
                                       "左侧可查看录音并搜索决定。")))
         }
-    }
-
-    private func recordRow(_ record: MeetingRecord, timeOfDay: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 7) {
-                Circle().fill(stateColor(record.state)).frame(width: 7, height: 7)
-                Text(record.title).font(.callout.weight(.medium)).lineLimit(1)
-                Spacer()
-                Text(timeOfDay
-                     ? Self.timeFormatter.string(from: record.startedAt)
-                     : relative(record.startedAt))
-                    .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
-            }
-            if let gist = record.card.gist {
-                Text(gist).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            } else {
-                Text(stateText(record.state)).font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        .padding(.vertical, 3)
     }
 
     private func processingDetail(_ record: MeetingRecord) -> some View {
@@ -477,7 +568,7 @@ struct MeetingLibraryView: View {
         navigation.selectedMeetingID = repository.records.first?.id
     }
 
-    private func stateColor(_ state: MeetingProcessingSnapshot.State) -> Color {
+    func stateColor(_ state: MeetingProcessingSnapshot.State) -> Color {
         switch state {
         case .ready: return Theme.ok
         case .processing: return Theme.accent
@@ -486,7 +577,7 @@ struct MeetingLibraryView: View {
         }
     }
 
-    private func stateText(_ state: MeetingProcessingSnapshot.State) -> String {
+    func stateText(_ state: MeetingProcessingSnapshot.State) -> String {
         switch state {
         case .ready: return L.t("Готово", "Ready", "已完成")
         case .processing: return L.t("Обрабатывается…", "Processing…", "处理中…")
@@ -496,25 +587,18 @@ struct MeetingLibraryView: View {
         }
     }
 
-    private func relative(_ date: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.locale = L.locale
-        formatter.unitsStyle = .short
-        return formatter.localizedString(for: date, relativeTo: Date())
-    }
-
     // MARK: - Форматтеры
 
-    private static let timeFormatter: DateFormatter = {
+    static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.locale = .current
+        f.locale = L.locale
         f.dateFormat = "HH:mm"
         return f
     }()
 
     private static let weekdayFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.locale = .current
+        f.locale = L.locale
         f.setLocalizedDateFormatFromTemplate("EE")
         return f
     }()
@@ -528,7 +612,7 @@ struct MeetingLibraryView: View {
 
     private static let fullDayFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.locale = .current
+        f.locale = L.locale
         f.setLocalizedDateFormatFromTemplate("EEEE d MMMM")
         return f
     }()
