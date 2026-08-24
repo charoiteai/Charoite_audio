@@ -233,6 +233,8 @@ def test_resolve_graph_honours_sufler_graph_dir(tmp_path, monkeypatch):
     заметку молча искал в рабочем графе — «готово» при сделанной половине.
     """
     cfg = {"sufler": {"graph_dir": "/tmp/рабочий-граф"}}
+    for name in ("CHAROITE_GRAPH_DIR", "SUFLER_GRAPH_DIR"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("SUFLER_GRAPH_DIR", str(tmp_path))
     assert rm.resolve_graph(cfg) == tmp_path
     monkeypatch.delenv("SUFLER_GRAPH_DIR")
