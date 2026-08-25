@@ -29,6 +29,7 @@ def _hub(sr=16000, chunk_s=3.0, overlap_s=0.5, vad_db=-45.0):
     hub.SPEAKER = a.AudioHub.SPEAKER
     hub._bufs = {}
     hub._sinks = {}
+    hub._drops = {}
     hub._lock = __import__("threading").Lock()
     # Поля, которые в бою ставит конструктор: заглушка обязана их повторять,
     # иначе тест падает на AttributeError вместо проверки поведения.
@@ -225,7 +226,7 @@ def test_зависший_перезапуск_не_останавливает_�
         "и микрофон перестал писать, хотя был исправен")
 
 
-def test_мёртвый_канал_не_уносит_соседей_при_старте():
+def test_мёртвый_канал_не_уносит_соседей_при_старте(monkeypatch):
     """Отказ одного источника не должен лишать встречу остальных.
 
     В AudioHub.start() цикл открывает каналы без try: исключение на первом
@@ -254,11 +255,28 @@ def test_мёртвый_канал_не_уносит_соседей_при_ст�
     hub.record_on = False
     hub.on_status = lambda _msg: None
 
+    # start() не хранит handle фонового _pump. Перехватываем только создание
+    # потока в этом тесте, чтобы он гарантированно завершился здесь, а не в
+    # следующем тесте: именно поздний выход раньше маскировал неполный _hub.
+    real_thread = a.threading.Thread
+    pump_threads = []
+
+    def tracked_thread(*args, **kwargs):
+        worker = real_thread(*args, **kwargs)
+        pump_threads.append(worker)
+        return worker
+
+    monkeypatch.setattr(a.threading, "Thread", tracked_thread)
+
     hub.start()
     try:
         assert mic.started, "исправный микрофон не открыли из-за отказа соседнего канала"
     finally:
         hub._running = False
+        assert len(pump_threads) == 1, "start() не поднял единственный pump-поток"
+        pump_threads[0].join(timeout=1.0)
+        assert not pump_threads[0].is_alive(), "pump-поток пережил границу теста"
+
 
 def test_blackhole_выигрывает_у_тапа(monkeypatch):
     """Есть оба — берём BlackHole: итог боевого теста 06.08.
