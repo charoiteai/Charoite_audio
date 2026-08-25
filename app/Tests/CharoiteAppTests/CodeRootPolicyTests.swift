@@ -152,21 +152,19 @@ final class CodeRootPolicyTests: XCTestCase {
         XCTAssertEqual(wrapped.arguments, arguments)
     }
 
-    /// Страж партии G-П2: `CHAROITE_ROOT` собирает только AppSettings.
-    /// Новый ручной блок снова создаст два источника правды и обязан упасть в CI.
+    /// Страж партии G-П2: все три известных запуска обязаны делегировать
+    /// полный контракт AppSettings, без ручной сборки окружения рядом.
     func testРучнаяСборкаPythonОкруженияНеВозвращается() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()   // CharoiteAppTests
             .deletingLastPathComponent()   // Tests
             .deletingLastPathComponent()   // app
             .appendingPathComponent("Sources/CharoiteApp")
-        let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)?
-            .compactMap { $0 as? URL }
-            .filter { $0.pathExtension == "swift" && $0.lastPathComponent != "AppSettings.swift" }
-            ?? []
 
         // Комментарии не считаются кодом: строка режется до «//», иначе
         // упоминание вызова в комментарии двигает счётчик (круг-1, GLM).
+        // Файлы инвентаря ОБЯЗАНЫ читаться — nil тут падение (круг-3, DS:
+        // прежний комментарий обещал терпимость, которой у инвентаря нет).
         func code(of url: URL) -> String? {
             guard let text = try? String(contentsOf: url, encoding: .utf8) else {
                 return nil   // не-UTF-8 файл — не повод ронять страж (круг-1, DS)
@@ -176,35 +174,52 @@ final class CodeRootPolicyTests: XCTestCase {
                 .joined(separator: "\n")
         }
 
-        var offenders: [String] = []
-        for file in files {
-            guard let text = code(of: file) else { continue }
-            // Любая ручная сборка окружения кончается присвоением
-            // `.environment =` — этот запрет ловит и updateValue/merge,
-            // и словарь-литерал, теряющий унаследованное окружение
-            // (круг-1, DS и GLM сошлись).
-            if text.contains("[\"CHAROITE_ROOT\"] =") || text.contains(".environment =") {
-                offenders.append(file.lastPathComponent)
-            }
-        }
-        XCTAssertTrue(offenders.isEmpty,
-                      "окружение python собирается в обход preparePython: "
-                    + offenders.sorted().joined(separator: ", "))
-
-        // «Хотя бы один вызов», а не точное число: легитимное изменение
-        // топологии запусков — не нарушение контракта (круг-1, DS и GLM).
-        for relative in ["Services/MeetingActionsService.swift",
-                         "Services/MeetingProcessingService.swift"] {
-            let text = code(of: root.appendingPathComponent(relative)) ?? ""
-            XCTAssertTrue(text.contains("AppSettings.preparePython("),
-                          "\(relative): запуск обошёл единый контракт")
+        // Это инвентарь исправленных call sites, а не метрика архитектуры:
+        // изменение топологии требует осознанно обновить и страж. Проверка
+        // «хотя бы один вызов на файл» пропускала потерю одного из двух
+        // запусков MeetingProcessing и оставляла CI зелёным.
+        // Инвентарь ВСЕХ python-запусков (круг-2, DS Critical: два файла
+        // из шести — удаление вызова в остальных четырёх было зелёным).
+        // Новая точка запуска = осознанно обновить страж; это договор.
+        // Остаточный риск принят вслух: НОВЫЙ файл с ручной сборкой и
+        // индирекция через константу в AppSettings текстовым сканом не
+        // ловятся (круг-2: компенсаторные слои дороже дыры) — их держит
+        // договор инвентаря и ревью.
+        let requiredCalls = [
+            "Services/DictationService.swift": 1,
+            "Services/ImportService.swift": 1,
+            "Services/MeetingActionsService.swift": 1,
+            "Services/MeetingProcessingService.swift": 2,
+            "Services/ModelPullService.swift": 1,
+            "Services/SuflerService.swift": 1,
+        ]
+        for (relative, expected) in requiredCalls {
+            let file = root.appendingPathComponent(relative)
+            let text = code(of: file)
+            // Файл инвентаря обязан читаться; остальные проверки метода
+            // при этом не прерываются (круг-2, DS M4 против XCTUnwrap).
+            XCTAssertNotNil(text, "не удалось прочитать \(relative)")
+            guard let text else { continue }
+            let actual = text.components(separatedBy: "AppSettings.preparePython(").count - 1
+            XCTAssertEqual(actual, expected,
+                           "\(relative): Python call sites изменились без обновления стража")
+            // Ручная сборка контракта рядом с вызовом: env И cwd (круг-2,
+            // DS M5 — переопределение cwd после preparePython было слепым).
+            XCTAssertFalse(text.contains("[\"CHAROITE_ROOT\"] =")
+                           || text.contains(".environment ="),
+                           "\(relative): окружение python снова собирается вручную")
+            XCTAssertFalse(text.contains(".currentDirectoryURL ="),
+                           "\(relative): cwd python переопределяется в обход preparePython")
         }
 
         // Трипваер на проводку cwd: юнит-среда не отличает codeRoot от
         // dataRoot значением (см. контрактный тест), поэтому сама строка
         // делегирования обязана оставаться в preparePython (круг-1, DS I1).
         let settings = code(of: root.appendingPathComponent("Models/AppSettings.swift")) ?? ""
-        XCTAssertTrue(settings.contains("process.currentDirectoryURL = codeRoot(dataRoot: dataRoot)"),
+        let cwdWire = try NSRegularExpression(
+            pattern: "currentDirectoryURL\\s*=\\s*codeRoot\\(dataRoot:\\s*dataRoot\\)")
+        XCTAssertTrue(cwdWire.firstMatch(in: settings,
+                          range: NSRange(settings.startIndex..., in: settings)) != nil,
                       "preparePython больше не делегирует cwd в codeRoot(dataRoot:)")
     }
 }
