@@ -273,9 +273,13 @@ def test_мёртвый_канал_не_уносит_соседей_при_ст�
         assert mic.started, "исправный микрофон не открыли из-за отказа соседнего канала"
     finally:
         hub._running = False
-        assert len(pump_threads) == 1, "start() не поднял единственный pump-поток"
-        pump_threads[0].join(timeout=1.0)
-        assert not pump_threads[0].is_alive(), "pump-поток пережил границу теста"
+        # Без pump_threads[0] до проверки длины: при падении start() ДО
+        # создания потока IndexError маскировал бы настоящую ошибку;
+        # join 3 c — как у соседних тестов файла (круг по #420, DS).
+        for worker in pump_threads:
+            worker.join(timeout=3.0)
+    assert len(pump_threads) == 1, "start() не поднял единственный pump-поток"
+    assert not pump_threads[0].is_alive(), "pump-поток пережил границу теста"
 
 
 def test_blackhole_выигрывает_у_тапа(monkeypatch):

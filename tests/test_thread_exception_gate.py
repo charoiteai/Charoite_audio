@@ -34,6 +34,9 @@ def test_unhandled_thread_exception_makes_pytest_red(tmp_path):
         encoding="utf-8",
     )
 
+    # Привязка к pyproject.toml НАМЕРЕННА: гейт живёт только там, и перенос
+    # его в conftest должен сломать эту канарейку — чтобы решение о новом
+    # месте принималось глазами, а не терялось молча (круг по #420, DS I2).
     result = subprocess.run(
         [
             sys.executable,
@@ -47,7 +50,7 @@ def test_unhandled_thread_exception_makes_pytest_red(tmp_path):
         cwd=ROOT,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=60,   # запас на холодный интерпретатор занятого раннера
         check=False,
     )
     output = result.stdout + result.stderr
