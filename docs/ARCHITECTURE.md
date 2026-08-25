@@ -351,14 +351,19 @@ instead of admitting it does not know. The change was reverted.
 
 ## Measuring memory quality
 
-`app/Tests/MemoryBench.swift` runs the real search path — the one the app
+`app/Probes/MemoryBench.swift` runs the real search path — the one the app
 uses — against a set of questions with expected facts, and reports how many of
 those facts survive into the answer.
 
     CHAROITE_BENCH=~/path/memory_bench.yaml \
     CHAROITE_GRAPH_DIR=~/path/to/graph \
     CHAROITE_BENCH_ANSWERS=1 \
-      swift test --package-path app --filter MemoryBench
+      swift test --package-path app \
+        --filter CharoiteAppLiveProbes.MemoryBench
+
+Live probes are a separate Swift test target. CI and nightly builds compile
+that target so its signatures cannot rot — behaviour runs only by hand — and execute only `CharoiteAppTests`; a missing
+private graph or local model must not look like a successful product test.
 
 Without `CHAROITE_BENCH_ANSWERS` it measures only what search delivers;
 with it, the full path through synthesis. The report lands in

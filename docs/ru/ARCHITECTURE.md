@@ -353,14 +353,21 @@ UTF-8 байтам, а не через `String.range(of:)` с юникод-но�
 
 ## Как меряется качество памяти
 
-`app/Tests/MemoryBench.swift` гоняет НАСТОЯЩИЙ путь поиска — тот, которым
+`app/Probes/MemoryBench.swift` гоняет НАСТОЯЩИЙ путь поиска — тот, которым
 пользуется приложение, — на наборе вопросов с ожидаемыми фактами и считает,
 сколько этих фактов доживает до ответа.
 
     CHAROITE_BENCH=~/путь/memory_bench.yaml \
     CHAROITE_GRAPH_DIR=~/путь/к/графу \
     CHAROITE_BENCH_ANSWERS=1 \
-      swift test --package-path app --filter MemoryBench
+      swift test --package-path app \
+        --filter CharoiteAppLiveProbes.MemoryBench
+
+Живые пробы вынесены в отдельный Swift test target. CI и nightly компилируют
+его против актуального приложения (гниение сигнатур; поведение проб
+проверяется только ручным запуском), а исполняют только `CharoiteAppTests`:
+отсутствие приватного графа или локальной модели не должно выглядеть как
+успешный продуктовый тест.
 
 Без `CHAROITE_BENCH_ANSWERS` меряется только выдача поиска, с ним — сквозной
 путь через синтез. Отчёт с перечнем потерянных фактов ложится в

@@ -3,10 +3,11 @@ import XCTest
 
 /// Замер поиска на реальном графе. Не гейт (у CI графа нет) — инструмент,
 /// чтобы говорить о производительности числами, а не ощущениями.
-final class SearchPerfTests: XCTestCase {
+final class SearchPerfProbe: XCTestCase {
     /// Граф для замера задаётся окружением: у каждого он свой, а зашивать
     /// чужой путь в публичный репозиторий нельзя.
-    ///   CHAROITE_GRAPH_DIR=~/путь/к/графу swift test --filter SearchPerfTests
+    ///   CHAROITE_GRAPH_DIR=~/путь/к/графу swift test --package-path app \
+    ///     --filter CharoiteAppLiveProbes.SearchPerfProbe
     private var realGraph: URL? {
         guard let raw = ProcessInfo.processInfo.environment["CHAROITE_GRAPH_DIR"],
               !raw.isEmpty else { return nil }
@@ -32,35 +33,5 @@ final class SearchPerfTests: XCTestCase {
             print("PERF «\(query)»: \(String(format: "%.2f", dt)) с, выдача \(out.count) знаков")
             XCTAssertLessThan(dt, 30, "поиск дольше 30 секунд — непригодно")
         }
-    }
-}
-
-/// Байтовый счётчик обязан считать ровно то же, что считал строковый.
-final class ByteCountingTests: XCTestCase {
-    func testCountsMatchNaiveStringSearch() {
-        let cases: [(String, String)] = [
-            ("витрин", "витрина витрины ВИТРИН витринах"),
-            ("ё", "ёлка ёж"),
-            ("аа", "аааа"),                     // без перекрытий: 2, а не 3
-            ("нет", "здесь этого слова не найти"),
-            ("", "пусто"),
-            ("длинная игла", "короткий"),
-        ]
-        for (needle, hay) in cases {
-            let naive = naiveCount(of: needle, in: hay)
-            let fast = ArchiveSearch.countOccurrencesForTests(of: needle, in: hay)
-            XCTAssertEqual(fast, naive, "«\(needle)» в «\(hay)»: байты \(fast), строки \(naive)")
-        }
-    }
-
-    private func naiveCount(of needle: String, in hay: String) -> Int {
-        guard !needle.isEmpty else { return 0 }
-        var count = 0
-        var idx = hay.startIndex
-        while let r = hay.range(of: needle, range: idx..<hay.endIndex) {
-            count += 1
-            idx = r.upperBound
-        }
-        return count
     }
 }

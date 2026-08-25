@@ -17,7 +17,7 @@
 
 1. Fork 后从 `main` 拉分支：`feat/…`、`fix/…`、`docs/…`。
 2. 约定式提交（`feat(app): …`、`fix(daemon): …`）。
-3. 应用改动：`swift build` 干净通过、`swift test` 全绿（app/Tests）；守护进程：`python -m py_compile`；触碰搜索或提示词时运行 `scripts/memory_bench.py`。
+3. 应用改动：`swift build` 干净通过、`swift test --filter '^CharoiteAppTests\.'` 全绿（实测探针仅手动运行）；守护进程：`python -m py_compile`；触碰搜索或提示词时运行 `scripts/memory_bench.py`。
 4. **在同一个 PR 里更新文档** — 代码改动若不触及 `docs/`、`README*` 与 `CHANGELOG.md`，CI 会拦截（纯技术性改动可打 `skip-docs` 标签）。
 5. PR 描述：改了什么、为什么改，可见之处附前后对比。
 

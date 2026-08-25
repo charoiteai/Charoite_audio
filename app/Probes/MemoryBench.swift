@@ -11,7 +11,7 @@ import XCTest
 ///
 /// Набор вопросов приватен (он про рабочие встречи) и лежит вне репозитория:
 ///   CHAROITE_BENCH=~/путь/memory_bench.yaml CHAROITE_GRAPH_DIR=~/путь/граф \
-///     swift test --package-path app --filter MemoryBench
+///     swift test --package-path app --filter CharoiteAppLiveProbes.MemoryBench
 final class MemoryBench: XCTestCase {
     private struct Case { let q: String; let must: [String] }
 

@@ -58,7 +58,7 @@ review gates, and who answers for what — is documented in
 
 1. Fork, branch from `main`: `feat/…`, `fix/…`, `docs/…`.
 2. Conventional commits (`feat(app): …`, `fix(daemon): …`).
-3. `swift build` clean and `swift test` green (app/Tests) for app changes; `python -m py_compile` for the
+3. `swift build` clean and `swift test --filter '^CharoiteAppTests\.'` green (live probes run only by hand) for app changes; `python -m py_compile` for the
    daemon; run `scripts/memory_bench.py` if you touch search or prompts.
 4. **Update docs in the same PR** — CI blocks code changes that leave
    `docs/`, `README*` and `CHANGELOG.md` untouched (label `skip-docs`

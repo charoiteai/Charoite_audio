@@ -260,13 +260,18 @@ Ollama 仍会在约 12 300 字符处静默截断输入——经二分查找验�
 
 ## 如何衡量记忆质量
 
-`app/Tests/MemoryBench.swift` 跑的是真实的检索路径——应用所使用的那一条——对照
+`app/Probes/MemoryBench.swift` 跑的是真实的检索路径——应用所使用的那一条——对照
 一组带预期事实的问题，并报告其中有多少事实进入了答案。
 
     CHAROITE_BENCH=~/path/memory_bench.yaml \
     CHAROITE_GRAPH_DIR=~/path/to/graph \
     CHAROITE_BENCH_ANSWERS=1 \
-      swift test --package-path app --filter MemoryBench
+      swift test --package-path app \
+        --filter CharoiteAppLiveProbes.MemoryBench
+
+实时探针位于独立的 Swift 测试 target。CI 与 nightly 会编译该 target，防止代码
+腐化，但只执行 `CharoiteAppTests`；缺少私有知识图谱或本地模型不能伪装成一次
+成功的产品测试。
 
 不带 `CHAROITE_BENCH_ANSWERS` 时，它只衡量检索交付了什么；带上之后，衡量的是
 经过综合的完整路径。报告落在 `/tmp/charoite_bench.txt`，并点名缺失的事实。
