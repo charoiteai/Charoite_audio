@@ -37,7 +37,9 @@ import deps  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
-import yaml  # noqa: E402
+# ПОСЛЕ хука: config_loader тянет yaml, а рецепт вместо трейсбека обязан
+# успеть встать до первого стороннего импорта (круг-1 по #418, DS+GLM+Codex).
+from config_loader import load_user_or_example  # noqa: E402
 
 import charoite_paths  # noqa: E402
 
@@ -162,10 +164,7 @@ def postponed_files(folder: pathlib.Path) -> list[pathlib.Path]:
 
 
 def _cfg() -> dict:
-    p = ROOT / "config" / "config.yaml"
-    if not p.exists():
-        p = ROOT / "config" / "config.example.yaml"
-    return yaml.safe_load(p.read_text(encoding="utf-8"))
+    return load_user_or_example(ROOT)
 
 
 def clean_time(value: str) -> str:
