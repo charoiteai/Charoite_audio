@@ -1,7 +1,7 @@
 ---
 layout: post
 title: "A mechanical move, verified mechanically"
-date: 2026-08-25 21:00:00 +0300
+date: 2026-08-25 17:15:00 +0300
 ---
 
 Charoite is in an overhaul phase: no new features for a while, just carving
