@@ -191,6 +191,24 @@ final class CodeRootPolicyTests: XCTestCase {
                            "\(relative): окружение python снова собирается вручную")
         }
 
+        // Третий край (круг-2 по #427): инвентарь двух файлов слеп к
+        // НОВОМУ файлу с ручной сборкой. CHAROITE_ROOT принадлежит одному
+        // владельцу — любое упоминание вне AppSettings ловит любую форму
+        // ручной установки (литерал, словарь, updateValue, merge), не
+        // запрещая легитимные env других процессов. Сегодня вне
+        // AppSettings таких упоминаний ноль — запрет бесплатный.
+        let allSwift = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL }
+            .filter { $0.pathExtension == "swift" && $0.lastPathComponent != "AppSettings.swift" }
+            ?? []
+        var rogue: [String] = []
+        for file in allSwift where (code(of: file) ?? "").contains("CHAROITE_ROOT") {
+            rogue.append(file.lastPathComponent)
+        }
+        XCTAssertTrue(rogue.isEmpty,
+                      "CHAROITE_ROOT трогают в обход AppSettings: "
+                    + rogue.sorted().joined(separator: ", "))
+
         // Трипваер на проводку cwd: юнит-среда не отличает codeRoot от
         // dataRoot значением (см. контрактный тест), поэтому сама строка
         // делегирования обязана оставаться в preparePython (круг-1, DS I1).
