@@ -14,7 +14,6 @@ import datetime as dt
 import json
 import os
 import pathlib
-import shutil
 import subprocess
 import sys
 import time
@@ -240,7 +239,7 @@ def main() -> None:
         return
 
     model = cloud.model(cfg, "cloud_model")
-    claude = shutil.which("claude") or "/opt/homebrew/bin/claude"
+    claude = cloud.claude_bin()
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
     cloud.add_proxy(env)
     prompt = (
