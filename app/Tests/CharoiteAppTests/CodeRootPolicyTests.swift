@@ -129,7 +129,10 @@ final class CodeRootPolicyTests: XCTestCase {
         AppSettings.preparePython(direct, root: root)
 
         XCTAssertEqual(direct.executableURL, AppSettings.pythonExecutable(root: root))
-        XCTAssertEqual(direct.currentDirectoryURL, AppSettings.codeRoot(dataRoot: root))
+        XCTAssertEqual(
+            direct.currentDirectoryURL?.standardizedFileURL.path,
+            AppSettings.codeRoot(dataRoot: root).standardizedFileURL.path
+        )
         XCTAssertEqual(direct.environment, expectedEnvironment)
         XCTAssertEqual(direct.arguments, arguments, "preparePython не владеет argv")
 
