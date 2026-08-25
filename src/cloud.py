@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import shutil
 
 # Ключ конфига → модель по умолчанию. Меняется ВМЕСТЕ с примерами конфига,
 # иначе тест валится: пример — это документация, а не пожелание.
@@ -61,6 +62,18 @@ TEXT_ONLY_DENIED = ("Bash", "Read", "Write", "Edit", "Grep", "Glob",
                     # процессы (ревью 15.08 — списка не хватало); MCP —
                     # любые внешние серверы из пользовательских настроек
                     "Skill", "SlashCommand", "BashOutput", "KillShell", "mcp__*")
+
+
+def claude_bin() -> str:
+    """Путь к Claude CLI: PATH, иначе задокументированный Homebrew-путь.
+
+    Пять точек выхода держали свою копию `shutil.which("claude") or
+    "/opt/homebrew/bin/claude"` — партия D-П4 карты оздоровления сводит
+    их сюда. Fallback не проверяется на существование нарочно: точка
+    выхода получает честный ENOENT от subprocess с понятным путём в
+    ошибке, а не молчаливую замену поведения.
+    """
+    return shutil.which("claude") or "/opt/homebrew/bin/claude"
 
 
 def text_only_args() -> list[str]:
