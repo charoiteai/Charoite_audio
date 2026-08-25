@@ -7,7 +7,8 @@ import XCTest
 /// чтобы качество можно было оценить глазами, а не по косвенным метрикам.
 ///
 ///   CHAROITE_ANSWER_PROBE=1 CHAROITE_GRAPH_DIR=~/путь \
-///     swift test --package-path app --filter AnswerQualityProbe
+///     swift test --package-path app \
+///       --filter CharoiteAppLiveProbes.AnswerQualityProbe
 final class AnswerQualityProbe: XCTestCase {
     private let questions = [
         "что решили по витрине сертификации",

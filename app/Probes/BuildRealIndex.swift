@@ -8,7 +8,7 @@ import XCTest
 /// один заход, настоящей Ollama и в настоящий файл индекса.
 ///
 ///   CHAROITE_BUILD_INDEX=1 CHAROITE_GRAPH_DIR=~/путь swift test \
-///     --package-path app --filter BuildRealIndex
+///     --package-path app --filter CharoiteAppLiveProbes.BuildRealIndex
 final class BuildRealIndex: XCTestCase {
     func testBuild() async throws {
         guard ProcessInfo.processInfo.environment["CHAROITE_BUILD_INDEX"] == "1",

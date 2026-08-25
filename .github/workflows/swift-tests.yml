@@ -55,12 +55,21 @@ jobs:
           path: app/.build
           key: spm-${{ runner.os }}-${{ hashFiles('app/Package.swift') }}
           restore-keys: spm-${{ runner.os }}-
-      - name: Build
+      # Живые пробы — отдельный test target: компилируем, чтобы не гнили
+      # сигнатуры, но не запускаем на CI без приватного графа и моделей.
+      - name: Build app and all test targets
         working-directory: app
-        run: swift build
-      - name: Test
+        run: swift build --build-tests
+      # Фильтр, не совпавший ни с одним тестом, даёт exit 0 при нуле
+      # прогонов — «зелёный без прогона» (круг-1 по #426: DS, GLM и Codex
+      # сошлись). Поэтому сверяем строку Executed: тестов должно быть >0.
+      - name: Test deterministic suite
         working-directory: app
-        run: swift test
+        shell: bash
+        run: |
+          set -o pipefail
+          swift test --skip-build --filter '^CharoiteAppTests\.' 2>&1 | tee /tmp/swift-test.log
+          grep -Eq 'Executed [1-9][0-9]* test' /tmp/swift-test.log
 
   ios:
     # iPhone-компаньон не собирался в CI ни разу: paths-фильтр покрывал только

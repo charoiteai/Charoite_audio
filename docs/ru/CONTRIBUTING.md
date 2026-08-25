@@ -57,7 +57,7 @@
 
 1. Форк, ветка от `main`: `feat/…`, `fix/…`, `docs/…`.
 2. Conventional-коммиты (`feat(app): …`, `fix(daemon): …`).
-3. Для правок приложения — чистый `swift build` и зелёный `swift test`
+3. Для правок приложения — чистый `swift build` и зелёный `swift test --filter '^CharoiteAppTests\.'` (живые пробы — только вручную)
    (app/Tests); для демона — `python -m py_compile`; тронули поиск или
    промпты — прогоните `scripts/memory_bench.py`.
 4. **Документация обновляется в том же PR** — CI блокирует изменения
