@@ -11,10 +11,11 @@ PR #399, DeepSeek: pid+mtime+STALE-велосипед дал три дыры —
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import pathlib
+
+import file_locks
 import sys
 import time
 
@@ -61,15 +62,7 @@ def mutation_running(root: pathlib.Path) -> bool:
     except OSError:
         return False
     with f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return True
-        except OSError:
-            # ФС без flock (SMB/NFS): судить не по чему — как live_gate,
-            # занятость не выдумываем (круг-2 по PR #399, DS).
-            return False
-    return False
+        return file_locks.held_by_someone(f)
 
 
 def machine_busy(root: pathlib.Path) -> list[str]:
@@ -103,21 +96,11 @@ class MutationLock:
         """True — лок наш; False — держит другой мутатор (не стартуем)."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         f = self.path.open("a+")
-        # Несколько попыток, как у демона: LOCK_SH-проба ночного
-        # wait_for_idle держит файл микросекунды, и единственная попытка
-        # могла ложно отказать при свободном локе (круг-2 по PR #399, DS).
-        for attempt in range(5):
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if attempt == 4:
-                    f.close()
-                    return False
-                time.sleep(0.2)
-            except OSError:
-                f.close()
-                return False
+        # Ретраи против микросекундных LOCK_SH-проб — в хелпере
+        # (круг-2 по PR #399, DS); ФС без flock — отказ сразу.
+        if not file_locks.acquire_exclusive(f, attempts=5, pause=0.2):
+            f.close()
+            return False
         os.chmod(self.path, 0o600)   # политика приватных каталогов, как у демона
         f.seek(0); f.truncate()
         f.write(f"{os.getpid()} {int(time.time())}\n")

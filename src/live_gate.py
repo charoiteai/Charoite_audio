@@ -18,9 +18,10 @@
 """
 from __future__ import annotations
 
-import fcntl
 import os
 import pathlib
+
+import file_locks
 import time
 from typing import Callable
 
@@ -71,14 +72,7 @@ def daemon_alive(root: pathlib.Path) -> bool:
     except OSError:
         return False
     with f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return True       # лок держит демон — встреча идёт
-        except OSError:
-            return False      # flock не поддержан — не блокируем фон
-        fcntl.flock(f, fcntl.LOCK_UN)
-        return False          # взяли — демона нет
+        return file_locks.held_by_someone(f)   # семантика — в докстринге хелпера
 
 
 def wait_while_live(root: pathlib.Path, log: Callable[[str], None] = print, *,
