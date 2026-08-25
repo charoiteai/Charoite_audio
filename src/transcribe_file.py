@@ -17,23 +17,15 @@ import tempfile
 import wave
 
 import numpy as np
-import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from stt import STT  # noqa: E402
 from transcript import NOISE, Transcript  # noqa: E402
 
 from charoite_paths import harden_umask, resolve_root
+from config_loader import load_user_or_example
 
 ROOT = resolve_root(__file__)
-
-
-def _cfg_text(root):
-    """config.yaml, а без него — config.example.yaml (свежий клон)."""
-    p = root / "config" / "config.yaml"
-    if not p.exists():
-        p = root / "config" / "config.example.yaml"
-    return p.read_text(encoding="utf-8")
 
 SEG_S = 25.0
 OVERLAP_S = 1.0
@@ -76,7 +68,7 @@ def main():
     src = pathlib.Path(sys.argv[1]).expanduser()
     if not src.exists():
         sys.exit(f"нет файла: {src}")
-    cfg = yaml.safe_load(_cfg_text(ROOT))
+    cfg = load_user_or_example(ROOT)
     stt = STT(cfg)
     wav = to_wav16k(src, pcm_rate=int(cfg["audio"]["samplerate"]))
     with wave.open(str(wav), "rb") as w:

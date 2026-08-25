@@ -26,26 +26,18 @@ import threading
 import numpy as np
 import requests
 import sounddevice as sd
-import yaml
 
 from charoite_paths import code_root, harden_umask, resolve_root
+from config_loader import load_user_or_example
 
 ROOT = resolve_root(__file__)
 CODE = code_root(__file__)
-
-
-def _cfg_text(root):
-    """config.yaml, а без него — config.example.yaml (свежий клон)."""
-    p = root / "config" / "config.yaml"
-    if not p.exists():
-        p = root / "config" / "config.example.yaml"
-    return p.read_text(encoding="utf-8")
 
 SR = 16000
 
 import graphs  # noqa: E402
 
-cfg = yaml.safe_load(_cfg_text(ROOT))
+cfg = load_user_or_example(ROOT)
 GRAPH = graphs.graph_dir(cfg) or pathlib.Path("")
 # Модель и адрес — из llm.py по конфигу, а не свои: прежний хардкод читал
 # несуществующий ключ sufler.model и после переезда конфига на mlx-сборку

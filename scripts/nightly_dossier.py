@@ -28,7 +28,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import dossier  # noqa: E402
 import graphs  # noqa: E402
 import live_gate  # noqa: E402
-import yaml  # noqa: E402
+from config_loader import load_user_or_example  # noqa: E402
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
@@ -40,10 +40,7 @@ MAX_PER_NIGHT = 12
 
 
 def cfg() -> dict:
-    p = ROOT / "config" / "config.yaml"
-    if not p.exists():
-        p = ROOT / "config" / "config.example.yaml"
-    return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    return load_user_or_example(ROOT) or {}
 
 
 def default_graph(c: dict) -> pathlib.Path:
