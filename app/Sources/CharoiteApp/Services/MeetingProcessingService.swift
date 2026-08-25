@@ -531,14 +531,10 @@ final class MeetingProcessingService: ObservableObject {
             transcriptPath: path)
 
         let p = Process()
-        p.executableURL = cmd.exec
         p.arguments = cmd.args
         // Запускаем рядом с кодом, а данные адресуем переменной: код может
         // лежать в подписанном бандле, писать в который нельзя.
-        p.currentDirectoryURL = AppSettings.codeRoot
-        var env = ProcessInfo.processInfo.environment
-        env["CHAROITE_ROOT"] = AppSettings.charoiteRoot.path
-        p.environment = env
+        AppSettings.preparePython(p, executable: cmd.exec)
         // лог — тот же файл, что у демонского запуска этой встречи, но append:
         // прошлый трейсбек — единственный след первой ошибки, затирать нельзя
         FileManager.default.createPrivateDirectory(at: cmd.log.deletingLastPathComponent())
@@ -583,12 +579,8 @@ final class MeetingProcessingService: ObservableObject {
             root: AppSettings.charoiteRoot, meetingID: snapshot.meetingID, title: cleaned)
         let ok: Bool = await withCheckedContinuation { cont in
             let p = Process()
-            p.executableURL = cmd.exec
             p.arguments = cmd.args
-            p.currentDirectoryURL = AppSettings.codeRoot
-            var env = ProcessInfo.processInfo.environment
-            env["CHAROITE_ROOT"] = AppSettings.charoiteRoot.path
-            p.environment = env
+            AppSettings.preparePython(p, executable: cmd.exec)
             p.terminationHandler = { proc in
                 cont.resume(returning: proc.terminationStatus == 0)
             }

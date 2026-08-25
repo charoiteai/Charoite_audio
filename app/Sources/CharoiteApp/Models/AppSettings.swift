@@ -167,13 +167,19 @@ enum AppSettings {
     /// Подготовить процесс python: интерпретатор, рабочий каталог кода и
     /// корень данных в окружении.
     ///
-    /// Собрано в одну функцию намеренно: запусков python шесть, и раньше
-    /// каждый сам склеивал путь — они разъезжались при первой же правке.
+    /// Собрано в одну функцию намеренно: штатные запуски python раньше
+    /// сами склеивали путь — они разъезжались при первой же правке.
     /// С разведёнными корнями цена расхождения выше: процесс, запущенный из
     /// бандла без CHAROITE_ROOT, попытается писать в подписанную папку.
-    static func preparePython(_ process: Process, root: URL? = nil) {
+    /// `executable` нужен контурам, где готовая команда оборачивает python
+    /// (`/usr/bin/nice`) или была собрана до перехода в detached-задачу.
+    static func preparePython(
+        _ process: Process,
+        root: URL? = nil,
+        executable: URL? = nil
+    ) {
         let dataRoot = root ?? charoiteRoot
-        process.executableURL = pythonExecutable(root: dataRoot)
+        process.executableURL = executable ?? pythonExecutable(root: dataRoot)
         process.currentDirectoryURL = codeRoot(dataRoot: dataRoot)
         var env = ProcessInfo.processInfo.environment
         env["CHAROITE_ROOT"] = dataRoot.path
