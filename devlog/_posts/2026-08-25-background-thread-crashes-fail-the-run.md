@@ -1,7 +1,7 @@
 ---
 layout: post
 title: "A crash in a background thread should fail the run"
-date: 2026-08-25 21:40:00 +0300
+date: 2026-08-25 17:45:00 +0300
 ---
 
 This devlog keeps returning to false green; apparently that is the theme.
