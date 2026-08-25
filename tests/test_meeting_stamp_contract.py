@@ -31,7 +31,7 @@ import meeting_stamp  # noqa: E402
 def test_пересборка_находит_запись_которую_назвал_демон(tmp_path, monkeypatch):
     """Сквозной договор. Оба конца — продуктовый код, не константы теста."""
     import rebuild_transcript as rt
-    from main import Transcript
+    from transcript import Transcript
 
     tr = Transcript(tmp_path / "transcripts")     # так называет стенограмму демон
     rec = tmp_path / "recordings"
@@ -58,7 +58,7 @@ def test_rebuild_не_режет_штамп(tmp_path, monkeypatch):
     `rebuild` пошёл за записями, и сравниваем с именем стенограммы.
     """
     import rebuild_transcript as rt
-    from main import Transcript
+    from transcript import Transcript
 
     tr = Transcript(tmp_path / "transcripts")
     tr.path.write_text("# Встреча\n", encoding="utf-8")
@@ -130,7 +130,7 @@ def test_секунды_в_штампе_не_теряются():
 def test_суффикс_коллизии_остаётся_частью_имени(tmp_path):
     """Две встречи в одну секунду дают `..._183145-1.md`, записи — с тем же
     суффиксом; значит и разбирать штамп нужно вместе с ним."""
-    from main import Transcript
+    from transcript import Transcript
 
     d = tmp_path / "transcripts"
     first, second = Transcript(d), Transcript(d)

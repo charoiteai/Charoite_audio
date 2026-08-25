@@ -25,6 +25,7 @@ resolution, dialogue markup, the cloud loop, heartbeat. Events stream to
 stdout as line-JSON (`{"type": "transcript"|"thesis"|"hint"|…}`); commands
 arrive on stdin (`hint`, `ask <question>`, `summary`, `stop`). Any UI can
 sit on top of this protocol; a second instance is blocked via flock.
+`Transcript` lives in dependency-light `src/transcript.py`; runtime modules never import `main.py`.
 
 Daemon statuses carry a failure flag (`{"type": "status", "error": true}`):
 the app renders those as errors and a plain status clears the flag. A model

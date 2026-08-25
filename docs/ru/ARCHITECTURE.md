@@ -27,6 +27,7 @@
 (`{"type": "transcript"|"thesis"|"hint"|…}`), команды приходят в stdin
 (`hint`, `ask <вопрос>`, `summary`, `stop`). Любой UI подключается
 поверх этого протокола; second-instance защищён flock.
+`Transcript` живёт в лёгком `src/transcript.py`; runtime-модули больше не импортируют legacy `main.py`.
 
 Статусы демона несут признак сбоя (`{"type": "status", "error": true}`):
 приложение красит такие строки как отказ, а обычный статус признак снимает.
