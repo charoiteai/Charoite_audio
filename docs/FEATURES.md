@@ -859,3 +859,15 @@ and only its formatting: names, wording and deadlines stay as written.
 
 Same graph after normalization: **275 tasks**. Existing files are converted
 once by `scripts/fix_action_items.py` (dry run by default).
+
+## Under the hood
+
+### One Claude CLI resolver (overhaul batch D-П4)
+
+Five exit points each carried their own copy of the CLI lookup
+(`shutil.which` with a Homebrew fallback). They now ask
+`cloud.claude_bin()` — one documented resolver next to `cloud.model()`
+and `cloud.add_proxy()`. The fallback is deliberately not
+existence-checked: a missing binary surfaces as an honest ENOENT with
+the path in the error, not as a silent behavior change. A structural
+test keeps stray copies from creeping back.

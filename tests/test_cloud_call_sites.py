@@ -367,6 +367,10 @@ def test_no_other_place_starts_claude():
     только src/ — scripts/ ходят теми же дорогами.
     """
     known = {f"{f}:{fn}" for f, fn in NETWORK_EXITS}
+    # Резолвер пути к CLI (D-П4) упоминает бинарь, но сеть не трогает и
+    # запуска не содержит — регистрировать его выходом значило бы требовать
+    # выключатель у функции без запроса. Его охраняет test_claude_resolver.py.
+    known.add("cloud.py:claude_bin")
     found = set()
     for root in (SRC, SRC.parent / "scripts"):
         for path in sorted(root.glob("*.py")):
