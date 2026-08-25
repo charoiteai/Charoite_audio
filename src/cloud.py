@@ -67,7 +67,8 @@ TEXT_ONLY_DENIED = ("Bash", "Read", "Write", "Edit", "Grep", "Glob",
 def claude_bin() -> str:
     """Путь к Claude CLI: PATH, иначе задокументированный Homebrew-путь.
 
-    Пять точек выхода держали свою копию `shutil.which("claude") or
+    GUI-запуск macOS не наследует Homebrew PATH — отсюда абсолютный
+    fallback (формулировка из #407). Пять точек выхода держали свою копию `shutil.which("claude") or
     "/opt/homebrew/bin/claude"` — партия D-П4 карты оздоровления сводит
     их сюда. Fallback не проверяется на существование нарочно: точка
     выхода получает честный ENOENT от subprocess с понятным путём в

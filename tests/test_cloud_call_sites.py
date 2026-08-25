@@ -426,14 +426,18 @@ def test_no_other_place_starts_claude():
     # выключатель у функции без запроса. Его охраняет test_claude_resolver.py.
     known.add("cloud.py:claude_bin")
     found = set()
+    resolved = set()
     for root in (SRC, SRC.parent / "scripts"):
         for path in sorted(root.glob("*.py")):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
-                        and (_mentions_claude(_own_consts(node))
-                             or _calls_claude_bin(node)):
-                    found.add(f"{path.name}:{node.name}")
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                key = f"{path.name}:{node.name}"
+                if _calls_claude_bin(node):
+                    resolved.add(key)
+                if _mentions_claude(_own_consts(node)) or key in resolved:
+                    found.add(key)
             top: set[str] = set()
             stack = list(ast.iter_child_nodes(tree))
             while stack:
@@ -449,3 +453,11 @@ def test_no_other_place_starts_claude():
     assert not unknown, (
         "появился новый путь запуска claude: " + ", ".join(unknown)
         + " — добавьте его в NETWORK_EXITS и убедитесь, что там есть выключатель")
+    # Обратная сторона (идея из #407): зарегистрированный выход ОБЯЗАН
+    # добывать бинарь резолвером — вернувшийся литерал или личный
+    # shutil.which в известной точке тоже поломка дедупа, а не только
+    # новый тихий выход.
+    missing = sorted({f"{f}:{fn}" for f, fn in NETWORK_EXITS} - resolved)
+    assert not missing, (
+        "известный выход обязан звать cloud.claude_bin(), а не держать "
+        "свою копию резолва: " + ", ".join(missing))
