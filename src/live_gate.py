@@ -20,8 +20,11 @@ from __future__ import annotations
 
 import os
 import pathlib
+import sys
 
-import file_locks
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+import file_locks  # noqa: E402
 import time
 from typing import Callable
 

@@ -93,3 +93,18 @@ def test_daemon_semantics_retries_any_oserror(monkeypatch, tmp_path):
             f, attempts=5, pause=0.1, busy=(OSError,), sleep=pauses.append)
     assert ok is False
     assert pauses == [0.1] * 4      # демон ретраит любую OSError — как раньше
+
+
+def test_daemon_call_site_keeps_the_oserror_policy():
+    """Ловушка будущих правок (круг-1 по #415, DS): тесты хелпера пиннят
+    обе конфигурации, но убранный из daemon busy=(OSError,) они не
+    заметят — политику вызова держит структурная проверка."""
+    daemon = (ROOT / "src" / "daemon.py").read_text(encoding="utf-8")
+    assert "busy=(OSError,)" in daemon
+
+
+def test_zero_attempts_is_a_caller_error(tmp_path):
+    import pytest
+    with (tmp_path / "x.lock").open("w") as f:
+        with pytest.raises(ValueError):
+            file_locks.acquire_exclusive(f, attempts=0)

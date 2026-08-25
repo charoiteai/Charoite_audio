@@ -46,8 +46,14 @@ def acquire_exclusive(f, *, attempts: int = 5, pause: float = 0.2,
     OSError (ФС без flock) — отказ сразу; демон передаёт (OSError,) —
     он не различает причины и одинаково не стартует вторым. Взятый лок
     остаётся на f: закрытие файла или смерть процесса освобождает его
-    ядром.
+    ядром. При busy=(OSError,) вторая ветка except мертва намеренно —
+    порядок клауз менять нельзя (круг-1 по #415, DS: перестановка молча
+    сменила бы политику ENOLCK; вызов демона пиннит структурный тест).
     """
+    if attempts < 1:
+        # «0 ретраев» читается как «одна попытка», а range(0) молча не делал
+        # ни одной — для демона это ложное «уже слушает» (круг-1 по #415, GLM).
+        raise ValueError(f"attempts must be >= 1, got {attempts}")
     for attempt in range(attempts):
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)

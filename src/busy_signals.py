@@ -14,13 +14,12 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-
-import file_locks
 import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
+import file_locks  # noqa: E402
 import live_gate  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
 
