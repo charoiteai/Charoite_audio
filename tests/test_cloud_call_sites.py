@@ -350,12 +350,66 @@ def _mentions_claude(consts: set[str]) -> bool:
                and not _MODEL_NAME.match(c) for c in consts)
 
 
+def _calls_claude_bin(fn: ast.AST) -> bool:
+    """Вызов cloud.claude_bin() — канонический способ добыть бинарь (D-П4).
+
+    После свода резолвера точки выхода не содержат строкового литерала —
+    сторож, ловивший только константы, ослеп бы на новый выход в этом же,
+    теперь каноническом, стиле (круг-1 по #406, DS). Видим оба написания:
+    cloud.claude_bin() и голый claude_bin() после from-импорта. Граница
+    по вложенным def — та же, что у _own_consts: cloud_thread_refine
+    объявлен внутри main, и его вызов не должен приписываться родителю.
+    """
+    body = fn.body if hasattr(fn, "body") else [fn]
+    stack = list(body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if isinstance(node, ast.Call):
+            f = node.func
+            if isinstance(f, ast.Attribute) and f.attr == "claude_bin":
+                return True
+            if isinstance(f, ast.Name) and f.id == "claude_bin":
+                return True
+        stack.extend(ast.iter_child_nodes(node))
+    return False
+
+
 def test_the_guard_still_sees_a_launch_and_ignores_a_model_name():
     """Сторож различает запуск процесса и имя модели — проверяем оба случая."""
     for launcher in ("claude", "/opt/homebrew/bin/claude", "claude -p prompt"):
         assert _mentions_claude({launcher}), f"пропущен запуск: {launcher}"
     for model in ("claude-opus-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001"):
         assert not _mentions_claude({model}), f"имя модели принято за запуск: {model}"
+
+
+def test_the_guard_sees_the_resolver_call_style():
+    """Канонический стиль D-П4 — без литерала — сторож тоже видит.
+
+    И не приписывает вызов вложенной функции её родителю: за вложенный
+    def отвечает он сам (круг-1 по #406, DS).
+    """
+    import textwrap
+    fn = ast.parse(textwrap.dedent("""
+        def leaked(cfg):
+            claude = cloud.claude_bin()
+            return claude
+    """)).body[0]
+    assert _calls_claude_bin(fn)
+    fn = ast.parse(textwrap.dedent("""
+        def bare(cfg):
+            return claude_bin()
+    """)).body[0]
+    assert _calls_claude_bin(fn)
+    parent = ast.parse(textwrap.dedent("""
+        def outer(cfg):
+            def inner():
+                return cloud.claude_bin()
+            return inner
+    """)).body[0]
+    assert not _calls_claude_bin(parent)
+    assert _calls_claude_bin(parent.body[0])
 
 
 def test_no_other_place_starts_claude():
@@ -377,7 +431,8 @@ def test_no_other_place_starts_claude():
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
-                        and _mentions_claude(_own_consts(node)):
+                        and (_mentions_claude(_own_consts(node))
+                             or _calls_claude_bin(node)):
                     found.add(f"{path.name}:{node.name}")
             top: set[str] = set()
             stack = list(ast.iter_child_nodes(tree))
@@ -388,7 +443,7 @@ def test_no_other_place_starts_claude():
                 if isinstance(node, ast.Constant) and isinstance(node.value, str):
                     top.add(node.value)
                 stack.extend(ast.iter_child_nodes(node))
-            if _mentions_claude(top):
+            if _mentions_claude(top) or _calls_claude_bin(tree):
                 found.add(f"{path.name}:<module>")
     unknown = sorted(found - known)
     assert not unknown, (

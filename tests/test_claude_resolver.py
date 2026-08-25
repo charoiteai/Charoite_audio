@@ -39,12 +39,14 @@ def test_no_stray_copies_of_the_resolver():
 
 
 def test_call_sites_use_the_resolver():
-    users = [
-        "src/daemon.py",
-        "scripts/cloud_review.py",
-        "scripts/nightly_claude_cores.py",
-        "scripts/nightly_dossier_review.py",
-    ]
-    missing = [f for f in users
-               if "cloud.claude_bin()" not in (ROOT / f).read_text(encoding="utf-8")]
-    assert missing == []
+    # Счёт вхождений, не факт присутствия: в daemon точек ДВЕ, и регрессия
+    # ровно одной оставила бы подстроку в файле (круг-1 по #406, DS).
+    users = {
+        "src/daemon.py": 2,
+        "scripts/cloud_review.py": 1,
+        "scripts/nightly_claude_cores.py": 1,
+        "scripts/nightly_dossier_review.py": 1,
+    }
+    short = {f: n for f, n in users.items()
+             if (ROOT / f).read_text(encoding="utf-8").count("cloud.claude_bin()") < n}
+    assert short == {}
