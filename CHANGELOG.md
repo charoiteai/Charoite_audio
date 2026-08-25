@@ -5,6 +5,14 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.61.0](https://github.com/charoiteai/Charoite_audio/compare/v0.60.0...v0.61.0) (2026-08-24)
+
+
+### Features
+
+* **sufler:** owner echo by text — speakers no longer eat the signature ([#401](https://github.com/charoiteai/Charoite_audio/issues/401)) ([12843c4](https://github.com/charoiteai/Charoite_audio/commit/12843c48cc89f65cae685d5026481781a2e73356))
+* **tests:** mutator coordinates with the live loop and the night ([#399](https://github.com/charoiteai/Charoite_audio/issues/399)) ([abcd220](https://github.com/charoiteai/Charoite_audio/commit/abcd220eddd917c455861b34ccf6678fcf919230))
+
 ## [0.60.0](https://github.com/charoiteai/Charoite_audio/compare/v0.59.0...v0.60.0) (2026-08-24)
 
 
