@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
-import fcntl
 import json
 import math
 import os
@@ -37,6 +36,7 @@ import yaml  # noqa: E402
 import action_items  # noqa: E402
 import autostop as autostop_rules  # noqa: E402
 import cloud  # noqa: E402
+import file_lock  # noqa: E402
 import install_profile  # noqa: E402
 import owner_voice  # noqa: E402
 import fact_check  # noqa: E402
@@ -385,13 +385,14 @@ def main():
     # живой демон держит лок постоянно — его пять попыток не пропустят.
     for attempt in range(5):
         try:
-            fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            break
+            if file_lock.try_acquire(lockf):
+                break
         except OSError:
-            if attempt == 4:
-                emit({"type": "status", "text": "⚠️ Суфлёр уже слушает в другом окне — второй запуск отменён"})
-                return
-            time.sleep(0.1)
+            pass
+        if attempt == 4:
+            emit({"type": "status", "text": "⚠️ Суфлёр уже слушает в другом окне — второй запуск отменён"})
+            return
+        time.sleep(0.1)
     cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
     # Граф перекрыт переменной окружения (тесты, демо): сказать об этом в
     # логе сразу, а не обнаруживать по пути записи после встречи (круг-1 по

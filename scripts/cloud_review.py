@@ -31,7 +31,6 @@ import contextlib
 import ctypes
 import dataclasses
 import datetime as dt
-import fcntl
 import functools
 import hashlib
 import io
@@ -54,6 +53,7 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 
 import charoite_paths  # noqa: E402
 import cloud  # noqa: E402
+import file_lock  # noqa: E402
 import graph_updater  # noqa: E402
 import privacy  # noqa: E402
 
@@ -427,9 +427,8 @@ def graph_lock(graph: pathlib.Path, wait: float | None = None):
         deadline = time.monotonic() + wait
         while True:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:        # занято соседом — ждём
+                if file_lock.try_acquire(fd):
+                    break
                 if time.monotonic() >= deadline:
                     yield False
                     return

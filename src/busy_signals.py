@@ -11,7 +11,6 @@ PR #399, DeepSeek: pid+mtime+STALE-велосипед дал три дыры —
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import pathlib
@@ -20,6 +19,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
+import file_lock  # noqa: E402
 import live_gate  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
 
@@ -56,20 +56,7 @@ def mutation_running(root: pathlib.Path) -> bool:
     «Мутация идёт» — только когда flock честно отказал из-за чужого лока;
     нет файла или прав — судить не по чему, ночь вставать не должна.
     """
-    try:
-        f = (root / LOCK_REL).open("r")
-    except OSError:
-        return False
-    with f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return True
-        except OSError:
-            # ФС без flock (SMB/NFS): судить не по чему — как live_gate,
-            # занятость не выдумываем (круг-2 по PR #399, DS).
-            return False
-    return False
+    return file_lock.is_held(root / LOCK_REL)
 
 
 def machine_busy(root: pathlib.Path) -> list[str]:
@@ -108,16 +95,15 @@ class MutationLock:
         # могла ложно отказать при свободном локе (круг-2 по PR #399, DS).
         for attempt in range(5):
             try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if attempt == 4:
-                    f.close()
-                    return False
-                time.sleep(0.2)
+                if file_lock.try_acquire(f):
+                    break
             except OSError:
                 f.close()
                 return False
+            if attempt == 4:
+                f.close()
+                return False
+            time.sleep(0.2)
         os.chmod(self.path, 0o600)   # политика приватных каталогов, как у демона
         f.seek(0); f.truncate()
         f.write(f"{os.getpid()} {int(time.time())}\n")

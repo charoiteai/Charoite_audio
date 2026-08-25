@@ -18,11 +18,12 @@
 """
 from __future__ import annotations
 
-import fcntl
 import os
 import pathlib
 import time
 from typing import Callable
+
+import file_lock
 
 LOCK_NAME = "daemon.lock"
 
@@ -66,19 +67,7 @@ def daemon_alive(root: pathlib.Path) -> bool:
     Проверяем разделяемым локом (LOCK_SH): с эксклюзивным локом демона он
     конфликтует, с такими же проверяющими — нет.
     """
-    try:
-        f = lock_path(root).open("r")   # flock не требует записи
-    except OSError:
-        return False
-    with f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return True       # лок держит демон — встреча идёт
-        except OSError:
-            return False      # flock не поддержан — не блокируем фон
-        fcntl.flock(f, fcntl.LOCK_UN)
-        return False          # взяли — демона нет
+    return file_lock.is_held(lock_path(root))
 
 
 def wait_while_live(root: pathlib.Path, log: Callable[[str], None] = print, *,

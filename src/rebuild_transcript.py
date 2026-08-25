@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import atexit
-import fcntl
 import json
 import os
 import pathlib
@@ -41,6 +40,7 @@ import numpy as np  # noqa: E402
 import yaml  # noqa: E402
 
 import install_profile  # noqa: E402
+import file_lock  # noqa: E402
 import owner_voice as owner_voice_rules  # noqa: E402
 import live_gate  # noqa: E402
 import meeting_stamp  # noqa: E402
@@ -187,14 +187,13 @@ def _take_rebuild_queue():
         log(f"очередь пересборок недоступна ({type(e).__name__}) — иду без неё")
         return None
     try:
-        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return f
-    except BlockingIOError:
-        log("другая пересборка ещё идёт — жду своей очереди")
+        if file_lock.try_acquire(f):
+            return f
     except OSError:
         return f          # flock не поддержан (сетевой том) — не блокируемся
+    log("другая пересборка ещё идёт — жду своей очереди")
     started = time.time()
-    fcntl.flock(f, fcntl.LOCK_EX)     # блокирующе: очередь, а не отказ
+    file_lock.acquire(f)     # блокирующе: очередь, а не отказ
     log(f"очередь пересборок подошла (ждал {int(time.time() - started)} с)")
     return f
 
