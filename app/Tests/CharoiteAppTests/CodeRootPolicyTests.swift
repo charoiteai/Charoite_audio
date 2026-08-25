@@ -115,4 +115,69 @@ final class CodeRootPolicyTests: XCTestCase {
         XCTAssertEqual(AppDelegate.migrateSettings(from: ["foo": 1], into: d), 0)
         XCTAssertNil(d.object(forKey: "charoite.codeFromRoot"))
     }
+
+    /// Один владелец обязан выставлять interpreter/cwd/env одинаково, не
+    /// трогая argv. Wrapper вроде `nice` меняет только executable.
+    func testPreparePythonСобираетПолныйКонтрактПроцесса() {
+        let root = URL(fileURLWithPath: "/tmp/charoite-python-policy")
+        let arguments = ["script.py", "--flag", "значение"]
+        var expectedEnvironment = ProcessInfo.processInfo.environment
+        expectedEnvironment["CHAROITE_ROOT"] = root.path
+
+        let direct = Process()
+        direct.arguments = arguments
+        AppSettings.preparePython(direct, root: root)
+
+        XCTAssertEqual(direct.executableURL, AppSettings.pythonExecutable(root: root))
+        XCTAssertEqual(direct.currentDirectoryURL, AppSettings.codeRoot(dataRoot: root))
+        XCTAssertEqual(direct.environment, expectedEnvironment)
+        XCTAssertEqual(direct.arguments, arguments, "preparePython не владеет argv")
+
+        let wrapper = URL(fileURLWithPath: "/usr/bin/nice")
+        let wrapped = Process()
+        wrapped.arguments = arguments
+        AppSettings.preparePython(wrapped, root: root, executable: wrapper)
+
+        XCTAssertEqual(wrapped.executableURL, wrapper)
+        XCTAssertEqual(wrapped.currentDirectoryURL, direct.currentDirectoryURL)
+        XCTAssertEqual(wrapped.environment, direct.environment)
+        XCTAssertEqual(wrapped.arguments, arguments)
+    }
+
+    /// Страж партии G-П2: `CHAROITE_ROOT` собирает только AppSettings.
+    /// Новый ручной блок снова создаст два источника правды и обязан упасть в CI.
+    func testРучнаяСборкаPythonОкруженияНеВозвращается() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // CharoiteAppTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // app
+            .appendingPathComponent("Sources/CharoiteApp")
+        let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL }
+            .filter { $0.pathExtension == "swift" && $0.lastPathComponent != "AppSettings.swift" }
+            ?? []
+
+        var offenders: [String] = []
+        for file in files {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            if text.contains("[\"CHAROITE_ROOT\"] =") {
+                offenders.append(file.lastPathComponent)
+            }
+        }
+        XCTAssertTrue(offenders.isEmpty,
+                      "CHAROITE_ROOT собирается в обход preparePython: "
+                    + offenders.sorted().joined(separator: ", "))
+
+        let requiredCalls = [
+            "Services/MeetingActionsService.swift": 1,
+            "Services/MeetingProcessingService.swift": 2,
+        ]
+        for (relative, expected) in requiredCalls {
+            let text = try String(contentsOf: root.appendingPathComponent(relative),
+                                  encoding: .utf8)
+            let actual = text.components(separatedBy: "AppSettings.preparePython(").count - 1
+            XCTAssertEqual(actual, expected,
+                           "\(relative): запуск снова обошёл единый контракт")
+        }
+    }
 }

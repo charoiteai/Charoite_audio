@@ -115,12 +115,8 @@ enum MeetingActionsService {
         }
         let process = Process()
         let output = Pipe()
-        process.executableURL = command.executable
         process.arguments = command.arguments
-        process.currentDirectoryURL = AppSettings.codeRoot
-        var env = ProcessInfo.processInfo.environment
-        env["CHAROITE_ROOT"] = AppSettings.charoiteRoot.path
-        process.environment = env
+        AppSettings.preparePython(process, executable: command.executable)
         process.standardOutput = output
         process.standardError = output
         do {
