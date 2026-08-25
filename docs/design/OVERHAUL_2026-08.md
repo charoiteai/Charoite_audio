@@ -178,6 +178,10 @@ Big-bang на живом продукте запрещён: демон пише�
   `AppSettings.preparePython`; executable/argv/cwd/inherited env и ошибки
   сохранены. Особый probe `SetupReadiness` намеренно не смешан: у него
   `cwd = data root` и другой env-контракт.
+- 25.08 — G-П2, post-merge микрофикс стража (draft PR): точный инвентарь
+  `1 + 2` call sites восстановлен после доказанной false-green мутации;
+  запрет ручной сборки environment ограничен двумя сервисами партии, а
+  полезные comment stripping и cwd-tripwire круга #422 сохранены.
 - 25.08 — из #407 (дубль D-П4 параллельного агента, закрыт): перенята
   позитивная сторона стража — известный выход ОБЯЗАН звать резолвер
   (AST по NETWORK_EXITS), сверка аргумента which, docstring про GUI
