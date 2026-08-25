@@ -177,7 +177,7 @@ Big-bang на живом продукте запрещён: демон пише�
   переведены; fallback без проверки существования — осознанно (честный
   ENOENT); сторож сети видит и безлитеральный стиль вызова
   (test_cloud_call_sites), анти-дубль — test_claude_resolver.
-- 25.08 — G-П11 (draft PR): пять opt-in контуров с реальным графом,
+- 25.08 — G-П11 (PR #426): пять opt-in контуров с реальным графом,
   Ollama или приватным бенчем отделены в `CharoiteAppLiveProbes`.
   PR/nightly компилируют все test targets, но исполняют только
   детерминированный `CharoiteAppTests`; чистый `ByteCountingTests` из
