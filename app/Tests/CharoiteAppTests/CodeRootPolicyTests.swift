@@ -163,6 +163,8 @@ final class CodeRootPolicyTests: XCTestCase {
 
         // Комментарии не считаются кодом: строка режется до «//», иначе
         // упоминание вызова в комментарии двигает счётчик (круг-1, GLM).
+        // Файлы инвентаря ОБЯЗАНЫ читаться — nil тут падение (круг-3, DS:
+        // прежний комментарий обещал терпимость, которой у инвентаря нет).
         func code(of url: URL) -> String? {
             guard let text = try? String(contentsOf: url, encoding: .utf8) else {
                 return nil   // не-UTF-8 файл — не повод ронять страж (круг-1, DS)
