@@ -55,12 +55,14 @@ jobs:
           path: app/.build
           key: spm-${{ runner.os }}-${{ hashFiles('app/Package.swift') }}
           restore-keys: spm-${{ runner.os }}-
-      - name: Build
+      # Живые пробы — отдельный test target: компилируем, чтобы они не гнили,
+      # но не запускаем на CI без приватного графа и локальных моделей.
+      - name: Build app and all test targets
         working-directory: app
-        run: swift build
-      - name: Test
+        run: swift build --build-tests
+      - name: Test deterministic suite
         working-directory: app
-        run: swift test
+        run: swift test --skip-build --filter '^CharoiteAppTests\.'
 
   ios:
     # iPhone-компаньон не собирался в CI ни разу: paths-фильтр покрывал только

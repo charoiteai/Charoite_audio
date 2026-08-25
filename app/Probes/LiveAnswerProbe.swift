@@ -3,6 +3,9 @@ import XCTest
 
 /// Живая проба: что реально уходит модели на вопрос по архиву.
 /// Не гейт — инструмент наблюдения. Требует CHAROITE_GRAPH_DIR.
+///
+///   CHAROITE_GRAPH_DIR=~/путь swift test --package-path app \
+///     --filter CharoiteAppLiveProbes.LiveAnswerProbe
 final class LiveAnswerProbe: XCTestCase {
     func testShowWhatModelReceives() async throws {
         guard let raw = ProcessInfo.processInfo.environment["CHAROITE_GRAPH_DIR"],

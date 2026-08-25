@@ -20,6 +20,7 @@ import pathlib
 import yaml
 
 WF = pathlib.Path(__file__).resolve().parent.parent / ".github" / "workflows"
+APP = WF.parent.parent / "app"
 
 
 def _load(name: str) -> dict:
@@ -61,6 +62,50 @@ def test_swift_tests_run_on_every_push_touching_app():
         f"его правки поедут в main без единой проверки")
     assert any("app-ios" in str(job) for job in wf["jobs"].values()), \
         "нет джобы, собирающей app-ios — фильтр paths его пускает, а собирать некому"
+
+
+def test_swift_live_probes_compile_but_do_not_run_in_gates():
+    """Пробы с реальным графом/Ollama не являются зелёными CI-тестами.
+
+    Они живут в отдельном target и обязаны компилироваться. PR и nightly
+    исполняют только deterministic suite: иначе отсутствие приватных данных
+    снова превратится в пять успешных skip и создаст ложную галочку.
+    """
+    package = (APP / "Package.swift").read_text(encoding="utf-8")
+    assert 'name: "CharoiteAppLiveProbes"' in package
+    assert 'path: "Probes"' in package
+
+    probes = {
+        "AnswerQualityProbe.swift",
+        "BuildRealIndex.swift",
+        "LiveAnswerProbe.swift",
+        "MemoryBench.swift",
+        "SearchPerfProbe.swift",
+    }
+    assert {path.name for path in (APP / "Probes").glob("*.swift")} == probes
+    assert not any((APP / "Tests" / name).exists() for name in probes)
+    deterministic_sources = "\n".join(
+        path.read_text(encoding="utf-8") for path in (APP / "Tests").rglob("*.swift"))
+    for live_case in (
+        "AnswerQualityProbe", "BuildRealIndex", "LiveAnswerProbe",
+        "MemoryBench", "SearchPerfTests",
+    ):
+        assert f"class {live_case}" not in deterministic_sources, \
+            f"{live_case}: живая проба вернулась в основной test target"
+
+    workflows = {
+        "swift-tests.yml": _load("swift-tests.yml")["jobs"]["test"],
+        "nightly.yml": _load("nightly.yml")["jobs"]["swift"],
+    }
+    for name, job in workflows.items():
+        commands = [str(step.get("run", "")) for step in job["steps"]]
+        assert any("--build-tests" in command for command in commands), \
+            f"{name}: живые пробы больше не компилируются"
+        test_commands = [command for command in commands if "swift test" in command]
+        assert len(test_commands) == 1
+        assert "--filter" in test_commands[0] and "CharoiteAppTests" in test_commands[0], \
+            f"{name}: CI снова запускает живые пробы как обычные тесты"
+        assert "CharoiteAppLiveProbes" not in test_commands[0]
 
 
 def test_twin_runs_do_not_cancel_each_other():

@@ -14,5 +14,10 @@ let package = Package(
             dependencies: ["CharoiteApp"],
             path: "Tests"
         ),
+        .testTarget(
+            name: "CharoiteAppLiveProbes",
+            dependencies: ["CharoiteApp"],
+            path: "Probes"
+        ),
     ]
 )
