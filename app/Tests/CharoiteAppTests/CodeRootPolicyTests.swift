@@ -115,4 +115,96 @@ final class CodeRootPolicyTests: XCTestCase {
         XCTAssertEqual(AppDelegate.migrateSettings(from: ["foo": 1], into: d), 0)
         XCTAssertNil(d.object(forKey: "charoite.codeFromRoot"))
     }
+
+    /// Один владелец обязан выставлять interpreter/cwd/env одинаково, не
+    /// трогая argv. Wrapper вроде `nice` меняет только executable.
+    ///
+    /// Ограничение (круг-1, DS): в юнит-среде код не встроен, поэтому
+    /// `codeRoot(dataRoot:) == dataRoot` и cwd-сравнение ловит только
+    /// nil/чужой путь. Ось «бандл против корня данных» держат тесты
+    /// `codeSource` выше и трипваер на проводку в страже ниже.
+    func testPreparePythonСобираетПолныйКонтрактПроцесса() {
+        let root = URL(fileURLWithPath: "/tmp/charoite-python-policy")
+        let arguments = ["script.py", "--flag", "значение"]
+        var expectedEnvironment = ProcessInfo.processInfo.environment
+        expectedEnvironment["CHAROITE_ROOT"] = root.path
+
+        let direct = Process()
+        direct.arguments = arguments
+        AppSettings.preparePython(direct, root: root)
+
+        XCTAssertEqual(direct.executableURL, AppSettings.pythonExecutable(root: root))
+        XCTAssertEqual(
+            direct.currentDirectoryURL?.standardizedFileURL.path,
+            AppSettings.codeRoot(dataRoot: root).standardizedFileURL.path
+        )
+        XCTAssertEqual(direct.environment, expectedEnvironment)
+        XCTAssertEqual(direct.arguments, arguments, "preparePython не владеет argv")
+
+        let wrapper = URL(fileURLWithPath: "/usr/bin/nice")
+        let wrapped = Process()
+        wrapped.arguments = arguments
+        AppSettings.preparePython(wrapped, root: root, executable: wrapper)
+
+        XCTAssertEqual(wrapped.executableURL, wrapper)
+        XCTAssertEqual(wrapped.currentDirectoryURL, direct.currentDirectoryURL)
+        XCTAssertEqual(wrapped.environment, direct.environment)
+        XCTAssertEqual(wrapped.arguments, arguments)
+    }
+
+    /// Страж партии G-П2: `CHAROITE_ROOT` собирает только AppSettings.
+    /// Новый ручной блок снова создаст два источника правды и обязан упасть в CI.
+    func testРучнаяСборкаPythonОкруженияНеВозвращается() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // CharoiteAppTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // app
+            .appendingPathComponent("Sources/CharoiteApp")
+        let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL }
+            .filter { $0.pathExtension == "swift" && $0.lastPathComponent != "AppSettings.swift" }
+            ?? []
+
+        // Комментарии не считаются кодом: строка режется до «//», иначе
+        // упоминание вызова в комментарии двигает счётчик (круг-1, GLM).
+        func code(of url: URL) -> String? {
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+                return nil   // не-UTF-8 файл — не повод ронять страж (круг-1, DS)
+            }
+            return text.components(separatedBy: "\n")
+                .map { $0.components(separatedBy: "//").first ?? $0 }
+                .joined(separator: "\n")
+        }
+
+        var offenders: [String] = []
+        for file in files {
+            guard let text = code(of: file) else { continue }
+            // Любая ручная сборка окружения кончается присвоением
+            // `.environment =` — этот запрет ловит и updateValue/merge,
+            // и словарь-литерал, теряющий унаследованное окружение
+            // (круг-1, DS и GLM сошлись).
+            if text.contains("[\"CHAROITE_ROOT\"] =") || text.contains(".environment =") {
+                offenders.append(file.lastPathComponent)
+            }
+        }
+        XCTAssertTrue(offenders.isEmpty,
+                      "окружение python собирается в обход preparePython: "
+                    + offenders.sorted().joined(separator: ", "))
+
+        // «Хотя бы один вызов», а не точное число: легитимное изменение
+        // топологии запусков — не нарушение контракта (круг-1, DS и GLM).
+        for relative in ["Services/MeetingActionsService.swift",
+                         "Services/MeetingProcessingService.swift"] {
+            let text = code(of: root.appendingPathComponent(relative)) ?? ""
+            XCTAssertTrue(text.contains("AppSettings.preparePython("),
+                          "\(relative): запуск обошёл единый контракт")
+        }
+
+        // Трипваер на проводку cwd: юнит-среда не отличает codeRoot от
+        // dataRoot значением (см. контрактный тест), поэтому сама строка
+        // делегирования обязана оставаться в preparePython (круг-1, DS I1).
+        let settings = code(of: root.appendingPathComponent("Models/AppSettings.swift")) ?? ""
+        XCTAssertTrue(settings.contains("process.currentDirectoryURL = codeRoot(dataRoot: dataRoot)"),
+                      "preparePython больше не делегирует cwd в codeRoot(dataRoot:)")
+    }
 }
