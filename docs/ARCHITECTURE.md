@@ -362,7 +362,7 @@ those facts survive into the answer.
         --filter CharoiteAppLiveProbes.MemoryBench
 
 Live probes are a separate Swift test target. CI and nightly builds compile
-that target so it cannot rot, but execute only `CharoiteAppTests`; a missing
+that target so its signatures cannot rot — behaviour runs only by hand — and execute only `CharoiteAppTests`; a missing
 private graph or local model must not look like a successful product test.
 
 Without `CHAROITE_BENCH_ANSWERS` it measures only what search delivers;

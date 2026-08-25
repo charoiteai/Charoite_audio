@@ -16,6 +16,7 @@ PR по-прежнему не запускает ничего:
 нельзя, а инвариант всё равно текстовый — «какие события запускают прогон».
 """
 import pathlib
+import re
 
 import yaml
 
@@ -82,13 +83,23 @@ def test_swift_live_probes_compile_but_do_not_run_in_gates():
         "MemoryBench.swift",
         "SearchPerfProbe.swift",
     }
-    assert {path.name for path in (APP / "Probes").glob("*.swift")} == probes
+    actual = {path.name for path in (APP / "Probes").glob("*.swift")}
+    assert actual == probes, (
+        "набор файлов в Probes/ разошёлся со списком стража: "
+        f"лишние {sorted(actual - probes)}, пропавшие {sorted(probes - actual)} — "
+        "новую пробу добавь и сюда, и в doc-команды запуска")
     assert not any((APP / "Tests" / name).exists() for name in probes)
     deterministic_sources = "\n".join(
         path.read_text(encoding="utf-8") for path in (APP / "Tests").rglob("*.swift"))
+    # Живая проба под любым именем гейтится приватным окружением — сам
+    # env-гейт и запрещён в детерминированных исходниках (круг-1: DS и GLM
+    # сошлись: реестр имён обходится переименованием). Сегодня в Tests/
+    # таких чтений ноль, ложных срабатываний нет.
+    assert 'environment["CHAROITE_' not in deterministic_sources, \
+        "env-гейченая живая проба вернулась в детерминированный target"
     for live_case in (
         "AnswerQualityProbe", "BuildRealIndex", "LiveAnswerProbe",
-        "MemoryBench", "SearchPerfTests",
+        "MemoryBench", "SearchPerfProbe",
     ):
         assert f"class {live_case}" not in deterministic_sources, \
             f"{live_case}: живая проба вернулась в основной test target"
@@ -106,6 +117,14 @@ def test_swift_live_probes_compile_but_do_not_run_in_gates():
         assert "--filter" in test_commands[0] and "CharoiteAppTests" in test_commands[0], \
             f"{name}: CI снова запускает живые пробы как обычные тесты"
         assert "CharoiteAppLiveProbes" not in test_commands[0]
+        # Сцепка фильтра с манифестом: фильтр, чей префикс не совпадает с
+        # именем существующего testTarget, отбирает ноль тестов и выходит
+        # нулём — «зелёный без прогона» (круг-1: DS+GLM). Grep по Executed
+        # в самих workflow — второй слой той же защиты.
+        m = re.search(r"--filter '\^([A-Za-z0-9_]+)\\\.'", test_commands[0])
+        assert m, f"{name}: фильтр не в каноничной форме ^Таргет\\."
+        assert f'name: "{m.group(1)}"' in (APP / "Package.swift").read_text(encoding="utf-8"), \
+            f"{name}: фильтр указывает на несуществующий testTarget {m.group(1)}"
 
 
 def test_twin_runs_do_not_cancel_each_other():

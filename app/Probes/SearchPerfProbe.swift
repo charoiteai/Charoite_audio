@@ -3,11 +3,11 @@ import XCTest
 
 /// Замер поиска на реальном графе. Не гейт (у CI графа нет) — инструмент,
 /// чтобы говорить о производительности числами, а не ощущениями.
-final class SearchPerfTests: XCTestCase {
+final class SearchPerfProbe: XCTestCase {
     /// Граф для замера задаётся окружением: у каждого он свой, а зашивать
     /// чужой путь в публичный репозиторий нельзя.
     ///   CHAROITE_GRAPH_DIR=~/путь/к/графу swift test --package-path app \
-    ///     --filter CharoiteAppLiveProbes.SearchPerfTests
+    ///     --filter CharoiteAppLiveProbes.SearchPerfProbe
     private var realGraph: URL? {
         guard let raw = ProcessInfo.processInfo.environment["CHAROITE_GRAPH_DIR"],
               !raw.isEmpty else { return nil }

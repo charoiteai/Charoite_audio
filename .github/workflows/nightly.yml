@@ -56,11 +56,17 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      # Живые пробы компилируем вместе со всеми тестами, чтобы они не гнили,
-      # но ночью без приватного графа/Ollama запускаем только deterministic suite.
-      # Без пайпа: `swift test | tail` возвращал код `tail`, то есть всегда 0.
+      # Живые пробы компилируем вместе со всеми тестами (гниение сигнатур),
+      # но ночью без приватного графа/Ollama гоняем только deterministic suite.
+      # Пайп здесь под pipefail (старый `swift test | tail` возвращал код
+      # tail — всегда 0), а grep по Executed ловит «зелёный без прогона»:
+      # фильтр без совпадений выходит нулём, не исполнив ни одного теста.
       - run: swift build --package-path app --build-tests
-      - run: swift test --package-path app --skip-build --filter '^CharoiteAppTests\.'
+      - shell: bash
+        run: |
+          set -o pipefail
+          swift test --package-path app --skip-build --filter '^CharoiteAppTests\.' 2>&1 | tee /tmp/swift-test.log
+          grep -Eq 'Executed [1-9][0-9]* test' /tmp/swift-test.log
   ios:
     # iOS-тесты существовали, но не гонялись нигде: в PR-проверке только
     # сборка. Правка в app-ios/ уезжала в main непроверенной — ночью есть
