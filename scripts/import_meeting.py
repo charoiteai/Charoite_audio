@@ -34,9 +34,12 @@ sys.path.insert(0, str(CODE / "src"))
 import graphs  # noqa: E402
 import meeting_stamp  # noqa: E402
 import deps  # noqa: E402
-from config_loader import load_user_or_example  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
+
+# ПОСЛЕ хука: config_loader тянет yaml, а рецепт вместо трейсбека обязан
+# успеть встать до первого стороннего импорта (круг-1 по #418, DS+GLM+Codex).
+from config_loader import load_user_or_example  # noqa: E402
 
 import charoite_paths  # noqa: E402
 

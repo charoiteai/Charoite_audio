@@ -107,3 +107,25 @@ def test_nightly_empty_config_policy_stays_at_call_sites():
         assert len(returns) == 1, relative
         assert isinstance(returns[0].value, ast.BoolOp), relative
         assert isinstance(returns[0].value.op, ast.Or), relative
+
+
+def test_import_meeting_installs_the_recipe_hook_first():
+    """deps.explain_missing обязан встать ДО импорта config_loader: тот
+    тянет yaml, и свежий клон без .venv должен получить рецепт, а не
+    трейсбек (круг-1 по #418, все три головы; порядок пиннится по
+    тексту — простая перестановка строк ломала CLI при зелёных тестах)."""
+    src = (ROOT / "scripts" / "import_meeting.py").read_text(encoding="utf-8")
+    hook = src.index("deps.explain_missing()")
+    loader = src.index("from config_loader import")
+    assert hook < loader
+
+
+def test_meeting_archive_imports_without_third_party():
+    """meeting_archive обязан импортироваться на голом python3:
+    morning_brief берёт из него только чистые функции (круг-1, GLM)."""
+    import ast as _ast
+    tree = _ast.parse((ROOT / "src" / "meeting_archive.py").read_text(encoding="utf-8"))
+    top = {n.names[0].name.split(".")[0]
+           for n in tree.body if isinstance(n, _ast.Import)} |           {(n.module or "").split(".")[0]
+           for n in tree.body if isinstance(n, _ast.ImportFrom)}
+    assert "yaml" not in top and "config_loader" not in top

@@ -24,7 +24,6 @@ import stat as _stat
 import sys
 
 from charoite_paths import resolve_root
-from config_loader import load_user_or_example
 from meeting_stamp import archive_time, files_with_stamp, graph_key, stamp_of
 import graphs
 
@@ -567,6 +566,10 @@ def _gen_summary(folder: pathlib.Path, force: bool = False):
         # конфиг 12.08 переехал на mlx-сборку, а Саммари продолжало звать
         # старую модель мимо него (аудит 14.08). Лестница resolve_model
         # заодно даёт фолбэк, если основная модель не установлена.
+        # Ленивый импорт: модуль обязан импортироваться без сторонних
+        # пакетов — morning_brief живёт на голом python3 (круг-1 по #418,
+        # GLM: единственный нетривиальный импорт у него — meeting_archive).
+        from config_loader import load_user_or_example
         cfg = load_user_or_example(ROOT)
         text = LLM(cfg).complete(
             "<материалы>\n" + "\n\n".join(src_parts) + decided_block + hist_block
