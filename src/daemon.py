@@ -51,8 +51,8 @@ import thesis_rules  # noqa: E402
 import voice_pitch  # noqa: E402
 from audio import AudioHub  # noqa: E402
 from llm import LLM, embed as llm_embed  # noqa: E402
-from main import NOISE, Transcript  # noqa: E402
 from stt import STT  # noqa: E402
+from transcript import NOISE, Transcript  # noqa: E402
 
 import brain  # noqa: E402
 import graphs  # noqa: E402

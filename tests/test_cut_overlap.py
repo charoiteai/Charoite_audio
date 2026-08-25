@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
-from main import Transcript  # noqa: E402
+from transcript import Transcript  # noqa: E402
 
 cut = Transcript._cut_overlap
 

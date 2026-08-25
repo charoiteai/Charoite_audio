@@ -25,6 +25,7 @@ Stop → recording rebuild → graph update → archive + Summary → [Claude de
 stdout（`{"type": "transcript"|"thesis"|"hint"|…}`）；命令从 stdin 传入
 （`hint`、`ask <question>`、`summary`、`stop`）。任何 UI 都可以架在这套
 协议之上；第二个实例会被 flock 阻止。
+`Transcript` 位于轻依赖的 `src/transcript.py`；运行时模块不再导入旧入口 `main.py`。
 
 守护进程的状态带有故障标志（`{"type": "status", "error": true}`）：应用把
 这类状态显示为错误，普通状态则清除标志。模型故障不会变成提示文本——只会
