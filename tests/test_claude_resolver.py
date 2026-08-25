@@ -15,8 +15,15 @@ import cloud  # noqa: E402
 
 
 def test_resolves_from_path(monkeypatch):
-    monkeypatch.setattr(cloud.shutil, "which", lambda name: "/x/bin/claude")
+    asked = []
+
+    def which(name):
+        asked.append(name)
+        return "/x/bin/claude"
+
+    monkeypatch.setattr(cloud.shutil, "which", which)
     assert cloud.claude_bin() == "/x/bin/claude"
+    assert asked == ["claude"]
 
 
 def test_falls_back_to_homebrew_when_missing(monkeypatch):
@@ -38,15 +45,7 @@ def test_no_stray_copies_of_the_resolver():
     assert offenders == []
 
 
-def test_call_sites_use_the_resolver():
-    # Счёт вхождений, не факт присутствия: в daemon точек ДВЕ, и регрессия
-    # ровно одной оставила бы подстроку в файле (круг-1 по #406, DS).
-    users = {
-        "src/daemon.py": 2,
-        "scripts/cloud_review.py": 1,
-        "scripts/nightly_claude_cores.py": 1,
-        "scripts/nightly_dossier_review.py": 1,
-    }
-    short = {f: n for f, n in users.items()
-             if (ROOT / f).read_text(encoding="utf-8").count("cloud.claude_bin()") < n}
-    assert short == {}
+# «Каждый известный выход зовёт резолвер» проверяет AST-страж в
+# test_cloud_call_sites.py (позитивная сторона test_no_other_place_starts_claude,
+# идея из #407): он привязан к реестру NETWORK_EXITS и не дублирует список
+# точек здесь подстрочным счётом.
