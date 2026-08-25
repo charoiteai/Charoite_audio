@@ -176,44 +176,48 @@ final class CodeRootPolicyTests: XCTestCase {
         // изменение топологии требует осознанно обновить и страж. Проверка
         // «хотя бы один вызов на файл» пропускала потерю одного из двух
         // запусков MeetingProcessing и оставляла CI зелёным.
+        // Инвентарь ВСЕХ python-запусков (круг-2, DS Critical: два файла
+        // из шести — удаление вызова в остальных четырёх было зелёным).
+        // Новая точка запуска = осознанно обновить страж; это договор.
+        // Остаточный риск принят вслух: НОВЫЙ файл с ручной сборкой и
+        // индирекция через константу в AppSettings текстовым сканом не
+        // ловятся (круг-2: компенсаторные слои дороже дыры) — их держит
+        // договор инвентаря и ревью.
         let requiredCalls = [
+            "Services/DictationService.swift": 1,
+            "Services/ImportService.swift": 1,
             "Services/MeetingActionsService.swift": 1,
             "Services/MeetingProcessingService.swift": 2,
+            "Services/ModelPullService.swift": 1,
+            "Services/SuflerService.swift": 1,
         ]
         for (relative, expected) in requiredCalls {
             let file = root.appendingPathComponent(relative)
-            let text = try XCTUnwrap(code(of: file), "не удалось прочитать \(relative)")
+            let text = code(of: file)
+            // Файл инвентаря обязан читаться; остальные проверки метода
+            // при этом не прерываются (круг-2, DS M4 против XCTUnwrap).
+            XCTAssertNotNil(text, "не удалось прочитать \(relative)")
+            guard let text else { continue }
             let actual = text.components(separatedBy: "AppSettings.preparePython(").count - 1
-            let message = "\(relative): Python call sites изменились без обновления стража"
-            XCTAssertEqual(actual, expected, message)
+            XCTAssertEqual(actual, expected,
+                           "\(relative): Python call sites изменились без обновления стража")
+            // Ручная сборка контракта рядом с вызовом: env И cwd (круг-2,
+            // DS M5 — переопределение cwd после preparePython было слепым).
             XCTAssertFalse(text.contains("[\"CHAROITE_ROOT\"] =")
                            || text.contains(".environment ="),
                            "\(relative): окружение python снова собирается вручную")
+            XCTAssertFalse(text.contains(".currentDirectoryURL ="),
+                           "\(relative): cwd python переопределяется в обход preparePython")
         }
-
-        // Третий край (круг-2 по #427): инвентарь двух файлов слеп к
-        // НОВОМУ файлу с ручной сборкой. CHAROITE_ROOT принадлежит одному
-        // владельцу — любое упоминание вне AppSettings ловит любую форму
-        // ручной установки (литерал, словарь, updateValue, merge), не
-        // запрещая легитимные env других процессов. Сегодня вне
-        // AppSettings таких упоминаний ноль — запрет бесплатный.
-        let allSwift = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)?
-            .compactMap { $0 as? URL }
-            .filter { $0.pathExtension == "swift" && $0.lastPathComponent != "AppSettings.swift" }
-            ?? []
-        var rogue: [String] = []
-        for file in allSwift where (code(of: file) ?? "").contains("CHAROITE_ROOT") {
-            rogue.append(file.lastPathComponent)
-        }
-        XCTAssertTrue(rogue.isEmpty,
-                      "CHAROITE_ROOT трогают в обход AppSettings: "
-                    + rogue.sorted().joined(separator: ", "))
 
         // Трипваер на проводку cwd: юнит-среда не отличает codeRoot от
         // dataRoot значением (см. контрактный тест), поэтому сама строка
         // делегирования обязана оставаться в preparePython (круг-1, DS I1).
         let settings = code(of: root.appendingPathComponent("Models/AppSettings.swift")) ?? ""
-        XCTAssertTrue(settings.contains("process.currentDirectoryURL = codeRoot(dataRoot: dataRoot)"),
+        let cwdWire = try NSRegularExpression(
+            pattern: "currentDirectoryURL\\s*=\\s*codeRoot\\(dataRoot:\\s*dataRoot\\)")
+        XCTAssertTrue(cwdWire.firstMatch(in: settings,
+                          range: NSRange(settings.startIndex..., in: settings)) != nil,
                       "preparePython больше не делегирует cwd в codeRoot(dataRoot:)")
     }
 }
