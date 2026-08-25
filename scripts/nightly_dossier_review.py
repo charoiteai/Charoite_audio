@@ -30,8 +30,6 @@ import shutil
 import subprocess
 import sys
 
-import yaml
-
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
 CODE = pathlib.Path(__file__).resolve().parent.parent
@@ -42,6 +40,7 @@ import dossier  # noqa: E402
 import graphs  # noqa: E402
 import live_gate  # noqa: E402
 import privacy  # noqa: E402
+from config_loader import load_user_or_example  # noqa: E402
 
 FRESH_DAYS = 3          # смотрим досье, собранные за последние сутки-трое
 MAX_SRC_CHARS = 45_000  # потолок на один запрос к Opus
@@ -157,10 +156,7 @@ def revision_stats(old_body: str, new_body: str) -> str:
 
 
 def _cfg() -> dict:
-    p = ROOT / "config" / "config.yaml"
-    if not p.exists():
-        p = ROOT / "config" / "config.example.yaml"
-    return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    return load_user_or_example(ROOT) or {}
 
 
 

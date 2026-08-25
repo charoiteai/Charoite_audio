@@ -18,8 +18,6 @@ import subprocess
 import sys
 import time
 
-import yaml
-
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
 CODE = pathlib.Path(__file__).resolve().parent.parent
@@ -32,13 +30,11 @@ import graphs  # noqa: E402
 import charoite_paths  # noqa: E402 — путь к src задаётся строкой выше
 import cloud  # noqa: E402
 import privacy  # noqa: E402
+from config_loader import load_user_or_example  # noqa: E402
 
 
 def _cfg() -> dict:
-    p = ROOT / "config" / "config.yaml"
-    if not p.exists():
-        p = ROOT / "config" / "config.example.yaml"
-    return yaml.safe_load(p.read_text(encoding="utf-8"))
+    return load_user_or_example(ROOT)
 
 
 

@@ -24,6 +24,7 @@ import stat as _stat
 import sys
 
 from charoite_paths import resolve_root
+from config_loader import load_user_or_example
 from meeting_stamp import archive_time, files_with_stamp, graph_key, stamp_of
 import graphs
 
@@ -561,17 +562,12 @@ def _gen_summary(folder: pathlib.Path, force: bool = False):
         "или отмена прошлой договорённости. Нет пересечений — пропусти раздел)"
     ) if history else ""
     try:
-        import yaml
-
         from llm import LLM
         # Модель и адрес — из конфига через llm.py, а не хардкодом: боевой
         # конфиг 12.08 переехал на mlx-сборку, а Саммари продолжало звать
         # старую модель мимо него (аудит 14.08). Лестница resolve_model
         # заодно даёт фолбэк, если основная модель не установлена.
-        cfg_p = ROOT / "config" / "config.yaml"
-        if not cfg_p.exists():   # свежий клон: пример вместо падения
-            cfg_p = ROOT / "config" / "config.example.yaml"
-        cfg = yaml.safe_load(cfg_p.read_text(encoding="utf-8"))
+        cfg = load_user_or_example(ROOT)
         text = LLM(cfg).complete(
             "<материалы>\n" + "\n\n".join(src_parts) + decided_block + hist_block
             + "\n</материалы>\n\n"
