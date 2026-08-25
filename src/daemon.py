@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
-import fcntl
 import json
 import math
 import os
@@ -54,6 +53,7 @@ from stt import STT  # noqa: E402
 from transcript import NOISE, Transcript  # noqa: E402
 
 import brain  # noqa: E402
+import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import hint_guard  # noqa: E402
 import meeting_stamp  # noqa: E402
@@ -379,19 +379,13 @@ def main():
     # single-instance: второй демон устроил бы битую стенограмму (один .tmp-путь)
     secure_dir(ROOT / "logs")
     lockf = open(ROOT / "logs" / "daemon.lock", "w")
-    # Несколько попыток: фоновые проверяющие (пересборка, ночь — live_gate)
-    # держат разделяемый лок микросекунды, и одна неудачная попытка в это
-    # окно отменяла бы встречу с ложным «уже слушает в другом окне». Второй
-    # живой демон держит лок постоянно — его пять попыток не пропустят.
-    for attempt in range(5):
-        try:
-            fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            break
-        except OSError:
-            if attempt == 4:
-                emit({"type": "status", "text": "⚠️ Суфлёр уже слушает в другом окне — второй запуск отменён"})
-                return
-            time.sleep(0.1)
+    # Ретраи против микросекундных проб фона — в хелпере. busy=(OSError,) —
+    # демон не различает «занято» и «flock не поддержан»: вторым не стартует
+    # в обоих случаях (семантика прежнего цикла сохранена, D-П6).
+    if not file_locks.acquire_exclusive(lockf, attempts=5, pause=0.1,
+                                        busy=(OSError,)):
+        emit({"type": "status", "text": "⚠️ Суфлёр уже слушает в другом окне — второй запуск отменён"})
+        return
     cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
     # Граф перекрыт переменной окружения (тесты, демо): сказать об этом в
     # логе сразу, а не обнаруживать по пути записи после встречи (круг-1 по
