@@ -32,6 +32,25 @@ _CALL = re.compile(r"\[\s*claude\w*\s*,\s*\"-p\"")
 _WINDOW = 2600
 
 
+def test_claude_resolver_prefers_path(monkeypatch):
+    asked = []
+
+    def which(name):
+        asked.append(name)
+        return "/custom/bin/claude"
+
+    monkeypatch.setattr(cloud.shutil, "which", which)
+
+    assert cloud.resolve_claude() == "/custom/bin/claude"
+    assert asked == ["claude"]
+
+
+def test_claude_resolver_keeps_macos_gui_fallback(monkeypatch):
+    monkeypatch.setattr(cloud.shutil, "which", lambda _name: None)
+
+    assert cloud.resolve_claude() == "/opt/homebrew/bin/claude"
+
+
 def _values(args: list[str], flag: str) -> list[str]:
     """Значения variadic CLI-флага до следующего `--...`."""
     if flag not in args:

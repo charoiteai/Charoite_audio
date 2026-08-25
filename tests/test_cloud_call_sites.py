@@ -42,6 +42,7 @@ NETWORK_EXITS = (
     ("nightly_claude_cores.py", "main"),
     ("nightly_dossier_review.py", "review"),
 )
+CLAUDE_RESOLVER = ("cloud.py", "resolve_claude")
 
 # Оба имени одного рубильника. Точка выхода не должна упоминать их сама —
 # знать их обязан только src/privacy.py.
@@ -84,6 +85,33 @@ def _own_consts(fn: ast.AST) -> set[str]:
             out.add(node.value)
         stack.extend(ast.iter_child_nodes(node))
     return out
+
+
+def _calls_claude_resolver(scope: ast.AST) -> bool:
+    """Вызывает ли область общий resolver, не считая вложенных функций."""
+    stack = list(scope.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and isinstance(node.func.value, ast.Name) \
+                and node.func.value.id == "cloud" \
+                and node.func.attr == "resolve_claude":
+            return True
+        stack.extend(ast.iter_child_nodes(node))
+    return False
+
+
+@pytest.mark.parametrize("source,expected", [
+    ("def exit():\n    cloud.resolve_claude()\n", True),
+    ("def exit():\n    shutil.which('claude')\n", False),
+    ("def exit():\n    def nested():\n        cloud.resolve_claude()\n", False),
+])
+def test_resolver_detector_stays_in_its_own_scope(source, expected):
+    fn = ast.parse(source).body[0]
+
+    assert _calls_claude_resolver(fn) is expected
 
 
 _PRIVACY_GATES = ("cloud_live_enabled", "cloud_hints_enabled",
@@ -336,12 +364,11 @@ def test_privacy_knows_both_switch_names():
 
 
 # Имя модели — не бинарник: «claude-opus-5» запустить нельзя. Сторож ловит
-# строку, которой стартует процесс, и одно от другого обязан отличать, иначе
-# модуль, который ТОЛЬКО называет модель (src/cloud.py — одно место для
-# дефолтов вместо литерала в каждой точке выхода), объявляется новым выходом в
-# сеть и с него требуется фильтр ANTHROPIC_API_KEY. Покрытие при этом не
-# сужается: исключаются ровно строки вида claude-<версия>, а «claude»,
-# «/opt/homebrew/bin/claude» и «claude -p …» ловятся по-прежнему.
+# строку запуска И вызов единого resolver, поэтому новый сетевой выход нельзя
+# спрятать за cloud.resolve_claude(). Сам resolver разрешён отдельно: он только
+# выбирает executable и не запускает процесс. Покрытие не сужается: старые
+# литералы «claude», «/opt/homebrew/bin/claude» и «claude -p …» по-прежнему
+# считаются запуском вне resolver и валят тест.
 _MODEL_NAME = re.compile(r"^claude-[a-z0-9.\-]+$")
 
 
@@ -367,14 +394,21 @@ def test_no_other_place_starts_claude():
     только src/ — scripts/ ходят теми же дорогами.
     """
     known = {f"{f}:{fn}" for f, fn in NETWORK_EXITS}
+    resolver = f"{CLAUDE_RESOLVER[0]}:{CLAUDE_RESOLVER[1]}"
     found = set()
+    resolved = set()
     for root in (SRC, SRC.parent / "scripts"):
         for path in sorted(root.glob("*.py")):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
-                        and _mentions_claude(_own_consts(node)):
-                    found.add(f"{path.name}:{node.name}")
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                key = f"{path.name}:{node.name}"
+                uses_resolver = _calls_claude_resolver(node)
+                if uses_resolver:
+                    resolved.add(key)
+                if _mentions_claude(_own_consts(node)) or uses_resolver:
+                    found.add(key)
             top: set[str] = set()
             stack = list(ast.iter_child_nodes(tree))
             while stack:
@@ -384,9 +418,14 @@ def test_no_other_place_starts_claude():
                 if isinstance(node, ast.Constant) and isinstance(node.value, str):
                     top.add(node.value)
                 stack.extend(ast.iter_child_nodes(node))
-            if _mentions_claude(top):
+            if _mentions_claude(top) or _calls_claude_resolver(tree):
                 found.add(f"{path.name}:<module>")
-    unknown = sorted(found - known)
+    unknown = sorted(found - known - {resolver})
     assert not unknown, (
         "появился новый путь запуска claude: " + ", ".join(unknown)
         + " — добавьте его в NETWORK_EXITS и убедитесь, что там есть выключатель")
+    missing = sorted(known - resolved)
+    assert not missing, (
+        "известный выход обязан вызывать cloud.resolve_claude(); прямой "
+        f"литерал или старый shutil.which запрещён: {missing}"
+    )

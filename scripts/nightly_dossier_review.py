@@ -246,7 +246,7 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
         total += len(block)
 
     prompt = PROMPT.format(theme=theme, current=body, sources="\n".join(parts))
-    claude = shutil.which("claude") or "/opt/homebrew/bin/claude"
+    claude = cloud.resolve_claude()
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
     cloud.add_proxy(env)
     try:

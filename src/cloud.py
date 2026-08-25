@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import shutil
 
 # Ключ конфига → модель по умолчанию. Меняется ВМЕСТЕ с примерами конфига,
 # иначе тест валится: пример — это документация, а не пожелание.
@@ -29,6 +30,17 @@ DEFAULTS = {
     # уточнение подсказок: то же, но чаще — дешёвая и быстрая
     "cloud_hints_model": "claude-haiku-4-5",
 }
+
+
+def resolve_claude() -> str:
+    """Executable для всех headless-вызовов Claude Code.
+
+    Shell/venv может подложить свой ``claude`` через PATH. GUI-запуск macOS
+    обычно не наследует Homebrew PATH, поэтому прежний абсолютный fallback
+    сохраняется. Существование бинарника здесь намеренно не проверяется:
+    каждый контур сам владеет своей деградацией, логом и кодом возврата.
+    """
+    return shutil.which("claude") or "/opt/homebrew/bin/claude"
 
 
 def model(cfg: dict, key: str) -> str:

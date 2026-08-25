@@ -697,7 +697,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         rev_name=rev.name, stamp=stamp, arch_folder=None, may_edit=may_edit,
         context=context)
     cmd = graph_updater.cloud_enrich_command(
-        cfg, claude_bin=shutil.which("claude") or "/opt/homebrew/bin/claude",
+        cfg, claude_bin=cloud.resolve_claude(),
         prompt=prompt, model=cloud.model(cfg, "cloud_model"), may_edit=may_edit,
         graph_available=graph_available, deny_paths=denied)
 

@@ -19,7 +19,6 @@ import math
 import os
 import pathlib
 import re
-import shutil
 import signal
 import stat
 import subprocess
@@ -1309,7 +1308,7 @@ def main():
             # сетевым выходом без рубильника.
             if not privacy.cloud_hints_enabled(cfg):
                 return
-            claude_bin = shutil.which("claude") or "/opt/homebrew/bin/claude"
+            claude_bin = cloud.resolve_claude()
             model = cloud.model(cfg, "cloud_hints_model")
             env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
             cloud.add_proxy(env)
@@ -1645,7 +1644,7 @@ def main():
         `cloud` из stdin (кнопка «Claude», ⌘⇧⏎). Вторая проверку обходила,
         и нажатие отправляло стенограмму при cloud_live: false.
         """
-        claude_bin = shutil.which("claude") or "/opt/homebrew/bin/claude"
+        claude_bin = cloud.resolve_claude()
         model = cloud.model(cfg, "cloud_live_model")
         env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
         cloud.add_proxy(env)  # без прокси из GUI-запуска — 403 по региону
