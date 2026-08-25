@@ -20,8 +20,8 @@ import numpy as np
 import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from main import NOISE, Transcript  # noqa: E402
 from stt import STT  # noqa: E402
+from transcript import NOISE, Transcript  # noqa: E402
 
 from charoite_paths import harden_umask, resolve_root
 
