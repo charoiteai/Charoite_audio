@@ -66,8 +66,9 @@ def test_daemon_measures_and_sheds_before_positional_split():
     assert "jobs = [(chunk, stt_runtime.CHANNEL_LABEL_ONLY, None)]" in loop[policy:split]
     assert 'elif plan == "diarize":' in loop[policy:split]
     assert '"type": "stt_progress"' in loop
-    for metric in ("backlog_seconds", "diarization_ms", "transcription_ms",
-                   "input_age_seconds", "recording_ok"):
+    for metric in ("state", "stage", "stage_age_seconds", "backlog_seconds",
+                   "diarization_ms", "transcription_ms", "input_age_seconds",
+                   "recording_ok", "channels"):
         assert f'"{metric}"' in loop
     assert "mark_stt_stage(\"diarization\")" in loop
     assert "mark_stt_stage(\"transcription\")" in loop
@@ -175,11 +176,29 @@ def test_пульс_и_stalled_по_порогам():
     assert stt_runtime.heartbeat_due(now=30.1, last=0.0) is True
     assert stt_runtime.heartbeat_due(now=100.0, last=80.0) is False
     assert stt_runtime.heartbeat_due(now=111.0, last=80.0) is True
+    assert stt_runtime.stage_is_stalled(stage_age_s=29.9) is False
+    assert stt_runtime.stage_is_stalled(stage_age_s=30.0) is True
     assert stt_runtime.stall_log_due(stage_age_s=29.9, now=100.0, last=0.0) is False
     assert stt_runtime.stall_log_due(stage_age_s=30.0, now=100.0, last=0.0) is True
     assert stt_runtime.stall_log_due(stage_age_s=30.0, now=100.0, last=80.0) is False
     # ровно период — пишем (>=), а не ждём ещё такт
     assert stt_runtime.stall_log_due(stage_age_s=30.0, now=130.0, last=100.0) is True
+
+
+def test_main_heartbeat_exposes_stall_without_forging_stt_progress():
+    """Главный поток видит native-hang, но событие остаётся `hb`.
+
+    Назвать его `stt_progress` означало бы двигать Swift-якорь и навсегда
+    спрятать зависший потребитель за живым main thread.
+    """
+    source = (REPO / "src" / "daemon.py").read_text(encoding="utf-8")
+    main_loop = source[source.index("        while not stop.is_set():", source.index("last_hb =")):
+                       source.index("    except KeyboardInterrupt:")]
+    heartbeat = main_loop[main_loop.index('emit({"type": "hb"'):
+                          main_loop.index("# Сторож слоя авто-подсказок")]
+    assert '"stt_stalled": stt_runtime.stage_is_stalled(' in heartbeat
+    assert "threshold=STT_STALL_THRESHOLD" in heartbeat
+    assert '"type": "stt_progress"' not in heartbeat
 
 
 def test_отказ_записи_на_диск_красится_по_подстроке():

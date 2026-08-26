@@ -64,6 +64,13 @@ Check the first transcript lines as well as the timer:
   disk space, close heavy apps. Falling behind usually means a busy machine —
   another model resident in memory, a build, a video export.
 
+While the problem continues, the warning remains visible in both the meeting
+window and the menu bar; ordinary hint or minutes messages cannot clear it.
+“STT has not responded” means recognition is blocked inside the named stage;
+after 100 seconds the existing watchdog attempts to recover the recording. A
+red “audio is not being saved” warning outranks every other status — no raw
+audio is available for recovery from that point onward.
+
 The main window may be closed; state remains in the menu bar. Quitting the app
 during a recording asks for confirmation because it stops the meeting.
 
