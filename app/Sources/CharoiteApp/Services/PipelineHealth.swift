@@ -143,9 +143,11 @@ struct PipelineHealthMonitor: Equatable {
 
     var problem: PipelineHealthProblem? {
         // Отказ диска виден с обеих сторон шва: из снапшота STT-потока и из
-        // heartbeat главного. hb может только ПОДНЯТЬ критикал (списка
-        // каналов у него нет); гасит критикал по-прежнему только валидный
-        // progress-снимок — он же сбрасывает probe в acceptProgress.
+        // heartbeat главного. Явный `recording_ok` в hb ставит И снимает
+        // липкий флаг (снятие — серверное подтверждение восстановления);
+        // hb без поля не трогает его, валидный progress-снимок сбрасывает
+        // вместе с probe в acceptProgress (круг-2 DS, M2: коммент обязан
+        // совпадать с кодом — снятие по hb уже реализовано).
         if let progress, !progress.recordingOK {
             return .recordingUnavailable(
                 channels: progress.failedRecordingChannels)

@@ -245,8 +245,11 @@ struct SuflerView: View {
                 // ВЫКЛЮЧЕНА: <исключение>»); генерик-баннер поверх него
                 // прятал её до конца встречи (круг-1 GLM, I2). Пока причина
                 // на экране — показываем её; затёрло обычным статусом —
-                // возвращается персистентный баннер.
-                return sufler.statusIsError ? sufler.status : pipelineStatus
+                // возвращается персистентный баннер. Уступаем ТОЛЬКО ошибке
+                // самого демона: Swift-`fail()` (таймаут подсказки) при
+                // мёртвом STT больше никогда не сменится статусом и прятал
+                // бы критикал до конца встречи (круг-2 DS, I1).
+                return sufler.statusErrorFromDaemon ? sufler.status : pipelineStatus
             }
             if sufler.statusIsError { return sufler.status }
             if let pipelineStatus = sufler.pipelineStatusText {

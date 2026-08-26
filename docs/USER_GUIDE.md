@@ -68,8 +68,12 @@ While the problem continues, the warning remains visible in both the meeting
 window and the menu bar; ordinary hint or minutes messages cannot clear it.
 “STT has not responded” means recognition is blocked inside the named stage;
 after 100 seconds the existing watchdog attempts to recover the recording. A
-red “audio is not being saved” warning outranks every other status — no raw
-audio is available for recovery from that point onward.
+red “audio is not being saved” warning outranks every other status; the only
+thing shown in its place is the daemon's own error with the actual cause.
+Recording of the failed channel does not resume until the meeting ends — no
+raw audio of that channel is available for recovery from that point onward;
+the remaining channels and finalization keep working, and the freed disk
+space serves them.
 
 The main window may be closed; state remains in the menu bar. Quitting the app
 during a recording asks for confirmation because it stops the meeting.

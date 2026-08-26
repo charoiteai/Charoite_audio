@@ -47,6 +47,12 @@ final class SuflerService: ObservableObject {
     /// модели, а не угадываться по переводу.
     @Published var statusIsError = false
 
+    /// Ошибка пришла ИМЕННО от демона (`status` c `error: true`) — например
+    /// «ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: <причина>». Swift-`fail()` (таймаут
+    /// подсказки и т.п.) этот флаг не ставит: недисковая ошибка не имеет
+    /// права прятать критикал конвейера в окне встречи (круг-2 DS, I1).
+    @Published private(set) var statusErrorFromDaemon = false
+
     /// Структурное здоровье живого конвейера. Обычные `status`-события его
     /// не сбрасывают: сообщение про обновлённые минутки не имеет права скрыть
     /// отказ записи на диск или продолжающееся отставание STT.
@@ -56,6 +62,7 @@ final class SuflerService: ObservableObject {
     func fail(_ text: String) {
         status = text
         statusIsError = true
+        statusErrorFromDaemon = false
     }
     @Published var lines: [TranscriptLine] = []
     @Published var hint = ""
@@ -291,6 +298,7 @@ final class SuflerService: ObservableObject {
         MeetingNotificationService.shared.requestAuthorization()
         status = L.t("Запускаю…", "Starting…", "启动中…")
         statusIsError = false
+        statusErrorFromDaemon = false
 
         // Статус TCC проверяем на каждый Start. Кэшировать сам факт проверки
         // нельзя: после отказа второе нажатие раньше запускало демон в тишине.
@@ -587,6 +595,7 @@ final class SuflerService: ObservableObject {
             endSleepGuard()   // записи больше нет — маку можно спать
             status = Self.stoppedStatus(autostopReason: autostopReason)
             statusIsError = false
+            statusErrorFromDaemon = false
             return
         case .giveUp:
             if let reason = captureLossReason {
@@ -855,6 +864,7 @@ final class SuflerService: ObservableObject {
                 // его снимает: раньше флаг был липким — после одного таймаута
                 // все дальнейшие «⚡ отвечаю» и «минутки обновлены» шли красным
                 statusIsError = obj["error"] as? Bool ?? false
+                statusErrorFromDaemon = statusIsError
             case "transcript":
                 let spk = obj["speaker"] as? String ?? ""
                 let plain = obj["plain"] as? String ?? ""

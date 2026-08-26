@@ -194,14 +194,16 @@ def test_main_heartbeat_exposes_stall_without_forging_stt_progress():
     source = (REPO / "src" / "daemon.py").read_text(encoding="utf-8")
     main_loop = source[source.index("        while not stop.is_set():", source.index("last_hb =")):
                        source.index("    except KeyboardInterrupt:")]
-    heartbeat = main_loop[main_loop.index('emit({"type": "hb"'):
+    heartbeat = main_loop[main_loop.index('hb_event = {"type": "hb"'):
                           main_loop.index("# Сторож слоя авто-подсказок")]
     assert '"stt_stalled": stt_runtime.stage_is_stalled(' in heartbeat
     assert "threshold=STT_STALL_THRESHOLD" in heartbeat
     assert '"type": "stt_progress"' not in heartbeat
     # О диске судит тоже сервер: снапшот recording_ok в hb, потому что
-    # stt_progress замерзает вместе с STT (круг-1 GLM по #431, I1).
-    assert '"recording_ok": hub.health_snapshot()["recording_ok"]' in heartbeat
+    # stt_progress замерзает вместе с STT (круг-1 GLM по #431, I1);
+    # вызов обёрнут — телеметрия не роняет main-loop (круг-2 DS, M3).
+    assert 'hub.health_snapshot()["recording_ok"]' in heartbeat
+    assert heartbeat.index("try:") < heartbeat.index("hub.health_snapshot")
 
 
 def test_отказ_записи_на_диск_красится_по_подстроке():
