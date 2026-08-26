@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 from collections.abc import Iterator
 
@@ -118,6 +119,7 @@ class LLM:
         l = cfg["llm"]
         self._cfg = cfg          # для оживления вставшей модели в complete()
         self._warned_mlx: set[tuple[str, str]] = set()
+        self._warned_mlx_lock = threading.Lock()
         self.engine = privacy.llm_engine(cfg)
         # У каждого движка свой адрес: у Ollama — llm.base_url (:11434),
         # у mlx_lm.server — llm.mlx_base_url (:8080). Оба под одной
@@ -173,6 +175,15 @@ class LLM:
                 return m
         return self.model  # пусть ollama сам скажет об ошибке
 
+    def _first_mlx_warn(self, model: str) -> bool:
+        """True — эту пару (model, mlx_model) ещё не объявляли (потокобезопасно)."""
+        with self._warned_mlx_lock:
+            key = (model, self.mlx_model)
+            if key in self._warned_mlx:
+                return False
+            self._warned_mlx.add(key)
+            return True
+
     def stream(self, prompt: str, model: str | None = None, system: str | None = None,
                think: bool = False, num_predict: int | None = None,
                temperature: float | None = None,
@@ -194,12 +205,11 @@ class LLM:
         ]
         if self.engine == "mlx-server":
             if model and model != self.mlx_model \
-                    and (model, self.mlx_model) not in self._warned_mlx:
+                    and self._first_mlx_warn(model):
                 # Запрошенная модель на mlx-server не транслируется — это
                 # больше не молча (круг-2 DS), но и не потоп: одна строка на
                 # пару моделей за процесс, иначе err-лог с потолком 2 МБ
                 # вытесняет реальные диагностики (круг-3 DS I1).
-                self._warned_mlx.add((model, self.mlx_model))
                 print(f"llm: mlx-server игнорирует model={model} — "
                       f"гонит {self.mlx_model}", file=sys.stderr, flush=True)
             yield from self._stream_mlx(messages, think=think,
