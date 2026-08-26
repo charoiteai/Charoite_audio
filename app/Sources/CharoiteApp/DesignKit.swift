@@ -390,10 +390,24 @@ struct ReadinessLine: View {
 /// состояние ЗАПИСИ, а не наличие входного сигнала: метр уровня удалён —
 /// уровень входа нигде не публикуется, и полоски были бы вечно пустым
 /// враньём; настоящий метр — отдельная задача (ревью 15.08).
+/// Секундные часы записи, замкнутые в собственную вью: TimelineView
+/// перерисовывает только эти цифры. Секундный @Published в сервисе
+/// перерисовывал каждого подписчика целиком (№50 — 37% CPU на записи).
+struct RecordingClock: View {
+    let startedAt: Date?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            Text(SuflerService.clockText(
+                startedAt.map { context.date.timeIntervalSince($0) } ?? 0))
+        }
+    }
+}
+
 struct RecordCapsule: View {
     let isRecording: Bool
     var isTransitioning: Bool = false
-    let clock: String
+    let clockFrom: Date?
     let action: () -> Void
 
     /// Один источник для надписи и системного шортката: разъедутся — капсула
@@ -419,7 +433,7 @@ struct RecordCapsule: View {
                         // что слушаем, без мигающих лампочек
                         .symbolEffect(.variableColor.iterative,
                                       options: .repeating, isActive: true)
-                    Text(clock)
+                    RecordingClock(startedAt: clockFrom)
                         .font(.body.weight(.light))
                         .monospacedDigit()
                     Divider().frame(height: 14).overlay(Color.white.opacity(0.35))

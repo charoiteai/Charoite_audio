@@ -36,7 +36,6 @@ final class SuflerService: ObservableObject {
     @Published private(set) var recordingStartedAt: Date?
 
     /// Тик раз в секунду, чтобы SwiftUI перерисовывал таймер.
-    @Published private(set) var recordingElapsed: TimeInterval = 0
     @Published var status = L.t("Готов к запуску", "Ready", "就绪")
     /// Текущий статус — про сбой, а не про обычный ход дела.
     ///
@@ -96,27 +95,19 @@ final class SuflerService: ObservableObject {
         send("set \(key) \(on ? "on" : "off")")
     }
 
-    /// Часы записи. Секундный тик — единственное, что здесь происходит:
-    /// длительность считается от даты старта, а не накоплением тиков, поэтому
-    /// уснувший ноутбук её не «съедает».
+    /// Часы записи. Секундного таймера здесь больше нет: цифры рисует
+    /// `RecordingClock` (TimelineView) от даты старта, поэтому каждую
+    /// секунду перерисовываются только они. Секундный @Published
+    /// перерисовывал целиком TodayWorkspaceView с десятью ObservedObject
+    /// всю встречу — главное слагаемое 37% CPU за 4,5 дня аптайма (№50).
+    /// Длительность считается от даты старта, а не накоплением тиков,
+    /// поэтому уснувший ноутбук её не «съедает».
     private func startClock() {
-        let started = Date()
-        recordingStartedAt = started
-        recordingElapsed = 0
-        clock?.invalidate()
-        clock = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self, let from = self.recordingStartedAt else { return }
-                self.recordingElapsed = Date().timeIntervalSince(from)
-            }
-        }
+        recordingStartedAt = Date()
     }
 
     func stopClock() {
-        clock?.invalidate()
-        clock = nil
         recordingStartedAt = nil
-        recordingElapsed = 0
     }
 
     /// «18:42» — мм:сс, а после часа «1:18:42». Для таймера, который человек
@@ -172,7 +163,6 @@ final class SuflerService: ObservableObject {
     // сна и надул бы только что перевзведённый якорь обратно (круг 3, GLM).
     private var discardNextInputAge = false
     var watchdog: Timer?
-    private var clock: Timer?
     var userStopped = false
     /// Причина последнего автостопа («silence» | «limit»), пока встреча на экране.
     @Published private(set) var autostopReason: String?
@@ -331,7 +321,8 @@ final class SuflerService: ObservableObject {
             stopConfirmPending = false
             start()
         case .recording:
-            if recordingElapsed < Self.tooShortToStop {
+            let elapsed = recordingStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+            if elapsed < Self.tooShortToStop {
                 let armed = stopArmedAt.map { Date().timeIntervalSince($0) <= 5 } ?? false
                 if !armed {
                     stopArmedAt = Date()

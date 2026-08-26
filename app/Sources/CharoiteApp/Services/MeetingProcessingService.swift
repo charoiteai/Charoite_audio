@@ -727,7 +727,11 @@ final class MeetingProcessingService: ObservableObject {
             }.value
             guard let self else { return }
             self.refreshInFlight = false
-            self.history = MeetingProcessingPolicy.history(snapshots)
+            // Гейт на равенство: 2-секундный поллинг годами публиковал
+            // одинаковые значения, и objectWillChange перерисовывал
+            // подписчиков (PrepView, TodayWorkspace) каждые 2 с (№50).
+            let history = MeetingProcessingPolicy.history(snapshots)
+            if self.history != history { self.history = history }
             self.accept(MeetingProcessingPolicy.latest(snapshots))
         }
     }
@@ -753,7 +757,7 @@ final class MeetingProcessingService: ObservableObject {
                 snapshot = nil
             }
             // иначе продолжаем ждать первый статус
-        } else {
+        } else if snapshot != latest {
             snapshot = latest
         }
         notifyIfReady()

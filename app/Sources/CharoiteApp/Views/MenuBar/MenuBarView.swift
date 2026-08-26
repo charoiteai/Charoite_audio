@@ -23,8 +23,7 @@ struct MenuBarView: View {
             let color: Color = sufler.pipelineStatusText == nil
                 ? .red
                 : (sufler.pipelineStatusIsCritical ? .red : Theme.warning)
-            return (L.t("Запись", "Recording", "录音中") + " · "
-                    + SuflerService.clockText(sufler.recordingElapsed), color)
+            return (L.t("Запись", "Recording", "录音中") + " ·", color)
         }
         if processing.isError {
             return (L.t("Ошибка — исходник сохранён",
@@ -52,6 +51,12 @@ struct MenuBarView: View {
                 Text(state.text)
                     .font(.caption).foregroundStyle(.secondary)
                     .lineLimit(1)
+                if sufler.isRunning {
+                    // цифры живут в своей вью — секунда не перерисовывает панель
+                    RecordingClock(startedAt: sufler.recordingStartedAt)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
             }
             // здоровье стека проверяется при открытии меню: молча зелёный,
             // а если Ollama лежит — видно ДО того, как вопрос уйдёт в пустоту
