@@ -53,7 +53,18 @@ export CHAROITE_NIGHTLY_UNTIL=$(( $(date +%s) + NIGHTLY_MAX_H * 3600 ))
 # и --root в буквальный каталог, пока python-слой (charoite_paths.resolve_root)
 # смотрел в настоящий — приложение не видело ночь вовсе (круг-3 DS, I3).
 CHAROITE_ROOT="$(printf '%s' "${CHAROITE_ROOT:-$PWD}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-case "$CHAROITE_ROOT" in "~"|"~/"*) CHAROITE_ROOT="$HOME${CHAROITE_ROOT#\~}";; esac
+# Тильда — в переменной, а не литералом в шаблоне: shellcheck справедливо
+# ругается на «~» в кавычках (SC2088), а нам она нужна именно как образец
+# для сравнения, а не как путь для раскрытия.
+TILDE='~'
+case "$CHAROITE_ROOT" in
+  "$TILDE")   CHAROITE_ROOT="$HOME" ;;
+  "$TILDE"/*) CHAROITE_ROOT="$HOME/${CHAROITE_ROOT#"$TILDE"/}" ;;
+  # «~имя» раскрывает только expanduser: без этой ветки статус уходил в
+  # буквальный каталог «./~имя», пока python-слой смотрел в домашний
+  # (круг-4 DS, Important 1). Питон здесь тот же, что у шагов ночи.
+  "$TILDE"*)  CHAROITE_ROOT="$($PY -c 'import pathlib,sys;print(pathlib.Path(sys.argv[1]).expanduser())' "$CHAROITE_ROOT" 2>/dev/null || printf '%s' "$CHAROITE_ROOT")" ;;
+esac
 export CHAROITE_ROOT
 
 rc=0
