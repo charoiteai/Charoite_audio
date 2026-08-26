@@ -163,3 +163,15 @@ struct PipelineHealthMonitor: Equatable {
         return probe
     }
 }
+
+@MainActor
+extension SuflerService {
+    var pipelineStatusText: String? {
+        guard isRunning, let problem = pipelineHealth.problem else { return nil }
+        return PipelineHealthPresentation.text(for: problem)
+    }
+
+    var pipelineStatusIsCritical: Bool {
+        isRunning && pipelineHealth.problem?.isCritical == true
+    }
+}

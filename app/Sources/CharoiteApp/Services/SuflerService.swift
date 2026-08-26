@@ -52,15 +52,6 @@ final class SuflerService: ObservableObject {
     /// отказ записи на диск или продолжающееся отставание STT.
     @Published private(set) var pipelineHealth = PipelineHealthMonitor()
 
-    var pipelineStatusText: String? {
-        guard isRunning, let problem = pipelineHealth.problem else { return nil }
-        return PipelineHealthPresentation.text(for: problem)
-    }
-
-    var pipelineStatusIsCritical: Bool {
-        isRunning && pipelineHealth.problem?.isCritical == true
-    }
-
     /// Ставит статус и помечает его как сообщение об отказе.
     func fail(_ text: String) {
         status = text
