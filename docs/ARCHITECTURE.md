@@ -121,10 +121,14 @@ the zone's promises and closed the gaps:
   core pairs holds the embedder and the NLI model; the gate existed only for
   dossiers and cloud revisions, so the cores revision kept sharing the model
   with the live prompter. It now yields like the rest.
-- **One run at a time.** A manual start on top of a running one produced two
-  processes overwriting each other's status and markers. The lock is `flock`
-  on `logs/nightly.lock`, as everywhere else in the project: the script holds
-  the descriptor, and the kernel releases it on any death, `kill -9` included.
+- **The status lands where it is looked for.** The data root is normalised
+  once at the start: a «~» or trailing spaces in `CHAROITE_ROOT` sent the
+  status and the idle wait into a literal directory while the python layer
+  looked at the real one — the app saw no night at all.
+  There is deliberately no guard against a second MANUAL run: both attempts to
+  build one (a pid directory and `flock` through the system python3) produced a
+  Critical on their first review round, and the cost of a rare double start is
+  lower than a brittle watchman on the night's very first line.
 - **A signal actually stops it.** The `trap` had no `exit`, so the run
   continued after `kill -TERM` and the "interrupted" state was overwritten by
   the final "ok" — that state was unreachable at all.
