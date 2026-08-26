@@ -93,6 +93,20 @@ enum MeetingProcessingPolicy {
         now.timeIntervalSince(since) > announceWithin
     }
 
+    /// Публиковать ли снимок подписчикам. Равенство сырых значений — не
+    /// критерий: resolvedState зависит от ВРЕМЕНИ (processing→error после
+    /// 30 минут тишины), файл статуса при этом не меняется — гейт только
+    /// по снимку прятал переход навсегда (круг-1 DS по #433, Critical).
+    static func shouldPublish(
+        current: MeetingProcessingSnapshot?,
+        latest: MeetingProcessingSnapshot?,
+        lastResolved: MeetingProcessingSnapshot.State?,
+        now: Date = Date()
+    ) -> Bool {
+        current != latest
+            || lastResolved != latest.map { resolvedState($0, now: now) }
+    }
+
     static func resolvedState(
         _ snapshot: MeetingProcessingSnapshot,
         now: Date = Date()
@@ -427,6 +441,11 @@ final class MeetingProcessingService: ObservableObject {
     /// поверх работающего: два конвейера на одну встречу пишут один статус и
     /// один лог, и чей результат окажется последним — вопрос удачи.
     private var retryProcess: Process?
+    /// Последний ОПУБЛИКОВАННЫЙ резолв снимка. Гейт на равенство сырых
+    /// снимков глотал time-dependent переход processing→error (30 минут
+    /// без статуса): файл не меняется, а resolvedState — меняется
+    /// (круг-1 DS по #433, Critical). Публикуем и при смене резолва.
+    private var lastResolved: MeetingProcessingSnapshot.State?
     private let notifiedKey = "charoite.processing.lastReadyNotification"
 
     private init() {}
@@ -744,6 +763,7 @@ final class MeetingProcessingService: ObservableObject {
                 retryExpectation = nil
                 waitingForPipeline = false
                 pipelineSilent = false
+                lastResolved = MeetingProcessingPolicy.resolvedState(latest)
                 snapshot = latest
             } else if MeetingProcessingPolicy.waitingExpired(since: waitingSince) {
                 // Конвейер так и не объявил о себе — честная ошибка вместо
@@ -757,7 +777,9 @@ final class MeetingProcessingService: ObservableObject {
                 snapshot = nil
             }
             // иначе продолжаем ждать первый статус
-        } else if snapshot != latest {
+        } else if MeetingProcessingPolicy.shouldPublish(
+            current: snapshot, latest: latest, lastResolved: lastResolved) {
+            lastResolved = latest.map { MeetingProcessingPolicy.resolvedState($0) }
             snapshot = latest
         }
         notifyIfReady()

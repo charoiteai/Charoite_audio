@@ -35,7 +35,6 @@ final class SuflerService: ObservableObject {
     /// а не от первой реплики: тишина в начале встречи тоже записана.
     @Published private(set) var recordingStartedAt: Date?
 
-    /// Тик раз в секунду, чтобы SwiftUI перерисовывал таймер.
     @Published var status = L.t("Готов к запуску", "Ready", "就绪")
     /// Текущий статус — про сбой, а не про обычный ход дела.
     ///
@@ -110,14 +109,11 @@ final class SuflerService: ObservableObject {
         recordingStartedAt = nil
     }
 
-    /// «18:42» — мм:сс, а после часа «1:18:42». Для таймера, который человек
-    /// читает боковым зрением, ведущие нули у минут важнее единообразия.
+    /// Формат живёт в DesignKit рядом с RecordingClock (круг-1 DS, M3:
+    /// дизайн-слой не должен тянуть сервис записи ради формата строки);
+    /// делегат оставлен, чтобы не трогать существующие вызовы и тесты.
     nonisolated static func clockText(_ seconds: TimeInterval) -> String {
-        let total = max(0, Int(seconds))
-        let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60)
-        return h > 0
-            ? String(format: "%d:%02d:%02d", h, m, s)
-            : String(format: "%d:%02d", m, s)
+        RecordingClock.text(seconds)
     }
 
     /// Слишком короткая запись — скорее всего промах по кнопке.

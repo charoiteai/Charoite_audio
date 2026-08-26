@@ -398,9 +398,22 @@ struct RecordingClock: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            Text(SuflerService.clockText(
-                startedAt.map { context.date.timeIntervalSince($0) } ?? 0))
+            let txt = Self.text(
+                startedAt.map { context.date.timeIntervalSince($0) } ?? 0)
+            // value обновляется каждый тик: VoiceOver читает «Идёт запись,
+            // 0:42», а не только label (круг-1 DS, M2)
+            Text(txt).accessibilityValue(txt)
         }
+    }
+
+    /// «18:42» — мм:сс, а после часа «1:18:42». Для таймера, который человек
+    /// читает боковым зрением, ведущие нули у минут важнее единообразия.
+    nonisolated static func text(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds))
+        let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60)
+        return h > 0
+            ? String(format: "%d:%02d:%02d", h, m, s)
+            : String(format: "%d:%02d", m, s)
     }
 }
 

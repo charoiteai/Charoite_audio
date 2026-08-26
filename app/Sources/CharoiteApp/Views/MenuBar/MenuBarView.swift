@@ -56,6 +56,7 @@ struct MenuBarView: View {
                     RecordingClock(startedAt: sufler.recordingStartedAt)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
             // здоровье стека проверяется при открытии меню: молча зелёный,
