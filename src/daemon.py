@@ -1141,6 +1141,12 @@ def main():
             if ok:
                 hint_lock.release()
     max_ctx = int(cfg["llm"]["max_context_chars"])
+    if not (cfg.get("llm") or {}).get("small_model"):
+        # Нить и фоновые контуры рассчитывают на малую модель; без неё
+        # llm.small молча падает в основную 35b (круг-5 DS M2) — говорим
+        # об этом один раз на старте, а не тихой деградацией на встрече.
+        print("конфиг: llm.small_model не задан — фоновые контуры пойдут "
+              "на основной модели", file=sys.stderr, flush=True)
     quiet = bool(cfg["sufler"].get("quiet", True))
     instant_on = bool(cfg["sufler"].get("instant", True))
     auto_model = llm.small if quiet else None  # тихий режим: весь фон без 26b
@@ -1353,9 +1359,18 @@ def main():
 
         Зовём не по часам, а по приросту разговора: молчание в переговорной не
         рождает новых строк, сколько ни жди.
+
+        Модель — малая (llm.small, если сконфигурирована — см. гвард
+        старта), без ретраев на большую:
+        большая и слот — подсказкам (инцидент 26.08, PR #430). Слот нить
+        почти не ждёт (timeout=1); после 4 пропусков подряд — ОДИН заход
+        с ожиданием 20 с (бурст, счётчик сбрасывается до захода), иначе
+        на плотной встрече она молча стояла бы часами (круг-3 DS I2,
+        круг-4 критика-1).
         """
         seen = 0
         quiet_rounds = 0
+        slot_misses = 0
         while not stop.is_set():
             time.sleep(THREAD_TICK)
             if not toggles["hints"]:
@@ -1372,12 +1387,36 @@ def main():
                 seen = len(full)
                 continue
             try:
-                with hint_slot("нить") as got:
+                # Нить — фон на МАЛОЙ модели: в live auto_model=None гнал
+                # её на ОСНОВНОЙ 35b с ожиданием слота 240 с — подсказчик
+                # голодал (26.08, встречи 11:07 и 11:35: stall 167–461 с,
+                # last=busy/failed, сторож #398; DS I1 по #430). Слот и
+                # большая модель — подсказкам; нить ждёт слот 1 с (после
+                # серии пропусков — один 20-секундный заход, см. докстринг).
+                # На mlx-server параметр model игнорируется движком — это
+                # больше не молча: llm.py пишет строку в err-лог (круг-2 DS).
+                burst = slot_misses >= 4   # условие, не сравнение таймаутов
+                slot_wait = 20.0 if burst else 1.0
+                if burst:
+                    slot_misses = 0   # бурст: один длинный заход, не защёлка
+                with hint_slot("нить", timeout=slot_wait) as got:
                     if not got:
+                        # Неудавшийся бурст сам засчитан пропуском — следующая
+                        # серия до бурста короче на один (круг-5 DS M3).
+                        slot_misses += 1
                         continue
+                    slot_misses = 0
                     parts: list[str] = []
                     yielded = False
-                    for tok in llm.thread(tail, thread.as_context(), model=auto_model):
+
+                    # Нить — СТРОГО малая модель, без ретраев на большую:
+                    # resolve_model на отказе малой возвращал 35b в слот
+                    # нити — тот же класс, что инцидент 26.08 (круг-4 DS,
+                    # критика-2; правило «упрощать, а не латать»). Отказ
+                    # малой виден через emit_error ниже; пропущенный тик
+                    # нити дёшев, кусок дождётся следующего.
+                    for tok in llm.thread(tail, thread.as_context(),
+                                          model=llm.small):
                         if manual_evt.is_set():
                             yielded = True   # ручной вопрос важнее: бросаем, кусок дождётся
                             break
@@ -2193,57 +2232,6 @@ def main():
             except Exception as e:  # noqa: BLE001
                 emit_error(f"минутки: {short_error(e)}")
 
-    def deep_loop():
-        """Глубокая проработка: 26b пересматривает заметки быстрой модели.
-
-        Раз в ~5 минут: подтверждает/уточняет/отбрасывает 📌💭 от e4b,
-        связывает с памятью графа, выдаёт до 5 строк «🔬 …».
-        """
-        seen_notes = 0
-        while not stop.is_set():
-            time.sleep(600 if quiet else 300)  # в тихом режиме 26b фоном — реже
-            if not toggles["theses"]:
-                continue
-            notes = tr.notes()
-            if len(notes) - seen_notes < 3:
-                continue  # мало новых заметок — глубокому нечего пересматривать
-            if manual_evt.is_set():
-                continue  # ручной запрос ждёт lock — не занимаем 26b на минуту
-            with hint_slot("глубокий разбор") as got:  # 26b — не сталкиваться с подсказчиком
-                if not got:
-                    continue
-                # Заметки «обработаны» только после взятого замка: занятый
-                # слот не должен навсегда съедать этот прирост (круг-2, Codex).
-                seen_notes = len(notes)
-                try:
-                    out = ""
-                    for tok in llm.stream(
-                        f"Хвост стенограммы:\n{tr.tail(4000)}\n\n"
-                        f"Заметки быстрой модели (сырые):\n" + "\n".join(notes[-20:]) + "\n\n"
-                        "Пересмотри глубоко: подтверди главное, отбрось шум, найди связи "
-                        "с памятью прошлых встреч, стратегические следствия. "
-                        "До 5 строк, каждая с префиксом «🔬 ». Если добавить нечего — NONE.",
-                        system=llm.system,
-                        think=True,  # глубокому контуру думать положено (раз в ~10 мин)
-                    ):
-                        if manual_evt.is_set():
-                            break  # ⌘⏎ во время deep — уступаем, не держим lock
-                        out += tok
-                    deep_added = 0
-                    for line in out.strip().splitlines():
-                        line = line.strip()
-                        if line and line != "NONE" and line.startswith("🔬"):
-                            # глубокая мысль — строкой 💭 в нить (канал
-                            # type:"thesis" мёртв с 04.08); знак 🔬 остаётся
-                            # в файле-логе через tr.note
-                            deep_added += thread.add_thesis(
-                                "💭 " + line.lstrip("🔬 ").strip())
-                            tr.note(line)
-                    if deep_added:
-                        emit({"type": "thread", "text": thread.render()})
-                except Exception as e:  # noqa: BLE001
-                    emit({"type": "status", "text": f"глубокий контур: {e}"})
-
     def gen_answer(question: str):
         """Вопрос пользователя из UI: ответ по живой стенограмме + графу/vault.
 
@@ -2591,7 +2579,7 @@ def main():
     threads = [threading.Thread(target=f, daemon=True) for f in (
         stt_loop, think_loop, thread_loop, instant_loop, cloud_loop,
         fast_trigger_loop, deja_vu_loop, dialog_markup_loop, name_loop,
-        minutes_loop, deep_loop, live_context_loop, stdin_loop, autostop_loop,
+        minutes_loop, live_context_loop, stdin_loop, autostop_loop,
     )]
     # Авто-подсказки — под именем и сторожем: 24.08 слой молчал три встречи
     # подряд, и мёртвый поток был неотличим от «нечего сказать». Сторож в

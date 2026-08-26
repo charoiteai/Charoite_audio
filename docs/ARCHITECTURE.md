@@ -59,6 +59,28 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
   200 response, or a stream that ends without its terminator, raises: a
   truncated set of minutes is never passed off as complete.
 
+### The hint outranks the thread (inside the daemon)
+
+Outside, processes compete for the model; inside the daemon, its own
+loops do. Incident of 26.08: the auto-theses loop (the "thread") ran the
+main 35b model in the live profile and held the Ollama connection —
+hints starved from within, with an empty gate and a live meeting.
+Rules after the post-mortem:
+
+- **Background never takes the big model.** The thread runs strictly on
+  `llm.small`, with no retries on the main model: two generations on one
+  GPU choke the hint engine. If `llm.small_model` is not configured, the
+  daemon says so with a line in the err log at startup — a silent
+  fallback to the main model is forbidden.
+- **A near-zero-wait slot.** The thread takes the hint slot with a 1 s
+  timeout: if busy, it skips the beat instead of queueing ahead of a
+  hint. After four consecutive misses it makes one attempt with a 20 s
+  wait (a burst), so the thread does not starve forever on a dense
+  meeting; a failed burst counts as a regular miss.
+- **No dead loops.** deep_loop is removed: the app has been sending
+  `set theses off quiet` since #394, so the loop never ran in a live
+  session — code that "seems to do something" is worse than none.
+
 ## Diarization: two passes
 
 1. **Live**: each chunk is embedded (ERes2Net, 512-dim) → a voice tracker

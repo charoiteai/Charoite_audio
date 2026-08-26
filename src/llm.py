@@ -26,6 +26,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+import threading
 import time
 from collections.abc import Iterator
 
@@ -117,6 +119,8 @@ class LLM:
     def __init__(self, cfg: dict):
         l = cfg["llm"]
         self._cfg = cfg          # для оживления вставшей модели в complete()
+        self._warned_mlx: set[tuple[str, str]] = set()
+        self._warned_mlx_lock = threading.Lock()
         self.engine = privacy.llm_engine(cfg)
         # У каждого движка свой адрес: у Ollama — llm.base_url (:11434),
         # у mlx_lm.server — llm.mlx_base_url (:8080). Оба под одной
@@ -172,13 +176,22 @@ class LLM:
                 return m
         return self.model  # пусть ollama сам скажет об ошибке
 
+    def _first_mlx_warn(self, model: str) -> bool:
+        """True — эту пару (model, mlx_model) ещё не объявляли (потокобезопасно)."""
+        with self._warned_mlx_lock:
+            key = (model, self.mlx_model)
+            if key in self._warned_mlx:
+                return False
+            self._warned_mlx.add(key)
+            return True
+
     def stream(self, prompt: str, model: str | None = None, system: str | None = None,
                think: bool = False, num_predict: int | None = None,
                temperature: float | None = None,
                busy_wait: float = BUSY_WAIT_LIVE) -> Iterator[str]:
         # think=False КРИТИЧЕН для live-контуров: дефолтный thinking у gemma4
         # молча съедает ~10с до первого слова (замер 17.07: TTFT 10.4с → 0.5с).
-        # think=True — только для глубоких фоновых проходов (deep_loop).
+        # think=True в живом контуре не используется (deep_loop удалён 26.08).
         #
         # ЛОВУШКА (замер 22.07): в Ollama num_predict ОДИН на рассуждение и ответ
         # (у Gemini это раздельные thinkingBudget/maxOutputTokens). qwen3.6 на
@@ -186,12 +199,20 @@ class LLM:
         # целиком: минутки при think=True вышли ПУСТЫМИ (0 знаков) на бюджетах
         # 500 и 1600, а при 4000 — 83с против 10с и документ вдвое беднее.
         # Для документов рассуждение не включать; при think=True num_predict
-        # либо не задавать вовсе (как в deep_loop), либо давать с запасом ×8.
+        # либо не задавать вовсе (deep_loop удалён), либо давать с запасом ×8.
         messages = [
             {"role": "system", "content": system or self.system},
             {"role": "user", "content": prompt},
         ]
         if self.engine == "mlx-server":
+            if model and model != self.mlx_model \
+                    and self._first_mlx_warn(model):
+                # Запрошенная модель на mlx-server не транслируется — это
+                # больше не молча (круг-2 DS), но и не потоп: одна строка на
+                # пару моделей за процесс, иначе err-лог с потолком 2 МБ
+                # вытесняет реальные диагностики (круг-3 DS I1).
+                print(f"llm: mlx-server игнорирует model={model} — "
+                      f"гонит {self.mlx_model}", file=sys.stderr, flush=True)
             yield from self._stream_mlx(messages, think=think,
                                         num_predict=num_predict,
                                         temperature=temperature,
