@@ -1377,7 +1377,12 @@ def main():
                         continue
                     parts: list[str] = []
                     yielded = False
-                    for tok in llm.thread(tail, thread.as_context(), model=auto_model):
+                    # Нить — фон: в live-профиле auto_model=None гнал её на
+                    # ОСНОВНОЙ 35b, и она держала hint_slot десятки секунд —
+                    # подсказчик голодал (26.08, встречи 11:07 и 11:35: stall
+                    # 167–461 с, last=busy/failed, сторож #398; DS I1 по #430).
+                    # Слот и большая модель — подсказкам; нити хватает малой.
+                    for tok in llm.thread(tail, thread.as_context(), model=llm.small):
                         if manual_evt.is_set():
                             yielded = True   # ручной вопрос важнее: бросаем, кусок дождётся
                             break
@@ -2193,57 +2198,6 @@ def main():
             except Exception as e:  # noqa: BLE001
                 emit_error(f"минутки: {short_error(e)}")
 
-    def deep_loop():
-        """Глубокая проработка: 26b пересматривает заметки быстрой модели.
-
-        Раз в ~5 минут: подтверждает/уточняет/отбрасывает 📌💭 от e4b,
-        связывает с памятью графа, выдаёт до 5 строк «🔬 …».
-        """
-        seen_notes = 0
-        while not stop.is_set():
-            time.sleep(600 if quiet else 300)  # в тихом режиме 26b фоном — реже
-            if not toggles["theses"]:
-                continue
-            notes = tr.notes()
-            if len(notes) - seen_notes < 3:
-                continue  # мало новых заметок — глубокому нечего пересматривать
-            if manual_evt.is_set():
-                continue  # ручной запрос ждёт lock — не занимаем 26b на минуту
-            with hint_slot("глубокий разбор") as got:  # 26b — не сталкиваться с подсказчиком
-                if not got:
-                    continue
-                # Заметки «обработаны» только после взятого замка: занятый
-                # слот не должен навсегда съедать этот прирост (круг-2, Codex).
-                seen_notes = len(notes)
-                try:
-                    out = ""
-                    for tok in llm.stream(
-                        f"Хвост стенограммы:\n{tr.tail(4000)}\n\n"
-                        f"Заметки быстрой модели (сырые):\n" + "\n".join(notes[-20:]) + "\n\n"
-                        "Пересмотри глубоко: подтверди главное, отбрось шум, найди связи "
-                        "с памятью прошлых встреч, стратегические следствия. "
-                        "До 5 строк, каждая с префиксом «🔬 ». Если добавить нечего — NONE.",
-                        system=llm.system,
-                        think=True,  # глубокому контуру думать положено (раз в ~10 мин)
-                    ):
-                        if manual_evt.is_set():
-                            break  # ⌘⏎ во время deep — уступаем, не держим lock
-                        out += tok
-                    deep_added = 0
-                    for line in out.strip().splitlines():
-                        line = line.strip()
-                        if line and line != "NONE" and line.startswith("🔬"):
-                            # глубокая мысль — строкой 💭 в нить (канал
-                            # type:"thesis" мёртв с 04.08); знак 🔬 остаётся
-                            # в файле-логе через tr.note
-                            deep_added += thread.add_thesis(
-                                "💭 " + line.lstrip("🔬 ").strip())
-                            tr.note(line)
-                    if deep_added:
-                        emit({"type": "thread", "text": thread.render()})
-                except Exception as e:  # noqa: BLE001
-                    emit({"type": "status", "text": f"глубокий контур: {e}"})
-
     def gen_answer(question: str):
         """Вопрос пользователя из UI: ответ по живой стенограмме + графу/vault.
 
@@ -2591,7 +2545,7 @@ def main():
     threads = [threading.Thread(target=f, daemon=True) for f in (
         stt_loop, think_loop, thread_loop, instant_loop, cloud_loop,
         fast_trigger_loop, deja_vu_loop, dialog_markup_loop, name_loop,
-        minutes_loop, deep_loop, live_context_loop, stdin_loop, autostop_loop,
+        minutes_loop, live_context_loop, stdin_loop, autostop_loop,
     )]
     # Авто-подсказки — под именем и сторожем: 24.08 слой молчал три встречи
     # подряд, и мёртвый поток был неотличим от «нечего сказать». Сторож в
