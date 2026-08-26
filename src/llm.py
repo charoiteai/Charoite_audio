@@ -117,6 +117,7 @@ class LLM:
     def __init__(self, cfg: dict):
         l = cfg["llm"]
         self._cfg = cfg          # для оживления вставшей модели в complete()
+        self._warned_mlx: set[tuple[str, str]] = set()
         self.engine = privacy.llm_engine(cfg)
         # У каждого движка свой адрес: у Ollama — llm.base_url (:11434),
         # у mlx_lm.server — llm.mlx_base_url (:8080). Оба под одной
@@ -192,10 +193,13 @@ class LLM:
             {"role": "user", "content": prompt},
         ]
         if self.engine == "mlx-server":
-            if model and model != self.mlx_model:
+            if model and model != self.mlx_model \
+                    and (model, self.mlx_model) not in self._warned_mlx:
                 # Запрошенная модель на mlx-server не транслируется — это
-                # больше не молча (круг-2 DS по #430): вызывающий думает,
-                # что работает малая, а гонится mlx_model.
+                # больше не молча (круг-2 DS), но и не потоп: одна строка на
+                # пару моделей за процесс, иначе err-лог с потолком 2 МБ
+                # вытесняет реальные диагностики (круг-3 DS I1).
+                self._warned_mlx.add((model, self.mlx_model))
                 print(f"llm: mlx-server игнорирует model={model} — "
                       f"гонит {self.mlx_model}", file=sys.stderr, flush=True)
             yield from self._stream_mlx(messages, think=think,

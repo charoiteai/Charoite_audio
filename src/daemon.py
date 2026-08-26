@@ -1353,9 +1353,15 @@ def main():
 
         Зовём не по часам, а по приросту разговора: молчание в переговорной не
         рождает новых строк, сколько ни жди.
+
+        Модель — всегда малая (llm.small): большая и слот — подсказкам
+        (инцидент 26.08, PR #430). Слот нить не ждёт (timeout=1), но после
+        серии пропусков один раз ждёт подольше — иначе на плотной встрече
+        она молча стояла бы часами (круг-3 DS I2).
         """
         seen = 0
         quiet_rounds = 0
+        slot_misses = 0
         while not stop.is_set():
             time.sleep(THREAD_TICK)
             if not toggles["hints"]:
@@ -1380,24 +1386,41 @@ def main():
                 # их очереди (timeout=1) — кусок дождётся следующего тика.
                 # На mlx-server параметр model игнорируется движком — это
                 # больше не молча: llm.py пишет строку в err-лог (круг-2 DS).
-                with hint_slot("нить", timeout=1.0) as got:
+                slot_wait = 20.0 if slot_misses >= 4 else 1.0
+                with hint_slot("нить", timeout=slot_wait) as got:
                     if not got:
+                        slot_misses += 1
                         continue
+                    slot_misses = 0
                     parts: list[str] = []
                     yielded = False
+
+                    # Контекст — один снимок на обе попытки: между ретраями
+                    # нить мог поменять другой писатель (круг-3 DS M1).
+                    thread_ctx = thread.as_context()
 
                     def _thread_tokens():
                         # Жёсткий llm.small мимо resolve_model молча убивал
                         # нить на конфиге без малой модели (круг-2 DS I2):
-                        # одна повторная попытка через resolve_model.
+                        # одна повторная попытка через resolve_model — но
+                        # ТОЛЬКО пока не отдано ни одного токена (mid-stream
+                        # обрыв с ретраем склеивал «частичный кусок + полный
+                        # повтор», круг-3 DS Critical) и ТОЛЬКО в live: в
+                        # quiet resolve_model поднял бы большую — вразрез с
+                        # «весь фон без 26b» (круг-3 DS M2).
+                        emitted = False
                         try:
-                            yield from llm.thread(tail, thread.as_context(),
-                                                  model=llm.small)
+                            for tok in llm.thread(tail, thread_ctx,
+                                                  model=llm.small):
+                                emitted = True
+                                yield tok
                         except LLMHTTPError:
+                            if emitted or quiet:
+                                raise
                             print("нить: малая модель недоступна — "
                                   "пробую через resolve_model",
                                   file=sys.stderr, flush=True)
-                            yield from llm.thread(tail, thread.as_context(),
+                            yield from llm.thread(tail, thread_ctx,
                                                   model=None)
 
                     for tok in _thread_tokens():
