@@ -118,10 +118,20 @@ def heartbeat_due(*, now: float, last: float, every: float = 30.0) -> bool:
     return now - last > every
 
 
+def stage_is_stalled(*, stage_age_s: float, threshold: float = 30.0) -> bool:
+    """Застрял ли текущий этап STT достаточно надолго, чтобы показать это.
+
+    Один вердикт идёт и в heartbeat приложения, и в rate-limited stderr:
+    разные сравнения на границе 30 секунд снова дали бы две правды.
+    """
+    return stage_age_s >= threshold
+
+
 def stall_log_due(*, stage_age_s: float, now: float, last: float,
                   threshold: float = 30.0, every: float = 30.0) -> bool:
     """Строка state=stalled: этап висит дольше порога, и не чаще `every`."""
-    return stage_age_s >= threshold and now - last >= every
+    return (stage_is_stalled(stage_age_s=stage_age_s, threshold=threshold)
+            and now - last >= every)
 
 
 def is_recording_failure(status_text: str) -> bool:

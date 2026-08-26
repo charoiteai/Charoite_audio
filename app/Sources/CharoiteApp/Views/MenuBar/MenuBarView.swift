@@ -20,8 +20,11 @@ struct MenuBarView: View {
     /// было видно только в окне, то есть чаще всего нигде.
     private var state: (text: String, color: Color) {
         if sufler.isRunning {
+            let color: Color = sufler.pipelineStatusText == nil
+                ? .red
+                : (sufler.pipelineStatusIsCritical ? .red : Theme.warning)
             return (L.t("Запись", "Recording", "录音中") + " · "
-                    + SuflerService.clockText(sufler.recordingElapsed), .red)
+                    + SuflerService.clockText(sufler.recordingElapsed), color)
         }
         if processing.isError {
             return (L.t("Ошибка — исходник сохранён",
@@ -53,6 +56,15 @@ struct MenuBarView: View {
             // здоровье стека проверяется при открытии меню: молча зелёный,
             // а если Ollama лежит — видно ДО того, как вопрос уйдёт в пустоту
             .task { await checkStack() }
+
+            if let pipelineStatus = sufler.pipelineStatusText {
+                Text(pipelineStatus)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(sufler.pipelineStatusIsCritical
+                                     ? Color.red : Theme.warning)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             // Запись и результат — прямо здесь: за ними не нужно открывать окно.
             HStack(spacing: 10) {
