@@ -57,6 +57,9 @@ struct MenuBarView: View {
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        // без label VoiceOver читал цифры дважды: содержимое
+                        // Text и его же value (круг-2 DS, M3)
+                        .accessibilityLabel(L.t("Идёт запись", "Recording", "录音中"))
                 }
             }
             // здоровье стека проверяется при открытии меню: молча зелёный,

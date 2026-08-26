@@ -101,6 +101,17 @@ final class MeetingProcessingTests: XCTestCase {
         XCTAssertTrue(MeetingProcessingPolicy.shouldPublish(
             current: processing, latest: nil,
             lastResolved: .processing, now: fresh))
+        // возврат из пустого каталога
+        XCTAssertTrue(MeetingProcessingPolicy.shouldPublish(
+            current: nil, latest: processing,
+            lastResolved: nil, now: fresh))
+        // конвейер ожил: свежий updated_at меняет сырой снимок — публикуем,
+        // даже когда последний опубликованный резолв был error
+        XCTAssertTrue(MeetingProcessingPolicy.shouldPublish(
+            current: processing,
+            latest: snapshot(state: .processing, updated: 40 * 60),
+            lastResolved: .error,
+            now: Date(timeIntervalSince1970: 41 * 60)))
     }
 
     func testProcessingBecomesExplicitErrorAfterThirtyMinutes() {
