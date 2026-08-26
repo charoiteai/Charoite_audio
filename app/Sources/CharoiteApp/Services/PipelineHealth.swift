@@ -19,7 +19,6 @@ struct PipelineProgressSnapshot: Equatable {
 
     let state: State
     let backlogSeconds: TimeInterval
-    let inputAgeSeconds: TimeInterval?
     let recordingOK: Bool
     let failedRecordingChannels: [String]
 
@@ -40,7 +39,6 @@ struct PipelineProgressSnapshot: Equatable {
         return PipelineProgressSnapshot(
             state: state,
             backlogSeconds: backlog,
-            inputAgeSeconds: nonnegativeNumber(object["input_age_seconds"]),
             recordingOK: recordingOK,
             failedRecordingChannels: failedChannels)
     }
@@ -53,6 +51,10 @@ struct PipelineStageProbe: Equatable {
     let stage: String
     let stageAgeSeconds: TimeInterval
     let stalled: Bool
+    /// Свежий вердикт о записи от main-thread. `recording_ok` в
+    /// `stt_progress` замерзает вместе с STT — ровно тогда, когда отказ
+    /// диска важнее всего (круг-1 GLM, I1). nil — демон без поля.
+    let recordingOK: Bool?
 
     static func decode(_ object: [String: Any]) -> PipelineStageProbe? {
         guard let stage = object["stt_stage"] as? String,
@@ -61,7 +63,8 @@ struct PipelineStageProbe: Equatable {
         else { return nil }
         return PipelineStageProbe(stage: stage,
                                   stageAgeSeconds: age,
-                                  stalled: stalled)
+                                  stalled: stalled,
+                                  recordingOK: object["recording_ok"] as? Bool)
     }
 }
 
@@ -82,11 +85,12 @@ enum PipelineHealthProblem: Equatable {
 enum PipelineHealthPresentation {
     static func text(for problem: PipelineHealthProblem) -> String {
         switch problem {
-        case .recordingUnavailable:
+        case .recordingUnavailable(let channels):
+            let scope = channels.isEmpty ? "" : " (\(channels.joined(separator: ", ")))"
             return L.t(
-                "⛔️ Аудио не пишется на диск — освободите место",
-                "⛔️ Audio is not being saved — free disk space",
-                "⛔️ 音频未写入磁盘——请释放磁盘空间")
+                "⛔️ Аудио не пишется на диск\(scope) — освободите место",
+                "⛔️ Audio is not being saved\(scope) — free disk space",
+                "⛔️ 音频未写入磁盘\(scope)——请释放磁盘空间")
         case .stalled(let stage, let seconds):
             let age = Int(seconds.rounded(.up))
             let title = stageTitle(stage)
@@ -115,6 +119,8 @@ enum PipelineHealthPresentation {
             return L.t("распознавание", "transcription", "转写")
         case "planning", "postprocess":
             return L.t("обработка", "processing", "处理")
+        case "idle":
+            return L.t("ожидание речи", "waiting for speech", "等待语音")
         default:
             return stage
         }
@@ -128,11 +134,25 @@ enum PipelineHealthPresentation {
 struct PipelineHealthMonitor: Equatable {
     private(set) var progress: PipelineProgressSnapshot?
     private(set) var stageProbe: PipelineStageProbe?
+    /// Липкий признак «hb сказал: запись не идёт». Каждый следующий hb
+    /// замещает probe целиком, поэтому критикал, живущий в самом probe,
+    /// гас бы через один такт (это поймал тест). Явный `recording_ok`
+    /// ставит и снимает флаг, hb без поля (старый демон) его не трогает,
+    /// валидный progress-снимок сбрасывает.
+    private(set) var recordingFailedByHeartbeat = false
 
     var problem: PipelineHealthProblem? {
+        // Отказ диска виден с обеих сторон шва: из снапшота STT-потока и из
+        // heartbeat главного. hb может только ПОДНЯТЬ критикал (списка
+        // каналов у него нет); гасит критикал по-прежнему только валидный
+        // progress-снимок — он же сбрасывает probe в acceptProgress.
         if let progress, !progress.recordingOK {
             return .recordingUnavailable(
                 channels: progress.failedRecordingChannels)
+        }
+        if recordingFailedByHeartbeat {
+            return .recordingUnavailable(
+                channels: progress?.failedRecordingChannels ?? [])
         }
         if let stageProbe, stageProbe.stalled {
             return .stalled(stage: stageProbe.stage,
@@ -151,6 +171,7 @@ struct PipelineHealthMonitor: Equatable {
         guard let snapshot = PipelineProgressSnapshot.decode(object) else { return nil }
         progress = snapshot
         stageProbe = nil
+        recordingFailedByHeartbeat = false
         return snapshot
     }
 
@@ -160,6 +181,9 @@ struct PipelineHealthMonitor: Equatable {
     ) -> PipelineStageProbe? {
         guard let probe = PipelineStageProbe.decode(object) else { return nil }
         stageProbe = probe
+        if let recordingOK = probe.recordingOK {
+            recordingFailedByHeartbeat = !recordingOK
+        }
         return probe
     }
 }

@@ -3,8 +3,8 @@
 События:  {"type":"status","text":...} | {"type":"transcript","ts":"HH:MM:SS","text":...}
           {"type":"stt_progress","backlog_seconds":...} — пульс именно STT,
           отдельно от heartbeat главного потока
-          {"type":"hb","stt_stage":...,"stt_stalled":bool} — main-thread
-          probe; не является прогрессом STT
+          {"type":"hb","stt_stage":...,"stt_stalled":bool,
+          "recording_ok":bool} — main-thread probe; не является прогрессом STT
           {"type":"thesis","text":...}  | {"type":"hint","text":...,"manual":bool}
           {"type":"hint_done","manual":bool} — manual: стрим запрошен человеком
           (вопрос/⌘⏎/протокол), не авто-циклом; панель по нему решает, что
@@ -2620,7 +2620,12 @@ def main():
                       # порог и не расходился с stderr-диагностикой.
                       "stt_stalled": stt_runtime.stage_is_stalled(
                           stage_age_s=stage_age,
-                          threshold=STT_STALL_THRESHOLD)})
+                          threshold=STT_STALL_THRESHOLD),
+                      # О диске тоже судит сервер: recording_ok в
+                      # stt_progress замерзает вместе с STT — ровно когда
+                      # отказ диска важнее всего (круг-1 GLM, I1).
+                      # health_snapshot read-only и дёшев раз в 30 с.
+                      "recording_ok": hub.health_snapshot()["recording_ok"]})
                 # Сторож слоя авто-подсказок: умерший поток — перезапуск и
                 # честная строка человеку (класс утреннего краша stt_loop:
                 # 40 минут тишины без единого слова). Потолок — три

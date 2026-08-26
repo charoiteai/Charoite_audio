@@ -49,14 +49,16 @@ final class PipelineHealthTests: XCTestCase {
     private func heartbeat(
         stage: String = "transcription",
         age: Double,
-        stalled: Bool
+        stalled: Bool,
+        recordingOK: Bool? = nil
     ) throws -> [String: Any] {
-        try object("""
+        let recordingField = recordingOK.map { ",\n  \"recording_ok\": \($0)" } ?? ""
+        return try object("""
         {
           "type": "hb",
           "stt_stage": "\(stage)",
           "stt_stage_age_seconds": \(age),
-          "stt_stalled": \(stalled)
+          "stt_stalled": \(stalled)\(recordingField)
         }
         """)
     }
@@ -67,7 +69,6 @@ final class PipelineHealthTests: XCTestCase {
 
         XCTAssertEqual(snapshot.state, .healthy)
         XCTAssertEqual(snapshot.backlogSeconds, 0.4)
-        XCTAssertEqual(snapshot.inputAgeSeconds, 0.2)
         XCTAssertTrue(snapshot.recordingOK)
         XCTAssertTrue(snapshot.failedRecordingChannels.isEmpty)
     }
@@ -131,6 +132,40 @@ final class PipelineHealthTests: XCTestCase {
         XCTAssertEqual(
             monitor.problem,
             .recordingUnavailable(channels: ["system"]))
+    }
+
+    func testHeartbeatRaisesDiskFailureWhileSTTIsFrozen() throws {
+        // recording_ok из stt_progress замерзает вместе с STT; свежий вердикт
+        // о диске несёт heartbeat главного потока (круг-1 GLM, I1). Каналов
+        // hb не знает — критикал поднимается с пустым списком.
+        var monitor = PipelineHealthMonitor()
+        monitor.acceptProgress(try progress())
+        monitor.acceptHeartbeat(try heartbeat(age: 65, stalled: true,
+                                              recordingOK: false))
+
+        XCTAssertEqual(monitor.problem, .recordingUnavailable(channels: []))
+
+        // Гасит критикал по-прежнему только валидный progress-снимок.
+        monitor.acceptHeartbeat(try heartbeat(age: 1, stalled: false))
+        XCTAssertEqual(monitor.problem, .recordingUnavailable(channels: []))
+
+        monitor.acceptProgress(try progress())
+        XCTAssertNil(monitor.problem)
+    }
+
+    func testPresentationNamesFailedChannelsAndTranslatesIdle() {
+        let named = PipelineHealthPresentation.text(
+            for: .recordingUnavailable(channels: ["system"]))
+        XCTAssertTrue(named.contains("(system)"))
+
+        let bare = PipelineHealthPresentation.text(
+            for: .recordingUnavailable(channels: []))
+        XCTAssertFalse(bare.contains("()"))
+
+        // Сырой идентификатор стадии не утекает в текст для человека.
+        let idle = PipelineHealthPresentation.text(
+            for: .stalled(stage: "idle", seconds: 45))
+        XCTAssertFalse(idle.contains("(idle)"))
     }
 
     func testHealthOwnerIsWiredToBothMeetingSurfaces() throws {

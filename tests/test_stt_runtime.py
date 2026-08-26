@@ -199,6 +199,9 @@ def test_main_heartbeat_exposes_stall_without_forging_stt_progress():
     assert '"stt_stalled": stt_runtime.stage_is_stalled(' in heartbeat
     assert "threshold=STT_STALL_THRESHOLD" in heartbeat
     assert '"type": "stt_progress"' not in heartbeat
+    # О диске судит тоже сервер: снапшот recording_ok в hb, потому что
+    # stt_progress замерзает вместе с STT (круг-1 GLM по #431, I1).
+    assert '"recording_ok": hub.health_snapshot()["recording_ok"]' in heartbeat
 
 
 def test_отказ_записи_на_диск_красится_по_подстроке():

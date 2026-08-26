@@ -241,7 +241,12 @@ struct SuflerView: View {
             // важнее нагрузки; lag/stall важнее обычной служебной строки.
             if sufler.pipelineStatusIsCritical,
                let pipelineStatus = sufler.pipelineStatusText {
-                return pipelineStatus
+                // Демон шлёт error-статус с ПРИЧИНОЙ отказа («ЗАПИСЬ НА ДИСК
+                // ВЫКЛЮЧЕНА: <исключение>»); генерик-баннер поверх него
+                // прятал её до конца встречи (круг-1 GLM, I2). Пока причина
+                // на экране — показываем её; затёрло обычным статусом —
+                // возвращается персистентный баннер.
+                return sufler.statusIsError ? sufler.status : pipelineStatus
             }
             if sufler.statusIsError { return sufler.status }
             if let pipelineStatus = sufler.pipelineStatusText {
