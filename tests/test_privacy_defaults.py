@@ -38,7 +38,8 @@ import privacy  # noqa: E402
 EXAMPLE = REPO / "config" / "config.example.yaml"
 
 GATES = (privacy.cloud_live_enabled, privacy.cloud_enrich_enabled,
-         privacy.cloud_hints_enabled, privacy.cloud_edit_graph_enabled)
+         privacy.cloud_hints_enabled, privacy.cloud_edit_graph_enabled,
+         privacy.cloud_engine_enabled)
 
 # Чтение ключа из словаря — и .get(), и прямое индексирование, кавычки любые.
 # Ловим любой ключ облака, а не список из двух: новый тумблер должен попадать

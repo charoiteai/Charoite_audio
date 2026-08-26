@@ -189,11 +189,24 @@ code path is shared.
   `~/.config/charoite/llm_key`, mode 600): config.yaml ends up in backups and
   screenshots, and a key is money and access. It is never put in the request
   body, never printed to logs or errors, and the address is https-only.
-- **A safety net for a dropped network.** A network error or a 5xx before the
-  first emitted token falls back to the local model with a line in the err log;
-  401/403/400 raise loudly instead — otherwise you work locally for a month
-  without knowing. After the first token there is no fallback: a hint started by
-  the cloud and finished locally would splice two different thoughts.
+- **A safety net for a dropped network.** A network error, a 5xx or a broken
+  gateway response (non-JSON, HTML instead of a stream) before the first emitted
+  token falls back to the local model with a line in the err log; 401/403/400
+  raise loudly instead — otherwise you work locally for a month without knowing.
+  After the first token there is no fallback: a hint started by the cloud and
+  finished locally would splice two different thoughts. Non-streaming calls (the
+  post-meeting pass, minutes, archive summaries) fall back the same way — their
+  answer is atomic, so there is nothing to splice. The net lands on whichever
+  local engine the person actually has: `cloud_fallback_engine`, defaulting to
+  mlx-server when `mlx_model` is set and to Ollama otherwise.
+- **The health probe knows about the cloud.** `llm_health` does not treat the
+  gateway as a local server: there is nothing to restart, and a failed probe no
+  longer blocks the post-meeting pass — the call itself has retries and a net.
+  Otherwise, on a cloud install (where the local Ollama only holds bge-m3) the
+  restart would kill the embedder and no meeting would ever reach the graph.
+- **The key never reaches the screen.** A 401 body echoes the key back, and
+  error bodies travel into the hint card, the transcript file and MCP replies —
+  so the key is stripped where a body becomes an exception.
 - **What stays on the machine with any engine:** speech recognition,
   diarization, search and dedup embeddings, NLI. A chat gateway has no cloud
   equivalent for these, and "fully in the cloud" is a different conversation —

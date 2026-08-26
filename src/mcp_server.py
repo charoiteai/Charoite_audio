@@ -141,7 +141,7 @@ def sufler_make_minutes() -> str:
     except ValueError:
         return f"Ollama вернула не JSON — минутки НЕ тронуты ({mpath.name})"
     except requests.RequestException as e:
-        return (f"Ollama недоступна ({type(e).__name__}) — минутки НЕ тронуты "
+        return (f"модель недоступна ({type(e).__name__}) — минутки НЕ тронуты "
                 f"({mpath.name})")
     if not out:
         return f"Модель вернула пустой ответ — минутки НЕ тронуты ({mpath.name})"

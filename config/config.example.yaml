@@ -42,6 +42,11 @@ llm:
   # cloud_model: deepseek-chat
   # cloud_key_file: ~/.config/charoite/llm_key
   # cloud_fallback_local: true
+  # На какой локальный движок падать, когда шлюза нет: ollama или
+  # mlx-server. Без ключа выбирается mlx-server, если задан mlx_model,
+  # иначе ollama — у кого локальная модель живёт на mlx_lm.server,
+  # запас в пустой Ollama был бы мёртвым.
+  # cloud_fallback_engine: ollama
   # mlx_base_url: http://127.0.0.1:8080
   # mlx_model: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
   # Шаблон стартует с моделей профиля 8/16 ГБ: одна лёгкая на все роли.

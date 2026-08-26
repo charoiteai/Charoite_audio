@@ -87,6 +87,9 @@ DEFAULT_MLX_MODEL = "mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit"
 #: доступ. Отдельный файл с правами 600, как токен GitHub у релизов.
 DEFAULT_CLOUD_KEY_FILE = "~/.config/charoite/llm_key"
 
+#: Сколько ждём недоступный шлюз, прежде чем ответить локальной моделью.
+CLOUD_BUSY_WAIT = 5.0
+
 
 def cloud_key(cfg: dict) -> str:
     """Ключ облачного шлюза из файла. Пусто — значит его нет.
@@ -97,9 +100,19 @@ def cloud_key(cfg: dict) -> str:
     raw = str((cfg.get("llm") or {}).get("cloud_key_file") or DEFAULT_CLOUD_KEY_FILE)
     path = pathlib.Path(raw).expanduser()
     try:
-        return path.read_text(encoding="utf-8").strip()
+        key = path.read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+    try:
+        mode = path.stat().st_mode & 0o077
+    except OSError:
+        mode = 0
+    if mode:
+        # Не отказ: ключ уже лежит на диске, и молчаливо не работать хуже.
+        # Но сказать вслух обязаны — доки обещают 600 (круг-1 DS, Minor).
+        print(f"llm: {path} доступен не только владельцу (chmod 600 рекомендуется)",
+              file=sys.stderr, flush=True)
+    return key
 
 
 # Явный потолок ответа для mlx-server, когда вызывающий не задал num_predict.
@@ -192,6 +205,12 @@ class LLM:
         # Локальный запас на случай, когда облачного шлюза нет: без него
         # пропавшая сеть означает встречу без подсказок вовсе.
         self.fallback_local = l.get("cloud_fallback_local", True) is not False
+        # На что падаем, когда шлюза нет. Жёсткий «ollama» бил мимо у тех, чей
+        # локальный движок — mlx_lm.server: в Ollama у них из чат-моделей никого,
+        # она держит только bge-m3 (круг-1, обе головы).
+        self.fallback_engine = str(l.get("cloud_fallback_engine") or "").strip().lower()
+        if self.fallback_engine not in ("ollama", "mlx-server"):
+            self.fallback_engine = "mlx-server" if l.get("mlx_model") else "ollama"
         self.temperature = float(l.get("temperature", 0.4))
         # num_ctx ЯВНО: без него Ollama грузит модель с контекстом из Modelfile
         # (qwen3.6 — 262144), KV-кэш раздувается и генерации медленнее в разы
@@ -309,6 +328,19 @@ class LLM:
                 # без хвоста встречи внешне неотличимы от готовых.
                 raise LLMHTTPError(r.status_code, "стрим оборван без завершения")
 
+    def _hide_key(self, text: str) -> str:
+        """Убрать ключ из текста ошибки шлюза.
+
+        OpenAI-совместимые шлюзы возвращают его эхом: «Incorrect API key
+        provided: sk-…». Тело ответа доезжает до карточки подсказки, до файла
+        стенограммы и до ответа MCP-инструмента — то есть ключ оказался бы
+        записан на диск и показан на экране (круг-1 DS, Critical). Маскируем
+        в единственной точке, где тело превращается в исключение.
+        """
+        if not self.cloud_ready or not self._key:
+            return text
+        return text.replace(self._key, "***")
+
     def _auth(self) -> dict:
         """Именованные аргументы запроса: облаку — заголовок авторизации.
 
@@ -343,7 +375,7 @@ class LLM:
             if r.status_code != 200:
                 # закрыть до raise: with-блок вызывающего сюда не дойдёт, а
                 # ответ открыт как стрим; ошибка — в контракте модуля LLMHTTPError
-                detail = r.text[:500]
+                detail = self._hide_key(r.text[:500])
                 r.close()
                 raise LLMHTTPError(r.status_code, detail)
             return r
@@ -384,6 +416,13 @@ class LLM:
         stream() собирает messages из prompt+system; здесь они уже собраны,
         и пересобирать их (теряя роли) ради одного вызова незачем.
         """
+        if self.cloud_ready:
+            # Метод существует ради локального запаса облака; вызвать его на
+            # самом облачном клиенте — значит собрать ollama-протокол и
+            # отправить его шлюзу (круг-1 DS, Minor).
+            yield from self._stream_cloud(messages, num_predict=num_predict,
+                                          temperature=temperature, busy_wait=busy_wait)
+            return
         if self.engine == "mlx-server":
             yield from self._stream_mlx(messages, think=False, num_predict=num_predict,
                                         temperature=temperature, busy_wait=busy_wait)
@@ -448,8 +487,12 @@ class LLM:
         emitted = False
         payload = self._cloud_payload(messages, num_predict=num_predict,
                                       temperature=temperature, stream=True)
+        # Ждать шлюз столько же, сколько локальный сервер, незачем: у локального
+        # «занято» проходит само, а недоступный шлюз лечится только запасом.
+        # Живая подсказка не должна молчать полминуты (круг-1 DS, Minor).
+        wait = min(busy_wait, CLOUD_BUSY_WAIT) if self.fallback_local else busy_wait
         try:
-            for chunk in self._sse(f"{self.base}/chat/completions", payload, busy_wait):
+            for chunk in self._sse(f"{self.base}/chat/completions", payload, wait):
                 emitted = True
                 yield chunk
             return
@@ -461,12 +504,20 @@ class LLM:
             if emitted:
                 raise
             reason = str(e)[:150] or type(e).__name__
+        except (ValueError, KeyError, IndexError, AttributeError, TypeError) as e:
+            # Битый SSE, HTML вместо потока, «choices» строкой — самый частый
+            # сбой чужого шлюза (прокси, rate-limiter). До первого токена это
+            # такой же повод уйти на локальную, как и сеть (круг-1 DS).
+            if emitted:
+                raise
+            reason = f"битый ответ шлюза: {type(e).__name__}"
         if not self.fallback_local:
             raise LLMHTTPError(503, f"облако недоступно ({reason}), "
                                     "локальный запас выключен")
         print(f"llm: облако недоступно ({reason}) — отвечаю локальной моделью",
               file=sys.stderr, flush=True)
-        local = LLM({**self._cfg, "llm": {**self._cfg["llm"], "engine": "ollama"}})
+        local = LLM({**self._cfg,
+                     "llm": {**self._cfg["llm"], "engine": self.fallback_engine}})
         yield from local.stream_messages(messages, num_predict=num_predict,
                                          temperature=temperature,
                                          busy_wait=busy_wait)
@@ -509,6 +560,13 @@ class LLM:
         try:
             for _ in self.stream("Ответь одним словом: готов", system="Ты просто отвечаешь: готов."):
                 break
+        except LLMHTTPError as e:
+            # Неверный ключ шлюза молчал до первой подсказки встречи: прогрев
+            # глотал всё подряд (круг-1 DS, Minor). Отказ доступа — единственное,
+            # что здесь стоит сказать вслух: остальное чинится ретраями.
+            if self.cloud_ready and e.status in (401, 403):
+                print(f"llm: шлюз не принял ключ (HTTP {e.status}) — проверьте "
+                      "llm.cloud_key_file", file=sys.stderr, flush=True)
         except Exception:
             pass  # ollama может быть не поднят — не валим старт
 
@@ -555,12 +613,31 @@ class LLM:
             # здесь, как и на mlx, держится на промпте и разборе вызывающим.
             payload = self._cloud_payload(messages, num_predict=num_predict,
                                           temperature=temperature, stream=False)
-            r = self._post_with_revive(f"{self.base}/chat/completions",
-                                       payload, timeout, revive=False,
-                                       busy_wait=busy_wait)
-            body = self._checked_body(r)
-            msg = ((body.get("choices") or [{}])[0].get("message") or {})
-            return (msg.get("content") or "").strip()
+            wait = min(busy_wait, CLOUD_BUSY_WAIT) if self.fallback_local else busy_wait
+            try:
+                r = self._post_busy(f"{self.base}/chat/completions",
+                                    payload, timeout, wait)
+                body = self._checked_body(r)
+                msg = ((body.get("choices") or [{}])[0].get("message") or {})
+                return (msg.get("content") or "").strip()
+            except (LLMHTTPError, requests.RequestException, ValueError,
+                    KeyError, IndexError, AttributeError, TypeError) as e:
+                # Ответ атомарный — склейки двух мыслей, из-за которой в
+                # стриме фолбэк запрещён после первого токена, здесь быть не
+                # может. Отказ доступа не подменяем: он должен быть громким.
+                if isinstance(e, LLMHTTPError) and e.status < 500:
+                    raise
+                if not self.fallback_local:
+                    raise
+                print(f"llm: облако не ответило ({str(e)[:120]}) — "
+                      "считаю локальной моделью", file=sys.stderr, flush=True)
+                local = LLM({**self._cfg,
+                             "llm": {**self._cfg["llm"], "engine": self.fallback_engine}})
+                return local.complete(prompt, system=system, model=model, think=think,
+                                      json_format=json_format, num_predict=num_predict,
+                                      num_ctx=num_ctx, temperature=temperature,
+                                      timeout=timeout, revive=revive,
+                                      busy_wait=busy_wait)
         if self.engine == "mlx-server":
             # Строгого JSON-режима у mlx-server нет: json_format здесь
             # полагается на промпт и разбор текста вызывающим (докстринг
@@ -622,14 +699,17 @@ class LLM:
                 raise
             return self._post_busy(url, payload, timeout, busy_wait)
 
-    @staticmethod
-    def _checked_body(r) -> dict:
-        """Тело ответа или LLMHTTPError — общая часть обоих движков."""
+    def _checked_body(self, r) -> dict:
+        """Тело ответа или LLMHTTPError — общая часть всех движков.
+
+        Не @staticmethod: тело ошибки чужого шлюза может содержать ключ
+        эхом, и убрать его умеет только экземпляр (круг-1 DS, Critical).
+        """
         if r.status_code != 200:
-            raise LLMHTTPError(r.status_code, r.text[:500])
+            raise LLMHTTPError(r.status_code, self._hide_key(r.text[:500]))
         body = r.json()
         if isinstance(body, dict) and body.get("error"):
-            raise LLMHTTPError(r.status_code, str(body["error"]))
+            raise LLMHTTPError(r.status_code, self._hide_key(str(body["error"])))
         return body
 
     # Формат подсказки живёт в коде, а не в роли из конфига. Роль отвечает на

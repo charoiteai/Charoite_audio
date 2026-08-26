@@ -169,7 +169,7 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
             return _extract(cfg, transcript, project_rule)
         return _extract_long(cfg, transcript, project_rule)
     except requests.RequestException as e:
-        print(f"граф: Ollama недоступна ({type(e).__name__}: {e}) — "
+        print(f"граф: модель недоступна ({type(e).__name__}: {e}) — "
               f"встреча сохранена, граф не обновлён")
         return None
 
