@@ -597,7 +597,36 @@ enum AppSettings {
                 out.append(line)
             }
         }
-        guard done else { return false }
+        if !done {
+            // Ключа в файле нет — так бывает у всех, кто поставил Чароит до
+            // появления тумблера: строка не находится, тумблер молча не
+            // работает (круг-1 DS по #436). Дописываем в конец секции
+            // sufler — она есть в любом рабочем конфиге, потому что без неё
+            // демон не стартует.
+            guard let start = out.firstIndex(where: {
+                $0.trimmingCharacters(in: .whitespaces).hasPrefix("sufler:")
+            }) else { return false }
+            var end = out.index(after: start)
+            // Отступ берём у первого же ребёнка секции, а не из литерала:
+            // конфиг документирован под ручную правку, и у секции с детьми
+            // в четыре пробела вставка в два ломает YAML — после сохранения
+            // тумблером демон не стартует вовсе (круг-2 GLM, I7).
+            var indent = "  "
+            var sawChild = false
+            while end < out.endIndex {
+                let line = out[end]
+                let t = line.trimmingCharacters(in: .whitespaces)
+                // конец секции — первая непустая строка без отступа
+                if !t.isEmpty && !line.hasPrefix(" ") && !line.hasPrefix("\t") { break }
+                if !sawChild, !t.isEmpty, !t.hasPrefix("#") {
+                    let prefix = line.prefix(while: { $0 == " " || $0 == "\t" })
+                    if !prefix.isEmpty { indent = String(prefix); sawChild = true }
+                }
+                end = out.index(after: end)
+            }
+            out.insert("\(indent)\(key): \(value)", at: end)
+            done = true
+        }
         do {
             try out.joined(separator: "\n").write(to: cfg, atomically: true, encoding: .utf8)
             return true

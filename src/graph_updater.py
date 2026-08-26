@@ -169,7 +169,7 @@ def extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
             return _extract(cfg, transcript, project_rule)
         return _extract_long(cfg, transcript, project_rule)
     except requests.RequestException as e:
-        print(f"граф: Ollama недоступна ({type(e).__name__}: {e}) — "
+        print(f"граф: модель недоступна ({type(e).__name__}: {e}) — "
               f"встреча сохранена, граф не обновлён")
         return None
 
@@ -302,14 +302,20 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
             busy_wait=BUSY_WAIT,   # фон: занятую модель ждём, а не роняем разбор
         )
     except LLMHTTPError as e:
+        # Совет зависит от движка: «ollama pull» на облачной установке ведёт
+        # качать 20 ГБ, от которых облако и избавляет (круг-2 DS, M2).
+        cloud = privacy.cloud_engine_active(cfg)
+        who = "шлюз" if cloud else "Ollama"
         if e.status in (429, 502, 503):
-            print(f"граф: модель занята (HTTP {e.status}) дольше {BUSY_WAIT // 60:.0f} мин — "
+            print(f"граф: {'облако недоступно или лимит' if cloud else 'модель занята'} "
+                  f"(HTTP {e.status}) дольше {BUSY_WAIT // 60:.0f} мин — "
                   "часть пропущена; повтор подберёт незавершённую встречу")
         elif e.status != 200:
-            print(f"граф: Ollama ответила HTTP {e.status} — модель "
-                  f"{cfg['llm']['model']} установлена? (ollama pull)")
+            hint = ("проверьте llm.cloud_model, адрес и ключ" if cloud
+                    else f"модель {cfg['llm']['model']} установлена? (ollama pull)")
+            print(f"граф: {who} ответил HTTP {e.status} — {hint}")
         else:
-            print(f"граф: Ollama вернула ошибку: {e.detail}")
+            print(f"граф: {who} вернул ошибку: {e.detail}")
         return None
     raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.M).strip()
     try:

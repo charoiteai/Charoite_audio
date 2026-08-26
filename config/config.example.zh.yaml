@@ -35,6 +35,22 @@ llm:
   # 该服务只提供启动时加载的那一个模型（mlx_model，HF 仓库名）；small/fallback
   # 在其上折叠为同一模型。向量嵌入（bge-m3）无论哪个引擎都留在 Ollama。
   # engine: ollama
+  # Третий движок — cloud: весь чат уходит на облачный OpenAI-совместимый
+  # шлюз, и ноутбук перестаёт держать большую модель. Включается ДВУМЯ
+  # ключами: llm.engine: cloud здесь и sufler.cloud_engine: true ниже —
+  # адрес без разрешения не работает, как и разрешение без адреса.
+  # Ключ шлюза в конфиг не кладут: он читается из отдельного файла
+  # (cloud_key_file, права 600). Пропала сеть — отвечает локальная модель,
+  # если cloud_fallback_local не выключен. Эмбеддинги, NLI и STT остаются
+  # локальными при любом движке.
+  # cloud_base_url: https://api.example.com/v1
+  # cloud_model: deepseek-chat
+  # cloud_key_file: ~/.config/charoite/llm_key
+  # cloud_fallback_local: true
+  # 断网回退到哪个本地引擎：ollama 或 mlx-server。未设置时，若已配置
+  # mlx_model 则选择 mlx-server，否则选择 ollama——对于本地模型运行在
+  # mlx_lm.server 上的用户，回退到空的 Ollama 等于没有回退。
+  # cloud_fallback_engine: ollama
   # mlx_base_url: http://127.0.0.1:8080
   # mlx_model: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
   model: qwen3.6:35b-a3b             # 主模型（提示、纪要、姓名）——中文原生
@@ -99,6 +115,7 @@ sufler:
   cloud_enrich: false     # 会后由云端 Claude 复盘（需要 claude CLI）
   cloud_model: claude-opus-5
   cloud_edit_graph: false
+  cloud_engine: false     # весь чат через облачный шлюз (см. llm.engine: cloud)
   # ↑ РАЗРЕШИТЬ ОБЛАКУ ПРАВИТЬ ГРАФ (опционально, по умолчанию выключено).
   # Без него Opus только пишет отчёт-рекомендации, правит человек руками.
   # С ним — правит сам, ночью, по своим же находкам: отменённые решения,
