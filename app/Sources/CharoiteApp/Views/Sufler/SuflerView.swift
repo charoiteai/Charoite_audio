@@ -484,11 +484,10 @@ struct SuflerView: View {
             // спрашивает именно это. Моноширинные цифры, чтобы строка не
             // дёргалась каждую секунду.
             if sufler.isRunning {
-                Text(SuflerService.clockText(sufler.recordingElapsed))
+                RecordingClock(startedAt: sufler.recordingStartedAt)
                     .font(.headline.monospacedDigit())
                     .foregroundStyle(.red)
                     .accessibilityLabel(L.t("Идёт запись", "Recording", "录音中"))
-                    .accessibilityValue(SuflerService.clockText(sufler.recordingElapsed))
             }
 
             // Сбой записи нельзя показывать так же, как «Готов к запуску»:
