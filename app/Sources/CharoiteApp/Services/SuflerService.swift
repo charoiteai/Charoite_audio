@@ -47,10 +47,8 @@ final class SuflerService: ObservableObject {
     /// модели, а не угадываться по переводу.
     @Published var statusIsError = false
 
-    /// Ошибка пришла ИМЕННО от демона (`status` c `error: true`) — например
-    /// «ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: <причина>». Swift-`fail()` (таймаут
-    /// подсказки и т.п.) этот флаг не ставит: недисковая ошибка не имеет
-    /// права прятать критикал конвейера в окне встречи (круг-2 DS, I1).
+    /// Ошибка от самого демона (`status` c `error: true`), не Swift-`fail()`:
+    /// только ей позволено заменять критикал на экране (круг-2 DS, I1).
     @Published private(set) var statusErrorFromDaemon = false
 
     /// Структурное здоровье живого конвейера. Обычные `status`-события его
@@ -595,7 +593,6 @@ final class SuflerService: ObservableObject {
             endSleepGuard()   // записи больше нет — маку можно спать
             status = Self.stoppedStatus(autostopReason: autostopReason)
             statusIsError = false
-            statusErrorFromDaemon = false
             return
         case .giveUp:
             if let reason = captureLossReason {
