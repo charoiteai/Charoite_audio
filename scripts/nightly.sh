@@ -39,6 +39,27 @@ case "$NIGHTLY_MAX_H" in (""|*[!0-9]*) NIGHTLY_MAX_H=4;; esac
 # 08/09 — все цифры, но bash счёл бы их восьмеричными и упал; 10# — десятичное
 NIGHTLY_MAX_H=$((10#$NIGHTLY_MAX_H))
 export CHAROITE_NIGHTLY_UNTIL=$(( $(date +%s) + NIGHTLY_MAX_H * 3600 ))
+# Один прогон ночи на машину. launchd свою джобу не задваивает, но ручной
+# запуск поверх идущего давал два процесса, которые перезаписывают друг другу
+# статус и отметки tier3, сталкиваются одинаковым «Тема.md.tmp» и теряют
+# строки хроники при параллельном слиянии (аудит ночи 26.08, GLM Important 4).
+# Лок каталогом, а не flock: flock на macOS без util-linux нет, а python здесь
+# звать нельзя — им же подменяют шаги в тестах. mkdir атомарен на любой ФС;
+# протухший лок узнаём по мёртвому pid.
+LOCKDIR="${CHAROITE_ROOT:-$PWD}/logs/nightly.lock.d"
+mkdir -p "$(dirname "$LOCKDIR")"
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+  OTHER=$(cat "$LOCKDIR/pid" 2>/dev/null || echo "")
+  if [ -n "$OTHER" ] && kill -0 "$OTHER" 2>/dev/null; then
+    echo "ночной прогон уже идёт (pid $OTHER) — выхожу"
+    exit 0
+  fi
+  echo "⚠️ остался лок мёртвого прогона (pid ${OTHER:-неизвестен}) — забираю"
+  rm -rf "$LOCKDIR" && mkdir "$LOCKDIR" 2>/dev/null || true
+fi
+echo $$ > "$LOCKDIR/pid" 2>/dev/null || true
+cleanup_lock() { rm -rf "$LOCKDIR"; }
+
 rc=0
 STARTED=$(date '+%F %T')
 # Куда кладём машиночитаемый итог. Логи launchd живут в /tmp и исчезают при
@@ -75,10 +96,14 @@ step() {
 # всегда — они секундные и нужны человеку к утру.
 overdue() { [ "$(date +%s)" -gt "$CHAROITE_NIGHTLY_UNTIL" ]; }
 skip_late() { echo "⏭️ $1 пропущен: время ночного прогона вышло"; FAILED="$FAILED $2"; }
-trap 'write_status interrupted' INT TERM
+# exit ОБЯЗАТЕЛЕН: без него bash выполняет ловушку и идёт дальше, а финальный
+# write_status затирает «interrupted» на «ok» — прогон продолжал держать
+# машину после явного требования остановиться, и состояние «прервана» было
+# недостижимо через сигнал вовсе (аудит ночи 26.08, GLM Critical 1).
+trap 'write_status interrupted; cleanup_lock; exit 143' INT TERM
 # set -e выносит скрипт из любой необработанной команды, и статус остался бы
 # «идёт» навсегда — поломка, замаскированная под работу.
-trap '[ "$STATUS_DONE" = 1 ] || { rc=1; write_status failed; }' EXIT
+trap '[ "$STATUS_DONE" = 1 ] || { rc=1; write_status failed; }; cleanup_lock' EXIT
 
 # Пишем «идёт» сразу: прогон занимает от четверти часа до часа с лишним
 # (ревизия ядер и досье — это локальная модель на каждой теме), и всё это
@@ -86,6 +111,14 @@ trap '[ "$STATUS_DONE" = 1 ] || { rc=1; write_status failed; }' EXIT
 write_status running
 
 echo "=== nightly $(date '+%F %T') ==="
+# «Не отвалилось ничего» и «работы не было» — разные ночи. Без графа
+# (отключённый диск, несмонтированный iCloud) каждый шаг честно выходит
+# нулём, и статус зеленел при нуле сделанного (аудит ночи 26.08, GLM
+# Important 5).
+if ! $PY -c "import sys; sys.path.insert(0, 'src'); import graphs; sys.exit(0 if graphs.all_graphs('Ядра') else 1)" 2>/dev/null; then
+  echo "⚠️ графов с папкой «Ядра» не видно — ночь пройдёт вхолостую"
+  FAILED="$FAILED графов-нет"
+fi
 # Разбор вечерней встречи вполне может идти и в 04:15. Вместе с ночным
 # циклом они делят одну память и одну локальную модель — и оба буксуют.
 # Ждём с потолком: пропустить ночь целиком хуже, чем поработать в тесноте.
@@ -119,7 +152,15 @@ fi
 if overdue; then
   skip_late "ревизия ядер" "tier3(поздно)"
 else
-  $PY scripts/tier3_cores.py --all-graphs --auto $TIER3_MODE || { echo "❌ РЕВИЗИЯ ЯДЕР УПАЛА (код $?)"; rc=1; FAILED="$FAILED ревизия-ядер"; }
+  $PY scripts/tier3_cores.py --all-graphs --auto $TIER3_MODE || {
+    case $? in
+      # 2 — «прошло вхолостую»: нет NLI-модели или лежит Ollama. Ночь с таким
+      # шагом не «ok», но и не авария (аудит ночи 26.08, DS Important 4).
+      2) echo "⚠️ ревизия ядер не состоялась — модель не отвечала"
+         FAILED="$FAILED ревизия-ядер(вхолостую)" ;;
+      *) echo "❌ РЕВИЗИЯ ЯДЕР УПАЛА (код $?)"; rc=1; FAILED="$FAILED ревизия-ядер" ;;
+    esac
+  }
 fi
 step "dossiers"
 # Сводки по темам поверх ядер + индекс для поиска. Инкрементально:
@@ -165,13 +206,24 @@ step "dedup graph files"
 # «Встречи-архив» для Finder) связываются жёсткими ссылками: место и
 # синхронизация iCloud перестают удваиваться, оба пути остаются рабочими.
 # Не путать с ревизией ядер выше — та сшивает СМЫСЛОВЫЕ дубли тем.
-$PY scripts/dedup_graph.py || { echo "⚠️ дедупликация файлов не отработала"; FAILED="$FAILED дедуп"; }
+if overdue; then
+  skip_late "дедупликация файлов" "дедуп(поздно)"
+else
+  $PY scripts/dedup_graph.py || { echo "⚠️ дедупликация файлов не отработала"; FAILED="$FAILED дедуп"; }
+fi
 
 step "morning brief"
 $PY scripts/morning_brief.py || { echo "❌ УТРЕННИЙ БРИФ УПАЛ (код $?)"; rc=1; FAILED="$FAILED утренний-бриф"; }
 step "memory bench"
 # не валит джобу: exit 1 бенча = сигнал деградации в логе, не авария
-$PY scripts/memory_bench.py || echo "⚠️ БЕНЧ ПАМЯТИ ПРОСЕЛ — смотри выше"
+# Бенч зовёт локальную модель — под потолок его, как и прочие тяжёлые шаги
+# (аудит ночи 26.08, DS Important 1: гейта не было, и после потолка бенч
+# всё равно поднимал модель).
+if overdue; then
+  skip_late "бенч памяти" "бенч(поздно)"
+else
+  $PY scripts/memory_bench.py || echo "⚠️ БЕНЧ ПАМЯТИ ПРОСЕЛ — смотри выше"
+fi
 echo "=== done $(date '+%F %T'), rc=$rc ==="
 FAILED="${FAILED# }"
 # «ok» — только когда не отвалилось НИЧЕГО. Код возврата мягче: им мы

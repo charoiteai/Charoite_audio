@@ -105,6 +105,39 @@ of that post-mortem:
   cases came from DeepSeek rounds on #433: first on the meeting card,
   then on the error badge).
 
+### What the night promises the morning
+
+The nightly run (`scripts/nightly.sh`, 04:15) grooms the graph while nobody
+is at the machine: brief, cores revision, dossiers, cloud revisions, file
+dedup, memory bench. An audit on 26.08 (two independent reviewers) checked
+the zone's promises and closed the gaps:
+
+- **The night ends at night.** The `CHAROITE_NIGHTLY_UNTIL` ceiling is now
+  visible to the tail steps too — dedup and the memory bench ran past it and
+  woke the model in the morning. Waiting for a live meeting is capped by
+  what is left of the night: a flat hour of waiting used to stretch the run
+  past the ceiling.
+- **A live meeting outranks the night — on the heaviest step too.** Judging
+  core pairs holds the embedder and the NLI model; the gate existed only for
+  dossiers and cloud revisions, so the cores revision kept sharing the model
+  with the live prompter. It now yields like the rest.
+- **One run at a time.** A manual start on top of a running one produced two
+  processes overwriting each other's status and markers. The lock is a
+  directory with a pid: a stale one from a dead process is taken over, a live
+  one is respected.
+- **A signal actually stops it.** The `trap` had no `exit`, so the run
+  continued after `kill -TERM` and the "interrupted" state was overwritten by
+  the final "ok" — that state was unreachable at all.
+- **"Ok" only when work happened.** A night with no graph at all, and a cores
+  revision that ran empty (no NLI model, Ollama down), no longer report green:
+  the revision has its own exit code 2, missing graphs are marked in the status.
+- **A person's edit does not vanish.** A core changed during the long pair
+  judging is not overwritten from the in-memory snapshot — the pair waits for
+  the next night. A duplicate's handwritten "Суть" moves into the canonical
+  core instead of living only in a rotating backup. Dedup re-checks the digest
+  before substituting: a file rewritten by the pipeline between the scan and
+  the link is skipped.
+
 ## Diarization: two passes
 
 1. **Live**: each chunk is embedded (ERes2Net, 512-dim) → a voice tracker

@@ -89,8 +89,23 @@ def pick_original(paths: list[pathlib.Path]) -> pathlib.Path:
     return min(pool, key=lambda p: (p.stat().st_mtime, str(p)))
 
 
-def link_copy(original: pathlib.Path, copy: pathlib.Path) -> str:
-    """Заменить копию жёсткой ссылкой. Возвращает статус для отчёта."""
+def link_copy(original: pathlib.Path, copy: pathlib.Path,
+              expected: str | None = None) -> str:
+    """Заменить копию жёсткой ссылкой. Возвращает статус для отчёта.
+
+    `expected` — хэш, с которым копия попала в группу. Хэширование графа
+    идёт минуты, а связывание — потом: если между ними живой конвейер
+    переписал копию (разбор долгой встречи, retro_fill, ручная правка),
+    подмена уничтожала НОВОЕ содержимое старым inode, и следа не
+    оставалось — бэкапа эта ветка не делает (аудит ночи 26.08, GLM
+    Critical 2 + DS Minor 10). Перед подменой сверяем ещё раз.
+    """
+    if expected is not None:
+        try:
+            if digest(copy) != expected or digest(original) != expected:
+                return "изменился во время прогона — пропуск"
+        except OSError as e:
+            return f"перепроверка не удалась ({e.strerror})"
     tmp = copy.with_name(copy.name + ".dedup-tmp")
     try:
         os.link(original, tmp)
@@ -148,7 +163,7 @@ def main() -> int:
     linked = 0
     already = 0
     failures: list[str] = []
-    for paths in groups.values():
+    for group_hash, paths in groups.items():
         original = pick_original(paths)
         for copy in paths:
             if copy == original:
@@ -161,7 +176,7 @@ def main() -> int:
                 freed += size
                 linked += 1
                 continue
-            status = link_copy(original, copy)
+            status = link_copy(original, copy, expected=group_hash)
             if status == "ok":
                 freed += size
                 linked += 1

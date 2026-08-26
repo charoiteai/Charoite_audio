@@ -35,6 +35,8 @@ import pathlib
 import re
 import shutil
 
+import os
+
 import llm
 import live_gate
 import nli
@@ -126,6 +128,11 @@ def load_cores(folder: pathlib.Path) -> list[dict]:
         chron = re.findall(r"^- \[\[.*", text, re.M)
         cores.append({
             "path": p, "name": p.stem, "status": status, "essence": essence,
+            # снимок времени изменения: суд пар идёт часами, а пишем мы текст
+            # из ПАМЯТИ. Правка ядра конвейером встречи или человеком за это
+            # время затиралась снимком, и живой файл терял её молча — копия
+            # оставалась только в бэкапе (аудит ночи 26.08, DS Important 3).
+            "mtime": p.stat().st_mtime,
             # откуда взялась суть: формулировка темы или сегодняшний автостатус.
             # По этому полю revise выбирает планку для необратимого слияния
             "essence_src": "секция" if written else "статус",
@@ -170,9 +177,30 @@ def _backup(folder: pathlib.Path, stamp: str, *files: pathlib.Path) -> None:
         shutil.rmtree(d, ignore_errors=True)
 
 
+def _stale(*cores) -> str | None:
+    """Изменился ли файл ядра с момента чтения. Имя первого изменившегося.
+
+    Пара пропускается целиком: её разберёт следующая ночь на свежих файлах
+    (`--since-last` увидит изменившееся ядро). Пропустить пару дешевле, чем
+    затереть чужую правку (аудит ночи 26.08, DS Important 3).
+    """
+    for c in cores:
+        try:
+            if c["path"].stat().st_mtime != c["mtime"]:
+                return c["name"]
+        except OSError:
+            return c["name"]        # исчез — тоже не наш случай
+    return None
+
+
 def _merge(folder: pathlib.Path, stamp: str, a: dict, b: dict, log: list[str]) -> None:
     """Слить дубль: канон — у кого хроника длиннее (при равной — свежий статус)."""
     canon, dup = (a, b) if (len(a["chron"]), a["date"]) >= (len(b["chron"]), b["date"]) else (b, a)
+    changed = _stale(canon, dup)
+    if changed:
+        log.append(f"⏭ «{canon['name']}» ↔ «{dup['name']}»: «{changed}» изменился "
+                   f"во время прогона — пара уйдёт на следующую ночь")
+        return
     _backup(folder, stamp, canon["path"], dup["path"])
     text = canon["text"]
     if dup["date"] > canon["date"] and dup["status"]:
@@ -189,6 +217,13 @@ def _merge(folder: pathlib.Path, stamp: str, a: dict, b: dict, log: list[str]) -
     # morning_brief будет вечно звать человека сводить уже сведённое
     text = re.sub(rf"\n> ⚠️ Tier3-NLI: возможный дубль: "
                   rf"\[\[Ядра/{re.escape(dup['name'])}\|.*?\n", "\n", text)
+    # «## Суть» пишет ТОЛЬКО человек, а от дубля остаётся redirect-заглушка:
+    # рукописная формулировка жила бы дальше лишь в бэкапе, а он ротируется
+    # (аудит ночи 26.08, GLM Important 6). Переносим её в канон, если она
+    # там ещё не сказана теми же словами.
+    if dup["essence_src"] == "секция" and dup["essence"]:
+        if _plain(dup["essence"]) not in _plain(text):
+            text += (f"\n## Суть дубля «{dup['name']}»\n{dup['essence']}\n")
     text += f"\n> 🔀 Tier3-NLI: сюда влита хроника дубля «{dup['name']}».\n"
     canon["path"].write_text(text, encoding="utf-8")
     canon["text"] = text
@@ -203,6 +238,10 @@ def _merge(folder: pathlib.Path, stamp: str, a: dict, b: dict, log: list[str]) -
 
 def _mark_dup(folder: pathlib.Path, stamp: str, a: dict, b: dict, log: list[str]) -> None:
     """Средняя уверенность: обратимая пометка в оба файла, сливает человек."""
+    stale = _stale(a, b)
+    if stale:
+        log.append(f"⏭ пометка пропущена: «{stale}» изменился во время прогона")
+        return
     changed = False
     for src, dst in ((a, b), (b, a)):
         if f"возможный дубль: [[Ядра/{dst['name']}" in src["text"]:
@@ -219,6 +258,10 @@ def _mark_dup(folder: pathlib.Path, stamp: str, a: dict, b: dict, log: list[str]
 
 def _link(folder: pathlib.Path, stamp: str, part: dict, whole: dict, log: list[str]) -> None:
     """Вложение: не сливаем, а даём графу взаимные ссылки-подсказки."""
+    stale = _stale(part, whole)
+    if stale:
+        log.append(f"⏭ пометка пропущена: «{stale}» изменился во время прогона")
+        return
     changed = False
     for src, dst, tag in ((part, whole, "часть более широкой темы"),
                           (whole, part, "частный эпизод этой темы")):
@@ -241,6 +284,31 @@ def auto_apply_allowed(cfg: dict) -> bool:
     (graph_updater после встречи) и ночного (tier3_cores --auto).
     """
     return (cfg.get("sufler") or {}).get("tier3_auto_apply") is True
+
+
+def _data_root() -> pathlib.Path:
+    """Корень ДАННЫХ установки: там лежит лок демона, по нему судят о встрече."""
+    return pathlib.Path(os.environ.get("CHAROITE_ROOT")
+                        or pathlib.Path(__file__).resolve().parent.parent)
+
+
+def night_wait_cap(default: float = 3600.0, now=None) -> float | None:
+    """Сколько ждать живую встречу: не дольше, чем осталось ночи.
+
+    Голый час ожидания игнорировал потолок и растягивал прогон за него
+    (аудит ночи 26.08, GLM Important 2 + DS Minor 6). Потолка нет —
+    ждём как раньше; ночь уже вышла — не ждём вовсе (0), вызывающий
+    увидит night_is_over и остановится.
+    """
+    import time as _time
+    raw = os.environ.get(live_gate.NIGHTLY_UNTIL_ENV)
+    if not raw:
+        return default
+    try:
+        left = float(raw) - (now() if now else _time.time())
+    except ValueError:
+        return default
+    return max(0.0, min(default, left))
 
 
 def revise(graph: pathlib.Path, only_names: list[str] | None = None,
@@ -333,6 +401,16 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
         if live_gate.night_is_over():
             out["stopped"] = True
             break
+        # Живая встреча важнее ночи — и на самом тяжёлом шаге тоже: суд пар
+        # держит bge-m3 в Ollama и NLI на CPU, а гейт стоял только у досье и
+        # облачных ревизий. Встреча, начавшаяся в середине воскресного
+        # прогона, делила модель с суфлёром до потолка (аудит ночи 26.08,
+        # GLM Important 1). Ждём с потолком: ночь и так ограничена.
+        if live_gate.wait_while_live(_data_root(), what="ревизия ядер",
+                                     cap=night_wait_cap()):
+            if live_gate.night_is_over():
+                out["stopped"] = True
+                break
         try:
             ab = nli.entail_prob(a["repr"], b["repr"])
             ba = nli.entail_prob(b["repr"], a["repr"])
