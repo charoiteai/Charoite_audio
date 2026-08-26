@@ -31,7 +31,6 @@ import contextlib
 import ctypes
 import dataclasses
 import datetime as dt
-import fcntl
 import functools
 import hashlib
 import io
@@ -41,7 +40,6 @@ import pathlib
 import shutil
 import subprocess
 import sys
-import time
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
@@ -54,6 +52,7 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 
 import charoite_paths  # noqa: E402
 import cloud  # noqa: E402
+import file_locks  # noqa: E402
 import graph_updater  # noqa: E402
 import privacy  # noqa: E402
 
@@ -112,7 +111,11 @@ def may_write(path: pathlib.Path, graph: pathlib.Path) -> bool:
     if any(part.startswith(".") for part in rel.parts):
         return False
     as_posix = rel.as_posix()
-    return not any(as_posix.startswith(p) for p in PROTECTED_DIRS)
+    # Граница сегмента обязательна: «Встречи-архив-2023/» и
+    # «Встречи-архив.md» — не защищённая папка, а голый startswith объявлял
+    # их ею и откатывал законную правку в карантин (аудит облака, DS M3).
+    return not any(as_posix == p.rstrip("/") or as_posix.startswith(p.rstrip("/") + "/")
+                   for p in PROTECTED_DIRS)
 
 
 def author_section_changed(before: str, after: str) -> bool:
@@ -212,8 +215,17 @@ def graph_files(graph: pathlib.Path):
         yield p
 
 
-def deny_paths(graph: pathlib.Path) -> list[tuple[str, bool]]:
-    """Что закрыть для записи правилами CLI: (относительный путь, каталог?).
+def deny_paths(graph: pathlib.Path, *,
+               symlinks_only: bool = False) -> list[tuple[str, bool]]:
+    """Что закрыть правилами CLI: (относительный путь, каталог?).
+
+    `symlinks_only=True` — только симлинки: им закрывают и ЧТЕНИЕ, потому
+    что цель лежит вне графа, а инъекция из стенограммы попросит именно
+    такой путь. Живая проверка 26.08 (claude 2.x): CLI сам резолвит симлинк
+    и под `dontAsk` отклоняет чтение наружу даже с `Read(/**)` — правило
+    ниже второй пояс, чтобы граница не держалась на одном лишь поведении
+    внешнего CLI (аудит облака 26.08, DS I1: находка не воспроизвелась,
+    страховка осталась).
 
     Защищённые папки; каждый скрытый каталог и файл (внутрь скрытого
     каталога не спускаемся — правило с `/**` закрывает его целиком); каждый
@@ -221,7 +233,7 @@ def deny_paths(graph: pathlib.Path) -> list[tuple[str, bool]]:
     его содержимого не видит, а `Edit(/**)` записать туда позволял (круг-1
     по PR #381, Codex Critical).
     """
-    out = [(d, True) for d in PROTECTED_DIRS]
+    out = [] if symlinks_only else [(d, True) for d in PROTECTED_DIRS]
     root = graph.resolve()
     unreadable: list[str] = []
     for dirpath, dirnames, filenames in os.walk(graph, onerror=lambda e: unreadable.append(str(e))):
@@ -234,13 +246,16 @@ def deny_paths(graph: pathlib.Path) -> list[tuple[str, bool]]:
         keep = []
         for d in sorted(dirnames):
             rel = rel_base / d
-            if d.startswith(".") or (base / d).is_symlink():
-                out.append((rel.as_posix(), True))     # и не спускаемся внутрь
+            is_link = (base / d).is_symlink()
+            if d.startswith(".") or is_link:
+                if is_link or not symlinks_only:
+                    out.append((rel.as_posix(), True))  # и не спускаемся внутрь
             else:
                 keep.append(d)
         dirnames[:] = keep
         for f in sorted(filenames):
-            if f.startswith(".") or (base / f).is_symlink():
+            is_link = (base / f).is_symlink()
+            if (f.startswith(".") or is_link) and (is_link or not symlinks_only):
                 out.append(((rel_base / f).as_posix(), False))
     if unreadable:
         # Нечитаемый подкаталог — неполный список запретов И неполный снимок
@@ -403,44 +418,22 @@ def rotate_quarantine(root: pathlib.Path, keep: int = QUARANTINE_KEEP,
         shutil.rmtree(stale, ignore_errors=True)
 
 
-@contextlib.contextmanager
 def graph_lock(graph: pathlib.Path, wait: float | None = None):
-    """Один воркер на граф: от снимка до ротации.
+    """Замок графа для этого разбора — общий с ночной ревизией досье.
 
-    Без замка два разбора одного графа (встречи ближе TIMEOUT) ротировали
-    снимки друг друга: второй оставался без копии и пропускал сверку, то
-    есть любые правки проходили без проверки (Codex, Critical 22.08).
-    flock на файле рядом со снимками — вне графа, вне iCloud; закрытие
-    дескриптора снимает замок и при аварийном выходе. Даёт True, если замок
-    взят, False — если за `wait` секунд сосед не освободил граф.
+    Реализация переехала в src/file_locks.py: тот же `cloud.lock` берёт
+    и nightly_dossier_review, иначе два пишущих контура сверяют правки
+    друг друга (аудит облака 26.08, GLM I3). Здесь остаётся адрес
+    каталога снимков этого графа и наш дефолт ожидания.
     """
     wait = LOCK_WAIT if wait is None else wait   # константу можно подменить в тестах
     try:
         base = charoite_paths.secure_dir(backup_root(graph).parent)
-        fd = os.open(base / "cloud.lock", os.O_RDWR | os.O_CREAT, 0o600)
     except OSError as e:
         # нет права на каталог данных — как и без бэкапа: только чтение
         print(f"замок графа не взять ({e}) — работаю на чтение")
-        yield False
-        return
-    try:
-        deadline = time.monotonic() + wait
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:        # занято соседом — ждём
-                if time.monotonic() >= deadline:
-                    yield False
-                    return
-                time.sleep(min(LOCK_POLL, max(0.0, deadline - time.monotonic())))
-            except OSError as e:           # ENOLCK и прочее — не «занято»
-                print(f"замок графа не взять ({e}) — работаю на чтение")
-                yield False
-                return
-        yield True
-    finally:
-        os.close(fd)
+        return contextlib.nullcontext(False)
+    return file_locks.graph_lock(base, wait, poll=LOCK_POLL)
 
 
 @dataclasses.dataclass
@@ -643,7 +636,11 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     # сосед мог бы принять его файлы за правки облака (круг-1 по #381).
     deliver = graph_available
     with contextlib.ExitStack() as stack:
-        if may_edit and not stack.enter_context(graph_lock(graph)):
+        # Замок нужен ВСЕГДА, когда мы пишем в граф. Доставка ревизии пишет
+        # в защищённые папки и при may_edit=False (cloud_edit_graph
+        # выключен) — без замка сосед-воркер видел эти файлы как правку
+        # облака и убирал в карантин (аудит облака, DS M4).
+        if (may_edit or deliver) and not stack.enter_context(graph_lock(graph)):
             print(f"граф занят другим разбором дольше {LOCK_WAIT // 60} мин — "
                   "работаю на чтение")
             may_edit = deliver = False
@@ -667,7 +664,15 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         print("граф исчез, пока ждали замок — работаю только текстом")
         graph_available = may_edit = deliver = False
         unlock()
-    before, backup, denied = {}, None, []
+    before, backup, denied, links = {}, None, [], []
+    if graph_available:
+        # Симлинки закрываем для ЧТЕНИЯ в любом режиме: без правки графа
+        # deny-правил не было вовсе (аудит облака 26.08). Нечитаемый угол
+        # графа здесь не авария: правку он и так запретит ниже.
+        try:
+            links = deny_paths(graph, symlinks_only=True)
+        except OSError as e:
+            print(f"симлинки графа не перечислить ({e}) — правило чтения не ставлю")
     if may_edit:
         try:
             denied = deny_paths(graph)
@@ -699,7 +704,8 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     cmd = graph_updater.cloud_enrich_command(
         cfg, claude_bin=cloud.claude_bin(),
         prompt=prompt, model=cloud.model(cfg, "cloud_model"), may_edit=may_edit,
-        graph_available=graph_available, deny_paths=denied)
+        graph_available=graph_available, deny_paths=denied,
+        symlink_paths=links)
 
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
     # Прокси из settings.json — иначе из GUI-запуска без shell-окружения
@@ -731,6 +737,14 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                                   timeout=TIMEOUT).returncode
         except subprocess.TimeoutExpired:
             lf.write(f"[cloud-review] таймаут {TIMEOUT}с — разбор прерван\n")
+            code = -1
+        except OSError as e:
+            # CLI не установлен/PATH пуст/нет прав: ENOENT улетал наверх МИМО
+            # finally со сверкой и ротацией — снимок оставался сиротой, лог
+            # обрывался на первой строке, stderr воркера уходил в DEVNULL, и
+            # встреча просто оставалась без ревизии без единого следа
+            # (аудит облака 26.08, DS I2 + GLM I2).
+            lf.write(f"[cloud-review] claude не запустился ({e})\n")
             code = -1
 
     ok = published = checked = False

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
 import datetime as dt
 import os
 import pathlib
@@ -35,8 +36,10 @@ import sys
 CODE = pathlib.Path(__file__).resolve().parent.parent
 ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 sys.path.insert(0, str(CODE / "src"))
+import charoite_paths  # noqa: E402
 import cloud  # noqa: E402
 import dossier  # noqa: E402
+import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import live_gate  # noqa: E402
 import tier3  # noqa: E402
@@ -65,6 +68,11 @@ _PROTECTED_RE = re.compile(r"(?m)^#{1,6}\s*(?:Правки автора|Исто
 _SOURCES_RE = re.compile(r"(?m)^#{1,6}\s*Источники\s*$")
 _MANUAL_RE = re.compile(r"(?m)^#{1,6}\s*Правки автора\s*$")
 _HEADING_RE = re.compile(r"(?m)^\s*#.*$")
+
+
+# Сколько ждать чужой разбор встречи, прежде чем работать без правок:
+# ночь под потолком, дольше стоять смысла нет.
+LOCK_WAIT = 10 * 60
 
 
 def strip_protected(body: str) -> str:
@@ -307,8 +315,38 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
     # Штамп с секундами: два прогона за день (ручной поверх ночного) иначе
     # клали бэкап в один каталог, и копия до первого прогона терялась.
     stamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    done, notes, applied, rejected, failed = 0, [], [], [], []
 
+    with contextlib.ExitStack() as stack:
+        if may_edit:
+            # Замок графа общий с разбором встречи (cloud_review): без него
+            # правки этой ревизии попадали в чужую сверку и уезжали в
+            # карантин, а прогон отчитывался «✓ применены» (аудит облака
+            # 26.08, GLM I3). Ждём недолго: ночь под потолком; не дождались —
+            # работаем как при выключенной записи: отчёт-рекомендации.
+            # secure_dir — как у соседа: каталог данных может ещё не
+            # существовать, а без него os.open даёт ENOENT, и замок молча
+            # «не берётся» (поймано тестом ревизии досье).
+            try:
+                lock_dir = charoite_paths.secure_dir(
+                    charoite_paths.graph_backups(
+                        graph, "cloud_backup", root=ROOT).parent)
+                taken = stack.enter_context(
+                    file_locks.graph_lock(lock_dir, LOCK_WAIT))
+            except OSError as e:
+                print(f"  замок графа не взять ({e}) — правки не пишу")
+                taken = False
+            if not taken:
+                print(f"  граф занят разбором встречи дольше "
+                      f"{int(LOCK_WAIT // 60)} мин — правки не пишу, "
+                      f"только отчёт")
+                may_edit = False
+        return _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg,
+                            dry=dry, limit=limit, may_edit=may_edit)
+
+
+def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
+                 dry: bool, limit: int, may_edit: bool) -> int:
+    done, notes, applied, rejected, failed = 0, [], [], [], []
     for path in fresh[:limit]:
         theme = path.stem
         members = cl[theme]
