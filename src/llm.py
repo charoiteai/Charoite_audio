@@ -95,6 +95,9 @@ CLOUD_BUSY_WAIT = 5.0
 CLOUD_TIMEOUT = (5.0, 45.0)
 #: Сколько ждём ПЕРВЫЙ токен, прежде чем считать шлюз молчащим.
 CLOUD_FIRST_TOKEN = 30.0
+#: Во сколько раз терпеливее к шлюзу, который шлёт keepalive: он
+#: думает над промптом, а не завис.
+ACTIVE_FACTOR = 4.0
 
 
 def cloud_key(cfg: dict) -> str:
@@ -511,16 +514,9 @@ class LLM:
         # Живая подсказка не должна молчать полминуты (круг-1 DS, Minor).
         wait = min(busy_wait, CLOUD_BUSY_WAIT) if self.fallback_local else busy_wait
         try:
-            # Общий дедлайн до ПЕРВОГО токена. Read-таймаут его не заменяет:
-            # SSE-keepalive («: keepalive») обнуляет таймаут сокета, и шлюз,
-            # который принял запрос и льёт пустые строки, держал бы подсказку
-            # бесконечно — а вместе с ней и слот подсказок (круг-2 GLM, I2).
-            deadline = time.monotonic() + CLOUD_FIRST_TOKEN
             for chunk in self._sse(f"{self.base}/chat/completions", payload, wait,
-                                   timeout=CLOUD_TIMEOUT):
-                if not emitted and time.monotonic() > deadline:
-                    raise self._fail(200, f"шлюз молчит дольше "
-                                          f"{int(CLOUD_FIRST_TOKEN)} с")
+                                   timeout=CLOUD_TIMEOUT,
+                                   first_token=CLOUD_FIRST_TOKEN):
                 emitted = True
                 yield chunk
             return
@@ -531,7 +527,10 @@ class LLM:
             # (круг-2 GLM, I1). Отказ доступа (4xx) по-прежнему громкий.
             if emitted or (e.status != 200 and e.status < 500):
                 raise
-            reason = f"шлюз ответил {e.status}"
+            # detail уже без ключа (_fail) — но именно он объясняет,
+            # почему ушли на локальную: «Insufficient balance» иначе
+            # терялся молча (круг-3 DS, I2).
+            reason = f"шлюз ответил {e.status}: {e.detail[:120]}"
         except requests.RequestException as e:
             if emitted:
                 raise
@@ -563,8 +562,24 @@ class LLM:
         yield from self._sse(f"{self.base}/v1/chat/completions", payload, busy_wait)
 
     def _sse(self, url: str, payload: dict, busy_wait: float,
-             timeout: float | tuple = 300) -> Iterator[str]:
-        """Разбор SSE-ответа OpenAI-совместимого сервера. Общий для mlx и облака."""
+             timeout: float | tuple = 300,
+             first_token: float | None = None) -> Iterator[str]:
+        """Разбор SSE-ответа OpenAI-совместимого сервера. Общий для mlx и облака.
+
+        `first_token` — сколько ждём ПЕРВЫЙ содержательный чанк. Проверять это
+        снаружи бесполезно: строки `: keepalive` и пустые дельты уходят через
+        `continue`, наружу управление не возвращается, а read-таймаут сокета
+        обнуляется каждым пришедшим байтом — шлюз, который «жив и молчит»,
+        держал бы подсказку и слот вечно (круг-3 DS, I1).
+
+        Тишина и активность считаются по-разному: пока идёт keepalive, шлюз
+        скорее думает над длинным промптом, и рвать его на тридцатой секунде
+        значит молча подменить модель локальной (круг-3 DS, I3).
+        """
+        silence = first_token
+        active = first_token * ACTIVE_FACTOR if first_token else None
+        started = time.monotonic()
+        last_byte = started
         with self._open_stream(url, payload, busy_wait, timeout=timeout) as r:
             # SSE: полезная нагрузка ТОЛЬКО в строках «data: …», терминатор
             # «data: [DONE]». Всё остальное пропускаем по спецификации: во
@@ -572,6 +587,17 @@ class LLM:
             # 1/1» — живой smoke 15.08 упал ровно на такой строке.
             done = False
             for line in r.iter_lines():
+                now = time.monotonic()
+                if line:
+                    last_byte = now
+                if silence is not None:
+                    quiet = now - last_byte
+                    # «совсем молчит» и «шлёт keepalive, но не отвечает» —
+                    # разные беды с разным терпением
+                    limit = silence if quiet >= silence else active
+                    if now - started > limit:
+                        raise self._fail(200, f"шлюз не отдал ни одного токена "
+                                              f"за {int(now - started)} с")
                 if not line or not line.startswith(b"data: "):
                     continue
                 line = line[6:]
@@ -584,6 +610,7 @@ class LLM:
                 chunk = (((data.get("choices") or [{}])[0].get("delta") or {})
                          .get("content") or "")
                 if chunk:
+                    silence = active = None      # ответ пошёл — дедлайн снят
                     yield chunk
             if not done:
                 raise self._fail(r.status_code, "стрим оборван без завершения")

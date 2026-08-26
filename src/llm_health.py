@@ -72,7 +72,7 @@ def _base_url(cfg: dict) -> str:
     engine = privacy.llm_engine(cfg)
     if engine == "mlx-server":
         return privacy.mlx_base_url(cfg)
-    if engine == "cloud":
+    if engine == "cloud" and privacy.cloud_engine_enabled(cfg):
         return privacy.cloud_llm_url(cfg)
     return privacy.llm_base_url(cfg)
 
@@ -106,7 +106,7 @@ def probe(cfg: dict, timeout: float = PROBE_TIMEOUT) -> bool | str:
     BUSY — сервер жив, но модель занята (503/429): не чинить, а подождать.
     """
     try:
-        if privacy.llm_engine(cfg) == "cloud" and privacy.cloud_engine_enabled(cfg):
+        if privacy.cloud_engine_active(cfg):
             # Облачный шлюз пробуем самым дешёвым запросом. Ключ читается тем
             # же путём, что в llm.py; нет ключа или адреса — это не «модель
             # встала», а неверная настройка: чинить перезапуском нечего.
@@ -307,7 +307,7 @@ def ensure_alive(cfg: dict, log: Callable[[str], None] = print,
     state = probe(cfg)
     if state is True:
         return True
-    if state == BUSY and privacy.llm_engine(cfg) == "cloud":
+    if state == BUSY and privacy.cloud_engine_active(cfg):
         # 429/503 шлюза — это лимит или очередь на чужой стороне, а не
         # занятая своя модель: ждать её освобождения 180 с бессмысленно,
         # у вызова есть ретраи и локальный запас (круг-2 DS, I3).
@@ -327,7 +327,7 @@ def ensure_alive(cfg: dict, log: Callable[[str], None] = print,
         else:
             log(f"LLM всё ещё занята после {int(wait)} с — иду в очередь за ней")
             return True
-    if privacy.llm_engine(cfg) == "cloud":
+    if privacy.cloud_engine_active(cfg):
         # Облако не «встало» — оно либо занято, либо недоступно сию секунду.
         # Блокировать из-за пробы весь разбор встречи нельзя: у самого вызова
         # есть и ретраи, и запас на локальной модели, а «граф не обновлён»

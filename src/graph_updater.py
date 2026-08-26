@@ -304,7 +304,7 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
     except LLMHTTPError as e:
         # Совет зависит от движка: «ollama pull» на облачной установке ведёт
         # качать 20 ГБ, от которых облако и избавляет (круг-2 DS, M2).
-        cloud = privacy.llm_engine(cfg) == "cloud"
+        cloud = privacy.cloud_engine_active(cfg)
         who = "шлюз" if cloud else "Ollama"
         if e.status in (429, 502, 503):
             print(f"граф: {'облако недоступно или лимит' if cloud else 'модель занята'} "

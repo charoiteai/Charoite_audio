@@ -210,3 +210,82 @@ class _NoResp:
     status_code = 500
 
     def json(self): return {}
+
+
+def _sse_lines(*lines):
+    """Ответ шлюза, каким его видит _sse."""
+
+    class _R:
+        status_code = 200
+
+        def iter_lines(self):
+            yield from lines
+
+        def __enter__(self): return self
+
+        def __exit__(self, *a): return False
+
+    return _R()
+
+
+def test_silent_gateway_is_cut_off_but_a_thinking_one_is_not(tmp_path, monkeypatch):
+    """Тишина рвётся быстро, keepalive — терпится дольше.
+
+    Проверять дедлайн снаружи бесполезно: keepalive-строки уходят через
+    continue, наружу управление не возвращается (круг-3 DS, I1), а рвать
+    думающий шлюз на тридцатой секунде — молча подменить модель (I3).
+    """
+    client = llm.LLM(_with_key(tmp_path, _cfg()))
+    clock = {"now": 0.0}
+    monkeypatch.setattr(llm.time, "monotonic", lambda: clock["now"])
+
+    def silent(*_a, **_kw):
+        for _ in range(5):
+            clock["now"] += 10          # ни байта
+            yield b""
+
+    monkeypatch.setattr(client, "_open_stream", lambda *a, **kw: _sse_lines(*silent()))
+    with pytest.raises(llm.LLMHTTPError) as err:
+        list(client._sse("u", {}, 1.0, first_token=30.0))
+    assert err.value.status == 200 and "ни одного токена" in err.value.detail
+
+    clock["now"] = 0.0
+    keepalive = ([b": keepalive"] * 5
+                 + [b'data: {"choices":[{"delta":{"content":"ok"}}]}', b"data: [DONE]"])
+
+    def ticking():
+        for line in keepalive:
+            clock["now"] += 10          # активность есть, ответа пока нет
+            yield line
+
+    monkeypatch.setattr(client, "_open_stream", lambda *a, **kw: _sse_lines(*ticking()))
+    assert "".join(client._sse("u", {}, 1.0, first_token=30.0)) == "ok", \
+        "думающий шлюз оборван раньше времени"
+
+
+def test_fallback_reason_carries_the_gateway_text(tmp_path, monkeypatch):
+    """«Insufficient balance» не должен теряться при уходе на локальную."""
+    client = llm.LLM(_with_key(tmp_path, _cfg()))
+
+    def refuse(*_a, **_kw):
+        yield from ()
+        raise client._fail(200, "Your account balance is insufficient")
+
+    said = []
+    monkeypatch.setattr(client, "_sse", refuse)
+    monkeypatch.setattr(llm, "LLM", lambda cfg: _LocalStub())
+    monkeypatch.setattr(llm.sys, "stderr", type("S", (), {
+        "write": lambda self, t: said.append(t), "flush": lambda self: None})())
+    list(client._stream_cloud([{"role": "user", "content": "?"}],
+                              num_predict=None, temperature=None, busy_wait=1.0))
+    assert any("insufficient" in t.lower() for t in said), said
+
+
+def test_effective_cloud_needs_both_keys():
+    """Диагностика обязана спрашивать ту же пару, что и клиент."""
+    assert privacy.cloud_engine_active(
+        {"llm": {"engine": "cloud"}, "sufler": {"cloud_engine": True}}, {}) is True
+    assert privacy.cloud_engine_active(
+        {"llm": {"engine": "cloud"}, "sufler": {}}, {}) is False
+    assert privacy.cloud_engine_active(
+        {"llm": {}, "sufler": {"cloud_engine": True}}, {}) is False

@@ -204,6 +204,16 @@ code path is shared.
   longer blocks the post-meeting pass — the call itself has retries and a net.
   Otherwise, on a cloud install (where the local Ollama only holds bge-m3) the
   restart would kill the embedder and no meeting would ever reach the graph.
+  Diagnostics, the probe and the client all ask the same pair of keys: an
+  address without permission means local work, and the doctor must fix the
+  local model rather than suggest checking a gateway.
+- **A silent gateway is told apart from a thinking one.** The
+  first-token deadline lives inside the stream parser: it cannot be checked
+  from outside, because keepalive lines never return control and the socket
+  timeout resets on every byte. Total silence is cut off in half a minute,
+  while a keepalive stream is tolerated four times longer — a gateway sending
+  signs of life is usually thinking over a long prompt, and cutting it off
+  would silently swap the model for the local one.
 - **The key never reaches the screen.** A 401 body echoes the key back, and
   error bodies travel into the hint card, the transcript file and MCP replies —
   so the key is stripped where a body becomes an exception.

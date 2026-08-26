@@ -69,7 +69,7 @@ def llm_url(cfg: dict) -> str | None:
         return None
     try:
         engine = privacy.llm_engine(cfg)
-        if engine == "cloud":
+        if privacy.cloud_engine_active(cfg):
             # На облачной установке локальной чат-модели может не быть вовсе:
             # проверять адрес Ollama и советовать «ollama pull» — вредный
             # совет, он ведёт перезапускать сервис, который держит эмбеддер
@@ -139,7 +139,7 @@ def check_ollama(cfg: dict) -> None:
     # облачный режим и должен был избавить (круг-2: GLM I5, DS M1).
     sys.path.insert(0, str(CODE / "src"))
     import privacy as _privacy
-    cloud = _privacy.llm_engine(cfg) == "cloud"
+    cloud = _privacy.cloud_engine_active(cfg)
     base = _privacy.llm_base_url(cfg) if cloud else llm_url(cfg)
     if base is None:
         return
@@ -246,7 +246,7 @@ def check_llm_alive(cfg: dict) -> None:
         return
     sys.path.insert(0, str(CODE / "src"))
     import privacy as _privacy
-    if _privacy.llm_engine(cfg) == "cloud":
+    if _privacy.cloud_engine_active(cfg):
         line(FAIL, "облачный шлюз не отвечает",
              "проверьте сеть, llm.cloud_base_url, имя модели и ключ в "
              "llm.cloud_key_file; локальную Ollama перезапускать не нужно — "
