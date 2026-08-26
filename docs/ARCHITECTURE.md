@@ -105,6 +105,35 @@ of that post-mortem:
   cases came from DeepSeek rounds on #433: first on the meeting card,
   then on the error badge).
 
+### The cloud layer: what each loop pays
+
+Four loops call the cloud through the headless CLI: the in-conversation
+answer, the post-meeting review, the nightly dossier revision and the
+nightly cores revision. Their shared rules live in `src/cloud.py` (model
+per step, call isolation, proxy); permission comes from `src/privacy.py`.
+An audit on 26.08 (two independent reviewers) confirmed the frame and
+closed four seams:
+
+- **A CLI error is not an answer.** The live loop took stdout and, when
+  empty, substituted stderr: "Unknown model" and "403" reached the
+  meeting canvas and the audit trail as cloud answers. The return code is
+  now checked, a failure goes to the status as an error and never into
+  the audit.
+- **The worker no longer dies silently.** A missing `claude` raised
+  ENOENT past `finally`: the graph snapshot was orphaned, the log stopped
+  after its first line, and the meeting simply never got a review. That
+  is now an ordinary failure path with the reason written down.
+- **One lock for everyone who writes the graph.** `cloud.lock` was taken
+  only by the meeting review; the nightly dossier revision edited the
+  same files without it, and the neighbour's boundary check quarantined
+  its edits while the run reported "✓ applied". The lock moved to
+  `src/file_locks.py` and is shared.
+- **Symlinks are denied for reading.** A symlink's target lives outside
+  the graph, and `Read(/**)` covers it lexically. A live run showed the
+  CLI resolves the path itself and refuses to read outward — but the
+  read-only mode had no deny rules at all, so the boundary rested solely
+  on an external program's behaviour.
+
 ## Diarization: two passes
 
 1. **Live**: each chunk is embedded (ERes2Net, 512-dim) → a voice tracker

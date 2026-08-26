@@ -10,7 +10,10 @@ shared/exclusive, blocking/nonblocking, таймауты, что писать в
 """
 from __future__ import annotations
 
+import contextlib
 import fcntl
+import os
+import pathlib
 import time
 
 
@@ -65,3 +68,50 @@ def acquire_exclusive(f, *, attempts: int = 5, pause: float = 0.2,
         except OSError:
             return False
     return False
+
+
+GRAPH_LOCK_POLL = 5.0
+
+
+@contextlib.contextmanager
+def graph_lock(lock_dir: pathlib.Path, wait: float, *,
+               poll: float = GRAPH_LOCK_POLL,
+               log=print, sleep=time.sleep, now=time.monotonic):
+    """Один пишущий в граф за раз: `cloud.lock` рядом со снимками.
+
+    Замок делят ВСЕ контуры, пишущие в файлы графа: разбор встречи
+    (cloud_review) и ночная ревизия досье. Пока он жил в одном скрипте,
+    ночная ревизия правила досье без него, и сверка соседа принимала её
+    правки за правки облака и убирала их в карантин, отчитавшись при этом
+    «✓ применены» (аудит облака 26.08, GLM I3).
+
+    Даёт True, если замок взят; False — если за `wait` секунд сосед не
+    освободил граф, каталог недоступен или ФС не умеет flock. False — это
+    «работай на чтение», а не авария: судить о занятости по ошибке ФС
+    нельзя (та же логика, что в held_by_someone).
+    """
+    try:
+        fd = os.open(pathlib.Path(lock_dir) / "cloud.lock",
+                     os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as e:
+        log(f"замок графа не взять ({e}) — работаю на чтение")
+        yield False
+        return
+    try:
+        deadline = now() + wait
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:        # занято соседом — ждём
+                if now() >= deadline:
+                    yield False
+                    return
+                sleep(min(poll, max(0.0, deadline - now())))
+            except OSError as e:           # ENOLCK и прочее — не «занято»
+                log(f"замок графа не взять ({e}) — работаю на чтение")
+                yield False
+                return
+        yield True
+    finally:
+        os.close(fd)

@@ -34,7 +34,10 @@ from config_loader import load_user_or_example  # noqa: E402
 
 
 def _cfg() -> dict:
-    return load_user_or_example(ROOT)
+    # `or {}`: пустой/битый config.yaml даёт None, и первый же гейт
+    # приватности падал с AttributeError, роняя ночной шаг вместо прохода
+    # с дефолтами — у соседнего контура защита была (аудит облака, DS M5).
+    return load_user_or_example(ROOT) or {}
 
 
 
