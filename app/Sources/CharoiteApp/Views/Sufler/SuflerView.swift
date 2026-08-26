@@ -234,6 +234,28 @@ struct SuflerView: View {
     /// «Failed», и сообщение об оборванной записи показывалось мелким серым
     /// текстом в одну строку — ровно то, чего этот код должен избегать.
     private var displayedStatus: String {
+        if sufler.isRunning {
+            // Подтверждение Stop требует немедленного второго действия.
+            if sufler.stopConfirmPending { return sufler.status }
+            // Отказ диска важнее вспомогательного слоя; capture/restart error
+            // важнее нагрузки; lag/stall важнее обычной служебной строки.
+            if sufler.pipelineStatusIsCritical,
+               let pipelineStatus = sufler.pipelineStatusText {
+                // Демон шлёт error-статус с ПРИЧИНОЙ отказа («ЗАПИСЬ НА ДИСК
+                // ВЫКЛЮЧЕНА: <исключение>»); генерик-баннер поверх него
+                // прятал её до конца встречи (круг-1 GLM, I2). Пока причина
+                // на экране — показываем её; затёрло обычным статусом —
+                // возвращается персистентный баннер. Уступаем ТОЛЬКО ошибке
+                // самого демона: Swift-`fail()` (таймаут подсказки) при
+                // мёртвом STT больше никогда не сменится статусом и прятал
+                // бы критикал до конца встречи (круг-2 DS, I1).
+                return sufler.statusErrorFromDaemon ? sufler.status : pipelineStatus
+            }
+            if sufler.statusIsError { return sufler.status }
+            if let pipelineStatus = sufler.pipelineStatusText {
+                return pipelineStatus
+            }
+        }
         if !sufler.isRunning, let processingStatus = processing.statusText {
             return processingStatus
         }
@@ -241,10 +263,23 @@ struct SuflerView: View {
     }
 
     private var statusIsProblem: Bool {
+        if sufler.isRunning {
+            if sufler.stopConfirmPending { return false }
+            return sufler.pipelineStatusText != nil || sufler.statusIsError
+        }
         if !sufler.isRunning, processing.statusText != nil {
             return processing.isError
         }
         return sufler.statusIsError
+    }
+
+    private var statusColor: Color {
+        if sufler.isRunning {
+            if sufler.stopConfirmPending { return .secondary }
+            if sufler.pipelineStatusIsCritical || sufler.statusIsError { return .red }
+            if sufler.pipelineStatusText != nil { return Theme.warning }
+        }
+        return statusIsProblem ? .red : .secondary
     }
 
     /// Откуда панель берёт текст прямо сейчас.
@@ -461,7 +496,7 @@ struct SuflerView: View {
             // сообщение «нажмите ещё раз» вдобавок обрезалось на полуслове.
             Text(displayedStatus)
                 .font(statusIsProblem ? .caption.weight(.medium) : .caption)
-                .foregroundStyle(statusIsProblem ? Color.red : Color.secondary)
+                .foregroundStyle(statusColor)
                 .lineLimit(statusIsProblem ? 2 : 1)
                 .fixedSize(horizontal: false, vertical: statusIsProblem)
                 .textSelection(.enabled)

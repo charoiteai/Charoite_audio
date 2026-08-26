@@ -3,6 +3,8 @@
 События:  {"type":"status","text":...} | {"type":"transcript","ts":"HH:MM:SS","text":...}
           {"type":"stt_progress","backlog_seconds":...} — пульс именно STT,
           отдельно от heartbeat главного потока
+          {"type":"hb","stt_stage":...,"stt_stalled":bool,
+          "recording_ok":bool} — main-thread probe; не является прогрессом STT
           {"type":"thesis","text":...}  | {"type":"hint","text":...,"manual":bool}
           {"type":"hint_done","manual":bool} — manual: стрим запрошен человеком
           (вопрос/⌘⏎/протокол), не авто-циклом; панель по нему решает, что
@@ -2600,8 +2602,24 @@ def main():
             if stt_runtime.heartbeat_due(now=now_mono, last=last_hb, every=MAIN_HB_EVERY):
                 last_hb = now_mono
                 stage, stage_age = stt_stage_snapshot()
-                emit({"type": "hb", "stt_stage": stage,
-                      "stt_stage_age_seconds": round(stage_age, 1)})
+                hb_event = {"type": "hb", "stt_stage": stage,
+                            "stt_stage_age_seconds": round(stage_age, 1),
+                            # Отдельный verdict, чтобы Swift не заводил второй
+                            # порог и не расходился с stderr-диагностикой.
+                            "stt_stalled": stt_runtime.stage_is_stalled(
+                                stage_age_s=stage_age,
+                                threshold=STT_STALL_THRESHOLD)}
+                # О диске тоже судит сервер: recording_ok в stt_progress
+                # замерзает вместе с STT — ровно когда отказ диска важнее
+                # всего (круг-1 GLM, I1). Телеметрия не смеет ронять
+                # main-loop (круг-2 DS, M3): исключение — hb без поля,
+                # Swift терпит его по контракту совместимости.
+                try:
+                    hb_event["recording_ok"] = (
+                        hub.health_snapshot()["recording_ok"])
+                except Exception:  # noqa: BLE001
+                    pass
+                emit(hb_event)
                 # Сторож слоя авто-подсказок: умерший поток — перезапуск и
                 # честная строка человеку (класс утреннего краша stt_loop:
                 # 40 минут тишины без единого слова). Потолок — три

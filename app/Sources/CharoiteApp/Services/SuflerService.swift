@@ -47,10 +47,20 @@ final class SuflerService: ObservableObject {
     /// модели, а не угадываться по переводу.
     @Published var statusIsError = false
 
+    /// Ошибка от самого демона (`status` c `error: true`), не Swift-`fail()`:
+    /// только ей позволено заменять критикал на экране (круг-2 DS, I1).
+    @Published private(set) var statusErrorFromDaemon = false
+
+    /// Структурное здоровье живого конвейера. Обычные `status`-события его
+    /// не сбрасывают: сообщение про обновлённые минутки не имеет права скрыть
+    /// отказ записи на диск или продолжающееся отставание STT.
+    @Published private(set) var pipelineHealth = PipelineHealthMonitor()
+
     /// Ставит статус и помечает его как сообщение об отказе.
     func fail(_ text: String) {
         status = text
         statusIsError = true
+        statusErrorFromDaemon = false
     }
     @Published var lines: [TranscriptLine] = []
     @Published var hint = ""
@@ -279,12 +289,14 @@ final class SuflerService: ObservableObject {
         publishLifecycle()
         userStopped = false
         autostopReason = nil
+        pipelineHealth = PipelineHealthMonitor()
         // Автостоп извещает баннером того, кого нет у экрана. Разрешение
         // раньше запрашивал только календарь — у всех остальных единственный
         // канал оповещения молча не существовал (ревью 18.08 ×2).
         MeetingNotificationService.shared.requestAuthorization()
         status = L.t("Запускаю…", "Starting…", "启动中…")
         statusIsError = false
+        statusErrorFromDaemon = false
 
         // Статус TCC проверяем на каждый Start. Кэшировать сам факт проверки
         // нельзя: после отказа второе нажатие раньше запускало демон в тишине.
@@ -514,6 +526,7 @@ final class SuflerService: ObservableObject {
             lastEventAt = Date()
             lastSTTProgressAt = nil
             lastAudioInputAt = nil
+            pipelineHealth = PipelineHealthMonitor()
             lastTickWall = Date()
             lastTickUptime = ProcessInfo.processInfo.systemUptime
             watchdog?.invalidate()
@@ -557,6 +570,7 @@ final class SuflerService: ObservableObject {
         watchdog = nil
         lastSTTProgressAt = nil
         lastAudioInputAt = nil
+        pipelineHealth = PipelineHealthMonitor()
 
         // Штатный Stop уже перевёл gate в stopping. Только теперь, после
         // фактической смерти читателя, можно закрывать capture и разрешать
@@ -798,7 +812,13 @@ final class SuflerService: ObservableObject {
 
     private func noteSTTProgress(_ obj: [String: Any]) {
         let now = Date()
+        // Сам факт события доказывает жизнь STT даже при несовместимом новом
+        // поле телеметрии. Декодер снимка не вправе разоружить watchdog.
         lastSTTProgressAt = now
+        var nextHealth = pipelineHealth
+        if nextHealth.acceptProgress(obj) != nil {
+            pipelineHealth = nextHealth
+        }
         if discardNextInputAge {
             // тик сна уже перевзвёл якорь; стенной возраст этого события —
             // эхо сна, не смерть входа. Один пропуск: следующий stt_progress
@@ -809,6 +829,15 @@ final class SuflerService: ObservableObject {
             // Python присылает возраст последнего кадра, а не свои настенные
             // часы: смена часового пояса не превращается в ложное зависание.
             lastAudioInputAt = now.addingTimeInterval(-max(0, age))
+        }
+    }
+
+    private func noteHeartbeat(_ obj: [String: Any]) {
+        // Главный поток видит зависший native inference, но не является
+        // прогрессом STT: lastSTTProgressAt здесь намеренно не двигается.
+        var nextHealth = pipelineHealth
+        if nextHealth.acceptHeartbeat(obj) != nil {
+            pipelineHealth = nextHealth
         }
     }
 
@@ -824,12 +853,15 @@ final class SuflerService: ObservableObject {
             switch type {
             case "stt_progress":
                 noteSTTProgress(obj)
+            case "hb":
+                noteHeartbeat(obj)
             case "status":
                 status = text
                 // Признак сбоя приходит от демона (`error: true`), обычный статус
                 // его снимает: раньше флаг был липким — после одного таймаута
                 // все дальнейшие «⚡ отвечаю» и «минутки обновлены» шли красным
                 statusIsError = obj["error"] as? Bool ?? false
+                statusErrorFromDaemon = statusIsError
             case "transcript":
                 let spk = obj["speaker"] as? String ?? ""
                 let plain = obj["plain"] as? String ?? ""
