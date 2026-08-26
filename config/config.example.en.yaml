@@ -33,6 +33,23 @@ llm:
   # model it was started with (mlx_model, a HF repo name); small/fallback
   # collapse into it. Embeddings (bge-m3) stay on Ollama either way.
   # engine: ollama
+  # A third engine — cloud: the whole chat goes to an OpenAI-compatible
+  # gateway and the laptop stops holding a large model. It takes TWO keys:
+  # llm.engine: cloud here and sufler.cloud_engine: true below — an address
+  # without permission does nothing, and so does permission without an
+  # address. The gateway key never lives in the config: it is read from a
+  # separate file (cloud_key_file, mode 600). If the network drops, the local
+  # model answers unless cloud_fallback_local is off. Embeddings, NLI and STT
+  # stay local with any engine.
+  # cloud_base_url: https://api.example.com/v1
+  # cloud_model: deepseek-chat
+  # cloud_key_file: ~/.config/charoite/llm_key
+  # cloud_fallback_local: true
+  # Which local engine the net falls back to: ollama or mlx-server.
+  # Without the key mlx-server is chosen when mlx_model is set, otherwise
+  # ollama — a net in an empty Ollama would be dead for anyone whose local
+  # model lives on mlx_lm.server.
+  # cloud_fallback_engine: ollama
   # mlx_base_url: http://127.0.0.1:8080
   # mlx_model: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
   model: qwen3.6:35b-a3b             # main model (hints, summaries, names)
@@ -119,6 +136,7 @@ sufler:
   cloud_enrich: false     # post-meeting review by cloud Claude (needs claude CLI)
   cloud_model: claude-opus-5
   cloud_edit_graph: false
+  cloud_engine: false     # whole chat through the cloud gateway (see llm.engine: cloud)
   # ↑ LET THE CLOUD EDIT THE GRAPH (optional, off by default).
   # Without it Opus only writes a report and a human applies the fixes.
   # With it, Opus edits at night from its own findings: superseded decisions,

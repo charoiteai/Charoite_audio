@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import re
 import sys
 import threading
@@ -81,6 +82,48 @@ def parse_json_block(text: str) -> dict | None:
 # именем HF-репозитория — mlx_lm.server грузит модели из huggingface-кэша.
 DEFAULT_MLX_MODEL = "mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit"
 
+#: Где лежит ключ облачного шлюза. В конфиг его класть нельзя: config.yaml
+#: попадает в бэкапы, в скриншоты и в чужие руки, а ключ — это деньги и
+#: доступ. Отдельный файл с правами 600, как токен GitHub у релизов.
+DEFAULT_CLOUD_KEY_FILE = "~/.config/charoite/llm_key"
+
+#: Сколько ждём недоступный шлюз, прежде чем ответить локальной моделью.
+CLOUD_BUSY_WAIT = 5.0
+#: Таймаут САМОГО запроса к шлюзу (connect, read). Бюджет ретраев выше не
+#: помогает против шлюза, который принял соединение и молчит: один запрос с
+#: дефолтными 300 с держал бы живую подсказку пять минут (круг-2 DS, I2).
+CLOUD_TIMEOUT = (5.0, 45.0)
+#: Сколько ждём ПЕРВЫЙ токен, прежде чем считать шлюз молчащим.
+CLOUD_FIRST_TOKEN = 30.0
+#: Во сколько раз терпеливее к шлюзу, который шлёт keepalive: он
+#: думает над промптом, а не завис.
+ACTIVE_FACTOR = 4.0
+
+
+def cloud_key(cfg: dict) -> str:
+    """Ключ облачного шлюза из файла. Пусто — значит его нет.
+
+    Ключ НИКОГДА не логируется и не попадает в сообщения об ошибках: путь
+    к файлу назвать можно, содержимое — нет.
+    """
+    raw = str((cfg.get("llm") or {}).get("cloud_key_file") or DEFAULT_CLOUD_KEY_FILE)
+    path = pathlib.Path(raw).expanduser()
+    try:
+        key = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    try:
+        mode = path.stat().st_mode & 0o077
+    except OSError:
+        mode = 0
+    if mode:
+        # Не отказ: ключ уже лежит на диске, и молчаливо не работать хуже.
+        # Но сказать вслух обязаны — доки обещают 600 (круг-1 DS, Minor).
+        print(f"llm: {path} доступен не только владельцу (chmod 600 рекомендуется)",
+              file=sys.stderr, flush=True)
+    return key
+
+
 # Явный потолок ответа для mlx-server, когда вызывающий не задал num_predict.
 # У Ollama отсутствие num_predict означает «без потолка», а mlx_lm.server
 # молча применяет СВОЙ дефолт из аргументов запуска (обычно 512) — живой тред
@@ -125,7 +168,32 @@ class LLM:
         # У каждого движка свой адрес: у Ollama — llm.base_url (:11434),
         # у mlx_lm.server — llm.mlx_base_url (:8080). Оба под одной
         # privacy-дисциплиной loopback/allow_remote.
-        self.base = (privacy.mlx_base_url(cfg) if self.engine == "mlx-server"
+        # Облачный движок пускает не allow_remote, а свой тумблер: он
+        # отправляет наружу ВЕСЬ поток, а не отдельный кусок по случаю.
+        # Рубильник сильнее конфига — под ним падаем обратно на локальную
+        # модель, чтобы «запустить офлайн» оставалось одной переменной.
+        self.cloud_ready = False
+        if self.engine == "cloud":
+            if privacy.cloud_engine_enabled(cfg):
+                self.base = privacy.cloud_llm_url(cfg)
+                self.cloud_model = str(l.get("cloud_model") or "")
+                self._key = cloud_key(cfg)
+                if not self.cloud_model:
+                    raise RuntimeError(
+                        "llm.engine = cloud, но llm.cloud_model не задан")
+                if not self._key:
+                    raise RuntimeError(
+                        "llm.engine = cloud, но ключ не найден: положите его в "
+                        f"{(l.get('cloud_key_file') or DEFAULT_CLOUD_KEY_FILE)} "
+                        "(права 600)")
+                self.cloud_ready = True
+            else:
+                print("llm.engine = cloud, но sufler.cloud_engine не включён "
+                      "(или взведён рубильник) — работаю на локальной модели",
+                      file=sys.stderr, flush=True)
+                self.engine = "ollama"
+        self.base = (privacy.cloud_llm_url(cfg) if self.cloud_ready else
+                     privacy.mlx_base_url(cfg) if self.engine == "mlx-server"
                      else privacy.llm_base_url(cfg))
         self.mlx_model = str(l.get("mlx_model") or DEFAULT_MLX_MODEL)
         self.model = l["model"]
@@ -143,6 +211,15 @@ class LLM:
         if os.environ.get("CHAROITE_ONE_MODEL"):
             self.small = self.model
             self.fallback = self.model
+        # Локальный запас на случай, когда облачного шлюза нет: без него
+        # пропавшая сеть означает встречу без подсказок вовсе.
+        self.fallback_local = l.get("cloud_fallback_local", True) is not False
+        # На что падаем, когда шлюза нет. Жёсткий «ollama» бил мимо у тех, чей
+        # локальный движок — mlx_lm.server: в Ollama у них из чат-моделей никого,
+        # она держит только bge-m3 (круг-1, обе головы).
+        self.fallback_engine = str(l.get("cloud_fallback_engine") or "").strip().lower()
+        if self.fallback_engine not in ("ollama", "mlx-server"):
+            self.fallback_engine = "mlx-server" if l.get("mlx_model") else "ollama"
         self.temperature = float(l.get("temperature", 0.4))
         # num_ctx ЯВНО: без него Ollama грузит модель с контекстом из Modelfile
         # (qwen3.6 — 262144), KV-кэш раздувается и генерации медленнее в разы
@@ -218,6 +295,11 @@ class LLM:
                                         temperature=temperature,
                                         busy_wait=busy_wait)
             return
+        if self.cloud_ready:
+            yield from self._stream_cloud(messages, num_predict=num_predict,
+                                          temperature=temperature,
+                                          busy_wait=busy_wait)
+            return
         options: dict = {
             "temperature": self.temperature if temperature is None else temperature,
             "num_ctx": self.num_ctx,
@@ -242,7 +324,7 @@ class LLM:
                     # ошибка ПОСРЕДИ 200-стрима приходит строкой {"error": …}:
                     # без этой проверки поток заканчивался «нормально» пустым,
                     # и подсказка тихо не приходила (аудит 18.08)
-                    raise LLMHTTPError(r.status_code, str(data["error"]))
+                    raise self._fail(r.status_code, str(data["error"]))
                 chunk = data.get("message", {}).get("content", "")
                 if chunk:
                     yield chunk
@@ -253,16 +335,56 @@ class LLM:
                 # соединение закрылось без терминатора: сервер упал или сеть
                 # оборвалась. Усечённый ответ не выдаём за целый — минутки
                 # без хвоста встречи внешне неотличимы от готовых.
-                raise LLMHTTPError(r.status_code, "стрим оборван без завершения")
+                raise self._fail(r.status_code, "стрим оборван без завершения")
+
+    def _fail(self, status: int, detail: str) -> LLMHTTPError:
+        """ЕДИНСТВЕННЫЙ способ создать LLMHTTPError внутри клиента.
+
+        Круг-1 закрыл утечку ключа «в точке, где тело становится
+        исключением», но точек оказалось несколько, и круг-2 нашёл
+        пропущенную: ошибка внутри 200-стрима (`data: {"error": …}`) шла
+        мимо маскировки прямо в карточку подсказки и в файл `_hints.md`.
+        Заплатать третье место — значит ждать четвёртого, поэтому способ
+        один, и структурный тест следит, чтобы прямой `raise LLMHTTPError`
+        в этом классе больше не появлялся.
+        """
+        return LLMHTTPError(status, self._hide_key(detail))
+
+    def _hide_key(self, text: str) -> str:
+        """Убрать ключ из текста ошибки шлюза.
+
+        OpenAI-совместимые шлюзы возвращают его эхом: «Incorrect API key
+        provided: sk-…». Тело ответа доезжает до карточки подсказки, до файла
+        стенограммы и до ответа MCP-инструмента — то есть ключ оказался бы
+        записан на диск и показан на экране (круг-1 DS, Critical). Маскируем
+        в единственной точке, где тело превращается в исключение.
+        """
+        if not self.cloud_ready or not self._key:
+            return text
+        return text.replace(self._key, "***")
+
+    def _auth(self) -> dict:
+        """Именованные аргументы запроса: облаку — заголовок авторизации.
+
+        Для локальных движков возвращает ПУСТОЙ словарь, а не `headers=None`:
+        вызов `requests.post(url, json=…, timeout=…)` остаётся ровно таким,
+        каким был, — его форму пиннят существующие тесты, подменяющие post.
+        Новый словарь на каждый вызов: requests не должен получить ссылку на
+        общий объект, который кто-то дополнит и запишет в лог.
+        """
+        if not self.cloud_ready:
+            return {}
+        return {"headers": {"Authorization": f"Bearer {self._key}"}}
 
     def _open_stream(self, url: str, payload: dict, busy_wait: float,
-                     timeout: float = 300):
+                     timeout: float | tuple = 300):
         """POST со стримом; занятый сервер (503/429, отказ соединения) —
         повторяем с растущей паузой, пока не выйдем за busy_wait."""
         deadline = time.monotonic() + max(0.0, busy_wait)
         for n, delay in enumerate(BUSY_BACKOFF + (BUSY_BACKOFF[-1],) * 1000):
             try:
-                r = requests.post(url, json=payload, stream=True, timeout=timeout)
+                r = requests.post(url, json=payload, stream=True, timeout=timeout,
+                                  **self._auth())
             except requests.ConnectionError:
                 if time.monotonic() + delay > deadline:
                     raise
@@ -277,7 +399,7 @@ class LLM:
                 # ответ открыт как стрим; ошибка — в контракте модуля LLMHTTPError
                 detail = r.text[:500]
                 r.close()
-                raise LLMHTTPError(r.status_code, detail)
+                raise self._fail(r.status_code, detail)
             return r
         raise RuntimeError("unreachable")  # pragma: no cover
 
@@ -308,19 +430,174 @@ class LLM:
             payload["chat_template_kwargs"] = {"enable_thinking": bool(think)}
         return payload
 
+    def stream_messages(self, messages: list[dict], *, num_predict: int | None = None,
+                        temperature: float | None = None,
+                        busy_wait: float = BUSY_WAIT_LIVE) -> Iterator[str]:
+        """Стрим по готовым messages — путь для локального запаса облака.
+
+        stream() собирает messages из prompt+system; здесь они уже собраны,
+        и пересобирать их (теряя роли) ради одного вызова незачем.
+        """
+        if self.cloud_ready:
+            # Метод существует ради локального запаса облака; вызвать его на
+            # самом облачном клиенте — значит собрать ollama-протокол и
+            # отправить его шлюзу (круг-1 DS, Minor).
+            yield from self._stream_cloud(messages, num_predict=num_predict,
+                                          temperature=temperature, busy_wait=busy_wait)
+            return
+        if self.engine == "mlx-server":
+            yield from self._stream_mlx(messages, think=False, num_predict=num_predict,
+                                        temperature=temperature, busy_wait=busy_wait)
+            return
+        options: dict = {
+            "temperature": self.temperature if temperature is None else temperature,
+            "num_ctx": self.num_ctx,
+        }
+        if num_predict:
+            options["num_predict"] = num_predict
+        payload = {"model": self.resolve_model(), "messages": messages,
+                   "stream": True, "think": False, "keep_alive": "90m",
+                   "options": options}
+        with self._open_stream(f"{self.base}/api/chat", payload, busy_wait) as r:
+            for line in r.iter_lines():
+                if not line:
+                    continue
+                data = json.loads(line)
+                if data.get("error"):
+                    raise self._fail(r.status_code, str(data["error"]))
+                chunk = data.get("message", {}).get("content", "")
+                if chunk:
+                    yield chunk
+                if data.get("done"):
+                    return
+            raise self._fail(r.status_code, "стрим оборван без завершения")
+
+    def _cloud_payload(self, messages: list[dict], *, num_predict: int | None,
+                       temperature: float | None, stream: bool) -> dict:
+        """Тело запроса к облачному OpenAI-совместимому шлюзу.
+
+        Без qwen-специфики mlx-ветки: `chat_template_kwargs` понимает
+        mlx_lm.server, а чужой шлюз на неизвестное поле отвечает 400.
+        Модель одна — та, что названа в конфиге: лестница «основная →
+        малая» здесь не нужна, размер выбирается ценой запроса, а не
+        памятью машины.
+        """
+        payload: dict = {
+            "model": self.cloud_model,
+            "messages": messages,
+            "stream": stream,
+            "temperature": self.temperature if temperature is None else temperature,
+        }
+        if num_predict:
+            payload["max_tokens"] = num_predict
+        return payload
+
+    def _stream_cloud(self, messages: list[dict], *, num_predict: int | None,
+                      temperature: float | None, busy_wait: float) -> Iterator[str]:
+        """Стрим облачного шлюза с падением обратно на локальную модель.
+
+        Фолбэк разрешён СТРОГО до первого отданного токена: подсказка,
+        начатая облаком и продолженная локальной моделью, склеится в две
+        разные мысли — этим уже обжигались на mid-stream ретрае (#430).
+        Отсюда флаг `emitted`.
+
+        Что считаем поводом упасть на локальную: сеть, таймаут и 5xx —
+        то есть «шлюза сейчас нет». Ошибки 401/403/400 фолбэк НЕ ловит:
+        неверный ключ или кривой запрос должны быть громкими, иначе месяц
+        работаем локально и не знаем об этом.
+        """
+        emitted = False
+        payload = self._cloud_payload(messages, num_predict=num_predict,
+                                      temperature=temperature, stream=True)
+        # Ждать шлюз столько же, сколько локальный сервер, незачем: у локального
+        # «занято» проходит само, а недоступный шлюз лечится только запасом.
+        # Живая подсказка не должна молчать полминуты (круг-1 DS, Minor).
+        wait = min(busy_wait, CLOUD_BUSY_WAIT) if self.fallback_local else busy_wait
+        try:
+            for chunk in self._sse(f"{self.base}/chat/completions", payload, wait,
+                                   timeout=CLOUD_TIMEOUT,
+                                   first_token=CLOUD_FIRST_TOKEN):
+                emitted = True
+                yield chunk
+            return
+        except LLMHTTPError as e:
+            # 200 в этом исключении — не «успех»: так выглядит оборванный
+            # стрим, пустое тело и HTML вместо потока (WAF, страница квоты).
+            # Это главный вид «битого шлюза», и запас нужен именно здесь
+            # (круг-2 GLM, I1). Отказ доступа (4xx) по-прежнему громкий.
+            if emitted or (e.status != 200 and e.status < 500):
+                raise
+            # detail уже без ключа (_fail) — но именно он объясняет,
+            # почему ушли на локальную: «Insufficient balance» иначе
+            # терялся молча (круг-3 DS, I2).
+            reason = f"шлюз ответил {e.status}: {e.detail[:120]}"
+        except requests.RequestException as e:
+            if emitted:
+                raise
+            reason = self._hide_key(str(e))[:150] or type(e).__name__
+        except (ValueError, KeyError, IndexError, AttributeError, TypeError) as e:
+            # Битый SSE, HTML вместо потока, «choices» строкой — самый частый
+            # сбой чужого шлюза (прокси, rate-limiter). До первого токена это
+            # такой же повод уйти на локальную, как и сеть (круг-1 DS).
+            if emitted:
+                raise
+            reason = f"битый ответ шлюза: {type(e).__name__}"
+        if not self.fallback_local:
+            raise self._fail(503, f"облако недоступно ({reason}), "
+                                    "локальный запас выключен")
+        print(f"llm: облако недоступно ({reason}) — отвечаю локальной моделью",
+              file=sys.stderr, flush=True)
+        local = LLM({**self._cfg,
+                     "llm": {**self._cfg["llm"], "engine": self.fallback_engine}})
+        yield from local.stream_messages(messages, num_predict=num_predict,
+                                         temperature=temperature,
+                                         busy_wait=busy_wait)
+
     def _stream_mlx(self, messages: list[dict], *, think: bool | None,
                     num_predict: int | None,
                     temperature: float | None,
                     busy_wait: float = BUSY_WAIT_LIVE) -> Iterator[str]:
         payload = self._mlx_payload(messages, think=think, num_predict=num_predict,
                                     temperature=temperature, stream=True)
-        with self._open_stream(f"{self.base}/v1/chat/completions", payload, busy_wait) as r:
+        yield from self._sse(f"{self.base}/v1/chat/completions", payload, busy_wait)
+
+    def _sse(self, url: str, payload: dict, busy_wait: float,
+             timeout: float | tuple = 300,
+             first_token: float | None = None) -> Iterator[str]:
+        """Разбор SSE-ответа OpenAI-совместимого сервера. Общий для mlx и облака.
+
+        `first_token` — сколько ждём ПЕРВЫЙ содержательный чанк. Проверять это
+        снаружи бесполезно: строки `: keepalive` и пустые дельты уходят через
+        `continue`, наружу управление не возвращается, а read-таймаут сокета
+        обнуляется каждым пришедшим байтом — шлюз, который «жив и молчит»,
+        держал бы подсказку и слот вечно (круг-3 DS, I1).
+
+        Тишина и активность считаются по-разному: пока идёт keepalive, шлюз
+        скорее думает над длинным промптом, и рвать его на тридцатой секунде
+        значит молча подменить модель локальной (круг-3 DS, I3).
+        """
+        silence = first_token
+        active = first_token * ACTIVE_FACTOR if first_token else None
+        started = time.monotonic()
+        last_byte = started
+        with self._open_stream(url, payload, busy_wait, timeout=timeout) as r:
             # SSE: полезная нагрузка ТОЛЬКО в строках «data: …», терминатор
             # «data: [DONE]». Всё остальное пропускаем по спецификации: во
             # время префилла сервер шлёт keepalive-комментарии «: keepalive
             # 1/1» — живой smoke 15.08 упал ровно на такой строке.
             done = False
             for line in r.iter_lines():
+                now = time.monotonic()
+                if line:
+                    last_byte = now
+                if silence is not None:
+                    quiet = now - last_byte
+                    # «совсем молчит» и «шлёт keepalive, но не отвечает» —
+                    # разные беды с разным терпением
+                    limit = silence if quiet >= silence else active
+                    if now - started > limit:
+                        raise self._fail(200, f"шлюз не отдал ни одного токена "
+                                              f"за {int(now - started)} с")
                 if not line or not line.startswith(b"data: "):
                     continue
                 line = line[6:]
@@ -329,19 +606,32 @@ class LLM:
                     break
                 data = json.loads(line)
                 if isinstance(data, dict) and data.get("error"):
-                    raise LLMHTTPError(r.status_code, str(data["error"]))
+                    raise self._fail(r.status_code, str(data["error"]))
                 chunk = (((data.get("choices") or [{}])[0].get("delta") or {})
                          .get("content") or "")
                 if chunk:
+                    silence = active = None      # ответ пошёл — дедлайн снят
                     yield chunk
             if not done:
-                raise LLMHTTPError(r.status_code, "стрим оборван без завершения")
+                raise self._fail(r.status_code, "стрим оборван без завершения")
 
     def warmup(self):
         """Гоним модель в память заранее — иначе первая подсказка ждёт ~20с загрузки."""
         try:
             for _ in self.stream("Ответь одним словом: готов", system="Ты просто отвечаешь: готов."):
                 break
+        except LLMHTTPError as e:
+            # Неверный ключ шлюза молчал до первой подсказки встречи: прогрев
+            # глотал всё подряд (круг-1 DS, Minor). Отказ доступа — единственное,
+            # что здесь стоит сказать вслух: остальное чинится ретраями.
+            if self.cloud_ready and e.status in (401, 403):
+                print(f"llm: шлюз не принял ключ (HTTP {e.status}) — проверьте "
+                      "llm.cloud_key_file", file=sys.stderr, flush=True)
+            elif self.cloud_ready and 400 <= e.status < 500 and e.status != 429:
+                # 404 — обычно неверное имя модели: молчать до первой подсказки
+                # встречи так же плохо, как молчать про ключ (круг-2 DS, M5).
+                print(f"llm: шлюз отказал (HTTP {e.status}) — проверьте "
+                      f"llm.cloud_model и адрес", file=sys.stderr, flush=True)
         except Exception:
             pass  # ollama может быть не поднят — не валим старт
 
@@ -383,6 +673,37 @@ class LLM:
             busy_wait = min(60.0, float(timeout))
         messages = ([{"role": "system", "content": system}] if system else []) \
                    + [{"role": "user", "content": prompt}]
+        if self.cloud_ready:
+            # У шлюзов есть response_format, но он у каждого свой; json_format
+            # здесь, как и на mlx, держится на промпте и разборе вызывающим.
+            payload = self._cloud_payload(messages, num_predict=num_predict,
+                                          temperature=temperature, stream=False)
+            wait = min(busy_wait, CLOUD_BUSY_WAIT) if self.fallback_local else busy_wait
+            try:
+                r = self._post_busy(f"{self.base}/chat/completions",
+                                    payload, CLOUD_TIMEOUT, wait)
+                body = self._checked_body(r)
+                msg = ((body.get("choices") or [{}])[0].get("message") or {})
+                return (msg.get("content") or "").strip()
+            except (LLMHTTPError, requests.RequestException, ValueError,
+                    KeyError, IndexError, AttributeError, TypeError) as e:
+                # Ответ атомарный — склейки двух мыслей, из-за которой в
+                # стриме фолбэк запрещён после первого токена, здесь быть не
+                # может. Отказ доступа не подменяем: он должен быть громким.
+                if isinstance(e, LLMHTTPError) and e.status not in (200,) and e.status < 500:
+                    raise
+                if not self.fallback_local:
+                    raise self._fail(503, f"облако недоступно ({type(e).__name__}), "
+                                          "локальный запас выключен") from e
+                print(f"llm: облако не ответило ({self._hide_key(str(e))[:120]}) — "
+                      "считаю локальной моделью", file=sys.stderr, flush=True)
+                local = LLM({**self._cfg,
+                             "llm": {**self._cfg["llm"], "engine": self.fallback_engine}})
+                return local.complete(prompt, system=system, model=model, think=think,
+                                      json_format=json_format, num_predict=num_predict,
+                                      num_ctx=num_ctx, temperature=temperature,
+                                      timeout=timeout, revive=revive,
+                                      busy_wait=busy_wait)
         if self.engine == "mlx-server":
             # Строгого JSON-режима у mlx-server нет: json_format здесь
             # полагается на промпт и разбор текста вызывающим (докстринг
@@ -423,7 +744,7 @@ class LLM:
         """
         deadline = time.monotonic() + max(0.0, busy_wait)
         for delay in BUSY_BACKOFF + (BUSY_BACKOFF[-1],) * 1000:
-            r = requests.post(url, json=payload, timeout=timeout)
+            r = requests.post(url, json=payload, timeout=timeout, **self._auth())
             if r.status_code in BUSY_STATUSES and time.monotonic() + delay <= deadline:
                 time.sleep(delay)
                 continue
@@ -444,14 +765,17 @@ class LLM:
                 raise
             return self._post_busy(url, payload, timeout, busy_wait)
 
-    @staticmethod
-    def _checked_body(r) -> dict:
-        """Тело ответа или LLMHTTPError — общая часть обоих движков."""
+    def _checked_body(self, r) -> dict:
+        """Тело ответа или LLMHTTPError — общая часть всех движков.
+
+        Не @staticmethod: тело ошибки чужого шлюза может содержать ключ
+        эхом, и убрать его умеет только экземпляр (круг-1 DS, Critical).
+        """
         if r.status_code != 200:
-            raise LLMHTTPError(r.status_code, r.text[:500])
+            raise self._fail(r.status_code, r.text[:500])
         body = r.json()
         if isinstance(body, dict) and body.get("error"):
-            raise LLMHTTPError(r.status_code, str(body["error"]))
+            raise self._fail(r.status_code, str(body["error"]))
         return body
 
     # Формат подсказки живёт в коде, а не в роли из конфига. Роль отвечает на

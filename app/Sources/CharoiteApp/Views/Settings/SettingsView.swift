@@ -16,6 +16,11 @@ struct SettingsView: View {
     /// Здесь только отражение, начальное значение берётся из файла в onAppear.
     @State private var cloudEditGraph = false
     @State private var cloudEditNote = ""
+    /// `sufler.cloud_engine`: весь чат (подсказки, тезисы, минутки) идёт не на
+    /// локальную модель, а в облачный шлюз. Отдельный ключ от остальных
+    /// облачных тумблеров: те отправляют кусок по случаю, этот — весь поток.
+    @State private var cloudEngine = false
+    @State private var cloudEngineNote = ""
     /// Тоже из config.yaml (`sufler.check_updates`): единственный поход
     /// приложения в интернет — раз в сутки спросить GitHub номер выпуска.
     /// До этого тумблера о нём знал только config.yaml, а экран обещал
@@ -234,9 +239,27 @@ struct SettingsView: View {
                 // Claude, а раз в сутки приложение спрашивает GitHub о версии.
                 // Человек решает, записывать ли совещания, именно по этим
                 // словам (дизайн-аудит 21.08).
-                Text(L.t("По умолчанию всё локально: аудио, распознавание, модели, граф. В облако уходит только то, что вы включите сами: слой Claude на встрече (кусок стенограммы) и правка досье облаком выше.",
-                         "By default everything is local: audio, recognition, models, graph. Only what you turn on yourself goes to the cloud: the Claude layer during a meeting (a slice of the transcript) and cloud dossier edits above.",
-                         "默认一切在本地：音频、识别、模型、图谱。只有你自己开启的内容才会上云：会议中的 Claude 层（一段逐字稿）以及上面的云端档案修改。"))
+                Text(L.t("По умолчанию всё локально: аудио, распознавание, модели, граф. В облако уходит только то, что вы включите сами: слой Claude на встрече (кусок стенограммы), правка досье облаком выше и облачный чат ниже.",
+                         "By default everything is local: audio, recognition, models, graph. Only what you turn on yourself goes to the cloud: the Claude layer during a meeting (a slice of the transcript), cloud dossier edits above and the cloud chat below.",
+                         "默认一切在本地：音频、识别、模型、图谱。只有你自己开启的内容才会上云：会议中的 Claude 层（一段逐字稿）、上面的云端档案修改以及下面的云端对话。"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle(L.t("Облачный чат вместо локальной модели",
+                           "Cloud chat instead of the local model",
+                           "用云端对话替代本地模型"),
+                       isOn: configBinding($cloudEngine, key: "cloud_engine",
+                                           note: $cloudEngineNote))
+                    .disabled(AppSettings.cloudForbiddenByEnvironment)
+                if !cloudEngineNote.isEmpty {
+                    Text(cloudEngineNote).font(.caption).foregroundStyle(Theme.warning)
+                }
+                Text(AppSettings.cloudForbiddenByEnvironment
+                     ? L.t("Выключено рубильником CHAROITE_NO_CLOUD вместе со всем облачным.",
+                           "Turned off by the CHAROITE_NO_CLOUD switch along with everything cloud.",
+                           "已由 CHAROITE_NO_CLOUD 开关连同所有云端功能一起关闭。")
+                     : L.t("Подсказки, тезисы и минутки считает облачная модель: ноутбук перестаёт держать большую модель, зато стенограмма уходит наружу постоянно, а не по случаю. Нужны адрес шлюза (llm.cloud_base_url), имя модели и ключ в отдельном файле. Пропала сеть — отвечает локальная модель, если она установлена. Распознавание речи, диаризация и поиск остаются на этой машине при любом положении тумблера.",
+                           "Hints, theses and minutes are computed by a cloud model: the laptop stops holding a large model, but the transcript leaves the machine continuously rather than occasionally. Needs a gateway address (llm.cloud_base_url), a model name and a key in a separate file. If the network drops, the local model answers, when installed. Speech recognition, diarization and search stay on this Mac either way.",
+                           "提示、要点与纪要由云端模型生成：本机不再常驻大模型，但逐字稿会持续离开本机，而非偶尔。需要网关地址（llm.cloud_base_url）、模型名称以及放在单独文件中的密钥。断网时由本地模型作答（若已安装）。无论开关如何，语音识别、说话人分离与检索都留在本机。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 // Тот же договор, что у облачного тумблера: источник правды —
@@ -267,6 +290,7 @@ struct SettingsView: View {
         // поправить руками, и тогда UI обязан показать то, что там лежит.
         .onAppear {
             cloudEditGraph = AppSettings.configFlag("cloud_edit_graph")
+            cloudEngine = AppSettings.configFlag("cloud_engine")
             checkUpdates = AppSettings.checkUpdates
             // Заметка об ошибке записи — про прошлую попытку: конфиг могли
             // починить, и висеть она не должна (ревью 22.08).

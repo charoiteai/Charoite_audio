@@ -68,9 +68,12 @@ MAC_APP = Path("/Applications/Ollama.app")
 
 
 def _base_url(cfg: dict) -> str:
-    """Адрес живого движка: у mlx-server свой порт и свой privacy-ключ."""
-    if privacy.llm_engine(cfg) == "mlx-server":
+    """Адрес живого движка: у mlx-server свой порт, у cloud — чужой шлюз."""
+    engine = privacy.llm_engine(cfg)
+    if engine == "mlx-server":
         return privacy.mlx_base_url(cfg)
+    if engine == "cloud" and privacy.cloud_engine_enabled(cfg):
+        return privacy.cloud_llm_url(cfg)
     return privacy.llm_base_url(cfg)
 
 
@@ -103,7 +106,27 @@ def probe(cfg: dict, timeout: float = PROBE_TIMEOUT) -> bool | str:
     BUSY — сервер жив, но модель занята (503/429): не чинить, а подождать.
     """
     try:
-        if privacy.llm_engine(cfg) == "mlx-server":
+        if privacy.cloud_engine_active(cfg):
+            # Облачный шлюз пробуем самым дешёвым запросом. Ключ читается тем
+            # же путём, что в llm.py; нет ключа или адреса — это не «модель
+            # встала», а неверная настройка: чинить перезапуском нечего.
+            # Условие с cloud_engine_enabled обязательно: договор «двух
+            # ключей» значит, что без разрешения к шлюзу не ходят ВООБЩЕ,
+            # включая пробу здоровья — иначе адрес без тумблера всё равно
+            # получал бы наш ключ (круг-2 DS, I1).
+            import llm as _llm  # локальный импорт: llm_health зовут и без llm
+            key = _llm.cloud_key(cfg)
+            if not key:
+                return False
+            r = requests.post(
+                privacy.cloud_llm_url(cfg) + "/chat/completions",
+                json={"model": str((cfg.get("llm") or {}).get("cloud_model") or ""),
+                      "messages": [{"role": "user", "content": "ok"}],
+                      "stream": False, "max_tokens": 1},
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=timeout,
+            )
+        elif privacy.llm_engine(cfg) == "mlx-server":
             r = requests.post(
                 privacy.mlx_base_url(cfg) + "/v1/chat/completions",
                 json={
@@ -284,6 +307,12 @@ def ensure_alive(cfg: dict, log: Callable[[str], None] = print,
     state = probe(cfg)
     if state is True:
         return True
+    if state == BUSY and privacy.cloud_engine_active(cfg):
+        # 429/503 шлюза — это лимит или очередь на чужой стороне, а не
+        # занятая своя модель: ждать её освобождения 180 с бессмысленно,
+        # у вызова есть ретраи и локальный запас (круг-2 DS, I3).
+        log("шлюз ответил «занято» — иду за ним самим запросом")
+        return True
     if state == BUSY:
         log("LLM занята другим запросом — жду, не перезапускаю")
         deadline = time.monotonic() + wait
@@ -298,6 +327,15 @@ def ensure_alive(cfg: dict, log: Callable[[str], None] = print,
         else:
             log(f"LLM всё ещё занята после {int(wait)} с — иду в очередь за ней")
             return True
+    if privacy.cloud_engine_active(cfg):
+        # Облако не «встало» — оно либо занято, либо недоступно сию секунду.
+        # Блокировать из-за пробы весь разбор встречи нельзя: у самого вызова
+        # есть и ретраи, и запас на локальной модели, а «граф не обновлён»
+        # из-за одной неудачной пробы — это молчание вместо результата
+        # (круг-1: GLM Critical, DS Important).
+        log("облачный шлюз не ответил на пробу — иду за ним самим запросом: "
+            "у вызова свои ретраи и локальный запас")
+        return True
     if not is_local(cfg):
         log("LLM не отвечает, но адрес не локальный — перезапуск не наше дело")
         return False

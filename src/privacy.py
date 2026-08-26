@@ -51,7 +51,8 @@ KILL_SWITCH = KILL_SWITCHES[1]  # исторический алиас для с�
 # Ключи конфига, которыми управляется облако. Список нужен снаружи: здесь они
 # читаются через переменную, и сканер config.example.yaml по исходникам их не
 # видит — без явного экспорта они выпадают из проверки на документированность.
-KEYS = ("cloud_live", "cloud_enrich", "cloud_hints", "cloud_edit_graph")
+KEYS = ("cloud_live", "cloud_enrich", "cloud_hints", "cloud_edit_graph",
+        "cloud_engine")
 
 
 def _allowed(cfg: dict, key: str, env: dict | None) -> bool:
@@ -96,17 +97,76 @@ DEFAULT_LLM_URL = "http://127.0.0.1:11434"
 DEFAULT_MLX_URL = "http://127.0.0.1:8080"
 
 
+def cloud_engine_enabled(cfg: dict, env: dict | None = None) -> bool:
+    """Разрешено ли гонять ВЕСЬ чат через облако (llm.engine: cloud).
+
+    Отдельный тумблер, а не следствие `llm.engine`: остальные четыре ключа
+    отправляют наружу отдельные куски по случаю, а этот — весь поток
+    подсказок, тезисов и минуток, то есть стенограмму целиком и постоянно.
+    Молчание конфига — «нет», как и везде здесь; рубильник сильнее конфига.
+    """
+    return _allowed(cfg, "cloud_engine", env)
+
+
+def cloud_engine_active(cfg: dict, env: dict | None = None) -> bool:
+    """Работает ли чат ЧЕРЕЗ ОБЛАКО на самом деле.
+
+    Именно эту пару проверяет клиент при старте: адрес без разрешения (и
+    разрешение без адреса) оставляют локальную модель. Диагностика и проба
+    здоровья обязаны спрашивать то же самое, иначе доктор рапортует про
+    шлюз машине, которая на нём не работает, а мёртвую локальную модель
+    никто не чинит (круг-3 DS, I4).
+    """
+    return llm_engine(cfg) == "cloud" and cloud_engine_enabled(cfg, env)
+
+
+#: Куда ходит облачный чат, если адрес не задан. Пусто — значит адрес
+#: обязателен: угадывать провайдера за пользователя мы не станем.
+DEFAULT_CLOUD_LLM_URL = ""
+
+
+def cloud_llm_url(cfg: dict, env: dict | None = None) -> str:
+    """Адрес облачного OpenAI-совместимого шлюза для llm.engine: cloud.
+
+    Не проходит через `_guarded_url`: там политика «loopback свободно,
+    остальное под allow_remote» — она для локальных серверов. Здесь наоборот:
+    адрес заведомо внешний, и пускает его не allow_remote, а собственный
+    тумблер `sufler.cloud_engine`, который спрашивается вызывающим. Что
+    проверяем тут: адрес задан, схема https (ключ уходит в заголовке — по
+    http его увидит любой на пути), и рубильник не взведён.
+    """
+    env = os.environ if env is None else env
+    raw = str((cfg.get("llm") or {}).get("cloud_base_url") or DEFAULT_CLOUD_LLM_URL).strip()
+    if not raw:
+        raise RuntimeError(
+            "llm.engine = cloud, но llm.cloud_base_url не задан: укажите "
+            "адрес OpenAI-совместимого шлюза (…/v1)")
+    if any(env.get(k) for k in KILL_SWITCHES):
+        raise RuntimeError(
+            f"llm.engine = cloud запрещён рубильником "
+            f"{'/'.join(k for k in KILL_SWITCHES if env.get(k))}")
+    url = raw.rstrip("/")
+    scheme = urllib.parse.urlsplit(url).scheme
+    host = urllib.parse.urlsplit(url).hostname
+    if scheme != "https" and not _is_loopback(host):
+        raise RuntimeError(
+            f"llm.cloud_base_url = {raw}: только https — по http ключ "
+            "уходит открытым текстом (loopback разрешён для тестов)")
+    return url
+
+
 def llm_engine(cfg: dict) -> str:
-    """Движок инференса чата: «ollama» (умолчание) или «mlx-server».
+    """Движок инференса чата: «ollama» (умолчание), «mlx-server» или «cloud».
 
     Единая точка, как и адреса: llm.py и llm_health спрашивают здесь, а не
     разбирают конфиг каждый по-своему. Эмбеддинги движка НЕ выбирают — bge-m3
     живёт на Ollama при любом значении (mlx_lm.server эмбеддинги не отдаёт).
     """
     raw = str((cfg.get("llm") or {}).get("engine") or "ollama").strip().lower()
-    if raw not in ("ollama", "mlx-server"):
+    if raw not in ("ollama", "mlx-server", "cloud"):
         raise RuntimeError(
-            f"llm.engine = {raw!r}: неизвестный движок, знаю ollama и mlx-server")
+            f"llm.engine = {raw!r}: неизвестный движок, знаю ollama, "
+            "mlx-server и cloud")
     return raw
 
 # localhost — не IP, ip_address() его не разбирает, а это самый частый адрес

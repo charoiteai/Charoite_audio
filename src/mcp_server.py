@@ -136,12 +136,12 @@ def sufler_make_minutes() -> str:
             num_ctx=8192, num_predict=420,
             timeout=600)
     except LLMHTTPError as e:
-        return (f"Ollama ответила {e.status} — минутки НЕ тронуты "
-                f"({mpath.name}). Проверьте модель {MODEL}: {e.detail[:200]}")
+        return (f"модель ответила {e.status} — минутки НЕ тронуты "
+                f"({mpath.name}). Проверьте настройку модели: {e.detail[:200]}")
     except ValueError:
-        return f"Ollama вернула не JSON — минутки НЕ тронуты ({mpath.name})"
+        return f"модель вернула не JSON — минутки НЕ тронуты ({mpath.name})"
     except requests.RequestException as e:
-        return (f"Ollama недоступна ({type(e).__name__}) — минутки НЕ тронуты "
+        return (f"модель недоступна ({type(e).__name__}) — минутки НЕ тронуты "
                 f"({mpath.name})")
     if not out:
         return f"Модель вернула пустой ответ — минутки НЕ тронуты ({mpath.name})"

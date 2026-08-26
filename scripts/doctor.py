@@ -68,6 +68,15 @@ def llm_url(cfg: dict) -> str | None:
              "без него нельзя решить, законен ли адрес LLM — проверьте src/privacy.py")
         return None
     try:
+        engine = privacy.llm_engine(cfg)
+        if privacy.cloud_engine_active(cfg):
+            # На облачной установке локальной чат-модели может не быть вовсе:
+            # проверять адрес Ollama и советовать «ollama pull» — вредный
+            # совет, он ведёт перезапускать сервис, который держит эмбеддер
+            # (круг-2: GLM I5, DS M1).
+            return privacy.cloud_llm_url(cfg)
+        if engine == "mlx-server":
+            return privacy.mlx_base_url(cfg)
         return privacy.llm_base_url(cfg)
     except RuntimeError as e:
         if not llm_url_refused:
@@ -124,7 +133,14 @@ def check_config() -> dict:
 
 
 def check_ollama(cfg: dict) -> None:
-    base = llm_url(cfg)
+    # На облачном движке чат-модели локально нет по замыслу, но Ollama всё
+    # равно нужна: на ней живут эмбеддинги. Проверяем её напрямую и не
+    # требуем llm.model — иначе доктор советует докачать 20 ГБ, от которых
+    # облачный режим и должен был избавить (круг-2: GLM I5, DS M1).
+    sys.path.insert(0, str(CODE / "src"))
+    import privacy as _privacy
+    cloud = _privacy.cloud_engine_active(cfg)
+    base = _privacy.llm_base_url(cfg) if cloud else llm_url(cfg)
     if base is None:
         return
     try:
@@ -138,7 +154,9 @@ def check_ollama(cfg: dict) -> None:
              "установите с ollama.com и запустите; либо поправьте llm.base_url")
         return
     line(OK, f"Ollama ({len(models)} моделей)")
-    main = str(cfg.get("llm", {}).get("model", ""))
+    main = "" if cloud else str(cfg.get("llm", {}).get("model", ""))
+    if cloud:
+        line(OK, "чат идёт через облачный шлюз — локальная чат-модель не нужна")
     if main and not any(m.startswith(main.split(":")[0]) for m in models):
         line(FAIL, f"модель llm.model «{main}» не найдена", f"ollama pull {main}")
     elif main:
@@ -225,6 +243,14 @@ def check_llm_alive(cfg: dict) -> None:
         line(WARN, "модель занята другим запросом (сервер жив, ответил 503/429)",
              "перезапускать не нужно: дождитесь конца разбора встречи или "
              "ночного цикла — конвейер сам ждёт занятую модель")
+        return
+    sys.path.insert(0, str(CODE / "src"))
+    import privacy as _privacy
+    if _privacy.cloud_engine_active(cfg):
+        line(FAIL, "облачный шлюз не отвечает",
+             "проверьте сеть, llm.cloud_base_url, имя модели и ключ в "
+             "llm.cloud_key_file; локальную Ollama перезапускать не нужно — "
+             "на ней живут эмбеддинги")
         return
     port_owner = llm_health.listener_path(base)
     line(FAIL, "модель не отвечает на генерацию"
