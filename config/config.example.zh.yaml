@@ -47,6 +47,10 @@ llm:
   # cloud_model: deepseek-chat
   # cloud_key_file: ~/.config/charoite/llm_key
   # cloud_fallback_local: true
+  # 断网回退到哪个本地引擎：ollama 或 mlx-server。未设置时，若已配置
+  # mlx_model 则选择 mlx-server，否则选择 ollama——对于本地模型运行在
+  # mlx_lm.server 上的用户，回退到空的 Ollama 等于没有回退。
+  # cloud_fallback_engine: ollama
   # mlx_base_url: http://127.0.0.1:8080
   # mlx_model: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
   model: qwen3.6:35b-a3b             # 主模型（提示、纪要、姓名）——中文原生

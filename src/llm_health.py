@@ -106,10 +106,14 @@ def probe(cfg: dict, timeout: float = PROBE_TIMEOUT) -> bool | str:
     BUSY — сервер жив, но модель занята (503/429): не чинить, а подождать.
     """
     try:
-        if privacy.llm_engine(cfg) == "cloud":
+        if privacy.llm_engine(cfg) == "cloud" and privacy.cloud_engine_enabled(cfg):
             # Облачный шлюз пробуем самым дешёвым запросом. Ключ читается тем
             # же путём, что в llm.py; нет ключа или адреса — это не «модель
             # встала», а неверная настройка: чинить перезапуском нечего.
+            # Условие с cloud_engine_enabled обязательно: договор «двух
+            # ключей» значит, что без разрешения к шлюзу не ходят ВООБЩЕ,
+            # включая пробу здоровья — иначе адрес без тумблера всё равно
+            # получал бы наш ключ (круг-2 DS, I1).
             import llm as _llm  # локальный импорт: llm_health зовут и без llm
             key = _llm.cloud_key(cfg)
             if not key:
@@ -302,6 +306,12 @@ def ensure_alive(cfg: dict, log: Callable[[str], None] = print,
     """
     state = probe(cfg)
     if state is True:
+        return True
+    if state == BUSY and privacy.llm_engine(cfg) == "cloud":
+        # 429/503 шлюза — это лимит или очередь на чужой стороне, а не
+        # занятая своя модель: ждать её освобождения 180 с бессмысленно,
+        # у вызова есть ретраи и локальный запас (круг-2 DS, I3).
+        log("шлюз ответил «занято» — иду за ним самим запросом")
         return True
     if state == BUSY:
         log("LLM занята другим запросом — жду, не перезапускаю")

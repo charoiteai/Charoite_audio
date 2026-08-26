@@ -169,3 +169,44 @@ def test_health_probe_does_not_restart_anything_for_cloud(tmp_path, monkeypatch)
     assert not calls, "перезапустили локальный сервер из-за облачной пробы"
     assert any("шлюз" in line for line in said)
     assert llm_health.is_local(cfg) is False
+
+
+def test_no_raw_error_can_be_raised_inside_the_client():
+    """Внутри клиента ошибку создаёт только _fail — она всегда маскирует ключ.
+
+    Круг-1 закрыл одну точку утечки, круг-2 нашёл вторую (ошибка внутри
+    200-стрима). Третьей быть не должно: сторож ловит любой прямой
+    `raise LLMHTTPError(` в классе, а не конкретное место.
+    """
+    source = (SRC / "llm.py").read_text(encoding="utf-8")
+    body = source[source.index("class LLM:"):]
+    assert "raise LLMHTTPError(" not in body, \
+        "ошибка создаётся в обход _fail — ключ снова доедет до экрана"
+    assert body.count("raise self._fail(") >= 8
+
+
+def test_error_inside_a_200_stream_is_masked_too(tmp_path):
+    """Прокси отвечает 200 и шлёт «error» в теле — ключ там тоже эхом."""
+    client = llm.LLM(_with_key(tmp_path, _cfg()))
+    err = client._fail(200, "Incorrect API key provided: secret-key")
+    assert "secret-key" not in err.detail and "***" in err.detail
+
+
+def test_probe_keeps_the_key_when_the_toggle_is_off(tmp_path, monkeypatch):
+    """Без разрешения к шлюзу не ходят вообще — включая пробу здоровья."""
+    import llm_health
+
+    cfg = _with_key(tmp_path, _cfg())
+    cfg["sufler"]["cloud_engine"] = False
+    sent = []
+    monkeypatch.setattr(llm_health.requests, "post",
+                        lambda url, **kw: sent.append(url) or _NoResp())
+    llm_health.probe(cfg, timeout=1)
+    assert all("gw.example.com" not in url for url in sent), \
+        "проба ушла на шлюз с ключом, хотя тумблер выключен"
+
+
+class _NoResp:
+    status_code = 500
+
+    def json(self): return {}

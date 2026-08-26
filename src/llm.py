@@ -89,6 +89,12 @@ DEFAULT_CLOUD_KEY_FILE = "~/.config/charoite/llm_key"
 
 #: Сколько ждём недоступный шлюз, прежде чем ответить локальной моделью.
 CLOUD_BUSY_WAIT = 5.0
+#: Таймаут САМОГО запроса к шлюзу (connect, read). Бюджет ретраев выше не
+#: помогает против шлюза, который принял соединение и молчит: один запрос с
+#: дефолтными 300 с держал бы живую подсказку пять минут (круг-2 DS, I2).
+CLOUD_TIMEOUT = (5.0, 45.0)
+#: Сколько ждём ПЕРВЫЙ токен, прежде чем считать шлюз молчащим.
+CLOUD_FIRST_TOKEN = 30.0
 
 
 def cloud_key(cfg: dict) -> str:
@@ -315,7 +321,7 @@ class LLM:
                     # ошибка ПОСРЕДИ 200-стрима приходит строкой {"error": …}:
                     # без этой проверки поток заканчивался «нормально» пустым,
                     # и подсказка тихо не приходила (аудит 18.08)
-                    raise LLMHTTPError(r.status_code, str(data["error"]))
+                    raise self._fail(r.status_code, str(data["error"]))
                 chunk = data.get("message", {}).get("content", "")
                 if chunk:
                     yield chunk
@@ -326,7 +332,20 @@ class LLM:
                 # соединение закрылось без терминатора: сервер упал или сеть
                 # оборвалась. Усечённый ответ не выдаём за целый — минутки
                 # без хвоста встречи внешне неотличимы от готовых.
-                raise LLMHTTPError(r.status_code, "стрим оборван без завершения")
+                raise self._fail(r.status_code, "стрим оборван без завершения")
+
+    def _fail(self, status: int, detail: str) -> LLMHTTPError:
+        """ЕДИНСТВЕННЫЙ способ создать LLMHTTPError внутри клиента.
+
+        Круг-1 закрыл утечку ключа «в точке, где тело становится
+        исключением», но точек оказалось несколько, и круг-2 нашёл
+        пропущенную: ошибка внутри 200-стрима (`data: {"error": …}`) шла
+        мимо маскировки прямо в карточку подсказки и в файл `_hints.md`.
+        Заплатать третье место — значит ждать четвёртого, поэтому способ
+        один, и структурный тест следит, чтобы прямой `raise LLMHTTPError`
+        в этом классе больше не появлялся.
+        """
+        return LLMHTTPError(status, self._hide_key(detail))
 
     def _hide_key(self, text: str) -> str:
         """Убрать ключ из текста ошибки шлюза.
@@ -355,7 +374,7 @@ class LLM:
         return {"headers": {"Authorization": f"Bearer {self._key}"}}
 
     def _open_stream(self, url: str, payload: dict, busy_wait: float,
-                     timeout: float = 300):
+                     timeout: float | tuple = 300):
         """POST со стримом; занятый сервер (503/429, отказ соединения) —
         повторяем с растущей паузой, пока не выйдем за busy_wait."""
         deadline = time.monotonic() + max(0.0, busy_wait)
@@ -375,9 +394,9 @@ class LLM:
             if r.status_code != 200:
                 # закрыть до raise: with-блок вызывающего сюда не дойдёт, а
                 # ответ открыт как стрим; ошибка — в контракте модуля LLMHTTPError
-                detail = self._hide_key(r.text[:500])
+                detail = r.text[:500]
                 r.close()
-                raise LLMHTTPError(r.status_code, detail)
+                raise self._fail(r.status_code, detail)
             return r
         raise RuntimeError("unreachable")  # pragma: no cover
 
@@ -442,13 +461,13 @@ class LLM:
                     continue
                 data = json.loads(line)
                 if data.get("error"):
-                    raise LLMHTTPError(r.status_code, str(data["error"]))
+                    raise self._fail(r.status_code, str(data["error"]))
                 chunk = data.get("message", {}).get("content", "")
                 if chunk:
                     yield chunk
                 if data.get("done"):
                     return
-            raise LLMHTTPError(r.status_code, "стрим оборван без завершения")
+            raise self._fail(r.status_code, "стрим оборван без завершения")
 
     def _cloud_payload(self, messages: list[dict], *, num_predict: int | None,
                        temperature: float | None, stream: bool) -> dict:
@@ -492,18 +511,31 @@ class LLM:
         # Живая подсказка не должна молчать полминуты (круг-1 DS, Minor).
         wait = min(busy_wait, CLOUD_BUSY_WAIT) if self.fallback_local else busy_wait
         try:
-            for chunk in self._sse(f"{self.base}/chat/completions", payload, wait):
+            # Общий дедлайн до ПЕРВОГО токена. Read-таймаут его не заменяет:
+            # SSE-keepalive («: keepalive») обнуляет таймаут сокета, и шлюз,
+            # который принял запрос и льёт пустые строки, держал бы подсказку
+            # бесконечно — а вместе с ней и слот подсказок (круг-2 GLM, I2).
+            deadline = time.monotonic() + CLOUD_FIRST_TOKEN
+            for chunk in self._sse(f"{self.base}/chat/completions", payload, wait,
+                                   timeout=CLOUD_TIMEOUT):
+                if not emitted and time.monotonic() > deadline:
+                    raise self._fail(200, f"шлюз молчит дольше "
+                                          f"{int(CLOUD_FIRST_TOKEN)} с")
                 emitted = True
                 yield chunk
             return
         except LLMHTTPError as e:
-            if emitted or e.status < 500:
+            # 200 в этом исключении — не «успех»: так выглядит оборванный
+            # стрим, пустое тело и HTML вместо потока (WAF, страница квоты).
+            # Это главный вид «битого шлюза», и запас нужен именно здесь
+            # (круг-2 GLM, I1). Отказ доступа (4xx) по-прежнему громкий.
+            if emitted or (e.status != 200 and e.status < 500):
                 raise
             reason = f"шлюз ответил {e.status}"
         except requests.RequestException as e:
             if emitted:
                 raise
-            reason = str(e)[:150] or type(e).__name__
+            reason = self._hide_key(str(e))[:150] or type(e).__name__
         except (ValueError, KeyError, IndexError, AttributeError, TypeError) as e:
             # Битый SSE, HTML вместо потока, «choices» строкой — самый частый
             # сбой чужого шлюза (прокси, rate-limiter). До первого токена это
@@ -512,7 +544,7 @@ class LLM:
                 raise
             reason = f"битый ответ шлюза: {type(e).__name__}"
         if not self.fallback_local:
-            raise LLMHTTPError(503, f"облако недоступно ({reason}), "
+            raise self._fail(503, f"облако недоступно ({reason}), "
                                     "локальный запас выключен")
         print(f"llm: облако недоступно ({reason}) — отвечаю локальной моделью",
               file=sys.stderr, flush=True)
@@ -530,9 +562,10 @@ class LLM:
                                     temperature=temperature, stream=True)
         yield from self._sse(f"{self.base}/v1/chat/completions", payload, busy_wait)
 
-    def _sse(self, url: str, payload: dict, busy_wait: float) -> Iterator[str]:
+    def _sse(self, url: str, payload: dict, busy_wait: float,
+             timeout: float | tuple = 300) -> Iterator[str]:
         """Разбор SSE-ответа OpenAI-совместимого сервера. Общий для mlx и облака."""
-        with self._open_stream(url, payload, busy_wait) as r:
+        with self._open_stream(url, payload, busy_wait, timeout=timeout) as r:
             # SSE: полезная нагрузка ТОЛЬКО в строках «data: …», терминатор
             # «data: [DONE]». Всё остальное пропускаем по спецификации: во
             # время префилла сервер шлёт keepalive-комментарии «: keepalive
@@ -547,13 +580,13 @@ class LLM:
                     break
                 data = json.loads(line)
                 if isinstance(data, dict) and data.get("error"):
-                    raise LLMHTTPError(r.status_code, str(data["error"]))
+                    raise self._fail(r.status_code, str(data["error"]))
                 chunk = (((data.get("choices") or [{}])[0].get("delta") or {})
                          .get("content") or "")
                 if chunk:
                     yield chunk
             if not done:
-                raise LLMHTTPError(r.status_code, "стрим оборван без завершения")
+                raise self._fail(r.status_code, "стрим оборван без завершения")
 
     def warmup(self):
         """Гоним модель в память заранее — иначе первая подсказка ждёт ~20с загрузки."""
@@ -567,6 +600,11 @@ class LLM:
             if self.cloud_ready and e.status in (401, 403):
                 print(f"llm: шлюз не принял ключ (HTTP {e.status}) — проверьте "
                       "llm.cloud_key_file", file=sys.stderr, flush=True)
+            elif self.cloud_ready and 400 <= e.status < 500 and e.status != 429:
+                # 404 — обычно неверное имя модели: молчать до первой подсказки
+                # встречи так же плохо, как молчать про ключ (круг-2 DS, M5).
+                print(f"llm: шлюз отказал (HTTP {e.status}) — проверьте "
+                      f"llm.cloud_model и адрес", file=sys.stderr, flush=True)
         except Exception:
             pass  # ollama может быть не поднят — не валим старт
 
@@ -616,7 +654,7 @@ class LLM:
             wait = min(busy_wait, CLOUD_BUSY_WAIT) if self.fallback_local else busy_wait
             try:
                 r = self._post_busy(f"{self.base}/chat/completions",
-                                    payload, timeout, wait)
+                                    payload, CLOUD_TIMEOUT, wait)
                 body = self._checked_body(r)
                 msg = ((body.get("choices") or [{}])[0].get("message") or {})
                 return (msg.get("content") or "").strip()
@@ -625,11 +663,12 @@ class LLM:
                 # Ответ атомарный — склейки двух мыслей, из-за которой в
                 # стриме фолбэк запрещён после первого токена, здесь быть не
                 # может. Отказ доступа не подменяем: он должен быть громким.
-                if isinstance(e, LLMHTTPError) and e.status < 500:
+                if isinstance(e, LLMHTTPError) and e.status not in (200,) and e.status < 500:
                     raise
                 if not self.fallback_local:
-                    raise
-                print(f"llm: облако не ответило ({str(e)[:120]}) — "
+                    raise self._fail(503, f"облако недоступно ({type(e).__name__}), "
+                                          "локальный запас выключен") from e
+                print(f"llm: облако не ответило ({self._hide_key(str(e))[:120]}) — "
                       "считаю локальной моделью", file=sys.stderr, flush=True)
                 local = LLM({**self._cfg,
                              "llm": {**self._cfg["llm"], "engine": self.fallback_engine}})
@@ -706,10 +745,10 @@ class LLM:
         эхом, и убрать его умеет только экземпляр (круг-1 DS, Critical).
         """
         if r.status_code != 200:
-            raise LLMHTTPError(r.status_code, self._hide_key(r.text[:500]))
+            raise self._fail(r.status_code, r.text[:500])
         body = r.json()
         if isinstance(body, dict) and body.get("error"):
-            raise LLMHTTPError(r.status_code, self._hide_key(str(body["error"])))
+            raise self._fail(r.status_code, str(body["error"]))
         return body
 
     # Формат подсказки живёт в коде, а не в роли из конфига. Роль отвечает на

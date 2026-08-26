@@ -45,6 +45,11 @@ llm:
   # cloud_model: deepseek-chat
   # cloud_key_file: ~/.config/charoite/llm_key
   # cloud_fallback_local: true
+  # Which local engine the net falls back to: ollama or mlx-server.
+  # Without the key mlx-server is chosen when mlx_model is set, otherwise
+  # ollama — a net in an empty Ollama would be dead for anyone whose local
+  # model lives on mlx_lm.server.
+  # cloud_fallback_engine: ollama
   # mlx_base_url: http://127.0.0.1:8080
   # mlx_model: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
   model: qwen3.6:35b-a3b             # main model (hints, summaries, names)
