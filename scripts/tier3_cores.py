@@ -68,7 +68,7 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
             if not only:
                 print(f"{graph.name}: свежих ядер нет — пропуск", flush=True)
                 _save_stamp(graph, started)
-                return
+                return True
             print(f"=== {graph.name}: инкремент, свежих ядер {len(only)}",
                   flush=True)
     r = tier3.revise(graph, only_names=only, apply=apply, mark=mark)
@@ -91,10 +91,10 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
         print(f"{graph.name}: ревизия не состоялась — нет NLI-модели, "
               f"лежит Ollama или пустые эмбеддинги; отметка не сдвинута ({took:.0f} с)",
               flush=True)
-        return
+        return False
     if not n and not r["log"]:
         print(f"{graph.name}: чисто ({took:.0f} с)", flush=True)
-        return
+        return True
     print(f"=== {graph.name} ({took:.0f} с)")
     for k, title in (("dups", "ДУБЛИ"), ("nests", "ВЛОЖЕНИЯ"), ("border", "ГРАНИЦА")):
         for line in r[k]:
@@ -102,9 +102,10 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
     for line in r["log"]:
         print(f"  {line}")
     sys.stdout.flush()
+    return True
 
 
-def main() -> None:
+def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--graph", type=pathlib.Path, default=None)
     ap.add_argument("--all-graphs", action="store_true",
@@ -132,7 +133,7 @@ def main() -> None:
     # если фоновая выключена (третий круг, Gemini).
     if args.auto and not install_profile.tier3_enabled(graphs.load_config()):
         print("ревизия ядер выключена профилем (sufler.tier3: false)")
-        return
+        return 0        # выключено осознанно — не «вхолостую»
 
     apply_mode = args.apply
     mark_mode = args.mark
@@ -147,16 +148,25 @@ def main() -> None:
             # не авария. Раньше отсутствие ровно iCloud-папки красило launchd
             # каждую ночь у любого, кто держит граф в другом месте.
             print(f"нет графов с папкой «Ядра» — искал в {graphs.where()}")
-            return
+            return 0
+        ran = []
         for g in found:
             if live_gate.night_is_over():
                 print("⏹ время ночного прогона вышло — остальные графы завтра")
                 break
-            run(g, apply_mode, mark_mode, args.since_last)
-        return
-    run(args.graph or graphs.configured_graph() or pathlib.Path.cwd(),
-        apply_mode, mark_mode, args.since_last)
+            ran.append(run(g, apply_mode, mark_mode, args.since_last))
+        # Код 2 — «шаг прошёл вхолостую»: без NLI-модели или с лежащей Ollama
+        # ревизия ничего не смотрит, а ночь показывала «ok». У досье такой
+        # код есть с самого начала (аудит ночи 26.08, DS Important 4).
+        return 0 if any(ran) else 2
+    target = pathlib.Path(args.graph or graphs.configured_graph() or pathlib.Path.cwd())
+    if not (target / "Ядра").is_dir():
+        # Код 2 значит «модель не отвечала»; отсутствие графа — другая беда
+        # и не авария, как и в ветке --all-graphs (круг-2 DS, M3).
+        print(f"в {target} нет папки «Ядра» — ревизовать нечего")
+        return 0
+    return 0 if run(target, apply_mode, mark_mode, args.since_last) else 2
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

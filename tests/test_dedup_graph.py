@@ -129,3 +129,23 @@ def test_snapshots_in_hidden_folders_are_never_linked(tmp_path):
     assert a.stat().st_ino == b.stat().st_ino, "живая копия по-прежнему связывается"
     assert c.stat().st_ino != a.stat().st_ino, "снимок .cloud_backup связан с живым файлом"
     assert e.stat().st_ino != a.stat().st_ino, "снимок Ядра/.tier3_backup связан с живым файлом"
+
+
+def test_file_changed_between_scan_and_link_is_left_alone(tmp_path):
+    """Копия, переписанная после хэширования, не подменяется старым inode.
+
+    Граф хэшируется одним проходом, связывание идёт потом: если между этим
+    живой конвейер дописал копию (разбор долгой встречи, retro_fill, рука
+    человека), подмена уничтожала НОВОЕ содержимое — а бэкапа эта ветка не
+    делает (аудит ночи 26.08, GLM Critical 2).
+    """
+    a, b = _graph(tmp_path)
+    scanned = d.digest(a)
+    b.write_text(BODY + "\nдописано во время прогона\n", encoding="utf-8")
+
+    status = d.link_copy(a, b, expected=scanned)
+
+    assert "изменился во время прогона" in status, status
+    assert b.read_text(encoding="utf-8").endswith("дописано во время прогона\n")
+    assert a.stat().st_ino != b.stat().st_ino, "файл всё-таки связали"
+    assert not list(tmp_path.rglob("*.dedup-tmp")), "временный файл не убран"

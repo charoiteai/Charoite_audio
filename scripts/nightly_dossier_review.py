@@ -42,6 +42,7 @@ import dossier  # noqa: E402
 import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import live_gate  # noqa: E402
+import tier3  # noqa: E402
 import privacy  # noqa: E402
 from config_loader import load_user_or_example  # noqa: E402
 
@@ -359,7 +360,8 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         # 21.08 именно этот шаг: прогон, начатый в 04:16, к 11:36 всё ещё
         # держал процессор, и живая запись рвалась (потолок — чтобы ночь не
         # стала днём).
-        live_gate.wait_while_live(ROOT, what="ревизия досье", cap=3600)
+        live_gate.wait_while_live(ROOT, what="ревизия досье",
+                                  cap=tier3.night_wait_cap())
         if live_gate.night_is_over():
             print("  ⏹ время ночного прогона вышло — остальные досье завтра")
             break

@@ -134,6 +134,43 @@ closed four seams:
   read-only mode had no deny rules at all, so the boundary rested solely
   on an external program's behaviour.
 
+### What the night promises the morning
+
+The nightly run (`scripts/nightly.sh`, 04:15) grooms the graph while nobody
+is at the machine: brief, cores revision, dossiers, cloud revisions, file
+dedup, memory bench. An audit on 26.08 (two independent reviewers) checked
+the zone's promises and closed the gaps:
+
+- **The night ends at night.** The `CHAROITE_NIGHTLY_UNTIL` ceiling is now
+  visible to the tail steps too — dedup and the memory bench ran past it and
+  woke the model in the morning. Waiting for a live meeting is capped by
+  what is left of the night: a flat hour of waiting used to stretch the run
+  past the ceiling.
+- **A live meeting outranks the night — on the heaviest step too.** Judging
+  core pairs holds the embedder and the NLI model; the gate existed only for
+  dossiers and cloud revisions, so the cores revision kept sharing the model
+  with the live prompter. It now yields like the rest.
+- **The status lands where it is looked for.** The data root is normalised
+  once at the start: a «~» or trailing spaces in `CHAROITE_ROOT` sent the
+  status and the idle wait into a literal directory while the python layer
+  looked at the real one — the app saw no night at all.
+  There is deliberately no guard against a second MANUAL run: both attempts to
+  build one (a pid directory and `flock` through the system python3) produced a
+  Critical on their first review round, and the cost of a rare double start is
+  lower than a brittle watchman on the night's very first line.
+- **A signal actually stops it.** The `trap` had no `exit`, so the run
+  continued after `kill -TERM` and the "interrupted" state was overwritten by
+  the final "ok" — that state was unreachable at all.
+- **"Ok" only when work happened.** A night with no graph at all, and a cores
+  revision that ran empty (no NLI model, Ollama down), no longer report green:
+  the revision has its own exit code 2, missing graphs are marked in the status.
+- **A person's edit does not vanish.** A core changed during the long pair
+  judging is not overwritten from the in-memory snapshot — the pair waits for
+  the next night. A duplicate's handwritten "Суть" moves into the canonical
+  core instead of living only in a rotating backup. Dedup re-checks the digest
+  before substituting: a file rewritten by the pipeline between the scan and
+  the link is skipped.
+
 ## Diarization: two passes
 
 1. **Live**: each chunk is embedded (ERes2Net, 512-dim) → a voice tracker

@@ -408,3 +408,38 @@ def test_meeting_pipeline_reads_permission_strictly():
         'graph_updater решает через bool() — строка "false" включит слияние'
     assert "auto_apply_allowed" in src, \
         "разрешение должно браться из единой точки tier3.auto_apply_allowed"
+
+
+def test_stale_core_is_skipped_instead_of_overwritten(graph_with_essence, monkeypatch):
+    """Ядро, изменившееся во время прогона, не затирается снимком из памяти.
+
+    Суд пар идёт часами, а пишем мы текст, прочитанный в начале. Правка
+    конвейера встречи или человека за это время исчезала молча — копия
+    оставалась только в бэкапе (аудит ночи 26.08, DS Important 3).
+    """
+    folder = graph_with_essence / "Ядра"
+    real_load = tier3.load_cores
+
+    def load_and_touch(f):
+        cores = real_load(f)
+        for c in cores:                      # «кто-то» переписал файл после чтения
+            c["path"].write_text(c["path"].read_text(encoding="utf-8")
+                                 + "\n- [[2026-08-26_1200]] свежая строка\n",
+                                 encoding="utf-8")
+        return cores
+
+    monkeypatch.setattr(tier3, "load_cores", load_and_touch)
+    report = tier3.revise(graph_with_essence, apply=True)
+    texts = _snapshot(graph_with_essence)
+    # правка «чужой руки» на месте, слияния не случилось
+    assert all("свежая строка" in t for t in texts.values()), texts
+    assert not any("Дубль. Смерджен" in t for t in texts.values()), texts
+    assert any("изменился во время прогона" in line for line in report["log"]), report["log"]
+
+
+def test_handwritten_essence_of_a_duplicate_survives_the_merge(graph_with_essence):
+    """Слияние не теряет рукописную «Суть» дубля: она переезжает в канон."""
+    tier3.revise(graph_with_essence, apply=True)
+    texts = _snapshot(graph_with_essence)
+    canon = [t for t in texts.values() if "Дубль. Смерджен" not in t]
+    assert any("Суть дубля" in t for t in canon), canon
