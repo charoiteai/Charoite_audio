@@ -171,6 +171,34 @@ the zone's promises and closed the gaps:
   before substituting: a file rewritten by the pipeline between the scan and
   the link is skipped.
 
+### Cloud chat (llm.engine: cloud)
+
+A third engine next to Ollama and mlx-server: hints, theses, the thread and
+minutes are computed by an external OpenAI-compatible gateway, and the laptop
+stops holding a large model. The transport is the same as mlx-server's
+(`/v1/chat/completions`, SSE) — only an authorization header was added, so the
+code path is shared.
+
+- **Two keys turn it on.** `llm.engine: cloud` says where, `sufler.cloud_engine:
+  true` grants permission. Either alone is not enough — an address without
+  permission and permission without an address both leave the local model in
+  charge — and `CHAROITE_NO_CLOUD` overrides both. The other cloud toggles work
+  the same way; this one differs in volume: the whole stream of the conversation
+  leaves the machine, not an occasional slice.
+- **The key never lives in the config.** `llm.cloud_key_file` (default
+  `~/.config/charoite/llm_key`, mode 600): config.yaml ends up in backups and
+  screenshots, and a key is money and access. It is never put in the request
+  body, never printed to logs or errors, and the address is https-only.
+- **A safety net for a dropped network.** A network error or a 5xx before the
+  first emitted token falls back to the local model with a line in the err log;
+  401/403/400 raise loudly instead — otherwise you work locally for a month
+  without knowing. After the first token there is no fallback: a hint started by
+  the cloud and finished locally would splice two different thoughts.
+- **What stays on the machine with any engine:** speech recognition,
+  diarization, search and dedup embeddings, NLI. A chat gateway has no cloud
+  equivalent for these, and "fully in the cloud" is a different conversation —
+  one about audio.
+
 ## Diarization: two passes
 
 1. **Live**: each chunk is embedded (ERes2Net, 512-dim) → a voice tracker

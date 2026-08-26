@@ -30,6 +30,18 @@ llm:
   # (mlx_model, имя HF-репозитория); small/fallback на нём схлопываются в
   # неё же. Эмбеддинги (bge-m3) при любом движке остаются на Ollama.
   # engine: ollama
+  # Третий движок — cloud: весь чат уходит на облачный OpenAI-совместимый
+  # шлюз, и ноутбук перестаёт держать большую модель. Включается ДВУМЯ
+  # ключами: llm.engine: cloud здесь и sufler.cloud_engine: true ниже —
+  # адрес без разрешения не работает, как и разрешение без адреса.
+  # Ключ шлюза в конфиг не кладут: он читается из отдельного файла
+  # (cloud_key_file, права 600). Пропала сеть — отвечает локальная модель,
+  # если cloud_fallback_local не выключен. Эмбеддинги, NLI и STT остаются
+  # локальными при любом движке.
+  # cloud_base_url: https://api.example.com/v1
+  # cloud_model: deepseek-chat
+  # cloud_key_file: ~/.config/charoite/llm_key
+  # cloud_fallback_local: true
   # mlx_base_url: http://127.0.0.1:8080
   # mlx_model: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
   # Шаблон стартует с моделей профиля 8/16 ГБ: одна лёгкая на все роли.
@@ -179,6 +191,7 @@ sufler:
   cloud_enrich: false     # разбор встречи облачным Claude после стопа (нужен claude CLI)
   cloud_model: claude-opus-5
   cloud_edit_graph: false
+  cloud_engine: false     # весь чат через облачный шлюз (см. llm.engine: cloud)
   # ↑ РАЗРЕШИТЬ ОБЛАКУ ПРАВИТЬ ГРАФ (опционально, по умолчанию выключено).
   # Без него Opus только пишет отчёт-рекомендации, правит человек руками.
   # С ним — правит сам, ночью, по своим же находкам: отменённые решения,
