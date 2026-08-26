@@ -1730,16 +1730,29 @@ def main():
                     capture_output=True, text=True, timeout=90, env=env,
                     stdin=subprocess.DEVNULL,  # иначе claude наследует fifo демона и ждёт EOF вечно
                 )
-                out = (r.stdout or "").strip() or f"[claude: {(r.stderr or 'пустой ответ')[:150]}]"
+                failure = ""
+                out = (r.stdout or "").strip()
+                # Код возврата смотрим ОБЯЗАТЕЛЬНО: раньше stderr падения
+                # («Unknown model», 403) становился строкой ответа и уходил
+                # в полотно и аудит как облачный ответ — контур не отличал
+                # «сработало» от «сломалось» (аудит облака 26.08, GLM I1).
+                if r.returncode != 0 or not out:
+                    failure = (r.stderr or "пустой ответ").strip()[:150]
+                    out = ""
             except subprocess.TimeoutExpired:
-                out = "[cloud: таймаут 90с]"
+                out, failure = "", "таймаут 90с"
             except Exception as e:  # noqa: BLE001
-                out = f"[cloud: {e}]"
+                out, failure = "", str(e)[:150]
             # В нить — только сам ответ: строка ⚡ теперь подсвечена, и
             # вклеенный «❓ вопрос» стал бы самым ярким текстом полотна —
             # ровно то, что владелец просил убрать (круг-1 по #394, DS+Codex).
             # Вопрос остаётся в аудите (label ниже) и в облачной ленте панели.
-            if out and not question_filter.is_refusal(out):
+            if failure:
+                # Сбой — в статус со признаком ошибки, не в нить: полотно
+                # встречи не место для текста ошибки CLI, а аудит не должен
+                # хранить её как ответ на вопрос.
+                emit_error(f"☁️ облако не ответило: {failure}")
+            elif out and not question_filter.is_refusal(out):
                 if thread.add_answer(q, question_filter.squeeze(out, max_lines=3, max_chars=380)):
                     emit({"type": "thread", "text": thread.render()})
             # Вопрос в живом UI больше не показывается (пакет владельца 24.08):
@@ -1747,6 +1760,8 @@ def main():
             # Прежний префикс «❓ {q}» уходил в события cloud, которых демон
             # давно не эмитит, — мёртвый код убран (круг-3 по #394, DS).
             emit({"type": "cloud_done"})
+            if failure:
+                continue          # в аудит идут ответы, а не сообщения о сбое
             label = f"☁️ {model} — на: {q[:400]}" if q else f"☁️ {model}"
             append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] {label}", out)
 

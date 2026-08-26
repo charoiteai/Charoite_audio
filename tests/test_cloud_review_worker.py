@@ -483,6 +483,37 @@ def test_review_of_an_untitled_meeting_lands_in_its_own_folder(tmp_path, monkeyp
     assert (existing / "Ревизия Claude.md").exists(), "ревизия не легла в папку встречи"
 
 
+def test_symlink_reading_is_denied_in_both_modes(tmp_path):
+    """Симлинку закрыто ЧТЕНИЕ, и в режиме чтения тоже.
+
+    Цель симлинка лежит вне графа, `Read(/**)` лексически её накрывает, а
+    в read-only режиме deny-правил не было вовсе: граница держалась только
+    на резолве путей внутри CLI (живая проверка 26.08: он отклоняет — но
+    пояс на своей стороне стоит одну строку). Защищённые папки читать
+    по-прежнему можно: закрыта только запись.
+    """
+    graph = _graph(tmp_path)
+    outside = tmp_path / "снаружи"; outside.mkdir()
+    (graph / "link_out").symlink_to(outside, target_is_directory=True)
+    (graph / "Ядра" / "ссылка.md").symlink_to(outside / "x.md")
+    (graph / ".DS_Store").write_text("", encoding="utf-8")
+
+    links = dict(cloud_review.deny_paths(graph, symlinks_only=True))
+    assert links == {"link_out": True, "Ядра/ссылка.md": False}, links
+
+    for may_edit in (False, True):
+        cmd = cloud_review.graph_updater.cloud_enrich_command(
+            {"sufler": {"cloud_enrich": True, "cloud_edit_graph": may_edit}},
+            claude_bin="claude", prompt="p", model="m", may_edit=may_edit,
+            deny_paths=cloud_review.deny_paths(graph) if may_edit else (),
+            symlink_paths=links.items())
+        tail = cmd[cmd.index("--disallowedTools"):cmd.index("--permission-mode")]
+        assert "Read(/link_out/**)" in tail, (may_edit, tail)
+        assert "Read(/Ядра/ссылка.md)" in tail, (may_edit, tail)
+        # чтение защищённой папки остаётся: модель обязана понимать граф
+        assert "Read(/Встречи-архив/**)" not in tail
+
+
 def test_deny_paths_close_protected_hidden_and_symlinked_places(tmp_path):
     """Первый слой — правила CLI: защищённые папки, скрытые каталоги и файлы,
     симлинки (rglob симлинк-каталог не обходит, а цель может быть вне графа;

@@ -1115,11 +1115,30 @@ def deny_rules(paths) -> list[str]:
     return rules
 
 
+def read_deny_rules(paths) -> list[str]:
+    """Запрет ЧТЕНИЯ: только для симлинков, в любом режиме.
+
+    Цель симлинка лежит вне графа, и `Read(/**)` лексически её накрывает.
+    Живой запуск 26.08 показал, что CLI резолвит путь сам и отклоняет
+    чтение наружу под `dontAsk`, — но граница безопасности не должна
+    держаться на одном поведении внешней программы (аудит облака 26.08).
+    Защищённые папки сюда не входят: их модель обязана читать, чтобы
+    понимать граф, — закрыта только запись.
+    """
+    rules = []
+    for rel, is_dir in paths:
+        rel = str(rel).strip("/")
+        if not rel:
+            continue
+        rules.append(f"Read(/{rel}/**)" if is_dir else f"Read(/{rel})")
+    return rules
+
+
 def cloud_enrich_command(cfg: dict, *, claude_bin: str, prompt: str, model: str,
                          env: dict | None = None,
                          may_edit: bool | None = None,
                          graph_available: bool = True,
-                         deny_paths=()) -> list[str]:
+                         deny_paths=(), symlink_paths=()) -> list[str]:
     """Команда облачного разбора: доступ только к его рабочему графу.
 
     Раньше инструменты записи и `--permission-mode acceptEdits` стояли в
@@ -1168,6 +1187,10 @@ def cloud_enrich_command(cfg: dict, *, claude_bin: str, prompt: str, model: str,
            # каталоги, симлинки (rglob их не обходит, а цель может лежать
            # вне графа). Список собирает cloud_review перед запуском.
            *(deny_rules(deny_paths) if may_edit else ()),
+           # Чтение симлинков закрыто в ОБОИХ режимах: без правки графа
+           # deny-правил не было вовсе, и граница держалась только на
+           # резолве путей внутри CLI (аудит облака 26.08).
+           *read_deny_rules(symlink_paths),
            # Всё вне path-rules отклоняется. acceptEdits здесь небезопасен:
            # он принимает правки в cwd без явного правила и сложнее для аудита.
            "--permission-mode", "dontAsk",
