@@ -122,9 +122,9 @@ the zone's promises and closed the gaps:
   dossiers and cloud revisions, so the cores revision kept sharing the model
   with the live prompter. It now yields like the rest.
 - **One run at a time.** A manual start on top of a running one produced two
-  processes overwriting each other's status and markers. The lock is a
-  directory with a pid: a stale one from a dead process is taken over, a live
-  one is respected.
+  processes overwriting each other's status and markers. The lock is `flock`
+  on `logs/nightly.lock`, as everywhere else in the project: the script holds
+  the descriptor, and the kernel releases it on any death, `kill -9` included.
 - **A signal actually stops it.** The `trap` had no `exit`, so the run
   continued after `kill -TERM` and the "interrupted" state was overwritten by
   the final "ok" — that state was unreachable at all.

@@ -43,22 +43,31 @@ export CHAROITE_NIGHTLY_UNTIL=$(( $(date +%s) + NIGHTLY_MAX_H * 3600 ))
 # запуск поверх идущего давал два процесса, которые перезаписывают друг другу
 # статус и отметки tier3, сталкиваются одинаковым «Тема.md.tmp» и теряют
 # строки хроники при параллельном слиянии (аудит ночи 26.08, GLM Important 4).
-# Лок каталогом, а не flock: flock на macOS без util-linux нет, а python здесь
-# звать нельзя — им же подменяют шаги в тестах. mkdir атомарен на любой ФС;
-# протухший лок узнаём по мёртвому pid.
-LOCKDIR="${CHAROITE_ROOT:-$PWD}/logs/nightly.lock.d"
-mkdir -p "$(dirname "$LOCKDIR")"
-if ! mkdir "$LOCKDIR" 2>/dev/null; then
-  OTHER=$(cat "$LOCKDIR/pid" 2>/dev/null || echo "")
-  if [ -n "$OTHER" ] && kill -0 "$OTHER" 2>/dev/null; then
-    echo "ночной прогон уже идёт (pid $OTHER) — выхожу"
-    exit 0
+#
+# Лок — flock, как везде в проекте (src/file_locks.py), а НЕ каталог с pid:
+# самодельный лок круг-2 разобрал за минуту — гонка между mkdir и записью
+# pid, забор чужого свежего лока, переиспользование pid после ребута
+# (DS Critical 1 + Important 1). flock на macOS нет как утилиты, поэтому
+# берём его СИСТЕМНЫМ python3: тесты подменяют только .venv/bin/python.
+# Дескриптор 9 держит сам скрипт — лок живёт, пока жив прогон, и снимается
+# ядром при любой смерти процесса, включая kill -9 и потерю питания.
+LOCK="${CHAROITE_ROOT:-$PWD}/logs/nightly.lock"
+mkdir -p "$(dirname "$LOCK")"
+if exec 9>"$LOCK"; then
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c '
+import fcntl, sys
+try:
+    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit(1)          # занято живым прогоном
+except OSError:
+    sys.exit(0)          # ФС без flock — судить не по чему, не мешаем
+' || { echo "ночной прогон уже идёт — выхожу"; exit 0; }
+  else
+    echo "⚠️ python3 не найден — прогон без защиты от повторного запуска"
   fi
-  echo "⚠️ остался лок мёртвого прогона (pid ${OTHER:-неизвестен}) — забираю"
-  rm -rf "$LOCKDIR" && mkdir "$LOCKDIR" 2>/dev/null || true
 fi
-echo $$ > "$LOCKDIR/pid" 2>/dev/null || true
-cleanup_lock() { rm -rf "$LOCKDIR"; }
 
 rc=0
 STARTED=$(date '+%F %T')
@@ -100,10 +109,10 @@ skip_late() { echo "⏭️ $1 пропущен: время ночного про
 # write_status затирает «interrupted» на «ok» — прогон продолжал держать
 # машину после явного требования остановиться, и состояние «прервана» было
 # недостижимо через сигнал вовсе (аудит ночи 26.08, GLM Critical 1).
-trap 'write_status interrupted; cleanup_lock; exit 143' INT TERM
+trap 'write_status interrupted; exit 143' INT TERM
 # set -e выносит скрипт из любой необработанной команды, и статус остался бы
 # «идёт» навсегда — поломка, замаскированная под работу.
-trap '[ "$STATUS_DONE" = 1 ] || { rc=1; write_status failed; }; cleanup_lock' EXIT
+trap '[ "$STATUS_DONE" = 1 ] || { rc=1; write_status failed; }' EXIT
 
 # Пишем «идёт» сразу: прогон занимает от четверти часа до часа с лишним
 # (ревизия ядер и досье — это локальная модель на каждой теме), и всё это

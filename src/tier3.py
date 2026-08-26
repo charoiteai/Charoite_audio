@@ -224,9 +224,17 @@ def _merge(folder: pathlib.Path, stamp: str, a: dict, b: dict, log: list[str]) -
     if dup["essence_src"] == "секция" and dup["essence"]:
         if _plain(dup["essence"]) not in _plain(text):
             text += (f"\n## Суть дубля «{dup['name']}»\n{dup['essence']}\n")
+    # Дубль мог сам быть каноном прошлой ночи и нести чужие перенесённые сути:
+    # без этого цепочка X⊂Y⊂Z теряла суть Y на втором слиянии (круг-2 DS, M2).
+    for m in re.finditer(r"## Суть дубля «[^»]+»\n(?:(?!\n## ).)*",
+                         dup["text"], re.S):
+        block = m.group(0).rstrip()
+        if _plain(block) not in _plain(text):
+            text += "\n" + block + "\n"
     text += f"\n> 🔀 Tier3-NLI: сюда влита хроника дубля «{dup['name']}».\n"
     canon["path"].write_text(text, encoding="utf-8")
     canon["text"] = text
+    canon["mtime"] = canon["path"].stat().st_mtime   # своя запись — не «чужая рука»
     dup["path"].write_text(
         f"---\ntype: ядро\nвид: задача\ntags: [дубль, redirect, tier3-nli]\n---\n"
         f"# {dup['name']} → [[Ядра/{canon['name']}]]\n\n"
@@ -251,6 +259,7 @@ def _mark_dup(folder: pathlib.Path, stamp: str, a: dict, b: dict, log: list[str]
                         f"[[Ядра/{dst['name']}|{dst['name']}]] — свести вручную, "
                         f"если это одна тема.\n")
         src["path"].write_text(src["text"], encoding="utf-8")
+        src["mtime"] = src["path"].stat().st_mtime   # своя запись — не «чужая рука»
         changed = True
     if changed:
         log.append(f"⚠️ возможный дубль (пометка): «{a['name']}» ↔ «{b['name']}»")
@@ -270,6 +279,7 @@ def _link(folder: pathlib.Path, stamp: str, part: dict, whole: dict, log: list[s
         _backup(folder, stamp, src["path"])
         src["text"] += f"\n> 🧩 Tier3-NLI: {tag} — [[Ядра/{dst['name']}|{dst['name']}]]\n"
         src["path"].write_text(src["text"], encoding="utf-8")
+        src["mtime"] = src["path"].stat().st_mtime   # своя запись — не «чужая рука»
         changed = True
     if changed:
         log.append(f"🧩 «{part['name']}» ⊂ «{whole['name']}»")
@@ -288,8 +298,12 @@ def auto_apply_allowed(cfg: dict) -> bool:
 
 def _data_root() -> pathlib.Path:
     """Корень ДАННЫХ установки: там лежит лок демона, по нему судят о встрече."""
-    return pathlib.Path(os.environ.get("CHAROITE_ROOT")
-                        or pathlib.Path(__file__).resolve().parent.parent)
+    raw = (os.environ.get("CHAROITE_ROOT") or "").strip()
+    # strip+expanduser как в charoite_paths.resolve_root: «~» или хвостовой
+    # пробел в переменной уводили поиск daemon.lock мимо демона, и гейт
+    # «уступаю живой встрече» молча не срабатывал (круг-2 DS, M5).
+    return (pathlib.Path(raw).expanduser() if raw
+            else pathlib.Path(__file__).resolve().parent.parent)
 
 
 def night_wait_cap(default: float = 3600.0, now=None) -> float | None:

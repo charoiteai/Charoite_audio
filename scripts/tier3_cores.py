@@ -159,8 +159,13 @@ def main() -> int:
         # ревизия ничего не смотрит, а ночь показывала «ok». У досье такой
         # код есть с самого начала (аудит ночи 26.08, DS Important 4).
         return 0 if any(ran) else 2
-    return 0 if run(args.graph or graphs.configured_graph() or pathlib.Path.cwd(),
-                    apply_mode, mark_mode, args.since_last) else 2
+    target = pathlib.Path(args.graph or graphs.configured_graph() or pathlib.Path.cwd())
+    if not (target / "Ядра").is_dir():
+        # Код 2 значит «модель не отвечала»; отсутствие графа — другая беда
+        # и не авария, как и в ветке --all-graphs (круг-2 DS, M3).
+        print(f"в {target} нет папки «Ядра» — ревизовать нечего")
+        return 0
+    return 0 if run(target, apply_mode, mark_mode, args.since_last) else 2
 
 
 if __name__ == "__main__":
