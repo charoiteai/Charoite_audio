@@ -110,7 +110,7 @@ struct TodayWorkspaceView: View {
             case .transitioning(let stopping):
                 RecordCapsule(isRecording: stopping,
                               isTransitioning: true,
-                              clock: "", action: {})
+                              clockFrom: nil, action: {})
             case .recording:
                 Button(L.t("Открыть встречу", "Open meeting", "打开会议")) {
                     navigation.open(.meeting)
@@ -118,7 +118,7 @@ struct TodayWorkspaceView: View {
                 .charoite(.link)
                 VStack(alignment: .trailing, spacing: 6) {
                     RecordCapsule(isRecording: true,
-                                  clock: SuflerService.clockText(sufler.recordingElapsed),
+                                  clockFrom: sufler.recordingStartedAt,
                                   action: { sufler.toggle() })
                     if sufler.stopConfirmPending {
                         // двухшаговый стоп короткой записи: подтверждение
@@ -168,7 +168,7 @@ struct TodayWorkspaceView: View {
     /// SetupReadinessService, а не от самочувствия интерфейса.
     private var capsuleWithReadiness: some View {
         VStack(alignment: .trailing, spacing: 6) {
-            RecordCapsule(isRecording: false, clock: "") {
+            RecordCapsule(isRecording: false, clockFrom: nil) {
                 navigation.open(.meeting)
                 // первый запуск: онбординг-sheet суфлёра сам предложит старт
                 if firstRunSeen { sufler.toggle() }

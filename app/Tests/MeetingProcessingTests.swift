@@ -73,6 +73,47 @@ final class MeetingProcessingTests: XCTestCase {
         XCTAssertEqual(parts.minute, 3, "штамп 2026-08-04_120310 → 12:03")
     }
 
+    func testEqualSnapshotStillPublishesWhenResolveFlips() {
+        // Гейт «публикуем только изменившийся снимок» глотал переход
+        // processing→error: файл статуса при зависшем конвейере не
+        // меняется, а resolvedState меняет вердикт по времени (№433 C1).
+        let processing = snapshot(state: .processing, updated: 100)
+        let fresh = Date(timeIntervalSince1970: 100 + 60)
+        let stale = Date(timeIntervalSince1970: 100 + 31 * 60)
+
+        // свежий равный снимок с тем же резолвом — публикация не нужна
+        XCTAssertFalse(MeetingProcessingPolicy.shouldPublish(
+            current: processing, latest: processing,
+            lastResolved: .processing, now: fresh))
+        // тот же снимок, но резолв перещёлкнулся в error — публикуем
+        XCTAssertTrue(MeetingProcessingPolicy.shouldPublish(
+            current: processing, latest: processing,
+            lastResolved: .processing, now: stale))
+        // после публикации error-резолва повторов нет
+        XCTAssertFalse(MeetingProcessingPolicy.shouldPublish(
+            current: processing, latest: processing,
+            lastResolved: .error, now: stale))
+        // изменившийся снимок публикуется всегда
+        XCTAssertTrue(MeetingProcessingPolicy.shouldPublish(
+            current: processing, latest: snapshot(state: .ready),
+            lastResolved: .processing, now: fresh))
+        // пустой каталог после снимка — тоже событие
+        XCTAssertTrue(MeetingProcessingPolicy.shouldPublish(
+            current: processing, latest: nil,
+            lastResolved: .processing, now: fresh))
+        // возврат из пустого каталога
+        XCTAssertTrue(MeetingProcessingPolicy.shouldPublish(
+            current: nil, latest: processing,
+            lastResolved: nil, now: fresh))
+        // конвейер ожил: свежий updated_at меняет сырой снимок — публикуем,
+        // даже когда последний опубликованный резолв был error
+        XCTAssertTrue(MeetingProcessingPolicy.shouldPublish(
+            current: processing,
+            latest: snapshot(state: .processing, updated: 40 * 60),
+            lastResolved: .error,
+            now: Date(timeIntervalSince1970: 41 * 60)))
+    }
+
     func testProcessingBecomesExplicitErrorAfterThirtyMinutes() {
         let processing = snapshot(state: .processing, updated: 100)
 

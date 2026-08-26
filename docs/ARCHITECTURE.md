@@ -81,6 +81,30 @@ Rules after the post-mortem:
   `set theses off quiet` since #394, so the loop never ran in a live
   session — code that "seems to do something" is worse than none.
 
+### What repaints in the app
+
+The local model and the recording share the machine with the interface
+itself, so the UI has its own resource contract. Measured on 24.08: the
+app held 37% CPU on average over 4.5 days of uptime — without a single
+frame of animation, purely from redundant repaints. Two rules came out
+of that post-mortem:
+
+- **A ticking value lives in its own view.** The recording clock's
+  second is `RecordingClock` (a `TimelineView` driven by the start
+  date), not an `@Published` in the service: publishing once per second
+  redrew the whole day screen with its ten subscribers for the entire
+  meeting. Duration is derived from the start date, so a sleeping
+  laptop does not eat it, and an invisible view does not tick at all.
+- **A publish gate compares what the consumer reads.** The two-second
+  processing-status poll published identical values and woke
+  subscribers for nothing — an equality gate is mandatory. But
+  comparing the raw snapshot is not enough: "processing" turns into
+  "error" by the CLOCK (thirty minutes of silence) while the file stays
+  untouched. The gate compares the resolved state — otherwise a hung
+  pipeline silently stays an eternal spinner with no Retry button (both
+  cases came from DeepSeek rounds on #433: first on the meeting card,
+  then on the error badge).
+
 ## Diarization: two passes
 
 1. **Live**: each chunk is embedded (ERes2Net, 512-dim) → a voice tracker

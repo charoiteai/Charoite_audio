@@ -390,10 +390,37 @@ struct ReadinessLine: View {
 /// состояние ЗАПИСИ, а не наличие входного сигнала: метр уровня удалён —
 /// уровень входа нигде не публикуется, и полоски были бы вечно пустым
 /// враньём; настоящий метр — отдельная задача (ревью 15.08).
+/// Секундные часы записи, замкнутые в собственную вью: TimelineView
+/// перерисовывает только эти цифры. Секундный @Published в сервисе
+/// перерисовывал каждого подписчика целиком (№50 — 37% CPU на записи).
+struct RecordingClock: View {
+    let startedAt: Date?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let txt = Self.text(
+                startedAt.map { context.date.timeIntervalSince($0) } ?? 0)
+            // value обновляется каждый тик: VoiceOver читает «Идёт запись,
+            // 0:42», а не только label (круг-1 DS, M2)
+            Text(txt).accessibilityValue(txt)
+        }
+    }
+
+    /// «18:42» — мм:сс, а после часа «1:18:42». Для таймера, который человек
+    /// читает боковым зрением, ведущие нули у минут важнее единообразия.
+    nonisolated static func text(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds))
+        let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60)
+        return h > 0
+            ? String(format: "%d:%02d:%02d", h, m, s)
+            : String(format: "%d:%02d", m, s)
+    }
+}
+
 struct RecordCapsule: View {
     let isRecording: Bool
     var isTransitioning: Bool = false
-    let clock: String
+    let clockFrom: Date?
     let action: () -> Void
 
     /// Один источник для надписи и системного шортката: разъедутся — капсула
@@ -419,7 +446,7 @@ struct RecordCapsule: View {
                         // что слушаем, без мигающих лампочек
                         .symbolEffect(.variableColor.iterative,
                                       options: .repeating, isActive: true)
-                    Text(clock)
+                    RecordingClock(startedAt: clockFrom)
                         .font(.body.weight(.light))
                         .monospacedDigit()
                     Divider().frame(height: 14).overlay(Color.white.opacity(0.35))
