@@ -178,7 +178,7 @@ class LLM:
                busy_wait: float = BUSY_WAIT_LIVE) -> Iterator[str]:
         # think=False КРИТИЧЕН для live-контуров: дефолтный thinking у gemma4
         # молча съедает ~10с до первого слова (замер 17.07: TTFT 10.4с → 0.5с).
-        # think=True — только для глубоких фоновых проходов (deep_loop).
+        # think=True в живом контуре не используется (deep_loop удалён 26.08).
         #
         # ЛОВУШКА (замер 22.07): в Ollama num_predict ОДИН на рассуждение и ответ
         # (у Gemini это раздельные thinkingBudget/maxOutputTokens). qwen3.6 на
@@ -186,12 +186,18 @@ class LLM:
         # целиком: минутки при think=True вышли ПУСТЫМИ (0 знаков) на бюджетах
         # 500 и 1600, а при 4000 — 83с против 10с и документ вдвое беднее.
         # Для документов рассуждение не включать; при think=True num_predict
-        # либо не задавать вовсе (как в deep_loop), либо давать с запасом ×8.
+        # либо не задавать вовсе (deep_loop удалён), либо давать с запасом ×8.
         messages = [
             {"role": "system", "content": system or self.system},
             {"role": "user", "content": prompt},
         ]
         if self.engine == "mlx-server":
+            if model and model != self.mlx_model:
+                # Запрошенная модель на mlx-server не транслируется — это
+                # больше не молча (круг-2 DS по #430): вызывающий думает,
+                # что работает малая, а гонится mlx_model.
+                print(f"llm: mlx-server игнорирует model={model} — "
+                      f"гонит {self.mlx_model}", file=sys.stderr, flush=True)
             yield from self._stream_mlx(messages, think=think,
                                         num_predict=num_predict,
                                         temperature=temperature,

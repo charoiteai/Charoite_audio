@@ -48,7 +48,7 @@ import stt_runtime  # noqa: E402
 import thesis_rules  # noqa: E402
 import voice_pitch  # noqa: E402
 from audio import AudioHub  # noqa: E402
-from llm import LLM, embed as llm_embed  # noqa: E402
+from llm import LLM, LLMHTTPError, embed as llm_embed  # noqa: E402
 from stt import STT  # noqa: E402
 from transcript import NOISE, Transcript  # noqa: E402
 
@@ -1372,17 +1372,35 @@ def main():
                 seen = len(full)
                 continue
             try:
-                with hint_slot("нить") as got:
+                # Нить — фон на МАЛОЙ модели и с мгновенным отказом от слота:
+                # в live auto_model=None гнал её на ОСНОВНОЙ 35b с ожиданием
+                # 240 с — подсказчик голодал (26.08, встречи 11:07 и 11:35:
+                # stall 167–461 с, last=busy/failed, сторож #398; DS I1 по
+                # #430). Слот и большая модель — подсказкам; нить не стоит в
+                # их очереди (timeout=1) — кусок дождётся следующего тика.
+                # На mlx-server параметр model игнорируется движком — это
+                # больше не молча: llm.py пишет строку в err-лог (круг-2 DS).
+                with hint_slot("нить", timeout=1.0) as got:
                     if not got:
                         continue
                     parts: list[str] = []
                     yielded = False
-                    # Нить — фон: в live-профиле auto_model=None гнал её на
-                    # ОСНОВНОЙ 35b, и она держала hint_slot десятки секунд —
-                    # подсказчик голодал (26.08, встречи 11:07 и 11:35: stall
-                    # 167–461 с, last=busy/failed, сторож #398; DS I1 по #430).
-                    # Слот и большая модель — подсказкам; нити хватает малой.
-                    for tok in llm.thread(tail, thread.as_context(), model=llm.small):
+
+                    def _thread_tokens():
+                        # Жёсткий llm.small мимо resolve_model молча убивал
+                        # нить на конфиге без малой модели (круг-2 DS I2):
+                        # одна повторная попытка через resolve_model.
+                        try:
+                            yield from llm.thread(tail, thread.as_context(),
+                                                  model=llm.small)
+                        except LLMHTTPError:
+                            print("нить: малая модель недоступна — "
+                                  "пробую через resolve_model",
+                                  file=sys.stderr, flush=True)
+                            yield from llm.thread(tail, thread.as_context(),
+                                                  model=None)
+
+                    for tok in _thread_tokens():
                         if manual_evt.is_set():
                             yielded = True   # ручной вопрос важнее: бросаем, кусок дождётся
                             break
