@@ -589,13 +589,18 @@ def _match_speaker(cand: str, known: set[str]) -> str:
     c = _norm_name(cand)
     if not c or len(c.split()) > 3:
         return ""
-    for s in known:
+    hits = []
+    for s in sorted(known):
         n = _norm_name(s)
         if not n:
             continue
-        if c == n or set(c.split()) <= set(n.split()) or set(n.split()) <= set(c.split()):
-            return s
-    return ""
+        if c == n:
+            return s            # точное совпадение снимает любую двусмысленность
+        if set(c.split()) <= set(n.split()) or set(n.split()) <= set(c.split()):
+            hits.append(s)
+    # Двое «Петров» в одной встрече: подписать наугад — та же ложная
+    # атрибуция, только реже. Молчим, как и когда имени нет вовсе.
+    return hits[0] if len(hits) == 1 else ""
 
 
 def _closest_span(quote: str, transcript: str, threshold: float = 0.75) -> str:

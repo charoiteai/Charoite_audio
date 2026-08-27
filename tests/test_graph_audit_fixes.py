@@ -186,3 +186,14 @@ def test_links_are_read_only_from_the_surviving_file(tmp_path):
     assert files["CRM"]["kind"] == "Ядра", "ядро должно побеждать в дубле имени"
     assert "CRM" not in back.get("Миграция", set()), \
         "ссылка проигравшего файла попала в кластер"
+
+
+def test_two_people_with_the_same_first_name_stay_unsigned():
+    """Подписать наугад — та же ложная атрибуция, просто реже."""
+    tr = "10:15 Пётр: решили брать новый вариант со следующей недели"
+    core = {"цитата": "решили брать новый вариант", "кто": "Ира"}
+    out = graph_updater.core_anchor(core, tr, {"Пётр Иванов", "Пётр Сидоров"})
+    assert "Пётр" not in out, f"выбрал одного из тёзок: {out}"
+    assert "«решили брать новый вариант»" in out
+    # а точное совпадение двусмысленности не создаёт
+    assert "Пётр" in graph_updater.core_anchor(core, tr, {"Пётр", "Пётр Иванов"})
