@@ -322,7 +322,8 @@ def test_invalid_answer_rolls_back_even_allowed_edits(tmp_path, monkeypatch):
     assert (q / "Люди" / "Новый.md").exists() and "ЮPay" in (
         q / "Ядра" / "Платёжный провайдер.md").read_text(encoding="utf-8")
     text = log.read_text(encoding="utf-8")
-    assert "ответ невалиден — правки графа откачены (2 тронуто, 0 оставлено)" in text
+    assert ("ответ невалиден — правки графа откачены: изменилось 2, "
+            "откачено 2, оставлено чужого 0") in text
 
 
 def test_graph_lock_serialises_workers_and_degrades_to_read_only(tmp_path, monkeypatch):
@@ -857,38 +858,92 @@ def test_delivery_does_not_depend_on_the_log_and_quarantine_names_the_stem(tmp_p
 
 
 def test_rollback_does_not_swallow_a_neighbours_work(tmp_path):
-    """Откат по невалидному ответу не трогает файлы, появившиеся во время прогона.
+    """Откат не трогает файлы ДРУГОЙ встречи — включая производные.
 
     27.08 вживую: облачная ревизия встречи 10:32 упала по таймауту 1800 с,
-    откат вернул граф к снимку — и унёс не только свои правки, но и заметку
-    самой встречи вместе с пятью артефактами встречи 11:33, разобранной сорока
-    минутами позже. Замок графа облако держит все тридцать минут ожидания, а
-    локальный разбор его не берёт — «изменилось с момента снимка» не отличает
-    чужую работу от своей. Чужое дороже лишнего: оставляем и называем вслух.
+    откат вернул граф к снимку — и унёс заметку самой встречи вместе с пятью
+    артефактами встречи 11:33, разобранной сорока минутами позже. Замок графа
+    облако держит все тридцать минут ожидания, разбор его не берёт, и
+    «изменилось с момента снимка» чужую работу от своей не отличает.
+
+    Имена здесь настоящие: конвейер копирует в «Стенограммы встреч» именно
+    производные (`_live`, `_minutes`, `_разбор`), а `stamp_of` их намеренно
+    не признаёт встречей — на «удобном» имени без суффикса тест был зелёным,
+    а файлы всё равно уезжали (круг-1 по PR #439, DS Critical 1).
     """
     graph = _graph(tmp_path)
     before = cloud_review.snapshot(graph)
     backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
 
-    # пока облако ждало модель, соседний разбор записал свою встречу
     neighbour = graph / "Встречи" / "2026-08-27_1133.md"
     neighbour.parent.mkdir(parents=True, exist_ok=True)
     neighbour.write_text("# Встреча 2026-08-27_1133\nработа соседа\n", encoding="utf-8")
-    doc = graph / "Документация" / "Стенограммы встреч" / "2026-08-27_1133_Статус.md"
-    doc.parent.mkdir(parents=True, exist_ok=True)
-    doc.write_text("стенограмма соседа\n", encoding="utf-8")
+    docs = graph / "Документация" / "Стенограммы встреч"
+    docs.mkdir(parents=True, exist_ok=True)
+    aux = []
+    for tail in ("", "_live", "_minutes", "_hints", "_разбор"):
+        f = docs / f"2026-08-27_1133_Статус_ВВКИ{tail}.md"
+        f.write_text(f"артефакт{tail}\n", encoding="utf-8")
+        aux.append(f)
 
     qdir = tmp_path / "q"
     v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
                                         rollback=True, stamp="2026-08-27_1032")
 
     assert neighbour.exists(), "откат унёс заметку соседней встречи"
-    assert doc.exists(), "откат унёс стенограмму соседней встречи"
-    assert sorted(v.kept_new) == ["2026-08-27_1133.md", "2026-08-27_1133_Статус.md"]
-    assert not v.removed, "чужие файлы уехали в карантин"
-    line = cloud_review.verdict_line(v, qdir) if hasattr(cloud_review, "verdict_line") else ""
-    if line:
-        assert "НЕ ТРОНУТЫ" in line and "2026-08-27_1133.md" in line
+    for f in aux:
+        assert f.exists(), f"откат унёс {f.name}"
+    assert len(v.kept_new) == 6 and not v.removed
+    line = cloud_review._verdict_line(v, qdir)
+    assert "НЕ ТРОНУТЫ" in line and "2026-08-27_1133_Статус_ВВКИ_live.md" in line
+    assert "оставлено чужого 6" in line
+
+
+def test_a_second_meeting_of_the_same_minute_is_a_stranger(tmp_path):
+    """Демон после краха поднимается через две секунды — внутри той же минуты.
+
+    Вторая встреча минуты живёт со своим посекундным штампом, и сводить их по
+    минуте значит объявить чужое своим (круг-1 по PR #439, DS Critical 2).
+    """
+    graph = _graph(tmp_path)
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-08-27_113312")
+    owner = graph / "Встречи" / "2026-08-27_1133.md"
+    owner.parent.mkdir(parents=True, exist_ok=True)
+    owner.write_text("# владелец минуты\n", encoding="utf-8")
+    qdir = tmp_path / "q"
+    v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
+                                        rollback=True, stamp="2026-08-27_113312")
+    assert owner.exists() and "2026-08-27_1133.md" in v.kept_new
+
+
+def test_our_own_files_are_still_rolled_back(tmp_path):
+    """Послабление не распространяется на свою же встречу."""
+    graph = _graph(tmp_path)
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
+    mine = graph / "Встречи" / "2026-08-27_1032.md"
+    mine.parent.mkdir(parents=True, exist_ok=True)
+    mine.write_text("# наша встреча\n", encoding="utf-8")
+    qdir = tmp_path / "q"
+    v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
+                                        rollback=True, stamp="2026-08-27_1032")
+    assert not mine.exists() and "2026-08-27_1032.md" in v.removed
+
+
+def test_a_neighbour_is_spared_even_when_the_answer_is_valid(tmp_path):
+    """Артефакты соседа лежат в защищённой папке — и при валидном ответе
+    уезжали в карантин тем же механизмом (круг-1, DS Important 1)."""
+    graph = _graph(tmp_path)
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
+    docs = graph / "Документация" / "Стенограммы встреч"
+    docs.mkdir(parents=True, exist_ok=True)
+    f = docs / "2026-08-27_1133_Статус_ВВКИ_разбор.md"
+    f.write_text("разбор соседа\n", encoding="utf-8")
+    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q",
+                                        rollback=False, stamp="2026-08-27_1032")
+    assert f.exists() and f.name in v.kept_new and not v.removed
 
 
 def test_rollback_still_removes_what_the_cloud_created_where_it_may_not(tmp_path):
