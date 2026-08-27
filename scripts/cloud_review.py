@@ -964,7 +964,8 @@ def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:
     if v.removed:
         parts.append(f"создано в служебной зоне — в карантин: {', '.join(v.removed)}")
     if v.watched:
-        parts.append(f"ИЗМЕНИЛОСЬ в зоне исполнения (проверь сам): {', '.join(v.watched)}")
+        parts.append(f"ПРОВЕРЬ РУКАМИ — настройки плагина изменились за окно "
+                     f"ревизии, там бывают стартовые шаблоны: {', '.join(v.watched)}")
     if v.kept_new:
         parts.append(f"появилось после снимка, НЕ ТРОНУТО: {', '.join(v.kept_new)}")
     if v.unrestorable:

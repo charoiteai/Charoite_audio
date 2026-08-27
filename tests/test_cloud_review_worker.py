@@ -1080,7 +1080,7 @@ def test_obsidian_keeps_writing_its_own_plugin_settings(tmp_path):
     assert settings.name in v.watched, "изменение в зоне исполнения не названо"
     assert settings.name not in v.reverted and settings.name not in v.removed
     line = cloud_review._verdict_line(v, tmp_path / "q")
-    assert "ИЗМЕНИЛОСЬ в зоне исполнения" in line and "data.json" in line
+    assert "ПРОВЕРЬ РУКАМИ" in line and "data.json" in line
 
 
 def test_gits_own_sample_hooks_are_not_swept_away(tmp_path):
