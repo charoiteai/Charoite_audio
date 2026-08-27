@@ -512,12 +512,13 @@ def written_by_the_pipeline(path: pathlib.Path, graph: pathlib.Path,
 
 def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
             qdir: pathlib.Path, old: pathlib.Path, existed: bool, why: str | None,
-            v: Verdict, ours: dict[str, str] | None = None) -> None:
+            v: Verdict, ours: dict[str, str] | None = None, *,
+            pipeline_busy: bool = False) -> None:
     """Убрать одну правку: созданное — в карантин, существовавшее — копией
     в карантин и из бэкапа обратно. Ничего не стирается."""
     ours = ours or {}
     if not existed:
-        if written_by_the_pipeline(path, graph, ours):
+        if pipeline_busy or written_by_the_pipeline(path, graph, ours):
             # Работа конвейера — не правка облака: оставляем и называем
             # вслух. Проверка идёт при ЛЮБОМ исходе, не только при откате:
             # артефакты лежат в «Документация/Стенограммы встреч», а это
@@ -567,6 +568,12 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
     v = Verdict(rolled_back=rollback)
     # Что за время нашего прогона записал конвейер — по его же журналу.
     ours = graph_writes.written_since(ROOT, since) if since else {}
+    # А работал ли он вообще в это окно. Если да — новые файлы не удаляем ни
+    # одного: подписаны не все писатели (их семнадцать в пяти модулях), и
+    # перечислять их бесполезно — каждый новый заводил бы дыру заново. Цена
+    # честная: уцелеет и то, что создало облако, но это видно в логе, а
+    # потерянную заметку встречи вернуть неоткуда (№119).
+    pipeline_busy = bool(since) and graph_writes.pipeline_was_busy(ROOT, since)
     touched = changed_since(before, graph)
     v.touched = len(touched)
     qdir = qdir or quarantine_root(graph) / backup.name
@@ -585,7 +592,8 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
             why = judge(path, graph, old_text, new_text, existed)
             if why is None and not rollback:
                 continue
-            _settle(path, graph, backup, qdir, old, existed, why, v, ours)
+            _settle(path, graph, backup, qdir, old, existed, why, v, ours,
+                    pipeline_busy=pipeline_busy)
         except OSError:
             v.failed.append(path.name)
     return v

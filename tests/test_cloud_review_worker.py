@@ -989,16 +989,71 @@ def test_the_cloud_cannot_hide_behind_our_journal_entry(tmp_path, monkeypatch):
     assert "2026-08-27_1032.md" in v.removed and not v.kept_new
 
 
-def test_the_pipeline_signs_artefacts_and_the_archive(tmp_path):
-    """Отметку ставит сам конвейер, а не тест: иначе неотмеченный писатель невидим.
+def test_a_busy_pipeline_window_protects_everything_it_wrote(tmp_path, monkeypatch):
+    """Гарантия держится на окне, а не на полноте списка писателей.
 
-    27.08 потерялись именно артефакты и папка архива — журнал заводился ради
-    них (круг-4, GLM Critical 1).
+    Писателей в граф семнадцать в пяти модулях, и пятый круг по PR #439 нашёл
+    подписанными три. Перечислять бесполезно: каждый новый заводит дыру
+    заново. Разбор объявляет окно своей работы, и откат, чьё окно пересеклось
+    с ним, не удаляет НИ ОДНОГО появившегося файла — он не может знать, чьи
+    они. Цена названа в логе: уцелеет и то, что создало облако.
     """
-    src = (pathlib.Path(__file__).resolve().parent.parent / "src"
-           / "graph_updater.py").read_text(encoding="utf-8")
-    docs = src[src.index("vdocs = graph"):src.index("# 4в) архив")]
-    assert "graph_writes.note(ROOT, graph, *copied)" in docs, \
-        "копии артефактов не отмечаются — откат унесёт их снова"
-    arch = src[src.index("arch_folder = archive_meeting("):]
-    assert "graph_writes.note(ROOT, graph," in arch[:600], "архив встречи не отмечается"
+    graph = _graph(tmp_path)
+    root = tmp_path / "data"
+    monkeypatch.setattr(cloud_review, "ROOT", root)
+    started = time.time()
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
+
+    with graph_writes.busy(root):          # пока облако ждало модель
+        made = []
+        for rel in ("Люди/Новый человек.md",            # узел, никем не подписан
+                    "Ядра/Новая тема.md",               # ядро, никем не подписан
+                    "Встречи-архив/2026-08-27 11-33 — Статус/Саммари.md"):
+            f = graph / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("работа конвейера\n", encoding="utf-8")
+            made.append(f)
+
+    qdir = tmp_path / "q"
+    v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
+                                        rollback=True, since=started)
+    for f in made:
+        assert f.exists(), f"откат унёс {f.name}, хотя конвейер работал в это окно"
+    assert len(v.kept_new) == len(made) and not v.removed
+
+
+def test_without_a_pipeline_window_the_cloud_is_rolled_back_as_before(tmp_path, monkeypatch):
+    """Послабление действует только при пересечении окон, а не всегда."""
+    graph = _graph(tmp_path)
+    root = tmp_path / "data"
+    monkeypatch.setattr(cloud_review, "ROOT", root)
+    started = time.time()
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
+    made = graph / "Люди" / "Выдумка облака.md"
+    made.parent.mkdir(parents=True, exist_ok=True)
+    made.write_text("узел от облака\n", encoding="utf-8")   # конвейер не работал
+    qdir = tmp_path / "q"
+    v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
+                                        rollback=True, since=started)
+    assert not made.exists() and "Выдумка облака.md" in v.removed
+
+
+def test_a_window_that_closed_before_our_snapshot_does_not_count(tmp_path, monkeypatch):
+    """Вчерашняя работа конвейера не оправдывает сегодняшние правки облака."""
+    graph = _graph(tmp_path)
+    root = tmp_path / "data"
+    monkeypatch.setattr(cloud_review, "ROOT", root)
+    with graph_writes.busy(root):
+        pass                                   # окно открылось и закрылось ДО снимка
+    time.sleep(0.01)
+    started = time.time()
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
+    made = graph / "Ядра" / "Поздняя выдумка.md"
+    made.parent.mkdir(parents=True, exist_ok=True)
+    made.write_text("узел от облака\n", encoding="utf-8")
+    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q",
+                                        rollback=True, since=started)
+    assert not made.exists() and "Поздняя выдумка.md" in v.removed

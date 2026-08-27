@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import contextlib  # noqa: F401 — тип в аннотации busy()
 import hashlib
 import json
 import pathlib
@@ -61,6 +62,115 @@ def digest(path: pathlib.Path) -> str:
         return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
     except OSError:
         return ""
+
+
+def write_text(root: pathlib.Path, graph: pathlib.Path, path: pathlib.Path,
+               text: str, *, encoding: str = "utf-8") -> None:
+    """Записать файл графа и тут же подписать — одним действием.
+
+    Перечислять писателей оказалось безнадёжно: пятый круг по PR #439 нашёл,
+    что подписаны три места из одиннадцати, и каждый новый писатель заводил бы
+    дыру заново. Поэтому подпись переехала внутрь записи: кто пишет через эту
+    функцию, тот подписан по построению, а тест-страж не даёт писать в граф
+    мимо неё.
+    """
+    pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
+    pathlib.Path(path).write_text(text, encoding=encoding)
+    note(root, graph, path)
+
+
+def copy(root: pathlib.Path, graph: pathlib.Path,
+         src: pathlib.Path, dst: pathlib.Path) -> None:
+    """Скопировать артефакт в граф и подписать. Метаданные сохраняем, как
+    делал copy2: время файла в архиве и в vault должно совпадать с оригиналом."""
+    import shutil
+
+    pathlib.Path(dst).parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+    note(root, graph, dst)
+
+
+def busy(root: pathlib.Path) -> "contextlib.AbstractContextManager":
+    """Отметить окно, пока конвейер работает с графом.
+
+    Подписывать каждый файл оказалось невозможно перечислением: писателей
+    семнадцать в пяти модулях, и пятый круг по PR #439 нашёл подписанными три
+    из них. Каждый новый писатель заводил бы дыру заново.
+
+    Поэтому гарантия даётся окном, а не списком: разбор встречи объявляет
+    «я работаю с T1 по T2», и откат облачной ревизии, чьё окно пересеклось с
+    этим, НЕ УДАЛЯЕТ появившиеся файлы — он не может знать, чьи они. Точечные
+    подписи (`write_text`, `copy`) остаются поверх: они уточняют, но гарантия
+    держится и без них.
+
+    Цена честная: в пересекающемся окне уцелеет и то, что создало облако.
+    Такой файл виден в логе поимённо и его можно убрать руками, а потерянную
+    заметку встречи вернуть неоткуда, кроме карантина (№119).
+    """
+    return _Busy(root)
+
+
+class _Busy:
+    def __init__(self, root: pathlib.Path) -> None:
+        self._root = root
+
+    def __enter__(self) -> "_Busy":
+        _mark(self._root, "start")
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        _mark(self._root, "end")
+        return False
+
+
+def _mark(root: pathlib.Path, what: str) -> None:
+    try:
+        log = _log_path(root)
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"t": time.time(), "busy": what}) + "\n")
+    except OSError:
+        pass
+
+
+def pipeline_was_busy(root: pathlib.Path, since: float) -> bool:
+    """Работал ли конвейер с графом после момента since (или работает сейчас)."""
+    log = _log_path(root)
+    if not log.is_file():
+        return False
+    try:
+        for line in log.read_text(encoding="utf-8", errors="ignore").splitlines():
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(rec, dict) and rec.get("busy") and rec.get("t", 0) >= since:
+                return True     # старт или конец работы попал в наше окно
+            # окно конвейера могло начаться ДО нашего снимка и ещё не кончиться
+            if isinstance(rec, dict) and rec.get("busy") == "start":
+                start = rec.get("t", 0)
+                if start < since and not _closed_after(root, start):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def _closed_after(root: pathlib.Path, start: float) -> bool:
+    """Было ли «end» после этого «start» — иначе конвейер ещё в работе."""
+    log = _log_path(root)
+    try:
+        for line in log.read_text(encoding="utf-8", errors="ignore").splitlines():
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if (isinstance(rec, dict) and rec.get("busy") == "end"
+                    and rec.get("t", 0) > start):
+                return True
+    except OSError:
+        pass
+    return False
 
 
 def written_since(root: pathlib.Path, since: float) -> dict[str, str]:
