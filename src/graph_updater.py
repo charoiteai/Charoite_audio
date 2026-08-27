@@ -499,8 +499,7 @@ def core_anchor(core: dict, transcript: str) -> str:
     СТЕНОГРАММУ, не модель. Цитата тогда дословна по построению; модель
     лишь указывает, ГДЕ искать. Ниже порога — по-прежнему отбрасываем.
     """
-    who = (core.get("кто") or "").strip().strip(".,!?»«\"")
-    when = (core.get("время") or "").strip()
+    who_llm = (core.get("кто") or "").strip().strip(".,!?»«\"")
     quote = " ".join((core.get("цитата") or "").split())
     if not quote or len(quote.split()) < 3:
         return ""
@@ -508,36 +507,116 @@ def core_anchor(core: dict, transcript: str) -> str:
     # цитаты старый шаблон не находил ни одного слова, norm(quote) выходил
     # пустым, а пустая строка входит в любую — проверка провенанса в zh-режиме
     # не отбрасывала выдумки, а пропускала их как подтверждённые.
-    norm = lambda s: " ".join(re.findall(r"\w+", s.lower(), re.UNICODE))
-    if not norm(quote):
+    if not re.findall(r"\w+", quote.lower(), re.UNICODE):
         return ""       # сверять нечего — за проверенное не выдаём
-    if norm(quote) not in norm(transcript):
-        quote = _closest_span(quote, transcript)
-        if not quote:
-            return ""  # даже похожего места нет — отбрасываем выдумку
-    head = ", ".join(x for x in (who, when if re.match(r"^\d{1,2}:\d{2}$", when) else "") if x)
+    found = _locate(quote, transcript)
+    if not found:
+        return ""       # даже похожего места нет — отбрасываем выдумку
+    quote, at = found
+    # «Кто» и «когда» — ТОЛЬКО из стенограммы. Раньше оба поля брались из
+    # ответа модели и не сверялись ни с чем: цитата настоящая, а подпись под
+    # ней — чья угодно. Стенограмма говорит «Пётр, 10:00», модель пишет «Ира,
+    # 11:00» — и в графе навсегда ложная атрибуция, которую не отличить от
+    # верной (аудит графа 26.08, Codex Important 1). Стенограмма молчит о
+    # говорящем — пишем цитату без подписи: отсутствие честнее выдумки, тот же
+    # принцип, что и для самой цитаты.
+    who, when = _speaker_at(transcript, at)
+    if who_llm and not who:
+        # не тихо: расхождение видно в логе прогона, а не только в графе
+        print(f"граф: «{who_llm}» от модели не подтверждён стенограммой — "
+              f"цитата идёт без подписи")
+    head = ", ".join(x for x in (who, when) if x)
     return f" · {head}: «{quote}»" if head else f" · «{quote}»"
 
 
-def _closest_span(quote: str, transcript: str, threshold: float = 0.75) -> str:
-    """Найти в стенограмме фрагмент, ближайший к модельному пересказу.
+# Реплика в стенограмме: «Имя: текст», иногда с таймкодом «[10:15]» или
+# «10:15» перед именем. Имя — до трёх слов: длинный префикс с двоеточием это
+# уже не говорящий, а заголовок вроде «Решения по проекту:».
+_SPEAKER_RE = re.compile(
+    r"^\s*(?:[-*>#]+\s*)?(?:\[?(\d{1,2}:\d{2})\]?\s+)?"
+    r"([^\s:*#\[][^:]{0,40}?)\s*:\s", re.UNICODE)
+_TIME_RE = re.compile(r"\[(\d{1,2}:\d{2})\]|(?:^|\s)(\d{1,2}:\d{2})(?:\s|$)")
 
-    Скользящее окно той же длины в словах (±2) по всей стенограмме; сходство —
-    difflib по спискам нормализованных слов. Возвращается ОРИГИНАЛЬНЫЙ срез
-    стенограммы (с регистром и пунктуацией), а не текст модели: даже если окно
-    чуть сползло, в граф попадает настоящая реплика, а не правдоподобный сочин.
+
+def _speaker_at(transcript: str, at: int) -> tuple[str, str]:
+    """Кто говорил и во сколько — по самой стенограмме, начиная с позиции at.
+
+    Ищем вверх от строки, где нашлась цитата: имя говорящего — в пределах
+    пяти строк (диаризация ставит его в начале реплики), таймкод — в пределах
+    двадцати (заголовки «## [10:15]» разрежены). Не нашли — возвращаем пустое,
+    и якорь останется без подписи.
+    """
+    lines = transcript[:at].split("\n")
+    who, when = "", ""
+    for back, ln in enumerate(reversed(lines)):
+        if not when and back < 20:
+            m = _TIME_RE.search(ln)
+            if m:
+                when = m.group(1) or m.group(2) or ""
+        if not who and back < 5:
+            m = _SPEAKER_RE.match(ln)
+            if m:
+                cand = m.group(2).strip(" *_#>-")
+                if cand and len(cand.split()) <= 3:
+                    who, when = cand, when or (m.group(1) or "")
+        if (who or back >= 5) and (when or back >= 20):
+            break
+    return who, when
+
+
+def _closest_span(quote: str, transcript: str, threshold: float = 0.75) -> str:
+    """Дословный срез стенограммы, ближайший к модельному пересказу (или «»)."""
+    found = _locate(quote, transcript, threshold)
+    return found[0] if found else ""
+
+
+def _locate(quote: str, transcript: str,
+            threshold: float = 0.75) -> tuple[str, int] | None:
+    """Найти цитату в стенограмме: вернуть дословный срез И его смещение.
+
+    Смещение нужно провенансу: по нему `_speaker_at` поднимается к строке
+    реплики и берёт говорящего из САМОЙ стенограммы. Без позиции подпись
+    приходилось брать у модели — то есть у того, чьи выдумки мы и проверяем.
+
+    Два уровня, как и раньше. Точное вхождение по словам — идеал, но модель
+    пересказывает даже при «скопируй дословно», и все цитаты уходили в
+    корзину. Второй уровень: скользящее окно той же длины (±2), сходство —
+    difflib по нормализованным словам; при ≥ threshold возвращается ОРИГИНАЛ
+    стенограммы, а не текст модели. Ниже порога — ничего.
     """
     import difflib
 
-    q_words = re.findall(r"[а-яёa-z0-9]+", quote.lower())
+    # \w с re.UNICODE, а не список русских и латинских букв: у китайской
+    # цитаты старый шаблон не находил ни одного слова, и второй уровень сверки
+    # не работал вовсе — в zh-режиме якорь молча отсутствовал почти всегда
+    # (аудит графа 26.08, GLM; тот же класс был и в core_anchor).
+    q_words = re.findall(r"\w+", quote.lower(), re.UNICODE)
     if not q_words:
-        return ""
+        return None
     tokens = [(m.start(), m.end(), m.group(0))
-              for m in re.finditer(r"[а-яёa-z0-9]+", transcript.lower())]
+              for m in re.finditer(r"\w+", transcript.lower(), re.UNICODE)]
     if len(tokens) < len(q_words):
-        return ""
+        return None
     words = [t[2] for t in tokens]
-    best_ratio, best_span = 0.0, (0, 0)
+
+    def span(i: int, j: int) -> tuple[str, int]:
+        start, end = tokens[i][0], tokens[j - 1][1]
+        return " ".join(transcript[start:end].split()), start
+
+    # первый уровень: точное совпадение последовательности слов. Ищем по
+    # нормализованной строке (O(n)), а не перебором окон, и требуем границы
+    # слов — иначе «дом» нашёлся бы внутри «домик».
+    flat, q = " ".join(words), " ".join(q_words)
+    pos = flat.find(q)
+    while pos >= 0:
+        left_ok = pos == 0 or flat[pos - 1] == " "
+        right_ok = pos + len(q) == len(flat) or flat[pos + len(q)] == " "
+        if left_ok and right_ok:
+            i = flat.count(" ", 0, pos)
+            return span(i, i + len(q_words))
+        pos = flat.find(q, pos + 1)
+
+    best_ratio, best = 0.0, None
     for size in (len(q_words), len(q_words) + 2, max(3, len(q_words) - 2)):
         sm = difflib.SequenceMatcher(b=q_words, autojunk=False)
         for i in range(0, len(words) - size + 1):
@@ -547,11 +626,10 @@ def _closest_span(quote: str, transcript: str, threshold: float = 0.75) -> str:
                 continue
             r = sm.ratio()
             if r > best_ratio:
-                best_ratio, best_span = r, (i, i + size)
-    if best_ratio < threshold:
-        return ""
-    start, end = tokens[best_span[0]][0], tokens[best_span[1] - 1][1]
-    return " ".join(transcript[start:end].split())
+                best_ratio, best = r, (i, i + size)
+    if best is None or best_ratio < threshold:
+        return None
+    return span(*best)
 
 
 _REDIRECT_RE = re.compile(r"^# .+? → \[\[Ядра/(.+?)(?:\|.*?)?\]\]", re.M)
@@ -567,7 +645,16 @@ def resolve_core_path(d: pathlib.Path, name: str, hops: int = 3) -> pathlib.Path
     пропускают (аудит DeepSeek 17.08). Идём по стрелке до канона (≤3 шага).
     """
     p = d / f"{safe_name(name)}.md"
-    for _ in range(hops):
+    # Идём до КОНЦА цепи, а не фиксированные три шага: цепочка A→B→C→D→E
+    # (пять слияний по одной теме — обычное дело за месяц) возвращала D,
+    # который сам ещё redirect, и статус уходил в файл, который tier3 и досье
+    # пропускают (аудит графа 26.08, Codex). От зацикливания — visited, а не
+    # счётчик: цикл A→B→A ловится сразу и точно.
+    visited: set[pathlib.Path] = set()
+    while True:
+        if p in visited:
+            return p       # кольцо редиректов — дальше идти некуда
+        visited.add(p)
         if not p.exists():
             return p
         text = p.read_text(encoding="utf-8")
@@ -580,7 +667,6 @@ def resolve_core_path(d: pathlib.Path, name: str, hops: int = 3) -> pathlib.Path
         if target == p or not target.exists():
             return p
         p = target
-    return p
 
 
 def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
@@ -649,15 +735,23 @@ def main():
     except Exception as e:  # noqa: BLE001 — без прогресса разбор всё равно идёт
         print(f"граф: статус недоступен ({type(e).__name__}: {e})")
     graph = graphs.graph_dir(cfg)   # None — не настроен (пустая/пробельная строка)
-    transcript = tpath.read_text(encoding="utf-8")
+    # РАЗДЕЛЕНЫ намеренно. `speech` — то, что реально прозвучало; `context` —
+    # то же плюс живые минутки, которые пишет МОДЕЛЬ по ходу встречи.
+    # Минутки помогают извлечению (модель видит уже сведённые формулировки),
+    # но провенанс по ним проверять нельзя: цитата, найденная в пересказе
+    # модели, получала в графе подпись «дословно из стенограммы» — то есть
+    # проверка выдумок подтверждалась выдумкой (аудит графа 26.08, Codex
+    # Critical). Сверка цитат идёт только по `speech`.
+    speech = tpath.read_text(encoding="utf-8")
+    context = speech
     minutes_p = tpath.with_name(tpath.stem + "_minutes.md")
     if minutes_p.exists():
-        transcript += "\n\n[МИНУТКИ]\n" + minutes_p.read_text(encoding="utf-8")
+        context += "\n\n[МИНУТКИ]\n" + minutes_p.read_text(encoding="utf-8")
     # «В записи нет речи» решается ДО вопроса о папке графа: этот факт от
     # графа не зависит, а раньше при пустом graph_dir пустая запись получала
     # «готово» вместо честного empty — и хук отрабатывал на тишине
     # (ревью 19.08, второй круг GLM).
-    if len(transcript) < 300:
+    if len(speech) < 300:
         # Отдельный код возврата, а не тихий выход: для вызывающего это не
         # ошибка обработки, а факт — в записи нет речи. Разница практическая:
         # ошибку конвейер обязан повторить, а тишину повторять бессмысленно,
@@ -681,7 +775,7 @@ def main():
     # post_meeting_hook нужны и без графа — ровно как при молчащей модели
     # ниже. Ранний выход отсюда стоил бы человеку архива и хука (ревью 19.08).
     graph_off = not install_profile.graph_enabled(cfg)
-    data = None if graph_off else extract(cfg, transcript, _project_rule(known, graph.name))
+    data = None if graph_off else extract(cfg, context, _project_rule(known, graph.name))
     # None — «граф не обновляем», но НЕ «ничего не делаем»: докстринг extract
     # обещает архив со стенограммой и минутками и без графа. Раньше здесь
     # стоял return — ни заметки, ни архива, ни хука, а пересборка трижды
@@ -760,7 +854,7 @@ def main():
     cores = [c for c in (data.get("ядра") or [])
              if isinstance(c, dict) and c.get("имя")][:4]
     for c in cores:
-        upsert_core(graph, c, meeting_link, stamp, transcript)
+        upsert_core(graph, c, meeting_link, stamp, speech)
     if cores:
         rebuild_cores_moc(graph)
         # Tier3-ревизия СРАЗУ после upsert: свежие ядра этой встречи против
@@ -887,7 +981,7 @@ def main():
         _yield_to_live()   # разбор после встречи — тяжёлая модель, живая встреча важнее
         debrief = LLM(cfg).complete(
             (f"Память прошлых встреч (граф):\n{gctx}\n\n" if gctx else "")
-            + f"Стенограмма встречи:\n{debrief_excerpt(transcript)}\n\n"
+            + f"Стенограмма встречи:\n{debrief_excerpt(context)}\n\n"
             "Составь разбор строго по разделам:\n"
             "# Разбор встречи\n"
             "## Вопросы встречи и ответы\n(каждый прозвучавший вопрос → ответ, если прозвучал; если нет — «открыт»)\n"

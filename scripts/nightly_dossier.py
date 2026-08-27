@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import pathlib
 import sys
@@ -25,7 +26,9 @@ from datetime import date
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
+import charoite_paths  # noqa: E402
 import dossier  # noqa: E402
+import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import live_gate  # noqa: E402
 import tier3  # noqa: E402
@@ -90,6 +93,30 @@ def generate(theme: str, members: list[str], files: dict, c: dict,
     return "".join(out).strip()
 
 
+LOCK_WAIT = 5 * 60          # дольше держит только зависший сосед
+
+
+@contextlib.contextmanager
+def _graph_lock(graph: pathlib.Path):
+    """Общий замок пишущих в граф: разбор встречи, облачная ревизия — и мы.
+
+    Локальная сборка досье замок не брала вовсе, хотя переписывает те же
+    файлы и индекс: сосед мог читать наполовину записанную папку, а его
+    сверка — принять наши правки за чужие (аудит графа 26.08, Codex).
+    Берём коротко, на одну запись: держать его весь прогон (до часа) значило
+    бы заставить ждать разбор только что закончившейся встречи.
+    """
+    try:
+        lock_dir = charoite_paths.secure_dir(
+            charoite_paths.graph_backups(graph, "cloud_backup", root=ROOT).parent)
+    except OSError as e:
+        print(f"  замок графа не взять ({e}) — не пишу")
+        yield False
+        return
+    with file_locks.graph_lock(lock_dir, LOCK_WAIT) as taken:
+        yield taken
+
+
 def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict:
     folder = graph / dossier.DOSSIER_DIR
     files, backlinks = dossier.scan(graph)
@@ -101,7 +128,13 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
     entries, built, skipped = [], 0, 0
     отказы = 0   # модель не ответила: тема осталась без разбора
 
-    themes = sorted(cl.items(), key=lambda kv: -len(kv[1]))
+    # Несобранные темы — вперёд, и только потом крупнейшие. Прежняя
+    # сортировка только по размеру отдавала все 12 слотов ночи большим
+    # «несвежим» кластерам (их отпечаток меняет каждая встреча), а новые
+    # маленькие темы стояли в хвосте неопределённо долго: на графе 26.08
+    # это 112 собранных досье из 419 тем (аудит графа, DS + GLM).
+    themes = sorted(cl.items(),
+                    key=lambda kv: ((folder / f"{kv[0]}.md").exists(), -len(kv[1])))
     for ti, (theme, members) in enumerate(themes):
         path = folder / f"{theme}.md"
         fp = dossier.fingerprint(members, files)
@@ -118,7 +151,7 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
             })
             continue
 
-        if built >= limit:
+        if not full and built >= limit:
             skipped += 1
             if path.exists():   # новую тему сверх лимита в индекс не выдумываем
                 entries.append(_index_entry_from_disk(theme, members, path, fp, today))
@@ -177,10 +210,18 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
         if manual:
             text = text.replace("## Правки автора\n\n—\n", f"## Правки автора\n\n{manual}\n")
 
-        folder.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".md.tmp")   # атомарно: папка синхронизируется iCloud
-        tmp.write_text(text, encoding="utf-8")
-        tmp.replace(path)
+        with _graph_lock(graph) as taken:
+            if not taken:
+                print(f"  ⏸ {theme}: граф занят соседом дольше "
+                      f"{LOCK_WAIT // 60} мин — тема уйдёт на следующую ночь")
+                skipped += 1
+                if path.exists():
+                    entries.append(_index_entry_from_disk(theme, members, path, fp, today))
+                continue
+            folder.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".md.tmp")   # атомарно: папка синхронизируется iCloud
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(path)
         built += 1
         print(f"  ✓ {theme}: {len(members)} источников, {len(body)} зн., {time.time()-t0:.0f}с")
 
@@ -195,7 +236,12 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
         # этот прогон: темы сверх лимита ночи и темы с отказом раньше
         # выпадали из _index/_ИНДЕКС, поиск деградировал, а --full на
         # большом графе оставлял в индексе 12 записей (аудит 17.08).
-        dossier.write_index(folder, entries)
+        with _graph_lock(graph) as taken:
+            if taken:
+                dossier.write_index(folder, entries)
+            else:
+                print("  индекс не переписан — граф занят соседом; "
+                      "прежний индекс остаётся в силе")
 
     return {"граф": graph.name, "тем": len(cl), "собрано": built,
             "пропущено": skipped, "отказы": отказы}
@@ -237,6 +283,7 @@ def main() -> int:
         pathlib.Path(args.graph).expanduser() if args.graph else default_graph(c)]
 
     total = 0
+    remaining = args.limit
     тем = 0
     отказов = 0
     for g in graphs:
@@ -244,7 +291,11 @@ def main() -> int:
             print(f"{g}: нет такой папки")
             continue
         print(f"=== {g.name}")
-        r = run(g, c, full=args.full, dry=args.dry, limit=args.limit)
+        # Потолок — на ПРОГОН, а не на каждый граф: при --all-graphs с двумя
+        # графами ночь собирала до 24 досье вместо 12 и уходила за своё окно
+        # вдвое (аудит графа 26.08, Codex).
+        r = run(g, c, full=args.full, dry=args.dry, limit=remaining)
+        remaining = max(0, remaining - r["собрано"])
         print(f"    тем: {r['тем']}, собрано: {r['собрано']}, без изменений: {r['пропущено']}"
               + (f", отказов модели: {r['отказы']}" if r.get("отказы") else ""))
         total += r["собрано"]

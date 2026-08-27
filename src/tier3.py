@@ -204,13 +204,22 @@ def _merge(folder: pathlib.Path, stamp: str, a: dict, b: dict, log: list[str]) -
     _backup(folder, stamp, canon["path"], dup["path"])
     text = canon["text"]
     if dup["date"] > canon["date"] and dup["status"]:
+        # Замена через lambda, а не строкой: статус и хроника несут цитаты —
+        # дословные срезы стенограммы, а re.sub разбирает в подстановке
+        # обратные слэши. Путь «миграция C:\1С\base» давал бы PatternError
+        # (ночная ревизия падала бы на этой паре каждую ночь) или тихую
+        # порчу через \1. Тот же класс уже чинили в graph_updater:598-607,
+        # здесь он остался (аудит графа 26.08, GLM).
+        repl = f"## Статус\n{dup['status']}\n\n"
         text = re.sub(r"## Статус\n.*?(?=\n## |\Z)",
-                      f"## Статус\n{dup['status']}\n\n", text, 1, re.S)
+                      lambda _: repl, text, count=1, flags=re.S)
     have = set(canon["chron"])
     extra = [ln for ln in dup["chron"] if ln not in have]
     if extra:
         if "## Хроника" in text:
-            text = re.sub(r"(## Хроника\n)", "\\1" + "\n".join(extra) + "\n", text, 1)
+            block = "\n".join(extra) + "\n"
+            text = re.sub(r"(## Хроника\n)", lambda m: m.group(1) + block,
+                          text, count=1)
         else:
             text += "\n## Хроника\n" + "\n".join(extra) + "\n"
     # просьба «свести вручную» на эту же пару отработала: снимаем, иначе
@@ -361,6 +370,7 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
                  # времени после несостоявшегося прогона — значит навсегда
                  # потерять из фокуса ядра, которые он должен был разобрать
                  "ran": False,
+                 "failed": 0,
                  # пары, которые слил бы прогон с apply=True, а этот не слил.
                  # По этому полю (а не по факту находки) вызывающий решает,
                  # советовать ли человеку `tier3_cores.py --apply`: совет,
@@ -428,7 +438,16 @@ def revise(graph: pathlib.Path, only_names: list[str] | None = None,
         try:
             ab = nli.entail_prob(a["repr"], b["repr"])
             ba = nli.entail_prob(b["repr"], a["repr"])
-        except Exception:
+        except Exception as e:  # noqa: BLE001 — одна пара не валит ревизию
+            # ...но и молчать нельзя: пара НЕ судилась, а отметка --since-last
+            # двигалась по ran=True — и эта пара не возвращалась в фокус уже
+            # никогда, потому что «свежей» она больше не считается. Считаем
+            # сбои: хоть один — отметка остаётся на месте, завтра пара будет
+            # пересмотрена (аудит графа 26.08, Codex Important 2).
+            out["failed"] = out.get("failed", 0) + 1
+            if out["failed"] <= 3:
+                print(f"tier3: пара «{a['name']}» ↔ «{b['name']}» не судилась "
+                      f"({type(e).__name__}: {e})", flush=True)
             continue
         if ab >= MERGE_T and ba >= MERGE_T:
             weak = a["essence_src"] == "статус" and b["essence_src"] == "статус"

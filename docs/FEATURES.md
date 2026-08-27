@@ -159,8 +159,15 @@ core plus everything that links to it; boundaries come from the links a human
 already drew. Search consults `Dossiers/_index.json` **first** and only goes
 into the graph for details, so "where does this topic stand" is answered from
 one written summary instead of a dozen fragments. Rebuilds are incremental: a
-dossier carries a fingerprint of its sources, and an unchanged fingerprint
-means the model is not called. Hand-written additions live in the
+dossier carries a fingerprint of its sources (microsecond precision — an edit
+landing in the same second as the scan used to go unnoticed), and an unchanged
+fingerprint means the model is not called. Topics without a dossier yet come
+FIRST in the night's queue: sorting by cluster size alone gave every slot to
+the large topics while small new ones waited indefinitely. The per-run cap is
+shared across graphs rather than applied to each. Once a week (the night into
+Monday) every dossier is rebuilt: `--full` no longer stops at that cap. Writes
+take the shared graph lock — the same one the meeting pipeline and the cloud
+review take. Hand-written additions live in the
 `## Author edits` section and survive rebuilds. To check what a query would
 find: `scripts/nightly_dossier.py --find "your question"`.
 

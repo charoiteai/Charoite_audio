@@ -123,6 +123,8 @@ def scan(graph: pathlib.Path) -> tuple[dict[str, dict], dict[str, set[str]]]:
     """
     files: dict[str, dict] = {}
     backlinks: dict[str, set[str]] = defaultdict(set)
+    # alias → канон: заглушки сами не темы, но входящие ссылки на них живые
+    redirects: dict[str, str] = {}
 
     for p in graph.rglob("*.md"):
         rel = p.relative_to(graph)
@@ -143,15 +145,50 @@ def scan(graph: pathlib.Path) -> tuple[dict[str, dict], dict[str, set[str]]]:
         # тратя на него запросы облака (аудит GLM 17.08). tier3.load_cores и
         # morning_brief её уже пропускают — теперь и здесь.
         if "Дубль. Смерджен" in text:
+            # Сама заглушка — не тема, но ссылки НА НЕЁ из заметок живые:
+            # встреча, сославшаяся на старое имя, пропадала из кластера
+            # канона, и досье собиралось без неё (аудит графа 26.08, Codex).
+            # Запоминаем стрелку и переносим входящие ниже, после скана.
+            m = LINK_RE.search(text)
+            if m:
+                redirects[_title(p)] = m.group(1).split("/")[-1].strip()
             continue
         t = _title(p)
         kind = rel.parts[0] if len(rel.parts) > 1 else "Прочее"
+        if t in files:
+            # Два файла с одним именем в разных папках (Люди/CRM.md и
+            # Системы/CRM.md): раньше второй молча затирал первый, и какой
+            # именно выживет, зависело от порядка обхода каталога. Выбор
+            # теперь детерминирован — ядро важнее (кластеры строятся вокруг
+            # ядер), при равенстве побеждает более содержательный файл — и
+            # виден в логе (аудит графа 26.08, Codex).
+            old_meta = files[t]
+            rank = lambda meta: (meta["kind"] == "Ядра", len(meta["text"]))
+            new_meta = {"path": p, "rel": str(rel), "text": text,
+                        "mtime": p.stat().st_mtime, "kind": kind}
+            keep, drop = ((new_meta, old_meta) if rank(new_meta) > rank(old_meta)
+                          else (old_meta, new_meta))
+            print(f"досье: имя «{t}» занято дважды — беру {keep['rel']}, "
+                  f"пропускаю {drop['rel']}")
+            files[t] = keep
+            continue
         files[t] = {"path": p, "rel": str(rel), "text": text,
                     "mtime": p.stat().st_mtime, "kind": kind}
         for m in LINK_RE.finditer(text):
             target = m.group(1).split("/")[-1].strip()
             if target and target != t:
                 backlinks[target].add(t)
+
+    # Входящие ссылки с заглушек — канону. Цепочку A→B→C проходим до конца,
+    # visited держит кольцо A→B→A от вечного цикла.
+    for alias, first in redirects.items():
+        canon, seen = first, {alias}
+        while canon in redirects and canon not in seen:
+            seen.add(canon)
+            canon = redirects[canon]
+        who = backlinks.pop(alias, set())
+        if who and canon in files:
+            backlinks[canon] |= who - {canon}
     return files, dict(backlinks)
 
 
@@ -173,8 +210,14 @@ def clusters(files: dict[str, dict], backlinks: dict[str, set[str]],
         members = {title} | inbound | {o for o in outbound if o in files}
         members = {m for m in members if m in files}
         if len(members) >= min_size:
-            # встречи вперёд по дате, ядра — по имени: хроника читается сама
-            out[title] = sorted(members, key=lambda m: (files[m]["kind"] != "Встречи", m))
+            # Хаб — первым: build_prompt берёт первые MAX_SOURCES участников,
+            # и в кластере из 14+ встреч само ядро темы (её «Статус» и «Суть»)
+            # в промпт не попадало вовсе — сводка собиралась без главного
+            # источника, и страдали ровно самые большие темы (аудит графа
+            # 26.08, GLM). Дальше встречи по дате, остальное по имени.
+            rest = sorted(members - {title},
+                          key=lambda m: (files[m]["kind"] != "Встречи", m))
+            out[title] = [title] + rest
     return out
 
 
@@ -190,7 +233,10 @@ def fingerprint(members: list[str], files: dict[str, dict]) -> str:
         if not meta:
             continue
         h.update(m.encode("utf-8"))
-        h.update(f"{meta['mtime']:.0f}".encode())
+        # Микросекунды, а не целые секунды: правка, легшая в ту же секунду,
+        # что и предыдущий скан, давала прежний отпечаток — «тема не менялась»,
+        # и досье не пересобиралось никогда (аудит графа 26.08, Codex).
+        h.update(f"{meta['mtime']:.6f}".encode())
     return h.hexdigest()[:16]
 
 
