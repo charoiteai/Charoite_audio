@@ -59,7 +59,8 @@ def parse_blocks(text: str) -> list[dict]:
     return out
 
 
-NOTES_HEAD = "\n---\n## Ко-мышление"
+NOTES_TITLE = "Ко-мышление"
+NOTES_HEAD = f"\n---\n## {NOTES_TITLE}"
 
 
 def notes_start(text: str) -> int:
@@ -232,7 +233,7 @@ class Transcript:
             parts.append("")
         if self._notes:
             parts.append("---")
-            parts.append("## Ко-мышление (📌 КТ · 💎 факты · 💭 мысли)")
+            parts.append(f"## {NOTES_TITLE} (📌 КТ · 💎 факты · 💭 мысли)")
             parts.extend(f"> {n}" for n in self._notes)
         return "\n".join(parts) + "\n"
 

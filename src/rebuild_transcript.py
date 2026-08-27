@@ -23,6 +23,7 @@ import json
 import os
 import pathlib
 import re
+import transcript
 import subprocess
 import sys
 import time
@@ -566,7 +567,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
         body += [f"**{spk}** [{span}]:", text, ""]
     # ко-мышление из живого черновика — переносим
     live_text = live.read_text(encoding="utf-8")
-    m = re.search(r"\n---\n## Ко-мышление.*", live_text, re.S)
+    m = re.search(rf"\n---\n## {transcript.NOTES_TITLE}.*", live_text, re.S)
     if m:
         body.append(m.group(0).lstrip("\n"))
 

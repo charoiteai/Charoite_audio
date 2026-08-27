@@ -436,3 +436,22 @@ def test_a_role_with_a_comma_does_not_split_a_participant():
     src = (SRC / "graph_updater.py").read_text(encoding="utf-8")
     block = src[src.index("        head = re.sub("):src.index("    for c in cores:")]
     assert 'head.split(",")' in block, "скобки снова снимаются после запятой"
+
+
+def test_the_pipeline_clips_the_notes_before_verification(tmp_path):
+    """Тест круг-5 держался на клипе внутри parse_blocks; продовый путь —
+    `speech = context[:notes_start(context)]` в main — не был покрыт вовсе."""
+    import transcript as tr_mod
+
+    tr = tr_mod.Transcript(tmp_path)
+    tr.set_participants(["Ольга"])
+    tr.add("посмотрим смету на следующей неделе", speaker="Ольга")
+    tr.note("11:41 💭 команда выбрала нового поставщика")
+    context = tr._render()
+    speech = context[:tr_mod.notes_start(context)]
+    assert "поставщика" in context and "поставщика" not in speech
+    assert "смету" in speech, "речь обрезана слишком рано"
+
+    src = (SRC / "graph_updater.py").read_text(encoding="utf-8")
+    assert "context[:transcript_mod.notes_start(context)]" in src, \
+        "конвейер снова сверяет цитаты по заметкам модели"
