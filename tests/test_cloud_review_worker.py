@@ -322,7 +322,7 @@ def test_invalid_answer_rolls_back_even_allowed_edits(tmp_path, monkeypatch):
     assert (q / "Люди" / "Новый.md").exists() and "ЮPay" in (
         q / "Ядра" / "Платёжный провайдер.md").read_text(encoding="utf-8")
     text = log.read_text(encoding="utf-8")
-    assert "ответ невалиден — все правки графа (2) откачены" in text
+    assert "ответ невалиден — правки графа откачены (2 тронуто, 0 оставлено)" in text
 
 
 def test_graph_lock_serialises_workers_and_degrades_to_read_only(tmp_path, monkeypatch):
@@ -854,3 +854,53 @@ def test_delivery_does_not_depend_on_the_log_and_quarantine_names_the_stem(tmp_p
     assert (graph / "Документация" / "Стенограммы встреч" / rev.name).exists(), "доставка не состоялась"
     runs = [p.name for p in cloud_review.quarantine_root(graph).iterdir()]
     assert len(runs) == 1 and runs[0].startswith(stamp + "30-"), runs
+
+
+def test_rollback_does_not_swallow_a_neighbours_work(tmp_path):
+    """Откат по невалидному ответу не трогает файлы, появившиеся во время прогона.
+
+    27.08 вживую: облачная ревизия встречи 10:32 упала по таймауту 1800 с,
+    откат вернул граф к снимку — и унёс не только свои правки, но и заметку
+    самой встречи вместе с пятью артефактами встречи 11:33, разобранной сорока
+    минутами позже. Замок графа облако держит все тридцать минут ожидания, а
+    локальный разбор его не берёт — «изменилось с момента снимка» не отличает
+    чужую работу от своей. Чужое дороже лишнего: оставляем и называем вслух.
+    """
+    graph = _graph(tmp_path)
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
+
+    # пока облако ждало модель, соседний разбор записал свою встречу
+    neighbour = graph / "Встречи" / "2026-08-27_1133.md"
+    neighbour.parent.mkdir(parents=True, exist_ok=True)
+    neighbour.write_text("# Встреча 2026-08-27_1133\nработа соседа\n", encoding="utf-8")
+    doc = graph / "Документация" / "Стенограммы встреч" / "2026-08-27_1133_Статус.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("стенограмма соседа\n", encoding="utf-8")
+
+    qdir = tmp_path / "q"
+    v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
+                                        rollback=True, stamp="2026-08-27_1032")
+
+    assert neighbour.exists(), "откат унёс заметку соседней встречи"
+    assert doc.exists(), "откат унёс стенограмму соседней встречи"
+    assert sorted(v.kept_new) == ["2026-08-27_1133.md", "2026-08-27_1133_Статус.md"]
+    assert not v.removed, "чужие файлы уехали в карантин"
+    line = cloud_review.verdict_line(v, qdir) if hasattr(cloud_review, "verdict_line") else ""
+    if line:
+        assert "НЕ ТРОНУТЫ" in line and "2026-08-27_1133.md" in line
+
+
+def test_rollback_still_removes_what_the_cloud_created_where_it_may_not(tmp_path):
+    """Послабление не отменяет запрет: созданное в защищённой папке уезжает."""
+    graph = _graph(tmp_path)
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
+    plugin = graph / ".obsidian" / "plugins" / "y" / "main.js"
+    plugin.parent.mkdir(parents=True, exist_ok=True)
+    plugin.write_text("alert(2)", encoding="utf-8")
+    qdir = tmp_path / "q"
+    v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
+                                        rollback=True, stamp="2026-08-27_1032")
+    assert not plugin.exists(), "запрет на защищённые папки ослаб"
+    assert "main.js" in v.removed and "main.js" not in v.kept_new

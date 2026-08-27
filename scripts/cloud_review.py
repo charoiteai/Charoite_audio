@@ -53,7 +53,8 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 import charoite_paths  # noqa: E402
 import cloud  # noqa: E402
 import file_locks  # noqa: E402
-import graph_updater  # noqa: E402
+import graph_updater
+import meeting_stamp  # noqa: E402
 import privacy  # noqa: E402
 
 BACKUP_DIR = ".cloud_backup"
@@ -447,6 +448,7 @@ class Verdict:
     rewritten: list[str] = dataclasses.field(default_factory=list)  # переписан заново → из бэкапа
     unrestorable: list[str] = dataclasses.field(default_factory=list)  # копии нет — оставлен как есть
     failed: list[str] = dataclasses.field(default_factory=list)     # сверка не смогла (OSError)
+    kept_new: list[str] = dataclasses.field(default_factory=list)   # появился при откате — НЕ трогаем
     rolled_back: bool = False        # ответ невалиден — откачено всё
 
     @property
@@ -478,12 +480,37 @@ def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
     return None
 
 
+def belongs_to_another_meeting(path: pathlib.Path, stamp: str | None) -> bool:
+    """В имени файла штамп чужой встречи — значит это работа соседнего разбора.
+
+    Пока облако тридцать минут ждёт модель, конвейер разбирает следующую
+    встречу и пишет её заметку и артефакты. Замок графа облако держит всё это
+    время, а разбор его не берёт, и «изменилось с момента снимка» своё от
+    чужого не отличает: 27.08 откат по невалидному ответу унёс заметку встречи
+    10:32 и пять файлов встречи 11:33 (№119). Штамп в имени — единственный
+    надёжный признак принадлежности: он есть у заметок встреч и у всех
+    артефактов в «Документация/Стенограммы встреч».
+    """
+    if not stamp:
+        return False
+    its = meeting_stamp.stamp_of(path.stem)
+    if its is None:
+        return False        # штампа нет — судить не по чему, работает общий путь
+    return meeting_stamp.minute_of(its) != meeting_stamp.minute_of(stamp)
+
+
 def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
             qdir: pathlib.Path, old: pathlib.Path, existed: bool, why: str | None,
-            v: Verdict) -> None:
+            v: Verdict, stamp: str | None = None) -> None:
     """Убрать одну правку: созданное — в карантин, существовавшее — копией
     в карантин и из бэкапа обратно. Ничего не стирается."""
     if not existed:
+        if v.rolled_back and belongs_to_another_meeting(path, stamp):
+            # Чужая встреча — не наша правка: оставляем и называем вслух.
+            # Защита от облака этим не слабеет: файл без штампа или со своим
+            # штампом идёт прежним путём, в карантин.
+            v.kept_new.append(path.name)
+            return
         if path.exists():
             quarantine(path, graph, qdir, move=True)
         v.removed.append(path.name)
@@ -499,7 +526,8 @@ def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
 
 def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
                        backup: pathlib.Path, qdir: pathlib.Path | None = None,
-                       *, rollback: bool = False) -> Verdict:
+                       *, rollback: bool = False,
+                       stamp: str | None = None) -> Verdict:
     """Сверить граф с состоянием до запуска и убрать запрещённое.
 
     Нарушение — это не только правка существующего файла: удаление тоже
@@ -539,7 +567,7 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
             why = judge(path, graph, old_text, new_text, existed)
             if why is None and not rollback:
                 continue
-            _settle(path, graph, backup, qdir, old, existed, why, v)
+            _settle(path, graph, backup, qdir, old, existed, why, v, stamp)
         except OSError:
             v.failed.append(path.name)
     return v
@@ -781,7 +809,8 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 # отчёта правки графа — неизвестной степени готовности
                 # (слияние до середины), и объяснить их человеку нечем.
                 v = enforce_boundaries(before, graph, backup, qdir,
-                                       rollback=not (ok and published))
+                                       rollback=not (ok and published),
+                                       stamp=stamp)
                 # не сверено, если что-то упало ИЛИ осталось как есть без копии
                 checked = v.touched >= 0 and not v.failed and not v.unrestorable
                 lines.append(_verdict_line(v, qdir))
@@ -820,8 +849,13 @@ def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:
         return "[cloud-review] снимка нет — границы не сверялись\n"
     if v.rolled_back:
         tail = (f"; СВЕРКА НЕ СМОГЛА: {', '.join(v.failed)}" if v.failed else "")
-        return (f"[cloud-review] ответ невалиден — все правки графа ({v.touched}) "
-                f"откачены, копии облака в карантине {qdir}{tail}\n")
+        # Появившееся за время прогона названо поимённо: это чаще всего работа
+        # соседнего разбора, и раньше она молча уезжала в карантин (№119).
+        kept = (f"; НЕ ТРОНУТЫ (появились во время прогона, чужая работа): "
+                f"{', '.join(v.kept_new)}" if v.kept_new else "")
+        return (f"[cloud-review] ответ невалиден — правки графа откачены "
+                f"({v.touched} тронуто, {len(v.kept_new)} оставлено), "
+                f"копии облака в карантине {qdir}{kept}{tail}\n")
     parts = [f"[cloud-review] правок графа: {v.touched}"]
     if v.reverted:
         parts.append(f"откатано запрещённых: {', '.join(v.reverted)}")
