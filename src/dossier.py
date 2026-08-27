@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import time
 import pathlib
 import re
 import unicodedata
@@ -123,6 +125,8 @@ def scan(graph: pathlib.Path) -> tuple[dict[str, dict], dict[str, set[str]]]:
     """
     files: dict[str, dict] = {}
     backlinks: dict[str, set[str]] = defaultdict(set)
+    # alias → канон: заглушки сами не темы, но входящие ссылки на них живые
+    redirects: dict[str, str] = {}
 
     for p in graph.rglob("*.md"):
         rel = p.relative_to(graph)
@@ -143,15 +147,67 @@ def scan(graph: pathlib.Path) -> tuple[dict[str, dict], dict[str, set[str]]]:
         # тратя на него запросы облака (аудит GLM 17.08). tier3.load_cores и
         # morning_brief её уже пропускают — теперь и здесь.
         if "Дубль. Смерджен" in text:
+            # Сама заглушка — не тема, но ссылки НА НЕЁ из заметок живые:
+            # встреча, сославшаяся на старое имя, пропадала из кластера
+            # канона, и досье собиралось без неё (аудит графа 26.08, Codex).
+            # Запоминаем стрелку и переносим входящие ниже, после скана.
+            m = LINK_RE.search(text)
+            if m:
+                redirects[_title(p)] = m.group(1).split("/")[-1].strip()
             continue
         t = _title(p)
         kind = rel.parts[0] if len(rel.parts) > 1 else "Прочее"
+        if t in files:
+            # Два файла с одним именем в разных папках (Люди/CRM.md и
+            # Системы/CRM.md): раньше второй молча затирал первый, и какой
+            # именно выживет, зависело от порядка обхода каталога. Выбор
+            # теперь детерминирован — ядро важнее (кластеры строятся вокруг
+            # ядер), при равенстве побеждает более содержательный файл — и
+            # виден в логе (аудит графа 26.08, Codex).
+            old_meta = files[t]
+            # rel в ключе — иначе при равном ранге выигрывал тот, кого
+            # rglob вернул первым, и состав графа зависел от порядка обхода.
+            rank = lambda meta: (meta["kind"] == "Ядра", len(meta["text"]),
+                                 meta["rel"])
+            new_meta = {"path": p, "rel": str(rel), "text": text,
+                        "mtime": p.stat().st_mtime, "kind": kind}
+            keep, drop = ((new_meta, old_meta) if rank(new_meta) > rank(old_meta)
+                          else (old_meta, new_meta))
+            print(f"досье: имя «{t}» занято дважды — беру {keep['rel']}, "
+                  f"пропускаю {drop['rel']}")
+            files[t] = keep
+            continue
         files[t] = {"path": p, "rel": str(rel), "text": text,
                     "mtime": p.stat().st_mtime, "kind": kind}
-        for m in LINK_RE.finditer(text):
+    # Ссылки разбираем ВТОРЫМ проходом, когда состав files уже устоялся: при
+    # дублирующемся имени первый проход успевал записать ссылки проигравшего
+    # файла под общим титулом, и кластер тянул за собой связи, которых у
+    # выжившего нет (круг-2 по PR #438, DS Minor 5).
+    for t, meta in files.items():
+        for m in LINK_RE.finditer(meta["text"]):
             target = m.group(1).split("/")[-1].strip()
             if target and target != t:
                 backlinks[target].add(t)
+
+    # Входящие ссылки с заглушек — канону. Цепочку A→B→C проходим до конца,
+    # visited держит кольцо A→B→A от вечного цикла.
+    for alias, first in redirects.items():
+        if alias in files:
+            # Имя занято живым узлом (tier3 слил «Ядра/CRM», а конвейер завёл
+            # «Системы/CRM»): входящие принадлежат ему, а не старой заглушке.
+            # Иначе система теряла все ссылки, а ядро обрастало чужими —
+            # молча (круг-3 по PR #438, GLM Important 3).
+            continue
+        canon, seen = first, {alias}
+        # Останавливаемся на живом узле: в цепочке A→B→C, где B — и заглушка,
+        # и живой файл-тёзка, ссылки A уходили мимо B прямо к C. Та же
+        # политика, что у головы цепочки (круг-4 по PR #438, DS Important 3).
+        while canon in redirects and canon not in files and canon not in seen:
+            seen.add(canon)
+            canon = redirects[canon]
+        who = backlinks.pop(alias, set())
+        if who and canon in files:
+            backlinks[canon] |= who - {canon}
     return files, dict(backlinks)
 
 
@@ -173,8 +229,14 @@ def clusters(files: dict[str, dict], backlinks: dict[str, set[str]],
         members = {title} | inbound | {o for o in outbound if o in files}
         members = {m for m in members if m in files}
         if len(members) >= min_size:
-            # встречи вперёд по дате, ядра — по имени: хроника читается сама
-            out[title] = sorted(members, key=lambda m: (files[m]["kind"] != "Встречи", m))
+            # Хаб — первым: build_prompt берёт первые MAX_SOURCES участников,
+            # и в кластере из 14+ встреч само ядро темы (её «Статус» и «Суть»)
+            # в промпт не попадало вовсе — сводка собиралась без главного
+            # источника, и страдали ровно самые большие темы (аудит графа
+            # 26.08, GLM). Дальше встречи по дате, остальное по имени.
+            rest = sorted(members - {title},
+                          key=lambda m: (files[m]["kind"] != "Встречи", m))
+            out[title] = [title] + rest
     return out
 
 
@@ -190,7 +252,10 @@ def fingerprint(members: list[str], files: dict[str, dict]) -> str:
         if not meta:
             continue
         h.update(m.encode("utf-8"))
-        h.update(f"{meta['mtime']:.0f}".encode())
+        # Микросекунды, а не целые секунды: правка, легшая в ту же секунду,
+        # что и предыдущий скан, давала прежний отпечаток — «тема не менялась»,
+        # и досье не пересобиралось никогда (аудит графа 26.08, Codex).
+        h.update(f"{meta['mtime']:.6f}".encode())
     return h.hexdigest()[:16]
 
 
@@ -340,12 +405,37 @@ def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
     эмбеддингов, ни запущенной Ollama. Семантика добирается уже поверх.
     """
     folder.mkdir(parents=True, exist_ok=True)
+    # Прошлый прогон могли убить между write и replace: имя с pid больше не
+    # перезаписывается следующим, и мусор жил бы в синхронизируемой папке
+    # вечно (круг-4 по PR #438, DS Important 2).
+    # Только ЧУЖОЕ И СТАРОЕ: сосед прямо сейчас может держать свой tmp между
+    # write и replace, и снос уронил бы ему весь ночной проход
+    # (круг-5 по PR #438, GLM Important 2).
+    cutoff = time.time() - 3600
+    for stale in list(folder.glob(f"{INDEX_JSON}.*.tmp")) + \
+            list(folder.glob(f"{INDEX_MD}.*.tmp")):
+        try:
+            if stale.stat().st_mtime > cutoff:
+                continue
+            stale.unlink()
+        except OSError:
+            pass
     entries = sorted(entries, key=lambda e: e["тема"].lower())
 
-    (folder / INDEX_JSON).write_text(
+    # Атомарно: индекс пишется вне замка графа (иначе занятый соседом граф
+    # оставлял бы на диске свежие досье и старый индекс — поиск смотрит
+    # только сюда и сутки их не видел бы, круг-2 по PR #438, DS Important 3),
+    # а без tmp+replace обрыв на середине дал бы битый json.
+    # Имя с pid: общий tmp давал двум одновременным прогонам смешать
+    # байты и атомарно установить битый json — а load_index глотает
+    # JSONDecodeError, и поиск сутки не видит ни одного досье
+    # (круг-3 по PR #438, GLM Important 4).
+    tmp = folder / f"{INDEX_JSON}.{os.getpid()}.tmp"
+    tmp.write_text(
         json.dumps({"версия": 1, "обновлён": date.today().isoformat(),
                     "досье": entries}, ensure_ascii=False, indent=1),
         encoding="utf-8")
+    tmp.replace(folder / INDEX_JSON)
 
     lines = [
         "---", "type: индекс-досье", f"обновлён: {date.today().isoformat()}",
@@ -365,7 +455,9 @@ def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
               "1. Ищем тему по ключам в таблице выше.",
               "2. Открываем досье — там состояние, хроника, решения, открытые вопросы.",
               "3. За подробностями идём по ссылкам из раздела «Источники».", ""]
-    (folder / INDEX_MD).write_text("\n".join(lines), encoding="utf-8")
+    tmp_md = folder / f"{INDEX_MD}.{os.getpid()}.tmp"
+    tmp_md.write_text("\n".join(lines), encoding="utf-8")
+    tmp_md.replace(folder / INDEX_MD)
 
 
 def load_index(folder: pathlib.Path) -> list[dict]:
