@@ -53,7 +53,7 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 import charoite_paths  # noqa: E402
 import cloud  # noqa: E402
 import file_locks  # noqa: E402
-import graph_updater  # noqa: E402
+import graph_updater
 import privacy  # noqa: E402
 
 BACKUP_DIR = ".cloud_backup"
@@ -173,20 +173,32 @@ def _digest(path: pathlib.Path) -> str:
 
 
 # Внутри `.obsidian` под охраной только то, что исполняется или включает
-# исполняемое: плагины (кроме их data.json), CSS-сниппеты и списки
-# включённых плагинов. Остальное — состояние окон и настроек, которое сам
-# Obsidian переписывает, пока открыт: откат такого файла на каждом разборе
-# был бы откатом чужой работы (круг-1 по PR #381, DeepSeek).
-_OBSIDIAN_GUARDED = ("community-plugins.json", "core-plugins.json")
+# исполняемое: плагины, CSS-сниппеты и списки включённых плагинов.
+# Остальное — состояние окон и настроек, которое сам Obsidian переписывает,
+# пока открыт: откат такого файла на каждом разборе был бы откатом чужой
+# работы (круг-1 по PR #381, DeepSeek).
+#
+# `data.json` плагина был исключением по той же причине — Obsidian пишет
+# туда сам. Исключение снято (GLM, круг-12): у Templater в data.json лежит
+# папка стартовых шаблонов, то есть это настройка, которая ИСПОЛНЯЕТСЯ при
+# запуске. Файл был невидим для снимка целиком — ни отката, ни строки в
+# логе. Шум от собственных правок Obsidian здесь дешевле пропущенного
+# запуска чужого JS.
+_OBSIDIAN_GUARDED = ("community-plugins.json", "core-plugins.json")  # сравнение через casefold
 
 
 def obsidian_guarded(rel: pathlib.Path) -> bool:
-    parts = rel.parts
+    # casefold на всех сравнениях: каталог, созданный как `.obsidian/Plugins`,
+    # на APFS ложится в тот же `plugins`, но в обходе приходит своим именем —
+    # и регистрозависимый фильтр выбрасывал бы его из снимка ещё до проверки
+    # зоны исполнения (Codex, круг-12).
+    parts = tuple(p.casefold() for p in rel.parts)
     if len(parts) < 2 or parts[0] != ".obsidian":
         return True
     if parts[1] == "plugins":
-        return rel.name != "data.json"
-    return parts[1] == "snippets" or (len(parts) == 2 and rel.name in _OBSIDIAN_GUARDED)
+        return True
+    return parts[1] == "snippets" or (
+        len(parts) == 2 and rel.name.casefold() in _OBSIDIAN_GUARDED)
 
 
 def graph_files(graph: pathlib.Path):
@@ -442,11 +454,13 @@ class Verdict:
     При rolled_back те же списки значат «откачено», а не «нарушение»."""
     touched: int = 0                 # всего правок (−1 — снимка не было, не судили)
     reverted: list[str] = dataclasses.field(default_factory=list)   # запрещённая правка → из бэкапа
-    removed: list[str] = dataclasses.field(default_factory=list)    # создан где нельзя → в карантин
+    removed: list[str] = dataclasses.field(default_factory=list)    # служебная зона → в карантин
+    watched: list[str] = dataclasses.field(default_factory=list)    # зона исполнения, правка не наша
     deleted: list[str] = dataclasses.field(default_factory=list)    # стёрт облаком → из бэкапа
     rewritten: list[str] = dataclasses.field(default_factory=list)  # переписан заново → из бэкапа
     unrestorable: list[str] = dataclasses.field(default_factory=list)  # копии нет — оставлен как есть
     failed: list[str] = dataclasses.field(default_factory=list)     # сверка не смогла (OSError)
+    kept_new: list[str] = dataclasses.field(default_factory=list)   # появился при откате — НЕ трогаем
     rolled_back: bool = False        # ответ невалиден — откачено всё
 
     @property
@@ -478,15 +492,111 @@ def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
     return None
 
 
+# Зоны, где файл означает не заметку, а ИСПОЛНЕНИЕ: плагин Obsidian, hook
+# Claude Code, git-хук. Только они и убираются, если появились за время
+# прогона. Не «всё скрытое»: в скрытой части графа живут и бэкапы конвейера
+# (`Ядра/.tier3_backup`, `.forget_backup`, `.cloud_backup`, `Досье/.backup`),
+# и мусор macOS с iCloud (`.DS_Store`, `.icloud`), и файлы самого владельца —
+# унести их значит потерять чужое, а угадать автора нечем (круги 9-11).
+#
+# Ложное срабатывание тут дёшево и обратимо: плагин, поставленный человеком
+# ровно в получасовое окно ревизии, уедет в карантин и достаётся оттуда.
+# Пропуск стоит дороже: стенограмму диктует живая встреча, текст в неё может
+# сочинить кто угодно, а hook в `.claude/settings.json` сработает в следующей
+# же сессии CLI.
+EXECUTABLE_AREAS = (
+    (".obsidian", "plugins"),
+    (".obsidian", "snippets"),
+    (".claude",),
+    (".git", "hooks"),
+)
+
+
+def _executable_area(path: pathlib.Path, graph: pathlib.Path) -> bool:
+    """Лежит ли путь внутри зоны, где файл запускается сам по себе.
+
+    Зона ищется на ЛЮБОЙ глубине: `.git/hooks` и `.claude` исполняемы и в
+    подпапке — `Чужое/.backup/.git/hooks/post-commit` запустится при первой
+    же команде git в той папке. Сравнение от корня графа пропускало ровно
+    это и было регрессом против прошлого круга (DS, круг-12).
+    """
+    try:
+        rel = path.resolve().relative_to(graph.resolve())
+    except (ValueError, OSError):
+        return False                   # вне графа — не наша сверка
+    parts = tuple(p.casefold() for p in rel.parts)
+    hit = next((area for area in EXECUTABLE_AREAS
+                for i in range(len(parts) - len(area) + 1)
+                if parts[i:i + len(area)] == area), None)
+    if hit is None:
+        return False
+    if hit == (".git", "hooks"):
+        # Git не запускает ничего с суффиксом `.sample` — это его собственные
+        # образцы, и `git init` кладёт все четырнадцать штук с режимом 755
+        # (проверено на этой машине). Бит исполнения их не отсеивает, суффикс
+        # отсеивает: без этого `git clone` вложенного репозитория в окно
+        # ревизии терял бы все образцы разом (GLM, круг-15; моя прошлая
+        # попытка исходила из режима 644 и тест моделировал файл, которого
+        # git не создаёт).
+        if path.name.casefold().endswith(".sample"):
+            return False
+        # Остальные хуки опасны ровно с битом исполнения: `Write` облака его
+        # не ставит, а без бита git хук не вызывает.
+        try:
+            return os.access(path, os.X_OK)
+        except OSError:
+            return False
+    return True
+
+
+def _rewritten_by_the_app(path: pathlib.Path, graph: pathlib.Path) -> bool:
+    """Файл в зоне исполнения, который правит само приложение, а не человек.
+
+    Такой ровно один: `data.json` плагина — Obsidian пишет туда настройки,
+    пока открыт. Код плагина (`main.js`), сниппеты, `.claude/settings.json`
+    и git-хуки приложение не трогает НИКОГДА: их изменение — это и есть та
+    атака, ради которой существует второй слой (DS, круг-14).
+    """
+    try:
+        rel = tuple(p.casefold() for p in path.resolve().relative_to(graph.resolve()).parts)
+    except (ValueError, OSError):
+        return False
+    return (len(rel) == 4 and rel[:2] == (".obsidian", "plugins")
+            and rel[3] == "data.json")
+
+
 def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
             qdir: pathlib.Path, old: pathlib.Path, existed: bool, why: str | None,
             v: Verdict) -> None:
-    """Убрать одну правку: созданное — в карантин, существовавшее — копией
-    в карантин и из бэкапа обратно. Ничего не стирается."""
+    """Убрать одну правку: вернуть старую версию, копию облака — в карантин.
+
+    Файла не было в снимке — не трогаем. Ни при откате, ни при валидном
+    отчёте: отчёт не перечисляет созданное облаком, так что об авторстве он
+    не говорит ничего, а конвейер пишет артефакты встречи (`_live`,
+    `_minutes`, `_hints`, `_разбор`) как раз в защищённую папку и замка
+    графа не берёт. Пять признаков «своего файла» проверены кругами и
+    отброшены — угадывать авторство нечем (№119).
+
+    Исключение одно и не про авторство: зоны исполнения — плагины и сниппеты
+    Obsidian, `.claude`, `.git/hooks`. Там файл запускается сам, и появившийся
+    за прогон уезжает в карантин. Круг-9 показал, что «скрытое» и «чужое» —
+    не одно и то же (в dot-каталогах лежат бэкапы конвейера), круг-10 — что и
+    обратное неверно (там же лежит `.claude`), круг-11 — что «скрытое» вообще
+    не тот признак: под него попадают `.DS_Store`, `.icloud` и файлы
+    владельца. Опасна не скрытость, а исполняемость.
+
+    Цена названа: мусор облака в контентной части графа полежит до ручной
+    уборки, зато заметка соседней встречи не исчезает. Запрет границ работает
+    там, где вопрос об авторстве не стоит: существовавший файл, который
+    облако переписало или удалило, возвращается из бэкапа.
+    """
     if not existed:
-        if path.exists():
-            quarantine(path, graph, qdir, move=True)
-        v.removed.append(path.name)
+        if _executable_area(path, graph):
+            if path.exists():
+                quarantine(path, graph, qdir, move=True)
+            v.removed.append(path.name)
+            return
+        v.kept_new.append(path.name)
         return
     if path.exists():
         quarantine(path, graph, qdir, move=False)
@@ -510,7 +620,10 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
 
     rollback=True — ответ облака невалиден (таймаут, обрывок, код ≠ 0):
     откатывается ВСЁ, включая разрешённые правки. Без отчёта они — правки
-    неизвестной степени готовности: слияние могло дойти до середины.
+    неизвестной степени готовности: слияние могло дойти до середины. Но
+    откат возвращает только СТАРЫЕ версии: файл, которого в снимке не было,
+    при откате остаётся на месте — чей он, без отчёта неизвестно, а рядом
+    работает конвейер разбора соседней встречи (№119).
 
     Ошибка на одном файле (диск, права, каталог на месте файла) не роняет
     сверку остальных: файл попадает в `failed`, и об этом говорит лог.
@@ -538,6 +651,19 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
                         if path.is_file() else "")
             why = judge(path, graph, old_text, new_text, existed)
             if why is None and not rollback:
+                continue
+            if (existed and not rollback and path.is_file()
+                    and _rewritten_by_the_app(path, graph)):
+                # `data.json` плагина, который на месте: Obsidian пишет туда
+                # сам, пока открыт. Удалённый файл — другое дело, его надо
+                # вернуть из бэкапа, а не «наблюдать» (Codex, круг-15).
+                # и откат отменял бы живую настройку человека на каждом
+                # успешном разборе (DS, круг-13). Видеть такую правку надо,
+                # отменять молча — нет: называем в логе, оставляем как есть.
+                # Всё прочее в зонах исполнения приложение не переписывает
+                # никогда, поэтому изменение там откатывается как раньше
+                # (DS, круг-14). Невалидный ответ — тоже откат, целиком.
+                v.watched.append(path.name)
                 continue
             _settle(path, graph, backup, qdir, old, existed, why, v)
         except OSError:
@@ -820,8 +946,24 @@ def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:
         return "[cloud-review] снимка нет — границы не сверялись\n"
     if v.rolled_back:
         tail = (f"; СВЕРКА НЕ СМОГЛА: {', '.join(v.failed)}" if v.failed else "")
-        return (f"[cloud-review] ответ невалиден — все правки графа ({v.touched}) "
-                f"откачены, копии облака в карантине {qdir}{tail}\n")
+        rolled = v.reverted + v.deleted + v.rewritten
+        # Появившееся после снимка названо поимённо: чьё оно — без отчёта
+        # неизвестно, и раньше всё это молча уезжало в карантин (№119).
+        # Чаще всего там работа соседнего разбора, иногда мусор облака;
+        # человек по именам видит, что именно осталось лежать.
+        kept = (f"; НЕ ТРОНУТЫ (появились после снимка, авторство неизвестно): "
+                f"{', '.join(v.kept_new)}" if v.kept_new else "")
+        # Откаченные названы поимённо не для красоты: файл, существовавший на
+        # момент снимка, мог за окно получить и правку конвейера (доклейка
+        # минуток, дописывание в ядро). Различить их нечем, откат вернёт
+        # снимок — и человеку нужен след, по которому чужую правку достают из
+        # карантина, а не строка «откачено 3» (GLM, круг-8).
+        back = (f"; ОТКАЧЕНЫ (в них могла быть и правка конвейера — версии до "
+                f"отката лежат в карантине): {', '.join(rolled)}" if rolled else "")
+        return (f"[cloud-review] ответ невалиден — правки графа откачены: "
+                f"изменилось {v.touched}, откачено {v.touched - len(v.kept_new)}, "
+                f"оставлено нового {len(v.kept_new)}; "
+                f"копии облака в карантине {qdir}{back}{kept}{tail}\n")
     parts = [f"[cloud-review] правок графа: {v.touched}"]
     if v.reverted:
         parts.append(f"откатано запрещённых: {', '.join(v.reverted)}")
@@ -830,7 +972,12 @@ def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:
     if v.rewritten:
         parts.append(f"переписано заново, возвращено: {', '.join(v.rewritten)}")
     if v.removed:
-        parts.append(f"созданных в защищённых — в карантин: {', '.join(v.removed)}")
+        parts.append(f"создано в служебной зоне — в карантин: {', '.join(v.removed)}")
+    if v.watched:
+        parts.append(f"ПРОВЕРЬ РУКАМИ — настройки плагина изменились за окно "
+                     f"ревизии, там бывают стартовые шаблоны: {', '.join(v.watched)}")
+    if v.kept_new:
+        parts.append(f"появилось после снимка, НЕ ТРОНУТО: {', '.join(v.kept_new)}")
     if v.unrestorable:
         parts.append(f"КОПИИ НЕТ, оставлено как есть: {', '.join(v.unrestorable)}")
     if v.failed:
