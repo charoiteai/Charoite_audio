@@ -479,37 +479,34 @@ def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
     return None
 
 
-# Скрытые каталоги, куда пишет НАШ конвейер, — единственные, что остаются на
-# месте. Всё прочее скрытое уезжает в карантин при любом исходе: там не
-# только `.obsidian` с плагинами, но и `.git`, `.claude`, `.config` —
-# каталоги, где файл означает исполнение кода, а не заметку. Стенограмма
-# приходит с живой встречи, то есть текст в неё может продиктовать кто
-# угодно; сверка — второй слой ровно потому, что первому (deny-правила CLI)
-# не доверяют, а созданного во время окна каталога у deny и нет (GLM,
-# круг-10).
+# Зоны, где файл означает не заметку, а ИСПОЛНЕНИЕ: плагин Obsidian, hook
+# Claude Code, git-хук. Только они и убираются, если появились за время
+# прогона. Не «всё скрытое»: в скрытой части графа живут и бэкапы конвейера
+# (`Ядра/.tier3_backup`, `.forget_backup`, `.cloud_backup`, `Досье/.backup`),
+# и мусор macOS с iCloud (`.DS_Store`, `.icloud`), и файлы самого владельца —
+# унести их значит потерять чужое, а угадать автора нечем (круги 9-11).
 #
-# Список — из кода писателей: tier3._backup (src/tier3.py:167), забывание
-# встречи (scripts/forget_meeting.py:78), снимок ревизии (BACKUP_DIR),
-# ночное досье (scripts/nightly_dossier_review.py:174). Появится новый —
-# упадёт тест, который перечисляет их поимённо.
-PIPELINE_BACKUPS = (".tier3_backup", ".forget_backup", ".cloud_backup", ".backup")
+# Ложное срабатывание тут дёшево и обратимо: плагин, поставленный человеком
+# ровно в получасовое окно ревизии, уедет в карантин и достаётся оттуда.
+# Пропуск стоит дороже: стенограмму диктует живая встреча, текст в неё может
+# сочинить кто угодно, а hook в `.claude/settings.json` сработает в следующей
+# же сессии CLI.
+EXECUTABLE_AREAS = (
+    (".obsidian", "plugins"),
+    (".obsidian", "snippets"),
+    (".claude",),
+    (".git", "hooks"),
+)
 
 
-def _ours_by_construction(path: pathlib.Path, graph: pathlib.Path) -> bool:
-    """Новый файл в скрытом каталоге, который ведёт сам конвейер.
-
-    Не догадка об авторстве: это места, куда облако писать не может даже
-    теоретически — они создаются нашим кодом под своими именами. Всё
-    остальное скрытое считается чужим, пока не доказано обратное.
-    """
+def _executable_area(path: pathlib.Path, graph: pathlib.Path) -> bool:
+    """Лежит ли путь внутри зоны, где файл запускается сам по себе."""
     try:
         rel = path.resolve().relative_to(graph.resolve())
     except (ValueError, OSError):
-        return False                   # вне графа своего нет
-    parts = [p.casefold() for p in rel.parts]
-    if not any(p.startswith(".") for p in parts):
-        return True                    # обычная часть графа — не наша забота
-    return any(p in PIPELINE_BACKUPS for p in parts)
+        return False                   # вне графа — не наша сверка
+    parts = tuple(p.casefold() for p in rel.parts)
+    return any(parts[:len(area)] == area for area in EXECUTABLE_AREAS)
 
 
 def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
@@ -524,11 +521,13 @@ def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
     графа не берёт. Пять признаков «своего файла» проверены кругами и
     отброшены — угадывать авторство нечем (№119).
 
-    Исключение одно и не про авторство: скрытые каталоги. Там файл значит не
-    заметку, а исполнение — плагин Obsidian, hook в `.claude`, git-хук, — и
-    туда уезжает в карантин всё, кроме бэкапов самого конвейера, которые он
-    ведёт под известными именами (`PIPELINE_BACKUPS`). Круг-9 показал, что
-    «скрытое» и «чужое» — не одно и то же, круг-10 — что и обратное неверно.
+    Исключение одно и не про авторство: зоны исполнения — плагины и сниппеты
+    Obsidian, `.claude`, `.git/hooks`. Там файл запускается сам, и появившийся
+    за прогон уезжает в карантин. Круг-9 показал, что «скрытое» и «чужое» —
+    не одно и то же (в dot-каталогах лежат бэкапы конвейера), круг-10 — что и
+    обратное неверно (там же лежит `.claude`), круг-11 — что «скрытое» вообще
+    не тот признак: под него попадают `.DS_Store`, `.icloud` и файлы
+    владельца. Опасна не скрытость, а исполняемость.
 
     Цена названа: мусор облака в контентной части графа полежит до ручной
     уборки, зато заметка соседней встречи не исчезает. Запрет границ работает
@@ -536,7 +535,7 @@ def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
     облако переписало или удалило, возвращается из бэкапа.
     """
     if not existed:
-        if not _ours_by_construction(path, graph):
+        if _executable_area(path, graph):
             if path.exists():
                 quarantine(path, graph, qdir, move=True)
             v.removed.append(path.name)
