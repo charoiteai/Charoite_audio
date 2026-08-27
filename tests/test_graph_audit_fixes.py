@@ -274,3 +274,105 @@ def test_two_index_writers_cannot_mix_bytes():
     src = (SRC / "dossier.py").read_text(encoding="utf-8")
     assert 'f"{INDEX_JSON}.{os.getpid()}.tmp"' in src
     assert 'f"{INDEX_MD}.{os.getpid()}.tmp"' in src
+
+
+# ── круг-4 по PR #438 (DeepSeek), дельта ─────────────────────────────────────
+
+def test_an_unknown_speaker_does_not_borrow_the_previous_one():
+    """Заголовок реплики — граница: чужие слова не подписываются соседом.
+
+    Пока заголовок был «просто ещё одним кандидатом», цикл шёл выше и брал имя
+    ПРЕДЫДУЩЕЙ реплики вместе с её временем. Гость или неопознанный
+    «Собеседник» — штатный случай, не экзотика.
+    """
+    text = ("# Встреча\nУчастники (звучали в разговоре): Мария\n\n"
+            "**Мария** [10:19–10:20]:\nподготовлю смету к пятнице\n\n"
+            "**Гость** [10:21–10:22]:\nобсудили бюджет на квартал\n")
+    out = graph_updater.core_anchor(
+        {"цитата": "обсудили бюджет на квартал", "кто": ""}, text, {"Мария"})
+    assert "Мария" not in out, f"подпись уехала к соседу: {out}"
+    assert "10:19" not in out, f"и время тоже: {out}"
+    assert "10:21" in out, f"своё время реплики потеряно: {out}"
+
+
+def test_a_long_turn_still_finds_its_header():
+    """Реплику ищем до заголовка, а не «пять строк вверх»."""
+    text = "**Пётр** [10:15]:\n" + "\n".join(f"строка {i}" for i in range(1, 9)) \
+        + "\nитоговая мысль про бюджет\n"
+    out = graph_updater.core_anchor(
+        {"цитата": "итоговая мысль про бюджет", "кто": ""}, text, {"Пётр"})
+    assert "Пётр" in out, f"говорящий потерян в длинном блоке: {out}"
+
+
+def test_a_time_inside_the_quote_is_not_the_time_of_the_turn():
+    text = "**Пётр** [10:15]:\nобсудили смету в 14:30 и разошлись\n"
+    out = graph_updater.core_anchor(
+        {"цитата": "обсудили смету в 14:30", "кто": ""}, text, {"Пётр"})
+    assert "10:15" in out and "14:30" not in out.split("«")[0], out
+
+
+def test_the_participants_header_is_read_in_three_languages_without_roles():
+    src = (SRC / "graph_updater.py").read_text(encoding="utf-8")
+    assert "Participants|参会者" in src, "шапка снова только по-русски"
+    assert "[(（].*?[)）]" in src, "роль в скобках снова попадёт в имя узла"
+
+
+def test_a_live_node_stops_the_redirect_chain(tmp_path):
+    """A→B→C, где B — и заглушка, и живой тёзка: ссылки A остаются у B."""
+    graph = tmp_path / "граф"
+    for d in ("Ядра", "Системы", "Встречи"):
+        (graph / d).mkdir(parents=True)
+    (graph / "Ядра" / "A.md").write_text(
+        "⚠️ **Дубль. Смерджен Tier3-NLI.** → [[Ядра/B]]\n", encoding="utf-8")
+    (graph / "Ядра" / "B.md").write_text(
+        "⚠️ **Дубль. Смерджен Tier3-NLI.** → [[Ядра/C]]\n", encoding="utf-8")
+    (graph / "Системы" / "B.md").write_text("## Суть\nживая система\n", encoding="utf-8")
+    (graph / "Ядра" / "C.md").write_text("## Статус\nидёт\n", encoding="utf-8")
+    (graph / "Встречи" / "2026-08-27_1100.md").write_text(
+        "обсудили [[Ядра/A|A]]\n", encoding="utf-8")
+    _, back = dossier.scan(graph)
+    assert "2026-08-27_1100" in back.get("B", set()), "живое звено пропущено"
+    assert "2026-08-27_1100" not in back.get("C", set()), "ссылка ушла мимо живого"
+
+
+def test_stale_temp_files_of_the_index_are_swept(tmp_path):
+    folder = tmp_path / "Досье"
+    folder.mkdir()
+    junk = folder / f"{dossier.INDEX_JSON}.99999.tmp"
+    junk.write_text("обрывок", encoding="utf-8")
+    dossier.write_index(folder, [])
+    assert not junk.exists(), "мусор прошлого прогона остался навсегда"
+    assert (folder / dossier.INDEX_JSON).exists()
+
+
+def test_the_format_is_parsed_where_it_is_written(tmp_path):
+    """Провенанс спрашивает transcript.parse_blocks, а не гадает по строкам.
+
+    Правило №62: два Critical подряд в одной моей правке — знак, что чинить
+    надо не заплаткой. Формат заголовка знает ровно одно место — рядом с
+    рендером; парсер провенанса больше не самодельный.
+    """
+    import transcript as tr_mod
+
+    tr = tr_mod.Transcript(tmp_path)
+    tr.set_participants(["Ольга", "Мария"])
+    tr.add("решено брать новую CRM со следующей недели", speaker="Ольга")
+    tr.add("подготовлю смету к пятнице", speaker="Мария")
+    text = tr._render()
+    blocks = tr_mod.parse_blocks(text)
+    assert [b["speaker"] for b in blocks] == ["Ольга", "Мария"], blocks
+    for b in blocks:
+        assert text[b["start"]:b["end"]].strip(), "тело реплики потеряно"
+
+    src = (SRC / "graph_updater.py").read_text(encoding="utf-8")
+    assert "_TURN_RE" not in src, "самодельный парсер формата вернулся"
+    assert "parse_blocks" in src
+
+
+def test_an_external_transcript_still_gets_its_provenance():
+    """Чужой формат без блоков — инлайновый путь остаётся."""
+    out = graph_updater.core_anchor(
+        {"цитата": "решили брать новый вариант", "кто": ""},
+        "10:15 Пётр: решили брать новый вариант со следующей недели",
+        {"Пётр"})
+    assert "Пётр" in out and "10:15" in out, out

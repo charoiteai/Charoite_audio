@@ -198,7 +198,10 @@ def scan(graph: pathlib.Path) -> tuple[dict[str, dict], dict[str, set[str]]]:
             # молча (круг-3 по PR #438, GLM Important 3).
             continue
         canon, seen = first, {alias}
-        while canon in redirects and canon not in seen:
+        # Останавливаемся на живом узле: в цепочке A→B→C, где B — и заглушка,
+        # и живой файл-тёзка, ссылки A уходили мимо B прямо к C. Та же
+        # политика, что у головы цепочки (круг-4 по PR #438, DS Important 3).
+        while canon in redirects and canon not in files and canon not in seen:
             seen.add(canon)
             canon = redirects[canon]
         who = backlinks.pop(alias, set())
@@ -401,6 +404,15 @@ def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
     эмбеддингов, ни запущенной Ollama. Семантика добирается уже поверх.
     """
     folder.mkdir(parents=True, exist_ok=True)
+    # Прошлый прогон могли убить между write и replace: имя с pid больше не
+    # перезаписывается следующим, и мусор жил бы в синхронизируемой папке
+    # вечно (круг-4 по PR #438, DS Important 2).
+    for stale in list(folder.glob(f"{INDEX_JSON}.*.tmp")) + \
+            list(folder.glob(f"{INDEX_MD}.*.tmp")):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
     entries = sorted(entries, key=lambda e: e["тема"].lower())
 
     # Атомарно: индекс пишется вне замка графа (иначе занятый соседом граф
