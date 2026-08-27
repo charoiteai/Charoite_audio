@@ -1240,7 +1240,18 @@ def main():
         с первым настоящим токеном, при сбое карточка не трогается, а человеку
         (ручной запрос — он ждёт) приходит короткое «модель занята».
         """
-        gen_started = time.monotonic()
+        wait_started = time.monotonic()
+        _started = {"model": None}      # присваивание из вложенного with
+
+        def _telemetry(reason: str) -> None:
+            """Исход захода — в состояние своего контура, на любом выходе."""
+            slot = hint_state["manual" if manual else "auto"]
+            slot["reason"] = reason
+            began = _started["model"]
+            slot["wait_ms"] = round(((began or time.monotonic()) - wait_started) * 1000)
+            slot["model_ms"] = (0 if began is None
+                                else round((time.monotonic() - began) * 1000))
+
         if manual:
             manual_evt.set()  # сигнал авто-генерации уступить
         # Замок — с потолком ожидания, не навсегда: 24.08 (встреча 10:14)
@@ -1256,7 +1267,15 @@ def main():
                     emit({"type": "hint", "text": "\n⚠ подсказчик занят — попробуйте ещё раз",
                           "manual": True})
                     emit({"type": "hint_done", "manual": True})
+                # Замок не взят — это тоже исход, и именно он был у зависшего
+                # держателя 24.08: пульс обязан назвать причину, а не молчать
+                # с чужой от прошлой попытки (круг-1 по PR #440, все три головы).
+                _telemetry("замок подсказок занят")
                 return "busy"
+            # Замок взят — дальше идёт работа модели. С этой секунды считается
+            # model_ms; всё, что было до, — ожидание чужой генерации (замок
+            # держат нить, минутки, ответ на вопрос, тема архива).
+            _started["model"] = time.monotonic()
             if manual:
                 manual_evt.clear()
             tail = tr.tail(max_ctx)
@@ -1294,10 +1313,9 @@ def main():
                 if failed is not None:
                     kind += f", сорвалась: {short_error(failed)}"
                 append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] подсказка ({kind})", "".join(parts))
-            hint_state["gen_ms"] = round((time.monotonic() - gen_started) * 1000)
             # Причина — той же человеческой строкой, что видит человек в
             # статусе: «сервер модели не отвечает», «модель занята».
-            hint_state["reason"] = short_error(failed) if failed is not None else ""
+            _telemetry(short_error(failed) if failed is not None else "")
             if failed is not None:
                 return "failed"
             return "yielded" if yielded else "done"   # уступила — вернёмся к куску раньше
@@ -1557,11 +1575,18 @@ def main():
     # пересоздаёт поток, а прочитанное (seen) и счётчик рестартов остаются.
     hint_state = {"thread": None, "restarts": 0, "seen": 0,
                   "pulse_mono": time.monotonic(),
-                  # Почему молчат подсказки и сколько ждали модель — видно в
-                  # пульсе. Пустая причина значит «всё в порядке». 27.08
-                  # пульс говорил только «fails=22», и чтобы узнать, что
+                  # Почему молчат подсказки и сколько ждали — видно в пульсе.
+                  # 27.08 пульс говорил только «fails=22», и чтобы узнать, что
                   # лежала Ollama, пришлось лезть в логи руками (№91).
-                  "reason": "", "gen_ms": 0}
+                  #
+                  # У авто и у ручной подсказки СВОИ поля: они идут из разных
+                  # потоков, и общая пара затирала причину сбоя авто-цикла
+                  # ручным запросом (круг-1 по PR #440, DS Critical 1).
+                  # Ожидание замка отделено от работы модели: замок держат и
+                  # нить, и минутки, и ответ на вопрос, и «сколько ждали
+                  # модель» из общей цифры не читалось (GLM Important 2).
+                  "auto": {"reason": "", "wait_ms": 0, "model_ms": 0},
+                  "manual": {"reason": "", "wait_ms": 0, "model_ms": 0}}
 
     def auto_hint_loop():
         """Подсказки в реальном времени: сами, по мере накопления разговора.
@@ -1604,10 +1629,14 @@ def main():
                             new_chars = str(len(tr.full()) - hint_state["seen"])
                         except Exception:  # noqa: BLE001 — пульс живучее счётчика
                             new_chars = "?"
-                    reason = str(hint_state.get("reason") or "")
+                    auto = hint_state.get("auto") or {}
+                    reason = str(auto.get("reason") or "")
+                    # Пульс — про АВТО-цикл, и поля берутся его: ручной запрос
+                    # идёт своим потоком и свою причину пишет отдельно.
                     print("hint-pulse: on=" + str(toggles["hints"]) +
                           f" new={new_chars} last={last_outcome} fails={failures}"
-                          f" gen_ms={hint_state.get('gen_ms', 0)}"
+                          f" wait_ms={auto.get('wait_ms', 0)}"
+                          f" model_ms={auto.get('model_ms', 0)}"
                           + (f" reason={reason}" if reason else ""),
                           file=sys.stderr, flush=True)
                 if not toggles["hints"]:

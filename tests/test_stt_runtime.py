@@ -243,24 +243,28 @@ def test_lag_line_carries_time_audio_and_rtf():
     assert '"audio_s"' in event and '"rtf"' in event, "событие без RTF"
 
 
-def test_hint_pulse_names_the_reason_and_the_wait():
-    """«fails=22» не отвечает на вопрос «почему».
+def test_hint_pulse_names_the_reason_and_separates_waiting_from_work():
+    """«fails=22» не отвечает на вопрос «почему», а одна цифра времени лжёт.
 
     27.08 подсказки отказали 22 раза подряд, а причину — упавшую Ollama —
-    пришлось искать в логах руками. Пульс обязан называть причину той же
-    человеческой строкой, что видит человек в статусе, и время ожидания
-    модели (№91).
+    пришлось искать в логах руками (№91). Круг по PR #440 добавил к этому две
+    поправки: ветка «замок занят» выходила до записи и оставляла в пульсе
+    чужую причину от прошлой попытки (все три головы), а единая цифра времени
+    смешивала ожидание чужой генерации с работой модели — замок держат и нить,
+    и минутки, и ответ на вопрос (GLM).
     """
     src = (pathlib.Path(__file__).resolve().parent.parent / "src"
            / "daemon.py").read_text(encoding="utf-8")
-    pulse = src[src.index('print("hint-pulse: on="'):]
+    pulse = src[src.index('auto = hint_state.get("auto")'):]
     pulse = pulse[:pulse.index("file=sys.stderr")]
-    assert "gen_ms=" in pulse and "reason=" in pulse, "пульс молчит о причине"
+    for field in ("wait_ms=", "model_ms=", "reason="):
+        assert field in pulse, f"пульс молчит о {field}"
+    assert 'hint_state.get("auto")' in pulse or "hint_state.get('auto')" in pulse, \
+        "пульс читает общее состояние — ручной запрос затрёт причину авто-цикла"
 
     gen = src[src.index("def gen_hint("):src.index("def instant_loop(")]
-    assert 'hint_state["reason"] = short_error(failed)' in gen, \
-        "причина не сохраняется из того же источника, что и статус человеку"
-    assert 'hint_state["gen_ms"]' in gen, "время генерации не замеряется"
-    # засечка должна стоять до замка, иначе ожидание слота не попадёт в счёт
-    assert gen.index("gen_started = time.monotonic()") < gen.index("with hint_slot("), \
-        "ожидание слота не входит во время генерации, а именно оно и тормозит"
+    assert gen.count("_telemetry(") >= 2, "исход пишется не на всех выходах"
+    busy = gen[gen.index('return "busy"') - 400:gen.index('return "busy"')]
+    assert "_telemetry(" in busy, "ветка busy снова выходит до записи телеметрии"
+    assert 'hint_state["manual" if manual else "auto"]' in gen, \
+        "ручная и авто подсказки снова пишут в одно поле"
