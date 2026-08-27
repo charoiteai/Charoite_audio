@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import os
 import pathlib
-import shutil
+import stat
 
 
 def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8") -> None:
@@ -49,17 +49,21 @@ def _carry_over_metadata(src: pathlib.Path, dst: pathlib.Path) -> None:
     вручную права (GLM, круг-1 по PR #441). Ни одна из потерь не роняет
     конвейер, поэтому сбой переноса не должен рушить саму запись.
 
-    Времена НЕ переносим — только права и атрибуты. `copystat` тащил бы и
-    mtime, а по нему ночь отбирает работу: `tier3.changed_since` берёт ядра
-    свежее прошлого прогона, и узел, обновлённый сегодня, но записанный до
-    того неделю назад, выпадал бы из инкремента навсегда — до следующего
+    Времена НЕ переносим — только права и атрибуты. Иначе узел, обновлённый
+    сегодня, но записанный до того неделю назад, выглядел бы недельным, а по
+    mtime ночь отбирает работу: `tier3.changed_since` берёт ядра свежее
+    прошлого прогона, и такое ядро выпадало бы из инкремента до следующего
     полного прохода. Тем же mtime живёт кэш `graph_nodes.NodeIndex`
     (DS, круг-2 по PR #441).
+
+    Права ставим сами через `chmod`. Ни `copystat`, ни `copymode` не годятся:
+    на macOS второй внутри вызывает первый, а тот переносит и времена —
+    поймано трассировкой, «безопасная» замена делала ровно то же самое.
     """
     if not src.exists():
         return
     try:
-        shutil.copymode(src, dst)
+        os.chmod(dst, stat.S_IMODE(src.stat().st_mode))
     except OSError:
         pass
     try:                              # расширенные атрибуты: теги и комментарии
