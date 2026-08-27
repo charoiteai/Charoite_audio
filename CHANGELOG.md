@@ -5,6 +5,30 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.62.0](https://github.com/charoiteai/Charoite_audio/compare/v0.61.2...v0.62.0) (2026-08-27)
+
+
+### Features
+
+* **llm:** cloud chat engine — the laptop stops holding a large model ([#436](https://github.com/charoiteai/Charoite_audio/issues/436)) ([41de4c8](https://github.com/charoiteai/Charoite_audio/commit/41de4c829d75d1ab819de5952137701c3daddd83))
+* **telemetry:** логи отвечают, почему отстаёт STT и почему молчат подсказки ([#440](https://github.com/charoiteai/Charoite_audio/issues/440)) ([74afcf0](https://github.com/charoiteai/Charoite_audio/commit/74afcf024de35263389f162a240091d54a0eec29))
+
+
+### Bug Fixes
+
+* **cloud-chat:** translate the zh config block and stop passing a cloud model name to the local engine ([#437](https://github.com/charoiteai/Charoite_audio/issues/437)) ([9e728e4](https://github.com/charoiteai/Charoite_audio/commit/9e728e4f885d743da3ca10759ea792286bef47d2))
+* **cloud:** a CLI failure is never an answer, and every graph writer takes the lock ([#434](https://github.com/charoiteai/Charoite_audio/issues/434)) ([29d2427](https://github.com/charoiteai/Charoite_audio/commit/29d2427f7422dea8c52191fa4c7eee93735681d6))
+* **cloud:** a rollback no longer swallows the neighbouring meeting's work ([#439](https://github.com/charoiteai/Charoite_audio/issues/439)) ([08cea8e](https://github.com/charoiteai/Charoite_audio/commit/08cea8e9aaf6ae1e4b5794d23a636b39ee98afd4))
+* **graph:** a fact's provenance comes from the transcript, never from the model ([#438](https://github.com/charoiteai/Charoite_audio/issues/438)) ([09dff41](https://github.com/charoiteai/Charoite_audio/commit/09dff411f098a086293cf6799cb3ea3d6f1e22f3))
+* **nightly:** the night ends at night, yields to a meeting, and never lies "ok" ([#435](https://github.com/charoiteai/Charoite_audio/issues/435)) ([d4505a5](https://github.com/charoiteai/Charoite_audio/commit/d4505a5c98d732c9edee8f43bb8b221ffade3951))
+* **runtime:** keep live pipeline failures visible ([#431](https://github.com/charoiteai/Charoite_audio/issues/431)) ([2cda290](https://github.com/charoiteai/Charoite_audio/commit/2cda290f55565e38f5906b1dd6804fc6a06b5d15))
+* **sufler:** deep pass must not starve live hints — quiet profile only ([#430](https://github.com/charoiteai/Charoite_audio/issues/430)) ([2d0c387](https://github.com/charoiteai/Charoite_audio/commit/2d0c3870b7a5c3ead26fa3ebf0c9fe06f6b20b2a))
+
+
+### Performance Improvements
+
+* **app:** recording clock repaints itself, not every subscriber ([#433](https://github.com/charoiteai/Charoite_audio/issues/433)) ([bd72d41](https://github.com/charoiteai/Charoite_audio/commit/bd72d41700eb37699da7457a4f4ed8205a890ac4))
+
 ## [0.61.2](https://github.com/charoiteai/Charoite_audio/compare/v0.61.1...v0.61.2) (2026-08-25)
 
 
