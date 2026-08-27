@@ -173,20 +173,32 @@ def _digest(path: pathlib.Path) -> str:
 
 
 # Внутри `.obsidian` под охраной только то, что исполняется или включает
-# исполняемое: плагины (кроме их data.json), CSS-сниппеты и списки
-# включённых плагинов. Остальное — состояние окон и настроек, которое сам
-# Obsidian переписывает, пока открыт: откат такого файла на каждом разборе
-# был бы откатом чужой работы (круг-1 по PR #381, DeepSeek).
-_OBSIDIAN_GUARDED = ("community-plugins.json", "core-plugins.json")
+# исполняемое: плагины, CSS-сниппеты и списки включённых плагинов.
+# Остальное — состояние окон и настроек, которое сам Obsidian переписывает,
+# пока открыт: откат такого файла на каждом разборе был бы откатом чужой
+# работы (круг-1 по PR #381, DeepSeek).
+#
+# `data.json` плагина был исключением по той же причине — Obsidian пишет
+# туда сам. Исключение снято (GLM, круг-12): у Templater в data.json лежит
+# папка стартовых шаблонов, то есть это настройка, которая ИСПОЛНЯЕТСЯ при
+# запуске. Файл был невидим для снимка целиком — ни отката, ни строки в
+# логе. Шум от собственных правок Obsidian здесь дешевле пропущенного
+# запуска чужого JS.
+_OBSIDIAN_GUARDED = ("community-plugins.json", "core-plugins.json")  # сравнение через casefold
 
 
 def obsidian_guarded(rel: pathlib.Path) -> bool:
-    parts = rel.parts
+    # casefold на всех сравнениях: каталог, созданный как `.obsidian/Plugins`,
+    # на APFS ложится в тот же `plugins`, но в обходе приходит своим именем —
+    # и регистрозависимый фильтр выбрасывал бы его из снимка ещё до проверки
+    # зоны исполнения (Codex, круг-12).
+    parts = tuple(p.casefold() for p in rel.parts)
     if len(parts) < 2 or parts[0] != ".obsidian":
         return True
     if parts[1] == "plugins":
-        return rel.name != "data.json"
-    return parts[1] == "snippets" or (len(parts) == 2 and rel.name in _OBSIDIAN_GUARDED)
+        return True
+    return parts[1] == "snippets" or (
+        len(parts) == 2 and rel.name.casefold() in _OBSIDIAN_GUARDED)
 
 
 def graph_files(graph: pathlib.Path):
@@ -500,13 +512,21 @@ EXECUTABLE_AREAS = (
 
 
 def _executable_area(path: pathlib.Path, graph: pathlib.Path) -> bool:
-    """Лежит ли путь внутри зоны, где файл запускается сам по себе."""
+    """Лежит ли путь внутри зоны, где файл запускается сам по себе.
+
+    Зона ищется на ЛЮБОЙ глубине: `.git/hooks` и `.claude` исполняемы и в
+    подпапке — `Чужое/.backup/.git/hooks/post-commit` запустится при первой
+    же команде git в той папке. Сравнение от корня графа пропускало ровно
+    это и было регрессом против прошлого круга (DS, круг-12).
+    """
     try:
         rel = path.resolve().relative_to(graph.resolve())
     except (ValueError, OSError):
         return False                   # вне графа — не наша сверка
     parts = tuple(p.casefold() for p in rel.parts)
-    return any(parts[:len(area)] == area for area in EXECUTABLE_AREAS)
+    return any(parts[i:i + len(area)] == area
+               for area in EXECUTABLE_AREAS
+               for i in range(len(parts) - len(area) + 1))
 
 
 def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,

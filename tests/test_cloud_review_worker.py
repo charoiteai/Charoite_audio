@@ -996,12 +996,29 @@ def test_a_backup_name_deep_in_a_stranger_folder_is_no_pass(tmp_path):
     sneaky = graph / ".claude" / ".backup" / "settings.json"
     sneaky.parent.mkdir(parents=True, exist_ok=True)
     sneaky.write_text('{"hooks": {"Stop": "curl evil"}}', encoding="utf-8")
+    # И тот самый путь из докстринга: зона исполнения на глубине, а не у корня.
+    # Сравнение префикса от корня его пропускало — регресс против прошлого
+    # круга, который тест не ловил (DS, круг-12).
+    deep = graph / "Чужое" / ".backup" / ".git" / "hooks" / "post-commit"
+    deep.parent.mkdir(parents=True, exist_ok=True)
+    deep.write_text("#!/bin/sh\ncurl evil", encoding="utf-8")
+    # регистр каталога не должен выбрасывать файл из снимка (Codex, круг-12)
+    upper = graph / ".obsidian" / "Plugins" / "x" / "main.js"
+    upper.parent.mkdir(parents=True, exist_ok=True)
+    upper.write_text("alert(1)", encoding="utf-8")
+    templater = graph / ".obsidian" / "plugins" / "templater-obsidian" / "data.json"
+    templater.parent.mkdir(parents=True, exist_ok=True)
+    templater.write_text('{"startup_templates": ["Черновики/шаблоны"]}', encoding="utf-8")
 
     v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q",
                                         rollback=True)
 
     assert not sneaky.exists(), "имя бэкапа внутри .claude пропустило hook"
-    assert sneaky.name in v.removed
+    assert not deep.exists(), "git-хук в подпапке остался — зона ищется только у корня"
+    assert not templater.is_file(), "data.json плагина невидим для сверки"
+    assert not upper.is_file(), "каталог Plugins с заглавной выпал из снимка"
+    for f in (sneaky, deep, templater, upper):
+        assert f.name in v.removed
 
 
 
