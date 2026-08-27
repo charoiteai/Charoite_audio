@@ -21,13 +21,15 @@ CHR-AUD-003. В режиме записи модель правила граф �
 написал человек или записала машина с его слов, и облаку там делать нечего.
 """
 import pathlib
+import time
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 sys.path.insert(0, str(REPO / "src"))
 
-import cloud_review  # noqa: E402
+import cloud_review
+import graph_writes  # noqa: E402
 
 
 def _graph(tmp: pathlib.Path) -> pathlib.Path:
@@ -857,109 +859,95 @@ def test_delivery_does_not_depend_on_the_log_and_quarantine_names_the_stem(tmp_p
     assert len(runs) == 1 and runs[0].startswith(stamp + "30-"), runs
 
 
-def test_rollback_does_not_swallow_a_neighbours_work(tmp_path):
-    """Откат не трогает файлы ДРУГОЙ встречи — включая производные.
+def test_rollback_does_not_swallow_what_the_pipeline_wrote(tmp_path, monkeypatch):
+    """Откат не трогает файлы, которые записал конвейер, — он отметился в журнале.
 
     27.08 вживую: облачная ревизия встречи 10:32 упала по таймауту 1800 с,
-    откат вернул граф к снимку — и унёс заметку самой встречи вместе с пятью
+    откат вернул граф к снимку и унёс заметку самой встречи вместе с пятью
     артефактами встречи 11:33, разобранной сорока минутами позже. Замок графа
-    облако держит все тридцать минут ожидания, разбор его не берёт, и
-    «изменилось с момента снимка» чужую работу от своей не отличает.
+    облако держит все тридцать минут ожидания, конвейер его не берёт и пишет
+    рядом; «изменилось с момента снимка» своё от чужого не отличает.
 
-    Имена здесь настоящие: конвейер копирует в «Стенограммы встреч» именно
-    производные (`_live`, `_minutes`, `_разбор`), а `stamp_of` их намеренно
-    не признаёт встречей — на «удобном» имени без суффикса тест был зелёным,
-    а файлы всё равно уезжали (круг-1 по PR #439, DS Critical 1).
+    Отличать по имени пробовали трижды, и трижды круги ломали догадку: штамп
+    чужой встречи не спасал свою заметку, штамп в имени пропускал подделку
+    облака, наличие оригинала в transcripts — тоже. Признак внешний: писатель
+    отмечается в журнале.
     """
     graph = _graph(tmp_path)
-    tdir = tmp_path / "transcripts"; tdir.mkdir(exist_ok=True)
+    root = tmp_path / "data"
+    monkeypatch.setattr(cloud_review, "ROOT", root)
+    started = time.time()
     before = cloud_review.snapshot(graph)
     backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
 
-    neighbour = graph / "Встречи" / "2026-08-27_1133.md"
-    neighbour.parent.mkdir(parents=True, exist_ok=True)
-    neighbour.write_text("# Встреча 2026-08-27_1133\nработа соседа\n", encoding="utf-8")
-    docs = graph / "Документация" / "Стенограммы встреч"
-    docs.mkdir(parents=True, exist_ok=True)
-    aux = []
-    for tail in ("", "_live", "_minutes", "_hints", "_разбор"):
-        name = f"2026-08-27_1133_Статус_ВВКИ{tail}.md"
-        (tdir / name).write_text("оригинал\n", encoding="utf-8")   # конвейер копирует
-        f = docs / name
-        f.write_text(f"артефакт{tail}\n", encoding="utf-8")
-        aux.append(f)
-
-    qdir = tmp_path / "q"
-    v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
-                                        rollback=True, tdir=tdir)
-
-    assert neighbour.exists(), "откат унёс заметку соседней встречи"
-    for f in aux:
-        assert f.exists(), f"откат унёс {f.name}"
-    assert len(v.kept_new) == 6 and not v.removed
-    line = cloud_review._verdict_line(v, qdir)
-    assert "НЕ ТРОНУТЫ" in line and "2026-08-27_1133_Статус_ВВКИ_live.md" in line
-    assert "оставлено чужого 6" in line
-
-
-def test_a_second_meeting_of_the_same_minute_is_a_stranger(tmp_path):
-    """Демон после краха поднимается через две секунды — внутри той же минуты.
-
-    Вторая встреча минуты живёт со своим посекундным штампом, и сводить их по
-    минуте значит объявить чужое своим (круг-1 по PR #439, DS Critical 2).
-    """
-    graph = _graph(tmp_path)
-    tdir = tmp_path / "transcripts"; tdir.mkdir(exist_ok=True)
-    (tdir / "2026-08-27_1133_Планёрка.md").write_text("стенограмма\n", encoding="utf-8")
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-08-27_113312")
-    owner = graph / "Встречи" / "2026-08-27_1133.md"
-    owner.parent.mkdir(parents=True, exist_ok=True)
-    owner.write_text("# владелец минуты\n", encoding="utf-8")
-    qdir = tmp_path / "q"
-    v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
-                                        rollback=True, tdir=tdir)
-    assert owner.exists() and "2026-08-27_1133.md" in v.kept_new
-
-
-def test_our_own_note_survives_the_rollback(tmp_path):
-    """Заметку СВОЕЙ встречи откат тоже не трогает.
-
-    Первая версия защищала только чужие встречи — и покрывала половину
-    инцидента: заметка ревизуемой встречи, дописанная конвейером после снимка
-    (ретрай, доклейка минуток), уезжала в карантин по-прежнему. Ровно так и
-    пропала заметка 10:32 (круг-2 по PR #439, GLM Critical 1)."""
-    graph = _graph(tmp_path)
-    tdir = tmp_path / "transcripts"; tdir.mkdir(exist_ok=True)
-    (tdir / "2026-08-27_1032_Инцидент.md").write_text("стенограмма\n", encoding="utf-8")
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
-    mine = graph / "Встречи" / "2026-08-27_1032.md"
+    written = []
+    mine = graph / "Встречи" / "2026-08-27_1032.md"      # своя заметка, дописана после снимка
     mine.parent.mkdir(parents=True, exist_ok=True)
     mine.write_text("# наша встреча\n", encoding="utf-8")
+    written.append(mine)
+    neighbour = graph / "Встречи" / "2026-08-27_1133.md"  # разбор соседней встречи
+    neighbour.write_text("# соседняя встреча\n", encoding="utf-8")
+    written.append(neighbour)
+    docs = graph / "Документация" / "Стенограммы встреч"
+    docs.mkdir(parents=True, exist_ok=True)
+    for tail in ("", "_live", "_minutes", "_hints", "_разбор"):
+        f = docs / f"2026-08-27_1133_Статус_ВВКИ{tail}.md"
+        f.write_text(f"артефакт{tail}\n", encoding="utf-8")
+        written.append(f)
+    graph_writes.note(root, graph, *written)
+
     qdir = tmp_path / "q"
     v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
-                                        rollback=True, tdir=tdir)
-    assert mine.exists() and "2026-08-27_1032.md" in v.kept_new
+                                        rollback=True, since=started)
+
+    for f in written:
+        assert f.exists(), f"откат унёс {f.name}"
+    assert len(v.kept_new) == len(written) and not v.removed
+    line = cloud_review._verdict_line(v, qdir)
+    assert "НЕ ТРОНУТЫ" in line and "2026-08-27_1133_Статус_ВВКИ_live.md" in line
+    assert f"оставлено чужого {len(written)}" in line
 
 
-def test_a_neighbour_is_spared_even_when_the_answer_is_valid(tmp_path):
-    """Артефакты соседа лежат в защищённой папке — и при валидном ответе
-    уезжали в карантин тем же механизмом (круг-1, DS Important 1)."""
+def test_a_forged_name_without_a_journal_entry_is_quarantined(tmp_path, monkeypatch):
+    """Облако может назвать файл штампом встречи — журнала у него нет.
+
+    Догадка по имени именно на этом и ломалась: «2026-07-15_1400_v2.md» в
+    защищённой папке проходил как работа конвейера (круг-3 по PR #439, DS).
+    """
     graph = _graph(tmp_path)
-    tdir = tmp_path / "transcripts"
-    tdir.mkdir(exist_ok=True)
-    name = "2026-08-27_1133_Статус_ВВКИ_разбор.md"
-    (tdir / name).write_text("оригинал\n", encoding="utf-8")   # конвейер копирует
+    root = tmp_path / "data"
+    monkeypatch.setattr(cloud_review, "ROOT", root)
+    started = time.time()
     before = cloud_review.snapshot(graph)
     backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
     docs = graph / "Документация" / "Стенограммы встреч"
     docs.mkdir(parents=True, exist_ok=True)
-    f = docs / name
-    f.write_text("разбор соседа\n", encoding="utf-8")
+    fake = docs / "2026-08-27_1133_Статус_ВВКИ_live.md"     # имя настоящего артефакта
+    fake.write_text("подделка облака\n", encoding="utf-8")
+    qdir = tmp_path / "q"
+    v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
+                                        rollback=True, since=started)
+    assert not fake.exists() and fake.name in v.removed and not v.kept_new
+
+
+def test_a_journal_entry_older_than_the_window_does_not_count(tmp_path, monkeypatch):
+    """Щадим только записи своего окна: вчерашняя отметка не оправдывает файл."""
+    graph = _graph(tmp_path)
+    root = tmp_path / "data"
+    monkeypatch.setattr(cloud_review, "ROOT", root)
+    stale = graph / "Встречи" / "2026-08-26_1031.md"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("вчерашняя заметка\n", encoding="utf-8")
+    graph_writes.note(root, graph, stale)                  # отметка ДО снимка
+    started = time.time() + 1                              # окно начинается позже
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
+    stale.write_text("переписано облаком\n", encoding="utf-8")
     v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q",
-                                        rollback=False, tdir=tdir)
-    assert f.exists() and f.name in v.kept_new and not v.removed
+                                        rollback=True, since=started)
+    assert stale.read_text(encoding="utf-8") == "вчерашняя заметка\n", \
+        "правка облака поверх старого файла не откачена"
+    assert "2026-08-26_1031.md" in v.reverted and not v.kept_new
 
 
 def test_rollback_still_removes_what_the_cloud_created_where_it_may_not(tmp_path):

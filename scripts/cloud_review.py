@@ -40,6 +40,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import time
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
@@ -54,7 +55,7 @@ import charoite_paths  # noqa: E402
 import cloud  # noqa: E402
 import file_locks  # noqa: E402
 import graph_updater
-import meeting_stamp  # noqa: E402
+import graph_writes
 import privacy  # noqa: E402
 
 BACKUP_DIR = ".cloud_backup"
@@ -480,43 +481,38 @@ def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
     return None
 
 
-def written_by_the_pipeline(path: pathlib.Path, tdir: pathlib.Path | None) -> bool:
-    """Файл положил конвейер, а не облако: у него есть оригинал в transcripts.
+def written_by_the_pipeline(path: pathlib.Path, graph: pathlib.Path,
+                            ours: set[str]) -> bool:
+    """Файл записал конвейер — он сам об этом отметился в журнале.
 
     Откат по невалидному ответу берёт «всё, что изменилось с момента снимка», а
-    это не то же самое, что «что написало облако». Замок графа облако держит
-    все тридцать минут ожидания модели, конвейер его не берёт и пишет рядом:
-    разбор следующей встречи, ретрай из приложения, доклейку минуток. 27.08
-    такой откат унёс заметку встречи 10:32 и пять артефактов встречи 11:33
-    (№119).
+    это не «что написало облако»: замок графа облако держит все тридцать минут
+    ожидания модели, конвейер его не берёт и пишет рядом — разбор следующей
+    встречи, ретрай из приложения, доклейка минуток. 27.08 такой откат унёс
+    заметку встречи 10:32 и пять артефактов встречи 11:33 (№119).
 
-    Признак — не имя. Имя со штампом подделывается: облако может создать
-    «2026-07-15_1400_v2.md» в защищённой папке, и такой файл обязан уехать в
-    карантин (проверено тестом с 22.08). Признак в том, что конвейер артефакты
-    КОПИРУЕТ: в «Документация/Стенограммы встреч» ложится то, что уже лежит в
-    `transcripts/` под тем же именем, а заметка `Встречи/<штамп>.md` живёт
-    ровно тогда, когда у встречи есть стенограмма. У облака оригинала нет.
+    Догадки по имени не работают, и это выяснено дорого: три круга голов
+    подряд ломали их. «Штамп чужой встречи» не спасал свою заметку; «штамп в
+    имени» пропускал подделку облака в защищённой папке; «есть оригинал в
+    transcripts» её же пропускал через штамп встречи. Признак сделан внешним:
+    писатель отмечается в `logs/graph_writes.jsonl`, откат читает записи за
+    своё окно. Ничего угадывать не надо — кто писал, тот и отметился.
     """
-    if tdir is None or not tdir.is_dir():
+    try:
+        rel = str(path.resolve().relative_to(graph.resolve()))
+    except (ValueError, OSError):
         return False
-    if (tdir / path.name).is_file():
-        return True                     # артефакт: копия лежит рядом с оригиналом
-    its = meeting_stamp.stamp_of(path.stem) or (
-        meeting_stamp._RE_TITLED.match(path.stem).group(1)
-        if meeting_stamp._RE_TITLED.match(path.stem) else None)
-    if not its:
-        return False
-    # заметка встречи: конвейер пишет её, только если стенограмма существует
-    return bool(meeting_stamp.files_with_stamp(tdir, its, suffix=".md"))
+    return rel in ours
 
 
 def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
             qdir: pathlib.Path, old: pathlib.Path, existed: bool, why: str | None,
-            v: Verdict, tdir: pathlib.Path | None = None) -> None:
+            v: Verdict, ours: set[str] | None = None) -> None:
     """Убрать одну правку: созданное — в карантин, существовавшее — копией
     в карантин и из бэкапа обратно. Ничего не стирается."""
+    ours = ours or set()
     if not existed:
-        if written_by_the_pipeline(path, tdir):
+        if written_by_the_pipeline(path, graph, ours):
             # Работа конвейера — не правка облака: оставляем и называем
             # вслух. Проверка идёт при ЛЮБОМ исходе, не только при откате:
             # артефакты лежат в «Документация/Стенограммы встреч», а это
@@ -542,7 +538,7 @@ def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
 def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
                        backup: pathlib.Path, qdir: pathlib.Path | None = None,
                        *, rollback: bool = False,
-                       tdir: pathlib.Path | None = None) -> Verdict:
+                       since: float | None = None) -> Verdict:
     """Сверить граф с состоянием до запуска и убрать запрещённое.
 
     Нарушение — это не только правка существующего файла: удаление тоже
@@ -564,6 +560,8 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
     if not backup.is_dir():
         return Verdict(touched=-1)
     v = Verdict(rolled_back=rollback)
+    # Что за время нашего прогона записал конвейер — по его же журналу.
+    ours = graph_writes.written_since(ROOT, since) if since else set()
     touched = changed_since(before, graph)
     v.touched = len(touched)
     qdir = qdir or quarantine_root(graph) / backup.name
@@ -582,7 +580,7 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
             why = judge(path, graph, old_text, new_text, existed)
             if why is None and not rollback:
                 continue
-            _settle(path, graph, backup, qdir, old, existed, why, v, tdir)
+            _settle(path, graph, backup, qdir, old, existed, why, v, ours)
         except OSError:
             v.failed.append(path.name)
     return v
@@ -730,6 +728,9 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             denied = []
             unlock()
     if may_edit:
+        # Момент снимка — граница окна: всё, что конвейер записал после него,
+        # видно в его журнале, и откат такие файлы не трогает (№119).
+        started = time.time()
         before = snapshot(graph)
         try:
             backup = backup_graph(graph, stamp)
@@ -825,7 +826,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 # (слияние до середины), и объяснить их человеку нечем.
                 v = enforce_boundaries(before, graph, backup, qdir,
                                        rollback=not (ok and published),
-                                       tdir=transcript.parent)
+                                       since=started)
                 # не сверено, если что-то упало ИЛИ осталось как есть без копии
                 checked = v.touched >= 0 and not v.failed and not v.unrestorable
                 lines.append(_verdict_line(v, qdir))

@@ -26,6 +26,7 @@ from llm import LLM, LLMHTTPError  # noqa: E402
 from charoite_paths import code_root, harden_umask, resolve_root
 import meeting_stamp
 from meeting_stamp import files_with_stamp, stamp_of
+import graph_writes
 import graphs
 
 ROOT = resolve_root(__file__)
@@ -1010,7 +1011,11 @@ def main():
     vdir = graph / "Встречи"
     if graph_ok:
         vdir.mkdir(parents=True, exist_ok=True)
-        (vdir / f"{stamp}.md").write_text("\n".join(md), encoding="utf-8")
+        note_path = vdir / f"{stamp}.md"
+        note_path.write_text("\n".join(md), encoding="utf-8")
+        # Отмечаемся в журнале: по нему откат облачной ревизии отличит нашу
+        # запись от своей и не унесёт её в карантин (№119).
+        graph_writes.note(ROOT, graph, note_path)
 
     # 3) строка в MOC
     moc = graph / "_MOC.md"
