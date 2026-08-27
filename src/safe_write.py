@@ -19,16 +19,47 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shutil
 
 
 def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8") -> None:
     """Записать текст так, чтобы обрыв не уничтожил прежнее содержимое."""
+    # Симлинк в графе ведёт к настоящему файлу, и писать надо в него: иначе
+    # `replace` подменил бы саму ссылку обычным файлом, а цель осталась со
+    # старым текстом (DS, круг-1 по PR #441).
+    if path.is_symlink():
+        path = path.resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     # PID в имени: два процесса, пишущие один узел, не должны собирать файл
     # друг за другом. Кто заменит последним — тот и победил, но целиком.
     tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
     try:
         tmp.write_text(text, encoding=encoding)
+        _carry_over_metadata(path, tmp)
         tmp.replace(path)
     finally:
         tmp.unlink(missing_ok=True)   # replace уже унёс файл — это не ошибка
+
+
+def _carry_over_metadata(src: pathlib.Path, dst: pathlib.Path) -> None:
+    """Перенести на новый файл права и метки Finder со старого.
+
+    `replace` создаёт новый inode, и без этого шага узел после первой же
+    правки терял бы цветные метки, комментарии Spotlight и выставленные
+    вручную права (GLM, круг-1 по PR #441). Ни одна из потерь не роняет
+    конвейер, поэтому сбой переноса не должен рушить саму запись.
+    """
+    if not src.exists():
+        return
+    try:
+        shutil.copystat(src, dst)
+    except OSError:
+        pass
+    try:                              # расширенные атрибуты: теги и комментарии
+        for name in os.listxattr(src):
+            try:
+                os.setxattr(dst, name, os.getxattr(src, name))
+            except OSError:
+                continue
+    except (OSError, AttributeError):
+        pass

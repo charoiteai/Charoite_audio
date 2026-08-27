@@ -55,3 +55,46 @@ def test_two_writers_do_not_assemble_one_file_out_of_two(tmp_path):
 
     assert node.read_text(encoding="utf-8") == "моя целая версия\n"
     assert other_pid_tmp.exists(), "хелпер тронул временный файл соседа"
+
+
+def test_a_symlinked_note_is_written_through_not_replaced(tmp_path):
+    """Симлинк ведёт к настоящему файлу — писать надо в него.
+
+    Круг-1, DS: `replace` подменил бы саму ссылку обычным файлом, а цель
+    осталась бы со старым текстом. В графе люди держат общие заметки
+    ссылками, и такая подмена рвёт связь молча.
+    """
+    real = tmp_path / "общая" / "Хранилище.md"
+    real.parent.mkdir(parents=True)
+    real.write_text("старое\n", encoding="utf-8")
+    link = tmp_path / "Ядра" / "Хранилище.md"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(real)
+
+    safe_write.write_text(link, "новое\n")
+
+    assert link.is_symlink(), "ссылку подменили обычным файлом"
+    assert real.read_text(encoding="utf-8") == "новое\n", "цель ссылки не обновилась"
+
+
+def test_file_permissions_survive_the_replace(tmp_path):
+    """`replace` даёт новый inode — права и метки надо перенести.
+
+    Круг-1, GLM: иначе узел после первой же правки терял бы выставленные
+    вручную права, цветные метки Finder и комментарии Spotlight.
+    """
+    node = tmp_path / "Ядра" / "Секрет.md"
+    node.parent.mkdir(parents=True)
+    node.write_text("старое\n", encoding="utf-8")
+    node.chmod(0o600)
+    try:
+        os.setxattr(node, "user.charoite.test", "метка".encode())
+        had_xattr = True
+    except (OSError, AttributeError):
+        had_xattr = False
+
+    safe_write.write_text(node, "новое\n")
+
+    assert node.stat().st_mode & 0o777 == 0o600, "права не пережили запись"
+    if had_xattr:
+        assert os.getxattr(node, "user.charoite.test") == "метка".encode(), "метка не пережила запись"

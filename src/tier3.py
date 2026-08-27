@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import safe_write
 import pathlib
 import re
 import shutil
@@ -241,15 +242,16 @@ def _merge(folder: pathlib.Path, stamp: str, a: dict, b: dict, log: list[str]) -
         if _plain(block) not in _plain(text):
             text += "\n" + block + "\n"
     text += f"\n> 🔀 Tier3-NLI: сюда влита хроника дубля «{dup['name']}».\n"
-    canon["path"].write_text(text, encoding="utf-8")
+    safe_write.write_text(canon["path"], text)
     canon["text"] = text
     canon["mtime"] = canon["path"].stat().st_mtime   # своя запись — не «чужая рука»
-    dup["path"].write_text(
+    safe_write.write_text(
+        dup["path"],
         f"---\ntype: ядро\nвид: задача\ntags: [дубль, redirect, tier3-nli]\n---\n"
         f"# {dup['name']} → [[Ядра/{canon['name']}]]\n\n"
         f"⚠️ **Дубль. Смерджен Tier3-NLI.** Хроника перенесена в "
         f"[[Ядра/{canon['name']}|{canon['name']}]].\n",
-        encoding="utf-8")
+        )
     log.append(f"🔀 «{dup['name']}» → «{canon['name']}» (+{len(extra)} строк хроники)")
 
 
@@ -267,7 +269,7 @@ def _mark_dup(folder: pathlib.Path, stamp: str, a: dict, b: dict, log: list[str]
         src["text"] += (f"\n> ⚠️ Tier3-NLI: возможный дубль: "
                         f"[[Ядра/{dst['name']}|{dst['name']}]] — свести вручную, "
                         f"если это одна тема.\n")
-        src["path"].write_text(src["text"], encoding="utf-8")
+        safe_write.write_text(src["path"], src["text"])
         src["mtime"] = src["path"].stat().st_mtime   # своя запись — не «чужая рука»
         changed = True
     if changed:
@@ -287,7 +289,7 @@ def _link(folder: pathlib.Path, stamp: str, part: dict, whole: dict, log: list[s
             continue
         _backup(folder, stamp, src["path"])
         src["text"] += f"\n> 🧩 Tier3-NLI: {tag} — [[Ядра/{dst['name']}|{dst['name']}]]\n"
-        src["path"].write_text(src["text"], encoding="utf-8")
+        safe_write.write_text(src["path"], src["text"])
         src["mtime"] = src["path"].stat().st_mtime   # своя запись — не «чужая рука»
         changed = True
     if changed:
