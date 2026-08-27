@@ -531,10 +531,17 @@ def _executable_area(path: pathlib.Path, graph: pathlib.Path) -> bool:
     if hit is None:
         return False
     if hit == (".git", "hooks"):
-        # Git запускает хук, только если у файла стоит бит исполнения, а
-        # `Write` его не ставит. Без этой оговорки штатные `*.sample` от
-        # `git clone` и хуки от `pre-commit install` во вложенном репозитории
-        # уезжали бы в карантин целыми пачками (DS и GLM, круг-13).
+        # Git не запускает ничего с суффиксом `.sample` — это его собственные
+        # образцы, и `git init` кладёт все четырнадцать штук с режимом 755
+        # (проверено на этой машине). Бит исполнения их не отсеивает, суффикс
+        # отсеивает: без этого `git clone` вложенного репозитория в окно
+        # ревизии терял бы все образцы разом (GLM, круг-15; моя прошлая
+        # попытка исходила из режима 644 и тест моделировал файл, которого
+        # git не создаёт).
+        if path.name.casefold().endswith(".sample"):
+            return False
+        # Остальные хуки опасны ровно с битом исполнения: `Write` облака его
+        # не ставит, а без бита git хук не вызывает.
         try:
             return os.access(path, os.X_OK)
         except OSError:
@@ -645,8 +652,11 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
             why = judge(path, graph, old_text, new_text, existed)
             if why is None and not rollback:
                 continue
-            if existed and not rollback and _rewritten_by_the_app(path, graph):
-                # `data.json` плагина: Obsidian пишет туда сам, пока открыт,
+            if (existed and not rollback and path.is_file()
+                    and _rewritten_by_the_app(path, graph)):
+                # `data.json` плагина, который на месте: Obsidian пишет туда
+                # сам, пока открыт. Удалённый файл — другое дело, его надо
+                # вернуть из бэкапа, а не «наблюдать» (Codex, круг-15).
                 # и откат отменял бы живую настройку человека на каждом
                 # успешном разборе (DS, круг-13). Видеть такую правку надо,
                 # отменять молча — нет: называем в логе, оставляем как есть.

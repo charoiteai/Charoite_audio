@@ -1098,7 +1098,8 @@ def test_gits_own_sample_hooks_are_not_swept_away(tmp_path):
     hooks = graph / "проект" / ".git" / "hooks"
     hooks.mkdir(parents=True, exist_ok=True)
     sample = hooks / "pre-commit.sample"
-    sample.write_text("#!/bin/sh\nexit 0", encoding="utf-8")     # без +x, как у git
+    sample.write_text("#!/bin/sh\nexit 0", encoding="utf-8")
+    sample.chmod(0o755)        # git кладёт свои образцы именно так, с +x
     live = hooks / "pre-commit"
     live.write_text("#!/bin/sh\npre-commit run", encoding="utf-8")
     live.chmod(0o755)
@@ -1146,3 +1147,26 @@ def test_a_changed_plugin_body_is_still_rolled_back(tmp_path):
     for f in (body, claude):
         assert f.name in v.reverted and f.name not in v.watched
         assert any(qdir.rglob(f.name)), "версия облака обязана лежать в карантине"
+
+
+def test_a_deleted_plugin_setting_comes_back_instead_of_being_watched(tmp_path):
+    """Удалённый `data.json` возвращается из бэкапа, а не «наблюдается».
+
+    Круг-15, Codex: поблажка смотрела только на путь, поэтому стёртый облаком
+    файл настроек проходил как «его пишет само приложение» — восстановления
+    не было, а ревизия считалась проверенной.
+    """
+    graph = _graph(tmp_path)
+    settings = graph / ".obsidian" / "plugins" / "x" / "data.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text('{"ключ": 1}', encoding="utf-8")
+
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
+    settings.unlink()
+
+    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q")
+
+    assert settings.is_file(), "удалённые настройки плагина не восстановлены"
+    assert settings.read_text(encoding="utf-8") == '{"ключ": 1}'
+    assert settings.name not in v.watched
