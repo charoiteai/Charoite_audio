@@ -198,7 +198,9 @@ code path is shared.
   post-meeting pass, minutes, archive summaries) fall back the same way — their
   answer is atomic, so there is nothing to splice. The net lands on whichever
   local engine the person actually has: `cloud_fallback_engine`, defaulting to
-  mlx-server when `mlx_model` is set and to Ollama otherwise.
+  mlx-server when `mlx_model` is set and to Ollama otherwise. The cloud model
+  name is not forwarded to it: the local engine has its own from the config,
+  and a foreign one would return a 404.
 - **The health probe knows about the cloud.** `llm_health` does not treat the
   gateway as a local server: there is nothing to restart, and a failed probe no
   longer blocks the post-meeting pass — the call itself has retries and a net.
