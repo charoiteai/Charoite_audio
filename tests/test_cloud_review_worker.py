@@ -30,7 +30,6 @@ sys.path.insert(0, str(REPO / "scripts"))
 sys.path.insert(0, str(REPO / "src"))
 
 import cloud_review
-import graph_writes  # noqa: E402
 
 
 def _graph(tmp: pathlib.Path) -> pathlib.Path:
@@ -320,13 +319,16 @@ def test_invalid_answer_rolls_back_even_allowed_edits(tmp_path, monkeypatch):
     cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 1
     assert core.read_text(encoding="utf-8") == original, "разрешённая правка не откачена"
-    assert not (graph / "Люди" / "Новый.md").exists()
     q = next(cloud_review.quarantine_root(graph).glob(f"{stamp}-*"))   # штамп + время
-    assert (q / "Люди" / "Новый.md").exists() and "ЮPay" in (
-        q / "Ядра" / "Платёжный провайдер.md").read_text(encoding="utf-8")
+    assert "ЮPay" in (q / "Ядра" / "Платёжный провайдер.md").read_text(encoding="utf-8")
+    # А созданный узел остаётся: без отчёта неизвестно, чей он (№119). Цена
+    # честная — мусор облака полежит до следующей ревизии, зато заметку
+    # соседней встречи откат больше не уносит.
+    assert (graph / "Люди" / "Новый.md").exists()
     text = log.read_text(encoding="utf-8")
     assert ("ответ невалиден — правки графа откачены: изменилось 2, "
-            "откачено 2, оставлено чужого 0") in text
+            "откачено 1, оставлено нового 1") in text
+    assert "НЕ ТРОНУТЫ (появились после снимка, авторство неизвестно): Новый.md" in text
 
 
 def test_graph_lock_serialises_workers_and_degrades_to_read_only(tmp_path, monkeypatch):
@@ -860,241 +862,80 @@ def test_delivery_does_not_depend_on_the_log_and_quarantine_names_the_stem(tmp_p
     assert len(runs) == 1 and runs[0].startswith(stamp + "30-"), runs
 
 
-def test_rollback_does_not_swallow_what_the_pipeline_wrote(tmp_path, monkeypatch):
-    """Откат не трогает файлы, которые записал конвейер, — он отметился в журнале.
+def test_a_failed_review_leaves_the_neighbouring_meeting_alone(tmp_path, monkeypatch):
+    """Откат возвращает старые версии и не удаляет появившееся после снимка.
 
     27.08 вживую: облачная ревизия встречи 10:32 упала по таймауту 1800 с,
     откат вернул граф к снимку и унёс заметку самой встречи вместе с пятью
     артефактами встречи 11:33, разобранной сорока минутами позже. Замок графа
     облако держит все тридцать минут ожидания, конвейер его не берёт и пишет
-    рядом; «изменилось с момента снимка» своё от чужого не отличает.
+    рядом; «изменилось с момента снимка» своё от чужого не отличает — и знать
+    не может: отчёта у отката нет, иначе он бы не откатывал.
 
-    Отличать по имени пробовали трижды, и трижды круги ломали догадку: штамп
-    чужой встречи не спасал свою заметку, штамп в имени пропускал подделку
-    облака, наличие оригинала в transcripts — тоже. Признак внешний: писатель
-    отмечается в журнале.
+    Отличать пытались четырьмя способами (штамп встречи в имени, наличие
+    оригинала в transcripts, подпись каждого писателя, окно работы конвейера)
+    — каждый ловил Critical на краевом случае. Правило вместо признака:
+    откат возвращает старое, но ничего не удаляет.
     """
     graph = _graph(tmp_path)
-    root = tmp_path / "data"
-    monkeypatch.setattr(cloud_review, "ROOT", root)
-    started = time.time()
+    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    old_node = graph / "Ядра" / "Хранилище.md"
+    old_node.parent.mkdir(parents=True, exist_ok=True)
+    old_node.write_text("# ядро\nстарый текст\n", encoding="utf-8")
+
     before = cloud_review.snapshot(graph)
     backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
 
-    written = []
-    mine = graph / "Встречи" / "2026-08-27_1032.md"      # своя заметка, дописана после снимка
+    # конвейер за это время разобрал соседнюю встречу
+    mine = graph / "Встречи" / "2026-08-27_1032.md"
     mine.parent.mkdir(parents=True, exist_ok=True)
     mine.write_text("# наша встреча\n", encoding="utf-8")
-    written.append(mine)
-    neighbour = graph / "Встречи" / "2026-08-27_1133.md"  # разбор соседней встречи
+    neighbour = graph / "Встречи" / "2026-08-27_1133.md"
     neighbour.write_text("# соседняя встреча\n", encoding="utf-8")
-    written.append(neighbour)
     docs = graph / "Документация" / "Стенограммы встреч"
     docs.mkdir(parents=True, exist_ok=True)
+    artefacts = []
     for tail in ("", "_live", "_minutes", "_hints", "_разбор"):
-        f = docs / f"2026-08-27_1133_Статус_ВВКИ{tail}.md"
+        f = docs / f"2026-08-27_1133_Статус{tail}.md"
         f.write_text(f"артефакт{tail}\n", encoding="utf-8")
-        written.append(f)
-    graph_writes.note(root, graph, *written)
+        artefacts.append(f)
+    # а облако успело переписать существовавшее ядро
+    old_node.write_text("# ядро\nоблачный текст\n", encoding="utf-8")
 
-    qdir = tmp_path / "q"
-    v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
-                                        rollback=True, since=started)
+    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q",
+                                        rollback=True)
 
-    for f in written:
-        assert f.exists(), f"откат унёс {f.name}"
-    assert len(v.kept_new) == len(written) and not v.removed
-    line = cloud_review._verdict_line(v, qdir)
-    assert "НЕ ТРОНУТЫ" in line and "2026-08-27_1133_Статус_ВВКИ_live.md" in line
-    assert f"оставлено чужого {len(written)}" in line
+    assert mine.is_file() and neighbour.is_file(), "откат унёс заметки встреч"
+    assert all(f.is_file() for f in artefacts), "откат унёс артефакты соседней встречи"
+    assert not v.removed, f"откат удалил появившееся после снимка: {v.removed}"
+    assert old_node.read_text(encoding="utf-8") == "# ядро\nстарый текст\n", (
+        "правка облака в существующем файле не откачена"
+    )
+    assert len(v.kept_new) == 7, "оставленное новьё должно быть названо в отчёте"
 
 
-def test_a_forged_name_without_a_journal_entry_is_quarantined(tmp_path, monkeypatch):
-    """Облако может назвать файл штампом встречи — журнала у него нет.
+def test_a_valid_report_still_takes_forbidden_new_files_to_quarantine(tmp_path, monkeypatch):
+    """Запрет границ жив: при валидном отчёте новый файл в защищённой папке уходит.
 
-    Догадка по имени именно на этом и ломалась: «2026-07-15_1400_v2.md» в
-    защищённой папке проходил как работа конвейера (круг-3 по PR #439, DS).
+    Иначе «не удаляем новое» превратилось бы в «пиши куда хочешь»: там, где
+    облако отчиталось о работе, авторство известно, и запрет должен значить
+    ровно то, что написано.
     """
     graph = _graph(tmp_path)
-    root = tmp_path / "data"
-    monkeypatch.setattr(cloud_review, "ROOT", root)
-    started = time.time()
+    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
     before = cloud_review.snapshot(graph)
     backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
+
     docs = graph / "Документация" / "Стенограммы встреч"
     docs.mkdir(parents=True, exist_ok=True)
-    fake = docs / "2026-08-27_1133_Статус_ВВКИ_live.md"     # имя настоящего артефакта
-    fake.write_text("подделка облака\n", encoding="utf-8")
-    qdir = tmp_path / "q"
-    v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
-                                        rollback=True, since=started)
-    assert not fake.exists() and fake.name in v.removed and not v.kept_new
-
-
-def test_a_journal_entry_older_than_the_window_does_not_count(tmp_path, monkeypatch):
-    """Щадим только записи своего окна: вчерашняя отметка не оправдывает файл."""
-    graph = _graph(tmp_path)
-    root = tmp_path / "data"
-    monkeypatch.setattr(cloud_review, "ROOT", root)
-    stale = graph / "Встречи" / "2026-08-26_1031.md"
-    stale.parent.mkdir(parents=True, exist_ok=True)
-    stale.write_text("вчерашняя заметка\n", encoding="utf-8")
-    graph_writes.note(root, graph, stale)                  # отметка ДО снимка
-    started = time.time() + 1                              # окно начинается позже
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
-    stale.write_text("переписано облаком\n", encoding="utf-8")
-    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q",
-                                        rollback=True, since=started)
-    assert stale.read_text(encoding="utf-8") == "вчерашняя заметка\n", \
-        "правка облака поверх старого файла не откачена"
-    assert "2026-08-26_1031.md" in v.reverted and not v.kept_new
-
-
-def test_rollback_still_removes_what_the_cloud_created_where_it_may_not(tmp_path):
-    """Послабление не отменяет запрет: созданное в защищённой папке уезжает."""
-    graph = _graph(tmp_path)
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
-    plugin = graph / ".obsidian" / "plugins" / "y" / "main.js"
-    plugin.parent.mkdir(parents=True, exist_ok=True)
-    plugin.write_text("alert(2)", encoding="utf-8")
-    qdir = tmp_path / "q"
-    v = cloud_review.enforce_boundaries(before, graph, backup, qdir, rollback=True)
-    assert not plugin.exists(), "запрет на защищённые папки ослаб"
-    assert "main.js" in v.removed and "main.js" not in v.kept_new
-
-
-def test_the_cloud_cannot_hide_behind_our_journal_entry(tmp_path, monkeypatch):
-    """Отметка покрывает наше содержимое, а не путь навсегда.
-
-    Без отпечатка облако переписывало отмеченный файл через Write, и откат
-    считал версию облака работой конвейера — прорыв без единой подделки имени
-    (круг-4 по PR #439, GLM Critical 2).
-    """
-    graph = _graph(tmp_path)
-    root = tmp_path / "data"
-    monkeypatch.setattr(cloud_review, "ROOT", root)
-    started = time.time()
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
-    note = graph / "Встречи" / "2026-08-27_1032.md"
-    note.parent.mkdir(parents=True, exist_ok=True)
-    note.write_text("# наша заметка\n", encoding="utf-8")
-    graph_writes.note(root, graph, note)
-    note.write_text("# версия облака\n", encoding="utf-8")     # облако поверх
-    qdir = tmp_path / "q"
-    v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
-                                        rollback=True, since=started)
-    assert not note.exists(), "версия облака осталась под нашей отметкой"
-    assert "2026-08-27_1032.md" in v.removed and not v.kept_new
-
-
-def test_a_busy_pipeline_window_protects_everything_it_wrote(tmp_path, monkeypatch):
-    """Гарантия держится на окне, а не на полноте списка писателей.
-
-    Писателей в граф семнадцать в пяти модулях, и пятый круг по PR #439 нашёл
-    подписанными три. Перечислять бесполезно: каждый новый заводит дыру
-    заново. Разбор объявляет окно своей работы, и откат, чьё окно пересеклось
-    с ним, не удаляет НИ ОДНОГО появившегося файла — он не может знать, чьи
-    они. Цена названа в логе: уцелеет и то, что создало облако.
-    """
-    graph = _graph(tmp_path)
-    root = tmp_path / "data"
-    monkeypatch.setattr(cloud_review, "ROOT", root)
-    started = time.time()
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
-
-    with graph_writes.busy(root):          # пока облако ждало модель
-        made = []
-        for rel in ("Люди/Новый человек.md",            # узел, никем не подписан
-                    "Ядра/Новая тема.md",               # ядро, никем не подписан
-                    "Встречи-архив/2026-08-27 11-33 — Статус/Саммари.md"):
-            f = graph / rel
-            f.parent.mkdir(parents=True, exist_ok=True)
-            f.write_text("работа конвейера\n", encoding="utf-8")
-            made.append(f)
+    intruder = docs / "2026-08-27_1032_Статус_переписанный_облаком.md"
+    intruder.write_text("облако полезло в защищённую папку\n", encoding="utf-8")
 
     qdir = tmp_path / "q"
-    v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
-                                        rollback=True, since=started)
-    for f in made:
-        assert f.exists(), f"откат унёс {f.name}, хотя конвейер работал в это окно"
-    assert len(v.kept_new) == len(made) and not v.removed
+    v = cloud_review.enforce_boundaries(before, graph, backup, qdir, rollback=False)
 
-
-def test_without_a_pipeline_window_the_cloud_is_rolled_back_as_before(tmp_path, monkeypatch):
-    """Послабление действует только при пересечении окон, а не всегда."""
-    graph = _graph(tmp_path)
-    root = tmp_path / "data"
-    monkeypatch.setattr(cloud_review, "ROOT", root)
-    started = time.time()
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
-    made = graph / "Люди" / "Выдумка облака.md"
-    made.parent.mkdir(parents=True, exist_ok=True)
-    made.write_text("узел от облака\n", encoding="utf-8")   # конвейер не работал
-    qdir = tmp_path / "q"
-    v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
-                                        rollback=True, since=started)
-    assert not made.exists() and "Выдумка облака.md" in v.removed
-
-
-def test_a_window_that_closed_before_our_snapshot_does_not_count(tmp_path, monkeypatch):
-    """Вчерашняя работа конвейера не оправдывает сегодняшние правки облака."""
-    graph = _graph(tmp_path)
-    root = tmp_path / "data"
-    monkeypatch.setattr(cloud_review, "ROOT", root)
-    with graph_writes.busy(root):
-        pass                                   # окно открылось и закрылось ДО снимка
-    time.sleep(0.01)
-    started = time.time()
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
-    made = graph / "Ядра" / "Поздняя выдумка.md"
-    made.parent.mkdir(parents=True, exist_ok=True)
-    made.write_text("узел от облака\n", encoding="utf-8")
-    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q",
-                                        rollback=True, since=started)
-    assert not made.exists() and "Поздняя выдумка.md" in v.removed
-
-def test_window_covers_the_whole_pipeline_run_not_just_pieces(tmp_path, monkeypatch):
-    """Разбор целиком идёт внутри окна: снимите обёртку — тест покажет.
-
-    Круг-6, DS Important 3: три теста окна проверяли сам graph_writes, но не
-    то, что main его открывает. Строку `with graph_writes.busy(ROOT)` можно
-    было убрать, не уронив ни одного теста.
-    """
-    import graph_updater
-
-    monkeypatch.setattr(graph_updater, "ROOT", tmp_path)
-    seen: list[str] = []
-
-    def fake_run(*a, **kw):
-        # изнутри разбора окно обязано быть открыто
-        seen.append("open" if graph_writes.pipeline_was_busy(tmp_path, 0.0) else "closed")
-        return 0
-
-    monkeypatch.setattr(graph_updater, "_run_main", fake_run)
-    graph_updater.main()
-
-    assert seen == ["open"], "разбор шёл вне окна — откат ослеп бы на его записи"
-    # после выхода окно закрыто: старт есть, но он перекрыт концом
-    log = (tmp_path / "logs" / graph_writes.LOG_NAME).read_text(encoding="utf-8")
-    assert '"busy": "end"' in log or '"busy":"end"' in log
-
-
-def test_orphan_window_stops_blinding_the_rollback_after_a_kill(tmp_path):
-    """kill -9 оставляет «start» без «end» — вечно живым он быть не может."""
-    old = time.time() - (graph_writes.BUSY_MAX_HOURS + 1) * 3600
-    log = tmp_path / "logs" / graph_writes.LOG_NAME
-    log.parent.mkdir(parents=True, exist_ok=True)
-    log.write_text(json.dumps({"t": old, "busy": "start"}) + "\n", encoding="utf-8")
-
-    assert not graph_writes.pipeline_was_busy(tmp_path, time.time() - 60), (
-        "сирота от kill -9 держала бы откат слепым до конца жизни журнала"
+    assert not intruder.exists(), "запрет на защищённую папку перестал работать"
+    assert intruder.name in v.removed
+    assert (qdir / intruder.name).is_file() or any(qdir.rglob(intruder.name)), (
+        "убранное обязано лежать в карантине, а не исчезать"
     )
-    # свежая сирота — это, наоборот, идущий прямо сейчас разбор
-    log.write_text(json.dumps({"t": time.time() - 5, "busy": "start"}) + "\n", encoding="utf-8")
-    assert graph_writes.pipeline_was_busy(tmp_path, time.time() - 60)

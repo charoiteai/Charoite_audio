@@ -26,7 +26,6 @@ from llm import LLM, LLMHTTPError  # noqa: E402
 from charoite_paths import code_root, harden_umask, resolve_root
 import meeting_stamp
 from meeting_stamp import files_with_stamp, stamp_of
-import graph_writes
 import graphs
 
 ROOT = resolve_root(__file__)
@@ -474,12 +473,13 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
             text = text.replace("## Встречи", f"## Встречи\n{stamp}", 1)
         else:
             text += f"\n## Встречи\n{stamp}\n"
-        graph_writes.write_text(ROOT, graph, p, text)
+        p.write_text(text, encoding="utf-8")
     else:
-        graph_writes.write_text(
-            ROOT, graph, p,
+        p.write_text(
             f"---\ntype: {typ}\ntags: [встречи, авто]\n---\n# {name}\n{desc}\n\n"
-            f"## Встречи\n{stamp}\n")
+            f"## Встречи\n{stamp}\n",
+            encoding="utf-8",
+        )
 
 
 def core_anchor(core: dict, transcript: str, speakers: set[str] | None = None) -> str:
@@ -759,13 +759,12 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
                 text = text.replace("## Хроника", f"## Хроника\n{stamp_line}", 1)
             else:
                 text += f"\n## Хроника\n{stamp_line}\n"
-        graph_writes.write_text(ROOT, graph, p, text)
+        p.write_text(text, encoding="utf-8")
     else:
-        graph_writes.write_text(
-            ROOT, graph, p,
+        p.write_text(
             f"---\ntype: ядро\nвид: {core.get('тип', 'тема')}\ntags: [ядро, авто]\n---\n"
             f"# {core['имя']}\n\n## Статус\n{status or '—'} _(обновлено {stamp[:10]})_\n\n"
-            f"## Хроника\n{stamp_line}\n")
+            f"## Хроника\n{stamp_line}\n", encoding="utf-8")
 
 
 def rebuild_cores_moc(graph: pathlib.Path):
@@ -782,20 +781,10 @@ def rebuild_cores_moc(graph: pathlib.Path):
         m = re.search(r"## Статус\n(.+)", text)
         st = m.group(1).strip() if m else "—"
         lines.append(f"- [[Ядра/{p.stem}|{p.stem}]] — {st}")
-    graph_writes.write_text(ROOT, d.parent, d / "_ЯДРА.md",
-                            "\n".join(lines) + "\n")
+    (d / "_ЯДРА.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def main():
-    # Всё, что делает разбор с графом, идёт внутри объявленного окна: откат
-    # облачной ревизии, чьё окно пересеклось с нашим, не удаляет появившиеся
-    # файлы — он не может знать, чьи они (№119). Точечные подписи уточняют,
-    # но гарантия держится на окне, а не на полноте списка писателей.
-    with graph_writes.busy(ROOT):
-        _run_main()
-
-
-def _run_main():
     harden_umask()  # данные встреч — только владельцу (аудит 16.08)
     global _progress
     cfg = load_cfg()
@@ -891,7 +880,7 @@ def _run_main():
         elif not (graph / "_MOC.md").exists():
             for d in ("Встречи", "Люди", "Системы"):
                 (graph / d).mkdir(parents=True, exist_ok=True)
-            graph_writes.write_text(ROOT, graph, graph / "_MOC.md",
+            (graph / "_MOC.md").write_text(
                 f"# {project} — MOC\n\n## 🗓 Встречи\n", encoding="utf-8")
             # Отдельной строкой и словами: новый граф — редкое событие, и если
             # он появился на рабочей встрече, это ошибка выбора, а не новая сфера.
@@ -1021,7 +1010,7 @@ def _run_main():
     vdir = graph / "Встречи"
     if graph_ok:
         vdir.mkdir(parents=True, exist_ok=True)
-        graph_writes.write_text(ROOT, graph, vdir / f"{stamp}.md", "\n".join(md))
+        (vdir / f"{stamp}.md").write_text("\n".join(md), encoding="utf-8")
 
     # 3) строка в MOC
     moc = graph / "_MOC.md"
@@ -1033,7 +1022,7 @@ def _run_main():
                 text = text.replace("## 🗓 Встречи", f"## 🗓 Встречи\n{line}", 1)
             else:
                 text += f"\n## 🗓 Встречи\n{line}\n"
-            graph_writes.write_text(ROOT, graph, moc, text)
+            moc.write_text(text, encoding="utf-8")
 
     if graph_ok:
         print(f"граф обновлён: встреча {stamp}, людей {len(people)}, сущностей {len(ents)}, решений {len(decisions)}")
@@ -1117,14 +1106,13 @@ def _run_main():
         vdocs = graph / "Документация" / "Стенограммы встреч"
         if vdocs.parent.exists():
             vdocs.mkdir(exist_ok=True)
+            import shutil as _sh2
             # Файлы ЭТОЙ встречи — по стему стенограммы с границей штампа: у
             # посекундной встречи без темы это «…113012*», а минутный глоб брал
             # файлы соседки той же минуты (аудит GLM 17.08).
-            copied = 0
             for f in files_with_stamp(tpath.parent, tpath.stem, suffix=".md"):
-                graph_writes.copy(ROOT, graph, f, vdocs / f.name)
-                copied += 1
-            print(f"артефакты скопированы в vault ({copied}): {vdocs}")
+                _sh2.copy2(f, vdocs / f.name)
+            print(f"артефакты скопированы в vault: {vdocs}")
     except Exception as e:  # noqa: BLE001
         print(f"копирование в vault не удалось: {e}")
 
@@ -1138,10 +1126,6 @@ def _run_main():
         # минуты (аудит DeepSeek 16.08); после наката темы — «штамп_тема».
         arch_folder = archive_meeting(graph, tpath.parent, stamp, title,
                                       files_key=tpath.stem)
-        # «Встречи-архив» — вторая защищённая папка: всё, что туда положил
-        # архиватор, для отката выглядит как правка облака.
-        graph_writes.note(ROOT, graph,
-                          *(f for f in arch_folder.rglob("*") if f.is_file()))
         print(f"архив встречи: {arch_folder.name}")
     except Exception as e:  # noqa: BLE001
         print(f"архив встречи не удался: {e}")

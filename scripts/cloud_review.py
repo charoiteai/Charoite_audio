@@ -40,7 +40,6 @@ import pathlib
 import shutil
 import subprocess
 import sys
-import time
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
@@ -55,7 +54,6 @@ import charoite_paths  # noqa: E402
 import cloud  # noqa: E402
 import file_locks  # noqa: E402
 import graph_updater
-import graph_writes
 import privacy  # noqa: E402
 
 BACKUP_DIR = ".cloud_backup"
@@ -481,51 +479,25 @@ def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
     return None
 
 
-def written_by_the_pipeline(path: pathlib.Path, graph: pathlib.Path,
-                            ours: dict[str, str]) -> bool:
-    """Файл записал конвейер — он сам об этом отметился в журнале.
-
-    Откат по невалидному ответу берёт «всё, что изменилось с момента снимка», а
-    это не «что написало облако»: замок графа облако держит все тридцать минут
-    ожидания модели, конвейер его не берёт и пишет рядом — разбор следующей
-    встречи, ретрай из приложения, доклейка минуток. 27.08 такой откат унёс
-    заметку встречи 10:32 и пять артефактов встречи 11:33 (№119).
-
-    Догадки по имени не работают, и это выяснено дорого: три круга голов
-    подряд ломали их. «Штамп чужой встречи» не спасал свою заметку; «штамп в
-    имени» пропускал подделку облака в защищённой папке; «есть оригинал в
-    transcripts» её же пропускал через штамп встречи. Признак сделан внешним:
-    писатель отмечается в `logs/graph_writes.jsonl`, откат читает записи за
-    своё окно. Ничего угадывать не надо — кто писал, тот и отметился.
-    """
-    try:
-        rel = str(path.resolve().relative_to(graph.resolve()))
-    except (ValueError, OSError):
-        return False
-    if rel not in ours:
-        return False
-    # Отметка покрывает то содержимое, которое конвейер записал. Облако могло
-    # переписать этот же файл поверх — тогда в графе версия облака, и щадить
-    # её нельзя (круг-4, GLM Critical 2).
-    return graph_writes.digest(path) == ours[rel]
-
-
 def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
             qdir: pathlib.Path, old: pathlib.Path, existed: bool, why: str | None,
-            v: Verdict, ours: dict[str, str] | None = None, *,
-            pipeline_busy: bool = False) -> None:
-    """Убрать одну правку: созданное — в карантин, существовавшее — копией
-    в карантин и из бэкапа обратно. Ничего не стирается."""
-    ours = ours or {}
+            v: Verdict, *, rollback: bool = False) -> None:
+    """Убрать одну правку: существовавшее — копией в карантин и из бэкапа
+    обратно; появившееся после снимка — по обстоятельствам. Ничего не стирается.
+
+    Файл, которого в снимке не было, при ОТКАТЕ не трогаем совсем. Откат
+    случается там, где облако не отчиталось (таймаут, обрывок), — а значит
+    мы не знаем, чьи это файлы. Пока знание брали из журнала конвейера,
+    две правки подряд ловили Critical на краевых случаях (kill -9, чужой
+    «end» поверх живого окна): источник знания сам оказался хрупким. Проще
+    и надёжнее не удалять чужого никогда: мусор облака виден в логе и уйдёт
+    следующей ревизией, а заметку встречи вернуть неоткуда (№119).
+
+    Валидный отчёт — другое дело: там облако отчиталось о работе, и файл в
+    защищённой папке убирается в карантин, иначе запрет ничего не значит.
+    """
     if not existed:
-        if pipeline_busy or written_by_the_pipeline(path, graph, ours):
-            # Работа конвейера — не правка облака: оставляем и называем
-            # вслух. Проверка идёт при ЛЮБОМ исходе, не только при откате:
-            # артефакты лежат в «Документация/Стенограммы встреч», а это
-            # защищённая папка — при валидном ответе они уезжали в карантин
-            # тем же механизмом, только на более частом пути (круг-1, DS I1).
-            # Защита от облака не слабеет: узлы (ядра, люди, системы) штампа
-            # в имени не имеют и идут прежним путём, в карантин.
+        if rollback:
             v.kept_new.append(path.name)
             return
         if path.exists():
@@ -543,8 +515,7 @@ def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
 
 def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
                        backup: pathlib.Path, qdir: pathlib.Path | None = None,
-                       *, rollback: bool = False,
-                       since: float | None = None) -> Verdict:
+                       *, rollback: bool = False) -> Verdict:
     """Сверить граф с состоянием до запуска и убрать запрещённое.
 
     Нарушение — это не только правка существующего файла: удаление тоже
@@ -555,7 +526,10 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
 
     rollback=True — ответ облака невалиден (таймаут, обрывок, код ≠ 0):
     откатывается ВСЁ, включая разрешённые правки. Без отчёта они — правки
-    неизвестной степени готовности: слияние могло дойти до середины.
+    неизвестной степени готовности: слияние могло дойти до середины. Но
+    откат возвращает только СТАРЫЕ версии: файл, которого в снимке не было,
+    при откате остаётся на месте — чей он, без отчёта неизвестно, а рядом
+    работает конвейер разбора соседней встречи (№119).
 
     Ошибка на одном файле (диск, права, каталог на месте файла) не роняет
     сверку остальных: файл попадает в `failed`, и об этом говорит лог.
@@ -566,14 +540,6 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
     if not backup.is_dir():
         return Verdict(touched=-1)
     v = Verdict(rolled_back=rollback)
-    # Что за время нашего прогона записал конвейер — по его же журналу.
-    ours = graph_writes.written_since(ROOT, since) if since else {}
-    # А работал ли он вообще в это окно. Если да — новые файлы не удаляем ни
-    # одного: подписаны не все писатели (их семнадцать в пяти модулях), и
-    # перечислять их бесполезно — каждый новый заводил бы дыру заново. Цена
-    # честная: уцелеет и то, что создало облако, но это видно в логе, а
-    # потерянную заметку встречи вернуть неоткуда (№119).
-    pipeline_busy = bool(since) and graph_writes.pipeline_was_busy(ROOT, since)
     touched = changed_since(before, graph)
     v.touched = len(touched)
     qdir = qdir or quarantine_root(graph) / backup.name
@@ -592,8 +558,8 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
             why = judge(path, graph, old_text, new_text, existed)
             if why is None and not rollback:
                 continue
-            _settle(path, graph, backup, qdir, old, existed, why, v, ours,
-                    pipeline_busy=pipeline_busy)
+            _settle(path, graph, backup, qdir, old, existed, why, v,
+                    rollback=rollback)
         except OSError:
             v.failed.append(path.name)
     return v
@@ -741,9 +707,6 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             denied = []
             unlock()
     if may_edit:
-        # Момент снимка — граница окна: всё, что конвейер записал после него,
-        # видно в его журнале, и откат такие файлы не трогает (№119).
-        started = time.time()
         before = snapshot(graph)
         try:
             backup = backup_graph(graph, stamp)
@@ -838,8 +801,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 # отчёта правки графа — неизвестной степени готовности
                 # (слияние до середины), и объяснить их человеку нечем.
                 v = enforce_boundaries(before, graph, backup, qdir,
-                                       rollback=not (ok and published),
-                                       since=started)
+                                       rollback=not (ok and published))
                 # не сверено, если что-то упало ИЛИ осталось как есть без копии
                 checked = v.touched >= 0 and not v.failed and not v.unrestorable
                 lines.append(_verdict_line(v, qdir))
@@ -878,13 +840,15 @@ def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:
         return "[cloud-review] снимка нет — границы не сверялись\n"
     if v.rolled_back:
         tail = (f"; СВЕРКА НЕ СМОГЛА: {', '.join(v.failed)}" if v.failed else "")
-        # Появившееся за время прогона названо поимённо: это чаще всего работа
-        # соседнего разбора, и раньше она молча уезжала в карантин (№119).
-        kept = (f"; НЕ ТРОНУТЫ (появились во время прогона, чужая работа): "
+        # Появившееся после снимка названо поимённо: чьё оно — без отчёта
+        # неизвестно, и раньше всё это молча уезжало в карантин (№119).
+        # Чаще всего там работа соседнего разбора, иногда мусор облака;
+        # человек по именам видит, что именно осталось лежать.
+        kept = (f"; НЕ ТРОНУТЫ (появились после снимка, авторство неизвестно): "
                 f"{', '.join(v.kept_new)}" if v.kept_new else "")
         return (f"[cloud-review] ответ невалиден — правки графа откачены: "
                 f"изменилось {v.touched}, откачено {v.touched - len(v.kept_new)}, "
-                f"оставлено чужого {len(v.kept_new)}; "
+                f"оставлено нового {len(v.kept_new)}; "
                 f"копии облака в карантине {qdir}{kept}{tail}\n")
     parts = [f"[cloud-review] правок графа: {v.touched}"]
     if v.reverted:
