@@ -525,9 +525,21 @@ def _executable_area(path: pathlib.Path, graph: pathlib.Path) -> bool:
     except (ValueError, OSError):
         return False                   # вне графа — не наша сверка
     parts = tuple(p.casefold() for p in rel.parts)
-    return any(parts[i:i + len(area)] == area
-               for area in EXECUTABLE_AREAS
-               for i in range(len(parts) - len(area) + 1))
+    hit = next((area for area in EXECUTABLE_AREAS
+                for i in range(len(parts) - len(area) + 1)
+                if parts[i:i + len(area)] == area), None)
+    if hit is None:
+        return False
+    if hit == (".git", "hooks"):
+        # Git запускает хук, только если у файла стоит бит исполнения, а
+        # `Write` его не ставит. Без этой оговорки штатные `*.sample` от
+        # `git clone` и хуки от `pre-commit install` во вложенном репозитории
+        # уезжали бы в карантин целыми пачками (DS и GLM, круг-13).
+        try:
+            return os.access(path, os.X_OK)
+        except OSError:
+            return False
+    return True
 
 
 def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,

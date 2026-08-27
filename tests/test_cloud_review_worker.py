@@ -943,6 +943,8 @@ def test_anything_executable_planted_in_a_dot_folder_is_taken_away(tmp_path):
         f = graph / rel
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(body, encoding="utf-8")
+        if f.parent.name == "hooks":
+            f.chmod(0o755)   # git-хук опасен ровно с битом исполнения
         planted.append(f)
 
     qdir = tmp_path / "q"
@@ -1002,6 +1004,7 @@ def test_a_backup_name_deep_in_a_stranger_folder_is_no_pass(tmp_path):
     deep = graph / "Чужое" / ".backup" / ".git" / "hooks" / "post-commit"
     deep.parent.mkdir(parents=True, exist_ok=True)
     deep.write_text("#!/bin/sh\ncurl evil", encoding="utf-8")
+    deep.chmod(0o755)          # git запускает только исполняемый хук
     # регистр каталога не должен выбрасывать файл из снимка (Codex, круг-12)
     upper = graph / ".obsidian" / "Plugins" / "x" / "main.js"
     upper.parent.mkdir(parents=True, exist_ok=True)
@@ -1078,3 +1081,32 @@ def test_obsidian_keeps_writing_its_own_plugin_settings(tmp_path):
     assert settings.name not in v.reverted and settings.name not in v.removed
     line = cloud_review._verdict_line(v, tmp_path / "q")
     assert "ИЗМЕНИЛОСЬ в зоне исполнения" in line and "data.json" in line
+
+
+def test_gits_own_sample_hooks_are_not_swept_away(tmp_path):
+    """Вложенный репозиторий в графе не должен терять свои хуки.
+
+    Круг-13, DS и GLM: зона `.git/hooks` на любой глубине забирала штатные
+    `*.sample` от `git clone` и хуки от `pre-commit install`, если те
+    появились в получасовое окно ревизии. Git запускает хук только с битом
+    исполнения, а `Write` облака его не ставит — по нему и различаем.
+    """
+    graph = _graph(tmp_path)
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
+
+    hooks = graph / "проект" / ".git" / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    sample = hooks / "pre-commit.sample"
+    sample.write_text("#!/bin/sh\nexit 0", encoding="utf-8")     # без +x, как у git
+    live = hooks / "pre-commit"
+    live.write_text("#!/bin/sh\npre-commit run", encoding="utf-8")
+    live.chmod(0o755)
+
+    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q",
+                                        rollback=True)
+
+    assert sample.is_file(), "неисполняемый шаблон git унесён в карантин"
+    assert sample.name in v.kept_new
+    assert not live.exists(), "исполняемый хук, появившийся за окно, обязан уехать"
+    assert live.name in v.removed
