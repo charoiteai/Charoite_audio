@@ -480,51 +480,50 @@ def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
     return None
 
 
-def belongs_to_another_meeting(path: pathlib.Path, stamp: str | None) -> bool:
-    """В имени файла штамп чужой встречи — значит это работа соседнего разбора.
+def written_by_the_pipeline(path: pathlib.Path, tdir: pathlib.Path | None) -> bool:
+    """Файл положил конвейер, а не облако: у него есть оригинал в transcripts.
 
-    Пока облако тридцать минут ждёт модель, конвейер разбирает следующую
-    встречу и пишет её заметку и артефакты. Замок графа облако держит всё это
-    время, а разбор его не берёт, и «изменилось с момента снимка» своё от
-    чужого не отличает: 27.08 откат по невалидному ответу унёс заметку встречи
-    10:32 и пять файлов встречи 11:33 (№119).
+    Откат по невалидному ответу берёт «всё, что изменилось с момента снимка», а
+    это не то же самое, что «что написало облако». Замок графа облако держит
+    все тридцать минут ожидания модели, конвейер его не берёт и пишет рядом:
+    разбор следующей встречи, ретрай из приложения, доклейку минуток. 27.08
+    такой откат унёс заметку встречи 10:32 и пять артефактов встречи 11:33
+    (№119).
 
-    Штамп берём ПРЕФИКСОМ имени, а не через `stamp_of`: тот намеренно
-    отбрасывает производные (`_live`, `_minutes`, `_hints`, `_разбор`), потому
-    что по ним нельзя пересобирать встречу. Здесь вопрос другой — чей это
-    файл, — и как раз производные и потерялись 27.08: в «Документация/
-    Стенограммы встреч» лежат все артефакты встречи, и у каждого штамп в имени.
-
-    Посекундный штамп сравниваем ТОЧНО. Демон после краха поднимается через
-    две секунды, то есть внутри той же минуты, и вторая встреча минуты —
-    отдельная встреча со своими файлами: свести их по минуте значило бы
-    объявить чужое своим и снова унести в карантин (круг-1 по PR #439, DS).
+    Признак — не имя. Имя со штампом подделывается: облако может создать
+    «2026-07-15_1400_v2.md» в защищённой папке, и такой файл обязан уехать в
+    карантин (проверено тестом с 22.08). Признак в том, что конвейер артефакты
+    КОПИРУЕТ: в «Документация/Стенограммы встреч» ложится то, что уже лежит в
+    `transcripts/` под тем же именем, а заметка `Встречи/<штамп>.md` живёт
+    ровно тогда, когда у встречи есть стенограмма. У облака оригинала нет.
     """
-    if not stamp:
+    if tdir is None or not tdir.is_dir():
         return False
-    m = meeting_stamp._RE_TITLED.match(path.stem)
-    if not m:
-        return False        # штампа нет — судить не по чему, работает общий путь
-    its = m.group(1)
-    if len(stamp) == len(meeting_stamp.minute_of(stamp)):
-        return meeting_stamp.minute_of(its) != stamp      # наш штамп минутный
-    return its != stamp                                   # наш посекундный — точно
+    if (tdir / path.name).is_file():
+        return True                     # артефакт: копия лежит рядом с оригиналом
+    its = meeting_stamp.stamp_of(path.stem) or (
+        meeting_stamp._RE_TITLED.match(path.stem).group(1)
+        if meeting_stamp._RE_TITLED.match(path.stem) else None)
+    if not its:
+        return False
+    # заметка встречи: конвейер пишет её, только если стенограмма существует
+    return bool(meeting_stamp.files_with_stamp(tdir, its, suffix=".md"))
 
 
 def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
             qdir: pathlib.Path, old: pathlib.Path, existed: bool, why: str | None,
-            v: Verdict, stamp: str | None = None) -> None:
+            v: Verdict, tdir: pathlib.Path | None = None) -> None:
     """Убрать одну правку: созданное — в карантин, существовавшее — копией
     в карантин и из бэкапа обратно. Ничего не стирается."""
     if not existed:
-        if belongs_to_another_meeting(path, stamp):
-            # Чужая встреча — не наша правка: оставляем и называем вслух.
-            # Проверка идёт при ЛЮБОМ исходе, не только при откате: артефакты
-            # соседа лежат в «Документация/Стенограммы встреч», а это
+        if written_by_the_pipeline(path, tdir):
+            # Работа конвейера — не правка облака: оставляем и называем
+            # вслух. Проверка идёт при ЛЮБОМ исходе, не только при откате:
+            # артефакты лежат в «Документация/Стенограммы встреч», а это
             # защищённая папка — при валидном ответе они уезжали в карантин
             # тем же механизмом, только на более частом пути (круг-1, DS I1).
-            # Защита от облака не слабеет: файл без штампа или со своим
-            # штампом идёт прежним путём, в карантин.
+            # Защита от облака не слабеет: узлы (ядра, люди, системы) штампа
+            # в имени не имеют и идут прежним путём, в карантин.
             v.kept_new.append(path.name)
             return
         if path.exists():
@@ -543,7 +542,7 @@ def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
 def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
                        backup: pathlib.Path, qdir: pathlib.Path | None = None,
                        *, rollback: bool = False,
-                       stamp: str | None = None) -> Verdict:
+                       tdir: pathlib.Path | None = None) -> Verdict:
     """Сверить граф с состоянием до запуска и убрать запрещённое.
 
     Нарушение — это не только правка существующего файла: удаление тоже
@@ -583,7 +582,7 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
             why = judge(path, graph, old_text, new_text, existed)
             if why is None and not rollback:
                 continue
-            _settle(path, graph, backup, qdir, old, existed, why, v, stamp)
+            _settle(path, graph, backup, qdir, old, existed, why, v, tdir)
         except OSError:
             v.failed.append(path.name)
     return v
@@ -826,7 +825,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 # (слияние до середины), и объяснить их человеку нечем.
                 v = enforce_boundaries(before, graph, backup, qdir,
                                        rollback=not (ok and published),
-                                       stamp=stamp)
+                                       tdir=transcript.parent)
                 # не сверено, если что-то упало ИЛИ осталось как есть без копии
                 checked = v.touched >= 0 and not v.failed and not v.unrestorable
                 lines.append(_verdict_line(v, qdir))

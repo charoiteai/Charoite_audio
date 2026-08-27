@@ -872,6 +872,7 @@ def test_rollback_does_not_swallow_a_neighbours_work(tmp_path):
     а файлы всё равно уезжали (круг-1 по PR #439, DS Critical 1).
     """
     graph = _graph(tmp_path)
+    tdir = tmp_path / "transcripts"; tdir.mkdir(exist_ok=True)
     before = cloud_review.snapshot(graph)
     backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
 
@@ -882,13 +883,15 @@ def test_rollback_does_not_swallow_a_neighbours_work(tmp_path):
     docs.mkdir(parents=True, exist_ok=True)
     aux = []
     for tail in ("", "_live", "_minutes", "_hints", "_разбор"):
-        f = docs / f"2026-08-27_1133_Статус_ВВКИ{tail}.md"
+        name = f"2026-08-27_1133_Статус_ВВКИ{tail}.md"
+        (tdir / name).write_text("оригинал\n", encoding="utf-8")   # конвейер копирует
+        f = docs / name
         f.write_text(f"артефакт{tail}\n", encoding="utf-8")
         aux.append(f)
 
     qdir = tmp_path / "q"
     v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
-                                        rollback=True, stamp="2026-08-27_1032")
+                                        rollback=True, tdir=tdir)
 
     assert neighbour.exists(), "откат унёс заметку соседней встречи"
     for f in aux:
@@ -906,6 +909,8 @@ def test_a_second_meeting_of_the_same_minute_is_a_stranger(tmp_path):
     минуте значит объявить чужое своим (круг-1 по PR #439, DS Critical 2).
     """
     graph = _graph(tmp_path)
+    tdir = tmp_path / "transcripts"; tdir.mkdir(exist_ok=True)
+    (tdir / "2026-08-27_1133_Планёрка.md").write_text("стенограмма\n", encoding="utf-8")
     before = cloud_review.snapshot(graph)
     backup = cloud_review.backup_graph(graph, "2026-08-27_113312")
     owner = graph / "Встречи" / "2026-08-27_1133.md"
@@ -913,13 +918,20 @@ def test_a_second_meeting_of_the_same_minute_is_a_stranger(tmp_path):
     owner.write_text("# владелец минуты\n", encoding="utf-8")
     qdir = tmp_path / "q"
     v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
-                                        rollback=True, stamp="2026-08-27_113312")
+                                        rollback=True, tdir=tdir)
     assert owner.exists() and "2026-08-27_1133.md" in v.kept_new
 
 
-def test_our_own_files_are_still_rolled_back(tmp_path):
-    """Послабление не распространяется на свою же встречу."""
+def test_our_own_note_survives_the_rollback(tmp_path):
+    """Заметку СВОЕЙ встречи откат тоже не трогает.
+
+    Первая версия защищала только чужие встречи — и покрывала половину
+    инцидента: заметка ревизуемой встречи, дописанная конвейером после снимка
+    (ретрай, доклейка минуток), уезжала в карантин по-прежнему. Ровно так и
+    пропала заметка 10:32 (круг-2 по PR #439, GLM Critical 1)."""
     graph = _graph(tmp_path)
+    tdir = tmp_path / "transcripts"; tdir.mkdir(exist_ok=True)
+    (tdir / "2026-08-27_1032_Инцидент.md").write_text("стенограмма\n", encoding="utf-8")
     before = cloud_review.snapshot(graph)
     backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
     mine = graph / "Встречи" / "2026-08-27_1032.md"
@@ -927,22 +939,26 @@ def test_our_own_files_are_still_rolled_back(tmp_path):
     mine.write_text("# наша встреча\n", encoding="utf-8")
     qdir = tmp_path / "q"
     v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
-                                        rollback=True, stamp="2026-08-27_1032")
-    assert not mine.exists() and "2026-08-27_1032.md" in v.removed
+                                        rollback=True, tdir=tdir)
+    assert mine.exists() and "2026-08-27_1032.md" in v.kept_new
 
 
 def test_a_neighbour_is_spared_even_when_the_answer_is_valid(tmp_path):
     """Артефакты соседа лежат в защищённой папке — и при валидном ответе
     уезжали в карантин тем же механизмом (круг-1, DS Important 1)."""
     graph = _graph(tmp_path)
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir(exist_ok=True)
+    name = "2026-08-27_1133_Статус_ВВКИ_разбор.md"
+    (tdir / name).write_text("оригинал\n", encoding="utf-8")   # конвейер копирует
     before = cloud_review.snapshot(graph)
     backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
     docs = graph / "Документация" / "Стенограммы встреч"
     docs.mkdir(parents=True, exist_ok=True)
-    f = docs / "2026-08-27_1133_Статус_ВВКИ_разбор.md"
+    f = docs / name
     f.write_text("разбор соседа\n", encoding="utf-8")
     v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q",
-                                        rollback=False, stamp="2026-08-27_1032")
+                                        rollback=False, tdir=tdir)
     assert f.exists() and f.name in v.kept_new and not v.removed
 
 
@@ -955,7 +971,6 @@ def test_rollback_still_removes_what_the_cloud_created_where_it_may_not(tmp_path
     plugin.parent.mkdir(parents=True, exist_ok=True)
     plugin.write_text("alert(2)", encoding="utf-8")
     qdir = tmp_path / "q"
-    v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
-                                        rollback=True, stamp="2026-08-27_1032")
+    v = cloud_review.enforce_boundaries(before, graph, backup, qdir, rollback=True)
     assert not plugin.exists(), "запрет на защищённые папки ослаб"
     assert "main.js" in v.removed and "main.js" not in v.kept_new
