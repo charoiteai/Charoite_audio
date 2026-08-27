@@ -126,6 +126,9 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
     cl = dossier.clusters(files, backlinks)
     today = date.today().isoformat()
     entries, built, skipped = [], 0, 0
+    # Раздельно, иначе ночь с занятым графом выглядит как «всё без
+    # изменений» (круг-2 по PR #438, DS Minor 9).
+    unchanged = over_limit = locked = late = 0
     отказы = 0   # модель не ответила: тема осталась без разбора
 
     # Несобранные темы — вперёд, и только потом крупнейшие. Прежняя
@@ -142,6 +145,7 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
 
         if not full and old_fp == fp and path.exists():
             skipped += 1
+            unchanged += 1
             # индекс всё равно перечитываем — тема жива
             entries.append({
                 "тема": theme, "файл": f"{dossier.DOSSIER_DIR}/{theme}.md",
@@ -153,6 +157,7 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
 
         if not full and built >= limit:
             skipped += 1
+            over_limit += 1
             if path.exists():   # новую тему сверх лимита в индекс не выдумываем
                 entries.append(_index_entry_from_disk(theme, members, path, fp, today))
             continue
@@ -174,6 +179,7 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
             # write_index посещённый префикс, и _index/_ИНДЕКС терял темы —
             # регресс бага 17.08 (круг по PR #363, GLM).
             skipped += len(themes) - ti   # сводка не врёт про хвост (круг-2, DS)
+            late += len(themes) - ti
             for late_theme, late_members in themes[ti:]:
                 late_path = folder / f"{late_theme}.md"
                 if late_path.exists():
@@ -215,6 +221,7 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
                 print(f"  ⏸ {theme}: граф занят соседом дольше "
                       f"{LOCK_WAIT // 60} мин — тема уйдёт на следующую ночь")
                 skipped += 1
+                locked += 1
                 if path.exists():
                     entries.append(_index_entry_from_disk(theme, members, path, fp, today))
                 continue
@@ -236,15 +243,19 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
         # этот прогон: темы сверх лимита ночи и темы с отказом раньше
         # выпадали из _index/_ИНДЕКС, поиск деградировал, а --full на
         # большом графе оставлял в индексе 12 записей (аудит 17.08).
-        with _graph_lock(graph) as taken:
-            if taken:
-                dossier.write_index(folder, entries)
-            else:
-                print("  индекс не переписан — граф занят соседом; "
-                      "прежний индекс остаётся в силе")
+        # Без замка: write_index пишет через tmp+replace, полуфайла не будет,
+        # а ждать соседа здесь значило бы оставить свежие досье невидимыми для
+        # поиска до следующей ночи (круг-2 по PR #438, DS Important 3).
+        dossier.write_index(folder, entries)
 
+    if skipped:
+        print(f"  пропущено {skipped}: без изменений {unchanged}, "
+              f"сверх лимита {over_limit}, граф занят {locked}, "
+              f"не успели за ночь {late}")
     return {"граф": graph.name, "тем": len(cl), "собрано": built,
-            "пропущено": skipped, "отказы": отказы}
+            "пропущено": skipped, "отказы": отказы,
+            "без_изменений": unchanged, "сверх_лимита": over_limit,
+            "занят": locked, "не_успели": late}
 
 
 def _собрано(path: pathlib.Path) -> str:

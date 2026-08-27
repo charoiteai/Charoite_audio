@@ -114,3 +114,75 @@ def test_prefilter_threshold_is_documented_as_is():
     константе едва не привёл к правке, ломающей поиск вложений."""
     assert tier3.EMB_PREFILTER == 0.55
     assert tier3.NEST_LO == 0.5 and tier3.DUP_T == 0.72
+
+
+# ── круг-2 по PR #438 (DeepSeek): правки самих правок ────────────────────────
+
+def test_a_heading_is_not_a_speaker():
+    """«Итог:», «Решения:», «Присутствовали:» — не имена.
+
+    Первая версия фикса брала за говорящего любую короткую фразу перед
+    двоеточием, а недиаризованная стенограмма состоит из них наполовину:
+    ложная атрибуция вернулась бы из нового источника. Теперь имя обязано
+    совпасть с участником встречи.
+    """
+    quote = "переходим на новую CRM"
+    for line in ("Итог: переходим на новую CRM",
+                 "## Решения: переходим на новую CRM",
+                 "Присутствовали: переходим на новую CRM"):
+        out = graph_updater.core_anchor({"цитата": quote, "кто": "Ира"}, line,
+                                        {"Дмитрий", "Пётр"})
+        assert "«" + quote + "»" in out, "цитата обязана остаться"
+        assert "Итог" not in out and "Решения" not in out, f"подпись из мусора: {out}"
+
+
+def test_a_known_participant_is_recognised_in_any_short_form():
+    """Стенограмма зовёт по имени, граф хранит полное — это один человек."""
+    tr = "10:15 Пётр: решили брать новый вариант со следующей недели"
+    out = graph_updater.core_anchor(
+        {"цитата": "решили брать новый вариант", "кто": "Ира"}, tr,
+        {"Пётр Иванов"})
+    assert "Пётр Иванов" in out, f"участник не узнан: {out}"
+    # чужого имени в графе нет — подписи тоже нет
+    out = graph_updater.core_anchor(
+        {"цитата": "решили брать новый вариант", "кто": "Ира"}, tr, {"Дмитрий"})
+    assert "Пётр" not in out and "Ира" not in out
+
+
+def test_a_pair_that_failed_nli_comes_back_by_name():
+    """Отметка инкремента идёт вперёд, но упавшая пара не теряется.
+
+    Держать отметку на месте — тупик: одна стабильно падающая пара
+    заблокировала бы инкремент навсегда, и фокус рос бы каждую ночь.
+    """
+    src = (SCRIPTS / "tier3_cores.py").read_text(encoding="utf-8")
+    assert "_save_stamp(graph, started, r.get(\"failed_names\"))" in src
+    assert "def _pending(" in src and "#pending" in src
+    assert "stuck = [n for n in _pending(graph) if n not in only]" in src
+    tier3_src = (SRC / "tier3.py").read_text(encoding="utf-8")
+    assert '"failed_names": set()' in tier3_src
+
+
+def test_the_index_is_written_atomically_and_without_the_lock():
+    """Иначе занятый соседом граф оставлял бы свежие досье невидимыми сутки."""
+    src = (SRC / "dossier.py").read_text(encoding="utf-8")
+    assert "tmp.replace(folder / INDEX_JSON)" in src
+    assert "tmp_md.replace(folder / INDEX_MD)" in src
+    night = (SCRIPTS / "nightly_dossier.py").read_text(encoding="utf-8")
+    tail = night[night.index("if not dry and entries:"):]
+    assert "_graph_lock" not in tail.split("return {")[0], "индекс снова под замком"
+
+
+def test_links_are_read_only_from_the_surviving_file(tmp_path):
+    """При дубле имени кластер не должен тянуть связи проигравшего файла."""
+    graph = tmp_path / "граф"
+    (graph / "Люди").mkdir(parents=True)
+    (graph / "Ядра").mkdir()
+    (graph / "Встречи").mkdir()
+    (graph / "Люди" / "CRM.md").write_text("[[Ядра/Миграция]]", encoding="utf-8")
+    (graph / "Ядра" / "CRM.md").write_text("## Статус\nидёт", encoding="utf-8")
+    (graph / "Ядра" / "Миграция.md").write_text("## Статус\nидёт", encoding="utf-8")
+    files, back = dossier.scan(graph)
+    assert files["CRM"]["kind"] == "Ядра", "ядро должно побеждать в дубле имени"
+    assert "CRM" not in back.get("Миграция", set()), \
+        "ссылка проигравшего файла попала в кластер"

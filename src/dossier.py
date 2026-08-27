@@ -174,7 +174,12 @@ def scan(graph: pathlib.Path) -> tuple[dict[str, dict], dict[str, set[str]]]:
             continue
         files[t] = {"path": p, "rel": str(rel), "text": text,
                     "mtime": p.stat().st_mtime, "kind": kind}
-        for m in LINK_RE.finditer(text):
+    # Ссылки разбираем ВТОРЫМ проходом, когда состав files уже устоялся: при
+    # дублирующемся имени первый проход успевал записать ссылки проигравшего
+    # файла под общим титулом, и кластер тянул за собой связи, которых у
+    # выжившего нет (круг-2 по PR #438, DS Minor 5).
+    for t, meta in files.items():
+        for m in LINK_RE.finditer(meta["text"]):
             target = m.group(1).split("/")[-1].strip()
             if target and target != t:
                 backlinks[target].add(t)
@@ -388,10 +393,16 @@ def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     entries = sorted(entries, key=lambda e: e["тема"].lower())
 
-    (folder / INDEX_JSON).write_text(
+    # Атомарно: индекс пишется вне замка графа (иначе занятый соседом граф
+    # оставлял бы на диске свежие досье и старый индекс — поиск смотрит
+    # только сюда и сутки их не видел бы, круг-2 по PR #438, DS Important 3),
+    # а без tmp+replace обрыв на середине дал бы битый json.
+    tmp = folder / (INDEX_JSON + ".tmp")
+    tmp.write_text(
         json.dumps({"версия": 1, "обновлён": date.today().isoformat(),
                     "досье": entries}, ensure_ascii=False, indent=1),
         encoding="utf-8")
+    tmp.replace(folder / INDEX_JSON)
 
     lines = [
         "---", "type: индекс-досье", f"обновлён: {date.today().isoformat()}",
@@ -411,7 +422,9 @@ def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
               "1. Ищем тему по ключам в таблице выше.",
               "2. Открываем досье — там состояние, хроника, решения, открытые вопросы.",
               "3. За подробностями идём по ссылкам из раздела «Источники».", ""]
-    (folder / INDEX_MD).write_text("\n".join(lines), encoding="utf-8")
+    tmp_md = folder / (INDEX_MD + ".tmp")
+    tmp_md.write_text("\n".join(lines), encoding="utf-8")
+    tmp_md.replace(folder / INDEX_MD)
 
 
 def load_index(folder: pathlib.Path) -> list[dict]:

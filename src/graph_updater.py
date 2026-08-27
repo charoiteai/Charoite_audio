@@ -278,11 +278,11 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
                     + ({"en": "\n\nLANGUAGE: write every field VALUE in English "
                               "(node names, summaries, statuses, updates, topics; people "
                               "as spoken). Keep the JSON KEYS exactly as specified above. "
-                              "The «цитата» field stays VERBATIM from the transcript.",
+                              "The «цитата» field stays VERBATIM from the transcript — copy it from the spoken lines, never from the [МИНУТКИ] block.",
                         "zh": "\n\nLANGUAGE: write every field VALUE in Chinese "
                               "(node names, summaries, statuses, updates, topics; people "
                               "as spoken). Keep the JSON KEYS exactly as specified above. "
-                              "The «цитата» field stays VERBATIM from the transcript."}
+                              "The «цитата» field stays VERBATIM from the transcript — copy it from the spoken lines, never from the [МИНУТКИ] block."}
                        .get(str(cfg.get("sufler", {}).get("language", "ru")).lower(), ""))
     )
     # Ошибка сервера здесь стоила всего пост-процессинга: исключение летело
@@ -482,7 +482,7 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         )
 
 
-def core_anchor(core: dict, transcript: str) -> str:
+def core_anchor(core: dict, transcript: str, speakers: set[str] | None = None) -> str:
     """Происхождение факта: кто сказал, когда и дословно.
 
     Без этого хроника обрывается на уровне встречи («что-то решили 21.07»), и
@@ -520,7 +520,7 @@ def core_anchor(core: dict, transcript: str) -> str:
     # верной (аудит графа 26.08, Codex Important 1). Стенограмма молчит о
     # говорящем — пишем цитату без подписи: отсутствие честнее выдумки, тот же
     # принцип, что и для самой цитаты.
-    who, when = _speaker_at(transcript, at)
+    who, when = _speaker_at(transcript, at, speakers or set())
     if who_llm and not who:
         # не тихо: расхождение видно в логе прогона, а не только в графе
         print(f"граф: «{who_llm}» от модели не подтверждён стенограммой — "
@@ -538,30 +538,64 @@ _SPEAKER_RE = re.compile(
 _TIME_RE = re.compile(r"\[(\d{1,2}:\d{2})\]|(?:^|\s)(\d{1,2}:\d{2})(?:\s|$)")
 
 
-def _speaker_at(transcript: str, at: int) -> tuple[str, str]:
+def _speaker_at(transcript: str, at: int,
+                speakers: set[str] | None = None) -> tuple[str, str]:
     """Кто говорил и во сколько — по самой стенограмме, начиная с позиции at.
 
-    Ищем вверх от строки, где нашлась цитата: имя говорящего — в пределах
-    пяти строк (диаризация ставит его в начале реплики), таймкод — в пределах
-    двадцати (заголовки «## [10:15]» разрежены). Не нашли — возвращаем пустое,
-    и якорь останется без подписи.
+    Ищем вверх от строки, где нашлась цитата: имя — в пределах пяти строк
+    (диаризация ставит его в начале реплики), таймкод — тоже пяти: у чужой
+    секции время своё, и «ближайший сверху» за двадцать строк подписал бы
+    цитату временем соседнего разговора.
+
+    Кандидат в имя ПРОВЕРЯЕТСЯ по участникам встречи. Без этой сверки регэксп
+    честно возвращал «Итог», «Решения», «Присутствовали» — любую короткую
+    фразу перед двоеточием, а недиаризованная стенограмма состоит из них
+    наполовину. Получалась та же ложная атрибуция, от которой уходили, только
+    из нового источника (круг-2 по PR #438, DeepSeek Critical 1). Участника не
+    узнали — якорь идёт без подписи: это и обещано в контракте выше.
     """
+    known = speakers or set()
     lines = transcript[:at].split("\n")
     who, when = "", ""
     for back, ln in enumerate(reversed(lines)):
-        if not when and back < 20:
+        if back >= 5:
+            break
+        if not when:
             m = _TIME_RE.search(ln)
             if m:
                 when = m.group(1) or m.group(2) or ""
-        if not who and back < 5:
+        if not who:
             m = _SPEAKER_RE.match(ln)
             if m:
-                cand = m.group(2).strip(" *_#>-")
-                if cand and len(cand.split()) <= 3:
+                cand = _match_speaker(m.group(2).strip(" *_#>-"), known)
+                if cand:
                     who, when = cand, when or (m.group(1) or "")
-        if (who or back >= 5) and (when or back >= 20):
+        if who and when:
             break
     return who, when
+
+
+def _norm_name(s: str) -> str:
+    return " ".join(re.findall(r"\w+", s.lower(), re.UNICODE))
+
+
+def _match_speaker(cand: str, known: set[str]) -> str:
+    """Кандидат из строки → каноническое имя участника встречи или пусто.
+
+    Стенограмма зовёт человека одним словом («Пётр»), граф — полным именем
+    («Пётр Иванов»): совпадением считаем и вложение по словам. В граф идёт
+    имя из списка участников, чтобы узел был один, а не три написания.
+    """
+    c = _norm_name(cand)
+    if not c or len(c.split()) > 3:
+        return ""
+    for s in known:
+        n = _norm_name(s)
+        if not n:
+            continue
+        if c == n or set(c.split()) <= set(n.split()) or set(n.split()) <= set(c.split()):
+            return s
+    return ""
 
 
 def _closest_span(quote: str, transcript: str, threshold: float = 0.75) -> str:
@@ -635,14 +669,14 @@ def _locate(quote: str, transcript: str,
 _REDIRECT_RE = re.compile(r"^# .+? → \[\[Ядра/(.+?)(?:\|.*?)?\]\]", re.M)
 
 
-def resolve_core_path(d: pathlib.Path, name: str, hops: int = 3) -> pathlib.Path:
+def resolve_core_path(d: pathlib.Path, name: str) -> pathlib.Path:
     """Файл ядра по имени — с учётом redirect-заглушек tier3.
 
     После слияния дубль остаётся файлом «`# дубль → [[Ядра/канон]]` … Дубль.
     Смерджен», и модель на следующей встрече может назвать ядро прежним
     именем. Раньше upsert писал в заглушку: в ней нет «## Статус» — свежий
     статус пропадал, а хроника копилась в файле, который tier3 и бриф
-    пропускают (аудит DeepSeek 17.08). Идём по стрелке до канона (≤3 шага).
+    пропускают (аудит DeepSeek 17.08). Идём по стрелке до конца цепи.
     """
     p = d / f"{safe_name(name)}.md"
     # Идём до КОНЦА цепи, а не фиксированные три шага: цепочка A→B→C→D→E
@@ -670,7 +704,7 @@ def resolve_core_path(d: pathlib.Path, name: str, hops: int = 3) -> pathlib.Path
 
 
 def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
-                transcript: str = ""):
+                transcript: str = "", speakers: set[str] | None = None):
     """Ядро — сквозная тема/задача: статус ПЕРЕЗАПИСЫВАЕТСЯ каждой встречей,
     хроника копится. В графе Obsidian ядра становятся хабами над-уровня."""
     d = graph / "Ядра"
@@ -678,7 +712,7 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
     p = resolve_core_path(d, core["имя"])
     status = (core.get("статус") or "").strip()
     upd = (core.get("обновление") or "").strip()
-    anchor = core_anchor(core, transcript) if transcript else ""
+    anchor = core_anchor(core, transcript, speakers) if transcript else ""
     stamp_line = (f"- [[{meeting_link}]] — {upd}{anchor}" if upd
                   else f"- [[{meeting_link}]]{anchor}")
     if p.exists():
@@ -853,8 +887,15 @@ def main():
     # 1б) ядра: сквозные темы/задачи — статус обновляется, хроника копится
     cores = [c for c in (data.get("ядра") or [])
              if isinstance(c, dict) and c.get("имя")][:4]
+    # Кого встреча вообще знает: люди из разбора плюс уже заведённые узлы.
+    # Этот список — единственный источник имён для провенанса.
+    speakers = {p["имя"] for p in people if p.get("имя")}
+    people_dir = graph / "Люди"
+    if people_dir.is_dir():
+        speakers |= {f.stem for f in people_dir.glob("*.md")
+                     if not f.name.startswith("_")}
     for c in cores:
-        upsert_core(graph, c, meeting_link, stamp, speech)
+        upsert_core(graph, c, meeting_link, stamp, speech, speakers)
     if cores:
         rebuild_cores_moc(graph)
         # Tier3-ревизия СРАЗУ после upsert: свежие ядра этой встречи против

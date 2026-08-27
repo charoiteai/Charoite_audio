@@ -47,9 +47,19 @@ def _stamps() -> dict:
         return {}
 
 
-def _save_stamp(graph: pathlib.Path, ts: float) -> None:
+def _pending(graph: pathlib.Path) -> list[str]:
+    """Ядра, чьи пары в прошлый раз не судились: вернуть их в фокус адресно."""
+    data = _stamps()
+    val = data.get(str(graph) + "#pending")
+    return list(val) if isinstance(val, list) else []
+
+
+def _save_stamp(graph: pathlib.Path, ts: float,
+                pending: set[str] | None = None) -> None:
     data = _stamps()
     data[str(graph)] = ts
+    # Не больше двух сотен: список — страховка от потери пары, а не очередь.
+    data[str(graph) + "#pending"] = sorted(pending or set())[:200]
     STAMPS.parent.mkdir(parents=True, exist_ok=True)
     STAMPS.write_text(json.dumps(data, ensure_ascii=False, indent=1),
                       encoding="utf-8")
@@ -65,6 +75,13 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
             print(f"=== {graph.name}: отметки нет — полный прогон", flush=True)
         else:
             only = tier3.changed_since(graph / "Ядра", prev)
+            # Пары, не судившиеся в прошлый раз из-за сбоя NLI: они не
+            # «свежие» по времени, но досмотреть их обязаны.
+            stuck = [n for n in _pending(graph) if n not in only]
+            if stuck:
+                print(f"{graph.name}: возвращаю в фокус {len(stuck)} ядер "
+                      "после прошлых сбоев NLI", flush=True)
+                only = list(only) + stuck
             if not only:
                 print(f"{graph.name}: свежих ядер нет — пропуск", flush=True)
                 _save_stamp(graph, started)
@@ -75,13 +92,15 @@ def run(graph: pathlib.Path, apply: bool, mark: bool = False,
     # Отметку двигаем только после состоявшегося прогона: без NLI-модели или с
     # лежащей Ollama ревизия молча возвращает пустой результат, и сдвинутая
     # отметка вычеркнула бы эти ядра из фокуса навсегда.
-    if r["ran"] and not r.get("stopped") and not r.get("failed"):
-        _save_stamp(graph, started)
-    elif r.get("failed"):
-        # Часть пар не судилась (сбой NLI на конкретной паре): сдвинутая
-        # отметка вычеркнула бы именно их — «свежими» они уже не станут.
-        print(f"{graph.name}: {r['failed']} пар не судились — "
-              "отметка не сдвинута, вернёмся к ним завтра", flush=True)
+    if r["ran"] and not r.get("stopped"):
+        # Отметка идёт вперёд даже при сбоях — иначе одна вечно падающая пара
+        # держала бы инкремент на месте, а фокус рос бы каждую ночь. Сами
+        # несудившиеся ядра запоминаются рядом с отметкой и вернутся адресно.
+        _save_stamp(graph, started, r.get("failed_names"))
+        if r.get("failed"):
+            print(f"{graph.name}: {r['failed']} пар не судились — "
+                  f"{len(r.get('failed_names') or ())} ядер вернутся в фокус "
+                  "следующим прогоном", flush=True)
     elif r.get("stopped"):
         # Ревизию оборвал потолок ночи: судимое досмотрено, отметка стоит
         # на месте — завтра инкремент возьмёт те же свежие ядра заново.
