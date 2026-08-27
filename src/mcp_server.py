@@ -12,6 +12,7 @@ import pathlib
 import subprocess
 
 import requests
+import transcript
 
 import meeting_stamp
 import privacy
@@ -108,9 +109,9 @@ def sufler_notes() -> str:
     if not f:
         return "Стенограмм нет."
     text = f.read_text(encoding="utf-8")
-    if "## Ко-мышление" not in text:
+    if f"## {transcript.NOTES_TITLE}" not in text:
         return "Заметок ко-мышления пока нет."
-    return text.split("## Ко-мышление", 1)[1].strip()
+    return text.split(f"## {transcript.NOTES_TITLE}", 1)[1].strip()
 
 
 @mcp.tool()

@@ -417,7 +417,6 @@ def test_stale_core_is_skipped_instead_of_overwritten(graph_with_essence, monkey
     конвейера встречи или человека за это время исчезала молча — копия
     оставалась только в бэкапе (аудит ночи 26.08, DS Important 3).
     """
-    folder = graph_with_essence / "Ядра"
     real_load = tier3.load_cores
 
     def load_and_touch(f):
