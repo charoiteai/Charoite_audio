@@ -455,6 +455,7 @@ class Verdict:
     touched: int = 0                 # всего правок (−1 — снимка не было, не судили)
     reverted: list[str] = dataclasses.field(default_factory=list)   # запрещённая правка → из бэкапа
     removed: list[str] = dataclasses.field(default_factory=list)    # служебная зона → в карантин
+    watched: list[str] = dataclasses.field(default_factory=list)    # зона исполнения, правка не наша
     deleted: list[str] = dataclasses.field(default_factory=list)    # стёрт облаком → из бэкапа
     rewritten: list[str] = dataclasses.field(default_factory=list)  # переписан заново → из бэкапа
     unrestorable: list[str] = dataclasses.field(default_factory=list)  # копии нет — оставлен как есть
@@ -615,6 +616,15 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
                         if path.is_file() else "")
             why = judge(path, graph, old_text, new_text, existed)
             if why is None and not rollback:
+                continue
+            if existed and not rollback and _executable_area(path, graph):
+                # Файл в зоне исполнения, который БЫЛ до запуска. Правку в нём
+                # мог сделать и не облако: Obsidian сам переписывает data.json
+                # плагина, пока открыт, — и откат отменял бы живую работу на
+                # каждом успешном разборе (DS, круг-13). Видеть такую правку
+                # надо, отменять молча — нет: называем в логе, оставляем как
+                # есть. Невалидный ответ — другое дело, там откатывается всё.
+                v.watched.append(path.name)
                 continue
             _settle(path, graph, backup, qdir, old, existed, why, v)
         except OSError:
@@ -924,6 +934,8 @@ def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:
         parts.append(f"переписано заново, возвращено: {', '.join(v.rewritten)}")
     if v.removed:
         parts.append(f"создано в служебной зоне — в карантин: {', '.join(v.removed)}")
+    if v.watched:
+        parts.append(f"ИЗМЕНИЛОСЬ в зоне исполнения (проверь сам): {', '.join(v.watched)}")
     if v.kept_new:
         parts.append(f"появилось после снимка, НЕ ТРОНУТО: {', '.join(v.kept_new)}")
     if v.unrestorable:

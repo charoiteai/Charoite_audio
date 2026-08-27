@@ -1049,3 +1049,32 @@ def test_the_pipelines_own_backups_are_not_swept_out_with_the_hidden_folders(tmp
 
     assert all(f.is_file() for f in ours), "бэкапы конвейера унесены в карантин"
     assert not v.removed, f"из графа вынесено: {v.removed}"
+
+
+def test_obsidian_keeps_writing_its_own_plugin_settings(tmp_path):
+    """Правка в зоне исполнения не отменяется молча — она называется.
+
+    Круг-13, DS Critical: взяв `data.json` под сверку, я сломал штатную
+    работу — Obsidian пишет туда сам, пока открыт, и откат отменял бы живую
+    настройку на КАЖДОМ успешном разборе. Кто именно правил файл, знать
+    нечем (пятый заход на ту же стену), поэтому: созданное в зоне
+    исполнения убираем, изменённое — оставляем и говорим о нём вслух.
+    """
+    graph = _graph(tmp_path)
+    settings = graph / ".obsidian" / "plugins" / "templater-obsidian" / "data.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text('{"startup_templates": []}', encoding="utf-8")
+
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
+    settings.write_text('{"startup_templates": ["Шаблоны"]}', encoding="utf-8")
+
+    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q")
+
+    assert settings.read_text(encoding="utf-8") == '{"startup_templates": ["Шаблоны"]}', (
+        "живая настройка Obsidian откачена на успешном разборе"
+    )
+    assert settings.name in v.watched, "изменение в зоне исполнения не названо"
+    assert settings.name not in v.reverted and settings.name not in v.removed
+    line = cloud_review._verdict_line(v, tmp_path / "q")
+    assert "ИЗМЕНИЛОСЬ в зоне исполнения" in line and "data.json" in line
