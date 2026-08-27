@@ -943,4 +943,30 @@ def test_a_plugin_planted_in_the_hidden_area_is_still_taken_away(tmp_path):
     assert (qdir / ".obsidian" / "plugins" / "x" / "main.js").read_text(
         encoding="utf-8") == "alert(1)", "убранное обязано лежать в карантине"
 
+def test_the_pipelines_own_backups_are_not_swept_out_with_the_hidden_folders(tmp_path):
+    """Скрытый каталог — ещё не чужой: в трёх таких пишет сам конвейер.
 
+    Круг-9, GLM Critical: правило «созданное в скрытой зоне — в карантин»
+    выносило из графа `Ядра/.tier3_backup` (tier3 снимает копию ядра на
+    каждой встрече, src/tier3.py:167) и `.forget_backup` (забывание встречи).
+    Это штатные пути восстановления, а ротация карантина стёрла бы их
+    насовсем через десяток разборов — потеря с задержкой.
+    """
+    graph = _graph(tmp_path)
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
+
+    ours = []
+    for rel in ("Ядра/.tier3_backup/2026-07-15_1500/Хранилище.md",
+                ".forget_backup/2026-07-15_1500/Встречи/2026-07-15_1500.md",
+                "Ядра/.tier3_backup/2026-07-15_1500/Доставка.md"):
+        f = graph / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("копия до правки\n", encoding="utf-8")
+        ours.append(f)
+
+    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q",
+                                        rollback=True)
+
+    assert all(f.is_file() for f in ours), "бэкапы конвейера унесены в карантин"
+    assert not v.removed, f"из графа вынесено: {v.removed}"

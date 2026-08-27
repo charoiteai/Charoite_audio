@@ -479,18 +479,23 @@ def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
     return None
 
 
-def _in_hidden_area(path: pathlib.Path, graph: pathlib.Path) -> bool:
-    """Скрытый служебный каталог графа: `.obsidian`, `.trash`, снимки.
+# Каталоги самого Obsidian: там лежит исполняемый код плагинов и настройки
+# приложения. Наш код туда не пишет ни строки — проверено по дереву; а вот
+# скрытые каталоги вообще конвейер использует вовсю: `Ядра/.tier3_backup`
+# пишет tier3 на каждой встрече (src/tier3.py:167), `.forget_backup` —
+# забывание встречи. Ровно на этом «скрытое = не наше» и поймал круг-9:
+# бэкапы конвейера уезжали в карантин, а ротация карантина стирала бы их
+# насовсем через десяток разборов.
+OBSIDIAN_INTERNALS = (".obsidian", ".trash")
 
-    Конвейер туда не пишет ни одной строки, и снимок их не видит (`snapshot`
-    пропускает dot-пути) — то же разделение, что в `may_write`. Вне графа —
-    считаем служебным: своего там нет тем более.
-    """
+
+def _is_obsidian_internals(path: pathlib.Path, graph: pathlib.Path) -> bool:
+    """Каталог приложения Obsidian внутри графа (или путь вообще вне графа)."""
     try:
         rel = path.resolve().relative_to(graph.resolve())
     except (ValueError, OSError):
-        return True
-    return any(part.startswith(".") for part in rel.parts)
+        return True                    # вне графа своего нет тем более
+    return bool(rel.parts) and rel.parts[0] in OBSIDIAN_INTERNALS
 
 
 def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
@@ -505,9 +510,12 @@ def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
     графа не берёт. Пять признаков «своего файла» проверены кругами и
     отброшены — угадывать авторство нечем (№119).
 
-    Исключение одно и не про авторство: скрытые служебные каталоги. Конвейер
-    туда не пишет вовсе, а созданный там плагин Obsidian — исполняемый код в
-    чужом приложении. Такое уезжает в карантин при любом исходе.
+    Исключение одно и не про авторство: каталоги самого Obsidian
+    (`.obsidian`, `.trash`). Наш код туда не пишет ни строки, а подложенный
+    там `main.js` — исполняемый код в чужом приложении. Такое уезжает в
+    карантин при любом исходе. Все прочие скрытые каталоги — наши бэкапы
+    (`.tier3_backup`, `.forget_backup`, `.cloud_backup`), и они остаются:
+    круг-9 показал, что «скрытое» и «не наше» — разные вещи.
 
     Цена названа: мусор облака в контентной части графа полежит до ручной
     уборки, зато заметка соседней встречи не исчезает. Запрет границ работает
@@ -515,7 +523,7 @@ def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
     облако переписало или удалило, возвращается из бэкапа.
     """
     if not existed:
-        if _in_hidden_area(path, graph):
+        if _is_obsidian_internals(path, graph):
             if path.exists():
                 quarantine(path, graph, qdir, move=True)
             v.removed.append(path.name)
