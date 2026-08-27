@@ -479,26 +479,37 @@ def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
     return None
 
 
-# Каталоги самого Obsidian: там лежит исполняемый код плагинов и настройки
-# приложения. Наш код туда не пишет ни строки — проверено по дереву; а вот
-# скрытые каталоги вообще конвейер использует вовсю: `Ядра/.tier3_backup`
-# пишет tier3 на каждой встрече (src/tier3.py:167), `.forget_backup` —
-# забывание встречи. Ровно на этом «скрытое = не наше» и поймал круг-9:
-# бэкапы конвейера уезжали в карантин, а ротация карантина стирала бы их
-# насовсем через десяток разборов.
-OBSIDIAN_INTERNALS = (".obsidian", ".trash")
+# Скрытые каталоги, куда пишет НАШ конвейер, — единственные, что остаются на
+# месте. Всё прочее скрытое уезжает в карантин при любом исходе: там не
+# только `.obsidian` с плагинами, но и `.git`, `.claude`, `.config` —
+# каталоги, где файл означает исполнение кода, а не заметку. Стенограмма
+# приходит с живой встречи, то есть текст в неё может продиктовать кто
+# угодно; сверка — второй слой ровно потому, что первому (deny-правила CLI)
+# не доверяют, а созданного во время окна каталога у deny и нет (GLM,
+# круг-10).
+#
+# Список — из кода писателей: tier3._backup (src/tier3.py:167), забывание
+# встречи (scripts/forget_meeting.py:78), снимок ревизии (BACKUP_DIR),
+# ночное досье (scripts/nightly_dossier_review.py:174). Появится новый —
+# упадёт тест, который перечисляет их поимённо.
+PIPELINE_BACKUPS = (".tier3_backup", ".forget_backup", ".cloud_backup", ".backup")
 
 
-def _is_obsidian_internals(path: pathlib.Path, graph: pathlib.Path) -> bool:
-    """Каталог приложения Obsidian внутри графа (или путь вообще вне графа)."""
+def _ours_by_construction(path: pathlib.Path, graph: pathlib.Path) -> bool:
+    """Новый файл в скрытом каталоге, который ведёт сам конвейер.
+
+    Не догадка об авторстве: это места, куда облако писать не может даже
+    теоретически — они создаются нашим кодом под своими именами. Всё
+    остальное скрытое считается чужим, пока не доказано обратное.
+    """
     try:
         rel = path.resolve().relative_to(graph.resolve())
     except (ValueError, OSError):
-        return True                    # вне графа своего нет тем более
-    # casefold: на APFS «.Obsidian» и «.obsidian» — один каталог, а вот на
-    # case-sensitive томе строгое сравнение пропустило бы подложенный плагин
-    # (Codex, круг-9). Регистр здесь ничего не различает по смыслу.
-    return bool(rel.parts) and rel.parts[0].casefold() in OBSIDIAN_INTERNALS
+        return False                   # вне графа своего нет
+    parts = [p.casefold() for p in rel.parts]
+    if not any(p.startswith(".") for p in parts):
+        return True                    # обычная часть графа — не наша забота
+    return any(p in PIPELINE_BACKUPS for p in parts)
 
 
 def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
@@ -513,12 +524,11 @@ def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
     графа не берёт. Пять признаков «своего файла» проверены кругами и
     отброшены — угадывать авторство нечем (№119).
 
-    Исключение одно и не про авторство: каталоги самого Obsidian
-    (`.obsidian`, `.trash`). Наш код туда не пишет ни строки, а подложенный
-    там `main.js` — исполняемый код в чужом приложении. Такое уезжает в
-    карантин при любом исходе. Все прочие скрытые каталоги — наши бэкапы
-    (`.tier3_backup`, `.forget_backup`, `.cloud_backup`), и они остаются:
-    круг-9 показал, что «скрытое» и «не наше» — разные вещи.
+    Исключение одно и не про авторство: скрытые каталоги. Там файл значит не
+    заметку, а исполнение — плагин Obsidian, hook в `.claude`, git-хук, — и
+    туда уезжает в карантин всё, кроме бэкапов самого конвейера, которые он
+    ведёт под известными именами (`PIPELINE_BACKUPS`). Круг-9 показал, что
+    «скрытое» и «чужое» — не одно и то же, круг-10 — что и обратное неверно.
 
     Цена названа: мусор облака в контентной части графа полежит до ручной
     уборки, зато заметка соседней встречи не исчезает. Запрет границ работает
@@ -526,7 +536,7 @@ def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
     облако переписало или удалило, возвращается из бэкапа.
     """
     if not existed:
-        if _is_obsidian_internals(path, graph):
+        if not _ours_by_construction(path, graph):
             if path.exists():
                 quarantine(path, graph, qdir, move=True)
             v.removed.append(path.name)
