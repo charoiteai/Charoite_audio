@@ -331,6 +331,11 @@ def test_invalid_answer_rolls_back_even_allowed_edits(tmp_path, monkeypatch):
     assert ("ответ невалиден — правки графа откачены: изменилось 2, "
             "откачено 1, оставлено нового 1") in text
     assert "НЕ ТРОНУТЫ (появились после снимка, авторство неизвестно): Новый.md" in text
+    # След для существующих: в откаченном файле могла быть и доклейка минуток,
+    # и дописанное в ядро — версия до отката лежит в карантине, и лог обязан
+    # сказать, где её искать (GLM, круг-8).
+    assert "ОТКАЧЕНЫ (в них могла быть и правка конвейера" in text
+    assert "Платёжный провайдер.md" in text.split("ОТКАЧЕНЫ")[1][:200]
 
 
 def test_graph_lock_serialises_workers_and_degrades_to_read_only(tmp_path, monkeypatch):
