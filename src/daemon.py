@@ -1243,14 +1243,22 @@ def main():
         wait_started = time.monotonic()
         _started = {"model": None}      # присваивание из вложенного with
 
-        def _telemetry(reason: str) -> None:
-            """Исход захода — в состояние своего контура, на любом выходе."""
+        def _telemetry(reason: str, model_ms: int | None = None) -> None:
+            """Исход захода — в состояние своего контура, на любом выходе.
+
+            `model_ms` передают, когда модель уже отработала, а до выхода
+            остались доставка в UI и запись файла: замеренное по месту время
+            честнее, чем «до этой строки» (круг-2).
+            """
             slot = hint_state["manual" if manual else "auto"]
             slot["reason"] = reason
             began = _started["model"]
             slot["wait_ms"] = round(((began or time.monotonic()) - wait_started) * 1000)
-            slot["model_ms"] = (0 if began is None
-                                else round((time.monotonic() - began) * 1000))
+            if model_ms is not None:
+                slot["model_ms"] = model_ms
+            else:
+                slot["model_ms"] = (0 if began is None
+                                    else round((time.monotonic() - began) * 1000))
 
         if manual:
             manual_evt.set()  # сигнал авто-генерации уступить
@@ -1282,6 +1290,10 @@ def main():
             if not tail:
                 emit({"type": "hint", "text": "Стенограмма пока пуста.", "manual": manual})
                 emit({"type": "hint_done", "manual": manual})
+                # Ранний выход — тоже исход. Без этой строки пульс показывал
+                # причину от прошлой попытки, то есть врал ровно там, где его
+                # и читают: молчит подсказка — почему (круг-2, все три головы).
+                _telemetry("стенограмма пуста")
                 return "done"
             parts: list[str] = []
             failed: Exception | None = None
@@ -1307,6 +1319,10 @@ def main():
                 elif parts:  # авто оборвалась после токенов: обрезок не должен выглядеть целым
                     emit({"type": "hint", "text": " …⚠", "manual": False})
                     parts.append(" …⚠")
+            # Модель отработала здесь. Дальше идут доставка в UI и запись
+            # файла: замок вывода, пайп, диск. Их место — не в model_ms,
+            # иначе занятый пайп читается как медленная модель (круг-2).
+            _model_ms_at_finish = round((time.monotonic() - _started["model"]) * 1000)
             emit({"type": "hint_done", "manual": manual})
             if parts:  # подсказки тоже сохраняем — лог полного разговора
                 kind = "ручная" if manual else "авто"
@@ -1315,7 +1331,8 @@ def main():
                 append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] подсказка ({kind})", "".join(parts))
             # Причина — той же человеческой строкой, что видит человек в
             # статусе: «сервер модели не отвечает», «модель занята».
-            _telemetry(short_error(failed) if failed is not None else "")
+            _telemetry(short_error(failed) if failed is not None else "",
+                       model_ms=_model_ms_at_finish)
             if failed is not None:
                 return "failed"
             return "yielded" if yielded else "done"   # уступила — вернёмся к куску раньше

@@ -1,6 +1,7 @@
 """Load shedding keeps text realtime while preserving full audio on disk."""
 from __future__ import annotations
 
+import ast
 import pathlib
 import sys
 
@@ -262,9 +263,42 @@ def test_hint_pulse_names_the_reason_and_separates_waiting_from_work():
     assert 'hint_state.get("auto")' in pulse or "hint_state.get('auto')" in pulse, \
         "пульс читает общее состояние — ручной запрос затрёт причину авто-цикла"
 
-    gen = src[src.index("def gen_hint("):src.index("def instant_loop(")]
-    assert gen.count("_telemetry(") >= 2, "исход пишется не на всех выходах"
-    busy = gen[gen.index('return "busy"') - 400:gen.index('return "busy"')]
-    assert "_telemetry(" in busy, "ветка busy снова выходит до записи телеметрии"
-    assert 'hint_state["manual" if manual else "auto"]' in gen, \
+    # Выходы считаем по дереву, а не по подстрокам: `gen.count("_telemetry(")`
+    # засчитывал и строку `def _telemetry(`, то есть гейт пропустил бы удаление
+    # вызова из ветки (GLM, круг-2).
+    tree = ast.parse(src)
+    gen = next(n for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef) and n.name == "gen_hint")
+
+    def _is_telemetry(stmt) -> bool:
+        return (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+                and isinstance(stmt.value.func, ast.Name)
+                and stmt.value.func.id == "_telemetry")
+
+    unmarked: list[int] = []
+
+    def _walk(body, seen: bool) -> None:
+        """Пройти тело по порядку: к каждому выходу — со своей историей пути."""
+        for stmt in body:
+            if _is_telemetry(stmt):
+                seen = True
+                continue
+            if isinstance(stmt, ast.Return):
+                if not seen:
+                    unmarked.append(stmt.lineno)
+                continue
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue                       # сам _telemetry и прочие помощники
+            # ветвления: каждая ветка идёт со своей копией истории
+            for field in ("body", "orelse", "finalbody"):
+                inner = getattr(stmt, field, None)
+                if inner:
+                    _walk(inner, seen)
+            for handler in getattr(stmt, "handlers", []):
+                _walk(handler.body, seen)
+
+    _walk(gen.body, False)
+    assert not unmarked, f"выход без записи исхода, строки: {unmarked}"
+
+    assert 'hint_state["manual" if manual else "auto"]' in src, \
         "ручная и авто подсказки снова пишут в одно поле"
