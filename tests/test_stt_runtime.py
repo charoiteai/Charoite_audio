@@ -210,3 +210,57 @@ def test_отказ_записи_на_диск_красится_по_подст�
     assert stt_runtime.is_recording_failure(
         "⚠️ подсказки отстают… ЗАПИСЬ НА ДИСК НЕ ИДЁТ — этот звук не вернуть") is True
     assert stt_runtime.is_recording_failure("канал не открылся") is False
+
+
+def test_realtime_factor_turns_milliseconds_into_a_verdict():
+    """«Транскрипция 3200 мс» без длины звука не значит ничего.
+
+    Паспорт gigaam-v3 на этой машине — 28× (17,6 с звука за 0,63 с, замер
+    16.07). Отставание при RTF около единицы означает, что модель работает не
+    в том режиме, и лечится профилированием, а не придерживанием соседей по
+    нагрузке (№105).
+    """
+    assert stt_runtime.realtime_factor(17.6, 630) == 27.94
+    assert stt_runtime.realtime_factor(4.0, 3225) == 1.24
+    # считать не из чего — молчим, а не выдумываем ноль
+    assert stt_runtime.realtime_factor(0, 3225) is None
+    assert stt_runtime.realtime_factor(4.0, 0) is None
+    assert stt_runtime.realtime_factor(-1, 100) is None
+
+
+def test_lag_line_carries_time_audio_and_rtf():
+    """Без отметки времени эпизоды не разложить по нагрузке машины,
+    без audio_s и rtf — не отличить медленную модель от большого куска."""
+    src = (pathlib.Path(__file__).resolve().parent.parent / "src"
+           / "daemon.py").read_text(encoding="utf-8")
+    line = src[src.index('print(f"{dt.datetime.now():%H:%M:%S} stt-health'):]
+    line = line[:line.index("file=sys.stderr")]
+    for field in ("backlog_s=", "cycle_ms=", "diarization_ms=",
+                  "transcription_ms=", "audio_s=", "rtf="):
+        assert field in line, f"в строке отставания нет {field}"
+    event = src[src.index('"type": "stt_progress"'):]
+    event = event[:event.index("})")]
+    assert '"audio_s"' in event and '"rtf"' in event, "событие без RTF"
+
+
+def test_hint_pulse_names_the_reason_and_the_wait():
+    """«fails=22» не отвечает на вопрос «почему».
+
+    27.08 подсказки отказали 22 раза подряд, а причину — упавшую Ollama —
+    пришлось искать в логах руками. Пульс обязан называть причину той же
+    человеческой строкой, что видит человек в статусе, и время ожидания
+    модели (№91).
+    """
+    src = (pathlib.Path(__file__).resolve().parent.parent / "src"
+           / "daemon.py").read_text(encoding="utf-8")
+    pulse = src[src.index('print("hint-pulse: on="'):]
+    pulse = pulse[:pulse.index("file=sys.stderr")]
+    assert "gen_ms=" in pulse and "reason=" in pulse, "пульс молчит о причине"
+
+    gen = src[src.index("def gen_hint("):src.index("def instant_loop(")]
+    assert 'hint_state["reason"] = short_error(failed)' in gen, \
+        "причина не сохраняется из того же источника, что и статус человеку"
+    assert 'hint_state["gen_ms"]' in gen, "время генерации не замеряется"
+    # засечка должна стоять до замка, иначе ожидание слота не попадёт в счёт
+    assert gen.index("gen_started = time.monotonic()") < gen.index("with hint_slot("), \
+        "ожидание слота не входит во время генерации, а именно оно и тормозит"

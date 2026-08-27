@@ -751,6 +751,7 @@ def main():
         last_cycle_ms = 0.0
         last_diarization_ms = 0.0
         last_transcription_ms = 0.0
+        last_audio_s = 0.0
         lagging = False
 
         def report_progress(*, force: bool = False) -> None:
@@ -782,6 +783,9 @@ def main():
                 "cycle_ms": round(last_cycle_ms),
                 "diarization_ms": round(last_diarization_ms),
                 "transcription_ms": round(last_transcription_ms),
+                "audio_s": round(last_audio_s, 2),
+                "rtf": stt_runtime.realtime_factor(last_audio_s,
+                                                   last_transcription_ms),
                 "recording_ok": health["recording_ok"],
                 "channels": health["channels"],
             })
@@ -789,10 +793,18 @@ def main():
             if stt_runtime.lag_log_due(lagging=lagging, now=now_mono,
                                        last=last_lag_log, every=STT_LAG_LOG_EVERY):
                 age_text = "unknown" if input_age is None else f"{float(input_age):.1f}"
-                print(f"stt-health state=lagging backlog_s={backlog:.1f} "
+                rtf = stt_runtime.realtime_factor(last_audio_s,
+                                                  last_transcription_ms)
+                # Время в строке — чтобы эпизоды раскладывались по времени
+                # суток: без него «машина спокойна» и «машина под нагрузкой»
+                # неотличимы, а из этого и делается вывод о причине (№105).
+                print(f"{dt.datetime.now():%H:%M:%S} stt-health state=lagging "
+                      f"backlog_s={backlog:.1f} "
                       f"cycle_ms={last_cycle_ms:.0f} "
                       f"diarization_ms={last_diarization_ms:.0f} "
                       f"transcription_ms={last_transcription_ms:.0f} "
+                      f"audio_s={last_audio_s:.1f} "
+                      f"rtf={'?' if rtf is None else f'{rtf:.1f}'} "
                       f"input_age_s={age_text}",
                       file=sys.stderr, flush=True)
                 last_lag_log = now_mono
@@ -865,6 +877,11 @@ def main():
                 continue
             cycle_diarization_ms = 0.0
             cycle_transcription_ms = 0.0
+            # Сколько СЕКУНД ЗВУКА прошло через модель за цикл. Без этого
+            # «транскрипция 3200 мс» не значит ничего: непонятно, модель
+            # медленная или кусок большой. С ним считается RTF, и причина
+            # отставания обсуждается по цифре, а не по догадке (№105).
+            cycle_audio_s = 0.0
             for speaker, chunk in batch:
                 # Признак «собеседников слышно» — ЗДЕСЬ, до STT и до любых
                 # отсевов. Раньше он стоял после распознавания, и короткие
@@ -947,6 +964,10 @@ def main():
                     finally:
                         cycle_transcription_ms += (
                             time.monotonic() - transcription_started) * 1000
+                        try:
+                            cycle_audio_s += len(piece) / float(hub.sr)
+                        except (TypeError, ValueError, ZeroDivisionError):
+                            pass        # телеметрия не смеет ронять распознавание
                         mark_stt_stage("postprocess")
                     if not text or text.lower().strip(" .!») ") in NOISE:
                         continue
@@ -1037,6 +1058,7 @@ def main():
             last_cycle_ms = (time.monotonic() - cycle_started) * 1000
             last_diarization_ms = cycle_diarization_ms
             last_transcription_ms = cycle_transcription_ms
+            last_audio_s = cycle_audio_s
             mark_stt_stage("idle")
             report_progress()
 
@@ -1218,6 +1240,7 @@ def main():
         с первым настоящим токеном, при сбое карточка не трогается, а человеку
         (ручной запрос — он ждёт) приходит короткое «модель занята».
         """
+        gen_started = time.monotonic()
         if manual:
             manual_evt.set()  # сигнал авто-генерации уступить
         # Замок — с потолком ожидания, не навсегда: 24.08 (встреча 10:14)
@@ -1271,6 +1294,10 @@ def main():
                 if failed is not None:
                     kind += f", сорвалась: {short_error(failed)}"
                 append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] подсказка ({kind})", "".join(parts))
+            hint_state["gen_ms"] = round((time.monotonic() - gen_started) * 1000)
+            # Причина — той же человеческой строкой, что видит человек в
+            # статусе: «сервер модели не отвечает», «модель занята».
+            hint_state["reason"] = short_error(failed) if failed is not None else ""
             if failed is not None:
                 return "failed"
             return "yielded" if yielded else "done"   # уступила — вернёмся к куску раньше
@@ -1529,7 +1556,12 @@ def main():
     # Состояние слоя авто-подсказок, живущее ПОВЕРХ потока: сторож
     # пересоздаёт поток, а прочитанное (seen) и счётчик рестартов остаются.
     hint_state = {"thread": None, "restarts": 0, "seen": 0,
-                  "pulse_mono": time.monotonic()}
+                  "pulse_mono": time.monotonic(),
+                  # Почему молчат подсказки и сколько ждали модель — видно в
+                  # пульсе. Пустая причина значит «всё в порядке». 27.08
+                  # пульс говорил только «fails=22», и чтобы узнать, что
+                  # лежала Ollama, пришлось лезть в логи руками (№91).
+                  "reason": "", "gen_ms": 0}
 
     def auto_hint_loop():
         """Подсказки в реальном времени: сами, по мере накопления разговора.
@@ -1572,8 +1604,11 @@ def main():
                             new_chars = str(len(tr.full()) - hint_state["seen"])
                         except Exception:  # noqa: BLE001 — пульс живучее счётчика
                             new_chars = "?"
+                    reason = str(hint_state.get("reason") or "")
                     print("hint-pulse: on=" + str(toggles["hints"]) +
-                          f" new={new_chars} last={last_outcome} fails={failures}",
+                          f" new={new_chars} last={last_outcome} fails={failures}"
+                          f" gen_ms={hint_state.get('gen_ms', 0)}"
+                          + (f" reason={reason}" if reason else ""),
                           file=sys.stderr, flush=True)
                 if not toggles["hints"]:
                     continue
