@@ -1,6 +1,7 @@
 """Load shedding keeps text realtime while preserving full audio on disk."""
 from __future__ import annotations
 
+import ast
 import pathlib
 import sys
 
@@ -210,3 +211,94 @@ def test_отказ_записи_на_диск_красится_по_подст�
     assert stt_runtime.is_recording_failure(
         "⚠️ подсказки отстают… ЗАПИСЬ НА ДИСК НЕ ИДЁТ — этот звук не вернуть") is True
     assert stt_runtime.is_recording_failure("канал не открылся") is False
+
+
+def test_realtime_factor_turns_milliseconds_into_a_verdict():
+    """«Транскрипция 3200 мс» без длины звука не значит ничего.
+
+    Паспорт gigaam-v3 на этой машине — 28× (17,6 с звука за 0,63 с, замер
+    16.07). Отставание при RTF около единицы означает, что модель работает не
+    в том режиме, и лечится профилированием, а не придерживанием соседей по
+    нагрузке (№105).
+    """
+    assert stt_runtime.realtime_factor(17.6, 630) == 27.94
+    assert stt_runtime.realtime_factor(4.0, 3225) == 1.24
+    # считать не из чего — молчим, а не выдумываем ноль
+    assert stt_runtime.realtime_factor(0, 3225) is None
+    assert stt_runtime.realtime_factor(4.0, 0) is None
+    assert stt_runtime.realtime_factor(-1, 100) is None
+
+
+def test_lag_line_carries_time_audio_and_rtf():
+    """Без отметки времени эпизоды не разложить по нагрузке машины,
+    без audio_s и rtf — не отличить медленную модель от большого куска."""
+    src = (pathlib.Path(__file__).resolve().parent.parent / "src"
+           / "daemon.py").read_text(encoding="utf-8")
+    line = src[src.index('print(f"{dt.datetime.now():%H:%M:%S} stt-health'):]
+    line = line[:line.index("file=sys.stderr")]
+    for field in ("backlog_s=", "cycle_ms=", "diarization_ms=",
+                  "transcription_ms=", "audio_s=", "rtf="):
+        assert field in line, f"в строке отставания нет {field}"
+    event = src[src.index('"type": "stt_progress"'):]
+    event = event[:event.index("})")]
+    assert '"audio_s"' in event and '"rtf"' in event, "событие без RTF"
+
+
+def test_hint_pulse_names_the_reason_and_separates_waiting_from_work():
+    """«fails=22» не отвечает на вопрос «почему», а одна цифра времени лжёт.
+
+    27.08 подсказки отказали 22 раза подряд, а причину — упавшую Ollama —
+    пришлось искать в логах руками (№91). Круг по PR #440 добавил к этому две
+    поправки: ветка «замок занят» выходила до записи и оставляла в пульсе
+    чужую причину от прошлой попытки (все три головы), а единая цифра времени
+    смешивала ожидание чужой генерации с работой модели — замок держат и нить,
+    и минутки, и ответ на вопрос (GLM).
+    """
+    src = (pathlib.Path(__file__).resolve().parent.parent / "src"
+           / "daemon.py").read_text(encoding="utf-8")
+    pulse = src[src.index('auto = hint_state.get("auto")'):]
+    pulse = pulse[:pulse.index("file=sys.stderr")]
+    for field in ("wait_ms=", "model_ms=", "reason="):
+        assert field in pulse, f"пульс молчит о {field}"
+    assert 'hint_state.get("auto")' in pulse or "hint_state.get('auto')" in pulse, \
+        "пульс читает общее состояние — ручной запрос затрёт причину авто-цикла"
+
+    # Выходы считаем по дереву, а не по подстрокам: `gen.count("_telemetry(")`
+    # засчитывал и строку `def _telemetry(`, то есть гейт пропустил бы удаление
+    # вызова из ветки (GLM, круг-2).
+    tree = ast.parse(src)
+    gen = next(n for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef) and n.name == "gen_hint")
+
+    def _is_telemetry(stmt) -> bool:
+        return (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+                and isinstance(stmt.value.func, ast.Name)
+                and stmt.value.func.id == "_telemetry")
+
+    unmarked: list[int] = []
+
+    def _walk(body, seen: bool) -> None:
+        """Пройти тело по порядку: к каждому выходу — со своей историей пути."""
+        for stmt in body:
+            if _is_telemetry(stmt):
+                seen = True
+                continue
+            if isinstance(stmt, ast.Return):
+                if not seen:
+                    unmarked.append(stmt.lineno)
+                continue
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue                       # сам _telemetry и прочие помощники
+            # ветвления: каждая ветка идёт со своей копией истории
+            for field in ("body", "orelse", "finalbody"):
+                inner = getattr(stmt, field, None)
+                if inner:
+                    _walk(inner, seen)
+            for handler in getattr(stmt, "handlers", []):
+                _walk(handler.body, seen)
+
+    _walk(gen.body, False)
+    assert not unmarked, f"выход без записи исхода, строки: {unmarked}"
+
+    assert 'hint_state["manual" if manual else "auto"]' in src, \
+        "ручная и авто подсказки снова пишут в одно поле"
