@@ -482,7 +482,7 @@ def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
 
 
 def written_by_the_pipeline(path: pathlib.Path, graph: pathlib.Path,
-                            ours: set[str]) -> bool:
+                            ours: dict[str, str]) -> bool:
     """Файл записал конвейер — он сам об этом отметился в журнале.
 
     Откат по невалидному ответу берёт «всё, что изменилось с момента снимка», а
@@ -502,15 +502,20 @@ def written_by_the_pipeline(path: pathlib.Path, graph: pathlib.Path,
         rel = str(path.resolve().relative_to(graph.resolve()))
     except (ValueError, OSError):
         return False
-    return rel in ours
+    if rel not in ours:
+        return False
+    # Отметка покрывает то содержимое, которое конвейер записал. Облако могло
+    # переписать этот же файл поверх — тогда в графе версия облака, и щадить
+    # её нельзя (круг-4, GLM Critical 2).
+    return graph_writes.digest(path) == ours[rel]
 
 
 def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
             qdir: pathlib.Path, old: pathlib.Path, existed: bool, why: str | None,
-            v: Verdict, ours: set[str] | None = None) -> None:
+            v: Verdict, ours: dict[str, str] | None = None) -> None:
     """Убрать одну правку: созданное — в карантин, существовавшее — копией
     в карантин и из бэкапа обратно. Ничего не стирается."""
-    ours = ours or set()
+    ours = ours or {}
     if not existed:
         if written_by_the_pipeline(path, graph, ours):
             # Работа конвейера — не правка облака: оставляем и называем
@@ -561,7 +566,7 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
         return Verdict(touched=-1)
     v = Verdict(rolled_back=rollback)
     # Что за время нашего прогона записал конвейер — по его же журналу.
-    ours = graph_writes.written_since(ROOT, since) if since else set()
+    ours = graph_writes.written_since(ROOT, since) if since else {}
     touched = changed_since(before, graph)
     v.touched = len(touched)
     qdir = qdir or quarantine_root(graph) / backup.name

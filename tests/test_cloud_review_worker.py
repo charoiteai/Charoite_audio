@@ -962,3 +962,43 @@ def test_rollback_still_removes_what_the_cloud_created_where_it_may_not(tmp_path
     v = cloud_review.enforce_boundaries(before, graph, backup, qdir, rollback=True)
     assert not plugin.exists(), "запрет на защищённые папки ослаб"
     assert "main.js" in v.removed and "main.js" not in v.kept_new
+
+
+def test_the_cloud_cannot_hide_behind_our_journal_entry(tmp_path, monkeypatch):
+    """Отметка покрывает наше содержимое, а не путь навсегда.
+
+    Без отпечатка облако переписывало отмеченный файл через Write, и откат
+    считал версию облака работой конвейера — прорыв без единой подделки имени
+    (круг-4 по PR #439, GLM Critical 2).
+    """
+    graph = _graph(tmp_path)
+    root = tmp_path / "data"
+    monkeypatch.setattr(cloud_review, "ROOT", root)
+    started = time.time()
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
+    note = graph / "Встречи" / "2026-08-27_1032.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text("# наша заметка\n", encoding="utf-8")
+    graph_writes.note(root, graph, note)
+    note.write_text("# версия облака\n", encoding="utf-8")     # облако поверх
+    qdir = tmp_path / "q"
+    v = cloud_review.enforce_boundaries(before, graph, backup, qdir,
+                                        rollback=True, since=started)
+    assert not note.exists(), "версия облака осталась под нашей отметкой"
+    assert "2026-08-27_1032.md" in v.removed and not v.kept_new
+
+
+def test_the_pipeline_signs_artefacts_and_the_archive(tmp_path):
+    """Отметку ставит сам конвейер, а не тест: иначе неотмеченный писатель невидим.
+
+    27.08 потерялись именно артефакты и папка архива — журнал заводился ради
+    них (круг-4, GLM Critical 1).
+    """
+    src = (pathlib.Path(__file__).resolve().parent.parent / "src"
+           / "graph_updater.py").read_text(encoding="utf-8")
+    docs = src[src.index("vdocs = graph"):src.index("# 4в) архив")]
+    assert "graph_writes.note(ROOT, graph, *copied)" in docs, \
+        "копии артефактов не отмечаются — откат унесёт их снова"
+    arch = src[src.index("arch_folder = archive_meeting("):]
+    assert "graph_writes.note(ROOT, graph," in arch[:600], "архив встречи не отмечается"

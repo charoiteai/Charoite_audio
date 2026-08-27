@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import pathlib
 import time
@@ -43,14 +44,28 @@ def note(root: pathlib.Path, graph: pathlib.Path, *paths: pathlib.Path) -> None:
                     rel = str(pathlib.Path(p).resolve().relative_to(graph.resolve()))
                 except (ValueError, OSError):
                     rel = pathlib.Path(p).name
-                f.write(json.dumps({"t": now, "p": rel}, ensure_ascii=False) + "\n")
+                f.write(json.dumps({"t": now, "p": rel, "h": digest(p)},
+                                    ensure_ascii=False) + "\n")
     except OSError:
         pass
 
 
-def written_since(root: pathlib.Path, since: float) -> set[str]:
-    """Пути (относительно графа), записанные конвейером после момента since."""
-    out: set[str] = set()
+def digest(path: pathlib.Path) -> str:
+    """Отпечаток содержимого — чтобы отметка не покрывала чужую правку.
+
+    Путь и время не отвечают на вопрос «это всё ещё наш файл»: облако может
+    переписать отмеченный файл через Write, и по одному пути откат посчитал бы
+    версию облака работой конвейера (круг-4 по PR #439, GLM Critical 2).
+    """
+    try:
+        return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def written_since(root: pathlib.Path, since: float) -> dict[str, str]:
+    """Путь → отпечаток для записей конвейера после момента since."""
+    out: dict[str, str] = {}
     log = _log_path(root)
     if not log.is_file():
         return out
@@ -61,7 +76,7 @@ def written_since(root: pathlib.Path, since: float) -> set[str]:
             except ValueError:
                 continue        # обрыв строки на записи — пропускаем одну, не весь журнал
             if isinstance(rec, dict) and rec.get("t", 0) >= since and rec.get("p"):
-                out.add(str(rec["p"]))
+                out[str(rec["p"])] = str(rec.get("h", ""))
     except OSError:
         pass
     return out

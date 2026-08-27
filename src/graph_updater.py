@@ -1115,9 +1115,15 @@ def main():
             # Файлы ЭТОЙ встречи — по стему стенограммы с границей штампа: у
             # посекундной встречи без темы это «…113012*», а минутный глоб брал
             # файлы соседки той же минуты (аудит GLM 17.08).
+            copied = []
             for f in files_with_stamp(tpath.parent, tpath.stem, suffix=".md"):
                 _sh2.copy2(f, vdocs / f.name)
-            print(f"артефакты скопированы в vault: {vdocs}")
+                copied.append(vdocs / f.name)
+            # Отмечаемся ЗА КАЖДЫЙ файл: именно эти пять артефактов унёс откат
+            # облачной ревизии соседней встречи 27.08 (№119). Без отметки
+            # журнал бесполезен — он и заводился ради них.
+            graph_writes.note(ROOT, graph, *copied)
+            print(f"артефакты скопированы в vault ({len(copied)}): {vdocs}")
     except Exception as e:  # noqa: BLE001
         print(f"копирование в vault не удалось: {e}")
 
@@ -1131,6 +1137,10 @@ def main():
         # минуты (аудит DeepSeek 16.08); после наката темы — «штамп_тема».
         arch_folder = archive_meeting(graph, tpath.parent, stamp, title,
                                       files_key=tpath.stem)
+        # «Встречи-архив» — вторая защищённая папка: всё, что туда положил
+        # архиватор, для отката выглядит как правка облака.
+        graph_writes.note(ROOT, graph,
+                          *(f for f in arch_folder.rglob("*") if f.is_file()))
         print(f"архив встречи: {arch_folder.name}")
     except Exception as e:  # noqa: BLE001
         print(f"архив встречи не удался: {e}")
