@@ -699,7 +699,10 @@ class LLM:
                       "считаю локальной моделью", file=sys.stderr, flush=True)
                 local = LLM({**self._cfg,
                              "llm": {**self._cfg["llm"], "engine": self.fallback_engine}})
-                return local.complete(prompt, system=system, model=model, think=think,
+                # model НЕ передаём: у облака имя своё (cloud_model), и
+                # локальный движок с ним получил бы 404 — пусть берёт своё
+                # из конфига (находка Qwen 3.8 на бенче головы 26.08).
+                return local.complete(prompt, system=system, think=think,
                                       json_format=json_format, num_predict=num_predict,
                                       num_ctx=num_ctx, temperature=temperature,
                                       timeout=timeout, revive=revive,
