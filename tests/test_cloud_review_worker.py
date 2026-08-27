@@ -254,26 +254,28 @@ def test_rewriting_a_node_from_scratch_is_reverted_but_a_redirect_stub_is_not(tm
     assert cloud_review.retention(body, body.replace("Решено", "В работе") + "- факт 9\n") > 0.8
 
 
-def test_created_in_protected_dir_is_removed_not_ignored(tmp_path):
-    """Файл, созданный облаком там, где писать нельзя, убирается, а не прощается.
+def test_a_new_file_in_the_pipelines_folder_survives_a_valid_report(tmp_path):
+    """Артефакт разбора соседней встречи переживает УСПЕШНУЮ ревизию.
 
-    Откатывать нечего — копии в бэкапе нет, и раньше `if bad and restore(...)`
-    на этом молча заканчивался: нарушение оставалось на диске и не попадало в
-    лог. Запрет, который действует только на существовавшие до запуска файлы,
-    запретом не является.
+    Круг-8, DS Critical: дыру №119 закрыли только в ветке отката, а при
+    валидном отчёте новый файл в защищённой папке по-прежнему уезжал в
+    карантин. Отчёт облака не перечисляет созданное им, так что «ответ
+    валиден» об авторстве не говорит ничего, — а конвейер пишет `_live`,
+    `_minutes`, `_hints` и `_разбор` именно туда и замка графа не берёт.
+    Успешных ревизий больше, чем провалившихся: дыра была шире исходной.
     """
     graph = _graph(tmp_path)
     before = cloud_review.snapshot(graph)
     backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
-    fake = graph / "Документация" / "Стенограммы встреч" / "2026-07-15_1400_v2.md"
-    fake.write_text("переписанная стенограмма\n", encoding="utf-8")
-    qdir = tmp_path / "q"
-    v = cloud_review.enforce_boundaries(before, graph, backup, qdir)
-    assert not fake.exists(), "созданный в защищённой папке файл остался"
-    assert fake.name in v.removed and v.touched == 1 and not v.reverted
-    # не стёрт, а отложен: правка за те же полчаса могла быть и человеческой (№40)
-    assert (qdir / "Документация" / "Стенограммы встреч" / fake.name).read_text(
-        encoding="utf-8") == "переписанная стенограмма\n"
+    artefact = graph / "Документация" / "Стенограммы встреч" / "2026-07-15_1500_Статус_minutes.md"
+    artefact.write_text("минутки соседней встречи\n", encoding="utf-8")
+
+    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q")
+
+    assert artefact.is_file(), "минутки соседней встречи унесены при валидном отчёте"
+    assert artefact.name in v.kept_new, "оставленное обязано быть названо в отчёте"
+    assert not v.removed
+
 
 
 def test_non_markdown_files_are_covered_too(tmp_path):
@@ -914,28 +916,26 @@ def test_a_failed_review_leaves_the_neighbouring_meeting_alone(tmp_path, monkeyp
     assert len(v.kept_new) == 7, "оставленное новьё должно быть названо в отчёте"
 
 
-def test_a_valid_report_still_takes_forbidden_new_files_to_quarantine(tmp_path, monkeypatch):
-    """Запрет границ жив: при валидном отчёте новый файл в защищённой папке уходит.
+def test_a_plugin_planted_in_the_hidden_area_is_still_taken_away(tmp_path):
+    """«Не удаляем новое» не распространяется на служебные каталоги.
 
-    Иначе «не удаляем новое» превратилось бы в «пиши куда хочешь»: там, где
-    облако отчиталось о работе, авторство известно, и запрет должен значить
-    ровно то, что написано.
+    В `.obsidian/plugins` лежит исполняемый код чужого приложения, конвейер
+    туда не пишет ни строки, и снимок этих путей не видит. Оставить там
+    созданный облаком main.js — это не бережность к данным, а внедрение кода.
     """
     graph = _graph(tmp_path)
-    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
     before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
-
-    docs = graph / "Документация" / "Стенограммы встреч"
-    docs.mkdir(parents=True, exist_ok=True)
-    intruder = docs / "2026-08-27_1032_Статус_переписанный_облаком.md"
-    intruder.write_text("облако полезло в защищённую папку\n", encoding="utf-8")
+    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
+    plugin = graph / ".obsidian" / "plugins" / "x" / "main.js"
+    plugin.parent.mkdir(parents=True, exist_ok=True)
+    plugin.write_text("alert(1)", encoding="utf-8")
 
     qdir = tmp_path / "q"
-    v = cloud_review.enforce_boundaries(before, graph, backup, qdir, rollback=False)
+    v = cloud_review.enforce_boundaries(before, graph, backup, qdir)
 
-    assert not intruder.exists(), "запрет на защищённую папку перестал работать"
-    assert intruder.name in v.removed
-    assert (qdir / intruder.name).is_file() or any(qdir.rglob(intruder.name)), (
-        "убранное обязано лежать в карантине, а не исчезать"
-    )
+    assert not plugin.exists(), "плагин, подложенный облаком, остался в графе"
+    assert plugin.name in v.removed and plugin.name not in v.kept_new
+    assert (qdir / ".obsidian" / "plugins" / "x" / "main.js").read_text(
+        encoding="utf-8") == "alert(1)", "убранное обязано лежать в карантине"
+
+

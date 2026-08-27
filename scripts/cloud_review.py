@@ -442,7 +442,7 @@ class Verdict:
     При rolled_back те же списки значат «откачено», а не «нарушение»."""
     touched: int = 0                 # всего правок (−1 — снимка не было, не судили)
     reverted: list[str] = dataclasses.field(default_factory=list)   # запрещённая правка → из бэкапа
-    removed: list[str] = dataclasses.field(default_factory=list)    # создан где нельзя → в карантин
+    removed: list[str] = dataclasses.field(default_factory=list)    # служебная зона → в карантин
     deleted: list[str] = dataclasses.field(default_factory=list)    # стёрт облаком → из бэкапа
     rewritten: list[str] = dataclasses.field(default_factory=list)  # переписан заново → из бэкапа
     unrestorable: list[str] = dataclasses.field(default_factory=list)  # копии нет — оставлен как есть
@@ -479,30 +479,48 @@ def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
     return None
 
 
+def _in_hidden_area(path: pathlib.Path, graph: pathlib.Path) -> bool:
+    """Скрытый служебный каталог графа: `.obsidian`, `.trash`, снимки.
+
+    Конвейер туда не пишет ни одной строки, и снимок их не видит (`snapshot`
+    пропускает dot-пути) — то же разделение, что в `may_write`. Вне графа —
+    считаем служебным: своего там нет тем более.
+    """
+    try:
+        rel = path.resolve().relative_to(graph.resolve())
+    except (ValueError, OSError):
+        return True
+    return any(part.startswith(".") for part in rel.parts)
+
+
 def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
             qdir: pathlib.Path, old: pathlib.Path, existed: bool, why: str | None,
-            v: Verdict, *, rollback: bool = False) -> None:
-    """Убрать одну правку: существовавшее — копией в карантин и из бэкапа
-    обратно; появившееся после снимка — по обстоятельствам. Ничего не стирается.
+            v: Verdict) -> None:
+    """Убрать одну правку: вернуть старую версию, копию облака — в карантин.
 
-    Файл, которого в снимке не было, при ОТКАТЕ не трогаем совсем. Откат
-    случается там, где облако не отчиталось (таймаут, обрывок), — а значит
-    мы не знаем, чьи это файлы. Пока знание брали из журнала конвейера,
-    две правки подряд ловили Critical на краевых случаях (kill -9, чужой
-    «end» поверх живого окна): источник знания сам оказался хрупким. Проще
-    и надёжнее не удалять чужого никогда: мусор облака виден в логе и уйдёт
-    следующей ревизией, а заметку встречи вернуть неоткуда (№119).
+    Файла не было в снимке — не трогаем. Ни при откате, ни при валидном
+    отчёте: отчёт не перечисляет созданное облаком, так что об авторстве он
+    не говорит ничего, а конвейер пишет артефакты встречи (`_live`,
+    `_minutes`, `_hints`, `_разбор`) как раз в защищённую папку и замка
+    графа не берёт. Пять признаков «своего файла» проверены кругами и
+    отброшены — угадывать авторство нечем (№119).
 
-    Валидный отчёт — другое дело: там облако отчиталось о работе, и файл в
-    защищённой папке убирается в карантин, иначе запрет ничего не значит.
+    Исключение одно и не про авторство: скрытые служебные каталоги. Конвейер
+    туда не пишет вовсе, а созданный там плагин Obsidian — исполняемый код в
+    чужом приложении. Такое уезжает в карантин при любом исходе.
+
+    Цена названа: мусор облака в контентной части графа полежит до ручной
+    уборки, зато заметка соседней встречи не исчезает. Запрет границ работает
+    там, где вопрос об авторстве не стоит: существовавший файл, который
+    облако переписало или удалило, возвращается из бэкапа.
     """
     if not existed:
-        if rollback:
-            v.kept_new.append(path.name)
+        if _in_hidden_area(path, graph):
+            if path.exists():
+                quarantine(path, graph, qdir, move=True)
+            v.removed.append(path.name)
             return
-        if path.exists():
-            quarantine(path, graph, qdir, move=True)
-        v.removed.append(path.name)
+        v.kept_new.append(path.name)
         return
     if path.exists():
         quarantine(path, graph, qdir, move=False)
@@ -558,8 +576,7 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
             why = judge(path, graph, old_text, new_text, existed)
             if why is None and not rollback:
                 continue
-            _settle(path, graph, backup, qdir, old, existed, why, v,
-                    rollback=rollback)
+            _settle(path, graph, backup, qdir, old, existed, why, v)
         except OSError:
             v.failed.append(path.name)
     return v
@@ -858,7 +875,9 @@ def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:
     if v.rewritten:
         parts.append(f"переписано заново, возвращено: {', '.join(v.rewritten)}")
     if v.removed:
-        parts.append(f"созданных в защищённых — в карантин: {', '.join(v.removed)}")
+        parts.append(f"создано в служебной зоне — в карантин: {', '.join(v.removed)}")
+    if v.kept_new:
+        parts.append(f"появилось после снимка, НЕ ТРОНУТО: {', '.join(v.kept_new)}")
     if v.unrestorable:
         parts.append(f"КОПИИ НЕТ, оставлено как есть: {', '.join(v.unrestorable)}")
     if v.failed:
