@@ -197,3 +197,80 @@ def test_two_people_with_the_same_first_name_stay_unsigned():
     assert "«решили брать новый вариант»" in out
     # а точное совпадение двусмысленности не создаёт
     assert "Пётр" in graph_updater.core_anchor(core, tr, {"Пётр", "Пётр Иванов"})
+
+
+# ── круг-3 по PR #438 (GLM 5.3 Flash) ────────────────────────────────────────
+
+def test_the_anchor_reads_the_format_charoite_actually_writes(tmp_path):
+    """Тест собирает стенограмму НАСТОЯЩИМ рендером, а не строкой из головы.
+
+    Круг-2 проверял выдуманный инлайн «10:15 Пётр: реплика», которого продукт
+    не пишет никогда. Реальный формат — «**Пётр** [10:15–10:18]:» отдельной
+    строкой, и на нём фикс не находил говорящего НИ РАЗУ: заголовок кончается
+    двоеточием, после которого ничего нет.
+    """
+    import transcript as tr_mod
+
+    tr = tr_mod.Transcript(tmp_path)
+    tr.set_participants(["Ольга", "Мария"])
+    tr.add("решено брать новую CRM со следующей недели", speaker="Ольга")
+    tr.add("подготовлю смету к пятнице", speaker="Мария")
+    text = tr._render()
+    assert "**Ольга**" in text, "рендер сменился — тест надо переписать под него"
+
+    out = graph_updater.core_anchor(
+        {"цитата": "решено брать новую CRM", "кто": "Ира"}, text,
+        {"Ольга", "Мария"})
+    assert "Ольга" in out and "«решено брать новую CRM»" in out, out
+    assert re.search(r"\d{1,2}:\d{2}", out), f"время потерялось: {out}"
+
+
+def test_only_this_meetings_participants_may_sign_a_quote():
+    """Список говорящих — участники встречи, а не вся история проекта.
+
+    Пока в него входили стемы всех файлов «Люди», ушедший три года назад
+    сотрудник оставался допустимым говорящим навсегда, а узел «Команда
+    разработки» подписывал любую строку «Команда: …».
+    """
+    src = (SRC / "graph_updater.py").read_text(encoding="utf-8")
+    block = src[src.index("    speakers = {p["):src.index("    for c in cores:")]
+    assert "Люди" not in block, "список говорящих снова берётся из графа"
+    assert "Участники" in block, "шапка стенограммы больше не читается"
+
+
+def test_a_longer_phrase_containing_a_name_is_not_that_person():
+    """Обратное вложение делало говорящим любую строку с именем внутри."""
+    out = graph_updater.core_anchor(
+        {"цитата": "обсудили бюджет на квартал", "кто": ""},
+        "**Сергей Иванов по проекту** [10:15]: обсудили бюджет на квартал",
+        {"Иванов"})
+    assert "Иванов" not in out, f"обратное вложение вернулось: {out}"
+    # а короткое имя внутри полного — по-прежнему тот же человек
+    assert "Пётр Иванов" in graph_updater.core_anchor(
+        {"цитата": "обсудили бюджет на квартал", "кто": ""},
+        "**Пётр** [10:15]:\nобсудили бюджет на квартал", {"Пётр Иванов"})
+
+
+def test_a_merged_stub_does_not_steal_links_from_a_live_namesake(tmp_path):
+    """Имя занято живым узлом — входящие принадлежат ему, а не заглушке."""
+    graph = tmp_path / "граф"
+    for d in ("Ядра", "Системы", "Встречи"):
+        (graph / d).mkdir(parents=True)
+    (graph / "Ядра" / "CRM.md").write_text(
+        "⚠️ **Дубль. Смерджен Tier3-NLI.** → [[Ядра/Миграция]]\n", encoding="utf-8")
+    (graph / "Системы" / "CRM.md").write_text("## Суть\nживая система\n", encoding="utf-8")
+    (graph / "Ядра" / "Миграция.md").write_text("## Статус\nидёт\n", encoding="utf-8")
+    (graph / "Встречи" / "2026-08-27_1000.md").write_text(
+        "обсудили [[Системы/CRM|CRM]]\n", encoding="utf-8")
+    files, back = dossier.scan(graph)
+    assert "CRM" in files and files["CRM"]["kind"] == "Системы"
+    assert "2026-08-27_1000" in back.get("CRM", set()), "живой узел лишился ссылки"
+    assert "2026-08-27_1000" not in back.get("Миграция", set()), \
+        "заглушка увела ссылку живого однофамильца"
+
+
+def test_two_index_writers_cannot_mix_bytes():
+    """Общий tmp давал двум прогонам атомарно установить битый json."""
+    src = (SRC / "dossier.py").read_text(encoding="utf-8")
+    assert 'f"{INDEX_JSON}.{os.getpid()}.tmp"' in src
+    assert 'f"{INDEX_MD}.{os.getpid()}.tmp"' in src

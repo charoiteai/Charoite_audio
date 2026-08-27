@@ -532,10 +532,24 @@ def core_anchor(core: dict, transcript: str, speakers: set[str] | None = None) -
 # Реплика в стенограмме: «Имя: текст», иногда с таймкодом «[10:15]» или
 # «10:15» перед именем. Имя — до трёх слов: длинный префикс с двоеточием это
 # уже не говорящий, а заголовок вроде «Решения по проекту:».
+# Основной формат — тот, что пишет сам Чароит (src/transcript.py:_render):
+# «**Имя** [10:15]:» или «**Имя** [10:15–10:18]:» отдельной строкой, а
+# реплика следующей. Первая версия фикса знала только инлайн «Имя: текст» и
+# на реальной стенограмме не находила говорящего НИ РАЗУ — заголовок кончается
+# двоеточием, после которого ничего нет (круг-3 по PR #438, GLM Critical 1).
+_TURN_RE = re.compile(
+    r"^\s*\*\*(.+?)\*\*\s*\[?(\d{1,2}:\d{2})"
+    r"(?:\s*[–—-]\s*\d{1,2}:\d{2})?\]?\s*:", re.UNICODE)
+# Фолбэк для инлайна: «10:15 Имя: реплика» — так выглядят внешние и старые
+# стенограммы, которые тоже кладут в конвейер.
 _SPEAKER_RE = re.compile(
     r"^\s*(?:[-*>#]+\s*)?(?:\[?(\d{1,2}:\d{2})\]?\s+)?"
     r"([^\s:*#\[][^:]{0,40}?)\s*:\s", re.UNICODE)
-_TIME_RE = re.compile(r"\[(\d{1,2}:\d{2})\]|(?:^|\s)(\d{1,2}:\d{2})(?:\s|$)")
+# Диапазон «[10:15–10:18]» — основной случай: SPLIT_GAP склеивает реплики
+# одного голоса до трёх минут, и одиночный таймкод скорее исключение.
+_TIME_RE = re.compile(
+    r"\[(\d{1,2}:\d{2})(?:\s*[–—-]\s*\d{1,2}:\d{2})?\]"
+    r"|(?:^|\s)(\d{1,2}:\d{2})(?:\s|$)")
 
 
 def _speaker_at(transcript: str, at: int,
@@ -565,11 +579,17 @@ def _speaker_at(transcript: str, at: int,
             if m:
                 when = m.group(1) or m.group(2) or ""
         if not who:
-            m = _SPEAKER_RE.match(ln)
+            m = _TURN_RE.match(ln)
             if m:
-                cand = _match_speaker(m.group(2).strip(" *_#>-"), known)
+                cand = _match_speaker(m.group(1).strip(" *_#>-"), known)
                 if cand:
-                    who, when = cand, when or (m.group(1) or "")
+                    who, when = cand, m.group(2) or when
+            if not who:
+                m = _SPEAKER_RE.match(ln)
+                if m:
+                    cand = _match_speaker(m.group(2).strip(" *_#>-"), known)
+                    if cand:
+                        who, when = cand, when or (m.group(1) or "")
         if who and when:
             break
     return who, when
@@ -596,7 +616,11 @@ def _match_speaker(cand: str, known: set[str]) -> str:
             continue
         if c == n:
             return s            # точное совпадение снимает любую двусмысленность
-        if set(c.split()) <= set(n.split()) or set(n.split()) <= set(c.split()):
+        # ТОЛЬКО кандидат ⊆ участник: «Пётр» узнаётся в «Пётр Иванов».
+        # Обратное вложение делало говорящим любую строку, куда имя узла
+        # попало целиком: «Сергей Иванов по проекту:» → «Иванов», «Команда:»
+        # → «Команда разработки» (круг-3 по PR #438, GLM Important 2).
+        if set(c.split()) <= set(n.split()):
             hits.append(s)
     # Двое «Петров» в одной встрече: подписать наугад — та же ложная
     # атрибуция, только реже. Молчим, как и когда имени нет вовсе.
@@ -892,13 +916,15 @@ def main():
     # 1б) ядра: сквозные темы/задачи — статус обновляется, хроника копится
     cores = [c for c in (data.get("ядра") or [])
              if isinstance(c, dict) and c.get("имя")][:4]
-    # Кого встреча вообще знает: люди из разбора плюс уже заведённые узлы.
-    # Этот список — единственный источник имён для провенанса.
+    # Кто говорил НА ЭТОЙ встрече: люди из разбора плюс шапка стенограммы,
+    # которую пишет сам конвейер («Участники (звучали в разговоре): …»).
+    # Узлы графа сюда НЕ идут: там вся история проекта, и ушедший три года
+    # назад сотрудник оставался бы допустимым говорящим навсегда — контракт
+    # обещает участника встречи (круг-3 по PR #438, GLM Important 2).
     speakers = {p["имя"] for p in people if p.get("имя")}
-    people_dir = graph / "Люди"
-    if people_dir.is_dir():
-        speakers |= {f.stem for f in people_dir.glob("*.md")
-                     if not f.name.startswith("_")}
+    m = re.search(r"^Участники[^:]*:\s*(.+)$", speech, re.M)
+    if m:
+        speakers |= {x.strip() for x in m.group(1).split(",") if x.strip()}
     for c in cores:
         upsert_core(graph, c, meeting_link, stamp, speech, speakers)
     if cores:

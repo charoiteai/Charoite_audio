@@ -59,7 +59,15 @@ def _save_stamp(graph: pathlib.Path, ts: float,
     data = _stamps()
     data[str(graph)] = ts
     # Не больше двух сотен: список — страховка от потери пары, а не очередь.
-    data[str(graph) + "#pending"] = sorted(pending or set())[:200]
+    # Обрезка вслух: молча выпавшие имена — это те же потерянные пары, только
+    # теперь по алфавиту (круг-3 по PR #438, GLM Minor 8).
+    keep = sorted(pending or set())
+    if len(keep) > 200:
+        print(f"tier3: несудившихся ядер {len(keep)} — в отметку идут первые "
+              f"200 по алфавиту, остальные вернутся как обычные свежие",
+              flush=True)
+        keep = keep[:200]
+    data[str(graph) + "#pending"] = keep
     STAMPS.parent.mkdir(parents=True, exist_ok=True)
     STAMPS.write_text(json.dumps(data, ensure_ascii=False, indent=1),
                       encoding="utf-8")

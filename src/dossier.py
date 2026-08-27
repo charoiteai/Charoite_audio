@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pathlib
 import re
 import unicodedata
@@ -163,7 +164,10 @@ def scan(graph: pathlib.Path) -> tuple[dict[str, dict], dict[str, set[str]]]:
             # ядер), при равенстве побеждает более содержательный файл — и
             # виден в логе (аудит графа 26.08, Codex).
             old_meta = files[t]
-            rank = lambda meta: (meta["kind"] == "Ядра", len(meta["text"]))
+            # rel в ключе — иначе при равном ранге выигрывал тот, кого
+            # rglob вернул первым, и состав графа зависел от порядка обхода.
+            rank = lambda meta: (meta["kind"] == "Ядра", len(meta["text"]),
+                                 meta["rel"])
             new_meta = {"path": p, "rel": str(rel), "text": text,
                         "mtime": p.stat().st_mtime, "kind": kind}
             keep, drop = ((new_meta, old_meta) if rank(new_meta) > rank(old_meta)
@@ -187,6 +191,12 @@ def scan(graph: pathlib.Path) -> tuple[dict[str, dict], dict[str, set[str]]]:
     # Входящие ссылки с заглушек — канону. Цепочку A→B→C проходим до конца,
     # visited держит кольцо A→B→A от вечного цикла.
     for alias, first in redirects.items():
+        if alias in files:
+            # Имя занято живым узлом (tier3 слил «Ядра/CRM», а конвейер завёл
+            # «Системы/CRM»): входящие принадлежат ему, а не старой заглушке.
+            # Иначе система теряла все ссылки, а ядро обрастало чужими —
+            # молча (круг-3 по PR #438, GLM Important 3).
+            continue
         canon, seen = first, {alias}
         while canon in redirects and canon not in seen:
             seen.add(canon)
@@ -397,7 +407,11 @@ def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
     # оставлял бы на диске свежие досье и старый индекс — поиск смотрит
     # только сюда и сутки их не видел бы, круг-2 по PR #438, DS Important 3),
     # а без tmp+replace обрыв на середине дал бы битый json.
-    tmp = folder / (INDEX_JSON + ".tmp")
+    # Имя с pid: общий tmp давал двум одновременным прогонам смешать
+    # байты и атомарно установить битый json — а load_index глотает
+    # JSONDecodeError, и поиск сутки не видит ни одного досье
+    # (круг-3 по PR #438, GLM Important 4).
+    tmp = folder / f"{INDEX_JSON}.{os.getpid()}.tmp"
     tmp.write_text(
         json.dumps({"версия": 1, "обновлён": date.today().isoformat(),
                     "досье": entries}, ensure_ascii=False, indent=1),
@@ -422,7 +436,7 @@ def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
               "1. Ищем тему по ключам в таблице выше.",
               "2. Открываем досье — там состояние, хроника, решения, открытые вопросы.",
               "3. За подробностями идём по ссылкам из раздела «Источники».", ""]
-    tmp_md = folder / (INDEX_MD + ".tmp")
+    tmp_md = folder / f"{INDEX_MD}.{os.getpid()}.tmp"
     tmp_md.write_text("\n".join(lines), encoding="utf-8")
     tmp_md.replace(folder / INDEX_MD)
 
