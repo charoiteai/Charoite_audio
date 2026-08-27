@@ -1,6 +1,7 @@
 """Обрыв записи не должен уничтожать то, что уже лежит на диске."""
 import os
 import pathlib
+import time
 import sys
 
 import pytest
@@ -98,3 +99,25 @@ def test_file_permissions_survive_the_replace(tmp_path):
     assert node.stat().st_mode & 0o777 == 0o600, "права не пережили запись"
     if had_xattr:
         assert os.getxattr(node, "user.charoite.test") == "метка".encode(), "метка не пережила запись"
+
+
+def test_the_note_looks_fresh_after_a_rewrite(tmp_path):
+    """После записи узел обязан выглядеть новее, чем был.
+
+    Круг-2, DS: перенос метаданных через `copystat` тащил и mtime, а по нему
+    ночь отбирает работу — `tier3.changed_since` берёт ядра свежее прошлого
+    прогона. Ядро, обновлённое сегодня, но записанное до того неделю назад,
+    выпадало бы из инкремента до следующего полного прохода. Тем же mtime
+    живёт кэш индекса узлов.
+    """
+    node = tmp_path / "Ядра" / "Хранилище.md"
+    node.parent.mkdir(parents=True)
+    node.write_text("старое\n", encoding="utf-8")
+    week_ago = time.time() - 7 * 24 * 3600
+    os.utime(node, (week_ago, week_ago))
+
+    safe_write.write_text(node, "новое\n")
+
+    assert node.stat().st_mtime > week_ago + 3600, (
+        "узел после записи выглядит недельной давности — ночь его не увидит"
+    )
