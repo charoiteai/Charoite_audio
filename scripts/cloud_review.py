@@ -495,7 +495,10 @@ def _is_obsidian_internals(path: pathlib.Path, graph: pathlib.Path) -> bool:
         rel = path.resolve().relative_to(graph.resolve())
     except (ValueError, OSError):
         return True                    # вне графа своего нет тем более
-    return bool(rel.parts) and rel.parts[0] in OBSIDIAN_INTERNALS
+    # casefold: на APFS «.Obsidian» и «.obsidian» — один каталог, а вот на
+    # case-sensitive томе строгое сравнение пропустило бы подложенный плагин
+    # (Codex, круг-9). Регистр здесь ничего не различает по смыслу.
+    return bool(rel.parts) and rel.parts[0].casefold() in OBSIDIAN_INTERNALS
 
 
 def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
