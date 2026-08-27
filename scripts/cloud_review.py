@@ -542,6 +542,22 @@ def _executable_area(path: pathlib.Path, graph: pathlib.Path) -> bool:
     return True
 
 
+def _rewritten_by_the_app(path: pathlib.Path, graph: pathlib.Path) -> bool:
+    """Файл в зоне исполнения, который правит само приложение, а не человек.
+
+    Такой ровно один: `data.json` плагина — Obsidian пишет туда настройки,
+    пока открыт. Код плагина (`main.js`), сниппеты, `.claude/settings.json`
+    и git-хуки приложение не трогает НИКОГДА: их изменение — это и есть та
+    атака, ради которой существует второй слой (DS, круг-14).
+    """
+    try:
+        rel = tuple(p.casefold() for p in path.resolve().relative_to(graph.resolve()).parts)
+    except (ValueError, OSError):
+        return False
+    return (len(rel) == 4 and rel[:2] == (".obsidian", "plugins")
+            and rel[3] == "data.json")
+
+
 def _settle(path: pathlib.Path, graph: pathlib.Path, backup: pathlib.Path,
             qdir: pathlib.Path, old: pathlib.Path, existed: bool, why: str | None,
             v: Verdict) -> None:
@@ -629,13 +645,14 @@ def enforce_boundaries(before: dict[str, str], graph: pathlib.Path,
             why = judge(path, graph, old_text, new_text, existed)
             if why is None and not rollback:
                 continue
-            if existed and not rollback and _executable_area(path, graph):
-                # Файл в зоне исполнения, который БЫЛ до запуска. Правку в нём
-                # мог сделать и не облако: Obsidian сам переписывает data.json
-                # плагина, пока открыт, — и откат отменял бы живую работу на
-                # каждом успешном разборе (DS, круг-13). Видеть такую правку
-                # надо, отменять молча — нет: называем в логе, оставляем как
-                # есть. Невалидный ответ — другое дело, там откатывается всё.
+            if existed and not rollback and _rewritten_by_the_app(path, graph):
+                # `data.json` плагина: Obsidian пишет туда сам, пока открыт,
+                # и откат отменял бы живую настройку человека на каждом
+                # успешном разборе (DS, круг-13). Видеть такую правку надо,
+                # отменять молча — нет: называем в логе, оставляем как есть.
+                # Всё прочее в зонах исполнения приложение не переписывает
+                # никогда, поэтому изменение там откатывается как раньше
+                # (DS, круг-14). Невалидный ответ — тоже откат, целиком.
                 v.watched.append(path.name)
                 continue
             _settle(path, graph, backup, qdir, old, existed, why, v)
