@@ -20,6 +20,7 @@ CHR-AUD-003. В режиме записи модель правила граф �
 Стенограммы, минутки и раздел «## Правки автора» неприкосновенны: это то, что
 написал человек или записала машина с его слов, и облаку там делать нечего.
 """
+import json
 import pathlib
 import time
 import sys
@@ -1057,3 +1058,43 @@ def test_a_window_that_closed_before_our_snapshot_does_not_count(tmp_path, monke
     v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q",
                                         rollback=True, since=started)
     assert not made.exists() and "Поздняя выдумка.md" in v.removed
+
+def test_window_covers_the_whole_pipeline_run_not_just_pieces(tmp_path, monkeypatch):
+    """Разбор целиком идёт внутри окна: снимите обёртку — тест покажет.
+
+    Круг-6, DS Important 3: три теста окна проверяли сам graph_writes, но не
+    то, что main его открывает. Строку `with graph_writes.busy(ROOT)` можно
+    было убрать, не уронив ни одного теста.
+    """
+    import graph_updater
+
+    monkeypatch.setattr(graph_updater, "ROOT", tmp_path)
+    seen: list[str] = []
+
+    def fake_run(*a, **kw):
+        # изнутри разбора окно обязано быть открыто
+        seen.append("open" if graph_writes.pipeline_was_busy(tmp_path, 0.0) else "closed")
+        return 0
+
+    monkeypatch.setattr(graph_updater, "_run_main", fake_run)
+    graph_updater.main()
+
+    assert seen == ["open"], "разбор шёл вне окна — откат ослеп бы на его записи"
+    # после выхода окно закрыто: старт есть, но он перекрыт концом
+    log = (tmp_path / "logs" / graph_writes.LOG_NAME).read_text(encoding="utf-8")
+    assert '"busy": "end"' in log or '"busy":"end"' in log
+
+
+def test_orphan_window_stops_blinding_the_rollback_after_a_kill(tmp_path):
+    """kill -9 оставляет «start» без «end» — вечно живым он быть не может."""
+    old = time.time() - (graph_writes.BUSY_MAX_HOURS + 1) * 3600
+    log = tmp_path / "logs" / graph_writes.LOG_NAME
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(json.dumps({"t": old, "busy": "start"}) + "\n", encoding="utf-8")
+
+    assert not graph_writes.pipeline_was_busy(tmp_path, time.time() - 60), (
+        "сирота от kill -9 держала бы откат слепым до конца жизни журнала"
+    )
+    # свежая сирота — это, наоборот, идущий прямо сейчас разбор
+    log.write_text(json.dumps({"t": time.time() - 5, "busy": "start"}) + "\n", encoding="utf-8")
+    assert graph_writes.pipeline_was_busy(tmp_path, time.time() - 60)

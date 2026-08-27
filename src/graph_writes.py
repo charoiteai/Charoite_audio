@@ -26,6 +26,11 @@ import time
 
 LOG_NAME = "graph_writes.jsonl"
 KEEP_HOURS = 24
+# Дольше двух часов разбор встречи не идёт: самый долгий шаг — облачное
+# обогащение с потолком 30 минут. Открытое окно старше этого — сирота от
+# `kill -9`, и считать его живым нельзя: иначе один убитый разбор ослепляет
+# откат навсегда (круг-6 по PR #439, DS Critical 1).
+BUSY_MAX_HOURS = 2
 
 
 def _log_path(root: pathlib.Path) -> pathlib.Path:
@@ -120,6 +125,10 @@ class _Busy:
 
     def __exit__(self, *exc) -> bool:
         _mark(self._root, "end")
+        # Чистим здесь: разбор встречи — редкое событие, и это единственная
+        # точка, где журнал заведомо не нужен целиком. Без вызова он рос бы
+        # вечно, а докстринг обещал обратное (круг-6, DS Minor).
+        prune(self._root)
         return False
 
 
@@ -134,62 +143,52 @@ def _mark(root: pathlib.Path, what: str) -> None:
 
 
 def pipeline_was_busy(root: pathlib.Path, since: float) -> bool:
-    """Работал ли конвейер с графом после момента since (или работает сейчас)."""
+    """Работал ли конвейер с графом в наше окно (или работает сейчас).
+
+    Открытое окно засчитывается, только если оно моложе `BUSY_MAX_HOURS`:
+    процесс, убитый `kill -9`, «end» не пишет, и вечная сирота сделала бы
+    откат слепым до конца жизни журнала.
+    """
+    records = _read(root)
+    if not records:
+        return False
+    fresh_enough = time.time() - BUSY_MAX_HOURS * 3600
+    ends = sorted(r["t"] for r in records if r.get("busy") == "end")
+    for rec in records:
+        if not rec.get("busy"):
+            continue
+        if rec["t"] >= since:
+            return True             # старт или конец работы попал в наше окно
+        if rec.get("busy") == "start" and rec["t"] >= fresh_enough:
+            # окно началось до снимка — считается, только если ещё не закрыто
+            if not any(e > rec["t"] for e in ends):
+                return True
+    return False
+
+
+def _read(root: pathlib.Path) -> list[dict]:
+    """Журнал построчно; битая строка пропускается, а не рушит чтение."""
     log = _log_path(root)
     if not log.is_file():
-        return False
+        return []
+    out: list[dict] = []
     try:
         for line in log.read_text(encoding="utf-8", errors="ignore").splitlines():
             try:
                 rec = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(rec, dict) and rec.get("busy") and rec.get("t", 0) >= since:
-                return True     # старт или конец работы попал в наше окно
-            # окно конвейера могло начаться ДО нашего снимка и ещё не кончиться
-            if isinstance(rec, dict) and rec.get("busy") == "start":
-                start = rec.get("t", 0)
-                if start < since and not _closed_after(root, start):
-                    return True
+            if isinstance(rec, dict) and isinstance(rec.get("t"), (int, float)):
+                out.append(rec)
     except OSError:
         pass
-    return False
-
-
-def _closed_after(root: pathlib.Path, start: float) -> bool:
-    """Было ли «end» после этого «start» — иначе конвейер ещё в работе."""
-    log = _log_path(root)
-    try:
-        for line in log.read_text(encoding="utf-8", errors="ignore").splitlines():
-            try:
-                rec = json.loads(line)
-            except ValueError:
-                continue
-            if (isinstance(rec, dict) and rec.get("busy") == "end"
-                    and rec.get("t", 0) > start):
-                return True
-    except OSError:
-        pass
-    return False
+    return out
 
 
 def written_since(root: pathlib.Path, since: float) -> dict[str, str]:
     """Путь → отпечаток для записей конвейера после момента since."""
-    out: dict[str, str] = {}
-    log = _log_path(root)
-    if not log.is_file():
-        return out
-    try:
-        for line in log.read_text(encoding="utf-8", errors="ignore").splitlines():
-            try:
-                rec = json.loads(line)
-            except ValueError:
-                continue        # обрыв строки на записи — пропускаем одну, не весь журнал
-            if isinstance(rec, dict) and rec.get("t", 0) >= since and rec.get("p"):
-                out[str(rec["p"])] = str(rec.get("h", ""))
-    except OSError:
-        pass
-    return out
+    return {str(r["p"]): str(r.get("h", ""))
+            for r in _read(root) if r.get("t", 0) >= since and r.get("p")}
 
 
 def prune(root: pathlib.Path, keep_hours: int = KEEP_HOURS) -> None:
