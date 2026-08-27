@@ -535,7 +535,7 @@ def core_anchor(core: dict, transcript: str, speakers: set[str] | None = None) -
 # Фолбэк для инлайна: «10:15 Имя: реплика» — так выглядят внешние и старые
 # стенограммы, которые тоже кладут в конвейер.
 _SPEAKER_RE = re.compile(
-    r"^\s*(?:[-*>#]+\s*)?(?:\[?(\d{1,2}:\d{2})\]?\s+)?"
+    r"^\s*(?:[-*>#]+\s*)?(?:\[?(\d{1,2}:\d{2}(?::\d{2})?)\]?\s+)?"
     r"([^\s:*#\[][^:]{0,40}?)\s*:\s", re.UNICODE)
 # Диапазон «[10:15–10:18]» — основной случай: SPLIT_GAP склеивает реплики
 # одного голоса до трёх минут, и одиночный таймкод скорее исключение.
@@ -566,7 +566,7 @@ def _speaker_at(transcript: str, at: int,
     try:
         import transcript as transcript_mod
         blocks = transcript_mod.parse_blocks(transcript)
-    except Exception:  # noqa: BLE001 — разбор формата не должен валить разбор встречи
+    except ImportError:     # запуск без пакета транскриптов — инлайн-путь
         blocks = []
     for b in blocks:
         if b["start"] <= at < b["end"]:
@@ -802,8 +802,15 @@ def main():
     # модели, получала в графе подпись «дословно из стенограммы» — то есть
     # проверка выдумок подтверждалась выдумкой (аудит графа 26.08, Codex
     # Critical). Сверка цитат идёт только по `speech`.
-    speech = tpath.read_text(encoding="utf-8")
-    context = speech
+    context = tpath.read_text(encoding="utf-8")
+    # `speech` — только сказанное: секцию «Ко-мышление» в конце пишет модель
+    # по ходу встречи, и цитата, найденная там, получала бы подпись живого
+    # человека с его временем (круг-5 по PR #438, GLM Critical 1).
+    try:
+        import transcript as transcript_mod
+        speech = context[:transcript_mod.notes_start(context)]
+    except ImportError:
+        speech = context
     minutes_p = tpath.with_name(tpath.stem + "_minutes.md")
     if minutes_p.exists():
         context += "\n\n[МИНУТКИ]\n" + minutes_p.read_text(encoding="utf-8")
@@ -925,8 +932,12 @@ def main():
     if m:
         # «Ольга (аналитик)» — это Ольга: роль в скобках в имя узла не идёт,
         # иначе в графе появится второй человек с той же головой.
-        speakers |= {re.sub(r"\s*[(（].*?[)）]", "", x).strip()
-                     for x in m.group(1).split(",") if x.strip()}
+        # Скобки снимаем ДО запятой: «Пётр (руководитель, отдел продаж)»
+        # иначе распадался на «Пётр (руководитель» и «отдел продаж)» — оба
+        # мусорные, а кандидат «Пётр» становился двусмысленным и терял
+        # подпись (круг-5 по PR #438, GLM Minor 4).
+        head = re.sub(r"\s*[(（].*?[)）]", "", m.group(1))
+        speakers |= {x.strip() for x in head.split(",") if x.strip()}
     for c in cores:
         upsert_core(graph, c, meeting_link, stamp, speech, speakers)
     if cores:

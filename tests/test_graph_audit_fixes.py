@@ -340,6 +340,8 @@ def test_stale_temp_files_of_the_index_are_swept(tmp_path):
     folder.mkdir()
     junk = folder / f"{dossier.INDEX_JSON}.99999.tmp"
     junk.write_text("обрывок", encoding="utf-8")
+    import os as _os
+    _os.utime(junk, (0, 0))     # мусор прошлой ночи, а не живого соседа
     dossier.write_index(folder, [])
     assert not junk.exists(), "мусор прошлого прогона остался навсегда"
     assert (folder / dossier.INDEX_JSON).exists()
@@ -376,3 +378,61 @@ def test_an_external_transcript_still_gets_its_provenance():
         "10:15 Пётр: решили брать новый вариант со следующей недели",
         {"Пётр"})
     assert "Пётр" in out and "10:15" in out, out
+
+
+# ── круг-5 по PR #438 (GLM) ──────────────────────────────────────────────────
+
+def test_the_co_thinking_notes_are_not_somebodys_speech(tmp_path):
+    """Заметки в конце пишет модель — человек их не произносил.
+
+    Без границы последний блок поглощал хвост файла, и цитата из «💭 мысли»
+    получала имя последнего говорящего вместе с его временем.
+    """
+    import transcript as tr_mod
+
+    tr = tr_mod.Transcript(tmp_path)
+    tr.set_participants(["Ольга", "Мария"])
+    tr.add("посмотрим смету на следующей неделе", speaker="Ольга")
+    tr.add("подготовлю смету к пятнице", speaker="Мария")
+    tr.note("11:41 💭 команда выбрала нового поставщика и начинает интеграцию")
+    text = tr._render()
+    assert "Ко-мышление" in text, "рендер сменился — тест переписать"
+
+    blocks = tr_mod.parse_blocks(text)
+    assert blocks and blocks[-1]["end"] <= tr_mod.notes_start(text), \
+        "последний блок снова поглощает заметки"
+    quote = "команда выбрала нового поставщика"
+    assert quote in text, "заметка не попала в стенограмму — тест бессмыслен"
+    out = graph_updater.core_anchor({"цитата": quote, "кто": ""}, text,
+                                    {"Ольга", "Мария"})
+    assert "Мария" not in out and "Ольга" not in out, \
+        f"заметка модели подписана человеком: {out}"
+
+
+def test_a_neighbours_fresh_temp_file_is_left_alone(tmp_path):
+    """Снести чужой tmp между write и replace — уронить соседу всю ночь."""
+    folder = tmp_path / "Досье"
+    folder.mkdir()
+    fresh = folder / f"{dossier.INDEX_JSON}.4242.tmp"
+    fresh.write_text("сосед пишет прямо сейчас", encoding="utf-8")
+    old = folder / f"{dossier.INDEX_JSON}.777.tmp"
+    old.write_text("мусор прошлой ночи", encoding="utf-8")
+    import os as _os
+    _os.utime(old, (0, 0))
+    dossier.write_index(folder, [])
+    assert fresh.exists(), "снесли файл живого прогона"
+    assert not old.exists(), "мусор прошлой ночи остался"
+
+
+def test_seconds_do_not_break_the_inline_path():
+    out = graph_updater.core_anchor(
+        {"цитата": "решили брать новый вариант", "кто": ""},
+        "10:15:30 Пётр: решили брать новый вариант со следующей недели",
+        {"Пётр"})
+    assert "Пётр" in out, f"инлайн с секундами потерял говорящего: {out}"
+
+
+def test_a_role_with_a_comma_does_not_split_a_participant():
+    src = (SRC / "graph_updater.py").read_text(encoding="utf-8")
+    block = src[src.index("        head = re.sub("):src.index("    for c in cores:")]
+    assert 'head.split(",")' in block, "скобки снова снимаются после запятой"

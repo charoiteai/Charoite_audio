@@ -39,15 +39,33 @@ def parse_blocks(text: str) -> list[dict]:
     смещения текста реплики в исходной строке. Для внешних стенограмм, писанных
     не нами, список будет пустым: это честный сигнал «формат не наш».
     """
+    # Хвост файла — не реплика: после последнего блока `_render` кладёт
+    # «--- ## Ко-мышление», а это заметки МОДЕЛИ. Без границы последний
+    # говорящий «произносил» бы всё, что дописал туда демон (круг-5 по
+    # PR #438, GLM Critical 1) — тот же класс, что минутки в провенансе.
+    tail = notes_start(text)
     out: list[dict] = []
     for m in BLOCK_RE.finditer(text):
+        if m.start() >= tail:
+            break
         out.append({"speaker": m.group("spk").strip(),
                     "time": m.group("t0"),
                     "start": m.end(),
                     "end": len(text)})
         if len(out) > 1:
             out[-2]["end"] = m.start()
+    for b in out:
+        b["end"] = min(b["end"], tail)
     return out
+
+
+NOTES_HEAD = "\n---\n## Ко-мышление"
+
+
+def notes_start(text: str) -> int:
+    """Где кончается сказанное и начинаются заметки модели (или len(text))."""
+    cut = text.find(NOTES_HEAD)
+    return cut if cut != -1 else len(text)
 
 
 class Transcript:

@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 import pathlib
 import re
 import unicodedata
@@ -407,9 +408,15 @@ def write_index(folder: pathlib.Path, entries: list[dict]) -> None:
     # Прошлый прогон могли убить между write и replace: имя с pid больше не
     # перезаписывается следующим, и мусор жил бы в синхронизируемой папке
     # вечно (круг-4 по PR #438, DS Important 2).
+    # Только ЧУЖОЕ И СТАРОЕ: сосед прямо сейчас может держать свой tmp между
+    # write и replace, и снос уронил бы ему весь ночной проход
+    # (круг-5 по PR #438, GLM Important 2).
+    cutoff = time.time() - 3600
     for stale in list(folder.glob(f"{INDEX_JSON}.*.tmp")) + \
             list(folder.glob(f"{INDEX_MD}.*.tmp")):
         try:
+            if stale.stat().st_mtime > cutoff:
+                continue
             stale.unlink()
         except OSError:
             pass
