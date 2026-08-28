@@ -27,6 +27,7 @@ struct SettingsView: View {
     /// «ничего не покидает этот Mac» (дизайн-аудит 21.08, честность).
     @State private var checkUpdates = true
     @State private var checkUpdatesNote = ""
+    @State private var updateCheckNote = ""
     @ObservedObject private var importer = ImportService.shared
     @ObservedObject private var launchAtLogin = LaunchAtLoginService.shared
     @State private var check = ""
@@ -282,12 +283,20 @@ struct SettingsView: View {
                            "对 GitHub 公共 API 的普通 GET 请求，无令牌、不含你的任何数据——用于发现应用与发布版本不一致。回到应用时检查，最多每四小时一次：过去的一天间隔让发布日变成了等待日。关闭后只与工作目录比对。"))
                     .font(.caption).foregroundStyle(.secondary)
                 // Человек спросил — отвечаем сейчас: кнопка обходит троттл.
-                Button(L.t("Проверить сейчас", "Check now", "立即检查")) {
-                    VersionStatusService.shared.refresh(force: true)
+                HStack {
+                    Button(L.t("Проверить сейчас", "Check now", "立即检查")) {
+                        VersionStatusService.shared.refresh(force: true)
+                        updateCheckNote = L.t("Спросил GitHub — ответ появится в строке версии.",
+                                              "Asked GitHub — the answer lands in the version line.",
+                                              "已询问 GitHub——结果将显示在版本行。")
+                    }
+                        .charoite(.regular, .s)
+                        .disabled(!AppSettings.checkUpdates
+                                  || AppSettings.cloudForbiddenByEnvironment)
+                    if !updateCheckNote.isEmpty {
+                        Text(updateCheckNote).font(.caption).foregroundStyle(.secondary)
+                    }
                 }
-                    .charoite(.regular, .s)
-                    .disabled(!AppSettings.checkUpdates
-                              || AppSettings.cloudForbiddenByEnvironment)
             }
         }
         .formStyle(.grouped)

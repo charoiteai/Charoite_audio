@@ -125,10 +125,19 @@ final class VersionStatusService: ObservableObject {
         return (out?.isEmpty ?? true) ? nil : out
     }
 
+    private var cachedCode: String??
+
     func refresh(force: Bool = false) {
-        let code = Self.codeVersion(root: AppSettings.charoiteRoot)
+        // `git describe` — синхронный subprocess; на каждую активацию окна
+        // он не нужен: версия кода меняется только руками (git pull), и
+        // кнопка «Проверить сейчас» (force) перечитывает её честно
+        // (DS, круг-1, I4).
+        if force || cachedCode == nil {
+            cachedCode = .some(Self.codeVersion(root: AppSettings.charoiteRoot))
+        }
         let latest = UserDefaults.standard.string(forKey: latestKey)
-        status = VersionStatus.compare(app: Self.appVersion, code: code, latest: latest)
+        status = VersionStatus.compare(app: Self.appVersion,
+                                       code: cachedCode ?? nil, latest: latest)
         fetchLatestIfDue(force: force)
     }
 
@@ -150,6 +159,13 @@ final class VersionStatusService: ObservableObject {
         let last = UserDefaults.standard.object(forKey: checkedKey) as? Date
         guard Self.fetchDue(last: last, now: Date(), force: force) else { return }
 
+        // Отметка — на ПОПЫТКУ и ДО запроса, не на успешный ответ: офлайн и
+        // rate-limit иначе снимали троттл, и каждая активация давала GET;
+        // заодно это гасит пересекающиеся запросы и дубль на старте (init
+        // зовёт refresh, активация тут же зовёт его снова) — второй заход
+        // видит свежую отметку и выходит (DS, круг-1, I2/I3). Цена: упавшая
+        // попытка повторится не раньше чем через 4 часа либо по кнопке.
+        UserDefaults.standard.set(Date(), forKey: checkedKey)
         let url = URL(string: "https://api.github.com/repos/charoiteai/Charoite_audio/releases/latest")!
         var req = URLRequest(url: url, timeoutInterval: 8)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -164,7 +180,6 @@ final class VersionStatusService: ObservableObject {
             else { return }   // нет связи — не повод для строки на экране
             Task { @MainActor in
                 UserDefaults.standard.set(tag, forKey: latestKey)
-                UserDefaults.standard.set(Date(), forKey: checkedKey)
                 self?.status = VersionStatus.compare(
                     app: Self.appVersion,
                     code: Self.codeVersion(root: AppSettings.charoiteRoot),
