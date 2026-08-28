@@ -95,13 +95,24 @@ REWRITE_KEEP = 1 / 3
 _STUB_TARGET_RE = re.compile(r"(?:→|->|⇒) \[\[([^\]]+)\]\]")
 
 
+def _stub_body(text: str) -> str:
+    """Тело файла без frontmatter и ведущих HTML-комментариев — общая
+    нормализация для is_redirect_stub и _stub_target, чтобы стрелка в
+    YAML-поле не притворялась редиректом (GLM, круг-4 M2)."""
+    body = (text or "").replace("\r\n", "\n").strip()
+    body = re.sub(r"\A---\n.*?\n---\n", "", body, count=1, flags=re.S)
+    return re.sub(r"\A(?:\s*<!--.*?-->\s*)*", "", body, flags=re.S).lstrip()
+
+
 def _stub_target(text: str) -> str | None:
     """Куда указывает заглушка-редирект: `→ [[Папка/Канон]]` → «Папка/Канон.md».
 
-    Нужна, чтобы не применять заглышку раньше, чем в граф лёг её канон:
-    иначе в графе остаётся редирект на узел, которого слияние не получило
-    (GLM, круг-2 И3)."""
-    m = _STUB_TARGET_RE.search(text or "")
+    Цель берём из ТЕЛА заглушки после среза frontmatter, не по сырому тексту:
+    стрелка-ссылка в YAML-поле (note, related) увела бы цель мимо канона, и
+    легитимная заглушка ушла бы в карантин (DS, круг-4). Ищется в той же
+    первой строке, которую валидирует is_redirect_stub."""
+    first = _stub_body(text).split("\n", 1)[0]
+    m = _STUB_TARGET_RE.search(first)
     if not m:
         return None
     target = m.group(1).split("|", 1)[0].split("#", 1)[0].strip()
@@ -112,13 +123,9 @@ def is_redirect_stub(text: str) -> bool:
     """Заглушка после слияния: короткий файл, чей ПЕРВЫЙ заголовок (после
     frontmatter) — стрелка на канон. Стрелка где-то в середине переписанного
     узла заглушкой не делает (круг-1 по PR #381, Codex + DeepSeek)."""
-    body = (text or "").replace("\r\n", "\n").strip()
-    body = re.sub(r"\A---\n.*?\n---\n", "", body, count=1, flags=re.S)   # frontmatter
-    if not body or len(body) > 1200:   # длину мерим ПОСЛЕ frontmatter (GLM M1)
+    body = _stub_body(text)
+    if not body or len(body) > 1200:   # длину мерим ПОСЛЕ frontmatter
         return False
-    # перед заголовком допустимы только пустые строки и HTML-комментарии:
-    # проза или код-фенс перед стрелкой — уже не заглушка (круг-3 по #381)
-    body = re.sub(r"\A(?:\s*<!--.*?-->\s*)*", "", body, flags=re.S).lstrip()
     first = body.split("\n", 1)[0].strip()
     return _REDIRECT_RE.fullmatch(first) is not None
 
@@ -554,6 +561,15 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
     шестнадцать кругов PR #439 существовали только потому, что облако и
     конвейер писали в один каталог (№120).
 
+    Принятый риск (luna, круг-4): если облако СОЗДАЁТ новый узел, а конвейер
+    без замка успевает создать и удалить файл ровно с тем же путём, перенос
+    запишет версию облака (ни в снимке, ни в графе файла нет — конфликт не
+    срабатывает). Отличить это от штатного создания узла нельзя без общего
+    лока с конвейером, а карантинить КАЖДЫЙ новый файл облака значило бы
+    ломать норму ради коллизии путей двух процессов. Цена промаха — один
+    лишний узел, видимый человеку; закрытие требует замка в конвейере (не
+    в этом PR).
+
     Принятый риск (DS, круг-1 по #447): между сравнением хеша и
     `tmp.replace` внутри safe_write есть окно в миллисекунды — доклейка
     конвейера, попавшая ровно туда, будет затёрта без следа в conflicts.
@@ -605,20 +621,13 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 if gpath.exists():
                     v.deleted.append(name)
                 continue
-            why = judge(gpath, graph, old, new, existed)
-            if why is not None:
-                quarantine(cpath, copy, qdir, move=False)
-                (v.removed if not existed else v.reverted).append(name)
-                continue
+            # Конфликт с конвейером проверяем ПЕРВЫМ: если файл в графе уже
+            # не тот, что на снимке (или конвейер его удалил), это его
+            # работа, и judge не должен назвать её нарушением облака — узел
+            # с «## Правки автора», стёртый конвейером, иначе шёл бы в
+            # reverted с ложным обвинением (luna, круг-4 M2).
             current = _digest(gpath) if gpath.exists() else None
-            # «Файла нет в графе, но он был в снимке» — это удаление
-            # конвейером даже когда файла не было в before (конвейер завёл
-            # его в окне T1..T2 между снимком хешей и снимком-каталогом, а
-            # потом убрал). Без второй половины перенос воскресил бы его из
-            # снимка и приписал облаку — дыра в гарантии «живая работа
-            # побеждает» для existed=False (DS, круг-3).
-            deleted_by_pipeline = not gpath.exists() and (backup / rel).exists()
-            if current != before.get(name) or deleted_by_pipeline:
+            if current != before.get(name):
                 # В графе уже не то, что было на снимке, — значит, туда
                 # писал конвейер, пока облако думало: дописал существующий
                 # файл (минутки, хроника ядра), создал новый узел (upsert
@@ -632,6 +641,11 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 # файл: резолв уводит путь из-под точки, но цель существует.
                 quarantine(cpath, copy, qdir, move=False)
                 v.conflicts.append(name)
+                continue
+            why = judge(gpath, graph, old, new, existed)
+            if why is not None:
+                quarantine(cpath, copy, qdir, move=False)
+                (v.removed if not existed else v.reverted).append(name)
                 continue
             target = _stub_target(new) if is_redirect_stub(new) else None
             if target is not None:
@@ -647,13 +661,19 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
             v.failed.append(name)
     for rel, cpath, gpath, name, target in pending_stubs:
         try:
-            # Канон в порядке, если он лёг в граф этой же дельтой ИЛИ уже
-            # есть в графе и его никто не забраковал (облако лишь сливает в
-            # существующий узел). Иначе заглушка — в карантин.
-            canon_ok = target in v.applied or (
-                (graph / target).is_file()
-                and target not in v.reverted and target not in v.removed
-                and target not in v.conflicts and target not in v.deleted)
+            # Канон ищем И от корня графа, И рядом с заглушкой: `[[Канон]]`
+            # без папки — частая форма Obsidian, когда дубль и канон лежат
+            # вместе, и цель тогда «Канон.md», а применённый канон —
+            # «Ядра/Канон.md» (GLM, круг-4 И2). Канон в порядке, если лёг
+            # этой дельтой или уже цел в графе и не забракован — включая
+            # сбой переноса (v.failed), иначе заглушка встала бы на канон
+            # без слитых фактов (luna, круг-4 И3).
+            cands = [target, (rel.parent / pathlib.Path(target).name).as_posix()]
+            bad = set(v.reverted) | set(v.removed) | set(v.conflicts) \
+                | set(v.deleted) | set(v.failed)
+            canon_ok = any(
+                c in v.applied or ((graph / c).is_file() and c not in bad)
+                for c in cands)
             if canon_ok:
                 safe_write.write_text(gpath, _read(cpath))
                 v.applied.append(name)
@@ -841,10 +861,16 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     # писало бы в живые данные, а сверка по пустой песочнице видела бы ноль
     # правок и доставляла ревизию как чистую. Проверяем ДО сборки команды и
     # понижаем до чтения графа — без песочницы писать некуда (GLM, круг-2).
-    if may_edit and (cloud_pen is None or not cloud_pen.is_dir()):
-        print("песочница исчезла до запуска — работаю на чтение графа")
+    if may_edit and (cloud_pen is None or cloud_pen.is_symlink()
+                     or not cloud_pen.is_dir()):
+        print("песочница исчезла или подменена символ. ссылкой — работаю на чтение")
         may_edit = deliver = False
         denied = []
+        # backup=None гасит ротацию: pre-check отпускает замок ДО запуска
+        # CLI, за read-only окно (до TIMEOUT) сосед берёт замок и заводит
+        # свои снимки, а rotate_snapshots в finally выполнилась бы ПОСЛЕ
+        # unlock и снесла бы их (DS, круг-4; зеркало OSError-ветки выше).
+        backup = cloud_pen = None
         unlock()
     # Файлы встречи — по стему её стенограммы, а не по минутному штампу:
     # посекундная соседка той же минуты в контекст не попадает (аудит 16.08).
@@ -867,9 +893,12 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     cloud.add_proxy(env)
 
     tmp = rev.with_suffix(rev.suffix + ".part")
-    work_dir = graph_updater.cloud_enrich_workdir(
-        cfg, cloud_pen if may_edit and cloud_pen is not None else graph,
-        transcript.parent)
+    if may_edit and cloud_pen is not None:
+        # write-режим: никакого фолбэка в папку стенограмм — cwd только
+        # песочница, зафиксированная реальным путём (luna, круг-4).
+        work_dir = cloud_pen.resolve()
+    else:
+        work_dir = graph_updater.cloud_enrich_workdir(cfg, graph, transcript.parent)
     mode = ("правка графа" if may_edit else
             "только чтение графа" if graph_available else
             "только текст (граф недоступен)")
@@ -955,8 +984,14 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 if not v.failed:
                     shutil.rmtree(cloud_pen, ignore_errors=True)
                 else:
-                    kept = qdir.parent / f"{qdir.name}-песочница"
+                    # ВНУТРЬ каталога запуска, а не рядом: суффикс «-песочница»
+                    # на имени ломал бы regex forget_meeting, и «забыть
+                    # встречу» оставило бы клон графа с её фактами на диске
+                    # (GLM, круг-4 И1). Внутри qdir её чистят и forget, и
+                    # rotate_quarantine.
+                    kept = qdir / "песочница"
                     try:
+                        charoite_paths.secure_dir(qdir)   # rename O(1), не copytree
                         shutil.move(str(cloud_pen), str(kept))
                         lines.append(f"[cloud-review] перенос упал на части "
                                      f"файлов — черновик облака в карантине: "

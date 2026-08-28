@@ -1217,8 +1217,15 @@ def test_the_sandbox_survives_a_per_file_transfer_failure(tmp_path, monkeypatch)
     # песочница не осталась в backup_root (её снёс бы следующий воркер) —
     # она в карантине, где живёт до forget_meeting (GLM И2)
     assert "черновик облака в карантине" in text
-    kept = list(cloud_review.quarantine_root(graph).glob("*-песочница"))
+    # песочница ВНУТРИ каталога запуска (иначе forget_meeting её не найдёт)
+    kept = list(cloud_review.quarantine_root(graph).glob("*/песочница"))
     assert kept and kept[0].is_dir(), "черновик облака не спрятан в карантин"
+    # и forget_meeting реально её удаляет (PRIVACY: «забыть встречу» — GLM И1)
+    import forget_meeting
+    plan = forget_meeting.plan(stamp, cloud_review.ROOT, graph)
+    kept_dir = kept[0].parent           # каталог запуска с песочницей внутри
+    assert any(kept_dir == d or kept_dir in d.parents or d in kept_dir.parents
+               for d in plan.delete), "forget_meeting не планирует удалить песочницу"
 
 
 def test_a_failed_second_copy_cleans_its_orphans_and_spares_a_neighbour(tmp_path, monkeypatch):
@@ -1336,8 +1343,13 @@ def test_a_sandbox_gone_before_launch_drops_to_read_only_not_into_transcripts(tm
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available",
                         lambda g: pathlib.Path(g).is_dir())
+    # сосед завёл свой снимок в том же backup_root, пока CLI работал read-only
+    neighbour = cloud_review.backup_root(graph) / "2099-01-01_0000"
+    neighbour.mkdir(parents=True, exist_ok=True)
+    (neighbour / "живой.md").write_text("сосед", encoding="utf-8")
     cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
     cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+    assert neighbour.is_dir(), "ротация pre-check снесла снимок соседа (DS r4)"
 
     assert pathlib.Path(seen["cwd"]).resolve() != transcript.parent.resolve(), (
         "cwd свалился в папку стенограмм — облако писало бы в живые данные"
@@ -1420,4 +1432,74 @@ def test_a_redirect_stub_is_recognised_with_ascii_arrow_and_yaml_frontmatter(tmp
                 "created: 2026-08-28\n" + "note: x\n" * 40 + "---\n"
                 "# Дубль → [[Ядра/Канон]]\n")
     assert cloud_review._stub_target("# Д -> [[Ядра/Канон]]\n") == "Ядра/Канон.md"
+    # стрелка во frontmatter НЕ должна перебить цель из тела (DS, круг-4)
+    assert cloud_review._stub_target(
+        "---\nrelated: см. → [[Другое]]\n---\n# Дубль → [[Ядра/Канон]]\n"
+    ) == "Ядра/Канон.md"
+
+def test_a_sandbox_swapped_for_a_symlink_drops_to_read_only(tmp_path, monkeypatch):
+    """Песочницу подменили симлинком на стенограммы — не пишем в живые данные.
+
+    luna круг-4 (Critical): симлинк проходит is_dir(), а cloud_enrich_workdir
+    разыменовал бы его в папку стенограмм при живых Edit/Write. Теперь
+    симлинк отвергается в pre-check, а в write-режиме фолбэка в стенограммы
+    нет вовсе — cwd только реальная песочница.
+    """
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    seen = {}
+
+    real = cloud_review.backup_graph
+    def swap(g, s, source=None):
+        dest = real(g, s, source=source)
+        if s.endswith("-облако"):
+            import shutil as _sh
+            _sh.rmtree(dest)
+            dest.symlink_to(transcript.parent)     # подмена симлинком на стенограммы
+        return dest
+
+    class Result:
+        returncode = 0
+    def fake_run(cmd, **kwargs):
+        seen["cwd"] = kwargs["cwd"]; seen["cmd"] = " ".join(cmd)
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    monkeypatch.setattr(cloud_review, "backup_graph", swap)
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available",
+                        lambda g: pathlib.Path(g).is_dir())
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+
+    assert pathlib.Path(seen["cwd"]).resolve() != transcript.parent.resolve(), (
+        "cwd ушёл в стенограммы через подменённый симлинк"
+    )
+    assert "Edit(/**)" not in seen["cmd"], "Edit-право выдано на подменённую песочницу"
+
+def test_a_stub_pointing_to_a_canon_in_the_same_folder_lands(tmp_path):
+    """Заглушка `[[Канон]]` без папки находит канон рядом (GLM круг-4 И2).
+
+    Частая форма Obsidian, когда дубль и канон в одной папке. Цель тогда
+    «Канон.md», а применённый канон — «Ядра/Канон.md»: без резолва от папки
+    заглушки слияние отбраковывалось, оба узла оставались, канон задваивался.
+    """
+    graph = _graph(tmp_path)
+    body = "# Ядро\n## Статус\nРешено\n" + "".join(f"- факт {i}\n" for i in range(8))
+    canon = graph / "Ядра" / "Канон.md"
+    canon.write_text(body, encoding="utf-8")
+    dup = graph / "Ядра" / "Дубль.md"
+    dup.write_text(body.replace("Ядро", "Дубль"), encoding="utf-8")
+
+    def worked(pen):
+        (pen / "Ядра" / "Канон.md").write_text(body + "- факт из дубля\n", encoding="utf-8")
+        (pen / "Ядра" / "Дубль.md").write_text(
+            "# Дубль → [[Канон]]\n\nДубль. Смерджен.\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, worked)
+
+    assert "Ядра/Дубль.md" in v.applied, "заглушка на канон рядом отбракована"
+    assert "Ядра/Дубль.md" not in v.reverted
+    assert dup.read_text(encoding="utf-8").startswith("# Дубль → [[")
 
