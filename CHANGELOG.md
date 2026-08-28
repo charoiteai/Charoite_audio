@@ -5,6 +5,18 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.63.0](https://github.com/charoiteai/Charoite_audio/compare/v0.62.0...v0.63.0) (2026-08-28)
+
+
+### Features
+
+* **telemetry:** the lag line counts model calls, not just seconds ([#442](https://github.com/charoiteai/Charoite_audio/issues/442)) ([de7bee2](https://github.com/charoiteai/Charoite_audio/commit/de7bee26bddefbbde95579c77faf568e4891bcd6))
+
+
+### Bug Fixes
+
+* **graph:** a node is never lost mid-write ([#441](https://github.com/charoiteai/Charoite_audio/issues/441)) ([21f5a44](https://github.com/charoiteai/Charoite_audio/commit/21f5a443eff019db7b3d08eeed46c5fdf07bef9b))
+
 ## [0.62.0](https://github.com/charoiteai/Charoite_audio/compare/v0.61.2...v0.62.0) (2026-08-27)
 
 
