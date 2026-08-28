@@ -349,7 +349,7 @@ def safe_name(name: str) -> str:
 
 
 _PLACEHOLDER_RE = re.compile(
-    r"^(?:собеседник|участник|спикер|speaker|participant|发言人|参会者)(?: \d+)?$")
+    r"^(?:собеседник|участник|спикер|speaker|participant|发言人|参会者)(?: ?[\d一二三四五六七八九十]+)?$")
 
 
 def is_speaker_placeholder(name: str) -> bool:
@@ -386,7 +386,12 @@ def tidy_links(text: str) -> str:
     уходит в узел как есть: в графе 60+ таких ссылок (аудит 28.08). Склеиваем
     пробелы внутри ссылки, остальной текст не трогаем.
     """
-    return _LINK_WS_RE.sub(lambda m: "[[" + " ".join(m.group(1).split()) + "]]", text)
+    def join(m: re.Match) -> str:
+        inner = " ".join(m.group(1).split())
+        # перенос на границе с «/» давал «[[Системы/ Витрина]]» — тоже мёртвая
+        # ссылка; слэш внутри [[…]] всегда разделитель папки (GLM, круг-1 #448)
+        return "[[" + re.sub(r"\s*/\s*", "/", inner) + "]]"
+    return _LINK_WS_RE.sub(join, text)
 
 
 def tidy_links_deep(obj):
@@ -507,6 +512,8 @@ def find_canonical(graph: pathlib.Path, name: str,
         if not d.exists():
             continue
         for f in d.glob("*.md"):
+            if f.name.startswith("_"):
+                continue      # _ЛЮДИ.md, _ЯДРА.md — указатели, не узлы (GLM M7)
             stem = f.stem.casefold()
             # Точное имя всегда выигрывает (иначе дубль системы возрождался).
             # Совпадение по ключу без пунктуации и скобок (name_key) — только
@@ -561,7 +568,8 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         safe_write.write_text(
             p,
             f"---\ntype: {typ}\ntags: [встречи, авто]\n---\n# {name}\n{desc}\n\n"
-            f"_(последнее упоминание: {day})_\n\n## Встречи\n{stamp}\n",
+            + (f"_(последнее упоминание: {day})_\n\n" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else "")
+            + f"## Встречи\n{stamp}\n",
         )
 
 
@@ -918,10 +926,16 @@ def rebuild_folder_index(graph: pathlib.Path, folder: str) -> None:
     for p in sorted(d.glob("*.md")):
         if p.name.startswith("_"):
             continue
-        text = p.read_text(encoding="utf-8", errors="replace")
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue          # битый симлинк, чужие права, iCloud — не роняем встречу (GLM I3)
         if redirects.is_merged(text):
             continue
-        dates = set(re.findall(r"\[\[Встречи/(\d{4}-\d{2}-\d{2})", text))
+        # только секция «## Встречи»: ссылка на старую встречу в прозе от облака
+        # завышала счётчик и «последнюю» (GLM M12)
+        m = re.search(r"## Встречи\n(.*?)(?=\n## |\Z)", text, re.S)
+        dates = set(re.findall(r"\[\[Встречи/(\d{4}-\d{2}-\d{2})", m.group(1) if m else text))
         rows.append((max(dates) if dates else "", len(dates), p.stem))
     rows.sort(key=lambda r: (r[0], r[1], r[2]), reverse=True)
     lines = [f"# {folder} — указатель\n",

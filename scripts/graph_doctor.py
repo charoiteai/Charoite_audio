@@ -75,6 +75,10 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
 
     def resolve(target: str) -> pathlib.Path | None:
         t = target.strip().rstrip("\\").strip()      # `[[Цель\|Текст]]` в таблицах
+        if re.search(r"\s/|/\s", t):
+            return None                              # «Системы/ Витрина» — мертва (GLM I2)
+        if "." in pathlib.PurePosixPath(t).name and not t.endswith(".md"):
+            return root / t if (root / t).exists() else None   # эмбед [[x.pdf]] (GLM M9)
         if t.endswith(".md"):
             t = t[:-3]
         if _norm(t) in by_path:
@@ -101,15 +105,16 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
 
     nodes = [p for p in notes if rel[p].split("/", 1)[0] in HUB_DIRS and "/" in rel[p]
              and not p.name.startswith("_")]          # _ЛЮДИ.md, _ЯДРА.md — указатели
+    node_set = set(nodes)
     orphans = [p for p in nodes if inbound[p] == 0]
     placeholders = [p for p in nodes if rel[p].startswith("Люди/")
                     and graph_updater.is_speaker_placeholder(re.sub(r"\s*[(（].*?[)）]", "", p.stem))
                     or rel[p].startswith("Люди/") and re.search(r"[(（]\s*(собеседник|speaker)\s*\d*\s*[)）]", p.stem, re.I)]
-    groups = {k: v for k, v in by_stem.items() if len([x for x in v if x in set(nodes)]) > 1}
+    groups = {k: v for k, v in by_stem.items() if len([x for x in v if x in node_set]) > 1}
     stubs = 0
     dup_real: list[list[str]] = []
     for _, ps in groups.items():
-        ps = [x for x in ps if x in set(nodes)]
+        ps = [x for x in ps if x in node_set]
         st = [x for x in ps if _is_stub(notes[x])]
         stubs += len(st)
         live = [x for x in ps if x not in st]
@@ -139,7 +144,7 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
 
     links_total = sum(outbound.values())
     rep = {
-        "graph": root.name, "notes": len(notes), "nodes": len(nodes), "links": links_total,
+        "graph": root.name, "root": str(root), "notes": len(notes), "nodes": len(nodes), "links": links_total,
         "broken": len(broken), "broken_targets": len({b for _, b in broken}),
         "wrapped_links": wrapped, "orphans": len(orphans), "placeholders": len(placeholders),
         "dup_groups": len(groups), "dup_stubs": stubs, "dup_real": len(dup_real),
@@ -202,7 +207,7 @@ def main() -> int:
     if not found:
         print("графов не найдено — нечего проверять")
         return 0
-    reps = {g.name: inspect(g, a.examples) for g in found}
+    reps = {str(g): inspect(g, a.examples) for g in found}   # ключ — путь: две «Работа» не затрут друг друга (GLM M11)
     for rep in reps.values():
         print(summary(rep))
     out = a.json or report_path()

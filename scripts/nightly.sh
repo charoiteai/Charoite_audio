@@ -238,6 +238,10 @@ else
   $PY scripts/dedup_graph.py || { echo "⚠️ дедупликация файлов не отработала"; FAILED="$FAILED дедуп"; }
 fi
 
+step "graph doctor (итог ночи)"
+# Второй замер — после tier3, досье и дедупа: утренний бриф показывает
+# цифры ПОСЛЕ ночных слияний, а не до них (GLM, круг-1 по #448 M13).
+$PY scripts/graph_doctor.py --all-graphs || { echo "⚠️ graph doctor (итог) не отработал"; FAILED="$FAILED graph-doctor"; }
 step "morning brief"
 $PY scripts/morning_brief.py || { echo "❌ УТРЕННИЙ БРИФ УПАЛ (код $?)"; rc=1; FAILED="$FAILED утренний-бриф"; }
 step "memory bench"

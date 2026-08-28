@@ -53,7 +53,7 @@ def sect_any(text: str, key: str) -> list[str]:
     return []
 
 
-def _graph_health(graph_name: str, max_age_h: int = 36) -> list[str]:
+def _graph_health(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
     """Строки брифа из logs/graph_doctor.json — свежего и про этот граф."""
     path = pathlib.Path(os.environ.get("CHAROITE_ROOT")
                         or pathlib.Path(__file__).resolve().parent.parent).expanduser() \
@@ -61,7 +61,8 @@ def _graph_health(graph_name: str, max_age_h: int = 36) -> list[str]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         made = dt.datetime.fromisoformat(data.get("generated", ""))
-        rep = data["graphs"][graph_name]
+        graphs_ = data["graphs"]
+        rep = graphs_.get(str(graph)) or graphs_.get(str(graph.resolve())) or graphs_[graph.name]
     except (OSError, ValueError, KeyError, TypeError):
         return []
     if dt.datetime.now() - made > dt.timedelta(hours=max_age_h):
@@ -149,7 +150,7 @@ def build_brief(graph: pathlib.Path) -> str | None:
 
     # здоровье графа — из ночного graph_doctor (детерминированный линт):
     # только свежий отчёт (до 36 часов) и только по этому графу.
-    health = _graph_health(graph.name)
+    health = _graph_health(graph)
     if health:
         lines += ["## Здоровье графа (ночной doctor)"] + health + [""]
 

@@ -149,7 +149,7 @@ def test_tidy_links_joins_wrapped_wikilinks():
     assert g.tidy_links("без ссылок\nстрока") == "без ссылок\nстрока"
     data = {"люди": [{"имя": "Иван", "вклад": "про [[Системы/\nВитрина]]"}], "темы": ["[[A\n B]]"]}
     tidy = g.tidy_links_deep(data)
-    assert tidy["люди"][0]["вклад"] == "про [[Системы/ Витрина]]".replace("/ ", "/ ")  # пробел склеен в один
+    assert tidy["люди"][0]["вклад"] == "про [[Системы/Витрина]]"   # перенос у «/» — без пробела (GLM I2)
     assert tidy["темы"] == ["[[A B]]"]
     assert data["темы"] == ["[[A\n B]]"], "исходник не тронут"
 
@@ -302,3 +302,33 @@ def test_placeholder_variants_and_folder_scoped_name_key(tmp_path, capsys):
     node.write_text("# Ольга\n_(последнее упоминание: 2026-07-01)_ \r\n\n## Встречи\n- [[Встречи/2026-07-01_1000]]\n", encoding="utf-8")
     g.upsert_entity(graph, "Люди", "Ольга", "person", "", "Встречи/2026-08-02_1000", "")
     assert node.read_text(encoding="utf-8").count("последнее упоминание") == 1
+
+
+def test_glm_round_one_fixes(tmp_path):
+    """Круг-1 по #448 (GLM): указатель не кандидат канона; «Системы/ Витрина»
+    — битая, эмбед [[x.pdf]] — нет; встречи в указателе — по секции; новый
+    узел без даты-штампа не получает строки свежести."""
+    graph = tmp_path / "g"
+    (graph / "Люди").mkdir(parents=True)
+    (graph / "Системы").mkdir()
+    (graph / "Люди" / "_ЛЮДИ.md").write_text("# Люди — указатель\n", encoding="utf-8")
+    g.upsert_entity(graph, "Люди", "Люди", "person", "странное имя", "Встречи/2026-08-01_1000", "")
+    assert (graph / "Люди" / "Люди.md").exists(), "сущность «Люди» приклеилась к указателю"
+    assert "## Встречи" not in (graph / "Люди" / "_ЛЮДИ.md").read_text(encoding="utf-8")
+    # ручной прогон без штампа: строки свежести нет, но и мусора нет
+    g.upsert_entity(graph, "Люди", "Гость", "person", "", "Встречи/заметки", "")
+    assert "последнее упоминание" not in (graph / "Люди" / "Гость.md").read_text(encoding="utf-8")
+    # указатель считает только секцию «## Встречи»
+    (graph / "Люди" / "Пётр.md").write_text(
+        "# Пётр\nв прозе облака: [[Встречи/2026-01-01_1000]]\n## Встречи\n- [[Встречи/2026-08-01_1000]]\n", encoding="utf-8")
+    g.rebuild_folder_index(graph, "Люди")
+    assert "| [[Люди/Пётр\\|Пётр]] | 1 | 2026-08-01 |" in (graph / "Люди" / "_ЛЮДИ.md").read_text(encoding="utf-8")
+    # doctor: пробел у слеша — битая ссылка; вложение — не битая
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+    import graph_doctor
+    (graph / "Системы" / "Витрина.md").write_text("# Витрина\n", encoding="utf-8")
+    (graph / "схема.pdf").write_bytes(b"%PDF")
+    (graph / "Люди" / "Иван.md").write_text("# Иван\n[[Системы/ Витрина]] и [[схема.pdf]] и [[Системы/Витрина]]\n", encoding="utf-8")
+    rep = graph_doctor.inspect(graph, examples=20)
+    ivan = [x for x in rep["examples"]["broken"] if x.startswith("Люди/Иван.md")]
+    assert ivan == ["Люди/Иван.md -> [[Системы/ Витрина]]"], rep["examples"]["broken"]
