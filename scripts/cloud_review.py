@@ -80,7 +80,7 @@ DENY_MAX = 200
 # Единственная допустимая форма «удаления» — заглушка-перенаправление,
 # как у tier3 при слиянии дублей: `# Имя → [[Папка/Канон]]` в первой строке
 # заголовка. Сам файл остаётся, ссылки на него не ломаются.
-_REDIRECT_RE = re.compile(r"^# .+? → \[\[[^\]]+\]\]", re.M)
+_REDIRECT_RE = re.compile(r"^# .+? (?:→|->|⇒) \[\[[^\]]+\]\]", re.M)
 
 # Что облако не трогает никогда, даже находясь внутри графа. Архив встречи —
 # та же категория, что копии стенограмм: Саммари, Минутки, Стенограмма суфлёра
@@ -92,14 +92,30 @@ PROTECTED_SECTION = "## Правки автора"
 
 REWRITE_MIN_LINES = 6
 REWRITE_KEEP = 1 / 3
+_STUB_TARGET_RE = re.compile(r"(?:→|->|⇒) \[\[([^\]]+)\]\]")
+
+
+def _stub_target(text: str) -> str | None:
+    """Куда указывает заглушка-редирект: `→ [[Папка/Канон]]` → «Папка/Канон.md».
+
+    Нужна, чтобы не применять заглышку раньше, чем в граф лёг её канон:
+    иначе в графе остаётся редирект на узел, которого слияние не получило
+    (GLM, круг-2 И3)."""
+    m = _STUB_TARGET_RE.search(text or "")
+    if not m:
+        return None
+    target = m.group(1).split("|", 1)[0].split("#", 1)[0].strip()
+    return target if target.endswith(".md") else f"{target}.md"
+
+
 def is_redirect_stub(text: str) -> bool:
     """Заглушка после слияния: короткий файл, чей ПЕРВЫЙ заголовок (после
     frontmatter) — стрелка на канон. Стрелка где-то в середине переписанного
     узла заглушкой не делает (круг-1 по PR #381, Codex + DeepSeek)."""
     body = (text or "").replace("\r\n", "\n").strip()
-    if not body or len(body) > 1200:
-        return False
     body = re.sub(r"\A---\n.*?\n---\n", "", body, count=1, flags=re.S)   # frontmatter
+    if not body or len(body) > 1200:   # длину мерим ПОСЛЕ frontmatter (GLM M1)
+        return False
     # перед заголовком допустимы только пустые строки и HTML-комментарии:
     # проза или код-фенс перед стрелкой — уже не заглушка (круг-3 по #381)
     body = re.sub(r"\A(?:\s*<!--.*?-->\s*)*", "", body, flags=re.S).lstrip()
@@ -278,13 +294,32 @@ def deny_paths(graph: pathlib.Path, *,
 
 
 def snapshot(graph: pathlib.Path) -> dict[str, str]:
-    """Хеши всех файлов графа. Дёшево: граф это текст.
+    """Хеши всех файлов графа по АБСОЛЮТНЫМ путям. Дёшево: граф это текст.
 
     Именно всех, а не только *.md: граница «что тронуло облако» обязана
     видеть любой файл, иначе .txt или .canvas меняются и создаются мимо
     контроля — снимок по расширению охранял бы не граф, а формат.
     """
     return {str(p.resolve()): _digest(p) for p in graph_files(graph)}
+
+
+def snapshot_rel(root: pathlib.Path) -> dict[str, str]:
+    """Хеши файлов по ОТНОСИТЕЛЬНЫМ путям — базелин для переноса.
+
+    Снимается с УЖЕ снятого снимка-каталога, а не с живого графа: между
+    хешами и снимком иначе ~2 с, в которые конвейер (замка он не берёт)
+    дописывает главный файл встречи, и правка облака уходила бы в ложный
+    конфликт (GLM, круг по #447). Так «песочница = снимок плюс правки
+    облака» истинно и для хешей, а не только для содержимого.
+    """
+    rroot = root.resolve()
+    out: dict[str, str] = {}
+    for p in graph_files(root):
+        try:
+            out[p.resolve().relative_to(rroot).as_posix()] = _digest(p)
+        except (ValueError, OSError):
+            continue
+    return out
 
 
 def backup_root(graph: pathlib.Path) -> pathlib.Path:
@@ -488,33 +523,23 @@ def _read(p: pathlib.Path) -> str:
         return ""
 
 
-def edits_in_copy(before: dict[str, str], copy: pathlib.Path,
-                  graph: pathlib.Path) -> list[pathlib.Path]:
-    """Что облако сделало в своей копии: пути ОТНОСИТЕЛЬНО корня графа.
+def edits_in_copy(before: dict[str, str], copy: pathlib.Path) -> list[pathlib.Path]:
+    """Что облако сделало в песочнице: относительные пути.
 
-    Сравнение нарочно своё, по относительным путям: сравнивать снимок с
-    копией по абсолютным ключам значит объявить изменённым КАЖДЫЙ файл —
-    корни разные, ни один ключ не совпадает. Живой прогон 28.08 показал
-    ровно это: одна правка, а «изменилось 2».
-
-    Возвращаются относительные пути: файл может существовать в копии, в
-    графе, или уже нигде — вызывающий строит из rel обе стороны сам.
+    `before` — относительный снимок (snapshot_rel), песочница тоже сводится
+    к относительным путям: их корни разные, а сравнивать надо по «месту в
+    графе». Возвращаются rel-пути: файл может быть в песочнице, в графе или
+    уже нигде — вызывающий строит из rel обе стороны сам.
     """
-    root, croot = graph.resolve(), copy.resolve()
+    croot = copy.resolve()
     now: dict[str, str] = {}
     for c in graph_files(copy):
         try:
             now[c.resolve().relative_to(croot).as_posix()] = _digest(c)
         except (ValueError, OSError):
             continue
-    was = {}
-    for key, digest in before.items():
-        try:
-            was[pathlib.Path(key).relative_to(root).as_posix()] = digest
-        except ValueError:
-            continue
-    rels = [r for r, d in now.items() if was.get(r) != d]
-    rels += [r for r in was if r not in now]      # облако удалило файл
+    rels = [r for r, d in now.items() if before.get(r) != d]
+    rels += [r for r in before if r not in now]   # облако удалило файл
     return [pathlib.Path(r) for r in sorted(set(rels))]
 
 
@@ -545,9 +570,9 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
     именем в логе, а не поверх чужого.
     """
     v = Verdict(rolled_back=not valid)
-    edits = edits_in_copy(before, copy, graph)
+    edits = edits_in_copy(before, copy)
     v.touched = len(edits)
-    root = graph.resolve()
+    pending_stubs: list[tuple] = []       # заглушки-редиректы — после канона
     for rel in edits:
         cpath, gpath = copy / rel, graph / rel
         name = rel.as_posix()
@@ -564,8 +589,7 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                     # врать «лежит в карантине» лог не должен (DS, M3)
                     v.deleted.append(name)
                 continue
-            key = str(root / rel)
-            existed = key in before
+            existed = name in before
             # Старый текст берём из СНИМКА, не из графа: файл в графе мог
             # уже уехать под конвейером, и сравнение его с самим собой
             # молча пропускало чужую правку (живой прогон 28.08).
@@ -594,7 +618,7 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
             # снимка и приписал облаку — дыра в гарантии «живая работа
             # побеждает» для existed=False (DS, круг-3).
             deleted_by_pipeline = not gpath.exists() and (backup / rel).exists()
-            if current != before.get(key) or deleted_by_pipeline:
+            if current != before.get(name) or deleted_by_pipeline:
                 # В графе уже не то, что было на снимке, — значит, туда
                 # писал конвейер, пока облако думало: дописал существующий
                 # файл (минутки, хроника ядра), создал новый узел (upsert
@@ -609,8 +633,33 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 quarantine(cpath, copy, qdir, move=False)
                 v.conflicts.append(name)
                 continue
+            target = _stub_target(new) if is_redirect_stub(new) else None
+            if target is not None:
+                # Заглушку сливаемого дубля применяем ПОСЛЕ канона: если его
+                # правка ушла в карантин (переписан заново, конфликт), в
+                # графе остался бы редирект на узел без слитых фактов (GLM,
+                # круг-2 И3). Откладываем до конца прохода.
+                pending_stubs.append((rel, cpath, gpath, name, target))
+                continue
             safe_write.write_text(gpath, new)
             v.applied.append(name)
+        except OSError:
+            v.failed.append(name)
+    for rel, cpath, gpath, name, target in pending_stubs:
+        try:
+            # Канон в порядке, если он лёг в граф этой же дельтой ИЛИ уже
+            # есть в графе и его никто не забраковал (облако лишь сливает в
+            # существующий узел). Иначе заглушка — в карантин.
+            canon_ok = target in v.applied or (
+                (graph / target).is_file()
+                and target not in v.reverted and target not in v.removed
+                and target not in v.conflicts and target not in v.deleted)
+            if canon_ok:
+                safe_write.write_text(gpath, _read(cpath))
+                v.applied.append(name)
+            else:
+                quarantine(cpath, copy, qdir, move=False)
+                v.reverted.append(name)
         except OSError:
             v.failed.append(name)
     return v
@@ -759,9 +808,12 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             unlock()
     cloud_pen = None
     if may_edit:
-        before = snapshot(graph)
         try:
             backup = backup_graph(graph, stamp)
+            # Базелин хешей — С самого снимка, не с живого графа: иначе за
+            # ~2 с между ними конвейер дописал бы главный файл встречи, и
+            # правка облака ушла бы в ложный конфликт (GLM, круг по #447).
+            before = snapshot_rel(backup)
             # №120: облако пишет в ПЕСОЧНИЦУ — вторую копию графа, cwd его
             # CLI. Конвейер в неё не пишет, поэтому «чей файл» больше не
             # угадывается признаками: авторство известно по построению.
@@ -783,6 +835,17 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             may_edit = deliver = False
             backup = cloud_pen = None
             unlock()                   # замок нужен только правящему
+    # Песочница могла исчезнуть между её созданием и стартом CLI (внешняя
+    # рука — тот же случай, что обслуживает finally). Тогда cloud_enrich_workdir
+    # свалился бы фолбэком на папку стенограмм ПРИ ЖИВЫХ Edit/Write: облако
+    # писало бы в живые данные, а сверка по пустой песочнице видела бы ноль
+    # правок и доставляла ревизию как чистую. Проверяем ДО сборки команды и
+    # понижаем до чтения графа — без песочницы писать некуда (GLM, круг-2).
+    if may_edit and (cloud_pen is None or not cloud_pen.is_dir()):
+        print("песочница исчезла до запуска — работаю на чтение графа")
+        may_edit = deliver = False
+        denied = []
+        unlock()
     # Файлы встречи — по стему её стенограммы, а не по минутному штампу:
     # посекундная соседка той же минуты в контекст не попадает (аудит 16.08).
     context, sent = graph_updater.cloud_enrich_context(transcript.parent, transcript.stem)
@@ -882,16 +945,25 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                                     backup=backup, valid=ok and published)
                 checked = not v.failed
                 lines.append(_verdict_line(v, qdir))
-                # Песочница отработала — убираем. При сбое переноса, хоть
-                # исключением, хоть по одному файлу (v.failed: ENOSPC на
-                # карантине или в safe_write), она ОСТАЁТСЯ: сбойный файл
-                # существует ровно там, и это единственная копия черновика
-                # облака (DS, круг-1 И1; регрессия — правило без теста).
+                # Песочница отработала — убираем. При сбое переноса по
+                # одному файлу (v.failed: ENOSPC на карантине или в
+                # safe_write) сбойный черновик существует ровно в ней, и
+                # это единственная его копия — но ОСТАВИТЬ её в backup_root
+                # нельзя: следующий же воркер этого графа снёс бы её
+                # ротацией (GLM, круг-2 И2). Переносим в карантин, где её
+                # чистит только forget_meeting, и называем путь.
                 if not v.failed:
                     shutil.rmtree(cloud_pen, ignore_errors=True)
                 else:
-                    lines.append(f"[cloud-review] перенос упал на части файлов "
-                                 f"— песочница цела: {cloud_pen}\n")
+                    kept = qdir.parent / f"{qdir.name}-песочница"
+                    try:
+                        shutil.move(str(cloud_pen), str(kept))
+                        lines.append(f"[cloud-review] перенос упал на части "
+                                     f"файлов — черновик облака в карантине: "
+                                     f"{kept}\n")
+                    except OSError as e:
+                        lines.append(f"[cloud-review] перенос упал, и песочницу "
+                                     f"не спрятать ({e}) — она в {cloud_pen}\n")
             except Exception as e:  # noqa: BLE001 — сказать и дойти до ротации
                 lines.append(f"[cloud-review] ПЕРЕНОС УПАЛ ({e}) — правки облака "
                              f"остались в снимке, граф цел\n")
