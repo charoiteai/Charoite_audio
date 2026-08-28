@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
+import os
 import pathlib
 import re
 import sys
@@ -25,6 +27,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
 import meeting_archive  # noqa: E402
+import redirects  # noqa: E402
 
 
 def sect(text: str, title: str) -> list[str]:
@@ -48,6 +51,28 @@ def sect_any(text: str, key: str) -> list[str]:
         if found:
             return found
     return []
+
+
+def _graph_health(graph: pathlib.Path, max_age_h: int = 36) -> list[str]:
+    """Строки брифа из logs/graph_doctor.json — свежего и про этот граф."""
+    path = pathlib.Path(os.environ.get("CHAROITE_ROOT")
+                        or pathlib.Path(__file__).resolve().parent.parent).expanduser() \
+        / "logs" / "graph_doctor.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        made = dt.datetime.fromisoformat(data.get("generated", ""))
+        graphs_ = data["graphs"]
+        rep = graphs_.get(str(graph)) or graphs_.get(str(graph.resolve())) or graphs_[graph.name]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    if dt.datetime.now() - made > dt.timedelta(hours=max_age_h):
+        return []
+    out = [f"- отчёт {made:%d.%m %H:%M}: узлов {rep.get('nodes', 0)}, ссылок {rep.get('links', 0)}, "
+           f"битых {rep.get('broken', 0)}, сирот {rep.get('orphans', 0)}, "
+           f"меток диаризации среди Люди {rep.get('placeholders', 0)}, "
+           f"дублей {rep.get('dup_real', 0)}, вне MOC {rep.get('moc_missing', 0)}"]
+    out += [f"- ⚠️ {w}" for w in rep.get("warnings", [])]
+    return out
 
 
 def build_brief(graph: pathlib.Path) -> str | None:
@@ -107,7 +132,7 @@ def build_brief(graph: pathlib.Path) -> str | None:
             if p.name.startswith("_"):
                 continue
             text = p.read_text(encoding="utf-8")
-            if "Дубль. Смерджен" in text:
+            if redirects.is_merged(text):
                 continue
             sm = re.search(r"## Статус\n(.+)", text)
             status = sm.group(1).strip() if sm else ""
@@ -122,6 +147,12 @@ def build_brief(graph: pathlib.Path) -> str | None:
         if to_merge:
             lines += ["## Tier3 просит свести вручную"] + [
                 f"- [[Ядра/{n}|{n}]]" for n in sorted(set(to_merge))] + [""]
+
+    # здоровье графа — из ночного graph_doctor (детерминированный линт):
+    # только свежий отчёт (до 36 часов) и только по этому графу.
+    health = _graph_health(graph)
+    if health:
+        lines += ["## Здоровье графа (ночной doctor)"] + health + [""]
 
     # ночная ревизия Opus: три риска — в самый верх брифа, хвосты — в конец.
     # Берём свежий отчёт (сегодня либо вчера), старый молча пропускаем.

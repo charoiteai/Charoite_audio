@@ -133,6 +133,15 @@ fi
 # а не рядом с кодом (вложенная установка; ревью 18.08)
 $PY scripts/wait_for_idle.py --root "${CHAROITE_ROOT:-$PWD}" --timeout "${NIGHTLY_WAIT:-3600}" || true
 
+step "graph doctor"
+# Здоровье графа как памяти — детерминированный линт без модели (секунды):
+# битые ссылки, метки диаризации среди Люди, сироты, дубли, покрытие MOC.
+# ДО брифа: бриф читает logs/graph_doctor.json и показывает предупреждения.
+$PY scripts/graph_doctor.py --all-graphs || {
+  echo "⚠️ graph doctor не отработал"; FAILED="$FAILED graph-doctor"
+  rm -f "${CHAROITE_ROOT:-$PWD}/logs/graph_doctor.json"   # вчерашний отчёт — не сегодняшний
+}
+
 step "morning brief (ранний)"
 # Страховочный проход: бриф на данных, какие есть. Упал — не авария, впереди
 # основной; ронять из-за него ночь нельзя.
@@ -229,6 +238,16 @@ else
   $PY scripts/dedup_graph.py || { echo "⚠️ дедупликация файлов не отработала"; FAILED="$FAILED дедуп"; }
 fi
 
+step "folder indexes"
+# Полная пересборка указателей Люди/Системы/Команды: днём их пишет каждая
+# встреча только по тронутым папкам, и две параллельные встречи могут
+# затереть строку друг друга (luna I8) — ночь приводит к точному виду.
+$PY -c "import sys; sys.path.insert(0, 'src'); import graphs, graph_updater as g; [g.rebuild_folder_index(gr, f) for gr in graphs.all_graphs('Ядра') for f in g.FOLDER_INDEX]" \
+  || { echo "⚠️ указатели папок не пересобраны"; FAILED="$FAILED указатели"; }
+step "graph doctor (итог ночи)"
+# Второй замер — после tier3, досье и дедупа: утренний бриф показывает
+# цифры ПОСЛЕ ночных слияний, а не до них (GLM, круг-1 по #448 M13).
+$PY scripts/graph_doctor.py --all-graphs || { echo "⚠️ graph doctor (итог) не отработал"; FAILED="$FAILED graph-doctor"; }
 step "morning brief"
 $PY scripts/morning_brief.py || { echo "❌ УТРЕННИЙ БРИФ УПАЛ (код $?)"; rc=1; FAILED="$FAILED утренний-бриф"; }
 step "memory bench"

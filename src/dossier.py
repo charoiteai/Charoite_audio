@@ -37,6 +37,7 @@ import re
 import unicodedata
 from collections import defaultdict
 from datetime import date
+from redirects import is_merged as _is_merged, stub_target as _stub_target   # локальная `redirects: dict` в scan() перекрыла бы модуль
 
 # Сколько источников максимум уходит в один запрос к модели. Больше — сводка
 # начинает терять детали, а генерация упирается в контекст.
@@ -146,14 +147,16 @@ def scan(graph: pathlib.Path) -> tuple[dict[str, dict], dict[str, set[str]]]:
         # «жив», и ночь собирала досье по мёртвому дублю рядом с каноном,
         # тратя на него запросы облака (аудит GLM 17.08). tier3.load_cores и
         # morning_brief её уже пропускают — теперь и здесь.
-        if "Дубль. Смерджен" in text:
+        if _is_merged(text):
             # Сама заглушка — не тема, но ссылки НА НЕЁ из заметок живые:
             # встреча, сославшаяся на старое имя, пропадала из кластера
             # канона, и досье собиралось без неё (аудит графа 26.08, Codex).
             # Запоминаем стрелку и переносим входящие ниже, после скана.
-            m = LINK_RE.search(text)
-            if m:
-                redirects[_title(p)] = m.group(1).split("/")[-1].strip()
+            # цель — из первой строки заголовка (redirects.stub_target), а не
+            # первая [[ссылка]] в файле: та могла быть из frontmatter (luna I5)
+            target = _stub_target(text)
+            if target:
+                redirects[_title(p)] = target.rsplit("/", 1)[-1].removesuffix(".md").strip()
             continue
         t = _title(p)
         kind = rel.parts[0] if len(rel.parts) > 1 else "Прочее"
