@@ -304,34 +304,42 @@ def test_hint_pulse_names_the_reason_and_separates_waiting_from_work():
         "ручная и авто подсказки снова пишут в одно поле"
 
 
-def test_lag_line_says_how_many_times_the_model_was_called():
-    """«audio_s=6.0» не отличает один вызов от двенадцати коротких.
+def test_lag_line_carries_totals_because_the_lagging_cycle_never_splits():
+    """Счётчик копится за всю запись, а не за цикл — иначе он мерит пустоту.
 
-    Замер 27.08: кусок 0,3 с идёт на 13,7x, а десять секунд — на 29x, то
-    есть цена вызова фиксированная и на дроблении теряется вдвое. Без числа
-    вызовов и длины самого короткого куска полевой RTF не разложить на
-    «медленная модель» и «много мелких заходов», а чинить надо разное.
+    Круг-1, GLM: строка `state=lagging` пишется ТОЛЬКО при отставании, а при
+    отставании раскладка уходит в `shed` и отдаёт один кусок на чанк целиком.
+    Значит в сохраняемой строке `calls` всегда равнялось бы числу каналов, а
+    `shortest_s` — длине чанка, независимо от того, дробит ли конвейер звук в
+    здоровых циклах. Гипотеза, ради которой всё затевалось, проверялась бы
+    данными, где явление structurally отсутствует.
     """
     src = (pathlib.Path(__file__).resolve().parent.parent / "src"
            / "daemon.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
 
-    # строка отставания несёт оба поля
     lag = src[src.index('stt-health state=lagging'):]
     lag = lag[:lag.index("file=sys.stderr")]
-    for field in ("calls=", "shortest_s="):
+    for field in ("calls=", "shortest_s=", "rtf_total="):
         assert field in lag, f"строка отставания молчит о {field}"
-
-    # и событие для приложения — тоже
-    assert '"stt_calls"' in src and '"shortest_s"' in src, (
-        "поля есть в логе, но не в stt_progress — приложение их не увидит"
+    assert '"calls_total"' in src and '"rtf_total"' in src, (
+        "итоги есть в логе, но не в stt_progress — приложение их не увидит"
     )
 
-    # счётчик стоит там же, где считаются секунды звука: иначе они разъедутся
-    counted = [n for n in ast.walk(tree)
-               if isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name)
-               and n.target.id in ("cycle_audio_s", "cycle_stt_calls")]
-    assert len(counted) >= 2, "звук и вызовы считаются не вместе"
+    # Ключевое: накопители НЕ обнуляются внутри цикла разбора батча.
+    loop = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.While) and "cycle_audio_s" in ast.dump(n))
+    # Ищем именно ОБНУЛЕНИЕ (присваивание константы), а не обновление
+    # минимума `shortest_piece_s = piece_s` — оно как раз законно.
+    reset_in_loop = [tgt.id for n in ast.walk(loop)
+                     if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)
+                     for tgt in n.targets
+                     if isinstance(tgt, ast.Name)
+                     and tgt.id in ("total_stt_calls", "total_audio_s",
+                                    "shortest_piece_s", "total_transcription_ms")]
+    assert not reset_in_loop, (
+        "итог обнуляется в цикле — снова получим цифры одного отстающего кадра"
+    )
 
 
 def test_the_call_counter_never_breaks_recognition():
@@ -348,7 +356,7 @@ def test_the_call_counter_never_breaks_recognition():
         if not isinstance(node, ast.Try):
             continue
         body = ast.dump(ast.Module(body=node.body, type_ignores=[]))
-        if "cycle_stt_calls" in body and "cycle_audio_s" in body:
+        if "total_stt_calls" in body and "cycle_audio_s" in body:
             names = {n.id for h in node.handlers for n in ast.walk(h.type or ast.Name(id=""))
                      if isinstance(n, ast.Name)}
             assert {"TypeError", "ValueError", "ZeroDivisionError"} <= names, (

@@ -752,13 +752,18 @@ def main():
         last_diarization_ms = 0.0
         last_transcription_ms = 0.0
         last_audio_s = 0.0
-        # Сколько раз за цикл звали модель и каким был самый короткий кусок.
-        # Без этого «audio_s=6.0» не отличает один вызов на шесть секунд от
-        # двенадцати по полсекунды, а цена у них разная: на короткий кусок
-        # ложится та же фиксированная работа (замер 27.08: 0,3 с идут на
-        # 13,7x против 29x на десяти секундах).
-        last_stt_calls = 0
-        last_shortest_s = 0.0
+        # Сколько раз звали модель и каким был самый короткий кусок — НЕ за
+        # цикл, а с начала записи. Иначе цифры описывали бы пустоту: строка
+        # `state=lagging` пишется только при отставании, а при отставании
+        # раскладка уходит в `shed` и даёт один кусок на чанк целиком. То
+        # есть в сохраняемой строке `calls` всегда равнялось бы числу
+        # каналов, а `shortest_s` — длине чанка, независимо от того, дробит
+        # конвейер звук в здоровых циклах или нет (GLM, круг-1 по PR #442).
+        # Накопленный итог виден в любой строке и описывает всю встречу.
+        total_stt_calls = 0
+        total_audio_s = 0.0
+        total_transcription_ms = 0.0
+        shortest_piece_s = 0.0
         lagging = False
 
         def report_progress(*, force: bool = False) -> None:
@@ -791,8 +796,11 @@ def main():
                 "diarization_ms": round(last_diarization_ms),
                 "transcription_ms": round(last_transcription_ms),
                 "audio_s": round(last_audio_s, 2),
-                "stt_calls": last_stt_calls,
-                "shortest_s": round(last_shortest_s, 2),
+                "calls_total": total_stt_calls,
+                "audio_s_total": round(total_audio_s, 1),
+                "shortest_s": round(shortest_piece_s, 2),
+                "rtf_total": stt_runtime.realtime_factor(total_audio_s,
+                                                         total_transcription_ms),
                 "rtf": stt_runtime.realtime_factor(last_audio_s,
                                                    last_transcription_ms),
                 "recording_ok": health["recording_ok"],
@@ -804,6 +812,8 @@ def main():
                 age_text = "unknown" if input_age is None else f"{float(input_age):.1f}"
                 rtf = stt_runtime.realtime_factor(last_audio_s,
                                                   last_transcription_ms)
+                rtf_all = stt_runtime.realtime_factor(total_audio_s,
+                                                      total_transcription_ms)
                 # Время в строке — чтобы эпизоды раскладывались по времени
                 # суток: без него «машина спокойна» и «машина под нагрузкой»
                 # неотличимы, а из этого и делается вывод о причине (№105).
@@ -813,8 +823,9 @@ def main():
                       f"diarization_ms={last_diarization_ms:.0f} "
                       f"transcription_ms={last_transcription_ms:.0f} "
                       f"audio_s={last_audio_s:.1f} "
-                      f"calls={last_stt_calls} "
-                      f"shortest_s={last_shortest_s:.1f} "
+                      f"calls={total_stt_calls} "
+                      f"shortest_s={shortest_piece_s:.1f} "
+                      f"rtf_total={'?' if rtf_all is None else f'{rtf_all:.1f}'} "
                       f"rtf={'?' if rtf is None else f'{rtf:.1f}'} "
                       f"input_age_s={age_text}",
                       file=sys.stderr, flush=True)
@@ -893,8 +904,6 @@ def main():
             # медленная или кусок большой. С ним считается RTF, и причина
             # отставания обсуждается по цифре, а не по догадке (№105).
             cycle_audio_s = 0.0
-            cycle_stt_calls = 0
-            cycle_shortest_s = 0.0
             for speaker, chunk in batch:
                 # Признак «собеседников слышно» — ЗДЕСЬ, до STT и до любых
                 # отсевов. Раньше он стоял после распознавания, и короткие
@@ -980,9 +989,10 @@ def main():
                         try:
                             piece_s = len(piece) / float(hub.sr)
                             cycle_audio_s += piece_s
-                            cycle_stt_calls += 1
-                            if cycle_shortest_s == 0.0 or piece_s < cycle_shortest_s:
-                                cycle_shortest_s = piece_s
+                            total_stt_calls += 1
+                            total_audio_s += piece_s
+                            if shortest_piece_s == 0.0 or piece_s < shortest_piece_s:
+                                shortest_piece_s = piece_s
                         except (TypeError, ValueError, ZeroDivisionError):
                             pass        # телеметрия не смеет ронять распознавание
                         mark_stt_stage("postprocess")
@@ -1076,8 +1086,7 @@ def main():
             last_diarization_ms = cycle_diarization_ms
             last_transcription_ms = cycle_transcription_ms
             last_audio_s = cycle_audio_s
-            last_stt_calls = cycle_stt_calls
-            last_shortest_s = cycle_shortest_s
+            total_transcription_ms += cycle_transcription_ms
             mark_stt_stage("idle")
             report_progress()
 
