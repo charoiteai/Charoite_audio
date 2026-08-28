@@ -383,3 +383,19 @@ def test_dossier_takes_stub_target_from_the_heading_not_frontmatter(tmp_path):
     _files, backlinks = dossier.scan(graph)
     assert "2026-08-01_1000" in backlinks.get("Канон", set()), backlinks
     assert not backlinks.get("Чужой"), "входящие ушли к узлу из frontmatter"
+
+
+def test_doctor_treats_dotted_node_names_as_nodes_not_embeds(tmp_path):
+    """«Linux 1.8», «МПД 3.0» — узлы с точкой в имени, не вложения: первый
+    вариант отсева эмбедов записал ~400 таких ссылок в битые (прод 28.08)."""
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+    import graph_doctor
+    graph = tmp_path / "g"
+    (graph / "Системы").mkdir(parents=True)
+    (graph / "Люди").mkdir()
+    (graph / "Системы" / "Linux 1.8.md").write_text("# Linux 1.8\n", encoding="utf-8")
+    (graph / "схема.pdf").write_bytes(b"%PDF")
+    (graph / "Люди" / "Иван.md").write_text(
+        "# Иван\n[[Системы/Linux 1.8]] [[Linux 1.8]] [[схема.pdf]] [[нет.pdf]] [[МПД 3.0]]\n", encoding="utf-8")
+    rep = graph_doctor.inspect(graph, examples=10)
+    assert rep["examples"]["broken"] == ["Люди/Иван.md -> [[нет.pdf]]", "Люди/Иван.md -> [[МПД 3.0]]"], rep["examples"]["broken"]

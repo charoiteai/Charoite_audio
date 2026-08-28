@@ -42,6 +42,7 @@ LINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
 HUB_DIRS = ("Люди", "Системы", "Команды", "Ядра", "Блокеры", "Модели", "Досье")
 DESIGN_PAIRS = {frozenset(("Досье", "Ядра"))}   # досье на ядро — одноимённо по замыслу
 THRESHOLDS = {"broken_share": 0.02, "orphan_share": 0.05}
+EMBED_RE = re.compile(r"\.(?:pdf|png|jpe?g|gif|webp|svg|heic|mp3|wav|m4a|mp4|mov|webm|canvas|json|csv|txt|docx?|xlsx?|pptx?|zip)$", re.I)
 
 
 def _norm(s: str) -> str:
@@ -77,8 +78,11 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
         t = target.strip().rstrip("\\").strip()      # `[[Цель\|Текст]]` в таблицах
         if re.search(r"\s/|/\s", t):
             return None                              # «Системы/ Витрина» — мертва (GLM I2)
-        if "." in pathlib.PurePosixPath(t).name and not t.endswith(".md"):
-            return root / t if (root / t).exists() else None   # эмбед [[x.pdf]] (GLM M9)
+        if EMBED_RE.search(pathlib.PurePosixPath(t).name):
+            # вложение [[x.pdf]] — по факту на диске (GLM M9). Только известные
+            # расширения: «Linux 1.8», «МПД 3.0» — узлы с точкой в имени, а не
+            # файлы; первый вариант принял 400 таких ссылок за битые (28.08).
+            return root / t if (root / t).exists() else None
         if t.endswith(".md"):
             t = t[:-3]
         if _norm(t) in by_path:
