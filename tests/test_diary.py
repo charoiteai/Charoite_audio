@@ -52,3 +52,20 @@ def test_diary_without_transcripts_dir(tmp_path):
     assert r.returncode == 0, r.stderr
     day = next((tmp_path / "Д").glob("*.md"))
     assert "Контекст:" not in day.read_text(encoding="utf-8")
+
+
+def test_diary_does_not_touch_the_audio_stack():
+    """Дневнику с текстом микрофон не нужен — и он за него не платит.
+
+    PortAudio на машине без звуковых устройств роняет процесс при ВЫХОДЕ
+    («terminate called without an active exception», код -6): работа сделана,
+    ответ напечатан, а returncode -6. В CI это выглядело как регресс кода и
+    дважды съело время на разбор (№122).
+    """
+    src = (ROOT / "src" / "dictate_note.py").read_text(encoding="utf-8")
+    head = src[:src.index("def ")]
+    assert "import sounddevice" not in head, (
+        "sounddevice импортируется на уровне модуля — дневник снова платит "
+        "за аудио-стек, которым не пользуется"
+    )
+    assert "import sounddevice" in src, "ленивый импорт потерялся вовсе"

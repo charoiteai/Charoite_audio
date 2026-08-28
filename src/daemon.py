@@ -78,6 +78,12 @@ THREAD_TICK = 30.0      # нить встречи: как часто СМОТР�
 THREAD_MIN_NEW = 900    # и сколько новых знаков нужно, чтобы позвать модель
 STT_PROGRESS_EVERY = 5.0   # отдельный пульс потребителя; главный hb его не заменяет
 STT_LAG_LOG_EVERY = 30.0   # цифры отставания в daemon.err.log без спама
+# Сводка по STT раз в пять минут — при ЛЮБОМ состоянии. Строка отставания
+# пишется только когда очередь растёт, а на спокойной машине этого не бывает:
+# 28.08 четыре встречи подряд прошли без единого лага, и цифр по STT не
+# осталось вовсе. Без периодической сводки здоровые встречи молчат, и судить
+# о конвейере приходится по единственному плохому дню.
+STT_SUMMARY_EVERY = 300.0
 # heartbeat для watchdog UI: главный тред жив → hb каждые 30с; тишина 100с
 # при живом процессе = зависание, UI перезапустит демон. Порог stalled —
 # только диагностика; решение о рестарте остаётся за 100-секундным
@@ -748,6 +754,7 @@ def main():
         # сможет отличить их от обычной тишины на встрече.
         last_progress_emit = 0.0
         last_lag_log = 0.0
+        last_summary_log = 0.0
         last_cycle_ms = 0.0
         last_diarization_ms = 0.0
         last_transcription_ms = 0.0
@@ -769,7 +776,7 @@ def main():
         def report_progress(*, force: bool = False) -> None:
             # Телеметрия не смеет ронять распознавание: любой её сбой — строка
             # в stderr, а не смерть stt_loop (ревью 21.08, Gemini).
-            nonlocal last_progress_emit, last_lag_log
+            nonlocal last_progress_emit, last_lag_log, last_summary_log
             now_mono = time.monotonic()
             if stt_runtime.progress_throttled(force=force, now=now_mono,
                                               last=last_progress_emit,
@@ -830,6 +837,21 @@ def main():
                       f"input_age_s={age_text}",
                       file=sys.stderr, flush=True)
                 last_lag_log = now_mono
+            # Сводка идёт независимо от состояния: она и нужна для спокойных
+            # встреч, где строка отставания не появляется никогда.
+            if stt_runtime.heartbeat_due(now=now_mono, last=last_summary_log,
+                                         every=STT_SUMMARY_EVERY):
+                rtf_all = stt_runtime.realtime_factor(total_audio_s,
+                                                      total_transcription_ms)
+                print(f"{dt.datetime.now():%H:%M:%S} stt-summary "
+                      f"state={'lagging' if lagging else 'healthy'} "
+                      f"calls={total_stt_calls} "
+                      f"audio_s={total_audio_s:.0f} "
+                      f"rtf={'?' if rtf_all is None else f'{rtf_all:.1f}'} "
+                      f"shortest_s={shortest_piece_s:.1f} "
+                      f"backlog_s={backlog:.1f}",
+                      file=sys.stderr, flush=True)
+                last_summary_log = now_mono
 
         mark_stt_stage("idle")
         report_progress(force=True)

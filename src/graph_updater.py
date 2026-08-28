@@ -21,6 +21,7 @@ import install_profile  # noqa: E402
 import live_gate  # noqa: E402
 import llm_health  # noqa: E402
 import privacy  # noqa: E402
+import safe_write  # noqa: E402
 from llm import LLM, LLMHTTPError  # noqa: E402
 
 from charoite_paths import code_root, harden_umask, resolve_root
@@ -388,12 +389,7 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
     # Через временное имя: это ЕДИНСТВЕННЫЙ экземпляр стенограммы, обрыв
     # голого write_text (kill ночного цикла, полный диск) оставлял бы вместо
     # встречи усечённый файл — восстанавливать неоткуда (аудит 0.46.0).
-    tmp = tpath.with_name(tpath.name + f".tmp{os.getpid()}")
-    try:
-        tmp.write_text(body, encoding="utf-8")
-        tmp.replace(tpath)
-    finally:
-        tmp.unlink(missing_ok=True)
+    safe_write.write_text(tpath, body)
     return tpath
 
 
@@ -473,12 +469,12 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
             text = text.replace("## Встречи", f"## Встречи\n{stamp}", 1)
         else:
             text += f"\n## Встречи\n{stamp}\n"
-        p.write_text(text, encoding="utf-8")
+        safe_write.write_text(p, text)
     else:
-        p.write_text(
+        safe_write.write_text(
+            p,
             f"---\ntype: {typ}\ntags: [встречи, авто]\n---\n# {name}\n{desc}\n\n"
             f"## Встречи\n{stamp}\n",
-            encoding="utf-8",
         )
 
 
@@ -759,12 +755,13 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
                 text = text.replace("## Хроника", f"## Хроника\n{stamp_line}", 1)
             else:
                 text += f"\n## Хроника\n{stamp_line}\n"
-        p.write_text(text, encoding="utf-8")
+        safe_write.write_text(p, text)
     else:
-        p.write_text(
+        safe_write.write_text(
+            p,
             f"---\ntype: ядро\nвид: {core.get('тип', 'тема')}\ntags: [ядро, авто]\n---\n"
             f"# {core['имя']}\n\n## Статус\n{status or '—'} _(обновлено {stamp[:10]})_\n\n"
-            f"## Хроника\n{stamp_line}\n", encoding="utf-8")
+            f"## Хроника\n{stamp_line}\n")
 
 
 def rebuild_cores_moc(graph: pathlib.Path):
@@ -781,7 +778,7 @@ def rebuild_cores_moc(graph: pathlib.Path):
         m = re.search(r"## Статус\n(.+)", text)
         st = m.group(1).strip() if m else "—"
         lines.append(f"- [[Ядра/{p.stem}|{p.stem}]] — {st}")
-    (d / "_ЯДРА.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    safe_write.write_text(d / "_ЯДРА.md", "\n".join(lines) + "\n")
 
 
 def main():
@@ -880,8 +877,8 @@ def main():
         elif not (graph / "_MOC.md").exists():
             for d in ("Встречи", "Люди", "Системы"):
                 (graph / d).mkdir(parents=True, exist_ok=True)
-            (graph / "_MOC.md").write_text(
-                f"# {project} — MOC\n\n## 🗓 Встречи\n", encoding="utf-8")
+            safe_write.write_text(graph / "_MOC.md",
+                                  f"# {project} — MOC\n\n## 🗓 Встречи\n")
             # Отдельной строкой и словами: новый граф — редкое событие, и если
             # он появился на рабочей встрече, это ошибка выбора, а не новая сфера.
             print(f"новый граф проекта: {graph.name} "
@@ -1010,7 +1007,7 @@ def main():
     vdir = graph / "Встречи"
     if graph_ok:
         vdir.mkdir(parents=True, exist_ok=True)
-        (vdir / f"{stamp}.md").write_text("\n".join(md), encoding="utf-8")
+        safe_write.write_text(vdir / f"{stamp}.md", "\n".join(md))
 
     # 3) строка в MOC
     moc = graph / "_MOC.md"
@@ -1022,7 +1019,7 @@ def main():
                 text = text.replace("## 🗓 Встречи", f"## 🗓 Встречи\n{line}", 1)
             else:
                 text += f"\n## 🗓 Встречи\n{line}\n"
-            moc.write_text(text, encoding="utf-8")
+            safe_write.write_text(moc, text)
 
     if graph_ok:
         print(f"граф обновлён: встреча {stamp}, людей {len(people)}, сущностей {len(ents)}, решений {len(decisions)}")
@@ -1052,7 +1049,7 @@ def main():
                     "category": "decision", "importance": 0.7, "meeting": stamp}, timeout=15)
             print(f"память Чароита: +{1 + min(len(decisions), 6)} фактов")
             brain_mark.parent.mkdir(parents=True, exist_ok=True)
-            brain_mark.write_text(f"{title}\n", encoding="utf-8")
+            safe_write.write_text(brain_mark, f"{title}\n")
         except Exception as e:  # noqa: BLE001 — brain может быть выключен, не валим граф
             print(f"память Чароита недоступна: {e}")
 
@@ -1096,7 +1093,7 @@ def main():
         if debrief.strip():
             slug2 = re.sub(r"[,;:!?.]", "", safe_name(title)).replace(" ", "_")[:50] if title else ""
             dpath = tpath.with_name(f"{stamp}_{slug2}_разбор.md" if slug2 else f"{stamp}_разбор.md")
-            dpath.write_text(f"<!-- {stamp} · {title or 'встреча'} -->\n" + debrief, encoding="utf-8")
+            safe_write.write_text(dpath, f"<!-- {stamp} · {title or 'встреча'} -->\n" + debrief)
             print(f"разбор: {dpath.name}")
     except Exception as e:
         print(f"разбор не удался: {e}")

@@ -364,3 +364,34 @@ def test_the_call_counter_never_breaks_recognition():
             )
             guarded = True
     assert guarded, "счётчик вызовов не обёрнут вовсе"
+
+
+def test_a_quiet_meeting_still_reports_stt_numbers():
+    """Спокойная встреча тоже обязана оставить цифры.
+
+    28.08: четыре встречи подряд прошли без единого отставания — и в логе не
+    осталось ни одной цифры по STT, потому что строка `state=lagging`
+    пишется только когда очередь растёт. Судить о конвейере пришлось бы по
+    единственному плохому дню, когда машина была занята моими же прогонами.
+    """
+    src = (pathlib.Path(__file__).resolve().parent.parent / "src"
+           / "daemon.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    assert "stt-summary" in src, "периодической сводки нет вовсе"
+    block = src[src.index('f"{dt.datetime.now():%H:%M:%S} stt-summary '):]
+    block = block[:block.index("file=sys.stderr")]
+    for field in ("calls=", "audio_s=", "rtf=", "shortest_s=", "state="):
+        assert field in block, f"сводка молчит о {field}"
+
+    # Сводка НЕ под условием lagging: иначе она повторит прежнюю ошибку.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        body = ast.dump(ast.Module(body=node.body, type_ignores=[]))
+        if "stt-summary" not in body:
+            continue
+        test = ast.dump(node.test)
+        assert "lag_log_due" not in test and "'lagging'" not in test, (
+            "сводка спрятана под условие отставания — спокойные встречи снова молчат"
+        )
