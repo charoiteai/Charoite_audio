@@ -1,4 +1,5 @@
 import Combine
+import AppKit
 import Foundation
 
 #if os(macOS)
@@ -82,6 +83,18 @@ final class VersionStatusService: ObservableObject {
     private init() {
         status = VersionStatus(state: .current(app: Self.appVersion))
         refresh()
+        // Проверка при возвращении к приложению, не только на старте: у
+        // приложения аптайм днями, и суточный кэш прятал свежий выпуск до
+        // завтра (№54). Троттл внутри fetchLatestIfDue — активаций много,
+        // запросов к GitHub от этого больше не становится.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                // Как в CalendarService: колбэк @Sendable и не наследует
+                // MainActor — прямой вызов refresh() здесь ловит либо
+                // компилятор, либо рантайм, смотря по SDK (DS, круг-1).
+                Task { @MainActor [weak self] in self?.refresh() }
+            }
     }
 
     static var appVersion: String {
@@ -112,19 +125,52 @@ final class VersionStatusService: ObservableObject {
         return (out?.isEmpty ?? true) ? nil : out
     }
 
-    func refresh() {
-        let code = Self.codeVersion(root: AppSettings.charoiteRoot)
+    private var cachedCode: String??
+    private var codeReadAt: Date?
+    /// `git describe` — синхронный subprocess, на каждую активацию он лишний
+    /// (DS, круг-1). Но и кэш «на весь аптайм» неверен: `git pull` делают
+    /// руками при работающем приложении, аптайм — дни, и строка версии
+    /// переставала лечиться сама в обе стороны (GLM, круг-3). Полминуты
+    /// снимают частые активации и оставляют строку живой.
+    nonisolated static let codeTTL: TimeInterval = 30
+
+    func refresh(force: Bool = false) {
+        if force || cachedCode == nil
+            || Date().timeIntervalSince(codeReadAt ?? .distantPast) >= Self.codeTTL {
+            cachedCode = .some(Self.codeVersion(root: AppSettings.charoiteRoot))
+            codeReadAt = Date()
+        }
         let latest = UserDefaults.standard.string(forKey: latestKey)
-        status = VersionStatus.compare(app: Self.appVersion, code: code, latest: latest)
-        fetchLatestIfDue()
+        status = VersionStatus.compare(app: Self.appVersion,
+                                       code: cachedCode ?? nil, latest: latest)
+        fetchLatestIfDue(force: force)
     }
 
-    /// Раз в сутки, и только если человек не запретил.
-    private func fetchLatestIfDue() {
+    /// Не чаще раза в четыре часа, и только если человек не запретил.
+    /// `force` — ручная кнопка: человек спросил — отвечаем сейчас, а не
+    /// «уже проверял утром». Сутки превращали день выпуска в день ожидания:
+    /// релиз выходил утром, а приложение узнавало о нём завтра (№54).
+    /// Пора ли идти в сеть — чистая функция, чтобы порог жил под тестом,
+    /// а не в голове: суточный порог однажды уже превратил день выпуска в
+    /// день ожидания, и заметили это по факту, а не по красному тесту.
+    nonisolated static func fetchDue(last: Date?, now: Date, force: Bool) -> Bool {
+        if force { return true }
+        guard let last else { return true }
+        return now.timeIntervalSince(last) >= 4 * 3600
+    }
+
+    private func fetchLatestIfDue(force: Bool = false) {
         guard AppSettings.checkUpdates else { return }
         let last = UserDefaults.standard.object(forKey: checkedKey) as? Date
-        if let last, Date().timeIntervalSince(last) < 24 * 3600 { return }
+        guard Self.fetchDue(last: last, now: Date(), force: force) else { return }
 
+        // Отметка — на ПОПЫТКУ и ДО запроса, не на успешный ответ: офлайн и
+        // rate-limit иначе снимали троттл, и каждая активация давала GET;
+        // заодно это гасит пересекающиеся запросы и дубль на старте (init
+        // зовёт refresh, активация тут же зовёт его снова) — второй заход
+        // видит свежую отметку и выходит (DS, круг-1, I2/I3). Цена: упавшая
+        // попытка повторится не раньше чем через 4 часа либо по кнопке.
+        UserDefaults.standard.set(Date(), forKey: checkedKey)
         let url = URL(string: "https://api.github.com/repos/charoiteai/Charoite_audio/releases/latest")!
         var req = URLRequest(url: url, timeoutInterval: 8)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -139,7 +185,6 @@ final class VersionStatusService: ObservableObject {
             else { return }   // нет связи — не повод для строки на экране
             Task { @MainActor in
                 UserDefaults.standard.set(tag, forKey: latestKey)
-                UserDefaults.standard.set(Date(), forKey: checkedKey)
                 self?.status = VersionStatus.compare(
                     app: Self.appVersion,
                     code: Self.codeVersion(root: AppSettings.charoiteRoot),
