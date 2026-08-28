@@ -1326,3 +1326,28 @@ def test_pipeline_deleting_an_edited_file_is_a_conflict_not_a_violation(tmp_path
     assert not node.exists(), "удалённый конвейером файл воскрешён"
     assert (qdir / "Люди" / "Иванов.md").is_file(), "версия облака не в карантине"
 
+def test_a_file_born_and_killed_by_the_pipeline_in_the_window_is_not_resurrected(tmp_path):
+    """Файл, что конвейер создал и убрал в окне T1..T2, не воскрешается.
+
+    DS круг-3: before=snapshot (файла нет), конвейер создал его до
+    снимка-каталога (в снимок попал), потом удалил из графа. existed=False,
+    current=None, before.get=None — единый чек молчал бы, и перенос
+    воскресил бы файл содержимым снимка, приписав облаку. Вторая половина
+    условия «нет в графе, но есть в снимке» ловит это как конфликт.
+    """
+    graph = _graph(tmp_path)
+    born = graph / "Встречи" / "рождённый_конвейером.md"
+
+    before = cloud_review.snapshot(graph)          # T1: файла нет
+    born.write_text("# конвейер завёл\n", encoding="utf-8")   # T1..T2
+    backup = cloud_review.backup_graph(graph, "снимок")        # снимок с файлом
+    pen = cloud_review.backup_graph(graph, "песочница", source=backup)
+    born.unlink()                                  # конвейер убрал из графа
+
+    v = cloud_review.apply_from_copy(before, pen, graph, tmp_path / "q",
+                                     backup=backup, valid=True)
+
+    assert not born.exists(), "файл воскрешён из снимка и приписан облаку"
+    assert "Встречи/рождённый_конвейером.md" in v.conflicts
+    assert "Встречи/рождённый_конвейером.md" not in v.applied
+
