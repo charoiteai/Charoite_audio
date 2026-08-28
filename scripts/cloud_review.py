@@ -13,7 +13,7 @@
     ждёт процесс с таймаутом → проверяет код возврата и то, что ответ похож на
     ревизию → публикует файл атомарно;
     в режиме записи снимает бэкап графа ДО запуска и после сверяет, что тронуто
-    только разрешённое, а нарушения откатывает.
+    только разрешённое, а запрещённое не переносит.
 
 Границы узкие намеренно. Облако дообогащает граф: узлы, ядра, заметки встреч.
 Стенограммы, минутки и раздел «## Правки автора» неприкосновенны — это то, что
@@ -287,19 +287,6 @@ def snapshot(graph: pathlib.Path) -> dict[str, str]:
     return {str(p.resolve()): _digest(p) for p in graph_files(graph)}
 
 
-def changed_since(before: dict[str, str], graph: pathlib.Path) -> list[pathlib.Path]:
-    """Что изменилось, появилось или ИСЧЕЗЛО после запуска облака.
-
-    Удалённые — обязательно: diff только по текущим файлам делает удаление
-    невидимым, то есть стереть узел облаку было «можно» просто потому, что
-    сравнивать становилось нечего.
-    """
-    now = snapshot(graph)
-    touched = [pathlib.Path(k) for k, v in now.items() if before.get(k) != v]
-    touched += [pathlib.Path(k) for k in before if k not in now]
-    return touched
-
-
 def backup_root(graph: pathlib.Path) -> pathlib.Path:
     """Каталог со снимками этого графа — в данных Чароита, не в графе."""
     # root — корень ДАННЫХ этой установки (CHAROITE_ROOT), а не папка кода:
@@ -382,10 +369,10 @@ def quarantine_root(graph: pathlib.Path) -> pathlib.Path:
     return charoite_paths.graph_backups(graph, QUARANTINE_KIND, root=ROOT)
 
 
-def quarantine(path: pathlib.Path, graph: pathlib.Path, qdir: pathlib.Path, *,
+def quarantine(path: pathlib.Path, base: pathlib.Path, qdir: pathlib.Path, *,
                move: bool) -> None:
-    """Отложить версию облака в карантин: копией (файл будет восстановлен
-    из бэкапа) или переносом (файла до запуска не было — убрать, не стирая).
+    """Отложить версию облака в карантин: путь в карантине повторяет путь
+    относительно `base` — песочницы при переносе, графа при уборке.
 
     Сверка больше ничего не удаляет безвозвратно: её «нарушение» может быть
     и правкой человека, сделанной за те же полчаса (карточка №40), и
@@ -393,7 +380,7 @@ def quarantine(path: pathlib.Path, graph: pathlib.Path, qdir: pathlib.Path, *,
     и человек решает сам.
     """
     try:
-        rel = path.resolve().relative_to(graph.resolve())
+        rel = path.resolve().relative_to(base.resolve())
     except (ValueError, OSError):
         rel = pathlib.Path(path.name)
     target = qdir / rel
@@ -495,11 +482,10 @@ def edits_in_copy(before: dict[str, str], copy: pathlib.Path,
                   graph: pathlib.Path) -> list[pathlib.Path]:
     """Что облако сделало в своей копии: пути ОТНОСИТЕЛЬНО корня графа.
 
-    Отдельная функция, а не `changed_since`: та сравнивает снимок с тем же
-    каталогом, из которого он снят, и ключи в ней — абсолютные пути. Дать
-    ей копию значит объявить изменённым КАЖДЫЙ файл графа — корни разные,
-    ни один ключ не совпадает. Живой прогон 28.08 показал ровно это: одна
-    правка, а «изменилось 2».
+    Сравнение нарочно своё, по относительным путям: сравнивать снимок с
+    копией по абсолютным ключам значит объявить изменённым КАЖДЫЙ файл —
+    корни разные, ни один ключ не совпадает. Живой прогон 28.08 показал
+    ровно это: одна правка, а «изменилось 2».
 
     Возвращаются относительные пути: файл может существовать в копии, в
     графе, или уже нигде — вызывающий строит из rel обе стороны сам.
@@ -578,25 +564,31 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
             if new is None:                       # облако стёрло файл
                 # Удаление НЕ переносим: у облака нет причин стирать чужое,
                 # а восстановление стёртого — это и был откат, из-за
-                # которого №119 унёс артефакты соседней встречи.
-                v.deleted.append(name)
+                # которого №119 унёс артефакты соседней встречи. Если файла
+                # нет уже и в графе (конвейер стёр его в окне снимка) —
+                # молчим: писать «в графе ОСТАВЛЕНО» про несуществующее
+                # значит врать в лог (GLM, круг-1).
+                if gpath.exists():
+                    v.deleted.append(name)
                 continue
             why = judge(gpath, graph, old, new, existed)
             if why is not None:
                 quarantine(cpath, copy, qdir, move=False)
                 (v.removed if not existed else v.reverted).append(name)
                 continue
-            if ((existed and _digest(gpath) != before[key])
-                    or (not existed and gpath.exists())):
-                # Конвейер успел, пока облако думало: дописал существующий
-                # файл (минутки, хроника ядра) или СОЗДАЛ новый узел — при
-                # разборе соседней встречи upsert_entity заводит людей и
-                # системы, не беря замка. Живая работа побеждает в обоих
-                # случаях: правка облака — в карантин. Без второй половины
-                # условия новый файл был единственным местом, где побеждало
-                # облако (DS, круг-1 по #447). Она же ловит запись сквозь
-                # симлинк-каталог графа в существующий файл: резолв уводит
-                # путь из-под точки, но цель-то существует.
+            current = _digest(gpath) if gpath.exists() else None
+            if current != before.get(key):
+                # В графе уже не то, что было на снимке, — значит, туда
+                # писал конвейер, пока облако думало: дописал существующий
+                # файл (минутки, хроника ядра), создал новый узел (upsert
+                # соседней встречи, замка он не берёт) или создал его в
+                # окне между снимком и клоном песочницы (GLM, круг-1) —
+                # тогда файл есть в песочнице, но его нет в снимке, и без
+                # этой ветки перенос записал бы поверх живого состояние
+                # клона. Живая работа побеждает всегда: правка облака — в
+                # карантин. Один чек закрывает обе находки круга-1 (DS и
+                # GLM) и запись сквозь симлинк-каталог графа в существующий
+                # файл: резолв уводит путь из-под точки, но цель существует.
                 quarantine(cpath, copy, qdir, move=False)
                 v.conflicts.append(name)
                 continue
@@ -840,12 +832,17 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     finally:
         # Сверка — раньше всего и без зависимости от лога: падение log.open
         # (права, ENOSPC, EMFILE) не должно обходить откат (круг-2, DS+Codex).
-        if may_edit and backup is not None and not backup.is_dir():
-            # Снимок исчез — с замком графа так может только внешняя рука.
-            # Без копии enforce не откатывает, а УДАЛЯЕТ: restore видит
-            # пустоту. Честнее не трогать файлы и сказать громко.
-            lines.append("[cloud-review] СНИМОК ИСЧЕЗ — границы не сверяю, "
-                         "файлы не трогаю; проверь правки руками\n")
+        if may_edit and backup is not None and (
+                not backup.is_dir() or cloud_pen is None
+                or not cloud_pen.is_dir()):
+            # Снимок или песочница исчезли — под замком графа так может
+            # только внешняя рука (или зачистка при ENOSPC). Судить не по
+            # чему: пустая песочница выглядела бы как «облако стёрло всё»
+            # (luna, I3), а без снимка не отличить правку от чужой. Честнее
+            # не трогать граф и сказать громко. checked остаётся False —
+            # доставка ревизии в защищённые папки не пойдёт.
+            lines.append("[cloud-review] СНИМОК ИЛИ ПЕСОЧНИЦА ИСЧЕЗЛИ — "
+                         "правки облака не переношу; проверь руками\n")
         elif may_edit and backup is not None:
             # Карантин — по ТОЧНОМУ стему стенограммы (с секундами, если они
             # есть) и времени до микросекунд: две встречи одной минуты и два
@@ -859,7 +856,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 # переносится: граф не был тронут вовсе.
                 v = apply_from_copy(before, cloud_pen, graph, qdir,
                                     backup=backup, valid=ok and published)
-                checked = v.touched >= 0 and not v.failed
+                checked = not v.failed
                 lines.append(_verdict_line(v, qdir))
                 # Песочница отработала — убираем. При падении переноса она
                 # ОСТАЁТСЯ: там работа облака целиком, и человеку есть на
@@ -926,7 +923,9 @@ def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:
         parts.append(f"создано в служебной зоне — в карантин: {', '.join(v.removed)}")
     if v.failed:
         parts.append(f"ПЕРЕНОС НЕ СМОГ (ошибка диска/прав): {', '.join(v.failed)}")
-    if v.violations:
+    if v.reverted or v.removed or v.conflicts:
+        # именно то, что реально ЛЕЖИТ в карантине: удаления туда не
+        # кладутся — файла в песочнице нет (luna, M2)
         parts.append(f"версии облака в карантине {qdir}")
     return ", ".join(parts) + "\n"
 

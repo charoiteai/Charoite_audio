@@ -83,7 +83,7 @@ def test_snapshot_and_obsidian_folders_are_off_limits(tmp_path):
         assert not cloud_review.may_write(hidden, graph), hidden
 
 
-def test_hidden_paths_are_watched_and_restored(tmp_path):
+def test_hidden_paths_are_seen_and_fenced(tmp_path):
     """Запрет без сверки — не запрет: snapshot и бэкап раньше пропускали
     dot-пути, а `Edit(/**)` их не исключает — правка .obsidian или снимка
     tier3 была невидимой и необратимой (Codex, Critical 22.08)."""
@@ -183,15 +183,17 @@ def test_author_section_changes_are_rejected(tmp_path):
     assert not cloud_review.author_section_changed(before, ok)
 
 
-def test_snapshot_notices_added_changed_and_untouched(tmp_path):
+def test_edits_in_copy_sees_added_changed_deleted_and_skips_untouched(tmp_path):
     graph = _graph(tmp_path)
     before = cloud_review.snapshot(graph)
-    (graph / "Ядра" / "Новое.md").write_text("# Новое\n", encoding="utf-8")
-    (graph / "Встречи" / "2026-07-15_1400.md").write_text("# Встреча\nправка\n",
-                                                          encoding="utf-8")
-    changed = cloud_review.changed_since(before, graph)
-    names = {p.name for p in changed}
-    assert names == {"Новое.md", "2026-07-15_1400.md"}, names
+    pen = cloud_review.backup_graph(graph, "песочница")
+    (pen / "Ядра" / "Новое.md").write_text("# Новое\n", encoding="utf-8")
+    (pen / "Встречи" / "2026-07-15_1400.md").write_text("# Встреча\nправка\n",
+                                                        encoding="utf-8")
+    (pen / "Документация" / "Стенограммы встреч" / "2026-07-15_1400.md").unlink()
+    rels = {r.as_posix() for r in cloud_review.edits_in_copy(before, pen, graph)}
+    assert rels == {"Ядра/Новое.md", "Встречи/2026-07-15_1400.md",
+                    "Документация/Стенограммы встреч/2026-07-15_1400.md"}, rels
 
 
 def test_archive_folders_are_untouchable(tmp_path):
@@ -202,7 +204,7 @@ def test_archive_folders_are_untouchable(tmp_path):
     assert not cloud_review.may_write(arch / "Минутки.md", graph)
 
 
-def test_deleted_file_is_seen_and_restored(tmp_path):
+def test_deleted_file_is_seen_and_kept_in_graph(tmp_path):
     """Удаление — тоже правка: diff только по живым файлам его не видел."""
     graph = _graph(tmp_path)
     core = graph / "Ядра" / "Платёжный провайдер.md"
@@ -929,7 +931,11 @@ def test_anything_executable_planted_in_a_dot_folder_is_taken_away(tmp_path):
             if f.parent.name == "hooks":
                 f.chmod(0o755)   # git-хук опасен ровно с битом исполнения
 
+    graph_before = cloud_review.snapshot(graph)
     v, qdir = _cloud_worked(graph, tmp_path, worked)
+    # точечные exists ниже зелёные и на пустом переносе (GLM, M6) — а вот
+    # неизменность ВСЕГО графа при трёх подкинутых файлах не подделать
+    assert cloud_review.snapshot(graph) == graph_before, "перенос тронул граф"
 
     for rel in rels:
         assert not (graph / rel).exists(), f"подложенное {rel} перенесено в граф"
@@ -1128,4 +1134,102 @@ def test_rewriting_a_node_from_scratch_stays_in_quarantine_but_a_stub_passes(tmp
     assert "Ядра/Провайдер платежей.md" in v.applied
     # дописанные факты и смена статуса — не переписывание
     assert cloud_review.retention(body, body.replace("Решено", "В работе") + "- факт 9\n") > 0.8
+
+def test_pipeline_file_created_during_snapshot_window_is_not_applied(tmp_path, monkeypatch):
+    """Окно между снимком и клоном песочницы — тоже не земля облака.
+
+    GLM, круг-1 по #447: снимок (T1) и клон песочницы (T3) — два обхода
+    графа, на большом томе десятки секунд. Файл, созданный конвейером в
+    T1..T3, попадает в песочницу, но не в снимок — и выглядел бы правкой
+    облака: «existed=False», конфликтный чек мимо, safe_write поверх
+    живого. Единый чек «в графе уже не то, что на снимке» ловит и это.
+    """
+    graph = _graph(tmp_path)
+    late = graph / "Встречи" / "2026-08-28_0900.md"
+    real = cloud_review.backup_graph
+
+    def backup(g, stamp):
+        dest = real(g, stamp)
+        if stamp == "песочница":              # клонится второй, T3
+            late.write_text("# Встреча\nконвейер, черновик\n", encoding="utf-8")
+            # песочница уже снята с файлом? нет: файл создан ПОСЛЕ клона —
+            # доиграем окно честно, докинув его в песочницу руками, как
+            # это сделал бы клон, сними мы его миллисекундой позже
+            (dest / "Встречи" / "2026-08-28_0900.md").write_text(
+                "# Встреча\nконвейер, черновик\n", encoding="utf-8")
+        return dest
+
+    monkeypatch.setattr(cloud_review, "backup_graph", backup)
+    before = cloud_review.snapshot(graph)
+    backup_dir = cloud_review.backup_graph(graph, "снимок")
+    pen = cloud_review.backup_graph(graph, "песочница")
+    # конвейер продолжает работать после T3 — дописывает свой файл в графе
+    late.write_text("# Встреча\nконвейер, дописано после T3\n", encoding="utf-8")
+
+    v = cloud_review.apply_from_copy(before, pen, graph, tmp_path / "q",
+                                     backup=backup_dir, valid=True)
+
+    assert late.read_text(encoding="utf-8") == "# Встреча\nконвейер, дописано после T3\n", (
+        "перенос записал поверх живого файла состояние клона"
+    )
+    assert "Встречи/2026-08-28_0900.md" in v.conflicts
+    assert "Встречи/2026-08-28_0900.md" not in v.applied
+
+def test_a_vanished_sandbox_is_loud_and_does_not_look_like_mass_deletion(tmp_path, monkeypatch):
+    """Исчезнувшая песочница — не «облако стёрло всё», а громкий отказ.
+
+    luna, круг-1 по #447: apply_from_copy по пустой копии объявил бы
+    удалёнными ВСЕ файлы графа. Вреда переносу нет (удаления не
+    переносятся), но checked стал бы True, доставка пошла бы, а лог врал.
+    """
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        import shutil as sh
+        sh.rmtree(kwargs["cwd"])          # внешняя рука унесла песочницу
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 1
+    text = log.read_text(encoding="utf-8")
+    assert "ПЕСОЧНИЦА ИСЧЕЗЛИ" in text
+    assert "стёрто облаком" not in text, "исчезнувшая песочница названа удалением"
+    assert not (graph / "Встречи-архив").exists(), "доставка пошла без переноса"
+
+def test_end_to_end_an_allowed_edit_travels_from_sandbox_to_graph(tmp_path, monkeypatch):
+    """Полный путь через run(): правка в песочнице доезжает до графа.
+
+    luna, M1: хелпер зовёт apply_from_copy напрямую, и сломанный wiring
+    run() (cwd, снимки, публикация, перенос в finally) тесты бы не увидели.
+    """
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    node = graph / "Встречи" / f"{stamp}.md"
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        (pathlib.Path(kwargs["cwd"]) / "Встречи" / f"{stamp}.md").write_text(
+            "# Встреча\nобогатило облако\n", encoding="utf-8")
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 0
+    assert node.read_text(encoding="utf-8") == "# Встреча\nобогатило облако\n", (
+        "разрешённая правка не доехала из песочницы до графа"
+    )
+    assert "перенесено в граф: Встречи/2026-07-15_1400.md" in log.read_text(encoding="utf-8")
 
