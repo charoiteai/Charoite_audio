@@ -752,6 +752,13 @@ def main():
         last_diarization_ms = 0.0
         last_transcription_ms = 0.0
         last_audio_s = 0.0
+        # Сколько раз за цикл звали модель и каким был самый короткий кусок.
+        # Без этого «audio_s=6.0» не отличает один вызов на шесть секунд от
+        # двенадцати по полсекунды, а цена у них разная: на короткий кусок
+        # ложится та же фиксированная работа (замер 27.08: 0,3 с идут на
+        # 13,7x против 29x на десяти секундах).
+        last_stt_calls = 0
+        last_shortest_s = 0.0
         lagging = False
 
         def report_progress(*, force: bool = False) -> None:
@@ -784,6 +791,8 @@ def main():
                 "diarization_ms": round(last_diarization_ms),
                 "transcription_ms": round(last_transcription_ms),
                 "audio_s": round(last_audio_s, 2),
+                "stt_calls": last_stt_calls,
+                "shortest_s": round(last_shortest_s, 2),
                 "rtf": stt_runtime.realtime_factor(last_audio_s,
                                                    last_transcription_ms),
                 "recording_ok": health["recording_ok"],
@@ -804,6 +813,8 @@ def main():
                       f"diarization_ms={last_diarization_ms:.0f} "
                       f"transcription_ms={last_transcription_ms:.0f} "
                       f"audio_s={last_audio_s:.1f} "
+                      f"calls={last_stt_calls} "
+                      f"shortest_s={last_shortest_s:.1f} "
                       f"rtf={'?' if rtf is None else f'{rtf:.1f}'} "
                       f"input_age_s={age_text}",
                       file=sys.stderr, flush=True)
@@ -882,6 +893,8 @@ def main():
             # медленная или кусок большой. С ним считается RTF, и причина
             # отставания обсуждается по цифре, а не по догадке (№105).
             cycle_audio_s = 0.0
+            cycle_stt_calls = 0
+            cycle_shortest_s = 0.0
             for speaker, chunk in batch:
                 # Признак «собеседников слышно» — ЗДЕСЬ, до STT и до любых
                 # отсевов. Раньше он стоял после распознавания, и короткие
@@ -965,7 +978,11 @@ def main():
                         cycle_transcription_ms += (
                             time.monotonic() - transcription_started) * 1000
                         try:
-                            cycle_audio_s += len(piece) / float(hub.sr)
+                            piece_s = len(piece) / float(hub.sr)
+                            cycle_audio_s += piece_s
+                            cycle_stt_calls += 1
+                            if cycle_shortest_s == 0.0 or piece_s < cycle_shortest_s:
+                                cycle_shortest_s = piece_s
                         except (TypeError, ValueError, ZeroDivisionError):
                             pass        # телеметрия не смеет ронять распознавание
                         mark_stt_stage("postprocess")
@@ -1059,6 +1076,8 @@ def main():
             last_diarization_ms = cycle_diarization_ms
             last_transcription_ms = cycle_transcription_ms
             last_audio_s = cycle_audio_s
+            last_stt_calls = cycle_stt_calls
+            last_shortest_s = cycle_shortest_s
             mark_stt_stage("idle")
             report_progress()
 

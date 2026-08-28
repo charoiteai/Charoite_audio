@@ -302,3 +302,57 @@ def test_hint_pulse_names_the_reason_and_separates_waiting_from_work():
 
     assert 'hint_state["manual" if manual else "auto"]' in src, \
         "ручная и авто подсказки снова пишут в одно поле"
+
+
+def test_lag_line_says_how_many_times_the_model_was_called():
+    """«audio_s=6.0» не отличает один вызов от двенадцати коротких.
+
+    Замер 27.08: кусок 0,3 с идёт на 13,7x, а десять секунд — на 29x, то
+    есть цена вызова фиксированная и на дроблении теряется вдвое. Без числа
+    вызовов и длины самого короткого куска полевой RTF не разложить на
+    «медленная модель» и «много мелких заходов», а чинить надо разное.
+    """
+    src = (pathlib.Path(__file__).resolve().parent.parent / "src"
+           / "daemon.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    # строка отставания несёт оба поля
+    lag = src[src.index('stt-health state=lagging'):]
+    lag = lag[:lag.index("file=sys.stderr")]
+    for field in ("calls=", "shortest_s="):
+        assert field in lag, f"строка отставания молчит о {field}"
+
+    # и событие для приложения — тоже
+    assert '"stt_calls"' in src and '"shortest_s"' in src, (
+        "поля есть в логе, но не в stt_progress — приложение их не увидит"
+    )
+
+    # счётчик стоит там же, где считаются секунды звука: иначе они разъедутся
+    counted = [n for n in ast.walk(tree)
+               if isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name)
+               and n.target.id in ("cycle_audio_s", "cycle_stt_calls")]
+    assert len(counted) >= 2, "звук и вызовы считаются не вместе"
+
+
+def test_the_call_counter_never_breaks_recognition():
+    """Телеметрия падает — распознавание продолжается.
+
+    Тот же контракт, что у подсчёта звука: деление на ноль или странный
+    кусок не должны ронять поток STT.
+    """
+    src = (pathlib.Path(__file__).resolve().parent.parent / "src"
+           / "daemon.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    guarded = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        body = ast.dump(ast.Module(body=node.body, type_ignores=[]))
+        if "cycle_stt_calls" in body and "cycle_audio_s" in body:
+            names = {n.id for h in node.handlers for n in ast.walk(h.type or ast.Name(id=""))
+                     if isinstance(n, ast.Name)}
+            assert {"TypeError", "ValueError", "ZeroDivisionError"} <= names, (
+                f"счётчик вызовов прикрыт не теми исключениями: {names}"
+            )
+            guarded = True
+    assert guarded, "счётчик вызовов не обёрнут вовсе"
