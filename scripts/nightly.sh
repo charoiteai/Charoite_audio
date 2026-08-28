@@ -238,6 +238,12 @@ else
   $PY scripts/dedup_graph.py || { echo "⚠️ дедупликация файлов не отработала"; FAILED="$FAILED дедуп"; }
 fi
 
+step "folder indexes"
+# Полная пересборка указателей Люди/Системы/Команды: днём их пишет каждая
+# встреча только по тронутым папкам, и две параллельные встречи могут
+# затереть строку друг друга (luna I8) — ночь приводит к точному виду.
+$PY -c "import sys; sys.path.insert(0, 'src'); import graphs, graph_updater as g; [g.rebuild_folder_index(gr, f) for gr in graphs.all_graphs('Ядра') for f in g.FOLDER_INDEX]" \
+  || { echo "⚠️ указатели папок не пересобраны"; FAILED="$FAILED указатели"; }
 step "graph doctor (итог ночи)"
 # Второй замер — после tier3, досье и дедупа: утренний бриф показывает
 # цифры ПОСЛЕ ночных слияний, а не до них (GLM, круг-1 по #448 M13).

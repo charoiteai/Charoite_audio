@@ -389,8 +389,10 @@ def tidy_links(text: str) -> str:
     def join(m: re.Match) -> str:
         inner = " ".join(m.group(1).split())
         # перенос на границе с «/» давал «[[Системы/ Витрина]]» — тоже мёртвая
-        # ссылка; слэш внутри [[…]] всегда разделитель папки (GLM, круг-1 #448)
-        return "[[" + re.sub(r"\s*/\s*", "/", inner) + "]]"
+        # ссылка; слэш в ЦЕЛИ всегда разделитель папки (GLM, круг-1 #448);
+        # алиас после «|» — отображаемый текст, его не трогаем (luna M2)
+        target, sep, alias = inner.partition("|")
+        return "[[" + re.sub(r"\s*/\s*", "/", target) + sep + alias + "]]"
     return _LINK_WS_RE.sub(join, text)
 
 
@@ -463,7 +465,7 @@ def canon_link(graph: pathlib.Path, name: str, default_folder: str | None = None
     и Obsidian плодит фантомные дубли. Узла нет — default_folder, куда его
     создаст upsert_entity; совсем без папки — короткая [[Имя]].
     """
-    p = find_canonical(graph, name)
+    p = find_canonical(graph, name, folder=default_folder)   # luna I1: папка и в ссылке
     if p is not None:
         return f"[[{p.parent.name}/{p.stem}|{p.stem}]]"
     disp = safe_name(name)
@@ -504,35 +506,39 @@ def find_canonical(graph: pathlib.Path, name: str,
     """
     n = safe_name(name).casefold()
     key = name_key(name)
+    places = ("Люди", "Команды", "Системы", "Модели", "Блокеры", "Ядра")
+    files = [f for place in places if (graph / place).exists()
+             for f in sorted((graph / place).glob("*.md")) if not f.name.startswith("_")]
+    # Три прохода, а не один с ранним return: совпадение по ключу в первой
+    # папке перебивало ТОЧНОЕ имя в следующей (luna, круг-1 #448 I2).
+    # 1) точное имя — по всем папкам (иначе дубль системы возрождался)
+    for f in files:
+        if f.stem.casefold() == n:
+            return f
+    # 2) ключ без пунктуации/скобок/дефисов — только в целевой папке записи
+    #    и только если кандидат один: «ИИ-агент» в Людях и «ИИ_агент» в
+    #    Системах — не один узел (DS I1); два кандидата — не гадаем
+    if key:
+        keyed = [f for f in files if name_key(f.stem) == key
+                 and (folder is None or f.parent.name == folder)]
+        if len(keyed) == 1:
+            return keyed[0]
+        if keyed and ambiguous is not None:
+            ambiguous.extend(f.stem for f in keyed)
+    # 3) подстрока — только для достаточно длинных имён и близких по длине
+    #    пар; при заданной папке — только в ней (luna I3: «Платёж» из Систем
+    #    дописывался в Люди/Платёжный). Двухбуквенное «Ян» входило в
+    #    «Январский релиз», «БД» — в «Обновление БД витрин»; «Риски»
+    #    проглатывали «Отчётность по рискам» — отсюда пороги.
     candidates: list[pathlib.Path] = []
-    # переменная цикла НЕ `folder`: она затеняла бы параметр, и проверка
-    # «та же папка» была бы всегда истинной (поймано тестом, круг-1 #448)
-    for place in ("Люди", "Команды", "Системы", "Модели", "Блокеры", "Ядра"):
-        d = graph / place
-        if not d.exists():
+    for f in files:
+        if folder is not None and f.parent.name != folder:
             continue
-        for f in d.glob("*.md"):
-            if f.name.startswith("_"):
-                continue      # _ЛЮДИ.md, _ЯДРА.md — указатели, не узлы (GLM M7)
-            stem = f.stem.casefold()
-            # Точное имя всегда выигрывает (иначе дубль системы возрождался).
-            # Совпадение по ключу без пунктуации и скобок (name_key) — только
-            # в целевой папке записи: «ИИ-агент» в Людях и «ИИ_агент» в
-            # Системах — не один узел, а первое совпадение по всем папкам
-            # приклеило бы систему к человеку (DS, круг-1 по #448 I1).
-            if stem == n or (key and name_key(f.stem) == key
-                             and (folder is None or f.parent.name == folder)):
-                return f
-            # Подстрока — только для достаточно длинных имён и близких по
-            # длине пар. Двухбуквенное «Ян» из распознавания входило в
-            # «Январский релиз», «БД» — в «Обновление БД витрин»; при
-            # единственном совпадении функция уверенно возвращала чужой узел,
-            # и встреча дописывалась не туда. В обратную сторону так же:
-            # «Риски» проглатывали «Отчётность по рискам».
-            if len(n) < 5 or len(stem) < 5:
-                continue
-            if (n in stem or stem in n) and abs(len(n) - len(stem)) <= max(len(n), len(stem)) // 2:
-                candidates.append(f)
+        stem = f.stem.casefold()
+        if len(n) < 5 or len(stem) < 5:
+            continue
+        if (n in stem or stem in n) and abs(len(n) - len(stem)) <= max(len(n), len(stem)) // 2:
+            candidates.append(f)
     if len(candidates) == 1:
         return candidates[0]
     if candidates and ambiguous is not None:
@@ -819,7 +825,9 @@ def resolve_core_path(d: pathlib.Path, name: str,
     # но молчать тоже нельзя: говорим в лог, doctor покажет утром.
     if graph is not None and not p.exists():
         other = find_canonical(graph, name)
-        if other is not None and other.parent != d:
+        if other is not None and other.parent == d:
+            p = other          # «А-Б» и «А Б» — одно ядро, не два (luna I4)
+        elif other is not None:
             print(f"граф: ядро «{name}» уже есть узлом {other.parent.name}/{other.stem} — "
                   "заведено параллельное ядро, возможный дубль (свести руками)")
     # Идём до КОНЦА цепи, а не фиксированные три шага: цепочка A→B→C→D→E
@@ -935,8 +943,9 @@ def rebuild_folder_index(graph: pathlib.Path, folder: str) -> None:
         # только секция «## Встречи»: ссылка на старую встречу в прозе от облака
         # завышала счётчик и «последнюю» (GLM M12)
         m = re.search(r"## Встречи\n(.*?)(?=\n## |\Z)", text, re.S)
-        dates = set(re.findall(r"\[\[Встречи/(\d{4}-\d{2}-\d{2})", m.group(1) if m else text))
-        rows.append((max(dates) if dates else "", len(dates), p.stem))
+        stamps = set(re.findall(r"\[\[Встречи/(\d{4}-\d{2}-\d{2}[^\]|#]*)", m.group(1) if m else text))
+        dates = {s[:10] for s in stamps}          # две встречи одного дня — две (luna M1)
+        rows.append((max(dates) if dates else "", len(stamps), p.stem))
     rows.sort(key=lambda r: (r[0], r[1], r[2]), reverse=True)
     lines = [f"# {folder} — указатель\n",
              "Автоматически после каждой встречи: узел, число встреч, последнее "
@@ -1097,7 +1106,12 @@ def main():
 
     touched = ({"Люди"} if people else set()) | {ENT_FOLDER.get(e.get("тип", ""), "Системы") for e in ents}
     for folder in sorted(touched & set(FOLDER_INDEX)):
-        rebuild_folder_index(graph, folder)      # только тронутые папки (DS I3)
+        try:
+            rebuild_folder_index(graph, folder)      # только тронутые папки (DS I3)
+        except OSError as e:
+            # указатель — производный вид: его сбой не должен ронять встречу
+            # (ядра, заметку, архив, хук) — ночь пересоберёт (luna I7)
+            print(f"граф: указатель {folder} не записан ({e})")
 
     # 1б) ядра: сквозные темы/задачи — статус обновляется, хроника копится
     cores = [c for c in (data.get("ядра") or [])

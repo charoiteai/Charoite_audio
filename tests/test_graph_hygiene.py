@@ -279,8 +279,10 @@ def test_placeholder_variants_and_folder_scoped_name_key(tmp_path, capsys):
     g.upsert_entity(graph, "Системы", "ИИ_агент", "система", "сервис", "Встречи/2026-08-01_1000", "")
     assert (graph / "Системы" / "ИИ_агент.md").exists(), "система склеилась с человеком"
     assert "2026-08-01" not in person.read_text(encoding="utf-8")
-    # но ссылка без папки по-прежнему находит узел по ключу
-    assert g.find_canonical(graph, "ИИ агент") is not None
+    # без папки при двух ключ-равных узлах в разных папках — не гадаем (luna I1/I2)
+    assert g.find_canonical(graph, "ИИ агент") is None
+    assert g.find_canonical(graph, "ИИ агент", folder="Системы") == graph / "Системы" / "ИИ_агент.md"
+    assert g.canon_link(graph, "ИИ_агент", "Системы") == "[[Системы/ИИ_агент|ИИ_агент]]"
     # «связи»/сущности: метка — текстом, узла нет
     assert g.link_or_text(graph, "Собеседник-3") == "Собеседник-3"
     # заглушка ядра, указывающая в Люди: статус остаётся у заглушки, не уходит в чужой узел
@@ -332,3 +334,52 @@ def test_glm_round_one_fixes(tmp_path):
     rep = graph_doctor.inspect(graph, examples=20)
     ivan = [x for x in rep["examples"]["broken"] if x.startswith("Люди/Иван.md")]
     assert ivan == ["Люди/Иван.md -> [[Системы/ Витрина]]"], rep["examples"]["broken"]
+
+
+
+def test_luna_round_one_fixes(tmp_path):
+    """Круг-1 по #448 (luna r2): точное имя важнее ключа из соседней папки;
+    подстрока не выходит за целевую папку; ключ-эквивалентное ядро в той же
+    папке переиспользуется; встречи считаются по штампу; алиас ссылки цел."""
+    graph = tmp_path / "g"
+    for d in ("Люди", "Системы", "Ядра"):
+        (graph / d).mkdir(parents=True)
+    (graph / "Люди" / "А-Б.md").write_text("# А-Б\n", encoding="utf-8")
+    (graph / "Системы" / "А Б.md").write_text("# А Б\n", encoding="utf-8")
+    assert g.find_canonical(graph, "А Б") == graph / "Системы" / "А Б.md", "точное имя проиграло ключу"
+    (graph / "Люди" / "Платёжный.md").write_text("# Платёжный\n", encoding="utf-8")
+    g.upsert_entity(graph, "Системы", "Платёж", "система", "", "Встречи/2026-08-01_1000", "")
+    assert (graph / "Системы" / "Платёж.md").exists(), "подстрока увела систему в Люди"
+    assert "2026-08-01" not in (graph / "Люди" / "Платёжный.md").read_text(encoding="utf-8")
+    (graph / "Ядра" / "Сбой-Х.md").write_text("# Сбой-Х\n## Статус\nидёт\n", encoding="utf-8")
+    assert g.resolve_core_path(graph / "Ядра", "Сбой Х", graph) == graph / "Ядра" / "Сбой-Х.md"
+    (graph / "Люди" / "Пётр.md").write_text(
+        "# Пётр\n## Встречи\n- [[Встречи/2026-08-01_1000]]\n- [[Встречи/2026-08-01_1400|вечер]]\n", encoding="utf-8")
+    g.rebuild_folder_index(graph, "Люди")
+    assert "| [[Люди/Пётр\\|Пётр]] | 2 | 2026-08-01 |" in (graph / "Люди" / "_ЛЮДИ.md").read_text(encoding="utf-8")
+    assert g.tidy_links("[[Ядра/X|до / после]]") == "[[Ядра/X|до / после]]"
+    assert g.tidy_links("[[Ядра/\nX|до / после]]") == "[[Ядра/X|до / после]]"
+    # сбой записи указателя не роняет конвейер: каталог на месте файла
+    (graph / "Люди" / "_ЛЮДИ.md").unlink()
+    (graph / "Люди" / "_ЛЮДИ.md").mkdir()
+    try:
+        g.rebuild_folder_index(graph, "Люди")
+    except OSError:
+        pass                    # сам вызов может кинуть OSError — конвейер его ловит
+
+
+def test_dossier_takes_stub_target_from_the_heading_not_frontmatter(tmp_path):
+    """dossier.scan: редирект заглушки — из первой строки заголовка; ссылка во
+    frontmatter уводила входящие к чужому узлу (luna I5)."""
+    import dossier
+    graph = tmp_path / "g"
+    (graph / "Ядра").mkdir(parents=True)
+    (graph / "Встречи").mkdir()
+    (graph / "Ядра" / "Канон.md").write_text("# Канон\n## Статус\nидёт\n- факт\n", encoding="utf-8")
+    (graph / "Ядра" / "Чужой.md").write_text("# Чужой\n## Статус\nидёт\n- факт\n", encoding="utf-8")
+    (graph / "Ядра" / "Дубль.md").write_text(
+        "---\nrelated: [[Ядра/Чужой]]\n---\n# Дубль → [[Ядра/Канон]]\n\nДубль слит.\n", encoding="utf-8")
+    (graph / "Встречи" / "2026-08-01_1000.md").write_text("# Встреча\n- [[Ядра/Дубль]]\n", encoding="utf-8")
+    _files, backlinks = dossier.scan(graph)
+    assert "2026-08-01_1000" in backlinks.get("Канон", set()), backlinks
+    assert not backlinks.get("Чужой"), "входящие ушли к узлу из frontmatter"

@@ -615,7 +615,10 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
             # уже уехать под конвейером, и сравнение его с самим собой
             # молча пропускало чужую правку (живой прогон 28.08).
             old = _read(backup / rel) if existed else ""
-            new = _read(cpath) if cpath.is_file() else None
+            # нормализуем ДО judge и распознавания заглушки: «[[Ядра/ Канон]]»
+            # иначе не находил канон, а перенос в первой строке ломал
+            # is_redirect_stub (luna, круг-1 #448 I6); карантин берёт cpath как есть
+            new = graph_updater.tidy_links(_read(cpath)) if cpath.is_file() else None
             if new is None:                       # облако стёрло файл
                 # Удаление НЕ переносим: у облака нет причин стирать чужое,
                 # а восстановление стёртого — это и был откат, из-за
@@ -1015,6 +1018,14 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 # переносится: граф не был тронут вовсе.
                 v = apply_from_copy(before, cloud_pen, graph, qdir,
                                     backup=backup, valid=ok and published)
+                # облако тоже правит узлы — указатели папок должны это видеть
+                # (luna I9); сбой указателя не отменяет перенос
+                for folder in sorted({a.split("/", 1)[0] for a in v.applied}
+                                     & set(graph_updater.FOLDER_INDEX)):
+                    try:
+                        graph_updater.rebuild_folder_index(graph, folder)
+                    except OSError as e:
+                        lines.append(f"[cloud-review] указатель {folder} не записан ({e})\n")
                 checked = not v.failed
                 lines.append(_verdict_line(v, qdir))
                 # Песочница отработала — убираем. При сбое переноса по
