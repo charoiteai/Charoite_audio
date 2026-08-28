@@ -302,3 +302,65 @@ def test_hint_pulse_names_the_reason_and_separates_waiting_from_work():
 
     assert 'hint_state["manual" if manual else "auto"]' in src, \
         "ручная и авто подсказки снова пишут в одно поле"
+
+
+def test_lag_line_carries_totals_because_the_lagging_cycle_never_splits():
+    """Счётчик копится за всю запись, а не за цикл — иначе он мерит пустоту.
+
+    Круг-1, GLM: строка `state=lagging` пишется ТОЛЬКО при отставании, а при
+    отставании раскладка уходит в `shed` и отдаёт один кусок на чанк целиком.
+    Значит в сохраняемой строке `calls` всегда равнялось бы числу каналов, а
+    `shortest_s` — длине чанка, независимо от того, дробит ли конвейер звук в
+    здоровых циклах. Гипотеза, ради которой всё затевалось, проверялась бы
+    данными, где явление structurally отсутствует.
+    """
+    src = (pathlib.Path(__file__).resolve().parent.parent / "src"
+           / "daemon.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    lag = src[src.index('stt-health state=lagging'):]
+    lag = lag[:lag.index("file=sys.stderr")]
+    for field in ("calls=", "shortest_s=", "rtf_total="):
+        assert field in lag, f"строка отставания молчит о {field}"
+    assert '"calls_total"' in src and '"rtf_total"' in src, (
+        "итоги есть в логе, но не в stt_progress — приложение их не увидит"
+    )
+
+    # Ключевое: накопители НЕ обнуляются внутри цикла разбора батча.
+    loop = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.While) and "cycle_audio_s" in ast.dump(n))
+    # Ищем именно ОБНУЛЕНИЕ (присваивание константы), а не обновление
+    # минимума `shortest_piece_s = piece_s` — оно как раз законно.
+    reset_in_loop = [tgt.id for n in ast.walk(loop)
+                     if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)
+                     for tgt in n.targets
+                     if isinstance(tgt, ast.Name)
+                     and tgt.id in ("total_stt_calls", "total_audio_s",
+                                    "shortest_piece_s", "total_transcription_ms")]
+    assert not reset_in_loop, (
+        "итог обнуляется в цикле — снова получим цифры одного отстающего кадра"
+    )
+
+
+def test_the_call_counter_never_breaks_recognition():
+    """Телеметрия падает — распознавание продолжается.
+
+    Тот же контракт, что у подсчёта звука: деление на ноль или странный
+    кусок не должны ронять поток STT.
+    """
+    src = (pathlib.Path(__file__).resolve().parent.parent / "src"
+           / "daemon.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    guarded = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        body = ast.dump(ast.Module(body=node.body, type_ignores=[]))
+        if "total_stt_calls" in body and "cycle_audio_s" in body:
+            names = {n.id for h in node.handlers for n in ast.walk(h.type or ast.Name(id=""))
+                     if isinstance(n, ast.Name)}
+            assert {"TypeError", "ValueError", "ZeroDivisionError"} <= names, (
+                f"счётчик вызовов прикрыт не теми исключениями: {names}"
+            )
+            guarded = True
+    assert guarded, "счётчик вызовов не обёрнут вовсе"
