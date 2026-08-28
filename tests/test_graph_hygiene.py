@@ -399,3 +399,25 @@ def test_doctor_treats_dotted_node_names_as_nodes_not_embeds(tmp_path):
         "# Иван\n[[Системы/Linux 1.8]] [[Linux 1.8]] [[схема.pdf]] [[нет.pdf]] [[МПД 3.0]]\n", encoding="utf-8")
     rep = graph_doctor.inspect(graph, examples=10)
     assert rep["examples"]["broken"] == ["Люди/Иван.md -> [[нет.pdf]]", "Люди/Иван.md -> [[МПД 3.0]]"], rep["examples"]["broken"]
+
+
+def test_doctor_note_wins_over_attachment_and_attachment_is_any_file_on_disk(tmp_path):
+    """DS по #449: узел, чей стем кончается на расширение («v2.json»), — узел;
+    вложение — любой файл на диске, без списка расширений; папка и выход
+    через `..` за корень — не цель ссылки."""
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+    import graph_doctor
+    graph = tmp_path / "g"
+    (graph / "Системы").mkdir(parents=True)
+    (graph / "Люди").mkdir()
+    (graph / "Системы" / "v2.json.md").write_text("# v2.json\n", encoding="utf-8")
+    (graph / "rec.ogg").write_bytes(b"OggS")
+    (tmp_path / "секрет.pdf").write_bytes(b"%PDF")
+    (graph / "Люди" / "Иван.md").write_text(
+        "# Иван\n[[v2.json]] [[Системы/v2.json]] [[rec.ogg]] [[rec.opus]] [[Люди]] [[../секрет.pdf]]\n",
+        encoding="utf-8")
+    rep = graph_doctor.inspect(graph, examples=10)
+    assert rep["examples"]["broken"] == [
+        "Люди/Иван.md -> [[rec.opus]]", "Люди/Иван.md -> [[Люди]]", "Люди/Иван.md -> [[../секрет.pdf]]",
+    ], rep["examples"]["broken"]
+    assert not any("v2.json" in x for x in rep["examples"]["orphans"]), rep["examples"]["orphans"]
