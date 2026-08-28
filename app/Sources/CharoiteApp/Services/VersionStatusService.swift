@@ -89,7 +89,12 @@ final class VersionStatusService: ObservableObject {
         // запросов к GitHub от этого больше не становится.
         NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
-            object: nil, queue: .main) { [weak self] _ in self?.refresh() }
+            object: nil, queue: .main) { [weak self] _ in
+                // Как в CalendarService: колбэк @Sendable и не наследует
+                // MainActor — прямой вызов refresh() здесь ловит либо
+                // компилятор, либо рантайм, смотря по SDK (DS, круг-1).
+                Task { @MainActor [weak self] in self?.refresh() }
+            }
     }
 
     static var appVersion: String {
