@@ -270,14 +270,18 @@ print(json.dumps({"missing": missing, "inputs": inputs, "audio_error": audio_err
 """#
         let process = Process()
         process.executableURL = python
-        // -I (isolated): cwd НЕ попадает в sys.path. Проба работает с
-        // currentDirectoryURL = папка данных, а туда пишут граф и владелец:
-        // подложенный yaml.py перехватил бы импорт и исполнился с правами
-        // приложения (DS, security-класс, №102). Проверено 28.08: дыра
-        // воспроизводится без -I и закрыта с ним; venv и бандл-python с -I
-        // импортируют штатно (pyvenv.cfg работает, отключается только
-        // user-site и PYTHON*-переменные — их проба и не использует).
-        process.arguments = ["-I", "-c", script]
+        // PYTHONSAFEPATH, а не -I: cwd не попадает в sys.path — проба
+        // работает с currentDirectoryURL = папка данных, куда пишут граф и
+        // владелец, и подложенный yaml.py исполнился бы с правами приложения
+        // (DS, security-класс, №102). -I был бы шире и опаснее: он тянет -E
+        // и глушит PYTHONPYCACHEPREFIX, которым приложение держит бандл
+        // запечатанным, — проба на первом же экране писала бы .pyc в
+        // подписанные Resources и ломала подпись, как в 0.52.0 (DS, круг-1
+        // по PR #444; обе стороны проверены живым опытом 28.08).
+        process.arguments = ["-c", script]
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONSAFEPATH"] = "1"
+        process.environment = env
         process.currentDirectoryURL = root
         let output = Pipe()
         process.standardOutput = output
