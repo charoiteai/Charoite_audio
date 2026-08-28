@@ -282,9 +282,18 @@ print(json.dumps({"missing": missing, "inputs": inputs, "audio_error": audio_err
         var env = ProcessInfo.processInfo.environment
         env["PYTHONSAFEPATH"] = "1"          // cwd (папка данных) — не в sys.path
         env["PYTHONNOUSERSITE"] = "1"        // ~/.local/lib — тоже не наш путь
+        env["PYTHONDONTWRITEBYTECODE"] = "1" // .pyc не пишем вовсе
         env.removeValue(forKey: "PYTHONPATH")    // сильнее SAFEPATH: чужой yaml.py
         env.removeValue(forKey: "PYTHONHOME")    // подменённый stdlib целиком
         env.removeValue(forKey: "PYTHONSTARTUP") // -c его не читает, но пусть
+        // Префикс кэша убираем ВМЕСТЕ с записью байткода: он держит бандл
+        // запечатанным ровно потому, что .pyc уезжают из Resources в папку
+        // пользователя, — но туда же их может подложить кто угодно, и
+        // подделанный .pyc исполнился бы вместо модуля (DS, круг-3). Пробе
+        // байткод не нужен вовсе: без записи бандл цел и без префикса, а
+        // разовый запуск с компиляцией в память укладывается в 85 мс
+        // (замер на бандл-python 28.08).
+        env.removeValue(forKey: "PYTHONPYCACHEPREFIX")
         process.environment = env
         process.currentDirectoryURL = root
         let output = Pipe()

@@ -18,8 +18,10 @@ def test_probe_env_closes_every_import_path():
     """
     src = SWIFT.read_text(encoding="utf-8")
     for key in ('env["PYTHONSAFEPATH"] = "1"', 'env["PYTHONNOUSERSITE"] = "1"',
+                'env["PYTHONDONTWRITEBYTECODE"] = "1"',
                 'env.removeValue(forKey: "PYTHONPATH")',
-                'env.removeValue(forKey: "PYTHONHOME")'):
+                'env.removeValue(forKey: "PYTHONHOME")',
+                'env.removeValue(forKey: "PYTHONPYCACHEPREFIX")'):
         assert key in src, f"проба не закрывает путь импорта: {key}"
 
 
@@ -93,4 +95,27 @@ def test_safepath_keeps_the_bytecode_cache_prefix(tmp_path):
              "PYTHONPYCACHEPREFIX": str(tmp_path)})
     assert f"PREFIX {tmp_path}" in r.stdout, (
         "SAFEPATH затёр префикс кэша байткода — бандл снова под угрозой"
+    )
+
+
+def test_probe_writes_no_bytecode_anywhere(tmp_path):
+    """Пробе байткод не нужен — ни в бандле, ни в кэше пользователя.
+
+    Круг-1: -I глушил PYTHONPYCACHEPREFIX, и .pyc уезжали в подписанные
+    Resources — подпись ломалась, как в 0.52.0. Круг-3: сохранённый префикс
+    сам стал путём импорта — подделанный .pyc в кэше исполнился бы вместо
+    модуля. Оба закрываются одним: запись байткода выключена, префикс не
+    нужен, компиляция живёт в памяти одного разового запуска.
+    """
+    pkg = tmp_path / "приложение"
+    pkg.mkdir()
+    (pkg / "модуль.py").write_text("VALUE = 1", encoding="utf-8")
+    r = subprocess.run(
+        [sys.executable, "-c", "import sys; sys.path.insert(0, '.'); import модуль"],
+        cwd=pkg, capture_output=True, text=True,
+        env={k: v for k, v in {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}.items()
+             if k != "PYTHONPYCACHEPREFIX"})
+    assert r.returncode == 0, f"импорт сломался: {r.stderr[:200]}"
+    assert not list(pkg.rglob("__pycache__")), (
+        "байткод всё-таки записан — бандл снова под угрозой"
     )
