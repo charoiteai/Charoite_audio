@@ -139,24 +139,9 @@ def test_backup_graph_does_not_rotate_and_rotation_is_separate(tmp_path, monkeyp
     assert first.exists() and dest.exists(), (
         "backup_graph не смеет ротировать: чужая сверка ещё идёт")
 
-    cloud_review.rotate_snapshots(root, keep=dest)
+    cloud_review.rotate_snapshots(root, dest)
     assert dest.exists(), "ротация съела свой срез"
     assert not first.exists(), "чужой срез не ротирован после сверки"
     assert (root / "заметка-пользователя.txt").exists(), "ротация трогает не-каталоги"
 
 
-def test_enforce_without_snapshot_refuses_to_judge(tmp_path, monkeypatch):
-    """Снимок исчез (конкурентная ротация до карточки №40) — сверка обязана
-    отказаться, а не удалять: restore видит пустоту, и «откат» превращался
-    в unlink файлов графа (круг-2 по PR #363, DeepSeek — TOCTOU)."""
-    g = _graph(tmp_path)
-    before = cloud_review.snapshot(g)
-    protected = g / "Встречи-архив"
-    protected.mkdir()
-    created = protected / "подделка.md"
-    created.write_text("создано облаком в защищённой папке", encoding="utf-8")
-
-    v = cloud_review.enforce_boundaries(before, g, tmp_path / "нет-такого-снимка")
-
-    assert (v.reverted, v.removed, v.touched) == ([], [], -1)
-    assert created.exists(), "без снимка сверка удалила файл — ровно старый Critical"
