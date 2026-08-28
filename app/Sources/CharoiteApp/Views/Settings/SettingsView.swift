@@ -264,9 +264,9 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                 // Тот же договор, что у облачного тумблера: источник правды —
                 // config.yaml, его же читает VersionStatusService.
-                Toggle(L.t("Раз в сутки спрашивать GitHub о новой версии",
-                           "Ask GitHub about a new version once a day",
-                           "每天向 GitHub 查询一次新版本"),
+                Toggle(L.t("Спрашивать GitHub о новой версии",
+                           "Ask GitHub about a new version",
+                           "向 GitHub 查询新版本"),
                        isOn: configBinding($checkUpdates, key: "check_updates",
                                            note: $checkUpdatesNote))
                     .disabled(AppSettings.cloudForbiddenByEnvironment)
@@ -277,10 +277,17 @@ struct SettingsView: View {
                      ? L.t("Выключено рубильником CHAROITE_NO_CLOUD вместе со всем облачным.",
                            "Turned off by the CHAROITE_NO_CLOUD switch along with everything cloud.",
                            "已由 CHAROITE_NO_CLOUD 开关连同所有云端功能一起关闭。")
-                     : L.t("Обычный GET к публичному API GitHub без токена и без данных о вас — чтобы заметить, что приложение и выпуск разошлись. Выключено — сверяемся только с рабочей папкой.",
-                           "A plain GET to GitHub's public API, no token and nothing about you — so you notice when the app and the release drift apart. Off — we only compare with the working folder.",
-                           "对 GitHub 公共 API 的普通 GET 请求，无令牌、不含你的任何数据——用于发现应用与发布版本不一致。关闭后只与工作目录比对。"))
+                     : L.t("Обычный GET к публичному API GitHub без токена и без данных о вас — чтобы заметить, что приложение и выпуск разошлись. Проверяем при возвращении к приложению, не чаще раза в четыре часа: суточная пауза превращала день выпуска в день ожидания. Выключено — сверяемся только с рабочей папкой.",
+                           "A plain GET to GitHub's public API, no token and nothing about you — so you notice when the app and the release drift apart. Checked when you come back to the app, at most once every four hours: a daily pause used to turn release day into waiting day. Off — we only compare with the working folder.",
+                           "对 GitHub 公共 API 的普通 GET 请求，无令牌、不含你的任何数据——用于发现应用与发布版本不一致。回到应用时检查，最多每四小时一次：过去的一天间隔让发布日变成了等待日。关闭后只与工作目录比对。"))
                     .font(.caption).foregroundStyle(.secondary)
+                // Человек спросил — отвечаем сейчас: кнопка обходит троттл.
+                Button(L.t("Проверить сейчас", "Check now", "立即检查")) {
+                    VersionStatusService.shared.refresh(force: true)
+                }
+                    .charoite(.regular, .s)
+                    .disabled(!AppSettings.checkUpdates
+                              || AppSettings.cloudForbiddenByEnvironment)
             }
         }
         .formStyle(.grouped)

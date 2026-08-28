@@ -113,3 +113,27 @@ final class NightlyAgentPathTests: XCTestCase {
                        "/Users/test/Project/old/scripts/nightly.sh")
     }
 }
+
+// №54: суточный порог превращал день выпуска в день ожидания — релиз выходил
+// утром, а приложение узнавало о нём завтра. Порог четыре часа + проверка на
+// активацию + ручная кнопка мимо троттла.
+extension VersionStatusTests {
+    func testFetchDueRespectsTheFourHourThrottle() {
+        let now = Date()
+        XCTAssertTrue(VersionStatusService.fetchDue(last: nil, now: now, force: false),
+                      "первый запуск обязан проверить")
+        XCTAssertFalse(VersionStatusService.fetchDue(
+            last: now.addingTimeInterval(-3600), now: now, force: false),
+            "час назад проверяли — активация не должна спамить GitHub")
+        XCTAssertTrue(VersionStatusService.fetchDue(
+            last: now.addingTimeInterval(-5 * 3600), now: now, force: false),
+            "пять часов — пора: сутки прятали свежий выпуск до завтра")
+    }
+
+    func testManualCheckIgnoresTheThrottle() {
+        let now = Date()
+        XCTAssertTrue(VersionStatusService.fetchDue(
+            last: now.addingTimeInterval(-60), now: now, force: true),
+            "человек нажал кнопку — отвечаем сейчас, а не «уже проверял»")
+    }
+}

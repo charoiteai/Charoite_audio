@@ -1,4 +1,5 @@
 import Combine
+import AppKit
 import Foundation
 
 #if os(macOS)
@@ -82,6 +83,13 @@ final class VersionStatusService: ObservableObject {
     private init() {
         status = VersionStatus(state: .current(app: Self.appVersion))
         refresh()
+        // Проверка при возвращении к приложению, не только на старте: у
+        // приложения аптайм днями, и суточный кэш прятал свежий выпуск до
+        // завтра (№54). Троттл внутри fetchLatestIfDue — активаций много,
+        // запросов к GitHub от этого больше не становится.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil, queue: .main) { [weak self] _ in self?.refresh() }
     }
 
     static var appVersion: String {
@@ -112,18 +120,30 @@ final class VersionStatusService: ObservableObject {
         return (out?.isEmpty ?? true) ? nil : out
     }
 
-    func refresh() {
+    func refresh(force: Bool = false) {
         let code = Self.codeVersion(root: AppSettings.charoiteRoot)
         let latest = UserDefaults.standard.string(forKey: latestKey)
         status = VersionStatus.compare(app: Self.appVersion, code: code, latest: latest)
-        fetchLatestIfDue()
+        fetchLatestIfDue(force: force)
     }
 
-    /// Раз в сутки, и только если человек не запретил.
-    private func fetchLatestIfDue() {
+    /// Не чаще раза в четыре часа, и только если человек не запретил.
+    /// `force` — ручная кнопка: человек спросил — отвечаем сейчас, а не
+    /// «уже проверял утром». Сутки превращали день выпуска в день ожидания:
+    /// релиз выходил утром, а приложение узнавало о нём завтра (№54).
+    /// Пора ли идти в сеть — чистая функция, чтобы порог жил под тестом,
+    /// а не в голове: суточный порог однажды уже превратил день выпуска в
+    /// день ожидания, и заметили это по факту, а не по красному тесту.
+    nonisolated static func fetchDue(last: Date?, now: Date, force: Bool) -> Bool {
+        if force { return true }
+        guard let last else { return true }
+        return now.timeIntervalSince(last) >= 4 * 3600
+    }
+
+    private func fetchLatestIfDue(force: Bool = false) {
         guard AppSettings.checkUpdates else { return }
         let last = UserDefaults.standard.object(forKey: checkedKey) as? Date
-        if let last, Date().timeIntervalSince(last) < 24 * 3600 { return }
+        guard Self.fetchDue(last: last, now: Date(), force: force) else { return }
 
         let url = URL(string: "https://api.github.com/repos/charoiteai/Charoite_audio/releases/latest")!
         var req = URLRequest(url: url, timeoutInterval: 8)
