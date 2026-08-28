@@ -126,14 +126,19 @@ final class VersionStatusService: ObservableObject {
     }
 
     private var cachedCode: String??
+    private var codeReadAt: Date?
+    /// `git describe` — синхронный subprocess, на каждую активацию он лишний
+    /// (DS, круг-1). Но и кэш «на весь аптайм» неверен: `git pull` делают
+    /// руками при работающем приложении, аптайм — дни, и строка версии
+    /// переставала лечиться сама в обе стороны (GLM, круг-3). Полминуты
+    /// снимают частые активации и оставляют строку живой.
+    nonisolated static let codeTTL: TimeInterval = 30
 
     func refresh(force: Bool = false) {
-        // `git describe` — синхронный subprocess; на каждую активацию окна
-        // он не нужен: версия кода меняется только руками (git pull), и
-        // кнопка «Проверить сейчас» (force) перечитывает её честно
-        // (DS, круг-1, I4).
-        if force || cachedCode == nil {
+        if force || cachedCode == nil
+            || Date().timeIntervalSince(codeReadAt ?? .distantPast) >= Self.codeTTL {
             cachedCode = .some(Self.codeVersion(root: AppSettings.charoiteRoot))
+            codeReadAt = Date()
         }
         let latest = UserDefaults.standard.string(forKey: latestKey)
         status = VersionStatus.compare(app: Self.appVersion,

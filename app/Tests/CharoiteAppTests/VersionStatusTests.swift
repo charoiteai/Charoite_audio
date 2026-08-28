@@ -130,6 +130,13 @@ extension VersionStatusTests {
             "пять часов — пора: сутки прятали свежий выпуск до завтра")
     }
 
+    func testCodeVersionCacheExpires() {
+        // GLM, круг-3: кэш «на весь аптайм» замораживал строку версии —
+        // расхождение чинили, а надпись висела; появлялось — не показывалась.
+        XCTAssertEqual(VersionStatusService.codeTTL, 30,
+                       "версия кода снова кэшируется дольше живого срока")
+    }
+
     func testManualCheckIgnoresTheThrottle() {
         let now = Date()
         XCTAssertTrue(VersionStatusService.fetchDue(
