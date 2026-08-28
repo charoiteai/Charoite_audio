@@ -1138,11 +1138,10 @@ def test_rewriting_a_node_from_scratch_stays_in_quarantine_but_a_stub_passes(tmp
 def test_pipeline_file_created_during_snapshot_window_is_not_applied(tmp_path, monkeypatch):
     """Окно между снимком и клоном песочницы — тоже не земля облака.
 
-    GLM, круг-1 по #447: снимок (T1) и клон песочницы (T3) — два обхода
-    графа, на большом томе десятки секунд. Файл, созданный конвейером в
-    T1..T3, попадает в песочницу, но не в снимок — и выглядел бы правкой
-    облака: «existed=False», конфликтный чек мимо, safe_write поверх
-    живого. Единый чек «в графе уже не то, что на снимке» ловит и это.
+    GLM, круг-1 по #447. С клоном-из-снимка (DS, круг-2) файл окна T1..T3
+    в песочницу уже не попадает — это первый пояс. Но тест держит ВТОРОЙ:
+    даже подсунь его в песочницу руками, единый чек «в графе уже не то,
+    что на снимке» назовёт это конфликтом, а не правкой облака.
     """
     graph = _graph(tmp_path)
     late = graph / "Встречи" / "2026-08-28_0900.md"
@@ -1232,4 +1231,98 @@ def test_end_to_end_an_allowed_edit_travels_from_sandbox_to_graph(tmp_path, monk
         "разрешённая правка не доехала из песочницы до графа"
     )
     assert "перенесено в граф: Встречи/2026-07-15_1400.md" in log.read_text(encoding="utf-8")
+
+def test_the_sandbox_survives_a_per_file_transfer_failure(tmp_path, monkeypatch):
+    """При v.failed песочница ОСТАЁТСЯ — там единственная копия черновика.
+
+    Регрессия круга-1 (DS И1): правило было применено без теста и затёрлось
+    при следующей крупной правке. Тест держит его на месте.
+    """
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    seen = {}
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        pen = pathlib.Path(kwargs["cwd"]); seen["pen"] = pen
+        (pen / "Встречи" / f"{stamp}.md").write_text("# правка\n", encoding="utf-8")
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    real = cloud_review.safe_write.write_text
+    def flaky(path, text, *a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    monkeypatch.setattr(cloud_review.safe_write, "write_text", flaky)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+    assert seen["pen"].is_dir(), "песочница снесена вместе с единственным черновиком"
+    assert "песочница цела" in log.read_text(encoding="utf-8")
+
+
+def test_a_failed_second_copy_cleans_its_orphans_and_spares_a_neighbour(tmp_path, monkeypatch):
+    """Сбой создания песочницы: сироты убраны, ротация НЕ трогает соседа.
+
+    Регрессия круга-1 (DS/luna И2). Проверяем и уборку частичных каталогов,
+    и что ротация погашена (backup=None) — иначе она бы выполнилась после
+    unlock и снесла снимки соседнего воркера.
+    """
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+
+    # сосед уже завёл свой снимок в том же корне
+    root = cloud_review.backup_root(graph)
+    neighbour = root / "2026-07-15_1500"
+    neighbour.mkdir(parents=True, exist_ok=True)
+    (neighbour / "живой.md").write_text("сосед", encoding="utf-8")
+
+    real = cloud_review.backup_graph
+    def half(g, s, source=None):
+        if s.endswith("-облако"):
+            (root / s).mkdir(parents=True, exist_ok=True)      # частичный каталог
+            raise OSError(28, "No space left on device")
+        return real(g, s, source=source)
+    monkeypatch.setattr(cloud_review, "backup_graph", half)
+
+    class Result:
+        returncode = 0
+    monkeypatch.setattr(cloud_review.subprocess, "run",
+                        lambda cmd, **k: (k["stdout"].write(_REPORT), Result())[1])
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+
+    assert not (root / f"{stamp}-облако").exists(), "сирота песочницы не убрана"
+    assert not (root / stamp).exists(), "сирота снимка не убрана"
+    assert neighbour.is_dir(), "ротация снесла снимок соседа"
+
+def test_pipeline_deleting_an_edited_file_is_a_conflict_not_a_violation(tmp_path):
+    """Конвейер удалил файл, который облако правило, — это конфликт.
+
+    DS M2 и luna круг-2: judge-ветка «existed and not gpath.exists()»
+    приписывала облаку удаление, сделанное конвейером, и файл уходил в
+    reverted вместо conflicts. Убрана — единый чек называет это конфликтом.
+    """
+    graph = _graph(tmp_path)
+    node = graph / "Люди" / "Иванов.md"
+    node.parent.mkdir(exist_ok=True)
+    node.write_text("# Иванов\nбыло\n", encoding="utf-8")
+
+    def worked(pen):
+        (pen / "Люди" / "Иванов.md").write_text(
+            "# Иванов\nоблако дописало\n", encoding="utf-8")
+        node.unlink()                      # конвейер удалил из графа
+
+    v, qdir = _cloud_worked(graph, tmp_path, worked)
+
+    assert "Люди/Иванов.md" in v.conflicts, f"названо не конфликтом: {v}"
+    assert "Люди/Иванов.md" not in v.reverted
+    assert not node.exists(), "удалённый конвейером файл воскрешён"
+    assert (qdir / "Люди" / "Иванов.md").is_file(), "версия облака не в карантине"
 

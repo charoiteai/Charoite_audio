@@ -321,24 +321,33 @@ def _libsystem():
     return ctypes.CDLL("libSystem.dylib", use_errno=True)
 
 
-def backup_graph(graph: pathlib.Path, stamp: str) -> pathlib.Path:
+def backup_graph(graph: pathlib.Path, stamp: str,
+                 source: pathlib.Path | None = None) -> pathlib.Path:
     """Копия файлов графа перед правкой. Обещание PRIVACY — кодом.
 
     Снимок лежит ВНЕ графа: граф живёт в iCloud, и полная копия на каждую
     правку превращалась в десятки тысяч файлов, которые система гоняла в
     облако вместо того, чтобы отдать процессор живой записи (21.08).
+
+    `source` задаёт, ОТКУДА копировать (root и имя всё равно по graph, чтобы
+    снимки лежали рядом). По умолчанию — сам граф. Песочница клонируется из
+    уже снятого снимка: тогда файлы, которые конвейер создал между снимком и
+    песочницей, в неё не попадают — окно между двумя обходами перестаёт быть
+    землёй, где облако могло «воскресить» удалённое конвейером (DS/GLM,
+    круг по #447). Песочница по построению = снимок плюс правки облака.
     """
+    src = source or graph
     root = charoite_paths.secure_dir(backup_root(graph))
     dest = root / stamp
     if dest.exists():
         # Повтор с тем же штампом: старый снимок хранил бы файлы, которых в
-        # графе уже нет, и restore воскрешал бы их (круг-1 по PR #381, Codex).
+        # источнике уже нет, и они бы всплывали при переносе (круг-1 #381).
         shutil.rmtree(dest, ignore_errors=True)
         if dest.exists():
             raise OSError(f"старый снимок {dest.name} не удаляется — не пересоздаю")
     dest.mkdir(parents=True, exist_ok=True)
-    for p in graph_files(graph):
-        target = dest / p.resolve().relative_to(graph.resolve())
+    for p in graph_files(src):
+        target = dest / p.resolve().relative_to(src.resolve())
         target.parent.mkdir(parents=True, exist_ok=True)
         if not _clone(p, target):
             shutil.copy2(p, target)
@@ -452,8 +461,9 @@ def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
     """
     if not may_write(path, graph):
         return "protected"
-    if existed and not path.exists():
-        return "deleted"
+    # Файла нет в графе, а в песочнице (из снимка) он есть и облако его
+    # правило — значит его удалил конвейер: это конфликт, не нарушение
+    # облака, и ловит его единый чек в apply_from_copy, а не judge (DS, M2).
     if existed and author_section_changed(old_text, new_text):
         return "author"
     # Не признак авторства, а смысловое ограничение задачи: облако
@@ -752,12 +762,19 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             # было»: по нему сверяется текст и ловится правка конвейера,
             # успевшая в граф, пока облако думало. Две копии на APFS
             # стоят почти нуля: clonefile делит блоки до первой записи.
-            cloud_pen = backup_graph(graph, f"{stamp}-облако")
+            cloud_pen = backup_graph(graph, f"{stamp}-облако", source=backup)
             denied = deny_paths(cloud_pen)
         except OSError as e:
             print(f"бэкап графа не удался ({e}) — работаю на чтение")
+            # Оба каталога могли создаться наполовину. Чистим их сами и
+            # гасим ротацию (backup=None): иначе rotate_snapshots в finally
+            # выполнится ПОСЛЕ unlock, и за время read-only прогона сосед
+            # успел бы взять замок и завести свои снимки — наша ротация их
+            # снесла бы (DS/luna, круг-1; регрессия M2 без теста).
+            for stale in (stamp, f"{stamp}-облако"):
+                shutil.rmtree(backup_root(graph) / stale, ignore_errors=True)
             may_edit = deliver = False
-            cloud_pen = None
+            backup = cloud_pen = None
             unlock()                   # замок нужен только правящему
     # Файлы встречи — по стему её стенограммы, а не по минутному штампу:
     # посекундная соседка той же минуты в контекст не попадает (аудит 16.08).
@@ -858,10 +875,16 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                                     backup=backup, valid=ok and published)
                 checked = not v.failed
                 lines.append(_verdict_line(v, qdir))
-                # Песочница отработала — убираем. При падении переноса она
-                # ОСТАЁТСЯ: там работа облака целиком, и человеку есть на
-                # что посмотреть, когда автоматика развела руками.
-                shutil.rmtree(cloud_pen, ignore_errors=True)
+                # Песочница отработала — убираем. При сбое переноса, хоть
+                # исключением, хоть по одному файлу (v.failed: ENOSPC на
+                # карантине или в safe_write), она ОСТАЁТСЯ: сбойный файл
+                # существует ровно там, и это единственная копия черновика
+                # облака (DS, круг-1 И1; регрессия — правило без теста).
+                if not v.failed:
+                    shutil.rmtree(cloud_pen, ignore_errors=True)
+                else:
+                    lines.append(f"[cloud-review] перенос упал на части файлов "
+                                 f"— песочница цела: {cloud_pen}\n")
             except Exception as e:  # noqa: BLE001 — сказать и дойти до ротации
                 lines.append(f"[cloud-review] ПЕРЕНОС УПАЛ ({e}) — правки облака "
                              f"остались в снимке, граф цел\n")
