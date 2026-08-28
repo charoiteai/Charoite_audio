@@ -25,7 +25,6 @@ import threading
 
 import numpy as np
 import requests
-import sounddevice as sd
 
 from charoite_paths import code_root, harden_umask, resolve_root
 from config_loader import load_user_or_example
@@ -105,6 +104,14 @@ def main():
 
         def cb(indata, *_):
             frames.append(indata.copy())
+
+        # Импорт здесь, а не наверху: PortAudio на машине без звуковых
+        # устройств роняет процесс при ВЫХОДЕ («terminate called without an
+        # active exception», код -6) — дневник успевал сделать работу и
+        # напечатать ответ, а падал уже на закрытии. Диктовке микрофон нужен,
+        # дневнику с текстом — нет, и он больше не платит за чужую библиотеку
+        # (флейк CI, №122).
+        import sounddevice as sd
 
         with sd.InputStream(samplerate=SR, channels=1, dtype="float32", callback=cb):
             print("REC", file=sys.stderr, flush=True)  # Swift ловит: запись пошла

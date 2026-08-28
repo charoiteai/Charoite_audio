@@ -23,6 +23,7 @@ import json
 import os
 import pathlib
 import re
+import safe_write
 import transcript
 import subprocess
 import sys
@@ -573,8 +574,8 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
 
     live_copy = live.with_name(live.stem + "_live.md")
     if not live_copy.exists():
-        live_copy.write_text(live_text, encoding="utf-8")
-    live.write_text("\n".join(body).rstrip() + "\n", encoding="utf-8")
+        safe_write.write_text(live_copy, live_text)
+    safe_write.write_text(live, "\n".join(body).rstrip() + "\n")
     log(f"финальная стенограмма записана: {live.name} (живой черновик → {live_copy.name})")
     return live
 
