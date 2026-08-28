@@ -47,7 +47,8 @@ def is_redirect_stub(text: str) -> bool:
     frontmatter) — стрелка на канон. Стрелка где-то в середине переписанного
     узла заглушкой не делает (круг-1 по PR #381, Codex + DeepSeek)."""
     body = stub_body(text)
-    if not body or len(body) > 1200:   # длину мерим ПОСЛЕ frontmatter
+    if not body or len(body) > 4000:   # длину мерим ПОСЛЕ frontmatter; облачная
+        # заглушка с перечнем слитых фактов длиннее 1200 (DS, круг-1 по #448 M8)
         return False
     first = body.split("\n", 1)[0].strip()
     return REDIRECT_RE.fullmatch(first) is not None

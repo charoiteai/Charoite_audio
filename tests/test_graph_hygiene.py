@@ -261,3 +261,44 @@ def test_folder_index_lists_live_nodes_freshest_first(tmp_path):
     assert rows == ["| [[Люди/Б\\|Б]] | 2 | 2026-08-20 |", "| [[Люди/А\\|А]] | 1 | 2026-07-01 |"]
     g.rebuild_folder_index(graph, "Досье")          # нет указателя для этой папки — тихо
     assert not (graph / "Досье").exists()
+
+
+def test_placeholder_variants_and_folder_scoped_name_key(tmp_path, capsys):
+    """Круг-1 по #448 (DS): метка с дефисом/№/скобкой и китайская — тоже метка;
+    ключ имени склеивает только внутри целевой папки; заглушка с каноном в
+    другой папке не уводит статус ядра; «## Статус → …» — не заглушка."""
+    for label in ("Собеседник-3", "Собеседник №3", "Собеседник 3,", "Собеседник 3 (муж)", "参会者 2", "Speaker  4"):
+        assert g.is_speaker_placeholder(label), label
+    assert not g.is_speaker_placeholder("Собеседников Пётр")
+    graph = tmp_path / "g"
+    for d in ("Люди", "Системы", "Ядра"):
+        (graph / d).mkdir(parents=True)
+    person = graph / "Люди" / "ИИ-агент.md"
+    person.write_text("# ИИ-агент\nчеловек с таким прозвищем\n", encoding="utf-8")
+    # запись системы «ИИ_агент» не должна приклеиться к человеку из другой папки
+    g.upsert_entity(graph, "Системы", "ИИ_агент", "система", "сервис", "Встречи/2026-08-01_1000", "")
+    assert (graph / "Системы" / "ИИ_агент.md").exists(), "система склеилась с человеком"
+    assert "2026-08-01" not in person.read_text(encoding="utf-8")
+    # но ссылка без папки по-прежнему находит узел по ключу
+    assert g.find_canonical(graph, "ИИ агент") is not None
+    # «связи»/сущности: метка — текстом, узла нет
+    assert g.link_or_text(graph, "Собеседник-3") == "Собеседник-3"
+    # заглушка ядра, указывающая в Люди: статус остаётся у заглушки, не уходит в чужой узел
+    (graph / "Ядра" / "Иван.md").write_text("# Иван\n## Статус\nядро с тем же именем\n", encoding="utf-8")
+    (graph / "Ядра" / "Дубль.md").write_text("# Дубль → [[Люди/Иван]]\n\nДубль слит.\n", encoding="utf-8")
+    assert g.resolve_core_path(graph / "Ядра", "Дубль", graph) == graph / "Ядра" / "Дубль.md"
+    # doctor: «## Статус → в работе» — живой узел, не заглушка
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+    import graph_doctor
+    assert not graph_doctor._is_stub("# Риски\n## Статус → в работе\n- пункт\n")
+    assert graph_doctor._is_stub("# Риски → [[Ядра/Канон]]\n\nДубль слит.\n")
+    # указатель считает встречу один раз, даже если узел ссылается на неё дважды
+    (graph / "Люди" / "Пётр.md").write_text(
+        "# Пётр\nсм. [[Встречи/2026-08-01_1000]]\n## Встречи\n- [[Встречи/2026-08-01_1000]]\n", encoding="utf-8")
+    g.rebuild_folder_index(graph, "Люди")
+    assert "| [[Люди/Пётр\\|Пётр]] | 1 | 2026-08-01 |" in (graph / "Люди" / "_ЛЮДИ.md").read_text(encoding="utf-8")
+    # строка свежести терпит CRLF и хвостовой пробел — второй копии не будет
+    node = graph / "Люди" / "Ольга.md"
+    node.write_text("# Ольга\n_(последнее упоминание: 2026-07-01)_ \r\n\n## Встречи\n- [[Встречи/2026-07-01_1000]]\n", encoding="utf-8")
+    g.upsert_entity(graph, "Люди", "Ольга", "person", "", "Встречи/2026-08-02_1000", "")
+    assert node.read_text(encoding="utf-8").count("последнее упоминание") == 1

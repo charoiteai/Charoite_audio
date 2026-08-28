@@ -66,7 +66,7 @@ def _graph_health(graph_name: str, max_age_h: int = 36) -> list[str]:
         return []
     if dt.datetime.now() - made > dt.timedelta(hours=max_age_h):
         return []
-    out = [f"- узлов {rep.get('nodes', 0)}, ссылок {rep.get('links', 0)}, "
+    out = [f"- отчёт {made:%d.%m %H:%M}: узлов {rep.get('nodes', 0)}, ссылок {rep.get('links', 0)}, "
            f"битых {rep.get('broken', 0)}, сирот {rep.get('orphans', 0)}, "
            f"меток диаризации среди Люди {rep.get('placeholders', 0)}, "
            f"дублей {rep.get('dup_real', 0)}, вне MOC {rep.get('moc_missing', 0)}"]

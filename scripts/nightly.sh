@@ -137,7 +137,10 @@ step "graph doctor"
 # Здоровье графа как памяти — детерминированный линт без модели (секунды):
 # битые ссылки, метки диаризации среди Люди, сироты, дубли, покрытие MOC.
 # ДО брифа: бриф читает logs/graph_doctor.json и показывает предупреждения.
-$PY scripts/graph_doctor.py --all-graphs || echo "⚠️ graph doctor не отработал"
+$PY scripts/graph_doctor.py --all-graphs || {
+  echo "⚠️ graph doctor не отработал"; FAILED="$FAILED graph-doctor"
+  rm -f "${CHAROITE_ROOT:-$PWD}/logs/graph_doctor.json"   # вчерашний отчёт — не сегодняшний
+}
 
 step "morning brief (ранний)"
 # Страховочный проход: бриф на данных, какие есть. Упал — не авария, впереди

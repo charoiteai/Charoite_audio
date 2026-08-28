@@ -34,13 +34,13 @@ import unicodedata
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graph_updater  # noqa: E402
 import graphs  # noqa: E402
+import redirects  # noqa: E402
 
 CODE = pathlib.Path(__file__).resolve().parent.parent
 ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 LINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
 HUB_DIRS = ("Люди", "Системы", "Команды", "Ядра", "Блокеры", "Модели", "Досье")
 DESIGN_PAIRS = {frozenset(("Досье", "Ядра"))}   # досье на ядро — одноимённо по замыслу
-STUB_RE = re.compile(r"^#[^\n]*(?:→|->|⇒|см\.)", re.M)
 THRESHOLDS = {"broken_share": 0.02, "orphan_share": 0.05}
 
 
@@ -48,12 +48,11 @@ def _norm(s: str) -> str:
     return unicodedata.normalize("NFC", s).strip().casefold()
 
 
-def _body(text: str) -> str:
-    return re.sub(r"\A---\n.*?\n---\n", "", text, count=1, flags=re.S)
-
 
 def _is_stub(text: str) -> bool:
-    return "дубль-слит" in text[:400] or bool(STUB_RE.search(_body(text).lstrip()[:300]))
+    # тот же детектор, что у tier3/досье/облака: «## Статус → в работе» — не
+    # заглушка (DS, круг-1 по #448 I2)
+    return "дубль-слит" in text[:400] or redirects.is_merged(text)
 
 
 def inspect(root: pathlib.Path, examples: int = 0) -> dict:

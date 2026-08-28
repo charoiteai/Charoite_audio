@@ -349,7 +349,7 @@ def safe_name(name: str) -> str:
 
 
 _PLACEHOLDER_RE = re.compile(
-    r"^(?:собеседник|участник|спикер|speaker|participant|发言人)\s*\d*$", re.I)
+    r"^(?:собеседник|участник|спикер|speaker|participant|发言人|参会者)(?: \d+)?$")
 
 
 def is_speaker_placeholder(name: str) -> bool:
@@ -361,7 +361,11 @@ def is_speaker_placeholder(name: str) -> bool:
     135–141 ссылки). Метка живёт в заметке встречи текстом и подписывает
     цитаты из стенограммы; узла и ссылки на него не получает.
     """
-    return bool(_PLACEHOLDER_RE.match(safe_name(name).strip()))
+    # По ключу имени: «Собеседник-3», «Собеседник №3», «Собеседник 3,» и
+    # «Собеседник 3 (муж)» — та же метка; иначе она вливалась через name_key
+    # в старый узел-склейщик (DS, круг-1 по #448 I4).
+    bare = re.sub(r"\s*[(（].*?[)）]\s*$", "", safe_name(name))
+    return bool(_PLACEHOLDER_RE.match(name_key(re.sub(r"[№#]", " ", bare))))
 
 
 def name_key(name: str) -> str:
@@ -476,14 +480,15 @@ def link_or_text(graph: pathlib.Path, name: str) -> str:
     ссылка навсегда (626 битых, 298 целей — аудит 28.08).
     """
     clean = safe_name(name)
-    if name_key(clean) in _PRONOUNS or len(clean) < 2:
-        return clean
+    if name_key(clean) in _PRONOUNS or len(clean) < 2 or is_speaker_placeholder(clean):
+        return clean                      # метка нашла бы старый узел-склейщик
     p = find_canonical(graph, clean)
     return f"[[{p.parent.name}/{p.stem}|{p.stem}]]" if p is not None else clean
 
 
 def find_canonical(graph: pathlib.Path, name: str,
-                   ambiguous: list[str] | None = None) -> pathlib.Path | None:
+                   ambiguous: list[str] | None = None,
+                   folder: str | None = None) -> pathlib.Path | None:
     """Ищет существующий узел: точное имя или имя-подстрока (система → ИС 1494 система).
 
     Если подходящих несколько — не гадаем и возвращаем None (новый узел): приклеить
@@ -495,15 +500,21 @@ def find_canonical(graph: pathlib.Path, name: str,
     n = safe_name(name).casefold()
     key = name_key(name)
     candidates: list[pathlib.Path] = []
-    for folder in ("Люди", "Команды", "Системы", "Модели", "Блокеры", "Ядра"):
-        d = graph / folder
+    # переменная цикла НЕ `folder`: она затеняла бы параметр, и проверка
+    # «та же папка» была бы всегда истинной (поймано тестом, круг-1 #448)
+    for place in ("Люди", "Команды", "Системы", "Модели", "Блокеры", "Ядра"):
+        d = graph / place
         if not d.exists():
             continue
         for f in d.glob("*.md"):
             stem = f.stem.casefold()
-            # Точное имя всегда выигрывает (иначе дубль системы возрождался);
-            # «точное» — по ключу без пунктуации и скобок, см. name_key.
-            if stem == n or (key and name_key(f.stem) == key):
+            # Точное имя всегда выигрывает (иначе дубль системы возрождался).
+            # Совпадение по ключу без пунктуации и скобок (name_key) — только
+            # в целевой папке записи: «ИИ-агент» в Людях и «ИИ_агент» в
+            # Системах — не один узел, а первое совпадение по всем папкам
+            # приклеило бы систему к человеку (DS, круг-1 по #448 I1).
+            if stem == n or (key and name_key(f.stem) == key
+                             and (folder is None or f.parent.name == folder)):
                 return f
             # Подстрока — только для достаточно длинных имён и близких по
             # длине пар. Двухбуквенное «Ян» из распознавания входило в
@@ -524,7 +535,7 @@ def find_canonical(graph: pathlib.Path, name: str,
 
 def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
                   desc: str, meeting_link: str, contrib: str):
-    canonical = find_canonical(graph, name)
+    canonical = find_canonical(graph, name, folder=folder)
     if canonical is not None:
         p = canonical  # дописываем в существующий узел, а не плодим дубль
     else:
@@ -554,7 +565,7 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         )
 
 
-_LAST_SEEN_RE = re.compile(r"^_\(последнее упоминание: (\d{4}-\d{2}-\d{2})\)_$", re.M)
+_LAST_SEEN_RE = re.compile(r"^_\(последнее упоминание: (\d{4}-\d{2}-\d{2})\)_[ \t]*\r?$", re.M)
 
 
 def _touch_last_seen(text: str, day: str) -> str:
@@ -823,7 +834,10 @@ def resolve_core_path(d: pathlib.Path, name: str,
         t = redirects.stub_target(text)
         if not t:
             return p
-        target = d / f"{safe_name(pathlib.PurePosixPath(t).stem)}.md"
+        tpath = pathlib.PurePosixPath(t)
+        if tpath.parent.name not in ("", d.name):
+            return p       # канон в другой папке — статус ядра туда не пишем (DS I5)
+        target = d / f"{safe_name(tpath.stem)}.md"
         if target == p or not target.exists():
             return p
         p = target
@@ -907,7 +921,7 @@ def rebuild_folder_index(graph: pathlib.Path, folder: str) -> None:
         text = p.read_text(encoding="utf-8", errors="replace")
         if redirects.is_merged(text):
             continue
-        dates = re.findall(r"\[\[Встречи/(\d{4}-\d{2}-\d{2})", text)
+        dates = set(re.findall(r"\[\[Встречи/(\d{4}-\d{2}-\d{2})", text))
         rows.append((max(dates) if dates else "", len(dates), p.stem))
     rows.sort(key=lambda r: (r[0], r[1], r[2]), reverse=True)
     lines = [f"# {folder} — указатель\n",
@@ -1050,7 +1064,8 @@ def main():
     # цитаты из стенограммы подписаны именно этой меткой.
     people = [p for p in raw_people if not is_speaker_placeholder(p["имя"])]
     anon = [p for p in raw_people if is_speaker_placeholder(p["имя"])]
-    ents = [e for e in (data.get("сущности") or []) if isinstance(e, dict) and e.get("имя")]
+    ents = [e for e in (data.get("сущности") or []) if isinstance(e, dict) and e.get("имя")
+            and not is_speaker_placeholder(e["имя"])]      # метка как «сущность» — тоже не узел
     decisions = [d for d in (data.get("решения") or []) if isinstance(d, str) and d.strip()]
     links = [l for l in (data.get("связи") or [])
              if isinstance(l, dict) and l.get("от") and l.get("к")]
@@ -1066,9 +1081,9 @@ def main():
                       e["имя"], e.get("тип", "entity"),
                       e.get("суть", ""), meeting_link, "")
 
-    if people or ents:
-        for folder in FOLDER_INDEX:
-            rebuild_folder_index(graph, folder)
+    touched = ({"Люди"} if people else set()) | {ENT_FOLDER.get(e.get("тип", ""), "Системы") for e in ents}
+    for folder in sorted(touched & set(FOLDER_INDEX)):
+        rebuild_folder_index(graph, folder)      # только тронутые папки (DS I3)
 
     # 1б) ядра: сквозные темы/задачи — статус обновляется, хроника копится
     cores = [c for c in (data.get("ядра") or [])
