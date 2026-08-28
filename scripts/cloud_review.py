@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import contextlib
 import ctypes
 import dataclasses
@@ -87,6 +88,40 @@ _REDIRECT_RE = re.compile(r"^# .+? → \[\[[^\]]+\]\]", re.M)
 # граница покрывала только одну папку из двух.
 PROTECTED_DIRS = ("Документация/Стенограммы встреч", "Встречи-архив")
 PROTECTED_SECTION = "## Правки автора"
+
+
+REWRITE_MIN_LINES = 6
+REWRITE_KEEP = 1 / 3
+def is_redirect_stub(text: str) -> bool:
+    """Заглушка после слияния: короткий файл, чей ПЕРВЫЙ заголовок (после
+    frontmatter) — стрелка на канон. Стрелка где-то в середине переписанного
+    узла заглушкой не делает (круг-1 по PR #381, Codex + DeepSeek)."""
+    body = (text or "").replace("\r\n", "\n").strip()
+    if not body or len(body) > 1200:
+        return False
+    body = re.sub(r"\A---\n.*?\n---\n", "", body, count=1, flags=re.S)   # frontmatter
+    # перед заголовком допустимы только пустые строки и HTML-комментарии:
+    # проза или код-фенс перед стрелкой — уже не заглушка (круг-3 по #381)
+    body = re.sub(r"\A(?:\s*<!--.*?-->\s*)*", "", body, flags=re.S).lstrip()
+    first = body.split("\n", 1)[0].strip()
+    return _REDIRECT_RE.fullmatch(first) is not None
+
+def retention(old: str, new: str) -> float:
+    """Какая доля содержательных строк старого текста уцелела в новом.
+
+    Меряем по строкам, а не по знакам: правка статуса меняет одну строку,
+    дописанные факты — добавляют, и обе оставляют старые строки на месте.
+    Переписанный заново узел — это когда старых строк почти не осталось.
+    Строки сравниваются без разметки (смена формата — не переписывание) и
+    с кратностью (одна уцелевшая строка не засчитывается за четыре
+    одинаковых старых).
+    """
+    before = collections.Counter(n for ln in old.splitlines() if (n := _norm(ln)))
+    if not before:
+        return 1.0
+    after = collections.Counter(n for ln in new.splitlines() if (n := _norm(ln)))
+    kept = sum((before & after).values())
+    return kept / sum(before.values())
 
 
 def may_write(path: pathlib.Path, graph: pathlib.Path) -> bool:
@@ -434,6 +469,16 @@ def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
         return "deleted"
     if existed and author_section_changed(old_text, new_text):
         return "author"
+    # Не признак авторства, а смысловое ограничение задачи: облако
+    # дообогащает узлы, а не сочиняет их заново. В песочнице авторство
+    # известно, но «переписал целиком» остаётся плохой правкой — и раньше
+    # круга-1 по #447 я снёс эту ветку вместе с признаками зря (DS, I2).
+    # Единственная допустимая форма «убрать узел» — заглушка-
+    # перенаправление, как у tier3 при слиянии дублей.
+    if (existed and not is_redirect_stub(new_text)
+            and sum(1 for ln in old_text.splitlines() if ln.strip()) >= REWRITE_MIN_LINES
+            and retention(old_text, new_text) < REWRITE_KEEP):
+        return "rewritten"
     return None
 
 
@@ -488,6 +533,14 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
     шестнадцать кругов PR #439 существовали только потому, что облако и
     конвейер писали в один каталог (№120).
 
+    Принятый риск (DS, круг-1 по #447): между сравнением хеша и
+    `tmp.replace` внутри safe_write есть окно в миллисекунды — доклейка
+    конвейера, попавшая ровно туда, будет затёрта без следа в conflicts.
+    Замок графа конвейер не берёт, POSIX-атомарного «сравнить-и-заменить»
+    для файлов нет. Окно на порядки уже прежнего получасового (весь разбор
+    до #447), цена промаха — одна доклейка, восстановимая из ревизии;
+    строить вокруг этого ручной CAS со вскрытием safe_write — дороже риска.
+
     Невалидный ответ: настоящий граф не тронут вовсе — копия просто
     выбрасывается, откат исчезает как класс. Валидный: каждая правка идёт
     через прежние проверки (may_write, зоны исполнения, авторский раздел), а
@@ -509,7 +562,11 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 # снимков, поэтому её правки складываем в карантин.
                 if cpath.is_file():
                     quarantine(cpath, copy, qdir, move=False)
-                v.reverted.append(name)
+                    v.reverted.append(name)
+                else:
+                    # стёртого в копии нет — класть в карантин нечего, и
+                    # врать «лежит в карантине» лог не должен (DS, M3)
+                    v.deleted.append(name)
                 continue
             key = str(root / rel)
             existed = key in before
@@ -529,11 +586,17 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 quarantine(cpath, copy, qdir, move=False)
                 (v.removed if not existed else v.reverted).append(name)
                 continue
-            if existed and _digest(gpath) != before[key]:
-                # Конвейер дописал, пока облако думало (минутки, хроника
-                # ядра). Живая работа побеждает: правка облака — в карантин.
-                # Это остаточный риск шестнадцатого круга #439, закрытый
-                # теперь по построению, а не признаком авторства.
+            if ((existed and _digest(gpath) != before[key])
+                    or (not existed and gpath.exists())):
+                # Конвейер успел, пока облако думало: дописал существующий
+                # файл (минутки, хроника ядра) или СОЗДАЛ новый узел — при
+                # разборе соседней встречи upsert_entity заводит людей и
+                # системы, не беря замка. Живая работа побеждает в обоих
+                # случаях: правка облака — в карантин. Без второй половины
+                # условия новый файл был единственным местом, где побеждало
+                # облако (DS, круг-1 по #447). Она же ловит запись сквозь
+                # симлинк-каталог графа в существующий файл: резолв уводит
+                # путь из-под точки, но цель-то существует.
                 quarantine(cpath, copy, qdir, move=False)
                 v.conflicts.append(name)
                 continue
@@ -842,9 +905,11 @@ def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:
         # менялся. Человеку важно другое — что именно оно успело наработать
         # и где эту работу посмотреть.
         tail = (f"; ПЕРЕНОС НЕ СМОГ: {', '.join(v.failed)}" if v.failed else "")
-        what = (f": {', '.join(v.reverted)}" if v.reverted else "")
+        what = (f"; в карантине: {', '.join(v.reverted)}" if v.reverted else "")
+        gone = (f"; стёрто облаком в копии, в графе цело: {', '.join(v.deleted)}"
+                if v.deleted else "")
         return (f"[cloud-review] ответ невалиден — граф не тронут; правок "
-                f"облака {v.touched}, лежат в карантине {qdir}{what}{tail}\n")
+                f"облака {v.touched}, карантин {qdir}{what}{gone}{tail}\n")
     parts = [f"[cloud-review] правок облака: {v.touched}"]
     if v.applied:
         parts.append(f"перенесено в граф: {', '.join(v.applied)}")

@@ -1067,4 +1067,65 @@ def test_gits_own_sample_hooks_are_not_swept_away(tmp_path):
     assert v.removed == ["проект/.git/hooks/post-commit"]
     assert any(qdir.rglob("post-commit")), "убранное обязано быть в карантине"
 
+def test_a_node_the_pipeline_created_meanwhile_beats_the_clouds_new_file(tmp_path):
+    """Конфликт ловится и на файле, которого не было в снимке.
+
+    DS, круг-1 по #447: чек «конвейер успел раньше» стоял за `existed`, и
+    новый файл был единственным местом, где побеждало облако. Сценарий
+    живой: две встречи подряд с общим участником без узла — пока облако
+    ревизует первую (создаёт Люди/Иванов.md в песочнице), конвейер разбирает
+    вторую и заводит того же человека в графе, со ссылкой на свою встречу.
+    """
+    graph = _graph(tmp_path)
+    node = graph / "Люди" / "Иванов.md"
+
+    def worked(pen):
+        (pen / "Люди").mkdir()
+        (pen / "Люди" / "Иванов.md").write_text(
+            "# Иванов\nсо встречи A\n", encoding="utf-8")
+        node.parent.mkdir(exist_ok=True)
+        node.write_text("# Иванов\nсо встречи B, [[Встречи/B]]\n", encoding="utf-8")
+
+    v, qdir = _cloud_worked(graph, tmp_path, worked)
+
+    assert node.read_text(encoding="utf-8") == "# Иванов\nсо встречи B, [[Встречи/B]]\n", (
+        "узел конвейера затёрт версией облака"
+    )
+    assert v.conflicts == ["Люди/Иванов.md"] and not v.applied
+    assert (qdir / "Люди" / "Иванов.md").read_text(
+        encoding="utf-8") == "# Иванов\nсо встречи A\n"
+
+def test_rewriting_a_node_from_scratch_stays_in_quarantine_but_a_stub_passes(tmp_path):
+    """Облако дообогащает узлы, а не сочиняет заново, — и в песочнице тоже.
+
+    Возвращено после круга-1 по #447 (DS, I2): retention — не признак
+    авторства, а смысловое ограничение задачи, и снимать его вместе с
+    признаками было ошибкой. Разница с прежней механикой: «возврата» больше
+    нет — старый файл просто остаётся в графе, а версия облака ждёт в
+    карантине. Заглушка-перенаправление — единственная форма «убрать узел».
+    """
+    graph = _graph(tmp_path)
+    core = graph / "Ядра" / "Платёжный провайдер.md"
+    body = "# Ядро\n## Статус\nРешено\n" + "".join(f"- факт {i}\n" for i in range(8))
+    core.write_text(body, encoding="utf-8")
+    dup = graph / "Ядра" / "Провайдер платежей.md"
+    dup.write_text(body.replace("Ядро", "Дубль"), encoding="utf-8")
+
+    def worked(pen):
+        (pen / "Ядра" / "Платёжный провайдер.md").write_text(
+            "# Ядро\nкороткое резюме облака\n", encoding="utf-8")
+        (pen / "Ядра" / "Провайдер платежей.md").write_text(
+            "# Провайдер платежей → [[Ядра/Платёжный провайдер]]\n\n"
+            "Дубль. Смерджен.\n", encoding="utf-8")
+
+    v, qdir = _cloud_worked(graph, tmp_path, worked)
+
+    assert core.read_text(encoding="utf-8") == body, "переписанное ядро попало в граф"
+    assert "Ядра/Платёжный провайдер.md" in v.reverted
+    assert (qdir / "Ядра" / "Платёжный провайдер.md").read_text(
+        encoding="utf-8") == "# Ядро\nкороткое резюме облака\n"
+    assert dup.read_text(encoding="utf-8").startswith("# Провайдер платежей → [[")
+    assert "Ядра/Провайдер платежей.md" in v.applied
+    # дописанные факты и смена статуса — не переписывание
+    assert cloud_review.retention(body, body.replace("Решено", "В работе") + "- факт 9\n") > 0.8
 
