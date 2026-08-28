@@ -77,14 +77,21 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
         t = target.strip().rstrip("\\").strip()      # `[[Цель\|Текст]]` в таблицах
         if re.search(r"\s/|/\s", t):
             return None                              # «Системы/ Витрина» — мертва (GLM I2)
-        if "." in pathlib.PurePosixPath(t).name and not t.endswith(".md"):
-            return root / t if (root / t).exists() else None   # эмбед [[x.pdf]] (GLM M9)
-        if t.endswith(".md"):
-            t = t[:-3]
-        if _norm(t) in by_path:
-            return by_path[_norm(t)]
-        cands = by_stem.get(_norm(pathlib.PurePosixPath(t).name), [])
-        return cands[0] if cands else None
+        # Заметка важнее вложения, как в Obsidian: «Linux 1.8», «v2.json» —
+        # узлы с точкой в имени (первый вариант принял 400 таких ссылок за
+        # битые, 28.08; DS по #449 — узел, чей стем кончается на расширение).
+        stem = t[:-3] if t.endswith(".md") else t
+        if _norm(stem) in by_path:
+            return by_path[_norm(stem)]
+        cands = by_stem.get(_norm(pathlib.PurePosixPath(stem).name), [])
+        if cands:
+            return cands[0]
+        # Вложение [[x.pdf]] — только файл на диске (GLM M9), без списка
+        # расширений: какие форматы кладёт демон — факт продукта, не линта.
+        parts = pathlib.PurePosixPath(t).parts
+        if ".." not in parts and (root / t).is_file():
+            return root / t
+        return None
 
     inbound: collections.Counter = collections.Counter()
     outbound: dict[pathlib.Path, int] = {}
