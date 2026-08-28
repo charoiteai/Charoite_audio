@@ -28,6 +28,7 @@ from charoite_paths import code_root, harden_umask, resolve_root
 import meeting_stamp
 from meeting_stamp import files_with_stamp, stamp_of
 import graphs
+import redirects
 
 ROOT = resolve_root(__file__)
 CODE = code_root(__file__)
@@ -347,6 +348,65 @@ def safe_name(name: str) -> str:
     return s or "без имени"
 
 
+_PLACEHOLDER_RE = re.compile(
+    r"^(?:собеседник|участник|спикер|speaker|participant|发言人|参会者)(?: ?[\d一二三四五六七八九十]+)?$")
+
+
+def is_speaker_placeholder(name: str) -> bool:
+    """«Собеседник 3», «Speaker 2» — метка диаризации, а не человек.
+
+    Узел на такую метку склеивал разных людей из разных встреч в одного:
+    «Собеседник 3» встречи А и «Собеседник 3» встречи Б — один файл в Люди
+    с сотней входящих ссылок (аудит графа 28.08: 17 таких узлов, у трёх по
+    135–141 ссылки). Метка живёт в заметке встречи текстом и подписывает
+    цитаты из стенограммы; узла и ссылки на него не получает.
+    """
+    # По ключу имени: «Собеседник-3», «Собеседник №3», «Собеседник 3,» и
+    # «Собеседник 3 (муж)» — та же метка; иначе она вливалась через name_key
+    # в старый узел-склейщик (DS, круг-1 по #448 I4).
+    bare = re.sub(r"\s*[(（].*?[)）]\s*$", "", safe_name(name))
+    return bool(_PLACEHOLDER_RE.match(name_key(re.sub(r"[№#]", " ", bare))))
+
+
+def name_key(name: str) -> str:
+    """Ключ сравнения имён узлов: регистр, пунктуация, скобки, дефис и
+    подчёркивание людей не различают — «Иван (Иванов)» и «Иван Иванов»,
+    «ИИ-агент» и «ИИ_агент», «Реестр 385 130» и «Реестр 385-130» жили в графе
+    четырьмя парами узлов (аудит 28.08)."""
+    return " ".join(re.sub(r"[\W_]+", " ", name, flags=re.UNICODE).casefold().split())
+
+
+_LINK_WS_RE = re.compile(r"\[\[([^\]]*?)\]\]", re.S)
+
+
+def tidy_links(text: str) -> str:
+    """Перенос строки внутри [[…]] — ссылка мертва для Obsidian.
+
+    Модель переносит длинную строку где придётся, и «[[Люди/Иван\nПетров]]»
+    уходит в узел как есть: в графе 60+ таких ссылок (аудит 28.08). Склеиваем
+    пробелы внутри ссылки, остальной текст не трогаем.
+    """
+    def join(m: re.Match) -> str:
+        inner = " ".join(m.group(1).split())
+        # перенос на границе с «/» давал «[[Системы/ Витрина]]» — тоже мёртвая
+        # ссылка; слэш в ЦЕЛИ всегда разделитель папки (GLM, круг-1 #448);
+        # алиас после «|» — отображаемый текст, его не трогаем (luna M2)
+        target, sep, alias = inner.partition("|")
+        return "[[" + re.sub(r"\s*/\s*", "/", target) + sep + alias + "]]"
+    return _LINK_WS_RE.sub(join, text)
+
+
+def tidy_links_deep(obj):
+    """tidy_links по всем строкам разбора модели (dict/list любой глубины)."""
+    if isinstance(obj, str):
+        return tidy_links(obj)
+    if isinstance(obj, list):
+        return [tidy_links_deep(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: tidy_links_deep(v) for k, v in obj.items()}
+    return obj
+
+
 def parse_stem(stem: str) -> tuple[str, str, bool]:
     """Стем стенограммы → (минутный штамп, голый штамп, есть ли уже тема).
 
@@ -405,7 +465,7 @@ def canon_link(graph: pathlib.Path, name: str, default_folder: str | None = None
     и Obsidian плодит фантомные дубли. Узла нет — default_folder, куда его
     создаст upsert_entity; совсем без папки — короткая [[Имя]].
     """
-    p = find_canonical(graph, name)
+    p = find_canonical(graph, name, folder=default_folder)   # luna I1: папка и в ссылке
     if p is not None:
         return f"[[{p.parent.name}/{p.stem}|{p.stem}]]"
     disp = safe_name(name)
@@ -414,8 +474,28 @@ def canon_link(graph: pathlib.Path, name: str, default_folder: str | None = None
     return f"[[{disp}]]"
 
 
+_PRONOUNS = {"он", "она", "оно", "они", "это", "этот", "эта", "то", "тот", "та", "те",
+             "там", "тут", "здесь", "мы", "вы", "я", "ты", "все", "всё", "кто", "что",
+             "he", "she", "it", "they", "this", "that", "we", "you"}
+
+
+def link_or_text(graph: pathlib.Path, name: str) -> str:
+    """[[Ссылка]] только на узел, который в графе есть; иначе — текст.
+
+    Свободные поля разбора («связи»: от/к) — что угодно из речи: местоимение,
+    обрывок слова, роль. Голая `[[он]]` без папки живёт в графе как битая
+    ссылка навсегда (626 битых, 298 целей — аудит 28.08).
+    """
+    clean = safe_name(name)
+    if name_key(clean) in _PRONOUNS or len(clean) < 2 or is_speaker_placeholder(clean):
+        return clean                      # метка нашла бы старый узел-склейщик
+    p = find_canonical(graph, clean)
+    return f"[[{p.parent.name}/{p.stem}|{p.stem}]]" if p is not None else clean
+
+
 def find_canonical(graph: pathlib.Path, name: str,
-                   ambiguous: list[str] | None = None) -> pathlib.Path | None:
+                   ambiguous: list[str] | None = None,
+                   folder: str | None = None) -> pathlib.Path | None:
     """Ищет существующий узел: точное имя или имя-подстрока (система → ИС 1494 система).
 
     Если подходящих несколько — не гадаем и возвращаем None (новый узел): приклеить
@@ -425,25 +505,40 @@ def find_canonical(graph: pathlib.Path, name: str,
     единого намёка, что они могут быть об одном и том же.
     """
     n = safe_name(name).casefold()
+    key = name_key(name)
+    places = ("Люди", "Команды", "Системы", "Модели", "Блокеры", "Ядра")
+    files = [f for place in places if (graph / place).exists()
+             for f in sorted((graph / place).glob("*.md")) if not f.name.startswith("_")]
+    # Три прохода, а не один с ранним return: совпадение по ключу в первой
+    # папке перебивало ТОЧНОЕ имя в следующей (luna, круг-1 #448 I2).
+    # 1) точное имя — по всем папкам (иначе дубль системы возрождался)
+    for f in files:
+        if f.stem.casefold() == n:
+            return f
+    # 2) ключ без пунктуации/скобок/дефисов — только в целевой папке записи
+    #    и только если кандидат один: «ИИ-агент» в Людях и «ИИ_агент» в
+    #    Системах — не один узел (DS I1); два кандидата — не гадаем
+    if key:
+        keyed = [f for f in files if name_key(f.stem) == key
+                 and (folder is None or f.parent.name == folder)]
+        if len(keyed) == 1:
+            return keyed[0]
+        if keyed and ambiguous is not None:
+            ambiguous.extend(f.stem for f in keyed)
+    # 3) подстрока — только для достаточно длинных имён и близких по длине
+    #    пар; при заданной папке — только в ней (luna I3: «Платёж» из Систем
+    #    дописывался в Люди/Платёжный). Двухбуквенное «Ян» входило в
+    #    «Январский релиз», «БД» — в «Обновление БД витрин»; «Риски»
+    #    проглатывали «Отчётность по рискам» — отсюда пороги.
     candidates: list[pathlib.Path] = []
-    for folder in ("Люди", "Команды", "Системы", "Модели", "Блокеры", "Ядра"):
-        d = graph / folder
-        if not d.exists():
+    for f in files:
+        if folder is not None and f.parent.name != folder:
             continue
-        for f in d.glob("*.md"):
-            stem = f.stem.casefold()
-            if stem == n:
-                return f  # точное имя всегда выигрывает (иначе дубль системы возрождался)
-            # Подстрока — только для достаточно длинных имён и близких по
-            # длине пар. Двухбуквенное «Ян» из распознавания входило в
-            # «Январский релиз», «БД» — в «Обновление БД витрин»; при
-            # единственном совпадении функция уверенно возвращала чужой узел,
-            # и встреча дописывалась не туда. В обратную сторону так же:
-            # «Риски» проглатывали «Отчётность по рискам».
-            if len(n) < 5 or len(stem) < 5:
-                continue
-            if (n in stem or stem in n) and abs(len(n) - len(stem)) <= max(len(n), len(stem)) // 2:
-                candidates.append(f)
+        stem = f.stem.casefold()
+        if len(n) < 5 or len(stem) < 5:
+            continue
+        if (n in stem or stem in n) and abs(len(n) - len(stem)) <= max(len(n), len(stem)) // 2:
+            candidates.append(f)
     if len(candidates) == 1:
         return candidates[0]
     if candidates and ambiguous is not None:
@@ -453,7 +548,7 @@ def find_canonical(graph: pathlib.Path, name: str,
 
 def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
                   desc: str, meeting_link: str, contrib: str):
-    canonical = find_canonical(graph, name)
+    canonical = find_canonical(graph, name, folder=folder)
     if canonical is not None:
         p = canonical  # дописываем в существующий узел, а не плодим дубль
     else:
@@ -461,6 +556,11 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         d.mkdir(parents=True, exist_ok=True)
         p = d / f"{safe_name(name)}.md"
     stamp = f"- [[{meeting_link}]] — {contrib}" if contrib else f"- [[{meeting_link}]]"
+    # Дата последнего упоминания — единственное, что у человека/системы
+    # обновляется механически: описание пишется один раз при первом
+    # упоминании, и без облачной правки узел не говорит, свеж ли он
+    # (Sonnet 28.08 I6). Ретрай старой встречи дату не откатывает.
+    day = pathlib.PurePosixPath(meeting_link).name[:10]
     if p.exists():
         text = p.read_text(encoding="utf-8")
         if meeting_link in text:
@@ -469,13 +569,30 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
             text = text.replace("## Встречи", f"## Встречи\n{stamp}", 1)
         else:
             text += f"\n## Встречи\n{stamp}\n"
-        safe_write.write_text(p, text)
+        safe_write.write_text(p, _touch_last_seen(text, day))
     else:
         safe_write.write_text(
             p,
             f"---\ntype: {typ}\ntags: [встречи, авто]\n---\n# {name}\n{desc}\n\n"
-            f"## Встречи\n{stamp}\n",
+            + (f"_(последнее упоминание: {day})_\n\n" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else "")
+            + f"## Встречи\n{stamp}\n",
         )
+
+
+_LAST_SEEN_RE = re.compile(r"^_\(последнее упоминание: (\d{4}-\d{2}-\d{2})\)_[ \t]*\r?$", re.M)
+
+
+def _touch_last_seen(text: str, day: str) -> str:
+    """Строка «_(последнее упоминание: ДАТА)_» — обновить, не откатывая назад."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        return text
+    m = _LAST_SEEN_RE.search(text)
+    if m:
+        return text if m.group(1) >= day else _LAST_SEEN_RE.sub(f"_(последнее упоминание: {day})_", text, count=1)
+    line = f"_(последнее упоминание: {day})_"
+    if "## Встречи" in text:
+        return text.replace("## Встречи", f"{line}\n\n## Встречи", 1)
+    return text.rstrip("\n") + f"\n\n{line}\n"
 
 
 def core_anchor(core: dict, transcript: str, speakers: set[str] | None = None) -> str:
@@ -691,10 +808,8 @@ def _locate(quote: str, transcript: str,
     return span(*best)
 
 
-_REDIRECT_RE = re.compile(r"^# .+? → \[\[Ядра/(.+?)(?:\|.*?)?\]\]", re.M)
-
-
-def resolve_core_path(d: pathlib.Path, name: str) -> pathlib.Path:
+def resolve_core_path(d: pathlib.Path, name: str,
+                      graph: pathlib.Path | None = None) -> pathlib.Path:
     """Файл ядра по имени — с учётом redirect-заглушек tier3.
 
     После слияния дубль остаётся файлом «`# дубль → [[Ядра/канон]]` … Дубль.
@@ -704,11 +819,24 @@ def resolve_core_path(d: pathlib.Path, name: str) -> pathlib.Path:
     пропускают (аудит DeepSeek 17.08). Идём по стрелке до конца цепи.
     """
     p = d / f"{safe_name(name)}.md"
+    # Тема, уже заведённая узлом в Системы/Команды/Люди, а теперь названная
+    # ядром: раньше рядом молча вырастал параллельный Ядра/X.md (4 живые пары
+    # в графе, аудит 28.08). Слить автоматически нельзя — структуры разные, —
+    # но молчать тоже нельзя: говорим в лог, doctor покажет утром.
+    if graph is not None and not p.exists():
+        other = find_canonical(graph, name)
+        if other is not None and other.parent == d:
+            p = other          # «А-Б» и «А Б» — одно ядро, не два (luna I4)
+        elif other is not None:
+            print(f"граф: ядро «{name}» уже есть узлом {other.parent.name}/{other.stem} — "
+                  "заведено параллельное ядро, возможный дубль (свести руками)")
     # Идём до КОНЦА цепи, а не фиксированные три шага: цепочка A→B→C→D→E
     # (пять слияний по одной теме — обычное дело за месяц) возвращала D,
     # который сам ещё redirect, и статус уходил в файл, который tier3 и досье
     # пропускают (аудит графа 26.08, Codex). От зацикливания — visited, а не
-    # счётчик: цикл A→B→A ловится сразу и точно.
+    # счётчик: цикл A→B→A ловится сразу и точно. Заглушку узнаём по
+    # структуре (redirects.is_merged): облако пишет «Дубль слит» своими
+    # словами, и буквальная пометка tier3 её не видела (Sonnet 28.08).
     visited: set[pathlib.Path] = set()
     while True:
         if p in visited:
@@ -717,12 +845,15 @@ def resolve_core_path(d: pathlib.Path, name: str) -> pathlib.Path:
         if not p.exists():
             return p
         text = p.read_text(encoding="utf-8")
-        if "Дубль. Смерджен" not in text:
+        if not redirects.is_merged(text):
             return p
-        m = _REDIRECT_RE.search(text)
-        if not m:
+        t = redirects.stub_target(text)
+        if not t:
             return p
-        target = d / f"{safe_name(m.group(1))}.md"
+        tpath = pathlib.PurePosixPath(t)
+        if tpath.parent.name not in ("", d.name):
+            return p       # канон в другой папке — статус ядра туда не пишем (DS I5)
+        target = d / f"{safe_name(tpath.stem)}.md"
         if target == p or not target.exists():
             return p
         p = target
@@ -734,7 +865,7 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
     хроника копится. В графе Obsidian ядра становятся хабами над-уровня."""
     d = graph / "Ядра"
     d.mkdir(parents=True, exist_ok=True)
-    p = resolve_core_path(d, core["имя"])
+    p = resolve_core_path(d, core["имя"], graph)
     status = (core.get("статус") or "").strip()
     upd = (core.get("обновление") or "").strip()
     anchor = core_anchor(core, transcript, speakers) if transcript else ""
@@ -775,10 +906,53 @@ def rebuild_cores_moc(graph: pathlib.Path):
         if p.name.startswith("_"):
             continue
         text = p.read_text(encoding="utf-8")
+        if redirects.is_merged(text):
+            continue        # заглушка после слияния — мёртвая строка «— —» (Sonnet 28.08 M8)
         m = re.search(r"## Статус\n(.+)", text)
         st = m.group(1).strip() if m else "—"
         lines.append(f"- [[Ядра/{p.stem}|{p.stem}]] — {st}")
     safe_write.write_text(d / "_ЯДРА.md", "\n".join(lines) + "\n")
+
+
+FOLDER_INDEX = {"Люди": "_ЛЮДИ.md", "Системы": "_СИСТЕМЫ.md", "Команды": "_КОМАНДЫ.md"}
+
+
+def rebuild_folder_index(graph: pathlib.Path, folder: str) -> None:
+    """Указатель папки узлов: имя, число встреч, последнее упоминание.
+
+    `_MOC.md` — рукописный обзор плюс авто-список встреч; узлы Люди/Системы/
+    Команды он не индексирует и не может (аудит 28.08: 1826 узлов из 1901
+    вне MOC). Указатель строится по образцу `_ЯДРА.md`/`Досье/_ИНДЕКС.md`:
+    свежее сверху, заглушки после слияния пропущены. Ссылка через `\\|` —
+    внутри таблицы пайп иначе ломает разметку.
+    """
+    d = graph / folder
+    name = FOLDER_INDEX.get(folder)
+    if name is None or not d.is_dir():
+        return
+    rows = []
+    for p in sorted(d.glob("*.md")):
+        if p.name.startswith("_"):
+            continue
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue          # битый симлинк, чужие права, iCloud — не роняем встречу (GLM I3)
+        if redirects.is_merged(text):
+            continue
+        # только секция «## Встречи»: ссылка на старую встречу в прозе от облака
+        # завышала счётчик и «последнюю» (GLM M12)
+        m = re.search(r"## Встречи\n(.*?)(?=\n## |\Z)", text, re.S)
+        stamps = set(re.findall(r"\[\[Встречи/(\d{4}-\d{2}-\d{2}[^\]|#]*)", m.group(1) if m else text))
+        dates = {s[:10] for s in stamps}          # две встречи одного дня — две (luna M1)
+        rows.append((max(dates) if dates else "", len(stamps), p.stem))
+    rows.sort(key=lambda r: (r[0], r[1], r[2]), reverse=True)
+    lines = [f"# {folder} — указатель\n",
+             "Автоматически после каждой встречи: узел, число встреч, последнее "
+             "упоминание; свежее сверху. Обзор проекта — в `_MOC.md`.\n",
+             "| узел | встреч | последняя |", "|---|---|---|"]
+    lines += [f"| [[{folder}/{stem}\\|{stem}]] | {n} | {last or '—'} |" for last, n, stem in rows]
+    safe_write.write_text(d / name, "\n".join(lines) + "\n")
 
 
 def main():
@@ -846,6 +1020,9 @@ def main():
     # ниже. Ранний выход отсюда стоил бы человеку архива и хука (ревью 19.08).
     graph_off = not install_profile.graph_enabled(cfg)
     data = None if graph_off else extract(cfg, context, _project_rule(known, graph.name))
+    if data:
+        # переносы строк внутри [[…]] от модели — мёртвые ссылки (tidy_links)
+        data = tidy_links_deep(data)
     # None — «граф не обновляем», но НЕ «ничего не делаем»: докстринг extract
     # обещает архив со стенограммой и минутками и без графа. Раньше здесь
     # стоял return — ни заметки, ни архива, ни хука, а пересборка трижды
@@ -902,9 +1079,16 @@ def main():
     meeting_link = f"Встречи/{stamp}"
     # 26b на длинных встречах иногда роняет ключи в JSON — битые записи пропускаем,
     # а не валим весь прогон (KeyError на часовой встрече 17.07)
-    people = [p for p in (data.get("люди") or []) if isinstance(p, dict) and p.get("имя")
-              and p["имя"].strip().lower() not in {"собеседник", "участник", "speaker", "—"}]
-    ents = [e for e in (data.get("сущности") or []) if isinstance(e, dict) and e.get("имя")]
+    raw_people = [p for p in (data.get("люди") or []) if isinstance(p, dict) and p.get("имя")
+                  and p["имя"].strip() != "—"]
+    # Метки диаризации («Собеседник 3», «Speaker 2») — не люди: узла и
+    # ссылки не получают, иначе разные люди разных встреч склеиваются в один
+    # файл (аудит 28.08). В заметке встречи остаются текстом, в speakers идут —
+    # цитаты из стенограммы подписаны именно этой меткой.
+    people = [p for p in raw_people if not is_speaker_placeholder(p["имя"])]
+    anon = [p for p in raw_people if is_speaker_placeholder(p["имя"])]
+    ents = [e for e in (data.get("сущности") or []) if isinstance(e, dict) and e.get("имя")
+            and not is_speaker_placeholder(e["имя"])]      # метка как «сущность» — тоже не узел
     decisions = [d for d in (data.get("решения") or []) if isinstance(d, str) and d.strip()]
     links = [l for l in (data.get("связи") or [])
              if isinstance(l, dict) and l.get("от") and l.get("к")]
@@ -920,6 +1104,15 @@ def main():
                       e["имя"], e.get("тип", "entity"),
                       e.get("суть", ""), meeting_link, "")
 
+    touched = ({"Люди"} if people else set()) | {ENT_FOLDER.get(e.get("тип", ""), "Системы") for e in ents}
+    for folder in sorted(touched & set(FOLDER_INDEX)):
+        try:
+            rebuild_folder_index(graph, folder)      # только тронутые папки (DS I3)
+        except OSError as e:
+            # указатель — производный вид: его сбой не должен ронять встречу
+            # (ядра, заметку, архив, хук) — ночь пересоберёт (luna I7)
+            print(f"граф: указатель {folder} не записан ({e})")
+
     # 1б) ядра: сквозные темы/задачи — статус обновляется, хроника копится
     cores = [c for c in (data.get("ядра") or [])
              if isinstance(c, dict) and c.get("имя")][:4]
@@ -928,7 +1121,7 @@ def main():
     # Узлы графа сюда НЕ идут: там вся история проекта, и ушедший три года
     # назад сотрудник оставался бы допустимым говорящим навсегда — контракт
     # обещает участника встречи (круг-3 по PR #438, GLM Important 2).
-    speakers = {p["имя"] for p in people if p.get("имя")}
+    speakers = {p["имя"] for p in people if p.get("имя")} | {p["имя"] for p in anon}
     # Три языка — как в manifest архива: русский, английский, китайский.
     m = re.search(r"^(?:Участники|Participants|参会者)[^:：]*[:：]\s*(.+)$",
                   speech, re.M)
@@ -993,8 +1186,12 @@ def main():
           f"# Встреча {stamp}" + (f" — {title}" if title else ""), ""]
     if topics:
         md += ["## Темы"] + [f"- {t}" for t in topics] + [""]
-    if people:
-        md += ["## Участники"] + [f"- {canon_link(graph, p['имя'], 'Люди')} — {p.get('роль','')}: {p.get('вклад','')}" for p in people] + [""]
+    if people or anon:
+        md += (["## Участники"]
+               + [f"- {canon_link(graph, p['имя'], 'Люди')} — {p.get('роль','')}: {p.get('вклад','')}" for p in people]
+               # метка диаризации — текстом, без ссылки: узла у неё нет
+               + [f"- {safe_name(p['имя'])} — {p.get('роль','')}: {p.get('вклад','')}" for p in anon]
+               + [""])
     if ents:
         md += ["## Сущности"] + [f"- {canon_link(graph, e['имя'], ENT_FOLDER.get(e.get('тип',''), 'Системы'))} ({e.get('тип','')}) — {e.get('суть','')}" for e in ents] + [""]
     if cores:
@@ -1002,7 +1199,10 @@ def main():
     if decisions:
         md += ["## Решения"] + [f"- 📌 {d}" for d in decisions] + [""]
     if links:
-        md += ["## Связи"] + [f"- {canon_link(graph, l['от'])} → {canon_link(graph, l['к'])}: {l.get('тип','')}" for l in links] + [""]
+        # «он», «Фанта», обрывки слов: ссылка — только на узел, который в графе
+        # есть (свой прогон уже завёл людей, сущности и ядра выше); остальное —
+        # текстом. Раньше canon_link давал голое [[он]] (Sonnet 28.08 I3).
+        md += ["## Связи"] + [f"- {link_or_text(graph, l['от'])} → {link_or_text(graph, l['к'])}: {l.get('тип','')}" for l in links] + [""]
     md += [f"Стенограмма: `{tpath}`"]
     vdir = graph / "Встречи"
     if graph_ok:
@@ -1435,8 +1635,10 @@ def cloud_enrich_prompt(*, transcript_name: str, folder: pathlib.Path,
         "в узлы Люди/Системы; (б) от старого графа к новой встрече — допиши в её "
         "заметку связи, которые видны только из истории (повторяющиеся "
         "люди/системы/блокеры, продолжение тем). Мерджи очевидные дубли (alias, "
-        "перенос ссылок). Не выдумывай — только то, что есть в стенограммах и "
-        "графе.\n"
+        "перенос ссылок). Если под «## Встречи» или «## Хроника» уже есть строка "
+        "с этой же ссылкой на встречу — замени её, не добавляй вторую. Ссылки "
+        "[[…]] держи на одной строке. Не выдумывай — только то, что есть в "
+        "стенограммах и графе.\n"
         "3. Файлы не удаляй и не переименовывай — удаление Чароит просто не "
         "перенесёт в граф. Явный дубль сливай так: факты и ссылки — в канон, а на месте "
         "дубля оставь заглушку «# Имя → [[Папка/Канон]]» с пометкой «Дубль. "

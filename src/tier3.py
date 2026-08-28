@@ -41,6 +41,7 @@ import os
 import llm
 import live_gate
 import nli
+from redirects import is_merged as _is_merged
 
 REPR_LIMIT = 350          # NLI держит 512 токенов на пару — имя+суть с запасом
 EMB_PREFILTER = 0.55      # косинус bge-m3; ниже — пары даже не судим
@@ -113,7 +114,7 @@ def load_cores(folder: pathlib.Path) -> list[dict]:
         if p.name.startswith("_"):
             continue
         text = p.read_text(encoding="utf-8")
-        if "Дубль. Смерджен" in text:
+        if _is_merged(text):
             continue  # уже сведён прошлой ревизией
         def sect(title: str) -> str:
             m = re.search(rf"## {title}\n(.*?)(?=\n## |\Z)", text, re.S)
