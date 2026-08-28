@@ -27,6 +27,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
 import meeting_archive  # noqa: E402
+import redirects  # noqa: E402
 
 
 def sect(text: str, title: str) -> list[str]:
@@ -130,7 +131,7 @@ def build_brief(graph: pathlib.Path) -> str | None:
             if p.name.startswith("_"):
                 continue
             text = p.read_text(encoding="utf-8")
-            if "Дубль. Смерджен" in text:
+            if redirects.is_merged(text):
                 continue
             sm = re.search(r"## Статус\n(.+)", text)
             status = sm.group(1).strip() if sm else ""

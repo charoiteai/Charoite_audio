@@ -96,11 +96,12 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
             tgt = resolve(m.group(1))
             if tgt is None:
                 broken.append((rel[p], " ".join(m.group(1).split())))
-            elif tgt != p:
-                inbound[tgt] += 1
+            elif tgt != p and not p.name.startswith("_"):
+                inbound[tgt] += 1                    # ссылка из указателя — не связь
         outbound[p] = n
 
-    nodes = [p for p in notes if rel[p].split("/", 1)[0] in HUB_DIRS and "/" in rel[p]]
+    nodes = [p for p in notes if rel[p].split("/", 1)[0] in HUB_DIRS and "/" in rel[p]
+             and not p.name.startswith("_")]          # _ЛЮДИ.md, _ЯДРА.md — указатели
     orphans = [p for p in nodes if inbound[p] == 0]
     placeholders = [p for p in nodes if rel[p].startswith("Люди/")
                     and graph_updater.is_speaker_placeholder(re.sub(r"\s*[(（].*?[)）]", "", p.stem))

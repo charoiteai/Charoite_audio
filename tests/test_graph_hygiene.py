@@ -183,3 +183,81 @@ def test_graph_doctor_counts_defects_and_spares_design_pairs(tmp_path):
     assert rep["moc_linked"] == 2 and rep["moc_missing"] == rep["nodes"] - 1
     assert any("меток диаризации" in w for w in rep["warnings"])
     assert not any("Досье" in x for x in rep["examples"]["dup_real"]), "пара Досье/Ядра — по замыслу"
+
+
+def test_redirect_stubs_are_recognised_by_structure_not_by_tier3_wording():
+    """Облако помечает слияние своими словами («Дубль слит») — три слоя
+    (досье, tier3, ядра) узнавали только буквальную пометку tier3 и принимали
+    такую заглушку за живой узел (Sonnet 28.08 I5)."""
+    import redirects
+    cloud = "---\ntype: entity\n---\n# Инцидент → [[Ядра/Инциденты]]\n\n⚠️ **Дубль слит.**\n"
+    tier3 = "# Тема\n## Статус\n…\n⚠️ **Дубль. Смерджен Tier3-NLI.** Хроника перенесена в [[Ядра/Канон]]\n"
+    alive = "# Живая тема\n## Статус\nидёт → [[Ядра/Соседняя]] связана\n" + "- факт\n" * 5
+    assert redirects.is_merged(cloud) and redirects.is_redirect_stub(cloud)
+    assert redirects.is_merged(tier3)
+    assert not redirects.is_merged(alive), "стрелка в середине текста — не заглушка"
+    assert redirects.stub_target(cloud) == "Ядра/Инциденты.md"
+
+
+def test_links_in_relations_only_point_at_existing_nodes(tmp_path):
+    """«## Связи»: [[он]] и обрывки слов больше не становятся ссылками
+    (Sonnet 28.08 I3: 626 битых ссылок, среди целей — местоимение «он»)."""
+    graph = tmp_path / "g"
+    (graph / "Люди").mkdir(parents=True)
+    (graph / "Люди" / "Иван Иванов.md").write_text("# Иван Иванов\n", encoding="utf-8")
+    assert g.link_or_text(graph, "он") == "он"
+    assert g.link_or_text(graph, "Фа") == "Фа"
+    assert g.link_or_text(graph, "Иван (Иванов)") == "[[Люди/Иван Иванов|Иван Иванов]]"
+    assert g.link_or_text(graph, "Неизвестная система") == "Неизвестная система"
+
+
+def test_a_core_named_after_an_existing_system_node_is_reported(tmp_path, capsys):
+    """Тема заведена как Системы/X, потом названа ядром: параллельное Ядра/X
+    больше не появляется молча (Sonnet 28.08 I4: 4 живые пары в графе)."""
+    graph = tmp_path / "g"
+    (graph / "Системы").mkdir(parents=True)
+    (graph / "Ядра").mkdir()
+    (graph / "Системы" / "Внеплановый бэкап.md").write_text("# Внеплановый бэкап\n", encoding="utf-8")
+    p = g.resolve_core_path(graph / "Ядра", "Внеплановый бэкап", graph)
+    assert p == graph / "Ядра" / "Внеплановый бэкап.md"
+    assert "уже есть узлом Системы/Внеплановый бэкап" in capsys.readouterr().out
+    # заглушка облака в Ядрах ведёт к канону, хотя пометки tier3 в ней нет
+    (graph / "Ядра" / "Канон.md").write_text("# Канон\n## Статус\nидёт\n", encoding="utf-8")
+    (graph / "Ядра" / "Дубль.md").write_text("# Дубль -> [[Ядра/Канон]]\n\nДубль слит.\n", encoding="utf-8")
+    assert g.resolve_core_path(graph / "Ядра", "Дубль", graph) == graph / "Ядра" / "Канон.md"
+
+
+def test_people_nodes_carry_a_last_seen_date_that_never_goes_backwards(tmp_path):
+    """У человека/системы описание пишется один раз; свежесть — строкой
+    «последнее упоминание», ретрай старой встречи её не откатывает (Sonnet I6)."""
+    graph = tmp_path / "g"
+    (graph / "Люди").mkdir(parents=True)
+    g.upsert_entity(graph, "Люди", "Пётр", "person", "аналитик", "Встречи/2026-07-15_1400", "спросил")
+    node = graph / "Люди" / "Пётр.md"
+    assert "_(последнее упоминание: 2026-07-15)_" in node.read_text(encoding="utf-8")
+    g.upsert_entity(graph, "Люди", "Пётр", "person", "", "Встречи/2026-08-20_1000", "")
+    text = node.read_text(encoding="utf-8")
+    assert "_(последнее упоминание: 2026-08-20)_" in text and text.count("последнее упоминание") == 1
+    g.upsert_entity(graph, "Люди", "Пётр", "person", "", "Встречи/2026-06-01_0900", "ретрай старого")
+    assert "_(последнее упоминание: 2026-08-20)_" in node.read_text(encoding="utf-8")
+    # старый узел без строки получает её при следующем упоминании
+    old = graph / "Люди" / "Старый.md"
+    old.write_text("# Старый\nроль\n\n## Встречи\n- [[Встречи/2026-05-05_1000]]\n", encoding="utf-8")
+    g.upsert_entity(graph, "Люди", "Старый", "person", "", "Встречи/2026-08-01_1000", "")
+    assert "_(последнее упоминание: 2026-08-01)_\n\n## Встречи" in old.read_text(encoding="utf-8")
+
+
+def test_folder_index_lists_live_nodes_freshest_first(tmp_path):
+    """Люди/_ЛЮДИ.md: узел, встреч, последняя; заглушки пропущены (Sonnet I7)."""
+    graph = tmp_path / "g"
+    (graph / "Люди").mkdir(parents=True)
+    (graph / "Люди" / "А.md").write_text("# А\n## Встречи\n- [[Встречи/2026-07-01_1000]]\n", encoding="utf-8")
+    (graph / "Люди" / "Б.md").write_text(
+        "# Б\n## Встречи\n- [[Встречи/2026-08-20_1000]]\n- [[Встречи/2026-06-01_1000]]\n", encoding="utf-8")
+    (graph / "Люди" / "В.md").write_text("# В → [[Люди/Б]]\n\nДубль слит.\n", encoding="utf-8")
+    g.rebuild_folder_index(graph, "Люди")
+    idx = (graph / "Люди" / "_ЛЮДИ.md").read_text(encoding="utf-8")
+    rows = [ln for ln in idx.splitlines() if ln.startswith("| [[")]
+    assert rows == ["| [[Люди/Б\\|Б]] | 2 | 2026-08-20 |", "| [[Люди/А\\|А]] | 1 | 2026-07-01 |"]
+    g.rebuild_folder_index(graph, "Досье")          # нет указателя для этой папки — тихо
+    assert not (graph / "Досье").exists()

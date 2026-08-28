@@ -80,7 +80,9 @@ DENY_MAX = 200
 # Единственная допустимая форма «удаления» — заглушка-перенаправление,
 # как у tier3 при слиянии дублей: `# Имя → [[Папка/Канон]]` в первой строке
 # заголовка. Сам файл остаётся, ссылки на него не ломаются.
-_REDIRECT_RE = re.compile(r"^# .+? (?:→|->|⇒) \[\[[^\]]+\]\]", re.M)
+# Заглушка-редирект — общий детектор src/redirects.py (тот же, что у tier3,
+# досье и конвейера); имена оставлены для тестов и читателей этого файла.
+from redirects import stub_target as _stub_target, is_redirect_stub  # noqa: E402
 
 # Что облако не трогает никогда, даже находясь внутри графа. Архив встречи —
 # та же категория, что копии стенограмм: Саммари, Минутки, Стенограмма суфлёра
@@ -88,46 +90,9 @@ _REDIRECT_RE = re.compile(r"^# .+? (?:→|->|⇒) \[\[[^\]]+\]\]", re.M)
 # граница покрывала только одну папку из двух.
 PROTECTED_DIRS = ("Документация/Стенограммы встреч", "Встречи-архив")
 PROTECTED_SECTION = "## Правки автора"
-
-
 REWRITE_MIN_LINES = 6
 REWRITE_KEEP = 1 / 3
-_STUB_TARGET_RE = re.compile(r"(?:→|->|⇒) \[\[([^\]]+)\]\]")
 
-
-def _stub_body(text: str) -> str:
-    """Тело файла без frontmatter и ведущих HTML-комментариев — общая
-    нормализация для is_redirect_stub и _stub_target, чтобы стрелка в
-    YAML-поле не притворялась редиректом (GLM, круг-4 M2)."""
-    body = (text or "").replace("\r\n", "\n").strip()
-    body = re.sub(r"\A---\n.*?\n---\n", "", body, count=1, flags=re.S)
-    return re.sub(r"\A(?:\s*<!--.*?-->\s*)*", "", body, flags=re.S).lstrip()
-
-
-def _stub_target(text: str) -> str | None:
-    """Куда указывает заглушка-редирект: `→ [[Папка/Канон]]` → «Папка/Канон.md».
-
-    Цель берём из ТЕЛА заглушки после среза frontmatter, не по сырому тексту:
-    стрелка-ссылка в YAML-поле (note, related) увела бы цель мимо канона, и
-    легитимная заглушка ушла бы в карантин (DS, круг-4). Ищется в той же
-    первой строке, которую валидирует is_redirect_stub."""
-    first = _stub_body(text).split("\n", 1)[0]
-    m = _STUB_TARGET_RE.search(first)
-    if not m:
-        return None
-    target = m.group(1).split("|", 1)[0].split("#", 1)[0].strip()
-    return target if target.endswith(".md") else f"{target}.md"
-
-
-def is_redirect_stub(text: str) -> bool:
-    """Заглушка после слияния: короткий файл, чей ПЕРВЫЙ заголовок (после
-    frontmatter) — стрелка на канон. Стрелка где-то в середине переписанного
-    узла заглушкой не делает (круг-1 по PR #381, Codex + DeepSeek)."""
-    body = _stub_body(text)
-    if not body or len(body) > 1200:   # длину мерим ПОСЛЕ frontmatter
-        return False
-    first = body.split("\n", 1)[0].strip()
-    return _REDIRECT_RE.fullmatch(first) is not None
 
 def retention(old: str, new: str) -> float:
     """Какая доля содержательных строк старого текста уцелела в новом.
@@ -695,7 +660,9 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 # круг-2 И3). Откладываем до конца прохода.
                 pending_stubs.append((rel, cpath, gpath, name, target))
                 continue
-            safe_write.write_text(gpath, new)
+            # переносы строк внутри [[…]] — стиль CLI при правке, для Obsidian
+            # ссылка мертва; чиним в единственной точке входа (Sonnet 28.08)
+            safe_write.write_text(gpath, graph_updater.tidy_links(new))
             v.applied.append(name)
         except OSError:
             v.failed.append(name)
@@ -727,7 +694,7 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                     and c not in bad)
                 for c in cands)
             if canon_ok:
-                safe_write.write_text(gpath, _read(cpath))
+                safe_write.write_text(gpath, graph_updater.tidy_links(_read(cpath)))
                 v.applied.append(name)
             else:
                 quarantine(cpath, copy, qdir, move=False)

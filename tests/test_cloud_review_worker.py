@@ -1699,3 +1699,23 @@ def test_a_stamp_that_is_a_path_never_leaves_the_snapshot_root(tmp_path, monkeyp
     # обычный штамп по-прежнему даёт снимок внутри backup_root
     dest = cloud_review.backup_graph(graph, "2026-07-15_1400")
     assert dest.parent == cloud_review.backup_root(graph) and dest.is_dir()
+
+
+def test_cloud_links_wrapped_over_lines_are_joined_on_transfer(tmp_path):
+    """CLI переносит длинный абзац посреди [[…]] — для Obsidian ссылка мертва
+    (63 таких в графе, аудит 28.08). Склеиваем в точке переноса в граф."""
+    graph = _graph(tmp_path)
+    body = "# Ядро\n## Статус\nРешено\n" + "".join(f"- факт {i}\n" for i in range(8))
+    core = graph / "Ядра" / "Платёжный провайдер.md"
+    core.write_text(body, encoding="utf-8")
+
+    def worked(pen):
+        (pen / "Ядра" / "Платёжный провайдер.md").write_text(
+            body + "- см. [[Системы/Система\n  1593|систему 1593]] и [[Люди/Иван\nИванов]]\n",
+            encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, worked)
+    assert "Ядра/Платёжный провайдер.md" in v.applied
+    text = core.read_text(encoding="utf-8")
+    assert "[[Системы/Система 1593|систему 1593]]" in text and "[[Люди/Иван Иванов]]" in text
+    assert "\n  1593" not in text
