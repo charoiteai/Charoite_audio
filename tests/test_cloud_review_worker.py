@@ -1503,3 +1503,162 @@ def test_a_stub_pointing_to_a_canon_in_the_same_folder_lands(tmp_path):
     assert "Ядра/Дубль.md" not in v.reverted
     assert dup.read_text(encoding="utf-8").startswith("# Дубль → [[")
 
+
+
+def test_a_stub_pointing_outside_the_graph_never_lands(tmp_path):
+    """Заглушка `[[../наружу]]` не применяется, даже если «наружу.md» лежит
+    и за графом, и тёзкой рядом с заглушкой (luna круг-5 И1, DS M3).
+
+    `pathlib.Path(target).name` стирал `..` и каталоги: для корневого дубля
+    локальный кандидат «наружу.md» совпадал с чужим узлом графа, а
+    «../наружу.md» резолвился в файл ЗА границей графа — оба пускали
+    редирект на цель, которой в графе нет. Теперь локальный кандидат —
+    только для bare-имени, а каждый кандидат проходит may_write.
+    """
+    graph = _graph(tmp_path)
+    body = "# Дубль\n## Статус\nРешено\n" + "".join(f"- факт {i}\n" for i in range(8))
+    dup = graph / "Дубль.md"
+    dup.write_text(body, encoding="utf-8")
+    (graph / "наружу.md").write_text("# Тёзка в графе\n", encoding="utf-8")
+    (graph.parent / "наружу.md").write_text("# За границей графа\n", encoding="utf-8")
+
+    def worked(pen):
+        (pen / "Дубль.md").write_text("# Дубль → [[../наружу]]\n\nСмерджен.\n",
+                                       encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, worked)
+
+    assert "Дубль.md" in v.reverted, "редирект за границу графа применён"
+    assert "Дубль.md" not in v.applied
+    assert dup.read_text(encoding="utf-8") == body, "дубль превращён в заглушку наружу"
+
+
+def test_a_stub_with_a_folder_does_not_settle_for_a_namesake_next_door(tmp_path):
+    """`[[Ядра/Канон]]` с явной папкой не подменяется тёзкой рядом с заглушкой
+    (DS круг-5 M2).
+
+    Фолбэк «канон рядом с заглушкой» строился безусловно: для цели с папкой
+    он давал ДРУГОЙ узел, и когда настоящий канон уехал в карантин
+    (переписан заново), а тёзка рядом цела, заглушка применялась —
+    редирект на неслитый канон.
+    """
+    graph = _graph(tmp_path)
+    body = "# Ядро\n## Статус\nРешено\n" + "".join(f"- факт {i}\n" for i in range(8))
+    (graph / "Ядра" / "Канон.md").write_text(body, encoding="utf-8")
+    (graph / "Люди").mkdir()
+    dup = graph / "Люди" / "Дубль.md"
+    dup.write_text(body.replace("Ядро", "Дубль"), encoding="utf-8")
+    (graph / "Люди" / "Канон.md").write_text("# Тёзка, не тот узел\n", encoding="utf-8")
+
+    def worked(pen):
+        # канон переписан заново — уйдёт в карантин по retention…
+        (pen / "Ядра" / "Канон.md").write_text("# Ядро\nкороткое резюме\n", encoding="utf-8")
+        # …а заглушка указывает на него с явной папкой
+        (pen / "Люди" / "Дубль.md").write_text(
+            "# Дубль → [[Ядра/Канон]]\n\nСмерджен.\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, worked)
+
+    assert "Ядра/Канон.md" in v.reverted, "канон должен был в карантин"
+    assert "Люди/Дубль.md" in v.reverted, "заглушка встала на тёзку рядом, канон не слит"
+    assert dup.read_text(encoding="utf-8") == body.replace("Ядро", "Дубль")
+
+
+def test_a_sandbox_swapped_mid_run_is_not_transferred(tmp_path, monkeypatch):
+    """Песочницу подменили симлинком на стенограммы, ПОКА CLI работал, —
+    перенос не идёт, стенограммы не становятся «правками облака» (DS круг-5 И1).
+
+    Гард в finally проверял is_dir(), а он идёт ПО симлинку: подмена в окне
+    прогона (до TIMEOUT) проходила гард, и apply_from_copy обходил цель
+    ссылки как песочницу — файлы встречи легли бы в граф узлами облака.
+    Повтор того же штампа после подмены снова правит граф: backup_graph
+    снимает ссылку на месте своего снимка, а не падает в «не удаляется».
+    """
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+
+    class Result:
+        returncode = 0
+    def swap_run(cmd, **kwargs):
+        pen = pathlib.Path(kwargs["cwd"])
+        import shutil as _sh
+        _sh.rmtree(pen)
+        pen.symlink_to(transcript.parent)      # подмена во время прогона
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+    def quiet_run(cmd, **kwargs):
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", swap_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available",
+                        lambda g: pathlib.Path(g).is_dir())
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    code = cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+
+    text = log.read_text(encoding="utf-8")
+    assert "СНИМОК ИЛИ ПЕСОЧНИЦА ИСЧЕЗЛИ" in text, "подмена прошла гард finally"
+    assert "перенесено в граф" not in text
+    assert not (graph / f"{stamp}.md").exists(), "стенограмма перенесена в граф узлом облака"
+    assert transcript.read_text(encoding="utf-8") == "текст\n", "стенограмма тронута"
+    assert code == 1, "граф не сверен — код обязан быть ненулевым"
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", quiet_run)
+    cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+    assert log.read_text(encoding="utf-8").count("режим правка графа") == 2, (
+        "повтор штампа после подмены не вернулся к правке графа"
+    )
+
+
+def test_a_sandbox_swapped_before_launch_leaves_no_orphans_and_frees_the_stamp(tmp_path, monkeypatch):
+    """Подмена песочницы перед стартом: команда собирается ПОСЛЕ проверки,
+    свои снимок и ссылка убраны, повтор штампа снова правит граф.
+
+    luna круг-5 (Critical + И2): проверка стояла после сборки промпта и
+    команды — при отказе CLI получал бы Edit при cwd=настоящий граф; а
+    ссылка оставалась в backup_root, и повтор штампа падал в «старый снимок
+    не удаляется». DS M4: полный снимок лежал сиротой до чужой ротации.
+    """
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    seen = {}
+
+    real_ctx = cloud_review.graph_updater.cloud_enrich_context
+    def swap_then_context(folder, stem):
+        # окно между созданием песочницы и стартом CLI: подмена ссылкой
+        pen = cloud_review.backup_root(graph) / f"{stamp}-облако"
+        if pen.is_dir() and not pen.is_symlink():
+            import shutil as _sh
+            _sh.rmtree(pen)
+            pen.symlink_to(transcript.parent)
+        return real_ctx(folder, stem)
+
+    class Result:
+        returncode = 0
+    def fake_run(cmd, **kwargs):
+        seen["cwd"] = kwargs["cwd"]; seen["cmd"] = " ".join(cmd)
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_enrich_context", swap_then_context)
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available",
+                        lambda g: pathlib.Path(g).is_dir())
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+
+    assert "Edit(/**)" not in seen["cmd"], (
+        "команда собрана ДО проверки песочницы — Edit при cwd=настоящий граф"
+    )
+    assert pathlib.Path(seen["cwd"]).resolve() != transcript.parent.resolve()
+    root = cloud_review.backup_root(graph)
+    assert not (root / f"{stamp}-облако").is_symlink(), "ссылка-подмена оставлена в backup_root"
+    assert not (root / stamp).exists(), "полный снимок лежит сиротой (DS M4)"
+    assert "режим правка графа" not in log.read_text(encoding="utf-8")
+
+    # повтор того же штампа без подмены — снова полноценная правка
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_enrich_context", real_ctx)
+    cloud_review.run(stamp, transcript, graph, rev, log, cfg)
+    assert "режим правка графа" in log.read_text(encoding="utf-8"), "штамп не освободился"

@@ -381,6 +381,11 @@ def backup_graph(graph: pathlib.Path, stamp: str,
     src = source or graph
     root = charoite_paths.secure_dir(backup_root(graph))
     dest = root / stamp
+    if dest.is_symlink():
+        # На месте снимка — ссылка (подмена прошлого запуска, см. pre-check):
+        # rmtree её не берёт, и повтор штампа падал бы в «не удаляется».
+        # Снимаем саму ссылку, цель не трогаем (luna, круг-5).
+        dest.unlink()
     if dest.exists():
         # Повтор с тем же штампом: старый снимок хранил бы файлы, которых в
         # источнике уже нет, и они бы всплывали при переносе (круг-1 #381).
@@ -413,6 +418,27 @@ def rotate_snapshots(root: pathlib.Path, *keep: pathlib.Path) -> None:
         if stale in keep or not stale.is_dir():
             continue        # чужие файлы в каталоге — не наши, не трогаем
         shutil.rmtree(stale, ignore_errors=True)
+
+
+def _drop_own_snapshots(graph: pathlib.Path, stamp: str) -> None:
+    """Убрать СВОИ снимок и песочницу этого штампа — и только их.
+
+    Понижение до чтения отпускает замок раньше ротации, поэтому чужие снимки
+    здесь не трогаются (DS, круг-4), а свои иначе лежали бы сиротами до
+    чужой ротации — полная копия графа (DS, круг-5 M4). Симлинк на месте
+    своего каталога снимается как ссылка: rmtree симлинк не берёт, и повтор
+    с тем же штампом упирался бы в «старый снимок не удаляется» (luna,
+    круг-5); подменённая цель не трогается.
+    """
+    for stale in (stamp, f"{stamp}-облако"):
+        p = backup_root(graph) / stale
+        try:
+            if p.is_symlink():
+                p.unlink()
+            else:
+                shutil.rmtree(p, ignore_errors=True)
+        except OSError:
+            pass                     # понижение важнее уборки
 
 
 def quarantine_root(graph: pathlib.Path) -> pathlib.Path:
@@ -668,11 +694,23 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
             # этой дельтой или уже цел в графе и не забракован — включая
             # сбой переноса (v.failed), иначе заглушка встала бы на канон
             # без слитых фактов (luna, круг-4 И3).
-            cands = [target, (rel.parent / pathlib.Path(target).name).as_posix()]
+            # Локальный кандидат — только для bare-имени (дубль и канон
+            # рядом): для пути с каталогами `[[../наружу]]` подстановка
+            # rel.parent увела бы канон за границу графа (luna, круг-5).
+            # Кандидаты нормализуются (`Ядра/../Люди/X` → `Люди/X`), чтобы
+            # сверка с applied/bad шла по тому же имени, что и перенос, а
+            # may_write отсекает всё, что резолвится за корень графа, в
+            # скрытые и защищённые папки (DS, круг-5 M3).
+            cands = [target]
+            if "/" not in target:
+                cands.append((rel.parent / target).as_posix())
+            cands = [os.path.normpath(c) for c in cands]
             bad = set(v.reverted) | set(v.removed) | set(v.conflicts) \
                 | set(v.deleted) | set(v.failed)
             canon_ok = any(
-                c in v.applied or ((graph / c).is_file() and c not in bad)
+                c in v.applied or (
+                    may_write(graph / c, graph) and (graph / c).is_file()
+                    and c not in bad)
                 for c in cands)
             if canon_ok:
                 safe_write.write_text(gpath, _read(cpath))
@@ -850,31 +888,50 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             # выполнится ПОСЛЕ unlock, и за время read-only прогона сосед
             # успел бы взять замок и завести свои снимки — наша ротация их
             # снесла бы (DS/luna, круг-1; регрессия M2 без теста).
-            for stale in (stamp, f"{stamp}-облако"):
-                shutil.rmtree(backup_root(graph) / stale, ignore_errors=True)
+            _drop_own_snapshots(graph, stamp)
             may_edit = deliver = False
             backup = cloud_pen = None
             unlock()                   # замок нужен только правящему
-    # Песочница могла исчезнуть между её созданием и стартом CLI (внешняя
-    # рука — тот же случай, что обслуживает finally). Тогда cloud_enrich_workdir
-    # свалился бы фолбэком на папку стенограмм ПРИ ЖИВЫХ Edit/Write: облако
-    # писало бы в живые данные, а сверка по пустой песочнице видела бы ноль
-    # правок и доставляла ревизию как чистую. Проверяем ДО сборки команды и
-    # понижаем до чтения графа — без песочницы писать некуда (GLM, круг-2).
-    if may_edit and (cloud_pen is None or cloud_pen.is_symlink()
-                     or not cloud_pen.is_dir()):
-        print("песочница исчезла или подменена символ. ссылкой — работаю на чтение")
-        may_edit = deliver = False
-        denied = []
-        # backup=None гасит ротацию: pre-check отпускает замок ДО запуска
-        # CLI, за read-only окно (до TIMEOUT) сосед берёт замок и заводит
-        # свои снимки, а rotate_snapshots в finally выполнилась бы ПОСЛЕ
-        # unlock и снесла бы их (DS, круг-4; зеркало OSError-ветки выше).
-        backup = cloud_pen = None
-        unlock()
     # Файлы встречи — по стему её стенограммы, а не по минутному штампу:
     # посекундная соседка той же минуты в контекст не попадает (аудит 16.08).
+    # Читаются ДО проверки песочницы: между проверкой и стартом CLI тогда
+    # остаётся только сборка строк, а не чтение файлов встречи с диска.
     context, sent = graph_updater.cloud_enrich_context(transcript.parent, transcript.stem)
+    # Песочница могла исчезнуть или стать симлинком между её созданием и
+    # стартом CLI (внешняя рука — тот же случай, что обслуживает finally).
+    # Тогда cloud_enrich_workdir свалился бы фолбэком на папку стенограмм
+    # ПРИ ЖИВЫХ Edit/Write: облако писало бы в живые данные, а сверка по
+    # пустой песочнице видела бы ноль правок и доставляла ревизию как чистую
+    # (GLM, круг-2). Проверка ОДНА и атомарная — open(O_NOFOLLOW|O_DIRECTORY):
+    # последний компонент обязан быть настоящим каталогом, симлинк даёт
+    # ELOOP; is_symlink()+is_dir() были двумя вызовами с окном между ними
+    # (luna, круг-5). Стоит она ДО сборки промпта и команды: понижение после
+    # сборки оставило бы CLI права Edit при cwd=настоящий граф. Реальный путь
+    # фиксируем здесь ровно раз — дальше ни resolve, ни is_dir по нему не
+    # разыменуют подмену (DS, круг-5). Окно между этой проверкой и chdir в
+    # subprocess закрыть нечем без передачи fd; но подменить песочницу может
+    # лишь тот, кто пишет в secure_dir(700) данных демона, а у него и так
+    # полный доступ к графу — это граница модели угроз, не дыра (luna,
+    # круги 4–5; по правилу двух Critical подряд — фиксируем границу, а не
+    # латаем симлинк третий раз).
+    if may_edit and cloud_pen is not None:
+        try:
+            os.close(os.open(str(cloud_pen),
+                             os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY))
+            cloud_pen = cloud_pen.resolve()
+        except OSError as e:
+            print(f"песочница исчезла или подменена ({e}) — работаю на чтение")
+            may_edit = deliver = False
+            denied = []
+            # Свои артефакты убираем сами (симлинк — как ссылку, снимок —
+            # целиком); backup=None гасит ротацию: pre-check отпускает замок
+            # ДО запуска CLI, за read-only окно (до TIMEOUT) сосед берёт
+            # замок и заводит свои снимки, а rotate_snapshots в finally
+            # выполнилась бы ПОСЛЕ unlock и снесла бы их (DS, круг-4;
+            # зеркало OSError-ветки выше).
+            _drop_own_snapshots(graph, stamp)
+            backup = cloud_pen = None
+            unlock()
     prompt = graph_updater.cloud_enrich_prompt(
         transcript_name=transcript.name, folder=transcript.parent,
         graph=cloud_pen if may_edit and cloud_pen is not None else graph,
@@ -893,12 +950,10 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     cloud.add_proxy(env)
 
     tmp = rev.with_suffix(rev.suffix + ".part")
-    if may_edit and cloud_pen is not None:
-        # write-режим: никакого фолбэка в папку стенограмм — cwd только
-        # песочница, зафиксированная реальным путём (luna, круг-4).
-        work_dir = cloud_pen.resolve()
-    else:
-        work_dir = graph_updater.cloud_enrich_workdir(cfg, graph, transcript.parent)
+    # write-режим: cwd — ТОЛЬКО песочница, реальным путём из проверки выше,
+    # без фолбэка в папку стенограмм (luna, круг-4); фолбэк остаётся чтению.
+    work_dir = (cloud_pen if may_edit and cloud_pen is not None
+                else graph_updater.cloud_enrich_workdir(cfg, graph, transcript.parent))
     mode = ("правка графа" if may_edit else
             "только чтение графа" if graph_available else
             "только текст (граф недоступен)")
@@ -949,8 +1004,8 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # Сверка — раньше всего и без зависимости от лога: падение log.open
         # (права, ENOSPC, EMFILE) не должно обходить откат (круг-2, DS+Codex).
         if may_edit and backup is not None and (
-                not backup.is_dir() or cloud_pen is None
-                or not cloud_pen.is_dir()):
+                not backup.is_dir() or backup.is_symlink() or cloud_pen is None
+                or cloud_pen.is_symlink() or not cloud_pen.is_dir()):
             # Снимок или песочница исчезли — под замком графа так может
             # только внешняя рука (или зачистка при ENOSPC). Судить не по
             # чему: пустая песочница выглядела бы как «облако стёрло всё»
