@@ -112,3 +112,74 @@ def test_graph_logs_expire(tmp_path, monkeypatch):
     assert not old.exists(), "старый лог с содержимым встречи остался"
     assert not retry_old.exists(), "старый retry-лог с именами участников остался"
     assert fresh.exists(), "свежий лог удалён — диагностику потеряли"
+
+
+def test_speaker_placeholders_are_labels_not_people():
+    """«Собеседник 3» — метка диаризации, а не человек (аудит графа 28.08:
+    17 таких узлов в Люди, до 141 входящих ссылок у одного — разные люди
+    разных встреч склеены в один файл)."""
+    for label in ("Собеседник", "Собеседник 3", "собеседник 12", "Speaker 2",
+                  "Участник 4", "спикер 1", "Participant 7"):
+        assert g.is_speaker_placeholder(label), label
+    for person in ("Собеседникова", "Участник встречи Иван", "Пётр", "Speaker of the House"):
+        assert not g.is_speaker_placeholder(person), person
+
+
+def test_find_canonical_matches_by_name_key(tmp_path):
+    """«Иван (Иванов)» и «Иван Иванов», «ИИ_агент» и «ИИ-агент» — один
+    узел, а не пара (аудит 28.08: четыре такие пары в графе)."""
+    graph = tmp_path / "g"
+    (graph / "Люди").mkdir(parents=True)
+    (graph / "Системы").mkdir()
+    ivanov = graph / "Люди" / "Иван Иванов.md"
+    ivanov.write_text("# Иван Иванов\n", encoding="utf-8")
+    agent = graph / "Системы" / "ИИ-агент.md"
+    agent.write_text("# ИИ-агент\n", encoding="utf-8")
+    assert g.find_canonical(graph, "Иван (Иванов)") == ivanov
+    assert g.find_canonical(graph, "иван иванов") == ivanov
+    assert g.find_canonical(graph, "ИИ_агент") == agent
+    assert g.find_canonical(graph, "Иван Сидоров") is None, "другой человек"
+    assert g.name_key("Реестр 385 130") == g.name_key("Реестр 385-130")
+
+
+def test_tidy_links_joins_wrapped_wikilinks():
+    """Перенос строки внутри [[…]] — мёртвая ссылка для Obsidian (60+ в графе)."""
+    assert g.tidy_links("см. [[Люди/Иван\nПетров|Иван]] и [[Ядра/Тема]]") == \
+        "см. [[Люди/Иван Петров|Иван]] и [[Ядра/Тема]]"
+    assert g.tidy_links("без ссылок\nстрока") == "без ссылок\nстрока"
+    data = {"люди": [{"имя": "Иван", "вклад": "про [[Системы/\nВитрина]]"}], "темы": ["[[A\n B]]"]}
+    tidy = g.tidy_links_deep(data)
+    assert tidy["люди"][0]["вклад"] == "про [[Системы/ Витрина]]".replace("/ ", "/ ")  # пробел склеен в один
+    assert tidy["темы"] == ["[[A B]]"]
+    assert data["темы"] == ["[[A\n B]]"], "исходник не тронут"
+
+
+def test_graph_doctor_counts_defects_and_spares_design_pairs(tmp_path):
+    """graph_doctor: битые и перенесённые ссылки, метки среди Люди, сироты,
+    настоящие дубли — считаются; пары Досье/Ядра и заглушки tier3 — нет."""
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+    import graph_doctor
+    graph = tmp_path / "Работа"
+    for d in ("Люди", "Системы", "Ядра", "Досье", "Встречи"):
+        (graph / d).mkdir(parents=True)
+    (graph / "Люди" / "Иван.md").write_text("# Иван\n- [[Встречи/2026-01-01_1000]]\n", encoding="utf-8")
+    (graph / "Люди" / "Собеседник 3.md").write_text("# Собеседник 3\n", encoding="utf-8")
+    (graph / "Системы" / "Витрина.md").write_text("# Витрина\nсирота без входящих\n", encoding="utf-8")
+    (graph / "Ядра" / "Тема.md").write_text("# Тема\n- [[Люди/Иван]] и [[Люди/Нет\nтакого]]\n", encoding="utf-8")
+    (graph / "Досье" / "Тема.md").write_text("# Тема\n| [[Ядра/Тема\\|Тема]] |\n", encoding="utf-8")
+    (graph / "Системы" / "Тема.md").write_text("# Тема\nнастоящий дубль ядра\n", encoding="utf-8")
+    (graph / "Системы" / "Иван.md").write_text("---\ntags: [дубль-слит]\n---\n# Иван → см. [[Люди/Иван]]\n", encoding="utf-8")
+    (graph / "Встречи" / "2026-01-01_1000.md").write_text(
+        "# Встреча\n- [[Люди/Иван]] [[Люди/Собеседник 3]] [[Ядра/Тема]] [[Досье/Тема]] [[он]]\n", encoding="utf-8")
+    (graph / "_MOC.md").write_text("- [[Встречи/2026-01-01_1000]]\n- [[Ядра/Тема]]\n", encoding="utf-8")
+
+    rep = graph_doctor.inspect(graph, examples=5)
+
+    assert rep["broken"] == 2 and rep["wrapped_links"] == 1, rep      # [[Люди/Нет\nтакого]], [[он]]
+    assert rep["placeholders"] == 1
+    assert "Системы/Витрина.md" in rep["examples"]["orphans"]
+    assert rep["dup_real"] == 1 and rep["examples"]["dup_real"] == ["Системы/Тема.md | Ядра/Тема.md"]
+    assert rep["dup_stubs"] == 1, "заглушка-редирект не дубль"
+    assert rep["moc_linked"] == 2 and rep["moc_missing"] == rep["nodes"] - 1
+    assert any("меток диаризации" in w for w in rep["warnings"])
+    assert not any("Досье" in x for x in rep["examples"]["dup_real"]), "пара Досье/Ядра — по замыслу"

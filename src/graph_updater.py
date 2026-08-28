@@ -347,6 +347,54 @@ def safe_name(name: str) -> str:
     return s or "без имени"
 
 
+_PLACEHOLDER_RE = re.compile(
+    r"^(?:собеседник|участник|спикер|speaker|participant|发言人)\s*\d*$", re.I)
+
+
+def is_speaker_placeholder(name: str) -> bool:
+    """«Собеседник 3», «Speaker 2» — метка диаризации, а не человек.
+
+    Узел на такую метку склеивал разных людей из разных встреч в одного:
+    «Собеседник 3» встречи А и «Собеседник 3» встречи Б — один файл в Люди
+    с сотней входящих ссылок (аудит графа 28.08: 17 таких узлов, у трёх по
+    135–141 ссылки). Метка живёт в заметке встречи текстом и подписывает
+    цитаты из стенограммы; узла и ссылки на него не получает.
+    """
+    return bool(_PLACEHOLDER_RE.match(safe_name(name).strip()))
+
+
+def name_key(name: str) -> str:
+    """Ключ сравнения имён узлов: регистр, пунктуация, скобки, дефис и
+    подчёркивание людей не различают — «Иван (Иванов)» и «Иван Иванов»,
+    «ИИ-агент» и «ИИ_агент», «Реестр 385 130» и «Реестр 385-130» жили в графе
+    четырьмя парами узлов (аудит 28.08)."""
+    return " ".join(re.sub(r"[\W_]+", " ", name, flags=re.UNICODE).casefold().split())
+
+
+_LINK_WS_RE = re.compile(r"\[\[([^\]]*?)\]\]", re.S)
+
+
+def tidy_links(text: str) -> str:
+    """Перенос строки внутри [[…]] — ссылка мертва для Obsidian.
+
+    Модель переносит длинную строку где придётся, и «[[Люди/Иван\nПетров]]»
+    уходит в узел как есть: в графе 60+ таких ссылок (аудит 28.08). Склеиваем
+    пробелы внутри ссылки, остальной текст не трогаем.
+    """
+    return _LINK_WS_RE.sub(lambda m: "[[" + " ".join(m.group(1).split()) + "]]", text)
+
+
+def tidy_links_deep(obj):
+    """tidy_links по всем строкам разбора модели (dict/list любой глубины)."""
+    if isinstance(obj, str):
+        return tidy_links(obj)
+    if isinstance(obj, list):
+        return [tidy_links_deep(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: tidy_links_deep(v) for k, v in obj.items()}
+    return obj
+
+
 def parse_stem(stem: str) -> tuple[str, str, bool]:
     """Стем стенограммы → (минутный штамп, голый штамп, есть ли уже тема).
 
@@ -425,6 +473,7 @@ def find_canonical(graph: pathlib.Path, name: str,
     единого намёка, что они могут быть об одном и том же.
     """
     n = safe_name(name).casefold()
+    key = name_key(name)
     candidates: list[pathlib.Path] = []
     for folder in ("Люди", "Команды", "Системы", "Модели", "Блокеры", "Ядра"):
         d = graph / folder
@@ -432,8 +481,10 @@ def find_canonical(graph: pathlib.Path, name: str,
             continue
         for f in d.glob("*.md"):
             stem = f.stem.casefold()
-            if stem == n:
-                return f  # точное имя всегда выигрывает (иначе дубль системы возрождался)
+            # Точное имя всегда выигрывает (иначе дубль системы возрождался);
+            # «точное» — по ключу без пунктуации и скобок, см. name_key.
+            if stem == n or (key and name_key(f.stem) == key):
+                return f
             # Подстрока — только для достаточно длинных имён и близких по
             # длине пар. Двухбуквенное «Ян» из распознавания входило в
             # «Январский релиз», «БД» — в «Обновление БД витрин»; при
@@ -846,6 +897,9 @@ def main():
     # ниже. Ранний выход отсюда стоил бы человеку архива и хука (ревью 19.08).
     graph_off = not install_profile.graph_enabled(cfg)
     data = None if graph_off else extract(cfg, context, _project_rule(known, graph.name))
+    if data:
+        # переносы строк внутри [[…]] от модели — мёртвые ссылки (tidy_links)
+        data = tidy_links_deep(data)
     # None — «граф не обновляем», но НЕ «ничего не делаем»: докстринг extract
     # обещает архив со стенограммой и минутками и без графа. Раньше здесь
     # стоял return — ни заметки, ни архива, ни хука, а пересборка трижды
@@ -902,8 +956,14 @@ def main():
     meeting_link = f"Встречи/{stamp}"
     # 26b на длинных встречах иногда роняет ключи в JSON — битые записи пропускаем,
     # а не валим весь прогон (KeyError на часовой встрече 17.07)
-    people = [p for p in (data.get("люди") or []) if isinstance(p, dict) and p.get("имя")
-              and p["имя"].strip().lower() not in {"собеседник", "участник", "speaker", "—"}]
+    raw_people = [p for p in (data.get("люди") or []) if isinstance(p, dict) and p.get("имя")
+                  and p["имя"].strip() != "—"]
+    # Метки диаризации («Собеседник 3», «Speaker 2») — не люди: узла и
+    # ссылки не получают, иначе разные люди разных встреч склеиваются в один
+    # файл (аудит 28.08). В заметке встречи остаются текстом, в speakers идут —
+    # цитаты из стенограммы подписаны именно этой меткой.
+    people = [p for p in raw_people if not is_speaker_placeholder(p["имя"])]
+    anon = [p for p in raw_people if is_speaker_placeholder(p["имя"])]
     ents = [e for e in (data.get("сущности") or []) if isinstance(e, dict) and e.get("имя")]
     decisions = [d for d in (data.get("решения") or []) if isinstance(d, str) and d.strip()]
     links = [l for l in (data.get("связи") or [])
@@ -928,7 +988,7 @@ def main():
     # Узлы графа сюда НЕ идут: там вся история проекта, и ушедший три года
     # назад сотрудник оставался бы допустимым говорящим навсегда — контракт
     # обещает участника встречи (круг-3 по PR #438, GLM Important 2).
-    speakers = {p["имя"] for p in people if p.get("имя")}
+    speakers = {p["имя"] for p in people if p.get("имя")} | {p["имя"] for p in anon}
     # Три языка — как в manifest архива: русский, английский, китайский.
     m = re.search(r"^(?:Участники|Participants|参会者)[^:：]*[:：]\s*(.+)$",
                   speech, re.M)
@@ -993,8 +1053,12 @@ def main():
           f"# Встреча {stamp}" + (f" — {title}" if title else ""), ""]
     if topics:
         md += ["## Темы"] + [f"- {t}" for t in topics] + [""]
-    if people:
-        md += ["## Участники"] + [f"- {canon_link(graph, p['имя'], 'Люди')} — {p.get('роль','')}: {p.get('вклад','')}" for p in people] + [""]
+    if people or anon:
+        md += (["## Участники"]
+               + [f"- {canon_link(graph, p['имя'], 'Люди')} — {p.get('роль','')}: {p.get('вклад','')}" for p in people]
+               # метка диаризации — текстом, без ссылки: узла у неё нет
+               + [f"- {safe_name(p['имя'])} — {p.get('роль','')}: {p.get('вклад','')}" for p in anon]
+               + [""])
     if ents:
         md += ["## Сущности"] + [f"- {canon_link(graph, e['имя'], ENT_FOLDER.get(e.get('тип',''), 'Системы'))} ({e.get('тип','')}) — {e.get('суть','')}" for e in ents] + [""]
     if cores:
