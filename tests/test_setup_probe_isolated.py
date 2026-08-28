@@ -9,6 +9,39 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SWIFT = ROOT / "app/Sources/CharoiteApp/Services/SetupReadinessService.swift"
 
 
+def test_probe_env_closes_every_import_path():
+    """SAFEPATH мало: PYTHONPATH сильнее его, user-site тоже мимо.
+
+    luna, круг-2: `PYTHONSAFEPATH=1 PYTHONPATH=/tmp python -c "import yaml"`
+    исполняет чужой yaml.py — проверено живым опытом. Приложение эти
+    переменные не ставит, но наследует из окружения запуска.
+    """
+    src = SWIFT.read_text(encoding="utf-8")
+    for key in ('env["PYTHONSAFEPATH"] = "1"', 'env["PYTHONNOUSERSITE"] = "1"',
+                'env.removeValue(forKey: "PYTHONPATH")',
+                'env.removeValue(forKey: "PYTHONHOME")'):
+        assert key in src, f"проба не закрывает путь импорта: {key}"
+
+
+def test_env_scrubbing_actually_blocks_pythonpath(tmp_path):
+    """Живой опыт на обе стороны: с PYTHONPATH перехват идёт, без — нет."""
+    (tmp_path / "yaml.py").write_text('raise SystemExit("PWNED")', encoding="utf-8")
+    base = {**os.environ, "PYTHONSAFEPATH": "1", "PYTHONNOUSERSITE": "1"}
+    pwned = subprocess.run([sys.executable, "-c", "import yaml"],
+                           capture_output=True, text=True,
+                           env={**base, "PYTHONPATH": str(tmp_path)})
+    assert "PWNED" in (pwned.stdout + pwned.stderr), (
+        "стенд не воспроизводит дыру — тест ничего не проверяет"
+    )
+    clean = dict(base)
+    clean.pop("PYTHONPATH", None)
+    ok = subprocess.run([sys.executable, "-c", "import yaml; print('ok')"],
+                        cwd=tmp_path, capture_output=True, text=True, env=clean)
+    assert ok.returncode == 0 and "ok" in ok.stdout, (
+        f"очистка окружения сломала импорт: {ok.stderr[:200]}"
+    )
+
+
 def test_probe_python_runs_with_safepath():
     """Проба обязана идти с PYTHONSAFEPATH, и НЕ с -I.
 

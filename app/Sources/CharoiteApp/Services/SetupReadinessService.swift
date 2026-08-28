@@ -280,7 +280,11 @@ print(json.dumps({"missing": missing, "inputs": inputs, "audio_error": audio_err
         // по PR #444; обе стороны проверены живым опытом 28.08).
         process.arguments = ["-c", script]
         var env = ProcessInfo.processInfo.environment
-        env["PYTHONSAFEPATH"] = "1"
+        env["PYTHONSAFEPATH"] = "1"          // cwd (папка данных) — не в sys.path
+        env["PYTHONNOUSERSITE"] = "1"        // ~/.local/lib — тоже не наш путь
+        env.removeValue(forKey: "PYTHONPATH")    // сильнее SAFEPATH: чужой yaml.py
+        env.removeValue(forKey: "PYTHONHOME")    // подменённый stdlib целиком
+        env.removeValue(forKey: "PYTHONSTARTUP") // -c его не читает, но пусть
         process.environment = env
         process.currentDirectoryURL = root
         let output = Pipe()
