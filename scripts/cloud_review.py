@@ -336,6 +336,20 @@ def backup_root(graph: pathlib.Path) -> pathlib.Path:
     return charoite_paths.graph_backups(graph, BACKUP_DIR.lstrip("."), root=ROOT)
 
 
+def _own_dir(graph: pathlib.Path, stamp: str) -> pathlib.Path:
+    """Каталог своего снимка или песочницы по штампу — строго внутри backup_root.
+
+    Штамп приходит аргументом воркера и ложится в путь: `/tmp/x` или `../x`
+    увели бы rmtree и unlink за каталог снимков — чужая ссылка исчезала бы,
+    а на её месте вырастала копия графа (luna, круг-6). Штамп обязан быть
+    одним именем каталога: без разделителей, не «.»/«..», не скрытым.
+    """
+    if (not stamp or stamp in (".", "..") or stamp.startswith(".")
+            or any(ch in stamp for ch in "/\\\0")):
+        raise ValueError(f"штамп встречи не имя каталога: {stamp!r}")
+    return backup_root(graph) / stamp
+
+
 def _clone(src: pathlib.Path, dst: pathlib.Path) -> bool:
     """Скопировать файл клоном APFS: copy-on-write, ноль байт на диске.
 
@@ -379,8 +393,8 @@ def backup_graph(graph: pathlib.Path, stamp: str,
     круг по #447). Песочница по построению = снимок плюс правки облака.
     """
     src = source or graph
-    root = charoite_paths.secure_dir(backup_root(graph))
-    dest = root / stamp
+    dest = _own_dir(graph, stamp)
+    charoite_paths.secure_dir(dest.parent)
     if dest.is_symlink():
         # На месте снимка — ссылка (подмена прошлого запуска, см. pre-check):
         # rmtree её не берёт, и повтор штампа падал бы в «не удаляется».
@@ -431,7 +445,7 @@ def _drop_own_snapshots(graph: pathlib.Path, stamp: str) -> None:
     круг-5); подменённая цель не трогается.
     """
     for stale in (stamp, f"{stamp}-облако"):
-        p = backup_root(graph) / stale
+        p = _own_dir(graph, stale)
         try:
             if p.is_symlink():
                 p.unlink()
@@ -793,6 +807,13 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     # CHAROITE_NO_CLOUD действует и на этом пути.
     if not privacy.cloud_enrich_enabled(cfg):
         print("облако выключено рубильником или конфигом — разбор не запускается")
+        return 1
+    # Штамп станет именем снимка и песочницы — проверяем ДО замка и бэкапа,
+    # чтобы кривой аргумент не дошёл ни до rmtree, ни до unlink (luna, круг-6).
+    try:
+        _own_dir(graph, stamp)
+    except ValueError as e:
+        print(f"{e} — разбор не запускается")
         return 1
     graph_available = graph_updater.cloud_graph_available(graph)
     # Право править имеет смысл только вместе с узкой cwd=graph. При

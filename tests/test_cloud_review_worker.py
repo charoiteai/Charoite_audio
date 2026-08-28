@@ -1662,3 +1662,40 @@ def test_a_sandbox_swapped_before_launch_leaves_no_orphans_and_frees_the_stamp(t
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_enrich_context", real_ctx)
     cloud_review.run(stamp, transcript, graph, rev, log, cfg)
     assert "режим правка графа" in log.read_text(encoding="utf-8"), "штамп не освободился"
+
+
+def test_a_stamp_that_is_a_path_never_leaves_the_snapshot_root(tmp_path, monkeypatch):
+    """Штамп ложится в путь снимка и песочницы — `/x`, `../x`, `a/b` не
+    выходят за backup_root (luna круг-6).
+
+    `root / stamp` с абсолютным или относительным путём уводил rmtree и
+    unlink за каталог снимков: чужая ссылка исчезала, а на её месте
+    вырастала копия графа. Теперь штамп обязан быть одним именем
+    каталога — и в backup_graph, и в уборке своих артефактов, и на входе
+    воркера, до замка.
+    """
+    import pytest
+    graph = _graph(tmp_path)
+    target = tmp_path / "цель"; target.mkdir()
+    foreign = tmp_path / "чужая"
+    foreign.symlink_to(target)                      # чужая ссылка вне снимков
+    transcript, rev, log = _meeting(tmp_path)
+
+    for bad in (str(foreign), "../чужая", "a/b", "a\\b", ".", "..", ".скрытый", ""):
+        with pytest.raises(ValueError):
+            cloud_review.backup_graph(graph, bad)
+        with pytest.raises(ValueError):
+            cloud_review._drop_own_snapshots(graph, bad)
+
+    def never_run(cmd, **kwargs):
+        raise AssertionError("CLI запущен с кривым штампом")
+    monkeypatch.setattr(cloud_review.subprocess, "run", never_run)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    assert cloud_review.run(str(foreign), transcript, graph, rev, log, cfg) == 1
+    assert cloud_review.run("../чужая", transcript, graph, rev, log, cfg) == 1
+
+    assert foreign.is_symlink() and target.is_dir(), "чужая ссылка или её цель тронуты"
+    assert not (foreign / "Ядра").exists(), "на месте чужой ссылки выросла копия графа"
+    # обычный штамп по-прежнему даёт снимок внутри backup_root
+    dest = cloud_review.backup_graph(graph, "2026-07-15_1400")
+    assert dest.parent == cloud_review.backup_root(graph) and dest.is_dir()
