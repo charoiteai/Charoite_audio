@@ -270,7 +270,14 @@ print(json.dumps({"missing": missing, "inputs": inputs, "audio_error": audio_err
 """#
         let process = Process()
         process.executableURL = python
-        process.arguments = ["-c", script]
+        // -I (isolated): cwd НЕ попадает в sys.path. Проба работает с
+        // currentDirectoryURL = папка данных, а туда пишут граф и владелец:
+        // подложенный yaml.py перехватил бы импорт и исполнился с правами
+        // приложения (DS, security-класс, №102). Проверено 28.08: дыра
+        // воспроизводится без -I и закрыта с ним; venv и бандл-python с -I
+        // импортируют штатно (pyvenv.cfg работает, отключается только
+        // user-site и PYTHON*-переменные — их проба и не использует).
+        process.arguments = ["-I", "-c", script]
         process.currentDirectoryURL = root
         let output = Pipe()
         process.standardOutput = output
