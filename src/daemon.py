@@ -853,6 +853,11 @@ def main():
                       file=sys.stderr, flush=True)
                 last_summary_log = now_mono
 
+        # Метка, под которой канал писал последний раз: сменилась (лаг →
+        # здоровый, канал → голос) — стенограмма сверит шов с ней (№69);
+        # номер чанка канала — чтобы сосед определялся по звуку, а не по часам.
+        last_label_by_channel: dict[str, str] = {}
+        chunk_seq: dict[str, int] = {}
         mark_stt_stage("idle")
         report_progress(force=True)
         while not stop.is_set():
@@ -927,6 +932,7 @@ def main():
             # отставания обсуждается по цифре, а не по догадке (№105).
             cycle_audio_s = 0.0
             for speaker, chunk in batch:
+                chunk_seq[speaker] = chunk_seq.get(speaker, -1) + 1
                 # Признак «собеседников слышно» — ЗДЕСЬ, до STT и до любых
                 # отсевов. Раньше он стоял после распознавания, и короткие
                 # «угу» собеседника (микро-куски, отсеянные политикой
@@ -1071,14 +1077,21 @@ def main():
                     rows.append((name, text))
                 for name, (_n, cand) in pitch_best.items():
                     _note_pitch(name, cand)
-                for name, text in rows:
+                prev_label = last_label_by_channel.get(speaker)
+                seams = stt_runtime.seam_for_rows(prev_label, [name for name, _ in rows])
+                added_labels: list[str] = []
+                for (name, text), (head, seam_with) in zip(rows, seams):
                     try:
-                        added = tr.add(text, speaker=name)
+                        added = tr.add(text, speaker=name, seam_with=seam_with,
+                                       seq=chunk_seq[speaker], head=head)
                     except Exception as e:  # noqa: BLE001 — стенограмма не должна убивать STT-тред
                         emit({"type": "status", "text": f"стенограмма: {e}"})
                         continue
                     if not added:  # полностью съеденные дедупом не эмитим
                         continue
+                    added_labels.append(name)
+                    last_label_by_channel[speaker] = stt_runtime.next_channel_label(
+                        prev_label, added_labels)
                     # Речь для автостопа отмечаем ЗДЕСЬ, после дедупа: на шуме
                     # STT повторяет одну и ту же фантомную фразу, дедуп её
                     # съедает — но таймер тишины она сбрасывала бы, и в шумной

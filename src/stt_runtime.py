@@ -157,3 +157,27 @@ def realtime_factor(audio_s: float, transcription_ms: float) -> float | None:
     if audio_s <= 0 or transcription_ms <= 0:
         return None
     return round(audio_s / (transcription_ms / 1000.0), 2)
+
+
+def seam_for_rows(prev_label: str | None, labels: list[str]) -> list[tuple[bool, str | None]]:
+    """Что передать стенограмме по каждому куску одного чанка канала.
+
+    Зона шва с предыдущим чанком — только голова чанка, то есть первый кусок;
+    остальные (второй голос того же чанка) звук с соседом не делят и шва не
+    получают. `seam_with` — прежняя метка канала, если она сменилась (лаг →
+    здоровый, канал → голос): DeepSeek/luna по #452 — раздача шва каждому
+    куску резала второго человека как шов.
+    """
+    out: list[tuple[bool, str | None]] = []
+    for i, label in enumerate(labels):
+        head = i == 0
+        seam = prev_label if head and prev_label and prev_label != label else None
+        out.append((head, seam))
+    return out
+
+
+def next_channel_label(prev_label: str | None, added_labels: list[str]) -> str | None:
+    """Метка, под которой канал писал последний раз: хвост чанка — у последнего
+    реально добавленного куска; ничего не добавлено — прежняя."""
+    return added_labels[-1] if added_labels else prev_label
+

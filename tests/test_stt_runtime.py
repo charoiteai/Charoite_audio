@@ -395,3 +395,18 @@ def test_a_quiet_meeting_still_reports_stt_numbers():
         assert "lag_log_due" not in test and "'lagging'" not in test, (
             "сводка спрятана под условие отставания — спокойные встречи снова молчат"
         )
+
+
+def test_seam_goes_only_to_the_head_piece_and_only_on_label_change():
+    assert stt_runtime.seam_for_rows("Собеседник", ["Собеседник 3", "Собеседник 4"]) == [
+        (True, "Собеседник"), (False, None)]
+    assert stt_runtime.seam_for_rows("Собеседник 3", ["Собеседник 3"]) == [(True, None)]
+    assert stt_runtime.seam_for_rows(None, ["Собеседник 3"]) == [(True, None)]
+    assert stt_runtime.seam_for_rows("Собеседник", []) == []
+
+
+def test_channel_label_follows_the_last_added_piece_or_stays():
+    assert stt_runtime.next_channel_label("Собеседник", ["Собеседник 3", "Собеседник 4"]) == "Собеседник 4"
+    assert stt_runtime.next_channel_label("Собеседник", []) == "Собеседник"
+    assert stt_runtime.next_channel_label(None, []) is None
+
