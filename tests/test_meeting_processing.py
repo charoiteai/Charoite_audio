@@ -216,6 +216,16 @@ def test_main_transcript_whose_title_ends_with_live_is_still_found(tmp_path):
     main.write_text("# Встреча 2026-07-31_141501 — Демо live\n\nтекст\n", encoding="utf-8")
     live.with_name("2026-07-31_141501_minutes.md").write_text("минутки", encoding="utf-8")
     assert find_final_transcript(live) == main.resolve()
+    # копии — голого штампа и самого главного — с той же шапкой и моложе:
+    # узнаются по имени источника, mtime не решает (DS r3)
+    import os
+    for name in ("2026-07-31_141501_live.md", "2026-07-31_141501_Демо_live_live.md"):
+        copy = live.with_name(name)
+        copy.write_text(main.read_text(encoding="utf-8"), encoding="utf-8")
+        os.utime(copy, (os.stat(copy).st_atime, os.stat(main).st_mtime + 100))
+    assert find_final_transcript(live) == main.resolve()
     # черновик без заголовка главного файла — по-прежнему не кандидат
+    for name in ("2026-07-31_141501_live.md", "2026-07-31_141501_Демо_live_live.md"):
+        live.with_name(name).unlink()
     main.write_text("черновик без шапки\n", encoding="utf-8")
     assert find_final_transcript(live) == live.resolve()

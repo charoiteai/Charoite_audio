@@ -502,7 +502,11 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
                "category": "decision", "importance": 0.7, "meeting": stamp}
               for d in decisions[:6]]
     def _h(fact: dict) -> str:
-        return hashlib.sha1(fact["text"].encode("utf-8")).hexdigest()[:16]
+        # шапка одна на встречу — её ключ сама встреча, а не текст тем: темы
+        # при повторе извлекаются заново, и хеш текста слал бы шапку дважды (DS r3)
+        if fact["category"] == "learned":
+            return "head"
+        return hashlib.sha256(fact["text"].encode("utf-8")).hexdigest()[:16]
 
     # Отметка помнит ХЕШИ отправленных фактов, а не позицию: повтор обработки
     # извлекает решения заново, порядок и состав могут отличаться — смещение
@@ -513,7 +517,7 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
     if mark.exists():
         lines = mark.read_text(encoding="utf-8", errors="replace").splitlines()
         if lines and lines[0].startswith("sent "):
-            done = {ln[5:] for ln in lines[1:] if ln.startswith("sha1:")}
+            done = {ln[3:] for ln in lines[1:] if ln.startswith("id:")}
             todo = [f for f in facts if _h(f) not in done]
         else:
             todo = []
@@ -530,7 +534,7 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
             done.add(_h(fact))
             mark.parent.mkdir(parents=True, exist_ok=True)
             safe_write.write_text(mark, f"sent {len(done)}/{len(facts)}\n"
-                                  + "".join(f"sha1:{h}\n" for h in sorted(done)) + f"# {title}\n")
+                                  + "".join(f"id:{h}\n" for h in sorted(done)) + f"# {title}\n")
         print(f"память Чароита: +{n} фактов")
     except Exception as e:  # noqa: BLE001 — brain может быть выключен, не валим граф
         print(f"память Чароита недоступна (ушло {n} из {len(todo)}): {e}")

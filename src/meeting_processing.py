@@ -85,8 +85,15 @@ def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
             # настоящим главным её спасать по содержимому нельзя, даже если она
             # моложе (DS по #455). А без главного тема встречи может сама
             # кончаться на «live» («Демо live») — тогда судим по содержимому,
-            # как остальных (DS r2)
-            candidates = [path for path in live_copies if _looks_main(path)]
+            # как остальных (DS r2). Копия узнаётся по имени источника, а не
+            # по mtime: `<штамп>_live` — копия голого штампа, `X_live` при
+            # живом `X` — копия `X`; иначе тронутая синком копия обгоняла бы
+            # главный (DS r3)
+            stems = {path.stem for path in live_copies}
+            mains = [path for path in live_copies if _looks_main(path)]
+            candidates = [path for path in mains
+                          if path.stem[len(stamp):].lower() != "_live"
+                          and path.stem[:-len("_live")] not in stems] or mains
         if candidates:
             return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
     return original.resolve()
