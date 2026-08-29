@@ -481,6 +481,8 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
     if not new_t.exists():
         for extra in tpath.parent.glob(f"{bare}_*.md"):  # _minutes, _hints…
             suffix = extra.name[len(bare):]  # "_minutes.md"
+            if suffix[:-3].lower() not in meeting_stamp.AUX_SUFFIXES:
+                continue    # главный файл соседней встречи той же минуты (хвост 20.08, GLM)
             target = extra.with_name(f"{stamp}_{slug}{suffix}")
             if not target.exists():         # чужой файл затирать нельзя
                 extra.rename(target)
@@ -1294,8 +1296,10 @@ def main():
             import tier3
             _yield_to_live()   # ревизия ядер тянет эмбеддер — не под живую встречу
             auto = tier3.auto_apply_allowed(cfg)
-            rep = tier3.revise(graph, only_names=[safe_name(c["имя"]) for c in cores],
-                               mark=True, apply=auto, cfg=cfg)
+            # имя из встречи может вести в заглушку слитого ядра — фокус ревизии
+            # берём по канону, иначе слитое ядро не пересматривается (хвост 20.08, GLM)
+            focus = [resolve_core_path(graph / "Ядра", c["имя"], graph).stem for c in cores]
+            rep = tier3.revise(graph, only_names=focus, mark=True, apply=auto, cfg=cfg)
             # печатаем СДЕЛАННОЕ (log) и осознанно пропущенное (skipped).
             # dups/nests — тот же список вторым слоем: он нужен отчёту CLI,
             # а здесь был бы двойным эхом каждой правки
@@ -1374,14 +1378,17 @@ def main():
             who = ", ".join(p["имя"] for p in people[:6])
             # meeting — ключ графа: по нему «забыть» и переименование доходят
             # до памяти (brain /forget, /rename с 23.08, карточка №41).
+            # 4xx/5xx — не исключение у requests: без raise_for_status отметка
+            # «отправлено» вставала при потерянных фактах, повтор не случался
+            # (хвост аудита 20.08, GLM). Отметка — только после ВСЕХ успешных.
             requests.post("http://127.0.0.1:8100/remember", json={
                 "text": f"Встреча {stamp} «{title or 'без названия'}» ({who}): темы — "
                         + "; ".join(topics[:4]),
-                "category": "learned", "importance": 0.6, "meeting": stamp}, timeout=15)
+                "category": "learned", "importance": 0.6, "meeting": stamp}, timeout=15).raise_for_status()
             for d in decisions[:6]:
                 requests.post("http://127.0.0.1:8100/remember", json={
                     "text": f"Решение встречи {stamp} «{title}»: {d}",
-                    "category": "decision", "importance": 0.7, "meeting": stamp}, timeout=15)
+                    "category": "decision", "importance": 0.7, "meeting": stamp}, timeout=15).raise_for_status()
             print(f"память Чароита: +{1 + min(len(decisions), 6)} фактов")
             brain_mark.parent.mkdir(parents=True, exist_ok=True)
             safe_write.write_text(brain_mark, f"{title}\n")

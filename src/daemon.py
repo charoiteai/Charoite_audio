@@ -585,7 +585,7 @@ def main():
         # живой разговор втрое раньше срока (ревью 20.08, локальная голова).
         # Ошибка здесь безопасна в одну сторону: лишний признак «звонок»
         # оставляет прежние пятнадцать минут, пропущенный — рубит встречу.
-        heard_by_channel.note(None, 0.0, is_mic=channel_speaker == mic_label)
+        heard_by_channel.note(None, 0.0, is_mic=channel_speaker == hub.SPEAKER.get("mic", ""))
         if spk_tracker is None:
             _note_pitch(channel_speaker, chunk)
             return channel_speaker  # без трекера канальные метки честны в звонке
@@ -1038,8 +1038,10 @@ def main():
                         # минут глушил живую встречу, считая, что речи не было
                         # (инцидент 20.08: встреча 08:57 обрезана на 09:02).
                         voiced = raw_piece if raw_piece is not None else piece
+                        # канал — по СЫРОЙ метке захвата: обнулённый при коллизии
+                        # имени mic_label травил счётчики (хвост 20.08, DS 5d)
                         heard_by_channel.note(n, len(voiced) / hub.sr,
-                                              is_mic=speaker == mic_label,
+                                              is_mic=speaker == hub.SPEAKER.get("mic", ""),
                                               now=time.monotonic())
                     # Текстовые пары (№93): фраза, совпавшая с недавней
                     # фразой другого канала, считается в ТЕЛЕМЕТРИЮ
@@ -1047,7 +1049,7 @@ def main():
                     # отдельным решением по полевым данным.
                     heard_by_channel.note_text(
                         n if n is not None and n >= 0 else None, text,
-                        is_mic=speaker == mic_label, now=time.monotonic())
+                        is_mic=speaker == hub.SPEAKER.get("mic", ""), now=time.monotonic())
                     if n is None:
                         name = voice_label(speaker, piece)
                     elif n < 0:
@@ -1244,7 +1246,8 @@ def main():
     cloud_evt = threading.Event()
     _last_fire = [0.0]
     _cloud_last = {"t": 0.0, "words": set()}
-    _pending_q = {"text": ""}  # последний детектированный вопрос — панели показывают его над ответом
+    _pending_q = {"text": "", "at": 0.0}  # последний вопрос и когда прозвучал — панели показывают его над ответом
+    PENDING_Q_TTL = 25.0   # старше — разговор ушёл: облако/⚡ отвечают по хвосту, а не «на вопрос» (хвост 20.08, DS)
     # живые тумблеры UI (`set hints|theses|cloud on|off`): выключенные контуры
     # молчат до обратного включения; дефолты хранит и присылает приложение
     toggles = {"hints": True, "theses": True, "cloud": True}
@@ -1273,6 +1276,7 @@ def main():
             # вообще нечего резать»). Это одно высказывание STT: сотни
             # символов, памяти не грозит.
             _pending_q["text"] = " ".join(q.split())
+            _pending_q["at"] = time.monotonic()
         instant_evt.set()
         if not (cloud_live and toggles["cloud"]):
             return
@@ -1768,7 +1772,7 @@ def main():
             # локом: пока поток ждал hint_lock, мог прийти второй вопрос — и
             # модель отвечала бы на него с узлами первого, а ответ ложился
             # под чужим вопросом в нить и лог (ревью 15.08 ×3).
-            q = _pending_q["text"]
+            q = _pending_q["text"] if time.monotonic() - _pending_q["at"] < PENDING_Q_TTL else ""
             tail = tr.tail(1600)
             # сверка вопроса с узлами графа — ДО hint_lock и вне STT-пути:
             # файловый лукап не смеет держать ни распознавание, ни очередь
@@ -1846,7 +1850,7 @@ def main():
             tail = tr.tail(2200)
             if not tail:
                 continue
-            q = _pending_q["text"]
+            q = _pending_q["text"] if time.monotonic() - _pending_q["at"] < PENDING_Q_TTL else ""
             short = model.split("-")[1] if model.count("-") else model  # claude-haiku-… → haiku
             think = f"☁️ {dt.datetime.now():%H:%M:%S} {short} думает" + (f" над: ❓ {q[:120]}" if q else "…")
             # «думает над ❓…» жило в полотне и дублировало вопрос, который

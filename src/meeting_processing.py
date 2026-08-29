@@ -45,6 +45,17 @@ def short_stamp(transcript: pathlib.Path) -> str:
     return match.group(1) if match else transcript.stem
 
 
+def _looks_main(path: pathlib.Path) -> bool:
+    """Главная стенограмма начинается с «# Встреча <штамп>»; разбор, минутки и
+    подсказки — нет. Читаем первые байты, кандидатов единицы."""
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(200).decode("utf-8", errors="ignore")
+    except OSError:
+        return False
+    return head.lstrip().startswith("# Встреча ")
+
+
 def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
     """Return the transcript even if graph_updater renamed it to its title."""
     if original.exists():
@@ -61,7 +72,9 @@ def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
             # словом «разбор» внутри) и статус получал несуществующий путь
             # (аудит DeepSeek 16.08).
             suffix = path.stem[len(stamp):].lower()
-            if any(suffix.endswith(aux) for aux in _AUX_SUFFIXES):
+            if any(suffix.endswith(aux) for aux in _AUX_SUFFIXES) and not _looks_main(path):
+                # тема встречи может сама кончаться на «разбор»/«live»: производный
+                # файл отличаем по содержимому, а не только по имени (хвост 20.08, DS)
                 continue
             candidates.append(path)
         if candidates:

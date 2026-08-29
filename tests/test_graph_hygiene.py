@@ -649,3 +649,11 @@ def test_core_chronicle_keeps_superseded_status_with_its_dates(tmp_path):
     assert g.has_link(text, "Встречи/2026-08-13_1000") and g.has_link(text, "Встречи/2026-08-13_100012")
     assert "- [[Встречи/2026-08-13_1000]] — акт · вытеснило статус (с 2026-08-13): «сдано»" in text
 
+
+def test_brain_mark_is_written_only_after_successful_posts():
+    """Отметка brain_sent — только после raise_for_status у всех POST: 4xx/5xx
+    без исключения ставили «отправлено» при потерянных фактах (хвост 20.08, GLM)."""
+    text = (SRC / "graph_updater.py").read_text(encoding="utf-8")
+    block = text[text.index('"http://127.0.0.1:8100/remember"'):text.index("safe_write.write_text(brain_mark")]
+    assert block.count(".raise_for_status()") == 2, "оба POST проверяют статус до отметки"
+

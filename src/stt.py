@@ -80,6 +80,14 @@ class STT:
                 f"неизвестный stt.backend: {self.backend} "
                 f"(ожидается gigaam | parakeet | sensevoice | whisper)")
 
+    @staticmethod
+    def to_int16(audio: np.ndarray) -> np.ndarray:
+        """float32 [-1, 1] → int16 с клипом: громкий всплеск или NaN без клипа
+        переворачивал знак (обёртка int16) и давал треск в распознавании
+        (хвост аудита 20.08, DS)."""
+        clean = np.nan_to_num(np.asarray(audio, dtype=np.float32), nan=0.0, posinf=1.0, neginf=-1.0)
+        return (np.clip(clean, -1.0, 1.0) * 32767).astype("int16")
+
     def transcribe(self, audio: np.ndarray, samplerate: int) -> str:
         """float32 mono 16kHz → текст. Пустую/шумовую отдачу чистим снаружи."""
         out = self._transcribe_raw(audio, samplerate)
@@ -110,7 +118,7 @@ class STT:
                     w.setnchannels(1)
                     w.setsampwidth(2)
                     w.setframerate(samplerate)
-                    w.writeframes((audio * 32767).astype("int16").tobytes())
+                    w.writeframes(self.to_int16(audio).tobytes())
                 res = self._model.transcribe(tmp)
                 return (getattr(res, "text", None) or str(res)).strip()
             finally:

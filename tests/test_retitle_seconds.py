@@ -11,6 +11,7 @@ rename_meeting.py. Здесь — распознавание голого шта
 
 from __future__ import annotations
 
+import pathlib
 import sys
 from pathlib import Path
 
@@ -94,3 +95,24 @@ def test_taken_name_is_not_overwritten(tmp_path):
     assert new == t and t.exists()                            # остались при своём
     assert taken.read_text(encoding="utf-8") == "чужая встреча"
     assert "— Планёрка" in t.read_text(encoding="utf-8")
+
+
+def test_retitle_leaves_the_neighbour_meeting_of_the_same_minute_alone(tmp_path):
+    """Глоб `{bare}_*.md` ловил главный файл соседней встречи той же минуты и
+    переименовывал его вместе с производными (хвост аудита 20.08, GLM)."""
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+    import graph_updater as g
+    d = tmp_path / "transcripts"
+    d.mkdir()
+    bare = "2026-08-29_1234"
+    live = d / f"{bare}.md"
+    live.write_text(f"# Встреча {bare}\n\nтекст\n", encoding="utf-8")
+    (d / f"{bare}_minutes.md").write_text("минутки", encoding="utf-8")
+    neighbour = d / f"{bare}_План_разбора.md"
+    neighbour.write_text(f"# Встреча {bare} — План разбора\n", encoding="utf-8")
+    out = g.retitle(live, bare, bare, "Новая тема")
+    assert out.name == f"{bare}_Новая_тема.md"
+    assert (d / f"{bare}_Новая_тема_minutes.md").exists(), "свои производные переехали"
+    assert neighbour.exists(), "чужой главный файл той же минуты не тронут"
+

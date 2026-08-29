@@ -624,6 +624,9 @@ def _pid_file(stamp: str) -> pathlib.Path:
     return ROOT / "logs" / f"rebuild-{stamp}.pid"
 
 
+_RUNNING_LOCKS: list = []   # открытые pid-файлы под flock (иначе GC закроет и снимет замок)
+
+
 def running_elsewhere(live: pathlib.Path) -> int | None:
     """Pid живой пересборки этой же встречи, если она уже идёт.
 
@@ -652,6 +655,20 @@ def running_elsewhere(live: pathlib.Path) -> int | None:
         return None
     if pid == os.getpid():
         return None
+    # Живой прогон держит flock на pid-файле — это главный признак. Без замка
+    # (старая версия, ручная отметка) — жив ли процесс, и не моложе ли он
+    # самой отметки: переиспользованный PID чужого процесса блокировал
+    # пересборку навсегда (хвост аудита 20.08, GLM).
+    try:
+        with f.open("r") as fh:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return pid       # кто-то держит эксклюзивный замок — идёт
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        mtime = f.stat().st_mtime
+    except OSError:
+        return None
     try:
         os.kill(pid, 0)          # 0 — только проверка, сигнал не шлём
     except ProcessLookupError:
@@ -659,7 +676,30 @@ def running_elsewhere(live: pathlib.Path) -> int | None:
         return None
     except PermissionError:
         return pid               # чужой пользователь, но процесс есть
+    if _process_started_after(pid, mtime):
+        f.unlink(missing_ok=True)   # PID переиспользован — отметка от умершего
+        return None
     return pid
+
+
+def _process_started_after(pid: int, mtime: float) -> bool:
+    """Процесс с этим pid стартовал ПОЗЖЕ отметки — значит, это уже другой
+    процесс. По `ps -o etime=`; не разобрать — считаем прежним (осторожно)."""
+    try:
+        import subprocess
+        out = subprocess.run(["ps", "-o", "etime=", "-p", str(pid)],
+                             capture_output=True, text=True, check=False, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if not out:
+        return False
+    days, rest = (out.split("-", 1) + [""])[:2] if "-" in out else ("0", out)
+    parts = rest.split(":")
+    try:
+        secs = int(days) * 86400 + sum(int(x) * 60 ** i for i, x in enumerate(reversed(parts)))
+    except ValueError:
+        return False
+    return (time.time() - secs) > mtime + 1.0
 
 
 def mark_running(live: pathlib.Path) -> pathlib.Path | None:
@@ -670,9 +710,13 @@ def mark_running(live: pathlib.Path) -> pathlib.Path | None:
     f = _pid_file(stamp)
     try:
         f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(str(os.getpid()), encoding="utf-8")
+        fh = f.open("w")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fh.write(str(os.getpid()))
+        fh.flush()
     except OSError:
         return None
+    _RUNNING_LOCKS.append(fh)   # держим открытым — замок живёт, пока жив процесс
     return f
 
 

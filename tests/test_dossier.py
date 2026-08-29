@@ -235,3 +235,13 @@ def test_индекс_не_теряет_досье_сверх_лимита_и_п
     r = nd.run(g, {"sufler": {}}, full=True, dry=False, limit=5)
     assert r["отказы"] == 2, "исключение считается один раз на тему"
     assert {e["тема"] for e in dossier.load_index(folder)} == {"Настройка доступа", "Отчётность"}
+
+
+def test_keys_see_cjk_words():
+    """Китайская встреча давала пустые ключи — досье не искалось (хвост 20.08, GLM)."""
+    import dossier
+    keys = dossier.keywords("会议讨论了数据平台的迁移计划 和 бюджет проекта")
+    joined = " ".join(keys) if not isinstance(keys, str) else keys
+    assert any("\u4e00" <= ch <= "\u9fff" for ch in joined), keys
+    assert "бюджет" in joined or "бюджет" in str(keys)
+

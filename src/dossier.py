@@ -85,7 +85,9 @@ def keywords(text: str, limit: int = 24) -> list[str]:
     по словам. Имена файлов-стенограмм отбрасываем — как ключ они бесполезны,
     а место в списке занимают.
     """
-    words = re.findall(r"[а-яa-z0-9][а-яa-z0-9_.-]{2,}", _norm(text))
+    # CJK — в классе символов: без него у китайской встречи ключи пусты и
+    # досье не ищется вовсе (хвост аудита 20.08, GLM)
+    words = re.findall(r"[а-яa-z0-9\u4e00-\u9fff][а-яa-z0-9_.\u4e00-\u9fff-]{1,}", _norm(text))
     freq: dict[str, int] = defaultdict(int)
     for w in words:
         if w in _STOP or len(w) > 24:

@@ -182,3 +182,14 @@ def test_aliases_from_the_header_are_read_by_the_shared_parser(tmp_path):
     hits = idx.lookup("обсудили реестр поручений на неделю")
     assert [n.name for n in hits] == ["Реестр"]
 
+
+def test_redirect_stub_is_not_a_node(tmp_path):
+    """Заглушка после слияния (`# X → [[Ядра/Y]]`, «Дубль слит») не попадает в
+    индекс узлов: иначе дайджест и подсказки цитировали мёртвый файл (хвост 20.08)."""
+    root = _graph(tmp_path)
+    (root / "Ядра" / "Старое ядро.md").write_text(
+        "---\ntype: ядро\n---\n# Старое ядро → [[Ядра/Ретеншн]]\n\n⚠️ **Дубль. Смерджен Tier3-NLI.**\n", encoding="utf-8")
+    idx = NodeIndex(root)
+    idx.refresh()
+    assert all(n.name != "Старое ядро" for n in idx._nodes.values())
+

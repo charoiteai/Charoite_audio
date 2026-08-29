@@ -118,3 +118,42 @@ def test_guard_is_wired_into_entry_point():
 
     assert guard < work, "проверка после начала работы бессмысленна"
     assert "mark_running(live)" in body, "прогон не отмечает себя — дубль не увидит его"
+
+
+def test_reused_pid_is_not_a_live_run(root, monkeypatch):
+    """PID умершей пересборки достался другому процессу: отметка старее, чем
+    процесс, — это не живой прогон, и файл отметки снимается (хвост 20.08, GLM)."""
+    live = _live(root)
+    rt._pid_file("2026-08-12_1532").write_text(str(os.getppid()), encoding="utf-8")
+    monkeypatch.setattr(rt, "_process_started_after", lambda pid, mtime: True)
+    assert rt.running_elsewhere(live) is None
+    assert not rt._pid_file("2026-08-12_1532").exists()
+
+
+def test_flock_holder_is_a_live_run_even_without_liveness_check(root, monkeypatch):
+    """Свой же замок в другом дескрипторе: держатель flock — живой прогон."""
+    live = _live(root)
+    mark = rt.mark_running(live)
+    assert mark is not None
+    monkeypatch.setattr(os, "getpid", lambda: 4242)   # «мы» — другой процесс
+    assert rt.running_elsewhere(live) is not None, "замок держится — прогон идёт"
+    rt._RUNNING_LOCKS.clear()
+
+
+def test_etime_parsing_days_hours_minutes():
+    import time as _t
+    now = _t.time()
+    monkey = rt._process_started_after
+    assert callable(monkey)
+    # 1-02:03:04 = 1 день 2 часа 3 мин 4 с назад: отметка «сейчас» — младше старта
+    import subprocess
+    class R:  # noqa: D401 — заглушка ps
+        stdout = "1-02:03:04\n"
+    orig = subprocess.run
+    subprocess.run = lambda *a, **k: R()
+    try:
+        assert rt._process_started_after(1, now) is False
+        assert rt._process_started_after(1, now - 3 * 86400) is True
+    finally:
+        subprocess.run = orig
+

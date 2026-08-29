@@ -179,3 +179,16 @@ def test_old_status_files_are_pruned(tmp_path):
     MeetingStatusStore(tmp_path)._prune(time.time())
 
     assert not old.exists()
+
+
+def test_main_transcript_whose_title_ends_with_an_aux_word_is_still_found(tmp_path):
+    """Тема встречи «Общий разбор» кончается на «разбор» — по одному имени файл
+    выглядит производным; главный узнаётся по содержимому (хвост аудита 20.08)."""
+    live = _transcript(tmp_path)
+    live.unlink()
+    main = live.with_name("2026-07-31_141501_Общий_разбор.md")
+    main.write_text("# Встреча 2026-07-31_141501 — Общий разбор\n\nтекст\n", encoding="utf-8")
+    review = live.with_name("2026-07-31_141501_Общий_разбор_разбор.md")
+    review.write_text("Граф дообогащён. Ниже — ревизия текстом.\n", encoding="utf-8")
+    assert find_final_transcript(live) == main.resolve()
+
