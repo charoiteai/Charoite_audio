@@ -55,6 +55,12 @@ def _is_stub(text: str) -> bool:
     return "дубль-слит" in text[:400] or redirects.is_merged(text)
 
 
+def _disk_candidates(root: pathlib.Path, target: str) -> list[pathlib.Path]:
+    """Пути вложения в обеих формах Unicode — NFC и NFD: инструменты macOS
+    пишут имена в NFD, ссылки набирают в NFC; APFS это скрывает, Linux нет."""
+    return [root / unicodedata.normalize(form, target) for form in ("NFC", "NFD")]
+
+
 def inspect(root: pathlib.Path, examples: int = 0) -> dict:
     """Метрики одного графа. `examples` > 0 — добавить примеры путей."""
     notes: dict[pathlib.Path, str] = {}
@@ -99,13 +105,12 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
         # Имя пробуем в обеих формах Unicode: инструменты macOS пишут NFD,
         # ссылки набирают в NFC (GLM по #449). stat под try: слишком длинное
         # имя или каталог без прав ронял бы весь ночной отчёт, а не ссылку.
-        for form in ("NFC", "NFD"):
-            cand = root / unicodedata.normalize(form, t)
+        for cand in _disk_candidates(root, t):
             try:
                 if cand.is_file():
                     return cand
             except (OSError, ValueError):
-                return None
+                continue
         return None
 
     inbound: collections.Counter = collections.Counter()

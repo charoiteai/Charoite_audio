@@ -437,3 +437,8 @@ def test_doctor_note_wins_over_attachment_and_attachment_is_any_file_on_disk(tmp
     assert rep["orphans"] == 2, rep["examples"]["orphans"]
     assert sorted(rep["examples"]["orphans"]) == ["Люди/Иван.md", "Системы/x.md"], rep["examples"]["orphans"]
     assert rep["moc_linked"] == 1, "вложение rec.ogg — не узел и не покрытие MOC"
+    # NFD-подслучай на APFS невидим (нормализационно нечувствительна) —
+    # кандидаты проверяются напрямую, чтобы мутация «одна форма» краснела и на маке
+    forms = [c.name for c in graph_doctor._disk_candidates(graph, "схема й.pdf")]
+    assert forms == [unicodedata.normalize("NFC", "схема й.pdf"), unicodedata.normalize("NFD", "схема й.pdf")]
+    assert forms[0] != forms[1]
