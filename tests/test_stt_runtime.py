@@ -398,11 +398,13 @@ def test_a_quiet_meeting_still_reports_stt_numbers():
 
 
 def test_seam_goes_only_to_the_head_piece_and_only_on_label_change():
-    assert stt_runtime.seam_for_rows("Собеседник", ["Собеседник 3", "Собеседник 4"]) == [
+    assert stt_runtime.seam_for_rows("Собеседник", [("Собеседник 3", True), ("Собеседник 4", False)]) == [
         (True, "Собеседник"), (False, None)]
-    assert stt_runtime.seam_for_rows("Собеседник 3", ["Собеседник 3"]) == [(True, None)]
-    assert stt_runtime.seam_for_rows(None, ["Собеседник 3"]) == [(True, None)]
+    assert stt_runtime.seam_for_rows("Собеседник 3", [("Собеседник 3", True)]) == [(True, None)]
+    assert stt_runtime.seam_for_rows(None, [("Собеседник 3", True)]) == [(True, None)]
     assert stt_runtime.seam_for_rows("Собеседник", []) == []
+    # первый кусок по звуку отсеян STT (пусто/шум): второй голос головой не становится
+    assert stt_runtime.seam_for_rows("Собеседник", [("Собеседник 4", False)]) == [(False, None)]
 
 
 def test_channel_label_follows_the_last_added_piece_or_stays():

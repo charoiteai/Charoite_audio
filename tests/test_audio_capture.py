@@ -800,3 +800,24 @@ def test_анти_шторм_отпускает_ровно_на_тридцато
     hub._last_check = 0.0
     hub._watch_streams()
     assert dead.restarts == 1, "29.9с — ещё анти-шторм"
+
+
+def test_every_physical_chunk_consumes_a_number_even_silent_or_echo():
+    """Шов стенограммы считает соседями только n и n-1 одного канала: тихий
+    чанк и mic-чанк, отброшенный как эхо, номер потребляют — иначе два
+    речевых чанка через паузу стали бы «соседями» (luna, круг-2 #452; DS #453)."""
+    hub = _hub()
+    n = int(hub.sr * hub.chunk_s) + 100
+    hub._bufs = {"blackhole": _tone(n), "mic": _tone(n)}          # оба звучат: mic — эхо, отброшен
+    out = dict(hub.pull_labeled())
+    assert hub.SPEAKER["mic"] not in out
+    assert hub.chunk_seq(hub.SPEAKER["mic"]) == ("mic", 0), "эхо-чанк mic номер потребил"
+    assert hub.chunk_seq(hub.SPEAKER["blackhole"]) == ("blackhole", 0)
+    hub._bufs = {"blackhole": np.zeros(n, dtype=np.float32), "mic": np.zeros(n, dtype=np.float32)}   # тишина
+    assert hub.pull_labeled() == []
+    assert hub.chunk_seq(hub.SPEAKER["mic"]) == ("mic", 1)
+    hub._bufs = {"blackhole": np.zeros(n, dtype=np.float32), "mic": _tone(n)}
+    assert hub.SPEAKER["mic"] in dict(hub.pull_labeled())
+    assert hub.chunk_seq(hub.SPEAKER["mic"]) == ("mic", 2), "речевой после тишины — не сосед первого"
+    assert hub.chunk_seq("нет такого") is None
+
