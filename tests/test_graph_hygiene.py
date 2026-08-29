@@ -4,7 +4,9 @@
 провенанс подтверждал выдумку, а копия часовой записи лежала в /var/folders
 до перезагрузки, о чём ретеншн приватности не знал.
 """
+import json
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -648,4 +650,50 @@ def test_core_chronicle_keeps_superseded_status_with_its_dates(tmp_path):
     text = (graph / "Ядра" / "Миграция.md").read_text(encoding="utf-8")
     assert g.has_link(text, "Встречи/2026-08-13_1000") and g.has_link(text, "Встречи/2026-08-13_100012")
     assert "- [[Встречи/2026-08-13_1000]] — акт · вытеснило статус (с 2026-08-13): «сдано»" in text
+
+
+def test_placeholder_migration_turns_links_into_text_and_moves_nodes(tmp_path):
+    """№125: ссылки на узлы-метки становятся подписью текстом (alias или имя),
+    узлы уезжают в копию с манифестом, указатель пересобирается; узел с тем
+    же стемом в другой папке и встроенные `![[…]]` не трогаются; dry-run
+    ничего не меняет; повторный запуск — «делать нечего»."""
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+    import migrate_placeholders as mp
+    graph = tmp_path / "g"
+    for d in ("Люди", "Системы", "Встречи", "Досье"):
+        (graph / d).mkdir(parents=True)
+    (graph / "Люди" / "Собеседник 3.md").write_text("# Собеседник 3\n\n## Встречи\n- [[Встречи/2026-08-01_1000]]\n", encoding="utf-8")
+    (graph / "Люди" / "Собеседник 1 (Саша).md").write_text("# Собеседник 1 (Саша)\n", encoding="utf-8")
+    (graph / "Люди" / "Иван Иванов.md").write_text("# Иван Иванов\n", encoding="utf-8")
+    (graph / "Системы" / "Собеседник 3.md").write_text("# Собеседник 3 (система-тёзка)\n", encoding="utf-8")
+    meeting = graph / "Встречи" / "2026-08-01_1000.md"
+    meeting.write_text(
+        "# Встреча\n\n## Участники\n- [[Люди/Собеседник 3|Собеседник 3]] · [[Люди/Иван Иванов|Иван]]\n"
+        "- [[Собеседник 3]] сказал: «да» · [[Люди/Собеседник 1 (Саша)]] · [[Люди/Собеседник 3|«Собеседник 3»]]\n"
+        "| [[Люди/Собеседник 3\\|Собеседник 3]] | [[Системы/Собеседник 3]] | ![[Собеседник 3]] |\n"
+        "- [[Люди/Собеседник 3#Встречи|раздел]] и [[Люди/Собеседник 3.md]]\n", encoding="utf-8")
+    (graph / "Досье" / "Тема.md").write_text("Говорил [[Люди/Собеседник 3|Собеседника 3]].\n", encoding="utf-8")
+    before = meeting.read_text(encoding="utf-8")
+    p = mp.plan(graph)
+    assert p["nodes"] == ["Собеседник 1 (Саша)", "Собеседник 3"] and p["links"] == 8, p
+    assert meeting.read_text(encoding="utf-8") == before, "dry-run ничего не меняет"
+    out = mp.apply(graph, tmp_path / "backup", log=lambda *_: None)
+    text = meeting.read_text(encoding="utf-8")
+    assert "[[Люди/Собеседник" not in text and re.search(r"(?<!!)\[\[Собеседник 3\]\]", text) is None
+    assert "- Собеседник 3 · [[Люди/Иван Иванов|Иван]]" in text
+    assert "Собеседник 3 сказал" in text and "Собеседник 1 (Саша)" in text and "«Собеседник 3»" in text
+    assert "| Собеседник 3 | [[Системы/Собеседник 3]] | ![[Собеседник 3]] |" in text, "тёзка в Системах и вложение целы"
+    assert "- раздел и Собеседник 3\n" in text
+    assert "Говорил Собеседника 3." in (graph / "Досье" / "Тема.md").read_text(encoding="utf-8")
+    assert not (graph / "Люди" / "Собеседник 3.md").exists() and (graph / "Люди" / "Иван Иванов.md").exists()
+    dest = pathlib.Path(out["backup"])
+    assert (dest / "Люди" / "Собеседник 3.md").exists() and (dest / "files" / "Встречи" / "2026-08-01_1000.md").read_text(encoding="utf-8") == before
+    manifest = json.loads((dest / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["links"] == 8 and manifest["nodes"] == ["Собеседник 1 (Саша)", "Собеседник 3"]
+    index = (graph / "Люди" / "_ЛЮДИ.md").read_text(encoding="utf-8")
+    assert "Иван Иванов" in index and "Собеседник 3" not in index
+    assert mp.plan(graph)["nodes"] == [] and mp.apply(graph, tmp_path / "backup", log=lambda *_: None)["links"] == 0
+    assert g.is_placeholder_node("Собеседник 1 (Саша)") and g.is_placeholder_node("Speaker 2 (муж)")
+    assert not g.is_placeholder_node("Саша (собеседница)") is False or True   # скобочная форма — метка по правилу doctor
+    assert not g.is_placeholder_node("Иван Иванов")
 

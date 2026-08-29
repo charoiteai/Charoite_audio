@@ -369,6 +369,15 @@ def is_speaker_placeholder(name: str) -> bool:
     return bool(_PLACEHOLDER_RE.match(name_key(re.sub(r"[№#]", " ", bare))))
 
 
+def is_placeholder_node(stem: str) -> bool:
+    """Узел в Люди — метка диаризации? «Собеседник 3», «Speaker 2 (муж)»,
+    «Собеседник 1 (Саша)» — да: облако дописывало имя в скобках, но узел
+    остаётся склейкой разных людей. Одно правило для doctor и миграции."""
+    bare = re.sub(r"\s*[(（].*?[)）]\s*$", "", stem)
+    return is_speaker_placeholder(bare) or bool(
+        re.search(r"[(（]\s*(собеседник|speaker|участник|спикер)\s*\d*\s*[)）]", stem, re.I))
+
+
 def name_key(name: str) -> str:
     """Ключ сравнения имён узлов: регистр, пунктуация, скобки, дефис и
     подчёркивание людей не различают — «Иван (Иванов)» и «Иван Иванов»,
