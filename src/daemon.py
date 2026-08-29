@@ -853,6 +853,9 @@ def main():
                       file=sys.stderr, flush=True)
                 last_summary_log = now_mono
 
+        # Метка, под которой канал писал последний раз: сменилась (лаг →
+        # здоровый, канал → голос) — стенограмма сверит шов и с ней (№69).
+        last_label_by_channel: dict[str, str] = {}
         mark_stt_stage("idle")
         report_progress(force=True)
         while not stop.is_set():
@@ -1073,7 +1076,10 @@ def main():
                     _note_pitch(name, cand)
                 for name, text in rows:
                     try:
-                        added = tr.add(text, speaker=name)
+                        seam_with = last_label_by_channel.get(speaker)
+                        last_label_by_channel[speaker] = name
+                        added = tr.add(text, speaker=name,
+                                       seam_with=seam_with if seam_with != name else None)
                     except Exception as e:  # noqa: BLE001 — стенограмма не должна убивать STT-тред
                         emit({"type": "status", "text": f"стенограмма: {e}"})
                         continue

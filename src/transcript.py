@@ -78,6 +78,9 @@ class Transcript:
     # Пока говорит тот же спикер — клеим в ОДИН абзац; новый блок только после
     # смены спикера или совсем длинной паузы (иначе стенограмма рвётся на строчки).
     SPLIT_GAP = 180.0
+    # Шов перекрытия живёт между СОСЕДНИМИ чанками канала: 3 с звука плюс
+    # очередь STT. Старше — не шов, а речь.
+    SEAM_WINDOW = 12.0
 
     def __init__(self, out_dir: pathlib.Path):
         out_dir.mkdir(exist_ok=True)
@@ -102,6 +105,7 @@ class Transcript:
         self._notes: list[str] = []
         self._names: dict[str, str] = {}  # канальная метка → опознанное имя
         self._prev_chunk: dict[str, str] = {}  # спикер → последний чанк (дедуп швов)
+        self._prev_at: dict[str, dt.datetime] = {}  # спикер → когда пришёл его последний чанк
         self._participants: list[str] = []  # групповая встреча: кто звучал
         self._lock = threading.Lock()
         self._save()
@@ -169,8 +173,17 @@ class Transcript:
                 return " ".join(words[k:])
         return new
 
-    def add(self, text: str, speaker: str | None = None) -> str | None:
-        """Добавляет чанк; возвращает реально добавленный текст (после дедупа) или None."""
+    def add(self, text: str, speaker: str | None = None,
+            seam_with: str | None = None) -> str | None:
+        """Добавляет чанк; возвращает реально добавленный текст (после дедупа) или None.
+
+        `seam_with` — метка, под которой ТОТ ЖЕ канал писал предыдущий чанк,
+        если она сменилась: в lagging-режиме чанк подписан каналом
+        («Собеседник»), следующий здоровый — голосом («Собеседник 3»), и
+        общие полсекунды перекрытия уходили в ленту дважды (№69, DeepSeek по
+        #362). Кандидата называет демон — только он знает канал; чужой канал
+        так не сверяется: повтор слов другим человеком — речь, не шов.
+        """
         now = dt.datetime.now()
         spk = speaker or "—"
         with self._lock:
@@ -182,7 +195,16 @@ class Transcript:
                 text = self._cut_overlap(prev, text)
                 if not text:
                     return None
+            if seam_with:
+                other = self._names.get(seam_with, seam_with)
+                at = self._prev_at.get(other)
+                if other != spk and at is not None \
+                        and (now - at).total_seconds() < self.SEAM_WINDOW:
+                    text = self._cut_overlap(self._prev_chunk.get(other, ""), text)
+                    if not text:
+                        return None
             self._prev_chunk[spk] = text
+            self._prev_at[spk] = now
             if self._blocks:
                 b = self._blocks[-1]
                 same = b[2] == spk and (now - b[1]).total_seconds() < self.SPLIT_GAP
@@ -213,6 +235,13 @@ class Transcript:
             for b in self._blocks:
                 if b[2] == old:
                     b[2] = new
+            # Шов живёт под новой меткой: без переноса следующий чанк того же
+            # голоса сверялся с пустотой, и стык после переименования
+            # дублировался (найдено тестом №69).
+            if old in self._prev_chunk:
+                self._prev_chunk[new] = self._prev_chunk.pop(old)
+            if old in self._prev_at:
+                self._prev_at[new] = self._prev_at.pop(old)
         self._save()
 
     def set_participants(self, names: list[str]):

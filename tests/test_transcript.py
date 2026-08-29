@@ -60,6 +60,44 @@ def test_seam_overlap_is_deduplicated_inside_one_channel(tmp_path, monkeypatch):
     assert tr.add("и сроки запуска", "mic") is None
 
 
+def test_seam_across_label_change_on_the_same_channel(tmp_path, monkeypatch):
+    """Лаг → здоровый: тот же канал, другая метка — шов всё равно один (№69).
+    Чужой канал без `seam_with` не сверяется: повтор слов — речь."""
+    tr = make_transcript(tmp_path, monkeypatch)
+    tr.add("мы обсудили бюджет на квартал", "Собеседник")            # lagging: метка канала
+    added = tr.add("бюджет на квартал и сроки запуска", "Собеседник 3",
+                   seam_with="Собеседник")                            # здоровый: метка голоса
+    assert added == "и сроки запуска"
+    assert tr.full().count("бюджет на квартал") == 1
+    assert tr.add("бюджет на квартал и сроки запуска", "mic") == "бюджет на квартал и сроки запуска"
+    # переименование задним числом не ломает сверку: метка ищется через _names
+    tr.add("решили перенести релиз", "Собеседник 3")
+    tr.rename_speaker("Собеседник 3", "Алексей")
+    assert tr.add("решили перенести релиз на среду", "Собеседник 4", seam_with="Собеседник 3") == "на среду"
+    # и свой же шов переименованного голоса: ключи дедупа переезжают вместе с меткой
+    tr.add("после обеда обсудим тесты", "Собеседник 5")
+    tr.rename_speaker("Собеседник 5", "Мария")
+    assert tr.add("обсудим тесты и релиз", "Собеседник 5") == "и релиз"
+
+
+def test_seam_across_labels_expires_with_the_window(tmp_path, monkeypatch):
+    import datetime as real_dt
+
+    class Clock:
+        current = real_dt.datetime(2026, 8, 29, 16, 40, 0)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+
+    monkeypatch.setattr(transcript.dt, "datetime", Clock)
+    tr = make_transcript(tmp_path, monkeypatch)
+    tr.add("мы обсудили бюджет на квартал", "Собеседник")
+    Clock.current += real_dt.timedelta(seconds=transcript.Transcript.SEAM_WINDOW + 1)
+    assert tr.add("бюджет на квартал и сроки запуска", "Собеседник 3",
+                  seam_with="Собеседник") == "бюджет на квартал и сроки запуска", "старый чанк — не шов"
+
+
 def test_split_gap_breaks_block_with_frozen_clock(tmp_path, monkeypatch):
     import datetime as real_dt
 
