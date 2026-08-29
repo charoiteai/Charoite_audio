@@ -57,23 +57,15 @@ def test_live_run_is_detected(root):
         fh.close()
 
 
-def test_own_pid_is_not_a_conflict(root):
-    """Собственная отметка не должна выглядеть чужим прогоном — иначе
-    пересборка запретит сама себя при повторном заходе в ту же функцию."""
-    live = _live(root)
-    rt._pid_file("2026-08-12_1532").write_text(str(os.getpid()), encoding="utf-8")
-
-    assert rt.running_elsewhere(live) is None
-
-
 def test_dead_mark_does_not_block(root):
     """Машину выключили посреди пересборки: замка на отметке нет — она ничего
     не запрещает, а следующий прогон переписывает её под своим замком. Живой
     pid без замка — тоже не прогон: pid переиспользуется (хвост 20.08, GLM),
-    а признак живости один — flock (круг по #455)."""
+    а признак живости один — flock (круг по #455); свой pid без замка —
+    тот же случай, отдельной доктрины «своя отметка» больше нет (GLM r2)."""
     live = _live(root)
     f = rt._pid_file("2026-08-12_1532")
-    for pid in (2 ** 22, os.getppid()):          # мёртвый и живой чужой
+    for pid in (2 ** 22, os.getppid(), os.getpid()):   # мёртвый, живой чужой, свой — без замка все равны
         f.write_text(str(pid), encoding="utf-8")
         assert rt.running_elsewhere(live) is None
     mark = rt.mark_running(live)
