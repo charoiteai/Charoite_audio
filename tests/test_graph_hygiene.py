@@ -666,6 +666,7 @@ def test_placeholder_migration_turns_links_into_text_and_moves_nodes(tmp_path):
     (graph / "Люди" / "Собеседник 1 (Саша).md").write_text("# Собеседник 1 (Саша)\n", encoding="utf-8")
     (graph / "Люди" / "Иван Иванов.md").write_text("# Иван Иванов\n", encoding="utf-8")
     (graph / "Системы" / "Собеседник 3.md").write_text("# Собеседник 3 (система-тёзка)\n", encoding="utf-8")
+    (graph / "Люди" / "Таня (Собеседник 4).md").write_text("# Таня (Собеседник 4)\n", encoding="utf-8")
     meeting = graph / "Встречи" / "2026-08-01_1000.md"
     meeting.write_text(
         "# Встреча\n\n## Участники\n- [[Люди/Собеседник 3|Собеседник 3]] · [[Люди/Иван Иванов|Иван]]\n"
@@ -676,6 +677,7 @@ def test_placeholder_migration_turns_links_into_text_and_moves_nodes(tmp_path):
     before = meeting.read_text(encoding="utf-8")
     p = mp.plan(graph)
     assert p["nodes"] == ["Собеседник 1 (Саша)", "Собеседник 3"] and p["links"] == 8, p
+    assert p["manual"] == ["Таня (Собеседник 4)"], "имя + метка в скобках — ручное решение, не миграция"
     assert meeting.read_text(encoding="utf-8") == before, "dry-run ничего не меняет"
     out = mp.apply(graph, tmp_path / "backup", log=lambda *_: None)
     text = meeting.read_text(encoding="utf-8")
@@ -686,6 +688,7 @@ def test_placeholder_migration_turns_links_into_text_and_moves_nodes(tmp_path):
     assert "- раздел и Собеседник 3\n" in text
     assert "Говорил Собеседника 3." in (graph / "Досье" / "Тема.md").read_text(encoding="utf-8")
     assert not (graph / "Люди" / "Собеседник 3.md").exists() and (graph / "Люди" / "Иван Иванов.md").exists()
+    assert (graph / "Люди" / "Таня (Собеседник 4).md").exists(), "узел с именем не тронут"
     dest = pathlib.Path(out["backup"])
     assert (dest / "Люди" / "Собеседник 3.md").exists() and (dest / "files" / "Встречи" / "2026-08-01_1000.md").read_text(encoding="utf-8") == before
     manifest = json.loads((dest / "manifest.json").read_text(encoding="utf-8"))

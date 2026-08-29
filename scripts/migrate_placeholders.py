@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Миграция накопленных узлов-меток («Собеседник N») в графе встреч (№125).
+r"""Миграция накопленных узлов-меток («Собеседник N») в графе встреч (№125).
 
 Метка диаризации — не человек: узел «Собеседник 3» склеивал разных людей из
 разных встреч в одного (аудит 28.08: 13 узлов, у трёх по 130–140 входящих).
@@ -37,12 +37,22 @@ import safe_write  # noqa: E402
 LINK_RE = re.compile(r"(?<!!)\[\[([^\]|#]+)(#[^\]|]*)?(?:\\?\|([^\]]*))?\]\]")
 
 
-def placeholder_nodes(graph: pathlib.Path) -> list[pathlib.Path]:
+def placeholder_nodes(graph: pathlib.Path) -> tuple[list[pathlib.Path], list[pathlib.Path]]:
+    """(узлы-метки, узлы на ручное решение). Метка в начале имени —
+    «Собеседник 3», «Собеседник 1 (Саша)» — склейка, её разбираем. Имя в
+    начале и метка в скобках — «Таня (Собеседник 4)» — у узла есть человек:
+    переименовать в «Таня» или слить с существующей «Таней» решает владелец,
+    скрипт такие только перечисляет (dry-run на проде 29.08: 4 из 17)."""
     people = graph / "Люди"
     if not people.is_dir():
-        return []
-    return sorted(p for p in people.glob("*.md")
-                  if not p.name.startswith("_") and graph_updater.is_placeholder_node(p.stem))
+        return [], []
+    labels, manual = [], []
+    for p in sorted(people.glob("*.md")):
+        if p.name.startswith("_") or not graph_updater.is_placeholder_node(p.stem):
+            continue
+        bare = re.sub(r"\s*[(（].*?[)）]\s*$", "", p.stem)
+        (labels if graph_updater.is_speaker_placeholder(bare) else manual).append(p)
+    return labels, manual
 
 
 def _target_stem(target: str) -> tuple[str | None, str]:
@@ -73,7 +83,7 @@ def unlink_placeholders(text: str, stems: set[str]) -> tuple[str, int]:
 
 
 def plan(graph: pathlib.Path) -> dict:
-    nodes = placeholder_nodes(graph)
+    nodes, manual = placeholder_nodes(graph)
     stems = {p.stem for p in nodes}
     files: dict[str, int] = {}
     for p in graph.rglob("*.md"):
@@ -88,6 +98,7 @@ def plan(graph: pathlib.Path) -> dict:
         if n:
             files[rel.as_posix()] = n
     return {"graph": str(graph), "nodes": [p.stem for p in nodes],
+            "manual": [p.stem for p in manual],
             "files": files, "links": sum(files.values())}
 
 
@@ -149,6 +160,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     p = plan(graph)
     print(f"узлов-меток: {len(p['nodes'])}: " + ", ".join(p["nodes"]))
+    if p["manual"]:
+        print("на ручное решение (имя + метка в скобках), не трогаю: " + ", ".join(p["manual"]))
     for rel, n in sorted(p["files"].items(), key=lambda kv: -kv[1])[:15]:
         print(f"  {n:4d}  {rel}")
     if len(p["files"]) > 15:
