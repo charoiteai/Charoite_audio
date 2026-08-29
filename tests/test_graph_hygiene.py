@@ -421,10 +421,11 @@ def test_doctor_note_wins_over_attachment_and_attachment_is_any_file_on_disk(tmp
     (graph / "Системы" / "Док.md").write_text("# Док\n", encoding="utf-8")
     (graph / "rec.ogg").write_bytes(b"OggS")
     (graph / ".trash" / "старое.pdf").write_bytes(b"%PDF")
+    (graph / ".env").write_bytes(b"SECRET=1")                # скрытый файл — не вложение (DS r2)
     (tmp_path / "секрет.pdf").write_bytes(b"%PDF")
     (graph / unicodedata.normalize("NFD", "схема й.pdf")).write_bytes(b"%PDF")
     dead = ("rec.opus", "Люди", "../секрет.pdf", "../x", "/etc/hosts", ".trash/старое.pdf",
-            "a" * 300 + ".pdf")
+            ".env", "a" * 300 + ".pdf")
     alive = ("v2.json", "v2.json.md", "Системы/v2.json", "ДОК.MD", "rec.ogg", "схема й.pdf")
     (graph / "Люди" / "Иван.md").write_text(
         "# Иван\n" + " ".join(f"[[{x}]]" for x in alive + dead) + "\n", encoding="utf-8")
