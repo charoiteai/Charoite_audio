@@ -374,8 +374,10 @@ def is_placeholder_node(stem: str) -> bool:
     «Собеседник 1 (Саша)» — да: облако дописывало имя в скобках, но узел
     остаётся склейкой разных людей. Одно правило для doctor и миграции."""
     bare = re.sub(r"\s*[(（].*?[)）]\s*$", "", stem)
-    return is_speaker_placeholder(bare) or bool(
-        re.search(r"[(（]\s*(собеседник|speaker|участник|спикер)\s*\d*\s*[)）]", stem, re.I))
+    if is_speaker_placeholder(bare):
+        return True
+    m = re.search(r"[(（]([^()（）]*)[)）]\s*$", stem)
+    return bool(m) and is_speaker_placeholder(m.group(1))   # один набор меток, что и для целого имени (luna I5)
 
 
 def name_key(name: str) -> str:
