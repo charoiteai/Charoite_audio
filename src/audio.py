@@ -453,6 +453,7 @@ class AudioHub:
         #          итог за встречу, из них не записано на диск]
         self._drops: dict[str, list[float]] = {}
         self._sys_speech_until = 0.0   # окно эха: до этого момента динамики недавно звучали
+        self.chunk_no: dict[str, int] = {}   # спикер → номер последнего физического чанка
         self._lock = threading.Lock()
         self._running = False
 
@@ -1048,6 +1049,14 @@ class AudioHub:
         """Готовые речевые чанки по каналам: [(speaker, chunk)]."""
         with self._lock:
             cut = {label: self._cut(label) for label in self._bufs}
+        # Номер ФИЗИЧЕСКОГО чанка канала — растёт и на тихих, и на отброшенных
+        # как эхо: шов стенограммы считает соседями только n и n-1, а тихий
+        # чанк между двумя речевыми — разрыв, не перекрытие (luna, круг-2 #452).
+        chunk_no = self.__dict__.setdefault("chunk_no", {})   # хаб в тестах собирают мимо __init__
+        for label, c in cut.items():
+            if c is not None:
+                name = self.SPEAKER.get(label, label)
+                chunk_no[name] = chunk_no.get(name, -1) + 1
         speech = {label: (c is not None and self.is_speech(c)) for label, c in cut.items()}
         now = time.monotonic()
         if speech.get("blackhole"):

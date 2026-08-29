@@ -103,6 +103,8 @@ class Transcript:
         self._names: dict[str, str] = {}  # канальная метка → опознанное имя
         self._prev_chunk: dict[str, str] = {}  # спикер → последний чанк (дедуп швов)
         self._prev_seq: dict[str, int | None] = {}  # спикер → номер чанка его последнего текста
+        self._prev_no: dict[str, int] = {}   # спикер → порядковый номер его последнего add (свежесть)
+        self._add_no = 0
         self._participants: list[str] = []  # групповая встреча: кто звучал
         self._lock = threading.Lock()
         self._save()
@@ -170,10 +172,27 @@ class Transcript:
                 return " ".join(words[k:])
         return new
 
-    def _adjacent(self, label: str, seq: int | None) -> bool:
-        """Последний текст метки — из соседнего чанка? Без номеров — да (как раньше)."""
+    @staticmethod
+    def _prev_of(seq):
+        """Номер соседа слева: int → int-1, (канал, n) → (канал, n-1)."""
+        if isinstance(seq, tuple):
+            return (seq[0], seq[1] - 1)
+        return seq - 1
+
+    def _adjacent(self, label: str, seq) -> bool:
+        """Последний текст метки — из соседнего чанка того же канала? Без
+        номеров — да (как раньше). Номер — int или (канал, n): одна метка
+        может звучать в двух каналах (владелец в микрофоне и в эхе), и
+        счётчики разных каналов не должны сравниваться как один (DS r2)."""
+        if seq is None:
+            return True
         prev_seq = self._prev_seq.get(label)
-        return seq is None or prev_seq is None or prev_seq == seq - 1
+        if prev_seq is None:
+            return False      # номер соседа неизвестен (текст без номера) — не сосед (luna r2)
+        try:
+            return prev_seq == self._prev_of(seq)
+        except TypeError:
+            return False
 
     def add(self, text: str, speaker: str | None = None,
             seam_with: str | None = None, seq: int | None = None,
@@ -181,9 +200,10 @@ class Transcript:
         """Добавляет чанк; возвращает реально добавленный текст (после дедупа) или None.
 
         Шов перекрытия (0,5 с звука) живёт между СОСЕДНИМИ чанками одного
-        канала и только в голове чанка. `seq` — номер чанка в канале: сосед —
-        ровно `seq - 1`, часы и очередь STT ни при чём (без `seq` — как
-        раньше, любой предыдущий текст метки). `head=False` — кусок не из
+        канала и только в голове чанка. `seq` — номер чанка в канале, лучше
+        парой `(канал, n)`: сосед — ровно `n - 1` того же канала, часы и
+        очередь STT ни при чём (без `seq` — как раньше, любой предыдущий
+        текст метки). `head=False` — кусок не из
         головы чанка (второй голос того же чанка): шва у него нет вовсе.
         `seam_with` — метка, под которой этот канал писал предыдущий чанк,
         если она сменилась (лаг → здоровый: канал «Собеседник» → голос
@@ -205,9 +225,18 @@ class Transcript:
             if prev:
                 text = self._cut_overlap(prev, text)
                 if not text:
+                    # Чанк съеден целиком, но он БЫЛ распознан: следующий чанк
+                    # перекрывается с его хвостом, то есть с текстом-источником,
+                    # и цепочка соседей не рвётся (DS, круг-2 #452).
+                    self._prev_chunk[spk] = prev
+                    self._prev_seq[spk] = seq
+                    self._add_no += 1
+                    self._prev_no[spk] = self._add_no
                     return None
             self._prev_chunk[spk] = text
             self._prev_seq[spk] = seq
+            self._add_no += 1
+            self._prev_no[spk] = self._add_no
             if self._blocks:
                 b = self._blocks[-1]
                 same = b[2] == spk and (now - b[1]).total_seconds() < self.SPLIT_GAP
@@ -244,13 +273,17 @@ class Transcript:
             if old in self._prev_chunk:
                 # Новая метка уже писала (человек назван раньше, чем опознан
                 # голос)? Остаётся более свежий текст, а не затирается чужим.
-                newer = (self._prev_seq.get(old) or -1) >= (self._prev_seq.get(new) or -1)
+                # свежесть — по порядку add, не по номеру чанка: два голоса
+                # одного чанка делят номер (luna r2)
+                newer = self._prev_no.get(old, 0) >= self._prev_no.get(new, 0)
                 if new not in self._prev_chunk or newer:
                     self._prev_chunk[new] = self._prev_chunk.pop(old)
                     self._prev_seq[new] = self._prev_seq.pop(old, None)
+                    self._prev_no[new] = self._prev_no.pop(old, 0)
                 else:
                     self._prev_chunk.pop(old)
                     self._prev_seq.pop(old, None)
+                    self._prev_no.pop(old, None)
         self._save()
 
     def set_participants(self, names: list[str]):
