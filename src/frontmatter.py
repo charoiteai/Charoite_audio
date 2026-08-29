@@ -43,9 +43,22 @@ def parse(text: str, where: str = "") -> dict:
     return data if isinstance(data, dict) else {}
 
 
-_ALIASES_INLINE_RE = re.compile(r"^aliases:[ \t]*\[([^\]]*)\][ \t]*$", re.M)
-_ALIASES_BLOCK_RE = re.compile(r"^aliases:[ \t]*\n((?:[ \t]+-[^\n]*\n?)+)", re.M)
-_ALIASES_SCALAR_RE = re.compile(r"^aliases:[ \t]*([^\[\n][^\n]*)$", re.M)
+_ALIASES_INLINE_RE = re.compile(r"^aliases:[ \t]*\[(.*)\][ \t]*$", re.M)   # до последней `]` строки: `]` в кавычках не рвёт
+_ALIASES_BLOCK_RE = re.compile(r"^aliases:[ \t]*\r?\n((?:[ \t]*-[^\n]*\n?)+)", re.M)   # блок с отступом и без
+_ALIASES_SCALAR_RE = re.compile(r"^aliases:[ \t]*([^\[\s][^\n]*)$", re.M)   # не пробел: иначе `[ \t]*` отступал и ловил поток
+
+
+def _is_literal(x) -> bool:
+    """Число, булево, дата — то, что YAML «понимает» вместо строки."""
+    return isinstance(x, (int, float, bool)) or type(x).__name__ in ("date", "datetime")
+
+
+def yaml_str(value: str) -> str:
+    """Строка для шапки: JSON-кавычки (= YAML-поток) плюс экранирование
+    U+0085/U+2028/U+2029, которые JSON не трогает, а YAML читает как перевод
+    строки (GLM r2, luna r3)."""
+    return re.sub(r"[\x85\u2028\u2029]", lambda m: "\\u%04x" % ord(m.group()),
+                  json.dumps(value, ensure_ascii=False))
 
 
 def _aliases_fallback(fm: str) -> list:
@@ -71,10 +84,18 @@ def aliases(text: str, where: str = "") -> list[str]:
     raw = data.get("aliases") if data else _aliases_fallback(fm)
     if isinstance(raw, str):
         raw = [raw]
-    if not isinstance(raw, list) or any(not isinstance(x, str) for x in raw):
+    if raw is None or isinstance(raw, (dict,)):
+        return []                       # `aliases: null`/`~`/mapping — псевдонимов нет (luna r3)
+    if not isinstance(raw, list):
+        raw = [raw]
+    if any(_is_literal(x) for x in raw):
         # число/дата/булево YAML уже «понял» по-своему (`01` → 1, `on` → True):
-        # псевдоним берём из текста поля, как записан (GLM r2)
-        raw = _aliases_fallback(fm)
+        # псевдоним берём из текста поля, как записан (GLM r2); если текст
+        # поля fallback не разобрал — строки из YAML не выбрасываем (DS r3)
+        fb = [a for a in _aliases_fallback(fm) if a not in ("null", "~")]
+        raw = fb if fb else [str(x) for x in raw if isinstance(x, str) or _is_literal(x)]
+    else:
+        raw = [x for x in raw if isinstance(x, str)]   # null/mapping/список внутри — вон
     out: list[str] = []
     for item in raw:
         if item is None or isinstance(item, (dict, list)):
@@ -85,61 +106,38 @@ def aliases(text: str, where: str = "") -> list[str]:
     return out
 
 
+def _node_end(node) -> int:
+    """Конец ПОСЛЕДНЕГО скаляра узла: у блочного списка end_mark стоит уже на
+    следующем ключе, и по нему срезалось бы соседнее поле."""
+    if isinstance(node, (yaml.SequenceNode, yaml.MappingNode)) and node.value \
+            and not getattr(node, "flow_style", False):     # поток `[...]` кончается на `]`
+        last = node.value[-1]
+        if isinstance(node, yaml.MappingNode):
+            last = last[1]
+        return _node_end(last)
+    return node.end_mark.index
+
+
 def _field_span(fm: str, key: str) -> tuple[int, int] | None:
-    """Границы поля `key:` в шапке вместе со значением: поток `[...]` с учётом
-    кавычек и вложенных скобок (и через переносы), блок «- имя» с отступом
-    или без, скаляр с продолжениями. Регекс `[^\]]*` рвался на `]` в
-    кавычках и на блоке без отступа (luna, круг-2 #451)."""
-    m = re.search(rf"(?m)^{re.escape(key)}:[ \t]*", fm)
-    if not m:
+    """Границы поля `key:` в шапке вместе со значением — по позициям узлов
+    самого YAML (`yaml.compose`, start/end_mark), а не рукописным сканером:
+    три заплатки на сканер за два круга #451 (кавычки в элементе, апостроф,
+    экранирование) закрывали по одному расхождению с грамматикой (GLM r3).
+    Шапка не разобралась — поле считается своей строкой плюс строками
+    блока «- имя» под ней."""
+    try:
+        node = yaml.compose(fm)
+    except yaml.YAMLError:
+        node = None
+    if isinstance(node, yaml.MappingNode):
+        for k, v in node.value:
+            if getattr(k, "value", None) == key:
+                end = max(_node_end(v), k.end_mark.index)
+                nl = fm.find("\n", end)
+                return k.start_mark.index, (len(fm) if nl == -1 else nl + 1)
         return None
-    start, i = m.start(), m.end()
-    rest = fm[i:]
-    if rest.startswith("["):
-        # Кавычка открывает строку только в НАЧАЛЕ элемента (после `[` или
-        # `,`): апостроф внутри `[Д'Артаньян]` — часть имени, а не кавычка.
-        # Сканер не сошёлся (незакрытая кавычка/скобка) — поле считается одной
-        # строкой, соседние поля не трогаются (Critical GLM, круг-2 #451).
-        depth, quote, j, item_start = 0, "", 0, False
-        closed_at = -1
-        while j < len(rest):
-            ch = rest[j]
-            if quote:
-                if ch == quote:
-                    quote = ""
-            elif ch in "\"'" and item_start:
-                quote = ch
-            elif ch == "[":
-                depth += 1
-                item_start = True
-            elif ch == "]":
-                depth -= 1
-                if depth == 0:
-                    closed_at = j + 1
-                    break
-            elif ch == ",":
-                item_start = True
-            elif not ch.isspace():
-                item_start = False
-            j += 1
-        if closed_at != -1 and not quote:
-            nl = rest.find("\n", closed_at)
-            return start, i + (len(rest) if nl == -1 else nl + 1)
-    nl = rest.find("\n")
-    end = i + (len(rest) if nl == -1 else nl + 1)
-    if rest.startswith("["):
-        return start, end            # несошедшийся поток — одна строка
-    if rest[:nl if nl != -1 else None].strip() == "":
-        cont = re.compile(r"^(?:[ \t]+\S|-[ \t])")     # блок: с отступом или «- имя» без него
-    else:
-        cont = re.compile(r"^[ \t]+\S")                 # скаляр: только продолжения
-    while end < len(fm):
-        nl2 = fm.find("\n", end)
-        line = fm[end:nl2 if nl2 != -1 else None]
-        if not cont.match(line):
-            break
-        end = len(fm) if nl2 == -1 else nl2 + 1
-    return start, end
+    m = re.search(rf"(?m)^{re.escape(key)}:[^\n]*\n?(?:[ \t]*-[^\n]*\n?)*", fm)
+    return (m.start(), m.end()) if m else None
 
 
 def with_aliases(text: str, names: list[str]) -> str:
@@ -152,21 +150,20 @@ def with_aliases(text: str, names: list[str]) -> str:
     merged = list(dict.fromkeys(merged))
     if merged == current:
         return text
-    line = "aliases: " + json.dumps(merged, ensure_ascii=False)
-    # U+0085/U+2028/U+2029 JSON не экранирует, а YAML читает как перевод строки
-    line = re.sub(r"[\x85\u2028\u2029]", lambda m: "\\u%04x" % ord(m.group()), line)
+    line = "aliases: [" + ", ".join(yaml_str(m) for m in merged) + "]"
     fm, body = split(text)
     if fm is None:
         if text.startswith("---"):
             return text     # незакрытая шапка: новую поверх не заводим (DS r2)
         return f"---\n{line}\n---\n{text}"
+    nl = "\r\n" if "\r\n" in fm else "\n"          # окончания строк — как в файле (DS r3)
     span = _field_span(fm, "aliases")
     if span:
-        fm2 = fm[:span[0]] + line + "\n" + fm[span[1]:]
+        fm2 = fm[:span[0]] + line + nl + fm[span[1]:]
     else:
-        fm2 = fm.rstrip("\n") + "\n" + line + "\n"
-    if not fm2.startswith("\n"):
-        fm2 = "\n" + fm2
-    if not fm2.endswith("\n"):
-        fm2 += "\n"
-    return "---" + fm2 + "---\n" + body
+        fm2 = fm.rstrip("\r\n") + nl + line + nl
+    if not fm2.startswith(nl):
+        fm2 = nl + fm2.lstrip("\r\n")
+    if not fm2.endswith(nl):
+        fm2 = fm2.rstrip("\r\n") + nl
+    return "---" + fm2 + "---" + nl + body

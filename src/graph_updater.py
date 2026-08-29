@@ -574,10 +574,11 @@ def find_canonical(graph: pathlib.Path, name: str,
     #     сказал «это система», и человек с псевдонимом «ИС 1494» не должен
     #     перехватывать её (Critical DS/luna/GLM, круг-1 #451). Без папки —
     #     в любой. Несколько узлов с одним псевдонимом — не гадаем.
-    # без папки (связи из «## Связи») однословный псевдоним без цифры не
-    # ловит свободное упоминание — то же правило, что у NodeIndex.lookup
-    # для живого контура (GLM r2): «Ваня» в шапке не магнит для любого «Ваня»
-    if key and (folder is not None or len(key.split()) > 1 or any(ch.isdigit() for ch in key)):
+    # Индекс ключуется ПОЛНЫМ ключом псевдонима: «Аня» ловит только «Аня», не
+    # «Ани» и не «Анну»; однословную кличку без папки (связи из «## Связи»)
+    # не режем — это записанное человеком знание и связность узла (DS r3
+    # против GLM r2); два узла с одной кличкой — по-прежнему не гадаем.
+    if key:
         hits = [f for f in _alias_index(files).get(key, [])
                 if folder is None or f.parent.name == folder]
         if len(hits) == 1:
@@ -937,7 +938,7 @@ def has_link(text: str, meeting_link: str) -> bool:
     return _link_re(meeting_link).search(text) is not None
 
 
-_RETRY_NOTE_RE = re.compile(r" · статус уточнён повторным разбором[^\n]*$")
+_RETRY_NOTE_RE = re.compile(r" · статус уточнён повторным разбором, было «[^\n]*»$")   # только пометка машины (GLM r3)
 
 
 def _annotate_chronicle(text: str, meeting_link: str, note: str) -> tuple[str, bool]:
@@ -1023,7 +1024,7 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
     else:
         safe_write.write_text(
             p,
-            f"---\ntype: ядро\nвид: {json.dumps(str(core.get('тип') or 'тема'), ensure_ascii=False)}\n"
+            f"---\ntype: ядро\nвид: {frontmatter.yaml_str(str(core.get('тип') or 'тема'))}\n"
             f"tags: [ядро, авто]\n---\n"
             f"# {core['имя']}\n\n## Статус\n{status or '—'} _(обновлено {stamp[:10]})_\n\n"
             f"## Хроника\n{stamp_line}\n")

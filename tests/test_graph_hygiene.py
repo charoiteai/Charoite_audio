@@ -467,8 +467,13 @@ def test_find_canonical_reads_aliases_from_node_frontmatter(tmp_path):
     (graph / "Люди" / "Иван Петров.md").write_text("---\naliases: [Ваня]\n---\n# Иван Петров\n", encoding="utf-8")
     assert g.find_canonical(graph, "Ваня", folder="Люди", ambiguous=amb) is None
     assert sorted(amb) == ["Иван Иванов", "Иван Петров"]
-    assert g.find_canonical(graph, "Ваня") is None, "без папки однословный псевдоним не магнит"
-    assert g.find_canonical(graph, "ИС-1494") == sys1494 or g.find_canonical(graph, "Витрина данных") == vitrina
+    assert g.find_canonical(graph, "Ваня") is None, "два узла с одной кличкой — не гадаем и без папки"
+    assert g.find_canonical(graph, "ИС-1494") == sys1494
+    assert g.find_canonical(graph, "Витрина данных") == vitrina, "псевдоним без папки — связь"
+    assert g.link_or_text(graph, "Витрина данных").startswith("[[Системы/Витрина 1494"), "связь по псевдониму без папки"
+    (graph / "Люди" / "Анна Смирнова.md").write_text("---\naliases: [Аня]\n---\n# Анна Смирнова\n", encoding="utf-8")
+    assert g.find_canonical(graph, "Аня").name == "Анна Смирнова.md", "однословная кличка без папки — связь (DS r3)"
+    assert g.find_canonical(graph, "Ани") is None, "ключ полный: «Ани» не «Аня»"
     # YAML-битая шапка (двоеточие в соседнем поле) псевдонимы не теряет — fallback по полю
     broken = graph / "Системы" / "Миграция БД.md"
     broken.write_text("---\ndesc: План: сделать\naliases: [\"МБ, база\", МБД]\n---\n# Миграция БД\n", encoding="utf-8")
@@ -541,6 +546,26 @@ def test_frontmatter_with_aliases_edits_the_header_in_place():
     # числа/булевы — как записаны, а не как YAML их понял
     assert frontmatter.aliases("---\naliases: [01, on]\n---\n") == ["01", "on"]
     assert frontmatter.aliases("---\naliases: 1494\n---\n") == ["1494"]
+    # не-строка в списке, который fallback не разбирает (блок без отступа + число): строки живут
+    assert frontmatter.aliases("---\naliases:\n- Витрина\n- 2026\n---\n") == ["Витрина", "2026"]
+    assert frontmatter.aliases('---\naliases: ["x]y", 01]\n---\n') == ["x]y", "01"], "как записано, «]» в кавычках не рвёт"
+    assert frontmatter.aliases("---\naliases: null\n---\n") == [] and frontmatter.aliases("---\naliases: ~\n---\n") == []
+    assert frontmatter.aliases("---\naliases: [foo, null, {a: 1}]\n---\n") == ["foo"], "null и mapping — не псевдонимы"
+    assert frontmatter.yaml_str("A\u2028B") == '"A\\u2028B"'
+    esc = '---\naliases: ["A\\" ] B",\n  "C"]\ntype: x\n---\n'
+    out = frontmatter.with_aliases(esc, ["D"])
+    assert frontmatter.parse(out)["type"] == "x" and frontmatter.aliases(out) == ['A" ] B', "C", "D"], out
+    # GLM r3: псевдоним из одной кавычки и «]» ниже по шапке — соседние поля целы
+    weird = '---\naliases: ["\\""]\ntags: [x]\ndesc: скажет "привет"\nпрочее: список завершён]\n---\n'
+    out = frontmatter.with_aliases(weird, ["D"])
+    parsed = frontmatter.parse(out)
+    assert parsed["tags"] == ["x"] and parsed["прочее"] == "список завершён]" and frontmatter.aliases(out) == ['"', "D"], out
+    # человеческий хвост после машинной пометки не сносится
+    human = "## Хроника\n- [[Встречи/2026-08-10_1000]] — статус уточнён повторным разбором на планёрке\n"
+    assert "на планёрке" in g._annotate_chronicle(human, "Встречи/2026-08-10_1000", "статус уточнён повторным разбором, было «x»")[0]
+    # CRLF-шапка: дописанные строки — тоже CRLF
+    crlf_out = frontmatter.with_aliases("---\r\ntype: человек\r\naliases: [Кузя]\r\n---\r\n# X\r\n", ["Новый"])
+    assert "\n\r\n" not in crlf_out and crlf_out.startswith('---\r\ntype: человек\r\naliases: ["Кузя", "Новый"]\r\n---\r\n# X')
     assert frontmatter.split("---\ntype: x\n----\nне закрытие\n---\nтело\n")[0] == "\ntype: x\n----\nне закрытие"
     assert frontmatter.aliases("---\nbad: [\naliases: Кузя\n---\n") == ["Кузя"], "скаляр через fallback"
 
