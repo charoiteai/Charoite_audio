@@ -27,6 +27,7 @@ from llm import LLM, LLMHTTPError  # noqa: E402
 from charoite_paths import code_root, harden_umask, resolve_root
 import meeting_stamp
 from meeting_stamp import files_with_stamp, stamp_of
+import frontmatter
 import graphs
 import redirects
 
@@ -379,6 +380,49 @@ def name_key(name: str) -> str:
 _LINK_WS_RE = re.compile(r"\[\[([^\]]*?)\]\]", re.S)
 
 
+# путь узла → ((inode, размер, mtime_ns), псевдонимы): шапки перечитываются
+# только у изменённых файлов, иначе каждый поиск канона читал бы ~2000 узлов
+# заново. Правка на месте с сохранением времён (rsync -t, восстановление из
+# бэкапа) кэшем не видна до конца процесса — процесс живёт одну встречу/ночь.
+_alias_cache: dict[pathlib.Path, tuple[tuple[int, int, int], tuple[str, ...]]] = {}
+
+
+def node_aliases(text: str) -> list[str]:
+    """`aliases:` из шапки узла — YAML (список, блок, одиночная строка).
+
+    Псевдонимы пишут человек и облако («ИС 1494» у «Витрина 1494»), до
+    28.08 конвейер их не читал — записанное знание лежало мёртвым (№127)."""
+    return frontmatter.aliases(text)
+
+
+def _alias_index(files: list[pathlib.Path]) -> dict[str, list[pathlib.Path]]:
+    """Ключ имени псевдонима → узлы, у которых он записан. Заглушка-редиректа
+    псевдонимов не отдаёт: её шапка пережила слияние, а запись в неё из графа
+    не видна (GLM, круг-1 #451). Битый файл (не UTF-8, нет прав) — пропуск,
+    а не смерть разбора всей встречи."""
+    index: dict[str, list[pathlib.Path]] = {}
+    for f in files:
+        try:
+            st = f.stat()
+            key = (st.st_ino, st.st_size, st.st_mtime_ns)
+            cached = _alias_cache.get(f)
+            if cached is None or cached[0] != key:
+                text = f.read_text(encoding="utf-8")
+                names = () if redirects.is_merged(text) else tuple(frontmatter.aliases(text, f.name))
+                cached = (key, names)
+                _alias_cache[f] = cached
+        except (OSError, ValueError):      # UnicodeDecodeError — ValueError
+            _alias_cache.pop(f, None)
+            continue
+        seen: set[str] = set()
+        for alias in cached[1]:
+            k = name_key(alias)
+            if k and k not in seen:
+                seen.add(k)
+                index.setdefault(k, []).append(f)
+    return index
+
+
 def tidy_links(text: str) -> str:
     """Перенос строки внутри [[…]] — ссылка мертва для Obsidian.
 
@@ -525,6 +569,22 @@ def find_canonical(graph: pathlib.Path, name: str,
             return keyed[0]
         if keyed and ambiguous is not None:
             ambiguous.extend(f.stem for f in keyed)
+    # 2b) псевдоним из шапки узла (`aliases:`) — по ключу имени, ПОСЛЕ ключа
+    #     в целевой папке и только в ней, если папка задана: тип записи уже
+    #     сказал «это система», и человек с псевдонимом «ИС 1494» не должен
+    #     перехватывать её (Critical DS/luna/GLM, круг-1 #451). Без папки —
+    #     в любой. Несколько узлов с одним псевдонимом — не гадаем.
+    # Индекс ключуется ПОЛНЫМ ключом псевдонима: «Аня» ловит только «Аня», не
+    # «Ани» и не «Анну»; однословную кличку без папки (связи из «## Связи»)
+    # не режем — это записанное человеком знание и связность узла (DS r3
+    # против GLM r2); два узла с одной кличкой — по-прежнему не гадаем.
+    if key:
+        hits = [f for f in _alias_index(files).get(key, [])
+                if folder is None or f.parent.name == folder]
+        if len(hits) == 1:
+            return hits[0]
+        if hits and ambiguous is not None:    # как проход 2: кандидаты наружу,
+            ambiguous.extend(f.stem for f in hits)   # дальше — подстрока в папке
     # 3) подстрока — только для достаточно длинных имён и близких по длине
     #    пар; при заданной папке — только в ней (luna I3: «Платёж» из Систем
     #    дописывался в Люди/Платёжный). Двухбуквенное «Ян» входило в
@@ -563,7 +623,7 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
     day = pathlib.PurePosixPath(meeting_link).name[:10]
     if p.exists():
         text = p.read_text(encoding="utf-8")
-        if meeting_link in text:
+        if has_link(text, meeting_link):
             return
         if "## Встречи" in text:
             text = text.replace("## Встречи", f"## Встречи\n{stamp}", 1)
@@ -859,6 +919,59 @@ def resolve_core_path(d: pathlib.Path, name: str,
         p = target
 
 
+def _flat(s: str) -> str:
+    return " ".join(s.split())
+
+
+def _clip(s: str, limit: int = 160) -> str:
+    s = _flat(s)
+    return s if len(s) <= limit else s[:limit - 1].rstrip() + "…"
+
+
+def _link_re(meeting_link: str) -> re.Pattern:
+    """Ссылка на встречу целиком: минутный штамп — префикс посекундного
+    (`_1000` ⊂ `_100012`), подстрочная проверка их путала (luna, круг-2 #451)."""
+    return re.compile(r"\[\[" + re.escape(meeting_link) + r"(?:\]\]|\||#)")
+
+
+def has_link(text: str, meeting_link: str) -> bool:
+    return _link_re(meeting_link).search(text) is not None
+
+
+_RETRY_NOTE_RE = re.compile(r" · статус уточнён повторным разбором, было «[^\n]*»$")   # только пометка машины (GLM r3)
+
+
+def _annotate_chronicle(text: str, meeting_link: str, note: str) -> tuple[str, bool]:
+    """Дописать пометку к строке хроники этой встречи (первой, где есть её
+    ссылка); прежнее уточнение снимается — строка не растёт с каждым ретраем
+    (GLM r2). Возвращает (текст, нашлась ли строка)."""
+    lines = text.split("\n")
+    exact = _link_re(meeting_link)
+    for i, ln in enumerate(lines):
+        if ln.startswith("- ") and exact.search(ln):
+            base = _RETRY_NOTE_RE.sub("", ln)
+            lines[i] = base + " · " + note
+            return "\n".join(lines), True
+    return text, False
+
+
+_STATUS_STAMP_RE = re.compile(r"\s*_\(обновлено (\d{4}-\d{2}-\d{2})\)_\s*$")
+
+
+def _current_status(text: str) -> tuple[str, str]:
+    """(текст статуса, дата «обновлено») из «## Статус» узла ядра; «—» — пусто."""
+    m = re.search(r"## Статус\n(.*?)(?=\n## |\Z)", text, re.S)
+    if not m:
+        return "", ""
+    block = m.group(1).strip()
+    since = ""
+    d = _STATUS_STAMP_RE.search(block)
+    if d:
+        since = d.group(1)
+        block = block[:d.start()].strip()
+    return ("" if block in ("", "—") else block), since
+
+
 def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
                 transcript: str = "", speakers: set[str] | None = None):
     """Ядро — сквозная тема/задача: статус ПЕРЕЗАПИСЫВАЕТСЯ каждой встречей,
@@ -867,12 +980,25 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
     d.mkdir(parents=True, exist_ok=True)
     p = resolve_core_path(d, core["имя"], graph)
     status = (core.get("статус") or "").strip()
+    if status == "—":
+        status = ""      # прочерк — не статус: не вытесняет и не записывается (luna, #451)
     upd = (core.get("обновление") or "").strip()
     anchor = core_anchor(core, transcript, speakers) if transcript else ""
     stamp_line = (f"- [[{meeting_link}]] — {upd}{anchor}" if upd
                   else f"- [[{meeting_link}]]{anchor}")
     if p.exists():
         text = p.read_text(encoding="utf-8")
+        # Вытесненный статус не исчезает, а уходит в хронику с датой, с
+        # которой он держался: у факта появляются «с» и «по» (Graphiti/Zep,
+        # №127). Ретрай той же встречи с тем же статусом строку не дублирует;
+        # ретрай с другим статусом — уточнение, и оно дописывается к строке
+        # ЭТОЙ встречи (DS/GLM, круг-1 #451), а не теряется молча.
+        old_status, since = _current_status(text)
+        changed = bool(status and old_status
+                       and _flat(old_status).casefold() != _flat(status).casefold())
+        seen_link = has_link(text, meeting_link)
+        superseded = (f" · вытеснило статус{f' (с {since})' if since else ''}: «{_clip(old_status)}»"
+                      if changed and not seen_link else "")
         if status:  # свежий статус вытесняет прежний
             # Замена через lambda, а не строкой: status приходит от модели, и
             # re.sub разбирает в подстановке обратные слэши. Путь вида
@@ -881,16 +1007,25 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
             repl = f"## Статус\n{status} _(обновлено {stamp[:10]})_\n\n"
             text = re.sub(r"## Статус\n.*?(?=\n## |\Z)",
                           lambda _: repl, text, count=1, flags=re.S)
-        if meeting_link not in text:
+        if not seen_link:
+            line = stamp_line + superseded
             if "## Хроника" in text:
-                text = text.replace("## Хроника", f"## Хроника\n{stamp_line}", 1)
+                text = text.replace("## Хроника", f"## Хроника\n{line}", 1)
             else:
-                text += f"\n## Хроника\n{stamp_line}\n"
+                text += f"\n## Хроника\n{line}\n"
+        elif changed:
+            text, found = _annotate_chronicle(
+                text, meeting_link, f"статус уточнён повторным разбором, было «{_clip(old_status)}»")
+            if not found:   # ссылка есть, но не в хронике (человек перенёс) — след всё равно нужен
+                line = stamp_line + f" · вытеснило статус{f' (с {since})' if since else ''}: «{_clip(old_status)}»"
+                text = (text.replace("## Хроника", f"## Хроника\n{line}", 1)
+                        if "## Хроника" in text else text + f"\n## Хроника\n{line}\n")
         safe_write.write_text(p, text)
     else:
         safe_write.write_text(
             p,
-            f"---\ntype: ядро\nвид: {core.get('тип', 'тема')}\ntags: [ядро, авто]\n---\n"
+            f"---\ntype: ядро\nвид: {frontmatter.yaml_str(str(core.get('тип') or 'тема'))}\n"
+            f"tags: [ядро, авто]\n---\n"
             f"# {core['имя']}\n\n## Статус\n{status or '—'} _(обновлено {stamp[:10]})_\n\n"
             f"## Хроника\n{stamp_line}\n")
 

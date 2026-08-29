@@ -168,3 +168,17 @@ def test_digit_code_matches_once_in_strict(tmp_path):
     idx.refresh()
     hits = idx.lookup("подключаемся к 2049 после пилота")
     assert [n.name for n in hits] == ["ИС 2049"]
+
+
+def test_aliases_from_the_header_are_read_by_the_shared_parser(tmp_path):
+    """Псевдонимы читаются одним парсером с конвейером (frontmatter.py, #451):
+    блок «- имя», кавычки с запятой, битая соседняя строка — всё видно."""
+    root = _graph(tmp_path)
+    (root / "Системы" / "Реестр.md").write_text(
+        "---\ntype: система\nописание: План: перенос\naliases:\n  - Реестр поручений\n  - \"РП, реестр\"\n---\n"
+        "# Реестр\n\n## Встречи\n- [[Встречи/2026-08-02_1500]]\n", encoding="utf-8")
+    idx = NodeIndex(root)
+    idx.refresh()
+    hits = idx.lookup("обсудили реестр поручений на неделю")
+    assert [n.name for n in hits] == ["Реестр"]
+
