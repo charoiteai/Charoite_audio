@@ -72,7 +72,10 @@ def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
             # словом «разбор» внутри) и статус получал несуществующий путь
             # (аудит DeepSeek 16.08).
             suffix = path.stem[len(stamp):].lower()
-            if any(suffix.endswith(aux) for aux in _AUX_SUFFIXES) and not _looks_main(path):
+            # «_live» — дословная копия главного файла, начинается так же: её
+            # спасать по содержимому нельзя (DS по #455)
+            if any(suffix.endswith(aux) for aux in _AUX_SUFFIXES) \
+                    and (suffix.endswith("_live") or not _looks_main(path)):
                 # тема встречи может сама кончаться на «разбор»/«live»: производный
                 # файл отличаем по содержимому, а не только по имени (хвост 20.08, DS)
                 continue

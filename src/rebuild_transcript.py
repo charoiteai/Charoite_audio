@@ -627,6 +627,10 @@ def _pid_file(stamp: str) -> pathlib.Path:
 _RUNNING_LOCKS: list = []   # открытые pid-файлы под flock (иначе GC закроет и снимет замок)
 
 
+class RunningElsewhere(RuntimeError):
+    """Отметку не взять: замок держит другой прогон — второй заход запрещён."""
+
+
 def running_elsewhere(live: pathlib.Path) -> int | None:
     """Pid живой пересборки этой же встречи, если она уже идёт.
 
@@ -642,64 +646,30 @@ def running_elsewhere(live: pathlib.Path) -> int | None:
     только в окне конвертации, а дубль случился на диаризации — то есть
     ровно там, где такого файла уже нет.
 
-    Мёртвую отметку (машину выключили посреди пересборки) убираем сами:
-    иначе одна аварийная ночь запретила бы пересборку встречи навсегда.
+    Признак один — flock на pid-файле: живой прогон держит его от
+    `mark_running` до выхода, а снимает замок сама ОС, когда процесс
+    умирает. Поэтому мёртвая отметка (машину выключили посреди пересборки)
+    ничего не запрещает — её перепишет следующий прогон. Живость по pid
+    (`kill 0`, старт процесса из `ps`) и уборка чужих файлов здесь
+    намеренно отсутствуют: pid переиспользуется, а unlink по имени под
+    чужим свежим замком снимал бы отметку живого прогона (круг по #455).
+    Отметки версий без замка не распознаются — разово, при обновлении.
     """
     stamp = meeting_stamp.stamp_of(live.stem)
     if not stamp:
         return None
     f = _pid_file(stamp)
     try:
-        pid = int(f.read_text().strip())
-    except (OSError, ValueError):
-        return None
-    if pid == os.getpid():
-        return None
-    # Живой прогон держит flock на pid-файле — это главный признак. Без замка
-    # (старая версия, ручная отметка) — жив ли процесс, и не моложе ли он
-    # самой отметки: переиспользованный PID чужого процесса блокировал
-    # пересборку навсегда (хвост аудита 20.08, GLM).
-    try:
         with f.open("r") as fh:
             try:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
             except BlockingIOError:
-                return pid       # кто-то держит эксклюзивный замок — идёт
+                raw = fh.read().strip()
+                return int(raw) if raw.isdigit() else -1   # -1: держатель есть, pid не прочитать
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        mtime = f.stat().st_mtime
     except OSError:
         return None
-    try:
-        os.kill(pid, 0)          # 0 — только проверка, сигнал не шлём
-    except ProcessLookupError:
-        f.unlink(missing_ok=True)
-        return None
-    except PermissionError:
-        return pid               # чужой пользователь, но процесс есть
-    if _process_started_after(pid, mtime):
-        f.unlink(missing_ok=True)   # PID переиспользован — отметка от умершего
-        return None
-    return pid
-
-
-def _process_started_after(pid: int, mtime: float) -> bool:
-    """Процесс с этим pid стартовал ПОЗЖЕ отметки — значит, это уже другой
-    процесс. По `ps -o etime=`; не разобрать — считаем прежним (осторожно)."""
-    try:
-        import subprocess
-        out = subprocess.run(["ps", "-o", "etime=", "-p", str(pid)],
-                             capture_output=True, text=True, check=False, timeout=5).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return False
-    if not out:
-        return False
-    days, rest = (out.split("-", 1) + [""])[:2] if "-" in out else ("0", out)
-    parts = rest.split(":")
-    try:
-        secs = int(days) * 86400 + sum(int(x) * 60 ** i for i, x in enumerate(reversed(parts)))
-    except ValueError:
-        return False
-    return (time.time() - secs) > mtime + 1.0
+    return None
 
 
 def mark_running(live: pathlib.Path) -> pathlib.Path | None:
@@ -710,8 +680,14 @@ def mark_running(live: pathlib.Path) -> pathlib.Path | None:
     f = _pid_file(stamp)
     try:
         f.parent.mkdir(parents=True, exist_ok=True)
-        fh = f.open("w")
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fh = f.open("a")           # не «w»: усечение до замка стирало pid живого прогона (DS, Critical)
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fh.close()
+            raise RunningElsewhere("замок пересборки держит другой процесс")
+        fh.truncate(0)
+        fh.seek(0)
         fh.write(str(os.getpid()))
         fh.flush()
     except OSError:
@@ -731,7 +707,11 @@ def main():
     if busy:
         log(f"пересборка этой встречи уже идёт (pid {busy}) — выхожу")
         return
-    mark = mark_running(live)
+    try:
+        mark = mark_running(live)
+    except RunningElsewhere as e:   # проскочили проверку одновременно: решает замок (DS по #455)
+        log(f"пересборка этой встречи уже идёт ({e}) — выхожу")
+        return
     status = MeetingStatusStore(ROOT)
     pipeline_started = time.time()
     # Снимаем отметку при любом выходе, включая аварийный: иначе одна

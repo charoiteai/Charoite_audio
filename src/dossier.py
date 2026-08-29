@@ -87,7 +87,17 @@ def keywords(text: str, limit: int = 24) -> list[str]:
     """
     # CJK — в классе символов: без него у китайской встречи ключи пусты и
     # досье не ищется вовсе (хвост аудита 20.08, GLM)
-    words = re.findall(r"[а-яa-z0-9\u4e00-\u9fff][а-яa-z0-9_.\u4e00-\u9fff-]{1,}", _norm(text))
+    # CJK — от одного иероглифа; кириллица/латиница — от трёх, иначе «не», «на»
+    # заняли бы верх частотности (DS по #455)
+    words: list[str] = []
+    for tok in re.findall(r"[\u4e00-\u9fff]+|[а-яa-z0-9][а-яa-z0-9_.-]{2,}", _norm(text)):
+        # CJK без пробелов приходит одним «словом» на всё предложение — такой
+        # ключ длиннее 24 знаков выпадал целиком, и у китайской встречи ключей
+        # не оставалось: режем на биграммы, как CJK-индексы (luna по #455)
+        if "\u4e00" <= tok[0] <= "\u9fff" and len(tok) > 2:
+            words.extend(tok[i:i + 2] for i in range(len(tok) - 1))
+        else:
+            words.append(tok)
     freq: dict[str, int] = defaultdict(int)
     for w in words:
         if w in _STOP or len(w) > 24:

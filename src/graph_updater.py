@@ -466,6 +466,59 @@ def parse_stem(stem: str) -> tuple[str, str, bool]:
     return m.group(1), m.group(0), stem != m.group(0)
 
 
+def _starts_like_meeting(path: pathlib.Path) -> bool:
+    """Главная стенограмма начинается с «# Встреча …»; производные — нет."""
+    try:
+        with path.open("rb") as fh:
+            return fh.read(200).decode("utf-8", errors="ignore").lstrip().startswith("# Встреча ")
+    except OSError:
+        return False
+
+
+def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions: list,
+                  mark: pathlib.Path, post=None) -> int:
+    """Факты встречи → память Чароита. Возвращает, сколько ушло в этот раз.
+
+    Один раз на встречу: повтор обработки («Повторить обработку», ретрай)
+    слал те же факты, и память дублировалась (аудит GLM 17.08). Отметка
+    `logs/brain_sent/<штамп>.txt` — счётчик успешных POST `n/всего`:
+    4xx/5xx у requests не исключение (raise_for_status обязателен), а обрыв
+    после первого удачного POST при повторе досылал бы с начала — дубль
+    (GLM по #455). Старый формат отметки (заголовок без счётчика) = всё
+    отправлено. `meeting` — ключ графа: по нему «забыть» и переименование
+    доходят до памяти (brain /forget, /rename с 23.08, карточка №41).
+    """
+    post = post or requests.post
+    who = ", ".join(p["имя"] for p in people[:6])
+    facts = [{"text": f"Встреча {stamp} «{title or 'без названия'}» ({who}): темы — "
+                      + "; ".join(topics[:4]),
+              "category": "learned", "importance": 0.6, "meeting": stamp}]
+    facts += [{"text": f"Решение встречи {stamp} «{title}»: {d}",
+               "category": "decision", "importance": 0.7, "meeting": stamp}
+              for d in decisions[:6]]
+    sent = 0
+    if mark.exists():
+        head = mark.read_text(encoding="utf-8", errors="replace").split("\n", 1)[0].strip()
+        m = re.match(r"^(\d+)/(\d+)$", head)
+        sent = int(m.group(1)) if m else len(facts)
+    if sent >= len(facts):
+        print("память Чароита: факты этой встречи уже отправлены — повтор пропущен")
+        return 0
+    n = 0
+    try:
+        for fact in facts[sent:]:
+            # 15с: brain ждёт эмбеддинг bge-m3 из Ollama, занятой нашим же extract —
+            # 5с не хватало (20.07: «memory недоступна», решения не попали в recall)
+            post("http://127.0.0.1:8100/remember", json=fact, timeout=15).raise_for_status()
+            n += 1
+            mark.parent.mkdir(parents=True, exist_ok=True)
+            safe_write.write_text(mark, f"{sent + n}/{len(facts)}\n{title}\n")
+        print(f"память Чароита: +{n} фактов")
+    except Exception as e:  # noqa: BLE001 — brain может быть выключен, не валим граф
+        print(f"память Чароита недоступна (ушло {n} из {len(facts) - sent}): {e}")
+    return n
+
+
 def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.Path:
     """Дать файлам встречи имя «штамп_тема»; вернуть новый путь стенограммы.
 
@@ -483,6 +536,8 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
             suffix = extra.name[len(bare):]  # "_minutes.md"
             if suffix[:-3].lower() not in meeting_stamp.AUX_SUFFIXES:
                 continue    # главный файл соседней встречи той же минуты (хвост 20.08, GLM)
+            if _starts_like_meeting(extra):
+                continue    # соседка с темой ровно «Разбор» — тоже главный файл (DS по #455)
             target = extra.with_name(f"{stamp}_{slug}{suffix}")
             if not target.exists():         # чужой файл затирать нельзя
                 extra.rename(target)
@@ -1363,37 +1418,11 @@ def main():
     if graph_ok:
         print(f"граф обновлён: встреча {stamp}, людей {len(people)}, сущностей {len(ents)}, решений {len(decisions)}")
 
-    # 3б) решения встречи → память Чароита (ChromaDB/PG, brain :8100), чтобы
-    # recall в чате/сессиях знал о встречах, а не только vault_search.
-    # Один раз на встречу: повтор обработки («Повторить обработку» в
-    # приложении, ретрай) снова слал те же факты, и память дублировалась
-    # (аудит GLM 17.08) — отметка в logs/brain_sent/<штамп>.
-    brain_mark = ROOT / "logs" / "brain_sent" / f"{stamp}.txt"
-    if graph_ok and brain_mark.exists():
-        print("память Чароита: факты этой встречи уже отправлены — повтор пропущен")
-    elif graph_ok:
-        try:
-            # 15с: brain ждёт эмбеддинг bge-m3 из Ollama, занятой нашим же extract —
-            # 5с не хватало (20.07: «memory недоступна», решения не попали в recall)
-            who = ", ".join(p["имя"] for p in people[:6])
-            # meeting — ключ графа: по нему «забыть» и переименование доходят
-            # до памяти (brain /forget, /rename с 23.08, карточка №41).
-            # 4xx/5xx — не исключение у requests: без raise_for_status отметка
-            # «отправлено» вставала при потерянных фактах, повтор не случался
-            # (хвост аудита 20.08, GLM). Отметка — только после ВСЕХ успешных.
-            requests.post("http://127.0.0.1:8100/remember", json={
-                "text": f"Встреча {stamp} «{title or 'без названия'}» ({who}): темы — "
-                        + "; ".join(topics[:4]),
-                "category": "learned", "importance": 0.6, "meeting": stamp}, timeout=15).raise_for_status()
-            for d in decisions[:6]:
-                requests.post("http://127.0.0.1:8100/remember", json={
-                    "text": f"Решение встречи {stamp} «{title}»: {d}",
-                    "category": "decision", "importance": 0.7, "meeting": stamp}, timeout=15).raise_for_status()
-            print(f"память Чароита: +{1 + min(len(decisions), 6)} фактов")
-            brain_mark.parent.mkdir(parents=True, exist_ok=True)
-            safe_write.write_text(brain_mark, f"{title}\n")
-        except Exception as e:  # noqa: BLE001 — brain может быть выключен, не валим граф
-            print(f"память Чароита недоступна: {e}")
+    # 3б) факты встречи → память Чароита (brain :8100), чтобы recall в чате и
+    # сессиях знал о встречах, а не только vault_search.
+    if graph_ok:
+        send_to_brain(stamp, title, people, topics, decisions,
+                      ROOT / "logs" / "brain_sent" / f"{stamp}.txt")
 
     # 4) пост-встречный разбор: вопросы→ответы, задачи, решения, рекомендации.
     # Без разбора модели (graph_ok=False) не пробуем: та же модель, что

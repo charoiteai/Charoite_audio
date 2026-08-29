@@ -41,13 +41,20 @@ def test_no_marks_means_free(root):
 
 
 def test_live_run_is_detected(root):
-    """Отметка чужого живого процесса запрещает второй прогон."""
+    """Чужой прогон держит flock на своей отметке — второй заход запрещён,
+    pid держателя читается из файла (для строки лога)."""
+    import fcntl
     live = _live(root)
-    # Живой процесс, который точно существует и не наш: родитель теста.
     alien = os.getppid()
-    rt._pid_file("2026-08-12_1532").write_text(str(alien), encoding="utf-8")
-
-    assert rt.running_elsewhere(live) == alien
+    f = rt._pid_file("2026-08-12_1532")
+    f.write_text(str(alien), encoding="utf-8")
+    fh = f.open("r+")
+    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        assert rt.running_elsewhere(live) == alien
+    finally:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        fh.close()
 
 
 def test_own_pid_is_not_a_conflict(root):
@@ -59,16 +66,19 @@ def test_own_pid_is_not_a_conflict(root):
     assert rt.running_elsewhere(live) is None
 
 
-def test_dead_mark_is_cleaned_up(root):
-    """Машину выключили посреди пересборки. Мёртвая отметка не должна
-    запрещать встречу навсегда."""
+def test_dead_mark_does_not_block(root):
+    """Машину выключили посреди пересборки: замка на отметке нет — она ничего
+    не запрещает, а следующий прогон переписывает её под своим замком. Живой
+    pid без замка — тоже не прогон: pid переиспользуется (хвост 20.08, GLM),
+    а признак живости один — flock (круг по #455)."""
     live = _live(root)
-    dead = 2 ** 22          # заведомо несуществующий pid
     f = rt._pid_file("2026-08-12_1532")
-    f.write_text(str(dead), encoding="utf-8")
-
-    assert rt.running_elsewhere(live) is None
-    assert not f.exists(), "мёртвая отметка осталась и заблокирует повтор"
+    for pid in (2 ** 22, os.getppid()):          # мёртвый и живой чужой
+        f.write_text(str(pid), encoding="utf-8")
+        assert rt.running_elsewhere(live) is None
+    mark = rt.mark_running(live)
+    assert mark == f and f.read_text(encoding="utf-8") == str(os.getpid())
+    rt._RUNNING_LOCKS.clear()
 
 
 def test_broken_mark_does_not_block(root):
@@ -92,10 +102,14 @@ def test_marks_are_per_meeting(root):
     конкурируют ни за файлы, ни за результат."""
     first = _live(root, "2026-08-12_1532")
     second = _live(root, "2026-08-12_1700")
-    rt._pid_file("2026-08-12_1532").write_text(str(os.getppid()), encoding="utf-8")
+    assert rt.mark_running(_live(root, "2026-08-12_1532")) is not None   # живой прогон = замок
 
     assert rt.running_elsewhere(first) is not None
     assert rt.running_elsewhere(second) is None
+    for fh in rt._RUNNING_LOCKS:
+        fh.close()
+    rt._RUNNING_LOCKS.clear()
+
 
 
 def test_titled_transcript_maps_to_same_meeting(root):
@@ -103,9 +117,13 @@ def test_titled_transcript_maps_to_same_meeting(root):
     находиться и по титульному имени, иначе защита обходится сама собой."""
     titled = root / "transcripts" / "2026-08-12_1532_Планирование_пилота.md"
     titled.write_text("стенограмма", encoding="utf-8")
-    rt._pid_file("2026-08-12_1532").write_text(str(os.getppid()), encoding="utf-8")
+    assert rt.mark_running(_live(root, "2026-08-12_1532")) is not None   # живой прогон = замок
 
     assert rt.running_elsewhere(titled) is not None
+    for fh in rt._RUNNING_LOCKS:
+        fh.close()
+    rt._RUNNING_LOCKS.clear()
+
 
 
 def test_guard_is_wired_into_entry_point():
@@ -120,16 +138,6 @@ def test_guard_is_wired_into_entry_point():
     assert "mark_running(live)" in body, "прогон не отмечает себя — дубль не увидит его"
 
 
-def test_reused_pid_is_not_a_live_run(root, monkeypatch):
-    """PID умершей пересборки достался другому процессу: отметка старее, чем
-    процесс, — это не живой прогон, и файл отметки снимается (хвост 20.08, GLM)."""
-    live = _live(root)
-    rt._pid_file("2026-08-12_1532").write_text(str(os.getppid()), encoding="utf-8")
-    monkeypatch.setattr(rt, "_process_started_after", lambda pid, mtime: True)
-    assert rt.running_elsewhere(live) is None
-    assert not rt._pid_file("2026-08-12_1532").exists()
-
-
 def test_flock_holder_is_a_live_run_even_without_liveness_check(root, monkeypatch):
     """Свой же замок в другом дескрипторе: держатель flock — живой прогон."""
     live = _live(root)
@@ -140,20 +148,53 @@ def test_flock_holder_is_a_live_run_even_without_liveness_check(root, monkeypatc
     rt._RUNNING_LOCKS.clear()
 
 
-def test_etime_parsing_days_hours_minutes():
-    import time as _t
-    now = _t.time()
-    monkey = rt._process_started_after
-    assert callable(monkey)
-    # 1-02:03:04 = 1 день 2 часа 3 мин 4 с назад: отметка «сейчас» — младше старта
-    import subprocess
-    class R:  # noqa: D401 — заглушка ps
-        stdout = "1-02:03:04\n"
-    orig = subprocess.run
-    subprocess.run = lambda *a, **k: R()
+def test_second_mark_does_not_wipe_the_live_pid_and_is_refused(root, monkeypatch):
+    """Гонка двух прогонов: второй mark_running не усекает pid живого и
+    получает отказ (замок), а не тихо идёт без отметки (DS по #455)."""
+    live = _live(root)
+    mark = rt.mark_running(live)
+    assert mark is not None and mark.read_text(encoding="utf-8") == str(os.getpid())
+    monkeypatch.setattr(os, "getpid", lambda: 4242)
+    with pytest.raises(rt.RunningElsewhere):
+        rt.mark_running(live)
+    assert mark.read_text(encoding="utf-8") != "" and mark.read_text(encoding="utf-8") != "4242"
+    assert rt.running_elsewhere(live) is not None
+    rt._RUNNING_LOCKS.clear()
+
+
+def test_empty_pid_file_under_lock_still_counts_as_running(root):
+    live = _live(root)
+    f = rt._pid_file("2026-08-12_1532")
+    f.write_text("", encoding="utf-8")
+    fh = f.open("r+")
+    import fcntl
+    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:
-        assert rt._process_started_after(1, now) is False
-        assert rt._process_started_after(1, now - 3 * 86400) is True
+        assert rt.running_elsewhere(live) == -1
     finally:
-        subprocess.run = orig
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        fh.close()
+    assert rt.running_elsewhere(live) is None, "замок снят — прогона нет, файл не важен"
+
+
+def test_second_main_exits_while_the_lock_is_held(root, monkeypatch):
+    """Сквозной случай: второй `main()` той же встречи при живом замке выходит
+    до статусов и конвертации (luna/GLM по #455)."""
+    import fcntl
+    import sys
+    live = _live(root)
+    f = rt._pid_file("2026-08-12_1532")
+    f.write_text("777", encoding="utf-8")
+    fh = f.open("r+")
+    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    lines = []
+    monkeypatch.setattr(rt, "log", lambda m: lines.append(m))
+    monkeypatch.setattr(sys, "argv", ["rebuild_transcript.py", str(live)])
+    monkeypatch.setattr(rt, "MeetingStatusStore", lambda *a, **k: (_ for _ in ()).throw(AssertionError("дошли до статусов")))
+    try:
+        rt.main()
+    finally:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        fh.close()
+    assert lines and "уже идёт" in lines[-1] and "777" in lines[-1]
 

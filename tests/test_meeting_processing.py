@@ -192,3 +192,17 @@ def test_main_transcript_whose_title_ends_with_an_aux_word_is_still_found(tmp_pa
     review.write_text("Граф дообогащён. Ниже — ревизия текстом.\n", encoding="utf-8")
     assert find_final_transcript(live) == main.resolve()
 
+
+def test_live_copy_is_never_taken_for_the_main_transcript(tmp_path):
+    """`_live.md` — дословная копия главного файла с тем же началом: спасать
+    её по содержимому нельзя, даже если она моложе (DS по #455)."""
+    import os
+    live = _transcript(tmp_path)
+    live.unlink()
+    main = live.with_name("2026-07-31_141501_Тема.md")
+    main.write_text("# Встреча 2026-07-31_141501 — Тема\n\nтекст\n", encoding="utf-8")
+    copy = live.with_name("2026-07-31_141501_Тема_live.md")
+    copy.write_text("# Встреча 2026-07-31_141501 — Тема\n\nчерновик\n", encoding="utf-8")
+    os.utime(copy, (os.stat(copy).st_atime, os.stat(copy).st_mtime + 100))
+    assert find_final_transcript(live) == main.resolve()
+

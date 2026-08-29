@@ -116,3 +116,44 @@ def test_retitle_leaves_the_neighbour_meeting_of_the_same_minute_alone(tmp_path)
     assert (d / f"{bare}_Новая_тема_minutes.md").exists(), "свои производные переехали"
     assert neighbour.exists(), "чужой главный файл той же минуты не тронут"
 
+
+def test_retitle_leaves_the_neighbour_titled_exactly_with_an_aux_word(tmp_path):
+    """Соседка той же минуты с темой ровно «Разбор»: суффикс совпадает с
+    производным, главный файл узнаётся по содержимому (DS по #455)."""
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+    import graph_updater as g
+    d = tmp_path / "transcripts"
+    d.mkdir()
+    bare = "2026-08-29_1234"
+    live = d / f"{bare}.md"
+    live.write_text(f"# Встреча {bare}\n", encoding="utf-8")
+    neighbour = d / f"{bare}_Разбор.md"
+    neighbour.write_text(f"# Встреча {bare} — Разбор\n", encoding="utf-8")
+    review = d / f"{bare}_разбор.md"
+    g.retitle(live, bare, bare, "Тема")
+    assert neighbour.exists() or review.exists()
+    assert (d / f"{bare}_Тема.md").exists()
+
+
+
+def test_retitle_of_a_per_second_meeting_leaves_the_minute_neighbour_alone(tmp_path):
+    """Боевой случай: вторая встреча той же минуты живёт с посекундным штампом,
+    её bare — «…_123456»; соседка с минутным стемом и её производные не
+    трогаются, свои производные едут (GLM по #455)."""
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+    import graph_updater as g
+    d = tmp_path / "transcripts"
+    d.mkdir()
+    minute, bare = "2026-08-29_1234", "2026-08-29_123456"
+    neighbour = d / f"{minute}_Первая.md"
+    neighbour.write_text(f"# Встреча {minute} — Первая\n", encoding="utf-8")
+    (d / f"{minute}_Первая_minutes.md").write_text("минутки первой", encoding="utf-8")
+    live = d / f"{bare}.md"
+    live.write_text(f"# Встреча {bare}\n\nтекст\n", encoding="utf-8")
+    (d / f"{bare}_minutes.md").write_text("минутки второй", encoding="utf-8")
+    out = g.retitle(live, bare, bare, "Вторая")
+    assert out.name == f"{bare}_Вторая.md" and "— Вторая" in out.read_text(encoding="utf-8")
+    assert (d / f"{bare}_Вторая_minutes.md").exists()
+    assert neighbour.exists() and (d / f"{minute}_Первая_minutes.md").exists()
