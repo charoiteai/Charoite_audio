@@ -198,3 +198,37 @@ def test_second_main_exits_while_the_lock_is_held(root, monkeypatch):
         fh.close()
     assert lines and "уже идёт" in lines[-1] and "777" in lines[-1]
 
+
+def test_volume_without_flock_is_reported_not_silent(root, monkeypatch):
+    """Том без flock (SMB/NFS): защита снята — об этом говорит лог, а не
+    молчание (DS r2 по #455). Нет файла — тишина, это обычный случай."""
+    import errno
+    import fcntl
+    lines = []
+    monkeypatch.setattr(rt, "log", lambda m: lines.append(m))
+    live = _live(root)
+    assert rt.running_elsewhere(live) is None and not lines
+    rt._pid_file("2026-08-12_1532").write_text("1", encoding="utf-8")
+
+    def no_flock(*a, **k):
+        raise OSError(errno.ENOTSUP, "Operation not supported")
+
+    monkeypatch.setattr(fcntl, "flock", no_flock)
+    assert rt.running_elsewhere(live) is None
+    assert rt.mark_running(live) is None
+    assert len(lines) == 2 and all("защита" in m for m in lines), lines
+
+
+def test_own_mark_stays_on_disk_after_exit(root):
+    """Своя отметка не снимается unlink-ом: замок отпускает ОС, а следующий
+    прогон переписывает файл под своим замком (DS r2 по #455)."""
+    live = _live(root)
+    f = rt.mark_running(live)
+    for fh in rt._RUNNING_LOCKS:
+        fh.close()                       # «процесс вышел»
+    rt._RUNNING_LOCKS.clear()
+    assert f.exists() and rt.running_elsewhere(live) is None
+    assert rt.mark_running(live) == f and f.read_text(encoding="utf-8") == str(os.getpid())
+    for fh in rt._RUNNING_LOCKS:
+        fh.close()
+    rt._RUNNING_LOCKS.clear()

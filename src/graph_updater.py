@@ -484,8 +484,11 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
     `logs/brain_sent/<штамп>.txt` — счётчик успешных POST `n/всего`:
     4xx/5xx у requests не исключение (raise_for_status обязателен), а обрыв
     после первого удачного POST при повторе досылал бы с начала — дубль
-    (GLM по #455). Старый формат отметки (заголовок без счётчика) = всё
-    отправлено. `meeting` — ключ графа: по нему «забыть» и переименование
+    (GLM по #455). Гарантия — at-least-once: факт, учтённый в отметке, не
+    повторяется; обрыв между удачным POST и записью отметки досылает ровно
+    его один раз. Отметка прежних версий (одна строка заголовка) = всё
+    отправлено; маркер `sent` не даёт принять тему вида «3/5» за счётчик
+    (DS r2). `meeting` — ключ графа: по нему «забыть» и переименование
     доходят до памяти (brain /forget, /rename с 23.08, карточка №41).
     """
     post = post or requests.post
@@ -499,7 +502,7 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
     sent = 0
     if mark.exists():
         head = mark.read_text(encoding="utf-8", errors="replace").split("\n", 1)[0].strip()
-        m = re.match(r"^(\d+)/(\d+)$", head)
+        m = re.match(r"^sent (\d+)/(\d+)$", head)
         sent = int(m.group(1)) if m else len(facts)
     if sent >= len(facts):
         print("память Чароита: факты этой встречи уже отправлены — повтор пропущен")
@@ -512,7 +515,7 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
             post("http://127.0.0.1:8100/remember", json=fact, timeout=15).raise_for_status()
             n += 1
             mark.parent.mkdir(parents=True, exist_ok=True)
-            safe_write.write_text(mark, f"{sent + n}/{len(facts)}\n{title}\n")
+            safe_write.write_text(mark, f"sent {sent + n}/{len(facts)}\n{title}\n")
         print(f"память Чароита: +{n} фактов")
     except Exception as e:  # noqa: BLE001 — brain может быть выключен, не валим граф
         print(f"память Чароита недоступна (ушло {n} из {len(facts) - sent}): {e}")

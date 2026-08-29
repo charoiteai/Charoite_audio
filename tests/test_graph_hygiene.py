@@ -677,12 +677,13 @@ def test_brain_mark_counts_successful_posts_and_retry_sends_only_the_rest(tmp_pa
     people = [{"имя": "Иван"}]
     args = ("2026-08-29_1200", "Планёрка", people, ["релиз"], ["ждём CI", "мёрж в пятницу"], mark)
     n = g.send_to_brain(*args, post=post)
-    assert n == 1 and mark.read_text(encoding="utf-8").startswith("1/3\n"), mark.read_text(encoding="utf-8")
+    assert n == 1 and mark.read_text(encoding="utf-8").startswith("sent 1/3\n"), mark.read_text(encoding="utf-8")
     fail_from[0] = 99
     n = g.send_to_brain(*args, post=post)
-    assert n == 2 and mark.read_text(encoding="utf-8").startswith("3/3\n")
+    assert n == 2 and mark.read_text(encoding="utf-8").startswith("sent 3/3\n")
     assert [t[:7] for t in sent] == ["Встреча", "Решение", "Решение"], sent
     assert g.send_to_brain(*args, post=post) == 0
-    mark.write_text("Старый формат: только заголовок\n", encoding="utf-8")   # отметка прежней версии = всё ушло
-    assert g.send_to_brain("2026-08-29_1200", "Планёрка", people, ["релиз"], [], mark, post=post) == 0
+    for old in ("Старый формат: только заголовок\n", "3/5\n"):   # отметка прежней версии = всё ушло, даже тема-«счётчик»
+        mark.write_text(old, encoding="utf-8")
+        assert g.send_to_brain("2026-08-29_1200", "Планёрка", people, ["релиз"], ["а", "б", "в", "г"], mark, post=post) == 0
     assert len(sent) == 3

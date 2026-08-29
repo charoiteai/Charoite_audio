@@ -65,21 +65,28 @@ def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
     # глоб находил бы файл соседки (карточка №39).
     bare = meeting_stamp.stamp_of(original.stem) or short_stamp(original)
     for stamp in dict.fromkeys((bare, short_stamp(original))):
-        candidates = []
+        candidates, live_copies = [], []
         for path in original.parent.glob(f"{stamp}_*.md"):
             # По ХВОСТУ имени, как meeting_stamp.stamp_of и rename_meeting: проверка
             # подстрокой вычёркивала главный файл встречи «План_разбора» (тема со
             # словом «разбор» внутри) и статус получал несуществующий путь
             # (аудит DeepSeek 16.08).
             suffix = path.stem[len(stamp):].lower()
-            # «_live» — дословная копия главного файла, начинается так же: её
-            # спасать по содержимому нельзя (DS по #455)
-            if any(suffix.endswith(aux) for aux in _AUX_SUFFIXES) \
-                    and (suffix.endswith("_live") or not _looks_main(path)):
-                # тема встречи может сама кончаться на «разбор»/«live»: производный
-                # файл отличаем по содержимому, а не только по имени (хвост 20.08, DS)
+            if suffix.endswith("_live"):
+                live_copies.append(path)   # копия или тема на «live» — решаем ниже
+                continue
+            if any(suffix.endswith(aux) for aux in _AUX_SUFFIXES) and not _looks_main(path):
+                # тема встречи может сама кончаться на «разбор»: производный файл
+                # отличаем по содержимому, а не только по имени (хвост 20.08, DS)
                 continue
             candidates.append(path)
+        if not candidates:
+            # «_live» — дословная копия главного файла с тем же началом: рядом с
+            # настоящим главным её спасать по содержимому нельзя, даже если она
+            # моложе (DS по #455). А без главного тема встречи может сама
+            # кончаться на «live» («Демо live») — тогда судим по содержимому,
+            # как остальных (DS r2)
+            candidates = [path for path in live_copies if _looks_main(path)]
         if candidates:
             return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
     return original.resolve()

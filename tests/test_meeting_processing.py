@@ -206,3 +206,16 @@ def test_live_copy_is_never_taken_for_the_main_transcript(tmp_path):
     os.utime(copy, (os.stat(copy).st_atime, os.stat(copy).st_mtime + 100))
     assert find_final_transcript(live) == main.resolve()
 
+
+def test_main_transcript_whose_title_ends_with_live_is_still_found(tmp_path):
+    """Тема «Демо live» даёт файл `…_Демо_live.md` — это главный, а не копия:
+    без другого главного рядом его судят по содержимому (DS r2 по #455)."""
+    live = _transcript(tmp_path)
+    live.unlink()
+    main = live.with_name("2026-07-31_141501_Демо_live.md")
+    main.write_text("# Встреча 2026-07-31_141501 — Демо live\n\nтекст\n", encoding="utf-8")
+    live.with_name("2026-07-31_141501_minutes.md").write_text("минутки", encoding="utf-8")
+    assert find_final_transcript(live) == main.resolve()
+    # черновик без заголовка главного файла — по-прежнему не кандидат
+    main.write_text("черновик без шапки\n", encoding="utf-8")
+    assert find_final_transcript(live) == live.resolve()
