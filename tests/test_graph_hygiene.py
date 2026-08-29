@@ -654,6 +654,68 @@ def test_core_chronicle_keeps_superseded_status_with_its_dates(tmp_path):
     assert "- [[Встречи/2026-08-13_1000]] — акт · вытеснило статус (с 2026-08-13): «сдано»" in text
 
 
+def test_brain_mark_counts_successful_posts_and_retry_sends_only_the_rest(tmp_path):
+    """4xx/5xx у requests — не исключение: без raise_for_status отметка вставала
+    при потерянных фактах (хвост 20.08, GLM). Обрыв после удачного POST при
+    повторе досылал бы всё заново — дубль в памяти (GLM по #455): отметка —
+    счётчик `n/всего`, повтор шлёт только остаток."""
+    import graph_updater as g
+
+    class Resp:
+        def __init__(self, ok):
+            self.ok = ok
+
+        def raise_for_status(self):
+            if not self.ok:
+                raise RuntimeError("500")
+
+    sent, fail_from = [], [2]
+
+    def post(url, json, timeout):
+        if len(sent) + 1 >= fail_from[0]:
+            return Resp(False)
+        sent.append(json["text"])
+        return Resp(True)
+
+    mark = tmp_path / "brain_sent" / "2026-08-29_1200.txt"
+    people = [{"имя": "Иван"}]
+    args = ("2026-08-29_1200", "Планёрка", people, ["релиз"], ["ждём CI", "мёрж в пятницу"], mark)
+    n = g.send_to_brain(*args, post=post)
+    assert n == 1 and mark.read_text(encoding="utf-8").startswith("sent 1/3\n"), mark.read_text(encoding="utf-8")
+    fail_from[0] = 99
+    n = g.send_to_brain(*args, post=post)
+    assert n == 2 and mark.read_text(encoding="utf-8").startswith("sent 3/3\n")
+    assert [t[:7] for t in sent] == ["Встреча", "Решение", "Решение"], sent
+    assert g.send_to_brain(*args, post=post) == 0
+    for old in ("Старый формат: только заголовок\n", "3/5\n", "sent 3/3\nsha1:abc\n# Планёрка\n"):   # прежние форматы = всё ушло
+        mark.write_text(old, encoding="utf-8")
+        assert g.send_to_brain("2026-08-29_1200", "Планёрка", people, ["релиз"], ["а", "б", "в", "г"], mark, post=post) == 0
+    assert len(sent) == 3
+    # повтор обработки извлёк решения заново, в другом порядке и с новым: ушли
+    # только новые, старые не дублируются (luna r2 по #455)
+    mark.unlink()
+    sent.clear()
+    fail_from[0] = 3
+    g.send_to_brain(*args, post=post)                       # шапка + «ждём CI», обрыв на втором решении
+    assert mark.read_text(encoding="utf-8").startswith("sent 2/3\n")
+    fail_from[0] = 99
+    sent.clear()
+    # темы тоже переизвлечены — шапка не уходит второй раз (DS r3)
+    n = g.send_to_brain("2026-08-29_1200", "Планёрка", people, ["сроки", "релиз"], ["новое решение", "мёрж в пятницу", "ждём CI"], mark, post=post)
+    assert n == 2 and [t.split(": ")[1] for t in sent] == ["новое решение", "мёрж в пятницу"], sent
+    assert mark.read_text(encoding="utf-8").startswith("sent 4/4\n")
+    # тему переименовали (brain /rename уже знает новую) — факты не «новые»;
+    # одно решение дважды в списке — один факт (GLM r3, luna r3)
+    sent.clear()
+    assert g.send_to_brain("2026-08-29_1200", "Другая тема", people, ["релиз"], ["ждём CI", "ждём CI", "мёрж в пятницу"], mark, post=post) == 0
+    # список короче, чем когда-либо ушло: счётчик по текущему списку, не «5/2» (GLM r3)
+    assert g.send_to_brain("2026-08-29_1200", "Планёрка", people, ["релиз"], ["Z"], mark, post=post) == 1
+    assert mark.read_text(encoding="utf-8").startswith("sent 2/2\n")
+    mark.unlink()
+    sent.clear()
+    assert g.send_to_brain("2026-08-29_1200", "Планёрка", people, ["релиз"], ["X", "X"], mark, post=post) == 2 and len(sent) == 2
+
+
 def test_placeholder_migration_turns_links_into_text_and_moves_nodes(tmp_path):
     """№125: ссылки на узлы-метки становятся подписью текстом (alias или имя),
     узлы уезжают в копию с манифестом, указатель пересобирается; узел с тем

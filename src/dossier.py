@@ -85,7 +85,19 @@ def keywords(text: str, limit: int = 24) -> list[str]:
     по словам. Имена файлов-стенограмм отбрасываем — как ключ они бесполезны,
     а место в списке занимают.
     """
-    words = re.findall(r"[а-яa-z0-9][а-яa-z0-9_.-]{2,}", _norm(text))
+    # CJK — в классе символов: без него у китайской встречи ключи пусты и
+    # досье не ищется вовсе (хвост аудита 20.08, GLM)
+    # CJK — от одного иероглифа; кириллица/латиница — от трёх, иначе «не», «на»
+    # заняли бы верх частотности (DS по #455)
+    words: list[str] = []
+    for tok in re.findall(r"[\u4e00-\u9fff]+|[а-яa-z0-9][а-яa-z0-9_.-]{2,}", _norm(text)):
+        # CJK без пробелов приходит одним «словом» на всё предложение — такой
+        # ключ длиннее 24 знаков выпадал целиком, и у китайской встречи ключей
+        # не оставалось: режем на биграммы, как CJK-индексы (luna по #455)
+        if "\u4e00" <= tok[0] <= "\u9fff" and len(tok) > 2:
+            words.extend(tok[i:i + 2] for i in range(len(tok) - 1))
+        else:
+            words.append(tok)
     freq: dict[str, int] = defaultdict(int)
     for w in words:
         if w in _STOP or len(w) > 24:
@@ -468,9 +480,21 @@ def load_index(folder: pathlib.Path) -> list[dict]:
     if not p.exists():
         return []
     try:
-        return json.loads(p.read_text(encoding="utf-8")).get("досье", [])
+        entries = json.loads(p.read_text(encoding="utf-8")).get("досье", [])
     except (OSError, json.JSONDecodeError):
         return []
+    # индекс прежней версии хранит цельные CJK-последовательности; запрос теперь
+    # биграммный — нормализуем ключи при чтении, а не ослабляем сравнение
+    # (luna r2, критика GLM r3): свежий индекс это не трогает
+    def _cjk_long(k: str) -> bool:
+        return len(k) > 2 and "\u4e00" <= k[0] <= "\u9fff"
+    for e in entries:
+        keys = e.get("ключи")
+        if keys and any(_cjk_long(k) for k in keys):
+            e["ключи"] = list(dict.fromkeys(
+                bg for k in keys
+                for bg in ([k[i:i + 2] for i in range(len(k) - 1)] if _cjk_long(k) else [k])))
+    return entries
 
 
 def lookup(folder: pathlib.Path, query: str, limit: int = 3) -> list[dict]:

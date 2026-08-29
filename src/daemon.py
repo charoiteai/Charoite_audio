@@ -378,6 +378,17 @@ def _rebuild_orphans_sequentially(lives: list[pathlib.Path]) -> None:
             statuses.failed(live, f"не удалось запустить восстановление: {e}")
 
 
+PENDING_Q_TTL = 25.0   # секунд: старше — разговор ушёл, облако/⚡ отвечают по хвосту (хвост 20.08, DS)
+
+
+def fresh_question(pending: dict, now: float, ttl: float = PENDING_Q_TTL) -> str:
+    """Последний вопрос, если он ещё свежий; иначе пусто — и ни панель, ни
+    промпт не притворяются, что отвечают «на вопрос», которого в хвосте уже
+    нет. `at` = 0.0 (вопросов не было) — пусто при любом monotonic."""
+    text = pending.get("text", "")
+    return text if text and now - pending.get("at", 0.0) < ttl else ""
+
+
 def main():
     # Стенограмма — и есть чувствительные данные продукта: пишем её и всё
     # остальное закрытым от других учёток машины (аудит 16.08). Разово
@@ -585,7 +596,7 @@ def main():
         # живой разговор втрое раньше срока (ревью 20.08, локальная голова).
         # Ошибка здесь безопасна в одну сторону: лишний признак «звонок»
         # оставляет прежние пятнадцать минут, пропущенный — рубит встречу.
-        heard_by_channel.note(None, 0.0, is_mic=channel_speaker == mic_label)
+        heard_by_channel.note(None, 0.0, is_mic=channel_speaker == hub.SPEAKER.get("mic", ""))
         if spk_tracker is None:
             _note_pitch(channel_speaker, chunk)
             return channel_speaker  # без трекера канальные метки честны в звонке
@@ -594,7 +605,7 @@ def main():
         except Exception:  # noqa: BLE001
             return channel_speaker
         heard_by_channel.note(n, len(chunk) / hub.sr,
-                              is_mic=channel_speaker == mic_label,
+                              is_mic=channel_speaker == hub.SPEAKER.get("mic", ""),
                               now=time.monotonic())
         if n is None:
             return channel_speaker
@@ -1038,8 +1049,10 @@ def main():
                         # минут глушил живую встречу, считая, что речи не было
                         # (инцидент 20.08: встреча 08:57 обрезана на 09:02).
                         voiced = raw_piece if raw_piece is not None else piece
+                        # канал — по СЫРОЙ метке захвата: обнулённый при коллизии
+                        # имени mic_label травил счётчики (хвост 20.08, DS 5d)
                         heard_by_channel.note(n, len(voiced) / hub.sr,
-                                              is_mic=speaker == mic_label,
+                                              is_mic=speaker == hub.SPEAKER.get("mic", ""),
                                               now=time.monotonic())
                     # Текстовые пары (№93): фраза, совпавшая с недавней
                     # фразой другого канала, считается в ТЕЛЕМЕТРИЮ
@@ -1047,7 +1060,7 @@ def main():
                     # отдельным решением по полевым данным.
                     heard_by_channel.note_text(
                         n if n is not None and n >= 0 else None, text,
-                        is_mic=speaker == mic_label, now=time.monotonic())
+                        is_mic=speaker == hub.SPEAKER.get("mic", ""), now=time.monotonic())
                     if n is None:
                         name = voice_label(speaker, piece)
                     elif n < 0:
@@ -1244,7 +1257,7 @@ def main():
     cloud_evt = threading.Event()
     _last_fire = [0.0]
     _cloud_last = {"t": 0.0, "words": set()}
-    _pending_q = {"text": ""}  # последний детектированный вопрос — панели показывают его над ответом
+    _pending_q = {"text": "", "at": 0.0}  # последний вопрос и когда прозвучал — панели показывают его над ответом
     # живые тумблеры UI (`set hints|theses|cloud on|off`): выключенные контуры
     # молчат до обратного включения; дефолты хранит и присылает приложение
     toggles = {"hints": True, "theses": True, "cloud": True}
@@ -1273,6 +1286,7 @@ def main():
             # вообще нечего резать»). Это одно высказывание STT: сотни
             # символов, памяти не грозит.
             _pending_q["text"] = " ".join(q.split())
+            _pending_q["at"] = time.monotonic()
         instant_evt.set()
         if not (cloud_live and toggles["cloud"]):
             return
@@ -1768,7 +1782,7 @@ def main():
             # локом: пока поток ждал hint_lock, мог прийти второй вопрос — и
             # модель отвечала бы на него с узлами первого, а ответ ложился
             # под чужим вопросом в нить и лог (ревью 15.08 ×3).
-            q = _pending_q["text"]
+            q = fresh_question(_pending_q, time.monotonic())
             tail = tr.tail(1600)
             # сверка вопроса с узлами графа — ДО hint_lock и вне STT-пути:
             # файловый лукап не смеет держать ни распознавание, ни очередь
@@ -1846,7 +1860,7 @@ def main():
             tail = tr.tail(2200)
             if not tail:
                 continue
-            q = _pending_q["text"]
+            q = fresh_question(_pending_q, time.monotonic())
             short = model.split("-")[1] if model.count("-") else model  # claude-haiku-… → haiku
             think = f"☁️ {dt.datetime.now():%H:%M:%S} {short} думает" + (f" над: ❓ {q[:120]}" if q else "…")
             # «думает над ❓…» жило в полотне и дублировало вопрос, который
@@ -1861,8 +1875,13 @@ def main():
                      # и уверенно выдавала её как реальную повестку встречи.
                      "Рабочая встреча, пользователь владелец — техлид. "
                      "Последние реплики:\n" + tail + "\n\n"
-                     "Собеседник задал вопрос (последняя реплика). Дай владельцу ГОТОВЫЙ ответ "
-                     "от первого лица: 3-5 предложений, по делу, по-русски. "
+                     # Просроченный вопрос (fresh_question → "") — модель не обязана
+                     # «отвечать на вопрос», которого в хвосте уже нет (GLM по #455)
+                     + (f"Собеседник задал вопрос: «{q[:300]}». Дай владельцу ГОТОВЫЙ ответ "
+                        if q else
+                        "Если в последних репликах есть вопрос к владельцу — дай на него ГОТОВЫЙ "
+                        "ответ; вопроса нет — одну полезную мысль по последним репликам. ")
+                     + "От первого лица: 3-5 предложений, по делу, по-русски. "
                      "ЧЕСТНОСТЬ ВАЖНЕЕ УВЕРЕННОСТИ: отвечай только тем, что следует из "
                      "стенограммы или общих знаний; конкретные факты встречи (повестку, "
                      "цифры, статусы задач) НЕ выдумывай — если их нет в репликах, так и "

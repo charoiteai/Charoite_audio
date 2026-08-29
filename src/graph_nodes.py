@@ -21,6 +21,7 @@ import re
 import threading
 
 import frontmatter
+import redirects
 
 # Папки узлов: русские — боевой конвейер, английские — демо-граф продукта.
 NODE_FOLDERS = ("Люди", "Команды", "Системы", "Модели", "Блокеры", "Ядра",
@@ -235,6 +236,8 @@ class NodeIndex:
             return self._nodes.get(p)   # держим прошлый снапшот
         if (st2.st_mtime, st2.st_size) != (st.st_mtime, st.st_size):
             return self._nodes.get(p)   # файл переписывается прямо сейчас
+        if redirects.is_merged(text):
+            return None                 # заглушка после слияния — не узел (хвост 20.08, GLM)
         name = p.stem
         # один разбор шапки на конвейер и поиск (frontmatter.py, #451)
         aliases = [tuple(stem(t) for t in tokens(a)) for a in frontmatter.aliases(text, p.name)]

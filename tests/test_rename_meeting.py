@@ -239,3 +239,36 @@ def test_resolve_graph_honours_sufler_graph_dir(tmp_path, monkeypatch):
     assert rm.resolve_graph(cfg) == tmp_path
     monkeypatch.delenv("SUFLER_GRAPH_DIR")
     assert rm.resolve_graph(cfg) == pathlib.Path("/tmp/рабочий-граф")
+
+
+def test_legacy_main_with_an_aux_tail_is_healed_by_rename(tmp_path):
+    """«…_Демо_live.md» прежних версий: по имени копия, по содержимому встреча.
+    rename видит его как главный и даёт имя через guard_slug; его производные
+    едут следом; настоящая копия `_live` с живым источником — не встреча (DS r4)."""
+    main = tmp_path / f"{STAMP}_Демо_live.md"
+    main.write_text(f"# Встреча {STAMP} — Демо live\n\nтекст\n", encoding="utf-8")
+    (tmp_path / f"{STAMP}_Демо_live_minutes.md").write_text("минутки", encoding="utf-8")
+    copy = tmp_path / f"{STAMP}_Демо_live_live.md"
+    copy.write_text(main.read_text(encoding="utf-8"), encoding="utf-8")
+    assert rm.legacy_mains(tmp_path, STAMP) == {STAMP: main}
+    graph = tmp_path / "граф"
+    docs = graph / "Документация" / "Стенограммы встреч"
+    docs.mkdir(parents=True)
+    (docs / main.name).write_text(main.read_text(encoding="utf-8"), encoding="utf-8")   # копия в vault
+    p = rm.plan(graph, tmp_path, STAMP, "Демо live", rm.pretty_and_slug("Демо live")[1])
+    moves = {src: dst.name for src, dst in p["moves"]}
+    assert moves[main] == f"{STAMP}_Демо-live.md"
+    assert moves[docs / main.name] == f"{STAMP}_Демо-live.md", "vault-копия главного — тоже главный (DS r5)"
+    assert moves[tmp_path / f"{STAMP}_Демо_live_minutes.md"] == f"{STAMP}_Демо-live_minutes.md"
+    assert moves[copy] == f"{STAMP}_Демо-live_live.md"
+
+
+def test_legacy_main_with_seconds_is_healed_by_the_minute_stamp(tmp_path):
+    """Посекундный legacy-главный зовут по минуте, как любую встречу: он
+    единственный кандидат минуты — лечится (DS r5)."""
+    sec = f"{STAMP}12"
+    main = tmp_path / f"{sec}_Итоги_разбор.md"
+    main.write_text(f"# Встреча {sec} — Итоги разбор\n\nтекст\n", encoding="utf-8")
+    assert rm.legacy_mains(tmp_path, STAMP) == {sec: main}
+    p = rm.plan(tmp_path / "нет-графа", tmp_path, STAMP, "Итоги разбор", rm.pretty_and_slug("Итоги разбор")[1])
+    assert {src.name: dst.name for src, dst in p["moves"]} == {main.name: f"{STAMP}_Итоги-разбор.md"}
