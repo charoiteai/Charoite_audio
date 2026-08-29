@@ -1080,12 +1080,11 @@ def main():
                 prev_label = last_label_by_channel.get(speaker)
                 seams = stt_runtime.seam_for_rows(prev_label, [(name, head) for name, _, head in rows])
                 added_labels: list[str] = []
-                chunk_no = hub.chunk_no.get(speaker)
+                seq = hub.chunk_seq(speaker)
                 for (name, text, _head), (head, seam_with) in zip(rows, seams):
                     try:
                         added = tr.add(text, speaker=name, seam_with=seam_with,
-                                       seq=None if chunk_no is None else (speaker, chunk_no),
-                                       head=head)
+                                       seq=seq, head=head)
                     except Exception as e:  # noqa: BLE001 — стенограмма не должна убивать STT-тред
                         emit({"type": "status", "text": f"стенограмма: {e}"})
                         continue

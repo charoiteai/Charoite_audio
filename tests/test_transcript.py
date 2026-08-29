@@ -111,6 +111,9 @@ def test_seam_needs_adjacent_chunks_and_only_the_head_piece(tmp_path, monkeypatc
     assert tr2.add("бюджет на квартал и сроки", "mic") == "и сроки"
     # текст без номера + чанк с номером: сосед неизвестен — не режем (luna r2)
     assert tr2.add("бюджет на квартал и сроки и ещё", "mic", seq=8) == "бюджет на квартал и сроки и ещё"
+    # смесь int и (канал, n) — не соседи; номер после номера None — тоже нет
+    assert tr2.add("сроки и ещё немного", "mic", seq=("mic", 9)) == "сроки и ещё немного"
+    assert tr2.add("ещё немного и всё", "mic", seq=None) == "и всё", "без номера — как раньше, сосед"
 
 
 def test_fully_eaten_chunk_keeps_the_seam_chain_alive(tmp_path, monkeypatch):

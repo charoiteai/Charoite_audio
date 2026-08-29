@@ -102,7 +102,11 @@ class Transcript:
         self._notes: list[str] = []
         self._names: dict[str, str] = {}  # канальная метка → опознанное имя
         self._prev_chunk: dict[str, str] = {}  # спикер → последний чанк (дедуп швов)
-        self._prev_seq: dict[str, int | None] = {}  # спикер → номер чанка его последнего текста
+        # спикер → номер последнего распознанного чанка метки: int или (канал, n);
+        # текст в _prev_chunk — ИСТОЧНИК шва для следующего чанка (после чанка,
+        # съеденного целиком, это текст соседа, а номер — съеденного: пара
+        # «источник + последний номер», а не «текст чанка N» — DS по #453)
+        self._prev_seq: dict[str, int | tuple[str, int] | None] = {}
         self._prev_no: dict[str, int] = {}   # спикер → порядковый номер его последнего add (свежесть)
         self._add_no = 0
         self._participants: list[str] = []  # групповая встреча: кто звучал
@@ -195,7 +199,7 @@ class Transcript:
             return False
 
     def add(self, text: str, speaker: str | None = None,
-            seam_with: str | None = None, seq: int | None = None,
+            seam_with: str | None = None, seq: int | tuple[str, int] | None = None,
             head: bool = True) -> str | None:
         """Добавляет чанк; возвращает реально добавленный текст (после дедупа) или None.
 

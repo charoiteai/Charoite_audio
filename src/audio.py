@@ -1054,9 +1054,8 @@ class AudioHub:
         # чанк между двумя речевыми — разрыв, не перекрытие (luna, круг-2 #452).
         chunk_no = self.__dict__.setdefault("chunk_no", {})   # хаб в тестах собирают мимо __init__
         for label, c in cut.items():
-            if c is not None:
-                name = self.SPEAKER.get(label, label)
-                chunk_no[name] = chunk_no.get(name, -1) + 1
+            if c is not None:      # ключ — физический канал, не имя спикера (DS по #453)
+                chunk_no[label] = chunk_no.get(label, -1) + 1
         speech = {label: (c is not None and self.is_speech(c)) for label, c in cut.items()}
         now = time.monotonic()
         if speech.get("blackhole"):
@@ -1080,6 +1079,21 @@ class AudioHub:
                     continue
             out.append((self.SPEAKER.get(label, label), chunk))
         return out
+
+    def channel_of(self, speaker: str) -> str:
+        """Физический канал по имени спикера из pull_labeled («Я» → mic)."""
+        for label, name in self.SPEAKER.items():
+            if name == speaker:
+                return label
+        return speaker
+
+    def chunk_seq(self, speaker: str) -> tuple[str, int] | None:
+        """(канал, номер последнего физического чанка) для стенограммы:
+        соседи — n и n-1 одного канала; тихий или отброшенный как эхо чанк
+        номер тоже потребляет (luna, круг-2 #452)."""
+        label = self.channel_of(speaker)
+        n = self.__dict__.get("chunk_no", {}).get(label)
+        return None if n is None else (label, n)
 
     def pull(self) -> np.ndarray | None:
         """Совместимость (CLI/тесты): первый готовый чанк любого канала."""
