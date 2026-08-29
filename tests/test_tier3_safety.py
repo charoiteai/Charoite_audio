@@ -442,3 +442,24 @@ def test_handwritten_essence_of_a_duplicate_survives_the_merge(graph_with_essenc
     texts = _snapshot(graph_with_essence)
     canon = [t for t in texts.values() if "Дубль. Смерджен" not in t]
     assert any("Суть дубля" in t for t in canon), canon
+
+
+def test_merge_carries_the_duplicate_name_and_aliases_into_the_canon(graph):
+    """После слияния имя дубля и его псевдонимы живут в шапке канона: иначе
+    следующее упоминание короткого псевдонима заводит дубль заново (GLM,
+    круг-1 #451); заглушка псевдонимов не несёт."""
+    import frontmatter
+    for p in sorted(graph.glob("Ядра/*.md")):
+        p.write_text(frontmatter.with_aliases(p.read_text(encoding="utf-8"), [f"псевдоним {p.stem}"]),
+                     encoding="utf-8")
+    assert tier3.revise(graph, apply=True)["log"]
+    texts = {p: p.read_text(encoding="utf-8") for p in graph.glob("Ядра/*.md")}
+    stubs = {p: t for p, t in texts.items() if "Дубль. Смерджен" in t}
+    assert stubs, "слияния не было"
+    for stub_path, stub_text in stubs.items():
+        m = re.search(r"→ \[\[Ядра/([^\]|]+)", stub_text)
+        canon = graph / "Ядра" / f"{m.group(1)}.md"
+        got = frontmatter.aliases(texts[canon])
+        assert stub_path.stem in got and f"псевдоним {stub_path.stem}" in got, got
+        assert frontmatter.aliases(stub_text) == [], "заглушка псевдонимов не несёт"
+

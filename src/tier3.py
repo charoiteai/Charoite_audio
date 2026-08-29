@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import safe_write
+import frontmatter
 import pathlib
 import re
 import shutil
@@ -243,6 +244,10 @@ def _merge(folder: pathlib.Path, stamp: str, a: dict, b: dict, log: list[str]) -
         if _plain(block) not in _plain(text):
             text += "\n" + block + "\n"
     text += f"\n> 🔀 Tier3-NLI: сюда влита хроника дубля «{dup['name']}».\n"
+    # Имя дубля и его псевдонимы — в шапку канона: иначе следующее упоминание
+    # короткого псевдонима («МБ») не находит ничего и заводит дубль заново
+    # (GLM, круг-1 #451); в заглушку они не пишутся.
+    text = frontmatter.with_aliases(text, [dup["name"], *frontmatter.aliases(dup["text"])])
     safe_write.write_text(canon["path"], text)
     canon["text"] = text
     canon["mtime"] = canon["path"].stat().st_mtime   # своя запись — не «чужая рука»
