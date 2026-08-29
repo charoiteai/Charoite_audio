@@ -181,3 +181,12 @@ def test_theme_ending_with_an_aux_word_stays_a_recognisable_meeting(tmp_path):
         moved = d / f"{stamp}_{tail}_minutes.md"
         assert moved.exists() and meeting_stamp.stamp_of(moved.stem) is None, "производный остался производным"
     assert g.theme_slug("Отчёт по задачам, итоги") == "Отчёт_по_задачам_итоги"
+
+
+def test_decompose_is_the_public_name_parser():
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+    import meeting_stamp
+    assert meeting_stamp.decompose("2026-08-04_1203_Отчет_minutes") == ("2026-08-04_1203", "Отчет_minutes")
+    assert meeting_stamp.decompose("2026-08-04_120312") == ("2026-08-04_120312", "")
+    assert meeting_stamp.decompose("заметка") is None

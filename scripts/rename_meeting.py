@@ -156,10 +156,15 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
     # по имени — копия, по содержимому — встреча. Такой файл rename и лечит:
     # новое имя идёт через guard_slug (DS r4 по #455).
     legacy = legacy_mains(tdir, minute)
+    legacy_names: set[str] = set()
     for bare, p in legacy.items():
-        if bare == stamp and bare not in mains:
+        # посекундный legacy-файл зовут по минуте, как и всё остальное:
+        # единственный кандидат минуты — он (DS r5)
+        if (bare == stamp or (stamp == minute and len(legacy) == 1)) and bare not in mains:
             mains[bare] = p
             mine.add(bare)
+            legacy_names.add(p.name)
+            print(f"{p.name} — главный по содержимому (источника рядом нет): имя лечится")
     if stamp == minute and tdir.is_dir():
         # Бесхозные посекундные производные («…113012_hints.md» без главного
         # файла «…113012») — владельца минуты: так их оставлял конвейер до
@@ -183,7 +188,8 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
             if not any(f.name.startswith(b) and not f.name[len(b):len(b) + 1].isdigit()
                        and not re.match(r"-\d", f.name[len(b):]) for b in mine):
                 continue
-            new = f"{stamp}_{slug}.md" if f in legacy.values() else retitled(f.name, stamp, slug)
+            # копия главного в Документации носит то же имя — тоже главный (DS r5)
+            new = f"{stamp}_{slug}.md" if f.name in legacy_names else retitled(f.name, stamp, slug)
             if not new:
                 continue
             target = f.with_name(new)
@@ -218,8 +224,8 @@ def legacy_mains(tdir: pathlib.Path, minute: str) -> dict[str, pathlib.Path]:
     for p in tdir.glob(f"{minute}*.md"):
         if meeting_stamp.stamp_of(p.stem):
             continue
-        m = meeting_stamp._RE_TITLED.match(p.stem)
-        if not m or not m.group(3):
+        parts = meeting_stamp.decompose(p.stem)
+        if not parts or not parts[1]:
             continue
         low = p.stem.lower()
         aux = next((a for a in meeting_stamp.AUX_SUFFIXES if low.endswith(a)), "")
@@ -231,7 +237,7 @@ def legacy_mains(tdir: pathlib.Path, minute: str) -> dict[str, pathlib.Path]:
         except OSError:
             continue
         if head.lstrip().startswith("# Встреча "):
-            found[m.group(1)] = p
+            found[parts[0]] = p
     return found
 
 
