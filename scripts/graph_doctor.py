@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import itertools
 import datetime as dt
 import json
 import os
@@ -55,6 +56,22 @@ def _is_stub(text: str) -> bool:
     return "дубль-слит" in text[:400] or redirects.is_merged(text)
 
 
+def _disk_candidates(root: pathlib.Path, target: str) -> list[pathlib.Path]:
+    """Пути вложения во всех сочетаниях форм Unicode по компонентам: каталог
+    может лежать в NFC, а файл в нём — в NFD (инструменты macOS пишут NFD,
+    ссылки набирают в NFC; APFS это скрывает, Linux нет — luna по #450).
+    Глубже трёх компонентов — только целиком NFC и NFD."""
+    parts = pathlib.PurePosixPath(target).parts
+    if len(parts) > 3:
+        return [root / unicodedata.normalize(form, target) for form in ("NFC", "NFD")]
+    out: list[pathlib.Path] = []
+    for forms in itertools.product(("NFC", "NFD"), repeat=len(parts)):
+        cand = root.joinpath(*(unicodedata.normalize(f, x) for f, x in zip(forms, parts)))
+        if cand not in out:
+            out.append(cand)
+    return out
+
+
 def inspect(root: pathlib.Path, examples: int = 0) -> dict:
     """Метрики одного графа. `examples` > 0 — добавить примеры путей."""
     notes: dict[pathlib.Path, str] = {}
@@ -75,12 +92,20 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
 
     def resolve(target: str) -> pathlib.Path | None:
         t = target.strip().rstrip("\\").strip()      # `[[Цель\|Текст]]` в таблицах
-        if re.search(r"\s/|/\s", t):
+        if not t or re.search(r"\s/|/\s", t):
             return None                              # «Системы/ Витрина» — мертва (GLM I2)
-        # Заметка важнее вложения, как в Obsidian: «Linux 1.8», «v2.json» —
-        # узлы с точкой в имени (первый вариант принял 400 таких ссылок за
-        # битые, 28.08; DS по #449 — узел, чей стем кончается на расширение).
-        stem = t[:-3] if t.endswith(".md") else t
+        # Ссылки Obsidian считаются от корня хранилища: абсолютный путь,
+        # выход через `..` и скрытые каталоги — не цели. Отсев ДО поиска
+        # заметки: `[[../x]]` находил `Системы/x.md` по стему (luna по #449),
+        # `[[/etc/hosts]]` отбрасывал корень в `root / t` (GLM, luna по #449).
+        parts = pathlib.PurePosixPath(t).parts
+        if t.startswith("/") or any(x.startswith(".") for x in parts):
+            return None
+        # Заметка важнее вложения (как ссылка без расширения в Obsidian):
+        # «Linux 1.8», «v2.json» — узлы с точкой в имени (первый вариант
+        # принял 400 таких ссылок за битые, 28.08; DS по #449 — узел, чей
+        # стем кончается на расширение).
+        stem = t[:-3] if t.casefold().endswith(".md") else t
         if _norm(stem) in by_path:
             return by_path[_norm(stem)]
         cands = by_stem.get(_norm(pathlib.PurePosixPath(stem).name), [])
@@ -88,9 +113,15 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
             return cands[0]
         # Вложение [[x.pdf]] — только файл на диске (GLM M9), без списка
         # расширений: какие форматы кладёт демон — факт продукта, не линта.
-        parts = pathlib.PurePosixPath(t).parts
-        if ".." not in parts and (root / t).is_file():
-            return root / t
+        # Имя пробуем в обеих формах Unicode: инструменты macOS пишут NFD,
+        # ссылки набирают в NFC (GLM по #449). stat под try: слишком длинное
+        # имя или каталог без прав ронял бы весь ночной отчёт, а не ссылку.
+        for cand in _disk_candidates(root, t):
+            try:
+                if cand.is_file():
+                    return cand
+            except (OSError, ValueError):
+                continue
         return None
 
     inbound: collections.Counter = collections.Counter()
@@ -144,7 +175,7 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
     if moc.exists():
         for m in LINK.finditer(moc.read_text(encoding="utf-8", errors="replace")):
             t = resolve(m.group(1))
-            if t is not None:
+            if t is not None and t in notes:   # вложение — не заметка, не покрытие (GLM M3)
                 moc_linked.add(t)
     week = dt.datetime.now().timestamp() - 7 * 86400
     fresh = sum(1 for p in notes if p.stat().st_mtime >= week)

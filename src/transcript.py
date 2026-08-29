@@ -102,6 +102,7 @@ class Transcript:
         self._notes: list[str] = []
         self._names: dict[str, str] = {}  # канальная метка → опознанное имя
         self._prev_chunk: dict[str, str] = {}  # спикер → последний чанк (дедуп швов)
+        self._prev_seq: dict[str, int | None] = {}  # спикер → номер чанка его последнего текста
         self._participants: list[str] = []  # групповая встреча: кто звучал
         self._lock = threading.Lock()
         self._save()
@@ -169,20 +170,44 @@ class Transcript:
                 return " ".join(words[k:])
         return new
 
-    def add(self, text: str, speaker: str | None = None) -> str | None:
-        """Добавляет чанк; возвращает реально добавленный текст (после дедупа) или None."""
+    def _adjacent(self, label: str, seq: int | None) -> bool:
+        """Последний текст метки — из соседнего чанка? Без номеров — да (как раньше)."""
+        prev_seq = self._prev_seq.get(label)
+        return seq is None or prev_seq is None or prev_seq == seq - 1
+
+    def add(self, text: str, speaker: str | None = None,
+            seam_with: str | None = None, seq: int | None = None,
+            head: bool = True) -> str | None:
+        """Добавляет чанк; возвращает реально добавленный текст (после дедупа) или None.
+
+        Шов перекрытия (0,5 с звука) живёт между СОСЕДНИМИ чанками одного
+        канала и только в голове чанка. `seq` — номер чанка в канале: сосед —
+        ровно `seq - 1`, часы и очередь STT ни при чём (без `seq` — как
+        раньше, любой предыдущий текст метки). `head=False` — кусок не из
+        головы чанка (второй голос того же чанка): шва у него нет вовсе.
+        `seam_with` — метка, под которой этот канал писал предыдущий чанк,
+        если она сменилась (лаг → здоровый: канал «Собеседник» → голос
+        «Собеседник 3»); тогда шов сверяется с ней, а не со своей меткой —
+        источник один (№69, DeepSeek по #362 и круг-1 по #452). Чужой канал
+        так не сверяется: повтор слов другим человеком — речь, не шов.
+        """
         now = dt.datetime.now()
         spk = speaker or "—"
         with self._lock:
             spk = self._names.get(spk, spk)
-            # шов перекрытия чанков живёт ВНУТРИ канала: сверяем с последним текстом
-            # этого же спикера, а не с чужим блоком (иначе дубль слов на смене голоса)
-            prev = self._prev_chunk.get(spk, "")
+            prev = ""
+            if head:
+                other = self._names.get(seam_with, seam_with) if seam_with else None
+                if other and other != spk and self._adjacent(other, seq):
+                    prev = self._prev_chunk.get(other, "")
+                elif self._adjacent(spk, seq):
+                    prev = self._prev_chunk.get(spk, "")
             if prev:
                 text = self._cut_overlap(prev, text)
                 if not text:
                     return None
             self._prev_chunk[spk] = text
+            self._prev_seq[spk] = seq
             if self._blocks:
                 b = self._blocks[-1]
                 same = b[2] == spk and (now - b[1]).total_seconds() < self.SPLIT_GAP
@@ -213,6 +238,19 @@ class Transcript:
             for b in self._blocks:
                 if b[2] == old:
                     b[2] = new
+            # Шов живёт под новой меткой: без переноса следующий чанк того же
+            # голоса сверялся с пустотой, и стык после переименования
+            # дублировался (найдено тестом №69).
+            if old in self._prev_chunk:
+                # Новая метка уже писала (человек назван раньше, чем опознан
+                # голос)? Остаётся более свежий текст, а не затирается чужим.
+                newer = (self._prev_seq.get(old) or -1) >= (self._prev_seq.get(new) or -1)
+                if new not in self._prev_chunk or newer:
+                    self._prev_chunk[new] = self._prev_chunk.pop(old)
+                    self._prev_seq[new] = self._prev_seq.pop(old, None)
+                else:
+                    self._prev_chunk.pop(old)
+                    self._prev_seq.pop(old, None)
         self._save()
 
     def set_participants(self, names: list[str]):

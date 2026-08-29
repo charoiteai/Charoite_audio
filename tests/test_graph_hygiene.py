@@ -399,28 +399,57 @@ def test_doctor_treats_dotted_node_names_as_nodes_not_embeds(tmp_path):
         "# Иван\n[[Системы/Linux 1.8]] [[Linux 1.8]] [[схема.pdf]] [[нет.pdf]] [[МПД 3.0]]\n", encoding="utf-8")
     rep = graph_doctor.inspect(graph, examples=10)
     assert rep["examples"]["broken"] == ["Люди/Иван.md -> [[нет.pdf]]", "Люди/Иван.md -> [[МПД 3.0]]"], rep["examples"]["broken"]
+    assert rep["broken"] == 2 and rep["orphans"] == 1, (rep["broken"], rep["orphans"])
 
 
 def test_doctor_note_wins_over_attachment_and_attachment_is_any_file_on_disk(tmp_path):
-    """DS по #449: узел, чей стем кончается на расширение («v2.json»), — узел;
-    вложение — любой файл на диске, без списка расширений; папка и выход
-    через `..` за корень — не цель ссылки."""
+    """DS по #449: узел, чей стем кончается на расширение («v2.json»), — узел
+    даже при файле-тёзке на диске; вложение — любой файл от корня графа;
+    папка, `..`, абсолютный путь и скрытые каталоги — не цели (GLM, luna
+    по #449); `.MD` без регистра; имя файла в NFD находится по NFC-ссылке;
+    слишком длинное имя — битая ссылка, а не падение всего отчёта."""
+    import unicodedata
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
     import graph_doctor
     graph = tmp_path / "g"
     (graph / "Системы").mkdir(parents=True)
     (graph / "Люди").mkdir()
+    (graph / ".trash").mkdir()
     (graph / "Системы" / "v2.json.md").write_text("# v2.json\n", encoding="utf-8")
+    (graph / "v2.json").write_bytes(b"{}")                     # коллизия: заметка важнее файла
+    (graph / "Системы" / "x.md").write_text("# x\n", encoding="utf-8")
+    (graph / "Системы" / "Док.md").write_text("# Док\n", encoding="utf-8")
     (graph / "rec.ogg").write_bytes(b"OggS")
+    (graph / ".trash" / "старое.pdf").write_bytes(b"%PDF")
+    (graph / ".env").write_bytes(b"SECRET=1")                # скрытый файл — не вложение (DS r2)
     (tmp_path / "секрет.pdf").write_bytes(b"%PDF")
+    (graph / unicodedata.normalize("NFD", "схема й.pdf")).write_bytes(b"%PDF")
+    nfc_dir = graph / unicodedata.normalize("NFC", "Café")
+    nfc_dir.mkdir()
+    (nfc_dir / unicodedata.normalize("NFD", "план й.pdf")).write_bytes(b"%PDF")   # смешанные формы (luna r2)
+    dead = ("rec.opus", "Люди", "../секрет.pdf", "../x", "/etc/hosts", ".trash/старое.pdf",
+            ".env", "a" * 300 + ".pdf")
+    alive = ("v2.json", "v2.json.md", "Системы/v2.json", "ДОК.MD", "rec.ogg", "схема й.pdf",
+             "Café/план й.pdf")
     (graph / "Люди" / "Иван.md").write_text(
-        "# Иван\n[[v2.json]] [[Системы/v2.json]] [[rec.ogg]] [[rec.opus]] [[Люди]] [[../секрет.pdf]]\n",
-        encoding="utf-8")
-    rep = graph_doctor.inspect(graph, examples=10)
-    assert rep["examples"]["broken"] == [
-        "Люди/Иван.md -> [[rec.opus]]", "Люди/Иван.md -> [[Люди]]", "Люди/Иван.md -> [[../секрет.pdf]]",
-    ], rep["examples"]["broken"]
-    assert not any("v2.json" in x for x in rep["examples"]["orphans"]), rep["examples"]["orphans"]
+        "# Иван\n" + " ".join(f"[[{x}]]" for x in alive + dead) + "\n", encoding="utf-8")
+    (graph / "_MOC.md").write_text("# MOC\n[[Системы/x]] [[rec.ogg]]\n", encoding="utf-8")
+    rep = graph_doctor.inspect(graph, examples=20)
+    assert rep["examples"]["broken"] == [f"Люди/Иван.md -> [[{x}]]" for x in dead], rep["examples"]["broken"]
+    assert rep["broken"] == len(dead) and rep["links"] == len(alive) + len(dead) + 2
+    # входящие дошли до v2.json и Док; x и Иван без входящих (ссылка из MOC — не связь)
+    assert rep["orphans"] == 2, rep["examples"]["orphans"]
+    assert sorted(rep["examples"]["orphans"]) == ["Люди/Иван.md", "Системы/x.md"], rep["examples"]["orphans"]
+    assert rep["moc_linked"] == 1, "вложение rec.ogg — не узел и не покрытие MOC"
+    # NFD-подслучай на APFS невидим (нормализационно нечувствительна) —
+    # кандидаты проверяются напрямую, чтобы мутация «одна форма» краснела и на маке
+    forms = [c.name for c in graph_doctor._disk_candidates(graph, "схема й.pdf")]
+    assert forms == [unicodedata.normalize("NFC", "схема й.pdf"), unicodedata.normalize("NFD", "схема й.pdf")]
+    assert forms[0] != forms[1]
+    nested = graph_doctor._disk_candidates(graph, "Café/план й.pdf")
+    assert len(nested) == 4 and any(
+        c.parent.name == unicodedata.normalize("NFC", "Café") and c.name == unicodedata.normalize("NFD", "план й.pdf")
+        for c in nested), "каталог в NFC, файл в NFD — есть среди кандидатов"
 
 
 def test_find_canonical_reads_aliases_from_node_frontmatter(tmp_path):
