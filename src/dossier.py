@@ -118,6 +118,11 @@ def _match(qkey: str, key: str) -> bool:
     if qkey == key:
         return True
     short, long = (qkey, key) if len(qkey) <= len(key) else (key, qkey)
+    if len(short) == 2 and "\u4e00" <= short[0] <= "\u9fff":
+        # биграмма против цельной CJK-последовательности из индекса прежней
+        # версии: подстрока, иначе китайский поиск оживает только после
+        # пересборки досье (luna r2 по #455)
+        return short in long
     return len(short) >= 4 and long.startswith(short)
 
 

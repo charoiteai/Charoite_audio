@@ -264,3 +264,18 @@ def test_long_cjk_run_is_split_into_bigrams(tmp_path):
     ]}, ensure_ascii=False), encoding="utf-8")
     hits = dossier.lookup(folder, "数据平台迁移计划")
     assert hits and hits[0]["тема"] == "数据平台迁移", hits
+
+
+def test_bigram_query_matches_a_whole_cjk_key_of_an_old_index(tmp_path):
+    """Индекс прежней версии хранит цельную CJK-последовательность; биграммы
+    запроса обязаны находить её без пересборки досье (luna r2 по #455)."""
+    import dossier
+    folder = tmp_path / "Досье"
+    folder.mkdir()
+    (folder / dossier.INDEX_JSON).write_text(json.dumps({"досье": [
+        {"тема": "数据平台迁移", "ключи": ["数据平台迁移", "会议"]},
+        {"тема": "Отчётность", "ключи": ["отчетност", "бюджет"]},
+    ]}, ensure_ascii=False), encoding="utf-8")
+    hits = dossier.lookup(folder, "数据平台迁移计划")
+    assert hits and hits[0]["тема"] == "数据平台迁移", hits
+    assert not dossier.lookup(folder, "бюджет квартала") or dossier.lookup(folder, "бюджет квартала")[0]["тема"] == "Отчётность"

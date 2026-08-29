@@ -687,3 +687,15 @@ def test_brain_mark_counts_successful_posts_and_retry_sends_only_the_rest(tmp_pa
         mark.write_text(old, encoding="utf-8")
         assert g.send_to_brain("2026-08-29_1200", "Планёрка", people, ["релиз"], ["а", "б", "в", "г"], mark, post=post) == 0
     assert len(sent) == 3
+    # повтор обработки извлёк решения заново, в другом порядке и с новым: ушли
+    # только новые, старые не дублируются (luna r2 по #455)
+    mark.unlink()
+    sent.clear()
+    fail_from[0] = 3
+    g.send_to_brain(*args, post=post)                       # шапка + «ждём CI», обрыв на втором решении
+    assert mark.read_text(encoding="utf-8").startswith("sent 2/3\n")
+    fail_from[0] = 99
+    sent.clear()
+    n = g.send_to_brain("2026-08-29_1200", "Планёрка", people, ["релиз"], ["новое решение", "мёрж в пятницу", "ждём CI"], mark, post=post)
+    assert n == 2 and [t.split(": ")[1] for t in sent] == ["новое решение", "мёрж в пятницу"], sent
+    assert mark.read_text(encoding="utf-8").startswith("sent 4/4\n")

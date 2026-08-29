@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -486,10 +487,11 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
     после первого удачного POST при повторе досылал бы с начала — дубль
     (GLM по #455). Гарантия — at-least-once: факт, учтённый в отметке, не
     повторяется; обрыв между удачным POST и записью отметки досылает ровно
-    его один раз. Отметка прежних версий (одна строка заголовка) = всё
-    отправлено; маркер `sent` не даёт принять тему вида «3/5» за счётчик
-    (DS r2). `meeting` — ключ графа: по нему «забыть» и переименование
-    доходят до памяти (brain /forget, /rename с 23.08, карточка №41).
+    его один раз; переформулированное при повторе решение — новый факт.
+    Отметка прежних версий (одна строка заголовка) = всё отправлено; маркер
+    `sent` не даёт принять тему вида «3/5» за счётчик (DS r2). `meeting` —
+    ключ графа: по нему «забыть» и переименование доходят до памяти (brain
+    /forget, /rename с 23.08, карточка №41).
     """
     post = post or requests.post
     who = ", ".join(p["имя"] for p in people[:6])
@@ -499,26 +501,39 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
     facts += [{"text": f"Решение встречи {stamp} «{title}»: {d}",
                "category": "decision", "importance": 0.7, "meeting": stamp}
               for d in decisions[:6]]
-    sent = 0
+    def _h(fact: dict) -> str:
+        return hashlib.sha1(fact["text"].encode("utf-8")).hexdigest()[:16]
+
+    # Отметка помнит ХЕШИ отправленных фактов, а не позицию: повтор обработки
+    # извлекает решения заново, порядок и состав могут отличаться — смещение
+    # слало бы старые повторно и теряло новые (luna r2 по #455). Строка без
+    # маркера `sent` — отметка прежних версий: всё отправлено.
+    done: set[str] = set()
+    todo = facts
     if mark.exists():
-        head = mark.read_text(encoding="utf-8", errors="replace").split("\n", 1)[0].strip()
-        m = re.match(r"^sent (\d+)/(\d+)$", head)
-        sent = int(m.group(1)) if m else len(facts)
-    if sent >= len(facts):
+        lines = mark.read_text(encoding="utf-8", errors="replace").splitlines()
+        if lines and lines[0].startswith("sent "):
+            done = {ln[5:] for ln in lines[1:] if ln.startswith("sha1:")}
+            todo = [f for f in facts if _h(f) not in done]
+        else:
+            todo = []
+    if not todo:
         print("память Чароита: факты этой встречи уже отправлены — повтор пропущен")
         return 0
     n = 0
     try:
-        for fact in facts[sent:]:
+        for fact in todo:
             # 15с: brain ждёт эмбеддинг bge-m3 из Ollama, занятой нашим же extract —
             # 5с не хватало (20.07: «memory недоступна», решения не попали в recall)
             post("http://127.0.0.1:8100/remember", json=fact, timeout=15).raise_for_status()
             n += 1
+            done.add(_h(fact))
             mark.parent.mkdir(parents=True, exist_ok=True)
-            safe_write.write_text(mark, f"sent {sent + n}/{len(facts)}\n{title}\n")
+            safe_write.write_text(mark, f"sent {len(done)}/{len(facts)}\n"
+                                  + "".join(f"sha1:{h}\n" for h in sorted(done)) + f"# {title}\n")
         print(f"память Чароита: +{n} фактов")
     except Exception as e:  # noqa: BLE001 — brain может быть выключен, не валим граф
-        print(f"память Чароита недоступна (ушло {n} из {len(facts) - sent}): {e}")
+        print(f"память Чароита недоступна (ушло {n} из {len(todo)}): {e}")
     return n
 
 
