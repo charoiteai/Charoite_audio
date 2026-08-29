@@ -118,11 +118,6 @@ def _match(qkey: str, key: str) -> bool:
     if qkey == key:
         return True
     short, long = (qkey, key) if len(qkey) <= len(key) else (key, qkey)
-    if len(short) == 2 and "\u4e00" <= short[0] <= "\u9fff":
-        # биграмма против цельной CJK-последовательности из индекса прежней
-        # версии: подстрока, иначе китайский поиск оживает только после
-        # пересборки досье (luna r2 по #455)
-        return short in long
     return len(short) >= 4 and long.startswith(short)
 
 
@@ -485,9 +480,21 @@ def load_index(folder: pathlib.Path) -> list[dict]:
     if not p.exists():
         return []
     try:
-        return json.loads(p.read_text(encoding="utf-8")).get("досье", [])
+        entries = json.loads(p.read_text(encoding="utf-8")).get("досье", [])
     except (OSError, json.JSONDecodeError):
         return []
+    # индекс прежней версии хранит цельные CJK-последовательности; запрос теперь
+    # биграммный — нормализуем ключи при чтении, а не ослабляем сравнение
+    # (luna r2, критика GLM r3): свежий индекс это не трогает
+    def _cjk_long(k: str) -> bool:
+        return len(k) > 2 and "\u4e00" <= k[0] <= "\u9fff"
+    for e in entries:
+        keys = e.get("ключи")
+        if keys and any(_cjk_long(k) for k in keys):
+            e["ключи"] = list(dict.fromkeys(
+                bg for k in keys
+                for bg in ([k[i:i + 2] for i in range(len(k) - 1)] if _cjk_long(k) else [k])))
+    return entries
 
 
 def lookup(folder: pathlib.Path, query: str, limit: int = 3) -> list[dict]:

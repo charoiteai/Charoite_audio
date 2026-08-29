@@ -487,7 +487,8 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
     после первого удачного POST при повторе досылал бы с начала — дубль
     (GLM по #455). Гарантия — at-least-once: факт, учтённый в отметке, не
     повторяется; обрыв между удачным POST и записью отметки досылает ровно
-    его один раз; переформулированное при повторе решение — новый факт.
+    его один раз; переформулированное при повторе решение — новый факт, а
+    смена темы встречи — нет (ключ решения — его текст, шапки — встреча).
     Отметка прежних версий (одна строка заголовка) = всё отправлено; маркер
     `sent` не даёт принять тему вида «3/5» за счётчик (DS r2). `meeting` —
     ключ графа: по нему «забыть» и переименование доходят до памяти (brain
@@ -495,30 +496,29 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
     """
     post = post or requests.post
     who = ", ".join(p["имя"] for p in people[:6])
-    facts = [{"text": f"Встреча {stamp} «{title or 'без названия'}» ({who}): темы — "
-                      + "; ".join(topics[:4]),
-              "category": "learned", "importance": 0.6, "meeting": stamp}]
-    facts += [{"text": f"Решение встречи {stamp} «{title}»: {d}",
-               "category": "decision", "importance": 0.7, "meeting": stamp}
-              for d in decisions[:6]]
-    def _h(fact: dict) -> str:
-        # шапка одна на встречу — её ключ сама встреча, а не текст тем: темы
-        # при повторе извлекаются заново, и хеш текста слал бы шапку дважды (DS r3)
-        if fact["category"] == "learned":
-            return "head"
-        return hashlib.sha256(fact["text"].encode("utf-8")).hexdigest()[:16]
-
-    # Отметка помнит ХЕШИ отправленных фактов, а не позицию: повтор обработки
+    # Ключ факта — не текст POST-а: тема входит в каждый текст, а её меняют
+    # rename_meeting (brain /rename) и повторное извлечение — и все факты
+    # стали бы «новыми» (GLM r3). Шапка одна на встречу — ключ «head»;
+    # решение — хеш его собственной формулировки (luna r2/r3).
+    keyed: list[tuple[str, dict]] = [("head", {
+        "text": f"Встреча {stamp} «{title or 'без названия'}» ({who}): темы — " + "; ".join(topics[:4]),
+        "category": "learned", "importance": 0.6, "meeting": stamp})]
+    for d in decisions[:6]:
+        key = hashlib.sha256(d.strip().lower().encode("utf-8")).hexdigest()[:16]
+        if all(key != k for k, _ in keyed):     # одно решение дважды в списке — один факт (luna r3)
+            keyed.append((key, {"text": f"Решение встречи {stamp} «{title}»: {d}",
+                                "category": "decision", "importance": 0.7, "meeting": stamp}))
+    # Отметка помнит КЛЮЧИ отправленных фактов, а не позицию: повтор обработки
     # извлекает решения заново, порядок и состав могут отличаться — смещение
     # слало бы старые повторно и теряло новые (luna r2 по #455). Строка без
     # маркера `sent` — отметка прежних версий: всё отправлено.
     done: set[str] = set()
-    todo = facts
+    todo = keyed
     if mark.exists():
         lines = mark.read_text(encoding="utf-8", errors="replace").splitlines()
         if lines and lines[0].startswith("sent "):
             done = {ln[3:] for ln in lines[1:] if ln.startswith("id:")}
-            todo = [f for f in facts if _h(f) not in done]
+            todo = [(k, f) for k, f in keyed if k not in done]
         else:
             todo = []
     if not todo:
@@ -526,19 +526,26 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
         return 0
     n = 0
     try:
-        for fact in todo:
+        for key, fact in todo:
             # 15с: brain ждёт эмбеддинг bge-m3 из Ollama, занятой нашим же extract —
             # 5с не хватало (20.07: «memory недоступна», решения не попали в recall)
             post("http://127.0.0.1:8100/remember", json=fact, timeout=15).raise_for_status()
             n += 1
-            done.add(_h(fact))
+            done.add(key)
             mark.parent.mkdir(parents=True, exist_ok=True)
-            safe_write.write_text(mark, f"sent {len(done)}/{len(facts)}\n"
+            covered = sum(1 for k, _ in keyed if k in done)   # из ТЕКУЩЕГО списка (GLM r3)
+            safe_write.write_text(mark, f"sent {covered}/{len(keyed)}\n"
                                   + "".join(f"id:{h}\n" for h in sorted(done)) + f"# {title}\n")
         print(f"память Чароита: +{n} фактов")
     except Exception as e:  # noqa: BLE001 — brain может быть выключен, не валим граф
         print(f"память Чароита недоступна (ушло {n} из {len(todo)}): {e}")
     return n
+
+
+def theme_slug(title: str) -> str:
+    """Тема → хвост имени файла («Отчёт по задачам» → «Отчет_по_задачам»);
+    служебный хвост страхует meeting_stamp.guard_slug."""
+    return meeting_stamp.guard_slug(re.sub(r"[,;:!?.]", "", safe_name(title)).replace(" ", "_")[:50])
 
 
 def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.Path:
@@ -551,7 +558,7 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
     свои файлы, а файлы соседней встречи той же минуты. Занятое имя — сторож
     от затирания: файл остаётся как есть, тема идёт только в шапку.
     """
-    slug = re.sub(r"[,;:!?.]", "", safe_name(title)).replace(" ", "_")[:50]
+    slug = theme_slug(title)
     new_t = tpath.with_name(f"{stamp}_{slug}.md")
     if not new_t.exists():
         for extra in tpath.parent.glob(f"{bare}_*.md"):  # _minutes, _hints…
@@ -1484,7 +1491,7 @@ def main():
             timeout=LLM_TIMEOUT, revive=True, busy_wait=BUSY_WAIT,
         )
         if debrief.strip():
-            slug2 = re.sub(r"[,;:!?.]", "", safe_name(title)).replace(" ", "_")[:50] if title else ""
+            slug2 = theme_slug(title) if title else ""
             dpath = tpath.with_name(f"{stamp}_{slug2}_разбор.md" if slug2 else f"{stamp}_разбор.md")
             safe_write.write_text(dpath, f"<!-- {stamp} · {title or 'встреча'} -->\n" + debrief)
             print(f"разбор: {dpath.name}")
@@ -1528,7 +1535,7 @@ def main():
             import subprocess as _sp
             # путь к claude и выбор модели теперь дело воркера: здесь остаётся
             # только решение «запускать разбор» и имена файлов
-            slug3 = re.sub(r"[,;:!?.]", "", safe_name(title)).replace(" ", "_")[:50] if title else ""
+            slug3 = theme_slug(title) if title else ""
             rev = tpath.with_name(f"{stamp}_{slug3}_ревизия_claude.md" if slug3 else f"{stamp}_ревизия_claude.md")
             log = ROOT / "logs" / f"cloud_review_{stamp}.log"
             log.parent.mkdir(exist_ok=True)

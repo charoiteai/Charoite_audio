@@ -157,3 +157,27 @@ def test_retitle_of_a_per_second_meeting_leaves_the_minute_neighbour_alone(tmp_p
     assert out.name == f"{bare}_Вторая.md" and "— Вторая" in out.read_text(encoding="utf-8")
     assert (d / f"{bare}_Вторая_minutes.md").exists()
     assert neighbour.exists() and (d / f"{minute}_Первая_minutes.md").exists()
+
+
+def test_theme_ending_with_an_aux_word_stays_a_recognisable_meeting(tmp_path):
+    """«Демо live» / «Разбор» как тема давали имя, которое stamp_of считал
+    производным файлом: встреча пропадала из списков и теряла замок
+    пересборки (luna r3 по #455). Хвост крепится дефисом, одно слово —
+    «-встреча»; производные едут вместе с главным и остаются производными."""
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+    import graph_updater as g
+    import meeting_stamp
+    d = tmp_path / "transcripts"
+    d.mkdir()
+    for title, tail in (("Демо live", "Демо-live"), ("Разбор", "Разбор-встреча"), ("Ревизия claude", "Ревизия-claude")):
+        stamp = f"2026-08-29_12{len(tail):02d}"
+        live = d / f"{stamp}.md"
+        live.write_text(f"# Встреча {stamp}\n\nтекст\n", encoding="utf-8")
+        (d / f"{stamp}_minutes.md").write_text("минутки", encoding="utf-8")
+        out = g.retitle(live, stamp, stamp, title)
+        assert out.name == f"{stamp}_{tail}.md", out.name
+        assert meeting_stamp.stamp_of(out.stem) == stamp, "главный файл узнаётся по имени"
+        moved = d / f"{stamp}_{tail}_minutes.md"
+        assert moved.exists() and meeting_stamp.stamp_of(moved.stem) is None, "производный остался производным"
+    assert g.theme_slug("Отчёт по задачам, итоги") == "Отчёт_по_задачам_итоги"

@@ -278,4 +278,6 @@ def test_bigram_query_matches_a_whole_cjk_key_of_an_old_index(tmp_path):
     ]}, ensure_ascii=False), encoding="utf-8")
     hits = dossier.lookup(folder, "数据平台迁移计划")
     assert hits and hits[0]["тема"] == "数据平台迁移", hits
-    assert not dossier.lookup(folder, "бюджет квартала") or dossier.lookup(folder, "бюджет квартала")[0]["тема"] == "Отчётность"
+    hits = dossier.lookup(folder, "бюджет квартала")
+    assert hits and hits[0]["тема"] == "Отчётность", hits
+    assert all(len(k) == 2 for k in dossier.load_index(folder)[0]["ключи"]), "старый ключ порезан на биграммы при чтении"

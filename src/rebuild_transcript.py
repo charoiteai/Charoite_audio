@@ -687,6 +687,7 @@ def mark_running(live: pathlib.Path) -> pathlib.Path | None:
     if not stamp:
         return None
     f = _pid_file(stamp)
+    fh = None
     try:
         f.parent.mkdir(parents=True, exist_ok=True)
         fh = f.open("a")           # не «w»: усечение до замка стирало pid живого прогона (DS, Critical)
@@ -700,6 +701,8 @@ def mark_running(live: pathlib.Path) -> pathlib.Path | None:
         fh.write(str(os.getpid()))
         fh.flush()
     except OSError as e:
+        if fh is not None:
+            fh.close()             # том без flock: дескриптор не держим (GLM r3)
         log(f"отметка пересборки не взята ({e}): защита от двойного прогона снята")
         return None
     _RUNNING_LOCKS.append(fh)   # держим открытым — замок живёт, пока жив процесс

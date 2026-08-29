@@ -78,7 +78,7 @@ def pretty_and_slug(title: str) -> tuple[str, str]:
     pretty = _safe(title.replace("_", " ").strip())
     if not pretty:
         sys.exit("новая тема пуста")
-    slug = re.sub(r"[,;:!?.]", "", pretty).replace(" ", "_")[:50]
+    slug = meeting_stamp.guard_slug(re.sub(r"[,;:!?.]", "", pretty).replace(" ", "_")[:50])
     return pretty, slug
 
 

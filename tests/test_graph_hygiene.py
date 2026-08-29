@@ -700,3 +700,13 @@ def test_brain_mark_counts_successful_posts_and_retry_sends_only_the_rest(tmp_pa
     n = g.send_to_brain("2026-08-29_1200", "Планёрка", people, ["сроки", "релиз"], ["новое решение", "мёрж в пятницу", "ждём CI"], mark, post=post)
     assert n == 2 and [t.split(": ")[1] for t in sent] == ["новое решение", "мёрж в пятницу"], sent
     assert mark.read_text(encoding="utf-8").startswith("sent 4/4\n")
+    # тему переименовали (brain /rename уже знает новую) — факты не «новые»;
+    # одно решение дважды в списке — один факт (GLM r3, luna r3)
+    sent.clear()
+    assert g.send_to_brain("2026-08-29_1200", "Другая тема", people, ["релиз"], ["ждём CI", "ждём CI", "мёрж в пятницу"], mark, post=post) == 0
+    # список короче, чем когда-либо ушло: счётчик по текущему списку, не «5/2» (GLM r3)
+    assert g.send_to_brain("2026-08-29_1200", "Планёрка", people, ["релиз"], ["Z"], mark, post=post) == 1
+    assert mark.read_text(encoding="utf-8").startswith("sent 2/2\n")
+    mark.unlink()
+    sent.clear()
+    assert g.send_to_brain("2026-08-29_1200", "Планёрка", people, ["релиз"], ["X", "X"], mark, post=post) == 2 and len(sent) == 2
