@@ -111,9 +111,10 @@ def test_seam_needs_adjacent_chunks_and_only_the_head_piece(tmp_path, monkeypatc
     assert tr2.add("бюджет на квартал и сроки", "mic") == "и сроки"
     # текст без номера + чанк с номером: сосед неизвестен — не режем (luna r2)
     assert tr2.add("бюджет на квартал и сроки и ещё", "mic", seq=8) == "бюджет на квартал и сроки и ещё"
-    # смесь int и (канал, n) — не соседи; номер после номера None — тоже нет
+    # смесь int и (канал, n) — не соседи в обе стороны (int живёт в канале «_»)
     assert tr2.add("сроки и ещё немного", "mic", seq=("mic", 9)) == "сроки и ещё немного"
-    assert tr2.add("ещё немного и всё", "mic", seq=None) == "и всё", "без номера — как раньше, сосед"
+    assert tr2.add("ещё немного и дальше", "mic", seq=10) == "ещё немного и дальше"
+    assert tr2.add("немного и дальше и всё", "mic", seq=None) == "и всё", "без номера — как раньше, сосед"
 
 
 def test_fully_eaten_chunk_keeps_the_seam_chain_alive(tmp_path, monkeypatch):
@@ -128,6 +129,10 @@ def test_fully_eaten_chunk_keeps_the_seam_chain_alive(tmp_path, monkeypatch):
     tr.add("после лага говорим про релиз", "Собеседник", seq=4)
     assert tr.add("говорим про релиз", "Собеседник 3", seam_with="Собеседник", seq=5) is None
     assert tr.add("говорим про релиз в среду", "Собеседник 3", seq=6) == "в среду"
+    # и прежняя метка канала остаётся соседом: лаг вернулся на один цикл (GLM #453)
+    tr.add("после лага говорим про релиз", "Собеседник", seq=14)
+    assert tr.add("говорим про релиз", "Собеседник 3", seam_with="Собеседник", seq=15) is None
+    assert tr.add("говорим про релиз в среду", "Собеседник", seq=16) == "в среду"
 
 
 def test_seq_is_per_channel_when_one_label_sounds_in_both(tmp_path, monkeypatch):

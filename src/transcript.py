@@ -177,26 +177,24 @@ class Transcript:
         return new
 
     @staticmethod
-    def _prev_of(seq):
-        """Номер соседа слева: int → int-1, (канал, n) → (канал, n-1)."""
-        if isinstance(seq, tuple):
-            return (seq[0], seq[1] - 1)
-        return seq - 1
+    def _seq_key(seq):
+        """Один домен номеров — (канал, n): голый int живёт в канале «_»
+        (CLI, тесты), чтобы соседство не выбиралось по типу аргумента (GLM #453)."""
+        if seq is None:
+            return None
+        return seq if isinstance(seq, tuple) else ("_", seq)
 
     def _adjacent(self, label: str, seq) -> bool:
         """Последний текст метки — из соседнего чанка того же канала? Без
-        номеров — да (как раньше). Номер — int или (канал, n): одна метка
-        может звучать в двух каналах (владелец в микрофоне и в эхе), и
-        счётчики разных каналов не должны сравниваться как один (DS r2)."""
+        номеров — да (как раньше). Одна метка может звучать в двух каналах
+        (владелец в микрофоне и в эхе): счётчики разных каналов не
+        сравниваются как один (DS r2)."""
         if seq is None:
             return True
         prev_seq = self._prev_seq.get(label)
         if prev_seq is None:
             return False      # номер соседа неизвестен (текст без номера) — не сосед (luna r2)
-        try:
-            return prev_seq == self._prev_of(seq)
-        except TypeError:
-            return False
+        return prev_seq == (seq[0], seq[1] - 1)
 
     def add(self, text: str, speaker: str | None = None,
             seam_with: str | None = None, seq: int | tuple[str, int] | None = None,
@@ -217,23 +215,28 @@ class Transcript:
         """
         now = dt.datetime.now()
         spk = speaker or "—"
+        seq = self._seq_key(seq)
         with self._lock:
             spk = self._names.get(spk, spk)
-            prev = ""
+            prev, source = "", ""
             if head:
                 other = self._names.get(seam_with, seam_with) if seam_with else None
                 if other and other != spk and self._adjacent(other, seq):
-                    prev = self._prev_chunk.get(other, "")
+                    prev, source = self._prev_chunk.get(other, ""), other
                 elif self._adjacent(spk, seq):
-                    prev = self._prev_chunk.get(spk, "")
+                    prev, source = self._prev_chunk.get(spk, ""), spk
             if prev:
                 text = self._cut_overlap(prev, text)
                 if not text:
                     # Чанк съеден целиком, но он БЫЛ распознан: следующий чанк
                     # перекрывается с его хвостом, то есть с текстом-источником,
-                    # и цепочка соседей не рвётся (DS, круг-2 #452).
+                    # и цепочка соседей не рвётся (DS, круг-2 #452). Источник —
+                    # прежняя метка канала? Её номер продвигается тоже: лаг может
+                    # вернуться на один цикл, и её голова — сосед (GLM #453).
                     self._prev_chunk[spk] = prev
                     self._prev_seq[spk] = seq
+                    if source and source != spk:
+                        self._prev_seq[source] = seq
                     self._add_no += 1
                     self._prev_no[spk] = self._add_no
                     return None

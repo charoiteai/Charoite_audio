@@ -811,7 +811,8 @@ def test_every_physical_chunk_consumes_a_number_even_silent_or_echo():
     hub._bufs = {"blackhole": _tone(n), "mic": _tone(n)}          # оба звучат: mic — эхо, отброшен
     out = dict(hub.pull_labeled())
     assert hub.SPEAKER["mic"] not in out
-    assert hub.chunk_seq(hub.SPEAKER["mic"]) == ("mic", 0) and hub.chunk_seq(hub.SPEAKER["blackhole"]) == ("blackhole", 0)
+    assert hub.chunk_seq(hub.SPEAKER["mic"]) == ("mic", 0), "эхо-чанк mic номер потребил"
+    assert hub.chunk_seq(hub.SPEAKER["blackhole"]) == ("blackhole", 0)
     hub._bufs = {"blackhole": np.zeros(n, dtype=np.float32), "mic": np.zeros(n, dtype=np.float32)}   # тишина
     assert hub.pull_labeled() == []
     assert hub.chunk_seq(hub.SPEAKER["mic"]) == ("mic", 1)
