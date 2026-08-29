@@ -64,38 +64,55 @@ def test_seam_across_label_change_on_the_same_channel(tmp_path, monkeypatch):
     """Лаг → здоровый: тот же канал, другая метка — шов всё равно один (№69).
     Чужой канал без `seam_with` не сверяется: повтор слов — речь."""
     tr = make_transcript(tmp_path, monkeypatch)
-    tr.add("мы обсудили бюджет на квартал", "Собеседник")            # lagging: метка канала
+    tr.add("мы обсудили бюджет на квартал", "Собеседник", seq=7)          # lagging: метка канала
     added = tr.add("бюджет на квартал и сроки запуска", "Собеседник 3",
-                   seam_with="Собеседник")                            # здоровый: метка голоса
+                   seam_with="Собеседник", seq=8)                          # здоровый: метка голоса
     assert added == "и сроки запуска"
     assert tr.full().count("бюджет на квартал") == 1
-    assert tr.add("бюджет на квартал и сроки запуска", "mic") == "бюджет на квартал и сроки запуска"
+    assert tr.add("бюджет на квартал и сроки запуска", "mic", seq=8) == "бюджет на квартал и сроки запуска"
     # переименование задним числом не ломает сверку: метка ищется через _names
-    tr.add("решили перенести релиз", "Собеседник 3")
+    tr.add("решили перенести релиз", "Собеседник 3", seq=9)
     tr.rename_speaker("Собеседник 3", "Алексей")
-    assert tr.add("решили перенести релиз на среду", "Собеседник 4", seam_with="Собеседник 3") == "на среду"
+    assert tr.add("решили перенести релиз на среду", "Собеседник 4", seam_with="Собеседник 3", seq=10) == "на среду"
     # и свой же шов переименованного голоса: ключи дедупа переезжают вместе с меткой
-    tr.add("после обеда обсудим тесты", "Собеседник 5")
+    tr.add("после обеда обсудим тесты", "Собеседник 5", seq=11)
     tr.rename_speaker("Собеседник 5", "Мария")
-    assert tr.add("обсудим тесты и релиз", "Собеседник 5") == "и релиз"
+    assert tr.add("обсудим тесты и релиз", "Собеседник 5", seq=12) == "и релиз"
 
 
-def test_seam_across_labels_expires_with_the_window(tmp_path, monkeypatch):
-    import datetime as real_dt
-
-    class Clock:
-        current = real_dt.datetime(2026, 8, 29, 16, 40, 0)
-
-        @classmethod
-        def now(cls, tz=None):
-            return cls.current
-
-    monkeypatch.setattr(transcript.dt, "datetime", Clock)
+def test_seam_needs_adjacent_chunks_and_only_the_head_piece(tmp_path, monkeypatch):
+    """Сосед — ровно seq-1, часы ни при чём: свой текст из-до-лага (seq 3) не
+    режет чанк 9; второй кусок того же чанка (head=False) шва не получает —
+    короткое эхо второго человека остаётся; при сменившейся метке источник
+    шва один — прежняя метка канала, свой старый текст не режет второй раз."""
     tr = make_transcript(tmp_path, monkeypatch)
-    tr.add("мы обсудили бюджет на квартал", "Собеседник")
-    Clock.current += real_dt.timedelta(seconds=transcript.Transcript.SEAM_WINDOW + 1)
-    assert tr.add("бюджет на квартал и сроки запуска", "Собеседник 3",
-                  seam_with="Собеседник") == "бюджет на квартал и сроки запуска", "старый чанк — не шов"
+    tr.add("мы обсудили бюджет на квартал", "Собеседник 3", seq=3)
+    tr.add("потом был лаг", "Собеседник", seq=8)
+    # чанк 9: голос 3 вернулся, seam_with — метка лаг-чанка; свой текст с seq=3 — не сосед
+    assert tr.add("бюджет на квартал и что дальше", "Собеседник 3",
+                  seam_with="Собеседник", seq=9) == "бюджет на квартал и что дальше"
+    # чанк 10, два голоса: голова режется по соседу, второй кусок — нет
+    tr.add("вот такой план на осень", "Собеседник 3", seq=10)
+    assert tr.add("такой план на осень мы принимаем целиком", "Собеседник 3", seq=11) == "мы принимаем целиком"
+    assert tr.add("вот такой план на осень", "Собеседник 4", seq=11, head=False) == "вот такой план на осень"
+    # источник шва один: seam_with сосед — свой текст (тоже сосед) не применяется вторым
+    tr.add("бюджет на квартал", "B", seq=20)
+    tr.add("и сроки запуска", "A", seq=21)
+    assert tr.add("бюджет на квартал и сроки запуска", "B", seam_with="A", seq=22) \
+        == "бюджет на квартал и сроки запуска", "свой текст с seq=20 — не сосед, шов только с A"
+    # без номеров — прежнее поведение: последний текст метки считается соседом
+    (tmp_path / "b").mkdir()
+    tr2 = make_transcript(tmp_path / "b", monkeypatch)
+    tr2.add("мы обсудили бюджет на квартал", "mic")
+    assert tr2.add("бюджет на квартал и сроки", "mic") == "и сроки"
+
+
+def test_rename_keeps_the_fresher_seam_when_the_new_label_already_wrote(tmp_path, monkeypatch):
+    tr = make_transcript(tmp_path, monkeypatch)
+    tr.add("Мария сказала раньше", "Мария", seq=1)
+    tr.add("после обеда обсудим тесты", "Собеседник 5", seq=5)
+    tr.rename_speaker("Собеседник 5", "Мария")
+    assert tr.add("обсудим тесты и релиз", "Мария", seq=6) == "и релиз", "свежий шов победил старый"
 
 
 def test_split_gap_breaks_block_with_frozen_clock(tmp_path, monkeypatch):
