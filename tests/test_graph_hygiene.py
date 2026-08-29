@@ -687,8 +687,10 @@ def test_placeholder_migration_turns_links_into_text_and_moves_nodes(tmp_path):
     assert p["nodes"] == ["Собеседник 1 (Саша)", "Собеседник 3"] and p["links"] == 12, p   # + CRLF-файл + указатель
     assert p["manual"] == ["Таня (Собеседник 4)"], "имя + метка в скобках — ручное решение, не миграция"
     (graph / "Люди" / "Таня.md").write_text("# Таня\n", encoding="utf-8")
-    assert mp.manual_hints(graph, p["manual"]) == {"Таня (Собеседник 4)": ["Таня"]}, "кандидат на слияние подсказан"
+    (graph / "Люди" / "Таня Петрова.md").write_text("# Таня Петрова\n", encoding="utf-8")
+    assert mp.manual_hints(graph, p["manual"]) == {"Таня (Собеседник 4)": ["Таня", "Таня Петрова (частично)"]}
     (graph / "Люди" / "Таня.md").unlink()
+    (graph / "Люди" / "Таня Петрова.md").unlink()
     assert p["namesakes_elsewhere"] == [g.name_key("Собеседник 3")], "тёзка в Системах — голую ссылку оставить"
     assert meeting.read_text(encoding="utf-8") == before, "dry-run ничего не меняет"
     out = mp.apply(graph, tmp_path / "backup", log=lambda *_: None)
@@ -707,6 +709,7 @@ def test_placeholder_migration_turns_links_into_text_and_moves_nodes(tmp_path):
     assert (dest / "Люди" / "Собеседник 3.md").exists() and (dest / "files" / "Встречи" / "2026-08-01_1000.md").read_text(encoding="utf-8") == before
     manifest = json.loads((dest / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["links"] == 12 and manifest["nodes"] == ["Собеседник 1 (Саша)", "Собеседник 3"]
+    assert manifest["files"] == p["files"] and out["links"] == 12, "в описи — фактические счётчики"
     assert manifest["status"] == "applied" and manifest["leftovers"] == [] and "rollback" in manifest
     assert manifest["index_rebuilt"] is True
     assert (dest / "files" / "Люди" / "_ЛЮДИ.md").read_text(encoding="utf-8") == index_before, "копия указателя как был"
@@ -765,12 +768,37 @@ def test_placeholder_migration_writes_the_manifest_before_touching_the_graph(tmp
     assert manifest["status"] == "partial" and manifest["files_done"] == ["Встречи/2026-08-01_1000.md"]
     assert (dest / "files" / "Встречи" / "2026-08-01_1000.md").exists(), "копия изменённого файла есть"
     assert (graph / "Люди" / "Собеседник 2.md").exists(), "узел на месте — перенос не удался"
-    # гейт живой встречи повторяется после замка
+    # гейт живой встречи повторяется ПОСЛЕ замка: под настоящим data_root замок берётся,
+    # и live() видит, что вход в замок уже случился (luna r2)
     (graph / "Встречи" / "2026-08-01_1000.md").write_text("- [[Люди/Собеседник 2]] сказал\n", encoding="utf-8")
     monkeypatch.setattr(mp.shutil, "copy2", __import__("shutil").copy2)
+    data_root = tmp_path / "data2"
+    (data_root / "logs").mkdir(parents=True)
+    import charoite_paths
+    lock_file = charoite_paths.graph_backups(graph, "cloud_backup", root=data_root).parent / "cloud.lock"
+    seen = {}
+
+    def live_after_lock() -> bool:
+        seen["lock_exists"] = lock_file.exists()
+        return True
+
     with pytest.raises(SystemExit):
-        mp.apply(graph, tmp_path / "backup2", log=lambda *_: None, live=lambda: True)
+        mp.apply(graph, tmp_path / "backup2", log=lambda *_: None, data_root=data_root, live=live_after_lock)
+    assert seen == {"lock_exists": True}, "гейт вызван уже под замком"
     assert (graph / "Люди" / "Собеседник 2.md").exists() and "[[Люди/Собеседник 2]]" in (graph / "Встречи" / "2026-08-01_1000.md").read_text(encoding="utf-8")
+    # partial-опись: объект в работе назван, счётчики фактические
+    real_write = mp.safe_write.write_text
+
+    def flaky(path, text, *a, **k):
+        real_write(path, text, *a, **k)
+        raise KeyboardInterrupt
+    monkeypatch.setattr(mp.safe_write, "write_text", flaky)
+    with pytest.raises(KeyboardInterrupt):
+        mp.apply(graph, tmp_path / "backup3", log=lambda *_: None)
+    dest3 = next((tmp_path / "backup3").iterdir())
+    m3 = json.loads((dest3 / "manifest.json").read_text(encoding="utf-8"))
+    assert m3["status"] == "partial" and m3["in_flight"]["file"] == "Встречи/2026-08-01_1000.md"
+    assert m3["files_done"] == [] and m3["links"] == 0
 
 
 def test_placeholder_migration_cli_guards(tmp_path):

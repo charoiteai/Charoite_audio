@@ -19,7 +19,8 @@ r"""Миграция накопленных узлов-меток («Собес�
 но указатель не пересобран или остались ссылки на снятые узлы (см. манифест).
 
     .venv/bin/python scripts/migrate_placeholders.py --graph "<путь к графу>"
-    .venv/bin/python scripts/migrate_placeholders.py --graph "<путь>" --apply --backup ~/charoite-backup/125
+    .venv/bin/python scripts/migrate_placeholders.py --graph "<путь>" --apply \
+        --backup ~/charoite-backup/125 --root "<корень данных Чароита>"   # или CHAROITE_ROOT
 """
 from __future__ import annotations
 
@@ -226,15 +227,24 @@ def manual_hints(graph: pathlib.Path, manual: list[str]) -> dict[str, list[str]]
     people = graph / "Люди"
     hints: dict[str, list[str]] = {}
     for stem in manual:
-        base = re.sub(r"\s*[(（].*?[)）]\s*$", "", stem).strip()
+        name = pathlib.PurePosixPath(stem).name        # manual — относительный путь с подпапкой
+        base = re.sub(r"\s*[(（].*?[)）]\s*$", "", name).strip()
         key = graph_updater.name_key(base)
         if not key:
             continue
-        cands = [p.stem for p in people.rglob("*.md")
-                 if not p.name.startswith("_") and p.stem != stem
-                 and (graph_updater.name_key(p.stem) == key or key in graph_updater.name_key(p.stem).split())]
+        exact, fuzzy = [], []
+        for p in people.rglob("*.md"):
+            rel = p.relative_to(people).with_suffix("").as_posix()
+            if p.name.startswith("_") or rel == stem:
+                continue
+            k = graph_updater.name_key(p.stem)
+            if k == key:
+                exact.append(rel)
+            elif key in k.split():
+                fuzzy.append(rel + " (частично)")     # «Анна» ⊂ «Анна Петрова» — эвристика, не совпадение
+        cands = sorted(exact) + sorted(fuzzy)
         if cands:
-            hints[stem] = sorted(cands)[:5]
+            hints[stem] = cands[:5]
     return hints
 
 
@@ -296,15 +306,20 @@ def _apply_locked(graph: pathlib.Path, backup: pathlib.Path, log=print) -> dict:
     keep_bare = set(p["namesakes_elsewhere"])
     done_files: list[str] = []
     moved: list[str] = []
+    current = {"file": None, "node": None}   # объект в работе: при обрыве — в опись как «неопределённый» (luna r2)
+    files_fact: dict[str, int] = {}
     index = graph / "Люди" / "_ЛЮДИ.md"
     # всё читаем ДО первой записи: упасть на чтении можно, посреди записи — нет (GLM I2)
     texts: dict[str, str] = {}
-    for rel in p["files"]:
-        try:
+    try:
+        for rel in p["files"]:
             texts[rel] = _read(graph / rel)
-        except (OSError, ValueError) as e:
-            _write_manifest("aborted", error=repr(e))
-            raise SystemExit(f"файл {rel} не читается ({e!r}) — ничего не изменено")
+    except (OSError, ValueError) as e:
+        _write_manifest("aborted", error=repr(e))
+        raise SystemExit(f"файл {rel} не читается ({e!r}) — ничего не изменено")
+    except BaseException as e:      # Ctrl-C на чтении: граф не тронут, но и «started» — не правда (luna r2)
+        _write_manifest("aborted", error=repr(e))
+        raise
     try:
         if index.exists():      # указатель пересобирается в конце — копия всегда (luna I4)
             (dest / "files" / "Люди").mkdir(parents=True, exist_ok=True)
@@ -315,12 +330,15 @@ def _apply_locked(graph: pathlib.Path, backup: pathlib.Path, log=print) -> dict:
             text = texts[rel]
             new, n = unlink_placeholders(text, keys, keep_bare)
             if n:
-                replaced += n
                 copy = dest / "files" / rel
                 copy.parent.mkdir(parents=True, exist_ok=True)
                 copy.write_bytes(text.encode("utf-8"))         # как было, побайтно — на случай отката
+                current["file"] = rel
                 safe_write.write_text(path, new)
-                done_files.append(rel)
+                done_files.append(rel)          # считается только сделанное; объект в работе — in_flight
+                files_fact[rel] = n
+                replaced += n
+                current["file"] = None
         for node in p["nodes"]:
             src = graph / "Люди" / f"{node}.md"
             target = dest / "Люди" / f"{node}.md"
@@ -328,10 +346,13 @@ def _apply_locked(graph: pathlib.Path, backup: pathlib.Path, log=print) -> dict:
             shutil.copy2(src, target)        # сначала копия и её проверка, потом удаление:
             if target.read_bytes() != src.read_bytes():     # через iCloud/другой том move не атомарен (luna C2)
                 raise OSError(f"копия узла не совпала: {target}")
+            current["node"] = node
             src.unlink()
             moved.append(node)
+            current["node"] = None
     except BaseException as e:   # и Ctrl-C: граф уже тронут — опись обязана это сказать (GLM r2)
-        _write_manifest("partial", error=repr(e), files_done=done_files, nodes_moved=moved)
+        _write_manifest("partial", error=repr(e), files_done=done_files, nodes_moved=moved,
+                        in_flight=current, files=files_fact or p["files"], links=replaced)
         log(f"миграция прервана: {e!r}; сделано файлов {len(done_files)}, перенесено узлов {len(moved)}; "
             f"опись и копии — {dest} (откат: files/* обратно в граф, Люди/* обратно в Люди)")
         raise
@@ -344,7 +365,7 @@ def _apply_locked(graph: pathlib.Path, backup: pathlib.Path, log=print) -> dict:
             log(f"указатель Люди/_ЛЮДИ.md не пересобран: {e}")
         left = leftovers(graph, keys, bare_keys=keys - keep_bare)
         _write_manifest("applied", files_done=done_files, nodes_moved=moved, leftovers=left,
-                        index_rebuilt=index_rebuilt)
+                        index_rebuilt=index_rebuilt, files=files_fact, links=replaced)   # факт, не план (luna r2)
     except BaseException as e:
         # граф уже изменён — статус не может остаться «started» (DS r2, I2)
         _write_manifest("partial", error=repr(e), files_done=done_files, nodes_moved=moved,
@@ -354,7 +375,8 @@ def _apply_locked(graph: pathlib.Path, backup: pathlib.Path, log=print) -> dict:
         f"в {len(done_files)} файлах; копия: {dest}")
     if left:
         log(f"ВНИМАНИЕ: остались ссылки на снятые узлы ({len(left)}): " + "; ".join(left[:10]))
-    return {**p, "backup": str(dest), "leftovers": left, "index_rebuilt": index_rebuilt}
+    return {**p, "files": files_fact, "links": replaced, "backup": str(dest),
+            "leftovers": left, "index_rebuilt": index_rebuilt}
 
 
 def _daemon_process_running() -> str:
@@ -446,7 +468,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {n:4d}  {rel}")
     if len(p["files"]) > 15:
         print(f"  … всего файлов {len(p['files'])}")
-    print(f"ссылок → текст: {p['links']}. Применить: --apply --backup DIR")
+    print(f"ссылок → текст: {p['links']}. Применить: --apply --backup DIR --root <корень данных>")
     return 0
 
 
