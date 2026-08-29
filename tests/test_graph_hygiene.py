@@ -5,6 +5,7 @@
 до перезагрузки, о чём ретеншн приватности не знал.
 """
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -677,10 +678,17 @@ def test_placeholder_migration_turns_links_into_text_and_moves_nodes(tmp_path):
         "- [[Люди/Собеседник 3^blk|голос]]\n"
         "```\n[[Люди/Собеседник 3|в коде]]\n```\n", encoding="utf-8")
     (graph / "Досье" / "Тема.md").write_text("Говорил [[Люди/Собеседник 3|Собеседника 3]].\n", encoding="utf-8")
+    crlf = graph / "Встречи" / "2026-08-02_1000.md"
+    crlf.write_bytes("# Встреча\r\n- [[Люди/Собеседник 3]] сказал\r\n- вторая строка\r\n".encode("utf-8"))
+    index_before = "# Люди\n- [[Люди/Собеседник 3|Собеседник 3]]\n"
+    (graph / "Люди" / "_ЛЮДИ.md").write_text(index_before, encoding="utf-8")
     before = meeting.read_text(encoding="utf-8")
     p = mp.plan(graph)
-    assert p["nodes"] == ["Собеседник 1 (Саша)", "Собеседник 3"] and p["links"] == 10, p
+    assert p["nodes"] == ["Собеседник 1 (Саша)", "Собеседник 3"] and p["links"] == 12, p   # + CRLF-файл + указатель
     assert p["manual"] == ["Таня (Собеседник 4)"], "имя + метка в скобках — ручное решение, не миграция"
+    (graph / "Люди" / "Таня.md").write_text("# Таня\n", encoding="utf-8")
+    assert mp.manual_hints(graph, p["manual"]) == {"Таня (Собеседник 4)": ["Таня"]}, "кандидат на слияние подсказан"
+    (graph / "Люди" / "Таня.md").unlink()
     assert p["namesakes_elsewhere"] == [g.name_key("Собеседник 3")], "тёзка в Системах — голую ссылку оставить"
     assert meeting.read_text(encoding="utf-8") == before, "dry-run ничего не меняет"
     out = mp.apply(graph, tmp_path / "backup", log=lambda *_: None)
@@ -698,9 +706,13 @@ def test_placeholder_migration_turns_links_into_text_and_moves_nodes(tmp_path):
     dest = pathlib.Path(out["backup"])
     assert (dest / "Люди" / "Собеседник 3.md").exists() and (dest / "files" / "Встречи" / "2026-08-01_1000.md").read_text(encoding="utf-8") == before
     manifest = json.loads((dest / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["links"] == 10 and manifest["nodes"] == ["Собеседник 1 (Саша)", "Собеседник 3"]
+    assert manifest["links"] == 12 and manifest["nodes"] == ["Собеседник 1 (Саша)", "Собеседник 3"]
     assert manifest["status"] == "applied" and manifest["leftovers"] == [] and "rollback" in manifest
-    assert manifest["index_rebuilt"] is True and (dest / "files" / "Люди" / "_ЛЮДИ.md").exists() is False or True
+    assert manifest["index_rebuilt"] is True
+    assert (dest / "files" / "Люди" / "_ЛЮДИ.md").read_text(encoding="utf-8") == index_before, "копия указателя как был"
+    assert crlf.read_bytes() == "# Встреча\r\n- Собеседник 3 сказал\r\n- вторая строка\r\n".encode("utf-8"), "CRLF цел"
+    assert manifest["kept_bare"] == {"Встречи/2026-08-01_1000.md": ["[[Собеседник 3]]"]}, "оставленная голая ссылка — в описи"
+    assert manifest["fenced_links"] == {"Встречи/2026-08-01_1000.md": 1}
     index = (graph / "Люди" / "_ЛЮДИ.md").read_text(encoding="utf-8")
     assert "Иван Иванов" in index and "Собеседник 3" not in index
     assert mp.plan(graph)["nodes"] == [] and mp.apply(graph, tmp_path / "backup", log=lambda *_: None)["links"] == 0
@@ -753,6 +765,12 @@ def test_placeholder_migration_writes_the_manifest_before_touching_the_graph(tmp
     assert manifest["status"] == "partial" and manifest["files_done"] == ["Встречи/2026-08-01_1000.md"]
     assert (dest / "files" / "Встречи" / "2026-08-01_1000.md").exists(), "копия изменённого файла есть"
     assert (graph / "Люди" / "Собеседник 2.md").exists(), "узел на месте — перенос не удался"
+    # гейт живой встречи повторяется после замка
+    (graph / "Встречи" / "2026-08-01_1000.md").write_text("- [[Люди/Собеседник 2]] сказал\n", encoding="utf-8")
+    monkeypatch.setattr(mp.shutil, "copy2", __import__("shutil").copy2)
+    with pytest.raises(SystemExit):
+        mp.apply(graph, tmp_path / "backup2", log=lambda *_: None, live=lambda: True)
+    assert (graph / "Люди" / "Собеседник 2.md").exists() and "[[Люди/Собеседник 2]]" in (graph / "Встречи" / "2026-08-01_1000.md").read_text(encoding="utf-8")
 
 
 def test_placeholder_migration_cli_guards(tmp_path):
@@ -769,13 +787,48 @@ def test_placeholder_migration_cli_guards(tmp_path):
     r = subprocess.run([sys.executable, str(script), "--graph", str(graph), "--apply", "--backup", str(tmp_path / "b"),
                         "--root", str(tmp_path / "нет-такого")], capture_output=True, text=True, cwd=root, check=False)
     assert r.returncode == 2 and "logs/" in r.stderr
-    data_root = tmp_path / "data"
-    (data_root / "logs").mkdir(parents=True)
+    env = {k: v for k, v in os.environ.items() if k != "CHAROITE_ROOT"}
+    r = subprocess.run([sys.executable, str(script), "--graph", str(graph), "--apply", "--backup", str(tmp_path / "b")],
+                       capture_output=True, text=True, cwd=root, check=False, env=env)
+    assert r.returncode == 2 and "CHAROITE_ROOT" in r.stderr, "без явного корня данных — отказ (DS r2)"
     r = subprocess.run([sys.executable, str(script), "--graph", str(graph), "--apply", "--backup", str(graph / "копия"),
-                        "--root", str(data_root)], capture_output=True, text=True, cwd=root, check=False)
-    assert r.returncode != 0 and "вне графа" in (r.stderr + r.stdout)
+                        "--root", str(tmp_path / "любой")], capture_output=True, text=True, cwd=root, check=False)
+    assert r.returncode == 2 and "вне графа" in r.stderr, "копия внутри графа — до всех сторожей"
     assert (graph / "Люди" / "Собеседник 2.md").exists()
     r = subprocess.run([sys.executable, str(script), "--graph", str(graph), "--report", str(tmp_path / "plan.json")],
                        capture_output=True, text=True, cwd=root, check=False)
     assert r.returncode == 0 and json.loads((tmp_path / "plan.json").read_text(encoding="utf-8"))["nodes"] == ["Собеседник 2"]
+
+
+def test_placeholder_migration_waits_for_the_shared_graph_lock_and_reports_leftovers(tmp_path):
+    """Замок cloud.lock занят соседом — миграция не пишет; leftovers видит
+    папочную ссылку, пережившую прогон; CLI с --root доходит до конца (GLM r2)."""
+    import file_locks
+    import charoite_paths
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+    import migrate_placeholders as mp
+    graph = tmp_path / "g"
+    (graph / "Люди").mkdir(parents=True)
+    (graph / "Встречи").mkdir()
+    (graph / "Люди" / "Собеседник 2.md").write_text("# Собеседник 2\n", encoding="utf-8")
+    (graph / "Встречи" / "2026-08-01_1000.md").write_text("- [[Люди/Собеседник 2]] сказал\n", encoding="utf-8")
+    data_root = tmp_path / "data"
+    (data_root / "logs").mkdir(parents=True)
+    lock_dir = charoite_paths.secure_dir(charoite_paths.graph_backups(graph, "cloud_backup", root=data_root).parent)
+    mp.LOCK_WAIT = 0.2
+    with file_locks.graph_lock(lock_dir, 0.1) as taken:
+        assert taken
+        with pytest.raises(SystemExit):
+            mp.apply(graph, tmp_path / "backup", log=lambda *_: None, data_root=data_root)
+    assert (graph / "Люди" / "Собеседник 2.md").exists(), "под чужим замком ничего не тронуто"
+    # leftovers: ссылка с папкой на снятый ключ
+    assert mp.leftovers(graph, {"собеседник 2"}) == ["Встречи/2026-08-01_1000.md: [[Люди/Собеседник 2]]"]
+    # успешный CLI-путь с явным корнем данных
+    root = pathlib.Path(__file__).resolve().parent.parent
+    r = subprocess.run([sys.executable, str(root / "scripts" / "migrate_placeholders.py"), "--graph", str(graph),
+                        "--apply", "--backup", str(tmp_path / "b2"), "--root", str(data_root)],
+                       capture_output=True, text=True, cwd=root, check=False)
+    assert r.returncode == 0, r.stderr + r.stdout
+    assert not (graph / "Люди" / "Собеседник 2.md").exists() and "cloud.lock" in r.stdout
+    assert "- Собеседник 2 сказал" in (graph / "Встречи" / "2026-08-01_1000.md").read_text(encoding="utf-8")
 

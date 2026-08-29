@@ -13,8 +13,10 @@ r"""Миграция накопленных узлов-меток («Собес�
   * указатель `Люди/_ЛЮДИ.md` пересобирается.
 
 По умолчанию — только план (dry-run). `--apply --backup DIR` меняет граф;
-каталог копии обязан лежать вне графа. При живой встрече (лок демона) —
-отказ: облако и конвейер пишут в те же файлы.
+каталог копии обязан лежать вне графа, корень данных — явный (`--root` или
+`CHAROITE_ROOT`). При живой встрече (лок или процесс демона) — отказ, код 3;
+на время правок берётся общий замок графа (cloud.lock). Код 1 — применено,
+но указатель не пересобран или остались ссылки на снятые узлы (см. манифест).
 
     .venv/bin/python scripts/migrate_placeholders.py --graph "<путь к графу>"
     .venv/bin/python scripts/migrate_placeholders.py --graph "<путь>" --apply --backup ~/charoite-backup/125
@@ -25,6 +27,7 @@ import argparse
 import contextlib
 import datetime as dt
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -56,6 +59,8 @@ def placeholder_nodes(graph: pathlib.Path) -> tuple[list[pathlib.Path], list[pat
         return [], []
     labels, manual = [], []
     for p in sorted(people.rglob("*.md")):      # и подпапки Люди/… (DS M7)
+        if any(part.startswith(".") for part in p.relative_to(people).parts):
+            continue                            # .trash и прочее скрытое — как в plan()
         if p.name.startswith("_") or not graph_updater.is_placeholder_node(p.stem):
             continue
         bare = re.sub(r"\s*[(（].*?[)）]\s*$", "", p.stem)
@@ -85,7 +90,8 @@ def _in_people(folder: str | None) -> bool:
     return f == "люди" or f.startswith("люди/")
 
 
-def unlink_placeholders(text: str, keys: set[str], keep_bare: set[str] = frozenset()) -> tuple[str, int]:
+def unlink_placeholders(text: str, keys: set[str], keep_bare: set[str] = frozenset(),
+                        kept: list[str] | None = None, fenced_hits: list[int] | None = None) -> tuple[str, int]:
     """Ссылки на узлы-метки → подпись текстом. Возвращает (текст, сколько).
 
     Сравнение — по ключу имени (`name_key`): `[[собеседник 3]]` и
@@ -104,6 +110,8 @@ def unlink_placeholders(text: str, keys: set[str], keep_bare: set[str] = frozens
         if key not in keys or not _in_people(folder):
             return m.group(0)
         if folder is None and key in keep_bare:
+            if kept is not None:
+                kept.append(m.group(0))      # оставлено намеренно — в опись (GLM r2, критика 2)
             return m.group(0)
         n += 1
         alias = (m.group(3) or "").strip()
@@ -115,13 +123,24 @@ def unlink_placeholders(text: str, keys: set[str], keep_bare: set[str] = frozens
             fenced = not fenced
             out.append(line)
             continue
-        out.append(line if fenced else LINK_RE.sub(repl, line))
+        if fenced:
+            if fenced_hits is not None:
+                for m in LINK_RE.finditer(line):
+                    folder, stem = _target_stem(m.group(1))
+                    if graph_updater.name_key(stem) in keys and _in_people(folder):
+                        fenced_hits.append(1)   # ссылка в коде: не трогаем, но считаем (GLM r2)
+            out.append(line)
+            continue
+        out.append(LINK_RE.sub(repl, line))
     return "\n".join(out), n
 
 
 def _namesakes_elsewhere(graph: pathlib.Path, keys: set[str]) -> set[str]:
     """Ключи меток, у которых есть живой узел с тем же именем вне Люди."""
     found: set[str] = set()
+    for p in graph.glob("*.md"):              # заметки в корне графа — тоже тёзки (GLM r2)
+        if graph_updater.name_key(p.stem) in keys:
+            found.add(graph_updater.name_key(p.stem))
     for d in graph.iterdir():
         if not d.is_dir() or d.name.startswith(".") or d.name.casefold() == "люди":
             continue
@@ -144,6 +163,8 @@ def plan(graph: pathlib.Path) -> dict:
     files: dict[str, int] = {}
     unreadable: list[str] = []
     symlinks: list[str] = [p.relative_to(graph).as_posix() for p in nodes if p.is_symlink()]
+    kept_bare: dict[str, list[str]] = {}
+    fenced_links: dict[str, int] = {}
     for p in graph.rglob("*.md"):
         rel = p.relative_to(graph)
         if any(part.startswith(".") for part in rel.parts) or p in nodes:
@@ -153,19 +174,28 @@ def plan(graph: pathlib.Path) -> dict:
         except (OSError, ValueError):
             unreadable.append(rel.as_posix())   # ссылку в нём не увидим — узел снимать нельзя (luna C3)
             continue
-        _new, n = unlink_placeholders(text, keys, keep_bare)
+        kept: list[str] = []
+        fenced: list[int] = []
+        _new, n = unlink_placeholders(text, keys, keep_bare, kept=kept, fenced_hits=fenced)
+        if kept:
+            kept_bare[rel.as_posix()] = kept
+        if fenced:
+            fenced_links[rel.as_posix()] = len(fenced)
         if n:
             files[rel.as_posix()] = n
             if p.is_symlink():
                 symlinks.append(rel.as_posix())      # safe_write пишет в цель ссылки, копия не та (luna C4)
     return {"graph": str(graph), "nodes": [p.relative_to(graph / "Люди").with_suffix("").as_posix() for p in nodes],
-            "manual": [p.stem for p in manual], "keys": sorted(keys),
-            "namesakes_elsewhere": sorted(keep_bare), "unreadable": unreadable, "symlinks": symlinks,
+            "manual": [p.relative_to(graph / "Люди").with_suffix("").as_posix() for p in manual], "keys": sorted(keys),
+            "namesakes_elsewhere": sorted(keep_bare), "kept_bare": kept_bare, "fenced_links": fenced_links,
+            "unreadable": unreadable, "symlinks": symlinks,
             "files": files, "links": sum(files.values())}
 
 
-def leftovers(graph: pathlib.Path, keys: set[str]) -> list[str]:
-    """Ссылки на снятые узлы, пережившие миграцию (регистр, подпапки, формы)."""
+def leftovers(graph: pathlib.Path, keys: set[str], bare_keys: set[str] = frozenset()) -> list[str]:
+    """Ссылки на снятые узлы, пережившие миграцию (регистр, подпапки, формы).
+    Голые ссылки считаются только на ключи без тёзки в другой папке (bare_keys):
+    такая ссылка могла появиться между планом и применением (DS r2)."""
     out: list[str] = []
     for p in graph.rglob("*.md"):
         rel = p.relative_to(graph)
@@ -184,9 +214,28 @@ def leftovers(graph: pathlib.Path, keys: set[str]) -> list[str]:
                 continue        # код — не ссылка, как и при замене
             for m in LINK_RE.finditer(line):
                 folder, stem = _target_stem(m.group(1))
-                if graph_updater.name_key(stem) in keys and _in_people(folder) and folder is not None:
+                key = graph_updater.name_key(stem)
+                if key in keys and _in_people(folder) and (folder is not None or key in bare_keys):
                     out.append(f"{rel.as_posix()}: {m.group(0)}")
     return out
+
+
+def manual_hints(graph: pathlib.Path, manual: list[str]) -> dict[str, list[str]]:
+    """Для узлов «Имя (Собеседник N)» — кандидаты на слияние: узлы Люди с тем
+    же именем без скобок (по ключу имени), чтобы владелец не искал руками."""
+    people = graph / "Люди"
+    hints: dict[str, list[str]] = {}
+    for stem in manual:
+        base = re.sub(r"\s*[(（].*?[)）]\s*$", "", stem).strip()
+        key = graph_updater.name_key(base)
+        if not key:
+            continue
+        cands = [p.stem for p in people.rglob("*.md")
+                 if not p.name.startswith("_") and p.stem != stem
+                 and (graph_updater.name_key(p.stem) == key or key in graph_updater.name_key(p.stem).split())]
+        if cands:
+            hints[stem] = sorted(cands)[:5]
+    return hints
 
 
 def _graph_lock(graph: pathlib.Path, data_root: pathlib.Path | None):
@@ -200,14 +249,19 @@ def _graph_lock(graph: pathlib.Path, data_root: pathlib.Path | None):
             charoite_paths.graph_backups(graph, "cloud_backup", root=data_root).parent)
     except OSError as e:
         raise SystemExit(f"замок графа не взять ({e}) — не пишу")
+    print(f"замок графа: {lock_dir / 'cloud.lock'}")   # расхождение корней видно сразу (GLM r2)
     return file_locks.graph_lock(lock_dir, LOCK_WAIT)
 
 
 def apply(graph: pathlib.Path, backup: pathlib.Path, log=print,
-          data_root: pathlib.Path | None = None) -> dict:
+          data_root: pathlib.Path | None = None, live=None) -> dict:
+    """`live` — проверка «идёт встреча», повторяется ПОСЛЕ взятия замка: между
+    гейтом в main() и замком встреча могла начаться (DS r2, I1)."""
     with _graph_lock(graph, data_root) as taken:
         if not taken:
             raise SystemExit("граф занят соседом (cloud.lock) дольше 5 минут — не пишу")
+        if live is not None and live():
+            raise SystemExit("встреча началась, пока брали замок — миграцию отложить")
         return _apply_locked(graph, backup, log)
 
 
@@ -228,7 +282,8 @@ def _apply_locked(graph: pathlib.Path, backup: pathlib.Path, log=print) -> dict:
     (dest / "Люди").mkdir(parents=True, exist_ok=False)   # второй запуск в ту же секунду — свой каталог (luna I6)
     manifest = dest / "manifest.json"
 
-    rollback = "скопировать files/<путь> обратно в граф и Люди/<узел>.md обратно в Люди/"
+    rollback = ("files/<относительный путь> скопировать обратно в граф по тому же пути; "
+                "Люди/<узел>.md (с подпапками, как в nodes_moved) — обратно в Люди/ по тому же пути")
 
     def _write_manifest(status: str, **extra) -> None:
         manifest.write_text(json.dumps({**p, "status": status, "stamp": stamp, "rollback": rollback, **extra},
@@ -254,11 +309,13 @@ def _apply_locked(graph: pathlib.Path, backup: pathlib.Path, log=print) -> dict:
         if index.exists():      # указатель пересобирается в конце — копия всегда (luna I4)
             (dest / "files" / "Люди").mkdir(parents=True, exist_ok=True)
             shutil.copy2(index, dest / "files" / "Люди" / "_ЛЮДИ.md")
+        replaced = 0
         for rel, _n in p["files"].items():
             path = graph / rel
             text = texts[rel]
             new, n = unlink_placeholders(text, keys, keep_bare)
             if n:
+                replaced += n
                 copy = dest / "files" / rel
                 copy.parent.mkdir(parents=True, exist_ok=True)
                 copy.write_bytes(text.encode("utf-8"))         # как было, побайтно — на случай отката
@@ -273,35 +330,45 @@ def _apply_locked(graph: pathlib.Path, backup: pathlib.Path, log=print) -> dict:
                 raise OSError(f"копия узла не совпала: {target}")
             src.unlink()
             moved.append(node)
-    except Exception as e:
+    except BaseException as e:   # и Ctrl-C: граф уже тронут — опись обязана это сказать (GLM r2)
         _write_manifest("partial", error=repr(e), files_done=done_files, nodes_moved=moved)
         log(f"миграция прервана: {e!r}; сделано файлов {len(done_files)}, перенесено узлов {len(moved)}; "
             f"опись и копии — {dest} (откат: files/* обратно в граф, Люди/* обратно в Люди)")
         raise
     index_rebuilt = True
     try:
-        graph_updater.rebuild_folder_index(graph, "Люди")
-    except OSError as e:
-        index_rebuilt = False
-        log(f"указатель Люди/_ЛЮДИ.md не пересобран: {e}")
-    left = leftovers(graph, keys)
-    _write_manifest("applied", files_done=done_files, nodes_moved=moved, leftovers=left,
-                    index_rebuilt=index_rebuilt)
-    log(f"перенесено узлов: {len(moved)}, ссылок → текст: {p['links']} "
+        try:
+            graph_updater.rebuild_folder_index(graph, "Люди")
+        except OSError as e:
+            index_rebuilt = False
+            log(f"указатель Люди/_ЛЮДИ.md не пересобран: {e}")
+        left = leftovers(graph, keys, bare_keys=keys - keep_bare)
+        _write_manifest("applied", files_done=done_files, nodes_moved=moved, leftovers=left,
+                        index_rebuilt=index_rebuilt)
+    except BaseException as e:
+        # граф уже изменён — статус не может остаться «started» (DS r2, I2)
+        _write_manifest("partial", error=repr(e), files_done=done_files, nodes_moved=moved,
+                        index_rebuilt=False)
+        raise
+    log(f"перенесено узлов: {len(moved)}, ссылок → текст: {replaced} "
         f"в {len(done_files)} файлах; копия: {dest}")
     if left:
         log(f"ВНИМАНИЕ: остались ссылки на снятые узлы ({len(left)}): " + "; ".join(left[:10]))
     return {**p, "backup": str(dest), "leftovers": left, "index_rebuilt": index_rebuilt}
 
 
-def _daemon_process_running() -> bool:
-    """Второй сторож: процесс демона на этой машине — независимо от корня."""
+def _daemon_process_running() -> str:
+    """Второй сторож: процесс демона на этой машине — независимо от корня.
+    Приложение стартует демона ровно как `[python, "src/daemon.py"]`: argv
+    кончается этим путём. Подстрока ловила мои же сессии ревью с «src/daemon.py»
+    в промпте (GLM r2). Возвращает строки совпадений (пусто — демона нет)."""
     try:
         import subprocess
-        r = subprocess.run(["pgrep", "-f", "src/daemon.py"], capture_output=True, text=True, check=False)
-        return bool(r.stdout.strip())
-    except OSError:
-        return False
+        r = subprocess.run(["pgrep", "-fl", r"src/daemon\.py$"], capture_output=True, text=True, check=False)
+        return r.stdout.strip()
+    except OSError as e:
+        print(f"pgrep недоступен ({e}) — второй сторож не работает", file=sys.stderr)
+        return ""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -313,6 +380,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="корень ДАННЫХ Чароита (где logs/daemon.lock); по умолчанию — CHAROITE_ROOT, как у демона")
     ap.add_argument("--report", type=pathlib.Path, help="записать полный план (JSON) — dry-run показывает только верх списка")
     a = ap.parse_args(argv)
+    if a.report and a.apply:
+        ap.error("--report работает только без --apply (опись применения — manifest.json в копии)")
     graph = a.graph.expanduser()
     if not (graph / "Люди").is_dir():
         print(f"нет папки Люди в {graph}", file=sys.stderr)
@@ -321,23 +390,50 @@ def main(argv: list[str] | None = None) -> int:
         if a.backup is None:
             print("--apply требует --backup DIR", file=sys.stderr)
             return 2
-        # Лок демона живёт в корне данных, не в checkout кода (luna C1): без
-        # явного --root берём тот же корень, что и демон (CHAROITE_ROOT);
-        # корень без logs/ — не корень данных, гадать не будем.
+        backup = a.backup.expanduser().resolve()
+        if backup == graph.resolve() or graph.resolve() in backup.parents:
+            print("каталог копии должен лежать вне графа", file=sys.stderr)
+            return 2
+        # Лок демона и общий замок живут в корне ДАННЫХ (luna C1): корень берём
+        # только явный — --root или CHAROITE_ROOT, как у демона; угадывать по
+        # checkout кода нельзя — logs/ есть в любой dev-копии (DS r2).
+        env_root = (os.environ.get("CHAROITE_ROOT") or "").strip()
+        if a.root is None and not env_root:
+            print("для --apply укажи корень данных: --root DIR или CHAROITE_ROOT", file=sys.stderr)
+            return 2
         root = (a.root or resolve_root(__file__)).expanduser()
         if not (root / "logs").is_dir():
             print(f"{root} — не корень данных (нет logs/); укажи --root", file=sys.stderr)
             return 2
-        if live_gate.daemon_alive(root) or _daemon_process_running():
-            print("идёт живая встреча (лок или процесс демона) — миграцию отложить", file=sys.stderr)
+
+        def live() -> bool:
+            return live_gate.daemon_alive(root) or bool(_daemon_process_running())
+
+        if live_gate.daemon_alive(root):
+            print("идёт живая встреча (лок демона) — миграцию отложить", file=sys.stderr)
             return 3
-        out = apply(graph, a.backup.expanduser(), data_root=root)
+        procs = _daemon_process_running()
+        if procs:
+            print(f"процесс демона запущен — миграцию отложить:\n{procs}", file=sys.stderr)
+            return 3
+        out = apply(graph, backup, data_root=root, live=live)
+        # код 1: применено, но указатель не пересобран или остались ссылки (см. манифест)
         return 0 if out.get("index_rebuilt", True) and not out.get("leftovers") else 1
     p = plan(graph)
     if a.report:
-        a.report.expanduser().write_text(json.dumps(p, ensure_ascii=False, indent=1), encoding="utf-8")
+        a.report = a.report.expanduser()
+        a.report.parent.mkdir(parents=True, exist_ok=True)
+        a.report.write_text(json.dumps(p, ensure_ascii=False, indent=1), encoding="utf-8")
         print(f"полный план: {a.report}")
     print(f"узлов-меток: {len(p['nodes'])}: " + ", ".join(p["nodes"]))
+    for stem, cands in manual_hints(graph, p["manual"]).items():
+        print(f"  {stem} — кандидаты на слияние в Люди: {', '.join(cands)}")
+    if p["fenced_links"]:
+        print(f"ссылки внутри блоков кода (не трогаю, останутся): {sum(p['fenced_links'].values())} "
+              f"в {len(p['fenced_links'])} файлах")
+    if p["kept_bare"]:
+        print(f"голые ссылки при тёзке в другой папке (оставлю): {sum(len(v) for v in p['kept_bare'].values())} "
+              f"в {len(p['kept_bare'])} файлах")
     if p["unreadable"]:
         print("НЕЧИТАЕМЫЕ файлы (миграция откажет): " + ", ".join(p["unreadable"]))
     if p["symlinks"]:
