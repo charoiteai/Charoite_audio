@@ -15,7 +15,7 @@ import sys
 import yaml
 
 _MAX_HEAD = 20_000   # шапка длиннее — не шапка
-_CLOSER_RE = re.compile(r"\n---[ \t]*(?:\n|$)")   # ровно `---`, не `----` и не разделитель в тексте
+_CLOSER_RE = re.compile(r"\r?\n---[ \t]*(?:\r?\n|$)")   # ровно `---` (и CRLF), не `----`
 
 
 def split(text: str) -> tuple[str | None, str]:
@@ -71,8 +71,10 @@ def aliases(text: str, where: str = "") -> list[str]:
     raw = data.get("aliases") if data else _aliases_fallback(fm)
     if isinstance(raw, str):
         raw = [raw]
-    if not isinstance(raw, list):
-        return []
+    if not isinstance(raw, list) or any(not isinstance(x, str) for x in raw):
+        # число/дата/булево YAML уже «понял» по-своему (`01` → 1, `on` → True):
+        # псевдоним берём из текста поля, как записан (GLM r2)
+        raw = _aliases_fallback(fm)
     out: list[str] = []
     for item in raw:
         if item is None or isinstance(item, (dict, list)):
@@ -94,26 +96,39 @@ def _field_span(fm: str, key: str) -> tuple[int, int] | None:
     start, i = m.start(), m.end()
     rest = fm[i:]
     if rest.startswith("["):
-        depth, quote, j = 0, "", 0
+        # Кавычка открывает строку только в НАЧАЛЕ элемента (после `[` или
+        # `,`): апостроф внутри `[Д'Артаньян]` — часть имени, а не кавычка.
+        # Сканер не сошёлся (незакрытая кавычка/скобка) — поле считается одной
+        # строкой, соседние поля не трогаются (Critical GLM, круг-2 #451).
+        depth, quote, j, item_start = 0, "", 0, False
+        closed_at = -1
         while j < len(rest):
             ch = rest[j]
             if quote:
                 if ch == quote:
                     quote = ""
-            elif ch in "\"'":
+            elif ch in "\"'" and item_start:
                 quote = ch
             elif ch == "[":
                 depth += 1
+                item_start = True
             elif ch == "]":
                 depth -= 1
                 if depth == 0:
-                    j += 1
+                    closed_at = j + 1
                     break
+            elif ch == ",":
+                item_start = True
+            elif not ch.isspace():
+                item_start = False
             j += 1
-        nl = rest.find("\n", j)
-        return start, i + (len(rest) if nl == -1 else nl + 1)
+        if closed_at != -1 and not quote:
+            nl = rest.find("\n", closed_at)
+            return start, i + (len(rest) if nl == -1 else nl + 1)
     nl = rest.find("\n")
     end = i + (len(rest) if nl == -1 else nl + 1)
+    if rest.startswith("["):
+        return start, end            # несошедшийся поток — одна строка
     if rest[:nl if nl != -1 else None].strip() == "":
         cont = re.compile(r"^(?:[ \t]+\S|-[ \t])")     # блок: с отступом или «- имя» без него
     else:
@@ -138,6 +153,8 @@ def with_aliases(text: str, names: list[str]) -> str:
     if merged == current:
         return text
     line = "aliases: " + json.dumps(merged, ensure_ascii=False)
+    # U+0085/U+2028/U+2029 JSON не экранирует, а YAML читает как перевод строки
+    line = re.sub(r"[\x85\u2028\u2029]", lambda m: "\\u%04x" % ord(m.group()), line)
     fm, body = split(text)
     if fm is None:
         if text.startswith("---"):

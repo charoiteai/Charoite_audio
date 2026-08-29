@@ -465,8 +465,10 @@ def test_find_canonical_reads_aliases_from_node_frontmatter(tmp_path):
     # два узла с одним псевдонимом — не гадаем, и подстрока дальше не гадает тоже
     amb: list[str] = []
     (graph / "Люди" / "Иван Петров.md").write_text("---\naliases: [Ваня]\n---\n# Иван Петров\n", encoding="utf-8")
-    assert g.find_canonical(graph, "Ваня", ambiguous=amb) is None
+    assert g.find_canonical(graph, "Ваня", folder="Люди", ambiguous=amb) is None
     assert sorted(amb) == ["Иван Иванов", "Иван Петров"]
+    assert g.find_canonical(graph, "Ваня") is None, "без папки однословный псевдоним не магнит"
+    assert g.find_canonical(graph, "ИС-1494") == sys1494 or g.find_canonical(graph, "Витрина данных") == vitrina
     # YAML-битая шапка (двоеточие в соседнем поле) псевдонимы не теряет — fallback по полю
     broken = graph / "Системы" / "Миграция БД.md"
     broken.write_text("---\ndesc: План: сделать\naliases: [\"МБ, база\", МБД]\n---\n# Миграция БД\n", encoding="utf-8")
@@ -526,6 +528,19 @@ def test_frontmatter_with_aliases_edits_the_header_in_place():
     broken = '---\naliases: ["Старый"]\nописание: Проект: перенос\n---\n'
     assert frontmatter.aliases(frontmatter.with_aliases(broken, ["Новый"])) == ["Старый", "Новый"]
     assert frontmatter.split("---\naliases: [A]\n---garbage\n# тело\n")[0] is None, "`---garbage` — не закрытие"
+    # апостроф в незакавыченном элементе — часть имени; соседние поля целы (Critical GLM r2)
+    apos = "---\ntype: система\ntags: [встречи, авто]\naliases: [Д'Артаньян]\nstatus: в работе\n---\n# Д\n"
+    out = frontmatter.with_aliases(apos, ["Дубль"])
+    assert "status: в работе" in out and frontmatter.aliases(out) == ["Д'Артаньян", "Дубль"], out
+    unbalanced = "---\naliases: [ИС 1494\nstatus: в работе\n---\n# X\n"
+    out = frontmatter.with_aliases(unbalanced, ["Y"])
+    assert "status: в работе" in out and out.count("aliases:") == 1, out
+    # CRLF-шапка закрывается, псевдонимы читаются (Important GLM r2)
+    crlf = "---\r\ntype: человек\r\naliases: [Кузя]\r\n---\r\n# Кузнецов\r\n"
+    assert frontmatter.aliases(crlf) == ["Кузя"] and frontmatter.split(crlf)[1].startswith("# Кузнецов")
+    # числа/булевы — как записаны, а не как YAML их понял
+    assert frontmatter.aliases("---\naliases: [01, on]\n---\n") == ["01", "on"]
+    assert frontmatter.aliases("---\naliases: 1494\n---\n") == ["1494"]
     assert frontmatter.split("---\ntype: x\n----\nне закрытие\n---\nтело\n")[0] == "\ntype: x\n----\nне закрытие"
     assert frontmatter.aliases("---\nbad: [\naliases: Кузя\n---\n") == ["Кузя"], "скаляр через fallback"
 
@@ -555,15 +570,21 @@ def test_core_chronicle_keeps_superseded_status_with_its_dates(tmp_path):
     text = (graph / "Ядра" / "Миграция.md").read_text(encoding="utf-8")
     assert "## Статус\nв работе, срок 15.09 _(обновлено 2026-08-10)_" in text
     assert text.count("2026-08-10_1000") == 1 and "статус уточнён повторным разбором, было «в работе, срок сдвинут»" in text
+    # третий разбор той же встречи: пометка заменяется, строка не растёт (GLM r2)
+    g.upsert_core(graph, {"имя": "Миграция", "статус": "в работе, срок 20.09", "обновление": "старт"},
+                  "Встречи/2026-08-10_1000", "2026-08-10_1000")
+    text = (graph / "Ядра" / "Миграция.md").read_text(encoding="utf-8")
+    assert text.count("статус уточнён повторным разбором") == 1 and "было «в работе, срок 15.09»" in text
     # ссылка сверяется целиком: минутный штамп — не префикс посекундного
-    marked = g._annotate_chronicle("## Хроника\n- [[Встречи/2026-08-10_100023]] — x\n- [[Встречи/2026-08-10_1000]] — y\n",
-                                   "Встречи/2026-08-10_1000", "п")
-    assert marked.splitlines()[2].endswith(" · п") and "x · п" not in marked
+    marked, found = g._annotate_chronicle("## Хроника\n- [[Встречи/2026-08-10_100023]] — x\n- [[Встречи/2026-08-10_1000]] — y\n",
+                                          "Встречи/2026-08-10_1000", "п")
+    assert found and marked.splitlines()[2].endswith(" · п") and "x · п" not in marked
+    assert g._annotate_chronicle("## Хроника\n- [[Встречи/2026-08-11_1000]] — z\n", "Встречи/2026-08-10_1000", "п")[1] is False
     # прочерк — не статус: не перезаписывает и не вытесняет
     g.upsert_core(graph, {"имя": "Миграция", "статус": "—", "обновление": "упомянули"},
                   "Встречи/2026-08-12_1000", "2026-08-12_1000")
     text = (graph / "Ядра" / "Миграция.md").read_text(encoding="utf-8")
-    assert "## Статус\nв работе, срок 15.09" in text and text.count("вытеснило статус") == 1
+    assert "## Статус\nв работе, срок 20.09" in text and text.count("вытеснило статус") == 1
     assert g._clip("а" * 200) == "а" * 159 + "…"
     # и в самой хронике: посекундная встреча не «занимает» ссылку минутной
     g.upsert_core(graph, {"имя": "Миграция", "статус": "сдано", "обновление": "финиш"},

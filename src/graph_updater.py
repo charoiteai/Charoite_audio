@@ -574,7 +574,10 @@ def find_canonical(graph: pathlib.Path, name: str,
     #     сказал «это система», и человек с псевдонимом «ИС 1494» не должен
     #     перехватывать её (Critical DS/luna/GLM, круг-1 #451). Без папки —
     #     в любой. Несколько узлов с одним псевдонимом — не гадаем.
-    if key:
+    # без папки (связи из «## Связи») однословный псевдоним без цифры не
+    # ловит свободное упоминание — то же правило, что у NodeIndex.lookup
+    # для живого контура (GLM r2): «Ваня» в шапке не магнит для любого «Ваня»
+    if key and (folder is not None or len(key.split()) > 1 or any(ch.isdigit() for ch in key)):
         hits = [f for f in _alias_index(files).get(key, [])
                 if folder is None or f.parent.name == folder]
         if len(hits) == 1:
@@ -934,17 +937,21 @@ def has_link(text: str, meeting_link: str) -> bool:
     return _link_re(meeting_link).search(text) is not None
 
 
-def _annotate_chronicle(text: str, meeting_link: str, note: str) -> str:
+_RETRY_NOTE_RE = re.compile(r" · статус уточнён повторным разбором[^\n]*$")
+
+
+def _annotate_chronicle(text: str, meeting_link: str, note: str) -> tuple[str, bool]:
     """Дописать пометку к строке хроники этой встречи (первой, где есть её
-    ссылка); пометка уже есть — ничего не менять."""
+    ссылка); прежнее уточнение снимается — строка не растёт с каждым ретраем
+    (GLM r2). Возвращает (текст, нашлась ли строка)."""
     lines = text.split("\n")
     exact = _link_re(meeting_link)
     for i, ln in enumerate(lines):
         if ln.startswith("- ") and exact.search(ln):
-            if note not in ln:
-                lines[i] = ln + " · " + note
-            break
-    return "\n".join(lines)
+            base = _RETRY_NOTE_RE.sub("", ln)
+            lines[i] = base + " · " + note
+            return "\n".join(lines), True
+    return text, False
 
 
 _STATUS_STAMP_RE = re.compile(r"\s*_\(обновлено (\d{4}-\d{2}-\d{2})\)_\s*$")
@@ -1006,13 +1013,18 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
             else:
                 text += f"\n## Хроника\n{line}\n"
         elif changed:
-            text = _annotate_chronicle(text, meeting_link,
-                                       f"статус уточнён повторным разбором, было «{_clip(old_status)}»")
+            text, found = _annotate_chronicle(
+                text, meeting_link, f"статус уточнён повторным разбором, было «{_clip(old_status)}»")
+            if not found:   # ссылка есть, но не в хронике (человек перенёс) — след всё равно нужен
+                line = stamp_line + f" · вытеснило статус{f' (с {since})' if since else ''}: «{_clip(old_status)}»"
+                text = (text.replace("## Хроника", f"## Хроника\n{line}", 1)
+                        if "## Хроника" in text else text + f"\n## Хроника\n{line}\n")
         safe_write.write_text(p, text)
     else:
         safe_write.write_text(
             p,
-            f"---\ntype: ядро\nвид: {core.get('тип', 'тема')}\ntags: [ядро, авто]\n---\n"
+            f"---\ntype: ядро\nвид: {json.dumps(str(core.get('тип') or 'тема'), ensure_ascii=False)}\n"
+            f"tags: [ядро, авто]\n---\n"
             f"# {core['имя']}\n\n## Статус\n{status or '—'} _(обновлено {stamp[:10]})_\n\n"
             f"## Хроника\n{stamp_line}\n")
 
