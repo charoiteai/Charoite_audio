@@ -146,8 +146,7 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
     node_set = set(nodes)
     orphans = [p for p in nodes if inbound[p] == 0]
     placeholders = [p for p in nodes if rel[p].startswith("Люди/")
-                    and graph_updater.is_speaker_placeholder(re.sub(r"\s*[(（].*?[)）]", "", p.stem))
-                    or rel[p].startswith("Люди/") and re.search(r"[(（]\s*(собеседник|speaker)\s*\d*\s*[)）]", p.stem, re.I)]
+                    and graph_updater.is_placeholder_node(p.stem)]
     groups = {k: v for k, v in by_stem.items() if len([x for x in v if x in node_set]) > 1}
     stubs = 0
     dup_real: list[list[str]] = []
