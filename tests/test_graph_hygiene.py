@@ -467,6 +467,11 @@ def test_find_canonical_reads_aliases_from_node_frontmatter(tmp_path):
     (graph / "Люди" / "Иван Петров.md").write_text("---\naliases: [Ваня]\n---\n# Иван Петров\n", encoding="utf-8")
     assert g.find_canonical(graph, "Ваня", ambiguous=amb) is None
     assert sorted(amb) == ["Иван Иванов", "Иван Петров"]
+    # YAML-битая шапка (двоеточие в соседнем поле) псевдонимы не теряет — fallback по полю
+    broken = graph / "Системы" / "Миграция БД.md"
+    broken.write_text("---\ndesc: План: сделать\naliases: [\"МБ, база\", МБД]\n---\n# Миграция БД\n", encoding="utf-8")
+    assert g.node_aliases(broken.read_text(encoding="utf-8")) == ["МБ, база", "МБД"]
+    assert g.find_canonical(graph, "МБД", folder="Системы") == broken
 
 
 def test_aliases_parse_as_yaml_and_skip_stubs_and_broken_files(tmp_path):
@@ -508,6 +513,21 @@ def test_frontmatter_with_aliases_edits_the_header_in_place():
     block = "---\naliases:\n  - a\n  - b\ntype: x\n---\nтело\n"
     assert frontmatter.aliases(frontmatter.with_aliases(block, ["c"])) == ["a", "b", "c"]
     assert frontmatter.parse(frontmatter.with_aliases(block, ["c"]))["type"] == "x"
+    unclosed = "---\ntype: x\nтекст\n"
+    assert frontmatter.with_aliases(unclosed, ["a"]) == unclosed, "незакрытая шапка — новую поверх не заводим"
+    # `]` в кавычках и блок без отступа — поле заменяется целиком, соседи целы (luna r2)
+    tricky = '---\naliases: ["A]B", "C"]\ntype: x\n---\nтело\n'
+    assert frontmatter.with_aliases(tricky, ["D"]) == '---\naliases: ["A]B", "C", "D"]\ntype: x\n---\nтело\n'
+    flat = "---\naliases:\n- a\n- b\ntype: x\n---\nтело\n"
+    assert frontmatter.with_aliases(flat, ["c"]) == '---\naliases: ["a", "b", "c"]\ntype: x\n---\nтело\n'
+    multi = '---\ntype: x\naliases: [\n  "a",\n  "b"\n]\ntags: [t]\n---\n'
+    assert frontmatter.with_aliases(multi, ["c"]) == '---\ntype: x\naliases: ["a", "b", "c"]\ntags: [t]\n---\n'
+    # YAML-ошибка в соседнем поле: старые псевдонимы не теряются при дописывании
+    broken = '---\naliases: ["Старый"]\nописание: Проект: перенос\n---\n'
+    assert frontmatter.aliases(frontmatter.with_aliases(broken, ["Новый"])) == ["Старый", "Новый"]
+    assert frontmatter.split("---\naliases: [A]\n---garbage\n# тело\n")[0] is None, "`---garbage` — не закрытие"
+    assert frontmatter.split("---\ntype: x\n----\nне закрытие\n---\nтело\n")[0] == "\ntype: x\n----\nне закрытие"
+    assert frontmatter.aliases("---\nbad: [\naliases: Кузя\n---\n") == ["Кузя"], "скаляр через fallback"
 
 
 def test_core_chronicle_keeps_superseded_status_with_its_dates(tmp_path):
@@ -535,10 +555,22 @@ def test_core_chronicle_keeps_superseded_status_with_its_dates(tmp_path):
     text = (graph / "Ядра" / "Миграция.md").read_text(encoding="utf-8")
     assert "## Статус\nв работе, срок 15.09 _(обновлено 2026-08-10)_" in text
     assert text.count("2026-08-10_1000") == 1 and "статус уточнён повторным разбором, было «в работе, срок сдвинут»" in text
+    # ссылка сверяется целиком: минутный штамп — не префикс посекундного
+    marked = g._annotate_chronicle("## Хроника\n- [[Встречи/2026-08-10_100023]] — x\n- [[Встречи/2026-08-10_1000]] — y\n",
+                                   "Встречи/2026-08-10_1000", "п")
+    assert marked.splitlines()[2].endswith(" · п") and "x · п" not in marked
     # прочерк — не статус: не перезаписывает и не вытесняет
     g.upsert_core(graph, {"имя": "Миграция", "статус": "—", "обновление": "упомянули"},
                   "Встречи/2026-08-12_1000", "2026-08-12_1000")
     text = (graph / "Ядра" / "Миграция.md").read_text(encoding="utf-8")
     assert "## Статус\nв работе, срок 15.09" in text and text.count("вытеснило статус") == 1
     assert g._clip("а" * 200) == "а" * 159 + "…"
+    # и в самой хронике: посекундная встреча не «занимает» ссылку минутной
+    g.upsert_core(graph, {"имя": "Миграция", "статус": "сдано", "обновление": "финиш"},
+                  "Встречи/2026-08-13_100012", "2026-08-13_100012")
+    g.upsert_core(graph, {"имя": "Миграция", "статус": "сдано, акт подписан", "обновление": "акт"},
+                  "Встречи/2026-08-13_1000", "2026-08-13_1000")
+    text = (graph / "Ядра" / "Миграция.md").read_text(encoding="utf-8")
+    assert g.has_link(text, "Встречи/2026-08-13_1000") and g.has_link(text, "Встречи/2026-08-13_100012")
+    assert "- [[Встречи/2026-08-13_1000]] — акт · вытеснило статус (с 2026-08-13): «сдано»" in text
 

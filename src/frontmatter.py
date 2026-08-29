@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 
 import yaml
 
 _MAX_HEAD = 20_000   # шапка длиннее — не шапка
+_CLOSER_RE = re.compile(r"\n---[ \t]*(?:\n|$)")   # ровно `---`, не `----` и не разделитель в тексте
 
 
 def split(text: str) -> tuple[str | None, str]:
@@ -21,27 +23,52 @@ def split(text: str) -> tuple[str | None, str]:
     `---` шапки нет: иначе `aliases:` из тела читались бы как поле."""
     if not text.startswith("---"):
         return None, text
-    end = text.find("\n---", 3, _MAX_HEAD)
-    if end == -1:
+    m = _CLOSER_RE.search(text, 3, _MAX_HEAD)
+    if m is None:
         return None, text
-    nl = text.find("\n", end + 1)
-    return text[3:end], (text[nl + 1:] if nl != -1 else "")
+    return text[3:m.start()], text[m.end():]
 
 
-def parse(text: str) -> dict:
+def parse(text: str, where: str = "") -> dict:
+    """Шапка как dict; YAML-ошибка — {} и строка в stderr (не молча: DS r2 #451)."""
     fm, _ = split(text)
     if fm is None:
         return {}
     try:
         data = yaml.safe_load(fm)
-    except yaml.YAMLError:
+    except yaml.YAMLError as e:
+        print(f"frontmatter: шапка не разобрана{f' ({where})' if where else ''}: "
+              f"{str(e).splitlines()[0][:120]}", file=sys.stderr, flush=True)
         return {}
     return data if isinstance(data, dict) else {}
 
 
-def aliases(text: str) -> list[str]:
+_ALIASES_INLINE_RE = re.compile(r"^aliases:[ \t]*\[([^\]]*)\][ \t]*$", re.M)
+_ALIASES_BLOCK_RE = re.compile(r"^aliases:[ \t]*\n((?:[ \t]+-[^\n]*\n?)+)", re.M)
+_ALIASES_SCALAR_RE = re.compile(r"^aliases:[ \t]*([^\[\n][^\n]*)$", re.M)
+
+
+def _aliases_fallback(fm: str) -> list:
+    """Поле `aliases:` из шапки, которую YAML не разобрал (незакавыченное
+    двоеточие в соседнем поле и т. п.): узел не должен терять псевдонимы
+    из-за чужой строки (DS r2 #451). Запятая в кавычках — часть имени."""
+    m = _ALIASES_INLINE_RE.search(fm)
+    if m:
+        return [x.strip().strip("\"'") for x in re.findall(r'"[^"]*"|\'[^\']*\'|[^,]+', m.group(1))]
+    m = _ALIASES_BLOCK_RE.search(fm)
+    if m:
+        return [ln.strip().lstrip("-").strip().strip("\"'") for ln in m.group(1).splitlines()]
+    m = _ALIASES_SCALAR_RE.search(fm)
+    return [m.group(1).strip().strip("\"'")] if m else []
+
+
+def aliases(text: str, where: str = "") -> list[str]:
     """Псевдонимы узла: список, блок или одиночная строка; пустые и дубли — вон."""
-    raw = parse(text).get("aliases")
+    fm, _ = split(text)
+    if fm is None:
+        return []
+    data = parse(text, where)
+    raw = data.get("aliases") if data else _aliases_fallback(fm)
     if isinstance(raw, str):
         raw = [raw]
     if not isinstance(raw, list):
@@ -56,7 +83,48 @@ def aliases(text: str) -> list[str]:
     return out
 
 
-_ALIASES_FIELD_RE = re.compile(r"(?ms)^aliases:[ \t]*(?:\[[^\]]*\]|\n(?:[ \t]+-[^\n]*\n?)+|[^\n]*)\n?")
+def _field_span(fm: str, key: str) -> tuple[int, int] | None:
+    """Границы поля `key:` в шапке вместе со значением: поток `[...]` с учётом
+    кавычек и вложенных скобок (и через переносы), блок «- имя» с отступом
+    или без, скаляр с продолжениями. Регекс `[^\]]*` рвался на `]` в
+    кавычках и на блоке без отступа (luna, круг-2 #451)."""
+    m = re.search(rf"(?m)^{re.escape(key)}:[ \t]*", fm)
+    if not m:
+        return None
+    start, i = m.start(), m.end()
+    rest = fm[i:]
+    if rest.startswith("["):
+        depth, quote, j = 0, "", 0
+        while j < len(rest):
+            ch = rest[j]
+            if quote:
+                if ch == quote:
+                    quote = ""
+            elif ch in "\"'":
+                quote = ch
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    j += 1
+                    break
+            j += 1
+        nl = rest.find("\n", j)
+        return start, i + (len(rest) if nl == -1 else nl + 1)
+    nl = rest.find("\n")
+    end = i + (len(rest) if nl == -1 else nl + 1)
+    if rest[:nl if nl != -1 else None].strip() == "":
+        cont = re.compile(r"^(?:[ \t]+\S|-[ \t])")     # блок: с отступом или «- имя» без него
+    else:
+        cont = re.compile(r"^[ \t]+\S")                 # скаляр: только продолжения
+    while end < len(fm):
+        nl2 = fm.find("\n", end)
+        line = fm[end:nl2 if nl2 != -1 else None]
+        if not cont.match(line):
+            break
+        end = len(fm) if nl2 == -1 else nl2 + 1
+    return start, end
 
 
 def with_aliases(text: str, names: list[str]) -> str:
@@ -72,9 +140,12 @@ def with_aliases(text: str, names: list[str]) -> str:
     line = "aliases: " + json.dumps(merged, ensure_ascii=False)
     fm, body = split(text)
     if fm is None:
+        if text.startswith("---"):
+            return text     # незакрытая шапка: новую поверх не заводим (DS r2)
         return f"---\n{line}\n---\n{text}"
-    if re.search(r"(?m)^aliases:", fm):
-        fm2 = _ALIASES_FIELD_RE.sub(line + "\n", fm, count=1)
+    span = _field_span(fm, "aliases")
+    if span:
+        fm2 = fm[:span[0]] + line + "\n" + fm[span[1]:]
     else:
         fm2 = fm.rstrip("\n") + "\n" + line + "\n"
     if not fm2.startswith("\n"):

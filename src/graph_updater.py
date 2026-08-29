@@ -408,7 +408,7 @@ def _alias_index(files: list[pathlib.Path]) -> dict[str, list[pathlib.Path]]:
             cached = _alias_cache.get(f)
             if cached is None or cached[0] != key:
                 text = f.read_text(encoding="utf-8")
-                names = () if redirects.is_merged(text) else tuple(node_aliases(text))
+                names = () if redirects.is_merged(text) else tuple(frontmatter.aliases(text, f.name))
                 cached = (key, names)
                 _alias_cache[f] = cached
         except (OSError, ValueError):      # UnicodeDecodeError — ValueError
@@ -579,10 +579,8 @@ def find_canonical(graph: pathlib.Path, name: str,
                 if folder is None or f.parent.name == folder]
         if len(hits) == 1:
             return hits[0]
-        if hits:
-            if ambiguous is not None:
-                ambiguous.extend(f.stem for f in hits)
-            return None
+        if hits and ambiguous is not None:    # как проход 2: кандидаты наружу,
+            ambiguous.extend(f.stem for f in hits)   # дальше — подстрока в папке
     # 3) подстрока — только для достаточно длинных имён и близких по длине
     #    пар; при заданной папке — только в ней (luna I3: «Платёж» из Систем
     #    дописывался в Люди/Платёжный). Двухбуквенное «Ян» входило в
@@ -621,7 +619,7 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
     day = pathlib.PurePosixPath(meeting_link).name[:10]
     if p.exists():
         text = p.read_text(encoding="utf-8")
-        if meeting_link in text:
+        if has_link(text, meeting_link):
             return
         if "## Встречи" in text:
             text = text.replace("## Встречи", f"## Встречи\n{stamp}", 1)
@@ -926,12 +924,23 @@ def _clip(s: str, limit: int = 160) -> str:
     return s if len(s) <= limit else s[:limit - 1].rstrip() + "…"
 
 
+def _link_re(meeting_link: str) -> re.Pattern:
+    """Ссылка на встречу целиком: минутный штамп — префикс посекундного
+    (`_1000` ⊂ `_100012`), подстрочная проверка их путала (luna, круг-2 #451)."""
+    return re.compile(r"\[\[" + re.escape(meeting_link) + r"(?:\]\]|\||#)")
+
+
+def has_link(text: str, meeting_link: str) -> bool:
+    return _link_re(meeting_link).search(text) is not None
+
+
 def _annotate_chronicle(text: str, meeting_link: str, note: str) -> str:
     """Дописать пометку к строке хроники этой встречи (первой, где есть её
     ссылка); пометка уже есть — ничего не менять."""
     lines = text.split("\n")
+    exact = _link_re(meeting_link)
     for i, ln in enumerate(lines):
-        if ln.startswith("- ") and f"[[{meeting_link}" in ln:
+        if ln.startswith("- ") and exact.search(ln):
             if note not in ln:
                 lines[i] = ln + " · " + note
             break
@@ -979,8 +988,9 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
         old_status, since = _current_status(text)
         changed = bool(status and old_status
                        and _flat(old_status).casefold() != _flat(status).casefold())
+        seen_link = has_link(text, meeting_link)
         superseded = (f" · вытеснило статус{f' (с {since})' if since else ''}: «{_clip(old_status)}»"
-                      if changed and meeting_link not in text else "")
+                      if changed and not seen_link else "")
         if status:  # свежий статус вытесняет прежний
             # Замена через lambda, а не строкой: status приходит от модели, и
             # re.sub разбирает в подстановке обратные слэши. Путь вида
@@ -989,7 +999,7 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
             repl = f"## Статус\n{status} _(обновлено {stamp[:10]})_\n\n"
             text = re.sub(r"## Статус\n.*?(?=\n## |\Z)",
                           lambda _: repl, text, count=1, flags=re.S)
-        if meeting_link not in text:
+        if not seen_link:
             line = stamp_line + superseded
             if "## Хроника" in text:
                 text = text.replace("## Хроника", f"## Хроника\n{line}", 1)
