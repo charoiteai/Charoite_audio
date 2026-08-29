@@ -683,7 +683,7 @@ def test_brain_mark_counts_successful_posts_and_retry_sends_only_the_rest(tmp_pa
     assert n == 2 and mark.read_text(encoding="utf-8").startswith("sent 3/3\n")
     assert [t[:7] for t in sent] == ["Встреча", "Решение", "Решение"], sent
     assert g.send_to_brain(*args, post=post) == 0
-    for old in ("Старый формат: только заголовок\n", "3/5\n"):   # отметка прежней версии = всё ушло, даже тема-«счётчик»
+    for old in ("Старый формат: только заголовок\n", "3/5\n", "sent 3/3\nsha1:abc\n# Планёрка\n"):   # прежние форматы = всё ушло
         mark.write_text(old, encoding="utf-8")
         assert g.send_to_brain("2026-08-29_1200", "Планёрка", people, ["релиз"], ["а", "б", "в", "г"], mark, post=post) == 0
     assert len(sent) == 3

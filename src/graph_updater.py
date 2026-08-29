@@ -516,11 +516,11 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
     todo = keyed
     if mark.exists():
         lines = mark.read_text(encoding="utf-8", errors="replace").splitlines()
-        if lines and lines[0].startswith("sent "):
+        if lines and lines[0].startswith("sent ") and any(ln.startswith("id:") for ln in lines):
             done = {ln[3:] for ln in lines[1:] if ln.startswith("id:")}
             todo = [(k, f) for k, f in keyed if k not in done]
         else:
-            todo = []
+            todo = []      # отметка прежних форматов (заголовок, «sha1:» круга-2) — всё отправлено
     if not todo:
         print("память Чароита: факты этой встречи уже отправлены — повтор пропущен")
         return 0

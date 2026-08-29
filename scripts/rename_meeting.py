@@ -152,6 +152,14 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
              for p in (tdir.glob(f"{minute}*.md") if tdir.is_dir() else ())
              if meeting_stamp.stamp_of(p.stem)}
     mine = {b for b, p in mains.items() if meeting_stamp.graph_key(tdir, p.stem, graph) == stamp}
+    # Главный файл прежних версий с темой на служебное слово («…_Демо_live.md»):
+    # по имени — копия, по содержимому — встреча. Такой файл rename и лечит:
+    # новое имя идёт через guard_slug (DS r4 по #455).
+    legacy = legacy_mains(tdir, minute)
+    for bare, p in legacy.items():
+        if bare == stamp and bare not in mains:
+            mains[bare] = p
+            mine.add(bare)
     if stamp == minute and tdir.is_dir():
         # Бесхозные посекундные производные («…113012_hints.md» без главного
         # файла «…113012») — владельца минуты: так их оставлял конвейер до
@@ -175,7 +183,7 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
             if not any(f.name.startswith(b) and not f.name[len(b):len(b) + 1].isdigit()
                        and not re.match(r"-\d", f.name[len(b):]) for b in mine):
                 continue
-            new = retitled(f.name, stamp, slug)
+            new = f"{stamp}_{slug}.md" if f in legacy.values() else retitled(f.name, stamp, slug)
             if not new:
                 continue
             target = f.with_name(new)
@@ -197,6 +205,34 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
 
     return {"moves": moves, "old_folder": old_folder, "new_folder": new_folder,
             "note": meeting_stamp.find_note(graph, stamp, tdir) or graph / "Встречи" / f"{stamp}.md"}
+
+
+def legacy_mains(tdir: pathlib.Path, minute: str) -> dict[str, pathlib.Path]:
+    """Главные файлы прежних версий, чья тема кончается служебным словом:
+    `stamp_of` их не узнаёт, но начинаются они с «# Встреча », а файла-источника
+    (имя без хвоста) рядом нет — значит, это не копия. Штамп → путь."""
+    found: dict[str, pathlib.Path] = {}
+    if not tdir.is_dir():
+        return found
+    names = {p.stem for p in tdir.glob("*.md")}
+    for p in tdir.glob(f"{minute}*.md"):
+        if meeting_stamp.stamp_of(p.stem):
+            continue
+        m = meeting_stamp._RE_TITLED.match(p.stem)
+        if not m or not m.group(3):
+            continue
+        low = p.stem.lower()
+        aux = next((a for a in meeting_stamp.AUX_SUFFIXES if low.endswith(a)), "")
+        if not aux or p.stem[:-len(aux)] in names:
+            continue                        # копия живого файла — не встреча
+        try:
+            with p.open("rb") as fh:
+                head = fh.read(200).decode("utf-8", errors="ignore")
+        except OSError:
+            continue
+        if head.lstrip().startswith("# Встреча "):
+            found[m.group(1)] = p
+    return found
 
 
 def archive_folder(graph: pathlib.Path, stamp: str) -> pathlib.Path | None:
