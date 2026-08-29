@@ -159,18 +159,20 @@ def realtime_factor(audio_s: float, transcription_ms: float) -> float | None:
     return round(audio_s / (transcription_ms / 1000.0), 2)
 
 
-def seam_for_rows(prev_label: str | None, labels: list[str]) -> list[tuple[bool, str | None]]:
+def seam_for_rows(prev_label: str | None,
+                  rows: list[tuple[str, bool]]) -> list[tuple[bool, str | None]]:
     """Что передать стенограмме по каждому куску одного чанка канала.
 
-    Зона шва с предыдущим чанком — только голова чанка, то есть первый кусок;
-    остальные (второй голос того же чанка) звук с соседом не делят и шва не
-    получают. `seam_with` — прежняя метка канала, если она сменилась (лаг →
-    здоровый, канал → голос): DeepSeek/luna по #452 — раздача шва каждому
-    куску резала второго человека как шов.
+    rows — (метка, кусок из головы чанка?). Зона шва с предыдущим чанком —
+    только голова чанка; остальные (второй голос того же чанка) звук с
+    соседом не делят и шва не получают. Голову называет раскладка (первый
+    кусок по звуку), а не место в списке: пустой первый кусок не делает
+    головой второй (luna, круг-2). `seam_with` — прежняя метка канала, если
+    она сменилась (лаг → здоровый, канал → голос): DeepSeek/luna по #452 —
+    раздача шва каждому куску резала второго человека как шов.
     """
     out: list[tuple[bool, str | None]] = []
-    for i, label in enumerate(labels):
-        head = i == 0
+    for label, head in rows:
         seam = prev_label if head and prev_label and prev_label != label else None
         out.append((head, seam))
     return out
