@@ -421,3 +421,58 @@ def test_doctor_note_wins_over_attachment_and_attachment_is_any_file_on_disk(tmp
         "Люди/Иван.md -> [[rec.opus]]", "Люди/Иван.md -> [[Люди]]", "Люди/Иван.md -> [[../секрет.pdf]]",
     ], rep["examples"]["broken"]
     assert not any("v2.json" in x for x in rep["examples"]["orphans"]), rep["examples"]["orphans"]
+
+
+def test_find_canonical_reads_aliases_from_node_frontmatter(tmp_path):
+    """`aliases:` в шапке узла — записанное знание «это то же самое»; до
+    №127 конвейер его не читал. Строка-список и блок «- имя», ключ имени
+    (пунктуация не важна), два узла с одним псевдонимом — не гадаем."""
+    import os
+    graph = tmp_path / "g"
+    (graph / "Системы").mkdir(parents=True)
+    (graph / "Люди").mkdir()
+    vitrina = graph / "Системы" / "Витрина 1494.md"
+    vitrina.write_text('---\ntype: система\naliases: ["ИС 1494", "Витрина данных"]\n---\n# Витрина 1494\n',
+                       encoding="utf-8")
+    reestr = graph / "Системы" / "Реестр.md"
+    reestr.write_text("---\ntype: система\naliases:\n  - Реестр поручений\n  - РП\n---\n# Реестр\n",
+                      encoding="utf-8")
+    assert g.node_aliases(vitrina.read_text(encoding="utf-8")) == ["ИС 1494", "Витрина данных"]
+    assert g.node_aliases(reestr.read_text(encoding="utf-8")) == ["Реестр поручений", "РП"]
+    assert g.find_canonical(graph, "ИС-1494") == vitrina
+    assert g.find_canonical(graph, "витрина данных", folder="Люди") == vitrina, "псевдоним — в любой папке"
+    assert g.find_canonical(graph, "Реестр поручений") == reestr
+    # псевдоним появился позже — кэш шапок обновляется по mtime
+    ivan = graph / "Люди" / "Иван Иванов.md"
+    ivan.write_text("---\ntype: человек\n---\n# Иван Иванов\n", encoding="utf-8")
+    assert g.find_canonical(graph, "Ваня") is None
+    ivan.write_text("---\ntype: человек\naliases: [Ваня]\n---\n# Иван Иванов\n", encoding="utf-8")
+    os.utime(ivan, ns=(os.stat(ivan).st_atime_ns, os.stat(ivan).st_mtime_ns + 10_000_000))
+    assert g.find_canonical(graph, "Ваня") == ivan
+    # два узла с одним псевдонимом — не гадаем
+    amb: list[str] = []
+    (graph / "Люди" / "Иван Петров.md").write_text("---\naliases: [Ваня]\n---\n# Иван Петров\n", encoding="utf-8")
+    assert g.find_canonical(graph, "Ваня", ambiguous=amb) is None
+    assert sorted(amb) == ["Иван Иванов", "Иван Петров"]
+
+
+def test_core_chronicle_keeps_superseded_status_with_its_dates(tmp_path):
+    """Статус ядра перезаписывается каждой встречей; вытесненный уходит в
+    хронику с датой, с которой держался, — у факта есть «с» и «по» (№127).
+    Ретрай той же встречи и тот же статус строку не плодят."""
+    graph = tmp_path / "g"
+    g.upsert_core(graph, {"имя": "Миграция", "статус": "план готов", "обновление": "обсудили план"},
+                  "Встречи/2026-08-01_1000", "2026-08-01_1000")
+    g.upsert_core(graph, {"имя": "Миграция", "статус": "план готов", "обновление": "без изменений"},
+                  "Встречи/2026-08-05_1000", "2026-08-05_1000")
+    g.upsert_core(graph, {"имя": "Миграция", "статус": "в работе, срок сдвинут", "обновление": "старт"},
+                  "Встречи/2026-08-10_1000", "2026-08-10_1000")
+    g.upsert_core(graph, {"имя": "Миграция", "статус": "в работе, срок сдвинут", "обновление": "старт"},
+                  "Встречи/2026-08-10_1000", "2026-08-10_1000")   # ретрай
+    text = (graph / "Ядра" / "Миграция.md").read_text(encoding="utf-8")
+    assert "## Статус\nв работе, срок сдвинут _(обновлено 2026-08-10)_" in text
+    assert text.count("вытеснило статус") == 1, text
+    assert "- [[Встречи/2026-08-10_1000]] — старт · вытеснило статус (с 2026-08-05): «план готов»" in text
+    assert text.count("2026-08-10_1000") == 1, "ретрай не дублирует строку хроники"
+    assert g._current_status(text) == ("в работе, срок сдвинут", "2026-08-10")
+

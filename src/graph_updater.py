@@ -379,6 +379,51 @@ def name_key(name: str) -> str:
 _LINK_WS_RE = re.compile(r"\[\[([^\]]*?)\]\]", re.S)
 
 
+_ALIASES_INLINE_RE = re.compile(r"^aliases:\s*\[([^\]]*)\]\s*$", re.M)
+_ALIASES_BLOCK_RE = re.compile(r"^aliases:\s*\n((?:[ \t]+-[^\n]*\n?)+)", re.M)
+# путь узла → (mtime_ns, псевдонимы): шапки перечитываются только у изменённых
+# файлов, иначе каждый поиск канона читал бы ~2000 узлов заново
+_alias_cache: dict[pathlib.Path, tuple[int, tuple[str, ...]]] = {}
+
+
+def node_aliases(text: str) -> list[str]:
+    """`aliases:` из шапки узла — строкой-списком или блоком «- имя».
+
+    Псевдонимы пишут человек и облако («ИС 1494» у «Витрина 1494»), до
+    28.08 конвейер их не читал — записанное знание лежало мёртвым (№127)."""
+    head = text[:2000]
+    if not head.startswith("---"):
+        return []
+    end = head.find("\n---", 3)
+    fm = head[3:end] if end != -1 else head[3:]
+    m = _ALIASES_INLINE_RE.search(fm)
+    if m:
+        raw = m.group(1).split(",")
+    else:
+        m = _ALIASES_BLOCK_RE.search(fm)
+        raw = [ln.strip().lstrip("-") for ln in m.group(1).splitlines()] if m else []
+    return [a for a in (x.strip(" \t\"'") for x in raw) if a]
+
+
+def _alias_index(files: list[pathlib.Path]) -> dict[str, list[pathlib.Path]]:
+    """Ключ имени псевдонима → узлы, у которых он записан."""
+    index: dict[str, list[pathlib.Path]] = {}
+    for f in files:
+        try:
+            mtime = f.stat().st_mtime_ns
+            cached = _alias_cache.get(f)
+            if cached is None or cached[0] != mtime:
+                cached = (mtime, tuple(node_aliases(f.read_text(encoding="utf-8"))))
+                _alias_cache[f] = cached
+        except OSError:
+            continue
+        for alias in cached[1]:
+            k = name_key(alias)
+            if k:
+                index.setdefault(k, []).append(f)
+    return index
+
+
 def tidy_links(text: str) -> str:
     """Перенос строки внутри [[…]] — ссылка мертва для Obsidian.
 
@@ -515,6 +560,16 @@ def find_canonical(graph: pathlib.Path, name: str,
     for f in files:
         if f.stem.casefold() == n:
             return f
+    # 1b) псевдоним из шапки узла (`aliases:`) — по ключу имени, в любой
+    #     папке: это записанное человеком или облаком знание «это то же
+    #     самое», оно точнее подстроки. Два узла с одним псевдонимом — не
+    #     гадаем, отдаём в ambiguous.
+    if key:
+        hits = _alias_index(files).get(key, [])
+        if len(hits) == 1:
+            return hits[0]
+        if hits and ambiguous is not None:
+            ambiguous.extend(f.stem for f in hits)
     # 2) ключ без пунктуации/скобок/дефисов — только в целевой папке записи
     #    и только если кандидат один: «ИИ-агент» в Людях и «ИИ_агент» в
     #    Системах — не один узел (DS I1); два кандидата — не гадаем
@@ -859,6 +914,23 @@ def resolve_core_path(d: pathlib.Path, name: str,
         p = target
 
 
+_STATUS_STAMP_RE = re.compile(r"\s*_\(обновлено (\d{4}-\d{2}-\d{2})\)_\s*$")
+
+
+def _current_status(text: str) -> tuple[str, str]:
+    """(текст статуса, дата «обновлено») из «## Статус» узла ядра; «—» — пусто."""
+    m = re.search(r"## Статус\n(.*?)(?=\n## |\Z)", text, re.S)
+    if not m:
+        return "", ""
+    block = m.group(1).strip()
+    since = ""
+    d = _STATUS_STAMP_RE.search(block)
+    if d:
+        since = d.group(1)
+        block = block[:d.start()].strip()
+    return ("" if block in ("", "—") else block), since
+
+
 def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
                 transcript: str = "", speakers: set[str] | None = None):
     """Ядро — сквозная тема/задача: статус ПЕРЕЗАПИСЫВАЕТСЯ каждой встречей,
@@ -873,6 +945,15 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
                   else f"- [[{meeting_link}]]{anchor}")
     if p.exists():
         text = p.read_text(encoding="utf-8")
+        superseded = ""
+        if status and meeting_link not in text:
+            # Вытесненный статус не исчезает, а уходит в хронику с датой, с
+            # которой он держался: у факта появляются «с» и «по» (Graphiti/
+            # Zep, №127). Ретрай той же встречи строку не дублирует.
+            old_status, since = _current_status(text)
+            if old_status and " ".join(old_status.split()).casefold() != " ".join(status.split()).casefold():
+                since_txt = f" (с {since})" if since else ""
+                superseded = f" · вытеснило статус{since_txt}: «{' '.join(old_status.split())[:160]}»"
         if status:  # свежий статус вытесняет прежний
             # Замена через lambda, а не строкой: status приходит от модели, и
             # re.sub разбирает в подстановке обратные слэши. Путь вида
@@ -882,10 +963,11 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
             text = re.sub(r"## Статус\n.*?(?=\n## |\Z)",
                           lambda _: repl, text, count=1, flags=re.S)
         if meeting_link not in text:
+            line = stamp_line + superseded
             if "## Хроника" in text:
-                text = text.replace("## Хроника", f"## Хроника\n{stamp_line}", 1)
+                text = text.replace("## Хроника", f"## Хроника\n{line}", 1)
             else:
-                text += f"\n## Хроника\n{stamp_line}\n"
+                text += f"\n## Хроника\n{line}\n"
         safe_write.write_text(p, text)
     else:
         safe_write.write_text(
