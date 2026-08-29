@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import itertools
 import datetime as dt
 import json
 import os
@@ -56,9 +57,19 @@ def _is_stub(text: str) -> bool:
 
 
 def _disk_candidates(root: pathlib.Path, target: str) -> list[pathlib.Path]:
-    """Пути вложения в обеих формах Unicode — NFC и NFD: инструменты macOS
-    пишут имена в NFD, ссылки набирают в NFC; APFS это скрывает, Linux нет."""
-    return [root / unicodedata.normalize(form, target) for form in ("NFC", "NFD")]
+    """Пути вложения во всех сочетаниях форм Unicode по компонентам: каталог
+    может лежать в NFC, а файл в нём — в NFD (инструменты macOS пишут NFD,
+    ссылки набирают в NFC; APFS это скрывает, Linux нет — luna по #450).
+    Глубже трёх компонентов — только целиком NFC и NFD."""
+    parts = pathlib.PurePosixPath(target).parts
+    if len(parts) > 3:
+        return [root / unicodedata.normalize(form, target) for form in ("NFC", "NFD")]
+    out: list[pathlib.Path] = []
+    for forms in itertools.product(("NFC", "NFD"), repeat=len(parts)):
+        cand = root.joinpath(*(unicodedata.normalize(f, x) for f, x in zip(forms, parts)))
+        if cand not in out:
+            out.append(cand)
+    return out
 
 
 def inspect(root: pathlib.Path, examples: int = 0) -> dict:

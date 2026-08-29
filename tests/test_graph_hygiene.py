@@ -424,9 +424,13 @@ def test_doctor_note_wins_over_attachment_and_attachment_is_any_file_on_disk(tmp
     (graph / ".env").write_bytes(b"SECRET=1")                # скрытый файл — не вложение (DS r2)
     (tmp_path / "секрет.pdf").write_bytes(b"%PDF")
     (graph / unicodedata.normalize("NFD", "схема й.pdf")).write_bytes(b"%PDF")
+    nfc_dir = graph / unicodedata.normalize("NFC", "Café")
+    nfc_dir.mkdir()
+    (nfc_dir / unicodedata.normalize("NFD", "план й.pdf")).write_bytes(b"%PDF")   # смешанные формы (luna r2)
     dead = ("rec.opus", "Люди", "../секрет.pdf", "../x", "/etc/hosts", ".trash/старое.pdf",
             ".env", "a" * 300 + ".pdf")
-    alive = ("v2.json", "v2.json.md", "Системы/v2.json", "ДОК.MD", "rec.ogg", "схема й.pdf")
+    alive = ("v2.json", "v2.json.md", "Системы/v2.json", "ДОК.MD", "rec.ogg", "схема й.pdf",
+             "Café/план й.pdf")
     (graph / "Люди" / "Иван.md").write_text(
         "# Иван\n" + " ".join(f"[[{x}]]" for x in alive + dead) + "\n", encoding="utf-8")
     (graph / "_MOC.md").write_text("# MOC\n[[Системы/x]] [[rec.ogg]]\n", encoding="utf-8")
@@ -442,3 +446,7 @@ def test_doctor_note_wins_over_attachment_and_attachment_is_any_file_on_disk(tmp
     forms = [c.name for c in graph_doctor._disk_candidates(graph, "схема й.pdf")]
     assert forms == [unicodedata.normalize("NFC", "схема й.pdf"), unicodedata.normalize("NFD", "схема й.pdf")]
     assert forms[0] != forms[1]
+    nested = graph_doctor._disk_candidates(graph, "Café/план й.pdf")
+    assert len(nested) == 4 and any(
+        c.parent.name == unicodedata.normalize("NFC", "Café") and c.name == unicodedata.normalize("NFD", "план й.pdf")
+        for c in nested), "каталог в NFC, файл в NFD — есть среди кандидатов"
