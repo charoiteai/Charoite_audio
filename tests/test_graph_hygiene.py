@@ -450,3 +450,202 @@ def test_doctor_note_wins_over_attachment_and_attachment_is_any_file_on_disk(tmp
     assert len(nested) == 4 and any(
         c.parent.name == unicodedata.normalize("NFC", "Café") and c.name == unicodedata.normalize("NFD", "план й.pdf")
         for c in nested), "каталог в NFC, файл в NFD — есть среди кандидатов"
+
+
+def test_find_canonical_reads_aliases_from_node_frontmatter(tmp_path):
+    """`aliases:` в шапке узла — записанное знание «это то же самое»; до
+    №127 конвейер его не читал. Список, блок и одиночная строка — YAML;
+    ключ имени (пунктуация не важна); при заданной папке записи псевдоним
+    ищется только в ней (человек с псевдонимом системы не перехватывает
+    систему — Critical трёх голов, круг-1 #451); два узла с одним
+    псевдонимом — не гадаем; точное имя и ключ в папке важнее псевдонима."""
+    import os
+    graph = tmp_path / "g"
+    (graph / "Системы").mkdir(parents=True)
+    (graph / "Люди").mkdir()
+    vitrina = graph / "Системы" / "Витрина 1494.md"
+    vitrina.write_text('---\ntype: система\naliases: ["ИС 1494", "Витрина данных"]\n---\n# Витрина 1494\n',
+                       encoding="utf-8")
+    reestr = graph / "Системы" / "Реестр.md"
+    reestr.write_text("---\ntype: система\naliases:\n  - Реестр поручений\n  - РП\n---\n# Реестр\n",
+                      encoding="utf-8")
+    scalar = graph / "Системы" / "Шина.md"
+    scalar.write_text("---\naliases: Корпоративная шина\n---\n# Шина\n", encoding="utf-8")
+    assert g.node_aliases(vitrina.read_text(encoding="utf-8")) == ["ИС 1494", "Витрина данных"]
+    assert g.node_aliases(reestr.read_text(encoding="utf-8")) == ["Реестр поручений", "РП"]
+    assert g.node_aliases(scalar.read_text(encoding="utf-8")) == ["Корпоративная шина"]
+    assert g.find_canonical(graph, "ИС-1494") == vitrina
+    assert g.find_canonical(graph, "ИС-1494", folder="Системы") == vitrina
+    assert g.find_canonical(graph, "витрина данных", folder="Люди") is None, "псевдоним — не через папку записи"
+    assert g.find_canonical(graph, "Реестр поручений") == reestr
+    assert g.find_canonical(graph, "корпоративная шина") == scalar
+    # DS-репро: человек с псевдонимом системы не перехватывает систему
+    ivan = graph / "Люди" / "Иван Иванов.md"
+    ivan.write_text('---\ntype: человек\naliases: ["ИС 1494"]\n---\n# Иван Иванов\n', encoding="utf-8")
+    sys1494 = graph / "Системы" / "ИС 1494.md"
+    sys1494.write_text("# ИС 1494\n", encoding="utf-8")
+    assert g.find_canonical(graph, "ИС-1494", folder="Системы") == sys1494, "ключ в папке важнее псевдонима"
+    assert g.find_canonical(graph, "ИС 1494") == sys1494, "точное имя важнее псевдонима"
+    # псевдоним появился позже — кэш шапок обновляется по (inode, размер, mtime)
+    assert g.find_canonical(graph, "Ваня", folder="Люди") is None
+    ivan.write_text('---\ntype: человек\naliases: ["ИС 1494", Ваня]\n---\n# Иван Иванов\n', encoding="utf-8")
+    os.utime(ivan, ns=(os.stat(ivan).st_atime_ns, os.stat(ivan).st_mtime_ns + 10_000_000))
+    assert g.find_canonical(graph, "Ваня", folder="Люди") == ivan
+    # два узла с одним псевдонимом — не гадаем, и подстрока дальше не гадает тоже
+    amb: list[str] = []
+    (graph / "Люди" / "Иван Петров.md").write_text("---\naliases: [Ваня]\n---\n# Иван Петров\n", encoding="utf-8")
+    assert g.find_canonical(graph, "Ваня", folder="Люди", ambiguous=amb) is None
+    assert sorted(amb) == ["Иван Иванов", "Иван Петров"]
+    assert g.find_canonical(graph, "Ваня") is None, "два узла с одной кличкой — не гадаем и без папки"
+    assert g.find_canonical(graph, "ИС-1494") == sys1494
+    assert g.find_canonical(graph, "Витрина данных") == vitrina, "псевдоним без папки — связь"
+    assert g.link_or_text(graph, "Витрина данных").startswith("[[Системы/Витрина 1494"), "связь по псевдониму без папки"
+    (graph / "Люди" / "Анна Смирнова.md").write_text("---\naliases: [Аня]\n---\n# Анна Смирнова\n", encoding="utf-8")
+    assert g.find_canonical(graph, "Аня").name == "Анна Смирнова.md", "однословная кличка без папки — связь (DS r3)"
+    assert g.find_canonical(graph, "Ани") is None, "ключ полный: «Ани» не «Аня»"
+    # YAML-битая шапка (двоеточие в соседнем поле) псевдонимы не теряет — fallback по полю
+    broken = graph / "Системы" / "Миграция БД.md"
+    broken.write_text("---\ndesc: План: сделать\naliases: [\"МБ, база\", МБД]\n---\n# Миграция БД\n", encoding="utf-8")
+    assert g.node_aliases(broken.read_text(encoding="utf-8")) == ["МБ, база", "МБД"]
+    assert g.find_canonical(graph, "МБД", folder="Системы") == broken
+
+
+def test_aliases_parse_as_yaml_and_skip_stubs_and_broken_files(tmp_path):
+    """Запятая в кавычках — часть имени, а не два псевдонима (Critical GLM);
+    шапка без закрывающего `---` — не шапка; `aliases: []` — пусто; дубли
+    псевдонима — один хит; не-UTF8 файл и заглушка-редирект поиск не
+    ломают и псевдонимов не отдают."""
+    graph = tmp_path / "g"
+    (graph / "Люди").mkdir(parents=True)
+    (graph / "Системы").mkdir()
+    petrov = graph / "Люди" / "Петров.md"
+    petrov.write_text('---\naliases: ["Петров, Иван", Ваня, Ваня]\n---\n# Петров\n', encoding="utf-8")
+    assert g.node_aliases(petrov.read_text(encoding="utf-8")) == ["Петров, Иван", "Ваня"]
+    assert g.find_canonical(graph, "Иван", folder="Люди") is None, "фантомного псевдонима «Иван» нет"
+    assert g.find_canonical(graph, "Петров, Иван", folder="Люди") == petrov
+    (graph / "Люди" / "Кузнецов.md").write_text("---\ntype: человек\nТекст без закрытия\naliases: [Кузя]\n",
+                                                encoding="utf-8")
+    assert g.find_canonical(graph, "Кузя", folder="Люди") is None, "шапка без закрывающего --- — не шапка"
+    assert g.node_aliases("---\naliases: []\n---\n# X\n") == []
+    assert g.node_aliases("---\naliases: [\"a\", \"a\", \"\"]\n---\n# X\n") == ["a"]
+    amb: list[str] = []
+    assert g.find_canonical(graph, "Ваня", folder="Люди", ambiguous=amb) == petrov, "дубль псевдонима — один хит"
+    assert amb == []
+    (graph / "Системы" / "Битый.md").write_bytes(b"---\naliases: [\xff]\n---\n")
+    stub = graph / "Системы" / "Старая витрина.md"
+    stub.write_text("---\naliases: [ИС 1494]\n---\n# Старая витрина → [[Системы/Витрина]]\n\nДубль слит.\n",
+                    encoding="utf-8")
+    (graph / "Системы" / "Витрина.md").write_text("# Витрина\n", encoding="utf-8")
+    assert g.find_canonical(graph, "ИС 1494", folder="Системы") is None, "псевдоним заглушки не ведёт в неё"
+
+
+def test_frontmatter_with_aliases_edits_the_header_in_place():
+    import frontmatter
+    assert frontmatter.with_aliases("# Узел\n", ["А, Б"]) == '---\naliases: ["А, Б"]\n---\n# Узел\n'
+    txt = "---\ntype: ядро\naliases: [МБ]\ntags: [ядро]\n---\n# Миграция\n"
+    out = frontmatter.with_aliases(txt, ["Миграция БД", "МБ"])
+    assert out == '---\ntype: ядро\naliases: ["МБ", "Миграция БД"]\ntags: [ядро]\n---\n# Миграция\n'
+    assert frontmatter.with_aliases(out, ["МБ"]) == out, "ничего нового — текст не тронут"
+    block = "---\naliases:\n  - a\n  - b\ntype: x\n---\nтело\n"
+    assert frontmatter.aliases(frontmatter.with_aliases(block, ["c"])) == ["a", "b", "c"]
+    assert frontmatter.parse(frontmatter.with_aliases(block, ["c"]))["type"] == "x"
+    unclosed = "---\ntype: x\nтекст\n"
+    assert frontmatter.with_aliases(unclosed, ["a"]) == unclosed, "незакрытая шапка — новую поверх не заводим"
+    # `]` в кавычках и блок без отступа — поле заменяется целиком, соседи целы (luna r2)
+    tricky = '---\naliases: ["A]B", "C"]\ntype: x\n---\nтело\n'
+    assert frontmatter.with_aliases(tricky, ["D"]) == '---\naliases: ["A]B", "C", "D"]\ntype: x\n---\nтело\n'
+    flat = "---\naliases:\n- a\n- b\ntype: x\n---\nтело\n"
+    assert frontmatter.with_aliases(flat, ["c"]) == '---\naliases: ["a", "b", "c"]\ntype: x\n---\nтело\n'
+    multi = '---\ntype: x\naliases: [\n  "a",\n  "b"\n]\ntags: [t]\n---\n'
+    assert frontmatter.with_aliases(multi, ["c"]) == '---\ntype: x\naliases: ["a", "b", "c"]\ntags: [t]\n---\n'
+    # YAML-ошибка в соседнем поле: старые псевдонимы не теряются при дописывании
+    broken = '---\naliases: ["Старый"]\nописание: Проект: перенос\n---\n'
+    assert frontmatter.aliases(frontmatter.with_aliases(broken, ["Новый"])) == ["Старый", "Новый"]
+    assert frontmatter.split("---\naliases: [A]\n---garbage\n# тело\n")[0] is None, "`---garbage` — не закрытие"
+    # апостроф в незакавыченном элементе — часть имени; соседние поля целы (Critical GLM r2)
+    apos = "---\ntype: система\ntags: [встречи, авто]\naliases: [Д'Артаньян]\nstatus: в работе\n---\n# Д\n"
+    out = frontmatter.with_aliases(apos, ["Дубль"])
+    assert "status: в работе" in out and frontmatter.aliases(out) == ["Д'Артаньян", "Дубль"], out
+    unbalanced = "---\naliases: [ИС 1494\nstatus: в работе\n---\n# X\n"
+    out = frontmatter.with_aliases(unbalanced, ["Y"])
+    assert "status: в работе" in out and out.count("aliases:") == 1, out
+    # CRLF-шапка закрывается, псевдонимы читаются (Important GLM r2)
+    crlf = "---\r\ntype: человек\r\naliases: [Кузя]\r\n---\r\n# Кузнецов\r\n"
+    assert frontmatter.aliases(crlf) == ["Кузя"] and frontmatter.split(crlf)[1].startswith("# Кузнецов")
+    # числа/булевы — как записаны, а не как YAML их понял
+    assert frontmatter.aliases("---\naliases: [01, on]\n---\n") == ["01", "on"]
+    assert frontmatter.aliases("---\naliases: 1494\n---\n") == ["1494"]
+    # не-строка в списке, который fallback не разбирает (блок без отступа + число): строки живут
+    assert frontmatter.aliases("---\naliases:\n- Витрина\n- 2026\n---\n") == ["Витрина", "2026"]
+    assert frontmatter.aliases('---\naliases: ["x]y", 01]\n---\n') == ["x]y", "01"], "как записано, «]» в кавычках не рвёт"
+    assert frontmatter.aliases("---\naliases: null\n---\n") == [] and frontmatter.aliases("---\naliases: ~\n---\n") == []
+    assert frontmatter.aliases("---\naliases: [foo, null, {a: 1}]\n---\n") == ["foo"], "null и mapping — не псевдонимы"
+    assert frontmatter.yaml_str("A\u2028B") == '"A\\u2028B"'
+    esc = '---\naliases: ["A\\" ] B",\n  "C"]\ntype: x\n---\n'
+    out = frontmatter.with_aliases(esc, ["D"])
+    assert frontmatter.parse(out)["type"] == "x" and frontmatter.aliases(out) == ['A" ] B', "C", "D"], out
+    # GLM r3: псевдоним из одной кавычки и «]» ниже по шапке — соседние поля целы
+    weird = '---\naliases: ["\\""]\ntags: [x]\ndesc: скажет "привет"\nпрочее: список завершён]\n---\n'
+    out = frontmatter.with_aliases(weird, ["D"])
+    parsed = frontmatter.parse(out)
+    assert parsed["tags"] == ["x"] and parsed["прочее"] == "список завершён]" and frontmatter.aliases(out) == ['"', "D"], out
+    # человеческий хвост после машинной пометки не сносится
+    human = "## Хроника\n- [[Встречи/2026-08-10_1000]] — статус уточнён повторным разбором на планёрке\n"
+    assert "на планёрке" in g._annotate_chronicle(human, "Встречи/2026-08-10_1000", "статус уточнён повторным разбором, было «x»")[0]
+    # CRLF-шапка: дописанные строки — тоже CRLF
+    crlf_out = frontmatter.with_aliases("---\r\ntype: человек\r\naliases: [Кузя]\r\n---\r\n# X\r\n", ["Новый"])
+    assert "\n\r\n" not in crlf_out and crlf_out.startswith('---\r\ntype: человек\r\naliases: ["Кузя", "Новый"]\r\n---\r\n# X')
+    assert frontmatter.split("---\ntype: x\n----\nне закрытие\n---\nтело\n")[0] == "\ntype: x\n----\nне закрытие"
+    assert frontmatter.aliases("---\nbad: [\naliases: Кузя\n---\n") == ["Кузя"], "скаляр через fallback"
+
+
+def test_core_chronicle_keeps_superseded_status_with_its_dates(tmp_path):
+    """Статус ядра перезаписывается каждой встречей; вытесненный уходит в
+    хронику с датой, с которой держался, — у факта есть «с» и «по» (№127).
+    Ретрай той же встречи и тот же статус строку не плодят."""
+    graph = tmp_path / "g"
+    g.upsert_core(graph, {"имя": "Миграция", "статус": "план готов", "обновление": "обсудили план"},
+                  "Встречи/2026-08-01_1000", "2026-08-01_1000")
+    g.upsert_core(graph, {"имя": "Миграция", "статус": "план готов", "обновление": "без изменений"},
+                  "Встречи/2026-08-05_1000", "2026-08-05_1000")
+    g.upsert_core(graph, {"имя": "Миграция", "статус": "в работе, срок сдвинут", "обновление": "старт"},
+                  "Встречи/2026-08-10_1000", "2026-08-10_1000")
+    g.upsert_core(graph, {"имя": "Миграция", "статус": "в работе, срок сдвинут", "обновление": "старт"},
+                  "Встречи/2026-08-10_1000", "2026-08-10_1000")   # ретрай
+    text = (graph / "Ядра" / "Миграция.md").read_text(encoding="utf-8")
+    assert "## Статус\nв работе, срок сдвинут _(обновлено 2026-08-10)_" in text
+    assert text.count("вытеснило статус") == 1, text
+    assert "- [[Встречи/2026-08-10_1000]] — старт · вытеснило статус (с 2026-08-05): «план готов»" in text
+    assert text.count("2026-08-10_1000") == 1, "ретрай не дублирует строку хроники"
+    assert g._current_status(text) == ("в работе, срок сдвинут", "2026-08-10")
+    # ретрай той же встречи с ДРУГИМ статусом — уточнение к её же строке, не потеря
+    g.upsert_core(graph, {"имя": "Миграция", "статус": "в работе, срок 15.09", "обновление": "старт"},
+                  "Встречи/2026-08-10_1000", "2026-08-10_1000")
+    text = (graph / "Ядра" / "Миграция.md").read_text(encoding="utf-8")
+    assert "## Статус\nв работе, срок 15.09 _(обновлено 2026-08-10)_" in text
+    assert text.count("2026-08-10_1000") == 1 and "статус уточнён повторным разбором, было «в работе, срок сдвинут»" in text
+    # третий разбор той же встречи: пометка заменяется, строка не растёт (GLM r2)
+    g.upsert_core(graph, {"имя": "Миграция", "статус": "в работе, срок 20.09", "обновление": "старт"},
+                  "Встречи/2026-08-10_1000", "2026-08-10_1000")
+    text = (graph / "Ядра" / "Миграция.md").read_text(encoding="utf-8")
+    assert text.count("статус уточнён повторным разбором") == 1 and "было «в работе, срок 15.09»" in text
+    # ссылка сверяется целиком: минутный штамп — не префикс посекундного
+    marked, found = g._annotate_chronicle("## Хроника\n- [[Встречи/2026-08-10_100023]] — x\n- [[Встречи/2026-08-10_1000]] — y\n",
+                                          "Встречи/2026-08-10_1000", "п")
+    assert found and marked.splitlines()[2].endswith(" · п") and "x · п" not in marked
+    assert g._annotate_chronicle("## Хроника\n- [[Встречи/2026-08-11_1000]] — z\n", "Встречи/2026-08-10_1000", "п")[1] is False
+    # прочерк — не статус: не перезаписывает и не вытесняет
+    g.upsert_core(graph, {"имя": "Миграция", "статус": "—", "обновление": "упомянули"},
+                  "Встречи/2026-08-12_1000", "2026-08-12_1000")
+    text = (graph / "Ядра" / "Миграция.md").read_text(encoding="utf-8")
+    assert "## Статус\nв работе, срок 20.09" in text and text.count("вытеснило статус") == 1
+    assert g._clip("а" * 200) == "а" * 159 + "…"
+    # и в самой хронике: посекундная встреча не «занимает» ссылку минутной
+    g.upsert_core(graph, {"имя": "Миграция", "статус": "сдано", "обновление": "финиш"},
+                  "Встречи/2026-08-13_100012", "2026-08-13_100012")
+    g.upsert_core(graph, {"имя": "Миграция", "статус": "сдано, акт подписан", "обновление": "акт"},
+                  "Встречи/2026-08-13_1000", "2026-08-13_1000")
+    text = (graph / "Ядра" / "Миграция.md").read_text(encoding="utf-8")
+    assert g.has_link(text, "Встречи/2026-08-13_1000") and g.has_link(text, "Встречи/2026-08-13_100012")
+    assert "- [[Встречи/2026-08-13_1000]] — акт · вытеснило статус (с 2026-08-13): «сдано»" in text
+

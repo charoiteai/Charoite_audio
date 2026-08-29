@@ -20,6 +20,8 @@ import pathlib
 import re
 import threading
 
+import frontmatter
+
 # Папки узлов: русские — боевой конвейер, английские — демо-граф продукта.
 NODE_FOLDERS = ("Люди", "Команды", "Системы", "Модели", "Блокеры", "Ядра",
                 "People", "Teams", "Systems", "Models", "Blockers", "Cores")
@@ -229,19 +231,13 @@ class NodeIndex:
         try:
             text = p.read_text(encoding="utf-8")
             st2 = p.stat()
-        except OSError:
+        except (OSError, ValueError):   # ValueError — не-UTF8 (DS r2 #451)
             return self._nodes.get(p)   # держим прошлый снапшот
         if (st2.st_mtime, st2.st_size) != (st.st_mtime, st.st_size):
             return self._nodes.get(p)   # файл переписывается прямо сейчас
         name = p.stem
-        aliases: list[tuple[str, ...]] = []
-        head = text[:600]
-        m = re.search(r"^aliases:\s*\[([^\]]*)\]", head, re.M)
-        if m:
-            for alias in m.group(1).split(","):
-                a = alias.strip(" \"'")
-                if a:
-                    aliases.append(tuple(stem(t) for t in tokens(a)))
+        # один разбор шапки на конвейер и поиск (frontmatter.py, #451)
+        aliases = [tuple(stem(t) for t in tokens(a)) for a in frontmatter.aliases(text, p.name)]
         return Node(path=p, folder=folder, name=name,
                     name_stems=tuple(stem(t) for t in tokens(name)),
                     alias_stems=tuple(aliases),
