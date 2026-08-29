@@ -78,7 +78,7 @@ def pretty_and_slug(title: str) -> tuple[str, str]:
     pretty = _safe(title.replace("_", " ").strip())
     if not pretty:
         sys.exit("новая тема пуста")
-    slug = re.sub(r"[,;:!?.]", "", pretty).replace(" ", "_")[:50]
+    slug = meeting_stamp.guard_slug(re.sub(r"[,;:!?.]", "", pretty).replace(" ", "_")[:50])
     return pretty, slug
 
 
@@ -152,6 +152,19 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
              for p in (tdir.glob(f"{minute}*.md") if tdir.is_dir() else ())
              if meeting_stamp.stamp_of(p.stem)}
     mine = {b for b, p in mains.items() if meeting_stamp.graph_key(tdir, p.stem, graph) == stamp}
+    # Главный файл прежних версий с темой на служебное слово («…_Демо_live.md»):
+    # по имени — копия, по содержимому — встреча. Такой файл rename и лечит:
+    # новое имя идёт через guard_slug (DS r4 по #455).
+    legacy = legacy_mains(tdir, minute)
+    legacy_names: set[str] = set()
+    for bare, p in legacy.items():
+        # посекундный legacy-файл зовут по минуте, как и всё остальное:
+        # единственный кандидат минуты — он (DS r5)
+        if (bare == stamp or (stamp == minute and len(legacy) == 1)) and bare not in mains:
+            mains[bare] = p
+            mine.add(bare)
+            legacy_names.add(p.name)
+            print(f"{p.name} — главный по содержимому (источника рядом нет): имя лечится")
     if stamp == minute and tdir.is_dir():
         # Бесхозные посекундные производные («…113012_hints.md» без главного
         # файла «…113012») — владельца минуты: так их оставлял конвейер до
@@ -175,7 +188,8 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
             if not any(f.name.startswith(b) and not f.name[len(b):len(b) + 1].isdigit()
                        and not re.match(r"-\d", f.name[len(b):]) for b in mine):
                 continue
-            new = retitled(f.name, stamp, slug)
+            # копия главного в Документации носит то же имя — тоже главный (DS r5)
+            new = f"{stamp}_{slug}.md" if f.name in legacy_names else retitled(f.name, stamp, slug)
             if not new:
                 continue
             target = f.with_name(new)
@@ -197,6 +211,34 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
 
     return {"moves": moves, "old_folder": old_folder, "new_folder": new_folder,
             "note": meeting_stamp.find_note(graph, stamp, tdir) or graph / "Встречи" / f"{stamp}.md"}
+
+
+def legacy_mains(tdir: pathlib.Path, minute: str) -> dict[str, pathlib.Path]:
+    """Главные файлы прежних версий, чья тема кончается служебным словом:
+    `stamp_of` их не узнаёт, но начинаются они с «# Встреча », а файла-источника
+    (имя без хвоста) рядом нет — значит, это не копия. Штамп → путь."""
+    found: dict[str, pathlib.Path] = {}
+    if not tdir.is_dir():
+        return found
+    names = {p.stem for p in tdir.glob("*.md")}
+    for p in tdir.glob(f"{minute}*.md"):
+        if meeting_stamp.stamp_of(p.stem):
+            continue
+        parts = meeting_stamp.decompose(p.stem)
+        if not parts or not parts[1]:
+            continue
+        low = p.stem.lower()
+        aux = next((a for a in meeting_stamp.AUX_SUFFIXES if low.endswith(a)), "")
+        if not aux or p.stem[:-len(aux)] in names:
+            continue                        # копия живого файла — не встреча
+        try:
+            with p.open("rb") as fh:
+                head = fh.read(200).decode("utf-8", errors="ignore")
+        except OSError:
+            continue
+        if head.lstrip().startswith("# Встреча "):
+            found[parts[0]] = p
+    return found
 
 
 def archive_folder(graph: pathlib.Path, stamp: str) -> pathlib.Path | None:

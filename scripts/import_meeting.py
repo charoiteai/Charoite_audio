@@ -298,6 +298,14 @@ def archive_folder_for(graph: pathlib.Path, stamp: str) -> pathlib.Path | None:
     return None
 
 
+def title_slug(title: str) -> str:
+    """Тема импорта в имени файла — через тот же страховщик, что и конвейер:
+    «Демо live» без него давал `…_Демо_live.md`, который stamp_of читает
+    как копию `_live` (DS r4 по #455)."""
+    slug = re.sub(r"[^\wА-Яа-яЁё-]+", "_", title).strip("_")[:40]
+    return meeting_stamp.guard_slug(slug) if slug else slug
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("file", help="аудио/текст/субтитры записанной встречи")
@@ -419,7 +427,7 @@ def main() -> None:
         return
     if stamp != f"{day}_{hhmm}":
         print(f"в минуте {day}_{hhmm} уже есть другая встреча — импорт под штампом {stamp}")
-    slug = re.sub(r"[^\wА-Яа-яЁё-]+", "_", args.title).strip("_")[:40]
+    slug = title_slug(args.title)
     tpath = tdir / (f"{stamp}_{slug}.md" if slug else f"{stamp}.md")
 
     ext = src.suffix.lower()

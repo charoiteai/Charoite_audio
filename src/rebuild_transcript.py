@@ -17,7 +17,6 @@
 """
 from __future__ import annotations
 
-import atexit
 import fcntl
 import json
 import os
@@ -624,6 +623,13 @@ def _pid_file(stamp: str) -> pathlib.Path:
     return ROOT / "logs" / f"rebuild-{stamp}.pid"
 
 
+_RUNNING_LOCKS: list = []   # открытые pid-файлы под flock (иначе GC закроет и снимет замок)
+
+
+class RunningElsewhere(RuntimeError):
+    """Отметку не взять: замок держит другой прогон — второй заход запрещён."""
+
+
 def running_elsewhere(live: pathlib.Path) -> int | None:
     """Pid живой пересборки этой же встречи, если она уже идёт.
 
@@ -639,40 +645,67 @@ def running_elsewhere(live: pathlib.Path) -> int | None:
     только в окне конвертации, а дубль случился на диаризации — то есть
     ровно там, где такого файла уже нет.
 
-    Мёртвую отметку (машину выключили посреди пересборки) убираем сами:
-    иначе одна аварийная ночь запретила бы пересборку встречи навсегда.
+    Признак один — flock на pid-файле: живой прогон держит его от
+    `mark_running` до выхода, а снимает замок сама ОС, когда процесс
+    умирает. Поэтому мёртвая отметка (машину выключили посреди пересборки)
+    ничего не запрещает — её перепишет следующий прогон. Живость по pid
+    (`kill 0`, старт процесса из `ps`) и уборка чужих файлов здесь
+    намеренно отсутствуют: pid переиспользуется, а unlink по имени под
+    чужим свежим замком снимал бы отметку живого прогона (круг по #455).
+    Отметки версий без замка не распознаются — разово, при обновлении.
     """
     stamp = meeting_stamp.stamp_of(live.stem)
     if not stamp:
         return None
     f = _pid_file(stamp)
     try:
-        pid = int(f.read_text().strip())
-    except (OSError, ValueError):
+        with f.open("r") as fh:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raw = fh.read().strip()
+                return int(raw) if raw.isdigit() else -1   # -1: держатель есть, pid не прочитать
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except FileNotFoundError:
         return None
-    if pid == os.getpid():
+    except OSError as e:
+        # том без flock (SMB/NFS/FUSE): работаем без защиты, но не молча —
+        # иначе двойной прогон 12.08 вернулся бы незаметно (DS r2 по #455)
+        log(f"замок пересборки недоступен ({e}): защита от двойного прогона снята")
         return None
-    try:
-        os.kill(pid, 0)          # 0 — только проверка, сигнал не шлём
-    except ProcessLookupError:
-        f.unlink(missing_ok=True)
-        return None
-    except PermissionError:
-        return pid               # чужой пользователь, но процесс есть
-    return pid
+    return None
 
 
 def mark_running(live: pathlib.Path) -> pathlib.Path | None:
-    """Отметить, что пересборка этой встречи идёт под нашим pid."""
+    """Отметить, что пересборка этой встречи идёт под нашим pid.
+
+    Файл после выхода не снимается: замок отпускает ОС, а unlink по имени в
+    окне выхода снимал бы отметку прогона, стартовавшего следом (DS r2 по
+    #455). Цена — файл в несколько байт на встречу в logs/.
+    """
     stamp = meeting_stamp.stamp_of(live.stem)
     if not stamp:
         return None
     f = _pid_file(stamp)
+    fh = None
     try:
         f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(str(os.getpid()), encoding="utf-8")
-    except OSError:
+        fh = f.open("a")           # не «w»: усечение до замка стирало pid живого прогона (DS, Critical)
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fh.close()
+            raise RunningElsewhere("замок пересборки держит другой процесс")
+        fh.truncate(0)
+        fh.seek(0)
+        fh.write(str(os.getpid()))
+        fh.flush()
+    except OSError as e:
+        if fh is not None:
+            fh.close()             # том без flock: дескриптор не держим (GLM r3)
+        log(f"отметка пересборки не взята ({e}): защита от двойного прогона снята")
         return None
+    _RUNNING_LOCKS.append(fh)   # держим открытым — замок живёт, пока жив процесс
     return f
 
 
@@ -687,13 +720,15 @@ def main():
     if busy:
         log(f"пересборка этой встречи уже идёт (pid {busy}) — выхожу")
         return
-    mark = mark_running(live)
+    try:
+        mark = mark_running(live)
+    except RunningElsewhere as e:   # проскочили проверку одновременно: решает замок (DS по #455)
+        log(f"пересборка этой встречи уже идёт ({e}) — выхожу")
+        return
     status = MeetingStatusStore(ROOT)
     pipeline_started = time.time()
-    # Снимаем отметку при любом выходе, включая аварийный: иначе одна
-    # оборванная пересборка запретила бы повтор этой встречи навсегда.
-    if mark:
-        atexit.register(lambda: mark.unlink(missing_ok=True))
+    if mark is None:
+        log("пересборка идёт без отметки — второй прогон этой встречи не будет отклонён")
 
     def publish(method, *args):
         try:

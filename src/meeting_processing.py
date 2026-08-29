@@ -45,6 +45,17 @@ def short_stamp(transcript: pathlib.Path) -> str:
     return match.group(1) if match else transcript.stem
 
 
+def _looks_main(path: pathlib.Path) -> bool:
+    """Главная стенограмма начинается с «# Встреча <штамп>»; разбор, минутки и
+    подсказки — нет. Читаем первые байты, кандидатов единицы."""
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(200).decode("utf-8", errors="ignore")
+    except OSError:
+        return False
+    return head.lstrip().startswith("# Встреча ")
+
+
 def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
     """Return the transcript even if graph_updater renamed it to its title."""
     if original.exists():
@@ -54,16 +65,35 @@ def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
     # глоб находил бы файл соседки (карточка №39).
     bare = meeting_stamp.stamp_of(original.stem) or short_stamp(original)
     for stamp in dict.fromkeys((bare, short_stamp(original))):
-        candidates = []
+        candidates, live_copies = [], []
         for path in original.parent.glob(f"{stamp}_*.md"):
             # По ХВОСТУ имени, как meeting_stamp.stamp_of и rename_meeting: проверка
             # подстрокой вычёркивала главный файл встречи «План_разбора» (тема со
             # словом «разбор» внутри) и статус получал несуществующий путь
             # (аудит DeepSeek 16.08).
             suffix = path.stem[len(stamp):].lower()
-            if any(suffix.endswith(aux) for aux in _AUX_SUFFIXES):
+            if suffix.endswith("_live"):
+                live_copies.append(path)   # копия или тема на «live» — решаем ниже
+                continue
+            if any(suffix.endswith(aux) for aux in _AUX_SUFFIXES) and not _looks_main(path):
+                # тема встречи может сама кончаться на «разбор»: производный файл
+                # отличаем по содержимому, а не только по имени (хвост 20.08, DS)
                 continue
             candidates.append(path)
+        if not candidates:
+            # «_live» — дословная копия главного файла с тем же началом: рядом с
+            # настоящим главным её спасать по содержимому нельзя, даже если она
+            # моложе (DS по #455). А без главного тема встречи может сама
+            # кончаться на «live» («Демо live») — тогда судим по содержимому,
+            # как остальных (DS r2). Копия узнаётся по имени источника, а не
+            # по mtime: `<штамп>_live` — копия голого штампа, `X_live` при
+            # живом `X` — копия `X`; иначе тронутая синком копия обгоняла бы
+            # главный (DS r3)
+            stems = {path.stem for path in live_copies}
+            mains = [path for path in live_copies if _looks_main(path)]
+            candidates = [path for path in mains
+                          if path.stem[len(stamp):].lower() != "_live"
+                          and path.stem[:-len("_live")] not in stems] or mains
         if candidates:
             return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
     return original.resolve()

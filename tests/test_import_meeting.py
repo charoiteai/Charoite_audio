@@ -318,3 +318,14 @@ def test_seen_marker_is_owner_only(tmp_path):
     assert not wav_complete(f)
     marker = tmp_path / ".m.wav.import-seen"
     assert marker.exists() and (marker.stat().st_mode & 0o777) == 0o600
+
+
+def test_import_title_goes_through_the_slug_guard():
+    """Импорт строил имя мимо guard_slug — «Демо live» давал файл, который
+    stamp_of считает копией `_live` (DS r4 по #455)."""
+    import meeting_stamp
+    import import_meeting as im
+    assert im.title_slug("Демо live") == "Демо-live"
+    assert im.title_slug("Разбор") == "Разбор-встреча"
+    assert im.title_slug("Отчёт по задачам") == "Отчёт_по_задачам"
+    assert meeting_stamp.stamp_of("2026-08-29_1200_" + im.title_slug("Демо live")) == "2026-08-29_1200"

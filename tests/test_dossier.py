@@ -1,6 +1,7 @@
 """Досье-слой: кластеризация, инкрементальность, поиск по индексу."""
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 
@@ -235,3 +236,48 @@ def test_индекс_не_теряет_досье_сверх_лимита_и_п
     r = nd.run(g, {"sufler": {}}, full=True, dry=False, limit=5)
     assert r["отказы"] == 2, "исключение считается один раз на тему"
     assert {e["тема"] for e in dossier.load_index(folder)} == {"Настройка доступа", "Отчётность"}
+
+
+def test_keys_see_cjk_words():
+    """Китайская встреча давала пустые ключи — досье не искалось (хвост 20.08, GLM)."""
+    import dossier
+    keys = dossier.keywords("会议讨论了数据平台的迁移计划 和 бюджет проекта")
+    joined = " ".join(keys) if not isinstance(keys, str) else keys
+    assert any("\u4e00" <= ch <= "\u9fff" for ch in joined), keys
+    assert "бюджет" in joined or "бюджет" in str(keys)
+    ru = dossier.keywords("мы не знали, на что поступить, и не вернулись, бюджет проекта не согласован")
+    assert not ({"не", "на", "и"} & set(ru)), ru
+
+
+
+def test_long_cjk_run_is_split_into_bigrams(tmp_path):
+    """Китайское предложение без пробелов — один токен длиннее 24 знаков —
+    выпадал целиком, ключей у встречи не оставалось (luna по #455)."""
+    import dossier
+    keys = dossier.keywords("这是一个超过二十四个汉字且中间没有空格的中文句子用于检索测试")
+    assert keys and all(len(k) == 2 for k in keys), keys
+    folder = tmp_path / "Досье"
+    folder.mkdir()
+    (folder / dossier.INDEX_JSON).write_text(json.dumps({"досье": [
+        {"тема": "数据平台迁移", "ключи": dossier.keywords("会议讨论了数据平台的迁移计划和时间表")},
+        {"тема": "Отчётность", "ключи": dossier.keywords("отчётность бюджет квартал")},
+    ]}, ensure_ascii=False), encoding="utf-8")
+    hits = dossier.lookup(folder, "数据平台迁移计划")
+    assert hits and hits[0]["тема"] == "数据平台迁移", hits
+
+
+def test_bigram_query_matches_a_whole_cjk_key_of_an_old_index(tmp_path):
+    """Индекс прежней версии хранит цельную CJK-последовательность; биграммы
+    запроса обязаны находить её без пересборки досье (luna r2 по #455)."""
+    import dossier
+    folder = tmp_path / "Досье"
+    folder.mkdir()
+    (folder / dossier.INDEX_JSON).write_text(json.dumps({"досье": [
+        {"тема": "数据平台迁移", "ключи": ["数据平台迁移", "会议"]},
+        {"тема": "Отчётность", "ключи": ["отчетност", "бюджет"]},
+    ]}, ensure_ascii=False), encoding="utf-8")
+    hits = dossier.lookup(folder, "数据平台迁移计划")
+    assert hits and hits[0]["тема"] == "数据平台迁移", hits
+    hits = dossier.lookup(folder, "бюджет квартала")
+    assert hits and hits[0]["тема"] == "Отчётность", hits
+    assert all(len(k) == 2 for k in dossier.load_index(folder)[0]["ключи"]), "старый ключ порезан на биграммы при чтении"
