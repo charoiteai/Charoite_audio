@@ -5,6 +5,27 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.64.0](https://github.com/charoiteai/Charoite_audio/compare/v0.63.0...v0.64.0) (2026-08-29)
+
+
+### Features
+
+* **cloud:** the cloud edits a copy, so authorship is known by construction ([#447](https://github.com/charoiteai/Charoite_audio/issues/447)) ([d633221](https://github.com/charoiteai/Charoite_audio/commit/d633221d5e8480a87b2d75018bf5445a51394c99))
+* **graph:** find_canonical reads node aliases; chronicle keeps the superseded status ([#451](https://github.com/charoiteai/Charoite_audio/issues/451)) ([97a7b41](https://github.com/charoiteai/Charoite_audio/commit/97a7b413f871206829b697683b3e87d5c8e55ac8))
+* **graph:** migrate accumulated speaker-placeholder nodes into plain text ([#454](https://github.com/charoiteai/Charoite_audio/issues/454)) ([dcebf3c](https://github.com/charoiteai/Charoite_audio/commit/dcebf3c0f3c701d171436fd28685c15a8004abb4))
+* **graph:** speaker labels are not people, and the night measures graph health ([#448](https://github.com/charoiteai/Charoite_audio/issues/448)) ([fb05e15](https://github.com/charoiteai/Charoite_audio/commit/fb05e15d12e1846db81fe7c044094b1d85d963d0))
+* **updates:** release day stops being waiting day ([#445](https://github.com/charoiteai/Charoite_audio/issues/445)) ([bdb6d3c](https://github.com/charoiteai/Charoite_audio/commit/bdb6d3c07119fdda1226081b23f21b23f4a337f1))
+
+
+### Bug Fixes
+
+* audit tails of 20.08 re-checked against main — eleven open items closed ([#455](https://github.com/charoiteai/Charoite_audio/issues/455)) ([f3eb98e](https://github.com/charoiteai/Charoite_audio/commit/f3eb98ebd3df93ecc70ec7d045cdf5a9b3dc4b0f))
+* **graph:** doctor rejects absolute, ../ and hidden link targets before resolving ([#450](https://github.com/charoiteai/Charoite_audio/issues/450)) ([2b12790](https://github.com/charoiteai/Charoite_audio/commit/2b12790c561a33c008367673c5cb17afbdf9da09))
+* **graph:** the doctor tells a node named «Linux 1.8» from an attachment ([#449](https://github.com/charoiteai/Charoite_audio/issues/449)) ([ef82d90](https://github.com/charoiteai/Charoite_audio/commit/ef82d90b4266d7478034ba9778cad9155dceb895))
+* **setup:** the readiness probe runs python isolated from the data folder ([#444](https://github.com/charoiteai/Charoite_audio/issues/444)) ([4c90a22](https://github.com/charoiteai/Charoite_audio/commit/4c90a22f7751a3c1ac4411807d20e39c88ebca0d))
+* **transcript:** physical chunk numbers, head from the layout, seam chain survives a swallowed chunk ([#453](https://github.com/charoiteai/Charoite_audio/issues/453)) ([10a9b5f](https://github.com/charoiteai/Charoite_audio/commit/10a9b5f144159053185f69992f4249a2d3982b0a))
+* **transcript:** seam dedup survives a label change on the same channel ([#452](https://github.com/charoiteai/Charoite_audio/issues/452)) ([acf3ede](https://github.com/charoiteai/Charoite_audio/commit/acf3ede1c9bf6b8271d1b31dba0e613e31aa9ff6))
+
 ## [0.63.0](https://github.com/charoiteai/Charoite_audio/compare/v0.62.0...v0.63.0) (2026-08-28)
 
 
