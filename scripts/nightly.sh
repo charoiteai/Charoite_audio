@@ -79,9 +79,9 @@ SLEPT_S=0
 slept_seconds() {
   local mono1
   mono1=$($PY -c 'import time; print(int(time.monotonic()))' 2>/dev/null || echo 0)
-  [ "$MONO0" -gt 0 ] && [ "$mono1" -gt 0 ] || { echo 0; return; }
+  if [ "$MONO0" -le 0 ] || [ "$mono1" -le 0 ]; then echo 0; return; fi
   local s=$(( ($(date +%s) - WALL0) - (mono1 - MONO0) ))
-  [ "$s" -gt 0 ] && echo "$s" || echo 0
+  if [ "$s" -gt 0 ]; then echo "$s"; else echo 0; fi
 }
 # Куда кладём машиночитаемый итог. Логи launchd живут в /tmp и исчезают при
 # перезагрузке — по ним нельзя отличить «ночью ничего не делалось» от
@@ -284,9 +284,15 @@ FAILED="${FAILED# }"
 # файлов не отработал или досье собрались без модели, — при rc=0 такая ночь
 # выглядела бы полностью успешной.
 SLEPT_S=$(slept_seconds)   # заранее: ветка «slept» ниже решает по нему
+# отвалились ли ТОЛЬКО шаги «(поздно)» — без grep по выводу (shellcheck SC2143)
+ONLY_LATE=1
+read -r -a _failed_steps <<< "$FAILED"
+for _step in "${_failed_steps[@]}"; do
+  case "$_step" in (*"(поздно)") ;; (*) ONLY_LATE=0 ;; esac
+done
 if [ "$rc" -eq 0 ] && [ -z "$FAILED" ]; then
   write_status ok
-elif [ "$SLEPT_S" -ge "${CHAROITE_NIGHTLY_SLEEP_S:-600}" ] && [ "$rc" -eq 0 ] && [ -z "$(printf '%s' "$FAILED" | tr ' ' '\n' | grep -v '(поздно)$')" ]; then
+elif [ "$SLEPT_S" -ge "${CHAROITE_NIGHTLY_SLEEP_S:-600}" ] && [ "$rc" -eq 0 ] && [ "$ONLY_LATE" = 1 ]; then
   # только «(поздно)» и проспано ≥10 мин: не поломка, а сон — ночь не состоялась
   echo "💤 машина спала $((SLEPT_S / 60)) мин — шаги «(поздно)» пропущены из-за сна, не из-за поломки"
   write_status slept
