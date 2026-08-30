@@ -71,6 +71,18 @@ def _status(tmp_path):
     return json.loads((tmp_path / "logs" / "nightly.json").read_text())
 
 
+# Заглушка python, у которой monotonic стоит на месте: так выглядит ночь,
+# которую машина проспала (wall-clock ушёл, monotonic — нет).
+FROZEN_CLOCK = (
+    "#!/bin/sh\n"
+    'case "$1" in\n'
+    "  -c) echo 1000; exit 0 ;;\n"
+    "  *) sleep 1; exit 0 ;;\n"      # шаг длится секунду: потолок NIGHTLY_MAX_H=0 успевает выйти
+    "esac\n"
+)
+SLOW_OK = "#!/bin/sh\nsleep 1\nexit 0\n"
+
+
 def _run(tmp_path: pathlib.Path, stub: str) -> subprocess.CompletedProcess:
     (tmp_path / "scripts").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".venv" / "bin").mkdir(parents=True, exist_ok=True)
@@ -204,3 +216,29 @@ def test_sudden_death_leaves_a_failure_not_a_forever_running(tmp_path):
                        capture_output=True, text=True, timeout=60)
     assert r.returncode != 0
     assert _status(tmp_path)["state"] == "failed", _status(tmp_path)
+
+
+def test_night_slept_through_is_reported_as_sleep_not_failure(tmp_path):
+    """30.08: прогон 04:20–09:59 на спящем Mac — четыре «(поздно)» и «failed»,
+    хотя не упало ничего. Проспанное время = wall-clock минус monotonic;
+    только «(поздно)» при сне — состояние «slept» (аудит 30.08, GLM I3)."""
+    import os
+    (tmp_path / "scripts").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".venv" / "bin").mkdir(parents=True, exist_ok=True)
+    shutil.copy(NIGHTLY, tmp_path / "scripts" / "nightly.sh")
+    py = tmp_path / ".venv" / "bin" / "python"
+    py.write_text(FROZEN_CLOCK)
+    py.chmod(0o755)
+    env = dict(os.environ, NIGHTLY_MAX_H="0", CHAROITE_NIGHTLY_SLEEP_S="0")
+    r = subprocess.run(["bash", str(tmp_path / "scripts" / "nightly.sh")],
+                       capture_output=True, text=True, timeout=60, env=env)
+    st = _status(tmp_path)
+    assert st["state"] == "slept", (st, r.stdout)
+    assert "(поздно)" in st["failed"] and st["slept_s"] >= 1
+    assert "спала" in r.stdout
+    # без сна те же «(поздно)» остаются поломкой
+    py.write_text(SLOW_OK)
+    r = subprocess.run(["bash", str(tmp_path / "scripts" / "nightly.sh")],
+                       capture_output=True, text=True, timeout=60,
+                       env=dict(os.environ, NIGHTLY_MAX_H="0"))
+    assert _status(tmp_path)["state"] == "failed", (_status(tmp_path), r.stdout)

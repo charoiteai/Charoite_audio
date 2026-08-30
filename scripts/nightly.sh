@@ -69,6 +69,20 @@ export CHAROITE_ROOT
 
 rc=0
 STARTED=$(date '+%F %T')
+# Сон машины: потолок ночи считается по часам, которые сон не останавливает,
+# а monotonic на macOS во сне стоит — разница и есть проспанное время. Ночь на
+# спящем ноутбуке 30.08 (04:20–09:59) выглядела как «failed» с четырьмя
+# «(поздно)», хотя не упало ничего (аудит 30.08, GLM Important 3).
+WALL0=$(date +%s)
+MONO0=$($PY -c 'import time; print(int(time.monotonic()))' 2>/dev/null || echo 0)
+SLEPT_S=0
+slept_seconds() {
+  local mono1
+  mono1=$($PY -c 'import time; print(int(time.monotonic()))' 2>/dev/null || echo 0)
+  if [ "$MONO0" -le 0 ] || [ "$mono1" -le 0 ]; then echo 0; return; fi
+  local s=$(( ($(date +%s) - WALL0) - (mono1 - MONO0) ))
+  if [ "$s" -gt 0 ]; then echo "$s"; else echo 0; fi
+}
 # Куда кладём машиночитаемый итог. Логи launchd живут в /tmp и исчезают при
 # перезагрузке — по ним нельзя отличить «ночью ничего не делалось» от
 # «файл стёрся». Статус нужен рядом с данными и должен переживать ребут:
@@ -84,9 +98,9 @@ mkdir -p "$STATUS_DIR"
 write_status() {
   local state="$1"
   # «идёт» — не итог: после него статус ещё обязан быть переписан.
-  [ "$state" = running ] || STATUS_DONE=1
-  printf '{"started":"%s","finished":"%s","state":"%s","rc":%s,"failed":"%s"}\n' \
-    "$STARTED" "$(date '+%F %T')" "$state" "$rc" "$FAILED" > "$STATUS"
+  [ "$state" = running ] || { STATUS_DONE=1; SLEPT_S=$(slept_seconds); }   # и для interrupted (GLM r1)
+  printf '{"started":"%s","finished":"%s","state":"%s","rc":%s,"failed":"%s","slept_s":%s}\n' \
+    "$STARTED" "$(date '+%F %T')" "$state" "$rc" "$FAILED" "${SLEPT_S:-0}" > "$STATUS"
 }
 # Заголовок шага со временем: по нему видно, сколько съел предыдущий, — без
 # этого «долго» и «встало» в логе выглядят одинаково.
@@ -247,7 +261,10 @@ $PY -c "import sys; sys.path.insert(0, 'src'); import graphs, graph_updater as g
 step "graph doctor (итог ночи)"
 # Второй замер — после tier3, досье и дедупа: утренний бриф показывает
 # цифры ПОСЛЕ ночных слияний, а не до них (GLM, круг-1 по #448 M13).
-$PY scripts/graph_doctor.py --all-graphs || { echo "⚠️ graph doctor (итог) не отработал"; FAILED="$FAILED graph-doctor"; }
+$PY scripts/graph_doctor.py --all-graphs || {
+  echo "⚠️ graph doctor (итог) не отработал"; FAILED="$FAILED graph-doctor"
+  rm -f "${CHAROITE_ROOT:-$PWD}/logs/graph_doctor.json"   # как и первый: отчёт до слияний — не итог (аудит 30.08)
+}
 step "morning brief"
 $PY scripts/morning_brief.py || { echo "❌ УТРЕННИЙ БРИФ УПАЛ (код $?)"; rc=1; FAILED="$FAILED утренний-бриф"; }
 step "memory bench"
@@ -266,5 +283,20 @@ FAILED="${FAILED# }"
 # сообщаем launchd об авариях, а человеку на экране важно и то, что дедуп
 # файлов не отработал или досье собрались без модели, — при rc=0 такая ночь
 # выглядела бы полностью успешной.
-if [ "$rc" -eq 0 ] && [ -z "$FAILED" ]; then write_status ok; else write_status failed; fi
+SLEPT_S=$(slept_seconds)   # заранее: ветка «slept» ниже решает по нему
+# отвалились ли ТОЛЬКО шаги «(поздно)» — без grep по выводу (shellcheck SC2143)
+ONLY_LATE=1
+read -r -a _failed_steps <<< "$FAILED"
+for _step in "${_failed_steps[@]}"; do
+  case "$_step" in (*"(поздно)") ;; (*) ONLY_LATE=0 ;; esac
+done
+if [ "$rc" -eq 0 ] && [ -z "$FAILED" ]; then
+  write_status ok
+elif [ "$SLEPT_S" -ge "${CHAROITE_NIGHTLY_SLEEP_S:-600}" ] && [ "$rc" -eq 0 ] && [ "$ONLY_LATE" = 1 ]; then
+  # только «(поздно)» и проспано ≥10 мин: не поломка, а сон — ночь не состоялась
+  echo "💤 машина спала $((SLEPT_S / 60)) мин — шаги «(поздно)» пропущены из-за сна, не из-за поломки"
+  write_status slept
+else
+  write_status failed
+fi
 exit $rc

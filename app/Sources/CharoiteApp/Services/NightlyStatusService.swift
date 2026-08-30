@@ -27,6 +27,10 @@ enum NightlyState: Equatable {
     case ok(finished: Date)
     /// Отработал, но какие-то шаги упали.
     case failed(finished: Date, steps: [String])
+    /// Машина проспала ночь: тяжёлые шаги пропущены по потолку времени, но
+    /// не упало ничего — `nightly.sh` считает проспанное как разницу
+    /// wall-clock и monotonic (30.08: 04:20–09:59 на спящем ноутбуке).
+    case slept(finished: Date, minutes: Int, steps: [String])
     /// Прогон начался и не завершился: машину усыпили или перезагрузили.
     case interrupted(started: Date)
     /// Последний известный прогон старше суток.
@@ -82,6 +86,10 @@ struct NightlyStatus: Equatable {
         }
         let steps = ((json["failed"] as? String) ?? "")
             .split(separator: " ").map(String.init)
+        if state == "slept" {
+            let seconds = (json["slept_s"] as? Int) ?? Int((json["slept_s"] as? Double) ?? 0)
+            return NightlyStatus(state: .slept(finished: finished, minutes: seconds / 60, steps: steps))
+        }
         return NightlyStatus(state: .failed(finished: finished, steps: steps))
     }
 
@@ -170,6 +178,8 @@ final class NightlyStatusService: ObservableObject {
             return L.t("Ночная обработка пройдена", "Nightly pass completed", "夜间处理已完成")
         case .failed:
             return L.t("Ночная обработка с ошибками", "Nightly pass had errors", "夜间处理出现错误")
+        case .slept:
+            return L.t("Ночная обработка проспана", "Nightly pass slept through", "夜间处理因休眠未完成")
         case .interrupted:
             return L.t("Ночная обработка прервана", "Nightly pass interrupted", "夜间处理被中断")
         case .stale:
@@ -204,6 +214,11 @@ final class NightlyStatusService: ObservableObject {
             return L.t("Не отработало: \(list). Подробности — в logs/nightly.log",
                        "Failed steps: \(list). Details in logs/nightly.log",
                        "失败步骤：\(list)。详情见 logs/nightly.log")
+        case .slept(_, let minutes, let steps):
+            let list = steps.joined(separator: ", ")
+            return L.t("Машина спала \(minutes) мин; пропущено: \(list). Ночи нужен не спящий Mac",
+                       "The machine slept for \(minutes) min; skipped: \(list). The night needs an awake Mac",
+                       "机器休眠 \(minutes) 分钟；跳过：\(list)。夜间处理需要保持唤醒")
         case .interrupted(let started):
             return L.t("Начата \(time.string(from: started)) и не завершилась — машину усыпили или перезагрузили",
                        "Started at \(time.string(from: started)) and never finished — the machine slept or rebooted",
@@ -228,7 +243,7 @@ final class NightlyStatusService: ObservableObject {
     var needsAttention: Bool {
         switch status.state {
         case .ok, .running: return false
-        case .failed, .interrupted, .stale, .never, .foreignScript: return true
+        case .failed, .slept, .interrupted, .stale, .never, .foreignScript: return true
         }
     }
 
@@ -237,6 +252,7 @@ final class NightlyStatusService: ObservableObject {
         case .running: return "moon.stars"
         case .ok: return "moon.stars.fill"
         case .failed: return "exclamationmark.triangle.fill"
+        case .slept: return "moon.zzz.fill"
         case .interrupted: return "pause.circle.fill"
         case .stale, .never: return "moon.zzz"
         case .foreignScript: return "arrow.triangle.branch"

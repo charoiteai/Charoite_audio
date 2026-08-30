@@ -229,3 +229,170 @@ def test_main_transcript_whose_title_ends_with_live_is_still_found(tmp_path):
         live.with_name(name).unlink()
     main.write_text("черновик без шапки\n", encoding="utf-8")
     assert find_final_transcript(live) == live.resolve()
+
+
+def test_status_key_is_the_stamp_and_survives_retitle(tmp_path):
+    """Ключ статуса — штамп исходного файла, записанный в сам статус: падение
+    после переименования писало «error» под старым стемом, повтор шёл под
+    новым, старый json оставался «error» навсегда — и каждая тихая итерация
+    заново пересобирала встречу из записей (аудит 30.08, GLM Critical 2)."""
+    live = _transcript(tmp_path)
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    first = store.processing(live, "updating_graph")
+    assert first.name == "2026-07-31_141501.json"
+    titled = live.with_name("2026-07-31_1415_План_релиза.md")
+    live.rename(titled)
+    assert store.failed(live, "модель не дала разбор") == first     # старым путём, как rebuild
+    later = MeetingStatusStore(tmp_path, now=lambda: 20.0)           # другой процесс, новым путём
+    assert later.ready(titled, None, False) == first, "одна встреча — один файл статуса"
+    assert json.loads(first.read_text(encoding="utf-8"))["key"] == "2026-07-31_141501"
+    assert later.unfinished() == [], "после успешного повтора призрака нет"
+    # файл прежней версии, названный по стему, без поля key — не перевешивает свежий «ready»
+    ghost = tmp_path / "logs" / "meeting-status" / "2026-07-31_1415_План_релиза.json"
+    ghost.write_text(json.dumps({"meeting_id": "2026-07-31_1415_План_релиза", "state": "error",
+                                 "updated_at": 5.0, "attempts": 1,
+                                 "transcript_path": str(titled.resolve())}), encoding="utf-8")
+    assert later.unfinished() == []
+    # не-штамп (импорт с чужим именем) — стем, как раньше
+    odd = tmp_path / "transcripts" / "заметка.md"
+    odd.write_text("# Встреча\n", encoding="utf-8")
+    assert store.processing(odd, "x").name == "заметка.json"
+
+
+def test_dead_neighbour_status_does_not_hijack_the_minute(tmp_path):
+    """Вторая встреча той же минуты удалена с диска, её «error» свежее: раньше
+    её мёртвый путь резолвился в файл владельца минуты и ронял ЕГО повтор
+    (DS r1 по #456). Живой путь перевешивает мёртвый."""
+    live = _transcript(tmp_path)
+    titled = live.with_name("2026-07-31_1415_Тема.md")
+    live.rename(titled)
+    d = tmp_path / "logs" / "meeting-status"
+    d.mkdir(parents=True)
+    (d / "2026-07-31_141501.json").write_text(json.dumps({
+        "meeting_id": "2026-07-31_141501", "key": "2026-07-31_141501", "state": "error",
+        "updated_at": 100.0, "attempts": 1, "transcript_path": str(titled.resolve())}), encoding="utf-8")
+    (d / "2026-07-31_141512.json").write_text(json.dumps({
+        "meeting_id": "2026-07-31_141512", "key": "2026-07-31_141512", "state": "error",
+        "updated_at": 200.0, "attempts": 1,
+        "transcript_path": str((tmp_path / "transcripts" / "2026-07-31_141512.md").resolve())}), encoding="utf-8")
+    pending = MeetingStatusStore(tmp_path, now=lambda: 1000.0).unfinished()
+    assert [p["key"] for p in pending] == ["2026-07-31_141501"]
+    assert pending[0]["transcript_path"] == str(titled.resolve())
+
+
+def test_crash_after_retitle_is_still_retried_with_the_current_path(tmp_path):
+    """Единственный статус — «processing» со старым (уже мёртвым) путём:
+    падение между retitle и следующей записью. Повтор находит текущий файл
+    и получает его путь, а не мёртвый (DS r1 по #456)."""
+    live = _transcript(tmp_path)
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    store.processing(live, "updating_graph")
+    titled = live.with_name("2026-07-31_1415_Тема.md")
+    live.rename(titled)
+    pending = MeetingStatusStore(tmp_path, now=lambda: 10.0 + 2 * 3600).unfinished()
+    assert len(pending) == 1 and pending[0]["transcript_path"] == str(titled.resolve())
+
+
+def test_legacy_main_named_live_beats_its_own_newer_copy(tmp_path):
+    """Прежние версии могли назвать главный «<штамп>_live.md» (тема «live»);
+    его копия «<штамп>_live_live.md» новее — но копия узнаётся по живому
+    источнику, а не по mtime (luna по аудиту 30.08)."""
+    import os
+    live = _transcript(tmp_path)
+    live.unlink()
+    main = live.with_name("2026-07-31_141501_live.md")
+    main.write_text("# Встреча 2026-07-31_141501 — live\n\nтекст\n", encoding="utf-8")
+    copy = live.with_name("2026-07-31_141501_live_live.md")
+    copy.write_text(main.read_text(encoding="utf-8"), encoding="utf-8")
+    os.utime(copy, (os.stat(copy).st_atime, os.stat(main).st_mtime + 100))
+    assert find_final_transcript(live) == main.resolve()
+
+
+def test_suffix_lists_have_one_source():
+    import meeting_processing as mp
+    import meeting_stamp
+    sys.path.insert(0, str(SRC.parent / "scripts"))
+    import rename_meeting as rm
+    assert mp._AUX_SUFFIXES is meeting_stamp.AUX_SUFFIXES and rm.SUFFIXES is meeting_stamp.AUX_SUFFIXES
+    assert "_debrief" in rm.SUFFIXES
+
+
+def test_meeting_id_stays_the_first_one_for_the_meeting(tmp_path):
+    """Приложение сверяет итог повтора по точному meeting_id: после retitle
+    новый стем ломал бы сверку (luna r1 по #456). Тема карточки — из пути."""
+    live = _transcript(tmp_path)
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    store.processing(live, "updating_graph")
+    titled = live.with_name("2026-07-31_1415_Тема.md")
+    live.rename(titled)
+    path = MeetingStatusStore(tmp_path, now=lambda: 20.0).ready(titled, None, False)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["meeting_id"] == "2026-07-31_141501" and data["transcript_path"] == str(titled.resolve())
+
+
+def test_corrupt_status_does_not_abort_the_retry_scan(tmp_path):
+    live = _transcript(tmp_path)
+    d = tmp_path / "logs" / "meeting-status"
+    d.mkdir(parents=True)
+    (d / "bad.json").write_text(json.dumps({"meeting_id": "x", "state": "error", "updated_at": "bad",
+                                            "transcript_path": str(live.resolve())}), encoding="utf-8")
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    store.failed(live, "упало")
+    assert len(MeetingStatusStore(tmp_path, now=lambda: 20.0).unfinished()) == 1
+
+
+def test_live_copy_of_a_titled_main_is_a_copy_only_while_its_source_lives(tmp_path):
+    """Средний ярус: «X_live» при живом X — копия; «<штамп>_live» без голого
+    файла — главный прежних версий (GLM r1: множество источников должно
+    включать все файлы встречи, не только live-копии)."""
+    live = _transcript(tmp_path)
+    live.unlink()
+    main = live.with_name("2026-07-31_141501_Тема.md")
+    main.write_text("# Встреча 2026-07-31_141501 — Тема\n\nтекст\n", encoding="utf-8")
+    copy = live.with_name("2026-07-31_141501_Тема_live.md")
+    copy.write_text(main.read_text(encoding="utf-8"), encoding="utf-8")
+    assert find_final_transcript(live) == main.resolve()
+    main.unlink()   # источник исчез — копия становится единственным кандидатом
+    assert find_final_transcript(live) == copy.resolve()
+
+
+def test_two_dead_paths_do_not_let_freshness_pick_the_key(tmp_path):
+    """Владелец после retitle (мёртвый голый путь) и удалённая соседка (мёртвый
+    путь, свежее): свежесть — не признак владения; в неоднозначности ключ
+    берётся детерминированно от текущего файла (GLM r2 по #456)."""
+    live = _transcript(tmp_path)
+    titled = live.with_name("2026-07-31_1415_Тема.md")
+    live.rename(titled)
+    d = tmp_path / "logs" / "meeting-status"
+    d.mkdir(parents=True)
+    (d / "2026-07-31_141501.json").write_text(json.dumps({
+        "meeting_id": "2026-07-31_141501", "key": "2026-07-31_141501", "state": "processing",
+        "updated_at": 10.0, "transcript_path": str(live.resolve())}), encoding="utf-8")
+    (d / "2026-07-31_141512.json").write_text(json.dumps({
+        "meeting_id": "2026-07-31_141512", "key": "2026-07-31_141512", "state": "error",
+        "updated_at": 200.0, "attempts": 1,
+        "transcript_path": str((tmp_path / "transcripts" / "2026-07-31_141512.md").resolve())}), encoding="utf-8")
+    path = MeetingStatusStore(tmp_path, now=lambda: 300.0).ready(titled, None, False)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["key"] == "2026-07-31_1415" and data["meeting_id"] != "2026-07-31_141512"
+
+
+def test_busy_ignores_a_corrupt_record(tmp_path):
+    d = tmp_path / "logs" / "meeting-status"
+    d.mkdir(parents=True)
+    (d / "bad.json").write_text(json.dumps({"state": "processing", "updated_at": "bad", "stage": "x"}), encoding="utf-8")
+    assert MeetingStatusStore(tmp_path, now=lambda: 10.0).busy() == []
+
+
+def test_infinite_numbers_in_a_status_are_treated_as_corrupt(tmp_path):
+    """json.loads принимает Infinity/NaN: «processing» с updated_at=Infinity
+    был бы вечно свежим, attempts=Infinity ронял int() (luna r3 по #456)."""
+    live = _transcript(tmp_path)
+    d = tmp_path / "logs" / "meeting-status"
+    d.mkdir(parents=True)
+    (d / "inf.json").write_text('{"meeting_id": "x", "state": "processing", "updated_at": Infinity, '
+                                '"attempts": Infinity, "stage": "y", "transcript_path": "%s"}' % live.resolve(),
+                                encoding="utf-8")
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    assert store.busy() == []
+    assert store.unfinished() == []
