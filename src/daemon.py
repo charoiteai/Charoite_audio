@@ -1258,7 +1258,9 @@ def main():
     cloud_evt = threading.Event()
     _last_fire = [0.0]
     _cloud_last = {"t": 0.0, "words": set()}
-    _pending_q = {"text": "", "at": 0.0}  # последний вопрос и когда прозвучал — панели показывают его над ответом
+    # последний вопрос и когда прозвучал — панели показывают его над ответом;
+    # ячейка со словарём: запись подменяет словарь целиком (см. on_question)
+    nonlocal_pending = [{"text": "", "at": 0.0}]
     # Черновик и финальные минутки: проверка маркера и запись — одним куском.
     # Между read_text и write_text черновика финал от «Протокола» успевал лечь
     # на диск и заворачивался черновиком (класс 0.46.0, аудит 30.08 DS M1).
@@ -1281,7 +1283,7 @@ def main():
         now = time.time()
         if now - _last_fire[0] < 8:
             return
-        if q.strip() and not question_filter.is_worth_asking(q, _pending_q["text"]):
+        if q.strip() and not question_filter.is_worth_asking(q, nonlocal_pending[0]["text"]):
             return
         _last_fire[0] = now
         if q.strip():  # панели показывают, НА ЧТО отвечают — без этого ответ висел без вопроса
@@ -1290,9 +1292,10 @@ def main():
             # сырой вопрос с усечённым (№95; круг-2 по #405, DS — «источнику
             # вообще нечего резать»). Это одно высказывание STT: сотни
             # символов, памяти не грозит.
-            # одной записью: два присваивания давали читателю text одного
-            # вопроса и at другого (аудит 30.08, DS M2)
-            _pending_q.update(text=" ".join(q.split()), at=time.monotonic())
+            # новый словарь, а не мутация: читатель берёт снимок по ссылке в
+            # момент вызова, и text одного вопроса с at другого не встречаются
+            # ни при записи, ни при чтении (аудит 30.08, DS M2; DS r1 по #457)
+            nonlocal_pending[0] = {"text": " ".join(q.split()), "at": time.monotonic()}
         instant_evt.set()
         if not (cloud_live and toggles["cloud"]):
             return
@@ -1788,7 +1791,7 @@ def main():
             # локом: пока поток ждал hint_lock, мог прийти второй вопрос — и
             # модель отвечала бы на него с узлами первого, а ответ ложился
             # под чужим вопросом в нить и лог (ревью 15.08 ×3).
-            q = fresh_question(_pending_q, time.monotonic())
+            q = fresh_question(nonlocal_pending[0], time.monotonic())
             tail = tr.tail(1600)
             # сверка вопроса с узлами графа — ДО hint_lock и вне STT-пути:
             # файловый лукап не смеет держать ни распознавание, ни очередь
@@ -1866,7 +1869,7 @@ def main():
             tail = tr.tail(2200)
             if not tail:
                 continue
-            q = fresh_question(_pending_q, time.monotonic())
+            q = fresh_question(nonlocal_pending[0], time.monotonic())
             short = model.split("-")[1] if model.count("-") else model  # claude-haiku-… → haiku
             think = f"☁️ {dt.datetime.now():%H:%M:%S} {short} думает" + (f" над: ❓ {q[:120]}" if q else "…")
             # «думает над ❓…» жило в полотне и дублировало вопрос, который
@@ -1961,10 +1964,13 @@ def main():
                 return
             if frame_q.full():
                 # переполнение роняло кадр молча: стрим не успевал, вопросы
-                # переставали триггерить ⚡, статус «подключён» врал (DS I2)
+                # переставали триггерить ⚡, статус «подключён» врал (DS I2).
+                # Сказать — не из аудио-потока: emit пишет в stdout, и при
+                # заторе на той стороне _pump перестал бы забирать звук
+                # (luna r1 по #457); сообщение уходит из своего потока.
                 msg = drops.dropped()
                 if msg:
-                    emit_error(msg)
+                    threading.Thread(target=emit_error, args=(msg,), daemon=True).start()
                 return
             frame_q.put(part)
 
@@ -2190,13 +2196,13 @@ def main():
                     or (dt.datetime.now() - t1).total_seconds() < 6:
                 continue
             seen.add(key)
-            if not toggles["hints"]:
-                continue   # подсказки выключены — вспомогательная разметка тем более молчит
             # Единственный LLM-контур вне арбитра держал модель на 900 токенов
             # каждые 6 с, пока подсказчик и ⚡ стояли в очереди к ней (аудит
-            # 30.08, DS I1). Замок берём тихо: не взяли за секунду — вернёмся к
-            # абзацу позже, разметка дешевле задержки подсказки.
-            if not hint_lock.acquire(timeout=1.0):
+            # 30.08, DS I1). Контракт арбитра целиком: выключенные подсказки и
+            # взведённый manual_evt (ручной вопрос ждёт) — уступаем, замок берём
+            # тихо на секунду; во всех трёх случаях абзац вернётся в следующий
+            # цикл — разметка дешевле задержки подсказки (DS r1 по #457).
+            if not toggles["hints"] or manual_evt.is_set() or not hint_lock.acquire(timeout=1.0):
                 seen.discard(key)
                 continue
             try:
