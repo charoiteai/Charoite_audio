@@ -57,8 +57,10 @@ def test_daemon_asks_the_labels_instead_of_comparing_strings():
     assert 'hub.SPEAKER.get("mic", "")' not in src, "сырая метка сравнивается только внутри ChannelLabels"
     assert "mic_label = " not in src, "локальной копии метки больше нет — она расходилась с захватом"
     assert src.count("chan.is_mic(") >= 6 and "chan.is_owner_line(" in src and "chan.signed_for(" in src
-    gate = src[src.index("режим собеседования: вопрос с той стороны"):src.index("fire_question(added)")]
-    assert "not chan.is_mic(speaker)" in gate, "сырой канал микрофона — никогда не вопрос собеседника (DS r1)"
+    i = src.index("fire_question(added)")          # единственный вызов; якорь — код, не комментарий
+    gate = src[max(0, i - 1500):i]
+    assert "not chan.is_mic(speaker) or _mic_voice_is_stranger(n)" in gate, \
+        "микрофон стреляет только по голосу, который положительно не владелец (DS r1/r2)"
 
 
 def test_offline_rebuild_shares_the_signature_rule():
@@ -67,3 +69,14 @@ def test_offline_rebuild_shares_the_signature_rule():
     src = (pathlib.Path(__file__).resolve().parent.parent / "src" / "rebuild_transcript.py").read_text(encoding="utf-8")
     assert "channel_labels.ChannelLabels.from_config(cfg).mic_signed" in src
     assert 'or "Я"' not in src, "литерала «Я» в правиле подписи больше нет"
+
+
+def test_daemon_labels_come_from_the_capture_itself():
+    """Демон берёт метки из захвата, а не пересчитывает правило рядом —
+    расхождение невозможно по построению (luna r2 по #459)."""
+    lb = ChannelLabels.from_capture(_cfg("Собеседник 2"), mic_raw="Я", other="Собеседник")
+    assert lb.collision and lb.mic_signed == "" and lb.is_mic("Я")
+    lb = ChannelLabels.from_capture(_cfg(""), mic_raw="Я", other="Собеседник")
+    assert lb.mic_signed == "Я" and not lb.collision
+    src = (pathlib.Path(__file__).resolve().parent.parent / "src" / "daemon.py").read_text(encoding="utf-8")
+    assert "ChannelLabels.from_capture(" in src and "from_config(cfg, other=hub" not in src

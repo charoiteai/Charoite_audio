@@ -622,9 +622,8 @@ def main():
     # Метки каналов и владелец — одна точка правды (D-П2): сырая метка канала,
     # подпись владельца и имя для сверки по словам собраны один раз и не
     # расходятся между захватом, счётчиками и подписью (аудит 30.08, DS).
-    chan = channel_labels.ChannelLabels.from_config(cfg, other=hub.SPEAKER.get("blackhole", channel_labels.NEUTRAL_OTHER))
-    if chan.mic_raw != hub.SPEAKER["mic"]:   # одно правило на двоих; расхождение — вслух, не падением
-        emit_error(f"метка микрофона разошлась: захват «{hub.SPEAKER['mic']}», демон «{chan.mic_raw}»")
+    chan = channel_labels.ChannelLabels.from_capture(
+        cfg, mic_raw=hub.SPEAKER["mic"], other=hub.SPEAKER["blackhole"])   # из факта захвата — без расхождений
     owner_name = chan.owner_name
 
     # Кто владелец — по КАНАЛУ, а не по догадке о голосе. Счётчики секунд
@@ -662,6 +661,14 @@ def main():
         хозяина встречи (ревью 19.08, круги 4 и 7).
         """
         return chan.is_owner_line(name)
+
+    def _mic_voice_is_stranger(voice: int | None) -> bool:
+        """Голос с микрофона — не владелец? Только когда владельцы уже
+        накоплены и этот голос не среди них; неизвестный голос — не довод."""
+        if voice is None:
+            return False
+        owners = owner_voice.owner_voices(heard_by_channel)
+        return bool(owners) and voice not in owners
 
     def _owner_label(voice: int | None, speaker: str, neutral: str) -> str:
         is_mic = chan.is_mic(speaker)
@@ -1112,8 +1119,15 @@ def main():
                     # глушил их с момента, когда name_loop опознавал собеседника
                     # по имени (аудит 14.08). Сверка — _is_owner_line: сперва
                     # метка своего канала, затем имя из настроек.
+                    # Микрофон — не «та сторона» по умолчанию, но и не глухая
+                    # стена: на очной встрече вопрос человека в комнате тоже
+                    # приходит с микрофона. Стреляем оттуда только по голосу,
+                    # который положительно НЕ владелец (владельцы уже накоплены,
+                    # этот — не из них); пока владелец не набран — молчим: это
+                    # закрывает первые секунды, когда своя реплика ещё
+                    # нейтральна (DS r1/r2 по #459).
                     if instant_on and toggles["hints"] \
-                            and not chan.is_mic(speaker) \
+                            and (not chan.is_mic(speaker) or _mic_voice_is_stranger(n)) \
                             and not _is_owner_line(name) \
                             and question_filter.looks_question(added):
                         fire_question(added)

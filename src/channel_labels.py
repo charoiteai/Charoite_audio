@@ -49,6 +49,15 @@ class ChannelLabels:
         signed = "" if (owner and mic != owner) else mic
         return cls(mic_raw=mic, other=other, owner_name=owner, mic_signed=signed)
 
+    @classmethod
+    def from_capture(cls, cfg: dict, *, mic_raw: str, other: str) -> "ChannelLabels":
+        """Из меток, которые захват уже выбрал: демон не пересчитывает правило
+        рядом, а берёт факт — расхождение с AudioHub невозможно по построению
+        (luna r2 по #459)."""
+        owner = (cfg.get("sufler", {}).get("user_name") or "").strip()
+        signed = "" if (owner and mic_raw != owner) else mic_raw
+        return cls(mic_raw=mic_raw, other=other, owner_name=owner, mic_signed=signed)
+
     @property
     def collision(self) -> bool:
         """Имя задано, но подписывать им нельзя (совпало с нейтральной меткой)."""
