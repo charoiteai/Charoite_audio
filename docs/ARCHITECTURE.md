@@ -64,7 +64,8 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
 Since 30.08 the dialogue markup walks under the arbiter too: it used to be
 the only loop taking the model past the lock — 900 tokens every six seconds
 while the hint and ⚡ queued behind it; now it takes the lock quietly for a
-second and lets the paragraph wait otherwise. Dropped frames of the fast
+second, lets the paragraph wait otherwise, and a manual question interrupts
+the markup even mid-stream. Dropped frames of the fast
 trigger are counted and reported once a minute as a status error instead
 of vanishing silently.
 

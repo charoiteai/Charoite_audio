@@ -1222,7 +1222,8 @@ def main():
     manual_evt = threading.Event()  # ручной запрос прерывает авто-генерацию
 
     @contextlib.contextmanager
-    def hint_slot(who: str, timeout: float = 240.0, *, clear_manual_on_busy: bool = False):
+    def hint_slot(who: str, timeout: float = 240.0, *, clear_manual_on_busy: bool = False,
+                  quiet: bool = False):
         """hint_lock с потолком ожидания вместо вечного with (круг-1 по #393).
 
         Зависший держатель обездвиживал ВСЕХ соседей по замку до конца
@@ -1236,7 +1237,8 @@ def main():
         if not ok:
             if clear_manual_on_busy:
                 manual_evt.clear()
-            emit_error(f"{who}: подсказчик занят — прежняя генерация не отпустила замок")
+            if not quiet:   # вспомогательные контуры уступают молча (разметка, #457)
+                emit_error(f"{who}: подсказчик занят — прежняя генерация не отпустила замок")
         try:
             yield ok
         finally:
@@ -1963,18 +1965,20 @@ def main():
         def _tap(src, part):
             if src != "blackhole":
                 return
-            if frame_q.full():
-                # переполнение роняло кадр молча: стрим не успевал, вопросы
-                # переставали триггерить ⚡, статус «подключён» врал (DS I2).
-                # Сказать — не из аудио-потока: emit пишет в stdout, и при
-                # заторе на той стороне _pump перестал бы забирать звук
-                # (luna r1 по #457); сообщение уходит из своего потока.
-                msg = drops.dropped()
-                if msg and (reporter[0] is None or not reporter[0].is_alive()):
-                    reporter[0] = threading.Thread(target=emit_error, args=(msg,), daemon=True)
-                    reporter[0].start()
+            try:
+                frame_q.put_nowait(part)      # без full()+put: не опираемся на «один продюсер» (GLM)
                 return
-            frame_q.put(part)
+            except _q.Full:
+                pass
+            # переполнение роняло кадр молча: стрим не успевал, вопросы
+            # переставали триггерить ⚡, статус «подключён» врал (DS I2).
+            # Сказать — не из аудио-потока: emit пишет в stdout, и при
+            # заторе на той стороне _pump перестал бы забирать звук
+            # (luna r1 по #457); сообщение уходит из своего потока.
+            msg = drops.dropped()
+            if msg and (reporter[0] is None or not reporter[0].is_alive()):
+                reporter[0] = threading.Thread(target=emit_error, args=(msg,), daemon=True)
+                reporter[0].start()
 
         hub.on_frame = _tap
         emit({"type": "status", "text": "⚡ быстрый триггер вопросов: gigastt-стрим подключён"})
@@ -2204,37 +2208,46 @@ def main():
             # взведённый manual_evt (ручной вопрос ждёт) — уступаем, замок берём
             # тихо на секунду; во всех трёх случаях абзац вернётся в следующий
             # цикл — разметка дешевле задержки подсказки (DS r1 по #457).
-            if not toggles["hints"] or manual_evt.is_set() or not hint_lock.acquire(timeout=1.0):
-                seen.discard(key)
+            if not toggles["hints"] or manual_evt.is_set():
+                seen.discard(key)     # абзац вернётся в следующий цикл
                 continue
-            if manual_evt.is_set():      # вопрос пришёл между проверкой и замком (DS r2)
-                hint_lock.release()
-                seen.discard(key)
-                continue
-            try:
-                out = "".join(llm.stream(
-                    f"Фрагмент живой стенограммы (в нём могли слиться реплики РАЗНЫХ "
-                    f"говорящих):\n{text}\n\n"
-                    "Разбей на реплики диалога: каждая реплика с новой строки, "
-                    "начинается с «— ». СЛОВА НЕ МЕНЯЙ, ничего не добавляй и не "
-                    "удаляй. Если это одна реплика одного человека — верни текст "
-                    "без изменений.",
-                    # разметке нужна дословность: бенч 21.07 — qwen3.5:4b чуть
-                    # правит слова (валидация режет), gemma держит их точно
-                    model=cfg["sufler"].get("markup_model", llm.small),
-                    system="Ты расставляешь границы реплик в стенограмме. Слова неприкосновенны.",
-                    num_predict=900,
-                )).strip()
-                # валидация: слова обязаны совпасть — e4b не имеет права переписывать
-                if not out or norm(out) != norm(text) or out.count("— ") < 2:
+            # Через арбитр, тихо: взяли замок на секунду — иначе абзац подождёт.
+            # Ручной вопрос (manual_evt) взводится ДО ожидания замка и должен
+            # прервать и стрим разметки: 900 токенов держали ⚡ дольше его
+            # потолка 45 с, и вопрос терялся молча (GLM по #457) — итерируем с
+            # уступкой, как авто-подсказка; оборванный вывод валидацию не пройдёт.
+            with hint_slot("разметка", timeout=1.0, quiet=True) as got:
+                if not got or manual_evt.is_set():
+                    seen.discard(key)
                     continue
-                if tr.update_block_text(idx, text, out):
-                    emit({"type": "transcript_markup", "speaker": tr.display_name(spk),
-                          "text": out})
-            except Exception as e:  # noqa: BLE001 — разметка вспомогательна
-                warn_markup(e)
-            finally:
-                hint_lock.release()
+                try:
+                    chunks: list[str] = []
+                    for tok in llm.stream(
+                        f"Фрагмент живой стенограммы (в нём могли слиться реплики РАЗНЫХ "
+                        f"говорящих):\n{text}\n\n"
+                        "Разбей на реплики диалога: каждая реплика с новой строки, "
+                        "начинается с «— ». СЛОВА НЕ МЕНЯЙ, ничего не добавляй и не "
+                        "удаляй. Если это одна реплика одного человека — верни текст "
+                        "без изменений.",
+                        # разметке нужна дословность: бенч 21.07 — qwen3.5:4b чуть
+                        # правит слова (валидация режет), gemma держит их точно
+                        model=cfg["sufler"].get("markup_model", llm.small),
+                        system="Ты расставляешь границы реплик в стенограмме. Слова неприкосновенны.",
+                        num_predict=900,
+                    ):
+                        if manual_evt.is_set() or not toggles["hints"]:
+                            seen.discard(key)
+                            break
+                        chunks.append(tok)
+                    out = "".join(chunks).strip()
+                    # валидация: слова обязаны совпасть — e4b не имеет права переписывать
+                    if not out or norm(out) != norm(text) or out.count("— ") < 2:
+                        continue
+                    if tr.update_block_text(idx, text, out):
+                        emit({"type": "transcript_markup", "speaker": tr.display_name(spk),
+                              "text": out})
+                except Exception as e:  # noqa: BLE001 — разметка вспомогательна
+                    warn_markup(e)
 
     def _median_f0(label: str) -> float | None:
         """Медианная частота основного тона этой метки за встречу.
@@ -2444,12 +2457,25 @@ def main():
                     # минутки (26b, без маркера) уже лежат на диске — черновик
                     # лёгкой модели затирал их молча (аудит 0.46.0).
                     with minutes_lock:
-                        if mpath.exists() and not mpath.read_text(
+                        # Финал пишет не только «Протокол» этого процесса, но и
+                        # mcp «Минутки» из другого — замок его не видит; сверяем
+                        # файл по stat перед подменой (GLM по #457)
+                        try:
+                            before = (mpath.stat().st_mtime_ns, mpath.stat().st_size)
+                        except OSError:
+                            before = None
+                        if before is not None and not mpath.read_text(
                                 encoding="utf-8").startswith("<!-- черновик"):
                             continue
                         tmp = mpath.with_name(mpath.name + f".draft{os.getpid()}")
                         try:
                             tmp.write_text("<!-- черновик, встреча идёт -->\n" + out, encoding="utf-8")
+                            try:
+                                now_st = (mpath.stat().st_mtime_ns, mpath.stat().st_size)
+                            except OSError:
+                                now_st = None
+                            if now_st != before:
+                                continue          # файл сменился под нами — не затираем чужой финал
                             tmp.replace(mpath)
                         finally:
                             tmp.unlink(missing_ok=True)
