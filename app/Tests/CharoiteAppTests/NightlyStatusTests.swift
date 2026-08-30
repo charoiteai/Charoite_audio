@@ -51,6 +51,21 @@ final class NightlyStatusTests: XCTestCase {
                        "человек должен видеть, что именно не отработало")
     }
 
+    /// Машина проспала ночь — не «упала»: человек видит сон и минуты, а не
+    /// список ошибок (аудит 30.08; nightly.sh пишет state «slept» и slept_s).
+    func testSleptNightIsNotAFailure() {
+        let now = Date()
+        var j = json(state: "slept", finishedAgo: 3 * 3600,
+                     failed: "ревизия-досье(поздно) дедуп(поздно)", now: now)
+        j["slept_s"] = 5 * 3600 + 30
+        let s = NightlyStatus.from(json: j, now: now)
+        guard case .slept(_, let minutes, let steps) = s.state else {
+            return XCTFail("сон должен быть своим состоянием: \(s.state)")
+        }
+        XCTAssertEqual(minutes, 300)
+        XCTAssertEqual(steps, ["ревизия-досье(поздно)", "дедуп(поздно)"])
+    }
+
     /// Самый опасный случай: цикл молча перестал запускаться.
     func testSkippedNightIsNoticed() {
         let now = Date()

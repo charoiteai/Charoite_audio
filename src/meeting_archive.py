@@ -533,8 +533,13 @@ def _gen_summary(folder: pathlib.Path, force: bool = False):
     (кто/что/срок) → открытое. 100-300 слов, списки, без таблиц.
     """
     out = folder / "Саммари.md"
-    # пустой файл — след оборванной записи, а не готовое саммари (аудит 30.08)
-    if out.exists() and out.stat().st_size > 0 and not force:
+    # пустой файл — след оборванной записи, а не готовое саммари (аудит 30.08);
+    # stat под try: файл может исчезнуть между проверками (luna r1)
+    try:
+        ready = out.stat().st_size > 0
+    except OSError:
+        ready = False
+    if ready and not force:
         return
     src_parts: list[str] = []
     for name, cap in (("Минутки.md", 3500), ("Тезисы.md", 1500),

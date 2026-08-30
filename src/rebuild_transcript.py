@@ -631,9 +631,10 @@ def retry_unfinished(status: MeetingStatusStore) -> None:
     subprocess.Popen(
         ["nice", "-n", "10", sys.executable, str(pathlib.Path(__file__)), str(target)],
         start_new_session=True, env=env,
-        # по штампу, не по 15 знакам: две встречи одной минуты писали в один
-        # лог, и второй спавн усекал лог первого (аудит 30.08, GLM)
-        stdout=open(ROOT / "logs" / f"retry_{meeting_stamp.stamp_of(target.stem) or target.stem}.log", "w"),
+        # по полному имени файла, не по 15 знакам: две встречи одной минуты
+        # (и две минутные встречи прежних версий) писали в один лог, и второй
+        # спавн усекал лог первого (аудит 30.08, GLM; DS r1)
+        stdout=open(ROOT / "logs" / f"retry_{target.stem}.log", "w"),
         stderr=subprocess.STDOUT,
     )
 

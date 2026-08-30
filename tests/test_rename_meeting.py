@@ -293,3 +293,12 @@ def test_apply_writes_the_note_atomically(tmp_path, monkeypatch):
     monkeypatch.setattr(rm, "brain_rename", lambda *a, **k: "")
     rm.apply({"moves": [], "old_folder": None, "new_folder": None, "note": note}, graph, STAMP, "Новая")
     assert f"{STAMP}.md" in written and "— Новая" in note.read_text(encoding="utf-8")
+
+
+def test_legacy_main_titled_with_a_service_word_is_healed_not_demoted(tmp_path):
+    """«<штамп>_debrief.md» прежних версий — главный по содержимому; с `_debrief`
+    в общем списке retitled принял бы его за производную (GLM r1 по #456)."""
+    main = tmp_path / f"{STAMP}_debrief.md"
+    main.write_text(f"# Встреча {STAMP} — debrief\n\nтекст\n", encoding="utf-8")
+    p = rm.plan(tmp_path / "нет-графа", tmp_path, STAMP, "Новая тема", rm.pretty_and_slug("Новая тема")[1])
+    assert {src.name: dst.name for src, dst in p["moves"]} == {main.name: f"{STAMP}_Новая_тема.md"}

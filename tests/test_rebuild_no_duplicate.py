@@ -240,9 +240,10 @@ def test_final_write_keeps_the_version_before_this_rebuild(root):
     assert not list(live.parent.glob("*_prev*")), "скрытая папка, не новый суффикс"
 
 
-def test_retry_log_is_named_by_the_full_stamp(root, monkeypatch):
+def test_retry_log_is_named_by_the_full_file_name(root, monkeypatch):
     """Две встречи одной минуты писали в один retry-лог по 15 знакам, и второй
-    спавн усекал лог первого (аудит 30.08, GLM)."""
+    спавн усекал лог первого (аудит 30.08, GLM); по штампу две минутные
+    встречи прежних версий всё ещё сталкивались бы (DS r1) — имя файла целиком."""
     import subprocess
     names = []
 
@@ -261,4 +262,4 @@ def test_retry_log_is_named_by_the_full_stamp(root, monkeypatch):
             def unfinished(self):
                 return [{"transcript_path": str(t), "attempts": 0}]
         rt.retry_unfinished(S())
-    assert names == ["retry_2026-08-12_153201.log", "retry_2026-08-12_153245.log"], names
+    assert names == ["retry_2026-08-12_153201_Первая.log", "retry_2026-08-12_153245_Вторая.log"], names

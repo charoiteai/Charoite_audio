@@ -333,9 +333,10 @@ def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
     if status_dir.exists():
         import json
         mapping = {str(old): str(new) for old, new in p["moves"]}
-        # Глоб по минутному префиксу намеренно: файл статуса назван по ЖИВОЙ
-        # стенограмме с секундами (2026-08-03_113012.json), а стамп встречи
-        # минутный; чью встречу файл описывает, решает transcript_path.
+        # Глоб по минутному префиксу намеренно: файл статуса назван по штампу
+        # ИСХОДНОЙ стенограммы — обычно с секундами (2026-08-03_113012.json),
+        # у прежних версий и импорта — минутному; чью встречу файл описывает,
+        # решает transcript_path.
         for sf in status_dir.glob(f"{stamp}*.json"):
             try:
                 data = json.loads(sf.read_text(encoding="utf-8"))

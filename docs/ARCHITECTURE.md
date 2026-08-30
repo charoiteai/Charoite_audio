@@ -266,12 +266,14 @@ code path is shared.
 Each phase is published atomically under `logs/meeting-status/`: the macOS
 app shows real progress, keeps failures linked to the source transcript, and
 announces readiness only after the exact meeting note exists. The status file
-is named by the meeting key (the minute for the owner of the minute, seconds
-for a second meeting in the same minute — the name retitle gives the main
-file), not by the file stem: a failure after retitle used to write «error»
-under the old stem while the retry ran under the new one, and the stale
-status kept the meeting in the retry queue forever, rebuilding it from the
-recordings every time (audit 30.08). Before overwriting a transcript the
+is named by the stamp of the ORIGINAL transcript, and that key is stored in
+the status itself: a new process (the graph step, a retry by the retitled
+path) finds the record of the same meeting by where its path resolves today
+and reuses the key; records with a dead path yield to live ones. The key
+used to be the file stem: a failure after retitle wrote «error» under the
+old stem while the retry ran under the new one, and the stale status kept
+the meeting in the retry queue forever, rebuilding it from the recordings
+every time (audit 30.08). Before overwriting a transcript the
 rebuild keeps its current version in `transcripts/.prev/<name>` (one
 generation): the live draft `_live.md` is written once, and manual edits
 between two rebuilds used to vanish. Meeting notes, archive files and

@@ -98,7 +98,7 @@ mkdir -p "$STATUS_DIR"
 write_status() {
   local state="$1"
   # «идёт» — не итог: после него статус ещё обязан быть переписан.
-  [ "$state" = running ] || STATUS_DONE=1
+  [ "$state" = running ] || { STATUS_DONE=1; SLEPT_S=$(slept_seconds); }   # и для interrupted (GLM r1)
   printf '{"started":"%s","finished":"%s","state":"%s","rc":%s,"failed":"%s","slept_s":%s}\n' \
     "$STARTED" "$(date '+%F %T')" "$state" "$rc" "$FAILED" "${SLEPT_S:-0}" > "$STATUS"
 }
@@ -283,7 +283,7 @@ FAILED="${FAILED# }"
 # сообщаем launchd об авариях, а человеку на экране важно и то, что дедуп
 # файлов не отработал или досье собрались без модели, — при rc=0 такая ночь
 # выглядела бы полностью успешной.
-SLEPT_S=$(slept_seconds)
+SLEPT_S=$(slept_seconds)   # заранее: ветка «slept» ниже решает по нему
 if [ "$rc" -eq 0 ] && [ -z "$FAILED" ]; then
   write_status ok
 elif [ "$SLEPT_S" -ge "${CHAROITE_NIGHTLY_SLEEP_S:-600}" ] && [ "$rc" -eq 0 ] && [ -z "$(printf '%s' "$FAILED" | tr ' ' '\n' | grep -v '(поздно)$')" ]; then

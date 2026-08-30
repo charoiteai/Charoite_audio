@@ -88,7 +88,10 @@ def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
             # по mtime: `<штамп>_live` — копия голого штампа, `X_live` при
             # живом `X` — копия `X`; иначе тронутая синком копия обгоняла бы
             # главный (DS r3)
-            stems = {path.stem for path in live_copies}
+            # источники копий — все файлы с этим штампом в каталоге: «<штамп>_live»
+            # — копия голого файла, «X_live» при живом X — копия X (GLM r1: множество
+            # из одних live-копий делало средний ярус пустым)
+            stems = {path.stem for path in original.parent.glob(f"{stamp}*.md")}
             mains = [path for path in live_copies if _looks_main(path)]
             # Сначала не-«<штамп>_live» без живого источника (главный «…_Демо_live»
             # при переименованном голом файле); затем «<штамп>_live» без голого
@@ -153,6 +156,7 @@ class MeetingStatusStore:
         self.root = pathlib.Path(root)
         self.directory = self.root / "logs" / STATUS_DIR
         self._now = now
+        self._keys = {}   # путь стенограммы → ключ статуса, на жизнь процесса
 
     def processing(self, transcript: pathlib.Path, stage: str,
                    part: int | None = None, parts: int | None = None) -> pathlib.Path:
@@ -253,11 +257,11 @@ class MeetingStatusStore:
         """
         now = float(self._now())
         out: list[dict[str, Any]] = []
-        # Одна встреча — один голос: файлы прежних версий названы по стему
-        # («…_1130_Тема.json» рядом с «…_1130.json»), и старый «error» не
-        # должен перевешивать свежий «ready» той же встречи — берём самую
-        # свежую запись на штамп (аудит 30.08, GLM Critical 2).
-        latest: dict[str, tuple[float, dict[str, Any]]] = {}
+        # Одна встреча — один голос. Записи группируются по файлу, куда сегодня
+        # ведёт их transcript_path: записи с мёртвым путём уступают живым (мёртвый
+        # «error» соседки той же минуты не роняет и не угоняет чужой повтор), а
+        # оставшиеся дедуплицируются по ключу — свежая перевешивает (DS r1 #456).
+        by_file: dict[pathlib.Path, list[tuple[bool, float, str, dict[str, Any]]]] = {}
         for path in sorted(self.directory.glob("*.json")):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
@@ -266,11 +270,26 @@ class MeetingStatusStore:
             if not isinstance(data, dict):
                 continue
             tp = str(data.get("transcript_path") or "")
-            key = self._key(pathlib.Path(tp)) if tp else self._key(path)
-            upd = float(data.get("updated_at", 0) or 0)
-            if key not in latest or upd > latest[key][0]:
-                latest[key] = (upd, data)
-        for _, data in latest.values():
+            if not tp:
+                continue
+            raw = pathlib.Path(tp)
+            current = find_final_transcript(raw)
+            if not current.is_file():
+                continue              # стенограмму удалили — повторять нечего
+            key = str(data.get("key") or "") or self._key(raw)
+            try:
+                upd = float(data.get("updated_at", 0) or 0)
+                int(data.get("attempts", 0) or 0)
+            except (TypeError, ValueError):
+                continue              # повреждённая запись не должна ронять весь подбор (luna r1)
+            by_file.setdefault(current, []).append((raw.is_file(), upd, key, data))
+        latest: dict[str, tuple[float, pathlib.Path, dict[str, Any]]] = {}
+        for current, group in by_file.items():
+            alive = [g for g in group if g[0]]
+            for _, upd, key, data in (alive or [max(group, key=lambda g: g[1])]):
+                if key not in latest or upd > latest[key][0]:
+                    latest[key] = (upd, current, data)
+        for _, current, data in latest.values():
             # ready — сделано; empty — сделано и повторять нечего: тишину
             # можно разбирать хоть трижды, речи в ней не появится.
             if data.get("state") in ("ready", "empty"):
@@ -282,10 +301,8 @@ class MeetingStatusStore:
                     continue          # идёт прямо сейчас — не мешаем
             elif data.get("state") != "error":
                 continue
-            transcript = pathlib.Path(str(data.get("transcript_path", "")))
-            if not transcript.is_file():
-                continue              # стенограмму удалили — повторять нечего
-            out.append(data)
+            # путь — текущий: после retitle старый мёртв, а повтору нужен файл
+            out.append({**data, "transcript_path": str(current)})
         return sorted(out, key=lambda d: float(d.get("updated_at", 0)), reverse=True)
 
     def busy(self, *, stale_after: float = STALE_PROCESSING) -> list[str]:
@@ -369,26 +386,57 @@ class MeetingStatusStore:
     def has_transcript(self, transcript: pathlib.Path) -> bool:
         return find_final_transcript(pathlib.Path(transcript)).is_file()
 
-    @staticmethod
-    def _key(transcript: pathlib.Path) -> str:
-        """Ключ файла статуса — неизменяемый штамп, не стем.
+    def _key(self, transcript: pathlib.Path) -> str:
+        """Ключ файла статуса — штамп ИСХОДНОГО файла встречи, один на всю жизнь.
 
         graph_updater переименовывает стенограмму посреди прогона (retitle),
         а падение после этого писало «error» под старым стемом и указывало на
         новый файл: повтор шёл под новым ключом, старый json оставался
         «error» навсегда — и каждая тихая итерация заново пересобирала встречу
-        из записей, затирая стенограмму (аудит 30.08, GLM Critical 2). Штамп
-        имя переживает; посекундный штамп второй встречи той же минуты — свой
-        ключ, как и у graph_key. Не-штамп (импорт с чужим именем) — стем.
+        из записей, затирая стенограмму (аудит 30.08, GLM Critical 2).
+
+        Ключ считается один раз и запоминается: в процессе — по пути, на
+        диске — полем `key` в самом статусе. Новый процесс (graph_updater,
+        повтор по титулованному пути) находит запись той же встречи по тому,
+        куда сегодня резолвится её `transcript_path`, и берёт ключ оттуда;
+        записи с мёртвым путём уступают живым — мёртвый статус соседки той
+        же минуты не угоняет чужой ключ (DS r1 по #456). Ни `graph_key`, ни
+        владения минутой здесь нет: имя статуса не обязано совпадать с именем
+        заметки графа, ему достаточно быть неизменным.
         """
-        # По ТЕКУЩЕМУ главному файлу (retitle уже мог переименовать): ключ графа —
-        # минута у владельца минуты, секунды у второй встречи той же минуты, то
-        # есть ровно то имя, которое retitle даёт главному файлу. Старый
-        # посекундный стем после переименования считался бы «второй встречей».
-        current = find_final_transcript(pathlib.Path(transcript))
-        stem = current.stem
-        key = meeting_stamp.graph_key(current.parent, stem) if meeting_stamp.stamp_of(stem) else stem
-        return re.sub(r"[^\w.-]+", "_", key)
+        transcript = pathlib.Path(transcript)
+        tp = str(transcript)
+        cached = self._keys.get(tp)
+        if cached:
+            return cached
+        current = find_final_transcript(transcript)
+        key = self._stored_key_for(current)
+        if key is None:
+            stem = current.stem if current.exists() else transcript.stem
+            key = meeting_stamp.stamp_of(stem) or stem
+        key = re.sub(r"[^\w.-]+", "_", key)
+        self._keys[tp] = key
+        return key
+
+    def _stored_key_for(self, current: pathlib.Path) -> str | None:
+        """Ключ уже существующей записи, чей transcript_path ведёт к этому файлу."""
+        best: tuple[int, float, str] | None = None
+        for path in self.directory.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            key = data.get("key") if isinstance(data, dict) else None
+            tp = str(data.get("transcript_path") or "") if isinstance(data, dict) else ""
+            if not key or not tp:
+                continue
+            raw = pathlib.Path(tp)
+            if find_final_transcript(raw) != current:
+                continue
+            rank = (1 if raw.is_file() else 0, float(data.get("updated_at", 0) or 0), str(key))
+            if best is None or rank > best:
+                best = rank
+        return best[2] if best else None
 
     def _path(self, transcript: pathlib.Path) -> pathlib.Path:
         return self.directory / f"{self._key(transcript)}.json"
@@ -403,6 +451,13 @@ class MeetingStatusStore:
     def _write(self, transcript: pathlib.Path, payload: dict[str, Any]) -> pathlib.Path:
         self.directory.mkdir(parents=True, exist_ok=True)
         target = self._path(transcript)
+        # meeting_id не меняется за жизнь встречи: приложение принимает итог
+        # повтора только при точном совпадении id, а retitle посреди прогона
+        # давал бы новый стем (luna r1 по #456). Тема для карточки берётся из
+        # transcript_path, не из id.
+        previous = self._read(transcript).get("meeting_id")
+        payload = {**payload, "key": self._key(transcript),
+                   "meeting_id": previous or payload.get("meeting_id")}
         fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=self.directory)
         tmp = pathlib.Path(tmp_name)
         try:

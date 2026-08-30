@@ -536,3 +536,14 @@ def test_apply_reports_what_it_could_not_delete(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "НЕ удалено" in out and "x.md" in out
     assert not (graph / "Встречи" / f"{STAMP}.md").exists(), "цикл оборвался на первом пути"
+
+
+def test_plan_forgets_the_copy_before_the_last_rebuild(tmp_path):
+    """transcripts/.prev/<имя> — тот же текст встречи; скрытую папку глоб не
+    обходит, и «забыть» оставляло его навсегда (GLM r1 по #456; PRIVACY.md)."""
+    root, graph = _world(tmp_path)
+    prev = root / "transcripts" / ".prev" / f"{STAMP}.md"
+    prev.parent.mkdir()
+    prev.write_text("текст до пересборки", encoding="utf-8")
+    plan = forget.plan(STAMP, root, graph)
+    assert str(prev) in {str(p) for p in plan.delete}
