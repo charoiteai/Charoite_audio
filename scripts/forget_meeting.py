@@ -317,8 +317,16 @@ def plan(stamp: str, root: pathlib.Path,
     for folder in ("transcripts", "recordings"):
         p.delete += _with_stamp(root / folder, stamp)
     # версия до пересборки (transcripts/.prev/<имя>) — тот же текст встречи:
-    # скрытая папка не обходится глобом, забыть обязаны и её (GLM r1 по #456)
-    p.delete += _with_stamp(root / "transcripts" / ".prev", stamp)
+    # скрытая папка не обходится глобом, забыть обязаны и её (GLM r1 по #456).
+    # Копия названа именем файла НА МОМЕНТ пересборки: до наката темы — голый
+    # посекундный штамп, который минутный глоб с границей не видит (DS r2);
+    # поэтому — и по штампу, и по именам удаляемых стенограмм, и по ключам
+    # статусов (там лежит штамп исходного файла).
+    prev_dir = root / "transcripts" / ".prev"
+    p.delete += _with_stamp(prev_dir, stamp)
+    if prev_dir.is_dir():
+        names = {f.name for f in p.delete if f.parent == root / "transcripts"}
+        p.delete += [f for f in prev_dir.iterdir() if f.name in names and f not in p.delete]
 
     # Логи графа этой встречи: в logs/graph_<штамп>*.log попадают имена
     # участников и куски цитат — «забыть» обязано дойти и до них, иначе
@@ -360,7 +368,17 @@ def plan(stamp: str, root: pathlib.Path,
     # стенограмме — с темой в имени, этап, текст ошибки; его же читает
     # список «Недавние встречи». Чистится сам через 14 дней, но «забыть»
     # обязано дойти сразу (второе мнение по #324–#328, 16.08).
-    p.delete += _status_files(root / STATUS_DIR, stamp)
+    statuses = _status_files(root / STATUS_DIR, stamp)
+    p.delete += statuses
+    if prev_dir.is_dir():
+        import json as _json
+        for sf in statuses:
+            try:
+                key = str(_json.loads(sf.read_text(encoding="utf-8")).get("key") or "")
+            except (OSError, ValueError):
+                continue
+            if key:
+                p.delete += [f for f in _with_stamp(prev_dir, key) if f not in p.delete]
 
     if keep_graph:
         p.brain_keys = []          # граф остаётся — остаётся и память о встрече

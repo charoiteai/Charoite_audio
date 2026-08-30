@@ -547,3 +547,21 @@ def test_plan_forgets_the_copy_before_the_last_rebuild(tmp_path):
     prev.write_text("текст до пересборки", encoding="utf-8")
     plan = forget.plan(STAMP, root, graph)
     assert str(prev) in {str(p) for p in plan.delete}
+
+
+def test_plan_forgets_the_prev_copy_named_by_the_original_seconds_stamp(tmp_path):
+    """Копия до пересборки названа голым посекундным именем, встречу забывают
+    по минуте: минутный глоб с границей её не видит — ключ берётся из статуса
+    и из имён удаляемых стенограмм (DS r2 по #456)."""
+    import json
+    root, graph = _world(tmp_path)
+    prev = root / "transcripts" / ".prev" / f"{STAMP}01.md"
+    prev.parent.mkdir()
+    prev.write_text("до пересборки", encoding="utf-8")
+    sd = root / "logs" / "meeting-status"
+    sd.mkdir(parents=True, exist_ok=True)
+    (sd / f"{STAMP}01.json").write_text(json.dumps({
+        "meeting_id": f"{STAMP}01", "key": f"{STAMP}01", "state": "ready",
+        "transcript_path": str(root / "transcripts" / f"{STAMP}.md")}), encoding="utf-8")
+    plan = forget.plan(STAMP, root, graph)
+    assert str(prev) in {str(p) for p in plan.delete}

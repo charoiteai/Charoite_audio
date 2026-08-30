@@ -354,3 +354,31 @@ def test_live_copy_of_a_titled_main_is_a_copy_only_while_its_source_lives(tmp_pa
     assert find_final_transcript(live) == main.resolve()
     main.unlink()   # источник исчез — копия становится единственным кандидатом
     assert find_final_transcript(live) == copy.resolve()
+
+
+def test_two_dead_paths_do_not_let_freshness_pick_the_key(tmp_path):
+    """Владелец после retitle (мёртвый голый путь) и удалённая соседка (мёртвый
+    путь, свежее): свежесть — не признак владения; в неоднозначности ключ
+    берётся детерминированно от текущего файла (GLM r2 по #456)."""
+    live = _transcript(tmp_path)
+    titled = live.with_name("2026-07-31_1415_Тема.md")
+    live.rename(titled)
+    d = tmp_path / "logs" / "meeting-status"
+    d.mkdir(parents=True)
+    (d / "2026-07-31_141501.json").write_text(json.dumps({
+        "meeting_id": "2026-07-31_141501", "key": "2026-07-31_141501", "state": "processing",
+        "updated_at": 10.0, "transcript_path": str(live.resolve())}), encoding="utf-8")
+    (d / "2026-07-31_141512.json").write_text(json.dumps({
+        "meeting_id": "2026-07-31_141512", "key": "2026-07-31_141512", "state": "error",
+        "updated_at": 200.0, "attempts": 1,
+        "transcript_path": str((tmp_path / "transcripts" / "2026-07-31_141512.md").resolve())}), encoding="utf-8")
+    path = MeetingStatusStore(tmp_path, now=lambda: 300.0).ready(titled, None, False)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["key"] == "2026-07-31_1415" and data["meeting_id"] != "2026-07-31_141512"
+
+
+def test_busy_ignores_a_corrupt_record(tmp_path):
+    d = tmp_path / "logs" / "meeting-status"
+    d.mkdir(parents=True)
+    (d / "bad.json").write_text(json.dumps({"state": "processing", "updated_at": "bad", "stage": "x"}), encoding="utf-8")
+    assert MeetingStatusStore(tmp_path, now=lambda: 10.0).busy() == []

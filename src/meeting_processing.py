@@ -286,6 +286,11 @@ class MeetingStatusStore:
         latest: dict[str, tuple[float, pathlib.Path, dict[str, Any]]] = {}
         for current, group in by_file.items():
             alive = [g for g in group if g[0]]
+            # Только мёртвые пути на файл: это либо своё окно между retitle и
+            # следующей записью, либо соседка, удалённая руками мимо forget, чей
+            # путь резолвится на чужой файл. По именам их не различить (DS r2);
+            # выбрано первое — автоповтор дороже, чем один лишний прогон в
+            # экзотике ручного удаления (копия до пересборки лежит в .prev).
             for _, upd, key, data in (alive or [max(group, key=lambda g: g[1])]):
                 if key not in latest or upd > latest[key][0]:
                     latest[key] = (upd, current, data)
@@ -326,8 +331,11 @@ class MeetingStatusStore:
                 continue
             if not isinstance(data, dict) or data.get("state") != "processing":
                 continue
-            if now - float(data.get("updated_at", 0)) >= stale_after:
-                continue
+            try:
+                if now - float(data.get("updated_at", 0) or 0) >= stale_after:
+                    continue
+            except (TypeError, ValueError):
+                continue              # повреждённая запись — не занятость (GLM r2)
             out.append(str(data.get("stage") or path.stem))
         return out
 
@@ -420,7 +428,8 @@ class MeetingStatusStore:
 
     def _stored_key_for(self, current: pathlib.Path) -> str | None:
         """Ключ уже существующей записи, чей transcript_path ведёт к этому файлу."""
-        best: tuple[int, float, str] | None = None
+        best: tuple[int, float, int, str] | None = None
+        candidates = 0
         for path in self.directory.glob("*.json"):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
@@ -433,10 +442,23 @@ class MeetingStatusStore:
             raw = pathlib.Path(tp)
             if find_final_transcript(raw) != current:
                 continue
-            rank = (1 if raw.is_file() else 0, float(data.get("updated_at", 0) or 0), str(key))
-            if best is None or rank > best:
+            candidates += 1
+            # живой путь → свежесть → запись, названная своим ключом (первичная)
+            try:
+                upd = float(data.get("updated_at", 0) or 0)
+            except (TypeError, ValueError):
+                upd = 0.0
+            rank = (1 if raw.is_file() else 0, upd, 1 if path.stem == str(key) else 0, str(key))
+            if best is None or rank[:3] > best[:3]:
                 best = rank
-        return best[2] if best else None
+        if best is None:
+            return None
+        if best[0] == 0 and candidates > 1:
+            # только мёртвые пути и их несколько: свежесть — не признак владения,
+            # соседка той же минуты угнала бы ключ и meeting_id (GLM r2) —
+            # не гадаем, дальше сработает детерминированный штамп текущего файла
+            return None
+        return best[3]
 
     def _path(self, transcript: pathlib.Path) -> pathlib.Path:
         return self.directory / f"{self._key(transcript)}.json"
