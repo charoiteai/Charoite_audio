@@ -18,6 +18,7 @@
 
 Что удаляется:
     transcripts/<штамп>*            стенограмма и производные (минутки, разбор)
+    transcripts/.prev/<штамп>*      версия до последней пересборки
     recordings/<штамп>*             запись, если ещё не истекла по ретеншну
     <граф>/Встречи/<штамп>.md       узел встречи
     <граф>/Встречи-архив/<папка>/   папка встречи со всеми документами
@@ -192,18 +193,44 @@ def _status_files(status_dir: pathlib.Path, stamp: str) -> list[pathlib.Path]:
     if not status_dir.is_dir():
         return []
     import json
+    from meeting_processing import find_final_transcript
     found = set(_with_stamp(status_dir, stamp, suffix=".json"))
+    records: list[tuple[pathlib.Path, pathlib.Path]] = []       # (статус, сырой путь)
     for f in status_dir.glob("*.json"):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue                     # не-словарь — мусор, не повод ронять forget (luna r3)
+        tp = str(data.get("transcript_path") or "")
+        if tp:
+            records.append((f, pathlib.Path(tp)))
+    # 1) по сырому имени — как и раньше
+    for f, raw in records:
+        if f not in found and meeting_stamp.belongs(raw.name, stamp):
+            found.add(f)
+    # 2) по тому, куда мёртвый путь резолвится сегодня: после retitle статус мог
+    # остаться с голым посекундным путём (окно до следующей записи), а минутная
+    # граница его не видит (luna r3). Но резолв мёртвого пути соседки падает на
+    # файл владельца минуты — принимаем совпадение, только если этот файл ещё не
+    # заявлен статусом, найденным по имени (DS r4).
+    claimed: set[pathlib.Path] = set()
+    for f, raw in records:
         if f in found:
+            try:
+                claimed.add(find_final_transcript(raw))
+            except OSError:
+                continue
+    for f, raw in records:
+        if f in found or raw.is_file():
             continue
         try:
-            tp = json.loads(f.read_text(encoding="utf-8")).get("transcript_path", "")
-        except (OSError, ValueError, AttributeError):
-            continue
-        name = pathlib.Path(str(tp)).name
-        rest = name[len(stamp):]
-        if name.startswith(stamp) and not rest[:1].isdigit() and not re.match(r"-\d", rest):
-            found.add(f)                 # «-N» — соседка, как в files_with_stamp
+            current = find_final_transcript(raw)
+        except OSError:
+            continue                     # демон переименовывает файл под ногами (DS r4)
+        if current not in claimed and meeting_stamp.belongs(current.name, stamp):
+            found.add(f)
     return sorted(found)
 
 
@@ -315,6 +342,17 @@ def plan(stamp: str, root: pathlib.Path,
 
     for folder in ("transcripts", "recordings"):
         p.delete += _with_stamp(root / folder, stamp)
+    # версия до пересборки (transcripts/.prev/<имя>) — тот же текст встречи:
+    # скрытая папка не обходится глобом, забыть обязаны и её (GLM r1 по #456).
+    # Копия названа именем файла НА МОМЕНТ пересборки: до наката темы — голый
+    # посекундный штамп, который минутный глоб с границей не видит (DS r2);
+    # поэтому — и по штампу, и по именам удаляемых стенограмм, и по ключам
+    # статусов (там лежит штамп исходного файла).
+    prev_dir = root / "transcripts" / ".prev"
+    p.delete += _with_stamp(prev_dir, stamp)
+    if prev_dir.is_dir():
+        names = {f.name for f in p.delete if f.parent == root / "transcripts"}
+        p.delete += [f for f in prev_dir.iterdir() if f.name in names and f not in p.delete]
 
     # Логи графа этой встречи: в logs/graph_<штамп>*.log попадают имена
     # участников и куски цитат — «забыть» обязано дойти и до них, иначе
@@ -356,7 +394,18 @@ def plan(stamp: str, root: pathlib.Path,
     # стенограмме — с темой в имени, этап, текст ошибки; его же читает
     # список «Недавние встречи». Чистится сам через 14 дней, но «забыть»
     # обязано дойти сразу (второе мнение по #324–#328, 16.08).
-    p.delete += _status_files(root / STATUS_DIR, stamp)
+    statuses = _status_files(root / STATUS_DIR, stamp)
+    p.delete += statuses
+    if prev_dir.is_dir():
+        import json as _json
+        for sf in statuses:
+            try:
+                data = _json.loads(sf.read_text(encoding="utf-8"))
+                key = str(data.get("key") or "") if isinstance(data, dict) else ""
+            except (OSError, ValueError):
+                continue
+            if key:
+                p.delete += [f for f in _with_stamp(prev_dir, key) if f not in p.delete]
 
     if keep_graph:
         p.brain_keys = []          # граф остаётся — остаётся и память о встрече

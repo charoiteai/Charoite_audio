@@ -155,3 +155,35 @@ def test_untitled_meeting_with_seconds_archives_its_own_files(graph, tmp_path):
     for f in folder.iterdir():
         text = f.read_text(encoding="utf-8", errors="ignore")
         assert "СОСЕДНЯЯ" not in text and "ДРУГАЯ" not in text, f
+
+
+def test_exclusions_keep_the_full_stamp(tmp_path):
+    """Строка про посекундную соседку исключала владельца минуты: регексп
+    резал штамп до 15 знаков (аудит 30.08, GLM)."""
+    import meeting_archive as ma
+    adir = tmp_path / ma.ARCHIVE_DIR
+    adir.mkdir()
+    (adir / "_исключено.md").write_text("2026-08-03_113045 — тест звука\n2026-08-04_1200 — демо\n", encoding="utf-8")
+    ex = ma._excluded(tmp_path)
+    assert "2026-08-03_113045" in ex and "2026-08-04_1200" in ex
+    assert "2026-08-03_1130" not in ex, "владелец минуты не исключён строкой про соседку"
+
+
+def test_empty_summary_is_regenerated(tmp_path, monkeypatch):
+    """Пустое Саммари.md — след оборванной записи, не готовое саммари (аудит 30.08)."""
+    import meeting_archive as ma
+    folder = tmp_path / "2026-08-03 11-30 — Тема"
+    folder.mkdir()
+    (folder / "Минутки.md").write_text("минутки " * 50, encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(ma, "_history_context", lambda f: calls.append(f) or "")
+    monkeypatch.setattr(ma, "decisions_of", lambda f: [])
+    (folder / "Саммари.md").write_text("готовое саммари", encoding="utf-8")
+    ma._gen_summary(folder)
+    assert not calls, "непустое саммари не пересобирается"
+    (folder / "Саммари.md").write_text("", encoding="utf-8")
+    try:
+        ma._gen_summary(folder)
+    except Exception:   # noqa: BLE001 — дальше модель, нам важен только вход в генерацию
+        pass
+    assert calls, "пустое саммари должно уйти на пересборку"

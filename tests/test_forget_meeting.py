@@ -536,3 +536,71 @@ def test_apply_reports_what_it_could_not_delete(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "НЕ удалено" in out and "x.md" in out
     assert not (graph / "Встречи" / f"{STAMP}.md").exists(), "цикл оборвался на первом пути"
+
+
+def test_plan_forgets_the_copy_before_the_last_rebuild(tmp_path):
+    """transcripts/.prev/<имя> — тот же текст встречи; скрытую папку глоб не
+    обходит, и «забыть» оставляло его навсегда (GLM r1 по #456; PRIVACY.md)."""
+    root, graph = _world(tmp_path)
+    prev = root / "transcripts" / ".prev" / f"{STAMP}.md"
+    prev.parent.mkdir()
+    prev.write_text("текст до пересборки", encoding="utf-8")
+    plan = forget.plan(STAMP, root, graph)
+    assert str(prev) in {str(p) for p in plan.delete}
+
+
+def test_plan_forgets_the_prev_copy_named_by_the_original_seconds_stamp(tmp_path):
+    """Копия до пересборки названа голым посекундным именем, встречу забывают
+    по минуте: минутный глоб с границей её не видит — ключ берётся из статуса
+    и из имён удаляемых стенограмм (DS r2 по #456)."""
+    import json
+    root, graph = _world(tmp_path)
+    prev = root / "transcripts" / ".prev" / f"{STAMP}01.md"
+    prev.parent.mkdir()
+    prev.write_text("до пересборки", encoding="utf-8")
+    sd = root / "logs" / "meeting-status"
+    sd.mkdir(parents=True, exist_ok=True)
+    (sd / f"{STAMP}01.json").write_text(json.dumps({
+        "meeting_id": f"{STAMP}01", "key": f"{STAMP}01", "state": "ready",
+        "transcript_path": str(root / "transcripts" / f"{STAMP}.md")}), encoding="utf-8")
+    plan = forget.plan(STAMP, root, graph)
+    assert str(prev) in {str(p) for p in plan.delete}
+
+
+def test_status_with_a_dead_raw_path_after_retitle_is_still_forgotten(tmp_path):
+    """Окно между retitle и следующей записью: статус и .prev названы посекундно,
+    transcript_path мёртвый голый — forget по минуте обязан найти их по
+    резолву пути (luna r3 по #456); не-словарь в статусе не роняет план."""
+    import json
+    root, graph = _world(tmp_path)
+    (root / "transcripts" / f"{STAMP}.md").rename(root / "transcripts" / f"{STAMP}_Тема.md")
+    sd = root / "logs" / "meeting-status"
+    sd.mkdir(parents=True, exist_ok=True)
+    st = sd / f"{STAMP}01.json"
+    st.write_text(json.dumps({"meeting_id": f"{STAMP}01", "key": f"{STAMP}01", "state": "processing",
+                              "transcript_path": str(root / "transcripts" / f"{STAMP}01.md")}), encoding="utf-8")
+    (sd / f"{STAMP}-мусор.json").write_text("[]", encoding="utf-8")
+    prev = root / "transcripts" / ".prev" / f"{STAMP}01.md"
+    prev.parent.mkdir()
+    prev.write_text("до пересборки", encoding="utf-8")
+    doomed = {str(p) for p in forget.plan(STAMP, root, graph).delete}
+    assert str(st) in doomed and str(prev) in doomed
+
+
+def test_dead_neighbour_status_is_not_claimed_by_the_owner_of_the_minute(tmp_path):
+    """Соседка удалена руками, её статус с мёртвым путём резолвится в файл
+    владельца минуты — forget владельца не должен считать его своим (DS r4);
+    а собственный статус с мёртвым путём после retitle — по-прежнему находится."""
+    import json
+    root, graph = _world(tmp_path)
+    (root / "transcripts" / f"{STAMP}.md").rename(root / "transcripts" / f"{STAMP}_Тема.md")
+    sd = root / "logs" / "meeting-status"
+    sd.mkdir(parents=True, exist_ok=True)
+    own = sd / f"{STAMP}.json"          # найден по имени, путь живой
+    own.write_text(json.dumps({"meeting_id": STAMP, "key": STAMP, "state": "ready",
+                               "transcript_path": str(root / "transcripts" / f"{STAMP}_Тема.md")}), encoding="utf-8")
+    neighbour = sd / f"{STAMP}45.json"  # мёртвый путь соседки резолвится в файл владельца
+    neighbour.write_text(json.dumps({"meeting_id": f"{STAMP}45", "key": f"{STAMP}45", "state": "error",
+                                     "transcript_path": str(root / "transcripts" / f"{STAMP}45.md")}), encoding="utf-8")
+    doomed = {str(p) for p in forget.plan(STAMP, root, graph).delete}
+    assert str(own) in doomed and str(neighbour) not in doomed

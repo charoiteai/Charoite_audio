@@ -272,3 +272,33 @@ def test_legacy_main_with_seconds_is_healed_by_the_minute_stamp(tmp_path):
     assert rm.legacy_mains(tmp_path, STAMP) == {sec: main}
     p = rm.plan(tmp_path / "нет-графа", tmp_path, STAMP, "Итоги разбор", rm.pretty_and_slug("Итоги разбор")[1])
     assert {src.name: dst.name for src, dst in p["moves"]} == {main.name: f"{STAMP}_Итоги-разбор.md"}
+
+
+def test_apply_writes_the_note_atomically(tmp_path, monkeypatch):
+    """Заметка встречи — единственный экземпляр: write_text усекал файл до
+    записи, обрыв оставлял 0 байт (аудит 30.08, GLM Critical 1)."""
+    import safe_write
+    graph = tmp_path / "граф"
+    (graph / "Встречи").mkdir(parents=True)
+    note = graph / "Встречи" / f"{STAMP}.md"
+    note.write_text(f"# Встреча {STAMP} — Старая\n\nтекст\n", encoding="utf-8")
+    written = []
+    real = safe_write.write_text
+
+    def spy(path, text, **k):
+        written.append(pathlib.Path(path).name)
+        return real(path, text, **k)
+
+    monkeypatch.setattr(rm.safe_write, "write_text", spy)
+    monkeypatch.setattr(rm, "brain_rename", lambda *a, **k: "")
+    rm.apply({"moves": [], "old_folder": None, "new_folder": None, "note": note}, graph, STAMP, "Новая")
+    assert f"{STAMP}.md" in written and "— Новая" in note.read_text(encoding="utf-8")
+
+
+def test_legacy_main_titled_with_a_service_word_is_healed_not_demoted(tmp_path):
+    """«<штамп>_debrief.md» прежних версий — главный по содержимому; с `_debrief`
+    в общем списке retitled принял бы его за производную (GLM r1 по #456)."""
+    main = tmp_path / f"{STAMP}_debrief.md"
+    main.write_text(f"# Встреча {STAMP} — debrief\n\nтекст\n", encoding="utf-8")
+    p = rm.plan(tmp_path / "нет-графа", tmp_path, STAMP, "Новая тема", rm.pretty_and_slug("Новая тема")[1])
+    assert {src.name: dst.name for src, dst in p["moves"]} == {main.name: f"{STAMP}_Новая_тема.md"}

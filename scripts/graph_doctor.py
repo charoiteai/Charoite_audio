@@ -177,7 +177,12 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
             if t is not None and t in notes:   # вложение — не заметка, не покрытие (GLM M3)
                 moc_linked.add(t)
     week = dt.datetime.now().timestamp() - 7 * 86400
-    fresh = sum(1 for p in notes if p.stat().st_mtime >= week)
+    fresh = 0
+    for p in notes:
+        try:                       # файл мог исчезнуть между rglob и stat (забыть встречу,
+            fresh += p.stat().st_mtime >= week   # миграция, iCloud) — не ронять doctor целиком
+        except OSError:
+            continue
 
     links_total = sum(outbound.values())
     rep = {

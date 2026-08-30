@@ -224,3 +224,42 @@ def test_own_mark_stays_on_disk_after_exit(root):
     for fh in rt._RUNNING_LOCKS:
         fh.close()
     rt._RUNNING_LOCKS.clear()
+
+
+def test_final_write_keeps_the_version_before_this_rebuild(root):
+    """Правки человека между двумя пересборками не пропадают: версия до
+    пересборки — в .prev/<имя>, живой черновик — в _live.md один раз (№131)."""
+    live = _live(root)
+    live.write_text("# Встреча 2026-08-12_1532\n\nживой черновик\n", encoding="utf-8")
+    rt.write_final(live, "# Встреча 2026-08-12_1532\n\nпервая пересборка\n", live.read_text(encoding="utf-8"))
+    live.write_text("# Встреча 2026-08-12_1532\n\nпервая пересборка, ПРАВКА РУКАМИ\n", encoding="utf-8")
+    rt.write_final(live, "# Встреча 2026-08-12_1532\n\nвторая пересборка\n", live.read_text(encoding="utf-8"))
+    assert "ПРАВКА РУКАМИ" in (live.parent / ".prev" / live.name).read_text(encoding="utf-8")
+    assert "живой черновик" in live.with_name(live.stem + "_live.md").read_text(encoding="utf-8")
+    assert "вторая пересборка" in live.read_text(encoding="utf-8")
+    assert not list(live.parent.glob("*_prev*")), "скрытая папка, не новый суффикс"
+
+
+def test_retry_log_is_named_by_the_full_file_name(root, monkeypatch):
+    """Две встречи одной минуты писали в один retry-лог по 15 знакам, и второй
+    спавн усекал лог первого (аудит 30.08, GLM); по штампу две минутные
+    встречи прежних версий всё ещё сталкивались бы (DS r1) — имя файла целиком."""
+    import subprocess
+    names = []
+
+    class FakePopen:
+        def __init__(self, *a, **k):
+            names.append(pathlib.Path(k["stdout"].name).name)
+            k["stdout"].close()
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(rt, "_yield_to_live", lambda *a, **k: None)
+    for stem in ("2026-08-12_153201_Первая", "2026-08-12_153245_Вторая"):
+        t = root / "transcripts" / f"{stem}.md"
+        t.write_text("# Встреча\n", encoding="utf-8")
+
+        class S:
+            def unfinished(self):
+                return [{"transcript_path": str(t), "attempts": 0}]
+        rt.retry_unfinished(S())
+    assert names == ["retry_2026-08-12_153201_Первая.log", "retry_2026-08-12_153245_Вторая.log"], names
