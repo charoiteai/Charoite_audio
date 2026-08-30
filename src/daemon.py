@@ -1259,8 +1259,8 @@ def main():
     _last_fire = [0.0]
     _cloud_last = {"t": 0.0, "words": set()}
     # последний вопрос и когда прозвучал — панели показывают его над ответом;
-    # ячейка со словарём: запись подменяет словарь целиком (см. on_question)
-    nonlocal_pending = [{"text": "", "at": 0.0}]
+    # ячейка со словарём, как _last_fire: fire_question подменяет словарь целиком
+    _pending_q = [{"text": "", "at": 0.0}]
     # Черновик и финальные минутки: проверка маркера и запись — одним куском.
     # Между read_text и write_text черновика финал от «Протокола» успевал лечь
     # на диск и заворачивался черновиком (класс 0.46.0, аудит 30.08 DS M1).
@@ -1283,7 +1283,7 @@ def main():
         now = time.time()
         if now - _last_fire[0] < 8:
             return
-        if q.strip() and not question_filter.is_worth_asking(q, nonlocal_pending[0]["text"]):
+        if q.strip() and not question_filter.is_worth_asking(q, _pending_q[0]["text"]):
             return
         _last_fire[0] = now
         if q.strip():  # панели показывают, НА ЧТО отвечают — без этого ответ висел без вопроса
@@ -1295,7 +1295,7 @@ def main():
             # новый словарь, а не мутация: читатель берёт снимок по ссылке в
             # момент вызова, и text одного вопроса с at другого не встречаются
             # ни при записи, ни при чтении (аудит 30.08, DS M2; DS r1 по #457)
-            nonlocal_pending[0] = {"text": " ".join(q.split()), "at": time.monotonic()}
+            _pending_q[0] = {"text": " ".join(q.split()), "at": time.monotonic()}
         instant_evt.set()
         if not (cloud_live and toggles["cloud"]):
             return
@@ -1791,7 +1791,7 @@ def main():
             # локом: пока поток ждал hint_lock, мог прийти второй вопрос — и
             # модель отвечала бы на него с узлами первого, а ответ ложился
             # под чужим вопросом в нить и лог (ревью 15.08 ×3).
-            q = fresh_question(nonlocal_pending[0], time.monotonic())
+            q = fresh_question(_pending_q[0], time.monotonic())
             tail = tr.tail(1600)
             # сверка вопроса с узлами графа — ДО hint_lock и вне STT-пути:
             # файловый лукап не смеет держать ни распознавание, ни очередь
@@ -1869,7 +1869,7 @@ def main():
             tail = tr.tail(2200)
             if not tail:
                 continue
-            q = fresh_question(nonlocal_pending[0], time.monotonic())
+            q = fresh_question(_pending_q[0], time.monotonic())
             short = model.split("-")[1] if model.count("-") else model  # claude-haiku-… → haiku
             think = f"☁️ {dt.datetime.now():%H:%M:%S} {short} думает" + (f" над: ❓ {q[:120]}" if q else "…")
             # «думает над ❓…» жило в полотне и дублировало вопрос, который
@@ -1958,6 +1958,7 @@ def main():
         import queue as _q
         frame_q: _q.Queue = _q.Queue(maxsize=300)
         drops = frame_drops.DropMeter()
+        reporter: list = [None]      # один поток-глашатай за раз: зажатый stdout не плодит потоки (DS r2)
 
         def _tap(src, part):
             if src != "blackhole":
@@ -1969,8 +1970,9 @@ def main():
                 # заторе на той стороне _pump перестал бы забирать звук
                 # (luna r1 по #457); сообщение уходит из своего потока.
                 msg = drops.dropped()
-                if msg:
-                    threading.Thread(target=emit_error, args=(msg,), daemon=True).start()
+                if msg and (reporter[0] is None or not reporter[0].is_alive()):
+                    reporter[0] = threading.Thread(target=emit_error, args=(msg,), daemon=True)
+                    reporter[0].start()
                 return
             frame_q.put(part)
 
@@ -2203,6 +2205,10 @@ def main():
             # тихо на секунду; во всех трёх случаях абзац вернётся в следующий
             # цикл — разметка дешевле задержки подсказки (DS r1 по #457).
             if not toggles["hints"] or manual_evt.is_set() or not hint_lock.acquire(timeout=1.0):
+                seen.discard(key)
+                continue
+            if manual_evt.is_set():      # вопрос пришёл между проверкой и замком (DS r2)
+                hint_lock.release()
                 seen.discard(key)
                 continue
             try:

@@ -17,4 +17,3 @@ def test_drops_are_reported_once_per_window_after_the_threshold():
     clock[0] = 61.0
     assert [m.dropped() for _ in range(4)] == [None] * 4
     assert m.dropped(), "новое окно — новый счёт и новое сообщение"
-    assert m.total == 11

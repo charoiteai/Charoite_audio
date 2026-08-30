@@ -41,7 +41,7 @@ def test_dialog_markup_takes_the_hint_lock_quietly_and_obeys_the_toggle():
     src = pathlib.Path(daemon.__file__).read_text(encoding="utf-8")
     body = src[src.index("def dialog_markup_loop"):src.index("def name_loop")]
     assert 'toggles["hints"]' in body and "hint_lock.acquire(timeout=1.0)" in body
-    assert "manual_evt.is_set()" in body, "ручной вопрос ждёт — разметка уступает, как нить и авто-подсказка"
+    assert body.count("manual_evt.is_set()") == 2, "до замка и после: окно между проверкой и acquire (DS r2)"
     assert "seen.discard(key)" in body and "hint_lock.release()" in body
     assert "hint_slot(" not in body, "тихо: без emit_error «подсказчик занят» каждые 6 с"
 
@@ -58,12 +58,13 @@ def test_minutes_draft_and_final_share_a_lock_and_replace_atomically():
 def test_pending_question_is_replaced_as_a_whole():
     """Читатель берёт снимок словаря: ни «новый text + старый at», ни наоборот."""
     src = pathlib.Path(daemon.__file__).read_text(encoding="utf-8")
-    assert 'nonlocal_pending[0] = {"text":' in src
-    assert "_pending_q" not in src and ".update(text=" not in src
+    assert '_pending_q[0] = {"text":' in src
+    assert "nonlocal_pending" not in src and ".update(text=" not in src
 
 
 def test_fast_trigger_reports_dropped_frames():
     src = pathlib.Path(daemon.__file__).read_text(encoding="utf-8")
     tap = src[src.index("def _tap(src, part)"):src.index("hub.on_frame = _tap")]
     assert "drops.dropped()" in tap and "target=emit_error" in tap, "сказать — не из аудио-потока (luna r1)"
+    assert "is_alive()" in tap, "один глашатай за раз (DS r2)"
     assert "emit_error(msg)" not in tap

@@ -26,7 +26,6 @@ class DropMeter:
         self._start = now()
         self._count = 0
         self._reported = False
-        self.total = 0
 
     def dropped(self) -> str | None:
         """Ещё один кадр потерян. Строка — когда пора сказать об этом вслух."""
@@ -34,11 +33,10 @@ class DropMeter:
         if t - self._start >= self.window_s:
             self._start, self._count, self._reported = t, 0, False
         self._count += 1
-        self.total += 1
         if self._count >= self.threshold and not self._reported:
             self._reported = True
             # без точного числа: emit_error душит повтор одинакового текста 5 мин,
-            # а меняющийся счётчик обходил дедуп (DS r1 по #457); масштаб — в total
+            # а меняющийся счётчик обходил дедуп (DS r1 по #457) — статус сигнал, не метрика
             return (f"⚡ быстрый триггер отстаёт: за {int(self.window_s)} с потеряно не меньше "
                     f"{self.threshold} кадров — стрим не успевает, детект вопросов деградирует")
         return None
