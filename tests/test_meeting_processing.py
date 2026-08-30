@@ -382,3 +382,17 @@ def test_busy_ignores_a_corrupt_record(tmp_path):
     d.mkdir(parents=True)
     (d / "bad.json").write_text(json.dumps({"state": "processing", "updated_at": "bad", "stage": "x"}), encoding="utf-8")
     assert MeetingStatusStore(tmp_path, now=lambda: 10.0).busy() == []
+
+
+def test_infinite_numbers_in_a_status_are_treated_as_corrupt(tmp_path):
+    """json.loads принимает Infinity/NaN: «processing» с updated_at=Infinity
+    был бы вечно свежим, attempts=Infinity ронял int() (luna r3 по #456)."""
+    live = _transcript(tmp_path)
+    d = tmp_path / "logs" / "meeting-status"
+    d.mkdir(parents=True)
+    (d / "inf.json").write_text('{"meeting_id": "x", "state": "processing", "updated_at": Infinity, '
+                                '"attempts": Infinity, "stage": "y", "transcript_path": "%s"}' % live.resolve(),
+                                encoding="utf-8")
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    assert store.busy() == []
+    assert store.unfinished() == []

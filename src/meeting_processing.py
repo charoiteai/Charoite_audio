@@ -7,6 +7,7 @@ without importing audio, STT, or diarization stacks.
 from __future__ import annotations
 
 import json
+import math
 import os
 import pathlib
 import re
@@ -279,9 +280,12 @@ class MeetingStatusStore:
             key = str(data.get("key") or "") or self._key(raw)
             try:
                 upd = float(data.get("updated_at", 0) or 0)
-                int(data.get("attempts", 0) or 0)
-            except (TypeError, ValueError):
+                attempts = int(data.get("attempts", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
                 continue              # повреждённая запись не должна ронять весь подбор (luna r1)
+            if not math.isfinite(upd):
+                continue              # json принимает Infinity/NaN, а сравнения с ними врут (luna r3)
+            data = {**data, "attempts": attempts}
             by_file.setdefault(current, []).append((raw.is_file(), upd, key, data))
         latest: dict[str, tuple[float, pathlib.Path, dict[str, Any]]] = {}
         for current, group in by_file.items():
@@ -332,10 +336,11 @@ class MeetingStatusStore:
             if not isinstance(data, dict) or data.get("state") != "processing":
                 continue
             try:
-                if now - float(data.get("updated_at", 0) or 0) >= stale_after:
-                    continue
-            except (TypeError, ValueError):
+                upd = float(data.get("updated_at", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
                 continue              # повреждённая запись — не занятость (GLM r2)
+            if not math.isfinite(upd) or now - upd >= stale_after:
+                continue
             out.append(str(data.get("stage") or path.stem))
         return out
 
@@ -446,7 +451,9 @@ class MeetingStatusStore:
             # живой путь → свежесть → запись, названная своим ключом (первичная)
             try:
                 upd = float(data.get("updated_at", 0) or 0)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
+                upd = 0.0
+            if not math.isfinite(upd):
                 upd = 0.0
             rank = (1 if raw.is_file() else 0, upd, 1 if path.stem == str(key) else 0, str(key))
             if best is None or rank[:3] > best[:3]:

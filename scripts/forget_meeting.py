@@ -193,18 +193,29 @@ def _status_files(status_dir: pathlib.Path, stamp: str) -> list[pathlib.Path]:
     if not status_dir.is_dir():
         return []
     import json
+    from meeting_processing import find_final_transcript
     found = set(_with_stamp(status_dir, stamp, suffix=".json"))
     for f in status_dir.glob("*.json"):
         if f in found:
             continue
         try:
-            tp = json.loads(f.read_text(encoding="utf-8")).get("transcript_path", "")
-        except (OSError, ValueError, AttributeError):
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
             continue
-        name = pathlib.Path(str(tp)).name
-        rest = name[len(stamp):]
-        if name.startswith(stamp) and not rest[:1].isdigit() and not re.match(r"-\d", rest):
-            found.add(f)                 # «-N» — соседка, как в files_with_stamp
+        if not isinstance(data, dict):
+            continue                     # не-словарь — мусор, не повод ронять forget (luna r3)
+        tp = str(data.get("transcript_path") or "")
+        if not tp:
+            continue
+        raw = pathlib.Path(tp)
+        # по сырому имени И по тому, куда путь резолвится сегодня: после retitle
+        # статус мог остаться с мёртвым голым посекундным путём (окно до
+        # следующей записи), а минутная граница его не видит (luna r3 по #456)
+        for name in {raw.name, find_final_transcript(raw).name}:
+            rest = name[len(stamp):]
+            if name.startswith(stamp) and not rest[:1].isdigit() and not re.match(r"-\d", rest):
+                found.add(f)             # «-N» — соседка, как в files_with_stamp
+                break
     return sorted(found)
 
 
@@ -374,7 +385,8 @@ def plan(stamp: str, root: pathlib.Path,
         import json as _json
         for sf in statuses:
             try:
-                key = str(_json.loads(sf.read_text(encoding="utf-8")).get("key") or "")
+                data = _json.loads(sf.read_text(encoding="utf-8"))
+                key = str(data.get("key") or "") if isinstance(data, dict) else ""
             except (OSError, ValueError):
                 continue
             if key:
