@@ -41,6 +41,7 @@ import cloud  # noqa: E402
 import install_profile  # noqa: E402
 import owner_voice  # noqa: E402
 import fact_check  # noqa: E402
+import frame_drops  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
 from meeting_thread import Thread as MeetingThread  # noqa: E402
 import privacy  # noqa: E402
@@ -1258,6 +1259,10 @@ def main():
     _last_fire = [0.0]
     _cloud_last = {"t": 0.0, "words": set()}
     _pending_q = {"text": "", "at": 0.0}  # последний вопрос и когда прозвучал — панели показывают его над ответом
+    # Черновик и финальные минутки: проверка маркера и запись — одним куском.
+    # Между read_text и write_text черновика финал от «Протокола» успевал лечь
+    # на диск и заворачивался черновиком (класс 0.46.0, аудит 30.08 DS M1).
+    minutes_lock = threading.Lock()
     # живые тумблеры UI (`set hints|theses|cloud on|off`): выключенные контуры
     # молчат до обратного включения; дефолты хранит и присылает приложение
     toggles = {"hints": True, "theses": True, "cloud": True}
@@ -1285,8 +1290,9 @@ def main():
             # сырой вопрос с усечённым (№95; круг-2 по #405, DS — «источнику
             # вообще нечего резать»). Это одно высказывание STT: сотни
             # символов, памяти не грозит.
-            _pending_q["text"] = " ".join(q.split())
-            _pending_q["at"] = time.monotonic()
+            # одной записью: два присваивания давали читателю text одного
+            # вопроса и at другого (аудит 30.08, DS M2)
+            _pending_q.update(text=" ".join(q.split()), at=time.monotonic())
         instant_evt.set()
         if not (cloud_live and toggles["cloud"]):
             return
@@ -1948,10 +1954,19 @@ def main():
             return  # сервера/библиотеки нет — обычный путь через чанки
         import queue as _q
         frame_q: _q.Queue = _q.Queue(maxsize=300)
+        drops = frame_drops.DropMeter()
 
         def _tap(src, part):
-            if src == "blackhole" and not frame_q.full():
-                frame_q.put(part)
+            if src != "blackhole":
+                return
+            if frame_q.full():
+                # переполнение роняло кадр молча: стрим не успевал, вопросы
+                # переставали триггерить ⚡, статус «подключён» врал (DS I2)
+                msg = drops.dropped()
+                if msg:
+                    emit_error(msg)
+                return
+            frame_q.put(part)
 
         hub.on_frame = _tap
         emit({"type": "status", "text": "⚡ быстрый триггер вопросов: gigastt-стрим подключён"})
@@ -2175,6 +2190,15 @@ def main():
                     or (dt.datetime.now() - t1).total_seconds() < 6:
                 continue
             seen.add(key)
+            if not toggles["hints"]:
+                continue   # подсказки выключены — вспомогательная разметка тем более молчит
+            # Единственный LLM-контур вне арбитра держал модель на 900 токенов
+            # каждые 6 с, пока подсказчик и ⚡ стояли в очереди к ней (аудит
+            # 30.08, DS I1). Замок берём тихо: не взяли за секунду — вернёмся к
+            # абзацу позже, разметка дешевле задержки подсказки.
+            if not hint_lock.acquire(timeout=1.0):
+                seen.discard(key)
+                continue
             try:
                 out = "".join(llm.stream(
                     f"Фрагмент живой стенограммы (в нём могли слиться реплики РАЗНЫХ "
@@ -2197,6 +2221,8 @@ def main():
                           "text": out})
             except Exception as e:  # noqa: BLE001 — разметка вспомогательна
                 warn_markup(e)
+            finally:
+                hint_lock.release()
 
     def _median_f0(label: str) -> float | None:
         """Медианная частота основного тона этой метки за встречу.
@@ -2405,10 +2431,16 @@ def main():
                     # если за это время человек нажал «Протокол», финальные
                     # минутки (26b, без маркера) уже лежат на диске — черновик
                     # лёгкой модели затирал их молча (аудит 0.46.0).
-                    if mpath.exists() and not mpath.read_text(
-                            encoding="utf-8").startswith("<!-- черновик"):
-                        continue
-                    mpath.write_text("<!-- черновик, встреча идёт -->\n" + out, encoding="utf-8")
+                    with minutes_lock:
+                        if mpath.exists() and not mpath.read_text(
+                                encoding="utf-8").startswith("<!-- черновик"):
+                            continue
+                        tmp = mpath.with_name(mpath.name + f".draft{os.getpid()}")
+                        try:
+                            tmp.write_text("<!-- черновик, встреча идёт -->\n" + out, encoding="utf-8")
+                            tmp.replace(mpath)
+                        finally:
+                            tmp.unlink(missing_ok=True)
                     emit({"type": "status", "text": f"🗒 минутки-черновик обновлены ({dt.datetime.now():%H:%M})"})
             except Exception as e:  # noqa: BLE001
                 emit_error(f"минутки: {short_error(e)}")
@@ -2506,11 +2538,12 @@ def main():
                 # усечённые минутки поверх готовых (mcp_server это уже чинил,
                 # здесь оставался прямой write_text — аудит 14.08)
                 tmp = mpath.with_name(mpath.name + f".tmp{os.getpid()}")
-                try:
-                    tmp.write_text(doc, encoding="utf-8")
-                    tmp.replace(mpath)
-                finally:
-                    tmp.unlink(missing_ok=True)
+                with minutes_lock:
+                    try:
+                        tmp.write_text(doc, encoding="utf-8")
+                        tmp.replace(mpath)
+                    finally:
+                        tmp.unlink(missing_ok=True)
                 emit({"type": "status", "text": f"Минутки: {mpath}"})
 
     def stdin_loop():

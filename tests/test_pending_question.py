@@ -33,3 +33,34 @@ def test_mic_channel_is_recognised_by_the_raw_label_everywhere():
     bad = re.findall(r"is_mic=\w+ == mic_label", src)
     assert not bad, bad
     assert src.count('is_mic=channel_speaker == hub.SPEAKER.get("mic", "")') == 2
+
+
+def test_dialog_markup_takes_the_hint_lock_quietly_and_obeys_the_toggle():
+    """Разметка была единственным LLM-контуром вне арбитра: 900 токенов каждые
+    6 с держали модель, пока подсказчик и ⚡ ждали (аудит 30.08, DS I1)."""
+    src = pathlib.Path(daemon.__file__).read_text(encoding="utf-8")
+    body = src[src.index("def dialog_markup_loop"):src.index("def name_loop")]
+    assert 'toggles["hints"]' in body and "hint_lock.acquire(timeout=1.0)" in body
+    assert "seen.discard(key)" in body and "hint_lock.release()" in body
+    assert "hint_slot(" not in body, "тихо: без emit_error «подсказчик занят» каждые 6 с"
+
+
+def test_minutes_draft_and_final_share_a_lock_and_replace_atomically():
+    src = pathlib.Path(daemon.__file__).read_text(encoding="utf-8")
+    draft = src[src.index("def minutes_loop"):src.index("def _do_summary")]
+    final = src[src.index("def _do_summary"):src.index("def stdin_loop")]
+    assert "with minutes_lock:" in draft and "with minutes_lock:" in final
+    assert 'mpath.write_text("<!-- черновик' not in draft, "черновик — только через tmp+replace"
+    assert ".replace(mpath)" in draft
+
+
+def test_pending_question_is_written_in_one_step():
+    src = pathlib.Path(daemon.__file__).read_text(encoding="utf-8")
+    assert "_pending_q.update(text=" in src
+    assert '_pending_q["at"] =' not in src and '_pending_q["text"] =' not in src
+
+
+def test_fast_trigger_reports_dropped_frames():
+    src = pathlib.Path(daemon.__file__).read_text(encoding="utf-8")
+    tap = src[src.index("def _tap(src, part)"):src.index("hub.on_frame = _tap")]
+    assert "drops.dropped()" in tap and "emit_error(msg)" in tap
