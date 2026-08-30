@@ -35,8 +35,7 @@ _STAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}_\d{4})")
 # (MeetingProcessingService.title) и rename_meeting.SUFFIXES: пропущенный
 # хвост здесь = файл разбора в transcript_path и тема «… разбор» в списке
 # (инцидент 04.08 — «_разбор» был свежее стенограммы и выигрывал по mtime).
-_AUX_SUFFIXES = ("_minutes", "_hints", "_live", "_debrief",
-                 "_разбор", "_ревизия_claude", "_спикеры")
+_AUX_SUFFIXES = meeting_stamp.AUX_SUFFIXES   # один список на все стороны (аудит 30.08, luna)
 
 
 def short_stamp(transcript: pathlib.Path) -> str:
@@ -91,9 +90,16 @@ def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
             # главный (DS r3)
             stems = {path.stem for path in live_copies}
             mains = [path for path in live_copies if _looks_main(path)]
-            candidates = [path for path in mains
-                          if path.stem[len(stamp):].lower() != "_live"
-                          and path.stem[:-len("_live")] not in stems] or mains
+            # Сначала не-«<штамп>_live» без живого источника (главный «…_Демо_live»
+            # при переименованном голом файле); затем «<штамп>_live» без голого
+            # рядом — главный прежних версий с темой «live», а не копия (luna по
+            # аудиту 30.08); mtime — только внутри остатка.
+            primary = [path for path in mains
+                       if path.stem[len(stamp):].lower() != "_live"
+                       and path.stem[:-len("_live")] not in stems]
+            candidates = (primary
+                          or [path for path in mains if path.stem[:-len("_live")] not in stems]
+                          or mains)
         if candidates:
             return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
     return original.resolve()
@@ -247,14 +253,27 @@ class MeetingStatusStore:
         """
         now = float(self._now())
         out: list[dict[str, Any]] = []
+        # Одна встреча — один голос: файлы прежних версий названы по стему
+        # («…_1130_Тема.json» рядом с «…_1130.json»), и старый «error» не
+        # должен перевешивать свежий «ready» той же встречи — берём самую
+        # свежую запись на штамп (аудит 30.08, GLM Critical 2).
+        latest: dict[str, tuple[float, dict[str, Any]]] = {}
         for path in sorted(self.directory.glob("*.json")):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
+            if not isinstance(data, dict):
+                continue
+            tp = str(data.get("transcript_path") or "")
+            key = self._key(pathlib.Path(tp)) if tp else self._key(path)
+            upd = float(data.get("updated_at", 0) or 0)
+            if key not in latest or upd > latest[key][0]:
+                latest[key] = (upd, data)
+        for _, data in latest.values():
             # ready — сделано; empty — сделано и повторять нечего: тишину
             # можно разбирать хоть трижды, речи в ней не появится.
-            if not isinstance(data, dict) or data.get("state") in ("ready", "empty"):
+            if data.get("state") in ("ready", "empty"):
                 continue
             if int(data.get("attempts", 0)) >= limit:
                 continue
@@ -350,9 +369,29 @@ class MeetingStatusStore:
     def has_transcript(self, transcript: pathlib.Path) -> bool:
         return find_final_transcript(pathlib.Path(transcript)).is_file()
 
+    @staticmethod
+    def _key(transcript: pathlib.Path) -> str:
+        """Ключ файла статуса — неизменяемый штамп, не стем.
+
+        graph_updater переименовывает стенограмму посреди прогона (retitle),
+        а падение после этого писало «error» под старым стемом и указывало на
+        новый файл: повтор шёл под новым ключом, старый json оставался
+        «error» навсегда — и каждая тихая итерация заново пересобирала встречу
+        из записей, затирая стенограмму (аудит 30.08, GLM Critical 2). Штамп
+        имя переживает; посекундный штамп второй встречи той же минуты — свой
+        ключ, как и у graph_key. Не-штамп (импорт с чужим именем) — стем.
+        """
+        # По ТЕКУЩЕМУ главному файлу (retitle уже мог переименовать): ключ графа —
+        # минута у владельца минуты, секунды у второй встречи той же минуты, то
+        # есть ровно то имя, которое retitle даёт главному файлу. Старый
+        # посекундный стем после переименования считался бы «второй встречей».
+        current = find_final_transcript(pathlib.Path(transcript))
+        stem = current.stem
+        key = meeting_stamp.graph_key(current.parent, stem) if meeting_stamp.stamp_of(stem) else stem
+        return re.sub(r"[^\w.-]+", "_", key)
+
     def _path(self, transcript: pathlib.Path) -> pathlib.Path:
-        safe = re.sub(r"[^\w.-]+", "_", pathlib.Path(transcript).stem)
-        return self.directory / f"{safe}.json"
+        return self.directory / f"{self._key(transcript)}.json"
 
     def _read(self, transcript: pathlib.Path) -> dict[str, Any]:
         try:

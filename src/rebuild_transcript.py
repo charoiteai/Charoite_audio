@@ -571,11 +571,28 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     if m:
         body.append(m.group(0).lstrip("\n"))
 
+    write_final(live, "\n".join(body).rstrip() + "\n", live_text)
+    return live
+
+
+def write_final(live: pathlib.Path, text: str, live_text: str) -> pathlib.Path:
+    """Записать финальную стенограмму, сохранив то, что было до неё.
+
+    `_live.md` — живой черновик, пишется один раз и навсегда. Но карточка
+    советует «исправьте стенограмму и пересоберите», а вторая пересборка
+    заново распознаёт аудио — правки человека исчезали без копии (№131).
+    Версия ДО каждой пересборки уходит в скрытую `.prev/<имя>` (одно
+    поколение): скрытая папка — не новый суффикс, списки и Swift её не видят.
+    """
     live_copy = live.with_name(live.stem + "_live.md")
     if not live_copy.exists():
         safe_write.write_text(live_copy, live_text)
-    safe_write.write_text(live, "\n".join(body).rstrip() + "\n")
-    log(f"финальная стенограмма записана: {live.name} (живой черновик → {live_copy.name})")
+    prev_dir = live.parent / ".prev"
+    prev_dir.mkdir(exist_ok=True)
+    safe_write.write_text(prev_dir / live.name, live_text)
+    safe_write.write_text(live, text)
+    log(f"финальная стенограмма записана: {live.name} (живой черновик → {live_copy.name}, "
+        f"версия до пересборки → .prev/{live.name})")
     return live
 
 
@@ -614,7 +631,9 @@ def retry_unfinished(status: MeetingStatusStore) -> None:
     subprocess.Popen(
         ["nice", "-n", "10", sys.executable, str(pathlib.Path(__file__)), str(target)],
         start_new_session=True, env=env,
-        stdout=open(ROOT / "logs" / f"retry_{target.stem[:15]}.log", "w"),
+        # по штампу, не по 15 знакам: две встречи одной минуты писали в один
+        # лог, и второй спавн усекал лог первого (аудит 30.08, GLM)
+        stdout=open(ROOT / "logs" / f"retry_{meeting_stamp.stamp_of(target.stem) or target.stem}.log", "w"),
         stderr=subprocess.STDOUT,
     )
 

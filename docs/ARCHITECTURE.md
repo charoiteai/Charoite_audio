@@ -171,6 +171,14 @@ the zone's promises and closed the gaps:
   before substituting: a file rewritten by the pipeline between the scan and
   the link is skipped.
 
+Sleep is not a failure: the night budget runs on wall-clock time, which sleep
+does not stop, while `monotonic` stands still — the difference lands in
+`nightly.json` as `slept_s`, and a night that lost only «(late)» steps to ten
+or more minutes of sleep ends as `slept`, not `failed` (30.08: a run from
+04:20 to 09:59 on a sleeping laptop). A full night needs an awake machine —
+that is the owner's power setting; `caffeinate` on battery with the lid closed
+does not help.
+
 ### Cloud chat (llm.engine: cloud)
 
 A third engine next to Ollama and mlx-server: hints, theses, the thread and
@@ -257,7 +265,18 @@ code path is shared.
 
 Each phase is published atomically under `logs/meeting-status/`: the macOS
 app shows real progress, keeps failures linked to the source transcript, and
-announces readiness only after the exact meeting note exists.
+announces readiness only after the exact meeting note exists. The status file
+is named by the meeting key (the minute for the owner of the minute, seconds
+for a second meeting in the same minute — the name retitle gives the main
+file), not by the file stem: a failure after retitle used to write «error»
+under the old stem while the retry ran under the new one, and the stale
+status kept the meeting in the retry queue forever, rebuilding it from the
+recordings every time (audit 30.08). Before overwriting a transcript the
+rebuild keeps its current version in `transcripts/.prev/<name>` (one
+generation): the live draft `_live.md` is written once, and manual edits
+between two rebuilds used to vanish. Meeting notes, archive files and
+statuses go through `safe_write` (tmp + replace), so an interrupted write
+never leaves an empty file.
 
 ## The knowledge graph (an Obsidian folder)
 

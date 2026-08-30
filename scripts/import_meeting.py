@@ -42,6 +42,7 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 from config_loader import load_user_or_example  # noqa: E402
 
 import charoite_paths  # noqa: E402
+import safe_write  # noqa: E402
 
 AUDIO = {".m4a", ".wav", ".mp3", ".aif", ".aiff", ".caf"}
 TEXT = {".txt", ".md"}
@@ -451,7 +452,7 @@ def main() -> None:
                                     compile_rules(cfg)))
         if not entries:
             sys.exit("в субтитрах не нашлось реплик")
-        tpath.write_text(subs_to_transcript(entries, stamp, source_mark(src.name, src.stat().st_size)), encoding="utf-8")
+        safe_write.write_text(tpath, subs_to_transcript(entries, stamp, source_mark(src.name, src.stat().st_size)))
         speakers = sorted({sp for _, sp, _ in entries if sp})
         print(f"стенограмма из субтитров: {tpath}"
               + (f" · спикеры: {', '.join(speakers)}" if speakers else ""))
@@ -461,8 +462,7 @@ def main() -> None:
                       compile_rules(cfg))
         if len(body) < 200:
             sys.exit("текст слишком короткий для встречи")
-        tpath.write_text(f"# Встреча {stamp} — импорт {source_mark(src.name, src.stat().st_size)}\n\n{body}\n",
-                         encoding="utf-8")
+        safe_write.write_text(tpath, f"# Встреча {stamp} — импорт {source_mark(src.name, src.stat().st_size)}\n\n{body}\n")
         print(f"стенограмма из текста: {tpath}")
     else:
         sys.exit(f"не понимаю формат {ext}: жду {sorted(AUDIO | TEXT | SUBS)}")

@@ -30,12 +30,15 @@ sys.path.insert(0, str(CODE / "src"))
 import graphs  # noqa: E402
 
 import charoite_paths  # noqa: E402
+import safe_write  # noqa: E402
 import meeting_stamp  # noqa: E402
 from meeting_archive import ARCHIVE_DIR, _safe  # noqa: E402
 
 # Хвосты производных файлов. Слаг стоит между штампом и хвостом:
 # 2026-08-03_1130_Обновление_ОС_разбор.md
-SUFFIXES = ("_minutes", "_hints", "_разбор", "_ревизия_claude", "_live", "_спикеры")
+# Один список на все стороны: свой экземпляр без `_debrief` не переименовывал
+# «…_debrief.md» и путал титулованную производную с темой (аудит 30.08, luna)
+SUFFIXES = meeting_stamp.AUX_SUFFIXES
 
 STAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{4}(?:\d{2}(?:-\d+)?)?")
 
@@ -290,8 +293,9 @@ def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
         for f in new_folder.glob("*.md"):
             text = f.read_text(encoding="utf-8")
             if old_folder.name in text:
-                f.write_text(text.replace(old_folder.name, new_folder.name),
-                             encoding="utf-8")
+                # tmp+replace: write_text усекает файл до нуля ДО записи, и обрыв
+                # (полный том iCloud, kill) оставлял пустую заметку (аудит 30.08, GLM)
+                safe_write.write_text(f, text.replace(old_folder.name, new_folder.name))
 
     # Манифест meeting.meta.json — JSON с темой внутри; текстовая замена по
     # *.md его не видит, а телефоны берут карточку именно из него. Пересборка
@@ -319,7 +323,7 @@ def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
             joined = (m.group(1).strip() + ", " if m.group(1).strip() else "")
             text = text[:m.start()] + f'aliases: [{joined}"{pretty}"]' + text[m.end():]
         if n or m:
-            note.write_text(text, encoding="utf-8")
+            safe_write.write_text(note, text)   # единственный экземпляр заметки встречи
 
     # Статус для приложения: transcript_path указывает на переименованный файл.
     # Через разбор JSON, не заменой подстроки: json.dumps по умолчанию
@@ -340,7 +344,7 @@ def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
             tp = str(data.get("transcript_path", ""))
             if tp in mapping:
                 data["transcript_path"] = mapping[tp]
-                sf.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                safe_write.write_text(sf, json.dumps(data, ensure_ascii=False))
 
     try:  # оглавление архива хранит имена папок — пересобрать лучше, чем врать
         from meeting_archive import _rebuild_index

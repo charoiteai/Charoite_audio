@@ -25,6 +25,7 @@ import sys
 
 from charoite_paths import resolve_root
 from meeting_stamp import archive_time, files_with_stamp, graph_key, stamp_of
+import safe_write
 import graphs
 
 ROOT = resolve_root(__file__)
@@ -79,7 +80,9 @@ def _excluded(graph: pathlib.Path) -> set[str]:
     f = graph / ARCHIVE_DIR / "_исключено.md"
     if not f.exists():
         return set()
-    return set(re.findall(r"\d{4}-\d{2}-\d{2}_\d{4}", f.read_text(encoding="utf-8")))
+    # Штамп целиком, с секундами и суффиксом коллизии: обрезка до минуты
+    # исключала владельца минуты по строке про соседку (аудит 30.08, GLM)
+    return set(re.findall(r"\d{4}-\d{2}-\d{2}_\d{4}(?:\d{2})?(?:-\d+)?", f.read_text(encoding="utf-8")))
 
 
 def _manifest_id(folder: pathlib.Path) -> str | None:
@@ -162,7 +165,7 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
                 break
         shutil.copy2(f, folder / dest)
     obs_url = _obsidian_url(graph, f"{graph.name}/Встречи/{stamp}")
-    (folder / "Граф.md").write_text(
+    safe_write.write_text(folder / "Граф.md",
         f"---\ntype: ссылка\nдата: {stamp}\n---\n"
         f"# Граф этой встречи\n\n"
         f"[Открыть заметку встречи в Obsidian]({obs_url}) — дальше «Локальный граф» "
@@ -530,7 +533,8 @@ def _gen_summary(folder: pathlib.Path, force: bool = False):
     (кто/что/срок) → открытое. 100-300 слов, списки, без таблиц.
     """
     out = folder / "Саммари.md"
-    if out.exists() and not force:
+    # пустой файл — след оборванной записи, а не готовое саммари (аудит 30.08)
+    if out.exists() and out.stat().st_size > 0 and not force:
         return
     src_parts: list[str] = []
     for name, cap in (("Минутки.md", 3500), ("Тезисы.md", 1500),
@@ -617,10 +621,9 @@ def _gen_summary(folder: pathlib.Path, force: bool = False):
                 f"[[{ARCHIVE_DIR}/{folder.name}/{n}|{n}]]"
                 for n in ("Минутки", "Разбор", "Стенограмма")
                 if (folder / f"{n}.md").exists())
-            out.write_text(f"---\ntype: саммари\nдата: {date}\n---\n\n"
-                           f"# Саммари — {folder.name}\n\n{text}\n"
-                           + (f"\n---\nПодробнее: {deeper}\n" if deeper else ""),
-                           encoding="utf-8")
+            safe_write.write_text(out, f"---\ntype: саммари\nдата: {date}\n---\n\n"
+                                  f"# Саммари — {folder.name}\n\n{text}\n"
+                                  + (f"\n---\nПодробнее: {deeper}\n" if deeper else ""))
     except Exception as e:  # noqa: BLE001
         print(f"саммари: {e}", file=sys.stderr)
 
@@ -644,9 +647,9 @@ def _derive_extras(folder: pathlib.Path):
         notes = [line[2:].strip() for line in tr.read_text(encoding="utf-8").splitlines()
                  if line.startswith("> ") and re.search(r"[📌💎💭🔬]", line)]
         if notes:
-            (folder / "Тезисы.md").write_text(
+            safe_write.write_text(folder / "Тезисы.md",
                 "# Тезисы встречи (📌 КТ · 💎 факты · 💭 мысли · 🔬 переоценка)\n\n"
-                + "\n".join(f"- {n}" for n in notes) + "\n", encoding="utf-8")
+                + "\n".join(f"- {n}" for n in notes) + "\n")
 
     qa: list[str] = []
     rb = folder / "Разбор.md"
@@ -697,8 +700,8 @@ def _derive_extras(folder: pathlib.Path):
             if qa[-1] == "---":
                 qa.pop()
     if qa:
-        (folder / "Вопросы и ответы.md").write_text(
-            "# Вопросы и ответы\n\n" + "\n".join(qa) + "\n", encoding="utf-8")
+        safe_write.write_text(folder / "Вопросы и ответы.md",
+            "# Вопросы и ответы\n\n" + "\n".join(qa) + "\n")
 
 
 def _rebuild_index(graph: pathlib.Path):
@@ -715,7 +718,7 @@ def _rebuild_index(graph: pathlib.Path):
             names.remove("Саммари")
             names.insert(0, "Саммари")
         lines.append(f"- [[{ARCHIVE_DIR}/{p.name}/{target}|{p.name}]] — {', '.join(names)}")
-    (adir / "_ОГЛАВЛЕНИЕ.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    safe_write.write_text(adir / "_ОГЛАВЛЕНИЕ.md", "\n".join(lines) + "\n")
 
 
 def migrate_all(graph: pathlib.Path, tdir: pathlib.Path) -> int:

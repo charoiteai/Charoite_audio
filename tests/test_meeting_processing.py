@@ -229,3 +229,60 @@ def test_main_transcript_whose_title_ends_with_live_is_still_found(tmp_path):
         live.with_name(name).unlink()
     main.write_text("черновик без шапки\n", encoding="utf-8")
     assert find_final_transcript(live) == live.resolve()
+
+
+def test_status_key_is_the_stamp_and_survives_retitle(tmp_path):
+    """Ключ статуса — штамп, не стем: падение после переименования файла
+    писало «error» под старым стемом, повтор шёл под новым, а старый json
+    оставался «error» навсегда — и каждая тихая итерация заново пересобирала
+    встречу из записей (аудит 30.08, GLM Critical 2)."""
+    live = _transcript(tmp_path)
+    store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
+    store.processing(live, "updating_graph")
+    titled = live.with_name("2026-07-31_1415_План_релиза.md")
+    live.rename(titled)
+    failed = store.failed(live, "модель не дала разбор")     # старым путём, как rebuild
+    assert failed.name == "2026-07-31_1415.json", "ключ — минута владельца, как имя после retitle"
+    later = MeetingStatusStore(tmp_path, now=lambda: 20.0)
+    ready = later.ready(titled, None, False)                 # повтор — новым путём
+    assert ready == failed, "одна встреча — один файл статуса"
+    assert later.unfinished() == [], "после успешного повтора призрака нет"
+    # файл прежней версии, названный по стему, с «error» — не перевешивает свежий «ready»
+    ghost = tmp_path / "logs" / "meeting-status" / "2026-07-31_1415_План_релиза.json"
+    ghost.write_text(json.dumps({"meeting_id": "2026-07-31_1415_План_релиза", "state": "error",
+                                 "updated_at": 5.0, "attempts": 1,
+                                 "transcript_path": str(titled.resolve())}), encoding="utf-8")
+    assert later.unfinished() == []
+    # а если свежее именно «error» — повтор один, не два
+    ghost.write_text(json.dumps({"meeting_id": "2026-07-31_1415_План_релиза", "state": "error",
+                                 "updated_at": 30.0, "attempts": 1,
+                                 "transcript_path": str(titled.resolve())}), encoding="utf-8")
+    assert len(later.unfinished()) == 1
+    # не-штамп (импорт с чужим именем) — стем, как раньше
+    odd = tmp_path / "transcripts" / "заметка.md"
+    odd.write_text("# Встреча\n", encoding="utf-8")
+    assert store.processing(odd, "x").name == "заметка.json"
+
+
+def test_legacy_main_named_live_beats_its_own_newer_copy(tmp_path):
+    """Прежние версии могли назвать главный «<штамп>_live.md» (тема «live»);
+    его копия «<штамп>_live_live.md» новее — но копия узнаётся по живому
+    источнику, а не по mtime (luna по аудиту 30.08)."""
+    import os
+    live = _transcript(tmp_path)
+    live.unlink()
+    main = live.with_name("2026-07-31_141501_live.md")
+    main.write_text("# Встреча 2026-07-31_141501 — live\n\nтекст\n", encoding="utf-8")
+    copy = live.with_name("2026-07-31_141501_live_live.md")
+    copy.write_text(main.read_text(encoding="utf-8"), encoding="utf-8")
+    os.utime(copy, (os.stat(copy).st_atime, os.stat(main).st_mtime + 100))
+    assert find_final_transcript(live) == main.resolve()
+
+
+def test_suffix_lists_have_one_source():
+    import meeting_processing as mp
+    import meeting_stamp
+    sys.path.insert(0, str(SRC.parent / "scripts"))
+    import rename_meeting as rm
+    assert mp._AUX_SUFFIXES is meeting_stamp.AUX_SUFFIXES and rm.SUFFIXES is meeting_stamp.AUX_SUFFIXES
+    assert "_debrief" in rm.SUFFIXES
