@@ -37,6 +37,7 @@ import yaml  # noqa: E402
 
 import action_items  # noqa: E402
 import autostop as autostop_rules  # noqa: E402
+import channel_labels  # noqa: E402
 import cloud  # noqa: E402
 import install_profile  # noqa: E402
 import owner_voice  # noqa: E402
@@ -597,7 +598,7 @@ def main():
         # живой разговор втрое раньше срока (ревью 20.08, локальная голова).
         # Ошибка здесь безопасна в одну сторону: лишний признак «звонок»
         # оставляет прежние пятнадцать минут, пропущенный — рубит встречу.
-        heard_by_channel.note(None, 0.0, is_mic=channel_speaker == hub.SPEAKER.get("mic", ""))
+        heard_by_channel.note(None, 0.0, is_mic=chan.is_mic(channel_speaker))
         if spk_tracker is None:
             _note_pitch(channel_speaker, chunk)
             return channel_speaker  # без трекера канальные метки честны в звонке
@@ -606,8 +607,7 @@ def main():
         except Exception:  # noqa: BLE001
             return channel_speaker
         heard_by_channel.note(n, len(chunk) / hub.sr,
-                              is_mic=channel_speaker == hub.SPEAKER.get("mic", ""),
-                              now=time.monotonic())
+                              is_mic=chan.is_mic(channel_speaker), now=time.monotonic())
         if n is None:
             return channel_speaker
         name = _owner_label(n, channel_speaker, _voice_name(n))
@@ -619,7 +619,12 @@ def main():
     # Имя не задано — сверяем с меткой своего канала («Я»): иначе гейт
     # открыт на собственные вопросы у всех, кто не заполнил настройку
     # (ревью 19.08, DeepSeek).
-    owner_name = (cfg["sufler"].get("user_name") or "").strip()
+    # Метки каналов и владелец — одна точка правды (D-П2): сырая метка канала,
+    # подпись владельца и имя для сверки по словам собраны один раз и не
+    # расходятся между захватом, счётчиками и подписью (аудит 30.08, DS).
+    chan = channel_labels.ChannelLabels.from_config(cfg, other=hub.SPEAKER.get("blackhole", channel_labels.NEUTRAL_OTHER))
+    assert chan.mic_raw == hub.SPEAKER["mic"], "захват и демон обязаны сойтись в метке микрофона"
+    owner_name = chan.owner_name
 
     # Кто владелец — по КАНАЛУ, а не по догадке о голосе. Счётчики секунд
     # речи по номеру голоса живут здесь, в памяти встречи, и умирают вместе
@@ -630,23 +635,10 @@ def main():
     # «Собеседник N», `is_counterpart` считал их чужими, и ⚡ отвечала на
     # вопросы самого хозяина встречи (ревью 19.08, DeepSeek).
     heard_by_channel = owner_voice.Heard()
-    other_label = hub.SPEAKER.get("blackhole", "")
     # Имя, неотличимое от нейтральной метки («Собеседник», «Собеседник 2»),
-    # подписью быть не может: по метке склеиваются абзацы, выбирается
-    # дорожка для распознавания и работает переименование по имени из
-    # разговора. Проверка стоит ЗДЕСЬ, на входе, а не в трёх местах
-    # разметки: латая края, я трижды подряд создавал новые дыры — каждая
-    # правка «на своём пути» открывала следующий (ревью 19.08, круги 3-5).
-    # Пустая метка выключает подпись целиком, и все пути становятся
-    # тривиальными.
-    # Метку канала демон не правит: коллизионное имя отсекается в источнике
-    # (AudioHub), туда оно и не попадает. Здесь решается только, включать ли
-    # ПОДПИСЬ владельца: если человек написал в настройках «Собеседник 2»,
-    # захват честно подставил «Я», и подписывать этой меткой нечего.
-    mic_label = hub.SPEAKER.get("mic", "")
-    wanted = (cfg["sufler"].get("user_name") or "").strip()
-    if wanted and wanted != mic_label:
-        mic_label = ""
+    # подписью быть не может: захват честно подставил «Я», подписывать нечем.
+    # Решение — поле ChannelLabels.mic_signed; здесь только сказать об этом.
+    if chan.collision:
         emit({"type": "status", "text":
               "ваше имя в настройках совпадает с нейтральной меткой — "
               "задайте другое (sufler.user_name), чтобы реплики подписывались"})
@@ -668,25 +660,11 @@ def main():
         захват подставлял «Я», и ⚡ снова отвечала на собственные вопросы
         хозяина встречи (ревью 19.08, круги 4 и 7).
         """
-        own = hub.SPEAKER.get("mic", "")
-        if own and name == own:
-            return True
-        if owner_voice.collides_with_neutral(owner_name):
-            # Имя, неотличимое от нейтральной метки, в сверку по ИМЕНИ не
-            # пускаем: `is_owner` сравнивает по четырёхбуквенному префиксу,
-            # и «Собеседник 2» из настроек делает владельцем КАЖДОГО
-            # «Собеседник N» — гейт глохнет для всех собеседников разом
-            # (ревью 19.08, девятый круг). Подпись таким именем и так
-            # выключена, сверять нечем.
-            return False
-        return speaker_names.is_owner(name, owner_name)
+        return chan.is_owner_line(name)
 
     def _owner_label(voice: int | None, speaker: str, neutral: str) -> str:
-        is_mic = speaker == mic_label
-        label = owner_voice.label_for(voice, is_mic=is_mic,
-                                      heard=heard_by_channel,
-                                      owner_label=mic_label,
-                                      other_label=other_label, neutral=neutral)
+        is_mic = chan.is_mic(speaker)
+        label = chan.signed_for(voice, speaker, heard=heard_by_channel, neutral=neutral)
         if not is_mic:
             # Реплика собеседника ничего не говорит о том, подписан ли
             # владелец: раньше она уводила статус в «в микрофоне несколько
@@ -720,7 +698,7 @@ def main():
                     "нейтральными")
         elif not owner_name:
             # Имя не задано вовсе — проверяем КОНФИГ, а не обнулённую
-            # переменную: `mic_label` при незаданном имени равен «Я» и
+            # переменную: сырая метка при незаданном имени равна «Я» и
             # непуст, поэтому прежняя ветка не срабатывала никогда, а при
             # коллизии сюда и не доходит (ревью 19.08, седьмой круг).
             note = ("задайте своё имя в настройках (sufler.user_name), "
@@ -734,7 +712,7 @@ def main():
         elif not note and owner_note["said"] != "signed":
             owner_note["said"] = "signed"
             emit({"type": "status", "text":
-                  f"ваши реплики подписываются как «{mic_label}» (канал микрофона)"})
+                  f"ваши реплики подписываются как «{chan.mic_signed}» (канал микрофона)"})
 
     # Голоса вспомогательных контуров: их отказ больше не немой (см. quiet_loop_warn)
     warn_deja = quiet_loop_warn("дежавю")
@@ -956,13 +934,13 @@ def main():
                 # страшно), а собеседник тише порога VAD или отсутствующий
                 # канал захвата признак НЕ поставят — и живой звонок попадёт
                 # под короткий порог.
-                # Сравниваем с СЫРОЙ меткой канала, а не с `mic_label`: тот
+                # Признак канала — labels.is_mic (сырая метка), не подпись: та
                 # обнуляется, когда имя владельца совпало с нейтральной меткой
                 # (см. ниже по main), и тогда микрофон считался бы чужим
                 # каналом — признак «звонок» взводила бы первая же реплика
                 # владельца, а правило `alone` умирало (ревью 20.08, DeepSeek).
                 heard_by_channel.note(None, 0.0,
-                                      is_mic=speaker == hub.SPEAKER.get("mic", ""))
+                                      is_mic=chan.is_mic(speaker))
                 # Позиционная раскладка (ревью 15.08): если в чанке говорили
                 # несколько человек кусками от секунды, распознаём по кускам —
                 # текст на границе реплик перестаёт уходить чужому голосу
@@ -1051,9 +1029,9 @@ def main():
                         # (инцидент 20.08: встреча 08:57 обрезана на 09:02).
                         voiced = raw_piece if raw_piece is not None else piece
                         # канал — по СЫРОЙ метке захвата: обнулённый при коллизии
-                        # имени mic_label травил счётчики (хвост 20.08, DS 5d)
+                        # имени (обнулённая подпись) травил счётчики (хвост 20.08, DS 5d)
                         heard_by_channel.note(n, len(voiced) / hub.sr,
-                                              is_mic=speaker == hub.SPEAKER.get("mic", ""),
+                                              is_mic=chan.is_mic(speaker),
                                               now=time.monotonic())
                     # Текстовые пары (№93): фраза, совпавшая с недавней
                     # фразой другого канала, считается в ТЕЛЕМЕТРИЮ
@@ -1061,7 +1039,7 @@ def main():
                     # отдельным решением по полевым данным.
                     heard_by_channel.note_text(
                         n if n is not None and n >= 0 else None, text,
-                        is_mic=speaker == hub.SPEAKER.get("mic", ""), now=time.monotonic())
+                        is_mic=chan.is_mic(speaker), now=time.monotonic())
                     if n is None:
                         name = voice_label(speaker, piece)
                     elif n < 0:
@@ -2309,7 +2287,7 @@ def main():
         # а не разговором. Пусто в конфиге — проверка просто не сработает.
         # Строка идёт в speaker_names целиком: сравнение по словам, потому что
         # в user_name обычно имя И фамилия, а модель предлагает одно имя.
-        owner_name = (cfg["sufler"].get("user_name") or "").strip()
+        owner_name = chan.owner_name
         while not stop.is_set():
             time.sleep(90)
             sample = tr.tail(3000)
