@@ -41,16 +41,18 @@ class ChannelLabels:
     def from_config(cls, cfg: dict, *, other: str = NEUTRAL_OTHER) -> "ChannelLabels":
         owner = (cfg.get("sufler", {}).get("user_name") or "").strip()
         mic = mic_label_for(cfg, other)
-        # Подпись только настоящим именем: «Я» при пустом имени и «Я» при
-        # коллизии — не подпись; label_for это и так отсекает через
-        # collides_with_neutral, здесь то же решение записано полем.
-        signed = mic if (owner and mic == owner) else ""
+        # Две разные причины не подписывать: коллизия имени с нейтральной
+        # меткой — подпись выключена (иначе реплики владельца склеились бы с
+        # чужими); пустое имя — подпись «Я», как и было до партии: иначе
+        # владелец в микрофоне становился «Собеседник N», и гейт ⚡ отвечал на
+        # его собственные вопросы (DS r1 по #459, Critical).
+        signed = "" if (owner and mic != owner) else mic
         return cls(mic_raw=mic, other=other, owner_name=owner, mic_signed=signed)
 
     @property
     def collision(self) -> bool:
         """Имя задано, но подписывать им нельзя (совпало с нейтральной меткой)."""
-        return bool(self.owner_name) and not self.mic_signed
+        return bool(self.owner_name) and self.mic_raw != self.owner_name
 
     def is_mic(self, label: str) -> bool:
         """Канал микрофона — по сырой метке, всегда: это устройство, не имя."""
@@ -62,7 +64,7 @@ class ChannelLabels:
         («Собеседник 2» делал бы владельцем каждого «Собеседник N»)."""
         if self.is_mic(name):
             return True
-        if owner_voice.collides_with_neutral(self.owner_name):
+        if owner_voice.collides_with_neutral(self.owner_name, self.other):
             return False
         return speaker_names.is_owner(name, self.owner_name)
 

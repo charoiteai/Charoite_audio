@@ -623,7 +623,8 @@ def main():
     # подпись владельца и имя для сверки по словам собраны один раз и не
     # расходятся между захватом, счётчиками и подписью (аудит 30.08, DS).
     chan = channel_labels.ChannelLabels.from_config(cfg, other=hub.SPEAKER.get("blackhole", channel_labels.NEUTRAL_OTHER))
-    assert chan.mic_raw == hub.SPEAKER["mic"], "захват и демон обязаны сойтись в метке микрофона"
+    if chan.mic_raw != hub.SPEAKER["mic"]:   # одно правило на двоих; расхождение — вслух, не падением
+        emit_error(f"метка микрофона разошлась: захват «{hub.SPEAKER['mic']}», демон «{chan.mic_raw}»")
     owner_name = chan.owner_name
 
     # Кто владелец — по КАНАЛУ, а не по догадке о голосе. Счётчики секунд
@@ -670,6 +671,11 @@ def main():
             # владелец: раньше она уводила статус в «в микрофоне несколько
             # человек», и на каждой смене говорящего лента получала пару
             # противоречащих сообщений (ревью 19.08).
+            return label
+        if chan.collision:
+            # Подпись выключена осознанно и сказано на старте: статусная
+            # машина «в микрофоне несколько человек» тут противоречила бы
+            # предупреждению (DS r1 по #459)
             return label
         if voice is None:
             # Голос неизвестен (раскладка не решила, трекер промолчал): это
@@ -1107,6 +1113,7 @@ def main():
                     # по имени (аудит 14.08). Сверка — _is_owner_line: сперва
                     # метка своего канала, затем имя из настроек.
                     if instant_on and toggles["hints"] \
+                            and not chan.is_mic(speaker) \
                             and not _is_owner_line(name) \
                             and question_filter.looks_question(added):
                         fire_question(added)
