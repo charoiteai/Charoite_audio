@@ -195,9 +195,8 @@ def _status_files(status_dir: pathlib.Path, stamp: str) -> list[pathlib.Path]:
     import json
     from meeting_processing import find_final_transcript
     found = set(_with_stamp(status_dir, stamp, suffix=".json"))
+    records: list[tuple[pathlib.Path, pathlib.Path]] = []       # (статус, сырой путь)
     for f in status_dir.glob("*.json"):
-        if f in found:
-            continue
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -205,17 +204,33 @@ def _status_files(status_dir: pathlib.Path, stamp: str) -> list[pathlib.Path]:
         if not isinstance(data, dict):
             continue                     # не-словарь — мусор, не повод ронять forget (luna r3)
         tp = str(data.get("transcript_path") or "")
-        if not tp:
+        if tp:
+            records.append((f, pathlib.Path(tp)))
+    # 1) по сырому имени — как и раньше
+    for f, raw in records:
+        if f not in found and meeting_stamp.belongs(raw.name, stamp):
+            found.add(f)
+    # 2) по тому, куда мёртвый путь резолвится сегодня: после retitle статус мог
+    # остаться с голым посекундным путём (окно до следующей записи), а минутная
+    # граница его не видит (luna r3). Но резолв мёртвого пути соседки падает на
+    # файл владельца минуты — принимаем совпадение, только если этот файл ещё не
+    # заявлен статусом, найденным по имени (DS r4).
+    claimed: set[pathlib.Path] = set()
+    for f, raw in records:
+        if f in found:
+            try:
+                claimed.add(find_final_transcript(raw))
+            except OSError:
+                continue
+    for f, raw in records:
+        if f in found or raw.is_file():
             continue
-        raw = pathlib.Path(tp)
-        # по сырому имени И по тому, куда путь резолвится сегодня: после retitle
-        # статус мог остаться с мёртвым голым посекундным путём (окно до
-        # следующей записи), а минутная граница его не видит (luna r3 по #456)
-        for name in {raw.name, find_final_transcript(raw).name}:
-            rest = name[len(stamp):]
-            if name.startswith(stamp) and not rest[:1].isdigit() and not re.match(r"-\d", rest):
-                found.add(f)             # «-N» — соседка, как в files_with_stamp
-                break
+        try:
+            current = find_final_transcript(raw)
+        except OSError:
+            continue                     # демон переименовывает файл под ногами (DS r4)
+        if current not in claimed and meeting_stamp.belongs(current.name, stamp):
+            found.add(f)
     return sorted(found)
 
 

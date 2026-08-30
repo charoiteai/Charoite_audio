@@ -44,6 +44,16 @@ _RE_TITLED = re.compile(
     r"((\d{4}-\d{2}-\d{2}_\d{4}(?:\d{2})?)(?:-\d+)?)(?:_(.+))?$")
 
 
+def belongs(name: str, stamp: str) -> bool:
+    """Имя файла — этой встречи? Штамп в начале и граница за ним: не цифра
+    (иначе «…1130» ловил бы «…113012») и не «-N» (суффикс коллизии соседки).
+    То же правило, что в `files_with_stamp`; forget и rename звали его копиями."""
+    if not name.startswith(stamp):
+        return False
+    rest = name[len(stamp):]
+    return not rest[:1].isdigit() and not re.match(r"-\d", rest)
+
+
 def decompose(name: str) -> tuple[str, str] | None:
     """Имя файла встречи → (штамп, хвост после него без ведущего «_»).
 

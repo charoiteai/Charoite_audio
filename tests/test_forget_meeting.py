@@ -585,3 +585,22 @@ def test_status_with_a_dead_raw_path_after_retitle_is_still_forgotten(tmp_path):
     prev.write_text("до пересборки", encoding="utf-8")
     doomed = {str(p) for p in forget.plan(STAMP, root, graph).delete}
     assert str(st) in doomed and str(prev) in doomed
+
+
+def test_dead_neighbour_status_is_not_claimed_by_the_owner_of_the_minute(tmp_path):
+    """Соседка удалена руками, её статус с мёртвым путём резолвится в файл
+    владельца минуты — forget владельца не должен считать его своим (DS r4);
+    а собственный статус с мёртвым путём после retitle — по-прежнему находится."""
+    import json
+    root, graph = _world(tmp_path)
+    (root / "transcripts" / f"{STAMP}.md").rename(root / "transcripts" / f"{STAMP}_Тема.md")
+    sd = root / "logs" / "meeting-status"
+    sd.mkdir(parents=True, exist_ok=True)
+    own = sd / f"{STAMP}.json"          # найден по имени, путь живой
+    own.write_text(json.dumps({"meeting_id": STAMP, "key": STAMP, "state": "ready",
+                               "transcript_path": str(root / "transcripts" / f"{STAMP}_Тема.md")}), encoding="utf-8")
+    neighbour = sd / f"{STAMP}45.json"  # мёртвый путь соседки резолвится в файл владельца
+    neighbour.write_text(json.dumps({"meeting_id": f"{STAMP}45", "key": f"{STAMP}45", "state": "error",
+                                     "transcript_path": str(root / "transcripts" / f"{STAMP}45.md")}), encoding="utf-8")
+    doomed = {str(p) for p in forget.plan(STAMP, root, graph).delete}
+    assert str(own) in doomed and str(neighbour) not in doomed

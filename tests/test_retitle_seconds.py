@@ -190,3 +190,13 @@ def test_decompose_is_the_public_name_parser():
     assert meeting_stamp.decompose("2026-08-04_1203_Отчет_minutes") == ("2026-08-04_1203", "Отчет_minutes")
     assert meeting_stamp.decompose("2026-08-04_120312") == ("2026-08-04_120312", "")
     assert meeting_stamp.decompose("заметка") is None
+
+
+def test_belongs_is_the_one_stamp_boundary_rule():
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+    import meeting_stamp
+    assert meeting_stamp.belongs("2026-08-03_1130_Тема.md", "2026-08-03_1130")
+    assert meeting_stamp.belongs("2026-08-03_1130.json", "2026-08-03_1130")
+    assert not meeting_stamp.belongs("2026-08-03_113012.md", "2026-08-03_1130")
+    assert not meeting_stamp.belongs("2026-08-03_1130-1_Тема.md", "2026-08-03_1130")
