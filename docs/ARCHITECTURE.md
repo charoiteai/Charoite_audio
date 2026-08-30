@@ -61,6 +61,14 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
 
 ### The hint outranks the thread (inside the daemon)
 
+Since 30.08 the dialogue markup walks under the arbiter too: it used to be
+the only loop taking the model past the lock — 900 tokens every six seconds
+while the hint and ⚡ queued behind it; now it takes the lock quietly for a
+second, lets the paragraph wait otherwise, and a manual question interrupts
+the markup even mid-stream. Dropped frames of the fast
+trigger are counted and reported once a minute as a status error instead
+of vanishing silently.
+
 Outside, processes compete for the model; inside the daemon, its own
 loops do. Incident of 26.08: the auto-theses loop (the "thread") ran the
 main 35b model in the live profile and held the Ollama connection —
