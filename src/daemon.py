@@ -41,6 +41,7 @@ import cloud  # noqa: E402
 import install_profile  # noqa: E402
 import owner_voice  # noqa: E402
 import fact_check  # noqa: E402
+import frame_drops  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
 from meeting_thread import Thread as MeetingThread  # noqa: E402
 import privacy  # noqa: E402
@@ -1221,7 +1222,8 @@ def main():
     manual_evt = threading.Event()  # ручной запрос прерывает авто-генерацию
 
     @contextlib.contextmanager
-    def hint_slot(who: str, timeout: float = 240.0, *, clear_manual_on_busy: bool = False):
+    def hint_slot(who: str, timeout: float = 240.0, *, clear_manual_on_busy: bool = False,
+                  quiet: bool = False):
         """hint_lock с потолком ожидания вместо вечного with (круг-1 по #393).
 
         Зависший держатель обездвиживал ВСЕХ соседей по замку до конца
@@ -1235,7 +1237,8 @@ def main():
         if not ok:
             if clear_manual_on_busy:
                 manual_evt.clear()
-            emit_error(f"{who}: подсказчик занят — прежняя генерация не отпустила замок")
+            if not quiet:   # вспомогательные контуры уступают молча (разметка, #457)
+                emit_error(f"{who}: подсказчик занят — прежняя генерация не отпустила замок")
         try:
             yield ok
         finally:
@@ -1257,7 +1260,13 @@ def main():
     cloud_evt = threading.Event()
     _last_fire = [0.0]
     _cloud_last = {"t": 0.0, "words": set()}
-    _pending_q = {"text": "", "at": 0.0}  # последний вопрос и когда прозвучал — панели показывают его над ответом
+    # последний вопрос и когда прозвучал — панели показывают его над ответом;
+    # ячейка со словарём, как _last_fire: fire_question подменяет словарь целиком
+    _pending_q = [{"text": "", "at": 0.0}]
+    # Черновик и финальные минутки: проверка маркера и запись — одним куском.
+    # Между read_text и write_text черновика финал от «Протокола» успевал лечь
+    # на диск и заворачивался черновиком (класс 0.46.0, аудит 30.08 DS M1).
+    minutes_lock = threading.Lock()
     # живые тумблеры UI (`set hints|theses|cloud on|off`): выключенные контуры
     # молчат до обратного включения; дефолты хранит и присылает приложение
     toggles = {"hints": True, "theses": True, "cloud": True}
@@ -1276,7 +1285,7 @@ def main():
         now = time.time()
         if now - _last_fire[0] < 8:
             return
-        if q.strip() and not question_filter.is_worth_asking(q, _pending_q["text"]):
+        if q.strip() and not question_filter.is_worth_asking(q, _pending_q[0]["text"]):
             return
         _last_fire[0] = now
         if q.strip():  # панели показывают, НА ЧТО отвечают — без этого ответ висел без вопроса
@@ -1285,8 +1294,10 @@ def main():
             # сырой вопрос с усечённым (№95; круг-2 по #405, DS — «источнику
             # вообще нечего резать»). Это одно высказывание STT: сотни
             # символов, памяти не грозит.
-            _pending_q["text"] = " ".join(q.split())
-            _pending_q["at"] = time.monotonic()
+            # новый словарь, а не мутация: читатель берёт снимок по ссылке в
+            # момент вызова, и text одного вопроса с at другого не встречаются
+            # ни при записи, ни при чтении (аудит 30.08, DS M2; DS r1 по #457)
+            _pending_q[0] = {"text": " ".join(q.split()), "at": time.monotonic()}
         instant_evt.set()
         if not (cloud_live and toggles["cloud"]):
             return
@@ -1782,7 +1793,7 @@ def main():
             # локом: пока поток ждал hint_lock, мог прийти второй вопрос — и
             # модель отвечала бы на него с узлами первого, а ответ ложился
             # под чужим вопросом в нить и лог (ревью 15.08 ×3).
-            q = fresh_question(_pending_q, time.monotonic())
+            q = fresh_question(_pending_q[0], time.monotonic())
             tail = tr.tail(1600)
             # сверка вопроса с узлами графа — ДО hint_lock и вне STT-пути:
             # файловый лукап не смеет держать ни распознавание, ни очередь
@@ -1860,7 +1871,7 @@ def main():
             tail = tr.tail(2200)
             if not tail:
                 continue
-            q = fresh_question(_pending_q, time.monotonic())
+            q = fresh_question(_pending_q[0], time.monotonic())
             short = model.split("-")[1] if model.count("-") else model  # claude-haiku-… → haiku
             think = f"☁️ {dt.datetime.now():%H:%M:%S} {short} думает" + (f" над: ❓ {q[:120]}" if q else "…")
             # «думает над ❓…» жило в полотне и дублировало вопрос, который
@@ -1948,10 +1959,26 @@ def main():
             return  # сервера/библиотеки нет — обычный путь через чанки
         import queue as _q
         frame_q: _q.Queue = _q.Queue(maxsize=300)
+        drops = frame_drops.DropMeter()
+        reporter: list = [None]      # один поток-глашатай за раз: зажатый stdout не плодит потоки (DS r2)
 
         def _tap(src, part):
-            if src == "blackhole" and not frame_q.full():
-                frame_q.put(part)
+            if src != "blackhole":
+                return
+            try:
+                frame_q.put_nowait(part)      # без full()+put: не опираемся на «один продюсер» (GLM)
+                return
+            except _q.Full:
+                pass
+            # переполнение роняло кадр молча: стрим не успевал, вопросы
+            # переставали триггерить ⚡, статус «подключён» врал (DS I2).
+            # Сказать — не из аудио-потока: emit пишет в stdout, и при
+            # заторе на той стороне _pump перестал бы забирать звук
+            # (luna r1 по #457); сообщение уходит из своего потока.
+            msg = drops.dropped()
+            if msg and (reporter[0] is None or not reporter[0].is_alive()):
+                reporter[0] = threading.Thread(target=emit_error, args=(msg,), daemon=True)
+                reporter[0].start()
 
         hub.on_frame = _tap
         emit({"type": "status", "text": "⚡ быстрый триггер вопросов: gigastt-стрим подключён"})
@@ -2175,28 +2202,52 @@ def main():
                     or (dt.datetime.now() - t1).total_seconds() < 6:
                 continue
             seen.add(key)
-            try:
-                out = "".join(llm.stream(
-                    f"Фрагмент живой стенограммы (в нём могли слиться реплики РАЗНЫХ "
-                    f"говорящих):\n{text}\n\n"
-                    "Разбей на реплики диалога: каждая реплика с новой строки, "
-                    "начинается с «— ». СЛОВА НЕ МЕНЯЙ, ничего не добавляй и не "
-                    "удаляй. Если это одна реплика одного человека — верни текст "
-                    "без изменений.",
-                    # разметке нужна дословность: бенч 21.07 — qwen3.5:4b чуть
-                    # правит слова (валидация режет), gemma держит их точно
-                    model=cfg["sufler"].get("markup_model", llm.small),
-                    system="Ты расставляешь границы реплик в стенограмме. Слова неприкосновенны.",
-                    num_predict=900,
-                )).strip()
-                # валидация: слова обязаны совпасть — e4b не имеет права переписывать
-                if not out or norm(out) != norm(text) or out.count("— ") < 2:
+            # Единственный LLM-контур вне арбитра держал модель на 900 токенов
+            # каждые 6 с, пока подсказчик и ⚡ стояли в очереди к ней (аудит
+            # 30.08, DS I1). Контракт арбитра целиком: выключенные подсказки и
+            # взведённый manual_evt (ручной вопрос ждёт) — уступаем, замок берём
+            # тихо на секунду; во всех трёх случаях абзац вернётся в следующий
+            # цикл — разметка дешевле задержки подсказки (DS r1 по #457).
+            if not toggles["hints"] or manual_evt.is_set():
+                seen.discard(key)     # абзац вернётся в следующий цикл
+                continue
+            # Через арбитр, тихо: взяли замок на секунду — иначе абзац подождёт.
+            # Ручной вопрос (manual_evt) взводится ДО ожидания замка и должен
+            # прервать и стрим разметки: 900 токенов держали ⚡ дольше его
+            # потолка 45 с, и вопрос терялся молча (GLM по #457) — итерируем с
+            # уступкой, как авто-подсказка; оборванный вывод валидацию не пройдёт.
+            with hint_slot("разметка", timeout=1.0, quiet=True) as got:
+                if not got or manual_evt.is_set():
+                    seen.discard(key)
                     continue
-                if tr.update_block_text(idx, text, out):
-                    emit({"type": "transcript_markup", "speaker": tr.display_name(spk),
-                          "text": out})
-            except Exception as e:  # noqa: BLE001 — разметка вспомогательна
-                warn_markup(e)
+                try:
+                    chunks: list[str] = []
+                    for tok in llm.stream(
+                        f"Фрагмент живой стенограммы (в нём могли слиться реплики РАЗНЫХ "
+                        f"говорящих):\n{text}\n\n"
+                        "Разбей на реплики диалога: каждая реплика с новой строки, "
+                        "начинается с «— ». СЛОВА НЕ МЕНЯЙ, ничего не добавляй и не "
+                        "удаляй. Если это одна реплика одного человека — верни текст "
+                        "без изменений.",
+                        # разметке нужна дословность: бенч 21.07 — qwen3.5:4b чуть
+                        # правит слова (валидация режет), gemma держит их точно
+                        model=cfg["sufler"].get("markup_model", llm.small),
+                        system="Ты расставляешь границы реплик в стенограмме. Слова неприкосновенны.",
+                        num_predict=900,
+                    ):
+                        if manual_evt.is_set() or not toggles["hints"]:
+                            seen.discard(key)
+                            break
+                        chunks.append(tok)
+                    out = "".join(chunks).strip()
+                    # валидация: слова обязаны совпасть — e4b не имеет права переписывать
+                    if not out or norm(out) != norm(text) or out.count("— ") < 2:
+                        continue
+                    if tr.update_block_text(idx, text, out):
+                        emit({"type": "transcript_markup", "speaker": tr.display_name(spk),
+                              "text": out})
+                except Exception as e:  # noqa: BLE001 — разметка вспомогательна
+                    warn_markup(e)
 
     def _median_f0(label: str) -> float | None:
         """Медианная частота основного тона этой метки за встречу.
@@ -2405,10 +2456,29 @@ def main():
                     # если за это время человек нажал «Протокол», финальные
                     # минутки (26b, без маркера) уже лежат на диске — черновик
                     # лёгкой модели затирал их молча (аудит 0.46.0).
-                    if mpath.exists() and not mpath.read_text(
-                            encoding="utf-8").startswith("<!-- черновик"):
-                        continue
-                    mpath.write_text("<!-- черновик, встреча идёт -->\n" + out, encoding="utf-8")
+                    with minutes_lock:
+                        # Финал пишет не только «Протокол» этого процесса, но и
+                        # mcp «Минутки» из другого — замок его не видит; сверяем
+                        # файл по stat перед подменой (GLM по #457)
+                        try:
+                            before = (mpath.stat().st_mtime_ns, mpath.stat().st_size)
+                        except OSError:
+                            before = None
+                        if before is not None and not mpath.read_text(
+                                encoding="utf-8").startswith("<!-- черновик"):
+                            continue
+                        tmp = mpath.with_name(mpath.name + f".draft{os.getpid()}")
+                        try:
+                            tmp.write_text("<!-- черновик, встреча идёт -->\n" + out, encoding="utf-8")
+                            try:
+                                now_st = (mpath.stat().st_mtime_ns, mpath.stat().st_size)
+                            except OSError:
+                                now_st = None
+                            if now_st != before:
+                                continue          # файл сменился под нами — не затираем чужой финал
+                            tmp.replace(mpath)
+                        finally:
+                            tmp.unlink(missing_ok=True)
                     emit({"type": "status", "text": f"🗒 минутки-черновик обновлены ({dt.datetime.now():%H:%M})"})
             except Exception as e:  # noqa: BLE001
                 emit_error(f"минутки: {short_error(e)}")
@@ -2506,11 +2576,12 @@ def main():
                 # усечённые минутки поверх готовых (mcp_server это уже чинил,
                 # здесь оставался прямой write_text — аудит 14.08)
                 tmp = mpath.with_name(mpath.name + f".tmp{os.getpid()}")
-                try:
-                    tmp.write_text(doc, encoding="utf-8")
-                    tmp.replace(mpath)
-                finally:
-                    tmp.unlink(missing_ok=True)
+                with minutes_lock:
+                    try:
+                        tmp.write_text(doc, encoding="utf-8")
+                        tmp.replace(mpath)
+                    finally:
+                        tmp.unlink(missing_ok=True)
                 emit({"type": "status", "text": f"Минутки: {mpath}"})
 
     def stdin_loop():
