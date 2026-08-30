@@ -32,6 +32,17 @@ the app renders those as errors and a plain status clears the flag. A model
 failure never becomes hint text — only a status — so the last good hint
 stays on screen.
 
+### Channel labels and the owner — one source (src/channel_labels.py)
+
+Who speaks into the microphone and who owns the meeting is answered by one
+`ChannelLabels` object built once from the config: the raw channel label
+(`mic_raw`, «Я» or the name unless it collides with the neutral label — the
+`mic_label_for` rule is shared with `AudioHub`), the owner's signature
+(`mic_signed`: the name, «Я» for an empty name, empty on a collision) and the name for the
+word match. Before phase 1 these were three sources that diverged: with the
+name «Собеседник 2» a microphone chunk counted as the microphone in the
+speech counters but as a stranger in the signature (audit 30.08). Party D-П2.
+
 ### The live meeting outranks the background (src/live_gate.py)
 
 There is one local model and several claimants: rebuilding an earlier

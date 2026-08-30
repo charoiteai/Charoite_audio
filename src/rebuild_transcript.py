@@ -42,6 +42,7 @@ import numpy as np  # noqa: E402
 import yaml  # noqa: E402
 
 import install_profile  # noqa: E402
+import channel_labels  # noqa: E402
 import owner_voice as owner_voice_rules  # noqa: E402
 import live_gate  # noqa: E402
 import meeting_stamp  # noqa: E402
@@ -473,16 +474,13 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
             # своей же встрече переименовывался. Пустое имя — «Я», как в
             # хабе захвата (audio.py), а не «владелец»: иначе безымянный
             # переименовывается по-прежнему.
-            owner_label = (cfg.get("sufler", {}).get("user_name") or "").strip() or "Я"
-            if owner_voice_rules.collides_with_neutral(owner_label):
-                # Одно правило с живой лентой, и оно знает про НОМЕР:
-                # нейтральные метки здесь — «Собеседник 1», «Собеседник 2».
-                # Имя владельца, совпавшее с такой меткой, дало бы две
-                # физические метки с одним текстом: по метке выбирается
-                # дорожка для распознавания, и реплики удалённого
-                # собеседника поехали бы из микрофонного аудио. «Собеседник
-                # Иванов» при этом подписывается спокойно — он ни с чем не
-                # сливается (ревью 19.08, второй и третий круги).
+            # Правило одно с живой лентой и захватом — ChannelLabels (D-П2):
+            # имя из настроек, пустое — «Я»; имя, совпавшее с нейтральной
+            # меткой («Собеседник 2»), подписью быть не может — по метке
+            # выбирается дорожка для распознавания, и реплики удалённого
+            # собеседника поехали бы из микрофонного аудио (ревью 19.08).
+            owner_label = channel_labels.ChannelLabels.from_config(cfg).mic_signed
+            if not owner_label:
                 owner_voice = None
             mapping = {}
             for s, e, k in mic_segs:

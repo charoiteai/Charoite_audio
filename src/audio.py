@@ -14,7 +14,7 @@ import numpy as np
 import sounddevice as sd
 
 import meeting_stamp
-import owner_voice
+import channel_labels
 
 from charoite_paths import resolve_root
 
@@ -424,9 +424,9 @@ class AudioHub:
         # Проверка стоит ЗДЕСЬ, в источнике: демон подменял метку уже после
         # старта захвата, и между стартом и подменой чанки успевали уйти со
         # старой (ревью 19.08, седьмой круг, локальная голова).
-        own = (cfg.get("sufler", {}).get("user_name") or "").strip()
-        if own and not owner_voice.collides_with_neutral(own, self.SPEAKER["blackhole"]):
-            self.SPEAKER = {**self.SPEAKER, "mic": own}
+        # Правило одно на захват и демон — channel_labels.mic_label_for (D-П2)
+        self.SPEAKER = {**self.SPEAKER,
+                        "mic": channel_labels.mic_label_for(cfg, self.SPEAKER["blackhole"])}
         self.sr = int(a["samplerate"])
         self.chunk_s = float(a["chunk_seconds"])
         self.overlap_s = float(a["overlap_seconds"])

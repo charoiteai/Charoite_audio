@@ -203,6 +203,12 @@ Big-bang на живом продукте запрещён: демон пише�
   детерминированный `CharoiteAppTests`; чистый `ByteCountingTests` из
   смешанного perf-файла остался в основном пакете.
 
+- 30.08 — D-П2 (PR feat/d-p2-channel-labels): `src/channel_labels.py` —
+  `ChannelLabels` (mic_raw / mic_signed / owner_name; is_mic, is_owner_line,
+  signed_for) и общее с AudioHub правило `mic_label_for`; демон больше не
+  держит локальную `mic_label` и не сравнивает строки с `hub.SPEAKER`.
+  Первая партия фазы 1; план — DS по аудиту 30.08.
+
 ## 6. Не трогать (единодушие голов + позиция)
 
 Transcript._save-переписывание файла; heard без явных локов; арбитр

@@ -32,7 +32,7 @@ def test_mic_channel_is_recognised_by_the_raw_label_everywhere():
     src = pathlib.Path(daemon.__file__).read_text(encoding="utf-8")
     bad = re.findall(r"is_mic=\w+ == mic_label", src)
     assert not bad, bad
-    assert src.count('is_mic=channel_speaker == hub.SPEAKER.get("mic", "")') == 2
+    assert src.count("is_mic=chan.is_mic(") >= 5, "признак канала — один объект ChannelLabels (D-П2)"
 
 
 def test_dialog_markup_takes_the_hint_lock_quietly_and_obeys_the_toggle():
