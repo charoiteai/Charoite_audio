@@ -103,15 +103,18 @@ def test_numbered_items_also_work():
 
 def test_live_draft_minutes_go_through_normalize():
     """Черновик минуток — итоговый документ встречи (автофинализации нет),
-    и он обязан проходить normalize ПЕРЕД записью: 31.08 обе встречи дня
-    написали поручения прозой, окно «Задачи» их не видело («58 задач как
-    месяц назад»). Ручной «Протокол» normalize уже звал — черновик нет."""
+    и он обязан проходить normalize ДО записи на диск: 31.08 обе встречи
+    дня написали поручения прозой, окно «Задачи» их не видело («58 задач
+    как месяц назад»). Проверяем ПОРЯДОК, а не наличие строки: перенос
+    normalize после write_text давал бы ложный зелёный (DS I2 по #462)."""
     daemon = (SRC / "daemon.py").read_text(encoding="utf-8")
     draft = daemon[: daemon.index('черновик, встреча идёт -->')]
     tail = draft[draft.rindex("if out.strip():"):]
     assert "action_items.normalize(out)" in tail, (
         "черновиковая запись минуток должна прогонять текст через "
         "action_items.normalize до записи на диск")
+    assert tail.index("action_items.normalize(out)") < tail.index("minutes_lock"), (
+        "normalize обязан отработать ДО входа в блок записи под замком")
 
 
 def test_normalize_handles_the_bare_caps_section_of_2026_08_31():
@@ -120,12 +123,53 @@ def test_normalize_handles_the_bare_caps_section_of_2026_08_31():
     real = (
         "Темы:\n- Статус релиза\n\n"
         "ПОРУЧЕНИЯ:\n"
-        "- **Собеседник 2 (Саша)** — проверить возможность ручного указания даты.\n"
-        "- **София** — связаться с Леной по вопросу мониторинга задачи 373021.\n\n"
+        "- **Собеседник 2 (Мира)** — проверить настройку календаря.\n"
+        "- **Инга** — связаться с Верой по задаче 999999.\n\n"
         "Открытые вопросы:\n- Перенос релиза\n"
     )
     out = normalize(real)
     boxes = CHECKBOX.findall(out)
     assert len(boxes) == 2, out
-    assert "- [ ] **Собеседник 2 (Саша)**" in out
+    assert "- [ ] **Собеседник 2 (Мира)**" in out
     assert "Открытые вопросы" in out and "- [ ] Перенос релиза" not in out
+
+
+
+def test_indented_label_inside_the_section_does_not_end_it():
+    """«  Срок:» с продолжением на следующей строке — часть пункта, а не
+    заголовок: закрытие раздела по любому двоеточию роняло следующие
+    поручения (DS I1 по #462). Заголовок узнаётся по структуре: без
+    отступа и не пункт."""
+    text = (
+        "Поручения:\n"
+        "- **Мира** — проверить настройку календаря.\n"
+        "  Срок:\n"
+        "  10.09\n"
+        "- **Вера** — связаться с клиентом.\n"
+        "\nОткрытые вопросы:\n- Качество модели\n"
+    )
+    out = normalize(text)
+    assert len(CHECKBOX.findall(out)) == 2, out
+    assert "- [ ] **Вера**" in out
+    assert "- [ ] Качество модели" not in out
+
+
+def test_long_bare_heading_still_closes_the_section():
+    """Длина заголовка больше не влияет: раньше `{0,60}` создавал слепую
+    зону, и длинный заголовок возвращал утечку хвоста в задачи (DS M1)."""
+    text = (
+        "Поручения:\n- **Мира** — проверить дату.\n\n"
+        "Открытые вопросы по сегодняшней встрече и всем рабочим задачам:\n"
+        "- Качество модели\n"
+    )
+    out = normalize(text)
+    assert len(CHECKBOX.findall(out)) == 1, out
+    assert "- [ ] Качество модели" not in out
+
+
+def test_en_dash_bullet_is_converted_not_treated_as_heading():
+    """Пункт, открытый типографским тире («– Приоритет:»), — пункт, а не
+    заголовок: раньше он и раздел закрывал, и сам терялся (DS M2)."""
+    text = "Поручения:\n– **Мира** — проверить дату.\n"
+    out = normalize(text)
+    assert len(CHECKBOX.findall(out)) == 1, out
