@@ -41,6 +41,9 @@ WRITERS = (
     "src/graph_updater.py",
     "src/dictate_note.py",
     "src/transcribe_file.py",
+    # минутки несут содержимое встречи; маска ставится в точке запуска,
+    # а не на импорте — модуль импортируют тесты (GLM I7/I2 по #464)
+    "src/mcp_server.py",
 )
 
 
@@ -111,11 +114,17 @@ def test_каждая_точка_входа_закрывает_маску(path):
     """
     text = (ROOT / path).read_text(encoding="utf-8")
     assert "harden_umask" in text, f"{path} не закрывает маску прав"
-    body = text.split("def main(", 1)
-    assert len(body) == 2, f"{path}: нет main() — сторож нуждается в правке"
+    # Точка запуска бывает двух форм: def main() и голый __main__-блок
+    # (mcp_server: на импорте маску ставить нельзя — модуль импортируют
+    # тесты, umask — состояние процесса).
+    for anchor in ("def main(", 'if __name__ == "__main__":'):
+        body = text.split(anchor, 1)
+        if len(body) == 2:
+            break
+    assert len(body) == 2, f"{path}: нет main()/__main__ — сторож нуждается в правке"
     head = body[1][:400]
     assert re.search(r"harden_umask\(\)", head), (
-        f"{path}: harden_umask должен вызываться в начале main(), "
+        f"{path}: harden_umask должен вызываться в начале точки запуска, "
         "иначе часть файлов успевает создаться со старой маской")
 
 

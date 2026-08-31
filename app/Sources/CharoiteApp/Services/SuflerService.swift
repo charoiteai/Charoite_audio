@@ -446,11 +446,14 @@ final class SuflerService: ObservableObject {
         // Блок старта пропущен: capture остался от прошлой встречи — главный
         // подозреваемый тихого фолбэка №140. Мёртвый остаток (isActive=false)
         // означает встречу без манифеста, то есть BlackHole, — говорим вслух
-        // так же, как в ветке !ready (GLM M8 по #464).
+        // так же, как в ветке !ready (GLM M8 по #464). captureStartTask ==
+        // nil — страховка от будущего рефакторинга гейта: «ещё поднимается»
+        // не должен звучать как «не поднялся» (DS r2 M5).
         let leftoverActive = (systemAudioCapture as? SystemAudioCapture)?.isActive ?? false
         SystemAudioCapture.captureLog("старт записи БЕЗ нового захвата: "
-            + "systemAudioCapture уже занят (isActive=\(leftoverActive))")
-        if !leftoverActive { announceCaptureFallback() }
+            + (leftoverActive ? "живой остаток прошлой встречи — переиспользуем"
+                              : "мёртвый остаток — встреча уйдёт на BlackHole"))
+        if !leftoverActive, captureStartTask == nil { announceCaptureFallback() }
         launchDaemon(preserveUI: preserveUI, token: token)
     }
 

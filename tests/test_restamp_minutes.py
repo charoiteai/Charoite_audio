@@ -74,3 +74,35 @@ def test_owner_label_is_never_substituted(tmp_path):
     assert "Я отвечаю за релиз. Январь — срок Яна." in out, out
     assert "Яблочный пирог — Инга." in out, out
     assert "Имярек" not in out
+
+
+def test_bare_channel_label_is_substituted_but_not_numbered_prefix(tmp_path):
+    """Голый «Собеседник» — канальная метка установок без моделей диаризации
+    (audio.SPEAKER): на них перештамповка не работала вовсе (GLM r2 I1).
+    При этом голая метка не должна съедать префикс нумерованной."""
+    live, mpath = _make(
+        tmp_path, "Участники: Собеседник, Собеседник 2\n- [ ] **Собеседник** — прислать смету\n")
+    rebuild_transcript.restamp_minutes(live, {"Собеседник": "Инга"})
+    out = mpath.read_text(encoding="utf-8")
+    assert "Участники: Инга, Собеседник 2" in out, out
+    assert "- [ ] **Инга** — прислать смету" in out
+
+
+def test_live_session_names_sanitizes_broken_live_json():
+    """Битый live.json («names» — список, число вместо имени) не должен
+    ронять перештамповку после уже записанной стенограммы (DS r2 M1)."""
+    assert rebuild_transcript.live_session_names({"names": ["x"]}) == {}
+    assert rebuild_transcript.live_session_names({}) == {}
+    got = rebuild_transcript.live_session_names(
+        {"names": {"Собеседник 2": "Инга", "Собеседник 3": 5, 4: "Марк", "Собеседник 5": "  "}})
+    assert got == {"Собеседник 2": "Инга"}
+
+
+def test_rebuild_wires_live_names_into_restamp():
+    """Контракт на проводку: rebuild обязан отдавать в restamp именно словарь
+    ЖИВОЙ сессии — откат на пересборочный `names` возвращал бы Critical со
+    смешанной нумерацией при зелёных юнитах (GLM r2 M4)."""
+    src = (SRC / "rebuild_transcript.py").read_text(encoding="utf-8")
+    fn = src[src.index("def rebuild("):]
+    assert "restamp_minutes(live, live_session_names(meta))" in fn, (
+        "в restamp должны идти имена живой сессии (live.json), не пересборочные")

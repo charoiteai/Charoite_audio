@@ -293,6 +293,21 @@ def live_meta(live: pathlib.Path) -> dict:
     return {}
 
 
+def live_session_names(meta: dict) -> dict[str, str]:
+    """Имена живой сессии из live.json — с санитайзом формы.
+
+    live.json может быть битым или правленным руками («names»: список, число
+    вместо имени): без фильтра исключение вылетало бы ПОСЛЕ write_final и
+    хоронило перештамповку, а прогон записывался как «пересборка не удалась»
+    при живой стенограмме (DS r2 M1 / GLM r2 M3 по #464).
+    """
+    d = meta.get("names")
+    if not isinstance(d, dict):
+        return {}
+    return {k: v.strip() for k, v in d.items()
+            if isinstance(k, str) and isinstance(v, str) and v.strip()}
+
+
 def names_by_time(live_text: str, base, segments: list[tuple[float, float, str]],
                   allowed: set[str]) -> dict[str, str]:
     """Переносит имена из живой стенограммы на метки пересборки ПО ВРЕМЕНИ.
@@ -533,7 +548,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # Имена: сперва переносим добытые ЖИВОЙ сессией (демон проверял их всю
     # встречу — самопредставления, ответы после обращения), сопоставляя по
     # времени. Затем qwen досматривает только те метки, которым имя не досталось.
-    allowed = {v for v in (meta.get("names") or {}).values() if isinstance(v, str) and v.strip()}
+    allowed = set(live_session_names(meta).values())
     names = names_by_time(live.read_text(encoding="utf-8"), base,
                           [(s, e, spk) for s, e, spk, _ in lines], allowed) if allowed else {}
     if names:
@@ -574,7 +589,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # живая нумерация, которой минутки и написаны. Пересборочный `names` живёт
     # в другом пространстве номеров (docstring names_by_time), и подстановка
     # по нему клеила бы имя не тому человеку (GLM Critical по #464).
-    restamp_minutes(live, dict(meta.get("names") or {}))
+    restamp_minutes(live, live_session_names(meta))
     return live
 
 
@@ -615,39 +630,46 @@ def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> None:
     это подстановка наугад (GLM Critical по #464).
     """
     mpath = live.with_name(live.stem + "_minutes.md")
-    # Снимок состояния ДО чтения: пересборка — отдельный процесс, minutes_lock
-    # демона её не видит, и в окно read→write мог лечь чужой финал (mcp
-    # «Минутки», редактор человека). Тот же гейт, что у демона (DS I1 по #464).
-    try:
-        before = (mpath.stat().st_mtime_ns, mpath.stat().st_size)
-    except OSError:
-        return
-    try:
-        text = mpath.read_text(encoding="utf-8")
-    except OSError as e:
-        log(f"минутки не перештампованы (не прочитались): {e}")
-        return
-    fixed = text
-    for line in (transcript.MINUTES_DRAFT_MARK + "\n", transcript.MINUTES_DRAFT_MARK):
-        fixed = fixed.replace(line, "", 1)
-    for label, name in live_names.items():
-        # Только нейтральные метки: любой другой ключ (метка владельца «Я»,
-        # короткое имя) без границ слова переписал бы живой текст — «Ясно» →
-        # «Имясно» (DS Critical по #464). Границы \w держат и «Собеседник 22»
-        # от «Собеседник 2», и «Январь» от «Ян»; имя — литералом, не шаблоном
-        # замены (обратный слэш в имени не интерпретируется).
-        if not name or not re.fullmatch(r"Собеседник\s+\d+", label):
+    # Гейт потери обновления + одна повторная попытка: пересборка — отдельный
+    # процесс, minutes_lock демона её не видит, и в окно read→write мог лечь
+    # чужой финал (mcp «Минутки», редактор). Fail-closed без ретрая возвращал
+    # бы №146 навсегда — файл оставался черновиком для UI (GLM r2 по #464).
+    for attempt in (1, 2):
+        try:
+            st = mpath.stat()
+            before = (st.st_mtime_ns, st.st_size)
+            text = mpath.read_text(encoding="utf-8")
+        except OSError as e:
+            log(f"минутки не перештампованы (не прочитались): {e}")
+            return
+        fixed = text
+        for line in (transcript.MINUTES_DRAFT_MARK + "\n", transcript.MINUTES_DRAFT_MARK):
+            fixed = fixed.replace(line, "", 1)
+        for label, name in live_names.items():
+            # Только нейтральные метки — включая голый «Собеседник» канала
+            # без диаризации (audio.SPEAKER; GLM r2 I1). Любой другой ключ
+            # (метка владельца «Я», короткое имя) без границ слова переписал
+            # бы живой текст — «Ясно» → «Имясно» (DS Critical по #464).
+            # (?!\s*\d): голая метка не съедает префикс «Собеседник 2»;
+            # (?!\w) держит «Собеседник 22» от «Собеседник 2» и «Январь» от
+            # «Ян»; имя — литералом, не шаблоном замены.
+            if not name or not re.fullmatch(r"Собеседник(?:\s+\d+)?", label):
+                continue
+            fixed = re.sub(r"(?<!\w)" + re.escape(label) + r"(?!\s*\d)(?!\w)",
+                           lambda _m, n=name: n, fixed)
+        if fixed == text:
+            return
+        try:
+            st = mpath.stat()
+            now = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            now = None
+        if now == before:
+            break
+        if attempt == 1:
+            log("минутки сменились под пересборкой — повторный заход")
             continue
-        fixed = re.sub(r"(?<!\w)" + re.escape(label) + r"(?!\w)",
-                       lambda _m, n=name: n, fixed)
-    if fixed == text:
-        return
-    try:
-        now = (mpath.stat().st_mtime_ns, mpath.stat().st_size)
-    except OSError:
-        now = None
-    if now != before:
-        log("минутки сменились под пересборкой — перештамповка пропущена")
+        log("минутки меняются под пересборкой — перештамповка пропущена")
         return
     safe_write.write_text(mpath, fixed)
     log(f"минутки перештампованы: {mpath.name}"
