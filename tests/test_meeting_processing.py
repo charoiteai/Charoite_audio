@@ -231,6 +231,60 @@ def test_main_transcript_whose_title_ends_with_live_is_still_found(tmp_path):
     assert find_final_transcript(live) == live.resolve()
 
 
+def test_retitled_final_under_minute_stamp_beats_the_live_copy(tmp_path):
+    """Запись с секундами зовут по минуте: финал — «1415_Тема» при исходной
+    «141501». Спасение живой копии на посекундном шаге не должно закрывать
+    настоящий финал минутного шага: статус цеплялся за «_live», финальный
+    гейт не видел заметку — ГОТОВАЯ встреча падала в error (первая живая
+    встреча 31.08)."""
+    import os
+    live = _transcript(tmp_path)
+    live.unlink()
+    final = live.with_name("2026-07-31_1415_Тема.md")
+    final.write_text("# Встреча 2026-07-31_1415 — Тема\n\nтекст\n", encoding="utf-8")
+    copy = live.with_name("2026-07-31_141501_live.md")
+    copy.write_text("# Встреча 2026-07-31_141501\n\nчерновик\n", encoding="utf-8")
+    os.utime(copy, (os.stat(copy).st_atime, os.stat(final).st_mtime + 100))
+    live.with_name("2026-07-31_1415_Тема_minutes.md").write_text("минутки", encoding="utf-8")
+    assert find_final_transcript(live) == final.resolve()
+    # штатный стейт после ПОЛНОГО retitle: копия тоже минутно названа и
+    # свежее финала — финал всё равно выигрывает (GLM Minor-2, круг-1 #460)
+    mcopy = live.with_name("2026-07-31_1415_Тема_live.md")
+    mcopy.write_text(final.read_text(encoding="utf-8"), encoding="utf-8")
+    os.utime(mcopy, (os.stat(mcopy).st_atime, os.stat(final).st_mtime + 200))
+    assert find_final_transcript(live) == final.resolve()
+
+
+def test_seconds_named_neighbour_is_invisible_to_the_minute_glob(tmp_path):
+    """Посекундная соседка («141505_Тема») в минутный глоб «1415_*.md» не
+    попадает по построению — между штампом и «_» стоят её секунды; №39
+    держится самим глобом, спасается своя живая копия."""
+    live = _transcript(tmp_path)
+    live.unlink()
+    neighbour = live.with_name("2026-07-31_141505_Тема.md")
+    neighbour.write_text("# Встреча 2026-07-31_141505 — Тема\n\nтекст\n", encoding="utf-8")
+    copy = live.with_name("2026-07-31_141501_live.md")
+    copy.write_text("# Встреча 2026-07-31_141501\n\nчерновик\n", encoding="utf-8")
+    assert find_final_transcript(live) == copy.resolve()
+
+
+def test_minute_named_owner_beats_the_orphaned_live_copy_by_recorded_choice(tmp_path):
+    """ЗАПИСАННЫЙ ВЫБОР (круг-1 #460, DS Important-2): минутного главного
+    «1415_Тема» по каталогу не отличить от чужого владельца минуты — оба
+    мира выглядят одинаково. Выбран минутный финал: это полевой кейс каждой
+    обычной встречи (владелец минуты — норма, 31.08), а конфликт «две
+    встречи в минуту, у нашей остался только `_live`» — экзотика, в которой
+    минута отдаётся владельцу; смешение статусов ограничено claimed/None-
+    механикой стора (#456)."""
+    live = _transcript(tmp_path)
+    live.unlink()
+    owner = live.with_name("2026-07-31_1415_Тема.md")
+    owner.write_text("# Встреча 2026-07-31_1415 — Тема\n\nтекст\n", encoding="utf-8")
+    copy = live.with_name("2026-07-31_141501_live.md")
+    copy.write_text("# Встреча 2026-07-31_141501\n\nчерновик\n", encoding="utf-8")
+    assert find_final_transcript(live) == owner.resolve()
+
+
 def test_status_key_is_the_stamp_and_survives_retitle(tmp_path):
     """Ключ статуса — штамп исходного файла, записанный в сам статус: падение
     после переименования писало «error» под старым стемом, повтор шёл под
