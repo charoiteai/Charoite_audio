@@ -108,7 +108,9 @@ def test_live_draft_minutes_go_through_normalize():
     как месяц назад»). Проверяем ПОРЯДОК, а не наличие строки: перенос
     normalize после write_text давал бы ложный зелёный (DS I2 по #462)."""
     daemon = (SRC / "daemon.py").read_text(encoding="utf-8")
-    draft = daemon[: daemon.index('черновик, встреча идёт -->')]
+    # Литерал маркера уехал в transcript.MINUTES_DRAFT_MARK (её же снимает
+    # пересборка) — якорь контракта теперь запись черновика через константу.
+    draft = daemon[: daemon.index('MINUTES_DRAFT_MARK + "\\n" + out')]
     tail = draft[draft.rindex("if out.strip():"):]
     assert "action_items.normalize(out)" in tail, (
         "черновиковая запись минуток должна прогонять текст через "
@@ -215,3 +217,46 @@ def test_en_dash_bullet_is_converted_not_treated_as_heading():
     )
     out = normalize(with_colon)
     assert "- [ ] **Вера** — задача два" in out, out
+
+
+def test_deadline_in_live_speech_is_left_alone():
+    """«Срок:» в середине живой формулировки — не хвост пункта: normalize
+    теперь бежит по черновику, который читает человек, и «обсудить срок:
+    завтра решаем» превращалось в «обсудить — завтра решаем» (advisory DS
+    по #462). Причёсывается только хвост после тире-разделителя."""
+    text = "Поручения:\n- **Мира** — обсудить срок: завтра решаем\n"
+    out = normalize(text)
+    assert "- [ ] **Мира** — обсудить срок: завтра решаем" in out, out
+
+    # без тире перед «Срок:» строка остаётся как есть — читаемая цена
+    plain = normalize("Поручения:\n- **Вера** — прислать смету. Срок: 10.09\n")
+    assert "- [ ] **Вера** — прислать смету. Срок: 10.09" in plain, plain
+
+
+def test_deadline_after_dash_is_still_prettified():
+    """Канонический хвост « — Срок: …» жив и после ужесточения."""
+    out = normalize("Поручения:\n- **Мира** — собрать данные — Срок: 10.09\n")
+    assert "- [ ] **Мира** — собрать данные — до 10.09" in out, out
+
+
+def test_long_unclosed_name_does_not_leave_dangling_bold():
+    """Съеденные обёрткой звёздочки на длинном имени не восстанавливаются —
+    но и висячие `**` в живом документе не остаются (Minor DS по #462):
+    непарные звёздочки снимаются целиком."""
+    name = "Рабочая группа по интеграции и сопровождению внешних подрядчиков корпоративного контура"
+    out = normalize(f"**Поручения:**\n*   **- {name}** — подготовить регламент.**\n")
+    line = next(l for l in out.split("\n") if l.startswith("- [ ]"))
+    assert line.count("**") % 2 == 0, out
+
+
+def test_mcp_minutes_normalize_before_write():
+    """Третий путь записи минуток — mcp-«Минутки» — обязан прогонять
+    normalize ДО записи (№141): порядок, а не наличие строки — перенос
+    после write_text давал бы ложный зелёный (урок DS I2 по #462)."""
+    mcp = (SRC / "mcp_server.py").read_text(encoding="utf-8")
+    fn = mcp[mcp.index("def sufler_make_minutes"):]
+    fn = fn[: fn.index("\n@")]                     # тело одного инструмента
+    assert "action_items.normalize(out)" in fn, (
+        "mcp-путь минуток должен звать action_items.normalize")
+    assert fn.index("action_items.normalize(out)") < fn.index("tmp.write_text"), (
+        "normalize обязан отработать ДО записи файла")

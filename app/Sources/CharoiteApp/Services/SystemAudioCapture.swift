@@ -536,7 +536,30 @@ final class SystemAudioCapture: NSObject {
     }
 
     private func log(_ message: String) {
+        Self.captureLog(message)
+    }
+
+    /// Журнал захвата — в ФАЙЛ, не только NSLog: диагноз №140 упёрся в то,
+    /// что строки приложения не находятся в unified log (log show за окно
+    /// встречи 15:43 — ноль событий процесса; живая ловушка log stream при
+    /// попытке 16:35 — тоже пусто, хотя каталог сессии создавался). Причину
+    /// «SCK не поднялся» иначе не увидеть никогда. Файл тримится демоном не
+    /// раньше прочих (logs/ живёт под LogTrim приложения).
+    nonisolated static func captureLog(_ message: String) {
         NSLog("[SystemAudioCapture] %@", message)
+        let dir = AppSettings.charoiteRoot.appendingPathComponent("logs", isDirectory: true)
+        let url = dir.appendingPathComponent("capture.log")
+        let fm = FileManager.default
+        fm.createPrivateDirectory(at: dir)
+        if !fm.fileExists(atPath: url.path) { fm.createPrivateFile(atPath: url.path) }
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let line = "\(df.string(from: Date())) \(message)\n"
+        if let h = try? FileHandle(forWritingTo: url) {
+            defer { try? h.close() }
+            _ = try? h.seekToEnd()
+            try? h.write(contentsOf: Data(line.utf8))
+        }
     }
 
     // MARK: - Приёмник кадров

@@ -570,6 +570,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
         body.append(m.group(0).lstrip("\n"))
 
     write_final(live, "\n".join(body).rstrip() + "\n", live_text)
+    restamp_minutes(live, names)
     return live
 
 
@@ -592,6 +593,37 @@ def write_final(live: pathlib.Path, text: str, live_text: str) -> pathlib.Path:
     log(f"финальная стенограмма записана: {live.name} (живой черновик → {live_copy.name}, "
         f"версия до пересборки → .prev/{live.name})")
     return live
+
+
+def restamp_minutes(live: pathlib.Path, names: dict[str, str]) -> None:
+    """Минутки после пересборки: снять маркер черновика, подставить имена.
+
+    Минутки пишет демон по ходу встречи; автофинализации нет, и после
+    пересборки человек читал документ с шапкой «черновик, встреча идёт» и
+    участниками «Собеседник 2, Собеседник 4», хотя стенограмма рядом уже
+    финальная и с именами (№146, встреча 08:45 31.08). Минутки целиком не
+    перегенерируем: LLM-вызов в rebuild-пути дорог, а главное — затёр бы
+    ручные правки человека. Перештамповка точечная: маркер и метки.
+    """
+    mpath = live.with_name(live.stem + "_minutes.md")
+    if not mpath.exists():
+        return
+    try:
+        text = mpath.read_text(encoding="utf-8")
+    except OSError as e:
+        log(f"минутки не перештампованы (не прочитались): {e}")
+        return
+    fixed = text
+    for line in (transcript.MINUTES_DRAFT_MARK + "\n", transcript.MINUTES_DRAFT_MARK):
+        fixed = fixed.replace(line, "", 1)
+    for label, name in names.items():
+        # (?!\d): «Собеседник 2» не должен красить «Собеседник 22»
+        fixed = re.sub(re.escape(label) + r"(?!\d)", name, fixed)
+    if fixed == text:
+        return
+    safe_write.write_text(mpath, fixed)
+    log(f"минутки перештампованы: {mpath.name}"
+        + (f" (имена: {', '.join(f'{k}→{v}' for k, v in names.items())})" if names else " (снят маркер черновика)"))
 
 
 def names_pending(live: pathlib.Path) -> bool:

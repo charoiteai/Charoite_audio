@@ -54,7 +54,7 @@ import voice_pitch  # noqa: E402
 from audio import AudioHub  # noqa: E402
 from llm import LLM, embed as llm_embed  # noqa: E402
 from stt import STT  # noqa: E402
-from transcript import NOISE, Transcript  # noqa: E402
+from transcript import MINUTES_DRAFT_MARK, NOISE, Transcript  # noqa: E402
 
 import brain  # noqa: E402
 import file_locks  # noqa: E402
@@ -2474,7 +2474,7 @@ def main():
                             continue
                         tmp = mpath.with_name(mpath.name + f".draft{os.getpid()}")
                         try:
-                            tmp.write_text("<!-- черновик, встреча идёт -->\n" + out, encoding="utf-8")
+                            tmp.write_text(MINUTES_DRAFT_MARK + "\n" + out, encoding="utf-8")
                             try:
                                 now_st = (mpath.stat().st_mtime_ns, mpath.stat().st_size)
                             except OSError:

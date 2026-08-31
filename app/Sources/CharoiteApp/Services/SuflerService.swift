@@ -410,6 +410,7 @@ final class SuflerService: ObservableObject {
         // манифест обязан существовать к моменту, когда python выбирает
         // источники, иначе встреча уйдёт на BlackHole.
         if #available(macOS 13.0, *), systemAudioCapture == nil {
+            SystemAudioCapture.captureLog("старт записи: поднимаю ScreenCaptureKit")
             let capture = SystemAudioCapture()
             // Поток ScreenCaptureKit умер посреди встречи и не пересоздался
             // (карточка №35): человек должен узнать сразу, а не из пустой
@@ -429,11 +430,26 @@ final class SuflerService: ObservableObject {
                 // Stop мог прийти, пока ScreenCaptureKit ждал первые кадры.
                 // Устаревший completion не имеет права запускать daemon.
                 guard self.lifecycleGate.owns(token, in: .starting) else { return }
-                if !ready { self.systemAudioCapture = nil }
+                if !ready {
+                    self.systemAudioCapture = nil
+                    // Фолбэк — вслух: молча уходить на BlackHole нельзя (№140).
+                    self.announceCaptureFallback()
+                }
+                SystemAudioCapture.captureLog(ready
+                    ? "захват готов — демон стартует с манифестом"
+                    : "захват НЕ поднялся — демон уйдёт на BlackHole")
                 self.launchDaemon(preserveUI: preserveUI, token: token)
             }
             captureStartTask = task
             return
+        }
+        // Блок старта пропущен: capture остался от прошлой встречи или macOS
+        // старая. Молча уходить в демона нельзя — это главный подозреваемый
+        // тихого фолбэка №140.
+        if #available(macOS 13.0, *) {
+            SystemAudioCapture.captureLog(
+                "старт записи БЕЗ нового захвата: systemAudioCapture уже занят "
+                + "(isActive=\((systemAudioCapture as? SystemAudioCapture)?.isActive ?? false))")
         }
         launchDaemon(preserveUI: preserveUI, token: token)
     }
