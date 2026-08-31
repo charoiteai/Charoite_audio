@@ -432,27 +432,20 @@ final class SuflerService: ObservableObject {
                 guard self.lifecycleGate.owns(token, in: .starting) else { return }
                 if !ready {
                     self.systemAudioCapture = nil
-                    // Фолбэк — вслух: молча уходить на BlackHole нельзя (№140).
-                    self.announceCaptureFallback()
+                    self.announceCaptureFallback()   // фолбэк — вслух, не молча на BlackHole (№140)
                 }
-                SystemAudioCapture.captureLog(ready
-                    ? "захват готов — демон стартует с манифестом"
-                    : "захват НЕ поднялся — демон уйдёт на BlackHole")
+                SystemAudioCapture.captureLog(ready ? "захват готов — демон стартует с манифестом" : "захват НЕ поднялся — демон уйдёт на BlackHole")
                 self.launchDaemon(preserveUI: preserveUI, token: token)
             }
             captureStartTask = task
             return
         }
         // Блок старта пропущен: capture остался от прошлой встречи — главный
-        // подозреваемый тихого фолбэка №140. Мёртвый остаток (isActive=false)
-        // означает встречу без манифеста, то есть BlackHole, — говорим вслух
-        // так же, как в ветке !ready (GLM M8 по #464). captureStartTask ==
-        // nil — страховка от будущего рефакторинга гейта: «ещё поднимается»
-        // не должен звучать как «не поднялся» (DS r2 M5).
+        // подозреваемый тихого фолбэка №140; мёртвый остаток = встреча без
+        // манифеста, говорим вслух, как в ветке !ready (GLM M8). Гейт по
+        // captureStartTask: «ещё поднимается» ≠ «не поднялся» (DS r2 M5).
         let leftoverActive = (systemAudioCapture as? SystemAudioCapture)?.isActive ?? false
-        SystemAudioCapture.captureLog("старт записи БЕЗ нового захвата: "
-            + (leftoverActive ? "живой остаток прошлой встречи — переиспользуем"
-                              : "мёртвый остаток — встреча уйдёт на BlackHole"))
+        SystemAudioCapture.captureLog("старт записи БЕЗ нового захвата: " + (leftoverActive ? "живой остаток прошлой встречи — переиспользуем" : "мёртвый остаток — встреча уйдёт на BlackHole"))
         if !leftoverActive, captureStartTask == nil { announceCaptureFallback() }
         launchDaemon(preserveUI: preserveUI, token: token)
     }
