@@ -5,6 +5,15 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.64.1](https://github.com/charoiteai/Charoite_audio/compare/v0.64.0...v0.64.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* **live:** dialogue markup under the hint lock, dropped stream frames reported, minutes draft and final share a lock ([#457](https://github.com/charoiteai/Charoite_audio/issues/457)) ([239c579](https://github.com/charoiteai/Charoite_audio/commit/239c579efc71ad6dea1c8a0dc6d8331ff7341fb6))
+* **pipeline:** _live rescue no longer shadows the minute-stamped final ([#460](https://github.com/charoiteai/Charoite_audio/issues/460)) ([e130af8](https://github.com/charoiteai/Charoite_audio/commit/e130af82ae5c4973d4d93bf5ad30fc7b61f21a5f))
+* **pipeline:** status keyed by the meeting, atomic writes, a copy before every rebuild, sleep is not a failed night ([#456](https://github.com/charoiteai/Charoite_audio/issues/456)) ([d59ccb5](https://github.com/charoiteai/Charoite_audio/commit/d59ccb58b8d8c80228b9bf07229ee7ccd3241946))
+
 ## [0.64.0](https://github.com/charoiteai/Charoite_audio/compare/v0.63.0...v0.64.0) (2026-08-29)
 
 
