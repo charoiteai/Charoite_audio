@@ -63,7 +63,7 @@
   itself: a repeat run rewrites the transcript in full.
 - **Instant answer (⚡)** — the other side's question is detected via STT
   punctuation and lead words; a ready first-person answer arrives in ~2-3 s,
-  with the question shown above it. The gate is "anyone but the owner"
+  the question is visible in the status line while ⚡ is answering, and in full in the meeting's _hints.md. The gate is "anyone but the owner"
   (word-level match against `user_name`), so answers keep firing after a
   counterpart gets recognised by name mid-meeting. Short real questions
   pass the filter: an explicit question form — a "?" plus an interrogative

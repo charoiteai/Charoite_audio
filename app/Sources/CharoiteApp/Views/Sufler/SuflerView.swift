@@ -745,8 +745,9 @@ struct SuflerView: View {
                                 .foregroundStyle(.tertiary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        // облачная лента — в той же панели, sky-карточкой:
-                        // видно, ЧТО ушло с машины, без отдельного окна
+                        // облачный информер — sky-карточкой в той же панели:
+                        // напоминает, что тумблер шлёт стенограмму наружу;
+                        // сам ответ приходит в нить (№53, круг по #466)
                         if sufler.isRunning && sufler.cloudOn {
                             cloudCard
                                 .padding(.top, 10)

@@ -154,3 +154,49 @@ class TestLiveLoopWiring:
         inst = inst[: inst.index("\n    def ")]
         assert 'question: str = ""' in inst
         assert "Собеседник задал вопрос" in inst
+
+
+class TestEchoAndLeadingGlue:
+    """Круг-1 по #466: смягчение не возвращает эхо-класс (DS F1), пауза и
+    ведущая склейка не роняют настоящий вопрос (DS M1/M2)."""
+
+    def test_comma_echo_is_still_rejected(self):
+        assert not qf.is_worth_asking("Что, опять?")
+        assert not qf.is_worth_asking("Что, Мира?")
+        assert not qf.is_worth_asking("Когда, блин?")
+        assert not qf.is_worth_asking("Что, если?")
+        assert not qf.is_worth_asking("Ну что, Мира?")
+
+    def test_comma_with_two_subjects_passes(self):
+        assert qf.is_worth_asking("Что, если поедем?")
+
+    def test_stt_pause_and_leading_glue_pass(self):
+        assert qf.is_worth_asking("Что… с деплоем?")
+        assert qf.is_worth_asking("А что с деплоем?")
+        assert qf.is_worth_asking("Так когда релиз?")
+
+
+class TestStrictAndRefusalReset:
+    """Круг-1 по #466, GLM: облако — по строгому порогу (мягкая форма
+    оплачивается секундами малой модели, не квотой Claude), а отказ модели
+    освобождает вопрос для повтора."""
+
+    def test_strict_disables_softening(self):
+        assert qf.is_worth_asking("Что с деплоем?")
+        assert not qf.is_worth_asking("Что с деплоем?", strict=True)
+        assert qf.is_worth_asking("Что с деплоем сегодня по плану?", strict=True)
+
+    def test_cloud_branch_requires_strict(self):
+        src = (Path(__file__).resolve().parent.parent / "src" / "daemon.py").read_text(encoding="utf-8")
+        fn = src[src.index("def fire_question("):]
+        fn = fn[: fn.index("\n    def ")]
+        assert "strict=True" in fn.split("cloud_evt.set()")[0].split("instant_evt.set()")[1], (
+            "облачная ветка обязана перепроверять вопрос строгим порогом")
+
+    def test_refusal_frees_the_pending_question(self):
+        src = (Path(__file__).resolve().parent.parent / "src" / "daemon.py").read_text(encoding="utf-8")
+        loop = src[src.index("def instant_loop("):]
+        loop = loop[: loop.index("\n    def ")]
+        assert 'is_refusal(answer)' in loop
+        assert '_pending_q[0] = {"text": "", "at": 0.0}' in loop, (
+            "отказ модели обязан освобождать вопрос — иначе «я же спросил» молчит до TTL")
