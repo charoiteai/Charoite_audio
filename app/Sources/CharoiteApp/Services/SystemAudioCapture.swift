@@ -536,7 +536,42 @@ final class SystemAudioCapture: NSObject {
     }
 
     private func log(_ message: String) {
+        Self.captureLog(message)
+    }
+
+    /// Журнал захвата — в ФАЙЛ, не только NSLog: диагноз №140 упёрся в то,
+    /// что строки приложения не находятся в unified log (log show за окно
+    /// встречи 15:43 — ноль событий процесса; живая ловушка log stream при
+    /// попытке 16:35 — тоже пусто, хотя каталог сессии создавался). Причину
+    /// «SCK не поднялся» иначе не увидеть никогда. Потолок размера держит
+    /// LogTrim при старте записи (SuflerService, рядом с daemon.err.log).
+    nonisolated static var captureLogURL: URL {
+        AppSettings.charoiteRoot
+            .appendingPathComponent("logs", isDirectory: true)
+            .appendingPathComponent("capture.log")
+    }
+
+    /// Пишут два мира — MainActor сервиса и nonisolated start()/stop() с
+    /// делегатской очередью SCK: без замка seekToEnd+write рвали бы строки,
+    /// а первый вызов дважды создавал файл (DS M1 по #464).
+    private nonisolated static let captureLogLock = NSLock()
+
+    nonisolated static func captureLog(_ message: String) {
         NSLog("[SystemAudioCapture] %@", message)
+        let url = captureLogURL
+        let fm = FileManager.default
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let line = "\(df.string(from: Date())) \(message)\n"
+        captureLogLock.lock()
+        defer { captureLogLock.unlock() }
+        fm.createPrivateDirectory(at: url.deletingLastPathComponent())
+        if !fm.fileExists(atPath: url.path) { fm.createPrivateFile(atPath: url.path) }
+        if let h = try? FileHandle(forWritingTo: url) {
+            defer { try? h.close() }
+            _ = try? h.seekToEnd()
+            try? h.write(contentsOf: Data(line.utf8))
+        }
     }
 
     // MARK: - Приёмник кадров

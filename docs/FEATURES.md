@@ -876,3 +876,13 @@ every draft write passes through the same normalization, and a bare heading
 line closes the section only when it names a known minutes section (open
 questions, risks, decisions…) — a trailing colon alone is not enough, because
 inside a live document that shape also belongs to wrapped lines and labels.
+
+Follow-ups from the same day closed the remaining gaps: the third write path —
+the MCP Minutes tool — now runs the same normalization before writing (it used
+to skip it, so its assignments never reached the task window); the deadline
+prettifier only touches the tail of an item after a dash, leaving live wording
+like "discuss the deadline: tomorrow" untouched; after a transcript rebuild the
+minutes are restamped — the draft marker is removed and "Speaker N" labels are
+replaced with the recovered names; and when native system-audio capture fails
+to start, the app now says out loud that the meeting is being recorded via
+BlackHole instead of falling back silently.

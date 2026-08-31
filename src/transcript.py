@@ -61,6 +61,10 @@ def parse_blocks(text: str) -> list[dict]:
 
 NOTES_TITLE = "Ко-мышление"
 NOTES_HEAD = f"\n---\n## {NOTES_TITLE}"
+# Шапка живого черновика минуток. Пишет демон (авто-черновик), снимает
+# пересборка (rebuild_transcript.restamp_minutes) — литерал обязан совпадать,
+# поэтому живёт здесь, в общем модуле документов.
+MINUTES_DRAFT_MARK = "<!-- черновик, встреча идёт -->"
 
 
 def notes_start(text: str) -> int:

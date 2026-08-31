@@ -410,6 +410,7 @@ final class SuflerService: ObservableObject {
         // манифест обязан существовать к моменту, когда python выбирает
         // источники, иначе встреча уйдёт на BlackHole.
         if #available(macOS 13.0, *), systemAudioCapture == nil {
+            SystemAudioCapture.captureLog("старт записи: поднимаю ScreenCaptureKit")
             let capture = SystemAudioCapture()
             // Поток ScreenCaptureKit умер посреди встречи и не пересоздался
             // (карточка №35): человек должен узнать сразу, а не из пустой
@@ -429,12 +430,23 @@ final class SuflerService: ObservableObject {
                 // Stop мог прийти, пока ScreenCaptureKit ждал первые кадры.
                 // Устаревший completion не имеет права запускать daemon.
                 guard self.lifecycleGate.owns(token, in: .starting) else { return }
-                if !ready { self.systemAudioCapture = nil }
+                if !ready {
+                    self.systemAudioCapture = nil
+                    self.announceCaptureFallback()   // фолбэк — вслух, не молча на BlackHole (№140)
+                }
+                SystemAudioCapture.captureLog(ready ? "захват готов — демон стартует с манифестом" : "захват НЕ поднялся — демон уйдёт на BlackHole")
                 self.launchDaemon(preserveUI: preserveUI, token: token)
             }
             captureStartTask = task
             return
         }
+        // Блок старта пропущен: capture остался от прошлой встречи — главный
+        // подозреваемый тихого фолбэка №140; мёртвый остаток = встреча без
+        // манифеста, говорим вслух, как в ветке !ready (GLM M8). Гейт по
+        // captureStartTask: «ещё поднимается» ≠ «не поднялся» (DS r2 M5).
+        let leftoverActive = (systemAudioCapture as? SystemAudioCapture)?.isActive ?? false
+        SystemAudioCapture.captureLog("старт записи БЕЗ нового захвата: " + (leftoverActive ? "живой остаток прошлой встречи — переиспользуем" : "мёртвый остаток — встреча уйдёт на BlackHole"))
+        if !leftoverActive, captureStartTask == nil { announceCaptureFallback() }
         launchDaemon(preserveUI: preserveUI, token: token)
     }
 
@@ -466,6 +478,7 @@ final class SuflerService: ObservableObject {
         }
         FileManager.default.makePrivate(atPath: errURL.path)   // лог старой установки
         LogTrim.trim(errURL)   // потолок: хвост остаётся, гигабайты — нет
+        LogTrim.trim(SystemAudioCapture.captureLogURL)   // журнал захвата — тот же потолок (DS M2)
         let errFH = try? FileHandle(forWritingTo: errURL)
         errFH?.seekToEndOfFile()
         p.standardError = errFH ?? FileHandle.nullDevice
