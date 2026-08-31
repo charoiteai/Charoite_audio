@@ -65,7 +65,13 @@
   punctuation and lead words; a ready first-person answer arrives in ~2-3 s,
   with the question shown above it. The gate is "anyone but the owner"
   (word-level match against `user_name`), so answers keep firing after a
-  counterpart gets recognised by name mid-meeting.
+  counterpart gets recognised by name mid-meeting. Short real questions
+  pass the filter: an explicit question form — a "?" plus an interrogative
+  opening — softens the subject threshold, so "Что с деплоем?" triggers an
+  answer while bare "Что?" still does not. The question is passed to the
+  model explicitly (the fast trigger hears it in the stream before it
+  reaches the transcript), and a model refusal no longer mutes a repeat of
+  the same question for the rest of the meeting.
 - **Cloud answer (☁️, opt-in)** — the same question goes to Claude in
   parallel (your subscription, `claude` CLI): local is instant, cloud is
   deeper 10-20 s later. Off by default — and off on every path: the switch

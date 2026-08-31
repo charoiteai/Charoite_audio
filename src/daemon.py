@@ -1285,7 +1285,12 @@ def main():
         now = time.time()
         if now - _last_fire[0] < 8:
             return
-        if q.strip() and not question_filter.is_worth_asking(q, _pending_q[0]["text"]):
+        # previous — только СВЕЖИЙ вопрос (тот же TTL, что у ответов):
+        # сырой text жил до конца встречи, и после отказа модели повтор
+        # того же вопроса глушился навсегда (аудит 18.08, №52). Протухший
+        # previous — не дедуп, а кляп.
+        if q.strip() and not question_filter.is_worth_asking(
+                q, fresh_question(_pending_q[0], time.monotonic())):
             return
         _last_fire[0] = now
         if q.strip():  # панели показывают, НА ЧТО отвечают — без этого ответ висел без вопроса
@@ -1823,7 +1828,10 @@ def main():
                 emit({"type": "status", "text": f"⚡ отвечаю: {q[:60]}" if q else "⚡ отвечаю"})
                 parts: list[str] = []
                 try:
-                    for tok in llm.instant(tail, nodes=nodes_block):
+                    # Вопрос — явно: из fast_trigger он в tail не попадает
+                    # (стрим в стенограмму не пишет), и модель отвечала по
+                    # хвосту без вопроса (аудит 18.08, №52).
+                    for tok in llm.instant(tail, nodes=nodes_block, question=q[:300]):
                         parts.append(tok)
                 except Exception as e:  # noqa: BLE001
                     emit_error(f"⚡ ответ не собрался: {short_error(e)}")
@@ -1934,7 +1942,8 @@ def main():
             # в нить идёт чистый ответ, аудит несёт вопрос в label «на: {q}».
             # Прежний префикс «❓ {q}» уходил в события cloud, которых демон
             # давно не эмитит, — мёртвый код убран (круг-3 по #394, DS).
-            emit({"type": "cloud_done"})
+            # cloud_done больше не эмитим: приложение канал cloud не слушает
+            # (лента выпилена — №53), а другого потребителя у события не было.
             if failure:
                 continue          # в аудит идут ответы, а не сообщения о сбое
             label = f"☁️ {model} — на: {q[:400]}" if q else f"☁️ {model}"

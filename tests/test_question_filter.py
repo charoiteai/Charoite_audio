@@ -109,3 +109,48 @@ class TestSqueeze:
     def test_empty_stays_empty(self):
         assert qf.squeeze("") == ""
         assert qf.squeeze(None) == ""
+
+
+class TestQuestionFormSoftensThreshold:
+    """Явная вопросная форма («?» + вопросный старт) снижает порог предмета
+    до двух: «Что с деплоем?» — настоящий вопрос с одним значимым словом,
+    общий порог в три его резал (аудит 18.08, №52)."""
+
+    def test_short_real_questions_pass(self):
+        assert qf.is_worth_asking("Что с деплоем?")
+        assert qf.is_worth_asking("Когда релиз?")
+        assert qf.is_worth_asking("Есть ли смысл?")
+
+    def test_subjectless_scraps_still_rejected(self):
+        # «Расскажи?» — старт сам значим, бонус не удваивается
+        assert not qf.is_worth_asking("Что?")
+        assert not qf.is_worth_asking("А он?")
+        assert not qf.is_worth_asking("Расскажи?")
+        assert not qf.is_worth_asking("Ну когда?")
+
+
+class TestLiveLoopWiring:
+    """Контракты проводки №52: тексты исходников, в стиле соседних
+    контракт-тестов (daemon и llm без Ollama юнитом не поднять)."""
+
+    def test_daemon_dedups_against_fresh_question_only(self):
+        # Сырой _pending_q жил до конца встречи: после отказа модели повтор
+        # того же вопроса глушился навсегда.
+        src = (Path(__file__).resolve().parent.parent / "src" / "daemon.py").read_text(encoding="utf-8")
+        fn = src[src.index("def fire_question("):]
+        fn = fn[: fn.index("\n    def ")]
+        assert "question_filter.is_worth_asking(" in fn
+        assert "fresh_question(_pending_q[0], time.monotonic())" in fn, (
+            "previous обязан проходить через fresh_question, а не сырой text")
+
+    def test_instant_receives_the_question_explicitly(self):
+        # fast_trigger ловит вопрос из стрима, которого в стенограмме нет:
+        # instant обязан получать вопрос явно, а не надеяться на tail.
+        root = Path(__file__).resolve().parent.parent / "src"
+        daemon = (root / "daemon.py").read_text(encoding="utf-8")
+        assert "llm.instant(tail, nodes=nodes_block, question=q" in daemon
+        llm_src = (root / "llm.py").read_text(encoding="utf-8")
+        inst = llm_src[llm_src.index("def instant("):]
+        inst = inst[: inst.index("\n    def ")]
+        assert 'question: str = ""' in inst
+        assert "Собеседник задал вопрос" in inst

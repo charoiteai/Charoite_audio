@@ -73,11 +73,28 @@ def is_worth_asking(text: str, previous: str = "") -> bool:
     Отсекаем три случая, на которых модель заведомо ответит пустотой:
     предмета нет (обрывок), это повтор только что заданного вопроса,
     реплика пустая.
+
+    Явная вопросная форма — «?» плюс вопросное начало — смягчает порог
+    предмета: «Что с деплоем?», «Когда релиз?» — настоящие короткие
+    вопросы с одним значимым словом, и общий порог в три их резал
+    (аудит 18.08, №52). Старт при этом считается значимым (он в _GLUE и
+    из meaningful_words выпадает), а «Что?» и «А он?» по-прежнему мимо:
+    предмета нет даже со смягчением.
     """
     text = " ".join(text.split())
     if not text:
         return False
-    if len(meaningful_words(text)) < MIN_MEANINGFUL:
+    words = text.lower().split()
+    first = words[0].strip("?,.!»)")
+    q_form = "?" in text and (
+        first in _QUESTION_START
+        or " ".join(w.strip("?,.!»)") for w in words[:2]) in _QUESTION_PAIRS)
+    mw = meaningful_words(text)
+    # Бонус только когда старт САМ выпал из значимых («что», «когда» — в
+    # _GLUE): иначе «Расскажи?» считал бы одно слово дважды и проходил
+    # без предмета.
+    significant = len(mw) + (1 if q_form and first not in mw else 0)
+    if significant < (2 if q_form else MIN_MEANINGFUL):
         return False
     if previous:
         a, b = text.lower(), " ".join(previous.split()).lower()
