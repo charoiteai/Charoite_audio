@@ -2466,7 +2466,8 @@ def main():
                         # mcp «Минутки» из другого — замок его не видит; сверяем
                         # файл по stat перед подменой (GLM по #457)
                         try:
-                            before = (mpath.stat().st_mtime_ns, mpath.stat().st_size)
+                            _st = mpath.stat()   # один вызов: два stat дают химеру при чужой записи между ними (DS r2 по #464)
+                            before = (_st.st_mtime_ns, _st.st_size)
                         except OSError:
                             before = None
                         if before is not None and not mpath.read_text(
@@ -2476,7 +2477,8 @@ def main():
                         try:
                             tmp.write_text(MINUTES_DRAFT_MARK + "\n" + out, encoding="utf-8")
                             try:
-                                now_st = (mpath.stat().st_mtime_ns, mpath.stat().st_size)
+                                _st = mpath.stat()
+                                now_st = (_st.st_mtime_ns, _st.st_size)
                             except OSError:
                                 now_st = None
                             if now_st != before:

@@ -339,6 +339,15 @@ def names_by_time(live_text: str, base, segments: list[tuple[float, float, str]]
         return {}
     score: dict[str, dict[str, float]] = {}
     for s, e, spk in segments:
+        # Метка владельца («Я» или имя из настроек) в скоринг не входит:
+        # владелец говорит больше всех, и живое имя, звучавшее во время его
+        # реплик (обращение к нему же), уходило бы ЕГО метке — а строка
+        # `spk = names.get(spk, spk)` дальше переименовала бы абзацы
+        # владельца в чужое имя в финальной стенограмме (№147, класс
+        # Critical DS по #464). Владелец уже подписан каналом; живые имена —
+        # только нейтральным меткам пересборки.
+        if not re.fullmatch(r"Собеседник\s+\d+", spk):
+            continue
         for ls, le, name in spans:
             ov = min(e, le) - max(s, ls)
             if ov > 0:
@@ -635,9 +644,10 @@ def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> None:
     # чужой финал (mcp «Минутки», редактор). Fail-closed без ретрая возвращал
     # бы №146 навсегда — файл оставался черновиком для UI (GLM r2 по #464).
     for attempt in (1, 2):
+        before = safe_write.stat_snapshot(mpath)
+        if before is None:
+            return
         try:
-            st = mpath.stat()
-            before = (st.st_mtime_ns, st.st_size)
             text = mpath.read_text(encoding="utf-8")
         except OSError as e:
             log(f"минутки не перештампованы (не прочитались): {e}")
@@ -659,19 +669,13 @@ def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> None:
                            lambda _m, n=name: n, fixed)
         if fixed == text:
             return
-        try:
-            st = mpath.stat()
-            now = (st.st_mtime_ns, st.st_size)
-        except OSError:
-            now = None
-        if now == before:
+        if safe_write.write_text(mpath, fixed, expect=before):
             break
         if attempt == 1:
             log("минутки сменились под пересборкой — повторный заход")
             continue
         log("минутки меняются под пересборкой — перештамповка пропущена")
         return
-    safe_write.write_text(mpath, fixed)
     log(f"минутки перештампованы: {mpath.name}"
         + (f" (имена: {', '.join(f'{k}→{v}' for k, v in live_names.items())})"
            if live_names else " (снят маркер черновика)"))

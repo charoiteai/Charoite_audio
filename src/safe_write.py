@@ -22,8 +22,30 @@ import pathlib
 import stat
 
 
-def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8") -> None:
-    """Записать текст так, чтобы обрыв не уничтожил прежнее содержимое."""
+def stat_snapshot(path: pathlib.Path) -> tuple[int, int] | None:
+    """Снимок (mtime_ns, size) ОДНИМ stat — для expect-гейта write_text.
+
+    Два подряд вызова stat дают химеру: чужой replace между ними — и mtime
+    от старой версии склеивается с размером новой (DS r2 по #464).
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8",
+               expect: tuple[int, int] | None = None) -> bool:
+    """Записать текст так, чтобы обрыв не уничтожил прежнее содержимое.
+
+    `expect` — снимок `stat_snapshot`, взятый ДО чтения исходника: если к
+    моменту записи файл уже не тот, запись не делается и возвращается False.
+    Гейт потери обновления жил копиями в демоне и пересборке (у каждого свой
+    протокол — критика DS по #464); здесь он один на всех писателей.
+    Проверка — перед самым replace: окно гонки сжато до минимума, но не до
+    нуля — это защита от затирания, не замок.
+    """
     # Симлинк в графе ведёт к настоящему файлу, и писать надо в него: иначе
     # `replace` подменил бы саму ссылку обычным файлом, а цель осталась со
     # старым текстом (DS, круг-1 по PR #441).
@@ -36,9 +58,12 @@ def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8") -> Non
     try:
         tmp.write_text(text, encoding=encoding)
         _carry_over_metadata(path, tmp)
+        if expect is not None and stat_snapshot(path) != expect:
+            return False
         tmp.replace(path)
     finally:
         tmp.unlink(missing_ok=True)   # replace уже унёс файл — это не ошибка
+    return True
 
 
 def _carry_over_metadata(src: pathlib.Path, dst: pathlib.Path) -> None:

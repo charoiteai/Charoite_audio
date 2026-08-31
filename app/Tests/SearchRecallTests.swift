@@ -103,10 +103,12 @@ final class IndexInvalidationTests: XCTestCase {
         _ = await ArchiveSearch.localSearch(query: "бюджет проекта",
                                             limit: 3, snippet: 200, root: graph)
 
-        // доиндексация уходит в фоновую Task — дожидаемся записи в индексе
-        // (запас до 10 секунд: раннер CI бывает занят соседями)
+        // доиндексация уходит в фоновую Task — дожидаемся записи в индексе.
+        // Потолок 30 с: десяти не хватало на занятой машине (№65 — раннер CI
+        // и локальные прогоны при параллельной сборке/головах ревью); на
+        // здоровом прогоне цикл выходит за доли секунды, потолок не платится.
         var stored: Double?
-        for _ in 0..<500 {
+        for _ in 0..<1500 {
             stored = await SemanticIndex.shared.storedMtime(of: rel)
             if stored != nil { break }
             try await Task.sleep(nanoseconds: 20_000_000)

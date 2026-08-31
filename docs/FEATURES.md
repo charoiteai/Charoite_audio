@@ -885,4 +885,8 @@ like "discuss the deadline: tomorrow" untouched; after a transcript rebuild the
 minutes are restamped — the draft marker is removed and "Speaker N" labels are
 replaced with the recovered names; and when native system-audio capture fails
 to start, the app now says out loud that the meeting is being recorded via
-BlackHole instead of falling back silently.
+BlackHole instead of falling back silently. Two more hardening steps followed:
+live-session names are matched only to neutral rebuild labels (the owner's
+own label can no longer inherit somebody else's name in the final
+transcript), and the menu-bar icon itself turns into a warning symbol when
+the pipeline goes critical — the one place that is always visible.

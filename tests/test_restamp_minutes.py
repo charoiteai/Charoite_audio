@@ -106,3 +106,35 @@ def test_rebuild_wires_live_names_into_restamp():
     fn = src[src.index("def rebuild("):]
     assert "restamp_minutes(live, live_session_names(meta))" in fn, (
         "в restamp должны идти имена живой сессии (live.json), не пересборочные")
+
+
+def test_names_by_time_never_assigns_to_owner_label():
+    """№147 (класс Critical DS по #464): владелец говорит больше всех, и
+    живое имя, звучавшее в его репликах (обращение к нему), уходило его
+    метке — стенограмма переименовывала абзацы владельца в чужое имя.
+    Метка владельца в скоринг не входит; имя достаётся нейтральной."""
+    import datetime as dt
+    base = dt.datetime(2026, 8, 31, 10, 0)
+    live = "**Инга** [10:00–10:02]:\nдлинная реплика\n"
+    segments = [(0.0, 100.0, "Ян"), (30.0, 60.0, "Собеседник 1")]
+    out = rebuild_transcript.names_by_time(live, base, segments, {"Инга"})
+    assert out == {"Собеседник 1": "Инга"}, out
+
+    only_owner = rebuild_transcript.names_by_time(
+        live, base, [(0.0, 100.0, "Я")], {"Инга"})
+    assert only_owner == {}, only_owner
+
+
+def test_safe_write_expect_gate(tmp_path):
+    """Общий expect-гейт: снимок до чтения — чужая запись в окне не
+    затирается (протокол один на всех писателей, критика DS по #464)."""
+    import safe_write
+    p = tmp_path / "m.md"
+    p.write_text("v1", encoding="utf-8")
+    snap = safe_write.stat_snapshot(p)
+    p.write_text("чужой финал длиннее", encoding="utf-8")
+    assert safe_write.write_text(p, "v2", expect=snap) is False
+    assert p.read_text(encoding="utf-8") == "чужой финал длиннее"
+    fresh = safe_write.stat_snapshot(p)
+    assert safe_write.write_text(p, "v2", expect=fresh) is True
+    assert p.read_text(encoding="utf-8") == "v2"
