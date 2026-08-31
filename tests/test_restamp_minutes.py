@@ -138,3 +138,29 @@ def test_safe_write_expect_gate(tmp_path):
     fresh = safe_write.stat_snapshot(p)
     assert safe_write.write_text(p, "v2", expect=fresh) is True
     assert p.read_text(encoding="utf-8") == "v2"
+
+
+def test_neutral_label_predicate_is_single_and_covers_nbsp():
+    """Единый предикат формы нейтральной метки (GLM M2 по #465): три копии
+    (` ?\\d+` / `\\s+\\d+` / опциональный номер) давали щель — имя владельца
+    «Собеседник 2» (NBSP) не ловилось коллизией, но ловилось скорингом."""
+    import channel_labels
+    assert channel_labels.is_neutral_label("Собеседник")
+    assert channel_labels.is_neutral_label("Собеседник 2")
+    assert channel_labels.is_neutral_label("Собеседник 2")
+    assert channel_labels.is_neutral_label("Собеседник 10")
+    assert not channel_labels.is_neutral_label("Я")
+    assert not channel_labels.is_neutral_label("Собеседник 2а")
+    assert not channel_labels.is_neutral_label("Ян")
+
+
+def test_owner_label_never_reaches_name_speakers_rest():
+    """DS+GLM I1 по #465: владелец не получает имя по построению — держать
+    его в rest значило холостой вызов модели на каждой пересборке и ложную
+    плашку «имена не определены» при её молчании. Контракт: rest и unnamed
+    считаются от нейтральных меток."""
+    src = (SRC / "rebuild_transcript.py").read_text(encoding="utf-8")
+    fn = src[src.index("def rebuild("):src.index("def write_final(")]
+    assert "neutral = {spk for _, _, spk, _ in lines" in fn
+    assert "rest = neutral - set(names)" in fn
+    assert "unnamed = neutral - set(names)" in fn

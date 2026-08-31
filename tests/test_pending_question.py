@@ -52,7 +52,11 @@ def test_minutes_draft_and_final_share_a_lock_and_replace_atomically():
     final = src[src.index("def _do_summary"):src.index("def stdin_loop")]
     assert "with minutes_lock:" in draft and "with minutes_lock:" in final
     assert 'mpath.write_text("<!-- черновик' not in draft, "черновик — только через tmp+replace"
-    assert ".replace(mpath)" in draft and "st_mtime_ns" in draft, "чужой финал из другого процесса не затирается (GLM)"
+    # Гейт переехал в общий safe_write (DS+GLM по #465): та же гарантия
+    # «tmp+replace и stat-сверка» теперь обязана идти через expect-снимок.
+    assert "safe_write.write_text(" in draft and "expect=before" in draft, \
+        "чужой финал из другого процесса не затирается (GLM; протокол — общий safe_write)"
+    assert "safe_write.stat_snapshot(mpath)" in draft, "снимок — одним stat, до проверки маркера"
 
 
 def test_pending_question_is_replaced_as_a_whole():

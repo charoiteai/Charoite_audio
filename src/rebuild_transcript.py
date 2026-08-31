@@ -346,8 +346,8 @@ def names_by_time(live_text: str, base, segments: list[tuple[float, float, str]]
         # владельца в чужое имя в финальной стенограмме (№147, класс
         # Critical DS по #464). Владелец уже подписан каналом; живые имена —
         # только нейтральным меткам пересборки.
-        if not re.fullmatch(r"Собеседник\s+\d+", spk):
-            continue
+        if not channel_labels.is_neutral_label(spk) or spk == channel_labels.NEUTRAL_OTHER:
+            continue   # владельца и голую канальную метку не скорим
         for ls, le, name in spans:
             ov = min(e, le) - max(s, ls)
             if ov > 0:
@@ -562,7 +562,14 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
                           [(s, e, spk) for s, e, spk, _ in lines], allowed) if allowed else {}
     if names:
         log("имена из живой сессии: " + ", ".join(f"{k}→{v}" for k, v in names.items()))
-    rest = {spk for _, _, spk, _ in lines} - set(names)
+    # Безымянными считаются только НЕЙТРАЛЬНЫЕ метки: владелец имя по
+    # построению не получает (фильтр скоринга выше), и без этого отсева он
+    # вечно сидел бы в rest — холостой вызов модели на каждой пересборке, а
+    # при её молчании ложная плашка «имена не определены» на полностью
+    # названной встрече (DS+GLM I1 по #465).
+    neutral = {spk for _, _, spk, _ in lines
+               if channel_labels.is_neutral_label(spk)}
+    rest = neutral - set(names)
     model_answered = True
     if rest:
         guessed, model_answered = name_speakers(
@@ -575,7 +582,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # Молчащая модель + оставшиеся безымянные метки = встреча, которую стоит
     # пересобрать. Пустой ответ модели при полностью названных участниках
     # ничего не стоит: помечаем только когда потеря видна в самом файле.
-    unnamed = {spk for _, _, spk, _ in lines} - set(names)
+    unnamed = neutral - set(names)
     names_pending = not model_answered and bool(unnamed)
     if names_pending:
         log(f"⚠️ имена не разобраны: модель молчала, безымянных меток {len(unnamed)}")
@@ -646,6 +653,9 @@ def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> None:
     for attempt in (1, 2):
         before = safe_write.stat_snapshot(mpath)
         if before is None:
+            # Нет минуток — штатная тишина; отказ по правам — вслух (GLM M6).
+            if mpath.exists():
+                log("минутки не перештампованы (stat не удался)")
             return
         try:
             text = mpath.read_text(encoding="utf-8")
@@ -663,7 +673,7 @@ def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> None:
             # (?!\s*\d): голая метка не съедает префикс «Собеседник 2»;
             # (?!\w) держит «Собеседник 22» от «Собеседник 2» и «Январь» от
             # «Ян»; имя — литералом, не шаблоном замены.
-            if not name or not re.fullmatch(r"Собеседник(?:\s+\d+)?", label):
+            if not name or not channel_labels.is_neutral_label(label):
                 continue
             fixed = re.sub(r"(?<!\w)" + re.escape(label) + r"(?!\s*\d)(?!\w)",
                            lambda _m, n=name: n, fixed)
