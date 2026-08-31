@@ -866,3 +866,12 @@ and only its formatting: names, wording and deadlines stay as written.
 
 Same graph after normalization: **275 tasks**. Existing files are converted
 once by `scripts/fix_action_items.py` (dry run by default).
+
+The first live day added two missing wires. Normalization ran only on the
+manual Protocol button, while the auto-saved draft — the document people
+actually read, since nothing finalizes it automatically — skipped it. And a
+bare heading line ("Open questions:") did not close the assignments section,
+so the lists after it leaked into the task window as false tasks. Both fixed:
+every draft write passes through the same normalization, and a heading is
+recognized structurally — an unindented line that is not a bullet — rather
+than by a trailing colon on a short line.
