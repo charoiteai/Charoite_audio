@@ -99,3 +99,33 @@ def test_numbered_items_also_work():
 """
     out = normalize(text)
     assert len(CHECKBOX.findall(out)) == 2, out
+
+
+def test_live_draft_minutes_go_through_normalize():
+    """Черновик минуток — итоговый документ встречи (автофинализации нет),
+    и он обязан проходить normalize ПЕРЕД записью: 31.08 обе встречи дня
+    написали поручения прозой, окно «Задачи» их не видело («58 задач как
+    месяц назад»). Ручной «Протокол» normalize уже звал — черновик нет."""
+    daemon = (SRC / "daemon.py").read_text(encoding="utf-8")
+    draft = daemon[: daemon.index('черновик, встреча идёт -->')]
+    tail = draft[draft.rindex("if out.strip():"):]
+    assert "action_items.normalize(out)" in tail, (
+        "черновиковая запись минуток должна прогонять текст через "
+        "action_items.normalize до записи на диск")
+
+
+def test_normalize_handles_the_bare_caps_section_of_2026_08_31():
+    """Реальная форма минуток 31.08: заголовок «ПОРУЧЕНИЯ:» голым капсом и
+    пункты «- **Имя (Кто)** — что сделать» — должны стать чекбоксами."""
+    real = (
+        "Темы:\n- Статус релиза\n\n"
+        "ПОРУЧЕНИЯ:\n"
+        "- **Собеседник 2 (Саша)** — проверить возможность ручного указания даты.\n"
+        "- **София** — связаться с Леной по вопросу мониторинга задачи 373021.\n\n"
+        "Открытые вопросы:\n- Перенос релиза\n"
+    )
+    out = normalize(real)
+    boxes = CHECKBOX.findall(out)
+    assert len(boxes) == 2, out
+    assert "- [ ] **Собеседник 2 (Саша)**" in out
+    assert "Открытые вопросы" in out and "- [ ] Перенос релиза" not in out
