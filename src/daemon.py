@@ -1285,7 +1285,12 @@ def main():
         now = time.time()
         if now - _last_fire[0] < 8:
             return
-        if q.strip() and not question_filter.is_worth_asking(q, _pending_q[0]["text"]):
+        # previous — только СВЕЖИЙ вопрос (тот же TTL, что у ответов):
+        # сырой text жил до конца встречи, и после отказа модели повтор
+        # того же вопроса глушился навсегда (аудит 18.08, №52). Протухший
+        # previous — не дедуп, а кляп.
+        if q.strip() and not question_filter.is_worth_asking(
+                q, fresh_question(_pending_q[0], time.monotonic())):
             return
         _last_fire[0] = now
         if q.strip():  # панели показывают, НА ЧТО отвечают — без этого ответ висел без вопроса
@@ -1300,6 +1305,12 @@ def main():
             _pending_q[0] = {"text": " ".join(q.split()), "at": time.monotonic()}
         instant_evt.set()
         if not (cloud_live and toggles["cloud"]):
+            return
+        # Облако — только по строгому порогу: мягкая форма («Что вообще?»)
+        # оплачивается секундами малой модели, а не срезом стенограммы
+        # наружу и квотой Claude (GLM I1 + критика-1 по #466). Короткий
+        # вопрос получает быстрый локальный ответ без облачного.
+        if q.strip() and not question_filter.is_worth_asking(q, strict=True):
             return
         # Дедуп облака по содержанию вопроса: переформулировка/повтор той же фразы
         # (partial → финал STT, «то есть…») давала второй ответ Haiku на тот же
@@ -1823,7 +1834,10 @@ def main():
                 emit({"type": "status", "text": f"⚡ отвечаю: {q[:60]}" if q else "⚡ отвечаю"})
                 parts: list[str] = []
                 try:
-                    for tok in llm.instant(tail, nodes=nodes_block):
+                    # Вопрос — явно: из fast_trigger он в tail не попадает
+                    # (стрим в стенограмму не пишет), и модель отвечала по
+                    # хвосту без вопроса (аудит 18.08, №52).
+                    for tok in llm.instant(tail, nodes=nodes_block, question=q[:300]):
                         parts.append(tok)
                 except Exception as e:  # noqa: BLE001
                     emit_error(f"⚡ ответ не собрался: {short_error(e)}")
@@ -1837,9 +1851,16 @@ def main():
                     # аудит терял хвост (№95, находка Ox Alpha 24.08).
                     label = f"⚡ ответ на: {q[:400]}" if q else "⚡ мгновенный ответ"
                     append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] {label}", answer)
+                elif q and question_filter.is_refusal(answer):
+                    # Вопрос НЕ отвечен — дедупить повтор против него нечего:
+                    # «я же спросил» через 10–20 с молчал до протухания TTL
+                    # (GLM I3 по #466). Сбрасываем только СВОЙ вопрос: пока
+                    # шла генерация, мог прийти новый — его не трогаем.
+                    if _pending_q[0]["text"] == " ".join(q.split()):
+                        _pending_q[0] = {"text": "", "at": 0.0}
 
     def cloud_loop():
-        """Лестница live: параллельно локальному ⚡ — ответ Claude Sonnet в свою панель.
+        """Лестница live: параллельно локальному ⚡ — ответ Claude в нить встречи.
 
         Headless `claude -p` по подписке Max (API-ключ вырезан из env).
         Локальный ответ приходит за ~2-3с, Sonnet догоняет глубже за ~10-20с.
@@ -1931,10 +1952,10 @@ def main():
                 if thread.add_answer(q, question_filter.squeeze(out, max_lines=3, max_chars=380)):
                     emit({"type": "thread", "text": thread.render()})
             # Вопрос в живом UI больше не показывается (пакет владельца 24.08):
-            # в нить идёт чистый ответ, аудит несёт вопрос в label «на: {q}».
-            # Прежний префикс «❓ {q}» уходил в события cloud, которых демон
-            # давно не эмитит, — мёртвый код убран (круг-3 по #394, DS).
-            emit({"type": "cloud_done"})
+            # в нить идёт чистый ответ, аудит несёт вопрос в label «на: {q}»
+            # (облачной ленты в приложении больше нет — №53, круг по #466).
+            # cloud_done больше не эмитим: приложение канал cloud не слушает
+            # (лента выпилена — №53), а другого потребителя у события не было.
             if failure:
                 continue          # в аудит идут ответы, а не сообщения о сбое
             label = f"☁️ {model} — на: {q[:400]}" if q else f"☁️ {model}"

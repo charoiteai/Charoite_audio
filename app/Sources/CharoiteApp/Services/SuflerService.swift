@@ -73,8 +73,10 @@ final class SuflerService: ObservableObject {
     /// Идёт явный поиск прошлого контекста по кнопке ⏮.
     /// Отдельно от isHinting: подсказка и архив могут выполняться параллельно,
     /// но два архивных разбора одной темы одновременно не нужны.
-    @Published var cloud = ""          // ответ Claude (Sonnet) — третья панель
-    @Published var isClouding = false
+    // Полей cloud/isClouding больше нет: с #232 облачный ответ идёт в НИТЬ
+    // (пакет владельца 24.08), демон событий cloud/cloud_start не эмитит —
+    // лента была вечно пустой, guard по isClouding мёртв (три головы по
+    // #394, №53). Карточка в SuflerView осталась статичным информером.
 
     // Живые тумблеры контуров. Выбор запоминается и становится дефолтом
     // следующих встреч (UserDefaults) — «один раз отказался, и так дальше».
@@ -360,7 +362,6 @@ final class SuflerService: ObservableObject {
         if !preserveUI {                 // авто-рестарт не должен стирать встречу с экрана
             lines = []
             hint = ""
-            cloud = ""
             // Нить прошлой встречи держится на экране до старта следующей —
             // после «Стоп» её дочитывают и копируют. Но в новую встречу она
             // ехать не должна: демон пришлёт нить не сразу, и первые минуты
@@ -382,7 +383,6 @@ final class SuflerService: ObservableObject {
         // без сброса кнопки Подсказка/Claude/Протокол залипали заблокированными
         isHinting = false
         isAutoHinting = false
-        isClouding = false
 
         // 🔴 ВЫКЛЮЧЕНО 06.08 по итогам боевого теста. Тап создаётся, виден
         // системе и из отдельного процесса отдаёт звук, но демон не получает
@@ -563,9 +563,8 @@ final class SuflerService: ObservableObject {
         errHandle = nil
         let wasRecording = lifecycle == .recording
         stopClock()
-        isHinting = false   // ждать hint_done/cloud_done от мёртвого демона бессмысленно
+        isHinting = false   // ждать hint_done от мёртвого демона бессмысленно
         disarmHintTimeout()
-        isClouding = false
         watchdog?.invalidate()
         watchdog = nil
         lastSTTProgressAt = nil
@@ -782,7 +781,7 @@ final class SuflerService: ObservableObject {
         // Выключен — не шлём даже по горячей клавише: ⌘⇧⏎ работает и тогда,
         // когда кнопка серая, а демон до правки принимал команду `cloud`ом
         // не глядя на выключатель.
-        guard isRunning, !isClouding, cloudOn else { return }
+        guard isRunning, cloudOn else { return }
         send("cloud")
     }
 
@@ -969,17 +968,12 @@ final class SuflerService: ObservableObject {
                 hint = _hintBuf  // финальный флаш хвоста
                 isHinting = false
                 disarmHintTimeout()
-            case "cloud_start":
-                // лента, как hint: `cloud = …` затирала все прошлые ответы Haiku
-                cloud += (cloud.isEmpty ? "" : "\n\n") + text + "\n"
-                isClouding = true
-            case "cloud":
-                cloud += text
-                if cloud.count > 40_000 {  // панель не должна пухнуть бесконечно
-                    cloud = String(cloud.suffix(30_000))
-                }
-            case "cloud_done":
-                isClouding = false
+            case "cloud_start", "cloud", "cloud_done":
+                // Мёртвый канал: демон не эмитит с #232 (v0.64.1 шлёт лишь
+                // cloud_done), ответ идёт в нить (№53). Тихо глотаем — как
+                // и default ниже; кейс держит имя канала в коде, чтобы его
+                // не «переизобрели» новым событием (GLM M5 по #466).
+                break
             case "rename":
                 // нейросеть надёжно определила имя: «Собеседник N» → имя,
                 // задним числом по всей ленте (стенограмму демон правит сам)

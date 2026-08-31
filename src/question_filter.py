@@ -67,17 +67,53 @@ def meaningful_words(text: str) -> list[str]:
     return [w for w in words if len(w) > 2 and w not in _GLUE]
 
 
-def is_worth_asking(text: str, previous: str = "") -> bool:
+def is_worth_asking(text: str, previous: str = "", *, strict: bool = False) -> bool:
     """Стоит ли будить модель ради этой реплики.
 
     Отсекаем три случая, на которых модель заведомо ответит пустотой:
     предмета нет (обрывок), это повтор только что заданного вопроса,
     реплика пустая.
+
+    Явная вопросная форма — «?» плюс вопросное начало — смягчает порог
+    предмета: «Что с деплоем?», «Когда релиз?» — настоящие короткие
+    вопросы с одним значимым словом, и общий порог в три их резал
+    (аудит 18.08, №52). Старт при этом считается значимым (он в _GLUE и
+    из meaningful_words выпадает), а «Что?» и «А он?» по-прежнему мимо:
+    предмета нет даже со смягчением.
+
+    strict=True выключает смягчение: цена ошибки асимметрична — локальный
+    ⚡ стоит секунды малой модели, облачный путь режет стенограмму наружу
+    и жжёт квоту. Остаточный класс «старт + одно водяное слово» («Что
+    вообще?») мягкий порог пропускает — пусть получает только быстрый
+    локальный ответ (GLM I1 + критика по #466).
     """
     text = " ".join(text.split())
     if not text:
         return False
-    if len(meaningful_words(text)) < MIN_MEANINGFUL:
+    words = text.lower().split()
+    # Ведущие склейки («а», «ну», «так»…) — не сам старт: «А что с
+    # деплоем?» — тот же короткий вопрос (DS M2 по #466). Пропускаем не
+    # больше двух и только слова, которые не являются вопросным стартом.
+    skip = 0
+    while (skip < min(2, len(words) - 1)
+           and words[skip].strip("?,.!»…)") in _GLUE
+           and words[skip].strip("?,.!»…)") not in _QUESTION_START):
+        skip += 1
+    lead = words[skip]
+    first = lead.strip("?,.!»…)")   # «…» тоже пауза STT: «Что… с деплоем?» (DS M1)
+    q_form = "?" in text and (
+        first in _QUESTION_START
+        or " ".join(w.strip("?,.!»…)") for w in words[skip:skip + 2]) in _QUESTION_PAIRS)
+    mw = meaningful_words(text)
+    # Бонус только когда старт САМ выпал из значимых («что», «когда» — в
+    # _GLUE): иначе «Расскажи?» считал бы одно слово дважды. И НЕ при
+    # запятой, приклеенной к старту: «Что, опять?»/«Что, Мира?» — эхо-
+    # переспрос, ради отсечения которого модуль и написан (DS F1 по #466);
+    # у «Что с деплоем?» запятой нет, а «Что, если поедем?» держат два
+    # значимых слова без бонуса.
+    soften = q_form and not strict
+    significant = len(mw) + (1 if soften and "," not in lead and first not in mw else 0)
+    if significant < (2 if soften else MIN_MEANINGFUL):
         return False
     if previous:
         a, b = text.lower(), " ".join(previous.split()).lower()
