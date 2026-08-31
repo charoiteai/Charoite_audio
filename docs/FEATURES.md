@@ -872,6 +872,7 @@ manual Protocol button, while the auto-saved draft — the document people
 actually read, since nothing finalizes it automatically — skipped it. And a
 bare heading line ("Open questions:") did not close the assignments section,
 so the lists after it leaked into the task window as false tasks. Both fixed:
-every draft write passes through the same normalization, and a heading is
-recognized structurally — an unindented line that is not a bullet — rather
-than by a trailing colon on a short line.
+every draft write passes through the same normalization, and a bare heading
+line closes the section only when it names a known minutes section (open
+questions, risks, decisions…) — a trailing colon alone is not enough, because
+inside a live document that shape also belongs to wrapped lines and labels.
