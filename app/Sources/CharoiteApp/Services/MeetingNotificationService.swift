@@ -181,6 +181,21 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
                                          content: content, trigger: nil))
     }
 
+    /// Встреча стартовала на фолбэке BlackHole вместо системного захвата.
+    ///
+    /// Показывается всегда: запись идёт и стороны в ней есть, но человек
+    /// должен знать, что натив не поднялся, — иначе фолбэк живёт незамеченным
+    /// неделями, а BlackHole нельзя удалять (№140: три встречи подряд ушли на
+    /// фолбэк при выданном праве, и об этом не говорило ничто).
+    func presentCaptureFallback(_ body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = L.t("Запись идёт через BlackHole", "Recording via BlackHole", "正在通过 BlackHole 录制")
+        content.body = body
+        content.sound = .default
+        center.add(UNNotificationRequest(identifier: "charoite.capture-fallback",
+                                         content: content, trigger: nil))
+    }
+
     /// Предупреждение перед автостопом — только когда окна не видно.
     ///
     /// У человека минута, чтобы сказать что-нибудь и продолжить запись, а

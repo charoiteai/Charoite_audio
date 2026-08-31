@@ -69,3 +69,28 @@ final class ScreenCaptureReadinessTests: XCTestCase {
                       "у проверки должен быть свой идентификатор")
     }
 }
+
+
+/// №140: натив не поднялся на старте, встреча уходит на BlackHole — молча
+/// нельзя. Три встречи 31.08 ушли на фолбэк при выданном праве, и об этом
+/// не говорило ничто: ни статус, ни уведомление.
+final class CaptureFallbackMessageTests: XCTestCase {
+
+    func testGrantedButFailedIsLoud() {
+        let msg = SuflerService.captureFallbackMessage(.granted)
+        XCTAssertNotNil(msg, "право есть, а захват не поднялся — аномалия, о ней говорим")
+        XCTAssertTrue(msg?.contains("BlackHole") == true)
+    }
+
+    func testGrantedThisSessionExplainsRestart() {
+        let msg = SuflerService.captureFallbackMessage(.grantedNeedsRestart)
+        XCTAssertNotNil(msg)
+        XCTAssertTrue(msg?.contains(L.t("перезапуска", "restart", "重启")) == true,
+                      "человек должен узнать, что право заработает после перезапуска")
+    }
+
+    func testDeniedStaysQuiet() {
+        XCTAssertNil(SuflerService.captureFallbackMessage(.denied),
+                     "права нет — об этом уже говорит готовность (SETUP), не дублируем")
+    }
+}

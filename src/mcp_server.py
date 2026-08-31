@@ -12,6 +12,7 @@ import pathlib
 import subprocess
 
 import requests
+import action_items
 import transcript
 
 import meeting_stamp
@@ -27,7 +28,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover — ветка зависит от версии пакета
     from mcp.server import MCPServer as FastMCP     # mcp 2.x
 
-from charoite_paths import code_root, resolve_root
+from charoite_paths import code_root, harden_umask, resolve_root
 
 ROOT = resolve_root(__file__)
 CODE = code_root(__file__)
@@ -146,6 +147,10 @@ def sufler_make_minutes() -> str:
                 f"({mpath.name})")
     if not out:
         return f"Модель вернула пустой ответ — минутки НЕ тронуты ({mpath.name})"
+    # Поручения — в чекбоксы ДО записи: это был третий путь записи минуток
+    # (после авто-черновика и ручного «Протокола»), и единственный без
+    # normalize — задачи из таких минуток не попадали в окно «Задачи» (№141).
+    out = action_items.normalize(out)
     # Через временное имя: обрыв посреди write_text оставлял бы усечённые
     # минутки ПОВЕРХ готовых — тот же класс, что у .wav в pcm_to_wav.
     tmp = mpath.with_name(mpath.name + f".tmp{os.getpid()}")
@@ -180,4 +185,10 @@ def sufler_update_graph() -> str:
 
 
 if __name__ == "__main__":
+    # 0600 на всём, что пишет сервер: минутки несут содержимое встречи, а без
+    # umask tmp+replace оставлял их 0644 — единственный писатель данных встреч
+    # без этой строки (GLM I7 по #464; в daemon/rebuild/main она давно есть).
+    # Здесь, а не на импорте: модуль импортируют тесты, umask — состояние
+    # процесса, и сайд-эффект на import ронял чужие проверки прав.
+    harden_umask()
     mcp.run()

@@ -54,7 +54,7 @@ import voice_pitch  # noqa: E402
 from audio import AudioHub  # noqa: E402
 from llm import LLM, embed as llm_embed  # noqa: E402
 from stt import STT  # noqa: E402
-from transcript import NOISE, Transcript  # noqa: E402
+from transcript import MINUTES_DRAFT_MARK, NOISE, Transcript  # noqa: E402
 
 import brain  # noqa: E402
 import file_locks  # noqa: E402
@@ -2420,7 +2420,7 @@ def main():
                 # кнопка «Протокол» пишет ФИНАЛЬНЫЕ минутки (26b) без маркера черновика —
                 # авточерновик лёгкой модели не должен их затирать. Чтение — в try:
                 # iCloud-заглушка или права убивали поток до конца встречи молча.
-                if mpath.exists() and not mpath.read_text(encoding="utf-8").startswith("<!-- черновик"):
+                if mpath.exists() and not mpath.read_text(encoding="utf-8").startswith(MINUTES_DRAFT_MARK):
                     continue
             except Exception as e:  # noqa: BLE001
                 emit_error(f"минутки: {short_error(e)}")
@@ -2470,11 +2470,11 @@ def main():
                         except OSError:
                             before = None
                         if before is not None and not mpath.read_text(
-                                encoding="utf-8").startswith("<!-- черновик"):
+                                encoding="utf-8").startswith(MINUTES_DRAFT_MARK):
                             continue
                         tmp = mpath.with_name(mpath.name + f".draft{os.getpid()}")
                         try:
-                            tmp.write_text("<!-- черновик, встреча идёт -->\n" + out, encoding="utf-8")
+                            tmp.write_text(MINUTES_DRAFT_MARK + "\n" + out, encoding="utf-8")
                             try:
                                 now_st = (mpath.stat().st_mtime_ns, mpath.stat().st_size)
                             except OSError:
