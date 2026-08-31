@@ -231,6 +231,37 @@ def test_main_transcript_whose_title_ends_with_live_is_still_found(tmp_path):
     assert find_final_transcript(live) == live.resolve()
 
 
+def test_retitled_final_under_minute_stamp_beats_the_live_copy(tmp_path):
+    """Запись с секундами зовут по минуте: финал — «1415_Тема» при исходной
+    «141501». Спасение живой копии на посекундном шаге не должно закрывать
+    настоящий финал минутного шага: статус цеплялся за «_live», финальный
+    гейт не видел заметку — ГОТОВАЯ встреча падала в error (первая живая
+    встреча 31.08)."""
+    import os
+    live = _transcript(tmp_path)
+    live.unlink()
+    final = live.with_name("2026-07-31_1415_Тема.md")
+    final.write_text("# Встреча 2026-07-31_1415 — Тема\n\nтекст\n", encoding="utf-8")
+    copy = live.with_name("2026-07-31_141501_live.md")
+    copy.write_text("# Встреча 2026-07-31_141501\n\nчерновик\n", encoding="utf-8")
+    os.utime(copy, (os.stat(copy).st_atime, os.stat(final).st_mtime + 100))
+    (tmp_path / "2026-07-31_1415_Тема_minutes.md").write_text("минутки", encoding="utf-8")
+    assert find_final_transcript(live) == final.resolve()
+
+
+def test_minute_glob_never_returns_the_neighbour_meeting(tmp_path):
+    """Минутный глоб видит соседку той же минуты («141505_Тема») — чужой
+    посекундный штамп не кандидат и не источник копий; своя живая копия
+    важнее чужого финала (карточка №39)."""
+    live = _transcript(tmp_path)
+    live.unlink()
+    neighbour = live.with_name("2026-07-31_141505_Тема.md")
+    neighbour.write_text("# Встреча 2026-07-31_141505 — Тема\n\nтекст\n", encoding="utf-8")
+    copy = live.with_name("2026-07-31_141501_live.md")
+    copy.write_text("# Встреча 2026-07-31_141501\n\nчерновик\n", encoding="utf-8")
+    assert find_final_transcript(live) == copy.resolve()
+
+
 def test_status_key_is_the_stamp_and_survives_retitle(tmp_path):
     """Ключ статуса — штамп исходного файла, записанный в сам статус: падение
     после переименования писало «error» под старым стемом, повтор шёл под

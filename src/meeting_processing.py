@@ -64,9 +64,16 @@ def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
     # встреча той же минуты носит тему при посекундном штампе, и минутный
     # глоб находил бы файл соседки (карточка №39).
     bare = meeting_stamp.stamp_of(original.stem) or short_stamp(original)
+    rescues: list[tuple[str, list[pathlib.Path]]] = []
     for stamp in dict.fromkeys((bare, short_stamp(original))):
         candidates, live_copies = [], []
         for path in original.parent.glob(f"{stamp}_*.md"):
+            fstamp = meeting_stamp.stamp_of(path.stem)
+            if fstamp not in (None, stamp, bare):
+                # минутный глоб видит соседку той же минуты («…141505_Тема»
+                # при нашей «…141501»): чужой штамп — не кандидат и не
+                # источник копий (карточка №39)
+                continue
             # По ХВОСТУ имени, как meeting_stamp.stamp_of и rename_meeting: проверка
             # подстрокой вычёркивала главный файл встречи «План_разбора» (тема со
             # словом «разбор» внутри) и статус получал несуществующий путь
@@ -80,30 +87,40 @@ def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
                 # отличаем по содержимому, а не только по имени (хвост 20.08, DS)
                 continue
             candidates.append(path)
-        if not candidates:
-            # «_live» — дословная копия главного файла с тем же началом: рядом с
-            # настоящим главным её спасать по содержимому нельзя, даже если она
-            # моложе (DS по #455). А без главного тема встречи может сама
-            # кончаться на «live» («Демо live») — тогда судим по содержимому,
-            # как остальных (DS r2). Копия узнаётся по имени источника, а не
-            # по mtime: `<штамп>_live` — копия голого штампа, `X_live` при
-            # живом `X` — копия `X`; иначе тронутая синком копия обгоняла бы
-            # главный (DS r3)
-            # источники копий — все файлы с этим штампом в каталоге: «<штамп>_live»
-            # — копия голого файла, «X_live» при живом X — копия X (GLM r1: множество
-            # из одних live-копий делало средний ярус пустым)
-            stems = {path.stem for path in original.parent.glob(f"{stamp}*.md")}
-            mains = [path for path in live_copies if _looks_main(path)]
-            # Сначала не-«<штамп>_live» без живого источника (главный «…_Демо_live»
-            # при переименованном голом файле); затем «<штамп>_live» без голого
-            # рядом — главный прежних версий с темой «live», а не копия (luna по
-            # аудиту 30.08); mtime — только внутри остатка.
-            primary = [path for path in mains
-                       if path.stem[len(stamp):].lower() != "_live"
-                       and path.stem[:-len("_live")] not in stems]
-            candidates = (primary
-                          or [path for path in mains if path.stem[:-len("_live")] not in stems]
-                          or mains)
+        if candidates:
+            return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
+        rescues.append((stamp, live_copies))
+    # Спасение «_live» — только когда НИ ОДИН штамп не дал настоящего файла:
+    # запись с секундами зовут по минуте («0845_Тема» при исходной «084531»),
+    # и спасённая на посекундном шаге копия закрывала бы настоящий финал
+    # минутного шага — статус цеплялся за «_live», финальный гейт не видел
+    # заметку, готовая встреча падала в error (первая живая встреча 31.08).
+    for stamp, live_copies in rescues:
+        if not live_copies:
+            continue
+        # «_live» — дословная копия главного файла с тем же началом: рядом с
+        # настоящим главным её спасать по содержимому нельзя, даже если она
+        # моложе (DS по #455). А без главного тема встречи может сама
+        # кончаться на «live» («Демо live») — тогда судим по содержимому,
+        # как остальных (DS r2). Копия узнаётся по имени источника, а не
+        # по mtime: `<штамп>_live` — копия голого штампа, `X_live` при
+        # живом `X` — копия `X`; иначе тронутая синком копия обгоняла бы
+        # главный (DS r3)
+        # источники копий — все файлы с этим штампом в каталоге: «<штамп>_live»
+        # — копия голого файла, «X_live» при живом X — копия X (GLM r1: множество
+        # из одних live-копий делало средний ярус пустым)
+        stems = {path.stem for path in original.parent.glob(f"{stamp}*.md")}
+        mains = [path for path in live_copies if _looks_main(path)]
+        # Сначала не-«<штамп>_live» без живого источника (главный «…_Демо_live»
+        # при переименованном голом файле); затем «<штамп>_live» без голого
+        # рядом — главный прежних версий с темой «live», а не копия (luna по
+        # аудиту 30.08); mtime — только внутри остатка.
+        primary = [path for path in mains
+                   if path.stem[len(stamp):].lower() != "_live"
+                   and path.stem[:-len("_live")] not in stems]
+        candidates = (primary
+                      or [path for path in mains if path.stem[:-len("_live")] not in stems]
+                      or mains)
         if candidates:
             return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
     return original.resolve()
