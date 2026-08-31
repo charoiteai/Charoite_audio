@@ -443,14 +443,10 @@ final class SuflerService: ObservableObject {
             captureStartTask = task
             return
         }
-        // Блок старта пропущен: capture остался от прошлой встречи или macOS
-        // старая. Молча уходить в демона нельзя — это главный подозреваемый
-        // тихого фолбэка №140.
-        if #available(macOS 13.0, *) {
-            SystemAudioCapture.captureLog(
-                "старт записи БЕЗ нового захвата: systemAudioCapture уже занят "
-                + "(isActive=\((systemAudioCapture as? SystemAudioCapture)?.isActive ?? false))")
-        }
+        // Блок старта пропущен: capture остался от прошлой встречи — главный
+        // подозреваемый тихого фолбэка №140. Молча уходить в демона нельзя.
+        SystemAudioCapture.captureLog("старт записи БЕЗ нового захвата: systemAudioCapture уже занят "
+            + "(isActive=\((systemAudioCapture as? SystemAudioCapture)?.isActive ?? false))")
         launchDaemon(preserveUI: preserveUI, token: token)
     }
 
