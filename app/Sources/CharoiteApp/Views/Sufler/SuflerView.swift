@@ -536,7 +536,10 @@ struct SuflerView: View {
                     Button("Claude") { sufler.requestCloud() }
                         .charoite(.quiet, .m)
                         .keyboardShortcut(.return, modifiers: [.command, .shift])
-                        .disabled(sufler.isClouding || !sufler.cloudOn)
+                        // isClouding из условия ушёл вместе с лентой (№53):
+                        // демон cloud_start не эмитит с #232, флаг был вечно
+                        // false и кнопку не блокировал ни разу.
+                        .disabled(!sufler.cloudOn)
                         .help(sufler.cloudOn
                               ? L.t("Спросить Claude по ходу встречи — кусок стенограммы уйдёт в облако (⌘⇧⏎)", "Ask Claude mid-meeting — a transcript slice goes to the cloud (⌘⇧⏎)", "会议中问 Claude — 一段逐字稿将发送至云端（⌘⇧⏎）")
                               : L.t("Облако выключено: включите «Claude» в тулбаре. Стенограмма не покидает машину", "Cloud is off: enable “Claude” in the toolbar. The transcript never leaves this machine", "云端已关闭：在工具栏开启「Claude」。逐字稿不会离开本机"))
@@ -681,7 +684,9 @@ struct SuflerView: View {
                 paneTitle(L.t("Нить встречи", "Meeting thread", "会议脉络"),
                           systemImage: "text.line.first.and.arrowtriangle.forward",
                           copy: { sufler.thread })
-                if sufler.isHinting || (sufler.isRunning && sufler.isClouding) {
+                // isClouding из условия ушёл (№53): флаг был вечно false с
+                // #232 — спиннер облака здесь не загорался ни разу.
+                if sufler.isHinting {
                     ProgressView().controlSize(.small).padding(.trailing, 10)
                 }
             }
@@ -740,8 +745,9 @@ struct SuflerView: View {
                                 .foregroundStyle(.tertiary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        // облачная лента — в той же панели, sky-карточкой:
-                        // видно, ЧТО ушло с машины, без отдельного окна
+                        // облачный информер — sky-карточкой в той же панели:
+                        // напоминает, что тумблер шлёт стенограмму наружу;
+                        // сам ответ приходит в нить (№53, круг по #466)
                         if sufler.isRunning && sufler.cloudOn {
                             cloudCard
                                 .padding(.top, 10)
@@ -758,12 +764,6 @@ struct SuflerView: View {
                     DispatchQueue.main.async {
                         proxy.scrollTo(pane.showHintCard ? "hintTop" : "hintBottom",
                                        anchor: pane.showHintCard ? .top : .bottom)
-                    }
-                }
-                // лента Claude растёт вниз — держимся за низ и для неё
-                .onChange(of: sufler.cloud) { _, _ in
-                    DispatchQueue.main.async {
-                        proxy.scrollTo("hintBottom", anchor: .bottom)
                     }
                 }
             }
@@ -796,9 +796,12 @@ struct SuflerView: View {
         .padding(.top, topPad)
     }
 
-    /// Облачная лента внутри панели подсказки: sky-карточка — облачное
-    /// заметно цветом (DESIGN.md), тумблер ☁️ остаётся единственным
-    /// выключателем отправки стенограммы с машины.
+    /// Облачная карточка — статичный информер, не лента: с #232 демон кладёт
+    /// облачный ответ в НИТЬ (пакет владельца 24.08 — вопрос в аудит, ответ
+    /// в полотно), а событий cloud/cloud_start не эмитит; лента была вечно
+    /// пустым приёмником с мёртвым guard'ом (три головы по #394, №53).
+    /// Остаётся то, ради чего карточка нужна: privacy-строка «уходит с
+    /// машины» рядом с единственным сетевым тумблером и hotkey-подсказка.
     private var cloudCard: some View {
         CloudSurface {
             HStack(spacing: 6) {
@@ -813,17 +816,13 @@ struct SuflerView: View {
                     .font(.caption2)
                     .foregroundStyle(Theme.sky.opacity(0.8))
                 Spacer()
-                if !sufler.cloud.isEmpty {
-                    SuflerCopyButton(text: { sufler.cloud })
-                }
             }
             .foregroundStyle(Theme.sky)
-            Text(sufler.cloud.isEmpty
-                 ? AttributedString(L.t("Вопрос собеседника уйдёт Claude автоматически · ⌘⇧⏎ — вручную", "The other side's question goes to Claude automatically · ⌘⇧⏎ — manually", "对方的问题会自动发给 Claude · ⌘⇧⏎ — 手动发送"))
-                 : withBoldQuestions(sufler.cloud))
+            Text(L.t("Вопрос собеседника уйдёт Claude автоматически, ответ — в нити · ⌘⇧⏎ — вручную",
+                     "The other side's question goes to Claude automatically, the answer lands in the thread · ⌘⇧⏎ — manually",
+                     "对方的问题会自动发给 Claude，回答落入会话线 · ⌘⇧⏎ — 手动发送"))
                 .font(.callout)
-                .foregroundStyle(sufler.cloud.isEmpty ? .tertiary : .primary)
-                .textSelection(.enabled)
+                .foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
