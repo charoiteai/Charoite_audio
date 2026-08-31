@@ -34,7 +34,7 @@ struct CharoiteApp: App {
             MenuBarView()
                 .tint(Theme.accent)
         } label: {
-            Image(systemName: "brain.head.profile")
+            MenuBarLabel()
         }
         .menuBarExtraStyle(.window)
 

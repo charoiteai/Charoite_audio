@@ -356,9 +356,22 @@ def collides_with_neutral(owner_label: str, other_label: str = NEUTRAL_BASE) -> 
         return True
     if owner_label == other_label:
         return True
-    # База — НЕ параметр, а константа: нумерованные метки генерируются от неё
-    # независимо от того, как названы каналы.
-    return bool(re.fullmatch(rf"{re.escape(NEUTRAL_BASE)} ?\d+", owner_label))
+    return is_neutral_label(owner_label)
+
+
+def is_neutral_label(label: str) -> bool:
+    """Форма нейтральной метки: «Собеседник» или «Собеседник N».
+
+    ЕДИНСТВЕННЫЙ предикат этой формы — раньше он жил тремя копиями
+    (` ?\d+` здесь, `\s+\d+` в скоринге пересборки, опциональный номер в
+    перештамповке), и щель между ними возвращала №147 для имени владельца
+    с экзотическим пробелом («Собеседник\u00a02» — GLM M2 по #465).
+    База — НЕ параметр, а константа: нумерованные метки генерируются от
+    неё независимо от того, как названы каналы.
+    """
+    # \s* (не \s+): «Собеседник2» слитно — тоже коллизия; сужение гварда
+    # уже возвращало эту дыру (ревью 19.08, третий круг — тест это пинует).
+    return bool(re.fullmatch(rf"{re.escape(NEUTRAL_BASE)}(?:\s*\d+)?", label))
 
 
 def label_for(voice: int | None, *, is_mic: bool, heard: Heard,

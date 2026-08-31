@@ -18,6 +18,9 @@ import speaker_names
 
 NEUTRAL_MIC = "Я"
 NEUTRAL_OTHER = "Собеседник"
+# Единый предикат формы нейтральной метки — живёт в owner_voice (ниже по
+# слою), здесь реэкспорт для читателей канальных правил (GLM M2 по #465).
+is_neutral_label = owner_voice.is_neutral_label
 
 
 def mic_label_for(cfg: dict, other: str = NEUTRAL_OTHER) -> str:

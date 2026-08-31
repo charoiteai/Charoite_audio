@@ -2,6 +2,30 @@ import SwiftUI
 
 #if os(macOS)
 
+/// Иконка в системной строке — единственное, что видно ВСЕГДА.
+///
+/// Critical конвейера (запись не пишется на диск — isCritical пропускает
+/// только .recordingUnavailable; зависший STT остаётся жёлтым статусом в
+/// меню) раньше жил только внутри выпадающего меню: пока человек его не
+/// откроет — тишина (№110, advisory GLM по #431). Теперь сам символ
+/// меняется на предупреждающий; строка меню может отрисовать монохромно,
+/// поэтому носитель сигнала — форма символа, цвет — усилитель.
+struct MenuBarLabel: View {
+    @ObservedObject private var sufler = SuflerService.shared
+
+    var body: some View {
+        if sufler.isRunning && sufler.pipelineStatusIsCritical {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+                .accessibilityLabel(L.t("Критическая ошибка записи",
+                                        "Critical recording failure",
+                                        "录音出现严重故障"))
+        } else {
+            Image(systemName: "brain.head.profile")
+        }
+    }
+}
+
 /// Меню-бар: статус, быстрый вопрос локальной модели, диктовка и заметка.
 struct MenuBarView: View {
     @ObservedObject private var sufler = SuflerService.shared
