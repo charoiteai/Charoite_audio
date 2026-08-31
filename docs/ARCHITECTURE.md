@@ -297,7 +297,14 @@ rebuild keeps its current version in `transcripts/.prev/<name>` (one
 generation): the live draft `_live.md` is written once, and manual edits
 between two rebuilds used to vanish. Meeting notes, archive files and
 statuses go through `safe_write` (tmp + replace), so an interrupted write
-never leaves an empty file.
+never leaves an empty file. Resolving the final transcript from the
+original name takes two passes: real candidates under both stamps first
+(seconds, then minute — a seconds-stamped recording is retitled under its
+minute), and only then the `_live`-copy rescue; a neighbour meeting's
+seconds stamp within the same minute is neither a candidate nor a copy
+source. Otherwise the copy rescued on the seconds pass would shadow the
+minute-stamped final, and a completed meeting was marked as error (first
+live meeting, 31.08).
 
 ## The knowledge graph (an Obsidian folder)
 
