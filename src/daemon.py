@@ -36,6 +36,7 @@ deps.explain_missing()      # запущено не из .venv — скажем 
 import yaml  # noqa: E402
 
 import action_items  # noqa: E402
+import safe_write  # noqa: E402
 import autostop as autostop_rules  # noqa: E402
 import channel_labels  # noqa: E402
 import cloud  # noqa: E402
@@ -2464,26 +2465,18 @@ def main():
                     with minutes_lock:
                         # Финал пишет не только «Протокол» этого процесса, но и
                         # mcp «Минутки» из другого — замок его не видит; сверяем
-                        # файл по stat перед подменой (GLM по #457)
-                        try:
-                            before = (mpath.stat().st_mtime_ns, mpath.stat().st_size)
-                        except OSError:
-                            before = None
+                        # файл по stat перед подменой (GLM по #457). Снимок и
+                        # проверка — общим safe_write.expect: локальная копия
+                        # протокола дважды расходилась с оригиналом (DS+GLM по
+                        # #465). before is None = первого черновика ещё нет —
+                        # expect=None пишет свободно, семантика прежняя.
+                        before = safe_write.stat_snapshot(mpath)
                         if before is not None and not mpath.read_text(
                                 encoding="utf-8").startswith(MINUTES_DRAFT_MARK):
                             continue
-                        tmp = mpath.with_name(mpath.name + f".draft{os.getpid()}")
-                        try:
-                            tmp.write_text(MINUTES_DRAFT_MARK + "\n" + out, encoding="utf-8")
-                            try:
-                                now_st = (mpath.stat().st_mtime_ns, mpath.stat().st_size)
-                            except OSError:
-                                now_st = None
-                            if now_st != before:
-                                continue          # файл сменился под нами — не затираем чужой финал
-                            tmp.replace(mpath)
-                        finally:
-                            tmp.unlink(missing_ok=True)
+                        if not safe_write.write_text(
+                                mpath, MINUTES_DRAFT_MARK + "\n" + out, expect=before):
+                            continue          # файл сменился под нами — не затираем чужой финал
                     emit({"type": "status", "text": f"🗒 минутки-черновик обновлены ({dt.datetime.now():%H:%M})"})
             except Exception as e:  # noqa: BLE001
                 emit_error(f"минутки: {short_error(e)}")
