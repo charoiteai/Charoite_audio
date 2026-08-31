@@ -260,3 +260,17 @@ def test_mcp_minutes_normalize_before_write():
         "mcp-путь минуток должен звать action_items.normalize")
     assert fn.index("action_items.normalize(out)") < fn.index("tmp.write_text"), (
         "normalize обязан отработать ДО записи файла")
+
+
+def test_pair_restore_leftover_bold_is_cleaned():
+    """Восстановление парности само создаёт нечёт: «Проверить **договор** —
+    …» получало ведущие ** и оставляло хвост «договор**» жирным до конца
+    строки (GLM M9 по #464). Страховка снимает ВСЕ ** при нечётности —
+    последней, когда «— **Срок: …» уже разобран."""
+    out = normalize("**Поручения:**\n*   Проверить **договор** — до пятницы\n")
+    line = next(l for l in out.split("\n") if l.startswith("- [ ]"))
+    assert line.count("**") % 2 == 0, out
+
+    # канонический пункт с «— **Срок:» страховкой не задет
+    ok = normalize("**Поручения:**\n*   **- **Ольга** — смета. — **Срок: 25.07**.**")
+    assert "- [ ] **Ольга** — смета. — до 25.07" in ok, ok

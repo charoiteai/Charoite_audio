@@ -444,9 +444,13 @@ final class SuflerService: ObservableObject {
             return
         }
         // Блок старта пропущен: capture остался от прошлой встречи — главный
-        // подозреваемый тихого фолбэка №140. Молча уходить в демона нельзя.
-        SystemAudioCapture.captureLog("старт записи БЕЗ нового захвата: systemAudioCapture уже занят "
-            + "(isActive=\((systemAudioCapture as? SystemAudioCapture)?.isActive ?? false))")
+        // подозреваемый тихого фолбэка №140. Мёртвый остаток (isActive=false)
+        // означает встречу без манифеста, то есть BlackHole, — говорим вслух
+        // так же, как в ветке !ready (GLM M8 по #464).
+        let leftoverActive = (systemAudioCapture as? SystemAudioCapture)?.isActive ?? false
+        SystemAudioCapture.captureLog("старт записи БЕЗ нового захвата: "
+            + "systemAudioCapture уже занят (isActive=\(leftoverActive))")
+        if !leftoverActive { announceCaptureFallback() }
         launchDaemon(preserveUI: preserveUI, token: token)
     }
 
@@ -478,6 +482,7 @@ final class SuflerService: ObservableObject {
         }
         FileManager.default.makePrivate(atPath: errURL.path)   // лог старой установки
         LogTrim.trim(errURL)   // потолок: хвост остаётся, гигабайты — нет
+        LogTrim.trim(SystemAudioCapture.captureLogURL)   // журнал захвата — тот же потолок (DS M2)
         let errFH = try? FileHandle(forWritingTo: errURL)
         errFH?.seekToEndOfFile()
         p.standardError = errFH ?? FileHandle.nullDevice

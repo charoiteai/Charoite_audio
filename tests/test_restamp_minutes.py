@@ -27,24 +27,24 @@ def test_marker_removed_and_labels_become_names(tmp_path):
     live, mpath = _make(
         tmp_path,
         transcript.MINUTES_DRAFT_MARK + "\n# Минутки\n\n"
-        "Участники: Антон, Собеседник 2, Собеседник 4\n\n"
+        "Участники: Ян, Собеседник 2, Собеседник 4\n\n"
         "Поручения:\n- [ ] **Собеседник 2** — прислать смету\n")
     rebuild_transcript.restamp_minutes(
-        live, {"Собеседник 2": "Юля", "Собеседник 4": "Сергей"})
+        live, {"Собеседник 2": "Инга", "Собеседник 4": "Марк"})
     out = mpath.read_text(encoding="utf-8")
     assert transcript.MINUTES_DRAFT_MARK not in out
-    assert "Юля" in out and "Сергей" in out
+    assert "Инга" in out and "Марк" in out
     assert "Собеседник 2" not in out and "Собеседник 4" not in out
-    assert "- [ ] **Юля** — прислать смету" in out
+    assert "- [ ] **Инга** — прислать смету" in out
 
 
 def test_label_boundary_respects_digits(tmp_path):
     """«Собеседник 2» не должен красить «Собеседник 22»."""
     live, mpath = _make(
         tmp_path, "Участники: Собеседник 2, Собеседник 22\n")
-    rebuild_transcript.restamp_minutes(live, {"Собеседник 2": "Юля"})
+    rebuild_transcript.restamp_minutes(live, {"Собеседник 2": "Инга"})
     out = mpath.read_text(encoding="utf-8")
-    assert "Юля, Собеседник 22" in out, out
+    assert "Инга, Собеседник 22" in out, out
 
 
 def test_idempotent_and_quiet_without_minutes(tmp_path):
@@ -52,9 +52,25 @@ def test_idempotent_and_quiet_without_minutes(tmp_path):
     минуток, ни переписывать уже перештампованный файл."""
     live = tmp_path / "no_minutes.md"
     live.write_text("# Встреча\n", encoding="utf-8")
-    rebuild_transcript.restamp_minutes(live, {"Собеседник 2": "Юля"})  # файла нет — тихо
+    rebuild_transcript.restamp_minutes(live, {"Собеседник 2": "Инга"})  # файла нет — тихо
 
-    live2, mpath = _make(tmp_path, "# Минутки\nУчастники: Юля\n")
+    live2, mpath = _make(tmp_path, "# Минутки\nУчастники: Инга\n")
     before = mpath.stat().st_mtime_ns
-    rebuild_transcript.restamp_minutes(live2, {"Собеседник 2": "Юля"})
+    rebuild_transcript.restamp_minutes(live2, {"Собеседник 2": "Инга"})
     assert mpath.stat().st_mtime_ns == before, "нечего менять — файл не трогается"
+
+
+def test_owner_label_is_never_substituted(tmp_path):
+    """names может нести и метку владельца («Я» при пустом user_name —
+    names_by_time скорит все сегменты, №147): без фильтра re.sub без границы
+    слова переписал бы каждое «Я» и каждое «Яблоко» документа (DS Critical
+    по #464). Подменяются только нейтральные «Собеседник N»."""
+    live, mpath = _make(
+        tmp_path,
+        "# Минутки\n\nЯ отвечаю за релиз. Январь — срок Яна. Яблочный пирог — Собеседник 2.\n")
+    rebuild_transcript.restamp_minutes(
+        live, {"Я": "Имярек", "Ян": "Имярек2", "Собеседник 2": "Инга"})
+    out = mpath.read_text(encoding="utf-8")
+    assert "Я отвечаю за релиз. Январь — срок Яна." in out, out
+    assert "Яблочный пирог — Инга." in out, out
+    assert "Имярек" not in out

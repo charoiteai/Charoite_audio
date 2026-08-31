@@ -570,7 +570,11 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
         body.append(m.group(0).lstrip("\n"))
 
     write_final(live, "\n".join(body).rstrip() + "\n", live_text)
-    restamp_minutes(live, names)
+    # В минутки — ТОЛЬКО имена живой сессии (meta["names"]): их метки — та же
+    # живая нумерация, которой минутки и написаны. Пересборочный `names` живёт
+    # в другом пространстве номеров (docstring names_by_time), и подстановка
+    # по нему клеила бы имя не тому человеку (GLM Critical по #464).
+    restamp_minutes(live, dict(meta.get("names") or {}))
     return live
 
 
@@ -595,7 +599,7 @@ def write_final(live: pathlib.Path, text: str, live_text: str) -> pathlib.Path:
     return live
 
 
-def restamp_minutes(live: pathlib.Path, names: dict[str, str]) -> None:
+def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> None:
     """Минутки после пересборки: снять маркер черновика, подставить имена.
 
     Минутки пишет демон по ходу встречи; автофинализации нет, и после
@@ -604,9 +608,19 @@ def restamp_minutes(live: pathlib.Path, names: dict[str, str]) -> None:
     финальная и с именами (№146, встреча 08:45 31.08). Минутки целиком не
     перегенерируем: LLM-вызов в rebuild-пути дорог, а главное — затёр бы
     ручные правки человека. Перештамповка точечная: маркер и метки.
+
+    `live_names` — словарь ЖИВОЙ сессии (live.json: «Собеседник N» → имя):
+    его метки — та же нумерация, которой написаны минутки. Имена, доугаданные
+    пересборкой по СВОИМ меткам, сюда не идут — без выравнивания нумераций
+    это подстановка наугад (GLM Critical по #464).
     """
     mpath = live.with_name(live.stem + "_minutes.md")
-    if not mpath.exists():
+    # Снимок состояния ДО чтения: пересборка — отдельный процесс, minutes_lock
+    # демона её не видит, и в окно read→write мог лечь чужой финал (mcp
+    # «Минутки», редактор человека). Тот же гейт, что у демона (DS I1 по #464).
+    try:
+        before = (mpath.stat().st_mtime_ns, mpath.stat().st_size)
+    except OSError:
         return
     try:
         text = mpath.read_text(encoding="utf-8")
@@ -616,14 +630,29 @@ def restamp_minutes(live: pathlib.Path, names: dict[str, str]) -> None:
     fixed = text
     for line in (transcript.MINUTES_DRAFT_MARK + "\n", transcript.MINUTES_DRAFT_MARK):
         fixed = fixed.replace(line, "", 1)
-    for label, name in names.items():
-        # (?!\d): «Собеседник 2» не должен красить «Собеседник 22»
-        fixed = re.sub(re.escape(label) + r"(?!\d)", name, fixed)
+    for label, name in live_names.items():
+        # Только нейтральные метки: любой другой ключ (метка владельца «Я»,
+        # короткое имя) без границ слова переписал бы живой текст — «Ясно» →
+        # «Имясно» (DS Critical по #464). Границы \w держат и «Собеседник 22»
+        # от «Собеседник 2», и «Январь» от «Ян»; имя — литералом, не шаблоном
+        # замены (обратный слэш в имени не интерпретируется).
+        if not name or not re.fullmatch(r"Собеседник\s+\d+", label):
+            continue
+        fixed = re.sub(r"(?<!\w)" + re.escape(label) + r"(?!\w)",
+                       lambda _m, n=name: n, fixed)
     if fixed == text:
+        return
+    try:
+        now = (mpath.stat().st_mtime_ns, mpath.stat().st_size)
+    except OSError:
+        now = None
+    if now != before:
+        log("минутки сменились под пересборкой — перештамповка пропущена")
         return
     safe_write.write_text(mpath, fixed)
     log(f"минутки перештампованы: {mpath.name}"
-        + (f" (имена: {', '.join(f'{k}→{v}' for k, v in names.items())})" if names else " (снят маркер черновика)"))
+        + (f" (имена: {', '.join(f'{k}→{v}' for k, v in live_names.items())})"
+           if live_names else " (снят маркер черновика)"))
 
 
 def names_pending(live: pathlib.Path) -> bool:

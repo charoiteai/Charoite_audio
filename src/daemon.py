@@ -2420,7 +2420,7 @@ def main():
                 # кнопка «Протокол» пишет ФИНАЛЬНЫЕ минутки (26b) без маркера черновика —
                 # авточерновик лёгкой модели не должен их затирать. Чтение — в try:
                 # iCloud-заглушка или права убивали поток до конца встречи молча.
-                if mpath.exists() and not mpath.read_text(encoding="utf-8").startswith("<!-- черновик"):
+                if mpath.exists() and not mpath.read_text(encoding="utf-8").startswith(MINUTES_DRAFT_MARK):
                     continue
             except Exception as e:  # noqa: BLE001
                 emit_error(f"минутки: {short_error(e)}")
@@ -2470,7 +2470,7 @@ def main():
                         except OSError:
                             before = None
                         if before is not None and not mpath.read_text(
-                                encoding="utf-8").startswith("<!-- черновик"):
+                                encoding="utf-8").startswith(MINUTES_DRAFT_MARK):
                             continue
                         tmp = mpath.with_name(mpath.name + f".draft{os.getpid()}")
                         try:
