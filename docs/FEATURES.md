@@ -358,6 +358,9 @@ it signals degradation, it does not break the loop.
   it with the card's ✕ (a thread tick lands seconds after the answer —
   it must not eat it). A hint mid-stream is never cut by a thread event
   either; the daemon marks streams as manual/auto so the app can tell.
+  The transcript and hint tokens repaint the screen in batches (feed up
+  to 4 times a second, stream ~7 fps) rather than per recognized chunk:
+  dense speech does not eat button responsiveness.
   While streaming, the view anchors to the top of the card so tokens do
   not scroll past the reader. If hints are toggled off, the
   empty pane says so instead of promising a thread that will never grow.
