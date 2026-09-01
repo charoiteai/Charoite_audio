@@ -61,6 +61,13 @@ final class SuflerService: ObservableObject {
         statusErrorFromDaemon = false
     }
     @Published var lines: [TranscriptLine] = []
+    /// Тень ленты (№153): мутации — ТОЛЬКО из consume и сбросов start(),
+    /// мимо коалессера (SuflerTranscriptFeed.swift, там история) — шторм
+    /// или рассинхрон с экраном. Dirty вместо сравнения массивов: диф
+    /// 500×2500 символов на каждый флаш грузил тот же main thread (GLM).
+    var _linesShadow: [TranscriptLine] = []
+    var _linesFlushScheduled = false
+    var _linesDirty = false
     @Published var hint = ""
 
     /// Нить встречи: то, что читают, пока разговор идёт.
@@ -103,6 +110,7 @@ final class SuflerService: ObservableObject {
     /// всю встречу — главное слагаемое 37% CPU за 4,5 дня аптайма (№50).
     /// Длительность считается от даты старта, а не накоплением тиков,
     /// поэтому уснувший ноутбук её не «съедает».
+
     private func startClock() {
         recordingStartedAt = Date()
     }
@@ -134,13 +142,13 @@ final class SuflerService: ObservableObject {
     /// в stop() и при смерти демона.
     var systemAudioCapture: Any?
     private var stdoutBuffer = Data()
-    private var _hintBuf = ""            // буфер троттла подсказки (см. consume)
+    var _hintBuf = ""            // буфер троттла подсказки (см. consume)
     // Панель различает содержимое подсказки: авто-контент (бриф, автоподсказки
     // раз в 75с) нить вправе вытеснить, а ответ на РУЧНОЙ вопрос/подсказку —
     // нет: демон эмитит thread сразу после отпускания hint_lock, то есть через
     // секунды после hint_done ручного ответа (ревью 16.08, №22). Ручной ответ
     // живёт до крестика или до следующей авто-подсказки — та вытесняет.
-    private var hintIsManual = false
+    var hintIsManual = false
     // Живой НЕзапрошенный стрим (авто-цикл демона): isHinting его не видит
     // (тот взводится только ручными запросами), а thread-событие посреди
     // авто-стрима резало буфер пополам — хвост рисовался с середины фразы.
@@ -148,7 +156,7 @@ final class SuflerService: ObservableObject {
     /// Финал последнего авто-стрима (uptime, не настенные часы — NTP-шаг не
     /// должен молодить/убивать карточку; правило файла, третий случай).
     private var _hintDoneUptime: TimeInterval = -1
-    private var _lastHintUI = Date.distantPast
+    var _lastHintUI = Date.distantPast
     // Три независимых пульса: daemon main-thread, сам STT consumer и входные
     // аудиокадры. Раньше первый продолжал слать hb при мёртвом STT, поэтому
     // приложение двадцать минут считало замершую стенограмму здоровой.
@@ -271,6 +279,8 @@ final class SuflerService: ObservableObject {
     func publishLifecycle() {
         lifecycle = lifecycleGate.state
         isRunning = lifecycle == .recording
+        flushLines()   // смена фазы не ждёт 250-мс коалессер: хвост ленты
+                       // виден сразу на «Стоп»/старте (№153)
     }
 
     func start(preserveUI: Bool = false) {
@@ -363,7 +373,7 @@ final class SuflerService: ObservableObject {
             return
         }
         if !preserveUI {                 // авто-рестарт не должен стирать встречу с экрана
-            lines = []
+            lines = []; _linesShadow = []
             hint = ""; _hintDoneUptime = -1
             // Нить прошлой встречи держится на экране до старта следующей —
             // после «Стоп» её дочитывают и копируют. Но в новую встречу она
@@ -712,7 +722,7 @@ final class SuflerService: ObservableObject {
     private var hintDeadline: Timer?
     private var _lastHintRearm = Date.distantPast
 
-    private func armHintTimeout() {
+    func armHintTimeout() {   // internal: зовут и extension-файлы (вынос №153)
         hintDeadline?.invalidate()
         hintDeadline = Timer.scheduledTimer(withTimeInterval: 150, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -730,25 +740,6 @@ final class SuflerService: ObservableObject {
         hintDeadline = nil
     }
 
-    func requestHint() {
-        guard isRunning, !isHinting else { return }
-        hint = ""
-        _hintBuf = ""; _lastHintUI = .distantPast
-        isHinting = true
-        hintIsManual = true
-        armHintTimeout()
-        send("hint")
-    }
-
-    func requestSummary() {
-        guard isRunning, !isHinting else { return }
-        hint = ""
-        _hintBuf = ""; _lastHintUI = .distantPast
-        isHinting = true
-        hintIsManual = true
-        armHintTimeout()
-        send("summary")
-    }
 
     /// Крестик на карточке подсказки: ручной ответ нить не гасит (он может
     /// быть нужен до конца встречи), поэтому убрать его с экрана может
@@ -834,6 +825,11 @@ final class SuflerService: ObservableObject {
         }
     }
 
+    /// Тестовый вход: private consume виден extension ЭТОГО файла — сырой
+    /// NDJSON-вход не открывается модулю (DS r1 по #473: из consume
+    /// достижим stop() живой записи).
+    func consumeForTest(_ json: String) { consume(Data((json + "\n").utf8)) }
+
     private func consume(_ data: Data) {
         stdoutBuffer.append(data)
         lastEventAt = Date()  // любое событие (включая hb) = демон жив
@@ -860,15 +856,16 @@ final class SuflerService: ObservableObject {
                 let plain = obj["plain"] as? String ?? ""
                 // куски одного голоса — в один абзац, а не строкой-«батчем» на каждый
                 // 3с-чанк; новый блок только на смене говорящего (или очень длинном)
-                if !spk.isEmpty, !plain.isEmpty, let last = lines.last,
+                if !spk.isEmpty, !plain.isEmpty, let last = _linesShadow.last,
                    last.speaker == spk, last.text.count < 2500 {
-                    lines[lines.count - 1].text += " " + plain
+                    _linesShadow[_linesShadow.count - 1].text += " " + plain
                 } else {
-                    lines.append(TranscriptLine(ts: obj["ts"] as? String ?? "",
-                                                speaker: spk,
-                                                text: plain.isEmpty ? text : plain))
+                    _linesShadow.append(TranscriptLine(ts: obj["ts"] as? String ?? "",
+                                                       speaker: spk,
+                                                       text: plain.isEmpty ? text : plain))
                 }
-                if lines.count > 500 { lines.removeFirst(lines.count - 500) }
+                if _linesShadow.count > 500 { _linesShadow.removeFirst(_linesShadow.count - 500) }
+                scheduleLinesFlush()
                 restartAttempts = 0  // транскрипция реально идёт — лимит рестартов обнуляем
             case "thread":
                 thread = text
@@ -937,7 +934,11 @@ final class SuflerService: ObservableObject {
                 }
                 // троттл ~30fps: hint растёт по токену, растущий Text = O(n²)
                 _hintBuf += text
-                if Date().timeIntervalSince(_lastHintUI) >= 0.033 {
+                // 150 мс, не кадровые 33: каждый токен-флаш пересобирал
+                // ВЕСЬ SuflerView (пять ObservedObject), 30 fps стрима —
+                // главный слагаемый шторма №153; глазу поток и на 7 fps
+                // непрерывен, а пересборок в 4,5 раза меньше.
+                if Date().timeIntervalSince(_lastHintUI) >= 0.15 {
                     hint = _hintBuf; _lastHintUI = Date()
                 }
                 // Идущая генерация — не зависшая: пока токены приходят, дедлайн
@@ -953,11 +954,12 @@ final class SuflerService: ObservableObject {
                 // e4b разметил реплики диалога внутри последнего абзаца этого голоса
                 let spk = obj["speaker"] as? String ?? ""
                 if !spk.isEmpty, !text.isEmpty {
-                    for i in stride(from: lines.count - 1, through: 0, by: -1)
-                    where lines[i].speaker == spk {
-                        lines[i].text = text
+                    for i in stride(from: _linesShadow.count - 1, through: 0, by: -1)
+                    where _linesShadow[i].speaker == spk {
+                        _linesShadow[i].text = text
                         break
                     }
+                    scheduleLinesFlush()
                 }
             case "hint_done":
                 let manual = obj["manual"] as? Bool ?? isHinting
@@ -982,9 +984,10 @@ final class SuflerService: ObservableObject {
                 // задним числом по всей ленте (стенограмму демон правит сам)
                 if let from = obj["from"] as? String,
                    let to = obj["to"] as? String, !from.isEmpty, !to.isEmpty {
-                    for i in lines.indices where lines[i].speaker == from {
-                        lines[i].speaker = to
+                    for i in _linesShadow.indices where _linesShadow[i].speaker == from {
+                        _linesShadow[i].speaker = to
                     }
+                    scheduleLinesFlush()
                 }
             default:
                 break  // hb и будущие типы — просто отметка живости выше
