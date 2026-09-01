@@ -260,12 +260,15 @@ def test_дефолт_limits_совпадает_с_конфигом():
 def test_farewell_detector_forms():
     """Короткие прощальные реплики матчатся, союз «пока» — нет."""
     yes = ["Всем пока!", "Ну всё, пока.", "До свидания", "Пока",
-           "давайте пока", "Спасибо, до связи", "хорошего дня", "До завтра",
-           "Пока-пока"]
+           "давайте пока", "Спасибо, до связи", "До завтра", "Пока-пока"]
     no = ["пока не забыл про отчёт", "я пока посмотрю документ",
           "пока идёт репликация посмотрим логи",
           "созвонимся завтра по этому вопросу и обсудим детали позже",
-          "всем нужно посмотреть протокол до завтрашней встречи и дать ответ"]
+          "всем нужно посмотреть протокол до завтрашней встречи и дать ответ",
+          # слабые формы — не прощание сами по себе: живой замер поймал их
+          # посреди встреч («Ну, а пока» на 23-й реплике из 266)
+          "хорошего дня", "Всем спасибо.", "Ну, а пока. Пока.",
+          "Пока. Угу, спасибо, хорошего дня."]
     for t in yes:
         assert autostop.is_farewell(t), t
     for t in no:
@@ -340,3 +343,61 @@ def test_break_announcement_is_not_farewell():
     найденный смоуком по 20 тысячам живых реплик."""
     assert not autostop.is_farewell("Через пять минут увидимся.")
     assert autostop.is_farewell("Всё, давай, увидимся.")
+
+
+def test_streak_dedups_chunk_seam_and_echo():
+    """DS r1 по #471: шов чанков («всем пока» → хвост «пока») и эхо той
+    же фразы в двух каналах не удваивают одно прощание."""
+    st = autostop.FarewellStreak()
+    assert st.feed("всем пока", now=10.0) == 1
+    assert st.feed("пока", now=11.5) == 1          # шовный хвост — не второй
+    assert st.feed("всем пока", now=12.0) == 1     # эхо канала — не второй
+    # настоящий второй: другие слова ЛИБО пауза больше окна
+    assert st.feed("до свидания", now=13.0) == 2
+
+
+def test_streak_counts_late_repeat_as_real():
+    """То же «пока» после паузы больше эхо-окна — настоящий обмен."""
+    st = autostop.FarewellStreak()
+    assert st.feed("пока", now=10.0) == 1
+    assert st.feed("пока", now=16.0) == 2
+
+
+def test_streak_resets_on_ordinary_remark():
+    st = autostop.FarewellStreak()
+    st.feed("всем пока", now=10.0)
+    assert st.feed("стой, ещё один вопрос по отчёту", now=11.0) == 0
+    assert st.feed("ну всё, пока", now=12.0) == 1
+
+
+def test_any_rule_counts_farewell_alone():
+    """Minor-2 DS: конфиг с одними прощаниями — правило живо."""
+    lim = autostop.limits_from_cfg({"sufler": {"autostop": {
+        "no_speech_minutes": 0, "silence_minutes": 0, "alone_minutes": 0,
+        "max_hours": 0, "farewell_seconds": 60}}})
+    assert lim.any_rule
+    d = autostop.decide(age_s=600, quiet_s=61, spoke=True, limits=lim,
+                        farewells=1)
+    assert d.action == "stop" and d.reason == autostop.FAREWELL, d
+
+
+def test_farewell_does_not_resurrect_disabled_silence():
+    """GLM r1 по #471: silence_minutes: 0 — «не останавливай после
+    молчания»; дефолтное прощание порог не воскрешает, ЯВНЫЙ
+    farewell_seconds — просьба и работает."""
+    lim = autostop.limits_from_cfg(
+        {"sufler": {"autostop": {"silence_minutes": 0, "alone_minutes": 0}}})
+    d = autostop.decide(age_s=600, quiet_s=61, spoke=True, limits=lim,
+                        farewells=1)
+    assert d.reason != autostop.FAREWELL, d
+    lim2 = autostop.limits_from_cfg(
+        {"sufler": {"autostop": {"silence_minutes": 0, "alone_minutes": 0,
+                                 "farewell_seconds": 60}}})
+    d2 = autostop.decide(age_s=600, quiet_s=61, spoke=True, limits=lim2,
+                        farewells=1)
+    assert d2.action == "stop" and d2.reason == autostop.FAREWELL, d2
+
+
+def test_break_in_a_while_wording_not_farewell():
+    """GLM r1: «спустя» — тот же класс анонса перерыва, что «через»."""
+    assert not autostop.is_farewell("Спустя пять минут увидимся")

@@ -151,13 +151,20 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
     func presentAutostop(reason: String, detail: String) {
         let content = UNMutableNotificationContent()
         content.title = L.t("Запись остановлена", "Recording stopped", "录音已停止")
-        content.body = reason == "limit"
-            ? L.t("Достигнут потолок длительности — встреча сохранена и разбирается",
-                  "Duration ceiling reached — the meeting is saved and being processed",
-                  "已达到时长上限——会议已保存并正在处理")
-            : L.t("Тишина: встречу никто не ведёт — она сохранена и разбирается",
-                  "Silence: nobody is talking — the meeting is saved and being processed",
-                  "静音：无人发言——会议已保存并正在处理")
+        switch reason {
+        case "limit":
+            content.body = L.t("Достигнут потолок длительности — встреча сохранена и разбирается",
+                               "Duration ceiling reached — the meeting is saved and being processed",
+                               "已达到时长上限——会议已保存并正在处理")
+        case "farewell":
+            content.body = L.t("Попрощались — встреча сохранена и разбирается",
+                               "Goodbyes said — the meeting is saved and being processed",
+                               "互道再见——会议已保存并正在处理")
+        default:
+            content.body = L.t("Тишина: встречу никто не ведёт — она сохранена и разбирается",
+                               "Silence: nobody is talking — the meeting is saved and being processed",
+                               "静音：无人发言——会议已保存并正在处理")
+        }
         content.subtitle = detail
         content.sound = .default
         center.add(UNNotificationRequest(identifier: "charoite.autostop." + reason,

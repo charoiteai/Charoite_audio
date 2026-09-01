@@ -507,6 +507,7 @@ def main():
     # не по громкости: энергетический гейт срабатывает на кулер и клавиатуру, и
     # «тишины» не наступало бы никогда (см. src/autostop.py).
     heard = {"at": None, "spoke": False, "farewells": 0}
+    farewell_streak = autostop_rules.FarewellStreak()
     global _stop_event
     _stop_event = stop          # emit сможет остановить нас при обрыве пайпа
     # SIGTERM (Swift terminate по грейсу) → штатный стоп с finally, а не убийство
@@ -1107,10 +1108,11 @@ def main():
                     heard["at"] = time.monotonic()
                     heard["spoke"] = True
                     # Прощания подряд: одно срежет порог тишины автостопа,
-                    # два — обмен прощаниями, конец встречи (см. autostop).
-                    heard["farewells"] = (heard["farewells"] + 1
-                                          if autostop_rules.is_farewell(added)
-                                          else 0)
+                    # два — обмен прощаниями, конец встречи. Шов чанков и
+                    # межканальное эхо дедупятся внутри FarewellStreak
+                    # (DS r1 по #471 — иначе одна реплика давала два).
+                    heard["farewells"] = farewell_streak.feed(
+                        added, time.monotonic())
                     disp = tr.display_name(name)
                     emit({
                         "type": "transcript",

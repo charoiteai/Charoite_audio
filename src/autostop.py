@@ -53,7 +53,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # Секунды. Мягкие дефолты: включено, но срабатывает только на явном забытии.
 DEFAULTS = {
@@ -82,19 +82,30 @@ FAREWELL = "farewell"
 # оканчивается многословной прощальной формой («до свидания», «всем пока»),
 # либо целиком состоит из прощальных слов («ну всё, пока»). Одиночное
 # «пока» в длинной реплике — союз («пока не забыл») и не матчится.
+# СИЛЬНЫЕ хвосты: их достаточно в конце короткой реплики. Слабые формы
+# («всем спасибо», «хорошего дня», «пока» с чем угодно) проходят только
+# путём «вся реплика из прощальных слов»: замер по шести неделям живых
+# стенограмм дал 9 срабатываний ПОСРЕДИ встречи (уход одного участника,
+# «Ну, а пока» на 23-й реплике из 266) — с ними стоп по одиночному
+# прощанию рвал бы живые встречи; после ужесточения осталось 3, все с
+# малым вредом, при 18 ловимых настоящих финалах (GLM r1 по #471,
+# advisory-замер).
 _FAREWELL_TAILS = (
     "до свидания", "досвидания", "до связи", "до встречи", "до созвона",
-    "до завтра", "до понедельника", "всем пока", "пока-пока", "пока пока",
-    "всем спасибо", "спасибо всем", "хорошего дня", "хорошего вечера",
-    "хороших выходных", "счастливо", "услышимся", "увидимся",
+    "до завтра", "до понедельника",
     # en/zh-пресеты: те же правила, свои формы
-    "goodbye", "bye everyone", "bye-bye", "bye bye", "see you", "take care",
-    "have a good day", "have a good one", "talk to you later",
+    "goodbye", "bye everyone", "see you", "take care",
     "再见", "拜拜", "回聊",
 )
 _FAREWELL_WORDS = frozenset(
-    "пока всем ну всё все давай давайте спасибо счастливо услышимся "
-    "увидимся ладно тогда ага угу да bye thanks ok okay 再见 拜拜".split())
+    "пока пока-пока всем ну всё все давай давайте спасибо счастливо "
+    "услышимся увидимся ладно тогда ага угу да bye bye-bye thanks ok okay "
+    "再见 拜拜".split())
+
+
+def farewell_words(text: str) -> frozenset[str]:
+    """Нормализованные слова реплики — для дедупа шва/эха в демоне."""
+    return frozenset(re.findall(r"[\w-]+", text.lower().replace("ё", "е")))
 
 
 def is_farewell(text: str) -> bool:
@@ -102,15 +113,17 @@ def is_farewell(text: str) -> bool:
     words = re.findall(r"[\w-]+", text.lower().replace("ё", "е"))
     if not words or len(words) > 6:
         return False
-    if "через" in words or " in " in f" {' '.join(words)} ":
-        # «Через пять минут увидимся» — перерыв, не конец встречи (живой
-        # смоук по 20 тысячам реплик нашёл ровно этот ложный класс).
+    if "через" in words or "спустя" in words \
+            or " in " in f" {' '.join(words)} ":
+        # «Через/спустя пять минут увидимся» — перерыв, не конец встречи
+        # (живой смоук по 20 тысячам реплик нашёл ровно этот класс).
         return False
     plain = " ".join(words)
     if any(plain.endswith(t) for t in _FAREWELL_TAILS):
         return True
     # «ну всё, пока» — все слова прощальные и среди них есть само прощание
-    core = {"пока", "счастливо", "bye", "再见", "拜拜"}
+    core = {"пока", "пока-пока", "счастливо", "увидимся", "услышимся",
+            "bye", "bye-bye", "再见", "拜拜"}
     return bool(core & set(words)) and \
         all(w in _FAREWELL_WORDS for w in words)
 
@@ -138,11 +151,15 @@ class Limits:
     min_s: float = 120.0
     #: Тишина после одного прощания; два прощания подряд — стоп без ожидания.
     farewell_s: float = 60.0
+    #: farewell_seconds задан в конфиге руками: просьба работает и там, где
+    #: базовые правила тишины выключены (прецедент alone, ревью 20.08).
+    farewell_explicit: bool = False
 
     @property
     def any_rule(self) -> bool:
         return self.enabled and (self.no_speech_s > 0 or self.silence_s > 0
-                                 or self.alone_s > 0 or self.max_s > 0)
+                                 or self.alone_s > 0 or self.max_s > 0
+                                 or self.farewell_s > 0)
 
 
 def limits_from_cfg(cfg: dict) -> Limits:
@@ -169,7 +186,7 @@ def limits_from_cfg(cfg: dict) -> Limits:
     no_speech = num("no_speech_minutes") * 60
     silence = num("silence_minutes") * 60
     alone = num("alone_minutes") * 60
-    return Limits(
+    base = Limits(
         enabled=not _falsy(raw.get("enabled", DEFAULTS["enabled"])),
         no_speech_s=no_speech,
         # Порог после разговора не может быть строже «речи не было»: иначе
@@ -188,8 +205,19 @@ def limits_from_cfg(cfg: dict) -> Limits:
         max_s=num("max_hours") * 3600,
         warn_s=num("warn_seconds"),
         min_s=num("min_minutes") * 60,
-        farewell_s=num("farewell_seconds"),
+        farewell_s=0.0,
     )
+    # Дефолтное правило не воскресает в мёртвом конфиге (тот же дух, что
+    # у alone: ревью 20.08, DeepSeek I3): владелец, выключивший ВСЁ
+    # нулями, не должен молча получить новое правило. Явно заданный
+    # farewell_seconds — просьба, работает всегда. Живость смотрим по
+    # ИТОГОВЫМ правилам (сырое alone_minutes имеет ненулевой дефолт).
+    alive = (base.no_speech_s > 0 or base.silence_s > 0
+             or base.alone_s > 0 or base.max_s > 0)
+    if "farewell_seconds" in raw or alive:
+        return replace(base, farewell_s=num("farewell_seconds"),
+                       farewell_explicit="farewell_seconds" in raw)
+    return base
 
 
 @dataclass(frozen=True)
@@ -263,7 +291,7 @@ def decide(*, age_s: float, quiet_s: float, spoke: bool, limits: Limits,
 
     if spoke and farewells >= 2 and limits.farewell_s > 0:
         return Decision("stop", FAREWELL,
-                        "обменялись прощаниями — останавливаю запись")
+                        "прощание прозвучало дважды — останавливаю запись")
     reason = SILENCE if spoke else NO_SPEECH
     if not spoke:
         threshold = limits.no_speech_s
@@ -275,8 +303,14 @@ def decide(*, age_s: float, quiet_s: float, spoke: bool, limits: Limits,
         threshold = limits.alone_s
     else:
         threshold = limits.silence_s
+    # Прощание СРЕЗАЕТ включённый порог тишины, но не воскрешает
+    # выключенный (GLM r1 по #471: silence_minutes: 0 — это «не
+    # останавливай после молчания», и дефолтное прощание обязано это
+    # уважать). Явно заданный farewell_seconds — просьба, работает и при
+    # выключенной тишине.
     if spoke and farewells == 1 and limits.farewell_s > 0 \
-            and (threshold <= 0 or limits.farewell_s < threshold):
+            and (limits.farewell_s < threshold
+                 or (threshold <= 0 and limits.farewell_explicit)):
         # Одно прощание: не стоп, а короткое ожидание — «всем пока»
         # уходящего с середины созвона не должно рвать запись.
         reason, threshold = FAREWELL, limits.farewell_s
@@ -304,6 +338,36 @@ def decide(*, age_s: float, quiet_s: float, spoke: bool, limits: Limits,
                             f"{heard}; через {_minutes(left)} остановлю запись — "
                             "скажите что-нибудь, чтобы продолжить", left)
     return Decision()
+
+
+class FarewellStreak:
+    """Счётчик прощаний подряд — с дедупом шва и межканального эха.
+
+    Шов чанков STT и эхо одной фразы в двух каналах удваивают ОДНУ
+    реплику (дедуп транскрипта не режет перекрытие в одно слово — DS r1
+    по #471): прощание, чьи слова входят в предыдущее прощальное (или
+    наоборот) и пришедшее в пределах echo_s, вторым не считается.
+    Спорный обмен («всем пока» → «пока» за 2 секунды) уходит в мягкий
+    путь одиночного прощания, а не в мгновенный стоп."""
+
+    def __init__(self, echo_s: float = 5.0):
+        self.echo_s = echo_s
+        self.count = 0
+        self._words: frozenset[str] = frozenset()
+        self._at = 0.0
+
+    def feed(self, text: str, now: float) -> int:
+        """Учесть реплику из стенограммы; вернуть текущую серию прощаний."""
+        if not is_farewell(text):
+            self.count = 0
+            return 0
+        fw = farewell_words(text)
+        echo = (self.count > 0 and now - self._at < self.echo_s
+                and (fw <= self._words or self._words <= fw))
+        if not echo:
+            self.count += 1
+        self._words, self._at = fw, now
+        return self.count
 
 
 class Watch:

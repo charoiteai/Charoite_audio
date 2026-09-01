@@ -18,6 +18,10 @@ extension SuflerService {
             return L.t("Остановлена автоматически: потолок длительности",
                        "Stopped automatically: duration ceiling",
                        "已自动停止：已达时长上限")
+        case "farewell":
+            return L.t("Остановлена автоматически: попрощались",
+                       "Stopped automatically: goodbyes said",
+                       "已自动停止：互道再见")
         case .some:
             return L.t("Остановлена автоматически: тишина",
                        "Stopped automatically: silence",
