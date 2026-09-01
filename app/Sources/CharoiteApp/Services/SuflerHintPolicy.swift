@@ -19,3 +19,27 @@ extension SuflerService {
             && ageSeconds >= hintCardLifetime
     }
 }
+
+extension SuflerService {
+    // Ручные запросы карточки — рядом с её политикой (вынос №153:
+    // сервис у потолка file_length, связные блоки переезжают по смыслу).
+    func requestHint() {
+        guard isRunning, !isHinting else { return }
+        hint = ""
+        _hintBuf = ""; _lastHintUI = .distantPast
+        isHinting = true
+        hintIsManual = true
+        armHintTimeout()
+        send("hint")
+    }
+
+    func requestSummary() {
+        guard isRunning, !isHinting else { return }
+        hint = ""
+        _hintBuf = ""; _lastHintUI = .distantPast
+        isHinting = true
+        hintIsManual = true
+        armHintTimeout()
+        send("summary")
+    }
+}

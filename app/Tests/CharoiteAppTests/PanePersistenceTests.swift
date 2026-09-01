@@ -110,3 +110,23 @@ final class PanePersistenceTests: XCTestCase {
                        "шапка rightPane снова гейтится по isRunning — регрессия #255, третий заход")
     }
 }
+
+@MainActor
+final class LinesCoalescerTests: XCTestCase {
+    /// №153: чанк транскрипта не публикует ленту немедленно — пачки уходят
+    /// коалессером, ручной flushLines() делает тень видимой.
+    func testShadowPublishesOnlyOnFlush() {
+        let s = SuflerService.shared
+        let before = s.lines
+        s.consumeForTest(#"{"type":"transcript","speaker":"X","plain":"раз","ts":"10:00"}"#)
+        XCTAssertEqual(s.lines, before, "публикация до flush — шторм вернулся")
+        s.flushLines()
+        XCTAssertEqual(s.lines.last?.text, "раз")
+        s.consumeForTest(#"{"type":"rename","from":"X","to":"Ян"}"#)
+        s.flushLines()
+        XCTAssertEqual(s.lines.last?.speaker, "Ян")
+        s.consumeForTest(#"{"type":"transcript","speaker":"Ян","plain":"два","ts":"10:00"}"#)
+        s.flushLines()
+        XCTAssertEqual(s.lines.last?.text, "раз два", "склейка одного голоса живёт в тени")
+    }
+}
