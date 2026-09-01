@@ -846,7 +846,11 @@ it signals degradation, it does not break the loop.
 - **Meeting tasks** — minutes write assignments as checkboxes
   («- [ ] **Name** — what — when»); the Tasks window collects every
   `- [ ]` across the graph with an open-count badge, ticking writes
-  `[x]` straight into markdown — Obsidian and the app always agree. The
+  `[x]` straight into markdown — Obsidian and the app always agree.
+  A "Mine" section comes first (the bold assignee matches `user_name`),
+  even for assignments from weeks ago; open items older than 14 days
+  with no due date collapse into a "Stale" section — the screen gets
+  cleaned, the files stay untouched. The
   list runs from the latest meeting to the earliest and every group
   carries its date: the order comes from the meeting time in the archive
   name, not the file mtime — the nightly review touches old folders and

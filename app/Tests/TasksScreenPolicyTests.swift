@@ -37,3 +37,53 @@ final class TasksScreenPolicyTests: XCTestCase {
                           TasksScreenPolicy.DueBucket.done)
     }
 }
+
+extension TasksScreenPolicyTests {
+    /// №152/запрос 01.09: «за мной — первым, даже если задачи далеко».
+    func testMineDetection() {
+        XCTAssertTrue(TasksScreenPolicy.isMine("**redacted** — зайти в redacted", owner: "redacted"))
+        XCTAssertTrue(TasksScreenPolicy.isMine("**redacted + Коля** — свериться", owner: "redacted"))
+        XCTAssertTrue(TasksScreenPolicy.isMine("**redacted** — письмо", owner: "redacted"))
+        XCTAssertFalse(TasksScreenPolicy.isMine("**Света** — рассчитать дельты", owner: "redacted"))
+        XCTAssertFalse(TasksScreenPolicy.isMine("**Все участники** — заводить фичи", owner: "redacted"))
+        XCTAssertFalse(TasksScreenPolicy.isMine("починить redactedу доступ", owner: "redacted"),
+                       "имя не в позиции ответственного — не моё")
+        XCTAssertFalse(TasksScreenPolicy.isMine("**redacted** — что-то", owner: ""),
+                       "пустой user_name ничего не присваивает")
+        // Границы круга 1 (DS r1 по #475):
+        XCTAssertFalse(TasksScreenPolicy.isMine("**redactedина** — сверить дельты", owner: "redacted"),
+                       "подстрока чужого имени — не моё")
+        XCTAssertFalse(TasksScreenPolicy.isMine("связаться с redactedом — до пятницы", owner: "redacted"),
+                       "без ведущего болда ответственного нет")
+        XCTAssertTrue(TasksScreenPolicy.isMine("**redacted** — дело", owner: "redacted redacted"),
+                      "полное имя в конфиге против короткого в минутках")
+        XCTAssertTrue(TasksScreenPolicy.isMine("**redacted redacted** — дело", owner: "redacted"))
+        XCTAssertTrue(TasksScreenPolicy.isMine("**redacted** — дело", owner: "redacted redacted"),
+                      "фамилия из user_name — тоже владелец (канон speaker_names)")
+    }
+
+    func testSplitCutoffBoundary() {
+        // ровно 14 дней — ещё не старьё (строгое <), день в день живёт
+        let cal = Calendar.current
+        let now = Date()
+        let edge = cal.date(byAdding: .day, value: -TasksScreenPolicy.staleAfterDays, to: now)!
+        let s = TasksScreenPolicy.split([("**Коля** — ровная граница", edge)],
+                                        owner: "redacted", now: now, calendar: cal)
+        XCTAssertEqual(s.fresh, [0], "день в день — ещё живое")
+    }
+
+    func testSplitMineFirstEvenWhenOld() {
+        let old = Date(timeIntervalSinceNow: -40 * 86_400)
+        let fresh = Date(timeIntervalSinceNow: -3600)
+        let items: [(text: String, happenedAt: Date)] = [
+            ("**Света** — свежая", fresh),
+            ("**redacted** — давняя, но моя", old),
+            ("**Коля** — старьё без срока", old),
+            ("**Коля** — старая, но со сроком до 05.09", old),
+        ]
+        let s = TasksScreenPolicy.split(items, owner: "redacted")
+        XCTAssertEqual(s.mine, [1], "моё не тонет в старых")
+        XCTAssertEqual(s.stale, [2], "старое без срока — в «Старые»")
+        XCTAssertEqual(s.fresh, [0, 3], "срок держит задачу живой")
+    }
+}

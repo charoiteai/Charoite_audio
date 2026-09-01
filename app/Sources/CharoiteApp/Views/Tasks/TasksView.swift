@@ -24,6 +24,18 @@ extension TasksScreenPolicy.DueBucket {
     }
 }
 
+/// Секции «Мои» и «Старые» — поверх обеих группировок (запрос владельца
+/// 01.09: «за мной — первым, даже если задачи далеко; старьё — почистить»).
+private enum TasksMineStale {
+    /// Кэш на процесс: configValue читает config.yaml с диска, а owner
+    /// дёргался из трёх computed-секций на каждую букву поиска (GLM r1).
+    static let owner: String = AppSettings.configValue("user_name") ?? ""
+    static let mineTitle = L.t("Мои", "Mine", "我的")
+    static func staleTitle(_ n: Int) -> String {
+        L.t("Старые (\(n))", "Stale (\(n))", "旧任务（\(n)）")
+    }
+}
+
 struct TasksView: View {
     @ObservedObject private var tasks = TasksService.shared
     @ObservedObject private var repository = MeetingRepository.shared
@@ -136,7 +148,10 @@ struct TasksView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if grouping == .byDue {
             List {
-                ForEach(dueGroups, id: \.bucket) { group in
+                mineSection
+                // «Старые» стоят ДО «Сделанных»: свёрнутые открытые не
+                // должны лежать ниже закрытых (DS r1 по #475).
+                ForEach(dueGroups.filter { $0.bucket != .done }, id: \.bucket) { group in
                     Section {
                         // Источник — в строке: в корзинах срока встречи
                         // перемешаны, и без подписи поручение безлико.
@@ -149,10 +164,19 @@ struct TasksView: View {
                                              : AnyShapeStyle(.secondary))
                     }
                 }
+                staleSection
+                ForEach(dueGroups.filter { $0.bucket == .done }, id: \.bucket) { group in
+                    Section {
+                        ForEach(group.items) { item in row(item, showSource: true) }
+                    } header: {
+                        Text(group.bucket.title).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
             .listStyle(.inset)
         } else {
             List {
+                mineSection
                 ForEach(groups, id: \.rel) { group in
                     Section {
                         ForEach(group.items) { item in row(item) }
@@ -160,6 +184,7 @@ struct TasksView: View {
                         groupHeader(group)
                     }
                 }
+                staleSection
             }
             .listStyle(.inset)
         }
@@ -181,6 +206,14 @@ struct TasksView: View {
             }
             Text(L.t("\(s.open) открыто", "\(s.open) open", "\(s.open) 未完成"))
                 .foregroundStyle(.secondary)
+            let staleN = splitOpen.stale.count
+            if staleN > 0 {
+                Text("·").foregroundStyle(.quaternary)
+                // свёрнутые «Старые» не должны терять счёт: чистится экран,
+                // а не ответственность (advisory DS r1 по #475)
+                Text(L.t("\(staleN) старых", "\(staleN) stale", "\(staleN) 旧"))
+                    .foregroundStyle(.tertiary)
+            }
             if s.done > 0 {
                 Text("·").foregroundStyle(.quaternary)
                 Text(L.t("\(s.done) сделано", "\(s.done) done", "\(s.done) 已完成"))
@@ -191,9 +224,53 @@ struct TasksView: View {
         .fixedSize()
     }
 
+    /// «Мои» — первая секция всегда, даже давние (владелец, 01.09).
+    @ViewBuilder private var mineSection: some View {
+        let mine = splitOpen.mine
+        if !mine.isEmpty {
+            Section {
+                ForEach(mine) { item in row(item, showSource: true) }
+            } header: {
+                Text(TasksMineStale.mineTitle)
+                    .font(.caption).foregroundStyle(Theme.accent)
+            }
+        }
+    }
+
+    /// «Старые» — свёрнуты (isExpanded явный: гарантия, а не дефолт —
+    /// GLM r1). Поиск и фокус-режим встречи складку выключают: совпадение
+    /// не должно прятаться, а список конкретной встречи человек открыл
+    /// осознанно (GLM Imp-4 + advisory).
+    @State private var staleExpanded = false
+    @ViewBuilder private var staleSection: some View {
+        let stale = splitOpen.stale
+        if !stale.isEmpty {
+            let unfolded = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || navigation.selectedTaskMeetingID != nil
+            Section {
+                if unfolded {
+                    ForEach(stale) { item in row(item, showSource: true) }
+                } else {
+                    DisclosureGroup(isExpanded: $staleExpanded) {
+                        ForEach(stale) { item in row(item, showSource: true) }
+                    } label: {
+                        Text(TasksMineStale.staleTitle(stale.count)).font(.caption)
+                    }
+                }
+            } header: {
+                if unfolded {
+                    Text(TasksMineStale.staleTitle(stale.count))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
     private var dueGroups: [(bucket: TasksScreenPolicy.DueBucket, items: [TasksService.Item])] {
         var byBucket: [TasksScreenPolicy.DueBucket: [TasksService.Item]] = [:]
-        for item in visible {
+        let split = splitOpen
+        let taken = Set(split.mine.map(\.id)).union(split.stale.map(\.id))
+        for item in visible where !taken.contains(item.id) {
             byBucket[TasksScreenPolicy.bucket(text: item.text, done: item.done),
                      default: []].append(item)
         }
@@ -226,10 +303,22 @@ struct TasksView: View {
 
     private var visibleOpen: [TasksService.Item] { visible.filter { !$0.done } }
 
+    /// Открытые, разложенные политикой: mine / живые / старые. Done идут
+    /// прежними путями (тумблер «Сделанные» не трогаем).
+    private var splitOpen: (mine: [TasksService.Item], fresh: [TasksService.Item],
+                            stale: [TasksService.Item]) {
+        let open = visibleOpen
+        let s = TasksScreenPolicy.split(open.map { ($0.text, $0.happenedAt) },
+                                        owner: TasksMineStale.owner)
+        return (s.mine.map { open[$0] }, s.fresh.map { open[$0] }, s.stale.map { open[$0] })
+    }
+
     private var groups: [(rel: String, items: [TasksService.Item])] {
         var order: [String] = []
         var byRel: [String: [TasksService.Item]] = [:]
-        for item in visible {
+        let split = splitOpen
+        let taken = Set(split.mine.map(\.id)).union(split.stale.map(\.id))
+        for item in visible where !taken.contains(item.id) {
             if byRel[item.rel] == nil { order.append(item.rel) }
             byRel[item.rel, default: []].append(item)
         }
