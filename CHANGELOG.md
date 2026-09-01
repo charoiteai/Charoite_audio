@@ -5,6 +5,16 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.64.2](https://github.com/charoiteai/Charoite_audio/compare/v0.64.1...v0.64.2) (2026-08-31)
+
+
+### Bug Fixes
+
+* **live:** short real questions, explicit question for instant answers, retire the dead cloud lane ([#466](https://github.com/charoiteai/Charoite_audio/issues/466)) ([394188e](https://github.com/charoiteai/Charoite_audio/commit/394188ee9bd78512b2ac569ff2ec01e4a51fde7d))
+* **minutes:** Tasks pane sees the live draft; bare heading closes the section ([#462](https://github.com/charoiteai/Charoite_audio/issues/462)) ([34b31c2](https://github.com/charoiteai/Charoite_audio/commit/34b31c295d466329e4bf25ae9d0379c489727c44))
+* **minutes:** the third write path, restamp after rebuild, and a loud BlackHole fallback ([#464](https://github.com/charoiteai/Charoite_audio/issues/464)) ([1412564](https://github.com/charoiteai/Charoite_audio/commit/1412564793c66c001ae049b6988d4817f3883c94))
+* **pipeline:** owner label never inherits a name; shared write gate; critical menu-bar icon ([#465](https://github.com/charoiteai/Charoite_audio/issues/465)) ([243fd55](https://github.com/charoiteai/Charoite_audio/commit/243fd5563e023486f1d6a5033cc391aebaf82cf2))
+
 ## [0.64.1](https://github.com/charoiteai/Charoite_audio/compare/v0.64.0...v0.64.1) (2026-08-31)
 
 
