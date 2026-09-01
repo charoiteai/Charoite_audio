@@ -47,3 +47,4 @@ extension SuflerService {
         return attempts < 3 ? .restart : .giveUp
     }
 }
+
