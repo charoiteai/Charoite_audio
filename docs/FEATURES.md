@@ -857,7 +857,10 @@ it signals degradation, it does not break the loop.
   untouched. Due dates carry no year, so the year is taken from the
   meeting date: "by 15.03" said in September means next March, not 170
   days overdue, and "by 20.02" from a February meeting is overdue in
-  September, not next year. The
+  September, not next year; a date up to a week before the meeting is a
+  just-missed deadline brought to the table, not next year. The meeting
+  card and Prep read the same date the same way; notes without a
+  meeting date in their path keep the older today-based guess. The
   list runs from the latest meeting to the earliest and every group
   carries its date: the order comes from the meeting time in the archive
   name, not the file mtime — the nightly review touches old folders and

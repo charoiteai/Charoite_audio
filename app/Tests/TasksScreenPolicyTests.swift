@@ -23,12 +23,12 @@ final class TasksScreenPolicyTests: XCTestCase {
 
     func testSummarySplitsOverdueOpenDone() {
         let s = TasksScreenPolicy.summary([
-            ("Прислать список — до 15.08", false, day(-10)),   // просрочено 5 дней — на виду
-            ("Согласовать доступ — до 25.08", false, day(-1)), // открыто (скоро)
-            ("Собрать статистику", false, day(-1)),            // открыто (без срока)
-            ("Завести ветку", true, day(-1)),                  // сделано
-            ("**Коля** — отчёт до 01.08", false, day(-30)),    // старое: просрочено 19 дней
-            ("**Коля** — без срока", false, day(-30)),         // старое: 30 дней без даты
+            ("Прислать список — до 15.08", false, day(-10), day(-10)),   // просрочено 5 дней — на виду
+            ("Согласовать доступ — до 25.08", false, day(-1), day(-1)), // открыто (скоро)
+            ("Собрать статистику", false, day(-1), day(-1)),            // открыто (без срока)
+            ("Завести ветку", true, day(-1), day(-1)),                  // сделано
+            ("**Коля** — отчёт до 01.08", false, day(-30), day(-30)),   // старое: просрочено 19 дней
+            ("**Коля** — без срока", false, day(-30), nil),             // старое: 30 дней, заметка без якоря
         ], owner: "Антон", now: now)
         XCTAssertEqual(s, .init(overdue: 1, open: 2, stale: 2, done: 1),
                        "четыре числа обязаны не пересекаться: старое не «просрочено»")
@@ -36,8 +36,8 @@ final class TasksScreenPolicyTests: XCTestCase {
 
     func testBucketsFollowDueStatusAndDoneGoesLast() {
         func b(_ text: String, done: Bool = false,
-               at happenedAt: Date? = nil) -> TasksScreenPolicy.DueBucket {
-            TasksScreenPolicy.bucket(text: text, done: done, happenedAt: happenedAt, now: now)
+               at anchor: Date? = nil) -> TasksScreenPolicy.DueBucket {
+            TasksScreenPolicy.bucket(text: text, done: done, anchor: anchor, now: now)
         }
         XCTAssertEqual(b("отчёт — до 13.08"), .overdue)
         XCTAssertEqual(b("созвон — до 25.08"), .week)
@@ -47,6 +47,10 @@ final class TasksScreenPolicyTests: XCTestCase {
                        "с якорем: март, названный в августе, — будущий, не 158 дней просрочки")
         XCTAssertEqual(b("план — до 15.03", at: day(-180)), .overdue,
                        "с якорем: март, названный в феврале, — просрочен")
+        XCTAssertEqual(b("долг — до 15.08", at: now), .overdue,
+                       "срок, пропущенный на днях и принесённый на встречу, — просрочка, не будущий год")
+        XCTAssertEqual(b("план — до 01.08", at: now), .later,
+                       "а за пределами люфта (19 дней до встречи) — уже следующий год")
         XCTAssertEqual(b("без даты вовсе"), .undated)
         XCTAssertEqual(b("сделано — до 13.08", done: true), .done,
                        "сделанному сроку нечего требовать — корзина одна")
@@ -83,7 +87,7 @@ extension TasksScreenPolicyTests {
     func testSplitCutoffBoundary() {
         // ровно 14 дней — ещё не старьё (строгое <), день в день живёт
         let edge = day(-TasksScreenPolicy.staleAfterDays)
-        let s = TasksScreenPolicy.split([("**Коля** — ровная граница", edge)],
+        let s = TasksScreenPolicy.split([("**Коля** — ровная граница", edge, edge)],
                                         owner: "Антон", now: now)
         XCTAssertEqual(s.fresh, [0], "день в день — ещё живое")
     }
@@ -92,21 +96,25 @@ extension TasksScreenPolicyTests {
         // Уточнение владельца (ночь 01.09): срок, просроченный на неделю и
         // больше, — тоже «Старые»; свежая просрочка остаётся на виду.
         let meeting = day(-20)
-        let items: [(text: String, happenedAt: Date)] = [
-            ("**Коля** — отчёт до \(ddmm(day(-9)))", meeting),
-            ("**Коля** — письмо до \(ddmm(day(-3)))", meeting),
-            ("**Антон** — моё до \(ddmm(day(-9)))", meeting),
-            ("**Коля** — ровно неделя, до \(ddmm(day(-7)))", meeting),
-            ("**Коля** — шесть дней, до \(ddmm(day(-6)))", meeting),
+        let items: [(text: String, happenedAt: Date, anchor: Date?)] = [
+            ("**Коля** — отчёт до \(ddmm(day(-9)))", meeting, meeting),
+            ("**Коля** — письмо до \(ddmm(day(-3)))", meeting, meeting),
+            ("**Антон** — моё до \(ddmm(day(-9)))", meeting, meeting),
+            ("**Коля** — ровно неделя, до \(ddmm(day(-7)))", meeting, meeting),
+            ("**Коля** — шесть дней, до \(ddmm(day(-6)))", meeting, meeting),
             // якорь года: срок, названный на встрече, не раньше её самой —
             // без якоря «до 15.03» из августа читалось бы как 158 дней
             // просрочки и сворачивалось в день постановки
-            ("**Коля** — план до 15.03", day(-1)),
+            ("**Коля** — план до 15.03", day(-1), day(-1)),
             // а февральское «до 20.02» в августе — просрочка, не будущий год
-            ("**Коля** — отчёт до 20.02", day(-200)),
+            ("**Коля** — отчёт до 20.02", day(-200), day(-200)),
+            // заметка без даты в имени: якоря нет, mtime им не становится —
+            // «до 15.03» в файле, тронутом вчера, остаётся просрочкой по
+            // прежней догадке (158 дней) и уходит в «Старые»
+            ("**Коля** — план до 15.03 (заметка)", day(-1), nil),
         ]
         let s = TasksScreenPolicy.split(items, owner: "Антон", now: now)
-        XCTAssertEqual(s.stale, [0, 3, 6], "9 и 7 дней просрочки, февральский срок — вниз")
+        XCTAssertEqual(s.stale, [0, 3, 6, 7], "9 и 7 дней просрочки, февральский срок, заметка — вниз")
         XCTAssertEqual(s.fresh, [1, 4, 5], "3 и 6 дней — на виду; будущий март — живой")
         XCTAssertEqual(s.mine, [2], "моё побеждает и недельную просрочку")
     }
@@ -114,11 +122,11 @@ extension TasksScreenPolicyTests {
     func testSplitMineFirstEvenWhenOld() {
         let old = day(-40)
         let fresh = day(0).addingTimeInterval(-3600)
-        let items: [(text: String, happenedAt: Date)] = [
-            ("**Света** — свежая", fresh),
-            ("**Антон** — давняя, но моя", old),
-            ("**Коля** — старьё без срока", old),
-            ("**Коля** — старая, но со сроком до \(ddmm(day(2)))", old),
+        let items: [(text: String, happenedAt: Date, anchor: Date?)] = [
+            ("**Света** — свежая", fresh, fresh),
+            ("**Антон** — давняя, но моя", old, old),
+            ("**Коля** — старьё без срока", old, old),
+            ("**Коля** — старая, но со сроком до \(ddmm(day(2)))", old, old),
         ]
         let s = TasksScreenPolicy.split(items, owner: "Антон", now: now)
         XCTAssertEqual(s.mine, [1], "моё не тонет в старых")

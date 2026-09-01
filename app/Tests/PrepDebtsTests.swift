@@ -22,9 +22,10 @@ final class PrepDebtsTests: XCTestCase {
     func testSummaryNamesEveryBucketAndSkipsZeros() {
         let now = date(2026, 8, 4)
         let summary = PrepView.debtsSummary(
-            ["отчёт до 24.07", "созвон к 06.08", "собрать цифры без даты"], now: now)
+            ["отчёт до 24.07", "созвон к 06.08", "собрать цифры без даты"].map { ($0, nil) },
+            now: now)
         XCTAssertEqual(summary, "1 просрочено · 1 на этой неделе · 1 без срока")
-        XCTAssertEqual(PrepView.debtsSummary(["без срока"], now: now), "1 без срока",
+        XCTAssertEqual(PrepView.debtsSummary([("без срока", nil)], now: now), "1 без срока",
                        "нули не пишем — строка не должна превращаться в «0 просрочено · …»")
     }
 

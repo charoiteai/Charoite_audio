@@ -26,18 +26,18 @@ enum TasksScreenPolicy {
     /// счётчика. Старые вычтены из первых двух: иначе одна просроченная на
     /// месяц задача давала «1 просрочено» при пустой корзине «Просрочено»
     /// (DS r1 по #479).
-    static func summary(_ items: [(text: String, done: Bool, happenedAt: Date)],
+    static func summary(_ items: [(text: String, done: Bool, happenedAt: Date, anchor: Date?)],
                         owner: String,
                         now: Date = Date(),
                         calendar: Calendar = .current) -> Summary {
         let open = items.filter { !$0.done }
-        let s = split(open.map { ($0.text, $0.happenedAt) },
+        let s = split(open.map { ($0.text, $0.happenedAt, $0.anchor) },
                       owner: owner, now: now, calendar: calendar)
         let staleSet = Set(s.stale)
         var overdue = 0, live = 0
         for (i, item) in open.enumerated() where !staleSet.contains(i) {
             if case .overdue = TaskDue.parse(item.text)?
-                .status(now: now, calendar: calendar, anchor: item.happenedAt) {
+                .status(now: now, calendar: calendar, anchor: item.anchor) {
                 overdue += 1
             } else {
                 live += 1
@@ -64,12 +64,12 @@ enum TasksScreenPolicy {
     }
 
     static func bucket(text: String, done: Bool,
-                       happenedAt: Date? = nil,
+                       anchor: Date?,
                        now: Date = Date(),
                        calendar: Calendar = .current) -> DueBucket {
         if done { return .done }
         guard let due = TaskDue.parse(text) else { return .undated }
-        switch due.status(now: now, calendar: calendar, anchor: happenedAt) {
+        switch due.status(now: now, calendar: calendar, anchor: anchor) {
         case .overdue: return .overdue
         case .soon: return .week
         case .later: return .later
@@ -81,9 +81,11 @@ enum TasksScreenPolicy {
     /// поручение БЕЗ срока — старше 14 дней от встречи; поручение СО
     /// сроком — просрочено на неделю и больше (свежая просрочка остаётся
     /// в «Просрочено», хлам недельной давности уезжает вниз). Год срока —
-    /// от даты встречи, не от «сегодня»: иначе сентябрьское «до 15.03»
-    /// сворачивалось в день постановки, а февральское «до 20.02» не
-    /// старело никогда (`TaskDue.status(anchor:)`).
+    /// от даты встречи (`anchor`), не от «сегодня»: иначе сентябрьское
+    /// «до 15.03» сворачивалось в день постановки, а февральское
+    /// «до 20.02» не старело никогда (`TaskDue.status(anchor:)`).
+    /// `happenedAt` — возраст для 14-дневной границы (для заметок без
+    /// даты в имени это mtime, якорем он не годится — `Item.dueAnchor`).
     static let staleAfterDays = 14
     static let staleOverdueDays = 7
 
@@ -118,7 +120,7 @@ enum TasksScreenPolicy {
 
     /// Открытые поручения одной операцией: «Мои» (первая секция всегда,
     /// даже давние — запрос владельца 01.09), живые и «Старые».
-    static func split(_ items: [(text: String, happenedAt: Date)],
+    static func split(_ items: [(text: String, happenedAt: Date, anchor: Date?)],
                       owner: String,
                       now: Date = Date(),
                       calendar: Calendar = .current)
@@ -133,7 +135,7 @@ enum TasksScreenPolicy {
             }
             if let due = TaskDue.parse(item.text) {
                 if case .overdue(let days) = due.status(now: now, calendar: calendar,
-                                                        anchor: item.happenedAt),
+                                                        anchor: item.anchor),
                    days >= staleOverdueDays {
                     stale.append(i)
                 } else {
