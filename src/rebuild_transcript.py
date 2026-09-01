@@ -627,10 +627,18 @@ def _lexicon_for(cfg: dict) -> "lexicon.Lexicon | None":
         if root is None:
             return None
         try:
-            _LEX_CACHE[0] = lexicon.load(root)
+            lex = lexicon.load(root)
         except Exception as e:  # noqa: BLE001 — улучшатель не роняет пересборку
             log(f"лексикон не собрался: {e}")
             return None
+        # Частично собранный лексикон не должен быть неотличим от пустого
+        # (GLM-9 по #469): пропуски и снятые из-за неоднозначности правила
+        # видны по одной строке лога.
+        tail = ""
+        if lex.skipped_nodes or lex.conflicts:
+            tail = f", пропущено узлов {lex.skipped_nodes}, конфликтов {lex.conflicts}"
+        log(f"лексикон: правил {len(lex.by_stem)}+{len(lex.by_word)}{tail}")
+        _LEX_CACHE[0] = lex
     return _LEX_CACHE[0]
 
 
@@ -647,31 +655,52 @@ def canonize(text: str, cfg: dict) -> str:
     if cand:
         try:
             out = ROOT / "logs" / "lexicon_candidates.md"
-            with out.open("a", encoding="utf-8") as f:
-                f.write(f"\n## {time.strftime('%Y-%m-%d %H:%M')}\n" + "\n".join(cand) + "\n")
-            log(f"лексикон: кандидатов в отчёт — {len(cand)}")
+            # Повторные пересборки одной встречи не дописывают те же
+            # строки (GLM-8 по #469): дубли отсекаются по содержимому,
+            # разросшийся отчёт теряет старую половину, не новую.
+            old = out.read_text(encoding="utf-8") if out.exists() else ""
+            fresh = [c for c in cand if c not in old]
+            if fresh:
+                if len(old) > 200_000:
+                    old = old[len(old) // 2:]
+                    out.write_text(old, encoding="utf-8")
+                with out.open("a", encoding="utf-8") as f:
+                    f.write(f"\n## {time.strftime('%Y-%m-%d %H:%M')}\n"
+                            + "\n".join(fresh) + "\n")
+                log(f"лексикон: кандидатов в отчёт — {len(fresh)}")
         except OSError:
             pass
     return fixed
 
 
 def canonize_file(path: pathlib.Path, cfg: dict) -> None:
-    """Канон для готового файла (минутки) — с гейтом потери обновления."""
+    """Канон для готового файла (минутки) — с гейтом потери обновления.
+
+    Проигранная гонка (mcp-«Минутки», редактор) не молчит, а перечитывает
+    и пробует ещё раз — та же схема, что у restamp_minutes (DS M1 по
+    #469); после второй неудачи — громкая строка в лог, канон догонит
+    следующая пересборка.
+    """
     lex = _lexicon_for(cfg)
-    if lex is None or lex.empty() or not path.exists():
+    if lex is None or lex.empty():
         return
-    before = safe_write.stat_snapshot(path)
-    if before is None:
-        return
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return
-    fixed, replaced = lexicon.apply(text, lex)
-    if not replaced or fixed == text:
-        return
-    if safe_write.write_text(path, fixed, expect=before):
-        log(f"лексикон в минутках: замен {len(replaced)}")
+    for attempt in (1, 2):
+        if not path.exists():
+            return
+        before = safe_write.stat_snapshot(path)
+        if before is None:
+            return
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return
+        fixed, replaced = lexicon.apply(text, lex)
+        if not replaced or fixed == text:
+            return
+        if safe_write.write_text(path, fixed, expect=before):
+            log(f"лексикон в минутках: замен {len(replaced)}")
+            return
+        log(f"лексикон в минутках: файл изменился под рукой (попытка {attempt})")
 
 
 def write_final(live: pathlib.Path, text: str, live_text: str) -> pathlib.Path:

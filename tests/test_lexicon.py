@@ -23,7 +23,7 @@ def _graph(tmp_path):
         "# Вельский Ян\nМониторинг DAG, вторая линия.\n",
         encoding="utf-8")
     (g / "Системы" / "КРАМ.md").write_text(
-        "---\ntype: system\n---\n# КРАМ\nСистема планирования.\n",
+        '---\ntype: system\naliases: ["крам"]\n---\n# КРАМ\nСистема планирования.\n',
         encoding="utf-8")
     (g / "Люди" / "_ЛЮДИ.md").write_text("| узел |\n", encoding="utf-8")
     return g
@@ -110,3 +110,115 @@ def test_two_letter_abbrev_node_is_ignored(tmp_path):
     lex = lexicon.load(g)
     out, rep = lexicon.apply("во дворе во всём", lex)
     assert rep == [] and out == "во дворе во всём"
+
+
+def test_alias_matching_other_nodes_surname_makes_no_rule(tmp_path):
+    """DS C1 по #469: алиас «Гельский» у Вельского не переписывает
+    реального Гельского Ивана с собственным узлом — правило не создаётся."""
+    g = tmp_path / "g"
+    (g / "Люди").mkdir(parents=True)
+    (g / "Люди" / "Вельский Ян.md").write_text(
+        '---\naliases: ["Гельский"]\n---\n# Вельский Ян\n', encoding="utf-8")
+    (g / "Люди" / "Гельский Иван.md").write_text(
+        "---\n---\n# Гельский Иван\n", encoding="utf-8")
+    lex = lexicon.load(g)
+    out, rep = lexicon.apply("Спроси у Гельского Ивана про отчёт", lex)
+    assert rep == [] and "Гельского Ивана" in out, (rep, out)
+
+
+def test_lowercase_common_noun_not_replaced_by_person_alias(tmp_path):
+    """DS C2 по #469: алиас «Диктор» у Виктора не смеет переписывать
+    строчного «диктора» — класс «хосты» через дверь персон."""
+    g = tmp_path / "g"
+    (g / "Люди").mkdir(parents=True)
+    (g / "Люди" / "Петров Виктор.md").write_text(
+        '---\naliases: ["Диктор"]\n---\n# Петров Виктор\n', encoding="utf-8")
+    lex = lexicon.load(g)
+    out, rep = lexicon.apply("говорил как диктор по радио", lex)
+    assert rep == [] and out == "говорил как диктор по радио"
+    # Заглавное STT-искажение при этом чинится:
+    out2, rep2 = lexicon.apply("Задачу Диктору передали.", lex)
+    assert rep2 == ["Диктору→Виктору"], rep2
+
+
+def test_abbrev_node_without_alias_makes_no_rule(tmp_path):
+    """DS I1 + GLM-3 по #469: капс-узел («МИР», «ПОЧТА») сам по себе не
+    перекапсит частотное слово — строчная форма канонизируется только
+    явным алиасом, гейт длины от «ПОЧТА» не спасал."""
+    g = tmp_path / "g"
+    (g / "Системы").mkdir(parents=True)
+    (g / "Системы" / "МИР.md").write_text("---\n---\n# МИР\n", encoding="utf-8")
+    (g / "Системы" / "ПОЧТА.md").write_text("---\n---\n# ПОЧТА\n", encoding="utf-8")
+    (g / "Системы" / "КРАМ.md").write_text(
+        '---\naliases: ["крам"]\n---\n# КРАМ\n', encoding="utf-8")
+    lex = lexicon.load(g)
+    out, rep = lexicon.apply("мир во всём мире, почта висит, крам работает", lex)
+    assert rep == ["крам→КРАМ"], rep
+    assert out.startswith("мир во всём мире, почта висит")
+
+
+def test_shared_alias_of_two_nodes_is_dropped(tmp_path):
+    """GLM-1 по #469: один алиас у двух узлов — победителя выбирал бы
+    порядок glob; правило снимается, неоднозначное слово не трогается."""
+    g = tmp_path / "g"
+    (g / "Люди").mkdir(parents=True)
+    (g / "Люди" / "Вельский Ян.md").write_text(
+        '---\naliases: ["Дельский"]\n---\n# Вельский Ян\n', encoding="utf-8")
+    (g / "Люди" / "Мельский Лев.md").write_text(
+        '---\naliases: ["Дельский"]\n---\n# Мельский Лев\n', encoding="utf-8")
+    lex = lexicon.load(g)
+    out, rep = lexicon.apply("Дельского ждали к девяти.", lex)
+    assert rep == [] and "Дельского" in out, (rep, out)
+    assert lex.conflicts >= 1
+
+
+def test_lowercase_words_are_not_candidates(tmp_path):
+    """GLM-4 отклонён данными смоука: строчные кандидаты либо дают ложные
+    ✔ («машина ~ марина»), либо жёсткий гейт теряет целевой класс.
+    Строчное — не кандидат; тема v2 вместе с фонетикой."""
+    lex = lexicon.load(_graph(tmp_path))
+    assert lexicon.candidates(
+        "задачу получил мельский по мониторингу второй линии", lex) == []
+
+
+def test_related_name_of_other_person_not_candidate(tmp_path):
+    """Живой смоук: «Никитина» (узел Ольга Никитина) не кандидат к узлу
+    «Никита» — это чьё-то каноническое имя; «Виктор» не кандидат к
+    «Виктория» — родственные имена не делят суффикс основ."""
+    g = tmp_path / "g"
+    (g / "Люди").mkdir(parents=True)
+    (g / "Люди" / "Никита.md").write_text("---\n---\n# Никита\nДанные.\n", encoding="utf-8")
+    (g / "Люди" / "Ольга Никитина.md").write_text(
+        "---\n---\n# Ольга Никитина\nДанные отчёта.\n", encoding="utf-8")
+    (g / "Люди" / "Виктория Юрьевна.md").write_text(
+        "---\n---\n# Виктория Юрьевна\nСогласование данных.\n", encoding="utf-8")
+    lex = lexicon.load(g)
+    cand = lexicon.candidates(
+        "Никитина и Виктор обсуждали данные отчёта и согласование.", lex)
+    assert cand == [], cand
+
+
+def test_canon_inflection_is_not_a_candidate(tmp_path):
+    """DS I2 по #469: правильно склонённый канон («Вельским», дистанция 1)
+    не мусорит отчёт кандидатов на каждой пересборке."""
+    lex = lexicon.load(_graph(tmp_path))
+    cand = lexicon.candidates("Работу согласовали с Вельским вчера.", lex)
+    assert cand == [], cand
+
+
+def test_all_caps_word_stays_all_caps(tmp_path):
+    """DS M4 по #469: «ГЕЛЬСКОГО» в шапке не схлопывается в «Вельского»."""
+    lex = lexicon.load(_graph(tmp_path))
+    out, rep = lexicon.apply("СЛУШАЛИ ГЕЛЬСКОГО ПО ОТЧЁТУ", lex)
+    assert "ВЕЛЬСКОГО" in out, out
+
+
+def test_block_alias_trailing_punctuation_stripped(tmp_path):
+    """DS M7 по #469: хвостовая запятая блочного алиаса не убивает правило."""
+    g = tmp_path / "g"
+    (g / "Люди").mkdir(parents=True)
+    (g / "Люди" / "Вельский Ян.md").write_text(
+        "---\naliases:\n  - Гельский,\n---\n# Вельский Ян\n", encoding="utf-8")
+    lex = lexicon.load(g)
+    out, rep = lexicon.apply("Гельского ждали к девяти.", lex)
+    assert rep == ["Гельского→Вельского"], rep
