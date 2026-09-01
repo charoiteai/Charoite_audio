@@ -5,6 +5,15 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.65.0](https://github.com/charoiteai/Charoite_audio/compare/v0.64.2...v0.65.0) (2026-09-01)
+
+
+### Features
+
+* **app:** auto-hint card lives 3 minutes instead of dying with the next thread update ([#472](https://github.com/charoiteai/Charoite_audio/issues/472)) ([b9c835f](https://github.com/charoiteai/Charoite_audio/commit/b9c835f675d716679d521a59cfcb8a31bf7d5f07))
+* **autostop:** farewells end the meeting — one cuts silence to a minute, two stop at once ([#471](https://github.com/charoiteai/Charoite_audio/issues/471)) ([6f929e2](https://github.com/charoiteai/Charoite_audio/commit/6f929e21a82c17a273de5af9959c6958e909697f))
+* **lexicon:** graph aliases canonize surnames and abbreviations at rebuild ([#469](https://github.com/charoiteai/Charoite_audio/issues/469)) ([4f6d584](https://github.com/charoiteai/Charoite_audio/commit/4f6d584e427f6347107fe699f89c748bdd70ce9c))
+
 ## [0.64.2](https://github.com/charoiteai/Charoite_audio/compare/v0.64.1...v0.64.2) (2026-08-31)
 
 
