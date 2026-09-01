@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.66.1](https://github.com/charoiteai/Charoite_audio/compare/v0.66.0...v0.66.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* **app:** sidebar hit-test was two rows off — clicks landed on the wrong section ([#477](https://github.com/charoiteai/Charoite_audio/issues/477)) ([eb742f5](https://github.com/charoiteai/Charoite_audio/commit/eb742f5a0b9c201761197612a7dc5351fa534e2d))
+
 ## [0.66.0](https://github.com/charoiteai/Charoite_audio/compare/v0.65.1...v0.66.0) (2026-09-01)
 
 
