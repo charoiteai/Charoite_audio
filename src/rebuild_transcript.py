@@ -43,6 +43,8 @@ import yaml  # noqa: E402
 
 import install_profile  # noqa: E402
 import channel_labels  # noqa: E402
+import graphs  # noqa: E402
+import lexicon  # noqa: E402
 import owner_voice as owner_voice_rules  # noqa: E402
 import live_gate  # noqa: E402
 import meeting_stamp  # noqa: E402
@@ -600,13 +602,76 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     if m:
         body.append(m.group(0).lstrip("\n"))
 
-    write_final(live, "\n".join(body).rstrip() + "\n", live_text)
+    final_text = "\n".join(body).rstrip() + "\n"
+    # Канон написаний из графа (№149): «Гельского» → «Вельского»,
+    # «крам» → «КРАМ» — только по подтверждённым алиасам узлов; похожие
+    # слова без алиаса не трогаются, а уходят в отчёт-кандидаты.
+    final_text = canonize(final_text, cfg)
+    write_final(live, final_text, live_text)
     # В минутки — ТОЛЬКО имена живой сессии (meta["names"]): их метки — та же
     # живая нумерация, которой минутки и написаны. Пересборочный `names` живёт
     # в другом пространстве номеров (docstring names_by_time), и подстановка
     # по нему клеила бы имя не тому человеку (GLM Critical по #464).
     restamp_minutes(live, live_session_names(meta))
+    canonize_file(live.with_name(live.stem + "_minutes.md"), cfg)
     return live
+
+
+_LEX_CACHE: list = [None]
+
+
+def _lexicon_for(cfg: dict) -> "lexicon.Lexicon | None":
+    """Лексикон один на процесс пересборки: узлы читаются один раз."""
+    if _LEX_CACHE[0] is None:
+        root = graphs.graph_dir(cfg)
+        if root is None:
+            return None
+        try:
+            _LEX_CACHE[0] = lexicon.load(root)
+        except Exception as e:  # noqa: BLE001 — улучшатель не роняет пересборку
+            log(f"лексикон не собрался: {e}")
+            return None
+    return _LEX_CACHE[0]
+
+
+def canonize(text: str, cfg: dict) -> str:
+    """Применить канон графа к тексту; кандидатов — в logs/lexicon_candidates.md."""
+    lex = _lexicon_for(cfg)
+    if lex is None or lex.empty():
+        return text
+    fixed, replaced = lexicon.apply(text, lex)
+    if replaced:
+        top = ", ".join(sorted(set(replaced))[:6])
+        log(f"лексикон: замен {len(replaced)} ({top})")
+    cand = lexicon.candidates(text, lex)
+    if cand:
+        try:
+            out = ROOT / "logs" / "lexicon_candidates.md"
+            with out.open("a", encoding="utf-8") as f:
+                f.write(f"\n## {time.strftime('%Y-%m-%d %H:%M')}\n" + "\n".join(cand) + "\n")
+            log(f"лексикон: кандидатов в отчёт — {len(cand)}")
+        except OSError:
+            pass
+    return fixed
+
+
+def canonize_file(path: pathlib.Path, cfg: dict) -> None:
+    """Канон для готового файла (минутки) — с гейтом потери обновления."""
+    lex = _lexicon_for(cfg)
+    if lex is None or lex.empty() or not path.exists():
+        return
+    before = safe_write.stat_snapshot(path)
+    if before is None:
+        return
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    fixed, replaced = lexicon.apply(text, lex)
+    if not replaced or fixed == text:
+        return
+    if safe_write.write_text(path, fixed, expect=before):
+        log(f"лексикон в минутках: замен {len(replaced)}")
 
 
 def write_final(live: pathlib.Path, text: str, live_text: str) -> pathlib.Path:
