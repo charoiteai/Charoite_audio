@@ -65,6 +65,56 @@ enum TasksScreenPolicy {
         case .later: return .later
         }
     }
+
+    /// Открытые поручения старше стольких дней и БЕЗ срока — «Старые»:
+    /// свёрнутая секция внизу вместо вечной ленты хлама (запрос владельца
+    /// 01.09 «старые поручения не чистятся»). Файлы не трогаем — чистится
+    /// экран, а не история; поручение со сроком старым не считается,
+    /// у него есть своя корзина «Просрочено».
+    static let staleAfterDays = 14
+
+    /// Поручение «за владельцем»: минутки пишут `**Имя** — дело`, и первый
+    /// жирный блок — ответственный. Матч по вхождению имени (регистр не
+    /// важен): «**Антон**», «**Антон + Коля**», «**Антон как сотрудник…**».
+    /// «Все участники» — не личное поручение. Пустое имя (user_name не
+    /// заполнен) — секции «Мои» просто нет, ничего не угадываем.
+    static func isMine(_ text: String, owner: String) -> Bool {
+        let owner = owner.trimmingCharacters(in: .whitespaces)
+        guard !owner.isEmpty else { return false }
+        let assignee: Substring
+        if let m = text.range(of: #"\*\*[^*]+\*\*"#, options: .regularExpression),
+           m.lowerBound == text.startIndex || text[..<m.lowerBound]
+               .trimmingCharacters(in: .whitespaces).isEmpty {
+            assignee = text[m]
+        } else if let dash = text.range(of: " — ") {
+            assignee = text[..<dash.lowerBound]
+        } else {
+            return false
+        }
+        return assignee.range(of: owner, options: [.caseInsensitive]) != nil
+    }
+
+    /// Открытые поручения одной операцией: «Мои» (первая секция всегда,
+    /// даже давние — запрос владельца 01.09), живые и «Старые».
+    static func split(_ items: [(text: String, happenedAt: Date)],
+                      owner: String,
+                      now: Date = Date(),
+                      calendar: Calendar = .current)
+        -> (mine: [Int], fresh: [Int], stale: [Int]) {
+        var mine: [Int] = [], fresh: [Int] = [], stale: [Int] = []
+        let cutoff = calendar.date(byAdding: .day, value: -staleAfterDays, to: now)
+            ?? now.addingTimeInterval(-Double(staleAfterDays) * 86_400)
+        for (i, item) in items.enumerated() {
+            if isMine(item.text, owner: owner) {
+                mine.append(i)
+            } else if item.happenedAt < cutoff, TaskDue.parse(item.text) == nil {
+                stale.append(i)
+            } else {
+                fresh.append(i)
+            }
+        }
+        return (mine, fresh, stale)
+    }
 }
 
 #endif

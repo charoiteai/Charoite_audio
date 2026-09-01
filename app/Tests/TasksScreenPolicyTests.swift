@@ -37,3 +37,33 @@ final class TasksScreenPolicyTests: XCTestCase {
                           TasksScreenPolicy.DueBucket.done)
     }
 }
+
+extension TasksScreenPolicyTests {
+    /// №152/запрос 01.09: «за мной — первым, даже если задачи далеко».
+    func testMineDetection() {
+        XCTAssertTrue(TasksScreenPolicy.isMine("**Антон** — зайти в ДАДМ", owner: "Антон"))
+        XCTAssertTrue(TasksScreenPolicy.isMine("**Антон + Коля** — свериться", owner: "Антон"))
+        XCTAssertTrue(TasksScreenPolicy.isMine("**антон** — письмо", owner: "Антон"))
+        XCTAssertFalse(TasksScreenPolicy.isMine("**Света** — рассчитать дельты", owner: "Антон"))
+        XCTAssertFalse(TasksScreenPolicy.isMine("**Все участники** — заводить фичи", owner: "Антон"))
+        XCTAssertFalse(TasksScreenPolicy.isMine("починить Антону доступ", owner: "Антон"),
+                       "имя не в позиции ответственного — не моё")
+        XCTAssertFalse(TasksScreenPolicy.isMine("**Антон** — что-то", owner: ""),
+                       "пустой user_name ничего не присваивает")
+    }
+
+    func testSplitMineFirstEvenWhenOld() {
+        let old = Date(timeIntervalSinceNow: -40 * 86_400)
+        let fresh = Date(timeIntervalSinceNow: -3600)
+        let items: [(text: String, happenedAt: Date)] = [
+            ("**Света** — свежая", fresh),
+            ("**Антон** — давняя, но моя", old),
+            ("**Коля** — старьё без срока", old),
+            ("**Коля** — старая, но со сроком до 05.09", old),
+        ]
+        let s = TasksScreenPolicy.split(items, owner: "Антон")
+        XCTAssertEqual(s.mine, [1], "моё не тонет в старых")
+        XCTAssertEqual(s.stale, [2], "старое без срока — в «Старые»")
+        XCTAssertEqual(s.fresh, [0, 3], "срок держит задачу живой")
+    }
+}
