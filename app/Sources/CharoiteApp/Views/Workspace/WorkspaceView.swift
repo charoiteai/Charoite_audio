@@ -10,19 +10,24 @@ struct WorkspaceView: View {
 
     var body: some View {
         NavigationSplitView {
-            // Выбор раздела — кнопки в обычном ScrollView, без List вовсе.
-            // List в sidebar-колонке этого окна молча терял и подсветку, и
-            // клики (AX: selected=false после клика) — найдено живым прогоном
-            // 04.08; кнопки же в этом окне срабатывают всегда.
-            ScrollView {
-                VStack(spacing: 2) {
-                    ForEach(WorkspaceSection.allCases) { section in
-                        sidebarRow(section)
-                    }
+            // Выбор раздела — кнопки БЕЗ контейнера прокрутки. История трёх
+            // заходов: List в sidebar-колонке терял клики (04.08) → кнопки в
+            // ScrollView → на 0.66.0 живой AX-прогон (01.09) поймал СИМПТОМ:
+            // строки рисовались на две ниже своих хитов (клик по видимой
+            // «Встреча» выбирал «Задачи», нижние — вне интерактивной зоны).
+            // VStack проверен тем же щупом на этой сборке: 5/5 строк
+            // открывают сами себя. Если съезд вернётся — первым делом
+            // смотреть инсет sidebar-КОЛОНКИ (titlebar/safe area), а не
+            // контейнер (GLM r1 по #477); и при росте секций за ~12 сюда
+            // должен вернуться скролл вместе с нейтрализацией инсета (DS).
+            VStack(spacing: 2) {
+                ForEach(WorkspaceSection.allCases) { section in
+                    sidebarRow(section)
                 }
-                .padding(.horizontal, 10)
-                .padding(.top, 8)
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
             .navigationTitle("Charoite")
             // Ширину колонки задаём явно. Без неё второе окно той же сцены
             // открывалось со схлопнутым сайдбаром, а detail оставался
