@@ -1,0 +1,368 @@
+"""Канон написаний из графа: фамилии и аббревиатуры STT приводятся к узлам.
+
+За одно утро одна фамилия прожила четыре жизни: «Вельский» (канон),
+«Ельский» (имя узла до сверки), «Гельского» (STT в стенограмме — из-за
+этого потерялось единственное именное поручение встречи), «Мельский».
+Узел графа при этом ЗНАЛ девять вариантов в `aliases:` — не хватало только
+кода, который применит это знание к тексту.
+
+Правила (решение владельца 01.09 «проверка при сборке, похожее — менять»):
+- Канон — ТОЛЬКО граф: имя узла Люди/Системы и его `aliases:` во
+  frontmatter. Никакого отдельного словаря: справочник правится там же,
+  где живёт узел, и виден человеку.
+- Замена — детерминированная и только по подтверждённым алиасам: основа
+  алиаса меняется на основу канона, падежное окончание сохраняется
+  («Гельск-ого» → «Вельск-ого»). Аббревиатуры — целым словом с
+  регистром канона («крам» → «КРАМ»).
+- «Похожее, но не алиас» — НЕ заменяется: слово с Заглавной на редакции
+  ≤2 от канона уходит в отчёт-кандидаты; если контекст вокруг него
+  пересекается с узлом (поле `отдел:` или тело — «Вельский + 2-я
+  линия»), кандидат помечен уверенным — человек подтверждает алиас одним
+  движением. Автозапись в узел — после обкатки, не в этой версии.
+- LLM к правке терминов не подпускается; фонетики в первой версии нет.
+"""
+from __future__ import annotations
+
+import dataclasses
+import pathlib
+import re
+
+import frontmatter
+
+#: Каталоги графа, чьи узлы дают канон. Встречи/Досье — потребители, не источник.
+SOURCE_DIRS = ("Люди", "Системы")
+
+#: Окончания фамилий/прилагательных: срезаются у алиаса и канона, чтобы
+#: заменить основу и сохранить падеж («…ский/…ского/…скому» — одна основа).
+_ENDINGS = ("ский", "ского", "скому", "ским", "ском", "ская", "ской", "скую",
+            "ий", "ый", "ой", "его", "ого", "ему", "ому", "им", "ым", "ом",
+            "ая", "яя", "ую", "юю", "а", "я", "у", "ю", "е", "и", "ы", "й")
+
+
+def _stem_name(word: str) -> str:
+    """Основа склоняемого слова-имени: без окончания, минимум 4 буквы."""
+    w = word.lower()
+    for e in _ENDINGS:
+        if len(w) - len(e) >= 4 and w.endswith(e):
+            return w[: -len(e)]
+    return w
+
+
+def _common_suffix(a: str, b: str) -> int:
+    """Длина общего хвоста двух основ — мера «падежного» родства."""
+    n = 0
+    while n < min(len(a), len(b)) and a[-1 - n] == b[-1 - n]:
+        n += 1
+    return n
+
+
+def _is_abbrev(word: str) -> bool:
+    """Аббревиатура: 3–6 букв капсом (КРАМ, ЛУНР, ПАРТ). Двухбуквенные —
+    слишком опасны: узел «ВО» на живом смоуке канонизировал предлог «во»
+    по всей стенограмме."""
+    return 3 <= len(word) <= 6 and word.isupper() and word.isalpha()
+
+
+@dataclasses.dataclass
+class Rule:
+    canon: str        # каноническое слово как в узле («Вельский», «КРАМ»)
+    node: str         # имя узла-источника (для отчёта)
+    stem: str         # основа канона для склоняемых; для аббревиатур = слово
+    abbrev: bool
+
+
+@dataclasses.dataclass
+class Lexicon:
+    #: alias-основа → правило (склоняемые) / alias-слово lower → правило (аббревиатуры)
+    by_stem: dict[str, Rule]
+    by_word: dict[str, Rule]
+    #: канон-слово → (узлы через «; », слова контекста: `отдел:` + тело)
+    context: dict[str, tuple[str, set[str]]]
+    #: основы канонических имён всех узлов Люди — «это уже чьё-то имя»
+    canon_stems: frozenset[str] = frozenset()
+    #: снятые из-за общего алиаса основы: «узлы через ; » — для строки в
+    #: отчёте кандидатов (advisory GLM r3: молчаливое снятие невидимо
+    #: человеку, а канал кандидатов советовал противоположное)
+    dropped_stems: dict[str, str] = dataclasses.field(default_factory=dict)
+    #: счётчики «почему канон не применился» — по логу (GLM-9 по #469);
+    #: причины раздельно (GLM-7 круга 2): чужая фамилия ≠ общий алиас
+    foreign_stem: int = 0
+    shared_alias: int = 0
+    skipped_nodes: int = 0
+
+    def empty(self) -> bool:
+        return not (self.by_stem or self.by_word)
+
+
+def _ctx_stem(w: str) -> str:
+    """Грубая основа для сверки контекста: «мониторингу/мониторинг»,
+    «второй/вторая», «линии/линия» должны совпадать. Короткая основа не
+    откатывается к полному слову, а добивается из него до 4 букв — иначе
+    «линия»→«лини», но «линии»→«линии», и одинаковые слова в разных
+    формах не пересекались (DS M2 по #469)."""
+    base = w.rstrip("аеёиоуыэюяй")
+    if len(base) >= 4:
+        return base
+    return w[:4] if len(w) >= 4 else w
+
+
+def _context_words(text: str) -> set[str]:
+    return {_ctx_stem(w) for w in re.findall(r"[а-яёa-z0-9-]{4,}", text.lower())}
+
+
+def _iter_nodes(graph_root: pathlib.Path, skipped: list[int] | None = None):
+    for d in SOURCE_DIRS:
+        base = graph_root / d
+        if not base.is_dir():
+            continue
+        for p in sorted(base.glob("*.md")):
+            if p.name.startswith("_"):
+                continue
+            try:
+                yield d, p, p.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                # вытесненный iCloud-файл / права: узел молча пропущен, но
+                # счётчик выносит это в лог — «частично собранный лексикон
+                # неотличим от пустого» (GLM-9 по #469)
+                if skipped is not None:
+                    skipped[0] += 1
+                continue
+
+
+def load(graph_root: pathlib.Path) -> Lexicon:
+    """Собрать канон из узлов графа. Ошибки чтения молча пропускают узел:
+    лексикон — улучшатель, он не смеет ронять пересборку."""
+    by_stem: dict[str, Rule] = {}
+    by_word: dict[str, Rule] = {}
+    context: dict[str, tuple[str, set[str]]] = {}
+    # Узлы читаются с диска ОДИН раз (DS-6/GLM-6 круга 2: двойной проход
+    # удваивал I/O по iCloud и давал TOCTOU — узел, прочитанный только во
+    # втором проходе, оставался без своей записи в canon_stems).
+    nodes = list(_iter_nodes(graph_root, skipped := [0]))
+    # Основы фамилий ВСЕХ узлов Люди — защита чужих канонов (DS C1 по
+    # #469): алиас «Гельский» у Вельского не смеет переписывать реального
+    # Гельского Ивана, у которого есть собственный узел. Совпала основа
+    # алиаса с чужим каноном — правило не создаётся; заодно рвётся и
+    # неидемпотентная пара взаимных алиасов двух узлов. Стем держит
+    # МНОЖЕСТВО узлов (DS r2: однофамильцы «Вельский Ян»/«Вельский Пётр»
+    # не выражаются одним значением — гейт зависел от порядка glob).
+    canon_stems: dict[str, set[str]] = {}
+    for d, p, _text in nodes:
+        if d != "Люди":
+            continue
+        for cw in re.findall(r"[\w-]+", p.stem):
+            if cw[:1].isupper() and len(_stem_name(cw)) >= 4:
+                canon_stems.setdefault(_stem_name(cw), set()).add(p.stem)
+    # Снятое из-за неоднозначности правило снято НАВСЕГДА (Critical обеих
+    # голов круга 2): del без липкого следа воскресал вторым алиасом той
+    # же основы или третьим узлом — победителя снова выбирал порядок glob.
+    dropped: dict[str, str] = {}   # основа → «узел1; узел2» для отчёта
+    foreign_stem = 0    # алиас = чужая фамилия (C1)
+    shared_alias = 0    # один алиас у двух узлов (GLM-1)
+    for d, p, text in nodes:
+        node = p.stem
+        data = frontmatter.parse(text, p.name) or {}
+        dept = str(data.get("отдел") or "")
+        aliases = frontmatter.aliases(text, p.name)
+        canon_words = [w for w in re.findall(r"[\w-]+", node) if len(w) >= 2]
+        # ПРАВИЛА ЗАМЕН — только фамилии (узлы Люди/) и капс-аббревиатуры.
+        # Тематические узлы Систем («Проблема с хостами» с алиасом
+        # «хосты») на первом же живом смоуке породили «хост→хостам» по
+        # всей стенограмме — нарицательные в замены не допускаются,
+        # им остаётся роль контекста для кандидатов.
+        person = d == "Люди"
+        # Каноны-персоны и аббревиатуры — в контекст кандидатов. Тело —
+        # целиком (узлы малы; «2-я линия» на символе 4000 тоже контекст),
+        # тёзки-узлы («Петров Иван»/«Петров Пётр») объединяют контексты,
+        # а не затирают друг друга по порядку glob (GLM-7/8 по #469).
+        for cw in canon_words:
+            if person and cw[:1].isupper() and len(cw) >= 4 or _is_abbrev(cw):
+                words = _context_words(dept + " " + text)
+                old = context.get(cw.lower())
+                if old is None:
+                    context[cw.lower()] = (node, words)
+                elif node not in old[0].split("; "):
+                    # сравнение по СПИСКУ узлов, не подстроке: «Никита» in
+                    # «Никита Соколов» затирал контекст длинного тёзки
+                    # (GLM-2/DS-5 круга 2)
+                    context[cw.lower()] = (old[0] + "; " + node, old[1] | words)
+                else:
+                    context[cw.lower()] = (old[0], old[1] | words)
+        for alias in aliases:
+            a_words = alias.split()
+            if len(a_words) != 1:
+                continue          # многословные алиасы — не в этой версии
+            # Хвостовая пунктуация блочного алиаса («- Гельский,») молча
+            # убивала правило: основа с запятой не совпадала ни с чем.
+            aw = a_words[0].strip(",;.!?\"'«»()")
+            if not aw:
+                continue
+            # цель замены: капс-аббревиатура узла ЛИБО (для персон)
+            # ФАМИЛИЯ — слово имени узла с самой длинной основой
+            # («Вельский Ян» → «Вельский», «Анна Николаева» →
+            # «Николаева»). Префикс-сверку алиаса с целью не делаем:
+            # алиас в узле уже подтверждён, а настоящие STT-искажения
+            # расходятся со второй буквы (Гельский/Вельский —
+            # живой смоук это и поймал).
+            target = next((cw for cw in canon_words if _is_abbrev(cw)
+                           and aw.lower() == cw.lower()), None)
+            if target is None and person and aw[:1].isupper():
+                # Цель — слово имени узла с максимальным ОБЩИМ СУФФИКСОМ
+                # основ (порог 3): настоящие STT-искажения фамилии делят
+                # хвост («гельск/вельск» → «ельск», «ельск/вельск» →
+                # «ельск»), а имя с фамилией суффикса не делят — «Марк»
+                # не станет «Ветровым», а фамилия — именем
+                # (живой смоук поймал обе пары). Нет суффикса — алиас
+                # остаётся поисковым синонимом узла без замены.
+                a_st = _stem_name(aw)
+                best, best_len = None, 2
+                for cw in canon_words:
+                    if not cw[:1].isupper() or len(_stem_name(cw)) < 4:
+                        continue
+                    n = _common_suffix(a_st, _stem_name(cw))
+                    if n > best_len:
+                        best, best_len = cw, n
+                target = best
+            if not target:
+                continue
+            # Холостой алиас-двойник канона правил не даёт, но сравнение
+            # для аббревиатур — с регистром: «крам» при каноне «КРАМ» —
+            # не двойник, а целевая строчная форма.
+            if aw == target or (not _is_abbrev(target)
+                                and aw.lower() == target.lower()):
+                continue
+            if _is_abbrev(target):
+                by_word[aw.lower()] = Rule(target, node, target, True)
+            elif aw[:1].isupper():   # алиас-фамилия пишется с Заглавной
+                st = _stem_name(aw)
+                owners = canon_stems.get(st)
+                if owners and node not in owners:
+                    foreign_stem += 1
+                    continue      # основа алиаса — чужая фамилия (C1)
+                if len(st) >= 4 and st != _stem_name(target):
+                    if st in dropped:
+                        shared_alias += 1
+                        if node not in dropped[st].split("; "):
+                            dropped[st] += "; " + node
+                        continue    # неоднозначность липкая — не воскрешать
+                    prev = by_stem.get(st)
+                    if prev is not None and prev.canon != target:
+                        # один алиас у двух узлов: победителя выбирал бы
+                        # порядок glob, а не человек — правило снимается
+                        # (GLM-1 по #469) и больше не ставится
+                        del by_stem[st]
+                        dropped[st] = prev.node + "; " + node
+                        shared_alias += 1
+                        continue
+                    by_stem[st] = Rule(target, node, _stem_name(target), False)
+        # Авто-правила из ИМЕНИ капс-узла нет вовсе: «Системы/ПОЧТА.md»
+        # перекапсил бы каждую строчную «почту» без чьего-либо
+        # подтверждения — гейт длины не спасает (DS I1 + GLM-3 по #469).
+        # Строчное написание аббревиатуры канонизируется только явным
+        # алиасом («крам» в aliases узла КРАМ) — как и всё остальное.
+    return Lexicon(by_stem, by_word, context, frozenset(canon_stems),
+                   dropped, foreign_stem, shared_alias, skipped[0])
+
+
+def apply(text: str, lex: Lexicon) -> tuple[str, list[str]]:
+    """Привести текст к канону. Возвращает (текст, список замен «было→стало»)."""
+    if lex.empty():
+        return text, []
+    replaced: list[str] = []
+
+    def fix_word(m: re.Match[str]) -> str:
+        w = m.group(0)
+        low = w.lower()
+        rule = lex.by_word.get(low)
+        if rule and w != rule.canon:
+            replaced.append(f"{w}→{rule.canon}")
+            return rule.canon
+        # Фамилии правятся только у слов с Заглавной — симметрия с гейтом
+        # создания правил (DS C2 по #469): алиас «Диктор» у Виктора не
+        # смеет переписывать строчного «диктора» по всей стенограмме.
+        # Цена: строчные STT-искажения фамилий не чинятся (живые
+        # искажения STT капсит — прецедент 0856 был с Заглавной).
+        if not w[:1].isupper():
+            return w
+        st = _stem_name(low)
+        rule = lex.by_stem.get(st)
+        if rule and not rule.abbrev:
+            ending = low[len(st):]
+            fixed = rule.stem + ending
+            # регистр как у оригинала: ВСЕКАПС не схлопывать в Заглавную
+            fixed = fixed.upper() if len(w) > 1 and w.isupper() else fixed.capitalize()
+            if fixed != w:
+                replaced.append(f"{w}→{fixed}")
+                return fixed
+        return w
+
+    out = re.sub(r"[\w-]+", fix_word, text)
+    return out, replaced
+
+
+def candidates(text: str, lex: Lexicon, window: int = 30) -> list[str]:
+    """Похожие на канон слова, которых нет в алиасах, — строки отчёта.
+
+    Уверенность даёт контекст (дополнение владельца 01.09): слова вокруг
+    кандидата пересекаются с полем `отдел:`/телом узла — помечаем ✔.
+    """
+    words = re.findall(r"[\w-]+", text)
+    lows = [w.lower() for w in words]
+    out: list[str] = []
+    seen: set[str] = set()
+    for i, w in enumerate(words):
+        # Только слова с Заглавной. Строчные кандидаты (GLM-4 по #469)
+        # пробовались на живом смоуке трижды и отклонены с данными: без
+        # гейтов — ложные ✔ «сервер ~ сергей», «машина ~ марина»; с
+        # жёстким суффикс-гейтом теряется целевой класс («гельский» —
+        # срез «-ский» оставляет основам общий хвост 2). Все живые
+        # прецеденты искажений фамилий были с Заглавной; строчные — тема
+        # v2 вместе с фонетикой.
+        if not w[:1].isupper() or len(w) < 6 or w.lower() in seen:
+            continue
+        st = _stem_name(w.lower())
+        if st in lex.by_stem:
+            continue                    # уже алиас — заменится
+        if st in lex.canon_stems:
+            # слово — чьё-то каноническое имя (узел «Ольга Никитина» при
+            # узле «Никита»): не «похожее на канон», а другой человек.
+            # Живой смоук: «Никитина ~ никита ✔» между реальными людьми.
+            continue
+        for cl, (node, ctx) in lex.context.items():
+            if len(cl) < 6 or abs(len(cl) - len(w)) > 2:
+                continue
+            if st == _stem_name(cl):
+                continue    # склонение самого канона — не кандидат (DS I2)
+            # Кандидат должен выглядеть падежным искажением того же
+            # имени: общий суффикс основ ≥2 («родецк/радецк» → 2 после
+            # среза «-ский»; «виктор/виктори» → 0, «сверк/светл» → 0 —
+            # родственные имена и случайные слова с дистанцией ≤2
+            # кандидатами не становятся; живой смоук: «Виктор ~
+            # виктория», «Сверка ~ светла», «Полная ~ полина» с ложными
+            # ✔). Порог именно 2, не 3: срез «-ский» съедает хвост
+            # основы, и настоящие искажения -ских фамилий делят ровно 2.
+            if _common_suffix(st, _stem_name(cl)) < 2:
+                continue
+            if _distance(w.lower(), cl) <= 2 and w.lower() != cl:
+                around = {_ctx_stem(x)
+                          for x in lows[max(0, i - window):i] + lows[i + 1:i + window + 1]
+                          if len(x) >= 4}
+                sure = len(around & ctx) >= 2
+                mark = "✔ контекст" if sure else "?"
+                out.append(f"- {w} ~ {cl} (узел {node}) {mark}")
+                seen.add(w.lower())
+                break
+    return out
+
+
+def _distance(a: str, b: str) -> int:
+    """Левенштейн без зависимостей: строки короткие, вызовов немного."""
+    if a == b:
+        return 0
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[-1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]

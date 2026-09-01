@@ -111,6 +111,13 @@
 
 1. **Transcript rebuild** — the full recording is re-diarized per channel:
    echo filtering, micro-fragment merging, clean paragraphs, names.
+   Surnames and abbreviations the STT writes differently are canonized
+   from the graph: a node's name plus its `aliases:` frontmatter is the
+   dictionary (People and ALL-CAPS system nodes only), the alias stem is
+   replaced while the case ending is kept, and similar-but-unconfirmed
+   words are never touched — they go to `logs/lexicon_candidates.md`
+   with a ✔ mark when the surrounding words match the node's `отдел:`
+   field or body, so confirming a new alias is one edit in the node.
 2. **Graph update** — entities (People/Systems), decisions, action items,
    Cores with status + chronicle; a meeting note with wiki-links.
 3. **Meeting archive** — a "date — title" folder with every document and a
