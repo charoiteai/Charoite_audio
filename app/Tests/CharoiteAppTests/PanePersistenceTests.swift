@@ -116,7 +116,7 @@ final class LinesCoalescerTests: XCTestCase {
     /// №153: чанк транскрипта не публикует ленту немедленно — пачки уходят
     /// коалессером, ручной flushLines() делает тень видимой.
     func testShadowPublishesOnlyOnFlush() {
-        let s = SuflerService.shared
+        let s = SuflerService()   // свежий экземпляр: shared копит хвосты флашей (GLM r1)
         let before = s.lines
         s.consumeForTest(#"{"type":"transcript","speaker":"X","plain":"раз","ts":"10:00"}"#)
         XCTAssertEqual(s.lines, before, "публикация до flush — шторм вернулся")
@@ -128,5 +128,18 @@ final class LinesCoalescerTests: XCTestCase {
         s.consumeForTest(#"{"type":"transcript","speaker":"Ян","plain":"два","ts":"10:00"}"#)
         s.flushLines()
         XCTAssertEqual(s.lines.last?.text, "раз два", "склейка одного голоса живёт в тени")
+    }
+
+    /// DS r1 по #473: планировщик коалессера обязан флашить САМ — тест с
+    /// ручным flushLines() оставался бы зелёным при мёртвом Task.
+    @MainActor func testCoalescerFlushesByItself() async {
+        let s = SuflerService()
+        s.consumeForTest(#"{"type":"transcript","speaker":"Т","plain":"сам","ts":"11:00"}"#)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertEqual(s.lines.last?.text.hasSuffix("сам"), true,
+                       "коалессер не дофлашил за 500 мс — планировщик мёртв")
+        s.consumeForTest(#"{"type":"transcript_markup","speaker":"Т","text":"— сам. — разметка"}"#)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertEqual(s.lines.last?.text, "— сам. — разметка", "markup не дошёл через тень")
     }
 }

@@ -61,10 +61,13 @@ final class SuflerService: ObservableObject {
         statusErrorFromDaemon = false
     }
     @Published var lines: [TranscriptLine] = []
-    /// Тень ленты (№153): мутации сюда, @Published lines — пачкой из
-    /// коалессера (SuflerTranscriptFeed.swift, там и вся история).
+    /// Тень ленты (№153): мутации — ТОЛЬКО из consume и сбросов start(),
+    /// мимо коалессера (SuflerTranscriptFeed.swift, там история) — шторм
+    /// или рассинхрон с экраном. Dirty вместо сравнения массивов: диф
+    /// 500×2500 символов на каждый флаш грузил тот же main thread (GLM).
     var _linesShadow: [TranscriptLine] = []
     var _linesFlushScheduled = false
+    var _linesDirty = false
     @Published var hint = ""
 
     /// Нить встречи: то, что читают, пока разговор идёт.
@@ -822,7 +825,12 @@ final class SuflerService: ObservableObject {
         }
     }
 
-    func consume(_ data: Data) {   // internal: тестовый вход в SuflerTranscriptFeed
+    /// Тестовый вход: private consume виден extension ЭТОГО файла — сырой
+    /// NDJSON-вход не открывается модулю (DS r1 по #473: из consume
+    /// достижим stop() живой записи).
+    func consumeForTest(_ json: String) { consume(Data((json + "\n").utf8)) }
+
+    private func consume(_ data: Data) {
         stdoutBuffer.append(data)
         lastEventAt = Date()  // любое событие (включая hb) = демон жив
         while let nl = stdoutBuffer.firstIndex(of: 0x0A) {

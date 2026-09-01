@@ -1,3 +1,4 @@
+#if os(macOS)
 // Политика карточки подсказки: когда обновление нити вправе её погасить.
 // Отдельный файл вместо остаточного места в соседних (GLM r1 по #472):
 // SuflerService трижды упирался в потолок 1000 строк, и связные блоки
@@ -23,23 +24,19 @@ extension SuflerService {
 extension SuflerService {
     // Ручные запросы карточки — рядом с её политикой (вынос №153:
     // сервис у потолка file_length, связные блоки переезжают по смыслу).
-    func requestHint() {
-        guard isRunning, !isHinting else { return }
-        hint = ""
-        _hintBuf = ""; _lastHintUI = .distantPast
-        isHinting = true
-        hintIsManual = true
-        armHintTimeout()
-        send("hint")
-    }
+    // Близнецы различались одной строкой команды — правка дедлайна
+    // поехала бы только в одного (GLM r1 по #473).
+    func requestHint() { requestCard("hint") }
+    func requestSummary() { requestCard("summary") }
 
-    func requestSummary() {
+    private func requestCard(_ cmd: String) {
         guard isRunning, !isHinting else { return }
         hint = ""
         _hintBuf = ""; _lastHintUI = .distantPast
         isHinting = true
         hintIsManual = true
         armHintTimeout()
-        send("summary")
+        send(cmd)
     }
 }
+#endif
