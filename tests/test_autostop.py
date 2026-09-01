@@ -253,3 +253,90 @@ def test_явный_alone_работает_даже_при_выключенно�
 def test_дефолт_limits_совпадает_с_конфигом():
     """Две точки истины разошлись бы молча: DEFAULTS подняли, датакласс нет."""
     assert autostop.Limits().alone_s == autostop.DEFAULTS["alone_minutes"] * 60
+
+
+# --- Прощания (№151, запрос владельца 01.09) ---
+
+def test_farewell_detector_forms():
+    """Короткие прощальные реплики матчатся, союз «пока» — нет."""
+    yes = ["Всем пока!", "Ну всё, пока.", "До свидания", "Пока",
+           "давайте пока", "Спасибо, до связи", "хорошего дня", "До завтра",
+           "Пока-пока"]
+    no = ["пока не забыл про отчёт", "я пока посмотрю документ",
+          "пока идёт репликация посмотрим логи",
+          "созвонимся завтра по этому вопросу и обсудим детали позже",
+          "всем нужно посмотреть протокол до завтрашней встречи и дать ответ"]
+    for t in yes:
+        assert autostop.is_farewell(t), t
+    for t in no:
+        assert not autostop.is_farewell(t), t
+
+
+def test_one_farewell_cuts_silence_threshold_with_instant_warn():
+    """Одно прощание: порог тишины 60с вместо 15 минут, warn сразу."""
+    lim = autostop.limits_from_cfg({})
+    d = autostop.decide(age_s=600, quiet_s=5, spoke=True, limits=lim,
+                        farewells=1)
+    assert d.action == "warn" and d.reason == autostop.FAREWELL, d
+    d = autostop.decide(age_s=600, quiet_s=61, spoke=True, limits=lim,
+                        farewells=1)
+    assert d.action == "stop" and d.reason == autostop.FAREWELL, d
+
+
+def test_two_farewells_stop_immediately():
+    """Обмен прощаниями (≥2 подряд) — стоп без ожидания тишины.
+    Риск двойного «пока» посреди встречи взят владельцем явно (01.09)."""
+    lim = autostop.limits_from_cfg({})
+    d = autostop.decide(age_s=600, quiet_s=0, spoke=True, limits=lim,
+                        farewells=2)
+    assert d.action == "stop" and d.reason == autostop.FAREWELL, d
+
+
+def test_farewell_needs_speech_and_min_age():
+    """Прощание не трогает свежую запись (min_s) и не работает без речи."""
+    lim = autostop.limits_from_cfg({})
+    assert not autostop.decide(age_s=30, quiet_s=0, spoke=True, limits=lim,
+                               farewells=2)
+    assert not autostop.decide(age_s=600, quiet_s=5, spoke=False, limits=lim,
+                               farewells=2).reason == autostop.FAREWELL
+
+
+def test_farewell_zero_disables_rule():
+    """farewell_seconds: 0 выключает обе ветки правила."""
+    lim = autostop.limits_from_cfg(
+        {"sufler": {"autostop": {"farewell_seconds": 0}}})
+    assert not autostop.decide(age_s=600, quiet_s=61, spoke=True, limits=lim,
+                               farewells=2)
+    d = autostop.decide(age_s=600, quiet_s=61, spoke=True, limits=lim,
+                        farewells=1)
+    assert d.reason != autostop.FAREWELL
+
+
+def test_farewell_does_not_raise_stricter_threshold():
+    """Если обычный порог УЖЕ короче (нестандартный конфиг), прощание его
+    не удлиняет."""
+    lim = autostop.limits_from_cfg(
+        {"sufler": {"autostop": {"silence_minutes": 0.5,
+                                 "no_speech_minutes": 0.5,
+                                 "farewell_seconds": 120}}})
+    d = autostop.decide(age_s=600, quiet_s=40, spoke=True, limits=lim,
+                        farewells=1)
+    assert d.reason != autostop.FAREWELL or d.action == ""
+
+
+def test_watch_resumes_after_farewell_when_talk_continues():
+    """Warn после прощания снимается новой речью — «автостоп отменён»."""
+    lim = autostop.limits_from_cfg({})
+    w = autostop.Watch(lim)
+    d = w.tick(now=1000, age_s=600, quiet_s=5, spoke=True, farewells=1)
+    assert d.action == "warn" and d.reason == autostop.FAREWELL
+    # разговор продолжился: farewells сброшен демоном, тишины нет
+    d = w.tick(now=1010, age_s=610, quiet_s=2, spoke=True, farewells=0)
+    assert d.action == "resumed", d
+
+
+def test_break_announcement_is_not_farewell():
+    """«Через пять минут увидимся» — перерыв: единственный ложный класс,
+    найденный смоуком по 20 тысячам живых реплик."""
+    assert not autostop.is_farewell("Через пять минут увидимся.")
+    assert autostop.is_farewell("Всё, давай, увидимся.")

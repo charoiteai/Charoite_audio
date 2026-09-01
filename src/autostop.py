@@ -52,6 +52,7 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 # Секунды. Мягкие дефолты: включено, но срабатывает только на явном забытии.
@@ -63,12 +64,55 @@ DEFAULTS = {
     "max_hours": 6.0,           # потолок длительности (0 — без потолка)
     "warn_seconds": 60.0,       # предупреждение перед стопом
     "min_minutes": 2.0,         # раньше этого не трогаем запись вовсе
+    "farewell_seconds": 60.0,   # тишина после ОДНОГО прощания (0 — выкл)
 }
 
 NO_SPEECH = "no_speech"
 SILENCE = "silence"
 ALONE = "alone"
 LIMIT = "limit"
+FAREWELL = "farewell"
+
+# Прощание в живой стенограмме — сигнал конца встречи (запрос владельца
+# 01.09: разговор кончился, а запись ждала штатные 15 минут тишины).
+# Детект детерминированный и нарочно узкий: цена ложного стопа — оборванная
+# запись, которую не переснять.
+#
+# Реплика считается прощальной, если она КОРОТКАЯ (до 6 слов) и либо
+# оканчивается многословной прощальной формой («до свидания», «всем пока»),
+# либо целиком состоит из прощальных слов («ну всё, пока»). Одиночное
+# «пока» в длинной реплике — союз («пока не забыл») и не матчится.
+_FAREWELL_TAILS = (
+    "до свидания", "досвидания", "до связи", "до встречи", "до созвона",
+    "до завтра", "до понедельника", "всем пока", "пока-пока", "пока пока",
+    "всем спасибо", "спасибо всем", "хорошего дня", "хорошего вечера",
+    "хороших выходных", "счастливо", "услышимся", "увидимся",
+    # en/zh-пресеты: те же правила, свои формы
+    "goodbye", "bye everyone", "bye-bye", "bye bye", "see you", "take care",
+    "have a good day", "have a good one", "talk to you later",
+    "再见", "拜拜", "回聊",
+)
+_FAREWELL_WORDS = frozenset(
+    "пока всем ну всё все давай давайте спасибо счастливо услышимся "
+    "увидимся ладно тогда ага угу да bye thanks ok okay 再见 拜拜".split())
+
+
+def is_farewell(text: str) -> bool:
+    """Прощальная ли реплика. Работает по added-тексту после дедупа."""
+    words = re.findall(r"[\w-]+", text.lower().replace("ё", "е"))
+    if not words or len(words) > 6:
+        return False
+    if "через" in words or " in " in f" {' '.join(words)} ":
+        # «Через пять минут увидимся» — перерыв, не конец встречи (живой
+        # смоук по 20 тысячам реплик нашёл ровно этот ложный класс).
+        return False
+    plain = " ".join(words)
+    if any(plain.endswith(t) for t in _FAREWELL_TAILS):
+        return True
+    # «ну всё, пока» — все слова прощальные и среди них есть само прощание
+    core = {"пока", "счастливо", "bye", "再见", "拜拜"}
+    return bool(core & set(words)) and \
+        all(w in _FAREWELL_WORDS for w in words)
 
 
 def _falsy(value) -> bool:
@@ -92,6 +136,8 @@ class Limits:
     max_s: float = 21_600.0
     warn_s: float = 60.0
     min_s: float = 120.0
+    #: Тишина после одного прощания; два прощания подряд — стоп без ожидания.
+    farewell_s: float = 60.0
 
     @property
     def any_rule(self) -> bool:
@@ -142,6 +188,7 @@ def limits_from_cfg(cfg: dict) -> Limits:
         max_s=num("max_hours") * 3600,
         warn_s=num("warn_seconds"),
         min_s=num("min_minutes") * 60,
+        farewell_s=num("farewell_seconds"),
     )
 
 
@@ -167,20 +214,35 @@ def _minutes(seconds: float) -> str:
     return f"{m} минут"
 
 
+def _seconds_ru(seconds: float) -> str:
+    """«45 секунд» для коротких прощальных сроков: минутная гранулярность
+    превращала бы 60-секундное окно в «через 1 минуту» на любом остатке."""
+    n = max(5, int(round(seconds / 5)) * 5)
+    if n % 10 == 1 and n % 100 != 11:
+        return f"{n} секунду"
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        return f"{n} секунды"
+    return f"{n} секунд"
+
+
 def _hours(seconds: float) -> str:
     h = seconds / 3600
     return f"{h:.0f}" if abs(h - round(h)) < 0.05 else f"{h:.1f}"
 
 
 def decide(*, age_s: float, quiet_s: float, spoke: bool, limits: Limits,
-           alone: bool = False) -> Decision:
+           alone: bool = False, farewells: int = 0) -> Decision:
     """Пора ли предупредить или остановить запись.
 
     age_s — возраст записи по стенным часам; quiet_s — сколько длится тишина
     (по монотонным; если речи не было ни разу — с начала записи);
     spoke — звучала ли распознанная речь за эту запись хоть раз;
     alone — за всю запись системный канал не нёс речи ни разу, то есть
-    собеседников слышно не было (признак канальный, диаризация не нужна).
+    собеседников слышно не было (признак канальный, диаризация не нужна);
+    farewells — сколько прощальных реплик идёт ПОДРЯД в хвосте стенограммы
+    (обычная реплика сбрасывает в ноль). Одно прощание срезает порог тишины
+    до farewell_s; два и больше — обмен прощаниями, стоп без ожидания
+    (риск двойного «пока» посреди встречи взят владельцем явно, 01.09).
     """
     if not limits.any_rule:
         return Decision()
@@ -199,6 +261,9 @@ def decide(*, age_s: float, quiet_s: float, spoke: bool, limits: Limits,
                             f"через {_minutes(left)} остановлю запись: "
                             f"идёт {_hours(limits.max_s)} ч", left)
 
+    if spoke and farewells >= 2 and limits.farewell_s > 0:
+        return Decision("stop", FAREWELL,
+                        "обменялись прощаниями — останавливаю запись")
     reason = SILENCE if spoke else NO_SPEECH
     if not spoke:
         threshold = limits.no_speech_s
@@ -210,16 +275,29 @@ def decide(*, age_s: float, quiet_s: float, spoke: bool, limits: Limits,
         threshold = limits.alone_s
     else:
         threshold = limits.silence_s
+    if spoke and farewells == 1 and limits.farewell_s > 0 \
+            and (threshold <= 0 or limits.farewell_s < threshold):
+        # Одно прощание: не стоп, а короткое ожидание — «всем пока»
+        # уходящего с середины созвона не должно рвать запись.
+        reason, threshold = FAREWELL, limits.farewell_s
     if threshold > 0:
         left = threshold - quiet_s
         # Причина видна человеку: стоп на десятой минуте вместо пятнадцатой
         # без объяснения выглядит поломкой (ревью 20.08, DeepSeek M3).
         alone_note = ", собеседников не слышно" if reason == ALONE else ""
         if left <= 0:
-            heard = (f"тишина {_minutes(quiet_s)}{alone_note}" if spoke
-                     else "речи не было с начала записи")
-            return Decision("stop", reason, f"{heard} — останавливаю запись")
+            heard = ("прощание и тишина — останавливаю запись"
+                     if reason == FAREWELL else
+                     (f"тишина {_minutes(quiet_s)}{alone_note} — останавливаю "
+                      "запись" if spoke
+                      else "речи не было с начала записи — останавливаю запись"))
+            return Decision("stop", reason, heard)
         if left <= limits.warn_s:
+            if reason == FAREWELL:
+                return Decision("warn", reason,
+                                "услышал прощание — через "
+                                f"{_seconds_ru(left)} остановлю запись; "
+                                "скажите что-нибудь, чтобы продолжить", left)
             heard = (f"тишина {_minutes(quiet_s)}{alone_note}" if spoke
                      else "речи не было с начала записи")
             return Decision("warn", reason,
@@ -244,7 +322,8 @@ class Watch:
         self.asked_at: float | None = None
 
     def tick(self, *, now: float, age_s: float, quiet_s: float, spoke: bool,
-             last_speech_at: float | None = None, alone: bool = False) -> Decision:
+             last_speech_at: float | None = None, alone: bool = False,
+             farewells: int = 0) -> Decision:
         """Что делать на этом такте. now/last_speech_at — монотонные секунды."""
         if self.asked_at is not None:
             # Просили остановиться и не дождались ответа. Молчим mute_s, но
@@ -258,7 +337,7 @@ class Watch:
                 self.asked_at = None
 
         d = decide(age_s=age_s, quiet_s=quiet_s, spoke=spoke, limits=self.limits,
-                   alone=alone)
+                   alone=alone, farewells=farewells)
         if d.action == "warn":
             if self.warned == d.reason:
                 return Decision()      # уже предупредили — не повторяемся
