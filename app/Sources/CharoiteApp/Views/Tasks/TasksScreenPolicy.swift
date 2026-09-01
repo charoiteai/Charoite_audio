@@ -66,12 +66,13 @@ enum TasksScreenPolicy {
         }
     }
 
-    /// Открытые поручения старше стольких дней и БЕЗ срока — «Старые»:
-    /// свёрнутая секция внизу вместо вечной ленты хлама (запрос владельца
-    /// 01.09 «старые поручения не чистятся»). Файлы не трогаем — чистится
-    /// экран, а не история; поручение со сроком старым не считается,
-    /// у него есть своя корзина «Просрочено».
+    /// «Старые» (свёрнутая секция внизу; файлы не трогаем — чистится
+    /// экран, а не история). Правило владельца (01.09, уточнено ночью):
+    /// поручение БЕЗ срока — старше 14 дней от встречи; поручение СО
+    /// сроком — просрочено больше недели (свежая просрочка остаётся в
+    /// «Просрочено», хлам недельной давности уезжает вниз).
     static let staleAfterDays = 14
+    static let staleOverdueDays = 7
 
     /// Поручение «за владельцем»: минутки пишут `**Имя** — дело`, и ТОЛЬКО
     /// ведущий жирный блок — ответственный (fallback по « — » ловил
@@ -115,7 +116,16 @@ enum TasksScreenPolicy {
         for (i, item) in items.enumerated() {
             if isMine(item.text, owner: owner) {
                 mine.append(i)
-            } else if item.happenedAt < cutoff, TaskDue.parse(item.text) == nil {
+                continue
+            }
+            if let due = TaskDue.parse(item.text) {
+                if case .overdue(let days) = due.status(now: now, calendar: calendar),
+                   days > staleOverdueDays {
+                    stale.append(i)
+                } else {
+                    fresh.append(i)
+                }
+            } else if item.happenedAt < cutoff {
                 stale.append(i)
             } else {
                 fresh.append(i)

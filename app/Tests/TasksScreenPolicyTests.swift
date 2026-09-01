@@ -72,6 +72,26 @@ extension TasksScreenPolicyTests {
         XCTAssertEqual(s.fresh, [0], "день в день — ещё живое")
     }
 
+    func testOverdueWeekGoesStale() {
+        // Уточнение владельца (ночь 01.09): срок, просроченный больше
+        // недели, — тоже «Старые»; свежая просрочка остаётся на виду.
+        let cal = Calendar.current
+        let now = Date()
+        let f = DateFormatter(); f.dateFormat = "dd.MM"
+        let d9 = f.string(from: cal.date(byAdding: .day, value: -9, to: now)!)
+        let d3 = f.string(from: cal.date(byAdding: .day, value: -3, to: now)!)
+        let recent = cal.date(byAdding: .day, value: -2, to: now)!
+        let items: [(text: String, happenedAt: Date)] = [
+            ("**Коля** — отчёт до \(d9)", recent),
+            ("**Коля** — письмо до \(d3)", recent),
+            ("**Антон** — моё до \(d9)", recent),
+        ]
+        let s = TasksScreenPolicy.split(items, owner: "Антон", now: now, calendar: cal)
+        XCTAssertEqual(s.stale, [0], "просрочка 9 дней — вниз")
+        XCTAssertEqual(s.fresh, [1], "просрочка 3 дня — на виду в «Просрочено»")
+        XCTAssertEqual(s.mine, [2], "моё побеждает и недельную просрочку")
+    }
+
     func testSplitMineFirstEvenWhenOld() {
         let old = Date(timeIntervalSinceNow: -40 * 86_400)
         let fresh = Date(timeIntervalSinceNow: -3600)

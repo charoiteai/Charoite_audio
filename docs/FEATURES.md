@@ -850,9 +850,11 @@ it signals degradation, it does not break the loop.
   `- [ ]` across the graph with an open-count badge, ticking writes
   `[x]` straight into markdown — Obsidian and the app always agree.
   A "Mine" section comes first (the bold assignee matches `user_name`),
-  even for assignments from weeks ago; open items older than 14 days
-  with no due date collapse into a "Stale" section — the screen gets
-  cleaned, the files stay untouched. The
+  even for assignments from weeks ago; open items collapse into a
+  "Stale" section once they go quiet — no due date and older than 14
+  days, or a due date more than a week past (a fresh overdue stays
+  visible in its bucket) — the screen gets cleaned, the files stay
+  untouched. The
   list runs from the latest meeting to the earliest and every group
   carries its date: the order comes from the meeting time in the archive
   name, not the file mtime — the nightly review touches old folders and
