@@ -73,25 +73,33 @@ enum TasksScreenPolicy {
     /// у него есть своя корзина «Просрочено».
     static let staleAfterDays = 14
 
-    /// Поручение «за владельцем»: минутки пишут `**Имя** — дело`, и первый
-    /// жирный блок — ответственный. Матч по вхождению имени (регистр не
-    /// важен): «**Антон**», «**Антон + Коля**», «**Антон как сотрудник…**».
-    /// «Все участники» — не личное поручение. Пустое имя (user_name не
-    /// заполнен) — секции «Мои» просто нет, ничего не угадываем.
+    /// Поручение «за владельцем»: минутки пишут `**Имя** — дело`, и ТОЛЬКО
+    /// ведущий жирный блок — ответственный (fallback по « — » ловил
+    /// «связаться с Антоном — до пятницы», DS r1 по #475). Матч по ЦЕЛОМУ
+    /// слову: «Антонина» — не «Антон» (DS r1). Owner — первый токен
+    /// user_name: в конфиге может лежать полное имя, а минутки пишут
+    /// короткое. Пустое имя — секции «Мои» нет, ничего не угадываем.
     static func isMine(_ text: String, owner: String) -> Bool {
-        let owner = owner.trimmingCharacters(in: .whitespaces)
-        guard !owner.isEmpty else { return false }
-        let assignee: Substring
-        if let m = text.range(of: #"\*\*[^*]+\*\*"#, options: .regularExpression),
-           m.lowerBound == text.startIndex || text[..<m.lowerBound]
-               .trimmingCharacters(in: .whitespaces).isEmpty {
-            assignee = text[m]
-        } else if let dash = text.range(of: " — ") {
-            assignee = text[..<dash.lowerBound]
-        } else {
-            return false
+        // Любое СЛОВО user_name (имя ИЛИ фамилия, ≥3 букв) — как в
+        // python-каноне src/speaker_names.py: конфиг хранит «Имя Фамилия»,
+        // минутки пишут одно слово (GLM r1 по #475).
+        let words = owner.split(whereSeparator: \.isWhitespace)
+            .map(String.init).filter { $0.count >= 3 }
+        guard !words.isEmpty else { return false }
+        guard let m = text.range(of: #"\*\*[^*]+\*\*"#, options: .regularExpression),
+              m.lowerBound == text.startIndex || text[..<m.lowerBound]
+                  .trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+        let assignee = text[m]
+        for word in words {
+            guard let r = assignee.range(of: word, options: [.caseInsensitive]) else {
+                continue
+            }
+            let before = assignee[..<r.lowerBound].last
+            let after = assignee[r.upperBound...].first
+            if (before.map { !$0.isLetter } ?? true)
+                && (after.map { !$0.isLetter } ?? true) { return true }
         }
-        return assignee.range(of: owner, options: [.caseInsensitive]) != nil
+        return false
     }
 
     /// Открытые поручения одной операцией: «Мои» (первая секция всегда,

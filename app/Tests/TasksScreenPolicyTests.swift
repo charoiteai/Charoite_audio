@@ -50,6 +50,26 @@ extension TasksScreenPolicyTests {
                        "имя не в позиции ответственного — не моё")
         XCTAssertFalse(TasksScreenPolicy.isMine("**Антон** — что-то", owner: ""),
                        "пустой user_name ничего не присваивает")
+        // Границы круга 1 (DS r1 по #475):
+        XCTAssertFalse(TasksScreenPolicy.isMine("**Антонина** — сверить дельты", owner: "Антон"),
+                       "подстрока чужого имени — не моё")
+        XCTAssertFalse(TasksScreenPolicy.isMine("связаться с Антоном — до пятницы", owner: "Антон"),
+                       "без ведущего болда ответственного нет")
+        XCTAssertTrue(TasksScreenPolicy.isMine("**Антон** — дело", owner: "Антон Кузьменков"),
+                      "полное имя в конфиге против короткого в минутках")
+        XCTAssertTrue(TasksScreenPolicy.isMine("**Антон Кузьменков** — дело", owner: "Антон"))
+        XCTAssertTrue(TasksScreenPolicy.isMine("**Кузьменков** — дело", owner: "Антон Кузьменков"),
+                      "фамилия из user_name — тоже владелец (канон speaker_names)")
+    }
+
+    func testSplitCutoffBoundary() {
+        // ровно 14 дней — ещё не старьё (строгое <), день в день живёт
+        let cal = Calendar.current
+        let now = Date()
+        let edge = cal.date(byAdding: .day, value: -TasksScreenPolicy.staleAfterDays, to: now)!
+        let s = TasksScreenPolicy.split([("**Коля** — ровная граница", edge)],
+                                        owner: "Антон", now: now, calendar: cal)
+        XCTAssertEqual(s.fresh, [0], "день в день — ещё живое")
     }
 
     func testSplitMineFirstEvenWhenOld() {
