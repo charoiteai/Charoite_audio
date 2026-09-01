@@ -10,19 +10,22 @@ struct WorkspaceView: View {
 
     var body: some View {
         NavigationSplitView {
-            // Выбор раздела — кнопки в обычном ScrollView, без List вовсе.
-            // List в sidebar-колонке этого окна молча терял и подсветку, и
-            // клики (AX: selected=false после клика) — найдено живым прогоном
-            // 04.08; кнопки же в этом окне срабатывают всегда.
-            ScrollView {
-                VStack(spacing: 2) {
-                    ForEach(WorkspaceSection.allCases) { section in
-                        sidebarRow(section)
-                    }
+            // Выбор раздела — кнопки БЕЗ контейнера прокрутки. История трёх
+            // заходов: List в sidebar-колонке терял клики (04.08) → кнопки в
+            // ScrollView; на 0.66.0 живой AX-прогон (01.09) показал, что
+            // ScrollView в сайдбаре NavigationSplitView рисует контент на
+            // ~60pt ниже своей hit-геометрии: клик по видимой «Встреча»
+            // выбирал «Задачи», нижние строки были вне интерактивной зоны —
+            // «кнопки не нажимаются». Пяти строкам скролл не нужен: чистый
+            // VStack совмещает картинку и хиты.
+            VStack(spacing: 2) {
+                ForEach(WorkspaceSection.allCases) { section in
+                    sidebarRow(section)
                 }
-                .padding(.horizontal, 10)
-                .padding(.top, 8)
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
             .navigationTitle("Charoite")
             // Ширину колонки задаём явно. Без неё второе окно той же сцены
             // открывалось со схлопнутым сайдбаром, а detail оставался
