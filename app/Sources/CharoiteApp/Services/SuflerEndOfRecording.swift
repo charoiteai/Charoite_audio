@@ -48,19 +48,3 @@ extension SuflerService {
     }
 }
 
-extension SuflerService {
-    /// Гасит ли обновление нити карточку подсказки. Чистая функция — обе
-    /// критические ошибки ревью 16.08 (стирание ручного ответа, ампутация
-    /// идущего авто-стрима) прошли бы мимо тестов, живи решение в consume.
-    /// Гаснет только завершённый И ПРОЧИТАННЫЙ авто-контент: свежая авто-подсказка живёт
-    /// минимум hintCardLifetime — карточка пропадала со следующим обновлением нити, за
-    /// полминуты не читалась (владелец, 01.09). Стримы/ручной ответ нить не трогает;
-    /// новая подсказка сменяет сразу, крестик работает всегда — старьё не копится.
-    nonisolated static let hintCardLifetime: TimeInterval = 180
-    nonisolated static func threadClearsHint(isHinting: Bool, isAutoHinting: Bool,
-                                             hintIsManual: Bool,
-                                             ageSeconds: TimeInterval = .infinity) -> Bool {
-        !isHinting && !isAutoHinting && !hintIsManual
-            && ageSeconds >= hintCardLifetime
-    }
-}
