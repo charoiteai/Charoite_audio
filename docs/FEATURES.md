@@ -557,7 +557,9 @@ it signals degradation, it does not break the loop.
   recording without speech is a result, not an error. A search with no hits
   is the shared EmptyState with "Clear search". The feed is buttons in a
   scroll view rather than a List with selection — the same choice as the
-  sidebar, which lost clicks inside a List. Grouping, summary and plurals are
+  sidebar, which lost clicks inside a List (and whose own ScrollView later
+  drew rows two positions below their clickable spots — the sidebar is a
+  plain VStack now, the drawn row IS the clickable row). Grouping, summary and plurals are
   a pure `LibraryScreenPolicy`, tested without UI.
 - **Memory screen shows where an answer came from** (August 2026 revision,
   screen 5; palette follows the meeting library by the owner's call) — a
