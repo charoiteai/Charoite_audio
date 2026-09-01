@@ -17,25 +17,34 @@ enum TasksScreenPolicy {
 
     struct Summary: Equatable {
         let overdue: Int
-        let open: Int      // открытые БЕЗ просроченных: три числа не пересекаются
+        let open: Int      // открытые БЕЗ просроченных и БЕЗ старых: числа не пересекаются
+        let stale: Int     // свёрнутые «Старые» — своя цифра, чтобы счёт не терялся
         let done: Int
     }
 
-    /// «2 просрочено · 9 открыто · 3 сделано» — вместо голого счётчика.
-    static func summary(_ items: [(text: String, done: Bool)],
+    /// «2 просрочено · 9 открыто · 3 старых · 3 сделано» — вместо голого
+    /// счётчика. Старые вычтены из первых двух: иначе одна просроченная на
+    /// месяц задача давала «1 просрочено» при пустой корзине «Просрочено»
+    /// (DS r1 по #479).
+    static func summary(_ items: [(text: String, done: Bool, happenedAt: Date)],
+                        owner: String,
                         now: Date = Date(),
                         calendar: Calendar = .current) -> Summary {
-        var overdue = 0, open = 0, done = 0
-        for item in items {
-            if item.done { done += 1; continue }
+        let open = items.filter { !$0.done }
+        let s = split(open.map { ($0.text, $0.happenedAt) },
+                      owner: owner, now: now, calendar: calendar)
+        let staleSet = Set(s.stale)
+        var overdue = 0, live = 0
+        for (i, item) in open.enumerated() where !staleSet.contains(i) {
             if case .overdue = TaskDue.parse(item.text)?
-                .status(now: now, calendar: calendar) {
+                .status(now: now, calendar: calendar, anchor: item.happenedAt) {
                 overdue += 1
             } else {
-                open += 1
+                live += 1
             }
         }
-        return Summary(overdue: overdue, open: open, done: done)
+        return Summary(overdue: overdue, open: live, stale: s.stale.count,
+                       done: items.count - open.count)
     }
 
     /// Корзины режима «По сроку». Порядок — это и порядок секций на экране:
@@ -55,11 +64,12 @@ enum TasksScreenPolicy {
     }
 
     static func bucket(text: String, done: Bool,
+                       happenedAt: Date? = nil,
                        now: Date = Date(),
                        calendar: Calendar = .current) -> DueBucket {
         if done { return .done }
         guard let due = TaskDue.parse(text) else { return .undated }
-        switch due.status(now: now, calendar: calendar) {
+        switch due.status(now: now, calendar: calendar, anchor: happenedAt) {
         case .overdue: return .overdue
         case .soon: return .week
         case .later: return .later
@@ -69,8 +79,11 @@ enum TasksScreenPolicy {
     /// «Старые» (свёрнутая секция внизу; файлы не трогаем — чистится
     /// экран, а не история). Правило владельца (01.09, уточнено ночью):
     /// поручение БЕЗ срока — старше 14 дней от встречи; поручение СО
-    /// сроком — просрочено больше недели (свежая просрочка остаётся в
-    /// «Просрочено», хлам недельной давности уезжает вниз).
+    /// сроком — просрочено на неделю и больше (свежая просрочка остаётся
+    /// в «Просрочено», хлам недельной давности уезжает вниз). Год срока —
+    /// от даты встречи, не от «сегодня»: иначе сентябрьское «до 15.03»
+    /// сворачивалось в день постановки, а февральское «до 20.02» не
+    /// старело никогда (`TaskDue.status(anchor:)`).
     static let staleAfterDays = 14
     static let staleOverdueDays = 7
 
@@ -119,8 +132,9 @@ enum TasksScreenPolicy {
                 continue
             }
             if let due = TaskDue.parse(item.text) {
-                if case .overdue(let days) = due.status(now: now, calendar: calendar),
-                   days > staleOverdueDays {
+                if case .overdue(let days) = due.status(now: now, calendar: calendar,
+                                                        anchor: item.happenedAt),
+                   days >= staleOverdueDays {
                     stale.append(i)
                 } else {
                     fresh.append(i)

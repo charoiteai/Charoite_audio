@@ -196,7 +196,8 @@ struct TasksView: View {
         // знал query). Считать по visible значило бы обнулять «сделано»
         // при выключенном тумблере (круг по PR #367: qwen + DeepSeek,
         // решение зафиксировано).
-        let s = TasksScreenPolicy.summary(scoped.map { ($0.text, $0.done) })
+        let s = TasksScreenPolicy.summary(scoped.map { ($0.text, $0.done, $0.happenedAt) },
+                                          owner: TasksMineStale.owner)
         return HStack(spacing: 4) {
             if s.overdue > 0 {
                 Text(L.t("\(s.overdue) просрочено", "\(s.overdue) overdue",
@@ -206,12 +207,11 @@ struct TasksView: View {
             }
             Text(L.t("\(s.open) открыто", "\(s.open) open", "\(s.open) 未完成"))
                 .foregroundStyle(.secondary)
-            let staleN = splitOpen.stale.count
-            if staleN > 0 {
+            if s.stale > 0 {
                 Text("·").foregroundStyle(.quaternary)
                 // свёрнутые «Старые» не должны терять счёт: чистится экран,
                 // а не ответственность (advisory DS r1 по #475)
-                Text(L.t("\(staleN) старых", "\(staleN) stale", "\(staleN) 旧"))
+                Text(L.t("\(s.stale) старых", "\(s.stale) stale", "\(s.stale) 旧"))
                     .foregroundStyle(.tertiary)
             }
             if s.done > 0 {
@@ -271,7 +271,8 @@ struct TasksView: View {
         let split = splitOpen
         let taken = Set(split.mine.map(\.id)).union(split.stale.map(\.id))
         for item in visible where !taken.contains(item.id) {
-            byBucket[TasksScreenPolicy.bucket(text: item.text, done: item.done),
+            byBucket[TasksScreenPolicy.bucket(text: item.text, done: item.done,
+                                              happenedAt: item.happenedAt),
                      default: []].append(item)
         }
         return TasksScreenPolicy.DueBucket.allCases.compactMap { bucket in
@@ -381,7 +382,7 @@ struct TasksView: View {
                 // забирает всю ширину строки, чипу достаётся ноль, и он
                 // просто не рисуется — ровно так он и не появился на первой
                 // проверке живьём. Переносится текст, срок остаётся целым.
-                DueChip(due: due)
+                DueChip(due: due, anchor: item.happenedAt)
                     .fixedSize()
                     .layoutPriority(1)
             }

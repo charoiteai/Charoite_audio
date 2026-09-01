@@ -251,20 +251,31 @@ struct TaskDue: Equatable {
         return nil
     }
 
-    func status(now: Date = Date(), calendar: Calendar = .current) -> Status {
-        var components = calendar.dateComponents([.year], from: now)
+    /// В тексте поручения года нет. С якорем (`anchor` — дата встречи)
+    /// год известен: срок, названный на встрече, не раньше её самой —
+    /// «до 15.01» в декабре значит январь следующего года, «до 20.02» в
+    /// феврале — этот же. Без якоря — догадка от «сегодня»: «до 15.01»,
+    /// прочитанное в августе, — следующий январь, а не просрочка на
+    /// двести дней: всё, что дальше полугода в прошлом, относим к
+    /// будущему году. Догадка врёт в обе стороны (сентябрьское «до 15.03»
+    /// — это будущий март, а не 170 дней просрочки; февральское
+    /// «до 20.02» в сентябре — просрочка, а не будущий год), поэтому
+    /// экран задач, где дата встречи есть, якорь передаёт всегда.
+    func status(now: Date = Date(), calendar: Calendar = .current,
+                anchor: Date? = nil) -> Status {
+        var components = calendar.dateComponents([.year], from: anchor ?? now)
         components.day = day
         components.month = month
         guard var target = calendar.date(from: components) else { return .later }
-        var days = calendar.dateComponents([.day], from: calendar.startOfDay(for: now),
-                                           to: calendar.startOfDay(for: target)).day ?? 0
-        // В тексте поручения года нет. «до 15.01», прочитанное в августе, —
-        // это следующий январь, а не просрочка на двести дней: всё, что
-        // дальше полугода в прошлом, относим к будущему году.
-        if days < -183, let next = calendar.date(byAdding: .year, value: 1, to: target) {
+        func daysAhead() -> Int {
+            calendar.dateComponents([.day], from: calendar.startOfDay(for: now),
+                                    to: calendar.startOfDay(for: target)).day ?? 0
+        }
+        var days = daysAhead()
+        let nextYear = anchor.map { target < calendar.startOfDay(for: $0) } ?? (days < -183)
+        if nextYear, let next = calendar.date(byAdding: .year, value: 1, to: target) {
             target = next
-            days = calendar.dateComponents([.day], from: calendar.startOfDay(for: now),
-                                           to: calendar.startOfDay(for: target)).day ?? 0
+            days = daysAhead()
         }
         if days < 0 { return .overdue(days: -days) }
         if days <= 7 { return .soon(days: days) }
@@ -277,9 +288,11 @@ struct TaskDue: Equatable {
 /// Срок чипом справа: просрочка — оранжевая, близкий срок — обычный.
 struct DueChip: View {
     let due: TaskDue
+    /// Дата встречи — год срока считается от неё (см. `TaskDue.status`).
+    var anchor: Date? = nil
 
     var body: some View {
-        let status = due.status()
+        let status = due.status(anchor: anchor)
         Text(label(status))
             .font(.caption2.weight(.semibold))
             .monospacedDigit()

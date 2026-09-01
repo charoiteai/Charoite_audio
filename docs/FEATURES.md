@@ -852,9 +852,12 @@ it signals degradation, it does not break the loop.
   A "Mine" section comes first (the bold assignee matches `user_name`),
   even for assignments from weeks ago; open items collapse into a
   "Stale" section once they go quiet — no due date and older than 14
-  days, or a due date more than a week past (a fresh overdue stays
+  days, or a due date a week or more past (a fresh overdue stays
   visible in its bucket) — the screen gets cleaned, the files stay
-  untouched. The
+  untouched. Due dates carry no year, so the year is taken from the
+  meeting date: "by 15.03" said in September means next March, not 170
+  days overdue, and "by 20.02" from a February meeting is overdue in
+  September, not next year. The
   list runs from the latest meeting to the earliest and every group
   carries its date: the order comes from the meeting time in the archive
   name, not the file mtime — the nightly review touches old folders and
