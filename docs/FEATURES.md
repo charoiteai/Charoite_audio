@@ -350,8 +350,10 @@ it signals degradation, it does not break the loop.
   **On screen the hint is a card ABOVE the thread, not instead of it**
   (#255 fixed twice, then #22): the old either/or pane let one hint hide
   the thread until the meeting ended, and a Stop used to wipe the
-  meeting's outcome off the screen — now the thread stays put, the
-  opening brief dims with the next thread update, while an answer the
+  meeting's outcome off the screen — now the thread stays put, an auto
+  hint lives on the card for at least three minutes (it used to dim with
+  the next thread update — half a minute was not enough to read it), an
+  aged one yields to the thread, while an answer the
   person ASKED for stays until the next hint replaces it or they dismiss
   it with the card's ✕ (a thread tick lands seconds after the answer —
   it must not eat it). A hint mid-stream is never cut by a thread event

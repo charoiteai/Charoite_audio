@@ -64,9 +64,18 @@ final class PanePersistenceTests: XCTestCase {
     /// 16.08): стирание только что запрошенного ручного ответа и ампутация
     /// идущего авто-стрима жили в приватном consume и тестами не ловились.
     func testНитьГаситТолькоЗавершённыйАвтоконтент() {
-        // бриф или отгоревшая авто-подсказка — гаснут
+        // бриф или отгоревшая авто-подсказка — гаснут (возраст по умолчанию ∞)
         XCTAssertTrue(SuflerService.threadClearsHint(
             isHinting: false, isAutoHinting: false, hintIsManual: false))
+        // свежая авто-подсказка — живёт: за полминуты её не успевали
+        // дочитать (просьба владельца 01.09)
+        XCTAssertFalse(SuflerService.threadClearsHint(
+            isHinting: false, isAutoHinting: false, hintIsManual: false,
+            ageSeconds: 30))
+        // отгоревшая своё — уступает нити
+        XCTAssertTrue(SuflerService.threadClearsHint(
+            isHinting: false, isAutoHinting: false, hintIsManual: false,
+            ageSeconds: SuflerService.hintCardLifetime + 1))
         // ручной стрим в полёте — не трогать
         XCTAssertFalse(SuflerService.threadClearsHint(
             isHinting: true, isAutoHinting: false, hintIsManual: false))
