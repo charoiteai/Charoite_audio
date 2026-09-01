@@ -237,7 +237,7 @@ struct MeetingCardView: View {
                         // видна в карточке, а не только в общем списке.
                         if !item.done, let due = TaskDue.parse(item.text) {
                             Spacer(minLength: 4)
-                            DueChip(due: due)
+                            DueChip(due: due, anchor: item.dueAnchor)
                         }
                     }
                 }

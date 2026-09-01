@@ -52,7 +52,7 @@ final class DesignKitTests: XCTestCase {
 
     func testOverdueCountsDaysWithinTheYear() throws {
         let due = try XCTUnwrap(TaskDue.parse("отчёт до 24.07"))
-        guard case .overdue(let days) = due.status(now: date(2026, 8, 4)) else {
+        guard case .overdue(let days) = due.status(now: date(2026, 8, 4), anchor: nil) else {
             return XCTFail("24.07 к 04.08 — просрочка")
         }
         XCTAssertEqual(days, 11)
@@ -62,7 +62,7 @@ final class DesignKitTests: XCTestCase {
         // В тексте года нет: «до 15.01» в августе — следующий январь,
         // а не просрочка на двести дней.
         let due = try XCTUnwrap(TaskDue.parse("подать заявку до 15.01"))
-        switch due.status(now: date(2026, 8, 4)) {
+        switch due.status(now: date(2026, 8, 4), anchor: nil) {
         case .overdue(let days):
             XCTFail("чип показал просрочку \(days) дней вместо будущего срока")
         case .soon, .later:
