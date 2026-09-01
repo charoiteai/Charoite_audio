@@ -635,8 +635,9 @@ def _lexicon_for(cfg: dict) -> "lexicon.Lexicon | None":
         # (GLM-9 по #469): пропуски и снятые из-за неоднозначности правила
         # видны по одной строке лога.
         tail = ""
-        if lex.skipped_nodes or lex.conflicts:
-            tail = f", пропущено узлов {lex.skipped_nodes}, конфликтов {lex.conflicts}"
+        if lex.skipped_nodes or lex.foreign_stem or lex.shared_alias:
+            tail = (f", пропущено узлов {lex.skipped_nodes}, алиас=чужая"
+                    f" фамилия {lex.foreign_stem}, общий алиас {lex.shared_alias}")
         log(f"лексикон: правил {len(lex.by_stem)}+{len(lex.by_word)}{tail}")
         _LEX_CACHE[0] = lex
     return _LEX_CACHE[0]
@@ -658,17 +659,26 @@ def canonize(text: str, cfg: dict) -> str:
             # Повторные пересборки одной встречи не дописывают те же
             # строки (GLM-8 по #469): дубли отсекаются по содержимому,
             # разросшийся отчёт теряет старую половину, не новую.
+            # UnicodeDecodeError здесь ловится обязательно: отчёт правят
+            # руками и таскает iCloud, а исключение из canonize роняло бы
+            # ВСЮ пересборку (GLM-3 круга 2).
             old = out.read_text(encoding="utf-8") if out.exists() else ""
+            if len(old) > 200_000:
+                # ротация: свежая половина, срез — по границе блока «## »;
+                # запись атомарная (safe_write), обрыв не оставит огрызок
+                half = old[len(old) // 2:]
+                cut = half.find("\n## ")
+                old = half[cut + 1:] if cut >= 0 else half
+                safe_write.write_text(out, old)
+            # fresh — по УЖЕ урезанному old: кандидат из выброшенной
+            # половины не должен пропадать из отчёта (DS-4 круга 2)
             fresh = [c for c in cand if c not in old]
             if fresh:
-                if len(old) > 200_000:
-                    old = old[len(old) // 2:]
-                    out.write_text(old, encoding="utf-8")
                 with out.open("a", encoding="utf-8") as f:
                     f.write(f"\n## {time.strftime('%Y-%m-%d %H:%M')}\n"
                             + "\n".join(fresh) + "\n")
                 log(f"лексикон: кандидатов в отчёт — {len(fresh)}")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             pass
     return fixed
 

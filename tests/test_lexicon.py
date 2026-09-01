@@ -169,7 +169,7 @@ def test_shared_alias_of_two_nodes_is_dropped(tmp_path):
     lex = lexicon.load(g)
     out, rep = lexicon.apply("Дельского ждали к девяти.", lex)
     assert rep == [] and "Дельского" in out, (rep, out)
-    assert lex.conflicts >= 1
+    assert lex.shared_alias >= 1
 
 
 def test_lowercase_words_are_not_candidates(tmp_path):
@@ -222,3 +222,35 @@ def test_block_alias_trailing_punctuation_stripped(tmp_path):
     lex = lexicon.load(g)
     out, rep = lexicon.apply("Гельского ждали к девяти.", lex)
     assert rep == ["Гельского→Вельского"], rep
+
+
+def test_dropped_rule_stays_dropped(tmp_path):
+    """Critical круга 2 (DS+GLM): второй алиас той же основы у второго
+    узла воскрешал снятое правило — победителя снова выбирал порядок
+    glob. Снятие липкое на весь load()."""
+    g = tmp_path / "g"
+    (g / "Люди").mkdir(parents=True)
+    (g / "Люди" / "Вельский Ян.md").write_text(
+        '---\naliases: ["Дельский"]\n---\n# Вельский Ян\n', encoding="utf-8")
+    (g / "Люди" / "Мельский Лев.md").write_text(
+        '---\naliases: ["Дельский", "Дельская"]\n---\n# Мельский Лев\n',
+        encoding="utf-8")
+    lex = lexicon.load(g)
+    out, rep = lexicon.apply("Дельского ждали к девяти.", lex)
+    assert rep == [] and "Дельского" in out, (rep, out)
+    assert lex.shared_alias >= 2
+
+
+def test_namesake_substring_node_keeps_merged_context(tmp_path):
+    """GLM-2/DS-5 круга 2: «Никита» — подстрока «Никита Соколов», и
+    проверка по подстроке затирала контекст длинного тёзки."""
+    g = tmp_path / "g"
+    (g / "Люди").mkdir(parents=True)
+    (g / "Люди" / "Никита Соколов.md").write_text(
+        "---\n---\n# Никита Соколов\nДеплой сервера отчёта.\n", encoding="utf-8")
+    (g / "Люди" / "Никита.md").write_text(
+        "---\n---\n# Никита\n\n", encoding="utf-8")
+    lex = lexicon.load(g)
+    node, ctx = lex.context["никита"]
+    assert "Никита Соколов" in node.split("; ") and "Никита" in node.split("; "), node
+    assert any(c.startswith("депл") for c in ctx), ctx

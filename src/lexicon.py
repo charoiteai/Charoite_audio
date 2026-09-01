@@ -80,9 +80,10 @@ class Lexicon:
     context: dict[str, tuple[str, set[str]]]
     #: основы канонических имён всех узлов Люди — «это уже чьё-то имя»
     canon_stems: frozenset[str] = frozenset()
-    #: снятые из-за неоднозначности правила и число пропущенных узлов —
-    #: чтобы «почему канон не применился» отвечалось по логу (GLM-9 по #469)
-    conflicts: int = 0
+    #: счётчики «почему канон не применился» — по логу (GLM-9 по #469);
+    #: причины раздельно (GLM-7 круга 2): чужая фамилия ≠ общий алиас
+    foreign_stem: int = 0
+    shared_alias: int = 0
     skipped_nodes: int = 0
 
     def empty(self) -> bool:
@@ -130,21 +131,31 @@ def load(graph_root: pathlib.Path) -> Lexicon:
     by_stem: dict[str, Rule] = {}
     by_word: dict[str, Rule] = {}
     context: dict[str, tuple[str, set[str]]] = {}
+    # Узлы читаются с диска ОДИН раз (DS-6/GLM-6 круга 2: двойной проход
+    # удваивал I/O по iCloud и давал TOCTOU — узел, прочитанный только во
+    # втором проходе, оставался без своей записи в canon_stems).
+    nodes = list(_iter_nodes(graph_root, skipped := [0]))
     # Основы фамилий ВСЕХ узлов Люди — защита чужих канонов (DS C1 по
     # #469): алиас «Гельский» у Вельского не смеет переписывать реального
     # Гельского Ивана, у которого есть собственный узел. Совпала основа
     # алиаса с чужим каноном — правило не создаётся; заодно рвётся и
-    # неидемпотентная пара взаимных алиасов двух узлов.
-    canon_stems: dict[str, str] = {}
-    conflicts = 0
-    skipped = [0]
-    for d, p, _text in _iter_nodes(graph_root):
+    # неидемпотентная пара взаимных алиасов двух узлов. Стем держит
+    # МНОЖЕСТВО узлов (DS r2: однофамильцы «Вельский Ян»/«Вельский Пётр»
+    # не выражаются одним значением — гейт зависел от порядка glob).
+    canon_stems: dict[str, set[str]] = {}
+    for d, p, _text in nodes:
         if d != "Люди":
             continue
         for cw in re.findall(r"[\w-]+", p.stem):
             if cw[:1].isupper() and len(_stem_name(cw)) >= 4:
-                canon_stems[_stem_name(cw)] = p.stem
-    for d, p, text in _iter_nodes(graph_root, skipped):
+                canon_stems.setdefault(_stem_name(cw), set()).add(p.stem)
+    # Снятое из-за неоднозначности правило снято НАВСЕГДА (Critical обеих
+    # голов круга 2): del без липкого следа воскресал вторым алиасом той
+    # же основы или третьим узлом — победителя снова выбирал порядок glob.
+    dropped: set[str] = set()
+    foreign_stem = 0    # алиас = чужая фамилия (C1)
+    shared_alias = 0    # один алиас у двух узлов (GLM-1)
+    for d, p, text in nodes:
         node = p.stem
         data = frontmatter.parse(text, p.name) or {}
         dept = str(data.get("отдел") or "")
@@ -164,10 +175,15 @@ def load(graph_root: pathlib.Path) -> Lexicon:
             if person and cw[:1].isupper() and len(cw) >= 4 or _is_abbrev(cw):
                 words = _context_words(dept + " " + text)
                 old = context.get(cw.lower())
-                if old and node not in old[0]:
+                if old is None:
+                    context[cw.lower()] = (node, words)
+                elif node not in old[0].split("; "):
+                    # сравнение по СПИСКУ узлов, не подстроке: «Никита» in
+                    # «Никита Соколов» затирал контекст длинного тёзки
+                    # (GLM-2/DS-5 круга 2)
                     context[cw.lower()] = (old[0] + "; " + node, old[1] | words)
                 else:
-                    context[cw.lower()] = (node, words)
+                    context[cw.lower()] = (old[0], old[1] | words)
         for alias in aliases:
             a_words = alias.split()
             if len(a_words) != 1:
@@ -215,18 +231,22 @@ def load(graph_root: pathlib.Path) -> Lexicon:
                 by_word[aw.lower()] = Rule(target, node, target, True)
             elif aw[:1].isupper():   # алиас-фамилия пишется с Заглавной
                 st = _stem_name(aw)
-                owner = canon_stems.get(st)
-                if owner is not None and owner != node:
-                    conflicts += 1
+                owners = canon_stems.get(st)
+                if owners and node not in owners:
+                    foreign_stem += 1
                     continue      # основа алиаса — чужая фамилия (C1)
                 if len(st) >= 4 and st != _stem_name(target):
+                    if st in dropped:
+                        shared_alias += 1
+                        continue    # неоднозначность липкая — не воскрешать
                     prev = by_stem.get(st)
                     if prev is not None and prev.canon != target:
                         # один алиас у двух узлов: победителя выбирал бы
                         # порядок glob, а не человек — правило снимается
-                        # (GLM-1 по #469), неоднозначное не трогаем
+                        # (GLM-1 по #469) и больше не ставится
                         del by_stem[st]
-                        conflicts += 1
+                        dropped.add(st)
+                        shared_alias += 1
                         continue
                     by_stem[st] = Rule(target, node, _stem_name(target), False)
         # Авто-правила из ИМЕНИ капс-узла нет вовсе: «Системы/ПОЧТА.md»
@@ -234,8 +254,8 @@ def load(graph_root: pathlib.Path) -> Lexicon:
         # подтверждения — гейт длины не спасает (DS I1 + GLM-3 по #469).
         # Строчное написание аббревиатуры канонизируется только явным
         # алиасом («крам» в aliases узла КРАМ) — как и всё остальное.
-    return Lexicon(by_stem, by_word, context,
-                   frozenset(canon_stems), conflicts, skipped[0])
+    return Lexicon(by_stem, by_word, context, frozenset(canon_stems),
+                   foreign_stem, shared_alias, skipped[0])
 
 
 def apply(text: str, lex: Lexicon) -> tuple[str, list[str]]:
@@ -322,8 +342,6 @@ def candidates(text: str, lex: Lexicon, window: int = 30) -> list[str]:
                           for x in lows[max(0, i - window):i] + lows[i + 1:i + window + 1]
                           if len(x) >= 4}
                 sure = len(around & ctx) >= 2
-                if not sure and not w[:1].isupper():
-                    continue
                 mark = "✔ контекст" if sure else "?"
                 out.append(f"- {w} ~ {cl} (узел {node}) {mark}")
                 seen.add(w.lower())
