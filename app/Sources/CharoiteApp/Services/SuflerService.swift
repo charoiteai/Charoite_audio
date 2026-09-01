@@ -145,6 +145,8 @@ final class SuflerService: ObservableObject {
     // (тот взводится только ручными запросами), а thread-событие посреди
     // авто-стрима резало буфер пополам — хвост рисовался с середины фразы.
     @Published private(set) var isAutoHinting = false
+    /// Финал последнего авто-стрима — возраст карточки для threadClearsHint.
+    private var _hintDoneAt: Date = .distantPast
     private var _lastHintUI = Date.distantPast
     // Три независимых пульса: daemon main-thread, сам STT consumer и входные
     // аудиокадры. Раньше первый продолжал слать hb при мёртвом STT, поэтому
@@ -760,15 +762,6 @@ final class SuflerService: ObservableObject {
         hintIsManual = false
     }
 
-    /// Гасит ли обновление нити карточку подсказки. Чистая функция — обе
-    /// критические ошибки ревью 16.08 (стирание ручного ответа, ампутация
-    /// идущего авто-стрима) прошли бы мимо тестов, живи решение в consume.
-    /// Гаснет только ЗАВЕРШЁННЫЙ авто-контент (бриф, старая авто-подсказка);
-    /// живые стримы и ручной ответ нить не трогает.
-    nonisolated static func threadClearsHint(isHinting: Bool, isAutoHinting: Bool,
-                                             hintIsManual: Bool) -> Bool {
-        !isHinting && !isAutoHinting && !hintIsManual
-    }
 
     /// ⏮: хвосты прошлых встреч по текущей теме нити — из графа в нить.
     /// Не занимает панель подсказки: ответ дописывается в нить строками ⏮,
@@ -880,7 +873,8 @@ final class SuflerService: ObservableObject {
                 thread = text
                 if Self.threadClearsHint(isHinting: isHinting,
                                          isAutoHinting: isAutoHinting,
-                                         hintIsManual: hintIsManual) {
+                                         hintIsManual: hintIsManual,
+                                         ageSeconds: Date().timeIntervalSince(_hintDoneAt)) {
                     // буфер чистим вместе с hint: иначе первый токен следующей
                     // генерации воскрешал стёртое (ревью 16.08, №22)
                     hint = ""; _hintBuf = ""
@@ -961,6 +955,7 @@ final class SuflerService: ObservableObject {
                 let manual = obj["manual"] as? Bool ?? isHinting
                 if !manual {
                     isAutoHinting = false
+                    _hintDoneAt = Date()   // отсчёт жизни карточки — с финала стрима
                     // done уступившего авто, пока ждём ручной ответ: не
                     // флашить чужой хвост и не сбрасывать ручной isHinting
                     if isHinting { break }
