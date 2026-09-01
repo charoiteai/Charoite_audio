@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.66.0](https://github.com/charoiteai/Charoite_audio/compare/v0.65.1...v0.66.0) (2026-09-01)
+
+
+### Features
+
+* **tasks:** Mine section always first, stale open items fold away ([#475](https://github.com/charoiteai/Charoite_audio/issues/475)) ([7d04347](https://github.com/charoiteai/Charoite_audio/commit/7d043473d7d0b80254d4c2e17c5ed80d38a88014))
+
 ## [0.65.1](https://github.com/charoiteai/Charoite_audio/compare/v0.65.0...v0.65.1) (2026-09-01)
 
 
