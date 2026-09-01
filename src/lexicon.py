@@ -80,6 +80,10 @@ class Lexicon:
     context: dict[str, tuple[str, set[str]]]
     #: основы канонических имён всех узлов Люди — «это уже чьё-то имя»
     canon_stems: frozenset[str] = frozenset()
+    #: снятые из-за общего алиаса основы: «узлы через ; » — для строки в
+    #: отчёте кандидатов (advisory GLM r3: молчаливое снятие невидимо
+    #: человеку, а канал кандидатов советовал противоположное)
+    dropped_stems: dict[str, str] = dataclasses.field(default_factory=dict)
     #: счётчики «почему канон не применился» — по логу (GLM-9 по #469);
     #: причины раздельно (GLM-7 круга 2): чужая фамилия ≠ общий алиас
     foreign_stem: int = 0
@@ -152,7 +156,7 @@ def load(graph_root: pathlib.Path) -> Lexicon:
     # Снятое из-за неоднозначности правило снято НАВСЕГДА (Critical обеих
     # голов круга 2): del без липкого следа воскресал вторым алиасом той
     # же основы или третьим узлом — победителя снова выбирал порядок glob.
-    dropped: set[str] = set()
+    dropped: dict[str, str] = {}   # основа → «узел1; узел2» для отчёта
     foreign_stem = 0    # алиас = чужая фамилия (C1)
     shared_alias = 0    # один алиас у двух узлов (GLM-1)
     for d, p, text in nodes:
@@ -238,6 +242,8 @@ def load(graph_root: pathlib.Path) -> Lexicon:
                 if len(st) >= 4 and st != _stem_name(target):
                     if st in dropped:
                         shared_alias += 1
+                        if node not in dropped[st].split("; "):
+                            dropped[st] += "; " + node
                         continue    # неоднозначность липкая — не воскрешать
                     prev = by_stem.get(st)
                     if prev is not None and prev.canon != target:
@@ -245,7 +251,7 @@ def load(graph_root: pathlib.Path) -> Lexicon:
                         # порядок glob, а не человек — правило снимается
                         # (GLM-1 по #469) и больше не ставится
                         del by_stem[st]
-                        dropped.add(st)
+                        dropped[st] = prev.node + "; " + node
                         shared_alias += 1
                         continue
                     by_stem[st] = Rule(target, node, _stem_name(target), False)
@@ -255,7 +261,7 @@ def load(graph_root: pathlib.Path) -> Lexicon:
         # Строчное написание аббревиатуры канонизируется только явным
         # алиасом («крам» в aliases узла КРАМ) — как и всё остальное.
     return Lexicon(by_stem, by_word, context, frozenset(canon_stems),
-                   foreign_stem, shared_alias, skipped[0])
+                   dropped, foreign_stem, shared_alias, skipped[0])
 
 
 def apply(text: str, lex: Lexicon) -> tuple[str, list[str]]:

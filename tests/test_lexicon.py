@@ -254,3 +254,42 @@ def test_namesake_substring_node_keeps_merged_context(tmp_path):
     node, ctx = lex.context["никита"]
     assert "Никита Соколов" in node.split("; ") and "Никита" in node.split("; "), node
     assert any(c.startswith("депл") for c in ctx), ctx
+
+
+def test_broken_candidates_report_self_heals(tmp_path, monkeypatch):
+    """DS r3 Important: битый UTF-8 в отчёте кандидатов глушил канал
+    НАВСЕГДА (except pass, ротация требует успешного чтения). Теперь
+    хвост усекается до валидной границы блока — с логом, без падения."""
+    import rebuild_transcript as rt
+    monkeypatch.setattr(rt, "ROOT", tmp_path)
+    g = _graph(tmp_path)
+    monkeypatch.setattr(rt.graphs, "graph_dir", lambda cfg: g)
+    monkeypatch.setattr(rt, "_LEX_CACHE", [None])
+    rep = tmp_path / "logs" / "lexicon_candidates.md"
+    rep.parent.mkdir(parents=True)
+    rep.write_bytes("## 2026-08-01 10:00\n- старый\n\n## 2026-08-02\n".encode() + b"\xd0")
+    # Вэльский — кандидат (дистанция 1 от канона, заглавный)
+    out = rt.canonize("Просто Вэльский зашёл в кабинет молча.", {})
+    assert "Вэльский" in out                       # замен нет, текст цел
+    text = rep.read_text(encoding="utf-8")          # файл снова валиден
+    assert "Вэльский ~ вельский" in text, text      # канал жив
+    assert "старый" in text                         # валидная часть цела
+
+
+def test_dropped_stem_reported_to_candidates_file(tmp_path, monkeypatch):
+    """Advisory GLM r3 принят: снятое из-за общего алиаса правило видно
+    человеку в отчёте кандидатов, а не только счётчиком в логе."""
+    import rebuild_transcript as rt
+    monkeypatch.setattr(rt, "ROOT", tmp_path)
+    g = tmp_path / "g"
+    (g / "Люди").mkdir(parents=True)
+    (g / "Люди" / "Вельский Ян.md").write_text(
+        '---\naliases: ["Дельский"]\n---\n# Вельский Ян\n', encoding="utf-8")
+    (g / "Люди" / "Мельский Лев.md").write_text(
+        '---\naliases: ["Дельская"]\n---\n# Мельский Лев\n', encoding="utf-8")
+    monkeypatch.setattr(rt.graphs, "graph_dir", lambda cfg: g)
+    monkeypatch.setattr(rt, "_LEX_CACHE", [None])
+    rt.canonize("Обычный текст без кандидатов.", {})
+    rep = tmp_path / "logs" / "lexicon_candidates.md"
+    text = rep.read_text(encoding="utf-8")
+    assert "правило снято" in text and "Вельский Ян; Мельский Лев" in text, text

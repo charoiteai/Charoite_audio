@@ -646,40 +646,69 @@ def _lexicon_for(cfg: dict) -> "lexicon.Lexicon | None":
 def canonize(text: str, cfg: dict) -> str:
     """Применить канон графа к тексту; кандидатов — в logs/lexicon_candidates.md."""
     lex = _lexicon_for(cfg)
-    if lex is None or lex.empty():
+    # Лексикон, у которого все правила снялись конфликтами, «пуст» для
+    # замен, но снятия обязаны дойти до отчёта — иначе они невидимы.
+    if lex is None or (lex.empty() and not lex.dropped_stems):
         return text
     fixed, replaced = lexicon.apply(text, lex)
     if replaced:
         top = ", ".join(sorted(set(replaced))[:6])
         log(f"лексикон: замен {len(replaced)} ({top})")
     cand = lexicon.candidates(text, lex)
+    # Снятые из-за общего алиаса основы — тоже строки отчёта: молчаливое
+    # снятие невидимо человеку, а канал кандидатов советовал бы добавить
+    # алиас, который уже конфликтует (advisory GLM r3). Пишутся и при
+    # пустых кандидатах текста; дедуп общий.
+    for st, nodes_ in sorted(lex.dropped_stems.items()):
+        cand.append(f"- алиас с основой «{st}» у узлов {nodes_} — "
+                    "правило снято, уточните узлы")
     if cand:
         try:
             out = ROOT / "logs" / "lexicon_candidates.md"
             # Повторные пересборки одной встречи не дописывают те же
             # строки (GLM-8 по #469): дубли отсекаются по содержимому,
             # разросшийся отчёт теряет старую половину, не новую.
-            # UnicodeDecodeError здесь ловится обязательно: отчёт правят
-            # руками и таскает iCloud, а исключение из canonize роняло бы
-            # ВСЮ пересборку (GLM-3 круга 2).
-            old = out.read_text(encoding="utf-8") if out.exists() else ""
+            # Битый UTF-8 (обрыв старого append, ручная правка) не роняет
+            # пересборку (GLM-3 круга 2) и НЕ глушит канал навсегда
+            # (DS r3): битый хвост усекается до последней валидной
+            # границы блока — отчёт самовосстанавливается, с логом.
+            before = safe_write.stat_snapshot(out)
+            raw = out.read_bytes() if out.exists() else b""
+            try:
+                old = raw.decode("utf-8")
+            except UnicodeDecodeError as e:
+                cut = raw.rfind(b"\n## ", 0, e.start)
+                old = raw[:cut + 1 if cut >= 0 else 0].decode("utf-8", "ignore")
+                safe_write.write_text(out, old, expect=before)
+                before = safe_write.stat_snapshot(out)
+                log("лексикон: отчёт кандидатов был битым — усечён до валидной границы")
             if len(old) > 200_000:
                 # ротация: свежая половина, срез — по границе блока «## »;
-                # запись атомарная (safe_write), обрыв не оставит огрызок
+                # запись атомарная (safe_write), обрыв не оставит огрызок.
+                # expect: ручная правка между чтением и записью не должна
+                # молча теряться (DS r3 Minor) — при гонке пропускаем ход.
                 half = old[len(old) // 2:]
                 cut = half.find("\n## ")
+                if cut < 0:
+                    # нет границы блока — хотя бы не рвать строку (GLM r3)
+                    cut = half.find("\n")
                 old = half[cut + 1:] if cut >= 0 else half
-                safe_write.write_text(out, old)
+                if not safe_write.write_text(out, old, expect=before):
+                    log("лексикон: отчёт изменился под рукой — ротация отложена")
+                    return fixed
             # fresh — по УЖЕ урезанному old: кандидат из выброшенной
-            # половины не должен пропадать из отчёта (DS-4 круга 2)
+            # половины не должен пропадать из отчёта (DS-4 круга 2).
+            # Цена: он всплывёт под свежей датой блока — осознанно, дедуп
+            # по содержимому строк важнее точной метки первого показа.
             fresh = [c for c in cand if c not in old]
             if fresh:
+                out.parent.mkdir(parents=True, exist_ok=True)
                 with out.open("a", encoding="utf-8") as f:
                     f.write(f"\n## {time.strftime('%Y-%m-%d %H:%M')}\n"
                             + "\n".join(fresh) + "\n")
                 log(f"лексикон: кандидатов в отчёт — {len(fresh)}")
-        except (OSError, UnicodeDecodeError):
-            pass
+        except OSError as e:
+            log(f"лексикон: отчёт кандидатов недоступен ({e.__class__.__name__})")
     return fixed
 
 
