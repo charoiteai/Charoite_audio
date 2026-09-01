@@ -65,6 +65,64 @@ enum TasksScreenPolicy {
         case .later: return .later
         }
     }
+
+    /// Открытые поручения старше стольких дней и БЕЗ срока — «Старые»:
+    /// свёрнутая секция внизу вместо вечной ленты хлама (запрос владельца
+    /// 01.09 «старые поручения не чистятся»). Файлы не трогаем — чистится
+    /// экран, а не история; поручение со сроком старым не считается,
+    /// у него есть своя корзина «Просрочено».
+    static let staleAfterDays = 14
+
+    /// Поручение «за владельцем»: минутки пишут `**Имя** — дело`, и ТОЛЬКО
+    /// ведущий жирный блок — ответственный (fallback по « — » ловил
+    /// «связаться с Антоном — до пятницы», DS r1 по #475). Матч по ЦЕЛОМУ
+    /// слову: «Антонина» — не «Антон» (DS r1). Owner — первый токен
+    /// user_name: в конфиге может лежать полное имя, а минутки пишут
+    /// короткое. Пустое имя — секции «Мои» нет, ничего не угадываем.
+    static func isMine(_ text: String, owner: String) -> Bool {
+        // Любое СЛОВО user_name (имя ИЛИ фамилия, ≥3 букв) — как в
+        // python-каноне src/speaker_names.py: конфиг хранит «Имя Фамилия»,
+        // минутки пишут одно слово (GLM r1 по #475).
+        let words = owner.split(whereSeparator: \.isWhitespace)
+            .map(String.init).filter { $0.count >= 3 }
+        guard !words.isEmpty else { return false }
+        guard let m = text.range(of: #"\*\*[^*]+\*\*"#, options: .regularExpression),
+              m.lowerBound == text.startIndex || text[..<m.lowerBound]
+                  .trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+        let assignee = text[m]
+        for word in words {
+            guard let r = assignee.range(of: word, options: [.caseInsensitive]) else {
+                continue
+            }
+            let before = assignee[..<r.lowerBound].last
+            let after = assignee[r.upperBound...].first
+            if (before.map { !$0.isLetter } ?? true)
+                && (after.map { !$0.isLetter } ?? true) { return true }
+        }
+        return false
+    }
+
+    /// Открытые поручения одной операцией: «Мои» (первая секция всегда,
+    /// даже давние — запрос владельца 01.09), живые и «Старые».
+    static func split(_ items: [(text: String, happenedAt: Date)],
+                      owner: String,
+                      now: Date = Date(),
+                      calendar: Calendar = .current)
+        -> (mine: [Int], fresh: [Int], stale: [Int]) {
+        var mine: [Int] = [], fresh: [Int] = [], stale: [Int] = []
+        let cutoff = calendar.date(byAdding: .day, value: -staleAfterDays, to: now)
+            ?? now.addingTimeInterval(-Double(staleAfterDays) * 86_400)
+        for (i, item) in items.enumerated() {
+            if isMine(item.text, owner: owner) {
+                mine.append(i)
+            } else if item.happenedAt < cutoff, TaskDue.parse(item.text) == nil {
+                stale.append(i)
+            } else {
+                fresh.append(i)
+            }
+        }
+        return (mine, fresh, stale)
+    }
 }
 
 #endif
