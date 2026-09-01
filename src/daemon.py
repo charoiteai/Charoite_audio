@@ -506,7 +506,8 @@ def main():
     # текст и звучала ли речь за эту запись вообще. По распознанному тексту, а
     # не по громкости: энергетический гейт срабатывает на кулер и клавиатуру, и
     # «тишины» не наступало бы никогда (см. src/autostop.py).
-    heard = {"at": None, "spoke": False}
+    heard = {"at": None, "spoke": False, "farewells": 0}
+    farewell_streak = autostop_rules.FarewellStreak()
     global _stop_event
     _stop_event = stop          # emit сможет остановить нас при обрыве пайпа
     # SIGTERM (Swift terminate по грейсу) → штатный стоп с finally, а не убийство
@@ -1106,6 +1107,12 @@ def main():
                     # 18.08, GLM).
                     heard["at"] = time.monotonic()
                     heard["spoke"] = True
+                    # Прощания подряд: одно срежет порог тишины автостопа,
+                    # два — обмен прощаниями, конец встречи. Шов чанков и
+                    # межканальное эхо дедупятся внутри FarewellStreak
+                    # (DS r1 по #471 — иначе одна реплика давала два).
+                    heard["farewells"] = farewell_streak.feed(
+                        added, time.monotonic())
                     disp = tr.display_name(name)
                     emit({
                         "type": "transcript",
@@ -2817,7 +2824,8 @@ def main():
                            # Тихий собеседник и отсутствующий канал захвата
                            # дадут ложное «я один»: для таких случаев порог и
                            # вынесен в `alone_minutes` (по умолчанию 10, см. autostop.py).
-                           alone=not heard_by_channel.call)
+                           alone=not heard_by_channel.call,
+                           farewells=int(heard["farewells"]))
             if not d:
                 continue
             if d.action == "resumed":

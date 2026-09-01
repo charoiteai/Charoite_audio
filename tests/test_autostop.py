@@ -253,3 +253,151 @@ def test_явный_alone_работает_даже_при_выключенно�
 def test_дефолт_limits_совпадает_с_конфигом():
     """Две точки истины разошлись бы молча: DEFAULTS подняли, датакласс нет."""
     assert autostop.Limits().alone_s == autostop.DEFAULTS["alone_minutes"] * 60
+
+
+# --- Прощания (№151, запрос владельца 01.09) ---
+
+def test_farewell_detector_forms():
+    """Короткие прощальные реплики матчатся, союз «пока» — нет."""
+    yes = ["Всем пока!", "Ну всё, пока.", "До свидания", "Пока",
+           "давайте пока", "Спасибо, до связи", "До завтра", "Пока-пока"]
+    no = ["пока не забыл про отчёт", "я пока посмотрю документ",
+          "пока идёт репликация посмотрим логи",
+          "созвонимся завтра по этому вопросу и обсудим детали позже",
+          "всем нужно посмотреть протокол до завтрашней встречи и дать ответ",
+          # слабые формы — не прощание сами по себе: живой замер поймал их
+          # посреди встреч («Ну, а пока» на 23-й реплике из 266)
+          "хорошего дня", "Всем спасибо.", "Ну, а пока. Пока.",
+          "Пока. Угу, спасибо, хорошего дня."]
+    for t in yes:
+        assert autostop.is_farewell(t), t
+    for t in no:
+        assert not autostop.is_farewell(t), t
+
+
+def test_one_farewell_cuts_silence_threshold_with_instant_warn():
+    """Одно прощание: порог тишины 60с вместо 15 минут, warn сразу."""
+    lim = autostop.limits_from_cfg({})
+    d = autostop.decide(age_s=600, quiet_s=5, spoke=True, limits=lim,
+                        farewells=1)
+    assert d.action == "warn" and d.reason == autostop.FAREWELL, d
+    d = autostop.decide(age_s=600, quiet_s=61, spoke=True, limits=lim,
+                        farewells=1)
+    assert d.action == "stop" and d.reason == autostop.FAREWELL, d
+
+
+def test_two_farewells_stop_immediately():
+    """Обмен прощаниями (≥2 подряд) — стоп без ожидания тишины.
+    Риск двойного «пока» посреди встречи взят владельцем явно (01.09)."""
+    lim = autostop.limits_from_cfg({})
+    d = autostop.decide(age_s=600, quiet_s=0, spoke=True, limits=lim,
+                        farewells=2)
+    assert d.action == "stop" and d.reason == autostop.FAREWELL, d
+
+
+def test_farewell_needs_speech_and_min_age():
+    """Прощание не трогает свежую запись (min_s) и не работает без речи."""
+    lim = autostop.limits_from_cfg({})
+    assert not autostop.decide(age_s=30, quiet_s=0, spoke=True, limits=lim,
+                               farewells=2)
+    assert not autostop.decide(age_s=600, quiet_s=5, spoke=False, limits=lim,
+                               farewells=2).reason == autostop.FAREWELL
+
+
+def test_farewell_zero_disables_rule():
+    """farewell_seconds: 0 выключает обе ветки правила."""
+    lim = autostop.limits_from_cfg(
+        {"sufler": {"autostop": {"farewell_seconds": 0}}})
+    assert not autostop.decide(age_s=600, quiet_s=61, spoke=True, limits=lim,
+                               farewells=2)
+    d = autostop.decide(age_s=600, quiet_s=61, spoke=True, limits=lim,
+                        farewells=1)
+    assert d.reason != autostop.FAREWELL
+
+
+def test_farewell_does_not_raise_stricter_threshold():
+    """Если обычный порог УЖЕ короче (нестандартный конфиг), прощание его
+    не удлиняет."""
+    lim = autostop.limits_from_cfg(
+        {"sufler": {"autostop": {"silence_minutes": 0.5,
+                                 "no_speech_minutes": 0.5,
+                                 "farewell_seconds": 120}}})
+    d = autostop.decide(age_s=600, quiet_s=40, spoke=True, limits=lim,
+                        farewells=1)
+    assert d.reason != autostop.FAREWELL or d.action == ""
+
+
+def test_watch_resumes_after_farewell_when_talk_continues():
+    """Warn после прощания снимается новой речью — «автостоп отменён»."""
+    lim = autostop.limits_from_cfg({})
+    w = autostop.Watch(lim)
+    d = w.tick(now=1000, age_s=600, quiet_s=5, spoke=True, farewells=1)
+    assert d.action == "warn" and d.reason == autostop.FAREWELL
+    # разговор продолжился: farewells сброшен демоном, тишины нет
+    d = w.tick(now=1010, age_s=610, quiet_s=2, spoke=True, farewells=0)
+    assert d.action == "resumed", d
+
+
+def test_break_announcement_is_not_farewell():
+    """«Через пять минут увидимся» — перерыв: единственный ложный класс,
+    найденный смоуком по 20 тысячам живых реплик."""
+    assert not autostop.is_farewell("Через пять минут увидимся.")
+    assert autostop.is_farewell("Всё, давай, увидимся.")
+
+
+def test_streak_dedups_chunk_seam_and_echo():
+    """DS r1 по #471: шов чанков («всем пока» → хвост «пока») и эхо той
+    же фразы в двух каналах не удваивают одно прощание."""
+    st = autostop.FarewellStreak()
+    assert st.feed("всем пока", now=10.0) == 1
+    assert st.feed("пока", now=11.5) == 1          # шовный хвост — не второй
+    assert st.feed("всем пока", now=12.0) == 1     # эхо канала — не второй
+    # настоящий второй: другие слова ЛИБО пауза больше окна
+    assert st.feed("до свидания", now=13.0) == 2
+
+
+def test_streak_counts_late_repeat_as_real():
+    """То же «пока» после паузы больше эхо-окна — настоящий обмен."""
+    st = autostop.FarewellStreak()
+    assert st.feed("пока", now=10.0) == 1
+    assert st.feed("пока", now=16.0) == 2
+
+
+def test_streak_resets_on_ordinary_remark():
+    st = autostop.FarewellStreak()
+    st.feed("всем пока", now=10.0)
+    assert st.feed("стой, ещё один вопрос по отчёту", now=11.0) == 0
+    assert st.feed("ну всё, пока", now=12.0) == 1
+
+
+def test_any_rule_counts_farewell_alone():
+    """Minor-2 DS: конфиг с одними прощаниями — правило живо."""
+    lim = autostop.limits_from_cfg({"sufler": {"autostop": {
+        "no_speech_minutes": 0, "silence_minutes": 0, "alone_minutes": 0,
+        "max_hours": 0, "farewell_seconds": 60}}})
+    assert lim.any_rule
+    d = autostop.decide(age_s=600, quiet_s=61, spoke=True, limits=lim,
+                        farewells=1)
+    assert d.action == "stop" and d.reason == autostop.FAREWELL, d
+
+
+def test_farewell_does_not_resurrect_disabled_silence():
+    """GLM r1 по #471: silence_minutes: 0 — «не останавливай после
+    молчания»; дефолтное прощание порог не воскрешает, ЯВНЫЙ
+    farewell_seconds — просьба и работает."""
+    lim = autostop.limits_from_cfg(
+        {"sufler": {"autostop": {"silence_minutes": 0, "alone_minutes": 0}}})
+    d = autostop.decide(age_s=600, quiet_s=61, spoke=True, limits=lim,
+                        farewells=1)
+    assert d.reason != autostop.FAREWELL, d
+    lim2 = autostop.limits_from_cfg(
+        {"sufler": {"autostop": {"silence_minutes": 0, "alone_minutes": 0,
+                                 "farewell_seconds": 60}}})
+    d2 = autostop.decide(age_s=600, quiet_s=61, spoke=True, limits=lim2,
+                        farewells=1)
+    assert d2.action == "stop" and d2.reason == autostop.FAREWELL, d2
+
+
+def test_break_in_a_while_wording_not_farewell():
+    """GLM r1: «спустя» — тот же класс анонса перерыва, что «через»."""
+    assert not autostop.is_farewell("Спустя пять минут увидимся")

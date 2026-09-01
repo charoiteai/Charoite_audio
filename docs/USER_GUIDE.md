@@ -86,7 +86,13 @@ were talking — quiet time is cut to 10 minutes instead of 15. Note that an
 in-person meeting looks the same to us: everyone sits in one room and lands in
 the microphone, so the far side is "silent" by definition. If your meetings are
 in-person, set `alone_minutes: 15` and the rule stops changing anything;
-`0` turns it off. A warning appears a minute before (in the status
+`0` turns it off.
+A fifth case is a farewell: on hearing "bye everyone" or "goodbye" in the
+conversation, the recording waits only a minute of silence instead of
+fifteen (the warning appears at once, any remark cancels it), and two
+farewells in a row — an exchange of goodbyes — stop the recording
+immediately. A "bye" inside a sentence does not count;
+`farewell_seconds: 0` disables the rule. A warning appears a minute before (in the status
 line, and as a banner if the window is not visible) — say something and the
 recording continues. The stop goes the usual way, as if you pressed Stop: the
 meeting is saved and processed, nothing is lost, and the status keeps the

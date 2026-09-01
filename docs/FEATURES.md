@@ -455,8 +455,14 @@ it signals degradation, it does not break the loop.
   stops it: the file is finalized, the transcript is rebuilt, the graph is
   updated — nothing is lost, and the status afterwards names the reason. The
   first two minutes are never touched ("I started it while everyone was
-  gathering"); everything is configurable under `sufler.autostop`, and
-  `autostop: false` turns it off entirely.
+  gathering"). A farewell heard in the live transcript ("bye everyone",
+  "see you") shortens the wait: after one farewell the silence threshold
+  drops to a minute (with an instant warning any remark cancels), and two
+  farewells in a row — an exchange of goodbyes — stop the recording at
+  once. The detector is deterministic and deliberately narrow: a short
+  closing phrase, not a conjunction inside a sentence. Everything is
+  configurable under `sufler.autostop` (`farewell_seconds`, 0 disables),
+  and `autostop: false` turns it off entirely.
 - **A recording without speech is called that** — forty seconds of silence
   is not a "processing error" but a result: the status says so, the
   transcript stays openable, and the pipeline will not re-process silence.
