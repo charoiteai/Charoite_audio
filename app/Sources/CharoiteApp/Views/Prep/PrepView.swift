@@ -268,7 +268,9 @@ struct PrepView: View {
                             .buttonStyle(.plain).disabled(tasks.isUpdating(item))
                             Text(MarkdownLine.render(item.text)).font(.callout).lineLimit(2)
                             Spacer(minLength: 4)
-                            if let due = TaskDue.parse(item.text) { DueChip(due: due) }
+                            if let due = TaskDue.parse(item.text) {
+                                DueChip(due: due, anchor: item.dueAnchor)
+                            }
                         }
                     }
                 }
@@ -278,15 +280,17 @@ struct PrepView: View {
 
     private func recomputeDebts() {
         let open = otherOpenTasks
-        debts = Debts(summary: open.isEmpty ? "" : Self.debtsSummary(open.map(\.text)),
+        debts = Debts(summary: open.isEmpty ? "" : Self.debtsSummary(open.map { ($0.text, $0.dueAnchor) }),
                       urgent: nextTopic == nil ? Self.mostUrgent(open, limit: 3) : [])
     }
 
     /// «2 просрочено · 6 на этой неделе · 15 без срока» — нули не пишем.
-    static func debtsSummary(_ texts: [String], now: Date = Date()) -> String {
+    static func debtsSummary(_ items: [(text: String, anchor: Date?)],
+                             now: Date = Date()) -> String {
         var counts: [TasksScreenPolicy.DueBucket: Int] = [:]
-        for text in texts {
-            counts[TasksScreenPolicy.bucket(text: text, done: false, now: now), default: 0] += 1
+        for item in items {
+            counts[TasksScreenPolicy.bucket(text: item.text, done: false,
+                                            anchor: item.anchor, now: now), default: 0] += 1
         }
         let parts: [(TasksScreenPolicy.DueBucket, String, String, String)] = [
             (.overdue, "просрочено", "overdue", "已逾期"),
@@ -305,10 +309,12 @@ struct PrepView: View {
     static func mostUrgent(_ items: [TasksService.Item], limit: Int,
                            now: Date = Date()) -> [TasksService.Item] {
         let ranked = items.map { item -> (TasksScreenPolicy.DueBucket, Int, TasksService.Item) in
-            let bucket = TasksScreenPolicy.bucket(text: item.text, done: false, now: now)
+            let bucket = TasksScreenPolicy.bucket(text: item.text, done: false,
+                                                  anchor: item.dueAnchor, now: now)
             // внутри просроченных — самые давние первыми
             var days = 0
-            if case .overdue(let d)? = TaskDue.parse(item.text)?.status(now: now) { days = -d }
+            if case .overdue(let d)? = TaskDue.parse(item.text)?
+                .status(now: now, anchor: item.dueAnchor) { days = -d }
             return (bucket, days, item)
         }
         // Третий ключ — стабильность: при равных корзинах порядок файла,
