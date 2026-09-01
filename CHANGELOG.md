@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.65.1](https://github.com/charoiteai/Charoite_audio/compare/v0.65.0...v0.65.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* **app:** batch transcript and hint-stream publishes — buttons drown no more ([#473](https://github.com/charoiteai/Charoite_audio/issues/473)) ([41bf940](https://github.com/charoiteai/Charoite_audio/commit/41bf9406ecc520a3ba6108918e6710d1cb9939ec))
+
 ## [0.65.0](https://github.com/charoiteai/Charoite_audio/compare/v0.64.2...v0.65.0) (2026-09-01)
 
 
