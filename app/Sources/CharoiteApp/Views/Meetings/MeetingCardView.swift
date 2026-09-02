@@ -70,7 +70,12 @@ struct MeetingCardView: View {
                     .textSelection(.enabled)
             }
             if !actionMessage.isEmpty {
-                Text(actionMessage)
+                // Процесс стартовал, но умер с кодом ≠ 0: сервис это знает
+                // (retryFailedToStart), а карточка иначе держала бы
+                // «запущена» навсегда (GLM Min-5 по #484).
+                Text(processing.retryFailedToStart
+                     ? MeetingProcessingPolicy.rebuildMessage(.launchFailed)
+                     : actionMessage)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -87,6 +92,10 @@ struct MeetingCardView: View {
         .task(id: meeting.meetingID) {
             card = MeetingCardLoader.load(for: meeting)
             tasks.rescan()
+            // Одна карточка на все встречи: строка про встречу A иначе
+            // висела под B («стенограммы нет» при живой стенограмме B —
+            // DS M1 по #484).
+            actionMessage = ""
         }
         .task(id: depth.rawValue + "|" + meeting.meetingID) { await loadDepthFile() }
         // Привычка «Подробно» из прежнего ключа — в «Минутки», один раз.
@@ -293,12 +302,13 @@ struct MeetingCardView: View {
                         title: meeting.title, dateText: dateText, card: card))
                 }
                 Divider()
+                // Сообщение — по факту запуска, не по нажатию: молчаливый
+                // отказ (повтор ещё идёт, файла нет, python не стартовал)
+                // раньше выглядел как «запущена» (№131).
                 Button(L.t("Пересобрать результат", "Rebuild result", "重建结果")) {
-                    processing.rebuild(meeting)
-                    actionMessage = L.t("Пересборка запущена",
-                                        "Rebuild started",
-                                        "已开始重建")
+                    actionMessage = MeetingProcessingPolicy.rebuildMessage(processing.rebuild(meeting))
                 }
+                .disabled(processing.rebuildingID == meeting.meetingID)
             }
             .menuStyle(.button)
             .charoite(.regular, .s)
