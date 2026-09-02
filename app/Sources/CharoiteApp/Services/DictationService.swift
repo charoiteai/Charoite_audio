@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Carbon.HIToolbox
 import SwiftUI
 
@@ -7,12 +8,20 @@ import SwiftUI
 /// Локальная диктовка: ⌥⌘D — старт/стоп записи, GigaAM распознаёт на
 /// устройстве, текст вставляется в активное поле (⌘V с восстановлением
 /// буфера). Ничего не покидает мак — наш ответ облачному Wispr Flow.
+///
+/// Пока человек говорит, системный движок (macOS 26+) показывает живой
+/// черновик на плашке внизу экрана — `LiveDictationPreview`. Черновик
+/// хуже GigaAM (12,4 % против 2,9 % ошибок на эталоне 02.09), поэтому
+/// финальный текст всегда от GigaAM; черновик идёт в дело только если
+/// python не ответил — на маке без модели диктовка всё равно работает.
 @MainActor
 final class DictationService: ObservableObject {
     static let shared = DictationService()
 
     @Published var isRecording = false
     @Published var status = ""
+    /// Живой черновик текущей диктовки (пусто, если движка нет).
+    @Published var preview = ""
 
     private var proc: Process?
     private var stdinPipe: Pipe?
@@ -27,6 +36,14 @@ final class DictationService: ObservableObject {
     private var noteMode = false
     private var errTail = ""  // хвост stderr питона — для внятной ошибки
     private var autoStop: Task<Void, Never>?  // предохранитель забытой записи
+    /// Второй захват микрофона — только ради черновика: python пишет свой
+    /// поток через PortAudio, CoreAudio отдаёт вход обоим. Упал этот —
+    /// диктовка идёт как раньше, без плашки.
+    private var previewEngine: AVAudioEngine?
+    private var previewBox: AnyObject?          // LiveDictationPreview (macOS 26+)
+    private var previewTask: Task<Void, Never>?
+    private var lastPreview = ""                // черновик на момент стопа
+    private static var previewUnavailableLogged = false
 
     private var suflerRoot: URL { AppSettings.charoiteRoot }
 
@@ -152,6 +169,7 @@ final class DictationService: ObservableObject {
                                             : L.t("🎙 заметка… говори (⌥⌘N — стоп)", "🎙 note… speak (⌥⌘N to stop)", "🎙 笔记…请讲话（⌥⌘N 停止）"))
                 : L.t("🎙 диктовка… (⌥⌘D — стоп)", "🎙 dictation… (⌥⌘D to stop)", "🎙 听写…（⌥⌘D 停止）")
             NSSound(named: "Pop")?.play()
+            startPreview()
             // глобальный хоткей легко забыть: не даём писать вечно — часовой
             // wav всё равно не распознается, а микрофон «висит» открытым
             autoStop = Task { [weak self] in
@@ -174,6 +192,7 @@ final class DictationService: ObservableObject {
         autoStop = nil
         status = L.t("распознаю…", "transcribing…", "正在识别…")
         isRecording = false
+        stopPreview()
         try? stdinPipe?.fileHandleForWriting.close()  // EOF = стоп записи
         // Распознавание короткое; зависший процесс добьём — и обязательно
         // с SIGKILL следом. Python, застрявший в нативном вызове (NeMo,
@@ -215,10 +234,27 @@ final class DictationService: ObservableObject {
         onResult = nil
         let wasNote = noteMode
         noteMode = false
+        let draft = lastPreview
+        lastPreview = ""
+        preview = ""
+        DictationPreviewPanel.shared.hide()
+        var text = text
+        var fromDraft = false
+        if text.isEmpty, exit != 0, !draft.isEmpty, !wasNote {
+            // GigaAM не ответил (нет venv, нет модели, упал) — отдаём черновик
+            // системного движка: хуже по терминам, но лучше пустого поля.
+            // Заметку из черновика не делаем: её текст уходит в граф и в
+            // память, а там точность важнее мгновенности.
+            text = draft
+            fromDraft = true
+        }
         guard !text.isEmpty else {
             status = exit == 0 ? L.t("тишина — ничего не распознано", "silence — nothing recognized", "静音——未识别到内容")
                                : L.t("ошибка распознавания: \(String(errTail.suffix(120)))", "recognition error: \(String(errTail.suffix(120)))", "识别错误：\(String(errTail.suffix(120)))")
             return
+        }
+        if fromDraft {
+            status = L.t("GigaAM не ответил — вставлен черновик системного движка", "GigaAM did not answer — inserted the system engine's draft", "GigaAM 未响应——已插入系统引擎的草稿")
         }
         if wasNote {
             // dictate_note.py печатает JSON {"title": ..., "path": ...}
@@ -232,16 +268,102 @@ final class DictationService: ObservableObject {
             NSSound(named: "Glass")?.play()
         } else if let handler {
             handler(text)
-            status = L.t("распознано: \(String(text.prefix(60)))", "recognized: \(String(text.prefix(60)))", "已识别：\(String(text.prefix(60)))")
+            if !fromDraft {
+                status = L.t("распознано: \(String(text.prefix(60)))", "recognized: \(String(text.prefix(60)))", "已识别：\(String(text.prefix(60)))")
+            }
             NSSound(named: "Glass")?.play()
         } else {
-            insert(text: text)
+            insert(text: text, keepStatus: fromDraft)
+        }
+    }
+
+    // MARK: - Живой черновик (системный движок, macOS 26+)
+
+    private func startPreview() {
+        guard #available(macOS 26.0, *) else { return }
+        previewTask?.cancel()
+        previewTask = Task { [weak self] in
+            guard let self else { return }
+            let live = LiveDictationPreview(locale: Self.previewLocale)
+            let ready = await live.prepare()
+            guard !Task.isCancelled, self.isRecording else { return }
+            guard ready == .ready else {
+                if !Self.previewUnavailableLogged {
+                    Self.previewUnavailableLogged = true
+                    NSLog("[Dictation] живой черновик недоступен: \(ready) для \(Self.previewLocale.identifier)")
+                }
+                return
+            }
+            let engine = AVAudioEngine()
+            let input = engine.inputNode
+            let format = input.outputFormat(forBus: 0)
+            guard format.sampleRate > 0, format.channelCount > 0 else { return }
+            do {
+                try await live.start(inputFormat: format)
+            } catch {
+                NSLog("[Dictation] живой черновик не поднялся: \(error.localizedDescription)")
+                live.cancel()
+                return
+            }
+            guard !Task.isCancelled, self.isRecording else { live.cancel(); return }
+            live.onChange = { [weak self] text in
+                guard let self, self.isRecording else { return }
+                self.preview = text
+                DictationPreviewPanel.shared.show(
+                    text: text,
+                    hint: L.t("черновик системного движка — итог распознает GigaAM после стопа",
+                              "system engine draft — GigaAM produces the final text after stop",
+                              "系统引擎草稿——停止后由 GigaAM 生成最终文本"))
+            }
+            input.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
+                live.ingest(buffer)
+            }
+            do {
+                try engine.start()
+            } catch {
+                input.removeTap(onBus: 0)
+                live.cancel()
+                NSLog("[Dictation] микрофон для черновика не открылся: \(error.localizedDescription)")
+                return
+            }
+            self.previewEngine = engine
+            self.previewBox = live
+        }
+    }
+
+    private func stopPreview() {
+        previewTask?.cancel()
+        previewTask = nil
+        guard let engine = previewEngine else { return }
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        previewEngine = nil
+        guard #available(macOS 26.0, *), let live = previewBox as? LiveDictationPreview else {
+            previewBox = nil
+            return
+        }
+        previewBox = nil
+        // Финал черновика приходит асинхронно; GigaAM за это время как раз
+        // распознаёт. К finished() черновик почти всегда готов, а если нет —
+        // страховка просто не сработает, диктовка от этого не зависит.
+        Task { [weak self] in
+            let text = await live.finish()
+            await MainActor.run { self?.lastPreview = text }
+        }
+    }
+
+    /// Язык черновика = язык продукта (sufler.language), как и у GigaAM.
+    private static var previewLocale: Locale {
+        switch AppSettings.uiLanguage {
+        case "en": return Locale(identifier: "en-US")
+        case "zh": return Locale(identifier: "zh-CN")
+        default: return Locale(identifier: "ru-RU")
         }
     }
 
     // MARK: - Вставка в активное поле
 
-    private func insert(text: String) {
+    private func insert(text: String, keepStatus: Bool = false) {
         let pb = NSPasteboard.general
         // сохраняем ВСЕ типы (скриншот/RTF), не только строку — иначе
         // картинка в буфере пропадала после диктовки безвозвратно
@@ -264,7 +386,9 @@ final class DictationService: ObservableObject {
             vUp?.flags = .maskCommand
             vDown?.post(tap: .cghidEventTap)
             vUp?.post(tap: .cghidEventTap)
-            status = L.t("вставлено: \(String(text.prefix(60)))", "inserted: \(String(text.prefix(60)))", "已插入：\(String(text.prefix(60)))")
+            if !keepStatus {
+                status = L.t("вставлено: \(String(text.prefix(60)))", "inserted: \(String(text.prefix(60)))", "已插入：\(String(text.prefix(60)))")
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                 // если буфер уже сменил кто-то другой (юзер успел скопировать) — не трогаем
                 guard pb.changeCount == ourChange else { return }
