@@ -97,9 +97,10 @@ Better to say it than to keep it in "Mid" for years:
   recordings, transcripts and the config in the user's folder; the first-run
   wizard writes the config and installs the models (August 2026)
 - System audio through ScreenCaptureKit: no driver, no Multi-Output Device,
-  no aggregate devices — one system permission. The Core Audio tap stays a
-  disabled reserve after it wedged `coreaudiod` four times on macOS 26.5
-  (August 2026)
+  no aggregate devices — one system permission. The Core Audio tap was
+  disabled after it wedged `coreaudiod` four times on macOS 26.5 (August
+  2026) and removed from the package on 2026-09-02; only the orphan cleanup
+  remains
 - Model sets sized to the machine's RAM, offered and installed from the
   first-run wizard instead of a config comment (August 2026)
 - One button scale across the app (seven roles, three sizes) and a second
