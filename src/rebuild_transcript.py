@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import pathlib
@@ -42,6 +43,8 @@ import numpy as np  # noqa: E402
 import yaml  # noqa: E402
 
 import install_profile  # noqa: E402
+import action_items  # noqa: E402
+import fact_check  # noqa: E402
 import channel_labels  # noqa: E402
 import graphs  # noqa: E402
 import lexicon  # noqa: E402
@@ -169,9 +172,14 @@ def _daemon_alive() -> bool:
     return live_gate.daemon_alive(ROOT)
 
 
-def _yield_to_live(what: str) -> None:
-    """Пока идёт живая встреча, тяжёлую модель не трогаем — см. live_gate."""
-    live_gate.wait_while_live(ROOT, log, what=what, poll=10)
+def _yield_to_live(what: str, cap: float | None = None) -> None:
+    """Пока идёт живая встреча, тяжёлую модель не трогаем — см. live_gate.
+
+    `cap` — потолок ожидания: внутри уже взятой очереди пересборок
+    (rebuild.lock) бесконечная уступка парковала бы очередь на всю чужую
+    встречу; после потолка вызов идёт в тесноте, с логом (GLM r2 по #483).
+    """
+    live_gate.wait_while_live(ROOT, log, what=what, poll=10, cap=cap)
 
 
 def _take_rebuild_queue():
@@ -286,13 +294,37 @@ def live_meta(live: pathlib.Path) -> dict:
     работаем как раньше: авто-кластеризация и определение имён по репликам.
     """
     try:
-        p = live.with_name(live.name + ".live.json")
+        p = live_meta_path(live)
         if p.exists():
             d = json.loads(p.read_text(encoding="utf-8"))
             return d if isinstance(d, dict) else {}
     except Exception as e:  # noqa: BLE001 — подсказка не обязательна
         log(f"live.json не прочитан: {e}")
     return {}
+
+
+def live_meta_path(live: pathlib.Path) -> pathlib.Path:
+    """Где лежит live.json этой встречи.
+
+    Демон пишет его как <посекундная стенограмма>.md.live.json. Накат темы
+    (graph_updater.retitle) и rename_meeting переименовывают только *.md —
+    сайдкар остаётся «2026-09-02_102112.md.live.json» рядом с
+    «2026-09-02_1021_Тема.md», и вторая пересборка (кнопка «Пересобрать»)
+    его не находила: терялись имена живой сессии, а с ними и хеш минуток
+    (advisory DS r2 по #483). Нет файла под своим именем — ищем по
+    минутному штампу; кандидатов несколько — берём самый свежий.
+    """
+    direct = live.with_name(live.name + ".live.json")
+    if direct.exists():
+        return direct
+    stamp = meeting_stamp.stamp_of(live.stem) or live.stem
+    minute = meeting_stamp.minute_of(stamp)
+    tail = ".md.live.json"
+    found = [p for p in live.parent.glob(f"{minute}*{tail}")
+             if meeting_stamp.minute_of(p.name[:-len(tail)]) == minute]
+    if not found:
+        return direct
+    return max(found, key=lambda p: p.stat().st_mtime)
 
 
 def live_session_names(meta: dict) -> dict[str, str]:
@@ -608,12 +640,23 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # слова без алиаса не трогаются, а уходят в отчёт-кандидаты.
     final_text = canonize(final_text, cfg)
     write_final(live, final_text, live_text)
-    # В минутки — ТОЛЬКО имена живой сессии (meta["names"]): их метки — та же
-    # живая нумерация, которой минутки и написаны. Пересборочный `names` живёт
-    # в другом пространстве номеров (docstring names_by_time), и подстановка
-    # по нему клеила бы имя не тому человеку (GLM Critical по #464).
-    restamp_minutes(live, live_session_names(meta))
-    canonize_file(live.with_name(live.stem + "_minutes.md"), cfg)
+    # Минутки: нетронутый автотекст — заново по финальной стенограмме; правленный
+    # руками — только перештамповать (маркер и имена ЖИВОЙ сессии: их метки —
+    # та же нумерация, которой минутки написаны; пересборочный `names` живёт в
+    # другом пространстве номеров и клеил бы имя не тому — GLM Critical по #464).
+    machine_owned = finalize_minutes(live, final_text, meta, cfg, live_session_names(meta))
+    mpath = live.with_name(live.stem + "_minutes.md")
+    canonize_file(mpath, cfg)
+    # Хеш — по байтам, которые ЛЕЖАТ на диске после канона, и только когда
+    # файл машинный. Раньше он писался до canonize_file (лексикон менял
+    # байты — вторая пересборка видела «правку руками»), а после
+    # транзиентного отказа модели перештампованный файл терял признак
+    # автотекста навсегда (DS r1 Imp-1/Imp-2 по #483).
+    if machine_owned:
+        try:
+            _remember_minutes_sha(live, _sha(mpath.read_text(encoding="utf-8")))
+        except (OSError, UnicodeDecodeError) as e:
+            log(f"хеш минуток не снят ({e}) — следующая пересборка их не тронет")
     return live
 
 
@@ -763,15 +806,153 @@ def write_final(live: pathlib.Path, text: str, live_text: str) -> pathlib.Path:
     return live
 
 
-def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> None:
+# Порог, ниже которого минутки не пересобираем, — тот же, с которого демон
+# начинает живой черновик (minutes_loop: «< 400 знаков — рано»).
+MINUTES_MIN_CHARS = 400
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _remember_minutes_sha(live: pathlib.Path, sha: str) -> None:
+    """Хеш машинных минуток — в live.json, чтобы следующая пересборка тоже
+    видела в них автотекст, а не правку руками. Зовётся из rebuild() после
+    канонизации — по байтам, которые реально лежат на диске."""
+    p = live_meta_path(live)
+    try:
+        meta = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(meta, dict):
+            return
+        meta["minutes_sha256"] = sha
+        safe_write.write_text(p, json.dumps(meta, ensure_ascii=False))
+    except (OSError, ValueError) as e:
+        log(f"хеш минуток не записан в live.json: {e}")
+
+
+def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
+                     live_names: dict[str, str]) -> bool:
+    """Минутки после пересборки: пересобрать по финалу или перештамповать.
+
+    Живой черновик пишется лёгкой моделью по голове и хвосту НЕЗАКОНЧЕННОЙ
+    встречи, с метками «Собеседник N» и без финального STT. Перештамповка
+    (№146) лечила шапку и метки, но не содержание: 02.09 10:21 финальные
+    минутки утверждали «ИИ для перевода» и раздавали поручения «Собеседнику
+    6», пока стенограмма рядом была верной и с именами. Круг по #464 отверг
+    регенерацию из-за цены LLM-вызова и риска затереть ручные правки; цена
+    замерена — 13 с на 10 000 знаков местной моделью, а ручные правки
+    отсекает хеш: демон кладёт в live.json sha256 последней СВОЕЙ записи
+    минуток (черновик или «Протокол»), и совпадение с файлом означает, что
+    текста никто не касался. Не совпало (правили в редакторе, писал mcp
+    «Минутки», демон старее этой правки) — только перештамповка, как прежде.
+    Нет минуток вовсе (короткая встреча, упавший поток) — собираем, если
+    стенограмма длиннее порога черновика.
+
+    Возвращает, машинный ли файл после этого шага (регенерирован или
+    перештампован при нетронутом автотексте): по нему rebuild() после
+    канона снимает хеш. Правленный руками файл — False, его хеш не трогаем.
+    Перед регенерацией прежняя версия уходит в .prev/ рядом со стенограммой
+    (одно поколение): уверенная, но неверная генерация не должна быть
+    невозвратной (advisory DS r1 по #483).
+    """
+    mpath = live.with_name(live.stem + "_minutes.md")
+    before = safe_write.stat_snapshot(mpath)
+    current: str | None = None
+    if before is not None:
+        try:
+            current = mpath.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            # не-UTF8 файл из редактора ронял бы всю пересборку после
+            # записи финала (GLM Minor-6 по #483)
+            log(f"минутки не прочитались ({e}) — перештамповка")
+            restamp_minutes(live, live_names)
+            return False
+    elif mpath.exists():
+        log("минутки не пересобраны (stat не удался) — перештамповка")
+        restamp_minutes(live, live_names)
+        return False
+    expected = meta.get("minutes_sha256") if isinstance(meta, dict) else None
+    owned = current is None or (bool(expected) and _sha(current) == expected)
+    if not owned:
+        log("минутки правлены не демоном (или без хеша в live.json) — перештамповка")
+        restamp_minutes(live, live_names)
+        return False
+    # Модели — только речь: хвост «Ко-мышление» (📌/💎/💭 живого контура) —
+    # мысли модели, не сказанное вслух; кнопка «Протокол» получает tr.full()
+    # без него, и здесь так же (GLM Imp-4 по #483). Порог — только при
+    # создании с нуля: существующий черновик сам доказывает, что встреча
+    # короткой не была, а финал бывает короче живого текста (эхо-фильтр
+    # микрофона; GLM Minor-5).
+    speech = re.split(re.escape(transcript.NOTES_HEAD), final_text, maxsplit=1)[0]
+    if len(speech) < MINUTES_MIN_CHARS:
+        # Замена содержательного черновика регенератом из пустого промпта
+        # хуже, чем создание с нуля (advisory GLM r2): короткий финал —
+        # прежнее поведение №146, перештамповка.
+        log(f"минутки не пересобраны: речи короче {MINUTES_MIN_CHARS} знаков")
+        return _fallback_restamp(mpath, before, current, live, live_names)
+    from llm import LLM
+    # Тяжёлый вызов не спорит с идущей встречей (GLM Imp-2), но и очередь
+    # пересборок не паркует на час: потолок 10 минут.
+    _yield_to_live("минутки", cap=600)
+    t0 = time.monotonic()
+    try:
+        doc = "".join(LLM(cfg).minutes(speech)).strip()
+    except Exception as e:  # noqa: BLE001 — модель лежит: не терять прежние минутки
+        log(f"минутки не пересобраны ({type(e).__name__}: {e}) — перештамповка")
+        return _fallback_restamp(mpath, before, current, live, live_names)
+    if not doc:
+        log("минутки не пересобраны (модель промолчала) — перештамповка")
+        return _fallback_restamp(mpath, before, current, live, live_names)
+    # Те же два шага, что у кнопки «Протокол»: сверка номеров и дат со
+    # стенограммой и чекбоксы в формат окна «Задачи».
+    doc = action_items.normalize(fact_check.annotate(doc, speech))
+    if current is not None:
+        prev_dir = live.parent / ".prev"
+        prev_dir.mkdir(exist_ok=True)
+        safe_write.write_text(prev_dir / mpath.name, current)
+    # Гейт в обе стороны: существовавший файл — тем же снимком, отсутствовавший
+    # — «его по-прежнему нет»: mcp «Минутки» или редактор за время генерации
+    # могли создать документ (GLM Critical по #483).
+    if not safe_write.write_text(mpath, doc, expect=before, expect_absent=before is None):
+        log("минутки сменились под пересборкой — оставлены как есть")
+        return False
+    log(f"минутки пересобраны по финальной стенограмме: {mpath.name} "
+        f"({len(final_text)} знаков → {len(doc)}, {time.monotonic() - t0:.0f}с"
+        + (", прежняя версия → .prev/" if current is not None else "") + ")")
+    return True
+
+
+def _fallback_restamp(mpath: pathlib.Path, before, current: str | None,
+                      live: pathlib.Path, live_names: dict[str, str]) -> bool:
+    """Отказ регенерации: перештамповать и сказать, машинный ли файл.
+
+    Машинным файл остаётся, только если он тот же, что finalize_minutes
+    прочла (снимок не сменился), и перештамповка его записала или
+    оставила байт-в-байт. Минуток не было, файл подменил чужой процесс
+    за время ожидания/вызова, перештамповка проиграла гонку — False:
+    иначе хеш снимался бы с чужих байтов, и следующая пересборка
+    регенерировала бы поверх них (DS r2 Imp-1, GLM r2 Imp-1 по #483).
+    """
+    if current is None or safe_write.stat_snapshot(mpath) != before:
+        if current is not None:
+            log("минутки сменились под пересборкой — оставлены как есть")
+        return False
+    return restamp_minutes(live, live_names)
+
+
+def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> bool:
     """Минутки после пересборки: снять маркер черновика, подставить имена.
+
+    Возвращает True, если файл после вызова — те байты, за которые она
+    отвечает: записала сама или менять было нечего; False — нет файла,
+    не прочитался, гонка проиграна дважды.
 
     Минутки пишет демон по ходу встречи; автофинализации нет, и после
     пересборки человек читал документ с шапкой «черновик, встреча идёт» и
     участниками «Собеседник 2, Собеседник 4», хотя стенограмма рядом уже
-    финальная и с именами (№146, встреча 08:45 31.08). Минутки целиком не
-    перегенерируем: LLM-вызов в rebuild-пути дорог, а главное — затёр бы
-    ручные правки человека. Перештамповка точечная: маркер и метки.
+    финальная и с именами (№146, встреча 08:45 31.08). Этот путь — для
+    минуток, которых касались руки или чужой процесс (finalize_minutes):
+    их не перегенерируем, перештамповка точечная — маркер и метки.
 
     `live_names` — словарь ЖИВОЙ сессии (live.json: «Собеседник N» → имя):
     его метки — та же нумерация, которой написаны минутки. Имена, доугаданные
@@ -789,12 +970,12 @@ def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> None:
             # Нет минуток — штатная тишина; отказ по правам — вслух (GLM M6).
             if mpath.exists():
                 log("минутки не перештампованы (stat не удался)")
-            return
+            return False
         try:
             text = mpath.read_text(encoding="utf-8")
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
             log(f"минутки не перештампованы (не прочитались): {e}")
-            return
+            return False
         fixed = text
         for line in (transcript.MINUTES_DRAFT_MARK + "\n", transcript.MINUTES_DRAFT_MARK):
             fixed = fixed.replace(line, "", 1)
@@ -811,17 +992,18 @@ def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> None:
             fixed = re.sub(r"(?<!\w)" + re.escape(label) + r"(?!\s*\d)(?!\w)",
                            lambda _m, n=name: n, fixed)
         if fixed == text:
-            return
+            return True
         if safe_write.write_text(mpath, fixed, expect=before):
             break
         if attempt == 1:
             log("минутки сменились под пересборкой — повторный заход")
             continue
         log("минутки меняются под пересборкой — перештамповка пропущена")
-        return
+        return False
     log(f"минутки перештампованы: {mpath.name}"
         + (f" (имена: {', '.join(f'{k}→{v}' for k, v in live_names.items())})"
            if live_names else " (снят маркер черновика)"))
+    return True
 
 
 def names_pending(live: pathlib.Path) -> bool:

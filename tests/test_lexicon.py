@@ -80,7 +80,9 @@ def test_rebuild_wires_canonize():
     src = (SRC / "rebuild_transcript.py").read_text(encoding="utf-8")
     fn = src[src.index("def rebuild("):src.index("def write_final(")]
     assert "canonize(final_text, cfg)" in fn or "final_text = canonize(" in fn
-    assert "canonize_file(live.with_name" in fn
+    # минутки: mpath = live.with_name(... "_minutes.md"); canonize_file(mpath, cfg)
+    assert 'mpath = live.with_name(live.stem + "_minutes.md")' in fn
+    assert "canonize_file(mpath, cfg)" in fn
 
 
 def test_first_name_alias_never_maps_to_surname(tmp_path):

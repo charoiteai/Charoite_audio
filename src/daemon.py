@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import hashlib
 import json
 import math
 import os
@@ -1274,6 +1275,16 @@ def main():
     # Между read_text и write_text черновика финал от «Протокола» успевал лечь
     # на диск и заворачивался черновиком (класс 0.46.0, аудит 30.08 DS M1).
     minutes_lock = threading.Lock()
+    # Хеш последней версии минуток, записанной ЭТИМ демоном (черновик или
+    # «Протокол»). Уходит в live.json: пересборка по нему отличает нетронутый
+    # автотекст (перегенерировать по финальной стенограмме) от правленного
+    # руками или чужим процессом (только перештамповать). Встреча 02.09 10:21:
+    # финал остался черновиком середины встречи — «Собеседник 3», «ИИ для
+    # перевода», поручения безымянным — при верной стенограмме рядом.
+    minutes_sha = {"v": None}
+
+    def note_minutes_written(text: str) -> None:
+        minutes_sha["v"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
     # живые тумблеры UI (`set hints|theses|cloud on|off`): выключенные контуры
     # молчат до обратного включения; дефолты хранит и присылает приложение
     toggles = {"hints": True, "theses": True, "cloud": True}
@@ -2502,9 +2513,16 @@ def main():
                         if before is not None and not mpath.read_text(
                                 encoding="utf-8").startswith(MINUTES_DRAFT_MARK):
                             continue
-                        if not safe_write.write_text(
-                                mpath, MINUTES_DRAFT_MARK + "\n" + out, expect=before):
+                        # Генерация шла десятки секунд; если за это время
+                        # встречу остановили, live.json с хешем уже записан —
+                        # поздний черновик сделал бы файл «чужим» для
+                        # пересборки (DS Minor-1 по #483).
+                        if stop.is_set():
+                            continue
+                        draft = MINUTES_DRAFT_MARK + "\n" + out
+                        if not safe_write.write_text(mpath, draft, expect=before):
                             continue          # файл сменился под нами — не затираем чужой финал
+                        note_minutes_written(draft)
                     emit({"type": "status", "text": f"🗒 минутки-черновик обновлены ({dt.datetime.now():%H:%M})"})
             except Exception as e:  # noqa: BLE001
                 emit_error(f"минутки: {short_error(e)}")
@@ -2606,6 +2624,7 @@ def main():
                     try:
                         tmp.write_text(doc, encoding="utf-8")
                         tmp.replace(mpath)
+                        note_minutes_written(doc)
                     finally:
                         tmp.unlink(missing_ok=True)
                 emit({"type": "status", "text": f"Минутки: {mpath}"})
@@ -2997,9 +3016,14 @@ def main():
             # имена опознаны за встречу. Без них rebuild кластеризует аудио с нуля
             # (21.07: живьём 8 голосов и 4 имени → в финале 14 безымянных) и
             # заново гадает имена, выбрасывая всё, что демон выяснил за час.
-            pathlib.Path(str(tr.path) + ".live.json").write_text(
-                json.dumps({"speakers": len(voice_names), "names": tr.names()},
-                           ensure_ascii=False), encoding="utf-8")
+            # Атомарно: по хешу в этом файле пересборка решает, трогать ли
+            # минутки, а демона в этот момент может добивать watchdog — обрыв
+            # write_text оставлял бы битый JSON (advisory GLM по #483).
+            safe_write.write_text(
+                pathlib.Path(str(tr.path) + ".live.json"),
+                json.dumps({"speakers": len(voice_names), "names": tr.names(),
+                            "minutes_sha256": minutes_sha["v"]},
+                           ensure_ascii=False))
         except Exception:  # noqa: BLE001 — подсказка вспомогательна, не рушим финал
             pass
         try:
