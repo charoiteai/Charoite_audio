@@ -121,3 +121,16 @@ def test_the_note_looks_fresh_after_a_rewrite(tmp_path):
     assert node.stat().st_mtime > week_ago + 3600, (
         "узел после записи выглядит недельной давности — ночь его не увидит"
     )
+
+
+def test_expect_absent_keeps_a_file_that_appeared_meanwhile(tmp_path):
+    """expect=None — свободная запись, не «пиши, только если файла нет»:
+    минутки, созданные mcp или редактором за время долгой генерации
+    пересборки, затирались бы молча (GLM Critical по #483)."""
+    path = tmp_path / "2026-09-02_1021_minutes.md"
+    assert safe_write.write_text(path, "первые\n", expect_absent=True), "файла не было — пишем"
+    assert path.read_text(encoding="utf-8") == "первые\n"
+    assert not safe_write.write_text(path, "поверх\n", expect_absent=True), (
+        "файл появился — чужой документ остаётся")
+    assert path.read_text(encoding="utf-8") == "первые\n"
+    assert not list(tmp_path.glob("*.tmp*")), "временный файл убран"
