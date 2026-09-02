@@ -103,9 +103,10 @@ def test_rebuild_wires_live_names_into_restamp():
     ЖИВОЙ сессии — откат на пересборочный `names` возвращал бы Critical со
     смешанной нумерацией при зелёных юнитах (GLM r2 M4)."""
     src = (SRC / "rebuild_transcript.py").read_text(encoding="utf-8")
-    fn = src[src.index("def rebuild("):]
-    assert "restamp_minutes(live, live_session_names(meta))" in fn, (
-        "в restamp должны идти имена живой сессии (live.json), не пересборочные")
+    fn = src[src.index("def rebuild("):src.index("def finalize_minutes(")]
+    assert "finalize_minutes(live, final_text, meta, cfg, live_session_names(meta))" in fn, (
+        "в минутки должны идти имена живой сессии (live.json), не пересборочные")
+    assert "restamp_minutes(" not in fn, "перештамповка — только внутри finalize_minutes"
 
 
 def test_names_by_time_never_assigns_to_owner_label():
@@ -164,3 +165,107 @@ def test_owner_label_never_reaches_name_speakers_rest():
     assert "neutral = {spk for _, _, spk, _ in lines" in fn
     assert "rest = neutral - set(names)" in fn
     assert "unnamed = neutral - set(names)" in fn
+
+
+# ---------------------------------------------------------------------------
+# finalize_minutes (после встречи 02.09 10:21): нетронутый автотекст —
+# заново по финальной стенограмме, правленный руками — только перештамповка.
+# ---------------------------------------------------------------------------
+import hashlib  # noqa: E402
+import json  # noqa: E402
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+class _FakeLLM:
+    """Модель на диске не нужна: возвращаем заготовку, считаем вызовы."""
+    calls: list[str] = []
+    answer = "# Минутки\n**Участники:** Инга, Марк\n## Поручения\n- [ ] **Инга** — прислать смету — до 05.09\n"
+    fail = False
+
+    def __init__(self, cfg):
+        pass
+
+    def minutes(self, text):
+        _FakeLLM.calls.append(text)
+        if _FakeLLM.fail:
+            raise RuntimeError("ollama лежит")
+        yield _FakeLLM.answer
+
+
+def _prep(tmp_path, monkeypatch, minutes: str | None, sha: str | None):
+    import llm
+    _FakeLLM.calls = []
+    _FakeLLM.fail = False
+    monkeypatch.setattr(llm, "LLM", _FakeLLM)
+    live = tmp_path / "2026-09-02_1021.md"
+    live.write_text("# Встреча\n", encoding="utf-8")
+    meta = {"speakers": 2, "names": {"Собеседник 2": "Инга"}}
+    if sha is not None:
+        meta["minutes_sha256"] = sha
+    (tmp_path / "2026-09-02_1021.md.live.json").write_text(
+        json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    mpath = tmp_path / "2026-09-02_1021_minutes.md"
+    if minutes is not None:
+        mpath.write_text(minutes, encoding="utf-8")
+    return live, mpath, meta
+
+
+FINAL = "**Инга** [10:21]:\nСмету пришлю к пятому.\n" * 30   # > MINUTES_MIN_CHARS
+
+
+def test_untouched_draft_is_regenerated_from_final(tmp_path, monkeypatch):
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nУчастники: Собеседник 2\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {"Собеседник 2": "Инга"})
+    out = mpath.read_text(encoding="utf-8")
+    assert _FakeLLM.calls == [FINAL], "минутки — по ФИНАЛЬНОЙ стенограмме"
+    assert "Черновик" not in out and "- [ ] **Инга** — прислать смету" in out
+    # хеш новой версии — в live.json: следующая пересборка тоже увидит автотекст
+    saved = json.loads((tmp_path / "2026-09-02_1021.md.live.json").read_text(encoding="utf-8"))
+    assert saved["minutes_sha256"] == _sha(out)
+    assert saved["names"] == {"Собеседник 2": "Инга"}, "остальные поля live.json целы"
+
+
+def test_hand_edited_minutes_are_only_restamped(tmp_path, monkeypatch):
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nУчастники: Собеседник 2\n"
+    edited = draft + "\nМоя пометка руками.\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, edited, _sha(draft))
+    rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {"Собеседник 2": "Инга"})
+    out = mpath.read_text(encoding="utf-8")
+    assert _FakeLLM.calls == [], "правленные руками минутки не перегенерируем"
+    assert "Моя пометка руками." in out and "Инга" in out
+    assert transcript.MINUTES_DRAFT_MARK not in out, "перештамповка сделана"
+
+
+def test_no_hash_in_live_json_keeps_old_behaviour(tmp_path, monkeypatch):
+    # демон старее этой правки: live.json без хеша — считаем, что трогали
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, None)
+    rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {})
+    assert _FakeLLM.calls == []
+    assert transcript.MINUTES_DRAFT_MARK not in mpath.read_text(encoding="utf-8")
+
+
+def test_model_failure_falls_back_to_restamp(tmp_path, monkeypatch):
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    _FakeLLM.fail = True
+    rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {"Собеседник 2": "Инга"})
+    out = mpath.read_text(encoding="utf-8")
+    assert "Черновик" in out and "Инга" in out, "модель лежит — прежние минутки перештампованы, не потеряны"
+    assert transcript.MINUTES_DRAFT_MARK not in out
+
+
+def test_missing_minutes_are_built_when_transcript_is_long_enough(tmp_path, monkeypatch):
+    live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
+    rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {})
+    assert mpath.exists() and "прислать смету" in mpath.read_text(encoding="utf-8")
+    _FakeLLM.calls = []
+    live2 = tmp_path / "2026-09-02_1100.md"
+    live2.write_text("# Встреча\n", encoding="utf-8")
+    rebuild_transcript.finalize_minutes(live2, "**Инга** [11:00]:\nПривет.\n", {}, {}, {})
+    assert _FakeLLM.calls == [] and not live2.with_name("2026-09-02_1100_minutes.md").exists(), \
+        "короткая встреча минуток не заслуживает"

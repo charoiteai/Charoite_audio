@@ -920,8 +920,12 @@ the MCP Minutes tool — now runs the same normalization before writing (it used
 to skip it, so its assignments never reached the task window); the deadline
 prettifier only touches the tail of an item after a dash, leaving live wording
 like "discuss the deadline: tomorrow" untouched; after a transcript rebuild the
-minutes are restamped — the draft marker is removed and "Speaker N" labels are
-replaced with the recovered names; and when native system-audio capture fails
+minutes are rebuilt from the final transcript when nobody has touched them (the
+daemon leaves a hash of its last write in live.json; a matching file is
+auto-text and is regenerated with the recovered names — a 13-minute meeting
+costs about 13 s on the local model), while hand-edited minutes are only
+restamped — the draft marker is removed and "Speaker N" labels are replaced
+with the recovered names; and when native system-audio capture fails
 to start, the app now says out loud that the meeting is being recorded via
 BlackHole instead of falling back silently. Two more hardening steps followed:
 live-session names are matched only to neutral rebuild labels (the owner's

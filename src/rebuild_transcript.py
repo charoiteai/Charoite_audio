@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import pathlib
@@ -42,6 +43,8 @@ import numpy as np  # noqa: E402
 import yaml  # noqa: E402
 
 import install_profile  # noqa: E402
+import action_items  # noqa: E402
+import fact_check  # noqa: E402
 import channel_labels  # noqa: E402
 import graphs  # noqa: E402
 import lexicon  # noqa: E402
@@ -608,11 +611,11 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # слова без алиаса не трогаются, а уходят в отчёт-кандидаты.
     final_text = canonize(final_text, cfg)
     write_final(live, final_text, live_text)
-    # В минутки — ТОЛЬКО имена живой сессии (meta["names"]): их метки — та же
-    # живая нумерация, которой минутки и написаны. Пересборочный `names` живёт
-    # в другом пространстве номеров (docstring names_by_time), и подстановка
-    # по нему клеила бы имя не тому человеку (GLM Critical по #464).
-    restamp_minutes(live, live_session_names(meta))
+    # Минутки: нетронутый автотекст — заново по финальной стенограмме; правленный
+    # руками — только перештамповать (маркер и имена ЖИВОЙ сессии: их метки —
+    # та же нумерация, которой минутки написаны; пересборочный `names` живёт в
+    # другом пространстве номеров и клеил бы имя не тому — GLM Critical по #464).
+    finalize_minutes(live, final_text, meta, cfg, live_session_names(meta))
     canonize_file(live.with_name(live.stem + "_minutes.md"), cfg)
     return live
 
@@ -763,15 +766,103 @@ def write_final(live: pathlib.Path, text: str, live_text: str) -> pathlib.Path:
     return live
 
 
+# Порог, ниже которого минутки не пересобираем, — тот же, с которого демон
+# начинает живой черновик (minutes_loop: «< 400 знаков — рано»).
+MINUTES_MIN_CHARS = 400
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _remember_minutes_sha(live: pathlib.Path, sha: str) -> None:
+    """Хеш пересобранных минуток — в live.json, чтобы следующая пересборка
+    тоже видела в них автотекст, а не правку руками."""
+    p = live.with_name(live.name + ".live.json")
+    try:
+        meta = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(meta, dict):
+            return
+        meta["minutes_sha256"] = sha
+        safe_write.write_text(p, json.dumps(meta, ensure_ascii=False))
+    except (OSError, ValueError) as e:
+        log(f"хеш минуток не записан в live.json: {e}")
+
+
+def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
+                     live_names: dict[str, str]) -> None:
+    """Минутки после пересборки: пересобрать по финалу или перештамповать.
+
+    Живой черновик пишется лёгкой моделью по голове и хвосту НЕЗАКОНЧЕННОЙ
+    встречи, с метками «Собеседник N» и без финального STT. Перештамповка
+    (№146) лечила шапку и метки, но не содержание: 02.09 10:21 финальные
+    минутки утверждали «ИИ для перевода» и раздавали поручения «Собеседнику
+    6», пока стенограмма рядом была верной и с именами. Круг по #464 отверг
+    регенерацию из-за цены LLM-вызова и риска затереть ручные правки; цена
+    замерена — 13 с на 10 000 знаков местной моделью, а ручные правки
+    отсекает хеш: демон кладёт в live.json sha256 последней СВОЕЙ записи
+    минуток (черновик или «Протокол»), и совпадение с файлом означает, что
+    текста никто не касался. Не совпало (правили в редакторе, писал mcp
+    «Минутки», демон старее этой правки) — только перештамповка, как прежде.
+    Нет минуток вовсе (короткая встреча, упавший поток) — собираем, если
+    стенограмма длиннее порога черновика.
+    """
+    mpath = live.with_name(live.stem + "_minutes.md")
+    before = safe_write.stat_snapshot(mpath)
+    current: str | None = None
+    if before is not None:
+        try:
+            current = mpath.read_text(encoding="utf-8")
+        except OSError as e:
+            log(f"минутки не прочитались ({e}) — перештамповка")
+            restamp_minutes(live, live_names)
+            return
+    elif mpath.exists():
+        log("минутки не пересобраны (stat не удался) — перештамповка")
+        restamp_minutes(live, live_names)
+        return
+    expected = meta.get("minutes_sha256") if isinstance(meta, dict) else None
+    owned = current is None or (bool(expected) and _sha(current) == expected)
+    if not owned:
+        log("минутки правлены не демоном (или без хеша в live.json) — перештамповка")
+        restamp_minutes(live, live_names)
+        return
+    if len(final_text) < MINUTES_MIN_CHARS:
+        log(f"минутки не пересобраны: стенограмма короче {MINUTES_MIN_CHARS} знаков")
+        restamp_minutes(live, live_names)
+        return
+    from llm import LLM
+    t0 = time.monotonic()
+    try:
+        doc = "".join(LLM(cfg).minutes(final_text)).strip()
+    except Exception as e:  # noqa: BLE001 — модель лежит: не терять прежние минутки
+        log(f"минутки не пересобраны ({type(e).__name__}: {e}) — перештамповка")
+        restamp_minutes(live, live_names)
+        return
+    if not doc:
+        log("минутки не пересобраны (модель промолчала) — перештамповка")
+        restamp_minutes(live, live_names)
+        return
+    # Те же два шага, что у кнопки «Протокол»: сверка номеров и дат со
+    # стенограммой и чекбоксы в формат окна «Задачи».
+    doc = action_items.normalize(fact_check.annotate(doc, final_text))
+    if not safe_write.write_text(mpath, doc, expect=before):
+        log("минутки сменились под пересборкой — оставлены как есть")
+        return
+    _remember_minutes_sha(live, _sha(doc))
+    log(f"минутки пересобраны по финальной стенограмме: {mpath.name} "
+        f"({len(final_text)} знаков → {len(doc)}, {time.monotonic() - t0:.0f}с)")
+
+
 def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> None:
     """Минутки после пересборки: снять маркер черновика, подставить имена.
 
     Минутки пишет демон по ходу встречи; автофинализации нет, и после
     пересборки человек читал документ с шапкой «черновик, встреча идёт» и
     участниками «Собеседник 2, Собеседник 4», хотя стенограмма рядом уже
-    финальная и с именами (№146, встреча 08:45 31.08). Минутки целиком не
-    перегенерируем: LLM-вызов в rebuild-пути дорог, а главное — затёр бы
-    ручные правки человека. Перештамповка точечная: маркер и метки.
+    финальная и с именами (№146, встреча 08:45 31.08). Этот путь — для
+    минуток, которых касались руки или чужой процесс (finalize_minutes):
+    их не перегенерируем, перештамповка точечная — маркер и метки.
 
     `live_names` — словарь ЖИВОЙ сессии (live.json: «Собеседник N» → имя):
     его метки — та же нумерация, которой написаны минутки. Имена, доугаданные
