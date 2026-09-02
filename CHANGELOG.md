@@ -5,6 +5,19 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.68.0](https://github.com/charoiteai/Charoite_audio/compare/v0.67.0...v0.68.0) (2026-09-02)
+
+
+### Features
+
+* **rebuild:** regenerate untouched minutes from the final transcript ([#483](https://github.com/charoiteai/Charoite_audio/issues/483)) ([46792c1](https://github.com/charoiteai/Charoite_audio/commit/46792c1de7d96c0964be80c3ecd78d38c39fd0c3))
+
+
+### Bug Fixes
+
+* **app:** "Rebuild result" reports what happened instead of "started" ([#484](https://github.com/charoiteai/Charoite_audio/issues/484)) ([6868cd0](https://github.com/charoiteai/Charoite_audio/commit/6868cd0ca9fb07870d5e1a5258611cc767b0a54e))
+* **tasks:** synthetic names in policy comments and tests ([#481](https://github.com/charoiteai/Charoite_audio/issues/481)) ([f0f9308](https://github.com/charoiteai/Charoite_audio/commit/f0f9308ea99e46ee48c04d1673eac273129635d7))
+
 ## [0.67.0](https://github.com/charoiteai/Charoite_audio/compare/v0.66.1...v0.67.0) (2026-09-01)
 
 
