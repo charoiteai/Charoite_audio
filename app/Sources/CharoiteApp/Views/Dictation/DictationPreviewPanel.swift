@@ -27,8 +27,12 @@ final class DictationPreviewPanel {
         guard !text.isEmpty else { return }
         let panel = panel ?? makePanel()
         self.panel = panel
-        place(panel)
-        if !panel.isVisible { panel.orderFrontRegardless() }
+        // Экран выбирается один раз на диктовку — при первом показе; иначе
+        // плашка бегала бы за курсором между дисплеями посреди фразы.
+        if !panel.isVisible {
+            place(panel)
+            panel.orderFrontRegardless()
+        }
     }
 
     func hide() {
@@ -46,7 +50,7 @@ final class DictationPreviewPanel {
         panel.hasShadow = true
         panel.ignoresMouseEvents = true
         panel.hidesOnDeactivate = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.contentView = NSHostingView(rootView: PreviewHUD(model: model))
         return panel
     }

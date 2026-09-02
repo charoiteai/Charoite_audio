@@ -47,11 +47,22 @@ struct DictationDraft: Equatable {
 final class LiveDictationPreview: @unchecked Sendable {
     enum Availability { case ready, assetsMissing, unsupported }
 
+    /// Вход анализатора: конвертер под формат микрофона и поток кадров.
+    /// Один неизменяемый контейнер на сессию — `ingest` с аудио-нити берёт
+    /// его под замком, `finish`/`cancel` под тем же замком снимают.
+    private final class Intake {
+        let converter: AVAudioConverter
+        let target: AVAudioFormat
+        let feed: AsyncStream<AnalyzerInput>.Continuation
+        init(converter: AVAudioConverter, target: AVAudioFormat,
+             feed: AsyncStream<AnalyzerInput>.Continuation) {
+            self.converter = converter; self.target = target; self.feed = feed
+        }
+    }
+
     private let transcriber: DictationTranscriber
     private var analyzer: SpeechAnalyzer?
-    private var feed: AsyncStream<AnalyzerInput>.Continuation?
-    private var converter: AVAudioConverter?
-    private var target: AVAudioFormat?
+    private var intake: Intake?
     private var results: Task<Void, Never>?
     private let lock = NSLock()
     private var draft = DictationDraft()
@@ -70,21 +81,16 @@ final class LiveDictationPreview: @unchecked Sendable {
 
     var text: String { lock.withLock { draft.text } }
 
-    /// Готов ли движок к этому языку. Ассеты, которых нет, ставятся на
-    /// загрузку в фоне — предпросмотр включится со следующей диктовки, а
-    /// эта идёт как раньше, без черновика.
+    /// Готов ли движок к этому языку. Ассеты приложение НЕ качает: это был
+    /// бы поход в сеть мимо рубильника `CHAROITE_NO_CLOUD` и мимо обещания
+    /// PRIVACY.md «приложение не скачивает модели». Язык диктовки ставится
+    /// системой (Системные настройки → Клавиатура → Диктовка), до тех пор
+    /// диктовка идёт как раньше, без черновика.
     func prepare() async -> Availability {
-        let status = await AssetInventory.status(forModules: [transcriber])
-        switch status {
-        case .installed:
-            return .ready
-        case .unsupported:
-            return .unsupported
-        default:
-            if let request = try? await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-                Task.detached { try? await request.downloadAndInstall() }
-            }
-            return .assetsMissing
+        switch await AssetInventory.status(forModules: [transcriber]) {
+        case .installed: return .ready
+        case .unsupported: return .unsupported
+        default: return .assetsMissing
         }
     }
 
@@ -98,10 +104,8 @@ final class LiveDictationPreview: @unchecked Sendable {
             throw NSError(domain: "LiveDictationPreview", code: 2,
                           userInfo: [NSLocalizedDescriptionKey: "нет конвертера \(inputFormat) → \(wanted)"])
         }
-        target = wanted
-        converter = conv
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
-        feed = continuation
+        lock.withLock { intake = Intake(converter: conv, target: wanted, feed: continuation) }
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         self.analyzer = analyzer
         let transcriber = self.transcriber
@@ -128,26 +132,35 @@ final class LiveDictationPreview: @unchecked Sendable {
 
     /// Вызывается с аудио-нити: перевод в формат анализатора и подача.
     func ingest(_ buffer: AVAudioPCMBuffer) {
-        guard let converter, let target, let feed else { return }
-        let ratio = target.sampleRate / buffer.format.sampleRate
+        guard let intake = lock.withLock({ intake }) else { return }
+        let ratio = intake.target.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
-        guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return }
+        guard let out = AVAudioPCMBuffer(pcmFormat: intake.target, frameCapacity: capacity) else { return }
         var consumed = false
         var error: NSError?
-        let status = converter.convert(to: out, error: &error) { _, outStatus in
+        let status = intake.converter.convert(to: out, error: &error) { _, outStatus in
             if consumed { outStatus.pointee = .noDataNow; return nil }
             consumed = true
             outStatus.pointee = .haveData
             return buffer
         }
         guard status != .error, out.frameLength > 0 else { return }
-        feed.yield(AnalyzerInput(buffer: out))
+        intake.feed.yield(AnalyzerInput(buffer: out))
+    }
+
+    /// Снять вход: кадры после этого не принимаются, поток закрыт.
+    private func closeIntake() {
+        let closed: Intake? = lock.withLock {
+            let current = intake
+            intake = nil
+            return current
+        }
+        closed?.feed.finish()
     }
 
     /// Закрыть вход и дождаться последних результатов. Возвращает черновик.
     func finish() async -> String {
-        feed?.finish()
-        feed = nil
+        closeIntake()
         try? await analyzer?.finalizeAndFinishThroughEndOfInput()
         await results?.value
         results = nil
@@ -157,8 +170,7 @@ final class LiveDictationPreview: @unchecked Sendable {
 
     /// Бросить без ожидания — старт не удался или диктовка отменена.
     func cancel() {
-        feed?.finish()
-        feed = nil
+        closeIntake()
         results?.cancel()
         results = nil
         let analyzer = self.analyzer

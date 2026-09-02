@@ -20,8 +20,6 @@ final class DictationService: ObservableObject {
 
     @Published var isRecording = false
     @Published var status = ""
-    /// Живой черновик текущей диктовки (пусто, если движка нет).
-    @Published var preview = ""
 
     private var proc: Process?
     private var stdinPipe: Pipe?
@@ -42,7 +40,14 @@ final class DictationService: ObservableObject {
     private var previewEngine: AVAudioEngine?
     private var previewBox: AnyObject?          // LiveDictationPreview (macOS 26+)
     private var previewTask: Task<Void, Never>?
-    private var lastPreview = ""                // черновик на момент стопа
+    /// Финализация черновика после стопа: `finished()` ждёт её только когда
+    /// черновик нужен как страховка. Каждая диктовка начинает с nil — чужой
+    /// черновик прошлой диктовки в эту не попадёт.
+    private var draftFinish: Task<String, Never>?
+    /// Сторож добил python (25/35 с). Тогда GigaAM, скорее всего, ещё
+    /// распознавал под нехваткой памяти — подменять его результат черновиком
+    /// с 12 % ошибок нельзя, человек получает честную ошибку.
+    private var watchdogFired = false
     private static var previewUnavailableLogged = false
 
     private var suflerRoot: URL { AppSettings.charoiteRoot }
@@ -128,6 +133,8 @@ final class DictationService: ObservableObject {
         guard proc == nil else { return }
         self.noteMode = note
         self.onResult = onResult
+        draftFinish = nil
+        watchdogFired = false
         let p = Process()
         p.arguments = [script] + args
         AppSettings.preparePython(p, root: suflerRoot)
@@ -169,7 +176,9 @@ final class DictationService: ObservableObject {
                                             : L.t("🎙 заметка… говори (⌥⌘N — стоп)", "🎙 note… speak (⌥⌘N to stop)", "🎙 笔记…请讲话（⌥⌘N 停止）"))
                 : L.t("🎙 диктовка… (⌥⌘D — стоп)", "🎙 dictation… (⌥⌘D to stop)", "🎙 听写…（⌥⌘D 停止）")
             NSSound(named: "Pop")?.play()
-            startPreview()
+            // Заметка и дневник черновик не берут никогда (текст уходит в
+            // граф и память) — незачем платить вторым захватом микрофона.
+            if !note { startPreview() }
             // глобальный хоткей легко забыть: не даём писать вечно — часовой
             // wav всё равно не распознается, а микрофон «висит» открытым
             autoStop = Task { [weak self] in
@@ -203,12 +212,15 @@ final class DictationService: ObservableObject {
         // индикатор микрофона в статус-баре продолжал гореть.
         let p = proc
         DispatchQueue.global().asyncAfter(deadline: .now() + 25) {
-            if let p, p.isRunning { p.terminate() }
+            guard let p, p.isRunning else { return }
+            Task { @MainActor [weak self] in self?.watchdogFired = true }
+            p.terminate()
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + 35) {
             guard let p, p.isRunning else { return }
             kill(p.processIdentifier, SIGKILL)
             Task { @MainActor [weak self] in
+                self?.watchdogFired = true
                 self?.proc = nil
                 self?.stdinPipe = nil
                 self?.isRecording = false
@@ -234,20 +246,45 @@ final class DictationService: ObservableObject {
         onResult = nil
         let wasNote = noteMode
         noteMode = false
-        let draft = lastPreview
-        lastPreview = ""
-        preview = ""
+        // python мог выйти сам (краш, нет модели) — без stop(): движок
+        // черновика и микрофон разбираем здесь, иначе захват живёт до выхода
+        // приложения, а каждая следующая диктовка плодит нового сироту.
+        stopPreview()
         DictationPreviewPanel.shared.hide()
-        var text = text
-        var fromDraft = false
-        if text.isEmpty, exit != 0, !draft.isEmpty, !wasNote {
-            // GigaAM не ответил (нет venv, нет модели, упал) — отдаём черновик
-            // системного движка: хуже по терминам, но лучше пустого поля.
-            // Заметку из черновика не делаем: её текст уходит в граф и в
-            // память, а там точность важнее мгновенности.
-            text = draft
-            fromDraft = true
+        let finish = draftFinish
+        draftFinish = nil
+        let killed = watchdogFired
+        watchdogFired = false
+        if text.isEmpty, exit != 0, !wasNote, !killed, let finish {
+            // GigaAM не ответил (python запустился, но упал: нет модели,
+            // сломанный импорт) — отдаём черновик системного движка: хуже по
+            // терминам, но лучше пустого поля. Финализация черновика
+            // асинхронна и на быстром падении python обычно ещё идёт — ждём
+            // её, но недолго. Заметку из черновика не делаем: её текст уходит
+            // в граф и в память, а там точность важнее мгновенности.
+            Task { [weak self] in
+                let draft = await Self.awaitDraft(finish, timeout: .seconds(8))
+                self?.deliver(text: draft, exit: exit, fromDraft: !draft.isEmpty,
+                              wasNote: wasNote, handler: handler)
+            }
+            return
         }
+        deliver(text: text, exit: exit, fromDraft: false, wasNote: wasNote, handler: handler)
+    }
+
+    /// Черновик или пусто, если финализация не уложилась в срок.
+    private static func awaitDraft(_ finish: Task<String, Never>, timeout: Duration) async -> String {
+        await withTaskGroup(of: String?.self) { group in
+            group.addTask { await finish.value }
+            group.addTask { try? await Task.sleep(for: timeout); return nil }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first ?? ""
+        }
+    }
+
+    private func deliver(text: String, exit: Int32, fromDraft: Bool, wasNote: Bool,
+                         handler: ((String) -> Void)?) {
         guard !text.isEmpty else {
             status = exit == 0 ? L.t("тишина — ничего не распознано", "silence — nothing recognized", "静音——未识别到内容")
                                : L.t("ошибка распознавания: \(String(errTail.suffix(120)))", "recognition error: \(String(errTail.suffix(120)))", "识别错误：\(String(errTail.suffix(120)))")
@@ -308,7 +345,6 @@ final class DictationService: ObservableObject {
             guard !Task.isCancelled, self.isRecording else { live.cancel(); return }
             live.onChange = { [weak self] text in
                 guard let self, self.isRecording else { return }
-                self.preview = text
                 DictationPreviewPanel.shared.show(
                     text: text,
                     hint: L.t("черновик системного движка — итог распознает GigaAM после стопа",
@@ -344,12 +380,9 @@ final class DictationService: ObservableObject {
         }
         previewBox = nil
         // Финал черновика приходит асинхронно; GigaAM за это время как раз
-        // распознаёт. К finished() черновик почти всегда готов, а если нет —
-        // страховка просто не сработает, диктовка от этого не зависит.
-        Task { [weak self] in
-            let text = await live.finish()
-            await MainActor.run { self?.lastPreview = text }
-        }
+        // распознаёт. finished() дождётся этой задачи, только если черновик
+        // понадобится как страховка.
+        draftFinish = Task { await live.finish() }
     }
 
     /// Язык черновика = язык продукта (sufler.language), как и у GigaAM.
@@ -399,6 +432,10 @@ final class DictationService: ObservableObject {
             // без права Accessibility печатать за пользователя нельзя —
             // текст в буфере, один ⌘V руками
             status = L.t("в буфере — нажми ⌘V (дай Чароиту право Universal Access для автовставки)", "copied — press ⌘V (grant Charoite the Accessibility right for auto-paste)", "已复制——按 ⌘V（授予 Charoite 辅助功能权限可自动粘贴）")
+            if keepStatus {
+                // Человек вставит текст сам — он обязан знать, что это черновик.
+                status = L.t("черновик системного движка (GigaAM не ответил) ", "system engine draft (GigaAM did not answer) ", "系统引擎草稿（GigaAM 未响应）") + status
+            }
         }
         NSSound(named: "Glass")?.play()
     }
