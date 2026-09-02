@@ -200,6 +200,9 @@ def _prep(tmp_path, monkeypatch, minutes: str | None, sha: str | None):
     _FakeLLM.calls = []
     _FakeLLM.fail = False
     monkeypatch.setattr(llm, "LLM", _FakeLLM)
+    # уступка живой встрече читает настоящий logs/daemon.lock — тест на
+    # машине с идущей встречей висел бы (GLM r2 Min-2)
+    monkeypatch.setattr(rebuild_transcript, "_yield_to_live", lambda *a, **k: None)
     live = tmp_path / "2026-09-02_1021.md"
     live.write_text("# Встреча\n", encoding="utf-8")
     meta = {"speakers": 2, "names": {"Собеседник 2": "Инга"}}
@@ -315,14 +318,96 @@ def test_model_gets_speech_without_the_notes_tail(tmp_path, monkeypatch):
     assert _FakeLLM.calls == [], "порог — по речи: заметки его не набирают"
 
 
-def test_existing_draft_is_regenerated_even_if_final_is_short(tmp_path, monkeypatch):
-    # GLM Minor-5: черновик уже доказал, что встреча не короткая; финал
-    # бывает короче живого текста (эхо-фильтр микрофона).
-    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\n"
+def test_short_final_keeps_existing_draft_restamped(tmp_path, monkeypatch):
+    # advisory GLM r2: замена содержательного черновика регенератом из
+    # пустого промпта хуже создания с нуля — короткий финал (эхо-фильтр
+    # микрофона) оставляет черновик, перештампованный; файл машинный.
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\n"
     live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
     short = "**Инга** [10:21]:\nСмету пришлю.\n"
-    owned = rebuild_transcript.finalize_minutes(live, short, meta, {}, {})
-    assert owned is True and _FakeLLM.calls == [short]
+    owned = rebuild_transcript.finalize_minutes(live, short, meta, {}, {"Собеседник 2": "Инга"})
+    out = mpath.read_text(encoding="utf-8")
+    assert owned is True and _FakeLLM.calls == []
+    assert "Черновик" in out and "Инга" in out and transcript.MINUTES_DRAFT_MARK not in out
+
+
+def test_foreign_overwrite_of_draft_plus_model_failure_is_not_claimed(tmp_path, monkeypatch):
+    # GLM r2 Imp-1: черновик был машинным, за время ожидания/вызова файл
+    # подменил mcp, модель упала → restamp (нет маркера) без записи; файл
+    # не наш — хеш снимать нельзя.
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+
+    class _OverwriteThenFail(_FakeLLM):
+        def minutes(self, text):
+            mpath.write_text("# Минутки от mcp\n", encoding="utf-8")
+            raise RuntimeError("ollama лежит")
+            yield  # noqa: unreachable
+
+    import llm
+    monkeypatch.setattr(llm, "LLM", _OverwriteThenFail)
+    owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {})
+    assert owned is False
+    assert mpath.read_text(encoding="utf-8") == "# Минутки от mcp\n"
+
+
+def test_silent_model_keeps_machine_draft_owned(tmp_path, monkeypatch):
+    # модель промолчала, файл не менялся → перештамповка, файл машинный
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    _FakeLLM.answer = "   "
+    try:
+        owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {"Собеседник 2": "Инга"})
+    finally:
+        _FakeLLM.answer = "# Минутки\n**Участники:** Инга, Марк\n## Поручения\n- [ ] **Инга** — прислать смету — до 05.09\n"
+    assert owned is True and "Инга" in mpath.read_text(encoding="utf-8")
+
+
+def test_undecodable_minutes_do_not_abort_and_are_not_owned(tmp_path, monkeypatch):
+    # GLM Min-6: не-UTF8 файл из редактора — перештамповка, не падение
+    live, mpath, meta = _prep(tmp_path, monkeypatch, None, "abc")
+    mpath.write_bytes(b"\xff\xfe<")
+    owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {})
+    assert owned is False and _FakeLLM.calls == []
+    assert mpath.read_bytes() == b"\xff\xfe<"
+
+
+def test_model_failure_with_late_foreign_file_does_not_claim_it(tmp_path, monkeypatch):
+    # DS r2 Imp-1: минуток не было, за окно вызова файл создал чужой
+    # процесс, модель упала → restamp ничего не писал, файл не машинный,
+    # хеш снимать нельзя (иначе следующая пересборка регенерирует поверх).
+    live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
+
+    class _LateThenFail(_FakeLLM):
+        def minutes(self, text):
+            mpath.write_text("# Минутки от mcp\n", encoding="utf-8")
+            raise RuntimeError("ollama лежит")
+            yield  # noqa: unreachable — генератор
+
+    import llm
+    monkeypatch.setattr(llm, "LLM", _LateThenFail)
+    owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {})
+    assert owned is False
+    assert mpath.read_text(encoding="utf-8") == "# Минутки от mcp\n"
+
+
+def test_live_json_is_found_after_retitle(tmp_path):
+    # advisory DS r2: накат темы переименовывает только *.md — сайдкар
+    # остаётся посекундным; вторая пересборка обязана его найти.
+    (tmp_path / "2026-09-02_102112.md.live.json").write_text(
+        json.dumps({"names": {"Собеседник 2": "Инга"}, "minutes_sha256": "abc"}), encoding="utf-8")
+    titled = tmp_path / "2026-09-02_1021_Обсуждение_темы.md"
+    titled.write_text("# Встреча\n", encoding="utf-8")
+    assert rebuild_transcript.live_meta_path(titled).name == "2026-09-02_102112.md.live.json"
+    assert rebuild_transcript.live_meta(titled)["names"] == {"Собеседник 2": "Инга"}
+    # хеш пишется в тот же найденный файл
+    rebuild_transcript._remember_minutes_sha(titled, "def")
+    saved = json.loads((tmp_path / "2026-09-02_102112.md.live.json").read_text(encoding="utf-8"))
+    assert saved["minutes_sha256"] == "def" and saved["names"] == {"Собеседник 2": "Инга"}
+    # чужая минута — не наш сайдкар
+    other = tmp_path / "2026-09-02_1100_Другая.md"
+    other.write_text("# Встреча\n", encoding="utf-8")
+    assert not rebuild_transcript.live_meta_path(other).exists()
 
 
 def test_missing_minutes_are_built_when_transcript_is_long_enough(tmp_path, monkeypatch):
