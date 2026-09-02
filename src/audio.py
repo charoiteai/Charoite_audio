@@ -35,8 +35,8 @@ def find_device(substr: str) -> int | None:
     return None
 
 
-def find_system_audio() -> tuple[int | None, str]:
-    """Индекс канала собеседников через устройство PortAudio и чем он получен.
+def find_system_audio() -> int | None:
+    """Индекс устройства PortAudio с каналом собеседников (None — нет).
 
     Единственное устройство здесь — BlackHole: запасной путь на случай, когда
     приложение не подняло ScreenCaptureKit (нет права, старая macOS). Второго
@@ -45,7 +45,7 @@ def find_system_audio() -> tuple[int | None, str]:
     в стенограмме не будет второй стороны разговора — вызывающий пишет это
     в источники.
     """
-    return find_device("blackhole"), "blackhole"
+    return find_device("blackhole")
 
 
 SCK_STREAM_MANIFEST = ROOT / "data" / "sck_stream.json"
@@ -128,14 +128,14 @@ class TapStreamCapture:
         while path.stat().st_size <= stream.tell():
             if time.time() > deadline:
                 stream.close()
-                raise RuntimeError("поток тапа не растёт — приложение кадров не пишет")
+                raise RuntimeError("поток приложения не растёт — приложение кадров не пишет")
             time.sleep(0.1)
         down = (_Downsampler(src_sr, self.samplerate)
                 if src_sr != self.samplerate else None)
         self._stop_flag.clear()
         self._thread = threading.Thread(
             target=self._pump_file, args=(stream, down),
-            daemon=True, name=f"tapstream-{self.label}")
+            daemon=True, name=f"appstream-{self.label}")
         self._thread.start()
 
     def _pump_file(self, stream, down):
@@ -445,10 +445,7 @@ class AudioHub:
         # 2. BlackHole — проверенный драйвер, но требует установки руками.
         # Третьего пути нет: поток Core Audio tap снят 02.09 (см. find_system_audio).
         sck = fresh_sck_manifest()
-        if sck:
-            bh, self.system_audio_via = None, "screencapturekit"
-        else:
-            bh, self.system_audio_via = find_system_audio()
+        bh = None if sck else find_system_audio()
         mic = sd.default.device[0] if sd.default.device else None
         # Микрофон в манифесте = система отдаёт оба канала одним потоком.
         mic_from_stream = bool(sck and sck.get("mic"))
@@ -636,8 +633,10 @@ class AudioHub:
         полное аудио встречи навсегда. На рабочей машине так пролежал 61 МБ
         системного звука девять дней при обещанных двух (аудит 16.08).
         PRIVACY.md обещает «записи временны» — обещание должно покрывать и
-        этот слой. `tap_stream.raw` — поток снятого 02.09 Core Audio tap:
-        новые версии его не пишут, старый файл убирается по тому же сроку.
+        этот слой. `tap_stream.raw` + `tap_stream.json` — поток и манифест
+        снятого 02.09 Core Audio tap: писателя больше нет, поэтому наследие
+        убирается сразу, без срока (ветку снять после 0.70, когда когорта
+        обновления пройдёт — вместе с `TapOrphanCleanup` в приложении).
 
         Живую сессию не трогаем: её каталог назван в свежем манифесте.
         Возвращает число удалённых путей.
@@ -659,10 +658,10 @@ class AudioHub:
             except OSError:
                 return False
 
-        raw = data_dir / "tap_stream.raw"
-        if raw.exists() and _old_enough(raw):
-            raw.unlink(missing_ok=True)
-            removed += 1
+        for legacy in (data_dir / "tap_stream.raw", data_dir / "tap_stream.json"):
+            if legacy.exists():
+                legacy.unlink(missing_ok=True)
+                removed += 1
 
         sck = data_dir / "sck"
         if sck.is_dir():

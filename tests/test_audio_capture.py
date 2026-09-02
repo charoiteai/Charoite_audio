@@ -290,7 +290,7 @@ def test_устройство_собеседников_это_blackhole(monkeypa
     devices = {"Charoite System Audio": 7, "BlackHole 2ch": 3}
     monkeypatch.setattr(a, "find_device",
                         lambda s: next((i for n, i in devices.items() if s.lower() in n.lower()), None))
-    assert a.find_system_audio() == (3, "blackhole")
+    assert a.find_system_audio() == 3
 
 
 def test_нет_драйвера_честный_none(monkeypatch):
@@ -300,8 +300,7 @@ def test_нет_драйвера_честный_none(monkeypatch):
     вторая сторона разговора, а узнаем мы об этом уже после встречи.
     """
     monkeypatch.setattr(a, "find_device", lambda s: None)
-    index, via = a.find_system_audio()
-    assert index is None and via == "blackhole"
+    assert a.find_system_audio() is None
 
 
 # --- Открытие потока: лестница конфигураций и ресемплер -----------------------

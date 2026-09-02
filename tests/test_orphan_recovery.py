@@ -242,8 +242,9 @@ def test_сырые_потоки_приложения_живут_по_тому_�
     ретеншна: каталоги сессий убирались лишь при штатном стопе — краш
     оставлял полное аудио навсегда. На рабочей машине так пролежал 61 МБ
     девять дней при обещанных двух (аудит 16.08). PRIVACY.md обещает
-    «записи временны». `tap_stream.raw` писали версии с Core Audio tap
-    (снят 02.09): новые не пишут, старый файл уходит по тому же сроку.
+    «записи временны». `tap_stream.raw`/`.json` писали версии с Core Audio
+    tap (снят 02.09): писателя больше нет — наследие уходит сразу, даже
+    свежее.
     """
     import audio
 
@@ -252,6 +253,8 @@ def test_сырые_потоки_приложения_живут_по_тому_�
     (data / "sck" / "живая-сессия").mkdir(parents=True)
     old_raw = data / "tap_stream.raw"
     old_raw.write_bytes(b"\0" * 16)
+    fresh_manifest = data / "tap_stream.json"      # наследие, но свежее по mtime
+    fresh_manifest.write_text("{}", encoding="utf-8")
     old_session = data / "sck" / "старая-сессия" / "system.raw"
     old_session.write_bytes(b"\0" * 16)
     live_session = data / "sck" / "живая-сессия" / "system.raw"
@@ -267,8 +270,9 @@ def test_сырые_потоки_приложения_живут_по_тому_�
 
     removed = audio.AudioHub.prune_stream_files(data, 2)
 
-    assert removed == 2, "старые сырые потоки остались лежать"
+    assert removed == 3, "старые сырые потоки остались лежать"
     assert not old_raw.exists(), "tap_stream.raw переживает срок хранения"
+    assert not fresh_manifest.exists(), "манифест снятого тапа переживает обновление"
     assert not old_session.exists(), "каталог мёртвой сессии не убран"
     assert live_session.exists(), "убита запись ИДУЩЕЙ встречи"
 
