@@ -29,7 +29,7 @@ final class TasksScreenPolicyTests: XCTestCase {
             ("Завести ветку", true, day(-1), day(-1)),                  // сделано
             ("**Коля** — отчёт до 01.08", false, day(-30), day(-30)),   // старое: просрочено 19 дней
             ("**Коля** — без срока", false, day(-30), nil),             // старое: 30 дней, заметка без якоря
-        ], owner: "Антон", now: now)
+        ], owner: "Марк", now: now)
         XCTAssertEqual(s, .init(overdue: 1, open: 2, stale: 2, done: 1),
                        "четыре числа обязаны не пересекаться: старое не «просрочено»")
     }
@@ -63,24 +63,24 @@ final class TasksScreenPolicyTests: XCTestCase {
 extension TasksScreenPolicyTests {
     /// №152/запрос 01.09: «за мной — первым, даже если задачи далеко».
     func testMineDetection() {
-        XCTAssertTrue(TasksScreenPolicy.isMine("**Антон** — зайти в ДАДМ", owner: "Антон"))
-        XCTAssertTrue(TasksScreenPolicy.isMine("**Антон + Коля** — свериться", owner: "Антон"))
-        XCTAssertTrue(TasksScreenPolicy.isMine("**антон** — письмо", owner: "Антон"))
-        XCTAssertFalse(TasksScreenPolicy.isMine("**Света** — рассчитать дельты", owner: "Антон"))
-        XCTAssertFalse(TasksScreenPolicy.isMine("**Все участники** — заводить фичи", owner: "Антон"))
-        XCTAssertFalse(TasksScreenPolicy.isMine("починить Антону доступ", owner: "Антон"),
+        XCTAssertTrue(TasksScreenPolicy.isMine("**Марк** — зайти в отдел", owner: "Марк"))
+        XCTAssertTrue(TasksScreenPolicy.isMine("**Марк + Коля** — свериться", owner: "Марк"))
+        XCTAssertTrue(TasksScreenPolicy.isMine("**марк** — письмо", owner: "Марк"))
+        XCTAssertFalse(TasksScreenPolicy.isMine("**Света** — рассчитать дельты", owner: "Марк"))
+        XCTAssertFalse(TasksScreenPolicy.isMine("**Все участники** — заводить фичи", owner: "Марк"))
+        XCTAssertFalse(TasksScreenPolicy.isMine("починить Марку доступ", owner: "Марк"),
                        "имя не в позиции ответственного — не моё")
-        XCTAssertFalse(TasksScreenPolicy.isMine("**Антон** — что-то", owner: ""),
+        XCTAssertFalse(TasksScreenPolicy.isMine("**Марк** — что-то", owner: ""),
                        "пустой user_name ничего не присваивает")
         // Границы круга 1 (DS r1 по #475):
-        XCTAssertFalse(TasksScreenPolicy.isMine("**Антонина** — сверить дельты", owner: "Антон"),
+        XCTAssertFalse(TasksScreenPolicy.isMine("**Маркус** — сверить дельты", owner: "Марк"),
                        "подстрока чужого имени — не моё")
-        XCTAssertFalse(TasksScreenPolicy.isMine("связаться с Антоном — до пятницы", owner: "Антон"),
+        XCTAssertFalse(TasksScreenPolicy.isMine("связаться с Марком — до пятницы", owner: "Марк"),
                        "без ведущего болда ответственного нет")
-        XCTAssertTrue(TasksScreenPolicy.isMine("**Антон** — дело", owner: "Антон Кузьменков"),
+        XCTAssertTrue(TasksScreenPolicy.isMine("**Марк** — дело", owner: "Марк Ковалёв"),
                       "полное имя в конфиге против короткого в минутках")
-        XCTAssertTrue(TasksScreenPolicy.isMine("**Антон Кузьменков** — дело", owner: "Антон"))
-        XCTAssertTrue(TasksScreenPolicy.isMine("**Кузьменков** — дело", owner: "Антон Кузьменков"),
+        XCTAssertTrue(TasksScreenPolicy.isMine("**Марк Ковалёв** — дело", owner: "Марк"))
+        XCTAssertTrue(TasksScreenPolicy.isMine("**Ковалёв** — дело", owner: "Марк Ковалёв"),
                       "фамилия из user_name — тоже владелец (канон speaker_names)")
     }
 
@@ -88,7 +88,7 @@ extension TasksScreenPolicyTests {
         // ровно 14 дней — ещё не старьё (строгое <), день в день живёт
         let edge = day(-TasksScreenPolicy.staleAfterDays)
         let s = TasksScreenPolicy.split([("**Коля** — ровная граница", edge, edge)],
-                                        owner: "Антон", now: now)
+                                        owner: "Марк", now: now)
         XCTAssertEqual(s.fresh, [0], "день в день — ещё живое")
     }
 
@@ -99,7 +99,7 @@ extension TasksScreenPolicyTests {
         let items: [(text: String, happenedAt: Date, anchor: Date?)] = [
             ("**Коля** — отчёт до \(ddmm(day(-9)))", meeting, meeting),
             ("**Коля** — письмо до \(ddmm(day(-3)))", meeting, meeting),
-            ("**Антон** — моё до \(ddmm(day(-9)))", meeting, meeting),
+            ("**Марк** — моё до \(ddmm(day(-9)))", meeting, meeting),
             ("**Коля** — ровно неделя, до \(ddmm(day(-7)))", meeting, meeting),
             ("**Коля** — шесть дней, до \(ddmm(day(-6)))", meeting, meeting),
             // якорь года: срок, названный на встрече, не раньше её самой —
@@ -113,7 +113,7 @@ extension TasksScreenPolicyTests {
             // прежней догадке (158 дней) и уходит в «Старые»
             ("**Коля** — план до 15.03 (заметка)", day(-1), nil),
         ]
-        let s = TasksScreenPolicy.split(items, owner: "Антон", now: now)
+        let s = TasksScreenPolicy.split(items, owner: "Марк", now: now)
         XCTAssertEqual(s.stale, [0, 3, 6, 7], "9 и 7 дней просрочки, февральский срок, заметка — вниз")
         XCTAssertEqual(s.fresh, [1, 4, 5], "3 и 6 дней — на виду; будущий март — живой")
         XCTAssertEqual(s.mine, [2], "моё побеждает и недельную просрочку")
@@ -124,11 +124,11 @@ extension TasksScreenPolicyTests {
         let fresh = day(0).addingTimeInterval(-3600)
         let items: [(text: String, happenedAt: Date, anchor: Date?)] = [
             ("**Света** — свежая", fresh, fresh),
-            ("**Антон** — давняя, но моя", old, old),
+            ("**Марк** — давняя, но моя", old, old),
             ("**Коля** — старьё без срока", old, old),
             ("**Коля** — старая, но со сроком до \(ddmm(day(2)))", old, old),
         ]
-        let s = TasksScreenPolicy.split(items, owner: "Антон", now: now)
+        let s = TasksScreenPolicy.split(items, owner: "Марк", now: now)
         XCTAssertEqual(s.mine, [1], "моё не тонет в старых")
         XCTAssertEqual(s.stale, [2], "старое без срока — в «Старые»")
         XCTAssertEqual(s.fresh, [0, 3], "срок держит задачу живой")
