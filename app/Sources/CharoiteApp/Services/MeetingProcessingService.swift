@@ -257,6 +257,55 @@ enum MeetingProcessingPolicy {
         case hidden, ready, waiting, running
     }
 
+    /// Чем закончилась попытка запустить пересборку. Раньше `rebuild(_:)`
+    /// молча выходил по занятости или отсутствию файла, а карточка всё равно
+    /// писала «Пересборка запущена» (№131, аудит 30.08): человек ждал
+    /// результата, которого не будет.
+    enum RebuildOutcome: Equatable {
+        /// Конвейер стартовал: стенограмма распознаётся заново из записи.
+        case started
+        /// Прошлый повтор ещё идёт — второй поверх него не запускаем.
+        case busy
+        /// Файла стенограммы нет — пересобирать нечего.
+        case transcriptMissing
+        /// Процесс не запустился (нет python/venv) — смотреть logs/.
+        case launchFailed
+    }
+
+    static func rebuildOutcome(retryInFlight: Bool, transcriptExists: Bool) -> RebuildOutcome {
+        if retryInFlight { return .busy }
+        if !transcriptExists { return .transcriptMissing }
+        return .started
+    }
+
+    /// Строка под меню после «Пересобрать результат» — чистая функция, как
+    /// `stageText`: то, что человек читает в ожидании, проверяется тестом
+    /// без View (advisory GLM по #484). Запуск сформулирован условно: .prev
+    /// появляется в конце конвейера, а у встречи старше record_keep_days
+    /// записей уже нет — распознавания не будет вовсе (GLM Imp-2). Занятость
+    /// — и чужая пересборка, и повтор ошибки другой встречи (GLM Min-4).
+    static func rebuildMessage(_ outcome: RebuildOutcome) -> String {
+        switch outcome {
+        case .started:
+            return L.t("Пересборка запущена: если записи ещё хранятся, стенограмма будет распознана заново, а прежняя версия сохранится в transcripts/.prev",
+                       "Rebuild started: if the recordings are still kept, the transcript will be re-recognized and the previous version saved in transcripts/.prev",
+                       "已开始重建：若录音仍保留，将重新识别逐字稿，旧版本将保存在 transcripts/.prev")
+        case .busy:
+            return L.t("Уже идёт пересборка или повтор другой встречи — дождитесь окончания",
+                       "A rebuild or retry of another meeting is already running — wait for it to finish",
+                       "另一场会议的重建或重试已在进行中——请等待其完成")
+        case .transcriptMissing:
+            return L.t("Стенограммы нет на диске — пересобирать нечего",
+                       "The transcript is not on disk — nothing to rebuild",
+                       "磁盘上没有逐字稿——无可重建")
+        case .launchFailed:
+            // та же строка, что в статусе сервиса: одно событие — одна формулировка
+            return L.t("Не удалось запустить повторную обработку — проверьте logs/",
+                       "Could not start reprocessing — check logs/",
+                       "无法启动重新处理——请查看 logs/")
+        }
+    }
+
     static func retryControl(
         for snapshot: MeetingProcessingSnapshot,
         transcriptExists: Bool,
@@ -382,7 +431,12 @@ struct RetryExpectation: Equatable, Sendable {
 /// тест держал контракт: venv-питон, правильный скрипт, лог рядом с логом
 /// демонского запуска той же встречи.
 enum MeetingRetryCommand {
-    static func build(root: URL, transcriptPath: String) -> (exec: URL, args: [String], log: URL) {
+    /// Запускаем через nice, поэтому `Process.run()` не скажет, что python
+    /// отсутствует: nice стартует, не может exec-нуть цель и выходит с
+    /// кодом — а карточка уже написала «запущена» (DS I1 по #484). Путь
+    /// python отдаём наружу, чтобы проверить исполняемость ДО запуска.
+    static func build(root: URL, transcriptPath: String)
+        -> (exec: URL, args: [String], log: URL, python: String) {
         let python = AppSettings.pythonExecutable(root: root).path
         let script = AppSettings.scriptPath("src/rebuild_transcript.py", root: root)
         let stem = URL(fileURLWithPath: transcriptPath)
@@ -391,7 +445,8 @@ enum MeetingRetryCommand {
         return (
             exec: URL(fileURLWithPath: "/usr/bin/nice"),
             args: ["-n", "10", python, script, transcriptPath],
-            log: root.appendingPathComponent("logs/graph_\(stamp).log")
+            log: root.appendingPathComponent("logs/graph_\(stamp).log"),
+            python: python
         )
     }
 }
@@ -416,6 +471,11 @@ final class MeetingProcessingService: ObservableObject {
 
     /// Повтор уже идёт: кнопка недоступна, второй запуск не начнётся.
     @Published private(set) var retryInFlight = false
+    /// Какая встреча пересобирается — на ВЕСЬ прогон процесса. `retryingID`
+    /// для этого не годится: он живёт до первого статуса (~2 с, accept()),
+    /// а при более свежем статусе чужой встречи — до конца прогона; пункт
+    /// меню гас то на секунды, то на всё время (GLM Imp-1 по #484).
+    @Published private(set) var rebuildingID: String?
 
     /// Недавние встречи, новая первая. Наполняется тем же опросом статусов,
     /// что и текущее состояние: отдельного хранилища у истории нет —
@@ -536,24 +596,34 @@ final class MeetingProcessingService: ObservableObject {
     /// Пересобрать готовую встречу после ручной правки стенограммы.
     /// Повтор для ошибки и осознанная пересборка — разные пользовательские
     /// действия, но конвейер у них один и тот же.
-    func rebuild(_ snapshot: MeetingProcessingSnapshot) {
-        guard !retryInFlight,
-              FileManager.default.fileExists(atPath: snapshot.transcriptPath) else { return }
-        launchRetry(
+    @discardableResult
+    func rebuild(_ snapshot: MeetingProcessingSnapshot) -> MeetingProcessingPolicy.RebuildOutcome {
+        let outcome = MeetingProcessingPolicy.rebuildOutcome(
+            retryInFlight: retryInFlight,
+            transcriptExists: FileManager.default.fileExists(atPath: snapshot.transcriptPath))
+        guard outcome == .started else { return outcome }
+        return launchRetry(
             meetingID: snapshot.meetingID,
             path: snapshot.transcriptPath,
-            seenAt: snapshot.updatedAt)
+            seenAt: snapshot.updatedAt) ? .started : .launchFailed
     }
 
     func reload() {
         refresh()
     }
 
-    private func launchRetry(meetingID: String, path: String, seenAt: TimeInterval) {
+    @discardableResult
+    private func launchRetry(meetingID: String, path: String, seenAt: TimeInterval) -> Bool {
 
         let cmd = MeetingRetryCommand.build(
             root: AppSettings.charoiteRoot,
             transcriptPath: path)
+        // Сломанный .venv / битый встроенный python: nice стартовал бы и
+        // упал уже после того, как карточка отчиталась (DS I1 по #484).
+        guard FileManager.default.isExecutableFile(atPath: cmd.python) else {
+            retryFailedToStart = true
+            return false
+        }
 
         let p = Process()
         p.arguments = cmd.args
@@ -580,10 +650,11 @@ final class MeetingProcessingService: ObservableObject {
             try p.run()
         } catch {
             retryFailedToStart = true
-            return
+            return false
         }
         retryProcess = p
         retryInFlight = true
+        rebuildingID = meetingID
         retryExpectation = RetryExpectation(
             meetingID: meetingID, afterUpdatedAt: seenAt, transcriptPath: path)
         waitingSince = Date()
@@ -593,6 +664,7 @@ final class MeetingProcessingService: ObservableObject {
         self.snapshot = nil
         lastResolved = nil
         refresh()
+        return true
     }
 
     /// Переименовать встречу: скрипт разносит новую тему по всем местам —
@@ -626,6 +698,7 @@ final class MeetingProcessingService: ObservableObject {
         guard proc === retryProcess else { return }
         retryProcess = nil
         retryInFlight = false
+        rebuildingID = nil
         guard proc.terminationStatus != 0 else { return }
         if waitingForPipeline {
             waitingSince = nil
