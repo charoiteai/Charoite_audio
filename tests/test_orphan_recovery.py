@@ -236,13 +236,15 @@ def test_ретеншн_не_родня_retry_пересборке():
 
 
 def test_сырые_потоки_приложения_живут_по_тому_же_сроку(tmp_path, monkeypatch):
-    """`data/sck/*` и `tap_stream.raw` — тоже записи встречи.
+    """`data/sck/*` — тоже записи встречи; `tap_stream.raw` — наследие тапа.
 
     Системный звук пишет приложение, а не демон, и эти файлы жили ВНЕ
-    ретеншна: `tap_stream.raw` усекался только следующим стартом тапа, а
-    каталоги сессий убирались лишь при штатном стопе — краш оставлял полное
-    аудио навсегда. На рабочей машине так пролежал 61 МБ девять дней при
-    обещанных двух (аудит 16.08). PRIVACY.md обещает «записи временны».
+    ретеншна: каталоги сессий убирались лишь при штатном стопе — краш
+    оставлял полное аудио навсегда. На рабочей машине так пролежал 61 МБ
+    девять дней при обещанных двух (аудит 16.08). PRIVACY.md обещает
+    «записи временны». `tap_stream.raw`/`.json` писали версии с Core Audio
+    tap (снят 02.09): писателя больше нет — наследие уходит сразу, даже
+    свежее.
     """
     import audio
 
@@ -251,6 +253,8 @@ def test_сырые_потоки_приложения_живут_по_тому_�
     (data / "sck" / "живая-сессия").mkdir(parents=True)
     old_raw = data / "tap_stream.raw"
     old_raw.write_bytes(b"\0" * 16)
+    fresh_manifest = data / "tap_stream.json"      # наследие, но свежее по mtime
+    fresh_manifest.write_text("{}", encoding="utf-8")
     old_session = data / "sck" / "старая-сессия" / "system.raw"
     old_session.write_bytes(b"\0" * 16)
     live_session = data / "sck" / "живая-сессия" / "system.raw"
@@ -263,12 +267,12 @@ def test_сырые_потоки_приложения_живут_по_тому_�
     # живая сессия названа в свежем манифесте — её не трогаем даже старой
     monkeypatch.setattr(audio, "fresh_sck_manifest",
                         lambda: {"system": str(live_session)})
-    monkeypatch.setattr(audio, "fresh_tap_manifest", lambda: None)
 
     removed = audio.AudioHub.prune_stream_files(data, 2)
 
-    assert removed == 2, "старые сырые потоки остались лежать"
+    assert removed == 3, "старые сырые потоки остались лежать"
     assert not old_raw.exists(), "tap_stream.raw переживает срок хранения"
+    assert not fresh_manifest.exists(), "манифест снятого тапа переживает обновление"
     assert not old_session.exists(), "каталог мёртвой сессии не убран"
     assert live_session.exists(), "убита запись ИДУЩЕЙ встречи"
 
@@ -281,7 +285,6 @@ def test_свежие_потоки_ретеншн_не_трогает(tmp_path, 
     fresh = data / "sck" / "вчерашняя" / "system.raw"
     fresh.write_bytes(b"\0" * 16)
     monkeypatch.setattr(audio, "fresh_sck_manifest", lambda: None)
-    monkeypatch.setattr(audio, "fresh_tap_manifest", lambda: None)
 
     assert audio.AudioHub.prune_stream_files(data, 2) == 0
     assert fresh.exists()
@@ -303,7 +306,6 @@ def test_пустой_свежий_каталог_сессии_не_удаляе
     week_ago = time.time() - 7 * 86400
     os.utime(stale_dir, (week_ago, week_ago))
     monkeypatch.setattr(audio, "fresh_sck_manifest", lambda: None)
-    monkeypatch.setattr(audio, "fresh_tap_manifest", lambda: None)
 
     audio.AudioHub.prune_stream_files(data, 2)
 

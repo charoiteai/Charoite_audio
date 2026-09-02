@@ -754,13 +754,17 @@ it signals degradation, it does not break the loop.
   with the stream). Verified live on 2026-08-23: SIGKILL of `replayd`
   mid-capture → −3805 → the stream was recreated in ~4 s (2 s pause + build
   + one second of frame check) and frames resumed.
-- **Core Audio tap — a disabled reserve** — the second native route to system
-  audio: the app reads the tap with its own IOProc and hands the daemon a PCM
-  stream. The scheme was proven in the field (38.9 s recorded), but the very
-  cycle of creating and destroying the tap aggregate wedges CoreAudio on
-  macOS 26.5: after a meeting the machine's speakers go silent until the
-  audio subsystem is restarted. The code stays in the package and is enabled
-  by editing one line — in case ScreenCaptureKit is unavailable.
+- **Core Audio tap — removed (2026-09-02)** — the second native route to
+  system audio (the app reads the tap with its own IOProc and hands the
+  daemon a PCM stream) was proven in the field (38.9 s recorded), but the
+  very cycle of creating and destroying the tap aggregate wedges CoreAudio
+  on macOS 26.5: after a meeting the machine's speakers go silent until the
+  audio subsystem is restarted. Disabled on 2026-08-07, the code is now gone
+  from the package — a reserve that mutes the machine is not a reserve. What
+  stays is the cleanup: aggregates left behind by those versions or by an
+  app crash are destroyed at launch and at quit, because a single orphan
+  hung CoreAudio for the whole machine. The fallback when ScreenCaptureKit
+  is unavailable remains BlackHole.
 - **The second window renders like the first** — the sidebar column width is
   set explicitly, so windows of the same scene no longer diverge in layout:
   the second window used to open with a collapsed sidebar, section labels

@@ -282,50 +282,35 @@ def test_мёртвый_канал_не_уносит_соседей_при_ст�
     assert not pump_threads[0].is_alive(), "pump-поток пережил границу теста"
 
 
-def test_blackhole_выигрывает_у_тапа(monkeypatch):
-    """Есть оба — берём BlackHole: итог боевого теста 06.08.
-
-    Тап открывается штатно, но демону не отдаёт ни кадра (0 байт за 94
-    секунды записи). Пока причина не найдена, проверенный драйвер важнее
-    красивой нативности: перевернуть приоритет обратно можно только вместе
-    с разбором, почему тап молчит.
-    """
-    devices = {a.TAP_DEVICE: 7, "BlackHole 2ch": 3}
+def test_устройство_собеседников_это_blackhole(monkeypatch):
+    """Приложение не подняло ScreenCaptureKit — второй стороной остаётся
+    драйвер BlackHole. Устройство «Charoite System Audio» (Core Audio tap,
+    снят 02.09) больше не ищется, даже если сирота с таким именем ещё висит
+    в системе: читать его демон всё равно не мог."""
+    devices = {"Charoite System Audio": 7, "BlackHole 2ch": 3}
     monkeypatch.setattr(a, "find_device",
                         lambda s: next((i for n, i in devices.items() if s.lower() in n.lower()), None))
-    assert a.find_system_audio() == (3, "blackhole")
+    assert a.find_system_audio() == 3
 
 
-def test_без_blackhole_берём_тап(monkeypatch):
-    """Драйвера нет — тап остаётся единственным источником второй стороны."""
-    monkeypatch.setattr(a, "find_device", lambda s: 7 if s == a.TAP_DEVICE else None)
-    assert a.find_system_audio() == (7, "tap")
-
-
-def test_без_тапа_откатываемся_на_blackhole(monkeypatch):
-    """Старая macOS, отказ в разрешении, приложение не запущено — тапа нет.
+def test_нет_драйвера_честный_none(monkeypatch):
+    """Источника нет — честный None, а не случайное устройство.
 
     Молча остаться без канала собеседников нельзя: в стенограмме пропадёт
     вторая сторона разговора, а узнаем мы об этом уже после встречи.
     """
-    monkeypatch.setattr(a, "find_device",
-                        lambda s: 3 if "blackhole" in s.lower() else None)
-    assert a.find_system_audio() == (3, "blackhole")
-
-
-def test_нет_ни_тапа_ни_драйвера(monkeypatch):
-    """Оба источника отсутствуют — честный None, а не случайное устройство."""
     monkeypatch.setattr(a, "find_device", lambda s: None)
-    index, via = a.find_system_audio()
-    assert index is None and via == "blackhole"
+    assert a.find_system_audio() is None
 
 
 # --- Открытие потока: лестница конфигураций и ресемплер -----------------------
 #
-# Тап отвечал PaMacCore AUHAL err=-10851 и не открывался вовсе — отсюда ноль
-# байт в записи. Проверить это на железе нельзя: рабочая машина занята
-# встречами, и ровно такие эксперименты её и подвесили. Поэтому весь узел
-# покрыт без единого обращения к устройству — sd.InputStream подменяется.
+# Устройство на 48 кГц (агрегат Core Audio tap, 06.08; любой интерфейс с
+# фиксированной частотой) отвечало PaMacCore AUHAL err=-10851 и не
+# открывалось вовсе — отсюда ноль байт в записи. Проверить это на железе
+# нельзя: рабочая машина занята встречами, и ровно такие эксперименты её и
+# подвесили. Поэтому весь узел покрыт без единого обращения к устройству —
+# sd.InputStream подменяется.
 
 
 class _FakeStream:
@@ -508,25 +493,27 @@ def test_ресемплер_пропускает_речевую_полосу():
     assert 0.6 < np.sqrt(np.mean(out[800:]**2)) < 0.75, "речевая полоса просела"
 
 
-# ── Поток тапа от приложения: демон читает файл, а не устройство ──────────
+# ── Поток приложения (ScreenCaptureKit): демон читает файл, а не устройство ──
 
 def _manifest(tmp_path, sr=48000):
+    """Манифест системного потока в форме, которую пишет SystemAudioCapture."""
     import json
-    raw = tmp_path / "tap_stream.raw"
+    raw = tmp_path / "system.raw"
     raw.write_bytes(b"")
-    m = {"path": str(raw), "samplerate": sr, "format": "s16le", "channels": 1}
-    (tmp_path / "tap_stream.json").write_text(json.dumps(m), encoding="utf-8")
+    m = {"engine": "screencapturekit", "system": str(raw), "system_rate": sr,
+         "samplerate": sr, "format": "s16le", "channels": 1}
+    (tmp_path / "sck_stream.json").write_text(json.dumps(m), encoding="utf-8")
     return m, raw
 
 
-def test_поток_тапа_читается_и_даунсемплится(tmp_path):
+def test_поток_приложения_читается_и_даунсемплится(tmp_path):
     """Приложение пишет s16le 48 кГц, конвейер получает float32 16 кГц.
 
     Право на системный звук есть только у приложения (вердикт 06–07.08),
     поэтому демон берёт кадры из растущего файла — и они обязаны прийти
     в той же форме, что и из PortAudio."""
     m, raw = _manifest(tmp_path)
-    cap = a.TapStreamCapture(m, 16000, "blackhole")
+    cap = a.TapStreamCapture(m, 16000, "blackhole", key="system")
     t = np.arange(48000, dtype=np.float32) / 48000
     tone = (0.5 * np.sin(2 * np.pi * 440 * t) * 32767).astype("<i2")
     def writer():
@@ -556,10 +543,10 @@ def test_поток_тапа_читается_и_даунсемплится(tmp_
     assert 0.2 < float(np.abs(out).max()) <= 1.0, "амплитуда тона потерялась"
 
 
-def test_поток_тапа_без_роста_падает_вслух(tmp_path):
+def test_поток_приложения_без_роста_падает_вслух(tmp_path):
     """Файл есть, но не растёт: канал обязан отказаться, а не писать тишину."""
     m, _raw = _manifest(tmp_path)
-    cap = a.TapStreamCapture(m, 16000, "blackhole")
+    cap = a.TapStreamCapture(m, 16000, "blackhole", key="system")
     try:
         cap.start()
     except RuntimeError as e:
@@ -569,23 +556,11 @@ def test_поток_тапа_без_роста_падает_вслух(tmp_path)
         raise AssertionError("старт без кадров обязан падать")
 
 
-def test_свежесть_манифеста(tmp_path, monkeypatch):
-    """Манифест мёртвой встречи (файл давно не рос) не выбирается."""
-    m, raw = _manifest(tmp_path)
-    monkeypatch.setattr(a, "TAP_STREAM_MANIFEST", tmp_path / "tap_stream.json")
-    raw.write_bytes(b"\0\0" * 100)
-    assert a.fresh_tap_manifest() is not None, "живой манифест не распознан"
-    old = time.time() - 60
-    import os
-    os.utime(raw, (old, old))
-    assert a.fresh_tap_manifest() is None, "труп прошлой встречи прошёл за живого"
-
-
 def test_нечётное_чтение_не_убивает_читателя(tmp_path):
     """Чтение застаёт запись посередине сэмпла: нечётный хвост переносится,
     а не роняет нить ValueError-ом — иначе канал глохнет молча."""
     m, raw = _manifest(tmp_path, sr=16000)
-    cap = a.TapStreamCapture(m, 16000, "blackhole")
+    cap = a.TapStreamCapture(m, 16000, "blackhole", key="system")
     tone = (np.ones(1600, dtype=np.float32) * 0.25 * 32767).astype("<i2").tobytes()
 
     def writer():
@@ -621,7 +596,7 @@ def test_рестарт_продолжает_с_места_а_не_с_конца
     """Сторож перезапустил канал — накопленное в файле читается, а не
     выбрасывается прыжком в конец: там могло лежать до 30 с встречи."""
     m, raw = _manifest(tmp_path, sr=16000)
-    cap = a.TapStreamCapture(m, 16000, "blackhole")
+    cap = a.TapStreamCapture(m, 16000, "blackhole", key="system")
     first = (np.ones(800, dtype=np.float32) * 0.2 * 32767).astype("<i2").tobytes()
     with raw.open("ab") as f:
         f.write(first)

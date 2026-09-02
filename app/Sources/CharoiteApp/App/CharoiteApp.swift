@@ -116,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         signal(SIGPIPE, SIG_IGN)
         // Тап-агрегаты, осиротевшие после прошлого запуска, убираем первым
         // делом: 06.08 такой сирота подвесил CoreAudio целиком.
-        if #available(macOS 14.4, *) { SystemAudioTap.cleanupOrphans() }
+        if #available(macOS 14.4, *) { TapOrphanCleanup.cleanupOrphans() }
         Self.migrateSettingsFromOldBundle()
         MeetingNotificationService.shared.configure()
         MeetingProcessingService.shared.startMonitoring()
@@ -233,10 +233,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         if SuflerService.shared.hasActiveLifecycle { SuflerService.shared.stop() }
-        // Тап не должен переживать приложение: живой агрегат без хозяина —
-        // это подвешенный CoreAudio (дважды за 06.08). stop() выше гасит
-        // его только при идущей записи — добираем оставшееся всегда.
-        if #available(macOS 14.4, *) { SystemAudioTap.cleanupOrphans() }
+        // Агрегат тапа без хозяина — это подвешенный CoreAudio (дважды за
+        // 06.08); сироты тех версий добираются при каждом выходе.
+        if #available(macOS 14.4, *) { TapOrphanCleanup.cleanupOrphans() }
     }
 
     /// charoite:// — управление из Shortcuts, терминала и других приложений:
