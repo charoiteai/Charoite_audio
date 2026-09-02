@@ -669,7 +669,12 @@ it signals degradation, it does not break the loop.
   implementation of the privacy rules. Destructive actions are tinted red,
   renaming can be cancelled (cross or Esc), the messenger-style protocol is
   free of markdown markup, and the card shows when the meeting itself
-  started — not when the pipeline finished writing its status.
+  started — not when the pipeline finished writing its status. "Rebuild
+  result" reports what actually happened: started (the transcript is
+  re-recognized from the recording, the previous version stays in
+  transcripts/.prev), already running, no transcript on disk, or failed
+  to launch — it used to say "started" on every click, including the
+  silent refusals, and the item is greyed out while a rebuild runs.
 - **Portable meeting card** — each archive folder receives a recoverable
   `meeting.meta.json` with stable, language-independent keys for participants,
   gist, decisions, action items and open questions. Markdown remains the

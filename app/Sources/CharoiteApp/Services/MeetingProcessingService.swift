@@ -257,6 +257,27 @@ enum MeetingProcessingPolicy {
         case hidden, ready, waiting, running
     }
 
+    /// Чем закончилась попытка запустить пересборку. Раньше `rebuild(_:)`
+    /// молча выходил по занятости или отсутствию файла, а карточка всё равно
+    /// писала «Пересборка запущена» (№131, аудит 30.08): человек ждал
+    /// результата, которого не будет.
+    enum RebuildOutcome: Equatable {
+        /// Конвейер стартовал: стенограмма распознаётся заново из записи.
+        case started
+        /// Прошлый повтор ещё идёт — второй поверх него не запускаем.
+        case busy
+        /// Файла стенограммы нет — пересобирать нечего.
+        case transcriptMissing
+        /// Процесс не запустился (нет python/venv) — смотреть logs/.
+        case launchFailed
+    }
+
+    static func rebuildOutcome(retryInFlight: Bool, transcriptExists: Bool) -> RebuildOutcome {
+        if retryInFlight { return .busy }
+        if !transcriptExists { return .transcriptMissing }
+        return .started
+    }
+
     static func retryControl(
         for snapshot: MeetingProcessingSnapshot,
         transcriptExists: Bool,
@@ -536,20 +557,24 @@ final class MeetingProcessingService: ObservableObject {
     /// Пересобрать готовую встречу после ручной правки стенограммы.
     /// Повтор для ошибки и осознанная пересборка — разные пользовательские
     /// действия, но конвейер у них один и тот же.
-    func rebuild(_ snapshot: MeetingProcessingSnapshot) {
-        guard !retryInFlight,
-              FileManager.default.fileExists(atPath: snapshot.transcriptPath) else { return }
-        launchRetry(
+    @discardableResult
+    func rebuild(_ snapshot: MeetingProcessingSnapshot) -> MeetingProcessingPolicy.RebuildOutcome {
+        let outcome = MeetingProcessingPolicy.rebuildOutcome(
+            retryInFlight: retryInFlight,
+            transcriptExists: FileManager.default.fileExists(atPath: snapshot.transcriptPath))
+        guard outcome == .started else { return outcome }
+        return launchRetry(
             meetingID: snapshot.meetingID,
             path: snapshot.transcriptPath,
-            seenAt: snapshot.updatedAt)
+            seenAt: snapshot.updatedAt) ? .started : .launchFailed
     }
 
     func reload() {
         refresh()
     }
 
-    private func launchRetry(meetingID: String, path: String, seenAt: TimeInterval) {
+    @discardableResult
+    private func launchRetry(meetingID: String, path: String, seenAt: TimeInterval) -> Bool {
 
         let cmd = MeetingRetryCommand.build(
             root: AppSettings.charoiteRoot,
@@ -580,7 +605,7 @@ final class MeetingProcessingService: ObservableObject {
             try p.run()
         } catch {
             retryFailedToStart = true
-            return
+            return false
         }
         retryProcess = p
         retryInFlight = true
@@ -593,6 +618,7 @@ final class MeetingProcessingService: ObservableObject {
         self.snapshot = nil
         lastResolved = nil
         refresh()
+        return true
     }
 
     /// Переименовать встречу: скрипт разносит новую тему по всем местам —

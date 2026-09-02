@@ -23,6 +23,30 @@ struct MeetingCardView: View {
     @State private var copied = false
     @State private var actionBusy = false
     @State private var actionMessage = ""
+
+    /// Честная строка под меню: что произошло после «Пересобрать результат».
+    /// Запуск — с оговоркой, что стенограмма распознаётся заново из записи,
+    /// а прежняя версия лежит в transcripts/.prev (одно поколение).
+    static func rebuildMessage(_ outcome: MeetingProcessingPolicy.RebuildOutcome) -> String {
+        switch outcome {
+        case .started:
+            return L.t("Пересборка запущена: стенограмма распознаётся заново из записи, прежняя версия — в transcripts/.prev",
+                       "Rebuild started: the transcript is re-recognized from the recording, the previous version is in transcripts/.prev",
+                       "已开始重建：将根据录音重新识别逐字稿，旧版本保存在 transcripts/.prev")
+        case .busy:
+            return L.t("Пересборка уже идёт — дождитесь её окончания",
+                       "A rebuild is already running — wait for it to finish",
+                       "重建已在进行中——请等待其完成")
+        case .transcriptMissing:
+            return L.t("Стенограммы нет на диске — пересобирать нечего",
+                       "The transcript is not on disk — nothing to rebuild",
+                       "磁盘上没有逐字稿——无可重建")
+        case .launchFailed:
+            return L.t("Не удалось запустить пересборку — проверьте logs/",
+                       "Could not start the rebuild — check logs/",
+                       "无法启动重建——请检查 logs/")
+        }
+    }
     @State private var forgetPlan = ""
     @State private var showForget = false
     /// Глубина чтения — привычка, а не разовый фильтр: помним между
@@ -293,12 +317,13 @@ struct MeetingCardView: View {
                         title: meeting.title, dateText: dateText, card: card))
                 }
                 Divider()
+                // Сообщение — по факту запуска, не по нажатию: молчаливый
+                // отказ (повтор ещё идёт, файла нет, python не стартовал)
+                // раньше выглядел как «запущена» (№131).
                 Button(L.t("Пересобрать результат", "Rebuild result", "重建结果")) {
-                    processing.rebuild(meeting)
-                    actionMessage = L.t("Пересборка запущена",
-                                        "Rebuild started",
-                                        "已开始重建")
+                    actionMessage = Self.rebuildMessage(processing.rebuild(meeting))
                 }
+                .disabled(processing.retryingID == meeting.meetingID)
             }
             .menuStyle(.button)
             .charoite(.regular, .s)
