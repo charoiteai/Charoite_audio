@@ -670,11 +670,15 @@ it signals degradation, it does not break the loop.
   renaming can be cancelled (cross or Esc), the messenger-style protocol is
   free of markdown markup, and the card shows when the meeting itself
   started — not when the pipeline finished writing its status. "Rebuild
-  result" reports what actually happened: started (the transcript is
-  re-recognized from the recording, the previous version stays in
-  transcripts/.prev), already running, no transcript on disk, or failed
-  to launch — it used to say "started" on every click, including the
-  silent refusals, and the item is greyed out while a rebuild runs.
+  result" reports what actually happened: started (if the recordings are
+  still kept, the transcript is re-recognized and the previous version
+  goes to transcripts/.prev), a rebuild or retry of another meeting is
+  already running, no transcript on disk, or failed to launch (a missing
+  python is caught before the process starts) — it used to say "started"
+  on every click, including the silent refusals; the item stays greyed
+  out for the whole run of this meeting's rebuild, the message is reset
+  when another meeting is opened, and a process that died after launch
+  turns the line into the failure text.
 - **Portable meeting card** — each archive folder receives a recoverable
   `meeting.meta.json` with stable, language-independent keys for participants,
   gist, decisions, action items and open questions. Markdown remains the

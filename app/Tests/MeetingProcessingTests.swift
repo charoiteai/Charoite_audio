@@ -157,10 +157,23 @@ final class MeetingProcessingTests: XCTestCase {
         XCTAssertEqual(P.rebuildOutcome(retryInFlight: true, transcriptExists: false), .busy,
                        "занятость важнее файла: второй конвейер поверх первого не запускаем")
         let messages = Set([P.RebuildOutcome.started, .busy, .transcriptMissing, .launchFailed]
-            .map(MeetingCardView.rebuildMessage))
+            .map(P.rebuildMessage))
         XCTAssertEqual(messages.count, 4, "четыре исхода — четыре разных строки")
-        XCTAssertTrue(MeetingCardView.rebuildMessage(.started).contains(".prev"),
+        XCTAssertTrue(P.rebuildMessage(.started).contains(".prev"),
                       "запуск честно предупреждает, где прежняя версия")
+        XCTAssertTrue(P.rebuildMessage(.started).contains("если записи"),
+                      "и не обещает распознавания встрече без записей (GLM Imp-2)")
+    }
+
+    func testRetryCommandExposesThePythonItWillExec() {
+        // DS I1 по #484: запуск идёт через nice, и Process.run() не заметит
+        // отсутствия python — сервис проверяет исполняемость сам, по пути,
+        // который команда честно отдаёт наружу и который стоит в args.
+        let root = URL(fileURLWithPath: "/tmp/charoite-test-root")
+        let cmd = MeetingRetryCommand.build(root: root, transcriptPath: "/tmp/x/2026-09-02_1021.md")
+        XCTAssertEqual(cmd.exec.path, "/usr/bin/nice")
+        XCTAssertEqual(cmd.args[2], cmd.python, "python в args — тот же, что проверяется до запуска")
+        XCTAssertTrue(cmd.python.hasSuffix("python3") || cmd.python.hasSuffix("python"))
     }
 
     func testRetryOfferedOnlyForFailuresWithLiveTranscript() {
