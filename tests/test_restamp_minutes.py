@@ -219,22 +219,44 @@ FINAL = "**Инга** [10:21]:\nСмету пришлю к пятому.\n" * 30
 def test_untouched_draft_is_regenerated_from_final(tmp_path, monkeypatch):
     draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nУчастники: Собеседник 2\n"
     live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
-    rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {"Собеседник 2": "Инга"})
+    owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {"Собеседник 2": "Инга"})
     out = mpath.read_text(encoding="utf-8")
+    assert owned is True
     assert _FakeLLM.calls == [FINAL], "минутки — по ФИНАЛЬНОЙ стенограмме"
     assert "Черновик" not in out and "- [ ] **Инга** — прислать смету" in out
-    # хеш новой версии — в live.json: следующая пересборка тоже увидит автотекст
+    # прежняя версия — в .prev/ рядом со стенограммой (advisory DS r1 по #483)
+    assert (tmp_path / ".prev" / "2026-09-02_1021_minutes.md").read_text(encoding="utf-8") == draft
+    # хеш пишет rebuild() ПОСЛЕ канонизации — по байтам на диске; сама запись
+    # хранит остальные поля live.json
+    rebuild_transcript._remember_minutes_sha(live, _sha(out))
     saved = json.loads((tmp_path / "2026-09-02_1021.md.live.json").read_text(encoding="utf-8"))
     assert saved["minutes_sha256"] == _sha(out)
     assert saved["names"] == {"Собеседник 2": "Инга"}, "остальные поля live.json целы"
+
+
+def test_rebuild_records_hash_after_canonization_only_for_machine_text():
+    """Контракт проводки (DS r1 Imp-1/Imp-2 по #483): хеш снимается в
+    rebuild() после canonize_file и только когда файл машинный — иначе
+    лексикон делал файл «правленным руками», а транзиентный отказ модели
+    навсегда выключал регенерацию."""
+    src = (SRC / "rebuild_transcript.py").read_text(encoding="utf-8")
+    fn = src[src.index("def rebuild("):src.index("def finalize_minutes(")]
+    i_fin = fn.index("machine_owned = finalize_minutes(")
+    i_can = fn.index("canonize_file(mpath, cfg)")
+    i_sha = fn.index("_remember_minutes_sha(live, _sha(mpath.read_text(")
+    assert i_fin < i_can < i_sha, "порядок: finalize → canonize → хеш по байтам с диска"
+    assert "if machine_owned:" in fn[i_can:i_sha], "хеш — только для машинного файла"
+    body = src[src.index("def finalize_minutes("):src.index("def restamp_minutes(")]
+    assert "_remember_minutes_sha(" not in body, "finalize_minutes сам хеш не пишет"
 
 
 def test_hand_edited_minutes_are_only_restamped(tmp_path, monkeypatch):
     draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nУчастники: Собеседник 2\n"
     edited = draft + "\nМоя пометка руками.\n"
     live, mpath, meta = _prep(tmp_path, monkeypatch, edited, _sha(draft))
-    rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {"Собеседник 2": "Инга"})
+    owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {"Собеседник 2": "Инга"})
     out = mpath.read_text(encoding="utf-8")
+    assert owned is False, "правленный руками файл — не машинный, хеш не трогать"
     assert _FakeLLM.calls == [], "правленные руками минутки не перегенерируем"
     assert "Моя пометка руками." in out and "Инга" in out
     assert transcript.MINUTES_DRAFT_MARK not in out, "перештамповка сделана"
@@ -253,10 +275,54 @@ def test_model_failure_falls_back_to_restamp(tmp_path, monkeypatch):
     draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\nСобеседник 2\n"
     live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
     _FakeLLM.fail = True
-    rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {"Собеседник 2": "Инга"})
+    owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {"Собеседник 2": "Инга"})
     out = mpath.read_text(encoding="utf-8")
     assert "Черновик" in out and "Инга" in out, "модель лежит — прежние минутки перештампованы, не потеряны"
     assert transcript.MINUTES_DRAFT_MARK not in out
+    assert owned is True, ("после транзиентного отказа файл остаётся машинным: хеш обновится, "
+                           "и следующая пересборка сможет перегенерировать (DS r1 Imp-1)")
+
+
+def test_document_that_appeared_during_generation_is_not_overwritten(tmp_path, monkeypatch):
+    # GLM Critical по #483: минуток не было, за 13–60 с генерации их создал
+    # mcp «Минутки» — регенерат не должен лечь поверх и объявить чужой
+    # текст «своим».
+    live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
+
+    class _LateWriter(_FakeLLM):
+        def minutes(self, text):
+            mpath.write_text("# Минутки от mcp\n", encoding="utf-8")
+            yield _FakeLLM.answer
+
+    import llm
+    monkeypatch.setattr(llm, "LLM", _LateWriter)
+    owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {})
+    assert owned is False, "чужой документ — не машинный, хеш не снимаем"
+    assert mpath.read_text(encoding="utf-8") == "# Минутки от mcp\n"
+
+
+def test_model_gets_speech_without_the_notes_tail(tmp_path, monkeypatch):
+    # GLM Imp-4: хвост «Ко-мышление» — мысли модели, не речь; кнопка
+    # «Протокол» его не видит, и регенерация — тоже. Порог считается по речи.
+    live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
+    notes = transcript.NOTES_HEAD + " (📌 КТ · 💎 факты · 💭 мысли)\n> 💎 факт, которого не звучало\n" * 40
+    rebuild_transcript.finalize_minutes(live, FINAL + notes, meta, {}, {})
+    assert _FakeLLM.calls == [FINAL], "в промпт ушла только речь"
+    _FakeLLM.calls = []
+    live2 = tmp_path / "2026-09-02_1100.md"
+    live2.write_text("# Встреча\n", encoding="utf-8")
+    rebuild_transcript.finalize_minutes(live2, "**Инга** [11:00]:\nПривет.\n" + notes, {}, {}, {})
+    assert _FakeLLM.calls == [], "порог — по речи: заметки его не набирают"
+
+
+def test_existing_draft_is_regenerated_even_if_final_is_short(tmp_path, monkeypatch):
+    # GLM Minor-5: черновик уже доказал, что встреча не короткая; финал
+    # бывает короче живого текста (эхо-фильтр микрофона).
+    draft = transcript.MINUTES_DRAFT_MARK + "\n# Черновик\n"
+    live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
+    short = "**Инга** [10:21]:\nСмету пришлю.\n"
+    owned = rebuild_transcript.finalize_minutes(live, short, meta, {}, {})
+    assert owned is True and _FakeLLM.calls == [short]
 
 
 def test_missing_minutes_are_built_when_transcript_is_long_enough(tmp_path, monkeypatch):

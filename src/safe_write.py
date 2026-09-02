@@ -36,11 +36,16 @@ def stat_snapshot(path: pathlib.Path) -> tuple[int, int] | None:
 
 
 def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8",
-               expect: tuple[int, int] | None = None) -> bool:
+               expect: tuple[int, int] | None = None,
+               expect_absent: bool = False) -> bool:
     """Записать текст так, чтобы обрыв не уничтожил прежнее содержимое.
 
     `expect` — снимок `stat_snapshot`, взятый ДО чтения исходника: если к
     моменту записи файл уже не тот, запись не делается и возвращается False.
+    `expect_absent` — гейт для «файла не было»: `expect=None` означает
+    свободную запись, а не «пиши, только если его по-прежнему нет» — и
+    документ, появившийся за время долгой генерации, затирался бы молча
+    (GLM Critical по #483). С флагом чужой файл, возникший в окне, остаётся.
     Гейт потери обновления жил копиями в демоне и пересборке (у каждого свой
     протокол — критика DS по #464); здесь он один на всех писателей.
     Проверка — перед самым replace: окно гонки сжато до минимума, но не до
@@ -59,6 +64,8 @@ def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8",
         tmp.write_text(text, encoding=encoding)
         _carry_over_metadata(path, tmp)
         if expect is not None and stat_snapshot(path) != expect:
+            return False
+        if expect_absent and path.exists():
             return False
         tmp.replace(path)
     finally:

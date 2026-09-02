@@ -615,8 +615,19 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # руками — только перештамповать (маркер и имена ЖИВОЙ сессии: их метки —
     # та же нумерация, которой минутки написаны; пересборочный `names` живёт в
     # другом пространстве номеров и клеил бы имя не тому — GLM Critical по #464).
-    finalize_minutes(live, final_text, meta, cfg, live_session_names(meta))
-    canonize_file(live.with_name(live.stem + "_minutes.md"), cfg)
+    machine_owned = finalize_minutes(live, final_text, meta, cfg, live_session_names(meta))
+    mpath = live.with_name(live.stem + "_minutes.md")
+    canonize_file(mpath, cfg)
+    # Хеш — по байтам, которые ЛЕЖАТ на диске после канона, и только когда
+    # файл машинный. Раньше он писался до canonize_file (лексикон менял
+    # байты — вторая пересборка видела «правку руками»), а после
+    # транзиентного отказа модели перештампованный файл терял признак
+    # автотекста навсегда (DS r1 Imp-1/Imp-2 по #483).
+    if machine_owned:
+        try:
+            _remember_minutes_sha(live, _sha(mpath.read_text(encoding="utf-8")))
+        except OSError as e:
+            log(f"хеш минуток не снят ({e}) — следующая пересборка их не тронет")
     return live
 
 
@@ -776,8 +787,9 @@ def _sha(text: str) -> str:
 
 
 def _remember_minutes_sha(live: pathlib.Path, sha: str) -> None:
-    """Хеш пересобранных минуток — в live.json, чтобы следующая пересборка
-    тоже видела в них автотекст, а не правку руками."""
+    """Хеш машинных минуток — в live.json, чтобы следующая пересборка тоже
+    видела в них автотекст, а не правку руками. Зовётся из rebuild() после
+    канонизации — по байтам, которые реально лежат на диске."""
     p = live.with_name(live.name + ".live.json")
     try:
         meta = json.loads(p.read_text(encoding="utf-8"))
@@ -790,7 +802,7 @@ def _remember_minutes_sha(live: pathlib.Path, sha: str) -> None:
 
 
 def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
-                     live_names: dict[str, str]) -> None:
+                     live_names: dict[str, str]) -> bool:
     """Минутки после пересборки: пересобрать по финалу или перештамповать.
 
     Живой черновик пишется лёгкой моделью по голове и хвосту НЕЗАКОНЧЕННОЙ
@@ -806,6 +818,13 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     «Минутки», демон старее этой правки) — только перештамповка, как прежде.
     Нет минуток вовсе (короткая встреча, упавший поток) — собираем, если
     стенограмма длиннее порога черновика.
+
+    Возвращает, машинный ли файл после этого шага (регенерирован или
+    перештампован при нетронутом автотексте): по нему rebuild() после
+    канона снимает хеш. Правленный руками файл — False, его хеш не трогаем.
+    Перед регенерацией прежняя версия уходит в .prev/ рядом со стенограммой
+    (одно поколение): уверенная, но неверная генерация не должна быть
+    невозвратной (advisory DS r1 по #483).
     """
     mpath = live.with_name(live.stem + "_minutes.md")
     before = safe_write.stat_snapshot(mpath)
@@ -813,45 +832,62 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     if before is not None:
         try:
             current = mpath.read_text(encoding="utf-8")
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
+            # не-UTF8 файл из редактора ронял бы всю пересборку после
+            # записи финала (GLM Minor-6 по #483)
             log(f"минутки не прочитались ({e}) — перештамповка")
             restamp_minutes(live, live_names)
-            return
+            return False
     elif mpath.exists():
         log("минутки не пересобраны (stat не удался) — перештамповка")
         restamp_minutes(live, live_names)
-        return
+        return False
     expected = meta.get("minutes_sha256") if isinstance(meta, dict) else None
     owned = current is None or (bool(expected) and _sha(current) == expected)
     if not owned:
         log("минутки правлены не демоном (или без хеша в live.json) — перештамповка")
         restamp_minutes(live, live_names)
-        return
-    if len(final_text) < MINUTES_MIN_CHARS:
-        log(f"минутки не пересобраны: стенограмма короче {MINUTES_MIN_CHARS} знаков")
-        restamp_minutes(live, live_names)
-        return
+        return False
+    # Модели — только речь: хвост «Ко-мышление» (📌/💎/💭 живого контура) —
+    # мысли модели, не сказанное вслух; кнопка «Протокол» получает tr.full()
+    # без него, и здесь так же (GLM Imp-4 по #483). Порог — только при
+    # создании с нуля: существующий черновик сам доказывает, что встреча
+    # короткой не была, а финал бывает короче живого текста (эхо-фильтр
+    # микрофона; GLM Minor-5).
+    speech = re.split(re.escape(transcript.NOTES_HEAD), final_text, maxsplit=1)[0]
+    if current is None and len(speech) < MINUTES_MIN_CHARS:
+        log(f"минутки не собраны: стенограмма короче {MINUTES_MIN_CHARS} знаков")
+        return False
     from llm import LLM
+    _yield_to_live("минутки")   # тяжёлый вызов не спорит с идущей встречей (GLM Imp-2)
     t0 = time.monotonic()
     try:
-        doc = "".join(LLM(cfg).minutes(final_text)).strip()
+        doc = "".join(LLM(cfg).minutes(speech)).strip()
     except Exception as e:  # noqa: BLE001 — модель лежит: не терять прежние минутки
         log(f"минутки не пересобраны ({type(e).__name__}: {e}) — перештамповка")
         restamp_minutes(live, live_names)
-        return
+        return True
     if not doc:
         log("минутки не пересобраны (модель промолчала) — перештамповка")
         restamp_minutes(live, live_names)
-        return
+        return True
     # Те же два шага, что у кнопки «Протокол»: сверка номеров и дат со
     # стенограммой и чекбоксы в формат окна «Задачи».
-    doc = action_items.normalize(fact_check.annotate(doc, final_text))
-    if not safe_write.write_text(mpath, doc, expect=before):
+    doc = action_items.normalize(fact_check.annotate(doc, speech))
+    if current is not None:
+        prev_dir = live.parent / ".prev"
+        prev_dir.mkdir(exist_ok=True)
+        safe_write.write_text(prev_dir / mpath.name, current)
+    # Гейт в обе стороны: существовавший файл — тем же снимком, отсутствовавший
+    # — «его по-прежнему нет»: mcp «Минутки» или редактор за время генерации
+    # могли создать документ (GLM Critical по #483).
+    if not safe_write.write_text(mpath, doc, expect=before, expect_absent=before is None):
         log("минутки сменились под пересборкой — оставлены как есть")
-        return
-    _remember_minutes_sha(live, _sha(doc))
+        return False
     log(f"минутки пересобраны по финальной стенограмме: {mpath.name} "
-        f"({len(final_text)} знаков → {len(doc)}, {time.monotonic() - t0:.0f}с)")
+        f"({len(final_text)} знаков → {len(doc)}, {time.monotonic() - t0:.0f}с"
+        + (", прежняя версия → .prev/" if current is not None else "") + ")")
+    return True
 
 
 def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> None:
@@ -883,7 +919,7 @@ def restamp_minutes(live: pathlib.Path, live_names: dict[str, str]) -> None:
             return
         try:
             text = mpath.read_text(encoding="utf-8")
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
             log(f"минутки не перештампованы (не прочитались): {e}")
             return
         fixed = text

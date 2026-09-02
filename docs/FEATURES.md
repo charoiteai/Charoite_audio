@@ -921,11 +921,15 @@ to skip it, so its assignments never reached the task window); the deadline
 prettifier only touches the tail of an item after a dash, leaving live wording
 like "discuss the deadline: tomorrow" untouched; after a transcript rebuild the
 minutes are rebuilt from the final transcript when nobody has touched them (the
-daemon leaves a hash of its last write in live.json; a matching file is
-auto-text and is regenerated with the recovered names — a 13-minute meeting
-costs about 13 s on the local model), while hand-edited minutes are only
-restamped — the draft marker is removed and "Speaker N" labels are replaced
-with the recovered names; and when native system-audio capture fails
+daemon — and, after the first rebuild, the rebuild itself — leaves a hash of the
+last automated write in live.json; a file that still matches it is treated as
+auto-text and is regenerated with the recovered names, the previous version
+going to transcripts/.prev; a 13-minute meeting costs about 13 s on the local
+model, and the call waits for a live meeting to end first), a meeting that
+never got a draft receives minutes if its speech is long enough, while
+hand-edited minutes are only restamped — the draft marker is removed and
+"Speaker N" labels are replaced with the recovered names; and when native
+system-audio capture fails
 to start, the app now says out loud that the meeting is being recorded via
 BlackHole instead of falling back silently. Two more hardening steps followed:
 live-session names are matched only to neutral rebuild labels (the owner's

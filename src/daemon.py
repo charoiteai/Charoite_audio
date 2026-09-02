@@ -2513,6 +2513,12 @@ def main():
                         if before is not None and not mpath.read_text(
                                 encoding="utf-8").startswith(MINUTES_DRAFT_MARK):
                             continue
+                        # Генерация шла десятки секунд; если за это время
+                        # встречу остановили, live.json с хешем уже записан —
+                        # поздний черновик сделал бы файл «чужим» для
+                        # пересборки (DS Minor-1 по #483).
+                        if stop.is_set():
+                            continue
                         draft = MINUTES_DRAFT_MARK + "\n" + out
                         if not safe_write.write_text(mpath, draft, expect=before):
                             continue          # файл сменился под нами — не затираем чужой финал
@@ -3010,10 +3016,14 @@ def main():
             # имена опознаны за встречу. Без них rebuild кластеризует аудио с нуля
             # (21.07: живьём 8 голосов и 4 имени → в финале 14 безымянных) и
             # заново гадает имена, выбрасывая всё, что демон выяснил за час.
-            pathlib.Path(str(tr.path) + ".live.json").write_text(
+            # Атомарно: по хешу в этом файле пересборка решает, трогать ли
+            # минутки, а демона в этот момент может добивать watchdog — обрыв
+            # write_text оставлял бы битый JSON (advisory GLM по #483).
+            safe_write.write_text(
+                pathlib.Path(str(tr.path) + ".live.json"),
                 json.dumps({"speakers": len(voice_names), "names": tr.names(),
                             "minutes_sha256": minutes_sha["v"]},
-                           ensure_ascii=False), encoding="utf-8")
+                           ensure_ascii=False))
         except Exception:  # noqa: BLE001 — подсказка вспомогательна, не рушим финал
             pass
         try:
