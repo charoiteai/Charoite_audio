@@ -236,13 +236,14 @@ def test_ретеншн_не_родня_retry_пересборке():
 
 
 def test_сырые_потоки_приложения_живут_по_тому_же_сроку(tmp_path, monkeypatch):
-    """`data/sck/*` и `tap_stream.raw` — тоже записи встречи.
+    """`data/sck/*` — тоже записи встречи; `tap_stream.raw` — наследие тапа.
 
     Системный звук пишет приложение, а не демон, и эти файлы жили ВНЕ
-    ретеншна: `tap_stream.raw` усекался только следующим стартом тапа, а
-    каталоги сессий убирались лишь при штатном стопе — краш оставлял полное
-    аудио навсегда. На рабочей машине так пролежал 61 МБ девять дней при
-    обещанных двух (аудит 16.08). PRIVACY.md обещает «записи временны».
+    ретеншна: каталоги сессий убирались лишь при штатном стопе — краш
+    оставлял полное аудио навсегда. На рабочей машине так пролежал 61 МБ
+    девять дней при обещанных двух (аудит 16.08). PRIVACY.md обещает
+    «записи временны». `tap_stream.raw` писали версии с Core Audio tap
+    (снят 02.09): новые не пишут, старый файл уходит по тому же сроку.
     """
     import audio
 
@@ -263,7 +264,6 @@ def test_сырые_потоки_приложения_живут_по_тому_�
     # живая сессия названа в свежем манифесте — её не трогаем даже старой
     monkeypatch.setattr(audio, "fresh_sck_manifest",
                         lambda: {"system": str(live_session)})
-    monkeypatch.setattr(audio, "fresh_tap_manifest", lambda: None)
 
     removed = audio.AudioHub.prune_stream_files(data, 2)
 
@@ -281,7 +281,6 @@ def test_свежие_потоки_ретеншн_не_трогает(tmp_path, 
     fresh = data / "sck" / "вчерашняя" / "system.raw"
     fresh.write_bytes(b"\0" * 16)
     monkeypatch.setattr(audio, "fresh_sck_manifest", lambda: None)
-    monkeypatch.setattr(audio, "fresh_tap_manifest", lambda: None)
 
     assert audio.AudioHub.prune_stream_files(data, 2) == 0
     assert fresh.exists()
@@ -303,7 +302,6 @@ def test_пустой_свежий_каталог_сессии_не_удаляе
     week_ago = time.time() - 7 * 86400
     os.utime(stale_dir, (week_ago, week_ago))
     monkeypatch.setattr(audio, "fresh_sck_manifest", lambda: None)
-    monkeypatch.setattr(audio, "fresh_tap_manifest", lambda: None)
 
     audio.AudioHub.prune_stream_files(data, 2)
 

@@ -183,12 +183,9 @@ extension SuflerService {
         startTask?.cancel()
         let capture = systemAudioCapture
         systemAudioCapture = nil
-        let tap = systemAudioTap
-        systemAudioTap = nil
 
         Task { @MainActor [weak self] in
             _ = await startTask?.value
-            if #available(macOS 14.4, *) { (tap as? SystemAudioTap)?.stop() }
             if #available(macOS 13.0, *) {
                 await (capture as? SystemAudioCapture)?.stop()
             }

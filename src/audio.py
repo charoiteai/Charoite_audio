@@ -35,34 +35,19 @@ def find_device(substr: str) -> int | None:
     return None
 
 
-# Устройство, которое приложение поднимает на время встречи через Core Audio
-# process tap (SystemAudioTap.swift). Имя — контракт между приложением и
-# демоном: меняешь здесь — меняй и там.
-TAP_DEVICE = "Charoite System Audio"
-
-
 def find_system_audio() -> tuple[int | None, str]:
-    """Индекс канала собеседников и чем он получен.
+    """Индекс канала собеседников через устройство PortAudio и чем он получен.
 
-    Приоритет у BlackHole — осознанно (итог боевого теста 06.08). Тап
-    создаётся, виден системе и из отдельного процесса отдаёт звук, но демону
-    не приносит ни кадра: 0 байт за 94 секунды записи, причём поток
-    открывается штатно (лестница конфигураций не понадобилась). Пока причина
-    не найдена, рабочие встречи важнее эксперимента. Тап остаётся фолбэком
-    для машин без BlackHole: хуже нуля байт он не даст, а после разбора
-    может и заработать. Молчаливого «ни того, ни другого» быть не должно:
-    без этого канала в стенограмме не будет второй стороны разговора.
+    Единственное устройство здесь — BlackHole: запасной путь на случай, когда
+    приложение не подняло ScreenCaptureKit (нет права, старая macOS). Второго
+    устройства нет: Core Audio tap (06–07.08) клинил CoreAudio на 26.5 и снят
+    02.09. Молчаливого «ни того, ни другого» быть не должно: без этого канала
+    в стенограмме не будет второй стороны разговора — вызывающий пишет это
+    в источники.
     """
-    bh = find_device("blackhole")
-    if bh is not None:
-        return bh, "blackhole"
-    tap = find_device(TAP_DEVICE)
-    if tap is not None:
-        return tap, "tap"
-    return None, "blackhole"
+    return find_device("blackhole"), "blackhole"
 
 
-TAP_STREAM_MANIFEST = ROOT / "data" / "tap_stream.json"
 SCK_STREAM_MANIFEST = ROOT / "data" / "sck_stream.json"
 
 
@@ -97,11 +82,6 @@ def fresh_sck_manifest() -> dict | None:
     return _fresh_manifest(SCK_STREAM_MANIFEST, "system")
 
 
-def fresh_tap_manifest() -> dict | None:
-    """Живой поток Core Audio tap (наследие; тап выключен по умолчанию)."""
-    return _fresh_manifest(TAP_STREAM_MANIFEST, "path")
-
-
 class TapStreamCapture:
     """Системный звук из файла-потока приложения — интерфейс как у Capture.
 
@@ -111,20 +91,17 @@ class TapStreamCapture:
     кадры; сторож тишины и страховка перезапуска работают без изменений.
     """
 
-    def __init__(self, manifest: dict, samplerate: int, label: str, key: str = "path"):
+    def __init__(self, manifest: dict, samplerate: int, label: str, key: str):
         self.label = label
         self.samplerate = int(samplerate)
         self.q: queue.Queue[np.ndarray] = queue.Queue()
-        # key указывает, какой из потоков манифеста читаем: у тапа он один
-        # («path»), у ScreenCaptureKit их два — «system» и «mic». Частота у
-        # каждого своя: система отдаёт запрошенную, а микрофон — родную
-        # частоту устройства (48 кГц), и спутать их значит растянуть голос.
-        if key != "path":
-            rate = manifest.get(f"{key}_rate", manifest["samplerate"])
-            self._m = dict(manifest, path=manifest[key], samplerate=rate)
-        else:
-            self._m = manifest
-        engine = manifest.get("engine", "tap")
+        # key указывает, какой из потоков манифеста читаем: у ScreenCaptureKit
+        # их два — «system» и «mic». Частота у каждого своя: система отдаёт
+        # запрошенную, а микрофон — родную частоту устройства (48 кГц), и
+        # спутать их значит растянуть голос.
+        rate = manifest.get(f"{key}_rate", manifest["samplerate"])
+        self._m = dict(manifest, path=manifest[key], samplerate=rate)
+        engine = manifest.get("engine", "sck")
         self.opened_as = f"поток приложения ({engine}), {float(self._m['samplerate']):.0f} Гц"
         self._stop_flag = threading.Event()
         self._thread: threading.Thread | None = None
@@ -312,9 +289,9 @@ class Capture:
         принимает любую частоту, поэтому пара «16 кГц + блок 4000» много лет
         выглядела безопасной.
 
-        Дальше — ради Core Audio-тапа. Агрегат тапа берёт частоту у физического
-        выхода (kAudioAggregateDeviceMainSubDeviceKey в SystemAudioTap.swift),
-        то есть 44.1 или 48 кГц. Частоту агрегата PortAudio поменять не может,
+        Дальше — ради устройств с фиксированной частотой. Так вёл себя агрегат
+        Core Audio tap (06.08; сам тап снят 02.09): частоту он брал у физического
+        выхода, то есть 44.1 или 48 кГц. Частоту агрегата PortAudio поменять не может,
         поэтому включает свой ресемплер и пересчитывает наш блок в кадры
         устройства: 250 мс на 48 кГц — это 12000 кадров, втрое больше типичного
         потолка kAudioDevicePropertyBufferFrameSizeRange (4096). AUHAL отвечает
@@ -465,14 +442,11 @@ class AudioHub:
         # Порядок источников системного звука — от лучшего к запасному:
         # 1. ScreenCaptureKit: ничего не создаёт в CoreAudio, а с macOS 15
         #    приносит и микрофон тем же потоком — PortAudio не нужен вовсе;
-        # 2. поток Core Audio tap (наследие, тап выключен по умолчанию);
-        # 3. BlackHole — проверенный драйвер, но требует установки руками.
+        # 2. BlackHole — проверенный драйвер, но требует установки руками.
+        # Третьего пути нет: поток Core Audio tap снят 02.09 (см. find_system_audio).
         sck = fresh_sck_manifest()
-        tap_stream = None if sck else fresh_tap_manifest()
         if sck:
             bh, self.system_audio_via = None, "screencapturekit"
-        elif tap_stream:
-            bh, self.system_audio_via = None, "tap-stream"
         else:
             bh, self.system_audio_via = find_system_audio()
         mic = sd.default.device[0] if sd.default.device else None
@@ -483,16 +457,9 @@ class AudioHub:
             self.captures.append(
                 TapStreamCapture(sck, self.sr, "blackhole", key="system"))
             self.sources.append("Системный звук (ScreenCaptureKit)")
-        elif mode in ("auto", "mix", "blackhole") and tap_stream is not None:
-            # Живой поток приложения важнее устройств: он означает, что тап
-            # уже отдаёт кадры тому единственному процессу, которому система
-            # это разрешает. BlackHole остаётся фолбэком на случай, когда
-            # манифеста нет (нет права, старая macOS, тап не поднялся).
-            self.captures.append(TapStreamCapture(tap_stream, self.sr, "blackhole"))
-            self.sources.append("Системный звук (тап)")
         elif mode in ("auto", "mix", "blackhole") and bh is not None:
             self.captures.append(Capture(bh, self.sr, "blackhole"))
-            self.sources.append("Тап системы" if self.system_audio_via == "tap" else "BlackHole")
+            self.sources.append("BlackHole")
         # auto = система И микрофон: на встрече нужны обе стороны разговора
         if mode in ("mic", "mix", "auto") and mode != "blackhole":
             if mic_from_stream:
@@ -664,13 +631,13 @@ class AudioHub:
         """Сырые потоки приложения — под тот же срок, что и записи.
 
         Системный звук пишет приложение (демону права не наследуются), и эти
-        файлы жили ВНЕ ретеншна: `tap_stream.raw` усекался только следующим
-        стартом тапа, а каталоги `sck/<uuid>/` убирались лишь при штатном
-        стопе своей сессии — краш, SIGKILL или перезагрузка оставляли полное
-        аудио встречи навсегда. На рабочей машине так пролежал 61 МБ
+        файлы жили ВНЕ ретеншна: каталоги `sck/<uuid>/` убирались лишь при
+        штатном стопе своей сессии — краш, SIGKILL или перезагрузка оставляли
+        полное аудио встречи навсегда. На рабочей машине так пролежал 61 МБ
         системного звука девять дней при обещанных двух (аудит 16.08).
         PRIVACY.md обещает «записи временны» — обещание должно покрывать и
-        этот слой.
+        этот слой. `tap_stream.raw` — поток снятого 02.09 Core Audio tap:
+        новые версии его не пишут, старый файл убирается по тому же сроку.
 
         Живую сессию не трогаем: её каталог назван в свежем манифесте.
         Возвращает число удалённых путей.
@@ -679,11 +646,11 @@ class AudioHub:
             return 0
         cutoff = time.time() - float(keep_days) * 86400
         alive: set[str] = set()
-        for manifest in (fresh_sck_manifest(), fresh_tap_manifest()):
-            for key in ("system", "mic", "path"):
-                p = (manifest or {}).get(key)
-                if p:
-                    alive.add(str(pathlib.Path(p).resolve()))
+        manifest = fresh_sck_manifest() or {}
+        for key in ("system", "mic"):
+            p = manifest.get(key)
+            if p:
+                alive.add(str(pathlib.Path(p).resolve()))
         removed = 0
 
         def _old_enough(p: pathlib.Path) -> bool:
@@ -693,7 +660,7 @@ class AudioHub:
                 return False
 
         raw = data_dir / "tap_stream.raw"
-        if (raw.exists() and str(raw.resolve()) not in alive and _old_enough(raw)):
+        if raw.exists() and _old_enough(raw):
             raw.unlink(missing_ok=True)
             removed += 1
 
