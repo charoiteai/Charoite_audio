@@ -305,27 +305,12 @@ def live_meta(live: pathlib.Path) -> dict:
 
 
 def live_meta_path(live: pathlib.Path) -> pathlib.Path:
-    """Где лежит live.json этой встречи.
-
-    Демон пишет его как <посекундная стенограмма>.md.live.json. Накат темы
-    (graph_updater.retitle) и rename_meeting переименовывают только *.md —
-    сайдкар остаётся «2026-09-02_102112.md.live.json» рядом с
-    «2026-09-02_1021_Тема.md», и вторая пересборка (кнопка «Пересобрать»)
-    его не находила: терялись имена живой сессии, а с ними и хеш минуток
-    (advisory DS r2 по #483). Нет файла под своим именем — ищем по
-    минутному штампу; кандидатов несколько — берём самый свежий.
-    """
-    direct = live.with_name(live.name + ".live.json")
-    if direct.exists():
-        return direct
-    stamp = meeting_stamp.stamp_of(live.stem) or live.stem
-    minute = meeting_stamp.minute_of(stamp)
-    tail = ".md.live.json"
-    found = [p for p in live.parent.glob(f"{minute}*{tail}")
-             if meeting_stamp.minute_of(p.name[:-len(tail)]) == minute]
-    if not found:
-        return direct
-    return max(found, key=lambda p: p.stat().st_mtime)
+    """Где лежит live.json этой встречи — единый резолвер live_sidecar:
+    свой файл, иначе единственный сайдкар минуты (наследие до 0.69.1),
+    неоднозначно — путь под своим именем (его нет → мета пустая, имена
+    соседки не подставляются; GLM advisory r2 по #489)."""
+    p = live_sidecar.sidecar_for(live)
+    return p if p is not None else live.with_name(live.name + ".live.json")
 
 
 def live_session_names(meta: dict) -> dict[str, str]:
@@ -418,7 +403,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # пересборка живого черновика) — как прежде, распознаём.
     edited = human_edited_transcript(live, meta)
     if edited is not None:
-        if live_sidecar.valid_sha((meta or {}).get("minutes_source_sha256")) == live_sidecar.sha(edited):
+        if live_sidecar.valid_sha((meta or {}).get("minutes_source_sha256")) == _sha(_speech(edited)):
             log("стенограмма правлена руками, минутки уже собраны по этому тексту — "
                 "ничего не меняю")
             return live
@@ -669,7 +654,7 @@ def human_edited_transcript(live: pathlib.Path, meta: dict) -> str | None:
     задан CHAROITE_FORCE_STT=1 — None: распознаём как прежде, ничего не
     «охраняем» вслепую.
     """
-    if os.environ.get("CHAROITE_FORCE_STT"):
+    if os.environ.get("CHAROITE_FORCE_STT") == "1":
         log("CHAROITE_FORCE_STT задан — распознаю заново, правки уйдут в .prev")
         return None
     if live_sidecar.sidecar_for(live) is None:
@@ -692,7 +677,8 @@ def _finish(live: pathlib.Path, final_text: str, meta: dict, cfg: dict) -> None:
     # руками — только перештамповать (маркер и имена ЖИВОЙ сессии: их метки —
     # та же нумерация, которой минутки написаны; пересборочный `names` живёт в
     # другом пространстве номеров и клеил бы имя не тому — GLM Critical по #464).
-    machine_owned = finalize_minutes(live, final_text, meta, cfg, live_session_names(meta))
+    outcome = finalize_minutes(live, final_text, meta, cfg, live_session_names(meta))
+    machine_owned = outcome != "human"
     mpath = live.with_name(live.stem + "_minutes.md")
     canonize_file(mpath, cfg)
     # Хеш — по байтам, которые ЛЕЖАТ на диске после канона, и только когда
@@ -703,9 +689,13 @@ def _finish(live: pathlib.Path, final_text: str, meta: dict, cfg: dict) -> None:
     if machine_owned:
         try:
             _remember_minutes_sha(live, _sha(mpath.read_text(encoding="utf-8")))
-            # По какому тексту собраны: повторный клик без правок не должен
-            # перегенерировать протокол (advisory GLM r1 по #489)
-            _remember_sha(live, "minutes_source_sha256", _sha(final_text))
+            # По какой речи собраны: повторный клик без правок не должен
+            # перегенерировать протокол (advisory GLM r1 по #489). Только
+            # после настоящей регенерации — перештамповка не собирала
+            # минутки из этого текста (DS I1 / GLM I2 r2); хвост
+            # «Ко-мышление» в речь не входит (GLM M4 r2).
+            if outcome == "regenerated":
+                _remember_sha(live, "minutes_source_sha256", _sha(_speech(final_text)))
         except (OSError, UnicodeDecodeError) as e:
             log(f"хеш минуток не снят ({e}) — следующая пересборка их не тронет")
 
@@ -868,6 +858,11 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _speech(text: str) -> str:
+    """Речь без хвоста «Ко-мышление» — то, из чего собираются минутки."""
+    return re.split(re.escape(transcript.NOTES_HEAD), text, maxsplit=1)[0]
+
+
 def _remember_minutes_sha(live: pathlib.Path, sha: str) -> None:
     """Хеш машинных минуток — в live.json, чтобы следующая пересборка тоже
     видела в них автотекст, а не правку руками. Зовётся из rebuild() после
@@ -885,7 +880,7 @@ def _remember_sha(live: pathlib.Path, key: str, sha: str) -> None:
 
 
 def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
-                     live_names: dict[str, str]) -> bool:
+                     live_names: dict[str, str]) -> str:
     """Минутки после пересборки: пересобрать по финалу или перештамповать.
 
     Живой черновик пишется лёгкой моделью по голове и хвосту НЕЗАКОНЧЕННОЙ
@@ -902,9 +897,10 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     Нет минуток вовсе (короткая встреча, упавший поток) — собираем, если
     стенограмма длиннее порога черновика.
 
-    Возвращает, машинный ли файл после этого шага (регенерирован или
-    перештампован при нетронутом автотексте): по нему rebuild() после
-    канона снимает хеш. Правленный руками файл — False, его хеш не трогаем.
+    Возвращает исход: «regenerated» — собраны заново из final_text,
+    «restamped» — машинный файл лишь перештампован (по нему rebuild() после
+    канона снимает хеш, но источник минуток не запоминает — DS I1 / GLM I2
+    r2 по #489), «human» — правленный руками, его хеш не трогаем.
     Перед регенерацией прежняя версия уходит в .prev/ рядом со стенограммой
     (одно поколение): уверенная, но неверная генерация не должна быть
     невозвратной (advisory DS r1 по #483).
@@ -920,17 +916,17 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
             # записи финала (GLM Minor-6 по #483)
             log(f"минутки не прочитались ({e}) — перештамповка")
             restamp_minutes(live, live_names)
-            return False
+            return "human"
     elif mpath.exists():
         log("минутки не пересобраны (stat не удался) — перештамповка")
         restamp_minutes(live, live_names)
-        return False
+        return "human"
     expected = meta.get("minutes_sha256") if isinstance(meta, dict) else None
     owned = current is None or (bool(expected) and _sha(current) == expected)
     if not owned:
         log("минутки правлены не демоном (или без хеша в live.json) — перештамповка")
         restamp_minutes(live, live_names)
-        return False
+        return "human"
     # Модели — только речь: хвост «Ко-мышление» (📌/💎/💭 живого контура) —
     # мысли модели, не сказанное вслух; кнопка «Протокол» получает tr.full()
     # без него, и здесь так же (GLM Imp-4 по #483). Порог — только при
@@ -943,7 +939,7 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
         # хуже, чем создание с нуля (advisory GLM r2): короткий финал —
         # прежнее поведение №146, перештамповка.
         log(f"минутки не пересобраны: речи короче {MINUTES_MIN_CHARS} знаков")
-        return _fallback_restamp(mpath, before, current, live, live_names)
+        return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     from llm import LLM
     # Тяжёлый вызов не спорит с идущей встречей (GLM Imp-2), но и очередь
     # пересборок не паркует на час: потолок 10 минут.
@@ -953,10 +949,10 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
         doc = "".join(LLM(cfg).minutes(speech)).strip()
     except Exception as e:  # noqa: BLE001 — модель лежит: не терять прежние минутки
         log(f"минутки не пересобраны ({type(e).__name__}: {e}) — перештамповка")
-        return _fallback_restamp(mpath, before, current, live, live_names)
+        return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     if not doc:
         log("минутки не пересобраны (модель промолчала) — перештамповка")
-        return _fallback_restamp(mpath, before, current, live, live_names)
+        return "restamped" if _fallback_restamp(mpath, before, current, live, live_names) else "human"
     # Те же два шага, что у кнопки «Протокол»: сверка номеров и дат со
     # стенограммой и чекбоксы в формат окна «Задачи».
     doc = action_items.normalize(fact_check.annotate(doc, speech))
@@ -969,11 +965,11 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     # могли создать документ (GLM Critical по #483).
     if not safe_write.write_text(mpath, doc, expect=before, expect_absent=before is None):
         log("минутки сменились под пересборкой — оставлены как есть")
-        return False
+        return "human"
     log(f"минутки пересобраны по финальной стенограмме: {mpath.name} "
         f"({len(final_text)} знаков → {len(doc)}, {time.monotonic() - t0:.0f}с"
         + (", прежняя версия → .prev/" if current is not None else "") + ")")
-    return True
+    return "regenerated"
 
 
 def _fallback_restamp(mpath: pathlib.Path, before, current: str | None,

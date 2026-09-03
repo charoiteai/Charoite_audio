@@ -287,9 +287,9 @@ enum MeetingProcessingPolicy {
     static func rebuildMessage(_ outcome: RebuildOutcome) -> String {
         switch outcome {
         case .started:
-            return L.t("Пересборка запущена: правленную руками стенограмму не трогаем, минутки соберутся по ней; нетронутая распознаётся заново (если записи ещё хранятся), прежняя версия — в transcripts/.prev",
-                       "Rebuild started: a transcript you edited by hand is kept and the minutes are rebuilt from it; an untouched one is re-recognized (if the recordings are still kept), the previous version goes to transcripts/.prev",
-                       "已开始重建：手工修改过的逐字稿保持不变，纪要按它重建；未改动的将重新识别（若录音仍保留），旧版本存入 transcripts/.prev")
+            return L.t("Пересборка запущена: правленную руками стенограмму не трогаем, минутки соберутся по ней (если их самих не правили; без изменений — ничего); нетронутая распознаётся заново (если записи ещё хранятся), прежняя версия — в transcripts/.prev",
+                       "Rebuild started: a transcript you edited by hand is kept and the minutes are rebuilt from it (unless they were edited too; nothing changed — nothing happens); an untouched one is re-recognized (if the recordings are still kept), the previous version goes to transcripts/.prev",
+                       "已开始重建：手工修改过的逐字稿保持不变，纪要按它重建（若纪要本身未改动；无变化则不做任何操作）；未改动的将重新识别（若录音仍保留），旧版本存入 transcripts/.prev")
         case .busy:
             return L.t("Уже идёт пересборка или повтор другой встречи — дождитесь окончания",
                        "A rebuild or retry of another meeting is already running — wait for it to finish",

@@ -353,6 +353,18 @@ def plan(stamp: str, root: pathlib.Path,
     if prev_dir.is_dir():
         names = {f.name for f in p.delete if f.parent == root / "transcripts"}
         p.delete += [f for f in prev_dir.iterdir() if f.name in names and f not in p.delete]
+    # Сайдкар live.json переехавшей встречи минутный глоб выше уносит сам;
+    # оставшийся под посекундным именем (встречи до 0.69.1) — единственный
+    # в этой минуте: сирота доставалась соседке той же минуты и её хеши
+    # (DS r2 по #489). Несколько — не угадываем.
+    tdir = root / "transcripts"
+    if tdir.is_dir():
+        tail = ".md.live.json"
+        minute = meeting_stamp.minute_of(stamp)
+        legacy = [f for f in tdir.glob(f"*{tail}") if f not in p.delete
+                  and meeting_stamp.minute_of(f.name[:-len(tail)]) == minute]
+        if len(legacy) == 1:
+            p.delete += legacy
 
     # Логи графа этой встречи: в logs/graph_<штамп>*.log попадают имена
     # участников и куски цитат — «забыть» обязано дойти и до них, иначе

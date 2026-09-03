@@ -59,7 +59,7 @@ def test_edited_transcript_skips_stt_and_rebuilds_minutes(root, monkeypatch):
     got: dict = {}
     monkeypatch.setattr(rt, "STT", _NoSTT)
     monkeypatch.setattr(rt, "finalize_minutes",
-                        lambda l, text, meta, cfg, names: got.setdefault("text", text) and False)
+                        lambda l, text, meta, cfg, names: got.setdefault("text", text) and "human")
     monkeypatch.setattr(rt, "canonize_file", lambda *a, **k: None)
     assert rt.rebuild(live, CFG) == live
     assert got["text"] == live.read_text(encoding="utf-8"), "минутки — по правленому тексту"
@@ -98,7 +98,7 @@ def test_edited_path_rebuilds_minutes_file_and_hashes(root, monkeypatch):
 
     def fake_finalize(l, text, meta, cfg, names):
         mpath.write_text("# Протокол\n" + text, encoding="utf-8")
-        return True
+        return "regenerated"
     monkeypatch.setattr(rt, "STT", _NoSTT)
     monkeypatch.setattr(rt, "finalize_minutes", fake_finalize)
     monkeypatch.setattr(rt, "canonize_file", lambda *a, **k: None)
@@ -106,7 +106,7 @@ def test_edited_path_rebuilds_minutes_file_and_hashes(root, monkeypatch):
     meta = json.loads(live.with_name(live.name + ".live.json").read_text(encoding="utf-8"))
     assert meta["transcript_sha256"] == _sha("машинный текст"), "хеш стенограммы не трогаем — файл правленый"
     assert meta["minutes_sha256"] == _sha(mpath.read_text(encoding="utf-8"))
-    assert meta["minutes_source_sha256"] == _sha(edited)
+    assert meta["minutes_source_sha256"] == _sha(edited)   # речь без «Ко-мышления» = весь текст
 
 
 def test_second_click_without_changes_does_nothing(root, monkeypatch):
@@ -129,6 +129,8 @@ def test_retitle_refreshes_transcript_hash(root):
     titled = graph_updater.retitle(live, "2026-09-03_1200", bare, "План выпуска")
     assert titled != live and titled.exists()
     assert titled.read_text(encoding="utf-8").startswith("# Встреча 2026-09-03_1200 — План выпуска")
+    assert titled.with_name(titled.name + ".live.json").exists(), "сайдкар переехал вместе с файлом"
+    assert not live.with_name(live.name + ".live.json").exists()
     meta = rt.live_meta(titled)
     assert rt.human_edited_transcript(titled, meta) is None, "тема в шапке — не правка руками"
     titled.write_text(titled.read_text(encoding="utf-8") + "правка\n", encoding="utf-8")
@@ -159,3 +161,58 @@ def test_force_stt_env_skips_the_gate(root, monkeypatch):
     live = _meeting(root, "правленый\n", {"transcript_sha256": _sha("машинный")})
     monkeypatch.setenv("CHAROITE_FORCE_STT", "1")
     assert rt.human_edited_transcript(live, rt.live_meta(live)) is None
+
+
+def test_retitle_keeps_a_human_edit_protected(root):
+    """Правка руками, потом накат темы: хеш не освежается, правка под защитой."""
+    bare = "2026-09-03_120005"
+    live = root / "transcripts" / f"{bare}.md"
+    live.write_text("живой\n", encoding="utf-8")
+    live.with_name(live.name + ".live.json").write_text("{}", encoding="utf-8")
+    rt.write_final(live, f"# Встреча {bare}\n\nмашинный текст\n", "живой\n")
+    live.write_text(f"# Встреча {bare}\n\nправленый текст\n", encoding="utf-8")
+    titled = graph_updater.retitle(live, "2026-09-03_1200", bare, "Тема")
+    assert rt.human_edited_transcript(titled, rt.live_meta(titled)) is not None
+
+
+def test_restamp_does_not_record_minutes_source(root, monkeypatch):
+    edited = "правленый текст\n"
+    live = _meeting(root, edited, {"transcript_sha256": _sha("машинный текст")})
+    monkeypatch.setattr(rt, "STT", _NoSTT)
+    monkeypatch.setattr(rt, "finalize_minutes", lambda *a, **k: "restamped")
+    monkeypatch.setattr(rt, "canonize_file", lambda *a, **k: None)
+    live.with_name(live.stem + "_minutes.md").write_text("старый протокол\n", encoding="utf-8")
+    assert rt.rebuild(live, CFG) == live
+    meta = json.loads(live.with_name(live.name + ".live.json").read_text(encoding="utf-8"))
+    assert "minutes_source_sha256" not in meta, "перештамповка не собирала минутки из этого текста"
+    assert "minutes_sha256" in meta
+
+
+def test_notes_tail_edit_does_not_regenerate(root, monkeypatch):
+    import transcript
+    speech = "речь\n"
+    text = speech + transcript.NOTES_HEAD + "\nправка в ко-мышлении\n"
+    live = _meeting(root, text, {"transcript_sha256": _sha("машинный"),
+                                 "minutes_source_sha256": _sha(speech)})
+    monkeypatch.setattr(rt, "STT", _NoSTT)
+    monkeypatch.setattr(rt, "finalize_minutes", lambda *a, **k: pytest.fail("речь не менялась"))
+    assert rt.rebuild(live, CFG) == live
+
+
+def test_force_stt_only_when_one(root, monkeypatch):
+    live = _meeting(root, "правленый\n", {"transcript_sha256": _sha("машинный")})
+    monkeypatch.setenv("CHAROITE_FORCE_STT", "0")
+    assert rt.human_edited_transcript(live, rt.live_meta(live)) is not None
+
+
+def test_legacy_sidecar_is_adopted_on_write(root):
+    """Сайдкар под старым посекундным именем при записи переезжает под своё."""
+    live = root / "transcripts" / "2026-09-03_1200_Тема.md"
+    live.write_text("текст\n", encoding="utf-8")
+    old = root / "transcripts" / "2026-09-03_120005.md.live.json"
+    old.write_text(json.dumps({"names": {"Собеседник 1": "Анна"}}), encoding="utf-8")
+    assert live_sidecar.remember(live, "transcript_sha256", _sha("текст\n"))
+    new = live.with_name(live.name + ".live.json")
+    assert new.exists() and not old.exists()
+    meta = json.loads(new.read_text(encoding="utf-8"))
+    assert meta["names"] == {"Собеседник 1": "Анна"} and meta["transcript_sha256"] == _sha("текст\n")
