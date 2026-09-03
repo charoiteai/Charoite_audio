@@ -55,6 +55,9 @@ final class DictationService: ObservableObject {
     /// текст, который поле замаскировало, не должен висеть внизу экрана.
     private var secureField = false
     private var secureCheckedAt = Date.distantPast
+    /// Диктовка НАЧАТА в поле пароля: этот текст на экран не выводим,
+    /// даже если к доставке впереди уже обычное поле (круг 2 по #488, DS).
+    private var startedSecure = false
     /// Где нажали ⌥⌘D: приложение и, при праве Accessibility, окно с
     /// фокусом. Распознавание идёт секунды (страховка черновиком — до 8 с),
     /// и ⌘V должен уйти туда, где человек начал диктовать, а не в окно,
@@ -152,10 +155,15 @@ final class DictationService: ObservableObject {
         startedAt = Date()
         let generation = self.generation
         DictationPreviewPanel.shared.hide()   // плашка прошлой диктовки не висит над новой
-        // Заметке и дневнику плашка не положена — AX-запрос им не нужен
-        secureField = note ? false : Self.focusedFieldIsSecure()
+        // Заметке и дневнику плашка не положена — AX-запрос им не нужен;
+        // один проход даёт и пароль, и окно, и владельца поля
+        let focus = note ? FocusInfo() : Self.focusInfo()
+        secureField = focus.secure
+        startedSecure = focus.secure
         secureCheckedAt = Date()
-        target = Self.frontAnchor()
+        // Якорь вставки нужен только глобальной диктовке: чат и заметка
+        // insert() не зовут (круг 2 по #488, DS)
+        target = (onResult == nil && !note) ? Self.frontAnchor(focus) : nil
         let p = Process()
         p.arguments = [script] + args
         AppSettings.preparePython(p, root: suflerRoot)
@@ -353,28 +361,55 @@ final class DictationService: ObservableObject {
         let window: AXUIElement?
     }
 
-    nonisolated static func frontAnchor() -> PasteAnchor? {
-        guard let front = NSWorkspace.shared.frontmostApplication else { return nil }
-        return PasteAnchor(pid: front.processIdentifier, name: front.localizedName ?? "?",
-                           window: focusedWindow())
+    /// Что под фокусом — одним AX-проходом (потолок 0,25 с на запрос):
+    /// поле пароля, его окно и владелец. Без права Accessibility всё пусто.
+    struct FocusInfo {
+        var secure = false
+        var window: AXUIElement?
+        var pid: pid_t?
     }
 
-    /// Окно сфокусированного элемента (AX, потолок 0,25 с) — nil без права
-    /// или когда у элемента окна нет.
-    nonisolated static func focusedWindow() -> AXUIElement? {
-        guard AXIsProcessTrusted() else { return nil }
+    nonisolated static func focusInfo() -> FocusInfo {
+        var info = FocusInfo()
+        guard AXIsProcessTrusted() else { return info }
         let system = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(system, 0.25)
+        AXUIElementSetMessagingTimeout(system, 0.25)   // зависшее чужое приложение не держит старт диктовки
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString,
                                             &focused) == .success,
-              let element = focused, CFGetTypeID(element) == AXUIElementGetTypeID() else { return nil }
-        let field = unsafeBitCast(element, to: AXUIElement.self)
-        AXUIElementSetMessagingTimeout(field, 0.25)
+              let value = focused, CFGetTypeID(value) == AXUIElementGetTypeID() else { return info }
+        let field = unsafeBitCast(value, to: AXUIElement.self)
+        AXUIElementSetMessagingTimeout(field, 0.25)   // таймаут — свойство ссылки, не наследуется
+        var pid: pid_t = 0
+        if AXUIElementGetPid(field, &pid) == .success, pid > 0 { info.pid = pid }
+        var role: CFTypeRef?
+        var subrole: CFTypeRef?
+        AXUIElementCopyAttributeValue(field, kAXRoleAttribute as CFString, &role)
+        AXUIElementCopyAttributeValue(field, kAXSubroleAttribute as CFString, &subrole)
+        info.secure = (role as? String) == "AXSecureTextField" || (subrole as? String) == "AXSecureTextField"
         var window: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(field, kAXWindowAttribute as CFString, &window) == .success,
-              let w = window, CFGetTypeID(w) == AXUIElementGetTypeID() else { return nil }
-        return unsafeBitCast(w, to: AXUIElement.self)
+        if AXUIElementCopyAttributeValue(field, kAXWindowAttribute as CFString, &window) == .success,
+           let w = window, CFGetTypeID(w) == AXUIElementGetTypeID() {
+            info.window = unsafeBitCast(w, to: AXUIElement.self)
+        }
+        return info
+    }
+
+    /// Сфокусированное поле — защищённый ввод (пароль)? Тогда ни живого
+    /// черновика, ни плашки (круг 3 по #486, GLM). Без права Accessibility
+    /// ответ «нет»: без него и ⌘V не будет, текст остаётся в буфере.
+    nonisolated static func focusedFieldIsSecure() -> Bool { focusInfo().secure }
+
+    /// Якорь вставки: владелец сфокусированного элемента (неактивирующая
+    /// key-панель — строка меню Чароита — не меняет frontmostApplication,
+    /// а окно и pid должны быть из одного источника; круг 2 по #488, DS),
+    /// иначе приложение впереди.
+    nonisolated static func frontAnchor(_ info: FocusInfo) -> PasteAnchor? {
+        let owner = info.pid.flatMap { NSRunningApplication(processIdentifier: $0) }
+            ?? NSWorkspace.shared.frontmostApplication
+        guard let owner else { return nil }
+        return PasteAnchor(pid: owner.processIdentifier, name: owner.localizedName ?? "?",
+                           window: info.window)
     }
 
     /// Куда уйдёт результат: ⌘V только с правом Accessibility и только туда,
@@ -389,26 +424,6 @@ final class DictationService: ObservableObject {
         if now.pid != startedIn.pid { return .windowChanged }
         if let a = startedIn.window, let b = now.window, !CFEqual(a, b) { return .windowChanged }
         return .paste
-    }
-
-    /// Сфокусированное поле — защищённый ввод (пароль)? Тогда ни живого
-    /// черновика, ни плашки (круг 3, GLM). Без права Accessibility ответ
-    /// «нет»: без него и ⌘V не будет, текст остаётся в буфере.
-    nonisolated static func focusedFieldIsSecure() -> Bool {
-        guard AXIsProcessTrusted() else { return false }
-        let system = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(system, 0.25)   // зависшее чужое приложение не держит старт диктовки
-        var focused: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString,
-                                            &focused) == .success,
-              let value = focused, CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
-        let field = unsafeBitCast(value, to: AXUIElement.self)
-        AXUIElementSetMessagingTimeout(field, 0.25)   // таймаут — свойство ссылки, не наследуется
-        var role: CFTypeRef?
-        var subrole: CFTypeRef?
-        AXUIElementCopyAttributeValue(field, kAXRoleAttribute as CFString, &role)
-        AXUIElementCopyAttributeValue(field, kAXSubroleAttribute as CFString, &subrole)
-        return (role as? String) == "AXSecureTextField" || (subrole as? String) == "AXSecureTextField"
     }
 
     /// Поле пароля — не снимок на старте, а последнее известное: фокус
@@ -566,7 +581,8 @@ final class DictationService: ObservableObject {
         pb.setString(text, forType: .string)
         let ourChange = pb.changeCount
 
-        let now = Self.frontAnchor()
+        let focus = Self.focusInfo()
+        let now = Self.frontAnchor(focus)
         switch Self.pasteDecision(trusted: AXIsProcessTrusted(), own: ProcessInfo.processInfo.processIdentifier,
                                   startedIn: target, now: now) {
         case .windowChanged:
@@ -584,7 +600,9 @@ final class DictationService: ObservableObject {
             status = hint + L.t(" (впереди «\(front)», диктовали в «\(started)»)",
                                 " (\u{201C}\(front)\u{201D} is in front, you dictated into \u{201C}\(started)\u{201D})",
                                 "（当前是「\(front)」，听写时是「\(started)」）")
-            if !refreshSecureField(force: true) {
+            // Текст из поля пароля на экран не выводим ни при каком фокусе;
+            // текущее поле — тем же AX-проходом, без второго запроса
+            if !startedSecure, !focus.secure {
                 DictationPreviewPanel.shared.flash(text: text, hint: hint, seconds: 6)
             }
             return
