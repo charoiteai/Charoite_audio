@@ -691,7 +691,9 @@ it signals degradation, it does not break the loop.
   started — not when the pipeline finished writing its status. "Rebuild
   result" reports what actually happened: started (if the recordings are
   still kept, the transcript is re-recognized and the previous version
-  goes to transcripts/.prev), a rebuild or retry of another meeting is
+  goes to transcripts/.prev; a transcript you edited by hand is never
+  re-recognized — the minutes are rebuilt from your text, the hash of the
+  last machine write lives in live.json), a rebuild or retry of another meeting is
   already running, no transcript on disk, or failed to launch (a missing
   python is caught before the process starts) — it used to say "started"
   on every click, including the silent refusals; the item stays greyed

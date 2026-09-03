@@ -410,6 +410,17 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     if stamp is None:
         return None
     meta = live_meta(live)
+    # Стенограмму правили руками после последней пересборки (хеш, снятый
+    # write_final, не совпал): STT заново затёр бы правки в .prev, а минутки
+    # собрались бы по машинному тексту (№131). Правленый финал — канон:
+    # заново только производное. Без хеша (старые встречи, первая
+    # пересборка живого черновика) — как прежде, распознаём.
+    edited = human_edited_transcript(live, meta)
+    if edited is not None:
+        log("стенограмма правлена руками после пересборки — STT пропущен, "
+            "минутки пересобираю по правленому тексту")
+        _finish(live, edited, meta, cfg)
+        return live
     sr_cfg = int(cfg["audio"]["samplerate"])
     rec_dir = ROOT / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings")
     if os.environ.get("SUFLER_RECORDINGS_DIR"):
@@ -640,6 +651,30 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # слова без алиаса не трогаются, а уходят в отчёт-кандидаты.
     final_text = canonize(final_text, cfg)
     write_final(live, final_text, live_text)
+    _finish(live, final_text, meta, cfg)
+    return live
+
+
+def human_edited_transcript(live: pathlib.Path, meta: dict) -> str | None:
+    """Текст стенограммы, если после последней пересборки её правили руками.
+
+    Признак — хеш из live.json (`transcript_sha256`, снимает write_final) не
+    совпал с файлом. Нет хеша или файл не читается — None: распознаём как
+    прежде, ничего не «охраняем» вслепую.
+    """
+    expected = meta.get("transcript_sha256") if isinstance(meta, dict) else None
+    if not expected:
+        return None
+    try:
+        current = live.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        log(f"стенограмма не прочиталась ({e}) — распознаю заново")
+        return None
+    return current if _sha(current) != expected else None
+
+
+def _finish(live: pathlib.Path, final_text: str, meta: dict, cfg: dict) -> None:
+    """Производное от финальной стенограммы: минутки и их хеш."""
     # Минутки: нетронутый автотекст — заново по финальной стенограмме; правленный
     # руками — только перештамповать (маркер и имена ЖИВОЙ сессии: их метки —
     # та же нумерация, которой минутки написаны; пересборочный `names` живёт в
@@ -657,7 +692,6 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
             _remember_minutes_sha(live, _sha(mpath.read_text(encoding="utf-8")))
         except (OSError, UnicodeDecodeError) as e:
             log(f"хеш минуток не снят ({e}) — следующая пересборка их не тронет")
-    return live
 
 
 _LEX_CACHE: list = [None]
@@ -803,6 +837,9 @@ def write_final(live: pathlib.Path, text: str, live_text: str) -> pathlib.Path:
     safe_write.write_text(live, text)
     log(f"финальная стенограмма записана: {live.name} (живой черновик → {live_copy.name}, "
         f"версия до пересборки → .prev/{live.name})")
+    # Хеш — по тем байтам, что ушли на диск: следующая пересборка отличит
+    # свой текст от правленного руками (№131).
+    _remember_sha(live, "transcript_sha256", _sha(text))
     return live
 
 
@@ -819,15 +856,22 @@ def _remember_minutes_sha(live: pathlib.Path, sha: str) -> None:
     """Хеш машинных минуток — в live.json, чтобы следующая пересборка тоже
     видела в них автотекст, а не правку руками. Зовётся из rebuild() после
     канонизации — по байтам, которые реально лежат на диске."""
+    _remember_sha(live, "minutes_sha256", sha)
+
+
+def _remember_sha(live: pathlib.Path, key: str, sha: str) -> None:
+    """Хеш последней МАШИННОЙ записи файла — в live.json под своим ключом
+    (`minutes_sha256`, `transcript_sha256`): совпадение с диском означает,
+    что текста никто не касался."""
     p = live_meta_path(live)
     try:
         meta = json.loads(p.read_text(encoding="utf-8"))
         if not isinstance(meta, dict):
             return
-        meta["minutes_sha256"] = sha
+        meta[key] = sha
         safe_write.write_text(p, json.dumps(meta, ensure_ascii=False))
     except (OSError, ValueError) as e:
-        log(f"хеш минуток не записан в live.json: {e}")
+        log(f"хеш {key} не записан в live.json: {e}")
 
 
 def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
