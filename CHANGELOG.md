@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.69.0](https://github.com/charoiteai/Charoite_audio/compare/v0.68.0...v0.69.0) (2026-09-03)
+
+
+### Features
+
+* **dictation:** live draft from the system engine while you speak ([#486](https://github.com/charoiteai/Charoite_audio/issues/486)) ([b1528fb](https://github.com/charoiteai/Charoite_audio/commit/b1528fb000611eb91726761a645fbecca06e2e56))
+
 ## [0.68.0](https://github.com/charoiteai/Charoite_audio/compare/v0.67.0...v0.68.0) (2026-09-02)
 
 
