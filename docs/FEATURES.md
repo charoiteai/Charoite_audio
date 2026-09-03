@@ -309,10 +309,12 @@ it signals degradation, it does not break the loop.
   no blocking items remain.
 - **Dictation** (global hotkey) — speak → recognized locally → pasted into
   the active field; the clipboard is restored, images included. The text
-  goes to the app where you pressed the hotkey: recognition takes seconds,
-  and if another app is in front by then, the text stays in the clipboard
-  and the status names both apps — press ⌘V in the right field (a window
-  switch inside the same app is not detected). In the menu
+  goes to the app — and, with the Accessibility right, the window — where
+  dictation started: recognition takes seconds, and if something else is
+  in front by then, the text stays in the clipboard (the previous clipboard
+  content is not restored), the strip and the status say so — press ⌘V in
+  the right field. Started from Charoite's own menu, the text goes wherever
+  you click, as before. In the menu
   bar, dictation, note and diary sit in a column with their shortcuts in a
   separate right-hand column: on one row they did not fit and got truncated
   exactly at the shortcut.

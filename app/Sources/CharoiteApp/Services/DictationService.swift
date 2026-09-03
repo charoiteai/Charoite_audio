@@ -55,11 +55,13 @@ final class DictationService: ObservableObject {
     /// текст, который поле замаскировало, не должен висеть внизу экрана.
     private var secureField = false
     private var secureCheckedAt = Date.distantPast
-    /// Приложение, в котором нажали ⌥⌘D: распознавание идёт секунды (а
-    /// страховка черновиком — до 8 с), и ⌘V должен уйти туда, где человек
-    /// начал диктовать, а не в окно, которое он успел открыть (№156).
-    private var targetApp: pid_t = 0
-    private var targetAppName = ""
+    /// Где нажали ⌥⌘D: приложение и, при праве Accessibility, окно с
+    /// фокусом. Распознавание идёт секунды (страховка черновиком — до 8 с),
+    /// и ⌘V должен уйти туда, где человек начал диктовать, а не в окно,
+    /// которое он успел открыть (№156). Собственный UI Чароита (строка
+    /// меню-бара, окно чата) якорем не считается — цель человека ещё
+    /// впереди, он в неё кликнет (круг 1 по #488).
+    private var target: PasteAnchor?
     private static var previewUnavailableLogged = false
 
     private var suflerRoot: URL { AppSettings.charoiteRoot }
@@ -153,9 +155,7 @@ final class DictationService: ObservableObject {
         // Заметке и дневнику плашка не положена — AX-запрос им не нужен
         secureField = note ? false : Self.focusedFieldIsSecure()
         secureCheckedAt = Date()
-        let front = NSWorkspace.shared.frontmostApplication
-        targetApp = front?.processIdentifier ?? 0
-        targetAppName = front?.localizedName ?? ""
+        target = Self.frontAnchor()
         let p = Process()
         p.arguments = [script] + args
         AppSettings.preparePython(p, root: suflerRoot)
@@ -345,15 +345,49 @@ final class DictationService: ObservableObject {
 
     enum PasteDecision: Equatable { case paste, noAccessibility, windowChanged }
 
-    /// Куда уйдёт результат: ⌘V только с правом Accessibility и только в
-    /// то приложение, где нажали ⌥⌘D. Приложение, не окно: смена окна внутри
-    /// одного приложения не ловится — дёшево и без AX-запросов (№156).
-    /// `startedIn == 0` — приложение на старте узнать не удалось: ведём себя
-    /// как раньше, вставляем.
-    nonisolated static func pasteDecision(trusted: Bool, startedIn: pid_t,
-                                          frontmost: pid_t?) -> PasteDecision {
+    /// Приложение впереди и окно с фокусом в нём (окно — только при праве
+    /// Accessibility; без него сравниваем приложения).
+    struct PasteAnchor {
+        let pid: pid_t
+        let name: String
+        let window: AXUIElement?
+    }
+
+    nonisolated static func frontAnchor() -> PasteAnchor? {
+        guard let front = NSWorkspace.shared.frontmostApplication else { return nil }
+        return PasteAnchor(pid: front.processIdentifier, name: front.localizedName ?? "?",
+                           window: focusedWindow())
+    }
+
+    /// Окно сфокусированного элемента (AX, потолок 0,25 с) — nil без права
+    /// или когда у элемента окна нет.
+    nonisolated static func focusedWindow() -> AXUIElement? {
+        guard AXIsProcessTrusted() else { return nil }
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.25)
+        var focused: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString,
+                                            &focused) == .success,
+              let element = focused, CFGetTypeID(element) == AXUIElementGetTypeID() else { return nil }
+        let field = unsafeBitCast(element, to: AXUIElement.self)
+        AXUIElementSetMessagingTimeout(field, 0.25)
+        var window: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(field, kAXWindowAttribute as CFString, &window) == .success,
+              let w = window, CFGetTypeID(w) == AXUIElementGetTypeID() else { return nil }
+        return unsafeBitCast(w, to: AXUIElement.self)
+    }
+
+    /// Куда уйдёт результат: ⌘V только с правом Accessibility и только туда,
+    /// где нажали ⌥⌘D — то же приложение и (если оба окна известны) то же
+    /// окно. Якорь неизвестен или это сам Чароит (строка меню-бара, чат) —
+    /// ведём себя как раньше, вставляем в активное поле; впереди сам Чароит
+    /// при чужом якоре — текст в буфере, в собственную панель не вставляем.
+    nonisolated static func pasteDecision(trusted: Bool, own: pid_t,
+                                          startedIn: PasteAnchor?, now: PasteAnchor?) -> PasteDecision {
         guard trusted else { return .noAccessibility }
-        if startedIn != 0, let frontmost, frontmost != startedIn { return .windowChanged }
+        guard let startedIn, startedIn.pid != own, let now else { return .paste }
+        if now.pid != startedIn.pid { return .windowChanged }
+        if let a = startedIn.window, let b = now.window, !CFEqual(a, b) { return .windowChanged }
         return .paste
     }
 
@@ -532,18 +566,28 @@ final class DictationService: ObservableObject {
         pb.setString(text, forType: .string)
         let ourChange = pb.changeCount
 
-        let front = NSWorkspace.shared.frontmostApplication
-        switch Self.pasteDecision(trusted: AXIsProcessTrusted(), startedIn: targetApp,
-                                  frontmost: front?.processIdentifier) {
+        let now = Self.frontAnchor()
+        switch Self.pasteDecision(trusted: AXIsProcessTrusted(), own: ProcessInfo.processInfo.processIdentifier,
+                                  startedIn: target, now: now) {
         case .windowChanged:
-            // ⌘V ушёл бы в чужое окно — текст в буфере, человек вставит сам
-            let where_ = front?.localizedName ?? "?"
-            status = L.t("активно уже «\(where_)», а диктовали в «\(targetAppName)» — текст в буфере, нажми ⌘V в нужном поле",
-                         "\u{201C}\(where_)\u{201D} is in front now, you dictated into \u{201C}\(targetAppName)\u{201D} — text is in the clipboard, press ⌘V in the right field",
-                         "当前是「\(where_)」，而听写时是「\(targetAppName)」——文本已在剪贴板，请在正确的输入框按 ⌘V")
-            if keepStatus {
-                status = L.t("черновик системного движка (GigaAM не ответил) ", "system engine draft (GigaAM did not answer) ", "系统引擎草稿（GigaAM 未响应）") + status
+            // ⌘V ушёл бы не туда — текст в буфере, человек вставит сам. Панель
+            // меню-бара к этому моменту закрыта, поэтому говорит плашка — там,
+            // куда он смотрит; звука успеха нет (круг 1 по #488, DS/GLM).
+            let hint = keepStatus
+                ? L.t("черновик системного движка в буфере — нажми ⌘V в нужном поле",
+                      "system engine draft is in the clipboard — press ⌘V in the right field",
+                      "系统引擎草稿已在剪贴板——请在正确的输入框按 ⌘V")
+                : L.t("текст в буфере — нажми ⌘V в нужном поле",
+                      "text is in the clipboard — press ⌘V in the right field",
+                      "文本已在剪贴板——请在正确的输入框按 ⌘V")
+            let front = now?.name ?? "?", started = target?.name ?? "?"
+            status = hint + L.t(" (впереди «\(front)», диктовали в «\(started)»)",
+                                " (\u{201C}\(front)\u{201D} is in front, you dictated into \u{201C}\(started)\u{201D})",
+                                "（当前是「\(front)」，听写时是「\(started)」）")
+            if !refreshSecureField(force: true) {
+                DictationPreviewPanel.shared.flash(text: text, hint: hint, seconds: 6)
             }
+            return
         case .paste:
             let src = CGEventSource(stateID: .combinedSessionState)
             let vDown = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true)
