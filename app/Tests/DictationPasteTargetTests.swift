@@ -54,4 +54,10 @@ final class DictationPasteTargetTests: XCTestCase {
         XCTAssertEqual(DictationService.pasteDecision(trusted: true, own: own, startedIn: nil, now: anchor(77)), .paste)
         XCTAssertEqual(DictationService.pasteDecision(trusted: true, own: own, startedIn: anchor(42), now: nil), .paste)
     }
+
+    func testStripNeverShowsPasswordText() {
+        XCTAssertTrue(DictationService.stripAllowed(startedSecure: false, nowSecure: false))
+        XCTAssertFalse(DictationService.stripAllowed(startedSecure: true, nowSecure: false), "начали в пароле — текст не показываем")
+        XCTAssertFalse(DictationService.stripAllowed(startedSecure: false, nowSecure: true), "стоим в пароле — тоже")
+    }
 }

@@ -408,8 +408,16 @@ final class DictationService: ObservableObject {
         let owner = info.pid.flatMap { NSRunningApplication(processIdentifier: $0) }
             ?? NSWorkspace.shared.frontmostApplication
         guard let owner else { return nil }
+        // Окно без владельца (pid не извлёкся) — не склеивать с frontmost:
+        // гибрид «pid одного, окно другого» хуже сравнения по приложению
         return PasteAnchor(pid: owner.processIdentifier, name: owner.localizedName ?? "?",
-                           window: info.window)
+                           window: info.pid != nil ? info.window : nil)
+    }
+
+    /// Можно ли показать надиктованный текст на экране: ни начали в поле
+    /// пароля, ни стоим в нём сейчас (DS r3 M4 — чистый шов для теста).
+    nonisolated static func stripAllowed(startedSecure: Bool, nowSecure: Bool) -> Bool {
+        !startedSecure && !nowSecure
     }
 
     /// Куда уйдёт результат: ⌘V только с правом Accessibility и только туда,
@@ -445,6 +453,11 @@ final class DictationService: ObservableObject {
                                : L.t("ошибка распознавания: \(String(errTail.suffix(120)))", "recognition error: \(String(errTail.suffix(120)))", "识别错误：\(String(errTail.suffix(120)))")
             return
         }
+        // Один AX-проход на всю доставку: гейт плашки черновика и решение о
+        // вставке смотрят на одно и то же мгновение (DS r3 M2)
+        let focus = (handler == nil && !wasNote) ? Self.focusInfo() : FocusInfo()
+        secureField = focus.secure
+        secureCheckedAt = Date()
         if fromDraft {
             status = L.t("GigaAM не ответил — вставлен черновик системного движка", "GigaAM did not answer — inserted the system engine's draft", "GigaAM 未响应——已插入系统引擎的草稿")
             // Человек смотрит в чужое поле, а не в строку статуса Чароита:
@@ -452,7 +465,7 @@ final class DictationService: ObservableObject {
             // Только глобальная диктовка: в чате текст уже перед глазами,
             // а в поле пароля плашки нет вовсе — фокус перечитывается здесь,
             // за 8 с ожидания черновика человек мог кликнуть куда угодно.
-            if handler == nil, !refreshSecureField(force: true) {
+            if handler == nil, !focus.secure {
                 DictationPreviewPanel.shared.flash(
                     text: text,
                     hint: L.t("черновик системного движка — GigaAM не ответил",
@@ -478,7 +491,7 @@ final class DictationService: ObservableObject {
             }
             NSSound(named: "Glass")?.play()
         } else {
-            insert(text: text, keepStatus: fromDraft)
+            insert(text: text, keepStatus: fromDraft, focus: focus)
         }
     }
 
@@ -566,7 +579,7 @@ final class DictationService: ObservableObject {
 
     // MARK: - Вставка в активное поле
 
-    private func insert(text: String, keepStatus: Bool = false) {
+    private func insert(text: String, keepStatus: Bool = false, focus: FocusInfo? = nil) {
         let pb = NSPasteboard.general
         // сохраняем ВСЕ типы (скриншот/RTF), не только строку — иначе
         // картинка в буфере пропадала после диктовки безвозвратно
@@ -581,7 +594,7 @@ final class DictationService: ObservableObject {
         pb.setString(text, forType: .string)
         let ourChange = pb.changeCount
 
-        let focus = Self.focusInfo()
+        let focus = focus ?? Self.focusInfo()
         let now = Self.frontAnchor(focus)
         switch Self.pasteDecision(trusted: AXIsProcessTrusted(), own: ProcessInfo.processInfo.processIdentifier,
                                   startedIn: target, now: now) {
@@ -597,13 +610,23 @@ final class DictationService: ObservableObject {
                       "text is in the clipboard — press ⌘V in the right field",
                       "文本已在剪贴板——请在正确的输入框按 ⌘V")
             let front = now?.name ?? "?", started = target?.name ?? "?"
-            status = hint + L.t(" (впереди «\(front)», диктовали в «\(started)»)",
-                                " (\u{201C}\(front)\u{201D} is in front, you dictated into \u{201C}\(started)\u{201D})",
-                                "（当前是「\(front)」，听写时是「\(started)」）")
+            // Другое окно того же приложения — не называть его дважды (DS r3 M3)
+            status = hint + (front == started
+                ? L.t(" (впереди другое окно «\(front)»)",
+                      " (another window of \u{201C}\(front)\u{201D} is in front)",
+                      "（当前是「\(front)」的另一个窗口）")
+                : L.t(" (впереди «\(front)», диктовали в «\(started)»)",
+                      " (\u{201C}\(front)\u{201D} is in front, you dictated into \u{201C}\(started)\u{201D})",
+                      "（当前是「\(front)」，听写时是「\(started)」）"))
             // Текст из поля пароля на экран не выводим ни при каком фокусе;
             // текущее поле — тем же AX-проходом, без второго запроса
-            if !startedSecure, !focus.secure {
+            if Self.stripAllowed(startedSecure: startedSecure, nowSecure: focus.secure) {
                 DictationPreviewPanel.shared.flash(text: text, hint: hint, seconds: 6)
+            } else if !focus.secure {
+                // Начали в пароле, а впереди уже обычное поле: сам текст не
+                // показываем, но инструкцию — да, иначе результат повиснет в
+                // буфере незамеченным (advisory DS r3)
+                DictationPreviewPanel.shared.flash(text: hint, hint: "", seconds: 6)
             }
             return
         case .paste:
@@ -615,7 +638,10 @@ final class DictationService: ObservableObject {
             vDown?.post(tap: .cghidEventTap)
             vUp?.post(tap: .cghidEventTap)
             if !keepStatus {
-                status = L.t("вставлено: \(String(text.prefix(60)))", "inserted: \(String(text.prefix(60)))", "已插入：\(String(text.prefix(60)))")
+                // Пароль в статус не попадает (DS r3 I1)
+                status = Self.stripAllowed(startedSecure: startedSecure, nowSecure: focus.secure)
+                    ? L.t("вставлено: \(String(text.prefix(60)))", "inserted: \(String(text.prefix(60)))", "已插入：\(String(text.prefix(60)))")
+                    : L.t("вставлено", "inserted", "已插入")
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                 // если буфер уже сменил кто-то другой (юзер успел скопировать) — не трогаем
