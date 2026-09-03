@@ -30,11 +30,12 @@ permissions:
 jobs:
   test:
     name: swift test (app)
-    # macos-15, а не 14: захват системного звука использует API микрофона
-    # ScreenCaptureKit (macOS 15), обёрнутый в #available. Минимальная
-    # версия приложения остаётся 14 — она задана в Package.swift; SDK нужен
-    # свежее ровно для того, чтобы такой код вообще компилировался.
-    runs-on: macos-15
+    # macos-26, а не 15: живой черновик диктовки использует SpeechAnalyzer /
+    # DictationTranscriber / AssetInventory (SDK 26), обёрнутые в #available
+    # — как раньше ScreenCaptureKit требовал SDK 15. Минимальная версия
+    # приложения остаётся 14 — она задана в Package.swift; SDK нужен свежее
+    # ровно для того, чтобы такой код вообще компилировался.
+    runs-on: macos-26
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -53,8 +54,9 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: app/.build
-          key: spm-${{ runner.os }}-${{ hashFiles('app/Package.swift') }}
-          restore-keys: spm-${{ runner.os }}-
+          # Образ в ключе: .build от Swift 6.1 (macos-15) на 6.2 не годится
+          key: spm-macos-26-${{ hashFiles('app/Package.swift') }}
+          restore-keys: spm-macos-26-
       # Живые пробы — отдельный test target: компилируем, чтобы не гнили
       # сигнатуры, но не запускаем на CI без приватного графа и моделей.
       - name: Build app and all test targets

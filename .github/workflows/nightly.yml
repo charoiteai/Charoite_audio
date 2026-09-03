@@ -47,10 +47,10 @@ jobs:
         run: pip -q install . "pytest==${PYTEST_VERSION}" "pytest-timeout==${PYTEST_TIMEOUT_VERSION}"
       - run: python -m pytest tests/ -q
   swift:
-    # macos-15, а не 14: SystemAudioCapture использует API микрофона
-    # ScreenCaptureKit (captureMicrophone, SCStreamOutputType.microphone),
-    # которых нет в SDK 14 — компиляция падала до единого теста.
-    runs-on: macos-15
+    # macos-26, а не 15: SpeechAnalyzer живого черновика диктовки есть
+    # только в SDK 26 (раньше так же SDK 15 требовал ScreenCaptureKit) —
+    # без него компиляция падает до единого теста.
+    runs-on: macos-26
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
