@@ -71,7 +71,7 @@ final class DictationPreviewPanel {
         var body: some View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(model.text)
-                    .font(.system(size: 15))
+                    .font(.title3)
                     .lineLimit(3)
                     .truncationMode(.head)
                     .frame(maxWidth: .infinity, alignment: .leading)

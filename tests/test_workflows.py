@@ -79,6 +79,7 @@ def test_swift_live_probes_compile_but_do_not_run_in_gates():
     probes = {
         "AnswerQualityProbe.swift",
         "BuildRealIndex.swift",
+        "DictationPreviewProbe.swift",
         "LiveAnswerProbe.swift",
         "MemoryBench.swift",
         "SearchPerfProbe.swift",
@@ -98,8 +99,8 @@ def test_swift_live_probes_compile_but_do_not_run_in_gates():
     assert 'environment["CHAROITE_' not in deterministic_sources, \
         "env-гейченая живая проба вернулась в детерминированный target"
     for live_case in (
-        "AnswerQualityProbe", "BuildRealIndex", "LiveAnswerProbe",
-        "MemoryBench", "SearchPerfProbe",
+        "AnswerQualityProbe", "BuildRealIndex", "DictationPreviewProbe",
+        "LiveAnswerProbe", "MemoryBench", "SearchPerfProbe",
     ):
         assert f"class {live_case}" not in deterministic_sources, \
             f"{live_case}: живая проба вернулась в основной test target"

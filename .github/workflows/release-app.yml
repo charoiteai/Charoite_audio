@@ -59,9 +59,9 @@ concurrency:
 jobs:
   build-app:
     name: build and attach Charoite.app
-    # macos-15: тот же SDK, что и в swift-tests — API микрофона
-    # ScreenCaptureKit не компилируется на 14.
-    runs-on: macos-15
+    # macos-26: тот же SDK, что и в swift-tests — SpeechAnalyzer живого
+    # черновика диктовки есть только в SDK 26.
+    runs-on: macos-26
     # Нотаризация ждёт Apple дважды (zip и DMG), каждая — до 35 минут
     # (scripts/notarize.sh): в плохой день второе ожидание должно успеть
     # упасть само и с журналом Apple, а не по обрыву джоба.
