@@ -54,6 +54,7 @@ final class DictationService: ObservableObject {
     /// Диктовка идёт в поле пароля: ни живого черновика, ни плашки —
     /// текст, который поле замаскировало, не должен висеть внизу экрана.
     private var secureField = false
+    private var secureCheckedAt = Date.distantPast
     private static var previewUnavailableLogged = false
 
     private var suflerRoot: URL { AppSettings.charoiteRoot }
@@ -144,7 +145,9 @@ final class DictationService: ObservableObject {
         startedAt = Date()
         let generation = self.generation
         DictationPreviewPanel.shared.hide()   // плашка прошлой диктовки не висит над новой
-        secureField = Self.focusedFieldIsSecure()
+        // Заметке и дневнику плашка не положена — AX-запрос им не нужен
+        secureField = note ? false : Self.focusedFieldIsSecure()
+        secureCheckedAt = Date()
         let p = Process()
         p.arguments = [script] + args
         AppSettings.preparePython(p, root: suflerRoot)
@@ -279,8 +282,8 @@ final class DictationService: ObservableObject {
         draftFinish = nil
         if text.isEmpty, exit != 0, !wasNote, let finish {
             // GigaAM не ответил (python запустился, но упал: нет модели,
-            // сломанный импорт — или его добил сторож: десять минут речи при
-            // 26x это ~23 с распознавания, порог сторожа 25 с) — отдаём
+            // сломанный импорт — или его добил сторож: срок 25 с плюс пятая
+            // часть записи, SIGTERM → SIGKILL через 10 с) — отдаём
             // черновик системного движка: хуже по терминам, но лучше пустого
             // поля, а чей это текст, говорят статус и плашка. Финализация
             // черновика асинхронна и на быстром падении python обычно ещё
@@ -344,11 +347,24 @@ final class DictationService: ObservableObject {
                                             &focused) == .success,
               let value = focused, CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
         let field = unsafeBitCast(value, to: AXUIElement.self)
+        AXUIElementSetMessagingTimeout(field, 0.25)   // таймаут — свойство ссылки, не наследуется
         var role: CFTypeRef?
         var subrole: CFTypeRef?
         AXUIElementCopyAttributeValue(field, kAXRoleAttribute as CFString, &role)
         AXUIElementCopyAttributeValue(field, kAXSubroleAttribute as CFString, &subrole)
         return (role as? String) == "AXSecureTextField" || (subrole as? String) == "AXSecureTextField"
+    }
+
+    /// Поле пароля — не снимок на старте, а последнее известное: фокус
+    /// меняется по ходу речи и в окне ожидания черновика (круг 4, DS).
+    /// Не чаще раза в секунду — AX-запрос идёт по главному потоку.
+    @discardableResult
+    private func refreshSecureField(force: Bool = false) -> Bool {
+        if force || Date().timeIntervalSince(secureCheckedAt) > 1 {
+            secureCheckedAt = Date()
+            secureField = Self.focusedFieldIsSecure()
+        }
+        return secureField
     }
 
     private func deliver(text: String, exit: Int32, fromDraft: Bool, wasNote: Bool,
@@ -363,8 +379,9 @@ final class DictationService: ObservableObject {
             // Человек смотрит в чужое поле, а не в строку статуса Чароита:
             // плашка внизу экрана несколько секунд говорит, чей это текст.
             // Только глобальная диктовка: в чате текст уже перед глазами,
-            // а в поле пароля плашки нет вовсе.
-            if handler == nil, !secureField {
+            // а в поле пароля плашки нет вовсе — фокус перечитывается здесь,
+            // за 8 с ожидания черновика человек мог кликнуть куда угодно.
+            if handler == nil, !refreshSecureField(force: true) {
                 DictationPreviewPanel.shared.flash(
                     text: text,
                     hint: L.t("черновик системного движка — GigaAM не ответил",
@@ -425,6 +442,8 @@ final class DictationService: ObservableObject {
             guard !Task.isCancelled, self.isRecording else { live.cancel(); return }
             live.onChange = { [weak self] text in
                 guard let self, self.isRecording else { return }
+                // Фокус мог уйти в поле пароля уже по ходу речи (круг 4, DS)
+                if self.refreshSecureField() { DictationPreviewPanel.shared.hide(); return }
                 DictationPreviewPanel.shared.show(
                     text: text,
                     hint: L.t("черновик системного движка — итог распознает GigaAM после стопа",
