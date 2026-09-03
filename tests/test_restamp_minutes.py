@@ -224,7 +224,7 @@ def test_untouched_draft_is_regenerated_from_final(tmp_path, monkeypatch):
     live, mpath, meta = _prep(tmp_path, monkeypatch, draft, _sha(draft))
     owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {"Собеседник 2": "Инга"})
     out = mpath.read_text(encoding="utf-8")
-    assert owned is True
+    assert owned != "human"
     assert _FakeLLM.calls == [FINAL], "минутки — по ФИНАЛЬНОЙ стенограмме"
     assert "Черновик" not in out and "- [ ] **Инга** — прислать смету" in out
     # прежняя версия — в .prev/ рядом со стенограммой (advisory DS r1 по #483)
@@ -244,7 +244,7 @@ def test_rebuild_records_hash_after_canonization_only_for_machine_text():
     навсегда выключал регенерацию."""
     src = (SRC / "rebuild_transcript.py").read_text(encoding="utf-8")
     fn = src[src.index("def rebuild("):src.index("def finalize_minutes(")]
-    i_fin = fn.index("machine_owned = finalize_minutes(")
+    i_fin = fn.index("outcome = finalize_minutes(")
     i_can = fn.index("canonize_file(mpath, cfg)")
     i_sha = fn.index("_remember_minutes_sha(live, _sha(mpath.read_text(")
     assert i_fin < i_can < i_sha, "порядок: finalize → canonize → хеш по байтам с диска"
@@ -259,7 +259,7 @@ def test_hand_edited_minutes_are_only_restamped(tmp_path, monkeypatch):
     live, mpath, meta = _prep(tmp_path, monkeypatch, edited, _sha(draft))
     owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {"Собеседник 2": "Инга"})
     out = mpath.read_text(encoding="utf-8")
-    assert owned is False, "правленный руками файл — не машинный, хеш не трогать"
+    assert owned == "human", "правленный руками файл — не машинный, хеш не трогать"
     assert _FakeLLM.calls == [], "правленные руками минутки не перегенерируем"
     assert "Моя пометка руками." in out and "Инга" in out
     assert transcript.MINUTES_DRAFT_MARK not in out, "перештамповка сделана"
@@ -282,7 +282,7 @@ def test_model_failure_falls_back_to_restamp(tmp_path, monkeypatch):
     out = mpath.read_text(encoding="utf-8")
     assert "Черновик" in out and "Инга" in out, "модель лежит — прежние минутки перештампованы, не потеряны"
     assert transcript.MINUTES_DRAFT_MARK not in out
-    assert owned is True, ("после транзиентного отказа файл остаётся машинным: хеш обновится, "
+    assert owned != "human", ("после транзиентного отказа файл остаётся машинным: хеш обновится, "
                            "и следующая пересборка сможет перегенерировать (DS r1 Imp-1)")
 
 
@@ -300,7 +300,7 @@ def test_document_that_appeared_during_generation_is_not_overwritten(tmp_path, m
     import llm
     monkeypatch.setattr(llm, "LLM", _LateWriter)
     owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {})
-    assert owned is False, "чужой документ — не машинный, хеш не снимаем"
+    assert owned == "human", "чужой документ — не машинный, хеш не снимаем"
     assert mpath.read_text(encoding="utf-8") == "# Минутки от mcp\n"
 
 
@@ -327,7 +327,7 @@ def test_short_final_keeps_existing_draft_restamped(tmp_path, monkeypatch):
     short = "**Инга** [10:21]:\nСмету пришлю.\n"
     owned = rebuild_transcript.finalize_minutes(live, short, meta, {}, {"Собеседник 2": "Инга"})
     out = mpath.read_text(encoding="utf-8")
-    assert owned is True and _FakeLLM.calls == []
+    assert owned != "human" and _FakeLLM.calls == []
     assert "Черновик" in out and "Инга" in out and transcript.MINUTES_DRAFT_MARK not in out
 
 
@@ -347,7 +347,7 @@ def test_foreign_overwrite_of_draft_plus_model_failure_is_not_claimed(tmp_path, 
     import llm
     monkeypatch.setattr(llm, "LLM", _OverwriteThenFail)
     owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {})
-    assert owned is False
+    assert owned == "human"
     assert mpath.read_text(encoding="utf-8") == "# Минутки от mcp\n"
 
 
@@ -360,7 +360,7 @@ def test_silent_model_keeps_machine_draft_owned(tmp_path, monkeypatch):
         owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {"Собеседник 2": "Инга"})
     finally:
         _FakeLLM.answer = "# Минутки\n**Участники:** Инга, Марк\n## Поручения\n- [ ] **Инга** — прислать смету — до 05.09\n"
-    assert owned is True and "Инга" in mpath.read_text(encoding="utf-8")
+    assert owned != "human" and "Инга" in mpath.read_text(encoding="utf-8")
 
 
 def test_undecodable_minutes_do_not_abort_and_are_not_owned(tmp_path, monkeypatch):
@@ -368,7 +368,7 @@ def test_undecodable_minutes_do_not_abort_and_are_not_owned(tmp_path, monkeypatc
     live, mpath, meta = _prep(tmp_path, monkeypatch, None, "abc")
     mpath.write_bytes(b"\xff\xfe<")
     owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {})
-    assert owned is False and _FakeLLM.calls == []
+    assert owned == "human" and _FakeLLM.calls == []
     assert mpath.read_bytes() == b"\xff\xfe<"
 
 
@@ -387,7 +387,7 @@ def test_model_failure_with_late_foreign_file_does_not_claim_it(tmp_path, monkey
     import llm
     monkeypatch.setattr(llm, "LLM", _LateThenFail)
     owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {})
-    assert owned is False
+    assert owned == "human"
     assert mpath.read_text(encoding="utf-8") == "# Минутки от mcp\n"
 
 
