@@ -22,6 +22,7 @@ import install_profile  # noqa: E402
 import live_gate  # noqa: E402
 import llm_health  # noqa: E402
 import privacy  # noqa: E402
+import live_sidecar  # noqa: E402
 import safe_write  # noqa: E402
 from llm import LLM, LLMHTTPError  # noqa: E402
 
@@ -591,6 +592,11 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
     # голого write_text (kill ночного цикла, полный диск) оставлял бы вместо
     # встречи усечённый файл — восстанавливать неоткуда (аудит 0.46.0).
     safe_write.write_text(tpath, body)
+    # Машинная запись — освежить хеш стенограммы, иначе следующая
+    # пересборка приняла бы шапку с темой за правку руками и навсегда
+    # пропускала STT (круг 1 по #489, DS+GLM Critical). Сайдкар известен
+    # точно: он остался под посекундным именем.
+    live_sidecar.remember(tpath, "transcript_sha256", live_sidecar.sha(body), bare=bare)
     return tpath
 
 

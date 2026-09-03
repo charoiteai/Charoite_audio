@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import live_sidecar
 import json
 import os
 import pathlib
@@ -417,6 +418,10 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # пересборка живого черновика) — как прежде, распознаём.
     edited = human_edited_transcript(live, meta)
     if edited is not None:
+        if live_sidecar.valid_sha((meta or {}).get("minutes_source_sha256")) == live_sidecar.sha(edited):
+            log("стенограмма правлена руками, минутки уже собраны по этому тексту — "
+                "ничего не меняю")
+            return live
         log("стенограмма правлена руками после пересборки — STT пропущен, "
             "минутки пересобираю по правленому тексту")
         _finish(live, edited, meta, cfg)
@@ -656,13 +661,21 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
 
 
 def human_edited_transcript(live: pathlib.Path, meta: dict) -> str | None:
-    """Текст стенограммы, если после последней пересборки её правили руками.
+    """Текст стенограммы, если после последней машинной записи её правили руками.
 
-    Признак — хеш из live.json (`transcript_sha256`, снимает write_final) не
-    совпал с файлом. Нет хеша или файл не читается — None: распознаём как
-    прежде, ничего не «охраняем» вслепую.
+    Признак — хеш из сайдкара (`transcript_sha256`; его снимают write_final и
+    graph_updater.retitle) не совпал с файлом. Нет хеша, мусор вместо него,
+    сайдкар неоднозначен (две встречи в одну минуту), файл не читается или
+    задан CHAROITE_FORCE_STT=1 — None: распознаём как прежде, ничего не
+    «охраняем» вслепую.
     """
-    expected = meta.get("transcript_sha256") if isinstance(meta, dict) else None
+    if os.environ.get("CHAROITE_FORCE_STT"):
+        log("CHAROITE_FORCE_STT задан — распознаю заново, правки уйдут в .prev")
+        return None
+    if live_sidecar.sidecar_for(live) is None:
+        log("два сайдкара одной минуты — хеш стенограммы не применяю, распознаю заново")
+        return None
+    expected = live_sidecar.valid_sha(meta.get("transcript_sha256") if isinstance(meta, dict) else None)
     if not expected:
         return None
     try:
@@ -690,6 +703,9 @@ def _finish(live: pathlib.Path, final_text: str, meta: dict, cfg: dict) -> None:
     if machine_owned:
         try:
             _remember_minutes_sha(live, _sha(mpath.read_text(encoding="utf-8")))
+            # По какому тексту собраны: повторный клик без правок не должен
+            # перегенерировать протокол (advisory GLM r1 по #489)
+            _remember_sha(live, "minutes_source_sha256", _sha(final_text))
         except (OSError, UnicodeDecodeError) as e:
             log(f"хеш минуток не снят ({e}) — следующая пересборка их не тронет")
 
@@ -860,18 +876,12 @@ def _remember_minutes_sha(live: pathlib.Path, sha: str) -> None:
 
 
 def _remember_sha(live: pathlib.Path, key: str, sha: str) -> None:
-    """Хеш последней МАШИННОЙ записи файла — в live.json под своим ключом
-    (`minutes_sha256`, `transcript_sha256`): совпадение с диском означает,
-    что текста никто не касался."""
-    p = live_meta_path(live)
-    try:
-        meta = json.loads(p.read_text(encoding="utf-8"))
-        if not isinstance(meta, dict):
-            return
-        meta[key] = sha
-        safe_write.write_text(p, json.dumps(meta, ensure_ascii=False))
-    except (OSError, ValueError) as e:
-        log(f"хеш {key} не записан в live.json: {e}")
+    """Хеш последней МАШИННОЙ записи файла — в сайдкар под своим ключом
+    (`minutes_sha256`, `transcript_sha256`, `minutes_source_sha256`):
+    совпадение с диском означает, что текста никто не касался. Нет
+    сайдкара — создаётся; неоднозначен — не пишем."""
+    if not live_sidecar.remember(live, key, sha):
+        log(f"хеш {key} не записан: сайдкар неоднозначен или не пишется")
 
 
 def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,

@@ -692,8 +692,11 @@ it signals degradation, it does not break the loop.
   result" reports what actually happened: started (if the recordings are
   still kept, the transcript is re-recognized and the previous version
   goes to transcripts/.prev; a transcript you edited by hand is never
-  re-recognized — the minutes are rebuilt from your text, the hash of the
-  last machine write lives in live.json), a rebuild or retry of another meeting is
+  re-recognized — the minutes are rebuilt from your text when they were not
+  edited by hand themselves, otherwise only re-stamped; a second click with
+  nothing changed does nothing; the hash of the last machine write lives in
+  live.json, and `CHAROITE_FORCE_STT=1` on the command-line rebuild
+  re-recognizes anyway, edits going to .prev), a rebuild or retry of another meeting is
   already running, no transcript on disk, or failed to launch (a missing
   python is caught before the process starts) — it used to say "started"
   on every click, including the silent refusals; the item stays greyed
