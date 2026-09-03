@@ -312,6 +312,25 @@ it signals degradation, it does not break the loop.
   bar, dictation, note and diary sit in a column with their shortcuts in a
   separate right-hand column: on one row they did not fit and got truncated
   exactly at the shortcut.
+- **Live dictation draft** (macOS 26+) — while you speak, the system
+  on-device engine shows a draft on a floating strip at the bottom of the
+  screen (it never steals focus — you are dictating into someone else's
+  field). The draft is not the result: on the 2026-09-02 reference it made
+  12.4 % word errors against GigaAM's 2.9 % and drops domain terms, so the
+  final text always comes from GigaAM after stop. The draft steps in only
+  when python started but could not recognize (no model, a broken import)
+  — dictation keeps working on a Mac without the model, with a status line
+  saying so. The watchdog gives the recognizer 25 s plus a fifth of the
+  recording (ten minutes of speech take ~23 s at 26×, up to a hundred on a
+  busy machine), then asks it to quit and kills it ten seconds later; when
+  it had to, the draft steps in the same way — the status line and the
+  strip say whose text went in.
+  Notes and diary have no strip and never
+  take the draft: their text goes into the graph and memory, where accuracy
+  matters more than immediacy. The app never downloads speech assets (the
+  kill switch and PRIVACY.md stay true): if the dictation language is not
+  installed in System Settings → Keyboard → Dictation, there is simply no
+  draft.
 - **Import recorded meetings** — `scripts/import_meeting.py file`
   (audio m4a/wav/mp3, text txt/md, subtitles vtt/srt from Zoom/Teams —
   speaker names preserved) → the full meeting archive: transcript,
