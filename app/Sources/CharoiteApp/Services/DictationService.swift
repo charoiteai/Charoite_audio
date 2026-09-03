@@ -44,10 +44,10 @@ final class DictationService: ObservableObject {
     /// черновик нужен как страховка. Каждая диктовка начинает с nil — чужой
     /// черновик прошлой диктовки в эту не попадёт.
     private var draftFinish: Task<String, Never>?
-    /// Сторож добил python (25/35 с). Тогда GigaAM, скорее всего, ещё
-    /// распознавал под нехваткой памяти — подменять его результат черновиком
-    /// с 12 % ошибок нельзя, человек получает честную ошибку.
-    private var watchdogFired = false
+    /// Номер диктовки. Доставка результата бывает отложенной (ожидание
+    /// черновика), и к её моменту человек мог начать следующую — чужой
+    /// текст в чужое поле и чужой статус не попадают.
+    private var generation = 0
     private static var previewUnavailableLogged = false
 
     private var suflerRoot: URL { AppSettings.charoiteRoot }
@@ -134,7 +134,7 @@ final class DictationService: ObservableObject {
         self.noteMode = note
         self.onResult = onResult
         draftFinish = nil
-        watchdogFired = false
+        generation += 1
         let p = Process()
         p.arguments = [script] + args
         AppSettings.preparePython(p, root: suflerRoot)
@@ -213,14 +213,12 @@ final class DictationService: ObservableObject {
         let p = proc
         DispatchQueue.global().asyncAfter(deadline: .now() + 25) {
             guard let p, p.isRunning else { return }
-            Task { @MainActor [weak self] in self?.watchdogFired = true }
             p.terminate()
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + 35) {
             guard let p, p.isRunning else { return }
             kill(p.processIdentifier, SIGKILL)
             Task { @MainActor [weak self] in
-                self?.watchdogFired = true
                 self?.proc = nil
                 self?.stdinPipe = nil
                 self?.isRecording = false
@@ -238,7 +236,6 @@ final class DictationService: ObservableObject {
         // обрывая её со статусом про «10 минут», которых не было.
         autoStop?.cancel()
         autoStop = nil
-        errTail = ""          // чужой хвост stderr не должен попасть в новую ошибку
         proc = nil
         stdinPipe = nil
         isRecording = false
@@ -253,19 +250,27 @@ final class DictationService: ObservableObject {
         DictationPreviewPanel.shared.hide()
         let finish = draftFinish
         draftFinish = nil
-        let killed = watchdogFired
-        watchdogFired = false
-        if text.isEmpty, exit != 0, !wasNote, !killed, let finish {
+        if text.isEmpty, exit != 0, !wasNote, let finish {
             // GigaAM не ответил (python запустился, но упал: нет модели,
-            // сломанный импорт) — отдаём черновик системного движка: хуже по
-            // терминам, но лучше пустого поля. Финализация черновика
-            // асинхронна и на быстром падении python обычно ещё идёт — ждём
-            // её, но недолго. Заметку из черновика не делаем: её текст уходит
-            // в граф и в память, а там точность важнее мгновенности.
+            // сломанный импорт — или его добил сторож: десять минут речи при
+            // 26x это ~23 с распознавания, порог сторожа 25 с) — отдаём
+            // черновик системного движка: хуже по терминам, но лучше пустого
+            // поля, а чей это текст, говорят статус и плашка. Финализация
+            // черновика асинхронна и на быстром падении python обычно ещё
+            // идёт — ждём её, но недолго. Заметку из черновика не делаем: её
+            // текст уходит в граф и в память, а там точность важнее
+            // мгновенности.
+            status = L.t("GigaAM не ответил — собираю черновик системного движка…",
+                         "GigaAM did not answer — collecting the system engine's draft…",
+                         "GigaAM 未响应——正在收集系统引擎的草稿…")
+            let generation = self.generation
             Task { [weak self] in
                 let draft = await Self.awaitDraft(finish, timeout: .seconds(8))
-                self?.deliver(text: draft, exit: exit, fromDraft: !draft.isEmpty,
-                              wasNote: wasNote, handler: handler)
+                // Человек мог начать следующую диктовку — её поле и статус не
+                // трогаем, устаревший результат пропадает.
+                guard let self, self.generation == generation else { return }
+                self.deliver(text: draft, exit: exit, fromDraft: !draft.isEmpty,
+                             wasNote: wasNote, handler: handler)
             }
             return
         }
@@ -273,14 +278,20 @@ final class DictationService: ObservableObject {
     }
 
     /// Черновик или пусто, если финализация не уложилась в срок.
+    ///
+    /// Не TaskGroup: группа на выходе дожидается всех детей, а ребёнка на
+    /// `finish.value` отмена не прерывает — потолка не было бы вовсе (второй
+    /// круг #486). Здесь ждём первого из двух; финализация, не успевшая к
+    /// сроку, доделается в фоне сама и никого не держит.
     private static func awaitDraft(_ finish: Task<String, Never>, timeout: Duration) async -> String {
-        await withTaskGroup(of: String?.self) { group in
-            group.addTask { await finish.value }
-            group.addTask { try? await Task.sleep(for: timeout); return nil }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first ?? ""
-        }
+        let (first, arrive) = AsyncStream<String>.makeStream()
+        Task { arrive.yield(await finish.value) }
+        let timer = Task { try? await Task.sleep(for: timeout); arrive.yield("") }
+        var results = first.makeAsyncIterator()
+        let draft = await results.next() ?? ""
+        timer.cancel()
+        arrive.finish()
+        return draft
     }
 
     private func deliver(text: String, exit: Int32, fromDraft: Bool, wasNote: Bool,
@@ -292,6 +303,9 @@ final class DictationService: ObservableObject {
         }
         if fromDraft {
             status = L.t("GigaAM не ответил — вставлен черновик системного движка", "GigaAM did not answer — inserted the system engine's draft", "GigaAM 未响应——已插入系统引擎的草稿")
+            // Человек смотрит в чужое поле, а не в строку статуса Чароита:
+            // плашка внизу экрана несколько секунд говорит, чей это текст.
+            DictationPreviewPanel.shared.flash(text: text, hint: status, seconds: 5)
         }
         if wasNote {
             // dictate_note.py печатает JSON {"title": ..., "path": ...}

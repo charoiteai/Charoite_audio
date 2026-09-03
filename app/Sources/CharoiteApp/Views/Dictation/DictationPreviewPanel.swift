@@ -18,10 +18,13 @@ final class DictationPreviewPanel {
 
     private let model = Model()
     private var panel: NSPanel?
+    private var flashHide: Task<Void, Never>?
 
     private init() {}
 
     func show(text: String, hint: String) {
+        flashHide?.cancel()
+        flashHide = nil
         model.text = text
         model.hint = hint
         guard !text.isEmpty else { return }
@@ -36,12 +39,28 @@ final class DictationPreviewPanel {
     }
 
     func hide() {
+        flashHide?.cancel()
+        flashHide = nil
         panel?.orderOut(nil)
         model.text = ""
     }
 
+    /// Показать на несколько секунд и спрятать: в поле ушёл черновик, и
+    /// человек, глядя в чужое окно, должен увидеть, чей это текст. Новая
+    /// диктовка (`show`) или `hide` снимают таймер.
+    func flash(text: String, hint: String, seconds: Double) {
+        show(text: text, hint: hint)
+        flashHide = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled else { return }
+            self?.hide()
+        }
+    }
+
     private func makePanel() -> NSPanel {
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 560, height: 96),
+        // Высота с запасом на три строки .title3 и подсказку (~110 pt при
+        // 15 pt); плашка прижата к низу, растёт вверх, низ не прыгает.
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 560, height: 132),
                             styleMask: [.borderless, .nonactivatingPanel],
                             backing: .buffered, defer: false)
         panel.level = .floating
@@ -86,6 +105,7 @@ final class DictationPreviewPanel {
             .frame(width: 560, alignment: .leading)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             .padding(6)
+            .frame(maxHeight: .infinity, alignment: .bottom)
         }
     }
 }
