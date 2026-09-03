@@ -102,7 +102,7 @@ final class DictationPreviewPanel {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .frame(width: 560, alignment: .leading)
+            .frame(width: 548, alignment: .leading)   // 560 окна минус внешний padding(6) с боков
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             .padding(6)
             .frame(maxHeight: .infinity, alignment: .bottom)

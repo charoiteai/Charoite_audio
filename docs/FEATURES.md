@@ -320,9 +320,11 @@ it signals degradation, it does not break the loop.
   final text always comes from GigaAM after stop. The draft steps in only
   when python started but could not recognize (no model, a broken import)
   — dictation keeps working on a Mac without the model, with a status line
-  saying so. When the watchdog had to kill a slow recognizer (ten minutes
-  of speech take ~23 s at 26×; the watchdog fires at 25 s), the draft steps
-  in the same way — the status line and the strip say whose text went in.
+  saying so. The watchdog gives the recognizer 25 s plus a fifth of the
+  recording (ten minutes of speech take ~23 s at 26×, up to a hundred on a
+  busy machine), then asks it to quit and kills it ten seconds later; when
+  it had to, the draft steps in the same way — the status line and the
+  strip say whose text went in.
   Notes and diary have no strip and never
   take the draft: their text goes into the graph and memory, where accuracy
   matters more than immediacy. The app never downloads speech assets (the

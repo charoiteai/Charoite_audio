@@ -48,6 +48,12 @@ final class DictationService: ObservableObject {
     /// черновика), и к её моменту человек мог начать следующую — чужой
     /// текст в чужое поле и чужой статус не попадают.
     private var generation = 0
+    /// Момент запуска python: сторож после стопа даёт распознаванию срок
+    /// от длины записи, а не константу.
+    private var startedAt = Date()
+    /// Диктовка идёт в поле пароля: ни живого черновика, ни плашки —
+    /// текст, который поле замаскировало, не должен висеть внизу экрана.
+    private var secureField = false
     private static var previewUnavailableLogged = false
 
     private var suflerRoot: URL { AppSettings.charoiteRoot }
@@ -135,6 +141,10 @@ final class DictationService: ObservableObject {
         self.onResult = onResult
         draftFinish = nil
         generation += 1
+        startedAt = Date()
+        let generation = self.generation
+        DictationPreviewPanel.shared.hide()   // плашка прошлой диктовки не висит над новой
+        secureField = Self.focusedFieldIsSecure()
         let p = Process()
         p.arguments = [script] + args
         AppSettings.preparePython(p, root: suflerRoot)
@@ -152,7 +162,8 @@ final class DictationService: ObservableObject {
             guard !data.isEmpty else { handle.readabilityHandler = nil; return }
             guard let chunk = String(data: data, encoding: .utf8) else { return }
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                // Хвост прошлой диктовки после сторожа — не в ошибку новой
+                guard let self, self.generation == generation else { return }
                 self.errTail = String((self.errTail + chunk).suffix(500))
                 if chunk.contains("REC"), self.isRecording {
                     self.status = L.t("🎙 запись пошла — говори (⌥⌘D — стоп)", "🎙 recording — speak (⌥⌘D to stop)", "🎙 录音中——请讲话（⌥⌘D 停止）")
@@ -164,7 +175,7 @@ final class DictationService: ObservableObject {
             errPipe.fileHandleForReading.readabilityHandler = nil
             let text = String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            Task { @MainActor [weak self] in self?.finished(text: text, exit: proc.terminationStatus) }
+            Task { @MainActor [weak self] in self?.finished(text: text, exit: proc.terminationStatus, generation: generation) }
         }
         do {
             try p.run()
@@ -178,7 +189,7 @@ final class DictationService: ObservableObject {
             NSSound(named: "Pop")?.play()
             // Заметка и дневник черновик не берут никогда (текст уходит в
             // граф и память) — незачем платить вторым захватом микрофона.
-            if !note { startPreview() }
+            if !note, !secureField { startPreview() }
             // глобальный хоткей легко забыть: не даём писать вечно — часовой
             // wav всё равно не распознается, а микрофон «висит» открытым
             autoStop = Task { [weak self] in
@@ -210,15 +221,23 @@ final class DictationService: ObservableObject {
         // start() навсегда упирался в `guard proc == nil`. ⌥⌘D, ⌥⌘N, ⌥⌘J и
         // кнопка-микрофон переставали отвечать до перезапуска приложения, а
         // индикатор микрофона в статус-баре продолжал гореть.
+        // Срок — от длины записи: десять минут речи при 26x это ~23 с, на
+        // занятой машине втрое дольше; константа 25 с добивала здоровый, но
+        // медленный GigaAM, и в поле уходил черновик вместо результата.
         let p = proc
-        DispatchQueue.global().asyncAfter(deadline: .now() + 25) {
+        let grace = Self.watchdogGrace(recorded: Date().timeIntervalSince(startedAt))
+        DispatchQueue.global().asyncAfter(deadline: .now() + grace) {
             guard let p, p.isRunning else { return }
             p.terminate()
         }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 35) {
+        DispatchQueue.global().asyncAfter(deadline: .now() + grace + 10) {
             guard let p, p.isRunning else { return }
             kill(p.processIdentifier, SIGKILL)
             Task { @MainActor [weak self] in
+                // Процесс объявлен мёртвым здесь, раньше terminationHandler:
+                // движок черновика разбираем тоже здесь, иначе диктовка,
+                // начатая до прихода finished(), оставит его сиротой.
+                self?.stopPreview()
                 self?.proc = nil
                 self?.stdinPipe = nil
                 self?.isRecording = false
@@ -229,7 +248,15 @@ final class DictationService: ObservableObject {
         }
     }
 
-    private func finished(text: String, exit: Int32) {
+    private func finished(text: String, exit: Int32, generation: Int) {
+        // Сторож (SIGKILL) объявляет процесс мёртвым раньше, чем сюда доедет
+        // terminationHandler, и start() уже открыт: если человек успел начать
+        // следующую диктовку, этот finished() — чужой. Её состояние не
+        // трогаем, устаревший результат пропадает (круг 3, DS).
+        guard generation == self.generation else {
+            NSLog("[Dictation] finished() прошлой диктовки пришёл после сторожа — пропущен")
+            return
+        }
         // Таймер автостопа снимался только в stop(). Если процесс завершался
         // сам (краш распознавателя, свой таймаут), таск оставался спать — и
         // через десять минут просыпался уже посреди СЛЕДУЮЩЕЙ диктовки,
@@ -268,7 +295,10 @@ final class DictationService: ObservableObject {
                 let draft = await Self.awaitDraft(finish, timeout: .seconds(8))
                 // Человек мог начать следующую диктовку — её поле и статус не
                 // трогаем, устаревший результат пропадает.
-                guard let self, self.generation == generation else { return }
+                guard let self, self.generation == generation else {
+                    NSLog("[Dictation] черновик прошлой диктовки пришёл во время следующей — отброшен")
+                    return
+                }
                 self.deliver(text: draft, exit: exit, fromDraft: !draft.isEmpty,
                              wasNote: wasNote, handler: handler)
             }
@@ -283,7 +313,7 @@ final class DictationService: ObservableObject {
     /// `finish.value` отмена не прерывает — потолка не было бы вовсе (второй
     /// круг #486). Здесь ждём первого из двух; финализация, не успевшая к
     /// сроку, доделается в фоне сама и никого не держит.
-    private static func awaitDraft(_ finish: Task<String, Never>, timeout: Duration) async -> String {
+    static func awaitDraft(_ finish: Task<String, Never>, timeout: Duration) async -> String {
         let (first, arrive) = AsyncStream<String>.makeStream()
         Task { arrive.yield(await finish.value) }
         let timer = Task { try? await Task.sleep(for: timeout); arrive.yield("") }
@@ -292,6 +322,33 @@ final class DictationService: ObservableObject {
         timer.cancel()
         arrive.finish()
         return draft
+    }
+
+    /// Сколько ждать распознавание после стопа: 25 с на прогрев и короткую
+    /// запись плюс пятая часть длины записи. Здоровый GigaAM на занятой
+    /// машине (замер 02.09: 6–12x под нагрузкой) укладывается, зависший
+    /// всё равно добивается.
+    nonisolated static func watchdogGrace(recorded: TimeInterval) -> TimeInterval {
+        25 + max(0, recorded) / 5
+    }
+
+    /// Сфокусированное поле — защищённый ввод (пароль)? Тогда ни живого
+    /// черновика, ни плашки (круг 3, GLM). Без права Accessibility ответ
+    /// «нет»: без него и ⌘V не будет, текст остаётся в буфере.
+    nonisolated static func focusedFieldIsSecure() -> Bool {
+        guard AXIsProcessTrusted() else { return false }
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.25)   // зависшее чужое приложение не держит старт диктовки
+        var focused: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString,
+                                            &focused) == .success,
+              let value = focused, CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
+        let field = unsafeBitCast(value, to: AXUIElement.self)
+        var role: CFTypeRef?
+        var subrole: CFTypeRef?
+        AXUIElementCopyAttributeValue(field, kAXRoleAttribute as CFString, &role)
+        AXUIElementCopyAttributeValue(field, kAXSubroleAttribute as CFString, &subrole)
+        return (role as? String) == "AXSecureTextField" || (subrole as? String) == "AXSecureTextField"
     }
 
     private func deliver(text: String, exit: Int32, fromDraft: Bool, wasNote: Bool,
@@ -305,7 +362,16 @@ final class DictationService: ObservableObject {
             status = L.t("GigaAM не ответил — вставлен черновик системного движка", "GigaAM did not answer — inserted the system engine's draft", "GigaAM 未响应——已插入系统引擎的草稿")
             // Человек смотрит в чужое поле, а не в строку статуса Чароита:
             // плашка внизу экрана несколько секунд говорит, чей это текст.
-            DictationPreviewPanel.shared.flash(text: text, hint: status, seconds: 5)
+            // Только глобальная диктовка: в чате текст уже перед глазами,
+            // а в поле пароля плашки нет вовсе.
+            if handler == nil, !secureField {
+                DictationPreviewPanel.shared.flash(
+                    text: text,
+                    hint: L.t("черновик системного движка — GigaAM не ответил",
+                              "system engine draft — GigaAM did not answer",
+                              "系统引擎草稿——GigaAM 未响应"),
+                    seconds: 5)
+            }
         }
         if wasNote {
             // dictate_note.py печатает JSON {"title": ..., "path": ...}
