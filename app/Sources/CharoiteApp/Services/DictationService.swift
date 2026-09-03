@@ -55,6 +55,11 @@ final class DictationService: ObservableObject {
     /// текст, который поле замаскировало, не должен висеть внизу экрана.
     private var secureField = false
     private var secureCheckedAt = Date.distantPast
+    /// Приложение, в котором нажали ⌥⌘D: распознавание идёт секунды (а
+    /// страховка черновиком — до 8 с), и ⌘V должен уйти туда, где человек
+    /// начал диктовать, а не в окно, которое он успел открыть (№156).
+    private var targetApp: pid_t = 0
+    private var targetAppName = ""
     private static var previewUnavailableLogged = false
 
     private var suflerRoot: URL { AppSettings.charoiteRoot }
@@ -148,6 +153,9 @@ final class DictationService: ObservableObject {
         // Заметке и дневнику плашка не положена — AX-запрос им не нужен
         secureField = note ? false : Self.focusedFieldIsSecure()
         secureCheckedAt = Date()
+        let front = NSWorkspace.shared.frontmostApplication
+        targetApp = front?.processIdentifier ?? 0
+        targetAppName = front?.localizedName ?? ""
         let p = Process()
         p.arguments = [script] + args
         AppSettings.preparePython(p, root: suflerRoot)
@@ -335,6 +343,20 @@ final class DictationService: ObservableObject {
         25 + max(0, recorded) / 5
     }
 
+    enum PasteDecision: Equatable { case paste, noAccessibility, windowChanged }
+
+    /// Куда уйдёт результат: ⌘V только с правом Accessibility и только в
+    /// то приложение, где нажали ⌥⌘D. Приложение, не окно: смена окна внутри
+    /// одного приложения не ловится — дёшево и без AX-запросов (№156).
+    /// `startedIn == 0` — приложение на старте узнать не удалось: ведём себя
+    /// как раньше, вставляем.
+    nonisolated static func pasteDecision(trusted: Bool, startedIn: pid_t,
+                                          frontmost: pid_t?) -> PasteDecision {
+        guard trusted else { return .noAccessibility }
+        if startedIn != 0, let frontmost, frontmost != startedIn { return .windowChanged }
+        return .paste
+    }
+
     /// Сфокусированное поле — защищённый ввод (пароль)? Тогда ни живого
     /// черновика, ни плашки (круг 3, GLM). Без права Accessibility ответ
     /// «нет»: без него и ⌘V не будет, текст остаётся в буфере.
@@ -510,7 +532,19 @@ final class DictationService: ObservableObject {
         pb.setString(text, forType: .string)
         let ourChange = pb.changeCount
 
-        if AXIsProcessTrusted() {
+        let front = NSWorkspace.shared.frontmostApplication
+        switch Self.pasteDecision(trusted: AXIsProcessTrusted(), startedIn: targetApp,
+                                  frontmost: front?.processIdentifier) {
+        case .windowChanged:
+            // ⌘V ушёл бы в чужое окно — текст в буфере, человек вставит сам
+            let where_ = front?.localizedName ?? "?"
+            status = L.t("активно уже «\(where_)», а диктовали в «\(targetAppName)» — текст в буфере, нажми ⌘V в нужном поле",
+                         "\u{201C}\(where_)\u{201D} is in front now, you dictated into \u{201C}\(targetAppName)\u{201D} — text is in the clipboard, press ⌘V in the right field",
+                         "当前是「\(where_)」，而听写时是「\(targetAppName)」——文本已在剪贴板，请在正确的输入框按 ⌘V")
+            if keepStatus {
+                status = L.t("черновик системного движка (GigaAM не ответил) ", "system engine draft (GigaAM did not answer) ", "系统引擎草稿（GigaAM 未响应）") + status
+            }
+        case .paste:
             let src = CGEventSource(stateID: .combinedSessionState)
             let vDown = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true)
             vDown?.flags = .maskCommand
@@ -527,7 +561,7 @@ final class DictationService: ObservableObject {
                 pb.clearContents()
                 if !saved.isEmpty { pb.writeObjects(saved) }
             }
-        } else {
+        case .noAccessibility:
             // без права Accessibility печатать за пользователя нельзя —
             // текст в буфере, один ⌘V руками
             status = L.t("в буфере — нажми ⌘V (дай Чароиту право Universal Access для автовставки)", "copied — press ⌘V (grant Charoite the Accessibility right for auto-paste)", "已复制——按 ⌘V（授予 Charoite 辅助功能权限可自动粘贴）")

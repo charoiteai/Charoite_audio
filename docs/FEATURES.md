@@ -308,7 +308,11 @@ it signals degradation, it does not break the loop.
   instead of being retyped from the screen. "Start listening" unlocks once
   no blocking items remain.
 - **Dictation** (global hotkey) — speak → recognized locally → pasted into
-  the active field; the clipboard is restored, images included. In the menu
+  the active field; the clipboard is restored, images included. The text
+  goes to the app where you pressed the hotkey: recognition takes seconds,
+  and if another app is in front by then, the text stays in the clipboard
+  and the status names both apps — press ⌘V in the right field (a window
+  switch inside the same app is not detected). In the menu
   bar, dictation, note and diary sit in a column with their shortcuts in a
   separate right-hand column: on one row they did not fit and got truncated
   exactly at the shortcut.
