@@ -226,6 +226,33 @@ def read(live: pathlib.Path, bare: str | None = None) -> dict | None:
     return meta if isinstance(meta, dict) else None
 
 
+def exact_stamp(live: pathlib.Path) -> str | None:
+    """Посекундный штамп встречи с МИНУТНЫМ именем (после наката темы) —
+    из сайдкара, а не угадыванием по каталогу записей.
+
+    Ключ `stamp` пишет демон при стопе, накат темы добавляет его при
+    переименовании; сайдкар под старым посекундным именем (до 0.69.1)
+    отдаёт штамп самим именем. Годится только штамп той же минуты и с
+    секундами; посекундной стенограмме уточнять нечего — None. Без этого
+    источника пересборка глобит минуту и могла взять запись соседки (№164).
+    """
+    key = meeting_stamp.stamp_of(live.stem)
+    if key is None or meeting_stamp.minute_of(key) != key:
+        return None
+
+    def _ok(value) -> bool:
+        return (isinstance(value, str) and meeting_stamp.stamp_of(value) == value
+                and value != key and meeting_stamp.minute_of(value) == key)
+
+    value = (read(live) or {}).get("stamp")
+    if _ok(value):
+        return value
+    p = sidecar_for(live)
+    if p is not None and p.exists() and _ok(p.name[:-len(TAIL)]):
+        return p.name[:-len(TAIL)]
+    return None
+
+
 def remember(live: pathlib.Path, key: str, value: str, bare: str | None = None) -> bool:
     """Записать ключ в сайдкар; нет файла — создать (импортированные встречи и
     сироты без live.json иначе оставались без защиты — DS M4 / GLM M1).

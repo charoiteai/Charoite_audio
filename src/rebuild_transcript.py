@@ -417,9 +417,15 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
         rec_dir = pathlib.Path(os.environ["SUFLER_RECORDINGS_DIR"])
 
     # Retry знает минутное имя с темой, записи — посекундный штамп демона.
-    # Разрешаем его один раз сразу для обоих каналов: если кандидаты не
-    # совпали, не берём ни один вместо склейки двух разных встреч.
-    recording_stamp = meeting_stamp.resolve_stamp(rec_dir, stamp)
+    # Точный штамп — из сайдкара (демон пишет его при стопе, накат темы —
+    # при переименовании); без него разрешаем по минуте один раз сразу для
+    # обоих каналов, и единственный кандидат с собственной стенограммой —
+    # соседка, а не мы (№164). Кандидаты не совпали — не берём ни один
+    # вместо склейки двух разных встреч.
+    exact = live_sidecar.exact_stamp(live)
+    if exact:
+        log(f"штамп записей из сайдкара: {exact}")
+    recording_stamp = meeting_stamp.resolve_stamp(rec_dir, stamp, exact=exact, tdir=live.parent)
     base = meeting_stamp.started_at(recording_stamp)
     if base is None:
         return None

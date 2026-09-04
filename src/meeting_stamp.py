@@ -349,12 +349,23 @@ def stamp_of_recording(name: str) -> str | None:
 
 
 def resolve_stamp(rec_dir: pathlib.Path, stamp: str,
-                  labels: tuple[str, ...] = RECORDING_LABELS) -> str:
+                  labels: tuple[str, ...] = RECORDING_LABELS, *,
+                  exact: str | None = None,
+                  tdir: pathlib.Path | None = None) -> str:
     """Единый штамп, под которым лежат каналы одной встречи.
 
     Демон называет записи ПОСЕКУНДНЫМ штампом стенограммы, а retry из
     приложения знает только минутное имя после наката темы («…_1203»):
     точного файла с таким именем на диске нет — ищем по минутному префиксу.
+
+    `exact` — посекундный штамп встречи, известный ТОЧНО (сайдкар: демон
+    пишет его при стопе, накат темы — при переименовании): записи либо под
+    ним, либо их нет — глоб по минуте не нужен, а брать по нему чужое
+    нельзя. `tdir` — каталог стенограмм: без `exact` единственный кандидат
+    минуты принимается, только если у него нет СВОЕЙ стенограммы, иначе это
+    соседка (крэш-рестарт в ту же минуту), чьи записи своих не заменяют
+    (ревью 04.09, GLM: посекундный вход закрыли 20.08, а минутный после
+    наката темы проваливался в ту же дыру).
 
     Критично смотреть на все каналы одним проходом. Если отдельно разрешить
     mic и blackhole, две встречи в одну минуту могут дать по одному каналу и
@@ -363,6 +374,8 @@ def resolve_stamp(rec_dir: pathlib.Path, stamp: str,
     Иначе оставляем исходное имя: лучше честно не пересобрать, чем смешать
     две встречи в одном документе.
     """
+    if exact and started_at(exact) is not None:
+        return exact
     extensions = ("wav", "pcm", "wav.part")
     for label in labels:
         for ext in extensions:
@@ -393,4 +406,10 @@ def resolve_stamp(rec_dir: pathlib.Path, stamp: str,
                 cand = p.name[: -len(tail)]
                 if started_at(cand) is not None:
                     found.add(cand)
-    return found.pop() if len(found) == 1 else stamp
+    if len(found) != 1:
+        return stamp
+    cand = found.pop()
+    if tdir is not None and any(stamp_of(f.stem) == cand
+                                for f in files_with_stamp(tdir, cand, suffix=".md")):
+        return stamp    # у кандидата своя стенограмма — записи соседки, не наши
+    return cand

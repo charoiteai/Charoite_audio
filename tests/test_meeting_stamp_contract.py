@@ -83,8 +83,8 @@ def test_rebuild_разрешает_один_штамп_на_оба_канала
     resolved: list[tuple[str, tuple[str, ...]]] = []
     asked: list[tuple[str, str]] = []
 
-    def resolve(_rec_dir, stamp, labels=meeting_stamp.RECORDING_LABELS):
-        resolved.append((stamp, labels))
+    def resolve(_rec_dir, stamp, labels=meeting_stamp.RECORDING_LABELS, **kw):
+        resolved.append((stamp, labels, kw))
         return "2026-08-04_120301"
 
     monkeypatch.setattr(rt.meeting_stamp, "resolve_stamp", resolve)
@@ -94,7 +94,10 @@ def test_rebuild_разрешает_один_штамп_на_оба_канала
 
     rt.rebuild(live, {"audio": {"samplerate": 16000}})
 
-    assert resolved == [("2026-08-04_1203", meeting_stamp.RECORDING_LABELS)]
+    # сайдкара нет — точного штампа нет, каталог стенограмм передан для
+    # проверки владения единственным кандидатом минуты
+    assert resolved == [("2026-08-04_1203", meeting_stamp.RECORDING_LABELS,
+                         {"exact": None, "tdir": tmp_path})]
     assert asked == [("2026-08-04_120301", "mic"),
                      ("2026-08-04_120301", "blackhole")]
 
@@ -203,6 +206,148 @@ def test_посекундная_встреча_не_берёт_запись_со
 
     assert meeting_stamp.resolve_stamp(rec, "2026-08-20_143012") == "2026-08-20_143012", (
         "секунда встречи известна точно — приблизительное имя искать незачем")
+
+
+def test_минутное_имя_с_точным_штампом_не_берёт_запись_соседки(tmp_path):
+    """Ревью 04.09 (GLM): та же дыра, что закрыта 20.08, только вход минутный.
+
+    После наката темы файл встречи зовётся «…_1203_Тема», своих записей нет
+    (крэш не дописал, ретеншн удалил), а в минуте лежит одна запись
+    соседки — глоб по минуте объявлял её однозначной. Сайдкар знает точный
+    штамп: записи либо под ним, либо их нет.
+    """
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    meeting_stamp.recording_path(
+        rec, "2026-08-04_120314", "mic", "wav").write_bytes(b"RIFF")
+
+    assert meeting_stamp.resolve_stamp(
+        rec, "2026-08-04_1203", exact="2026-08-04_120301") == "2026-08-04_120301", (
+        "точный штамп известен — запись соседки той же минуты не наша")
+
+
+def test_точный_штамп_разрешает_две_встречи_в_минуту(tmp_path):
+    """Обратная сторона: с точным штампом двусмысленность минуты исчезает."""
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    for s in ("2026-08-04_120301", "2026-08-04_120314"):
+        meeting_stamp.recording_path(rec, s, "mic", "wav").write_bytes(b"RIFF")
+
+    assert meeting_stamp.resolve_stamp(
+        rec, "2026-08-04_1203", exact="2026-08-04_120301") == "2026-08-04_120301"
+
+
+def test_наследие_без_штампа_не_берёт_запись_соседки_с_живой_стенограммой(tmp_path):
+    """Сайдкара со штампом нет (встречи до этой правки): единственный
+    кандидат минуты принимается, только если у него нет собственной
+    стенограммы — иначе это соседка, а не мы."""
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    (tdir / "2026-08-04_1203_Тема.md").write_text(
+        "# Встреча 2026-08-04_1203 — Тема\n", encoding="utf-8")
+    (tdir / "2026-08-04_120314.md").write_text(
+        "# Встреча 2026-08-04_120314\n", encoding="utf-8")
+    meeting_stamp.recording_path(
+        rec, "2026-08-04_120314", "mic", "wav").write_bytes(b"RIFF")
+
+    assert meeting_stamp.resolve_stamp(rec, "2026-08-04_1203", tdir=tdir) == "2026-08-04_1203"
+    # соседка с темой под своим посекундным ключом — тоже соседка
+    (tdir / "2026-08-04_120314.md").rename(tdir / "2026-08-04_120314_Другая.md")
+    assert meeting_stamp.resolve_stamp(rec, "2026-08-04_1203", tdir=tdir) == "2026-08-04_1203"
+
+
+def test_наследие_без_штампа_по_прежнему_находит_свою_запись(tmp_path):
+    """Кандидат без собственной стенограммы — наша запись под посекундным
+    именем демона (инцидент 28.07 не возвращается)."""
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    (tdir / "2026-08-04_1203_Тема.md").write_text(
+        "# Встреча 2026-08-04_1203 — Тема\n", encoding="utf-8")
+    (tdir / "2026-08-04_1203_Тема_minutes.md").write_text("минутки\n", encoding="utf-8")
+    meeting_stamp.recording_path(
+        rec, "2026-08-04_120310", "mic", "wav").write_bytes(b"RIFF")
+
+    assert meeting_stamp.resolve_stamp(rec, "2026-08-04_1203", tdir=tdir) == "2026-08-04_120310"
+
+
+def test_сайдкар_отдаёт_точный_штамп_минутной_встречи(tmp_path):
+    """Источник точного штампа — ключ `stamp` сайдкара; мусор и чужая минута
+    точным штампом не считаются, посекундной стенограмме уточнять нечего."""
+    import json
+
+    import live_sidecar
+
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    live = tdir / "2026-08-04_1203_Тема.md"
+    live.write_text("# Встреча 2026-08-04_1203 — Тема\n", encoding="utf-8")
+    assert live_sidecar.exact_stamp(live) is None      # сайдкара нет
+    sidecar = live.with_name(live.name + ".live.json")
+    sidecar.write_text(json.dumps({"stamp": "2026-08-04_120301"}), encoding="utf-8")
+    assert live_sidecar.exact_stamp(live) == "2026-08-04_120301"
+    for bad in ("2026-08-04_120501", 120301, "2026-08-04_1203", "мусор"):
+        sidecar.write_text(json.dumps({"stamp": bad}), encoding="utf-8")
+        assert live_sidecar.exact_stamp(live) is None, bad
+
+    sec = tdir / "2026-08-04_120301.md"
+    sec.write_text("# Встреча 2026-08-04_120301\n", encoding="utf-8")
+    sec.with_name(sec.name + ".live.json").write_text(
+        json.dumps({"stamp": "2026-08-04_120301"}), encoding="utf-8")
+    assert live_sidecar.exact_stamp(sec) is None       # имя уже посекундное
+
+
+def test_сайдкар_под_старым_посекундным_именем_отдаёт_штамп(tmp_path):
+    """Встречи, озаглавленные до 0.69.1: сайдкар остался «…120301.md.live.json»
+    — штамп в его имени. Два таких сайдкара одной минуты без своих файлов —
+    неоднозначно, точного штампа нет."""
+    import live_sidecar
+
+    live = tmp_path / "2026-08-04_1203_Тема.md"
+    live.write_text("# Встреча 2026-08-04_1203 — Тема\n", encoding="utf-8")
+    (tmp_path / "2026-08-04_120301.md.live.json").write_text("{}", encoding="utf-8")
+    assert live_sidecar.exact_stamp(live) == "2026-08-04_120301"
+    (tmp_path / "2026-08-04_120314.md.live.json").write_text("{}", encoding="utf-8")
+    assert live_sidecar.exact_stamp(live) is None
+
+
+def test_rebuild_передаёт_точный_штамп_из_сайдкара(tmp_path, monkeypatch):
+    """Пересборка озаглавленной встречи ищет записи по штампу из сайдкара."""
+    import json
+
+    import rebuild_transcript as rt
+
+    live = tmp_path / "2026-08-04_1203_Тема.md"
+    live.write_text("# Встреча\n", encoding="utf-8")
+    live.with_name(live.name + ".live.json").write_text(
+        json.dumps({"stamp": "2026-08-04_120301"}), encoding="utf-8")
+    seen: list[dict] = []
+
+    def resolve(_rec_dir, stamp, labels=meeting_stamp.RECORDING_LABELS, **kw):
+        seen.append(kw)
+        return "2026-08-04_120301"
+
+    monkeypatch.setattr(rt.meeting_stamp, "resolve_stamp", resolve)
+    monkeypatch.setattr(rt, "wait_recording", lambda *_a: None)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(tmp_path / "recordings"))
+
+    rt.rebuild(live, {"audio": {"samplerate": 16000}})
+
+    assert seen == [{"exact": "2026-08-04_120301", "tdir": tmp_path}]
+
+
+def test_демон_пишет_посекундный_штамп_в_сайдкар():
+    """Вторая сторона №164: без ключа `stamp` пересборке неоткуда взять
+    точный штамп после наката темы — имя файла его теряет. Структурная
+    проверка, как у имени записи: важен сам факт записи ключа демоном."""
+    import pathlib
+
+    src = (pathlib.Path(__file__).resolve().parents[1] / "src" / "daemon.py").read_text(encoding="utf-8")
+    block = src[src.index('".live.json"'):][:1500]
+    assert '"stamp": tr.stamp' in block
 
 
 def test_посекундный_штамп_находит_свою_запись(tmp_path):
