@@ -303,3 +303,16 @@ def test_minute_owner_with_a_service_word_title_is_recognised(root):
     assert live_sidecar.sidecar_for(live) == sc
     assert rt.live_meta(live)["names"] == {"Собеседник 1": "Анна"}
 
+
+def test_per_second_stale_title_sidecar_belongs_to_the_renamed_neighbour(root):
+    """Посекундная соседка переименована до переноса пары: её сайдкар под
+    старой темой — её (Important DS r7 по #489), а не сирота."""
+    tdir = root / "transcripts"
+    a = tdir / "2026-09-03_1200_Новая.md"; a.write_text("A\n", encoding="utf-8")
+    b = tdir / "2026-09-03_120040_Другое.md"; b.write_text("B\n", encoding="utf-8")
+    stale = tdir / "2026-09-03_120040_Повтор.md.live.json"
+    stale.write_text(json.dumps({"names": {"Собеседник 1": "Инга"}}), encoding="utf-8")
+    assert live_sidecar.owner_of(stale) == b
+    assert live_sidecar.sidecar_for(b) == stale
+    assert rt.live_meta(b)["names"] == {"Собеседник 1": "Инга"}
+

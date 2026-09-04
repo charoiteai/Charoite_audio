@@ -670,3 +670,25 @@ def test_aux_owner_with_a_neighbour(tmp_path):
     plan = forget.plan("2026-09-03_1200", tmp_path)
     assert own in plan.delete and nb not in plan.delete
 
+
+def test_sweep_keeps_the_renamed_per_second_neighbours_stale_sidecar(tmp_path):
+    """Забываем владельца минуты; у живой посекундной соседки сайдкар под
+    старой темой — остаётся (Important DS r7 по #489)."""
+    tdir = tmp_path / "transcripts"; tdir.mkdir()
+    (tdir / "2026-09-03_1200_Новая.md").write_text("A\n", encoding="utf-8")
+    (tdir / "2026-09-03_120040_Другое.md").write_text("B\n", encoding="utf-8")
+    stale = tdir / "2026-09-03_120040_Повтор.md.live.json"; stale.write_text("{}", encoding="utf-8")
+    plan = forget.plan("2026-09-03_1200", tmp_path)
+    assert tdir / "2026-09-03_1200_Новая.md" in plan.delete
+    assert stale not in plan.delete
+
+
+def test_per_second_forget_does_not_touch_a_minute_keyed_stale_trace(tmp_path):
+    """Граница свипа: забывание посекундной соседки не трогает бесхозный
+    минутно-ключевой след — его уносит только забывание самой минуты."""
+    tdir = tmp_path / "transcripts"; tdir.mkdir()
+    (tdir / "2026-09-03_120045_Повтор.md").write_text("B\n", encoding="utf-8")
+    trace = tdir / "2026-09-03_1200_Старая.md.live.json"; trace.write_text("{}", encoding="utf-8")
+    plan = forget.plan("2026-09-03_120045", tmp_path)
+    assert trace not in plan.delete
+

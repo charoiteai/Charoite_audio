@@ -43,8 +43,10 @@ def owner_of(sidecar: pathlib.Path) -> pathlib.Path | None:
     Посекундное имя («…120040.md.live.json»): владелец — главный файл с
     этим посекундным штампом («…120040_Повтор.md»), если он есть; иначе —
     главный файл минуты («…1200_Отчет.md»): так конвейер до 0.69.1 оставлял
-    сайдкар владельца минуты. Имя с темой — файл с этой темой. Никого —
-    None (сирота). Две встречи в минуту (крэш-рестарт) различаются здесь
+    сайдкар владельца минуты. Имя с темой — файл с этой темой; его нет
+    (переименование до переноса пары) — главный файл с тем же ключом под
+    любой темой, а для минутного ключа — владелец минуты. Никого — None
+    (сирота). Две встречи в минуту (крэш-рестарт) различаются здесь
     штампом, а не «единственный — мой» (Critical DS r3 по #489).
     """
     base = sidecar.name[:-len(TAIL)]
@@ -58,7 +60,15 @@ def owner_of(sidecar: pathlib.Path) -> pathlib.Path | None:
         if titled.exists():
             return titled
         parts = meeting_stamp.decompose(base)
-        if parts and parts[0] == meeting_stamp.minute_of(parts[0]):
+        if not parts:
+            return None
+        # Главный файл с тем же ключом под другой темой — и посекундным, и
+        # минутным (DS r7 по #489); для минутного ключа — ещё владелец
+        # минуты с темой на служебное слово (шапка)
+        for f in meeting_stamp.files_with_stamp(tdir, parts[0], suffix=".md"):
+            if _is_main(f, parts[0]):
+                return f
+        if parts[0] == meeting_stamp.minute_of(parts[0]):
             return _minute_owner(tdir, parts[0])
         return None
     for f in meeting_stamp.files_with_stamp(tdir, stamp, suffix=".md"):
