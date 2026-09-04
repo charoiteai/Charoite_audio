@@ -634,3 +634,39 @@ def test_plan_takes_ownerless_sidecars_of_the_minute_and_the_service_word_owner(
     assert own in plan.delete and orphan in plan.delete
     assert other not in plan.delete
 
+
+def test_sweep_keeps_the_alive_owners_stale_title_sidecar(tmp_path):
+    """Забываем посекундную соседку B; у живого владельца минуты A сайдкар
+    под старой темой (rename до переноса пары) — остаётся (DS r6 по #489)."""
+    tdir = tmp_path / "transcripts"; tdir.mkdir()
+    (tdir / "2026-09-03_1200_Новая.md").write_text("A\n", encoding="utf-8")
+    stale = tdir / "2026-09-03_1200_Старая.md.live.json"
+    stale.write_text('{"names": {"Собеседник 1": "Анна"}}', encoding="utf-8")
+    (tdir / "2026-09-03_120045_Повтор.md").write_text("B\n", encoding="utf-8")
+    plan = forget.plan("2026-09-03_120045", tmp_path)
+    assert stale not in plan.delete
+    assert tdir / "2026-09-03_120045_Повтор.md" in plan.delete
+
+
+def test_sweep_takes_a_truly_ownerless_per_second_sidecar(tmp_path):
+    """Минута без главных файлов: посекундный сайдкар — мёртвый след, уходит
+    вместе с забыванием минуты; с темой минуты — уносит сам минутный глоб."""
+    tdir = tmp_path / "transcripts"; tdir.mkdir()
+    orphan = tdir / "2026-09-03_120005.md.live.json"; orphan.write_text("{}", encoding="utf-8")
+    titled = tdir / "2026-09-03_1200_Старая.md.live.json"; titled.write_text("{}", encoding="utf-8")
+    plan = forget.plan("2026-09-03_1200", tmp_path)
+    assert orphan in plan.delete
+    assert titled in plan.delete
+
+
+def test_aux_owner_with_a_neighbour(tmp_path):
+    """Владелец минуты с темой на служебное слово и посекундная соседка:
+    забываем владельца — его посекундный сайдкар уходит, соседкин нет."""
+    tdir = tmp_path / "transcripts"; tdir.mkdir()
+    (tdir / "2026-09-03_1200_Демо_live.md").write_text("# Встреча 2026-09-03_1200 — Демо live\n", encoding="utf-8")
+    own = tdir / "2026-09-03_120005.md.live.json"; own.write_text("{}", encoding="utf-8")
+    (tdir / "2026-09-03_120040_Повтор.md").write_text("B\n", encoding="utf-8")
+    nb = tdir / "2026-09-03_120040.md.live.json"; nb.write_text("{}", encoding="utf-8")
+    plan = forget.plan("2026-09-03_1200", tmp_path)
+    assert own in plan.delete and nb not in plan.delete
+

@@ -52,12 +52,23 @@ def owner_of(sidecar: pathlib.Path) -> pathlib.Path | None:
     titled = tdir / (base + ".md")
     stamp = meeting_stamp.stamp_of(base)
     if stamp is None or stamp != base:
-        return titled if titled.exists() else None
+        # Имя с темой: файл с этой темой; его нет — переименование до
+        # переноса пары, сайдкар владельца минуты (одна семантика с
+        # _legacy — DS r6 по #489)
+        if titled.exists():
+            return titled
+        parts = meeting_stamp.decompose(base)
+        if parts and parts[0] == meeting_stamp.minute_of(parts[0]):
+            return _minute_owner(tdir, parts[0])
+        return None
     for f in meeting_stamp.files_with_stamp(tdir, stamp, suffix=".md"):
         if _is_main(f, stamp):
             return f
-    minute = meeting_stamp.minute_of(stamp)
-    for f in tdir.glob(f"{minute}*.md"):
+    return _minute_owner(tdir, meeting_stamp.minute_of(stamp))
+
+
+def _minute_owner(tdir: pathlib.Path, minute: str) -> pathlib.Path | None:
+    for f in sorted(tdir.glob(f"{minute}*.md")):
         if _main_of_minute(f, minute):
             return f
     return None
@@ -105,13 +116,7 @@ def _legacy(live: pathlib.Path) -> list[pathlib.Path]:
         base_stamp = meeting_stamp.stamp_of(p.name[:-len(TAIL)])
         if base_stamp is None or meeting_stamp.minute_of(base_stamp) != minute:
             continue
-        owner = owner_of(p)
-        if owner == live:
-            out.append(p)
-        elif owner is None and base_stamp == minute and stamp == minute:
-            # Сайдкар с прежней темой, владельца по имени нет — переименование
-            # до того, как rename_meeting стал переносить пару: он владельца
-            # минуты, то есть наш
+        if owner_of(p) == live:
             out.append(p)
     return out
 

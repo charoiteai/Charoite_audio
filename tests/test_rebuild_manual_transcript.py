@@ -260,7 +260,7 @@ def test_titled_sidecar_left_by_an_old_rename_is_found(root):
     live = tdir / "2026-09-03_1200_Новая.md"; live.write_text("x\n", encoding="utf-8")
     old = tdir / "2026-09-03_1200_Старая.md.live.json"
     old.write_text(json.dumps({"names": {"Собеседник 1": "Анна"}}), encoding="utf-8")
-    assert live_sidecar.owner_of(old) is None
+    assert live_sidecar.owner_of(old) == live, "старая тема без файла — владельца минуты"
     assert live_sidecar.sidecar_for(live) == old
     assert rt.live_meta(live)["names"] == {"Собеседник 1": "Анна"}
 

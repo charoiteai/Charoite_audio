@@ -369,10 +369,14 @@ def plan(stamp: str, root: pathlib.Path,
                 continue
             owner = live_sidecar.owner_of(sc)
             base = meeting_stamp.stamp_of(sc.name[:-len(".md.live.json")])
-            # Свой — уходит; бесхозный сайдкар этой минуты — мёртвый след
-            # (живая встреча в минуте всегда даёт владельца), имена
-            # участников не должны его переживать (advisory DS r5)
-            if owner in gone or (owner is None and base and meeting_stamp.minute_of(base) == minute):
+            # Свой — уходит; бесхозный ПОСЕКУНДНЫЙ сайдкар этой минуты —
+            # мёртвый след (живая встреча в минуте всегда даёт владельца),
+            # имена участников не должны его переживать (advisory DS r5).
+            # Имена с темой без файла — владельца минуты, их решает owner_of
+            # (Important DS r6).
+            orphan = owner is None and base and base != meeting_stamp.minute_of(base) \
+                and meeting_stamp.minute_of(base) == minute
+            if owner in gone or orphan:
                 p.delete.append(sc)
 
     # Логи графа этой встречи: в logs/graph_<штамп>*.log попадают имена
