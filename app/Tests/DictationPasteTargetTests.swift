@@ -86,4 +86,10 @@ final class DictationPasteTargetTests: XCTestCase {
         XCTAssertFalse(DictationService.liveStripAllowed(nowSecure: false, secureSeen: false, trusted: false), "без права AX пароль не отличить — плашки нет")
         XCTAssertFalse(DictationService.liveStripAllowed(nowSecure: true, secureSeen: true, trusted: true))
     }
+
+    func testSecureReadAppliesOnlyToTheLiveRecordingOfTheSameDictation() {
+        XCTAssertTrue(DictationService.secureReadApplies(generation: 3, current: 3, recording: true))
+        XCTAssertFalse(DictationService.secureReadApplies(generation: 3, current: 4, recording: true), "уже следующая диктовка")
+        XCTAssertFalse(DictationService.secureReadApplies(generation: 3, current: 3, recording: false), "после стопа — доставка читает сама")
+    }
 }

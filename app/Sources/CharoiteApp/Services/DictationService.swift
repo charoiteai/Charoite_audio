@@ -454,6 +454,12 @@ final class DictationService: ObservableObject {
         return pasteDecision(trusted: true, own: own, startedIn: startedIn, now: now)
     }
 
+    /// Применять ли результат фонового чтения фокуса: только к той же
+    /// диктовке и пока она пишется (DS r11 M1, M3 — чистый шов для теста).
+    nonisolated static func secureReadApplies(generation: Int, current: Int, recording: Bool) -> Bool {
+        generation == current && recording
+    }
+
     /// Показывать ли надиктованный текст на плашке: не в поле пароля и не
     /// после него — защёлка держит до конца диктовки (DS r6 C1, M2); без
     /// права Accessibility пароль не отличить — плашки нет вовсе (DS r8 I1).
@@ -489,7 +495,10 @@ final class DictationService: ObservableObject {
             Task.detached(priority: .userInitiated) { [weak self] in
                 let secure = Self.focusedFieldIsSecure()
                 await MainActor.run { [weak self] in
-                    guard let self, self.generation == generation else { return }
+                    // Чтение, завершившееся после стопа или уже в следующей
+                    // диктовке, не применяется: доставка читает фокус сама (DS r11 M1)
+                    guard let self, Self.secureReadApplies(generation: generation, current: self.generation,
+                                                            recording: self.isRecording) else { return }
                     self.secureField = secure
                     if secure {
                         self.secureSeen = true
