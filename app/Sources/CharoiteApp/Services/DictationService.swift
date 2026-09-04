@@ -55,9 +55,11 @@ final class DictationService: ObservableObject {
     /// текст, который поле замаскировало, не должен висеть внизу экрана.
     private var secureField = false
     private var secureCheckedAt = Date.distantPast
-    /// Диктовка НАЧАТА в поле пароля: этот текст на экран не выводим,
-    /// даже если к доставке впереди уже обычное поле (круг 2 по #488, DS).
-    private var startedSecure = false
+    /// Диктовка хоть раз касалась поля пароля — на старте или по ходу речи
+    /// (защёлка, не снимок: стартовое чтение AX могло застать поле до того,
+    /// как оно стало secure — advisory DS r5 по #488). Тогда ни текста на
+    /// экране, ни автовставки: человек вставляет сам (круги 2–5 по #488).
+    private var secureSeen = false
     /// Где нажали ⌥⌘D: приложение и, при праве Accessibility, окно с
     /// фокусом. Распознавание идёт секунды (страховка черновиком — до 8 с),
     /// и ⌘V должен уйти туда, где человек начал диктовать, а не в окно,
@@ -159,7 +161,7 @@ final class DictationService: ObservableObject {
         // один проход даёт и пароль, и окно, и владельца поля
         let focus = note ? FocusInfo() : Self.focusInfo()
         secureField = focus.secure
-        startedSecure = focus.secure
+        secureSeen = focus.secure
         secureCheckedAt = Date()
         // Якорь вставки нужен только глобальной диктовке: чат и заметка
         // insert() не зовут (круг 2 по #488, DS)
@@ -351,7 +353,7 @@ final class DictationService: ObservableObject {
         25 + max(0, recorded) / 5
     }
 
-    enum PasteDecision: Equatable { case paste, noAccessibility, windowChanged }
+    enum PasteDecision: Equatable { case paste, noAccessibility, windowChanged, secret }
 
     /// Приложение впереди и окно с фокусом в нём (окно — только при праве
     /// Accessibility; без него сравниваем приложения).
@@ -408,23 +410,20 @@ final class DictationService: ObservableObject {
         let owner = info.pid.flatMap { NSRunningApplication(processIdentifier: $0) }
             ?? NSWorkspace.shared.frontmostApplication
         guard let owner else { return nil }
-        // Окно — только от того же владельца, что и pid якоря: гибрид «pid
-        // одного, окно другого» хуже сравнения по приложению (DS r3 M1, r4 M2)
+        // Окно берём только когда его владелец известен и жив: pid, который
+        // не резолвится в приложение, — не пара для окна (DS r3 M1, r5 M3)
         return PasteAnchor(pid: owner.processIdentifier, name: owner.localizedName ?? "?",
-                           window: info.pid == owner.processIdentifier ? info.window : nil)
+                           window: info.pid != nil ? info.window : nil)
     }
 
-    /// ⌘V раскрыл бы секрет: диктовку начали в поле пароля, а вставка ушла
-    /// бы в обычное поле (то же окно, фокус переехал). В само поле пароля
-    /// вставлять можно — оно маскирует (DS r4 I1).
-    nonisolated static func pasteRevealsSecret(startedSecure: Bool, nowSecure: Bool) -> Bool {
-        startedSecure && !nowSecure
-    }
-
-    /// Можно ли показать надиктованный текст на экране: ни начали в поле
-    /// пароля, ни стоим в нём сейчас (DS r3 M4 — чистый шов для теста).
-    nonisolated static func stripAllowed(startedSecure: Bool, nowSecure: Bool) -> Bool {
-        !startedSecure && !nowSecure
+    /// Итог доставки: право Accessibility → пароль → окно. Диктовка,
+    /// касавшаяся поля пароля, автовставки не получает вообще — ни в обычное
+    /// поле, ни в само поле пароля: одно правило вместо матрицы (DS r5 I1).
+    nonisolated static func finalDecision(trusted: Bool, own: pid_t, startedIn: PasteAnchor?, now: PasteAnchor?,
+                                          secureSeen: Bool) -> PasteDecision {
+        guard trusted else { return .noAccessibility }
+        if secureSeen { return .secret }
+        return pasteDecision(trusted: true, own: own, startedIn: startedIn, now: now)
     }
 
     /// Куда уйдёт результат: ⌘V только с правом Accessibility и только туда,
@@ -449,6 +448,7 @@ final class DictationService: ObservableObject {
         if force || Date().timeIntervalSince(secureCheckedAt) > 1 {
             secureCheckedAt = Date()
             secureField = Self.focusedFieldIsSecure()
+            if secureField { secureSeen = true }
         }
         return secureField
     }
@@ -605,15 +605,18 @@ final class DictationService: ObservableObject {
 
         let focus = focus ?? Self.focusInfo()
         let now = Self.frontAnchor(focus)
-        var decision = Self.pasteDecision(trusted: AXIsProcessTrusted(), own: ProcessInfo.processInfo.processIdentifier,
-                                          startedIn: target, now: now)
-        // Начали в поле пароля, а к доставке в том же окне фокус в обычном
-        // поле: ⌘V вставил бы секрет открытым текстом — оставляем в буфере с
-        // инструкцией (DS r4 I1)
-        if decision == .paste, Self.pasteRevealsSecret(startedSecure: startedSecure, nowSecure: focus.secure) {
-            decision = .windowChanged
-        }
-        switch decision {
+        if focus.secure { secureSeen = true }
+        switch Self.finalDecision(trusted: AXIsProcessTrusted(), own: ProcessInfo.processInfo.processIdentifier,
+                                  startedIn: target, now: now, secureSeen: secureSeen) {
+        case .secret:
+            // Диктовка касалась поля пароля: ⌘V раскрыл бы секрет в обычном
+            // поле, а статус и плашка — на экране. Текст только в буфере,
+            // инструкция без него, звука нет (DS r4 I1, r5 I1/M2).
+            status = L.t("диктовка шла в поле пароля — текст в буфере, вставь его в нужное поле сам",
+                         "the dictation touched a password field — the text is in the clipboard, paste it into the right field yourself",
+                         "听写涉及密码字段——文本已在剪贴板，请自行粘贴到正确的输入框")
+            DictationPreviewPanel.shared.flash(text: status, hint: "", seconds: 6)
+            return
         case .windowChanged:
             // ⌘V ушёл бы не туда — текст в буфере, человек вставит сам. Панель
             // меню-бара к этому моменту закрыта, поэтому говорит плашка — там,
@@ -635,16 +638,8 @@ final class DictationService: ObservableObject {
                 : L.t(" (впереди «\(front)», диктовали в «\(started)»)",
                       " (\u{201C}\(front)\u{201D} is in front, you dictated into \u{201C}\(started)\u{201D})",
                       "（当前是「\(front)」，听写时是「\(started)」）"))
-            // Текст из поля пароля на экран не выводим ни при каком фокусе;
-            // текущее поле — тем же AX-проходом, без второго запроса
-            if Self.stripAllowed(startedSecure: startedSecure, nowSecure: focus.secure) {
-                DictationPreviewPanel.shared.flash(text: text, hint: hint, seconds: 6)
-            } else if !focus.secure {
-                // Начали в пароле, а впереди уже обычное поле: сам текст не
-                // показываем, но инструкцию — да, иначе результат повиснет в
-                // буфере незамеченным (advisory DS r3)
-                DictationPreviewPanel.shared.flash(text: hint, hint: "", seconds: 6)
-            }
+            // Пароля не было (иначе исход .secret): текст показать можно
+            DictationPreviewPanel.shared.flash(text: text, hint: hint, seconds: 6)
             return
         case .paste:
             let src = CGEventSource(stateID: .combinedSessionState)
@@ -655,10 +650,7 @@ final class DictationService: ObservableObject {
             vDown?.post(tap: .cghidEventTap)
             vUp?.post(tap: .cghidEventTap)
             if !keepStatus {
-                // Пароль в статус не попадает (DS r3 I1)
-                status = Self.stripAllowed(startedSecure: startedSecure, nowSecure: focus.secure)
-                    ? L.t("вставлено: \(String(text.prefix(60)))", "inserted: \(String(text.prefix(60)))", "已插入：\(String(text.prefix(60)))")
-                    : L.t("вставлено", "inserted", "已插入")
+                status = L.t("вставлено: \(String(text.prefix(60)))", "inserted: \(String(text.prefix(60)))", "已插入：\(String(text.prefix(60)))")
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                 // если буфер уже сменил кто-то другой (юзер успел скопировать) — не трогаем

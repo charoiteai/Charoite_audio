@@ -55,20 +55,19 @@ final class DictationPasteTargetTests: XCTestCase {
         XCTAssertEqual(DictationService.pasteDecision(trusted: true, own: own, startedIn: anchor(42), now: nil), .paste)
     }
 
-    func testStripNeverShowsPasswordText() {
-        XCTAssertTrue(DictationService.stripAllowed(startedSecure: false, nowSecure: false))
-        XCTAssertFalse(DictationService.stripAllowed(startedSecure: true, nowSecure: false), "начали в пароле — текст не показываем")
-        XCTAssertFalse(DictationService.stripAllowed(startedSecure: false, nowSecure: true), "стоим в пароле — тоже")
+    func testSecretNeverPastesAnywhere() {
+        // касание поля пароля — ни в обычное поле, ни в само поле пароля
+        XCTAssertEqual(DictationService.finalDecision(trusted: true, own: own, startedIn: anchor(42), now: anchor(42), secureSeen: true), .secret)
+        XCTAssertEqual(DictationService.finalDecision(trusted: true, own: own, startedIn: anchor(42), now: anchor(77), secureSeen: true), .secret)
+        XCTAssertEqual(DictationService.finalDecision(trusted: true, own: own, startedIn: nil, now: nil, secureSeen: true), .secret)
     }
 
-    func testStripNeverShowsPasswordTextEvenWhenBothSecure() {
-        XCTAssertFalse(DictationService.stripAllowed(startedSecure: true, nowSecure: true))
+    func testNoAccessibilityStillWinsOverSecret() {
+        XCTAssertEqual(DictationService.finalDecision(trusted: false, own: own, startedIn: anchor(42), now: anchor(42), secureSeen: true), .noAccessibility)
     }
 
-    func testPasteIntoANormalFieldAfterAPasswordStartIsRefused() {
-        XCTAssertTrue(DictationService.pasteRevealsSecret(startedSecure: true, nowSecure: false))
-        XCTAssertFalse(DictationService.pasteRevealsSecret(startedSecure: true, nowSecure: true), "в само поле пароля — можно, оно маскирует")
-        XCTAssertFalse(DictationService.pasteRevealsSecret(startedSecure: false, nowSecure: false))
-        XCTAssertFalse(DictationService.pasteRevealsSecret(startedSecure: false, nowSecure: true), "обычный старт, пароль впереди: ⌘V маскируется полем")
+    func testWithoutASecretTheWindowRuleDecides() {
+        XCTAssertEqual(DictationService.finalDecision(trusted: true, own: own, startedIn: anchor(42), now: anchor(42), secureSeen: false), .paste)
+        XCTAssertEqual(DictationService.finalDecision(trusted: true, own: own, startedIn: anchor(42), now: anchor(77), secureSeen: false), .windowChanged)
     }
 }
