@@ -19,6 +19,7 @@ sys.path.insert(0, str(REPO / "src"))
 
 import graph_updater  # noqa: E402
 import live_sidecar  # noqa: E402
+import meeting_processing as mp  # noqa: E402
 import rebuild_transcript as rt  # noqa: E402
 
 CFG = {"audio": {"samplerate": 16000}, "log": {}}
@@ -468,3 +469,29 @@ def test_minute_key_sidecar_with_a_stale_title_finds_a_service_word_owner(root):
     assert live_sidecar.owner_of(stale) == main
     assert live_sidecar.sidecar_for(main) == stale
     assert rt.live_meta(main)["names"] == {"Собеседник 1": "Анна"}
+
+
+def test_minute_owner_titled_live_beats_a_detached_per_second_copy_in_both_resolvers(root):
+    """DS r11 по #489: владелец минуты с темой на «live» (DS r5) и отцепленная
+    копия посекундного черновика «…120005_live.md» от write_final — оба
+    резолвера, owner_of и meeting_processing.find_final_transcript по мёртвому
+    посекундному пути, отдают владельца минуты, а не копию."""
+    tdir = root / "transcripts"
+    main = tdir / "2026-09-03_1200_Демо_live.md"
+    main.write_text("# Встреча 2026-09-03_1200 — Демо live\n", encoding="utf-8")
+    (tdir / "2026-09-03_120005_live.md").write_text("# Встреча 2026-09-03_120005\n\nчерновик\n", encoding="utf-8")
+    sc = tdir / "2026-09-03_120005.md.live.json"; sc.write_text("{}", encoding="utf-8")
+    assert live_sidecar.owner_of(sc) == main
+    assert mp.find_final_transcript(tdir / "2026-09-03_120005.md") == main.resolve()
+    assert live_sidecar.sidecar_for(main) == sc
+
+
+def test_bare_leftover_next_to_the_titled_minute_owner_does_not_own(root):
+    """То же для минутного ключа (DS r11 M2): «…_1200.md» рядом с
+    «…_1200_Тема.md» — владелец посекундного сайдкара озаглавленный."""
+    tdir = root / "transcripts"
+    (tdir / "2026-09-03_1200.md").write_text("# Встреча 2026-09-03_1200\n", encoding="utf-8")
+    main = tdir / "2026-09-03_1200_Тема.md"
+    main.write_text("# Встреча 2026-09-03_1200 — Тема\n", encoding="utf-8")
+    sc = tdir / "2026-09-03_120005.md.live.json"; sc.write_text("{}", encoding="utf-8")
+    assert live_sidecar.owner_of(sc) == main

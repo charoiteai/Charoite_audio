@@ -100,6 +100,11 @@ def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
     # и спасённая на посекундном шаге копия закрывала бы настоящий финал
     # минутного шага — статус цеплялся за «_live», финальный гейт не видел
     # заметку, готовая встреча падала в error (первая живая встреча 31.08).
+    # Ярус важнее шага: озаглавленный «…_Демо_live» минутного шага важнее
+    # «<штамп>_live»-остатка посекундного — иначе отцепленная копия голого
+    # черновика (write_final до ретитла) обгоняла бы настоящего владельца
+    # минуты, и этот резолвер расходился с live_sidecar.owner_of (DS r11 по #489)
+    tiers = []
     for stamp, live_copies in rescues:
         if not live_copies:
             continue
@@ -123,11 +128,12 @@ def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
         primary = [path for path in mains
                    if path.stem[len(stamp):].lower() != "_live"
                    and path.stem[:-len("_live")] not in stems]
-        candidates = (primary
-                      or [path for path in mains if path.stem[:-len("_live")] not in stems]
-                      or mains)
-        if candidates:
-            return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
+        bare = [path for path in mains if path.stem[:-len("_live")] not in stems]
+        tiers.append((primary, bare, mains))
+    for level in range(3):
+        for tier in tiers:
+            if tier[level]:
+                return max(tier[level], key=lambda path: path.stat().st_mtime).resolve()
     return original.resolve()
 
 

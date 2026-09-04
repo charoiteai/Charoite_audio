@@ -708,6 +708,5 @@ def test_sweep_takes_an_ownerless_titled_per_second_sidecar_with_a_service_word(
     без главного — stamp_of такое имя не разбирает, ключ берётся decompose —
     уходит при забывании минуты."""
     tdir = tmp_path / "transcripts"; tdir.mkdir()
-    (tdir / "2026-09-03_1200_minutes.md").write_text("# Протокол\n", encoding="utf-8")
     sc = tdir / "2026-09-03_120030_Разбор.md.live.json"; sc.write_text("{}", encoding="utf-8")
     assert forget.plan("2026-09-03_1200", tmp_path).delete.count(sc) == 1
