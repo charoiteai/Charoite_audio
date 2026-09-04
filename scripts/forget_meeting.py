@@ -66,6 +66,7 @@ CODE = pathlib.Path(__file__).resolve().parent.parent
 ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 sys.path.insert(0, str(CODE / "src"))
 import deps  # noqa: E402
+import live_sidecar  # noqa: E402
 
 deps.explain_missing()      # запущено не из .venv — скажем рецепт, а не трейсбек
 
@@ -354,10 +355,17 @@ def plan(stamp: str, root: pathlib.Path,
         names = {f.name for f in p.delete if f.parent == root / "transcripts"}
         p.delete += [f for f in prev_dir.iterdir() if f.name in names and f not in p.delete]
     # Сайдкар live.json переехавшей встречи минутный глоб выше уносит сам.
-    # Сайдкар под посекундным именем (встречи, озаглавленные до 0.69.1) не
-    # трогаем: чей он в этой минуте, по имени не узнать, и попытка угадать
-    # «единственный — мой» удаляла сайдкар живой соседки (DS r3 по #489).
-    # После переезда сайдкаров новые встречи в него не упираются.
+    # Сайдкар под посекундным именем (встречи до 0.69.1) — только тот, чей
+    # владелец по штампу (live_sidecar.owner_of) уходит вместе с ней:
+    # «единственный в минуте — мой» удалял сайдкар живой соседки (DS r3 по
+    # #489), а без уборки сирота с именами участников переживала «забыть»
+    # (GLM r3).
+    tdir = root / "transcripts"
+    if tdir.is_dir():
+        gone = {f for f in p.delete if f.parent == tdir}
+        for sc in tdir.glob("*.md.live.json"):
+            if sc not in p.delete and live_sidecar.owner_of(sc) in gone:
+                p.delete.append(sc)
 
     # Логи графа этой встречи: в logs/graph_<штамп>*.log попадают имена
     # участников и куски цитат — «забыть» обязано дойти и до них, иначе

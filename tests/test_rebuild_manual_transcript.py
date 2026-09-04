@@ -230,17 +230,63 @@ def test_retitle_without_a_hash_does_not_start_protection(root):
     assert rt.human_edited_transcript(titled, meta) is None
 
 
-def test_legacy_sidecar_is_not_adopted_when_a_neighbour_shares_the_minute(root):
-    """Две встречи в минуту: единственный посекундный сайдкар может быть
-    соседкин — не усыновляем и не читаем, свой сайдкар заводится с нуля."""
-    live = root / "transcripts" / "2026-09-03_1200_Тема.md"
-    live.write_text("текст\n", encoding="utf-8")
-    neighbour = root / "transcripts" / "2026-09-03_120040_Повтор.md"
-    neighbour.write_text("# Встреча\n", encoding="utf-8")
-    old = root / "transcripts" / "2026-09-03_120040.md.live.json"
-    old.write_text(json.dumps({"names": {"Собеседник 1": "Анна"}}), encoding="utf-8")
+def test_owner_of_tells_two_meetings_of_a_minute_apart(root):
+    """Сценарий DS r3: A владеет минутой (сайдкар посекундный, до 0.69.1),
+    B — посекундная соседка. Владельцы — по штампу, не по счёту."""
+    tdir = root / "transcripts"
+    a = tdir / "2026-09-03_1200_Отчет.md"; a.write_text("A\n", encoding="utf-8")
+    b = tdir / "2026-09-03_120040_Повтор.md"; b.write_text("B\n", encoding="utf-8")
+    sa = tdir / "2026-09-03_120005.md.live.json"; sa.write_text("{}", encoding="utf-8")
+    sb = tdir / "2026-09-03_120040.md.live.json"; sb.write_text("{}", encoding="utf-8")
+    assert live_sidecar.owner_of(sa) == a
+    assert live_sidecar.owner_of(sb) == b
+    assert live_sidecar.sidecar_for(a) == sa and live_sidecar.sidecar_for(b) == sb
+    # усыновление берёт только свой
+    assert live_sidecar.remember(b, "transcript_sha256", _sha("B\n"))
+    assert sa.exists() and not sb.exists() and b.with_name(b.name + ".live.json").exists()
+
+
+def test_orphan_sidecar_belongs_to_nobody(root):
+    sc = root / "transcripts" / "2026-09-03_120005.md.live.json"; sc.write_text("{}", encoding="utf-8")
+    assert live_sidecar.owner_of(sc) is None
+    live = root / "transcripts" / "2026-09-03_1201_Другая.md"; live.write_text("x\n", encoding="utf-8")
     assert live_sidecar.sidecar_for(live) == live.with_name(live.name + ".live.json")
-    assert live_sidecar.remember(live, "transcript_sha256", _sha("текст\n"))
-    assert old.exists(), "сайдкар соседки на месте"
-    meta = json.loads(live.with_name(live.name + ".live.json").read_text(encoding="utf-8"))
-    assert "names" not in meta and meta["transcript_sha256"] == _sha("текст\n")
+
+
+def test_titled_sidecar_left_by_an_old_rename_is_found(root):
+    """Переименовали до того, как rename_meeting стал переносить сайдкар:
+    сайдкар с прежней темой — свой (по имени с темой владельца нет)."""
+    tdir = root / "transcripts"
+    live = tdir / "2026-09-03_1200_Новая.md"; live.write_text("x\n", encoding="utf-8")
+    old = tdir / "2026-09-03_1200_Старая.md.live.json"
+    old.write_text(json.dumps({"names": {"Собеседник 1": "Анна"}}), encoding="utf-8")
+    assert live_sidecar.owner_of(old) is None
+    assert live_sidecar.sidecar_for(live) == old
+    assert rt.live_meta(live)["names"] == {"Собеседник 1": "Анна"}
+
+
+def test_neighbour_with_a_service_word_in_the_title_still_owns_its_sidecar(root):
+    """«…120030_Разбор.md»: stamp_of даёт None, но это главный файл соседки —
+    её сайдкар не наш (Important DS r4 по #489)."""
+    tdir = root / "transcripts"
+    ours = tdir / "2026-09-03_1200_Синхронизация.md"; ours.write_text("# Встреча\nнаш\n", encoding="utf-8")
+    nb = tdir / "2026-09-03_120030_Разбор.md"; nb.write_text("# Встреча 2026-09-03_120030 — Разбор\n", encoding="utf-8")
+    sc = tdir / "2026-09-03_120030.md.live.json"
+    sc.write_text(json.dumps({"names": {"Собеседник 1": "Инга"}}), encoding="utf-8")
+    assert live_sidecar.owner_of(sc) == nb
+    assert live_sidecar.sidecar_for(ours) == ours.with_name(ours.name + ".live.json")
+    assert rt.live_meta(ours) == {}
+
+
+def test_retitle_without_a_hash_keeps_the_sidecar_names(root):
+    """Боевая форма «нет хеша»: сайдкар после стопа демона с именами, но без
+    transcript_sha256 — ретитл переносит его, имена целы, хеш не появляется."""
+    bare = "2026-09-03_120005"
+    live = root / "transcripts" / f"{bare}.md"
+    live.write_text(f"# Встреча {bare}\n\nтекст\n", encoding="utf-8")
+    live.with_name(live.name + ".live.json").write_text(
+        json.dumps({"names": {"Собеседник 2": "Инга"}, "speakers": 2}), encoding="utf-8")
+    titled = graph_updater.retitle(live, "2026-09-03_1200", bare, "Тема")
+    meta = rt.live_meta(titled)
+    assert meta["names"] == {"Собеседник 2": "Инга"} and "transcript_sha256" not in meta
+

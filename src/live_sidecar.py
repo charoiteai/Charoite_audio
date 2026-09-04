@@ -37,22 +37,71 @@ def _direct(live: pathlib.Path) -> pathlib.Path:
     return live.with_name(live.name + ".live.json")
 
 
+def owner_of(sidecar: pathlib.Path) -> pathlib.Path | None:
+    """Чья это стенограмма — по штампу в имени сайдкара, не по счёту.
+
+    Посекундное имя («…120040.md.live.json»): владелец — главный файл с
+    этим посекундным штампом («…120040_Повтор.md»), если он есть; иначе —
+    главный файл минуты («…1200_Отчет.md»): так конвейер до 0.69.1 оставлял
+    сайдкар владельца минуты. Имя с темой — файл с этой темой. Никого —
+    None (сирота). Две встречи в минуту (крэш-рестарт) различаются здесь
+    штампом, а не «единственный — мой» (Critical DS r3 по #489).
+    """
+    base = sidecar.name[:-len(TAIL)]
+    tdir = sidecar.parent
+    titled = tdir / (base + ".md")
+    stamp = meeting_stamp.stamp_of(base)
+    if stamp is None or stamp != base:
+        return titled if titled.exists() else None
+    for f in meeting_stamp.files_with_stamp(tdir, stamp, suffix=".md"):
+        if _is_main(f, stamp):
+            return f
+    minute = meeting_stamp.minute_of(stamp)
+    for f in tdir.glob(f"{minute}*.md"):
+        if f.is_file() and meeting_stamp.stamp_of(f.stem) == minute:
+            return f
+    return None
+
+
+def _is_main(path: pathlib.Path, stamp: str) -> bool:
+    """Главный файл встречи с этим штампом — по имени, а если тема кончается
+    служебным словом («…120030_Разбор.md» — stamp_of даёт None, DS r4 по
+    #489) — по шапке «# Встреча », как отличает их и graph_updater."""
+    if not path.is_file() or path.suffix != ".md":
+        return False
+    if meeting_stamp.stamp_of(path.stem) == stamp:
+        return True
+    try:
+        with path.open("rb") as fh:
+            return fh.read(200).decode("utf-8", errors="ignore").lstrip().startswith("# Встреча ")
+    except OSError:
+        return False
+
+
 def _legacy(live: pathlib.Path) -> list[pathlib.Path]:
-    """Сайдкар той же минуты под посекундным именем — встреча, озаглавленная
-    до того, как ретитл начал переносить сайдкар. Считается своим, только
-    если наша стенограмма — единственная главная в этой минуте: две встречи
-    в минуту (крэш-рестарт) по имени не различить, и «единственный — мой»
-    крал бы сайдкар соседки (Critical DS r3 по #489). Тогда — пусто."""
+    """Сайдкары этой стенограммы под другим именем: посекундным (встречи,
+    озаглавленные до 0.69.1) или с прежней темой (переименование до
+    того, как rename_meeting стал переносить сайдкар). Свои — те, чей
+    owner_of == live."""
     stamp = meeting_stamp.stamp_of(live.stem) or live.stem
     minute = meeting_stamp.minute_of(stamp)
     direct = _direct(live)
-    for other in live.parent.glob(f"{minute}*.md"):
-        if other != live and other.is_file() and meeting_stamp.stamp_of(other.stem):
-            other_stamp = meeting_stamp.stamp_of(other.stem) or ""
-            if meeting_stamp.minute_of(other_stamp) == minute:
-                return []
-    return [p for p in live.parent.glob(f"{minute}*{TAIL}")
-            if p != direct and meeting_stamp.minute_of(p.name[:-len(TAIL)]) == minute]
+    out = []
+    for p in live.parent.glob(f"{minute}*{TAIL}"):
+        if p == direct:
+            continue
+        base_stamp = meeting_stamp.stamp_of(p.name[:-len(TAIL)])
+        if base_stamp is None or meeting_stamp.minute_of(base_stamp) != minute:
+            continue
+        owner = owner_of(p)
+        if owner == live:
+            out.append(p)
+        elif owner is None and base_stamp == minute and stamp == minute:
+            # Сайдкар с прежней темой, владельца по имени нет — переименование
+            # до того, как rename_meeting стал переносить пару: он владельца
+            # минуты, то есть наш
+            out.append(p)
+    return out
 
 
 def sidecar_for(live: pathlib.Path, bare: str | None = None) -> pathlib.Path | None:
@@ -76,18 +125,24 @@ def sidecar_for(live: pathlib.Path, bare: str | None = None) -> pathlib.Path | N
     return found[0] if found else direct
 
 
-def migrate(live: pathlib.Path, bare: str) -> pathlib.Path:
-    """Сайдкар переезжает вместе с переименованным файлом: дальше он под
-    своим именем, без угадывания по минуте (advisory GLM r2 по #489).
-    Целевое имя занято — оставляем как есть."""
-    old = live.with_name(bare + TAIL)
-    new = _direct(live)
+def move(old_main: pathlib.Path, new_main: pathlib.Path) -> pathlib.Path:
+    """Сайдкар переезжает вместе с переименованной стенограммой: дальше он
+    под своим именем, без угадывания (advisory GLM r2 по #489). Зовут все
+    переименователи: ретитл (migrate) напрямую, rename_meeting — парой в
+    своём плане переносов. Целевое имя занято — оставляем как есть."""
+    old = old_main.with_name(old_main.name + ".live.json")
+    new = new_main.with_name(new_main.name + ".live.json")
     if old.exists() and not new.exists() and old != new:
         try:
             old.rename(new)
         except OSError:
             return old
     return new if new.exists() else old
+
+
+def migrate(live: pathlib.Path, bare: str) -> pathlib.Path:
+    """Ретитл: сайдкар «<bare>.md.live.json» → под новое имя файла."""
+    return move(live.with_name(bare + ".md"), live)
 
 
 def read(live: pathlib.Path, bare: str | None = None) -> dict | None:
@@ -110,9 +165,11 @@ def remember(live: pathlib.Path, key: str, value: str, bare: str | None = None) 
     if p is None:
         return False
     if bare is None and p != _direct(live) and p.exists():
-        # Единственный сайдкар минуты под старым именем — усыновить: писать
-        # в чужой по glob нельзя (GLM Minor r2 по #489), а свой после
-        # переезда всегда под своим именем
+        # Свой сайдкар под старым именем — усыновить: дальше он под своим
+        # именем. Писать в чужой нельзя (GLM Minor r2 по #489) — в кандидаты
+        # попадают только те, чей owner_of == live
+        if _direct(live).exists():
+            return False   # кто-то создал свой за это время (GLM M3 r3)
         try:
             p.rename(_direct(live))
             p = _direct(live)

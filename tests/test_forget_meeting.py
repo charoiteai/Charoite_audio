@@ -604,3 +604,20 @@ def test_dead_neighbour_status_is_not_claimed_by_the_owner_of_the_minute(tmp_pat
                                      "transcript_path": str(root / "transcripts" / f"{STAMP}45.md")}), encoding="utf-8")
     doomed = {str(p) for p in forget.plan(STAMP, root, graph).delete}
     assert str(own) in doomed and str(neighbour) not in doomed
+
+
+def test_plan_takes_the_forgotten_meetings_sidecar_but_not_the_neighbours(tmp_path):
+    """Две встречи в минуту: A владеет минутой (сайдкар посекундный, до
+    0.69.1), B — посекундная соседка. Забываем A: её сайдкар уходит, B —
+    остаётся (Critical DS r3 и Important GLM r3 по #489)."""
+    root = tmp_path
+    tdir = root / "transcripts"; tdir.mkdir()
+    (tdir / "2026-09-03_1200_Отчет.md").write_text("A\n", encoding="utf-8")
+    (tdir / "2026-09-03_120040_Повтор.md").write_text("B\n", encoding="utf-8")
+    sa = tdir / "2026-09-03_120005.md.live.json"; sa.write_text("{}", encoding="utf-8")
+    sb = tdir / "2026-09-03_120040.md.live.json"; sb.write_text("{}", encoding="utf-8")
+    plan = forget.plan("2026-09-03_1200", root)
+    assert sa in plan.delete
+    assert sb not in plan.delete
+    assert tdir / "2026-09-03_120040_Повтор.md" not in plan.delete
+
