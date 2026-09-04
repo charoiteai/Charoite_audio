@@ -495,3 +495,20 @@ def test_bare_leftover_next_to_the_titled_minute_owner_does_not_own(root):
     main.write_text("# Встреча 2026-09-03_1200 — Тема\n", encoding="utf-8")
     sc = tdir / "2026-09-03_120005.md.live.json"; sc.write_text("{}", encoding="utf-8")
     assert live_sidecar.owner_of(sc) == main
+
+
+def test_second_meetings_per_second_main_titled_live_beats_the_minute_owner_in_both_resolvers(root):
+    """Зеркало DS r12 I1: владелец минуты «…_1200_Демо_live.md» и настоящий
+    посекундный главный второй встречи «…_120005_live.md» с шапкой «— live»
+    (легаси-тема «live») — оба резолвера отдают второй встрече её файл, а
+    копия голого черновика с голой шапкой по-прежнему проигрывает владельцу
+    минуты (тест выше)."""
+    tdir = root / "transcripts"
+    a = tdir / "2026-09-03_1200_Демо_live.md"
+    a.write_text("# Встреча 2026-09-03_1200 — Демо live\n", encoding="utf-8")
+    b = tdir / "2026-09-03_120005_live.md"
+    b.write_text("# Встреча 2026-09-03_120005 — live\n", encoding="utf-8")
+    sc = tdir / "2026-09-03_120005.md.live.json"; sc.write_text("{}", encoding="utf-8")
+    assert live_sidecar.owner_of(sc) == b
+    assert mp.find_final_transcript(tdir / "2026-09-03_120005.md") == b.resolve()
+    assert live_sidecar.sidecar_for(b) == sc

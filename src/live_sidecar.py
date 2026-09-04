@@ -149,17 +149,8 @@ def _derivative(path: pathlib.Path) -> bool:
 
 
 def _named_after_header(stem: str, head: str) -> bool:
-    """Тема шапки «# Встреча <штамп> — <тема>» и хвост имени — одни слова
-    («Демо live» ↔ «Демо_live», «Демо-live» после guard_slug)."""
-    parts = meeting_stamp.decompose(stem)
-    theme = head.split(" — ", 1)[1] if " — " in head else ""
-    if not parts or not parts[1] or not theme:
-        return False
-    return _words(theme) == _words(parts[1])
-
-
-def _words(text: str) -> list[str]:
-    return re.findall(r"[^\W_]+", text.lower())
+    """Общий признак meeting_stamp.named_after_header (DS r12 по #489)."""
+    return meeting_stamp.named_after_header(stem, head)
 
 
 def _legacy(live: pathlib.Path) -> list[pathlib.Path]:

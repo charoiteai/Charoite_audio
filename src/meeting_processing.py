@@ -45,6 +45,15 @@ def short_stamp(transcript: pathlib.Path) -> str:
     return match.group(1) if match else transcript.stem
 
 
+def _first_line(path: pathlib.Path) -> str:
+    """Шапка встречи — первая строка файла (первые 200 байт)."""
+    try:
+        with path.open("rb") as fh:
+            return fh.read(200).decode("utf-8", errors="ignore").lstrip().split("\n", 1)[0]
+    except OSError:
+        return ""
+
+
 def _looks_main(path: pathlib.Path) -> bool:
     """Главная стенограмма начинается с «# Встреча <штамп>»; разбор, минутки и
     подсказки — нет. Читаем первые байты, кандидатов единицы."""
@@ -125,11 +134,16 @@ def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
         # при переименованном голом файле); затем «<штамп>_live» без голого
         # рядом — главный прежних версий с темой «live», а не копия (luna по
         # аудиту 30.08); mtime — только внутри остатка.
+        # «<штамп>_live» с темой «live» в шапке — встреча прежних версий, а не
+        # остаток копии: тот же признак, что у live_sidecar (DS r12 по #489 —
+        # иначе ярус-мажорный порядок отдавал посекундную вторую встречу
+        # владельцу минуты)
         primary = [path for path in mains
-                   if path.stem[len(stamp):].lower() != "_live"
+                   if (path.stem[len(stamp):].lower() != "_live"
+                       or meeting_stamp.named_after_header(path.stem, _first_line(path)))
                    and path.stem[:-len("_live")] not in stems]
-        bare = [path for path in mains if path.stem[:-len("_live")] not in stems]
-        tiers.append((primary, bare, mains))
+        no_source = [path for path in mains if path.stem[:-len("_live")] not in stems]
+        tiers.append((primary, no_source, mains))
     for level in range(3):
         for tier in tiers:
             if tier[level]:

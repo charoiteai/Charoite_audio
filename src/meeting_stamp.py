@@ -120,6 +120,23 @@ def stamp_of(name: str) -> str | None:
     return m.group(1)
 
 
+def named_after_header(stem: str, head: str) -> bool:
+    """Тема шапки «# Встреча <штамп> — <тема>» и хвост имени — одни слова
+    («Демо live» ↔ «Демо_live», «Демо-live» после guard_slug, «live» ↔
+    «<штамп>_live»): файл со служебным хвостом в имени — встреча, а не
+    производная. Один признак на live_sidecar и meeting_processing
+    (DS r12 по #489: два резолвера расходились)."""
+    parts = decompose(stem)
+    theme = head.split(" — ", 1)[1] if " — " in head else ""
+    if not parts or not parts[1] or not theme:
+        return False
+    return _words(theme) == _words(parts[1])
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[^\W_]+", text.lower())
+
+
 def minute_of(stamp: str) -> str:
     """«2026-08-03_113012-1» → «2026-08-03_1130»; не штамп — как есть."""
     m = _RE.match(stamp)
