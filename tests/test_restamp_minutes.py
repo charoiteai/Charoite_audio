@@ -400,10 +400,13 @@ def test_live_json_is_found_after_retitle(tmp_path):
     titled.write_text("# Встреча\n", encoding="utf-8")
     assert rebuild_transcript.live_meta_path(titled).name == "2026-09-02_102112.md.live.json"
     assert rebuild_transcript.live_meta(titled)["names"] == {"Собеседник 2": "Инга"}
-    # хеш пишется в тот же найденный файл
+    # запись усыновляет сайдкар: он переезжает под имя стенограммы, чтобы
+    # дальше не угадывать его по минуте (#489); содержимое сохраняется
     rebuild_transcript._remember_minutes_sha(titled, "def")
-    saved = json.loads((tmp_path / "2026-09-02_102112.md.live.json").read_text(encoding="utf-8"))
+    assert not (tmp_path / "2026-09-02_102112.md.live.json").exists()
+    saved = json.loads((tmp_path / "2026-09-02_1021_Обсуждение_темы.md.live.json").read_text(encoding="utf-8"))
     assert saved["minutes_sha256"] == "def" and saved["names"] == {"Собеседник 2": "Инга"}
+    assert rebuild_transcript.live_meta(titled)["names"] == {"Собеседник 2": "Инга"}
     # чужая минута — не наш сайдкар
     other = tmp_path / "2026-09-02_1100_Другая.md"
     other.write_text("# Встреча\n", encoding="utf-8")
