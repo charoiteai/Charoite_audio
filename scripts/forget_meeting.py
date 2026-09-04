@@ -368,7 +368,9 @@ def plan(stamp: str, root: pathlib.Path,
             if sc in p.delete:
                 continue
             owner = live_sidecar.owner_of(sc)
-            base = meeting_stamp.stamp_of(sc.name[:-len(".md.live.json")])
+            sc_stem = sc.name[:-len(".md.live.json")]
+            parts = meeting_stamp.decompose(sc_stem)
+            base = meeting_stamp.stamp_of(sc_stem) or (parts[0] if parts else None)
             # Свой — уходит; бесхозный ПОСЕКУНДНЫЙ сайдкар этой минуты —
             # мёртвый след (живая встреча в минуте всегда даёт владельца),
             # имена участников не должны его переживать (advisory DS r5).

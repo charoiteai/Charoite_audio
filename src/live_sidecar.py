@@ -89,6 +89,8 @@ def _main_of_minute(path: pathlib.Path, minute: str) -> bool:
     не производная — по stamp_of, а при теме на служебное слово
     («…_1200_Демо_live.md», до guard_slug) — по шапке (DS r5 по #489).
     Посекундную соседку с темой отсекает сам ключ минуты."""
+    if not path.is_file():
+        return False
     parts = meeting_stamp.decompose(path.stem)
     if not parts or parts[0] != minute:
         return False
@@ -98,16 +100,30 @@ def _main_of_minute(path: pathlib.Path, minute: str) -> bool:
 def _is_main(path: pathlib.Path, stamp: str) -> bool:
     """Главный файл встречи с этим штампом — по имени, а если тема кончается
     служебным словом («…120030_Разбор.md» — stamp_of даёт None, DS r4 по
-    #489) — по шапке «# Встреча », как отличает их и graph_updater."""
+    #489) — по шапке «# Встреча », как отличает их и graph_updater. Копия
+    живого черновика «<стем>_live.md» (её оставляет write_final) начинается
+    с той же шапки — не главный, если рядом лежит файл без суффикса
+    (GLM r6 по #489, как legacy_mains в rename_meeting)."""
     if not path.is_file() or path.suffix != ".md":
         return False
     if meeting_stamp.stamp_of(path.stem) == stamp:
         return True
+    if _copy_of(path):
+        return False
     try:
         with path.open("rb") as fh:
             return fh.read(200).decode("utf-8", errors="ignore").lstrip().startswith("# Встреча ")
     except OSError:
         return False
+
+
+def _copy_of(path: pathlib.Path) -> bool:
+    """«<стем>_live.md» при живом «<стем>.md» — копия, не встреча."""
+    stem = path.stem
+    for suffix in getattr(meeting_stamp, "AUX_SUFFIXES", ("_live", "_minutes", "_hints")):
+        if stem.lower().endswith(suffix.lower()) and (path.parent / (stem[:-len(suffix)] + ".md")).exists():
+            return True
+    return False
 
 
 def _legacy(live: pathlib.Path) -> list[pathlib.Path]:

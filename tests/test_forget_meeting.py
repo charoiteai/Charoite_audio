@@ -692,3 +692,12 @@ def test_per_second_forget_does_not_touch_a_minute_keyed_stale_trace(tmp_path):
     plan = forget.plan("2026-09-03_120045", tmp_path)
     assert trace not in plan.delete
 
+
+def test_sweep_takes_an_ownerless_sidecar_when_no_main_is_left(tmp_path):
+    """Ветка «бесхозный»: главный снесён руками, остались только минутки —
+    посекундный сайдкар уходит вместе с забыванием минуты (GLM r6 M1)."""
+    tdir = tmp_path / "transcripts"; tdir.mkdir()
+    (tdir / "2026-09-03_1200_minutes.md").write_text("# Протокол\n", encoding="utf-8")
+    sc = tdir / "2026-09-03_120050.md.live.json"; sc.write_text("{}", encoding="utf-8")
+    assert forget.plan("2026-09-03_1200", tmp_path).delete.count(sc) == 1
+
