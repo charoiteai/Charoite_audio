@@ -66,6 +66,8 @@ final class DictationPasteTargetTests: XCTestCase {
     func testPasswordUnderTheDeliveryFocusIsSecretToo() {
         // диктовали в обычное поле, а к доставке кликнули в пароль (DS r8 I2)
         XCTAssertEqual(DictationService.finalDecision(trusted: true, own: own, startedIn: anchor(42), now: anchor(42), secureSeen: false, nowSecure: true), .secret)
+        // старт из меню (якоря нет) и пароль под фокусом доставки — тоже .secret
+        XCTAssertEqual(DictationService.finalDecision(trusted: true, own: own, startedIn: nil, now: nil, secureSeen: false, nowSecure: true), .secret)
     }
 
     func testNoAccessibilityStillWinsOverSecret() {

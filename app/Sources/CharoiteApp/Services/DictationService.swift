@@ -175,16 +175,12 @@ final class DictationService: ObservableObject {
         if onResult == nil, !note, AXIsProcessTrusted() {
             secureWatch = Task { [weak self] in
                 while !Task.isCancelled {
-                    // Без живой плашки сторож — единственный читатель фокуса:
-                    // раз в секунду; с ней onChange читает сам — раз в две (DS r8)
-                    try? await Task.sleep(for: .seconds(self?.previewEngine == nil ? 1 : 2))
+                    // Раз в секунду и с плашкой, и без: в паузе речи onChange
+                    // молчит, и прячет черновик над полем пароля только сторож
+                    // (GLM M1, DS r10 M2); чтение AX — в фоне (DS r10 I1)
+                    try? await Task.sleep(for: .seconds(1))
                     guard let self, self.isRecording, !Task.isCancelled else { return }
-                    // Фокус ушёл в пароль в паузе речи — onChange не стреляет,
-                    // а последний черновик висел бы поверх поля (GLM M1)
-                    if !Self.liveStripAllowed(nowSecure: self.refreshSecureField(), secureSeen: self.secureSeen,
-                                              trusted: true) {
-                        DictationPreviewPanel.shared.hide()
-                    }
+                    self.refreshSecureField()
                 }
             }
         }
@@ -481,16 +477,26 @@ final class DictationService: ObservableObject {
 
     /// Поле пароля — не снимок на старте, а последнее известное: фокус
     /// меняется по ходу речи и в окне ожидания черновика (круг 4, DS).
-    /// Не чаще раза в секунду — AX-запрос идёт по главному потоку.
+    /// Возвращает последнее известное; свежее чтение AX (межпроцессный
+    /// вызов в чужое приложение, до 0,75 с при зависшем) идёт в фоне не
+    /// чаще четырёх раз в секунду и по возврату взводит защёлку и прячет
+    /// плашку (DS r10 I1). Без права Accessibility — всегда «нет».
     @discardableResult
-    private func refreshSecureField(force: Bool = false) -> Bool {
-        // Четверть секунды, а не секунда: после клика в поле пароля первая
-        // секунда речи не должна лечь на плашку (advisory GLM); на живом
-        // приложении запрос — микросекунды
-        if force || Date().timeIntervalSince(secureCheckedAt) > 0.25 {
+    private func refreshSecureField() -> Bool {
+        if Date().timeIntervalSince(secureCheckedAt) > 0.25, AXIsProcessTrusted() {
             secureCheckedAt = Date()
-            secureField = Self.focusedFieldIsSecure()
-            if secureField { secureSeen = true }
+            let generation = self.generation
+            Task.detached(priority: .userInitiated) { [weak self] in
+                let secure = Self.focusedFieldIsSecure()
+                await MainActor.run {
+                    guard let self, self.generation == generation else { return }
+                    self.secureField = secure
+                    if secure {
+                        self.secureSeen = true
+                        DictationPreviewPanel.shared.hide()
+                    }
+                }
+            }
         }
         return secureField
     }
