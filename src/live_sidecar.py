@@ -38,11 +38,19 @@ def _direct(live: pathlib.Path) -> pathlib.Path:
 
 
 def _legacy(live: pathlib.Path) -> list[pathlib.Path]:
-    """Сайдкары той же минуты под чужим (посекундным) именем — встречи,
-    озаглавленные до того, как ретитл начал переносить сайдкар."""
+    """Сайдкар той же минуты под посекундным именем — встреча, озаглавленная
+    до того, как ретитл начал переносить сайдкар. Считается своим, только
+    если наша стенограмма — единственная главная в этой минуте: две встречи
+    в минуту (крэш-рестарт) по имени не различить, и «единственный — мой»
+    крал бы сайдкар соседки (Critical DS r3 по #489). Тогда — пусто."""
     stamp = meeting_stamp.stamp_of(live.stem) or live.stem
     minute = meeting_stamp.minute_of(stamp)
     direct = _direct(live)
+    for other in live.parent.glob(f"{minute}*.md"):
+        if other != live and other.is_file() and meeting_stamp.stamp_of(other.stem):
+            other_stamp = meeting_stamp.stamp_of(other.stem) or ""
+            if meeting_stamp.minute_of(other_stamp) == minute:
+                return []
     return [p for p in live.parent.glob(f"{minute}*{TAIL}")
             if p != direct and meeting_stamp.minute_of(p.name[:-len(TAIL)]) == minute]
 

@@ -228,3 +228,19 @@ def test_retitle_without_a_hash_does_not_start_protection(root):
     meta = rt.live_meta(titled)
     assert "transcript_sha256" not in meta
     assert rt.human_edited_transcript(titled, meta) is None
+
+
+def test_legacy_sidecar_is_not_adopted_when_a_neighbour_shares_the_minute(root):
+    """Две встречи в минуту: единственный посекундный сайдкар может быть
+    соседкин — не усыновляем и не читаем, свой сайдкар заводится с нуля."""
+    live = root / "transcripts" / "2026-09-03_1200_Тема.md"
+    live.write_text("текст\n", encoding="utf-8")
+    neighbour = root / "transcripts" / "2026-09-03_120040_Повтор.md"
+    neighbour.write_text("# Встреча\n", encoding="utf-8")
+    old = root / "transcripts" / "2026-09-03_120040.md.live.json"
+    old.write_text(json.dumps({"names": {"Собеседник 1": "Анна"}}), encoding="utf-8")
+    assert live_sidecar.sidecar_for(live) == live.with_name(live.name + ".live.json")
+    assert live_sidecar.remember(live, "transcript_sha256", _sha("текст\n"))
+    assert old.exists(), "сайдкар соседки на месте"
+    meta = json.loads(live.with_name(live.name + ".live.json").read_text(encoding="utf-8"))
+    assert "names" not in meta and meta["transcript_sha256"] == _sha("текст\n")
