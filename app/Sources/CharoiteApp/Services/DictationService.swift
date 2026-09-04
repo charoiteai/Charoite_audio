@@ -583,7 +583,8 @@ final class DictationService: ObservableObject {
         let action = Self.draftAction(security: security, captured: captured?.serial, pending: pendingDraft?.serial,
                                       secureSeen: secureSeen, trusted: AXIsProcessTrusted(),
                                       unknownStreak: unknownStreak)
-        unknownStreak = security == .unknown ? unknownStreak + 1 : 0
+        unknownStreak = Self.nextUnknownStreak(security: security, pieceWaiting: pendingDraft != nil,
+                                               streak: unknownStreak)
         let out = Self.draftOutcome(action: action, captured: captured, pending: pendingDraft)
         if out.latch { secureSeen = true }
         if out.clearPending { pendingDraft = nil }
@@ -608,13 +609,20 @@ final class DictationService: ObservableObject {
     /// возврат показывает кусок, отстающий не больше чем на один полёт
     /// (GLM r13 I2, I3).
     nonisolated static func draftAction(security: FocusSecurity, captured: Int?, pending: Int?,
-                                        secureSeen: Bool, trusted: Bool, unknownStreak: Int = 0) -> DraftAction {
+                                        secureSeen: Bool, trusted: Bool, unknownStreak: Int) -> DraftAction {
         if security == .secure { return .latch }
         guard trusted, !secureSeen else { return .hide }
         if security == .unknown { return pending != nil && unknownStreak < 2 ? .hideAndReread : .hide }
         guard let captured else { return pending == nil ? .wait : .reread }
         if let pending, pending != captured { return .showAndReread }
         return .show
+    }
+
+    /// Счёт подряд идущих «не ответило» — только пока кусок ждёт: пустые
+    /// чтения сторожа до первого куска бюджет двух перечитываний не тратят
+    /// (GLM r15 I1); любой другой ответ или отсутствие куска обнуляют.
+    nonisolated static func nextUnknownStreak(security: FocusSecurity, pieceWaiting: Bool, streak: Int) -> Int {
+        security == .unknown && pieceWaiting ? streak + 1 : 0
     }
 
     /// Что именно применить к состоянию по решению (чистый шов, GLM r14 I1):
@@ -805,11 +813,15 @@ final class DictationService: ObservableObject {
     /// Приложение не отдало сфокусированный элемент, а вставка пошла: один
     /// раз на приложение — если какое-то отвечает так именно на поле пароля,
     /// полевой случай проявится в логе (GLM r13, критика 2).
+    /// Ключ записи «вставка вслепую»: bundle id, а без него pid (GLM r15 M4).
+    nonisolated static func blindPasteKey(bundleID: String?, pid: pid_t) -> String { bundleID ?? String(pid) }
+
     private static var blindPasteLogged = Set<String>()
     private static func noteBlindPaste(anchor: PasteAnchor) {
         // Ключ — bundle id (или pid): одноимённые процессы не делят запись,
         // а без якоря не логируем вовсе (GLM r14 M1)
-        let key = NSRunningApplication(processIdentifier: anchor.pid)?.bundleIdentifier ?? String(anchor.pid)
+        let key = Self.blindPasteKey(bundleID: NSRunningApplication(processIdentifier: anchor.pid)?.bundleIdentifier,
+                                     pid: anchor.pid)
         guard blindPasteLogged.insert(key).inserted else { return }
         NSLog("[Dictation] вставка в \(anchor.name) (\(key)): приложение не отдаёт сфокусированный элемент — поле пароля там не отличить")
     }
