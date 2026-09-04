@@ -362,3 +362,109 @@ def test_name_evidence_beats_the_header_copy_for_the_minute_owner(root):
     sc = tdir / "2026-09-03_120005.md.live.json"; sc.write_text("{}", encoding="utf-8")
     assert live_sidecar.owner_of(sc) == main
 
+
+
+def test_detached_live_copy_of_a_per_second_draft_does_not_beat_the_minute_owner(root):
+    """Раскладка DS r10 I1 (случай 1): владелец минуты «…_1200_Отчет.md»,
+    встреча стартовала в 12:00:05, сайдкар до 0.69.1 посекундный, а от
+    write_final остался черновик «…120005_live.md» с голой шапкой — его
+    источник ретитл переименовал. Владелец — главный минуты, не копия;
+    цепочка владелец → усыновление → мета держится (DS r10 M2)."""
+    tdir = root / "transcripts"
+    main = tdir / "2026-09-03_1200_Отчет.md"
+    main.write_text("# Встреча 2026-09-03_1200 — Отчет\n", encoding="utf-8")
+    (tdir / "2026-09-03_120005_live.md").write_text("# Встреча 2026-09-03_120005\n\nчерновик\n", encoding="utf-8")
+    sc = tdir / "2026-09-03_120005.md.live.json"
+    sc.write_text(json.dumps({"names": {"Собеседник 1": "Анна"}}), encoding="utf-8")
+    assert live_sidecar.owner_of(sc) == main
+    assert live_sidecar.sidecar_for(main) == sc
+    assert rt.live_meta(main)["names"] == {"Собеседник 1": "Анна"}
+
+
+def test_detached_live_copy_does_not_beat_a_service_word_neighbour(root):
+    """DS r10 I1 (случай 2): «…120030_Разбор.md» (тема до guard_slug) и
+    отцепленная копия «…120030_live.md» — обе с шапкой, sorted ставит
+    копию первой; владелец посекундного сайдкара — «_Разбор»."""
+    tdir = root / "transcripts"
+    nb = tdir / "2026-09-03_120030_Разбор.md"
+    nb.write_text("# Встреча 2026-09-03_120030 — Разбор\n", encoding="utf-8")
+    (tdir / "2026-09-03_120030_live.md").write_text("# Встреча 2026-09-03_120030\n", encoding="utf-8")
+    sc = tdir / "2026-09-03_120030.md.live.json"; sc.write_text("{}", encoding="utf-8")
+    assert live_sidecar.owner_of(sc) == nb
+
+
+def test_sidecar_named_after_a_copy_belongs_to_the_source(root):
+    """Сайдкар «…_Демо_live.md.live.json» при живых «…_Демо.md» и копии
+    «…_Демо_live.md»: короткое замыкание «файл с этим именем есть» отдавало
+    владение копии (DS r9 I2 по #489). Владелец — источник, и он усыновляет
+    сайдкар при записи."""
+    tdir = root / "transcripts"
+    main = tdir / "2026-09-03_1200_Демо.md"
+    main.write_text("# Встреча 2026-09-03_1200 — Демо\n", encoding="utf-8")
+    (tdir / "2026-09-03_1200_Демо_live.md").write_text("# Встреча 2026-09-03_1200 — Демо\n", encoding="utf-8")
+    sc = tdir / "2026-09-03_1200_Демо_live.md.live.json"
+    sc.write_text(json.dumps({"names": {"Собеседник 1": "Инга"}}), encoding="utf-8")
+    assert live_sidecar.owner_of(sc) == main
+    assert live_sidecar.sidecar_for(main) == sc
+    assert rt.live_meta(main)["names"] == {"Собеседник 1": "Инга"}
+    assert live_sidecar.remember(main, "transcript_sha256", _sha("x"))
+    assert not sc.exists() and main.with_name(main.name + ".live.json").exists()
+
+
+def test_live_copy_with_a_live_source_is_never_main(root):
+    """Белый ящик (DS r9 I1): инвариант «копия — не главный» пиннится там,
+    где он реален, — сортировка кандидатов до него не доводит."""
+    tdir = root / "transcripts"
+    (tdir / "2026-09-03_1200_Отчет.md").write_text("# Встреча 2026-09-03_1200 — Отчет\n", encoding="utf-8")
+    copy = tdir / "2026-09-03_1200_Отчет_live.md"
+    copy.write_text("# Встреча 2026-09-03_1200 — Отчет\n", encoding="utf-8")
+    assert live_sidecar._is_main(copy, "2026-09-03_1200") is False
+    assert live_sidecar._derivative(copy)
+
+
+def test_a_theme_ending_with_live_is_main_without_a_source_but_copies_are_not(root):
+    """Без источника копию от встречи отличает шапка: тема «Демо live» (до
+    guard_slug, luna 30.08 / DS r5) — одни слова с хвостом имени; копия
+    голого черновика или копия с прежней темой — нет (DS r10 I1)."""
+    tdir = root / "transcripts"
+    main = tdir / "2026-09-03_1200_Демо_live.md"
+    main.write_text("# Встреча 2026-09-03_1200 — Демо live\n", encoding="utf-8")
+    assert not live_sidecar._derivative(main)
+    guarded = tdir / "2026-09-03_1201_Демо-live.md"
+    guarded.write_text("# Встреча 2026-09-03_1201 — Демо live\n", encoding="utf-8")
+    assert not live_sidecar._derivative(guarded)
+    bare_copy = tdir / "2026-09-03_120005_live.md"
+    bare_copy.write_text("# Встреча 2026-09-03_120005\n\nчерновик\n", encoding="utf-8")
+    assert live_sidecar._derivative(bare_copy)
+    stale_copy = tdir / "2026-09-03_1200_Отчет_live.md"
+    stale_copy.write_text("# Встреча 2026-09-03_1200 — Отчет\n", encoding="utf-8")
+    assert live_sidecar._derivative(stale_copy), "прежняя тема в шапке — копия переименованного источника"
+    minutes = tdir / "2026-09-03_1200_Отчет_minutes.md"
+    minutes.write_text("# Протокол\n", encoding="utf-8")
+    assert not live_sidecar._is_main(minutes, "2026-09-03_1200"), "минутки — не встреча по шапке"
+
+
+def test_bare_leftover_next_to_the_titled_main_does_not_own(root):
+    """Остаток прерванного переноса: голый «…120040.md» рядом с
+    «…120040_Другое.md» — текущий главный озаглавленный (DS r10 M1)."""
+    tdir = root / "transcripts"
+    (tdir / "2026-09-03_120040.md").write_text("# Встреча 2026-09-03_120040\n", encoding="utf-8")
+    main = tdir / "2026-09-03_120040_Другое.md"
+    main.write_text("# Встреча 2026-09-03_120040 — Другое\n", encoding="utf-8")
+    sc = tdir / "2026-09-03_120040.md.live.json"; sc.write_text("{}", encoding="utf-8")
+    assert live_sidecar.owner_of(sc) == main
+
+
+def test_minute_key_sidecar_with_a_stale_title_finds_a_service_word_owner(root):
+    """DS r9 M2: сайдкар с прежней темой без файла, ключ минутный, а
+    нынешний главный — с темой на служебное слово («…_Итоги_разбор.md»,
+    до guard_slug): имени-свидетельства нет, владелец — по шапке."""
+    tdir = root / "transcripts"
+    main = tdir / "2026-09-03_1200_Итоги_разбор.md"
+    main.write_text("# Встреча 2026-09-03_1200 — Итоги разбор\n", encoding="utf-8")
+    (tdir / "2026-09-03_1200_minutes.md").write_text("# Протокол\n", encoding="utf-8")
+    stale = tdir / "2026-09-03_1200_Старая.md.live.json"
+    stale.write_text(json.dumps({"names": {"Собеседник 1": "Анна"}}), encoding="utf-8")
+    assert live_sidecar.owner_of(stale) == main
+    assert live_sidecar.sidecar_for(main) == stale
+    assert rt.live_meta(main)["names"] == {"Собеседник 1": "Анна"}

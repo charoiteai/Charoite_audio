@@ -43,7 +43,9 @@ def owner_of(sidecar: pathlib.Path) -> pathlib.Path | None:
     Посекундное имя («…120040.md.live.json»): владелец — главный файл с
     этим посекундным штампом («…120040_Повтор.md»), если он есть; иначе —
     главный файл минуты («…1200_Отчет.md»): так конвейер до 0.69.1 оставлял
-    сайдкар владельца минуты. Имя с темой — файл с этой темой; его нет
+    сайдкар владельца минуты. Имя с темой — файл с этой темой, если он
+    встреча, а не производная (сайдкар, названный по копии «…_Демо_live.md»
+    при живом «…_Демо.md», — источника, DS r9 по #489); его нет
     (переименование до переноса пары) — главный файл с тем же ключом под
     любой темой, а для минутного ключа — владелец минуты. Никого — None
     (сирота). Две встречи в минуту (крэш-рестарт) различаются здесь
@@ -54,10 +56,7 @@ def owner_of(sidecar: pathlib.Path) -> pathlib.Path | None:
     titled = tdir / (base + ".md")
     stamp = meeting_stamp.stamp_of(base)
     if stamp is None or stamp != base:
-        # Имя с темой: файл с этой темой; его нет — переименование до
-        # переноса пары, сайдкар владельца минуты (одна семантика с
-        # _legacy — DS r6 по #489)
-        if titled.exists():
+        if titled.is_file() and not _derivative(titled):
             return titled
         parts = meeting_stamp.decompose(base)
         if not parts:
@@ -78,76 +77,89 @@ def owner_of(sidecar: pathlib.Path) -> pathlib.Path | None:
 
 
 def _main_with_key(tdir: pathlib.Path, key: str) -> pathlib.Path | None:
-    """Главный файл с этим ключом: сначала по имени-свидетельству
-    (stamp_of == ключ), и только если такого нет — по шапке. Копия
-    «…120040_live.md» начинается с той же шапки и сортируется раньше
-    кириллической темы — без иерархии она обгоняла бы главный
-    «…120040_Другое.md» (DS r8 по #489; та же иерархия, что в
-    meeting_processing.find_final_transcript)."""
-    candidates = [f for f in meeting_stamp.files_with_stamp(tdir, key, suffix=".md")
-                  if f.is_file() and f.suffix == ".md"]
-    for f in candidates:
-        if meeting_stamp.stamp_of(f.stem) == key:
-            return f
+    """Главный файл с этим ключом (посекундным или минутным) среди файлов
+    самого ключа — посекундных соседок и «-N» отсекает files_with_stamp."""
+    return _pick_main(meeting_stamp.files_with_stamp(tdir, key, suffix=".md"), key)
+
+
+def _minute_owner(tdir: pathlib.Path, minute: str) -> pathlib.Path | None:
+    """Владелец минуты среди файлов минутного ключа: посекундные имена
+    («…120005_Тема») отсекает сам ключ разбора имени."""
+    candidates = [f for f in sorted(tdir.glob(f"{minute}*.md"))
+                  if (meeting_stamp.decompose(f.stem) or ("",))[0] == minute]
+    return _pick_main(candidates, minute)
+
+
+def _pick_main(candidates: list[pathlib.Path], key: str) -> pathlib.Path | None:
+    """Ярусы: имя-свидетельство (stamp_of == ключ; голый файл рядом с
+    озаглавленным — остаток прерванного переноса, текущий главный —
+    озаглавленный, DS r10 M1), затем шапка «# Встреча » у файла с темой на
+    служебное слово («…120030_Разбор.md» до guard_slug, DS r4) — но не у
+    производной. Копия «…_live.md» с той же шапкой сортируется раньше
+    кириллической темы (DS r8), а её источник ретитл переименовывает
+    (DS r10 I1) — её отсекает _derivative, а не порядок обхода."""
+    named = [f for f in candidates if f.is_file() and meeting_stamp.stamp_of(f.stem) == key]
+    if named:
+        return next((f for f in named if f.stem != key), named[0])
     for f in candidates:
         if _is_main(f, key):
             return f
     return None
 
 
-def _minute_owner(tdir: pathlib.Path, minute: str) -> pathlib.Path | None:
-    """Владелец минуты: сначала по имени (stamp_of == минута), потом по
-    шапке — та же иерархия, что в _main_with_key."""
-    candidates = sorted(tdir.glob(f"{minute}*.md"))
-    for f in candidates:
-        if f.is_file() and meeting_stamp.stamp_of(f.stem) == minute:
-            return f
-    for f in candidates:
-        if _main_of_minute(f, minute):
-            return f
-    return None
-
-
-def _main_of_minute(path: pathlib.Path, minute: str) -> bool:
-    """Главный файл владельца минуты: разбор имени даёт ключ минуты и это
-    не производная — по stamp_of, а при теме на служебное слово
-    («…_1200_Демо_live.md», до guard_slug) — по шапке (DS r5 по #489).
-    Посекундную соседку с темой отсекает сам ключ минуты."""
-    if not path.is_file():
-        return False
-    parts = meeting_stamp.decompose(path.stem)
-    if not parts or parts[0] != minute:
-        return False
-    return meeting_stamp.stamp_of(path.stem) == minute or _is_main(path, minute)
-
-
-def _is_main(path: pathlib.Path, stamp: str) -> bool:
-    """Главный файл встречи с этим штампом — по имени, а если тема кончается
-    служебным словом («…120030_Разбор.md» — stamp_of даёт None, DS r4 по
-    #489) — по шапке «# Встреча », как отличает их и graph_updater. Копия
-    живого черновика «<стем>_live.md» (её оставляет write_final) начинается
-    с той же шапки — не главный, если рядом лежит файл без суффикса
-    (GLM r6 по #489, как legacy_mains в rename_meeting)."""
+def _is_main(path: pathlib.Path, key: str) -> bool:
+    """Главный файл встречи с этим ключом: по имени, а если тема кончается
+    служебным словом (stamp_of даёт None) — по шапке «# Встреча », как
+    отличает их и graph_updater, и только если это не производная."""
     if not path.is_file() or path.suffix != ".md":
         return False
-    if meeting_stamp.stamp_of(path.stem) == stamp:
+    if meeting_stamp.stamp_of(path.stem) == key:
         return True
-    if _copy_of(path):
-        return False
+    return _head(path).startswith("# Встреча ") and not _derivative(path)
+
+
+def _head(path: pathlib.Path) -> str:
+    """Первая строка файла (первые 200 байт) — шапка встречи."""
     try:
         with path.open("rb") as fh:
-            return fh.read(200).decode("utf-8", errors="ignore").lstrip().startswith("# Встреча ")
+            text = fh.read(200).decode("utf-8", errors="ignore").lstrip()
     except OSError:
-        return False
+        return ""
+    return text.split("\n", 1)[0]
 
 
-def _copy_of(path: pathlib.Path) -> bool:
-    """«<стем>_live.md» при живом «<стем>.md» — копия, не встреча."""
+def _derivative(path: pathlib.Path) -> bool:
+    """Производная, не встреча. «X_minutes.md», «X_разбор.md», … при живом
+    «X.md» — производные от него. «X_live.md» — копия живого черновика (её
+    оставляет write_final): при живом «X.md» — всегда; без него (источник
+    переименован ретитлом — штатный порядок write_final → retitle — или
+    rename_meeting; DS r10 I1 по #489) копию выдаёт шапка: голая
+    («# Встреча <штамп>») или с прежней темой, тогда как у настоящей
+    встречи с темой на «live» («Демо live» до guard_slug, DS r5) тема шапки
+    и хвост имени — одни слова. Хвост сравнивается срезом по длине
+    суффикса: lower() не обязан сохранять длину (DS r9 M3)."""
     stem = path.stem
-    for suffix in getattr(meeting_stamp, "AUX_SUFFIXES", ("_live", "_minutes", "_hints")):
-        if stem.lower().endswith(suffix.lower()) and (path.parent / (stem[:-len(suffix)] + ".md")).exists():
+    for suffix in meeting_stamp.AUX_SUFFIXES:
+        if stem[-len(suffix):].lower() != suffix.lower():
+            continue
+        if (path.parent / (stem[:-len(suffix)] + ".md")).is_file():
             return True
+        return suffix == "_live" and not _named_after_header(stem, _head(path))
     return False
+
+
+def _named_after_header(stem: str, head: str) -> bool:
+    """Тема шапки «# Встреча <штамп> — <тема>» и хвост имени — одни слова
+    («Демо live» ↔ «Демо_live», «Демо-live» после guard_slug)."""
+    parts = meeting_stamp.decompose(stem)
+    theme = head.split(" — ", 1)[1] if " — " in head else ""
+    if not parts or not parts[1] or not theme:
+        return False
+    return _words(theme) == _words(parts[1])
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[^\W_]+", text.lower())
 
 
 def _legacy(live: pathlib.Path) -> list[pathlib.Path]:
@@ -163,7 +175,11 @@ def _legacy(live: pathlib.Path) -> list[pathlib.Path]:
     for p in live.parent.glob(f"{minute}*{TAIL}"):
         if p == direct:
             continue
-        base_stamp = meeting_stamp.stamp_of(p.name[:-len(TAIL)])
+        base = p.name[:-len(TAIL)]
+        base_parts = meeting_stamp.decompose(base)
+        # Имя с хвостом на служебное слово («…_Демо_live») stamp_of не
+        # разбирает — ключ берётся разбором имени (DS r9 I2 по #489)
+        base_stamp = meeting_stamp.stamp_of(base) or (base_parts[0] if base_parts else None)
         if base_stamp is None or meeting_stamp.minute_of(base_stamp) != minute:
             continue
         if owner_of(p) == live:
