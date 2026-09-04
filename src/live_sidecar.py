@@ -119,13 +119,8 @@ def _is_main(path: pathlib.Path, key: str) -> bool:
 
 
 def _head(path: pathlib.Path) -> str:
-    """Первая строка файла (первые 200 байт) — шапка встречи."""
-    try:
-        with path.open("rb") as fh:
-            text = fh.read(200).decode("utf-8", errors="ignore").lstrip()
-    except OSError:
-        return ""
-    return text.split("\n", 1)[0]
+    """Шапка встречи — общее чтение meeting_stamp.first_line (DS r13 по #489)."""
+    return meeting_stamp.first_line(path)
 
 
 def _derivative(path: pathlib.Path) -> bool:

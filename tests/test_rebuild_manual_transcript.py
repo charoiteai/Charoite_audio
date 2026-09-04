@@ -20,6 +20,7 @@ sys.path.insert(0, str(REPO / "src"))
 import graph_updater  # noqa: E402
 import live_sidecar  # noqa: E402
 import meeting_processing as mp  # noqa: E402
+import meeting_stamp  # noqa: E402
 import rebuild_transcript as rt  # noqa: E402
 
 CFG = {"audio": {"samplerate": 16000}, "log": {}}
@@ -512,3 +513,20 @@ def test_second_meetings_per_second_main_titled_live_beats_the_minute_owner_in_b
     assert live_sidecar.owner_of(sc) == b
     assert mp.find_final_transcript(tdir / "2026-09-03_120005.md") == b.resolve()
     assert live_sidecar.sidecar_for(b) == sc
+
+
+def test_named_after_header_normalises_case_punctuation_and_the_guard_dash():
+    """DS r13 M3: общий признак «тема шапки = хвост имени» пиннится напрямую —
+    регистр, пунктуация и дефис guard_slug схлопываются; без « — » и при
+    чужой теме — нет."""
+    f = meeting_stamp.named_after_header
+    assert f("2026-09-03_120005_live", "# Встреча 2026-09-03_120005 — live")
+    assert f("2026-09-03_120005_live", "# Встреча 2026-09-03_120005 — Live")
+    assert f("2026-09-03_120005_live", "# Встреча 2026-09-03_120005 — live!")
+    assert f("2026-09-03_1200_Демо_live", "# Встреча 2026-09-03_1200 — Демо live")
+    assert f("2026-09-03_1200_Демо-live", "# Встреча 2026-09-03_1200 — Демо live"), "дефис после guard_slug"
+    assert f("2026-09-03_1200_Демо_live", "# Встреча 2026-09-03_120005 — Демо live"), "штамп шапки не сравнивается"
+    assert not f("2026-09-03_120005_live", "# Встреча 2026-09-03_120005"), "голая шапка — копия черновика"
+    assert not f("2026-09-03_1200_Отчет_live", "# Встреча 2026-09-03_1200 — Отчет"), "прежняя тема без live"
+    assert not f("2026-09-03_1200", "# Встреча 2026-09-03_1200 — Тема"), "имя без хвоста"
+    assert not f("не-наше-имя", "# Встреча x — y")
