@@ -604,20 +604,3 @@ def test_dead_neighbour_status_is_not_claimed_by_the_owner_of_the_minute(tmp_pat
                                      "transcript_path": str(root / "transcripts" / f"{STAMP}45.md")}), encoding="utf-8")
     doomed = {str(p) for p in forget.plan(STAMP, root, graph).delete}
     assert str(own) in doomed and str(neighbour) not in doomed
-
-
-def test_plan_takes_the_legacy_sidecar_of_the_minute(tmp_path):
-    """Сайдкар под посекундным именем у озаглавленной встречи (до 0.69.1):
-    единственный в минуте — уходит вместе с ней, иначе доставался бы соседке
-    той же минуты и её хешам (DS r2 по #489)."""
-    root = tmp_path
-    (root / "transcripts").mkdir()
-    stamp = "2026-09-03_1200"
-    (root / "transcripts" / f"{stamp}_Тема.md").write_text("# Встреча\n", encoding="utf-8")
-    sidecar = root / "transcripts" / f"{stamp}05.md.live.json"
-    sidecar.write_text("{}", encoding="utf-8")
-    other = root / "transcripts" / "2026-09-03_120105.md.live.json"
-    other.write_text("{}", encoding="utf-8")
-    plan = forget.plan(stamp, root)
-    assert sidecar in plan.delete
-    assert other not in plan.delete

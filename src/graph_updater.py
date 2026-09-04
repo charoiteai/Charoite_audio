@@ -585,11 +585,12 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
         tpath.rename(new_t)
         tpath = new_t
     body = tpath.read_text(encoding="utf-8")
-    # Машинным файл был, если хеша нет или он совпадает с байтами ДО правки
+    # Машинным файл был, если записанный хеш совпадает с байтами ДО правки
     # шапки; правку руками накат темы узаконивать не должен — следующая
-    # пересборка стёрла бы её (GLM Critical r2 по #489)
+    # пересборка стёрла бы её (GLM Critical r2 по #489). Нет хеша вовсе —
+    # не начинать защиту с текущих байт: они могли быть уже правлены (DS r3)
     prev = live_sidecar.read(tpath, bare) or {}
-    machine = live_sidecar.valid_sha(prev.get("transcript_sha256")) in (None, live_sidecar.sha(body))
+    machine = live_sidecar.valid_sha(prev.get("transcript_sha256")) == live_sidecar.sha(body)
     # Искать по bare: в шапке посекундной стенограммы штамп с секундами,
     # и замена по короткому штампу оставляла бы хвост «19» после темы.
     body = body.replace(f"# Встреча {bare}", f"# Встреча {stamp} — {title}", 1)

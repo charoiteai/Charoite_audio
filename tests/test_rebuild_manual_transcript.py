@@ -216,3 +216,15 @@ def test_legacy_sidecar_is_adopted_on_write(root):
     assert new.exists() and not old.exists()
     meta = json.loads(new.read_text(encoding="utf-8"))
     assert meta["names"] == {"Собеседник 1": "Анна"} and meta["transcript_sha256"] == _sha("текст\n")
+
+
+def test_retitle_without_a_hash_does_not_start_protection(root):
+    """Нет хеша — не с чего считать текущие байты машинными: до первой
+    настоящей машинной записи защита не включается (advisory DS r3)."""
+    bare = "2026-09-03_120005"
+    live = root / "transcripts" / f"{bare}.md"
+    live.write_text(f"# Встреча {bare}\n\nвозможно, уже правленый текст\n", encoding="utf-8")
+    titled = graph_updater.retitle(live, "2026-09-03_1200", bare, "Тема")
+    meta = rt.live_meta(titled)
+    assert "transcript_sha256" not in meta
+    assert rt.human_edited_transcript(titled, meta) is None
