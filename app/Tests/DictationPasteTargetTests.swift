@@ -90,14 +90,40 @@ final class DictationPasteTargetTests: XCTestCase {
 
     func testDraftActionShowsTheCapturedPieceAndRereadsForANewerOne() {
         XCTAssertEqual(DictationService.draftAction(security: .clear, captured: 5, pending: 5, secureSeen: false, trusted: true), .show)
-        XCTAssertEqual(DictationService.draftAction(security: .clear, captured: 5, pending: nil, secureSeen: false, trusted: true), .show, "кусок уже никто не ждёт — показать захваченный")
         XCTAssertEqual(DictationService.draftAction(security: .clear, captured: 5, pending: 7, secureSeen: false, trusted: true), .showAndReread, "за полёт пришёл новый — показать старый, перечитать для нового")
         XCTAssertEqual(DictationService.draftAction(security: .clear, captured: nil, pending: 7, secureSeen: false, trusted: true), .reread, "сторож читал без куска, кусок пришёл за полёт — перечитать")
         XCTAssertEqual(DictationService.draftAction(security: .clear, captured: nil, pending: nil, secureSeen: false, trusted: true), .wait)
         XCTAssertEqual(DictationService.draftAction(security: .secure, captured: 5, pending: 7, secureSeen: false, trusted: true), .latch)
-        XCTAssertEqual(DictationService.draftAction(security: .unknown, captured: 5, pending: 5, secureSeen: false, trusted: true), .hide, "не ответило — плашка гаснет, кусок ждёт")
+        XCTAssertEqual(DictationService.draftAction(security: .unknown, captured: 5, pending: 5, secureSeen: false, trusted: true, unknownStreak: 0), .hideAndReread, "не ответило, кусок ждёт — плашка гаснет и цепное перечитывание")
+        XCTAssertEqual(DictationService.draftAction(security: .unknown, captured: 5, pending: 5, secureSeen: false, trusted: true, unknownStreak: 2), .hide, "два подряд — дальше ждём сторожа")
+        XCTAssertEqual(DictationService.draftAction(security: .unknown, captured: nil, pending: nil, secureSeen: false, trusted: true), .hide, "не ответило, куска нет — только гаснет")
         XCTAssertEqual(DictationService.draftAction(security: .clear, captured: 5, pending: 7, secureSeen: true, trusted: true), .hide, "защёлка важнее перечитывания (GLM r13 M1)")
+        XCTAssertEqual(DictationService.draftAction(security: .unknown, captured: 5, pending: 7, secureSeen: true, trusted: true), .hide, "защёлка важнее цепного перечитывания")
         XCTAssertEqual(DictationService.draftAction(security: .clear, captured: 5, pending: 5, secureSeen: false, trusted: false), .hide, "без права AX плашки нет")
+    }
+
+    func testDraftOutcomeShowsTheCapturedPieceAndKeepsANewerPending() {
+        let old = (text: "раз", serial: 5), new = (text: "раз два", serial: 7)
+        let shown = DictationService.draftOutcome(action: .show, captured: old, pending: old)
+        XCTAssertEqual(shown, DictationService.DraftOutcome(shown: "раз", clearPending: true, reread: false, hide: false, latch: false))
+        let chained = DictationService.draftOutcome(action: .showAndReread, captured: old, pending: new)
+        XCTAssertEqual(chained, DictationService.DraftOutcome(shown: "раз", clearPending: false, reread: true, hide: false, latch: false),
+                       "новый кусок остаётся ждать своё чтение, показан захваченный")
+        XCTAssertEqual(DictationService.draftOutcome(action: .latch, captured: old, pending: new),
+                       DictationService.DraftOutcome(shown: nil, clearPending: true, reread: false, hide: true, latch: true))
+        XCTAssertEqual(DictationService.draftOutcome(action: .hideAndReread, captured: old, pending: new),
+                       DictationService.DraftOutcome(shown: nil, clearPending: false, reread: true, hide: true, latch: false),
+                       "кусок не выбрасывается")
+        XCTAssertEqual(DictationService.draftOutcome(action: .reread, captured: nil, pending: new),
+                       DictationService.DraftOutcome(shown: nil, clearPending: false, reread: true, hide: false, latch: false))
+        XCTAssertEqual(DictationService.draftOutcome(action: .wait, captured: nil, pending: nil), DictationService.DraftOutcome(shown: nil))
+    }
+
+    func testUnknownFlashOnlyWithTheAccessibilityRight() {
+        XCTAssertTrue(DictationService.unknownFlashAllowed(trusted: true, security: .unknown, secureSeen: false))
+        XCTAssertFalse(DictationService.unknownFlashAllowed(trusted: false, security: .unknown, secureSeen: false), "без права вставки нет — сообщение про неё соврало бы")
+        XCTAssertFalse(DictationService.unknownFlashAllowed(trusted: true, security: .clear, secureSeen: false))
+        XCTAssertFalse(DictationService.unknownFlashAllowed(trusted: true, security: .unknown, secureSeen: true))
     }
 
     func testFrontmostFallbackOnlyWhenTheSystemWideReadFailed() {

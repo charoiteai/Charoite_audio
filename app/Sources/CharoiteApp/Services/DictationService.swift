@@ -65,6 +65,10 @@ final class DictationService: ObservableObject {
     /// его запуска, и показывает именно его — порядок не зависит от
     /// настенных часов и не голодает при плотных кусках (GLM r13 I2, I3).
     private var pieceSerial = 0
+    /// Подряд идущие «не ответило»: до двух цепных перечитываний, дальше кусок
+    /// ждёт сторожа — одиночный таймаут AX на загруженной машине не гасит
+    /// плашку на секунду (GLM r14, критика 1).
+    private var unknownStreak = 0
     /// Диктовка хоть раз касалась поля пароля — на старте или по ходу речи
     /// (защёлка, не снимок: стартовое чтение AX могло застать поле до того,
     /// как оно стало secure — advisory DS r5 по #488). Тогда ни текста на
@@ -177,6 +181,7 @@ final class DictationService: ObservableObject {
         secureSeen = focus.secure
         secureReadInFlight = false
         pendingDraft = nil
+        unknownStreak = 0
         // Якорь вставки нужен только глобальной диктовке: чат и заметка
         // insert() не зовут (круг 2 по #488, DS)
         target = (onResult == nil && !note) ? Self.frontAnchor(focus) : nil
@@ -527,6 +532,13 @@ final class DictationService: ObservableObject {
         trusted && !secureSeen && security == .clear
     }
 
+    /// Плашка «в поле вставлен черновик» без текста — только когда вставка
+    /// реально идёт (право Accessibility есть), приложение впереди не ответило
+    /// и пароля не было (GLM r13 I1, r14 M2).
+    nonisolated static func unknownFlashAllowed(trusted: Bool, security: FocusSecurity, secureSeen: Bool) -> Bool {
+        trusted && security == .unknown && !secureSeen
+    }
+
     /// Куда уйдёт результат: ⌘V только с правом Accessibility и только туда,
     /// где нажали ⌥⌘D — то же приложение и (если оба окна известны) то же
     /// окно. Якорь неизвестен или это сам Чароит (строка меню-бара, чат) —
@@ -568,46 +580,66 @@ final class DictationService: ObservableObject {
     }
 
     private func applyFocusSecurity(_ security: FocusSecurity, captured: (text: String, serial: Int)?) {
-        switch Self.draftAction(security: security, captured: captured?.serial, pending: pendingDraft?.serial,
-                                secureSeen: secureSeen, trusted: AXIsProcessTrusted()) {
-        case .latch:
-            secureSeen = true
-            pendingDraft = nil
-            DictationPreviewPanel.shared.hide()
-        case .hide:
-            DictationPreviewPanel.shared.hide()
-        case .show, .showAndReread:
-            if let captured {
-                if pendingDraft?.serial == captured.serial { pendingDraft = nil }
-                DictationPreviewPanel.shared.show(text: captured.text, hint: Self.liveStripHint)
-            }
-            if pendingDraft != nil { readFocusSecurity() }   // за время полёта пришёл новый кусок
-        case .reread:
-            readFocusSecurity()
-        case .wait:
-            break
-        }
+        let action = Self.draftAction(security: security, captured: captured?.serial, pending: pendingDraft?.serial,
+                                      secureSeen: secureSeen, trusted: AXIsProcessTrusted(),
+                                      unknownStreak: unknownStreak)
+        unknownStreak = security == .unknown ? unknownStreak + 1 : 0
+        let out = Self.draftOutcome(action: action, captured: captured, pending: pendingDraft)
+        if out.latch { secureSeen = true }
+        if out.clearPending { pendingDraft = nil }
+        if out.hide { DictationPreviewPanel.shared.hide() }
+        if let text = out.shown { DictationPreviewPanel.shared.show(text: text, hint: Self.liveStripHint) }
+        if out.reread { readFocusSecurity() }
     }
 
-    enum DraftAction { case show, showAndReread, reread, wait, hide, latch }
+    enum DraftAction { case show, showAndReread, reread, wait, hide, hideAndReread, latch }
 
     /// Что делать по возврату чтения фокуса (чистый шов, GLM r12 M5):
     /// `captured` — номер куска, ждавшего на момент запуска чтения (nil —
     /// сторож читал без куска), `pending` — номер куска, ждущего сейчас.
-    /// Пароль — защёлка, кусок в мусор, плашка гаснет; не ответило — плашка
-    /// гаснет, кусок ждёт; не пароль — показать захваченный кусок (чтение
+    /// Пароль — защёлка, кусок в мусор, плашка гаснет. Не ответило — плашка
+    /// гаснет; при ждущем куске до двух цепных перечитываний подряд, дальше
+    /// кусок ждёт сторожа (1 с) — на этом пути отставание не ограничено
+    /// (GLM r14 M3). Не пароль — показать захваченный кусок (чтение
     /// стартовало после его прихода по построению) и, если за полёт пришёл
     /// новый, сразу перечитать для него; захвачено ничего, но кусок ждёт —
     /// перечитать; ничего не ждёт — ждать. Защёлка и отсутствие права —
-    /// плашки нет. Ни часов, ни голодания: каждый возврат показывает кусок,
-    /// отстающий не больше чем на один полёт (GLM r13 I2, I3).
+    /// плашки нет. Ни часов, ни голодания: на пути «не пароль» каждый
+    /// возврат показывает кусок, отстающий не больше чем на один полёт
+    /// (GLM r13 I2, I3).
     nonisolated static func draftAction(security: FocusSecurity, captured: Int?, pending: Int?,
-                                        secureSeen: Bool, trusted: Bool) -> DraftAction {
+                                        secureSeen: Bool, trusted: Bool, unknownStreak: Int = 0) -> DraftAction {
         if security == .secure { return .latch }
-        guard trusted, !secureSeen, security == .clear else { return .hide }
+        guard trusted, !secureSeen else { return .hide }
+        if security == .unknown { return pending != nil && unknownStreak < 2 ? .hideAndReread : .hide }
         guard let captured else { return pending == nil ? .wait : .reread }
         if let pending, pending != captured { return .showAndReread }
         return .show
+    }
+
+    /// Что именно применить к состоянию по решению (чистый шов, GLM r14 I1):
+    /// показать захваченный текст, очистить ждущий кусок только если это тот
+    /// же кусок, перечитать, если за полёт пришёл новый.
+    struct DraftOutcome: Equatable {
+        var shown: String?
+        var clearPending = false
+        var reread = false
+        var hide = false
+        var latch = false
+    }
+
+    nonisolated static func draftOutcome(action: DraftAction, captured: (text: String, serial: Int)?,
+                                         pending: (text: String, serial: Int)?) -> DraftOutcome {
+        switch action {
+        case .latch: return DraftOutcome(shown: nil, clearPending: true, hide: true, latch: true)
+        case .hide: return DraftOutcome(shown: nil, hide: true)
+        case .hideAndReread: return DraftOutcome(shown: nil, reread: true, hide: true)
+        case .wait: return DraftOutcome(shown: nil)
+        case .reread: return DraftOutcome(shown: nil, reread: true)
+        case .show, .showAndReread:
+            let same = captured != nil && pending?.serial == captured?.serial
+            return DraftOutcome(shown: captured?.text, clearPending: same, reread: pending != nil && !same)
+        }
     }
 
     /// Кусок живого черновика: на плашку — только по чтению фокуса,
@@ -658,7 +690,8 @@ final class DictationService: ObservableObject {
                               "系统引擎草稿——GigaAM 未响应"),
                     seconds: 5)
             }
-            else if handler == nil, AXIsProcessTrusted(), focus.security == .unknown, !secureSeen {
+            else if handler == nil, Self.unknownFlashAllowed(trusted: AXIsProcessTrusted(), security: focus.security,
+                                                              secureSeen: secureSeen) {
                 // Приложение впереди не ответило: текста на плашке нет, но
                 // человек должен узнать, что в поле лёг черновик (GLM r12 M3)
                 DictationPreviewPanel.shared.flash(
@@ -773,9 +806,12 @@ final class DictationService: ObservableObject {
     /// раз на приложение — если какое-то отвечает так именно на поле пароля,
     /// полевой случай проявится в логе (GLM r13, критика 2).
     private static var blindPasteLogged = Set<String>()
-    private static func noteBlindPaste(app: String) {
-        guard blindPasteLogged.insert(app).inserted else { return }
-        NSLog("[Dictation] вставка в \(app): приложение не отдаёт сфокусированный элемент — поле пароля там не отличить")
+    private static func noteBlindPaste(anchor: PasteAnchor) {
+        // Ключ — bundle id (или pid): одноимённые процессы не делят запись,
+        // а без якоря не логируем вовсе (GLM r14 M1)
+        let key = NSRunningApplication(processIdentifier: anchor.pid)?.bundleIdentifier ?? String(anchor.pid)
+        guard blindPasteLogged.insert(key).inserted else { return }
+        NSLog("[Dictation] вставка в \(anchor.name) (\(key)): приложение не отдаёт сфокусированный элемент — поле пароля там не отличить")
     }
 
     private func insert(text: String, keepStatus: Bool = false, focus: FocusInfo? = nil) {
@@ -838,7 +874,7 @@ final class DictationService: ObservableObject {
             DictationPreviewPanel.shared.flash(text: text, hint: hint, seconds: 6)
             return
         case .paste:
-            if focus.blind { Self.noteBlindPaste(app: now?.name ?? "?") }
+            if focus.blind, let now { Self.noteBlindPaste(anchor: now) }
             let src = CGEventSource(stateID: .combinedSessionState)
             let vDown = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true)
             vDown?.flags = .maskCommand
