@@ -488,7 +488,7 @@ final class DictationService: ObservableObject {
             let generation = self.generation
             Task.detached(priority: .userInitiated) { [weak self] in
                 let secure = Self.focusedFieldIsSecure()
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     guard let self, self.generation == generation else { return }
                     self.secureField = secure
                     if secure {
