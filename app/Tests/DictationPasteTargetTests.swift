@@ -91,6 +91,7 @@ final class DictationPasteTargetTests: XCTestCase {
     func testDraftActionShowsTheCapturedPieceAndRereadsForANewerOne() {
         XCTAssertEqual(DictationService.draftAction(security: .clear, captured: 5, pending: 5, secureSeen: false, trusted: true, unknownStreak: 0), .show)
         XCTAssertEqual(DictationService.draftAction(security: .clear, captured: 5, pending: 7, secureSeen: false, trusted: true, unknownStreak: 0), .showAndReread, "за полёт пришёл новый — показать старый, перечитать для нового")
+        XCTAssertEqual(DictationService.draftAction(security: .clear, captured: 5, pending: nil, secureSeen: false, trusted: true, unknownStreak: 0), .show, "кусок потреблён до возврата — показать, не перечитывать (GLM r16 M2)")
         XCTAssertEqual(DictationService.draftAction(security: .clear, captured: nil, pending: 7, secureSeen: false, trusted: true, unknownStreak: 0), .reread, "сторож читал без куска, кусок пришёл за полёт — перечитать")
         XCTAssertEqual(DictationService.draftAction(security: .clear, captured: nil, pending: nil, secureSeen: false, trusted: true, unknownStreak: 0), .wait)
         XCTAssertEqual(DictationService.draftAction(security: .secure, captured: 5, pending: 7, secureSeen: false, trusted: true, unknownStreak: 0), .latch)

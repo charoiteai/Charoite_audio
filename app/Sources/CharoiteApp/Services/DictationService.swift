@@ -65,9 +65,10 @@ final class DictationService: ObservableObject {
     /// его запуска, и показывает именно его — порядок не зависит от
     /// настенных часов и не голодает при плотных кусках (GLM r13 I2, I3).
     private var pieceSerial = 0
-    /// Подряд идущие «не ответило»: до двух цепных перечитываний, дальше кусок
-    /// ждёт сторожа — одиночный таймаут AX на загруженной машине не гасит
-    /// плашку на секунду (GLM r14, критика 1).
+    /// Подряд идущие «не ответило», пока кусок ждёт: до двух цепных
+    /// перечитываний, дальше кусок ждёт сторожа — одиночный таймаут AX на
+    /// загруженной машине не гасит плашку на секунду (GLM r14, критика 1).
+    /// Пустые чтения сторожа до первого куска бюджет не тратят (GLM r15 I1).
     private var unknownStreak = 0
     /// Диктовка хоть раз касалась поля пароля — на старте или по ходу речи
     /// (защёлка, не снимок: стартовое чтение AX могло застать поле до того,
@@ -585,6 +586,14 @@ final class DictationService: ObservableObject {
                                       unknownStreak: unknownStreak)
         unknownStreak = Self.nextUnknownStreak(security: security, pieceWaiting: pendingDraft != nil,
                                                streak: unknownStreak)
+        if action == .hide, security == .unknown, pendingDraft != nil,
+           let app = NSWorkspace.shared.frontmostApplication {
+            // Бюджет перечитываний исчерпан: живой черновик до конца диктовки
+            // покажет только сторож — след в логе, иначе «плашка не
+            // появляется» в поле не диагностировать (GLM r16, критика 1)
+            Self.noteUnknownBudget(key: Self.blindPasteKey(bundleID: app.bundleIdentifier, pid: app.processIdentifier),
+                                   app: app.localizedName ?? "?")
+        }
         let out = Self.draftOutcome(action: action, captured: captured, pending: pendingDraft)
         if out.latch { secureSeen = true }
         if out.clearPending { pendingDraft = nil }
@@ -815,6 +824,12 @@ final class DictationService: ObservableObject {
     /// полевой случай проявится в логе (GLM r13, критика 2).
     /// Ключ записи «вставка вслепую»: bundle id, а без него pid (GLM r15 M4).
     nonisolated static func blindPasteKey(bundleID: String?, pid: pid_t) -> String { bundleID ?? String(pid) }
+
+    private static var unknownBudgetLogged = Set<String>()
+    private static func noteUnknownBudget(key: String, app: String) {
+        guard unknownBudgetLogged.insert(key).inserted else { return }
+        NSLog("[Dictation] \(app) (\(key)) не отвечает на чтение фокуса: живая плашка ждёт сторожа (раз в секунду)")
+    }
 
     private static var blindPasteLogged = Set<String>()
     private static func noteBlindPaste(anchor: PasteAnchor) {
