@@ -82,5 +82,6 @@ final class DictationPasteTargetTests: XCTestCase {
         XCTAssertFalse(DictationService.liveStripAllowed(nowSecure: true, secureSeen: false, trusted: true))
         XCTAssertFalse(DictationService.liveStripAllowed(nowSecure: false, secureSeen: true, trusted: true), "побывали в пароле — текст не возвращается")
         XCTAssertFalse(DictationService.liveStripAllowed(nowSecure: false, secureSeen: false, trusted: false), "без права AX пароль не отличить — плашки нет")
+        XCTAssertFalse(DictationService.liveStripAllowed(nowSecure: true, secureSeen: true, trusted: true))
     }
 }

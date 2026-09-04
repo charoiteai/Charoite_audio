@@ -314,7 +314,12 @@ it signals degradation, it does not break the loop.
   in front by then, the text stays in the clipboard (the previous clipboard
   content is not restored), the strip and the status say so — press ⌘V in
   the right field. Started from Charoite's own menu, the text goes wherever
-  you click, as before. In the menu
+  you click, as before. Passwords: if the dictation touched a password
+  field at any moment (or one has the focus when the text arrives), nothing
+  is pasted and nothing is shown — the text waits in the clipboard, the strip
+  and the status carry only the instruction; without the Accessibility right
+  a password field cannot be told apart, so the live draft strip is not
+  shown at all. In the menu
   bar, dictation, note and diary sit in a column with their shortcuts in a
   separate right-hand column: on one row they did not fit and got truncated
   exactly at the shortcut.

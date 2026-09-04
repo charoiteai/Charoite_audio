@@ -179,7 +179,12 @@ final class DictationService: ObservableObject {
                     // раз в секунду; с ней onChange читает сам — раз в две (DS r8)
                     try? await Task.sleep(for: .seconds(self?.previewEngine == nil ? 1 : 2))
                     guard let self, self.isRecording, !Task.isCancelled else { return }
-                    self.refreshSecureField()
+                    // Фокус ушёл в пароль в паузе речи — onChange не стреляет,
+                    // а последний черновик висел бы поверх поля (GLM M1)
+                    if !Self.liveStripAllowed(nowSecure: self.refreshSecureField(), secureSeen: self.secureSeen,
+                                              trusted: true) {
+                        DictationPreviewPanel.shared.hide()
+                    }
                 }
             }
         }
@@ -392,7 +397,7 @@ final class DictationService: ObservableObject {
         var pid: pid_t?
     }
 
-    nonisolated static func focusInfo() -> FocusInfo {
+    nonisolated static func focusInfo(secureOnly: Bool = false) -> FocusInfo {
         var info = FocusInfo()
         guard AXIsProcessTrusted() else { return info }
         let system = AXUIElementCreateSystemWide()
@@ -410,6 +415,7 @@ final class DictationService: ObservableObject {
         AXUIElementCopyAttributeValue(field, kAXRoleAttribute as CFString, &role)
         AXUIElementCopyAttributeValue(field, kAXSubroleAttribute as CFString, &subrole)
         info.secure = (role as? String) == "AXSecureTextField" || (subrole as? String) == "AXSecureTextField"
+        if secureOnly { return info }   // сторожу окно не нужно — минус один запрос по 0,25 с (GLM I1)
         var window: CFTypeRef?
         if AXUIElementCopyAttributeValue(field, kAXWindowAttribute as CFString, &window) == .success,
            let w = window, CFGetTypeID(w) == AXUIElementGetTypeID() {
@@ -421,7 +427,7 @@ final class DictationService: ObservableObject {
     /// Сфокусированное поле — защищённый ввод (пароль)? Тогда ни живого
     /// черновика, ни плашки (круг 3 по #486, GLM). Без права Accessibility
     /// ответ «нет»: без него и ⌘V не будет, текст остаётся в буфере.
-    nonisolated static func focusedFieldIsSecure() -> Bool { focusInfo().secure }
+    nonisolated static func focusedFieldIsSecure() -> Bool { focusInfo(secureOnly: true).secure }
 
     /// Якорь вставки: владелец сфокусированного элемента (неактивирующая
     /// key-панель — строка меню Чароита — не меняет frontmostApplication,
@@ -478,7 +484,10 @@ final class DictationService: ObservableObject {
     /// Не чаще раза в секунду — AX-запрос идёт по главному потоку.
     @discardableResult
     private func refreshSecureField(force: Bool = false) -> Bool {
-        if force || Date().timeIntervalSince(secureCheckedAt) > 1 {
+        // Четверть секунды, а не секунда: после клика в поле пароля первая
+        // секунда речи не должна лечь на плашку (advisory GLM); на живом
+        // приложении запрос — микросекунды
+        if force || Date().timeIntervalSince(secureCheckedAt) > 0.25 {
             secureCheckedAt = Date()
             secureField = Self.focusedFieldIsSecure()
             if secureField { secureSeen = true }
