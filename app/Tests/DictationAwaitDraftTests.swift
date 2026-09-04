@@ -42,7 +42,8 @@ final class DictationAwaitDraftTests: XCTestCase {
         // На CI права Accessibility нет — контракт: «нет права → не пароль»,
         // плашка ведёт себя как раньше, а вставки ⌘V всё равно не будет.
         if !AXIsProcessTrusted() {
-            XCTAssertFalse(DictationService.focusedFieldIsSecure())
+            XCTAssertEqual(DictationService.focusSecurityNow(), .unknown, "без права AX — неизвестно; плашку и ⌘V держит гейт trusted")
+            XCTAssertFalse(DictationService.focusInfo(secureOnly: true).secure)
         }
     }
 }

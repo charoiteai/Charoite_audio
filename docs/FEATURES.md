@@ -308,7 +308,26 @@ it signals degradation, it does not break the loop.
   instead of being retyped from the screen. "Start listening" unlocks once
   no blocking items remain.
 - **Dictation** (global hotkey) — speak → recognized locally → pasted into
-  the active field; the clipboard is restored, images included. In the menu
+  the active field; the clipboard is restored, images included. The text
+  goes to the app — and, with the Accessibility right, the window — where
+  dictation started: recognition takes seconds, and if something else is
+  in front by then, the text stays in the clipboard (the previous clipboard
+  content is not restored), the strip and the status say so — press ⌘V in
+  the right field. Started from Charoite's own menu, the text goes wherever
+  you click, as before. Passwords: if the dictation touched a password
+  field at any moment (or one has the focus when the text arrives), nothing
+  is pasted and nothing is shown — the text waits in the clipboard, the strip
+  and the status carry only the instruction; without the Accessibility right
+  a password field cannot be told apart, so the live draft strip is not
+  shown at all. Every piece of the live draft reaches the strip only by a
+  focus read started after the piece arrived (an inter-process request,
+  milliseconds): a click into a password field mid-speech hides it with the
+  next piece or with the once-a-second watch, and it does not come back
+  before the dictation ends; if the app in front does not answer, the strip
+  stays silent. A password field is recognised through Accessibility: an app
+  that does not expose its tree (Chromium browsers with accessibility off)
+  cannot be told apart — there the strip and the paste behave as in a plain
+  field. In the menu
   bar, dictation, note and diary sit in a column with their shortcuts in a
   separate right-hand column: on one row they did not fit and got truncated
   exactly at the shortcut.
