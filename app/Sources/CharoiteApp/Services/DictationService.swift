@@ -175,7 +175,7 @@ final class DictationService: ObservableObject {
         if onResult == nil, !note, AXIsProcessTrusted() {
             secureWatch = Task { [weak self] in
                 while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(1))
+                    try? await Task.sleep(for: .seconds(2))   // защёлке чаще не нужно (DS r7 M1)
                     guard let self, self.isRecording, !Task.isCancelled else { return }
                     self.refreshSecureField()
                 }
@@ -437,12 +437,14 @@ final class DictationService: ObservableObject {
     }
 
     /// Итог доставки: право Accessibility → пароль → окно. Диктовка,
-    /// касавшаяся поля пароля, автовставки в ОБЫЧНОЕ поле не получает (DS r5
-    /// I1); в само поле пароля — можно, оно маскирует (advisory DS r6).
+    /// касавшаяся поля пароля, автовставки не получает вообще — ни в обычное
+    /// поле, ни в само поле пароля: поле маскирует ввод, но статус и плашка
+    /// Чароита не маскируют, а synthetic ⌘V под secure input глотается и
+    /// статус «вставлено» врёт (DS r7 C1/C2/I1 — откат advisory r6).
     nonisolated static func finalDecision(trusted: Bool, own: pid_t, startedIn: PasteAnchor?, now: PasteAnchor?,
-                                          secureSeen: Bool, nowSecure: Bool) -> PasteDecision {
+                                          secureSeen: Bool) -> PasteDecision {
         guard trusted else { return .noAccessibility }
-        if secureSeen, !nowSecure { return .secret }
+        if secureSeen { return .secret }
         return pasteDecision(trusted: true, own: own, startedIn: startedIn, now: now)
     }
 
@@ -637,7 +639,7 @@ final class DictationService: ObservableObject {
         let now = Self.frontAnchor(focus)
         if focus.secure { secureSeen = true }
         switch Self.finalDecision(trusted: AXIsProcessTrusted(), own: ProcessInfo.processInfo.processIdentifier,
-                                  startedIn: target, now: now, secureSeen: secureSeen, nowSecure: focus.secure) {
+                                  startedIn: target, now: now, secureSeen: secureSeen) {
         case .secret:
             // Диктовка касалась поля пароля: ⌘V раскрыл бы секрет в обычном
             // поле, а статус и плашка — на экране. Текст только в буфере,
