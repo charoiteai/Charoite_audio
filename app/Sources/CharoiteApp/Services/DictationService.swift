@@ -57,8 +57,11 @@ final class DictationService: ObservableObject {
     /// Кусок живого черновика, который покажется, когда чтение фокуса,
     /// запущенное не раньше его прихода, ответит «не пароль»: плашка не
     /// показывает текст по устаревшему ответу — поле пароля могло его уже
-    /// замаскировать (GLM r11 I1 по #488).
+    /// замаскировать (GLM r11 I1 по #488). Момент прихода куска и момент
+    /// запуска летящего чтения сравниваются: чтение, стартовавшее раньше
+    /// куска, могло снять фокус до клика в пароль (GLM r12 I1).
     private var pendingDraft: String?
+    private var pendingDraftAt = Date.distantPast
     /// Диктовка хоть раз касалась поля пароля — на старте или по ходу речи
     /// (защёлка, не снимок: стартовое чтение AX могло застать поле до того,
     /// как оно стало secure — advisory DS r5 по #488). Тогда ни текста на
@@ -413,7 +416,9 @@ final class DictationService: ObservableObject {
         AXUIElementSetMessagingTimeout(system, 0.25)   // зависшее чужое приложение не держит старт диктовки
         var focused: CFTypeRef?
         var err = AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused)
-        if err != .success, let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
+        // Определённое «сфокусированного элемента нет» фолбэка не требует —
+        // лишний IPC и шанс ухудшить ответ до «неизвестно» (GLM r12 M2)
+        if err != .success, err != .noValue, let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
             // Chromium (Яндекс Браузер, Chrome) без включённой accessibility
             // на общесистемный запрос отвечает cannotComplete, а на прямой —
             // «нет сфокусированного элемента»; так прячущее свои поля
@@ -446,9 +451,14 @@ final class DictationService: ObservableObject {
     }
 
     /// Ответы AX → что известно о поле: «нет сфокусированного элемента» —
-    /// пароля нет (так отвечает и Chromium, не отдающий свои поля); роль
-    /// прочитана — по роли и подроли; не ответило (таймаут, зависшее
-    /// приложение) — неизвестно. Чистая функция для теста.
+    /// пароля нет; роль прочитана — по роли и подроли; не ответило
+    /// (таймаут, зависшее приложение) — неизвестно. Чистая функция для теста.
+    /// Решение 04.09 (запись в decisions): Chromium с выключенной
+    /// accessibility отвечает «нет элемента» и на обычное поле, и на пароль —
+    /// это «пароль неотличим», и мы сознательно считаем его «нет пароля»:
+    /// иначе живая плашка гасла бы в главном браузере, а защиты там всё
+    /// равно не дать. Без права Accessibility наоборот fail-closed: там нет
+    /// и вставки, плашка была бы голым показом.
     nonisolated static func focusSecurity(focused: AXError, role: AXError,
                                           roleName: String?, subrole: String?) -> FocusSecurity {
         if focused == .noValue { return .clear }
@@ -528,6 +538,7 @@ final class DictationService: ObservableObject {
         guard !secureReadInFlight, AXIsProcessTrusted() else { return }
         secureReadInFlight = true
         let generation = self.generation
+        let launchedAt = Date()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let security = Self.focusSecurityNow()
             Task { @MainActor [weak self] in
@@ -538,33 +549,53 @@ final class DictationService: ObservableObject {
                 self.secureReadInFlight = false
                 guard Self.secureReadApplies(generation: generation, current: self.generation,
                                              recording: self.isRecording) else { return }
-                self.applyFocusSecurity(security)
+                self.applyFocusSecurity(security, readLaunchedAt: launchedAt)
             }
         }
     }
 
-    private func applyFocusSecurity(_ security: FocusSecurity) {
-        switch security {
-        case .secure:
+    private func applyFocusSecurity(_ security: FocusSecurity, readLaunchedAt: Date) {
+        switch Self.draftAction(security: security, readLaunchedAt: readLaunchedAt,
+                                pendingAt: pendingDraft == nil ? nil : pendingDraftAt,
+                                secureSeen: secureSeen, trusted: AXIsProcessTrusted()) {
+        case .latch:
             secureSeen = true
             pendingDraft = nil
             DictationPreviewPanel.shared.hide()
-        case .unknown:
+        case .hide:
             DictationPreviewPanel.shared.hide()
-        case .clear:
-            guard let text = pendingDraft,
-                  Self.liveStripAllowed(security: security, secureSeen: secureSeen,
-                                        trusted: AXIsProcessTrusted()) else { return }
+        case .show:
+            let text = pendingDraft ?? ""
             pendingDraft = nil
             DictationPreviewPanel.shared.show(text: text, hint: Self.liveStripHint)
+        case .reread:
+            readFocusSecurity()
+        case .wait:
+            break
         }
     }
 
-    /// Кусок живого черновика: на плашку — только после чтения фокуса,
-    /// запущенного не раньше его прихода (или уже летящего); текст, который
-    /// поле пароля успело замаскировать, по устаревшему ответу не
-    /// показывается (GLM r11 I1). Побывали в пароле — не показываем и после
-    /// выхода из него (DS r6 C1); без права Accessibility плашки нет (DS r8 I1).
+    enum DraftAction { case show, reread, wait, hide, latch }
+
+    /// Что делать с отложенным куском по возврату чтения фокуса (чистый шов,
+    /// GLM r12 M5): пароль — защёлка, кусок в мусор, плашка гаснет; не
+    /// ответило — плашка гаснет, кусок ждёт следующего чтения; не пароль —
+    /// показать, только если чтение стартовало не раньше прихода куска, иначе
+    /// перечитать (летящее чтение могло снять фокус до клика в пароль, GLM
+    /// r12 I1); куска нет — ждать. Защёлка и отсутствие права — плашки нет.
+    nonisolated static func draftAction(security: FocusSecurity, readLaunchedAt: Date, pendingAt: Date?,
+                                        secureSeen: Bool, trusted: Bool) -> DraftAction {
+        if security == .secure { return .latch }
+        guard trusted, !secureSeen, security == .clear else { return .hide }
+        guard let pendingAt else { return .wait }
+        return readLaunchedAt >= pendingAt ? .show : .reread
+    }
+
+    /// Кусок живого черновика: на плашку — только по чтению фокуса,
+    /// запущенному после его прихода; текст, который поле пароля успело
+    /// замаскировать, по устаревшему ответу не показывается (GLM r11 I1,
+    /// r12 I1). Побывали в пароле — не показываем и после выхода из него
+    /// (DS r6 C1); без права Accessibility плашки нет (DS r8 I1).
     private func offerDraft(_ text: String) {
         guard !secureSeen, AXIsProcessTrusted() else {
             pendingDraft = nil
@@ -572,6 +603,7 @@ final class DictationService: ObservableObject {
             return
         }
         pendingDraft = text
+        pendingDraftAt = Date()
         readFocusSecurity()
     }
 
@@ -606,6 +638,15 @@ final class DictationService: ObservableObject {
                               "system engine draft — GigaAM did not answer",
                               "系统引擎草稿——GigaAM 未响应"),
                     seconds: 5)
+            }
+            else if handler == nil, focus.security == .unknown, !secureSeen {
+                // Приложение впереди не ответило: текста на плашке нет, но
+                // человек должен узнать, что в поле лёг черновик (GLM r12 M3)
+                DictationPreviewPanel.shared.flash(
+                    text: L.t("в поле вставлен черновик системного движка — GigaAM не ответил",
+                              "the system engine's draft was inserted — GigaAM did not answer",
+                              "已插入系统引擎草稿——GigaAM 未响应"),
+                    hint: "", seconds: 5)
             }
         }
         if wasNote {

@@ -88,6 +88,19 @@ final class DictationPasteTargetTests: XCTestCase {
         XCTAssertFalse(DictationService.liveStripAllowed(security: .secure, secureSeen: true, trusted: true))
     }
 
+    func testDraftActionShowsOnlyByAReadLaunchedAfterThePiece() {
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        let later = t0.addingTimeInterval(0.001)
+        XCTAssertEqual(DictationService.draftAction(security: .clear, readLaunchedAt: later, pendingAt: t0, secureSeen: false, trusted: true), .show)
+        XCTAssertEqual(DictationService.draftAction(security: .clear, readLaunchedAt: t0, pendingAt: t0, secureSeen: false, trusted: true), .show, "запуск в тот же момент — не раньше куска")
+        XCTAssertEqual(DictationService.draftAction(security: .clear, readLaunchedAt: t0, pendingAt: later, secureSeen: false, trusted: true), .reread, "чтение старше куска — перечитать, не показывать")
+        XCTAssertEqual(DictationService.draftAction(security: .clear, readLaunchedAt: later, pendingAt: nil, secureSeen: false, trusted: true), .wait, "куска нет — ждать")
+        XCTAssertEqual(DictationService.draftAction(security: .secure, readLaunchedAt: later, pendingAt: t0, secureSeen: false, trusted: true), .latch)
+        XCTAssertEqual(DictationService.draftAction(security: .unknown, readLaunchedAt: later, pendingAt: t0, secureSeen: false, trusted: true), .hide, "не ответило — плашка гаснет, кусок ждёт")
+        XCTAssertEqual(DictationService.draftAction(security: .clear, readLaunchedAt: later, pendingAt: t0, secureSeen: true, trusted: true), .hide, "после защёлки текст не возвращается")
+        XCTAssertEqual(DictationService.draftAction(security: .clear, readLaunchedAt: later, pendingAt: t0, secureSeen: false, trusted: false), .hide, "без права AX плашки нет")
+    }
+
     func testFocusSecurityFromAccessibilityAnswers() {
         XCTAssertEqual(DictationService.focusSecurity(focused: .noValue, role: .failure, roleName: nil, subrole: nil), .clear,
                        "нет сфокусированного элемента — пароля нет (Chromium без accessibility)")
