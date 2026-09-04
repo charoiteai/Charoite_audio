@@ -204,6 +204,14 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
                 continue
             taken.add(target)
             moves.append((f, target))
+            # Сайдкар едет вместе с главным файлом: защита правок и имена
+            # живут под именем стенограммы (#489); rename и ретитл держат
+            # пару одинаково
+            if folder == tdir and f.suffix == ".md":
+                sc, sc_target = f.with_name(f.name + ".live.json"), target.with_name(target.name + ".live.json")
+                if sc.exists() and not sc_target.exists() and sc_target not in taken:
+                    taken.add(sc_target)
+                    moves.append((sc, sc_target))
 
     day, hhmm = stamp[:10], meeting_stamp.archive_time(stamp)
     old_folder = archive_folder(graph, stamp)

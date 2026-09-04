@@ -120,6 +120,40 @@ def stamp_of(name: str) -> str | None:
     return m.group(1)
 
 
+def first_line(path: pathlib.Path) -> str:
+    """Первая строка файла (первые 200 байт) — шапка встречи «# Встреча …».
+    Одно чтение на live_sidecar и meeting_processing (DS r13 по #489)."""
+    try:
+        with path.open("rb") as fh:
+            return fh.read(200).decode("utf-8", errors="ignore").lstrip().split("\n", 1)[0]
+    except OSError:
+        return ""
+
+
+def named_after_header(stem: str, head: str) -> bool:
+    """Тема шапки «# Встреча <штамп> — <тема>» и хвост имени — одни слова
+    («Демо live» ↔ «Демо_live», «Демо-live» после guard_slug, «live» ↔
+    «<штамп>_live»): файл со служебным хвостом в имени — встреча, а не
+    производная. Один признак на live_sidecar и meeting_processing
+    (DS r12 по #489: два резолвера расходились).
+
+    Предусловие: имеет смысл только для имени с хвостом на служебное слово
+    (`_live` и прочие AUX_SUFFIXES) — для обычного озаглавленного файла
+    результат ничего не значит. Гарант согласованности имени и шапки —
+    graph_updater.retitle: он переименовывает файл и дописывает тему в
+    шапку в одном событии, а копия write_final снимается до ретитла с голой
+    шапкой; на этом порядке признак и держится (DS r13, критика 1)."""
+    parts = decompose(stem)
+    theme = head.split(" — ", 1)[1] if " — " in head else ""
+    if not parts or not parts[1] or not theme:
+        return False
+    return _words(theme) == _words(parts[1])
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[^\W_]+", text.lower())
+
+
 def minute_of(stamp: str) -> str:
     """«2026-08-03_113012-1» → «2026-08-03_1130»; не штамп — как есть."""
     m = _RE.match(stamp)
