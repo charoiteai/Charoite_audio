@@ -408,10 +408,17 @@ final class DictationService: ObservableObject {
         let owner = info.pid.flatMap { NSRunningApplication(processIdentifier: $0) }
             ?? NSWorkspace.shared.frontmostApplication
         guard let owner else { return nil }
-        // Окно без владельца (pid не извлёкся) — не склеивать с frontmost:
-        // гибрид «pid одного, окно другого» хуже сравнения по приложению
+        // Окно — только от того же владельца, что и pid якоря: гибрид «pid
+        // одного, окно другого» хуже сравнения по приложению (DS r3 M1, r4 M2)
         return PasteAnchor(pid: owner.processIdentifier, name: owner.localizedName ?? "?",
-                           window: info.pid != nil ? info.window : nil)
+                           window: info.pid == owner.processIdentifier ? info.window : nil)
+    }
+
+    /// ⌘V раскрыл бы секрет: диктовку начали в поле пароля, а вставка ушла
+    /// бы в обычное поле (то же окно, фокус переехал). В само поле пароля
+    /// вставлять можно — оно маскирует (DS r4 I1).
+    nonisolated static func pasteRevealsSecret(startedSecure: Bool, nowSecure: Bool) -> Bool {
+        startedSecure && !nowSecure
     }
 
     /// Можно ли показать надиктованный текст на экране: ни начали в поле
@@ -456,8 +463,10 @@ final class DictationService: ObservableObject {
         // Один AX-проход на всю доставку: гейт плашки черновика и решение о
         // вставке смотрят на одно и то же мгновение (DS r3 M2)
         let focus = (handler == nil && !wasNote) ? Self.focusInfo() : FocusInfo()
-        secureField = focus.secure
-        secureCheckedAt = Date()
+        if handler == nil, !wasNote {
+            secureField = focus.secure
+            secureCheckedAt = Date()
+        }
         if fromDraft {
             status = L.t("GigaAM не ответил — вставлен черновик системного движка", "GigaAM did not answer — inserted the system engine's draft", "GigaAM 未响应——已插入系统引擎的草稿")
             // Человек смотрит в чужое поле, а не в строку статуса Чароита:
@@ -596,8 +605,15 @@ final class DictationService: ObservableObject {
 
         let focus = focus ?? Self.focusInfo()
         let now = Self.frontAnchor(focus)
-        switch Self.pasteDecision(trusted: AXIsProcessTrusted(), own: ProcessInfo.processInfo.processIdentifier,
-                                  startedIn: target, now: now) {
+        var decision = Self.pasteDecision(trusted: AXIsProcessTrusted(), own: ProcessInfo.processInfo.processIdentifier,
+                                          startedIn: target, now: now)
+        // Начали в поле пароля, а к доставке в том же окне фокус в обычном
+        // поле: ⌘V вставил бы секрет открытым текстом — оставляем в буфере с
+        // инструкцией (DS r4 I1)
+        if decision == .paste, Self.pasteRevealsSecret(startedSecure: startedSecure, nowSecure: focus.secure) {
+            decision = .windowChanged
+        }
+        switch decision {
         case .windowChanged:
             // ⌘V ушёл бы не туда — текст в буфере, человек вставит сам. Панель
             // меню-бара к этому моменту закрыта, поэтому говорит плашка — там,
@@ -610,8 +626,9 @@ final class DictationService: ObservableObject {
                       "text is in the clipboard — press ⌘V in the right field",
                       "文本已在剪贴板——请在正确的输入框按 ⌘V")
             let front = now?.name ?? "?", started = target?.name ?? "?"
-            // Другое окно того же приложения — не называть его дважды (DS r3 M3)
-            status = hint + (front == started
+            // Другое окно того же приложения — не называть его дважды (DS r3 M3);
+            // одно приложение — это один pid, а не одно имя (DS r4 M3)
+            status = hint + (now?.pid == target?.pid
                 ? L.t(" (впереди другое окно «\(front)»)",
                       " (another window of \u{201C}\(front)\u{201D} is in front)",
                       "（当前是「\(front)」的另一个窗口）")

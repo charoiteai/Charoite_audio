@@ -60,4 +60,15 @@ final class DictationPasteTargetTests: XCTestCase {
         XCTAssertFalse(DictationService.stripAllowed(startedSecure: true, nowSecure: false), "начали в пароле — текст не показываем")
         XCTAssertFalse(DictationService.stripAllowed(startedSecure: false, nowSecure: true), "стоим в пароле — тоже")
     }
+
+    func testStripNeverShowsPasswordTextEvenWhenBothSecure() {
+        XCTAssertFalse(DictationService.stripAllowed(startedSecure: true, nowSecure: true))
+    }
+
+    func testPasteIntoANormalFieldAfterAPasswordStartIsRefused() {
+        XCTAssertTrue(DictationService.pasteRevealsSecret(startedSecure: true, nowSecure: false))
+        XCTAssertFalse(DictationService.pasteRevealsSecret(startedSecure: true, nowSecure: true), "в само поле пароля — можно, оно маскирует")
+        XCTAssertFalse(DictationService.pasteRevealsSecret(startedSecure: false, nowSecure: false))
+        XCTAssertFalse(DictationService.pasteRevealsSecret(startedSecure: false, nowSecure: true), "обычный старт, пароль впереди: ⌘V маскируется полем")
+    }
 }
