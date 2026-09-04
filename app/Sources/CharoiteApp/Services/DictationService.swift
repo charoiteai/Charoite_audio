@@ -60,8 +60,11 @@ final class DictationService: ObservableObject {
     /// замаскировать (GLM r11 I1 по #488). Момент прихода куска и момент
     /// запуска летящего чтения сравниваются: чтение, стартовавшее раньше
     /// куска, могло снять фокус до клика в пароль (GLM r12 I1).
-    private var pendingDraft: String?
-    private var pendingDraftAt = Date.distantPast
+    private var pendingDraft: (text: String, serial: Int)?
+    /// Монотонный номер куска: чтение захватывает кусок, ждавший на момент
+    /// его запуска, и показывает именно его — порядок не зависит от
+    /// настенных часов и не голодает при плотных кусках (GLM r13 I2, I3).
+    private var pieceSerial = 0
     /// Диктовка хоть раз касалась поля пароля — на старте или по ходу речи
     /// (защёлка, не снимок: стартовое чтение AX могло застать поле до того,
     /// как оно стало secure — advisory DS r5 по #488). Тогда ни текста на
@@ -406,6 +409,10 @@ final class DictationService: ObservableObject {
         var security: FocusSecurity = .unknown
         var window: AXUIElement?
         var pid: pid_t?
+        /// Приложение не отдало сфокусированный элемент (noValue): пароль
+        /// там не отличить — вставка идёт вслепую, один раз на приложение
+        /// пишется в лог (GLM r13, критика 2).
+        var blind = false
         var secure: Bool { security == .secure }
     }
 
@@ -418,7 +425,7 @@ final class DictationService: ObservableObject {
         var err = AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused)
         // Определённое «сфокусированного элемента нет» фолбэка не требует —
         // лишний IPC и шанс ухудшить ответ до «неизвестно» (GLM r12 M2)
-        if err != .success, err != .noValue, let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
+        if Self.needsFrontmostFallback(err), let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
             // Chromium (Яндекс Браузер, Chrome) без включённой accessibility
             // на общесистемный запрос отвечает cannotComplete, а на прямой —
             // «нет сфокусированного элемента»; так прячущее свои поля
@@ -429,6 +436,7 @@ final class DictationService: ObservableObject {
         }
         guard err == .success, let value = focused, CFGetTypeID(value) == AXUIElementGetTypeID() else {
             info.security = Self.focusSecurity(focused: err, role: .failure, roleName: nil, subrole: nil)
+            info.blind = err == .noValue
             return info
         }
         let field = unsafeBitCast(value, to: AXUIElement.self)
@@ -465,6 +473,11 @@ final class DictationService: ObservableObject {
         guard focused == .success, role == .success else { return .unknown }
         return roleName == "AXSecureTextField" || subrole == "AXSecureTextField" ? .secure : .clear
     }
+
+    /// Идти ли за фокусом к фронтмост-приложению напрямую: только когда
+    /// общесистемный запрос не ответил; определённое «элемента нет»
+    /// (noValue) фолбэка не требует (GLM r12 M2, r13 M2).
+    nonisolated static func needsFrontmostFallback(_ err: AXError) -> Bool { err != .success && err != .noValue }
 
     /// Поле под фокусом без окна — сторожу и живой плашке окно не нужно
     /// (минус один запрос по 0,25 с, GLM I1).
@@ -538,7 +551,7 @@ final class DictationService: ObservableObject {
         guard !secureReadInFlight, AXIsProcessTrusted() else { return }
         secureReadInFlight = true
         let generation = self.generation
-        let launchedAt = Date()
+        let captured = pendingDraft
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let security = Self.focusSecurityNow()
             Task { @MainActor [weak self] in
@@ -549,14 +562,13 @@ final class DictationService: ObservableObject {
                 self.secureReadInFlight = false
                 guard Self.secureReadApplies(generation: generation, current: self.generation,
                                              recording: self.isRecording) else { return }
-                self.applyFocusSecurity(security, readLaunchedAt: launchedAt)
+                self.applyFocusSecurity(security, captured: captured)
             }
         }
     }
 
-    private func applyFocusSecurity(_ security: FocusSecurity, readLaunchedAt: Date) {
-        switch Self.draftAction(security: security, readLaunchedAt: readLaunchedAt,
-                                pendingAt: pendingDraft == nil ? nil : pendingDraftAt,
+    private func applyFocusSecurity(_ security: FocusSecurity, captured: (text: String, serial: Int)?) {
+        switch Self.draftAction(security: security, captured: captured?.serial, pending: pendingDraft?.serial,
                                 secureSeen: secureSeen, trusted: AXIsProcessTrusted()) {
         case .latch:
             secureSeen = true
@@ -564,10 +576,12 @@ final class DictationService: ObservableObject {
             DictationPreviewPanel.shared.hide()
         case .hide:
             DictationPreviewPanel.shared.hide()
-        case .show:
-            let text = pendingDraft ?? ""
-            pendingDraft = nil
-            DictationPreviewPanel.shared.show(text: text, hint: Self.liveStripHint)
+        case .show, .showAndReread:
+            if let captured {
+                if pendingDraft?.serial == captured.serial { pendingDraft = nil }
+                DictationPreviewPanel.shared.show(text: captured.text, hint: Self.liveStripHint)
+            }
+            if pendingDraft != nil { readFocusSecurity() }   // за время полёта пришёл новый кусок
         case .reread:
             readFocusSecurity()
         case .wait:
@@ -575,20 +589,25 @@ final class DictationService: ObservableObject {
         }
     }
 
-    enum DraftAction { case show, reread, wait, hide, latch }
+    enum DraftAction { case show, showAndReread, reread, wait, hide, latch }
 
-    /// Что делать с отложенным куском по возврату чтения фокуса (чистый шов,
-    /// GLM r12 M5): пароль — защёлка, кусок в мусор, плашка гаснет; не
-    /// ответило — плашка гаснет, кусок ждёт следующего чтения; не пароль —
-    /// показать, только если чтение стартовало не раньше прихода куска, иначе
-    /// перечитать (летящее чтение могло снять фокус до клика в пароль, GLM
-    /// r12 I1); куска нет — ждать. Защёлка и отсутствие права — плашки нет.
-    nonisolated static func draftAction(security: FocusSecurity, readLaunchedAt: Date, pendingAt: Date?,
+    /// Что делать по возврату чтения фокуса (чистый шов, GLM r12 M5):
+    /// `captured` — номер куска, ждавшего на момент запуска чтения (nil —
+    /// сторож читал без куска), `pending` — номер куска, ждущего сейчас.
+    /// Пароль — защёлка, кусок в мусор, плашка гаснет; не ответило — плашка
+    /// гаснет, кусок ждёт; не пароль — показать захваченный кусок (чтение
+    /// стартовало после его прихода по построению) и, если за полёт пришёл
+    /// новый, сразу перечитать для него; захвачено ничего, но кусок ждёт —
+    /// перечитать; ничего не ждёт — ждать. Защёлка и отсутствие права —
+    /// плашки нет. Ни часов, ни голодания: каждый возврат показывает кусок,
+    /// отстающий не больше чем на один полёт (GLM r13 I2, I3).
+    nonisolated static func draftAction(security: FocusSecurity, captured: Int?, pending: Int?,
                                         secureSeen: Bool, trusted: Bool) -> DraftAction {
         if security == .secure { return .latch }
         guard trusted, !secureSeen, security == .clear else { return .hide }
-        guard let pendingAt else { return .wait }
-        return readLaunchedAt >= pendingAt ? .show : .reread
+        guard let captured else { return pending == nil ? .wait : .reread }
+        if let pending, pending != captured { return .showAndReread }
+        return .show
     }
 
     /// Кусок живого черновика: на плашку — только по чтению фокуса,
@@ -602,8 +621,8 @@ final class DictationService: ObservableObject {
             DictationPreviewPanel.shared.hide()
             return
         }
-        pendingDraft = text
-        pendingDraftAt = Date()
+        pieceSerial += 1
+        pendingDraft = (text, pieceSerial)
         readFocusSecurity()
     }
 
@@ -639,7 +658,7 @@ final class DictationService: ObservableObject {
                               "系统引擎草稿——GigaAM 未响应"),
                     seconds: 5)
             }
-            else if handler == nil, focus.security == .unknown, !secureSeen {
+            else if handler == nil, AXIsProcessTrusted(), focus.security == .unknown, !secureSeen {
                 // Приложение впереди не ответило: текста на плашке нет, но
                 // человек должен узнать, что в поле лёг черновик (GLM r12 M3)
                 DictationPreviewPanel.shared.flash(
@@ -750,6 +769,15 @@ final class DictationService: ObservableObject {
 
     // MARK: - Вставка в активное поле
 
+    /// Приложение не отдало сфокусированный элемент, а вставка пошла: один
+    /// раз на приложение — если какое-то отвечает так именно на поле пароля,
+    /// полевой случай проявится в логе (GLM r13, критика 2).
+    private static var blindPasteLogged = Set<String>()
+    private static func noteBlindPaste(app: String) {
+        guard blindPasteLogged.insert(app).inserted else { return }
+        NSLog("[Dictation] вставка в \(app): приложение не отдаёт сфокусированный элемент — поле пароля там не отличить")
+    }
+
     private func insert(text: String, keepStatus: Bool = false, focus: FocusInfo? = nil) {
         let pb = NSPasteboard.general
         // сохраняем ВСЕ типы (скриншот/RTF), не только строку — иначе
@@ -810,6 +838,7 @@ final class DictationService: ObservableObject {
             DictationPreviewPanel.shared.flash(text: text, hint: hint, seconds: 6)
             return
         case .paste:
+            if focus.blind { Self.noteBlindPaste(app: now?.name ?? "?") }
             let src = CGEventSource(stateID: .combinedSessionState)
             let vDown = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true)
             vDown?.flags = .maskCommand
