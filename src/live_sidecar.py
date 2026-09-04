@@ -65,20 +65,44 @@ def owner_of(sidecar: pathlib.Path) -> pathlib.Path | None:
         # Главный файл с тем же ключом под другой темой — и посекундным, и
         # минутным (DS r7 по #489); для минутного ключа — ещё владелец
         # минуты с темой на служебное слово (шапка)
-        for f in meeting_stamp.files_with_stamp(tdir, parts[0], suffix=".md"):
-            if _is_main(f, parts[0]):
-                return f
+        found = _main_with_key(tdir, parts[0])
+        if found is not None:
+            return found
         if parts[0] == meeting_stamp.minute_of(parts[0]):
             return _minute_owner(tdir, parts[0])
         return None
-    for f in meeting_stamp.files_with_stamp(tdir, stamp, suffix=".md"):
-        if _is_main(f, stamp):
-            return f
+    found = _main_with_key(tdir, stamp)
+    if found is not None:
+        return found
     return _minute_owner(tdir, meeting_stamp.minute_of(stamp))
 
 
+def _main_with_key(tdir: pathlib.Path, key: str) -> pathlib.Path | None:
+    """Главный файл с этим ключом: сначала по имени-свидетельству
+    (stamp_of == ключ), и только если такого нет — по шапке. Копия
+    «…120040_live.md» начинается с той же шапки и сортируется раньше
+    кириллической темы — без иерархии она обгоняла бы главный
+    «…120040_Другое.md» (DS r8 по #489; та же иерархия, что в
+    meeting_processing.find_final_transcript)."""
+    candidates = [f for f in meeting_stamp.files_with_stamp(tdir, key, suffix=".md")
+                  if f.is_file() and f.suffix == ".md"]
+    for f in candidates:
+        if meeting_stamp.stamp_of(f.stem) == key:
+            return f
+    for f in candidates:
+        if _is_main(f, key):
+            return f
+    return None
+
+
 def _minute_owner(tdir: pathlib.Path, minute: str) -> pathlib.Path | None:
-    for f in sorted(tdir.glob(f"{minute}*.md")):
+    """Владелец минуты: сначала по имени (stamp_of == минута), потом по
+    шапке — та же иерархия, что в _main_with_key."""
+    candidates = sorted(tdir.glob(f"{minute}*.md"))
+    for f in candidates:
+        if f.is_file() and meeting_stamp.stamp_of(f.stem) == minute:
+            return f
+    for f in candidates:
         if _main_of_minute(f, minute):
             return f
     return None

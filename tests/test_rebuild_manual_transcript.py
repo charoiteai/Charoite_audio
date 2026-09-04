@@ -336,3 +336,29 @@ def test_per_second_sidecar_with_only_a_per_second_neighbour_is_ownerless(root):
     sc = tdir / "2026-09-03_120005.md.live.json"; sc.write_text("{}", encoding="utf-8")
     assert live_sidecar.owner_of(sc) is None, "соседка отсекается ключом, минутки — не встреча"
 
+
+def test_name_evidence_beats_the_header_copy_for_a_per_second_key(root):
+    """Раскладка DS r8: копия «…120040_live.md» с настоящей шапкой осталась
+    под посекундным именем, главный переименован в «…120040_Другое.md» —
+    владелец сайдкара под старой темой всегда главный, не копия."""
+    tdir = root / "transcripts"
+    head = "# Встреча 2026-09-03_120040 — Другое\n\n**Анна** [12:00]:\nтекст\n"
+    main = tdir / "2026-09-03_120040_Другое.md"; main.write_text(head, encoding="utf-8")
+    (tdir / "2026-09-03_120040_live.md").write_text("# Встреча 2026-09-03_120040\n\nчерновик\n", encoding="utf-8")
+    (tdir / "2026-09-03_1200_Новая.md").write_text("# Встреча 2026-09-03_1200 — Новая\n", encoding="utf-8")
+    stale = tdir / "2026-09-03_120040_Повтор.md.live.json"
+    stale.write_text(json.dumps({"names": {"Собеседник 1": "Инга"}}), encoding="utf-8")
+    for _ in range(3):
+        assert live_sidecar.owner_of(stale) == main
+    assert live_sidecar.sidecar_for(main) == stale
+    assert rt.live_meta(main)["names"] == {"Собеседник 1": "Инга"}
+
+
+def test_name_evidence_beats_the_header_copy_for_the_minute_owner(root):
+    tdir = root / "transcripts"
+    main = tdir / "2026-09-03_1200_Отчет.md"; main.write_text("# Встреча 2026-09-03_1200 — Отчет\n", encoding="utf-8")
+    (tdir / "2026-09-03_1200_Отчет_live.md").write_text("# Встреча 2026-09-03_1200 — Отчет\n", encoding="utf-8")
+    (tdir / "2026-09-03_1200_live.md").write_text("# Встреча 2026-09-03_1200\n", encoding="utf-8")
+    sc = tdir / "2026-09-03_120005.md.live.json"; sc.write_text("{}", encoding="utf-8")
+    assert live_sidecar.owner_of(sc) == main
+
