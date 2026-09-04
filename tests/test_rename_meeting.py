@@ -302,3 +302,15 @@ def test_legacy_main_titled_with_a_service_word_is_healed_not_demoted(tmp_path):
     main.write_text(f"# Встреча {STAMP} — debrief\n\nтекст\n", encoding="utf-8")
     p = rm.plan(tmp_path / "нет-графа", tmp_path, STAMP, "Новая тема", rm.pretty_and_slug("Новая тема")[1])
     assert {src.name: dst.name for src, dst in p["moves"]} == {main.name: f"{STAMP}_Новая_тема.md"}
+
+
+def test_sidecar_follows_the_renamed_transcript(world):
+    graph, tdir = world
+    sc = tdir / f"{STAMP}_Обновление_ОС.md.live.json"
+    sc.write_text(json.dumps({"names": {"Собеседник 1": "Анна"}}), encoding="utf-8")
+    pretty, slug = rm.pretty_and_slug("Инцидент загрузки")
+    p = rm.plan(graph, tdir, STAMP, pretty, slug)
+    assert (sc, tdir / f"{STAMP}_Инцидент_загрузки.md.live.json") in p["moves"]
+    rm.apply(p, graph, STAMP, pretty)
+    assert not sc.exists() and (tdir / f"{STAMP}_Инцидент_загрузки.md.live.json").exists()
+

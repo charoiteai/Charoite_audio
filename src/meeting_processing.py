@@ -48,12 +48,7 @@ def short_stamp(transcript: pathlib.Path) -> str:
 def _looks_main(path: pathlib.Path) -> bool:
     """Главная стенограмма начинается с «# Встреча <штамп>»; разбор, минутки и
     подсказки — нет. Читаем первые байты, кандидатов единицы."""
-    try:
-        with path.open("rb") as fh:
-            head = fh.read(200).decode("utf-8", errors="ignore")
-    except OSError:
-        return False
-    return head.lstrip().startswith("# Встреча ")
+    return meeting_stamp.first_line(path).startswith("# Встреча ")
 
 
 def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
@@ -100,6 +95,11 @@ def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
     # и спасённая на посекундном шаге копия закрывала бы настоящий финал
     # минутного шага — статус цеплялся за «_live», финальный гейт не видел
     # заметку, готовая встреча падала в error (первая живая встреча 31.08).
+    # Ярус важнее шага: озаглавленный «…_Демо_live» минутного шага важнее
+    # «<штамп>_live»-остатка посекундного — иначе отцепленная копия голого
+    # черновика (write_final до ретитла) обгоняла бы настоящего владельца
+    # минуты, и этот резолвер расходился с live_sidecar.owner_of (DS r11 по #489)
+    tiers = []
     for stamp, live_copies in rescues:
         if not live_copies:
             continue
@@ -116,18 +116,26 @@ def find_final_transcript(original: pathlib.Path) -> pathlib.Path:
         # из одних live-копий делало средний ярус пустым)
         stems = {path.stem for path in original.parent.glob(f"{stamp}*.md")}
         mains = [path for path in live_copies if _looks_main(path)]
-        # Сначала не-«<штамп>_live» без живого источника (главный «…_Демо_live»
-        # при переименованном голом файле); затем «<штамп>_live» без голого
-        # рядом — главный прежних версий с темой «live», а не копия (luna по
-        # аудиту 30.08); mtime — только внутри остатка.
+        # Уровень 0 (primary) — главные обоих родов: не-«<штамп>_live» без
+        # живого источника («…_Демо_live» при переименованном голом файле) и
+        # ровно «<штамп>_live», чья шапка называет тему «live» (главный
+        # прежних версий, luna 30.08); уровень 1 (no_source) — только
+        # «<штамп>_live»-остатки без голого рядом; уровень 2 — остальное.
+        # mtime решает только внутри уровня (DS r13 M1 по #489).
+        # «<штамп>_live» с темой «live» в шапке — встреча прежних версий, а не
+        # остаток копии: тот же признак, что у live_sidecar (DS r12 по #489 —
+        # иначе ярус-мажорный порядок отдавал посекундную вторую встречу
+        # владельцу минуты)
         primary = [path for path in mains
-                   if path.stem[len(stamp):].lower() != "_live"
+                   if (path.stem[len(stamp):].lower() != "_live"
+                       or meeting_stamp.named_after_header(path.stem, meeting_stamp.first_line(path)))
                    and path.stem[:-len("_live")] not in stems]
-        candidates = (primary
-                      or [path for path in mains if path.stem[:-len("_live")] not in stems]
-                      or mains)
-        if candidates:
-            return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
+        no_source = [path for path in mains if path.stem[:-len("_live")] not in stems]
+        tiers.append((primary, no_source, mains))
+    for level in range(3):
+        for tier in tiers:
+            if tier[level]:
+                return max(tier[level], key=lambda path: path.stat().st_mtime).resolve()
     return original.resolve()
 
 

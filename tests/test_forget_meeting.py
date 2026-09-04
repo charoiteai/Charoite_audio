@@ -604,3 +604,109 @@ def test_dead_neighbour_status_is_not_claimed_by_the_owner_of_the_minute(tmp_pat
                                      "transcript_path": str(root / "transcripts" / f"{STAMP}45.md")}), encoding="utf-8")
     doomed = {str(p) for p in forget.plan(STAMP, root, graph).delete}
     assert str(own) in doomed and str(neighbour) not in doomed
+
+
+def test_plan_takes_the_forgotten_meetings_sidecar_but_not_the_neighbours(tmp_path):
+    """Две встречи в минуту: A владеет минутой (сайдкар посекундный, до
+    0.69.1), B — посекундная соседка. Забываем A: её сайдкар уходит, B —
+    остаётся (Critical DS r3 и Important GLM r3 по #489)."""
+    root = tmp_path
+    tdir = root / "transcripts"; tdir.mkdir()
+    (tdir / "2026-09-03_1200_Отчет.md").write_text("A\n", encoding="utf-8")
+    (tdir / "2026-09-03_120040_Повтор.md").write_text("B\n", encoding="utf-8")
+    sa = tdir / "2026-09-03_120005.md.live.json"; sa.write_text("{}", encoding="utf-8")
+    sb = tdir / "2026-09-03_120040.md.live.json"; sb.write_text("{}", encoding="utf-8")
+    plan = forget.plan("2026-09-03_1200", root)
+    assert sa in plan.delete
+    assert sb not in plan.delete
+    assert tdir / "2026-09-03_120040_Повтор.md" not in plan.delete
+
+
+def test_plan_takes_ownerless_sidecars_of_the_minute_and_the_service_word_owner(tmp_path):
+    root = tmp_path
+    tdir = root / "transcripts"; tdir.mkdir()
+    (tdir / "2026-09-03_1200_Демо_live.md").write_text("# Встреча 2026-09-03_1200 — Демо live\n", encoding="utf-8")
+    own = tdir / "2026-09-03_120005.md.live.json"; own.write_text("{}", encoding="utf-8")
+    orphan = tdir / "2026-09-03_120050.md.live.json"; orphan.write_text("{}", encoding="utf-8")
+    other = tdir / "2026-09-03_120105.md.live.json"; other.write_text("{}", encoding="utf-8")
+    plan = forget.plan("2026-09-03_1200", root)
+    assert tdir / "2026-09-03_1200_Демо_live.md" in plan.delete
+    assert own in plan.delete and orphan in plan.delete
+    assert other not in plan.delete
+
+
+def test_sweep_keeps_the_alive_owners_stale_title_sidecar(tmp_path):
+    """Забываем посекундную соседку B; у живого владельца минуты A сайдкар
+    под старой темой (rename до переноса пары) — остаётся (DS r6 по #489)."""
+    tdir = tmp_path / "transcripts"; tdir.mkdir()
+    (tdir / "2026-09-03_1200_Новая.md").write_text("A\n", encoding="utf-8")
+    stale = tdir / "2026-09-03_1200_Старая.md.live.json"
+    stale.write_text('{"names": {"Собеседник 1": "Анна"}}', encoding="utf-8")
+    (tdir / "2026-09-03_120045_Повтор.md").write_text("B\n", encoding="utf-8")
+    plan = forget.plan("2026-09-03_120045", tmp_path)
+    assert stale not in plan.delete
+    assert tdir / "2026-09-03_120045_Повтор.md" in plan.delete
+
+
+def test_sweep_takes_a_truly_ownerless_per_second_sidecar(tmp_path):
+    """Минута без главных файлов: посекундный сайдкар — мёртвый след, уходит
+    вместе с забыванием минуты; с темой минуты — уносит сам минутный глоб."""
+    tdir = tmp_path / "transcripts"; tdir.mkdir()
+    orphan = tdir / "2026-09-03_120005.md.live.json"; orphan.write_text("{}", encoding="utf-8")
+    titled = tdir / "2026-09-03_1200_Старая.md.live.json"; titled.write_text("{}", encoding="utf-8")
+    plan = forget.plan("2026-09-03_1200", tmp_path)
+    assert orphan in plan.delete
+    assert titled in plan.delete
+
+
+def test_aux_owner_with_a_neighbour(tmp_path):
+    """Владелец минуты с темой на служебное слово и посекундная соседка:
+    забываем владельца — его посекундный сайдкар уходит, соседкин нет."""
+    tdir = tmp_path / "transcripts"; tdir.mkdir()
+    (tdir / "2026-09-03_1200_Демо_live.md").write_text("# Встреча 2026-09-03_1200 — Демо live\n", encoding="utf-8")
+    own = tdir / "2026-09-03_120005.md.live.json"; own.write_text("{}", encoding="utf-8")
+    (tdir / "2026-09-03_120040_Повтор.md").write_text("B\n", encoding="utf-8")
+    nb = tdir / "2026-09-03_120040.md.live.json"; nb.write_text("{}", encoding="utf-8")
+    plan = forget.plan("2026-09-03_1200", tmp_path)
+    assert own in plan.delete and nb not in plan.delete
+
+
+def test_sweep_keeps_the_renamed_per_second_neighbours_stale_sidecar(tmp_path):
+    """Забываем владельца минуты; у живой посекундной соседки сайдкар под
+    старой темой — остаётся (Important DS r7 по #489)."""
+    tdir = tmp_path / "transcripts"; tdir.mkdir()
+    (tdir / "2026-09-03_1200_Новая.md").write_text("A\n", encoding="utf-8")
+    (tdir / "2026-09-03_120040_Другое.md").write_text("B\n", encoding="utf-8")
+    stale = tdir / "2026-09-03_120040_Повтор.md.live.json"; stale.write_text("{}", encoding="utf-8")
+    plan = forget.plan("2026-09-03_1200", tmp_path)
+    assert tdir / "2026-09-03_1200_Новая.md" in plan.delete
+    assert stale not in plan.delete
+
+
+def test_per_second_forget_does_not_touch_a_minute_keyed_stale_trace(tmp_path):
+    """Граница свипа: забывание посекундной соседки не трогает бесхозный
+    минутно-ключевой след — его уносит только забывание самой минуты."""
+    tdir = tmp_path / "transcripts"; tdir.mkdir()
+    (tdir / "2026-09-03_120045_Повтор.md").write_text("B\n", encoding="utf-8")
+    trace = tdir / "2026-09-03_1200_Старая.md.live.json"; trace.write_text("{}", encoding="utf-8")
+    plan = forget.plan("2026-09-03_120045", tmp_path)
+    assert trace not in plan.delete
+
+
+def test_sweep_takes_an_ownerless_sidecar_when_no_main_is_left(tmp_path):
+    """Ветка «бесхозный»: главный снесён руками, остались только минутки —
+    посекундный сайдкар уходит вместе с забыванием минуты (GLM r6 M1)."""
+    tdir = tmp_path / "transcripts"; tdir.mkdir()
+    (tdir / "2026-09-03_1200_minutes.md").write_text("# Протокол\n", encoding="utf-8")
+    sc = tdir / "2026-09-03_120050.md.live.json"; sc.write_text("{}", encoding="utf-8")
+    assert forget.plan("2026-09-03_1200", tmp_path).delete.count(sc) == 1
+
+
+
+def test_sweep_takes_an_ownerless_titled_per_second_sidecar_with_a_service_word(tmp_path):
+    """Фолбэк разбора имени в свипе (DS r9 M1): «…120030_Разбор.md.live.json»
+    без главного — stamp_of такое имя не разбирает, ключ берётся decompose —
+    уходит при забывании минуты."""
+    tdir = tmp_path / "transcripts"; tdir.mkdir()
+    sc = tdir / "2026-09-03_120030_Разбор.md.live.json"; sc.write_text("{}", encoding="utf-8")
+    assert forget.plan("2026-09-03_1200", tmp_path).delete.count(sc) == 1

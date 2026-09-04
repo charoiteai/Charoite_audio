@@ -22,6 +22,7 @@ import install_profile  # noqa: E402
 import live_gate  # noqa: E402
 import llm_health  # noqa: E402
 import privacy  # noqa: E402
+import live_sidecar  # noqa: E402
 import safe_write  # noqa: E402
 from llm import LLM, LLMHTTPError  # noqa: E402
 
@@ -584,6 +585,12 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
         tpath.rename(new_t)
         tpath = new_t
     body = tpath.read_text(encoding="utf-8")
+    # Машинным файл был, если записанный хеш совпадает с байтами ДО правки
+    # шапки; правку руками накат темы узаконивать не должен — следующая
+    # пересборка стёрла бы её (GLM Critical r2 по #489). Нет хеша вовсе —
+    # не начинать защиту с текущих байт: они могли быть уже правлены (DS r3)
+    prev = live_sidecar.read(tpath, bare) or {}
+    machine = live_sidecar.valid_sha(prev.get("transcript_sha256")) == live_sidecar.sha(body)
     # Искать по bare: в шапке посекундной стенограммы штамп с секундами,
     # и замена по короткому штампу оставляла бы хвост «19» после темы.
     body = body.replace(f"# Встреча {bare}", f"# Встреча {stamp} — {title}", 1)
@@ -591,6 +598,12 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
     # голого write_text (kill ночного цикла, полный диск) оставлял бы вместо
     # встречи усечённый файл — восстанавливать неоткуда (аудит 0.46.0).
     safe_write.write_text(tpath, body)
+    # Сайдкар переезжает вместе с файлом; машинная запись освежает хеш
+    # стенограммы, иначе следующая пересборка приняла бы шапку с темой за
+    # правку руками и навсегда пропускала STT (круг 1 по #489, DS+GLM).
+    live_sidecar.migrate(tpath, bare)
+    if machine and not live_sidecar.remember(tpath, "transcript_sha256", live_sidecar.sha(body)):
+        print("граф: хеш стенограммы после наката темы не записан — сайдкар неоднозначен", file=sys.stderr)
     return tpath
 
 
