@@ -51,10 +51,41 @@ final class DictationService: ObservableObject {
     /// Момент запуска python: сторож после стопа даёт распознаванию срок
     /// от длины записи, а не константу.
     private var startedAt = Date()
-    /// Диктовка идёт в поле пароля: ни живого черновика, ни плашки —
-    /// текст, который поле замаскировало, не должен висеть внизу экрана.
-    private var secureField = false
-    private var secureCheckedAt = Date.distantPast
+    /// Фоновое чтение фокуса ещё не вернулось: следующее не запускается,
+    /// а кусок черновика ждёт его в `pendingDraft`.
+    private var secureReadInFlight = false
+    /// Кусок живого черновика, который покажется, когда чтение фокуса,
+    /// запущенное не раньше его прихода, ответит «не пароль»: плашка не
+    /// показывает текст по устаревшему ответу — поле пароля могло его уже
+    /// замаскировать (GLM r11 I1 по #488). Момент прихода куска и момент
+    /// запуска летящего чтения сравниваются: чтение, стартовавшее раньше
+    /// куска, могло снять фокус до клика в пароль (GLM r12 I1).
+    private var pendingDraft: (text: String, serial: Int)?
+    /// Монотонный номер куска: чтение захватывает кусок, ждавший на момент
+    /// его запуска, и показывает именно его — порядок не зависит от
+    /// настенных часов и не голодает при плотных кусках (GLM r13 I2, I3).
+    private var pieceSerial = 0
+    /// Подряд идущие «не ответило», пока кусок ждёт: до двух цепных
+    /// перечитываний, дальше кусок ждёт сторожа — одиночный таймаут AX на
+    /// загруженной машине не гасит плашку на секунду (GLM r14, критика 1).
+    /// Пустые чтения сторожа до первого куска бюджет не тратят (GLM r15 I1).
+    private var unknownStreak = 0
+    /// Диктовка хоть раз касалась поля пароля — на старте или по ходу речи
+    /// (защёлка, не снимок: стартовое чтение AX могло застать поле до того,
+    /// как оно стало secure — advisory DS r5 по #488). Тогда ни текста на
+    /// экране, ни автовставки: человек вставляет сам (круги 2–5 по #488).
+    private var secureSeen = false
+    /// Сторож поля пароля на время записи — независимо от живой плашки
+    /// (её может не быть: macOS < 26, нет ассетов): раз в секунду
+    /// перечитывает фокус и взводит защёлку (DS r6 I1).
+    private var secureWatch: Task<Void, Never>?
+    /// Где нажали ⌥⌘D: приложение и, при праве Accessibility, окно с
+    /// фокусом. Распознавание идёт секунды (страховка черновиком — до 8 с),
+    /// и ⌘V должен уйти туда, где человек начал диктовать, а не в окно,
+    /// которое он успел открыть (№156). Собственный UI Чароита (строка
+    /// меню-бара, окно чата) якорем не считается — цель человека ещё
+    /// впереди, он в неё кликнет (круг 1 по #488).
+    private var target: PasteAnchor?
     private static var previewUnavailableLogged = false
 
     private var suflerRoot: URL { AppSettings.charoiteRoot }
@@ -145,9 +176,32 @@ final class DictationService: ObservableObject {
         startedAt = Date()
         let generation = self.generation
         DictationPreviewPanel.shared.hide()   // плашка прошлой диктовки не висит над новой
-        // Заметке и дневнику плашка не положена — AX-запрос им не нужен
-        secureField = note ? false : Self.focusedFieldIsSecure()
-        secureCheckedAt = Date()
+        // Заметке и дневнику плашка не положена — AX-запрос им не нужен;
+        // один проход даёт и пароль, и окно, и владельца поля
+        let focus = note ? FocusInfo() : Self.focusInfo()
+        secureSeen = focus.secure
+        secureReadInFlight = false
+        pendingDraft = nil
+        unknownStreak = 0
+        // Якорь вставки нужен только глобальной диктовке: чат и заметка
+        // insert() не зовут (круг 2 по #488, DS)
+        target = (onResult == nil && !note) ? Self.frontAnchor(focus) : nil
+        secureWatch?.cancel()
+        secureWatch = nil
+        // Сторож — везде, где есть плашка, то есть и в чате (GLM r11 M3)
+        if !note, AXIsProcessTrusted() {
+            secureWatch = Task { [weak self] in
+                while !Task.isCancelled {
+                    // Раз в секунду и с плашкой, и без: в паузе речи onChange
+                    // молчит, и прячет черновик над полем пароля только сторож
+                    // (GLM M1, DS r10 M2); чтение AX — в фоне (DS r10 I1).
+                    // После защёлки читать нечего: решение принято (GLM r11 M1)
+                    try? await Task.sleep(for: .seconds(1))
+                    guard let self, self.isRecording, !self.secureSeen, !Task.isCancelled else { return }
+                    self.readFocusSecurity()
+                }
+            }
+        }
         let p = Process()
         p.arguments = [script] + args
         AppSettings.preparePython(p, root: suflerRoot)
@@ -192,7 +246,7 @@ final class DictationService: ObservableObject {
             NSSound(named: "Pop")?.play()
             // Заметка и дневник черновик не берут никогда (текст уходит в
             // граф и память) — незачем платить вторым захватом микрофона.
-            if !note, !secureField { startPreview() }
+            if !note, !secureSeen { startPreview() }
             // глобальный хоткей легко забыть: не даём писать вечно — часовой
             // wav всё равно не распознается, а микрофон «висит» открытым
             autoStop = Task { [weak self] in
@@ -213,6 +267,9 @@ final class DictationService: ObservableObject {
     private func stop() {
         autoStop?.cancel()
         autoStop = nil
+        secureWatch?.cancel()
+        secureWatch = nil
+        pendingDraft = nil
         status = L.t("распознаю…", "transcribing…", "正在识别…")
         isRecording = false
         stopPreview()
@@ -266,6 +323,8 @@ final class DictationService: ObservableObject {
         // обрывая её со статусом про «10 минут», которых не было.
         autoStop?.cancel()
         autoStop = nil
+        secureWatch?.cancel()
+        secureWatch = nil
         proc = nil
         stdinPipe = nil
         isRecording = false
@@ -335,36 +394,291 @@ final class DictationService: ObservableObject {
         25 + max(0, recorded) / 5
     }
 
-    /// Сфокусированное поле — защищённый ввод (пароль)? Тогда ни живого
-    /// черновика, ни плашки (круг 3, GLM). Без права Accessibility ответ
-    /// «нет»: без него и ⌘V не будет, текст остаётся в буфере.
-    nonisolated static func focusedFieldIsSecure() -> Bool {
-        guard AXIsProcessTrusted() else { return false }
+    enum PasteDecision: Equatable { case paste, noAccessibility, windowChanged, secret }
+
+    /// Приложение впереди и окно с фокусом в нём (окно — только при праве
+    /// Accessibility; без него сравниваем приложения).
+    struct PasteAnchor {
+        let pid: pid_t
+        let name: String
+        let window: AXUIElement?
+    }
+
+    /// Что известно о поле под фокусом: не пароль, пароль, неизвестно —
+    /// приложение впереди не ответило за таймаут (зависло) или чтение ещё
+    /// в полёте. На «неизвестно» плашка молчит (GLM r11 I1 по #488).
+    enum FocusSecurity { case clear, secure, unknown }
+
+    /// Что под фокусом — одним AX-проходом (потолок 0,25 с на запрос):
+    /// поле пароля, его окно и владелец. Без права Accessibility всё пусто.
+    struct FocusInfo {
+        var security: FocusSecurity = .unknown
+        var window: AXUIElement?
+        var pid: pid_t?
+        /// Приложение не отдало сфокусированный элемент (noValue): пароль
+        /// там не отличить — вставка идёт вслепую, один раз на приложение
+        /// пишется в лог (GLM r13, критика 2).
+        var blind = false
+        var secure: Bool { security == .secure }
+    }
+
+    nonisolated static func focusInfo(secureOnly: Bool = false) -> FocusInfo {
+        var info = FocusInfo()
+        guard AXIsProcessTrusted() else { return info }
         let system = AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(system, 0.25)   // зависшее чужое приложение не держит старт диктовки
         var focused: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString,
-                                            &focused) == .success,
-              let value = focused, CFGetTypeID(value) == AXUIElementGetTypeID() else { return false }
+        var err = AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused)
+        // Определённое «сфокусированного элемента нет» фолбэка не требует —
+        // лишний IPC и шанс ухудшить ответ до «неизвестно» (GLM r12 M2)
+        if Self.needsFrontmostFallback(err), let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
+            // Chromium (Яндекс Браузер, Chrome) без включённой accessibility
+            // на общесистемный запрос отвечает cannotComplete, а на прямой —
+            // «нет сфокусированного элемента»; так прячущее свои поля
+            // приложение отличается от зависшего (замер 04.09, GLM r11 I1)
+            let app = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(app, 0.25)
+            err = AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &focused)
+        }
+        guard err == .success, let value = focused, CFGetTypeID(value) == AXUIElementGetTypeID() else {
+            info.security = Self.focusSecurity(focused: err, role: .failure, roleName: nil, subrole: nil)
+            info.blind = err == .noValue
+            return info
+        }
         let field = unsafeBitCast(value, to: AXUIElement.self)
         AXUIElementSetMessagingTimeout(field, 0.25)   // таймаут — свойство ссылки, не наследуется
+        var pid: pid_t = 0
+        if AXUIElementGetPid(field, &pid) == .success, pid > 0 { info.pid = pid }
         var role: CFTypeRef?
         var subrole: CFTypeRef?
-        AXUIElementCopyAttributeValue(field, kAXRoleAttribute as CFString, &role)
+        let roleErr = AXUIElementCopyAttributeValue(field, kAXRoleAttribute as CFString, &role)
         AXUIElementCopyAttributeValue(field, kAXSubroleAttribute as CFString, &subrole)
-        return (role as? String) == "AXSecureTextField" || (subrole as? String) == "AXSecureTextField"
+        info.security = Self.focusSecurity(focused: .success, role: roleErr,
+                                           roleName: role as? String, subrole: subrole as? String)
+        if secureOnly { return info }   // сторожу окно не нужно — минус один запрос по 0,25 с (GLM I1)
+        var window: CFTypeRef?
+        if AXUIElementCopyAttributeValue(field, kAXWindowAttribute as CFString, &window) == .success,
+           let w = window, CFGetTypeID(w) == AXUIElementGetTypeID() {
+            info.window = unsafeBitCast(w, to: AXUIElement.self)
+        }
+        return info
     }
 
-    /// Поле пароля — не снимок на старте, а последнее известное: фокус
-    /// меняется по ходу речи и в окне ожидания черновика (круг 4, DS).
-    /// Не чаще раза в секунду — AX-запрос идёт по главному потоку.
-    @discardableResult
-    private func refreshSecureField(force: Bool = false) -> Bool {
-        if force || Date().timeIntervalSince(secureCheckedAt) > 1 {
-            secureCheckedAt = Date()
-            secureField = Self.focusedFieldIsSecure()
+    /// Ответы AX → что известно о поле: «нет сфокусированного элемента» —
+    /// пароля нет; роль прочитана — по роли и подроли; не ответило
+    /// (таймаут, зависшее приложение) — неизвестно. Чистая функция для теста.
+    /// Решение 04.09 (запись в decisions): Chromium с выключенной
+    /// accessibility отвечает «нет элемента» и на обычное поле, и на пароль —
+    /// это «пароль неотличим», и мы сознательно считаем его «нет пароля»:
+    /// иначе живая плашка гасла бы в главном браузере, а защиты там всё
+    /// равно не дать. Без права Accessibility наоборот fail-closed: там нет
+    /// и вставки, плашка была бы голым показом.
+    nonisolated static func focusSecurity(focused: AXError, role: AXError,
+                                          roleName: String?, subrole: String?) -> FocusSecurity {
+        if focused == .noValue { return .clear }
+        guard focused == .success, role == .success else { return .unknown }
+        return roleName == "AXSecureTextField" || subrole == "AXSecureTextField" ? .secure : .clear
+    }
+
+    /// Идти ли за фокусом к фронтмост-приложению напрямую: только когда
+    /// общесистемный запрос не ответил; определённое «элемента нет»
+    /// (noValue) фолбэка не требует (GLM r12 M2, r13 M2).
+    nonisolated static func needsFrontmostFallback(_ err: AXError) -> Bool { err != .success && err != .noValue }
+
+    /// Поле под фокусом без окна — сторожу и живой плашке окно не нужно
+    /// (минус один запрос по 0,25 с, GLM I1).
+    nonisolated static func focusSecurityNow() -> FocusSecurity { focusInfo(secureOnly: true).security }
+
+    /// Якорь вставки: владелец сфокусированного элемента (неактивирующая
+    /// key-панель — строка меню Чароита — не меняет frontmostApplication,
+    /// а окно и pid должны быть из одного источника; круг 2 по #488, DS),
+    /// иначе приложение впереди.
+    nonisolated static func frontAnchor(_ info: FocusInfo) -> PasteAnchor? {
+        let owner = info.pid.flatMap { NSRunningApplication(processIdentifier: $0) }
+            ?? NSWorkspace.shared.frontmostApplication
+        guard let owner else { return nil }
+        // Окно — только от того же процесса, что и владелец якоря: pid из AX,
+        // не резолвящийся в живое приложение, оставил бы окно мёртвого
+        // процесса при pid фронтмоста (DS r3 M1, r6 M3)
+        return PasteAnchor(pid: owner.processIdentifier, name: owner.localizedName ?? "?",
+                           window: info.pid == owner.processIdentifier ? info.window : nil)
+    }
+
+    /// Итог доставки: право Accessibility → пароль → окно. Диктовка,
+    /// касавшаяся поля пароля, автовставки не получает вообще — ни в обычное
+    /// поле, ни в само поле пароля: поле маскирует ввод, но статус и плашка
+    /// Чароита не маскируют, а synthetic ⌘V под secure input глотается и
+    /// статус «вставлено» врёт (DS r7 C1/C2/I1 — откат advisory r6).
+    nonisolated static func finalDecision(trusted: Bool, own: pid_t, startedIn: PasteAnchor?, now: PasteAnchor?,
+                                          secureSeen: Bool, nowSecure: Bool) -> PasteDecision {
+        guard trusted else { return .noAccessibility }
+        // Пароль под фокусом доставки — тоже .secret: ⌘V под secure input
+        // глотается, статус «вставлено» врал бы (DS r7 I1, r8 I2)
+        if secureSeen || nowSecure { return .secret }
+        return pasteDecision(trusted: true, own: own, startedIn: startedIn, now: now)
+    }
+
+    /// Применять ли результат фонового чтения фокуса: только к той же
+    /// диктовке и пока она пишется (DS r11 M1, M3 — чистый шов для теста).
+    nonisolated static func secureReadApplies(generation: Int, current: Int, recording: Bool) -> Bool {
+        generation == current && recording
+    }
+
+    /// Показывать ли надиктованный текст на плашке: только по чтению AX,
+    /// ответившему «не пароль» — не в поле пароля, не после него (защёлка
+    /// держит до конца диктовки, DS r6 C1, M2) и не когда приложение не
+    /// ответило (GLM r11 I1); без права Accessibility пароль не отличить —
+    /// плашки нет вовсе (DS r8 I1).
+    nonisolated static func liveStripAllowed(security: FocusSecurity, secureSeen: Bool, trusted: Bool) -> Bool {
+        trusted && !secureSeen && security == .clear
+    }
+
+    /// Плашка «в поле вставлен черновик» без текста — только когда вставка
+    /// реально идёт (право Accessibility есть), приложение впереди не ответило
+    /// и пароля не было (GLM r13 I1, r14 M2).
+    nonisolated static func unknownFlashAllowed(trusted: Bool, security: FocusSecurity, secureSeen: Bool) -> Bool {
+        trusted && security == .unknown && !secureSeen
+    }
+
+    /// Куда уйдёт результат: ⌘V только с правом Accessibility и только туда,
+    /// где нажали ⌥⌘D — то же приложение и (если оба окна известны) то же
+    /// окно. Якорь неизвестен или это сам Чароит (строка меню-бара, чат) —
+    /// ведём себя как раньше, вставляем в активное поле; впереди сам Чароит
+    /// при чужом якоре — текст в буфере, в собственную панель не вставляем.
+    nonisolated static func pasteDecision(trusted: Bool, own: pid_t,
+                                          startedIn: PasteAnchor?, now: PasteAnchor?) -> PasteDecision {
+        guard trusted else { return .noAccessibility }
+        guard let startedIn, startedIn.pid != own, let now else { return .paste }
+        if now.pid != startedIn.pid { return .windowChanged }
+        if let a = startedIn.window, let b = now.window, !CFEqual(a, b) { return .windowChanged }
+        return .paste
+    }
+
+    /// Чтение фокуса в фоне — межпроцессный вызов в чужое приложение (до
+    /// 0,5 с при зависшем), на GCD, не на кооперативном пуле (GLM r11 M2);
+    /// одно в полёте за раз. По возврату: пароль — защёлка, плашка гаснет;
+    /// не пароль — показывается отложенный кусок черновика; не ответило —
+    /// плашка гаснет, кусок ждёт следующего чтения (GLM r11 I1). Без права
+    /// Accessibility чтения нет: плашка и так запрещена.
+    private func readFocusSecurity() {
+        guard !secureReadInFlight, AXIsProcessTrusted() else { return }
+        secureReadInFlight = true
+        let generation = self.generation
+        let captured = pendingDraft
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let security = Self.focusSecurityNow()
+            Task { @MainActor [weak self] in
+                // Чтение прошлой диктовки её флаг не трогает — у новой свой;
+                // завершившееся после стопа не применяется: доставка читает
+                // фокус сама (DS r11 M1)
+                guard let self, generation == self.generation else { return }
+                self.secureReadInFlight = false
+                guard Self.secureReadApplies(generation: generation, current: self.generation,
+                                             recording: self.isRecording) else { return }
+                self.applyFocusSecurity(security, captured: captured)
+            }
         }
-        return secureField
+    }
+
+    private func applyFocusSecurity(_ security: FocusSecurity, captured: (text: String, serial: Int)?) {
+        let action = Self.draftAction(security: security, captured: captured?.serial, pending: pendingDraft?.serial,
+                                      secureSeen: secureSeen, trusted: AXIsProcessTrusted(),
+                                      unknownStreak: unknownStreak)
+        unknownStreak = Self.nextUnknownStreak(security: security, pieceWaiting: pendingDraft != nil,
+                                               streak: unknownStreak)
+        if action == .hide, security == .unknown, pendingDraft != nil,
+           let app = NSWorkspace.shared.frontmostApplication {
+            // Бюджет перечитываний исчерпан: живой черновик до конца диктовки
+            // покажет только сторож — след в логе, иначе «плашка не
+            // появляется» в поле не диагностировать (GLM r16, критика 1)
+            Self.noteUnknownBudget(key: Self.blindPasteKey(bundleID: app.bundleIdentifier, pid: app.processIdentifier),
+                                   app: app.localizedName ?? "?")
+        }
+        let out = Self.draftOutcome(action: action, captured: captured, pending: pendingDraft)
+        if out.latch { secureSeen = true }
+        if out.clearPending { pendingDraft = nil }
+        if out.hide { DictationPreviewPanel.shared.hide() }
+        if let text = out.shown { DictationPreviewPanel.shared.show(text: text, hint: Self.liveStripHint) }
+        if out.reread { readFocusSecurity() }
+    }
+
+    enum DraftAction { case show, showAndReread, reread, wait, hide, hideAndReread, latch }
+
+    /// Что делать по возврату чтения фокуса (чистый шов, GLM r12 M5):
+    /// `captured` — номер куска, ждавшего на момент запуска чтения (nil —
+    /// сторож читал без куска), `pending` — номер куска, ждущего сейчас.
+    /// Пароль — защёлка, кусок в мусор, плашка гаснет. Не ответило — плашка
+    /// гаснет; при ждущем куске до двух цепных перечитываний подряд, дальше
+    /// кусок ждёт сторожа (1 с) — на этом пути отставание не ограничено
+    /// (GLM r14 M3). Не пароль — показать захваченный кусок (чтение
+    /// стартовало после его прихода по построению) и, если за полёт пришёл
+    /// новый, сразу перечитать для него; захвачено ничего, но кусок ждёт —
+    /// перечитать; ничего не ждёт — ждать. Защёлка и отсутствие права —
+    /// плашки нет. Ни часов, ни голодания: на пути «не пароль» каждый
+    /// возврат показывает кусок, отстающий не больше чем на один полёт
+    /// (GLM r13 I2, I3).
+    nonisolated static func draftAction(security: FocusSecurity, captured: Int?, pending: Int?,
+                                        secureSeen: Bool, trusted: Bool, unknownStreak: Int) -> DraftAction {
+        if security == .secure { return .latch }
+        guard trusted, !secureSeen else { return .hide }
+        if security == .unknown { return pending != nil && unknownStreak < 2 ? .hideAndReread : .hide }
+        guard let captured else { return pending == nil ? .wait : .reread }
+        if let pending, pending != captured { return .showAndReread }
+        return .show
+    }
+
+    /// Счёт подряд идущих «не ответило» — только пока кусок ждёт: пустые
+    /// чтения сторожа до первого куска бюджет двух перечитываний не тратят
+    /// (GLM r15 I1); любой другой ответ или отсутствие куска обнуляют.
+    nonisolated static func nextUnknownStreak(security: FocusSecurity, pieceWaiting: Bool, streak: Int) -> Int {
+        security == .unknown && pieceWaiting ? streak + 1 : 0
+    }
+
+    /// Что именно применить к состоянию по решению (чистый шов, GLM r14 I1):
+    /// показать захваченный текст, очистить ждущий кусок только если это тот
+    /// же кусок, перечитать, если за полёт пришёл новый.
+    struct DraftOutcome: Equatable {
+        var shown: String?
+        var clearPending = false
+        var reread = false
+        var hide = false
+        var latch = false
+    }
+
+    nonisolated static func draftOutcome(action: DraftAction, captured: (text: String, serial: Int)?,
+                                         pending: (text: String, serial: Int)?) -> DraftOutcome {
+        switch action {
+        case .latch: return DraftOutcome(shown: nil, clearPending: true, hide: true, latch: true)
+        case .hide: return DraftOutcome(shown: nil, hide: true)
+        case .hideAndReread: return DraftOutcome(shown: nil, reread: true, hide: true)
+        case .wait: return DraftOutcome(shown: nil)
+        case .reread: return DraftOutcome(shown: nil, reread: true)
+        case .show, .showAndReread:
+            let same = captured != nil && pending?.serial == captured?.serial
+            return DraftOutcome(shown: captured?.text, clearPending: same, reread: pending != nil && !same)
+        }
+    }
+
+    /// Кусок живого черновика: на плашку — только по чтению фокуса,
+    /// запущенному после его прихода; текст, который поле пароля успело
+    /// замаскировать, по устаревшему ответу не показывается (GLM r11 I1,
+    /// r12 I1). Побывали в пароле — не показываем и после выхода из него
+    /// (DS r6 C1); без права Accessibility плашки нет (DS r8 I1).
+    private func offerDraft(_ text: String) {
+        guard !secureSeen, AXIsProcessTrusted() else {
+            pendingDraft = nil
+            DictationPreviewPanel.shared.hide()
+            return
+        }
+        pieceSerial += 1
+        pendingDraft = (text, pieceSerial)
+        readFocusSecurity()
+    }
+
+    private static var liveStripHint: String {
+        L.t("черновик системного движка — итог распознает GigaAM после стопа",
+            "system engine draft — GigaAM produces the final text after stop",
+            "系统引擎草稿——停止后由 GigaAM 生成最终文本")
     }
 
     private func deliver(text: String, exit: Int32, fromDraft: Bool, wasNote: Bool,
@@ -374,6 +688,9 @@ final class DictationService: ObservableObject {
                                : L.t("ошибка распознавания: \(String(errTail.suffix(120)))", "recognition error: \(String(errTail.suffix(120)))", "识别错误：\(String(errTail.suffix(120)))")
             return
         }
+        // Один AX-проход на всю доставку: гейт плашки черновика и решение о
+        // вставке смотрят на одно и то же мгновение (DS r3 M2)
+        let focus = (handler == nil && !wasNote) ? Self.focusInfo() : FocusInfo()
         if fromDraft {
             status = L.t("GigaAM не ответил — вставлен черновик системного движка", "GigaAM did not answer — inserted the system engine's draft", "GigaAM 未响应——已插入系统引擎的草稿")
             // Человек смотрит в чужое поле, а не в строку статуса Чароита:
@@ -381,13 +698,24 @@ final class DictationService: ObservableObject {
             // Только глобальная диктовка: в чате текст уже перед глазами,
             // а в поле пароля плашки нет вовсе — фокус перечитывается здесь,
             // за 8 с ожидания черновика человек мог кликнуть куда угодно.
-            if handler == nil, !refreshSecureField(force: true) {
+            if handler == nil, Self.liveStripAllowed(security: focus.security, secureSeen: secureSeen,
+                                                     trusted: AXIsProcessTrusted()) {
                 DictationPreviewPanel.shared.flash(
                     text: text,
                     hint: L.t("черновик системного движка — GigaAM не ответил",
                               "system engine draft — GigaAM did not answer",
                               "系统引擎草稿——GigaAM 未响应"),
                     seconds: 5)
+            }
+            else if handler == nil, Self.unknownFlashAllowed(trusted: AXIsProcessTrusted(), security: focus.security,
+                                                              secureSeen: secureSeen) {
+                // Приложение впереди не ответило: текста на плашке нет, но
+                // человек должен узнать, что в поле лёг черновик (GLM r12 M3)
+                DictationPreviewPanel.shared.flash(
+                    text: L.t("в поле вставлен черновик системного движка — GigaAM не ответил",
+                              "the system engine's draft was inserted — GigaAM did not answer",
+                              "已插入系统引擎草稿——GigaAM 未响应"),
+                    hint: "", seconds: 5)
             }
         }
         if wasNote {
@@ -407,7 +735,7 @@ final class DictationService: ObservableObject {
             }
             NSSound(named: "Glass")?.play()
         } else {
-            insert(text: text, keepStatus: fromDraft)
+            insert(text: text, keepStatus: fromDraft, focus: focus)
         }
     }
 
@@ -442,13 +770,9 @@ final class DictationService: ObservableObject {
             guard !Task.isCancelled, self.isRecording else { live.cancel(); return }
             live.onChange = { [weak self] text in
                 guard let self, self.isRecording else { return }
-                // Фокус мог уйти в поле пароля уже по ходу речи (круг 4, DS)
-                if self.refreshSecureField() { DictationPreviewPanel.shared.hide(); return }
-                DictationPreviewPanel.shared.show(
-                    text: text,
-                    hint: L.t("черновик системного движка — итог распознает GigaAM после стопа",
-                              "system engine draft — GigaAM produces the final text after stop",
-                              "系统引擎草稿——停止后由 GigaAM 生成最终文本"))
+                // Фокус мог уйти в поле пароля уже по ходу речи (круг 4, DS):
+                // кусок показывается только по свежему чтению фокуса
+                self.offerDraft(text)
             }
             input.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
                 live.ingest(buffer)
@@ -495,7 +819,29 @@ final class DictationService: ObservableObject {
 
     // MARK: - Вставка в активное поле
 
-    private func insert(text: String, keepStatus: Bool = false) {
+    /// Приложение не отдало сфокусированный элемент, а вставка пошла: один
+    /// раз на приложение — если какое-то отвечает так именно на поле пароля,
+    /// полевой случай проявится в логе (GLM r13, критика 2).
+    /// Ключ записи «вставка вслепую»: bundle id, а без него pid (GLM r15 M4).
+    nonisolated static func blindPasteKey(bundleID: String?, pid: pid_t) -> String { bundleID ?? String(pid) }
+
+    private static var unknownBudgetLogged = Set<String>()
+    private static func noteUnknownBudget(key: String, app: String) {
+        guard unknownBudgetLogged.insert(key).inserted else { return }
+        NSLog("[Dictation] \(app) (\(key)) не отвечает на чтение фокуса: живая плашка ждёт сторожа (раз в секунду)")
+    }
+
+    private static var blindPasteLogged = Set<String>()
+    private static func noteBlindPaste(anchor: PasteAnchor) {
+        // Ключ — bundle id (или pid): одноимённые процессы не делят запись,
+        // а без якоря не логируем вовсе (GLM r14 M1)
+        let key = Self.blindPasteKey(bundleID: NSRunningApplication(processIdentifier: anchor.pid)?.bundleIdentifier,
+                                     pid: anchor.pid)
+        guard blindPasteLogged.insert(key).inserted else { return }
+        NSLog("[Dictation] вставка в \(anchor.name) (\(key)): приложение не отдаёт сфокусированный элемент — поле пароля там не отличить")
+    }
+
+    private func insert(text: String, keepStatus: Bool = false, focus: FocusInfo? = nil) {
         let pb = NSPasteboard.general
         // сохраняем ВСЕ типы (скриншот/RTF), не только строку — иначе
         // картинка в буфере пропадала после диктовки безвозвратно
@@ -510,7 +856,52 @@ final class DictationService: ObservableObject {
         pb.setString(text, forType: .string)
         let ourChange = pb.changeCount
 
-        if AXIsProcessTrusted() {
+        let focus = focus ?? Self.focusInfo()
+        let now = Self.frontAnchor(focus)
+        let touchedSecure = secureSeen
+        if focus.secure { secureSeen = true }
+        switch Self.finalDecision(trusted: AXIsProcessTrusted(), own: ProcessInfo.processInfo.processIdentifier,
+                                  startedIn: target, now: now, secureSeen: touchedSecure, nowSecure: focus.secure) {
+        case .secret:
+            // Диктовка касалась поля пароля — или пароль под фокусом сейчас:
+            // ⌘V раскрыл бы секрет в обычном поле либо был бы проглочен
+            // secure input, а статус и плашка — на экране. Текст только в
+            // буфере, инструкция без него, звука нет (DS r4 I1, r5, r7, r8 M2).
+            let why = touchedSecure
+                ? L.t("диктовка шла в поле пароля", "the dictation touched a password field", "听写涉及密码字段")
+                : L.t("под фокусом поле пароля", "a password field has the focus", "焦点在密码字段")
+            let what = keepStatus
+                ? L.t("черновик системного движка в буфере", "the system engine's draft is in the clipboard", "系统引擎草稿已在剪贴板")
+                : L.t("текст в буфере", "the text is in the clipboard", "文本已在剪贴板")
+            status = why + " — " + what + L.t(", вставь его в нужное поле сам", ", paste it into the right field yourself", "，请自行粘贴到正确的输入框")
+            DictationPreviewPanel.shared.flash(text: status, hint: "", seconds: 6)
+            return
+        case .windowChanged:
+            // ⌘V ушёл бы не туда — текст в буфере, человек вставит сам. Панель
+            // меню-бара к этому моменту закрыта, поэтому говорит плашка — там,
+            // куда он смотрит; звука успеха нет (круг 1 по #488, DS/GLM).
+            let hint = keepStatus
+                ? L.t("черновик системного движка в буфере — нажми ⌘V в нужном поле",
+                      "system engine draft is in the clipboard — press ⌘V in the right field",
+                      "系统引擎草稿已在剪贴板——请在正确的输入框按 ⌘V")
+                : L.t("текст в буфере — нажми ⌘V в нужном поле",
+                      "text is in the clipboard — press ⌘V in the right field",
+                      "文本已在剪贴板——请在正确的输入框按 ⌘V")
+            let front = now?.name ?? "?", started = target?.name ?? "?"
+            // Другое окно того же приложения — не называть его дважды (DS r3 M3);
+            // одно приложение — это один pid, а не одно имя (DS r4 M3)
+            status = hint + (now?.pid == target?.pid
+                ? L.t(" (впереди другое окно «\(front)»)",
+                      " (another window of \u{201C}\(front)\u{201D} is in front)",
+                      "（当前是「\(front)」的另一个窗口）")
+                : L.t(" (впереди «\(front)», диктовали в «\(started)»)",
+                      " (\u{201C}\(front)\u{201D} is in front, you dictated into \u{201C}\(started)\u{201D})",
+                      "（当前是「\(front)」，听写时是「\(started)」）"))
+            // Пароля не было (иначе исход .secret): текст показать можно
+            DictationPreviewPanel.shared.flash(text: text, hint: hint, seconds: 6)
+            return
+        case .paste:
+            if focus.blind, let now { Self.noteBlindPaste(anchor: now) }
             let src = CGEventSource(stateID: .combinedSessionState)
             let vDown = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true)
             vDown?.flags = .maskCommand
@@ -527,7 +918,7 @@ final class DictationService: ObservableObject {
                 pb.clearContents()
                 if !saved.isEmpty { pb.writeObjects(saved) }
             }
-        } else {
+        case .noAccessibility:
             // без права Accessibility печатать за пользователя нельзя —
             // текст в буфере, один ⌘V руками
             status = L.t("в буфере — нажми ⌘V (дай Чароиту право Universal Access для автовставки)", "copied — press ⌘V (grant Charoite the Accessibility right for auto-paste)", "已复制——按 ⌘V（授予 Charoite 辅助功能权限可自动粘贴）")
