@@ -290,3 +290,16 @@ def test_retitle_without_a_hash_keeps_the_sidecar_names(root):
     meta = rt.live_meta(titled)
     assert meta["names"] == {"Собеседник 2": "Инга"} and "transcript_sha256" not in meta
 
+
+def test_minute_owner_with_a_service_word_title_is_recognised(root):
+    """«…_1200_Демо_live.md» (тема до guard_slug): stamp_of даёт None, но это
+    владелец минуты — его посекундный сайдкар свой (Important DS r5 по #489)."""
+    tdir = root / "transcripts"
+    live = tdir / "2026-09-03_1200_Демо_live.md"
+    live.write_text("# Встреча 2026-09-03_1200 — Демо live\n", encoding="utf-8")
+    sc = tdir / "2026-09-03_120005.md.live.json"
+    sc.write_text(json.dumps({"names": {"Собеседник 1": "Анна"}}), encoding="utf-8")
+    assert live_sidecar.owner_of(sc) == live
+    assert live_sidecar.sidecar_for(live) == sc
+    assert rt.live_meta(live)["names"] == {"Собеседник 1": "Анна"}
+

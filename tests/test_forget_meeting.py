@@ -621,3 +621,16 @@ def test_plan_takes_the_forgotten_meetings_sidecar_but_not_the_neighbours(tmp_pa
     assert sb not in plan.delete
     assert tdir / "2026-09-03_120040_Повтор.md" not in plan.delete
 
+
+def test_plan_takes_ownerless_sidecars_of_the_minute_and_the_service_word_owner(tmp_path):
+    root = tmp_path
+    tdir = root / "transcripts"; tdir.mkdir()
+    (tdir / "2026-09-03_1200_Демо_live.md").write_text("# Встреча 2026-09-03_1200 — Демо live\n", encoding="utf-8")
+    own = tdir / "2026-09-03_120005.md.live.json"; own.write_text("{}", encoding="utf-8")
+    orphan = tdir / "2026-09-03_120050.md.live.json"; orphan.write_text("{}", encoding="utf-8")
+    other = tdir / "2026-09-03_120105.md.live.json"; other.write_text("{}", encoding="utf-8")
+    plan = forget.plan("2026-09-03_1200", root)
+    assert tdir / "2026-09-03_1200_Демо_live.md" in plan.delete
+    assert own in plan.delete and orphan in plan.delete
+    assert other not in plan.delete
+

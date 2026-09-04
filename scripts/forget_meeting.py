@@ -363,8 +363,16 @@ def plan(stamp: str, root: pathlib.Path,
     tdir = root / "transcripts"
     if tdir.is_dir():
         gone = {f for f in p.delete if f.parent == tdir}
+        minute = meeting_stamp.minute_of(stamp)
         for sc in tdir.glob("*.md.live.json"):
-            if sc not in p.delete and live_sidecar.owner_of(sc) in gone:
+            if sc in p.delete:
+                continue
+            owner = live_sidecar.owner_of(sc)
+            base = meeting_stamp.stamp_of(sc.name[:-len(".md.live.json")])
+            # Свой — уходит; бесхозный сайдкар этой минуты — мёртвый след
+            # (живая встреча в минуте всегда даёт владельца), имена
+            # участников не должны его переживать (advisory DS r5)
+            if owner in gone or (owner is None and base and meeting_stamp.minute_of(base) == minute):
                 p.delete.append(sc)
 
     # Логи графа этой встречи: в logs/graph_<штамп>*.log попадают имена

@@ -58,9 +58,20 @@ def owner_of(sidecar: pathlib.Path) -> pathlib.Path | None:
             return f
     minute = meeting_stamp.minute_of(stamp)
     for f in tdir.glob(f"{minute}*.md"):
-        if f.is_file() and meeting_stamp.stamp_of(f.stem) == minute:
+        if _main_of_minute(f, minute):
             return f
     return None
+
+
+def _main_of_minute(path: pathlib.Path, minute: str) -> bool:
+    """Главный файл владельца минуты: разбор имени даёт ключ минуты и это
+    не производная — по stamp_of, а при теме на служебное слово
+    («…_1200_Демо_live.md», до guard_slug) — по шапке (DS r5 по #489).
+    Посекундную соседку с темой отсекает сам ключ минуты."""
+    parts = meeting_stamp.decompose(path.stem)
+    if not parts or parts[0] != minute:
+        return False
+    return meeting_stamp.stamp_of(path.stem) == minute or _is_main(path, minute)
 
 
 def _is_main(path: pathlib.Path, stamp: str) -> bool:
@@ -83,7 +94,8 @@ def _legacy(live: pathlib.Path) -> list[pathlib.Path]:
     озаглавленные до 0.69.1) или с прежней темой (переименование до
     того, как rename_meeting стал переносить сайдкар). Свои — те, чей
     owner_of == live."""
-    stamp = meeting_stamp.stamp_of(live.stem) or live.stem
+    parts = meeting_stamp.decompose(live.stem)
+    stamp = meeting_stamp.stamp_of(live.stem) or (parts[0] if parts else live.stem)
     minute = meeting_stamp.minute_of(stamp)
     direct = _direct(live)
     out = []
