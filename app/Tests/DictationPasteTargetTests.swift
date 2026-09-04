@@ -80,11 +80,25 @@ final class DictationPasteTargetTests: XCTestCase {
     }
 
     func testLiveStripHidesInAndAfterAPasswordFieldAndWithoutAccessibility() {
-        XCTAssertTrue(DictationService.liveStripAllowed(nowSecure: false, secureSeen: false, trusted: true))
-        XCTAssertFalse(DictationService.liveStripAllowed(nowSecure: true, secureSeen: false, trusted: true))
-        XCTAssertFalse(DictationService.liveStripAllowed(nowSecure: false, secureSeen: true, trusted: true), "побывали в пароле — текст не возвращается")
-        XCTAssertFalse(DictationService.liveStripAllowed(nowSecure: false, secureSeen: false, trusted: false), "без права AX пароль не отличить — плашки нет")
-        XCTAssertFalse(DictationService.liveStripAllowed(nowSecure: true, secureSeen: true, trusted: true))
+        XCTAssertTrue(DictationService.liveStripAllowed(security: .clear, secureSeen: false, trusted: true))
+        XCTAssertFalse(DictationService.liveStripAllowed(security: .secure, secureSeen: false, trusted: true))
+        XCTAssertFalse(DictationService.liveStripAllowed(security: .unknown, secureSeen: false, trusted: true), "приложение не ответило — что под фокусом, неизвестно, плашки нет")
+        XCTAssertFalse(DictationService.liveStripAllowed(security: .clear, secureSeen: true, trusted: true), "побывали в пароле — текст не возвращается")
+        XCTAssertFalse(DictationService.liveStripAllowed(security: .clear, secureSeen: false, trusted: false), "без права AX пароль не отличить — плашки нет")
+        XCTAssertFalse(DictationService.liveStripAllowed(security: .secure, secureSeen: true, trusted: true))
+    }
+
+    func testFocusSecurityFromAccessibilityAnswers() {
+        XCTAssertEqual(DictationService.focusSecurity(focused: .noValue, role: .failure, roleName: nil, subrole: nil), .clear,
+                       "нет сфокусированного элемента — пароля нет (Chromium без accessibility)")
+        XCTAssertEqual(DictationService.focusSecurity(focused: .cannotComplete, role: .failure, roleName: nil, subrole: nil), .unknown,
+                       "не ответило за таймаут — зависло, плашка молчит")
+        XCTAssertEqual(DictationService.focusSecurity(focused: .apiDisabled, role: .failure, roleName: nil, subrole: nil), .unknown)
+        XCTAssertEqual(DictationService.focusSecurity(focused: .success, role: .cannotComplete, roleName: nil, subrole: nil), .unknown,
+                       "элемент есть, роль не прочиталась — неизвестно")
+        XCTAssertEqual(DictationService.focusSecurity(focused: .success, role: .success, roleName: "AXTextField", subrole: nil), .clear)
+        XCTAssertEqual(DictationService.focusSecurity(focused: .success, role: .success, roleName: "AXSecureTextField", subrole: nil), .secure)
+        XCTAssertEqual(DictationService.focusSecurity(focused: .success, role: .success, roleName: "AXTextField", subrole: "AXSecureTextField"), .secure)
     }
 
     func testSecureReadAppliesOnlyToTheLiveRecordingOfTheSameDictation() {

@@ -319,7 +319,11 @@ it signals degradation, it does not break the loop.
   is pasted and nothing is shown — the text waits in the clipboard, the strip
   and the status carry only the instruction; without the Accessibility right
   a password field cannot be told apart, so the live draft strip is not
-  shown at all. In the menu
+  shown at all. Every piece of the live draft reaches the strip only after
+  a fresh focus read (an inter-process request, milliseconds): a click into
+  a password field mid-speech hides it with the next piece or with the
+  once-a-second watch, and it does not come back before the dictation ends;
+  if the app in front does not answer, the strip stays silent. In the menu
   bar, dictation, note and diary sit in a column with their shortcuts in a
   separate right-hand column: on one row they did not fit and got truncated
   exactly at the shortcut.
