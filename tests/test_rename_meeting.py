@@ -304,6 +304,27 @@ def test_legacy_main_titled_with_a_service_word_is_healed_not_demoted(tmp_path):
     assert {src.name: dst.name for src, dst in p["moves"]} == {main.name: f"{STAMP}_Новая_тема.md"}
 
 
+def test_bare_seconds_main_keeps_its_seconds_in_the_sidecar(tmp_path, monkeypatch):
+    """Голый посекундный главный файл получает минутное имя — секунды остаются
+    только в ключе `stamp` сайдкара, иначе пересборка снова гадает по минуте
+    (№164, GLM r1 по #492)."""
+    graph, tdir = tmp_path / "graph", tmp_path / "transcripts"
+    tdir.mkdir()
+    (graph / "Встречи").mkdir(parents=True)
+    (tdir / "2026-08-03_113012.md").write_text("# Встреча 2026-08-03_113012\n", encoding="utf-8")
+    (tdir / "2026-08-03_113012_hints.md").write_text("подсказки", encoding="utf-8")
+    monkeypatch.setattr(rm, "ROOT", tmp_path)
+    pretty, slug = rm.pretty_and_slug("Инцидент загрузки")
+
+    p = rm.plan(graph, tdir, STAMP, pretty, slug)
+    rm.apply(p, graph, STAMP, pretty)
+
+    new = tdir / f"{STAMP}_Инцидент_загрузки.md"
+    assert new.exists() and not (tdir / "2026-08-03_113012.md").exists()
+    meta = json.loads((tdir / f"{STAMP}_Инцидент_загрузки.md.live.json").read_text(encoding="utf-8"))
+    assert meta["stamp"] == "2026-08-03_113012"
+
+
 def test_sidecar_follows_the_renamed_transcript(world):
     graph, tdir = world
     sc = tdir / f"{STAMP}_Обновление_ОС.md.live.json"

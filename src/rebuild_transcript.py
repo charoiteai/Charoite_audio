@@ -426,6 +426,12 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     if exact:
         log(f"штамп записей из сайдкара: {exact}")
     recording_stamp = meeting_stamp.resolve_stamp(rec_dir, stamp, exact=exact, tdir=live.parent)
+    if exact is None and recording_stamp == stamp and meeting_stamp.minute_of(stamp) == stamp:
+        # Отказ по минуте — событие, а не тишина (DS r1 по #492): дальше
+        # ожидание под минутным именем, и «записей нет» без этой строки
+        # выглядело бы как отсутствие записей, а не как отвод чужих.
+        log("точного штампа нет, запись по минуте однозначно не разрешена "
+            "(нет кандидатов, две встречи в минуту или у кандидата своя стенограмма)")
     base = meeting_stamp.started_at(recording_stamp)
     if base is None:
         return None

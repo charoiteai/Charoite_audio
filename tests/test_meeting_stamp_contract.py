@@ -240,7 +240,9 @@ def test_точный_штамп_разрешает_две_встречи_в_м�
 def test_наследие_без_штампа_не_берёт_запись_соседки_с_живой_стенограммой(tmp_path):
     """Сайдкара со штампом нет (встречи до этой правки): единственный
     кандидат минуты принимается, только если у него нет собственной
-    стенограммы — иначе это соседка, а не мы."""
+    стенограммы — иначе это соседка, а не мы. Голый «…120314.md» — тоже
+    улика: соседка, чей конвейер упал до наката темы; своего голого остатка
+    рядом с минутным именем не бывает (переименования — через rename())."""
     rec = tmp_path / "recordings"
     rec.mkdir()
     tdir = tmp_path / "transcripts"
@@ -300,18 +302,29 @@ def test_сайдкар_отдаёт_точный_штамп_минутной_в
     assert live_sidecar.exact_stamp(sec) is None       # имя уже посекундное
 
 
-def test_сайдкар_под_старым_посекундным_именем_отдаёт_штамп(tmp_path):
-    """Встречи, озаглавленные до 0.69.1: сайдкар остался «…120301.md.live.json»
-    — штамп в его имени. Два таких сайдкара одной минуты без своих файлов —
-    неоднозначно, точного штампа нет."""
+def test_чужой_сайдкар_минуты_не_источник_точного_штампа(tmp_path):
+    """GLM Critical r1 по #492: сирота удалённой соседки («…120314.md» стёрт
+    руками, сайдкар остался) усыновляется owner_of как «владельца минуты» —
+    для хешей это дёшево, для выбора записи — чужой разговор в нашей
+    стенограмме. Точный штамп читается только из прямого сайдкара: ни имя
+    наследия, ни ключ в чужом файле им не считаются."""
+    import json
+
     import live_sidecar
 
     live = tmp_path / "2026-08-04_1203_Тема.md"
     live.write_text("# Встреча 2026-08-04_1203 — Тема\n", encoding="utf-8")
+    # сайдкар-наследие (до 0.69.1) под посекундным именем — не источник
     (tmp_path / "2026-08-04_120301.md.live.json").write_text("{}", encoding="utf-8")
-    assert live_sidecar.exact_stamp(live) == "2026-08-04_120301"
-    (tmp_path / "2026-08-04_120314.md.live.json").write_text("{}", encoding="utf-8")
     assert live_sidecar.exact_stamp(live) is None
+    # сирота соседки с ключом stamp — тем более не источник
+    (tmp_path / "2026-08-04_120314.md.live.json").write_text(
+        json.dumps({"stamp": "2026-08-04_120314"}), encoding="utf-8")
+    assert live_sidecar.exact_stamp(live) is None
+    # свой прямой сайдкар — единственный источник
+    live.with_name(live.name + ".live.json").write_text(
+        json.dumps({"stamp": "2026-08-04_120301"}), encoding="utf-8")
+    assert live_sidecar.exact_stamp(live) == "2026-08-04_120301"
 
 
 def test_rebuild_передаёт_точный_штамп_из_сайдкара(tmp_path, monkeypatch):
@@ -346,7 +359,10 @@ def test_демон_пишет_посекундный_штамп_в_сайдка
     import pathlib
 
     src = (pathlib.Path(__file__).resolve().parents[1] / "src" / "daemon.py").read_text(encoding="utf-8")
-    block = src[src.index('".live.json"'):][:1500]
+    # якорь — сам словарь сайдкара, а не первое упоминание live.json выше по
+    # файлу (DS r1 M1 по #492: срез от чужого упоминания молча уехал бы)
+    start = src.index('json.dumps({"speakers": len(voice_names)')
+    block = src[start:src.index("ensure_ascii", start)]
     assert '"stamp": tr.stamp' in block
 
 

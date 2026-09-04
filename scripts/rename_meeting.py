@@ -31,6 +31,7 @@ import graphs  # noqa: E402
 
 import charoite_paths  # noqa: E402
 import safe_write  # noqa: E402
+import live_sidecar  # noqa: E402
 import meeting_stamp  # noqa: E402
 from meeting_archive import ARCHIVE_DIR, _safe  # noqa: E402
 
@@ -291,6 +292,17 @@ def brain_rename(stamp: str, pretty: str) -> str:
 def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
     for old, new in p["moves"]:
         old.rename(new)
+    # Голый посекундный главный файл получил минутное имя: секунды остались
+    # только здесь — кладём их в сайдкар ключом `stamp`, как накат темы, иначе
+    # пересборка такой встречи снова гадает по минуте (№164, GLM r1 по #492).
+    # После всех переносов: пара .md + сайдкар уже под новым именем.
+    for old, new in p["moves"]:
+        bare = meeting_stamp.stamp_of(old.stem)
+        if old.suffix != ".md" or bare != old.stem or bare == meeting_stamp.minute_of(bare):
+            continue
+        if meeting_stamp.stamp_of(new.stem) == meeting_stamp.minute_of(bare) \
+                and not live_sidecar.remember(new, "stamp", bare):
+            print(f"{new.name}: посекундный штамп в сайдкар не записан — сайдкар неоднозначен")
 
     old_folder, new_folder = p["old_folder"], p["new_folder"]
     if old_folder is not None and new_folder is not None:

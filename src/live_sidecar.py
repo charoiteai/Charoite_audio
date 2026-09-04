@@ -228,28 +228,34 @@ def read(live: pathlib.Path, bare: str | None = None) -> dict | None:
 
 def exact_stamp(live: pathlib.Path) -> str | None:
     """Посекундный штамп встречи с МИНУТНЫМ именем (после наката темы) —
-    из сайдкара, а не угадыванием по каталогу записей.
+    из ключа `stamp` её СОБСТВЕННОГО сайдкара, а не угадыванием по каталогу
+    записей.
 
-    Ключ `stamp` пишет демон при стопе, накат темы добавляет его при
-    переименовании; сайдкар под старым посекундным именем (до 0.69.1)
-    отдаёт штамп самим именем. Годится только штамп той же минуты и с
-    секундами; посекундной стенограмме уточнять нечего — None. Без этого
-    источника пересборка глобит минуту и могла взять запись соседки (№164).
+    Ключ пишут демон при стопе, накат темы и rename_meeting при
+    переименовании — только для этой стенограммы, и переезжает он вместе с
+    ней под прямое имя. Читается ТОЛЬКО прямой сайдкар: усыновление
+    сайдкара-наследия через sidecar_for/owner_of построено для хешей, где
+    цена ошибки — «распознаём заново», а здесь сирота удалённой соседки той
+    же минуты (её .md стёрт руками, сайдкар остался) выдавала бы чужой штамп
+    как точный — и по ключу, и по имени (GLM Critical r1 по #492). Годится
+    только штамп той же минуты и с секундами; посекундной стенограмме
+    уточнять нечего — None. Без ключа пересборка разрешает минуту глобом с
+    проверкой владения (meeting_stamp.resolve_stamp).
     """
     key = meeting_stamp.stamp_of(live.stem)
     if key is None or meeting_stamp.minute_of(key) != key:
         return None
-
-    def _ok(value) -> bool:
-        return (isinstance(value, str) and meeting_stamp.stamp_of(value) == value
-                and value != key and meeting_stamp.minute_of(value) == key)
-
-    value = (read(live) or {}).get("stamp")
-    if _ok(value):
+    direct = _direct(live)
+    if not direct.exists():
+        return None
+    try:
+        meta = json.loads(direct.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    value = meta.get("stamp") if isinstance(meta, dict) else None
+    if (isinstance(value, str) and meeting_stamp.stamp_of(value) == value
+            and value != key and meeting_stamp.minute_of(value) == key):
         return value
-    p = sidecar_for(live)
-    if p is not None and p.exists() and _ok(p.name[:-len(TAIL)]):
-        return p.name[:-len(TAIL)]
     return None
 
 
