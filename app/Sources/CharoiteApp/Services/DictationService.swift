@@ -175,7 +175,9 @@ final class DictationService: ObservableObject {
         if onResult == nil, !note, AXIsProcessTrusted() {
             secureWatch = Task { [weak self] in
                 while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(2))   // защёлке чаще не нужно (DS r7 M1)
+                    // Без живой плашки сторож — единственный читатель фокуса:
+                    // раз в секунду; с ней onChange читает сам — раз в две (DS r8)
+                    try? await Task.sleep(for: .seconds(self?.previewEngine == nil ? 1 : 2))
                     guard let self, self.isRecording, !Task.isCancelled else { return }
                     self.refreshSecureField()
                 }
@@ -442,16 +444,19 @@ final class DictationService: ObservableObject {
     /// Чароита не маскируют, а synthetic ⌘V под secure input глотается и
     /// статус «вставлено» врёт (DS r7 C1/C2/I1 — откат advisory r6).
     nonisolated static func finalDecision(trusted: Bool, own: pid_t, startedIn: PasteAnchor?, now: PasteAnchor?,
-                                          secureSeen: Bool) -> PasteDecision {
+                                          secureSeen: Bool, nowSecure: Bool) -> PasteDecision {
         guard trusted else { return .noAccessibility }
-        if secureSeen { return .secret }
+        // Пароль под фокусом доставки — тоже .secret: ⌘V под secure input
+        // глотается, статус «вставлено» врал бы (DS r7 I1, r8 I2)
+        if secureSeen || nowSecure { return .secret }
         return pasteDecision(trusted: true, own: own, startedIn: startedIn, now: now)
     }
 
     /// Показывать ли надиктованный текст на плашке: не в поле пароля и не
-    /// после него — защёлка держит до конца диктовки (DS r6 C1, M2).
-    nonisolated static func liveStripAllowed(nowSecure: Bool, secureSeen: Bool) -> Bool {
-        !nowSecure && !secureSeen
+    /// после него — защёлка держит до конца диктовки (DS r6 C1, M2); без
+    /// права Accessibility пароль не отличить — плашки нет вовсе (DS r8 I1).
+    nonisolated static func liveStripAllowed(nowSecure: Bool, secureSeen: Bool, trusted: Bool) -> Bool {
+        trusted && !nowSecure && !secureSeen
     }
 
     /// Куда уйдёт результат: ⌘V только с правом Accessibility и только туда,
@@ -502,7 +507,8 @@ final class DictationService: ObservableObject {
             // Только глобальная диктовка: в чате текст уже перед глазами,
             // а в поле пароля плашки нет вовсе — фокус перечитывается здесь,
             // за 8 с ожидания черновика человек мог кликнуть куда угодно.
-            if handler == nil, Self.liveStripAllowed(nowSecure: focus.secure, secureSeen: secureSeen) {
+            if handler == nil, Self.liveStripAllowed(nowSecure: focus.secure, secureSeen: secureSeen,
+                                                     trusted: AXIsProcessTrusted()) {
                 DictationPreviewPanel.shared.flash(
                     text: text,
                     hint: L.t("черновик системного движка — GigaAM не ответил",
@@ -565,7 +571,8 @@ final class DictationService: ObservableObject {
                 guard let self, self.isRecording else { return }
                 // Фокус мог уйти в поле пароля уже по ходу речи (круг 4, DS);
                 // побывал в нём — текст не показываем и после выхода (DS r6 C1)
-                if !Self.liveStripAllowed(nowSecure: self.refreshSecureField(), secureSeen: self.secureSeen) {
+                if !Self.liveStripAllowed(nowSecure: self.refreshSecureField(), secureSeen: self.secureSeen,
+                                          trusted: AXIsProcessTrusted()) {
                     DictationPreviewPanel.shared.hide()
                     return
                 }
@@ -637,16 +644,22 @@ final class DictationService: ObservableObject {
 
         let focus = focus ?? Self.focusInfo()
         let now = Self.frontAnchor(focus)
+        let touchedSecure = secureSeen
         if focus.secure { secureSeen = true }
         switch Self.finalDecision(trusted: AXIsProcessTrusted(), own: ProcessInfo.processInfo.processIdentifier,
-                                  startedIn: target, now: now, secureSeen: secureSeen) {
+                                  startedIn: target, now: now, secureSeen: touchedSecure, nowSecure: focus.secure) {
         case .secret:
-            // Диктовка касалась поля пароля: ⌘V раскрыл бы секрет в обычном
-            // поле, а статус и плашка — на экране. Текст только в буфере,
-            // инструкция без него, звука нет (DS r4 I1, r5 I1/M2).
-            status = L.t("диктовка шла в поле пароля — текст в буфере, вставь его в нужное поле сам",
-                         "the dictation touched a password field — the text is in the clipboard, paste it into the right field yourself",
-                         "听写涉及密码字段——文本已在剪贴板，请自行粘贴到正确的输入框")
+            // Диктовка касалась поля пароля — или пароль под фокусом сейчас:
+            // ⌘V раскрыл бы секрет в обычном поле либо был бы проглочен
+            // secure input, а статус и плашка — на экране. Текст только в
+            // буфере, инструкция без него, звука нет (DS r4 I1, r5, r7, r8 M2).
+            let why = touchedSecure
+                ? L.t("диктовка шла в поле пароля", "the dictation touched a password field", "听写涉及密码字段")
+                : L.t("под фокусом поле пароля", "a password field has the focus", "焦点在密码字段")
+            let what = keepStatus
+                ? L.t("черновик системного движка в буфере", "the system engine's draft is in the clipboard", "系统引擎草稿已在剪贴板")
+                : L.t("текст в буфере", "the text is in the clipboard", "文本已在剪贴板")
+            status = why + " — " + what + L.t(", вставь его в нужное поле сам", ", paste it into the right field yourself", "，请自行粘贴到正确的输入框")
             DictationPreviewPanel.shared.flash(text: status, hint: "", seconds: 6)
             return
         case .windowChanged:
