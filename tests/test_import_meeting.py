@@ -606,6 +606,19 @@ def test_settle_all_holds_any_fresh_file_but_not_explicit_scans(tmp_path):
     assert im.scan_candidates(tmp_path, settle_all=True) == [], "рост размера — отсчёт заново"
 
 
+def test_scan_prints_machine_marker_for_postponed_files(tmp_path, monkeypatch, capsys):
+    """Приложение догоняет отложенные файлы по маркеру `postponed=N`, а не по
+    человеческой фразе (GLM r5 по #496)."""
+    import import_meeting as im
+
+    (tmp_path / "Recording.m4a").write_bytes(b"\0" * 100)
+    monkeypatch.setattr(im, "_cfg", lambda: {"audio": {}})
+    monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
+    _run_scan(monkeypatch, tmp_path, "--settle-all")
+    out = capsys.readouterr().out
+    assert "postponed=1" in out and "отложен до следующего скана" in out
+
+
 def test_sweep_removes_only_old_temporaries(tmp_path):
     """Сироты .part и отчётов ребёнка после краха уходят по возрасту; живая
     копия (свежая) и чужие файлы — нет (GLM/DS r3 по #496)."""

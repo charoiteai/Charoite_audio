@@ -79,6 +79,10 @@ final class ImportService: ObservableObject {
     func disable() {
         timer?.invalidate()
         timer = nil
+        // Догон отложенных файлов — тоже автоматический скан: тумблер «off»
+        // и смена папки обязаны его снять (GLM r5 по #496)
+        settleRetry?.invalidate()
+        settleRetry = nil
     }
 
     /// Кнопка «Импортировать сейчас» — тот же прогон вне расписания.
@@ -252,9 +256,12 @@ final class ImportService: ObservableObject {
     /// Дроп принят, но часть файлов источник не отдал (зависший провайдер,
     /// файл исчез между дропом и загрузкой) — сказать вслух, а не молчать.
     func reportNotLoaded(_ count: Int) {
-        status = L.t("не загрузилось из дропа: \(count) файл(ов)",
-                     "not loaded from the drop: \(count) file(s)",
-                     "拖放中有 \(count) 个文件未能加载")
+        let note = L.t("не загрузилось из дропа: \(count) файл(ов)",
+                       "not loaded from the drop: \(count) file(s)",
+                       "拖放中有 \(count) 个文件未能加载")
+        // Составляем, а не затираем: «копирую…» и «не взято» живут в том же
+        // поле (GLM r5 по #496)
+        status = status.isEmpty ? note : status + " · " + note
     }
 
     /// «Повторить»: снять метку ошибки и прогнать скан ещё раз.
@@ -334,6 +341,7 @@ final class ImportService: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.proc = nil
+                self.runningSettleAll = false      // описывает идущий скан — не переживает его (GLM r5)
                 self.isScanning = false
                 self.lastLog = text
                 self.status = code == 0
@@ -345,7 +353,8 @@ final class ImportService: ObservableObject {
                     let settle = self.scanAgainSettle
                     self.scanAgainSettle = false
                     self.scan(dir: dir, settleAll: settle)
-                } else if settleAll, text.contains("отложен до следующего скана") {
+                } else if settleAll, text.contains("postponed=") {
+                    // Машинный маркер скрипта, не человеческая фраза (критика GLM r5)
                     // Тик отложил файлы до покоя размера — догоним через
                     // 35 с, а не через следующие две минуты
                     self.settleRetry?.invalidate()
@@ -360,6 +369,7 @@ final class ImportService: ObservableObject {
             proc = p
         } catch {
             isScanning = false
+            runningSettleAll = false
             status = L.t("импорт не запустился: \(error.localizedDescription)", "import failed to start: \(error.localizedDescription)", "导入未能启动：\(error.localizedDescription)")
         }
     }
@@ -400,7 +410,7 @@ final class ImportService: ObservableObject {
 private final class LogTail: @unchecked Sendable {
     private let lock = NSLock()
     private var data = Data()
-    private let limit = 16_000
+    private let limit = 64_000
 
     func append(_ chunk: Data) {
         guard !chunk.isEmpty else { return }

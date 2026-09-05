@@ -650,7 +650,9 @@ def main() -> None:
         cfg = _cfg()
         removed = prune_done(folder, import_keep_days(cfg, args.keep_days),
                              graph=graphs.graph_dir(cfg))
-        print(f"ретеншн импорта: удалено копий — {len(removed)}")
+        copies = sum(1 for p in removed if p.parent.name == "done")
+        print(f"ретеншн импорта: удалено копий — {copies}"
+              + (f", аудио-исходников в архиве — {len(removed) - copies}" if len(removed) > copies else ""))
         temporaries = sweep_temporaries(folder)
         if temporaries:
             print(f"ретеншн импорта: + временных без владельца — {len(temporaries)}")
@@ -684,8 +686,13 @@ def main() -> None:
                 marker.unlink(missing_ok=True)
         sweep_temporaries(folder)
         todo = scan_candidates(folder, settle_all=args.settle_all)
-        for waiting in postponed_files(folder, settle_all=args.settle_all):
+        postponed = postponed_files(folder, settle_all=args.settle_all)
+        for waiting in postponed:
             print(f"ещё копируется, отложен до следующего скана: {waiting.name}")
+        if postponed:
+            # Машинный маркер для приложения (догон через 35 с): фраза выше —
+            # для человека, и её правят; маркер — контракт (GLM r5 по #496)
+            print(f"postponed={len(postponed)}")
         if not todo:
             print("готовых файлов нет — нечего импортировать")
             prune_done(folder, keep_days, graph=graph)
