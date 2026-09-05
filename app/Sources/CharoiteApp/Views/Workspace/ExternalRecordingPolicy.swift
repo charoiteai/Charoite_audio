@@ -14,8 +14,9 @@ struct ImportItem: Identifiable, Equatable {
         case failed(message: String)
         /// В done/ с сайдкаром импорта.
         case done(Imported)
-        /// В done/ без сайдкара — импорт до этой версии; срок по ctime.
-        case legacy(deleteAt: Date)
+        /// В done/ без сайдкара — импорт до этой версии; срок назначит
+        /// первая уборка (скрипт запишет сайдкар «увидели сейчас»).
+        case legacy
     }
 
     struct Imported: Equatable {
@@ -79,12 +80,6 @@ enum ExternalRecordingPolicy {
                      deleteAt: deleteAt,
                      isRepeat: sidecar.repeat ?? false,
                      noSpeech: sidecar.no_speech ?? false)
-    }
-
-    /// Копия без сайдкара: перенос в done/ обновляет ctime — это и есть
-    /// момент импорта, тем же правилом живёт скрипт.
-    static func legacyDeleteAt(changed: Date, keepDays: Double = defaultKeepDays) -> Date {
-        changed.addingTimeInterval(keepDays * 86400)
     }
 
     static func isSupported(_ url: URL) -> Bool {
@@ -155,9 +150,10 @@ enum ExternalRecordingPolicy {
             if let stamp = imported.stamp { parts.append(stamp) }
             parts.append(deletionText(deleteAt: imported.deleteAt, now: now))
             return parts.joined(separator: " · ")
-        case .legacy(let deleteAt):
+        case .legacy:
             return [L.t("обработан раньше", "processed earlier", "此前已处理"),
-                    deletionText(deleteAt: deleteAt, now: now)].joined(separator: " · ")
+                    L.t("срок назначит ближайшая проверка", "the next check sets the deadline", "下次检查将设定期限")]
+                .joined(separator: " · ")
         }
     }
 

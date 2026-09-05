@@ -341,6 +341,8 @@ def _run_scan(monkeypatch, folder, *extra):
 
 
 def test_failed_import_is_marked_kept_and_not_rescanned(tmp_path, monkeypatch):
+    import pytest
+
     """Сбой: файл на месте, метка ошибки с хвостом вывода, следующий скан
     его не берёт (раньше STT гонялся по тому же файлу каждые две минуты);
     --retry-failed снимает метку и пробует ещё раз."""
@@ -359,7 +361,12 @@ def test_failed_import_is_marked_kept_and_not_rescanned(tmp_path, monkeypatch):
 
     monkeypatch.setattr(im.subprocess, "run", lambda cmd, **kw: (calls.append(cmd), Failed())[1])
     monkeypatch.setattr(im, "_cfg", lambda: {"audio": {"import_keep_days": 2}})
-    _run_scan(monkeypatch, tmp_path)
+    monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
+    im._seen_marker(bad).write_text("300 1\n", encoding="ascii")
+    with pytest.raises(SystemExit) as failed_scan:
+        _run_scan(monkeypatch, tmp_path)
+    assert failed_scan.value.code == 1, "сбой файла — ненулевой код скана (DS r1)"
+    assert not im._seen_marker(bad).exists(), "отсчёт покоя размера — заново"
     assert bad.exists(), "при ошибке файл не удаляется и не переносится"
     marker = im.error_marker(bad)
     meta = json.loads(marker.read_text(encoding="utf-8"))
@@ -368,7 +375,8 @@ def test_failed_import_is_marked_kept_and_not_rescanned(tmp_path, monkeypatch):
     n = len(calls)
     _run_scan(monkeypatch, tmp_path)
     assert len(calls) == n, "без снятой метки повторного прогона быть не должно"
-    _run_scan(monkeypatch, tmp_path, "--retry-failed")
+    with pytest.raises(SystemExit):
+        _run_scan(monkeypatch, tmp_path, "--retry-failed")
     assert len(calls) == n + 1 and marker.exists(), "повтор — и снова метка, раз снова сбой"
 
 
@@ -398,6 +406,7 @@ def test_successful_import_lands_in_done_with_sidecar(tmp_path, monkeypatch):
 
     monkeypatch.setattr(im.subprocess, "run", fake_child)
     monkeypatch.setattr(im, "_cfg", lambda: {"audio": {"import_keep_days": "1.5"}})
+    monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
     before = time.time()
     _run_scan(monkeypatch, tmp_path)
     moved = tmp_path / "done" / "Recording-1.txt"
@@ -455,19 +464,114 @@ def test_prune_done_removes_expired_copies_and_archive_audio(tmp_path):
     assert not im.imported_sidecar(expired_audio).exists()
 
 
-def test_prune_legacy_done_files_by_ctime(tmp_path):
-    """Файл в done/ без сайдкара (импорт до этой версии): срок по ctime —
-    момент переноса. Только что перенесённый живёт keep_days, при нуле уходит."""
+def test_prune_legacy_done_files_get_their_days_from_the_first_sweep(tmp_path):
+    """Файл в done/ без сайдкара (импорт до этой версии): первый проход
+    даёт ему сайдкар «увидели сейчас», удаление — через keep_days с этого
+    момента, независимо от ctime/mtime (GLM r1 по #496: ставка на ctime
+    при rename не обещана POSIX)."""
+    import json
+
     import import_meeting as im
 
     done = tmp_path / "done"
     done.mkdir()
     legacy = done / "old.m4a"
     legacy.write_bytes(b"\0")
-    assert im.prune_done(tmp_path, 2) == []
+    old = time.time() - 30 * 86400
+    os.utime(legacy, (old, old))
+    now = time.time()
+    assert im.prune_done(tmp_path, 2, now=now) == []
     assert legacy.exists()
-    assert im.prune_done(tmp_path, 0) == [legacy]
-    assert not legacy.exists()
+    meta = json.loads(im.imported_sidecar(legacy).read_text(encoding="utf-8"))
+    assert meta["legacy"] is True and meta["imported_at"] == now
+    assert im.prune_done(tmp_path, 2, now=now + 2 * 86400 - 1) == []
+    assert im.prune_done(tmp_path, 2, now=now + 2 * 86400 + 1) == [legacy]
+    assert not legacy.exists() and not im.imported_sidecar(legacy).exists()
+
+
+def test_prune_finds_archive_source_by_stamp_when_sidecar_lacks_it(tmp_path):
+    """Ребёнок упал после cp в архив и до отчёта (или это повтор без копии):
+    исходник ищем по штампу в графе тем же поиском, что импорт."""
+    import import_meeting as im
+
+    graph = tmp_path / "vault" / "Работа"
+    folder = graph / "Встречи-архив" / "2026-09-05 12-00 — Тема"
+    folder.mkdir(parents=True)
+    src = folder / "Исходник.m4a"
+    src.write_bytes(b"a")
+    done = tmp_path / "done"
+    done.mkdir()
+    copy = done / "rec.m4a"
+    copy.write_bytes(b"c")
+    now = time.time()
+    im._write_json(im.imported_sidecar(copy), {"imported_at": now - 9, "delete_after": now - 1,
+                                               "stamp": "2026-09-05_1200"})
+    removed = im.prune_done(tmp_path, 2, now=now, graph=graph)
+    assert copy in removed and src in removed and not src.exists()
+
+
+def test_orphan_error_marker_does_not_haunt_the_next_file(tmp_path, monkeypatch):
+    """Сбойный файл убрали руками, метка осталась; новый файл с тем же
+    именем не должен считаться сбойным (GLM r1 по #496)."""
+    import import_meeting as im
+
+    ghost = tmp_path / "Recording.txt"
+    im._write_json(im.error_marker(ghost), {"code": 1, "message": "старый сбой"})
+    fresh = tmp_path / "Recording.txt"
+    fresh.write_text("z" * 300, encoding="utf-8")
+    # метка живёт рядом с файлом того же имени — это ЕЩЁ не сирота
+    assert scan_candidates(tmp_path) == []
+    fresh.unlink()
+    calls = []
+
+    class Ok:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(im.subprocess, "run", lambda cmd, **kw: (calls.append(cmd), Ok())[1])
+    monkeypatch.setattr(im, "_cfg", lambda: {"audio": {}})
+    monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
+    _run_scan(monkeypatch, tmp_path)               # скан без файла — сирота-метка убрана
+    assert not im.error_marker(ghost).exists()
+    fresh.write_text("z" * 300, encoding="utf-8")
+    _run_scan(monkeypatch, tmp_path)
+    assert len(calls) == 1, "новый файл с именем старого сбоя импортируется"
+
+
+def test_one_broken_file_does_not_stop_the_queue(tmp_path, monkeypatch):
+    """OSError на переносе одного файла — пропуск, остальные идут, уборка
+    в конце выполняется (GLM r1 по #496)."""
+    import import_meeting as im
+
+    a = tmp_path / "a.txt"
+    b = tmp_path / "b.txt"
+    for f in (a, b):
+        f.write_text("q" * 300, encoding="utf-8")
+
+    class Ok:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(im.subprocess, "run", lambda cmd, **kw: Ok())
+    monkeypatch.setattr(im, "_cfg", lambda: {"audio": {"import_keep_days": 0}})
+    monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
+    real_rename = pathlib.Path.rename
+
+    def flaky(self, target):
+        if self.name == "a.txt":
+            raise OSError("диск полон")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(pathlib.Path, "rename", flaky)
+    import pytest
+    with pytest.raises(SystemExit) as partly:
+        _run_scan(monkeypatch, tmp_path)
+    assert partly.value.code == 1, "часть очереди не прошла — код 1"
+    assert a.exists(), "сбойный перенос — файл на месте"
+    assert not b.exists(), "второй файл обработан несмотря на первый"
+    assert not (tmp_path / "done" / "b.txt").exists(), "уборка в конце скана (keep 0) прошла"
 
 
 def test_import_keep_days_is_forgiving_but_not_negative(capsys):
@@ -479,6 +583,8 @@ def test_import_keep_days_is_forgiving_but_not_negative(capsys):
     assert im.import_keep_days({}) == im.IMPORT_KEEP_DAYS_DEFAULT
     assert im.import_keep_days({"audio": {"import_keep_days": "два"}}) == im.IMPORT_KEEP_DAYS_DEFAULT
     assert "непонятное" in capsys.readouterr().out
+    assert im.import_keep_days({"audio": {"import_keep_days": "1e999"}}) == im.IMPORT_KEEP_DAYS_DEFAULT
+    assert im.import_keep_days({"audio": {"record_keep_days": 7}}) == 7, "без своего срока — как у записей"
     assert im.import_keep_days({"audio": {"import_keep_days": 5}}, override="0") == 0
     with pytest.raises(SystemExit):
         im.import_keep_days({"audio": {"import_keep_days": -1}})

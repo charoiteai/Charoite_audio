@@ -77,8 +77,8 @@ final class ImportService: ObservableObject {
     /// слежения: срок «удалится через 2 дня» обещан и тому, кто слежение
     /// выключил и кладёт файлы руками через вкладку.
     func startRetention(dir: String) {
+        guard retentionTimer == nil else { return }   // уже идёт — вкладка не плодит процессы
         prune(dir: dir)
-        guard retentionTimer == nil else { return }
         retentionTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, let dir = Self.configuredDir else { return }
@@ -95,8 +95,7 @@ final class ImportService: ObservableObject {
         var out: [ImportItem] = []
         let fm = FileManager.default
         let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey,
-                                      .attributeModificationDateKey, .isRegularFileKey,
-                                      .isSymbolicLinkKey]
+                                      .isRegularFileKey, .isSymbolicLinkKey]
         let root = (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys,
                                                 options: [.skipsHiddenFiles])) ?? []
         for url in root where ExternalRecordingPolicy.isSupported(url) {
@@ -128,8 +127,7 @@ final class ImportService: ObservableObject {
                let s = try? JSONDecoder().decode(ExternalRecordingPolicy.Sidecar.self, from: data) {
                 phase = .done(ExternalRecordingPolicy.imported(from: s))
             } else {
-                let changed = v.attributeModificationDate ?? v.contentModificationDate ?? Date()
-                phase = .legacy(deleteAt: ExternalRecordingPolicy.legacyDeleteAt(changed: changed))
+                phase = .legacy
             }
             out.append(ImportItem(url: url, name: url.lastPathComponent,
                                   bytes: v.fileSize ?? 0,
@@ -141,12 +139,17 @@ final class ImportService: ObservableObject {
 
     /// Файлы из перетаскивания или диалога: копия в папку импорта под
     /// свободным именем, затем скан. Оригинал остаётся там, где был.
+    /// Сама копия — в фоне: гигабайтная запись диктофона или ещё не
+    /// скачанный из iCloud файл держали бы главный поток десятки секунд
+    /// (GLM r1 по #496).
     func add(urls: [URL], dir: String) {
         let folder = Self.folderURL(dir)
         let fm = FileManager.default
         try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
-        var copied = 0
+        var jobs: [(from: URL, to: URL)] = []
+        var alreadyThere = 0
         var skipped: [String] = []
+        var taken = Set((try? fm.contentsOfDirectory(atPath: folder.path)) ?? [])
         for url in urls {
             guard ExternalRecordingPolicy.isSupported(url) else {
                 skipped.append(url.lastPathComponent)
@@ -154,25 +157,69 @@ final class ImportService: ObservableObject {
             }
             // Файл уже лежит в папке импорта (перетащили из неё же) — не копия
             if url.deletingLastPathComponent().standardizedFileURL.path == folder.standardizedFileURL.path {
-                copied += 1
+                alreadyThere += 1
                 continue
             }
-            let taken = Set((try? fm.contentsOfDirectory(atPath: folder.path)) ?? [])
             let name = ExternalRecordingPolicy.uniqueName(url.lastPathComponent, taken: taken)
-            do {
-                try fm.copyItem(at: url, to: folder.appendingPathComponent(name))
-                copied += 1
-            } catch {
-                skipped.append("\(url.lastPathComponent): \(error.localizedDescription)")
-            }
+            taken.insert(name)
+            jobs.append((url, folder.appendingPathComponent(name)))
         }
         if !skipped.isEmpty {
             status = L.t("не взято: \(skipped.joined(separator: ", "))",
                          "not taken: \(skipped.joined(separator: ", "))",
                          "未接收：\(skipped.joined(separator: ", "))")
         }
+        guard !jobs.isEmpty else {
+            refresh(dir: dir)
+            if alreadyThere > 0 { scan(dir: dir) }
+            return
+        }
+        status = L.t("копирую \(jobs.count) файл(ов)…", "copying \(jobs.count) file(s)…", "正在复制 \(jobs.count) 个文件…")
+        Task.detached(priority: .userInitiated) {
+            var failures: [String] = []
+            var copied: [URL] = []
+            for job in jobs {
+                do {
+                    try FileManager.default.copyItem(at: job.from, to: job.to)
+                    Self.carryModificationDate(from: job.from, to: job.to)
+                    copied.append(job.to)
+                } catch {
+                    failures.append("\(job.from.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+            await MainActor.run {
+                self.copiesFinished(dir: dir, copied: copied, failures: failures)
+            }
+        }
+    }
+
+    /// Дата встречи — это mtime файла (скрипт берёт штамп из него), а
+    /// copyItem её сохранять не обязан: трёхдневная запись с телефона стала
+    /// бы встречей «сегодня в минуту дропа» (критика DS r1 по #496).
+    nonisolated private static func carryModificationDate(from src: URL, to dst: URL) {
+        guard let date = (try? src.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate else { return }
+        var values = URLResourceValues()
+        values.contentModificationDate = date
+        var target = dst
+        try? target.setResourceValues(values)
+    }
+
+    private func copiesFinished(dir: String, copied: [URL], failures: [String]) {
+        if !failures.isEmpty {
+            status = L.t("не скопировано: \(failures.joined(separator: ", "))",
+                         "not copied: \(failures.joined(separator: ", "))",
+                         "未复制：\(failures.joined(separator: ", "))")
+        }
+        // Свежая копия под именем старого сбоя — это и есть «повторить»:
+        // метка ошибки не должна пережить файл, который её вызвал (DS r1)
+        for url in copied {
+            let marker = url.deletingLastPathComponent()
+                .appendingPathComponent(".\(url.lastPathComponent).import-error")
+            try? FileManager.default.removeItem(at: marker)
+        }
         refresh(dir: dir)
-        if copied > 0 { scan(dir: dir) }
+        if !copied.isEmpty { scan(dir: dir) }
     }
 
     /// «Повторить»: снять метку ошибки и прогнать скан ещё раз.
@@ -235,6 +282,10 @@ final class ImportService: ObservableObject {
         p.terminationHandler = { [weak self] proc in
             out.fileHandleForReading.readabilityHandler = nil
             err.fileHandleForReading.readabilityHandler = nil
+            // Хвост, пришедший после последнего колбэка, — иначе в журнале
+            // нет ни «не удался…», ни «ретеншн: удалено N» (GLM r1 по #496)
+            tail.append(out.fileHandleForReading.readDataToEndOfFile())
+            tail.append(err.fileHandleForReading.readDataToEndOfFile())
             let code = proc.terminationStatus
             let text = tail.text
             Task { @MainActor [weak self] in

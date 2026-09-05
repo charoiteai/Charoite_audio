@@ -12,7 +12,7 @@ audio:
   vad_energy_db: -55      # 静音阈值；越低越灵敏
   record: true            # 保留完整录音，用于会后离线重建逐字稿
   record_keep_days: 2     # 录音 N 天后自动删除（隐私）
-  import_keep_days: 2     # 导入录音的副本（done/ 与归档中的音频源）在导入 N 天后删除
+  import_keep_days: 2     # 导入录音的副本（done/ 与归档中的音频源）在导入 N 天后删除；未设置时与 record_keep_days 相同
 
 stt:
   # whisper 开箱即用（模型首次运行自动下载）。中文质量更好的路径是 SenseVoice：

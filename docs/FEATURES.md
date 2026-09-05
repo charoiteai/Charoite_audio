@@ -865,7 +865,8 @@ it signals degradation, it does not break the loop.
   longer pushed through STT every two minutes — retry with the button (or
   `--scan --retry-failed`). Retention runs after every scan and every six
   hours regardless of the watch toggle; copies that reached `done/` before
-  this version are aged by their move time and go with the same sweep.
+  this version get their days from the first sweep that sees them. The
+  default equals `audio.record_keep_days`.
   Point the app at a folder (Settings →
   Import, or `--scan` in the CLI): recordings dropped there become graph
   meetings on their own; processed files move to `done/`, failed ones

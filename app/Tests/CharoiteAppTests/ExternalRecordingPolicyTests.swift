@@ -38,10 +38,12 @@ final class ExternalRecordingPolicyTests: XCTestCase {
         XCTAssertEqual(done.kind, "meeting")
     }
 
-    func testЛегасиКопияЖивётОтМоментаПереносаВDone() {
-        let moved = Date(timeIntervalSince1970: 10_000)
-        XCTAssertEqual(ExternalRecordingPolicy.legacyDeleteAt(changed: moved),
-                       Date(timeIntervalSince1970: 10_000 + 2 * 86400))
+    /// Копия без сайдкара срок не выдумывает: его назначит первая уборка
+    /// скрипта (сайдкар «увидели сейчас»), а не ctime и не mtime.
+    func testЛегасиКопияБезДатыДоПервойУборки() {
+        let text = ExternalRecordingPolicy.statusText(.legacy, now: Date())
+        XCTAssertTrue(text.contains(L.t("ближайшая проверка", "next check", "下次检查")), text)
+        XCTAssertFalse(text.contains("удалится "), "даты, которую никто не назначал, быть не должно")
     }
 
     /// Порядок: сначала то, что требует человека (сбой), потом очередь,
