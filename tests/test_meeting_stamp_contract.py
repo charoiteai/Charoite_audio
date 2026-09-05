@@ -352,6 +352,27 @@ def test_rebuild_передаёт_точный_штамп_из_сайдкара(
     assert seen == [{"exact": "2026-08-04_120301", "tdir": tmp_path}]
 
 
+def test_rebuild_не_считает_отказом_запись_под_минутным_именем(tmp_path, monkeypatch):
+    """DS r2 M3 по #492: запись, названная самой минутой (демон до 28.07),
+    resolve_stamp возвращает как есть — это находка, а не отвод чужих;
+    лог отказа здесь врал бы."""
+    import rebuild_transcript as rt
+
+    live = tmp_path / "2026-08-03_1130_Тема.md"
+    live.write_text("# Встреча\n", encoding="utf-8")
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    meeting_stamp.recording_path(rec, "2026-08-03_1130", "mic", "wav").write_bytes(b"RIFF")
+    logged: list[str] = []
+    monkeypatch.setattr(rt, "log", lambda msg: logged.append(msg))
+    monkeypatch.setattr(rt, "wait_recording", lambda *_a: None)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
+
+    rt.rebuild(live, {"audio": {"samplerate": 16000}})
+
+    assert not any("однозначно не разрешена" in m for m in logged), logged
+
+
 def test_демон_пишет_посекундный_штамп_в_сайдкар():
     """Вторая сторона №164: без ключа `stamp` пересборке неоткуда взять
     точный штамп после наката темы — имя файла его теряет. Структурная
