@@ -23,10 +23,7 @@ jobs:
     # release-please вешает ярлык «autorelease: tagged» на уже слитый PR —
     # событие labeled приходит, когда ветки и её head-коммита больше нет,
     # и git diff base...head падает (23.08, PR #389). Слитый PR не проверяем.
-    # Ветка release-please меняет только версию, манифест и CHANGELOG —
-    # документировать в ней нечего, а app-ios/project.yml (бамп
-    # MARKETING_VERSION) считался кодом и красил каждый релизный PR (#501, 05.09).
-    if: github.event.pull_request.merged == false && !startsWith(github.head_ref, 'release-please--')
+    if: github.event.pull_request.merged == false
     steps:
       - uses: actions/checkout@v7
         with:
@@ -56,6 +53,17 @@ jobs:
           # который кода не касался.
           changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"
 
+          # Релизный PR release-please: версия, манифест, CHANGELOG и бамп
+          # MARKETING_VERSION в app-ios/project.yml (generic-updater с #500) —
+          # документировать нечего. Пропуск — по СОСТАВУ диффа, а не по имени
+          # ветки: появится новый extra-file — страж покраснеет и заставит
+          # вписать его сюда осознанно, а не замолчит (GLM r1 по PR #503).
+          release_only="$(echo "$changed" | grep -vE '^(CHANGELOG\.md|\.github/\.release-please-manifest\.json|app-ios/project\.yml)$' || true)"
+          if [ -n "$changed" ] && [ -z "$release_only" ]; then
+            echo "Только релизные файлы (версия, манифест, CHANGELOG) — документировать нечего."
+            exit 0
+          fi
+
           # Кодом считается весь код, а не только Python: приложение на 4400
           # строк Swift раньше можно было переписать целиком, и страж молчал.
           touches_code="$(echo "$changed" | grep -E '^(src/|app/|app-ios/|app-android/|scripts/)' || true)"
@@ -73,7 +81,7 @@ jobs:
           # Переводы (README.zh.md и прочие) из списка убраны: опечатка в
           # китайском переводе закрывала требование задокументировать демон.
           # CHANGELOG убран тоже — docs/RELEASING.md запрещает править его руками.
-          touches_docs="$(echo "$changed" | grep -E '^(docs/|(app-android|scripts)/README\.md$|README\.md$|PRIVACY\.md$|SECURITY\.md$|ROADMAP\.md$|CONTRIBUTING\.md$)' || true)"
+          touches_docs="$(echo "$changed" | grep -E '^(docs/|(app|app-ios|app-android|scripts)/README\.md$|README\.md$|PRIVACY\.md$|SECURITY\.md$|ROADMAP\.md$|CONTRIBUTING\.md$)' || true)"
 
           if [ -n "$touches_code" ] && [ -z "$touches_docs" ]; then
             echo "::error::Изменён код, но не тронута документация."
