@@ -5,6 +5,19 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.71.0](https://github.com/charoiteai/Charoite_audio/compare/v0.70.0...v0.71.0) (2026-09-05)
+
+
+### Features
+
+* **app:** номер версии на виду — подвал сайдбара Mac и настройки записи iPhone ([#500](https://github.com/charoiteai/Charoite_audio/issues/500)) ([f332d66](https://github.com/charoiteai/Charoite_audio/commit/f332d6626b8732e2ed624de9bd068873ce0fff28))
+
+
+### Bug Fixes
+
+* **audit:** правки по аудиту зоны 03–05.09 — зонд CLI облака, забывание встречи с копией импорта и посекундными файлами, ретеншн после переименования ([#499](https://github.com/charoiteai/Charoite_audio/issues/499)) ([08e5683](https://github.com/charoiteai/Charoite_audio/commit/08e568381778922cbb7d660f6c8b11d85df9708b))
+* **import:** импортированная встреча получает статус для списка встреч ([#502](https://github.com/charoiteai/Charoite_audio/issues/502)) ([0a877e6](https://github.com/charoiteai/Charoite_audio/commit/0a877e6b77d1d331adaedbebb010ab60f33165fe))
+
 ## [0.70.0](https://github.com/charoiteai/Charoite_audio/compare/v0.69.4...v0.70.0) (2026-09-05)
 
 
