@@ -984,7 +984,11 @@ going to transcripts/.prev; a 13-minute meeting costs about 13 s on the local
 model, and the call waits up to ten minutes for a live meeting to end first),
 a meeting that never got a draft receives minutes if its speech is long
 enough, a final transcript too short for the model keeps the draft, the
-sidecar with the hash is found even after the meeting was retitled, while
+sidecar with the hash is found even after the meeting was retitled and also
+carries the meeting's exact seconds stamp (`stamp`, written by the daemon at
+stop and by the retitle), so a rebuild of a retitled meeting looks for its
+recordings by that stamp instead of guessing by the minute and can no longer
+pick up a same-minute neighbour's recording when its own are gone, while
 hand-edited minutes are only restamped — the draft marker is removed and
 "Speaker N" labels are replaced with the recovered names; and when native
 system-audio capture fails

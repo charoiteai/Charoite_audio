@@ -604,6 +604,11 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
     live_sidecar.migrate(tpath, bare)
     if machine and not live_sidecar.remember(tpath, "transcript_sha256", live_sidecar.sha(body)):
         print("граф: хеш стенограммы после наката темы не записан — сайдкар неоднозначен", file=sys.stderr)
+    # Посекундный штамп встречи после наката темы знают только демон и это
+    # место: имя файла стало минутным, сайдкар переехал под него. По ключу
+    # `stamp` пересборка ищет записи точно, а не по минуте (№164).
+    if meeting_stamp.minute_of(bare) != bare and not live_sidecar.remember(tpath, "stamp", bare):
+        print("граф: посекундный штамп после наката темы не записан — сайдкар неоднозначен", file=sys.stderr)
     return tpath
 
 

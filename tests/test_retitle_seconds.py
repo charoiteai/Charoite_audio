@@ -68,6 +68,24 @@ def test_seconds_meeting_gets_minute_name_and_title(tmp_path):
     assert "# Встреча 2026-08-03_1130 — Инцидент загрузки\n" in new.read_text(encoding="utf-8")
 
 
+def test_retitle_records_seconds_stamp_in_sidecar(tmp_path):
+    """После наката темы имя файла минутное, сайдкар переехал под него —
+    посекундный штамп встречи остаётся только в ключе `stamp` (№164)."""
+    import json
+
+    t = _meeting(tmp_path, "2026-08-03_113012")
+    new = gu.retitle(t, "2026-08-03_1130", "2026-08-03_113012", "Инцидент загрузки")
+    meta = json.loads((tmp_path / (new.name + ".live.json")).read_text(encoding="utf-8"))
+    assert meta["stamp"] == "2026-08-03_113012"
+
+
+def test_retitle_of_minute_meeting_records_no_stamp(tmp_path):
+    """Минутной встрече уточнять нечего — сайдкар ради этого не создаётся."""
+    t = _meeting(tmp_path, "2026-08-03_1130")
+    new = gu.retitle(t, "2026-08-03_1130", "2026-08-03_1130", "Инцидент загрузки")
+    assert not (tmp_path / (new.name + ".live.json")).exists()
+
+
 def test_minute_meeting_behaviour_unchanged(tmp_path):
     t = _meeting(tmp_path, "2026-08-03_1130")
     new = gu.retitle(t, "2026-08-03_1130", "2026-08-03_1130", "Инцидент загрузки")

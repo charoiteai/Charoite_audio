@@ -3022,7 +3022,12 @@ def main():
             safe_write.write_text(
                 pathlib.Path(str(tr.path) + ".live.json"),
                 json.dumps({"speakers": len(voice_names), "names": tr.names(),
-                            "minutes_sha256": minutes_sha["v"]},
+                            "minutes_sha256": minutes_sha["v"],
+                            # посекундный штамп встречи: после наката темы имя
+                            # файла его теряет, а пересборке он нужен точно —
+                            # иначе она ищет записи по минуте и может взять
+                            # запись соседки (№164)
+                            "stamp": tr.stamp},
                            ensure_ascii=False))
         except Exception:  # noqa: BLE001 — подсказка вспомогательна, не рушим финал
             pass

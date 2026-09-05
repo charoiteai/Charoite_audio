@@ -417,9 +417,24 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
         rec_dir = pathlib.Path(os.environ["SUFLER_RECORDINGS_DIR"])
 
     # Retry знает минутное имя с темой, записи — посекундный штамп демона.
-    # Разрешаем его один раз сразу для обоих каналов: если кандидаты не
-    # совпали, не берём ни один вместо склейки двух разных встреч.
-    recording_stamp = meeting_stamp.resolve_stamp(rec_dir, stamp)
+    # Точный штамп — из сайдкара (демон пишет его при стопе, накат темы —
+    # при переименовании); без него разрешаем по минуте один раз сразу для
+    # обоих каналов, и единственный кандидат с собственной стенограммой —
+    # соседка, а не мы (№164). Кандидаты не совпали — не берём ни один
+    # вместо склейки двух разных встреч.
+    exact = live_sidecar.exact_stamp(live)
+    if exact:
+        log(f"штамп записей из сайдкара: {exact}")
+    recording_stamp = meeting_stamp.resolve_stamp(rec_dir, stamp, exact=exact, tdir=live.parent)
+    if exact is None and recording_stamp == stamp and meeting_stamp.minute_of(stamp) == stamp \
+            and not any(meeting_stamp.recording_path(rec_dir, stamp, lab, ext).exists()
+                        for lab in meeting_stamp.RECORDING_LABELS for ext in meeting_stamp.RECORDING_EXTS):
+        # Отказ по минуте — событие, а не тишина (DS r1 по #492): дальше
+        # ожидание под минутным именем, и «записей нет» без этой строки
+        # выглядело бы как отсутствие записей, а не как отвод чужих. Запись,
+        # названная самой минутой (демон до 28.07), — не отказ (DS r2 M3).
+        log("точного штампа нет, запись по минуте однозначно не разрешена "
+            "(нет кандидатов, две встречи в минуту или у кандидата своя стенограмма)")
     base = meeting_stamp.started_at(recording_stamp)
     if base is None:
         return None
@@ -434,7 +449,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # принимает решения; touch честно продлевает жизнь на keep_days от старта
     # пересборки.
     for _label in meeting_stamp.RECORDING_LABELS:
-        for _ext in ("pcm", "wav", "wav.part"):
+        for _ext in meeting_stamp.RECORDING_EXTS:
             _p = meeting_stamp.recording_path(rec_dir, recording_stamp, _label, _ext)
             try:
                 if _p.exists():

@@ -304,6 +304,84 @@ def test_legacy_main_titled_with_a_service_word_is_healed_not_demoted(tmp_path):
     assert {src.name: dst.name for src, dst in p["moves"]} == {main.name: f"{STAMP}_Новая_тема.md"}
 
 
+def test_bare_seconds_main_keeps_its_seconds_in_the_sidecar(tmp_path, monkeypatch):
+    """Голый посекундный главный файл получает минутное имя — секунды остаются
+    только в ключе `stamp` сайдкара, иначе пересборка снова гадает по минуте
+    (№164, GLM r1 по #492)."""
+    graph, tdir = tmp_path / "graph", tmp_path / "transcripts"
+    tdir.mkdir()
+    (graph / "Встречи").mkdir(parents=True)
+    (tdir / "2026-08-03_113012.md").write_text("# Встреча 2026-08-03_113012\n", encoding="utf-8")
+    (tdir / "2026-08-03_113012_hints.md").write_text("подсказки", encoding="utf-8")
+    monkeypatch.setattr(rm, "ROOT", tmp_path)
+    pretty, slug = rm.pretty_and_slug("Инцидент загрузки")
+
+    p = rm.plan(graph, tdir, STAMP, pretty, slug)
+    rm.apply(p, graph, STAMP, pretty)
+
+    new = tdir / f"{STAMP}_Инцидент_загрузки.md"
+    assert new.exists() and not (tdir / "2026-08-03_113012.md").exists()
+    meta = json.loads((tdir / f"{STAMP}_Инцидент_загрузки.md.live.json").read_text(encoding="utf-8"))
+    assert meta["stamp"] == "2026-08-03_113012"
+
+
+def test_legacy_seconds_main_with_a_service_word_keeps_its_seconds(tmp_path, monkeypatch):
+    """DS r2 M1 по #492: legacy-главный «…113012_Итоги_разбор.md» (тема на
+    служебное слово, stamp_of его не разбирает) лечится в минутное имя — и
+    тоже получает ключ `stamp`, иначе его секунды теряются навсегда."""
+    sec = f"{STAMP}12"
+    main = tmp_path / f"{sec}_Итоги_разбор.md"
+    main.write_text(f"# Встреча {sec} — Итоги разбор\n\nтекст\n", encoding="utf-8")
+    monkeypatch.setattr(rm, "ROOT", tmp_path)
+    pretty, slug = rm.pretty_and_slug("Итоги разбор")
+    p = rm.plan(tmp_path / "нет-графа", tmp_path, STAMP, pretty, slug)
+    assert p["stamps"] == [(tmp_path / f"{STAMP}_Итоги-разбор.md", sec)]
+    rm.apply(p, tmp_path / "нет-графа", STAMP, pretty)
+    meta = json.loads((tmp_path / f"{STAMP}_Итоги-разбор.md.live.json").read_text(encoding="utf-8"))
+    assert meta["stamp"] == sec
+
+
+def test_vault_copy_of_a_bare_main_gets_no_sidecar(tmp_path, monkeypatch):
+    """DS r2 M2 по #492: копия главного в Документации едет вместе с ним, но
+    сайдкар ей не полагается — читать его там некому, а переносить нечем."""
+    graph, tdir = tmp_path / "graph", tmp_path / "transcripts"
+    tdir.mkdir()
+    (graph / "Встречи").mkdir(parents=True)
+    docs = graph / "Документация" / "Стенограммы встреч"
+    docs.mkdir(parents=True)
+    (tdir / "2026-08-03_113012.md").write_text("# Встреча 2026-08-03_113012\n", encoding="utf-8")
+    (docs / "2026-08-03_113012.md").write_text("# Встреча 2026-08-03_113012\n", encoding="utf-8")
+    monkeypatch.setattr(rm, "ROOT", tmp_path)
+    pretty, slug = rm.pretty_and_slug("Тема")
+    p = rm.plan(graph, tdir, STAMP, pretty, slug)
+    assert [t.parent for t, _ in p["stamps"]] == [tdir]
+    rm.apply(p, graph, STAMP, pretty)
+    assert (tdir / f"{STAMP}_Тема.md.live.json").exists()
+    assert not list(docs.glob("*.live.json")), "в vault сайдкару не место"
+
+
+def test_stamp_is_not_written_into_a_foreign_sidecar_on_the_target_name(tmp_path, monkeypatch):
+    """DS r3 M1 по #492: имя сайдкара-цели занято сиротой удалённой встречи —
+    свой сайдкар остаётся под старым именем, и штамп в чужой файл не пишется."""
+    graph, tdir = tmp_path / "graph", tmp_path / "transcripts"
+    tdir.mkdir()
+    (graph / "Встречи").mkdir(parents=True)
+    (tdir / "2026-08-03_113012.md").write_text("# Встреча 2026-08-03_113012\n", encoding="utf-8")
+    own = tdir / "2026-08-03_113012.md.live.json"
+    own.write_text(json.dumps({"names": {"Собеседник 1": "Анна"}}), encoding="utf-8")
+    foreign = tdir / f"{STAMP}_Тема.md.live.json"
+    foreign.write_text(json.dumps({"names": {"Собеседник 1": "Чужой"}, "minutes_sha256": "x" * 64}), encoding="utf-8")
+    monkeypatch.setattr(rm, "ROOT", tmp_path)
+    pretty, slug = rm.pretty_and_slug("Тема")
+
+    p = rm.plan(graph, tdir, STAMP, pretty, slug)
+    assert p["stamps"] == [], "штамп в чужой сайдкар не планируется"
+    rm.apply(p, graph, STAMP, pretty)
+
+    assert own.exists(), "свой сайдкар остался под старым именем"
+    assert json.loads(foreign.read_text(encoding="utf-8")).get("stamp") is None
+
+
 def test_sidecar_follows_the_renamed_transcript(world):
     graph, tdir = world
     sc = tdir / f"{STAMP}_Обновление_ОС.md.live.json"
