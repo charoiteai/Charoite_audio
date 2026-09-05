@@ -23,7 +23,10 @@ jobs:
     # release-please вешает ярлык «autorelease: tagged» на уже слитый PR —
     # событие labeled приходит, когда ветки и её head-коммита больше нет,
     # и git diff base...head падает (23.08, PR #389). Слитый PR не проверяем.
-    if: github.event.pull_request.merged == false
+    # Ветка release-please меняет только версию, манифест и CHANGELOG —
+    # документировать в ней нечего, а app-ios/project.yml (бамп
+    # MARKETING_VERSION) считался кодом и красил каждый релизный PR (#501, 05.09).
+    if: github.event.pull_request.merged == false && !startsWith(github.head_ref, 'release-please--')
     steps:
       - uses: actions/checkout@v7
         with:
@@ -75,7 +78,7 @@ jobs:
           if [ -n "$touches_code" ] && [ -z "$touches_docs" ]; then
             echo "::error::Изменён код, но не тронута документация."
             echo ""
-            echo "Обнови docs/, README* или CHANGELOG.md — либо повесь метку skip-docs,"
+            echo "Обнови docs/ или README* (CHANGELOG.md ведёт release-please) — либо повесь метку skip-docs,"
             echo "если правка чисто техническая и документировать нечего."
             echo ""
             echo "Изменённые файлы:"
