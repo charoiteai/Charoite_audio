@@ -17,6 +17,7 @@ stdin (EOF = стоп). STT греется параллельно записи.
 from __future__ import annotations
 
 import datetime as dt
+import faulthandler
 import json
 import pathlib
 import re
@@ -81,8 +82,41 @@ def last_meeting_today() -> tuple[str, str] | None:
     return stamp, topic
 
 
+
+def _record_and_transcribe(warm_t: threading.Thread, stt_holder: dict) -> str | None:
+    """Ветка микрофона: пишем до EOF от Swift и распознаём. None — распознавать нечего."""
+    frames: list[np.ndarray] = []
+
+    def cb(indata, *_):
+        frames.append(indata.copy())
+
+    # Импорт здесь, а не наверху: PortAudio на машине без звуковых
+    # устройств роняет процесс при ВЫХОДЕ («terminate called without an
+    # active exception», код -6) — дневник успевал сделать работу и
+    # напечатать ответ, а падал уже на закрытии. Диктовке микрофон нужен,
+    # дневнику с текстом — нет, и он больше не платит за чужую библиотеку
+    # (флейк CI, №122).
+    import sounddevice as sd
+
+    with sd.InputStream(samplerate=SR, channels=1, dtype="float32", callback=cb):
+        print("REC", file=sys.stderr, flush=True)  # Swift ловит: запись пошла
+        sys.stdin.buffer.read()  # EOF от Swift = стоп
+
+    audio = np.concatenate(frames)[:, 0] if frames else np.zeros(0, dtype="float32")
+    if len(audio) < SR * 0.4:
+        return None
+    warm_t.join(timeout=60)
+    stt = stt_holder.get("stt")
+    if stt is None:
+        print("STT не загрузился", file=sys.stderr)
+        sys.exit(1)
+    raw = stt.transcribe(audio, SR).strip()
+    return raw or None
+
+
 def main():
     harden_umask()  # данные встреч — только владельцу (аудит 16.08)
+    faulthandler.enable()  # следующий SIGABRT оставит стек, а не одну цифру -6 (№174)
     diary = "--diary" in sys.argv
     text_mode = "--text" in sys.argv
     stt_holder: dict = {}
@@ -92,41 +126,28 @@ def main():
         from stt import STT
         stt_holder["stt"] = STT(cfg)
 
-    warm_t = threading.Thread(target=warm, daemon=True)
-    warm_t.start()
-
     if text_mode:
+        # Текстовому режиму STT не нужен — и прогревать его нельзя: daemon-поток
+        # грузил onnxruntime/GigaAM в фоне, а интерпретатор выходил раньше, чем
+        # тот заканчивал, — и нативные библиотеки падали на выходе с SIGABRT
+        # («terminate called without an active exception», код -6). Работа была
+        # сделана, ответ напечатан, а returncode -6 красил CI через раз
+        # (05.09 — #499 и #503, №174).
         raw = sys.stdin.read().strip()
         if not raw:
             return
     else:
-        frames: list[np.ndarray] = []
-
-        def cb(indata, *_):
-            frames.append(indata.copy())
-
-        # Импорт здесь, а не наверху: PortAudio на машине без звуковых
-        # устройств роняет процесс при ВЫХОДЕ («terminate called without an
-        # active exception», код -6) — дневник успевал сделать работу и
-        # напечатать ответ, а падал уже на закрытии. Диктовке микрофон нужен,
-        # дневнику с текстом — нет, и он больше не платит за чужую библиотеку
-        # (флейк CI, №122).
-        import sounddevice as sd
-
-        with sd.InputStream(samplerate=SR, channels=1, dtype="float32", callback=cb):
-            print("REC", file=sys.stderr, flush=True)  # Swift ловит: запись пошла
-            sys.stdin.buffer.read()  # EOF от Swift = стоп
-
-        audio = np.concatenate(frames)[:, 0] if frames else np.zeros(0, dtype="float32")
-        if len(audio) < SR * 0.4:
-            return
-        warm_t.join(timeout=60)
-        stt = stt_holder.get("stt")
-        if stt is None:
-            print("STT не загрузился", file=sys.stderr)
-            sys.exit(1)
-        raw = stt.transcribe(audio, SR).strip()
-        if not raw:
+        warm_t = threading.Thread(target=warm, daemon=True)
+        warm_t.start()
+        try:
+            raw = _record_and_transcribe(warm_t, stt_holder)
+        finally:
+            # Любой выход из ветки микрофона — короткая запись, отмена,
+            # ошибка — дожидается прогрева: брошенный посреди нативного init
+            # daemon-поток ронял бы процесс на выходе тем же SIGABRT (GLM r1
+            # по №174). Потолок — чтобы зависший onnxruntime не держал выход.
+            warm_t.join(timeout=60)
+        if raw is None:
             return
 
     if diary:
