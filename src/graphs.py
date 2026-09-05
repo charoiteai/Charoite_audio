@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 import pathlib
+import sys
+import time
 
 from charoite_paths import resolve_root
 
@@ -105,6 +107,21 @@ def roots() -> list[pathlib.Path]:
     return ([gd.parent] if gd else []) + [ICLOUD]
 
 
+def _listdir_patient(root: pathlib.Path, attempts: int = 3, pause: float = 0.5) -> list[pathlib.Path]:
+    """Листинг корня с повтором: iCloud-каталог отвечал EINTR посреди ночи
+    (17.08), и один сигнал ронял весь ночной шаг (аудит GLM/DS 05.09).
+    Устойчивый отказ — пропуск корня вслух, не падение."""
+    for i in range(attempts):
+        try:
+            return sorted(root.iterdir())
+        except OSError as e:
+            if i + 1 == attempts:
+                print(f"graphs: каталог {root} не прочитался ({e}) — пропуск", file=sys.stderr)
+                return []
+            time.sleep(pause)
+    return []
+
+
 def all_graphs(marker: str) -> list[pathlib.Path]:
     """Графы vault, у которых есть подпапка marker («Ядра», «Встречи-архив»).
 
@@ -116,7 +133,7 @@ def all_graphs(marker: str) -> list[pathlib.Path]:
     for root in roots():
         if not root.is_dir():
             continue
-        for d in sorted(root.iterdir()):
+        for d in _listdir_patient(root):
             if d.name.startswith("."):
                 continue      # скрытое — не граф (снимки, .obsidian, .trash)
             if d.is_dir() and (d / marker).is_dir() and d not in seen:

@@ -475,6 +475,28 @@ def test_prune_done_removes_expired_copies_and_archive_audio(tmp_path):
     assert not im.imported_sidecar(expired_audio).exists()
 
 
+def test_prune_finds_the_archive_source_after_the_meeting_was_renamed(tmp_path):
+    """DS аудит 05.09: rename_meeting переносит папку архива целиком, путь в
+    сайдкаре мёртв — исходник ищем по штампу, а не сдаёмся."""
+    import import_meeting as im
+
+    graph = tmp_path / "vault" / "Работа"
+    folder = graph / "Встречи-архив" / "2026-09-05 12-00 — Новая тема"
+    folder.mkdir(parents=True)
+    src = folder / "Исходник.m4a"
+    src.write_bytes(b"a")
+    done = tmp_path / "done"
+    done.mkdir()
+    copy = done / "rec.m4a"
+    copy.write_bytes(b"c")
+    now = time.time()
+    dead = str(graph / "Встречи-архив" / "2026-09-05 12-00 — Старая тема" / "Исходник.m4a")
+    im._write_json(im.imported_sidecar(copy), {"imported_at": now - 9, "delete_after": now - 1,
+                                               "stamp": "2026-09-05_1200", "archive_source": dead})
+    removed = im.prune_done(tmp_path, 2, now=now, graph=graph)
+    assert src in removed and not src.exists()
+
+
 def test_prune_legacy_done_files_get_their_days_from_the_first_sweep(tmp_path):
     """Файл в done/ без сайдкара (импорт до этой версии): первый проход
     даёт ему сайдкар «увидели сейчас», удаление — через keep_days с этого
@@ -668,9 +690,10 @@ def test_import_keep_days_is_forgiving_but_not_negative(capsys):
     assert im.import_keep_days({"audio": {"import_keep_days": "два"}}) == im.IMPORT_KEEP_DAYS_DEFAULT
     assert "непонятное" in capsys.readouterr().out
     assert im.import_keep_days({"audio": {"import_keep_days": "1e999"}}) == im.IMPORT_KEEP_DAYS_DEFAULT
-    assert im.import_keep_days({"audio": {"record_keep_days": 7}}) == 7, "без своего срока — как у записей"
-    assert im.import_keep_days({"audio": {"import_keep_days": None, "record_keep_days": 5}}) == 5, \
-        "пустой ключ в YAML — тоже каскад (GLM r2)"
+    assert im.import_keep_days({"audio": {"record_keep_days": 7}}) == im.IMPORT_KEEP_DAYS_DEFAULT, \
+        "срок импорта не наследует record_keep_days (аудит 05.09: чужая запись не живёт дольше, чем просили)"
+    assert im.import_keep_days({"audio": {"import_keep_days": None, "record_keep_days": 5}}) == \
+        im.IMPORT_KEEP_DAYS_DEFAULT
     assert im.import_keep_days({"audio": {"import_keep_days": 5}}, override="0") == 0
     with pytest.raises(SystemExit):
         im.import_keep_days({"audio": {"import_keep_days": -1}})
@@ -778,3 +801,17 @@ def test_direct_import_publishes_failed_when_the_tail_dies(tmp_path, monkeypatch
 
     data = json.loads((root / "logs" / "meeting-status" / "2026-09-05_1200.json").read_text(encoding="utf-8"))
     assert data["state"] == "error" and "retro_fill" in data["error"] and "сигналом 9" in data["error"]
+
+
+def test_keep_days_hint_is_by_value_and_once(capsys):
+    """DS r2 по #499: `record_keep_days: 2.0` — тот же дефолт, подсказки нет;
+    отличное значение — подсказка один раз на процесс, не на каждый прун."""
+    im._KEEP_DAYS_HINTED[0] = False
+    try:
+        assert im.import_keep_days({"audio": {"record_keep_days": 2.0}}) == im.IMPORT_KEEP_DAYS_DEFAULT
+        assert "больше не влияет" not in capsys.readouterr().out
+        im.import_keep_days({"audio": {"record_keep_days": 14}})
+        im.import_keep_days({"audio": {"record_keep_days": 14}})
+        assert capsys.readouterr().out.count("больше не влияет") == 1
+    finally:
+        im._KEEP_DAYS_HINTED[0] = False

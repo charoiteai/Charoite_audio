@@ -30,6 +30,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
@@ -252,22 +253,50 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
 
     prompt = PROMPT.format(theme=theme, current=body, sources="\n".join(parts))
     claude = cloud.claude_bin()
-    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-    cloud.add_proxy(env)
-    try:
-        # Досье и все источники уже В ПРОМПТЕ — инструментов этому вызову не
-        # положено вовсе: инъекция из стенограммы/досье не должна читать
-        # произвольные файлы и вносить их в переписанный текст (аудит 14.08).
-        # stdin=DEVNULL — по правилу соседних вызовов: унаследованный поток
-        # заставляет headless-claude ждать EOF до таймаута.
-        r = subprocess.run([claude, "-p", prompt, "--model", model,
-                            *cloud.text_only_args()],
-                           capture_output=True, text=True, timeout=600, env=env,
-                           stdin=subprocess.DEVNULL)
-    except Exception as e:  # noqa: BLE001
-        why = f"сбой: claude не отработал ({e})"
-        print(f"  ⚠️ {theme}: {why}")
-        return None, why
+    env = cloud.cli_env()      # то же окружение, что у зонда: иначе зонд не представителен (DS r2 по #499)
+    r = None
+    for attempt in (1, 2):
+        try:
+            # Досье и все источники уже В ПРОМПТЕ — инструментов этому вызову не
+            # положено вовсе: инъекция из стенограммы/досье не должна читать
+            # произвольные файлы и вносить их в переписанный текст (аудит 14.08).
+            # stdin=DEVNULL — по правилу соседних вызовов: унаследованный поток
+            # заставляет headless-claude ждать EOF до таймаута. Вызов остаётся
+            # ЗДЕСЬ, под privacy-гейтом выше: сторож test_cloud_call_sites
+            # держит выход в сеть именно в review().
+            r = subprocess.run([claude, "-p", prompt, "--model", model,
+                                *cloud.text_only_args()],
+                               capture_output=True, text=True, timeout=600, env=env,
+                               stdin=subprocess.DEVNULL)
+            break
+        except OSError as e:
+            # exec не удался: бинарник CLI меняется под ногами (обновление) —
+            # одна пауза (на процесс) и повтор с переразрешённым путём (аудит 05.09)
+            if attempt == 1:
+                global _SLEPT_FOR_CLI
+                if not _SLEPT_FOR_CLI:
+                    print(f"  ⚠️ {theme}: claude не запустился ({e}) — повтор через {int(cloud.RETRY_PAUSE)} с")
+                    time.sleep(cloud.RETRY_PAUSE)
+                    _SLEPT_FOR_CLI = True
+                try:
+                    claude = cloud.claude_bin_checked(retries=0)
+                except cloud.CloudCLIUnavailable:
+                    CLI_DOWN[0] = True          # умер по ходу — main() отдаст 3
+                    why = f"сбой: claude не отработал ({e})"
+                    print(f"  ⚠️ {theme}: {why}")
+                    return None, why
+                continue
+            # Зонд ответил, а exec снова не удался — бинарник всё ещё меняется:
+            # это отказ инфраструктуры, не сбой темы (Important DS r2 по #499)
+            CLI_DOWN[0] = True
+            why = f"сбой: claude не отработал ({e})"
+            print(f"  ⚠️ {theme}: {why}")
+            return None, why
+        except Exception as e:  # noqa: BLE001
+            why = f"сбой: claude не отработал ({e})"
+            print(f"  ⚠️ {theme}: {why}")
+            return None, why
+    assert r is not None
     if r.returncode != 0:
         # Код ≠ 0 с текстом в stdout — сообщение CLI об ошибке или обрывок,
         # а не ревизия; раньше он шёл в парсер наравне с ответом.
@@ -344,6 +373,40 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
                             dry=dry, limit=limit, may_edit=may_edit)
 
 
+# Сбои шага (не отказ по содержанию) за прогон: main() отдаёт по ним код 2 —
+# раньше они жили только в служебном md внутри графа, и ночь с лежащим
+# облаком выглядела успешной (аудит GLM/DS по main 05.09)
+FAILED_STEPS: list[str] = []
+# Пауза перед повтором exec — один раз на процесс: обновление CLI посреди
+# прогона иначе усыпляло бы каждую тему на 60 с, и ночь вылезала за потолок
+# (GLM r1 по #499)
+_SLEPT_FOR_CLI = False
+_REPROBED = [False]
+
+
+def cli_back() -> bool:
+    """Один повторный зонд на процесс (прогон всех графов) после аварии CLI.
+
+    Обновление CLI — штатное событие, и один не ответивший зонд посреди ночи
+    (30 с таймаута `--version` во время самозамены бинарника) не должен
+    списывать все оставшиеся досье до утра; второй раз уже не верим — иначе
+    прогон зондировал бы каждую тему (критика GLM r2 по #499).
+    """
+    if _REPROBED[0]:
+        return False
+    _REPROBED[0] = True
+    try:
+        cloud.claude_bin_checked(retries=0)
+    except cloud.CloudCLIUnavailable:
+        return False
+    CLI_DOWN[0] = False
+    print("  ↻ CLI облака снова отвечает — продолжаем")
+    return True
+# CLI умер посреди прогона (обновление началось после зонда): повторный зонд
+# не ответил — остальные темы не трогаем, main() отдаёт 3, а не 2 (DS r1)
+CLI_DOWN = [False]
+
+
 def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
                  dry: bool, limit: int, may_edit: bool) -> int:
     done, notes, applied, rejected, failed = 0, [], [], [], []
@@ -364,6 +427,9 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
                                   cap=tier3.night_wait_cap())
         if live_gate.night_is_over():
             print("  ⏹ время ночного прогона вышло — остальные досье завтра")
+            break
+        if CLI_DOWN[0] and not cli_back():
+            print("  ⏹ CLI облака не запускается — остальные досье завтра")
             break
         old = path.read_text(encoding="utf-8")     # одно чтение на проверку и запись
         fixed, why = review(theme, path, graph, files, members, model, cfg, current=old)
@@ -410,6 +476,7 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
             report += "## Отклонено\n\n" + "\n".join(rejected) + "\n\n"
         if failed:
             report += "## Сбои шага (не отказ по содержанию)\n\n" + "\n".join(failed) + "\n\n"
+            FAILED_STEPS.extend(failed)
         if notes:
             report += ("## Предложено, но не применено\n\n"
                        "Запись выключена: `sufler.cloud_edit_graph: false`. Включите "
@@ -459,15 +526,30 @@ def main() -> int:
             return 1
         graph_list = [chosen]
 
+    # Зонд CLI после резолва графа (при битом конфиге — сначала код 1, без
+    # минуты на таймауты; DS r1 по #499) и до первой темы: сломанный бинарник —
+    # не «сбой темы», а отказ инфраструктуры, ночь видит его кодом 3 (аудит 05.09)
+    try:
+        cloud.claude_bin_checked()
+    except cloud.CloudCLIUnavailable as e:
+        print(f"CLI облака не отвечает: {e} — ревизия досье не начата")
+        return 3
+
     режим = "правит граф" if privacy.cloud_edit_graph_enabled(cfg) else "только отчёт"
     print(f"режим: {режим}")
     total = 0
     for g in graph_list:
-        if not g.is_dir():
+        if not g.is_dir() or (CLI_DOWN[0] and not cli_back()):
             continue
         print(f"=== {g.name}")
         total += run(g, cfg, dry=args.dry, limit=args.limit)
     print(f"итого досье просмотрено: {total}")
+    if CLI_DOWN[0]:
+        print("CLI облака перестал запускаться по ходу ревизии — код 3")
+        return 3
+    if FAILED_STEPS:
+        print(f"сбои шага: {len(FAILED_STEPS)} тем не проверено — код 2")
+        return 2
     return 0
 
 

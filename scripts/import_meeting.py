@@ -170,26 +170,46 @@ def free_name(folder: pathlib.Path, name: str) -> pathlib.Path:
     return dest
 
 
+_KEEP_DAYS_HINTED = [False]
+
+
+def _hint_keep_days_once(record_keep_days) -> None:
+    """До 0.70.1 срок копии наследовался от record_keep_days — сказать в лог
+    один раз на процесс, что теперь он свой; по значению, а не по строке:
+    `2.0` — тот же дефолт (DS r2 по #499)."""
+    if _KEEP_DAYS_HINTED[0] or record_keep_days is None:
+        return
+    try:
+        same = float(record_keep_days) == float(IMPORT_KEEP_DAYS_DEFAULT)
+    except (TypeError, ValueError):
+        return          # кривое значение — не о чем говорить «больше не влияет» (DS r3 M2)
+    if same:
+        return
+    _KEEP_DAYS_HINTED[0] = True
+    print(f"import_keep_days не задан — копии импорта живут {IMPORT_KEEP_DAYS_DEFAULT} дн. "
+          f"(record_keep_days={record_keep_days} на них больше не влияет; "
+          f"задайте audio.import_keep_days явно)")
+
+
 def import_keep_days(cfg: dict, override=None) -> float:
     """Срок жизни копии в done/ (`audio.import_keep_days`, дни).
 
-    Не задан — берём `audio.record_keep_days`: у живой встречи и у
-    импортированной одна папка архива и одно обещание PRIVACY, и человек,
-    поднявший срок записей ради пересборки, не должен молча терять
-    исходники импорта (критика GLM r1 по #496). Кривое значение — не повод
-    удалять сразу или не удалять никогда: говорим вслух и берём умолчание.
-    Отрицательное — отказ: «удалить до импорта» не бывает. Ноль допустим —
-    копия уходит первым же проходом. Бесконечность — как кривое: в JSON
-    сайдкара она не проходит, а «никогда» задаётся не так.
+    Не задан — 2, БЕЗ каскада из `record_keep_days`: каскад (круг 1 по #496)
+    держался на «пересборка читает Исходник» — а она его не читает, зато
+    чужая запись (диктофон, звонок) растягивалась бы до срока живых записей
+    (14 дней в поле) вопреки просьбе владельца «удалять через два дня»
+    (аудит GLM/DS 05.09). Кривое значение — не повод удалять сразу или не
+    удалять никогда: говорим вслух и берём умолчание. Отрицательное — отказ:
+    «удалить до импорта» не бывает. Ноль допустим — копия уходит первым же
+    проходом. Бесконечность — как кривое: в JSON сайдкара она не проходит.
     """
     raw = override
     audio = cfg.get("audio") or {}
     if raw is None:
         raw = audio.get("import_keep_days")
-    if raw is None:          # ключа нет или `import_keep_days:` пустой — каскад (GLM r2)
-        raw = audio.get("record_keep_days")
-    if raw is None:
+    if raw is None:          # ключа нет или `import_keep_days:` пустой
         raw = IMPORT_KEEP_DAYS_DEFAULT
+        _hint_keep_days_once(audio.get("record_keep_days"))
     try:
         days = float(raw)
     except (TypeError, ValueError):
@@ -212,19 +232,21 @@ def _archive_source_for(meta: dict, done_file: pathlib.Path,
     ищем по штампу в графе, тем же поиском, что и импорт. Только аудио и
     только имя «Исходник…», которое писали сами.
     """
-    candidate: pathlib.Path | None = None
+    candidates: list[pathlib.Path] = []
     archive = meta.get("archive_source")
     if isinstance(archive, str):
-        candidate = pathlib.Path(archive)
-    elif graph is not None and isinstance(meta.get("stamp"), str):
+        candidates.append(pathlib.Path(archive))
+    # Путь — подсказка, не истина: переименование встречи переносит всю
+    # папку архива, и сохранённый путь мёртв; штамп находит папку по
+    # meeting_id манифеста (DS аудит 05.09)
+    if graph is not None and isinstance(meta.get("stamp"), str):
         found = archive_folder_for(graph, meta["stamp"])
         if found is not None:
-            candidate = found / f"Исходник{done_file.suffix.lower()}"
-    if candidate is None:
-        return None
-    if (candidate.suffix.lower() in AUDIO and candidate.name.startswith("Исходник")
-            and not candidate.is_symlink() and candidate.is_file()):
-        return candidate
+            candidates.append(found / f"Исходник{done_file.suffix.lower()}")
+    for candidate in candidates:
+        if (candidate.suffix.lower() in AUDIO and candidate.name.startswith("Исходник")
+                and not candidate.is_symlink() and candidate.is_file()):
+            return candidate
     return None
 
 
