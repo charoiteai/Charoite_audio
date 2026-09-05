@@ -374,16 +374,39 @@ def test_stamp_is_not_written_into_a_foreign_sidecar_on_the_target_name(tmp_path
     monkeypatch.setattr(rm, "ROOT", tmp_path)
     pretty, slug = rm.pretty_and_slug("Тема")
 
+    (tdir / "2026-08-03_113012_hints.md").write_text("подсказки", encoding="utf-8")
     p = rm.plan(graph, tdir, STAMP, pretty, slug)
     assert p["stamps"] == [], "штамп в чужой сайдкар не планируется"
-    # GLM Critical по main 05.09: и сам .md под чужой сайдкар не переезжает —
-    # иначе сирота стала бы прямым сайдкаром встречи с чужим ключом stamp
-    assert not [m for m in p["moves"] if m[0].name == "2026-08-03_113012.md"]
+    # GLM Critical по main 05.09: .md под чужой сайдкар не переезжает — иначе
+    # сирота стала бы прямым сайдкаром встречи с чужим ключом stamp; и ни один
+    # файл встречи (GLM r1 по #494, I1): производные не должны уехать без главного
+    assert p["moves"] == []
     rm.apply(p, graph, STAMP, pretty)
+    assert (tdir / "2026-08-03_113012_hints.md").exists()
 
     assert (tdir / "2026-08-03_113012.md").exists(), "стенограмма осталась под старым именем"
     assert own.exists(), "свой сайдкар остался под старым именем"
     assert json.loads(foreign.read_text(encoding="utf-8")).get("stamp") is None
+
+
+def test_own_sidecar_under_the_target_name_reunites_the_pair(tmp_path, monkeypatch):
+    """GLM r1 по #494, I2: .md вернули под старое имя (откат, Time Machine),
+    а свой сайдкар остался под целевым — его ключ stamp = наши секунды, это
+    не сирота: перенос разрешён, пара воссоединяется."""
+    graph, tdir = tmp_path / "graph", tmp_path / "transcripts"
+    tdir.mkdir()
+    (graph / "Встречи").mkdir(parents=True)
+    (tdir / "2026-08-03_113012.md").write_text("# Встреча 2026-08-03_113012\n", encoding="utf-8")
+    own_twin = tdir / f"{STAMP}_Тема.md.live.json"
+    own_twin.write_text(json.dumps({"stamp": "2026-08-03_113012", "names": {"Собеседник 1": "Анна"}}), encoding="utf-8")
+    monkeypatch.setattr(rm, "ROOT", tmp_path)
+    pretty, slug = rm.pretty_and_slug("Тема")
+    p = rm.plan(graph, tdir, STAMP, pretty, slug)
+    assert [m[0].name for m in p["moves"]] == ["2026-08-03_113012.md"]
+    rm.apply(p, graph, STAMP, pretty)
+    assert (tdir / f"{STAMP}_Тема.md").exists()
+    meta = json.loads(own_twin.read_text(encoding="utf-8"))
+    assert meta["stamp"] == "2026-08-03_113012" and meta["names"] == {"Собеседник 1": "Анна"}
 
 
 def test_sidecar_follows_the_renamed_transcript(world):

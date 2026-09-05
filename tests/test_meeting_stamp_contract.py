@@ -258,10 +258,17 @@ def test_наследие_без_штампа_не_берёт_запись_со�
     # соседка с темой под своим посекундным ключом — тоже соседка
     (tdir / "2026-08-04_120314.md").rename(tdir / "2026-08-04_120314_Другая.md")
     assert meeting_stamp.resolve_stamp(rec, "2026-08-04_1203", tdir=tdir) == "2026-08-04_1203"
-    # .md соседки стёрт руками, остался её сайдкар — та же улика (GLM I3 по main 05.09)
+    # .md соседки стёрт руками, остался её сайдкар С КЛЮЧОМ stamp (новый демон) —
+    # та же улика (GLM I3 по main 05.09)
     (tdir / "2026-08-04_120314_Другая.md").unlink()
-    (tdir / "2026-08-04_120314_Другая.md.live.json").write_text("{}", encoding="utf-8")
+    import json as _json
+    (tdir / "2026-08-04_120314_Другая.md.live.json").write_text(
+        _json.dumps({"stamp": "2026-08-04_120314"}), encoding="utf-8")
     assert meeting_stamp.resolve_stamp(rec, "2026-08-04_1203", tdir=tdir) == "2026-08-04_1203"
+    # сайдкар без ключа под посекундным именем — наследие до 0.69.1, с тем же
+    # успехом наш собственный (DS r1 по #494): не улика, запись берётся
+    (tdir / "2026-08-04_120314_Другая.md.live.json").write_text("{}", encoding="utf-8")
+    assert meeting_stamp.resolve_stamp(rec, "2026-08-04_1203", tdir=tdir) == "2026-08-04_120314"
     # без единого следа соседки единственный кандидат по-прежнему наш
     (tdir / "2026-08-04_120314_Другая.md.live.json").unlink()
     assert meeting_stamp.resolve_stamp(rec, "2026-08-04_1203", tdir=tdir) == "2026-08-04_120314"
@@ -409,9 +416,16 @@ def test_список_расширений_записи_один_на_всех()
     списком; расхождение с resolve_stamp давало бы ложный лог отказа."""
     import pathlib
 
+    import ast
+
     src = (pathlib.Path(__file__).resolve().parents[1] / "src" / "rebuild_transcript.py").read_text(encoding="utf-8")
-    # в rebuild нет собственного кортежа расширений (GLM M4: прежний assert не мог упасть)
-    assert '("wav", "pcm", "wav.part")' not in src and '("pcm", "wav", "wav.part")' not in src
+    # в rebuild нет собственного литерала из трёх расширений — по дереву, а не
+    # по строке (GLM r1 по #494, M2: строковый assert обходился пробелами/порядком)
+    exts = set(meeting_stamp.RECORDING_EXTS)
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            vals = {e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)}
+            assert vals != exts, "rebuild_transcript держит свой список расширений записи"
     assert src.count("meeting_stamp.RECORDING_EXTS") >= 2
     assert meeting_stamp.RECORDING_EXTS == ("wav", "pcm", "wav.part")
 

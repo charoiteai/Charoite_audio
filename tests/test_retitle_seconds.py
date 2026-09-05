@@ -99,7 +99,19 @@ def test_retitle_refuses_a_name_whose_sidecar_is_foreign(tmp_path):
     assert new == t and t.exists(), "файл остался под своим именем"
     assert "— Инцидент загрузки" in t.read_text(encoding="utf-8")
     assert json.loads(foreign.read_text(encoding="utf-8"))["stamp"] == "2026-08-03_113045", "чужой сайдкар не тронут"
-    assert not (tmp_path / "2026-08-03_113012.md.live.json").exists() or True   # своего сайдкара и не было
+
+
+def test_retitle_reunites_with_its_own_sidecar_under_the_target_name(tmp_path):
+    """GLM r1 по #494, I2: близнец под целевым именем несёт НАШ stamp — это
+    свой сайдкар после прерванного переноса, файл переименовывается."""
+    import json
+
+    t = _meeting(tmp_path, "2026-08-03_113012")
+    own = tmp_path / "2026-08-03_1130_Инцидент_загрузки.md.live.json"
+    own.write_text(json.dumps({"stamp": "2026-08-03_113012"}), encoding="utf-8")
+    new = gu.retitle(t, "2026-08-03_1130", "2026-08-03_113012", "Инцидент загрузки")
+    assert new.name == "2026-08-03_1130_Инцидент_загрузки.md" and not t.exists()
+    assert json.loads(own.read_text(encoding="utf-8"))["stamp"] == "2026-08-03_113012"
 
 
 def test_minute_meeting_behaviour_unchanged(tmp_path):

@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import json
 import datetime as dt
 import pathlib
 import re
@@ -417,8 +418,21 @@ def resolve_stamp(rec_dir: pathlib.Path, stamp: str,
     cand = found.pop()
     if tdir is not None and (
             any(stamp_of(f.stem) == cand for f in files_with_stamp(tdir, cand, suffix=".md"))
-            or files_with_stamp(tdir, cand, suffix=".md.live.json")):
-        # у кандидата своя стенограмма или свой сайдкар (её .md стёрт руками,
-        # сайдкар остался — GLM по main 05.09) — записи соседки, не наши
+            or any(_sidecar_claims(f, cand) for f in files_with_stamp(tdir, cand, suffix=".md.live.json"))):
+        # у кандидата своя стенограмма — или сайдкар с ЕГО ключом stamp (её .md
+        # стёрт руками, сайдкар нового демона остался — GLM по main 05.09).
+        # Сайдкар без ключа под посекундным именем — наследие до 0.69.1, и
+        # он с тем же успехом наш собственный (DS r1 по #494): не улика.
         return stamp
     return cand
+
+
+def _sidecar_claims(sidecar: pathlib.Path, cand: str) -> bool:
+    """Сайдкар несёт ключ `stamp` == cand — его писал демон/накат для встречи
+    с этими секундами (то же правило, что live_sidecar.claims; здесь без
+    импорта, чтобы не замыкать модули друг на друга)."""
+    try:
+        meta = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(meta, dict) and meta.get("stamp") == cand

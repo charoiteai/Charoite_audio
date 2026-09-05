@@ -196,6 +196,19 @@ def sidecar_for(live: pathlib.Path, bare: str | None = None) -> pathlib.Path | N
     return found[0] if found else direct
 
 
+def claims(sidecar: pathlib.Path, bare: str) -> bool:
+    """Сайдкар под этим именем — нашей встречи с посекундным штампом `bare`?
+    Единственное свидетельство — ключ `stamp` (пишут демон, накат темы,
+    rename_meeting). Так отличают свой сайдкар, оставшийся под целевым
+    именем после прерванного или откаченного переноса, от сироты соседки
+    (GLM r1 по #494, I2): своему пара воссоединяется, чужой — отказ."""
+    try:
+        meta = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(meta, dict) and meta.get("stamp") == bare
+
+
 def move(old_main: pathlib.Path, new_main: pathlib.Path) -> pathlib.Path:
     """Сайдкар переезжает вместе с переименованной стенограммой: дальше он
     под своим именем, без угадывания (advisory GLM r2 по #489). Зовут все
