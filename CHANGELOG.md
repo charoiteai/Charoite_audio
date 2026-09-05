@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.69.4](https://github.com/charoiteai/Charoite_audio/compare/v0.69.3...v0.69.4) (2026-09-05)
+
+
+### Bug Fixes
+
+* **rename:** never rename a transcript under a foreign sidecar ([#494](https://github.com/charoiteai/Charoite_audio/issues/494)) ([60dd9e1](https://github.com/charoiteai/Charoite_audio/commit/60dd9e167ead5668215d43d1c299a84a4123eb9c))
+
 ## [0.69.3](https://github.com/charoiteai/Charoite_audio/compare/v0.69.2...v0.69.3) (2026-09-05)
 
 
