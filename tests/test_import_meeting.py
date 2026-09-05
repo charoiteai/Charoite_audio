@@ -1,5 +1,6 @@
 """Импорт встреч: парсер vtt/srt и сборка стенограммы конвейера."""
 import os
+import pathlib
 import struct
 import sys
 import time
@@ -329,3 +330,155 @@ def test_import_title_goes_through_the_slug_guard():
     assert im.title_slug("Разбор") == "Разбор-встреча"
     assert im.title_slug("Отчёт по задачам") == "Отчёт_по_задачам"
     assert meeting_stamp.stamp_of("2026-08-29_1200_" + im.title_slug("Демо live")) == "2026-08-29_1200"
+
+
+# ---- №166: метки сбоя, сайдкары done/, ретеншн копий ---------------------
+
+def _run_scan(monkeypatch, folder, *extra):
+    import import_meeting as im
+    monkeypatch.setattr(sys, "argv", ["import_meeting.py", "--scan", *extra, "--", str(folder)])
+    im.main()
+
+
+def test_failed_import_is_marked_kept_and_not_rescanned(tmp_path, monkeypatch):
+    """Сбой: файл на месте, метка ошибки с хвостом вывода, следующий скан
+    его не берёт (раньше STT гонялся по тому же файлу каждые две минуты);
+    --retry-failed снимает метку и пробует ещё раз."""
+    import json
+
+    import import_meeting as im
+
+    bad = tmp_path / "bad.txt"
+    bad.write_text("x" * 300, encoding="utf-8")
+    calls = []
+
+    class Failed:
+        returncode = 1
+        stdout = "что-то пошло\nтранскрибация не удалась\n"
+        stderr = ""
+
+    monkeypatch.setattr(im.subprocess, "run", lambda cmd, **kw: (calls.append(cmd), Failed())[1])
+    monkeypatch.setattr(im, "_cfg", lambda: {"audio": {"import_keep_days": 2}})
+    _run_scan(monkeypatch, tmp_path)
+    assert bad.exists(), "при ошибке файл не удаляется и не переносится"
+    marker = im.error_marker(bad)
+    meta = json.loads(marker.read_text(encoding="utf-8"))
+    assert meta["code"] == 1 and meta["message"] == "транскрибация не удалась"
+    assert scan_candidates(tmp_path) == [], "сбойный файл ждёт «Повторить»"
+    n = len(calls)
+    _run_scan(monkeypatch, tmp_path)
+    assert len(calls) == n, "без снятой метки повторного прогона быть не должно"
+    _run_scan(monkeypatch, tmp_path, "--retry-failed")
+    assert len(calls) == n + 1 and marker.exists(), "повтор — и снова метка, раз снова сбой"
+
+
+def test_successful_import_lands_in_done_with_sidecar(tmp_path, monkeypatch):
+    """Успех: файл в done/ под свободным именем, рядом сайдкар с моментом
+    импорта, сроком удаления и итогом ребёнка (штамп, стенограмма)."""
+    import json
+
+    import import_meeting as im
+
+    src = tmp_path / "Recording.txt"
+    src.write_text("y" * 300, encoding="utf-8")
+    (tmp_path / "done").mkdir()
+    (tmp_path / "done" / "Recording.txt").write_text("старая копия", encoding="utf-8")
+
+    def fake_child(cmd, **kw):
+        result = pathlib.Path(cmd[cmd.index("--result-json") + 1])
+        im._write_json(result, {"kind": "meeting", "stamp": "2026-09-05_1200",
+                                "transcript": "/t/2026-09-05_1200.md",
+                                "archive_source": "/arch/Исходник.txt"})
+
+        class Ok:
+            returncode = 0
+            stdout = "готово: встреча 2026-09-05_1200 в архиве и графе\n"
+            stderr = ""
+        return Ok()
+
+    monkeypatch.setattr(im.subprocess, "run", fake_child)
+    monkeypatch.setattr(im, "_cfg", lambda: {"audio": {"import_keep_days": "1.5"}})
+    before = time.time()
+    _run_scan(monkeypatch, tmp_path)
+    moved = tmp_path / "done" / "Recording-1.txt"
+    assert moved.exists() and not src.exists(), "чужую копию с тем же именем не затираем"
+    meta = json.loads(im.imported_sidecar(moved).read_text(encoding="utf-8"))
+    assert meta["stamp"] == "2026-09-05_1200" and meta["source"] == "Recording.txt"
+    assert meta["keep_days"] == 1.5
+    assert before <= meta["imported_at"] <= time.time()
+    assert abs(meta["delete_after"] - (meta["imported_at"] + 1.5 * 86400)) < 1
+    assert not (tmp_path / ".Recording.txt.import-result.json").exists()
+
+
+def test_prune_done_removes_expired_copies_and_archive_audio(tmp_path):
+    """Ретеншн done/: срок — от импорта (сайдкар), не от mtime; вместе с
+    копией уходит аудио-«Исходник» в архиве; текстовый исходник в архиве и
+    неистёкшие копии остаются; корень папки не трогаем никогда."""
+    import import_meeting as im
+
+    done = tmp_path / "done"
+    done.mkdir()
+    arch = tmp_path / "archive"
+    arch.mkdir()
+    now = time.time()
+
+    def put(name, delete_after, archive):
+        f = done / name
+        f.write_bytes(b"\0" * 10)
+        old = now - 30 * 86400        # mtime старый — ретеншн на него не смотрит
+        os.utime(f, (old, old))
+        im._write_json(im.imported_sidecar(f), {"imported_at": now - 3 * 86400,
+                                                "delete_after": delete_after,
+                                                "stamp": "s", "archive_source": archive})
+        return f
+
+    audio_src = arch / "Исходник.m4a"
+    audio_src.write_bytes(b"a")
+    text_src = arch / "Исходник.vtt"
+    text_src.write_text("WEBVTT", encoding="utf-8")
+    foreign = arch / "Чужой.m4a"
+    foreign.write_bytes(b"f")
+    expired_audio = put("a.m4a", now - 60, str(audio_src))
+    expired_text = put("b.vtt", now - 60, str(text_src))
+    fresh = put("c.m4a", now + 3600, str(foreign))
+    stray = put("d.m4a", now - 60, str(foreign))     # чужое имя в архиве — не наше
+    root = tmp_path / "root.m4a"
+    root.write_bytes(b"r")
+    os.utime(root, (now - 30 * 86400, now - 30 * 86400))
+
+    removed = im.prune_done(tmp_path, 2, now=now)
+    assert expired_audio in removed and audio_src in removed
+    assert expired_text in removed and text_src.exists(), "текстовый исходник — не голос"
+    assert stray in removed and foreign.exists(), "в архиве удаляем только «Исходник…»"
+    assert fresh.exists() and im.imported_sidecar(fresh).exists()
+    assert root.exists(), "корень папки импорта — не зона ретеншна"
+    assert not im.imported_sidecar(expired_audio).exists()
+
+
+def test_prune_legacy_done_files_by_ctime(tmp_path):
+    """Файл в done/ без сайдкара (импорт до этой версии): срок по ctime —
+    момент переноса. Только что перенесённый живёт keep_days, при нуле уходит."""
+    import import_meeting as im
+
+    done = tmp_path / "done"
+    done.mkdir()
+    legacy = done / "old.m4a"
+    legacy.write_bytes(b"\0")
+    assert im.prune_done(tmp_path, 2) == []
+    assert legacy.exists()
+    assert im.prune_done(tmp_path, 0) == [legacy]
+    assert not legacy.exists()
+
+
+def test_import_keep_days_is_forgiving_but_not_negative(capsys):
+    import pytest
+
+    import import_meeting as im
+
+    assert im.import_keep_days({"audio": {"import_keep_days": "1.5"}}) == 1.5
+    assert im.import_keep_days({}) == im.IMPORT_KEEP_DAYS_DEFAULT
+    assert im.import_keep_days({"audio": {"import_keep_days": "два"}}) == im.IMPORT_KEEP_DAYS_DEFAULT
+    assert "непонятное" in capsys.readouterr().out
+    assert im.import_keep_days({"audio": {"import_keep_days": 5}}, override="0") == 0
+    with pytest.raises(SystemExit):
+        im.import_keep_days({"audio": {"import_keep_days": -1}})
