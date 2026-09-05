@@ -415,7 +415,10 @@ def resolve_stamp(rec_dir: pathlib.Path, stamp: str,
     if len(found) != 1:
         return stamp
     cand = found.pop()
-    if tdir is not None and any(stamp_of(f.stem) == cand
-                                for f in files_with_stamp(tdir, cand, suffix=".md")):
-        return stamp    # у кандидата своя стенограмма — записи соседки, не наши
+    if tdir is not None and (
+            any(stamp_of(f.stem) == cand for f in files_with_stamp(tdir, cand, suffix=".md"))
+            or files_with_stamp(tdir, cand, suffix=".md.live.json")):
+        # у кандидата своя стенограмма или свой сайдкар (её .md стёрт руками,
+        # сайдкар остался — GLM по main 05.09) — записи соседки, не наши
+        return stamp
     return cand

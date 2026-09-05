@@ -376,8 +376,12 @@ def test_stamp_is_not_written_into_a_foreign_sidecar_on_the_target_name(tmp_path
 
     p = rm.plan(graph, tdir, STAMP, pretty, slug)
     assert p["stamps"] == [], "штамп в чужой сайдкар не планируется"
+    # GLM Critical по main 05.09: и сам .md под чужой сайдкар не переезжает —
+    # иначе сирота стала бы прямым сайдкаром встречи с чужим ключом stamp
+    assert not [m for m in p["moves"] if m[0].name == "2026-08-03_113012.md"]
     rm.apply(p, graph, STAMP, pretty)
 
+    assert (tdir / "2026-08-03_113012.md").exists(), "стенограмма осталась под старым именем"
     assert own.exists(), "свой сайдкар остался под старым именем"
     assert json.loads(foreign.read_text(encoding="utf-8")).get("stamp") is None
 

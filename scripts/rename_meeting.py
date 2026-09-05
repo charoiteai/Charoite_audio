@@ -204,6 +204,13 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
             if target in taken or target.exists():
                 print(f"пропуск: {f.name} — имя {new} уже занято")
                 continue
+            # Занятое имя сайдкара — тоже занятое имя: переименовать .md под
+            # чужую сироту значит сделать её ПРЯМЫМ сайдкаром встречи, и
+            # exact_stamp отдаст её штамп как точный (GLM Critical по main
+            # 05.09, #492). Пара остаётся под старым именем, секунды целы.
+            if folder == tdir and f.suffix == ".md" and target.with_name(target.name + ".live.json").exists():
+                print(f"пропуск: {f.name} — имя {new} занято чужим сайдкаром {new}.live.json")
+                continue
             taken.add(target)
             moves.append((f, target))
             # Сайдкар едет вместе с главным файлом: защита правок и имена
@@ -215,11 +222,7 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
                     taken.add(sc_target)
                     moves.append((sc, sc_target))
                 if sc_target.exists():
-                    # Имя сайдкара занято чужой сиротой: свой сайдкар остаётся
-                    # под старым именем, а писать штамп в чужой файл нельзя —
-                    # решение о переносе и о записи не должны расходиться
-                    # (DS r3 M1 по #492). Секунды остаются в старом имени пары.
-                    continue
+                    continue    # недостижимо после проверки выше — страховка от расхождения
                 # Главный файл с секундами получает минутное имя: секунды
                 # остаются только в ключе `stamp` сайдкара — как после наката
                 # темы (№164). Главные здесь двух видов: голый «…113012.md» и
@@ -416,6 +419,9 @@ def main() -> None:
 
     for old, new in p["moves"]:
         print(f"файл:  {old.name}  →  {new.name}")
+    for target, bare in p.get("stamps", ()):
+        # секунды, которые уйдут в сайдкар, — тоже часть плана (GLM M2 по main 05.09)
+        print(f"штамп: {target.name}.live.json ← stamp {bare}")
     if p["old_folder"] is not None:
         print(f"архив: {p['old_folder'].name}  →  {p['new_folder'].name}")
     if p["note"].exists():

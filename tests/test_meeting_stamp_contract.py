@@ -258,6 +258,13 @@ def test_наследие_без_штампа_не_берёт_запись_со�
     # соседка с темой под своим посекундным ключом — тоже соседка
     (tdir / "2026-08-04_120314.md").rename(tdir / "2026-08-04_120314_Другая.md")
     assert meeting_stamp.resolve_stamp(rec, "2026-08-04_1203", tdir=tdir) == "2026-08-04_1203"
+    # .md соседки стёрт руками, остался её сайдкар — та же улика (GLM I3 по main 05.09)
+    (tdir / "2026-08-04_120314_Другая.md").unlink()
+    (tdir / "2026-08-04_120314_Другая.md.live.json").write_text("{}", encoding="utf-8")
+    assert meeting_stamp.resolve_stamp(rec, "2026-08-04_1203", tdir=tdir) == "2026-08-04_1203"
+    # без единого следа соседки единственный кандидат по-прежнему наш
+    (tdir / "2026-08-04_120314_Другая.md.live.json").unlink()
+    assert meeting_stamp.resolve_stamp(rec, "2026-08-04_1203", tdir=tdir) == "2026-08-04_120314"
 
 
 def test_наследие_без_штампа_по_прежнему_находит_свою_запись(tmp_path):
@@ -352,6 +359,28 @@ def test_rebuild_передаёт_точный_штамп_из_сайдкара(
     assert seen == [{"exact": "2026-08-04_120301", "tdir": tmp_path}]
 
 
+def test_rebuild_после_отказа_по_минуте_не_ждёт_записи(tmp_path, monkeypatch):
+    """GLM M5 по main 05.09: отказ по минуте доказывает, что под минутным
+    именем записи нет и не появится — 2×45 с ожидания пустые."""
+    import rebuild_transcript as rt
+
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    live = tdir / "2026-08-04_1203_Тема.md"
+    live.write_text("# Встреча\n", encoding="utf-8")
+    (tdir / "2026-08-04_120314.md").write_text("# Встреча 2026-08-04_120314\n", encoding="utf-8")
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    meeting_stamp.recording_path(rec, "2026-08-04_120314", "mic", "wav").write_bytes(b"RIFF")
+    waited: list[str] = []
+    monkeypatch.setattr(rt, "wait_recording", lambda _d, stamp, label, _sr: waited.append(f"{stamp}/{label}"))
+    monkeypatch.setattr(rt, "log", lambda _m: None)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
+
+    assert rt.rebuild(live, {"audio": {"samplerate": 16000}}) is None
+    assert waited == [], "после отказа ждать нечего"
+
+
 def test_rebuild_не_считает_отказом_запись_под_минутным_именем(tmp_path, monkeypatch):
     """DS r2 M3 по #492: запись, названная самой минутой (демон до 28.07),
     resolve_stamp возвращает как есть — это находка, а не отвод чужих;
@@ -379,7 +408,8 @@ def test_список_расширений_записи_один_на_всех()
     import pathlib
 
     src = (pathlib.Path(__file__).resolve().parents[1] / "src" / "rebuild_transcript.py").read_text(encoding="utf-8")
-    assert '"wav.part")' not in src.replace('"wav.part")', "", 1) or 'RECORDING_EXTS' in src
+    # в rebuild нет собственного кортежа расширений (GLM M4: прежний assert не мог упасть)
+    assert '("wav", "pcm", "wav.part")' not in src and '("pcm", "wav", "wav.part")' not in src
     assert src.count("meeting_stamp.RECORDING_EXTS") >= 2
     assert meeting_stamp.RECORDING_EXTS == ("wav", "pcm", "wav.part")
 
