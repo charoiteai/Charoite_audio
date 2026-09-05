@@ -699,6 +699,110 @@ def test_import_keep_days_is_forgiving_but_not_negative(capsys):
         im.import_keep_days({"audio": {"import_keep_days": -1}})
 
 
+def _main_keeping_umask() -> None:
+    """im.main() в процессе тестов: harden_umask() менял umask процесса, и
+    следующий тест (test_private_permissions) видел чужие права (CI 05.09)."""
+    before = os.umask(0o022)
+    os.umask(before)
+    try:
+        im.main()
+    finally:
+        os.umask(before)
+
+
+def test_direct_import_publishes_a_meeting_status(tmp_path, monkeypatch, capsys):
+    """Поле 05.09: две записи с телефона были разобраны и разложены в граф,
+    но в списке встреч приложения их не было — импорт не писал статус
+    встречи. Теперь: прогресс на графе, «готово» со ссылкой на заметку, а
+    повтор импорта — тоже «готово» (идемпотентно)."""
+    import json
+
+    root = tmp_path / "root"
+    (root / "transcripts").mkdir(parents=True)
+    src = tmp_path / "Заметки.txt"
+    src.write_text("х" * 400, encoding="utf-8")
+    note = tmp_path / "graph" / "Встречи" / "2026-09-05_1200.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("# встреча\n", encoding="utf-8")
+
+    class Ok:
+        returncode = 0
+        stdout = stderr = ""
+    calls = []
+    monkeypatch.setattr(im.subprocess, "run", lambda cmd, **kw: (calls.append(cmd), Ok())[1])
+    monkeypatch.setattr(im, "ROOT", root)
+    monkeypatch.setattr(im, "_cfg", lambda: {"log": {"transcripts_dir": "transcripts"}})
+    monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
+    monkeypatch.setattr(im, "find_meeting_note", lambda cfg, t, **kw: note)
+    monkeypatch.setattr(sys, "argv", ["import_meeting.py", str(src), "--date", "2026-09-05", "--time", "12:00"])
+    _main_keeping_umask()
+
+    status = root / "logs" / "meeting-status" / "2026-09-05_1200.json"
+    assert status.exists(), sorted((root / "logs").rglob("*")) if (root / "logs").exists() else "нет статуса"
+    data = json.loads(status.read_text(encoding="utf-8"))
+    assert data["state"] == "ready" and data["note_path"] == str(note.resolve())
+    assert data["transcript_path"].endswith("2026-09-05_1200.md")
+    assert any("graph_updater.py" in str(c) for c in calls)
+
+    # повтор той же записи: встреча уже есть — статус остаётся «готово»
+    status.unlink()
+    _main_keeping_umask()
+    assert json.loads(status.read_text(encoding="utf-8"))["state"] == "ready"
+    assert "повтор не нужен" in capsys.readouterr().out
+
+
+def test_direct_import_publishes_failed_when_graph_updater_crashes(tmp_path, monkeypatch):
+    """Critical GLM r1 по #502: любой ненулевой код graph_updater, кроме «нет
+    речи» и «нет разбора», — ошибка статуса, а не «готово»."""
+    import json
+
+    root = tmp_path / "root"
+    (root / "transcripts").mkdir(parents=True)
+    src = tmp_path / "Заметки.txt"
+    src.write_text("х" * 400, encoding="utf-8")
+
+    class Crash:
+        returncode = 1
+        stdout = stderr = ""
+    monkeypatch.setattr(im.subprocess, "run", lambda cmd, **kw: Crash())
+    monkeypatch.setattr(im, "ROOT", root)
+    monkeypatch.setattr(im, "_cfg", lambda: {"log": {"transcripts_dir": "transcripts"}})
+    monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
+    monkeypatch.setattr(sys, "argv", ["import_meeting.py", str(src), "--date", "2026-09-05", "--time", "12:00"])
+    _main_keeping_umask()
+
+    data = json.loads((root / "logs" / "meeting-status" / "2026-09-05_1200.json").read_text(encoding="utf-8"))
+    assert data["state"] == "error" and "с кодом 1" in data["error"]
+
+
+def test_direct_import_publishes_failed_when_the_tail_dies(tmp_path, monkeypatch):
+    """Критика GLM r2 по #502: граф собрался, а retro_fill (минутки/разбор)
+    умер по сигналу — статус «ошибка» словами «сигналом 9», не «готово»."""
+    import json
+
+    root = tmp_path / "root"
+    (root / "transcripts").mkdir(parents=True)
+    src = tmp_path / "Заметки.txt"
+    src.write_text("х" * 400, encoding="utf-8")
+
+    class Result:
+        def __init__(self, rc):
+            self.returncode = rc
+            self.stdout = self.stderr = ""
+
+    def run(cmd, **kw):
+        return Result(-9 if any("retro_fill.py" in str(c) for c in cmd) else 0)
+    monkeypatch.setattr(im.subprocess, "run", run)
+    monkeypatch.setattr(im, "ROOT", root)
+    monkeypatch.setattr(im, "_cfg", lambda: {"log": {"transcripts_dir": "transcripts"}})
+    monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
+    monkeypatch.setattr(sys, "argv", ["import_meeting.py", str(src), "--date", "2026-09-05", "--time", "12:00"])
+    _main_keeping_umask()
+
+    data = json.loads((root / "logs" / "meeting-status" / "2026-09-05_1200.json").read_text(encoding="utf-8"))
+    assert data["state"] == "error" and "retro_fill" in data["error"] and "сигналом 9" in data["error"]
+
+
 def test_keep_days_hint_is_by_value_and_once(capsys):
     """DS r2 по #499: `record_keep_days: 2.0` — тот же дефолт, подсказки нет;
     отличное значение — подсказка один раз на процесс, не на каждый прун."""
