@@ -440,6 +440,14 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
         # ожидания были бы пустыми (GLM M5 по main 05.09)
         log("записей нет — оставляю живую стенограмму")
         return None
+    # Под минутой нет ни одного файла канала — ждать нечего ни при точном
+    # штампе (записи сметены ретеншном, импорт без записей), ни при
+    # секундном: 2×45 с под rebuild.lock были пустыми (аудит GLM/DS 05.09).
+    # У живой встречи .pcm/.wav.part под минутой уже лежит — её не задеваем.
+    if not rec_dir.is_dir() or not meeting_stamp.recordings_under_minute(
+            rec_dir, meeting_stamp.minute_of(recording_stamp)):
+        log("записей нет — оставляю живую стенограмму")
+        return None
     base = meeting_stamp.started_at(recording_stamp)
     if base is None:
         return None

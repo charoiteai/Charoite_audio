@@ -175,9 +175,9 @@ struct ExternalRecordingView: View {
     }
 
     private var footer: some View {
-        Text(L.t("Файл копируется в папку импорта — оригинал остаётся у вас. Обработанная копия живёт столько дней, сколько задано в audio.import_keep_days (по умолчанию как у записей встреч), и удаляется вместе с аудио-исходником в архиве встречи; дата — у каждого файла. При ошибке ничего не удаляется. Всё локально.",
-                 "The file is copied into the import folder — your original stays put. A processed copy lives as many days as audio.import_keep_days says (default: same as meeting recordings) and is deleted together with the audio source in the meeting archive; the date is shown per file. On failure nothing is deleted. Everything stays local.",
-                 "文件会复制到导入文件夹，你的原件保持不动。已处理的副本按 audio.import_keep_days 设定的天数保留（默认与会议录音相同），随后与会议归档中的音频源一起删除；每个文件旁显示日期。处理失败时不删除任何内容。全部本地完成。"))
+        Text(L.t("Файл копируется в папку импорта — оригинал остаётся у вас. Обработанная копия живёт столько дней, сколько задано в audio.import_keep_days (по умолчанию 2 дня), и удаляется вместе с аудио-исходником в архиве встречи; дата — у каждого файла. При ошибке ничего не удаляется. Всё локально.",
+                 "The file is copied into the import folder — your original stays put. A processed copy lives as many days as audio.import_keep_days says (default 2 days) and is deleted together with the audio source in the meeting archive; the date is shown per file. On failure nothing is deleted. Everything stays local.",
+                 "文件会复制到导入文件夹，你的原件保持不动。已处理的副本按 audio.import_keep_days 设定的天数保留（默认 2 天），随后与会议归档中的音频源一起删除；每个文件旁显示日期。处理失败时不删除任何内容。全部本地完成。"))
             .font(.caption)
             .foregroundStyle(.secondary)
     }

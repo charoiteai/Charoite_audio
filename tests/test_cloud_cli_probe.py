@@ -1,0 +1,218 @@
+"""Зонд Claude CLI перед ночными облачными шагами (аудит GLM/DS 05.09).
+
+Ночь 05.09: обновление CLI подменило бинарник, exec падал с «Exec format
+error», семь тем ревизии легли в отчёт как «сбой» при коде 0 у ночи.
+"""
+import pathlib
+import subprocess
+import sys
+
+import pytest
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(REPO / "scripts"))
+import cloud  # noqa: E402
+
+
+def test_probe_returns_none_on_exec_failure(monkeypatch):
+    def boom(*_a, **_k):
+        raise OSError(8, "Exec format error")
+    monkeypatch.setattr(cloud.subprocess, "run", boom)
+    assert cloud.probe_claude("/x/claude") is None
+
+
+def test_probe_runs_in_the_cli_environment(monkeypatch):
+    """Зонд идёт в том же окружении, что вызовы: без ключа и с прокси из
+    настроек — иначе под launchd за корп-прокси он падал бы ложной аварией."""
+    seen = {}
+
+    def run(cmd, **kw):
+        seen.update(kw)
+        return subprocess.CompletedProcess(cmd, 0, stdout="2.1.261\n", stderr="")
+
+    monkeypatch.setattr(cloud.subprocess, "run", run)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(cloud, "add_proxy", lambda env: env.__setitem__("HTTPS_PROXY", "http://proxy:3128"))
+    assert cloud.probe_claude("/x/claude") == "2.1.261"
+    assert "ANTHROPIC_API_KEY" not in seen["env"] and seen["env"]["HTTPS_PROXY"] == "http://proxy:3128"
+
+
+def test_checked_bin_retries_once_then_gives_up(monkeypatch):
+    calls = []
+
+    def probe(path, timeout=30, env=None):
+        calls.append(path)
+        return None
+
+    monkeypatch.setattr(cloud, "probe_claude", probe)
+    monkeypatch.setattr(cloud.shutil, "which", lambda _n: "/usr/local/bin/claude")
+    slept = []
+    monkeypatch.setattr(cloud.time, "sleep", lambda s: slept.append(s))
+    with pytest.raises(cloud.CloudCLIUnavailable):
+        cloud.claude_bin_checked(pause=0)
+    assert slept == [0], "одна пауза между двумя попытками"
+    assert calls == ["/usr/local/bin/claude", "/opt/homebrew/bin/claude"] * 2
+
+
+def test_checked_bin_takes_the_second_candidate_when_the_first_is_broken(monkeypatch):
+    monkeypatch.setattr(cloud.shutil, "which", lambda _n: "/usr/local/bin/claude")
+    monkeypatch.setattr(cloud, "probe_claude",
+                        lambda p, timeout=30, env=None: "2.1.261" if p.startswith("/opt") else None)
+    monkeypatch.setattr(cloud, "_VERIFIED", None)
+    assert cloud.claude_bin_checked(pause=0) == "/opt/homebrew/bin/claude"
+    # точки выхода зовут claude_bin() — и получают проверенный путь, а не which (DS r1)
+    assert cloud.claude_bin() == "/opt/homebrew/bin/claude"
+    monkeypatch.setattr(cloud, "_VERIFIED", None)
+    assert cloud.claude_bin() == "/usr/local/bin/claude"
+
+
+def test_review_reports_cli_down_when_it_dies_mid_run(monkeypatch, tmp_path):
+    """CLI сломался после зонда: повторный зонд не ответил — тема падает,
+    флаг CLI_DOWN поднят, main() отдаст 3, а не 2 (DS r1 по #499)."""
+    def run(cmd, **kw):
+        raise OSError(8, "Exec format error")
+
+    review, _ = _review_call(monkeypatch, run)
+
+    def down(**kw):
+        raise cloud.CloudCLIUnavailable("умер по ходу")
+    monkeypatch.setattr(review.cloud, "claude_bin_checked", down)
+    review.CLI_DOWN[0] = False
+    try:
+        fixed, why = review.review("Тема", tmp_path / "Тема.md", tmp_path, {}, [], "opus", {}, current=DOSSIER)
+        assert fixed is None and why.startswith("сбой:")
+        assert review.CLI_DOWN[0] is True
+    finally:
+        review.CLI_DOWN[0] = False
+
+
+def test_dossier_review_exits_3_when_cli_is_down(monkeypatch, capsys):
+    import nightly_dossier_review as review
+
+    monkeypatch.setattr(sys, "argv", ["nightly_dossier_review.py", "--all-graphs"])
+    monkeypatch.setattr(review, "_cfg", lambda: {})
+    monkeypatch.setattr(review.privacy, "cloud_enrich_enabled", lambda cfg: True)
+
+    def down():
+        raise cloud.CloudCLIUnavailable("битый симлинк")
+    monkeypatch.setattr(review.cloud, "claude_bin_checked", down)
+    assert review.main() == 3
+    assert "не начата" in capsys.readouterr().out
+
+
+def test_dossier_review_exits_2_when_some_themes_failed(monkeypatch):
+    import nightly_dossier_review as review
+
+    monkeypatch.setattr(sys, "argv", ["nightly_dossier_review.py", "--all-graphs"])
+    monkeypatch.setattr(review, "_cfg", lambda: {})
+    monkeypatch.setattr(review.privacy, "cloud_enrich_enabled", lambda cfg: True)
+    monkeypatch.setattr(review.cloud, "claude_bin_checked", lambda **kw: "/x/claude")
+    monkeypatch.setattr(review.graphs, "all_graphs", lambda marker: [])
+    review.FAILED_STEPS.clear()
+    assert review.main() == 0
+    review.FAILED_STEPS.append("- **тема** — сбой: claude не отработал")
+    try:
+        assert review.main() == 2
+    finally:
+        review.FAILED_STEPS.clear()
+
+
+DOSSIER = "## Сейчас\nстарое\n\n## Источники\n- [[Встречи/2026-09-01_1000]]\n\n## Правки автора\n\n—\n"
+
+
+def _review_call(monkeypatch, run):
+    import nightly_dossier_review as review
+
+    monkeypatch.setattr(review.subprocess, "run", run)
+    slept = []
+    monkeypatch.setattr(review.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(review.cloud, "claude_bin", lambda: "/x/claude")
+    monkeypatch.setattr(review.cloud, "add_proxy", lambda env: None)
+    monkeypatch.setattr(review.privacy, "cloud_enrich_enabled", lambda cfg: True)
+    monkeypatch.setattr(review.dossier, "trim_to_format", lambda t: t)
+    return review, slept
+
+
+def test_review_retries_exec_failure_once(monkeypatch, tmp_path):
+    """Первая попытка — Exec format error, вторая — ответ: тема не теряется."""
+    attempts = []
+
+    def run(cmd, **kw):
+        attempts.append(cmd[0])
+        if len(attempts) == 1:
+            raise OSError(8, "Exec format error")
+        return subprocess.CompletedProcess(cmd, 0, stdout="## Сейчас\nновое\n", stderr="")
+
+    review, slept = _review_call(monkeypatch, run)
+    review._SLEPT_FOR_CLI = False
+    monkeypatch.setattr(review.cloud, "claude_bin_checked", lambda **kw: "/x/claude")
+    fixed, why = review.review("Тема", tmp_path / "Тема.md", tmp_path, {}, [], "opus", {}, current=DOSSIER)
+    assert len(attempts) == 2 and slept == [review.cloud.RETRY_PAUSE], "одна пауза и повтор"
+    assert not why.startswith("сбой:"), why
+    # вторая тема в том же процессе: повтор есть, сна больше нет (GLM r1 по #499)
+    attempts.clear()
+    fixed, why = review.review("Тема 2", tmp_path / "Тема 2.md", tmp_path, {}, [], "opus", {}, current=DOSSIER)
+    assert len(attempts) == 2 and slept == [review.cloud.RETRY_PAUSE], "пауза — один раз на процесс"
+
+
+def test_review_gives_up_after_the_second_exec_failure(monkeypatch, tmp_path):
+    def run(cmd, **kw):
+        raise OSError(8, "Exec format error")
+
+    review, _ = _review_call(monkeypatch, run)
+    monkeypatch.setattr(review.cloud, "claude_bin_checked", lambda **kw: "/x/claude")
+    fixed, why = review.review("Тема", tmp_path / "Тема.md", tmp_path, {}, [], "opus", {}, current=DOSSIER)
+    assert fixed is None and why.startswith("сбой:")
+
+
+def test_second_exec_failure_after_a_live_probe_is_cli_down(monkeypatch, tmp_path):
+    """Зонд ответил, а exec снова упал — бинарник всё ещё меняется: это отказ
+    инфраструктуры (код 3), а не сбой темы (код 2) — Important DS r2 по #499."""
+    def run(cmd, **kw):
+        raise OSError(8, "Exec format error")
+
+    review, _ = _review_call(monkeypatch, run)
+    monkeypatch.setattr(review.cloud, "claude_bin_checked", lambda **kw: "/x/claude")
+    review._SLEPT_FOR_CLI = False
+    review.CLI_DOWN[0] = False
+    try:
+        fixed, why = review.review("Тема", tmp_path / "Тема.md", tmp_path, {}, [], "opus", {}, current=DOSSIER)
+        assert fixed is None and why.startswith("сбой:")
+        assert review.CLI_DOWN[0] is True
+    finally:
+        review.CLI_DOWN[0] = False
+
+
+def test_cli_back_reprobes_once_per_run(monkeypatch):
+    """Одно обновление CLI посреди ночи не списывает остаток досье: один
+    повторный зонд на прогон, второй раз — нет (критика GLM r2 по #499)."""
+    import nightly_dossier_review as review
+
+    calls = []
+    monkeypatch.setattr(review.cloud, "claude_bin_checked", lambda **kw: calls.append(1) or "/x/claude")
+    review._REPROBED[0] = False
+    review.CLI_DOWN[0] = True
+    try:
+        assert review.cli_back() is True and review.CLI_DOWN[0] is False
+        review.CLI_DOWN[0] = True
+        assert review.cli_back() is False and review.CLI_DOWN[0] is True
+        assert len(calls) == 1
+    finally:
+        review.CLI_DOWN[0] = False
+        review._REPROBED[0] = False
+
+
+def test_cli_back_stays_down_when_the_probe_fails(monkeypatch):
+    import nightly_dossier_review as review
+
+    def down(**kw):
+        raise cloud.CloudCLIUnavailable("всё ещё меняется")
+    monkeypatch.setattr(review.cloud, "claude_bin_checked", down)
+    review._REPROBED[0] = False
+    review.CLI_DOWN[0] = True
+    try:
+        assert review.cli_back() is False and review.CLI_DOWN[0] is True
+    finally:
+        review.CLI_DOWN[0] = False
+        review._REPROBED[0] = False

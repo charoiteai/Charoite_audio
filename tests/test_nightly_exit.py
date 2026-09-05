@@ -94,6 +94,78 @@ def _run(tmp_path: pathlib.Path, stub: str) -> subprocess.CompletedProcess:
                           capture_output=True, text=True, timeout=60)
 
 
+# CLI облака не запускается (обновление под ногами): ревизия досье — код 3.
+DOSSIER_REVIEW_CLI_DOWN = (
+    "#!/bin/sh\n"
+    'case "$1" in\n'
+    "  *nightly_dossier_review.py*) exit 3 ;;\n"
+    "  *) exit 0 ;;\n"
+    "esac\n"
+)
+CORES_CLI_DOWN = (
+    "#!/bin/sh\n"
+    'case "$1" in\n'
+    "  *nightly_claude_cores.py*) exit 3 ;;\n"
+    "  *) exit 0 ;;\n"
+    "esac\n"
+)
+DOSSIER_REVIEW_PARTIAL = (
+    "#!/bin/sh\n"
+    'case "$1" in\n'
+    "  *nightly_dossier_review.py*) exit 2 ;;\n"
+    "  *) exit 0 ;;\n"
+    "esac\n"
+)
+
+
+def test_cloud_cli_down_marks_the_night_failed(tmp_path):
+    """Ночь 05.09: обновление Claude CLI уронило семь тем ревизии, а ночь
+    отчиталась «ok» (аудит GLM/DS). Код 3 у облачного шага — состояние
+    failed в статусе (его читает утренний бриф); launchd-код остаётся 0:
+    шаг необязательный и самовосстанавливается (критика GLM/DS по #499)."""
+    for stub in (DOSSIER_REVIEW_CLI_DOWN, CORES_CLI_DOWN):
+        r = _run(tmp_path, stub)
+        assert r.returncode == 0, r.stdout
+        assert "CLI облака не отвечает" in r.stdout, r.stdout
+        assert _status(tmp_path)["state"] == "failed", _status(tmp_path)
+        assert "(cli)" in str(_status(tmp_path).get("failed", "")), _status(tmp_path)
+
+
+def test_partially_failed_review_is_visible_but_not_fatal(tmp_path):
+    """Часть тем не проверена — предупреждение в FAILED, ночь не авария."""
+    r = _run(tmp_path, DOSSIER_REVIEW_PARTIAL)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "часть тем не проверена" in r.stdout, r.stdout
+    assert "ревизия-досье(сбои)" in str(_status(tmp_path).get("failed", "")), _status(tmp_path)
+
+
+def test_graph_listing_survives_a_transient_eintr(tmp_path, monkeypatch):
+    """iCloud-каталог отвечал EINTR посреди ночи (17.08) и ронял шаг целиком —
+    один повтор спасает, устойчивый отказ — пропуск корня вслух."""
+    monkeypatch.setattr(graphs, "ICLOUD", tmp_path / "нет-iCloud")
+    work = tmp_path / "Vault" / "Работа"
+    (work / "Ядра").mkdir(parents=True)
+    monkeypatch.setattr(graphs, "configured_graph", lambda: work)
+    real = pathlib.Path.iterdir
+    hits = {"n": 0}
+
+    def flaky(self):
+        hits["n"] += 1
+        if hits["n"] == 1:
+            raise InterruptedError(4, "Interrupted system call")
+        return real(self)
+
+    monkeypatch.setattr(pathlib.Path, "iterdir", flaky)
+    monkeypatch.setattr(graphs.time, "sleep", lambda _s: None)
+    assert graphs.all_graphs("Ядра") == [work]
+
+    def broken(self):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(pathlib.Path, "iterdir", broken)
+    assert graphs.all_graphs("Ядра") == [], "устойчивый отказ — пустой список, не traceback"
+
+
 def test_script_is_syntactically_valid():
     assert subprocess.run(["bash", "-n", str(NIGHTLY)]).returncode == 0
 

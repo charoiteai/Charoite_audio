@@ -158,9 +158,11 @@ def test_every_cloud_exit_passes_the_proxied_env_to_claude():
         src = (ROOT / rel).read_text(encoding="utf-8")
         assert "def _proxy_env" not in src and "def load_claude_proxy_env" not in src, \
             f"{rel}: своя копия вместо cloud.add_proxy"
-        uses = src.count("cloud.add_proxy(env)")
+        # cloud.cli_env() — та же одна точка (фильтр ключа + прокси), которой
+        # с #499 пользуется и зонд CLI: выход обязан идти в том же окружении
+        uses = src.count("cloud.add_proxy(env)") + src.count("env = cloud.cli_env()")
         assert uses >= 1, rel
         # каждое применение — перед subprocess с env=env в том же блоке
-        for m in re.finditer(r"cloud\.add_proxy\(env\)", src):
+        for m in re.finditer(r"cloud\.add_proxy\(env\)|env = cloud\.cli_env\(\)", src):
             tail = src[m.end():m.end() + 4000]
             assert "env=env" in tail, f"{rel}: прокси построен, но до процесса не доходит"

@@ -16,8 +16,11 @@ test_cloud_model_defaults.py держит это), и точки выхода с
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import shutil
+import subprocess
+import time
 
 # Ключ конфига → модель по умолчанию. Меняется ВМЕСТЕ с примерами конфига,
 # иначе тест валится: пример — это документация, а не пожелание.
@@ -74,7 +77,74 @@ def claude_bin() -> str:
     выхода получает честный ENOENT от subprocess с понятным путём в
     ошибке, а не молчаливую замену поведения.
     """
+    if _VERIFIED:
+        return _VERIFIED
     return shutil.which("claude") or "/opt/homebrew/bin/claude"
+
+
+# Путь, который прошёл зонд claude_bin_checked(): точки выхода зовут
+# claude_bin() (сторож call sites держит это как канон) и получают именно
+# проверенный бинарник, а не повторный which (DS r1 по #499)
+_VERIFIED: str | None = None
+
+
+class CloudCLIUnavailable(RuntimeError):
+    """Claude CLI не запускается: битый симлинк, обновление под ногами, нет бинарника."""
+
+
+def cli_env() -> dict:
+    """Окружение для любого запуска CLI: без ANTHROPIC_API_KEY (подписка, не
+    потокенный биллинг) и с прокси из настроек — под launchd прокси в
+    окружении нет, и зонд без него падал бы ложной аварией (GLM r1 по #499)."""
+    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    add_proxy(env)
+    return env
+
+
+def probe_claude(path: str, timeout: float = 30, env: dict | None = None) -> str | None:
+    """`claude --version` одним вызовом: строка версии или None."""
+    try:
+        r = subprocess.run([path, "--version"], capture_output=True, text=True,
+                           timeout=timeout, stdin=subprocess.DEVNULL,
+                           env=cli_env() if env is None else env)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    return (r.stdout or "").strip() or None
+
+
+# Пауза перед второй попыткой зонда: обновление CLI меняет бинарник на секунды
+RETRY_PAUSE = 60.0
+
+
+def claude_bin_checked(*, retries: int = 1, pause: float | None = None) -> str:
+    """Путь к живому Claude CLI — или CloudCLIUnavailable.
+
+    Ночь 05.09: обновление CLI подменило бинарник под ногами, `claude_bin()`
+    отдал путь, exec упал с «Exec format error», и семь тем ревизии молча
+    легли в отчёт как «сбой» при коде 0 (аудит GLM/DS по main 05.09). Зонд
+    `--version` до основного цикла: не отвечает — пауза и вторая попытка
+    (обновление короткое), потом честный отказ, который ночь обязана
+    показать кодом возврата, а не строкой в служебном файле.
+    """
+    candidates: list[str] = []
+    for c in (shutil.which("claude"), "/opt/homebrew/bin/claude"):
+        if c and c not in candidates:
+            candidates.append(c)
+    env = cli_env()
+    last = "кандидатов нет"
+    global _VERIFIED
+    for attempt in range(retries + 1):
+        for c in candidates:
+            if probe_claude(c, env=env):
+                _VERIFIED = c
+                return c
+            last = c
+        if attempt < retries:
+            time.sleep(RETRY_PAUSE if pause is None else pause)
+    _VERIFIED = None
+    raise CloudCLIUnavailable(f"Claude CLI не отвечает на --version: {last}")
 
 
 def text_only_args() -> list[str]:
