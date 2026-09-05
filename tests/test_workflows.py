@@ -192,7 +192,19 @@ def test_docs_guard_treats_android_as_code():
     """Изменение Android-поведения требует документации или skip-docs."""
     source = (WF / "docs-guard.yml").read_text(encoding="utf-8")
     assert "app-android/" in source
-    assert r"(app-android|scripts)/README\.md" in source
+    assert r"(app|app-ios|app-android|scripts)/README\.md" in source
+
+
+def test_docs_guard_lets_a_release_only_diff_through_by_content():
+    """Релизный PR release-please (версия, манифест, CHANGELOG, бамп
+    MARKETING_VERSION в app-ios/project.yml) проходит стража по СОСТАВУ
+    диффа, а не по имени ветки: новый extra-file покраснеет и заставит
+    вписать его осознанно (GLM r1 по PR #503, после красного #501)."""
+    source = (WF / "docs-guard.yml").read_text(encoding="utf-8")
+    assert "release-please--" not in str(_load("docs-guard.yml")["jobs"]["docs-updated"].get("if", ""))
+    for name in (r"CHANGELOG\.md", r"\.release-please-manifest\.json", r"app-ios/project\.yml"):
+        assert name in source, name
+    assert 'release_only' in source and '[ -z "$release_only" ]' in source
 
 
 def test_dependabot_tracks_android_gradle_dependencies():
