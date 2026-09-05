@@ -99,7 +99,7 @@ struct RecordView: View {
                     .padding(.horizontal, 24)
             } else if rec.armed {
                 Label(rec.armedStatus ?? L.t("Жду микрофон", "Waiting for the microphone", "等待麦克风"),
-                      systemImage: "phone.fill")
+                      systemImage: rec.armedBecause == .recorderBusy ? "mic.slash.fill" : "phone.fill")
                     .font(.callout.weight(.medium))
                     .foregroundStyle(Theme.accent)
                     .multilineTextAlignment(.center)
@@ -111,6 +111,18 @@ struct RecordView: View {
                     "按停止，录音便经 iCloud 送往 Mac。\n之后由它接手：逐字稿、纪要、图谱。"))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 28)
+            }
+
+            // Автостарт ждёт папку доставки — сказать об этом здесь, а не
+            // молчать оранжевым лотком в тулбаре (критика DS r2)
+            if !rec.isRecording, !rec.armed, autostart, !Inbox.folderChosen {
+                Text(L.t("Писать сразу при открытии — после выбора папки доставки (лоток вверху)",
+                         "Recording on open starts once the delivery folder is chosen (tray above)",
+                         "选定投递文件夹后（上方托盘）即可打开即录"))
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 28)
             }

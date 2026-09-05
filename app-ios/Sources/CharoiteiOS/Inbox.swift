@@ -149,11 +149,23 @@ enum Inbox {
     /// в очередь. Зовётся на старте — раньше такие файлы просто пропадали.
     static func rescueOrphans() {
         let fm = FileManager.default
-        let left = (try? fm.contentsOfDirectory(at: inProgress, includingPropertiesForKeys: nil)) ?? []
+        let left = (try? fm.contentsOfDirectory(at: inProgress, includingPropertiesForKeys: [.fileSizeKey])) ?? []
         for f in left where audioExts.contains(f.pathExtension) {
+            // Файл, который init рекордера создал, а record() не начал
+            // (убийство процесса посреди пробы взвода), — пустышка, не
+            // запись: на Mac она уезжала «встречей» нулевой длины (GLM r2).
+            // Секундный огрызок настоящей записи весит больше порога.
+            let bytes = (try? f.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            if bytes < orphanMinBytes {
+                try? fm.removeItem(at: f)
+                continue
+            }
             try? fm.moveItem(at: f, to: uniqueName(in: outbox, like: f))
         }
     }
+
+    /// Ниже этого размера в `current/` — не запись, а заготовка контейнера.
+    static let orphanMinBytes = 1024
 
     /// Свободное имя рядом с занятым. Затирать чужой файл нельзя нигде:
     /// ни в своей очереди, ни в папке импорта на Mac.

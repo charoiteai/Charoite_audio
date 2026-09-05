@@ -35,13 +35,47 @@ final class RecorderAutoStartTests: XCTestCase {
         XCTAssertLessThanOrEqual(Recorder.armLifetime, 2 * 3600)
     }
 
+    /// Срок — пауза между пробами, не возраст взвода: открытое приложение
+    /// пробует каждые 5 с и ждёт хоть час звонка; вернулись через 31 минуту
+    /// фона — взвод снят (DS r2).
+    func testСрокВзводаЭтоПаузаМеждуПробамиАНеВозраст() {
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertFalse(Recorder.armExpired(lastProbeAt: t0, now: t0.addingTimeInterval(5)),
+                       "проба каждые 5 с — срок не тикает")
+        XCTAssertFalse(Recorder.armExpired(lastProbeAt: t0, now: t0.addingTimeInterval(29 * 60)))
+        XCTAssertTrue(Recorder.armExpired(lastProbeAt: t0, now: t0.addingTimeInterval(31 * 60)),
+                      "фон дольше срока — запись не ждут")
+        XCTAssertEqual(Recorder.armLifetimeMinutes, 30,
+                       "README/FEATURES обещают 30 минут — менять вместе с текстами")
+    }
+
+    /// Пустышка в current/ (init без record) не должна ехать на Mac.
+    func testСиротаНулевогоРазмераНеПопадаетВОчередь() throws {
+        let fm = FileManager.default
+        let stub = Inbox.inProgress.appendingPathComponent("test_stub_\(UUID().uuidString.prefix(6)).caf")
+        try Data().write(to: stub)
+        let real = Inbox.inProgress.appendingPathComponent("test_real_\(UUID().uuidString.prefix(6)).caf")
+        try Data(repeating: 1, count: Inbox.orphanMinBytes + 10).write(to: real)
+        defer {
+            try? fm.removeItem(at: stub)
+            for u in Inbox.queued where u.lastPathComponent.hasPrefix("test_real_") { try? fm.removeItem(at: u) }
+        }
+        Inbox.rescueOrphans()
+        XCTAssertFalse(fm.fileExists(atPath: stub.path), "пустышка удалена, не спасена")
+        XCTAssertTrue(Inbox.queued.contains { $0.lastPathComponent == real.lastPathComponent },
+                      "настоящий огрызок — в очередь")
+    }
+
     /// Баннер называет настоящую причину, а не всегда «звонок» (GLM/DS r1).
     func testСообщениеВзводаНазываетПричину() {
         let call = Recorder.armMessage(for: .sessionBusy)
         let other = Recorder.armMessage(for: .recorderBusy)
         XCTAssertTrue(call.contains(L.t("звонок", "call", "通话")), call)
+        XCTAssertTrue(call.contains(L.t("другое приложение", "another app", "其他应用")),
+                      "isBusy приходит и не от звонка — текст не уверяет лишнего: \(call)")
         XCTAssertTrue(other.contains(L.t("другим приложением", "Another app", "其他应用")), other)
         XCTAssertNotEqual(call, other)
+        XCTAssertTrue(call.contains("\(Recorder.armLifetimeMinutes)"), "срок в тексте — из константы")
         for text in [call, other] {
             XCTAssertTrue(text.contains(L.t("пока приложение открыто", "while the app is open", "保持应用打开")),
                           "обещание сужено до открытого приложения: \(text)")
