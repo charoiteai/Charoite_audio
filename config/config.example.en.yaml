@@ -12,6 +12,7 @@ audio:
   vad_energy_db: -55      # silence threshold; lower = more sensitive
   record: true            # keep the full recording for the offline transcript re-pass
   record_keep_days: 2     # recordings are deleted after N days (privacy)
+  import_keep_days: 2     # copies of imported recordings (done/ and the audio source in the archive) — N days after import; unset = record_keep_days
 
 stt:
   backend: parakeet       # parakeet (English, fast) | whisper (multilingual) | gigaam (Russian)

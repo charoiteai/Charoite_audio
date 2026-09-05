@@ -128,6 +128,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            let dir = d.string(forKey: "charoite.importDir"), !dir.isEmpty {
             ImportService.shared.enable(dir: dir)
         }
+        // Ретеншн копий импорта (`import_keep_days`) не зависит от тумблера
+        // слежения: файлы, положенные через вкладку «Внешняя запись», обещано
+        // удалить через два дня и тому, кто за папкой не следит.
+        if let dir = ImportService.configuredDir {
+            ImportService.shared.startRetention(dir: dir)
+        }
         // Календарный контур принадлежит приложению, а не окну: при запуске
         // через Login Items главное окно может ни разу не открыться, но
         // напоминание о встрече всё равно должно прийти.

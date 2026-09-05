@@ -7,6 +7,7 @@ struct WorkspaceView: View {
     @ObservedObject private var tasks = TasksService.shared
     @ObservedObject private var sufler = SuflerService.shared
     @ObservedObject private var processing = MeetingProcessingService.shared
+    @ObservedObject private var importer = ImportService.shared
 
     var body: some View {
         NavigationSplitView {
@@ -64,6 +65,8 @@ struct WorkspaceView: View {
             SuflerView()
         case .meetings:
             MeetingLibraryView()
+        case .inbox:
+            ExternalRecordingView()
         case .tasks:
             TasksView()
         case .memory:
@@ -111,6 +114,7 @@ struct WorkspaceView: View {
             return processing.history.filter {
                 MeetingProcessingPolicy.resolvedState($0) == .error
             }.count
+        case .inbox: return ExternalRecordingPolicy.failedCount(importer.items)
         case .tasks: return tasks.openCount
         case .today, .memory: return 0
         }
