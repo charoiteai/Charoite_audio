@@ -881,7 +881,9 @@ it signals degradation, it does not break the loop.
   `.<name>.import-error` marker, stays put, is never deleted and is no
   longer pushed through STT every two minutes — retry with the button (or
   `--scan --retry-failed`). Retention runs after every scan and every six
-  hours regardless of the watch toggle; copies that reached `done/` before
+  hours regardless of the watch toggle, and also from the daemon at every
+  meeting start — including installs without the app (the folders come
+  from the app's settings and from `audio.import_dir`, if set); copies that reached `done/` before
   this version get their days from the first sweep that sees them. The
   term is independent of `record_keep_days`: someone else's recording must
   not outlive what was asked for.
