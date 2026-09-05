@@ -35,6 +35,13 @@ final class ImportService: ObservableObject {
     private var pruneProc: Process?
     /// Файл добавили, пока скан ещё шёл: после него — ещё один проход.
     private var scanAgain = false
+    /// Имена, под которые копии ещё только пишутся: два дропа Recording.m4a
+    /// подряд не должны целиться в один путь (GLM r2 по #496).
+    private var reserved = Set<String>()
+    /// Сколько батчей копий идёт прямо сейчас. Пока > 0, скан не стартует:
+    /// сканер и копировальщик смотрят в одну папку, и первый видел бы
+    /// недописанный файл (Critical GLM+DS r2 по #496).
+    private var copying = 0
 
     /// Папка из Настроек, как её ввёл человек (тильда не раскрыта).
     static var configuredDir: String? {
@@ -125,9 +132,10 @@ final class ImportService: ObservableObject {
             let phase: ImportItem.Phase
             if let data = try? Data(contentsOf: sidecar),
                let s = try? JSONDecoder().decode(ExternalRecordingPolicy.Sidecar.self, from: data) {
-                phase = .done(ExternalRecordingPolicy.imported(from: s))
+                let imported = ExternalRecordingPolicy.imported(from: s)
+                phase = s.legacy == true ? .legacy(deleteAt: imported.deleteAt) : .done(imported)
             } else {
-                phase = .legacy
+                phase = .legacy(deleteAt: nil)
             }
             out.append(ImportItem(url: url, name: url.lastPathComponent,
                                   bytes: v.fileSize ?? 0,
@@ -149,7 +157,7 @@ final class ImportService: ObservableObject {
         var jobs: [(from: URL, to: URL)] = []
         var alreadyThere = 0
         var skipped: [String] = []
-        var taken = Set((try? fm.contentsOfDirectory(atPath: folder.path)) ?? [])
+        var taken = Set((try? fm.contentsOfDirectory(atPath: folder.path)) ?? []).union(reserved)
         for url in urls {
             guard ExternalRecordingPolicy.isSupported(url) else {
                 skipped.append(url.lastPathComponent)
@@ -162,6 +170,7 @@ final class ImportService: ObservableObject {
             }
             let name = ExternalRecordingPolicy.uniqueName(url.lastPathComponent, taken: taken)
             taken.insert(name)
+            reserved.insert(name)
             jobs.append((url, folder.appendingPathComponent(name)))
         }
         if !skipped.isEmpty {
@@ -175,20 +184,30 @@ final class ImportService: ObservableObject {
             return
         }
         status = L.t("копирую \(jobs.count) файл(ов)…", "copying \(jobs.count) file(s)…", "正在复制 \(jobs.count) 个文件…")
+        copying += 1
+        let names = jobs.map { $0.to.lastPathComponent }
         Task.detached(priority: .userInitiated) {
             var failures: [String] = []
             var copied: [URL] = []
             for job in jobs {
+                // Публикация атомарная, как у доставки с iPhone: пишем под
+                // скрытым именем с расширением, которого сканер не знает, и
+                // переименовываем одним шагом — недописанный файл не
+                // существует ни для вкладки, ни для скрипта.
+                let part = job.to.deletingLastPathComponent()
+                    .appendingPathComponent(".\(job.to.lastPathComponent).\(UUID().uuidString.prefix(8)).part")
                 do {
-                    try FileManager.default.copyItem(at: job.from, to: job.to)
-                    Self.carryModificationDate(from: job.from, to: job.to)
+                    try FileManager.default.copyItem(at: job.from, to: part)
+                    Self.carryModificationDate(from: job.from, to: part)
+                    try FileManager.default.moveItem(at: part, to: job.to)
                     copied.append(job.to)
                 } catch {
+                    try? FileManager.default.removeItem(at: part)
                     failures.append("\(job.from.lastPathComponent): \(error.localizedDescription)")
                 }
             }
             await MainActor.run {
-                self.copiesFinished(dir: dir, copied: copied, failures: failures)
+                self.copiesFinished(dir: dir, names: names, copied: copied, failures: failures)
             }
         }
     }
@@ -205,7 +224,9 @@ final class ImportService: ObservableObject {
         try? target.setResourceValues(values)
     }
 
-    private func copiesFinished(dir: String, copied: [URL], failures: [String]) {
+    private func copiesFinished(dir: String, names: [String], copied: [URL], failures: [String]) {
+        copying = max(0, copying - 1)
+        reserved.subtract(names)
         if !failures.isEmpty {
             status = L.t("не скопировано: \(failures.joined(separator: ", "))",
                          "not copied: \(failures.joined(separator: ", "))",
@@ -243,8 +264,8 @@ final class ImportService: ObservableObject {
     // MARK: - Процессы
 
     private func scan(dir: String) {
-        guard proc == nil else {
-            scanAgain = true            // предыдущий прогон ещё молотит
+        guard proc == nil, copying == 0 else {
+            scanAgain = true            // предыдущий прогон ещё молотит или идёт копия
             return
         }
         let folder = Self.folderURL(dir)

@@ -15,8 +15,10 @@ struct ImportItem: Identifiable, Equatable {
         /// В done/ с сайдкаром импорта.
         case done(Imported)
         /// В done/ без сайдкара — импорт до этой версии; срок назначит
-        /// первая уборка (скрипт запишет сайдкар «увидели сейчас»).
-        case legacy
+        /// первая уборка (скрипт запишет сайдкар «увидели сейчас» с
+        /// `legacy: true` — тогда дата уже есть, а «встреча собрана» — нет:
+        /// что это за файл, Charoite не знает).
+        case legacy(deleteAt: Date?)
     }
 
     struct Imported: Equatable {
@@ -60,6 +62,7 @@ enum ExternalRecordingPolicy {
         var kind: String?
         var `repeat`: Bool?
         var no_speech: Bool?
+        var legacy: Bool?
     }
 
     /// Метка `.<имя>.import-error`.
@@ -150,9 +153,10 @@ enum ExternalRecordingPolicy {
             if let stamp = imported.stamp { parts.append(stamp) }
             parts.append(deletionText(deleteAt: imported.deleteAt, now: now))
             return parts.joined(separator: " · ")
-        case .legacy:
+        case .legacy(let deleteAt):
             return [L.t("обработан раньше", "processed earlier", "此前已处理"),
-                    L.t("срок назначит ближайшая проверка", "the next check sets the deadline", "下次检查将设定期限")]
+                    deleteAt.map { deletionText(deleteAt: $0, now: now) }
+                        ?? L.t("срок назначит ближайшая проверка", "the next check sets the deadline", "下次检查将设定期限")]
                 .joined(separator: " · ")
         }
     }

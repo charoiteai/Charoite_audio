@@ -858,7 +858,7 @@ it signals degradation, it does not break the loop.
   the import folder, the original is left alone, and it goes through the
   same pipeline as a live meeting. The list shows what waits, what was
   built (stamp, a “Transcript” button) and when the copy goes away: a
-  processed copy in `done/` lives `audio.import_keep_days` (default 2 days)
+  processed copy in `done/` lives `audio.import_keep_days` (unset: same as `record_keep_days`)
   and is deleted together with the audio “Исходник” in the meeting archive;
   text sources (txt/vtt) in the archive stay. A failed file gets a
   `.<name>.import-error` marker, stays put, is never deleted and is no

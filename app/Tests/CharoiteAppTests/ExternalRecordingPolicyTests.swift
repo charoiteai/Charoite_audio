@@ -41,9 +41,23 @@ final class ExternalRecordingPolicyTests: XCTestCase {
     /// Копия без сайдкара срок не выдумывает: его назначит первая уборка
     /// скрипта (сайдкар «увидели сейчас»), а не ctime и не mtime.
     func testЛегасиКопияБезДатыДоПервойУборки() {
-        let text = ExternalRecordingPolicy.statusText(.legacy, now: Date())
+        let text = ExternalRecordingPolicy.statusText(.legacy(deleteAt: nil), now: Date())
         XCTAssertTrue(text.contains(L.t("ближайшая проверка", "next check", "下次检查")), text)
         XCTAssertFalse(text.contains("удалится "), "даты, которую никто не назначал, быть не должно")
+    }
+
+    /// Сайдкар от уборки (`legacy: true`) даёт дату, но не «встреча собрана»:
+    /// что это за файл, Charoite не знает (DS r2 по #496).
+    func testЛегасиСайдкарУборкиДаётДатуНоНеВстречу() throws {
+        let json = #"{"legacy": true, "imported_at": 1000, "delete_after": 1000000000, "keep_days": 2}"#
+        let sidecar = try JSONDecoder().decode(ExternalRecordingPolicy.Sidecar.self, from: Data(json.utf8))
+        XCTAssertEqual(sidecar.legacy, true)
+        let now = Date(timeIntervalSince1970: 1000)
+        let text = ExternalRecordingPolicy.statusText(
+            .legacy(deleteAt: ExternalRecordingPolicy.imported(from: sidecar).deleteAt), now: now)
+        XCTAssertTrue(text.contains(L.t("обработан раньше", "processed earlier", "此前已处理")), text)
+        XCTAssertFalse(text.contains(L.t("встреча собрана", "meeting built", "会议已生成")), text)
+        XCTAssertTrue(text.contains(L.t("удалится", "deleted", "删除")), text)
     }
 
     /// Порядок: сначала то, что требует человека (сбой), потом очередь,

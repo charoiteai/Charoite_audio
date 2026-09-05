@@ -184,7 +184,11 @@ def import_keep_days(cfg: dict, override=None) -> float:
     raw = override
     audio = cfg.get("audio") or {}
     if raw is None:
-        raw = audio.get("import_keep_days", audio.get("record_keep_days", IMPORT_KEEP_DAYS_DEFAULT))
+        raw = audio.get("import_keep_days")
+    if raw is None:          # ключа нет или `import_keep_days:` пустой — каскад (GLM r2)
+        raw = audio.get("record_keep_days")
+    if raw is None:
+        raw = IMPORT_KEEP_DAYS_DEFAULT
     try:
         days = float(raw)
     except (TypeError, ValueError):
@@ -260,9 +264,12 @@ def prune_done(folder: pathlib.Path, keep_days: float, *, now: float | None = No
                 deadline = None
         if deadline is None:
             # Первый взгляд новой версии на старую копию: срок с этого момента
-            _write_json(sidecar, {"legacy": True, "imported_at": now,
-                                  "keep_days": keep_days,
-                                  "delete_after": now + keep_days * 86400})
+            try:
+                _write_json(sidecar, {"legacy": True, "imported_at": now,
+                                      "keep_days": keep_days,
+                                      "delete_after": now + keep_days * 86400})
+            except OSError as e:
+                print(f"ретеншн импорта: сайдкар для {f.name} не записался: {e}")
             continue
         if now < deadline:
             continue
@@ -782,9 +789,11 @@ def _scan_one(f: pathlib.Path, done: pathlib.Path, keep_days: float) -> bool:
             print(f"  {ln}")
         if r.returncode == 0:
             dest = free_name(done, f.name)
-            f.rename(dest)
             imported_at = time.time()
             meta = _read_json(result_path) or {}
+            # Сайдкар ДО переноса: обрыв между ними оставлял копию без штампа,
+            # и аудио-«Исходник» в архиве жил бы вечно; сайдкар без файла —
+            # сирота, её убирает уборка (GLM r2 по #496)
             _write_json(imported_sidecar(dest), {
                 **meta,
                 "source": f.name,
@@ -792,6 +801,7 @@ def _scan_one(f: pathlib.Path, done: pathlib.Path, keep_days: float) -> bool:
                 "keep_days": keep_days,
                 "delete_after": imported_at + keep_days * 86400,
             })
+            f.rename(dest)
             forget_seen_marker(f)
             error_marker(f).unlink(missing_ok=True)
             return True
@@ -801,9 +811,9 @@ def _scan_one(f: pathlib.Path, done: pathlib.Path, keep_days: float) -> bool:
             "message": (lines[-1] if lines else f"код {r.returncode}")[:300],
             "tail": lines[-20:],
         })
-        # Отсчёт покоя размера — заново: иначе «Повторить» для потокового
-        # WAV первые 30 секунд выглядит как ничего (DS r1 по #496)
-        forget_seen_marker(f)
+        # Маркер покоя размера НЕ трогаем: он и есть доказательство, что файл
+        # отстоял свои 30 с; сброс заставлял «Повторить» ждать заново
+        # (GLM r2 и DS r2 по #496 — против моей правки по DS r1)
         print(f"импорт {f.name} не удался (код {r.returncode}) — файл остаётся, "
               f"повтор: кнопка «Повторить» или --retry-failed")
         return False

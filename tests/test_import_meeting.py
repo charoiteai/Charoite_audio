@@ -374,7 +374,7 @@ def test_failed_import_is_marked_kept_and_not_rescanned(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as failed_scan:
         _run_scan(monkeypatch, tmp_path)
     assert failed_scan.value.code == 1, "сбой файла — ненулевой код скана (DS r1)"
-    assert not im._seen_marker(bad).exists(), "отсчёт покоя размера — заново"
+    assert im._seen_marker(bad).exists(), "покой размера уже доказан — маркер остаётся (r2)"
     assert bad.exists(), "при ошибке файл не удаляется и не переносится"
     marker = im.error_marker(bad)
     meta = json.loads(marker.read_text(encoding="utf-8"))
@@ -580,6 +580,8 @@ def test_one_broken_file_does_not_stop_the_queue(tmp_path, monkeypatch):
     assert a.exists(), "сбойный перенос — файл на месте"
     assert not b.exists(), "второй файл обработан несмотря на первый"
     assert not (tmp_path / "done" / "b.txt").exists(), "уборка в конце скана (keep 0) прошла"
+    assert not list((tmp_path / "done").glob(".*.imported.json")), \
+        "сайдкар, записанный до сорвавшегося переноса, убран как сирота"
 
 
 def test_import_keep_days_is_forgiving_but_not_negative(capsys):
@@ -593,6 +595,8 @@ def test_import_keep_days_is_forgiving_but_not_negative(capsys):
     assert "непонятное" in capsys.readouterr().out
     assert im.import_keep_days({"audio": {"import_keep_days": "1e999"}}) == im.IMPORT_KEEP_DAYS_DEFAULT
     assert im.import_keep_days({"audio": {"record_keep_days": 7}}) == 7, "без своего срока — как у записей"
+    assert im.import_keep_days({"audio": {"import_keep_days": None, "record_keep_days": 5}}) == 5, \
+        "пустой ключ в YAML — тоже каскад (GLM r2)"
     assert im.import_keep_days({"audio": {"import_keep_days": 5}}, override="0") == 0
     with pytest.raises(SystemExit):
         im.import_keep_days({"audio": {"import_keep_days": -1}})
