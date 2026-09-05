@@ -650,8 +650,10 @@ def main() -> None:
         cfg = _cfg()
         removed = prune_done(folder, import_keep_days(cfg, args.keep_days),
                              graph=graphs.graph_dir(cfg))
-        removed += sweep_temporaries(folder)
-        print(f"ретеншн импорта: удалено файлов — {len(removed)}")
+        print(f"ретеншн импорта: удалено копий — {len(removed)}")
+        temporaries = sweep_temporaries(folder)
+        if temporaries:
+            print(f"ретеншн импорта: + временных без владельца — {len(temporaries)}")
         return
 
     if args.scan:

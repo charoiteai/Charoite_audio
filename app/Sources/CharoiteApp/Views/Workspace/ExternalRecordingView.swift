@@ -215,29 +215,34 @@ struct ExternalRecordingView: View {
                 return out
             }
             let missed = candidates.count - urls.count
+            if !urls.isEmpty { ImportService.shared.add(urls: urls, dir: dir) }
+            // После add: тот пишет «копирую…» в статус и затирал бы отчёт о
+            // промахах до первого же кадра (GLM r4 по #496)
             if missed > 0 { ImportService.shared.reportNotLoaded(missed) }
-            guard !urls.isEmpty else { return }
-            ImportService.shared.add(urls: urls, dir: dir)
         }
         return true
     }
 
-    private static func fileURL(from provider: NSItemProvider) async -> URL? {
-        await withTaskGroup(of: URL?.self) { group in
-            group.addTask {
-                await withCheckedContinuation { cont in
-                    provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
-                        cont.resume(returning: data.flatMap { URL(dataRepresentation: $0, relativeTo: nil) })
-                    }
-                }
+    /// URL из провайдера с честным таймаутом: один continuation, «первый
+    /// резюм выигрывает». Группа задач тут не годится — на выходе она ждёт
+    /// всех детей, а зависший колбэк провайдера не приходит никогда
+    /// (Critical GLM r4 по #496).
+    private static func fileURL(from provider: NSItemProvider,
+                                timeout: TimeInterval = 10) async -> URL? {
+        await withCheckedContinuation { (cont: CheckedContinuation<URL?, Never>) in
+            let gate = NSLock()
+            var done = false
+            func once(_ result: URL?) {
+                gate.lock()
+                let first = !done
+                done = true
+                gate.unlock()
+                if first { cont.resume(returning: result) }
             }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(10))
-                return nil
+            provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
+                once(data.flatMap { URL(dataRepresentation: $0, relativeTo: nil) })
             }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { once(nil) }
         }
     }
 

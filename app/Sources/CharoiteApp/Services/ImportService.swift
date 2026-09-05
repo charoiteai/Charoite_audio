@@ -35,6 +35,14 @@ final class ImportService: ObservableObject {
     private var pruneProc: Process?
     /// Файл добавили, пока скан ещё шёл: после него — ещё один проход.
     private var scanAgain = false
+    /// Повторный проход наследует «покой размера», если его требовал
+    /// прерванный тик или новая просьба: иначе машинный re-scan забирал бы
+    /// чужую Finder-копию на середине (критика GLM r4 по #496).
+    private var scanAgainSettle = false
+    private var runningSettleAll = false
+    /// Одноразовый догон после тика, отложившего файлы: гарантия «30 с
+    /// покоя» не должна ждать следующего двухминутного тика (критика GLM r4).
+    private var settleRetry: Timer?
     /// Имена, под которые копии ещё только пишутся: два дропа Recording.m4a
     /// подряд не должны целиться в один путь (GLM r2 по #496).
     private var reserved = Set<String>()
@@ -221,6 +229,14 @@ final class ImportService: ObservableObject {
 
     private func copiesFinished(dir: String, names: [String], copied: [URL], failures: [String]) {
         reserved.subtract(names)
+        // Свежая копия под именем старого сбоя — это и есть «повторить»:
+        // метка ошибки не должна пережить файл, который её вызвал (DS r1).
+        // До гейта папки: это про сами файлы, а не про экран (GLM r4)
+        for url in copied {
+            let marker = url.deletingLastPathComponent()
+                .appendingPathComponent(".\(url.lastPathComponent).import-error")
+            try? FileManager.default.removeItem(at: marker)
+        }
         // Папку сменили, пока шла копия: учёт — всегда, хвост для экрана —
         // только своему каталогу (GLM r3 по #496)
         guard dir == (Self.configuredDir ?? dir) else { return }
@@ -228,13 +244,6 @@ final class ImportService: ObservableObject {
             status = L.t("не скопировано: \(failures.joined(separator: ", "))",
                          "not copied: \(failures.joined(separator: ", "))",
                          "未复制：\(failures.joined(separator: ", "))")
-        }
-        // Свежая копия под именем старого сбоя — это и есть «повторить»:
-        // метка ошибки не должна пережить файл, который её вызвал (DS r1)
-        for url in copied {
-            let marker = url.deletingLastPathComponent()
-                .appendingPathComponent(".\(url.lastPathComponent).import-error")
-            try? FileManager.default.removeItem(at: marker)
         }
         refresh(dir: dir)
         if !copied.isEmpty { scan(dir: dir) }
@@ -277,8 +286,10 @@ final class ImportService: ObservableObject {
     private func scan(dir: String, settleAll: Bool = false) {
         guard proc == nil else {
             scanAgain = true            // предыдущий прогон ещё молотит
+            scanAgainSettle = scanAgainSettle || settleAll || runningSettleAll
             return
         }
+        runningSettleAll = settleAll
         let folder = Self.folderURL(dir)
         // Импорт перемещает файлы (успешные уезжают в done/), поэтому папка
         // должна существовать и быть именно папкой. Промежуточный путь,
@@ -331,7 +342,16 @@ final class ImportService: ObservableObject {
                 self.refresh(dir: dir)
                 if self.scanAgain {
                     self.scanAgain = false
-                    self.scan(dir: dir)
+                    let settle = self.scanAgainSettle
+                    self.scanAgainSettle = false
+                    self.scan(dir: dir, settleAll: settle)
+                } else if settleAll, text.contains("отложен до следующего скана") {
+                    // Тик отложил файлы до покоя размера — догоним через
+                    // 35 с, а не через следующие две минуты
+                    self.settleRetry?.invalidate()
+                    self.settleRetry = Timer.scheduledTimer(withTimeInterval: 35, repeats: false) { [weak self] _ in
+                        Task { @MainActor [weak self] in self?.scan(dir: dir, settleAll: true) }
+                    }
                 }
             }
         }
