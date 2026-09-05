@@ -181,7 +181,7 @@ def _hint_keep_days_once(record_keep_days) -> None:
     try:
         same = float(record_keep_days) == float(IMPORT_KEEP_DAYS_DEFAULT)
     except (TypeError, ValueError):
-        same = False
+        return          # кривое значение — не о чем говорить «больше не влияет» (DS r3 M2)
     if same:
         return
     _KEEP_DAYS_HINTED[0] = True

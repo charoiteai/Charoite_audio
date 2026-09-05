@@ -519,3 +519,32 @@ def test_files_with_stamp_stops_at_the_stamp_boundary(tmp_path):
     assert meeting_stamp.files_with_stamp(d / "нет", "2026-08-03_1130") == []
     assert meeting_stamp.files_with_stamp(
         d, "2026-08-03_1130", prefix="graph_", suffix=".log") == []
+
+
+def test_stamp_prefix_reads_any_meeting_file_name():
+    """Формат имени живёт в meeting_stamp: forget собирает кандидатов через
+    stamp_prefix, а не своим регэкспом (критика GLM r3 по #499)."""
+    sp = meeting_stamp.stamp_prefix
+    assert sp("2026-07-15_140023_mic.wav.part") == "2026-07-15_140023"
+    assert sp("2026-07-15_140023_mic.pcm") == "2026-07-15_140023"
+    assert sp("2026-07-15_1400_minutes.md") == "2026-07-15_1400"
+    assert sp("2026-07-15_140023-1.md") == "2026-07-15_140023-1"
+    assert sp("2026-07-15_140023.md.live.json") == "2026-07-15_140023"
+    assert sp("2026-07-15_14002.md") is None          # пять цифр — не штамп
+    assert sp("Исходник.wav") is None
+
+
+def test_recording_unfinished_is_anything_but_a_ready_wav():
+    ru = meeting_stamp.recording_unfinished
+    assert ru("2026-07-15_140023_mic.pcm")
+    assert ru("2026-07-15_140023_mic.wav.part")
+    assert ru("2026-07-15_140023_mic.wav.part4242")
+    assert not ru("2026-07-15_140023_mic.wav")
+    assert not ru("2026-07-15_140023.md")
+
+
+def test_note_transcript_stamp_reads_the_transcript_line():
+    nts = meeting_stamp.note_transcript_stamp
+    assert nts("# x\n\nСтенограмма: `transcripts/2026-07-15_140023.md`\n") == "2026-07-15_140023"
+    assert nts("# x\n\nСтенограмма: `transcripts/2026-07-15_1400_Тема.md`\n") == "2026-07-15_1400"
+    assert nts("# x\nбез строки\n") is None
