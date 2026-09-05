@@ -5,6 +5,18 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.72.0](https://github.com/charoiteai/Charoite_audio/compare/v0.71.0...v0.72.0) (2026-09-05)
+
+
+### Features
+
+* **daemon:** ретеншн копий импорта из демона при старте и на каждом старте встречи ([#506](https://github.com/charoiteai/Charoite_audio/issues/506)) ([947681b](https://github.com/charoiteai/Charoite_audio/commit/947681b8bf22083a21c74689d1cc88f03acd3727))
+
+
+### Bug Fixes
+
+* **diary:** текстовый режим не прогревает STT в фоне — SIGABRT на выходе красил CI ([#504](https://github.com/charoiteai/Charoite_audio/issues/504)) ([97ea9bf](https://github.com/charoiteai/Charoite_audio/commit/97ea9bf688a8e98e94f1719009c727399f65f27a))
+
 ## [0.71.0](https://github.com/charoiteai/Charoite_audio/compare/v0.70.0...v0.71.0) (2026-09-05)
 
 
