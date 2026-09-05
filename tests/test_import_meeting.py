@@ -335,9 +335,17 @@ def test_import_title_goes_through_the_slug_guard():
 # ---- №166: метки сбоя, сайдкары done/, ретеншн копий ---------------------
 
 def _run_scan(monkeypatch, folder, *extra):
+    """Скан через main(). main() зовёт harden_umask() — umask ПРОЦЕССА
+    pytest менялся на 077, и test_private_permissions (ждёт 0755 у каталога
+    установок) падал следом (CI по #496). Возвращаем umask как был."""
     import import_meeting as im
     monkeypatch.setattr(sys, "argv", ["import_meeting.py", "--scan", *extra, "--", str(folder)])
-    im.main()
+    before = os.umask(0)
+    os.umask(before)
+    try:
+        im.main()
+    finally:
+        os.umask(before)
 
 
 def test_failed_import_is_marked_kept_and_not_rescanned(tmp_path, monkeypatch):
