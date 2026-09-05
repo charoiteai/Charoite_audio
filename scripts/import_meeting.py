@@ -56,6 +56,7 @@ from config_loader import load_user_or_example  # noqa: E402
 import charoite_paths  # noqa: E402
 import safe_write  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
+from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402
 
 AUDIO = {".m4a", ".wav", ".mp3", ".aif", ".aiff", ".caf"}
 TEXT = {".txt", ".md"}
@@ -829,9 +830,7 @@ def main() -> None:
     _status("processing", tpath, "updating_graph")
     graph_run = subprocess.run(
         [sys.executable, str(CODE / "src" / "graph_updater.py"), str(tpath)])
-    # = graph_updater.EXIT_NO_SPEECH. Именно копия, не импорт: верхний уровень
-    # модуля тянет requests/llm_health — дорого и с сайд-эффектами для обвязки.
-    no_speech, no_graph = 3, 4
+    no_speech, no_graph = EXIT_NO_SPEECH, EXIT_NO_GRAPH   # одно место — exit_codes (№173)
     if graph_run.returncode == no_graph:
         # graph_updater.EXIT_NO_GRAPH: модель не дала разбор — узлов графа нет,
         # архив со стенограммой собран. Хвост (минутки/разбор) всё равно
