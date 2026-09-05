@@ -5,19 +5,31 @@ struct RecordView: View {
     /// Что показываем поверх экрана. Одно состояние на все листы — иначе
     /// SwiftUI показывает только последний из нескольких `.sheet`.
     private enum Sheet: String, Identifiable {
-        case folder, queue
+        case folder, queue, settings
         var id: String { rawValue }
     }
 
     @StateObject private var rec = Recorder()
-    @State private var kind: Recorder.Kind = .meeting
+    /// Тип записи помнится между запусками: автостарт пишет тем, что
+    /// выбирали в прошлый раз, а не всегда «встречу».
+    @AppStorage(Recorder.kindStorageKey) private var kindRaw = Recorder.Kind.meeting.rawValue
+    /// «Писать сразу при открытии» — по умолчанию включено (№167).
+    @AppStorage("record.autostart") private var autostart = true
+    /// Первое появление экрана за запуск — единственный момент автостарта.
+    @State private var launched = false
+    /// Автостарт уже был (или его заменил интент): выбор папки после
+    /// подсказки его не повторяет второй раз.
+    @State private var autostarted = false
     @State private var sheet: Sheet?
     @State private var queued = 0
     @State private var stuckInQueue = 0
 
+    private var kind: Recorder.Kind { Recorder.Kind(rawValue: kindRaw) ?? .meeting }
+
     var body: some View {
         VStack(spacing: 24) {
-            Picker(L.t("Тип записи", "Recording kind", "录音类型"), selection: $kind) {
+            Picker(L.t("Тип записи", "Recording kind", "录音类型"),
+                   selection: Binding(get: { kind }, set: { kindRaw = $0.rawValue })) {
                 ForEach(Recorder.Kind.allCases) { k in
                     // Именно title: rawValue — технический идентификатор, он
                     // уходит в имя файла и Live Activity. На экране он давал
@@ -26,28 +38,46 @@ struct RecordView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .disabled(rec.isRecording)
+            // Во взводе тип заморожен вместе с ним: переключение на экране
+            // не доезжало до пробы, и запись шла старым типом (GLM/DS r1)
+            .disabled(rec.isRecording || rec.armed)
             .padding(.horizontal)
 
             Spacer()
 
             Button {
-                rec.isRecording ? rec.stop() : rec.start(kind: kind)
+                if rec.isRecording {
+                    rec.stop()
+                } else if rec.armed {
+                    rec.disarm()
+                } else {
+                    rec.start(kind: kind)
+                }
             } label: {
                 ZStack {
                     Circle()
                         .fill(Theme.record)
                         .frame(width: 132, height: 132)
                         .shadow(color: Theme.accent.opacity(0.45), radius: 18, y: 8)
-                    RoundedRectangle(cornerRadius: rec.isRecording ? 10 : 66)
-                        .fill(.white)
-                        .frame(width: rec.isRecording ? 40 : 44,
-                               height: rec.isRecording ? 40 : 44)
-                        .animation(.spring(response: 0.3), value: rec.isRecording)
+                    if rec.armed {
+                        // Взвод: ждём микрофон у звонка — телефон в руке,
+                        // человек должен видеть, что нажимать больше не надо
+                        Image(systemName: "phone.arrow.down.left")
+                            .font(.system(.title, weight: .semibold))
+                            .foregroundStyle(.white)
+                    } else {
+                        RoundedRectangle(cornerRadius: rec.isRecording ? 10 : 66)
+                            .fill(.white)
+                            .frame(width: rec.isRecording ? 40 : 44,
+                                   height: rec.isRecording ? 40 : 44)
+                            .animation(.spring(response: 0.3), value: rec.isRecording)
+                    }
                 }
             }
             .accessibilityLabel(rec.isRecording
                                 ? L.t("Остановить запись", "Stop recording", "停止录音")
+                                : rec.armed
+                                ? L.t("Отменить ожидание микрофона", "Cancel waiting for the microphone", "取消等待麦克风")
                                 : L.t("Начать запись", "Start recording", "开始录音"))
 
             Text(timeString(rec.elapsed))
@@ -70,6 +100,13 @@ struct RecordView: View {
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
+            } else if rec.armed {
+                Label(rec.armedStatus ?? L.t("Жду микрофон", "Waiting for the microphone", "等待麦克风"),
+                      systemImage: rec.armedBecause == .recorderBusy ? "mic.slash.fill" : "phone.fill")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(Theme.accent)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
             } else {
                 Text(rec.lastResult ?? L.t(
                     "Стоп — и запись уедет на Mac через iCloud.\nДальше он сам: стенограмма, минутки, граф.",
@@ -77,6 +114,18 @@ struct RecordView: View {
                     "按停止，录音便经 iCloud 送往 Mac。\n之后由它接手：逐字稿、纪要、图谱。"))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 28)
+            }
+
+            // Автостарт ждёт папку доставки — сказать об этом здесь, а не
+            // молчать оранжевым лотком в тулбаре (критика DS r2)
+            if !rec.isRecording, !rec.armed, autostart, !Inbox.folderChosen {
+                Text(L.t("Писать сразу при открытии — после выбора папки доставки (лоток вверху)",
+                         "Recording on open starts once the delivery folder is chosen (tray above)",
+                         "选定投递文件夹后（上方托盘）即可打开即录"))
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 28)
             }
@@ -119,6 +168,14 @@ struct RecordView: View {
         .padding(.vertical)
         .navigationTitle(L.t("Запись", "Record", "录音"))
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    sheet = .settings
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .accessibilityLabel(L.t("Настройки записи", "Recording settings", "录音设置"))
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     sheet = .folder
@@ -146,6 +203,15 @@ struct RecordView: View {
                         rec.lastResult = L.t("Папка выбрана: \(url.lastPathComponent)",
                                              "Folder set: \(url.lastPathComponent)",
                                              "已选择文件夹：\(url.lastPathComponent)")
+                        // Подсказка обещала «после выбора папки» — держим слово
+                        // в этой же сессии, один раз (критика GLM r3)
+                        if !autostarted, Recorder.shouldAutoStart(enabled: autostart && !Self.underTests,
+                                                                  coldLaunch: true,
+                                                                  isRecording: rec.isRecording, armed: rec.armed,
+                                                                  deliveryReady: true) {
+                            autostarted = true
+                            rec.start(kind: kind)
+                        }
                         Task { await Inbox.flush { msg in rec.lastResult = msg } }
                     } catch {
                         rec.lastResult = L.t("Не удалось запомнить папку: \(error.localizedDescription)",
@@ -155,6 +221,8 @@ struct RecordView: View {
                 }
             case .queue:
                 QueueView(rec: rec)
+            case .settings:
+                RecordSettingsView()
             }
         }
         .task {
@@ -162,11 +230,40 @@ struct RecordView: View {
             // (LiveActivityIntent), но про сам рекордер она ничего не знает —
             // виджету он недоступен и не должен быть. Здесь и связываем.
             RecordingControl.onStop = { [weak rec] in rec?.stop() }
+            // «Начать запись» из Siri/Команд/кнопки действия — тем же типом,
+            // что выбран на экране.
+            RecordingControl.onStart = { [weak rec] in
+                guard let rec, !rec.isRecording else { return }
+                let raw = UserDefaults.standard.string(forKey: Recorder.kindStorageKey) ?? ""
+                rec.start(kind: Recorder.Kind(rawValue: raw) ?? .meeting)
+            }
+            if !launched {
+                launched = true
+                // Слушать сразу (№167): просьба интента важнее настройки;
+                // без просьбы — автостарт по настройке, один раз за запуск,
+                // только когда папка доставки выбрана (первый запуск без
+                // папки писал бы в никуда) и не под XCTest — хост тестов
+                // иначе начинал настоящую запись (GLM r1).
+                if RecordingControl.takeStartRequest() {
+                    autostarted = true
+                    rec.start(kind: kind)
+                } else if Recorder.shouldAutoStart(enabled: autostart && !Self.underTests,
+                                                   coldLaunch: true,
+                                                   isRecording: rec.isRecording, armed: rec.armed,
+                                                   deliveryReady: Inbox.folderChosen) {
+                    autostarted = true
+                    rec.start(kind: kind)
+                }
+            }
             await Inbox.flush { msg in rec.lastResult = msg }
             rec.refreshLastRecording()
             refreshQueue()
         }
         .onChange(of: rec.lastRecording) { _, _ in refreshQueue() }
+    }
+
+    private static var underTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     }
 
     /// Пересчитать очередь: SwiftUI за файловой системой не следит, а число в

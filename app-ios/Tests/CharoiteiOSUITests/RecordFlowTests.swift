@@ -11,6 +11,9 @@ import XCTest
 private func launchInRussian() -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-ui.language", "ru"]
+    // Автостарт (№167) на симуляторе с выбранной папкой доставки писал бы с
+    // первого кадра, и кнопки «Начать запись» не было бы (GLM r2)
+    app.launchArguments += ["-record.autostart", "NO"]
     app.launch()
     return app
 }

@@ -1,6 +1,7 @@
 import ActivityKit
 import AVFoundation
 import Foundation
+import UIKit
 
 /// Запись с продолжением в фоне (Background Audio).
 ///
@@ -50,6 +51,131 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     /// расти, и человек, не глядя в них в упор, этого не замечает. Здесь —
     /// явный флаг, чтобы экран мог сказать словами.
     @Published private(set) var stalled = false
+
+    /// Взвод: микрофон занят (идёт звонок), запись начнётся сама, как
+    /// только его отдадут. «Слушать сразу» на iOS упирается ровно сюда:
+    /// сам звонок не запишет никто (сессия CallKit выше любой другой), но
+    /// открытое во время звонка приложение не должно требовать второго
+    /// нажатия после него (№167).
+    @Published private(set) var armed = false
+    /// Текст взвода — отдельный канал: доставка пишет в `lastResult`, и
+    /// баннер взвода терял бы причину («Уехало на Mac» с иконкой телефона —
+    /// GLM r1 по #497).
+    @Published private(set) var armedStatus: String?
+    private var armedKind: Kind = .meeting
+    private var armedAt: Date?
+    private var armTimer: Timer?
+    /// Как часто пробуем микрофон во взведённом состоянии. Проба дешёвая
+    /// (setActive + record), а `.ended` после чужого звонка нам никто не шлёт —
+    /// сессии у нас в этот момент ещё нет.
+    nonisolated static let armProbeEvery: TimeInterval = 5
+    /// Сколько живёт взвод. В фоне процесс спит и таймер не тикает: старт
+    /// из свёрнутого приложения платформа не даёт. Вернулись на экран через
+    /// пять минут — стартуем; вернулись через три часа «посмотреть» — не
+    /// должны получить запись, о которой не просили (DS r1 по #497).
+    nonisolated static let armLifetimeMinutes = 30
+    nonisolated static var armLifetime: TimeInterval { TimeInterval(armLifetimeMinutes * 60) }
+    /// Последняя проба микрофона. Срок взвода — это НЕ возраст взвода, а
+    /// пауза между пробами: пока приложение открыто, пробы идут каждые 5 с
+    /// и срок не тикает (человек, державший экран весь звонок, не получает
+    /// «истекло» — DS r2); в фоне таймер стоит, и первый тик после возврата
+    /// видит паузу — вернулись через часы, значит запись не ждут (DS r1).
+    private var lastProbeAt: Date?
+    /// Почему ждём — для текста и иконки, обновляется каждой пробой (DS r2).
+    @Published private(set) var armedBecause: StartFailure?
+    /// Сколько проб подряд не удалось — для паузы между пробами.
+    private var probeAttempts = 0
+
+    /// Пауза до следующей пробы. Звонок: каждые 5 с — сессию не отдают
+    /// ещё до создания рекордера, проба дешёвая, а старт после звонка
+    /// нужен быстро. Чужое приложение на входе: проба создаёт и удаляет
+    /// файл и дёргает чужой звук — пауза растёт до минуты (GLM r3).
+    nonisolated static func nextProbeInterval(after failure: StartFailure?, attempts: Int) -> TimeInterval {
+        guard failure == .recorderBusy else { return armProbeEvery }
+        let grown = armProbeEvery * pow(2, Double(max(0, attempts - 1)))
+        return min(60, grown)
+    }
+    /// Ключ типа записи в UserDefaults — один на экран и интент (GLM r1).
+    nonisolated static let kindStorageKey = "record.kind"
+    /// Запрос разрешения уже в полёте — второй старт (интент поверх
+    /// автостарта) не должен открыть второй промпт и второй рекордер (DS r1).
+    /// Штамп, а не флаг: колбэк промпта может не прийти (уход в фон с
+    /// открытым промптом), и флаг навсегда глушил бы кнопку (GLM r2).
+    private var permissionRequestedAt: Date?
+    nonisolated static let permissionRequestStale: TimeInterval = 30
+
+    /// Почему старт не удался.
+    enum StartFailure: Equatable {
+        /// Микрофон запрещён в Настройках — ждать нечего.
+        case permissionDenied
+        /// Места нет — ждать нечего.
+        case lowStorage
+        /// Сессию не отдали: звонок держит приоритет — отдадут после него.
+        case sessionBusy
+        /// Рекордер не стартовал: вход у другого приложения — может отпустить.
+        case recorderBusy
+        case other
+    }
+
+    /// Ждать ли микрофон после неудачного старта. Взводимся только на
+    /// временные причины; запрет и пустой диск ожиданием не лечатся.
+    nonisolated static func shouldArm(after failure: StartFailure) -> Bool {
+        switch failure {
+        case .sessionBusy, .recorderBusy: return true
+        case .permissionDenied, .lowStorage, .other: return false
+        }
+    }
+
+    /// Открыли приложение — писать сразу? Только холодный старт (не возврат
+    /// из фона), только с включённой настройкой, только если ничего не
+    /// идёт (иначе возврат на экран посреди записи запускал бы вторую) и
+    /// только когда доставка настроена: первый запуск без папки iCloud
+    /// выстреливал бы промпт микрофона и писал в никуда (критика GLM/DS r1).
+    nonisolated static func shouldAutoStart(enabled: Bool, coldLaunch: Bool,
+                                            isRecording: Bool, armed: Bool,
+                                            deliveryReady: Bool) -> Bool {
+        enabled && coldLaunch && !isRecording && !armed && deliveryReady
+    }
+
+    nonisolated static func armExpired(armedAt: Date, now: Date) -> Bool {
+        now.timeIntervalSince(armedAt) > armLifetime
+    }
+
+    /// Пауза между пробами длиннее срока — приложение спало дольше, чем
+    /// человек готов ждать записи, о которой не просил.
+    nonisolated static func armExpired(lastProbeAt: Date, now: Date) -> Bool {
+        armExpired(armedAt: lastProbeAt, now: now)
+    }
+
+    /// Честный текст взвода: причина — та, что была, а не всегда «звонок»
+    /// (GLM/DS r1); старт обещан только открытому приложению.
+    nonisolated static func armMessage(for failure: StartFailure) -> String {
+        let m = armLifetimeMinutes
+        switch failure {
+        case .recorderBusy:
+            return L.t("Микрофон занят другим приложением. Стартую сам, как только его отпустят, — пока приложение открыто (или при возврате в течение \(m) минут)",
+                       "Another app holds the microphone. I start by myself once it lets go — while the app is open (or on return within \(m) minutes)",
+                       "麦克风被其他应用占用。一旦释放就会自动开始——需保持应用打开（或在 \(m) 分钟内返回）")
+        default:
+            // isBusy приходит и от чужого приложения, не только от звонка —
+            // называть причину точнее, чем знаем, нельзя (GLM r2)
+            return L.t("Жду микрофон: идёт звонок или его держит другое приложение. Стартую сам, как только его отдадут, — пока приложение открыто (или при возврате в течение \(m) минут)",
+                       "Waiting for the microphone: a call is on or another app holds it. I start by myself when it is released — while the app is open (or on return within \(m) minutes)",
+                       "等待麦克风：正在通话或被其他应用占用。一旦释放就会自动开始——需保持应用打开（或在 \(m) 分钟内返回）")
+        }
+    }
+
+    /// Ошибка аудиосессии → причина. `insufficientPriority` ('!pri') — ровно
+    /// то, что iOS отвечает, пока микрофон у звонка; `isBusy` — то же от
+    /// другого приложения.
+    nonisolated static func failure(for error: Error) -> StartFailure {
+        let code = (error as NSError).code
+        if code == AVAudioSession.ErrorCode.insufficientPriority.rawValue
+            || code == AVAudioSession.ErrorCode.isBusy.rawValue {
+            return .sessionBusy
+        }
+        return .other
+    }
 
     /// Последняя запись на телефоне — то, чем можно поделиться прямо сейчас.
     ///
@@ -163,6 +289,10 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     }
 
     func start(kind: Kind) {
+        // Три триггера старта (кнопка/автостарт, интент, проба взвода) не
+        // взаимоисключены во времени: второй рекордер молча перетирал бы
+        // первый, оставив незакрытый файл (DS r1 по #497).
+        guard !isRecording, recorder == nil else { return }
         // Разрешение спрашиваем ДО старта. Раньше не спрашивали вовсе:
         // setActive при запрещённом микрофоне обычно не бросает, система
         // просто подаёт тишину — и человек писал час, получая пустой файл
@@ -171,27 +301,46 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         case .granted:
             break
         case .undetermined:
+            if let asked = permissionRequestedAt,
+               Date().timeIntervalSince(asked) < Self.permissionRequestStale {
+                // промпт ещё на экране — второй не открываем, но и не молчим (GLM r3)
+                lastResult = L.t("Подтвердите доступ к микрофону — запрос уже открыт",
+                                 "Confirm microphone access — the request is already open",
+                                 "请确认麦克风权限——请求已打开")
+                return
+            }
+            permissionRequestedAt = Date()
             AVAudioApplication.requestRecordPermission { [weak self] granted in
                 Task { @MainActor in
                     guard let self else { return }
-                    if granted { self.start(kind: kind) }
-                    else { self.lastResult = L.t("Без доступа к микрофону запись невозможна",
-                                                 "Recording needs microphone access",
-                                                 "录音需要麦克风权限") }
+                    self.permissionRequestedAt = nil
+                    if granted {
+                        self.start(kind: kind)
+                    } else {
+                        self.startFailed(.permissionDenied, kind: kind,
+                                         message: L.t("Без доступа к микрофону запись невозможна",
+                                                      "Recording needs microphone access",
+                                                      "录音需要麦克风权限"))
+                    }
                 }
             }
             return
         default:
-            lastResult = L.t("Микрофон запрещён: Настройки › Charoite › Микрофон",
-                             "Microphone denied: Settings › Charoite › Microphone",
-                             "麦克风被拒绝：设置 › Charoite › 麦克风")
+            // Через startFailed, а не напрямую: политика «на запрет и место не
+            // взводимся» живёт в shouldArm, и выходить в обход неё нельзя
+            // (GLM M3 / DS M2 по #497)
+            startFailed(.permissionDenied, kind: kind,
+                        message: L.t("Микрофон запрещён: Настройки › Charoite › Микрофон",
+                                     "Microphone denied: Settings › Charoite › Microphone",
+                                     "麦克风被拒绝：设置 › Charoite › 麦克风"))
             return
         }
 
         guard Self.freeBytes() > Self.minFreeBytes else {
-            lastResult = L.t("Мало места на iPhone — освободите 300 МБ",
-                             "Low storage — free up 300 MB",
-                             "存储空间不足 — 请释放 300 MB")
+            startFailed(.lowStorage, kind: kind,
+                        message: L.t("Мало места на iPhone — освободите 300 МБ",
+                                     "Low storage — free up 300 MB",
+                                     "存储空间不足 — 请释放 300 MB"))
             return
         }
 
@@ -212,9 +361,10 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             try? session.setPrefersNoInterruptionsFromSystemAlerts(true)
             try session.setActive(true)
         } catch {
-            lastResult = L.t("Аудиосессия не открылась: \(error.localizedDescription)",
-                             "Audio session failed: \(error.localizedDescription)",
-                             "音频会话失败：\(error.localizedDescription)")
+            startFailed(Self.failure(for: error), kind: kind,
+                        message: L.t("Аудиосессия не открылась: \(error.localizedDescription)",
+                                     "Audio session failed: \(error.localizedDescription)",
+                                     "音频会话失败：\(error.localizedDescription)"))
             return
         }
 
@@ -246,11 +396,21 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             r.delegate = self
             r.isMeteringEnabled = true
             guard r.record() else {
-                lastResult = L.t("Запись не стартовала — микрофон занят другим приложением?",
-                                 "Recording did not start — microphone busy?",
-                                 "录音未开始 — 麦克风被占用？")
+                // init рекордера уже создал файл: пустышка при каждой пробе
+                // взвода ехала бы на Mac «записью» (GLM I2 / DS M3 по #497)
+                try? FileManager.default.removeItem(at: url)
+                // Сессию отдаём: иначе индикатор микрофона горит весь взвод,
+                // а проба активирует её заново сама (GLM r2). Без
+                // notifyOthersOnDeactivation: с ним каждая проба дёргала бы
+                // чужой плеер паузой и продолжением (GLM r3)
+                try? AVAudioSession.sharedInstance().setActive(false)
+                startFailed(.recorderBusy, kind: kind,
+                            message: L.t("Запись не стартовала — микрофон занят другим приложением?",
+                                         "Recording did not start — microphone busy?",
+                                         "录音未开始 — 麦克风被占用？"))
                 return
             }
+            disarm(quiet: true)
             recorder = r
             isRecording = true
             currentKind = kind
@@ -264,10 +424,83 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             }
             startActivity(kind: kind)
         } catch {
+            try? FileManager.default.removeItem(at: url)
+            disarm(quiet: true)
             lastResult = L.t("Запись не стартовала: \(error.localizedDescription)",
                              "Recording failed: \(error.localizedDescription)",
                              "录音失败：\(error.localizedDescription)")
         }
+    }
+
+    /// Неудачный старт: либо честное сообщение, либо взвод и ожидание.
+    private func startFailed(_ failure: StartFailure, kind: Kind, message: String) {
+        guard Self.shouldArm(after: failure) else {
+            disarm(quiet: true)
+            lastResult = message
+            return
+        }
+        arm(kind: kind, because: failure)
+    }
+
+    /// Ждать микрофон и стартовать самим, как только его отдадут.
+    func arm(kind: Kind, because failure: StartFailure = .sessionBusy) {
+        armedKind = kind
+        // Причина могла смениться (звонок кончился, вход забрало другое
+        // приложение) — текст и иконку обновляем на каждой пробе; та же
+        // строка не мигает (GLM/DS r2)
+        armedBecause = failure
+        armedStatus = Self.armMessage(for: failure)
+        guard !armed else { return }        // уже ждём — таймер не трогаем
+        armed = true
+        armedAt = Date()
+        lastProbeAt = Date()
+        probeAttempts = 0
+        scheduleProbe()
+    }
+
+    private func scheduleProbe() {
+        armTimer?.invalidate()
+        let pause = Self.nextProbeInterval(after: armedBecause, attempts: probeAttempts)
+        armTimer = Timer.scheduledTimer(withTimeInterval: pause, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.probeArmed() }
+        }
+    }
+
+    /// Человек передумал: та же большая кнопка во взведённом состоянии.
+    func disarm(quiet: Bool = false) {
+        armTimer?.invalidate()
+        armTimer = nil
+        guard armed else { return }
+        armed = false
+        armedAt = nil
+        lastProbeAt = nil
+        probeAttempts = 0
+        armedBecause = nil
+        armedStatus = nil
+        if !quiet {
+            lastResult = L.t("Ожидание микрофона отменено", "Waiting for the microphone cancelled", "已取消等待麦克风")
+        }
+    }
+
+    private func probeArmed() {
+        guard armed, !isRecording else {
+            disarm(quiet: true)
+            return
+        }
+        let now = Date()
+        let previous = lastProbeAt ?? now
+        lastProbeAt = now
+        if Self.armExpired(lastProbeAt: previous, now: now) {
+            disarm(quiet: true)
+            let m = Self.armLifetimeMinutes
+            lastResult = L.t("Ожидание микрофона истекло (\(m) мин) — нажмите запись",
+                             "Waiting for the microphone expired (\(m) min) — tap record",
+                             "等待麦克风已超时（\(m) 分钟）——请点击录音")
+            return
+        }
+        probeAttempts += 1
+        start(kind: armedKind)      // успех снимает взвод сам; неудача — ждём дальше
+        if armed { scheduleProbe() }
     }
 
     /// Прерывания и смена маршрута. Без этого звонок посреди встречи оставлял
@@ -282,6 +515,19 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
             Task { @MainActor [weak self] in self?.handleInterruption(type) }
+        })
+        observers.append(nc.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // Промпт разрешения система снимает при уходе в фон, колбэк
+                // может не прийти: вернулись — штамп больше не держит кнопку
+                if AVAudioApplication.shared.recordPermission == .undetermined {
+                    self.permissionRequestedAt = nil
+                }
+            }
         })
         observers.append(nc.addObserver(
             forName: AVAudioSession.mediaServicesWereResetNotification,

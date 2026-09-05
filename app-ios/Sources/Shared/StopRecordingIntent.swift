@@ -41,4 +41,25 @@ public enum RecordingControl {
     static func stopFromLiveActivity() {
         onStop?()
     }
+
+    /// Что делать по «Начать запись» (интент: Siri, Команды, кнопка
+    /// действия). Ставит экран записи при появлении.
+    public static var onStart: (() -> Void)?
+    /// Просьба пришла раньше, чем экран поставил обработчик — холодный
+    /// запуск интентом: приложение только поднимается, экрана ещё нет.
+    private static var startRequested = false
+
+    static func requestStart() {
+        if let onStart {
+            onStart()
+        } else {
+            startRequested = true
+        }
+    }
+
+    /// Экран записи забирает отложенную просьбу первым делом.
+    static func takeStartRequest() -> Bool {
+        defer { startRequested = false }
+        return startRequested
+    }
 }
