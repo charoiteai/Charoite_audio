@@ -62,6 +62,13 @@ xcodegen generate
 open CharoiteiOS.xcodeproj   # выберите свою команду, соберите на устройство
 ```
 
+Версия в настройках записи берётся из `MARKETING_VERSION` в `project.yml`
+(её поднимает release-please); после `xcodegen generate` проверьте plist:
+`plutil -p Info.plist | grep CFBundleShortVersionString` должен печатать `$(MARKETING_VERSION)`,
+а собранный бандл — номер релиза. Номер сборки (`CURRENT_PROJECT_VERSION`,
+оба таргета) release-please не ведёт: перед каждой загрузкой в App Store /
+TestFlight поднимайте его руками.
+
 Тесты: unit-таргет (парсинг графа) + UI-тесты. Запуск на симуляторе:
 
 ```bash

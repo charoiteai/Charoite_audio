@@ -31,6 +31,16 @@ struct RecordSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .safeAreaInset(edge: .bottom) {
+                // Номер версии виден человеку: «у тебя какая?» — один взгляд
+                // (просьба владельца 05.09)
+                Text("Charoite \(Self.versionLine)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity)
+                    .background(.bar)
+            }
             .navigationTitle(L.t("Запись", "Recording", "录音"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -39,6 +49,16 @@ struct RecordSettingsView: View {
                 }
             }
         }
+    }
+}
+
+extension RecordSettingsView {
+    /// «0.70.1 (7)» — маркетинговая версия и сборка из Info.plist.
+    static var versionLine: String {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let short = info["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info["CFBundleVersion"] as? String ?? "?"
+        return "\(short) (\(build))"
     }
 }
 

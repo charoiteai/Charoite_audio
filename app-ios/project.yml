@@ -36,7 +36,13 @@ targets:
         # было нечем — приложение не отдавало папку наружу.
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
-        CFBundleVersion: "6"
+        # Версия и номер сборки — из настроек таргета (ниже), а не литералы:
+        # xcodegen сам пишет в plist «1.0»/«1», и телефон показывал бы их
+        # (проверено сборкой на симуляторе, GLM r1 по #500); у приложения
+        # и виджета пара обязана совпадать, App Store требует роста номера
+        # сборки на каждую загрузку.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         # Стандартное шифрование (HTTPS) — экспортных ограничений нет; без
         # этого ключа каждый TestFlight-билд ждёт ручного ответа в ASC.
         ITSAppUsesNonExemptEncryption: false
@@ -54,8 +60,8 @@ targets:
         DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.9"
-        MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.70.0" # x-release-please-version
+        CURRENT_PROJECT_VERSION: "6"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   CharoiteWidgets:
     type: app-extension
@@ -65,6 +71,8 @@ targets:
       path: WidgetsInfo.plist
       properties:
         CFBundleDisplayName: Charoite
+        CFBundleShortVersionString: $(MARKETING_VERSION)   # та же пара, что у приложения
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
@@ -72,10 +80,10 @@ targets:
         DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.9"
-        MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        CURRENT_PROJECT_VERSION: "6"
         # WidgetKit-расширение обязано жить в bundle приложения
         PRODUCT_BUNDLE_IDENTIFIER: ai.charoite.CharoiteiOS.widgets
+        MARKETING_VERSION: "0.70.0" # x-release-please-version
   CharoiteiOSTests:
     type: bundle.unit-test
     platform: iOS
