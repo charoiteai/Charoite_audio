@@ -1,6 +1,6 @@
-"""Ретеншн копий импорта из демона (№170): папка — из config.yaml или из
-настроек приложения, уборка — тем же скриптом, что зовёт приложение, в
-фоне и с потолком времени."""
+"""Ретеншн копий импорта из демона (№170): папки — из config.yaml и из
+настроек приложения (обе), уборка — тем же скриптом, что зовёт приложение,
+в фоне, вывод ребёнка в файл, итог по машинному маркеру."""
 import pathlib
 import subprocess
 import sys
@@ -16,64 +16,89 @@ class _Done:
         self.returncode, self.stdout, self.stderr = rc, out, err
 
 
-def test_import_folder_prefers_config_and_requires_an_existing_dir(tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(daemon.subprocess, "run", lambda cmd, **kw: (calls.append(cmd), _Done(0, "/nowhere\n"))[1])
-    inbox = tmp_path / "Inbox"
-    inbox.mkdir()
-    assert daemon._import_folder({"audio": {"import_dir": str(inbox)}}) == inbox
-    assert calls == [], "при ключе в конфиге настройки приложения не читаются"
-    assert daemon._import_folder({"audio": {"import_dir": str(tmp_path / "нет")}}) is None
-
-
-def test_import_folder_falls_back_to_the_apps_setting(tmp_path, monkeypatch):
-    inbox = tmp_path / "Charoite Inbox"
-    inbox.mkdir()
-    seen = []
-
+def _defaults(path):
+    """`defaults read` отвечает путём; всё остальное — не сюда."""
     def run(cmd, **kw):
-        seen.append(cmd)
-        assert cmd[:2] == ["defaults", "read"] and cmd[2] == daemon.IMPORT_DEFAULTS_DOMAIN
-        return _Done(0, str(inbox) + "\n")
-    monkeypatch.setattr(daemon.subprocess, "run", run)
-    assert daemon._import_folder({"audio": {}}) == inbox
-    monkeypatch.setattr(daemon.subprocess, "run", lambda cmd, **kw: _Done(1, "", "does not exist"))
-    assert daemon._import_folder({}) is None
+        assert cmd[:2] == ["defaults", "read"] and cmd[2] == daemon.IMPORT_DEFAULTS_DOMAIN, cmd
+        return _Done(0, path + "\n") if path else _Done(1, "", "does not exist")
+    return run
 
 
-def test_prune_runs_the_import_script_in_the_background_and_reports_only_removals(tmp_path, monkeypatch):
+def test_import_folders_takes_both_config_and_the_apps_choice(tmp_path, monkeypatch):
+    cfg_dir = tmp_path / "cli-inbox"
+    app_dir = tmp_path / "Charoite Inbox"
+    cfg_dir.mkdir()
+    app_dir.mkdir()
+    monkeypatch.setattr(daemon.subprocess, "run", _defaults(str(app_dir)))
+    assert daemon._import_folders({"audio": {"import_dir": str(cfg_dir)}}) == [cfg_dir, app_dir]
+    # одна и та же папка — один раз
+    assert daemon._import_folders({"audio": {"import_dir": str(app_dir)}}) == [app_dir]
+    # без ключа — только выбор приложения; без него — пусто
+    assert daemon._import_folders({"audio": {}}) == [app_dir]
+    monkeypatch.setattr(daemon.subprocess, "run", _defaults(""))
+    assert daemon._import_folders({}) == []
+
+
+def test_dead_config_path_does_not_silence_the_apps_folder(tmp_path, monkeypatch, capsys):
+    """Important GLM r1: протухший audio.import_dir раньше возвращал None до
+    фолбэка — живая папка приложения не чистилась, и никто об этом не знал."""
+    app_dir = tmp_path / "Charoite Inbox"
+    app_dir.mkdir()
+    monkeypatch.setattr(daemon.subprocess, "run", _defaults(str(app_dir)))
+    assert daemon._import_folders({"audio": {"import_dir": str(tmp_path / "old")}}) == [app_dir]
+    assert "audio.import_dir" in capsys.readouterr().err
+
+
+def test_prune_runs_the_import_script_with_output_in_a_file_and_reports_only_removals(tmp_path, monkeypatch):
     inbox = tmp_path / "Inbox"
     inbox.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path / "root")
     calls, events = [], []
 
     def run(cmd, **kw):
+        if cmd[:2] == ["defaults", "read"]:
+            return _Done(1, "", "does not exist")
         calls.append((cmd, kw))
-        return _Done(0, "ретеншн импорта: удалено копий — 2, аудио-исходников в архиве — 1\n")
+        kw["stdout"].write("ретеншн импорта: удалено копий — 2, аудио-исходников в архиве — 1\n"
+                           "prune=copies:2,archive:1,temporaries:0\n")
+        return _Done(0)
     monkeypatch.setattr(daemon.subprocess, "run", run)
     monkeypatch.setattr(daemon, "emit", lambda obj: events.append(obj))
-    t = daemon._prune_import_folder({"audio": {"import_dir": str(inbox)}})
-    assert t is not None
-    t.join(timeout=10)
+    daemon._prune_import_folder({"audio": {"import_dir": str(inbox)}}).join(timeout=10)
     cmd, kw = calls[0]
     assert cmd[1].endswith("scripts/import_meeting.py") and cmd[2:] == ["--prune", str(inbox)]
     assert kw["timeout"] == daemon.IMPORT_PRUNE_TIMEOUT and kw["stdin"] is subprocess.DEVNULL
-    assert events and "удалено копий — 2" in events[0]["text"]
+    assert kw["stderr"] is subprocess.STDOUT and hasattr(kw["stdout"], "write"), "вывод ребёнка — в файл, не в пайп"
+    assert (tmp_path / "root" / "logs" / daemon.IMPORT_PRUNE_LOG).exists()
+    assert events and "удалено копий — 2" in events[0]["text"] and "в архиве — 1" in events[0]["text"]
 
-    # ничего не удалено — тишина; нет папки — ни процесса, ни потока
+    # ничего не удалено — тишина
     events.clear()
-    monkeypatch.setattr(daemon.subprocess, "run", lambda cmd, **kw: _Done(0, "ретеншн импорта: удалено копий — 0\n"))
+
+    def quiet(cmd, **kw):
+        if cmd[:2] == ["defaults", "read"]:
+            return _Done(1, "", "")
+        kw["stdout"].write("ретеншн импорта: удалено копий — 0\nprune=copies:0,archive:0,temporaries:0\n")
+        return _Done(0)
+    monkeypatch.setattr(daemon.subprocess, "run", quiet)
     daemon._prune_import_folder({"audio": {"import_dir": str(inbox)}}).join(timeout=10)
     assert events == []
-    assert daemon._prune_import_folder({"audio": {"import_dir": str(tmp_path / "нет")}}) is None
 
 
 def test_prune_failures_stay_in_stderr(tmp_path, monkeypatch, capsys):
     inbox = tmp_path / "Inbox"
     inbox.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path / "root")
     monkeypatch.setattr(daemon, "emit", lambda obj: (_ for _ in ()).throw(AssertionError("emit при ошибке")))
-    monkeypatch.setattr(daemon.subprocess, "run", lambda cmd, **kw: _Done(1, "", "boom"))
+
+    def run(cmd, **kw):
+        if cmd[:2] == ["defaults", "read"]:
+            return _Done(1, "", "")
+        kw["stdout"].write("boom\n")
+        return _Done(1)
+    monkeypatch.setattr(daemon.subprocess, "run", run)
     daemon._prune_import_folder({"audio": {"import_dir": str(inbox)}}).join(timeout=10)
-    assert "ретеншн импорта: код 1" in capsys.readouterr().err
+    assert "ретеншн импорта (Inbox): код 1" in capsys.readouterr().err
 
 
 def test_meeting_start_cleanup_prunes_the_import_folder():
@@ -81,3 +106,16 @@ def test_meeting_start_cleanup_prunes_the_import_folder():
     src = (ROOT / "src" / "daemon.py").read_text(encoding="utf-8")
     block = src[src.index("AudioHub.prune_recordings("):src.index("system_base = llm.system")]
     assert "_prune_import_folder(cfg)" in block
+
+
+def test_prune_cli_prints_the_machine_marker(tmp_path, monkeypatch, capsys):
+    """Демон читает итог по маркеру `prune=…`, а не по прозе."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import import_meeting as im
+
+    (tmp_path / "done").mkdir()
+    monkeypatch.setattr(im, "_cfg", lambda: {"audio": {"import_keep_days": 2}})
+    monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
+    monkeypatch.setattr(sys, "argv", ["import_meeting.py", "--prune", str(tmp_path)])
+    im.main()
+    assert "prune=copies:0,archive:0,temporaries:0" in capsys.readouterr().out

@@ -272,66 +272,98 @@ def _prune_graph_logs(cfg: dict) -> None:
 
 # Папка импорта приложения — её выбирает владелец во вкладке «Внешняя запись»
 # (UserDefaults приложения); CLI и сборки без приложения задают её в
-# config.yaml (audio.import_dir).
+# config.yaml (audio.import_dir). Обе — законные папки импорта, у каждой свои
+# копии, демон чистит обе.
 IMPORT_DEFAULTS_DOMAIN = "ai.charoite.app"
 IMPORT_DEFAULTS_KEY = "charoite.importDir"
 IMPORT_PRUNE_TIMEOUT = 300
+IMPORT_PRUNE_LOG = "import_prune.log"
+_PRUNE_MARK = re.compile(r"^prune=copies:(\d+),archive:(\d+)", re.M)
 
 
-def _import_folder(cfg: dict) -> pathlib.Path | None:
-    """Папка импорта для ретеншна копий: `audio.import_dir` из config.yaml,
-    иначе — выбор владельца в приложении (`defaults read ai.charoite.app
-    charoite.importDir`). Нет ни того, ни другого, или папки нет на диске —
-    None: чистить нечего, и говорить об этом не надо."""
-    raw = (cfg.get("audio") or {}).get("import_dir")
-    if not raw:
-        try:
-            r = subprocess.run(["defaults", "read", IMPORT_DEFAULTS_DOMAIN, IMPORT_DEFAULTS_KEY],
-                               capture_output=True, text=True, timeout=10)
-            raw = r.stdout.strip() if r.returncode == 0 else ""
-        except (OSError, subprocess.SubprocessError):
-            raw = ""
+def _app_import_folder() -> pathlib.Path | None:
+    """Выбор владельца в приложении: `defaults read ai.charoite.app charoite.importDir`.
+    Нет ключа, нет папки, нет `defaults` — None."""
+    try:
+        r = subprocess.run(["defaults", "read", IMPORT_DEFAULTS_DOMAIN, IMPORT_DEFAULTS_KEY],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    raw = r.stdout.strip() if r.returncode == 0 else ""
     if not raw:
         return None
-    folder = pathlib.Path(str(raw)).expanduser()
+    folder = pathlib.Path(raw).expanduser()
     return folder if folder.is_dir() else None
 
 
-def _prune_import_folder(cfg: dict) -> threading.Thread | None:
-    """Ретеншн копий импорта из демона — тем же скриптом, что зовёт приложение
-    (`import_meeting.py --prune`), в фоне и с потолком времени.
+def _import_folders(cfg: dict) -> list[pathlib.Path]:
+    """Папки импорта для ретеншна копий: `audio.import_dir` из config.yaml И
+    выбор владельца в приложении — обе, если различаются. Мёртвый путь в
+    конфиге не глушит уборку живой папки и не молчит: строка в stderr
+    (Important GLM r1 по №170)."""
+    found: list[pathlib.Path] = []
+    raw = (cfg.get("audio") or {}).get("import_dir")
+    if raw:
+        folder = pathlib.Path(str(raw)).expanduser()
+        if folder.is_dir():
+            found.append(folder)
+        else:
+            print(f"ретеншн импорта: audio.import_dir={raw} — папки нет, пропускаю",
+                  file=sys.stderr, flush=True)
+    app = _app_import_folder()
+    if app is not None and app not in found:
+        found.append(app)
+    return found
+
+
+def _prune_one_import_folder(folder: pathlib.Path) -> None:
+    """Один прогон `import_meeting.py --prune` — тем же скриптом, что зовёт
+    приложение. Вывод ребёнка идёт в файл, а не в пайп: демон может выйти
+    посреди уборки (встреча кончилась), и ребёнок, писавший в закрытый пайп,
+    падал бы на BrokenPipe с недобитыми копиями (Minor GLM r1). Итог читается
+    по машинному маркеру `prune=copies:N,archive:M`."""
+    log = ROOT / "logs" / IMPORT_PRUNE_LOG
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "w", encoding="utf-8") as out:
+            r = subprocess.run([sys.executable, str(CODE / "scripts" / "import_meeting.py"),
+                                "--prune", str(folder)],
+                               stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                               timeout=IMPORT_PRUNE_TIMEOUT)
+        text = log.read_text(encoding="utf-8", errors="replace")
+        if r.returncode != 0:
+            print(f"ретеншн импорта ({folder.name}): код {r.returncode}: {text.strip()[-300:]}",
+                  file=sys.stderr, flush=True)
+            return
+        m = _PRUNE_MARK.search(text)
+        copies, archive = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+        if copies + archive:
+            emit({"type": "status",
+                  "text": f"Ретеншн импорта: удалено копий — {copies}"
+                          + (f", аудио-исходников в архиве — {archive}" if archive else "")})
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"ретеншн импорта ({folder.name}): {e}", file=sys.stderr, flush=True)
+
+
+def _prune_import_folder(cfg: dict) -> threading.Thread:
+    """Ретеншн копий импорта из демона — в фоне и с потолком времени.
 
     Приложение чистит done/ и аудио-«Исходник» в архиве раз в шесть часов —
     но только пока запущено; при закрытом приложении копии переживали
     import_keep_days сколько угодно (критика GLM r1/r2 по #496, №170).
-    Демон добирает при своём старте и на каждом старте встречи. Уборка —
-    не повод задержать встречу: отдельный поток, subprocess с таймаутом,
-    любая ошибка — строка в stderr, не исключение.
+    Демон добирает на каждом старте встречи (он и поднимается под встречу) —
+    в том числе в установках без приложения, где чистить было некому. Уборка —
+    не повод задержать встречу: и `defaults read`, и subprocess живут в
+    отдельном потоке (подвисший cfprefsd держал бы старт до 10 с — Minor
+    GLM r1), любая ошибка — строка в stderr, не исключение.
     """
-    folder = _import_folder(cfg)
-    if folder is None:
-        return None
-
     def run():
-        try:
-            r = subprocess.run([sys.executable, str(CODE / "scripts" / "import_meeting.py"),
-                                "--prune", str(folder)],
-                               capture_output=True, text=True, timeout=IMPORT_PRUNE_TIMEOUT,
-                               stdin=subprocess.DEVNULL)
-            summary = (r.stdout or "").strip().splitlines()
-            removed = [ln for ln in summary if "удалено копий" in ln and not ln.endswith("— 0")]
-            if r.returncode != 0:
-                print(f"ретеншн импорта: код {r.returncode}: {(r.stderr or '').strip()[-300:]}",
-                      file=sys.stderr, flush=True)
-            elif removed:
-                emit({"type": "status", "text": removed[0]})
-        except (OSError, subprocess.SubprocessError) as e:
-            print(f"ретеншн импорта: {e}", file=sys.stderr, flush=True)
+        for folder in _import_folders(cfg):
+            _prune_one_import_folder(folder)
 
     t = threading.Thread(target=run, name="import-prune", daemon=True)
     t.start()
     return t
-
 
 def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
     """Добить встречи, оборванные аварийно. Возвращает штампы, которые

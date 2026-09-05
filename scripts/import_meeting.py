@@ -429,19 +429,32 @@ def postponed_files(folder: pathlib.Path, *, settle_all: bool = False) -> list[p
 TEMP_ORPHAN_AGE = 3600
 
 
+def _newest_time(st: os.stat_result) -> float:
+    """Возраст временного файла — по самой свежей из отметок: mtime ИЛИ ctime.
+    Вкладка переносит на `.part` mtime исходника (запись с телефона
+    трёхдневной давности), и по одному mtime живая копия неотличима от
+    брошенной три дня назад — свип снимал бы её из-под идущего копирования
+    (Important DS r1 по №170). Время создания тут не спасает: APFS при
+    переносе mtime в прошлое отматывает и birthtime (проверено 05.09). ctime
+    ставит только ядро — на каждую запись и на сам перенос даты, — и у живой
+    копии он всегда свежий; у сироты, которую никто не трогал, — старый."""
+    return max(st.st_mtime, st.st_ctime)
+
+
 def sweep_temporaries(folder: pathlib.Path, *, now: float | None = None) -> list[pathlib.Path]:
     """Убрать скрытые временные файлы без владельца.
 
     `.part` пишет вкладка (копия до атомарной публикации), отчёт ребёнка —
     скан; краш или Cmd-Q посреди копии оставляли их навсегда: скрытые, ни
     одним сканером не видимые гигабайты, при синкаемой папке — ещё и в
-    iCloud (GLM/DS r3 по #496). Только по возрасту: живую копию не задеть.
+    iCloud (GLM/DS r3 по #496). Только по возрасту — и по самой свежей из
+    отметок файла (см. _newest_time): живую копию не задеть.
     """
     now = time.time() if now is None else now
     removed: list[pathlib.Path] = []
     for p in list(folder.glob(".*.part")) + list(folder.glob(".*.import-result.json")):
         try:
-            if p.is_symlink() or not p.is_file() or now - p.stat().st_mtime < TEMP_ORPHAN_AGE:
+            if p.is_symlink() or not p.is_file() or now - _newest_time(p.stat()) < TEMP_ORPHAN_AGE:
                 continue
             p.unlink()
             removed.append(p)
@@ -679,6 +692,9 @@ def main() -> None:
         temporaries = sweep_temporaries(folder)
         if temporaries:
             print(f"ретеншн импорта: + временных без владельца — {len(temporaries)}")
+        # Машинный маркер целой строкой — для демона: проза выше может меняться
+        # (падежи, локализация), маркер — нет (GLM r1 по №170), как postponed= у скана
+        print(f"prune=copies:{copies},archive:{len(removed) - copies},temporaries:{len(temporaries)}")
         return
 
     if args.scan:
