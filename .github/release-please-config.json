@@ -6,7 +6,12 @@
       "changelog-path": "CHANGELOG.md",
       "bump-minor-pre-major": true,
       "prerelease": true,
-      "extra-files": ["app-ios/project.yml"]
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "app-ios/project.yml"
+        }
+      ]
     }
   }
 }

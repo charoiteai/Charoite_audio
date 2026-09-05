@@ -64,6 +64,11 @@ xcodegen generate
 open CharoiteiOS.xcodeproj   # select your team, build to your device
 ```
 
+The version shown in Record settings comes from `MARKETING_VERSION` in `project.yml`
+(bumped by release-please); check the generated plist after `xcodegen generate`:
+`plutil -p Info.plist | grep CFBundleShortVersionString` must print `$(MARKETING_VERSION)`,
+and the built bundle resolves it to the release number.
+
 Tests: unit target (graph parsing) + UI tests. Run them on a simulator:
 
 ```bash

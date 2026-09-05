@@ -42,6 +42,10 @@ xcodegen generate
 open CharoiteiOS.xcodeproj   # 选择您的开发者团队，构建到设备
 ```
 
+录音设置中显示的版本来自 `project.yml` 的 `MARKETING_VERSION`（由 release-please 递增）；
+`xcodegen generate` 后检查 plist：`plutil -p Info.plist | grep CFBundleShortVersionString`
+应输出 `$(MARKETING_VERSION)`，构建后的 bundle 则解析为发布版本号。
+
 测试：unit 目标（图谱解析）+ UI 测试。在模拟器上运行：
 
 ```bash
