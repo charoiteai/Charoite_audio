@@ -436,7 +436,18 @@ it signals degradation, it does not break the loop.
   microphone belongs to the call (an iOS rule), the app says so plainly,
   waits for the call to end and resumes THE SAME file; resume attempts and
   file rotation are suppressed for the duration — on 07.08 they were what
-  turned a 30-minute meeting into a 40 KB scrap. A folder
+  turned a 30-minute meeting into a 40 KB scrap.
+  **Listens right away (№167)**: open the app and the recording is already
+  running (setting “Record as soon as the app opens”, on by default, the
+  last kind you picked, once per launch, not on return from background);
+  opened during a call, the app arms itself and starts on its own when the
+  call releases the microphone, while the app stays open (iOS will not
+  start a backgrounded app; return within 30 minutes and it starts on
+  return); autostart waits for a chosen delivery folder; an App Intent “Start recording in
+  Charoite” for Siri, Shortcuts and the Action button opens the app and
+  starts; the PrivacyInfo.xcprivacy manifest is added. iOS never starts a
+  recording from the background and no app records the call itself — that
+  is the platform, not the app. A folder
   outside iCloud cannot be chosen: on-device storage looks identical in
   Files but never syncs anywhere — such a bookmark is rejected with a clear
   error, and stale local bookmarks are forgotten so the app asks to pick
