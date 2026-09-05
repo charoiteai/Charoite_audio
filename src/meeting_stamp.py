@@ -418,7 +418,7 @@ def resolve_stamp(rec_dir: pathlib.Path, stamp: str,
     cand = found.pop()
     if tdir is not None and (
             any(stamp_of(f.stem) == cand for f in files_with_stamp(tdir, cand, suffix=".md"))
-            or any(_sidecar_claims(f, cand) for f in files_with_stamp(tdir, cand, suffix=".md.live.json"))):
+            or any(sidecar_claims(f, cand) for f in files_with_stamp(tdir, cand, suffix=".md.live.json"))):
         # у кандидата своя стенограмма — или сайдкар с ЕГО ключом stamp (её .md
         # стёрт руками, сайдкар нового демона остался — GLM по main 05.09).
         # Сайдкар без ключа под посекундным именем — наследие до 0.69.1, и
@@ -427,10 +427,12 @@ def resolve_stamp(rec_dir: pathlib.Path, stamp: str,
     return cand
 
 
-def _sidecar_claims(sidecar: pathlib.Path, cand: str) -> bool:
-    """Сайдкар несёт ключ `stamp` == cand — его писал демон/накат для встречи
-    с этими секундами (то же правило, что live_sidecar.claims; здесь без
-    импорта, чтобы не замыкать модули друг на друга)."""
+def sidecar_claims(sidecar: pathlib.Path, cand: str) -> bool:
+    """Сайдкар несёт ключ `stamp` == cand — его писал демон/накат/rename для
+    встречи с этими секундами. Единственное определение предиката «этот
+    сайдкар — встречи с такими секундами»: live_sidecar.claims зовёт его
+    (GLM r2 по #494, M2), а сюда он положен потому, что meeting_stamp — нижний
+    модуль и импортировать live_sidecar не может."""
     try:
         meta = json.loads(sidecar.read_text(encoding="utf-8"))
     except (OSError, ValueError):

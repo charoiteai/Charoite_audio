@@ -202,11 +202,7 @@ def claims(sidecar: pathlib.Path, bare: str) -> bool:
     rename_meeting). Так отличают свой сайдкар, оставшийся под целевым
     именем после прерванного или откаченного переноса, от сироты соседки
     (GLM r1 по #494, I2): своему пара воссоединяется, чужой — отказ."""
-    try:
-        meta = json.loads(sidecar.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-    return isinstance(meta, dict) and meta.get("stamp") == bare
+    return meeting_stamp.sidecar_claims(sidecar, bare)
 
 
 def move(old_main: pathlib.Path, new_main: pathlib.Path) -> pathlib.Path:

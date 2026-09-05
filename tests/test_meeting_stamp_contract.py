@@ -425,7 +425,7 @@ def test_список_расширений_записи_один_на_всех()
     for node in ast.walk(ast.parse(src)):
         if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
             vals = {e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)}
-            assert vals != exts, "rebuild_transcript держит свой список расширений записи"
+            assert not exts <= vals, "rebuild_transcript держит свой список расширений записи"
     assert src.count("meeting_stamp.RECORDING_EXTS") >= 2
     assert meeting_stamp.RECORDING_EXTS == ("wav", "pcm", "wav.part")
 

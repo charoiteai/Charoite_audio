@@ -409,6 +409,33 @@ def test_own_sidecar_under_the_target_name_reunites_the_pair(tmp_path, monkeypat
     assert meta["stamp"] == "2026-08-03_113012" and meta["names"] == {"Собеседник 1": "Анна"}
 
 
+def test_already_titled_meeting_can_be_renamed_again(tmp_path, monkeypatch):
+    """DS/GLM r2 по #494: встреча уже озаглавлена минутным именем, секунды
+    живут только в её прямом сайдкаре; под целевым именем — свой близнец
+    после частично применённого rename. Блока быть не должно: повторный
+    запуск чинит архив/заметку, а no-op на ту же тему — не отказ."""
+    graph, tdir = tmp_path / "graph", tmp_path / "transcripts"
+    tdir.mkdir()
+    (graph / "Встречи").mkdir(parents=True)
+    main = tdir / f"{STAMP}_Обновление_ОС.md"
+    main.write_text(f"# Встреча {STAMP} — Обновление ОС\n", encoding="utf-8")
+    main.with_name(main.name + ".live.json").write_text(json.dumps({"stamp": "2026-08-03_113012"}), encoding="utf-8")
+    twin = tdir / f"{STAMP}_Инцидент_загрузки.md.live.json"
+    twin.write_text(json.dumps({"stamp": "2026-08-03_113012"}), encoding="utf-8")
+    monkeypatch.setattr(rm, "ROOT", tmp_path)
+    pretty, slug = rm.pretty_and_slug("Инцидент загрузки")
+
+    p = rm.plan(graph, tdir, STAMP, pretty, slug)
+    assert not p.get("blocked"), "свой близнец по ключу stamp из прямого сайдкара — не блок"
+    assert [m[0].name for m in p["moves"]] == [main.name]
+    rm.apply(p, graph, STAMP, pretty)
+    assert (tdir / f"{STAMP}_Инцидент_загрузки.md").exists()
+
+    # no-op: та же тема ещё раз — целевой .md наш, блока нет, moves пусты
+    p2 = rm.plan(graph, tdir, STAMP, pretty, slug)
+    assert not p2.get("blocked") and p2["moves"] == []
+
+
 def test_sidecar_follows_the_renamed_transcript(world):
     graph, tdir = world
     sc = tdir / f"{STAMP}_Обновление_ОС.md.live.json"

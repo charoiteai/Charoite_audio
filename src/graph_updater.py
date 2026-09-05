@@ -599,6 +599,10 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
     # пересборка стёрла бы её (GLM Critical r2 по #489). Нет хеша вовсе —
     # не начинать защиту с текущих байт: они могли быть уже правлены (DS r3)
     prev = live_sidecar.read(tpath, bare) or {}
+    if not prev and taken_sidecar.exists() and live_sidecar.claims(taken_sidecar, bare):
+        # воссоединение со своим близнецом: хеш последней машинной записи —
+        # в нём, иначе шапка с темой навсегда сойдёт за правку руками (GLM r2 M1)
+        prev = live_sidecar.read(tpath) or {}
     machine = live_sidecar.valid_sha(prev.get("transcript_sha256")) == live_sidecar.sha(body)
     # Искать по bare: в шапке посекундной стенограммы штамп с секундами,
     # и замена по короткому штампу оставляла бы хвост «19» после темы.

@@ -178,13 +178,27 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
             legacy_names.add(p.name)
             print(f"{p.name} — главный по содержимому (источника рядом нет): имя лечится")
     if blocked:
-        # Наш ли близнец: ключ stamp совпадает с секундами одного из наших главных
+        # Наш ли близнец. Своим он считается, если: целевой .md уже наш (встреча
+        # уже озаглавлена этим именем — повторный или частично применённый
+        # rename, DS/GLM r2 по #494); или ключ stamp близнеца совпадает с
+        # секундами одного из наших главных файлов — из имени (голый
+        # посекундный) либо из его собственного прямого сайдкара (минутное имя
+        # после наката темы хранит секунды только там).
         secs = {b for b in mine if b != meeting_stamp.minute_of(b)}
-        if any(live_sidecar.claims(twin, b) for b in secs):
+        for b, p in mains.items():
+            own = p.with_name(p.name + ".live.json")
+            if b in mine and own.exists():
+                try:
+                    v = json.loads(own.read_text(encoding="utf-8")).get("stamp")
+                except (OSError, ValueError, AttributeError):
+                    v = None
+                if isinstance(v, str):
+                    secs.add(v)
+        if (tdir / f"{stamp}_{slug}.md").exists() or any(live_sidecar.claims(twin, b) for b in secs):
             blocked = False
     if blocked:
-        print(f"пропуск: {twin.name} занят сайдкаром без нашего штампа (чужая сирота или наследие без stamp) — "
-              f"файлы встречи не переименованы; проверьте, чей он, и уберите или переименуйте руками")
+        print(f"переименование не выполнено: {twin.name} занят сайдкаром без нашего штампа "
+              f"(чужая сирота или наследие без ключа stamp) — проверьте, чей он, и уберите или переименуйте руками")
         return {"moves": [], "stamps": [], "old_folder": None, "new_folder": None, "blocked": twin,
                 "note": meeting_stamp.find_note(graph, stamp, tdir) or graph / "Встречи" / f"{stamp}.md"}
     if stamp == minute and tdir.is_dir():
@@ -231,6 +245,10 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
                 if sc.exists() and not sc_target.exists() and sc_target not in taken:
                     taken.add(sc_target)
                     moves.append((sc, sc_target))
+                elif sc.exists() and sc_target.exists():
+                    # воссоединение: под целевым именем уже лежит свой близнец,
+                    # старый сайдкар остаётся наследием (DS r2 M2 по #494)
+                    print(f"сайдкар {sc.name} остаётся: под {sc_target.name} уже лежит свой близнец")
                 # Главный файл с секундами получает минутное имя: секунды
                 # остаются только в ключе `stamp` сайдкара — как после наката
                 # темы (№164). Главные здесь двух видов: голый «…113012.md» и
@@ -423,9 +441,7 @@ def main() -> None:
 
     p = plan(graph, tdir, stamp, pretty, slug)
     if p.get("blocked"):
-        # DS r1 по #494, M1: заблокированная встреча — не «не нашлась» и не «готово»
-        print(f"переименование не выполнено: {p['blocked'].name} занят сайдкаром без нашего штампа")
-        sys.exit(1)
+        sys.exit(1)     # причина уже напечатана планом (DS r1 M1 / r2 M3 по #494)
     if not p["moves"] and p["old_folder"] is None and not p["note"].exists():
         sys.exit(f"встреча {stamp} не нашлась ни в transcripts/, ни в графе")
 
