@@ -147,9 +147,11 @@ enum Inbox {
 
     /// Записи, пережившие смерть приложения: их никто не закрыл и не поставил
     /// в очередь. Зовётся на старте — раньше такие файлы просто пропадали.
-    static func rescueOrphans() {
+    static func rescueOrphans(from current: URL? = nil, to queue: URL? = nil) {
         let fm = FileManager.default
-        let left = (try? fm.contentsOfDirectory(at: inProgress, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+        let current = current ?? inProgress
+        let queue = queue ?? outbox
+        let left = (try? fm.contentsOfDirectory(at: current, includingPropertiesForKeys: [.fileSizeKey])) ?? []
         for f in left where audioExts.contains(f.pathExtension) {
             // Файл, который init рекордера создал, а record() не начал
             // (убийство процесса посреди пробы взвода), — пустышка, не
@@ -160,7 +162,7 @@ enum Inbox {
                 try? fm.removeItem(at: f)
                 continue
             }
-            try? fm.moveItem(at: f, to: uniqueName(in: outbox, like: f))
+            try? fm.moveItem(at: f, to: uniqueName(in: queue, like: f))
         }
     }
 

@@ -50,20 +50,32 @@ final class RecorderAutoStartTests: XCTestCase {
     }
 
     /// Пустышка в current/ (init без record) не должна ехать на Mac.
+    /// Каталоги — временные: общий песочный ящик хоста не трогаем (GLM r3).
     func testСиротаНулевогоРазмераНеПопадаетВОчередь() throws {
         let fm = FileManager.default
-        let stub = Inbox.inProgress.appendingPathComponent("test_stub_\(UUID().uuidString.prefix(6)).caf")
-        try Data().write(to: stub)
-        let real = Inbox.inProgress.appendingPathComponent("test_real_\(UUID().uuidString.prefix(6)).caf")
-        try Data(repeating: 1, count: Inbox.orphanMinBytes + 10).write(to: real)
-        defer {
-            try? fm.removeItem(at: stub)
-            for u in Inbox.queued where u.lastPathComponent.hasPrefix("test_real_") { try? fm.removeItem(at: u) }
-        }
-        Inbox.rescueOrphans()
-        XCTAssertFalse(fm.fileExists(atPath: stub.path), "пустышка удалена, не спасена")
-        XCTAssertTrue(Inbox.queued.contains { $0.lastPathComponent == real.lastPathComponent },
-                      "настоящий огрызок — в очередь")
+        let base = fm.temporaryDirectory.appendingPathComponent("orphans_\(UUID().uuidString.prefix(6))")
+        let current = base.appendingPathComponent("current"), queue = base.appendingPathComponent("outbox")
+        try fm.createDirectory(at: current, withIntermediateDirectories: true)
+        try fm.createDirectory(at: queue, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: base) }
+        try Data().write(to: current.appendingPathComponent("stub.caf"))
+        try Data(repeating: 1, count: Inbox.orphanMinBytes - 1).write(to: current.appendingPathComponent("almost.caf"))
+        try Data(repeating: 1, count: Inbox.orphanMinBytes).write(to: current.appendingPathComponent("edge.caf"))
+        Inbox.rescueOrphans(from: current, to: queue)
+        let queued = Set((try fm.contentsOfDirectory(atPath: queue.path)))
+        XCTAssertEqual(queued, ["edge.caf"], "ровно порог — запись, ниже — пустышка")
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: current.path), [], "current/ пуст: пустышки удалены, запись уехала")
+    }
+
+    /// Пауза между пробами: звонок — каждые 5 с, чужое приложение на входе —
+    /// растёт до минуты, чтобы не дёргать чужой звук и не плодить файлы (GLM r3).
+    func testПаузаПробРастётТолькоДляЧужогоПриложения() {
+        XCTAssertEqual(Recorder.nextProbeInterval(after: .sessionBusy, attempts: 7), Recorder.armProbeEvery)
+        XCTAssertEqual(Recorder.nextProbeInterval(after: .recorderBusy, attempts: 1), 5)
+        XCTAssertEqual(Recorder.nextProbeInterval(after: .recorderBusy, attempts: 2), 10)
+        XCTAssertEqual(Recorder.nextProbeInterval(after: .recorderBusy, attempts: 4), 40)
+        XCTAssertEqual(Recorder.nextProbeInterval(after: .recorderBusy, attempts: 9), 60, "потолок — минута")
+        XCTAssertEqual(Recorder.nextProbeInterval(after: nil, attempts: 3), Recorder.armProbeEvery)
     }
 
     /// Баннер называет настоящую причину, а не всегда «звонок» (GLM/DS r1).

@@ -17,6 +17,9 @@ struct RecordView: View {
     @AppStorage("record.autostart") private var autostart = true
     /// Первое появление экрана за запуск — единственный момент автостарта.
     @State private var launched = false
+    /// Автостарт уже был (или его заменил интент): выбор папки после
+    /// подсказки его не повторяет второй раз.
+    @State private var autostarted = false
     @State private var sheet: Sheet?
     @State private var queued = 0
     @State private var stuckInQueue = 0
@@ -200,6 +203,15 @@ struct RecordView: View {
                         rec.lastResult = L.t("Папка выбрана: \(url.lastPathComponent)",
                                              "Folder set: \(url.lastPathComponent)",
                                              "已选择文件夹：\(url.lastPathComponent)")
+                        // Подсказка обещала «после выбора папки» — держим слово
+                        // в этой же сессии, один раз (критика GLM r3)
+                        if !autostarted, Recorder.shouldAutoStart(enabled: autostart && !Self.underTests,
+                                                                  coldLaunch: true,
+                                                                  isRecording: rec.isRecording, armed: rec.armed,
+                                                                  deliveryReady: true) {
+                            autostarted = true
+                            rec.start(kind: kind)
+                        }
                         Task { await Inbox.flush { msg in rec.lastResult = msg } }
                     } catch {
                         rec.lastResult = L.t("Не удалось запомнить папку: \(error.localizedDescription)",
@@ -233,11 +245,13 @@ struct RecordView: View {
                 // папки писал бы в никуда) и не под XCTest — хост тестов
                 // иначе начинал настоящую запись (GLM r1).
                 if RecordingControl.takeStartRequest() {
+                    autostarted = true
                     rec.start(kind: kind)
                 } else if Recorder.shouldAutoStart(enabled: autostart && !Self.underTests,
                                                    coldLaunch: true,
                                                    isRecording: rec.isRecording, armed: rec.armed,
                                                    deliveryReady: Inbox.folderChosen) {
+                    autostarted = true
                     rec.start(kind: kind)
                 }
             }
