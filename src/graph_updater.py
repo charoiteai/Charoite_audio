@@ -572,7 +572,16 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
     """
     slug = theme_slug(title)
     new_t = tpath.with_name(f"{stamp}_{slug}.md")
-    if not new_t.exists():
+    # Занятое имя сайдкара — тоже занятое имя: migrate при занятой цели
+    # молча не переносит пару, а remember дальше сливал бы наши ключи в
+    # чужую сироту — прямой сайдкар встречи с чужими именами/хешами
+    # (DS на Fireworks по main 05.09, I1). Файл остаётся как есть, тема —
+    # только в шапку, как и при занятом .md.
+    taken_sidecar = new_t.with_name(new_t.name + ".live.json")
+    foreign_twin = taken_sidecar.exists() and not live_sidecar.claims(taken_sidecar, bare)
+    if not new_t.exists() and foreign_twin:
+        print(f"граф: имя {new_t.name} занято сайдкаром {taken_sidecar.name} без нашего штампа — файл не переименован", file=sys.stderr)
+    if not new_t.exists() and not foreign_twin:
         for extra in tpath.parent.glob(f"{bare}_*.md"):  # _minutes, _hints…
             suffix = extra.name[len(bare):]  # "_minutes.md"
             if suffix[:-3].lower() not in meeting_stamp.AUX_SUFFIXES:
@@ -590,6 +599,10 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
     # пересборка стёрла бы её (GLM Critical r2 по #489). Нет хеша вовсе —
     # не начинать защиту с текущих байт: они могли быть уже правлены (DS r3)
     prev = live_sidecar.read(tpath, bare) or {}
+    if not prev and taken_sidecar.exists() and live_sidecar.claims(taken_sidecar, bare):
+        # воссоединение со своим близнецом: хеш последней машинной записи —
+        # в нём, иначе шапка с темой навсегда сойдёт за правку руками (GLM r2 M1)
+        prev = live_sidecar.read(tpath) or {}
     machine = live_sidecar.valid_sha(prev.get("transcript_sha256")) == live_sidecar.sha(body)
     # Искать по bare: в шапке посекундной стенограммы штамп с секундами,
     # и замена по короткому штампу оставляла бы хвост «19» после темы.
