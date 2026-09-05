@@ -715,3 +715,27 @@ def test_direct_import_publishes_a_meeting_status(tmp_path, monkeypatch, capsys)
     im.main()
     assert json.loads(status.read_text(encoding="utf-8"))["state"] == "ready"
     assert "повтор не нужен" in capsys.readouterr().out
+
+
+def test_direct_import_publishes_failed_when_graph_updater_crashes(tmp_path, monkeypatch):
+    """Critical GLM r1 по #502: любой ненулевой код graph_updater, кроме «нет
+    речи» и «нет разбора», — ошибка статуса, а не «готово»."""
+    import json
+
+    root = tmp_path / "root"
+    (root / "transcripts").mkdir(parents=True)
+    src = tmp_path / "Заметки.txt"
+    src.write_text("х" * 400, encoding="utf-8")
+
+    class Crash:
+        returncode = 1
+        stdout = stderr = ""
+    monkeypatch.setattr(im.subprocess, "run", lambda cmd, **kw: Crash())
+    monkeypatch.setattr(im, "ROOT", root)
+    monkeypatch.setattr(im, "_cfg", lambda: {"log": {"transcripts_dir": "transcripts"}})
+    monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
+    monkeypatch.setattr(sys, "argv", ["import_meeting.py", str(src), "--date", "2026-09-05", "--time", "12:00"])
+    im.main()
+
+    data = json.loads((root / "logs" / "meeting-status" / "2026-09-05_1200.json").read_text(encoding="utf-8"))
+    assert data["state"] == "error" and "кодом 1" in data["error"]

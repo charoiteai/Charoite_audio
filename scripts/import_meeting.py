@@ -768,11 +768,13 @@ def main() -> None:
         # целиком — с секундами и суффиксом у соседки в занятой минуте,
         # иначе она ложилась в минутный файл поверх первой (круг-1 по
         # PR #388, DeepSeek).
-        _status("processing", tdir / f"{stamp}.md", "rebuilding_transcript")
+        # Статуса до появления файла нет: ключ статуса по несуществующему пути
+        # угадывался глобом минуты и мог перехватить json соседки (GLM r1 по
+        # #502); отказ STT живёт меткой во вкладке импорта — скан повторит сам,
+        # а кнопка «Повторить обработку» без стенограммы была бы мёртвой.
         r = subprocess.run([sys.executable, str(CODE / "src" / "transcribe_file.py"),
                             str(src), stamp[11:], day])
         if r.returncode != 0:
-            _status("failed", tdir / f"{stamp}.md", "транскрибация не удалась")
             sys.exit("транскрибация не удалась")
         tpath = tdir / f"{stamp}.md"
         if slug:
@@ -845,6 +847,11 @@ def main() -> None:
         # Список встреч показывает ошибку с кнопкой «Повторить обработку» —
         # тот же путь, что у демона, когда модель лежала
         _status("failed", tpath, "модель не дала разбор — граф не обновлён, повторите обработку")
+    elif graph_run.returncode:
+        # Любой другой ненулевой код — падение разбора (трейсбек, конфиг,
+        # сигнал): «готово» тут было бы ложью, пересборка на тот же случай
+        # пишет ошибку (Critical GLM r1 по #502)
+        _status("failed", tpath, f"graph_updater завершился с кодом {graph_run.returncode} — повторите обработку")
     else:
         _status("ready", tpath, _note_for(cfg, tpath))
     _report(args.result_json, {"kind": "meeting", "source": src.name,
