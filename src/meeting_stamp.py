@@ -222,6 +222,30 @@ def graph_key(tdir: pathlib.Path, stem: str,
 _TRANSCRIPT_LINE = re.compile(r"^Стенограмма: `([^`]+)`", re.M)
 
 
+def note_transcript_stamp(note_text: str) -> str | None:
+    """Штамп стенограммы из строки «Стенограмма: `<путь>`» заметки встречи —
+    тот же источник, по которому `note_is_ours` решает владение; forget
+    берёт из него точную секунду владельца минуты (DS r3 по #499)."""
+    m = _TRANSCRIPT_LINE.search(note_text)
+    return stamp_of(pathlib.Path(m.group(1)).stem) if m else None
+
+
+#: Штамп в НАЧАЛЕ имени любого файла встречи — записи, сайдкара, копии,
+#: временного `.part`: суффикс коллизии «-1» — часть штампа, граница — после
+#: штампа не цифра и не дефис.
+_RE_PREFIX = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{4}(?:\d{2})?(?:-\d+)?)(?![\d-])")
+
+
+def stamp_prefix(name: str) -> str | None:
+    """Штамп, с которого начинается имя файла встречи: «2026-07-15_140023_mic.wav.part»
+    → «2026-07-15_140023», «2026-07-15_1400_minutes.md» → «2026-07-15_1400»,
+    «2026-07-15_140023-1.md» → «2026-07-15_140023-1»; имя без штампа — None.
+    Формат имени живёт здесь: forget собирал кандидатов своим регэкспом
+    (критика GLM r3 по #499)."""
+    m = _RE_PREFIX.match(name)
+    return m.group(1) if m else None
+
+
 def note_is_ours(note_text: str, stamp: str,
                  tdir: pathlib.Path | None = None) -> bool:
     """Заметка `Встречи/<минута>.md` принадлежит встрече со штампом `stamp`?
@@ -238,8 +262,7 @@ def note_is_ours(note_text: str, stamp: str,
     файл, и минутно названный владелец. Без transcripts/ спорить нечем —
     считаем своей (круг-1 по PR #388, DeepSeek и Codex).
     """
-    m = _TRANSCRIPT_LINE.search(note_text)
-    its = stamp_of(pathlib.Path(m.group(1)).stem) if m else None
+    its = note_transcript_stamp(note_text)
     if its is not None and minute_of(its) != minute_of(stamp):
         return False
     if its is not None and its != minute_of(its):          # посекундный владелец
@@ -272,7 +295,7 @@ def find_note(graph: pathlib.Path, stamp: str,
             try:
                 if not note_is_ours(note.read_text(encoding="utf-8"), stamp, tdir):
                     continue
-            except OSError:
+            except (OSError, ValueError):     # нечитаемая или не-UTF-8 заметка — не наша (GLM r5 по #499)
                 continue
         return note
     return None
@@ -290,6 +313,28 @@ def archive_time(key: str) -> str:
     if len(core) == 17:
         hhmm = f"{hhmm}-{core[15:17]}"
     return hhmm + key[len(core):]          # «-1» суффикса коллизии, если был
+
+
+def recordings_under_minute(rec_dir: pathlib.Path, minute: str) -> bool:
+    """Есть ли под минутой хоть один файл канала (pcm / wav / wav.part…).
+
+    Пересборке без единого файла ждать нечего; формат имени знает только этот
+    модуль (stamp_of_recording), а не регэксп на месте вызова (GLM r1 по
+    #499). Листинг не удался — «есть»: лучше подождать 90 с, чем отказать
+    встрече из-за сбоя iCloud. Осознанная граница: пересборка, дёрнутая в
+    первые секунды записи, когда демон ещё не открыл .pcm, увидит «нет
+    файлов» и выйдет — это не «записи не будет», а «сейчас ждать нечего»
+    (DS r1 по #499); стоп встречи запускает пересборку заново.
+    """
+    try:
+        names = [f.name for f in rec_dir.iterdir()]
+    except OSError:
+        return True
+    for name in names:
+        s = stamp_of_recording(name)
+        if s and minute_of(s) == minute:
+            return True
+    return False
 
 
 def files_with_stamp(directory: pathlib.Path, stamp: str, *, prefix: str = "",
@@ -331,6 +376,14 @@ def recording_path(rec_dir: pathlib.Path, stamp: str, label: str,
 #: Файл канала встречи: `<штамп>_<метка>.pcm|.wav`, плюс временные имена
 #: конвертации — `.wav.part` у демона и `.wav.part<pid>` у пересборки.
 _RE_RECORDING = re.compile(r"^(?P<stamp>.+)_(?P<label>[^_]+)\.(?:pcm|wav)(?:\.part\d*)?$")
+
+
+def recording_unfinished(name: str) -> bool:
+    """Файл канала ещё пишется или ждёт восстановления: сырой `.pcm` демона и
+    временные `.wav.part`/`.wav.part<pid>` конвертации — всё, что подходит
+    под имя записи, но не готовый `.wav`. Забывание СОСЕДНЕЙ встречи такой
+    файл не трогает (Critical GLM r3 по #499)."""
+    return _RE_RECORDING.match(name) is not None and not name.endswith(".wav")
 
 
 def stamp_of_recording(name: str) -> str | None:

@@ -65,7 +65,11 @@ def test_rebuild_не_режет_штамп(tmp_path, monkeypatch):
     asked: list[str] = []
     monkeypatch.setattr(rt, "wait_recording",
                         lambda rec_dir, stamp, label, sr: asked.append(stamp))
-    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(tmp_path / "recordings"))
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    # сырой поток демона под минутой: без единого файла ждать нечего (аудит 05.09)
+    meeting_stamp.recording_path(rec, tr.stamp, "mic", "pcm").write_bytes(b"")
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
     rt.rebuild(tr.path, {"audio": {"samplerate": 16000}})
 
     assert asked, "rebuild не дошёл до поиска записей — имя встречи не распознано"
@@ -90,7 +94,10 @@ def test_rebuild_разрешает_один_штамп_на_оба_канала
     monkeypatch.setattr(rt.meeting_stamp, "resolve_stamp", resolve)
     monkeypatch.setattr(rt, "wait_recording",
                         lambda _dir, stamp, label, _sr: asked.append((stamp, label)))
-    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(tmp_path / "recordings"))
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    meeting_stamp.recording_path(rec, "2026-08-04_120301", "mic", "pcm").write_bytes(b"")
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
 
     rt.rebuild(live, {"audio": {"samplerate": 16000}})
 
@@ -390,6 +397,40 @@ def test_rebuild_после_отказа_по_минуте_не_ждёт_зап�
     assert waited == [], "после отказа ждать нечего"
 
 
+def test_recordings_under_minute_знает_имена_каналов_и_терпит_ошибку_листинга(tmp_path, monkeypatch):
+    """Формат имени — в meeting_stamp, а не регэксп на месте (GLM r1 по #499);
+    сбой листинга — «есть», чтобы не отказать встрече из-за iCloud."""
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    assert not meeting_stamp.recordings_under_minute(rec, "2026-08-04_1203")
+    (rec / "2026-08-04_120301_blackhole.wav.part4242").write_bytes(b"")
+    assert meeting_stamp.recordings_under_minute(rec, "2026-08-04_1203")
+    assert not meeting_stamp.recordings_under_minute(rec, "2026-08-04_1204")
+    monkeypatch.setattr(pathlib.Path, "iterdir", lambda self: (_ for _ in ()).throw(OSError(5, "io")))
+    assert meeting_stamp.recordings_under_minute(rec, "2026-08-04_1204"), "не знаем — ждём, не отказываем"
+
+
+def test_rebuild_без_единого_файла_под_минутой_не_ждёт(tmp_path, monkeypatch):
+    """Аудит GLM/DS 05.09: точный штамп из сайдкара или секундный штамп без
+    записей (ретеншн, импорт) доходил до 2×45 с ожидания под rebuild.lock."""
+    import rebuild_transcript as rt
+
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    live = tdir / "2026-08-04_120314.md"
+    live.write_text("# Встреча 2026-08-04_120314\n", encoding="utf-8")
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    meeting_stamp.recording_path(rec, "2026-08-04_130000", "mic", "wav").write_bytes(b"RIFF")  # другая минута
+    waited: list[str] = []
+    monkeypatch.setattr(rt, "wait_recording", lambda _d, stamp, label, _sr: waited.append(f"{stamp}/{label}"))
+    monkeypatch.setattr(rt, "log", lambda _m: None)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
+
+    assert rt.rebuild(live, {"audio": {"samplerate": 16000}}) is None
+    assert waited == [], "под минутой пусто — ждать нечего"
+
+
 def test_rebuild_не_считает_отказом_запись_под_минутным_именем(tmp_path, monkeypatch):
     """DS r2 M3 по #492: запись, названная самой минутой (демон до 28.07),
     resolve_stamp возвращает как есть — это находка, а не отвод чужих;
@@ -478,3 +519,32 @@ def test_files_with_stamp_stops_at_the_stamp_boundary(tmp_path):
     assert meeting_stamp.files_with_stamp(d / "нет", "2026-08-03_1130") == []
     assert meeting_stamp.files_with_stamp(
         d, "2026-08-03_1130", prefix="graph_", suffix=".log") == []
+
+
+def test_stamp_prefix_reads_any_meeting_file_name():
+    """Формат имени живёт в meeting_stamp: forget собирает кандидатов через
+    stamp_prefix, а не своим регэкспом (критика GLM r3 по #499)."""
+    sp = meeting_stamp.stamp_prefix
+    assert sp("2026-07-15_140023_mic.wav.part") == "2026-07-15_140023"
+    assert sp("2026-07-15_140023_mic.pcm") == "2026-07-15_140023"
+    assert sp("2026-07-15_1400_minutes.md") == "2026-07-15_1400"
+    assert sp("2026-07-15_140023-1.md") == "2026-07-15_140023-1"
+    assert sp("2026-07-15_140023.md.live.json") == "2026-07-15_140023"
+    assert sp("2026-07-15_14002.md") is None          # пять цифр — не штамп
+    assert sp("Исходник.wav") is None
+
+
+def test_recording_unfinished_is_anything_but_a_ready_wav():
+    ru = meeting_stamp.recording_unfinished
+    assert ru("2026-07-15_140023_mic.pcm")
+    assert ru("2026-07-15_140023_mic.wav.part")
+    assert ru("2026-07-15_140023_mic.wav.part4242")
+    assert not ru("2026-07-15_140023_mic.wav")
+    assert not ru("2026-07-15_140023.md")
+
+
+def test_note_transcript_stamp_reads_the_transcript_line():
+    nts = meeting_stamp.note_transcript_stamp
+    assert nts("# x\n\nСтенограмма: `transcripts/2026-07-15_140023.md`\n") == "2026-07-15_140023"
+    assert nts("# x\n\nСтенограмма: `transcripts/2026-07-15_1400_Тема.md`\n") == "2026-07-15_1400"
+    assert nts("# x\nбез строки\n") is None

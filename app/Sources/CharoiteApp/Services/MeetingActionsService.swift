@@ -25,17 +25,36 @@ struct MeetingActionCommand: Equatable, Sendable {
         root: URL,
         meetingID: String,
         graph: URL,
-        apply: Bool
+        apply: Bool,
+        importFolder: String? = nil
     ) -> MeetingActionCommand {
         var args = [
             AppSettings.scriptPath("scripts/forget_meeting.py", root: root),
-            String(meetingID.prefix(15)),
+            forgetTarget(meetingID),
             "--graph", graph.path,
         ]
+        // Копия аудио импортированной встречи живёт в папке импорта — путь
+        // знает только приложение, скрипт без него её не найдёт (аудит 05.09)
+        if let importFolder, !importFolder.isEmpty {
+            args += ["--import-folder", (importFolder as NSString).expandingTildeInPath]
+        }
         if apply { args.append("--yes") }
         return MeetingActionCommand(
             executable: AppSettings.pythonExecutable(root: root),
             arguments: args)
+    }
+
+    /// Цель «забыть»: посекундный штамп, если ID его несёт («2026-08-03_113012»,
+    /// с суффиксом коллизии «-1» включительно), иначе минута. Срез до минуты
+    /// у посекундного ID заставлял скрипт угадывать владельца минуты по
+    /// каталогу и делал соседку той же минуты (крэш-рестарт) незабываемой из
+    /// приложения — «забыть» её стирало владельца (критика DS r3 по #499).
+    static func forgetTarget(_ meetingID: String) -> String {
+        let seconds = #"^\d{4}-\d{2}-\d{2}_\d{6}(?:-\d+)?"#
+        if let range = meetingID.range(of: seconds, options: .regularExpression) {
+            return String(meetingID[range])
+        }
+        return String(meetingID.prefix(15))
     }
 
     /// ID статуса содержит `_HHMM`, папка архива — ` HH-MM`.
@@ -84,7 +103,8 @@ enum MeetingActionsService {
             root: AppSettings.charoiteRoot,
             meetingID: snapshot.meetingID,
             graph: graph,
-            apply: false))
+            apply: false,
+            importFolder: ImportService.configuredDir))
     }
 
     static func forget(_ snapshot: MeetingProcessingSnapshot) async -> MeetingActionResult {
@@ -98,7 +118,8 @@ enum MeetingActionsService {
             root: AppSettings.charoiteRoot,
             meetingID: snapshot.meetingID,
             graph: graph,
-            apply: true))
+            apply: true,
+            importFolder: ImportService.configuredDir))
     }
 
     private static func execute(_ command: MeetingActionCommand) async -> MeetingActionResult {

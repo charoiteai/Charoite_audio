@@ -238,6 +238,11 @@ def main() -> None:
         return
 
     model = cloud.model(cfg, "cloud_model")
+    try:
+        cloud.claude_bin_checked()       # зонд --version: битый бинарник — код 3 (аудит 05.09)
+    except cloud.CloudCLIUnavailable as e:
+        print(f"CLI облака не отвечает: {e}")
+        sys.exit(3)          # инфраструктура, не содержание — ночь видит код 3
     claude = cloud.claude_bin()
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
     cloud.add_proxy(env)
@@ -261,6 +266,9 @@ def main() -> None:
             capture_output=True, text=True, timeout=600, env=env,
             stdin=subprocess.DEVNULL)
         out = (r.stdout or "").strip()
+    except OSError as e:
+        print(f"CLI облака не запустился: {e}")
+        sys.exit(3)          # бинарник сменился под ногами — код 3, не «не принята»
     except Exception as e:  # noqa: BLE001
         print(f"CLI облака не отработал: {e}")
         sys.exit(2)          # авария облака — тоже не ревизия (ревью 17.08)

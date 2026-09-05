@@ -353,7 +353,9 @@ final class ImportService: ObservableObject {
                     let settle = self.scanAgainSettle
                     self.scanAgainSettle = false
                     self.scan(dir: dir, settleAll: settle)
-                } else if settleAll, text.contains("postponed=") {
+                } else if settleAll, text.split(separator: "\n").contains(where: { line in
+                    line.hasPrefix("postponed=") && Int(line.dropFirst("postponed=".count)) != nil
+                }) {
                     // Машинный маркер скрипта, не человеческая фраза (критика GLM r5)
                     // Тик отложил файлы до покоя размера — догоним через
                     // 35 с, а не через следующие две минуты

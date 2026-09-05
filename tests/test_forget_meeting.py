@@ -24,6 +24,8 @@
     5. Повторный запуск — не авария: забывать больше нечего.
 """
 import pathlib
+
+import pytest
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -101,6 +103,265 @@ def test_plan_finds_every_place_the_meeting_lives(tmp_path):
     assert str(graph / "Ядра" / "Выбор платёжного провайдера.md") in edited
     assert str(graph / "Досье" / "Платёжный провайдер.md") in edited
     assert str(graph / "Люди" / "Мария Соколова.md") in edited
+
+
+def test_plan_takes_the_import_copy_when_the_folder_is_known(tmp_path):
+    """Аудит GLM 05.09: копия аудио импортированной встречи в done/ папки
+    импорта переживала «забыть» до import_keep_days. Путь знает приложение —
+    с ним копия и сайдкар уходят, без него план говорит об этом вслух."""
+    import json
+
+    root, graph = _world(tmp_path)
+    inbox = tmp_path / "inbox"
+    done = inbox / "done"
+    done.mkdir(parents=True)
+    mine = done / "Recording.m4a"
+    mine.write_bytes(b"a")
+    (done / ".Recording.m4a.imported.json").write_text(
+        json.dumps({"stamp": STAMP, "imported_at": 1}), encoding="utf-8")
+    theirs = done / "Other.m4a"
+    theirs.write_bytes(b"b")
+    (done / ".Other.m4a.imported.json").write_text(
+        json.dumps({"stamp": OTHER, "imported_at": 1}), encoding="utf-8")
+
+    plan = forget.plan(STAMP, root, graph, import_folder=inbox)
+    doomed = {str(p) for p in plan.delete}
+    assert str(mine) in doomed and str(done / ".Recording.m4a.imported.json") in doomed
+    assert str(theirs) not in doomed and str(done / ".Other.m4a.imported.json") not in doomed
+
+    blind = forget.plan(STAMP, root, graph)
+    assert any("папке импорта" in line for line in blind.beyond_reach), blind.beyond_reach
+
+    # та же минута, но ни стенограммы, ни записи под этой секундой — ничья
+    # копия: не удаляем, называем вслух (критика GLM r3 по #499)
+    (done / ".Restamped.m4a.imported.json").write_text(
+        json.dumps({"stamp": STAMP + "17", "imported_at": 1}), encoding="utf-8")
+    (done / "Restamped.m4a").write_bytes(b"r")
+    aware = forget.plan(STAMP, root, graph, import_folder=inbox)
+    assert str(done / "Restamped.m4a") not in {str(p) for p in aware.delete}
+    assert sum(f"{STAMP}17" in line for line in aware.beyond_reach) == 1, aware.beyond_reach
+    # одна запись под этой секундой — ещё не паспорт (у соседки она есть
+    # раньше стенограммы, DS r4): копия и запись остаются, названы вслух
+    wav = root / "recordings" / f"{STAMP}17_mic.wav"
+    wav.write_bytes(b"RIFF")
+    lone = forget.plan(STAMP, root, graph, import_folder=inbox)
+    assert str(done / "Restamped.m4a") not in {str(p) for p in lone.delete}
+    assert str(wav) not in {str(p) for p in lone.delete}
+    assert any(f"{STAMP}17" in line and "только запись" in line for line in lone.beyond_reach), lone.beyond_reach
+    # а копия живого черновика под старым именем — паспорт владельца: всё уходит
+    (root / "transcripts" / f"{STAMP}17_live.md").write_text(f"# Встреча {STAMP}17\nчерновик\n", encoding="utf-8")
+    traced = forget.plan(STAMP, root, graph, import_folder=inbox)
+    doomed = {str(p) for p in traced.delete}
+    assert str(done / "Restamped.m4a") in doomed and str(wav) in doomed
+
+
+def test_minute_target_owns_the_seconds_files_of_its_minute_but_not_the_neighbour(tmp_path):
+    """Critical DS r1 по #499: приложение зовёт «забыть» минутой, а импорт
+    и демон именуют файлы посекундно — записи и копия импорта владельца
+    минуты уходят с ней. Critical DS r2: но «нет заметки в графе» соседку
+    не отличает — её заметка появляется после стопа, а файлы раньше;
+    улика чужой встречи — главный файл стенограммы под этой секундой (даже
+    голый) или заметка. Такие штампы остаются и называются вслух."""
+    import json
+
+    root, graph = _world(tmp_path)
+    tdir = root / "transcripts"
+    rec = root / "recordings"
+    # владелец минуты: записи и копия живого черновика под секундой, файла нет
+    (rec / f"{STAMP}23_mic.wav").write_bytes(b"RIFF")
+    (tdir / f"{STAMP}23_live.md").write_text(f"# Встреча {STAMP}\n", encoding="utf-8")
+    # соседка с темой и заметкой
+    neighbour = tdir / f"{STAMP}45_Соседка.md"
+    neighbour.write_text(f"# Встреча {STAMP}45\n", encoding="utf-8")
+    (graph / "Встречи" / f"{STAMP}45.md").write_text("---\ntype: встреча\n---\n# соседка\n", encoding="utf-8")
+    # соседка после крэш-рестарта: голый файл и запись, заметки ещё нет
+    fresh = tdir / f"{STAMP}52.md"
+    fresh.write_text(f"# Встреча {STAMP}52\n", encoding="utf-8")
+    (rec / f"{STAMP}52_mic.wav").write_bytes(b"RIFF")
+    # соседка, которая пишется прямо сейчас: только сырая запись (GLM r3)
+    (rec / f"{STAMP}58_mic.pcm").write_bytes(b"\x00")
+    (rec / f"{STAMP}58_blackhole.wav.part").write_bytes(b"\x00")
+    # соседка между готовой записью и первой стенограммой: только .wav (DS r4)
+    (rec / f"{STAMP}33_mic.wav").write_bytes(b"RIFF")
+    inbox = tmp_path / "inbox"
+    done = inbox / "done"
+    done.mkdir(parents=True)
+    for name, st in (("Mine.m4a", f"{STAMP}23"), ("Their.m4a", f"{STAMP}45"), ("Fresh.m4a", f"{STAMP}52")):
+        (done / name).write_bytes(b"x")
+        (done / f".{name}.imported.json").write_text(json.dumps({"stamp": st, "imported_at": 1}), encoding="utf-8")
+
+    plan = forget.plan(STAMP, root, graph, import_folder=inbox)
+    doomed = {str(p) for p in plan.delete}
+    assert str(rec / f"{STAMP}23_mic.wav") in doomed and str(tdir / f"{STAMP}23_live.md") in doomed
+    assert str(done / "Mine.m4a") in doomed and str(done / ".Mine.m4a.imported.json") in doomed
+    assert str(neighbour) not in doomed and str(graph / "Встречи" / f"{STAMP}45.md") not in doomed
+    assert str(fresh) not in doomed and str(rec / f"{STAMP}52_mic.wav") not in doomed
+    assert str(done / "Their.m4a") not in doomed and str(done / "Fresh.m4a") not in doomed
+    assert str(rec / f"{STAMP}58_mic.pcm") not in doomed and str(rec / f"{STAMP}58_blackhole.wav.part") not in doomed
+    assert any(f"{STAMP}52" in line and "соседка" in line for line in plan.beyond_reach), plan.beyond_reach
+    assert any(f"{STAMP}58" in line and "идёт запись" in line for line in plan.beyond_reach), plan.beyond_reach
+    assert str(rec / f"{STAMP}33_mic.wav") not in doomed
+    assert any(f"{STAMP}33" in line and "только запись" in line for line in plan.beyond_reach), plan.beyond_reach
+    assert any(f"{STAMP}23" in line and "по копиям" in line for line in plan.describe().splitlines()), plan.describe()
+    # соседка с копией импорта названа один раз, а не в двух блоках (GLM/DS r3)
+    assert sum(f"{STAMP}45" in line for line in plan.beyond_reach) == 1, plan.beyond_reach
+
+    # без графа решает каталог: голый файл под секундой — та же улика, и
+    # план не ссылается на заметку, которой не видел (DS r2 M3)
+    blind = forget.plan(STAMP, root, None, import_folder=inbox)
+    assert str(fresh) not in {str(p) for p in blind.delete}
+    assert str(rec / f"{STAMP}23_mic.wav") in {str(p) for p in blind.delete}
+
+
+def test_exact_stamp_from_the_own_sidecar_beats_the_directory_evidence(tmp_path):
+    """Секунда из ключа `stamp` собственного сайдкара — наша по слову демона:
+    голый остаток прерванного переименования под ней уходит вместе с
+    записями и копией в .prev (Critical DS r2, Minor GLM r2 по #499)."""
+    import json
+
+    root, graph = _world(tmp_path)
+    tdir = root / "transcripts"
+    (tdir / f"{STAMP}.md.live.json").write_text(json.dumps({"stamp": f"{STAMP}31"}), encoding="utf-8")
+    leftover = tdir / f"{STAMP}31.md"
+    leftover.write_text(f"# Встреча {STAMP}31\n", encoding="utf-8")
+    wav = root / "recordings" / f"{STAMP}31_mic.wav"
+    wav.write_bytes(b"RIFF")
+    prev = tdir / ".prev"
+    prev.mkdir()
+    (prev / f"{STAMP}31.md").write_text("до пересборки\n", encoding="utf-8")
+    # секунда без сайдкарного слова, но с голым файлом — не наша
+    stranger = tdir / f"{STAMP}58.md"
+    stranger.write_text(f"# Встреча {STAMP}58\n", encoding="utf-8")
+
+    plan = forget.plan(STAMP, root, graph)
+    doomed = {str(p) for p in plan.delete}
+    assert str(leftover) in doomed and str(wav) in doomed and str(prev / f"{STAMP}31.md") in doomed
+    assert str(stranger) not in doomed
+
+
+def _bare_world(tmp: pathlib.Path, seconds: str, *, note_line: str | None = None):
+    """Встреча до наката темы: главный файл голый посекундный, минутно
+    названного нет; заметка графа — под минутой."""
+    root = tmp / "charoite"
+    graph = tmp / "graph"
+    (root / "transcripts").mkdir(parents=True)
+    (root / "recordings").mkdir(parents=True)
+    (graph / "Встречи").mkdir(parents=True)
+    (root / "transcripts" / f"{STAMP}{seconds}.md").write_text(f"# Встреча {STAMP}{seconds}\n", encoding="utf-8")
+    (root / "recordings" / f"{STAMP}{seconds}_mic.wav").write_bytes(b"RIFF")
+    text = f"---\ntype: встреча\n---\n# {STAMP}\n"
+    if note_line:
+        text += f"\nСтенограмма: `{note_line}`\n"
+    (graph / "Встречи" / f"{STAMP}.md").write_text(text, encoding="utf-8")
+    return root, graph
+
+
+def test_minute_target_before_retitle_owns_its_bare_seconds_file(tmp_path):
+    """Critical DS r3 по #499: до наката темы главный файл владельца минуты —
+    голый посекундный, минутно названного нет; приложение зовёт минутой.
+    Владелец — самый ранний голый посекундный без своей заметки (правило
+    graph_key): его стенограмма и запись уходят, поздняя соседка остаётся."""
+    root, graph = _bare_world(tmp_path, "11")
+    tdir = root / "transcripts"
+    later = tdir / f"{STAMP}40.md"
+    later.write_text(f"# Встреча {STAMP}40\n", encoding="utf-8")
+    (root / "recordings" / f"{STAMP}40_mic.wav").write_bytes(b"RIFF")
+
+    plan = forget.plan(STAMP, root, graph)
+    doomed = {str(p) for p in plan.delete}
+    assert str(tdir / f"{STAMP}11.md") in doomed
+    assert str(root / "recordings" / f"{STAMP}11_mic.wav") in doomed
+    assert str(later) not in doomed and str(root / "recordings" / f"{STAMP}40_mic.wav") not in doomed
+    assert str(graph / "Встречи" / f"{STAMP}.md") in doomed
+
+
+def test_note_transcript_line_names_the_owner_of_the_minute(tmp_path):
+    """Строка «Стенограмма:» заметки минуты весит больше порядка файлов: если
+    заметка называет позднюю секунду, владелец — она, ранняя — соседка."""
+    root, graph = _bare_world(tmp_path, "11", note_line=f"transcripts/{STAMP}40.md")
+    tdir = root / "transcripts"
+    (tdir / f"{STAMP}40.md").write_text(f"# Встреча {STAMP}40\n", encoding="utf-8")
+    (root / "recordings" / f"{STAMP}40_mic.wav").write_bytes(b"RIFF")
+
+    plan = forget.plan(STAMP, root, graph)
+    doomed = {str(p) for p in plan.delete}
+    assert str(tdir / f"{STAMP}40.md") in doomed and str(root / "recordings" / f"{STAMP}40_mic.wav") in doomed
+    assert str(tdir / f"{STAMP}11.md") not in doomed
+    assert any(f"{STAMP}11" in line for line in plan.beyond_reach), plan.beyond_reach
+
+
+def test_passport_copy_needs_the_meeting_header(tmp_path):
+    """Критика GLM r5: файл, случайно названный штампом (заметка на полях
+    без шапки «# Встреча»), паспортом не считается — запись под этой
+    секундой остаётся; копия write_final с шапкой — паспорт, и план
+    называет файл, по которому решил."""
+    root, graph = _world(tmp_path)
+    wav = root / "recordings" / f"{STAMP}17_mic.wav"
+    wav.write_bytes(b"RIFF")
+    stray = root / "transcripts" / f"{STAMP}17_live.md"
+    stray.write_text("мои заметки на полях\n", encoding="utf-8")
+    plan = forget.plan(STAMP, root, graph)
+    assert str(wav) not in {str(p) for p in plan.delete}
+    stray.write_text(f"# Встреча {STAMP}17\nчерновик\n", encoding="utf-8")
+    plan = forget.plan(STAMP, root, graph)
+    assert str(wav) in {str(p) for p in plan.delete}
+    assert any(f"{STAMP}17_live.md" in line for line in plan.notes), plan.notes
+
+
+def test_broken_encoding_in_the_minute_note_is_not_a_crash(tmp_path):
+    """GLM r5 M1: не-UTF-8 заметка — UnicodeDecodeError (ValueError), тот же
+    исход «не решить», а не трейсбек на кнопке «Забыть»."""
+    root, graph = _bare_world(tmp_path, "11")
+    (graph / "Встречи" / f"{STAMP}.md").write_bytes(b"\xff\xfe# note\n")
+    plan = forget.plan(STAMP, root, graph)
+    assert str(root / "transcripts" / f"{STAMP}11.md") not in {str(p) for p in plan.delete}
+    assert any("не прочитать" in line for line in plan.notes), plan.notes
+
+
+def test_unreadable_minute_note_freezes_the_seconds_files(tmp_path):
+    """DS r4 M1: заметку минуты не прочитать — это «не решить», а не «строки
+    нет»: правило самого раннего файла не применяется, посекундные файлы
+    остаются и названы вслух."""
+    import os
+    if os.geteuid() == 0:
+        pytest.skip("root читает всё — нечитаемую заметку не сымитировать")
+    root, graph = _bare_world(tmp_path, "11")
+    note = graph / "Встречи" / f"{STAMP}.md"
+    note.chmod(0)                     # read_text → PermissionError (OSError)
+    (root / "transcripts" / f"{STAMP}40.md").write_text(f"# Встреча {STAMP}40\n", encoding="utf-8")
+
+    try:
+        plan = forget.plan(STAMP, root, graph)
+    finally:
+        note.chmod(0o600)
+    doomed = {str(p) for p in plan.delete}
+    assert str(root / "transcripts" / f"{STAMP}11.md") not in doomed
+    assert str(root / "recordings" / f"{STAMP}11_mic.wav") not in doomed
+    assert any("не прочитать" in line for line in plan.beyond_reach), plan.beyond_reach
+    assert any("не прочитать" in line for line in plan.notes), plan.notes
+
+
+def test_seconds_target_does_not_reach_across_its_minute(tmp_path):
+    """Цель с секундами владеет только собой: копия импорта соседней
+    секунды той же минуты остаётся (Important GLM r2 по #499)."""
+    import json
+
+    root, graph = _world(tmp_path)
+    tdir = root / "transcripts"
+    mine = tdir / f"{STAMP}23.md"
+    mine.write_text(f"# Встреча {STAMP}23\n", encoding="utf-8")
+    inbox = tmp_path / "inbox"
+    done = inbox / "done"
+    done.mkdir(parents=True)
+    for name, st in (("Mine.m4a", f"{STAMP}23"), ("Next.m4a", f"{STAMP}40")):
+        (done / name).write_bytes(b"x")
+        (done / f".{name}.imported.json").write_text(json.dumps({"stamp": st, "imported_at": 1}), encoding="utf-8")
+
+    plan = forget.plan(f"{STAMP}23", root, graph, import_folder=inbox)
+    doomed = {str(p) for p in plan.delete}
+    assert str(mine) in doomed and str(done / "Mine.m4a") in doomed
+    assert str(done / "Next.m4a") not in doomed
+    assert str(root / "transcripts" / f"{STAMP}.md") not in doomed
 
 
 def test_plan_does_not_touch_the_neighbouring_meeting(tmp_path):
