@@ -5,7 +5,8 @@
       "release-type": "simple",
       "changelog-path": "CHANGELOG.md",
       "bump-minor-pre-major": true,
-      "prerelease": true
+      "prerelease": true,
+      "extra-files": ["app-ios/project.yml"]
     }
   }
 }

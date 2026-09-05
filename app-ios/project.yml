@@ -54,7 +54,7 @@ targets:
         DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.9"
-        MARKETING_VERSION: "0.1.0"
+        MARKETING_VERSION: "0.70.0" # x-release-please-version
         CURRENT_PROJECT_VERSION: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   CharoiteWidgets:
@@ -72,10 +72,10 @@ targets:
         DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.9"
-        MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         # WidgetKit-расширение обязано жить в bundle приложения
         PRODUCT_BUNDLE_IDENTIFIER: ai.charoite.CharoiteiOS.widgets
+        MARKETING_VERSION: "0.70.0" # x-release-please-version
   CharoiteiOSTests:
     type: bundle.unit-test
     platform: iOS

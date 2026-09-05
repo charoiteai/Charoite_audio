@@ -864,6 +864,10 @@ it signals degradation, it does not break the loop.
   pipeline to `<stamp>_Topic.md` count as repeats too. A recording with no
   speech saves its transcript and finishes immediately — a three-second
   scrap no longer drives the LLM pipeline across the whole backlog.
+- **Version number in plain sight** — Mac: at the bottom of the sidebar
+  (“Charoite 0.70.1”); iPhone: at the bottom of the recording settings with
+  the build number. The iPhone companion rides the same release train as
+  the Mac (release-please bumps `app-ios/project.yml`).
 - **“External recording” tab** — a phone voice memo, someone else's call
   recording, a Zoom export: drop the file (or pick it) — it is copied into
   the import folder, the original is left alone, and it goes through the
