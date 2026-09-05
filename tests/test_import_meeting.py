@@ -346,7 +346,7 @@ def _run_scan(monkeypatch, folder, *extra):
     before = os.umask(0)
     os.umask(before)
     try:
-        im.main()
+        _main_keeping_umask()
     finally:
         os.umask(before)
 
@@ -676,6 +676,17 @@ def test_import_keep_days_is_forgiving_but_not_negative(capsys):
         im.import_keep_days({"audio": {"import_keep_days": -1}})
 
 
+def _main_keeping_umask() -> None:
+    """im.main() в процессе тестов: harden_umask() менял umask процесса, и
+    следующий тест (test_private_permissions) видел чужие права (CI 05.09)."""
+    before = os.umask(0o022)
+    os.umask(before)
+    try:
+        _main_keeping_umask()
+    finally:
+        os.umask(before)
+
+
 def test_direct_import_publishes_a_meeting_status(tmp_path, monkeypatch, capsys):
     """Поле 05.09: две записи с телефона были разобраны и разложены в граф,
     но в списке встреч приложения их не было — импорт не писал статус
@@ -701,7 +712,7 @@ def test_direct_import_publishes_a_meeting_status(tmp_path, monkeypatch, capsys)
     monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
     monkeypatch.setattr(im, "find_meeting_note", lambda cfg, t, **kw: note)
     monkeypatch.setattr(sys, "argv", ["import_meeting.py", str(src), "--date", "2026-09-05", "--time", "12:00"])
-    im.main()
+    _main_keeping_umask()
 
     status = root / "logs" / "meeting-status" / "2026-09-05_1200.json"
     assert status.exists(), sorted((root / "logs").rglob("*")) if (root / "logs").exists() else "нет статуса"
@@ -712,7 +723,7 @@ def test_direct_import_publishes_a_meeting_status(tmp_path, monkeypatch, capsys)
 
     # повтор той же записи: встреча уже есть — статус остаётся «готово»
     status.unlink()
-    im.main()
+    _main_keeping_umask()
     assert json.loads(status.read_text(encoding="utf-8"))["state"] == "ready"
     assert "повтор не нужен" in capsys.readouterr().out
 
@@ -735,7 +746,7 @@ def test_direct_import_publishes_failed_when_graph_updater_crashes(tmp_path, mon
     monkeypatch.setattr(im, "_cfg", lambda: {"log": {"transcripts_dir": "transcripts"}})
     monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
     monkeypatch.setattr(sys, "argv", ["import_meeting.py", str(src), "--date", "2026-09-05", "--time", "12:00"])
-    im.main()
+    _main_keeping_umask()
 
     data = json.loads((root / "logs" / "meeting-status" / "2026-09-05_1200.json").read_text(encoding="utf-8"))
     assert data["state"] == "error" and "с кодом 1" in data["error"]
@@ -763,7 +774,7 @@ def test_direct_import_publishes_failed_when_the_tail_dies(tmp_path, monkeypatch
     monkeypatch.setattr(im, "_cfg", lambda: {"log": {"transcripts_dir": "transcripts"}})
     monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
     monkeypatch.setattr(sys, "argv", ["import_meeting.py", str(src), "--date", "2026-09-05", "--time", "12:00"])
-    im.main()
+    _main_keeping_umask()
 
     data = json.loads((root / "logs" / "meeting-status" / "2026-09-05_1200.json").read_text(encoding="utf-8"))
     assert data["state"] == "error" and "retro_fill" in data["error"] and "сигналом 9" in data["error"]
