@@ -738,4 +738,32 @@ def test_direct_import_publishes_failed_when_graph_updater_crashes(tmp_path, mon
     im.main()
 
     data = json.loads((root / "logs" / "meeting-status" / "2026-09-05_1200.json").read_text(encoding="utf-8"))
-    assert data["state"] == "error" and "кодом 1" in data["error"]
+    assert data["state"] == "error" and "с кодом 1" in data["error"]
+
+
+def test_direct_import_publishes_failed_when_the_tail_dies(tmp_path, monkeypatch):
+    """Критика GLM r2 по #502: граф собрался, а retro_fill (минутки/разбор)
+    умер по сигналу — статус «ошибка» словами «сигналом 9», не «готово»."""
+    import json
+
+    root = tmp_path / "root"
+    (root / "transcripts").mkdir(parents=True)
+    src = tmp_path / "Заметки.txt"
+    src.write_text("х" * 400, encoding="utf-8")
+
+    class Result:
+        def __init__(self, rc):
+            self.returncode = rc
+            self.stdout = self.stderr = ""
+
+    def run(cmd, **kw):
+        return Result(-9 if any("retro_fill.py" in str(c) for c in cmd) else 0)
+    monkeypatch.setattr(im.subprocess, "run", run)
+    monkeypatch.setattr(im, "ROOT", root)
+    monkeypatch.setattr(im, "_cfg", lambda: {"log": {"transcripts_dir": "transcripts"}})
+    monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
+    monkeypatch.setattr(sys, "argv", ["import_meeting.py", str(src), "--date", "2026-09-05", "--time", "12:00"])
+    im.main()
+
+    data = json.loads((root / "logs" / "meeting-status" / "2026-09-05_1200.json").read_text(encoding="utf-8"))
+    assert data["state"] == "error" and "retro_fill" in data["error"] and "сигналом 9" in data["error"]

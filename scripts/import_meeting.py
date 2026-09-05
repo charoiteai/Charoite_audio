@@ -828,7 +828,7 @@ def main() -> None:
                                    "stamp": stamp, "transcript": str(tpath)})
         return
     print("— догенерирую минутки/разбор/тезисы и раскладываю архив…")
-    subprocess.run([sys.executable, str(CODE / "src" / "retro_fill.py")])
+    tail_run = subprocess.run([sys.executable, str(CODE / "src" / "retro_fill.py")])
     # исходник — рядом с материалами встречи (APFS-клон: без лишнего места)
     graph = graphs.graph_dir(cfg) or pathlib.Path("")
     folder = archive_folder_for(graph, stamp)
@@ -851,7 +851,12 @@ def main() -> None:
         # Любой другой ненулевой код — падение разбора (трейсбек, конфиг,
         # сигнал): «готово» тут было бы ложью, пересборка на тот же случай
         # пишет ошибку (Critical GLM r1 по #502)
-        _status("failed", tpath, f"graph_updater завершился с кодом {graph_run.returncode} — повторите обработку")
+        _status("failed", tpath, f"graph_updater завершился {_exit_word(graph_run.returncode)} — повторите обработку")
+    elif tail_run.returncode:
+        # Хвост (минутки/разбор/тезисы) упал: retro_fill глотает отказы модели
+        # сам, ненулевой код — падение или конфиг; «готово» без минуток
+        # висело бы навсегда (критика GLM r2 по #502)
+        _status("failed", tpath, f"хвост обработки (retro_fill) завершился {_exit_word(tail_run.returncode)} — повторите обработку")
     else:
         _status("ready", tpath, _note_for(cfg, tpath))
     _report(args.result_json, {"kind": "meeting", "source": src.name,
@@ -869,6 +874,11 @@ def _status(method: str, transcript: pathlib.Path, *args) -> None:
         getattr(MeetingStatusStore(ROOT), method)(transcript, *args)
     except Exception as e:  # noqa: BLE001
         print(f"статус встречи не записан ({type(e).__name__}: {e})")
+
+
+def _exit_word(code: int) -> str:
+    """Код возврата словами для человека: «сигналом 9», а не «кодом -9» (GLM r2 по #502)."""
+    return f"сигналом {-code}" if code < 0 else f"с кодом {code}"
 
 
 def _note_for(cfg: dict, transcript: pathlib.Path) -> pathlib.Path | None:
