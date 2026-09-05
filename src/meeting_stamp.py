@@ -37,6 +37,10 @@ _RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{4}(?:\d{2})?)(?:-\d+)?$")
 AUX_SUFFIXES = ("_minutes", "_hints", "_live", "_debrief",
                 "_разбор", "_ревизия_claude", "_спикеры")
 RECORDING_LABELS = ("mic", "blackhole")
+# Расширения файла канала в порядке поиска: готовый wav, сырой pcm демона,
+# недописанный wav.part. Единственный список — resolve_stamp, rebuild
+# (гейт лога, touch перед ожиданием) читают его отсюда (DS r3 / GLM по #492).
+RECORDING_EXTS = ("wav", "pcm", "wav.part")
 
 # Главный файл встречи после наката темы: «2026-08-04_1203_Отчет_по_задачам».
 # Ровно такие имена шлёт retry из приложения (transcript_path статуса).
@@ -349,12 +353,26 @@ def stamp_of_recording(name: str) -> str | None:
 
 
 def resolve_stamp(rec_dir: pathlib.Path, stamp: str,
-                  labels: tuple[str, ...] = RECORDING_LABELS) -> str:
+                  labels: tuple[str, ...] = RECORDING_LABELS, *,
+                  exact: str | None = None,
+                  tdir: pathlib.Path | None = None) -> str:
     """Единый штамп, под которым лежат каналы одной встречи.
 
     Демон называет записи ПОСЕКУНДНЫМ штампом стенограммы, а retry из
     приложения знает только минутное имя после наката темы («…_1203»):
     точного файла с таким именем на диске нет — ищем по минутному префиксу.
+
+    `exact` — посекундный штамп встречи, известный ТОЧНО (сайдкар: демон
+    пишет его при стопе, накат темы — при переименовании): записи либо под
+    ним, либо их нет — глоб по минуте не нужен, а брать по нему чужое
+    нельзя. `tdir` — каталог стенограмм: без `exact` единственный кандидат
+    минуты принимается, только если у него нет СВОЕЙ стенограммы, иначе это
+    соседка (крэш-рестарт в ту же минуту), чьи записи своих не заменяют
+    (ревью 04.09, GLM: посекундный вход закрыли 20.08, а минутный после
+    наката темы проваливался в ту же дыру). Уликой считается и ГОЛЫЙ файл
+    кандидата («…120314.md» — соседка, чей конвейер упал до наката темы):
+    голого остатка своей же встречи рядом с минутным именем не бывает —
+    накат темы и rename_meeting переименовывают через rename(), без копии.
 
     Критично смотреть на все каналы одним проходом. Если отдельно разрешить
     mic и blackhole, две встречи в одну минуту могут дать по одному каналу и
@@ -363,9 +381,10 @@ def resolve_stamp(rec_dir: pathlib.Path, stamp: str,
     Иначе оставляем исходное имя: лучше честно не пересобрать, чем смешать
     две встречи в одном документе.
     """
-    extensions = ("wav", "pcm", "wav.part")
+    if exact and started_at(exact) is not None:
+        return exact
     for label in labels:
-        for ext in extensions:
+        for ext in RECORDING_EXTS:
             if recording_path(rec_dir, stamp, label, ext).exists():
                 # Хотя другой канал может принадлежать иному посекундному
                 # кандидату, общий точный штамп безопасен: wait_recording
@@ -387,10 +406,16 @@ def resolve_stamp(rec_dir: pathlib.Path, stamp: str,
     minute = head[:15]
     found: set[str] = set()
     for label in labels:
-        for ext in extensions:
+        for ext in RECORDING_EXTS:
             tail = f"_{label}.{ext}"
             for p in rec_dir.glob(f"{minute}*{tail}"):
                 cand = p.name[: -len(tail)]
                 if started_at(cand) is not None:
                     found.add(cand)
-    return found.pop() if len(found) == 1 else stamp
+    if len(found) != 1:
+        return stamp
+    cand = found.pop()
+    if tdir is not None and any(stamp_of(f.stem) == cand
+                                for f in files_with_stamp(tdir, cand, suffix=".md")):
+        return stamp    # у кандидата своя стенограмма — записи соседки, не наши
+    return cand

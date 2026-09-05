@@ -31,6 +31,7 @@ import graphs  # noqa: E402
 
 import charoite_paths  # noqa: E402
 import safe_write  # noqa: E402
+import live_sidecar  # noqa: E402
 import meeting_stamp  # noqa: E402
 from meeting_archive import ARCHIVE_DIR, _safe  # noqa: E402
 
@@ -145,6 +146,7 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
          pretty: str, slug: str) -> dict:
     """Что переименуется и что перепишется. Считается без единой записи."""
     moves: list[tuple[pathlib.Path, pathlib.Path]] = []
+    stamps: list[tuple[pathlib.Path, str]] = []     # (новое имя, посекундный штамп)
     taken: set[pathlib.Path] = set()
     # Файлы ИМЕННО этой встречи: главные файлы, чей ключ графа — наш stamp,
     # и их производные. Минутный ключ раньше захватывал голые посекундные
@@ -212,6 +214,28 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
                 if sc.exists() and not sc_target.exists() and sc_target not in taken:
                     taken.add(sc_target)
                     moves.append((sc, sc_target))
+                if sc_target.exists():
+                    # Имя сайдкара занято чужой сиротой: свой сайдкар остаётся
+                    # под старым именем, а писать штамп в чужой файл нельзя —
+                    # решение о переносе и о записи не должны расходиться
+                    # (DS r3 M1 по #492). Секунды остаются в старом имени пары.
+                    continue
+                # Главный файл с секундами получает минутное имя: секунды
+                # остаются только в ключе `stamp` сайдкара — как после наката
+                # темы (№164). Главные здесь двух видов: голый «…113012.md» и
+                # legacy с темой на служебное слово («…113012_Итоги_разбор.md»,
+                # DS r2 M1 по #492); производные («…113012_hints.md») не
+                # разбираются stamp_of и в legacy_names не входят. Только
+                # transcripts/: копии в vault сайдкар не заводят (DS r2 M2).
+                if f.stem == meeting_stamp.stamp_of(f.stem):
+                    bare = f.stem
+                elif f.name in legacy_names:
+                    bare = (meeting_stamp.decompose(f.stem) or ("",))[0]
+                else:
+                    bare = ""
+                if bare and bare != meeting_stamp.minute_of(bare) \
+                        and meeting_stamp.stamp_of(target.stem) == meeting_stamp.minute_of(bare):
+                    stamps.append((target, bare))
 
     day, hhmm = stamp[:10], meeting_stamp.archive_time(stamp)
     old_folder = archive_folder(graph, stamp)
@@ -220,7 +244,7 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
     if old_folder is not None and old_folder == new_folder:
         old_folder = new_folder = None
 
-    return {"moves": moves, "old_folder": old_folder, "new_folder": new_folder,
+    return {"moves": moves, "stamps": stamps, "old_folder": old_folder, "new_folder": new_folder,
             "note": meeting_stamp.find_note(graph, stamp, tdir) or graph / "Встречи" / f"{stamp}.md"}
 
 
@@ -291,6 +315,13 @@ def brain_rename(stamp: str, pretty: str) -> str:
 def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
     for old, new in p["moves"]:
         old.rename(new)
+    # Секунды главного файла, получившего минутное имя, — в ключ `stamp`
+    # сайдкара (кто и почему — решает plan). После всех переносов: пара
+    # .md + сайдкар уже под новым именем, remember пишет в прямой.
+    for target, bare in p.get("stamps", ()):
+        if not live_sidecar.remember(target, "stamp", bare):
+            print(f"{target.name}: посекундный штамп в сайдкар не записан "
+                  "(сайдкар неоднозначен, битый JSON или ошибка записи)")
 
     old_folder, new_folder = p["old_folder"], p["new_folder"]
     if old_folder is not None and new_folder is not None:
