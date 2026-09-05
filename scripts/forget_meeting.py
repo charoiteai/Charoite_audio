@@ -336,6 +336,51 @@ def meeting_archive_id(folder: pathlib.Path) -> str | None:
         return None
 
 
+class _Ownership:
+    """Какие штампы — этой встречи: сам `stamp`, а для минутного ключа — и
+    посекундные штампы его минуты, если под ними нет ДРУГОЙ встречи.
+
+    Приложение зовёт «забыть» минутным ключом, а демон и импорт именуют
+    файлы посекундно: записи владельца минуты лежат как `<минутаСС>_mic.wav`,
+    копия импорта — с посекундным штампом в сайдкаре (Critical DS r1 по
+    #499). Но та же минута — штатное место соседки (демон после краха
+    поднимается через две секунды), и «нет заметки в графе» её не отличает:
+    заметка появляется после стопа, а файлы — раньше (Critical DS r2,
+    Important GLM r2). Правило — то же, что у конвейера
+    (meeting_stamp.resolve_stamp, live_sidecar.exact_stamp): секунда из ключа
+    `stamp` собственного сайдкара — наша по слову демона; любая другая —
+    наша, только если под ней нет ни главного файла стенограммы (голый —
+    тоже улика: соседка до наката темы и остаток прерванного переименования
+    по именам неразличимы, а удалять чужое нельзя), ни заметки в графе.
+    Спорное остаётся на диске и называется вслух (`foreign`).
+    """
+
+    def __init__(self, stamp: str, root: pathlib.Path, graph: pathlib.Path | None):
+        self.stamp = stamp
+        self.minute = meeting_stamp.minute_of(stamp) == stamp
+        self.tdir = root / "transcripts"
+        self.graph = graph
+        self.exact: str | None = None
+        self.foreign: list[str] = []
+        if self.minute and self.tdir.is_dir():
+            live = live_sidecar.minute_owner(self.tdir, stamp)
+            if live is not None:
+                self.exact = live_sidecar.exact_stamp(live)
+
+    def owns(self, s: str) -> bool:
+        if s == self.stamp or (self.exact is not None and s == self.exact):
+            return True
+        if not self.minute or meeting_stamp.minute_of(s) != self.stamp:
+            return False
+        other = live_sidecar.main_with_key(self.tdir, s) is not None or (
+            self.graph is not None and (self.graph / "Встречи" / f"{s}.md").is_file())
+        if other:
+            if s not in self.foreign:
+                self.foreign.append(s)
+            return False
+        return True
+
+
 def plan(stamp: str, root: pathlib.Path,
          graph: pathlib.Path | None = None, keep_graph: bool = False,
          import_folder: pathlib.Path | None = None) -> Plan:
@@ -349,20 +394,16 @@ def plan(stamp: str, root: pathlib.Path,
     p = Plan(stamp=stamp)
 
     # Приложение зовёт «забыть» минутным ключом, а демон и импорт именуют
-    # файлы посекундно: до наката темы стенограмма владельца минуты лежит как
-    # `<минутаСС>.md`, копия импорта — с посекундным штампом в сайдкаре.
-    # Посекундный штамп той же минуты без СВОЕЙ заметки в графе — не соседка
-    # (у соседки ключ графа посекундный и заметка своя), а владелец; его
-    # файлы уходят вместе с минутой (Critical DS r1 по #499).
-    owned = [stamp]
-    if graph is not None and meeting_stamp.minute_of(stamp) == stamp:
-        tdir_all = root / "transcripts"
-        for f in (sorted(tdir_all.glob(f"{stamp}*")) if tdir_all.is_dir() else []):
-            s = meeting_stamp.stamp_of(f.stem)
-            if (s and s != stamp and meeting_stamp.minute_of(s) == stamp
-                    and not (graph / "Встречи" / f"{s}.md").exists()
-                    and s not in owned):
-                owned.append(s)
+    # файлы посекундно: правило владения — в _Ownership (Critical DS r1 и r2
+    # по #499).
+    own = _Ownership(stamp, root, graph)
+    seen: set[str] = set()
+    for folder in (root / "transcripts", root / "recordings", root / "transcripts" / ".prev"):
+        for f in (folder.iterdir() if folder.is_dir() else ()):
+            m = _STAMP_RE.match(f.name)
+            if m:
+                seen.add(m.group(1))
+    owned = [stamp] + [s for s in sorted(seen) if s != stamp and own.owns(s)]
 
     for folder in ("transcripts", "recordings"):
         for s in owned:
@@ -371,10 +412,12 @@ def plan(stamp: str, root: pathlib.Path,
     # скрытая папка не обходится глобом, забыть обязаны и её (GLM r1 по #456).
     # Копия названа именем файла НА МОМЕНТ пересборки: до наката темы — голый
     # посекундный штамп, который минутный глоб с границей не видит (DS r2);
-    # поэтому — и по штампу, и по именам удаляемых стенограмм, и по ключам
-    # статусов (там лежит штамп исходного файла).
+    # поэтому — по каждому своему штампу (GLM r2 по #499), по именам
+    # удаляемых стенограмм и по ключам статусов (там лежит штамп исходного
+    # файла).
     prev_dir = root / "transcripts" / ".prev"
-    p.delete += _with_stamp(prev_dir, stamp)
+    for s in owned:
+        p.delete += [f for f in _with_stamp(prev_dir, s) if f not in p.delete]
     if prev_dir.is_dir():
         names = {f.name for f in p.delete if f.parent == root / "transcripts"}
         p.delete += [f for f in prev_dir.iterdir() if f.name in names and f not in p.delete]
@@ -420,18 +463,18 @@ def plan(stamp: str, root: pathlib.Path,
             if not isinstance(meta, dict):
                 continue
             sc_stamp = meta.get("stamp")
-            same_minute = isinstance(sc_stamp, str) and meeting_stamp.minute_of(sc_stamp) == minute
-            # Копия той же минуты без своей заметки в графе — владельца минуты
-            # (тот же критерий, что у стенограмм выше); с заметкой — соседка
-            ours = sc_stamp in gone_stamps or (
-                same_minute and graph is not None
-                and not (graph / "Встречи" / f"{sc_stamp}.md").exists())
-            if not ours:
-                if same_minute:
-                    # Соседка той же минуты — не трогаем, но говорим вслух (GLM r1)
-                    p.beyond_reach.append(f"в папке импорта лежит копия с штампом {sc_stamp} "
-                                          f"(та же минута, своя заметка в графе — соседка): "
-                                          f"{sc.name[1:-len('.imported.json')]}")
+            if not isinstance(sc_stamp, str):
+                continue
+            # Копия с посекундным штампом нашей минуты — по тому же правилу
+            # владения, что стенограммы и записи выше (Important GLM r2 по #499:
+            # критерий один и только для минутной цели)
+            if not (sc_stamp in gone_stamps or own.owns(sc_stamp)):
+                if meeting_stamp.minute_of(sc_stamp) == minute:
+                    # Та же минута, но другая встреча — не трогаем, говорим вслух (GLM r1)
+                    p.beyond_reach.append(f"в папке импорта лежит копия с штампом {sc_stamp}: "
+                                          f"та же минута, но не эта встреча — под ним своя "
+                                          f"стенограмма или заметка; забыть отдельно по штампу "
+                                          f"{sc_stamp}: {sc.name[1:-len('.imported.json')]}")
                 continue
             owner = done_dir / sc.name[1:-len(".imported.json")]
             if owner.is_file() and owner not in p.delete:
@@ -442,6 +485,10 @@ def plan(stamp: str, root: pathlib.Path,
         p.beyond_reach.append("копия исходника в папке импорта (done/), если встреча "
                               "импортирована: путь знает приложение (--import-folder); "
                               "без него её удалит ретеншн import_keep_days")
+    for s in own.foreign:
+        p.beyond_reach.append(f"файлы с посекундным штампом {s} той же минуты: под ним своя "
+                              f"стенограмма или заметка — соседка (крэш-рестарт в ту же минуту) "
+                              f"или остаток прерванного переименования; забыть отдельно по штампу {s}")
 
     # Логи графа этой встречи: в logs/graph_<штамп>*.log попадают имена
     # участников и куски цитат — «забыть» обязано дойти и до них, иначе

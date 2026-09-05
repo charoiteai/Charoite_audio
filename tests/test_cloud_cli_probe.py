@@ -164,3 +164,55 @@ def test_review_gives_up_after_the_second_exec_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(review.cloud, "claude_bin_checked", lambda **kw: "/x/claude")
     fixed, why = review.review("Тема", tmp_path / "Тема.md", tmp_path, {}, [], "opus", {}, current=DOSSIER)
     assert fixed is None and why.startswith("сбой:")
+
+
+def test_second_exec_failure_after_a_live_probe_is_cli_down(monkeypatch, tmp_path):
+    """Зонд ответил, а exec снова упал — бинарник всё ещё меняется: это отказ
+    инфраструктуры (код 3), а не сбой темы (код 2) — Important DS r2 по #499."""
+    def run(cmd, **kw):
+        raise OSError(8, "Exec format error")
+
+    review, _ = _review_call(monkeypatch, run)
+    monkeypatch.setattr(review.cloud, "claude_bin_checked", lambda **kw: "/x/claude")
+    review._SLEPT_FOR_CLI = False
+    review.CLI_DOWN[0] = False
+    try:
+        fixed, why = review.review("Тема", tmp_path / "Тема.md", tmp_path, {}, [], "opus", {}, current=DOSSIER)
+        assert fixed is None and why.startswith("сбой:")
+        assert review.CLI_DOWN[0] is True
+    finally:
+        review.CLI_DOWN[0] = False
+
+
+def test_cli_back_reprobes_once_per_run(monkeypatch):
+    """Одно обновление CLI посреди ночи не списывает остаток досье: один
+    повторный зонд на прогон, второй раз — нет (критика GLM r2 по #499)."""
+    import nightly_dossier_review as review
+
+    calls = []
+    monkeypatch.setattr(review.cloud, "claude_bin_checked", lambda **kw: calls.append(1) or "/x/claude")
+    review._REPROBED[0] = False
+    review.CLI_DOWN[0] = True
+    try:
+        assert review.cli_back() is True and review.CLI_DOWN[0] is False
+        review.CLI_DOWN[0] = True
+        assert review.cli_back() is False and review.CLI_DOWN[0] is True
+        assert len(calls) == 1
+    finally:
+        review.CLI_DOWN[0] = False
+        review._REPROBED[0] = False
+
+
+def test_cli_back_stays_down_when_the_probe_fails(monkeypatch):
+    import nightly_dossier_review as review
+
+    def down(**kw):
+        raise cloud.CloudCLIUnavailable("всё ещё меняется")
+    monkeypatch.setattr(review.cloud, "claude_bin_checked", down)
+    review._REPROBED[0] = False
+    review.CLI_DOWN[0] = True
+    try:
+        assert review.cli_back() is False and review.CLI_DOWN[0] is True
+    finally:
+        review.CLI_DOWN[0] = False
+        review._REPROBED[0] = False

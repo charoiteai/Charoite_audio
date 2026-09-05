@@ -66,25 +66,25 @@ def owner_of(sidecar: pathlib.Path) -> pathlib.Path | None:
         # Главный файл с тем же ключом под другой темой — и посекундным, и
         # минутным (DS r7 по #489); для минутного ключа — ещё владелец
         # минуты с темой на служебное слово (шапка)
-        found = _main_with_key(tdir, parts[0])
+        found = main_with_key(tdir, parts[0])
         if found is not None:
             return found
         if parts[0] == meeting_stamp.minute_of(parts[0]):
-            return _minute_owner(tdir, parts[0])
+            return minute_owner(tdir, parts[0])
         return None
-    found = _main_with_key(tdir, stamp)
+    found = main_with_key(tdir, stamp)
     if found is not None:
         return found
-    return _minute_owner(tdir, meeting_stamp.minute_of(stamp))
+    return minute_owner(tdir, meeting_stamp.minute_of(stamp))
 
 
-def _main_with_key(tdir: pathlib.Path, key: str) -> pathlib.Path | None:
+def main_with_key(tdir: pathlib.Path, key: str) -> pathlib.Path | None:
     """Главный файл с этим ключом (посекундным или минутным) среди файлов
     самого ключа — посекундных соседок и «-N» отсекает files_with_stamp."""
     return _pick_main(meeting_stamp.files_with_stamp(tdir, key, suffix=".md"), key)
 
 
-def _minute_owner(tdir: pathlib.Path, minute: str) -> pathlib.Path | None:
+def minute_owner(tdir: pathlib.Path, minute: str) -> pathlib.Path | None:
     """Владелец минуты среди файлов минутного ключа: посекундные имена
     («…120005_Тема») отсекает сам ключ разбора имени."""
     candidates = [f for f in sorted(tdir.glob(f"{minute}*.md"))

@@ -140,33 +140,98 @@ def test_plan_takes_the_import_copy_when_the_folder_is_known(tmp_path):
 
 def test_minute_target_owns_the_seconds_files_of_its_minute_but_not_the_neighbour(tmp_path):
     """Critical DS r1 по #499: приложение зовёт «забыть» минутой, а импорт
-    и демон именуют файлы посекундно. Посекундный штамп минуты без своей
-    заметки в графе — владелец (его стенограмма, копия и сайдкар уходят);
-    с заметкой — соседка (остаётся)."""
+    и демон именуют файлы посекундно — записи и копия импорта владельца
+    минуты уходят с ней. Critical DS r2: но «нет заметки в графе» соседку
+    не отличает — её заметка появляется после стопа, а файлы раньше;
+    улика чужой встречи — главный файл стенограммы под этой секундой (даже
+    голый) или заметка. Такие штампы остаются и называются вслух."""
     import json
 
     root, graph = _world(tmp_path)
     tdir = root / "transcripts"
-    mine = tdir / f"{STAMP}23.md"                  # импорт/демон до наката темы
-    mine.write_text(f"# Встреча {STAMP}23\n", encoding="utf-8")
-    (root / "recordings" / f"{STAMP}23_mic.wav").write_bytes(b"RIFF")
+    rec = root / "recordings"
+    # владелец минуты: записи и копия живого черновика под секундой, файла нет
+    (rec / f"{STAMP}23_mic.wav").write_bytes(b"RIFF")
+    (tdir / f"{STAMP}23_live.md").write_text(f"# Встреча {STAMP}\n", encoding="utf-8")
+    # соседка с темой и заметкой
     neighbour = tdir / f"{STAMP}45_Соседка.md"
     neighbour.write_text(f"# Встреча {STAMP}45\n", encoding="utf-8")
     (graph / "Встречи" / f"{STAMP}45.md").write_text("---\ntype: встреча\n---\n# соседка\n", encoding="utf-8")
+    # соседка после крэш-рестарта: голый файл и запись, заметки ещё нет
+    fresh = tdir / f"{STAMP}52.md"
+    fresh.write_text(f"# Встреча {STAMP}52\n", encoding="utf-8")
+    (rec / f"{STAMP}52_mic.wav").write_bytes(b"RIFF")
     inbox = tmp_path / "inbox"
     done = inbox / "done"
     done.mkdir(parents=True)
-    for name, st in (("Mine.m4a", f"{STAMP}23"), ("Their.m4a", f"{STAMP}45")):
+    for name, st in (("Mine.m4a", f"{STAMP}23"), ("Their.m4a", f"{STAMP}45"), ("Fresh.m4a", f"{STAMP}52")):
         (done / name).write_bytes(b"x")
         (done / f".{name}.imported.json").write_text(json.dumps({"stamp": st, "imported_at": 1}), encoding="utf-8")
 
     plan = forget.plan(STAMP, root, graph, import_folder=inbox)
     doomed = {str(p) for p in plan.delete}
-    assert str(mine) in doomed and str(root / "recordings" / f"{STAMP}23_mic.wav") in doomed
+    assert str(rec / f"{STAMP}23_mic.wav") in doomed and str(tdir / f"{STAMP}23_live.md") in doomed
     assert str(done / "Mine.m4a") in doomed and str(done / ".Mine.m4a.imported.json") in doomed
     assert str(neighbour) not in doomed and str(graph / "Встречи" / f"{STAMP}45.md") not in doomed
-    assert str(done / "Their.m4a") not in doomed
-    assert any("соседка" in line for line in plan.beyond_reach), plan.beyond_reach
+    assert str(fresh) not in doomed and str(rec / f"{STAMP}52_mic.wav") not in doomed
+    assert str(done / "Their.m4a") not in doomed and str(done / "Fresh.m4a") not in doomed
+    assert any(f"{STAMP}52" in line and "соседка" in line for line in plan.beyond_reach), plan.beyond_reach
+    assert any(f"{STAMP}45" in line for line in plan.beyond_reach), plan.beyond_reach
+
+    # без графа решает каталог: голый файл под секундой — та же улика, и
+    # план не ссылается на заметку, которой не видел (DS r2 M3)
+    blind = forget.plan(STAMP, root, None, import_folder=inbox)
+    assert str(fresh) not in {str(p) for p in blind.delete}
+    assert str(rec / f"{STAMP}23_mic.wav") in {str(p) for p in blind.delete}
+
+
+def test_exact_stamp_from_the_own_sidecar_beats_the_directory_evidence(tmp_path):
+    """Секунда из ключа `stamp` собственного сайдкара — наша по слову демона:
+    голый остаток прерванного переименования под ней уходит вместе с
+    записями и копией в .prev (Critical DS r2, Minor GLM r2 по #499)."""
+    import json
+
+    root, graph = _world(tmp_path)
+    tdir = root / "transcripts"
+    (tdir / f"{STAMP}.md.live.json").write_text(json.dumps({"stamp": f"{STAMP}31"}), encoding="utf-8")
+    leftover = tdir / f"{STAMP}31.md"
+    leftover.write_text(f"# Встреча {STAMP}31\n", encoding="utf-8")
+    wav = root / "recordings" / f"{STAMP}31_mic.wav"
+    wav.write_bytes(b"RIFF")
+    prev = tdir / ".prev"
+    prev.mkdir()
+    (prev / f"{STAMP}31.md").write_text("до пересборки\n", encoding="utf-8")
+    # секунда без сайдкарного слова, но с голым файлом — не наша
+    stranger = tdir / f"{STAMP}58.md"
+    stranger.write_text(f"# Встреча {STAMP}58\n", encoding="utf-8")
+
+    plan = forget.plan(STAMP, root, graph)
+    doomed = {str(p) for p in plan.delete}
+    assert str(leftover) in doomed and str(wav) in doomed and str(prev / f"{STAMP}31.md") in doomed
+    assert str(stranger) not in doomed
+
+
+def test_seconds_target_does_not_reach_across_its_minute(tmp_path):
+    """Цель с секундами владеет только собой: копия импорта соседней
+    секунды той же минуты остаётся (Important GLM r2 по #499)."""
+    import json
+
+    root, graph = _world(tmp_path)
+    tdir = root / "transcripts"
+    mine = tdir / f"{STAMP}23.md"
+    mine.write_text(f"# Встреча {STAMP}23\n", encoding="utf-8")
+    inbox = tmp_path / "inbox"
+    done = inbox / "done"
+    done.mkdir(parents=True)
+    for name, st in (("Mine.m4a", f"{STAMP}23"), ("Next.m4a", f"{STAMP}40")):
+        (done / name).write_bytes(b"x")
+        (done / f".{name}.imported.json").write_text(json.dumps({"stamp": st, "imported_at": 1}), encoding="utf-8")
+
+    plan = forget.plan(f"{STAMP}23", root, graph, import_folder=inbox)
+    doomed = {str(p) for p in plan.delete}
+    assert str(mine) in doomed and str(done / "Mine.m4a") in doomed
+    assert str(done / "Next.m4a") not in doomed
+    assert str(root / "transcripts" / f"{STAMP}.md") not in doomed
 
 
 def test_plan_does_not_touch_the_neighbouring_meeting(tmp_path):

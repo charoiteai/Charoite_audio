@@ -253,8 +253,7 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
 
     prompt = PROMPT.format(theme=theme, current=body, sources="\n".join(parts))
     claude = cloud.claude_bin()
-    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-    cloud.add_proxy(env)
+    env = cloud.cli_env()      # то же окружение, что у зонда: иначе зонд не представителен (DS r2 по #499)
     r = None
     for attempt in (1, 2):
         try:
@@ -287,6 +286,9 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
                     print(f"  ⚠️ {theme}: {why}")
                     return None, why
                 continue
+            # Зонд ответил, а exec снова не удался — бинарник всё ещё меняется:
+            # это отказ инфраструктуры, не сбой темы (Important DS r2 по #499)
+            CLI_DOWN[0] = True
             why = f"сбой: claude не отработал ({e})"
             print(f"  ⚠️ {theme}: {why}")
             return None, why
@@ -379,6 +381,27 @@ FAILED_STEPS: list[str] = []
 # прогона иначе усыпляло бы каждую тему на 60 с, и ночь вылезала за потолок
 # (GLM r1 по #499)
 _SLEPT_FOR_CLI = False
+_REPROBED = [False]
+
+
+def cli_back() -> bool:
+    """Один повторный зонд на прогон после аварии CLI по ходу ревизии.
+
+    Обновление CLI — штатное событие, и один не ответивший зонд посреди ночи
+    (30 с таймаута `--version` во время самозамены бинарника) не должен
+    списывать все оставшиеся досье до утра; второй раз уже не верим — иначе
+    прогон зондировал бы каждую тему (критика GLM r2 по #499).
+    """
+    if _REPROBED[0]:
+        return False
+    _REPROBED[0] = True
+    try:
+        cloud.claude_bin_checked(retries=0)
+    except cloud.CloudCLIUnavailable:
+        return False
+    CLI_DOWN[0] = False
+    print("  ↻ CLI облака снова отвечает — продолжаем")
+    return True
 # CLI умер посреди прогона (обновление началось после зонда): повторный зонд
 # не ответил — остальные темы не трогаем, main() отдаёт 3, а не 2 (DS r1)
 CLI_DOWN = [False]
@@ -405,7 +428,7 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         if live_gate.night_is_over():
             print("  ⏹ время ночного прогона вышло — остальные досье завтра")
             break
-        if CLI_DOWN[0]:
+        if CLI_DOWN[0] and not cli_back():
             print("  ⏹ CLI облака не запускается — остальные досье завтра")
             break
         old = path.read_text(encoding="utf-8")     # одно чтение на проверку и запись
@@ -516,7 +539,7 @@ def main() -> int:
     print(f"режим: {режим}")
     total = 0
     for g in graph_list:
-        if not g.is_dir() or CLI_DOWN[0]:
+        if not g.is_dir() or (CLI_DOWN[0] and not cli_back()):
             continue
         print(f"=== {g.name}")
         total += run(g, cfg, dry=args.dry, limit=args.limit)

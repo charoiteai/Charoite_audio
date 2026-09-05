@@ -182,7 +182,7 @@ the zone's promises and closed the gaps:
   the final "ok" — that state was unreachable at all.
 - **"Ok" only when work happened.** A night with no graph at all, and a cores
   revision that ran empty (no NLI model, Ollama down), no longer report green:
-  the revision has its own exit code 2, a broken cloud CLI exits 3 (the night fails, rc=1: a CLI update under our feet, audit 05.09), missing graphs are marked in the status.
+  the revision has its own exit code 2, a broken cloud CLI exits 3 (the night is marked failed in the status, rc untouched: a CLI update under our feet, audit 05.09), missing graphs are marked in the status.
 - **A person's edit does not vanish.** A core changed during the long pair
   judging is not overwritten from the in-memory snapshot — the pair waits for
   the next night. A duplicate's handwritten "Суть" moves into the canonical

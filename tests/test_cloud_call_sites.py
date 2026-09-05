@@ -199,12 +199,25 @@ def test_cloud_loop_respects_the_live_toggle():
 
 
 def _strips_the_key(node: ast.AST) -> bool:
-    """Выражение — это словарь окружения, из которого вычищен ключ."""
+    """Выражение — это словарь окружения, из которого вычищен ключ: сам
+    фильтр `k != "ANTHROPIC_API_KEY"` или вызов канонического сборщика
+    `cloud.cli_env()` — его тело проверяет test_cli_env_itself_strips_the_key,
+    а выходы обязаны идти в том же окружении, что зонд (DS r2 по #499)."""
+    if isinstance(node, ast.Call) and ast.unparse(node.func) in ("cloud.cli_env", "cli_env") \
+            and not node.args and not node.keywords:
+        return True
     return any(
         isinstance(n, ast.Compare)
         and any(isinstance(op, ast.NotEq) for op in n.ops)
         and "ANTHROPIC_API_KEY" in _consts(n)
         for n in ast.walk(node))
+
+
+def test_cli_env_itself_strips_the_key():
+    """Канонический сборщик окружения, на который ссылаются выходы, сам
+    вычищает ключ — иначе доверие к нему в _strips_the_key пустое."""
+    fn = _func(SRC / "cloud.py", "cli_env")
+    assert _strips_the_key(fn), "cloud.cli_env больше не фильтрует ANTHROPIC_API_KEY"
 
 
 def _bindings(scope: ast.AST, name: str) -> list[ast.AST]:

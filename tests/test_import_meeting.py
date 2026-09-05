@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
+import import_meeting as im  # noqa: E402
 from import_meeting import (  # noqa: E402
     WAV_SETTLE_SECONDS,
     clean_date,
@@ -696,3 +697,17 @@ def test_import_keep_days_is_forgiving_but_not_negative(capsys):
     assert im.import_keep_days({"audio": {"import_keep_days": 5}}, override="0") == 0
     with pytest.raises(SystemExit):
         im.import_keep_days({"audio": {"import_keep_days": -1}})
+
+
+def test_keep_days_hint_is_by_value_and_once(capsys):
+    """DS r2 по #499: `record_keep_days: 2.0` — тот же дефолт, подсказки нет;
+    отличное значение — подсказка один раз на процесс, не на каждый прун."""
+    im._KEEP_DAYS_HINTED[0] = False
+    try:
+        assert im.import_keep_days({"audio": {"record_keep_days": 2.0}}) == im.IMPORT_KEEP_DAYS_DEFAULT
+        assert "больше не влияет" not in capsys.readouterr().out
+        im.import_keep_days({"audio": {"record_keep_days": 14}})
+        im.import_keep_days({"audio": {"record_keep_days": 14}})
+        assert capsys.readouterr().out.count("больше не влияет") == 1
+    finally:
+        im._KEEP_DAYS_HINTED[0] = False
