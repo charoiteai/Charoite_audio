@@ -44,7 +44,9 @@ open CharoiteiOS.xcodeproj   # 选择您的开发者团队，构建到设备
 
 录音设置中显示的版本来自 `project.yml` 的 `MARKETING_VERSION`（由 release-please 递增）；
 `xcodegen generate` 后检查 plist：`plutil -p Info.plist | grep CFBundleShortVersionString`
-应输出 `$(MARKETING_VERSION)`，构建后的 bundle 则解析为发布版本号。
+应输出 `$(MARKETING_VERSION)`，构建后的 bundle 则解析为发布版本号。构建号
+（两个 target 的 `CURRENT_PROJECT_VERSION`）不由 release-please 管理：每次上传
+App Store / TestFlight 前请手动递增。
 
 测试：unit 目标（图谱解析）+ UI 测试。在模拟器上运行：
 
