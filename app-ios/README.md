@@ -15,6 +15,18 @@ runs on your Mac.
   live level meter, a Live Activity timer in the Dynamic Island and on
   the lock screen — with a **Stop** button right there: the phone can stay
   face down on the table and the recording still ends when the meeting does.
+- **Listens right away** — open the app and the recording is already
+  running (gear → "Record as soon as the app opens", on by default; the
+  kind is the last one you picked). Opened during a call? iOS keeps the
+  microphone for the call, so the app arms itself, shows "waiting for the
+  microphone" and starts on its own the moment the call ends — no second
+  tap. Cancel with the same big button.
+- **Hands-free start** — an App Intent "Start recording in Charoite" for
+  Siri, Shortcuts, the Action button and Back Tap. iOS never starts a
+  recording from the background: the intent opens the app, which starts
+  immediately. What no app can do on iPhone: record the call itself — the
+  microphone belongs to the call; a call during a recording is a pause and
+  the same file continues afterwards. Calls are recorded by the Mac.
 - **Stalled-recording watchdog** — if the file's duration stops growing
   for more than three seconds (a call, an interruption, a stolen
   microphone), the screen says so in orange. An earlier build measured

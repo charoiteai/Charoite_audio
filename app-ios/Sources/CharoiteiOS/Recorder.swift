@@ -51,6 +51,61 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     /// явный флаг, чтобы экран мог сказать словами.
     @Published private(set) var stalled = false
 
+    /// Взвод: микрофон занят (идёт звонок), запись начнётся сама, как
+    /// только его отдадут. «Слушать сразу» на iOS упирается ровно сюда:
+    /// сам звонок не запишет никто (сессия CallKit выше любой другой), но
+    /// открытое во время звонка приложение не должно требовать второго
+    /// нажатия после него (№167).
+    @Published private(set) var armed = false
+    private var armedKind: Kind = .meeting
+    private var armTimer: Timer?
+    /// Как часто пробуем микрофон во взведённом состоянии. Проба дешёвая
+    /// (setActive + record), а `.ended` после чужого звонка нам никто не шлёт —
+    /// сессии у нас в этот момент ещё нет.
+    nonisolated static let armProbeEvery: TimeInterval = 5
+
+    /// Почему старт не удался.
+    enum StartFailure: Equatable {
+        /// Микрофон запрещён в Настройках — ждать нечего.
+        case permissionDenied
+        /// Места нет — ждать нечего.
+        case lowStorage
+        /// Сессию не отдали: звонок держит приоритет — отдадут после него.
+        case sessionBusy
+        /// Рекордер не стартовал: вход у другого приложения — может отпустить.
+        case recorderBusy
+        case other
+    }
+
+    /// Ждать ли микрофон после неудачного старта. Взводимся только на
+    /// временные причины; запрет и пустой диск ожиданием не лечатся.
+    nonisolated static func shouldArm(after failure: StartFailure) -> Bool {
+        switch failure {
+        case .sessionBusy, .recorderBusy: return true
+        case .permissionDenied, .lowStorage, .other: return false
+        }
+    }
+
+    /// Открыли приложение — писать сразу? Только холодный старт (не возврат
+    /// из фона), только с включённой настройкой и только если ничего не
+    /// идёт: иначе возврат на экран посреди записи запускал бы вторую.
+    nonisolated static func shouldAutoStart(enabled: Bool, coldLaunch: Bool,
+                                            isRecording: Bool, armed: Bool) -> Bool {
+        enabled && coldLaunch && !isRecording && !armed
+    }
+
+    /// Ошибка аудиосессии → причина. `insufficientPriority` ('!pri') — ровно
+    /// то, что iOS отвечает, пока микрофон у звонка; `isBusy` — то же от
+    /// другого приложения.
+    nonisolated static func failure(for error: Error) -> StartFailure {
+        let code = (error as NSError).code
+        if code == AVAudioSession.ErrorCode.insufficientPriority.rawValue
+            || code == AVAudioSession.ErrorCode.isBusy.rawValue {
+            return .sessionBusy
+        }
+        return .other
+    }
+
     /// Последняя запись на телефоне — то, чем можно поделиться прямо сейчас.
     ///
     /// Отдельное published-поле, а не чтение папки прямо в теле экрана:
@@ -212,9 +267,10 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             try? session.setPrefersNoInterruptionsFromSystemAlerts(true)
             try session.setActive(true)
         } catch {
-            lastResult = L.t("Аудиосессия не открылась: \(error.localizedDescription)",
-                             "Audio session failed: \(error.localizedDescription)",
-                             "音频会话失败：\(error.localizedDescription)")
+            startFailed(Self.failure(for: error), kind: kind,
+                        message: L.t("Аудиосессия не открылась: \(error.localizedDescription)",
+                                     "Audio session failed: \(error.localizedDescription)",
+                                     "音频会话失败：\(error.localizedDescription)"))
             return
         }
 
@@ -246,11 +302,13 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             r.delegate = self
             r.isMeteringEnabled = true
             guard r.record() else {
-                lastResult = L.t("Запись не стартовала — микрофон занят другим приложением?",
-                                 "Recording did not start — microphone busy?",
-                                 "录音未开始 — 麦克风被占用？")
+                startFailed(.recorderBusy, kind: kind,
+                            message: L.t("Запись не стартовала — микрофон занят другим приложением?",
+                                         "Recording did not start — microphone busy?",
+                                         "录音未开始 — 麦克风被占用？"))
                 return
             }
+            disarm(quiet: true)
             recorder = r
             isRecording = true
             currentKind = kind
@@ -268,6 +326,49 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
                              "Recording failed: \(error.localizedDescription)",
                              "录音失败：\(error.localizedDescription)")
         }
+    }
+
+    /// Неудачный старт: либо честное сообщение, либо взвод и ожидание.
+    private func startFailed(_ failure: StartFailure, kind: Kind, message: String) {
+        guard Self.shouldArm(after: failure) else {
+            disarm(quiet: true)
+            lastResult = message
+            return
+        }
+        arm(kind: kind)
+    }
+
+    /// Ждать микрофон и стартовать самим, как только его отдадут.
+    func arm(kind: Kind) {
+        armedKind = kind
+        guard !armed else { return }        // уже ждём — не мигать текстом на каждой пробе
+        armed = true
+        lastResult = L.t("Жду микрофон: идёт звонок. Запись начнётся сама, как только он кончится",
+                         "Waiting for the microphone: a call is on. Recording starts by itself when it ends",
+                         "等待麦克风：正在通话。通话结束后会自动开始录音")
+        armTimer?.invalidate()
+        armTimer = Timer.scheduledTimer(withTimeInterval: Self.armProbeEvery, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.probeArmed() }
+        }
+    }
+
+    /// Человек передумал: та же большая кнопка во взведённом состоянии.
+    func disarm(quiet: Bool = false) {
+        armTimer?.invalidate()
+        armTimer = nil
+        guard armed else { return }
+        armed = false
+        if !quiet {
+            lastResult = L.t("Ожидание микрофона отменено", "Waiting for the microphone cancelled", "已取消等待麦克风")
+        }
+    }
+
+    private func probeArmed() {
+        guard armed, !isRecording else {
+            disarm(quiet: true)
+            return
+        }
+        start(kind: armedKind)      // успех снимает взвод сам; неудача — ждём дальше
     }
 
     /// Прерывания и смена маршрута. Без этого звонок посреди встречи оставлял

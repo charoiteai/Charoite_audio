@@ -5,19 +5,28 @@ struct RecordView: View {
     /// Что показываем поверх экрана. Одно состояние на все листы — иначе
     /// SwiftUI показывает только последний из нескольких `.sheet`.
     private enum Sheet: String, Identifiable {
-        case folder, queue
+        case folder, queue, settings
         var id: String { rawValue }
     }
 
     @StateObject private var rec = Recorder()
-    @State private var kind: Recorder.Kind = .meeting
+    /// Тип записи помнится между запусками: автостарт пишет тем, что
+    /// выбирали в прошлый раз, а не всегда «встречу».
+    @AppStorage("record.kind") private var kindRaw = Recorder.Kind.meeting.rawValue
+    /// «Писать сразу при открытии» — по умолчанию включено (№167).
+    @AppStorage("record.autostart") private var autostart = true
+    /// Первое появление экрана за запуск — единственный момент автостарта.
+    @State private var launched = false
     @State private var sheet: Sheet?
     @State private var queued = 0
     @State private var stuckInQueue = 0
 
+    private var kind: Recorder.Kind { Recorder.Kind(rawValue: kindRaw) ?? .meeting }
+
     var body: some View {
         VStack(spacing: 24) {
-            Picker(L.t("Тип записи", "Recording kind", "录音类型"), selection: $kind) {
+            Picker(L.t("Тип записи", "Recording kind", "录音类型"),
+                   selection: Binding(get: { kind }, set: { kindRaw = $0.rawValue })) {
                 ForEach(Recorder.Kind.allCases) { k in
                     // Именно title: rawValue — технический идентификатор, он
                     // уходит в имя файла и Live Activity. На экране он давал
@@ -32,22 +41,38 @@ struct RecordView: View {
             Spacer()
 
             Button {
-                rec.isRecording ? rec.stop() : rec.start(kind: kind)
+                if rec.isRecording {
+                    rec.stop()
+                } else if rec.armed {
+                    rec.disarm()
+                } else {
+                    rec.start(kind: kind)
+                }
             } label: {
                 ZStack {
                     Circle()
                         .fill(Theme.record)
                         .frame(width: 132, height: 132)
                         .shadow(color: Theme.accent.opacity(0.45), radius: 18, y: 8)
-                    RoundedRectangle(cornerRadius: rec.isRecording ? 10 : 66)
-                        .fill(.white)
-                        .frame(width: rec.isRecording ? 40 : 44,
-                               height: rec.isRecording ? 40 : 44)
-                        .animation(.spring(response: 0.3), value: rec.isRecording)
+                    if rec.armed {
+                        // Взвод: ждём микрофон у звонка — телефон в руке,
+                        // человек должен видеть, что нажимать больше не надо
+                        Image(systemName: "phone.arrow.down.left")
+                            .font(.system(.title, weight: .semibold))
+                            .foregroundStyle(.white)
+                    } else {
+                        RoundedRectangle(cornerRadius: rec.isRecording ? 10 : 66)
+                            .fill(.white)
+                            .frame(width: rec.isRecording ? 40 : 44,
+                                   height: rec.isRecording ? 40 : 44)
+                            .animation(.spring(response: 0.3), value: rec.isRecording)
+                    }
                 }
             }
             .accessibilityLabel(rec.isRecording
                                 ? L.t("Остановить запись", "Stop recording", "停止录音")
+                                : rec.armed
+                                ? L.t("Отменить ожидание микрофона", "Cancel waiting for the microphone", "取消等待麦克风")
                                 : L.t("Начать запись", "Start recording", "开始录音"))
 
             Text(timeString(rec.elapsed))
@@ -68,6 +93,13 @@ struct RecordView: View {
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.callout.weight(.medium))
                     .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            } else if rec.armed {
+                Label(rec.lastResult ?? L.t("Жду микрофон", "Waiting for the microphone", "等待麦克风"),
+                      systemImage: "phone.fill")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(Theme.accent)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
             } else {
@@ -119,6 +151,14 @@ struct RecordView: View {
         .padding(.vertical)
         .navigationTitle(L.t("Запись", "Record", "录音"))
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    sheet = .settings
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .accessibilityLabel(L.t("Настройки записи", "Recording settings", "录音设置"))
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     sheet = .folder
@@ -155,6 +195,8 @@ struct RecordView: View {
                 }
             case .queue:
                 QueueView(rec: rec)
+            case .settings:
+                RecordSettingsView()
             }
         }
         .task {
@@ -162,6 +204,24 @@ struct RecordView: View {
             // (LiveActivityIntent), но про сам рекордер она ничего не знает —
             // виджету он недоступен и не должен быть. Здесь и связываем.
             RecordingControl.onStop = { [weak rec] in rec?.stop() }
+            // «Начать запись» из Siri/Команд/кнопки действия — тем же типом,
+            // что выбран на экране.
+            RecordingControl.onStart = { [weak rec] in
+                guard let rec, !rec.isRecording else { return }
+                let raw = UserDefaults.standard.string(forKey: "record.kind") ?? ""
+                rec.start(kind: Recorder.Kind(rawValue: raw) ?? .meeting)
+            }
+            if !launched {
+                launched = true
+                // Слушать сразу (№167): просьба интента важнее настройки;
+                // без просьбы — автостарт по настройке, один раз за запуск.
+                if RecordingControl.takeStartRequest() {
+                    rec.start(kind: kind)
+                } else if Recorder.shouldAutoStart(enabled: autostart, coldLaunch: true,
+                                                   isRecording: rec.isRecording, armed: rec.armed) {
+                    rec.start(kind: kind)
+                }
+            }
             await Inbox.flush { msg in rec.lastResult = msg }
             rec.refreshLastRecording()
             refreshQueue()
