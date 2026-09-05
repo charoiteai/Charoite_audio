@@ -26,6 +26,18 @@ struct WorkspaceView: View {
                     sidebarRow(section)
                 }
                 Spacer(minLength: 0)
+                // Номер версии — на виду, а не только в строке обновления
+                // (просьба владельца 05.09): по нему сверяют, что раскатка дошла.
+                Text("Charoite \(VersionStatusService.appVersion)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 9)
+                    .padding(.bottom, 6)
+                    .textSelection(.enabled)
+                    .accessibilityLabel(Text(L.t("Версия \(VersionStatusService.appVersion)",
+                                                  "Version \(VersionStatusService.appVersion)",
+                                                  "版本 \(VersionStatusService.appVersion)")))
             }
             .padding(.horizontal, 10)
             .padding(.top, 8)
