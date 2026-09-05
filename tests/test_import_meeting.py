@@ -346,7 +346,7 @@ def _run_scan(monkeypatch, folder, *extra):
     before = os.umask(0)
     os.umask(before)
     try:
-        _main_keeping_umask()
+        im.main()
     finally:
         os.umask(before)
 
@@ -682,7 +682,7 @@ def _main_keeping_umask() -> None:
     before = os.umask(0o022)
     os.umask(before)
     try:
-        _main_keeping_umask()
+        im.main()
     finally:
         os.umask(before)
 
