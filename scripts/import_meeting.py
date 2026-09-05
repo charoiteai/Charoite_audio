@@ -830,14 +830,13 @@ def main() -> None:
     _status("processing", tpath, "updating_graph")
     graph_run = subprocess.run(
         [sys.executable, str(CODE / "src" / "graph_updater.py"), str(tpath)])
-    no_speech, no_graph = EXIT_NO_SPEECH, EXIT_NO_GRAPH   # одно место — exit_codes (№173)
-    if graph_run.returncode == no_graph:
+    if graph_run.returncode == EXIT_NO_GRAPH:
         # graph_updater.EXIT_NO_GRAPH: модель не дала разбор — узлов графа нет,
         # архив со стенограммой собран. Хвост (минутки/разбор) всё равно
         # пробуем: retro_fill сам переживёт лежащую модель.
         print("⚠️ модель не дала разбор — граф не обновлён; архив собран, "
               "повторите обработку позже (rebuild_transcript или «Повторить обработку»)")
-    if graph_run.returncode == no_speech:
+    if graph_run.returncode == EXIT_NO_SPEECH:
         # В записи нет речи — генерить минутки и разбор не из чего. Раньше
         # хвост шёл дальше, и retro_fill гонял LLM по всему бэклогу встреч
         # из-за трёхсекундной пустышки: импорт случайного обрывка стоил
@@ -864,7 +863,7 @@ def main() -> None:
         if dest.exists():
             archived = dest
     print(f"готово: встреча {stamp} в архиве и графе")
-    if graph_run.returncode == no_graph:
+    if graph_run.returncode == EXIT_NO_GRAPH:
         # Список встреч показывает ошибку с кнопкой «Повторить обработку» —
         # тот же путь, что у демона, когда модель лежала
         _status("failed", tpath, "модель не дала разбор — граф не обновлён, повторите обработку")
