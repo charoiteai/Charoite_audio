@@ -65,7 +65,11 @@ def test_rebuild_не_режет_штамп(tmp_path, monkeypatch):
     asked: list[str] = []
     monkeypatch.setattr(rt, "wait_recording",
                         lambda rec_dir, stamp, label, sr: asked.append(stamp))
-    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(tmp_path / "recordings"))
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    # сырой поток демона под минутой: без единого файла ждать нечего (аудит 05.09)
+    meeting_stamp.recording_path(rec, tr.stamp, "mic", "pcm").write_bytes(b"")
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
     rt.rebuild(tr.path, {"audio": {"samplerate": 16000}})
 
     assert asked, "rebuild не дошёл до поиска записей — имя встречи не распознано"
@@ -90,7 +94,10 @@ def test_rebuild_разрешает_один_штамп_на_оба_канала
     monkeypatch.setattr(rt.meeting_stamp, "resolve_stamp", resolve)
     monkeypatch.setattr(rt, "wait_recording",
                         lambda _dir, stamp, label, _sr: asked.append((stamp, label)))
-    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(tmp_path / "recordings"))
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    meeting_stamp.recording_path(rec, "2026-08-04_120301", "mic", "pcm").write_bytes(b"")
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
 
     rt.rebuild(live, {"audio": {"samplerate": 16000}})
 
@@ -388,6 +395,27 @@ def test_rebuild_после_отказа_по_минуте_не_ждёт_зап�
 
     assert rt.rebuild(live, {"audio": {"samplerate": 16000}}) is None
     assert waited == [], "после отказа ждать нечего"
+
+
+def test_rebuild_без_единого_файла_под_минутой_не_ждёт(tmp_path, monkeypatch):
+    """Аудит GLM/DS 05.09: точный штамп из сайдкара или секундный штамп без
+    записей (ретеншн, импорт) доходил до 2×45 с ожидания под rebuild.lock."""
+    import rebuild_transcript as rt
+
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    live = tdir / "2026-08-04_120314.md"
+    live.write_text("# Встреча 2026-08-04_120314\n", encoding="utf-8")
+    rec = tmp_path / "recordings"
+    rec.mkdir()
+    meeting_stamp.recording_path(rec, "2026-08-04_130000", "mic", "wav").write_bytes(b"RIFF")  # другая минута
+    waited: list[str] = []
+    monkeypatch.setattr(rt, "wait_recording", lambda _d, stamp, label, _sr: waited.append(f"{stamp}/{label}"))
+    monkeypatch.setattr(rt, "log", lambda _m: None)
+    monkeypatch.setenv("SUFLER_RECORDINGS_DIR", str(rec))
+
+    assert rt.rebuild(live, {"audio": {"samplerate": 16000}}) is None
+    assert waited == [], "под минутой пусто — ждать нечего"
 
 
 def test_rebuild_не_считает_отказом_запись_под_минутным_именем(tmp_path, monkeypatch):

@@ -223,7 +223,15 @@ step "dossier review (cloud, optional)"
 if overdue; then
   skip_late "ревизия досье" "ревизия-досье(поздно)"
 else
-  $PY scripts/nightly_dossier_review.py --all-graphs || echo "⚠️ ревизия досье не отработала"
+  # Код 3 — CLI облака не запускается (обновление под ногами, битый симлинк):
+  # это авария ночи, rc=1; код 2 — часть тем не проверена (сбой шага, аудит 05.09)
+  $PY scripts/nightly_dossier_review.py --all-graphs || {
+    case $? in
+      3) echo "❌ ревизия досье: CLI облака не отвечает"; FAILED="$FAILED ревизия-досье(cli)"; rc=1 ;;
+      2) echo "⚠️ ревизия досье: часть тем не проверена (сбой шага)"; FAILED="$FAILED ревизия-досье(сбои)" ;;
+      *) echo "⚠️ ревизия досье не отработала"; FAILED="$FAILED ревизия-досье" ;;
+    esac
+  }
 fi
 step "claude cores review"
 # облачный взгляд на ядра (Opus): отчёт-рекомендации, ничего не правит.
@@ -236,6 +244,7 @@ if overdue; then
 else
   $PY scripts/nightly_claude_cores.py || {
     case $? in
+      3) echo "❌ облачная ревизия ядер: CLI облака не отвечает"; FAILED="$FAILED claude-cores(cli)"; rc=1 ;;
       2) echo "⚠️ облачная ревизия ядер не принята"; FAILED="$FAILED claude-cores(не-принята)" ;;
       *) echo "⚠️ облачная ревизия не отработала"; FAILED="$FAILED claude-cores" ;;
     esac

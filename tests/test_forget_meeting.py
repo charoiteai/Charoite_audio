@@ -103,6 +103,34 @@ def test_plan_finds_every_place_the_meeting_lives(tmp_path):
     assert str(graph / "Люди" / "Мария Соколова.md") in edited
 
 
+def test_plan_takes_the_import_copy_when_the_folder_is_known(tmp_path):
+    """Аудит GLM 05.09: копия аудио импортированной встречи в done/ папки
+    импорта переживала «забыть» до import_keep_days. Путь знает приложение —
+    с ним копия и сайдкар уходят, без него план говорит об этом вслух."""
+    import json
+
+    root, graph = _world(tmp_path)
+    inbox = tmp_path / "inbox"
+    done = inbox / "done"
+    done.mkdir(parents=True)
+    mine = done / "Recording.m4a"
+    mine.write_bytes(b"a")
+    (done / ".Recording.m4a.imported.json").write_text(
+        json.dumps({"stamp": STAMP, "imported_at": 1}), encoding="utf-8")
+    theirs = done / "Other.m4a"
+    theirs.write_bytes(b"b")
+    (done / ".Other.m4a.imported.json").write_text(
+        json.dumps({"stamp": OTHER, "imported_at": 1}), encoding="utf-8")
+
+    plan = forget.plan(STAMP, root, graph, import_folder=inbox)
+    doomed = {str(p) for p in plan.delete}
+    assert str(mine) in doomed and str(done / ".Recording.m4a.imported.json") in doomed
+    assert str(theirs) not in doomed and str(done / ".Other.m4a.imported.json") not in doomed
+
+    blind = forget.plan(STAMP, root, graph)
+    assert any("папке импорта" in line for line in blind.beyond_reach), blind.beyond_reach
+
+
 def test_plan_does_not_touch_the_neighbouring_meeting(tmp_path):
     """Соседняя встреча того же графа остаётся нетронутой — вся."""
     root, graph = _world(tmp_path)

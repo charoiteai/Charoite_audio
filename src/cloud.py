@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 import pathlib
 import shutil
+import subprocess
+import time
 
 # Ключ конфига → модель по умолчанию. Меняется ВМЕСТЕ с примерами конфига,
 # иначе тест валится: пример — это документация, а не пожелание.
@@ -75,6 +77,51 @@ def claude_bin() -> str:
     ошибке, а не молчаливую замену поведения.
     """
     return shutil.which("claude") or "/opt/homebrew/bin/claude"
+
+
+class CloudCLIUnavailable(RuntimeError):
+    """Claude CLI не запускается: битый симлинк, обновление под ногами, нет бинарника."""
+
+
+def probe_claude(path: str, timeout: float = 30) -> str | None:
+    """`claude --version` одним вызовом: строка версии или None."""
+    try:
+        r = subprocess.run([path, "--version"], capture_output=True, text=True,
+                           timeout=timeout, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    return (r.stdout or "").strip() or None
+
+
+# Пауза перед второй попыткой зонда: обновление CLI меняет бинарник на секунды
+RETRY_PAUSE = 60.0
+
+
+def claude_bin_checked(*, retries: int = 1, pause: float | None = None) -> str:
+    """Путь к живому Claude CLI — или CloudCLIUnavailable.
+
+    Ночь 05.09: обновление CLI подменило бинарник под ногами, `claude_bin()`
+    отдал путь, exec упал с «Exec format error», и семь тем ревизии молча
+    легли в отчёт как «сбой» при коде 0 (аудит GLM/DS по main 05.09). Зонд
+    `--version` до основного цикла: не отвечает — пауза и вторая попытка
+    (обновление короткое), потом честный отказ, который ночь обязана
+    показать кодом возврата, а не строкой в служебном файле.
+    """
+    candidates: list[str] = []
+    for c in (shutil.which("claude"), "/opt/homebrew/bin/claude"):
+        if c and c not in candidates:
+            candidates.append(c)
+    last = "кандидатов нет"
+    for attempt in range(retries + 1):
+        for c in candidates:
+            if probe_claude(c):
+                return c
+            last = c
+        if attempt < retries:
+            time.sleep(RETRY_PAUSE if pause is None else pause)
+    raise CloudCLIUnavailable(f"Claude CLI не отвечает на --version: {last}")
 
 
 def text_only_args() -> list[str]:

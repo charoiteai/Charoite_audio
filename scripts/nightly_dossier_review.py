@@ -30,6 +30,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 # Код и данные — разные корни: CHAROITE_ROOT переносит ДАННЫЕ, а `src/`
 # всегда лежит рядом с этим файлом. См. src/charoite_paths.py.
@@ -254,20 +255,37 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
     claude = cloud.claude_bin()
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
     cloud.add_proxy(env)
-    try:
-        # Досье и все источники уже В ПРОМПТЕ — инструментов этому вызову не
-        # положено вовсе: инъекция из стенограммы/досье не должна читать
-        # произвольные файлы и вносить их в переписанный текст (аудит 14.08).
-        # stdin=DEVNULL — по правилу соседних вызовов: унаследованный поток
-        # заставляет headless-claude ждать EOF до таймаута.
-        r = subprocess.run([claude, "-p", prompt, "--model", model,
-                            *cloud.text_only_args()],
-                           capture_output=True, text=True, timeout=600, env=env,
-                           stdin=subprocess.DEVNULL)
-    except Exception as e:  # noqa: BLE001
-        why = f"сбой: claude не отработал ({e})"
-        print(f"  ⚠️ {theme}: {why}")
-        return None, why
+    r = None
+    for attempt in (1, 2):
+        try:
+            # Досье и все источники уже В ПРОМПТЕ — инструментов этому вызову не
+            # положено вовсе: инъекция из стенограммы/досье не должна читать
+            # произвольные файлы и вносить их в переписанный текст (аудит 14.08).
+            # stdin=DEVNULL — по правилу соседних вызовов: унаследованный поток
+            # заставляет headless-claude ждать EOF до таймаута. Вызов остаётся
+            # ЗДЕСЬ, под privacy-гейтом выше: сторож test_cloud_call_sites
+            # держит выход в сеть именно в review().
+            r = subprocess.run([claude, "-p", prompt, "--model", model,
+                                *cloud.text_only_args()],
+                               capture_output=True, text=True, timeout=600, env=env,
+                               stdin=subprocess.DEVNULL)
+            break
+        except OSError as e:
+            # exec не удался: бинарник CLI меняется под ногами (обновление) —
+            # одна пауза и повтор с переразрешённым путём (аудит 05.09)
+            if attempt == 1:
+                print(f"  ⚠️ {theme}: claude не запустился ({e}) — повтор через {int(cloud.RETRY_PAUSE)} с")
+                time.sleep(cloud.RETRY_PAUSE)
+                claude = cloud.claude_bin()
+                continue
+            why = f"сбой: claude не отработал ({e})"
+            print(f"  ⚠️ {theme}: {why}")
+            return None, why
+        except Exception as e:  # noqa: BLE001
+            why = f"сбой: claude не отработал ({e})"
+            print(f"  ⚠️ {theme}: {why}")
+            return None, why
+    assert r is not None
     if r.returncode != 0:
         # Код ≠ 0 с текстом в stdout — сообщение CLI об ошибке или обрывок,
         # а не ревизия; раньше он шёл в парсер наравне с ответом.
@@ -344,6 +362,12 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
                             dry=dry, limit=limit, may_edit=may_edit)
 
 
+# Сбои шага (не отказ по содержанию) за прогон: main() отдаёт по ним код 2 —
+# раньше они жили только в служебном md внутри графа, и ночь с лежащим
+# облаком выглядела успешной (аудит GLM/DS по main 05.09)
+FAILED_STEPS: list[str] = []
+
+
 def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
                  dry: bool, limit: int, may_edit: bool) -> int:
     done, notes, applied, rejected, failed = 0, [], [], [], []
@@ -410,6 +434,7 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
             report += "## Отклонено\n\n" + "\n".join(rejected) + "\n\n"
         if failed:
             report += "## Сбои шага (не отказ по содержанию)\n\n" + "\n".join(failed) + "\n\n"
+            FAILED_STEPS.extend(failed)
         if notes:
             report += ("## Предложено, но не применено\n\n"
                        "Запись выключена: `sufler.cloud_edit_graph: false`. Включите "
@@ -435,6 +460,14 @@ def main() -> int:
     if not privacy.cloud_enrich_enabled(cfg):
         print("облако выключено рубильником — пропуск")
         return 0
+
+    # Зонд CLI до первой темы: сломанный бинарник — не «сбой темы», а
+    # отказ инфраструктуры, и ночь обязана увидеть его кодом (аудит 05.09)
+    try:
+        cloud.claude_bin_checked()
+    except cloud.CloudCLIUnavailable as e:
+        print(f"CLI облака не отвечает: {e} — ревизия досье не начата")
+        return 3
 
     if args.all_graphs:
         # Все vault-ы, а не только iCloud: настроенный graph_dir вне iCloud
@@ -468,6 +501,9 @@ def main() -> int:
         print(f"=== {g.name}")
         total += run(g, cfg, dry=args.dry, limit=args.limit)
     print(f"итого досье просмотрено: {total}")
+    if FAILED_STEPS:
+        print(f"сбои шага: {len(FAILED_STEPS)} тем не проверено — код 2")
+        return 2
     return 0
 
 

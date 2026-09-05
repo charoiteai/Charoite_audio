@@ -337,8 +337,15 @@ def meeting_archive_id(folder: pathlib.Path) -> str | None:
 
 
 def plan(stamp: str, root: pathlib.Path,
-         graph: pathlib.Path | None = None, keep_graph: bool = False) -> Plan:
-    """Собрать план: что удалить, что переписать. Ничего не меняет."""
+         graph: pathlib.Path | None = None, keep_graph: bool = False,
+         import_folder: pathlib.Path | None = None) -> Plan:
+    """Собрать план: что удалить, что переписать. Ничего не меняет.
+
+    `import_folder` — папка импорта приложения: копия аудио в её `done/` и
+    сайдкар знают штамп встречи и обязаны уйти вместе с ней, иначе голоса
+    участников переживают «забыть» до import_keep_days (аудит GLM 05.09).
+    Путь знает только приложение — без него об этом говорим вслух.
+    """
     p = Plan(stamp=stamp)
 
     for folder in ("transcripts", "recordings"):
@@ -381,11 +388,33 @@ def plan(stamp: str, root: pathlib.Path,
             if owner in gone or orphan:
                 p.delete.append(sc)
 
+    # Копия импорта: done/<файл> и .<файл>.imported.json со штампом встречи
+    gone_stamps = {meeting_stamp.stamp_of(f.stem) for f in p.delete
+                   if f.parent == root / "transcripts"} - {None}
+    gone_stamps.add(stamp)
+    done_dir = pathlib.Path(import_folder).expanduser() / "done" if import_folder else None
+    if done_dir is not None and done_dir.is_dir():
+        for sc in sorted(done_dir.glob(".*.imported.json")):
+            try:
+                meta = json.loads(sc.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(meta, dict) or meta.get("stamp") not in gone_stamps:
+                continue
+            owner = done_dir / sc.name[1:-len(".imported.json")]
+            if owner.is_file() and owner not in p.delete:
+                p.delete.append(owner)
+            if sc not in p.delete:
+                p.delete.append(sc)
+    elif import_folder is None:
+        p.beyond_reach.append("копия исходника в папке импорта (done/), если встреча "
+                              "импортирована: путь знает приложение (--import-folder); "
+                              "без него её удалит ретеншн import_keep_days")
+
     # Логи графа этой встречи: в logs/graph_<штамп>*.log попадают имена
     # участников и куски цитат — «забыть» обязано дойти и до них, иначе
     # содержимое встречи переживает саму встречу (аудит 0.46.0: «забыть»
-    # не доходит до логов). Исходник в папке импорта done/ сюда не входит:
-    # её путь знает только вызов --scan, у скрипта его нет — см. README.
+    # не доходит до логов).
     logs = root / "logs"
     # Все три класса логов названы МИНУТНЫМ штампом (daemon: `stem[:15]`,
     # graph_updater: parse_stem, rebuild: `stem[:15]`), а штамп посекундной
@@ -646,6 +675,8 @@ def main() -> int:
     ap.add_argument("--yes", action="store_true", help="выполнить (без него — только план)")
     ap.add_argument("--graph", type=pathlib.Path, default=None,
                     help="конкретный граф (по умолчанию — все графы vault)")
+    ap.add_argument("--import-folder", type=pathlib.Path, default=None,
+                    help="папка импорта приложения: копия аудио в done/ уходит вместе со встречей")
     ap.add_argument("--keep-graph", action="store_true",
                     help="только стенограмма и запись; граф не трогать")
     args = ap.parse_args()
@@ -664,7 +695,8 @@ def main() -> int:
         print(f"за {args.target} встреч несколько: {', '.join(found)}\n")
     done = False
     for stamp in found:
-        done |= apply(plan(stamp, ROOT, graph, keep_graph=args.keep_graph), yes=args.yes)
+        done |= apply(plan(stamp, ROOT, graph, keep_graph=args.keep_graph,
+                           import_folder=args.import_folder), yes=args.yes)
         print()
     return 0 if (done or not args.yes) else 1
 

@@ -425,6 +425,11 @@ def test_no_other_place_starts_claude():
     # запуска не содержит — регистрировать его выходом значило бы требовать
     # выключатель у функции без запроса. Его охраняет test_claude_resolver.py.
     known.add("cloud.py:claude_bin")
+    # Зонд `claude --version` (аудит 05.09) запускает CLI, но ничего не
+    # отправляет: версия печатается локально. Выключатель — у вызывающих
+    # ночных шагов, которые зовут зонд после privacy.cloud_enrich_enabled.
+    known.add("cloud.py:probe_claude")
+    known.add("cloud.py:claude_bin_checked")
     found = set()
     resolved = set()
     for root in (SRC, SRC.parent / "scripts"):

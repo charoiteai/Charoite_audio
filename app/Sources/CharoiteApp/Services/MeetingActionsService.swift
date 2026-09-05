@@ -25,13 +25,19 @@ struct MeetingActionCommand: Equatable, Sendable {
         root: URL,
         meetingID: String,
         graph: URL,
-        apply: Bool
+        apply: Bool,
+        importFolder: String? = nil
     ) -> MeetingActionCommand {
         var args = [
             AppSettings.scriptPath("scripts/forget_meeting.py", root: root),
             String(meetingID.prefix(15)),
             "--graph", graph.path,
         ]
+        // Копия аудио импортированной встречи живёт в папке импорта — путь
+        // знает только приложение, скрипт без него её не найдёт (аудит 05.09)
+        if let importFolder, !importFolder.isEmpty {
+            args += ["--import-folder", (importFolder as NSString).expandingTildeInPath]
+        }
         if apply { args.append("--yes") }
         return MeetingActionCommand(
             executable: AppSettings.pythonExecutable(root: root),
@@ -84,7 +90,8 @@ enum MeetingActionsService {
             root: AppSettings.charoiteRoot,
             meetingID: snapshot.meetingID,
             graph: graph,
-            apply: false))
+            apply: false,
+            importFolder: ImportService.configuredDir))
     }
 
     static func forget(_ snapshot: MeetingProcessingSnapshot) async -> MeetingActionResult {
@@ -98,7 +105,8 @@ enum MeetingActionsService {
             root: AppSettings.charoiteRoot,
             meetingID: snapshot.meetingID,
             graph: graph,
-            apply: true))
+            apply: true,
+            importFolder: ImportService.configuredDir))
     }
 
     private static func execute(_ command: MeetingActionCommand) async -> MeetingActionResult {
