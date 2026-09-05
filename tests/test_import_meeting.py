@@ -1,5 +1,7 @@
 """Импорт встреч: парсер vtt/srt и сборка стенограммы конвейера."""
 import os
+
+import pytest
 import pathlib
 import struct
 import sys
@@ -242,7 +244,6 @@ def test_stray_punctuation_does_not_make_the_time_wrong():
 
 
 def test_impossible_time_is_refused():
-    import pytest
     for bad in ("2599", "0899", "штука", "123456", ""):
         with pytest.raises(SystemExit):
             clean_time(bad)
@@ -255,7 +256,6 @@ def test_date_separator_is_up_to_the_human():
 
 
 def test_impossible_date_is_refused():
-    import pytest
     for bad in ("2026-13-03", "2026-02-31", "03.08.26", "вчера"):
         with pytest.raises(SystemExit):
             clean_date(bad)
@@ -352,7 +352,6 @@ def _run_scan(monkeypatch, folder, *extra):
 
 
 def test_failed_import_is_marked_kept_and_not_rescanned(tmp_path, monkeypatch):
-    import pytest
 
     """Сбой: файл на месте, метка ошибки с хвостом вывода, следующий скан
     его не берёт (раньше STT гонялся по тому же файлу каждые две минуты);
@@ -598,7 +597,6 @@ def test_one_broken_file_does_not_stop_the_queue(tmp_path, monkeypatch):
         return real_rename(self, target)
 
     monkeypatch.setattr(pathlib.Path, "rename", flaky)
-    import pytest
     with pytest.raises(SystemExit) as partly:
         _run_scan(monkeypatch, tmp_path)
     assert partly.value.code == 1, "часть очереди не прошла — код 1"
@@ -644,7 +642,9 @@ def test_scan_prints_machine_marker_for_postponed_files(tmp_path, monkeypatch, c
 
 def test_sweep_removes_only_old_temporaries(tmp_path):
     """Сироты .part и отчётов ребёнка после краха уходят по возрасту; живая
-    копия (свежая) и чужие файлы — нет (GLM/DS r3 по #496)."""
+    копия (свежая) и чужие файлы — нет (GLM/DS r3 по #496). Возраст — по
+    самой свежей из mtime и ctime; ctime состарить из тестов нельзя, поэтому
+    «часы» свипа сдвинуты вперёд, а живая копия помечена будущим mtime."""
     import import_meeting as im
 
     old_part = tmp_path / ".Recording.m4a.a1b2c3d4.part"
@@ -655,12 +655,29 @@ def test_sweep_removes_only_old_temporaries(tmp_path):
     old_result.write_text("{}", encoding="utf-8")
     other = tmp_path / ".Recording.m4a.import-error"
     other.write_text("{}", encoding="utf-8")
-    ago = time.time() - im.TEMP_ORPHAN_AGE - 5
+    real_now = time.time()
+    ago = real_now - im.TEMP_ORPHAN_AGE - 5
     for p in (old_part, old_result):
         os.utime(p, (ago, ago))
-    removed = im.sweep_temporaries(tmp_path)
+    ahead = real_now + 2 * im.TEMP_ORPHAN_AGE
+    os.utime(fresh_part, (ahead, ahead))
+    removed = im.sweep_temporaries(tmp_path, now=real_now + im.TEMP_ORPHAN_AGE + 10)
     assert sorted(removed) == sorted([old_part, old_result])
     assert fresh_part.exists() and other.exists()
+
+
+def test_sweep_keeps_a_live_copy_that_carries_the_old_source_mtime(tmp_path):
+    """Important DS r1 по №170: вкладка переносит на `.part` mtime исходника,
+    и трёхдневная запись с телефона в момент копирования по одному mtime
+    выглядит сиротой. ctime переноса даты — свежий, свип копию не трогает."""
+    import import_meeting as im
+
+    live = tmp_path / ".Old.m4a.deadbeef.part"
+    live.write_bytes(b"copying")
+    ago = time.time() - 3 * 86400
+    os.utime(live, (ago, ago))
+    assert im.sweep_temporaries(tmp_path) == []
+    assert live.exists()
 
 
 def test_orphan_sidecar_sweep_spares_the_young(tmp_path):
@@ -681,7 +698,6 @@ def test_orphan_sidecar_sweep_spares_the_young(tmp_path):
 
 
 def test_import_keep_days_is_forgiving_but_not_negative(capsys):
-    import pytest
 
     import import_meeting as im
 
