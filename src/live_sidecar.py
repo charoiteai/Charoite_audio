@@ -255,10 +255,22 @@ def exact_stamp(live: pathlib.Path) -> str | None:
     except (OSError, ValueError):
         return None
     value = meta.get("stamp") if isinstance(meta, dict) else None
-    if (isinstance(value, str) and meeting_stamp.stamp_of(value) == value
-            and value != key and meeting_stamp.minute_of(value) == key):
-        return value
-    return None
+    return value if _seconds_stamp_of_minute(value, key) else None
+
+
+def _seconds_stamp_of_minute(value, key: str) -> bool:
+    """Значение ключа `stamp` годится: строка, посекундный штамп (не минута,
+    даже с суффиксом коллизии — DS M3 по main 05.09), той же минуты, и
+    реальное время: регекс пропускает секунды 99, а started_at на них
+    бросает ValueError и ронял бы пересборку (DS на Fireworks, M1)."""
+    if not (isinstance(value, str) and meeting_stamp.stamp_of(value) == value
+            and value != key and meeting_stamp.minute_of(value) == key
+            and value[15:17].isdigit()):     # секунды на местах 15–16; «…1203-1» их не имеет
+        return False
+    try:
+        return meeting_stamp.started_at(value) is not None
+    except ValueError:
+        return False
 
 
 def remember(live: pathlib.Path, key: str, value: str, bare: str | None = None) -> bool:

@@ -298,7 +298,9 @@ def test_сайдкар_отдаёт_точный_штамп_минутной_в
     sidecar = live.with_name(live.name + ".live.json")
     sidecar.write_text(json.dumps({"stamp": "2026-08-04_120301"}), encoding="utf-8")
     assert live_sidecar.exact_stamp(live) == "2026-08-04_120301"
-    for bad in ("2026-08-04_120501", 120301, "2026-08-04_1203", "мусор"):
+    for bad in ("2026-08-04_120501", 120301, "2026-08-04_1203", "мусор",
+                "2026-08-04_1203-1",     # минута с суффиксом коллизии — не секунды (DS M3)
+                "2026-08-04_120399"):    # секунд 99 не бывает: strptime бросал бы ValueError (DS-FW M1)
         sidecar.write_text(json.dumps({"stamp": bad}), encoding="utf-8")
         assert live_sidecar.exact_stamp(live) is None, bad
 

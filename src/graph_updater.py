@@ -572,7 +572,15 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
     """
     slug = theme_slug(title)
     new_t = tpath.with_name(f"{stamp}_{slug}.md")
-    if not new_t.exists():
+    # Занятое имя сайдкара — тоже занятое имя: migrate при занятой цели
+    # молча не переносит пару, а remember дальше сливал бы наши ключи в
+    # чужую сироту — прямой сайдкар встречи с чужими именами/хешами
+    # (DS на Fireworks по main 05.09, I1). Файл остаётся как есть, тема —
+    # только в шапку, как и при занятом .md.
+    taken_sidecar = new_t.with_name(new_t.name + ".live.json")
+    if not new_t.exists() and taken_sidecar.exists():
+        print(f"граф: имя {new_t.name} занято чужим сайдкаром {taken_sidecar.name} — файл не переименован", file=sys.stderr)
+    if not new_t.exists() and not taken_sidecar.exists():
         for extra in tpath.parent.glob(f"{bare}_*.md"):  # _minutes, _hints…
             suffix = extra.name[len(bare):]  # "_minutes.md"
             if suffix[:-3].lower() not in meeting_stamp.AUX_SUFFIXES:
