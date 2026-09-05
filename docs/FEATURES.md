@@ -988,7 +988,13 @@ sidecar with the hash is found even after the meeting was retitled and also
 carries the meeting's exact seconds stamp (`stamp`, written by the daemon at
 stop and by the retitle), so a rebuild of a retitled meeting looks for its
 recordings by that stamp instead of guessing by the minute and can no longer
-pick up a same-minute neighbour's recording when its own are gone, while
+pick up a same-minute neighbour's recording when its own are gone; a title
+whose sidecar name is already taken by a stranger's orphan is refused by both
+the automatic retitle and `rename_meeting.py` (the pair keeps its old name,
+the title goes to the header only), while a twin that carries the meeting's
+own seconds stamp reunites the pair, and an orphan sidecar with the
+candidate's stamp counts as evidence of a neighbour when recordings are
+resolved by minute, while
 hand-edited minutes are only restamped — the draft marker is removed and
 "Speaker N" labels are replaced with the recovered names; and when native
 system-audio capture fails
