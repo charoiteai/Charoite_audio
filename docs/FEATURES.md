@@ -871,7 +871,9 @@ it signals degradation, it does not break the loop.
 - **“External recording” tab** — a phone voice memo, someone else's call
   recording, a Zoom export: drop the file (or pick it) — it is copied into
   the import folder, the original is left alone, and it goes through the
-  same pipeline as a live meeting. The list shows what waits, what was
+  same pipeline as a live meeting. The processed meeting shows up in the meetings list with a
+  status, like a daemon-recorded one (before 0.71 the import wrote no status and the
+  meeting lived only on this tab — field report 05.09). The list shows what waits, what was
   built (stamp, a “Transcript” button) and when the copy goes away: a
   processed copy in `done/` lives `audio.import_keep_days` (default 2 days)
   and is deleted together with the audio “Исходник” in the meeting archive;
