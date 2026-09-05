@@ -295,7 +295,7 @@ def find_note(graph: pathlib.Path, stamp: str,
             try:
                 if not note_is_ours(note.read_text(encoding="utf-8"), stamp, tdir):
                     continue
-            except OSError:
+            except (OSError, ValueError):     # нечитаемая или не-UTF-8 заметка — не наша (GLM r5 по #499)
                 continue
         return note
     return None

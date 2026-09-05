@@ -376,6 +376,7 @@ class _Ownership:
         self.foreign: dict[str, str] = {}
         self.unsure: str | None = None       # заметку минуты не прочитать — владение не решить
         self.how: str = ""                   # чем доказано владение точной секундой
+        self.passport: dict[str, str] = {}   # штамп → файл-копия, по которому он признан своим
         self.exact: str | None = self._exact() if self.minute else None
 
     def _own_note(self, s: str) -> bool:
@@ -390,9 +391,11 @@ class _Ownership:
             return None
         try:
             its = meeting_stamp.note_transcript_stamp(note.read_text(encoding="utf-8"))
-        except OSError as e:
+        except (OSError, ValueError) as e:
             # Не «строки нет», а «не решить»: iCloud-заминка не должна отдавать
-            # владение самому раннему файлу вопреки заметке (DS r4 M1)
+            # владение самому раннему файлу вопреки заметке (DS r4 M1); битая
+            # кодировка (UnicodeDecodeError — ValueError) — то же «не решить»,
+            # а не трейсбек на кнопке «Забыть» (GLM r5 M1)
             self.unsure = f"заметку минуты не прочитать ({e.__class__.__name__}) — владение не решить"
             return None
         if its and its != self.stamp and meeting_stamp.minute_of(its) == self.stamp:
@@ -462,13 +465,17 @@ class _Ownership:
             return "в transcripts/ и recordings/ следа нет — чья это копия, не решить"
         # Паспорт владельца до наката темы — копии его же стенограммы под
         # старым именем (`<s>_live.md`, `.prev/<s>.md`): ретитл переименовал
-        # источник, копии остались. Одна запись без стенограммы и заметки —
-        # не паспорт: у соседки она есть раньше стенограммы (DS r4 I1); её
-        # удалит ретеншн, а план говорит вслух.
-        if not (meeting_stamp.files_with_stamp(self.tdir, s, suffix=".md")
-                or meeting_stamp.files_with_stamp(self.tdir / ".prev", s)):
-            return "под ним только запись без стенограммы и заметки — чья, не решить; аудио удалит ретеншн"
-        return None
+        # источник, копии остались. Копия write_final всегда несёт шапку
+        # «# Встреча …» — файл без неё (чужая заметка, случайно названная
+        # штампом) паспортом не считается (критика GLM r5). Одна запись без
+        # стенограммы и заметки — не паспорт: у соседки она есть раньше
+        # стенограммы (DS r4 I1); её удалит ретеншн, а план говорит вслух.
+        for f in (meeting_stamp.files_with_stamp(self.tdir, s, suffix=".md")
+                  + meeting_stamp.files_with_stamp(self.tdir / ".prev", s)):
+            if meeting_stamp.first_line(f).startswith("# Встреча "):
+                self.passport[s] = f.name
+                return None
+        return "под ним только запись без стенограммы и заметки — чья, не решить; аудио удалит ретеншн"
 
 
 def plan(stamp: str, root: pathlib.Path,
@@ -498,10 +505,9 @@ def plan(stamp: str, root: pathlib.Path,
         p.notes.append(f"владелец минуты — секунда {own.exact}: {own.how}")
     elif own.unsure:
         p.notes.append(f"посекундные файлы минуты не тронуты: {own.unsure}")
-    passport = [s for s in owned[1:] if s != own.exact]
-    if passport:
-        p.notes.append("свои по копиям стенограммы под старым именем (_live/.prev): "
-                       + ", ".join(passport))
+    if own.passport:
+        p.notes.append("свои по копиям стенограммы под старым именем: "
+                       + ", ".join(f"{s} ({name})" for s, name in sorted(own.passport.items())))
 
     for folder in ("transcripts", "recordings"):
         for s in owned:

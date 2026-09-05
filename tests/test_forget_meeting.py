@@ -149,7 +149,7 @@ def test_plan_takes_the_import_copy_when_the_folder_is_known(tmp_path):
     assert str(wav) not in {str(p) for p in lone.delete}
     assert any(f"{STAMP}17" in line and "только запись" in line for line in lone.beyond_reach), lone.beyond_reach
     # а копия живого черновика под старым именем — паспорт владельца: всё уходит
-    (root / "transcripts" / f"{STAMP}17_live.md").write_text("черновик\n", encoding="utf-8")
+    (root / "transcripts" / f"{STAMP}17_live.md").write_text(f"# Встреча {STAMP}17\nчерновик\n", encoding="utf-8")
     traced = forget.plan(STAMP, root, graph, import_folder=inbox)
     doomed = {str(p) for p in traced.delete}
     assert str(done / "Restamped.m4a") in doomed and str(wav) in doomed
@@ -288,6 +288,34 @@ def test_note_transcript_line_names_the_owner_of_the_minute(tmp_path):
     assert str(tdir / f"{STAMP}40.md") in doomed and str(root / "recordings" / f"{STAMP}40_mic.wav") in doomed
     assert str(tdir / f"{STAMP}11.md") not in doomed
     assert any(f"{STAMP}11" in line for line in plan.beyond_reach), plan.beyond_reach
+
+
+def test_passport_copy_needs_the_meeting_header(tmp_path):
+    """Критика GLM r5: файл, случайно названный штампом (заметка на полях
+    без шапки «# Встреча»), паспортом не считается — запись под этой
+    секундой остаётся; копия write_final с шапкой — паспорт, и план
+    называет файл, по которому решил."""
+    root, graph = _world(tmp_path)
+    wav = root / "recordings" / f"{STAMP}17_mic.wav"
+    wav.write_bytes(b"RIFF")
+    stray = root / "transcripts" / f"{STAMP}17_live.md"
+    stray.write_text("мои заметки на полях\n", encoding="utf-8")
+    plan = forget.plan(STAMP, root, graph)
+    assert str(wav) not in {str(p) for p in plan.delete}
+    stray.write_text(f"# Встреча {STAMP}17\nчерновик\n", encoding="utf-8")
+    plan = forget.plan(STAMP, root, graph)
+    assert str(wav) in {str(p) for p in plan.delete}
+    assert any(f"{STAMP}17_live.md" in line for line in plan.notes), plan.notes
+
+
+def test_broken_encoding_in_the_minute_note_is_not_a_crash(tmp_path):
+    """GLM r5 M1: не-UTF-8 заметка — UnicodeDecodeError (ValueError), тот же
+    исход «не решить», а не трейсбек на кнопке «Забыть»."""
+    root, graph = _bare_world(tmp_path, "11")
+    (graph / "Встречи" / f"{STAMP}.md").write_bytes(b"\xff\xfe# note\n")
+    plan = forget.plan(STAMP, root, graph)
+    assert str(root / "transcripts" / f"{STAMP}11.md") not in {str(p) for p in plan.delete}
+    assert any("не прочитать" in line for line in plan.notes), plan.notes
 
 
 def test_unreadable_minute_note_freezes_the_seconds_files(tmp_path):
