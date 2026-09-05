@@ -92,14 +92,19 @@ def main():
         from stt import STT
         stt_holder["stt"] = STT(cfg)
 
-    warm_t = threading.Thread(target=warm, daemon=True)
-    warm_t.start()
-
     if text_mode:
+        # Текстовому режиму STT не нужен — и прогревать его нельзя: daemon-поток
+        # грузил onnxruntime/GigaAM в фоне, а интерпретатор выходил раньше, чем
+        # тот заканчивал, — и нативные библиотеки падали на выходе с SIGABRT
+        # («terminate called without an active exception», код -6). Работа была
+        # сделана, ответ напечатан, а returncode -6 красил CI через раз
+        # (05.09 — #499 и #503, №174).
         raw = sys.stdin.read().strip()
         if not raw:
             return
     else:
+        warm_t = threading.Thread(target=warm, daemon=True)
+        warm_t.start()
         frames: list[np.ndarray] = []
 
         def cb(indata, *_):

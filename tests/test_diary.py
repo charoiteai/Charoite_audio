@@ -69,3 +69,19 @@ def test_diary_does_not_touch_the_audio_stack():
         "за аудио-стек, которым не пользуется"
     )
     assert "import sounddevice" in src, "ленивый импорт потерялся вовсе"
+
+
+def test_diary_text_mode_does_not_warm_the_stt(tmp_path):
+    """№174: в текстовом режиме дневник не грузит STT даже в фоне — daemon-поток
+    с onnxruntime/GigaAM не успевал закончиться к выходу интерпретатора, и
+    процесс падал с SIGABRT (код -6) после сделанной работы. Проверяем по
+    трассе импортов интерпретатора: модуля stt в ней быть не должно."""
+    env = os.environ | {"SUFLER_DIARY_DIR": str(tmp_path / "Д"),
+                        "SUFLER_TRANSCRIPTS_DIR": str(tmp_path / "нет")}
+    r = subprocess.run(
+        [sys.executable, "-X", "importtime", str(ROOT / "src" / "dictate_note.py"), "--diary", "--text"],
+        input="мысль в текстовом режиме", capture_output=True, text=True, env=env, timeout=180,
+    )
+    assert r.returncode == 0, r.stderr[-800:]
+    imported = {line.rsplit("|", 1)[-1].strip() for line in r.stderr.splitlines() if line.startswith("import time:")}
+    assert "stt" not in imported and "onnxruntime" not in imported, sorted(m for m in imported if "stt" in m or "onnx" in m)
