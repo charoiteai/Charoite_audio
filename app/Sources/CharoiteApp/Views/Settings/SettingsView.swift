@@ -205,9 +205,9 @@ struct SettingsView: View {
                         Text(importer.status).font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                Text(L.t("Упавший в папку файл станет встречей графа: стенограмма, протокол, задачи, узлы. Готовые уходят в done/. Локально.",
-                         "A file dropped here becomes a meeting in the graph: transcript, minutes, tasks, nodes. Processed ones move to done/. Locally.",
-                         "放入此处的文件会成为图谱中的一场会议：逐字稿、纪要、任务、节点。处理完的移入 done/。全部本地。"))
+                Text(L.t("Упавший в папку файл станет встречей графа: стенограмма, протокол, задачи, узлы. Готовые уходят в done/ и удаляются через audio.import_keep_days (по умолчанию как record_keep_days) вместе с аудио-исходником в архиве; сбойные остаются на виду. Очередь и сроки — во вкладке «Внешняя запись». Локально.",
+                         "A file dropped here becomes a meeting in the graph: transcript, minutes, tasks, nodes. Processed ones move to done/ and are deleted after audio.import_keep_days (default: record_keep_days) together with the audio source in the archive; failed ones stay visible. Queue and deadlines live in the “External recording” tab. Locally.",
+                         "放入此处的文件会成为图谱中的一场会议：逐字稿、纪要、任务、节点。处理完的移入 done/，并在 audio.import_keep_days（默认与 record_keep_days 相同）后与归档中的音频源一起删除；失败的保留可见。队列与期限见“外部录音”标签页。全部本地。"))
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section(L.t("Календарь", "Calendar", "日历")) {

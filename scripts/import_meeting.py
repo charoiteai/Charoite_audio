@@ -13,12 +13,24 @@
 
     .venv/bin/python scripts/import_meeting.py запись.m4a --date 2026-07-15
     .venv/bin/python scripts/import_meeting.py zoom.vtt --title "Планёрка"
+    .venv/bin/python scripts/import_meeting.py --scan -- ~/Charoite_inbox
+    .venv/bin/python scripts/import_meeting.py --prune -- ~/Charoite_inbox
+
+Папка импорта (--scan): успешные файлы переезжают в done/ с сайдкаром
+`.<имя>.imported.json` (когда импортирован, во что превратился, когда
+удалить); сбойные остаются в корне с меткой `.<имя>.import-error` и больше
+не пересканируются, пока метку не снимут (--retry-failed или кнопка
+«Повторить» во вкладке «Внешняя запись»). Копия в done/ и аудио-«Исходник»
+в архиве встречи удаляются через `audio.import_keep_days` (по умолчанию 2)
+после импорта — --prune делает это отдельно, --scan — в конце каждого
+прохода.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
 import json
+import math
 import os
 import pathlib
 import re
@@ -60,6 +72,15 @@ RIFF_SIZE_UNKNOWN = {0, 0xFFFFFFFF}
 # Память между сканами — скрытый сайдкар рядом с файлом.
 WAV_SETTLE_SECONDS = 30
 
+# Сколько дней копия исходника живёт в done/ после успешного импорта — и
+# столько же аудио-«Исходник» в папке встречи. Срок отдельный от
+# record_keep_days: внешняя запись (диктофон телефона, чужая запись звонка)
+# приходит готовой, пересобирать её из done/ незачем, а держать вечно —
+# нарушение обещания PRIVACY (карточка №166, 05.09).
+IMPORT_KEEP_DAYS_DEFAULT = 2
+ERROR_MARKER_SUFFIX = ".import-error"
+IMPORTED_SIDECAR_SUFFIX = ".imported.json"
+
 
 def _seen_marker(path: pathlib.Path) -> pathlib.Path:
     return path.with_name(f".{path.name}.import-seen")
@@ -93,6 +114,193 @@ def forget_seen_marker(path: pathlib.Path) -> None:
         _seen_marker(path).unlink()
     except OSError:
         pass
+
+
+def error_marker(path: pathlib.Path) -> pathlib.Path:
+    """Метка сбойного импорта рядом с файлом.
+
+    Без неё сканер заново гонял STT по тому же файлу каждые две минуты,
+    пока человек не уберёт его руками, а во вкладке не было чем отличить
+    «ждёт» от «не вышло» (№166). Снимается --retry-failed или кнопкой
+    «Повторить»; сам файл остаётся на месте — при ошибке ничего не удаляем.
+    """
+    return path.with_name(f".{path.name}{ERROR_MARKER_SUFFIX}")
+
+
+def imported_sidecar(done_file: pathlib.Path) -> pathlib.Path:
+    """Память о том, КОГДА файл импортирован и во что превратился.
+
+    mtime у перенесённого файла — время записи (оно же штамп встречи), а
+    ретеншну нужен момент импорта: по mtime вчерашняя запись, импортированная
+    сегодня, улетела бы сразу.
+    """
+    return done_file.with_name(f".{done_file.name}{IMPORTED_SIDECAR_SUFFIX}")
+
+
+def _write_json(path: pathlib.Path, data: dict) -> None:
+    safe_write.write_text(path, json.dumps(data, ensure_ascii=False, indent=1) + "\n")
+
+
+def _read_json(path: pathlib.Path) -> dict | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _report(path: str | None, data: dict) -> None:
+    """Итог одного импорта для сканера (--result-json): штамп, стенограмма,
+    копия исходника в архиве. Сканер кладёт это в сайдкар done/."""
+    if path:
+        _write_json(pathlib.Path(path), data)
+
+
+def free_name(folder: pathlib.Path, name: str) -> pathlib.Path:
+    """Свободное имя в done/: два Recording.m4a с телефона — две разные
+    записи, и вторая не должна затирать копию первой (rename на POSIX
+    перезаписывает молча)."""
+    dest = folder / name
+    stem, suffix = pathlib.Path(name).stem, pathlib.Path(name).suffix
+    n = 1
+    while dest.exists() or imported_sidecar(dest).exists():
+        dest = folder / f"{stem}-{n}{suffix}"
+        n += 1
+    return dest
+
+
+def import_keep_days(cfg: dict, override=None) -> float:
+    """Срок жизни копии в done/ (`audio.import_keep_days`, дни).
+
+    Не задан — берём `audio.record_keep_days`: у живой встречи и у
+    импортированной одна папка архива и одно обещание PRIVACY, и человек,
+    поднявший срок записей ради пересборки, не должен молча терять
+    исходники импорта (критика GLM r1 по #496). Кривое значение — не повод
+    удалять сразу или не удалять никогда: говорим вслух и берём умолчание.
+    Отрицательное — отказ: «удалить до импорта» не бывает. Ноль допустим —
+    копия уходит первым же проходом. Бесконечность — как кривое: в JSON
+    сайдкара она не проходит, а «никогда» задаётся не так.
+    """
+    raw = override
+    audio = cfg.get("audio") or {}
+    if raw is None:
+        raw = audio.get("import_keep_days")
+    if raw is None:          # ключа нет или `import_keep_days:` пустой — каскад (GLM r2)
+        raw = audio.get("record_keep_days")
+    if raw is None:
+        raw = IMPORT_KEEP_DAYS_DEFAULT
+    try:
+        days = float(raw)
+    except (TypeError, ValueError):
+        print(f"import_keep_days: непонятное значение {raw!r} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
+        return float(IMPORT_KEEP_DAYS_DEFAULT)
+    if math.isnan(days) or math.isinf(days):
+        print(f"import_keep_days: непонятное значение {raw!r} — беру {IMPORT_KEEP_DAYS_DEFAULT}")
+        return float(IMPORT_KEEP_DAYS_DEFAULT)
+    if days < 0:
+        sys.exit(f"import_keep_days не может быть отрицательным: {raw!r}")
+    return days
+
+
+def _archive_source_for(meta: dict, done_file: pathlib.Path,
+                        graph: pathlib.Path | None) -> pathlib.Path | None:
+    """Аудио-«Исходник» этой копии в архиве встречи.
+
+    Путь пишет ребёнок в сайдкар; но ребёнок мог упасть после `cp -c` и до
+    отчёта, а повтор импорта отчитывается без копии (GLM r1 по #496) — тогда
+    ищем по штампу в графе, тем же поиском, что и импорт. Только аудио и
+    только имя «Исходник…», которое писали сами.
+    """
+    candidate: pathlib.Path | None = None
+    archive = meta.get("archive_source")
+    if isinstance(archive, str):
+        candidate = pathlib.Path(archive)
+    elif graph is not None and isinstance(meta.get("stamp"), str):
+        found = archive_folder_for(graph, meta["stamp"])
+        if found is not None:
+            candidate = found / f"Исходник{done_file.suffix.lower()}"
+    if candidate is None:
+        return None
+    if (candidate.suffix.lower() in AUDIO and candidate.name.startswith("Исходник")
+            and not candidate.is_symlink() and candidate.is_file()):
+        return candidate
+    return None
+
+
+def prune_done(folder: pathlib.Path, keep_days: float, *, now: float | None = None,
+               graph: pathlib.Path | None = None) -> list[pathlib.Path]:
+    """Удалить из done/ копии, отслужившие срок, и их аудио-«Исходник» в архиве.
+
+    Срок — от момента ИМПОРТА (поле delete_after сайдкара), не от mtime.
+    Файл без сайдкара (импорт до этой версии) получает сайдкар «увидели
+    сейчас» и живёт keep_days с этого момента: срок не зависит ни от ctime,
+    ни от того, как файл попал в done/ (GLM r1 по #496). Сбойные файлы лежат
+    в корне папки, а не в done/, — ретеншн их не видит по построению («при
+    ошибке не удалять»). Текстовые исходники (txt/md/vtt/srt) в архиве не
+    трогаем: чужая расшифровка, положенная человеком, голоса в ней нет.
+    Два уборщика разом (хвост скана и --prune приложения) — норма: файл,
+    исчезнувший из-под ног, просто пропускается и не считается.
+    """
+    done = folder / "done"
+    if done.is_symlink() or not done.is_dir():
+        return []
+    now = time.time() if now is None else now
+    removed: list[pathlib.Path] = []
+    # Сайдкар без файла (копию убрали руками) — мусор, ничего не решает.
+    # Моложе минуты не трогаем: скан пишет сайдкар ДО переноса, и второй
+    # процесс (--prune приложения) успевал бы съесть живой (r3 по #496)
+    for orphan in done.glob(f".*{IMPORTED_SIDECAR_SUFFIX}"):
+        owner = done / orphan.name[1:-len(IMPORTED_SIDECAR_SUFFIX)]
+        try:
+            young = now - orphan.stat().st_mtime < 60
+        except OSError:
+            continue
+        if not owner.exists() and not young:
+            orphan.unlink(missing_ok=True)
+    for f in sorted(done.iterdir()):
+        if f.is_symlink() or not f.is_file() or f.name.startswith("."):
+            continue
+        sidecar = imported_sidecar(f)
+        meta = _read_json(sidecar)
+        deadline = None
+        if meta is not None:
+            try:
+                deadline = float(meta.get("delete_after"))
+            except (TypeError, ValueError):
+                deadline = None
+        if deadline is None:
+            # Первый взгляд новой версии на старую копию: срок с этого момента
+            try:
+                _write_json(sidecar, {"legacy": True, "imported_at": now,
+                                      "keep_days": keep_days,
+                                      "delete_after": now + keep_days * 86400})
+            except OSError as e:
+                print(f"ретеншн импорта: сайдкар для {f.name} не записался: {e}")
+            continue
+        if now < deadline:
+            continue
+        try:
+            f.unlink()
+        except FileNotFoundError:
+            continue        # второй уборщик успел первым — не наш счёт
+        except OSError as e:
+            print(f"ретеншн импорта: {f.name} не удалился: {e}")
+            continue
+        removed.append(f)
+        print(f"ретеншн импорта: удалена копия {f.name}")
+        src = _archive_source_for(meta or {}, f, graph)
+        if src is not None:
+            try:
+                src.unlink()
+                removed.append(src)
+                print(f"ретеншн импорта: удалён аудио-исходник в архиве встречи {(meta or {}).get('stamp')}")
+            except OSError as e:
+                print(f"ретеншн импорта: исходник в архиве не удалился: {e}")
+        try:
+            sidecar.unlink()
+        except OSError:
+            pass
+    return removed
 
 
 def wav_complete(path: pathlib.Path, *, settle: bool = True) -> bool:
@@ -132,8 +340,32 @@ def wav_complete(path: pathlib.Path, *, settle: bool = True) -> bool:
     return declared >= 44 and actual >= declared
 
 
-def scan_candidates(folder: pathlib.Path) -> list[pathlib.Path]:
-    """Поддерживаемые и уже полностью опубликованные файлы папки импорта."""
+def settled_enough(path: pathlib.Path, *, settle_all: bool) -> bool:
+    """Готов ли файл к импорту с точки зрения «его ещё пишут?».
+
+    WAV судится по заголовку (или по покою размера, если заголовок без
+    длины). Остальные форматы полноту не объявляют: с `settle_all` (тик
+    слежения) любой файл обязан 30 с не менять размер — Finder-копия
+    большого m4a или материализация из iCloud иначе брались бы на середине
+    (критика GLM/DS r3 по #496). Без флага (кнопка «Обработать сейчас»,
+    скан после дропа — копии вкладки опубликованы атомарно) — сразу.
+    """
+    if path.suffix.lower() == ".wav":
+        return wav_complete(path)
+    if not settle_all:
+        return True
+    try:
+        return _size_settled(path, path.stat().st_size)
+    except OSError:
+        return False
+
+
+def scan_candidates(folder: pathlib.Path, *, skip_failed: bool = True,
+                    settle_all: bool = False) -> list[pathlib.Path]:
+    """Поддерживаемые и уже полностью опубликованные файлы папки импорта.
+
+    Файл с меткой ошибки прошлого импорта не берём: он ждёт «Повторить».
+    """
     out = []
     for path in sorted(folder.iterdir()):
         # Симлинк в папке импорта — чужой файл в графе и в LLM-конвейере:
@@ -144,13 +376,16 @@ def scan_candidates(folder: pathlib.Path) -> list[pathlib.Path]:
             continue
         if not path.is_file() or path.suffix.lower() not in (AUDIO | TEXT | SUBS):
             continue
-        if path.suffix.lower() == ".wav" and not wav_complete(path):
+        if skip_failed and error_marker(path).exists():
+            print(f"импорт: {path.name} — прошлый импорт не удался, ждёт «Повторить»")
+            continue
+        if not settled_enough(path, settle_all=settle_all):
             continue
         out.append(path)
     return out
 
 
-def postponed_files(folder: pathlib.Path) -> list[pathlib.Path]:
+def postponed_files(folder: pathlib.Path, *, settle_all: bool = False) -> list[pathlib.Path]:
     """Файлы, отложенные до следующего скана: копирование ещё идёт.
 
     Нужны только чтобы сказать о них вслух. Молчаливый пропуск человек
@@ -160,8 +395,37 @@ def postponed_files(folder: pathlib.Path) -> list[pathlib.Path]:
         path
         for path in sorted(folder.iterdir())
         if not path.is_symlink() and path.is_file()
-        and path.suffix.lower() == ".wav" and not wav_complete(path)
+        and path.suffix.lower() in (AUDIO | TEXT | SUBS)
+        and not settled_enough(path, settle_all=settle_all)
     ]
+
+
+# Временные файлы моложе этого возраста считаются живыми: копия вкладки
+# (`.<имя>.<uuid>.part`) и отчёт ребёнка (`.<имя>.import-result.json`)
+# при живом процессе не живут дольше минут; час — запас на гигабайт из iCloud.
+TEMP_ORPHAN_AGE = 3600
+
+
+def sweep_temporaries(folder: pathlib.Path, *, now: float | None = None) -> list[pathlib.Path]:
+    """Убрать скрытые временные файлы без владельца.
+
+    `.part` пишет вкладка (копия до атомарной публикации), отчёт ребёнка —
+    скан; краш или Cmd-Q посреди копии оставляли их навсегда: скрытые, ни
+    одним сканером не видимые гигабайты, при синкаемой папке — ещё и в
+    iCloud (GLM/DS r3 по #496). Только по возрасту: живую копию не задеть.
+    """
+    now = time.time() if now is None else now
+    removed: list[pathlib.Path] = []
+    for p in list(folder.glob(".*.part")) + list(folder.glob(".*.import-result.json")):
+        try:
+            if p.is_symlink() or not p.is_file() or now - p.stat().st_mtime < TEMP_ORPHAN_AGE:
+                continue
+            p.unlink()
+            removed.append(p)
+            print(f"импорт: убран временный файл без владельца — {p.name}")
+        except OSError:
+            continue
+    return removed
 
 
 def _cfg() -> dict:
@@ -318,6 +582,18 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--scan", action="store_true",
                     help="файл = ПАПКА-вход: импортировать все поддерживаемые "
                          "файлы из неё, успешные переносить в done/")
+    ap.add_argument("--retry-failed", action="store_true",
+                    help="со --scan: снять метки ошибок и попробовать сбойные ещё раз")
+    ap.add_argument("--settle-all", action="store_true",
+                    help="со --scan: любой файл должен 30 с не менять размер "
+                         "(тик слежения: чужие копии в папку не атомарны)")
+    ap.add_argument("--prune", action="store_true",
+                    help="файл = ПАПКА-вход: только удалить из done/ копии, "
+                         "отслужившие import_keep_days")
+    ap.add_argument("--keep-days", default=None,
+                    help="срок жизни копии в done/ вместо audio.import_keep_days")
+    ap.add_argument("--result-json", default=None,
+                    help=argparse.SUPPRESS)   # служебный: итог импорта для сканера
     return ap
 
 
@@ -367,10 +643,31 @@ def main() -> None:
     ap = build_parser()
     args = ap.parse_args()
 
+    if args.prune:
+        folder = pathlib.Path(args.file).expanduser()
+        if not folder.is_dir():
+            sys.exit(f"--prune ждёт папку: {folder}")
+        cfg = _cfg()
+        removed = prune_done(folder, import_keep_days(cfg, args.keep_days),
+                             graph=graphs.graph_dir(cfg))
+        copies = sum(1 for p in removed if p.parent.name == "done")
+        print(f"ретеншн импорта: удалено копий — {copies}"
+              + (f", аудио-исходников в архиве — {len(removed) - copies}" if len(removed) > copies else ""))
+        temporaries = sweep_temporaries(folder)
+        if temporaries:
+            print(f"ретеншн импорта: + временных без владельца — {len(temporaries)}")
+        return
+
     if args.scan:
         folder = pathlib.Path(args.file).expanduser()
         if not folder.is_dir():
             sys.exit(f"--scan ждёт папку: {folder}")
+        cfg = _cfg()
+        keep_days = import_keep_days(cfg, args.keep_days)
+        graph = graphs.graph_dir(cfg)
+        if args.retry_failed:
+            for marker in folder.glob(f".*{ERROR_MARKER_SUFFIX}"):
+                marker.unlink(missing_ok=True)
         done = folder / "done"
         # done/ — только настоящий каталог: симлинк увёл бы импортированные
         # файлы в чужую папку, а битая ссылка ронила бы весь скан на
@@ -381,18 +678,40 @@ def main() -> None:
         for marker in folder.glob(".*.import-seen"):
             if not (folder / marker.name[1:-len(".import-seen")]).exists():
                 forget_seen_marker(folder / marker.name[1:-len(".import-seen")])
-        todo = scan_candidates(folder)
-        for waiting in postponed_files(folder):
+        # Метка ошибки без файла: человек убрал сбойный файл руками, и
+        # следующий файл с тем же именем (диктофон зовёт всё Recording.m4a)
+        # считался бы сбойным навсегда (GLM r1 по #496).
+        for marker in folder.glob(f".*{ERROR_MARKER_SUFFIX}"):
+            if not (folder / marker.name[1:-len(ERROR_MARKER_SUFFIX)]).exists():
+                marker.unlink(missing_ok=True)
+        sweep_temporaries(folder)
+        todo = scan_candidates(folder, settle_all=args.settle_all)
+        postponed = postponed_files(folder, settle_all=args.settle_all)
+        for waiting in postponed:
             print(f"ещё копируется, отложен до следующего скана: {waiting.name}")
+        if postponed:
+            # Машинный маркер для приложения (догон через 35 с): фраза выше —
+            # для человека, и её правят; маркер — контракт (GLM r5 по #496)
+            print(f"postponed={len(postponed)}")
         if not todo:
             print("готовых файлов нет — нечего импортировать")
+            prune_done(folder, keep_days, graph=graph)
             return
+        failed = 0
         for f in todo:
             print(f"=== импорт {f.name} ===")
-            r = subprocess.run([sys.executable, __file__, str(f)])
-            if r.returncode == 0:
-                f.rename(done / f.name)
-                forget_seen_marker(f)
+            # Один файл, исчезнувший из-под ног во время транскрибации, или
+            # полный том не должны ронять очередь и уборку (GLM r1 по #496)
+            try:
+                failed += 0 if _scan_one(f, done, keep_days) else 1
+            except OSError as e:
+                failed += 1
+                print(f"импорт {f.name}: {e} — файл пропущен до следующего скана")
+        prune_done(folder, keep_days, graph=graph)
+        # Сбой хотя бы одного файла — ненулевой код: приложение судит по нему,
+        # и «импорт завершён» при красной строке в списке — ложь (DS r1 по #496)
+        if failed:
+            sys.exit(1)
         return
 
     src = pathlib.Path(args.file).expanduser()
@@ -406,7 +725,10 @@ def main() -> None:
     # и дневник; транскрибируем и отдаём конвейеру заметок
     base = src.name.lower()
     if base.startswith(("note_", "diary_")) and src.suffix.lower() in AUDIO:
-        return import_voice_note(src, diary=base.startswith("diary_"))
+        import_voice_note(src, diary=base.startswith("diary_"))
+        _report(args.result_json, {"kind": "diary" if base.startswith("diary_") else "note",
+                                   "source": src.name, "size": src.stat().st_size})
+        return
 
     cfg = _cfg()
     tdir = ROOT / cfg["log"]["transcripts_dir"]
@@ -425,6 +747,13 @@ def main() -> None:
         # (найдено 06.08: три файла с телефона молотились по кругу).
         # Повтор — это успех: встреча уже в архиве.
         print(f"встреча {already.name} уже импортирована — повтор не нужен")
+        old_stamp = meeting_stamp.stamp_of(already.stem)
+        old_folder = archive_folder_for(graphs.graph_dir(cfg) or pathlib.Path(""), old_stamp) if old_stamp else None
+        old_src = old_folder / f"Исходник{src.suffix.lower()}" if old_folder is not None else None
+        _report(args.result_json, {"kind": "meeting", "source": src.name,
+                                   "size": src.stat().st_size, "repeat": True,
+                                   "stamp": old_stamp, "transcript": str(already),
+                                   "archive_source": str(old_src) if old_src is not None and old_src.exists() else None})
         return
     if stamp != f"{day}_{hhmm}":
         print(f"в минуте {day}_{hhmm} уже есть другая встреча — импорт под штампом {stamp}")
@@ -486,12 +815,16 @@ def main() -> None:
         # из-за трёхсекундной пустышки: импорт случайного обрывка стоил
         # минуты полной загрузки машины (найдено 06.08 на тестовом файле).
         print(f"готово: пустая запись {stamp} — стенограмма сохранена, конвейер не нужен")
+        _report(args.result_json, {"kind": "meeting", "source": src.name,
+                                   "size": src.stat().st_size, "no_speech": True,
+                                   "stamp": stamp, "transcript": str(tpath)})
         return
     print("— догенерирую минутки/разбор/тезисы и раскладываю архив…")
     subprocess.run([sys.executable, str(CODE / "src" / "retro_fill.py")])
     # исходник — рядом с материалами встречи (APFS-клон: без лишнего места)
     graph = graphs.graph_dir(cfg) or pathlib.Path("")
     folder = archive_folder_for(graph, stamp)
+    archived: pathlib.Path | None = None
     if folder is None:
         print(f"папка архива встречи {stamp} не найдена — исходник в архив не скопирован")
     else:
@@ -499,7 +832,63 @@ def main() -> None:
         if not dest.exists():
             subprocess.run(["cp", "-c", str(src), str(dest)],
                            capture_output=True)
+        if dest.exists():
+            archived = dest
     print(f"готово: встреча {stamp} в архиве и графе")
+    _report(args.result_json, {"kind": "meeting", "source": src.name,
+                               "size": src.stat().st_size, "stamp": stamp,
+                               "transcript": str(tpath),
+                               "archive_source": str(archived) if archived else None})
+
+
+def _scan_one(f: pathlib.Path, done: pathlib.Path, keep_days: float) -> bool:
+    """Один файл папки импорта: ребёнок → done/ с сайдкаром (True) или метка
+    ошибки (False)."""
+    result_path = f.with_name(f".{f.name}.import-result.json")
+    result_path.unlink(missing_ok=True)
+    try:
+        # Вывод ребёнка собираем, а не пускаем в свой stdout целиком:
+        # приложение читает наш stdout через трубу, и мегабайт логов
+        # транскрибации подвесил бы импорт на полном буфере. Наружу —
+        # хвост, в метку ошибки — тоже хвост.
+        r = subprocess.run([sys.executable, __file__, str(f),
+                            "--result-json", str(result_path)],
+                           capture_output=True, text=True, errors="replace")
+        lines = [ln for ln in (r.stdout + "\n" + r.stderr).splitlines() if ln.strip()]
+        for ln in lines[-8:]:
+            print(f"  {ln}")
+        if r.returncode == 0:
+            dest = free_name(done, f.name)
+            imported_at = time.time()
+            meta = _read_json(result_path) or {}
+            # Сайдкар ДО переноса: обрыв между ними оставлял копию без штампа,
+            # и аудио-«Исходник» в архиве жил бы вечно; сайдкар без файла —
+            # сирота, её убирает уборка (GLM r2 по #496)
+            _write_json(imported_sidecar(dest), {
+                **meta,
+                "source": f.name,
+                "imported_at": imported_at,
+                "keep_days": keep_days,
+                "delete_after": imported_at + keep_days * 86400,
+            })
+            f.rename(dest)
+            forget_seen_marker(f)
+            error_marker(f).unlink(missing_ok=True)
+            return True
+        _write_json(error_marker(f), {
+            "failed_at": time.time(),
+            "code": r.returncode,
+            "message": (lines[-1] if lines else f"код {r.returncode}")[:300],
+            "tail": lines[-20:],
+        })
+        # Маркер покоя размера НЕ трогаем: он и есть доказательство, что файл
+        # отстоял свои 30 с; сброс заставлял «Повторить» ждать заново
+        # (GLM r2 и DS r2 по #496 — против моей правки по DS r1)
+        print(f"импорт {f.name} не удался (код {r.returncode}) — файл остаётся, "
+              f"повтор: кнопка «Повторить» или --retry-failed")
+        return False
+    finally:
+        result_path.unlink(missing_ok=True)
 
 
 def import_voice_note(src: pathlib.Path, diary: bool) -> None:

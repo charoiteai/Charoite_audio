@@ -853,6 +853,20 @@ it signals degradation, it does not break the loop.
   pipeline to `<stamp>_Topic.md` count as repeats too. A recording with no
   speech saves its transcript and finishes immediately — a three-second
   scrap no longer drives the LLM pipeline across the whole backlog.
+- **“External recording” tab** — a phone voice memo, someone else's call
+  recording, a Zoom export: drop the file (or pick it) — it is copied into
+  the import folder, the original is left alone, and it goes through the
+  same pipeline as a live meeting. The list shows what waits, what was
+  built (stamp, a “Transcript” button) and when the copy goes away: a
+  processed copy in `done/` lives `audio.import_keep_days` (unset: same as `record_keep_days`)
+  and is deleted together with the audio “Исходник” in the meeting archive;
+  text sources (txt/vtt) in the archive stay. A failed file gets a
+  `.<name>.import-error` marker, stays put, is never deleted and is no
+  longer pushed through STT every two minutes — retry with the button (or
+  `--scan --retry-failed`). Retention runs after every scan and every six
+  hours regardless of the watch toggle; copies that reached `done/` before
+  this version get their days from the first sweep that sees them. The
+  default equals `audio.record_keep_days`.
   Point the app at a folder (Settings →
   Import, or `--scan` in the CLI): recordings dropped there become graph
   meetings on their own; processed files move to `done/`, failed ones
