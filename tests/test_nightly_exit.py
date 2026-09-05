@@ -118,13 +118,17 @@ DOSSIER_REVIEW_PARTIAL = (
 )
 
 
-def test_cloud_cli_down_fails_the_night(tmp_path):
+def test_cloud_cli_down_marks_the_night_failed(tmp_path):
     """Ночь 05.09: обновление Claude CLI уронило семь тем ревизии, а ночь
-    отчиталась rc=0 (аудит GLM/DS). Код 3 у любого облачного шага — авария."""
+    отчиталась «ok» (аудит GLM/DS). Код 3 у облачного шага — состояние
+    failed в статусе (его читает утренний бриф); launchd-код остаётся 0:
+    шаг необязательный и самовосстанавливается (критика GLM/DS по #499)."""
     for stub in (DOSSIER_REVIEW_CLI_DOWN, CORES_CLI_DOWN):
         r = _run(tmp_path, stub)
-        assert r.returncode != 0, r.stdout
+        assert r.returncode == 0, r.stdout
         assert "CLI облака не отвечает" in r.stdout, r.stdout
+        assert _status(tmp_path)["state"] == "failed", _status(tmp_path)
+        assert "(cli)" in str(_status(tmp_path).get("failed", "")), _status(tmp_path)
 
 
 def test_partially_failed_review_is_visible_but_not_fatal(tmp_path):

@@ -348,8 +348,25 @@ def plan(stamp: str, root: pathlib.Path,
     """
     p = Plan(stamp=stamp)
 
+    # Приложение зовёт «забыть» минутным ключом, а демон и импорт именуют
+    # файлы посекундно: до наката темы стенограмма владельца минуты лежит как
+    # `<минутаСС>.md`, копия импорта — с посекундным штампом в сайдкаре.
+    # Посекундный штамп той же минуты без СВОЕЙ заметки в графе — не соседка
+    # (у соседки ключ графа посекундный и заметка своя), а владелец; его
+    # файлы уходят вместе с минутой (Critical DS r1 по #499).
+    owned = [stamp]
+    if graph is not None and meeting_stamp.minute_of(stamp) == stamp:
+        tdir_all = root / "transcripts"
+        for f in (sorted(tdir_all.glob(f"{stamp}*")) if tdir_all.is_dir() else []):
+            s = meeting_stamp.stamp_of(f.stem)
+            if (s and s != stamp and meeting_stamp.minute_of(s) == stamp
+                    and not (graph / "Встречи" / f"{s}.md").exists()
+                    and s not in owned):
+                owned.append(s)
+
     for folder in ("transcripts", "recordings"):
-        p.delete += _with_stamp(root / folder, stamp)
+        for s in owned:
+            p.delete += _with_stamp(root / folder, s)
     # версия до пересборки (transcripts/.prev/<имя>) — тот же текст встречи:
     # скрытая папка не обходится глобом, забыть обязаны и её (GLM r1 по #456).
     # Копия названа именем файла НА МОМЕНТ пересборки: до наката темы — голый
@@ -391,15 +408,30 @@ def plan(stamp: str, root: pathlib.Path,
     # Копия импорта: done/<файл> и .<файл>.imported.json со штампом встречи
     gone_stamps = {meeting_stamp.stamp_of(f.stem) for f in p.delete
                    if f.parent == root / "transcripts"} - {None}
-    gone_stamps.add(stamp)
+    gone_stamps.update(owned)
     done_dir = pathlib.Path(import_folder).expanduser() / "done" if import_folder else None
     if done_dir is not None and done_dir.is_dir():
+        minute = meeting_stamp.minute_of(stamp)
         for sc in sorted(done_dir.glob(".*.imported.json")):
             try:
                 meta = json.loads(sc.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            if not isinstance(meta, dict) or meta.get("stamp") not in gone_stamps:
+            if not isinstance(meta, dict):
+                continue
+            sc_stamp = meta.get("stamp")
+            same_minute = isinstance(sc_stamp, str) and meeting_stamp.minute_of(sc_stamp) == minute
+            # Копия той же минуты без своей заметки в графе — владельца минуты
+            # (тот же критерий, что у стенограмм выше); с заметкой — соседка
+            ours = sc_stamp in gone_stamps or (
+                same_minute and graph is not None
+                and not (graph / "Встречи" / f"{sc_stamp}.md").exists())
+            if not ours:
+                if same_minute:
+                    # Соседка той же минуты — не трогаем, но говорим вслух (GLM r1)
+                    p.beyond_reach.append(f"в папке импорта лежит копия с штампом {sc_stamp} "
+                                          f"(та же минута, своя заметка в графе — соседка): "
+                                          f"{sc.name[1:-len('.imported.json')]}")
                 continue
             owner = done_dir / sc.name[1:-len(".imported.json")]
             if owner.is_file() and owner not in p.delete:

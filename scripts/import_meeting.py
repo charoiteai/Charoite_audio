@@ -187,6 +187,12 @@ def import_keep_days(cfg: dict, override=None) -> float:
         raw = audio.get("import_keep_days")
     if raw is None:          # ключа нет или `import_keep_days:` пустой
         raw = IMPORT_KEEP_DAYS_DEFAULT
+        if str(audio.get("record_keep_days", IMPORT_KEEP_DAYS_DEFAULT)) != str(IMPORT_KEEP_DAYS_DEFAULT):
+            # До 0.70.1 срок наследовался от record_keep_days — сказать один раз
+            # в лог, что теперь он свой (критика DS по #499)
+            print(f"import_keep_days не задан — копии импорта живут {IMPORT_KEEP_DAYS_DEFAULT} дн. "
+                  f"(record_keep_days={audio.get('record_keep_days')} на них больше не влияет; "
+                  f"задайте audio.import_keep_days явно)")
     try:
         days = float(raw)
     except (TypeError, ValueError):

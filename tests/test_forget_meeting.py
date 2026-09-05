@@ -130,6 +130,44 @@ def test_plan_takes_the_import_copy_when_the_folder_is_known(tmp_path):
     blind = forget.plan(STAMP, root, graph)
     assert any("папке импорта" in line for line in blind.beyond_reach), blind.beyond_reach
 
+    # та же минута, посекундный штамп без своей заметки — владелец: копия уходит
+    (done / ".Restamped.m4a.imported.json").write_text(
+        json.dumps({"stamp": STAMP + "17", "imported_at": 1}), encoding="utf-8")
+    (done / "Restamped.m4a").write_bytes(b"r")
+    aware = forget.plan(STAMP, root, graph, import_folder=inbox)
+    assert str(done / "Restamped.m4a") in {str(p) for p in aware.delete}
+
+
+def test_minute_target_owns_the_seconds_files_of_its_minute_but_not_the_neighbour(tmp_path):
+    """Critical DS r1 по #499: приложение зовёт «забыть» минутой, а импорт
+    и демон именуют файлы посекундно. Посекундный штамп минуты без своей
+    заметки в графе — владелец (его стенограмма, копия и сайдкар уходят);
+    с заметкой — соседка (остаётся)."""
+    import json
+
+    root, graph = _world(tmp_path)
+    tdir = root / "transcripts"
+    mine = tdir / f"{STAMP}23.md"                  # импорт/демон до наката темы
+    mine.write_text(f"# Встреча {STAMP}23\n", encoding="utf-8")
+    (root / "recordings" / f"{STAMP}23_mic.wav").write_bytes(b"RIFF")
+    neighbour = tdir / f"{STAMP}45_Соседка.md"
+    neighbour.write_text(f"# Встреча {STAMP}45\n", encoding="utf-8")
+    (graph / "Встречи" / f"{STAMP}45.md").write_text("---\ntype: встреча\n---\n# соседка\n", encoding="utf-8")
+    inbox = tmp_path / "inbox"
+    done = inbox / "done"
+    done.mkdir(parents=True)
+    for name, st in (("Mine.m4a", f"{STAMP}23"), ("Their.m4a", f"{STAMP}45")):
+        (done / name).write_bytes(b"x")
+        (done / f".{name}.imported.json").write_text(json.dumps({"stamp": st, "imported_at": 1}), encoding="utf-8")
+
+    plan = forget.plan(STAMP, root, graph, import_folder=inbox)
+    doomed = {str(p) for p in plan.delete}
+    assert str(mine) in doomed and str(root / "recordings" / f"{STAMP}23_mic.wav") in doomed
+    assert str(done / "Mine.m4a") in doomed and str(done / ".Mine.m4a.imported.json") in doomed
+    assert str(neighbour) not in doomed and str(graph / "Встречи" / f"{STAMP}45.md") not in doomed
+    assert str(done / "Their.m4a") not in doomed
+    assert any("соседка" in line for line in plan.beyond_reach), plan.beyond_reach
+
 
 def test_plan_does_not_touch_the_neighbouring_meeting(tmp_path):
     """Соседняя встреча того же графа остаётся нетронутой — вся."""

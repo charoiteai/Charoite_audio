@@ -292,6 +292,28 @@ def archive_time(key: str) -> str:
     return hhmm + key[len(core):]          # «-1» суффикса коллизии, если был
 
 
+def recordings_under_minute(rec_dir: pathlib.Path, minute: str) -> bool:
+    """Есть ли под минутой хоть один файл канала (pcm / wav / wav.part…).
+
+    Пересборке без единого файла ждать нечего; формат имени знает только этот
+    модуль (stamp_of_recording), а не регэксп на месте вызова (GLM r1 по
+    #499). Листинг не удался — «есть»: лучше подождать 90 с, чем отказать
+    встрече из-за сбоя iCloud. Осознанная граница: пересборка, дёрнутая в
+    первые секунды записи, когда демон ещё не открыл .pcm, увидит «нет
+    файлов» и выйдет — это не «записи не будет», а «сейчас ждать нечего»
+    (DS r1 по #499); стоп встречи запускает пересборку заново.
+    """
+    try:
+        names = [f.name for f in rec_dir.iterdir()]
+    except OSError:
+        return True
+    for name in names:
+        s = stamp_of_recording(name)
+        if s and minute_of(s) == minute:
+            return True
+    return False
+
+
 def files_with_stamp(directory: pathlib.Path, stamp: str, *, prefix: str = "",
                      suffix: str = "") -> list[pathlib.Path]:
     """Файлы «<prefix><штамп>…<suffix>» этой встречи — и только её.

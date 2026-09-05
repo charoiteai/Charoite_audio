@@ -272,11 +272,20 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
             break
         except OSError as e:
             # exec не удался: бинарник CLI меняется под ногами (обновление) —
-            # одна пауза и повтор с переразрешённым путём (аудит 05.09)
+            # одна пауза (на процесс) и повтор с переразрешённым путём (аудит 05.09)
             if attempt == 1:
-                print(f"  ⚠️ {theme}: claude не запустился ({e}) — повтор через {int(cloud.RETRY_PAUSE)} с")
-                time.sleep(cloud.RETRY_PAUSE)
-                claude = cloud.claude_bin()
+                global _SLEPT_FOR_CLI
+                if not _SLEPT_FOR_CLI:
+                    print(f"  ⚠️ {theme}: claude не запустился ({e}) — повтор через {int(cloud.RETRY_PAUSE)} с")
+                    time.sleep(cloud.RETRY_PAUSE)
+                    _SLEPT_FOR_CLI = True
+                try:
+                    claude = cloud.claude_bin_checked(retries=0)
+                except cloud.CloudCLIUnavailable:
+                    CLI_DOWN[0] = True          # умер по ходу — main() отдаст 3
+                    why = f"сбой: claude не отработал ({e})"
+                    print(f"  ⚠️ {theme}: {why}")
+                    return None, why
                 continue
             why = f"сбой: claude не отработал ({e})"
             print(f"  ⚠️ {theme}: {why}")
@@ -366,6 +375,13 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
 # раньше они жили только в служебном md внутри графа, и ночь с лежащим
 # облаком выглядела успешной (аудит GLM/DS по main 05.09)
 FAILED_STEPS: list[str] = []
+# Пауза перед повтором exec — один раз на процесс: обновление CLI посреди
+# прогона иначе усыпляло бы каждую тему на 60 с, и ночь вылезала за потолок
+# (GLM r1 по #499)
+_SLEPT_FOR_CLI = False
+# CLI умер посреди прогона (обновление началось после зонда): повторный зонд
+# не ответил — остальные темы не трогаем, main() отдаёт 3, а не 2 (DS r1)
+CLI_DOWN = [False]
 
 
 def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
@@ -388,6 +404,9 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
                                   cap=tier3.night_wait_cap())
         if live_gate.night_is_over():
             print("  ⏹ время ночного прогона вышло — остальные досье завтра")
+            break
+        if CLI_DOWN[0]:
+            print("  ⏹ CLI облака не запускается — остальные досье завтра")
             break
         old = path.read_text(encoding="utf-8")     # одно чтение на проверку и запись
         fixed, why = review(theme, path, graph, files, members, model, cfg, current=old)
@@ -461,14 +480,6 @@ def main() -> int:
         print("облако выключено рубильником — пропуск")
         return 0
 
-    # Зонд CLI до первой темы: сломанный бинарник — не «сбой темы», а
-    # отказ инфраструктуры, и ночь обязана увидеть его кодом (аудит 05.09)
-    try:
-        cloud.claude_bin_checked()
-    except cloud.CloudCLIUnavailable as e:
-        print(f"CLI облака не отвечает: {e} — ревизия досье не начата")
-        return 3
-
     if args.all_graphs:
         # Все vault-ы, а не только iCloud: настроенный graph_dir вне iCloud
         # раньше не попадал в ночную ревизию досье (аудит 17.08).
@@ -492,15 +503,27 @@ def main() -> int:
             return 1
         graph_list = [chosen]
 
+    # Зонд CLI после резолва графа (при битом конфиге — сначала код 1, без
+    # минуты на таймауты; DS r1 по #499) и до первой темы: сломанный бинарник —
+    # не «сбой темы», а отказ инфраструктуры, ночь видит его кодом 3 (аудит 05.09)
+    try:
+        cloud.claude_bin_checked()
+    except cloud.CloudCLIUnavailable as e:
+        print(f"CLI облака не отвечает: {e} — ревизия досье не начата")
+        return 3
+
     режим = "правит граф" if privacy.cloud_edit_graph_enabled(cfg) else "только отчёт"
     print(f"режим: {режим}")
     total = 0
     for g in graph_list:
-        if not g.is_dir():
+        if not g.is_dir() or CLI_DOWN[0]:
             continue
         print(f"=== {g.name}")
         total += run(g, cfg, dry=args.dry, limit=args.limit)
     print(f"итого досье просмотрено: {total}")
+    if CLI_DOWN[0]:
+        print("CLI облака перестал запускаться по ходу ревизии — код 3")
+        return 3
     if FAILED_STEPS:
         print(f"сбои шага: {len(FAILED_STEPS)} тем не проверено — код 2")
         return 2

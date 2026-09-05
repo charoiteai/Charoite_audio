@@ -397,6 +397,19 @@ def test_rebuild_после_отказа_по_минуте_не_ждёт_зап�
     assert waited == [], "после отказа ждать нечего"
 
 
+def test_recordings_under_minute_знает_имена_каналов_и_терпит_ошибку_листинга(tmp_path, monkeypatch):
+    """Формат имени — в meeting_stamp, а не регэксп на месте (GLM r1 по #499);
+    сбой листинга — «есть», чтобы не отказать встрече из-за iCloud."""
+    rec = tmp_path / "rec"
+    rec.mkdir()
+    assert not meeting_stamp.recordings_under_minute(rec, "2026-08-04_1203")
+    (rec / "2026-08-04_120301_blackhole.wav.part4242").write_bytes(b"")
+    assert meeting_stamp.recordings_under_minute(rec, "2026-08-04_1203")
+    assert not meeting_stamp.recordings_under_minute(rec, "2026-08-04_1204")
+    monkeypatch.setattr(pathlib.Path, "iterdir", lambda self: (_ for _ in ()).throw(OSError(5, "io")))
+    assert meeting_stamp.recordings_under_minute(rec, "2026-08-04_1204"), "не знаем — ждём, не отказываем"
+
+
 def test_rebuild_без_единого_файла_под_минутой_не_ждёт(tmp_path, monkeypatch):
     """Аудит GLM/DS 05.09: точный штамп из сайдкара или секундный штамп без
     записей (ретеншн, импорт) доходил до 2×45 с ожидания под rebuild.lock."""
