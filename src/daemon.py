@@ -270,6 +270,69 @@ def _prune_graph_logs(cfg: dict) -> None:
             continue
 
 
+# Папка импорта приложения — её выбирает владелец во вкладке «Внешняя запись»
+# (UserDefaults приложения); CLI и сборки без приложения задают её в
+# config.yaml (audio.import_dir).
+IMPORT_DEFAULTS_DOMAIN = "ai.charoite.app"
+IMPORT_DEFAULTS_KEY = "charoite.importDir"
+IMPORT_PRUNE_TIMEOUT = 300
+
+
+def _import_folder(cfg: dict) -> pathlib.Path | None:
+    """Папка импорта для ретеншна копий: `audio.import_dir` из config.yaml,
+    иначе — выбор владельца в приложении (`defaults read ai.charoite.app
+    charoite.importDir`). Нет ни того, ни другого, или папки нет на диске —
+    None: чистить нечего, и говорить об этом не надо."""
+    raw = (cfg.get("audio") or {}).get("import_dir")
+    if not raw:
+        try:
+            r = subprocess.run(["defaults", "read", IMPORT_DEFAULTS_DOMAIN, IMPORT_DEFAULTS_KEY],
+                               capture_output=True, text=True, timeout=10)
+            raw = r.stdout.strip() if r.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            raw = ""
+    if not raw:
+        return None
+    folder = pathlib.Path(str(raw)).expanduser()
+    return folder if folder.is_dir() else None
+
+
+def _prune_import_folder(cfg: dict) -> threading.Thread | None:
+    """Ретеншн копий импорта из демона — тем же скриптом, что зовёт приложение
+    (`import_meeting.py --prune`), в фоне и с потолком времени.
+
+    Приложение чистит done/ и аудио-«Исходник» в архиве раз в шесть часов —
+    но только пока запущено; при закрытом приложении копии переживали
+    import_keep_days сколько угодно (критика GLM r1/r2 по #496, №170).
+    Демон добирает при своём старте и на каждом старте встречи. Уборка —
+    не повод задержать встречу: отдельный поток, subprocess с таймаутом,
+    любая ошибка — строка в stderr, не исключение.
+    """
+    folder = _import_folder(cfg)
+    if folder is None:
+        return None
+
+    def run():
+        try:
+            r = subprocess.run([sys.executable, str(CODE / "scripts" / "import_meeting.py"),
+                                "--prune", str(folder)],
+                               capture_output=True, text=True, timeout=IMPORT_PRUNE_TIMEOUT,
+                               stdin=subprocess.DEVNULL)
+            summary = (r.stdout or "").strip().splitlines()
+            removed = [ln for ln in summary if "удалено копий" in ln and not ln.endswith("— 0")]
+            if r.returncode != 0:
+                print(f"ретеншн импорта: код {r.returncode}: {(r.stderr or '').strip()[-300:]}",
+                      file=sys.stderr, flush=True)
+            elif removed:
+                emit({"type": "status", "text": removed[0]})
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"ретеншн импорта: {e}", file=sys.stderr, flush=True)
+
+    t = threading.Thread(target=run, name="import-prune", daemon=True)
+    t.start()
+    return t
+
+
 def _recover_orphans(cfg: dict, current_stamp: str) -> set[str]:
     """Добить встречи, оборванные аварийно. Возвращает штампы, которые
     пересобираются прямо сейчас, — их записи ретеншну трогать нельзя.
@@ -459,6 +522,9 @@ def main():
         if dropped:
             emit({"type": "status",
                   "text": f"Убраны сырые потоки прошлых встреч: {dropped}"})
+        # Копии импорта (done/ и аудио-«Исходник» в архиве) — тем же сроком
+        # import_keep_days, что и приложение, но и при закрытом приложении (№170)
+        _prune_import_folder(cfg)
         if held:
             # Вслух: задержка сверх обещанного в PRIVACY срока — это исключение,
             # и человек должен видеть, что оно случилось и почему.

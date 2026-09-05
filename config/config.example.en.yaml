@@ -13,6 +13,7 @@ audio:
   record: true            # keep the full recording for the offline transcript re-pass
   record_keep_days: 2     # recordings are deleted after N days (privacy)
   import_keep_days: 2     # copies of imported recordings (done/ and the audio source in the archive) — N days after import (independent of record_keep_days)
+  # import_dir: ~/Charoite Inbox   # import folder for the daemon's retention sweep; without it the app's chosen folder is used
 
 stt:
   backend: parakeet       # parakeet (English, fast) | whisper (multilingual) | gigaam (Russian)
