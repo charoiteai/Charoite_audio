@@ -441,7 +441,9 @@ it signals degradation, it does not break the loop.
   running (setting “Record as soon as the app opens”, on by default, the
   last kind you picked, once per launch, not on return from background);
   opened during a call, the app arms itself and starts on its own when the
-  call releases the microphone; an App Intent “Start recording in
+  call releases the microphone, while the app stays open (iOS will not
+  start a backgrounded app; return within 30 minutes and it starts on
+  return); autostart waits for a chosen delivery folder; an App Intent “Start recording in
   Charoite” for Siri, Shortcuts and the Action button opens the app and
   starts; the PrivacyInfo.xcprivacy manifest is added. iOS never starts a
   recording from the background and no app records the call itself — that

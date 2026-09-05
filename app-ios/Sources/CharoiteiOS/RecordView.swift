@@ -12,7 +12,7 @@ struct RecordView: View {
     @StateObject private var rec = Recorder()
     /// Тип записи помнится между запусками: автостарт пишет тем, что
     /// выбирали в прошлый раз, а не всегда «встречу».
-    @AppStorage("record.kind") private var kindRaw = Recorder.Kind.meeting.rawValue
+    @AppStorage(Recorder.kindStorageKey) private var kindRaw = Recorder.Kind.meeting.rawValue
     /// «Писать сразу при открытии» — по умолчанию включено (№167).
     @AppStorage("record.autostart") private var autostart = true
     /// Первое появление экрана за запуск — единственный момент автостарта.
@@ -35,7 +35,9 @@ struct RecordView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .disabled(rec.isRecording)
+            // Во взводе тип заморожен вместе с ним: переключение на экране
+            // не доезжало до пробы, и запись шла старым типом (GLM/DS r1)
+            .disabled(rec.isRecording || rec.armed)
             .padding(.horizontal)
 
             Spacer()
@@ -96,7 +98,7 @@ struct RecordView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
             } else if rec.armed {
-                Label(rec.lastResult ?? L.t("Жду микрофон", "Waiting for the microphone", "等待麦克风"),
+                Label(rec.armedStatus ?? L.t("Жду микрофон", "Waiting for the microphone", "等待麦克风"),
                       systemImage: "phone.fill")
                     .font(.callout.weight(.medium))
                     .foregroundStyle(Theme.accent)
@@ -208,17 +210,22 @@ struct RecordView: View {
             // что выбран на экране.
             RecordingControl.onStart = { [weak rec] in
                 guard let rec, !rec.isRecording else { return }
-                let raw = UserDefaults.standard.string(forKey: "record.kind") ?? ""
+                let raw = UserDefaults.standard.string(forKey: Recorder.kindStorageKey) ?? ""
                 rec.start(kind: Recorder.Kind(rawValue: raw) ?? .meeting)
             }
             if !launched {
                 launched = true
                 // Слушать сразу (№167): просьба интента важнее настройки;
-                // без просьбы — автостарт по настройке, один раз за запуск.
+                // без просьбы — автостарт по настройке, один раз за запуск,
+                // только когда папка доставки выбрана (первый запуск без
+                // папки писал бы в никуда) и не под XCTest — хост тестов
+                // иначе начинал настоящую запись (GLM r1).
                 if RecordingControl.takeStartRequest() {
                     rec.start(kind: kind)
-                } else if Recorder.shouldAutoStart(enabled: autostart, coldLaunch: true,
-                                                   isRecording: rec.isRecording, armed: rec.armed) {
+                } else if Recorder.shouldAutoStart(enabled: autostart && !Self.underTests,
+                                                   coldLaunch: true,
+                                                   isRecording: rec.isRecording, armed: rec.armed,
+                                                   deliveryReady: Inbox.folderChosen) {
                     rec.start(kind: kind)
                 }
             }
@@ -227,6 +234,10 @@ struct RecordView: View {
             refreshQueue()
         }
         .onChange(of: rec.lastRecording) { _, _ in refreshQueue() }
+    }
+
+    private static var underTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     }
 
     /// Пересчитать очередь: SwiftUI за файловой системой не следит, а число в

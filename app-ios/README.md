@@ -17,10 +17,12 @@ runs on your Mac.
   face down on the table and the recording still ends when the meeting does.
 - **Listens right away** — open the app and the recording is already
   running (gear → "Record as soon as the app opens", on by default; the
-  kind is the last one you picked). Opened during a call? iOS keeps the
-  microphone for the call, so the app arms itself, shows "waiting for the
-  microphone" and starts on its own the moment the call ends — no second
-  tap. Cancel with the same big button.
+  kind is the last one you picked; kicks in once the delivery folder is
+  chosen). Opened during a call? iOS keeps the microphone for the call,
+  so the app arms itself, shows "waiting for the microphone" and starts on
+  its own the moment the call ends — no second tap — while the app stays
+  open: a backgrounded app cannot start on iOS, but come back within 30
+  minutes and it starts on return. Cancel with the same big button.
 - **Hands-free start** — an App Intent "Start recording in Charoite" for
   Siri, Shortcuts, the Action button and Back Tap. iOS never starts a
   recording from the background: the intent opens the app, which starts

@@ -8,18 +8,44 @@ final class RecorderAutoStartTests: XCTestCase {
 
     func testАвтостартТолькоНаХолодномЗапускеСВключённойНастройкой() {
         XCTAssertTrue(Recorder.shouldAutoStart(enabled: true, coldLaunch: true,
-                                               isRecording: false, armed: false))
+                                               isRecording: false, armed: false, deliveryReady: true))
         XCTAssertFalse(Recorder.shouldAutoStart(enabled: false, coldLaunch: true,
-                                                isRecording: false, armed: false),
+                                                isRecording: false, armed: false, deliveryReady: true),
                        "выключенная настройка — никакого автостарта")
         XCTAssertFalse(Recorder.shouldAutoStart(enabled: true, coldLaunch: false,
-                                                isRecording: false, armed: false),
+                                                isRecording: false, armed: false, deliveryReady: true),
                        "возврат из фона — не повод начать вторую запись")
         XCTAssertFalse(Recorder.shouldAutoStart(enabled: true, coldLaunch: true,
-                                                isRecording: true, armed: false))
+                                                isRecording: true, armed: false, deliveryReady: true))
         XCTAssertFalse(Recorder.shouldAutoStart(enabled: true, coldLaunch: true,
-                                                isRecording: false, armed: true),
+                                                isRecording: false, armed: true, deliveryReady: true),
                        "уже ждём микрофон — второй взвод не нужен")
+        XCTAssertFalse(Recorder.shouldAutoStart(enabled: true, coldLaunch: true,
+                                                isRecording: false, armed: false, deliveryReady: false),
+                       "папка доставки не выбрана — первый запуск не пишет в никуда")
+    }
+
+    /// Взвод — не вечный: свёрнутое приложение стартовать не может, а через
+    /// часы «посмотреть» не должно превращаться в запись (DS r1).
+    func testВзводИстекаетЧерезПолчаса() {
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertFalse(Recorder.armExpired(armedAt: t0, now: t0.addingTimeInterval(29 * 60)))
+        XCTAssertTrue(Recorder.armExpired(armedAt: t0, now: t0.addingTimeInterval(31 * 60)))
+        XCTAssertGreaterThanOrEqual(Recorder.armLifetime, 5 * 60)
+        XCTAssertLessThanOrEqual(Recorder.armLifetime, 2 * 3600)
+    }
+
+    /// Баннер называет настоящую причину, а не всегда «звонок» (GLM/DS r1).
+    func testСообщениеВзводаНазываетПричину() {
+        let call = Recorder.armMessage(for: .sessionBusy)
+        let other = Recorder.armMessage(for: .recorderBusy)
+        XCTAssertTrue(call.contains(L.t("звонок", "call", "通话")), call)
+        XCTAssertTrue(other.contains(L.t("другим приложением", "Another app", "其他应用")), other)
+        XCTAssertNotEqual(call, other)
+        for text in [call, other] {
+            XCTAssertTrue(text.contains(L.t("пока приложение открыто", "while the app is open", "保持应用打开")),
+                          "обещание сужено до открытого приложения: \(text)")
+        }
     }
 
     func testВзводТолькоНаВременныеПричины() {
@@ -47,6 +73,10 @@ final class RecorderAutoStartTests: XCTestCase {
 
     @MainActor
     func testПросьбаИнтентаЖдётЭкранЕслиЕгоЕщёНет() {
+        // Тесты hosted: у приложения-хоста свой обработчик — вернуть как было,
+        // чтобы просьба из теста не стартовала настоящую запись (GLM M9)
+        let saved = RecordingControl.onStart
+        defer { RecordingControl.onStart = saved }
         RecordingControl.onStart = nil
         _ = RecordingControl.takeStartRequest()          // чистый стол
         RecordingControl.requestStart()
@@ -58,6 +88,5 @@ final class RecorderAutoStartTests: XCTestCase {
         RecordingControl.requestStart()
         XCTAssertEqual(fired, 1, "экран на месте — стартуем сразу")
         XCTAssertFalse(RecordingControl.takeStartRequest(), "исполненная просьба не откладывается")
-        RecordingControl.onStart = nil
     }
 }
