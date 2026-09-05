@@ -214,6 +214,12 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
                 if sc.exists() and not sc_target.exists() and sc_target not in taken:
                     taken.add(sc_target)
                     moves.append((sc, sc_target))
+                if sc_target.exists():
+                    # Имя сайдкара занято чужой сиротой: свой сайдкар остаётся
+                    # под старым именем, а писать штамп в чужой файл нельзя —
+                    # решение о переносе и о записи не должны расходиться
+                    # (DS r3 M1 по #492). Секунды остаются в старом имени пары.
+                    continue
                 # Главный файл с секундами получает минутное имя: секунды
                 # остаются только в ключе `stamp` сайдкара — как после наката
                 # темы (№164). Главные здесь двух видов: голый «…113012.md» и
@@ -314,7 +320,8 @@ def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
     # .md + сайдкар уже под новым именем, remember пишет в прямой.
     for target, bare in p.get("stamps", ()):
         if not live_sidecar.remember(target, "stamp", bare):
-            print(f"{target.name}: посекундный штамп в сайдкар не записан — сайдкар неоднозначен")
+            print(f"{target.name}: посекундный штамп в сайдкар не записан "
+                  "(сайдкар неоднозначен, битый JSON или ошибка записи)")
 
     old_folder, new_folder = p["old_folder"], p["new_folder"]
     if old_folder is not None and new_folder is not None:

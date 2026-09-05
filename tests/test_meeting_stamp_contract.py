@@ -373,6 +373,17 @@ def test_rebuild_не_считает_отказом_запись_под_мину
     assert not any("однозначно не разрешена" in m for m in logged), logged
 
 
+def test_список_расширений_записи_один_на_всех():
+    """DS r3 M2 / GLM по #492: rebuild повторял тройку расширений своим
+    списком; расхождение с resolve_stamp давало бы ложный лог отказа."""
+    import pathlib
+
+    src = (pathlib.Path(__file__).resolve().parents[1] / "src" / "rebuild_transcript.py").read_text(encoding="utf-8")
+    assert '"wav.part")' not in src.replace('"wav.part")', "", 1) or 'RECORDING_EXTS' in src
+    assert src.count("meeting_stamp.RECORDING_EXTS") >= 2
+    assert meeting_stamp.RECORDING_EXTS == ("wav", "pcm", "wav.part")
+
+
 def test_демон_пишет_посекундный_штамп_в_сайдкар():
     """Вторая сторона №164: без ключа `stamp` пересборке неоткуда взять
     точный штамп после наката темы — имя файла его теряет. Структурная

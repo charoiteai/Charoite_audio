@@ -428,7 +428,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     recording_stamp = meeting_stamp.resolve_stamp(rec_dir, stamp, exact=exact, tdir=live.parent)
     if exact is None and recording_stamp == stamp and meeting_stamp.minute_of(stamp) == stamp \
             and not any(meeting_stamp.recording_path(rec_dir, stamp, lab, ext).exists()
-                        for lab in meeting_stamp.RECORDING_LABELS for ext in ("wav", "pcm", "wav.part")):
+                        for lab in meeting_stamp.RECORDING_LABELS for ext in meeting_stamp.RECORDING_EXTS):
         # Отказ по минуте — событие, а не тишина (DS r1 по #492): дальше
         # ожидание под минутным именем, и «записей нет» без этой строки
         # выглядело бы как отсутствие записей, а не как отвод чужих. Запись,
@@ -449,7 +449,7 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     # принимает решения; touch честно продлевает жизнь на keep_days от старта
     # пересборки.
     for _label in meeting_stamp.RECORDING_LABELS:
-        for _ext in ("pcm", "wav", "wav.part"):
+        for _ext in meeting_stamp.RECORDING_EXTS:
             _p = meeting_stamp.recording_path(rec_dir, recording_stamp, _label, _ext)
             try:
                 if _p.exists():

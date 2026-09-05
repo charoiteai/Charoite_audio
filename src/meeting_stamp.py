@@ -37,6 +37,10 @@ _RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{4}(?:\d{2})?)(?:-\d+)?$")
 AUX_SUFFIXES = ("_minutes", "_hints", "_live", "_debrief",
                 "_разбор", "_ревизия_claude", "_спикеры")
 RECORDING_LABELS = ("mic", "blackhole")
+# Расширения файла канала в порядке поиска: готовый wav, сырой pcm демона,
+# недописанный wav.part. Единственный список — resolve_stamp, rebuild
+# (гейт лога, touch перед ожиданием) читают его отсюда (DS r3 / GLM по #492).
+RECORDING_EXTS = ("wav", "pcm", "wav.part")
 
 # Главный файл встречи после наката темы: «2026-08-04_1203_Отчет_по_задачам».
 # Ровно такие имена шлёт retry из приложения (transcript_path статуса).
@@ -379,9 +383,8 @@ def resolve_stamp(rec_dir: pathlib.Path, stamp: str,
     """
     if exact and started_at(exact) is not None:
         return exact
-    extensions = ("wav", "pcm", "wav.part")
     for label in labels:
-        for ext in extensions:
+        for ext in RECORDING_EXTS:
             if recording_path(rec_dir, stamp, label, ext).exists():
                 # Хотя другой канал может принадлежать иному посекундному
                 # кандидату, общий точный штамп безопасен: wait_recording
@@ -403,7 +406,7 @@ def resolve_stamp(rec_dir: pathlib.Path, stamp: str,
     minute = head[:15]
     found: set[str] = set()
     for label in labels:
-        for ext in extensions:
+        for ext in RECORDING_EXTS:
             tail = f"_{label}.{ext}"
             for p in rec_dir.glob(f"{minute}*{tail}"):
                 cand = p.name[: -len(tail)]

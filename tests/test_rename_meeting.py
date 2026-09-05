@@ -360,6 +360,28 @@ def test_vault_copy_of_a_bare_main_gets_no_sidecar(tmp_path, monkeypatch):
     assert not list(docs.glob("*.live.json")), "в vault сайдкару не место"
 
 
+def test_stamp_is_not_written_into_a_foreign_sidecar_on_the_target_name(tmp_path, monkeypatch):
+    """DS r3 M1 по #492: имя сайдкара-цели занято сиротой удалённой встречи —
+    свой сайдкар остаётся под старым именем, и штамп в чужой файл не пишется."""
+    graph, tdir = tmp_path / "graph", tmp_path / "transcripts"
+    tdir.mkdir()
+    (graph / "Встречи").mkdir(parents=True)
+    (tdir / "2026-08-03_113012.md").write_text("# Встреча 2026-08-03_113012\n", encoding="utf-8")
+    own = tdir / "2026-08-03_113012.md.live.json"
+    own.write_text(json.dumps({"names": {"Собеседник 1": "Анна"}}), encoding="utf-8")
+    foreign = tdir / f"{STAMP}_Тема.md.live.json"
+    foreign.write_text(json.dumps({"names": {"Собеседник 1": "Чужой"}, "minutes_sha256": "x" * 64}), encoding="utf-8")
+    monkeypatch.setattr(rm, "ROOT", tmp_path)
+    pretty, slug = rm.pretty_and_slug("Тема")
+
+    p = rm.plan(graph, tdir, STAMP, pretty, slug)
+    assert p["stamps"] == [], "штамп в чужой сайдкар не планируется"
+    rm.apply(p, graph, STAMP, pretty)
+
+    assert own.exists(), "свой сайдкар остался под старым именем"
+    assert json.loads(foreign.read_text(encoding="utf-8")).get("stamp") is None
+
+
 def test_sidecar_follows_the_renamed_transcript(world):
     graph, tdir = world
     sc = tdir / f"{STAMP}_Обновление_ОС.md.live.json"
