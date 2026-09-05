@@ -244,7 +244,6 @@ def test_stray_punctuation_does_not_make_the_time_wrong():
 
 
 def test_impossible_time_is_refused():
-    import pytest
     for bad in ("2599", "0899", "штука", "123456", ""):
         with pytest.raises(SystemExit):
             clean_time(bad)
@@ -257,7 +256,6 @@ def test_date_separator_is_up_to_the_human():
 
 
 def test_impossible_date_is_refused():
-    import pytest
     for bad in ("2026-13-03", "2026-02-31", "03.08.26", "вчера"):
         with pytest.raises(SystemExit):
             clean_date(bad)
@@ -354,7 +352,6 @@ def _run_scan(monkeypatch, folder, *extra):
 
 
 def test_failed_import_is_marked_kept_and_not_rescanned(tmp_path, monkeypatch):
-    import pytest
 
     """Сбой: файл на месте, метка ошибки с хвостом вывода, следующий скан
     его не берёт (раньше STT гонялся по тому же файлу каждые две минуты);
@@ -600,7 +597,6 @@ def test_one_broken_file_does_not_stop_the_queue(tmp_path, monkeypatch):
         return real_rename(self, target)
 
     monkeypatch.setattr(pathlib.Path, "rename", flaky)
-    import pytest
     with pytest.raises(SystemExit) as partly:
         _run_scan(monkeypatch, tmp_path)
     assert partly.value.code == 1, "часть очереди не прошла — код 1"
@@ -702,7 +698,6 @@ def test_orphan_sidecar_sweep_spares_the_young(tmp_path):
 
 
 def test_import_keep_days_is_forgiving_but_not_negative(capsys):
-    import pytest
 
     import import_meeting as im
 

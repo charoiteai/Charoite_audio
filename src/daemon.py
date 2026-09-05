@@ -324,7 +324,8 @@ def _prune_one_import_folder(folder: pathlib.Path) -> None:
     # Лог — на папку: обе папки могут зваться одинаково, а сирота-ребёнок
     # прошлого демона ещё пишет в свой файл, когда новый открывает «w»
     # (Minor GLM r2)
-    log = ROOT / "logs" / f"import_prune-{re.sub(r'[^-\w]', '_', folder.name)}.log"
+    safe_name = re.sub(r"[^-\w]", "_", folder.name)
+    log = ROOT / "logs" / f"import_prune-{safe_name}.log"
     try:
         log.parent.mkdir(parents=True, exist_ok=True)
         with open(log, "w", encoding="utf-8") as out:

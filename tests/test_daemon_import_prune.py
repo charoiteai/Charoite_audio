@@ -1,6 +1,7 @@
 """Ретеншн копий импорта из демона (№170): папки — из config.yaml и из
 настроек приложения (обе), уборка — тем же скриптом, что зовёт приложение,
 в фоне, вывод ребёнка в файл, итог по машинному маркеру."""
+import os
 import pathlib
 import subprocess
 import sys
@@ -145,5 +146,10 @@ def test_prune_cli_prints_the_machine_marker(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(im, "_cfg", lambda: {"audio": {"import_keep_days": 2}})
     monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
     monkeypatch.setattr(sys, "argv", ["import_meeting.py", "--prune", str(tmp_path)])
-    im.main()
+    before = os.umask(0o022)   # main() ужесточает umask процесса — вернуть, иначе соседние тесты видят чужие права
+    os.umask(before)
+    try:
+        im.main()
+    finally:
+        os.umask(before)
     assert "prune=copies:0,archive:0,temporaries:0" in capsys.readouterr().out
