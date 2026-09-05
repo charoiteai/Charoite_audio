@@ -5,6 +5,14 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.70.0](https://github.com/charoiteai/Charoite_audio/compare/v0.69.4...v0.70.0) (2026-09-05)
+
+
+### Features
+
+* **import:** вкладка «Внешняя запись» — очередь, метки сбоя и ретеншн копий (№166) ([#496](https://github.com/charoiteai/Charoite_audio/issues/496)) ([2592460](https://github.com/charoiteai/Charoite_audio/commit/2592460d410a1a90a89b1c5e9b3aeef56af230a8))
+* **ios:** слушать и записывать сразу — автостарт, взвод на занятом микрофоне, интент «Начать запись» (№167) ([#497](https://github.com/charoiteai/Charoite_audio/issues/497)) ([7b83ed2](https://github.com/charoiteai/Charoite_audio/commit/7b83ed2d08f323d966e3a342a46539b2cf8af4af))
+
 ## [0.69.4](https://github.com/charoiteai/Charoite_audio/compare/v0.69.3...v0.69.4) (2026-09-05)
 
 
