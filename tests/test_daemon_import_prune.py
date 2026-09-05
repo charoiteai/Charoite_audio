@@ -69,7 +69,7 @@ def test_prune_runs_the_import_script_with_output_in_a_file_and_reports_only_rem
     assert cmd[1].endswith("scripts/import_meeting.py") and cmd[2:] == ["--prune", str(inbox)]
     assert kw["timeout"] == daemon.IMPORT_PRUNE_TIMEOUT and kw["stdin"] is subprocess.DEVNULL
     assert kw["stderr"] is subprocess.STDOUT and hasattr(kw["stdout"], "write"), "вывод ребёнка — в файл, не в пайп"
-    assert (tmp_path / "root" / "logs" / daemon.IMPORT_PRUNE_LOG).exists()
+    assert list((tmp_path / "root" / "logs").glob("import_prune-Inbox.log")), "лог — на папку"
     assert events and "удалено копий — 2" in events[0]["text"] and "в архиве — 1" in events[0]["text"]
 
     # ничего не удалено — тишина
@@ -98,7 +98,35 @@ def test_prune_failures_stay_in_stderr(tmp_path, monkeypatch, capsys):
         return _Done(1)
     monkeypatch.setattr(daemon.subprocess, "run", run)
     daemon._prune_import_folder({"audio": {"import_dir": str(inbox)}}).join(timeout=10)
-    assert "ретеншн импорта (Inbox): код 1" in capsys.readouterr().err
+    assert f"ретеншн импорта ({inbox}): код 1" in capsys.readouterr().err
+
+
+def test_prune_without_the_marker_is_reported_not_silenced(tmp_path, monkeypatch, capsys):
+    """Minor GLM r2: дрейф формата маркера в ребёнке — строка в stderr, а не
+    «ничего не удалено»; брошенные временные тоже попадают в статус."""
+    inbox = tmp_path / "Inbox"
+    inbox.mkdir()
+    monkeypatch.setattr(daemon, "ROOT", tmp_path / "root")
+    events = []
+    monkeypatch.setattr(daemon, "emit", lambda obj: events.append(obj))
+
+    def no_marker(cmd, **kw):
+        if cmd[:2] == ["defaults", "read"]:
+            return _Done(1, "", "")
+        kw["stdout"].write("ретеншн импорта: удалено копий — 3\n")
+        return _Done(0)
+    monkeypatch.setattr(daemon.subprocess, "run", no_marker)
+    daemon._prune_import_folder({"audio": {"import_dir": str(inbox)}}).join(timeout=10)
+    assert events == [] and "маркера итога нет" in capsys.readouterr().err
+
+    def temporaries(cmd, **kw):
+        if cmd[:2] == ["defaults", "read"]:
+            return _Done(1, "", "")
+        kw["stdout"].write("prune=copies:0,archive:0,temporaries:2\n")
+        return _Done(0)
+    monkeypatch.setattr(daemon.subprocess, "run", temporaries)
+    daemon._prune_import_folder({"audio": {"import_dir": str(inbox)}}).join(timeout=10)
+    assert events and "брошенных временных файлов — 2" in events[0]["text"]
 
 
 def test_meeting_start_cleanup_prunes_the_import_folder():

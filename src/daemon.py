@@ -277,8 +277,7 @@ def _prune_graph_logs(cfg: dict) -> None:
 IMPORT_DEFAULTS_DOMAIN = "ai.charoite.app"
 IMPORT_DEFAULTS_KEY = "charoite.importDir"
 IMPORT_PRUNE_TIMEOUT = 300
-IMPORT_PRUNE_LOG = "import_prune.log"
-_PRUNE_MARK = re.compile(r"^prune=copies:(\d+),archive:(\d+)", re.M)
+_PRUNE_MARK = re.compile(r"^prune=copies:(\d+),archive:(\d+),temporaries:(\d+)", re.M)
 
 
 def _app_import_folder() -> pathlib.Path | None:
@@ -286,7 +285,7 @@ def _app_import_folder() -> pathlib.Path | None:
     Нет ключа, нет папки, нет `defaults` — None."""
     try:
         r = subprocess.run(["defaults", "read", IMPORT_DEFAULTS_DOMAIN, IMPORT_DEFAULTS_KEY],
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None
     raw = r.stdout.strip() if r.returncode == 0 else ""
@@ -322,7 +321,10 @@ def _prune_one_import_folder(folder: pathlib.Path) -> None:
     посреди уборки (встреча кончилась), и ребёнок, писавший в закрытый пайп,
     падал бы на BrokenPipe с недобитыми копиями (Minor GLM r1). Итог читается
     по машинному маркеру `prune=copies:N,archive:M`."""
-    log = ROOT / "logs" / IMPORT_PRUNE_LOG
+    # Лог — на папку: обе папки могут зваться одинаково, а сирота-ребёнок
+    # прошлого демона ещё пишет в свой файл, когда новый открывает «w»
+    # (Minor GLM r2)
+    log = ROOT / "logs" / f"import_prune-{re.sub(r'[^-\w]', '_', folder.name)}.log"
     try:
         log.parent.mkdir(parents=True, exist_ok=True)
         with open(log, "w", encoding="utf-8") as out:
@@ -332,17 +334,26 @@ def _prune_one_import_folder(folder: pathlib.Path) -> None:
                                timeout=IMPORT_PRUNE_TIMEOUT)
         text = log.read_text(encoding="utf-8", errors="replace")
         if r.returncode != 0:
-            print(f"ретеншн импорта ({folder.name}): код {r.returncode}: {text.strip()[-300:]}",
+            print(f"ретеншн импорта ({folder}): код {r.returncode}: {text.strip()[-300:]}",
                   file=sys.stderr, flush=True)
             return
         m = _PRUNE_MARK.search(text)
-        copies, archive = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
-        if copies + archive:
-            emit({"type": "status",
-                  "text": f"Ретеншн импорта: удалено копий — {copies}"
-                          + (f", аудио-исходников в архиве — {archive}" if archive else "")})
+        if m is None:
+            # Дрейф формата маркера в ребёнке не должен выглядеть как «ничего
+            # не удалено» (Minor GLM r2)
+            print(f"ретеншн импорта ({folder}): маркера итога нет — {text.strip()[-200:]}",
+                  file=sys.stderr, flush=True)
+            return
+        copies, archive, temporaries = (int(g) for g in m.groups())
+        if copies + archive + temporaries:
+            parts = [f"удалено копий — {copies}"]
+            if archive:
+                parts.append(f"аудио-исходников в архиве — {archive}")
+            if temporaries:
+                parts.append(f"брошенных временных файлов — {temporaries}")
+            emit({"type": "status", "text": "Ретеншн импорта: " + ", ".join(parts)})
     except (OSError, subprocess.SubprocessError) as e:
-        print(f"ретеншн импорта ({folder.name}): {e}", file=sys.stderr, flush=True)
+        print(f"ретеншн импорта ({folder}): {e}", file=sys.stderr, flush=True)
 
 
 def _prune_import_folder(cfg: dict) -> threading.Thread:
