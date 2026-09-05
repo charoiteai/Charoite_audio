@@ -120,9 +120,13 @@ class Plan:
     # ключ графа (минутный у владельца минуты, посекундный у соседки) и сам
     # штамп, если отличается. /forget у brain есть с 23.08 (карточка №41).
     brain_keys: list[str] = dataclasses.field(default_factory=list)
+    # Как план решил, чьи посекундные файлы минуты: человек проверяет довод
+    # ДО необратимого удаления (критика DS r4 по #499)
+    notes: list[str] = dataclasses.field(default_factory=list)
 
     def describe(self) -> str:
         out = [f"Встреча {self.stamp}"]
+        out += [f"  {line}" for line in self.notes]
         if not self.delete and not self.edit and not self.beyond_reach:
             return out[0] + ": следов не найдено — забывать нечего"
         if self.delete:
@@ -370,6 +374,8 @@ class _Ownership:
         self.rec = root / "recordings"
         self.graph = graph
         self.foreign: dict[str, str] = {}
+        self.unsure: str | None = None       # заметку минуты не прочитать — владение не решить
+        self.how: str = ""                   # чем доказано владение точной секундой
         self.exact: str | None = self._exact() if self.minute else None
 
     def _own_note(self, s: str) -> bool:
@@ -384,7 +390,10 @@ class _Ownership:
             return None
         try:
             its = meeting_stamp.note_transcript_stamp(note.read_text(encoding="utf-8"))
-        except OSError:
+        except OSError as e:
+            # Не «строки нет», а «не решить»: iCloud-заминка не должна отдавать
+            # владение самому раннему файлу вопреки заметке (DS r4 M1)
+            self.unsure = f"заметку минуты не прочитать ({e.__class__.__name__}) — владение не решить"
             return None
         if its and its != self.stamp and meeting_stamp.minute_of(its) == self.stamp:
             return its
@@ -408,11 +417,23 @@ class _Ownership:
             # минута уже названа темой: голые посекундные рядом — соседки или
             # остатки (правило graph_key), владельца выдаёт только сайдкар
             # или заметка
-            return live_sidecar.exact_stamp(live) or self._note_stamp()
+            exact = live_sidecar.exact_stamp(live)
+            if exact:
+                self.how = f"по сайдкару {live.name}"
+                return exact
+            its = self._note_stamp()
+            if its:
+                self.how = "по строке «Стенограмма:» заметки минуты"
+            return its
         its = self._note_stamp()
         if its:
+            self.how = "по строке «Стенограмма:» заметки минуты"
             return its
+        if self.unsure:
+            return None
         bare = [s for s in self._bare_mains() if not self._own_note(s)]
+        if bare:
+            self.how = "самый ранний голый посекундный файл минуты (правило graph_key)"
         return bare[0] if bare else None
 
     def owns(self, s: str, *, traced: bool = True) -> bool:
@@ -429,6 +450,8 @@ class _Ownership:
         return True
 
     def _foreign_reason(self, s: str, traced: bool) -> str | None:
+        if self.unsure:                  # заметку минуты не прочитать — всё посекундное замораживаем
+            return self.unsure
         if live_sidecar.main_with_key(self.tdir, s) is not None or self._own_note(s):
             return ("под ним своя стенограмма или заметка — соседка (крэш-рестарт в ту же "
                     "минуту) или остаток прерванного переименования")
@@ -437,6 +460,14 @@ class _Ownership:
             return "под ним идёт запись или ждёт восстановления"
         if not traced:
             return "в transcripts/ и recordings/ следа нет — чья это копия, не решить"
+        # Паспорт владельца до наката темы — копии его же стенограммы под
+        # старым именем (`<s>_live.md`, `.prev/<s>.md`): ретитл переименовал
+        # источник, копии остались. Одна запись без стенограммы и заметки —
+        # не паспорт: у соседки она есть раньше стенограммы (DS r4 I1); её
+        # удалит ретеншн, а план говорит вслух.
+        if not (meeting_stamp.files_with_stamp(self.tdir, s, suffix=".md")
+                or meeting_stamp.files_with_stamp(self.tdir / ".prev", s)):
+            return "под ним только запись без стенограммы и заметки — чья, не решить; аудио удалит ретеншн"
         return None
 
 
@@ -463,6 +494,14 @@ def plan(stamp: str, root: pathlib.Path,
             if s:
                 seen.add(s)
     owned = [stamp] + [s for s in sorted(seen) if s != stamp and own.owns(s)]
+    if own.exact:
+        p.notes.append(f"владелец минуты — секунда {own.exact}: {own.how}")
+    elif own.unsure:
+        p.notes.append(f"посекундные файлы минуты не тронуты: {own.unsure}")
+    passport = [s for s in owned[1:] if s != own.exact]
+    if passport:
+        p.notes.append("свои по копиям стенограммы под старым именем (_live/.prev): "
+                       + ", ".join(passport))
 
     for folder in ("transcripts", "recordings"):
         for s in owned:

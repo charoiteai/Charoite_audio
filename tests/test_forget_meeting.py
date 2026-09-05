@@ -24,6 +24,8 @@
     5. Повторный запуск — не авария: забывать больше нечего.
 """
 import pathlib
+
+import pytest
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -138,10 +140,19 @@ def test_plan_takes_the_import_copy_when_the_folder_is_known(tmp_path):
     aware = forget.plan(STAMP, root, graph, import_folder=inbox)
     assert str(done / "Restamped.m4a") not in {str(p) for p in aware.delete}
     assert sum(f"{STAMP}17" in line for line in aware.beyond_reach) == 1, aware.beyond_reach
-    # а с записью под этой секундой — владельца: копия уходит вместе с ней
-    (root / "recordings" / f"{STAMP}17_mic.wav").write_bytes(b"RIFF")
+    # одна запись под этой секундой — ещё не паспорт (у соседки она есть
+    # раньше стенограммы, DS r4): копия и запись остаются, названы вслух
+    wav = root / "recordings" / f"{STAMP}17_mic.wav"
+    wav.write_bytes(b"RIFF")
+    lone = forget.plan(STAMP, root, graph, import_folder=inbox)
+    assert str(done / "Restamped.m4a") not in {str(p) for p in lone.delete}
+    assert str(wav) not in {str(p) for p in lone.delete}
+    assert any(f"{STAMP}17" in line and "только запись" in line for line in lone.beyond_reach), lone.beyond_reach
+    # а копия живого черновика под старым именем — паспорт владельца: всё уходит
+    (root / "transcripts" / f"{STAMP}17_live.md").write_text("черновик\n", encoding="utf-8")
     traced = forget.plan(STAMP, root, graph, import_folder=inbox)
-    assert str(done / "Restamped.m4a") in {str(p) for p in traced.delete}
+    doomed = {str(p) for p in traced.delete}
+    assert str(done / "Restamped.m4a") in doomed and str(wav) in doomed
 
 
 def test_minute_target_owns_the_seconds_files_of_its_minute_but_not_the_neighbour(tmp_path):
@@ -170,6 +181,8 @@ def test_minute_target_owns_the_seconds_files_of_its_minute_but_not_the_neighbou
     # соседка, которая пишется прямо сейчас: только сырая запись (GLM r3)
     (rec / f"{STAMP}58_mic.pcm").write_bytes(b"\x00")
     (rec / f"{STAMP}58_blackhole.wav.part").write_bytes(b"\x00")
+    # соседка между готовой записью и первой стенограммой: только .wav (DS r4)
+    (rec / f"{STAMP}33_mic.wav").write_bytes(b"RIFF")
     inbox = tmp_path / "inbox"
     done = inbox / "done"
     done.mkdir(parents=True)
@@ -187,6 +200,9 @@ def test_minute_target_owns_the_seconds_files_of_its_minute_but_not_the_neighbou
     assert str(rec / f"{STAMP}58_mic.pcm") not in doomed and str(rec / f"{STAMP}58_blackhole.wav.part") not in doomed
     assert any(f"{STAMP}52" in line and "соседка" in line for line in plan.beyond_reach), plan.beyond_reach
     assert any(f"{STAMP}58" in line and "идёт запись" in line for line in plan.beyond_reach), plan.beyond_reach
+    assert str(rec / f"{STAMP}33_mic.wav") not in doomed
+    assert any(f"{STAMP}33" in line and "только запись" in line for line in plan.beyond_reach), plan.beyond_reach
+    assert any(f"{STAMP}23" in line and "по копиям" in line for line in plan.describe().splitlines()), plan.describe()
     # соседка с копией импорта названа один раз, а не в двух блоках (GLM/DS r3)
     assert sum(f"{STAMP}45" in line for line in plan.beyond_reach) == 1, plan.beyond_reach
 
@@ -272,6 +288,29 @@ def test_note_transcript_line_names_the_owner_of_the_minute(tmp_path):
     assert str(tdir / f"{STAMP}40.md") in doomed and str(root / "recordings" / f"{STAMP}40_mic.wav") in doomed
     assert str(tdir / f"{STAMP}11.md") not in doomed
     assert any(f"{STAMP}11" in line for line in plan.beyond_reach), plan.beyond_reach
+
+
+def test_unreadable_minute_note_freezes_the_seconds_files(tmp_path):
+    """DS r4 M1: заметку минуты не прочитать — это «не решить», а не «строки
+    нет»: правило самого раннего файла не применяется, посекундные файлы
+    остаются и названы вслух."""
+    import os
+    if os.geteuid() == 0:
+        pytest.skip("root читает всё — нечитаемую заметку не сымитировать")
+    root, graph = _bare_world(tmp_path, "11")
+    note = graph / "Встречи" / f"{STAMP}.md"
+    note.chmod(0)                     # read_text → PermissionError (OSError)
+    (root / "transcripts" / f"{STAMP}40.md").write_text(f"# Встреча {STAMP}40\n", encoding="utf-8")
+
+    try:
+        plan = forget.plan(STAMP, root, graph)
+    finally:
+        note.chmod(0o600)
+    doomed = {str(p) for p in plan.delete}
+    assert str(root / "transcripts" / f"{STAMP}11.md") not in doomed
+    assert str(root / "recordings" / f"{STAMP}11_mic.wav") not in doomed
+    assert any("не прочитать" in line for line in plan.beyond_reach), plan.beyond_reach
+    assert any("не прочитать" in line for line in plan.notes), plan.notes
 
 
 def test_seconds_target_does_not_reach_across_its_minute(tmp_path):
