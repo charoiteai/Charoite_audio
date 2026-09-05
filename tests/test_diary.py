@@ -85,3 +85,18 @@ def test_diary_text_mode_does_not_warm_the_stt(tmp_path):
     assert r.returncode == 0, r.stderr[-800:]
     imported = {line.rsplit("|", 1)[-1].strip() for line in r.stderr.splitlines() if line.startswith("import time:")}
     assert "stt" not in imported and "onnxruntime" not in imported, sorted(m for m in imported if "stt" in m or "onnx" in m)
+
+
+def test_microphone_branch_keeps_warming_and_joining_the_stt():
+    """Обратная страховка (GLM r1 по №174): ветка микрофона по-прежнему
+    прогревает STT в фоне и ДОЖИДАЕТСЯ прогрева при любом выходе — иначе
+    короткая запись или отмена бросали бы daemon-поток посреди нативного
+    init и роняли процесс на выходе. Проверяется по исходнику: в CI
+    микрофона нет."""
+    src = (ROOT / "src" / "dictate_note.py").read_text(encoding="utf-8")
+    main_src = src[src.index("def main("):]
+    mic = main_src[main_src.index("    else:\n"):main_src.index("    if diary:")]
+    assert "warm_t = threading.Thread(target=warm, daemon=True)" in mic
+    assert "finally:" in mic and "warm_t.join(timeout=60)" in mic
+    text = main_src[main_src.index("if text_mode:"):main_src.index("    else:\n")]
+    assert "warm_t" not in text, "текстовый режим снова прогревает STT"
