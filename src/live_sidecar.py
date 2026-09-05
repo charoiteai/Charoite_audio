@@ -196,6 +196,15 @@ def sidecar_for(live: pathlib.Path, bare: str | None = None) -> pathlib.Path | N
     return found[0] if found else direct
 
 
+def claims(sidecar: pathlib.Path, bare: str) -> bool:
+    """Сайдкар под этим именем — нашей встречи с посекундным штампом `bare`?
+    Единственное свидетельство — ключ `stamp` (пишут демон, накат темы,
+    rename_meeting). Так отличают свой сайдкар, оставшийся под целевым
+    именем после прерванного или откаченного переноса, от сироты соседки
+    (GLM r1 по #494, I2): своему пара воссоединяется, чужой — отказ."""
+    return meeting_stamp.sidecar_claims(sidecar, bare)
+
+
 def move(old_main: pathlib.Path, new_main: pathlib.Path) -> pathlib.Path:
     """Сайдкар переезжает вместе с переименованной стенограммой: дальше он
     под своим именем, без угадывания (advisory GLM r2 по #489). Зовут все
@@ -255,10 +264,22 @@ def exact_stamp(live: pathlib.Path) -> str | None:
     except (OSError, ValueError):
         return None
     value = meta.get("stamp") if isinstance(meta, dict) else None
-    if (isinstance(value, str) and meeting_stamp.stamp_of(value) == value
-            and value != key and meeting_stamp.minute_of(value) == key):
-        return value
-    return None
+    return value if _seconds_stamp_of_minute(value, key) else None
+
+
+def _seconds_stamp_of_minute(value, key: str) -> bool:
+    """Значение ключа `stamp` годится: строка, посекундный штамп (не минута,
+    даже с суффиксом коллизии — DS M3 по main 05.09), той же минуты, и
+    реальное время: регекс пропускает секунды 99, а started_at на них
+    бросает ValueError и ронял бы пересборку (DS на Fireworks, M1)."""
+    if not (isinstance(value, str) and meeting_stamp.stamp_of(value) == value
+            and value != key and meeting_stamp.minute_of(value) == key
+            and value[15:17].isdigit()):     # секунды на местах 15–16; «…1203-1» их не имеет
+        return False
+    try:
+        return meeting_stamp.started_at(value) is not None
+    except ValueError:
+        return False
 
 
 def remember(live: pathlib.Path, key: str, value: str, bare: str | None = None) -> bool:
