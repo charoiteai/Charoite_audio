@@ -38,10 +38,6 @@ final class ImportService: ObservableObject {
     /// Имена, под которые копии ещё только пишутся: два дропа Recording.m4a
     /// подряд не должны целиться в один путь (GLM r2 по #496).
     private var reserved = Set<String>()
-    /// Сколько батчей копий идёт прямо сейчас. Пока > 0, скан не стартует:
-    /// сканер и копировальщик смотрят в одну папку, и первый видел бы
-    /// недописанный файл (Critical GLM+DS r2 по #496).
-    private var copying = 0
 
     /// Папка из Настроек, как её ввёл человек (тильда не раскрыта).
     static var configuredDir: String? {
@@ -66,9 +62,9 @@ final class ImportService: ObservableObject {
 
     func enable(dir: String) {
         disable()
-        scan(dir: dir)
+        scan(dir: dir, settleAll: true)
         timer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.scan(dir: dir) }
+            Task { @MainActor [weak self] in self?.scan(dir: dir, settleAll: true) }
         }
     }
 
@@ -184,7 +180,6 @@ final class ImportService: ObservableObject {
             return
         }
         status = L.t("копирую \(jobs.count) файл(ов)…", "copying \(jobs.count) file(s)…", "正在复制 \(jobs.count) 个文件…")
-        copying += 1
         let names = jobs.map { $0.to.lastPathComponent }
         Task.detached(priority: .userInitiated) {
             var failures: [String] = []
@@ -225,8 +220,10 @@ final class ImportService: ObservableObject {
     }
 
     private func copiesFinished(dir: String, names: [String], copied: [URL], failures: [String]) {
-        copying = max(0, copying - 1)
         reserved.subtract(names)
+        // Папку сменили, пока шла копия: учёт — всегда, хвост для экрана —
+        // только своему каталогу (GLM r3 по #496)
+        guard dir == (Self.configuredDir ?? dir) else { return }
         if !failures.isEmpty {
             status = L.t("не скопировано: \(failures.joined(separator: ", "))",
                          "not copied: \(failures.joined(separator: ", "))",
@@ -241,6 +238,14 @@ final class ImportService: ObservableObject {
         }
         refresh(dir: dir)
         if !copied.isEmpty { scan(dir: dir) }
+    }
+
+    /// Дроп принят, но часть файлов источник не отдал (зависший провайдер,
+    /// файл исчез между дропом и загрузкой) — сказать вслух, а не молчать.
+    func reportNotLoaded(_ count: Int) {
+        status = L.t("не загрузилось из дропа: \(count) файл(ов)",
+                     "not loaded from the drop: \(count) file(s)",
+                     "拖放中有 \(count) 个文件未能加载")
     }
 
     /// «Повторить»: снять метку ошибки и прогнать скан ещё раз.
@@ -263,9 +268,15 @@ final class ImportService: ObservableObject {
 
     // MARK: - Процессы
 
-    private func scan(dir: String) {
-        guard proc == nil, copying == 0 else {
-            scanAgain = true            // предыдущий прогон ещё молотит или идёт копия
+    /// Скан. `settleAll` — с тика слежения: чужая копия в папку (Finder,
+    /// синк) не атомарна, и скрипт ждёт 30 с покоя размера у любого файла;
+    /// кнопка и скан после дропа — сразу (копии вкладки опубликованы через
+    /// .part). Гейта «пока идёт копия» нет намеренно: недописанный файл
+    /// невидим по построению, а счётчик без сторожа мог зависнуть навсегда
+    /// (критика GLM r3 по #496).
+    private func scan(dir: String, settleAll: Bool = false) {
+        guard proc == nil else {
+            scanAgain = true            // предыдущий прогон ещё молотит
             return
         }
         let folder = Self.folderURL(dir)
@@ -290,7 +301,7 @@ final class ImportService: ObservableObject {
         // `--`: путь папки выбирает человек, и argparse не должен прочитать
         // его как флаг, если имя начинается с дефиса (аудит 16.08, п.5).
         p.arguments = [AppSettings.scriptPath("scripts/import_meeting.py", root: root),
-                       "--scan", "--", folder.path]
+                       "--scan"] + (settleAll ? ["--settle-all"] : []) + ["--", folder.path]
         AppSettings.preparePython(p, root: root)
         // Трубы читаем: скрипт печатает по восемь строк на файл, но
         // непрочитанная труба на 64 КБ подвесила бы импорт молча.

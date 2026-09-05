@@ -246,10 +246,16 @@ def prune_done(folder: pathlib.Path, keep_days: float, *, now: float | None = No
         return []
     now = time.time() if now is None else now
     removed: list[pathlib.Path] = []
-    # Сайдкар без файла (копию убрали руками) — мусор, ничего не решает
+    # Сайдкар без файла (копию убрали руками) — мусор, ничего не решает.
+    # Моложе минуты не трогаем: скан пишет сайдкар ДО переноса, и второй
+    # процесс (--prune приложения) успевал бы съесть живой (r3 по #496)
     for orphan in done.glob(f".*{IMPORTED_SIDECAR_SUFFIX}"):
         owner = done / orphan.name[1:-len(IMPORTED_SIDECAR_SUFFIX)]
-        if not owner.exists():
+        try:
+            young = now - orphan.stat().st_mtime < 60
+        except OSError:
+            continue
+        if not owner.exists() and not young:
             orphan.unlink(missing_ok=True)
     for f in sorted(done.iterdir()):
         if f.is_symlink() or not f.is_file() or f.name.startswith("."):
@@ -334,7 +340,28 @@ def wav_complete(path: pathlib.Path, *, settle: bool = True) -> bool:
     return declared >= 44 and actual >= declared
 
 
-def scan_candidates(folder: pathlib.Path, *, skip_failed: bool = True) -> list[pathlib.Path]:
+def settled_enough(path: pathlib.Path, *, settle_all: bool) -> bool:
+    """Готов ли файл к импорту с точки зрения «его ещё пишут?».
+
+    WAV судится по заголовку (или по покою размера, если заголовок без
+    длины). Остальные форматы полноту не объявляют: с `settle_all` (тик
+    слежения) любой файл обязан 30 с не менять размер — Finder-копия
+    большого m4a или материализация из iCloud иначе брались бы на середине
+    (критика GLM/DS r3 по #496). Без флага (кнопка «Обработать сейчас»,
+    скан после дропа — копии вкладки опубликованы атомарно) — сразу.
+    """
+    if path.suffix.lower() == ".wav":
+        return wav_complete(path)
+    if not settle_all:
+        return True
+    try:
+        return _size_settled(path, path.stat().st_size)
+    except OSError:
+        return False
+
+
+def scan_candidates(folder: pathlib.Path, *, skip_failed: bool = True,
+                    settle_all: bool = False) -> list[pathlib.Path]:
     """Поддерживаемые и уже полностью опубликованные файлы папки импорта.
 
     Файл с меткой ошибки прошлого импорта не берём: он ждёт «Повторить».
@@ -352,13 +379,13 @@ def scan_candidates(folder: pathlib.Path, *, skip_failed: bool = True) -> list[p
         if skip_failed and error_marker(path).exists():
             print(f"импорт: {path.name} — прошлый импорт не удался, ждёт «Повторить»")
             continue
-        if path.suffix.lower() == ".wav" and not wav_complete(path):
+        if not settled_enough(path, settle_all=settle_all):
             continue
         out.append(path)
     return out
 
 
-def postponed_files(folder: pathlib.Path) -> list[pathlib.Path]:
+def postponed_files(folder: pathlib.Path, *, settle_all: bool = False) -> list[pathlib.Path]:
     """Файлы, отложенные до следующего скана: копирование ещё идёт.
 
     Нужны только чтобы сказать о них вслух. Молчаливый пропуск человек
@@ -368,8 +395,37 @@ def postponed_files(folder: pathlib.Path) -> list[pathlib.Path]:
         path
         for path in sorted(folder.iterdir())
         if not path.is_symlink() and path.is_file()
-        and path.suffix.lower() == ".wav" and not wav_complete(path)
+        and path.suffix.lower() in (AUDIO | TEXT | SUBS)
+        and not settled_enough(path, settle_all=settle_all)
     ]
+
+
+# Временные файлы моложе этого возраста считаются живыми: копия вкладки
+# (`.<имя>.<uuid>.part`) и отчёт ребёнка (`.<имя>.import-result.json`)
+# при живом процессе не живут дольше минут; час — запас на гигабайт из iCloud.
+TEMP_ORPHAN_AGE = 3600
+
+
+def sweep_temporaries(folder: pathlib.Path, *, now: float | None = None) -> list[pathlib.Path]:
+    """Убрать скрытые временные файлы без владельца.
+
+    `.part` пишет вкладка (копия до атомарной публикации), отчёт ребёнка —
+    скан; краш или Cmd-Q посреди копии оставляли их навсегда: скрытые, ни
+    одним сканером не видимые гигабайты, при синкаемой папке — ещё и в
+    iCloud (GLM/DS r3 по #496). Только по возрасту: живую копию не задеть.
+    """
+    now = time.time() if now is None else now
+    removed: list[pathlib.Path] = []
+    for p in list(folder.glob(".*.part")) + list(folder.glob(".*.import-result.json")):
+        try:
+            if p.is_symlink() or not p.is_file() or now - p.stat().st_mtime < TEMP_ORPHAN_AGE:
+                continue
+            p.unlink()
+            removed.append(p)
+            print(f"импорт: убран временный файл без владельца — {p.name}")
+        except OSError:
+            continue
+    return removed
 
 
 def _cfg() -> dict:
@@ -528,6 +584,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "файлы из неё, успешные переносить в done/")
     ap.add_argument("--retry-failed", action="store_true",
                     help="со --scan: снять метки ошибок и попробовать сбойные ещё раз")
+    ap.add_argument("--settle-all", action="store_true",
+                    help="со --scan: любой файл должен 30 с не менять размер "
+                         "(тик слежения: чужие копии в папку не атомарны)")
     ap.add_argument("--prune", action="store_true",
                     help="файл = ПАПКА-вход: только удалить из done/ копии, "
                          "отслужившие import_keep_days")
@@ -591,6 +650,7 @@ def main() -> None:
         cfg = _cfg()
         removed = prune_done(folder, import_keep_days(cfg, args.keep_days),
                              graph=graphs.graph_dir(cfg))
+        removed += sweep_temporaries(folder)
         print(f"ретеншн импорта: удалено файлов — {len(removed)}")
         return
 
@@ -620,8 +680,9 @@ def main() -> None:
         for marker in folder.glob(f".*{ERROR_MARKER_SUFFIX}"):
             if not (folder / marker.name[1:-len(ERROR_MARKER_SUFFIX)]).exists():
                 marker.unlink(missing_ok=True)
-        todo = scan_candidates(folder)
-        for waiting in postponed_files(folder):
+        sweep_temporaries(folder)
+        todo = scan_candidates(folder, settle_all=args.settle_all)
+        for waiting in postponed_files(folder, settle_all=args.settle_all):
             print(f"ещё копируется, отложен до следующего скана: {waiting.name}")
         if not todo:
             print("готовых файлов нет — нечего импортировать")

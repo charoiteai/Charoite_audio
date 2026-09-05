@@ -206,10 +206,16 @@ struct ExternalRecordingView: View {
         guard !candidates.isEmpty else { return false }
         let dir = self.dir
         Task { @MainActor in
-            var urls: [URL] = []
-            for p in candidates {
-                if let url = await Self.fileURL(from: p) { urls.append(url) }
+            // Провайдеры грузятся параллельно и с таймаутом: зависший источник
+            // drag-а не должен ронять весь дроп, а промахи — не молчать (r3)
+            let urls = await withTaskGroup(of: URL?.self, returning: [URL].self) { group in
+                for p in candidates { group.addTask { await Self.fileURL(from: p) } }
+                var out: [URL] = []
+                for await url in group { if let url { out.append(url) } }
+                return out
             }
+            let missed = candidates.count - urls.count
+            if missed > 0 { ImportService.shared.reportNotLoaded(missed) }
             guard !urls.isEmpty else { return }
             ImportService.shared.add(urls: urls, dir: dir)
         }
@@ -217,10 +223,21 @@ struct ExternalRecordingView: View {
     }
 
     private static func fileURL(from provider: NSItemProvider) async -> URL? {
-        await withCheckedContinuation { cont in
-            provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
-                cont.resume(returning: data.flatMap { URL(dataRepresentation: $0, relativeTo: nil) })
+        await withTaskGroup(of: URL?.self) { group in
+            group.addTask {
+                await withCheckedContinuation { cont in
+                    provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
+                        cont.resume(returning: data.flatMap { URL(dataRepresentation: $0, relativeTo: nil) })
+                    }
+                }
             }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(10))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
         }
     }
 

@@ -201,7 +201,9 @@ def test_app_passes_folder_after_double_dash():
     флаг (аудит 16.08, п.5) — приложение ставит `--` перед путём."""
     swift = (ROOT / "app" / "Sources" / "CharoiteApp" / "Services"
              / "ImportService.swift").read_text(encoding="utf-8")
-    assert '"--scan", "--", folder.path' in swift
+    # --scan (с необязательным --settle-all между) … "--", папка — в обоих запусках
+    assert '"--scan"] + (settleAll ? ["--settle-all"] : []) + ["--", folder.path]' in swift
+    assert '"--prune", "--", folder.path' in swift
 
 
 def test_scan_reports_files_it_postponed(tmp_path):
@@ -580,8 +582,66 @@ def test_one_broken_file_does_not_stop_the_queue(tmp_path, monkeypatch):
     assert a.exists(), "сбойный перенос — файл на месте"
     assert not b.exists(), "второй файл обработан несмотря на первый"
     assert not (tmp_path / "done" / "b.txt").exists(), "уборка в конце скана (keep 0) прошла"
-    assert not list((tmp_path / "done").glob(".*.imported.json")), \
-        "сайдкар, записанный до сорвавшегося переноса, убран как сирота"
+    orphan = im.imported_sidecar(tmp_path / "done" / "a.txt")
+    assert orphan.exists(), "свежий сайдкар (моложе минуты) уборка щадит — живой мог быть до переноса"
+    im.prune_done(tmp_path, 0, now=time.time() + 120)
+    assert not orphan.exists(), "сайдкар, записанный до сорвавшегося переноса, убран как сирота"
+
+
+def test_settle_all_holds_any_fresh_file_but_not_explicit_scans(tmp_path):
+    """Тик слежения: чужая копия m4a/txt в папку не атомарна — файл обязан
+    30 с не менять размер; кнопка «Обработать сейчас» и скан после дропа
+    (копии вкладки опубликованы через .part) берут сразу (r3 по #496)."""
+    import import_meeting as im
+
+    f = tmp_path / "Recording.m4a"
+    f.write_bytes(b"\0" * 1000)
+    assert im.scan_candidates(tmp_path) == [f], "без флага — как раньше, сразу"
+    assert im.scan_candidates(tmp_path, settle_all=True) == []
+    assert im.postponed_files(tmp_path, settle_all=True) == [f]
+    _age_markers(tmp_path, WAV_SETTLE_SECONDS + 1)
+    assert im.scan_candidates(tmp_path, settle_all=True) == [f]
+    with f.open("ab") as fh:
+        fh.write(b"\0" * 10)
+    assert im.scan_candidates(tmp_path, settle_all=True) == [], "рост размера — отсчёт заново"
+
+
+def test_sweep_removes_only_old_temporaries(tmp_path):
+    """Сироты .part и отчётов ребёнка после краха уходят по возрасту; живая
+    копия (свежая) и чужие файлы — нет (GLM/DS r3 по #496)."""
+    import import_meeting as im
+
+    old_part = tmp_path / ".Recording.m4a.a1b2c3d4.part"
+    old_part.write_bytes(b"x")
+    fresh_part = tmp_path / ".Live.m4a.ffffffff.part"
+    fresh_part.write_bytes(b"y")
+    old_result = tmp_path / ".Recording.m4a.import-result.json"
+    old_result.write_text("{}", encoding="utf-8")
+    other = tmp_path / ".Recording.m4a.import-error"
+    other.write_text("{}", encoding="utf-8")
+    ago = time.time() - im.TEMP_ORPHAN_AGE - 5
+    for p in (old_part, old_result):
+        os.utime(p, (ago, ago))
+    removed = im.sweep_temporaries(tmp_path)
+    assert sorted(removed) == sorted([old_part, old_result])
+    assert fresh_part.exists() and other.exists()
+
+
+def test_orphan_sidecar_sweep_spares_the_young(tmp_path):
+    """Сайдкар пишется до переноса: параллельный --prune не должен съесть
+    живой сайдкар моложе минуты (r3 по #496)."""
+    import import_meeting as im
+
+    done = tmp_path / "done"
+    done.mkdir()
+    young = im.imported_sidecar(done / "a.m4a")
+    im._write_json(young, {"imported_at": 1, "delete_after": 2})
+    old = im.imported_sidecar(done / "b.m4a")
+    im._write_json(old, {"imported_at": 1, "delete_after": 2})
+    ago = time.time() - 120
+    os.utime(old, (ago, ago))
+    im.prune_done(tmp_path, 2)
+    assert young.exists() and not old.exists()
 
 
 def test_import_keep_days_is_forgiving_but_not_negative(capsys):
