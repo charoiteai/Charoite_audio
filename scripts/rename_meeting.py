@@ -442,6 +442,11 @@ def main() -> None:
     p = plan(graph, tdir, stamp, pretty, slug)
     if p.get("blocked"):
         sys.exit(1)     # причина уже напечатана планом (DS r1 M1 / r2 M3 по #494)
+    if not p["moves"] and p["old_folder"] is None and (tdir / f"{stamp}_{slug}.md").exists():
+        # no-op: встреча уже носит это имя, а заметки/архива может и не быть —
+        # это не «не нашлась» (GLM r3 M3 по #494)
+        print(f"уже переименована: {stamp} — «{pretty}»")
+        return
     if not p["moves"] and p["old_folder"] is None and not p["note"].exists():
         sys.exit(f"встреча {stamp} не нашлась ни в transcripts/, ни в графе")
 
