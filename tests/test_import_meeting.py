@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
+import import_meeting as im  # noqa: E402
 from import_meeting import (  # noqa: E402
     WAV_SETTLE_SECONDS,
     clean_date,
@@ -673,3 +674,44 @@ def test_import_keep_days_is_forgiving_but_not_negative(capsys):
     assert im.import_keep_days({"audio": {"import_keep_days": 5}}, override="0") == 0
     with pytest.raises(SystemExit):
         im.import_keep_days({"audio": {"import_keep_days": -1}})
+
+
+def test_direct_import_publishes_a_meeting_status(tmp_path, monkeypatch, capsys):
+    """Поле 05.09: две записи с телефона были разобраны и разложены в граф,
+    но в списке встреч приложения их не было — импорт не писал статус
+    встречи. Теперь: прогресс на графе, «готово» со ссылкой на заметку, а
+    повтор импорта — тоже «готово» (идемпотентно)."""
+    import json
+
+    root = tmp_path / "root"
+    (root / "transcripts").mkdir(parents=True)
+    src = tmp_path / "Заметки.txt"
+    src.write_text("х" * 400, encoding="utf-8")
+    note = tmp_path / "graph" / "Встречи" / "2026-09-05_1200.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("# встреча\n", encoding="utf-8")
+
+    class Ok:
+        returncode = 0
+        stdout = stderr = ""
+    calls = []
+    monkeypatch.setattr(im.subprocess, "run", lambda cmd, **kw: (calls.append(cmd), Ok())[1])
+    monkeypatch.setattr(im, "ROOT", root)
+    monkeypatch.setattr(im, "_cfg", lambda: {"log": {"transcripts_dir": "transcripts"}})
+    monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
+    monkeypatch.setattr(im, "find_meeting_note", lambda cfg, t, **kw: note)
+    monkeypatch.setattr(sys, "argv", ["import_meeting.py", str(src), "--date", "2026-09-05", "--time", "12:00"])
+    im.main()
+
+    status = root / "logs" / "meeting-status" / "2026-09-05_1200.json"
+    assert status.exists(), sorted((root / "logs").rglob("*")) if (root / "logs").exists() else "нет статуса"
+    data = json.loads(status.read_text(encoding="utf-8"))
+    assert data["state"] == "ready" and data["note_path"] == str(note.resolve())
+    assert data["transcript_path"].endswith("2026-09-05_1200.md")
+    assert any("graph_updater.py" in str(c) for c in calls)
+
+    # повтор той же записи: встреча уже есть — статус остаётся «готово»
+    status.unlink()
+    im.main()
+    assert json.loads(status.read_text(encoding="utf-8"))["state"] == "ready"
+    assert "повтор не нужен" in capsys.readouterr().out

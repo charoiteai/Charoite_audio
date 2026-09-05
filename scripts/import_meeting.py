@@ -55,6 +55,7 @@ from config_loader import load_user_or_example  # noqa: E402
 
 import charoite_paths  # noqa: E402
 import safe_write  # noqa: E402
+from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
 
 AUDIO = {".m4a", ".wav", ".mp3", ".aif", ".aiff", ".caf"}
 TEXT = {".txt", ".md"}
@@ -747,6 +748,7 @@ def main() -> None:
         # (найдено 06.08: три файла с телефона молотились по кругу).
         # Повтор — это успех: встреча уже в архиве.
         print(f"встреча {already.name} уже импортирована — повтор не нужен")
+        _status("ready", already, _note_for(cfg, already))
         old_stamp = meeting_stamp.stamp_of(already.stem)
         old_folder = archive_folder_for(graphs.graph_dir(cfg) or pathlib.Path(""), old_stamp) if old_stamp else None
         old_src = old_folder / f"Исходник{src.suffix.lower()}" if old_folder is not None else None
@@ -766,9 +768,11 @@ def main() -> None:
         # целиком — с секундами и суффиксом у соседки в занятой минуте,
         # иначе она ложилась в минутный файл поверх первой (круг-1 по
         # PR #388, DeepSeek).
+        _status("processing", tdir / f"{stamp}.md", "rebuilding_transcript")
         r = subprocess.run([sys.executable, str(CODE / "src" / "transcribe_file.py"),
                             str(src), stamp[11:], day])
         if r.returncode != 0:
+            _status("failed", tdir / f"{stamp}.md", "транскрибация не удалась")
             sys.exit("транскрибация не удалась")
         tpath = tdir / f"{stamp}.md"
         if slug:
@@ -798,6 +802,7 @@ def main() -> None:
 
     # единый хвост: граф → минутки/разбор/тезисы/архив (идемпотентно)
     print("— обновляю граф…")
+    _status("processing", tpath, "updating_graph")
     graph_run = subprocess.run(
         [sys.executable, str(CODE / "src" / "graph_updater.py"), str(tpath)])
     # = graph_updater.EXIT_NO_SPEECH. Именно копия, не импорт: верхний уровень
@@ -815,6 +820,7 @@ def main() -> None:
         # из-за трёхсекундной пустышки: импорт случайного обрывка стоил
         # минуты полной загрузки машины (найдено 06.08 на тестовом файле).
         print(f"готово: пустая запись {stamp} — стенограмма сохранена, конвейер не нужен")
+        _status("ready", tpath, None)
         _report(args.result_json, {"kind": "meeting", "source": src.name,
                                    "size": src.stat().st_size, "no_speech": True,
                                    "stamp": stamp, "transcript": str(tpath)})
@@ -835,10 +841,34 @@ def main() -> None:
         if dest.exists():
             archived = dest
     print(f"готово: встреча {stamp} в архиве и графе")
+    if graph_run.returncode == no_graph:
+        # Список встреч показывает ошибку с кнопкой «Повторить обработку» —
+        # тот же путь, что у демона, когда модель лежала
+        _status("failed", tpath, "модель не дала разбор — граф не обновлён, повторите обработку")
+    else:
+        _status("ready", tpath, _note_for(cfg, tpath))
     _report(args.result_json, {"kind": "meeting", "source": src.name,
                                "size": src.stat().st_size, "stamp": stamp,
                                "transcript": str(tpath),
                                "archive_source": str(archived) if archived else None})
+
+
+def _status(method: str, transcript: pathlib.Path, *args) -> None:
+    """Статус встречи для приложения — как у демона и пересборки: иначе
+    импортированная встреча живёт только на вкладке импорта, а в списке
+    встреч её нет (поле 05.09: две записи с телефона разобраны, разложены в
+    граф и архив — и невидимы). Прогресс не смеет ронять импорт."""
+    try:
+        getattr(MeetingStatusStore(ROOT), method)(transcript, *args)
+    except Exception as e:  # noqa: BLE001
+        print(f"статус встречи не записан ({type(e).__name__}: {e})")
+
+
+def _note_for(cfg: dict, transcript: pathlib.Path) -> pathlib.Path | None:
+    try:
+        return find_meeting_note(cfg, transcript)
+    except Exception:  # noqa: BLE001 — статус важнее ссылки на заметку
+        return None
 
 
 def _scan_one(f: pathlib.Path, done: pathlib.Path, keep_days: float) -> bool:
