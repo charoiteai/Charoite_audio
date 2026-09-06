@@ -150,6 +150,9 @@ def _to_checkbox(line: str) -> str:
 # участнике «Саша» пройдёт; фамилий в шапке стенограммы обычно нет.
 _PARTICIPANTS_HEAD = re.compile(r"^(?:Участники|Participants|参会者)[^:：]*[:：]\s*(.+)$", re.M)
 _SPEAKER_LABEL = re.compile(r"^\*\*([^*\n]{1,60})\*\*\s*\[\d{2}:\d{2}", re.M)
+# Те же паттерны нужны graph_updater (фон записи, №185): один источник, чтобы
+# дрейф формата метки не делал говоривших неговорившими (GLM I4 по #512).
+PARTICIPANTS_HEAD, SPEAKER_LABEL = _PARTICIPANTS_HEAD, _SPEAKER_LABEL
 _PLACEHOLDER = re.compile(r"^(?:собеседник|speaker|说话人|发言人|я|me)\b", re.I)
 _COLLECTIVE = frozenset({
     "команда", "все", "всем", "коллеги", "участники", "владелец", "владелец и собеседники",

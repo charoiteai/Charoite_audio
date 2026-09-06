@@ -235,7 +235,9 @@ def test_only_this_meetings_participants_may_sign_a_quote():
     src = (SRC / "graph_updater.py").read_text(encoding="utf-8")
     block = src[src.index("    speakers = {p["):src.index("    for c in cores:")]
     assert "Люди" not in block, "список говорящих снова берётся из графа"
-    assert "Участники" in block, "шапка стенограммы больше не читается"
+    # шапка читается общим парсером (#512: один на speakers и фильтр фона)
+    assert "header_participants(speech)" in block, "шапка стенограммы больше не читается"
+    assert graph_updater.header_participants("Участники (звучали в разговоре): Ольга, Пётр") == {"Ольга", "Пётр"}
 
 
 def test_a_longer_phrase_containing_a_name_is_not_that_person():
@@ -312,9 +314,14 @@ def test_a_time_inside_the_quote_is_not_the_time_of_the_turn():
 
 
 def test_the_participants_header_is_read_in_three_languages_without_roles():
-    src = (SRC / "graph_updater.py").read_text(encoding="utf-8")
-    assert "Participants|参会者" in src, "шапка снова только по-русски"
-    assert "[(（].*?[)）]" in src, "роль в скобках снова попадёт в имя узла"
+    """Паттерн шапки живёт в action_items (один источник, #512) и знает три языка;
+    роль в скобках в имя узла не попадает."""
+    hp = graph_updater.header_participants
+    assert hp("Participants (heard): Olga, Peter") == {"Olga", "Peter"}
+    assert hp("参会者：王, 李") == {"王", "李"}
+    assert hp("Участники (звучали в разговоре): Ольга (аналитик), Пётр") == {"Ольга", "Пётр"}
+    assert "[(（].*?[)）]" in (SRC / "graph_updater.py").read_text(encoding="utf-8"), \
+        "роль в скобках снова попадёт в имя узла"
 
 
 def test_a_live_node_stops_the_redirect_chain(tmp_path):
@@ -433,9 +440,10 @@ def test_seconds_do_not_break_the_inline_path():
 
 
 def test_a_role_with_a_comma_does_not_split_a_participant():
-    src = (SRC / "graph_updater.py").read_text(encoding="utf-8")
-    block = src[src.index("        head = re.sub("):src.index("    for c in cores:")]
-    assert 'head.split(",")' in block, "скобки снова снимаются после запятой"
+    """«Пётр (руководитель, отдел продаж)» — один человек: скобки снимаются ДО запятой."""
+    got = graph_updater.header_participants(
+        "Участники (звучали в разговоре): Пётр (руководитель, отдел продаж), Ольга")
+    assert got == {"Пётр", "Ольга"}, got
 
 
 def test_the_pipeline_clips_the_notes_before_verification(tmp_path):
