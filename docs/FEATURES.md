@@ -957,6 +957,12 @@ it signals degradation, it does not break the loop.
   carries its date: the order comes from the meeting time in the archive
   name, not the file mtime — the nightly review touches old folders and
   used to float them to the top as if they were fresh.
+- **Action items go to participants only.** If the minutes assign a task to
+  someone who was not in the meeting (merely mentioned), the line loses its
+  checkbox and gets a «⚠ не участник» mark: it stays out of the Tasks window
+  and the reader sees the assignee must be chosen again. Participants come
+  from the transcript header, speaker labels and the owner; unknown — nothing
+  is marked.
 - **Streaming archive answers** — first words in ~1s, token-by-token
   with a typing cursor; the chat model picker lists what Ollama
   actually has.

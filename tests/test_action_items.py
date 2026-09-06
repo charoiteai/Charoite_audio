@@ -12,7 +12,7 @@ import sys
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
-from action_items import normalize  # noqa: E402
+from action_items import OUTSIDER_MARK, flag_outsiders, normalize, participants_of  # noqa: E402
 
 CHECKBOX = re.compile(r"^\s*[-*] \[[ xX]\] ", re.M)
 
@@ -282,3 +282,53 @@ def test_bold_name_with_bold_deadline_keeps_the_name_bold():
     остаётся чётным, и страховка не снимает жирность имени."""
     out = normalize("**Поручения:**\n*   **Мира** — задача — **Срок: завтра**.\n")
     assert "- [ ] **Мира** — задача — завтра" in out, out
+
+
+# ---- исполнитель — участник встречи (05.09: поручение упомянутому, не присутствующему)
+
+TRANSCRIPT = """# Встреча 2026-09-05_1413 — Отладка модели
+Участники (звучали в разговоре): Андрей, Дмитрий (бизнес), Аня
+
+**Андрей** [14:15]:
+Давайте посмотрим запрос.
+
+**Собеседник 2** [14:16]:
+Угу.
+"""
+
+
+def test_participants_come_from_header_labels_and_owner():
+    p = participants_of(TRANSCRIPT, owner="Игорь Ветров")
+    assert {"Андрей", "Дмитрий", "Аня", "Игорь Ветров"} <= p
+    assert not any(x.startswith("Собеседник") for x in p), p
+    assert participants_of("") == set()
+
+
+def test_outsider_loses_checkbox_and_gets_a_mark():
+    minutes = """## Поручения
+- [ ] **Саша Никитин** — отладить конвертацию MD — до пятницы
+- [ ] **Андрей** — убрать кавычки из промпта
+- [ ] **Команда** — собрать тесты
+## Открытые вопросы
+- [ ] **Никитин** — вне раздела поручений, не трогаем
+"""
+    out = flag_outsiders(minutes, {"Андрей", "Дмитрий", "Аня"})
+    assert f"- {OUTSIDER_MARK} (Саша Никитин): **Саша Никитин** — отладить конвертацию MD — до пятницы" in out, out
+    assert "- [ ] **Андрей** — убрать кавычки из промпта" in out
+    assert "- [ ] **Команда** — собрать тесты" in out
+    assert "- [ ] **Никитин** — вне раздела" in out
+    assert out.count("- [ ]") == 3
+
+
+def test_case_forms_owner_and_pairs():
+    out = flag_outsiders("## Поручения\n- [ ] **Ольге** — макет\n- [ ] **Игорь** — смета\n",
+                         {"Ольга", "Игорь Ветров"})
+    assert "⚠" not in out, out
+    pair = flag_outsiders("## Поручения\n- [ ] **Дмитрий и Ольга** — токены\n", {"Дмитрий"})
+    assert f"{OUTSIDER_MARK} (Ольга)" in pair, pair
+
+
+def test_unknown_participants_change_nothing():
+    txt = "## Поручения\n- [ ] **Кто-то** — что-то\n"
+    assert flag_outsiders(txt, set()) == txt
+

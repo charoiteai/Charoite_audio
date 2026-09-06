@@ -984,6 +984,10 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     # Те же два шага, что у кнопки «Протокол»: сверка номеров и дат со
     # стенограммой и чекбоксы в формат окна «Задачи».
     doc = action_items.normalize(fact_check.annotate(doc, speech))
+    # Поручение тому, кого на встрече не было, — пометка, не задача (05.09:
+    # минутки приписали поручение упомянутому, а не присутствующему).
+    doc = action_items.flag_outsiders(doc, action_items.participants_of(
+        speech, owner=(cfg.get("sufler") or {}).get("user_name") or ""))
     if current is not None:
         prev_dir = live.parent / ".prev"
         prev_dir.mkdir(exist_ok=True)

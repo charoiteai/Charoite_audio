@@ -128,3 +128,96 @@ def _to_checkbox(line: str) -> str:
     if body.count("**") % 2 == 1:
         body = body.replace("**", "")
     return f"- [ ] {body}"
+
+
+# ---- исполнитель поручения — участник встречи --------------------------------
+# 05.09 минутки приписали поручение Саше Никитину, которого на встрече не было
+# (его лишь упомянули: «это к Саше Никитину вопрос»), и пример по валютам —
+# Дмитрию вместо Ани. Промпт просит имена из разговора, но модель охотно
+# назначает того, о ком говорили. Кому можно: тому, кто говорил (метка
+# говорящего в стенограмме) или кого конвейер записал в шапку «Участники
+# (звучали в разговоре)», плюс владелец. Собирательные исполнители
+# («Команда», «Все», «владелец и собеседники») — не люди, их не проверяем.
+# Ограничение: сверка по имени, а не по фамилии — «Саша Никитин» при
+# участнике «Саша» пройдёт; фамилий в шапке стенограммы обычно нет.
+_PARTICIPANTS_HEAD = re.compile(r"^(?:Участники|Participants|参会者)[^:：]*[:：]\s*(.+)$", re.M)
+_SPEAKER_LABEL = re.compile(r"^\*\*([^*\n]{1,60})\*\*\s*\[\d{2}:\d{2}", re.M)
+_PLACEHOLDER = re.compile(r"^(?:собеседник|speaker|说话人|发言人|я|me)\b", re.I)
+_COLLECTIVE = frozenset({
+    "команда", "все", "всем", "коллеги", "участники", "владелец", "владелец и собеседники",
+    "team", "all", "everyone", "owner", "participants", "全体", "团队", "所有人",
+})
+_ASSIGNEE_LINE = re.compile(r"^(\s*)[-*] \[[ xX]\] \*\*([^*\n]{1,80})\*\*(.*)$")
+_NAME_SPLIT = re.compile(r"\s*(?:,|/|;|\s+и\s+|\s+and\s+|\s+&\s+)\s*", re.I)
+OUTSIDER_MARK = "⚠ не участник"
+
+
+def participants_of(transcript: str, owner: str = "") -> set[str]:
+    """Кто был на встрече по стенограмме: шапка «Участники (звучали в
+    разговоре)» + метки говорящих + владелец. Метки-заглушки («Собеседник 2»,
+    «Speaker 1», «Я») и роли в скобках не в счёт. Пусто — участники неизвестны,
+    и судить некого."""
+    names: set[str] = set()
+    text = transcript or ""
+    m = _PARTICIPANTS_HEAD.search(text)
+    if m:
+        head = re.sub(r"\s*[(（].*?[)）]", "", m.group(1))
+        names |= {x.strip() for x in head.split(",") if x.strip()}
+    for lab in _SPEAKER_LABEL.findall(text):
+        lab = lab.strip()
+        if lab and not _PLACEHOLDER.match(lab):
+            names.add(lab)
+    if owner and owner.strip():
+        names.add(owner.strip())
+    return names
+
+
+def _is_participant(name: str, participants: set[str]) -> bool:
+    n = name.strip().strip(".").casefold()
+    if not n or n in _COLLECTIVE:
+        return True
+    first = n.split()[0]
+    for p in participants:
+        pf = p.strip().casefold().split()
+        if not pf:
+            continue
+        # полное имя, первое имя или падежная форма («Ольге» ↔ «Ольга»):
+        # общий префикс из четырёх букв, как у speaker_names.PREFIX
+        if n == " ".join(pf) or first == pf[0]:
+            return True
+        if len(first) >= 4 and len(pf[0]) >= 4 and first[:4] == pf[0][:4]:
+            return True
+    return False
+
+
+def flag_outsiders(text: str, participants: set[str]) -> str:
+    """Поручение тому, кого на встрече не было, — пометка, а не задача.
+
+    Строка «- [ ] **Имя** — …» в разделе поручений становится
+    «- ⚠ не участник (Имя): **Имя** — …»: без чекбокса её не подхватит окно
+    «Задачи», а читающий минутки видит, что исполнителя надо назначить заново
+    или передать дальше. Остальные разделы и известные исполнители не
+    трогаются. Пустой список участников — ничего не решаем."""
+    if not participants:
+        return text
+    out: list[str] = []
+    inside = False
+    for line in text.split("\n"):
+        if _SECTION.match(line):
+            inside = True
+            out.append(line)
+            continue
+        if inside and ((_OTHER_SECTION.match(line)
+                        or (_BARE_HEADING.match(line) and _KNOWN_BARE_SECTION.match(line)))
+                       and not _BULLET.match(line)):
+            inside = False
+        if inside:
+            m = _ASSIGNEE_LINE.match(line)
+            if m:
+                names = [x for x in _NAME_SPLIT.split(m.group(2)) if x.strip()]
+                strangers = [x.strip() for x in names if not _is_participant(x, participants)]
+                if strangers:
+                    line = f"{m.group(1)}- {OUTSIDER_MARK} ({', '.join(strangers)}): **{m.group(2)}**{m.group(3)}"
+        out.append(line)
+    return "\n".join(out)
+
