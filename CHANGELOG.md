@@ -5,6 +5,18 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.74.0](https://github.com/charoiteai/Charoite_audio/compare/v0.73.0...v0.74.0) (2026-09-06)
+
+
+### Features
+
+* **review:** мост L4 в минутки — восстановленные ревизией поручения чекбоксами ([#518](https://github.com/charoiteai/Charoite_audio/issues/518)) ([6942e66](https://github.com/charoiteai/Charoite_audio/commit/6942e6689f6cddac6f1b55a9e2fa16b1be9e6ec4))
+
+
+### Bug Fixes
+
+* **app:** диктовка читает фокус в фоне на старте и при доставке ([#517](https://github.com/charoiteai/Charoite_audio/issues/517)) ([7f5bf40](https://github.com/charoiteai/Charoite_audio/commit/7f5bf4084632cb0b781cb4de75ce4c8d4dfb4ab3))
+
 ## [0.73.0](https://github.com/charoiteai/Charoite_audio/compare/v0.72.3...v0.73.0) (2026-09-06)
 
 
