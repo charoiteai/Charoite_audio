@@ -279,16 +279,41 @@ def test_import_future_stamp_falls_back_to_mtime(tmp_path):
     assert im.meeting_moment(p) == (LOCAL, None)
 
 
-def test_import_stamp_finds_old_import_under_mtime_minute(tmp_path):
-    # до 06.09 минута бралась из mtime: повторный импорт того же файла после
-    # правки ищет повтор и там (also=), а не заводит вторую встречу
+def test_import_stamp_finds_same_recording_in_another_minute(tmp_path):
+    # до 06.09 минута бралась из mtime, а mtime у заново скопированного файла —
+    # момент копирования: повтор «та же запись» ищется по всей папке, с размером
     tdir = tmp_path / "transcripts"
     tdir.mkdir()
     (tdir / "2026-09-06_1610.md").write_text(
         "# Встреча 2026-09-06_1610 — запись Recording.m4a (5000 Б)\n", encoding="utf-8")
-    stamp, already = im.import_stamp(tdir, "2026-09-05_1413", "Recording.m4a", "00", 5000,
-                                     also=("2026-09-06_1610",))
-    assert stamp == "2026-09-06_1610" and already is not None
-    # другая запись — минуты свободны, повтора нет
-    assert im.import_stamp(tdir, "2026-09-05_1413", "Other.m4a", "00", 1, also=("2026-09-06_1610",)) \
-        == ("2026-09-05_1413", None)
+    (tdir / "2026-09-06_1610_разбор.md").write_text("# производный файл\n", encoding="utf-8")
+    stamp, already = im.import_stamp(tdir, "2026-09-05_1413", "Recording.m4a", "00", 5000)
+    assert stamp == "2026-09-06_1610" and already is not None and already.name == "2026-09-06_1610.md"
+    # другой размер с тем же именем (телефон экспортирует всё как Recording.m4a) — не повтор
+    assert im.import_stamp(tdir, "2026-09-05_1413", "Recording.m4a", "00", 7000) == ("2026-09-05_1413", None)
+    # шапка без размера (импорт до 23.08) вне своей минуты — не повтор: имя слишком общее
+    (tdir / "2026-09-04_0900.md").write_text("# Встреча 2026-09-04_0900 — импорт memo.m4a\n", encoding="utf-8")
+    assert im.import_stamp(tdir, "2026-09-05_1413", "memo.m4a", "00", 10) == ("2026-09-05_1413", None)
+    # …а в своей минуте — повтор, как и раньше
+    assert im.import_stamp(tdir, "2026-09-04_0900", "memo.m4a", "00", 10)[1] is not None
+
+
+def test_mp3_v24_frame_unsync_is_undone(tmp_path):
+    payload = b"\1" + "2026-09-05T14:13:00".encode("utf-16")                 # BOM ff fe → ff 00 fe
+    unsynced = payload.replace(b"\xff", b"\xff\x00")
+    frame = b"TDRC" + _syncsafe(len(unsynced)) + b"\0\x02" + unsynced         # флаг unsync кадра (v2.4)
+    p = tmp_path / "unsync24.mp3"
+    p.write_bytes(b"ID3\4\0\x80" + _syncsafe(len(frame)) + frame)
+    assert media_meta.recorded_at(p) == LOCAL
+
+
+def test_wav_huge_info_list_is_scanned_past_first_mebibyte(tmp_path):
+    raw = b"2026-09-05 14:13:00\0"
+    filler = b"ICMT" + struct.pack("<I", 1_200_000) + b"x" * 1_200_000        # 1,2 МБ комментария до ICRD
+    info_body = b"INFO" + filler + b"ICRD" + struct.pack("<I", len(raw)) + raw
+    chunks = (b"fmt " + struct.pack("<I", 16) + b"\0" * 16
+              + b"LIST" + struct.pack("<I", len(info_body)) + info_body
+              + b"data" + struct.pack("<I", 8) + b"\0" * 8)
+    p = tmp_path / "big.wav"
+    p.write_bytes(b"RIFF" + struct.pack("<I", 4 + len(chunks)) + b"WAVE" + chunks)
+    assert media_meta.recorded_at(p) == LOCAL

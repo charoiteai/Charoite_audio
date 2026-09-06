@@ -659,9 +659,35 @@ def find_repeat(tdir: pathlib.Path, minute: str, src_name: str,
     return None, taken
 
 
+def find_repeat_anywhere(tdir: pathlib.Path, src_name: str,
+                         src_size: int | None) -> pathlib.Path | None:
+    """Та же запись где угодно в папке — последний рубеж дедупа.
+
+    Минута штампа у одного и того же файла может меняться: до 06.09 она
+    бралась из mtime, теперь — из самой записи (media_meta), а mtime у
+    повторно скопированного файла — момент копирования. Поэтому повтор
+    ищется по шапке во всей папке, но только с РАЗМЕРОМ в шапке: телефон
+    экспортирует всё как Recording.m4a, и без размера две разные записи
+    склеились бы по имени.
+    """
+    if src_size is None or not tdir.is_dir():
+        return None
+    for p in sorted(tdir.glob("*.md")):
+        if meeting_stamp.stamp_of(p.stem) is None:
+            continue
+        try:
+            with p.open(encoding="utf-8", errors="replace") as fh:
+                head = fh.readline()
+        except OSError:
+            continue
+        m = _SOURCE_HEAD_RE.search(head)
+        if m and m.group("tail").endswith(" Б)") and same_source(head, src_name, src_size):
+            return p
+    return None
+
+
 def import_stamp(tdir: pathlib.Path, minute: str, src_name: str,
-                 seconds: str, src_size: int | None = None,
-                 also: tuple[str, ...] = ()) -> tuple[str, pathlib.Path | None]:
+                 seconds: str, src_size: int | None = None) -> tuple[str, pathlib.Path | None]:
     """Штамп импорта и найденный повтор.
 
     Повтор — та же ЗАПИСЬ, а не та же минута: шапка стенограммы импорта
@@ -673,19 +699,15 @@ def import_stamp(tdir: pathlib.Path, minute: str, src_name: str,
     «00» при времени от человека), как демон при крэш-рестарте: граф даст
     ей свой ключ (meeting_stamp.graph_key). Занятые секунды — суффикс «-N».
 
-    `also` — минуты, где та же запись могла лечь раньше под другим
-    штампом: до 06.09 минута бралась из mtime, теперь — из самой записи
-    (media_meta), и повторный импорт старого файла искал бы повтор не там.
+    Повтор — сначала в своей минуте (шапка с размером или без, как до
+    06.09), потом по всей папке с размером (find_repeat_anywhere): минута
+    того же файла могла быть другой, пока штамп брался из mtime.
     """
     found, taken = find_repeat(tdir, minute, src_name, src_size)
+    if found is None:
+        found = find_repeat_anywhere(tdir, src_name, src_size)
     if found is not None:
         return meeting_stamp.stamp_of(found.stem), found
-    for other in also:
-        if other == minute:
-            continue
-        found, _ = find_repeat(tdir, other, src_name, src_size)
-        if found is not None:
-            return meeting_stamp.stamp_of(found.stem), found
     if not taken:
         return minute, None
     stamp = f"{minute}{seconds}"
@@ -711,10 +733,6 @@ def meeting_moment(src: pathlib.Path) -> tuple[dt.datetime, str | None]:
     mt = dt.datetime.fromtimestamp(src.stat().st_mtime)
     rec = media_meta.recorded_at(src)
     if rec is None or abs(rec - mt) <= MOMENT_DRIFT:
-        return mt, None
-    if rec > dt.datetime.now():
-        # штамп из имени наивный: запись в другом поясе «из будущего» —
-        # это чужие часы, а не момент встречи
         return mt, None
     return rec, (f"дата встречи — по самой записи {rec:%Y-%m-%d %H:%M}: mtime файла "
                  f"{mt:%Y-%m-%d %H:%M} сдвинут синком или копированием")
@@ -826,12 +844,9 @@ def main() -> None:
         print(moment_note)
     day = clean_date(args.date) if args.date else f"{mt:%Y-%m-%d}"
     hhmm = clean_time(args.time) if args.time else f"{mt:%H%M}"
-    # тот же файл мог быть импортирован до 06.09 под минутой из mtime
-    file_mt = dt.datetime.fromtimestamp(src.stat().st_mtime)
-    also = (f"{file_mt:%Y-%m-%d_%H%M}",) if moment_note else ()
     stamp, already = import_stamp(tdir, f"{day}_{hhmm}", src.name,
                                   f"{mt:%S}" if not args.time else "00",
-                                  src.stat().st_size, also=also)
+                                  src.stat().st_size)
     if already is not None:
         # Код 0, а не sys.exit(строка): выход строкой возвращает 1, скан
         # считал повтор ОТКАЗОМ и не переносил файл в done/ — тот застревал

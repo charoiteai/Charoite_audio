@@ -17,8 +17,10 @@ mtime файла — ненадёжный источник даты встреч
 
 `recorded_at(path)` — наивное локальное время (как
 `datetime.fromtimestamp(mtime)`), None — файл ничего не знает или знает
-нелепое (эпоха 1904, дата из будущего). Дата без времени — тоже None:
-для штампа встречи нужна минута, а не день.
+нелепое (эпоха 1904, момент позже «сейчас» — чужие часы или чужой пояс у
+штампа без пояса). Дата без времени — тоже None: для штампа встречи нужна
+минута, а не день. Правдоподобие — здесь и только здесь (_sane), импорт
+его не перепроверяет.
 """
 from __future__ import annotations
 
@@ -33,6 +35,7 @@ MEDIA_SUFFIXES = MP4_SUFFIXES | {".caf", ".wav", ".wave", ".mp3", ".aif", ".aiff
                                  ".ogg", ".opus", ".flac", ".webm", ".amr"}
 _MP4_EPOCH = dt.datetime(1904, 1, 1, tzinfo=dt.timezone.utc)
 _MOOV_LIMIT = 64 * 1024 * 1024        # больше — не индекс, а мусор
+_LIST_LIMIT = 16 * 1024 * 1024        # LIST/INFO у WAV: с запасом на раздутые комментарии
 _ISO = re.compile(r"(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:[.,]\d+)?\s*"
                   r"(Z|[+-]\d{2}:?\d{2})?")
 # штамп в имени: iphone_2026-09-06_123910, «2026-09-05 14-13-00», 2026-09-05T1413
@@ -111,7 +114,7 @@ def parse_iso(text: str) -> dt.datetime | None:
 def _sane(moment: dt.datetime | None) -> dt.datetime | None:
     if moment is None:
         return None
-    if moment < _EARLIEST or moment > dt.datetime.now() + dt.timedelta(days=1):
+    if moment < _EARLIEST or moment > dt.datetime.now():
         return None
     return moment
 
@@ -269,11 +272,14 @@ def _wav(p: pathlib.Path) -> dt.datetime | None:
                 return None
             typ, size = struct.unpack("<4sI", ch)
             if typ == b"LIST":
-                body = fh.read(min(size, 1 << 20))
+                body = fh.read(min(size, _LIST_LIMIT))
                 if body[:4] == b"INFO":
-                    return _riff_info(body[4:])
-                # adtl/exif: дочитать хвост и байт выравнивания, иначе курсор
-                # встанет на байт раньше следующего заголовка
+                    found = _riff_info(body[4:])
+                    if found is not None:
+                        return found
+                # adtl/exif или INFO без даты: дочитать хвост и байт
+                # выравнивания, иначе курсор встанет на байт раньше
+                # следующего заголовка; INFO может лежать и дальше
                 fh.seek(size - len(body) + (size & 1), 1)
             else:
                 # data — тоже мимо: многие диктофоны пишут LIST/INFO после него
@@ -317,9 +323,15 @@ def _mp3(p: pathlib.Path) -> dt.datetime | None:
         fsize = _syncsafe(body[off + 4:off + 8]) if major == 4 else struct.unpack(">I", body[off + 4:off + 8])[0]
         fflags = body[off + 9]
         payload = body[off + 10:off + 10 + fsize]
-        # сжатие, шифрование, unsync кадра, индикатор длины — тело упаковано,
-        # текст из него не читаем
-        packed = (fflags & 0x0F) if major == 4 else (fflags & 0xE0)
+        if major == 4:
+            # v2.4: unsync — на кадре (размер кадра уже по раз-синхронизированному
+            # телу), снимаем сами; сжатие, шифрование, индикатор длины — тело
+            # упаковано, текст из него не читаем
+            packed = fflags & 0x0D
+            if fflags & 0x02:
+                payload = payload.replace(b"\xff\x00", b"\xff")
+        else:
+            packed = fflags & 0xE0                 # сжатие, шифрование, группа
         if fid in (b"TDRC", b"TYER", b"TDAT", b"TIME") and payload and not packed:
             frames[fid] = _id3_text(payload)
         off += 10 + fsize
