@@ -332,3 +332,12 @@ def test_unknown_participants_change_nothing():
     txt = "## Поручения\n- [ ] **Кто-то** — что-то\n"
     assert flag_outsiders(txt, set()) == txt
 
+
+def test_mark_survives_a_second_normalize():
+    """Пересборка гоняет normalize повторно: пометка не должна снова стать чекбоксом."""
+    marked = flag_outsiders("## Поручения\n- [ ] **Саша Никитин** — отладить формат\n", {"Андрей"})
+    assert OUTSIDER_MARK in marked
+    again = normalize(marked)
+    assert again == marked, again
+    assert "- [ ]" not in again
+

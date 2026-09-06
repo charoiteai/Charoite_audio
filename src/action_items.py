@@ -49,6 +49,10 @@ _KNOWN_BARE_SECTION = re.compile(
 _BULLET = re.compile(r"^\s*(?:[-*+•–—⁃‣▪]|\d+[.)])\s+")
 # Уже правильный чекбокс — не трогаем.
 _CHECKBOX = re.compile(r"^\s*[-*] \[[ xX]\] ")
+# Пометка «не участник» (flag_outsiders) — тоже не трогаем: иначе следующий
+# проход normalize (пересборка, повторный «Протокол») вернул бы строке
+# чекбокс, и задача снова ушла бы отсутствующему.
+_OUTSIDER_LINE = re.compile(r"^\s*[-*] ⚠ не участник\b")
 
 
 def normalize(text: str) -> str:
@@ -75,7 +79,8 @@ def normalize(text: str) -> str:
                 inside = False
                 out.append(line)
                 continue
-            if line.strip() and _BULLET.match(line) and not _CHECKBOX.match(line):
+            if line.strip() and _BULLET.match(line) and not _CHECKBOX.match(line) \
+                    and not _OUTSIDER_LINE.match(line):
                 out.append(_to_checkbox(line))
                 continue
         out.append(line)
