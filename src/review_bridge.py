@@ -25,17 +25,23 @@ import safe_write
 # «## Восстановленные поручения», «**Восстановленные поручения:**»,
 # «Восстановленные поручения:» — модель просят строгую форму, но жирный и
 # голый варианты она пишет тоже (GLM r1 M1 по #518)
-RECOVERED_HEAD = re.compile(r"^\s*(?:#{1,6}\s*|\*\*\s*)?восстановленные поручения\s*[:：.]?\s*\**\s*$", re.IGNORECASE)
-RECOVERED_WORD = re.compile(r"восстановленн\w* поручени", re.IGNORECASE)
+RECOVERED_HEAD = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*)?\s*восстановленные поручения\s*[:：.]?\s*(?:\*\*)?\s*$",
+                            re.IGNORECASE)
+# строка, начинающаяся с этих слов (после # или **), — заголовок, а не
+# упоминание вроде «восстановленных поручений нет» в прозе (DS r2 M5)
+RECOVERED_WORD = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*)?\s*восстановленн\w* поручени", re.IGNORECASE | re.MULTILINE)
 MARKS = {"ru": "(из ревизии)", "en": "(from the review)", "zh": "（来自审阅）"}
 SECTION_TITLE = {"ru": "## Поручения", "en": "## Action items", "zh": "## 行动项"}
 _HEADING = re.compile(r"^\s*#{1,6}\s")
 _BOLD_HEADING = re.compile(r"^\s*\*\*[^*]+\*\*\s*$")
-_BULLET = re.compile(r"^\s*(?:[-*+•–—⁃‣▪]|\d+[.)])\s+")
+# «-**Иван**» без пробела — тоже пункт (GLM r2 M6), а вот «*» без пробела —
+# начало жирного текста, не маркер
+_BULLET = re.compile(r"^\s*(?:-\s*|[*+•–—⁃‣▪]\s+|\d+[.)]\s+)(?=\S)")
 _CHECKBOX = re.compile(r"^\s*\[[ xX]\]\s*")
-_ITEM = re.compile(r"^\s*(?:[-*+•–—⁃‣▪]|\d+[.)])\s*(?:\[[ xX]\]\s*)?(?P<text>\S.*)$")
+_ITEM = re.compile(r"^\s*(?:-\s*|[*+•–—⁃‣▪]\s+|\d+[.)]\s+)(?:\[[ xX]\]\s*)?(?P<text>\S.*)$")
 _EMPTY_ITEM = re.compile(r"^(?:нет|none|无|—|-)\.?$", re.IGNORECASE)
-_SECTION_WORD = re.compile(r"поручени|action item|行动项", re.IGNORECASE)
+_SECTION_WORD = re.compile(r"^\s*#{1,6}\s*(?:\*\*)?\s*(?:поручени|action item|行动项)", re.IGNORECASE)
+_PAREN_NOTE = re.compile(r"^\s*[(（][^)）]*[)）]\s*$")
 
 
 def recovered_items(review: str) -> list[str]:
@@ -47,7 +53,7 @@ def recovered_items(review: str) -> list[str]:
         if RECOVERED_HEAD.match(line):
             inside = True
             continue
-        if inside and (_HEADING.match(line) or _BOLD_HEADING.match(line)):
+        if inside and _section_end(line):
             break
         if not inside:
             continue
@@ -55,19 +61,34 @@ def recovered_items(review: str) -> list[str]:
             continue
         if not _BULLET.match(line):
             # перенос строки внутри пункта — продолжение, не новый пункт
-            # (GLM r1 M2 / DS r1 I2 по #518); «нет» и строка до первого
-            # пункта — мимо
-            if items and not _EMPTY_ITEM.match(line.strip().strip("*")):
+            # (GLM r1 M2 / DS r1 I2 по #518); «нет», комментарий модели в
+            # скобках «(срок не назван)», жирная подпись и строка до первого
+            # пункта — мимо (DS r2 I2/M3)
+            bare = line.strip().strip("*").strip()
+            if items and bare and not _EMPTY_ITEM.match(bare) and not _PAREN_NOTE.match(line) \
+                    and not _BOLD_HEADING.match(line):
                 items[-1] = (items[-1] + " " + line.strip()).strip()
             continue
         m = _ITEM.match(line)
         if not m:
             continue
         text = m.group("text").strip()
-        if not text or _EMPTY_ITEM.match(text):
+        if not text or _EMPTY_ITEM.match(text.strip("*").strip()):
             continue
         items.append(text)
     return items
+
+
+def _section_end(line: str) -> bool:
+    """Конец раздела ревизии: markdown-заголовок, жирная подпись с
+    двоеточием («**Решения:**») или голая известная секция («Решения:»);
+    жирная строка без двоеточия внутри раздела — не граница (DS r2 M3:
+    молча ронять пункты после неё хуже, чем принять лишнее)."""
+    if _HEADING.match(line):
+        return True
+    if _BOLD_HEADING.match(line) and line.strip().rstrip("*").rstrip().endswith((":", "：")):
+        return True
+    return bool(action_items._BARE_HEADING.match(line) and action_items._KNOWN_BARE_SECTION.match(line))
 
 
 def section_present(review: str) -> bool:
@@ -113,7 +134,12 @@ def _same_item(a: str, b: str) -> bool:
     nb, wb = _split(b)
     if not na or na != nb or not wa or not wb:
         return False
-    return len(wa & wb) / len(wa | wb) >= SIMILAR
+    common = len(wa & wb)
+    # ревизия сжимает: «собрать примеры вопросов» ⊂ «… для теста» — то же
+    # дело (GLM r2, критика 1); из двух значимых слов вложенность не судим
+    if common >= 2 and common == min(len(wa), len(wb)):
+        return True
+    return common / len(wa | wb) >= SIMILAR
 
 
 def _empty_line(line: str) -> bool:
@@ -122,7 +148,7 @@ def _empty_line(line: str) -> bool:
     if not line.strip():
         return False                       # пустые строки считает хвост раздела
     bare = _CHECKBOX.sub("", line.strip().lstrip("-*•–— ").strip()).strip().strip("*").strip()
-    return bool(_EMPTY_ITEM.match(bare))
+    return not bare or bool(_EMPTY_ITEM.match(bare))   # «—» съедается lstrip → пусто = маркер
 
 
 def _section_bounds(lines: list[str]) -> tuple[int, int] | None:
@@ -137,7 +163,7 @@ def _section_bounds(lines: list[str]) -> tuple[int, int] | None:
         # «## Поручения и сроки» прежних минуток — тот же раздел, а не повод
         # завести второй (DS r1 M3 по #518)
         for i, line in enumerate(lines):
-            if _HEADING.match(line) and _SECTION_WORD.search(line):
+            if _SECTION_WORD.match(line):
                 start = i
                 break
     if start is None:

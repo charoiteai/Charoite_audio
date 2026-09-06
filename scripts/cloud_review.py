@@ -1076,8 +1076,11 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 sufler = cfg.get("sufler") or {}
                 added = review_bridge.bridge(rev, transcript, owner=str(sufler.get("user_name") or ""),
                                              lang=str(sufler.get("language") or "ru"))
+                verified = "сверено" if (not may_edit or checked) else "БЕЗ сверки графа"
                 if added:
-                    lines.append(f"[cloud-review] мост ревизии: в минутки дописано поручений — {added}\n")
+                    lines.append(f"[cloud-review] мост ревизии ({verified}): в минутки дописано поручений — {added}\n")
+                elif not review_bridge.minutes_path(transcript).is_file():
+                    lines.append("[cloud-review] мост ревизии: минуток рядом со стенограммой нет\n")
                 elif review_bridge.section_present(rev.read_text(encoding="utf-8", errors="replace")):
                     lines.append("[cloud-review] мост ревизии: раздел о восстановленных поручениях есть, "
                                  "пунктов не извлечено или все уже в минутках\n")
