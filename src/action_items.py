@@ -156,7 +156,11 @@ _COLLECTIVE = frozenset({
     "team", "all", "everyone", "owner", "participants", "全体", "团队", "所有人",
 })
 _ASSIGNEE_LINE = re.compile(r"^(\s*)[-*] \[[ xX]\] \*\*([^*\n]{1,80})\*\*(.*)$")
-_NAME_SPLIT = re.compile(r"\s*(?:,|/|;|\s+и\s+|\s+and\s+|\s+&\s+)\s*", re.I)
+# Один токенизатор перечислений на все проверки: «Дмитрий и Ольга», «Дмитрий с
+# Ольгой», «Dmitry with Olga», «Саша/Коля», «Саша, Коля», «Саша + Коля»
+# (GLM I1 и критика 1, DS критика 2 — круг 2 #510).
+_NAME_SEP = re.compile(r"\s*(?:,|/|;|\+|\s+и\s+|\s+с\s+|\s+and\s+|\s+with\s+|\s+&\s+)\s*", re.I)
+_JOINERS = frozenset({"и", "с", "and", "with", "&", "+"})
 # Пометка — на языке минуток (`sufler.language`): английские минутки с русской
 # пометкой читались бы как сбой (Minor GLM/DS, круг 1 #510).
 OUTSIDER_MARKS = {"ru": "⚠ не участник", "en": "⚠ not a participant", "zh": "⚠ 非与会者"}
@@ -164,12 +168,42 @@ OUTSIDER_MARK = OUTSIDER_MARKS["ru"]
 # Падеж: «Саше»/«Саша», «Ане»/«Аня», «Дмитрию»/«Дмитрий», «Игорю»/«Игорь» —
 # у имён на -а/-я склонение меняет последнюю букву, и общий 4-буквенный
 # префикс это не видит («саше» ≠ «саша»); сравниваем основы без последней
-# гласной/й/ь (GLM C2 / DS I1, круг 1 #510).
+# гласной/й/ь (GLM C2 / DS I1, круг 1 #510). Творительный «Игорем»,
+# «Петровым» — остаток «ем/ым/ом» (DS M2, круг 2).
 _SOFT_TAIL = re.compile(r"[аеёиоуыэюяьй]$")
+_CASE_TAIL = re.compile(r"[аеёиоуыэюяьй]*м?")
+# Уменьшительные против полных («Дима» — «Дмитрий»): основы разные, а человек
+# один (GLM M1, круг 2). Таблица закрытая — только частые пары.
+_DIMINUTIVES = {
+    "дима": ("дмитрий",), "митя": ("дмитрий",), "ваня": ("иван",), "оля": ("ольга",),
+    "саша": ("александр", "александра"), "шура": ("александр", "александра"),
+    "катя": ("екатерина",), "лена": ("елена",), "маша": ("мария",), "наташа": ("наталья", "наталия"),
+    "коля": ("николай",), "женя": ("евгений", "евгения"), "серёжа": ("сергей",), "сережа": ("сергей",),
+    "миша": ("михаил",), "паша": ("павел",), "витя": ("виктор",), "толя": ("анатолий",),
+    "юра": ("юрий",), "лёша": ("алексей",), "леша": ("алексей",), "гоша": ("георгий",),
+    "костя": ("константин",), "настя": ("анастасия",), "даша": ("дарья",), "таня": ("татьяна",),
+    "аня": ("анна",), "ира": ("ирина",), "света": ("светлана",), "люда": ("людмила",),
+    "галя": ("галина",), "валя": ("валентина", "валентин"), "надя": ("надежда",), "вова": ("владимир",),
+    "володя": ("владимир",), "слава": ("вячеслав", "станислав", "ярослав"), "стас": ("станислав",),
+    "тёма": ("артём",), "тема": ("артём",), "лёва": ("лев",), "боря": ("борис",), "гриша": ("григорий",),
+    "андрюха": ("андрей",), "андрюша": ("андрей",), "макс": ("максим",), "рома": ("роман",),
+    "дениска": ("денис",), "кирюша": ("кирилл",), "никитка": ("никита",), "илюша": ("илья",),
+    "лиза": ("елизавета",), "соня": ("софья", "софия"), "поля": ("полина",), "маргоша": ("маргарита",),
+    "рита": ("маргарита",), "вера": ("вероника",), "ксюша": ("ксения",), "юля": ("юлия",),
+}
+
+
+def _norm(word: str) -> str:
+    return word.strip().casefold().replace("ё", "е")
 
 
 def _stem(word: str) -> str:
     return _SOFT_TAIL.sub("", word)
+
+
+def _split_names(text: str) -> list[str]:
+    """Перечисление исполнителей → имена, без союзов и пустых кусков."""
+    return [x.strip() for x in _NAME_SEP.split(text or "") if x.strip() and _norm(x) not in _JOINERS]
 
 
 def participants_set(names, owner: str = "") -> set[str]:
@@ -202,49 +236,72 @@ def participants_of(transcript: str, owner: str = "") -> set[str]:
 
 
 def _same_person(word: str, known_word: str) -> bool:
-    """Одно имя в разных падежах или одно и то же слово.
+    """Одно имя в разных падежах, уменьшительное к полному, или то же слово.
 
-    Основы без последней мягкой буквы равны («саше»/«саша» → «саш»); или одна
-    основа — другая плюс только гласные («ольго» = «ольг» + «о»: «Ольгой»).
-    «Марине» и «Мария» («марин» / «мари» + «н») — разные люди: голый
-    4-буквенный префикс их склеивал (GLM, круг 1 #510)."""
+    Основы без последней мягкой буквы равны («саше»/«саша» → «саш»); или
+    одна основа — другая плюс падежный хвост из гласных и «м» («ольго» =
+    «ольг» + «о»: «Ольгой»; «игорем» = «игор» + «ем»). «Марине» и «Мария»
+    («марин» / «мари» + «н») — разные люди: голый 4-буквенный префикс их
+    склеивал (GLM, круг 1 #510). Известные коллизии этой эвристики —
+    «Витя»/«Вита» (одна основа) и «Ветровой»/«Ветров» (хвост «ой» падежный)
+    — приняты: цена ошибки здесь «задача осталась», а не «задача пропала».
+    ё и е — одна буква (DS M3, круг 2)."""
+    word, known_word = _norm(word), _norm(known_word)
     if word == known_word:
         return True
     a, b = _stem(word), _stem(known_word)
     if len(a) >= 2 and a == b:
         return True
     short, long = sorted((a, b), key=len)
-    return len(short) >= 3 and long.startswith(short) and _VOWELS_ONLY.fullmatch(long[len(short):]) is not None
-
-
-_VOWELS_ONLY = re.compile(r"[аеёиоуыэюяьй]*")
-_JOINERS = frozenset({"и", "and", "&", "with"})
+    if len(short) >= 3 and long.startswith(short) and _CASE_TAIL.fullmatch(long[len(short):]) is not None:
+        return True
+    # уменьшительное ↔ полное, в любом падеже: сравниваем основы
+    for small, full_names in ((word, known_word), (known_word, word)):
+        fulls = _DIMINUTIVES.get(small) or _DIMINUTIVES.get(_stem(small) + "а") or _DIMINUTIVES.get(_stem(small) + "я")
+        if fulls and any(_stem(_norm(f)) == _stem(full_names) or _stem(full_names).startswith(_stem(_norm(f)))
+                         for f in fulls):
+            return True
+    return False
 
 
 def _same_people(whole: str, participants: set[str]) -> bool:
     """«Никитин, Саша» — это «Саша Никитин»: тот же набор слов в любом порядке.
-    Союзы не в счёт, чтобы «Дмитрий и Ольга» не сошёл за одного Дмитрия."""
-    words = {w for w in re.split(r"[\s,/;]+", whole.strip().casefold()) if w} - _JOINERS
+    Союзы делают строку перечислением, а не одним человеком: «Дмитрий и
+    Ольга» и «Саша и Петров» целиком ни за кого не сходят (DS M4, круг 2)."""
+    raw = [w for w in re.split(r"[\s,/;]+", whole.strip()) if w]
+    if any(_norm(w) in _JOINERS for w in raw):
+        return False
+    words = {_norm(w) for w in raw}
     if not words:
         return False
     for p in participants:
-        pf = {w for w in p.strip().casefold().split() if w}
+        pf = {_norm(w) for w in p.split() if w}
         if pf and pf == words:
             return True
     return False
 
 
 def _is_participant(name: str, participants: set[str]) -> bool:
-    n = name.strip().strip(".").casefold()
-    if not n or n in _COLLECTIVE:
-        return True
-    first = n.split()[0]
+    n = _norm(name).strip(".")
+    if not n or n in _COLLECTIVE or _PLACEHOLDER.match(n):
+        return True    # собирательное или заглушка — не про человека, не судим (GLM M3)
+    words = n.split()
+    first = words[0]
+    initial = re.fullmatch(r"([а-яa-z])\.", first)
     for p in participants:
-        pf = p.strip().casefold().split()
+        pf = _norm(p).split()
         if not pf:
             continue
         if n == " ".join(pf):
             return True
+        if initial:
+            # «Д. Петров» при «Дмитрий Петров»: инициал совпал с первой буквой
+            # какого-то слова участника, а фамилия — с другим (GLM M2)
+            rest = words[1:]
+            if any(w.startswith(initial.group(1)) for w in pf) and rest and \
+                    any(_same_person(r, w) for r in rest for w in pf):
+                return True
+            continue
         # первое слово исполнителя — против КАЖДОГО слова участника: в шапке
         # может стоять «Дмитрий Петров», а в поручении — «Петров» (GLM I3)
         if any(_same_person(first, w) for w in pf):
@@ -260,7 +317,10 @@ def flag_outsiders(text: str, participants: set[str], lang: str = "ru") -> str:
     «Задачи», а читающий минутки видит, что исполнителя надо назначить заново
     или передать дальше. Остальные разделы и известные исполнители не
     трогаются. Пустой список участников — ничего не решаем."""
-    if not participants:
+    # Один известный участник — это владелец без опознанных собеседников
+    # (1:1 без имён, сорванный разбор имён): судить некого, любое имя из
+    # речи — законный исполнитель (GLM I2, круг 2).
+    if len(participants) < 2:
         return text
     mark = OUTSIDER_MARKS.get((lang or "ru").strip().lower()[:2], OUTSIDER_MARK)
     out: list[str] = []
@@ -283,8 +343,7 @@ def flag_outsiders(text: str, participants: set[str], lang: str = "ru") -> str:
                 if _same_people(whole, participants):
                     strangers: list[str] = []
                 else:
-                    names = [x.strip() for x in _NAME_SPLIT.split(whole) if x.strip()]
-                    strangers = [x for x in names if not _is_participant(x, participants)]
+                    strangers = [x for x in _split_names(whole) if not _is_participant(x, participants)]
                 if strangers:
                     line = f"{m.group(1)}- {mark} ({', '.join(strangers)}): **{m.group(2)}**{m.group(3)}"
         out.append(line)

@@ -324,7 +324,7 @@ def test_case_forms_owner_and_pairs():
     out = flag_outsiders("## Поручения\n- [ ] **Ольге** — макет\n- [ ] **Игорь** — смета\n",
                          {"Ольга", "Игорь Ветров"})
     assert "⚠" not in out, out
-    pair = flag_outsiders("## Поручения\n- [ ] **Дмитрий и Ольга** — токены\n", {"Дмитрий"})
+    pair = flag_outsiders("## Поручения\n- [ ] **Дмитрий и Ольга** — токены\n", {"Дмитрий", "Игорь Ветров"})
     assert f"{OUTSIDER_MARK} (Ольга)" in pair, pair
 
 
@@ -335,7 +335,7 @@ def test_unknown_participants_change_nothing():
 
 def test_mark_survives_a_second_normalize():
     """Пересборка гоняет normalize повторно: пометка не должна снова стать чекбоксом."""
-    marked = flag_outsiders("## Поручения\n- [ ] **Саша Никитин** — отладить формат\n", {"Андрей"})
+    marked = flag_outsiders("## Поручения\n- [ ] **Саша Никитин** — отладить формат\n", {"Андрей", "Аня"})
     assert OUTSIDER_MARK in marked
     again = normalize(marked)
     assert again == marked, again
@@ -366,7 +366,7 @@ def test_declined_names_are_participants():
     text = "## Поручения\n" + "\n".join(f"- [ ] **{n}** — дело" for n in ("Саше", "Ане", "Дмитрию", "Игорю", "Ольгой")) + "\n"
     out = flag_outsiders(text, parts)
     assert "⚠" not in out, out
-    assert flag_outsiders("## Поручения\n- [ ] **Марине** — дело\n", {"Мария"}).count("⚠") == 1
+    assert flag_outsiders("## Поручения\n- [ ] **Марине** — дело\n", {"Мария", "Игорь"}).count("⚠") == 1
 
 
 def test_surname_and_comma_order_match_the_participant():
@@ -378,7 +378,24 @@ def test_surname_and_comma_order_match_the_participant():
 
 def test_header_placeholders_and_language_mark():
     assert participants_of("Участники (звучали в разговоре): Собеседник, Андрей") == {"Андрей"}
-    en = flag_outsiders("## Action items\n- [ ] **Smith** — draft\n", {"Jones"}, lang="en")
+    en = flag_outsiders("## Action items\n- [ ] **Smith** — draft\n", {"Jones", "Igor"}, lang="en")
     assert OUTSIDER_MARKS["en"] in en and "не участник" not in en
     assert normalize(en) == en   # пометка на любом языке переживает normalize
+
+
+def test_round2_joiners_owner_alone_diminutives_initials_placeholders():
+    """Круг 2 (#510): «Дмитрий с Ольгой» — Ольга помечена; владелец-одиночка — судить
+    некого; «Дима» — это Дмитрий, «Д. Петров» — Дмитрий Петров, «Собеседник 2» — не
+    про человека; «Игорем» и «Алене» (без ё) — участники."""
+    parts = {"Дмитрий Петров", "Игорь", "Алёна", "Ольга Петрова"}
+    out = flag_outsiders("## Поручения\n- [ ] **Дмитрий с Ольгой** — токены\n", {"Дмитрий", "Игорь"})
+    assert f"{OUTSIDER_MARK} (Ольгой)" in out, out
+    alone = "## Поручения\n- [ ] **Игорь** — отчёт\n"
+    assert flag_outsiders(alone, {"Игорь Ветров"}) == alone            # только владелец известен
+    text = "## Поручения\n" + "\n".join(f"- [ ] **{n}** — дело" for n in
+                                        ("Дима", "Д. Петров", "Собеседник 2", "Игорем", "Алене", "Оле")) + "\n"
+    out = flag_outsiders(text, parts)
+    assert "⚠" not in out, out
+    stranger = flag_outsiders("## Поручения\n- [ ] **Витя** — дело\n- [ ] **О. Сидоров** — дело\n", parts)
+    assert stranger.count("⚠") == 2, stranger
 
