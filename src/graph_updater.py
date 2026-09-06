@@ -33,6 +33,7 @@ import frontmatter
 import graphs
 import redirects
 from speaker_names import resolve_vocative
+from action_items import PARTICIPANTS_HEAD, SPEAKER_LABEL
 
 ROOT = resolve_root(__file__)
 CODE = code_root(__file__)
@@ -747,6 +748,19 @@ def find_canonical(graph: pathlib.Path, name: str,
 
 
 _MENTION_STEM = re.compile(r"[аеёиоуыэюяьй]$")
+_STEM_TAIL = r"(?:[аеёиоуыэюяьй]|(?![\wёЁ]))"   # за основой — окончание или конец слова, не «маркетинг» за «мари»
+
+
+def header_participants(text: str) -> set[str]:
+    """Имена из шапки стенограммы «Участники (звучали в разговоре): …» — роли
+    в скобках срезаны, скобки сняты ДО запятой («Пётр (руководитель, отдел
+    продаж)» — один человек). Один парсер на фильтр фона и на speakers
+    (DS I2 по #512)."""
+    m = PARTICIPANTS_HEAD.search(text or "")
+    if not m:
+        return set()
+    head = re.sub(r"\s*[(（].*?[)）]", "", m.group(1))
+    return {x.strip() for x in head.split(",") if x.strip()}
 
 
 def drop_background(people: list[dict], speech: str) -> tuple[list[dict], list[str]]:
@@ -754,37 +768,45 @@ def drop_background(people: list[dict], speech: str) -> tuple[list[dict], list[s
 
     05.09: «Мариш сюда» из бытового фона записи стало участницей деловой
     встречи, и авто-проход приписал ей реплики Ани. Критерий узкий и
-    проверяемый по стенограмме: человек не говорил (нет метки «**Имя**
-    [чч:мм]» и нет в шапке «Участники (звучали в разговоре)») И упомянут в
-    тексте не больше одного раза. Кто говорил — участник; о ком говорят по
-    делу — упомянут не раз и остаётся узлом (Голенков, Никитин). Возвращает
-    (оставшиеся, имена отброшенных) — отброшенные уходят в лог, не в граф."""
-    text = speech or ""
-    spoken: set[str] = set()
-    m = re.search(r"^(?:Участники|Participants|参会者)[^:：]*[:：]\s*(.+)$", text, re.M)
-    if m:
-        head = re.sub(r"\s*[(（].*?[)）]", "", m.group(1))
-        spoken |= {x.strip().casefold() for x in head.split(",") if x.strip()}
-    spoken |= {x.strip().casefold() for x in re.findall(r"^\*\*([^*\n]{1,60})\*\*\s*\[\d{2}:\d{2}", text, re.M)}
+    проверяемый по стенограмме: человек не говорил (ни одно слово его имени
+    не совпадает с меткой «**Имя** [чч:мм]» или именем из шапки, в том
+    числе по основе — «Никитин» и «Никитина») И упомянут в тексте не больше
+    одного раза (по любой из основ его имени). Кто говорил — участник; о ком
+    говорят по делу — упомянут не раз и остаётся узлом. Возвращает
+    (оставшиеся, имена отброшенных); отброшенные не получают узла, но
+    остаются строкой в «## Участники» заметки — ложный выброс виден и
+    поправим руками (GLM M1, DS M1). Паттерны шапки и меток — из
+    action_items, один источник (GLM I4). ё и е — одна буква (GLM I3).
+    Основа судится с окончанием или концом слова за ней — «Оль, сюда» не
+    повторит 05.09, а «маркетинг» не спасёт Марию (GLM I2, DS M2).
+    Известный предел: участник под меткой-заглушкой («Собеседник 2»), чьё
+    имя прозвучало один раз, узла не получит — его строка в заметке
+    остаётся (GLM I1)."""
+    text = (speech or "").replace("ё", "е").replace("Ё", "Е")
+    spoken_words = {w.casefold() for name in header_participants(text) for w in name.split()}
+    spoken_words |= {w.casefold() for lab in SPEAKER_LABEL.findall(text) for w in lab.strip().split()}
+    spoken_stems = {_MENTION_STEM.sub("", w) for w in spoken_words}
     low = text.casefold()
     kept: list[dict] = []
     noise: list[str] = []
     for p in people:
-        name = str(p.get("имя") or "").strip()
-        first = name.split()[0].casefold() if name else ""
-        if not first:
+        name = str(p.get("имя") or "").replace("ё", "е").replace("Ё", "Е").strip()
+        tokens = [t.casefold() for t in name.split() if t]
+        if not tokens:
             kept.append(p)
             continue
-        if name.casefold() in spoken or first in {w for s_ in spoken for w in s_.split()}:
+        # говорил: любое слово имени совпало со словом метки/шапки, точно или по основе (DS I1)
+        if any(t in spoken_words or (len(_MENTION_STEM.sub("", t)) >= 2 and _MENTION_STEM.sub("", t) in spoken_stems)
+               for t in tokens):
             kept.append(p)
             continue
-        stem = _MENTION_STEM.sub("", first)
-        if len(stem) < 3:
-            kept.append(p)                      # слишком короткая основа — не судим
+        stems = [st for st in (_MENTION_STEM.sub("", t) for t in tokens) if len(st) >= 2]
+        if not stems:
+            kept.append(p)                      # однобуквенные основы — не судим
             continue
-        mentions = len(re.findall(r"(?<![\wёЁ])" + re.escape(stem) + r"[\wёЁ]*", low))
+        mentions = max(len(re.findall(r"(?<![\wёЁ])" + re.escape(st) + _STEM_TAIL, low)) for st in stems)
         if mentions <= 1:
-            noise.append(name)
+            noise.append(str(p.get("имя") or "").strip())
         else:
             kept.append(p)
     return kept, noise
@@ -1437,7 +1459,11 @@ def main():
     people, noise = drop_background(
         merge_vocatives([p for p in raw_people if not is_speaker_placeholder(p["имя"])]), speech)
     if noise:
-        print("граф: фон разговора, не участники: " + ", ".join(noise))
+        print("граф: фон разговора, узла не получают: " + ", ".join(noise))
+        # тот же голос мог прийти и «сущностью» — узел через чёрный ход (DS M3)
+        _noise_keys = {n.casefold() for n in noise}
+        data["сущности"] = [e for e in (data.get("сущности") or [])
+                            if not (isinstance(e, dict) and str(e.get("имя") or "").strip().casefold() in _noise_keys)]
     anon = [p for p in raw_people if is_speaker_placeholder(p["имя"])]
     ents = [e for e in (data.get("сущности") or []) if isinstance(e, dict) and e.get("имя")
             and not is_speaker_placeholder(e["имя"])]      # метка как «сущность» — тоже не узел
@@ -1475,17 +1501,10 @@ def main():
     # обещает участника встречи (круг-3 по PR #438, GLM Important 2).
     speakers = {p["имя"] for p in people if p.get("имя")} | {p["имя"] for p in anon}
     # Три языка — как в manifest архива: русский, английский, китайский.
-    m = re.search(r"^(?:Участники|Participants|参会者)[^:：]*[:：]\s*(.+)$",
-                  speech, re.M)
-    if m:
-        # «Ольга (аналитик)» — это Ольга: роль в скобках в имя узла не идёт,
-        # иначе в графе появится второй человек с той же головой.
-        # Скобки снимаем ДО запятой: «Пётр (руководитель, отдел продаж)»
-        # иначе распадался на «Пётр (руководитель» и «отдел продаж)» — оба
-        # мусорные, а кандидат «Пётр» становился двусмысленным и терял
-        # подпись (круг-5 по PR #438, GLM Minor 4).
-        head = re.sub(r"\s*[(（].*?[)）]", "", m.group(1))
-        speakers |= {x.strip() for x in head.split(",") if x.strip()}
+    # «Ольга (аналитик)» — это Ольга: роль в скобках в имя узла не идёт,
+    # скобки снимаем ДО запятой (круг-5 по PR #438, GLM Minor 4). Парсер один
+    # на фильтр фона и на speakers (DS I2 по #512).
+    speakers |= header_participants(speech)
     for c in cores:
         upsert_core(graph, c, meeting_link, stamp, speech, speakers)
     if cores:
@@ -1545,6 +1564,8 @@ def main():
                + [f"- {canon_link(graph, p['имя'], 'Люди')} — {p.get('роль','')}: {p.get('вклад','')}" for p in people]
                # метка диаризации — текстом, без ссылки: узла у неё нет
                + [f"- {safe_name(p['имя'])} — {p.get('роль','')}: {p.get('вклад','')}" for p in anon]
+               # голос из фона записи — текстом и с пометкой: узла нет, след есть
+               + [f"- {safe_name(n)} — фон записи, не участник (узел не создан)" for n in noise]
                + [""])
     if ents:
         md += ["## Сущности"] + [f"- {canon_link(graph, e['имя'], ENT_FOLDER.get(e.get('тип',''), 'Системы'))} ({e.get('тип','')}) — {e.get('суть','')}" for e in ents] + [""]
