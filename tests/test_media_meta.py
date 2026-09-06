@@ -89,6 +89,32 @@ def test_m4a_day_with_offset_beats_mvhd(tmp_path):
     assert media_meta.recorded_at(p) == LOCAL
 
 
+def test_m4a_day_without_zone_yields_to_mvhd(tmp_path):
+    # ©day без пояса — неизвестно чьё время; mvhd всегда UTC и побеждает
+    p = m4a(tmp_path / "video.mp4", created_utc=_utc_of(LOCAL), day="2026-09-05T09:13:00")
+    assert media_meta.recorded_at(p) == LOCAL
+    # …а когда mvhd молчит, ©day без пояса — последний источник контейнера
+    p = m4a(tmp_path / "ffmpeg.mp4", created_utc=None, day="2026-09-05T14:13:00")
+    assert media_meta.recorded_at(p) == LOCAL
+
+
+def test_insane_day_does_not_block_mvhd_or_name(tmp_path):
+    # отравленный ©day (шаблон, кривой теггер) не глушит честный mvhd
+    p = m4a(tmp_path / "a.m4a", created_utc=_utc_of(LOCAL), day="1999-01-01T10:00:00Z")
+    assert media_meta.recorded_at(p) == LOCAL
+    # …и честный штамп в имени, когда контейнер целиком нелеп
+    p = m4a(tmp_path / "2026-09-05_1413.m4a", created_utc=dt.datetime(1998, 1, 1),
+            day="2099-01-01T10:00:00Z")
+    assert media_meta.recorded_at(p) == LOCAL
+
+
+def test_truncated_64bit_box_does_not_kill_moov(tmp_path):
+    moov = mvhd(_utc_of(LOCAL)) + struct.pack(">I4s", 1, b"free") + b"\0\0\0"   # обрезанный largesize
+    p = tmp_path / "t.m4a"
+    p.write_bytes(box(b"ftyp", b"M4A \0\0\0\0") + box(b"moov", moov))
+    assert media_meta.recorded_at(p) == LOCAL
+
+
 def test_m4a_day_without_time_falls_back_to_mvhd(tmp_path):
     p = m4a(tmp_path / "a.m4a", created_utc=_utc_of(LOCAL), day="2026-09-05")
     assert media_meta.recorded_at(p) == LOCAL
@@ -122,6 +148,19 @@ def test_wav_icrd_date_only_is_not_a_moment(tmp_path):
     assert media_meta.recorded_at(wav(tmp_path / "r.wav", "2026-09-05")) is None
 
 
+def test_wav_info_after_data_and_odd_adtl_list(tmp_path):
+    # диктофоны пишут LIST/INFO ПОСЛЕ data; перед ним — adtl нечётной длины
+    raw = b"2026-09-05 14:13:00\0"
+    info = b"LIST" + struct.pack("<I", 4 + 8 + len(raw)) + b"INFO" + b"ICRD" + struct.pack("<I", len(raw)) + raw
+    adtl_body = b"adtl" + b"labl" + struct.pack("<I", 5) + b"\1\0\0\0x" + b"\0"      # 4+8+5 = 17, нечётно
+    adtl = b"LIST" + struct.pack("<I", 17) + adtl_body[:17] + b"\0"                # + байт выравнивания
+    chunks = (b"fmt " + struct.pack("<I", 16) + b"\0" * 16 + b"data" + struct.pack("<I", 9) + b"\0" * 9 + b"\0"
+              + adtl + info)
+    p = tmp_path / "dictaphone.wav"
+    p.write_bytes(b"RIFF" + struct.pack("<I", 4 + len(chunks)) + b"WAVE" + chunks)
+    assert media_meta.recorded_at(p) == LOCAL
+
+
 def test_mp3_tdrc_v24(tmp_path):
     assert media_meta.recorded_at(id3(tmp_path / "r.mp3", {b"TDRC": "2026-09-05T14:13:00"})) == LOCAL
 
@@ -133,6 +172,24 @@ def test_mp3_tyer_tdat_time_v23(tmp_path):
 
 def test_mp3_year_only_is_not_a_moment(tmp_path):
     assert media_meta.recorded_at(id3(tmp_path / "r.mp3", {b"TYER": "2026"}, major=3)) is None
+
+
+def test_mp3_packed_frame_is_skipped(tmp_path):
+    # кадр со сжатием/шифрованием/unsync — тело упаковано, текст не читаем
+    payload = b"\3" + b"2026-09-05T14:13:00"
+    frame = b"TDRC" + _syncsafe(len(payload)) + b"\0\x08" + payload           # флаг compression (v2.4)
+    p = tmp_path / "packed.mp3"
+    p.write_bytes(b"ID3\4\0\0" + _syncsafe(len(frame)) + frame)
+    assert media_meta.recorded_at(p) is None
+
+
+def test_mp3_v23_tag_unsync_is_undone(tmp_path):
+    payload = b"\1" + "2026-09-05T14:13:00".encode("utf-16")                 # BOM ff fe → unsync вставит 00
+    frame = b"TDRC" + struct.pack(">I", len(payload)) + b"\0\0" + payload
+    body = frame.replace(b"\xff", b"\xff\x00")
+    p = tmp_path / "unsync.mp3"
+    p.write_bytes(b"ID3\3\0\x80" + _syncsafe(len(body)) + body)
+    assert media_meta.recorded_at(p) == LOCAL
 
 
 def test_garbage_and_truncated_files_do_not_raise(tmp_path):
@@ -160,6 +217,15 @@ def test_name_stamps():
     assert media_meta.from_name("Recording") is None
     assert media_meta.from_name("2026-13-40_9999") is None          # не дата
     assert media_meta.from_name("v12026-09-05_1413") is None         # цифры впритык — не штамп
+
+
+def test_name_stamp_only_for_media(tmp_path):
+    p = tmp_path / "2026-09-05_1413.vtt"
+    p.write_text("WEBVTT\n", encoding="utf-8")
+    assert media_meta.recorded_at(p) is None
+    q = tmp_path / "2026-09-05_1413.ogg"
+    q.write_bytes(b"OggS" + b"\0" * 32)
+    assert media_meta.recorded_at(q) == LOCAL
 
 
 def test_parse_iso_zone_and_no_zone():
@@ -199,7 +265,30 @@ def test_import_falls_back_to_mtime_when_recording_knows_nothing(tmp_path):
 
 
 def test_import_text_sources_use_mtime(tmp_path):
-    p = tmp_path / "zoom.vtt"
+    p = tmp_path / "2026-01-01_0900 zoom.vtt"          # штамп в имени сабов — не момент записи
     p.write_text("WEBVTT\n", encoding="utf-8")
     _touch(p, LOCAL)
     assert im.meeting_moment(p) == (LOCAL, None)
+
+
+def test_import_future_stamp_falls_back_to_mtime(tmp_path):
+    # имя «из будущего» (запись в другом поясе) — чужие часы, не момент встречи
+    ahead = dt.datetime.now() + dt.timedelta(hours=20)
+    p = caf(tmp_path / f"iphone_{ahead:%Y-%m-%d_%H%M%S}.caf", None)
+    _touch(p, LOCAL)
+    assert im.meeting_moment(p) == (LOCAL, None)
+
+
+def test_import_stamp_finds_old_import_under_mtime_minute(tmp_path):
+    # до 06.09 минута бралась из mtime: повторный импорт того же файла после
+    # правки ищет повтор и там (also=), а не заводит вторую встречу
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    (tdir / "2026-09-06_1610.md").write_text(
+        "# Встреча 2026-09-06_1610 — запись Recording.m4a (5000 Б)\n", encoding="utf-8")
+    stamp, already = im.import_stamp(tdir, "2026-09-05_1413", "Recording.m4a", "00", 5000,
+                                     also=("2026-09-06_1610",))
+    assert stamp == "2026-09-06_1610" and already is not None
+    # другая запись — минуты свободны, повтора нет
+    assert im.import_stamp(tdir, "2026-09-05_1413", "Other.m4a", "00", 1, also=("2026-09-06_1610",)) \
+        == ("2026-09-05_1413", None)

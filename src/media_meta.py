@@ -10,7 +10,8 @@ mtime файла — ненадёжный источник даты встреч
   `moov/udta/meta/ilst` (строка ISO-8601, часто с поясом);
 - CAF: пары «ключ\\0значение\\0» в чанке `info` (`recorded date`);
   AVAudioRecorder на iPhone чанка не пишет — компаньон кладёт штамп в имя
-  (`iphone_2026-09-06_123910.caf`), имя разбираем как последний источник;
+  (`iphone_2026-09-06_123910.caf`), имя разбираем как последний источник
+  и только у медиа-файлов (у текста и сабов имя — что угодно);
 - WAV: `ICRD` в `LIST/INFO`; MP3: `TDRC` (ID3v2.4) или `TYER`+`TDAT`+`TIME`
   (ID3v2.3).
 
@@ -27,6 +28,9 @@ import re
 import struct
 
 MP4_SUFFIXES = {".m4a", ".mp4", ".mov", ".m4v", ".m4b"}
+# штамп в имени берём только у записей: у текста/сабов имя — что угодно
+MEDIA_SUFFIXES = MP4_SUFFIXES | {".caf", ".wav", ".wave", ".mp3", ".aif", ".aiff",
+                                 ".ogg", ".opus", ".flac", ".webm", ".amr"}
 _MP4_EPOCH = dt.datetime(1904, 1, 1, tzinfo=dt.timezone.utc)
 _MOOV_LIMIT = 64 * 1024 * 1024        # больше — не индекс, а мусор
 _ISO = re.compile(r"(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:[.,]\d+)?\s*"
@@ -37,9 +41,13 @@ _EARLIEST = dt.datetime(2000, 1, 1)
 
 
 def recorded_at(path: pathlib.Path | str) -> dt.datetime | None:
-    """Момент записи по контейнеру, иначе по штампу в имени, иначе None."""
+    """Момент записи по контейнеру, иначе по штампу в имени (только у
+    медиа), иначе None. Каждый источник проходит _sane сам по себе: нелепый
+    ©day не должен глушить честный mvhd или штамп в имени."""
     p = pathlib.Path(path)
     suffix = p.suffix.lower()
+    if suffix not in MEDIA_SUFFIXES:
+        return None
     found = None
     try:
         if suffix in MP4_SUFFIXES:
@@ -52,9 +60,10 @@ def recorded_at(path: pathlib.Path | str) -> dt.datetime | None:
             found = _mp3(p)
     except (OSError, struct.error, ValueError, UnicodeDecodeError, IndexError):
         found = None
+    found = _sane(found)
     if found is None:
-        found = from_name(p.stem)
-    return _sane(found)
+        found = _sane(from_name(p.stem))
+    return found
 
 
 def from_name(stem: str) -> dt.datetime | None:
@@ -67,6 +76,12 @@ def from_name(stem: str) -> dt.datetime | None:
         return dt.datetime(y, mo, d, hh, mm, ss)
     except ValueError:
         return None
+
+
+def has_zone(text: str) -> bool:
+    """В строке ISO-8601 назван пояс (Z или ±ЧЧ:ММ)?"""
+    m = _ISO.search(text or "")
+    return bool(m and m.group(7))
 
 
 def parse_iso(text: str) -> dt.datetime | None:
@@ -108,9 +123,17 @@ def _mp4(p: pathlib.Path) -> dt.datetime | None:
         moov = _find_top_box(fh, b"moov")
     if moov is None:
         return None
-    day = _ilst_day(moov)
-    if day is not None:
+    # ©day с поясом — самый честный источник (время устройства + его пояс);
+    # ©day без пояса — время неизвестно чьё, уступает mvhd (тот всегда UTC)
+    day_text = _ilst_day(moov)
+    day = _sane(parse_iso(day_text)) if day_text else None
+    if day is not None and has_zone(day_text):
         return day
+    mvhd = _mvhd_created(moov)
+    return mvhd if mvhd is not None else day
+
+
+def _mvhd_created(moov: bytes) -> dt.datetime | None:
     mvhd = _child(moov, b"mvhd")
     if mvhd is None or len(mvhd) < 20:
         return None
@@ -122,7 +145,7 @@ def _mp4(p: pathlib.Path) -> dt.datetime | None:
     if created == 0:
         return None
     moment = _MP4_EPOCH + dt.timedelta(seconds=created)
-    return moment.astimezone().replace(tzinfo=None)
+    return _sane(moment.astimezone().replace(tzinfo=None))
 
 
 def _find_top_box(fh, wanted: bytes) -> bytes | None:
@@ -162,6 +185,8 @@ def _boxes(buf: bytes):
         size, typ = struct.unpack(">I4s", buf[off:off + 8])
         hdr = 8
         if size == 1:
+            if off + 16 > len(buf):
+                return                         # обрезанный 64-битный заголовок
             size = struct.unpack(">Q", buf[off + 8:off + 16])[0]
             hdr = 16
         elif size == 0:
@@ -179,7 +204,8 @@ def _child(buf: bytes, wanted: bytes) -> bytes | None:
     return None
 
 
-def _ilst_day(moov: bytes) -> dt.datetime | None:
+def _ilst_day(moov: bytes) -> str | None:
+    """Строка ©day из udta/meta/ilst, как записана."""
     udta = _child(moov, b"udta")
     if udta is None:
         return None
@@ -195,7 +221,7 @@ def _ilst_day(moov: bytes) -> dt.datetime | None:
     data = _child(day, b"data")
     if data is None or len(data) < 8:
         return None
-    return parse_iso(data[8:].decode("utf-8", "replace"))
+    return data[8:].decode("utf-8", "replace")
 
 
 # --- CAF ------------------------------------------------------------------
@@ -246,9 +272,11 @@ def _wav(p: pathlib.Path) -> dt.datetime | None:
                 body = fh.read(min(size, 1 << 20))
                 if body[:4] == b"INFO":
                     return _riff_info(body[4:])
-            elif typ == b"data":
-                return None
+                # adtl/exif: дочитать хвост и байт выравнивания, иначе курсор
+                # встанет на байт раньше следующего заголовка
+                fh.seek(size - len(body) + (size & 1), 1)
             else:
+                # data — тоже мимо: многие диктофоны пишут LIST/INFO после него
                 fh.seek(size + (size & 1), 1)
 
 
@@ -275,6 +303,8 @@ def _mp3(p: pathlib.Path) -> dt.datetime | None:
             return None                        # v2.2 — трёхбуквенные кадры, не поддерживаем
         size = _syncsafe(head[6:10])
         body = fh.read(min(size, 1 << 20))
+    if major == 3 and flags & 0x80:
+        body = body.replace(b"\xff\x00", b"\xff")   # unsync всего тега (v2.3)
     off = 0
     if flags & 0x40:                           # расширенный заголовок
         ext = _syncsafe(body[:4]) if major == 4 else struct.unpack(">I", body[:4])[0] + 4
@@ -285,8 +315,12 @@ def _mp3(p: pathlib.Path) -> dt.datetime | None:
         if fid == b"\0\0\0\0":
             break
         fsize = _syncsafe(body[off + 4:off + 8]) if major == 4 else struct.unpack(">I", body[off + 4:off + 8])[0]
+        fflags = body[off + 9]
         payload = body[off + 10:off + 10 + fsize]
-        if fid in (b"TDRC", b"TYER", b"TDAT", b"TIME") and payload:
+        # сжатие, шифрование, unsync кадра, индикатор длины — тело упаковано,
+        # текст из него не читаем
+        packed = (fflags & 0x0F) if major == 4 else (fflags & 0xE0)
+        if fid in (b"TDRC", b"TYER", b"TDAT", b"TIME") and payload and not packed:
             frames[fid] = _id3_text(payload)
         off += 10 + fsize
     if frames.get(b"TDRC"):
