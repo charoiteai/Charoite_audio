@@ -189,13 +189,17 @@ final class DictationPasteTargetTests: XCTestCase {
     /// протухший (старше TTL) — нет.
     func testParkedTextsGoInFrontOfTheNextInsertion() {
         let now = Date()
-        let stale = [(text: "первая", at: now.addingTimeInterval(-5)),
-                     (text: "вторая", at: now.addingTimeInterval(-1)),
-                     (text: "древняя", at: now.addingTimeInterval(-3600))]
-        let fresh = DictationService.freshStale(stale, now: now, ttl: 600)
-        XCTAssertEqual(fresh, ["первая", "вторая"])
-        XCTAssertEqual(DictationService.withStale(fresh, text: "третья"), "первая вторая третья")
-        XCTAssertEqual(DictationService.withStale([], text: "одна"), "одна")
+        typealias S = DictationService.StaleText
+        let stale = [S(text: "первая", at: now.addingTimeInterval(-5), pid: 7),
+                     S(text: "вторая", at: now.addingTimeInterval(-1), pid: nil),
+                     S(text: "чужая", at: now.addingTimeInterval(-1), pid: 9),
+                     S(text: "древняя", at: now.addingTimeInterval(-3600), pid: 7)]
+        let fresh = DictationService.freshStale(stale, now: now, ttl: 600, pid: 7)
+        XCTAssertEqual(fresh, ["первая", "вторая"], "чужое приложение и протухшее — мимо, безымянный якорь — со всеми")
+        XCTAssertEqual(DictationService.freshStale(stale, now: now, ttl: 600, pid: nil), ["первая", "вторая", "чужая"])
+        XCTAssertEqual(DictationService.mergeStale(fresh, text: "третья", secret: false), "первая вторая третья")
+        XCTAssertEqual(DictationService.mergeStale(fresh, text: "третья", secret: true), "третья", "парольному исходу — только свой текст")
+        XCTAssertEqual(DictationService.mergeStale([], text: "одна", secret: false), "одна")
     }
 
     /// Доставка решает по снимку своей диктовки: защёлка, взведённая
