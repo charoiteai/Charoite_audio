@@ -9,7 +9,9 @@
 
 Дальше единый хвост конвейера: минутки+разбор+тезисы (retro_fill,
 идемпотентно), обновление графа (graph_updater), раскладка в архив
-встреч. Дата встречи — из mtime файла, точнее: --date/--time.
+встреч. Дата встречи — из самой записи (метаданные контейнера или штамп
+в имени с телефона, src/media_meta), иначе из mtime файла; точнее —
+--date/--time.
 
     .venv/bin/python scripts/import_meeting.py запись.m4a --date 2026-07-15
     .venv/bin/python scripts/import_meeting.py zoom.vtt --title "Планёрка"
@@ -55,6 +57,7 @@ from config_loader import load_user_or_example  # noqa: E402
 
 import charoite_paths  # noqa: E402
 import safe_write  # noqa: E402
+import media_meta  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
 from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402
 
@@ -634,19 +637,9 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def import_stamp(tdir: pathlib.Path, minute: str, src_name: str,
-                 seconds: str, src_size: int | None = None) -> tuple[str, pathlib.Path | None]:
-    """Штамп импорта и найденный повтор.
-
-    Повтор — та же ЗАПИСЬ, а не та же минута: шапка стенограммы импорта
-    хранит имя исходника («— импорт <файл>»), по нему и узнаём. Раньше
-    повтором считалась любая встреча той же минуты — вторая запись с
-    телефона в ту же минуту (или рядом со встречей демона) молча уезжала
-    в done/ без импорта (аудит 17.08, карточка №41). Чужая встреча в этой
-    минуте — импортируем под посекундным штампом (секунды — от mtime записи,
-    «00» при времени от человека), как демон при крэш-рестарте: граф даст
-    ей свой ключ (meeting_stamp.graph_key). Занятые секунды — суффикс «-N».
-    """
+def find_repeat(tdir: pathlib.Path, minute: str, src_name: str,
+                src_size: int | None) -> tuple[pathlib.Path | None, bool]:
+    """Стенограмма той же записи в минуте `minute` и занята ли минута вообще."""
     taken = False
     for p in sorted(tdir.glob(f"{minute}*.md")) if tdir.is_dir() else ():
         s = meeting_stamp.stamp_of(p.stem)
@@ -661,8 +654,60 @@ def import_stamp(tdir: pathlib.Path, minute: str, src_name: str,
         # (transcribe_file) — «— запись …»: повтор узнаём по обеим, с
         # размером, когда он есть.
         if same_source(head, src_name, src_size):
-            return s, p
+            return p, True
         taken = True
+    return None, taken
+
+
+def find_repeat_anywhere(tdir: pathlib.Path, src_name: str,
+                         src_size: int | None) -> pathlib.Path | None:
+    """Та же запись где угодно в папке — последний рубеж дедупа.
+
+    Минута штампа у одного и того же файла может меняться: до 06.09 она
+    бралась из mtime, теперь — из самой записи (media_meta), а mtime у
+    повторно скопированного файла — момент копирования. Поэтому повтор
+    ищется по шапке во всей папке, но только с РАЗМЕРОМ в шапке: телефон
+    экспортирует всё как Recording.m4a, и без размера две разные записи
+    склеились бы по имени.
+    """
+    if src_size is None or not tdir.is_dir():
+        return None
+    for p in sorted(tdir.glob("*.md")):
+        if meeting_stamp.stamp_of(p.stem) is None:
+            continue
+        try:
+            with p.open(encoding="utf-8", errors="replace") as fh:
+                head = fh.readline()
+        except OSError:
+            continue
+        m = _SOURCE_HEAD_RE.search(head)
+        if m and m.group("tail").endswith(" Б)") and same_source(head, src_name, src_size):
+            return p
+    return None
+
+
+def import_stamp(tdir: pathlib.Path, minute: str, src_name: str,
+                 seconds: str, src_size: int | None = None) -> tuple[str, pathlib.Path | None]:
+    """Штамп импорта и найденный повтор.
+
+    Повтор — та же ЗАПИСЬ, а не та же минута: шапка стенограммы импорта
+    хранит имя исходника («— импорт <файл>»), по нему и узнаём. Раньше
+    повтором считалась любая встреча той же минуты — вторая запись с
+    телефона в ту же минуту (или рядом со встречей демона) молча уезжала
+    в done/ без импорта (аудит 17.08, карточка №41). Чужая встреча в этой
+    минуте — импортируем под посекундным штампом (секунды — от mtime записи,
+    «00» при времени от человека), как демон при крэш-рестарте: граф даст
+    ей свой ключ (meeting_stamp.graph_key). Занятые секунды — суффикс «-N».
+
+    Повтор — сначала в своей минуте (шапка с размером или без, как до
+    06.09), потом по всей папке с размером (find_repeat_anywhere): минута
+    того же файла могла быть другой, пока штамп брался из mtime.
+    """
+    found, taken = find_repeat(tdir, minute, src_name, src_size)
+    if found is None:
+        found = find_repeat_anywhere(tdir, src_name, src_size)
+    if found is not None:
+        return meeting_stamp.stamp_of(found.stem), found
     if not taken:
         return minute, None
     stamp = f"{minute}{seconds}"
@@ -671,6 +716,26 @@ def import_stamp(tdir: pathlib.Path, minute: str, src_name: str,
         stamp = f"{minute}{seconds}-{n}"
         n += 1
     return stamp, None
+
+
+# На сколько запись и mtime вправе расходиться, прежде чем верить записи:
+# у честного файла они совпадают с точностью до секунд (телефон дописал —
+# синк положил), сутки разницы — это скачивание, копирование или синк,
+# тронувший mtime без записи.
+MOMENT_DRIFT = dt.timedelta(minutes=2)
+
+
+def meeting_moment(src: pathlib.Path) -> tuple[dt.datetime, str | None]:
+    """Момент встречи для штампа: сама запись, если она знает и расходится
+    с mtime больше MOMENT_DRIFT, иначе mtime. Вторым — строка в лог, когда
+    верим записи, а не файлу.
+    """
+    mt = dt.datetime.fromtimestamp(src.stat().st_mtime)
+    rec = media_meta.recorded_at(src)
+    if rec is None or abs(rec - mt) <= MOMENT_DRIFT:
+        return mt, None
+    return rec, (f"дата встречи — по самой записи {rec:%Y-%m-%d %H:%M}: mtime файла "
+                 f"{mt:%Y-%m-%d %H:%M} сдвинут синком или копированием")
 
 
 def main() -> None:
@@ -774,7 +839,9 @@ def main() -> None:
     tdir = ROOT / cfg["log"]["transcripts_dir"]
     tdir.mkdir(parents=True, exist_ok=True)
 
-    mt = dt.datetime.fromtimestamp(src.stat().st_mtime)
+    mt, moment_note = meeting_moment(src)
+    if moment_note:
+        print(moment_note)
     day = clean_date(args.date) if args.date else f"{mt:%Y-%m-%d}"
     hhmm = clean_time(args.time) if args.time else f"{mt:%H%M}"
     stamp, already = import_stamp(tdir, f"{day}_{hhmm}", src.name,
