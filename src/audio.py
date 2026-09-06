@@ -633,10 +633,9 @@ class AudioHub:
         полное аудио встречи навсегда. На рабочей машине так пролежал 61 МБ
         системного звука девять дней при обещанных двух (аудит 16.08).
         PRIVACY.md обещает «записи временны» — обещание должно покрывать и
-        этот слой. `tap_stream.raw` + `tap_stream.json` — поток и манифест
-        снятого 02.09 Core Audio tap: писателя больше нет, поэтому наследие
-        убирается сразу, без срока (ветку снять после 0.70, когда когорта
-        обновления пройдёт — вместе с `TapOrphanCleanup` в приложении).
+        этот слой. Наследие Core Audio tap (`tap_stream.raw|json`) убиралось
+        здесь безусловно до 06.09; ветка снята вместе с `TapOrphanCleanup`
+        в приложении — когорта обновления прошла 0.70 (№154).
 
         Живую сессию не трогаем: её каталог назван в свежем манифесте.
         Возвращает число удалённых путей.
@@ -657,11 +656,6 @@ class AudioHub:
                 return p.stat().st_mtime < cutoff
             except OSError:
                 return False
-
-        for legacy in (data_dir / "tap_stream.raw", data_dir / "tap_stream.json"):
-            if legacy.exists():
-                legacy.unlink(missing_ok=True)
-                removed += 1
 
         sck = data_dir / "sck"
         if sck.is_dir():
