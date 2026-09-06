@@ -168,4 +168,27 @@ final class DictationPasteTargetTests: XCTestCase {
         XCTAssertFalse(DictationService.secureReadApplies(generation: 3, current: 4, recording: true), "уже следующая диктовка")
         XCTAssertFalse(DictationService.secureReadApplies(generation: 3, current: 3, recording: false), "после стопа — доставка читает сама")
     }
+
+    /// Старт читает фокус в фоне (№161): возврат применяется только к той
+    /// диктовке, что его запустила, — и до стопа, и после (якорь и защёлка
+    /// нужны доставке), но не к следующей.
+    func testStartReadAppliesOnlyToItsOwnDictation() {
+        XCTAssertTrue(DictationService.startReadApplies(generation: 3, current: 3))
+        XCTAssertFalse(DictationService.startReadApplies(generation: 3, current: 4), "уже следующая диктовка — у неё свой якорь")
+    }
+
+    /// Доставка решает по снимку своей диктовки: защёлка, взведённая
+    /// следующей диктовкой за время фонового чтения, чужую вставку не
+    /// запрещает, а свой пароль под фокусом — запрещает (№161).
+    func testDeliveryDecidesOnItsOwnSnapshot() {
+        let clean = DictationService.finalDecision(trusted: true, own: own, startedIn: anchor(7), now: anchor(7),
+                                                   secureSeen: false, nowSecure: false)
+        XCTAssertEqual(clean, .paste, "снимок без пароля — вставка, что бы ни взвела следующая диктовка")
+        let touched = DictationService.finalDecision(trusted: true, own: own, startedIn: anchor(7), now: anchor(7),
+                                                     secureSeen: true, nowSecure: false)
+        XCTAssertEqual(touched, .secret, "своя защёлка из снимка держится")
+        let nowSecure = DictationService.finalDecision(trusted: true, own: own, startedIn: anchor(7), now: anchor(7),
+                                                       secureSeen: false, nowSecure: true)
+        XCTAssertEqual(nowSecure, .secret, "пароль под фокусом в момент доставки — секрет")
+    }
 }

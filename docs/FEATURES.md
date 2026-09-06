@@ -328,7 +328,11 @@ it signals degradation, it does not break the loop.
   milliseconds): a click into a password field mid-speech hides it with the
   next piece or with the once-a-second watch, and it does not come back
   before the dictation ends; if the app in front does not answer, the strip
-  stays silent. A password field is recognised through Accessibility: an app
+  stays silent. The focus is read the same way at the start of a dictation
+  and at delivery — in the background, so an app in front that hangs cannot
+  freeze Charoite's menu or strip for the half second of the request; the
+  delivery decides on a snapshot of its own dictation, not on whatever the
+  next one has already started. A password field is recognised through Accessibility: an app
   that does not expose its tree (Chromium browsers with accessibility off)
   cannot be told apart — there the strip and the paste behave as in a plain
   field. In the menu
