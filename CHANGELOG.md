@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.73.0](https://github.com/charoiteai/Charoite_audio/compare/v0.72.3...v0.73.0) (2026-09-06)
+
+
+### Features
+
+* **import:** дата встречи из самой записи, а не из mtime файла ([#515](https://github.com/charoiteai/Charoite_audio/issues/515)) ([9f1ffcb](https://github.com/charoiteai/Charoite_audio/commit/9f1ffcba07ef7730ca0c30c84114f3dc1fea9a2a))
+
 ## [0.72.3](https://github.com/charoiteai/Charoite_audio/compare/v0.72.2...v0.72.3) (2026-09-06)
 
 
