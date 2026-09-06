@@ -12,7 +12,7 @@ import sys
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
-from action_items import normalize  # noqa: E402
+from action_items import OUTSIDER_MARK, OUTSIDER_MARKS, flag_outsiders, normalize, participants_of, participants_set  # noqa: E402
 
 CHECKBOX = re.compile(r"^\s*[-*] \[[ xX]\] ", re.M)
 
@@ -282,3 +282,120 @@ def test_bold_name_with_bold_deadline_keeps_the_name_bold():
     остаётся чётным, и страховка не снимает жирность имени."""
     out = normalize("**Поручения:**\n*   **Мира** — задача — **Срок: завтра**.\n")
     assert "- [ ] **Мира** — задача — завтра" in out, out
+
+
+# ---- исполнитель — участник встречи (05.09: поручение упомянутому, не присутствующему)
+
+TRANSCRIPT = """# Встреча 2026-09-05_1413 — Отладка модели
+Участники (звучали в разговоре): Андрей, Дмитрий (бизнес), Аня
+
+**Андрей** [14:15]:
+Давайте посмотрим запрос.
+
+**Собеседник 2** [14:16]:
+Угу.
+"""
+
+
+def test_participants_come_from_header_labels_and_owner():
+    p = participants_of(TRANSCRIPT, owner="Игорь Ветров")
+    assert {"Андрей", "Дмитрий", "Аня", "Игорь Ветров"} <= p
+    assert not any(x.startswith("Собеседник") for x in p), p
+    assert participants_of("") == set()
+
+
+def test_outsider_loses_checkbox_and_gets_a_mark():
+    minutes = """## Поручения
+- [ ] **Саша Никитин** — отладить конвертацию MD — до пятницы
+- [ ] **Андрей** — убрать кавычки из промпта
+- [ ] **Команда** — собрать тесты
+## Открытые вопросы
+- [ ] **Никитин** — вне раздела поручений, не трогаем
+"""
+    out = flag_outsiders(minutes, {"Андрей", "Дмитрий", "Аня"})
+    assert f"- {OUTSIDER_MARK} (Саша Никитин): **Саша Никитин** — отладить конвертацию MD — до пятницы" in out, out
+    assert "- [ ] **Андрей** — убрать кавычки из промпта" in out
+    assert "- [ ] **Команда** — собрать тесты" in out
+    assert "- [ ] **Никитин** — вне раздела" in out
+    assert out.count("- [ ]") == 3
+
+
+def test_case_forms_owner_and_pairs():
+    out = flag_outsiders("## Поручения\n- [ ] **Ольге** — макет\n- [ ] **Игорь** — смета\n",
+                         {"Ольга", "Игорь Ветров"})
+    assert "⚠" not in out, out
+    pair = flag_outsiders("## Поручения\n- [ ] **Дмитрий и Ольга** — токены\n", {"Дмитрий", "Игорь Ветров"})
+    assert f"{OUTSIDER_MARK} (Ольга)" in pair, pair
+
+
+def test_unknown_participants_change_nothing():
+    txt = "## Поручения\n- [ ] **Кто-то** — что-то\n"
+    assert flag_outsiders(txt, set()) == txt
+
+
+def test_mark_survives_a_second_normalize():
+    """Пересборка гоняет normalize повторно: пометка не должна снова стать чекбоксом."""
+    marked = flag_outsiders("## Поручения\n- [ ] **Саша Никитин** — отладить формат\n", {"Андрей", "Аня"})
+    assert OUTSIDER_MARK in marked
+    again = normalize(marked)
+    assert again == marked, again
+    assert "- [ ]" not in again
+
+
+def test_daemon_uses_transcript_participants_not_full_text(tmp_path):
+    """Critical круга 1 (#510): tr.full() рендерит «[чч:мм] Имя: …» без шапки и
+    без **, и participants_of по нему видел только владельца — все остальные
+    исполнители теряли чекбокс. Источник для демона — Transcript.participants()."""
+    from transcript import Transcript
+    tr = Transcript(tmp_path)
+    tr.set_participants(["Андрей", "Дмитрий"])
+    tr.add("Давайте посмотрим запрос.", speaker="Андрей")
+    tr.add("Угу.", speaker="Собеседник 2")
+    tr.add("Пример пришлю.", speaker="Аня")
+    assert participants_of(tr.full(), owner="Игорь Ветров") == {"Игорь Ветров"}   # текстом — слеп
+    got = participants_set(tr.participants(), owner="Игорь Ветров")
+    assert got == {"Андрей", "Дмитрий", "Аня", "Игорь Ветров"}, got
+    out = flag_outsiders("## Поручения\n- [ ] **Андрей** — убрать кавычки\n- [ ] **Никитин** — формат\n", got)
+    assert "- [ ] **Андрей** — убрать кавычки" in out and f"{OUTSIDER_MARK} (Никитин)" in out
+
+
+def test_declined_names_are_participants():
+    """«Саше»/«Саша», «Ане»/«Аня», «Дмитрию»/«Дмитрий», «Игорю»/«Игорь», «Ольгой»/«Ольга»
+    — модель пишет поручение в дательном, и это не повод снимать задачу."""
+    parts = {"Саша", "Аня", "Дмитрий", "Игорь", "Ольга"}
+    text = "## Поручения\n" + "\n".join(f"- [ ] **{n}** — дело" for n in ("Саше", "Ане", "Дмитрию", "Игорю", "Ольгой")) + "\n"
+    out = flag_outsiders(text, parts)
+    assert "⚠" not in out, out
+    assert flag_outsiders("## Поручения\n- [ ] **Марине** — дело\n", {"Мария", "Игорь"}).count("⚠") == 1
+
+
+def test_surname_and_comma_order_match_the_participant():
+    """«Петров» при участнике «Дмитрий Петров»; «Никитин, Саша» при «Саша Никитин»."""
+    out = flag_outsiders("## Поручения\n- [ ] **Петров** — демо\n- [ ] **Никитин, Саша** — формат\n",
+                         {"Дмитрий Петров", "Саша Никитин"})
+    assert "⚠" not in out, out
+
+
+def test_header_placeholders_and_language_mark():
+    assert participants_of("Участники (звучали в разговоре): Собеседник, Андрей") == {"Андрей"}
+    en = flag_outsiders("## Action items\n- [ ] **Smith** — draft\n", {"Jones", "Igor"}, lang="en")
+    assert OUTSIDER_MARKS["en"] in en and "не участник" not in en
+    assert normalize(en) == en   # пометка на любом языке переживает normalize
+
+
+def test_round2_joiners_owner_alone_diminutives_initials_placeholders():
+    """Круг 2 (#510): «Дмитрий с Ольгой» — Ольга помечена; владелец-одиночка — судить
+    некого; «Дима» — это Дмитрий, «Д. Петров» — Дмитрий Петров, «Собеседник 2» — не
+    про человека; «Игорем» и «Алене» (без ё) — участники."""
+    parts = {"Дмитрий Петров", "Игорь", "Алёна", "Ольга Петрова"}
+    out = flag_outsiders("## Поручения\n- [ ] **Дмитрий с Ольгой** — токены\n", {"Дмитрий", "Игорь"})
+    assert f"{OUTSIDER_MARK} (Ольгой)" in out, out
+    alone = "## Поручения\n- [ ] **Игорь** — отчёт\n"
+    assert flag_outsiders(alone, {"Игорь Ветров"}) == alone            # только владелец известен
+    text = "## Поручения\n" + "\n".join(f"- [ ] **{n}** — дело" for n in
+                                        ("Дима", "Д. Петров", "Собеседник 2", "Игорем", "Алене", "Оле")) + "\n"
+    out = flag_outsiders(text, parts)
+    assert "⚠" not in out, out
+    stranger = flag_outsiders("## Поручения\n- [ ] **Витя** — дело\n- [ ] **О. Сидоров** — дело\n", parts)
+    assert stranger.count("⚠") == 2, stranger
+
