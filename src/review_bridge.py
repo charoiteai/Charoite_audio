@@ -39,16 +39,18 @@ _BOLD_HEADING = re.compile(r"^\s*\*\*[^*]+\*\*\s*$")
 _BULLET = re.compile(r"^\s*(?:-\s*|[*+•–—⁃‣▪]\s+|\d+[.)]\s+)(?=\S)")
 _CHECKBOX = re.compile(r"^\s*\[[ xX]\]\s*")
 _ITEM = re.compile(r"^\s*(?:-\s*|[*+•–—⁃‣▪]\s+|\d+[.)]\s+)(?:\[[ xX]\]\s*)?(?P<text>\S.*)$")
-_EMPTY_ITEM = re.compile(r"^(?:нет|none|无|[—–\-•⁃‣▪]+|\*+)\.?$", re.IGNORECASE)
-# «**Пётр** — позвонить» без маркера — свой пункт (не хвост чужого); а
-# «**на стенд** до пятницы» — перенос с жирного спана, его клеим (GLM r4 I1)
-_OWN_ITEM = re.compile(r"^\s*\*\*[^*]+\*\*\s*[—–-]")
+_EMPTY_ITEM = re.compile(r"^(?:нет|none|无|[—–\-•⁃‣▪*\s]+)\.?$", re.IGNORECASE)
+# «**Пётр** — позвонить» / «**Пётр**: позвонить» без маркера — узнаваемое
+# поручение: свой пункт, а не хвост чужого и не потеря (GLM r4 I1, r5 I1 и
+# критика 1); «**на стенд** до пятницы» и «**срок:** пятница» — перенос с
+# жирного спана, его клеим
+_OWN_ITEM = re.compile(r"^\s*\*\*[^*]+\*\*\s*[—–-]|^\s*\*\*[^*:：]+\*\*\s*[:：]")
 # легаси-заголовок раздела: markdown-заголовок со слова «Поручения» либо
-# голая/жирная строка со слова и с двоеточием на конце — проза «Поручений
-# нет — все задачи закрыты» разделом не считается (GLM r4 M2)
+# голая/жирная строка из известного списка — форму «слово + что угодно +
+# двоеточие» не угадываем, как и action_items (GLM r5, критика 2)
 _SECTION_WORD = re.compile(
     r"^\s*(?:#{1,6}\s*(?:\*\*)?\s*(?:поручени|action item|行动项)"
-    r"|(?:\*\*)?\s*(?:поручени|action item|行动项)[^:：\n]*[:：]\s*\**\s*$)",
+    r"|(?:\*\*)?\s*(?:поручения|поручения и сроки|action items|行动项)\s*[:：]\s*\**\s*$)",
     re.IGNORECASE)
 _PAREN_NOTE = re.compile(r"^\s*[(（][^)）]*[)）]\s*$")
 
@@ -75,8 +77,9 @@ def recovered_items(review: str) -> list[str]:
             # без маркера — свой пункт, а не хвост чужого) и строка до
             # первого пункта — мимо (DS r2 I2/M3, GLM r3 M3)
             bare = line.strip().strip("*").strip()
-            if items and bare and not _EMPTY_ITEM.match(bare) and not _PAREN_NOTE.match(line) \
-                    and not _OWN_ITEM.match(line) and not _BOLD_HEADING.match(line):
+            if items and _OWN_ITEM.match(line):
+                items.append(line.strip())          # поручение без маркера — свой пункт
+            elif items and bare and not _EMPTY_ITEM.match(bare) and not _PAREN_NOTE.match(line):
                 items[-1] = (items[-1] + " " + line.strip()).strip()
             continue
         m = _ITEM.match(line)
@@ -199,9 +202,18 @@ def merge_into_minutes(minutes: str, items: list[str], participants: set[str] | 
     mark = MARKS.get(lang, MARKS["ru"])
     fresh: list[str] = []
     for item in items:
-        # внутри одной ревизии вложенность судим в обе стороны — порядок
-        # строк не должен решать, останется один пункт или два (GLM r4 M4)
-        if _key(item) and not any(_same_item(item, other) or _same_item(other, item) for other in fresh):
+        if not _key(item):
+            continue
+        # внутри одной ревизии вложенность судим в обе стороны, и выживает
+        # самая полная форма — порядок строк не решает ни счёт, ни текст
+        # (GLM r4 M4, r5 M4)
+        for i, other in enumerate(fresh):
+            if _same_item(item, other):
+                break
+            if _same_item(other, item):
+                fresh[i] = item
+                break
+        else:
             fresh.append(item)
     if not fresh:
         return minutes, 0
