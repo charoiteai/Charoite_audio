@@ -32,6 +32,7 @@ from meeting_stamp import files_with_stamp, stamp_of
 import frontmatter
 import graphs
 import redirects
+from speaker_names import nominative_candidates
 
 ROOT = resolve_root(__file__)
 CODE = code_root(__file__)
@@ -683,6 +684,17 @@ def find_canonical(graph: pathlib.Path, name: str,
     for f in files:
         if f.stem.casefold() == n:
             return f
+    # 1б) звательный падеж → именительный, только среди людей и только к
+    #     точному имени узла: «Коль» → Люди/Коля, «Ань» → Люди/Аня. Проход 3
+    #     (подстрока) этого не ловит — имена короче пяти букв он не смотрит,
+    #     и 05.09 Коля получил второй узел «Коль» в одной встрече. Что
+    #     считается звательной формой — speaker_names.nominative_candidates.
+    if folder in (None, "Люди"):
+        forms = {x.casefold() for x in nominative_candidates(safe_name(name))}
+        if forms:
+            voc = [f for f in files if f.parent.name == "Люди" and f.stem.casefold() in forms]
+            if len(voc) == 1:
+                return voc[0]
     # 2) ключ без пунктуации/скобок/дефисов — только в целевой папке записи
     #    и только если кандидат один: «ИИ-агент» в Людях и «ИИ_агент» в
     #    Системах — не один узел (DS I1); два кандидата — не гадаем
@@ -728,6 +740,35 @@ def find_canonical(graph: pathlib.Path, name: str,
     if candidates and ambiguous is not None:
         ambiguous.extend(f.stem for f in candidates)
     return None
+
+
+def merge_vocatives(people: list[dict]) -> list[dict]:
+    """«Коль» и «Коля» из одного разбора — один человек.
+
+    Модель просят писать имена в именительном падеже, но обращение из
+    стенограммы («Коль, ты имеешь в виду…») она всё равно отдаёт отдельной
+    записью, и upsert заводил второй узел (встреча 05.09). Звательная запись
+    вливается в именительную из того же списка: вклад дописывается, роль
+    остаётся у именительной. Порядок остальных записей не меняется. Что
+    считается звательной формой — speaker_names.nominative_candidates."""
+    by_name = {str(p.get("имя", "")).strip().casefold(): p for p in people}
+    out: list[dict] = []
+    for p in people:
+        name = str(p.get("имя", "")).strip()
+        target = None
+        for form in nominative_candidates(name):
+            q = by_name.get(form.casefold())
+            if q is not None and q is not p:
+                target = q
+                break
+        if target is None:
+            out.append(p)
+            continue
+        extra = str(p.get("вклад") or "").strip()
+        had = str(target.get("вклад") or "").strip()
+        if extra and extra not in had:
+            target["вклад"] = f"{had}; {extra}" if had else extra
+    return out
 
 
 def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
@@ -1344,7 +1385,7 @@ def main():
     # ссылки не получают, иначе разные люди разных встреч склеиваются в один
     # файл (аудит 28.08). В заметке встречи остаются текстом, в speakers идут —
     # цитаты из стенограммы подписаны именно этой меткой.
-    people = [p for p in raw_people if not is_speaker_placeholder(p["имя"])]
+    people = merge_vocatives([p for p in raw_people if not is_speaker_placeholder(p["имя"])])
     anon = [p for p in raw_people if is_speaker_placeholder(p["имя"])]
     ents = [e for e in (data.get("сущности") or []) if isinstance(e, dict) and e.get("имя")
             and not is_speaker_placeholder(e["имя"])]      # метка как «сущность» — тоже не узел

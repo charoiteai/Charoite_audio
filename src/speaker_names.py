@@ -47,6 +47,55 @@ PREFIX = 4
 # собственных репликах говорящего.
 _INTRO = r"(это|я|меня\s+зовут)\s+"
 
+# Звательный падеж — имя на «-а/-я» без последней гласной: «Коль», «Ань»,
+# «Саш». Префиксная склейка выше этого не видит, когда расходится четвёртая
+# буква: «Коль» и «Коля» — и 05.09 Коля получил второй узел «Коль» в том же
+# графе. Обратный ход детерминирован и узкий: мягкий знак → «я» (Коль → Коля,
+# Ань → Аня), «й» у короткого имени → «я» (Зой → Зоя), другой согласный у
+# имени в 3–5 букв → «а» (Саш → Саша, Мариш → Мариша, Полин → Полина).
+# Длинные и похожие на фамилию («…ов/…ев») не трогаем: «Александр» + «а» —
+# другой человек. Стоп-лист — мужские имена, чья форма на «-а/-я» есть
+# самостоятельное женское имя.
+_VOWELS = "аеёиоуыэюя"
+_SURNAME_TAILS = ("ов", "ев", "ёв", "ын")
+_NOT_VOCATIVE = frozenset({"влад", "кир", "дан", "юлий"})
+
+
+def nominative_candidates(name: str) -> tuple[str, ...]:
+    """Именительные формы, звательным падежом которых могло быть `name`.
+
+    Пусто — если имя кончается гласной (это уже именительный), короче
+    MIN_LEN, длиннее пяти букв с обычным согласным, похоже на фамилию или
+    стоит в стоп-листе. Сама по себе форма ничего не решает: склейка
+    происходит только при точном совпадении с известным человеком."""
+    n = (name or "").strip()
+    low = n.casefold()
+    if len(n) < MIN_LEN or not n.replace("-", "").isalpha() or low in _NOT_VOCATIVE:
+        return ()
+    last = low[-1]
+    if last in _VOWELS:
+        return ()
+    if last == "ь":
+        return (n[:-1] + "я",)
+    if last == "й":
+        return (n[:-1] + "я",) if len(n) <= 4 else ()
+    if len(n) > 5 or low.endswith(_SURNAME_TAILS):
+        return ()
+    return (n + "а",)
+
+
+def resolve_vocative(name: str, known) -> str | None:
+    """Известный человек, к которому обращались «name»: «Коль» + («Коля»,) → «Коля».
+
+    Только точное совпадение выведенной формы с известным именем, без
+    догадок: «Мариш» при известной «Марине» остаётся как есть (Мариша ≠
+    Марина). Два известных на одну форму — не гадаем."""
+    forms = {f.casefold() for f in nominative_candidates(name)}
+    if not forms:
+        return None
+    hits = [k for k in known if str(k).casefold() in forms]
+    return hits[0] if len(hits) == 1 else None
+
 
 def _clean(raw: str) -> str:
     """Обрезка пунктуации и кавычек, единый регистр имени."""
@@ -142,10 +191,16 @@ def trustworthy_name(raw: str, *, sample: str, label: str,
     # падежи — по известным людям графа, до проверки владельца: «Игорёк» из
     # разговора должен сначала стать «Игорь», чтобы владелец узнался.
     if known and name not in known:
-        low = name.casefold()
-        hit = [k for k in known if k.casefold().startswith(low[:PREFIX])]
-        if len(hit) == 1:
-            name = hit[0]
+        # сначала точный обратный ход из звательного падежа («Коль» → «Коля»),
+        # потом — префиксная склейка («Андрюх» → «Андрей»)
+        voc = resolve_vocative(name, known)
+        if voc:
+            name = voc
+        else:
+            low = name.casefold()
+            hit = [k for k in known if k.casefold().startswith(low[:PREFIX])]
+            if len(hit) == 1:
+                name = hit[0]
 
     if is_owner(name, owner_name):
         return None
