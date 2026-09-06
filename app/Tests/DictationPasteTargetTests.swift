@@ -177,6 +177,14 @@ final class DictationPasteTargetTests: XCTestCase {
         XCTAssertFalse(DictationService.startReadApplies(generation: 3, current: 4), "уже следующая диктовка — у неё свой якорь")
     }
 
+    /// Доставка настигла следующую диктовку — исполнять нельзя: её поле,
+    /// статус и защёлка не наши; текст уходит в буфер (DS r1 I1 / GLM r1 I2
+    /// по #517).
+    func testStaleDeliveryDoesNotApplyToTheNextDictation() {
+        XCTAssertTrue(DictationService.deliveryApplies(generation: 5, current: 5))
+        XCTAssertFalse(DictationService.deliveryApplies(generation: 5, current: 6), "следующая диктовка уже идёт — текст в буфер, ⌘V не постить")
+    }
+
     /// Доставка решает по снимку своей диктовки: защёлка, взведённая
     /// следующей диктовкой за время фонового чтения, чужую вставку не
     /// запрещает, а свой пароль под фокусом — запрещает (№161).

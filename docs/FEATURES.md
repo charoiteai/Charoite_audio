@@ -331,8 +331,11 @@ it signals degradation, it does not break the loop.
   stays silent. The focus is read the same way at the start of a dictation
   and at delivery — in the background, so an app in front that hangs cannot
   freeze Charoite's menu or strip for the half second of the request; the
-  delivery decides on a snapshot of its own dictation, not on whatever the
-  next one has already started. A password field is recognised through Accessibility: an app
+  delivery waits for the start-time read (a short phrase must not lose its
+  anchor or the password latch) and decides on a snapshot of its own
+  dictation; if the next dictation has already started by the time the
+  text is ready, that text goes to the clipboard without ⌘V and the strip
+  says so — the new dictation's field, status and latch are never touched. A password field is recognised through Accessibility: an app
   that does not expose its tree (Chromium browsers with accessibility off)
   cannot be told apart — there the strip and the paste behave as in a plain
   field. In the menu

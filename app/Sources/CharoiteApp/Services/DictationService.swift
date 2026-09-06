@@ -48,6 +48,8 @@ final class DictationService: ObservableObject {
     /// черновика), и к её моменту человек мог начать следующую — чужой
     /// текст в чужое поле и чужой статус не попадают.
     private var generation = 0
+    /// Стартовое чтение фокуса этой диктовки — доставка ждёт его завершения
+    private var startRead: Task<Void, Never>?
     /// Момент запуска python: сторож после стопа даёт распознаванию срок
     /// от длины записи, а не константу.
     private var startedAt = Date()
@@ -190,13 +192,19 @@ final class DictationService: ObservableObject {
         // вставки нужен только глобальной диктовке: чат и заметка insert()
         // не зовут (круг 2 по #488, DS) — им хватает одного запроса о пароле.
         let global = onResult == nil && !note
+        startRead = nil
         if !note {
-            readFocus(secureOnly: !global) { [weak self] focus in
+            // Task, а не колбэк: доставка ждёт его (await value) — иначе у
+            // короткой диктовки якорь и защёлка пароля не успевали к решению
+            // (DS r1 I2 / GLM r1 I1 по #517)
+            startRead = Task { @MainActor [weak self] in
+                let focus = await Self.focusOffMain(secureOnly: !global)
                 guard let self, Self.startReadApplies(generation: generation, current: self.generation) else { return }
                 if global { self.target = Self.frontAnchor(focus) }
                 if focus.secure {
                     self.secureSeen = true
-                    DictationPreviewPanel.shared.hide()
+                    // плашку доставки поздний возврат не гасит (GLM r1 M2)
+                    if self.isRecording { DictationPreviewPanel.shared.hide() }
                 } else if self.isRecording {
                     // Черновик системного движка — только не в поле пароля:
                     // раньше это решал синхронный проход, теперь его возврат
@@ -279,6 +287,10 @@ final class DictationService: ObservableObject {
             // (self. — параметр onResult затеняет свойство)
             self.onResult = nil
             self.noteMode = false
+            // Диктовки нет — её стартовое чтение не должно выставить якорь и
+            // защёлку несуществующей записи (GLM r1 M1 по #517)
+            self.generation += 1
+            self.startRead = nil
         }
     }
 
@@ -574,21 +586,31 @@ final class DictationService: ObservableObject {
         return .paste
     }
 
-    /// Чтение фокуса для старта и доставки — тем же фоновым путём, что у
-    /// сторожа (ниже): межпроцессный вызов в чужое приложение на GCD,
-    /// результат — на главный актор. Главный поток чужое приложение не
-    /// ждёт (№161, GLM r11 крит.2 по #488: до 0,5 с заморозки на ⌥⌘D и на
-    /// доставке при зависшем приложении впереди).
-    private func readFocus(secureOnly: Bool, _ apply: @escaping @MainActor (FocusInfo) -> Void) {
-        DispatchQueue.global(qos: .userInitiated).async {
-            let info = Self.focusInfo(secureOnly: secureOnly)
-            Task { @MainActor in apply(info) }
+    /// Одна последовательная очередь на все AX-чтения (старт, доставка,
+    /// сторож): в зависшее приложение впереди не уходят три параллельных
+    /// запроса по 0,25–1,25 с (DS r1 M2 по #517).
+    private nonisolated static let focusQueue = DispatchQueue(label: "ai.charoite.dictation.focus", qos: .userInitiated)
+
+    /// Чтение фокуса вне главного потока с ожиданием из async-контекста:
+    /// межпроцессный вызов в чужое приложение (до 0,5 с на зависшем) главный
+    /// поток не держит ни на старте, ни на доставке (№161, GLM r11 крит.2 по
+    /// #488). Потолок ожидания — таймауты AX внутри focusInfo.
+    nonisolated static func focusOffMain(secureOnly: Bool) async -> FocusInfo {
+        await withCheckedContinuation { cont in
+            focusQueue.async { cont.resume(returning: focusInfo(secureOnly: secureOnly)) }
         }
     }
 
     /// Применять ли чтение фокуса, снятое на старте: только к той же
     /// диктовке — следующая берёт свой якорь и свою защёлку (чистый шов).
     nonisolated static func startReadApplies(generation: Int, current: Int) -> Bool {
+        generation == current
+    }
+
+    /// Исполнять ли доставку: только пока не началась следующая диктовка —
+    /// иначе её поле, статус и защёлка получили бы чужой текст и чужое
+    /// чтение (чистый шов; DS r1 I1 / GLM r1 I2 по #517).
+    nonisolated static func deliveryApplies(generation: Int, current: Int) -> Bool {
         generation == current
     }
 
@@ -603,7 +625,7 @@ final class DictationService: ObservableObject {
         secureReadInFlight = true
         let generation = self.generation
         let captured = pendingDraft
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        Self.focusQueue.async { [weak self] in
             let security = Self.focusSecurityNow()
             Task { @MainActor [weak self] in
                 // Чтение прошлой диктовки её флаг не трогает — у новой свой;
@@ -738,11 +760,41 @@ final class DictationService: ObservableObject {
         // плашка Чароита живут (№161, GLM r11 крит.2). Снимок якоря и
         // защёлки ЭТОЙ диктовки берётся до чтения: за эти полсекунды человек
         // мог начать следующую, и её состояние — не наше.
-        let anchor = target, touched = secureSeen
-        readFocus(secureOnly: false) { [weak self] focus in
-            self?.finishDelivery(text: text, fromDraft: fromDraft, wasNote: false, handler: nil,
-                                 focus: focus, anchor: anchor, touchedSecure: touched)
+        let generation = self.generation
+        let startRead = self.startRead
+        Task { @MainActor [weak self] in
+            // Якорь и защёлка старта — раньше снимка: у короткой диктовки
+            // стартовое чтение ещё в полёте (DS r1 I2 / GLM r1 I1 по #517)
+            await startRead?.value
+            guard let self else { return }
+            guard Self.deliveryApplies(generation: generation, current: self.generation) else {
+                self.parkStale(text: text); return
+            }
+            let anchor = self.target, touched = self.secureSeen
+            let focus = await Self.focusOffMain(secureOnly: false)
+            // Следующая диктовка уже идёт: её поле, статус и защёлку не
+            // трогаем, текст не теряем (DS r1 I1 / GLM r1 I2 по #517)
+            guard Self.deliveryApplies(generation: generation, current: self.generation) else {
+                self.parkStale(text: text); return
+            }
+            self.finishDelivery(text: text, fromDraft: fromDraft, wasNote: false, handler: nil,
+                                focus: focus, anchor: anchor, touchedSecure: touched)
         }
+    }
+
+    /// Доставка настигла следующую диктовку: ⌘V и статус — не наши, текст —
+    /// в буфер, плашка говорит, где он. Правило продукта: доставка старой
+    /// диктовки состояния новой не трогает, текст не теряется.
+    private func parkStale(text: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        NSLog("[Dictation] доставка прошлой диктовки настигла новую — текст в буфере без ⌘V")
+        DictationPreviewPanel.shared.flash(
+            text: L.t("текст прошлой диктовки в буфере — нажми ⌘V в нужном поле сам",
+                      "the previous dictation's text is in the clipboard — press ⌘V in the right field yourself",
+                      "上一次听写的文本已在剪贴板——请自行在正确的输入框按 ⌘V"),
+            hint: "", seconds: 6)
     }
 
     /// Хвост доставки после чтения фокуса: плашка черновика, заметка, чат
