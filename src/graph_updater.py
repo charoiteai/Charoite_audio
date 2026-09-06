@@ -272,6 +272,8 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
                     'скопированный из стенограммы без изменений. НЕЛЬЗЯ склеивать '
                     'куски из разных мест через многоточие — только один сплошной отрезок"}]}\n'
                     "Только то, что реально прозвучало. Имена людей — как звучали (владелец, Дмитрий…). "
+                    "В «люди» — участники разговора и те, о ком говорят по делу; обращение к домашним, "
+                    "дети, посторонние голоса и фон записи — не люди встречи. "
                     "Пустые списки допустимы."
                     + project_rule
                     # en/zh-режим: КЛЮЧИ JSON — контракт кода, не трогаем; на
@@ -742,6 +744,50 @@ def find_canonical(graph: pathlib.Path, name: str,
     if candidates and ambiguous is not None:
         ambiguous.extend(f.stem for f in candidates)
     return None
+
+
+_MENTION_STEM = re.compile(r"[аеёиоуыэюяьй]$")
+
+
+def drop_background(people: list[dict], speech: str) -> tuple[list[dict], list[str]]:
+    """Люди из разбора, которых в разговоре по сути нет, — не участники.
+
+    05.09: «Мариш сюда» из бытового фона записи стало участницей деловой
+    встречи, и авто-проход приписал ей реплики Ани. Критерий узкий и
+    проверяемый по стенограмме: человек не говорил (нет метки «**Имя**
+    [чч:мм]» и нет в шапке «Участники (звучали в разговоре)») И упомянут в
+    тексте не больше одного раза. Кто говорил — участник; о ком говорят по
+    делу — упомянут не раз и остаётся узлом (Голенков, Никитин). Возвращает
+    (оставшиеся, имена отброшенных) — отброшенные уходят в лог, не в граф."""
+    text = speech or ""
+    spoken: set[str] = set()
+    m = re.search(r"^(?:Участники|Participants|参会者)[^:：]*[:：]\s*(.+)$", text, re.M)
+    if m:
+        head = re.sub(r"\s*[(（].*?[)）]", "", m.group(1))
+        spoken |= {x.strip().casefold() for x in head.split(",") if x.strip()}
+    spoken |= {x.strip().casefold() for x in re.findall(r"^\*\*([^*\n]{1,60})\*\*\s*\[\d{2}:\d{2}", text, re.M)}
+    low = text.casefold()
+    kept: list[dict] = []
+    noise: list[str] = []
+    for p in people:
+        name = str(p.get("имя") or "").strip()
+        first = name.split()[0].casefold() if name else ""
+        if not first:
+            kept.append(p)
+            continue
+        if name.casefold() in spoken or first in {w for s_ in spoken for w in s_.split()}:
+            kept.append(p)
+            continue
+        stem = _MENTION_STEM.sub("", first)
+        if len(stem) < 3:
+            kept.append(p)                      # слишком короткая основа — не судим
+            continue
+        mentions = len(re.findall(r"(?<![\wёЁ])" + re.escape(stem) + r"[\wёЁ]*", low))
+        if mentions <= 1:
+            noise.append(name)
+        else:
+            kept.append(p)
+    return kept, noise
 
 
 def merge_vocatives(people: list[dict]) -> list[dict]:
@@ -1388,7 +1434,10 @@ def main():
     # ссылки не получают, иначе разные люди разных встреч склеиваются в один
     # файл (аудит 28.08). В заметке встречи остаются текстом, в speakers идут —
     # цитаты из стенограммы подписаны именно этой меткой.
-    people = merge_vocatives([p for p in raw_people if not is_speaker_placeholder(p["имя"])])
+    people, noise = drop_background(
+        merge_vocatives([p for p in raw_people if not is_speaker_placeholder(p["имя"])]), speech)
+    if noise:
+        print("граф: фон разговора, не участники: " + ", ".join(noise))
     anon = [p for p in raw_people if is_speaker_placeholder(p["имя"])]
     ents = [e for e in (data.get("сущности") or []) if isinstance(e, dict) and e.get("имя")
             and not is_speaker_placeholder(e["имя"])]      # метка как «сущность» — тоже не узел

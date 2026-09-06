@@ -51,7 +51,9 @@
   speaker Sasha); grammatical cases are folded onto known people of the
   graph, including the vocative with a soft sign ("Kol'" → "Kolya") — the
   graph uses the same narrow check to attach an address to the existing
-  person node instead of creating a second one.
+  person node instead of creating a second one; a voice from the household
+  background that never spoke and is mentioned once does not become a
+  person node.
 - **A silent model on the name pass is not passed off as success.** "No names
   were spoken" and "the model never answered" produce an equally empty result,
   and one meeting shipped with "Собеседник 1..5" labels while the run was
