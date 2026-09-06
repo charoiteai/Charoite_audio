@@ -122,6 +122,57 @@ def test_case_is_restored_from_known_people():
                             owner_name=OWNER, known=("Полина", "Мария")) == "Полина"
 
 
+def test_vocative_resolves_to_known_person():
+    """«Коль» → «Коля»: префиксная склейка это не видит — четвёртая буква разная.
+
+    Встреча 05.09: Коля получил в графе второй узел «Коль» из обращения
+    «Коль, ты имеешь в виду…». Обратный ход из звательного падежа идёт до
+    префиксного и только к точному известному имени."""
+    sample = "[10:00] Я: Коль, ты имеешь в виду уточнение?\n[10:01] Собеседник: Ну да."
+    assert trustworthy_name("Коль", sample=sample, label="Собеседник",
+                            owner_name=OWNER, known=("Коля", "Полина")) == "Коля"
+    sample = "[10:00] Я: Ань, ты скинешь пример?\n[10:01] Собеседник: Угу."
+    assert trustworthy_name("Ань", sample=sample, label="Собеседник",
+                            owner_name=OWNER, known=("Аня",)) == "Аня"
+
+
+def test_vocative_is_exact_and_narrow():
+    """Формы выводятся детерминированно; склейка — только при точном совпадении.
+
+    «Мариш» при известной «Марине» не склеивается (Мариша ≠ Марина); имя на
+    гласную — уже именительный; «Влад» + «а» — другой человек (стоп-лист);
+    длинное «Александр» и «Голенков» на фамилию не трогаем; «Игорь» даёт
+    форму «Игоря», которой среди людей не бывает, — значит, останется Игорем."""
+    from speaker_names import nominative_candidates, resolve_vocative
+    assert nominative_candidates("Коль") == ("Коля", "Колья")
+    assert nominative_candidates("Иль") == ("Иля", "Илья")
+    assert nominative_candidates("Саш") == ("Саша",)
+    assert nominative_candidates("Зой") == ("Зоя",)
+    for nominative in ("Коля", "Аня", "Марина", "Ан", "Влад", "Александр", "Голенков",
+                       "Ильин", "Полин", "Николай"):
+        assert nominative_candidates(nominative) == (), nominative
+    assert resolve_vocative("Мариш", ("Марина",)) is None
+    assert resolve_vocative("Игорь", ("Игорь", "Игоря")) == "Игоря"  # только если такой человек есть
+    assert resolve_vocative("Коль", ("Коля", "Коля Иванов")) == "Коля"
+    assert resolve_vocative("Иль", ("Илья",)) == "Илья"
+    assert resolve_vocative("Иль", ("Илья", "Иля")) is None   # две формы — не гадаем
+    assert resolve_vocative("Тань", ()) is None
+
+
+def test_prefix_fold_and_stop_list_hold_in_the_full_path():
+    """«Андрюх» → «Андрей» по префиксу как раньше; «Иль» при Илье и Иле решает префикс;
+    «Влад» не становится «Владой» ни звательным ходом, ни префиксным (DS I1, круг 1 #508)."""
+    sample = "[10:00] Я: Андрюх, глянь.\n[10:01] Собеседник: Смотрю."
+    assert trustworthy_name("Андрюх", sample=sample, label="Собеседник",
+                            owner_name=OWNER, known=("Андрей",)) == "Андрей"
+    sample = "[10:00] Я: Иль, ты здесь?\n[10:01] Собеседник: Да."
+    assert trustworthy_name("Иль", sample=sample, label="Собеседник",
+                            owner_name=OWNER, known=("Илья", "Иля")) == "Илья"
+    sample = "[10:00] Я: Влад, привет.\n[10:01] Собеседник: Привет."
+    assert trustworthy_name("Влад", sample=sample, label="Собеседник",
+                            owner_name=OWNER, known=("Влада",)) == "Влад"
+
+
 def test_name_must_be_heard_in_the_transcript():
     """Модель может выдумать имя. В стенограмме его нет — значит нет."""
     assert trustworthy_name("Светлана", sample=ADDRESSED, label="Собеседник",

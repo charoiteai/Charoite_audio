@@ -49,7 +49,9 @@
   only in the speaker's own lines, with no self-introduction, counts as
   addressing someone else (saying "Sash, could you…" does not make the
   speaker Sasha); grammatical cases are folded onto known people of the
-  graph.
+  graph, including the vocative with a soft sign ("Kol'" → "Kolya") — the
+  graph uses the same narrow check to attach an address to the existing
+  person node instead of creating a second one.
 - **A silent model on the name pass is not passed off as success.** "No names
   were spoken" and "the model never answered" produce an equally empty result,
   and one meeting shipped with "Собеседник 1..5" labels while the run was

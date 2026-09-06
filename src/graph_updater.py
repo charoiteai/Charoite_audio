@@ -32,6 +32,7 @@ from meeting_stamp import files_with_stamp, stamp_of
 import frontmatter
 import graphs
 import redirects
+from speaker_names import resolve_vocative
 
 ROOT = resolve_root(__file__)
 CODE = code_root(__file__)
@@ -709,6 +710,19 @@ def find_canonical(graph: pathlib.Path, name: str,
             return hits[0]
         if hits and ambiguous is not None:    # как проход 2: кандидаты наружу,
             ambiguous.extend(f.stem for f in hits)   # дальше — подстрока в папке
+    # 2в) звательный падеж → именительный, только среди людей и только к
+    #     точному имени узла: «Коль» → Люди/Коля, «Иль» → Люди/Илья. Стоит
+    #     ПОСЛЕ псевдонимов: записанное человеком «Николай: aliases: Коль»
+    #     важнее грамматической догадки (GLM I2 / DS I2, круг 1 #508).
+    #     Проход 3 (подстрока) этого не ловит — имена короче пяти букв он не
+    #     смотрит, и 05.09 Коля получил второй узел «Коль» в одной встрече.
+    #     Правило одно на демон и граф — speaker_names.resolve_vocative: две
+    #     формы на одно обращение («Илья» и «Иля» для «Иль») — не гадаем.
+    if folder in (None, "Люди"):
+        people = [f for f in files if f.parent.name == "Люди"]
+        who = resolve_vocative(safe_name(name), [f.stem for f in people])
+        if who is not None:
+            return next(f for f in people if f.stem == who)
     # 3) подстрока — только для достаточно длинных имён и близких по длине
     #    пар; при заданной папке — только в ней (luna I3: «Платёж» из Систем
     #    дописывался в Люди/Платёжный). Двухбуквенное «Ян» входило в
@@ -728,6 +742,36 @@ def find_canonical(graph: pathlib.Path, name: str,
     if candidates and ambiguous is not None:
         ambiguous.extend(f.stem for f in candidates)
     return None
+
+
+def merge_vocatives(people: list[dict]) -> list[dict]:
+    """«Коль» и «Коля» из одного разбора — один человек.
+
+    Модель просят писать имена в именительном падеже, но обращение из
+    стенограммы («Коль, ты имеешь в виду…») она всё равно отдаёт отдельной
+    записью, и upsert заводил второй узел (встреча 05.09). Звательная запись
+    вливается в именительную из того же списка: вклад дописывается, роль
+    берётся у звательной, если у именительной пустая. Порядок остальных
+    записей не меняется. Правило то же, что у графа и демона —
+    speaker_names.resolve_vocative: две подходящие записи — не гадаем.
+    Запись цели меняется на месте (это тот же dict, что в raw_people —
+    дальше raw_people не читается)."""
+    names = [str(p.get("имя") or "").strip() for p in people]
+    by_name = {n.casefold(): p for n, p in zip(names, people)}
+    out: list[dict] = []
+    for p, name in zip(people, names):
+        who = resolve_vocative(safe_name(name), [n for n in names if n != name])
+        target = by_name.get(who.casefold()) if who else None
+        if target is None or target is p:
+            out.append(p)
+            continue
+        extra = " ".join(str(p.get("вклад") or "").split())
+        had = " ".join(str(target.get("вклад") or "").split())
+        if extra and extra.casefold() != had.casefold():
+            target["вклад"] = f"{had}; {extra}" if had else extra
+        if not str(target.get("роль") or "").strip() and str(p.get("роль") or "").strip():
+            target["роль"] = str(p["роль"]).strip()
+    return out
 
 
 def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
@@ -1344,7 +1388,7 @@ def main():
     # ссылки не получают, иначе разные люди разных встреч склеиваются в один
     # файл (аудит 28.08). В заметке встречи остаются текстом, в speakers идут —
     # цитаты из стенограммы подписаны именно этой меткой.
-    people = [p for p in raw_people if not is_speaker_placeholder(p["имя"])]
+    people = merge_vocatives([p for p in raw_people if not is_speaker_placeholder(p["имя"])])
     anon = [p for p in raw_people if is_speaker_placeholder(p["имя"])]
     ents = [e for e in (data.get("сущности") or []) if isinstance(e, dict) and e.get("имя")
             and not is_speaker_placeholder(e["имя"])]      # метка как «сущность» — тоже не узел
