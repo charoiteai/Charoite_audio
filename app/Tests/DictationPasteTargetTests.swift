@@ -168,4 +168,52 @@ final class DictationPasteTargetTests: XCTestCase {
         XCTAssertFalse(DictationService.secureReadApplies(generation: 3, current: 4, recording: true), "уже следующая диктовка")
         XCTAssertFalse(DictationService.secureReadApplies(generation: 3, current: 3, recording: false), "после стопа — доставка читает сама")
     }
+
+    /// Старт читает фокус в фоне (№161): возврат применяется только к той
+    /// диктовке, что его запустила, — и до стопа, и после (якорь и защёлка
+    /// нужны доставке), но не к следующей.
+    func testStartReadAppliesOnlyToItsOwnDictation() {
+        XCTAssertTrue(DictationService.sameDictation(generation: 3, current: 3))
+        XCTAssertFalse(DictationService.sameDictation(generation: 3, current: 4), "уже следующая диктовка — у неё свой якорь")
+    }
+
+    /// Доставка настигла следующую диктовку — исполнять нельзя: её поле,
+    /// статус и защёлка не наши; текст ждёт следующей вставки (DS r1 I1 /
+    /// GLM r1 I2, круг 2 по #517).
+    func testStaleDeliveryDoesNotApplyToTheNextDictation() {
+        XCTAssertTrue(DictationService.sameDictation(generation: 5, current: 5))
+        XCTAssertFalse(DictationService.sameDictation(generation: 5, current: 6), "следующая диктовка уже идёт — текст ждёт, ⌘V не постить")
+    }
+
+    /// Припаркованный текст уходит перед следующей вставкой по порядку,
+    /// протухший (старше TTL) — нет.
+    func testParkedTextsGoInFrontOfTheNextInsertion() {
+        let now = Date()
+        typealias S = DictationService.StaleText
+        let stale = [S(text: "первая", at: now.addingTimeInterval(-5), pid: 7),
+                     S(text: "вторая", at: now.addingTimeInterval(-1), pid: nil),
+                     S(text: "чужая", at: now.addingTimeInterval(-1), pid: 9),
+                     S(text: "древняя", at: now.addingTimeInterval(-3600), pid: 7)]
+        let fresh = DictationService.freshStale(stale, now: now, ttl: 600, pid: 7)
+        XCTAssertEqual(fresh, ["первая", "вторая"], "чужое приложение и протухшее — мимо, безымянный якорь — со всеми")
+        XCTAssertEqual(DictationService.freshStale(stale, now: now, ttl: 600, pid: nil), ["первая", "вторая", "чужая"])
+        XCTAssertEqual(DictationService.mergeStale(fresh, text: "третья", secret: false), "первая вторая третья")
+        XCTAssertEqual(DictationService.mergeStale(fresh, text: "третья", secret: true), "третья", "парольному исходу — только свой текст")
+        XCTAssertEqual(DictationService.mergeStale([], text: "одна", secret: false), "одна")
+    }
+
+    /// Доставка решает по снимку своей диктовки: защёлка, взведённая
+    /// следующей диктовкой за время фонового чтения, чужую вставку не
+    /// запрещает, а свой пароль под фокусом — запрещает (№161).
+    func testDeliveryDecidesOnItsOwnSnapshot() {
+        let clean = DictationService.finalDecision(trusted: true, own: own, startedIn: anchor(7), now: anchor(7),
+                                                   secureSeen: false, nowSecure: false)
+        XCTAssertEqual(clean, .paste, "снимок без пароля — вставка, что бы ни взвела следующая диктовка")
+        let touched = DictationService.finalDecision(trusted: true, own: own, startedIn: anchor(7), now: anchor(7),
+                                                     secureSeen: true, nowSecure: false)
+        XCTAssertEqual(touched, .secret, "своя защёлка из снимка держится")
+        let nowSecure = DictationService.finalDecision(trusted: true, own: own, startedIn: anchor(7), now: anchor(7),
+                                                       secureSeen: false, nowSecure: true)
+        XCTAssertEqual(nowSecure, .secret, "пароль под фокусом в момент доставки — секрет")
+    }
 }
