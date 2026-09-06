@@ -55,6 +55,7 @@ import safe_write  # noqa: E402
 import cloud  # noqa: E402
 import file_locks  # noqa: E402
 import graph_updater
+import review_bridge  # noqa: E402
 import privacy  # noqa: E402
 
 BACKUP_DIR = ".cloud_backup"
@@ -1065,6 +1066,26 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # и Документация — защищённые папки, и созданную здесь копию сверка
         # приняла бы за правку облака. Без графа (text-only) доставлять
         # некуда, без замка — нельзя (сосед сверяет). От лога не зависит.
+        if published and deliver:
+            # Мост L4 → минутки — ДО раскладки архива: deliver_review зовёт
+            # archive_meeting, а тот копирует `<стем>_minutes.md` в Минутки.md,
+            # которые читает вкладка «Задачи» (хвост №152). Минутки в
+            # transcripts пишет конвейер, не облако, — сверка границ графа
+            # (checked) мосту не гейт (GLM r1 по #518, критика 2).
+            try:
+                sufler = cfg.get("sufler") or {}
+                added = review_bridge.bridge(rev, transcript, owner=str(sufler.get("user_name") or ""),
+                                             lang=str(sufler.get("language") or "ru"))
+                verified = "сверено" if (not may_edit or checked) else "БЕЗ сверки графа"
+                if added:
+                    lines.append(f"[cloud-review] мост ревизии ({verified}): в минутки дописано поручений — {added}\n")
+                elif not review_bridge.minutes_path(transcript).is_file():
+                    lines.append("[cloud-review] мост ревизии: минуток рядом со стенограммой нет\n")
+                elif review_bridge.section_present(rev.read_text(encoding="utf-8", errors="replace")):
+                    lines.append("[cloud-review] мост ревизии: раздел о восстановленных поручениях есть, "
+                                 "пунктов не извлечено или все уже в минутках\n")
+            except Exception as e:  # noqa: BLE001 — мост не важнее самой ревизии
+                lines.append(f"[cloud-review] мост ревизии не сработал: {e}\n")
         if published and deliver and (not may_edit or checked):
             buf = io.StringIO()
             deliver_review(rev, transcript, graph, stamp, buf)

@@ -575,7 +575,12 @@ it signals degradation, it does not break the loop.
   file". When a cloud review ran for the meeting, the card honestly shows
   its outcome from the log: "N graph edits", with an unsaved review file
   highlighted — before, the review worked invisibly and its edits were
-  only discoverable in the logs.
+  only discoverable in the logs. Action items the review recovers from
+  the transcript (its strict "Recovered action items" section) are
+  appended to the minutes as checkboxes marked "(from the review)" before
+  the archive is refreshed, so the Tasks tab sees them; an item the
+  minutes already hold in other words is not duplicated, and an assignee
+  who was not at the meeting gets the same "not a participant" mark.
 - **Renaming a meeting** — the pencil in the card, or
   `scripts/rename_meeting.py <stamp> "New topic"`. The topic is invented
   by the model and is sometimes off; changing it by hand meant visiting
