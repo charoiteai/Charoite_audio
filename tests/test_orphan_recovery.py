@@ -268,7 +268,7 @@ def test_сырые_потоки_приложения_живут_по_тому_�
 
     removed = audio.AudioHub.prune_stream_files(data, 2)
 
-    assert removed == 1, "старые сырые потоки остались лежать"
+    assert removed == 1, "старый сырой поток мёртвой сессии остался лежать"
     assert stranger.exists(), "ретеншн удалил файл, который не писал"
     assert not old_session.exists(), "каталог мёртвой сессии не убран"
     assert live_session.exists(), "убита запись ИДУЩЕЙ встречи"
