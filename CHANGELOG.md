@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.72.1](https://github.com/charoiteai/Charoite_audio/compare/v0.72.0...v0.72.1) (2026-09-06)
+
+
+### Bug Fixes
+
+* **graph:** звательный падеж не плодит второй узел человека ([#508](https://github.com/charoiteai/Charoite_audio/issues/508)) ([32e1919](https://github.com/charoiteai/Charoite_audio/commit/32e19194cdb6fdd86707130d5727973642111a60))
+
 ## [0.72.0](https://github.com/charoiteai/Charoite_audio/compare/v0.71.0...v0.72.0) (2026-09-05)
 
 
