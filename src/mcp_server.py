@@ -151,8 +151,10 @@ def sufler_make_minutes() -> str:
     # (после авто-черновика и ручного «Протокола»), и единственный без
     # normalize — задачи из таких минуток не попадали в окно «Задачи» (№141).
     out = action_items.normalize(out)
-    out = action_items.flag_outsiders(out, action_items.participants_of(
-        transcript, owner=(_CFG.get("sufler") or {}).get("user_name") or ""))
+    _sufler = _CFG.get("sufler") or {}
+    out = action_items.flag_outsiders(
+        out, action_items.participants_of(transcript, owner=_sufler.get("user_name") or ""),
+        lang=str(_sufler.get("language") or "ru"))
     # Через временное имя: обрыв посреди write_text оставлял бы усечённые
     # минутки ПОВЕРХ готовых — тот же класс, что у .wav в pcm_to_wav.
     tmp = mpath.with_name(mpath.name + f".tmp{os.getpid()}")

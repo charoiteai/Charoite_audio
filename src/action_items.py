@@ -52,7 +52,7 @@ _CHECKBOX = re.compile(r"^\s*[-*] \[[ xX]\] ")
 # Пометка «не участник» (flag_outsiders) — тоже не трогаем: иначе следующий
 # проход normalize (пересборка, повторный «Протокол») вернул бы строке
 # чекбокс, и задача снова ушла бы отсутствующему.
-_OUTSIDER_LINE = re.compile(r"^\s*[-*] ⚠ не участник\b")
+_OUTSIDER_LINE = re.compile(r"^\s*[-*] ⚠ (?:не участник|not a participant|非与会者)\b")
 
 
 def normalize(text: str) -> str:
@@ -140,9 +140,12 @@ def _to_checkbox(line: str) -> str:
 # (его лишь упомянули: «это к Саше Никитину вопрос»), и пример по валютам —
 # Дмитрию вместо Ани. Промпт просит имена из разговора, но модель охотно
 # назначает того, о ком говорили. Кому можно: тому, кто говорил (метка
-# говорящего в стенограмме) или кого конвейер записал в шапку «Участники
-# (звучали в разговоре)», плюс владелец. Собирательные исполнители
-# («Команда», «Все», «владелец и собеседники») — не люди, их не проверяем.
+# говорящего) или кого конвейер записал в шапку «Участники (звучали в
+# разговоре)», плюс владелец. Собирательные исполнители («Команда», «Все»,
+# «владелец и собеседники») — не люди, их не проверяем.
+# Источник участников: у демона — Transcript.participants() (структура, а не
+# текст: full() и файл рендерят метки по-разному — Critical круга 1 #510);
+# у пересборки и MCP — текст файла стенограммы через participants_of.
 # Ограничение: сверка по имени, а не по фамилии — «Саша Никитин» при
 # участнике «Саша» пройдёт; фамилий в шапке стенограммы обычно нет.
 _PARTICIPANTS_HEAD = re.compile(r"^(?:Участники|Participants|参会者)[^:：]*[:：]\s*(.+)$", re.M)
@@ -154,27 +157,81 @@ _COLLECTIVE = frozenset({
 })
 _ASSIGNEE_LINE = re.compile(r"^(\s*)[-*] \[[ xX]\] \*\*([^*\n]{1,80})\*\*(.*)$")
 _NAME_SPLIT = re.compile(r"\s*(?:,|/|;|\s+и\s+|\s+and\s+|\s+&\s+)\s*", re.I)
-OUTSIDER_MARK = "⚠ не участник"
+# Пометка — на языке минуток (`sufler.language`): английские минутки с русской
+# пометкой читались бы как сбой (Minor GLM/DS, круг 1 #510).
+OUTSIDER_MARKS = {"ru": "⚠ не участник", "en": "⚠ not a participant", "zh": "⚠ 非与会者"}
+OUTSIDER_MARK = OUTSIDER_MARKS["ru"]
+# Падеж: «Саше»/«Саша», «Ане»/«Аня», «Дмитрию»/«Дмитрий», «Игорю»/«Игорь» —
+# у имён на -а/-я склонение меняет последнюю букву, и общий 4-буквенный
+# префикс это не видит («саше» ≠ «саша»); сравниваем основы без последней
+# гласной/й/ь (GLM C2 / DS I1, круг 1 #510).
+_SOFT_TAIL = re.compile(r"[аеёиоуыэюяьй]$")
+
+
+def _stem(word: str) -> str:
+    return _SOFT_TAIL.sub("", word)
+
+
+def participants_set(names, owner: str = "") -> set[str]:
+    """Имена в множество участников: заглушки («Собеседник 2», «Speaker 1»,
+    «Я») и пустые отбрасываются, владелец добавляется. Пусто — участники
+    неизвестны, и судить некого."""
+    out: set[str] = set()
+    for raw in names or ():
+        name = str(raw or "").strip()
+        if name and not _PLACEHOLDER.match(name):
+            out.add(name)
+    if owner and owner.strip():
+        out.add(owner.strip())
+    return out
 
 
 def participants_of(transcript: str, owner: str = "") -> set[str]:
-    """Кто был на встрече по стенограмме: шапка «Участники (звучали в
-    разговоре)» + метки говорящих + владелец. Метки-заглушки («Собеседник 2»,
-    «Speaker 1», «Я») и роли в скобках не в счёт. Пусто — участники неизвестны,
-    и судить некого."""
-    names: set[str] = set()
+    """Участники из ТЕКСТА стенограммы в формате файла: шапка «Участники
+    (звучали в разговоре): …» (роли в скобках срезаются) и метки говорящих
+    «**Имя** [чч:мм]». Для живого объекта Transcript этот текст не годится —
+    брать Transcript.participants() и participants_set()."""
+    names: list[str] = []
     text = transcript or ""
     m = _PARTICIPANTS_HEAD.search(text)
     if m:
         head = re.sub(r"\s*[(（].*?[)）]", "", m.group(1))
-        names |= {x.strip() for x in head.split(",") if x.strip()}
-    for lab in _SPEAKER_LABEL.findall(text):
-        lab = lab.strip()
-        if lab and not _PLACEHOLDER.match(lab):
-            names.add(lab)
-    if owner and owner.strip():
-        names.add(owner.strip())
-    return names
+        names += [x.strip() for x in head.split(",") if x.strip()]
+    names += [lab.strip() for lab in _SPEAKER_LABEL.findall(text)]
+    return participants_set(names, owner)
+
+
+def _same_person(word: str, known_word: str) -> bool:
+    """Одно имя в разных падежах или одно и то же слово.
+
+    Основы без последней мягкой буквы равны («саше»/«саша» → «саш»); или одна
+    основа — другая плюс только гласные («ольго» = «ольг» + «о»: «Ольгой»).
+    «Марине» и «Мария» («марин» / «мари» + «н») — разные люди: голый
+    4-буквенный префикс их склеивал (GLM, круг 1 #510)."""
+    if word == known_word:
+        return True
+    a, b = _stem(word), _stem(known_word)
+    if len(a) >= 2 and a == b:
+        return True
+    short, long = sorted((a, b), key=len)
+    return len(short) >= 3 and long.startswith(short) and _VOWELS_ONLY.fullmatch(long[len(short):]) is not None
+
+
+_VOWELS_ONLY = re.compile(r"[аеёиоуыэюяьй]*")
+_JOINERS = frozenset({"и", "and", "&", "with"})
+
+
+def _same_people(whole: str, participants: set[str]) -> bool:
+    """«Никитин, Саша» — это «Саша Никитин»: тот же набор слов в любом порядке.
+    Союзы не в счёт, чтобы «Дмитрий и Ольга» не сошёл за одного Дмитрия."""
+    words = {w for w in re.split(r"[\s,/;]+", whole.strip().casefold()) if w} - _JOINERS
+    if not words:
+        return False
+    for p in participants:
+        pf = {w for w in p.strip().casefold().split() if w}
+        if pf and pf == words:
+            return True
+    return False
 
 
 def _is_participant(name: str, participants: set[str]) -> bool:
@@ -186,16 +243,16 @@ def _is_participant(name: str, participants: set[str]) -> bool:
         pf = p.strip().casefold().split()
         if not pf:
             continue
-        # полное имя, первое имя или падежная форма («Ольге» ↔ «Ольга»):
-        # общий префикс из четырёх букв, как у speaker_names.PREFIX
-        if n == " ".join(pf) or first == pf[0]:
+        if n == " ".join(pf):
             return True
-        if len(first) >= 4 and len(pf[0]) >= 4 and first[:4] == pf[0][:4]:
+        # первое слово исполнителя — против КАЖДОГО слова участника: в шапке
+        # может стоять «Дмитрий Петров», а в поручении — «Петров» (GLM I3)
+        if any(_same_person(first, w) for w in pf):
             return True
     return False
 
 
-def flag_outsiders(text: str, participants: set[str]) -> str:
+def flag_outsiders(text: str, participants: set[str], lang: str = "ru") -> str:
     """Поручение тому, кого на встрече не было, — пометка, а не задача.
 
     Строка «- [ ] **Имя** — …» в разделе поручений становится
@@ -205,6 +262,7 @@ def flag_outsiders(text: str, participants: set[str]) -> str:
     трогаются. Пустой список участников — ничего не решаем."""
     if not participants:
         return text
+    mark = OUTSIDER_MARKS.get((lang or "ru").strip().lower()[:2], OUTSIDER_MARK)
     out: list[str] = []
     inside = False
     for line in text.split("\n"):
@@ -219,10 +277,15 @@ def flag_outsiders(text: str, participants: set[str]) -> str:
         if inside:
             m = _ASSIGNEE_LINE.match(line)
             if m:
-                names = [x for x in _NAME_SPLIT.split(m.group(2)) if x.strip()]
-                strangers = [x.strip() for x in names if not _is_participant(x, participants)]
+                whole = m.group(2).strip()
+                # «Никитин, Саша» — сначала целиком (тот же набор слов), потом по
+                # частям (GLM M5); «Дмитрий и Ольга» целиком не сойдёт за Дмитрия
+                if _same_people(whole, participants):
+                    strangers: list[str] = []
+                else:
+                    names = [x.strip() for x in _NAME_SPLIT.split(whole) if x.strip()]
+                    strangers = [x for x in names if not _is_participant(x, participants)]
                 if strangers:
-                    line = f"{m.group(1)}- {OUTSIDER_MARK} ({', '.join(strangers)}): **{m.group(2)}**{m.group(3)}"
+                    line = f"{m.group(1)}- {mark} ({', '.join(strangers)}): **{m.group(2)}**{m.group(3)}"
         out.append(line)
     return "\n".join(out)
-

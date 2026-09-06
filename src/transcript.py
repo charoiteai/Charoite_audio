@@ -349,6 +349,20 @@ class Transcript:
                 for t0, _t1, spk, text in self._blocks
             )
 
+    def participants(self) -> list[str]:
+        """Кто звучал на встрече: шапка (set_participants) плюс метки говорящих
+        из блоков, в порядке появления, без повторов. Заглушки («Собеседник 2»,
+        «Я») здесь НЕ фильтруются — это делает потребитель
+        (action_items.participants_set). Структурный источник вместо разбора
+        текста: full() отдаёт «[чч:мм] Имя: …», а файл — «**Имя** [чч:мм]:»,
+        и regex по одному формату слеп ко второму (Critical GLM/DS, круг 1 #510)."""
+        with self._lock:
+            names = list(self._participants)
+            for _t0, _t1, spk, _text in self._blocks:
+                if spk and spk not in names:
+                    names.append(spk)
+        return names
+
     def last(self) -> str:
         with self._lock:
             return self._blocks[-1][3] if self._blocks else ""

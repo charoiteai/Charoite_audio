@@ -2609,7 +2609,8 @@ def main():
                     # исполнитель — только участник встречи (05.09: поручение
                     # ушло упомянутому, а не присутствующему)
                     out = action_items.flag_outsiders(
-                        out, action_items.participants_of(tr.full(), owner=owner_name))
+                        out, action_items.participants_set(tr.participants(), owner=owner_name),
+                        lang=llm.lang)
                     # Маркер перепроверяем ПЕРЕД записью, а не только на входе
                     # в итерацию: генерация выше занимает десятки секунд, и
                     # если за это время человек нажал «Протокол», финальные
@@ -2731,7 +2732,8 @@ def main():
                 # стояло пустым при живых поручениях на каждой встрече.
                 doc = action_items.normalize(doc)
                 doc = action_items.flag_outsiders(
-                    doc, action_items.participants_of(tr.full(), owner=owner_name))
+                    doc, action_items.participants_set(tr.participants(), owner=owner_name),
+                    lang=llm.lang)
                 # Через временное имя: обрыв посреди write_text оставлял бы
                 # усечённые минутки поверх готовых (mcp_server это уже чинил,
                 # здесь оставался прямой write_text — аудит 14.08)
