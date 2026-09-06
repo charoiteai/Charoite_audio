@@ -173,16 +173,27 @@ final class DictationPasteTargetTests: XCTestCase {
     /// диктовке, что его запустила, — и до стопа, и после (якорь и защёлка
     /// нужны доставке), но не к следующей.
     func testStartReadAppliesOnlyToItsOwnDictation() {
-        XCTAssertTrue(DictationService.startReadApplies(generation: 3, current: 3))
-        XCTAssertFalse(DictationService.startReadApplies(generation: 3, current: 4), "уже следующая диктовка — у неё свой якорь")
+        XCTAssertTrue(DictationService.sameDictation(generation: 3, current: 3))
+        XCTAssertFalse(DictationService.sameDictation(generation: 3, current: 4), "уже следующая диктовка — у неё свой якорь")
     }
 
     /// Доставка настигла следующую диктовку — исполнять нельзя: её поле,
-    /// статус и защёлка не наши; текст уходит в буфер (DS r1 I1 / GLM r1 I2
-    /// по #517).
+    /// статус и защёлка не наши; текст ждёт следующей вставки (DS r1 I1 /
+    /// GLM r1 I2, круг 2 по #517).
     func testStaleDeliveryDoesNotApplyToTheNextDictation() {
-        XCTAssertTrue(DictationService.deliveryApplies(generation: 5, current: 5))
-        XCTAssertFalse(DictationService.deliveryApplies(generation: 5, current: 6), "следующая диктовка уже идёт — текст в буфер, ⌘V не постить")
+        XCTAssertTrue(DictationService.sameDictation(generation: 5, current: 5))
+        XCTAssertFalse(DictationService.sameDictation(generation: 5, current: 6), "следующая диктовка уже идёт — текст ждёт, ⌘V не постить")
+    }
+
+    /// Припаркованный текст уходит перед следующей вставкой по порядку,
+    /// протухший (старше TTL) — нет.
+    func testParkedTextsGoInFrontOfTheNextInsertion() {
+        let now = Date()
+        let stale = [(text: "первая", at: now.addingTimeInterval(-5)),
+                     (text: "вторая", at: now.addingTimeInterval(-1)),
+                     (text: "древняя", at: now.addingTimeInterval(-3600))]
+        XCTAssertEqual(DictationService.withStale(stale, text: "третья", now: now, ttl: 600), "первая вторая третья")
+        XCTAssertEqual(DictationService.withStale([], text: "одна", now: now, ttl: 600), "одна")
     }
 
     /// Доставка решает по снимку своей диктовки: защёлка, взведённая
