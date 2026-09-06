@@ -47,12 +47,15 @@ def test_merge_appends_missing_items_with_a_mark_and_keeps_the_rest():
     text, added = rb.merge_into_minutes(MINUTES, rb.recovered_items(REVIEW))
     # Иван и Пётр уже есть в минутках другими словами — ревизия их
     # пересказала, а не нашла; новое — только Саша Орлова
-    assert added == 1
+    # Пётр совпал с минутками лишь на 3/5 значимых слов — при пороге 0,7
+    # дописывается: лишний дубль виден, потерянный — нет (DS r1 по #518)
+    assert added == 2
     section = text.split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
     lines = [ln for ln in section.split("\n") if ln.strip()]
     assert lines == ["- [ ] **Иван** — уточнить и согласовать бюджет стенда — до 10.09",
                      "- [ ] **Пётр** — собрать примеры вопросов для теста",
-                     "- [ ] **Саша Орлова** — подготовить демо для показа (из ревизии)"]
+                     "- [ ] **Саша Орлова** — подготовить демо для показа (из ревизии)",
+                     "- [ ] **Пётр** — собрать примеры вопросов (из ревизии)"]
     # остальные разделы и пустая строка перед следующим — на месте
     assert "## Открытые вопросы\n- Кто ведёт протокол дальше?" in text
     assert "(из ревизии)\n\n## Открытые вопросы" in text
@@ -62,7 +65,7 @@ def test_merge_appends_missing_items_with_a_mark_and_keeps_the_rest():
 def test_merge_is_idempotent_and_dedups_by_meaning():
     once, added = rb.merge_into_minutes(MINUTES, rb.recovered_items(REVIEW))
     twice, again = rb.merge_into_minutes(once, rb.recovered_items(REVIEW))
-    assert added == 1 and again == 0 and twice == once
+    assert added == 2 and again == 0 and twice == once
     # тот же исполнитель, другое дело — новый пункт
     _, n = rb.merge_into_minutes(once, ["**Иван** — заказать сервер под стенд"])
     assert n == 1
@@ -105,7 +108,7 @@ def test_bridge_writes_minutes_next_to_the_transcript(tmp_path):
     review = tdir / "2026-09-05_1413_Планёрка_ревизия_claude.md"
     review.write_text(REVIEW + "- [ ] **Мария** — принести отчёт\n", encoding="utf-8")
     # последняя строка ревизии — вне строгого раздела (после «## 7.»), в минутки не идёт
-    assert rb.bridge(review, transcript, owner="Владелец") == 1
+    assert rb.bridge(review, transcript, owner="Владелец") == 2
     text = minutes.read_text(encoding="utf-8")
     assert "**Саша Орлова** — подготовить демо для показа (из ревизии)" in text
     assert "Мария" not in text
@@ -114,6 +117,41 @@ def test_bridge_writes_minutes_next_to_the_transcript(tmp_path):
     assert rb.bridge(tdir / "нет.md", transcript) == 0
     minutes.unlink()
     assert rb.bridge(review, transcript) == 0
+
+
+def test_checkbox_no_is_an_empty_section_too():
+    text, added = rb.merge_into_minutes("## Поручения\n\n- [ ] нет\n", ["**Иван** — позвонить"])
+    assert added == 1 and "нет" not in text.split("## Поручения", 1)[1]
+    assert text.rstrip("\n").endswith("## Поручения\n- [ ] **Иван** — позвонить (из ревизии)")
+    text, added = rb.merge_into_minutes("## Поручения\n- **нет**\n", ["**Иван** — позвонить"])
+    assert added == 1 and "**нет**" not in text
+
+
+def test_stop_words_do_not_glue_two_different_items():
+    two = ["**Пётр** — согласовать бюджет с финансами", "**Пётр** — согласовать бюджет с юристами"]
+    _, added = rb.merge_into_minutes("## Поручения\n- нет\n", two)
+    assert added == 2
+    # а пересказ того же дела — по-прежнему одно
+    _, again = rb.merge_into_minutes("## Поручения\n- [ ] **Пётр** — согласовать бюджет с финансами\n",
+                                     ["**Пётр** — бюджет согласовать с финансами до пятницы"])
+    assert again == 0
+
+
+def test_bold_and_bare_headings_and_wrapped_items():
+    bold = "**Восстановленные поручения:**\n- [ ] **Иван** — согласовать\n  бюджет стенда\n- [ ] **Пётр** — позвонить\n**Что сделано в графе**\n- узел\n"
+    assert rb.recovered_items(bold) == ["**Иван** — согласовать бюджет стенда", "**Пётр** — позвонить"]
+    bare = "Восстановленные поручения:\n- **Иван** — позвонить\n\n## Другое\n- x\n"
+    assert rb.recovered_items(bare) == ["**Иван** — позвонить"]
+    dot = "## Восстановленные поручения.\n- **Иван** — позвонить\nнет\n"
+    assert rb.recovered_items(dot) == ["**Иван** — позвонить"]
+
+
+def test_legacy_section_title_is_reused_not_duplicated():
+    old = "# Минутки\n## Поручения и сроки\n- [ ] **Иван** — позвонить\n\n## Риски\n- нет\n"
+    text, added = rb.merge_into_minutes(old, ["**Пётр** — написать"])
+    assert added == 1 and text.count("## Поручения") == 1
+    assert "## Поручения и сроки\n- [ ] **Иван** — позвонить\n- [ ] **Пётр** — написать (из ревизии)\n\n## Риски" in text
+    assert rb.section_present("…в разделе восстановленных поручений пусто…") and not rb.section_present("ничего")
 
 
 def test_l4_prompt_names_the_strict_section():

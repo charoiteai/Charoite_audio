@@ -22,12 +22,20 @@ import re
 import action_items
 import safe_write
 
-RECOVERED_HEAD = re.compile(r"^\s*#{1,6}\s*восстановленные поручения\s*[:：]?\s*$", re.IGNORECASE)
+# «## Восстановленные поручения», «**Восстановленные поручения:**»,
+# «Восстановленные поручения:» — модель просят строгую форму, но жирный и
+# голый варианты она пишет тоже (GLM r1 M1 по #518)
+RECOVERED_HEAD = re.compile(r"^\s*(?:#{1,6}\s*|\*\*\s*)?восстановленные поручения\s*[:：.]?\s*\**\s*$", re.IGNORECASE)
+RECOVERED_WORD = re.compile(r"восстановленн\w* поручени", re.IGNORECASE)
 MARKS = {"ru": "(из ревизии)", "en": "(from the review)", "zh": "（来自审阅）"}
 SECTION_TITLE = {"ru": "## Поручения", "en": "## Action items", "zh": "## 行动项"}
 _HEADING = re.compile(r"^\s*#{1,6}\s")
-_ITEM = re.compile(r"^\s*(?:[-*+•–—]\s*)?(?:\[[ xX]\]\s*)?(?P<text>\S.*)$")
+_BOLD_HEADING = re.compile(r"^\s*\*\*[^*]+\*\*\s*$")
+_BULLET = re.compile(r"^\s*(?:[-*+•–—⁃‣▪]|\d+[.)])\s+")
+_CHECKBOX = re.compile(r"^\s*\[[ xX]\]\s*")
+_ITEM = re.compile(r"^\s*(?:[-*+•–—⁃‣▪]|\d+[.)])\s*(?:\[[ xX]\]\s*)?(?P<text>\S.*)$")
 _EMPTY_ITEM = re.compile(r"^(?:нет|none|无|—|-)\.?$", re.IGNORECASE)
+_SECTION_WORD = re.compile(r"поручени|action item|行动项", re.IGNORECASE)
 
 
 def recovered_items(review: str) -> list[str]:
@@ -39,9 +47,18 @@ def recovered_items(review: str) -> list[str]:
         if RECOVERED_HEAD.match(line):
             inside = True
             continue
-        if inside and _HEADING.match(line):
+        if inside and (_HEADING.match(line) or _BOLD_HEADING.match(line)):
             break
         if not inside:
+            continue
+        if not line.strip():
+            continue
+        if not _BULLET.match(line):
+            # перенос строки внутри пункта — продолжение, не новый пункт
+            # (GLM r1 M2 / DS r1 I2 по #518); «нет» и строка до первого
+            # пункта — мимо
+            if items and not _EMPTY_ITEM.match(line.strip().strip("*")):
+                items[-1] = (items[-1] + " " + line.strip()).strip()
             continue
         m = _ITEM.match(line)
         if not m:
@@ -53,18 +70,25 @@ def recovered_items(review: str) -> list[str]:
     return items
 
 
+def section_present(review: str) -> bool:
+    """В ревизии есть слова о восстановленных поручениях: если пунктов при
+    этом не извлечено, мосту есть о чём сказать в лог (GLM r1, критика 1)."""
+    return bool(RECOVERED_WORD.search(review or ""))
+
+
 def _key(item: str) -> str:
     """Ключ дедупа: без пометок, жирного, чекбокса, пунктуации и регистра."""
-    text = item
-    for mark in list(MARKS.values()) + list(action_items.OUTSIDER_MARKS.values()):
+    text = re.sub(r"⚠[^:]*:", " ", item)           # «⚠ не участник (Имя):» целиком
+    for mark in MARKS.values():
         text = text.replace(mark, " ")
     text = re.sub(r"^\s*(?:[-*+•–—]\s*)?(?:\[[ xX]\]\s*)?", "", text)
-    text = re.sub(r"⚠[^:]*:", " ", text)
     return " ".join(re.findall(r"[^\W_]+", text.lower()))
 
 
 _ASSIGNEE = re.compile(r"^\s*(?:[-*+•–—]\s*)?(?:\[[ xX]\]\s*)?(?:⚠[^:]*:\s*)?\*\*(?P<name>[^*]+)\*\*\s*(?P<rest>.*)$")
-SIMILAR = 0.5
+# Порог высокий намеренно: лишний дубль в «Задачах» виден и снимается одним
+# кликом, а съеденное поручение невидимо (DS r1 по #518, критика 2)
+SIMILAR = 0.7
 
 
 def _split(item: str) -> tuple[str, set[str]]:
@@ -73,13 +97,15 @@ def _split(item: str) -> tuple[str, set[str]]:
     if not m:
         return "", set(_key(item).split())
     name = " ".join(re.findall(r"[^\W_]+", m.group("name").lower()))
-    return name, set(_key(m.group("rest")).split())
+    # предлоги и союзы («с», «и», «до») не считаются: иначе «согласовать
+    # бюджет с финансами» и «… с юристами» сходились как одно (GLM r1 I2)
+    return name, {w for w in _key(m.group("rest")).split() if len(w) > 2}
 
 
 def _same_item(a: str, b: str) -> bool:
     """Один и тот же пункт: тот же ключ, либо тот же исполнитель и то же дело
-    другими словами (пересечение слов ≥ SIMILAR по Жаккару) — ревизия
-    пересказывает поручение минуток, а не находит новое."""
+    другими словами (пересечение значимых слов ≥ SIMILAR по Жаккару) —
+    ревизия пересказывает поручение минуток, а не находит новое."""
     ka, kb = _key(a), _key(b)
     if ka == kb:
         return True
@@ -90,6 +116,15 @@ def _same_item(a: str, b: str) -> bool:
     return len(wa & wb) / len(wa | wb) >= SIMILAR
 
 
+def _empty_line(line: str) -> bool:
+    """«нет», «- нет», «- [ ] нет» — честно пустой раздел, не пункт
+    (чекбокс срезается, GLM r1 I1 по #518)."""
+    if not line.strip():
+        return False                       # пустые строки считает хвост раздела
+    bare = _CHECKBOX.sub("", line.strip().lstrip("-*•–— ").strip()).strip().strip("*").strip()
+    return bool(_EMPTY_ITEM.match(bare))
+
+
 def _section_bounds(lines: list[str]) -> tuple[int, int] | None:
     """(начало, конец) строк раздела поручений: конец — следующий заголовок
     или конец файла (граница — как у action_items)."""
@@ -98,6 +133,13 @@ def _section_bounds(lines: list[str]) -> tuple[int, int] | None:
         if action_items._SECTION.match(line):
             start = i
             break
+    if start is None:
+        # «## Поручения и сроки» прежних минуток — тот же раздел, а не повод
+        # завести второй (DS r1 M3 по #518)
+        for i, line in enumerate(lines):
+            if _HEADING.match(line) and _SECTION_WORD.search(line):
+                start = i
+                break
     if start is None:
         return None
     end = len(lines)
@@ -138,7 +180,7 @@ def merge_into_minutes(minutes: str, items: list[str], participants: set[str] | 
         return minutes, 0
     section = lines[start + 1:end]
     # «нет» — честный пустой раздел; с первым пунктом он перестаёт быть пустым
-    section = [ln for ln in section if not _EMPTY_ITEM.match(ln.strip().lstrip("-*• ").strip())]
+    section = [ln for ln in section if not _empty_line(ln)]
     # дописываем после последнего пункта, до пустых строк перед следующим разделом
     tail = 0
     while section and not section[-1].strip():
