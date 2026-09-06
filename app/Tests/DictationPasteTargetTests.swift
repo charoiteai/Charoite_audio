@@ -192,8 +192,10 @@ final class DictationPasteTargetTests: XCTestCase {
         let stale = [(text: "первая", at: now.addingTimeInterval(-5)),
                      (text: "вторая", at: now.addingTimeInterval(-1)),
                      (text: "древняя", at: now.addingTimeInterval(-3600))]
-        XCTAssertEqual(DictationService.withStale(stale, text: "третья", now: now, ttl: 600), "первая вторая третья")
-        XCTAssertEqual(DictationService.withStale([], text: "одна", now: now, ttl: 600), "одна")
+        let fresh = DictationService.freshStale(stale, now: now, ttl: 600)
+        XCTAssertEqual(fresh, ["первая", "вторая"])
+        XCTAssertEqual(DictationService.withStale(fresh, text: "третья"), "первая вторая третья")
+        XCTAssertEqual(DictationService.withStale([], text: "одна"), "одна")
     }
 
     /// Доставка решает по снимку своей диктовки: защёлка, взведённая

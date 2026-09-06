@@ -387,15 +387,11 @@ final class DictationService: ObservableObject {
                 let draft = await Self.awaitDraft(finish, timeout: .seconds(8))
                 // Человек мог начать следующую диктовку — её поле и статус не
                 // трогаем, устаревший результат пропадает.
-                guard let self else { return }
-                guard self.generation == generation else {
-                    // Глобальный черновик не роняем — он уйдёт перед следующей
-                    // вставкой (DS r2 M2 по #517); чату и заметке отдавать некуда
-                    if !draft.isEmpty, handler == nil, !wasNote {
-                        self.parkStale(text: draft, gate: 0)
-                    } else {
-                        NSLog("[Dictation] черновик прошлой диктовки пришёл во время следующей — отброшен")
-                    }
+                guard let self, self.generation == generation else {
+                    // Черновик — текст худшего качества (обрыв слова на падении
+                    // python): парковать его как отложенный груз хуже, чем
+                    // потерять (GLM r3 по #517, критика 2; против DS r2 M2)
+                    NSLog("[Dictation] черновик прошлой диктовки пришёл во время следующей — отброшен")
                     return
                 }
                 self.deliver(text: draft, exit: exit, fromDraft: !draft.isEmpty,
@@ -795,22 +791,25 @@ final class DictationService: ObservableObject {
     /// вставки новой, плашка — её живого черновика (GLM r2 I1/I2, DS r2 I1/I2
     /// по #517). Поэтому текст ждёт и уходит ПЕРЕД следующей глобальной
     /// вставкой — обычно это та же мысль, которую человек продолжил новой
-    /// диктовкой. Правило продукта: доставка старой не трогает новую, текст
-    /// не теряется. Старше staleTTL — уже не нужен.
+    /// диктовкой. Правило продукта: доставка старой не трогает новую; текст
+    /// живёт до следующей глобальной вставки, старше staleTTL — пропадает.
     private var staleTexts: [(text: String, at: Date)] = []
     nonisolated static let staleTTL: TimeInterval = 600
 
     private func parkStale(text: String, gate: Int) {
         staleTexts.append((text, Date()))
-        NSLog("[Dictation] доставка прошлой диктовки настигла новую (шов \(gate), \(text.count) зн.) — текст уйдёт перед следующей вставкой")
+        NSLog("[Dictation] доставка прошлой диктовки настигла новую (шов \(gate), \(text.count) зн.) — текст уйдёт перед следующей глобальной вставкой или пропадёт через \(Int(Self.staleTTL)) с")
     }
 
-    /// Что вставлять: свежие припаркованные тексты впереди, по порядку, потом
-    /// свой (чистый шов для теста).
-    nonisolated static func withStale(_ stale: [(text: String, at: Date)], text: String,
-                                      now: Date, ttl: TimeInterval) -> String {
-        let fresh = stale.filter { now.timeIntervalSince($0.at) <= ttl }.map(\.text)
-        return (fresh + [text]).joined(separator: " ")
+    /// Свежие припаркованные тексты по порядку (чистый шов для теста).
+    nonisolated static func freshStale(_ stale: [(text: String, at: Date)], now: Date,
+                                       ttl: TimeInterval) -> [String] {
+        stale.filter { now.timeIntervalSince($0.at) <= ttl }.map(\.text)
+    }
+
+    /// Что вставлять: припаркованное впереди, свой текст — последним.
+    nonisolated static func withStale(_ stale: [String], text: String) -> String {
+        (stale + [text]).joined(separator: " ")
     }
 
     /// Хвост доставки после чтения фокуса: плашка черновика, заметка, чат
@@ -862,9 +861,11 @@ final class DictationService: ObservableObject {
             }
             NSSound(named: "Glass")?.play()
         } else {
-            let full = Self.withStale(staleTexts, text: text, now: Date(), ttl: Self.staleTTL)
-            staleTexts.removeAll()
-            insert(text: full, keepStatus: fromDraft, focus: focus, anchor: anchor, touchedSecure: touchedSecure)
+            // Черновик системного движка — текст худшего качества: припаркованное
+            // к нему не клеим, оно дождётся настоящей вставки (GLM r3 M2)
+            let stale = fromDraft ? [] : Self.freshStale(staleTexts, now: Date(), ttl: Self.staleTTL)
+            insert(text: text, keepStatus: fromDraft, focus: focus, anchor: anchor,
+                   touchedSecure: touchedSecure, stale: stale)
         }
     }
 
@@ -970,7 +971,19 @@ final class DictationService: ObservableObject {
         NSLog("[Dictation] вставка в \(anchor.name) (\(key)): приложение не отдаёт сфокусированный элемент — поле пароля там не отличить")
     }
 
-    private func insert(text: String, keepStatus: Bool, focus: FocusInfo, anchor: PasteAnchor?, touchedSecure: Bool) {
+    private func insert(text: String, keepStatus: Bool, focus: FocusInfo, anchor: PasteAnchor?,
+                        touchedSecure: Bool, stale: [String] = []) {
+        let now = Self.frontAnchor(focus)
+        // Пароль под фокусом доставки — защёлка и текущей диктовке, если она
+        // уже идёт: её собственное чтение увидит то же поле (fail-closed)
+        if focus.secure { secureSeen = true }
+        let decision = Self.finalDecision(trusted: AXIsProcessTrusted(), own: ProcessInfo.processInfo.processIdentifier,
+                                          startedIn: anchor, now: now, secureSeen: touchedSecure, nowSecure: focus.secure)
+        // Припаркованное клеится только туда, где текст вставляется или
+        // ждёт ручной вставки в нужное поле; парольному исходу — только свой
+        // текст, чужой не получает парольного адресата (GLM r3 I1 по #517)
+        let text = decision == .secret ? text : Self.withStale(stale, text: text)
+        if decision != .secret, !stale.isEmpty { staleTexts.removeAll() }
         let pb = NSPasteboard.general
         // сохраняем ВСЕ типы (скриншот/RTF), не только строку — иначе
         // картинка в буфере пропадала после диктовки безвозвратно
@@ -985,12 +998,7 @@ final class DictationService: ObservableObject {
         pb.setString(text, forType: .string)
         let ourChange = pb.changeCount
 
-        let now = Self.frontAnchor(focus)
-        // Пароль под фокусом доставки — защёлка и текущей диктовке, если она
-        // уже идёт: её собственное чтение увидит то же поле (fail-closed)
-        if focus.secure { secureSeen = true }
-        switch Self.finalDecision(trusted: AXIsProcessTrusted(), own: ProcessInfo.processInfo.processIdentifier,
-                                  startedIn: anchor, now: now, secureSeen: touchedSecure, nowSecure: focus.secure) {
+        switch decision {
         case .secret:
             // Диктовка касалась поля пароля — или пароль под фокусом сейчас:
             // ⌘V раскрыл бы секрет в обычном поле либо был бы проглочен

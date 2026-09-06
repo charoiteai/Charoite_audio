@@ -334,9 +334,10 @@ it signals degradation, it does not break the loop.
   delivery waits for the start-time read (a short phrase must not lose its
   anchor or the password latch) and decides on a snapshot of its own
   dictation; if the next dictation has already started by the time the
-  text is ready, that text is kept and goes in front of the next
-  insertion (within ten minutes) — the new dictation's field, status,
-  clipboard and latch are never touched. A password field is recognised through Accessibility: an app
+  text is ready, that text is kept and goes in front of the next real
+  insertion (within ten minutes; never into a password field, never glued
+  to a system-engine draft) — the new dictation's field, status, clipboard
+  and latch are never touched. A password field is recognised through Accessibility: an app
   that does not expose its tree (Chromium browsers with accessibility off)
   cannot be told apart — there the strip and the paste behave as in a plain
   field. In the menu
