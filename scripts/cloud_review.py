@@ -55,6 +55,7 @@ import safe_write  # noqa: E402
 import cloud  # noqa: E402
 import file_locks  # noqa: E402
 import graph_updater
+import review_bridge  # noqa: E402
 import privacy  # noqa: E402
 
 BACKUP_DIR = ".cloud_backup"
@@ -1066,6 +1067,17 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # приняла бы за правку облака. Без графа (text-only) доставлять
         # некуда, без замка — нельзя (сосед сверяет). От лога не зависит.
         if published and deliver and (not may_edit or checked):
+            # Мост L4 → минутки — ДО раскладки архива: deliver_review зовёт
+            # archive_meeting, а тот копирует `<стем>_minutes.md` в Минутки.md,
+            # которые читает вкладка «Задачи» (хвост №152).
+            try:
+                sufler = cfg.get("sufler") or {}
+                added = review_bridge.bridge(rev, transcript, owner=str(sufler.get("user_name") or ""),
+                                             lang=str(sufler.get("language") or "ru"))
+                if added:
+                    lines.append(f"[cloud-review] мост ревизии: в минутки дописано поручений — {added}\n")
+            except Exception as e:  # noqa: BLE001 — мост не важнее самой ревизии
+                lines.append(f"[cloud-review] мост ревизии не сработал: {e}\n")
             buf = io.StringIO()
             deliver_review(rev, transcript, graph, stamp, buf)
             lines.append(buf.getvalue())
