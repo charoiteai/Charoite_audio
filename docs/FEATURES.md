@@ -357,7 +357,11 @@ it signals degradation, it does not break the loop.
 - **Import recorded meetings** — `scripts/import_meeting.py file`
   (audio m4a/wav/mp3, text txt/md, subtitles vtt/srt from Zoom/Teams —
   speaker names preserved) → the full meeting archive: transcript,
-  minutes, debrief, theses, graph; meeting date via `--date/--time`;
+  minutes, debrief, theses, graph; the meeting date comes from the
+  recording itself (container metadata of m4a/caf/wav/mp3 or the stamp
+  in the companion's file name), file mtime only when the recording
+  knows nothing — a sync or a download that touched mtime no longer
+  moves the meeting; `--date/--time` override;
   the source file is kept next to the meeting materials (APFS clone).
 - **The meeting thread** — the main thing on screen while people talk. It is
   not rebuilt every few minutes but **grows**: the model sees what has been

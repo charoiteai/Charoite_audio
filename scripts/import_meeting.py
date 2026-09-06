@@ -9,7 +9,9 @@
 
 Дальше единый хвост конвейера: минутки+разбор+тезисы (retro_fill,
 идемпотентно), обновление графа (graph_updater), раскладка в архив
-встреч. Дата встречи — из mtime файла, точнее: --date/--time.
+встреч. Дата встречи — из самой записи (метаданные контейнера или штамп
+в имени с телефона, src/media_meta), иначе из mtime файла; точнее —
+--date/--time.
 
     .venv/bin/python scripts/import_meeting.py запись.m4a --date 2026-07-15
     .venv/bin/python scripts/import_meeting.py zoom.vtt --title "Планёрка"
@@ -55,6 +57,7 @@ from config_loader import load_user_or_example  # noqa: E402
 
 import charoite_paths  # noqa: E402
 import safe_write  # noqa: E402
+import media_meta  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
 from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402
 
@@ -673,6 +676,26 @@ def import_stamp(tdir: pathlib.Path, minute: str, src_name: str,
     return stamp, None
 
 
+# На сколько запись и mtime вправе расходиться, прежде чем верить записи:
+# у честного файла они совпадают с точностью до секунд (телефон дописал —
+# синк положил), сутки разницы — это скачивание, копирование или синк,
+# тронувший mtime без записи.
+MOMENT_DRIFT = dt.timedelta(minutes=2)
+
+
+def meeting_moment(src: pathlib.Path) -> tuple[dt.datetime, str | None]:
+    """Момент встречи для штампа: сама запись, если она знает и расходится
+    с mtime больше MOMENT_DRIFT, иначе mtime. Вторым — строка в лог, когда
+    верим записи, а не файлу.
+    """
+    mt = dt.datetime.fromtimestamp(src.stat().st_mtime)
+    rec = media_meta.recorded_at(src)
+    if rec is None or abs(rec - mt) <= MOMENT_DRIFT:
+        return mt, None
+    return rec, (f"дата встречи — по самой записи {rec:%Y-%m-%d %H:%M}: mtime файла "
+                 f"{mt:%Y-%m-%d %H:%M} сдвинут синком или копированием")
+
+
 def main() -> None:
     # Импорт пишет стенограмму, записи и архивную папку — те же данные, что
     # демон, и с теми же правами: только владельцу (аудит DeepSeek 16.08).
@@ -774,7 +797,9 @@ def main() -> None:
     tdir = ROOT / cfg["log"]["transcripts_dir"]
     tdir.mkdir(parents=True, exist_ok=True)
 
-    mt = dt.datetime.fromtimestamp(src.stat().st_mtime)
+    mt, moment_note = meeting_moment(src)
+    if moment_note:
+        print(moment_note)
     day = clean_date(args.date) if args.date else f"{mt:%Y-%m-%d}"
     hhmm = clean_time(args.time) if args.time else f"{mt:%H%M}"
     stamp, already = import_stamp(tdir, f"{day}_{hhmm}", src.name,
