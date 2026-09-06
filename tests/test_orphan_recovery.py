@@ -236,32 +236,30 @@ def test_ретеншн_не_родня_retry_пересборке():
 
 
 def test_сырые_потоки_приложения_живут_по_тому_же_сроку(tmp_path, monkeypatch):
-    """`data/sck/*` — тоже записи встречи; `tap_stream.raw` — наследие тапа.
+    """`data/sck/*` — тоже записи встречи.
 
     Системный звук пишет приложение, а не демон, и эти файлы жили ВНЕ
     ретеншна: каталоги сессий убирались лишь при штатном стопе — краш
     оставлял полное аудио навсегда. На рабочей машине так пролежал 61 МБ
     девять дней при обещанных двух (аудит 16.08). PRIVACY.md обещает
-    «записи временны». `tap_stream.raw`/`.json` писали версии с Core Audio
-    tap (снят 02.09): писателя больше нет — наследие уходит сразу, даже
-    свежее.
+    «записи временны». Безусловная уборка наследия Core Audio tap
+    (`tap_stream.*`) снята 06.09 (№154): чужие файлы с таким именем ретеншн
+    больше не трогает.
     """
     import audio
 
     data = tmp_path / "data"
     (data / "sck" / "старая-сессия").mkdir(parents=True)
     (data / "sck" / "живая-сессия").mkdir(parents=True)
-    old_raw = data / "tap_stream.raw"
-    old_raw.write_bytes(b"\0" * 16)
-    fresh_manifest = data / "tap_stream.json"      # наследие, но свежее по mtime
-    fresh_manifest.write_text("{}", encoding="utf-8")
+    stranger = data / "tap_stream.raw"                 # больше не наше наследие — не трогаем
+    stranger.write_bytes(b"\0" * 16)
     old_session = data / "sck" / "старая-сессия" / "system.raw"
     old_session.write_bytes(b"\0" * 16)
     live_session = data / "sck" / "живая-сессия" / "system.raw"
     live_session.write_bytes(b"\0" * 16)
 
     week_ago = time.time() - 7 * 86400
-    for p in (old_raw, old_session, live_session):
+    for p in (stranger, old_session, live_session):
         os.utime(p, (week_ago, week_ago))
 
     # живая сессия названа в свежем манифесте — её не трогаем даже старой
@@ -270,9 +268,8 @@ def test_сырые_потоки_приложения_живут_по_тому_�
 
     removed = audio.AudioHub.prune_stream_files(data, 2)
 
-    assert removed == 3, "старые сырые потоки остались лежать"
-    assert not old_raw.exists(), "tap_stream.raw переживает срок хранения"
-    assert not fresh_manifest.exists(), "манифест снятого тапа переживает обновление"
+    assert removed == 1, "старый сырой поток мёртвой сессии остался лежать"
+    assert stranger.exists(), "ретеншн удалил файл, который не писал"
     assert not old_session.exists(), "каталог мёртвой сессии не убран"
     assert live_session.exists(), "убита запись ИДУЩЕЙ встречи"
 

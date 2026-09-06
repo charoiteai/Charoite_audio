@@ -560,7 +560,7 @@ def main():
             keep_days,
             protect=hub.protect_stamps,
         )
-        # Сырые потоки приложения (data/sck/*, tap_stream.raw) жили вне
+        # Сырые потоки приложения (data/sck/*) жили вне
         # ретеншна: краш оставлял полное аудио встречи навсегда (аудит 16.08).
         dropped = AudioHub.prune_stream_files(ROOT / "data", keep_days)
         if dropped:
