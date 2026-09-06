@@ -25,7 +25,7 @@ import safe_write
 # «## Восстановленные поручения», «**Восстановленные поручения:**»,
 # «Восстановленные поручения:» — модель просят строгую форму, но жирный и
 # голый варианты она пишет тоже (GLM r1 M1 по #518)
-RECOVERED_HEAD = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*)?\s*восстановленные поручения\s*[:：.]?\s*(?:\*\*)?\s*$",
+RECOVERED_HEAD = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*)?\s*восстановленные поручения\s*(?:\*\*)?\s*[:：.]?\s*(?:\*\*)?\s*$",
                             re.IGNORECASE)
 # строка, начинающаяся с этих слов (после # или **), — заголовок, а не
 # упоминание вроде «восстановленных поручений нет» в прозе (DS r2 M5)
@@ -39,8 +39,8 @@ _BOLD_HEADING = re.compile(r"^\s*\*\*[^*]+\*\*\s*$")
 _BULLET = re.compile(r"^\s*(?:-\s*|[*+•–—⁃‣▪]\s+|\d+[.)]\s+)(?=\S)")
 _CHECKBOX = re.compile(r"^\s*\[[ xX]\]\s*")
 _ITEM = re.compile(r"^\s*(?:-\s*|[*+•–—⁃‣▪]\s+|\d+[.)]\s+)(?:\[[ xX]\]\s*)?(?P<text>\S.*)$")
-_EMPTY_ITEM = re.compile(r"^(?:нет|none|无|—|-)\.?$", re.IGNORECASE)
-_SECTION_WORD = re.compile(r"^\s*#{1,6}\s*(?:\*\*)?\s*(?:поручени|action item|行动项)", re.IGNORECASE)
+_EMPTY_ITEM = re.compile(r"^(?:нет|none|无|—+|-+|\*+)\.?$", re.IGNORECASE)
+_SECTION_WORD = re.compile(r"^\s*(?:#{1,6}\s*|\*\*\s*)?(?:поручени|action item|行动项)", re.IGNORECASE)
 _PAREN_NOTE = re.compile(r"^\s*[(（][^)）]*[)）]\s*$")
 
 
@@ -53,7 +53,7 @@ def recovered_items(review: str) -> list[str]:
         if RECOVERED_HEAD.match(line):
             inside = True
             continue
-        if inside and _section_end(line):
+        if inside and _section_end(line, had_items=bool(items)):
             break
         if not inside:
             continue
@@ -62,11 +62,12 @@ def recovered_items(review: str) -> list[str]:
         if not _BULLET.match(line):
             # перенос строки внутри пункта — продолжение, не новый пункт
             # (GLM r1 M2 / DS r1 I2 по #518); «нет», комментарий модели в
-            # скобках «(срок не назван)», жирная подпись и строка до первого
-            # пункта — мимо (DS r2 I2/M3)
+            # скобках «(срок не назван)», строка с жирного («**Пётр** — …»
+            # без маркера — свой пункт, а не хвост чужого) и строка до
+            # первого пункта — мимо (DS r2 I2/M3, GLM r3 M3)
             bare = line.strip().strip("*").strip()
             if items and bare and not _EMPTY_ITEM.match(bare) and not _PAREN_NOTE.match(line) \
-                    and not _BOLD_HEADING.match(line):
+                    and not line.lstrip().startswith("*"):
                 items[-1] = (items[-1] + " " + line.strip()).strip()
             continue
         m = _ITEM.match(line)
@@ -79,15 +80,16 @@ def recovered_items(review: str) -> list[str]:
     return items
 
 
-def _section_end(line: str) -> bool:
-    """Конец раздела ревизии: markdown-заголовок, жирная подпись с
-    двоеточием («**Решения:**») или голая известная секция («Решения:»);
-    жирная строка без двоеточия внутри раздела — не граница (DS r2 M3:
-    молча ронять пункты после неё хуже, чем принять лишнее)."""
+def _section_end(line: str, had_items: bool) -> bool:
+    """Конец раздела ревизии: markdown-заголовок, голая известная секция
+    («Решения:») или жирная подпись — с двоеточием всегда, без двоеточия
+    («**Что сделано в графе**») — когда пункты уже были: до первого пункта
+    жирная строка может быть подписью самого раздела (GLM r3 I1 по #518 —
+    иначе пункты следующего раздела ехали в минутки)."""
     if _HEADING.match(line):
         return True
-    if _BOLD_HEADING.match(line) and line.strip().rstrip("*").rstrip().endswith((":", "：")):
-        return True
+    if _BOLD_HEADING.match(line):
+        return had_items or line.strip().rstrip("*").rstrip().endswith((":", "："))
     return bool(action_items._BARE_HEADING.match(line) and action_items._KNOWN_BARE_SECTION.match(line))
 
 
@@ -136,8 +138,9 @@ def _same_item(a: str, b: str) -> bool:
         return False
     common = len(wa & wb)
     # ревизия сжимает: «собрать примеры вопросов» ⊂ «… для теста» — то же
-    # дело (GLM r2, критика 1); из двух значимых слов вложенность не судим
-    if common >= 2 and common == min(len(wa), len(wb)):
+    # дело (GLM r2, критика 1). Только в эту сторону: пункт минуток короче
+    # ревизионного — у ревизии могло появиться новое дело (GLM r3, критика 1)
+    if common >= 2 and common == len(wa):
         return True
     return common / len(wa | wb) >= SIMILAR
 
