@@ -6,48 +6,50 @@
     .venv/bin/python scripts/graph_doctor.py --examples 10   # с примерами путей
     .venv/bin/python scripts/graph_doctor.py --strict        # код 1, если есть предупреждения
 
-Что считает: битые [[ссылки]] (экранированный `\\|` в таблицах — валиден),
-ссылки с переносом строки внутри (для Obsidian мертвы), метки диаризации
-среди Люди («Собеседник N» — узел, склеивающий разных людей), сироты (узел
-без входящих), одноимённые узлы в разных папках (пары Досье/Ядра и
-заглушки-редиректы tier3 — по замыслу, считаются отдельно), почти-дубли по
-ключу имени (graph_updater.name_key), покрытие _MOC.md, свежесть.
+Что считает: битые [[ссылки]] (экранированный `\\|` в таблицах — валиден,
+псевдоним из `aliases:` шапки — живая цель, как у Obsidian), отдельно по
+активным папкам и по архиву (`Встречи-архив` конвейер не перечитывает —
+там лежит легаси, а не гниение живой памяти; порог предупреждения — только
+по активным), ссылки с переносом строки внутри (для Obsidian мертвы), метки
+диаризации среди Люди («Собеседник N» — узел, склеивающий разных людей),
+сироты (узел без входящих), одноимённые узлы в разных папках (пары
+Досье/Ядра и заглушки-редиректы tier3 — по замыслу, считаются отдельно),
+почти-дубли по ключу имени (graph_names.name_key) и без порядка слов
+(«Иван Петров» / «Петров Иван» — bag_key), покрытие _MOC.md, свежесть.
 
 Ничего не меняет. Отчёт — JSON для утреннего брифа (logs/graph_doctor.json
 в корне данных) и сводка в stdout. Пороги предупреждений: битых > 2 %
-ссылок, метки > 0, сироты > 5 % узлов, настоящие дубли > 0, почти-дубли > 0.
-Аудит графа 28.08: 626 битых из 68 514 ссылок, 17 узлов-меток, 5 дублей,
-7 почти-дублей — цифры, которых до этого скрипта никто не видел.
+активных ссылок, метки > 0, сироты > 5 % узлов, настоящие дубли > 0,
+почти-дубли > 0. Аудит графа 28.08: 626 битых из 68 514 ссылок, 17
+узлов-меток, 5 дублей, 7 почти-дублей — цифры, которых до этого скрипта
+никто не видел; аудит памяти 07.09: 1316 битых, из них 73 % в архиве.
 """
 from __future__ import annotations
 
 import argparse
 import collections
-import itertools
 import datetime as dt
 import json
 import os
 import pathlib
-import re
 import sys
-import unicodedata
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import graph_links  # noqa: E402
+import graph_names  # noqa: E402
 import graph_updater  # noqa: E402
 import graphs  # noqa: E402
 import redirects  # noqa: E402
 
 CODE = pathlib.Path(__file__).resolve().parent.parent
 ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
-LINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
+LINK = graph_links.LINK
 HUB_DIRS = ("Люди", "Системы", "Команды", "Ядра", "Блокеры", "Модели", "Досье")
 DESIGN_PAIRS = {frozenset(("Досье", "Ядра"))}   # досье на ядро — одноимённо по замыслу
 THRESHOLDS = {"broken_share": 0.02, "orphan_share": 0.05}
 
-
-def _norm(s: str) -> str:
-    return unicodedata.normalize("NFC", s).strip().casefold()
-
+_norm = graph_links.norm
+_disk_candidates = graph_links.disk_candidates   # прежнее имя — для тестов и скриптов
 
 
 def _is_stub(text: str) -> bool:
@@ -56,97 +58,44 @@ def _is_stub(text: str) -> bool:
     return "дубль-слит" in text[:400] or redirects.is_merged(text)
 
 
-def _disk_candidates(root: pathlib.Path, target: str) -> list[pathlib.Path]:
-    """Пути вложения во всех сочетаниях форм Unicode по компонентам: каталог
-    может лежать в NFC, а файл в нём — в NFD (инструменты macOS пишут NFD,
-    ссылки набирают в NFC; APFS это скрывает, Linux нет — luna по #450).
-    Глубже трёх компонентов — только целиком NFC и NFD."""
-    parts = pathlib.PurePosixPath(target).parts
-    if len(parts) > 3:
-        return [root / unicodedata.normalize(form, target) for form in ("NFC", "NFD")]
-    out: list[pathlib.Path] = []
-    for forms in itertools.product(("NFC", "NFD"), repeat=len(parts)):
-        cand = root.joinpath(*(unicodedata.normalize(f, x) for f, x in zip(forms, parts)))
-        if cand not in out:
-            out.append(cand)
-    return out
-
-
 def inspect(root: pathlib.Path, examples: int = 0) -> dict:
     """Метрики одного графа. `examples` > 0 — добавить примеры путей."""
-    notes: dict[pathlib.Path, str] = {}
-    for p in root.rglob("*.md"):
-        rel_parts = p.relative_to(root).parts
-        if any(part.startswith(".") for part in rel_parts):
-            continue                          # .obsidian, .trash, снимки
-        try:
-            notes[p] = p.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
+    notes = graph_links.read_notes(root)
     rel = {p: p.relative_to(root).as_posix() for p in notes}
-    by_stem: dict[str, list[pathlib.Path]] = collections.defaultdict(list)
-    by_path: dict[str, pathlib.Path] = {}
-    for p in notes:
-        by_stem[_norm(p.stem)].append(p)
-        by_path[_norm(rel[p][:-3])] = p
-
-    def resolve(target: str) -> pathlib.Path | None:
-        t = target.strip().rstrip("\\").strip()      # `[[Цель\|Текст]]` в таблицах
-        if not t or re.search(r"\s/|/\s", t):
-            return None                              # «Системы/ Витрина» — мертва (GLM I2)
-        # Ссылки Obsidian считаются от корня хранилища: абсолютный путь,
-        # выход через `..` и скрытые каталоги — не цели. Отсев ДО поиска
-        # заметки: `[[../x]]` находил `Системы/x.md` по стему (luna по #449),
-        # `[[/etc/hosts]]` отбрасывал корень в `root / t` (GLM, luna по #449).
-        parts = pathlib.PurePosixPath(t).parts
-        if t.startswith("/") or any(x.startswith(".") for x in parts):
-            return None
-        # Заметка важнее вложения (как ссылка без расширения в Obsidian):
-        # «Linux 1.8», «v2.json» — узлы с точкой в имени (первый вариант
-        # принял 400 таких ссылок за битые, 28.08; DS по #449 — узел, чей
-        # стем кончается на расширение).
-        stem = t[:-3] if t.casefold().endswith(".md") else t
-        if _norm(stem) in by_path:
-            return by_path[_norm(stem)]
-        cands = by_stem.get(_norm(pathlib.PurePosixPath(stem).name), [])
-        if cands:
-            return cands[0]
-        # Вложение [[x.pdf]] — только файл на диске (GLM M9), без списка
-        # расширений: какие форматы кладёт демон — факт продукта, не линта.
-        # Имя пробуем в обеих формах Unicode: инструменты macOS пишут NFD,
-        # ссылки набирают в NFC (GLM по #449). stat под try: слишком длинное
-        # имя или каталог без прав ронял бы весь ночной отчёт, а не ссылку.
-        for cand in _disk_candidates(root, t):
-            try:
-                if cand.is_file():
-                    return cand
-            except (OSError, ValueError):
-                continue
-        return None
+    resolver = graph_links.LinkResolver(root, notes)
+    by_stem = resolver.by_stem
 
     inbound: collections.Counter = collections.Counter()
     outbound: dict[pathlib.Path, int] = {}
     broken: list[tuple[str, str]] = []
     wrapped = 0
+    links_active = 0
     for p, text in notes.items():
         n = 0
+        archived = graph_links.is_archive(rel[p])
         for m in LINK.finditer(text):
             n += 1
             if "\n" in m.group(1):
                 wrapped += 1
-            tgt = resolve(m.group(1))
+            tgt = resolver.resolve(m.group(1))
             if tgt is None:
-                broken.append((rel[p], " ".join(m.group(1).split())))
+                broken.append((rel[p], " ".join(m.group(1).split()).rstrip("\\")))   # `Цель\|Текст` — без слэша (GLM r2 M3)
             elif tgt != p and not p.name.startswith("_"):
                 inbound[tgt] += 1                    # ссылка из указателя — не связь
         outbound[p] = n
+        if not archived:
+            links_active += n
+    broken_archive = [b for b in broken if graph_links.is_archive(b[0])]
+    broken_active = len(broken) - len(broken_archive)
+    # цель — файл, а не написание: `[[Имя]]` и `[[Люди/Имя]]` — одна цель (GLM M5)
+    targets = {graph_names.name_key(pathlib.PurePosixPath(t).name) for _, t in broken}
 
     nodes = [p for p in notes if rel[p].split("/", 1)[0] in HUB_DIRS and "/" in rel[p]
              and not p.name.startswith("_")]          # _ЛЮДИ.md, _ЯДРА.md — указатели
     node_set = set(nodes)
     orphans = [p for p in nodes if inbound[p] == 0]
     placeholders = [p for p in nodes if rel[p].startswith("Люди/")
-                    and graph_updater.is_placeholder_node(p.stem)]
+                    and graph_names.is_placeholder_node(p.stem)]
     groups = {k: v for k, v in by_stem.items() if len([x for x in v if x in node_set]) > 1}
     stubs = 0
     dup_real: list[list[str]] = []
@@ -162,18 +111,30 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
         if len(live) < 2:
             continue
         dup_real.append(sorted(rel[x] for x in live))
-    near: dict[str, set[str]] = collections.defaultdict(set)
+    # почти-дубли: ключ без пунктуации — в любой папке; без порядка слов —
+    # только Люди, как и свёртка в find_canonical («Реестр Витрин» и
+    # «Витрин Реестр» у систем — разные вещи; DS r2 M2)
+    near: dict[tuple[str, str], set[str]] = collections.defaultdict(set)
     for p in nodes:
-        k = graph_updater.name_key(p.stem)
-        if k:
-            near[(rel[p].split("/", 1)[0], k)].add(p.stem)   # type: ignore[index]
-    near_dups = [sorted(v) for v in near.values() if len(v) > 1]
+        folder = rel[p].split("/", 1)[0]
+        keys = {graph_names.name_key(p.stem)}
+        if folder == "Люди":
+            keys.add(graph_names.bag_key(p.stem))
+        for k in keys:
+            if k:
+                near[(folder, k)].add(p.stem)
+    seen_groups: set[frozenset[str]] = set()
+    near_dups: list[list[str]] = []
+    for v in near.values():
+        if len(v) > 1 and frozenset(v) not in seen_groups:
+            seen_groups.add(frozenset(v))
+            near_dups.append(sorted(v))
 
     moc = root / "_MOC.md"
     moc_linked: set[pathlib.Path] = set()
     if moc.exists():
         for m in LINK.finditer(moc.read_text(encoding="utf-8", errors="replace")):
-            t = resolve(m.group(1))
+            t = resolver.resolve(m.group(1))
             if t is not None and t in notes:   # вложение — не заметка, не покрытие (GLM M3)
                 moc_linked.add(t)
     week = dt.datetime.now().timestamp() - 7 * 86400
@@ -187,7 +148,8 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
     links_total = sum(outbound.values())
     rep = {
         "graph": root.name, "root": str(root), "notes": len(notes), "nodes": len(nodes), "links": links_total,
-        "broken": len(broken), "broken_targets": len({b for _, b in broken}),
+        "links_active": links_active, "broken": len(broken), "broken_active": broken_active,
+        "broken_archive": len(broken_archive), "broken_targets": len(targets),
         "wrapped_links": wrapped, "orphans": len(orphans), "placeholders": len(placeholders),
         "dup_groups": len(groups), "dup_stubs": stubs, "dup_real": len(dup_real),
         "near_dups": len(near_dups), "moc": moc.exists(), "moc_linked": len(moc_linked),
@@ -195,8 +157,9 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
         "orphans_by_dir": dict(collections.Counter(rel[p].split("/", 1)[0] for p in orphans)),
     }
     warnings: list[str] = []
-    if links_total and len(broken) / links_total > THRESHOLDS["broken_share"]:
-        warnings.append(f"битых ссылок {len(broken)} ({100 * len(broken) / links_total:.1f} % от {links_total})")
+    if links_active and broken_active / links_active > THRESHOLDS["broken_share"]:
+        warnings.append(f"битых ссылок в активных папках {broken_active} "
+                        f"({100 * broken_active / links_active:.1f} % от {links_active}; в архиве ещё {len(broken_archive)})")
     if placeholders:
         warnings.append(f"меток диаризации среди Люди: {len(placeholders)} — узлы склеивают разных людей")
     if nodes and len(orphans) / len(nodes) > THRESHOLDS["orphan_share"]:
@@ -204,11 +167,12 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
     if dup_real:
         warnings.append(f"одноимённых узлов в разных папках: {len(dup_real)} групп")
     if near_dups:
-        warnings.append(f"почти-дублей по имени: {len(near_dups)} (пунктуация/скобки/дефис)")
+        warnings.append(f"почти-дублей по имени: {len(near_dups)} (пунктуация/скобки/дефис/порядок слов)")
     rep["warnings"] = warnings
     if examples:
         rep["examples"] = {
-            "broken": [f"{s} -> [[{t}]]" for s, t in broken[:examples]],
+            "broken": [f"{s} -> [[{t}]]" for s, t in broken if not graph_links.is_archive(s)][:examples],
+            "broken_archive": [f"{s} -> [[{t}]]" for s, t in broken_archive[:examples]],
             "placeholders": [rel[p] for p in placeholders[:examples]],
             "orphans": [rel[p] for p in orphans[:examples]],
             "dup_real": [" | ".join(g) for g in dup_real[:examples]],
@@ -219,7 +183,8 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
 
 def summary(rep: dict) -> str:
     lines = [f"{rep['graph']}: заметок {rep['notes']}, узлов {rep['nodes']}, ссылок {rep['links']}; "
-             f"битых {rep['broken']} (целей {rep['broken_targets']}, с переносом {rep['wrapped_links']}); "
+             f"битых {rep['broken']} (актив {rep.get('broken_active', '?')} / архив {rep.get('broken_archive', '?')}; "
+             f"целей {rep['broken_targets']}, с переносом {rep['wrapped_links']}); "
              f"сирот {rep['orphans']}; меток {rep['placeholders']}; "
              f"дублей {rep['dup_real']} (+{rep['dup_stubs']} заглушек); почти-дублей {rep['near_dups']}; "
              f"вне MOC {rep['moc_missing']}; изменено за 7 дн. {rep['fresh_7d']}"]

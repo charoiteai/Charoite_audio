@@ -55,6 +55,7 @@ import safe_write  # noqa: E402
 import cloud  # noqa: E402
 import file_locks  # noqa: E402
 import graph_updater
+import graph_links  # noqa: E402
 import review_bridge  # noqa: E402
 import privacy  # noqa: E402
 
@@ -490,6 +491,7 @@ class Verdict:
     removed: list[str] = dataclasses.field(default_factory=list)    # служебная зона → в карантин
     deleted: list[str] = dataclasses.field(default_factory=list)    # облако стёрло — в графе оставлено
     failed: list[str] = dataclasses.field(default_factory=list)     # перенос не смог (OSError)
+    unlinked: list[str] = dataclasses.field(default_factory=list)   # «файл: цели» — ссылки без узла, ставшие текстом
     rolled_back: bool = False        # ответ невалиден — откачено всё
 
     @property
@@ -556,6 +558,26 @@ def edits_in_copy(before: dict[str, str], copy: pathlib.Path) -> list[pathlib.Pa
     return [pathlib.Path(r) for r in sorted(set(rels))]
 
 
+def _journal_unlinked(name: str, gone: list[str]) -> None:
+    """Снятые цели — в журнал `logs/graph_unlinked.log` корня данных: цель,
+    которую модель пишет второй месяц («Kwen 32B»), должна всплыть как
+    кандидат на узел или алиас, а не раствориться в логе прогона (GLM r2,
+    критика 1). Сбой записи журнала перенос не останавливает."""
+    try:
+        log = graph_updater.ROOT / "logs" / "graph_unlinked.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        # ротация: журнал растёт с каждым прогоном (DS r3 M2) — старше
+        # полумегабайта уезжает в .old, одно поколение
+        if log.exists() and log.stat().st_size > 512 * 1024:
+            log.replace(log.with_suffix(".old"))
+        with log.open("a", encoding="utf-8") as fh:
+            stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+            for target in gone:
+                fh.write(f"{stamp}\t{name}\t{target}\n")
+    except OSError:
+        pass
+
+
 def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                     graph: pathlib.Path, qdir: pathlib.Path,
                     *, backup: pathlib.Path, valid: bool) -> Verdict:
@@ -594,6 +616,25 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
     v = Verdict(rolled_back=not valid)
     edits = edits_in_copy(before, copy)
     v.touched = len(edits)
+    # Цели ссылок облака сверяются с песочницей (снимок графа плюс узлы,
+    # которые облако создало в этом же прогоне): `[[Понятие]]` без узла,
+    # «Kwen 32B» при узле с другим написанием, местоимение — ложились в граф
+    # битыми, и это был единственный открытый канал таких ссылок после
+    # гейтов конвейера (GLM Critical 1, аудит памяти 07.09). Ссылка без
+    # цели становится текстом, а не карантином: правка облака ценна сама по
+    # себе, мёртвая ссылка — нет.
+    # Резолвер — по ЖИВОМУ графу (узлы, заведённые конвейером после снимка,
+    # тоже цели) плюс правки самой копии (узлы, созданные облаком в этом же
+    # прогоне); снимок сам по себе устаревает за время работы облака.
+    resolver = graph_links.LinkResolver(graph) if valid and edits else None   # без правок граф не читаем (GLM r2 I2)
+    if resolver is not None:
+        for rel in edits:
+            cpath = copy / rel
+            if cpath.is_file():
+                try:
+                    resolver.add(graph / rel, _read(cpath))
+                except (OSError, ValueError):
+                    continue
     pending_stubs: list[tuple] = []       # заглушки-редиректы — после канона
     for rel in edits:
         cpath, gpath = copy / rel, graph / rel
@@ -666,8 +707,15 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 continue
             # переносы строк внутри [[…]] — стиль CLI при правке, для Obsidian
             # ссылка мертва; чиним в единственной точке входа (Sonnet 28.08)
-            safe_write.write_text(gpath, graph_updater.tidy_links(new))
+            new = graph_updater.tidy_links(new)
+            gone: list[str] = []
+            if resolver is not None:
+                new, gone = graph_links.unlink_unresolved(new, resolver)
+            safe_write.write_text(gpath, new)
             v.applied.append(name)
+            if gone:                              # журнал — после успешной записи (GLM r3 M2)
+                v.unlinked.append(f"{name}: {', '.join(gone)}")
+                _journal_unlinked(name, gone)
         except OSError:
             v.failed.append(name)
     for rel, cpath, gpath, name, target in pending_stubs:
@@ -1122,6 +1170,8 @@ def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:
     parts = [f"[cloud-review] правок облака: {v.touched}"]
     if v.applied:
         parts.append(f"перенесено в граф: {', '.join(v.applied)}")
+    if v.unlinked:
+        parts.append(f"ссылки без узла стали текстом: {'; '.join(v.unlinked)}")
     if v.conflicts:
         # Не авария, а нормальная развязка: конвейер писал в тот же файл,
         # пока облако думало. Живая работа осталась, версия облака — рядом.

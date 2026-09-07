@@ -1708,6 +1708,11 @@ def test_cloud_links_wrapped_over_lines_are_joined_on_transfer(tmp_path):
     body = "# Ядро\n## Статус\nРешено\n" + "".join(f"- факт {i}\n" for i in range(8))
     core = graph / "Ядра" / "Платёжный провайдер.md"
     core.write_text(body, encoding="utf-8")
+    # цели ссылок обязаны существовать: с 07.09 ссылка без узла становится текстом
+    (graph / "Системы").mkdir()
+    (graph / "Системы" / "Система 1593.md").write_text("# Система 1593\n", encoding="utf-8")
+    (graph / "Люди").mkdir()
+    (graph / "Люди" / "Иван Иванов.md").write_text("# Иван Иванов\n", encoding="utf-8")
 
     def worked(pen):
         (pen / "Ядра" / "Платёжный провайдер.md").write_text(
@@ -1719,3 +1724,35 @@ def test_cloud_links_wrapped_over_lines_are_joined_on_transfer(tmp_path):
     text = core.read_text(encoding="utf-8")
     assert "[[Системы/Система 1593|систему 1593]]" in text and "[[Люди/Иван Иванов]]" in text
     assert "\n  1593" not in text
+
+
+def test_cloud_links_without_a_node_become_text_on_transfer(tmp_path):
+    """Аудит памяти 07.09 (GLM Critical 1): облако писало `[[Понятие]]` без
+    узла, и заметка ложилась в граф с битой ссылкой — единственный открытый
+    канал после гейтов конвейера. Цель ищется в живом графе и среди узлов,
+    которые облако создало в этом же прогоне; остальное — текст, с логом."""
+    graph = _graph(tmp_path)
+    (graph / "Люди").mkdir()
+    (graph / "Люди" / "Иван Иванов.md").write_text(
+        "---\naliases: [Ваня]\n---\n# Иван Иванов\n", encoding="utf-8")
+    body = "# Ядро\n## Статус\nРешено\n" + "".join(f"- факт {i}\n" for i in range(8))
+    core = graph / "Ядра" / "Платёжный провайдер.md"
+    core.write_text(body, encoding="utf-8")
+
+    def worked(pen):
+        (pen / "Системы").mkdir()
+        (pen / "Системы" / "Новая витрина.md").write_text("# Новая витрина\n", encoding="utf-8")
+        (pen / "Ядра" / "Платёжный провайдер.md").write_text(
+            body + "- [[Люди/Иван Иванов]] и [[Ваня]] про [[Системы/Новая витрина]], "
+                   "[[Kwen 32B]] и [[Перенос на завтра|перенос]];\n```\n[[в коде]]\n```\n",
+            encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, worked)
+    text = core.read_text(encoding="utf-8")
+    assert "[[Люди/Иван Иванов]]" in text and "[[Ваня]]" in text, "узел и его псевдоним — живые цели"
+    assert "[[Системы/Новая витрина]]" in text, "узел, созданный облаком в этом же прогоне, — живая цель"
+    assert "Kwen 32B" in text and "[[Kwen 32B]]" not in text
+    assert " перенос;" in text and "[[Перенос на завтра" not in text
+    assert "[[в коде]]" in text, "внутри огороженного блока кода ссылки не трогаются"
+    assert v.unlinked == ["Ядра/Платёжный провайдер.md: Kwen 32B, Перенос на завтра"], v.unlinked
+    assert "ссылки без узла стали текстом" in cloud_review._verdict_line(v, tmp_path / "q")

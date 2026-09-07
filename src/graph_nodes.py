@@ -21,6 +21,7 @@ import re
 import threading
 
 import frontmatter
+import graph_names
 import redirects
 
 # Папки узлов: русские — боевой конвейер, английские — демо-граф продукта.
@@ -238,6 +239,8 @@ class NodeIndex:
             return self._nodes.get(p)   # файл переписывается прямо сейчас
         if redirects.is_merged(text):
             return None                 # заглушка после слияния — не узел (хвост 20.08, GLM)
+        if folder == "Люди" and graph_names.is_placeholder_node(p.stem):
+            return None                 # «Собеседник 3» — склейка разных людей, не подсказка (GLM I6, 07.09)
         name = p.stem
         # один разбор шапки на конвейер и поиск (frontmatter.py, #451)
         aliases = [tuple(stem(t) for t in tokens(a)) for a in frontmatter.aliases(text, p.name)]
