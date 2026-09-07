@@ -55,6 +55,7 @@ import safe_write  # noqa: E402
 import cloud  # noqa: E402
 import file_locks  # noqa: E402
 import graph_updater
+import graph_links  # noqa: E402
 import review_bridge  # noqa: E402
 import privacy  # noqa: E402
 
@@ -490,6 +491,7 @@ class Verdict:
     removed: list[str] = dataclasses.field(default_factory=list)    # служебная зона → в карантин
     deleted: list[str] = dataclasses.field(default_factory=list)    # облако стёрло — в графе оставлено
     failed: list[str] = dataclasses.field(default_factory=list)     # перенос не смог (OSError)
+    unlinked: list[str] = dataclasses.field(default_factory=list)   # «файл: цели» — ссылки без узла, ставшие текстом
     rolled_back: bool = False        # ответ невалиден — откачено всё
 
     @property
@@ -594,6 +596,25 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
     v = Verdict(rolled_back=not valid)
     edits = edits_in_copy(before, copy)
     v.touched = len(edits)
+    # Цели ссылок облака сверяются с песочницей (снимок графа плюс узлы,
+    # которые облако создало в этом же прогоне): `[[Понятие]]` без узла,
+    # «Kwen 32B» при узле с другим написанием, местоимение — ложились в граф
+    # битыми, и это был единственный открытый канал таких ссылок после
+    # гейтов конвейера (GLM Critical 1, аудит памяти 07.09). Ссылка без
+    # цели становится текстом, а не карантином: правка облака ценна сама по
+    # себе, мёртвая ссылка — нет.
+    # Резолвер — по ЖИВОМУ графу (узлы, заведённые конвейером после снимка,
+    # тоже цели) плюс правки самой копии (узлы, созданные облаком в этом же
+    # прогоне); снимок сам по себе устаревает за время работы облака.
+    resolver = graph_links.LinkResolver(graph) if valid else None
+    if resolver is not None:
+        for rel in edits:
+            cpath = copy / rel
+            if cpath.is_file():
+                try:
+                    resolver.add(graph / rel, _read(cpath))
+                except (OSError, ValueError):
+                    continue
     pending_stubs: list[tuple] = []       # заглушки-редиректы — после канона
     for rel in edits:
         cpath, gpath = copy / rel, graph / rel
@@ -666,7 +687,12 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 continue
             # переносы строк внутри [[…]] — стиль CLI при правке, для Obsidian
             # ссылка мертва; чиним в единственной точке входа (Sonnet 28.08)
-            safe_write.write_text(gpath, graph_updater.tidy_links(new))
+            new = graph_updater.tidy_links(new)
+            if resolver is not None:
+                new, gone = graph_links.unlink_unresolved(new, resolver)
+                if gone:
+                    v.unlinked.append(f"{name}: {', '.join(gone)}")
+            safe_write.write_text(gpath, new)
             v.applied.append(name)
         except OSError:
             v.failed.append(name)
@@ -1122,6 +1148,8 @@ def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:
     parts = [f"[cloud-review] правок облака: {v.touched}"]
     if v.applied:
         parts.append(f"перенесено в граф: {', '.join(v.applied)}")
+    if v.unlinked:
+        parts.append(f"ссылки без узла стали текстом: {'; '.join(v.unlinked)}")
     if v.conflicts:
         # Не авария, а нормальная развязка: конвейер писал в тот же файл,
         # пока облако думало. Живая работа осталась, версия облака — рядом.

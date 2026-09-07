@@ -336,58 +336,13 @@ def _extract(cfg: dict, transcript: str, project_rule: str = "") -> dict | None:
         return None
 
 
-def safe_name(name: str) -> str:
-    """Имя узла графа: безопасное и для файловой системы, и для вики-ссылок.
-
-    Раньше вырезались только запрещённые в именах файлов символы, а из имени
-    строится `[[Папка/Имя|Имя]]`. Сущность «Витрина [v2]» давала ссылку,
-    которую Obsidian закрывал на первом `]]` — узел оставался несвязанным;
-    `#` уводил ссылку на заголовок, `^` — на блок. Отдельно: имя, схлопнутое
-    в пустоту, давало скрытый файл «.md» и ломало поиск канонического узла
-    (пустая строка входит в любую).
-    """
-    s = re.sub(r'[/\\:*?"<>|\[\]#^]', "-", name)
-    s = re.sub(r"\s+", " ", s).strip(" .-")[:60]
-    return s or "без имени"
-
-
-_PLACEHOLDER_RE = re.compile(
-    r"^(?:собеседник|участник|спикер|speaker|participant|发言人|参会者)(?: ?[\d一二三四五六七八九十]+)?$")
-
-
-def is_speaker_placeholder(name: str) -> bool:
-    """«Собеседник 3», «Speaker 2» — метка диаризации, а не человек.
-
-    Узел на такую метку склеивал разных людей из разных встреч в одного:
-    «Собеседник 3» встречи А и «Собеседник 3» встречи Б — один файл в Люди
-    с сотней входящих ссылок (аудит графа 28.08: 17 таких узлов, у трёх по
-    135–141 ссылки). Метка живёт в заметке встречи текстом и подписывает
-    цитаты из стенограммы; узла и ссылки на него не получает.
-    """
-    # По ключу имени: «Собеседник-3», «Собеседник №3», «Собеседник 3,» и
-    # «Собеседник 3 (муж)» — та же метка; иначе она вливалась через name_key
-    # в старый узел-склейщик (DS, круг-1 по #448 I4).
-    bare = re.sub(r"\s*[(（].*?[)）]\s*$", "", safe_name(name))
-    return bool(_PLACEHOLDER_RE.match(name_key(re.sub(r"[№#]", " ", bare))))
-
-
-def is_placeholder_node(stem: str) -> bool:
-    """Узел в Люди — метка диаризации? «Собеседник 3», «Speaker 2 (муж)»,
-    «Собеседник 1 (Саша)» — да: облако дописывало имя в скобках, но узел
-    остаётся склейкой разных людей. Одно правило для doctor и миграции."""
-    bare = re.sub(r"\s*[(（].*?[)）]\s*$", "", stem)
-    if is_speaker_placeholder(bare):
-        return True
-    m = re.search(r"[(（]([^()（）]*)[)）]\s*$", stem)
-    return bool(m) and is_speaker_placeholder(m.group(1))   # один набор меток, что и для целого имени (luna I5)
-
-
-def name_key(name: str) -> str:
-    """Ключ сравнения имён узлов: регистр, пунктуация, скобки, дефис и
-    подчёркивание людей не различают — «Иван (Иванов)» и «Иван Иванов»,
-    «ИИ-агент» и «ИИ_агент», «Реестр 385 130» и «Реестр 385-130» жили в графе
-    четырьмя парами узлов (аудит 28.08)."""
-    return " ".join(re.sub(r"[\W_]+", " ", name, flags=re.UNICODE).casefold().split())
+# Имена узлов, ключи сравнения и метки диаризации живут в graph_names —
+# лёгком модуле без requests/llm, который импортируют демон, doctor и
+# уборка ссылок; здесь — те же имена для прежних вызывающих и тестов.
+from graph_names import (  # noqa: E402,F401
+    _PLACEHOLDER_RE, bag_key, is_placeholder_node, is_speaker_placeholder,
+    name_key, safe_name, strip_speaker_label,
+)
 
 
 _LINK_WS_RE = re.compile(r"\[\[([^\]]*?)\]\]", re.S)
@@ -626,7 +581,7 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
 
 
 ENT_FOLDER = {"система": "Системы", "команда": "Команды", "проект": "Системы",
-              "документ": "Системы"}
+              "документ": "Системы", "модель": "Модели"}   # «модель» шла в Системы мимо живой Модели/ (GLM I5, 07.09)
 
 
 def canon_link(graph: pathlib.Path, name: str, default_folder: str | None = None) -> str:
@@ -648,7 +603,10 @@ def canon_link(graph: pathlib.Path, name: str, default_folder: str | None = None
 
 _PRONOUNS = {"он", "она", "оно", "они", "это", "этот", "эта", "то", "тот", "та", "те",
              "там", "тут", "здесь", "мы", "вы", "я", "ты", "все", "всё", "кто", "что",
-             "he", "she", "it", "they", "this", "that", "we", "you"}
+             # косвенные падежи — из ответа модели приходят так же часто (GLM M9 / DS M, 07.09)
+             "его", "её", "ее", "их", "ему", "ей", "им", "нему", "ним", "них", "ней",
+             "нам", "вам", "мне", "тебе", "себя", "сам", "сама", "сами", "кого", "чего",
+             "he", "she", "it", "they", "this", "that", "we", "you", "him", "her", "them"}
 
 
 def link_or_text(graph: pathlib.Path, name: str) -> str:
@@ -675,7 +633,30 @@ def find_canonical(graph: pathlib.Path, name: str,
     кандидатов отдаём наружу через `ambiguous`, чтобы связь не потерялась совсем:
     в графе накопилось 22 таких случая, и человек размазывался по трём узлам без
     единого намёка, что они могут быть об одном и том же.
+
+    Найденная заглушка-редиректа после слияния («# Иван → [[Люди/Иван Петров]]»)
+    ведёт к канону: по точному имени проход 1 находил именно заглушку, и
+    `upsert_entity` дописывал встречу в мёртвый файл (DS F3, аудит памяти 07.09);
+    для Ядер то же давно делает `resolve_core_path`. Канон заглушки исчез — узла нет.
     """
+    p = _find_canonical_raw(graph, name, ambiguous, folder)
+    if p is None:
+        return None
+    try:
+        text = p.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return p
+    if not redirects.is_merged(text):
+        return p
+    target = redirects.stub_target(text)
+    canon = (graph / target) if target else None
+    return canon if canon is not None and canon.is_file() and not redirects.is_merged(
+        canon.read_text(encoding="utf-8", errors="replace")) else None
+
+
+def _find_canonical_raw(graph: pathlib.Path, name: str,
+                        ambiguous: list[str] | None,
+                        folder: str | None) -> pathlib.Path | None:
     n = safe_name(name).casefold()
     key = name_key(name)
     places = ("Люди", "Команды", "Системы", "Модели", "Блокеры", "Ядра")
@@ -690,6 +671,7 @@ def find_canonical(graph: pathlib.Path, name: str,
     # 2) ключ без пунктуации/скобок/дефисов — только в целевой папке записи
     #    и только если кандидат один: «ИИ-агент» в Людях и «ИИ_агент» в
     #    Системах — не один узел (DS I1); два кандидата — не гадаем
+    keyed: list[pathlib.Path] = []
     if key:
         keyed = [f for f in files if name_key(f.stem) == key
                  and (folder is None or f.parent.name == folder)]
@@ -697,6 +679,19 @@ def find_canonical(graph: pathlib.Path, name: str,
             return keyed[0]
         if keyed and ambiguous is not None:
             ambiguous.extend(f.stem for f in keyed)
+    # 2а) те же слова в другом порядке — только люди и только многословные
+    #     имена: модель отдаёт «Иван Петров» при узле «Петров Иван», и
+    #     конвейер заводил второго человека, а doctor дубля не видел (GLM
+    #     Critical / DS F1, аудит памяти 07.09). Два кандидата — не гадаем.
+    #     Ключ-равные узлы в разных папках проход 2 уже назвал неоднозначными
+    #     — порядок слов их не разводит, поэтому только при пустом `keyed`.
+    if key and not keyed and " " in key and folder in (None, "Люди"):
+        bag = bag_key(name)
+        bagged = [f for f in files if f.parent.name == "Люди" and bag_key(f.stem) == bag]
+        if len(bagged) == 1:
+            return bagged[0]
+        if bagged and ambiguous is not None:
+            ambiguous.extend(f.stem for f in bagged)
     # 2b) псевдоним из шапки узла (`aliases:`) — по ключу имени, ПОСЛЕ ключа
     #     в целевой папке и только в ней, если папка задана: тип записи уже
     #     сказал «это система», и человек с псевдонимом «ИС 1494» не должен
@@ -1452,6 +1447,14 @@ def main():
     # а не валим весь прогон (KeyError на часовой встрече 17.07)
     raw_people = [p for p in (data.get("люди") or []) if isinstance(p, dict) and p.get("имя")
                   and p["имя"].strip() != "—"]
+    # «Саша (Спикер 1)» — метка диаризации у настоящего имени: имя остаётся,
+    # метка нет; иначе узел «Саша (Спикер 1)» склеивал людей как до №125
+    # (GLM Critical 3, 07.09). То же для сущностей.
+    for p in raw_people:
+        p["имя"] = strip_speaker_label(str(p["имя"]).strip())
+    for e in (data.get("сущности") or []):
+        if isinstance(e, dict) and e.get("имя"):
+            e["имя"] = strip_speaker_label(str(e["имя"]).strip())
     # Метки диаризации («Собеседник 3», «Speaker 2») — не люди: узла и
     # ссылки не получают, иначе разные люди разных встреч склеиваются в один
     # файл (аудит 28.08). В заметке встречи остаются текстом, в speakers идут —

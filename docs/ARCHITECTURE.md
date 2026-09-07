@@ -331,6 +331,25 @@ separators — «Project Alpha» and «Project_Alpha» are one graph, not two. A
 graph is created only for a clearly non-work topic; on a work meeting that is
 a mis-pick, so the log records which graphs were known at the time.
 
+**Graph hygiene as memory (memory audit, 07.09).** One resolver,
+`src/graph_links.py`, decides whether a `[[link]]` is alive for the
+nightly doctor, the cloud review and clean-ups alike: full path, note
+name, an `aliases:` entry from the node header (as Obsidian does), or an
+attachment on disk. `scripts/graph_doctor.py` reports broken links
+separately for active folders and for `Встречи-архив`, which the
+pipeline never re-reads; the warning threshold applies to active links
+only, and near-duplicates are also found across word order («Иван
+Петров» / «Петров Иван»). The pipeline folds word order for people,
+resolves the instrumental case («с Сашей») the way it resolves the
+vocative, strips a diarization label glued to a real name («Саша
+(Speaker 1)») and follows a redirect stub to its canon instead of
+appending a meeting into the stub. When the cloud review's edits are
+carried from the sandbox into the graph, every link target is checked
+against the sandbox itself: a link to a node that exists neither in the
+snapshot nor among the nodes this run created becomes plain text, and the
+log names the file and the targets — before this, such links landed in
+the graph broken.
+
 ## Dossiers: a floor between search and the graph
 
 Asked "so where does this topic stand", search returns a dozen scattered
