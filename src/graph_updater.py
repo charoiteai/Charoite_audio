@@ -643,6 +643,20 @@ def find_canonical(graph: pathlib.Path, name: str,
     return follow_stubs(graph, p) if p is not None else None
 
 
+def _journal_graph_event(kind: str, what: str, meeting_link: str) -> None:
+    """`logs/graph_unlinked.log` корня данных — общий журнал решений «не
+    писать»: снятые ссылки облака и пропуски записи в заглушки (DS r3 I1,
+    GLM r3 критика 2). Сбой журнала запись в граф не останавливает."""
+    try:
+        log = ROOT / "logs" / "graph_unlinked.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        import datetime as _dt
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(f"{_dt.datetime.now():%Y-%m-%d %H:%M}\t{meeting_link}\t{kind}: {what}\n")
+    except OSError:
+        pass
+
+
 def follow_stubs(graph: pathlib.Path, p: pathlib.Path) -> pathlib.Path | None:
     """Живой узел за цепочкой заглушек-редиректов или None, если цепочка
     обрывается. Цепочка A→B→C — обычное дело за месяц слияний, один хоп
@@ -661,9 +675,9 @@ def follow_stubs(graph: pathlib.Path, p: pathlib.Path) -> pathlib.Path | None:
         target = redirects.stub_target(text)
         if not target:
             return None
-        cands = [graph / target]
-        if "/" not in target:
-            cands.append(p.parent / target)
+        # голое имя — сначала рядом с заглушкой (дубль и канон лежат вместе),
+        # потом от корня: корневой черновик-тёзка уводил встречу из папки (GLM r3 M1)
+        cands = [p.parent / target, graph / target] if "/" not in target else [graph / target]
         p = next((c for c in cands if c.is_file()), None)
     return None
 
@@ -869,10 +883,30 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
     if p.exists():
         text = p.read_text(encoding="utf-8")
         if redirects.is_merged(text):
-            # канон не нашёлся (цепочка заглушек оборвана), а файл с этим
-            # именем — заглушка: встречу в мёртвый файл не пишем (DS r2 B1)
-            print(f"граф: «{p.stem}» — заглушка без живого канона, встреча {meeting_link} не дописана")
-            return
+            # Канон не нашёлся (цепочка заглушек оборвана), а файл с этим
+            # именем — заглушка. В мёртвый файл не пишем (DS r2 B1); узел
+            # заводим ПО ЦЕЛИ заглушки — слияние сказало «этот человек
+            # теперь там», и имя заглушки иначе навсегда закрывает ветку
+            # «создать» (DS r3 I1). Событие — в журнал, не только в stdout.
+            target = redirects.stub_target(text)
+            leaf = pathlib.PurePosixPath(target).name if target else ""
+            alt = (graph / target) if target and "/" in target else (graph / folder / leaf if leaf else None)
+            if alt is None or alt == p or (alt.exists() and redirects.is_merged(alt.read_text(encoding="utf-8", errors="replace"))):
+                _journal_graph_event("заглушка без канона", f"{p.parent.name}/{p.stem}", meeting_link)
+                print(f"граф: «{p.stem}» — заглушка без живого канона, встреча {meeting_link} не дописана")
+                return
+            _journal_graph_event("узел по цели заглушки", f"{p.parent.name}/{p.stem} → {alt.parent.name}/{alt.stem}", meeting_link)
+            p = alt
+            if not p.exists():
+                p.parent.mkdir(parents=True, exist_ok=True)
+                safe_write.write_text(
+                    p,
+                    f"---\ntype: {typ}\ntags: [встречи, авто]\n---\n# {p.stem}\n{desc}\n\n"
+                    + (f"_(последнее упоминание: {day})_\n\n" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else "")
+                    + f"## Встречи\n{stamp}\n",
+                )
+                return
+            text = p.read_text(encoding="utf-8")
         if has_link(text, meeting_link):
             return
         if "## Встречи" in text:

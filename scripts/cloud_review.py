@@ -566,6 +566,10 @@ def _journal_unlinked(name: str, gone: list[str]) -> None:
     try:
         log = graph_updater.ROOT / "logs" / "graph_unlinked.log"
         log.parent.mkdir(parents=True, exist_ok=True)
+        # ротация: журнал растёт с каждым прогоном (DS r3 M2) — старше
+        # полумегабайта уезжает в .old, одно поколение
+        if log.exists() and log.stat().st_size > 512 * 1024:
+            log.replace(log.with_suffix(".old"))
         with log.open("a", encoding="utf-8") as fh:
             stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
             for target in gone:
@@ -704,13 +708,14 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
             # переносы строк внутри [[…]] — стиль CLI при правке, для Obsidian
             # ссылка мертва; чиним в единственной точке входа (Sonnet 28.08)
             new = graph_updater.tidy_links(new)
+            gone: list[str] = []
             if resolver is not None:
                 new, gone = graph_links.unlink_unresolved(new, resolver)
-                if gone:
-                    v.unlinked.append(f"{name}: {', '.join(gone)}")
-                    _journal_unlinked(name, gone)
             safe_write.write_text(gpath, new)
             v.applied.append(name)
+            if gone:                              # журнал — после успешной записи (GLM r3 M2)
+                v.unlinked.append(f"{name}: {', '.join(gone)}")
+                _journal_unlinked(name, gone)
         except OSError:
             v.failed.append(name)
     for rel, cpath, gpath, name, target in pending_stubs:

@@ -136,9 +136,16 @@ def test_canonical_walks_stub_chains_and_bare_targets_and_never_writes_into_a_st
     (people / "Кольцо2.md").write_text("# Кольцо2 → [[Люди/Кольцо]]\n", encoding="utf-8")
     assert g.find_canonical(graph, "Кольцо") is None, "кольцо редиректов — обрыв"
     (people / "Мёртвая.md").write_text("# Мёртвая → [[Люди/Нет такой]]\n", encoding="utf-8")
-    g.upsert_entity(graph, "Люди", "Мёртвая", "person", "", "Встречи/2026-09-07_1000", "")
+    g.upsert_entity(graph, "Люди", "Мёртвая", "person", "аналитик", "Встречи/2026-09-07_1000", "")
     assert "2026-09-07" not in (people / "Мёртвая.md").read_text(encoding="utf-8"), "встреча дописана в заглушку"
-    assert not (people / "Мёртвая (1).md").exists()
+    # узел заведён ПО ЦЕЛИ заглушки: слияние сказало «этот человек теперь там» (DS r3 I1)
+    born = people / "Нет такой.md"
+    assert born.exists() and "2026-09-07_1000" in born.read_text(encoding="utf-8") and "аналитик" in born.read_text(encoding="utf-8")
+    g.upsert_entity(graph, "Люди", "Мёртвая", "person", "", "Встречи/2026-09-08_1000", "")
+    assert born.read_text(encoding="utf-8").count("## Встречи") == 1 and "2026-09-08" in born.read_text(encoding="utf-8")
+    # голая цель заглушки: сосед по папке важнее корневого тёзки (GLM r3 M1)
+    (graph / "Петров Иван.md").write_text("# черновик в корне\n", encoding="utf-8")
+    assert g.find_canonical(graph, "Оля") == people / "Петров Иван.md"
 
 
 def test_instrumental_rules_do_not_glue_nominative_names(tmp_path):
@@ -146,6 +153,8 @@ def test_instrumental_rules_do_not_glue_nominative_names(tmp_path):
     «Андреем» → «Андрей»."""
     assert nominative_candidates("Алексей") == ()
     assert nominative_candidates("Сергей") == ()
+    assert nominative_candidates("Марией") == ("Мария",) and nominative_candidates("Юлией") == ("Юлия",)
+    assert nominative_candidates("Гришей") == (), "принятая цена гейта: длинные формы не на «-ия»"
     assert "Андрей" in nominative_candidates("Андреем")
     assert "Сергей" in nominative_candidates("Сергеем")
     graph = _graph(tmp_path)
