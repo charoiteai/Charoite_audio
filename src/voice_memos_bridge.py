@@ -10,7 +10,9 @@ Apple и разборы 2025–2026): у Диктофона в Быстрых к
 записи лежат обычными `.m4a` в контейнере
 `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings`.
 Эта папка — единственная точка автоматизации, и её нельзя трогать: на macOS
-26.1 переименование или перенос файла ломает запись в приложении. Поэтому
+26.1 переименование или перенос файла ломает запись в приложении. Папка
+закрыта TCC: читать её может только процесс с «Полным доступом к диску» —
+сканер импорта запускает приложение, значит доступ выдаётся Чароиту. Поэтому
 мост только копирует новые файлы в папку импорта, а дальше работает штатный
 конвейер импорта (`scripts/import_meeting.py --scan`), как для записи с
 телефона или перетащенного файла.
@@ -42,6 +44,10 @@ DEFAULT_DIR = "~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Reco
 STATE_NAME = "voice_memos_bridge.json"
 SETTLE_SECONDS = 60.0
 DEFAULT_MIN_SECONDS = 120.0
+DENIED_HINT_SECONDS = 6 * 3600.0     # подсказка про полный доступ к диску — не чаще раза в 6 часов
+DENIED_HINT = ("нет доступа к папке Диктофона: в Настройках → Конфиденциальность и "
+               "безопасность → Полный доступ к диску добавьте Чароит (сканер импорта "
+               "запускается от его имени) и перезапустите приложение")
 SUFFIXES = (".m4a",)
 _DURATION_RE = re.compile(r"estimated duration:\s*([\d.]+)\s*sec")
 
@@ -151,7 +157,27 @@ def bridge(cfg: dict | None, inbox: pathlib.Path, root: pathlib.Path, *,
     state = load_state(root)
     limit = min_seconds(cfg)
     changed = False
-    for f in sorted(src_dir.iterdir()):
+    try:
+        entries = sorted(src_dir.iterdir())
+    except PermissionError:
+        # Контейнер Диктофона закрыт TCC: без «Полного доступа к диску» у
+        # приложения stat папки проходит, а листинг — «Operation not
+        # permitted» (проверено на этом Mac 07.09). Не ошибка моста, а шаг
+        # настройки — подсказать, но не каждые две минуты.
+        last = state.get("_denied_at")
+        last = last if isinstance(last, (int, float)) else 0.0
+        summary["denied"] = (now - last) >= DENIED_HINT_SECONDS
+        if summary["denied"] and not dry:
+            state["_denied_at"] = now
+            try:
+                save_state(root, state)
+            except OSError:
+                pass
+        return summary
+    except OSError as e:
+        summary.setdefault("errors", []).append(f"{src_dir}: {e}")
+        return summary
+    for f in entries:
         try:
             if f.name.startswith(".") or f.is_symlink() or not f.is_file() or f.suffix.lower() not in SUFFIXES:
                 continue
@@ -204,6 +230,8 @@ def describe(summary: dict) -> str:
     """Одна строка для статуса приложения и лога."""
     if summary.get("source") is None:
         return ""
+    if summary.get("denied") is not None:
+        return ("Диктофон → импорт: " + DENIED_HINT) if summary["denied"] else ""
     parts = []
     if summary["copied"]:
         parts.append(f"скопировано {len(summary['copied'])}: {', '.join(summary['copied'])}")

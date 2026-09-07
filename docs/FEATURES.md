@@ -898,9 +898,12 @@ it signals degradation, it does not break the loop.
   pipeline as a file dropped on the “External recording” tab. Only files
   longer than two minutes (`audio.voice_memos_min_seconds`), unchanged for a
   minute (iCloud writes in chunks) and not seen before (journal
-  `logs/voice_memos_bridge.json`) are taken. Open Voice Memos on the Mac once
-  and enable it in iCloud; `audio.voice_memos_bridge: false` switches the
-  bridge off. There is no automation on the iPhone itself: Shortcuts has no
+  `logs/voice_memos_bridge.json`) are taken. One-time setup: open Voice Memos
+  on the Mac and enable it in iCloud, and grant Charoite “Full Disk Access”
+  (System Settings → Privacy & Security) — the Voice Memos container is
+  protected by the system, without it the scanner sees the folder but not its
+  files, and the bridge says so in the status line. `audio.voice_memos_bridge:
+  false` switches the bridge off. There is no automation on the iPhone itself: Shortcuts has no
   “export the recording file” action for Voice Memos (checked against Apple's
   iOS 26 documentation), so without Mac sync it stays “Share → Save to Files”
   into the import folder. Voice Memos survives the lock screen but stops on an

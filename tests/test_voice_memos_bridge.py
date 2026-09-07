@@ -82,3 +82,23 @@ def test_switches_off_by_config_and_without_the_folder(tmp_path, monkeypatch):
     assert vm.bridge(missing, inbox, root, now=10 ** 10)["source"] is None
     assert vm.describe(vm.bridge(missing, inbox, root, now=10 ** 10)) == ""
     assert vm.min_seconds({"audio": {"voice_memos_min_seconds": "abc"}}) == vm.DEFAULT_MIN_SECONDS
+
+
+def test_tcc_denied_folder_gives_one_hint_and_no_spam(tmp_path, monkeypatch):
+    """Контейнер Диктофона без полного доступа к диску: stat проходит, листинг —
+    «Operation not permitted». Мост подсказывает шаг настройки раз в 6 часов
+    и не считает это сбоем."""
+    _, inbox, root, cfg = _setup(tmp_path, monkeypatch, {})
+
+    def denied(self):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(pathlib.Path, "iterdir", denied)
+    t0 = 10 ** 9
+    first = vm.bridge(cfg, inbox, root, now=t0)
+    assert first["denied"] is True and "errors" not in first
+    assert "Полный доступ к диску" in vm.describe(first)
+    second = vm.bridge(cfg, inbox, root, now=t0 + 60)
+    assert second["denied"] is False and vm.describe(second) == ""
+    later = vm.bridge(cfg, inbox, root, now=t0 + vm.DENIED_HINT_SECONDS)
+    assert later["denied"] is True
