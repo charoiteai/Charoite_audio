@@ -640,18 +640,32 @@ def find_canonical(graph: pathlib.Path, name: str,
     для Ядер то же давно делает `resolve_core_path`. Канон заглушки исчез — узла нет.
     """
     p = _find_canonical_raw(graph, name, ambiguous, folder)
-    if p is None:
-        return None
-    try:
-        text = p.read_text(encoding="utf-8")
-    except (OSError, ValueError):
-        return p
-    if not redirects.is_merged(text):
-        return p
-    target = redirects.stub_target(text)
-    canon = (graph / target) if target else None
-    return canon if canon is not None and canon.is_file() and not redirects.is_merged(
-        canon.read_text(encoding="utf-8", errors="replace")) else None
+    return follow_stubs(graph, p) if p is not None else None
+
+
+def follow_stubs(graph: pathlib.Path, p: pathlib.Path) -> pathlib.Path | None:
+    """Живой узел за цепочкой заглушек-редиректов или None, если цепочка
+    обрывается. Цепочка A→B→C — обычное дело за месяц слияний, один хоп
+    возвращал встречу в мёртвую заглушку (GLM r2 Critical / DS r2 B1);
+    цель без папки («→ [[Петров Иван]]») ищется и от корня, и рядом с
+    заглушкой — как у `resolve_core_path`. Кольцо — обрыв."""
+    visited: set[pathlib.Path] = set()
+    while p is not None and p not in visited:
+        visited.add(p)
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            return p
+        if not redirects.is_merged(text):
+            return p
+        target = redirects.stub_target(text)
+        if not target:
+            return None
+        cands = [graph / target]
+        if "/" not in target:
+            cands.append(p.parent / target)
+        p = next((c for c in cands if c.is_file()), None)
+    return None
 
 
 def _find_canonical_raw(graph: pathlib.Path, name: str,
@@ -854,6 +868,11 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
     day = pathlib.PurePosixPath(meeting_link).name[:10]
     if p.exists():
         text = p.read_text(encoding="utf-8")
+        if redirects.is_merged(text):
+            # канон не нашёлся (цепочка заглушек оборвана), а файл с этим
+            # именем — заглушка: встречу в мёртвый файл не пишем (DS r2 B1)
+            print(f"граф: «{p.stem}» — заглушка без живого канона, встреча {meeting_link} не дописана")
+            return
         if has_link(text, meeting_link):
             return
         if "## Встречи" in text:
@@ -1450,6 +1469,10 @@ def main():
     # «Саша (Спикер 1)» — метка диаризации у настоящего имени: имя остаётся,
     # метка нет; иначе узел «Саша (Спикер 1)» склеивал людей как до №125
     # (GLM Critical 3, 07.09). То же для сущностей.
+    # исходные имена с меткой нужны подписи цитат: `_match_speaker` сверяет
+    # «Спикер 1» из стенограммы с известными именами по словам (GLM r2 I1)
+    labeled_names = {str(p["имя"]).strip() for p in raw_people
+                     if strip_speaker_label(str(p["имя"]).strip()) != str(p["имя"]).strip()}
     for p in raw_people:
         p["имя"] = strip_speaker_label(str(p["имя"]).strip())
     for e in (data.get("сущности") or []):
@@ -1508,6 +1531,7 @@ def main():
     # скобки снимаем ДО запятой (круг-5 по PR #438, GLM Minor 4). Парсер один
     # на фильтр фона и на speakers (DS I2 по #512).
     speakers |= header_participants(speech)
+    speakers |= labeled_names          # «Саша (Спикер 1)» — подпись цитат «Спикер 1» остаётся
     for c in cores:
         upsert_core(graph, c, meeting_link, stamp, speech, speakers)
     if cores:

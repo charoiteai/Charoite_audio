@@ -79,7 +79,7 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
                 wrapped += 1
             tgt = resolver.resolve(m.group(1))
             if tgt is None:
-                broken.append((rel[p], " ".join(m.group(1).split())))
+                broken.append((rel[p], " ".join(m.group(1).split()).rstrip("\\")))   # `Цель\|Текст` — без слэша (GLM r2 M3)
             elif tgt != p and not p.name.startswith("_"):
                 inbound[tgt] += 1                    # ссылка из указателя — не связь
         outbound[p] = n
@@ -111,11 +111,16 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
         if len(live) < 2:
             continue
         dup_real.append(sorted(rel[x] for x in live))
-    # почти-дубли: ключ без пунктуации и ключ без порядка слов — в одной папке
+    # почти-дубли: ключ без пунктуации — в любой папке; без порядка слов —
+    # только Люди, как и свёртка в find_canonical («Реестр Витрин» и
+    # «Витрин Реестр» у систем — разные вещи; DS r2 M2)
     near: dict[tuple[str, str], set[str]] = collections.defaultdict(set)
     for p in nodes:
         folder = rel[p].split("/", 1)[0]
-        for k in {graph_names.name_key(p.stem), graph_names.bag_key(p.stem)}:
+        keys = {graph_names.name_key(p.stem)}
+        if folder == "Люди":
+            keys.add(graph_names.bag_key(p.stem))
+        for k in keys:
             if k:
                 near[(folder, k)].add(p.stem)
     seen_groups: set[frozenset[str]] = set()

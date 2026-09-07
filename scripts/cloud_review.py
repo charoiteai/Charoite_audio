@@ -558,6 +558,22 @@ def edits_in_copy(before: dict[str, str], copy: pathlib.Path) -> list[pathlib.Pa
     return [pathlib.Path(r) for r in sorted(set(rels))]
 
 
+def _journal_unlinked(name: str, gone: list[str]) -> None:
+    """Снятые цели — в журнал `logs/graph_unlinked.log` корня данных: цель,
+    которую модель пишет второй месяц («Kwen 32B»), должна всплыть как
+    кандидат на узел или алиас, а не раствориться в логе прогона (GLM r2,
+    критика 1). Сбой записи журнала перенос не останавливает."""
+    try:
+        log = graph_updater.ROOT / "logs" / "graph_unlinked.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8") as fh:
+            stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+            for target in gone:
+                fh.write(f"{stamp}\t{name}\t{target}\n")
+    except OSError:
+        pass
+
+
 def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                     graph: pathlib.Path, qdir: pathlib.Path,
                     *, backup: pathlib.Path, valid: bool) -> Verdict:
@@ -606,7 +622,7 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
     # Резолвер — по ЖИВОМУ графу (узлы, заведённые конвейером после снимка,
     # тоже цели) плюс правки самой копии (узлы, созданные облаком в этом же
     # прогоне); снимок сам по себе устаревает за время работы облака.
-    resolver = graph_links.LinkResolver(graph) if valid else None
+    resolver = graph_links.LinkResolver(graph) if valid and edits else None   # без правок граф не читаем (GLM r2 I2)
     if resolver is not None:
         for rel in edits:
             cpath = copy / rel
@@ -692,6 +708,7 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 new, gone = graph_links.unlink_unresolved(new, resolver)
                 if gone:
                     v.unlinked.append(f"{name}: {', '.join(gone)}")
+                    _journal_unlinked(name, gone)
             safe_write.write_text(gpath, new)
             v.applied.append(name)
         except OSError:

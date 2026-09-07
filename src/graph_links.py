@@ -170,4 +170,4 @@ def unlink_unresolved(text: str, resolver: LinkResolver,
             out.append(line)
             continue
         out.append(line if fenced else FULL_LINK.sub(repl, line))
-    return "\n".join(out), gone
+    return "\n".join(out), list(dict.fromkeys(gone))   # одна цель — один раз в списке (GLM r2 M2)

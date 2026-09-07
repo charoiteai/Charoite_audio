@@ -121,3 +121,46 @@ def test_node_index_skips_placeholder_nodes(tmp_path):
     idx.refresh()
     names = {n.name for n in idx._nodes.values()}
     assert "Петров Иван" in names and "Собеседник 3" not in names
+
+
+def test_canonical_walks_stub_chains_and_bare_targets_and_never_writes_into_a_stub(tmp_path):
+    """Круг 2 (GLM Critical / DS B1): один хоп возвращал встречу в мёртвую
+    заглушку при цепочке A→B→C и при цели без папки; upsert в заглушку —
+    никогда."""
+    graph = _graph(tmp_path)
+    people = graph / "Люди"
+    (people / "Оля.md").write_text("# Оля → [[Люди/Петров]]\n", encoding="utf-8")
+    (people / "Петров.md").write_text("# Петров → [[Петров Иван]]\n\nДубль. Смерджен\n", encoding="utf-8")
+    assert g.find_canonical(graph, "Оля").name == "Петров Иван.md", "цепочка A→B→C и цель без папки"
+    (people / "Кольцо.md").write_text("# Кольцо → [[Люди/Кольцо2]]\n", encoding="utf-8")
+    (people / "Кольцо2.md").write_text("# Кольцо2 → [[Люди/Кольцо]]\n", encoding="utf-8")
+    assert g.find_canonical(graph, "Кольцо") is None, "кольцо редиректов — обрыв"
+    (people / "Мёртвая.md").write_text("# Мёртвая → [[Люди/Нет такой]]\n", encoding="utf-8")
+    g.upsert_entity(graph, "Люди", "Мёртвая", "person", "", "Встречи/2026-09-07_1000", "")
+    assert "2026-09-07" not in (people / "Мёртвая.md").read_text(encoding="utf-8"), "встреча дописана в заглушку"
+    assert not (people / "Мёртвая (1).md").exists()
+
+
+def test_instrumental_rules_do_not_glue_nominative_names(tmp_path):
+    """DS r2 B2/M1: «Алексей» — именительный, не творительный «-ей»;
+    «Андреем» → «Андрей»."""
+    assert nominative_candidates("Алексей") == ()
+    assert nominative_candidates("Сергей") == ()
+    assert "Андрей" in nominative_candidates("Андреем")
+    assert "Сергей" in nominative_candidates("Сергеем")
+    graph = _graph(tmp_path)
+    (graph / "Люди" / "Алекса.md").write_text("# Алекса\n", encoding="utf-8")
+    assert g.find_canonical(graph, "Алексей", folder="Люди") is None, "Алексей приклеился к Алексе"
+
+
+def test_unlink_reports_each_target_once_and_doctor_strips_table_backslash(tmp_path):
+    graph = _graph(tmp_path)
+    r = graph_links.LinkResolver(graph)
+    out, gone = graph_links.unlink_unresolved("[[Kwen 32B]] и снова [[Kwen 32B]]", r)
+    assert gone == ["Kwen 32B"] and "[[" not in out
+    (graph / "Встречи" / "2026-09-01_1000.md").write_text("| [[Kwen 32B\\|Kwen]] |\n", encoding="utf-8")
+    (graph / "Системы" / "Реестр Витрин.md").write_text("# Реестр Витрин\n", encoding="utf-8")
+    (graph / "Системы" / "Витрин Реестр.md").write_text("# Витрин Реестр\n", encoding="utf-8")
+    rep = graph_doctor.inspect(graph, examples=5)
+    assert rep["examples"]["broken"] == ["Встречи/2026-09-01_1000.md -> [[Kwen 32B]]"]
+    assert rep["near_dups"] == 0, "порядок слов у систем — не дубль (как в find_canonical)"

@@ -85,12 +85,19 @@ def nominative_candidates(name: str) -> tuple[str, ...]:
     # Склейка по-прежнему только при точном единственном совпадении с
     # известным человеком (GLM Critical 2, аудит памяти 07.09: ~50 битых
     # «Сашей/Ромой» в архиве — тот же механизм, что у звательного до №180).
-    if low.endswith("ей") and len(n) >= 4:
+    # «-ей» только у коротких форм (Сашей, Колей, Аней — ≤5 букв): длинные
+    # «Алексей», «Андрей», «Сергей» — именительный, и «Алексей» → «Алекса»
+    # склеил бы с чужим узлом (DS r2 B2); «Наташей» этим гейтом не ловится.
+    if low.endswith("ей") and 4 <= len(n) <= 5:
         return (n[:-2] + "я", n[:-2] + "а")
     if low.endswith("ой") and len(n) >= 4:
         return (n[:-2] + "а",)
     if low.endswith(("ом", "ем")) and len(n) >= 5:
-        return (n[:-2], n[:-2] + "ь")
+        base = n[:-2]
+        forms = [base, base + "ь"]
+        if base[-1:].casefold() == "е":
+            forms.append(base + "й")   # Андреем → Андрей, Сергеем → Сергей (DS r2 M1)
+        return tuple(forms)
     if last == "й":
         return (n[:-1] + "я",) if len(n) <= 4 else ()
     if len(n) > 5 or low.endswith(_SURNAME_TAILS):

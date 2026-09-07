@@ -345,9 +345,10 @@ vocative, strips a diarization label glued to a real name («Саша
 (Speaker 1)») and follows a redirect stub to its canon instead of
 appending a meeting into the stub. When the cloud review's edits are
 carried from the sandbox into the graph, every link target is checked
-against the sandbox itself: a link to a node that exists neither in the
-snapshot nor among the nodes this run created becomes plain text, and the
-log names the file and the targets — before this, such links landed in
+against the live graph and the nodes this run created: a link to a node
+that exists in neither becomes plain text, the log names the file and the
+targets, and the removed targets accumulate in `logs/graph_unlinked.log`
+as candidates for a node or an alias — before this, such links landed in
 the graph broken.
 
 ## Dossiers: a floor between search and the graph
