@@ -20,7 +20,7 @@ audio:
   # voice_memos_dir: ~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings
   # voice_memos_min_seconds: 120   # короче — голосовая заметка, не встреча
   # voice_memos_per_scan: 3        # самых свежих за скан — первый скан не льёт весь архив
-  # voice_memos_max_age_days: 14   # старше — архив Диктофона, мост его не трогает
+  # voice_memos_max_age_days: 14   # старше — архив Диктофона, мост его не трогает (потолок 29)
 
 stt:
   backend: gigaam         # gigaam (русский, быстрый) | parakeet | whisper

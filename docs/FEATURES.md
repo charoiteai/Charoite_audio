@@ -902,14 +902,18 @@ it signals degradation, it does not break the loop.
   on the Mac and enable it in iCloud, and grant Charoite “Full Disk Access”
   (System Settings → Privacy & Security) — the Voice Memos container is
   protected by the system, without it the scanner sees the folder but not its
-  files, and the bridge says so in the status line. The bridge is opt-in —
+  files, and the bridge says so in the status line. That grant is broad (the
+  whole home Library, not one folder) — the owner decides; without it the
+  bridge stays silent. The bridge is opt-in —
   `audio.voice_memos_bridge: true` (the Voice Memos library is personal; it
   must not flow into the pipeline without the owner's decision) — and takes
   at most three newest recordings per scan (`audio.voice_memos_per_scan`),
   no older than two weeks (`audio.voice_memos_max_age_days`): the first scan
   does not pour the whole library in, and a lost journal does not bring old
   recordings back. Files evicted by iCloud wait until they are downloaded; a
-  file afinfo cannot parse yet waits an hour. There is no automation on the iPhone itself: Shortcuts has no
+  file that still cannot be parsed after a day (sync broke off) is not sent
+  to the pipeline — the bridge names it in the status line and the owner
+  decides in Voice Memos. There is no automation on the iPhone itself: Shortcuts has no
   “export the recording file” action for Voice Memos (checked against Apple's
   iOS 26 documentation), so without Mac sync it stays “Share → Save to Files”
   into the import folder. Voice Memos survives the lock screen but stops on an

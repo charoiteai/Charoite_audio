@@ -56,8 +56,8 @@ def test_fresh_files_wait_for_the_sync_to_settle(tmp_path, monkeypatch):
     assert vm.bridge(cfg, inbox, root, now=f.stat().st_mtime + vm.SETTLE_SECONDS + 1)["copied"] == ["a.m4a"]
 
 
-def test_unknown_duration_is_copied_and_namesakes_get_a_stamp(tmp_path, monkeypatch):
-    src, inbox, root, cfg = _setup(tmp_path, monkeypatch, {"Новая запись 4.m4a": None})
+def test_namesake_of_other_size_gets_a_stamp_and_same_size_sidecar_is_skipped(tmp_path, monkeypatch):
+    src, inbox, root, cfg = _setup(tmp_path, monkeypatch, {"Новая запись 4.m4a": 600.0})
     f = src / "Новая запись 4.m4a"
     f.write_bytes(b"y" * 500)
     # в папке импорта уже есть тёзка другого размера (прошлый день) — копия со штампом
@@ -129,7 +129,8 @@ def test_archive_beyond_the_age_window_is_never_touched(tmp_path, monkeypatch):
 def test_per_scan_cap_takes_the_newest_and_queues_the_rest(tmp_path, monkeypatch):
     import os
     src, inbox, root, cfg = _setup(tmp_path, monkeypatch, {})
-    monkeypatch.setattr(vm, "duration_seconds", lambda p: 600.0)
+    parsed = []
+    monkeypatch.setattr(vm, "duration_seconds", lambda p: parsed.append(p.name) or 600.0)
     base = 10 ** 9
     for i in range(5):
         f = src / f"Запись {i}.m4a"
@@ -137,22 +138,26 @@ def test_per_scan_cap_takes_the_newest_and_queues_the_rest(tmp_path, monkeypatch
         os.utime(f, (base + i * 100, base + i * 100))
     out = vm.bridge(cfg, inbox, root, now=base + 3600)
     assert out["copied"] == ["Запись 4.m4a", "Запись 3.m4a", "Запись 2.m4a"] and out["queued"] == 2
+    assert parsed == ["Запись 4.m4a", "Запись 3.m4a", "Запись 2.m4a"], "очередь не платит за afinfo"
     again = vm.bridge(cfg, inbox, root, now=base + 3700)
     assert again["copied"] == ["Запись 1.m4a", "Запись 0.m4a"] and again["queued"] == 0
 
 
-def test_replacing_a_failed_namesake_drops_its_error_marker(tmp_path, monkeypatch):
-    """Сбойная тёзка в корне папки имя не держит; новая копия встаёт на её
-    место, а метка ошибки снимается — иначе скан не взял бы и новую."""
+def test_failed_namesake_waiting_for_retry_is_kept_and_the_new_copy_gets_a_stamp(tmp_path, monkeypatch):
+    """Сбойная тёзка с меткой ошибки ждёт «Повторить» — это могла быть другая
+    запись с тем же именем; мост её не затирает и метку не снимает, новая
+    копия встаёт под штампованным именем и уходит в скан (GLM r2)."""
     src, inbox, root, cfg = _setup(tmp_path, monkeypatch, {"Новая запись 4.m4a": 600.0})
     f = src / "Новая запись 4.m4a"
     f.write_bytes(b"full" * 100)
-    (inbox / "Новая запись 4.m4a").write_bytes(b"cut")
+    failed = inbox / "Новая запись 4.m4a"
+    failed.write_bytes(b"cut")
     marker = inbox / f".Новая запись 4.m4a{vm.ERROR_MARKER_SUFFIX}"
     marker.write_text("транскрибация не удалась", encoding="utf-8")
     out = vm.bridge(cfg, inbox, root, now=f.stat().st_mtime + 3600)
-    assert out["copied"] == ["Новая запись 4.m4a"]
-    assert (inbox / "Новая запись 4.m4a").read_bytes() == f.read_bytes() and not marker.exists()
+    assert len(out["copied"]) == 1 and out["copied"][0].startswith("Новая запись 4_20")
+    assert failed.read_bytes() == b"cut" and marker.exists()
+    assert (inbox / out["copied"][0]).read_bytes() == f.read_bytes()
 
 
 def test_symlink_namesake_in_inbox_does_not_count_as_imported(tmp_path, monkeypatch):
@@ -176,13 +181,26 @@ def test_unparsed_young_file_waits_and_dataless_placeholder_is_skipped(tmp_path,
     f = src / "a.m4a"
     f.write_bytes(b"x" * 64)
     t0 = f.stat().st_mtime
+    probes = []
+    monkeypatch.setattr(vm, "duration_seconds", lambda p: probes.append(p.name))
     assert vm.bridge(cfg, inbox, root, now=t0 + 600)["fresh"] == 1
-    assert vm.bridge(cfg, inbox, root, now=t0 + vm.UNPARSED_GRACE_SECONDS + 1)["copied"] == ["a.m4a"]
+    assert vm.bridge(cfg, inbox, root, now=t0 + 700)["fresh"] == 1 and probes == ["a.m4a"], "повторная проба не раньше чем через 10 минут"
+    assert vm.bridge(cfg, inbox, root, now=t0 + 600 + vm.REPROBE_SECONDS)["fresh"] == 1 and probes == ["a.m4a", "a.m4a"]
+    late = vm.bridge(cfg, inbox, root, now=t0 + vm.UNPARSED_GRACE_SECONDS + 1)
+    assert late["copied"] == [] and late["unparsed"] == ["a.m4a"] and "не докачались" in vm.describe(late)
+    assert not (inbox / "a.m4a").exists()
+    assert vm.bridge(cfg, inbox, root, now=t0 + vm.UNPARSED_GRACE_SECONDS + 2)["seen"] == 1
     real = os.stat(f)
     assert not vm.is_dataless(real)
     dataless = os.stat_result((real.st_mode, real.st_ino, real.st_dev, real.st_nlink, real.st_uid, real.st_gid,
                                real.st_size, real.st_atime, real.st_mtime, real.st_ctime), {"st_blocks": 0})
     assert vm.is_dataless(dataless)
+    # сквозь bridge(): выселенный файл не копируется и не журналится — докачается, возьмём
+    g = src / "b.m4a"
+    g.write_bytes(b"y" * 77)
+    monkeypatch.setattr(vm, "is_dataless", lambda st: st.st_size == 77)
+    out = vm.bridge(cfg, inbox, root, now=g.stat().st_mtime + 3600)
+    assert out["cloud"] == 1 and not (inbox / "b.m4a").exists() and "ещё в облаке" in vm.describe(out)
 
 
 def test_journal_drops_month_old_entries_and_leaves_no_temp(tmp_path):
@@ -192,3 +210,69 @@ def test_journal_drops_month_old_entries_and_leaves_no_temp(tmp_path):
                          "new|2|2": {"copied_to": "y", "at": now - 100}}, now=now)
     assert set(vm.load_state(root)) == {"new|2|2"}
     assert [p.name for p in (root / "logs").iterdir()] == [vm.STATE_NAME]
+
+
+def test_same_size_namesake_with_other_duration_is_a_different_recording(tmp_path, monkeypatch):
+    """Диктофон переиспользует имена; совпал и размер — сверяем длительность:
+    разошлась — это другая запись, копия под штампом (GLM r1 M3)."""
+    src, inbox, root, cfg = _setup(tmp_path, monkeypatch, {})
+    f = src / "Новая запись 4.m4a"
+    f.write_bytes(b"s" * 64)
+    (inbox / "done").mkdir()
+    (inbox / "done" / "Новая запись 4.m4a").write_bytes(b"d" * 64)
+    monkeypatch.setattr(vm, "duration_seconds", lambda p: 600.0 if p.parent == src else 300.0)
+    out = vm.bridge(cfg, inbox, root, now=f.stat().st_mtime + 3600)
+    assert len(out["copied"]) == 1 and out["copied"][0].startswith("Новая запись 4_20")
+    # та же длительность — та же запись, пропуск
+    g = src / "Новая запись 5.m4a"
+    g.write_bytes(b"s" * 64)
+    (inbox / "done" / "Новая запись 5.m4a").write_bytes(b"d" * 64)
+    monkeypatch.setattr(vm, "duration_seconds", lambda p: 600.0)
+    out2 = vm.bridge(cfg, inbox, root, now=g.stat().st_mtime + 3600)
+    assert out2["copied"] == [] and out2["seen"] >= 1
+    # старая копия не разбирается — не доказано, что та же: копия со штампом
+    h = src / "Новая запись 6.m4a"
+    h.write_bytes(b"s" * 64)
+    (inbox / "done" / "Новая запись 6.m4a").write_bytes(b"d" * 64)
+    monkeypatch.setattr(vm, "duration_seconds", lambda p: 600.0 if p.parent == src else None)
+    out3 = vm.bridge(cfg, inbox, root, now=h.stat().st_mtime + 3600)
+    assert len(out3["copied"]) == 1 and out3["copied"][0].startswith("Новая запись 6_20")
+
+
+def test_age_window_is_capped_below_journal_life_and_short_entries_follow_the_threshold(tmp_path, monkeypatch):
+    assert vm.max_age_seconds({"audio": {"voice_memos_max_age_days": 45}}) == (vm.STATE_KEEP_SECONDS / 86400 - 1) * 86400
+    assert vm.max_age_seconds({"audio": {"voice_memos_max_age_days": "x"}}) == vm.DEFAULT_MAX_AGE_DAYS * 86400
+    src, inbox, root, cfg = _setup(tmp_path, monkeypatch, {"Заметка.m4a": 90.0})
+    f = src / "Заметка.m4a"
+    f.write_bytes(b"n" * 10)
+    now = f.stat().st_mtime + 3600
+    assert vm.bridge(cfg, inbox, root, now=now)["short"] == 1
+    assert vm.bridge(cfg, inbox, root, now=now + 1)["seen"] == 1
+    lowered = {"audio": {**cfg["audio"], "voice_memos_min_seconds": 60}}
+    assert vm.bridge(lowered, inbox, root, now=now + 2)["copied"] == ["Заметка.m4a"], "порог понизили — переоценка"
+
+
+def test_age_window_from_config_is_honoured(tmp_path, monkeypatch):
+    import os
+    src, inbox, root, cfg = _setup(tmp_path, monkeypatch, {})
+    monkeypatch.setattr(vm, "duration_seconds", lambda p: 600.0)
+    f = src / "Позавчера.m4a"
+    f.write_bytes(b"x" * 10)
+    now = 10 ** 9
+    os.utime(f, (now - 2 * 86400, now - 2 * 86400))
+    narrow = {"audio": {**cfg["audio"], "voice_memos_max_age_days": 1}}
+    assert vm.bridge(narrow, inbox, root, now=now)["old"] == 1
+    assert vm.bridge(cfg, inbox, root, now=now)["copied"] == ["Позавчера.m4a"]
+
+
+def test_journal_merges_with_the_disk_instead_of_overwriting(tmp_path):
+    """Два пересекающихся скана: каждый сохраняет свои ключи, чужие не теряются."""
+    root = tmp_path / "data"
+    now = 10 ** 9
+    a = vm.load_state(root)
+    b = vm.load_state(root)
+    a["a|1|1"] = {"copied_to": "a", "at": now}
+    vm.save_state(root, a, now=now)
+    b["b|2|2"] = {"copied_to": "b", "at": now}
+    vm.save_state(root, b, now=now)
+    assert set(vm.load_state(root)) == {"a|1|1", "b|2|2"}
