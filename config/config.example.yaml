@@ -11,6 +11,12 @@ audio:
   record_keep_days: 2     # записи удаляются через N дней (приватность)
   import_keep_days: 2     # копии импортированных записей (done/ и аудио-Исходник в архиве) — через N дней после импорта (независимо от record_keep_days)
   # import_dir: ~/Charoite Inbox   # папка импорта для ретеншна из демона — в дополнение к папке, выбранной в приложении: демон чистит обе
+  # Мост из Диктофона (Voice Memos): записи, синхронизированные через iCloud на этот Mac,
+  # копируются (не переносятся) в папку импорта при каждом скане. Диктофон на Mac нужно
+  # открыть один раз и включить его в iCloud. По умолчанию включён и молчит, если папки нет.
+  # voice_memos_bridge: true
+  # voice_memos_dir: ~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings
+  # voice_memos_min_seconds: 120   # короче — голосовая заметка, не встреча
 
 stt:
   backend: gigaam         # gigaam (русский, быстрый) | parakeet | whisper

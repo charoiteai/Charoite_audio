@@ -1,0 +1,225 @@
+"""Мост из Диктофона (Voice Memos) в папку импорта: копия, никогда не перенос.
+
+Зачем. Компаньон на iPhone 07.09 останавливался трижды за собрание (20 мин,
+2 мин, 5 мин), а стандартный Диктофон писал без обрывов — владелец спросил,
+нельзя ли брать полную запись оттуда. Ресёрч 08.09 (официальные источники
+Apple и разборы 2025–2026): у Диктофона в Быстрых командах нет действия
+«отдать файл записи» и нет триггера «новая запись» — на телефоне без ручного
+«Поделиться → Сохранить в Файлы» не обойтись. Зато на Mac после включения
+синхронизации iCloud (приложение Диктофон на Mac нужно открыть хотя бы раз)
+записи лежат обычными `.m4a` в контейнере
+`~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings`.
+Эта папка — единственная точка автоматизации, и её нельзя трогать: на macOS
+26.1 переименование или перенос файла ломает запись в приложении. Поэтому
+мост только копирует новые файлы в папку импорта, а дальше работает штатный
+конвейер импорта (`scripts/import_meeting.py --scan`), как для записи с
+телефона или перетащенного файла.
+
+Что копируется: `.m4a`, лежащий без изменений не меньше минуты (синк iCloud
+дописывает файл кусками), длиннее `audio.voice_memos_min_seconds` (по
+умолчанию 120 с — короче обычно голосовая заметка, не встреча; длительность
+не определилась — копируем, потерять хуже, чем импортировать лишнее) и ещё
+не виденный по ключу «имя|размер|mtime» (журнал `logs/voice_memos_bridge.json`
+в корне данных). Копия идёт через скрытый `.<имя>.<uuid>.part` и атомарный
+rename — сканер импорта скрытые файлы не видит и не заберёт половину. mtime
+копии не сохраняется намеренно: дата встречи берётся из контейнера m4a
+(`media_meta.recorded_at`), а свежий mtime защищает `.part` от уборки
+«брошенных временных файлов» сканера.
+"""
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+
+DEFAULT_DIR = "~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings"
+STATE_NAME = "voice_memos_bridge.json"
+SETTLE_SECONDS = 60.0
+DEFAULT_MIN_SECONDS = 120.0
+SUFFIXES = (".m4a",)
+_DURATION_RE = re.compile(r"estimated duration:\s*([\d.]+)\s*sec")
+
+
+def audio_cfg(cfg: dict | None) -> dict:
+    return ((cfg or {}).get("audio") or {}) if isinstance(cfg, dict) else {}
+
+
+def enabled(cfg: dict | None) -> bool:
+    """`audio.voice_memos_bridge: false` выключает мост; по умолчанию он
+    включён и молчит, если папки Диктофона на Mac нет."""
+    return bool(audio_cfg(cfg).get("voice_memos_bridge", True))
+
+
+def source_dir(cfg: dict | None) -> pathlib.Path | None:
+    raw = audio_cfg(cfg).get("voice_memos_dir") or DEFAULT_DIR
+    p = pathlib.Path(str(raw)).expanduser()
+    return p if p.is_dir() else None
+
+
+def min_seconds(cfg: dict | None) -> float:
+    try:
+        return float(audio_cfg(cfg).get("voice_memos_min_seconds", DEFAULT_MIN_SECONDS))
+    except (TypeError, ValueError):
+        return DEFAULT_MIN_SECONDS
+
+
+def duration_seconds(path: pathlib.Path) -> float | None:
+    """Длительность по `afinfo` (штатный macOS); нет утилиты или не разобралось — None."""
+    try:
+        r = subprocess.run(["afinfo", str(path)], capture_output=True, text=True,
+                           timeout=20, stdin=subprocess.DEVNULL, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = _DURATION_RE.search(r.stdout or "")
+    return float(m.group(1)) if m else None
+
+
+def _state_path(root: pathlib.Path) -> pathlib.Path:
+    return root / "logs" / STATE_NAME
+
+
+def load_state(root: pathlib.Path) -> dict:
+    try:
+        data = json.loads(_state_path(root).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(root: pathlib.Path, state: dict) -> None:
+    p = _state_path(root)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(p)
+
+
+def file_key(path: pathlib.Path, st: os.stat_result) -> str:
+    return f"{path.name}|{st.st_size}|{int(st.st_mtime)}"
+
+
+def _imported_size(inbox: pathlib.Path, name: str) -> int | None:
+    """Размер файла с таким именем, который папка импорта уже видела: в корне,
+    в done/ или в сайдкаре `.<имя>.imported.json` (копия могла быть удалена
+    ретеншном, сайдкар живёт дольше)."""
+    for cand in (inbox / name, inbox / "done" / name):
+        try:
+            if cand.is_file():
+                return cand.stat().st_size
+        except OSError:
+            continue
+    for side in (inbox / f".{name}.imported.json", inbox / "done" / f".{name}.imported.json"):
+        try:
+            meta = json.loads(side.read_text(encoding="utf-8"))
+            if isinstance(meta, dict) and isinstance(meta.get("size"), int):
+                return int(meta["size"])
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def target_name(inbox: pathlib.Path, src: pathlib.Path, st: os.stat_result) -> str:
+    """Имя копии: как у Диктофона («Новая запись 4.m4a»), пока оно свободно;
+    тёзка другого размера получает штамп mtime — Диктофон переиспользует
+    номера в имени между днями."""
+    seen = _imported_size(inbox, src.name)
+    if seen is None or seen == st.st_size:
+        return src.name
+    stamp = time.strftime("%Y-%m-%d_%H%M%S", time.localtime(st.st_mtime))
+    return f"{src.stem}_{stamp}{src.suffix}"
+
+
+def bridge(cfg: dict | None, inbox: pathlib.Path, root: pathlib.Path, *,
+           now: float | None = None, dry: bool = False) -> dict:
+    """Скопировать новые записи Диктофона в `inbox`. Возвращает сводку:
+    copied — имена копий, short/fresh/seen — сколько пропущено и почему.
+    Ничего в папке Диктофона не меняет и не удаляет."""
+    summary: dict = {"copied": [], "short": 0, "fresh": 0, "seen": 0, "source": None}
+    if not enabled(cfg):
+        return summary
+    src_dir = source_dir(cfg)
+    if src_dir is None or not inbox.is_dir():
+        return summary
+    summary["source"] = str(src_dir)
+    now = time.time() if now is None else now
+    state = load_state(root)
+    limit = min_seconds(cfg)
+    changed = False
+    for f in sorted(src_dir.iterdir()):
+        try:
+            if f.name.startswith(".") or f.is_symlink() or not f.is_file() or f.suffix.lower() not in SUFFIXES:
+                continue
+            st = f.stat()
+        except OSError:
+            continue
+        key = file_key(f, st)
+        if key in state:
+            summary["seen"] += 1
+            continue
+        if now - st.st_mtime < SETTLE_SECONDS or st.st_size == 0:
+            summary["fresh"] += 1                  # синк ещё дописывает — в следующий раз
+            continue
+        dur = duration_seconds(f)
+        if dur is not None and dur < limit:
+            state[key] = {"skipped": "short", "seconds": round(dur, 1), "at": now}
+            summary["short"] += 1
+            changed = True
+            continue
+        seen_size = _imported_size(inbox, f.name)
+        if seen_size == st.st_size:
+            state[key] = {"skipped": "already in inbox", "at": now}
+            summary["seen"] += 1
+            changed = True
+            continue
+        name = target_name(inbox, f, st)
+        if dry:
+            summary["copied"].append(name)
+            continue
+        tmp = inbox / f".{name}.{uuid.uuid4().hex[:8]}.part"
+        try:
+            shutil.copyfile(f, tmp)               # без mtime: свежий .part не «брошенный»
+            tmp.replace(inbox / name)
+        except OSError as e:
+            tmp.unlink(missing_ok=True)
+            summary.setdefault("errors", []).append(f"{f.name}: {e}")
+            continue
+        state[key] = {"copied_to": name, "size": st.st_size, "seconds": dur, "at": now}
+        summary["copied"].append(name)
+        changed = True
+    if changed and not dry:
+        try:
+            save_state(root, state)
+        except OSError as e:
+            summary.setdefault("errors", []).append(f"журнал: {e}")
+    return summary
+
+
+def describe(summary: dict) -> str:
+    """Одна строка для статуса приложения и лога."""
+    if summary.get("source") is None:
+        return ""
+    parts = []
+    if summary["copied"]:
+        parts.append(f"скопировано {len(summary['copied'])}: {', '.join(summary['copied'])}")
+    if summary["short"]:
+        parts.append(f"короче порога — {summary['short']}")
+    if summary["fresh"]:
+        parts.append(f"ещё синхронизируются — {summary['fresh']}")
+    if summary.get("errors"):
+        parts.append("ошибки: " + "; ".join(summary["errors"]))
+    return "Диктофон → импорт: " + (", ".join(parts) if parts else "нового нет")
+
+
+if __name__ == "__main__":     # ручной прогон: python3 src/voice_memos_bridge.py <папка импорта> [--dry]
+    from charoite_paths import resolve_root
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if not args:
+        sys.exit("укажи папку импорта")
+    out = bridge({}, pathlib.Path(args[0]).expanduser(), resolve_root(__file__), dry="--dry" in sys.argv)
+    print(describe(out) or "папки Диктофона на этом Mac нет (включи синхронизацию iCloud и открой Диктофон на Mac один раз)")

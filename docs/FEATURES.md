@@ -890,6 +890,21 @@ it signals degradation, it does not break the loop.
   (“Charoite 0.70.1”); iPhone: at the bottom of the recording settings with
   the build number. The iPhone companion rides the same release train as
   the Mac (release-please bumps `app-ios/project.yml`).
+- **Voice Memos bridge** — recordings made with the stock iPhone Voice Memos
+  app and synced through iCloud to this Mac land in the import folder by
+  themselves: on every scan the bridge copies new `.m4a` files out of the
+  Voice Memos container (copy, never move — on macOS 26.1 moving or renaming
+  a file breaks the recording inside the app), and they go through the same
+  pipeline as a file dropped on the “External recording” tab. Only files
+  longer than two minutes (`audio.voice_memos_min_seconds`), unchanged for a
+  minute (iCloud writes in chunks) and not seen before (journal
+  `logs/voice_memos_bridge.json`) are taken. Open Voice Memos on the Mac once
+  and enable it in iCloud; `audio.voice_memos_bridge: false` switches the
+  bridge off. There is no automation on the iPhone itself: Shortcuts has no
+  “export the recording file” action for Voice Memos (checked against Apple's
+  iOS 26 documentation), so without Mac sync it stays “Share → Save to Files”
+  into the import folder. Voice Memos survives the lock screen but stops on an
+  incoming call and when another app starts playing audio.
 - **“External recording” tab** — a phone voice memo, someone else's call
   recording, a Zoom export: drop the file (or pick it) — it is copied into
   the import folder, the original is left alone, and it goes through the
