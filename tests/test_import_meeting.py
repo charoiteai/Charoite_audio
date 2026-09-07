@@ -850,7 +850,7 @@ def test_scan_copies_new_voice_memos_into_the_folder_first(tmp_path, monkeypatch
     os.utime(rec, (old, old))
     folder = tmp_path / "inbox"
     folder.mkdir()
-    monkeypatch.setattr(im, "_cfg", lambda: {"audio": {"voice_memos_dir": str(memos)}})
+    monkeypatch.setattr(im, "_cfg", lambda: {"audio": {"voice_memos_dir": str(memos), "voice_memos_bridge": True}})
     monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
     monkeypatch.setattr(im.voice_memos_bridge, "duration_seconds", lambda p: 600.0)
 

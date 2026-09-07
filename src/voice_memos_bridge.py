@@ -17,6 +17,12 @@ Apple и разборы 2025–2026): у Диктофона в Быстрых к
 конвейер импорта (`scripts/import_meeting.py --scan`), как для записи с
 телефона или перетащенного файла.
 
+Мост включается явно (`audio.voice_memos_bridge: true`), смотрит только на
+записи не старше `audio.voice_memos_max_age_days` (14) и берёт не больше
+`audio.voice_memos_per_scan` (3) самых свежих за скан — первый скан после
+включения не должен вылить многолетний архив Диктофона в конвейер, а потеря
+журнала не должна вернуть в конвейер прошлогодние записи.
+
 Что копируется: `.m4a`, лежащий без изменений не меньше минуты (синк iCloud
 дописывает файл кусками), длиннее `audio.voice_memos_min_seconds` (по
 умолчанию 120 с — короче обычно голосовая заметка, не встреча; длительность
@@ -44,6 +50,11 @@ DEFAULT_DIR = "~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Reco
 STATE_NAME = "voice_memos_bridge.json"
 SETTLE_SECONDS = 60.0
 DEFAULT_MIN_SECONDS = 120.0
+DEFAULT_PER_SCAN = 3                 # самых свежих за скан: первый скан после включения не льёт весь архив
+DEFAULT_MAX_AGE_DAYS = 14.0          # старше — архив Диктофона, не «вчерашняя встреча»: не трогаем
+UNPARSED_GRACE_SECONDS = 3600.0      # afinfo не разобрал молодой файл — Диктофон пишет moov в конец, ждём
+STATE_KEEP_SECONDS = 30 * 86400.0    # записи журнала старше месяца выкидываем (> DEFAULT_MAX_AGE_DAYS — запись к тому времени уже за гейтом возраста)
+ERROR_MARKER_SUFFIX = ".import-error"   # как у import_meeting.error_marker: `.<имя>.import-error`
 DENIED_HINT_SECONDS = 6 * 3600.0     # подсказка про полный доступ к диску — не чаще раза в 6 часов
 DENIED_HINT = ("нет доступа к папке Диктофона: в Настройках → Конфиденциальность и "
                "безопасность → Полный доступ к диску добавьте Чароит (сканер импорта "
@@ -57,9 +68,35 @@ def audio_cfg(cfg: dict | None) -> dict:
 
 
 def enabled(cfg: dict | None) -> bool:
-    """`audio.voice_memos_bridge: false` выключает мост; по умолчанию он
-    включён и молчит, если папки Диктофона на Mac нет."""
-    return bool(audio_cfg(cfg).get("voice_memos_bridge", True))
+    """Мост включается явно: `audio.voice_memos_bridge: true`. По умолчанию
+    выключен — контейнер Диктофона это личный архив, и лить его в
+    транскрибацию, граф и архив без решения владельца нельзя (критика GLM
+    r1 по #522). Включённый молчит, если папки Диктофона на Mac нет."""
+    return bool(audio_cfg(cfg).get("voice_memos_bridge", False))
+
+
+def per_scan(cfg: dict | None) -> int:
+    try:
+        return max(1, int(audio_cfg(cfg).get("voice_memos_per_scan", DEFAULT_PER_SCAN)))
+    except (TypeError, ValueError):
+        return DEFAULT_PER_SCAN
+
+
+def max_age_seconds(cfg: dict | None) -> float:
+    """Окно моста в секундах: записи старше `audio.voice_memos_max_age_days`
+    (14) — архив, а не встреча на импорт. Гейт закрывает и первый скан после
+    включения, и повторный импорт после потери журнала: копия в done/ живёт
+    `import_keep_days`, контейнер Диктофона — годами (DS I2 по #522)."""
+    try:
+        return max(1.0, float(audio_cfg(cfg).get("voice_memos_max_age_days", DEFAULT_MAX_AGE_DAYS))) * 86400.0
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_AGE_DAYS * 86400.0
+
+
+def is_dataless(st: os.stat_result) -> bool:
+    """Выселенный iCloud плейсхолдер: размер есть, блоков на диске нет —
+    copyfile запустил бы докачку внутри скана (GLM I2 по #522)."""
+    return getattr(st, "st_blocks", 1) == 0 and st.st_size > 0
 
 
 def source_dir(cfg: dict | None) -> pathlib.Path | None:
@@ -98,16 +135,48 @@ def load_state(root: pathlib.Path) -> dict:
         return {}
 
 
-def save_state(root: pathlib.Path, state: dict) -> None:
+def save_state(root: pathlib.Path, state: dict, *, now: float | None = None) -> None:
+    """Атомарная запись журнала. tmp-имя уникально на процесс: два скана разом
+    (приложение раз в 2 мин + ручной CLI) с общим tmp оставляли обрывок
+    (GLM r1 по #522). Записи старше месяца выкидываем — иначе журнал растёт
+    вечно; ключ «имя|размер|mtime» после этого просто переоценится."""
+    now = time.time() if now is None else now
+    fresh = {k: v for k, v in state.items()
+             if not (isinstance(v, dict) and isinstance(v.get("at"), (int, float))
+                     and now - v["at"] > STATE_KEEP_SECONDS)}
     p = _state_path(root)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(p)
+    tmp = p.with_name(f".{p.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(json.dumps(fresh, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(p)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def file_key(path: pathlib.Path, st: os.stat_result) -> str:
     return f"{path.name}|{st.st_size}|{int(st.st_mtime)}"
+
+
+def _mtime_desc(p: pathlib.Path) -> float:
+    try:
+        return -p.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _same_recording(inbox: pathlib.Path, name: str, dur: float | None) -> bool:
+    """Тёзка того же размера — та же запись? Диктофон переиспользует имена, и
+    совпадение байт в размере хоть и редко, но возможно (GLM r1 по #522):
+    если у обеих известна длительность, сверяем её с допуском в секунду;
+    неизвестна — верим размеру."""
+    if dur is None:
+        return True
+    for cand in (inbox / name, inbox / "done" / name):
+        if cand.is_file() and not cand.is_symlink():
+            other = duration_seconds(cand)
+            return other is None or abs(other - dur) <= 1.0
+    return True
 
 
 def _imported_size(inbox: pathlib.Path, name: str) -> int | None:
@@ -116,7 +185,11 @@ def _imported_size(inbox: pathlib.Path, name: str) -> int | None:
     ретеншном, сайдкар живёт дольше)."""
     for cand in (inbox / name, inbox / "done" / name):
         try:
+            if cand.is_symlink():
+                continue            # ссылку скан не импортирует — она не «уже виденная запись» (DS M1)
             if cand.is_file():
+                if cand.parent == inbox and (inbox / f".{name}{ERROR_MARKER_SUFFIX}").exists():
+                    continue        # сбойная копия имя не держит: её снимут «Повторить»/удалением (GLM r1)
                 return cand.stat().st_size
         except OSError:
             continue
@@ -146,7 +219,7 @@ def bridge(cfg: dict | None, inbox: pathlib.Path, root: pathlib.Path, *,
     """Скопировать новые записи Диктофона в `inbox`. Возвращает сводку:
     copied — имена копий, short/fresh/seen — сколько пропущено и почему.
     Ничего в папке Диктофона не меняет и не удаляет."""
-    summary: dict = {"copied": [], "short": 0, "fresh": 0, "seen": 0, "source": None}
+    summary: dict = {"copied": [], "short": 0, "fresh": 0, "seen": 0, "old": 0, "cloud": 0, "queued": 0, "source": None}
     if not enabled(cfg):
         return summary
     src_dir = source_dir(cfg)
@@ -156,9 +229,11 @@ def bridge(cfg: dict | None, inbox: pathlib.Path, root: pathlib.Path, *,
     now = time.time() if now is None else now
     state = load_state(root)
     limit = min_seconds(cfg)
+    limit_per_scan = per_scan(cfg)
+    max_age = max_age_seconds(cfg)
     changed = False
     try:
-        entries = sorted(src_dir.iterdir())
+        entries = sorted(src_dir.iterdir(), key=_mtime_desc)
     except PermissionError:
         # Контейнер Диктофона закрыт TCC: без «Полного доступа к диску» у
         # приложения stat папки проходит, а листинг — «Operation not
@@ -188,17 +263,30 @@ def bridge(cfg: dict | None, inbox: pathlib.Path, root: pathlib.Path, *,
         if key in state:
             summary["seen"] += 1
             continue
-        if now - st.st_mtime < SETTLE_SECONDS or st.st_size == 0:
+        age = now - st.st_mtime
+        if age > max_age:
+            summary["old"] += 1                    # архив Диктофона: не наш, без журнала и без afinfo
+            continue
+        if age < SETTLE_SECONDS or st.st_size == 0:
             summary["fresh"] += 1                  # синк ещё дописывает — в следующий раз
             continue
+        if is_dataless(st):
+            summary["cloud"] += 1                  # выселенный iCloud плейсхолдер: ждём докачки
+            continue
+        if len(summary["copied"]) >= limit_per_scan:
+            summary["queued"] += 1                 # остальное — следующими тактами, без afinfo сейчас (DS I3)
+            continue
         dur = duration_seconds(f)
+        if dur is None and age < UNPARSED_GRACE_SECONDS:
+            summary["fresh"] += 1                  # moov ещё не дописан — недо-файл в конвейер не тащим (DS I1)
+            continue
         if dur is not None and dur < limit:
             state[key] = {"skipped": "short", "seconds": round(dur, 1), "at": now}
             summary["short"] += 1
             changed = True
             continue
         seen_size = _imported_size(inbox, f.name)
-        if seen_size == st.st_size:
+        if seen_size == st.st_size and _same_recording(inbox, f.name, dur):
             state[key] = {"skipped": "already in inbox", "at": now}
             summary["seen"] += 1
             changed = True
@@ -211,6 +299,8 @@ def bridge(cfg: dict | None, inbox: pathlib.Path, root: pathlib.Path, *,
         try:
             shutil.copyfile(f, tmp)               # без mtime: свежий .part не «брошенный»
             tmp.replace(inbox / name)
+            # Заменили сбойную тёзку — её метка ошибки иначе спрячет от скана и новую копию
+            (inbox / f".{name}{ERROR_MARKER_SUFFIX}").unlink(missing_ok=True)
         except OSError as e:
             tmp.unlink(missing_ok=True)
             summary.setdefault("errors", []).append(f"{f.name}: {e}")
@@ -220,7 +310,7 @@ def bridge(cfg: dict | None, inbox: pathlib.Path, root: pathlib.Path, *,
         changed = True
     if changed and not dry:
         try:
-            save_state(root, state)
+            save_state(root, state, now=now)
         except OSError as e:
             summary.setdefault("errors", []).append(f"журнал: {e}")
     return summary
@@ -239,6 +329,10 @@ def describe(summary: dict) -> str:
         parts.append(f"короче порога — {summary['short']}")
     if summary["fresh"]:
         parts.append(f"ещё синхронизируются — {summary['fresh']}")
+    if summary.get("cloud"):
+        parts.append(f"ещё в облаке (выселены iCloud) — {summary['cloud']}")
+    if summary.get("queued"):
+        parts.append(f"в очереди на следующие сканы — {summary['queued']}")
     if summary.get("errors"):
         parts.append("ошибки: " + "; ".join(summary["errors"]))
     return "Диктофон → импорт: " + (", ".join(parts) if parts else "нового нет")
