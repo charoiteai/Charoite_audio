@@ -831,3 +831,43 @@ def test_keep_days_hint_is_by_value_and_once(capsys):
         assert capsys.readouterr().out.count("больше не влияет") == 1
     finally:
         im._KEEP_DAYS_HINTED[0] = False
+
+
+def test_scan_copies_new_voice_memos_into_the_folder_first(tmp_path, monkeypatch, capsys):
+    """Мост из Диктофона идёт в начале --scan: синхронизированная на Mac
+    запись копируется в папку импорта (исходник не трогаем), приложение
+    видит строку статуса, и копия идёт в тот же скан, что и остальные файлы."""
+    import os
+    import time
+
+    import import_meeting as im
+
+    memos = tmp_path / "Recordings"
+    memos.mkdir()
+    rec = memos / "Новая запись 7.m4a"
+    rec.write_bytes(b"m4a" * 200)
+    old = time.time() - 3600
+    os.utime(rec, (old, old))
+    folder = tmp_path / "inbox"
+    folder.mkdir()
+    monkeypatch.setattr(im, "_cfg", lambda: {"audio": {"voice_memos_dir": str(memos), "voice_memos_bridge": True}})
+    monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
+    monkeypatch.setattr(im.voice_memos_bridge, "duration_seconds", lambda p: 600.0)
+
+    class Failed:               # ребёнок-транскрибатор «упал»: копия остаётся в папке с меткой ошибки
+        returncode = 1
+        stdout = "транскрибация не удалась\n"
+        stderr = ""
+
+    monkeypatch.setattr(im.subprocess, "run", lambda cmd, **kw: Failed())
+    monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path / "data"))
+    monkeypatch.setattr(im, "ROOT", tmp_path / "data")
+
+    with pytest.raises(SystemExit):     # сбой ребёнка = код 1 у скана, как в тесте про метку ошибки
+        _run_scan(monkeypatch, folder)
+
+    out = capsys.readouterr().out
+    assert out.index("Диктофон → импорт: скопировано 1: Новая запись 7.m4a") < out.index("=== импорт Новая запись 7.m4a ===")
+    assert (folder / "Новая запись 7.m4a").read_bytes() == rec.read_bytes()
+    assert rec.exists() and not list(folder.glob(".*.part"))
+    assert (tmp_path / "data" / "logs" / "voice_memos_bridge.json").exists()
