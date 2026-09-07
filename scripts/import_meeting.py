@@ -58,6 +58,7 @@ from config_loader import load_user_or_example  # noqa: E402
 import charoite_paths  # noqa: E402
 import safe_write  # noqa: E402
 import media_meta  # noqa: E402
+import voice_memos_bridge  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
 from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402
 
@@ -790,6 +791,15 @@ def main() -> None:
             if not (folder / marker.name[1:-len(ERROR_MARKER_SUFFIX)]).exists():
                 marker.unlink(missing_ok=True)
         sweep_temporaries(folder)
+        # Мост из Диктофона: новые записи, синхронизированные iCloud на этот
+        # Mac, копируются в папку импорта и идут тем же сканом. Сбой моста
+        # не должен ронять импорт того, что уже лежит в папке.
+        try:
+            bridged = voice_memos_bridge.describe(voice_memos_bridge.bridge(cfg, folder, ROOT))
+        except Exception as e:  # noqa: BLE001
+            bridged = f"Диктофон → импорт: сбой моста — {e}"
+        if bridged:
+            print(bridged)
         todo = scan_candidates(folder, settle_all=args.settle_all)
         postponed = postponed_files(folder, settle_all=args.settle_all)
         for waiting in postponed:
