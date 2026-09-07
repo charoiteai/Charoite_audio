@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.75.0](https://github.com/charoiteai/Charoite_audio/compare/v0.74.1...v0.75.0) (2026-09-07)
+
+
+### Features
+
+* **import:** мост из Диктофона — записи Voice Memos с Mac в папку импорта ([#522](https://github.com/charoiteai/Charoite_audio/issues/522)) ([cee68f9](https://github.com/charoiteai/Charoite_audio/commit/cee68f92b7979728f764b3c6016f4929f899ebb4))
+
 ## [0.74.1](https://github.com/charoiteai/Charoite_audio/compare/v0.74.0...v0.74.1) (2026-09-07)
 
 
