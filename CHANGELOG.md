@@ -5,6 +5,18 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.76.0](https://github.com/charoiteai/Charoite_audio/compare/v0.75.0...v0.76.0) (2026-09-08)
+
+
+### Features
+
+* **cloud:** усилие разбора cloud_effort и потолок ревизии 45 мин ([#526](https://github.com/charoiteai/Charoite_audio/issues/526)) ([cee6771](https://github.com/charoiteai/Charoite_audio/commit/cee6771ea7948f235ef607882f8bf35d724898a9))
+
+
+### Bug Fixes
+
+* **tests:** тесты не дотягиваются до графов iCloud — graph_dir из env закрывает обход iCloud ([#525](https://github.com/charoiteai/Charoite_audio/issues/525)) ([4d6e8ba](https://github.com/charoiteai/Charoite_audio/commit/4d6e8bae71b5bbdbe755c4d73a2d9164747b14eb))
+
 ## [0.75.0](https://github.com/charoiteai/Charoite_audio/compare/v0.74.1...v0.75.0) (2026-09-07)
 
 
