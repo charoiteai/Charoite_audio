@@ -20,6 +20,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import time
 
 # Ключ конфига → модель по умолчанию. Меняется ВМЕСТЕ с примерами конфига,
@@ -33,6 +34,47 @@ DEFAULTS = {
     # уточнение подсказок: то же, но чаще — дешёвая и быстрая
     "cloud_hints_model": "claude-haiku-4-5",
 }
+# Усилие (effort) облачного разбора встречи. Не модель — отдельный словарь,
+# чтобы сторож примеров конфига (test_cloud_model_defaults) не требовал от
+# него имени модели. Без явного значения headless `claude -p` идёт с
+# «auto (currently high)», а из shell с глобальным env — с max: замер 08.09 по
+# 80 разборам — 22 упёрлись в 30-минутный потолок при 34–47 правках графа,
+# удачные шли 20–29 мин. medium режет время хода в разы; глубина разбора
+# страдает меньше, чем от обрыва на 30-й минуте с откатом всех правок.
+EFFORT_DEFAULTS = {"cloud_effort": "medium"}
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max", "auto")
+
+
+def effort_warning(cfg: dict, key: str = "cloud_effort") -> str:
+    """Пустая строка, если значение ключа в порядке; иначе — что взято вместо него.
+
+    Отдельно от effort(): воркер разбора запущен демоном с stderr в DEVNULL,
+    и предупреждение в stderr до человека не доходило (DS M1 по #526) —
+    cloud_review кладёт эту строку в шапку своего лога.
+    """
+    if key not in EFFORT_DEFAULTS:
+        raise KeyError(f"{key}: неизвестный ключ усилия, известны {sorted(EFFORT_DEFAULTS)}")
+    value = str((cfg.get("sufler") or {}).get(key) or "").strip().lower()
+    if not value or value in EFFORT_LEVELS:
+        return ""
+    return f"{key}: «{value}» не из {EFFORT_LEVELS} — беру {EFFORT_DEFAULTS[key]}"
+
+
+def effort(cfg: dict, key: str = "cloud_effort") -> str:
+    """Уровень усилия из конфига или дефолт; неизвестное слово — дефолт вслух (stderr)."""
+    warning = effort_warning(cfg, key)
+    if warning:
+        print(f"cloud: {warning}", file=sys.stderr)
+        return EFFORT_DEFAULTS[key]
+    value = str((cfg.get("sufler") or {}).get(key) or "").strip().lower()
+    return value or EFFORT_DEFAULTS[key]
+
+
+def effort_args(level: str) -> list[str]:
+    """`--settings` с env CLAUDE_CODE_EFFORT_LEVEL: единственное, что перекрывает
+    и `--effort`, и глобальный env машины (проверено 08.09: `--effort low`
+    при env max остаётся max, `--settings {"env":…}` — нет)."""
+    return ["--settings", json.dumps({"env": {"CLAUDE_CODE_EFFORT_LEVEL": level}})]
 
 
 def model(cfg: dict, key: str) -> str:

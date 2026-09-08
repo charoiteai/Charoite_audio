@@ -114,6 +114,8 @@ sufler:
   # --- 云层（可选；保持关闭 = 一切留在本地） ---
   cloud_enrich: false     # 会后由云端 Claude 复盘（需要 claude CLI）
   cloud_model: claude-opus-5
+  cloud_effort: medium    # 复盘推理强度：low|medium|high|xhigh|max|auto；medium 让复盘落在
+                          # 45 分钟上限之内，high/max 最多慢一倍
   cloud_edit_graph: false
   cloud_engine: false     # 整个对话经由云端网关（见 llm.engine: cloud）
   # ↑ РАЗРЕШИТЬ ОБЛАКУ ПРАВИТЬ ГРАФ (опционально, по умолчанию выключено).
