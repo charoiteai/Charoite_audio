@@ -48,7 +48,7 @@ def test_every_default_matches_every_example_config():
     """Дефолт в коде и значение в примере — одно и то же, на всех языках."""
     for path in EXAMPLES:
         sufler = yaml.safe_load(path.read_text(encoding="utf-8"))["sufler"]
-        for key, default in cloud.DEFAULTS.items():
+        for key, default in {**cloud.DEFAULTS, **cloud.EFFORT_DEFAULTS}.items():
             assert sufler.get(key) == default, (
                 f"{path.name}: {key} = {sufler.get(key)!r}, "
                 f"а код без ключа возьмёт {default!r}")

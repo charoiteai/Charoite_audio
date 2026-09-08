@@ -38,6 +38,7 @@ import os
 import re
 import pathlib
 import shutil
+import time
 import subprocess
 import sys
 
@@ -64,6 +65,12 @@ BACKUP_DIR = ".cloud_backup"
 # «хранить 1 срез»; десять полных копий графа не пригодились ни разу, а
 # весили 1.7 ГБ и 48K файлов). Ротация — в backup_graph, без констант.
 TIMEOUT = 30 * 60           # разбор длинной встречи идёт минуты, но не часы
+# По 80 логам 28.08–08.09 удачные разборы шли 8–29 мин (медиана ~21), 22
+# упёрлись в потолок на 34–47 правках графа — на усилии auto→high/max.
+# Лечится усилием (cloud_effort=medium), а не потолком: LOCK_WAIT следует за
+# TIMEOUT, и каждые +15 мин потолка — +15 мин ожидания замка второй встрече
+# подряд и чаще read-only без доставки (DS I1 по #526). Поднимать только по
+# цифрам из строки «за N мин, усилие …» в логе (№189).
 MIN_REPORT = 60             # страховка от «ok» и пустой строки
 # Замок графа: второй воркер того же графа (встречи ближе TIMEOUT) ждёт
 # первого, а не ротирует его снимок; не дождался — работает на чтение.
@@ -977,11 +984,12 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         graph=cloud_pen if may_edit and cloud_pen is not None else graph,
         rev_name=rev.name, stamp=stamp, arch_folder=None, may_edit=may_edit,
         context=context)
+    effort = cloud.effort(cfg)          # один раз: и в команду, и в строку лога
     cmd = graph_updater.cloud_enrich_command(
         cfg, claude_bin=cloud.claude_bin(),
         prompt=prompt, model=cloud.model(cfg, "cloud_model"), may_edit=may_edit,
         graph_available=graph_available, deny_paths=denied,
-        symlink_paths=links)
+        symlink_paths=links, effort=effort)
 
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
     # Прокси из settings.json — иначе из GUI-запуска без shell-окружения
@@ -997,9 +1005,12 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     mode = ("правка графа" if may_edit else
             "только чтение графа" if graph_available else
             "только текст (граф недоступен)")
+    bad_effort = cloud.effort_warning(cfg)
     head = (f"[cloud-review] {stamp}: файлов в запросе {len(sent)} "
-            f"({', '.join(sent)}), {len(context)} знаков, режим {mode}"
-            + (f", закрыто для записи путей: {len(denied)}" if may_edit else "") + "\n")
+            f"({', '.join(sent)}), {len(context)} знаков, режим {mode}, усилие {effort}"
+            + (f", закрыто для записи путей: {len(denied)}" if may_edit else "")
+            + (f"; {bad_effort}" if bad_effort else "") + "\n")
+    t_start = time.monotonic()
     with tmp.open("w", encoding="utf-8") as out, contextlib.ExitStack() as files:
         # .part открывается первым: не откроется — лог и не нужен (и не течёт)
         try:
@@ -1037,9 +1048,10 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             text = ""
         ok = code == 0 and looks_like_report(text)
         published = publish(tmp, rev, ok)
-        lines.append(f"[cloud-review] ревизия сохранена: {rev.name}\n" if published else
+        took = f"за {(time.monotonic() - t_start) / 60:.1f} мин, усилие {effort}"
+        lines.append(f"[cloud-review] ревизия сохранена: {rev.name} ({took})\n" if published else
                      f"[cloud-review] ревизия НЕ сохранена (код {code}, "
-                     f"{len(text)} знаков) — см. {rev.name}.partial\n")
+                     f"{len(text)} знаков, {took}) — см. {rev.name}.partial\n")
     finally:
         # Сверка — раньше всего и без зависимости от лога: падение log.open
         # (права, ENOSPC, EMFILE) не должно обходить откат (круг-2, DS+Codex).
