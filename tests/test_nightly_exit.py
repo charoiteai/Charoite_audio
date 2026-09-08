@@ -142,6 +142,8 @@ def test_partially_failed_review_is_visible_but_not_fatal(tmp_path):
 def test_graph_listing_survives_a_transient_eintr(tmp_path, monkeypatch):
     """iCloud-каталог отвечал EINTR посреди ночи (17.08) и ронял шаг целиком —
     один повтор спасает, устойчивый отказ — пропуск корня вслух."""
+    for n in graphs.ENV_GRAPH_NAMES:      # конфиг-ветка roots(), не env (GLM I1 по #525)
+        monkeypatch.delenv(n, raising=False)
     monkeypatch.setattr(graphs, "ICLOUD", tmp_path / "нет-iCloud")
     work = tmp_path / "Vault" / "Работа"
     (work / "Ядра").mkdir(parents=True)
@@ -242,6 +244,8 @@ def test_vault_is_the_folder_above_the_configured_graph(tmp_path, monkeypatch):
     Vault — это папка НАД графом: sufler.graph_dir указывает на ~/Vault/Работа,
     а ночью надо обойти и ~/Vault/Личное. Одного захардкоженного пути мало.
     """
+    for n in graphs.ENV_GRAPH_NAMES:      # конфиг-ветка roots(), не env (GLM I1 по #525)
+        monkeypatch.delenv(n, raising=False)
     monkeypatch.setattr(graphs, "ICLOUD", tmp_path / "нет-iCloud")
     work, home = tmp_path / "Vault" / "Работа", tmp_path / "Vault" / "Личное"
     for g in (work, home):
