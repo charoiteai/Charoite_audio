@@ -102,8 +102,17 @@ def configured_graph() -> pathlib.Path | None:
 
 
 def roots() -> list[pathlib.Path]:
-    """Папки, в которых лежат графы."""
+    """Папки, в которых лежат графы.
+
+    CHAROITE_GRAPH_DIR / SUFLER_GRAPH_DIR означает «граф здесь и только
+    здесь»: с переменной iCloud-каталог не обходится. Иначе тестовый
+    прогон с подменённым графом всё равно дотягивался до рабочих графов:
+    forget_meeting.plan(graph=None) читал 14 651 файл из iCloud за один
+    тест, а под нагрузкой 07.09 это стало 120-секундным таймаутом (№197).
+    """
     gd = configured_graph()
+    if gd is not None and env_override() is not None:
+        return [gd.parent]
     return ([gd.parent] if gd else []) + [ICLOUD]
 
 
