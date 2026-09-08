@@ -214,6 +214,7 @@ sufler:
   cloud_effort: medium    # усилие разбора: low|medium|high|xhigh|max|auto; medium — разбор
                           # укладывается в потолок 45 мин, high/max — до 2× дольше
   cloud_live_effort: low  # усилие вызовов в темпе встречи (нить, ответ на вопрос)
+  cloud_night_effort: high  # ночные ревизии досье и ядер: потолок 600 с, глубина важнее
   cloud_edit_graph: false
   cloud_engine: false     # весь чат через облачный шлюз (см. llm.engine: cloud)
   # ↑ РАЗРЕШИТЬ ОБЛАКУ ПРАВИТЬ ГРАФ (опционально, по умолчанию выключено).

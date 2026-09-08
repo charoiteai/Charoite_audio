@@ -1630,6 +1630,12 @@ def main():
                     stdin=subprocess.DEVNULL,
                     capture_output=True, text=True, timeout=60, env=env)
                 out = (r.stdout or "").strip()
+                if r.returncode != 0:
+                    # отказ CLI (версия без --settings, 403) — не тишина: строка в
+                    # stderr демона, как у ответа на вопрос (GLM M3 по #528)
+                    print(f"{dt.datetime.now():%H:%M:%S} нить: облако не ответило: "
+                          f"{(r.stderr or '').strip()[:150]}", file=sys.stderr, flush=True)
+                    return
             except Exception:  # noqa: BLE001 — ревизия не критична, тишина честнее
                 return
             from meeting_thread import parse_edits

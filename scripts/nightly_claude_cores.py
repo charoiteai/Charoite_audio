@@ -263,7 +263,7 @@ def main() -> None:
         # (аудит 14.08). Единый контракт «только текст» — cloud.text_only_args.
         r = subprocess.run(
             [claude, "-p", prompt, "--model", model,
-             *cloud.effort_args(cloud.effort(cfg, "cloud_effort")),   # №214
+             *cloud.effort_args(cloud.effort(cfg, "cloud_night_effort")),   # №214
              *cloud.text_only_args()],
             capture_output=True, text=True, timeout=600, env=env,
             stdin=subprocess.DEVNULL)
