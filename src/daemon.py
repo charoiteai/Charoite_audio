@@ -1618,7 +1618,9 @@ def main():
                      "не комментируй. Всё точно — ответь ровно: NONE",
                      # нить и реплики — чужие слова в промпте: инструментов
                      # этому вызову не положено (см. cloud.text_only_args)
-                     "--model", model, *cloud.text_only_args()],
+                     "--model", model,
+                     *cloud.effort_args(cloud.effort(cfg, "cloud_live_effort")),   # №214
+                     *cloud.text_only_args()],
                     # stdin=DEVNULL обязателен: без него потомок наследует
                     # командный пайп от приложения. Claude на унаследованном
                     # fifo ждёт EOF (см. соседний вызов ниже, там это уже
@@ -1628,6 +1630,12 @@ def main():
                     stdin=subprocess.DEVNULL,
                     capture_output=True, text=True, timeout=60, env=env)
                 out = (r.stdout or "").strip()
+                if r.returncode != 0:
+                    # отказ CLI (версия без --settings, 403) — не тишина: строка в
+                    # stderr демона, как у ответа на вопрос (GLM M3 по #528)
+                    print(f"{dt.datetime.now():%H:%M:%S} нить: облако не ответило: "
+                          f"{(r.stderr or '').strip()[:150]}", file=sys.stderr, flush=True)
+                    return
             except Exception:  # noqa: BLE001 — ревизия не критична, тишина честнее
                 return
             from meeting_thread import parse_edits
@@ -2048,6 +2056,8 @@ def main():
                      "скажи («по повестке уточню») или отвечай без них. "
                      "Только текст ответа — без преамбул, без markdown-заголовков.",
                      "--model", model,
+                     # усилие в темпе разговора — cloud_live_effort (№214)
+                     *cloud.effort_args(cloud.effort(cfg, "cloud_live_effort")),
                      # изоляция «только текст» — единый контракт всех
                      # headless-вызовов (список запретов жил здесь копией)
                      *cloud.text_only_args()],

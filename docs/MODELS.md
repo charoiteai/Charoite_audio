@@ -327,6 +327,8 @@ choice.
 | `cloud_live_model` | `claude-haiku-4-5` | answering a question mid-meeting: speed matters more |
 | `cloud_hints_model` | `claude-haiku-4-5` | hint refinement: same, but more often |
 | `cloud_effort` | `medium` | reasoning effort for the post-meeting debrief (`low`…`max`). Headless `claude -p` otherwise runs at `high`: by 80 review logs (28.08–08.09) 22 debriefs hit the 30-minute ceiling on 34–47 graph edits and were quarantined; `medium` keeps them inside the 45-minute ceiling |
+| `cloud_live_effort` | `low` | in-meeting calls (thread fixes, answer to a question, 60–90 s ceilings): shorter reasoning, faster reply |
+| `cloud_night_effort` | `high` | nightly dossier and core reviews: 600 s ceiling and no graph lock, depth over speed |
 
 Defaults live in one place — `src/cloud.py` — and match the example configs; a
 mismatch fails a test. Previously the literal sat in every call site, and one
