@@ -38,6 +38,7 @@ import os
 import re
 import pathlib
 import shutil
+import time
 import subprocess
 import sys
 
@@ -63,7 +64,11 @@ BACKUP_DIR = ".cloud_backup"
 # Снимков держим ровно один — срез ТЕКУЩЕЙ правки (решение владельца 21.08:
 # «хранить 1 срез»; десять полных копий графа не пригодились ни разу, а
 # весили 1.7 ГБ и 48K файлов). Ротация — в backup_graph, без констант.
-TIMEOUT = 30 * 60           # разбор длинной встречи идёт минуты, но не часы
+TIMEOUT = 45 * 60           # разбор длинной встречи идёт минуты, но не часы
+# 30 мин не хватало: по 80 логам 28.08–08.09 удачные разборы шли 8–29 мин
+# (медиана ~21), 22 упёрлись в потолок на 34–47 правках графа, и всё
+# сделанное уходило в карантин. 45 — запас поверх cloud_effort=medium,
+# который сам режет время хода; замок соседа ждёт TIMEOUT+5 (№189).
 MIN_REPORT = 60             # страховка от «ok» и пустой строки
 # Замок графа: второй воркер того же графа (встречи ближе TIMEOUT) ждёт
 # первого, а не ротирует его снимок; не дождался — работает на чтение.
@@ -1000,6 +1005,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     head = (f"[cloud-review] {stamp}: файлов в запросе {len(sent)} "
             f"({', '.join(sent)}), {len(context)} знаков, режим {mode}"
             + (f", закрыто для записи путей: {len(denied)}" if may_edit else "") + "\n")
+    t_start = time.monotonic()
     with tmp.open("w", encoding="utf-8") as out, contextlib.ExitStack() as files:
         # .part открывается первым: не откроется — лог и не нужен (и не течёт)
         try:
@@ -1037,9 +1043,10 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             text = ""
         ok = code == 0 and looks_like_report(text)
         published = publish(tmp, rev, ok)
-        lines.append(f"[cloud-review] ревизия сохранена: {rev.name}\n" if published else
+        took = f"за {(time.monotonic() - t_start) / 60:.0f} мин, усилие {cloud.effort(cfg)}"
+        lines.append(f"[cloud-review] ревизия сохранена: {rev.name} ({took})\n" if published else
                      f"[cloud-review] ревизия НЕ сохранена (код {code}, "
-                     f"{len(text)} знаков) — см. {rev.name}.partial\n")
+                     f"{len(text)} знаков, {took}) — см. {rev.name}.partial\n")
     finally:
         # Сверка — раньше всего и без зависимости от лога: падение log.open
         # (права, ENOSPC, EMFILE) не должно обходить откат (круг-2, DS+Codex).
