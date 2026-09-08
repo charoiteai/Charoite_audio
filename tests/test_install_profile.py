@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+
+import pytest
 import subprocess
 import sys
 
@@ -18,6 +20,15 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import install_profile  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _config_semantics_without_env(monkeypatch):
+    """Профиль установки читается из конфига: переменные графа (их ставит
+    общий conftest, чтобы тесты не дотягивались до iCloud) здесь сняты —
+    иначе graph_dir из env перекрывал бы проверяемый конфиг (№197)."""
+    monkeypatch.delenv("CHAROITE_GRAPH_DIR", raising=False)
+    monkeypatch.delenv("SUFLER_GRAPH_DIR", raising=False)
 
 
 def test_default_is_everything_on():

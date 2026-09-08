@@ -97,7 +97,8 @@ In `config/config.yaml`:
   relative path (`demo/graph`) is resolved by the app and by every script
   from the Charoite data folder (the one holding `config/`), never from the
   directory a script happens to be launched from; `SUFLER_GRAPH_DIR` in the
-  environment overrides the setting for trial runs on another graph.
+  environment overrides the setting for trial runs on another graph and also
+  narrows graph discovery to that graph's vault (the iCloud folder is not read).
 
 Also worth filling: `sufler.user_context` (1-2 sentences about your work) —
 context for instant answers.
