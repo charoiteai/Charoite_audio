@@ -60,3 +60,12 @@ def test_precomputed_effort_is_used_as_is():
     cmd = graph_updater.cloud_enrich_command(
         cfg, claude_bin="claude", prompt="p", model="m", env={}, effort="xhigh")
     assert _has(cmd, ["--settings", json.dumps({"env": {"CLAUDE_CODE_EFFORT_LEVEL": "xhigh"}})])
+
+
+def test_effort_warning_is_a_plain_string_for_the_log_head():
+    assert cloud.effort_warning({}) == ""
+    assert cloud.effort_warning({"sufler": {"cloud_effort": "high"}}) == ""
+    w = cloud.effort_warning({"sufler": {"cloud_effort": "xxhigh"}})
+    assert "xxhigh" in w and "medium" in w
+    with pytest.raises(KeyError):
+        cloud.effort_warning({}, "нет-такого")

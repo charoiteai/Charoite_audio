@@ -45,17 +45,29 @@ EFFORT_DEFAULTS = {"cloud_effort": "medium"}
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max", "auto")
 
 
-def effort(cfg: dict, key: str = "cloud_effort") -> str:
-    """Уровень усилия из конфига или дефолт; неизвестное слово — дефолт вслух."""
+def effort_warning(cfg: dict, key: str = "cloud_effort") -> str:
+    """Пустая строка, если значение ключа в порядке; иначе — что взято вместо него.
+
+    Отдельно от effort(): воркер разбора запущен демоном с stderr в DEVNULL,
+    и предупреждение в stderr до человека не доходило (DS M1 по #526) —
+    cloud_review кладёт эту строку в шапку своего лога.
+    """
     if key not in EFFORT_DEFAULTS:
         raise KeyError(f"{key}: неизвестный ключ усилия, известны {sorted(EFFORT_DEFAULTS)}")
     value = str((cfg.get("sufler") or {}).get(key) or "").strip().lower()
-    if value in EFFORT_LEVELS:
-        return value
-    if value:
-        print(f"cloud: {key}: «{value}» — не из {EFFORT_LEVELS}, беру {EFFORT_DEFAULTS[key]}",
-              file=sys.stderr)
-    return EFFORT_DEFAULTS[key]
+    if not value or value in EFFORT_LEVELS:
+        return ""
+    return f"{key}: «{value}» не из {EFFORT_LEVELS} — беру {EFFORT_DEFAULTS[key]}"
+
+
+def effort(cfg: dict, key: str = "cloud_effort") -> str:
+    """Уровень усилия из конфига или дефолт; неизвестное слово — дефолт вслух (stderr)."""
+    warning = effort_warning(cfg, key)
+    if warning:
+        print(f"cloud: {warning}", file=sys.stderr)
+        return EFFORT_DEFAULTS[key]
+    value = str((cfg.get("sufler") or {}).get(key) or "").strip().lower()
+    return value or EFFORT_DEFAULTS[key]
 
 
 def effort_args(level: str) -> list[str]:
