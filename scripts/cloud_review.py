@@ -982,11 +982,12 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         graph=cloud_pen if may_edit and cloud_pen is not None else graph,
         rev_name=rev.name, stamp=stamp, arch_folder=None, may_edit=may_edit,
         context=context)
+    effort = cloud.effort(cfg)          # один раз: и в команду, и в строку лога
     cmd = graph_updater.cloud_enrich_command(
         cfg, claude_bin=cloud.claude_bin(),
         prompt=prompt, model=cloud.model(cfg, "cloud_model"), may_edit=may_edit,
         graph_available=graph_available, deny_paths=denied,
-        symlink_paths=links)
+        symlink_paths=links, effort=effort)
 
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
     # Прокси из settings.json — иначе из GUI-запуска без shell-окружения
@@ -1043,7 +1044,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             text = ""
         ok = code == 0 and looks_like_report(text)
         published = publish(tmp, rev, ok)
-        took = f"за {(time.monotonic() - t_start) / 60:.0f} мин, усилие {cloud.effort(cfg)}"
+        took = f"за {(time.monotonic() - t_start) / 60:.1f} мин, усилие {effort}"
         lines.append(f"[cloud-review] ревизия сохранена: {rev.name} ({took})\n" if published else
                      f"[cloud-review] ревизия НЕ сохранена (код {code}, "
                      f"{len(text)} знаков, {took}) — см. {rev.name}.partial\n")

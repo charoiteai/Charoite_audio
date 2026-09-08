@@ -1940,7 +1940,8 @@ def cloud_enrich_command(cfg: dict, *, claude_bin: str, prompt: str, model: str,
                          env: dict | None = None,
                          may_edit: bool | None = None,
                          graph_available: bool = True,
-                         deny_paths=(), symlink_paths=()) -> list[str]:
+                         deny_paths=(), symlink_paths=(),
+                         effort: str | None = None) -> list[str]:
     """Команда облачного разбора: доступ только к его рабочему графу.
 
     Раньше инструменты записи и `--permission-mode acceptEdits` стояли в
@@ -1968,7 +1969,9 @@ def cloud_enrich_command(cfg: dict, *, claude_bin: str, prompt: str, model: str,
     fallback-папка со стенограммами не должна становиться случайной
     песочницей с правом чтения/записи.
     """
-    effort_flags = cloud.effort_args(cloud.effort(cfg, "cloud_effort"))
+    # effort — уже вычисленный уровень (cloud_review считает его один раз и
+    # пишет в лог); без него — из конфига здесь
+    effort_flags = cloud.effort_args(effort or cloud.effort(cfg, "cloud_effort"))
     if not graph_available:
         return [claude_bin, "-p", prompt, "--model", model,
                 *effort_flags, *cloud.text_only_args()]
