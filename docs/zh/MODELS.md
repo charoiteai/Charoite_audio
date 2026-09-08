@@ -260,6 +260,7 @@ Mac 的模型。
 | `cloud_live_model` | `claude-haiku-4-5` | 会议进行中回答问题：速度更重要 |
 | `cloud_hints_model` | `claude-haiku-4-5` | 提示润色：同理，但更频繁 |
 | `cloud_effort` | `medium` | 会后复盘的推理强度（`low`…`max`）。无此项时 headless `claude -p` 以 `high` 运行：按 80 份复盘日志（28.08–08.09），22 次在 34–47 处图谱修改上撞到 30 分钟上限并被隔离；`medium` 让复盘落在 45 分钟上限之内 |
+| `cloud_live_effort` | `low` | 会中调用（对话线修正、问题回答，60–90 秒上限）：推理更短，回复更快 |
 
 默认值只写在一个地方——`src/cloud.py`——并与示例配置保持一致；不一致会导致
 测试失败。此前这些字面量散落在每个调用点，其中一个键（`cloud_model`）有两个

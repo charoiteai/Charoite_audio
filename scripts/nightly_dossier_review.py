@@ -265,6 +265,7 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
             # ЗДЕСЬ, под privacy-гейтом выше: сторож test_cloud_call_sites
             # держит выход в сеть именно в review().
             r = subprocess.run([claude, "-p", prompt, "--model", model,
+                                *cloud.effort_args(cloud.effort(cfg, "cloud_effort")),   # №214
                                 *cloud.text_only_args()],
                                capture_output=True, text=True, timeout=600, env=env,
                                stdin=subprocess.DEVNULL)

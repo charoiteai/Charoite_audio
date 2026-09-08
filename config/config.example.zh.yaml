@@ -116,6 +116,7 @@ sufler:
   cloud_model: claude-opus-5
   cloud_effort: medium    # 复盘推理强度：low|medium|high|xhigh|max|auto；medium 让复盘落在
                           # 45 分钟上限之内，high/max 最多慢一倍
+  cloud_live_effort: low  # 会中调用（对话线、问题回答）的推理强度
   cloud_edit_graph: false
   cloud_engine: false     # 整个对话经由云端网关（见 llm.engine: cloud）
   # ↑ РАЗРЕШИТЬ ОБЛАКУ ПРАВИТЬ ГРАФ (опционально, по умолчанию выключено).
