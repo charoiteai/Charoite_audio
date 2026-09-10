@@ -796,3 +796,47 @@ def test_every_physical_chunk_consumes_a_number_even_silent_or_echo():
     assert hub.chunk_seq(hub.SPEAKER["mic"]) == ("mic", 2), "речевой после тишины — не сосед первого"
     assert hub.chunk_seq("нет такого") is None
 
+
+
+def test_missing_system_channel_screams_and_names_the_reason(tmp_path, monkeypatch):
+    """Запись без канала собеседников обязана быть ГРОМКОЙ, с причиной.
+
+    До 10.09 об этом сообщала только строка статуса «Слушаю: Микрофон
+    (fallback)» рядом с названием модели — на встрече такое не замечают, а
+    узнаю́т через час по пустой стенограмме. С удалением BlackHole (№137)
+    запасного пути не осталось вовсе: если ScreenCaptureKit не поднялся,
+    вторая сторона разговора не запишется, и предупредить надо СРАЗУ.
+    """
+    said = []
+    hub = object.__new__(a.AudioHub)
+    hub.on_status = said.append
+    monkeypatch.setattr(a, "ROOT", tmp_path)          # свой logs/, боевой не трогаем
+    calls = []
+    monkeypatch.setattr("subprocess.run", lambda *args, **kw: calls.append(args))
+
+    hub._warn_no_system_channel(sck_missing=True, bh_missing=True)
+
+    assert len(said) == 1, "предупреждение должно быть ровно одно"
+    msg = said[0]
+    assert "СОБЕСЕДНИКОВ" in msg, "текст обязан говорить, ЧТО потеряно, а не «fallback»"
+    assert "ScreenCaptureKit" in msg and "право" in msg, "нужна причина и что проверить"
+    assert calls, "уведомление macOS не отправлено — строку статуса не заметят"
+
+    log = (tmp_path / "logs" / "capture.log").read_text(encoding="utf-8")
+    assert "ЗАПИСЬ БЕЗ СИСТЕМНОГО ЗВУКА" in log, "причина обязана осесть в capture.log"
+
+
+def test_warning_survives_broken_log_and_no_notifier(tmp_path, monkeypatch):
+    """Предупреждение важнее своих же побочных действий: недоступный лог или
+    упавший osascript не должны ронять старт записи."""
+    said = []
+    hub = object.__new__(a.AudioHub)
+    hub.on_status = said.append
+    monkeypatch.setattr(a, "ROOT", tmp_path / "нет-такого-каталога" / "и-файл-занят")
+
+    def boom(*args, **kw):
+        raise OSError("уведомления недоступны")
+
+    monkeypatch.setattr("subprocess.run", boom)
+    hub._warn_no_system_channel(sck_missing=False, bh_missing=True)
+    assert said and "СОБЕСЕДНИКОВ" in said[0], "человек предупреждён, несмотря на отказы вокруг"

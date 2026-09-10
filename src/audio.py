@@ -472,8 +472,61 @@ class AudioHub:
         if not self.captures:  # blackhole запрошен, но не найден
             self.captures.append(Capture(mic, self.sr, "mic"))
             self.sources.append("Микрофон (fallback)")
+        # Канала собеседников нет — встреча запишется ОДНИМ микрофоном, и в
+        # стенограмме не будет второй стороны разговора. До 10.09 об этом
+        # сообщала только строка статуса «Слушаю: Микрофон (fallback)» рядом
+        # с названием модели: на встрече такое не замечают, а узнают через час
+        # по пустой стенограмме. С удалением BlackHole (№137) запасного пути
+        # не осталось вовсе, поэтому предупреждение обязано быть громким.
+        if not any(c.label == "blackhole" for c in self.captures):
+            self._warn_no_system_channel(sck_missing=sck is None, bh_missing=bh is None)
         for c in self.captures:
             self._bufs[c.label] = np.zeros(0, dtype=np.float32)
+
+    def _warn_no_system_channel(self, *, sck_missing: bool, bh_missing: bool) -> None:
+        """Громко сказать, что собеседников в записи не будет, и почему.
+
+        Причину знает Swift-часть: она поднимает ScreenCaptureKit и пишет ход
+        в logs/capture.log. Питон видит только отсутствие манифеста, поэтому
+        последнюю строку лога подхватываем — иначе разбираться придётся
+        вручную и уже после встречи.
+        """
+        import datetime                       # локально: шапку аудио-модуля не трогаем
+        import subprocess
+
+        why = []
+        if sck_missing:
+            why.append("ScreenCaptureKit не поднялся (нет свежего "
+                       f"{SCK_STREAM_MANIFEST.name}; проверить право «Запись экрана»)")
+        if bh_missing:
+            why.append("устройства системного звука в CoreAudio нет "
+                       "(BlackHole удалён 10.09, запасного пути больше нет)")
+        try:
+            log = ROOT / "logs" / "capture.log"
+            tail = [ln.strip() for ln in log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            if tail:
+                why.append(f"последняя строка capture.log: {tail[-1]}")
+        except OSError:
+            pass
+        reason = "; ".join(why) or "причина неизвестна"
+        self._say("⚠️ СОБЕСЕДНИКОВ В ЗАПИСИ НЕ БУДЕТ: системный звук не "
+                  f"захвачен, пишем только микрофон. {reason}")
+        try:                                    # уведомление macOS: строку статуса не заметят
+            subprocess.run(
+                ["osascript", "-e",
+                 'display notification "Системный звук не захвачен — в записи будет '
+                 'только ваш микрофон, без собеседников." with title "Чароит: запись неполная"'],
+                check=False, timeout=5)
+        except Exception:                       # noqa: BLE001 — уведомление не должно ронять запись
+            pass
+        try:
+            log = ROOT / "logs" / "capture.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with open(log, "a", encoding="utf-8") as fh:
+                fh.write(f"{datetime.datetime.now():%F %H:%M:%S} ЗАПИСЬ БЕЗ СИСТЕМНОГО "
+                         f"ЗВУКА (только микрофон): {reason}\n")
+        except OSError:
+            pass
 
     # Сколько ждём перезапуск канала, прежде чем считать его безнадёжным.
     # Пять секунд: закрытие живого стрима укладывается в доли секунды, а
