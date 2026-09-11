@@ -986,9 +986,13 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     doc = action_items.normalize(fact_check.annotate(doc, speech))
     # Поручение тому, кого на встрече не было, — пометка, не задача (05.09:
     # минутки приписали поручение упомянутому, а не присутствующему).
+    # Владелец — одним написанием ДО пометки (порядок — контракт функции):
+    # пересборка — четвёртый путь записи минуток, без него она возвращала бы
+    # «**Марку**» поверх «**Марк**» (№188, круг 2 по #536).
     sufler = cfg.get("sufler") or {}
-    doc = action_items.flag_outsiders(
-        doc, action_items.participants_of(speech, owner=sufler.get("user_name") or ""),
+    user_name = str(sufler.get("user_name") or "")
+    doc = action_items.finalize_assignees(
+        doc, action_items.participants_of(speech, owner=user_name), user_name,
         lang=str(sufler.get("language") or "ru"))
     if current is not None:
         prev_dir = live.parent / ".prev"

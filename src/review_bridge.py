@@ -247,9 +247,15 @@ def _dedup_view(line: str, owner: str) -> str:
     line = action_items.canon_owner_item(line, owner)
     words = owner.split()
     m = _ASSIGNEE.match(line)
-    if len(words) > 1 and m and m.group("name").strip().casefold() == " ".join(words).casefold():
+    # полное имя сравниваем без регистра и ё: «**Петр Иванов**» в минутках при
+    # user_name «Пётр Иванов» — тот же владелец (Important GLM r2 по #536)
+    if len(words) > 1 and m and _plain(m.group("name")) == _plain(" ".join(words)):
         line = line[:m.start("name")] + words[0] + line[m.end("name"):]
     return line
+
+
+def _plain(text: str) -> str:
+    return " ".join(text.split()).casefold().replace("ё", "е")
 
 
 def merge_into_minutes(minutes: str, items: list[str], participants: set[str] | None = None,

@@ -2618,12 +2618,12 @@ def main():
                     out = action_items.normalize(out)
                     # исполнитель — только участник встречи (05.09: поручение
                     # ушло упомянутому, а не присутствующему)
-                    out = action_items.flag_outsiders(
+                    # Владелец — одним написанием (окно «Задачи» ищет его целым
+                    # словом user_name), и ТОЛЬКО потом пометка: порядок —
+                    # контракт finalize_assignees (№188, DS r2 по #536)
+                    out = action_items.finalize_assignees(
                         out, action_items.participants_set(tr.participants(), owner=owner_name),
-                        lang=llm.lang)
-                    # владелец — одним написанием: окно «Задачи» ищет его целым
-                    # словом user_name, падеж и уменьшительное решаем здесь (№188)
-                    out = action_items.canon_owner(out, owner_name)
+                        owner_name, lang=llm.lang)
                     # Маркер перепроверяем ПЕРЕД записью, а не только на входе
                     # в итерацию: генерация выше занимает десятки секунд, и
                     # если за это время человек нажал «Протокол», финальные
@@ -2744,10 +2744,9 @@ def main():
                 # из 138 файлов минуток чекбоксы нашлись в двух, и окно задач
                 # стояло пустым при живых поручениях на каждой встрече.
                 doc = action_items.normalize(doc)
-                doc = action_items.flag_outsiders(
+                doc = action_items.finalize_assignees(          # канон владельца → пометка (№188)
                     doc, action_items.participants_set(tr.participants(), owner=owner_name),
-                    lang=llm.lang)
-                doc = action_items.canon_owner(doc, owner_name)   # см. черновик выше (№188)
+                    owner_name, lang=llm.lang)
                 # Через временное имя: обрыв посреди write_text оставлял бы
                 # усечённые минутки поверх готовых (mcp_server это уже чинил,
                 # здесь оставался прямой write_text — аудит 14.08)

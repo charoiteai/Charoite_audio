@@ -371,45 +371,64 @@ def flag_outsiders(text: str, participants: set[str], lang: str = "ru") -> str:
 # через «е» вместо «ё». Фамилия, уменьшительные («Саша» при «Александр»),
 # составные исполнители («Марк и Инга», «Марку Ковалёву») не трогаются.
 # Известная коллизия: уменьшительное в самом user_name («Витя») и чужая Вита —
-# дательный у обоих «Вите»; лингвистически неразличимо.
-_OWNER_ITEM = re.compile(r"^(\s*(?:[-*] \[[ xX]\] )?)\*\*([^*\n]{1,80})\*\*(.*)$")
-_FLEETING_STEM = {"лев": "льв"}     # беглая гласная, не выводимая правилом: Лев → Льву
+# дательный у обоих «Вите»; лингвистически неразличимо. Фамилия — той же
+# механикой (круг 2, критика GLM): «Ковалёву» → «Ковалёв», а «Ковалёвой» —
+# нет; однофамилец в дательном неотличим ровно так же, как в именительном.
+# Буллет без чекбокса («- **Имя** — …», руками в Obsidian) матчится ради
+# сравнения в мосте; на пути записи гейт — _ASSIGNEE_LINE с чекбоксом.
+_OWNER_ITEM = re.compile(r"^(\s*(?:[-*] )?(?:\[[ xX]\] )?)\*\*([^*\n]{1,80})\*\*(.*)$")
+# Таблицы вместо орфографических правил: класс имён с беглой гласной закрыт
+# (Павел, Лев), а правило по суффиксу «-ел» давало «Даниел» → «данилу» —
+# дательный ДРУГОГО имени (критика GLM r2 по #536); «Любовь» — единственное
+# женское на -ь в ходу, дательный «Любови», а не «любовю».
+_FLEETING_STEM = {"павел": "павл", "лев": "льв"}
+_DATIVE_EXACT = {"любовь": "любови"}
 
 
-def _owner_forms(first: str) -> set[str]:
-    """Формы ИМЕНИ владельца в позиции исполнителя — генерация из user_name,
-    а не стемминг чужого слова: «Александре» — дательный женского имени, у
+def _plain(word: str) -> str:
+    """Регистр и ё/е в одну сторону: ё и е — одно имя, в обе стороны
+    («Семёну» при «Семен» в user_name, «Петр» при «Пётр»; Important GLM r2)."""
+    return word.casefold().replace("ё", "е")
+
+
+def _owner_forms(word: str) -> set[str]:
+    """Формы слова из user_name в позиции исполнителя (в виде _plain):
+    именительный и дательный по типу склонения. Генерация из самого слова, а
+    не стемминг чужого: «Александре» — дательный женского имени, у
     владельца-Александра дательный — «Александру», и они не путаются."""
-    name = first.casefold()
-    forms = {name, name.replace("ё", "е")}
-    for n in tuple(forms):
-        if n.endswith("ия"):
-            forms.add(n[:-1] + "и")               # Мария → Марии
-        elif n.endswith(("а", "я")):
-            forms.add(n[:-1] + "е")               # Анна → Анне, Илья → Илье, Наталья → Наталье
-        elif n.endswith(("ь", "й")):
-            forms.add(n[:-1] + "ю")               # Игорь → Игорю, Андрей → Андрею
-        else:
-            forms.add(n + "у")                    # Марк → Марку, Петр → Петру
-            if len(n) > 3 and n.endswith(("ел", "ёл", "ок", "ец")):
-                forms.add(n[:-2] + n[-1] + "у")   # Павел → Павлу (беглая гласная)
-            if n in _FLEETING_STEM:
-                forms.add(_FLEETING_STEM[n] + "у")
+    n = _plain(word)
+    forms = {n}
+    if n in _DATIVE_EXACT:
+        forms.add(_DATIVE_EXACT[n])
+    elif n.endswith("ия"):
+        forms.add(n[:-1] + "и")                   # Мария → Марии
+    elif n.endswith(("а", "я")):
+        forms.add(n[:-1] + "е")                   # Анна → Анне, Илья → Илье, Наталья → Наталье
+    elif n.endswith(("ь", "й")):
+        forms.add(n[:-1] + "ю")                   # Игорь → Игорю, Андрей → Андрею
+    else:
+        forms.add(_FLEETING_STEM.get(n, n) + "у")   # Марк → Марку, Ковалев → Ковалеву, Павел → Павлу
     return forms
 
 
 def _owner_canon(whole: str, owner: str) -> str | None:
-    """Каноническое написание, если `whole` — имя владельца в другой форме, иначе None."""
+    """Написание из user_name, если `whole` — одно из его слов в другой форме
+    (дательный, регистр, ё/е), иначе None. Имя → имя, фамилия → фамилия:
+    «Ковалёву» → «Ковалёв», не «Марк»."""
     canon = [w for w in (owner or "").split() if w]
     if not canon:
         return None
     names = _split_names(whole)
     if len(names) != 1 or len(names[0].split()) != 1:
         return None                       # «Марк и Инга», «Марку Ковалёву» — не трогаем
-    word = names[0].strip().casefold()
-    if word == canon[0].casefold():
-        return None                       # уже канон — побуквенно: «Петр» ≠ «Пётр»
-    return canon[0] if word in _owner_forms(canon[0]) else None
+    word = names[0].strip()
+    if word in canon:
+        return None                       # уже канон — побуквенно, с регистром
+    plain = _plain(word)
+    for w in canon:
+        if plain in _owner_forms(w):
+            return w                      # «марку», «МАРК», «Петр», «Ковалёву» → слово из user_name
+    return None
 
 
 def canon_owner_item(item: str, owner: str) -> str:
@@ -423,9 +442,20 @@ def canon_owner_item(item: str, owner: str) -> str:
     return f"{m.group(1)}**{name}**{m.group(3)}"
 
 
+def finalize_assignees(text: str, participants: set[str], owner: str, lang: str = "ru") -> str:
+    """Исполнители раздела поручений перед записью минуток: сначала владелец
+    в каноне, потом пометка «не участник». Порядок — контракт этой функции:
+    «Павлу» у владельца-Павла flag_outsiders участником не считает
+    (_same_person не знает беглой гласной), и до канона строка не доживала —
+    чекбокс снят, canon_owner её уже не видит (Critical DS r2 по #536).
+    Один вызов на все пути записи: черновик и финал демона, sufler_make_minutes."""
+    return flag_outsiders(canon_owner(text, owner), participants, lang=lang)
+
+
 def canon_owner(text: str, owner: str) -> str:
-    """Раздел поручений минуток: исполнитель-владелец — первым словом user_name.
-    Остальные разделы и чужие исполнители не трогаются; пустое имя — как есть."""
+    """Раздел поручений минуток: слово user_name в другой форме — написанием
+    из user_name. Остальные разделы и чужие исполнители не трогаются; пустое
+    имя — как есть."""
     if not (owner or "").strip():
         return text
     out: list[str] = []
