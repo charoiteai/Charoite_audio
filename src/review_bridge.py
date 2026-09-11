@@ -255,7 +255,9 @@ def _dedup_view(line: str, owner: str) -> str:
 
 
 def _plain(text: str) -> str:
-    return " ".join(text.split()).casefold().replace("ё", "е")
+    """Полное имя для сравнения: свёртка пробелов + та же нормализация регистра
+    и ё/е, что у сверки участников (action_items._norm), — одна на всех."""
+    return action_items._norm(" ".join(text.split()))
 
 
 def merge_into_minutes(minutes: str, items: list[str], participants: set[str] | None = None,
