@@ -2621,6 +2621,9 @@ def main():
                     out = action_items.flag_outsiders(
                         out, action_items.participants_set(tr.participants(), owner=owner_name),
                         lang=llm.lang)
+                    # владелец — одним написанием: окно «Задачи» ищет его целым
+                    # словом user_name, падеж и уменьшительное решаем здесь (№188)
+                    out = action_items.canon_owner(out, owner_name)
                     # Маркер перепроверяем ПЕРЕД записью, а не только на входе
                     # в итерацию: генерация выше занимает десятки секунд, и
                     # если за это время человек нажал «Протокол», финальные
@@ -2744,6 +2747,7 @@ def main():
                 doc = action_items.flag_outsiders(
                     doc, action_items.participants_set(tr.participants(), owner=owner_name),
                     lang=llm.lang)
+                doc = action_items.canon_owner(doc, owner_name)   # см. черновик выше (№188)
                 # Через временное имя: обрыв посреди write_text оставлял бы
                 # усечённые минутки поверх готовых (mcp_server это уже чинил,
                 # здесь оставался прямой write_text — аудит 14.08)

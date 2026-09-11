@@ -351,3 +351,72 @@ def flag_outsiders(text: str, participants: set[str], lang: str = "ru") -> str:
                     line = f"{m.group(1)}- {mark} ({', '.join(strangers)}): **{m.group(2)}**{m.group(3)}"
         out.append(line)
     return "\n".join(out)
+
+
+# ---- исполнитель-владелец — одним написанием ---------------------------------
+# Минутки и мост ревизии пишут имя так, как оно прозвучало: «Игорю», «Саше»,
+# «Ковалёву». Окно «Задачи» узнаёт владельца по ЦЕЛОМУ слову user_name
+# (TasksScreenPolicy.isMine — намеренно без эвристик: «Маркус» ≠ «Марк»), и
+# падежная или уменьшительная форма выпадала из секции «Мои». Решение «это
+# владелец» принимается здесь, при записи поручения, теми же правилами, что и
+# сверка участников (_same_person: падеж, уменьшительное, ё/е), а не второй
+# копией правил в приложении (№188, advisory GLM по #475/#479).
+# Переписывается только пункт с ОДНИМ исполнителем, и только когда его
+# написание не совпадает ни с одним словом user_name и не с именем целиком:
+# «Игорь Ветров», «Ветров» и «Игорь» остаются, «Игорю», «Ветрову», «Саша»
+# (при «Александр …») → первое слово user_name.
+_OWNER_ITEM = re.compile(r"^(\s*(?:[-*] \[[ xX]\] )?)\*\*([^*\n]{1,80})\*\*(.*)$")
+
+
+def _owner_canon(whole: str, owner: str) -> str | None:
+    """Каноническое написание, если `whole` — владелец в другой форме, иначе None."""
+    canon = [w for w in (owner or "").split() if w]
+    if not canon or not whole.strip():
+        return None
+    names = _split_names(whole)
+    if len(names) != 1 or any(_norm(w) in _JOINERS for w in whole.split()):
+        return None                       # «Марк и Инга» — не один человек
+    own = [w.casefold() for w in canon]
+    parts = [w.casefold() for w in names[0].split() if w]
+    if not parts or len(parts) > len(own):
+        return None
+    # «уже канон» — побуквенно, без склейки ё/е: «Ковалев» приложение целым
+    # словом «Ковалёв» не узнает, значит это тоже другая форма
+    if " ".join(parts) == " ".join(own) or (len(parts) == 1 and parts[0] in own):
+        return None
+    if all(any(_same_person(p, w) for w in own) for p in parts):
+        return canon[0]
+    return None
+
+
+def canon_owner_item(item: str, owner: str) -> str:
+    """Один пункт («**Имя** — дело», с чекбоксом или без) с владельцем в каноне."""
+    m = _OWNER_ITEM.match(item or "")
+    if not m:
+        return item
+    name = _owner_canon(m.group(2).strip(), owner)
+    if name is None:
+        return item
+    return f"{m.group(1)}**{name}**{m.group(3)}"
+
+
+def canon_owner(text: str, owner: str) -> str:
+    """Раздел поручений минуток: исполнитель-владелец — первым словом user_name.
+    Остальные разделы и чужие исполнители не трогаются; пустое имя — как есть."""
+    if not (owner or "").strip():
+        return text
+    out: list[str] = []
+    inside = False
+    for line in text.split("\n"):
+        if _SECTION.match(line):
+            inside = True
+            out.append(line)
+            continue
+        if inside and ((_OTHER_SECTION.match(line)
+                        or (_BARE_HEADING.match(line) and _KNOWN_BARE_SECTION.match(line)))
+                       and not _BULLET.match(line)):
+            inside = False
+        if inside and _ASSIGNEE_LINE.match(line):
+            line = canon_owner_item(line, owner)
+        out.append(line)
+    return "\n".join(out)

@@ -989,8 +989,11 @@ it signals degradation, it does not break the loop.
   («- [ ] **Name** — what — when»); the Tasks window collects every
   `- [ ]` across the graph with an open-count badge, ticking writes
   `[x]` straight into markdown — Obsidian and the app always agree.
-  A "Mine" section comes first (the bold assignee matches `user_name`),
-  even for assignments from weeks ago; open items collapse into a
+  A "Mine" section comes first (the bold assignee matches `user_name`
+  as a whole word; the pipeline writes the owner one way when it saves
+  minutes — a case form or a diminutive of the name becomes the first
+  word of `user_name`, so "Mine" does not miss it), even for
+  assignments from weeks ago; open items collapse into a
   "Stale" section once they go quiet — no due date and older than 14
   days, or a due date a week or more past (a fresh overdue stays
   visible in its bucket) — the screen gets cleaned, the files stay

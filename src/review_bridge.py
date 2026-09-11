@@ -304,6 +304,9 @@ def bridge(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
     items = recovered_items(text, dropped=dropped)
     if not items:
         return 0
+    # Владелец — одним написанием ДО сверки с минутками: «**Игорю** — позвонить»
+    # против «**Игорь** — позвонить» иначе не дубль, а второй пункт (№188)
+    items = [action_items.canon_owner_item(item, owner) for item in items]
     minutes = minutes_path(transcript)
     if not minutes.is_file():
         return 0
