@@ -107,7 +107,9 @@ def test_bridge_writes_minutes_next_to_the_transcript(tmp_path):
     review = tdir / "2026-09-05_1413_Планёрка_ревизия_claude.md"
     review.write_text(REVIEW + "- [ ] **Мария** — принести отчёт\n", encoding="utf-8")
     # последняя строка ревизии — вне строгого раздела (после «## 7.»), в минутки не идёт
-    assert rb.bridge(review, transcript, owner="Владелец") == 1
+    dropped: list[str] = []
+    assert rb.bridge(review, transcript, owner="Владелец", dropped=dropped) == 1
+    assert dropped == ["нет"], "выброшенное из раздела доходит до лога через bridge (GLM r1 по #533)"
     text = minutes.read_text(encoding="utf-8")
     assert "**Саша Орлова** — подготовить демо для показа (из ревизии)" in text
     assert "Мария" not in text
@@ -218,3 +220,72 @@ def test_l4_prompt_names_the_strict_section():
     prompt = graph_updater.cloud_enrich_prompt(transcript_name="x.md", folder=Path("."), graph=Path("."),
                                                rev_name="r.md", stamp="2026-09-05_1413", may_edit=False, context="")
     assert "## Восстановленные поручения" in prompt and "- [ ] **Имя** — что сделать" in prompt
+
+
+def test_classify_line_table():
+    """Таблица «строка → класс» — единственное место, где живут правила
+    разбора раздела (№187, критика GLM r4 по #518). had_items — были ли
+    уже пункты в разделе: от этого зависят граница без двоеточия, свой
+    пункт без маркера и перенос. Новый крайний случай — новая строка
+    здесь, а не новая ветка в цикле."""
+    cases = [
+        # заголовок раздела в трёх формах
+        ("## Восстановленные поручения", False, rb.LINE_HEAD),
+        ("**Восстановленные поручения:**", False, rb.LINE_HEAD),
+        ("Восстановленные поручения:", True, rb.LINE_HEAD),
+        # границы раздела
+        ("## 7. Что сделано в графе", True, rb.LINE_END),
+        ("**Решения:**", False, rb.LINE_END),            # жирная подпись с двоеточием — граница всегда
+        ("**Что сделано в графе**", True, rb.LINE_END),    # без двоеточия — граница, когда пункты были
+        ("**Что сделано в графе**", False, rb.LINE_NOISE), # …а до первого пункта это подпись раздела
+        ("Решения:", True, rb.LINE_END),                 # голая известная секция
+        # пустые
+        ("", True, rb.LINE_BLANK),
+        ("   ", False, rb.LINE_BLANK),
+        # пункты с маркером
+        ("- [ ] **Иван** — согласовать бюджет", False, rb.LINE_ITEM),
+        ("- **Саша Орлова** — подготовить демо", True, rb.LINE_ITEM),
+        ("-**Саша** — позвонить", True, rb.LINE_ITEM),    # без пробела после маркера (GLM r2 M6)
+        ("1) **Пётр** — написать", False, rb.LINE_ITEM),
+        # маркер есть, пункта нет
+        ("- нет", False, rb.LINE_NOISE),
+        ("- [ ] нет", True, rb.LINE_NOISE),
+        ("- **нет**", False, rb.LINE_NOISE),
+        ("- ---", True, rb.LINE_NOISE),
+        ("- [ ]", True, rb.LINE_NOISE),                   # чекбокс без текста — не пункт «[ ]» (DS r1 по #533)
+        ("- [x]", False, rb.LINE_NOISE),
+        ("-[ ] ", False, rb.LINE_NOISE),
+        # без маркера
+        ("**Пётр** — позвонить", True, rb.LINE_OWN_ITEM),  # свой пункт (GLM r5 I1)
+        ("**Саша**: написать", True, rb.LINE_OWN_ITEM),
+        ("**Пётр** — позвонить", False, rb.LINE_NOISE),    # до первого пункта — мимо (GLM r3 M3)
+        ("  бюджет стенда", True, rb.LINE_CONT),           # перенос внутри пункта (DS r1 I2)
+        ("**на стенд** до пятницы", True, rb.LINE_CONT),   # перенос с жирного спана (круг 4)
+        ("всё", True, rb.LINE_CONT),
+        ("(срок не назван)", True, rb.LINE_NOISE),         # комментарий модели (DS r2 I2)
+        ("нет", True, rb.LINE_NOISE),
+        ("–", True, rb.LINE_NOISE),
+        ("– —", True, rb.LINE_NOISE),
+        ("**", True, rb.LINE_NOISE),                       # одни звёздочки — не хвост пункта (GLM r1 по #533)
+        ("*", True, rb.LINE_NOISE),
+        ("строка до первого пункта", False, rb.LINE_NOISE),
+    ]
+    for line, had, want in cases:
+        assert rb.classify_line(line, had) == want, f"{line!r} had_items={had}: ждали {want}"
+
+
+def test_dropped_lines_are_collected_for_the_log():
+    """Что мост выбросил из раздела, должно быть видно в логе ревизии:
+    иначе потерянное поручение и честно пустой раздел выглядят одинаково."""
+    review = ("## Восстановленные поручения\n- нет\n  (срок не назван)  \nпреамбула до пункта\n- [ ]\n"
+              "- [ ] **Иван** — позвонить\n---\nвсё\n## Далее\n- x\n")
+    dropped: list[str] = []
+    assert rb.recovered_items(review, dropped=dropped) == ["**Иван** — позвонить всё"]
+    # строки в лог — без отступов (GLM r1 по #533); пустой чекбокс — выброшен, а не пункт «[ ]»
+    assert dropped == ["- нет", "(срок не назван)", "преамбула до пункта", "- [ ]", "---"]
+    # без списка — прежнее поведение, ничего не копится и не ломается
+    assert rb.recovered_items(review) == ["**Иван** — позвонить всё"]
+    # пустые строки и границы раздела — не «выброшенное»
+    dropped = []
+    rb.recovered_items("## Восстановленные поручения\n\n- [ ] **Иван** — позвонить\n\n## Далее\n", dropped=dropped)
+    assert dropped == []

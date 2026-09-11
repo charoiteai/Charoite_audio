@@ -1134,8 +1134,9 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             # (checked) мосту не гейт (GLM r1 по #518, критика 2).
             try:
                 sufler = cfg.get("sufler") or {}
+                dropped: list[str] = []
                 added = review_bridge.bridge(rev, transcript, owner=str(sufler.get("user_name") or ""),
-                                             lang=str(sufler.get("language") or "ru"))
+                                             lang=str(sufler.get("language") or "ru"), dropped=dropped)
                 verified = "сверено" if (not may_edit or checked) else "БЕЗ сверки графа"
                 if added:
                     lines.append(f"[cloud-review] мост ревизии ({verified}): в минутки дописано поручений — {added}\n")
@@ -1144,6 +1145,15 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 elif review_bridge.section_present(rev.read_text(encoding="utf-8", errors="replace")):
                     lines.append("[cloud-review] мост ревизии: раздел о восстановленных поручениях есть, "
                                  "пунктов не извлечено или все уже в минутках\n")
+                # Что мост выбросил из раздела — в лог: «нет», комментарии модели,
+                # строки до первого пункта. Без этого потерянное поручение и честно
+                # пустой раздел выглядели одинаково (GLM r4 по #518, критика 1).
+                # Отдельным if ПОСЛЕ цепочки: врезанный в неё, он перехватывал
+                # elif у `if added` — лог врал на каждом чистом прогоне (DS/GLM r1 по #533)
+                if dropped:
+                    shown = "; ".join(s[:80] for s in dropped[:5])
+                    more = "" if len(dropped) <= 5 else f" (и ещё {len(dropped) - 5})"
+                    lines.append(f"[cloud-review] мост ревизии: отброшено строк раздела — {len(dropped)}: {shown}{more}\n")
             except Exception as e:  # noqa: BLE001 — мост не важнее самой ревизии
                 lines.append(f"[cloud-review] мост ревизии не сработал: {e}\n")
         if published and deliver and (not may_edit or checked):
