@@ -120,6 +120,58 @@ def test_bridge_writes_minutes_next_to_the_transcript(tmp_path):
     assert rb.bridge(review, transcript) == 0
 
 
+def test_bridge_writes_the_owner_one_way_before_dedup(tmp_path):
+    """№188: «**Ивану** — позвонить заказчику» из ревизии против «**Иван** —
+    позвонить заказчику» в минутках — тот же пункт, а не второй; новый пункт
+    владельца пишется первым словом user_name, как его ищет окно «Задачи»."""
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    transcript = tdir / "2026-09-05_1413_Планёрка.md"
+    transcript.write_text("# Встреча\n\nУчастники (звучали в разговоре): Иван, Пётр\n\n"
+                          "**Иван** [14:13]: начнём\n", encoding="utf-8")
+    minutes = tdir / "2026-09-05_1413_Планёрка_minutes.md"
+    # три написания владельца, которые уже могут лежать в минутках: канон,
+    # легаси-падеж (минутки до канонизации) и полное user_name
+    minutes.write_text("# Минутки\n## Поручения\n- [ ] **Иван** — позвонить заказчику\n"
+                       "- [ ] **Ивану** — согласовать бюджет\n- [ ] **Иван Орлов** — собрать демо\n"
+                       "- **Ивану** — уточнить смету\n",          # буллет без чекбокса, руками (GLM r2 M5)
+                       encoding="utf-8")
+    review = tdir / "2026-09-05_1413_Планёрка_ревизия_claude.md"
+    review.write_text("## Восстановленные поручения\n- [ ] **Ивану** — позвонить заказчику\n"
+                      "- [ ] **Ивану** — согласовать бюджет\n- [ ] **Ивану** — собрать демо\n"
+                      "- [ ] **Ивану** — уточнить смету\n- [ ] **Ивану** — написать отчёт\n", encoding="utf-8")
+    assert rb.bridge(review, transcript, owner="Иван Орлов") == 1, minutes.read_text(encoding="utf-8")
+    text = minutes.read_text(encoding="utf-8")
+    for phrase in ("позвонить заказчику", "согласовать бюджет", "собрать демо", "уточнить смету"):
+        assert text.count(phrase) == 1, (phrase, text)
+    assert "- [ ] **Иван** — написать отчёт (из ревизии)" in text, text
+    # старые строки минуток не переписываются — сравнение шло по канону, файл не трогали
+    assert "- [ ] **Ивану** — согласовать бюджет\n" in text and "- [ ] **Иван Орлов** — собрать демо\n" in text
+    # полное имя без ё в минутках против user_name с ё — тот же владелец (GLM r2 I1)
+    _, added = rb.merge_into_minutes("## Поручения\n- [ ] **Петр Иванов** — собрать демо\n",
+                                     ["**Пётр** — собрать демо"], owner="Пётр Иванов")
+    assert added == 0
+
+
+def test_bridge_does_not_mark_the_owner_legacy_dative_line(tmp_path):
+    """Important GLM r3 по #536: мост гонит flag_outsiders по всему разделу, и
+    легаси-строка «**Павлу**» владельца-Павла (написана до канонизации) теряла
+    чекбокс — _same_person не знает беглой гласной. Формы владельца теперь в
+    самих участниках (participants_of), строка остаётся задачей."""
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    transcript = tdir / "2026-09-05_1413_Планёрка.md"
+    transcript.write_text("# Встреча\n\nУчастники (звучали в разговоре): Павел, Пётр\n\n"
+                          "**Пётр** [14:13]: начнём\n", encoding="utf-8")
+    minutes = tdir / "2026-09-05_1413_Планёрка_minutes.md"
+    minutes.write_text("# Минутки\n## Поручения\n- [ ] **Павлу** — согласовать бюджет\n", encoding="utf-8")
+    review = tdir / "2026-09-05_1413_Планёрка_ревизия_claude.md"
+    review.write_text("## Восстановленные поручения\n- [ ] **Петру** — собрать демо\n", encoding="utf-8")
+    assert rb.bridge(review, transcript, owner="Павел Иванов") == 1
+    text = minutes.read_text(encoding="utf-8")
+    assert "- [ ] **Павлу** — согласовать бюджет\n" in text and "не участник" not in text, text
+
+
 def test_checkbox_no_is_an_empty_section_too():
     text, added = rb.merge_into_minutes("## Поручения\n\n- [ ] нет\n", ["**Иван** — позвонить"])
     assert added == 1 and "нет" not in text.split("## Поручения", 1)[1]
