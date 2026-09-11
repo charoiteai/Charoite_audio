@@ -155,6 +155,9 @@ def sufler_make_minutes() -> str:
     out = action_items.flag_outsiders(
         out, action_items.participants_of(transcript, owner=_sufler.get("user_name") or ""),
         lang=str(_sufler.get("language") or "ru"))
+    # владелец — одним написанием, как в демоне: иначе пересборка этим путём
+    # возвращала бы «**Марку**» поверх «**Марк**» (Important GLM r1 по #536)
+    out = action_items.canon_owner(out, str(_sufler.get("user_name") or ""))
     # Через временное имя: обрыв посреди write_text оставлял бы усечённые
     # минутки ПОВЕРХ готовых — тот же класс, что у .wav в pcm_to_wav.
     tmp = mpath.with_name(mpath.name + f".tmp{os.getpid()}")

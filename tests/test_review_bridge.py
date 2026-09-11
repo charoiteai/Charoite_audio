@@ -130,15 +130,22 @@ def test_bridge_writes_the_owner_one_way_before_dedup(tmp_path):
     transcript.write_text("# Встреча\n\nУчастники (звучали в разговоре): Иван, Пётр\n\n"
                           "**Иван** [14:13]: начнём\n", encoding="utf-8")
     minutes = tdir / "2026-09-05_1413_Планёрка_minutes.md"
-    minutes.write_text("# Минутки\n## Поручения\n- [ ] **Иван** — позвонить заказчику\n", encoding="utf-8")
+    # три написания владельца, которые уже могут лежать в минутках: канон,
+    # легаси-падеж (минутки до канонизации) и полное user_name
+    minutes.write_text("# Минутки\n## Поручения\n- [ ] **Иван** — позвонить заказчику\n"
+                       "- [ ] **Ивану** — согласовать бюджет\n- [ ] **Иван Орлов** — собрать демо\n",
+                       encoding="utf-8")
     review = tdir / "2026-09-05_1413_Планёрка_ревизия_claude.md"
     review.write_text("## Восстановленные поручения\n- [ ] **Ивану** — позвонить заказчику\n"
-                      "- [ ] **Ивану** — собрать демо\n", encoding="utf-8")
-    assert rb.bridge(review, transcript, owner="Иван Орлов") == 1
+                      "- [ ] **Ивану** — согласовать бюджет\n- [ ] **Ивану** — собрать демо\n"
+                      "- [ ] **Ивану** — написать отчёт\n", encoding="utf-8")
+    assert rb.bridge(review, transcript, owner="Иван Орлов") == 1, minutes.read_text(encoding="utf-8")
     text = minutes.read_text(encoding="utf-8")
-    assert text.count("позвонить заказчику") == 1, text
-    assert "- [ ] **Иван** — собрать демо (из ревизии)" in text, text
-    assert "Ивану" not in text
+    assert text.count("позвонить заказчику") == 1 and text.count("согласовать бюджет") == 1 \
+        and text.count("собрать демо") == 1, text
+    assert "- [ ] **Иван** — написать отчёт (из ревизии)" in text, text
+    # старые строки минуток не переписываются — сравнение шло по канону, файл не трогали
+    assert "- [ ] **Ивану** — согласовать бюджет\n" in text and "- [ ] **Иван Орлов** — собрать демо\n" in text
 
 
 def test_checkbox_no_is_an_empty_section_too():

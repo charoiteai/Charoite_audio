@@ -236,10 +236,28 @@ def _section_bounds(lines: list[str]) -> tuple[int, int] | None:
     return start, end
 
 
+def _dedup_view(line: str, owner: str) -> str:
+    """Строка минуток ДЛЯ СРАВНЕНИЯ с пунктом ревизии: владелец в том же
+    каноне, что у ревизии (canon_owner_item), а полное user_name жирным —
+    тоже первым словом: «**Иван Орлов** — …», «**Ивану** — …» (минутки до
+    канонизации) и «**Иван** — …» — один исполнитель, а не три (Important
+    DS/GLM, круг 1 по #536). Файл этим не переписывается."""
+    if not (owner or "").strip():
+        return line
+    line = action_items.canon_owner_item(line, owner)
+    words = owner.split()
+    m = _ASSIGNEE.match(line)
+    if len(words) > 1 and m and m.group("name").strip().casefold() == " ".join(words).casefold():
+        line = line[:m.start("name")] + words[0] + line[m.end("name"):]
+    return line
+
+
 def merge_into_minutes(minutes: str, items: list[str], participants: set[str] | None = None,
-                       lang: str = "ru") -> tuple[str, int]:
+                       lang: str = "ru", owner: str = "") -> tuple[str, int]:
     """Минутки с дописанными пунктами и сколько дописано. Повторы не
-    дописываются; «нет» в пустом разделе уступает место первому пункту."""
+    дописываются; «нет» в пустом разделе уступает место первому пункту.
+    `owner` — user_name: существующие пункты сравниваются с ревизионными
+    в одном каноне владельца (_dedup_view), сам текст минуток не меняется."""
     lang = (lang or "ru").strip().lower()[:2]
     mark = MARKS.get(lang, MARKS["ru"])
     fresh: list[str] = []
@@ -267,7 +285,7 @@ def merge_into_minutes(minutes: str, items: list[str], participants: set[str] | 
         start, end = len(lines) - 1, len(lines)
     else:
         start, end = bounds
-    existing = [line for line in lines[start + 1:end] if _key(line)]
+    existing = [_dedup_view(line, owner) for line in lines[start + 1:end] if _key(line)]
     new_lines = [f"- [ ] {item} {mark}" for item in fresh
                  if not any(_same_item(item, line) for line in existing)]
     if not new_lines:
@@ -316,7 +334,7 @@ def bridge(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
         speech = ""
     participants = action_items.participants_of(speech, owner) if speech else set()
     before = minutes.read_text(encoding="utf-8", errors="replace")
-    after, added = merge_into_minutes(before, items, participants, lang=lang)
+    after, added = merge_into_minutes(before, items, participants, lang=lang, owner=owner)
     if added:
         safe_write.write_text(minutes, after)
     return added

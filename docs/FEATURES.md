@@ -991,8 +991,9 @@ it signals degradation, it does not break the loop.
   `[x]` straight into markdown — Obsidian and the app always agree.
   A "Mine" section comes first (the bold assignee matches `user_name`
   as a whole word; the pipeline writes the owner one way when it saves
-  minutes — a case form or a diminutive of the name becomes the first
-  word of `user_name`, so "Mine" does not miss it), even for
+  minutes — the dative form of the first name, or its spelling with "е"
+  for "ё", becomes the first word of `user_name`, so "Mine" does not
+  miss it; surnames and diminutives are left as they are), even for
   assignments from weeks ago; open items collapse into a
   "Stale" section once they go quiet — no due date and older than 14
   days, or a due date a week or more past (a fresh overdue stays
