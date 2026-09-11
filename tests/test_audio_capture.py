@@ -796,3 +796,179 @@ def test_every_physical_chunk_consumes_a_number_even_silent_or_echo():
     assert hub.chunk_seq(hub.SPEAKER["mic"]) == ("mic", 2), "речевой после тишины — не сосед первого"
     assert hub.chunk_seq("нет такого") is None
 
+
+
+def test_missing_system_channel_screams_and_names_the_reason(tmp_path, monkeypatch):
+    """Запись без канала собеседников обязана быть ГРОМКОЙ, с причиной.
+
+    До 10.09 об этом сообщала только строка статуса «Слушаю: Микрофон
+    (fallback)» рядом с названием модели — на встрече такое не замечают, а
+    узнаю́т через час по пустой стенограмме. С удалением BlackHole (№137)
+    запасного пути не осталось вовсе: если ScreenCaptureKit не поднялся,
+    вторая сторона разговора не запишется, и предупредить надо СРАЗУ.
+    """
+    said = []
+    hub = object.__new__(a.AudioHub)
+    hub.on_status = said.append
+    monkeypatch.setattr(a, "ROOT", tmp_path)          # свой logs/, боевой не трогаем
+    calls = []
+    # Popen, а не run: уведомление пускается без ожидания, чтобы залипший
+    # osascript не отодвигал открытие каналов (круг 1, 10.09).
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: calls.append(args))
+
+    hub._warn_no_system_channel(sck_missing=True, bh_missing=True)
+
+    assert len(said) == 1, "предупреждение должно быть ровно одно"
+    msg = said[0]
+    assert "СОБЕСЕДНИКОВ" in msg, "текст обязан говорить, ЧТО потеряно, а не «fallback»"
+    assert "ScreenCaptureKit" in msg and "право" in msg, "нужна причина и что проверить"
+    assert calls, "уведомление macOS не отправлено — строку статуса не заметят"
+
+    log = (tmp_path / "logs" / "capture.log").read_text(encoding="utf-8")
+    assert "ЗАПИСЬ БЕЗ СИСТЕМНОГО ЗВУКА" in log, "причина обязана осесть в capture.log"
+
+
+def test_предупреждение_переживает_недоступный_лог_и_упавший_notifier(tmp_path, monkeypatch):
+    """Предупреждение важнее своих же побочных действий: недоступный лог и
+    упавший osascript не должны ронять старт записи.
+
+    «logs» здесь — ФАЙЛ, а не каталог: чтение хвоста даёт NotADirectoryError,
+    запись — FileExistsError на mkdir(exist_ok=True); оба — OSError, и обе
+    ветки except исполняются по-настоящему. Прежняя версия подставляла
+    несуществующий путь, а mkdir(parents=True) его молча создавал — ветка
+    except на записи не исполнялась ни разу, и мутация «убрать except»
+    оставляла тест зелёным (круг 2, DS и GLM независимо, 11.09). Идёт боевым
+    путём — конструктор → on_status → start(), — а не прямым вызовом метода."""
+    _no_system_channel(monkeypatch, tmp_path)
+    (tmp_path / "logs").write_bytes(b"")             # файл на месте каталога логов
+
+    def boom(*args, **kw):
+        raise OSError("уведомления недоступны")
+
+    monkeypatch.setattr("subprocess.Popen", boom)
+    hub = a.AudioHub(_hub_cfg())
+    said = []
+    hub.on_status = said.append
+    hub.start()                                      # не должен бросить
+
+    assert any("СОБЕСЕДНИКОВ" in m for m in said), "человек предупреждён, несмотря на отказы вокруг"
+    assert (tmp_path / "logs").is_file(), \
+        "запись в лог обязана была отказать, а не пересоздать каталог поверх файла"
+
+
+# --- Проводка предупреждения: тесты идут БОЕВЫМ путём ------------------------
+# Прежние тесты звали hub._warn_no_system_channel напрямую и потому
+# пропустили главное: предупреждение уходило из __init__, а on_status демон
+# вешает уже ПОСЛЕ конструктора — строка статуса не доходила до интерфейса
+# никогда. Откат точки вызова они держали зелёными (круг 1, DS и GLM
+# независимо, 10.09). Прямой вызов остался один — test_warning_reaches_all_three_channels,
+# он проверяет состав сообщения, не проводку. Ниже — проверки через
+# конструктор и start().
+
+def _hub_cfg(device="auto"):
+    return {
+        "audio": {"samplerate": 16000, "chunk_seconds": 3.0, "overlap_seconds": 0.5,
+                  "vad_energy_db": -45.0, "record": False, "device": device},
+        "log": {"recordings_dir": "recordings"},
+        "sufler": {"user_name": "Владелец"},
+    }
+
+
+def _no_system_channel(monkeypatch, tmp_path):
+    """Машина без канала собеседников: ни потока приложения, ни устройства."""
+    monkeypatch.setattr(a, "ROOT", tmp_path)
+    monkeypatch.setattr(a, "fresh_sck_manifest", lambda: None)
+    monkeypatch.setattr(a, "find_system_audio", lambda: None)
+    monkeypatch.setattr(a.sd.default, "device", (1, None), raising=False)
+    monkeypatch.setattr(a.Capture, "start", lambda self: None)
+    monkeypatch.setattr(a.threading, "Thread",
+                        lambda *args, **kw: type("_T", (), {"start": lambda s: None})())
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: None)
+
+
+def test_предупреждение_доходит_до_ui_потому_что_ждёт_start(tmp_path, monkeypatch):
+    """Порядок проводки: demon строит AudioHub, ПОТОМ вешает on_status, потом
+    start(). Если кричать из конструктора, крик уходит в None — и именно так
+    было до этой правки. Тест повторяет боевой порядок целиком."""
+    _no_system_channel(monkeypatch, tmp_path)
+
+    hub = a.AudioHub(_hub_cfg())          # как daemon.py:537 — on_status ещё нет
+    assert hub.on_status is None, "заглушка теста разошлась с боевым порядком"
+
+    said = []
+    hub.on_status = said.append           # как daemon.py:541 — уже после конструктора
+    hub.start()                           # как daemon.py:626
+
+    assert said, "предупреждение не дошло до интерфейса: крик ушёл в None"
+    assert any("СОБЕСЕДНИКОВ" in m for m in said), \
+        "в интерфейс ушло что-то не то — человек не поймёт, что потеряно"
+
+
+def test_режим_только_микрофон_не_поднимает_ложную_тревогу(tmp_path, monkeypatch):
+    """device: mic — это диктовка и личные заметки: собеседников там нет по
+    замыслу. Кричать о них на каждом запуске значит приучить не читать
+    предупреждения вовсе."""
+    _no_system_channel(monkeypatch, tmp_path)
+
+    hub = a.AudioHub(_hub_cfg(device="mic"))
+    # Прямо про гейт, а не про доставку: пустой said бывает и когда крик
+    # просто не долетел (так этот тест и прошёл на мутации 11.09 — зелёный
+    # по неверной причине). Факт не должен быть зафиксирован вовсе.
+    assert hub._no_system_channel is None, "в режиме mic взведено предупреждение"
+
+    said = []
+    hub.on_status = said.append
+    hub.start()
+
+    assert not any("СОБЕСЕДНИКОВ" in m for m in said), \
+        "ложная тревога в режиме одного микрофона"
+
+    # Контроль: в auto на той же машине предупреждение обязано взводиться —
+    # иначе тест выше зелёный просто потому, что сломан весь механизм.
+    assert a.AudioHub(_hub_cfg())._no_system_channel is not None, \
+        "в auto предупреждение не взводится — проверка режима mic ничего не значит"
+
+
+def test_битый_лог_не_срывает_старт_записи(tmp_path, monkeypatch):
+    """capture.log дописывает Swift-часть, и чтение может застать оборванную
+    UTF-8 последовательность. Раньше UnicodeDecodeError (наследник ValueError,
+    не OSError) летел сквозь except из конструктора и убивал старт записи.
+    Теперь основная защита — errors="replace" при чтении (причина сохраняется
+    с U+FFFD), а ValueError в except — страховка на случай снятия replace.
+    Тест проверяет итог: старт не падает и предупреждение доходит; ветку
+    except ValueError он при replace не исполняет — это задумано (круг 2)."""
+    _no_system_channel(monkeypatch, tmp_path)
+    log = tmp_path / "logs" / "capture.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    # \xff\xfe — не-UTF-8 байты: ровно то, что читатель застаёт, если Swift
+    # дописывает многобайтовую букву прямо сейчас.
+    log.write_bytes(b"SCK: denied\n\xff\xfe" + "оборванный хвост".encode("utf-8"))
+
+    hub = a.AudioHub(_hub_cfg())
+    said = []
+    hub.on_status = said.append
+    hub.start()                            # не должен бросить
+
+    assert any("СОБЕСЕДНИКОВ" in m for m in said), "предупреждение потерялось на битом логе"
+
+
+def test_причиной_не_становится_собственное_предупреждение_прошлой_встречи(tmp_path, monkeypatch):
+    """Мы пишем предупреждение в тот же capture.log, из которого берём причину.
+    Без метки своей строки причиной следующей встречи становилось бы эхо
+    предыдущей вместо сообщения Swift."""
+    _no_system_channel(monkeypatch, tmp_path)
+    log = tmp_path / "logs" / "capture.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(
+        "SCK: permission denied by user\n"
+        f"2026-09-10 12:00:00 {a.MIC_ONLY_LOG_MARK}: прошлая встреча\n",
+        encoding="utf-8")
+
+    hub = a.AudioHub(_hub_cfg())
+    said = []
+    hub.on_status = said.append
+    hub.start()
+
+    msg = "".join(said)
+    assert "permission denied by user" in msg, "причина от Swift потеряна"
+    assert "прошлая встреча" not in msg, "причиной стало собственное предупреждение"

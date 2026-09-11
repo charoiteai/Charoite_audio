@@ -49,6 +49,10 @@ def find_system_audio() -> int | None:
 
 
 SCK_STREAM_MANIFEST = ROOT / "data" / "sck_stream.json"
+# Метка своей строки в capture.log: этот же лог мы читаем, чтобы назвать
+# причину, и без метки причиной становилось бы наше собственное
+# предупреждение с прошлой встречи.
+MIC_ONLY_LOG_MARK = "ЗАПИСЬ БЕЗ СИСТЕМНОГО ЗВУКА (только микрофон)"
 
 
 def _fresh_manifest(path: pathlib.Path, *keys: str) -> dict | None:
@@ -472,8 +476,90 @@ class AudioHub:
         if not self.captures:  # blackhole запрошен, но не найден
             self.captures.append(Capture(mic, self.sr, "mic"))
             self.sources.append("Микрофон (fallback)")
+        # Канала собеседников нет — встреча запишется ОДНИМ микрофоном, и в
+        # стенограмме не будет второй стороны разговора. До 10.09 об этом
+        # сообщала только строка статуса «Слушаю: Микрофон (fallback)» рядом
+        # с названием модели: на встрече такое не замечают, а узнают через час
+        # по пустой стенограмме. С удалением BlackHole (№137) запасного пути
+        # не осталось вовсе, поэтому предупреждение обязано быть громким.
+        #
+        # Здесь только ЗАПОМИНАЕМ факт, а говорим в start(). Причина в порядке
+        # проводки: daemon.py строит AudioHub (стр. 537) и лишь потом вешает
+        # on_status (стр. 541), а main.py не вешает его вовсе. Предупреждение
+        # из конструктора уходило в `self.on_status is None` и не долетало до
+        # интерфейса НИКОГДА — то есть «громко» было ровно наполовину
+        # (уведомление и лог), а обещанная строка статуса молчала (круг 1,
+        # DS и GLM независимо, 10.09).
+        #
+        # Режим mic исключён сознательно: там пользователь сам просит один
+        # микрофон (диктовка, личные заметки), и канала собеседников не будет
+        # по построению. Кричать об этом — ложная тревога на каждом запуске.
+        self._no_system_channel = None
+        if mode != "mic" and not any(c.label == "blackhole" for c in self.captures):
+            self._no_system_channel = {"sck_missing": sck is None, "bh_missing": bh is None}
         for c in self.captures:
             self._bufs[c.label] = np.zeros(0, dtype=np.float32)
+
+    def _warn_no_system_channel(self, *, sck_missing: bool, bh_missing: bool) -> None:
+        """Громко сказать, что собеседников в записи не будет, и почему.
+
+        Причину знает Swift-часть: она поднимает ScreenCaptureKit и пишет ход
+        в logs/capture.log. Питон видит только отсутствие манифеста, поэтому
+        последнюю строку лога подхватываем — иначе разбираться придётся
+        вручную и уже после встречи.
+        """
+        import datetime                       # локально: шапку аудио-модуля не трогаем
+        import subprocess
+
+        why = []
+        if sck_missing:
+            why.append("ScreenCaptureKit не поднялся (нет свежего "
+                       f"{SCK_STREAM_MANIFEST.name}; проверить право «Запись экрана»)")
+        if bh_missing:
+            why.append("устройства системного звука не видно")
+        try:
+            log = ROOT / "logs" / "capture.log"
+            # Битый хвост (Swift дописывает многобайтовую букву прямо сейчас)
+            # раньше давал UnicodeDecodeError — наследника ValueError, а не
+            # OSError, — и он убивал старт записи целиком (круг 1, DS 10.09).
+            # Основная защита — errors="replace": невалидные байты становятся
+            # U+FFFD, причина сохраняется. ValueError в except — страховка на
+            # случай, если replace когда-нибудь снимут; при replace эта ветка
+            # недостижима (круг 2, обе головы) — это задумано, а не забыто.
+            #
+            # Свои же строки в хвост не берём: предупреждение пишется в этот
+            # самый лог, и через встречу причиной становилось бы эхо прошлой
+            # встречи вместо сообщения Swift.
+            tail = [ln.strip() for ln in log.read_text(encoding="utf-8", errors="replace").splitlines()
+                    if ln.strip() and MIC_ONLY_LOG_MARK not in ln]
+            if tail:
+                why.append(f"последняя строка capture.log: {tail[-1]}")
+        except (OSError, ValueError):
+            pass
+        reason = "; ".join(why) or "причина неизвестна"
+        self._say("⚠️ СОБЕСЕДНИКОВ В ЗАПИСИ НЕ БУДЕТ: системный звук не "
+                  f"захвачен, пишем только микрофон. {reason}")
+        try:
+            # Popen, а не run: это вызывается на пути старта записи, и
+            # залипший osascript (занятый центр уведомлений, первый показ под
+            # TCC) отодвигал бы открытие каналов на весь таймаут — первые
+            # секунды разговора не попали бы в файл. Уведомление со звуком:
+            # беззвучный баннер за развёрнутым окном встречи не замечают.
+            subprocess.Popen(
+                ["osascript", "-e",
+                 'display notification "Системный звук не захвачен — в записи будет '
+                 'только ваш микрофон, без собеседников. Проверьте право «Запись экрана»." '
+                 'with title "Чароит: запись неполная" sound name "Glass"'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:                       # noqa: BLE001 — уведомление не должно ронять запись
+            pass
+        try:
+            log = ROOT / "logs" / "capture.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with open(log, "a", encoding="utf-8") as fh:
+                fh.write(f"{datetime.datetime.now():%F %H:%M:%S} {MIC_ONLY_LOG_MARK}: {reason}\n")
+        except OSError:
+            pass
 
     # Сколько ждём перезапуск канала, прежде чем считать его безнадёжным.
     # Пять секунд: закрытие живого стрима укладывается в доли секунды, а
@@ -482,6 +568,16 @@ class AudioHub:
 
     def start(self):
         self._running = True
+        # Предупреждение о записи без собеседников — здесь, а не в __init__:
+        # к моменту start() потребитель уже повесил on_status (daemon.py и
+        # main.py), и строка доходит до интерфейса. Первым делом, до открытия
+        # файлов: человек должен увидеть это в начале встречи, а не после неё.
+        # Честно про носители: статус в Swift нелипкий, следующий emit демона
+        # (диаризация, первые чанки) его сменяет за секунды — главный носитель
+        # для человека это уведомление со звуком и строка в capture.log; липкий
+        # статус ошибки записи — отдельная работа (круг 2 GLM по #531).
+        if getattr(self, "_no_system_channel", None):
+            self._warn_no_system_channel(**self._no_system_channel)
         if self.record_on:
             self._open_sinks()
         # Поканально, а не общим циклом: 06.08 отказ канала системного звука
