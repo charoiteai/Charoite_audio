@@ -79,6 +79,12 @@ cp config/config.example.yaml config/config.yaml
 Charoite 自行选择音源：优先 ScreenCaptureKit，其次 BlackHole。会议状态栏会
 显示当前使用的通道。
 
+如果完全没有对方的音频通道（「屏幕录制」权限被撤销、BlackHole 未配置），录制
+仍会开始——但只有麦克风——并且 Charoite 会在开始的那一刻立即告知：会议状态栏
+中的一行提示，加上带声音的系统通知，并说明原因。不会再出现悄无声息的「会议
+录制时没有对方声音」。例外是 `config.yaml` 中的 `device: mic`：那是有意选择
+麦克风，不会发出警告。
+
 ## 4. macOS 权限
 
 - **麦克风**——首次运行时请求授权。
