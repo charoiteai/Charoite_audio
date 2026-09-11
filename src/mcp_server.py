@@ -152,8 +152,12 @@ def sufler_make_minutes() -> str:
     # normalize — задачи из таких минуток не попадали в окно «Задачи» (№141).
     out = action_items.normalize(out)
     _sufler = _CFG.get("sufler") or {}
-    out = action_items.flag_outsiders(
-        out, action_items.participants_of(transcript, owner=_sufler.get("user_name") or ""),
+    # владелец — одним написанием, потом пометка «не участник» — как в демоне:
+    # иначе пересборка этим путём возвращала бы «**Марку**» поверх «**Марк**»
+    # (Important GLM r1 по #536); порядок — контракт finalize_assignees
+    user_name = str(_sufler.get("user_name") or "")
+    out = action_items.finalize_assignees(
+        out, action_items.participants_of(transcript, owner=user_name), user_name,
         lang=str(_sufler.get("language") or "ru"))
     # Через временное имя: обрыв посреди write_text оставлял бы усечённые
     # минутки ПОВЕРХ готовых — тот же класс, что у .wav в pcm_to_wav.
