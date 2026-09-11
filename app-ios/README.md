@@ -27,12 +27,8 @@ runs on your Mac.
   Siri, Shortcuts, the Action button and Back Tap. iOS never starts a
   recording from the background: the intent opens the app, which starts
   immediately. What no app can do on iPhone: record the call itself — the
-  microphone belongs to the call; a call during a recording is a pause.
-  When the call ends, the app waits for the microphone for up to a minute
-  (iOS hands it back a few seconds after a long call, not instantly) and
-  continues the same file; if the input never comes back, it closes the
-  file and continues the meeting in a new one, arming itself if the input
-  is still busy. Calls are recorded by the Mac.
+  microphone belongs to the call; a call during a recording is a pause and
+  the same file continues afterwards. Calls are recorded by the Mac.
 - **Stalled-recording watchdog** — if the file's duration stops growing
   for more than three seconds (a call, an interruption, a stolen
   microphone), the screen says so in orange. An earlier build measured
