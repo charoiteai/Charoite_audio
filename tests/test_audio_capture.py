@@ -812,7 +812,9 @@ def test_missing_system_channel_screams_and_names_the_reason(tmp_path, monkeypat
     hub.on_status = said.append
     monkeypatch.setattr(a, "ROOT", tmp_path)          # свой logs/, боевой не трогаем
     calls = []
-    monkeypatch.setattr("subprocess.run", lambda *args, **kw: calls.append(args))
+    # Popen, а не run: уведомление пускается без ожидания, чтобы залипший
+    # osascript не отодвигал открытие каналов (круг 1, 10.09).
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: calls.append(args))
 
     hub._warn_no_system_channel(sck_missing=True, bh_missing=True)
 
@@ -837,6 +839,119 @@ def test_warning_survives_broken_log_and_no_notifier(tmp_path, monkeypatch):
     def boom(*args, **kw):
         raise OSError("уведомления недоступны")
 
-    monkeypatch.setattr("subprocess.run", boom)
+    monkeypatch.setattr("subprocess.Popen", boom)
     hub._warn_no_system_channel(sck_missing=False, bh_missing=True)
     assert said and "СОБЕСЕДНИКОВ" in said[0], "человек предупреждён, несмотря на отказы вокруг"
+
+
+# --- Проводка предупреждения: тесты идут БОЕВЫМ путём ------------------------
+# Прежние два теста звали hub._warn_no_system_channel напрямую и потому
+# пропустили главное: предупреждение уходило из __init__, а on_status демон
+# вешает уже ПОСЛЕ конструктора — строка статуса не доходила до интерфейса
+# никогда. Откат точки вызова оба теста держали зелёными (круг 1, DS и GLM
+# независимо, 10.09). Ниже — проверки того же через конструктор и start().
+
+def _hub_cfg(device="auto"):
+    return {
+        "audio": {"samplerate": 16000, "chunk_seconds": 3.0, "overlap_seconds": 0.5,
+                  "vad_energy_db": -45.0, "record": False, "device": device},
+        "log": {"recordings_dir": "recordings"},
+        "sufler": {"user_name": "Владелец"},
+    }
+
+
+def _no_system_channel(monkeypatch, tmp_path):
+    """Машина без канала собеседников: ни потока приложения, ни устройства."""
+    monkeypatch.setattr(a, "ROOT", tmp_path)
+    monkeypatch.setattr(a, "fresh_sck_manifest", lambda: None)
+    monkeypatch.setattr(a, "find_system_audio", lambda: None)
+    monkeypatch.setattr(a.sd.default, "device", (1, None), raising=False)
+    monkeypatch.setattr(a.Capture, "start", lambda self: None)
+    monkeypatch.setattr(a.threading, "Thread",
+                        lambda *args, **kw: type("_T", (), {"start": lambda s: None})())
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: None)
+
+
+def test_предупреждение_доходит_до_ui_потому_что_ждёт_start(tmp_path, monkeypatch):
+    """Порядок проводки: demon строит AudioHub, ПОТОМ вешает on_status, потом
+    start(). Если кричать из конструктора, крик уходит в None — и именно так
+    было до этой правки. Тест повторяет боевой порядок целиком."""
+    _no_system_channel(monkeypatch, tmp_path)
+
+    hub = a.AudioHub(_hub_cfg())          # как daemon.py:537 — on_status ещё нет
+    assert hub.on_status is None, "заглушка теста разошлась с боевым порядком"
+
+    said = []
+    hub.on_status = said.append           # как daemon.py:541 — уже после конструктора
+    hub.start()                           # как daemon.py:626
+
+    assert said, "предупреждение не дошло до интерфейса: крик ушёл в None"
+    assert any("СОБЕСЕДНИКОВ" in m for m in said), \
+        "в интерфейс ушло что-то не то — человек не поймёт, что потеряно"
+
+
+def test_режим_только_микрофон_не_поднимает_ложную_тревогу(tmp_path, monkeypatch):
+    """device: mic — это диктовка и личные заметки: собеседников там нет по
+    замыслу. Кричать о них на каждом запуске значит приучить не читать
+    предупреждения вовсе."""
+    _no_system_channel(monkeypatch, tmp_path)
+
+    hub = a.AudioHub(_hub_cfg(device="mic"))
+    # Прямо про гейт, а не про доставку: пустой said бывает и когда крик
+    # просто не долетел (так этот тест и прошёл на мутации 11.09 — зелёный
+    # по неверной причине). Факт не должен быть зафиксирован вовсе.
+    assert hub._no_system_channel is None, "в режиме mic взведено предупреждение"
+
+    said = []
+    hub.on_status = said.append
+    hub.start()
+
+    assert not any("СОБЕСЕДНИКОВ" in m for m in said), \
+        "ложная тревога в режиме одного микрофона"
+
+    # Контроль: в auto на той же машине предупреждение обязано взводиться —
+    # иначе тест выше зелёный просто потому, что сломан весь механизм.
+    assert a.AudioHub(_hub_cfg())._no_system_channel is not None, \
+        "в auto предупреждение не взводится — проверка режима mic ничего не значит"
+
+
+def test_битый_лог_не_срывает_старт_записи(tmp_path, monkeypatch):
+    """capture.log дописывает Swift-часть, и чтение может застать оборванную
+    UTF-8 последовательность. UnicodeDecodeError — наследник ValueError, а не
+    OSError: раньше он летел сквозь except из конструктора и убивал старт
+    записи целиком."""
+    _no_system_channel(monkeypatch, tmp_path)
+    log = tmp_path / "logs" / "capture.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    # \xff\xfe — не-UTF-8 байты: ровно то, что читатель застаёт, если Swift
+    # дописывает многобайтовую букву прямо сейчас.
+    log.write_bytes(b"SCK: denied\n\xff\xfe" + "оборванный хвост".encode("utf-8"))
+
+    hub = a.AudioHub(_hub_cfg())
+    said = []
+    hub.on_status = said.append
+    hub.start()                            # не должен бросить
+
+    assert any("СОБЕСЕДНИКОВ" in m for m in said), "предупреждение потерялось на битом логе"
+
+
+def test_причиной_не_становится_собственное_предупреждение_прошлой_встречи(tmp_path, monkeypatch):
+    """Мы пишем предупреждение в тот же capture.log, из которого берём причину.
+    Без метки своей строки причиной следующей встречи становилось бы эхо
+    предыдущей вместо сообщения Swift."""
+    _no_system_channel(monkeypatch, tmp_path)
+    log = tmp_path / "logs" / "capture.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(
+        "SCK: permission denied by user\n"
+        f"2026-09-10 12:00:00 {a.MIC_ONLY_LOG_MARK}: прошлая встреча\n",
+        encoding="utf-8")
+
+    hub = a.AudioHub(_hub_cfg())
+    said = []
+    hub.on_status = said.append
+    hub.start()
+
+    msg = "".join(said)
+    assert "permission denied by user" in msg, "причина от Swift потеряна"
+    assert "прошлая встреча" not in msg, "причиной стало собственное предупреждение"

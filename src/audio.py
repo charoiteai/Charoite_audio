@@ -49,6 +49,10 @@ def find_system_audio() -> int | None:
 
 
 SCK_STREAM_MANIFEST = ROOT / "data" / "sck_stream.json"
+# Метка своей строки в capture.log: этот же лог мы читаем, чтобы назвать
+# причину, и без метки причиной становилось бы наше собственное
+# предупреждение с прошлой встречи.
+MIC_ONLY_LOG_MARK = "ЗАПИСЬ БЕЗ СИСТЕМНОГО ЗВУКА (только микрофон)"
 
 
 def _fresh_manifest(path: pathlib.Path, *keys: str) -> dict | None:
@@ -478,8 +482,21 @@ class AudioHub:
         # с названием модели: на встрече такое не замечают, а узнают через час
         # по пустой стенограмме. С удалением BlackHole (№137) запасного пути
         # не осталось вовсе, поэтому предупреждение обязано быть громким.
-        if not any(c.label == "blackhole" for c in self.captures):
-            self._warn_no_system_channel(sck_missing=sck is None, bh_missing=bh is None)
+        #
+        # Здесь только ЗАПОМИНАЕМ факт, а говорим в start(). Причина в порядке
+        # проводки: daemon.py строит AudioHub (стр. 537) и лишь потом вешает
+        # on_status (стр. 541), а main.py не вешает его вовсе. Предупреждение
+        # из конструктора уходило в `self.on_status is None` и не долетало до
+        # интерфейса НИКОГДА — то есть «громко» было ровно наполовину
+        # (уведомление и лог), а обещанная строка статуса молчала (круг 1,
+        # DS и GLM независимо, 10.09).
+        #
+        # Режим mic исключён сознательно: там пользователь сам просит один
+        # микрофон (диктовка, личные заметки), и канала собеседников не будет
+        # по построению. Кричать об этом — ложная тревога на каждом запуске.
+        self._no_system_channel = None
+        if mode != "mic" and not any(c.label == "blackhole" for c in self.captures):
+            self._no_system_channel = {"sck_missing": sck is None, "bh_missing": bh is None}
         for c in self.captures:
             self._bufs[c.label] = np.zeros(0, dtype=np.float32)
 
@@ -499,32 +516,48 @@ class AudioHub:
             why.append("ScreenCaptureKit не поднялся (нет свежего "
                        f"{SCK_STREAM_MANIFEST.name}; проверить право «Запись экрана»)")
         if bh_missing:
-            why.append("устройства системного звука в CoreAudio нет "
-                       "(BlackHole удалён 10.09, запасного пути больше нет)")
+            why.append("устройства системного звука не видно")
         try:
             log = ROOT / "logs" / "capture.log"
-            tail = [ln.strip() for ln in log.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            # ValueError, а не только OSError: read_text декодирует строго, и
+            # один не-UTF-8 байт (или оборванный хвост, который Swift дописывает
+            # прямо сейчас) даёт UnicodeDecodeError — наследника ValueError.
+            # Он летел сквозь этот except из __init__ и убивал старт записи
+            # целиком. Рядом, в _fresh_manifest, тот же read_text давно ловится
+            # как (OSError, ValueError, KeyError) — образец был, я его не
+            # применил (круг 1, DS 10.09).
+            #
+            # Свои же строки в хвост не берём: предупреждение пишется в этот
+            # самый лог, и через встречу причиной становилось бы эхо прошлой
+            # встречи вместо сообщения Swift.
+            tail = [ln.strip() for ln in log.read_text(encoding="utf-8", errors="replace").splitlines()
+                    if ln.strip() and MIC_ONLY_LOG_MARK not in ln]
             if tail:
                 why.append(f"последняя строка capture.log: {tail[-1]}")
-        except OSError:
+        except (OSError, ValueError):
             pass
         reason = "; ".join(why) or "причина неизвестна"
         self._say("⚠️ СОБЕСЕДНИКОВ В ЗАПИСИ НЕ БУДЕТ: системный звук не "
                   f"захвачен, пишем только микрофон. {reason}")
-        try:                                    # уведомление macOS: строку статуса не заметят
-            subprocess.run(
+        try:
+            # Popen, а не run: это вызывается на пути старта записи, и
+            # залипший osascript (занятый центр уведомлений, первый показ под
+            # TCC) отодвигал бы открытие каналов на весь таймаут — первые
+            # секунды разговора не попали бы в файл. Уведомление со звуком:
+            # беззвучный баннер за развёрнутым окном встречи не замечают.
+            subprocess.Popen(
                 ["osascript", "-e",
                  'display notification "Системный звук не захвачен — в записи будет '
-                 'только ваш микрофон, без собеседников." with title "Чароит: запись неполная"'],
-                check=False, timeout=5)
+                 'только ваш микрофон, без собеседников. Проверьте право «Запись экрана»." '
+                 'with title "Чароит: запись неполная" sound name "Glass"'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:                       # noqa: BLE001 — уведомление не должно ронять запись
             pass
         try:
             log = ROOT / "logs" / "capture.log"
             log.parent.mkdir(parents=True, exist_ok=True)
             with open(log, "a", encoding="utf-8") as fh:
-                fh.write(f"{datetime.datetime.now():%F %H:%M:%S} ЗАПИСЬ БЕЗ СИСТЕМНОГО "
-                         f"ЗВУКА (только микрофон): {reason}\n")
+                fh.write(f"{datetime.datetime.now():%F %H:%M:%S} {MIC_ONLY_LOG_MARK}: {reason}\n")
         except OSError:
             pass
 
@@ -535,6 +568,12 @@ class AudioHub:
 
     def start(self):
         self._running = True
+        # Предупреждение о записи без собеседников — здесь, а не в __init__:
+        # к моменту start() потребитель уже повесил on_status (daemon.py), и
+        # строка доходит до интерфейса. Первым делом, до открытия файлов:
+        # человек должен увидеть это в начале встречи, а не после неё.
+        if getattr(self, "_no_system_channel", None):
+            self._warn_no_system_channel(**self._no_system_channel)
         if self.record_on:
             self._open_sinks()
         # Поканально, а не общим циклом: 06.08 отказ канала системного звука
