@@ -76,6 +76,10 @@ def main():
     console.print(f"[dim]{cfg['sufler']['hotkey_hint']} · стенограмма: {tr.path}[/dim]\n")
 
     stop = threading.Event()
+    # Статусы хаба — в консоль: предупреждение «собеседников не будет» уходит
+    # через on_status в момент start(), и без потребителя CLI его молча терял
+    # (демон вешает on_status на emit, здесь до 11.09 не вешал никто).
+    hub.on_status = lambda text: console.print(f"[yellow]{text}[/yellow]")
     hub.start()
     threading.Thread(target=stt_loop, args=(hub, stt, tr, stop), daemon=True).start()
 

@@ -828,28 +828,42 @@ def test_missing_system_channel_screams_and_names_the_reason(tmp_path, monkeypat
     assert "ЗАПИСЬ БЕЗ СИСТЕМНОГО ЗВУКА" in log, "причина обязана осесть в capture.log"
 
 
-def test_warning_survives_broken_log_and_no_notifier(tmp_path, monkeypatch):
-    """Предупреждение важнее своих же побочных действий: недоступный лог или
-    упавший osascript не должны ронять старт записи."""
-    said = []
-    hub = object.__new__(a.AudioHub)
-    hub.on_status = said.append
-    monkeypatch.setattr(a, "ROOT", tmp_path / "нет-такого-каталога" / "и-файл-занят")
+def test_предупреждение_переживает_недоступный_лог_и_упавший_notifier(tmp_path, monkeypatch):
+    """Предупреждение важнее своих же побочных действий: недоступный лог и
+    упавший osascript не должны ронять старт записи.
+
+    «logs» здесь — ФАЙЛ, а не каталог: чтение хвоста даёт NotADirectoryError,
+    запись — FileExistsError на mkdir(exist_ok=True); оба — OSError, и обе
+    ветки except исполняются по-настоящему. Прежняя версия подставляла
+    несуществующий путь, а mkdir(parents=True) его молча создавал — ветка
+    except на записи не исполнялась ни разу, и мутация «убрать except»
+    оставляла тест зелёным (круг 2, DS и GLM независимо, 11.09). Идёт боевым
+    путём — конструктор → on_status → start(), — а не прямым вызовом метода."""
+    _no_system_channel(monkeypatch, tmp_path)
+    (tmp_path / "logs").write_bytes(b"")             # файл на месте каталога логов
 
     def boom(*args, **kw):
         raise OSError("уведомления недоступны")
 
     monkeypatch.setattr("subprocess.Popen", boom)
-    hub._warn_no_system_channel(sck_missing=False, bh_missing=True)
-    assert said and "СОБЕСЕДНИКОВ" in said[0], "человек предупреждён, несмотря на отказы вокруг"
+    hub = a.AudioHub(_hub_cfg())
+    said = []
+    hub.on_status = said.append
+    hub.start()                                      # не должен бросить
+
+    assert any("СОБЕСЕДНИКОВ" in m for m in said), "человек предупреждён, несмотря на отказы вокруг"
+    assert (tmp_path / "logs").is_file(), \
+        "запись в лог обязана была отказать, а не пересоздать каталог поверх файла"
 
 
 # --- Проводка предупреждения: тесты идут БОЕВЫМ путём ------------------------
-# Прежние два теста звали hub._warn_no_system_channel напрямую и потому
+# Прежние тесты звали hub._warn_no_system_channel напрямую и потому
 # пропустили главное: предупреждение уходило из __init__, а on_status демон
 # вешает уже ПОСЛЕ конструктора — строка статуса не доходила до интерфейса
-# никогда. Откат точки вызова оба теста держали зелёными (круг 1, DS и GLM
-# независимо, 10.09). Ниже — проверки того же через конструктор и start().
+# никогда. Откат точки вызова они держали зелёными (круг 1, DS и GLM
+# независимо, 10.09). Прямой вызов остался один — test_warning_reaches_all_three_channels,
+# он проверяет состав сообщения, не проводку. Ниже — проверки через
+# конструктор и start().
 
 def _hub_cfg(device="auto"):
     return {
@@ -917,9 +931,12 @@ def test_режим_только_микрофон_не_поднимает_лож
 
 def test_битый_лог_не_срывает_старт_записи(tmp_path, monkeypatch):
     """capture.log дописывает Swift-часть, и чтение может застать оборванную
-    UTF-8 последовательность. UnicodeDecodeError — наследник ValueError, а не
-    OSError: раньше он летел сквозь except из конструктора и убивал старт
-    записи целиком."""
+    UTF-8 последовательность. Раньше UnicodeDecodeError (наследник ValueError,
+    не OSError) летел сквозь except из конструктора и убивал старт записи.
+    Теперь основная защита — errors="replace" при чтении (причина сохраняется
+    с U+FFFD), а ValueError в except — страховка на случай снятия replace.
+    Тест проверяет итог: старт не падает и предупреждение доходит; ветку
+    except ValueError он при replace не исполняет — это задумано (круг 2)."""
     _no_system_channel(monkeypatch, tmp_path)
     log = tmp_path / "logs" / "capture.log"
     log.parent.mkdir(parents=True, exist_ok=True)
