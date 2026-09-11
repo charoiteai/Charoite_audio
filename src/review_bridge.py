@@ -55,40 +55,70 @@ _SECTION_WORD = re.compile(
 _PAREN_NOTE = re.compile(r"^\s*[(（][^)）]*[)）]\s*$")
 
 
-def recovered_items(review: str) -> list[str]:
+# Классы строк внутри раздела ревизии. Один классификатор вместо цепочки
+# условий в цикле: пять кругов по #518 двигали по одному крайнему случаю за
+# раз, и каждый круг менял ветвление в теле цикла. Теперь у строки ровно один
+# класс, таблица «строка → класс» лежит в тестах, а цикл только раскладывает
+# (GLM r4 по #518, критика 1; №187).
+LINE_HEAD = "head"            # заголовок «Восстановленные поручения» (повтор внутри — пропуск)
+LINE_END = "end"              # граница раздела: следующий заголовок или известная секция
+LINE_BLANK = "blank"          # пустая строка — не пункт и не граница
+LINE_ITEM = "item"            # пункт с маркером: «- [ ] **Иван** — …»
+LINE_OWN_ITEM = "own_item"    # «**Пётр** — …» без маркера — свой пункт, не хвост чужого
+LINE_CONT = "continuation"    # перенос строки внутри предыдущего пункта
+LINE_NOISE = "noise"          # «нет», «(срок не назван)», голый маркер, строка до первого пункта
+
+
+def classify_line(line: str, had_items: bool) -> str:
+    """Класс строки раздела ревизии. Порядок проверок — тот же, что раньше
+    в цикле: граница раньше пустоты (жирная подпись без двоеточия — граница
+    только когда пункты уже были), пункт с маркером раньше переноса."""
+    if RECOVERED_HEAD.match(line):
+        return LINE_HEAD
+    if _section_end(line, had_items):
+        return LINE_END
+    if not line.strip():
+        return LINE_BLANK
+    if _BULLET.match(line):
+        m = _ITEM.match(line)
+        text = m.group("text").strip() if m else ""
+        if not text or _EMPTY_ITEM.match(text.strip("*").strip()):
+            return LINE_NOISE                    # «- нет», «- [ ] нет», «- ---»
+        return LINE_ITEM
+    # без маркера: поручение с жирного имени — свой пункт; иное непустое —
+    # продолжение предыдущего; «нет», комментарий в скобках и всё до первого
+    # пункта — шум (GLM r1 M2, DS r1 I2, DS r2 I2/M3, GLM r3 M3, r5 I1)
+    if had_items and _OWN_ITEM.match(line):
+        return LINE_OWN_ITEM
+    bare = line.strip().strip("*").strip()
+    if had_items and bare and not _EMPTY_ITEM.match(bare) and not _PAREN_NOTE.match(line):
+        return LINE_CONT
+    return LINE_NOISE
+
+
+def recovered_items(review: str, dropped: list[str] | None = None) -> list[str]:
     """Пункты раздела «## Восстановленные поручения» ревизии без маркеров
-    и чекбоксов; «нет» и пустые строки — не пункты; раздела нет — пусто."""
+    и чекбоксов; «нет» и пустые строки — не пункты; раздела нет — пусто.
+    `dropped` — сюда, если передан, складываются непустые строки раздела,
+    которые не стали ни пунктом, ни продолжением: по ним видно, что мост
+    выбросил (GLM r4 по #518, критика 1)."""
     items: list[str] = []
     inside = False
     for line in (review or "").split("\n"):
-        if RECOVERED_HEAD.match(line):
-            inside = True
-            continue
-        if inside and _section_end(line, had_items=bool(items)):
-            break
         if not inside:
+            inside = bool(RECOVERED_HEAD.match(line))
             continue
-        if not line.strip():
-            continue
-        if not _BULLET.match(line):
-            # перенос строки внутри пункта — продолжение, не новый пункт
-            # (GLM r1 M2 / DS r1 I2 по #518); «нет», комментарий модели в
-            # скобках «(срок не назван)», строка с жирного («**Пётр** — …»
-            # без маркера — свой пункт, а не хвост чужого) и строка до
-            # первого пункта — мимо (DS r2 I2/M3, GLM r3 M3)
-            bare = line.strip().strip("*").strip()
-            if items and _OWN_ITEM.match(line):
-                items.append(line.strip())          # поручение без маркера — свой пункт
-            elif items and bare and not _EMPTY_ITEM.match(bare) and not _PAREN_NOTE.match(line):
-                items[-1] = (items[-1] + " " + line.strip()).strip()
-            continue
-        m = _ITEM.match(line)
-        if not m:
-            continue
-        text = m.group("text").strip()
-        if not text or _EMPTY_ITEM.match(text.strip("*").strip()):
-            continue
-        items.append(text)
+        kind = classify_line(line, had_items=bool(items))
+        if kind == LINE_END:
+            break
+        if kind == LINE_ITEM:
+            items.append(_ITEM.match(line).group("text").strip())   # type: ignore[union-attr]
+        elif kind == LINE_OWN_ITEM:
+            items.append(line.strip())
+        elif kind == LINE_CONT:
+            items[-1] = (items[-1] + " " + line.strip()).strip()
+        elif kind == LINE_NOISE and dropped is not None:
+            dropped.append(line.strip())
     return items
 
 
@@ -250,14 +280,16 @@ def minutes_path(transcript: pathlib.Path) -> pathlib.Path:
 
 
 def bridge(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
-           lang: str = "ru") -> int:
+           lang: str = "ru", dropped: list[str] | None = None) -> int:
     """Дописать восстановленные поручения ревизии в минутки этой встречи.
-    Возвращает число дописанных; нет ревизии, минуток или пунктов — 0."""
+    Возвращает число дописанных; нет ревизии, минуток или пунктов — 0.
+    `dropped` — список для строк раздела, которые мост выбросил (см.
+    recovered_items); вызывающий пишет их в свой лог."""
     try:
         text = review.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return 0
-    items = recovered_items(text)
+    items = recovered_items(text, dropped=dropped)
     if not items:
         return 0
     minutes = minutes_path(transcript)

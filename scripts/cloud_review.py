@@ -1134,11 +1134,19 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             # (checked) мосту не гейт (GLM r1 по #518, критика 2).
             try:
                 sufler = cfg.get("sufler") or {}
+                dropped: list[str] = []
                 added = review_bridge.bridge(rev, transcript, owner=str(sufler.get("user_name") or ""),
-                                             lang=str(sufler.get("language") or "ru"))
+                                             lang=str(sufler.get("language") or "ru"), dropped=dropped)
                 verified = "сверено" if (not may_edit or checked) else "БЕЗ сверки графа"
                 if added:
                     lines.append(f"[cloud-review] мост ревизии ({verified}): в минутки дописано поручений — {added}\n")
+                if dropped:
+                    # Что мост выбросил из раздела — в лог: «нет», комментарии модели,
+                    # строки до первого пункта. Без этого потерянное поручение и честно
+                    # пустой раздел выглядели одинаково (GLM r4 по #518, критика 1)
+                    shown = "; ".join(s[:80] for s in dropped[:5])
+                    more = "" if len(dropped) <= 5 else f" (и ещё {len(dropped) - 5})"
+                    lines.append(f"[cloud-review] мост ревизии: отброшено строк раздела — {len(dropped)}: {shown}{more}\n")
                 elif not review_bridge.minutes_path(transcript).is_file():
                     lines.append("[cloud-review] мост ревизии: минуток рядом со стенограммой нет\n")
                 elif review_bridge.section_present(rev.read_text(encoding="utf-8", errors="replace")):
