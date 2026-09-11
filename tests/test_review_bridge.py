@@ -107,7 +107,9 @@ def test_bridge_writes_minutes_next_to_the_transcript(tmp_path):
     review = tdir / "2026-09-05_1413_Планёрка_ревизия_claude.md"
     review.write_text(REVIEW + "- [ ] **Мария** — принести отчёт\n", encoding="utf-8")
     # последняя строка ревизии — вне строгого раздела (после «## 7.»), в минутки не идёт
-    assert rb.bridge(review, transcript, owner="Владелец") == 1
+    dropped: list[str] = []
+    assert rb.bridge(review, transcript, owner="Владелец", dropped=dropped) == 1
+    assert dropped == ["нет"], "выброшенное из раздела доходит до лога через bridge (GLM r1 по #533)"
     text = minutes.read_text(encoding="utf-8")
     assert "**Саша Орлова** — подготовить демо для показа (из ревизии)" in text
     assert "Мария" not in text
@@ -250,6 +252,9 @@ def test_classify_line_table():
         ("- [ ] нет", True, rb.LINE_NOISE),
         ("- **нет**", False, rb.LINE_NOISE),
         ("- ---", True, rb.LINE_NOISE),
+        ("- [ ]", True, rb.LINE_NOISE),                   # чекбокс без текста — не пункт «[ ]» (DS r1 по #533)
+        ("- [x]", False, rb.LINE_NOISE),
+        ("-[ ] ", False, rb.LINE_NOISE),
         # без маркера
         ("**Пётр** — позвонить", True, rb.LINE_OWN_ITEM),  # свой пункт (GLM r5 I1)
         ("**Саша**: написать", True, rb.LINE_OWN_ITEM),
@@ -261,6 +266,8 @@ def test_classify_line_table():
         ("нет", True, rb.LINE_NOISE),
         ("–", True, rb.LINE_NOISE),
         ("– —", True, rb.LINE_NOISE),
+        ("**", True, rb.LINE_NOISE),                       # одни звёздочки — не хвост пункта (GLM r1 по #533)
+        ("*", True, rb.LINE_NOISE),
         ("строка до первого пункта", False, rb.LINE_NOISE),
     ]
     for line, had, want in cases:
@@ -270,11 +277,12 @@ def test_classify_line_table():
 def test_dropped_lines_are_collected_for_the_log():
     """Что мост выбросил из раздела, должно быть видно в логе ревизии:
     иначе потерянное поручение и честно пустой раздел выглядят одинаково."""
-    review = ("## Восстановленные поручения\n- нет\n(срок не назван)\nпреамбула до пункта\n"
+    review = ("## Восстановленные поручения\n- нет\n  (срок не назван)  \nпреамбула до пункта\n- [ ]\n"
               "- [ ] **Иван** — позвонить\n---\nвсё\n## Далее\n- x\n")
     dropped: list[str] = []
     assert rb.recovered_items(review, dropped=dropped) == ["**Иван** — позвонить всё"]
-    assert dropped == ["- нет", "(срок не назван)", "преамбула до пункта", "---"]
+    # строки в лог — без отступов (GLM r1 по #533); пустой чекбокс — выброшен, а не пункт «[ ]»
+    assert dropped == ["- нет", "(срок не назван)", "преамбула до пункта", "- [ ]", "---"]
     # без списка — прежнее поведение, ничего не копится и не ломается
     assert rb.recovered_items(review) == ["**Иван** — позвонить всё"]
     # пустые строки и границы раздела — не «выброшенное»

@@ -69,6 +69,19 @@ LINE_CONT = "continuation"    # перенос строки внутри пре�
 LINE_NOISE = "noise"          # «нет», «(срок не назван)», голый маркер, строка до первого пункта
 
 
+def _item_text(line: str) -> str:
+    """Текст пункта с маркером — без маркера и чекбокса; не пункт — пусто.
+    У «- [ ]» без текста регэксп _ITEM отдаёт чекбокс как текст (хвост
+    после него пуст, и группа чекбокса откатывается) — снимаем его отдельно,
+    иначе в минутки уезжал пункт «[ ]» (DS r1 по #533, проверено прогоном).
+    Одна функция на классификатор и цикл: LINE_ITEM ⟹ текст непуст —
+    инвариант структурный, а не свойство регэкспов (критика GLM r1)."""
+    m = _ITEM.match(line)
+    if not m:
+        return ""
+    return _CHECKBOX.sub("", m.group("text"), count=1).strip()
+
+
 def classify_line(line: str, had_items: bool) -> str:
     """Класс строки раздела ревизии. Порядок проверок — тот же, что раньше
     в цикле: граница раньше пустоты (жирная подпись без двоеточия — граница
@@ -80,10 +93,9 @@ def classify_line(line: str, had_items: bool) -> str:
     if not line.strip():
         return LINE_BLANK
     if _BULLET.match(line):
-        m = _ITEM.match(line)
-        text = m.group("text").strip() if m else ""
+        text = _item_text(line)
         if not text or _EMPTY_ITEM.match(text.strip("*").strip()):
-            return LINE_NOISE                    # «- нет», «- [ ] нет», «- ---»
+            return LINE_NOISE                    # «- нет», «- [ ] нет», «- ---», «- [ ]»
         return LINE_ITEM
     # без маркера: поручение с жирного имени — свой пункт; иное непустое —
     # продолжение предыдущего; «нет», комментарий в скобках и всё до первого
@@ -112,7 +124,7 @@ def recovered_items(review: str, dropped: list[str] | None = None) -> list[str]:
         if kind == LINE_END:
             break
         if kind == LINE_ITEM:
-            items.append(_ITEM.match(line).group("text").strip())   # type: ignore[union-attr]
+            items.append(_item_text(line))
         elif kind == LINE_OWN_ITEM:
             items.append(line.strip())
         elif kind == LINE_CONT:
