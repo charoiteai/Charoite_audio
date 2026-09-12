@@ -57,6 +57,7 @@ import cloud  # noqa: E402
 import file_locks  # noqa: E402
 import graph_updater
 import graph_links  # noqa: E402
+import name_fixes  # noqa: E402
 import review_bridge  # noqa: E402
 import privacy  # noqa: E402
 import live_gate  # noqa: E402
@@ -833,6 +834,13 @@ def deliver_review(rev: pathlib.Path, transcript: pathlib.Path, graph: pathlib.P
         vdocs = graph / "Документация" / "Стенограммы встреч"
         if vdocs.is_dir():
             shutil.copy2(rev, vdocs / rev.name)
+            # Стенограмма и минутки после моста (имена меток, снятые и
+            # восстановленные поручения) — заново, как в разборе: копия в
+            # Документации иначе оставалась довозной версией (№239)
+            from meeting_stamp import files_with_stamp
+            for f in files_with_stamp(transcript.parent, transcript.stem, suffix=".md"):
+                if f != rev:
+                    shutil.copy2(f, vdocs / f.name)
         lf.write(f"[cloud-review] ревизия доставлена: архив {folder.name if folder else '—'}"
                  f"{', vault' if vdocs.is_dir() else ''}\n")
     except Exception as e:  # noqa: BLE001 — доставка не важнее самой ревизии
@@ -1241,6 +1249,23 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 verified = "сверено" if (not may_edit or checked) else "БЕЗ сверки графа"
                 rev_text = rev.read_text(encoding="utf-8", errors="replace")
                 has_minutes = review_bridge.minutes_path(transcript).is_file()
+                # Имена меток — раньше всего: заголовки реплик и участники
+                # минуток под верными именами, чтобы архив и Документация
+                # получили их этим же прогоном (№239); поручения под ошибочной
+                # меткой ревизия снимает и восстанавливает сама, ниже
+                dropped_n: list[str] = []
+                renamed, heads, parts = name_fixes.apply(rev, transcript, cfg, dropped=dropped_n)
+                if renamed:
+                    lines.append("[cloud-review] имена меток исправлены по ревизии: "
+                                 + ", ".join(f"{k} → {v}" for k, v in renamed.items())
+                                 + f" — заголовков реплик {heads}, участники минуток "
+                                 + ("да" if parts else "нет") + "\n")
+                    if not may_edit:
+                        lines.append("[cloud-review] узлы графа не правлены (режим только чтения): "
+                                     "встречу и связи из узла Люди с ошибочным именем перенести руками\n")
+                elif name_fixes.section_present(rev_text):
+                    lines.append("[cloud-review] мост ревизии: раздел об исправлениях имён есть, "
+                                 "применимых строк нет\n")
                 # Сначала снять ложное, потом дописать восстановленное: если
                 # ревизия заменяет пункт похожим верным, дедуп не должен
                 # принять новый за уже существующий ложный (№238)
@@ -1265,7 +1290,8 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 # пустой раздел выглядели одинаково (GLM r4 по #518, критика 1).
                 # Отдельным if ПОСЛЕ цепочки: врезанный в неё, он перехватывал
                 # elif у `if added` — лог врал на каждом чистом прогоне (DS/GLM r1 по #533)
-                for what, junk in (("восстановленных", dropped), ("снятых", dropped_w)):
+                for what, junk in (("восстановленных", dropped), ("снятых", dropped_w),
+                                   ("исправлений имён", dropped_n)):
                     if junk:
                         shown = "; ".join(s[:80] for s in junk[:5])
                         more = "" if len(junk) <= 5 else f" (и ещё {len(junk) - 5})"

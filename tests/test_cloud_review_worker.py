@@ -773,7 +773,8 @@ def test_check_and_rollback_survive_an_unwritable_log(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
     cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
     cloud_review.run(stamp, transcript, graph, rev, log, cfg)
-    assert doc.read_text(encoding="utf-8") == "стенограмма\n", (
+    # копия в Документации — довозная из transcripts/ (№239), но не облачная
+    assert doc.read_text(encoding="utf-8") == transcript.read_text(encoding="utf-8") == "текст\n", (
         "запрещённая правка перенесена в граф, хотя лог недоступен"
     )
 

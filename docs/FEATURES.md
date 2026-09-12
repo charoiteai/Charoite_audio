@@ -604,7 +604,14 @@ it signals degradation, it does not break the loop.
   meeting note is marked ⛔ in place by the review, and Charoite's memory of
   the meeting is resent without the withdrawn decisions (a send that broke
   halfway leaves a debt file next to the sent-mark; reprocessing, the next
-  review of that meeting or any review run of another meeting pays it); the local model's
+  review of that meeting or any review run of another meeting pays it); a speaker label the rebuild named after the wrong
+  person (the strict "Name fixes" section: label → name with the grounds)
+  is restamped in the transcript's block headers and in the minutes'
+  participants line, the previous version goes to `.prev/`, and the archive
+  and Документация copies are refreshed — the owner's microphone label is
+  never renamed, a fix that names no existing label is logged and skipped,
+  and action items under the wrong label are withdrawn and restored by the
+  review itself rather than renamed by guess; the local model's
   debrief stays a draft with such a header, and its tasks and
   recommendations come from this meeting only; an item the
   minutes already hold in other words is not duplicated, and an assignee
