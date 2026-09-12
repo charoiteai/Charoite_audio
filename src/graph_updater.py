@@ -914,9 +914,12 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         # формулировками и датой встречи. Пересказ того же (вложение, общие
         # слова) новым фактом не считается — иначе каждая встреча плодила бы
         # строку; пустое не вытесняет (№194, Q4 аудита памяти 07.09).
-        text = _supersede_description(text, desc, meeting_link)
-        if "## Встречи" in text:
-            text = text.replace("## Встречи", f"## Встречи\n{stamp}", 1)
+        text = _supersede_description(text, desc, meeting_link, name=p.stem)
+        # строка-заголовок целиком: «## Встречи-архив» выше настоящего раздела
+        # получал ссылку встречи внутрь своего имени (DS r1 по #539)
+        m = re.search(r"^## Встречи[ \t]*\r?$", text, re.M)
+        if m:
+            text = text[:m.end()] + f"\n{stamp}" + text[m.end():]
         else:
             text += f"\n## Встречи\n{stamp}\n"
         safe_write.write_text(p, _touch_last_seen(text, day))
@@ -940,53 +943,91 @@ def _touch_last_seen(text: str, day: str) -> str:
     if m:
         return text if m.group(1) >= day else _LAST_SEEN_RE.sub(f"_(последнее упоминание: {day})_", text, count=1)
     line = f"_(последнее упоминание: {day})_"
-    if "## Встречи" in text:
-        return text.replace("## Встречи", f"{line}\n\n## Встречи", 1)
+    # перед ПЕРВЫМ разделом, а не перед «## Встречи»: с №194 у узла может
+    # стоять «## Хроника» раньше, и служебная строка иначе вклинивалась между
+    # хроникой и встречами
+    m = re.search(r"^## ", text, re.M)
+    if m:
+        return text[:m.start()] + f"{line}\n\n" + text[m.start():]
     return text.rstrip("\n") + f"\n\n{line}\n"
 
 
+_FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n", re.S)
 _NODE_TITLE_RE = re.compile(r"^# [^\n]*\n", re.M)
+# Служебные слова не решают, тот же это факт или другой: «отвечает за миграцию
+# для проекта» и «отвечает за тестирование для проекта» на них сходились
+# (Critical DS r1 по #539). «не» — значимое: отрицание = новый факт.
+_FACT_STOP = frozenset(
+    "для что как при это или также его её ее их они она оно он тот эта эти все всё был была было "
+    "были быть есть будет над под про без между через уже ещё еще где когда чем чтобы того этого "
+    "за на по из от до со ко об".split())
 
 
 def _current_description(text: str) -> tuple[str, int, int]:
-    """(описание, начало, конец) — строки узла сразу после «# Имя» до первой
-    пустой, служебной («_(последнее упоминание…») или заголовка раздела.
-    Нет заголовка — ("", -1, -1); есть, но описания нет — пустая строка и
-    обе границы сразу после заголовка."""
-    m = _NODE_TITLE_RE.search(text)
+    """(описание, начало, конец) — тело узла сразу после «# Имя» до служебной
+    строки («_(последнее упоминание…»), горизонтальной черты или заголовка
+    раздела. Пустые строки внутри — часть описания: иначе второй абзац старого
+    описания оставался сиротой под новым (DS/GLM r1 по #539). Заголовок
+    ищется ПОСЛЕ frontmatter — комментарий «# …» в YAML-шапке не заголовок.
+    Нет заголовка — ("", -1, -1); описания нет — пусто и обе границы сразу
+    после заголовка."""
+    fm = _FRONTMATTER_RE.match(text)
+    m = _NODE_TITLE_RE.search(text, fm.end() if fm else 0)
     if not m:
         return "", -1, -1
     start = end = m.end()
     for ln in text[start:].split("\n"):
-        if not ln.strip() or ln.startswith(("## ", "_(последнее упоминание:", "---")):
+        s = ln.strip()
+        if s.startswith(("## ", "_(последнее упоминание:", "---")) or ln.startswith("# "):
             break
         end += len(ln) + 1
+    end = min(end, len(text))
     return text[start:end].strip(), start, end
 
 
-def _same_fact(a: str, b: str) -> bool:
-    """Пересказ одного описания, не новый факт: одно вложено в другое либо
-    общих значимых слов не меньше половины (Жаккар по словам от трёх букв)."""
-    na, nb = _flat(a).casefold(), _flat(b).casefold()
-    if not na or not nb or na in nb or nb in na:
-        return True
-    wa = {w for w in re.findall(r"\w+", na) if len(w) > 2}
-    wb = {w for w in re.findall(r"\w+", nb) if len(w) > 2}
-    if not wa or not wb:
-        return True
-    return len(wa & wb) / len(wa | wb) >= 0.5
+def _fact_words(s: str) -> tuple[set[str], set[str]]:
+    """(значимые слова, числа) — регистр и ё/е сведены, служебные слова
+    выброшены; «не» и короткие обрывки остаются, числа — отдельно."""
+    words = re.findall(r"\w+", s.casefold().replace("ё", "е"))
+    return ({w for w in words if len(w) >= 2 and w not in _FACT_STOP and not w.isdigit()},
+            {w for w in words if w.isdigit()})
 
 
-def _supersede_description(text: str, desc: str, meeting_link: str) -> str:
+def _same_fact(old: str, new: str) -> bool:
+    """Пересказ одного описания, не новый факт.
+
+    Новое, вложенное в старое, — пересказ короче; старое, вложенное в новое, —
+    НЕ пересказ: обогащение и отрицание («аналитик» → «бывший аналитик, ушёл»)
+    — новый факт (Critical DS r1, Important GLM r1 по #539). Иначе — общих
+    значимых слов не меньше 0,7 по Жаккару при тех же числах (смена даты —
+    новый факт); описания без значимых слов («QA», «1С») — только побуквенно.
+    Ошибка в сторону «новый факт» видна строкой хроники с обеими
+    формулировками и правится; ошибка в сторону «пересказ» невидима.
+    """
+    na = _flat(old).casefold().replace("ё", "е")
+    nb = _flat(new).casefold().replace("ё", "е")
+    if na == nb or (nb and nb in na):
+        return True
+    wa, da = _fact_words(na)
+    wb, db = _fact_words(nb)
+    if da != db or not wa or not wb:
+        return False
+    return len(wa & wb) / len(wa | wb) >= 0.7
+
+
+def _supersede_description(text: str, desc: str, meeting_link: str, name: str = "") -> str:
     """Описание узла человека/системы новым фактом с датой (№194).
 
     Пустое описание в узле — заполняется без следа (это не вытеснение).
     Существенно другое — заменяет прежнее, а прежнее уходит в «## Хроника»
-    первой строкой: «- [[встреча]] — _(было: «X» → стало: «Y», ДАТА)_».
-    Раздел живёт перед «## Встречи»; читатели узла (индексы папок, поиск,
-    doctor) на него не смотрят, ссылка встречи в строке хроники гасит ретрай
-    через has_link, как и у Ядер.
+    первой строкой ЦЕЛИКОМ: «- [[встреча]] — _(было: «X» → стало: «Y», ДАТА)_»
+    (обрезка теряла бы факт, Important DS r1). Раздел живёт перед
+    «## Встречи»; ссылка встречи в строке хроники гасит ретрай через
+    has_link, как и у Ядер. Оба исхода — в журнал графа, иначе порог
+    не откалибровать (критика обеих голов). Концы строк: read_text в
+    upsert_entity сводит CRLF к LF, так что здесь всегда «\n».
     """
+    nl = "\n"
     new = _flat(desc)
     if not new or new == "—":
         return text
@@ -994,18 +1035,23 @@ def _supersede_description(text: str, desc: str, meeting_link: str) -> str:
     if start < 0:
         return text
     if not old:
-        return text[:start] + new + "\n" + text[start:]
+        return text[:start] + new + nl + text[start:]
     if _same_fact(old, new):
+        if _flat(old).casefold() != new.casefold():
+            _journal_graph_event("описание — пересказ", f"{name}: «{_clip(new)}» ≈ «{_clip(old)}»", meeting_link)
         return text
     day = pathlib.PurePosixPath(meeting_link).name[:10]
     when = f", {day}" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else ""
-    line = f"- [[{meeting_link}]] — _(было: «{_clip(old)}» → стало: «{_clip(new)}»{when})_"
-    text = text[:start] + new + "\n" + text[end:]
-    if "## Хроника" in text:
-        return text.replace("## Хроника", f"## Хроника\n{line}", 1)
-    if "## Встречи" in text:
-        return text.replace("## Встречи", f"## Хроника\n{line}\n\n## Встречи", 1)
-    return text.rstrip("\n") + f"\n\n## Хроника\n{line}\n"
+    line = f"- [[{meeting_link}]] — _(было: «{_flat(old)}» → стало: «{new}»{when})_"
+    _journal_graph_event("описание вытеснено", f"{name}: «{_clip(old)}» → «{_clip(new)}»", meeting_link)
+    text = text[:start] + new + nl + nl + text[end:]
+    head = f"## Хроника{nl}{line}"
+    if re.search(r"^## Хроника[ \t]*\r?$", text, re.M):
+        return re.sub(r"^## Хроника[ \t]*\r?$", lambda _: head, text, count=1, flags=re.M)
+    m = re.search(r"^## Встречи[ \t]*\r?$", text, re.M)      # не «## Встречи-архив» (DS r1)
+    if m:
+        return text[:m.start()] + head + nl + nl + text[m.start():]
+    return text.rstrip("\r\n") + nl + nl + head + nl
 
 
 def core_anchor(core: dict, transcript: str, speakers: set[str] | None = None) -> str:
