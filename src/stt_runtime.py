@@ -134,13 +134,28 @@ def stall_log_due(*, stage_age_s: float, now: float, last: float,
             and now - last >= every)
 
 
+# Предупреждения про ВСЮ встречу, а не про момент: держатся на экране до
+# конца записи (Swift `stickyStatus`), обычные статусы их не снимают.
+STICKY_WARNINGS = ("СОБЕСЕДНИКОВ В ЗАПИСИ НЕ БУДЕТ",)
+
+
+def is_sticky_status(status_text: str) -> bool:
+    """Держать ли статус до конца встречи. «Собеседников в записи не будет»
+    приходит один раз на старте, а следующий же emit демона («👥 живая
+    диаризация включена», через секунду) стирал его с экрана — человек не
+    успевал прочитать единственный экранный носитель (№228, GLM r2 по #531).
+    Снятие — только явным событием `sticky: false` или новым стартом."""
+    return any(mark in status_text for mark in STICKY_WARNINGS)
+
+
 def is_recording_failure(status_text: str) -> bool:
-    """Красить ли статус как отказ: смерть записи на диск — не серая строка.
+    """Красить ли статус как отказ: смерть записи на диск — не серая строка,
+    как и запись без второй стороны разговора.
 
     Подстрока, не префикс: сообщения _note_drop начинаются с «⚠️ подсказки
     отстают», и префикс красил 2 из 4 (круг 3, GLM + DeepSeek).
     """
-    return "ЗАПИСЬ НА ДИСК" in status_text
+    return "ЗАПИСЬ НА ДИСК" in status_text or is_sticky_status(status_text)
 
 
 def realtime_factor(audio_s: float, transcription_ms: float) -> float | None:

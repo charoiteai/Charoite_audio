@@ -252,6 +252,11 @@ struct SuflerView: View {
                 return sufler.statusErrorFromDaemon ? sufler.status : pipelineStatus
             }
             if sufler.statusIsError { return sufler.status }
+            // Липкое предупреждение демона («собеседников в записи не будет»):
+            // ниже критикала диска и свежей ошибки, выше служебных строк —
+            // иначе «👥 диаризация включена» через секунду прятала его до
+            // конца встречи (№228)
+            if let sticky = sufler.stickyStatus { return sticky }
             if let pipelineStatus = sufler.pipelineStatusText {
                 return pipelineStatus
             }
@@ -265,7 +270,7 @@ struct SuflerView: View {
     private var statusIsProblem: Bool {
         if sufler.isRunning {
             if sufler.stopConfirmPending { return false }
-            return sufler.pipelineStatusText != nil || sufler.statusIsError
+            return sufler.pipelineStatusText != nil || sufler.statusIsError || sufler.stickyStatus != nil
         }
         if !sufler.isRunning, processing.statusText != nil {
             return processing.isError
@@ -276,7 +281,7 @@ struct SuflerView: View {
     private var statusColor: Color {
         if sufler.isRunning {
             if sufler.stopConfirmPending { return .secondary }
-            if sufler.pipelineStatusIsCritical || sufler.statusIsError { return .red }
+            if sufler.pipelineStatusIsCritical || sufler.statusIsError || sufler.stickyStatus != nil { return .red }
             if sufler.pipelineStatusText != nil { return Theme.warning }
         }
         return statusIsProblem ? .red : .secondary

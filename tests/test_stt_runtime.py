@@ -213,6 +213,15 @@ def test_отказ_записи_на_диск_красится_по_подст�
     assert stt_runtime.is_recording_failure("канал не открылся") is False
 
 
+def test_запись_без_собеседников_липкая_и_красная():
+    """№228: предупреждение про всю встречу держится до конца записи и красится
+    как отказ; отказ диска липким не объявляется — его держит heartbeat."""
+    warn = "⚠️ СОБЕСЕДНИКОВ В ЗАПИСИ НЕ БУДЕТ: системный звук не захвачен, пишем только микрофон."
+    assert stt_runtime.is_sticky_status(warn) is True and stt_runtime.is_recording_failure(warn) is True
+    assert stt_runtime.is_sticky_status("ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: диск полон") is False
+    assert stt_runtime.is_sticky_status("👥 живая диаризация голосов включена") is False
+
+
 def test_realtime_factor_turns_milliseconds_into_a_verdict():
     """«Транскрипция 3200 мс» без длины звука не значит ничего.
 
