@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Features
 
 * **graph:** описание человека и системы — факт с датой, прежнее уходит в хронику узла ([#539](https://github.com/charoiteai/Charoite_audio/issues/539)) ([8642a31](https://github.com/charoiteai/Charoite_audio/commit/8642a31d9b2e5a9d22a8838b66ec02b40a8ad27a))
+* **minutes:** владелец поручения — одним написанием при записи минуток и моста ревизии ([#536](https://github.com/charoiteai/Charoite_audio/issues/536)) ([7b88162](https://github.com/charoiteai/Charoite_audio/commit/7b88162))
 
 
 ### Bug Fixes
