@@ -5,6 +5,24 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.78.0](https://github.com/charoiteai/Charoite_audio/compare/v0.77.1...v0.78.0) (2026-09-12)
+
+
+### Features
+
+* **graph:** описание человека и системы — факт с датой, прежнее уходит в хронику узла ([#539](https://github.com/charoiteai/Charoite_audio/issues/539)) ([8642a31](https://github.com/charoiteai/Charoite_audio/commit/8642a31d9b2e5a9d22a8838b66ec02b40a8ad27a))
+
+
+### Bug Fixes
+
+* **app:** предупреждение о записи без собеседников держится на экране до конца встречи ([#538](https://github.com/charoiteai/Charoite_audio/issues/538)) ([4e77c02](https://github.com/charoiteai/Charoite_audio/commit/4e77c02bda123232c8eef265fb341258e7722b4e))
+* **audio:** предупреждение о записи без собеседников и при отказе канала на старте ([#537](https://github.com/charoiteai/Charoite_audio/issues/537)) ([d24fef8](https://github.com/charoiteai/Charoite_audio/commit/d24fef81da80e72cd58248751fc57991ca4f437d))
+
+
+### Reverts
+
+* **ios:** app-ios обратно к состоянию 0.77.1 — код PR [#530](https://github.com/charoiteai/Charoite_audio/issues/530) вошёл в main squash'ем [#533](https://github.com/charoiteai/Charoite_audio/issues/533) ([#534](https://github.com/charoiteai/Charoite_audio/issues/534)) ([e8804a6](https://github.com/charoiteai/Charoite_audio/commit/e8804a6ff03169884129f979afe5746728f814dd))
+
 ## [0.77.1](https://github.com/charoiteai/Charoite_audio/compare/v0.77.0...v0.77.1) (2026-09-11)
 
 
