@@ -129,7 +129,12 @@
    as "was … → now …, date" — a rephrasing of the same thing is not a new
    fact. The chronicle keeps the last ten such lines; older ones move to
    "## Архив хроники" at the end of the node — nothing is lost, the top of
-   the node stays readable.
+   the node stays readable. A system, team or model node is not created when
+   the name is not a name (a pronoun, a fragment), is one letter away from an
+   existing node, or matches several nodes: the name stays as text in the
+   meeting note with links to the candidates, and the candidate goes to
+   `_Кандидаты.md` at the graph root — confirm with an alias in the node or
+   create the node by hand.
 3. **Meeting archive** — a "date — title" folder with every document and a
    link that opens the graph in Obsidian.
 4. **Summary** — a one-minute read: bottom line up front → topics →
