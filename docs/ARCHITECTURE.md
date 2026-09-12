@@ -288,7 +288,9 @@ code path is shared.
    review, and the review never caught up with them).
 
 Each phase is published atomically under `logs/meeting-status/`: the macOS
-app shows real progress, keeps failures linked to the source transcript, and
+app shows real progress, the cloud review stage (running, retrying, ok,
+failed) lives in the same status as the `review` field without moving
+readiness, keeps failures linked to the source transcript, and
 announces readiness only after the exact meeting note exists. The status file
 is named by the stamp of the ORIGINAL transcript, and that key is stored in
 the status itself: a new process (the graph step, a retry by the retitled
