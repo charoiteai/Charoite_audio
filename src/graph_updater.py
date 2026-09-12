@@ -644,9 +644,10 @@ def find_canonical(graph: pathlib.Path, name: str,
 
 
 def _journal_graph_event(kind: str, what: str, meeting_link: str) -> None:
-    """`logs/graph_unlinked.log` корня данных — общий журнал решений «не
-    писать»: снятые ссылки облака и пропуски записи в заглушки (DS r3 I1,
-    GLM r3 критика 2). Сбой журнала запись в граф не останавливает."""
+    """`logs/graph_unlinked.log` корня данных — общий журнал графовых
+    решений: «не писать» (снятые ссылки облака, пропуски записи в заглушки —
+    DS r3 I1, GLM r3 критика 2) и, с №194, вытеснение и пересказ описания
+    узла. Сбой журнала запись в граф не останавливает."""
     try:
         log = ROOT / "logs" / "graph_unlinked.log"
         log.parent.mkdir(parents=True, exist_ok=True)
@@ -914,15 +915,18 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         # формулировками и датой встречи. Пересказ того же (вложение, общие
         # слова) новым фактом не считается — иначе каждая встреча плодила бы
         # строку; пустое не вытесняет (№194, Q4 аудита памяти 07.09).
-        text = _supersede_description(text, desc, meeting_link, name=p.stem)
-        # строка-заголовок целиком: «## Встречи-архив» выше настоящего раздела
-        # получал ссылку встречи внутрь своего имени (DS r1 по #539)
-        m = re.search(r"^## Встречи[ \t]*\r?$", text, re.M)
+        text, event = _supersede_description(text, desc, meeting_link, name=p.stem)
+        # строка-заголовок целиком и только в теле: «## Встречи-архив» выше
+        # настоящего раздела получал ссылку встречи внутрь своего имени (DS r1
+        # по #539), «## …» в YAML-шапке — не раздел (GLM r2)
+        m = re.compile(r"^## Встречи[ \t]*$", re.M).search(text, _body_at(text))
         if m:
             text = text[:m.end()] + f"\n{stamp}" + text[m.end():]
         else:
             text += f"\n## Встречи\n{stamp}\n"
         safe_write.write_text(p, _touch_last_seen(text, day))
+        if event:   # после записи: журнал не должен обещать то, чего в узле нет
+            _journal_graph_event(event[0], event[1], meeting_link)
     else:
         safe_write.write_text(
             p,
@@ -943,10 +947,10 @@ def _touch_last_seen(text: str, day: str) -> str:
     if m:
         return text if m.group(1) >= day else _LAST_SEEN_RE.sub(f"_(последнее упоминание: {day})_", text, count=1)
     line = f"_(последнее упоминание: {day})_"
-    # перед ПЕРВЫМ разделом, а не перед «## Встречи»: с №194 у узла может
+    # перед ПЕРВЫМ разделом тела, а не перед «## Встречи»: с №194 у узла может
     # стоять «## Хроника» раньше, и служебная строка иначе вклинивалась между
-    # хроникой и встречами
-    m = re.search(r"^## ", text, re.M)
+    # хроникой и встречами; «## …» в YAML-шапке — не раздел (GLM r2 по #539)
+    m = re.compile(r"^## ", re.M).search(text, _body_at(text))
     if m:
         return text[:m.start()] + f"{line}\n\n" + text[m.start():]
     return text.rstrip("\n") + f"\n\n{line}\n"
@@ -954,13 +958,18 @@ def _touch_last_seen(text: str, day: str) -> str:
 
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n", re.S)
 _NODE_TITLE_RE = re.compile(r"^# [^\n]*\n", re.M)
-# Служебные слова не решают, тот же это факт или другой: «отвечает за миграцию
-# для проекта» и «отвечает за тестирование для проекта» на них сходились
-# (Critical DS r1 по #539). «не» — значимое: отрицание = новый факт.
-_FACT_STOP = frozenset(
-    "для что как при это или также его её ее их они она оно он тот эта эти все всё был была было "
-    "были быть есть будет над под про без между через уже ещё еще где когда чем чтобы того этого "
-    "за на по из от до со ко об".split())
+# Слова, переворачивающие смысл: их наличие обязано совпадать у старого и
+# нового описания, иначе это новый факт — «не участвует» ↔ «участвует»,
+# «бывший аналитик» ↔ «аналитик» (Critical DS и GLM, круг 2 по #539).
+_FACT_SIGNAL = frozenset("не ни без нельзя бывший бывшая экс прежний прежняя ранее уже".split())
+
+
+def _body_at(text: str) -> int:
+    """Смещение тела узла — сразу после frontmatter. Разделы и служебные
+    строки ищутся только в теле: «## …» и «# …» в YAML-шапке — комментарии,
+    а не заголовки (Minor DS/GLM, круги 1–2 по #539)."""
+    fm = _FRONTMATTER_RE.match(text)
+    return fm.end() if fm else 0
 
 
 def _current_description(text: str) -> tuple[str, int, int]:
@@ -971,8 +980,7 @@ def _current_description(text: str) -> tuple[str, int, int]:
     ищется ПОСЛЕ frontmatter — комментарий «# …» в YAML-шапке не заголовок.
     Нет заголовка — ("", -1, -1); описания нет — пусто и обе границы сразу
     после заголовка."""
-    fm = _FRONTMATTER_RE.match(text)
-    m = _NODE_TITLE_RE.search(text, fm.end() if fm else 0)
+    m = _NODE_TITLE_RE.search(text, _body_at(text))
     if not m:
         return "", -1, -1
     start = end = m.end()
@@ -985,73 +993,80 @@ def _current_description(text: str) -> tuple[str, int, int]:
     return text[start:end].strip(), start, end
 
 
+def _fact_norm(s: str) -> str:
+    return _flat(s).casefold().replace("ё", "е")
+
+
 def _fact_words(s: str) -> tuple[set[str], set[str]]:
-    """(значимые слова, числа) — регистр и ё/е сведены, служебные слова
-    выброшены; «не» и короткие обрывки остаются, числа — отдельно."""
-    words = re.findall(r"\w+", s.casefold().replace("ё", "е"))
-    return ({w for w in words if len(w) >= 2 and w not in _FACT_STOP and not w.isdigit()},
-            {w for w in words if w.isdigit()})
+    """(слова, числа) описания — регистр и ё/е сведены, обрывки из одной
+    буквы выброшены, числа отдельным множеством."""
+    words = re.findall(r"\w+", _fact_norm(s))
+    return {w for w in words if len(w) >= 2 and not w.isdigit()}, {w for w in words if w.isdigit()}
 
 
 def _same_fact(old: str, new: str) -> bool:
-    """Пересказ одного описания, не новый факт.
+    """Пересказ одного описания, не новый факт — одно правило над множествами
+    слов, без порогов и подстрочности (два круга по #539: подстрочный шорткат
+    глушил «не участвует» → «участвует», Жаккар 0,5 склеивал разные факты, а
+    0,7 терял смену одного слова в длинном описании).
 
-    Новое, вложенное в старое, — пересказ короче; старое, вложенное в новое, —
-    НЕ пересказ: обогащение и отрицание («аналитик» → «бывший аналитик, ушёл»)
-    — новый факт (Critical DS r1, Important GLM r1 по #539). Иначе — общих
-    значимых слов не меньше 0,7 по Жаккару при тех же числах (смена даты —
-    новый факт); описания без значимых слов («QA», «1С») — только побуквенно.
-    Ошибка в сторону «новый факт» видна строкой хроники с обеими
-    формулировками и правится; ошибка в сторону «пересказ» невидима.
+    Пересказ — это то же самое слово в слово, либо те же слова короче или в
+    другом порядке (слова нового ⊆ слов старого) при тех же числах и тех же
+    словах-переворотах («не», «бывший», …). Всё остальное — новый факт:
+    обогащение, замена любого слова, смена даты, снятое или добавленное
+    отрицание. Ошибка в сторону «новый факт» видна строкой хроники с обеими
+    формулировками и правится; ошибка в сторону «пересказ» невидима — поэтому
+    правило узкое.
     """
-    na = _flat(old).casefold().replace("ё", "е")
-    nb = _flat(new).casefold().replace("ё", "е")
-    if na == nb or (nb and nb in na):
+    if _fact_norm(old) == _fact_norm(new):
         return True
-    wa, da = _fact_words(na)
-    wb, db = _fact_words(nb)
-    if da != db or not wa or not wb:
+    wa, da = _fact_words(old)
+    wb, db = _fact_words(new)
+    if da != db or (wa & _FACT_SIGNAL) != (wb & _FACT_SIGNAL):
         return False
-    return len(wa & wb) / len(wa | wb) >= 0.7
+    return bool(wa) and bool(wb) and wb <= wa
 
 
-def _supersede_description(text: str, desc: str, meeting_link: str, name: str = "") -> str:
+def _supersede_description(text: str, desc: str, meeting_link: str, name: str = "") -> tuple[str, tuple[str, str] | None]:
     """Описание узла человека/системы новым фактом с датой (№194).
 
-    Пустое описание в узле — заполняется без следа (это не вытеснение).
-    Существенно другое — заменяет прежнее, а прежнее уходит в «## Хроника»
-    первой строкой ЦЕЛИКОМ: «- [[встреча]] — _(было: «X» → стало: «Y», ДАТА)_»
-    (обрезка теряла бы факт, Important DS r1). Раздел живёт перед
-    «## Встречи»; ссылка встречи в строке хроники гасит ретрай через
-    has_link, как и у Ядер. Оба исхода — в журнал графа, иначе порог
-    не откалибровать (критика обеих голов). Концы строк: read_text в
-    upsert_entity сводит CRLF к LF, так что здесь всегда «\n».
+    Возвращает (текст, событие для журнала или None) — журналирует вызывающий
+    ПОСЛЕ записи файла, иначе журнал сообщал бы о вытеснении, которого в узле
+    нет (Minor DS r2). Пустое описание в узле — заполняется без следа (это не
+    вытеснение); «—», «–», «-» описанием не считаются. Существенно другое —
+    заменяет прежнее, а прежнее уходит в «## Хроника» первой строкой ЦЕЛИКОМ:
+    «- [[встреча]] — _(было: «X» → стало: «Y», ДАТА)_» (обрезка теряла бы факт,
+    Important DS r1). Раздел живёт перед «## Встречи»; ссылка встречи в
+    строке хроники гасит ретрай через has_link, как и у Ядер. Концы строк:
+    read_text в upsert_entity сводит CRLF к LF, здесь всегда «\n».
     """
     nl = "\n"
     new = _flat(desc)
-    if not new or new == "—":
-        return text
+    if not new.strip("—–- "):
+        return text, None
     old, start, end = _current_description(text)
     if start < 0:
-        return text
+        return text, None
     if not old:
-        return text[:start] + new + nl + text[start:]
+        return text[:start] + new + nl + nl + text[end:], None
     if _same_fact(old, new):
-        if _flat(old).casefold() != new.casefold():
-            _journal_graph_event("описание — пересказ", f"{name}: «{_clip(new)}» ≈ «{_clip(old)}»", meeting_link)
-        return text
+        if _fact_norm(old) == _fact_norm(new):
+            return text, None
+        return text, ("описание — пересказ", f"{name}: «{_clip(new)}» ≈ «{_clip(old)}»")
     day = pathlib.PurePosixPath(meeting_link).name[:10]
     when = f", {day}" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else ""
     line = f"- [[{meeting_link}]] — _(было: «{_flat(old)}» → стало: «{new}»{when})_"
-    _journal_graph_event("описание вытеснено", f"{name}: «{_clip(old)}» → «{_clip(new)}»", meeting_link)
+    event = ("описание вытеснено", f"{name}: «{_clip(old)}» → «{_clip(new)}»")
     text = text[:start] + new + nl + nl + text[end:]
     head = f"## Хроника{nl}{line}"
-    if re.search(r"^## Хроника[ \t]*\r?$", text, re.M):
-        return re.sub(r"^## Хроника[ \t]*\r?$", lambda _: head, text, count=1, flags=re.M)
-    m = re.search(r"^## Встречи[ \t]*\r?$", text, re.M)      # не «## Встречи-архив» (DS r1)
+    body = _body_at(text)
+    m = re.compile(r"^## Хроника[ \t]*$", re.M).search(text, body)
     if m:
-        return text[:m.start()] + head + nl + nl + text[m.start():]
-    return text.rstrip("\r\n") + nl + nl + head + nl
+        return text[:m.start()] + head + text[m.end():], event
+    m = re.compile(r"^## Встречи[ \t]*$", re.M).search(text, body)      # не «## Встречи-архив» (DS r1)
+    if m:
+        return text[:m.start()] + head + nl + nl + text[m.start():], event
+    return text.rstrip("\n") + nl + nl + head + nl, event
 
 
 def core_anchor(core: dict, transcript: str, speakers: set[str] | None = None) -> str:
