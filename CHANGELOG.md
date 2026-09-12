@@ -5,6 +5,19 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.79.0](https://github.com/charoiteai/Charoite_audio/compare/v0.78.0...v0.79.0) (2026-09-12)
+
+
+### Features
+
+* **graph:** узел сущности не заводится для мусора, опечатки существующего имени и неоднозначности ([#544](https://github.com/charoiteai/Charoite_audio/issues/544)) ([5781fb9](https://github.com/charoiteai/Charoite_audio/commit/5781fb9251a451c5585b52384686c1ecc0c37dc4))
+* **graph:** хроника вытеснений у человека и системы держит десять строк, старшие уходят в архив узла ([#542](https://github.com/charoiteai/Charoite_audio/issues/542)) ([3fcd19b](https://github.com/charoiteai/Charoite_audio/commit/3fcd19b376e839701697f626fc849fc73d2400d9))
+
+
+### Bug Fixes
+
+* **audio:** предупреждение о записи без собеседников и при смерти канала посреди встречи ([#541](https://github.com/charoiteai/Charoite_audio/issues/541)) ([7c19922](https://github.com/charoiteai/Charoite_audio/commit/7c19922244a3cb7d4e5fce13879da7daa2128888))
+
 ## [0.78.0](https://github.com/charoiteai/Charoite_audio/compare/v0.77.1...v0.78.0) (2026-09-12)
 
 
