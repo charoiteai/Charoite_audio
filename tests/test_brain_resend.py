@@ -48,6 +48,9 @@ def test_note_decisions_skip_withdrawn_and_head_reads_only_participants():
                                         "Единый токен для всех команд"]
     assert g.note_decisions(AFTER) == ["Пересчёт бюджета произойдёт на следующей неделе"]
     assert g.note_decisions("# Встреча x\n\n## Темы\n- a\n") == []
+    # облако переформатировало: уровень заголовка и отступ списка — не повод
+    # «не видеть» решений ни до, ни после (DS r1 M3 по #545)
+    assert g.note_decisions("### Решения\n  - 📌 одно\n  - ⛔ два\n#### Связи\n- 📌 не решение\n") == ["одно"]
     title, people, topics = g._note_head(AFTER)
     assert title == "Планёрка команды"
     assert [p["имя"] for p in people] == ["Иван", "Анна"], "упомянутые и «не участники» ссылки несут, участниками не начинаются"
@@ -91,3 +94,35 @@ def test_resend_is_a_no_op_when_decisions_did_not_change_and_survives_a_dead_bra
 
     out = g.resend_to_brain_after_review("s", note, BEFORE, mark, post=dead)
     assert out.startswith("память Чароита не переотправлена (brain:") and mark.exists(), "brain лежит — отметка цела, ревизия не роняется"
+
+
+def test_resend_keeps_a_debt_when_remember_fails_after_forget_and_pays_it_next_time(tmp_path):
+    """DS r1 I3 по #545: brain забыл встречу, а /remember упал на эмбеддере —
+    раньше память встречи оставалась пустой навсегда (на следующем проходе
+    заметка уже правлена, «решения те же»). Теперь долг лежит рядом с
+    отметкой, и следующий проход досылает."""
+    note = tmp_path / "n.md"
+    note.write_text(AFTER, encoding="utf-8")
+    mark = tmp_path / "brain_sent" / "s.txt"
+    mark.parent.mkdir()
+    mark.write_text("sent 4/4\nid:x\n", encoding="utf-8")
+    debt = mark.with_suffix(".pending")
+
+    def half_dead(url, json, timeout):
+        if url.endswith("/forget"):
+            return _Resp()
+        raise ConnectionError("embedder busy")
+
+    out = g.resend_to_brain_after_review("s", note, BEFORE, mark, post=half_dead)
+    assert out.startswith("память Чароита НЕ переотправлена полностью (ушло 0 из 2)") and debt.exists(), out
+    assert not mark.exists(), "отметки нет — повтор обработки тоже дошлёт всё"
+    calls: list[str] = []
+    out = g.resend_to_brain_after_review("s", note, AFTER, mark, post=lambda url, json, timeout: calls.append(url) or _Resp())
+    assert out == "память Чароита переотправлена после ревизии: снято решений 0, ушло фактов 2", out
+    assert calls[0].endswith("/forget") and len(calls) == 3 and not debt.exists()
+    calls.clear()
+    out = g.resend_to_brain_after_review("s", note, AFTER, mark, post=lambda *a, **k: calls.append(a) or _Resp())
+    assert "без переотправки" in out and not calls, "долг оплачен, решения те же — тишина"
+    # brain лёг на /forget — долг остаётся, отметка цела
+    out = g.resend_to_brain_after_review("s", note, BEFORE, mark, post=lambda *a, **k: (_ for _ in ()).throw(ConnectionError("down")))
+    assert "долг записан" in out and debt.exists() and mark.exists()

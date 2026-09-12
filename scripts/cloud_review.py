@@ -1145,19 +1145,25 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 owner = str(sufler.get("user_name") or "")
                 lang = str(sufler.get("language") or "ru")
                 verified = "сверено" if (not may_edit or checked) else "БЕЗ сверки графа"
+                rev_text = rev.read_text(encoding="utf-8", errors="replace")
+                has_minutes = review_bridge.minutes_path(transcript).is_file()
                 # Сначала снять ложное, потом дописать восстановленное: если
                 # ревизия заменяет пункт похожим верным, дедуп не должен
                 # принять новый за уже существующий ложный (№238)
-                withdrawn = review_bridge.withdraw(rev, transcript, owner=owner, lang=lang, dropped=dropped)
+                dropped_w: list[str] = []          # свой список: лог называет раздел (DS r1 M2)
+                withdrawn = review_bridge.withdraw(rev, transcript, owner=owner, lang=lang, dropped=dropped_w)
                 if withdrawn:
                     lines.append(f"[cloud-review] мост ревизии ({verified}): снято поручений — {withdrawn} "
                                  f"(перенесены в «{review_bridge.WITHDRAWN_TITLE.get(lang[:2], review_bridge.WITHDRAWN_TITLE['ru'])[3:]}»)\n")
+                elif has_minutes and review_bridge.withdrawn_section_present(rev_text):
+                    lines.append("[cloud-review] мост ревизии: раздел о снятых поручениях есть, "
+                                 "пунктов не извлечено или в минутках их нет\n")
                 added = review_bridge.bridge(rev, transcript, owner=owner, lang=lang, dropped=dropped)
                 if added:
                     lines.append(f"[cloud-review] мост ревизии ({verified}): в минутки дописано поручений — {added}\n")
-                elif not review_bridge.minutes_path(transcript).is_file():
+                elif not has_minutes:
                     lines.append("[cloud-review] мост ревизии: минуток рядом со стенограммой нет\n")
-                elif review_bridge.section_present(rev.read_text(encoding="utf-8", errors="replace")):
+                elif review_bridge.section_present(rev_text):
                     lines.append("[cloud-review] мост ревизии: раздел о восстановленных поручениях есть, "
                                  "пунктов не извлечено или все уже в минутках\n")
                 # Что мост выбросил из раздела — в лог: «нет», комментарии модели,
@@ -1165,10 +1171,11 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 # пустой раздел выглядели одинаково (GLM r4 по #518, критика 1).
                 # Отдельным if ПОСЛЕ цепочки: врезанный в неё, он перехватывал
                 # elif у `if added` — лог врал на каждом чистом прогоне (DS/GLM r1 по #533)
-                if dropped:
-                    shown = "; ".join(s[:80] for s in dropped[:5])
-                    more = "" if len(dropped) <= 5 else f" (и ещё {len(dropped) - 5})"
-                    lines.append(f"[cloud-review] мост ревизии: отброшено строк раздела — {len(dropped)}: {shown}{more}\n")
+                for what, junk in (("восстановленных", dropped), ("снятых", dropped_w)):
+                    if junk:
+                        shown = "; ".join(s[:80] for s in junk[:5])
+                        more = "" if len(junk) <= 5 else f" (и ещё {len(junk) - 5})"
+                        lines.append(f"[cloud-review] мост ревизии: отброшено строк раздела {what} — {len(junk)}: {shown}{more}\n")
             except Exception as e:  # noqa: BLE001 — мост не важнее самой ревизии
                 lines.append(f"[cloud-review] мост ревизии не сработал: {e}\n")
         if published and deliver and (not may_edit or checked):
@@ -1176,9 +1183,13 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             deliver_review(rev, transcript, graph, stamp, buf)
             lines.append(buf.getvalue())
         # Память — по заметке после переноса правок облака: снятые ⛔ решения
-        # в brain не остаются (№237). Только когда перенос состоялся: без
-        # сверки заметка в графе прежняя, и переотправлять нечего.
-        if published and may_edit and checked and note_path is not None:
+        # в brain не остаются (№237). Сверка (checked) гейтом не стоит:
+        # перенос пофайловый, и заметка с ⛔ может лежать в графе при упавшем
+        # соседнем файле — сама функция сравнивает решения до и после, без
+        # переноса они те же (GLM r1 I2 по #545). Без права правки графа
+        # (may_edit) заметка не трогается — brain и граф согласны, пусть и
+        # с ошибочным решением: граф здесь источник, а не ревизия.
+        if published and may_edit and note_path is not None:
             try:
                 mark = ROOT / "logs" / "brain_sent" / f"{stamp}.txt"
                 lines.append("[cloud-review] " + graph_updater.resend_to_brain_after_review(

@@ -189,6 +189,13 @@ def section_present(review: str) -> bool:
     return bool(RECOVERED_WORD.search(review or ""))
 
 
+def withdrawn_section_present(review: str) -> bool:
+    """То же для снятых: раздел свободной формы («**Что снять:**», «## Снятые
+    поручения (проверка)») не разбирается — по логу это должно отличаться
+    от «снимать нечего» (DS r1 M1, GLM r1 M4 по #545)."""
+    return bool(WITHDRAWN_WORD.search(review or ""))
+
+
 def _key(item: str) -> str:
     """Ключ дедупа: без пометок, жирного, чекбокса, пунктуации и регистра."""
     text = re.sub(r"⚠[^:]*:", " ", item)           # «⚠ не участник (Имя):» целиком
@@ -384,13 +391,26 @@ def bridge(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
     return added
 
 
+def _continuation(line: str) -> bool:
+    """Строка раздела поручений — перенос предыдущего пункта: непустая, без
+    маркера, не свой пункт с жирного имени и не жирная подпись. Уезжает
+    вместе с пунктом, иначе в «Поручениях» остаётся сирота без исполнителя,
+    а в зачёркнутом тексте теряется хвост (DS r1 I2, GLM r1 M3 по #545)."""
+    return bool(line.strip()) and not _BULLET.match(line) and not _OWN_ITEM.match(line) \
+        and not _BOLD_HEADING.match(line)
+
+
 def withdraw_from_minutes(minutes: str, items: list[tuple[str, str]], lang: str = "ru",
-                          owner: str = "") -> tuple[str, int]:
+                          owner: str = "", dropped: list[str] | None = None) -> tuple[str, int]:
     """Минутки, из раздела поручений которых снятые ревизией пункты переехали
     в «## Снято ревизией» (сразу за разделом поручений) с причиной, и сколько
     переехало. Пункт ищется так же, как при дедупе восстановленных: тот же
     исполнитель и то же дело (в любую сторону вложения), владелец — в одном
-    каноне. Выполненный человеком пункт («[x]») не снимается: сделанное —
+    каноне. Один пункт ревизии снимает ровно одну строку минуток: подходит
+    к нескольким («подготовить отчёт» против «…по бюджету» и «…по срокам»)
+    — не гадаем, ничего не снимаем и говорим об этом в `dropped` (DS r1
+    Critical по #545: съеденное поручение невидимо, лишнее — видно и снимается
+    кликом). Выполненный человеком пункт («[x]») не снимается: сделанное —
     факт, а не пересказ модели. Ничего не нашлось — минутки те же (№238)."""
     lang = (lang or "ru").strip().lower()[:2]
     if not items:
@@ -400,23 +420,41 @@ def withdraw_from_minutes(minutes: str, items: list[tuple[str, str]], lang: str 
     if bounds is None:
         return minutes, 0
     start, end = bounds
+    body = lines[start + 1:end]
+    cand = [i for i, ln in enumerate(body)
+            if _key(ln) and not _DONE_ITEM.match(ln) and not _continuation(ln)]
+    views = {i: _dedup_view(body[i], owner) for i in cand}
+    taken: dict[int, str] = {}                      # строка минуток → причина снятия
+    for item, why in items:
+        hits = [i for i in cand if _matches_withdrawn(item, views[i])]
+        if len(hits) > 1:
+            # точное совпадение ключа перевешивает пересказ; два точных — гадание
+            exact = [i for i in hits if _key(item) == _key(views[i])]
+            hits = exact if len(exact) == 1 else hits
+        if len(hits) == 1:
+            taken.setdefault(hits[0], why)          # две причины на одну строку — первая
+        elif hits and dropped is not None:
+            dropped.append(f"снятие «{item}» подходит к {len(hits)} пунктам минуток — не гадаем, оставлены")
+    if not taken:
+        return minutes, 0
+    mark = WITHDRAWN_MARKS.get(lang, WITHDRAWN_MARKS["ru"])
     moved: list[str] = []
     keep: list[str] = []
-    mark = WITHDRAWN_MARKS.get(lang, WITHDRAWN_MARKS["ru"])
-    for line in lines[start + 1:end]:
-        if not _key(line) or _DONE_ITEM.match(line):
+    i = 0
+    while i < len(body):
+        line = body[i]
+        if i not in taken:
             keep.append(line)
+            i += 1
             continue
-        view = _dedup_view(line, owner)
-        why = next((reason for item, reason in items if _matches_withdrawn(item, view)), None)
-        if why is None:
-            keep.append(line)
-            continue
+        why = taken[i]
         m = _ITEM.match(line)
         text = _CHECKBOX.sub("", m.group("text") if m else line.strip(), count=1).strip()
+        i += 1
+        while i < len(body) and _continuation(body[i]):     # переносы пункта — с ним
+            text = f"{text} {body[i].strip()}"
+            i += 1
         moved.append(f"- ~~{text}~~ _({mark}{': ' + why if why else ''})_")
-    if not moved:
-        return minutes, 0
     section = keep
     while section and not section[-1].strip():
         section.pop()
@@ -427,11 +465,13 @@ def withdraw_from_minutes(minutes: str, items: list[tuple[str, str]], lang: str 
     # раздел уже есть (вторая ревизия, повтор обработки) — дописываем в него без дублей
     at = next((i for i, ln in enumerate(rest) if _WITHDRAWN_TITLE_RE.match(ln)), None)
     if at is not None:
-        old_keys = {_key(ln) for ln in rest[at + 1:] if _key(ln)}
-        fresh = [m for m in moved if _key(m) not in old_keys]
         stop = at + 1
         while stop < len(rest) and not _HEADING.match(rest[stop]):
             stop += 1
+        # ключи — только своего раздела: строка «Открытых вопросов» с тем же
+        # текстом не должна глушить перенос (GLM r1 M6 по #545)
+        old_keys = {_key(ln) for ln in rest[at + 1:stop] if _key(ln)}
+        fresh = [m for m in moved if _key(m) not in old_keys]
         block = rest[at + 1:stop]
         while block and not block[-1].strip():
             block.pop()
@@ -446,7 +486,11 @@ def _matches_withdrawn(item: str, view: str) -> bool:
     """Пункт минуток (view — в каноне владельца) — тот, что ревизия снимает:
     тот же ключ или тот же исполнитель и то же дело в любую сторону вложения;
     исполнитель в другом падеже («**Сергею**» против «**Сергей**») — тот же
-    человек (action_items._same_person), сам текст минуток этим не правится."""
+    человек (action_items._same_person), сам текст минуток этим не правится.
+    Вложение — от двух общих значимых слов, как у _same_item: одно общее
+    слово («позвонить») снимало бы любой пункт этого человека (DS r1
+    Critical, GLM r1 I1 по #545); однословное дело с тем же словом
+    проходит по Жаккару (1.0)."""
     if _same_item(item, view) or _same_item(view, item):
         return True
     na, wa = _split(item)
@@ -457,7 +501,9 @@ def _matches_withdrawn(item: str, view: str) -> bool:
     if len(pa) != len(pb) or not all(action_items._same_person(x, y) for x, y in zip(pa, pb)):
         return False
     common = len(wa & wb)
-    return common == len(wa) or common == len(wb) or common / len(wa | wb) >= SIMILAR
+    if common >= 2 and (common == len(wa) or common == len(wb)):
+        return True
+    return common / len(wa | wb) >= SIMILAR
 
 
 def withdraw(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
@@ -476,7 +522,7 @@ def withdraw(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
     if not minutes.is_file():
         return 0
     before = minutes.read_text(encoding="utf-8", errors="replace")
-    after, moved = withdraw_from_minutes(before, items, lang=lang, owner=owner)
+    after, moved = withdraw_from_minutes(before, items, lang=lang, owner=owner, dropped=dropped)
     if moved:
         safe_write.write_text(minutes, after)
     return moved

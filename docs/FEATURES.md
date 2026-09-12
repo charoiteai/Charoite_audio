@@ -593,9 +593,14 @@ it signals degradation, it does not break the loop.
   were never said (the strict "Withdrawn action items" section: the assignee
   was not at the meeting, no deadline was named, a joke) move from the
   action items section into "Withdrawn by the review" with the reason —
-  they leave the Tasks tab but not the minutes; a wrong decision in the
+  they leave the Tasks tab but not the minutes (one withdrawn item takes
+  exactly one line of the minutes, together with its wrapped continuation;
+  when it fits several lines nothing is withdrawn and the log says so — an
+  eaten task is invisible, an extra one is a click away); a wrong decision in the
   meeting note is marked ⛔ in place by the review, and Charoite's memory of
-  the meeting is resent without the withdrawn decisions; the local model's
+  the meeting is resent without the withdrawn decisions (a resend that broke
+  halfway leaves a debt file next to the sent-mark, and the next review or
+  reprocessing pays it); the local model's
   debrief stays a draft with such a header, and its tasks and
   recommendations come from this meeting only; an item the
   minutes already hold in other words is not duplicated, and an assignee

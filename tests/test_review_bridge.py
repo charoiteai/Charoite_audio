@@ -330,6 +330,71 @@ def test_withdraw_moves_false_items_out_of_tasks_but_not_out_of_minutes():
     assert n == 1 and "## Withdrawn by the review\n- ~~**Ann** — send the report~~ _(withdrawn by the review: not said)_" in en
 
 
+def test_withdrawal_is_one_to_one_and_does_not_guess_between_brothers():
+    """DS r1 Critical по #545: один снятый пункт снимал все похожие строки
+    минуток; GLM r1 I1: одно общее слово дела снимало любой пункт человека
+    в другом падеже. Теперь: подходит к нескольким — не гадаем, точная
+    строка среди похожих — ровно она, однословное дело — по Жаккару."""
+    minutes = ("# Минутки\n## Поручения\n"
+               "- [ ] **Иван** — подготовить отчёт по бюджету\n"
+               "- [ ] **Иван** — подготовить отчёт по срокам\n"
+               "- [ ] **Сергей** — позвонить в банк\n"
+               "- [ ] **Сергей** — позвонить юристу\n"
+               "- [ ] **Сергей** — позвонить\n")
+    dropped: list[str] = []
+    text, moved = rb.withdraw_from_minutes(minutes, [("**Иван** — подготовить отчёт", "шутка")], dropped=dropped)
+    assert (moved, text) == (0, minutes)
+    assert dropped == ["снятие «**Иван** — подготовить отчёт» подходит к 2 пунктам минуток — не гадаем, оставлены"]
+    text, moved = rb.withdraw_from_minutes(minutes, [("**Сергею** — позвонить", "шутка")])
+    assert moved == 1 and "- ~~**Сергей** — позвонить~~ _(снято ревизией: шутка)_" in text
+    tasks = text.split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
+    assert "позвонить в банк" in tasks and "позвонить юристу" in tasks, "одно общее слово — не то же дело"
+    both = minutes + "- [ ] **Иван** — подготовить отчёт\n"
+    text, moved = rb.withdraw_from_minutes(both, [("**Иван** — подготовить отчёт", "шутка")])
+    tasks = text.split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
+    assert moved == 1 and "по бюджету" in tasks and "по срокам" in tasks and "- [ ] **Иван** — подготовить отчёт\n" not in tasks + "\n"
+    # две причины на одну строку — снимается один раз, с первой
+    text, moved = rb.withdraw_from_minutes(minutes, [("**Сергею** — позвонить", "раз"), ("**Сергей** — позвонить", "два")])
+    assert moved == 1 and text.count("~~") == 2 and "(снято ревизией: раз)" in text
+
+
+def test_withdrawn_item_takes_its_wrapped_lines_along():
+    """DS r1 I2, GLM r1 M3 по #545: перенос пункта на вторую строку уезжает
+    вместе с ним — в «Поручениях» не остаётся сироты без исполнителя, в
+    зачёркнутом тексте не теряется хвост."""
+    minutes = ("# Минутки\n## Поручения\n"
+               "- [ ] **Мария** — пересчитать оценки по проекту,\n"
+               "  отчёт по срокам — к 25.09\n"
+               "- [ ] **Анна** — исключить Ольгу из рабочей группы\n\n"
+               "## Открытые вопросы\n- Кто ведёт протокол дальше?\n")
+    text, moved = rb.withdraw_from_minutes(minutes, [("**Мария** — пересчитать оценки по проекту, отчёт по срокам", "Марии нет")])
+    assert moved == 1, text
+    tasks = text.split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
+    assert tasks.strip() == "- [ ] **Анна** — исключить Ольгу из рабочей группы", tasks
+    assert "- ~~**Мария** — пересчитать оценки по проекту, отчёт по срокам — к 25.09~~ _(снято ревизией: Марии нет)_" in text
+    assert rb._continuation("  отчёт по срокам") and not rb._continuation("- [ ] x") \
+        and not rb._continuation("**Пётр** — свой пункт") and not rb._continuation("**Срок**") and not rb._continuation("  ")
+
+
+def test_existing_withdrawn_section_dedups_only_within_itself():
+    """GLM r1 M6 по #545: ключи дедупа — из своего раздела, а не до конца файла."""
+    minutes = ("# Минутки\n## Поручения\n- [ ] **Анна** — исключить Ольгу из рабочей группы\n\n"
+               "## Снято ревизией\n- ~~**Пётр** — старое~~ _(снято ревизией: x)_\n\n"
+               "## Открытые вопросы\n- ~~**Анна** — исключить Ольгу из рабочей группы~~ _(снято ревизией: y)_\n")
+    text, moved = rb.withdraw_from_minutes(minutes, [("**Анна** — исключить Ольгу из рабочей группы", "y")])
+    assert moved == 1
+    gone = text.split("## Снято ревизией\n", 1)[1].split("\n## ", 1)[0]
+    assert "**Анна** — исключить" in gone and "**Пётр** — старое" in gone
+    assert text.count("**Анна** — исключить Ольгу из рабочей группы~~") == 2, "чужой раздел не глушит перенос"
+
+
+def test_withdrawn_section_present_mirrors_the_recovered_check():
+    assert rb.withdrawn_section_present("## Снятые поручения (проверка)\n- x")
+    assert rb.withdrawn_section_present("**Снятые поручения:**")
+    assert not rb.withdrawn_section_present("## Восстановленные поручения\n- x")
+    assert not rb.withdrawn_section_present("в записи снятых поручений нет")
+
+
 def test_withdraw_then_bridge_on_disk_keeps_the_verified_item(tmp_path):
     """Снятие идёт до дописывания: ревизия снимает ложный пункт и
     восстанавливает верный похожий — верный не должен погибнуть в дедупе

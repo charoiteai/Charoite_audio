@@ -443,6 +443,25 @@ def _starts_like_meeting(path: pathlib.Path) -> bool:
         return False
 
 
+def _meeting_facts(stamp: str, title: str, people: list, topics: list,
+                   decisions: list) -> list[tuple[str, dict]]:
+    """(ключ, факт) встречи для brain: шапка и до шести решений.
+    Ключ факта — не текст POST-а: тема входит в каждый текст, а её меняют
+    rename_meeting (brain /rename) и повторное извлечение — и все факты
+    стали бы «новыми» (GLM r3). Шапка одна на встречу — ключ «head»;
+    решение — хеш его собственной формулировки (luna r2/r3)."""
+    who = ", ".join(p["имя"] for p in people[:6])
+    keyed: list[tuple[str, dict]] = [("head", {
+        "text": f"Встреча {stamp} «{title or 'без названия'}» ({who}): темы — " + "; ".join(topics[:4]),
+        "category": "learned", "importance": 0.6, "meeting": stamp})]
+    for d in decisions[:6]:
+        key = hashlib.sha256(d.strip().lower().encode("utf-8")).hexdigest()[:16]
+        if all(key != k for k, _ in keyed):     # одно решение дважды в списке — один факт (luna r3)
+            keyed.append((key, {"text": f"Решение встречи {stamp} «{title}»: {d}",
+                                "category": "decision", "importance": 0.7, "meeting": stamp}))
+    return keyed
+
+
 def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions: list,
                   mark: pathlib.Path, post=None) -> int:
     """Факты встречи → память Чароита. Возвращает, сколько ушло в этот раз.
@@ -462,19 +481,7 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
     /forget, /rename с 23.08, карточка №41).
     """
     post = post or requests.post
-    who = ", ".join(p["имя"] for p in people[:6])
-    # Ключ факта — не текст POST-а: тема входит в каждый текст, а её меняют
-    # rename_meeting (brain /rename) и повторное извлечение — и все факты
-    # стали бы «новыми» (GLM r3). Шапка одна на встречу — ключ «head»;
-    # решение — хеш его собственной формулировки (luna r2/r3).
-    keyed: list[tuple[str, dict]] = [("head", {
-        "text": f"Встреча {stamp} «{title or 'без названия'}» ({who}): темы — " + "; ".join(topics[:4]),
-        "category": "learned", "importance": 0.6, "meeting": stamp})]
-    for d in decisions[:6]:
-        key = hashlib.sha256(d.strip().lower().encode("utf-8")).hexdigest()[:16]
-        if all(key != k for k, _ in keyed):     # одно решение дважды в списке — один факт (luna r3)
-            keyed.append((key, {"text": f"Решение встречи {stamp} «{title}»: {d}",
-                                "category": "decision", "importance": 0.7, "meeting": stamp}))
+    keyed = _meeting_facts(stamp, title, people, topics, decisions)
     # Отметка помнит КЛЮЧИ отправленных фактов, а не позицию: повтор обработки
     # извлекает решения заново, порядок и состав могут отличаться — смещение
     # слало бы старые повторно и теряло новые (luna r2 по #455). Строка без
@@ -512,7 +519,12 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
 DEBRIEF_NOTE = ("_Черновик локальной модели по стенограмме; сверка ошибок — «Ревизия "
                 "Claude» рядом, если облачная ревизия включена._")
 BRAIN = "http://127.0.0.1:8100"
-_DECISION_LINE = re.compile(r"^- 📌 (?P<text>.+?)\s*$")
+# отступ и уровень заголовка — мягко: облако, переформатировав заметку
+# («### Решения», список с отступом), иначе давало «решений нет» и до, и
+# после ревизии — и переотправка молча не срабатывала (DS r1 M3 по #545)
+_DECISION_LINE = re.compile(r"^\s*- 📌\s+(?P<text>.+?)\s*$")
+_DECISIONS_HEAD = re.compile(r"^#{2,4}\s*Решения\s*$", re.M)
+_NEXT_HEAD = re.compile(r"^#{1,6}\s", re.M)
 _NOTE_TITLE = re.compile(r"^# Встреча \S+(?: — (?P<title>.+))?\s*$", re.M)
 _PERSON_LINK = re.compile(r"\[\[Люди/[^\]|]+\|(?P<name>[^\]]+)\]\]")
 
@@ -520,11 +532,11 @@ _PERSON_LINK = re.compile(r"\[\[Люди/[^\]|]+\|(?P<name>[^\]]+)\]\]")
 def note_decisions(text: str) -> list[str]:
     """Живые решения заметки встречи: строки «- 📌 …» раздела «## Решения».
     Строка, которую ревизия пометила «- ⛔ …», решением не считается."""
-    m = re.compile(r"^## Решения[ \t]*$", re.M).search(text)
+    m = _DECISIONS_HEAD.search(text)
     if not m:
         return []
     body = text[m.end():]
-    nxt = re.compile(r"^## ", re.M).search(body)
+    nxt = _NEXT_HEAD.search(body)
     section = body[:nxt.start()] if nxt else body
     return [d.group("text").strip() for ln in section.split("\n") if (d := _DECISION_LINE.match(ln))]
 
@@ -567,19 +579,32 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
     заново по заметке. Решения не менялись — ничего не трогаем (облако
     правит заметку почти каждой встрече, а лишний /forget — лишний холостой
     ход эмбеддера). Brain лежит — строка в лог, не исключение: ревизия
-    доставлена, память догонит повтор."""
+    доставлена, память догонит повтор.
+
+    Долг переотправки — файл `<отметка>.pending` рядом с отметкой: он
+    ставится ДО /forget и снимается после полной отправки. Сбой между ними
+    (brain забыл встречу, а /remember упал на эмбеддере — сценарий 20.07)
+    иначе оставлял память встречи пустой навсегда: на следующем проходе
+    заметка уже правлена, «решения те же» — и переотправки нет (DS r1 I3
+    по #545). С долгом следующая ревизия или повтор обработки досылают."""
     post = post or requests.post
     try:
         after = note.read_text(encoding="utf-8")
     except OSError as e:
         return f"память Чароита не переотправлена: заметка не прочитана ({e})"
+    pending = mark.with_suffix(".pending")
     old, new = note_decisions(note_before), note_decisions(after)
-    if old == new:
+    if old == new and not pending.exists():
         return "память Чароита: решения встречи после ревизии те же — без переотправки"
+    try:
+        pending.parent.mkdir(parents=True, exist_ok=True)
+        pending.touch()
+    except OSError:
+        pass
     try:
         post(f"{BRAIN}/forget", json={"meeting": stamp}, timeout=15).raise_for_status()
     except Exception as e:  # noqa: BLE001 — brain выключен: память догонит повтор
-        return f"память Чароита не переотправлена (brain: {e})"
+        return f"память Чароита не переотправлена (brain: {e}) — долг записан, догонит следующая ревизия"
     try:
         mark.unlink()
     except OSError:
@@ -587,6 +612,15 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
     title, people, topics = _note_head(after)
     n = send_to_brain(stamp, title, people, topics, new, mark, post=post)
     dropped = len([d for d in old if d not in new])
+    total = len(_meeting_facts(stamp, title, people, topics, new))
+    if n < total:
+        # долг остаётся: brain уже забыл встречу, а полный состав не дошёл (GLM r1 M5)
+        return (f"память Чароита НЕ переотправлена полностью (ушло {n} из {total}) — "
+                "долг записан, догонит следующая ревизия или повтор обработки")
+    try:
+        pending.unlink()
+    except OSError:
+        pass
     return f"память Чароита переотправлена после ревизии: снято решений {dropped}, ушло фактов {n}"
 
 
