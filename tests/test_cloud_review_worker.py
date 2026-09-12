@@ -762,9 +762,14 @@ def test_check_and_rollback_survive_an_unwritable_log(tmp_path, monkeypatch):
     class Result:
         returncode = 0
 
+    stray = graph / "Документация" / "Стенограммы встреч" / "чужой.md"
+
     def fake_run(cmd, **kwargs):
-        (pathlib.Path(kwargs["cwd"]) / "Документация" / "Стенограммы встреч"
-         / f"{stamp}.md").write_text("переписано облаком", encoding="utf-8")
+        pen = pathlib.Path(kwargs["cwd"]) / "Документация" / "Стенограммы встреч"
+        (pen / f"{stamp}.md").write_text("переписано облаком", encoding="utf-8")
+        # файл, которого в transcripts/ нет: довоз копий его не перекроет,
+        # так что откат виден только по нему (GLM r1 I3 по #548)
+        (pen / "чужой.md").write_text("создано облаком", encoding="utf-8")
         kwargs["stdout"].write(_REPORT)
         log.unlink(); log.parent.joinpath("cloud.log").mkdir()   # лог стал каталогом
         return Result()
@@ -773,9 +778,61 @@ def test_check_and_rollback_survive_an_unwritable_log(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
     cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
     cloud_review.run(stamp, transcript, graph, rev, log, cfg)
-    assert doc.read_text(encoding="utf-8") == "стенограмма\n", (
-        "запрещённая правка перенесена в граф, хотя лог недоступен"
-    )
+    assert not stray.exists(), "запрещённая правка перенесена в граф, хотя лог недоступен"
+    # копия стенограммы в Документации — довозная из transcripts/ (№239), не облачная
+    assert doc.read_text(encoding="utf-8") == transcript.read_text(encoding="utf-8") == "текст\n"
+
+
+def test_name_fixes_go_before_withdraw_and_bridge_and_only_with_a_checked_graph(tmp_path, monkeypatch):
+    """№239: имена меток правятся раньше снятия и восстановления поручений
+    (участники для «не участник» берутся из уже переименованной стенограммы),
+    и только под правкой графа со сверенным переносом; без права правки —
+    строка в лог, файлы целы."""
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    minutes = transcript.with_name(transcript.stem + "_minutes.md")
+
+    def fresh():
+        transcript.write_text("# Встреча\n\nУчастники (звучали в разговоре): Сергей, Юля\n\n**Сергей** [14:00]:\nначнём\n\n"
+                              "**Юля** [14:01]:\nМаш, ты согласуешь?\n", encoding="utf-8")
+        minutes.write_text("# Минутки\n**Участники:** Сергей, Юля\n\n## Поручения\n- [ ] **Сергей** — согласовать план\n",
+                           encoding="utf-8")
+        rev.unlink(missing_ok=True)
+
+    fresh()
+    review = (_REPORT + "\n## Исправления имён\n- **Сергей** → **Мария** — основание: обращение «Маш»\n"
+              "## Снятые поручения\n- **Сергей** — согласовать план — причина: метка не того человека\n"
+              "## Восстановленные поручения\n- [ ] **Мария** — согласовать план\n")
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        kwargs["stdout"].write(review)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    assert cloud_review.run(stamp, transcript, graph, rev, log, {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False}}) == 0
+    text = log.read_text(encoding="utf-8")
+    assert "имена меток не перештампованы: правка графа выключена" in text and "верные имена мост считает участниками" in text
+    assert "**Сергей** [14:00]:" in transcript.read_text(encoding="utf-8"), "без права правки графа стенограмма не тронута"
+    tasks = minutes.read_text(encoding="utf-8").split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
+    assert "- [ ] **Мария** — согласовать план (из ревизии)" in tasks and "⚠" not in tasks, \
+        "верное имя из раздела — участник и без перештамповки (DS r2 I2)"
+    log.unlink()
+    fresh()
+    assert cloud_review.run(stamp, transcript, graph, rev, log, {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}) == 0
+    text = log.read_text(encoding="utf-8")
+    assert "имена меток исправлены по ревизии: Сергей → Мария — заголовков реплик 1, участники минуток да" in text
+    assert text.index("имена меток исправлены") < text.index("снято поручений") < text.index("дописано поручений")
+    speech = transcript.read_text(encoding="utf-8")
+    assert "**Мария** [14:00]:" in speech and "Участники (звучали в разговоре): Мария, Юля" in speech
+    tasks = minutes.read_text(encoding="utf-8").split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
+    assert "- [ ] **Мария** — согласовать план (из ревизии)" in tasks and "**Сергей** —" not in tasks
+    assert "⚠" not in tasks, "верное имя — участник переименованной стенограммы, пометки «не участник» нет"
+    assert "**Участники:** Мария, Юля" in minutes.read_text(encoding="utf-8")
 
 
 def test_unreadable_subfolder_downgrades_to_read_only(tmp_path, monkeypatch):

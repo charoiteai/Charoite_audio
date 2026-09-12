@@ -285,7 +285,14 @@ code path is shared.
    minutes' tasks into "Withdrawn by the review" with the reason, wrong
    decisions in the note are marked ⛔ in place, and Charoite's memory of the
    meeting is resent without them (facts used to reach memory before the
-   review, and the review never caught up with them).
+   review, and the review never caught up with them). A speaker label the
+   rebuild named after the wrong person (strict "Name fixes" section:
+   label → name with the grounds) is restamped in the transcript's block
+   headers and participants line and in the minutes' participants line,
+   with the previous versions in `.prev/` — only in edit mode with a
+   verified transfer, where the cloud also moves the meeting out of the
+   wrong person's node; in read-only mode nothing is renamed and the log
+   points to the review's section for a human.
 
 Each phase is published atomically under `logs/meeting-status/`: the macOS
 app shows real progress, the cloud review stage (running, retrying, ok,
