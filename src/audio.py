@@ -501,13 +501,14 @@ class AudioHub:
         # лишь при sck is None; иначе это ложная причина (DS и GLM r1 по #537).
         self._system_origin = {"sck_missing": sck is None, "bh_missing": bh is None and sck is None}
         self._no_system_channel = None
+        self._mic_only_warned = False     # крик «собеседников не будет» — один на встречу (№232)
         if mode != "mic" and not any(c.label == "blackhole" for c in self.captures):
             self._no_system_channel = dict(self._system_origin)
         for c in self.captures:
             self._bufs[c.label] = np.zeros(0, dtype=np.float32)
 
     def _warn_no_system_channel(self, *, sck_missing: bool = False, bh_missing: bool = False,
-                                start_error: str | None = None) -> None:
+                                start_error: str | None = None, died: str | None = None) -> None:
         """Громко сказать, что собеседников в записи не будет, и почему.
 
         Причину знает Swift-часть: она поднимает ScreenCaptureKit и пишет ход
@@ -515,11 +516,18 @@ class AudioHub:
         последнюю строку лога подхватываем — иначе разбираться придётся
         вручную и уже после встречи. `start_error` — второй повод: устройство
         собеседников нашлось, но открыть его при старте не удалось (№230).
+        `died` — третий: канал жил, но умер во время встречи, и сторож его
+        отключил (№232); дальше в записи только микрофон, и человеку об этом
+        говорят так же громко, как на старте. Любой повод взводит
+        `_mic_only_warned`: крик — один на встречу, сторож повторно не кричит.
         """
         import datetime                       # локально: шапку аудио-модуля не трогаем
         import subprocess
 
+        self._mic_only_warned = True
         why = []
+        if died:
+            why.append(f"канал собеседников умер во время встречи: {died}")
         if start_error:
             why.append(f"канал собеседников найден, но не открылся при старте: {start_error}")
         if sck_missing:
@@ -550,8 +558,11 @@ class AudioHub:
         # Маркер — из stt_runtime: по нему демон помечает статус липким и
         # приложение держит его до конца встречи; рукописная копия строки
         # разошлась бы молча (№228, GLM r1 по #538)
-        self._say(f"⚠️ {stt_runtime.MIC_ONLY_WARNING}: системный звук не "
-                  f"захвачен, пишем только микрофон. {reason}")
+        # Смерть посреди встречи — не «не захвачен»: первая половина записана,
+        # пропала вторая; текст обязан говорить правду о носителе (№232)
+        what = ("системный звук пропал, дальше пишем только микрофон" if died
+                else "системный звук не захвачен, пишем только микрофон")
+        self._say(f"⚠️ {stt_runtime.MIC_ONLY_WARNING}: {what}. {reason}")
         try:
             # Popen, а не run: это вызывается на пути старта записи, и
             # залипший osascript (занятый центр уведомлений, первый показ под
@@ -560,13 +571,20 @@ class AudioHub:
             # беззвучный баннер за развёрнутым окном встречи не замечают.
             # Совет — по причине: при отказе открытия право «Запись экрана» в
             # порядке, и посылать человека в настройки TCC — ложный адрес
-            # (Important DS и GLM r1 по #537)
-            advice = ("Устройство собеседников не открылось — освободите его и запустите запись ещё раз."
-                      if start_error else "Проверьте право «Запись экрана».")
+            # (Important DS и GLM r1 по #537); умерший канал не чинится ни
+            # правом, ни освобождением устройства — только перезапуском записи
+            if died:
+                advice = "Канал собеседников отвалился во время встречи — остановите и запустите запись заново."
+                body = "Системный звук пропал — дальше в записи только ваш микрофон, без собеседников."
+            elif start_error:
+                advice = "Устройство собеседников не открылось — освободите его и запустите запись ещё раз."
+                body = "Системный звук не захвачен — в записи будет только ваш микрофон, без собеседников."
+            else:
+                advice = "Проверьте право «Запись экрана»."
+                body = "Системный звук не захвачен — в записи будет только ваш микрофон, без собеседников."
             subprocess.Popen(
                 ["osascript", "-e",
-                 'display notification "Системный звук не захвачен — в записи будет '
-                 f'только ваш микрофон, без собеседников. {advice}" '
+                 f'display notification "{body} {advice}" '
                  'with title "Чароит: запись неполная" sound name "Glass"'],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 start_new_session=True)       # как у остальных fire-and-forget Popen (DS r2 по #531)
@@ -970,6 +988,16 @@ class AudioHub:
                 self._hung.add(c.label)
                 msg = (f"🎙 канал {c.label}: перезапуск завис, канал отключён — "
                        "встреча пишется остальными")
+                # Канал собеседников умер посреди встречи — тот же исход, что
+                # «не открылся на старте» (№230), и та же тихая строка: человек
+                # до конца встречи не знал, что собеседников в записи больше
+                # нет. Кричим так же громко (липкая строка, уведомление,
+                # capture.log), но один раз на встречу: после крика на старте
+                # второй — шум. Чтение хвоста лога и Popen — миллисекунды,
+                # конвейер _pump это не задерживает (№232).
+                if c.label == "blackhole" and not getattr(self, "_mic_only_warned", False):
+                    self._warn_no_system_channel(died=f"перезапуск завис после {int(silent)}с без кадров")
+                    msg = None                # причина ушла криком, не дважды (как в start)
             else:
                 msg = f"🎙 канал {c.label}: рестарт стрима не удался ({outcome}), попробую через 30с"
             if outcome is None:
@@ -982,7 +1010,7 @@ class AudioHub:
                 # _last_try, а _last_frame говорит правду.
                 with self._lock:
                     self._last_frame[c.label] = time.time()
-            if self.on_status is not None:
+            if msg is not None and self.on_status is not None:
                 try:
                     self.on_status(msg)
                 except Exception:  # noqa: BLE001

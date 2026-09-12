@@ -138,7 +138,10 @@ and Charoite says so right at the start: a line in the meeting status plus a
 system notification with sound, including the reason. The status line stays
 red until the end of the meeting — ordinary status updates do not push it
 away. There is no more silent
-"the meeting was recorded without the other side". The exception is
+"the meeting was recorded without the other side". A channel for the other
+side that dies mid-meeting (the stream hung and did not restart) raises the
+same alarm — once, with the advice to stop and start the recording again.
+The exception is
 `device: mic` in `config.yaml`: the microphone is chosen deliberately there,
 and no warning is raised.
 

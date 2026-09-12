@@ -34,6 +34,7 @@ def _hub(sr=16000, chunk_s=3.0, overlap_s=0.5, vad_db=-45.0):
     # Поля, которые в бою ставит конструктор: заглушка обязана их повторять,
     # иначе тест падает на AttributeError вместо проверки поведения.
     hub._hung = set()
+    hub._mic_only_warned = False
     hub._last_frame = {}
     hub._last_try = {}
     hub._last_check = 0.0
@@ -1077,3 +1078,61 @@ def test_причиной_не_становится_собственное_пр�
     msg = "".join(said)
     assert "permission denied by user" in msg, "причина от Swift потеряна"
     assert "прошлая встреча" not in msg, "причиной стало собственное предупреждение"
+
+
+def test_смерть_канала_собеседников_после_старта_кричит_один_раз(monkeypatch, tmp_path):
+    """№232: сторож переводит канал собеседников в _hung — раньше это была
+    тихая строка «перезапуск завис, канал отключён», и человек до конца встречи
+    не знал, что собеседников в записи больше нет. Тот же крик, что на старте
+    (№230), но один на встречу: после крика на старте сторож молчит, повторный
+    проход сторожа не кричит, микрофон про собеседников не кричит."""
+    monkeypatch.setattr(a, "ROOT", tmp_path)
+    calls = []
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: calls.append((args, kw)))
+
+    class _Dead:
+        def __init__(self, label):
+            self.label = label
+            self.q = queue.Queue()
+        def start(self): pass
+        def stop(self): pass
+
+    def dead_hub(labels, *, warned=False):
+        hub = _hub()
+        hub.captures = [_Dead(lbl) for lbl in labels]
+        hub._mic_only_warned = warned
+        hub.said = []
+        hub.on_status = hub.said.append
+        monkeypatch.setattr(hub, "_restart_guarded", lambda c: TimeoutError("не вернулся за 5с"))
+        hub._last_frame = {lbl: a.time.time() - 40 for lbl in labels}
+        return hub
+
+    hub = dead_hub(["blackhole", "mic"])
+    hub._last_frame["mic"] = a.time.time()                    # микрофон жив
+    hub._watch_streams()
+    assert hub._hung == {"blackhole"}
+    scream = [m for m in hub.said if "СОБЕСЕДНИКОВ" in m]
+    assert len(scream) == 1 and "умер во время встречи" in scream[0] and "пропал" in scream[0], hub.said
+    assert not any("перезапуск завис" in m and "СОБЕСЕДНИКОВ" not in m for m in hub.said), \
+        "причина один раз: криком, не тихой строкой сторожа и криком"
+    banner = calls[0][0][0][-1]
+    assert calls and 'sound name "Glass"' in banner and "остановите и запустите запись заново" in banner, banner
+    assert "Запись экрана" not in banner and "освободите" not in banner, "умерший канал не чинится ни правом, ни устройством"
+    log = (tmp_path / "logs" / "capture.log").read_text(encoding="utf-8")
+    assert a.MIC_ONLY_LOG_MARK in log and "перезапуск завис" in log
+    # второй проход сторожа: канал уже в _hung — ни крика, ни строки
+    hub._last_check = 0.0
+    hub._watch_streams()
+    assert len([m for m in hub.said if "СОБЕСЕДНИКОВ" in m]) == 1 and len(calls) == 1
+
+    # микрофон умер — обычная строка сторожа, крика про собеседников нет
+    mic = dead_hub(["mic"])
+    mic._watch_streams()
+    assert mic._hung == {"mic"} and any("перезапуск завис" in m for m in mic.said)
+    assert not any("СОБЕСЕДНИКОВ" in m for m in mic.said) and len(calls) == 1
+
+    # уже кричали на старте — сторож второй раз не кричит, но канал отключает и говорит об этом
+    again = dead_hub(["blackhole"], warned=True)
+    again._watch_streams()
+    assert again._hung == {"blackhole"} and any("перезапуск завис" in m for m in again.said)
+    assert not any("СОБЕСЕДНИКОВ" in m for m in again.said) and len(calls) == 1
