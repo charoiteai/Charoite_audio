@@ -100,12 +100,21 @@ def test_plan_drops_the_owner_the_same_name_placeholders_and_unknown_labels():
     assert nf.plan([("Собеседник 3", "Владелец", ""), ("Сергей", "Я", "")], headers={"Собеседник 3", "Сергей"},
                    protected={"Владелец", "Я"}, dropped=dropped) == {}
     assert all("целевое имя" in d for d in dropped)
-    # слияние в существующую чужую дорожку — применяется, но громко
-    notes: list[str] = []
-    assert nf.plan([("Сергей", "Мария", "")], headers={"Сергей", "Мария"}, protected=set(), notes=notes) == {"Сергей": "Мария"}
-    assert notes == ["«Сергей → Мария»: сливается с существующей дорожкой «Мария» — две дорожки под одним именем"]
-    # основание в скобках — та же строгая форма (DS M6)
+    # слияние в существующую чужую дорожку — не делаем (критика DS r2): два голоса под одним именем без отката
+    dropped.clear()
+    assert nf.plan([("Сергей", "Мария", "")], headers={"Сергей", "Мария"}, protected=set(), dropped=dropped) == {}
+    assert "слияние дорожек не делаем" in dropped[0]
+    # обмен — не слияние: обе дорожки переименованы; отклонённая правка цели отменяет и слияние в неё (DS r2 I1, GLM r2 M1)
+    assert nf.plan([("А", "Б", ""), ("Б", "А", "")], headers={"А", "Б"}, protected=set()) == {"А": "Б", "Б": "А"}
+    dropped.clear()
+    assert nf.plan([("Б", "Я", ""), ("А", "Б", "")], headers={"А", "Б"}, protected={"Я"}, dropped=dropped) == {}
+    assert any("её правка отклонена" in d for d in dropped)
+    assert nf.plan([("", "Мария", "")], headers={""}, protected=set(), dropped=dropped) == {} and "пустая метка" in dropped[-1]
+    # основание в скобках — та же строгая форма (DS M6); скобка без слова «основание» — не форма (DS r2 M1)
     assert nf.name_fixes("## Исправления имён\n- **Сергей** → **Мария** (основание: два обращения)\n") == [("Сергей", "Мария", "два обращения")]
+    dropped.clear()
+    assert nf.name_fixes("## Исправления имён\n- **Сергей** → **Мария** (из обращения)\n", dropped=dropped) == []
+    assert dropped == ["**Сергей** → **Мария** (из обращения)"]
 
 
 def test_apply_restamps_headers_and_participants_keeps_prev_and_sha(tmp_path):
@@ -140,7 +149,17 @@ def test_non_utf8_meeting_file_skips_names_without_raising(tmp_path):
     live.write_bytes("**Сергей** [15:33]:\nПривет, Юля\n".encode("cp1251"))
     dropped: list[str] = []
     assert nf.apply(rev, live, {"sufler": {}}, dropped=dropped) == ({}, 0, False)
-    assert dropped and "не в UTF-8" in dropped[0]
+    assert dropped and dropped[0].startswith(live.name) and "не в UTF-8" in dropped[0]
+    # битые только минутки — стенограмма перештамповывается, минутки нет, файл назван (критика GLM r2)
+    live.write_text(SPEECH, encoding="utf-8")
+    mpath.write_bytes("**Участники:** Сергей\n".encode("cp1251"))
+    dropped.clear()
+    mapping, heads, parts = nf.apply(rev, live, {"sufler": {}}, dropped=dropped)
+    assert heads == 3 and not parts and any(d.startswith(mpath.name) for d in dropped)
+    # план без правки файлов — для моста поручений в режиме чтения (DS r2 I2)
+    live.write_text(SPEECH, encoding="utf-8")
+    assert nf.planned(rev, live, {"sufler": {"user_name": "Владелец"}}) == {"Сергей": "Мария", "Собеседник 3": "Пётр"}
+    assert live.read_text(encoding="utf-8") == SPEECH
 
 
 def test_hand_edited_transcript_is_restamped_but_stays_hand_edited(tmp_path):

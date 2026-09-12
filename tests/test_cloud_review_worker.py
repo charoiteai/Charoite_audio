@@ -816,8 +816,11 @@ def test_name_fixes_go_before_withdraw_and_bridge_and_only_with_a_checked_graph(
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
     assert cloud_review.run(stamp, transcript, graph, rev, log, {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False}}) == 0
     text = log.read_text(encoding="utf-8")
-    assert "имена меток не перештампованы: правка графа выключена" in text
+    assert "имена меток не перештампованы: правка графа выключена" in text and "верные имена мост считает участниками" in text
     assert "**Сергей** [14:00]:" in transcript.read_text(encoding="utf-8"), "без права правки графа стенограмма не тронута"
+    tasks = minutes.read_text(encoding="utf-8").split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
+    assert "- [ ] **Мария** — согласовать план (из ревизии)" in tasks and "⚠" not in tasks, \
+        "верное имя из раздела — участник и без перештамповки (DS r2 I2)"
     log.unlink()
     fresh()
     assert cloud_review.run(stamp, transcript, graph, rev, log, {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}) == 0

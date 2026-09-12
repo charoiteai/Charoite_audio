@@ -33,10 +33,12 @@ import transcript
 NAMES_HEAD = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*)?\s*исправлени[ея] им[её]н\s*(?:\*\*)?\s*[:：.]?\s*(?:\*\*)?\s*$",
                         re.IGNORECASE)
 NAMES_WORD = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*)?\s*исправлени\w* им[её]н", re.IGNORECASE | re.MULTILINE)
-# основание — через тире или в скобках: «— основание: …» и «(основание: …)»
-# модель пишет обе формы (DS r1 M6 по #548)
+# основание — через тире или в скобках: «— основание: …» и «(основание: …)»,
+# модель пишет обе формы (DS r1 M6 по #548); скобка без слова «основание» —
+# не форма, строка уходит в отброшенные, а не теряет хвост молча (DS r2 M1)
 _FIX = re.compile(r"^\*\*(?P<label>[^*\n]+?)\*\*\s*(?:→|->|=>|—>|⇒)\s*\*\*(?P<name>[^*\n]+?)\*\*"
-                  r"\s*(?:[—–-]\s*)?\(?\s*(?:(?:основание|причина|reason|原因)\s*[:：]\s*(?P<why>.+?))?\)?\s*$",
+                  r"\s*(?:[—–-]\s*(?:основание|причина|reason|原因)\s*[:：]\s*(?P<why>.+?)"
+                  r"|\(\s*(?:основание|причина|reason|原因)\s*[:：]\s*(?P<why2>[^)\n]+?)\s*\))?\s*$",
                   re.IGNORECASE)
 _BAD_NAME = re.compile(r"[\[\]*|#\n]")
 # строка участников: «**Участники:** …» в шапке минуток (посреди строки) и
@@ -56,7 +58,8 @@ def name_fixes(review: str, dropped: list[str] | None = None) -> list[tuple[str,
             if dropped is not None:
                 dropped.append(item)
             continue
-        out.append((m.group("label").strip(), m.group("name").strip(), (m.group("why") or "").strip()))
+        out.append((m.group("label").strip(), m.group("name").strip(),
+                    (m.group("why") or m.group("why2") or "").strip()))
     return out
 
 
@@ -67,20 +70,24 @@ def section_present(review: str) -> bool:
 
 
 def plan(fixes: list[tuple[str, str, str]], headers: set[str], protected: set[str],
-         dropped: list[str] | None = None, notes: list[str] | None = None) -> dict[str, str]:
-    """Метка → имя, что реально применимо. Не применяется: та же метка;
-    метка микрофона владельца (канал — факт железа, не догадка модели) —
-    ни как метка, ни как цель (иначе чужая дорожка стала бы владельцем,
-    DS r1 I4 / GLM r1 M5 по #548); имя-заглушка («Собеседник 3»), мусор
-    или слишком длинное; метки нет в заголовках реплик; вторая правка той
-    же метки. Причина — в `dropped`. Обмен двух меток (A→B, B→A) применим:
-    подстановка идёт одним проходом. Слияние в существующую чужую метку
-    применимо, но громко — строка в `notes` (критика GLM r1)."""
+         dropped: list[str] | None = None) -> dict[str, str]:
+    """Метка → имя, что реально применимо. Не применяется: та же или пустая
+    метка; метка микрофона владельца (канал — факт железа, не догадка
+    модели) — ни как метка, ни как цель (иначе чужая дорожка стала бы
+    владельцем, DS r1 I4 / GLM r1 M5 по #548); имя-заглушка («Собеседник
+    3»), мусор или слишком длинное; метки нет в заголовках реплик; вторая
+    правка той же метки; имя — метка ДРУГОЙ живой дорожки, которую никто не
+    переименовывает (слияние двух голосов в одного человека без отката —
+    не делаем, критика DS r2; обмен A↔B при этом применим: обе дорожки
+    переименованы одним проходом). Причина — в `dropped`."""
     mapping: dict[str, str] = {}
+    labels = {label for label, _, _ in fixes}
     for label, name, _why in fixes:
         reason = ""
         if label == name:
             reason = "то же имя"
+        elif not label:
+            reason = "пустая метка"
         elif label in protected:
             reason = "метка владельца (канал микрофона) не переименовывается"
         elif name in protected:
@@ -91,13 +98,19 @@ def plan(fixes: list[tuple[str, str, str]], headers: set[str], protected: set[st
             reason = "такой метки в заголовках реплик нет"
         elif label in mapping:
             reason = "метка уже исправлена другой строкой"
+        elif name in headers and name not in labels:
+            reason = f"имя — метка другой дорожки «{name}», слияние дорожек не делаем"
         if reason:
             if dropped is not None:
                 dropped.append(f"«{label} → {name}» — {reason}")
             continue
-        if name in headers and name not in {k for k, _, _ in fixes} and notes is not None:
-            notes.append(f"«{label} → {name}»: сливается с существующей дорожкой «{name}» — две дорожки под одним именем")
         mapping[label] = name
+    # обмен/цепочка обещаны только если ВСЕ участники переименованы: «Б → Я»
+    # отклонён, а «А → Б» применился бы слиянием (DS r2 I1, GLM r2 M1)
+    for label in [k for k, v in mapping.items() if v in headers and v not in mapping]:
+        if dropped is not None:
+            dropped.append(f"«{label} → {mapping[label]}» — имя — метка другой дорожки «{mapping[label]}», её правка отклонена")
+        del mapping[label]
     return mapping
 
 
@@ -195,39 +208,57 @@ def restamp_minutes(live: pathlib.Path, mapping: dict[str, str]) -> bool:
     return True
 
 
-def apply(review: pathlib.Path, live: pathlib.Path, cfg: dict,
-          dropped: list[str] | None = None,
-          notes: list[str] | None = None) -> tuple[dict[str, str], int, bool]:
-    """Исправления имён из ревизии — в стенограмму и минутки этой встречи.
-    Возвращает (применённая карта, заголовков реплик, тронута ли строка
-    участников минуток). Нет ревизии, раздела или применимых строк — пусто;
-    файл не в UTF-8 (правили в чужом редакторе) — пусто со строкой в
-    `dropped`, а не исключение: мост поручений должен идти своим ходом
-    (DS r1 I2 по #548)."""
+def planned(review: pathlib.Path, live: pathlib.Path, cfg: dict,
+            dropped: list[str] | None = None) -> dict[str, str]:
+    """Карта «метка → имя», которую ревизия просит применить, без правки
+    файлов. Нужна и без права правки графа: мост поручений считает
+    участников по НЕпереименованной стенограмме, и восстановленный пункт с
+    верным именем получал бы «⚠ не участник» (DS r2 I2 по #548) — верные
+    имена из этой карты мост добавляет к участникам. Файл не в UTF-8 —
+    пусто со строкой в `dropped`."""
     try:
         text = review.read_text(encoding="utf-8", errors="replace")
         speech = live.read_text(encoding="utf-8")
-        minutes_path = review_bridge.minutes_path(live)
-        if minutes_path.is_file():
-            minutes_path.read_text(encoding="utf-8")
     except UnicodeDecodeError as e:
         if dropped is not None:
-            dropped.append(f"файл встречи не в UTF-8 — имена не перештампованы ({e.reason})")
-        return {}, 0, False
+            dropped.append(f"{live.name} не в UTF-8 — имена не перештампованы ({e.reason})")
+        return {}
     except OSError:
-        return {}, 0, False
+        return {}
     fixes = name_fixes(text, dropped=dropped)
     if not fixes:
-        return {}, 0, False
+        return {}
     headers = {b["speaker"] for b in transcript.parse_blocks(speech)}
     sufler = cfg.get("sufler") or {}
     owner = str(sufler.get("user_name") or "").strip()
     protected = {channel_labels.mic_label_for(cfg), channel_labels.NEUTRAL_MIC}
     if owner:
         protected |= {owner, owner.split()[0]}
-    mapping = plan(fixes, headers, protected, dropped=dropped, notes=notes)
+    return plan(fixes, headers, protected, dropped=dropped)
+
+
+def apply(review: pathlib.Path, live: pathlib.Path, cfg: dict,
+          dropped: list[str] | None = None) -> tuple[dict[str, str], int, bool]:
+    """Исправления имён из ревизии — в стенограмму и минутки этой встречи.
+    Возвращает (применённая карта, заголовков реплик, тронута ли строка
+    участников минуток). Нет ревизии, раздела или применимых строк — пусто;
+    файл не в UTF-8 (правили в чужом редакторе) — пусто со строкой в
+    `dropped`, а не исключение: мост поручений должен идти своим ходом
+    (DS r1 I2 по #548). Файлы независимы: битые или не записавшиеся минутки
+    не отменяют уже перештампованную стенограмму — строка в `dropped`, а
+    результат по факту (критика GLM r2, DS r2 M3)."""
+    mapping = planned(review, live, cfg, dropped=dropped)
     if not mapping:
         return {}, 0, False
     n = restamp_transcript(live, mapping)
-    touched = restamp_minutes(live, mapping)
+    mpath = review_bridge.minutes_path(live)
+    touched = False
+    try:
+        touched = restamp_minutes(live, mapping)
+    except UnicodeDecodeError as e:
+        if dropped is not None:
+            dropped.append(f"{mpath.name} не в UTF-8 — участники минуток не перештампованы ({e.reason})")
+    except OSError as e:
+        if dropped is not None:
+            dropped.append(f"{mpath.name}: участники минуток не перештампованы ({e})")
     return mapping, n, touched

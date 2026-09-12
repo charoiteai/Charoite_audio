@@ -613,7 +613,8 @@ it signals degradation, it does not break the loop.
   transcript would drift from the person's node, and the section stays in
   the review for a human); the owner's microphone label is never renamed
   nor used as a target, a fix that names no existing label is logged and
-  skipped, merging into an existing label is logged, and action items under
+  skipped, merging a track into another live track is refused (two voices
+  under one name with no way back), and action items under
   the wrong label are withdrawn and restored by the review itself rather
   than renamed by guess; the local model's
   debrief stays a draft with such a header, and its tasks and

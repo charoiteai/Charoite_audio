@@ -1259,28 +1259,36 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 # нет (критика DS/GLM r1 по #548); раздел ревизии остаётся
                 # человеку. Свой try: сбой имён не должен глушить мост поручений.
                 dropped_n: list[str] = []
-                notes_n: list[str] = []
+                renamed: dict[str, str] = {}
+                names_failed = False
                 if may_edit and checked:
                     try:
-                        renamed, heads, parts = name_fixes.apply(rev, transcript, cfg, dropped=dropped_n, notes=notes_n)
+                        renamed, heads, parts = name_fixes.apply(rev, transcript, cfg, dropped=dropped_n)
                     except Exception as e:  # noqa: BLE001
-                        renamed, heads, parts = {}, 0, False
+                        names_failed = True
                         lines.append(f"[cloud-review] имена меток не перештампованы: {e}\n")
                     if renamed:
                         lines.append("[cloud-review] имена меток исправлены по ревизии: "
                                      + ", ".join(f"{k} → {v}" for k, v in renamed.items())
                                      + f" — заголовков реплик {heads}, участники минуток "
                                      + ("да" if parts else "нет") + "\n")
-                    elif name_fixes.section_present(rev_text):
+                    elif name_fixes.section_present(rev_text) and not names_failed:
                         lines.append("[cloud-review] мост ревизии: раздел об исправлениях имён есть, "
                                      "применимых строк нет\n")
-                    for note in notes_n:
-                        lines.append(f"[cloud-review] имена меток: {note}\n")
-                elif name_fixes.section_present(rev_text):
-                    lines.append("[cloud-review] имена меток не перештампованы: "
-                                 + ("правка графа выключена — узел Люди править нельзя" if not may_edit
-                                    else "перенос правок графа не сверен")
-                                 + "; раздел «Исправления имён» в ревизии — для правки руками\n")
+                else:
+                    # без правки файлов верные имена всё же известны: мост
+                    # считает их участниками, иначе восстановленный пункт с
+                    # верным именем получал бы «⚠ не участник» (DS r2 I2)
+                    try:
+                        renamed = name_fixes.planned(rev, transcript, cfg, dropped=dropped_n)
+                    except Exception as e:  # noqa: BLE001
+                        lines.append(f"[cloud-review] имена меток: раздел не разобран ({e})\n")
+                    if name_fixes.section_present(rev_text):
+                        lines.append("[cloud-review] имена меток не перештампованы: "
+                                     + ("правка графа выключена — узел Люди править нельзя" if not may_edit
+                                        else "перенос правок графа не сверен")
+                                     + "; раздел «Исправления имён» в ревизии — для правки руками"
+                                     + (", верные имена мост считает участниками" if renamed else "") + "\n")
                 # Сначала снять ложное, потом дописать восстановленное: если
                 # ревизия заменяет пункт похожим верным, дедуп не должен
                 # принять новый за уже существующий ложный (№238)
@@ -1292,7 +1300,8 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 elif has_minutes and review_bridge.withdrawn_section_present(rev_text):
                     lines.append("[cloud-review] мост ревизии: раздел о снятых поручениях есть, "
                                  "пунктов не извлечено или в минутках их нет\n")
-                added = review_bridge.bridge(rev, transcript, owner=owner, lang=lang, dropped=dropped)
+                added = review_bridge.bridge(rev, transcript, owner=owner, lang=lang, dropped=dropped,
+                                             extra_participants=set(renamed.values()))
                 if added:
                     lines.append(f"[cloud-review] мост ревизии ({verified}): в минутки дописано поручений — {added}\n")
                 elif not has_minutes:

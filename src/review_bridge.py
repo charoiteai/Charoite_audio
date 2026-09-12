@@ -366,11 +366,15 @@ def minutes_path(transcript: pathlib.Path) -> pathlib.Path:
 
 
 def bridge(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
-           lang: str = "ru", dropped: list[str] | None = None) -> int:
+           lang: str = "ru", dropped: list[str] | None = None,
+           extra_participants: set[str] | None = None) -> int:
     """Дописать восстановленные поручения ревизии в минутки этой встречи.
     Возвращает число дописанных; нет ревизии, минуток или пунктов — 0.
     `dropped` — список для строк раздела, которые мост выбросил (см.
-    recovered_items); вызывающий пишет их в свой лог."""
+    recovered_items); вызывающий пишет их в свой лог. `extra_participants`
+    — верные имена меток из «## Исправления имён» ревизии, когда файлы не
+    перештампованы (без права правки графа): иначе пункт с верным именем
+    получал бы «⚠ не участник» по старой шапке (DS r2 I2 по #548)."""
     try:
         text = review.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -389,6 +393,8 @@ def bridge(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
     except OSError:
         speech = ""
     participants = action_items.participants_of(speech, owner) if speech else set()
+    if extra_participants:
+        participants = participants | action_items.participants_set(sorted(extra_participants), owner)
     before = minutes.read_text(encoding="utf-8", errors="replace")
     after, added = merge_into_minutes(before, items, participants, lang=lang, owner=owner)
     if added:
