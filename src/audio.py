@@ -504,13 +504,20 @@ class AudioHub:
         self._mic_only_warned = False     # крик «собеседников не будет» — один на встречу (№232)
         self._system_dead = False         # канал собеседников был и умер (старт или сторож) — ждём, не оживёт ли
         self._fail_streak: dict[str, int] = {}   # неудачные рестарты подряд по каналу
+        self._scream_count = 0            # криков за встречу — потолок звука LOUD_SCREAMS
         if mode != "mic" and not any(c.label == "blackhole" for c in self.captures):
             self._no_system_channel = dict(self._system_origin)
         for c in self.captures:
             self._bufs[c.label] = np.zeros(0, dtype=np.float32)
 
+    # Уведомлений со звуком за встречу — не больше трёх: флапающий поток
+    # (то пишется, то нет) иначе звенел бы каждые полторы минуты до конца
+    # встречи (критика GLM r2 по #541); строка статуса — при каждой потере
+    LOUD_SCREAMS = 3
+
     def _warn_no_system_channel(self, *, sck_missing: bool = False, bh_missing: bool = False,
-                                start_error: str | None = None, died: str | None = None) -> None:
+                                start_error: str | None = None, died: str | None = None,
+                                retrying: bool = False) -> None:
         """Громко сказать, что собеседников в записи не будет, и почему.
 
         Причину знает Swift-часть: она поднимает ScreenCaptureKit и пишет ход
@@ -569,13 +576,12 @@ class AudioHub:
         # микрофона в записи нет, и «дальше только микрофон» было бы ложью
         # (Important DS r1 по #541)
         has_mic = any(getattr(c, "label", "") == "mic" for c in getattr(self, "captures", []))
-        if died and not has_mic:
-            what = "системный звук пропал, запись остановилась: ни собеседников, ни вас в ней дальше не будет"
-        elif died:
-            what = "системный звук пропал, дальше пишем только микрофон"
-        else:
-            what = "системный звук не захвачен, пишем только микрофон"
+        lost = "системный звук пропал" if died else "системный звук не захвачен"
+        what = (f"{lost}, {'дальше ' if died else ''}пишем только микрофон" if has_mic
+                else f"{lost}: в записи не будет ни собеседников, ни вас")
         self._say(f"⚠️ {stt_runtime.MIC_ONLY_WARNING}: {what}. {reason}")
+        loud = getattr(self, "_scream_count", 0) < self.LOUD_SCREAMS
+        self._scream_count = getattr(self, "_scream_count", 0) + 1
         try:
             # Popen, а не run: это вызывается на пути старта записи, и
             # залипший osascript (занятый центр уведомлений, первый показ под
@@ -586,15 +592,23 @@ class AudioHub:
             # порядке, и посылать человека в настройки TCC — ложный адрес
             # (Important DS и GLM r1 по #537); умерший канал не чинится ни
             # правом, ни освобождением устройства — только перезапуском записи
-            body = "Системный звук не захвачен — в записи будет только ваш микрофон, без собеседников."
-            if died:
+            body = f"{lost[0].upper()}{lost[1:]} — " + (
+                "дальше в записи только ваш микрофон, без собеседников." if has_mic and died
+                else "в записи будет только ваш микрофон, без собеседников." if has_mic
+                else "в записи не будет ни собеседников, ни вас.")
+            if retrying:
+                # ветка повторов канал не бросает — совет «перезапустите» тут
+                # ложный: через полминуты поток может ожить (критика DS r2)
+                advice = ("Канал пробуем перезапустить каждые полминуты; не снялось через пару "
+                          "минут — остановите и запустите запись заново.")
+            elif died:
                 advice = "Канал собеседников отвалился во время встречи — остановите и запустите запись заново."
-                body = ("Системный звук пропал — дальше в записи только ваш микрофон, без собеседников." if has_mic
-                        else "Системный звук пропал — запись остановилась, дальше в ней не будет ни собеседников, ни вас.")
             elif start_error:
                 advice = "Устройство собеседников не открылось — освободите его и запустите запись ещё раз."
             else:
                 advice = "Проверьте право «Запись экрана»."
+            if not loud:
+                raise RuntimeError("потолок уведомлений со звуком за встречу")   # строка и лог остаются
             subprocess.Popen(
                 ["osascript", "-e",
                  f'display notification "{body} {advice}" '
@@ -982,6 +996,8 @@ class AudioHub:
         if now - self._last_check < 5:
             return
         self._last_check = now
+        if not hasattr(self, "_fail_streak"):     # хаб без конструктора (object.__new__) — Minor DS r2
+            self._fail_streak = {}
         for c in self.captures:
             silent = now - self._last_frame.get(c.label, now)
             if silent < 30:
@@ -1002,8 +1018,10 @@ class AudioHub:
                     # встречи неправдой; следующая смерть кричит заново (№232)
                     self._system_dead = False
                     self._mic_only_warned = False
-                    msg = (f"✅ {stt_runtime.MIC_BACK_NOTICE}: канал собеседников ожил, запись снова "
-                           f"полная; без собеседников было около {int(silent)}с")
+                    # «снова пишется», не «запись снова полная»: микрофон мог
+                    # умереть отдельно и лежать в _hung (Important DS r2)
+                    msg = (f"✅ {stt_runtime.MIC_BACK_NOTICE}: канал собеседников снова пишется; "
+                           f"без собеседников было около {int(silent)}с")
             elif isinstance(outcome, TimeoutError):
                 # Главный урок 06.08: закрытие мёртвого стрима не возвращается,
                 # и вызов прямо из _pump останавливал конвейер целиком — вместе
@@ -1032,7 +1050,7 @@ class AudioHub:
                 # собеседников, дальше ждать нечего. Канал не бросаем: поток
                 # может ожить, и тогда ветка выше снимет строку
                 if c.label == "blackhole" and n >= 2 and not getattr(self, "_mic_only_warned", False):
-                    self._warn_no_system_channel(died=f"рестарт не удался {n} раза подряд: {outcome}")
+                    self._warn_no_system_channel(died=f"рестарт не удался {n} раза подряд: {outcome}", retrying=True)
                     msg = None
             if outcome is None:
                 # Возраст кадров сбрасываем ТОЛЬКО при удачном перезапуске.
