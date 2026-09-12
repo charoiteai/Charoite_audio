@@ -875,10 +875,10 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         d.mkdir(parents=True, exist_ok=True)
         p = d / f"{safe_name(name)}.md"
     stamp = f"- [[{meeting_link}]] — {contrib}" if contrib else f"- [[{meeting_link}]]"
-    # Дата последнего упоминания — единственное, что у человека/системы
-    # обновляется механически: описание пишется один раз при первом
-    # упоминании, и без облачной правки узел не говорит, свеж ли он
-    # (Sonnet 28.08 I6). Ретрай старой встречи дату не откатывает.
+    # Механически у человека/системы обновляются две вещи: дата последнего
+    # упоминания (Sonnet 28.08 I6; ретрай старой встречи её не откатывает) и
+    # описание — но только существенно новым фактом и со следом в «## Хроника»
+    # (№194): раньше описание писалось один раз и устаревало молча.
     day = pathlib.PurePosixPath(meeting_link).name[:10]
     if p.exists():
         text = p.read_text(encoding="utf-8")
@@ -909,6 +909,12 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
             text = p.read_text(encoding="utf-8")
         if has_link(text, meeting_link):
             return
+        # Описание — факт с датой, как статус у Ядер: существенно другое
+        # вытесняет прежнее, прежнее уходит в «## Хроника» строкой с обеими
+        # формулировками и датой встречи. Пересказ того же (вложение, общие
+        # слова) новым фактом не считается — иначе каждая встреча плодила бы
+        # строку; пустое не вытесняет (№194, Q4 аудита памяти 07.09).
+        text = _supersede_description(text, desc, meeting_link)
         if "## Встречи" in text:
             text = text.replace("## Встречи", f"## Встречи\n{stamp}", 1)
         else:
@@ -937,6 +943,69 @@ def _touch_last_seen(text: str, day: str) -> str:
     if "## Встречи" in text:
         return text.replace("## Встречи", f"{line}\n\n## Встречи", 1)
     return text.rstrip("\n") + f"\n\n{line}\n"
+
+
+_NODE_TITLE_RE = re.compile(r"^# [^\n]*\n", re.M)
+
+
+def _current_description(text: str) -> tuple[str, int, int]:
+    """(описание, начало, конец) — строки узла сразу после «# Имя» до первой
+    пустой, служебной («_(последнее упоминание…») или заголовка раздела.
+    Нет заголовка — ("", -1, -1); есть, но описания нет — пустая строка и
+    обе границы сразу после заголовка."""
+    m = _NODE_TITLE_RE.search(text)
+    if not m:
+        return "", -1, -1
+    start = end = m.end()
+    for ln in text[start:].split("\n"):
+        if not ln.strip() or ln.startswith(("## ", "_(последнее упоминание:", "---")):
+            break
+        end += len(ln) + 1
+    return text[start:end].strip(), start, end
+
+
+def _same_fact(a: str, b: str) -> bool:
+    """Пересказ одного описания, не новый факт: одно вложено в другое либо
+    общих значимых слов не меньше половины (Жаккар по словам от трёх букв)."""
+    na, nb = _flat(a).casefold(), _flat(b).casefold()
+    if not na or not nb or na in nb or nb in na:
+        return True
+    wa = {w for w in re.findall(r"\w+", na) if len(w) > 2}
+    wb = {w for w in re.findall(r"\w+", nb) if len(w) > 2}
+    if not wa or not wb:
+        return True
+    return len(wa & wb) / len(wa | wb) >= 0.5
+
+
+def _supersede_description(text: str, desc: str, meeting_link: str) -> str:
+    """Описание узла человека/системы новым фактом с датой (№194).
+
+    Пустое описание в узле — заполняется без следа (это не вытеснение).
+    Существенно другое — заменяет прежнее, а прежнее уходит в «## Хроника»
+    первой строкой: «- [[встреча]] — _(было: «X» → стало: «Y», ДАТА)_».
+    Раздел живёт перед «## Встречи»; читатели узла (индексы папок, поиск,
+    doctor) на него не смотрят, ссылка встречи в строке хроники гасит ретрай
+    через has_link, как и у Ядер.
+    """
+    new = _flat(desc)
+    if not new or new == "—":
+        return text
+    old, start, end = _current_description(text)
+    if start < 0:
+        return text
+    if not old:
+        return text[:start] + new + "\n" + text[start:]
+    if _same_fact(old, new):
+        return text
+    day = pathlib.PurePosixPath(meeting_link).name[:10]
+    when = f", {day}" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else ""
+    line = f"- [[{meeting_link}]] — _(было: «{_clip(old)}» → стало: «{_clip(new)}»{when})_"
+    text = text[:start] + new + "\n" + text[end:]
+    if "## Хроника" in text:
+        return text.replace("## Хроника", f"## Хроника\n{line}", 1)
+    if "## Встречи" in text:
+        return text.replace("## Встречи", f"## Хроника\n{line}\n\n## Встречи", 1)
+    return text.rstrip("\n") + f"\n\n## Хроника\n{line}\n"
 
 
 def core_anchor(core: dict, transcript: str, speakers: set[str] | None = None) -> str:
