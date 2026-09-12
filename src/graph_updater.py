@@ -879,7 +879,7 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
     # Прочерк любого вида от модели — не описание, ни в новом узле, ни в
     # старом: иначе следующая встреча вытесняла бы «–» строкой хроники с
     # фиктивным «было» (Important DS r3 по #539)
-    if not _flat(desc).strip("—–- "):
+    if _is_placeholder(desc):
         desc = ""
     # Механически у человека/системы обновляются две вещи: дата последнего
     # упоминания (Sonnet 28.08 I6; ретрай старой встречи её не откатывает) и
@@ -907,7 +907,8 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
                 p.parent.mkdir(parents=True, exist_ok=True)
                 safe_write.write_text(
                     p,
-                    f"---\ntype: {typ}\ntags: [встречи, авто]\n---\n# {p.stem}\n{desc}\n\n"
+                    f"---\ntype: {typ}\ntags: [встречи, авто]\n---\n# {p.stem}\n"
+                    + (f"{desc}\n\n" if desc else "\n")
                     + (f"_(последнее упоминание: {day})_\n\n" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else "")
                     + f"## Встречи\n{stamp}\n",
                 )
@@ -993,15 +994,24 @@ def _current_description(text: str) -> tuple[str, int, int]:
     return text[start:end].strip(), start, end
 
 
+def _is_placeholder(desc: str) -> bool:
+    """Прочерк любого вида вместо описания — тире всех начертаний, минус,
+    дефис, пустота. Одна проверка на все входы (создание узла, заглушка,
+    вытеснение), чтобы инвариант не размножался копиями (Minor DS r4 по #539)."""
+    return not _flat(desc).strip("—–-−―‒ \t")
+
+
 def _fact_norm(s: str) -> str:
     return _flat(s).casefold().replace("ё", "е")
 
 
-def _fact_words(s: str) -> tuple[set[str], set[str]]:
+def _fact_words(s: str) -> tuple[set[str], tuple[str, ...]]:
     """(слова, числа) описания — регистр и ё/е сведены, обрывки из одной
-    буквы выброшены, числа отдельным множеством."""
+    буквы выброшены; слова множеством (порядок не смысл), числа — в порядке
+    появления: у дат, долей и версий порядок и есть смысл, «с 12.09» и
+    «с 09.12» множеством совпадали (Important DS r4 по #539)."""
     words = re.findall(r"\w+", _fact_norm(s))
-    return {w for w in words if len(w) >= 2 and not w.isdigit()}, {w for w in words if w.isdigit()}
+    return {w for w in words if len(w) >= 2 and not w.isdigit()}, tuple(w for w in words if w.isdigit())
 
 
 def _same_fact(old: str, new: str) -> bool:
@@ -1018,6 +1028,10 @@ def _same_fact(old: str, new: str) -> bool:
     года» → «курирует проект» снимает срок, и лексикой не отличить сокращение
     от отмены. Ошибка в сторону «новый факт» видна строкой хроники с обеими
     формулировками и правится; ошибка в сторону «пересказ» невидима.
+
+    Порядок слов не смотрим и при отрицании («не Иван курирует» ↔ «Иван не
+    курирует») — сознательно: это вернуло бы словарь, от которого ушли; числа
+    же сравниваются последовательностью, там порядок — сам факт (даты).
     """
     if _fact_norm(old) == _fact_norm(new):
         return True
@@ -1041,7 +1055,7 @@ def _supersede_description(text: str, desc: str, meeting_link: str, name: str = 
     """
     nl = "\n"
     new = _flat(desc)
-    if not new:
+    if not new or _is_placeholder(new):
         return text, None
     old, start, end = _current_description(text)
     if start < 0:
