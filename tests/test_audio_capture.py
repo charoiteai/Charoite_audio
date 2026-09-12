@@ -902,6 +902,13 @@ def test_предупреждение_доходит_до_ui_потому_что
     assert said, "предупреждение не дошло до интерфейса: крик ушёл в None"
     assert any("СОБЕСЕДНИКОВ" in m for m in said), \
         "в интерфейс ушло что-то не то — человек не поймёт, что потеряно"
+    # связь с липкостью — по РЕАЛЬНОМУ тексту, а не по копии строки в тесте:
+    # перестановка слов в предупреждении молча вернула бы «стёрлось через
+    # секунду» при зелёном CI (№228, GLM r1 по #538)
+    import stt_runtime
+    warn = next(m for m in said if "СОБЕСЕДНИКОВ" in m)
+    assert stt_runtime.is_sticky_status(warn), warn
+    assert not stt_runtime.is_recording_failure(warn), "неполная запись — не отказ записи"
 
 
 def test_режим_только_микрофон_не_поднимает_ложную_тревогу(tmp_path, monkeypatch):

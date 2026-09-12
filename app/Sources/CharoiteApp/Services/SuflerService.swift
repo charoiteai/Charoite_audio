@@ -823,7 +823,10 @@ final class SuflerService: ObservableObject {
                 statusIsError = obj["error"] as? Bool ?? false
                 statusErrorFromDaemon = statusIsError
                 // Липкое — отдельный слой: ключ есть только у липких и у явного
-                // снятия; статус без ключа его не трогает (№228)
+                // снятия; статус без ключа его не трогает (№228). Продюсера
+                // `sticky: false` у демона пока нет (канал внутри встречи не
+                // восстанавливается — №232/№111): ветка снятия — контракт на
+                // будущее, а не работающее поведение (DS/GLM r1 по #538)
                 if let sticky = obj["sticky"] as? Bool {
                     stickyStatus = sticky ? text : nil
                 }

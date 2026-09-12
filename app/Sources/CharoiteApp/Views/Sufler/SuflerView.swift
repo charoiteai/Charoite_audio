@@ -235,36 +235,53 @@ struct SuflerView: View {
     /// текстом в одну строку — ровно то, чего этот код должен избегать.
     private var displayedStatus: String {
         if sufler.isRunning {
-            // Подтверждение Stop требует немедленного второго действия.
-            if sufler.stopConfirmPending { return sufler.status }
-            // Отказ диска важнее вспомогательного слоя; capture/restart error
-            // важнее нагрузки; lag/stall важнее обычной служебной строки.
-            if sufler.pipelineStatusIsCritical,
-               let pipelineStatus = sufler.pipelineStatusText {
-                // Демон шлёт error-статус с ПРИЧИНОЙ отказа («ЗАПИСЬ НА ДИСК
-                // ВЫКЛЮЧЕНА: <исключение>»); генерик-баннер поверх него
-                // прятал её до конца встречи (круг-1 GLM, I2). Пока причина
-                // на экране — показываем её; затёрло обычным статусом —
-                // возвращается персистентный баннер. Уступаем ТОЛЬКО ошибке
-                // самого демона: Swift-`fail()` (таймаут подсказки) при
-                // мёртвом STT больше никогда не сменится статусом и прятал
-                // бы критикал до конца встречи (круг-2 DS, I1).
-                return sufler.statusErrorFromDaemon ? sufler.status : pipelineStatus
-            }
-            if sufler.statusIsError { return sufler.status }
-            // Липкое предупреждение демона («собеседников в записи не будет»):
-            // ниже критикала диска и свежей ошибки, выше служебных строк —
-            // иначе «👥 диаризация включена» через секунду прятала его до
-            // конца встречи (№228)
-            if let sticky = sufler.stickyStatus { return sticky }
-            if let pipelineStatus = sufler.pipelineStatusText {
-                return pipelineStatus
-            }
+            return Self.liveStatusText(
+                stopConfirmPending: sufler.stopConfirmPending,
+                criticalHealthText: sufler.pipelineStatusIsCritical ? sufler.pipelineStatusText : nil,
+                errorFromDaemon: sufler.statusErrorFromDaemon,
+                isError: sufler.statusIsError,
+                healthText: sufler.pipelineStatusText,
+                sticky: sufler.stickyStatus,
+                status: sufler.status)
         }
         if !sufler.isRunning, let processingStatus = processing.statusText {
             return processingStatus
         }
         return sufler.status
+    }
+
+    /// Строка статуса на живой встрече — чистая функция, чтобы приоритеты
+    /// были под тестом (DS r1 по #538): подтверждение Stop → критикал диска →
+    /// ошибка демона → здоровье STT (stall/lag) → липкое предупреждение →
+    /// служебная строка.
+    static func liveStatusText(stopConfirmPending: Bool, criticalHealthText: String?,
+                               errorFromDaemon: Bool, isError: Bool, healthText: String?,
+                               sticky: String?, status: String) -> String {
+        // Подтверждение Stop требует немедленного второго действия.
+        if stopConfirmPending { return status }
+        // Отказ диска важнее вспомогательного слоя; capture/restart error
+        // важнее нагрузки; lag/stall важнее обычной служебной строки.
+        if let critical = criticalHealthText {
+            // Демон шлёт error-статус с ПРИЧИНОЙ отказа («ЗАПИСЬ НА ДИСК
+            // ВЫКЛЮЧЕНА: <исключение>»); генерик-баннер поверх него
+            // прятал её до конца встречи (круг-1 GLM, I2). Пока причина
+            // на экране — показываем её; затёрло обычным статусом —
+            // возвращается персистентный баннер. Уступаем ТОЛЬКО ошибке
+            // самого демона: Swift-`fail()` (таймаут подсказки) при
+            // мёртвом STT больше никогда не сменится статусом и прятал
+            // бы критикал до конца встречи (круг-2 DS, I1). Липкое
+            // предупреждение error не несёт, так что это окно не открывает.
+            return errorFromDaemon ? status : critical
+        }
+        if isError { return status }
+        // «⚠️ STT не отвечает N с» / «отстаёт на N с» — про сейчас и требуют
+        // внимания; липкое про всю встречу может подождать (DS I1 по #538)
+        if let health = healthText { return health }
+        // Липкое предупреждение демона («собеседников в записи не будет»):
+        // выше служебных строк — иначе «👥 диаризация включена» через
+        // секунду прятала его до конца встречи (№228)
+        if let sticky { return sticky }
+        return status
     }
 
     private var statusIsProblem: Bool {

@@ -213,11 +213,13 @@ def test_отказ_записи_на_диск_красится_по_подст�
     assert stt_runtime.is_recording_failure("канал не открылся") is False
 
 
-def test_запись_без_собеседников_липкая_и_красная():
-    """№228: предупреждение про всю встречу держится до конца записи и красится
-    как отказ; отказ диска липким не объявляется — его держит heartbeat."""
-    warn = "⚠️ СОБЕСЕДНИКОВ В ЗАПИСИ НЕ БУДЕТ: системный звук не захвачен, пишем только микрофон."
-    assert stt_runtime.is_sticky_status(warn) is True and stt_runtime.is_recording_failure(warn) is True
+def test_запись_без_собеседников_липкая_но_не_отказ():
+    """№228: предупреждение про всю встречу держится до конца записи; отказом
+    записи (флаг error, гейт критикала диска в приложении) оно не считается —
+    красный липкому приложение даёт само; отказ диска липким не объявляется —
+    его держит heartbeat."""
+    warn = f"⚠️ {stt_runtime.MIC_ONLY_WARNING}: системный звук не захвачен, пишем только микрофон."
+    assert stt_runtime.is_sticky_status(warn) is True and stt_runtime.is_recording_failure(warn) is False
     assert stt_runtime.is_sticky_status("ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: диск полон") is False
     assert stt_runtime.is_sticky_status("👥 живая диаризация голосов включена") is False
 
