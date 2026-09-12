@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -20,7 +21,6 @@ import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import cloud  # noqa: E402
-import file_locks  # noqa: E402
 import install_profile  # noqa: E402
 import live_gate  # noqa: E402
 import llm_health  # noqa: E402
@@ -489,7 +489,7 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
     # (оплата долга из другого воркера) ложился посреди своей отправки —
     # дубли или дыра в памяти (DS r3 I2, GLM r3 I1 по #545)
     with (contextlib.nullcontext(True) if locked else _sender_lock(mark, SEND_LOCK_WAIT)) as ok:
-        if not ok:
+        if ok is False:
             print("память Чароита: факты этой встречи шлёт другой процесс — пропущено")
             return 0
         return _send_facts(stamp, title, keyed, mark, post)
@@ -560,20 +560,36 @@ DEBT_MIN_AGE = 10 * 60       # долг моложе — у живого отп�
 
 
 @contextlib.contextmanager
-def _sender_lock(mark: pathlib.Path, wait: float):
+def _sender_lock(mark: pathlib.Path, wait: float, *, sleep=time.sleep, now=time.monotonic):
     """Один отправитель фактов встречи за раз — flock на `<отметка>.lock`.
-    Даёт True, если замок взят; False — держит другой процесс (демон шлёт
-    разбор, воркер переотправляет после ревизии, чужой воркер платит долг)
-    дольше `wait` секунд, каталога нет или ФС без flock. Замок отпускается
-    закрытием файла."""
+    Три исхода (DS r4 I1 по #545): True — замок взят; False — держит другой
+    процесс (демон шлёт разбор, воркер переотправляет после ревизии, чужой
+    воркер платит долг) дольше `wait` секунд; None — замка нет вовсе
+    (каталог не открыть, ФС без flock) — это не «занято», работать без
+    замка, как велит политика file_locks. Замок отпускается закрытием
+    файла; `.lock` не удаляется даже при forget (DS r4 M4: unlink снимает
+    имя, а не flock, и следующий отправитель взял бы новый инод)."""
     try:
         mark.parent.mkdir(parents=True, exist_ok=True)
         f = open(mark.with_suffix(".lock"), "a+", encoding="utf-8")   # noqa: SIM115 — закрывается в with
     except OSError:
-        yield False
+        yield None
         return
     with f:
-        yield file_locks.acquire_exclusive(f, attempts=max(1, int(wait / 0.2) + 1), pause=0.2)
+        deadline = now() + wait
+        while True:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                yield True
+                return
+            except BlockingIOError:
+                if now() >= deadline:
+                    yield False
+                    return
+                sleep(min(0.2, max(0.0, deadline - now())))
+            except OSError:
+                yield None
+                return
 
 
 def _settle_debt(mark: pathlib.Path) -> None:
@@ -639,7 +655,7 @@ def _note_head(text: str) -> tuple[str, list[dict], list[str]]:
 
 def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: str,
                                  mark: pathlib.Path, post=None, *,
-                                 lock_wait: float = SEND_LOCK_WAIT) -> str:
+                                 lock_wait: float | None = None) -> str:
     """Память Чароита после облачной ревизии — по заметке встречи ПОСЛЕ неё.
 
     Факты уходили в brain в разборе, за двадцать минут до ревизии, и она их
@@ -670,8 +686,8 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
     old, new = note_decisions(note_before), note_decisions(after)
     if old == new and not pending.exists():
         return "память Чароита: решения встречи после ревизии те же — без переотправки"
-    with _sender_lock(mark, lock_wait) as ok:
-        if not ok:
+    with _sender_lock(mark, SEND_LOCK_WAIT if lock_wait is None else lock_wait) as ok:
+        if ok is False:
             return "память Чароита не переотправлена: факты встречи шлёт другой процесс — позже"
         try:
             pending.parent.mkdir(parents=True, exist_ok=True)
@@ -710,14 +726,16 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, skip: str = 
     снимается: платить не по чему. Возвращает строки для лога."""
     ripe: list[tuple[float, pathlib.Path]] = []
     try:
-        for p in sent_dir.glob("*.pending"):
-            if p.stem == skip:
-                continue
-            age = float(now()) - p.stat().st_mtime
-            if age >= DEBT_MIN_AGE:
-                ripe.append((p.stat().st_mtime, p))
+        debts = [p for p in sent_dir.glob("*.pending") if p.stem != skip]
     except OSError as e:
         return [f"долги памяти не проверены: {e}"]
+    for p in debts:
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue              # оплатил сосед или forget — не наша очередь (DS r4 M2)
+        if float(now()) - mtime >= DEBT_MIN_AGE:
+            ripe.append((mtime, p))
     out: list[str] = []
     for _, debt in sorted(ripe)[:limit]:
         stamp = debt.stem

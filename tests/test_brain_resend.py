@@ -225,6 +225,11 @@ def test_sender_lock_keeps_a_foreign_payer_and_a_second_sender_out(tmp_path, mon
         assert not calls and debt.exists() and debt.stat().st_mtime >= before
     lines = g.pay_brain_debts(graph, sent, post=ok, now=lambda: time.time() + g.DEBT_MIN_AGE + 1)
     assert lines[0].endswith("ушло фактов 4") and not debt.exists() and len(calls) == 5
+    # замка нет вовсе (ФС без flock) — это не «занято»: факты идут без замка (DS r4 I1)
+    calls.clear()
+    monkeypatch.setattr(g.fcntl, "flock", lambda *a, **k: (_ for _ in ()).throw(OSError(77, "ENOLCK")))
+    assert g.send_to_brain("2026-09-05_1000", "Т", [], [], ["x"], sent / "2026-09-05_1000.txt", post=ok) == 2 and len(calls) == 2
+    assert not (sent / "2026-09-05_1000.pending").exists()
 
 
 def test_unpayable_debt_does_not_hold_the_queue(tmp_path):
