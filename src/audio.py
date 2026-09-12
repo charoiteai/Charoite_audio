@@ -15,6 +15,7 @@ import sounddevice as sd
 
 import meeting_stamp
 import channel_labels
+import stt_runtime
 
 from charoite_paths import resolve_root
 
@@ -546,7 +547,10 @@ class AudioHub:
         except (OSError, ValueError):
             pass
         reason = "; ".join(why) or "причина неизвестна"
-        self._say("⚠️ СОБЕСЕДНИКОВ В ЗАПИСИ НЕ БУДЕТ: системный звук не "
+        # Маркер — из stt_runtime: по нему демон помечает статус липким и
+        # приложение держит его до конца встречи; рукописная копия строки
+        # разошлась бы молча (№228, GLM r1 по #538)
+        self._say(f"⚠️ {stt_runtime.MIC_ONLY_WARNING}: системный звук не "
                   f"захвачен, пишем только микрофон. {reason}")
         try:
             # Popen, а не run: это вызывается на пути старта записи, и
