@@ -86,9 +86,26 @@ def test_plan_drops_the_owner_the_same_name_placeholders_and_unknown_labels():
         "то же имя", "метка владельца (канал микрофона) не переименовывается",
         "имя не годится (заглушка, разметка или длина)", "такой метки в заголовках реплик нет",
         "метка уже исправлена другой строкой", "имя не годится (заглушка, разметка или длина)"]
-    # обмен меток — одним проходом, без каскада
-    text, n = nf.rename_headers("**А** [1:00]:\nа\n\n**Б** [1:01]:\nб\n", {"А": "Б", "Б": "А"})
-    assert n == 2 and text == "**Б** [1:00]:\nа\n\n**А** [1:01]:\nб\n"
+    # обмен меток — одним проходом, без каскада: и в заголовках, и в шапке
+    # участников (GLM r1 Critical, DS r1 I1 по #548), цепочка A→B→C — тоже
+    text, n = nf.rename_headers("Участники (звучали в разговоре): А, Б\n\n**А** [1:00]:\nа\n\n**Б** [1:01]:\nб\n",
+                                {"А": "Б", "Б": "А"})
+    assert n == 2 and text == "Участники (звучали в разговоре): Б, А\n\n**Б** [1:00]:\nа\n\n**А** [1:01]:\nб\n"
+    assert nf.rename_participants("**Участники:** Аня, Боря\n", {"Аня": "Боря", "Боря": "Вера"}) == "**Участники:** Боря, Вера\n"
+    # дефис — часть слова; «Участники:» в конце строки не тянет за собой следующую (DS M5, GLM M4)
+    assert nf.rename_participants("**Участники:** Анна-Мария, Анна\n", {"Анна": "Мария"}) == "**Участники:** Анна-Мария, Мария\n"
+    assert nf.rename_participants("**Участники:**\n- [ ] **Аня** — x\n", {"Аня": "Боря"}) == "**Участники:**\n- [ ] **Аня** — x\n"
+    # цель — метка владельца/«Я»: не применяется (DS I4, GLM M5)
+    dropped.clear()
+    assert nf.plan([("Собеседник 3", "Владелец", ""), ("Сергей", "Я", "")], headers={"Собеседник 3", "Сергей"},
+                   protected={"Владелец", "Я"}, dropped=dropped) == {}
+    assert all("целевое имя" in d for d in dropped)
+    # слияние в существующую чужую дорожку — применяется, но громко
+    notes: list[str] = []
+    assert nf.plan([("Сергей", "Мария", "")], headers={"Сергей", "Мария"}, protected=set(), notes=notes) == {"Сергей": "Мария"}
+    assert notes == ["«Сергей → Мария»: сливается с существующей дорожкой «Мария» — две дорожки под одним именем"]
+    # основание в скобках — та же строгая форма (DS M6)
+    assert nf.name_fixes("## Исправления имён\n- **Сергей** → **Мария** (основание: два обращения)\n") == [("Сергей", "Мария", "два обращения")]
 
 
 def test_apply_restamps_headers_and_participants_keeps_prev_and_sha(tmp_path):
@@ -110,8 +127,20 @@ def test_apply_restamps_headers_and_participants_keeps_prev_and_sha(tmp_path):
     assert "- [ ] **Сергей** — согласовать план" in minutes, "поручения не переименовываются наугад — их снимает и возвращает ревизия"
     assert meta["minutes_sha256"] == live_sidecar.sha(minutes)
     assert dropped == ["(не уверен)", "«Юля → Юля» — то же имя", "«Иван → Ольга» — такой метки в заголовках реплик нет"]
+    assert (tmp_path / ".prev" / mpath.name).read_text(encoding="utf-8") == MINUTES, "минутки до правки — тоже в .prev (DS I3)"
     # повтор — нечего менять
-    assert nf.apply(rev, live, cfg) == ({}, 0, False) or nf.apply(rev, live, cfg)[1] == 0
+    again = nf.apply(rev, live, cfg)
+    assert again[1] == 0 and again[0] == {}, again
+
+
+def test_non_utf8_meeting_file_skips_names_without_raising(tmp_path):
+    """DS r1 I2 по #548: стенограмма в cp1251 (правил чужой редактор) не
+    должна ронять мост поручений — имена пропускаются со строкой в dropped."""
+    live, mpath, rev = _world(tmp_path)
+    live.write_bytes("**Сергей** [15:33]:\nПривет, Юля\n".encode("cp1251"))
+    dropped: list[str] = []
+    assert nf.apply(rev, live, {"sufler": {}}, dropped=dropped) == ({}, 0, False)
+    assert dropped and "не в UTF-8" in dropped[0]
 
 
 def test_hand_edited_transcript_is_restamped_but_stays_hand_edited(tmp_path):

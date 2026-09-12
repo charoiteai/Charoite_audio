@@ -1252,20 +1252,35 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 # Имена меток — раньше всего: заголовки реплик и участники
                 # минуток под верными именами, чтобы архив и Документация
                 # получили их этим же прогоном (№239); поручения под ошибочной
-                # меткой ревизия снимает и восстанавливает сама, ниже
+                # меткой ревизия снимает и восстанавливает сама, ниже.
+                # Только когда граф правится и перенос сверен: без права
+                # правки стенограмма разошлась бы с узлом Люди навсегда, а
+                # после несверенного переноса — с правками, которых в графе
+                # нет (критика DS/GLM r1 по #548); раздел ревизии остаётся
+                # человеку. Свой try: сбой имён не должен глушить мост поручений.
                 dropped_n: list[str] = []
-                renamed, heads, parts = name_fixes.apply(rev, transcript, cfg, dropped=dropped_n)
-                if renamed:
-                    lines.append("[cloud-review] имена меток исправлены по ревизии: "
-                                 + ", ".join(f"{k} → {v}" for k, v in renamed.items())
-                                 + f" — заголовков реплик {heads}, участники минуток "
-                                 + ("да" if parts else "нет") + "\n")
-                    if not may_edit:
-                        lines.append("[cloud-review] узлы графа не правлены (режим только чтения): "
-                                     "встречу и связи из узла Люди с ошибочным именем перенести руками\n")
+                notes_n: list[str] = []
+                if may_edit and checked:
+                    try:
+                        renamed, heads, parts = name_fixes.apply(rev, transcript, cfg, dropped=dropped_n, notes=notes_n)
+                    except Exception as e:  # noqa: BLE001
+                        renamed, heads, parts = {}, 0, False
+                        lines.append(f"[cloud-review] имена меток не перештампованы: {e}\n")
+                    if renamed:
+                        lines.append("[cloud-review] имена меток исправлены по ревизии: "
+                                     + ", ".join(f"{k} → {v}" for k, v in renamed.items())
+                                     + f" — заголовков реплик {heads}, участники минуток "
+                                     + ("да" if parts else "нет") + "\n")
+                    elif name_fixes.section_present(rev_text):
+                        lines.append("[cloud-review] мост ревизии: раздел об исправлениях имён есть, "
+                                     "применимых строк нет\n")
+                    for note in notes_n:
+                        lines.append(f"[cloud-review] имена меток: {note}\n")
                 elif name_fixes.section_present(rev_text):
-                    lines.append("[cloud-review] мост ревизии: раздел об исправлениях имён есть, "
-                                 "применимых строк нет\n")
+                    lines.append("[cloud-review] имена меток не перештампованы: "
+                                 + ("правка графа выключена — узел Люди править нельзя" if not may_edit
+                                    else "перенос правок графа не сверен")
+                                 + "; раздел «Исправления имён» в ревизии — для правки руками\n")
                 # Сначала снять ложное, потом дописать восстановленное: если
                 # ревизия заменяет пункт похожим верным, дедуп не должен
                 # принять новый за уже существующий ложный (№238)
