@@ -627,8 +627,10 @@ class AudioHub:
             self._say(f"🎙 канал {lbl} не открылся ({err}) — встреча пишется без него")
         if scream:
             # одной строкой: текст уходит и в capture.log, где запись = строка,
-            # а хвост без метки припишется Swift-части (DS r1 по #537)
-            self._warn_no_system_channel(**self._system_origin,
+            # а хвост без метки припишется Swift-части (DS r1 по #537).
+            # Хаб без конструктора (тесты через object.__new__) причин не знает —
+            # пустой словарь, а не выдуманная (Minor DS/GLM r1 по #537)
+            self._warn_no_system_channel(**getattr(self, "_system_origin", {}),
                                          start_error=" ".join(str(dead[0]).split())[:300])
         now = time.time()
         for c in self.captures:
