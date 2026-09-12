@@ -5,6 +5,18 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.80.0](https://github.com/charoiteai/Charoite_audio/compare/v0.79.0...v0.80.0) (2026-09-12)
+
+
+### Features
+
+* **review:** ревизия снимает ложные поручения и решения, память встречи переотправляется после неё ([#545](https://github.com/charoiteai/Charoite_audio/issues/545)) ([c0f0cc6](https://github.com/charoiteai/Charoite_audio/commit/c0f0cc6d7290bdc868b31b303d7efbc52f49fc66))
+
+
+### Bug Fixes
+
+* **review:** один повтор облачной ревизии после сбоя запуска и этап ревизии в статусе встречи ([#546](https://github.com/charoiteai/Charoite_audio/issues/546)) ([ea18aa5](https://github.com/charoiteai/Charoite_audio/commit/ea18aa56e1631a228d6ac1f5afa8da0143a02f23))
+
 ## [0.79.0](https://github.com/charoiteai/Charoite_audio/compare/v0.78.0...v0.79.0) (2026-09-12)
 
 
