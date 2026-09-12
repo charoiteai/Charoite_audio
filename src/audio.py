@@ -494,24 +494,32 @@ class AudioHub:
         # Режим mic исключён сознательно: там пользователь сам просит один
         # микрофон (диктовка, личные заметки), и канала собеседников не будет
         # по построению. Кричать об этом — ложная тревога на каждом запуске.
+        # Режим и происхождение канала запоминаем всегда: start() судит ещё раз,
+        # уже по факту открытия (№230), и ему нужна та же причина.
+        self._mode = mode
+        self._system_origin = {"sck_missing": sck is None, "bh_missing": bh is None}
         self._no_system_channel = None
         if mode != "mic" and not any(c.label == "blackhole" for c in self.captures):
-            self._no_system_channel = {"sck_missing": sck is None, "bh_missing": bh is None}
+            self._no_system_channel = dict(self._system_origin)
         for c in self.captures:
             self._bufs[c.label] = np.zeros(0, dtype=np.float32)
 
-    def _warn_no_system_channel(self, *, sck_missing: bool, bh_missing: bool) -> None:
+    def _warn_no_system_channel(self, *, sck_missing: bool, bh_missing: bool,
+                                start_error: str | None = None) -> None:
         """Громко сказать, что собеседников в записи не будет, и почему.
 
         Причину знает Swift-часть: она поднимает ScreenCaptureKit и пишет ход
         в logs/capture.log. Питон видит только отсутствие манифеста, поэтому
         последнюю строку лога подхватываем — иначе разбираться придётся
-        вручную и уже после встречи.
+        вручную и уже после встречи. `start_error` — второй повод: устройство
+        собеседников нашлось, но открыть его при старте не удалось (№230).
         """
         import datetime                       # локально: шапку аудио-модуля не трогаем
         import subprocess
 
         why = []
+        if start_error:
+            why.append(f"канал собеседников найден, но не открылся при старте: {start_error}")
         if sck_missing:
             why.append("ScreenCaptureKit не поднялся (нет свежего "
                        f"{SCK_STREAM_MANIFEST.name}; проверить право «Запись экрана»)")
@@ -550,7 +558,8 @@ class AudioHub:
                  'display notification "Системный звук не захвачен — в записи будет '
                  'только ваш микрофон, без собеседников. Проверьте право «Запись экрана»." '
                  'with title "Чароит: запись неполная" sound name "Glass"'],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True)       # как у остальных fire-and-forget Popen (DS r2 по #531)
         except Exception:                       # noqa: BLE001 — уведомление не должно ронять запись
             pass
         try:
@@ -600,6 +609,14 @@ class AudioHub:
                                + "; ".join(f"{lbl} → {err}" for lbl, err in failed))
         for lbl, err in failed:
             self._say(f"🎙 канал {lbl} не открылся ({err}) — встреча пишется без него")
+        # Канал собеседников нашёлся в конструкторе, но открыть его не удалось
+        # (устройство занято, отозвано): гейт выше судит по НАЛИЧИЮ, и встреча
+        # шла одним микрофоном с одной тихой строкой — тот же симптом, что
+        # чинил #531, только на машинах с BlackHole (Important DS r2, №230).
+        dead = [err for lbl, err in failed if lbl == "blackhole"]
+        if dead and getattr(self, "_mode", "auto") != "mic" and not getattr(self, "_no_system_channel", None):
+            self._warn_no_system_channel(**getattr(self, "_system_origin", {"sck_missing": True, "bh_missing": False}),
+                                         start_error=str(dead[0]))
         now = time.time()
         for c in self.captures:
             self._last_frame[c.label] = now

@@ -814,7 +814,7 @@ def test_missing_system_channel_screams_and_names_the_reason(tmp_path, monkeypat
     calls = []
     # Popen, а не run: уведомление пускается без ожидания, чтобы залипший
     # osascript не отодвигал открытие каналов (круг 1, 10.09).
-    monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: calls.append(args))
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: calls.append((args, kw)))
 
     hub._warn_no_system_channel(sck_missing=True, bh_missing=True)
 
@@ -823,6 +823,11 @@ def test_missing_system_channel_screams_and_names_the_reason(tmp_path, monkeypat
     assert "СОБЕСЕДНИКОВ" in msg, "текст обязан говорить, ЧТО потеряно, а не «fallback»"
     assert "ScreenCaptureKit" in msg and "право" in msg, "нужна причина и что проверить"
     assert calls, "уведомление macOS не отправлено — строку статуса не заметят"
+    # не только факт вызова: звук и текст баннера — половина «громкости»,
+    # их потеря проходила зелёной (Minor DS r2 по #531)
+    cmd = calls[0][0][0]
+    assert cmd[0] == "osascript" and 'sound name "Glass"' in cmd[-1] and "без собеседников" in cmd[-1], cmd
+    assert calls[0][1].get("start_new_session") is True, "как у остальных fire-and-forget Popen"
 
     log = (tmp_path / "logs" / "capture.log").read_text(encoding="utf-8")
     assert "ЗАПИСЬ БЕЗ СИСТЕМНОГО ЗВУКА" in log, "причина обязана осесть в capture.log"
@@ -927,6 +932,55 @@ def test_режим_только_микрофон_не_поднимает_лож
     # иначе тест выше зелёный просто потому, что сломан весь механизм.
     assert a.AudioHub(_hub_cfg())._no_system_channel is not None, \
         "в auto предупреждение не взводится — проверка режима mic ничего не значит"
+
+
+def _system_device_that_fails_to_open(monkeypatch, tmp_path, *, fail=True):
+    """Машина с устройством собеседников (BlackHole найден), у которого start()
+    падает: занято другим процессом, отозвано. Микрофон открывается."""
+    monkeypatch.setattr(a, "ROOT", tmp_path)
+    monkeypatch.setattr(a, "fresh_sck_manifest", lambda: None)
+    monkeypatch.setattr(a, "find_system_audio", lambda: 7)
+    monkeypatch.setattr(a.sd.default, "device", (1, None), raising=False)
+
+    def start(self):
+        if fail and self.label == "blackhole":
+            raise RuntimeError("PortAudio: device busy")
+
+    monkeypatch.setattr(a.Capture, "start", start)
+    monkeypatch.setattr(a.threading, "Thread",
+                        lambda *args, **kw: type("_T", (), {"start": lambda s: None})())
+    calls = []
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: calls.append((args, kw)))
+    return calls
+
+
+def test_отказ_канала_собеседников_на_старте_кричит_так_же_громко(tmp_path, monkeypatch):
+    """№230 (Important DS r2 по #531): гейт в конструкторе судит по НАЛИЧИЮ
+    устройства, а канал умирает в start() — раньше это была одна тихая строка
+    «канал blackhole не открылся», и встреча шла одним микрофоном без
+    уведомления и без строки в capture.log. Тот же симптом, тот же крик."""
+    calls = _system_device_that_fails_to_open(monkeypatch, tmp_path)
+    hub = a.AudioHub(_hub_cfg())
+    assert hub._no_system_channel is None, "гейт конструктора молчит: устройство найдено"
+    said = []
+    hub.on_status = said.append
+    hub.start()                                       # blackhole падает, mic открывается
+
+    msg = "\n".join(said)
+    assert "СОБЕСЕДНИКОВ" in msg, "отказ канала при старте остался тихой строкой"
+    assert "не открылся при старте" in msg and "device busy" in msg, "причина обязана быть названа"
+    assert "устройства системного звука не видно" not in msg, "устройство есть — ложная причина"
+    assert calls and 'sound name "Glass"' in calls[0][0][0][-1], "уведомление со звуком не ушло"
+    log = (tmp_path / "logs" / "capture.log").read_text(encoding="utf-8")
+    assert a.MIC_ONLY_LOG_MARK in log and "device busy" in log
+
+    # контроль: тот же канал открылся — крика нет (иначе тест выше зелёный от шума)
+    calls = _system_device_that_fails_to_open(monkeypatch, tmp_path, fail=False)
+    hub = a.AudioHub(_hub_cfg())
+    said = []
+    hub.on_status = said.append
+    hub.start()
+    assert not any("СОБЕСЕДНИКОВ" in m for m in said) and not calls
 
 
 def test_битый_лог_не_срывает_старт_записи(tmp_path, monkeypatch):
