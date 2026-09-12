@@ -132,7 +132,8 @@ Charoite picks the source itself: ScreenCaptureKit first, then BlackHole. The
 meeting status shows which channel is in use.
 
 If there is no channel for the other side at all (Screen Recording permission
-revoked, BlackHole not set up), recording still starts — microphone only —
+revoked, BlackHole not set up), or the device is there but fails to open at
+start (busy, revoked), recording still starts — microphone only —
 and Charoite says so right at the start: a line in the meeting status plus a
 system notification with sound, including the reason. The status line stays
 red until the end of the meeting — ordinary status updates do not push it
