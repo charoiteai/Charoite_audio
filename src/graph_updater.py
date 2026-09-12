@@ -876,6 +876,11 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         d.mkdir(parents=True, exist_ok=True)
         p = d / f"{safe_name(name)}.md"
     stamp = f"- [[{meeting_link}]] — {contrib}" if contrib else f"- [[{meeting_link}]]"
+    # Прочерк любого вида от модели — не описание, ни в новом узле, ни в
+    # старом: иначе следующая встреча вытесняла бы «–» строкой хроники с
+    # фиктивным «было» (Important DS r3 по #539)
+    if not _flat(desc).strip("—–- "):
+        desc = ""
     # Механически у человека/системы обновляются две вещи: дата последнего
     # упоминания (Sonnet 28.08 I6; ретрай старой встречи её не откатывает) и
     # описание — но только существенно новым фактом и со следом в «## Хроника»
@@ -930,7 +935,8 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
     else:
         safe_write.write_text(
             p,
-            f"---\ntype: {typ}\ntags: [встречи, авто]\n---\n# {name}\n{desc}\n\n"
+            f"---\ntype: {typ}\ntags: [встречи, авто]\n---\n# {name}\n"
+            + (f"{desc}\n\n" if desc else "\n")   # без описания — одна пустая, как на всех остальных путях
             + (f"_(последнее упоминание: {day})_\n\n" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else "")
             + f"## Встречи\n{stamp}\n",
         )
@@ -958,12 +964,6 @@ def _touch_last_seen(text: str, day: str) -> str:
 
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n", re.S)
 _NODE_TITLE_RE = re.compile(r"^# [^\n]*\n", re.M)
-# Слова, переворачивающие смысл: их наличие обязано совпадать у старого и
-# нового описания, иначе это новый факт — «не участвует» ↔ «участвует»,
-# «бывший аналитик» ↔ «аналитик» (Critical DS и GLM, круг 2 по #539).
-_FACT_SIGNAL = frozenset("не ни без нельзя бывший бывшая экс прежний прежняя ранее уже".split())
-
-
 def _body_at(text: str) -> int:
     """Смещение тела узла — сразу после frontmatter. Разделы и служебные
     строки ищутся только в теле: «## …» и «# …» в YAML-шапке — комментарии,
@@ -1006,25 +1006,24 @@ def _fact_words(s: str) -> tuple[set[str], set[str]]:
 
 def _same_fact(old: str, new: str) -> bool:
     """Пересказ одного описания, не новый факт — одно правило над множествами
-    слов, без порогов и подстрочности (два круга по #539: подстрочный шорткат
-    глушил «не участвует» → «участвует», Жаккар 0,5 склеивал разные факты, а
-    0,7 терял смену одного слова в длинном описании).
+    слов, без порогов, подстрочности и словарей (три круга по #539: подстрочный
+    шорткат глушил «не участвует» → «участвует», Жаккар 0,5 склеивал разные
+    факты, 0,7 терял смену одного слова, а список слов-переворотов был
+    заведомо дырявым — «бывшие», «перестал», «нет»).
 
-    Пересказ — это то же самое слово в слово, либо те же слова короче или в
-    другом порядке (слова нового ⊆ слов старого) при тех же числах и тех же
-    словах-переворотах («не», «бывший», …). Всё остальное — новый факт:
-    обогащение, замена любого слова, смена даты, снятое или добавленное
-    отрицание. Ошибка в сторону «новый факт» видна строкой хроники с обеими
-    формулировками и правится; ошибка в сторону «пересказ» невидима — поэтому
-    правило узкое.
+    Пересказ — это ТЕ ЖЕ слова и те же числа: слово в слово, другой регистр,
+    ё/е, другой порядок, повторы. Всё остальное — новый факт: обогащение,
+    усечение, замена любого слова, смена даты, снятое или добавленное
+    отрицание. Усечение тоже новый факт сознательно: «курирует проект до конца
+    года» → «курирует проект» снимает срок, и лексикой не отличить сокращение
+    от отмены. Ошибка в сторону «новый факт» видна строкой хроники с обеими
+    формулировками и правится; ошибка в сторону «пересказ» невидима.
     """
     if _fact_norm(old) == _fact_norm(new):
         return True
     wa, da = _fact_words(old)
     wb, db = _fact_words(new)
-    if da != db or (wa & _FACT_SIGNAL) != (wb & _FACT_SIGNAL):
-        return False
-    return bool(wa) and bool(wb) and wb <= wa
+    return bool(wa or da) and wa == wb and da == db
 
 
 def _supersede_description(text: str, desc: str, meeting_link: str, name: str = "") -> tuple[str, tuple[str, str] | None]:
@@ -1042,13 +1041,16 @@ def _supersede_description(text: str, desc: str, meeting_link: str, name: str = 
     """
     nl = "\n"
     new = _flat(desc)
-    if not new.strip("—–- "):
+    if not new:
         return text, None
     old, start, end = _current_description(text)
     if start < 0:
         return text, None
     if not old:
-        return text[:start] + new + nl + nl + text[end:], None
+        # пустая строка перед следующим блоком, и ровно одна: у узла из одного
+        # заголовка хвоста нет, и второй перенос давал три пустых (GLM r3)
+        tail = text[end:]
+        return text[:start] + new + nl + (nl if tail.strip() else "") + tail, None
     if _same_fact(old, new):
         if _fact_norm(old) == _fact_norm(new):
             return text, None
