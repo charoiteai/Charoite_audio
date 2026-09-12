@@ -27,7 +27,18 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 sys.path.insert(0, str(REPO / "src"))
 
+import pytest
+
 import cloud_review
+
+
+@pytest.fixture(autouse=True)
+def _no_retry_pause(monkeypatch):
+    """Повтор ревизии (№240) в бою спит десять минут и ждёт конца живой
+    встречи; тестам нужна логика, не пауза. Тест повтора подменяет
+    `_sleep` своим счётчиком поверх этой заглушки."""
+    monkeypatch.setattr(cloud_review, "_sleep", lambda s: None)
+    monkeypatch.setattr(cloud_review.live_gate, "wait_while_live", lambda *a, **k: False)
 
 
 def _graph(tmp: pathlib.Path) -> pathlib.Path:
@@ -315,7 +326,8 @@ def test_invalid_answer_rolls_back_even_allowed_edits(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
     cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
-    assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == 1
+    # ненулевой код CLI — повторяемый сбой (№240): второй заход тот же, код RC_CLI
+    assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_CLI
     # №120: облако работало в копии, поэтому «откат» исчез как класс —
     # настоящий граф не менялся ни на байт, и доказывать это не нужно
     # сложной сверкой. Ядро осталось прежним, созданный узел в граф не попал.
@@ -1756,3 +1768,123 @@ def test_cloud_links_without_a_node_become_text_on_transfer(tmp_path):
     assert "[[в коде]]" in text, "внутри огороженного блока кода ссылки не трогаются"
     assert v.unlinked == ["Ядра/Платёжный провайдер.md: Kwen 32B, Перенос на завтра"], v.unlinked
     assert "ссылки без узла стали текстом" in cloud_review._verdict_line(v, tmp_path / "q")
+
+
+def test_cli_failure_is_retried_once_after_a_pause_and_outside_a_live_meeting(tmp_path, monkeypatch):
+    """№240: упавший запуск CLI или оборванный ответ повторяются один раз
+    через паузу, не под живой встречей; таймаут не повторяется; второй
+    сбой подряд останавливает с честной строкой."""
+    log = tmp_path / "cloud.log"
+    transcript = tmp_path / "t.md"
+    transcript.write_text("текст\n", encoding="utf-8")
+    rev = tmp_path / "r.md"
+    calls: list[int] = []
+    events: list[str] = []
+    monkeypatch.setattr(cloud_review, "_sleep", lambda s: events.append(f"sleep {s}"))
+    monkeypatch.setattr(cloud_review.live_gate, "wait_while_live",
+                        lambda root, log=print, **kw: (events.append("gate"), log("повтор ревизии: живой встречи нет"), False)[2])
+    monkeypatch.setattr(cloud_review, "_review_stage", lambda *a, **k: None)
+
+    def once(*args):
+        calls.append(len(calls))
+        return outcomes[len(calls) - 1]
+
+    monkeypatch.setattr(cloud_review, "_run_once", once)
+    outcomes = [cloud_review.RC_CLI, cloud_review.RC_OK]
+    assert cloud_review.run("2026-07-15_1400", transcript, tmp_path / "g", rev, log, {}) == 0
+    assert len(calls) == 2 and events == ["gate", f"sleep {cloud_review.RETRY_DELAY}", "gate"], \
+        "живой гейт до паузы и после неё (DS r1 M3)"
+    text = log.read_text(encoding="utf-8")
+    assert "повтор ревизии через 10 мин" in text and "живой встречи нет" in text
+    calls.clear(); events.clear(); log.unlink()
+    outcomes = [cloud_review.RC_TIMEOUT]
+    assert cloud_review.run("2026-07-15_1400", transcript, tmp_path / "g", rev, log, {}) == cloud_review.RC_TIMEOUT
+    assert len(calls) == 1 and not events and "таймаут — повтор не поможет" in log.read_text(encoding="utf-8")
+    calls.clear(); log.unlink()
+    outcomes = [cloud_review.RC_ERROR]
+    assert cloud_review.run("2026-07-15_1400", transcript, tmp_path / "g", rev, log, {}) == cloud_review.RC_ERROR
+    assert len(calls) == 1 and not events, "ответ с кодом 0, не похожий на ревизию, не повторяется"
+    outcomes = [cloud_review.RC_CLI, cloud_review.RC_CLI]
+    calls.clear()
+    assert cloud_review.run("2026-07-15_1400", transcript, tmp_path / "g", rev, log, {}) == cloud_review.RC_CLI
+    assert len(calls) == 2 and "повтор не помог" in log.read_text(encoding="utf-8")
+    # за паузу ревизию довёз другой воркер — повтор отменяется (GLM r1 I2)
+    calls.clear(); events.clear(); log.unlink()
+    rev.write_text("# Ревизия\n", encoding="utf-8")
+    outcomes = [cloud_review.RC_CLI, cloud_review.RC_OK]
+    assert cloud_review.run("2026-07-15_1400", transcript, tmp_path / "g", rev, log, {}) == cloud_review.RC_OK
+    assert len(calls) == 1 and "уже доставлена другим прогоном" in log.read_text(encoding="utf-8")
+
+
+def test_retry_runs_the_real_worker_twice_and_cleans_the_partial(tmp_path, monkeypatch):
+    """DS r1 M5, GLM r1 M1 по #546: повтор на настоящем _run_once — снимок
+    и песочница первого захода не мешают второму, ревизия публикуется,
+    обрывок первой попытки не остаётся рядом."""
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    calls: list[int] = []
+
+    class Result:
+        returncode = 1
+
+    def flaky(cmd, **kwargs):
+        calls.append(len(calls))
+        if len(calls) == 1:
+            kwargs["stdout"].write("обрывок")
+            return Result()
+        kwargs["stdout"].write(_REPORT)
+        Result.returncode = 0
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", flaky)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+    assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
+    assert len(calls) == 2 and rev.read_text(encoding="utf-8") == _REPORT
+    assert not rev.with_suffix(rev.suffix + ".partial").exists(), "обрывок первой попытки убран"
+    text = log.read_text(encoding="utf-8")
+    assert text.count("ревизия сохранена") == 1 and "НЕ сохранена" in text and "попытка 2 из 2" in text
+
+
+def test_run_once_tells_cli_failure_from_timeout_and_writes_the_review_stage(tmp_path, monkeypatch):
+    """Код возврата различает «CLI упал / ответ оборван» (повторяемо) и
+    таймаут (нет); этап ревизии ложится в статус встречи, если он есть."""
+    import json
+    import meeting_processing
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    store = meeting_processing.MeetingStatusStore(tmp_path / "data")
+    store.processing(transcript, "updating_graph")
+    status = store.ready(transcript, note=None)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False}}
+
+    def enoent(cmd, **kwargs):
+        raise OSError(13, "Permission denied: claude")
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", enoent)
+    assert cloud_review._run_once(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_CLI
+    data = json.loads(status.read_text(encoding="utf-8"))
+    assert data["state"] == "ready" and data["review"]["state"] == "failed" and "НЕ сохранена" in data["review"]["note"]
+
+    def slow(cmd, **kwargs):
+        raise cloud_review.subprocess.TimeoutExpired(cmd, 1)
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", slow)
+    assert cloud_review._run_once(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_TIMEOUT
+
+    class Result:
+        returncode = 0
+
+    def fine(cmd, **kwargs):
+        kwargs["stdout"].write(_REPORT)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fine)
+    assert cloud_review._run_once(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
+    data = json.loads(status.read_text(encoding="utf-8"))
+    assert data["review"]["state"] == "ok" and data["state"] == "ready"
