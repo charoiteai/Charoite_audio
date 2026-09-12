@@ -6,12 +6,15 @@
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
 import pathlib
 import re
 import sys
+import time
 
 import requests
 import yaml
@@ -443,8 +446,27 @@ def _starts_like_meeting(path: pathlib.Path) -> bool:
         return False
 
 
+def _meeting_facts(stamp: str, title: str, people: list, topics: list,
+                   decisions: list) -> list[tuple[str, dict]]:
+    """(ключ, факт) встречи для brain: шапка и до шести решений.
+    Ключ факта — не текст POST-а: тема входит в каждый текст, а её меняют
+    rename_meeting (brain /rename) и повторное извлечение — и все факты
+    стали бы «новыми» (GLM r3). Шапка одна на встречу — ключ «head»;
+    решение — хеш его собственной формулировки (luna r2/r3)."""
+    who = ", ".join(p["имя"] for p in people[:6])
+    keyed: list[tuple[str, dict]] = [("head", {
+        "text": f"Встреча {stamp} «{title or 'без названия'}» ({who}): темы — " + "; ".join(topics[:4]),
+        "category": "learned", "importance": 0.6, "meeting": stamp})]
+    for d in decisions[:6]:
+        key = hashlib.sha256(d.strip().lower().encode("utf-8")).hexdigest()[:16]
+        if all(key != k for k, _ in keyed):     # одно решение дважды в списке — один факт (luna r3)
+            keyed.append((key, {"text": f"Решение встречи {stamp} «{title}»: {d}",
+                                "category": "decision", "importance": 0.7, "meeting": stamp}))
+    return keyed
+
+
 def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions: list,
-                  mark: pathlib.Path, post=None) -> int:
+                  mark: pathlib.Path, post=None, *, locked: bool = False) -> int:
     """Факты встречи → память Чароита. Возвращает, сколько ушло в этот раз.
 
     Один раз на встречу: повтор обработки («Повторить обработку», ретрай)
@@ -462,25 +484,26 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
     /forget, /rename с 23.08, карточка №41).
     """
     post = post or requests.post
-    who = ", ".join(p["имя"] for p in people[:6])
-    # Ключ факта — не текст POST-а: тема входит в каждый текст, а её меняют
-    # rename_meeting (brain /rename) и повторное извлечение — и все факты
-    # стали бы «новыми» (GLM r3). Шапка одна на встречу — ключ «head»;
-    # решение — хеш его собственной формулировки (luna r2/r3).
-    keyed: list[tuple[str, dict]] = [("head", {
-        "text": f"Встреча {stamp} «{title or 'без названия'}» ({who}): темы — " + "; ".join(topics[:4]),
-        "category": "learned", "importance": 0.6, "meeting": stamp})]
-    for d in decisions[:6]:
-        key = hashlib.sha256(d.strip().lower().encode("utf-8")).hexdigest()[:16]
-        if all(key != k for k, _ in keyed):     # одно решение дважды в списке — один факт (luna r3)
-            keyed.append((key, {"text": f"Решение встречи {stamp} «{title}»: {d}",
-                                "category": "decision", "importance": 0.7, "meeting": stamp}))
+    keyed = _meeting_facts(stamp, title, people, topics, decisions)
+    # Один отправитель фактов встречи за раз: без замка чужой /forget
+    # (оплата долга из другого воркера) ложился посреди своей отправки —
+    # дубли или дыра в памяти (DS r3 I2, GLM r3 I1 по #545)
+    with (contextlib.nullcontext(True) if locked else _sender_lock(mark, SEND_LOCK_WAIT)) as ok:
+        if ok is False:
+            print("память Чароита: факты этой встречи шлёт другой процесс — пропущено")
+            return 0
+        return _send_facts(stamp, title, keyed, mark, post)
+
+
+def _send_facts(stamp: str, title: str, keyed: list[tuple[str, dict]],
+                mark: pathlib.Path, post) -> int:
     # Отметка помнит КЛЮЧИ отправленных фактов, а не позицию: повтор обработки
     # извлекает решения заново, порядок и состав могут отличаться — смещение
     # слало бы старые повторно и теряло новые (luna r2 по #455). Строка без
     # маркера `sent` — отметка прежних версий: всё отправлено.
     done: set[str] = set()
     todo = keyed
+    legacy = False
     if mark.exists():
         lines = mark.read_text(encoding="utf-8", errors="replace").splitlines()
         if lines and lines[0].startswith("sent ") and any(ln.startswith("id:") for ln in lines):
@@ -488,10 +511,30 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
             todo = [(k, f) for k, f in keyed if k not in done]
         else:
             todo = []      # отметка прежних форматов (заголовок, «sha1:» круга-2) — всё отправлено
+            legacy = True
     if not todo:
         print("память Чароита: факты этой встречи уже отправлены — повтор пропущен")
+        # долг снимается только по отметке, которая ЗНАЕТ состав; легаси —
+        # предположение «всё отправлено», а долг мог оставить упавший
+        # /forget (DS r3 M4)
+        if not legacy:
+            _settle_debt(mark)
         return 0
+    # Долг «не всё дошло» — рядом с отметкой, у того, кто её пишет: ставится
+    # до первого POST, снимается, когда в отметке весь состав. Его оплачивает
+    # любой следующий отправитель — повтор обработки или ревизия (DS r2 M3 и
+    # критика по #545: долг жил только в функции ревизии)
+    debt = mark.with_suffix(".pending")
+    try:
+        debt.parent.mkdir(parents=True, exist_ok=True)
+        debt.touch()
+    except OSError:
+        pass
     n = 0
+    # покрытие — по ТЕКУЩЕМУ списку и только по записанной отметке: `len(done)`
+    # при равном числе чужих ключей гасило долг без единого POST (DS r3
+    # Critical), а счёт до записи отметки — при упавшей записи (GLM r3 M1)
+    covered = sum(1 for k, _ in keyed if k in done)
     try:
         for key, fact in todo:
             # 15с: brain ждёт эмбеддинг bge-m3 из Ollama, занятой нашим же extract —
@@ -500,13 +543,215 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
             n += 1
             done.add(key)
             mark.parent.mkdir(parents=True, exist_ok=True)
-            covered = sum(1 for k, _ in keyed if k in done)   # из ТЕКУЩЕГО списка (GLM r3)
-            safe_write.write_text(mark, f"sent {covered}/{len(keyed)}\n"
+            fresh = sum(1 for k, _ in keyed if k in done)   # из ТЕКУЩЕГО списка (GLM r3)
+            safe_write.write_text(mark, f"sent {fresh}/{len(keyed)}\n"
                                   + "".join(f"id:{h}\n" for h in sorted(done)) + f"# {title}\n")
+            covered = fresh
         print(f"память Чароита: +{n} фактов")
     except Exception as e:  # noqa: BLE001 — brain может быть выключен, не валим граф
         print(f"память Чароита недоступна (ушло {n} из {len(todo)}): {e}")
+    if covered == len(keyed):
+        _settle_debt(mark)
     return n
+
+
+SEND_LOCK_WAIT = 30.0        # свой отправитель ждёт соседа; плательщик чужих долгов — нет
+DEBT_MIN_AGE = 10 * 60       # долг моложе — у живого отправителя, чужим не трогать
+
+
+@contextlib.contextmanager
+def _sender_lock(mark: pathlib.Path, wait: float, *, sleep=time.sleep, now=time.monotonic):
+    """Один отправитель фактов встречи за раз — flock на `<отметка>.lock`.
+    Три исхода (DS r4 I1 по #545): True — замок взят; False — держит другой
+    процесс (демон шлёт разбор, воркер переотправляет после ревизии, чужой
+    воркер платит долг) дольше `wait` секунд; None — замка нет вовсе
+    (каталог не открыть, ФС без flock) — это не «занято», работать без
+    замка, как велит политика file_locks. Замок отпускается закрытием
+    файла; `.lock` не удаляется даже при forget (DS r4 M4: unlink снимает
+    имя, а не flock, и следующий отправитель взял бы новый инод)."""
+    try:
+        mark.parent.mkdir(parents=True, exist_ok=True)
+        f = open(mark.with_suffix(".lock"), "a+", encoding="utf-8")   # noqa: SIM115 — закрывается в with
+    except OSError:
+        yield None
+        return
+    with f:
+        deadline = now() + wait
+        while True:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                yield True
+                return
+            except BlockingIOError:
+                if now() >= deadline:
+                    yield False
+                    return
+                sleep(min(0.2, max(0.0, deadline - now())))
+            except OSError:
+                yield None
+                return
+
+
+def _settle_debt(mark: pathlib.Path) -> None:
+    """Снять долг переотправки рядом с отметкой — состав дошёл целиком."""
+    try:
+        mark.with_suffix(".pending").unlink()
+    except OSError:
+        pass
+
+
+DEBRIEF_NOTE = ("_Черновик локальной модели по стенограмме; сверка ошибок — «Ревизия "
+                "Claude» рядом, если облачная ревизия включена._")
+BRAIN = "http://127.0.0.1:8100"
+# отступ и уровень заголовка — мягко: облако, переформатировав заметку
+# («### Решения», список с отступом), иначе давало «решений нет» и до, и
+# после ревизии — и переотправка молча не срабатывала (DS r1 M3 по #545)
+_DECISION_LINE = re.compile(r"^\s*- 📌\s+(?P<text>.+?)\s*$")
+_DECISIONS_HEAD = re.compile(r"^(?P<hashes>#{2,4})\s*Решения\s*$", re.M)
+_SECTION_HEAD = re.compile(r"^#{2,4}\s+(?P<name>.+?)\s*$")
+_NOTE_TITLE = re.compile(r"^# Встреча \S+(?: — (?P<title>.+))?\s*$", re.M)
+_PERSON_LINK = re.compile(r"\[\[Люди/[^\]|]+\|(?P<name>[^\]]+)\]\]")
+
+
+def note_decisions(text: str) -> list[str]:
+    """Живые решения заметки встречи: строки «- 📌 …» раздела «## Решения».
+    Строка, которую ревизия пометила «- ⛔ …», решением не считается.
+    Раздел закрывает заголовок НЕ глубже своего: «### По бюджету» внутри
+    «## Решения» — подраздел решений, а не конец (DS r2 I2 по #545)."""
+    m = _DECISIONS_HEAD.search(text)
+    if not m:
+        return []
+    body = text[m.end():]
+    nxt = re.compile(r"^#{1,%d}\s" % len(m.group("hashes")), re.M).search(body)
+    section = body[:nxt.start()] if nxt else body
+    return [d.group("text").strip() for ln in section.split("\n") if (d := _DECISION_LINE.match(ln))]
+
+
+def _note_head(text: str) -> tuple[str, list[dict], list[str]]:
+    """(тема, участники, темы) из заметки встречи — то же, что шло в brain
+    из разбора модели, только по факту, а не по гипотезе. Участник — строка
+    «## Участники», начинающаяся ссылкой на человека (после «✅»); строки
+    «упомянуты, отсутствуют» и «не участники» ссылки несут, но участниками
+    не начинаются."""
+    m = _NOTE_TITLE.search(text)
+    title = (m.group("title") or "").strip() if m else ""
+    people: list[dict] = []
+    topics: list[str] = []
+    section = None
+    for ln in text.split("\n"):
+        sm = _SECTION_HEAD.match(ln)      # уровень заголовка — мягко, как у решений (GLM r2 M1)
+        if sm:
+            section = sm.group("name")
+            continue
+        if section == "Участники" and ln.startswith("- "):
+            head = ln[2:].lstrip("✅ ").strip()
+            pm = _PERSON_LINK.match(head)
+            if pm:
+                people.append({"имя": pm.group("name").strip()})
+        elif section == "Темы" and ln.startswith("- "):
+            topics.append(ln[2:].strip())
+    return title, people, topics
+
+
+def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: str,
+                                 mark: pathlib.Path, post=None, *,
+                                 lock_wait: float | None = None) -> str:
+    """Память Чароита после облачной ревизии — по заметке встречи ПОСЛЕ неё.
+
+    Факты уходили в brain в разборе, за двадцать минут до ревизии, и она их
+    не догоняла: на встрече 11.09 ревизия сняла три решения из шести
+    («четвёртый спринт» — третий, «ВВКИ под контролем» — «пробел»), а recall
+    отдавал их как факты (№237). У brain ключа факта нет — только ключ
+    встречи (/forget {"meeting"}), поэтому память не правится по одному, а
+    переотправляется: забыть встречу целиком, прислать шапку и решения
+    заново по заметке. Решения не менялись — ничего не трогаем (облако
+    правит заметку почти каждой встрече, а лишний /forget — лишний холостой
+    ход эмбеддера). Brain лежит — строка в лог, не исключение: ревизия
+    доставлена, память догонит повтор.
+
+    Долг переотправки — файл `<отметка>.pending` рядом с отметкой: здесь он
+    ставится ДО /forget, а снимает его send_to_brain, когда состав дошёл
+    целиком. Сбой между /forget и /remember (brain забыл встречу, а
+    эмбеддер упал — сценарий 20.07) иначе оставлял память встречи пустой
+    навсегда: на следующем проходе заметка уже правлена, «решения те же» —
+    и переотправки нет (DS r1 I3 по #545). С долгом досылает следующая
+    ревизия (полная переотправка) или повтор обработки (недостающее по
+    отметке); долги других встреч гасит любой прогон ревизии — pay_brain_debts."""
+    post = post or requests.post
+    try:
+        after = note.read_text(encoding="utf-8")
+    except OSError as e:
+        return f"память Чароита не переотправлена: заметка не прочитана ({e})"
+    pending = mark.with_suffix(".pending")
+    old, new = note_decisions(note_before), note_decisions(after)
+    if old == new and not pending.exists():
+        return "память Чароита: решения встречи после ревизии те же — без переотправки"
+    with _sender_lock(mark, SEND_LOCK_WAIT if lock_wait is None else lock_wait) as ok:
+        if ok is False:
+            return "память Чароита не переотправлена: факты встречи шлёт другой процесс — позже"
+        try:
+            pending.parent.mkdir(parents=True, exist_ok=True)
+            pending.touch()
+        except OSError:
+            pass
+        try:
+            post(f"{BRAIN}/forget", json={"meeting": stamp}, timeout=15).raise_for_status()
+        except Exception as e:  # noqa: BLE001 — brain выключен: память догонит повтор
+            return f"память Чароита не переотправлена (brain: {e}) — долг записан, догонит следующая ревизия"
+        try:
+            mark.unlink()
+        except OSError:
+            pass
+        title, people, topics = _note_head(after)
+        n = send_to_brain(stamp, title, people, topics, new, mark, post=post, locked=True)
+    dropped = len([d for d in old if d not in new])
+    total = len(_meeting_facts(stamp, title, people, topics, new))
+    if n < total:
+        # долг остаётся: brain уже забыл встречу, а полный состав не дошёл (GLM r1 M5)
+        return (f"память Чароита НЕ переотправлена полностью (ушло {n} из {total}) — "
+                "долг записан, догонит следующая ревизия или повтор обработки")
+    return f"память Чароита переотправлена после ревизии: снято решений {dropped}, ушло фактов {n}"
+
+
+def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, skip: str = "",
+                    limit: int = 3, post=None, now=time.time) -> list[str]:
+    """Долги переотправки других встреч — при любом прогоне ревизии: без
+    этого долг встречи, которую больше не ревизируют и не пересобирают,
+    висел бы невидимо и вечно (GLM r2 M2 и критика по #545). Не больше
+    `limit` за раз (каждый — /forget и до семи эмбеддингов), старейшие
+    первыми; неоплаченный долг сдвигается в конец очереди (DS r3 I3);
+    долг моложе DEBT_MIN_AGE — у живого отправителя, его не трогаем, а
+    замок отправителя не ждём (DS r3 I2, GLM r3 I1). Свою встречу (`skip`)
+    не трогаем: её долг гасит сам прогон. Заметки нет в графе — долг
+    снимается: платить не по чему. Возвращает строки для лога."""
+    ripe: list[tuple[float, pathlib.Path]] = []
+    try:
+        debts = [p for p in sent_dir.glob("*.pending") if p.stem != skip]
+    except OSError as e:
+        return [f"долги памяти не проверены: {e}"]
+    for p in debts:
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue              # оплатил сосед или forget — не наша очередь (DS r4 M2)
+        if float(now()) - mtime >= DEBT_MIN_AGE:
+            ripe.append((mtime, p))
+    out: list[str] = []
+    for _, debt in sorted(ripe)[:limit]:
+        stamp = debt.stem
+        note = graph / "Встречи" / f"{stamp}.md"
+        if not note.is_file():
+            _settle_debt(debt.with_suffix(".txt"))
+            out.append(f"долг памяти {stamp}: заметки встречи в графе нет — снят")
+            continue
+        out.append(f"долг памяти {stamp}: " + resend_to_brain_after_review(
+            stamp, note, "", debt.with_suffix(".txt"), post=post, lock_wait=0.0))
+        if debt.exists():
+            try:
+                debt.touch()          # не оплачен — в конец очереди, слот освобождается
+            except OSError:
+                pass
+    return out
 
 
 def theme_slug(title: str) -> str:
@@ -2019,23 +2264,29 @@ def main():
             gctx_parts.append(m.read_text(encoding="utf-8")[:800])
         gctx = "\n---\n".join(gctx_parts)[:2500]
         _yield_to_live()   # разбор после встречи — тяжёлая модель, живая встреча важнее
+        # Память графа — только чтобы узнавать имена, системы и термины: две
+        # прошлые заметки в промпте давали разбору чужие рекомендации
+        # («повестка 10:33» в разборе встречи 15:33 — ревизия L4 11.09, №241)
         debrief = LLM(cfg).complete(
-            (f"Память прошлых встреч (граф):\n{gctx}\n\n" if gctx else "")
-            + f"Стенограмма встречи:\n{debrief_excerpt(context)}\n\n"
+            (f"Память прошлых встреч (граф) — ТОЛЬКО для узнавания имён, систем и "
+             f"терминов, НЕ источник задач и рекомендаций:\n{gctx}\n\n" if gctx else "")
+            + f"Стенограмма ЭТОЙ встречи:\n{debrief_excerpt(context)}\n\n"
             "Составь разбор строго по разделам:\n"
             "# Разбор встречи\n"
             "## Вопросы встречи и ответы\n(каждый прозвучавший вопрос → ответ, если прозвучал; если нет — «открыт»)\n"
-            "## Задачи\n(список «- **Кто** — что — срок»)\n"
+            "## Задачи\n(список «- **Кто** — что — срок»; только то, что прозвучало на этой встрече)\n"
             "## Возможные решения открытых вопросов\n(варианты с плюсами/минусами, кратко)\n"
-            "## Рекомендации: что проработать до следующей встречи\n(конкретные шаги)",
+            "## Рекомендации: что проработать до следующей встречи\n(конкретные шаги по вопросам ЭТОЙ встречи)",
             system=(
                 # позитивные формулировки вместо «не выдумывай / БЕЗ таблиц»:
                 # локальная модель следует им заметно точнее
                 "Ты аналитик после рабочей встречи. Пиши по-русски, сухо, markdown. "
-                "Опирайся строго на стенограмму и память прошлых встреч; в разделах "
-                "решений и рекомендаций помечай свои варианты словом «предложение». "
-                "Оформляй всё списками «- …» с жирным ключом в начале пункта: "
-                "так документ читается в любом plain-тексте."
+                "Опирайся строго на стенограмму этой встречи; память прошлых встреч "
+                "нужна только чтобы правильно называть людей, системы и термины. "
+                "Задачи, решения и рекомендации бери из того, что прозвучало сегодня; "
+                "в разделах решений и рекомендаций помечай свои варианты словом "
+                "«предложение». Оформляй всё списками «- …» с жирным ключом в начале "
+                "пункта: так документ читается в любом plain-тексте."
             ),
             model=cfg["llm"]["model"],
             think=None,  # умолчание модели, как было до рефакторинга
@@ -2045,7 +2296,10 @@ def main():
         if debrief.strip():
             slug2 = theme_slug(title) if title else ""
             dpath = tpath.with_name(f"{stamp}_{slug2}_разбор.md" if slug2 else f"{stamp}_разбор.md")
-            safe_write.write_text(dpath, f"<!-- {stamp} · {title or 'встреча'} -->\n" + debrief)
+            # шапка честно называет автора: облачная ревизия рядом сверяет и
+            # снимает ошибки, а сам разбор остаётся черновиком (№241)
+            safe_write.write_text(dpath, f"<!-- {stamp} · {title or 'встреча'} -->\n"
+                                  f"{DEBRIEF_NOTE}\n" + debrief)
             print(f"разбор: {dpath.name}")
     except Exception as e:
         print(f"разбор не удался: {e}")
@@ -2380,7 +2634,13 @@ def cloud_enrich_prompt(*, transcript_name: str, folder: pathlib.Path,
         "поручения» (по нему их дописывает в минутки Чароит): каждая строка — "
         "«- [ ] **Имя** — что сделать — срок, если назван»; исполнитель — только "
         "участник встречи, и только то, что прозвучало. Ничего не пропущено — "
-        "этот раздел не пиши.\n")
+        "этот раздел не пиши.\n"
+        "Поручения, которые в минутках ЕСТЬ, а в записи не прозвучали (такого "
+        "исполнителя на встрече нет, срок не назывался, это шутка или пересказ с "
+        "ошибкой), вынеси под заголовком СТРОГО «## Снятые поручения»: каждая "
+        "строка — «- **Имя** — что сделать — причина: …», имя и дело — как в "
+        "минутках, чтобы Чароит нашёл пункт; по этому разделу он перенесёт пункт "
+        "из поручений в «Снято ревизией». Снимать нечего — раздел не пиши.\n")
 
     if not may_edit:
         return head + analysis + (
@@ -2403,7 +2663,10 @@ def cloud_enrich_prompt(*, transcript_name: str, folder: pathlib.Path,
         "перенос ссылок). Если под «## Встречи» или «## Хроника» уже есть строка "
         "с этой же ссылкой на встречу — замени её, не добавляй вторую. Ссылки "
         "[[…]] держи на одной строке. Не выдумывай — только то, что есть в "
-        "стенограммах и графе.\n"
+        "стенограммах и графе. Ошибочное решение в «## Решения» заметки этой "
+        "встречи помечай НА МЕСТЕ: «- 📌 …» → «- ⛔ …» и в конце строки "
+        "« _(ревизия: причина)_»; не удаляй и не переставляй строки — по этой "
+        "пометке Чароит переотправит память встречи без снятых решений.\n"
         "3. Файлы не удаляй и не переименовывай — удаление Чароит просто не "
         "перенесёт в граф. Явный дубль сливай так: факты и ссылки — в канон, а на месте "
         "дубля оставь заглушку «# Имя → [[Папка/Канон]]» с пометкой «Дубль. "
