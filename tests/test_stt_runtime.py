@@ -222,6 +222,11 @@ def test_запись_без_собеседников_липкая_но_не_о�
     assert stt_runtime.is_sticky_status(warn) is True and stt_runtime.is_recording_failure(warn) is False
     assert stt_runtime.is_sticky_status("ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: диск полон") is False
     assert stt_runtime.is_sticky_status("👥 живая диаризация голосов включена") is False
+    # отбой липкого: канал ожил посреди встречи (№232) — снимает, но сам не липкий и не отказ
+    back = f"✅ {stt_runtime.MIC_BACK_NOTICE}: канал собеседников ожил, запись снова полная"
+    assert stt_runtime.is_sticky_clear(back) is True
+    assert stt_runtime.is_sticky_status(back) is False and stt_runtime.is_recording_failure(back) is False
+    assert stt_runtime.is_sticky_clear(warn) is False
 
 
 def test_realtime_factor_turns_milliseconds_into_a_verdict():
