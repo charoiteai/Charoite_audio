@@ -939,9 +939,30 @@ def _run_once(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             print(f"граф занят другим разбором дольше {LOCK_WAIT // 60} мин — "
                   "работаю на чтение")
             may_edit = deliver = False
-        return _run_locked(stamp, transcript, graph, rev, log, cfg,
-                           may_edit=may_edit, graph_available=graph_available,
-                           deliver=deliver, unlock=stack.close)
+        rc = _run_locked(stamp, transcript, graph, rev, log, cfg,
+                         may_edit=may_edit, graph_available=graph_available,
+                         deliver=deliver, unlock=stack.close)
+    if graph_available:
+        _pay_brain_debts(stamp, graph, log)
+    return rc
+
+
+def _pay_brain_debts(stamp: str, graph: pathlib.Path, log: pathlib.Path) -> None:
+    """Долги переотправки памяти ДРУГИХ встреч — после своего прогона и вне
+    замка графа: встречу, которую больше не ревизируют и не пересобирают,
+    иначе никто не догонял (GLM r2 по #545). Только чтение заметок графа и
+    вызовы brain; сбой — строка в лог, не код выхода."""
+    try:
+        lines = graph_updater.pay_brain_debts(graph, ROOT / "logs" / "brain_sent", skip=stamp)
+    except Exception as e:  # noqa: BLE001 — чужие долги не важнее своей ревизии
+        lines = [f"долги памяти других встреч не проверены: {e}"]
+    if not lines:
+        return
+    try:
+        with log.open("a", encoding="utf-8") as lf:
+            lf.writelines(f"[cloud-review] {ln}\n" for ln in lines)
+    except OSError:
+        print("\n".join(lines))
 
 
 def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
@@ -1080,6 +1101,13 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             f"({', '.join(sent)}), {len(context)} знаков, режим {mode}, усилие {effort}"
             + (f", закрыто для записи путей: {len(denied)}" if may_edit else "")
             + (f"; {bad_effort}" if bad_effort else "") + "\n")
+    # Заметка встречи ДО облака: после переноса по ней видно, какие решения
+    # ревизия сняла (⛔ на месте), и память переотправляется без них (№237)
+    note_path = (graph / "Встречи" / f"{stamp}.md") if graph_available and graph is not None else None
+    try:
+        note_before = note_path.read_text(encoding="utf-8") if note_path is not None else ""
+    except OSError:
+        note_before = ""
     t_start = time.monotonic()
     with tmp.open("w", encoding="utf-8") as out, contextlib.ExitStack() as files:
         # .part открывается первым: не откроется — лог и не нужен (и не течёт)
@@ -1208,14 +1236,28 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             try:
                 sufler = cfg.get("sufler") or {}
                 dropped: list[str] = []
-                added = review_bridge.bridge(rev, transcript, owner=str(sufler.get("user_name") or ""),
-                                             lang=str(sufler.get("language") or "ru"), dropped=dropped)
+                owner = str(sufler.get("user_name") or "")
+                lang = str(sufler.get("language") or "ru")
                 verified = "сверено" if (not may_edit or checked) else "БЕЗ сверки графа"
+                rev_text = rev.read_text(encoding="utf-8", errors="replace")
+                has_minutes = review_bridge.minutes_path(transcript).is_file()
+                # Сначала снять ложное, потом дописать восстановленное: если
+                # ревизия заменяет пункт похожим верным, дедуп не должен
+                # принять новый за уже существующий ложный (№238)
+                dropped_w: list[str] = []          # свой список: лог называет раздел (DS r1 M2)
+                withdrawn = review_bridge.withdraw(rev, transcript, owner=owner, lang=lang, dropped=dropped_w)
+                if withdrawn:
+                    lines.append(f"[cloud-review] мост ревизии ({verified}): снято поручений — {withdrawn} "
+                                 f"(перенесены в «{review_bridge.WITHDRAWN_TITLE.get(lang[:2], review_bridge.WITHDRAWN_TITLE['ru'])[3:]}»)\n")
+                elif has_minutes and review_bridge.withdrawn_section_present(rev_text):
+                    lines.append("[cloud-review] мост ревизии: раздел о снятых поручениях есть, "
+                                 "пунктов не извлечено или в минутках их нет\n")
+                added = review_bridge.bridge(rev, transcript, owner=owner, lang=lang, dropped=dropped)
                 if added:
                     lines.append(f"[cloud-review] мост ревизии ({verified}): в минутки дописано поручений — {added}\n")
-                elif not review_bridge.minutes_path(transcript).is_file():
+                elif not has_minutes:
                     lines.append("[cloud-review] мост ревизии: минуток рядом со стенограммой нет\n")
-                elif review_bridge.section_present(rev.read_text(encoding="utf-8", errors="replace")):
+                elif review_bridge.section_present(rev_text):
                     lines.append("[cloud-review] мост ревизии: раздел о восстановленных поручениях есть, "
                                  "пунктов не извлечено или все уже в минутках\n")
                 # Что мост выбросил из раздела — в лог: «нет», комментарии модели,
@@ -1223,16 +1265,31 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 # пустой раздел выглядели одинаково (GLM r4 по #518, критика 1).
                 # Отдельным if ПОСЛЕ цепочки: врезанный в неё, он перехватывал
                 # elif у `if added` — лог врал на каждом чистом прогоне (DS/GLM r1 по #533)
-                if dropped:
-                    shown = "; ".join(s[:80] for s in dropped[:5])
-                    more = "" if len(dropped) <= 5 else f" (и ещё {len(dropped) - 5})"
-                    lines.append(f"[cloud-review] мост ревизии: отброшено строк раздела — {len(dropped)}: {shown}{more}\n")
+                for what, junk in (("восстановленных", dropped), ("снятых", dropped_w)):
+                    if junk:
+                        shown = "; ".join(s[:80] for s in junk[:5])
+                        more = "" if len(junk) <= 5 else f" (и ещё {len(junk) - 5})"
+                        lines.append(f"[cloud-review] мост ревизии: отброшено строк раздела {what} — {len(junk)}: {shown}{more}\n")
             except Exception as e:  # noqa: BLE001 — мост не важнее самой ревизии
                 lines.append(f"[cloud-review] мост ревизии не сработал: {e}\n")
         if published and deliver and (not may_edit or checked):
             buf = io.StringIO()
             deliver_review(rev, transcript, graph, stamp, buf)
             lines.append(buf.getvalue())
+        # Память — по заметке после переноса правок облака: снятые ⛔ решения
+        # в brain не остаются (№237). Сверка (checked) гейтом не стоит:
+        # перенос пофайловый, и заметка с ⛔ может лежать в графе при упавшем
+        # соседнем файле — сама функция сравнивает решения до и после, без
+        # переноса они те же (GLM r1 I2 по #545). Без права правки графа
+        # (may_edit) заметка не трогается — brain и граф согласны, пусть и
+        # с ошибочным решением: граф здесь источник, а не ревизия.
+        if published and may_edit and note_path is not None:
+            try:
+                mark = ROOT / "logs" / "brain_sent" / f"{stamp}.txt"
+                lines.append("[cloud-review] " + graph_updater.resend_to_brain_after_review(
+                    stamp, note_path, note_before, mark) + "\n")
+            except Exception as e:  # noqa: BLE001 — память не важнее ревизии
+                lines.append(f"[cloud-review] память Чароита не переотправлена: {e}\n")
         try:
             with log.open("a", encoding="utf-8") as lf:
                 lf.writelines(lines)

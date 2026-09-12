@@ -679,9 +679,11 @@ def test_forget_reaches_the_brain_by_key_and_reports_when_it_is_down(tmp_path, m
     sent_dir.mkdir(parents=True, exist_ok=True)
     mark = sent_dir / f"{STAMP}.txt"
     mark.write_text("тема\n", encoding="utf-8")
+    debt = sent_dir / f"{STAMP}.pending"       # долг переотправки после ревизии (№237)
+    debt.touch()
 
     plan = forget.plan(STAMP, root, graph)
-    assert mark in plan.delete
+    assert mark in plan.delete and debt in plan.delete
     assert plan.brain_keys == [STAMP]
     assert not any("brain" in line for line in plan.beyond_reach)
 

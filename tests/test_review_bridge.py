@@ -268,10 +268,210 @@ def test_legacy_section_title_is_reused_not_duplicated():
     assert rb.section_present("## Восстановленные поручения\n- x")
 
 
+WITHDRAWING = """# Ревизия
+## Ошибки минуток
+- ⛔ «Мария — пересчитать оценки по проекту — к 25.09» — Марии на встрече нет.
+## Снятые поручения
+- **Мария** — пересчитать оценки по проекту, отчёт по срокам — причина: Марии на встрече нет, даты 25.09 в записи нет
+- **Пётр** — согласовать план релиза и бюджет — причина: срока нет, уходит в отпуск
+- **Пётр** — собрать примеры вопросов
+нет
+## Восстановленные поручения
+- [ ] **Иван** — прислать сводку по плану
+"""
+
+MINUTES_FALSE = """# Минутки
+## Поручения
+- [ ] **Мария** — пересчитать оценки по проекту, отчёт по срокам — к 25.09
+- [ ] **Петру** — согласовать план релиза и бюджет — до конца недели
+- [x] **Пётр** — собрать примеры вопросов для теста
+- [ ] **Анна** — исключить Ольгу из рабочей группы
+
+## Открытые вопросы
+- Кто ведёт протокол дальше?
+"""
+
+
+def test_withdrawn_items_parse_reason_and_only_the_strict_section():
+    dropped: list[str] = []
+    items = rb.withdrawn_items(WITHDRAWING, dropped=dropped)
+    assert items[0] == ("**Мария** — пересчитать оценки по проекту, отчёт по срокам", "Марии на встрече нет, даты 25.09 в записи нет")
+    assert items[1][1] == "срока нет, уходит в отпуск" and items[2] == ("**Пётр** — собрать примеры вопросов", "")
+    assert len(items) == 3 and dropped == ["нет"], "восстановленные — другой раздел, «нет» — шум"
+    assert rb.withdrawn_items("## Восстановленные поручения\n- [ ] **Иван** — x\n") == []
+
+
+def test_withdraw_moves_false_items_out_of_tasks_but_not_out_of_minutes():
+    """№238: снятый пункт исчезает из раздела поручений (его читает вкладка
+    «Задачи»), но остаётся в минутках зачёркнутым с причиной; выполненный
+    человеком «[x]» не снимается; исполнитель в другом падеже — тот же."""
+    text, moved = rb.withdraw_from_minutes(MINUTES_FALSE, rb.withdrawn_items(WITHDRAWING), owner="Владелец")
+    assert moved == 2, text
+    tasks = text.split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
+    assert "Мария" not in tasks and "Петру" not in tasks
+    assert "- [x] **Пётр** — собрать примеры вопросов для теста" in tasks, "сделанное человеком — факт, не пересказ"
+    assert "- [ ] **Анна** — исключить Ольгу из рабочей группы" in tasks
+    gone = text.split("## Снято ревизией\n", 1)[1].split("\n## ", 1)[0]
+    assert "- ~~**Мария** — пересчитать оценки по проекту, отчёт по срокам — к 25.09~~ _(снято ревизией: Марии на встрече нет, даты 25.09 в записи нет)_" in gone
+    assert "- ~~**Петру** — согласовать план релиза и бюджет — до конца недели~~ _(снято ревизией: срока нет, уходит в отпуск)_" in gone
+    assert text.index("## Поручения") < text.index("## Снято ревизией") < text.index("## Открытые вопросы")
+    # идемпотентно: второй проход ничего не находит и не дублирует раздел
+    again, moved2 = rb.withdraw_from_minutes(text, rb.withdrawn_items(WITHDRAWING), owner="Владелец")
+    assert moved2 == 0 and again == text
+    # раздел уже есть — новая ревизия дописывает в него, а не заводит второй
+    more, moved3 = rb.withdraw_from_minutes(text, [("**Анна** — исключить Ольгу из рабочей группы", "говорила Анна, поручения не было")])
+    assert moved3 == 1 and more.count("## Снято ревизией") == 1 and "**Анна** — исключить" in more.split("## Снято ревизией\n", 1)[1]
+    # без раздела поручений и без пунктов — минутки те же
+    assert rb.withdraw_from_minutes("# Минутки\n## Темы\n- a\n", rb.withdrawn_items(WITHDRAWING)) == ("# Минутки\n## Темы\n- a\n", 0)
+    assert rb.withdraw_from_minutes(MINUTES_FALSE, []) == (MINUTES_FALSE, 0)
+    # английские минутки — свой заголовок и пометка
+    en, n = rb.withdraw_from_minutes("# Minutes\n## Action items\n- [ ] **Ann** — send the report\n",
+                                     [("**Ann** — send the report", "not said")], lang="en")
+    assert n == 1 and "## Withdrawn by the review\n- ~~**Ann** — send the report~~ _(withdrawn by the review: not said)_" in en
+
+
+def test_withdrawal_is_one_to_one_and_does_not_guess_between_brothers():
+    """DS r1 Critical по #545: один снятый пункт снимал все похожие строки
+    минуток; GLM r1 I1: одно общее слово дела снимало любой пункт человека
+    в другом падеже. Теперь: подходит к нескольким — не гадаем, точная
+    строка среди похожих — ровно она, однословное дело — по Жаккару."""
+    minutes = ("# Минутки\n## Поручения\n"
+               "- [ ] **Иван** — подготовить отчёт по бюджету\n"
+               "- [ ] **Иван** — подготовить отчёт по срокам\n"
+               "- [ ] **Сергей** — позвонить в банк\n"
+               "- [ ] **Сергей** — позвонить юристу\n"
+               "- [ ] **Сергей** — позвонить\n")
+    dropped: list[str] = []
+    text, moved = rb.withdraw_from_minutes(minutes, [("**Иван** — подготовить отчёт", "шутка")], dropped=dropped)
+    assert (moved, text) == (0, minutes)
+    assert dropped == ["снятие «**Иван** — подготовить отчёт» подходит к 2 пунктам минуток — не гадаем, оставлены"]
+    text, moved = rb.withdraw_from_minutes(minutes, [("**Сергею** — позвонить", "шутка")])
+    assert moved == 1 and "- ~~**Сергей** — позвонить~~ _(снято ревизией: шутка)_" in text
+    tasks = text.split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
+    assert "позвонить в банк" in tasks and "позвонить юристу" in tasks, "одно общее слово — не то же дело"
+    both = minutes + "- [ ] **Иван** — подготовить отчёт\n"
+    text, moved = rb.withdraw_from_minutes(both, [("**Иван** — подготовить отчёт", "шутка")])
+    tasks = text.split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
+    assert moved == 1 and "по бюджету" in tasks and "по срокам" in tasks and "- [ ] **Иван** — подготовить отчёт\n" not in tasks + "\n"
+    # две причины на одну строку — снимается один раз, с первой
+    text, moved = rb.withdraw_from_minutes(minutes, [("**Сергею** — позвонить", "раз"), ("**Сергей** — позвонить", "два")])
+    assert moved == 1 and text.count("~~") == 2 and "(снято ревизией: раз)" in text
+
+
+def test_withdrawn_item_takes_its_wrapped_lines_along():
+    """DS r1 I2, GLM r1 M3 по #545: перенос пункта на вторую строку уезжает
+    вместе с ним — в «Поручениях» не остаётся сироты без исполнителя, в
+    зачёркнутом тексте не теряется хвост."""
+    minutes = ("# Минутки\n## Поручения\n"
+               "- [ ] **Мария** — пересчитать оценки по проекту,\n"
+               "  отчёт по срокам — к 25.09\n"
+               "- [ ] **Анна** — исключить Ольгу из рабочей группы\n\n"
+               "## Открытые вопросы\n- Кто ведёт протокол дальше?\n")
+    text, moved = rb.withdraw_from_minutes(minutes, [("**Мария** — пересчитать оценки по проекту, отчёт по срокам", "Марии нет")])
+    assert moved == 1, text
+    tasks = text.split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
+    assert tasks.strip() == "- [ ] **Анна** — исключить Ольгу из рабочей группы", tasks
+    assert "- ~~**Мария** — пересчитать оценки по проекту, отчёт по срокам — к 25.09~~ _(снято ревизией: Марии нет)_" in text
+    assert rb._continuation("  отчёт по срокам") and not rb._continuation("- [ ] x") \
+        and not rb._continuation("**Пётр** — свой пункт") and not rb._continuation("**Срок**") and not rb._continuation("  ")
+
+
+def test_two_word_owner_is_compared_in_one_canon_on_both_sides(tmp_path):
+    """DS r2 Critical, GLM r2 I1 по #545: у владельца «Иван Орлов» строка
+    минуток сводилась к «**Иван**», а пункт ревизии оставался «**Иван
+    Орлов**» — снятие не срабатывало никогда, восстановление давало дубль."""
+    minutes = "## Поручения\n- [ ] **Иван Орлов** — подготовить отчёт по бюджету\n"
+    assert rb.withdraw_from_minutes(minutes, [("**Иван Орлов** — подготовить отчёт по бюджету", "не прозвучало")],
+                                    owner="Иван Орлов")[1] == 0, "сама функция ждёт пункт в каноне минуток"
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    transcript = tdir / "2026-09-11_1533_Планёрка.md"
+    transcript.write_text("# Встреча\n\n**Иван Орлов** [15:33]: начнём\n", encoding="utf-8")
+    mpath = tdir / "2026-09-11_1533_Планёрка_minutes.md"
+    mpath.write_text("# Минутки\n" + minutes + "- [ ] **Иван Орлов** — согласовать план\n", encoding="utf-8")
+    review = tdir / "2026-09-11_1533_Планёрка_ревизия_claude.md"
+    review.write_text("# Ревизия\n## Снятые поручения\n- **Иван Орлов** — подготовить отчёт по бюджету — причина: не прозвучало\n"
+                      "## Восстановленные поручения\n- [ ] **Иван Орлов** — согласовать план\n"
+                      "- [ ] **Иван Орлов** — позвонить юристу\n", encoding="utf-8")
+    assert rb.withdraw(review, transcript, owner="Иван Орлов") == 1
+    assert rb.bridge(review, transcript, owner="Иван Орлов") == 1, "«согласовать план» уже есть — не дубль"
+    text = mpath.read_text(encoding="utf-8")
+    tasks = text.split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
+    assert tasks.strip() == ("- [ ] **Иван Орлов** — согласовать план\n"
+                             "- [ ] **Иван Орлов** — позвонить юристу (из ревизии)"), text
+    assert "~~**Иван Орлов** — подготовить отчёт по бюджету~~" in text, "в минутках — как было написано, не первое слово"
+
+
+def test_blank_line_inside_a_wrapped_item_does_not_orphan_its_tail():
+    """DS r2 M4 по #545: перенос через пустую строку — тоже хвост пункта."""
+    minutes = "## Поручения\n- [ ] **Мария** — пересчитать оценки,\n\n  отчёт по срокам к 25.09\n- [ ] **Анна** — x\n"
+    text, moved = rb.withdraw_from_minutes(minutes, [("**Мария** — пересчитать оценки", "нет на встрече")])
+    assert moved == 1
+    tasks = text.split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
+    assert tasks.strip() == "- [ ] **Анна** — x", tasks
+    assert "- ~~**Мария** — пересчитать оценки, отчёт по срокам к 25.09~~" in text
+    # абзац прозы после пустой строки — не хвост пункта (DS r3 M5): без отступа остаётся
+    prose = "## Поручения\n- [ ] **Мария** — пересчитать оценки\n\nСроки уточняются.\n"
+    text, moved = rb.withdraw_from_minutes(prose, [("**Мария** — пересчитать оценки", "")])
+    assert moved == 1 and "Сроки уточняются." in text.split("## Снято ревизией", 1)[0] and "~~**Мария** — пересчитать оценки~~" in text
+
+
+def test_review_items_are_deduped_among_themselves_in_the_owner_canon():
+    """GLM r3 M2 по #545: «**Иван Орлов** — X» и «**Иван** — X» в одной ревизии — один пункт."""
+    text, n = rb.merge_into_minutes("## Поручения\n- [ ] **Анна** — y\n",
+                                    ["**Иван Орлов** — позвонить юристу", "**Иван** — позвонить юристу"], owner="Иван Орлов")
+    assert n == 1 and text.count("позвонить юристу") == 1
+
+
+def test_existing_withdrawn_section_dedups_only_within_itself():
+    """GLM r1 M6 по #545: ключи дедупа — из своего раздела, а не до конца файла."""
+    minutes = ("# Минутки\n## Поручения\n- [ ] **Анна** — исключить Ольгу из рабочей группы\n\n"
+               "## Снято ревизией\n- ~~**Пётр** — старое~~ _(снято ревизией: x)_\n\n"
+               "## Открытые вопросы\n- ~~**Анна** — исключить Ольгу из рабочей группы~~ _(снято ревизией: y)_\n")
+    text, moved = rb.withdraw_from_minutes(minutes, [("**Анна** — исключить Ольгу из рабочей группы", "y")])
+    assert moved == 1
+    gone = text.split("## Снято ревизией\n", 1)[1].split("\n## ", 1)[0]
+    assert "**Анна** — исключить" in gone and "**Пётр** — старое" in gone
+    assert text.count("**Анна** — исключить Ольгу из рабочей группы~~") == 2, "чужой раздел не глушит перенос"
+
+
+def test_withdrawn_section_present_mirrors_the_recovered_check():
+    assert rb.withdrawn_section_present("## Снятые поручения (проверка)\n- x")
+    assert rb.withdrawn_section_present("**Снятые поручения:**")
+    assert not rb.withdrawn_section_present("## Восстановленные поручения\n- x")
+    assert not rb.withdrawn_section_present("в записи снятых поручений нет")
+
+
+def test_withdraw_then_bridge_on_disk_keeps_the_verified_item(tmp_path):
+    """Снятие идёт до дописывания: ревизия снимает ложный пункт и
+    восстанавливает верный похожий — верный не должен погибнуть в дедупе
+    против ложного."""
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    transcript = tdir / "2026-09-11_1533_Планёрка.md"
+    transcript.write_text("# Встреча\n\nУчастники (звучали в разговоре): Олег, Анна, Иван\n\n**Олег** [15:33]: начнём\n",
+                          encoding="utf-8")
+    minutes = tdir / "2026-09-11_1533_Планёрка_minutes.md"
+    minutes.write_text("# Минутки\n## Поручения\n- [ ] **Иван** — прислать сводку по плану к пятнице\n", encoding="utf-8")
+    review = tdir / "2026-09-11_1533_Планёрка_ревизия_claude.md"
+    review.write_text("# Ревизия\n## Снятые поручения\n- **Иван** — прислать сводку по плану к пятнице — причина: срока не было\n"
+                      "## Восстановленные поручения\n- [ ] **Иван** — прислать сводку по плану\n", encoding="utf-8")
+    assert rb.withdraw(review, transcript, owner="Владелец") == 1
+    assert rb.bridge(review, transcript, owner="Владелец") == 1
+    text = minutes.read_text(encoding="utf-8")
+    tasks = text.split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
+    assert tasks.strip() == "- [ ] **Иван** — прислать сводку по плану (из ревизии)", text
+    assert "~~**Иван** — прислать сводку по плану к пятнице~~ _(снято ревизией: срока не было)_" in text
+
+
 def test_l4_prompt_names_the_strict_section():
     prompt = graph_updater.cloud_enrich_prompt(transcript_name="x.md", folder=Path("."), graph=Path("."),
                                                rev_name="r.md", stamp="2026-09-05_1413", may_edit=False, context="")
     assert "## Восстановленные поручения" in prompt and "- [ ] **Имя** — что сделать" in prompt
+    assert "## Снятые поручения" in prompt and "— причина: …" in prompt, "снятие — тот же строгий контракт (№238)"
+    editing = graph_updater.cloud_enrich_prompt(transcript_name="x.md", folder=Path("."), graph=Path("."),
+                                                rev_name="r.md", stamp="2026-09-05_1413", may_edit=True, context="")
+    assert "«- 📌 …» → «- ⛔ …»" in editing and "не удаляй и не переставляй" in editing, "решения помечаются на месте (№237)"
 
 
 def test_classify_line_table():
