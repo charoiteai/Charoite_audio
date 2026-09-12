@@ -79,7 +79,7 @@ stdout（`{"type": "transcript"|"thesis"|"hint"|…}`）；命令从 stdin 传�
 4. 可选：云端 Claude 将会议纪要与逐字稿交叉核对，并为图谱补充只有
    从历史视角才能看到的链接。
 
-每个阶段都会原子写入 `logs/meeting-status/`：macOS 应用显示真实处理进度，
+每个阶段都会原子写入 `logs/meeting-status/`：macOS 应用显示真实处理进度，云端审阅阶段（进行中、重试、完成、失败）作为 `review` 字段写入同一状态而不改变就绪状态，
 失败时保留指向原始逐字稿的路径，并且只在精确的会议笔记实际生成后通知完成。
 
 ## 知识图谱（一个 Obsidian 文件夹）

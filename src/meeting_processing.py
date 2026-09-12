@@ -254,6 +254,22 @@ class MeetingStatusStore:
             payload["names_pending"] = True
         return self._write(transcript, payload)
 
+    def review(self, transcript: pathlib.Path, state: str, note: str = "") -> pathlib.Path | None:
+        """Этап облачной ревизии — поле `review` поверх статуса, state и stage
+        не трогаем: ревизия идёт отдельным воркером ПОСЛЕ «готово», и
+        приложение показывало «готово» при идущей, повторяемой или упавшей
+        ревизии (№240). `state` — running | retrying | ok | failed, `note` —
+        последняя строка её лога. Статуса ещё нет (воркер запущен руками до
+        разбора) — не заводим: запись без stage читалась бы как битая.
+        `updated_at` самого статуса не сдвигается — по нему судят
+        `unfinished` и `busy`, а ревизия не обработка."""
+        transcript = pathlib.Path(transcript)
+        current = self._read(transcript)
+        if not current:
+            return None
+        current["review"] = {"state": state, "note": str(note)[:300], "updated_at": float(self._now())}
+        return self._write(transcript, current)
+
     def failed(self, transcript: pathlib.Path, error: object) -> pathlib.Path:
         transcript = pathlib.Path(transcript)
         current = self._read(transcript)

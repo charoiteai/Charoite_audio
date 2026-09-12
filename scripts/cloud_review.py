@@ -59,6 +59,7 @@ import graph_updater
 import graph_links  # noqa: E402
 import review_bridge  # noqa: E402
 import privacy  # noqa: E402
+import live_gate  # noqa: E402
 
 BACKUP_DIR = ".cloud_backup"
 # Снимков держим ровно один — срез ТЕКУЩЕЙ правки (решение владельца 21.08:
@@ -76,6 +77,14 @@ MIN_REPORT = 60             # страховка от «ok» и пустой с�
 # первого, а не ротирует его снимок; не дождался — работает на чтение.
 LOCK_WAIT = TIMEOUT + 5 * 60
 LOCK_POLL = 5
+# Один повтор через десять минут, когда упал сам запуск или оборвался ответ:
+# 10.09 «claude: Permission denied» во время обновления CLI и код 1 с
+# обрывком в 148 знаков после 18 минут — оба прошли бы со второй попытки, а
+# единственным путём был «Повторить обработку» со всей пересборкой (№240).
+# Таймаут не повторяем: контекст тот же, потолок тот же — упрётся снова.
+RETRY_DELAY = 10 * 60
+RC_OK, RC_ERROR, RC_CLI, RC_TIMEOUT = 0, 1, 3, 4
+_sleep = time.sleep                 # подменяется тестами
 # Карантин: всё, что сверка убирает из графа, сначала копируется сюда —
 # unlink'а у сверки больше нет (карточки №40 и №88). Держим десять последних.
 QUARANTINE_KIND = "cloud_quarantine"
@@ -826,8 +835,50 @@ def deliver_review(rev: pathlib.Path, transcript: pathlib.Path, graph: pathlib.P
         lf.write(f"[cloud-review] ревизия не доставлена в архив: {e}\n")
 
 
+def _log_line(log: pathlib.Path, line: str) -> None:
+    """Строка в лог ревизии, best-effort: лог — не гейт для работы."""
+    try:
+        with log.open("a", encoding="utf-8") as lf:
+            lf.write(f"[cloud-review] {line}\n")
+    except OSError:
+        print(f"[cloud-review] {line}")
+
+
+def _review_stage(transcript: pathlib.Path, state: str, note: str = "") -> None:
+    """Этап ревизии в статусе встречи: приложение видело «готово» при идущей
+    или упавшей ревизии (№240). Статуса нет — не заводим; сбой — не гейт."""
+    try:
+        from meeting_processing import MeetingStatusStore
+        MeetingStatusStore(ROOT).review(transcript, state, note)
+    except Exception as e:  # noqa: BLE001 — статус вторичен, ревизия важнее
+        print(f"статус этапа ревизии не записан: {e}")
+
+
 def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
-        rev: pathlib.Path, log: pathlib.Path, cfg: dict) -> int:
+        rev: pathlib.Path, log: pathlib.Path, cfg: dict, attempt: int = 1) -> int:
+    """Один разбор — и один повтор, если упал сам запуск CLI или оборвался
+    ответ (RC_CLI): пауза RETRY_DELAY, не под живой встречей, замок графа
+    берётся заново. Таймаут (RC_TIMEOUT) и несверенный перенос (RC_ERROR)
+    не повторяются — там повтор бьёт в тот же потолок или в чужую работу."""
+    rc = _run_once(stamp, transcript, graph, rev, log, cfg)
+    if rc == RC_CLI and attempt == 1:
+        _log_line(log, f"повтор ревизии через {RETRY_DELAY // 60} мин: CLI не запустился "
+                       "или ответ оборван — попытка 2 из 2")
+        _review_stage(transcript, "retrying", "повтор через десять минут")
+        _sleep(RETRY_DELAY)
+        live_gate.wait_while_live(ROOT, log=lambda s: _log_line(log, s), what="повтор ревизии")
+        return run(stamp, transcript, graph, rev, log, cfg, attempt=2)
+    if rc == RC_CLI:
+        _log_line(log, "повтор не помог — ревизии нет; «Повторить обработку» в приложении "
+                       "или запуск scripts/cloud_review.py руками")
+    elif rc == RC_TIMEOUT:
+        _log_line(log, "таймаут — повтор не поможет: тот же контекст упрётся в тот же потолок; "
+                       "сократить усилие (sufler.cloud_effort) или разбить встречу")
+    return rc
+
+
+def _run_once(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
+              rev: pathlib.Path, log: pathlib.Path, cfg: dict) -> int:
     # Разрешение спрашиваем ЗДЕСЬ, а не полагаемся на вызывающего: воркер —
     # отдельный процесс, и запустить его можно руками. Рубильник
     # CHAROITE_NO_CLOUD действует и на этом пути.
@@ -1021,6 +1072,8 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             lf = files.enter_context(open(os.devnull, "w", encoding="utf-8"))
         lf.write(head)
         lf.flush()
+        _review_stage(transcript, "running", head.strip())
+        timed_out = False
         try:
             code = subprocess.run(cmd, cwd=str(work_dir), env=env,
                                   stdin=subprocess.DEVNULL, stdout=out, stderr=lf,
@@ -1028,6 +1081,7 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         except subprocess.TimeoutExpired:
             lf.write(f"[cloud-review] таймаут {TIMEOUT}с — разбор прерван\n")
             code = -1
+            timed_out = True
         except OSError as e:
             # CLI не установлен/PATH пуст/нет прав: ENOENT улетал наверх МИМО
             # finally со сверкой и ротацией — снимок оставался сиротой, лог
@@ -1170,8 +1224,18 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             rotate_snapshots(backup_root(graph),
                              *(p for p in (backup, cloud_pen) if p))
     if may_edit and backup is not None and not checked:
-        return 1                   # ревизия, может, и есть, но граф не сверен
-    return 0 if published else 1
+        _review_stage(transcript, "failed", "перенос правок не сверен")
+        return RC_ERROR            # ревизия, может, и есть, но граф не сверен
+    if published:
+        _review_stage(transcript, "ok", next((ln.strip() for ln in lines if "правок облака" in ln), lines[0].strip() if lines else ""))
+        return RC_OK
+    _review_stage(transcript, "failed", lines[0].strip() if lines else "ревизия не сохранена")
+    if timed_out:
+        return RC_TIMEOUT
+    # Повторяем только упавший ПРОЦЕСС (не запустился, ненулевой код —
+    # сеть, лимит, обновление CLI); ответ с кодом 0, но не похожий на
+    # ревизию, — не сбой запуска, а ответ модели, и второй заход даст тот же
+    return RC_CLI if code != 0 else RC_ERROR
 
 
 def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:

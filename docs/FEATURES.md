@@ -586,7 +586,11 @@ it signals degradation, it does not break the loop.
   file". When a cloud review ran for the meeting, the card honestly shows
   its outcome from the log: "N graph edits", with an unsaved review file
   highlighted — before, the review worked invisibly and its edits were
-  only discoverable in the logs. Action items the review recovers from
+  only discoverable in the logs. A review whose CLI failed to start or whose
+  answer broke off retries itself once — ten minutes later and not during a
+  live meeting; a timeout is not retried. Its stage (running, retrying, ok,
+  failed) lives in the meeting status as the `review` field without moving
+  readiness. Action items the review recovers from
   the transcript (its strict "Recovered action items" section) are
   appended to the minutes as checkboxes marked "(from the review)" before
   the archive is refreshed, so the Tasks tab sees them; an item the

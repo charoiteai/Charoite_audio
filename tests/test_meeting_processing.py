@@ -450,3 +450,24 @@ def test_infinite_numbers_in_a_status_are_treated_as_corrupt(tmp_path):
     store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
     assert store.busy() == []
     assert store.unfinished() == []
+
+
+def test_review_stage_rides_on_top_of_the_status_without_moving_readiness(tmp_path):
+    """№240: этап облачной ревизии — поле `review` в статусе встречи; state,
+    stage и updated_at готовности не сдвигаются (по ним судят unfinished и
+    busy); без статуса запись не заводится."""
+    live = _transcript(tmp_path)
+    ticks = [100.0, 120.0, 130.0, 140.0]
+    store = MeetingStatusStore(tmp_path, now=lambda: ticks.pop(0) if ticks else 200.0)
+    assert store.review(live, "running") is None and not list((tmp_path / "logs").glob("**/*.json")), \
+        "воркер, запущенный до разбора, статус не выдумывает"
+    store.processing(live, "updating_graph")
+    path = store.ready(live, note=None)
+    store.review(live, "running", "файлов в запросе 4")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["state"] == "ready" and data["stage"] == "complete" and data["updated_at"] == 120.0
+    assert data["review"] == {"state": "running", "note": "файлов в запросе 4", "updated_at": 130.0}
+    store.review(live, "failed", "x" * 500)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["review"]["state"] == "failed" and len(data["review"]["note"]) == 300
+    assert store.unfinished() == [] and store.busy() == [], "ревизия — не обработка"
