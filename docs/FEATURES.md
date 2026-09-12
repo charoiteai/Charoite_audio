@@ -123,7 +123,11 @@
    with a ✔ mark when the surrounding words match the node's `отдел:`
    field or body, so confirming a new alias is one edit in the node.
 2. **Graph update** — entities (People/Systems), decisions, action items,
-   Cores with status + chronicle; a meeting note with wiki-links.
+   Cores with status + chronicle; a meeting note with wiki-links. A
+   person's or system's description is a dated fact too: a substantially
+   new one replaces it, and the old wording stays in the node's chronicle
+   as "was … → now …, date" — a rephrasing of the same thing is not a new
+   fact.
 3. **Meeting archive** — a "date — title" folder with every document and a
    link that opens the graph in Obsidian.
 4. **Summary** — a one-minute read: bottom line up front → topics →
