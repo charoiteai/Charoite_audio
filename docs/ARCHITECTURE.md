@@ -280,7 +280,12 @@ code path is shared.
    historical context (Cores + two previous summaries; the future never
    leaks into the past — cut off by meeting date).
 4. Optionally the cloud Claude cross-checks minutes against the transcript
-   and enriches the graph with links visible only from history.
+   and enriches the graph with links visible only from history. What the
+   review refutes does not live on: withdrawn action items move from the
+   minutes' tasks into "Withdrawn by the review" with the reason, wrong
+   decisions in the note are marked ⛔ in place, and Charoite's memory of the
+   meeting is resent without them (facts used to reach memory before the
+   review, and the review never caught up with them).
 
 Each phase is published atomically under `logs/meeting-status/`: the macOS
 app shows real progress, keeps failures linked to the source transcript, and

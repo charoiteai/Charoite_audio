@@ -268,10 +268,98 @@ def test_legacy_section_title_is_reused_not_duplicated():
     assert rb.section_present("## Восстановленные поручения\n- x")
 
 
+WITHDRAWING = """# Ревизия
+## Ошибки минуток
+- ⛔ «Мария — пересчитать оценки по проекту — к 25.09» — Марии на встрече нет.
+## Снятые поручения
+- **Мария** — пересчитать оценки по проекту, отчёт по срокам — причина: Марии на встрече нет, даты 25.09 в записи нет
+- **Пётр** — согласовать план релиза и бюджет — причина: срока нет, уходит в отпуск
+- **Пётр** — собрать примеры вопросов
+нет
+## Восстановленные поручения
+- [ ] **Иван** — прислать сводку по плану
+"""
+
+MINUTES_FALSE = """# Минутки
+## Поручения
+- [ ] **Мария** — пересчитать оценки по проекту, отчёт по срокам — к 25.09
+- [ ] **Петру** — согласовать план релиза и бюджет — до конца недели
+- [x] **Пётр** — собрать примеры вопросов для теста
+- [ ] **Анна** — исключить Ольгу из рабочей группы
+
+## Открытые вопросы
+- Кто ведёт протокол дальше?
+"""
+
+
+def test_withdrawn_items_parse_reason_and_only_the_strict_section():
+    dropped: list[str] = []
+    items = rb.withdrawn_items(WITHDRAWING, dropped=dropped)
+    assert items[0] == ("**Мария** — пересчитать оценки по проекту, отчёт по срокам", "Марии на встрече нет, даты 25.09 в записи нет")
+    assert items[1][1] == "срока нет, уходит в отпуск" and items[2] == ("**Пётр** — собрать примеры вопросов", "")
+    assert len(items) == 3 and dropped == ["нет"], "восстановленные — другой раздел, «нет» — шум"
+    assert rb.withdrawn_items("## Восстановленные поручения\n- [ ] **Иван** — x\n") == []
+
+
+def test_withdraw_moves_false_items_out_of_tasks_but_not_out_of_minutes():
+    """№238: снятый пункт исчезает из раздела поручений (его читает вкладка
+    «Задачи»), но остаётся в минутках зачёркнутым с причиной; выполненный
+    человеком «[x]» не снимается; исполнитель в другом падеже — тот же."""
+    text, moved = rb.withdraw_from_minutes(MINUTES_FALSE, rb.withdrawn_items(WITHDRAWING), owner="Владелец")
+    assert moved == 2, text
+    tasks = text.split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
+    assert "Мария" not in tasks and "Петру" not in tasks
+    assert "- [x] **Пётр** — собрать примеры вопросов для теста" in tasks, "сделанное человеком — факт, не пересказ"
+    assert "- [ ] **Анна** — исключить Ольгу из рабочей группы" in tasks
+    gone = text.split("## Снято ревизией\n", 1)[1].split("\n## ", 1)[0]
+    assert "- ~~**Мария** — пересчитать оценки по проекту, отчёт по срокам — к 25.09~~ _(снято ревизией: Марии на встрече нет, даты 25.09 в записи нет)_" in gone
+    assert "- ~~**Петру** — согласовать план релиза и бюджет — до конца недели~~ _(снято ревизией: срока нет, уходит в отпуск)_" in gone
+    assert text.index("## Поручения") < text.index("## Снято ревизией") < text.index("## Открытые вопросы")
+    # идемпотентно: второй проход ничего не находит и не дублирует раздел
+    again, moved2 = rb.withdraw_from_minutes(text, rb.withdrawn_items(WITHDRAWING), owner="Владелец")
+    assert moved2 == 0 and again == text
+    # раздел уже есть — новая ревизия дописывает в него, а не заводит второй
+    more, moved3 = rb.withdraw_from_minutes(text, [("**Анна** — исключить Ольгу из рабочей группы", "говорила Анна, поручения не было")])
+    assert moved3 == 1 and more.count("## Снято ревизией") == 1 and "**Анна** — исключить" in more.split("## Снято ревизией\n", 1)[1]
+    # без раздела поручений и без пунктов — минутки те же
+    assert rb.withdraw_from_minutes("# Минутки\n## Темы\n- a\n", rb.withdrawn_items(WITHDRAWING)) == ("# Минутки\n## Темы\n- a\n", 0)
+    assert rb.withdraw_from_minutes(MINUTES_FALSE, []) == (MINUTES_FALSE, 0)
+    # английские минутки — свой заголовок и пометка
+    en, n = rb.withdraw_from_minutes("# Minutes\n## Action items\n- [ ] **Ann** — send the report\n",
+                                     [("**Ann** — send the report", "not said")], lang="en")
+    assert n == 1 and "## Withdrawn by the review\n- ~~**Ann** — send the report~~ _(withdrawn by the review: not said)_" in en
+
+
+def test_withdraw_then_bridge_on_disk_keeps_the_verified_item(tmp_path):
+    """Снятие идёт до дописывания: ревизия снимает ложный пункт и
+    восстанавливает верный похожий — верный не должен погибнуть в дедупе
+    против ложного."""
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    transcript = tdir / "2026-09-11_1533_Планёрка.md"
+    transcript.write_text("# Встреча\n\nУчастники (звучали в разговоре): Олег, Анна, Иван\n\n**Олег** [15:33]: начнём\n",
+                          encoding="utf-8")
+    minutes = tdir / "2026-09-11_1533_Планёрка_minutes.md"
+    minutes.write_text("# Минутки\n## Поручения\n- [ ] **Иван** — прислать сводку по плану к пятнице\n", encoding="utf-8")
+    review = tdir / "2026-09-11_1533_Планёрка_ревизия_claude.md"
+    review.write_text("# Ревизия\n## Снятые поручения\n- **Иван** — прислать сводку по плану к пятнице — причина: срока не было\n"
+                      "## Восстановленные поручения\n- [ ] **Иван** — прислать сводку по плану\n", encoding="utf-8")
+    assert rb.withdraw(review, transcript, owner="Владелец") == 1
+    assert rb.bridge(review, transcript, owner="Владелец") == 1
+    text = minutes.read_text(encoding="utf-8")
+    tasks = text.split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
+    assert tasks.strip() == "- [ ] **Иван** — прислать сводку по плану (из ревизии)", text
+    assert "~~**Иван** — прислать сводку по плану к пятнице~~ _(снято ревизией: срока не было)_" in text
+
+
 def test_l4_prompt_names_the_strict_section():
     prompt = graph_updater.cloud_enrich_prompt(transcript_name="x.md", folder=Path("."), graph=Path("."),
                                                rev_name="r.md", stamp="2026-09-05_1413", may_edit=False, context="")
     assert "## Восстановленные поручения" in prompt and "- [ ] **Имя** — что сделать" in prompt
+    assert "## Снятые поручения" in prompt and "— причина: …" in prompt, "снятие — тот же строгий контракт (№238)"
+    editing = graph_updater.cloud_enrich_prompt(transcript_name="x.md", folder=Path("."), graph=Path("."),
+                                                rev_name="r.md", stamp="2026-09-05_1413", may_edit=True, context="")
+    assert "«- 📌 …» → «- ⛔ …»" in editing and "не удаляй и не переставляй" in editing, "решения помечаются на месте (№237)"
 
 
 def test_classify_line_table():

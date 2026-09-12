@@ -589,7 +589,15 @@ it signals degradation, it does not break the loop.
   only discoverable in the logs. Action items the review recovers from
   the transcript (its strict "Recovered action items" section) are
   appended to the minutes as checkboxes marked "(from the review)" before
-  the archive is refreshed, so the Tasks tab sees them; an item the
+  the archive is refreshed, so the Tasks tab sees them; action items that
+  were never said (the strict "Withdrawn action items" section: the assignee
+  was not at the meeting, no deadline was named, a joke) move from the
+  action items section into "Withdrawn by the review" with the reason —
+  they leave the Tasks tab but not the minutes; a wrong decision in the
+  meeting note is marked ⛔ in place by the review, and Charoite's memory of
+  the meeting is resent without the withdrawn decisions; the local model's
+  debrief stays a draft with such a header, and its tasks and
+  recommendations come from this meeting only; an item the
   minutes already hold in other words is not duplicated, and an assignee
   who was not at the meeting gets the same "not a participant" mark.
 - **Renaming a meeting** — the pencil in the card, or

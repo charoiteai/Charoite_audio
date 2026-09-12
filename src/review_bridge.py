@@ -30,8 +30,23 @@ RECOVERED_HEAD = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*)?\s*восстановл
 # строка, начинающаяся с этих слов (после # или **), — заголовок, а не
 # упоминание вроде «восстановленных поручений нет» в прозе (DS r2 M5)
 RECOVERED_WORD = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*)?\s*восстановленн\w* поручени", re.IGNORECASE | re.MULTILINE)
+# Обратная сторона моста (№238): ревизия так же строго отдаёт поручения,
+# которых в записи НЕ было (исполнителя на встрече нет, срок не звучал,
+# шутка, пересказ с ошибкой), — под «## Снятые поручения». Мост переносит
+# такие пункты из раздела поручений в «## Снято ревизией» с причиной: они
+# исчезают из вкладки «Задачи» (она читает только раздел поручений), но не
+# из минуток — след виден, и человек может вернуть строку руками.
+WITHDRAWN_HEAD = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*)?\s*снятые поручения\s*(?:\*\*)?\s*[:：.]?\s*(?:\*\*)?\s*$",
+                            re.IGNORECASE)
+WITHDRAWN_WORD = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*)?\s*снят\w* поручени", re.IGNORECASE | re.MULTILINE)
+# «- **Имя** — что сделать — причина: Светы на встрече нет» → пункт и причина
+_REASON = re.compile(r"\s+[—–-]\s*(?:причина|reason|原因)\s*[:：]\s*(?P<why>.+?)\s*$", re.IGNORECASE)
 MARKS = {"ru": "(из ревизии)", "en": "(from the review)", "zh": "（来自审阅）"}
+WITHDRAWN_MARKS = {"ru": "снято ревизией", "en": "withdrawn by the review", "zh": "已由审阅撤回"}
 SECTION_TITLE = {"ru": "## Поручения", "en": "## Action items", "zh": "## 行动项"}
+WITHDRAWN_TITLE = {"ru": "## Снято ревизией", "en": "## Withdrawn by the review", "zh": "## 审阅撤回"}
+_WITHDRAWN_TITLE_RE = re.compile(r"^\s*#{1,6}\s*(?:снято ревизией|withdrawn by the review|审阅撤回)\s*$", re.IGNORECASE)
+_DONE_ITEM = re.compile(r"^\s*(?:[-*+•–—]\s*)?\[[xX]\]")
 _HEADING = re.compile(r"^\s*#{1,6}\s")
 _BOLD_HEADING = re.compile(r"^\s*\*\*[^*]+\*\*\s*$")
 # «-**Иван**» без пробела — тоже пункт (GLM r2 M6), а вот «*» без пробела —
@@ -82,11 +97,13 @@ def _item_text(line: str) -> str:
     return _CHECKBOX.sub("", m.group("text"), count=1).strip()
 
 
-def classify_line(line: str, had_items: bool) -> str:
+def classify_line(line: str, had_items: bool, head: re.Pattern[str] = RECOVERED_HEAD) -> str:
     """Класс строки раздела ревизии. Порядок проверок — тот же, что раньше
     в цикле: граница раньше пустоты (жирная подпись без двоеточия — граница
-    только когда пункты уже были), пункт с маркером раньше переноса."""
-    if RECOVERED_HEAD.match(line):
+    только когда пункты уже были), пункт с маркером раньше переноса.
+    `head` — заголовок разбираемого раздела: восстановленные или снятые
+    поручения, один классификатор на оба (№238)."""
+    if head.match(line):
         return LINE_HEAD
     if _section_end(line, had_items):
         return LINE_END
@@ -114,13 +131,18 @@ def recovered_items(review: str, dropped: list[str] | None = None) -> list[str]:
     `dropped` — сюда, если передан, складываются непустые строки раздела,
     которые не стали ни пунктом, ни продолжением: по ним видно, что мост
     выбросил (GLM r4 по #518, критика 1)."""
+    return _section_items(review, RECOVERED_HEAD, dropped)
+
+
+def _section_items(review: str, head: re.Pattern[str], dropped: list[str] | None) -> list[str]:
+    """Пункты одного строгого раздела ревизии (см. recovered_items)."""
     items: list[str] = []
     inside = False
     for line in (review or "").split("\n"):
         if not inside:
-            inside = bool(RECOVERED_HEAD.match(line))
+            inside = bool(head.match(line))
             continue
-        kind = classify_line(line, had_items=bool(items))
+        kind = classify_line(line, had_items=bool(items), head=head)
         if kind == LINE_END:
             break
         if kind == LINE_ITEM:
@@ -132,6 +154,20 @@ def recovered_items(review: str, dropped: list[str] | None = None) -> list[str]:
         elif kind == LINE_NOISE and dropped is not None:
             dropped.append(line.strip())
     return items
+
+
+def withdrawn_items(review: str, dropped: list[str] | None = None) -> list[tuple[str, str]]:
+    """Пункты раздела «## Снятые поручения» — (пункт как в минутках, причина).
+    Причина — хвост «— причина: …»; без него пункт целиком, причина пустая.
+    Раздела нет — пусто (№238)."""
+    out: list[tuple[str, str]] = []
+    for item in _section_items(review, WITHDRAWN_HEAD, dropped):
+        m = _REASON.search(item)
+        if m:
+            out.append((item[:m.start()].strip(), m.group("why").strip()))
+        else:
+            out.append((item, ""))
+    return out
 
 
 def _section_end(line: str, had_items: bool) -> bool:
@@ -346,3 +382,101 @@ def bridge(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
     if added:
         safe_write.write_text(minutes, after)
     return added
+
+
+def withdraw_from_minutes(minutes: str, items: list[tuple[str, str]], lang: str = "ru",
+                          owner: str = "") -> tuple[str, int]:
+    """Минутки, из раздела поручений которых снятые ревизией пункты переехали
+    в «## Снято ревизией» (сразу за разделом поручений) с причиной, и сколько
+    переехало. Пункт ищется так же, как при дедупе восстановленных: тот же
+    исполнитель и то же дело (в любую сторону вложения), владелец — в одном
+    каноне. Выполненный человеком пункт («[x]») не снимается: сделанное —
+    факт, а не пересказ модели. Ничего не нашлось — минутки те же (№238)."""
+    lang = (lang or "ru").strip().lower()[:2]
+    if not items:
+        return minutes, 0
+    lines = minutes.split("\n")
+    bounds = _section_bounds(lines)
+    if bounds is None:
+        return minutes, 0
+    start, end = bounds
+    moved: list[str] = []
+    keep: list[str] = []
+    mark = WITHDRAWN_MARKS.get(lang, WITHDRAWN_MARKS["ru"])
+    for line in lines[start + 1:end]:
+        if not _key(line) or _DONE_ITEM.match(line):
+            keep.append(line)
+            continue
+        view = _dedup_view(line, owner)
+        why = next((reason for item, reason in items if _matches_withdrawn(item, view)), None)
+        if why is None:
+            keep.append(line)
+            continue
+        m = _ITEM.match(line)
+        text = _CHECKBOX.sub("", m.group("text") if m else line.strip(), count=1).strip()
+        moved.append(f"- ~~{text}~~ _({mark}{': ' + why if why else ''})_")
+    if not moved:
+        return minutes, 0
+    section = keep
+    while section and not section[-1].strip():
+        section.pop()
+    rest = lines[end:]
+    while rest and not rest[0].strip():
+        rest.pop(0)
+    title = WITHDRAWN_TITLE.get(lang, WITHDRAWN_TITLE["ru"])
+    # раздел уже есть (вторая ревизия, повтор обработки) — дописываем в него без дублей
+    at = next((i for i, ln in enumerate(rest) if _WITHDRAWN_TITLE_RE.match(ln)), None)
+    if at is not None:
+        old_keys = {_key(ln) for ln in rest[at + 1:] if _key(ln)}
+        fresh = [m for m in moved if _key(m) not in old_keys]
+        stop = at + 1
+        while stop < len(rest) and not _HEADING.match(rest[stop]):
+            stop += 1
+        block = rest[at + 1:stop]
+        while block and not block[-1].strip():
+            block.pop()
+        rest = rest[:at + 1] + block + fresh + [""] + rest[stop:]
+        merged = lines[:start + 1] + section + [""] + rest
+    else:
+        merged = lines[:start + 1] + section + ["", title] + moved + ([""] if rest else []) + rest
+    return "\n".join(merged), len(moved)
+
+
+def _matches_withdrawn(item: str, view: str) -> bool:
+    """Пункт минуток (view — в каноне владельца) — тот, что ревизия снимает:
+    тот же ключ или тот же исполнитель и то же дело в любую сторону вложения;
+    исполнитель в другом падеже («**Сергею**» против «**Сергей**») — тот же
+    человек (action_items._same_person), сам текст минуток этим не правится."""
+    if _same_item(item, view) or _same_item(view, item):
+        return True
+    na, wa = _split(item)
+    nb, wb = _split(view)
+    if not (na and nb and wa and wb) or na == nb:
+        return False
+    pa, pb = na.split(), nb.split()
+    if len(pa) != len(pb) or not all(action_items._same_person(x, y) for x, y in zip(pa, pb)):
+        return False
+    common = len(wa & wb)
+    return common == len(wa) or common == len(wb) or common / len(wa | wb) >= SIMILAR
+
+
+def withdraw(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
+             lang: str = "ru", dropped: list[str] | None = None) -> int:
+    """Перенести снятые ревизией поручения из задач минуток в «Снято ревизией».
+    Возвращает число перенесённых; нет ревизии, минуток или пунктов — 0."""
+    try:
+        text = review.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    items = withdrawn_items(text, dropped=dropped)
+    if not items:
+        return 0
+    items = [(action_items.canon_owner_item(item, owner), why) for item, why in items]
+    minutes = minutes_path(transcript)
+    if not minutes.is_file():
+        return 0
+    before = minutes.read_text(encoding="utf-8", errors="replace")
+    after, moved = withdraw_from_minutes(before, items, lang=lang, owner=owner)
+    if moved:
+        safe_write.write_text(minutes, after)
+    return moved
