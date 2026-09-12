@@ -623,6 +623,149 @@ def link_or_text(graph: pathlib.Path, name: str) -> str:
     return f"[[{p.parent.name}/{p.stem}|{p.stem}]]" if p is not None else clean
 
 
+def _one_edit_away(a: str, b: str) -> bool:
+    """Расстояние Левенштейна ≤ 1: одна замена, вставка или удаление символа."""
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        return sum(x != y for x, y in zip(a, b)) == 1
+    short, long = (a, b) if len(a) < len(b) else (b, a)
+    i = 0
+    while i < len(short) and short[i] == long[i]:
+        i += 1
+    return short[i:] == long[i + 1:]
+
+
+def entity_node_verdict(graph: pathlib.Path, folder: str, name: str) -> tuple[str, list[str]]:
+    """Заводить ли узел «сущности» из разбора — («existing» | «new» | «junk» |
+    «ambiguous» | «near», кандидаты).
+
+    «Сущности» и «связи» — выход одной генерации, а конвейер верил сущностям
+    безусловно: местоимение или обрывок становились узлом Системы, опечатка
+    «Kwen 32B» при узле «Qwen 32B» — вторым узлом навсегда, а кандидаты
+    find_canonical при неоднозначности («не гадаем») уходили в никуда (DS F4
+    и критика GLM r1b, аудит памяти 07.09; №193). Теперь мусор — не узел;
+    неоднозначность и опечатка (ключ имени в одном символе от узла той же
+    папки при длине ключа ≥ 5 и тех же числах — «ИС 1494» и «ИС 1495» разные)
+    — узел не заводим: имя остаётся текстом в заметке встречи, кандидаты —
+    в `_Кандидаты.md` в корне графа человеку. Подтвердил (алиас в
+    узле-кандидате или узел руками) — следующая встреча ляжет куда надо. Не
+    гадаем и здесь: приклеить сущность к похожему узлу наугад хуже, чем
+    отложить узел на одну встречу. Кандидаты — «Папка/Имя»: near ищется по
+    всем папкам узлов, потому что тип сущности — самое ненадёжное поле того
+    же ответа модели («Kwen 32B» приходит системой, а «Qwen 32B» лежит в
+    Моделях; критика DS r1 по #544), а кандидат не приклеивается, а
+    показывается. Люди сюда не ходят: у них свои правила (звательные формы,
+    порядок слов, фон записи).
+    """
+    clean = safe_name(name)
+    key = name_key(clean)
+    # пустой ключ («»», «///») и «без имени» (safe_name на пустоте) — тоже
+    # обрывки: раньше становились узлами ««».md» и «без имени.md» (GLM I1, DS I3 r1 по #544)
+    if not key or key in _PRONOUNS or clean == "без имени" or len(clean) < 2 or is_speaker_placeholder(clean):
+        return "junk", []
+    ambiguous: list[str] = []
+    if find_canonical(graph, clean, ambiguous, folder=folder) is not None:
+        return "existing", []
+    if ambiguous:
+        return "ambiguous", sorted({f"{folder}/{c}" for c in ambiguous})
+    nums = re.findall(r"\d+", key)
+    near: list[str] = []
+    if len(key) >= 5:
+        # Стемы и псевдонимы (GLM M2 r1); заглушка-редиректа отдаёт свой
+        # канон, оборванная — мимо; точный стем с оборванным каноном — не
+        # кандидат сам себе (DS I1/I2 r1)
+        places = ("Люди", "Команды", "Системы", "Модели", "Блокеры", "Ядра")
+        files = [f for place in places if (graph / place).is_dir()
+                 for f in sorted((graph / place).glob("*.md")) if not f.name.startswith("_")]
+        by_key: dict[str, list[pathlib.Path]] = {}
+        for f in files:
+            by_key.setdefault(name_key(f.stem), []).append(f)
+        for akey, fs in _alias_index(files).items():
+            for f in fs:
+                by_key.setdefault(akey, []).append(f)
+        for k, fs in by_key.items():
+            if k == key or len(k) < 5 or re.findall(r"\d+", k) != nums or not _one_edit_away(key, k):
+                continue
+            for f in fs:
+                live = follow_stubs(graph, f)
+                if live is not None and f"{live.parent.name}/{live.stem}" not in near:
+                    near.append(f"{live.parent.name}/{live.stem}")
+    return ("near", sorted(near)) if near else ("new", [])
+
+
+_HELD_WHY = {"junk": "не имя", "ambiguous": "подходит нескольким узлам", "near": "похоже на существующий узел"}
+
+
+CANDIDATES_NOTE = "_Кандидаты.md"   # в корне графа: `_`-файлы из сканов find_canonical и near исключены
+
+
+def _journal_held_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
+                         verdict: str, cands: list[str], meeting_link: str) -> None:
+    """Кандидаты на узел, которых конвейер не завёл (№193), — `_Кандидаты.md`
+    в корне графа: там их читают в Obsidian, ссылки на встречу и узлы живые
+    (критика DS r1 по #544: журнал рядом с машинными логами не открывают).
+    Повтор обработки той же встречи строку не дублирует (GLM M1). Мусор —
+    только в graph_unlinked.log: человеку в нём подтверждать нечего. Сбой
+    журнала встречу не роняет."""
+    _journal_graph_event("узел не создан", f"{folder}/{name}: {_HELD_WHY[verdict]}"
+                         + (" — " + ", ".join(cands) if cands else ""), meeting_link)
+    if verdict == "junk":
+        return
+    try:
+        log = graph / CANDIDATES_NOTE
+        mark = f"[[{meeting_link}]] · «{name}» ({typ})"
+        text = log.read_text(encoding="utf-8") if log.exists() else (
+            "# Кандидаты на узлы графа, которых конвейер не завёл\n\n"
+            "Узел не заводится, когда имя подходит нескольким узлам или отличается от "
+            "существующего на одну букву. Подтвердить: добавить `aliases:` в узел-кандидат "
+            "или создать узел руками — следующая встреча ляжет туда. Свежее снизу.\n\n")
+        if mark in text:
+            return
+        day = pathlib.PurePosixPath(meeting_link).name[:10]
+        links = ", ".join(f"[[{c}]]" for c in cands)
+        safe_write.write_text(log, text + f"- {day} {mark} — {_HELD_WHY[verdict]}: {links}\n")
+    except OSError:
+        pass
+
+
+def entity_line(graph: pathlib.Path, e: dict, held: dict[tuple[str, str], tuple[str, list[str]]]) -> str:
+    """Строка сущности в заметке встречи: ссылка на узел, а если узла не
+    завели (№193) — текст с пометкой и ссылками на кандидатов, чтобы Obsidian
+    связал встречу с ними, а не с фантомом. Ключ `held` — папка и имя: одно
+    имя в двух типах — две разные записи (DS M5 / GLM M4 r1 по #544)."""
+    folder = ENT_FOLDER.get(e.get("тип", ""), "Системы")
+    name = e["имя"]
+    head = f"({e.get('тип', '')}) — {e.get('суть', '')}"
+    if (folder, name) not in held:
+        return f"- {canon_link(graph, name, folder)} {head}"
+    verdict, cands = held[(folder, name)]
+    tail = ": " + ", ".join(f"[[{c}|{c.split('/', 1)[-1]}]]" for c in cands) if cands else ""
+    return f"- {safe_name(name)} {head} _(узел не создан: {_HELD_WHY[verdict]}{tail})_"
+
+
+def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str) -> dict[tuple[str, str], tuple[str, list[str]]]:
+    """Узлы «сущностей» разбора — через вердикт (№193): existing/new →
+    `upsert_entity`; junk/ambiguous/near — без узла, в `held` и в журналы.
+    Шов вынесен из main() под тест (DS I4 r1 по #544)."""
+    held: dict[tuple[str, str], tuple[str, list[str]]] = {}
+    for e in ents:
+        folder = ENT_FOLDER.get(e.get("тип", ""), "Системы")
+        verdict, cands = entity_node_verdict(graph, folder, e["имя"])
+        if verdict in ("existing", "new"):
+            upsert_entity(graph, folder, e["имя"], e.get("тип", "entity"),
+                          e.get("суть", ""), meeting_link, "")
+        else:
+            held[(folder, e["имя"])] = (verdict, cands)
+            _journal_held_entity(graph, folder, e["имя"], e.get("тип", "entity"), verdict, cands, meeting_link)
+    if held:
+        print("граф: узла не получили — " + "; ".join(
+            f"{n} ({_HELD_WHY[v]}{': ' + ', '.join(c) if c else ''})" for (_, n), (v, c) in held.items()))
+    return held
+
+
 def find_canonical(graph: pathlib.Path, name: str,
                    ambiguous: list[str] | None = None,
                    folder: str | None = None) -> pathlib.Path | None:
@@ -1734,10 +1877,9 @@ def main():
     for p in people:
         upsert_entity(graph, "Люди", p["имя"], "person",
                       p.get("роль", ""), meeting_link, p.get("вклад", ""))
-    for e in ents:
-        upsert_entity(graph, ENT_FOLDER.get(e.get("тип", ""), "Системы"),
-                      e["имя"], e.get("тип", "entity"),
-                      e.get("суть", ""), meeting_link, "")
+    # Сущность получает узел не безусловно (№193): мусор, опечатка существующего
+    # имени и «подходит нескольким» — текстом в заметке и в _Кандидаты.md графа
+    held = apply_entities(graph, ents, meeting_link)
 
     touched = ({"Люди"} if people else set()) | {ENT_FOLDER.get(e.get("тип", ""), "Системы") for e in ents}
     for folder in sorted(touched & set(FOLDER_INDEX)):
@@ -1826,7 +1968,7 @@ def main():
                + [f"- {safe_name(n)} — фон записи, не участник (узел не создан)" for n in noise]
                + [""])
     if ents:
-        md += ["## Сущности"] + [f"- {canon_link(graph, e['имя'], ENT_FOLDER.get(e.get('тип',''), 'Системы'))} ({e.get('тип','')}) — {e.get('суть','')}" for e in ents] + [""]
+        md += ["## Сущности"] + [entity_line(graph, e, held) for e in ents] + [""]
     if cores:
         md += ["## Ядра"] + [f"- {canon_link(graph, c['имя'], 'Ядра')} — {c.get('обновление', c.get('статус', ''))}" for c in cores] + [""]
     if decisions:
