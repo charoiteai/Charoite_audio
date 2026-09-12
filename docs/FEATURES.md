@@ -127,7 +127,9 @@
    person's or system's description is a dated fact too: a substantially
    new one replaces it, and the old wording stays in the node's chronicle
    as "was … → now …, date" — a rephrasing of the same thing is not a new
-   fact.
+   fact. The chronicle keeps the last ten such lines; older ones move to
+   "## Архив хроники" at the end of the node — nothing is lost, the top of
+   the node stays readable.
 3. **Meeting archive** — a "date — title" folder with every document and a
    link that opens the graph in Obsidian.
 4. **Summary** — a one-minute read: bottom line up front → topics →
