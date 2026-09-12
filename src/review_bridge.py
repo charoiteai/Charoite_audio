@@ -317,11 +317,14 @@ def merge_into_minutes(minutes: str, items: list[str], participants: set[str] | 
             continue
         # внутри одной ревизии вложенность судим в обе стороны, и выживает
         # самая полная форма — порядок строк не решает ни счёт, ни текст
-        # (GLM r4 M4, r5 M4)
+        # (GLM r4 M4, r5 M4); сравнение — в каноне владельца с обеих сторон,
+        # как и с минутками (GLM r3 M2 по #545)
+        view = _dedup_view(item, owner)
         for i, other in enumerate(fresh):
-            if _same_item(item, other):
+            other_view = _dedup_view(other, owner)
+            if _same_item(view, other_view):
                 break
-            if _same_item(other, item):
+            if _same_item(other_view, view):
                 fresh[i] = item
                 break
         else:
@@ -453,12 +456,21 @@ def withdraw_from_minutes(minutes: str, items: list[tuple[str, str]], lang: str 
         m = _ITEM.match(line)
         text = _CHECKBOX.sub("", m.group("text") if m else line.strip(), count=1).strip()
         i += 1
-        # переносы пункта — с ним; пустая строка между ними хвост не обрывает
-        # (DS r2 M4): цикл останавливается на маркере, жирном имени или подписи
-        while i < len(body) and (not body[i].strip() or _continuation(body[i])):
-            if body[i].strip():
-                text = f"{text} {body[i].strip()}"
-            i += 1
+        # переносы пункта — с ним; одна пустая строка перед ОТСТУПНЫМ переносом
+        # хвост не обрывает (DS r2 M4), а абзац прозы после пустой строки —
+        # не хвост, остаётся в разделе (DS r3 M5): как в markdown, где
+        # продолжение пункта после пустой строки обязано быть с отступом
+        while i < len(body):
+            j = i
+            if not body[j].strip():
+                j += 1
+                if j >= len(body) or not body[j].strip() or not body[j][:1].isspace() \
+                        or not _continuation(body[j]):
+                    break
+            elif not _continuation(body[j]):
+                break
+            text = f"{text} {body[j].strip()}"
+            i = j + 1
         moved.append(f"- ~~{text}~~ _({mark}{': ' + why if why else ''})_")
     section = keep
     while section and not section[-1].strip():

@@ -6,18 +6,21 @@
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import pathlib
 import re
 import sys
+import time
 
 import requests
 import yaml
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import cloud  # noqa: E402
+import file_locks  # noqa: E402
 import install_profile  # noqa: E402
 import live_gate  # noqa: E402
 import llm_health  # noqa: E402
@@ -463,7 +466,7 @@ def _meeting_facts(stamp: str, title: str, people: list, topics: list,
 
 
 def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions: list,
-                  mark: pathlib.Path, post=None) -> int:
+                  mark: pathlib.Path, post=None, *, locked: bool = False) -> int:
     """Факты встречи → память Чароита. Возвращает, сколько ушло в этот раз.
 
     Один раз на встречу: повтор обработки («Повторить обработку», ретрай)
@@ -482,12 +485,25 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
     """
     post = post or requests.post
     keyed = _meeting_facts(stamp, title, people, topics, decisions)
+    # Один отправитель фактов встречи за раз: без замка чужой /forget
+    # (оплата долга из другого воркера) ложился посреди своей отправки —
+    # дубли или дыра в памяти (DS r3 I2, GLM r3 I1 по #545)
+    with (contextlib.nullcontext(True) if locked else _sender_lock(mark, SEND_LOCK_WAIT)) as ok:
+        if not ok:
+            print("память Чароита: факты этой встречи шлёт другой процесс — пропущено")
+            return 0
+        return _send_facts(stamp, title, keyed, mark, post)
+
+
+def _send_facts(stamp: str, title: str, keyed: list[tuple[str, dict]],
+                mark: pathlib.Path, post) -> int:
     # Отметка помнит КЛЮЧИ отправленных фактов, а не позицию: повтор обработки
     # извлекает решения заново, порядок и состав могут отличаться — смещение
     # слало бы старые повторно и теряло новые (luna r2 по #455). Строка без
     # маркера `sent` — отметка прежних версий: всё отправлено.
     done: set[str] = set()
     todo = keyed
+    legacy = False
     if mark.exists():
         lines = mark.read_text(encoding="utf-8", errors="replace").splitlines()
         if lines and lines[0].startswith("sent ") and any(ln.startswith("id:") for ln in lines):
@@ -495,9 +511,14 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
             todo = [(k, f) for k, f in keyed if k not in done]
         else:
             todo = []      # отметка прежних форматов (заголовок, «sha1:» круга-2) — всё отправлено
+            legacy = True
     if not todo:
         print("память Чароита: факты этой встречи уже отправлены — повтор пропущен")
-        _settle_debt(mark)
+        # долг снимается только по отметке, которая ЗНАЕТ состав; легаси —
+        # предположение «всё отправлено», а долг мог оставить упавший
+        # /forget (DS r3 M4)
+        if not legacy:
+            _settle_debt(mark)
         return 0
     # Долг «не всё дошло» — рядом с отметкой, у того, кто её пишет: ставится
     # до первого POST, снимается, когда в отметке весь состав. Его оплачивает
@@ -510,7 +531,10 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
     except OSError:
         pass
     n = 0
-    covered = len(done)
+    # покрытие — по ТЕКУЩЕМУ списку и только по записанной отметке: `len(done)`
+    # при равном числе чужих ключей гасило долг без единого POST (DS r3
+    # Critical), а счёт до записи отметки — при упавшей записи (GLM r3 M1)
+    covered = sum(1 for k, _ in keyed if k in done)
     try:
         for key, fact in todo:
             # 15с: brain ждёт эмбеддинг bge-m3 из Ollama, занятой нашим же extract —
@@ -519,15 +543,37 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
             n += 1
             done.add(key)
             mark.parent.mkdir(parents=True, exist_ok=True)
-            covered = sum(1 for k, _ in keyed if k in done)   # из ТЕКУЩЕГО списка (GLM r3)
-            safe_write.write_text(mark, f"sent {covered}/{len(keyed)}\n"
+            fresh = sum(1 for k, _ in keyed if k in done)   # из ТЕКУЩЕГО списка (GLM r3)
+            safe_write.write_text(mark, f"sent {fresh}/{len(keyed)}\n"
                                   + "".join(f"id:{h}\n" for h in sorted(done)) + f"# {title}\n")
+            covered = fresh
         print(f"память Чароита: +{n} фактов")
     except Exception as e:  # noqa: BLE001 — brain может быть выключен, не валим граф
         print(f"память Чароита недоступна (ушло {n} из {len(todo)}): {e}")
     if covered == len(keyed):
         _settle_debt(mark)
     return n
+
+
+SEND_LOCK_WAIT = 30.0        # свой отправитель ждёт соседа; плательщик чужих долгов — нет
+DEBT_MIN_AGE = 10 * 60       # долг моложе — у живого отправителя, чужим не трогать
+
+
+@contextlib.contextmanager
+def _sender_lock(mark: pathlib.Path, wait: float):
+    """Один отправитель фактов встречи за раз — flock на `<отметка>.lock`.
+    Даёт True, если замок взят; False — держит другой процесс (демон шлёт
+    разбор, воркер переотправляет после ревизии, чужой воркер платит долг)
+    дольше `wait` секунд, каталога нет или ФС без flock. Замок отпускается
+    закрытием файла."""
+    try:
+        mark.parent.mkdir(parents=True, exist_ok=True)
+        f = open(mark.with_suffix(".lock"), "a+", encoding="utf-8")   # noqa: SIM115 — закрывается в with
+    except OSError:
+        yield False
+        return
+    with f:
+        yield file_locks.acquire_exclusive(f, attempts=max(1, int(wait / 0.2) + 1), pause=0.2)
 
 
 def _settle_debt(mark: pathlib.Path) -> None:
@@ -592,7 +638,8 @@ def _note_head(text: str) -> tuple[str, list[dict], list[str]]:
 
 
 def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: str,
-                                 mark: pathlib.Path, post=None) -> str:
+                                 mark: pathlib.Path, post=None, *,
+                                 lock_wait: float = SEND_LOCK_WAIT) -> str:
     """Память Чароита после облачной ревизии — по заметке встречи ПОСЛЕ неё.
 
     Факты уходили в brain в разборе, за двадцать минут до ревизии, и она их
@@ -623,21 +670,24 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
     old, new = note_decisions(note_before), note_decisions(after)
     if old == new and not pending.exists():
         return "память Чароита: решения встречи после ревизии те же — без переотправки"
-    try:
-        pending.parent.mkdir(parents=True, exist_ok=True)
-        pending.touch()
-    except OSError:
-        pass
-    try:
-        post(f"{BRAIN}/forget", json={"meeting": stamp}, timeout=15).raise_for_status()
-    except Exception as e:  # noqa: BLE001 — brain выключен: память догонит повтор
-        return f"память Чароита не переотправлена (brain: {e}) — долг записан, догонит следующая ревизия"
-    try:
-        mark.unlink()
-    except OSError:
-        pass
-    title, people, topics = _note_head(after)
-    n = send_to_brain(stamp, title, people, topics, new, mark, post=post)
+    with _sender_lock(mark, lock_wait) as ok:
+        if not ok:
+            return "память Чароита не переотправлена: факты встречи шлёт другой процесс — позже"
+        try:
+            pending.parent.mkdir(parents=True, exist_ok=True)
+            pending.touch()
+        except OSError:
+            pass
+        try:
+            post(f"{BRAIN}/forget", json={"meeting": stamp}, timeout=15).raise_for_status()
+        except Exception as e:  # noqa: BLE001 — brain выключен: память догонит повтор
+            return f"память Чароита не переотправлена (brain: {e}) — долг записан, догонит следующая ревизия"
+        try:
+            mark.unlink()
+        except OSError:
+            pass
+        title, people, topics = _note_head(after)
+        n = send_to_brain(stamp, title, people, topics, new, mark, post=post, locked=True)
     dropped = len([d for d in old if d not in new])
     total = len(_meeting_facts(stamp, title, people, topics, new))
     if n < total:
@@ -648,19 +698,28 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
 
 
 def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, skip: str = "",
-                    limit: int = 3, post=None) -> list[str]:
+                    limit: int = 3, post=None, now=time.time) -> list[str]:
     """Долги переотправки других встреч — при любом прогоне ревизии: без
     этого долг встречи, которую больше не ревизируют и не пересобирают,
     висел бы невидимо и вечно (GLM r2 M2 и критика по #545). Не больше
-    `limit` за раз (каждый — /forget и до семи эмбеддингов), свою встречу
-    (`skip`) — не трогаем, её долг гасит сам прогон. Заметки нет в графе —
-    долг снимается: платить не по чему. Возвращает строки для лога."""
-    out: list[str] = []
+    `limit` за раз (каждый — /forget и до семи эмбеддингов), старейшие
+    первыми; неоплаченный долг сдвигается в конец очереди (DS r3 I3);
+    долг моложе DEBT_MIN_AGE — у живого отправителя, его не трогаем, а
+    замок отправителя не ждём (DS r3 I2, GLM r3 I1). Свою встречу (`skip`)
+    не трогаем: её долг гасит сам прогон. Заметки нет в графе — долг
+    снимается: платить не по чему. Возвращает строки для лога."""
+    ripe: list[tuple[float, pathlib.Path]] = []
     try:
-        debts = sorted(p for p in sent_dir.glob("*.pending") if p.stem != skip)
-    except OSError:
-        return out
-    for debt in debts[:limit]:
+        for p in sent_dir.glob("*.pending"):
+            if p.stem == skip:
+                continue
+            age = float(now()) - p.stat().st_mtime
+            if age >= DEBT_MIN_AGE:
+                ripe.append((p.stat().st_mtime, p))
+    except OSError as e:
+        return [f"долги памяти не проверены: {e}"]
+    out: list[str] = []
+    for _, debt in sorted(ripe)[:limit]:
         stamp = debt.stem
         note = graph / "Встречи" / f"{stamp}.md"
         if not note.is_file():
@@ -668,7 +727,12 @@ def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, skip: str = 
             out.append(f"долг памяти {stamp}: заметки встречи в графе нет — снят")
             continue
         out.append(f"долг памяти {stamp}: " + resend_to_brain_after_review(
-            stamp, note, "", debt.with_suffix(".txt"), post=post))
+            stamp, note, "", debt.with_suffix(".txt"), post=post, lock_wait=0.0))
+        if debt.exists():
+            try:
+                debt.touch()          # не оплачен — в конец очереди, слот освобождается
+            except OSError:
+                pass
     return out
 
 

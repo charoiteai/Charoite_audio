@@ -410,6 +410,17 @@ def test_blank_line_inside_a_wrapped_item_does_not_orphan_its_tail():
     tasks = text.split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
     assert tasks.strip() == "- [ ] **Анна** — x", tasks
     assert "- ~~**Мария** — пересчитать оценки, отчёт по срокам к 25.09~~" in text
+    # абзац прозы после пустой строки — не хвост пункта (DS r3 M5): без отступа остаётся
+    prose = "## Поручения\n- [ ] **Мария** — пересчитать оценки\n\nСроки уточняются.\n"
+    text, moved = rb.withdraw_from_minutes(prose, [("**Мария** — пересчитать оценки", "")])
+    assert moved == 1 and "Сроки уточняются." in text.split("## Снято ревизией", 1)[0] and "~~**Мария** — пересчитать оценки~~" in text
+
+
+def test_review_items_are_deduped_among_themselves_in_the_owner_canon():
+    """GLM r3 M2 по #545: «**Иван Орлов** — X» и «**Иван** — X» в одной ревизии — один пункт."""
+    text, n = rb.merge_into_minutes("## Поручения\n- [ ] **Анна** — y\n",
+                                    ["**Иван Орлов** — позвонить юристу", "**Иван** — позвонить юристу"], owner="Иван Орлов")
+    assert n == 1 and text.count("позвонить юристу") == 1
 
 
 def test_existing_withdrawn_section_dedups_only_within_itself():

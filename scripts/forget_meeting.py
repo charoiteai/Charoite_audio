@@ -744,8 +744,9 @@ def plan(stamp: str, root: pathlib.Path,
     # позже фактов.
     for key in p.brain_keys:
         p.delete += _with_stamp(logs / "brain_sent", key, suffix=".txt")
-        # долг переотправки после ревизии (№237) — той же встречи
+        # долг переотправки (№237) и замок отправителя — той же встречи
         p.delete += _with_stamp(logs / "brain_sent", key, suffix=".pending")
+        p.delete += _with_stamp(logs / "brain_sent", key, suffix=".lock")
     return p
 
 
