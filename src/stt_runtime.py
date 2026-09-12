@@ -140,6 +140,11 @@ def stall_log_due(*, stage_age_s: float, now: float, last: float,
 # иначе три рукописные копии строки расходились бы молча (GLM r1 по #538).
 MIC_ONLY_WARNING = "СОБЕСЕДНИКОВ В ЗАПИСИ НЕ БУДЕТ"
 STICKY_WARNINGS = (MIC_ONLY_WARNING,)
+# Отбой липкого предупреждения: канал собеседников умер посреди встречи и
+# ожил (сторож перезапустил поток) — строка «не будет» стала бы неправдой
+# до конца встречи (№232). Демон шлёт `sticky: false`, приложение снимает слой.
+MIC_BACK_NOTICE = "СОБЕСЕДНИКИ СНОВА В ЗАПИСИ"
+STICKY_CLEARS = (MIC_BACK_NOTICE,)
 
 
 def is_sticky_status(status_text: str) -> bool:
@@ -147,10 +152,14 @@ def is_sticky_status(status_text: str) -> bool:
     приходит один раз на старте, а следующий же emit демона («👥 живая
     диаризация включена», через секунду) стирал его с экрана — человек не
     успевал прочитать единственный экранный носитель (№228, GLM r2 по #531).
-    Снимается новым стартом; протокол допускает и явное `sticky: false`, но
-    продюсера у него пока нет — канал внутри встречи не восстанавливается
-    (появится с №232/№111)."""
+    Снимается новым стартом или явным `sticky: false` — его шлёт
+    `is_sticky_clear`, когда умерший посреди встречи канал ожил (№232)."""
     return any(mark in status_text for mark in STICKY_WARNINGS)
+
+
+def is_sticky_clear(status_text: str) -> bool:
+    """Снять ли липкое предупреждение: канал собеседников вернулся."""
+    return any(mark in status_text for mark in STICKY_CLEARS)
 
 
 def is_recording_failure(status_text: str) -> bool:

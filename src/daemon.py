@@ -547,7 +547,9 @@ def main():
          "error": stt_runtime.is_recording_failure(t),
          # Ключ sticky — только у липких: обычный статус его не несёт и липкое
          # не снимает; снятие — явное `sticky: false` (№228)
-         **({"sticky": True} if stt_runtime.is_sticky_status(t) else {})})
+         # явный `sticky: false` — отбой: умерший посреди встречи канал ожил (№232)
+         **({"sticky": True} if stt_runtime.is_sticky_status(t)
+            else {"sticky": False} if stt_runtime.is_sticky_clear(t) else {})})
     # Встречи, оборванные аварийно, запускаем ДО чистки и говорим ретеншну их
     # не трогать: «до» тут не про порядок строк, а про то, что запись обязана
     # дожить до конца пересборки. Порядка строк было мало — Popen возвращается

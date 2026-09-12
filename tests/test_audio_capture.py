@@ -35,6 +35,8 @@ def _hub(sr=16000, chunk_s=3.0, overlap_s=0.5, vad_db=-45.0):
     # иначе тест падает на AttributeError вместо проверки поведения.
     hub._hung = set()
     hub._mic_only_warned = False
+    hub._system_dead = False
+    hub._fail_streak = {}
     hub._last_frame = {}
     hub._last_try = {}
     hub._last_check = 0.0
@@ -1115,8 +1117,9 @@ def test_смерть_канала_собеседников_после_стар�
     assert len(scream) == 1 and "умер во время встречи" in scream[0] and "пропал" in scream[0], hub.said
     assert not any("перезапуск завис" in m and "СОБЕСЕДНИКОВ" not in m for m in hub.said), \
         "причина один раз: криком, не тихой строкой сторожа и криком"
+    assert len(calls) == 1, "уведомление со звуком не ушло"
     banner = calls[0][0][0][-1]
-    assert calls and 'sound name "Glass"' in banner and "остановите и запустите запись заново" in banner, banner
+    assert 'sound name "Glass"' in banner and "остановите и запустите запись заново" in banner, banner
     assert "Запись экрана" not in banner and "освободите" not in banner, "умерший канал не чинится ни правом, ни устройством"
     log = (tmp_path / "logs" / "capture.log").read_text(encoding="utf-8")
     assert a.MIC_ONLY_LOG_MARK in log and "перезапуск завис" in log
@@ -1136,3 +1139,43 @@ def test_смерть_канала_собеседников_после_стар�
     again._watch_streams()
     assert again._hung == {"blackhole"} and any("перезапуск завис" in m for m in again.said)
     assert not any("СОБЕСЕДНИКОВ" in m for m in again.said) and len(calls) == 1
+
+    # Основной путь macOS 15+ (Critical DS r1 по #541): поток ScreenCaptureKit перестал расти,
+    # restart() возвращает обычную ошибку за ~3 с, не TimeoutError — первая неудача тихая,
+    # вторая подряд кричит; канал в _hung не попадает, поток может ожить
+    def dead_stream(hub):
+        monkeypatch.setattr(hub, "_restart_guarded", lambda c: RuntimeError("поток приложения не растёт"))
+
+    def tick(hub):
+        hub._last_check = 0.0
+        hub._last_try = {}
+        hub._watch_streams()
+
+    sck = dead_hub(["blackhole", "mic"])
+    sck._last_frame["mic"] = a.time.time()
+    dead_stream(sck)
+    tick(sck)
+    assert not sck._hung and not any("СОБЕСЕДНИКОВ" in m for m in sck.said) and len(calls) == 1, "одна неудача — ещё не смерть"
+    tick(sck)
+    scream = [m for m in sck.said if "СОБЕСЕДНИКОВ" in m]
+    assert len(scream) == 1 and "2 раза подряд" in scream[0] and "поток приложения не растёт" in scream[0], sck.said
+    assert not sck._hung and len(calls) == 2 and "пишем только микрофон" in scream[0]
+    # канал ожил — липкая строка снимается явно, следующая смерть кричит заново
+    monkeypatch.setattr(sck, "_restart_guarded", lambda c: None)
+    tick(sck)
+    back = [m for m in sck.said if a.stt_runtime.MIC_BACK_NOTICE in m]
+    assert len(back) == 1 and not sck._mic_only_warned and not sck._system_dead and not sck._fail_streak, sck.said
+    dead_stream(sck)
+    sck._last_frame["blackhole"] = a.time.time() - 40
+    tick(sck)
+    tick(sck)
+    assert len([m for m in sck.said if "СОБЕСЕДНИКОВ" in m]) == 2 and len(calls) == 3, "после оживления смерть кричит снова"
+
+    # device: blackhole — микрофона в записи нет, текст не обещает «только микрофон» (Important DS r1)
+    solo = dead_hub(["blackhole"])
+    dead_stream(solo)
+    tick(solo)
+    tick(solo)
+    scream = [m for m in solo.said if "СОБЕСЕДНИКОВ" in m]
+    assert len(scream) == 1 and "ни вас" in scream[0] and "только микрофон" not in scream[0], solo.said
+    assert "ни вас" in calls[-1][0][0][-1]
