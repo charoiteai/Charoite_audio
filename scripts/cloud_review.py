@@ -796,11 +796,15 @@ def publish(tmp: pathlib.Path, rev: pathlib.Path, ok: bool) -> bool:
     Пустой или недописанный файл на месте ревизии хуже отсутствия файла: он
     выглядит как готовый ответ, и человек читает обрывок, не зная об этом.
     """
+    partial = rev.with_suffix(rev.suffix + ".partial")
     if not ok:
         if tmp.exists():
-            tmp.replace(rev.with_suffix(rev.suffix + ".partial"))
+            tmp.replace(partial)
         return False
     tmp.replace(rev)
+    # обрывок первой попытки рядом с годной ревизией — мусор в Finder и
+    # поиске (GLM r1 M1 по #546)
+    partial.unlink(missing_ok=True)
     return True
 
 
@@ -856,17 +860,32 @@ def _review_stage(transcript: pathlib.Path, state: str, note: str = "") -> None:
 
 def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         rev: pathlib.Path, log: pathlib.Path, cfg: dict, attempt: int = 1) -> int:
-    """Один разбор — и один повтор, если упал сам запуск CLI или оборвался
-    ответ (RC_CLI): пауза RETRY_DELAY, не под живой встречей, замок графа
-    берётся заново. Таймаут (RC_TIMEOUT) и несверенный перенос (RC_ERROR)
-    не повторяются — там повтор бьёт в тот же потолок или в чужую работу."""
+    """Один разбор — и один повтор, если процесс CLI не запустился или
+    вернул ненулевой код (RC_CLI): пауза RETRY_DELAY, не под живой встречей,
+    замок графа берётся заново. Таймаут (RC_TIMEOUT), несверенный перенос
+    и ответ с кодом 0, не похожий на ревизию (RC_ERROR), не повторяются —
+    там повтор бьёт в тот же потолок или в тот же ответ модели."""
     rc = _run_once(stamp, transcript, graph, rev, log, cfg)
     if rc == RC_CLI and attempt == 1:
-        _log_line(log, f"повтор ревизии через {RETRY_DELAY // 60} мин: CLI не запустился "
-                       "или ответ оборван — попытка 2 из 2")
+        _log_line(log, f"повтор ревизии через {RETRY_DELAY // 60} мин: процесс CLI не запустился "
+                       "или завершился с ошибкой — попытка 2 из 2")
         _review_stage(transcript, "retrying", "повтор через десять минут")
+        # живой гейт до паузы и после неё: встреча, идущая в момент сбоя, не
+        # складывает своё время с паузой, а начавшаяся в паузу — не получает
+        # облако под собой (DS r1 M3 по #546)
+        gate = lambda: live_gate.wait_while_live(ROOT, log=lambda s: _log_line(log, s), what="повтор ревизии")  # noqa: E731
+        gate()
         _sleep(RETRY_DELAY)
-        live_gate.wait_while_live(ROOT, log=lambda s: _log_line(log, s), what="повтор ревизии")
+        gate()
+        # За паузу ревизию мог довезти другой воркер («Повторить обработку»
+        # запускает второго: .partial первого он не считает ревизией) — тот
+        # же дедуп, что у graph_updater перед запуском (GLM r1 I2)
+        try:
+            if rev.exists() and rev.stat().st_mtime >= transcript.stat().st_mtime:
+                _log_line(log, "ревизия уже доставлена другим прогоном — повтор отменён")
+                return RC_OK
+        except OSError:
+            pass
         return run(stamp, transcript, graph, rev, log, cfg, attempt=2)
     if rc == RC_CLI:
         _log_line(log, "повтор не помог — ревизии нет; «Повторить обработку» в приложении "
@@ -1224,8 +1243,11 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             rotate_snapshots(backup_root(graph),
                              *(p for p in (backup, cloud_pen) if p))
     if may_edit and backup is not None and not checked:
-        _review_stage(transcript, "failed", "перенос правок не сверен")
-        return RC_ERROR            # ревизия, может, и есть, но граф не сверен
+        # причина — таймаут, если он был: карточка не должна винить сверку
+        # за 30-минутный потолок (GLM r1 M2 по #546); оба кода без повтора
+        _review_stage(transcript, "failed", "таймаут; перенос правок не сверен" if timed_out
+                      else "перенос правок не сверен")
+        return RC_TIMEOUT if timed_out else RC_ERROR   # ревизия, может, и есть, но граф не сверен
     if published:
         _review_stage(transcript, "ok", next((ln.strip() for ln in lines if "правок облака" in ln), lines[0].strip() if lines else ""))
         return RC_OK
