@@ -421,40 +421,65 @@ def test_entity_node_policy_holds_junk_typos_and_ambiguity(tmp_path, monkeypatch
     logs/graph_ambiguous.md, в заметке встречи — текст с пометкой и ссылками
     на кандидатов. Новое и точно найденное — как раньше."""
     graph = tmp_path / "g"
+    (graph / "Системы").mkdir(parents=True)
+    (graph / "Модели").mkdir()
     for stem in ("Qwen 32B", "ИС 1494", "Реестр Витрин", "ИИ-агент", "ИИ_агент"):
-        (graph / "Системы").mkdir(parents=True, exist_ok=True)
         (graph / "Системы" / f"{stem}.md").write_text(f"# {stem}\n\n## Встречи\n", encoding="utf-8")
+    (graph / "Системы" / "Витрина 1494.md").write_text('---\naliases: ["ИС Витрина"]\n---\n# Витрина 1494\n', encoding="utf-8")
     verdict = lambda name: g.entity_node_verdict(graph, "Системы", name)  # noqa: E731
     assert verdict("Qwen 32B") == ("existing", [])
-    assert verdict("Kwen 32B") == ("near", ["Qwen 32B"]), "опечатка в одну букву — не новый узел"
+    assert verdict("Kwen 32B") == ("near", ["Системы/Qwen 32B"]), "опечатка в одну букву — не новый узел"
     assert verdict("Реестр Витрины") == ("existing", []), "подстрока в папке — прежний проход 3 find_canonical"
-    assert verdict("Реестр Витрен") == ("near", ["Реестр Витрин"]), "замена буквы — подстрокой не ловится, опечаткой да"
+    assert verdict("Реестр Витрен") == ("near", ["Системы/Реестр Витрин"]), "замена буквы — подстрокой не ловится, опечаткой да"
+    assert verdict("ИС Витрино") == ("near", ["Системы/Витрина 1494"]), "опечатка в псевдоним — тоже кандидат (GLM M2)"
     assert verdict("ИС 1495") == ("new", []), "числа обязаны совпадать — соседняя система реальна"
     assert verdict("Витрина ЕИС") == ("new", [])
-    assert verdict("ИИ агент") == ("ambiguous", ["ИИ-агент", "ИИ_агент"]), "два ключ-равных узла — не гадаем"
+    assert verdict("ИИ агент") == ("ambiguous", ["Системы/ИИ-агент", "Системы/ИИ_агент"]), "два ключ-равных узла — не гадаем"
     assert verdict("ИС 1") == ("new", []), "короткий ключ опечаткой не судим"
-    for junk in ("он", "их", "x", "Собеседник 2"):
-        assert verdict(junk) == ("junk", []), junk
+    for junk in ("он", "их", "x", "Собеседник 2", "«»", "///", "!!", ""):
+        assert verdict(junk) == ("junk", []), junk       # пунктуация и «без имени» — тоже обрывки (GLM I1, DS I3)
     assert g._one_edit_away("kwen32b", "qwen32b") and g._one_edit_away("abc", "abcd") and g._one_edit_away("abcd", "acd")
     assert not g._one_edit_away("abc", "abcde") and not g._one_edit_away("abcd", "abdc")
-    # журнал кандидатов и общий журнал графа — после решения «не заводить»
+    # заглушки-редиректы: кандидат-заглушка отдаёт свой канон из другой папки; точный стем с
+    # оборванным каноном — не кандидат сам себе (DS I1/I2): вердикт new, а upsert_entity
+    # дальше сам скажет «заглушка без канона»
+    (graph / "Модели" / "Qwen 32B.md").write_text("# Qwen 32B\n\n## Встречи\n", encoding="utf-8")
+    (graph / "Системы" / "Qwen 32B.md").write_text("# Qwen 32B → [[Модели/Qwen 32B]]\n\nДубль. Смерджен\n", encoding="utf-8")
+    assert verdict("Kwen 32B") == ("near", ["Модели/Qwen 32B"]), "near по всем папкам, заглушка → канон, без дубля"
+    (graph / "Системы" / "Qwen 32B.md").write_text("# Qwen 32B → [[Модели/Нет такой]]\n\nДубль. Смерджен\n", encoding="utf-8")
+    assert verdict("Qwen 32B") == ("new", []), "оборванная заглушка не кандидат самой себе"
+    assert verdict("Kwen 32B") == ("near", ["Модели/Qwen 32B"]), "оборванная заглушка мимо, живой узел Моделей остаётся"
+    (graph / "Системы" / "Qwen 32B.md").write_text("# Qwen 32B\n\n## Встречи\n", encoding="utf-8")
+    (graph / "Модели" / "Qwen 32B.md").unlink()
+    # шов main: apply_entities заводит новое и существующее, держит остальное, журналит один раз (DS I4, GLM M1)
     monkeypatch.setattr(g, "ROOT", tmp_path)
-    g._journal_held_entity(graph, "Системы", "Kwen 32B", "система", "near", ["Qwen 32B"], "Встречи/2026-09-12_1000")
-    g._journal_held_entity(graph, "Системы", "он", "система", "junk", [], "Встречи/2026-09-12_1000")
-    amb = (tmp_path / "logs" / "graph_ambiguous.md").read_text(encoding="utf-8")
-    assert amb.startswith("# Кандидаты на узлы графа") and amb.count("\n- ") == 1, amb
-    assert "- 2026-09-12 [[g/Встречи/2026-09-12_1000]] · «Kwen 32B» (система) — похоже на существующий узел: [[g/Системы/Qwen 32B]]" in amb
+    ents = [{"имя": "Kwen 32B", "тип": "система", "суть": "модель"},
+            {"имя": "Витрина ЕИС", "тип": "система", "суть": "витрина"},
+            {"имя": "он", "тип": "система", "суть": ""},
+            {"имя": "Qwen 32B", "тип": "система", "суть": "модель"}]
+    held = g.apply_entities(graph, ents, "Встречи/2026-09-12_1000")
+    assert held == {("Системы", "Kwen 32B"): ("near", ["Системы/Qwen 32B"]), ("Системы", "он"): ("junk", [])}, held
+    assert (graph / "Системы" / "Витрина ЕИС.md").exists() and not (graph / "Системы" / "Kwen 32B.md").exists()
+    assert "[[Встречи/2026-09-12_1000]]" in (graph / "Системы" / "Qwen 32B.md").read_text(encoding="utf-8")
+    note = (graph / g.CANDIDATES_NOTE).read_text(encoding="utf-8")
+    assert note.startswith("# Кандидаты на узлы графа") and note.count("\n- ") == 1, note
+    assert "- 2026-09-12 [[Встречи/2026-09-12_1000]] · «Kwen 32B» (система) — похоже на существующий узел: [[Системы/Qwen 32B]]" in note
+    assert "«он»" not in note, "мусор — не кандидат для человека"
     unlinked = (tmp_path / "logs" / "graph_unlinked.log").read_text(encoding="utf-8")
-    assert "узел не создан: Системы/Kwen 32B: похоже на существующий узел — Qwen 32B" in unlinked
-    assert "узел не создан: Системы/он: не имя" in unlinked and "«он»" not in amb, "мусор — не кандидат для человека"
-    assert not (graph / "Системы" / "Kwen 32B.md").exists()
-    # строка заметки встречи: без фантомной ссылки, с кандидатами, обычная сущность — ссылкой
-    held = {"Kwen 32B": ("near", ["Qwen 32B"]), "он": ("junk", [])}
+    assert "узел не создан: Системы/Kwen 32B: похоже на существующий узел — Системы/Qwen 32B" in unlinked
+    assert "узел не создан: Системы/он: не имя" in unlinked
+    g.apply_entities(graph, ents, "Встречи/2026-09-12_1000")             # повтор обработки встречи
+    assert (graph / g.CANDIDATES_NOTE).read_text(encoding="utf-8").count("\n- ") == 1, "ретрай не дублирует строку"
+    assert verdict("Kwen 32B")[0] == "near", "файл _Кандидаты.md в корне графа сканами не считается узлом"
+    # строка заметки встречи: без фантомной ссылки, с кандидатами; обычная сущность — ссылкой;
+    # ключ held — папка и имя: одно имя в двух типах не затирает друг друга (DS M5 / GLM M4)
     assert g.entity_line(graph, {"имя": "Kwen 32B", "тип": "система", "суть": "модель"}, held) == \
         "- Kwen 32B (система) — модель _(узел не создан: похоже на существующий узел: [[Системы/Qwen 32B|Qwen 32B]])_"
     assert g.entity_line(graph, {"имя": "он", "тип": "система", "суть": ""}, held) == "- он (система) —  _(узел не создан: не имя)_"
     assert g.entity_line(graph, {"имя": "Qwen 32B", "тип": "система", "суть": "модель"}, held) == \
         "- [[Системы/Qwen 32B|Qwen 32B]] (система) — модель"
+    assert g.entity_line(graph, {"имя": "Kwen 32B", "тип": "модель", "суть": "модель"}, held) == \
+        "- [[Модели/Kwen 32B|Kwen 32B]] (модель) — модель", "тот же текст другим типом — не в held этой папки"
 
 
 def test_description_supersede_edges(tmp_path):
