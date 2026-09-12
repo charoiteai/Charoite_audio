@@ -929,7 +929,13 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         if m:
             text = text[:m.end()] + f"\n{stamp}" + text[m.end():]
         else:
-            text += f"\n## Встречи\n{stamp}\n"
+            # раздела нет (человек снёс) — заводим перед «## Архив хроники»,
+            # если он уже есть: архив — всегда хвост узла (Minor DS/GLM r1 по #542)
+            am = re.compile(r"^## Архив хроники[ \t]*$", re.M).search(text, _body_at(text))
+            if am:
+                text = text[:am.start()] + f"## Встречи\n{stamp}\n\n" + text[am.start():]
+            else:
+                text += f"\n## Встречи\n{stamp}\n"
         safe_write.write_text(p, _touch_last_seen(text, day))
         if event:   # после записи: журнал не должен обещать то, чего в узле нет
             _journal_graph_event(event[0], event[1], meeting_link)
@@ -1041,6 +1047,9 @@ def _same_fact(old: str, new: str) -> bool:
 
 
 CHRONICLE_KEEP = 10   # строк вытеснений в «## Хроника» человека/системы; старшие — в «## Архив хроники»
+# Машинная строка вытеснения — ровно то, что пишет _supersede_description;
+# только такие строки считаются и переезжают, рукопись человека — нет
+_CHRONICLE_LINE_RE = re.compile(r"^- \[\[[^\]\n]+\]\] — _\(было: «.*» → стало: «.*»(?:, \d{4}-\d{2}-\d{2})?\)_$")
 
 
 def _cap_chronicle(text: str, keep: int = CHRONICLE_KEEP) -> str:
@@ -1054,7 +1063,11 @@ def _cap_chronicle(text: str, keep: int = CHRONICLE_KEEP) -> str:
     переезжают; новые сверху и в хронике, и в архиве. Имя архива не
     начинается с «## Хроника», чтобы подстрочные проверки заголовка не
     приняли его за раздел (урок «## Встречи-архив», DS r1 по #539).
-    Раздел с чужой (не «- ») строкой не трогаем: это правка человека.
+    Переезжают только МАШИННЫЕ строки — по шаблону самой записи вытеснения;
+    всё, что дописал человек (свой пункт, строка без пункта, пустые строки
+    между группами), остаётся на своём месте, и обрезка от рукописи не
+    выключается (Important DS r1 по #542: гард «чужая строка — не трогаем»
+    и уносил рукописный пункт в архив, и замораживал обрезку навсегда).
     Лента ядер (`upsert_core`) — не вытеснения, а история встреч, её не режем.
     """
     body = _body_at(text)
@@ -1065,13 +1078,13 @@ def _cap_chronicle(text: str, keep: int = CHRONICLE_KEEP) -> str:
     nxt = re.compile(r"^## ", re.M).search(text, sec_start)
     sec_end = nxt.start() if nxt else len(text)
     lines = text[sec_start:sec_end].split("\n")
-    if any(ln.strip() and not ln.startswith("- ") for ln in lines):
+    machine = [i for i, ln in enumerate(lines) if _CHRONICLE_LINE_RE.match(ln)]
+    if len(machine) <= keep:
         return text
-    items = [ln for ln in lines if ln.startswith("- ")]
-    if len(items) <= keep:
-        return text
-    overflow = items[keep:]
-    text = text[:sec_start] + "\n" + "\n".join(items[:keep]) + "\n\n" + text[sec_end:]
+    drop = set(machine[keep:])                    # новые сверху → лишние = самые старые
+    overflow = [lines[i] for i in machine[keep:]]
+    kept = [ln for i, ln in enumerate(lines) if i not in drop]
+    text = text[:sec_start] + "\n".join(kept) + text[sec_end:]
     am = re.compile(r"^## Архив хроники[ \t]*$", re.M).search(text, _body_at(text))
     if am:
         return text[:am.end()] + "\n" + "\n".join(overflow) + text[am.end():]

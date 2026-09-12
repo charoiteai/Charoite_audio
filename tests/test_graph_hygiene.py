@@ -379,10 +379,33 @@ def test_people_chronicle_keeps_last_ten_and_archives_the_rest(tmp_path):
     archive = [ln.split("]]")[0] for ln in text.split("## Архив хроники\n", 1)[1].splitlines() if ln.startswith("- ")]
     assert len(chron) == 10 and "2026-01-14" in chron[0]
     assert archive == ["- [[Встречи/2026-01-04_1000", "- [[Встречи/2026-01-03_1000", "- [[Встречи/2026-01-02_1000"], archive
-    # рукописная строка в хронике — раздел не режем
-    manual = "# Ручной\nаналитик\n\n## Хроника\n" + "\n".join(f"- [[Встречи/2026-02-{i:02d}_1000]] — _(было: «a{i}» → стало: «b{i}»)_" for i in range(1, 13)) \
-        + "\nсюда я дописал сам\n\n## Встречи\n- [[Встречи/2026-02-01_1000]]\n"
-    assert g._cap_chronicle(manual) == manual
+    # рукопись в хронике остаётся на месте — свой пункт, строка без пункта, пустая строка
+    # между группами; режутся только машинные строки сверх десяти (Important DS r1 по #542)
+    line = "- [[Встречи/2026-02-{0:02d}_1000]] — _(было: «a{0}» → стало: «b{0}»)_"
+    manual = ("# Ручной\nаналитик\n\n## Хроника\n- моя заметка сверху\n" + "\n".join(line.format(i) for i in range(12, 6, -1))
+              + "\n\nсюда я дописал сам\n" + "\n".join(line.format(i) for i in range(6, 0, -1))
+              + "\n- мой пункт снизу\n\n## Встречи\n- [[Встречи/2026-02-01_1000]]\n")
+    capped = g._cap_chronicle(manual)
+    chron = capped.split("## Хроника\n", 1)[1].split("\n## Встречи", 1)[0]
+    assert chron.startswith("- моя заметка сверху\n") and "\n\nсюда я дописал сам\n" in chron and chron.endswith("- мой пункт снизу\n"), chron
+    assert [ln for ln in chron.splitlines() if g._CHRONICLE_LINE_RE.match(ln)] == [line.format(i) for i in range(12, 2, -1)]
+    archive = capped.split("## Архив хроники\n", 1)[1]
+    assert archive == line.format(2) + "\n" + line.format(1) + "\n", archive
+    assert g._cap_chronicle(capped) == capped, "идемпотентно"
+    # края (Minor DS r1): хроника последним разделом, переполнение блоком, CRLF не трогаем
+    tail = "# Хвост\nроль\n\n## Хроника\n" + "\n".join(line.format(i) for i in range(13, 0, -1)) + "\n"
+    capped = g._cap_chronicle(tail)
+    assert "\n\n\n" not in capped and capped.endswith(line.format(1) + "\n"), capped
+    assert capped.split("## Архив хроники\n", 1)[1].splitlines() == [line.format(i) for i in (3, 2, 1)], "блок из трёх — новее выше"
+    crlf = manual.replace("\n", "\r\n")
+    assert g._cap_chronicle(crlf) == crlf, "CRLF до read_text не трогаем — в бою его нет"
+    # узел без «## Встречи» (человек снёс): раздел встреч встаёт ПЕРЕД архивом (Minor DS/GLM r1)
+    (graph / "Люди" / "Безвстреч.md").write_text(
+        "# Безвстреч\nаналитик\n\n## Хроника\n" + "\n".join(line.format(i) for i in range(12, 0, -1)) + "\n", encoding="utf-8")
+    g.upsert_entity(graph, "Люди", "Безвстреч", "person", "директор", "Встречи/2026-03-01_1000", "")
+    text = (graph / "Люди" / "Безвстреч.md").read_text(encoding="utf-8")
+    assert text.index("## Хроника") < text.index("## Встречи") < text.index("## Архив хроники"), text
+    assert "- [[Встречи/2026-03-01_1000]]\n\n## Архив хроники\n" in text
     # ядра: лента встреч — не хроника вытеснений, режется только у людей и систем
     (graph / "Ядра").mkdir()
     for i in range(1, 14):
