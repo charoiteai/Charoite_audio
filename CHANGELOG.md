@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.0](https://github.com/charoiteai/Charoite_audio/compare/v0.80.0...v0.81.0) (2026-09-12)
+
+
+### Features
+
+* **review:** исправления имён меток по ревизии — перештамповка стенограммы и участников минуток ([#548](https://github.com/charoiteai/Charoite_audio/issues/548)) ([cfef20e](https://github.com/charoiteai/Charoite_audio/commit/cfef20ee2f4a6a50bd81a3d5cc830f2b96cf6381))
+
 ## [0.80.0](https://github.com/charoiteai/Charoite_audio/compare/v0.79.0...v0.80.0) (2026-09-12)
 
 
