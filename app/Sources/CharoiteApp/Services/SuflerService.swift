@@ -49,6 +49,13 @@ final class SuflerService: ObservableObject {
     /// только ей позволено заменять критикал на экране (круг-2 DS, I1).
     @Published private(set) var statusErrorFromDaemon = false
 
+    /// Липкое предупреждение демона (`status` с `sticky: true`): «собеседников
+    /// в записи не будет» — про всю встречу, а не про момент. Обычные статусы
+    /// его не снимают (нелипкий error жил доли секунды: сразу после старта
+    /// демон шлёт «👥 живая диаризация…», и предупреждение исчезало — №228);
+    /// снимается явным `sticky: false` от демона или новым стартом.
+    @Published private(set) var stickyStatus: String?
+
     /// Структурное здоровье живого конвейера. Обычные `status`-события его
     /// не сбрасывают: сообщение про обновлённые минутки не имеет права скрыть
     /// отказ записи на диск или продолжающееся отставание STT.
@@ -294,6 +301,7 @@ final class SuflerService: ObservableObject {
         status = L.t("Запускаю…", "Starting…", "启动中…")
         statusIsError = false
         statusErrorFromDaemon = false
+        stickyStatus = nil          // новая встреча — прошлое предупреждение не её
 
         // Статус TCC проверяем на каждый Start. Кэшировать сам факт проверки
         // нельзя: после отказа второе нажатие раньше запускало демон в тишине.
@@ -814,6 +822,14 @@ final class SuflerService: ObservableObject {
                 // все дальнейшие «⚡ отвечаю» и «минутки обновлены» шли красным
                 statusIsError = obj["error"] as? Bool ?? false
                 statusErrorFromDaemon = statusIsError
+                // Липкое — отдельный слой: ключ есть только у липких и у явного
+                // снятия; статус без ключа его не трогает (№228). Продюсера
+                // `sticky: false` у демона пока нет (канал внутри встречи не
+                // восстанавливается — №232/№111): ветка снятия — контракт на
+                // будущее, а не работающее поведение (DS/GLM r1 по #538)
+                if let sticky = obj["sticky"] as? Bool {
+                    stickyStatus = sticky ? text : nil
+                }
             case "transcript":
                 let spk = obj["speaker"] as? String ?? ""
                 let plain = obj["plain"] as? String ?? ""
