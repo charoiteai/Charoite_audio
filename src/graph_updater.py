@@ -929,7 +929,13 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         if m:
             text = text[:m.end()] + f"\n{stamp}" + text[m.end():]
         else:
-            text += f"\n## Встречи\n{stamp}\n"
+            # раздела нет (человек снёс) — заводим перед «## Архив хроники»,
+            # если он уже есть: архив — всегда хвост узла (Minor DS/GLM r1 по #542)
+            am = re.compile(r"^## Архив хроники[ \t]*$", re.M).search(text, _body_at(text))
+            if am:
+                text = text[:am.start()] + f"## Встречи\n{stamp}\n\n" + text[am.start():]
+            else:
+                text += f"\n## Встречи\n{stamp}\n"
         safe_write.write_text(p, _touch_last_seen(text, day))
         if event:   # после записи: журнал не должен обещать то, чего в узле нет
             _journal_graph_event(event[0], event[1], meeting_link)
@@ -1040,6 +1046,51 @@ def _same_fact(old: str, new: str) -> bool:
     return bool(wa or da) and wa == wb and da == db
 
 
+CHRONICLE_KEEP = 10   # строк вытеснений в «## Хроника» человека/системы; старшие — в «## Архив хроники»
+# Машинная строка вытеснения — ровно то, что пишет _supersede_description;
+# только такие строки считаются и переезжают, рукопись человека — нет
+_CHRONICLE_LINE_RE = re.compile(r"^- \[\[[^\]\n]+\]\] — _\(было: «.*» → стало: «.*»(?:, \d{4}-\d{2}-\d{2})?\)_$")
+
+
+def _cap_chronicle(text: str, keep: int = CHRONICLE_KEEP) -> str:
+    """«## Хроника» узла человека/системы держит последние `keep` строк, старшие
+    уезжают в «## Архив хроники» в конец узла (№233, критика DS r3/r4 по #539).
+
+    Каждое вытеснение описания — строка, и у часто упоминаемого человека узел
+    становился бы лентой «было → стало» без предела; читают же верх узла,
+    дайджест подсказок берёт первые три строки истории, а ретрай встречи
+    гасится ссылкой в любом месте файла (has_link). Факты не теряются —
+    переезжают; новые сверху и в хронике, и в архиве. Имя архива не
+    начинается с «## Хроника», чтобы подстрочные проверки заголовка не
+    приняли его за раздел (урок «## Встречи-архив», DS r1 по #539).
+    Переезжают только МАШИННЫЕ строки — по шаблону самой записи вытеснения;
+    всё, что дописал человек (свой пункт, строка без пункта, пустые строки
+    между группами), остаётся на своём месте, и обрезка от рукописи не
+    выключается (Important DS r1 по #542: гард «чужая строка — не трогаем»
+    и уносил рукописный пункт в архив, и замораживал обрезку навсегда).
+    Лента ядер (`upsert_core`) — не вытеснения, а история встреч, её не режем.
+    """
+    body = _body_at(text)
+    m = re.compile(r"^## Хроника[ \t]*$", re.M).search(text, body)
+    if not m:
+        return text
+    sec_start = m.end()
+    nxt = re.compile(r"^## ", re.M).search(text, sec_start)
+    sec_end = nxt.start() if nxt else len(text)
+    lines = text[sec_start:sec_end].split("\n")
+    machine = [i for i, ln in enumerate(lines) if _CHRONICLE_LINE_RE.match(ln)]
+    if len(machine) <= keep:
+        return text
+    drop = set(machine[keep:])                    # новые сверху → лишние = самые старые
+    overflow = [lines[i] for i in machine[keep:]]
+    kept = [ln for i, ln in enumerate(lines) if i not in drop]
+    text = text[:sec_start] + "\n".join(kept) + text[sec_end:]
+    am = re.compile(r"^## Архив хроники[ \t]*$", re.M).search(text, _body_at(text))
+    if am:
+        return text[:am.end()] + "\n" + "\n".join(overflow) + text[am.end():]
+    return text.rstrip("\n") + "\n\n## Архив хроники\n" + "\n".join(overflow) + "\n"
+
+
 def _supersede_description(text: str, desc: str, meeting_link: str, name: str = "") -> tuple[str, tuple[str, str] | None]:
     """Описание узла человека/системы новым фактом с датой (№194).
 
@@ -1078,7 +1129,7 @@ def _supersede_description(text: str, desc: str, meeting_link: str, name: str = 
     body = _body_at(text)
     m = re.compile(r"^## Хроника[ \t]*$", re.M).search(text, body)
     if m:
-        return text[:m.start()] + head + text[m.end():], event
+        return _cap_chronicle(text[:m.start()] + head + text[m.end():]), event
     m = re.compile(r"^## Встречи[ \t]*$", re.M).search(text, body)      # не «## Встречи-архив» (DS r1)
     if m:
         return text[:m.start()] + head + nl + nl + text[m.start():], event
