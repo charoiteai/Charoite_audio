@@ -497,8 +497,20 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
             todo = []      # отметка прежних форматов (заголовок, «sha1:» круга-2) — всё отправлено
     if not todo:
         print("память Чароита: факты этой встречи уже отправлены — повтор пропущен")
+        _settle_debt(mark)
         return 0
+    # Долг «не всё дошло» — рядом с отметкой, у того, кто её пишет: ставится
+    # до первого POST, снимается, когда в отметке весь состав. Его оплачивает
+    # любой следующий отправитель — повтор обработки или ревизия (DS r2 M3 и
+    # критика по #545: долг жил только в функции ревизии)
+    debt = mark.with_suffix(".pending")
+    try:
+        debt.parent.mkdir(parents=True, exist_ok=True)
+        debt.touch()
+    except OSError:
+        pass
     n = 0
+    covered = len(done)
     try:
         for key, fact in todo:
             # 15с: brain ждёт эмбеддинг bge-m3 из Ollama, занятой нашим же extract —
@@ -513,7 +525,17 @@ def send_to_brain(stamp: str, title: str, people: list, topics: list, decisions:
         print(f"память Чароита: +{n} фактов")
     except Exception as e:  # noqa: BLE001 — brain может быть выключен, не валим граф
         print(f"память Чароита недоступна (ушло {n} из {len(todo)}): {e}")
+    if covered == len(keyed):
+        _settle_debt(mark)
     return n
+
+
+def _settle_debt(mark: pathlib.Path) -> None:
+    """Снять долг переотправки рядом с отметкой — состав дошёл целиком."""
+    try:
+        mark.with_suffix(".pending").unlink()
+    except OSError:
+        pass
 
 
 DEBRIEF_NOTE = ("_Черновик локальной модели по стенограмме; сверка ошибок — «Ревизия "
@@ -523,20 +545,22 @@ BRAIN = "http://127.0.0.1:8100"
 # («### Решения», список с отступом), иначе давало «решений нет» и до, и
 # после ревизии — и переотправка молча не срабатывала (DS r1 M3 по #545)
 _DECISION_LINE = re.compile(r"^\s*- 📌\s+(?P<text>.+?)\s*$")
-_DECISIONS_HEAD = re.compile(r"^#{2,4}\s*Решения\s*$", re.M)
-_NEXT_HEAD = re.compile(r"^#{1,6}\s", re.M)
+_DECISIONS_HEAD = re.compile(r"^(?P<hashes>#{2,4})\s*Решения\s*$", re.M)
+_SECTION_HEAD = re.compile(r"^#{2,4}\s+(?P<name>.+?)\s*$")
 _NOTE_TITLE = re.compile(r"^# Встреча \S+(?: — (?P<title>.+))?\s*$", re.M)
 _PERSON_LINK = re.compile(r"\[\[Люди/[^\]|]+\|(?P<name>[^\]]+)\]\]")
 
 
 def note_decisions(text: str) -> list[str]:
     """Живые решения заметки встречи: строки «- 📌 …» раздела «## Решения».
-    Строка, которую ревизия пометила «- ⛔ …», решением не считается."""
+    Строка, которую ревизия пометила «- ⛔ …», решением не считается.
+    Раздел закрывает заголовок НЕ глубже своего: «### По бюджету» внутри
+    «## Решения» — подраздел решений, а не конец (DS r2 I2 по #545)."""
     m = _DECISIONS_HEAD.search(text)
     if not m:
         return []
     body = text[m.end():]
-    nxt = _NEXT_HEAD.search(body)
+    nxt = re.compile(r"^#{1,%d}\s" % len(m.group("hashes")), re.M).search(body)
     section = body[:nxt.start()] if nxt else body
     return [d.group("text").strip() for ln in section.split("\n") if (d := _DECISION_LINE.match(ln))]
 
@@ -553,8 +577,9 @@ def _note_head(text: str) -> tuple[str, list[dict], list[str]]:
     topics: list[str] = []
     section = None
     for ln in text.split("\n"):
-        if ln.startswith("## "):
-            section = ln[3:].strip()
+        sm = _SECTION_HEAD.match(ln)      # уровень заголовка — мягко, как у решений (GLM r2 M1)
+        if sm:
+            section = sm.group("name")
             continue
         if section == "Участники" and ln.startswith("- "):
             head = ln[2:].lstrip("✅ ").strip()
@@ -581,12 +606,14 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
     ход эмбеддера). Brain лежит — строка в лог, не исключение: ревизия
     доставлена, память догонит повтор.
 
-    Долг переотправки — файл `<отметка>.pending` рядом с отметкой: он
-    ставится ДО /forget и снимается после полной отправки. Сбой между ними
-    (brain забыл встречу, а /remember упал на эмбеддере — сценарий 20.07)
-    иначе оставлял память встречи пустой навсегда: на следующем проходе
-    заметка уже правлена, «решения те же» — и переотправки нет (DS r1 I3
-    по #545). С долгом следующая ревизия или повтор обработки досылают."""
+    Долг переотправки — файл `<отметка>.pending` рядом с отметкой: здесь он
+    ставится ДО /forget, а снимает его send_to_brain, когда состав дошёл
+    целиком. Сбой между /forget и /remember (brain забыл встречу, а
+    эмбеддер упал — сценарий 20.07) иначе оставлял память встречи пустой
+    навсегда: на следующем проходе заметка уже правлена, «решения те же» —
+    и переотправки нет (DS r1 I3 по #545). С долгом досылает следующая
+    ревизия (полная переотправка) или повтор обработки (недостающее по
+    отметке); долги других встреч гасит любой прогон ревизии — pay_brain_debts."""
     post = post or requests.post
     try:
         after = note.read_text(encoding="utf-8")
@@ -617,11 +644,32 @@ def resend_to_brain_after_review(stamp: str, note: pathlib.Path, note_before: st
         # долг остаётся: brain уже забыл встречу, а полный состав не дошёл (GLM r1 M5)
         return (f"память Чароита НЕ переотправлена полностью (ушло {n} из {total}) — "
                 "долг записан, догонит следующая ревизия или повтор обработки")
-    try:
-        pending.unlink()
-    except OSError:
-        pass
     return f"память Чароита переотправлена после ревизии: снято решений {dropped}, ушло фактов {n}"
+
+
+def pay_brain_debts(graph: pathlib.Path, sent_dir: pathlib.Path, *, skip: str = "",
+                    limit: int = 3, post=None) -> list[str]:
+    """Долги переотправки других встреч — при любом прогоне ревизии: без
+    этого долг встречи, которую больше не ревизируют и не пересобирают,
+    висел бы невидимо и вечно (GLM r2 M2 и критика по #545). Не больше
+    `limit` за раз (каждый — /forget и до семи эмбеддингов), свою встречу
+    (`skip`) — не трогаем, её долг гасит сам прогон. Заметки нет в графе —
+    долг снимается: платить не по чему. Возвращает строки для лога."""
+    out: list[str] = []
+    try:
+        debts = sorted(p for p in sent_dir.glob("*.pending") if p.stem != skip)
+    except OSError:
+        return out
+    for debt in debts[:limit]:
+        stamp = debt.stem
+        note = graph / "Встречи" / f"{stamp}.md"
+        if not note.is_file():
+            _settle_debt(debt.with_suffix(".txt"))
+            out.append(f"долг памяти {stamp}: заметки встречи в графе нет — снят")
+            continue
+        out.append(f"долг памяти {stamp}: " + resend_to_brain_after_review(
+            stamp, note, "", debt.with_suffix(".txt"), post=post))
+    return out
 
 
 def theme_slug(title: str) -> str:

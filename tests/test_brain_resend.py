@@ -50,7 +50,11 @@ def test_note_decisions_skip_withdrawn_and_head_reads_only_participants():
     assert g.note_decisions("# Встреча x\n\n## Темы\n- a\n") == []
     # облако переформатировало: уровень заголовка и отступ списка — не повод
     # «не видеть» решений ни до, ни после (DS r1 M3 по #545)
-    assert g.note_decisions("### Решения\n  - 📌 одно\n  - ⛔ два\n#### Связи\n- 📌 не решение\n") == ["одно"]
+    assert g.note_decisions("### Решения\n  - 📌 одно\n  - ⛔ два\n### Связи\n- 📌 не решение\n") == ["одно"]
+    # подраздел внутри решений — не конец раздела (DS r2 I2 по #545)
+    assert g.note_decisions("## Решения\n### По бюджету\n- 📌 Утвердили бюджет\n## Связи\n- 📌 нет\n") == ["Утвердили бюджет"]
+    assert g._note_head(AFTER.replace("## Участники", "### Участники").replace("## Темы", "### Темы"))[1:] == (
+        [{"имя": "Иван"}, {"имя": "Анна"}], ["Оценки и бюджет", "Бюджет на следующий год"]), "уровень заголовка — мягко (GLM r2 M1)"
     title, people, topics = g._note_head(AFTER)
     assert title == "Планёрка команды"
     assert [p["имя"] for p in people] == ["Иван", "Анна"], "упомянутые и «не участники» ссылки несут, участниками не начинаются"
@@ -126,3 +130,34 @@ def test_resend_keeps_a_debt_when_remember_fails_after_forget_and_pays_it_next_t
     # brain лёг на /forget — долг остаётся, отметка цела
     out = g.resend_to_brain_after_review("s", note, BEFORE, mark, post=lambda *a, **k: (_ for _ in ()).throw(ConnectionError("down")))
     assert "долг записан" in out and debt.exists() and mark.exists()
+    # долг гасит и обычный отправитель — повтор обработки (DS r2 M3): отметка полна → долг снят
+    g.send_to_brain("s", "Планёрка команды", [{"имя": "Иван"}], ["тема"],
+                    ["Пересчёт бюджета произойдёт на следующей неделе"], mark, post=lambda *a, **k: _Resp())
+    assert not debt.exists()
+
+
+def test_send_to_brain_owns_the_debt_and_any_review_run_pays_other_meetings(tmp_path):
+    """Долг ставит и снимает тот, кто пишет отметку; долги чужих встреч
+    гасит любой прогон ревизии (GLM r2 M2 и критика по #545)."""
+    sent = tmp_path / "brain_sent"
+    sent.mkdir()
+    mark = sent / "2026-09-01_1000.txt"
+
+    def dead(url, json, timeout):
+        raise ConnectionError("down")
+
+    assert g.send_to_brain("2026-09-01_1000", "Тема", [], [], ["решение"], mark, post=dead) == 0
+    assert (sent / "2026-09-01_1000.pending").exists() and not mark.exists(), "ничего не дошло — долг записан"
+    graph = tmp_path / "graph"
+    (graph / "Встречи").mkdir(parents=True)
+    (graph / "Встречи" / "2026-09-01_1000.md").write_text(BEFORE.replace("2026-09-11_1533", "2026-09-01_1000"), encoding="utf-8")
+    (sent / "2026-09-02_1000.pending").touch()          # заметки нет — платить не по чему
+    (sent / "2026-09-11_1533.pending").touch()          # своя встреча — не трогаем
+    calls: list[str] = []
+    lines = g.pay_brain_debts(graph, sent, skip="2026-09-11_1533",
+                              post=lambda url, json, timeout: calls.append(url) or _Resp())
+    assert lines == ["долг памяти 2026-09-01_1000: память Чароита переотправлена после ревизии: снято решений 0, ушло фактов 4",
+                     "долг памяти 2026-09-02_1000: заметки встречи в графе нет — снят"], lines
+    assert calls[0].endswith("/forget") and len(calls) == 5
+    assert sorted(p.name for p in sent.glob("*.pending")) == ["2026-09-11_1533.pending"]
+    assert mark.read_text(encoding="utf-8").startswith("sent 4/4\n")

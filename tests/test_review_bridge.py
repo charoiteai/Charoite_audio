@@ -376,6 +376,42 @@ def test_withdrawn_item_takes_its_wrapped_lines_along():
         and not rb._continuation("**Пётр** — свой пункт") and not rb._continuation("**Срок**") and not rb._continuation("  ")
 
 
+def test_two_word_owner_is_compared_in_one_canon_on_both_sides(tmp_path):
+    """DS r2 Critical, GLM r2 I1 по #545: у владельца «Иван Орлов» строка
+    минуток сводилась к «**Иван**», а пункт ревизии оставался «**Иван
+    Орлов**» — снятие не срабатывало никогда, восстановление давало дубль."""
+    minutes = "## Поручения\n- [ ] **Иван Орлов** — подготовить отчёт по бюджету\n"
+    assert rb.withdraw_from_minutes(minutes, [("**Иван Орлов** — подготовить отчёт по бюджету", "не прозвучало")],
+                                    owner="Иван Орлов")[1] == 0, "сама функция ждёт пункт в каноне минуток"
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    transcript = tdir / "2026-09-11_1533_Планёрка.md"
+    transcript.write_text("# Встреча\n\n**Иван Орлов** [15:33]: начнём\n", encoding="utf-8")
+    mpath = tdir / "2026-09-11_1533_Планёрка_minutes.md"
+    mpath.write_text("# Минутки\n" + minutes + "- [ ] **Иван Орлов** — согласовать план\n", encoding="utf-8")
+    review = tdir / "2026-09-11_1533_Планёрка_ревизия_claude.md"
+    review.write_text("# Ревизия\n## Снятые поручения\n- **Иван Орлов** — подготовить отчёт по бюджету — причина: не прозвучало\n"
+                      "## Восстановленные поручения\n- [ ] **Иван Орлов** — согласовать план\n"
+                      "- [ ] **Иван Орлов** — позвонить юристу\n", encoding="utf-8")
+    assert rb.withdraw(review, transcript, owner="Иван Орлов") == 1
+    assert rb.bridge(review, transcript, owner="Иван Орлов") == 1, "«согласовать план» уже есть — не дубль"
+    text = mpath.read_text(encoding="utf-8")
+    tasks = text.split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
+    assert tasks.strip() == ("- [ ] **Иван Орлов** — согласовать план\n"
+                             "- [ ] **Иван Орлов** — позвонить юристу (из ревизии)"), text
+    assert "~~**Иван Орлов** — подготовить отчёт по бюджету~~" in text, "в минутках — как было написано, не первое слово"
+
+
+def test_blank_line_inside_a_wrapped_item_does_not_orphan_its_tail():
+    """DS r2 M4 по #545: перенос через пустую строку — тоже хвост пункта."""
+    minutes = "## Поручения\n- [ ] **Мария** — пересчитать оценки,\n\n  отчёт по срокам к 25.09\n- [ ] **Анна** — x\n"
+    text, moved = rb.withdraw_from_minutes(minutes, [("**Мария** — пересчитать оценки", "нет на встрече")])
+    assert moved == 1
+    tasks = text.split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
+    assert tasks.strip() == "- [ ] **Анна** — x", tasks
+    assert "- ~~**Мария** — пересчитать оценки, отчёт по срокам к 25.09~~" in text
+
+
 def test_existing_withdrawn_section_dedups_only_within_itself():
     """GLM r1 M6 по #545: ключи дедупа — из своего раздела, а не до конца файла."""
     minutes = ("# Минутки\n## Поручения\n- [ ] **Анна** — исключить Ольгу из рабочей группы\n\n"

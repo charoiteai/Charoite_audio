@@ -337,8 +337,10 @@ def merge_into_minutes(minutes: str, items: list[str], participants: set[str] | 
     else:
         start, end = bounds
     existing = [_dedup_view(line, owner) for line in lines[start + 1:end] if _key(line)]
+    # сравнение — в одном каноне с обеих сторон (полное имя владельца из
+    # двух слов → первое слово), в минутки пункт идёт как есть (DS r2 по #545)
     new_lines = [f"- [ ] {item} {mark}" for item in fresh
-                 if not any(_same_item(item, line) for line in existing)]
+                 if not any(_same_item(_dedup_view(item, owner), line) for line in existing)]
     if not new_lines:
         return minutes, 0
     section = lines[start + 1:end]
@@ -451,8 +453,11 @@ def withdraw_from_minutes(minutes: str, items: list[tuple[str, str]], lang: str 
         m = _ITEM.match(line)
         text = _CHECKBOX.sub("", m.group("text") if m else line.strip(), count=1).strip()
         i += 1
-        while i < len(body) and _continuation(body[i]):     # переносы пункта — с ним
-            text = f"{text} {body[i].strip()}"
+        # переносы пункта — с ним; пустая строка между ними хвост не обрывает
+        # (DS r2 M4): цикл останавливается на маркере, жирном имени или подписи
+        while i < len(body) and (not body[i].strip() or _continuation(body[i])):
+            if body[i].strip():
+                text = f"{text} {body[i].strip()}"
             i += 1
         moved.append(f"- ~~{text}~~ _({mark}{': ' + why if why else ''})_")
     section = keep
@@ -517,7 +522,11 @@ def withdraw(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
     items = withdrawn_items(text, dropped=dropped)
     if not items:
         return 0
-    items = [(action_items.canon_owner_item(item, owner), why) for item, why in items]
+    # Пункт ревизии — в том же каноне, что строки минуток (_dedup_view: канон
+    # владельца И полное имя из двух слов → первое слово): иначе у владельца
+    # «Иван Орлов» ключи расходились на фамилию, и снятие не срабатывало
+    # никогда (DS r2 Critical, GLM r2 I1 по #545)
+    items = [(_dedup_view(item, owner), why) for item, why in items]
     minutes = minutes_path(transcript)
     if not minutes.is_file():
         return 0

@@ -869,9 +869,30 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             print(f"граф занят другим разбором дольше {LOCK_WAIT // 60} мин — "
                   "работаю на чтение")
             may_edit = deliver = False
-        return _run_locked(stamp, transcript, graph, rev, log, cfg,
-                           may_edit=may_edit, graph_available=graph_available,
-                           deliver=deliver, unlock=stack.close)
+        rc = _run_locked(stamp, transcript, graph, rev, log, cfg,
+                         may_edit=may_edit, graph_available=graph_available,
+                         deliver=deliver, unlock=stack.close)
+    if graph_available:
+        _pay_brain_debts(stamp, graph, log)
+    return rc
+
+
+def _pay_brain_debts(stamp: str, graph: pathlib.Path, log: pathlib.Path) -> None:
+    """Долги переотправки памяти ДРУГИХ встреч — после своего прогона и вне
+    замка графа: встречу, которую больше не ревизируют и не пересобирают,
+    иначе никто не догонял (GLM r2 по #545). Только чтение заметок графа и
+    вызовы brain; сбой — строка в лог, не код выхода."""
+    try:
+        lines = graph_updater.pay_brain_debts(graph, ROOT / "logs" / "brain_sent", skip=stamp)
+    except Exception as e:  # noqa: BLE001 — чужие долги не важнее своей ревизии
+        lines = [f"долги памяти других встреч не проверены: {e}"]
+    if not lines:
+        return
+    try:
+        with log.open("a", encoding="utf-8") as lf:
+            lf.writelines(f"[cloud-review] {ln}\n" for ln in lines)
+    except OSError:
+        print("\n".join(lines))
 
 
 def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
