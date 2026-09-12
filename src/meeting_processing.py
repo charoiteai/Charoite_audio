@@ -31,6 +31,9 @@ RETRY_LIMIT = 3
 # умер, не дописав ни ready, ни error. Час выбран с запасом на честную работу:
 # полная пересборка часовой встречи со всеми моделями укладывается в минуты.
 STALE_PROCESSING = 3600
+# Этап облачной ревизии без исхода дольше этого — воркер мёртв (№240):
+# прогон до 30 мин, пауза повтора 10, второй прогон, замок графа — с запасом.
+REVIEW_STALE = 3 * 3600
 _STAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}_\d{4})")
 # Производные файлы конвейера. Список обязан совпадать со Swift-стороной
 # (MeetingProcessingService.title) и rename_meeting.SUFFIXES: пропущенный
@@ -252,7 +255,60 @@ class MeetingStatusStore:
         # статуса (и приложение до обновления) видят прежний документ.
         if names_pending:
             payload["names_pending"] = True
+        # Этап ревизии переживает готовность: воркер запускается ДО ready()
+        # конвейера и успевал записать «running» раньше, чем тот собрал
+        # документ заново без поля (DS r1 I1, GLM r1 I1 по #546)
+        if isinstance(current.get("review"), dict):
+            payload["review"] = current["review"]
         return self._write(transcript, payload)
+
+    def review(self, transcript: pathlib.Path, state: str, note: str = "") -> pathlib.Path | None:
+        """Этап облачной ревизии — поле `review` поверх статуса, state и stage
+        не трогаем: ревизия идёт отдельным воркером ПОСЛЕ «готово», и
+        приложение показывало «готово» при идущей, повторяемой или упавшей
+        ревизии (№240). `state` — running | retrying | ok | failed, `note` —
+        последняя строка её лога. Статуса ещё нет (воркер запущен руками до
+        разбора) — не заводим: запись без stage читалась бы как битая.
+        `updated_at` самого статуса не сдвигается — по нему судят
+        `unfinished` и `busy`, а ревизия не обработка."""
+        transcript = pathlib.Path(transcript)
+        current = self._read(transcript)
+        if not current:
+            return None
+        current["review"] = {"state": state, "note": str(note)[:300], "updated_at": float(self._now())}
+        return self._write(transcript, current)
+
+    def expire_reviews(self, *, stale_after: float = REVIEW_STALE) -> list[pathlib.Path]:
+        """Этап `running`/`retrying`, который никто не закрыл, — в `failed`:
+        воркер убит в паузе повтора или на живом гейте, и поле иначе висело
+        бы в статусе навсегда (DS r1 I2, GLM r1 I3 по #546). Порог — дольше
+        худшего честного пути (прогон 30 мин + пауза 10 + второй прогон
+        + замок); живой воркер потом перепишет поле своим исходом.
+        Возвращает переписанные файлы; зовётся из unfinished()."""
+        now = float(self._now())
+        out: list[pathlib.Path] = []
+        for path in sorted(self.directory.glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            rv = data.get("review") if isinstance(data, dict) else None
+            if not isinstance(rv, dict) or rv.get("state") not in ("running", "retrying"):
+                continue
+            try:
+                age = now - float(rv.get("updated_at", 0) or 0)
+            except (TypeError, ValueError):
+                age = float("inf")
+            if age < stale_after:
+                continue
+            data["review"] = {"state": "failed", "note": "воркер ревизии не завершил работу (этап устарел)",
+                              "updated_at": now}
+            try:
+                self._write_path(path, data)
+            except OSError:
+                continue
+            out.append(path)
+        return out
 
     def failed(self, transcript: pathlib.Path, error: object) -> pathlib.Path:
         transcript = pathlib.Path(transcript)
@@ -271,6 +327,8 @@ class MeetingStatusStore:
             # повторять, — уже другой процесс, запущенный после следующей встречи.
             "attempts": int(current.get("attempts", 0)) + 1,
         }
+        if isinstance(current.get("review"), dict):
+            payload["review"] = current["review"]
         return self._write(transcript, payload)
 
     def unfinished(self, *, stale_after: float = STALE_PROCESSING,
@@ -286,6 +344,7 @@ class MeetingStatusStore:
         который умер, не дописав ни ready, ни error (SIGKILL, перезагрузка,
         закрытая крышка).
         """
+        self.expire_reviews()
         now = float(self._now())
         out: list[dict[str, Any]] = []
         # Одна встреча — один голос. Записи группируются по файлу, куда сегодня
@@ -517,6 +576,12 @@ class MeetingStatusStore:
         previous = self._read(transcript).get("meeting_id")
         payload = {**payload, "key": self._key(transcript),
                    "meeting_id": previous or payload.get("meeting_id")}
+        self._write_path(target, payload)
+        return target
+
+    def _write_path(self, target: pathlib.Path, payload: dict[str, Any]) -> None:
+        """Атомарная запись документа статуса по готовому пути (ключ и
+        meeting_id уже в payload): tmp → fsync → replace."""
         fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=self.directory)
         tmp = pathlib.Path(tmp_name)
         try:
@@ -528,7 +593,6 @@ class MeetingStatusStore:
             os.replace(tmp, target)
         finally:
             tmp.unlink(missing_ok=True)
-        return target
 
     def _prune(self, now: float) -> None:
         if not self.directory.is_dir():

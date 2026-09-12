@@ -450,3 +450,64 @@ def test_infinite_numbers_in_a_status_are_treated_as_corrupt(tmp_path):
     store = MeetingStatusStore(tmp_path, now=lambda: 10.0)
     assert store.busy() == []
     assert store.unfinished() == []
+
+
+def test_review_stage_rides_on_top_of_the_status_without_moving_readiness(tmp_path):
+    """№240: этап облачной ревизии — поле `review` в статусе встречи; state,
+    stage и updated_at готовности не сдвигаются (по ним судят unfinished и
+    busy); без статуса запись не заводится."""
+    live = _transcript(tmp_path)
+    ticks = [100.0, 120.0, 130.0, 140.0]
+    store = MeetingStatusStore(tmp_path, now=lambda: ticks.pop(0) if ticks else 200.0)
+    assert store.review(live, "running") is None and not list((tmp_path / "logs").glob("**/*.json")), \
+        "воркер, запущенный до разбора, статус не выдумывает"
+    store.processing(live, "updating_graph")
+    path = store.ready(live, note=None)
+    store.review(live, "running", "файлов в запросе 4")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["state"] == "ready" and data["stage"] == "complete" and data["updated_at"] == 120.0
+    assert data["review"] == {"state": "running", "note": "файлов в запросе 4", "updated_at": 130.0}
+    store.review(live, "failed", "x" * 500)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["review"]["state"] == "failed" and len(data["review"]["note"]) == 300
+    assert store.unfinished() == [] and store.busy() == [], "ревизия — не обработка"
+
+
+def test_review_stage_survives_ready_and_failed_but_not_a_new_run(tmp_path):
+    """DS/GLM r1 I1 по #546: воркер пишет «running» раньше, чем конвейер
+    дописывает готовность, — ready()/failed() переносят поле, новый прогон
+    (processing) его снимает."""
+    live = _transcript(tmp_path)
+    store = MeetingStatusStore(tmp_path, now=lambda: 100.0)
+    store.processing(live, "updating_graph")
+    store.review(live, "running", "файлов в запросе 4")
+    path = store.ready(live, note=None)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["state"] == "ready" and data["review"]["state"] == "running", "готовность не стёрла этап ревизии"
+    store.failed(live, "boom")
+    assert json.loads(path.read_text(encoding="utf-8"))["review"]["state"] == "running"
+    store.processing(live, "transcribing")
+    assert "review" not in json.loads(path.read_text(encoding="utf-8")), "новый прогон — новая ревизия"
+
+
+def test_stale_running_or_retrying_review_expires_into_failed(tmp_path):
+    """DS r1 I2, GLM r1 I3 по #546: воркер убит в паузе повтора — этап
+    «retrying» не должен висеть вечно; unfinished() его протухает."""
+    import meeting_processing
+    live = _transcript(tmp_path)
+    clock = [100.0]
+    store = MeetingStatusStore(tmp_path, now=lambda: clock[0])
+    store.processing(live, "updating_graph")
+    path = store.ready(live, note=None)
+    store.review(live, "retrying", "повтор через десять минут")
+    clock[0] = 100.0 + meeting_processing.REVIEW_STALE - 1
+    assert store.unfinished() == [] and json.loads(path.read_text(encoding="utf-8"))["review"]["state"] == "retrying"
+    clock[0] = 100.0 + meeting_processing.REVIEW_STALE + 1
+    assert store.unfinished() == []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["review"]["state"] == "failed" and "не завершил" in data["review"]["note"]
+    assert data["state"] == "ready" and data["updated_at"] == 100.0, "готовность и её время не тронуты"
+    store.review(live, "ok", "правок облака: 2")
+    clock[0] += meeting_processing.REVIEW_STALE * 2
+    store.unfinished()
+    assert json.loads(path.read_text(encoding="utf-8"))["review"]["state"] == "ok", "исход не протухает"
