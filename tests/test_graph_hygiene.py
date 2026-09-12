@@ -349,6 +349,48 @@ def test_same_fact_rule_table():
         assert not same(old, new), (old, new)
 
 
+def test_people_chronicle_keeps_last_ten_and_archives_the_rest(tmp_path):
+    """№233 (критика DS r3/r4 по #539): хроника вытеснений держит последние
+    десять строк, старшие переезжают в «## Архив хроники» в конец узла — новые
+    сверху в обоих; ссылка встречи из архива по-прежнему гасит ретрай; раздел
+    с рукописной строкой не режется."""
+    graph = tmp_path / "g"
+    (graph / "Люди").mkdir(parents=True)
+    node = graph / "Люди" / "Лента.md"
+    for i in range(13):
+        g.upsert_entity(graph, "Люди", "Лента", "person", f"роль {i}", f"Встречи/2026-01-{i + 1:02d}_1000", "")
+    text = node.read_text(encoding="utf-8")
+    chron = text.split("## Хроника\n", 1)[1].split("\n## ", 1)[0]
+    items = [ln for ln in chron.splitlines() if ln.startswith("- ")]
+    assert g.CHRONICLE_KEEP == 10 and len(items) == 10, items
+    assert "2026-01-13" in items[0] and "2026-01-04" in items[-1], "новые сверху, десятая — самая старая из оставленных"
+    assert text.index("## Встречи") < text.index("## Архив хроники"), "архив — в конце узла, не перед встречами"
+    archive = [ln for ln in text.split("## Архив хроники\n", 1)[1].splitlines() if ln.startswith("- ")]
+    assert [ln.split("]]")[0] for ln in archive] == ["- [[Встречи/2026-01-03_1000", "- [[Встречи/2026-01-02_1000"], archive
+    assert "роль 0" in archive[-1] and "роль 1" in archive[-1], "факт переехал целиком, не обрезан"
+    assert text.count("- [[Встречи/2026-01-") == 13 + 12, "13 ссылок встреч + 12 строк вытеснений, ничего не потеряно"
+    # ретрай встречи, чья строка уже в архиве, — без изменений
+    g.upsert_entity(graph, "Люди", "Лента", "person", "роль 99", "Встречи/2026-01-02_1000", "")
+    assert node.read_text(encoding="utf-8") == text
+    # следующее вытеснение: в хронике по-прежнему десять, архив растёт сверху
+    g.upsert_entity(graph, "Люди", "Лента", "person", "роль 13", "Встречи/2026-01-14_1000", "")
+    text = node.read_text(encoding="utf-8")
+    chron = [ln for ln in text.split("## Хроника\n", 1)[1].split("\n## ", 1)[0].splitlines() if ln.startswith("- ")]
+    archive = [ln.split("]]")[0] for ln in text.split("## Архив хроники\n", 1)[1].splitlines() if ln.startswith("- ")]
+    assert len(chron) == 10 and "2026-01-14" in chron[0]
+    assert archive == ["- [[Встречи/2026-01-04_1000", "- [[Встречи/2026-01-03_1000", "- [[Встречи/2026-01-02_1000"], archive
+    # рукописная строка в хронике — раздел не режем
+    manual = "# Ручной\nаналитик\n\n## Хроника\n" + "\n".join(f"- [[Встречи/2026-02-{i:02d}_1000]] — _(было: «a{i}» → стало: «b{i}»)_" for i in range(1, 13)) \
+        + "\nсюда я дописал сам\n\n## Встречи\n- [[Встречи/2026-02-01_1000]]\n"
+    assert g._cap_chronicle(manual) == manual
+    # ядра: лента встреч — не хроника вытеснений, режется только у людей и систем
+    (graph / "Ядра").mkdir()
+    for i in range(1, 14):
+        g.upsert_core(graph, {"имя": "Тема", "статус": f"этап {i}", "обновление": "шаг"}, f"Встречи/2026-03-{i:02d}_1000", f"2026-03-{i:02d}")
+    core = (graph / "Ядра" / "Тема.md").read_text(encoding="utf-8")
+    assert core.count("- [[Встречи/2026-03-") == 13 and "## Архив хроники" not in core
+
+
 def test_description_supersede_edges(tmp_path):
     """Края №194 по кругам 1–2 (#539): даты, короткие описания, frontmatter с
     комментарием и с «## » в шапке, CRLF, ссылка без штампа, «## Встречи-архив»,

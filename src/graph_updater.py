@@ -1040,6 +1040,44 @@ def _same_fact(old: str, new: str) -> bool:
     return bool(wa or da) and wa == wb and da == db
 
 
+CHRONICLE_KEEP = 10   # строк вытеснений в «## Хроника» человека/системы; старшие — в «## Архив хроники»
+
+
+def _cap_chronicle(text: str, keep: int = CHRONICLE_KEEP) -> str:
+    """«## Хроника» узла человека/системы держит последние `keep` строк, старшие
+    уезжают в «## Архив хроники» в конец узла (№233, критика DS r3/r4 по #539).
+
+    Каждое вытеснение описания — строка, и у часто упоминаемого человека узел
+    становился бы лентой «было → стало» без предела; читают же верх узла,
+    дайджест подсказок берёт первые три строки истории, а ретрай встречи
+    гасится ссылкой в любом месте файла (has_link). Факты не теряются —
+    переезжают; новые сверху и в хронике, и в архиве. Имя архива не
+    начинается с «## Хроника», чтобы подстрочные проверки заголовка не
+    приняли его за раздел (урок «## Встречи-архив», DS r1 по #539).
+    Раздел с чужой (не «- ») строкой не трогаем: это правка человека.
+    Лента ядер (`upsert_core`) — не вытеснения, а история встреч, её не режем.
+    """
+    body = _body_at(text)
+    m = re.compile(r"^## Хроника[ \t]*$", re.M).search(text, body)
+    if not m:
+        return text
+    sec_start = m.end()
+    nxt = re.compile(r"^## ", re.M).search(text, sec_start)
+    sec_end = nxt.start() if nxt else len(text)
+    lines = text[sec_start:sec_end].split("\n")
+    if any(ln.strip() and not ln.startswith("- ") for ln in lines):
+        return text
+    items = [ln for ln in lines if ln.startswith("- ")]
+    if len(items) <= keep:
+        return text
+    overflow = items[keep:]
+    text = text[:sec_start] + "\n" + "\n".join(items[:keep]) + "\n\n" + text[sec_end:]
+    am = re.compile(r"^## Архив хроники[ \t]*$", re.M).search(text, _body_at(text))
+    if am:
+        return text[:am.end()] + "\n" + "\n".join(overflow) + text[am.end():]
+    return text.rstrip("\n") + "\n\n## Архив хроники\n" + "\n".join(overflow) + "\n"
+
+
 def _supersede_description(text: str, desc: str, meeting_link: str, name: str = "") -> tuple[str, tuple[str, str] | None]:
     """Описание узла человека/системы новым фактом с датой (№194).
 
@@ -1078,7 +1116,7 @@ def _supersede_description(text: str, desc: str, meeting_link: str, name: str = 
     body = _body_at(text)
     m = re.compile(r"^## Хроника[ \t]*$", re.M).search(text, body)
     if m:
-        return text[:m.start()] + head + text[m.end():], event
+        return _cap_chronicle(text[:m.start()] + head + text[m.end():]), event
     m = re.compile(r"^## Встречи[ \t]*$", re.M).search(text, body)      # не «## Встречи-архив» (DS r1)
     if m:
         return text[:m.start()] + head + nl + nl + text[m.start():], event
