@@ -65,17 +65,21 @@ class LLMHTTPError(RuntimeError):
 def parse_json_block(text: str) -> dict | None:
     """Первый JSON-объект из ответа модели.
 
-    Модели заворачивают JSON в прозу и ```-заборы даже при прямом запрете;
-    берём первый блок в фигурных скобках. None — разобрать нечего.
+    Модели заворачивают JSON в прозу и ```-заборы даже при прямом запрете.
+    Разбор — от каждой «{» по порядку через raw_decode: жадный «{.*}» брал
+    диапазон от первой скобки до последней, и «{"a":1}\nПримечание: {"b":2}»
+    не разбирался вовсе (аудит 13.09, GLM M1). None — разобрать нечего.
     """
-    m = re.search(r"\{.*\}", text or "", re.DOTALL)
-    if not m:
-        return None
-    try:
-        data = json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return None
-    return data if isinstance(data, dict) else None
+    text = text or ""
+    dec = json.JSONDecoder()
+    for m in re.finditer(r"\{", text):
+        try:
+            data, _ = dec.raw_decode(text, m.start())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
 
 
 # Дефолтные веса для mlx-server: тот же MoE, что боевой ollama-тег, только
@@ -223,7 +227,16 @@ class LLM:
             self.fallback = self.model
         # Локальный запас на случай, когда облачного шлюза нет: без него
         # пропавшая сеть означает встречу без подсказок вовсе.
-        self.fallback_local = l.get("cloud_fallback_local", True) is not False
+        fb = l.get("cloud_fallback_local")
+        if fb is None:
+            fb = True
+        elif not isinstance(fb, bool):
+            # строгий булев, как у тумблеров privacy: «false» в кавычках из YAML —
+            # не False, и молча считать его истиной нельзя (аудит 13.09, DS M5)
+            print(f"llm: cloud_fallback_local = {fb!r} — ожидается true/false, "
+                  "считаю true", file=sys.stderr, flush=True)
+            fb = True
+        self.fallback_local = fb
         # На что падаем, когда шлюза нет. Жёсткий «ollama» бил мимо у тех, чей
         # локальный движок — mlx_lm.server: в Ollama у них из чат-моделей никого,
         # она держит только bge-m3 (круг-1, обе головы).
@@ -331,7 +344,7 @@ class LLM:
             for line in r.iter_lines():
                 if not line:
                     continue
-                data = json.loads(line)
+                data = self._json_line(r, line)
                 if data.get("error"):
                     # ошибка ПОСРЕДИ 200-стрима приходит строкой {"error": …}:
                     # без этой проверки поток заканчивался «нормально» пустым,
@@ -348,6 +361,17 @@ class LLM:
                 # оборвалась. Усечённый ответ не выдаём за целый — минутки
                 # без хвоста встречи внешне неотличимы от готовых.
                 raise self._fail(r.status_code, "стрим оборван без завершения")
+
+    def _json_line(self, r, line: bytes):
+        """Строка потока → JSON, иначе LLMHTTPError по контракту стрима.
+
+        Страница прокси или портала внутри 200-стрима роняла итератор голым
+        ValueError мимо задокументированного LLMHTTPError, и обработчики живого
+        контура его не ловили (аудит 13.09, DS M1/M2)."""
+        try:
+            return json.loads(line)
+        except ValueError:
+            raise self._fail(r.status_code, f"не-JSON в потоке: {line[:120]!r}") from None
 
     def _fail(self, status: int, detail: str) -> LLMHTTPError:
         """ЕДИНСТВЕННЫЙ способ создать LLMHTTPError внутри клиента.
@@ -477,7 +501,7 @@ class LLM:
             for line in r.iter_lines():
                 if not line:
                     continue
-                data = json.loads(line)
+                data = self._json_line(r, line)
                 if data.get("error"):
                     raise self._fail(r.status_code, str(data["error"]))
                 chunk = data.get("message", {}).get("content", "")
@@ -617,17 +641,22 @@ class LLM:
                     if now - started > limit:
                         raise self._fail(200, f"шлюз не отдал ни одного токена "
                                               f"за {int(now - started)} с")
-                if not line or not line.startswith(b"data: "):
+                # «data:» без пробела — тоже валидный SSE (аудит 13.09, DS M1)
+                if not line or not line.startswith(b"data:"):
                     continue
-                line = line[6:]
+                line = line[5:].lstrip(b" ")
                 if line.strip() == b"[DONE]":
                     done = True
                     break
-                data = json.loads(line)
+                data = self._json_line(r, line)
                 if isinstance(data, dict) and data.get("error"):
                     raise self._fail(r.status_code, str(data["error"]))
-                chunk = (((data.get("choices") or [{}])[0].get("delta") or {})
-                         .get("content") or "")
+                try:
+                    chunk = (((data.get("choices") or [{}])[0].get("delta") or {})
+                             .get("content") or "")
+                except (AttributeError, TypeError, IndexError):
+                    raise self._fail(r.status_code,
+                                     f"неожиданная форма SSE: {line[:120]!r}") from None
                 if chunk:
                     silence = active = None      # ответ пошёл — дедлайн снят
                     yield chunk
@@ -699,8 +728,13 @@ class LLM:
                                           temperature=temperature, stream=False)
             wait = min(busy_wait, CLOUD_BUSY_WAIT) if self.fallback_local else busy_wait
             try:
-                r = self._post_busy(f"{self.base}/chat/completions",
-                                    payload, CLOUD_TIMEOUT, wait)
+                # read-таймаут — от вызывающего, не меньше облачного минимума: документные
+                # вызовы (минутки timeout=600, разбор графа) резались 45 с и молча уходили
+                # на локальную модель; CLOUD_TIMEOUT целиком — только для стрима подсказок
+                # (аудит 13.09, DS I1)
+                r = self._post_busy(f"{self.base}/chat/completions", payload,
+                                    (CLOUD_TIMEOUT[0], max(CLOUD_TIMEOUT[1], float(timeout))),
+                                    wait)
                 body = self._checked_body(r)
                 msg = ((body.get("choices") or [{}])[0].get("message") or {})
                 return (msg.get("content") or "").strip()
@@ -768,6 +802,7 @@ class LLM:
         for delay in BUSY_BACKOFF + (BUSY_BACKOFF[-1],) * 1000:
             r = requests.post(url, json=payload, timeout=timeout, **self._auth())
             if r.status_code in BUSY_STATUSES and time.monotonic() + delay <= deadline:
+                r.close()          # соединение не держим до GC на каждой паузе (GLM M2), как в _open_stream
                 time.sleep(delay)
                 continue
             return r
@@ -1046,6 +1081,11 @@ class LLM:
         дольше двух минут живого потолка (DS/GLM r1 по #558)."""
         kwargs.setdefault("timeout", DOC_STREAM_TIMEOUT)
         return self.stream(*args, **kwargs)
+
+    def fit(self, transcript: str) -> str:
+        """Публичный вход `_fit` для внешних сборщиков промпта (MCP-минутки):
+        длинную встречу сворачивают так же, как демон (аудит 13.09, GLM I1)."""
+        return self._fit(transcript)
 
     def _fit(self, transcript: str) -> str:
         """Длинную встречу сворачиваем в сводки частей, а не отдаём на обрезку.

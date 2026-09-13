@@ -215,6 +215,19 @@ def mlx_base_url(cfg: dict, env: dict | None = None) -> str:
     return _guarded_url(cfg, env, key="mlx_base_url", default=DEFAULT_MLX_URL)
 
 
+def _is_private_host(host: str | None) -> bool:
+    """Адрес своей сети: частный, link-local или loopback IP, mDNS-имя «.local»
+    и подобные, имя без точек (хост в локальной сети). Для него http допустим."""
+    if not host:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        h = host.lower()
+        return "." not in h or h.endswith((".local", ".lan", ".home", ".internal"))
+    return ip.is_private or ip.is_link_local or ip.is_loopback
+
+
 def _guarded_url(cfg: dict, env: dict | None, *, key: str, default: str) -> str:
     env = os.environ if env is None else env
     raw = str((cfg.get("llm") or {}).get(key) or default)
@@ -227,6 +240,18 @@ def _guarded_url(cfg: dict, env: dict | None, *, key: str, default: str) -> str:
             f"llm.{key} = {raw} указывает не на эту машину, а рубильник "
             f"{'/'.join(k for k in KILL_SWITCHES if env.get(k))} запрещает "
             "любой выход наружу")
+    # Схема — часть политики, не только адрес: allow_remote разрешал http на
+    # чужую машину, и стенограмма шла бы по сети открытым текстом (аудит 13.09,
+    # DS M3). Своя сеть (RFC 1918, link-local, .local) — http допустим: Ollama
+    # на соседнем Mac TLS не умеет; всё, что дальше, — только https.
+    scheme = urllib.parse.urlsplit(url).scheme.lower()
+    if scheme not in ("http", "https"):
+        raise RuntimeError(f"llm.{key} = {raw}: схема «{scheme or '—'}» не поддерживается, нужен http(s)")
+    if scheme == "http" and not _is_private_host(host):
+        raise RuntimeError(
+            f"llm.{key} = {raw} — адрес вне своей сети по открытому http: стенограмма "
+            "ушла бы по сети открытым текстом. Для удалённого адреса нужен https "
+            "(llm.allow_remote этого не снимает)")
     if (cfg.get("llm") or {}).get("allow_remote") is True:
         return url
     raise RuntimeError(

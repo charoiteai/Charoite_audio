@@ -101,3 +101,26 @@ def test_no_reader_bypasses_privacy():
     assert scanned > 1, "сторож не нашёл файлов для проверки — обход сломан"
     assert not offenders, (
         "llm.base_url читается мимо privacy.llm_base_url:\n" + "\n".join(offenders))
+
+
+# ── Аудит 13.09, зона 4: схема — часть политики (DS M3) ─────────────────
+
+def test_remote_http_outside_own_network_is_refused_even_with_allow_remote():
+    # 203.0.113.0/24 (TEST-NET) ipaddress считает непубличным — берём настоящий внешний адрес и имя
+    for url in ("http://8.8.8.8:11434", "http://llm.example.com:11434"):
+        cfg = {"llm": {"base_url": url, "allow_remote": True}}
+        with pytest.raises(RuntimeError, match="https"):
+            privacy.llm_base_url(cfg, NO_ENV)
+
+
+def test_remote_http_inside_own_network_and_https_anywhere_are_allowed_with_flag():
+    for url in ("http://192.168.1.50:11434", "http://10.0.0.7:11434", "http://ollama.local:11434",
+                "http://studio:11434", "https://llm.example.com"):
+        cfg = {"llm": {"base_url": url, "allow_remote": True}}
+        assert privacy.llm_base_url(cfg, NO_ENV) == url
+
+
+def test_unknown_scheme_is_refused():
+    cfg = {"llm": {"base_url": "ftp://192.168.1.50:11434", "allow_remote": True}}
+    with pytest.raises(RuntimeError, match="схема"):
+        privacy.llm_base_url(cfg, NO_ENV)

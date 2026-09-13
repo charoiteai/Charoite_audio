@@ -71,17 +71,26 @@ _DERIVED = tuple(f"{s}.md" for s in meeting_stamp.AUX_SUFFIXES)
 
 
 def _latest(pattern: str = "*.md") -> pathlib.Path | None:
-    files = [
-        p for p in TRANSCRIPTS.glob(pattern)
-        if not p.name.endswith(_DERIVED)
-    ]
-    return max(files, key=lambda p: p.stat().st_mtime) if files else None
+    files = []
+    for p in TRANSCRIPTS.glob(pattern):
+        if p.name.endswith(_DERIVED):
+            continue
+        try:
+            files.append((p.stat().st_mtime, p))
+        except OSError:
+            continue        # ретеншн демона убрал файл между glob и stat (аудит 13.09, GLM M3)
+    return max(files)[1] if files else None
+
+
+DAEMON_PATTERN = r"python[^ ]* .*src/daemon\.py($| )"
 
 
 @mcp.tool()
 def sufler_status() -> str:
     """Статус суфлёра: идёт ли встреча, какой файл стенограммы, размер."""
-    running = subprocess.run(["pgrep", "-f", "src/daemon.py"], capture_output=True).returncode == 0
+    # только процесс python с этим скриптом: голый «src/daemon.py» совпадал с редактором,
+    # в котором открыт файл, и статус врал «работает» (аудит 13.09, GLM M4)
+    running = subprocess.run(["pgrep", "-f", DAEMON_PATTERN], capture_output=True).returncode == 0
     f = _latest()
     if not f:
         return f"Демон: {'работает' if running else 'остановлен'}. Стенограмм нет."
@@ -99,7 +108,9 @@ def sufler_live_transcript(max_chars: int = 6000) -> str:
     if not f:
         return "Стенограмм нет."
     text = f.read_text(encoding="utf-8")
-    body = text.split("---")[0]  # без раздела ко-мышления
+    # граница заметок — канон transcript.notes_start: самодельный split("---") резал
+    # стенограмму на первом же «---» внутри сказанного (аудит 13.09, DS M4)
+    body = text[:transcript.notes_start(text)]
     return f"[{f.name}]\n" + (body[-max_chars:] if len(body) > max_chars else body)
 
 
@@ -129,9 +140,14 @@ def sufler_make_minutes() -> str:
     # инструмент отвечал «Минутки сохранены». Дальше пустышку подхватывал
     # архив, и документ встречи пропадал до ручного повторного прогона.
     # Пустой ответ модели — это неудача, а не новые минутки.
+    client = _client()
     try:
-        out = _client().complete(
-            f"Стенограмма:\n\n{transcript}\n\nСоставь минутки: дата, участники, темы, решения, поручения списком «- **Кто** — что — срок» (только участникам; дела для отсутствующих — в открытые вопросы), открытые вопросы, риски. Только факты. ЖЁСТКИЙ ЛИМИТ: не длиннее 900 знаков, максимум 3 пункта в разделе, каждый — одна строка.",
+        # длинная встреча — через ту же свёртку частей, что у демона: иначе Ollama
+        # молча обрезала промпт, и минутки без первого часа ложились поверх полных
+        # (аудит 13.09, GLM I1)
+        fitted = client.fit(transcript)
+        out = client.complete(
+            f"Стенограмма:\n\n{fitted}\n\nСоставь минутки: дата, участники, темы, решения, поручения списком «- **Кто** — что — срок» (только участникам; дела для отсутствующих — в открытые вопросы), открытые вопросы, риски. Только факты. ЖЁСТКИЙ ЛИМИТ: не длиннее 900 знаков, максимум 3 пункта в разделе, каждый — одна строка.",
             system="Ты секретарь встречи. Пишешь точные, сухие минутки по-русски, markdown. Оформляешь всё списками «- …» с жирным ключом.",
             model=MODEL,  # из конфига: не тянем вторую тяжёлую модель поверх резидентной
             think=None,   # умолчание модели — как исторически у этого инструмента
@@ -185,10 +201,15 @@ def sufler_update_graph() -> str:
     """Обновить Obsidian-граф по последней встрече (сущности, связи, решения)."""
     import sys as _sys
 
-    r = subprocess.run(
-        [_sys.executable, str(CODE / "src" / "graph_updater.py")],
-        capture_output=True, text=True, timeout=600,
-    )
+    try:
+        r = subprocess.run(
+            [_sys.executable, str(CODE / "src" / "graph_updater.py")],
+            capture_output=True, text=True, timeout=600,
+        )
+    except subprocess.TimeoutExpired:
+        # сырой краш инструмента вместо ответа; отцеплённый облачный воркер
+        # graph_updater переживёт, локальный прогон остаётся без отчёта (GLM M5)
+        return "разбор не уложился в 600 с и прерван — повторите позже или запустите graph_updater.py вручную"
     return (r.stdout + r.stderr).strip() or "готово"
 
 
