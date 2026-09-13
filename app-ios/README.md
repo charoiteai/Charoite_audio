@@ -31,8 +31,14 @@ runs on your Mac.
   When the call ends, the app waits for the microphone for up to a minute
   (iOS hands it back a few seconds after a long call, not instantly) and
   continues the same file; if the input never comes back, it closes the
-  file and continues the meeting in a new one, arming itself if the input
-  is still busy. Calls are recorded by the Mac.
+  file and continues the meeting in a new one. A second call inside that
+  minute cancels the wait — the file is never cut while a call is live —
+  and opening the app during a pause only probes the input, it does not
+  start the countdown. If the new file cannot start because the input is
+  still busy, the start is armed; in the background that arm cannot fire
+  on its own (iOS suspends the app), so the recording picks up when the app
+  is opened again or when the system grants it time. Calls are recorded by
+  the Mac.
 - **Stalled-recording watchdog** — if the file's duration stops growing
   for more than three seconds (a call, an interruption, a stolen
   microphone), the screen says so in orange. An earlier build measured

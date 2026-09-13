@@ -66,4 +66,25 @@ final class RecorderAfterCallTests: XCTestCase {
     func testОжиданиеПослеЗвонкаНеБудитСторожаЗастоя() {
         XCTAssertFalse(Recorder.shouldAutoResume(stalled: true, interrupted: true))
     }
+
+    // MARK: - Окно ожидания: одно и только в паузе (круг 1 по #530)
+
+    /// `.ended` без `.began` не ставит штамп, повторный `.ended` не
+    /// перезапускает бюджет (GLM M2, DS M1).
+    func testОкноПослеЗвонкаОткрываетсяОдинРазИТолькоВПаузе() {
+        XCTAssertTrue(Recorder.shouldOpenAfterCallWindow(interrupted: true, windowOpen: false))
+        XCTAssertFalse(Recorder.shouldOpenAfterCallWindow(interrupted: true, windowOpen: true),
+                       "второй .ended не должен сдвигать бюджет минуты")
+        XCTAssertFalse(Recorder.shouldOpenAfterCallWindow(interrupted: false, windowOpen: false),
+                       "«пустой» .ended без паузы — ложный штамп")
+    }
+
+    /// Возврат в приложение посреди паузы — принудительная проба входа, а не
+    /// окно с ротацией: звонок мог ещё идти (GLM I1, DS I1-B).
+    func testПринудительнаяПробаМинуетПороги() {
+        XCTAssertFalse(Recorder.shouldProbeInterruption(interruptedFor: 1, sinceLastProbe: 1))
+        XCTAssertTrue(Recorder.shouldProbeInterruption(interruptedFor: 1, sinceLastProbe: 1, forced: true))
+        XCTAssertTrue(Recorder.shouldProbeInterruption(interruptedFor: Recorder.probeAfterInterruption,
+                                                       sinceLastProbe: nil))
+    }
 }

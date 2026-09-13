@@ -234,6 +234,10 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     /// Фоновая задача на окно ожидания входа после звонка: без неё iOS
     /// вправе усыпить приложение между попытками, и вход не вернётся никому.
     private var afterCallTask: UIBackgroundTaskIdentifier = .invalid
+    private var rotateTask: UIBackgroundTaskIdentifier = .invalid
+    /// Проверить вход на ближайшем такте, минуя пороги пробы: возврат в
+    /// приложение посреди паузы (`.ended` мог потеряться).
+    private var probeNow = false
 
     /// Сколько ждём микрофон после конца звонка, прежде чем закрыть файл и
     /// продолжить встречу новым.
@@ -287,11 +291,24 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     /// вернёт false.
     nonisolated static func shouldProbeInterruption(
         interruptedFor: TimeInterval,
-        sinceLastProbe: TimeInterval?
+        sinceLastProbe: TimeInterval?,
+        forced: Bool = false
     ) -> Bool {
+        // Принудительная проба — возврат в приложение посреди паузы: `.ended`
+        // мог потеряться, проверяем вход сразу. Проба безопасна: не ротирует
+        // и ничего не считает, поэтому пороги ей не указ (GLM I1 по #530).
+        if forced { return true }
         guard interruptedFor >= probeAfterInterruption else { return false }
         guard let sinceLastProbe else { return true }
         return sinceLastProbe >= probeEvery
+    }
+
+    /// Открывать ли окно ожидания по `.ended`: только если мы действительно
+    /// в паузе и окно ещё не открыто. «Пустой» `.ended` (без `.began`) не
+    /// оставляет ложного штампа, второй `.ended` не перезапускает бюджет
+    /// (GLM M2, DS M1 по #530).
+    nonisolated static func shouldOpenAfterCallWindow(interrupted: Bool, windowOpen: Bool) -> Bool {
+        interrupted && !windowOpen
     }
     /// Что пишем сейчас — нужно, чтобы продолжить тем же типом после ротации.
     private var currentKind: Kind = .meeting
@@ -564,11 +581,13 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
                 }
                 // Открыли приложение посреди паузы: `.ended` iOS доставляет
                 // не всегда — человек вернулся после звонка, вход проверяем
-                // сразу, а не через полминуты по таймеру.
+                // сразу, а не через полминуты по таймеру. Но не окном
+                // ожидания с ротацией: звонок мог ещё идти (`.began` был,
+                // `.ended` нет), и через минуту файл резался бы посреди
+                // живого звонка (GLM I1, DS I1-B по #530). Проба безопасна:
+                // вход наш — продолжаем тот же файл, нет — ждём дальше.
                 if self.isRecording, self.interrupted, self.recorder != nil, self.callEndedAt == nil {
-                    self.callEndedAt = Date()
-                    self.beginAfterCallTask()
-                    self.resumeAfterCall(attempt: 1)
+                    self.probeNow = true
                 }
             }
         })
@@ -606,13 +625,21 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             interrupted = true
             interruptedAt = Date()
             lastInterruptionProbe = nil
+            // Новый звонок гасит окно ожидания предыдущего: иначе бюджет
+            // первого `.ended` дотикивал посреди живого второго звонка и
+            // резал файл, а остаток встречи в фоне не писался (GLM Critical,
+            // DS I1 по #530). Следующий `.ended` откроет окно заново.
+            callEndedAt = nil
+            endAfterCallTask()
             lastResult = L.t("Пауза: идёт звонок — микрофон у него. Запись продолжится после",
                              "Paused: a call owns the microphone. Recording resumes after it",
                              "已暂停：通话占用麦克风。通话结束后继续录音")
         case .ended:
             // Флаг прерывания снимет сама успешная попытка: пока вход не наш,
             // это всё ещё пауза, и сторож застоя не должен считать попытки
-            // и ротировать поверх нашего ожидания.
+            // и ротировать поверх нашего ожидания. Окно — одно: повторный
+            // `.ended` не сдвигает бюджет, `.ended` без паузы не ставит штамп.
+            guard Self.shouldOpenAfterCallWindow(interrupted: interrupted, windowOpen: callEndedAt != nil) else { return }
             callEndedAt = Date()
             lastInterruptionProbe = nil
             beginAfterCallTask()
@@ -655,7 +682,8 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         lastResult = L.t("Микрофон не вернулся за минуту после звонка — закрываю файл и продолжаю встречу новым",
                          "Microphone did not come back within a minute after the call — closing the file and continuing in a new one",
                          "通话后一分钟内麦克风未恢复 — 关闭文件并以新文件继续")
-        endAfterCallTask()
+        // Задачу окна снимает stop() внутри rotateFile; сама ротация держит
+        // свою фоновую задачу до исхода отложенного старта (GLM I2 по #530).
         rotateFile()
     }
 
@@ -664,6 +692,22 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         afterCallTask = UIApplication.shared.beginBackgroundTask(withName: "charoite.resume-after-call") { [weak self] in
             Task { @MainActor [weak self] in self?.endAfterCallTask() }
         }
+    }
+
+    /// Фоновая задача на ротацию: stop() закрывает задачу окна, а отложенный
+    /// на 0,7 с старт нового файла без своей задачи в фоне мог не дожить до
+    /// исполнения — остаток встречи не писался (GLM I2 по #530).
+    private func beginRotateTask() {
+        guard rotateTask == .invalid else { return }
+        rotateTask = UIApplication.shared.beginBackgroundTask(withName: "charoite.rotate-file") { [weak self] in
+            Task { @MainActor [weak self] in self?.endRotateTask() }
+        }
+    }
+
+    private func endRotateTask() {
+        guard rotateTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(rotateTask)
+        rotateTask = .invalid
     }
 
     private func endAfterCallTask() {
@@ -695,6 +739,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         interruptedAt = nil
         callEndedAt = nil
         lastInterruptionProbe = nil
+        probeNow = false
         endAfterCallTask()
         lastGrowth = nil
         level = 0
@@ -738,9 +783,15 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     /// не тратит: не вышло — просто ждём дальше.
     private func probeInterruptionIfNeeded() {
         guard isRecording, interrupted, let since = interruptedAt, let r = recorder else { return }
+        // Пока открыто окно после звонка, вход долбит его цикл — проба
+        // рядом не нужна (GLM M1 по #530)
+        guard callEndedAt == nil else { return }
+        let forced = probeNow
+        probeNow = false
         guard Self.shouldProbeInterruption(
             interruptedFor: Date().timeIntervalSince(since),
-            sinceLastProbe: lastInterruptionProbe.map { Date().timeIntervalSince($0) }
+            sinceLastProbe: lastInterruptionProbe.map { Date().timeIntervalSince($0) },
+            forced: forced
         ) else { return }
 
         lastInterruptionProbe = Date()
@@ -824,9 +875,12 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     /// имени, в котором стоят секунды.
     private func rotateFile() {
         let kind = currentKind
+        beginRotateTask()
         stop()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
-            guard let self, !self.isRecording else { return }
+            guard let self else { return }
+            defer { self.endRotateTask() }
+            guard !self.isRecording else { return }
             self.start(kind: kind)
         }
     }
