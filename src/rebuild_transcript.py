@@ -47,6 +47,7 @@ import install_profile  # noqa: E402
 import action_items  # noqa: E402
 import fact_check  # noqa: E402
 import channel_labels  # noqa: E402
+import speaker_names  # noqa: E402
 import graphs  # noqa: E402
 import lexicon  # noqa: E402
 import owner_voice as owner_voice_rules  # noqa: E402
@@ -250,7 +251,40 @@ def overlap_frac(a: tuple[float, float], b: tuple[float, float]) -> float:
     return inter / max(1e-6, a[1] - a[0])
 
 
-def name_speakers(cfg: dict, lines: list[tuple[str, str]]) -> tuple[dict[str, str], bool]:
+def _cut_lines(text: str, limit: int) -> str:
+    """Первые `limit` знаков, но по границе строки (или слова, если строка
+    одна): обрезок слова с заглавной («Лен» от «Ленинградское») стал бы для
+    гвардов доверия формой имени «Лена» (GLM I1 по #551)."""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    sep = "\n" if "\n" in head else " "
+    return head.rsplit(sep, 1)[0] if sep in head else head
+
+
+def known_first_names(cfg: dict) -> tuple[str, ...]:
+    """Первые имена людей графа — для приведения падежей (правило 4
+    speaker_names), тем же путём, что у живого опознания в демоне."""
+    try:
+        root = graphs.graph_dir(cfg)
+        people = root / "Люди" if root else None
+        if people is None or not people.is_dir():
+            return ()
+        return tuple(sorted({q.stem.split()[0] for q in people.glob("*.md")
+                             if q.stem.strip() and not q.stem.startswith("Собеседник")}))
+    except OSError:
+        return ()
+
+
+def _sample_line(spk: str, text: str) -> str:
+    """Строка sample для модели и гвардов — «[·] метка: текст»: формат хвоста
+    живой стенограммы («] метка:» читают гварды), без номера в скобках —
+    номер подталкивал бы модель ключевать ответ им, а не меткой (DS M4 по #551)."""
+    return f"[·] {spk}: {text}"
+
+
+def name_speakers(cfg: dict, lines: list[tuple[str, str]],
+                  known: tuple[str, ...] = ()) -> tuple[dict[str, str], bool]:
     """qwen: «Собеседник N» ↔ имена из разговора; владельца не трогаем.
 
     Возвращает (имена, ответила ли модель). Второе — не педантизм: пустой
@@ -258,11 +292,29 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]]) -> tuple[dict[str, st
     не разобрался». 12.08 случилось второе, стенограмма ушла с «Собеседник
     1..5», а прогон записался успешным — та же тихая деградация, которую
     чинили в ночных досье. Различаем: первое нормально, второе стоит показать.
+    Ответ, которым нельзя воспользоваться, — тоже не ответ: если гварды
+    отвергли всё, что предложила модель, снаружи это неотличимо от молчания,
+    и плашка «имена не разобраны» обязана остаться (критика DS по #551).
+
+    Ответ модели — кандидат, не приговор: каждое имя проходит те же гварды
+    доверия, что живое опознание в демоне (speaker_names.trustworthy_name):
+    владелец по словам `user_name`, а не по полной строке («Игорь» против
+    «Игорь Ветров»); имя, которого в разговоре не слышно, — выдумано;
+    имя только в собственных репликах метки без представления — обращение
+    к другому. До аудита зон 12.09 (зона 1) пересборка верила модели почти
+    на слово — и цена ошибки здесь та же: метка переписывается по всей
+    стенограмме, минутки и граф наследуют её молча.
     """
     from llm import LLM
-    _owner = ((cfg.get("sufler") or {}).get("user_name") or "").strip().lower()
-    sample = "\n".join(f"[{spk}] {text}" for spk, text in lines if text)[:7000]
-    _yield_to_live("имена")
+    user_name = str((cfg.get("sufler") or {}).get("user_name") or "")
+    # Формат хвоста живой стенограммы — «[…] метка: текст»: его читают
+    # гварды доверия («] метка:» — реплика самой метки). Времени у строк
+    # пересборки тут нет, в скобках — номер реплики.
+    sample = _cut_lines("\n".join(_sample_line(spk, text) for spk, text in lines if text), 7000)
+    # Уступка живой встрече — с потолком: очередь пересборок (rebuild.lock)
+    # уже взята, бесконечное ожидание парковало бы её на всю чужую встречу
+    # (тот же потолок, что у минуток).
+    _yield_to_live("имена", cap=600)
     try:
         raw = LLM(cfg).complete(
             sample,
@@ -279,13 +331,32 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]]) -> tuple[dict[str, st
             model=cfg["llm"]["model"], json_format=True, think=False,
             num_ctx=8192, timeout=240)
         data = json.loads(raw or "{}")
-        return {k: v.strip() for k, v in data.items()
-                if isinstance(v, str) and v.strip() and v.strip() != "?"
-                and k.startswith("Собеседник")
-                and v.strip().lower() != _owner}, True  # владелец определён каналом
     except Exception as e:  # noqa: BLE001
         log(f"имена: не удалось ({e})")
         return {}, False
+    names: dict[str, str] = {}
+    proposed = 0
+    for k, v in (data.items() if isinstance(data, dict) else ()):
+        if not (isinstance(k, str) and k.startswith("Собеседник") and isinstance(v, str)):
+            continue
+        if v.strip() in ("", "?"):
+            continue
+        proposed += 1
+        name = speaker_names.trustworthy_name(v, sample=sample, label=k, owner_name=user_name,
+                                              known=known)
+        if name:
+            names[k] = name
+        else:
+            log(f"имена: «{v.strip()}» для «{k}» не принято (владелец, не звучало в тексте, "
+                "обращение в своей реплике, не имя или не одно слово)")
+    # «ответила» — вернула объект (массив или строка под json_format — тот же
+    # мусор, что молчание, GLM M1 по #551), и хоть чем-то из него можно
+    # воспользоваться: всё предложенное отвергнуто — снаружи это молчание.
+    # Владелец определён каналом и в ответе не ждётся.
+    answered = isinstance(data, dict) and not (proposed and not names)
+    if proposed and not names:
+        log(f"имена: все {proposed} предложенных имени отвергнуты гвардами — считаю, что модель не ответила")
+    return names, answered
 
 
 def live_meta(live: pathlib.Path) -> dict:
@@ -326,6 +397,28 @@ def live_session_names(meta: dict) -> dict[str, str]:
         return {}
     return {k: v.strip() for k, v in d.items()
             if isinstance(k, str) and isinstance(v, str) and v.strip()}
+
+
+def minutes_names(meta: dict) -> dict[str, str]:
+    """Имена для перештамповки минуток — по тому, ЧЬЕЙ нумерацией они написаны.
+
+    Минутки живой сессии (черновик демона, «Протокол» по кнопке) написаны
+    метками живой сессии — к ним подходят имена из live.json. Минутки,
+    собранные прошлой пересборкой из финальной стенограммы (в сайдкаре лежит
+    `minutes_source_sha256`), написаны нумерацией пересборки: имена там уже
+    стоят в тексте, а оставшиеся «Собеседник N» — другие люди, чем
+    одноимённые метки живой сессии. Штамповать их именами live.json значило
+    бы приклеить имя не тому (аудит зон 12.09, зона 1) — остаются нейтральные.
+    Мусор вместо хеша не считается признаком пересборки: прежнее поведение.
+    Признак — хеш, а не отдельная отметка (критика DS по #551): отметка писалась
+    бы тем же best-effort сайдкаром и падала бы вместе с ним; отказ записи
+    _finish объявляет вслух, а не тихо.
+    """
+    if not isinstance(meta, dict):
+        return {}
+    if live_sidecar.valid_sha(meta.get("minutes_source_sha256")):
+        return {}
+    return live_session_names(meta)
 
 
 def names_by_time(live_text: str, base, segments: list[tuple[float, float, str]],
@@ -636,7 +729,8 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     model_answered = True
     if rest:
         guessed, model_answered = name_speakers(
-            cfg, [(spk, txt) for _, _, spk, txt in lines if spk in rest])
+            cfg, [(spk, txt) for _, _, spk, txt in lines if spk in rest],
+            known=known_first_names(cfg))
         for k, v in guessed.items():
             if k in rest and v not in names.values():  # одно имя — одной метке
                 names[k] = v
@@ -702,10 +796,11 @@ def human_edited_transcript(live: pathlib.Path, meta: dict) -> str | None:
 def _finish(live: pathlib.Path, final_text: str, meta: dict, cfg: dict) -> None:
     """Производное от финальной стенограммы: минутки и их хеш."""
     # Минутки: нетронутый автотекст — заново по финальной стенограмме; правленный
-    # руками — только перештамповать (маркер и имена ЖИВОЙ сессии: их метки —
-    # та же нумерация, которой минутки написаны; пересборочный `names` живёт в
-    # другом пространстве номеров и клеил бы имя не тому — GLM Critical по #464).
-    outcome = finalize_minutes(live, final_text, meta, cfg, live_session_names(meta))
+    # руками — только перештамповать (маркер и имена той нумерации, которой
+    # минутки написаны: живой сессии — из live.json, прошлой пересборки —
+    # никаких; пересборочный `names` живёт в другом пространстве номеров и
+    # клеил бы имя не тому — GLM Critical по #464, аудит зон 12.09).
+    outcome = finalize_minutes(live, final_text, meta, cfg, minutes_names(meta))
     machine_owned = outcome != "human"
     mpath = live.with_name(live.stem + "_minutes.md")
     canonize_file(mpath, cfg)
@@ -722,8 +817,14 @@ def _finish(live: pathlib.Path, final_text: str, meta: dict, cfg: dict) -> None:
             # после настоящей регенерации — перештамповка не собирала
             # минутки из этого текста (DS I1 / GLM I2 r2); хвост
             # «Ко-мышление» в речь не входит (GLM M4 r2).
-            if outcome == "regenerated":
-                _remember_sha(live, "minutes_source_sha256", _sha(_speech(final_text)))
+            if outcome == "regenerated" and not _remember_sha(live, "minutes_source_sha256",
+                                                              _sha(_speech(final_text))):
+                # Без этого хеша minutes_names сочтёт минутки живыми и следующая
+                # перештамповка возьмёт имена live.json на нумерацию пересборки
+                # (DS I3 по #551): сказать громко, пока минутки нетронуты
+                log("⚠️ минутки пересобраны, а признак их нумерации не записан — "
+                    "следующая пересборка может перештамповать их именами живой сессии; "
+                    "проверьте сайдкар .live.json")
         except (OSError, UnicodeDecodeError) as e:
             log(f"хеш минуток не снят ({e}) — следующая пересборка их не тронет")
 
@@ -898,13 +999,15 @@ def _remember_minutes_sha(live: pathlib.Path, sha: str) -> None:
     _remember_sha(live, "minutes_sha256", sha)
 
 
-def _remember_sha(live: pathlib.Path, key: str, sha: str) -> None:
+def _remember_sha(live: pathlib.Path, key: str, sha: str) -> bool:
     """Хеш последней МАШИННОЙ записи файла — в сайдкар под своим ключом
     (`minutes_sha256`, `transcript_sha256`, `minutes_source_sha256`):
     совпадение с диском означает, что текста никто не касался. Нет
-    сайдкара — создаётся; неоднозначен — не пишем."""
-    if not live_sidecar.remember(live, key, sha):
+    сайдкара — создаётся; неоднозначен — не пишем (False)."""
+    ok = live_sidecar.remember(live, key, sha)
+    if not ok:
         log(f"хеш {key} не записан: сайдкар неоднозначен или не пишется")
+    return ok
 
 
 def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,

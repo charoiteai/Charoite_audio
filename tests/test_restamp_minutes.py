@@ -98,14 +98,29 @@ def test_live_session_names_sanitizes_broken_live_json():
     assert got == {"Собеседник 2": "Инга"}
 
 
+def test_minutes_names_follow_the_numbering_the_minutes_were_written_in():
+    """Минутки прошлой пересборки (в сайдкаре minutes_source_sha256) написаны
+    нумерацией пересборки — имена живой сессии к ним не подходят. Живые
+    минутки и мусор вместо хеша — прежнее поведение, имена из live.json."""
+    names = {"Собеседник 2": "Инга"}
+    assert rebuild_transcript.minutes_names({"names": names}) == names
+    assert rebuild_transcript.minutes_names({"names": names, "minutes_source_sha256": "a" * 64}) == {}
+    assert rebuild_transcript.minutes_names({"names": names, "minutes_source_sha256": "мусор"}) == names
+    assert rebuild_transcript.minutes_names({}) == {}
+    assert rebuild_transcript.minutes_names(None) == {}
+
+
 def test_rebuild_wires_live_names_into_restamp():
-    """Контракт на проводку: rebuild обязан отдавать в restamp именно словарь
-    ЖИВОЙ сессии — откат на пересборочный `names` возвращал бы Critical со
-    смешанной нумерацией при зелёных юнитах (GLM r2 M4)."""
+    """Контракт на проводку: rebuild обязан отдавать в restamp словарь по
+    нумерации минуток (minutes_names) — откат на пересборочный `names`
+    возвращал бы Critical со смешанной нумерацией при зелёных юнитах (GLM r2
+    M4); имена живой сессии на минутках прошлой пересборки — та же ошибка
+    с другого конца (аудит зон 12.09)."""
     src = (SRC / "rebuild_transcript.py").read_text(encoding="utf-8")
     fn = src[src.index("def rebuild("):src.index("def finalize_minutes(")]
-    assert "finalize_minutes(live, final_text, meta, cfg, live_session_names(meta))" in fn, (
-        "в минутки должны идти имена живой сессии (live.json), не пересборочные")
+    assert "finalize_minutes(live, final_text, meta, cfg, minutes_names(meta))" in fn, (
+        "в минутки должны идти имена той нумерации, которой они написаны "
+        "(minutes_names: живая сессия из live.json или ничего), не пересборочные")
     assert "restamp_minutes(" not in fn, "перештамповка — только внутри finalize_minutes"
 
 

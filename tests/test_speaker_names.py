@@ -31,7 +31,7 @@ import sys
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
-from speaker_names import is_counterpart, is_owner, trustworthy_name  # noqa: E402
+from speaker_names import heard_forms, is_counterpart, is_owner, trustworthy_name  # noqa: E402
 
 
 def test_мгновенные_ответы_не_гаснут_после_опознания_имени():
@@ -240,3 +240,61 @@ def test_коллизионное_имя_не_делает_владельцем_
         "префиксное правило срабатывает — поэтому демон и обходит его"
     assert is_owner("Собеседник 3", "Собеседник")
     assert not is_owner("Мария", "Собеседник 2")
+
+
+# ---------------------------------------------------------------------------
+# Правило 3 и падежи (аудит зон 12.09, зона 1): модель отдаёт именительный,
+# в речи имя звучит обращением — «Тань» и есть «Таня», а не выдумка.
+# ---------------------------------------------------------------------------
+
+def test_vocative_only_name_counts_as_heard():
+    sample = "[10:00] Я: Тань, глянь смету.\n[10:01] Собеседник: Гляну."
+    assert heard_forms("Таня", sample) == ("тань",)
+    assert trustworthy_name("Таня", sample=sample, label="Собеседник",
+                            owner_name=OWNER) == "Таня"
+
+
+def test_vocative_in_own_line_is_still_an_address():
+    """Гвард обращения читает те же формы: «Саш, а ты…» в собственной
+    реплике не делает говорящего Сашей и в именительном падеже."""
+    sample = "[10:00] Собеседник: Саш, а ты смету видел?\n[10:01] Собеседник: Ладно."
+    assert trustworthy_name("Саша", sample=sample, label="Собеседник",
+                            owner_name=OWNER) is None
+
+
+def test_lowercase_common_word_is_not_a_heard_name():
+    """«ром» со строчной — напиток, не Рома: формы ищутся по словам с заглавной."""
+    sample = "[10:00] Я: выпили ром и разошлись.\n[10:01] Собеседник: Бывает."
+    assert heard_forms("Рома", sample) == ()
+    assert trustworthy_name("Рома", sample=sample, label="Собеседник",
+                            owner_name=OWNER) is None
+
+
+def test_heard_forms_lists_the_literal_name_first():
+    sample = "[10:00] Я: Коля, привет.\n[10:01] Я: Коль, ты тут?"
+    assert heard_forms("Коля", sample) == ("коля", "коль")
+
+
+def test_forms_match_whole_words_only():
+    """«Коль» в «кольцо» — не обращение и не форма имени (критика GLM по #551)."""
+    assert heard_forms("Коля", "[10:00] Я: кольцо на столе.\n[10:01] Собеседник: угу.") == ()
+    own = "[10:00] Собеседник: кольцо нашли.\n[10:01] Собеседник: Коль, ты тут?"
+    assert heard_forms("Коля", own) == ("коль",)
+    assert trustworthy_name("Коля", sample=own, label="Собеседник", owner_name=OWNER) is None
+    other = "[10:00] Я: Коль, ты тут?\n[10:01] Собеседник: тут, кольцо нашёл."
+    assert trustworthy_name("Коля", sample=other, label="Собеседник", owner_name=OWNER) == "Коля"
+
+
+def test_back_formed_forms_need_the_position_of_a_name():
+    """Слово с заглавной в начале предложения — не обращение (DS I1 по #551):
+    «Ром был отличный» не делает Рому услышанной, «Людей было много» — Люду.
+    Обращение — отделено знаком или стоит в конце; творительный — после «с»."""
+    assert heard_forms("Рома", "[·] Собеседник 1: Ром был отличный, настойка.\n[·] Собеседник 2: Ага.") == ()
+    assert heard_forms("Люда", "[·] Собеседник 1: Людей было много.\n[·] Собеседник 2: Ага.") == ()
+    assert heard_forms("Коля", "[·] Я: Коль, ты тут?") == ("коль",)
+    assert heard_forms("Коля", "[·] Я: ты тут, Коль") == ("коль",)
+    assert heard_forms("Саша", "[·] Я: Саш! Глянь смету.") == ("саш",)
+    assert heard_forms("Саша", "[·] Я: договорились с Сашей на четверг") == ("сашей",)
+    assert heard_forms("Саша", "[·] Я: Сашей звали собаку") == (), "творительный без «с» — не форма имени"
+    assert heard_forms("Таня", "[·] Я: я звонил Тане вчера") == (), "косвенный падеж третьего лица — намеренно мимо"
+    assert heard_forms("Таня", "[·] Я: Тань глянь смету") == (), "обращение без знака — принятая цена"
