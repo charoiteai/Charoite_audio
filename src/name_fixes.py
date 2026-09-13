@@ -168,11 +168,15 @@ def _machine_owned(live: pathlib.Path, key: str, text: str) -> bool:
     return bool(expected) and expected == live_sidecar.sha(text)
 
 
-def restamp_transcript(live: pathlib.Path, mapping: dict[str, str]) -> int:
+def restamp_transcript(live: pathlib.Path, mapping: dict[str, str],
+                       dropped: list[str] | None = None) -> int:
     """Заголовки реплик стенограммы под верными именами. Версия до правки —
     в .prev/ (одно поколение, как у пересборки); хеш машинного текста в
     сайдкаре обновляется, только если он совпадал до правки: правленную
-    руками стенограмму пересборка и дальше должна считать ручной."""
+    руками стенограмму пересборка и дальше должна считать ручной. Файл,
+    сменившийся между чтением и записью (пересборка, редактор), не
+    затирается — 0 и строка в `dropped` (аудит зон 12.09, зона 4)."""
+    snap = safe_write.stat_snapshot(live)
     text = live.read_text(encoding="utf-8")
     fixed, n = rename_headers(text, mapping)
     if not n:
@@ -181,19 +185,25 @@ def restamp_transcript(live: pathlib.Path, mapping: dict[str, str]) -> int:
     prev_dir = live.parent / ".prev"
     prev_dir.mkdir(exist_ok=True)
     safe_write.write_text(prev_dir / live.name, text)
-    safe_write.write_text(live, fixed)
+    if not safe_write.write_text(live, fixed, expect=snap):
+        if dropped is not None:
+            dropped.append(f"{live.name} сменилась под перештамповкой — заголовки реплик не тронуты")
+        return 0
     if owned:
         live_sidecar.remember(live, "transcript_sha256", live_sidecar.sha(fixed))
     return n
 
 
-def restamp_minutes(live: pathlib.Path, mapping: dict[str, str]) -> bool:
+def restamp_minutes(live: pathlib.Path, mapping: dict[str, str],
+                    dropped: list[str] | None = None) -> bool:
     """Строка участников минуток рядом со стенограммой; хеш машинных минуток
     обновляется тем же правилом, что у стенограммы. Нет минуток или строки —
-    False."""
+    False; сменившийся под рукой файл не затирается — False и строка в
+    `dropped` (тот же гейт expect, что у моста поручений)."""
     mpath = review_bridge.minutes_path(live)
     if not mpath.is_file():
         return False
+    snap = safe_write.stat_snapshot(mpath)
     text = mpath.read_text(encoding="utf-8")
     fixed = rename_participants(text, mapping)
     if fixed == text:
@@ -202,7 +212,10 @@ def restamp_minutes(live: pathlib.Path, mapping: dict[str, str]) -> bool:
     prev_dir = live.parent / ".prev"          # версия до правки — как у пересборки (DS r1 I3)
     prev_dir.mkdir(exist_ok=True)
     safe_write.write_text(prev_dir / mpath.name, text)
-    safe_write.write_text(mpath, fixed)
+    if not safe_write.write_text(mpath, fixed, expect=snap):
+        if dropped is not None:
+            dropped.append(f"{mpath.name} сменились под перештамповкой — участники не тронуты")
+        return False
     if owned:
         live_sidecar.remember(live, "minutes_sha256", live_sidecar.sha(fixed))
     return True
@@ -250,11 +263,11 @@ def apply(review: pathlib.Path, live: pathlib.Path, cfg: dict,
     mapping = planned(review, live, cfg, dropped=dropped)
     if not mapping:
         return {}, 0, False
-    n = restamp_transcript(live, mapping)
+    n = restamp_transcript(live, mapping, dropped=dropped)
     mpath = review_bridge.minutes_path(live)
     touched = False
     try:
-        touched = restamp_minutes(live, mapping)
+        touched = restamp_minutes(live, mapping, dropped=dropped)
     except UnicodeDecodeError as e:
         if dropped is not None:
             dropped.append(f"{mpath.name} не в UTF-8 — участники минуток не перештампованы ({e.reason})")

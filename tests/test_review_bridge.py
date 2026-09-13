@@ -541,3 +541,73 @@ def test_dropped_lines_are_collected_for_the_log():
     dropped = []
     rb.recovered_items("## Восстановленные поручения\n\n- [ ] **Иван** — позвонить\n\n## Далее\n", dropped=dropped)
     assert dropped == []
+
+
+# ---------------------------------------------------------------------------
+# Аудит зон 12.09, зона 4: падеж исполнителя в дедупе, легаси-заголовок и
+# пометка «не участник», гейт expect на записи минуток.
+# ---------------------------------------------------------------------------
+import safe_write  # noqa: E402
+
+
+def test_non_owner_assignee_in_another_case_is_the_same_item():
+    assert rb._same_item("**Сергею** — позвонить подрядчику по смете", "**Сергей** — позвонить подрядчику по смете")
+    assert rb._same_item("**Ивану Орлову** — собрать примеры", "**Иван Орлов** — собрать примеры вопросов для теста")
+    assert not rb._same_item("**Сергею** — позвонить подрядчику", "**Марине** — позвонить подрядчику")
+    minutes = "## Поручения\n- [ ] **Сергей** — позвонить подрядчику по смете\n"
+    _, added = rb.merge_into_minutes(minutes, ["**Сергею** — позвонить подрядчику по смете"])
+    assert added == 0, "тот же человек в другом падеже — не второй пункт"
+
+
+def test_item_bridged_under_a_legacy_heading_gets_the_outsider_mark():
+    minutes = "# Минутки\n## Поручения и сроки\n- [ ] **Олег** — начать\n\n## Решения\n- да\n"
+    text, added = rb.merge_into_minutes(minutes, ["**Иван** — прислать сводку"], {"Олег", "Анна"})
+    assert added == 1
+    assert "- ⚠ не участник (Иван): **Иван** — прислать сводку (из ревизии)" in text, text
+    assert "\n## Решения\n- да\n" in text and text.count("## Поручения") == 1
+
+
+def _disk(tmp_path):
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    transcript = tdir / "2026-09-11_1533_Планёрка.md"
+    transcript.write_text("# Встреча\n\nУчастники (звучали в разговоре): Олег, Иван\n\n**Олег** [15:33]: начнём\n",
+                          encoding="utf-8")
+    minutes = tdir / "2026-09-11_1533_Планёрка_minutes.md"
+    minutes.write_text("# Минутки\n## Поручения\n- [ ] **Иван** — прислать сводку по плану к пятнице\n", encoding="utf-8")
+    review = tdir / "2026-09-11_1533_Планёрка_ревизия_claude.md"
+    review.write_text("# Ревизия\n## Снятые поручения\n- **Иван** — прислать сводку по плану к пятнице — причина: срока не было\n"
+                      "## Восстановленные поручения\n- [ ] **Олег** — собрать команду\n", encoding="utf-8")
+    return transcript, minutes, review
+
+
+def test_bridge_and_withdraw_do_not_overwrite_minutes_changed_underneath(tmp_path, monkeypatch):
+    """Пересборка или редактор записали минутки между чтением моста и его
+    записью — мост ничего не пишет, говорит в лог, чужая версия остаётся."""
+    transcript, minutes, review = _disk(tmp_path)
+    foreign = "# Минутки\n## Поручения\n- [ ] **Иван** — совсем другое, записано рядом\n"
+
+    def clobber(fn):
+        def wrapped(*a, **k):
+            out = fn(*a, **k)
+            minutes.write_text(foreign, encoding="utf-8")
+            return out
+        return wrapped
+
+    monkeypatch.setattr(rb, "merge_into_minutes", clobber(rb.merge_into_minutes))
+    dropped: list[str] = []
+    assert rb.bridge(review, transcript, owner="Владелец", dropped=dropped) == 0
+    assert minutes.read_text(encoding="utf-8") == foreign, "мост затёр чужую запись"
+    assert dropped and "сменились под мостом" in dropped[-1]
+    minutes.write_text("# Минутки\n## Поручения\n- [ ] **Иван** — прислать сводку по плану к пятнице\n", encoding="utf-8")
+    monkeypatch.setattr(rb, "withdraw_from_minutes", clobber(rb.withdraw_from_minutes))
+    dropped.clear()
+    assert rb.withdraw(review, transcript, owner="Владелец", dropped=dropped) == 0
+    assert minutes.read_text(encoding="utf-8") == foreign
+    assert dropped and "сменились под мостом" in dropped[-1]
+    # без гонки — прежнее поведение
+    monkeypatch.undo()
+    minutes.write_text("# Минутки\n## Поручения\n- [ ] **Иван** — прислать сводку по плану к пятнице\n", encoding="utf-8")
+    assert rb.withdraw(review, transcript, owner="Владелец") == 1
+    assert rb.bridge(review, transcript, owner="Владелец") == 1
+    assert safe_write.stat_snapshot(minutes) is not None

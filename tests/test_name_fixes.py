@@ -182,3 +182,33 @@ def test_l4_prompt_names_the_strict_section_in_both_modes():
                                                    rev_name="r.md", stamp="2026-09-05_1413", may_edit=may_edit, context="")
         assert "## Исправления имён" in prompt and "**Метка** → **Имя** — основание: …" in prompt
         assert ("из узла Люди с ошибочным именем убери строку" in prompt) is may_edit
+
+
+def test_restamp_refuses_to_overwrite_files_changed_underneath(tmp_path, monkeypatch):
+    """Гейт expect на обеих записях (аудит зон 12.09, зона 4): файл, сменившийся
+    между чтением и записью, не затирается — 0/False и строка в dropped;
+    .prev при этом уже лежит, это не потеря."""
+    live, mpath, rev = _world(tmp_path)
+    cfg = {"sufler": {"user_name": "Владелец"}}
+
+    # чужая запись — между чтением и записью каждой из функций: _machine_owned
+    # зовётся ровно там (planned() читает те же файлы раньше, его не трогаем)
+    owned = nf._machine_owned
+
+    def clobber(live_, key, text):
+        out = owned(live_, key, text)
+        target, foreign = ((live, "# чужая запись стенограммы\n") if key == "transcript_sha256"
+                           else (mpath, "# чужие минутки\n"))
+        target.write_text(foreign, encoding="utf-8")
+        return out
+
+    monkeypatch.setattr(nf, "_machine_owned", clobber)
+    dropped: list[str] = []
+    mapping, heads, parts = nf.apply(rev, live, cfg, dropped=dropped)
+    assert mapping and heads == 0 and parts is False
+    assert live.read_text(encoding="utf-8") == "# чужая запись стенограммы\n"
+    assert mpath.read_text(encoding="utf-8") == "# чужие минутки\n"
+    assert any("сменилась под перештамповкой" in d for d in dropped), dropped
+    assert any("сменились под перештамповкой" in d for d in dropped), dropped
+    meta = json.loads((tmp_path / "2026-09-11_1533_Планёрка.md.live.json").read_text(encoding="utf-8"))
+    assert meta["transcript_sha256"] == live_sidecar.sha(SPEECH), "хеш не обновлён — запись не состоялась"

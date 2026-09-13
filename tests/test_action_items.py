@@ -479,3 +479,32 @@ def test_round2_joiners_owner_alone_diminutives_initials_placeholders():
     stranger = flag_outsiders("## Поручения\n- [ ] **Витя** — дело\n- [ ] **О. Сидоров** — дело\n", parts)
     assert stranger.count("⚠") == 2, stranger
 
+
+
+# ---------------------------------------------------------------------------
+# Аудит зон 12.09, зона 4: один предикат заголовка раздела на всех читателей
+# минуток — легаси «## Поручения и сроки» знал только мост ревизии, и под
+# ним поручение чужому человеку оставалось задачей без пометки.
+# ---------------------------------------------------------------------------
+import action_items as ai  # noqa: E402
+
+
+def test_section_heading_predicate_covers_current_and_legacy_forms():
+    for line in ("## Поручения", "**Поручения:**", "Поручения:", "## Поручения и сроки",
+                 "Поручения и сроки:", "**Поручения и сроки:**", "## Action items", "## 行动项"):
+        assert ai.is_section_heading(line), line
+    for line in ("## Решения", "Открытые вопросы:", "- [ ] **Иван** — поручения и сроки согласовать",
+                 "Поручения по срокам обсудили"):
+        assert not ai.is_section_heading(line), line
+
+
+def test_legacy_heading_is_the_same_section_for_every_reader():
+    doc = "## Поручения и сроки\n- **Ольге** — макет\n- **Саша Никитин** — смета\n## Решения\n- принято\n"
+    out = normalize(doc)
+    assert "- [ ] **Ольге** — макет" in out and "- [ ] **Саша Никитин** — смета" in out
+    assert "- принято" in out, "чужой раздел чекбоксов не получает"
+    out = ai.canon_owner(out, "Ольга Ветрова")
+    assert "- [ ] **Ольга** — макет" in out
+    out = flag_outsiders(out, {"Ольга", "Дмитрий"})
+    assert f"- {OUTSIDER_MARK} (Саша Никитин): **Саша Никитин** — смета" in out, out
+    assert "- [ ] **Ольга** — макет" in out

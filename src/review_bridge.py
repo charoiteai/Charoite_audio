@@ -60,13 +60,6 @@ _EMPTY_ITEM = re.compile(r"^(?:нет|none|无|[—–\-•⁃‣▪*\s]+)\.?$",
 # критика 1); «**на стенд** до пятницы» и «**срок:** пятница» — перенос с
 # жирного спана, его клеим
 _OWN_ITEM = re.compile(r"^\s*\*\*[^*]+\*\*\s*[—–-]|^\s*\*\*[^*:：]+\*\*\s*[:：]")
-# легаси-заголовок раздела: markdown-заголовок со слова «Поручения» либо
-# голая/жирная строка из известного списка — форму «слово + что угодно +
-# двоеточие» не угадываем, как и action_items (GLM r5, критика 2)
-_SECTION_WORD = re.compile(
-    r"^\s*(?:#{1,6}\s*(?:\*\*)?\s*(?:поручени|action item|行动项)"
-    r"|(?:\*\*)?\s*(?:поручения|поручения и сроки|action items|行动项)\s*[:：]\s*\**\s*$)",
-    re.IGNORECASE)
 _PAREN_NOTE = re.compile(r"^\s*[(（][^)）]*[)）]\s*$")
 
 
@@ -222,16 +215,30 @@ def _split(item: str) -> tuple[str, set[str]]:
     return name, {w for w in _key(m.group("rest")).split() if len(w) > 2}
 
 
+def _same_assignee(na: str, nb: str) -> bool:
+    """Один исполнитель в разных падежах или написаниях: «сергею» и «сергей»,
+    «иван орлов» и «ивану орлову» — пословно через action_items._same_person.
+    Владелец приводится к канону раньше (_dedup_view); остальные участники
+    до 13.09 сравнивались строкой, и «**Сергею** — позвонить» дописывался
+    вторым пунктом рядом с «**Сергей** — позвонить» (аудит зон 12.09, зона 4)."""
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    pa, pb = na.split(), nb.split()
+    return len(pa) == len(pb) and all(action_items._same_person(x, y) for x, y in zip(pa, pb))
+
+
 def _same_item(a: str, b: str) -> bool:
-    """Один и тот же пункт: тот же ключ, либо тот же исполнитель и то же дело
-    другими словами (пересечение значимых слов ≥ SIMILAR по Жаккару) —
-    ревизия пересказывает поручение минуток, а не находит новое."""
+    """Один и тот же пункт: тот же ключ, либо тот же исполнитель (в любом
+    падеже) и то же дело другими словами (пересечение значимых слов ≥ SIMILAR
+    по Жаккару) — ревизия пересказывает поручение минуток, а не находит новое."""
     ka, kb = _key(a), _key(b)
     if ka == kb:
         return True
     na, wa = _split(a)
     nb, wb = _split(b)
-    if not na or na != nb or not wa or not wb:
+    if not _same_assignee(na, nb) or not wa or not wb:
         return False
     common = len(wa & wb)
     # ревизия сжимает: «собрать примеры вопросов» ⊂ «… для теста» — то же
@@ -254,18 +261,11 @@ def _empty_line(line: str) -> bool:
 def _section_bounds(lines: list[str]) -> tuple[int, int] | None:
     """(начало, конец) строк раздела поручений: конец — следующий заголовок
     или конец файла (граница — как у action_items)."""
-    start = None
-    for i, line in enumerate(lines):
-        if action_items._SECTION.match(line):
-            start = i
-            break
-    if start is None:
-        # «## Поручения и сроки» прежних минуток — тот же раздел, а не повод
-        # завести второй (DS r1 M3 по #518)
-        for i, line in enumerate(lines):
-            if _SECTION_WORD.match(line):
-                start = i
-                break
+    # Один предикат с action_items (normalize, canon_owner, flag_outsiders):
+    # «## Поручения и сроки» прежних минуток — тот же раздел, а не повод
+    # завести второй (DS r1 M3 по #518), и пометка «не участник» обязана
+    # видеть его так же, как мост (аудит зон 12.09, зона 4)
+    start = next((i for i, line in enumerate(lines) if action_items.is_section_heading(line)), None)
     if start is None:
         return None
     end = len(lines)
@@ -395,10 +395,17 @@ def bridge(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
     participants = action_items.participants_of(speech, owner) if speech else set()
     if extra_participants:
         participants = participants | action_items.participants_set(sorted(extra_participants), owner)
+    # Снимок ДО чтения: минутки правят и пересборка, и mcp «Минутки», и
+    # редактор — запись без гейта затирала бы их версию своей (аудит зон
+    # 12.09, зона 4). Проиграли гонку — ничего не пишем, говорим в лог:
+    # следующая ревизия допишет заново.
+    snap = safe_write.stat_snapshot(minutes)
     before = minutes.read_text(encoding="utf-8", errors="replace")
     after, added = merge_into_minutes(before, items, participants, lang=lang, owner=owner)
-    if added:
-        safe_write.write_text(minutes, after)
+    if added and not safe_write.write_text(minutes, after, expect=snap):
+        if dropped is not None:
+            dropped.append(f"{minutes.name} сменились под мостом — поручения ({added}) не дописаны")
+        return 0
     return added
 
 
@@ -518,10 +525,7 @@ def _matches_withdrawn(item: str, view: str) -> bool:
         return True
     na, wa = _split(item)
     nb, wb = _split(view)
-    if not (na and nb and wa and wb) or na == nb:
-        return False
-    pa, pb = na.split(), nb.split()
-    if len(pa) != len(pb) or not all(action_items._same_person(x, y) for x, y in zip(pa, pb)):
+    if not (wa and wb) or not _same_assignee(na, nb):
         return False
     common = len(wa & wb)
     if common >= 2 and (common == len(wa) or common == len(wb)):
@@ -548,8 +552,11 @@ def withdraw(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
     minutes = minutes_path(transcript)
     if not minutes.is_file():
         return 0
+    snap = safe_write.stat_snapshot(minutes)          # гейт потери обновления — как у bridge
     before = minutes.read_text(encoding="utf-8", errors="replace")
     after, moved = withdraw_from_minutes(before, items, lang=lang, owner=owner, dropped=dropped)
-    if moved:
-        safe_write.write_text(minutes, after)
+    if moved and not safe_write.write_text(minutes, after, expect=snap):
+        if dropped is not None:
+            dropped.append(f"{minutes.name} сменились под мостом — снятые ({moved}) не перенесены")
+        return 0
     return moved

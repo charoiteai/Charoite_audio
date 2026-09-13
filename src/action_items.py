@@ -24,6 +24,17 @@ _SECTION = re.compile(
     r"^\s*(?:[*_#]*\s*)?(?:поручени|action item|行动项)\w*\s*[:：]?\s*[*_]*\s*$",
     re.IGNORECASE,
 )
+# Легаси-заголовок того же раздела: markdown-заголовок со слова «Поручения»
+# («## Поручения и сроки» прежних минуток) либо голая/жирная строка из
+# известного списка — форму «слово + что угодно + двоеточие» не угадываем
+# (GLM r5 по #518, критика 2). До 13.09 его знал только мост ревизии, а
+# normalize / canon_owner / flag_outsiders — нет: под старым заголовком
+# поручение чужому человеку оставалось задачей без пометки «не участник»
+# (аудит зон 12.09, зона 4).
+_LEGACY_SECTION = re.compile(
+    r"^\s*(?:#{1,6}\s*(?:\*\*)?\s*(?:поручени|action item|行动项)"
+    r"|(?:\*\*)?\s*(?:поручения|поручения и сроки|action items|行动项)\s*[:：]\s*\**\s*$)",
+    re.IGNORECASE)
 # Любой другой заголовок — конец раздела: markdown-заголовок или жирный
 # «**Решения:**».
 _OTHER_SECTION = re.compile(r"^\s*(?:#{1,6}\s|\*\*[^*]+:\*\*\s*$)")
@@ -55,6 +66,15 @@ _CHECKBOX = re.compile(r"^\s*[-*] \[[ xX]\] ")
 _OUTSIDER_LINE = re.compile(r"^\s*[-*] ⚠ (?:не участник|not a participant|非与会者)\b")
 
 
+def is_section_heading(line: str) -> bool:
+    """Заголовок раздела поручений — единственный предикат на всех читателей
+    минуток: текущий («## Поручения», «**Поручения:**») и легаси («## Поручения
+    и сроки»). Мост ревизии, normalize, canon_owner и flag_outsiders обязаны
+    видеть один и тот же раздел, иначе пункт дописывается под заголовок,
+    который пометка «не участник» не считает разделом."""
+    return bool(_SECTION.match(line) or _LEGACY_SECTION.match(line))
+
+
 def normalize(text: str) -> str:
     """Привести пункты раздела «Поручения» к виду «- [ ] …».
 
@@ -65,7 +85,7 @@ def normalize(text: str) -> str:
     out: list[str] = []
     inside = False
     for line in lines:
-        if _SECTION.match(line):
+        if is_section_heading(line):
             inside = True
             out.append(line)
             continue
@@ -339,7 +359,7 @@ def flag_outsiders(text: str, participants: set[str], lang: str = "ru") -> str:
     out: list[str] = []
     inside = False
     for line in text.split("\n"):
-        if _SECTION.match(line):
+        if is_section_heading(line):
             inside = True
             out.append(line)
             continue
@@ -476,7 +496,7 @@ def canon_owner(text: str, owner: str) -> str:
     out: list[str] = []
     inside = False
     for line in text.split("\n"):
-        if _SECTION.match(line):
+        if is_section_heading(line):
             inside = True
             out.append(line)
             continue
