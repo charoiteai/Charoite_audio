@@ -75,6 +75,7 @@ from charoite_paths import (
 ROOT = resolve_root(__file__)      # данные пользователя
 CODE = code_root(__file__)         # src/ и scripts/ — рядом с этим файлом
 THESIS_EVERY = 40.0     # автотезисы: раз в N секунд по новым фразам
+THINK_MAX_CHARS = 6_000  # тезисы: потолок свежего фрагмента в промпте (~четверть num_ctx)
 HINT_EVERY = 75.0       # автоподсказки: не чаще, чем раз в N секунд
 HINT_MIN_NEW = 220      # и только если накопилось столько новых знаков разговора
 HINT_RETRY = 20.0       # сорвалась (модель занята) — следующая попытка раньше, а не через 75 с
@@ -1321,22 +1322,39 @@ def main():
             fresh = full[seen:]
             if len(fresh) < 120:  # мало нового — не гонять модель
                 continue
+            # После часа выключенных тезисов или серии сбоев fresh — вся встреча:
+            # Ollama молча режет голову промпта по num_ctx, ранняя часть теряется
+            # без следа (аудит 13.09, GLM M1). Берём ГОЛОВУ по потолку и двигаем
+            # seen на прочитанное: бэклог доедет за несколько тактов в хронологии,
+            # а не выбрасывается (DS r1 M1 по #558).
+            consumed = len(full)
+            if len(fresh) > THINK_MAX_CHARS:
+                fresh = fresh[:THINK_MAX_CHARS]
+                consumed = seen + THINK_MAX_CHARS
             try:
                 parts: list[str] = []
                 yielded = False
-                for tok in llm.stream(
-                        (f"Контекст (уже обработано):\n{context_tail}\n\n" if context_tail else "")
-                        + f"НОВЫЙ фрагмент стенограммы:\n{fresh}",
-                        model=cfg["sufler"].get("think_model", llm.small),
-                        system=thesis_rules.THINK_SYSTEM,
-                ):
-                    if manual_evt.is_set():
-                        yielded = True   # человек задал вопрос — тяжёлая модель ему нужнее
-                        break
-                    parts.append(tok)
+                # Под арбитром, как разметка и нить: в дефолтном шаблоне think_model
+                # = model, и тезисы каждые 40 с держали ту же очередь Ollama, что
+                # подсказки, — ручной вопрос ждал 45 с и получал «занято» (аудит
+                # 13.09, DS I1 / GLM I2; остаток №53). Замок тихо, на секунду: не
+                # взяли — фрагмент разберём следующим тиком, seen не двигаем.
+                with hint_slot("тезисы", timeout=1.0, quiet=True) as got:
+                    if not got:
+                        continue
+                    for tok in llm.stream(
+                            (f"Контекст (уже обработано):\n{context_tail}\n\n" if context_tail else "")
+                            + f"НОВЫЙ фрагмент стенограммы:\n{fresh}",
+                            model=cfg["sufler"].get("think_model", llm.small),
+                            system=thesis_rules.THINK_SYSTEM,
+                    ):
+                        if manual_evt.is_set():
+                            yielded = True   # человек задал вопрос — тяжёлая модель ему нужнее
+                            break
+                        parts.append(tok)
                 if yielded:
                     continue   # seen не двигаем: фрагмент разберём следующим тиком
-                seen = len(full)
+                seen = consumed
                 out = "".join(parts)
                 context_tail = fresh[-800:]
                 # Строки без живого префикса отбрасываются целиком: вступления
@@ -1354,6 +1372,18 @@ def main():
 
     hint_lock = threading.Lock()   # подсказки/минутки на 26b — по одной за раз
     manual_evt = threading.Event()  # ручной запрос прерывает авто-генерацию
+
+    def _collect(tokens) -> str | None:
+        """Собрать стрим целиком, уступив ручному запросу: None — прервано
+        (manual_evt взведён), вызывающий не двигает свой seen и вернётся к
+        куску следующим тактом. Одна проверка на всех держателей замка вместо
+        копии условия в каждом цикле (DS/GLM r1 по #558)."""
+        parts: list[str] = []
+        for tok in tokens:
+            if manual_evt.is_set():
+                return None
+            parts.append(tok)
+        return "".join(parts)
 
     @contextlib.contextmanager
     def hint_slot(who: str, timeout: float = 240.0, *, clear_manual_on_busy: bool = False,
@@ -1563,6 +1593,14 @@ def main():
                 elif parts:  # авто оборвалась после токенов: обрезок не должен выглядеть целым
                     emit({"type": "hint", "text": " …⚠", "manual": False})
                     parts.append(" …⚠")
+            if not parts and failed is None and not yielded:
+                # Пустой стрим без исключения — не подсказка: кусок разговора
+                # считался разобранным, серия сбоев обнулялась, а человек не видел
+                # ни символа (аудит 13.09, DS M3). Дальше — путь обычного сбоя.
+                failed = RuntimeError("модель вернула пустой ответ")
+                if manual:
+                    emit({"type": "hint", "text": "\n⚠ модель вернула пустой ответ — попробуйте ещё раз",
+                          "manual": True})
             # Модель отработала здесь. Дальше идут доставка в UI и запись
             # файла: замок вывода, пайп, диск. Их место — не в model_ms,
             # иначе занятый пайп читается как медленная модель (круг-2).
@@ -2097,12 +2135,13 @@ def main():
             # вклеенный «❓ вопрос» стал бы самым ярким текстом полотна —
             # ровно то, что владелец просил убрать (круг-1 по #394, DS+Codex).
             # Вопрос остаётся в аудите (label ниже) и в облачной ленте панели.
+            refusal = bool(out) and question_filter.is_refusal(out)
             if failure:
                 # Сбой — в статус со признаком ошибки, не в нить: полотно
                 # встречи не место для текста ошибки CLI, а аудит не должен
                 # хранить её как ответ на вопрос.
                 emit_error(f"☁️ облако не ответило: {failure}")
-            elif out and not question_filter.is_refusal(out):
+            elif out and not refusal:
                 if thread.add_answer(q, question_filter.squeeze(out, max_lines=3, max_chars=380)):
                     emit({"type": "thread", "text": thread.render()})
             # Вопрос в живом UI больше не показывается (пакет владельца 24.08):
@@ -2110,9 +2149,13 @@ def main():
             # (облачной ленты в приложении больше нет — №53, круг по #466).
             # cloud_done больше не эмитим: приложение канал cloud не слушает
             # (лента выпилена — №53), а другого потребителя у события не было.
-            if failure:
+            if failure or not out:
                 continue          # в аудит идут ответы, а не сообщения о сбое
-            label = f"☁️ {model} — на: {q[:400]}" if q else f"☁️ {model}"
+            # отказ («не вижу вопроса») — в аудит с ярлыком, а не как ответ: без
+            # ярлыка он выглядел отвеченным вопросом (аудит 13.09, DS M4), без
+            # записи исчезал бесследно (критика GLM r1 по #558)
+            head = f"☁️ отказ {model}" if refusal else f"☁️ {model}"
+            label = f"{head} — на: {q[:400]}" if q else head
             append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] {label}", out)
 
     def fast_trigger_loop():
@@ -2274,7 +2317,6 @@ def main():
             fresh = full[seen_len:]
             if len(fresh) < 300:
                 continue
-            seen_len = len(full)
             try:
                 cores = [p for p in sorted(cores_dir.glob("*.md"))
                          if not p.name.startswith("_")]
@@ -2299,6 +2341,11 @@ def main():
                                  if p.stem in vecs), key=lambda x: -x[0])
                 if len(scored) < 3:
                     continue
+                # прирост «израсходован» только когда есть с чем сверять: занятая
+                # Ollama (штатный 20-с таймаут эмбеддинга) или пустой кэш векторов
+                # иначе выбрасывали фрагмент из сверки с ядрами навсегда (аудит
+                # 13.09, DS M5 / GLM M2; DS r1 M2 по #558)
+                seen_len = len(full)
                 mid = scored[len(scored) // 2][0]  # медиана как «фон» разговора
 
                 if not brief_done and len(full) >= 600:
@@ -2377,9 +2424,9 @@ def main():
                     or (dt.datetime.now() - t1).total_seconds() < 6:
                 continue
             seen.add(key)
-            # Единственный LLM-контур вне арбитра держал модель на 900 токенов
-            # каждые 6 с, пока подсказчик и ⚡ стояли в очереди к ней (аудит
-            # 30.08, DS I1). Контракт арбитра целиком: выключенные подсказки и
+            # Разметка вне арбитра держала модель на 900 токенов каждые 6 с, пока
+            # подсказчик и ⚡ стояли в очереди к ней (аудит 30.08, DS I1); с 13.09
+            # под арбитром и тезисы с черновиком минуток. Контракт целиком: выключенные подсказки и
             # взведённый manual_evt (ручной вопрос ждёт) — уступаем, замок берём
             # тихо на секунду; во всех трёх случаях абзац вернётся в следующий
             # цикл — разметка дешевле задержки подсказки (DS r1 по #457).
@@ -2485,99 +2532,120 @@ def main():
         # Строка идёт в speaker_names целиком: сравнение по словам, потому что
         # в user_name обычно имя И фамилия, а модель предлагает одно имя.
         owner_name = chan.owner_name
+        last_len = -1
         while not stop.is_set():
             time.sleep(90)
+            grown = len(tr.full())
+            if grown == last_len:
+                continue  # с прошлого такта ничего не сказано — тот же ответ, зря гонять модель (аудит 13.09, GLM M4)
+            prev_len, last_len = last_len, grown
             sample = tr.tail(3000)
             if sample.count("Собеседник") < 2 and not listed:
                 continue  # та сторона ещё толком не говорила
             try:
-                if spk_tracker is not None:
-                    # мультиспикер: qwen сопоставляет имена меткам, JSON + гварды
-                    labels = sorted(set(re.findall(r"Собеседник \d+", sample)) - set(renamed))
-                    if labels:
-                        out = "".join(llm.stream(
-                            f"Стенограмма (метки говорящих условные):\n{sample}\n\n"
-                            "Определи ИМЕНА говорящих. КРИТИЧНО: имя внутри реплики — "
-                            "почти всегда ОБРАЩЕНИЕ к ДРУГОМУ человеку («Саш, а ты…» "
-                            "говорит НЕ Ольга). Говорящий получает имя только если: "
-                            "(а) он сам представился («это Таня», «меня зовут…»), или "
-                            "(б) к нему обратились по имени В ЧУЖОЙ реплике и он ответил "
-                            "СЛЕДУЮЩЕЙ репликой. Имя — в именительном падеже (Таня, не "
-                            "Тань). Не путай с названиями компаний и междометиями. "
-                            'Верни ТОЛЬКО JSON вида {"Собеседник 1": "Имя"} — лишь метки, '
-                            "в которых УВЕРЕН. Не уверен ни в ком — верни {}.",
-                            model=cfg["sufler"].get("think_model", llm.small),
-                            system="Ты сопоставляешь имена говорящим по стенограмме. Только JSON.",
-                        ))
-                        # берём ПОСЛЕДНИЙ плоский {...}: жадный \{.*\} склеивал
-                        # два объекта в один невалидный кусок, если модель добавляла прозу
-                        cands = re.findall(r"\{[^{}]*\}", out, re.DOTALL)
-                        try:
-                            pairs = json.loads(cands[-1]) if cands else {}
-                        except ValueError:
-                            pairs = {}
-                        for label, raw_name in pairs.items():
-                            # все гварды доверия — в одном месте (src/speaker_names.py),
-                            # чтобы безмодельная ветка ниже не расходилась с этой:
-                            # владелец по словам user_name, «обращение ≠ говорящий»,
-                            # выдуманные имена, падежи по людям графа
-                            name = speaker_names.trustworthy_name(
-                                raw_name, sample=sample, label=label,
-                                owner_name=owner_name, known=tuple(known_first),
-                                voice=voice_pitch.register(_median_f0(label)),
-                                name_gender=name_gender(str(raw_name)))
-                            if (label in labels and name
-                                    and name not in renamed.values()):
-                                renamed[label] = name
-                                tr.rename_speaker(label, name)
-                                for vid, vname in list(voice_names.items()):
-                                    if vname == label:
-                                        voice_names[vid] = name
-                                emit({"type": "rename", "from": label, "to": name})
-                                emit({"type": "status", "text": f"👤 {label} → {name}"})
-                elif not named:
-                    out = "".join(llm.stream(
-                        f"Стенограмма встречи:\n{sample}\n\n"
-                        "С той стороны говорит ОДИН человек? Если да и его имя явно "
-                        "прозвучало (представился или к нему обращались) — ответь ТОЛЬКО "
-                        "именем, одним словом. Если людей несколько или имя не звучало — "
-                        "ответь ровно NONE.",
-                        model=llm.small,
-                        system="Ты определяешь имя говорящего по стенограмме. Одно слово или NONE.",
-                    ))
-                    raw_name = out.strip().split()[0] if out.strip() else ""
-                    # та же проверка доверия, что в мультиспикерной ветке выше:
-                    # эта ветка работает БЕЗ модели голосов, то есть по умолчанию,
-                    # и раньше была слабее — гварда «обращение ≠ говорящий» в ней
-                    # не было вовсе, а владелец узнавался только по полной строке
-                    name = speaker_names.trustworthy_name(
-                        raw_name, sample=sample, label="Собеседник",
-                        owner_name=owner_name, known=tuple(known_first),
-                        voice=voice_pitch.register(_median_f0("Собеседник")),
-                        name_gender=name_gender(raw_name))
-                    if name:
-                        tr.rename_speaker("Собеседник", name)
-                        emit({"type": "rename", "from": "Собеседник", "to": name})
-                        emit({"type": "status", "text": f"👤 Собеседник опознан: {name}"})
-                        named = True
+                # под арбитром, как остальные фоновые контуры: три стрима такта на
+                # think_model/small шли в ту же очередь Ollama мимо hint_slot
+                # (DS r1 I2 / GLM M3 по #558); не взяли — такт вернётся, last_len назад
+                with hint_slot("имена", timeout=1.0, quiet=True) as got:
+                    if not got:
+                        last_len = prev_len
                         continue
-                out = "".join(llm.stream(
-                    f"Стенограмма встречи:\n{sample}\n\n"
-                    "Перечисли ИМЕНА людей, которые реально звучали в разговоре "
-                    "(участники, к кому обращались, кто упоминался как присутствующий). "
-                    "Только имена через запятую, без пояснений. Если имён не было — NONE.",
-                    model=llm.small,
-                    system="Ты извлекаешь имена из стенограммы. Только список через запятую или NONE.",
-                ))
-                raw = out.strip().splitlines()[0] if out.strip() else ""
-                if raw and "NONE" not in raw.upper():
-                    names = [n.strip(" .«»\"") for n in raw.split(",")]
-                    names = [n for n in names if n and n.replace("-", "").replace(" ", "").isalpha()
-                             and 2 <= len(n) <= 25][:12]
-                    if names and set(names) != set(listed):
-                        listed = names
-                        tr.set_participants(names)
-                        emit({"type": "status", "text": f"👥 Звучали: {', '.join(names)}"})
+                    if spk_tracker is not None:
+                        # мультиспикер: qwen сопоставляет имена меткам, JSON + гварды
+                        labels = sorted(set(re.findall(r"Собеседник \d+", sample)) - set(renamed))
+                        if labels:
+                            out = _collect(llm.stream(
+                                f"Стенограмма (метки говорящих условные):\n{sample}\n\n"
+                                "Определи ИМЕНА говорящих. КРИТИЧНО: имя внутри реплики — "
+                                "почти всегда ОБРАЩЕНИЕ к ДРУГОМУ человеку («Саш, а ты…» "
+                                "говорит НЕ Ольга). Говорящий получает имя только если: "
+                                "(а) он сам представился («это Таня», «меня зовут…»), или "
+                                "(б) к нему обратились по имени В ЧУЖОЙ реплике и он ответил "
+                                "СЛЕДУЮЩЕЙ репликой. Имя — в именительном падеже (Таня, не "
+                                "Тань). Не путай с названиями компаний и междометиями. "
+                                'Верни ТОЛЬКО JSON вида {"Собеседник 1": "Имя"} — лишь метки, '
+                                "в которых УВЕРЕН. Не уверен ни в ком — верни {}.",
+                                model=cfg["sufler"].get("think_model", llm.small),
+                                system="Ты сопоставляешь имена говорящим по стенограмме. Только JSON.",
+                            ))
+                            if out is None:
+                                last_len = prev_len
+                                continue   # уступили ручному запросу — такт имён вернётся (DS/GLM r1 по #558)
+                            # берём ПОСЛЕДНИЙ плоский {...}: жадный \{.*\} склеивал
+                            # два объекта в один невалидный кусок, если модель добавляла прозу
+                            cands = re.findall(r"\{[^{}]*\}", out, re.DOTALL)
+                            try:
+                                pairs = json.loads(cands[-1]) if cands else {}
+                            except ValueError:
+                                pairs = {}
+                            for label, raw_name in pairs.items():
+                                # все гварды доверия — в одном месте (src/speaker_names.py),
+                                # чтобы безмодельная ветка ниже не расходилась с этой:
+                                # владелец по словам user_name, «обращение ≠ говорящий»,
+                                # выдуманные имена, падежи по людям графа
+                                name = speaker_names.trustworthy_name(
+                                    raw_name, sample=sample, label=label,
+                                    owner_name=owner_name, known=tuple(known_first),
+                                    voice=voice_pitch.register(_median_f0(label)),
+                                    name_gender=name_gender(str(raw_name)))
+                                if (label in labels and name
+                                        and name not in renamed.values()):
+                                    renamed[label] = name
+                                    tr.rename_speaker(label, name)
+                                    for vid, vname in list(voice_names.items()):
+                                        if vname == label:
+                                            voice_names[vid] = name
+                                    emit({"type": "rename", "from": label, "to": name})
+                                    emit({"type": "status", "text": f"👤 {label} → {name}"})
+                    elif not named:
+                        out = _collect(llm.stream(
+                            f"Стенограмма встречи:\n{sample}\n\n"
+                            "С той стороны говорит ОДИН человек? Если да и его имя явно "
+                            "прозвучало (представился или к нему обращались) — ответь ТОЛЬКО "
+                            "именем, одним словом. Если людей несколько или имя не звучало — "
+                            "ответь ровно NONE.",
+                            model=llm.small,
+                            system="Ты определяешь имя говорящего по стенограмме. Одно слово или NONE.",
+                        ))
+                        if out is None:
+                            last_len = prev_len
+                            continue   # уступили ручному запросу — такт имён вернётся (DS/GLM r1 по #558)
+                        raw_name = out.strip().split()[0] if out.strip() else ""
+                        # та же проверка доверия, что в мультиспикерной ветке выше:
+                        # эта ветка работает БЕЗ модели голосов, то есть по умолчанию,
+                        # и раньше была слабее — гварда «обращение ≠ говорящий» в ней
+                        # не было вовсе, а владелец узнавался только по полной строке
+                        name = speaker_names.trustworthy_name(
+                            raw_name, sample=sample, label="Собеседник",
+                            owner_name=owner_name, known=tuple(known_first),
+                            voice=voice_pitch.register(_median_f0("Собеседник")),
+                            name_gender=name_gender(raw_name))
+                        if name:
+                            tr.rename_speaker("Собеседник", name)
+                            emit({"type": "rename", "from": "Собеседник", "to": name})
+                            emit({"type": "status", "text": f"👤 Собеседник опознан: {name}"})
+                            named = True
+                            continue
+                    out = _collect(llm.stream(
+                        f"Стенограмма встречи:\n{sample}\n\n"
+                        "Перечисли ИМЕНА людей, которые реально звучали в разговоре "
+                        "(участники, к кому обращались, кто упоминался как присутствующий). "
+                        "Только имена через запятую, без пояснений. Если имён не было — NONE.",
+                        model=llm.small,
+                        system="Ты извлекаешь имена из стенограммы. Только список через запятую или NONE.",
+                    ))
+                    if out is None:
+                        last_len = prev_len
+                        continue   # уступили ручному запросу — такт имён вернётся (DS/GLM r1 по #558)
+                    raw = out.strip().splitlines()[0] if out.strip() else ""
+                    if raw and "NONE" not in raw.upper():
+                        names = [n.strip(" .«»\"") for n in raw.split(",")]
+                        names = [n for n in names if n and n.replace("-", "").replace(" ", "").isalpha()
+                                 and 2 <= len(n) <= 25][:12]
+                        if names and set(names) != set(listed):
+                            listed = names
+                            tr.set_participants(names)
+                            emit({"type": "status", "text": f"👥 Звучали: {', '.join(names)}"})
             except Exception as e:  # noqa: BLE001 — имена вспомогательны, но их
                 # отказ до конца встречи неотличим от «имён не звучало»
                 warn_names(e)
@@ -2585,8 +2653,10 @@ def main():
     def minutes_loop():
         """Живые минутки: черновик _minutes.md дорабатывается по ходу встречи.
 
-        Идёт на лёгкой модели ПАРАЛЛЕЛЬНО подсказкам (другая модель Ollama).
-        Финальную версию делает кнопка «Протокол» (26b).
+        Идёт на think_model под тем же арбитром, что подсказки: в дефолтном
+        шаблоне это одна модель и одна очередь Ollama, и черновик каждые 150 с
+        иначе ставил подсказки в очередь на минуты (аудит 13.09, GLM I2).
+        Финальную версию делает кнопка «Протокол».
         """
         seen = 0
         mpath = tr.path.with_name(tr.path.stem + "_minutes.md")
@@ -2612,8 +2682,14 @@ def main():
             if len(full) > 18_000:
                 full = full[:3_000] + "\n\n[… середина опущена …]\n\n" + full[-14_000:]
             try:
-                out = "".join(
-                    llm.stream(
+                with hint_slot("черновик минуток", timeout=1.0, quiet=True) as got:
+                    if not got:
+                        continue   # seen не двигаем — черновик в следующий такт
+                    # черновик — самая долгая генерация живого пути: без уступки он
+                    # держал замок до конца стрима, и ручной вопрос через 45 с
+                    # получал «занято» (DS/GLM r1 I1 по #558)
+                    out = _collect(
+                      llm.stream(
                         f"Стенограмма встречи (идёт, реплики по спикерам):\n\n{full}\n\n"
                         "Обнови ЧЕРНОВИК минуток (markdown): участники (из контекста), "
                         "темы, решения, поручения списком «- **Кто** — что — срок», "
@@ -2624,6 +2700,8 @@ def main():
                                "таблицы нечитаемы в plain-тексте.",
                     )
                 )
+                if out is None:
+                    continue   # уступили ручному запросу — черновик следующим тактом, seen не двигаем
                 seen = grown
                 if out.strip():
                     # Поручения черновика — сразу в формат окна «Задачи»:

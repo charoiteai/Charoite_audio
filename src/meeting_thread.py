@@ -220,8 +220,12 @@ class Thread:
                 if not rest:
                     continue
                 if mark == TOPIC:
+                    # повтор заголовка темы — не строка: open_topic вернёт ту же
+                    # тему, а счётчик снимал торможение thread_loop и звал
+                    # модель каждые 900 знаков (аудит 13.09, DS I1)
+                    before = len(self.topics)
                     self.open_topic(rest, at)
-                    added += 1
+                    added += len(self.topics) - before
                 elif mark in KINDS:
                     added += 1 if self.add(KINDS[mark], rest, at) else 0
         return added
@@ -318,12 +322,16 @@ class Thread:
         return applied
 
     def _find_line(self, probe: str) -> Line | None:
-        """Строка нити под правку: ищем с конца — свежее правится чаще."""
-        for topic in reversed(self.topics):
-            for line in reversed(topic.lines):
-                clean = _norm(re.sub(r"==", "", line.text))
-                if _same_norm(probe, clean):
-                    return line
+        """Строка нити под правку: сначала точное совпадение, потом нечёткое;
+        внутри прохода — с конца, свежее правится чаще. Иначе короткая правка
+        «поток упал» ложилась на более позднюю длинную строку с тем же началом
+        (аудит 13.09, GLM M7)."""
+        for exact in (True, False):
+            for topic in reversed(self.topics):
+                for line in reversed(topic.lines):
+                    clean = _norm(re.sub(r"==", "", line.text))
+                    if (clean == probe) if exact else _same_norm(probe, clean):
+                        return line
         return None
 
     @property
@@ -345,6 +353,7 @@ class Thread:
         темы сохраняем: модели важно знать, о чём сейчас), — этого хватает,
         чтобы не повторяться.
         """
+        topics = max(1, topics)   # [-0:] — вся нить, ровно то, от чего бережёт max_chars
         with self._mutex:
             text = "\n".join(t.render() for t in self.topics[-topics:])
             if len(text) <= max_chars:
@@ -474,10 +483,15 @@ def _same_norm(a: str, b: str) -> bool:
     """
     if not a or not b:
         return False
-    if a == b or a in b or b in a:
+    if a == b:
         return True
     if min(len(a), len(b)) < LINE_MIN_LEN:
         return False
+    # вхождение — тоже нечёткое сравнение, и порог длины над ним: короткая
+    # старая строка («срок 1 08») входила в любое новое решение с той же датой
+    # и молча съедала его (аудит 13.09, DS I2)
+    if a in b or b in a:
+        return True
     if difflib.SequenceMatcher(None, a, b).ratio() >= SAME_ENOUGH:
         return True
     return _same_words(a, b)
