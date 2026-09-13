@@ -1,6 +1,7 @@
 """Диаризация записи встречи: кто из НЕСКОЛЬКИХ голосов что сказал, с именами.
 
-Запуск: .venv/bin/python src/diarize.py <запись.wav|m4a> [--channel right] [ЧЧММ]
+Запуск: .venv/bin/python src/diarize.py <запись.wav|m4a> [--channel right|--channel=right]
+        [--speakers N] [ЧЧММ]
 
 Конвейер: sherpa-onnx (pyannote-сегментация + eres2net-эмбеддинги, чистый ONNX,
 всё локально) → сегменты Speaker N → GigaAM по сегментам → qwen сопоставляет
@@ -25,15 +26,12 @@ import wave
 import numpy as np
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from stt import STT  # noqa: E402
+from stt import AFCONVERT_TIMEOUT, STT  # noqa: E402
 
 from charoite_paths import resolve_root
 from config_loader import load_user_or_example
 
 ROOT = resolve_root(__file__)
-#: afconvert без потолка вешал импорт на битом или сетевом входе навсегда
-#: (аудит 13.09, DS M4); трёхчасовая запись сводится за минуты.
-AFCONVERT_TIMEOUT = 900
 
 SEG_MODEL = ROOT / "models" / "diar" / "segmentation.onnx"
 EMB_MODEL = ROOT / "models" / "diar" / "embedding.onnx"
@@ -53,8 +51,22 @@ def _scratch_dir() -> pathlib.Path:
     atexit.register(shutil.rmtree, d, True)
     return d
 
+def wav_is_int16(path: pathlib.Path) -> bool:
+    """WAV читается модулем wave и хранит 16-битный PCM. 8-бит читался как int16
+    (мусор или ValueError на нечётной длине), float32 и WAVE_FORMAT_EXTENSIBLE
+    (ffmpeg, Audacity) роняли CLI wave.Error — при том, что transcribe_file тот же
+    файл сводил (GLM r1 I1 по #555). Не разобрали — False: сведёт afconvert."""
+    try:
+        with wave.open(str(path), "rb") as w:
+            return w.getsampwidth() == 2
+    except (wave.Error, EOFError, OSError):
+        return False
+
+
 def load_audio(src: pathlib.Path, channel: str) -> tuple[np.ndarray, int]:
-    if src.suffix.lower() != ".wav":
+    if src.suffix.lower() != ".wav" or not wav_is_int16(src):
+        # без -c 1: каналы нужны раздельно — выбор left/right ниже и есть смысл
+        # этой функции, сведение усреднило бы владельца с собеседниками
         tmp = _scratch_dir() / "d.wav"
         subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@16000",
                         str(src), str(tmp)], check=True, capture_output=True,
@@ -334,6 +346,9 @@ def parse_args(argv: list[str]) -> tuple[list[str], str, int]:
                 num_speakers = int(val)
             except ValueError:
                 raise SystemExit(f"--speakers: ожидается число, не «{val}»") from None
+            if num_speakers != -1 and num_speakers < 1:
+                # 0 и отрицательные молча уходили в авто-режим (DS/GLM M2 по #555)
+                raise SystemExit("--speakers: 1 или больше; без ключа или -1 — авто")
     if not pos:
         raise SystemExit("укажите файл записи: diarize.py <запись.wav> [--channel right] [--speakers N] [ЧЧММ]")
     return pos, channel, num_speakers

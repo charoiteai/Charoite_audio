@@ -57,6 +57,31 @@ def test_broken_wav_header_goes_to_afconvert_too(tmp_path, monkeypatch):
     assert tf.to_wav16k(src) != src
 
 
+def test_pcm_at_a_non_16k_rate_is_resampled_not_passed_through(tmp_path, monkeypatch):
+    """Крэш-запись .pcm пишется на audio.samplerate конфига; при 48 кГц она уходила
+    в модель под своей частотой без единой ошибки (DS r1 I1 / GLM M4 по #555)."""
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(tf.subprocess, "run", fake_run)
+    pcm = tmp_path / "rec.pcm"
+    pcm.write_bytes(bytes(4800 * 2))
+    out = tf.to_wav16k(pcm, pcm_rate=48000)
+    assert len(calls) == 1 and calls[0][0] == "afconvert" and out.name == "rec16k.wav"
+    assert tf.wav_is_mono_16bit(pathlib.Path(calls[0][-2])) is False, "промежуточный WAV — 48 кГц"
+    calls.clear()
+    out = tf.to_wav16k(pcm, pcm_rate=16000)
+    assert not calls and tf.wav_is_mono_16bit(out)
+
+
 def test_noise_list_matches_after_the_readers_strip():
-    for phrase in ("Продолжение следует...", "Спасибо за просмотр!", "продолжение следует"):
-        assert phrase.lower().strip(" .!») ") in NOISE
+    from transcript import is_noise
+    for phrase in ("Продолжение следует...", "Продолжение следует…", "Спасибо за просмотр!",
+                   "продолжение следует", "СПАСИБО ЗА ПРОСМОТР."):
+        assert is_noise(phrase), phrase
+    assert not is_noise("продолжение следует в понедельник")
+    for phrase in NOISE:
+        assert is_noise(phrase)

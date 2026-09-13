@@ -259,6 +259,10 @@ def test_cut_overlap_indexes_tokens_without_letters_consistently():
     assert Transcript._cut_overlap("а вот на что", "... на что смотреть") == "смотреть"
     # всё совпало, кроме токена без букв — прироста нет
     assert Transcript._cut_overlap(prev, plain.rsplit(" ", 2)[0] + " —") == ""
+    # токен из двух нормализованных слов режется целиком: «1.5» уходит в хвост,
+    # а не обрубок «5» (DS r1 M1 по #555 — заявленная граница, не дефект)
+    assert Transcript._cut_overlap("обсудили бюджет на", "бюджет на 1.5 млн рублей") == "1.5 млн рублей"
+    assert Transcript._norm_tokens("а — б.в") == [(0, "а"), (2, "б"), (2, "в")]
 
 
 def test_transcript_boundary_does_not_load_runtime_stack():

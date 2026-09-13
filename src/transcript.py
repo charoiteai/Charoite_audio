@@ -22,6 +22,16 @@ import meeting_stamp
 # 13.09, GLM M2).
 NOISE = {"продолжение следует...", "продолжение следует", "субтитры делал dimatorzok",
          "спасибо за просмотр!", "спасибо за просмотр"}
+#: что срезают читатели перед сравнением: пробелы, точки, «!», «»)» и настоящее
+#: многоточие U+2026 — им фраза и записана в описании выше, а в наборе strip его не
+#: было, так что «продолжение следует…» не ловилась никогда (DS r1 M3 по #555)
+NOISE_STRIP = " .!»)…"
+
+
+def is_noise(text: str) -> bool:
+    """Реплика — галлюцинация STT на тишине. Один предикат на четырёх читателей
+    (демон, CLI, пересборка, офлайн-расшифровка): копии strip-набора разъезжались."""
+    return text.lower().strip(NOISE_STRIP) in NOISE
 
 
 BLOCK_RE = re.compile(
@@ -132,6 +142,13 @@ class Transcript:
         return re.findall(r"[\w-]+", text.lower())
 
     @classmethod
+    def _norm_tokens(cls, text: str) -> list[tuple[int, str]]:
+        """(номер токена text.split(), нормализованное слово) — одна система
+        индексов для совпадений и для реза: параллельные списки без общего
+        источника и были багом шва (критика DS r1 по #555)."""
+        return [(i, w) for i, tok in enumerate(text.split()) for w in cls._norm_words(tok)]
+
+    @classmethod
     def _similar(cls, a: list[str], b: list[str]) -> float:
         """Похожесть по словам, а не по буквам: одна кривая буква не рушит счёт."""
         if not a or not b:
@@ -143,16 +160,15 @@ class Transcript:
         """Режет повтор шва: хвост предыдущего чанка обычно повторяется в начале нового."""
         pw = cls._norm_words(prev)
         words = new.split()
-        # nw и owner — в одной системе индексов: каждое нормализованное слово
-        # помнит номер токена new.split(), из которого взято. До 13.09 индексы
-        # блоков (по nw) применялись к words напрямую: токен без букв («—»,
+        # Совпадения считаются по нормализованным словам, рез — по токенам
+        # new.split(); _norm_tokens держит их в одной системе индексов. До 13.09
+        # индексы блоков применялись к words напрямую: токен без букв («—»,
         # «...») сдвигал рез, и шовное слово дублировалось (аудит 13.09, DS M1).
-        nw: list[str] = []
-        owner: list[int] = []
-        for i, tok in enumerate(words):
-            for w in cls._norm_words(tok):
-                nw.append(w)
-                owner.append(i)
+        # Токен из двух слов («1.5», «т.е.») режется целиком — в хвост или в
+        # огрызок: дубль полутокена дешевле потери речи (DS/GLM r1 по #555).
+        tokens = cls._norm_tokens(new)
+        nw = [w for _, w in tokens]
+        owner = [i for i, _ in tokens]
         if not pw or not nw:
             return new
 
