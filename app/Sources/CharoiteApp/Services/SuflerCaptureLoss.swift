@@ -97,6 +97,7 @@ extension SuflerService {
 
     func captureRecovered() {
         guard isRunning else { return }
+        statusIsError = false      // восстановление рисовалось красным до следующего статуса демона (аудит 13.09, GLM M1)
         status = L.t("Захват звука восстановлен после сбоя",
                           "Audio capture recovered after a failure",
                           "音频捕获在故障后已恢复")

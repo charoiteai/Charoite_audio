@@ -120,6 +120,9 @@ final class SystemAudioCapture: NSObject {
     /// Сколько ждём системные вызовы ScreenCaptureKit при сборке потока:
     /// они не отменяются и таймаута не имеют, а подвисший сервис захвата —
     /// ровно тот сценарий, ради которого пересоздание и нужно (DS, круг-1).
+    /// Микрофон в поток не попал (кадров не дал за 10 с): демон откроет его
+    /// отдельно, а SuflerService скажет об этом вслух (аудит 13.09, DS I1).
+    private(set) var micFallback = false
     nonisolated static let openTimeout: UInt64 = 10_000_000_000
 
     /// Поднять захват. Возвращает false, если система отказала — вызывающий
@@ -190,6 +193,26 @@ final class SystemAudioCapture: NSObject {
             log("кадров нет за секунду — остаёмся на BlackHole")
             await stop()
             return false
+        }
+        // Первый буфер микрофона может прийти позже секунды проверки (гарнитура
+        // по USB или Bluetooth на старте): манифест пишется один раз, и без
+        // «mic» демон открывал микрофон через PortAudio — ровно тот путь, от
+        // которого ушли на macOS 15 (аудит 13.09, DS I1). Ждём, как syncMicRate:
+        // до трёх раз по 3 с; Stop за это время — обычный выход.
+        var micAttempt = 0
+        while micInStream && sink.micFrames == 0 && micAttempt < 3 {
+            micAttempt += 1
+            log("микрофон ещё не дал кадров — жду 3 с (попытка \(micAttempt) из 3)")
+            do {
+                try await Task.sleep(nanoseconds: 3_000_000_000)
+            } catch {
+                await stop()
+                return false
+            }
+        }
+        micFallback = micInStream && sink.micFrames == 0
+        if micFallback {
+            log("микрофон не дал ни кадра за 10 с — в манифест не пишу, демон откроет его отдельно")
         }
         writeManifest(micInStream: micInStream && sink.micFrames > 0)
         log("системный звук через ScreenCaptureKit: \(sink.systemFrames) кадров за секунду"
