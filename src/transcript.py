@@ -17,7 +17,10 @@ import meeting_stamp
 # — если GigaAM когда-то начнёт лить мусор, это будет другой мусор, и ловить
 # его нужно классификатором (gen_hint уже видит реплику целиком), а не
 # дописыванием строк сюда.
-NOISE = {"продолжение следует...", "субтитры делал dimatorzok",
+# Оба варианта каждой фразы: читатели сравнивают после strip(" .!») "), то есть
+# без хвостовых точек — вариант с многоточием сам по себе недостижим (аудит
+# 13.09, GLM M2).
+NOISE = {"продолжение следует...", "продолжение следует", "субтитры делал dimatorzok",
          "спасибо за просмотр!", "спасибо за просмотр"}
 
 
@@ -138,10 +141,24 @@ class Transcript:
     @classmethod
     def _cut_overlap(cls, prev: str, new: str) -> str:
         """Режет повтор шва: хвост предыдущего чанка обычно повторяется в начале нового."""
-        pw, nw = cls._norm_words(prev), cls._norm_words(new)
+        pw = cls._norm_words(prev)
+        words = new.split()
+        # nw и owner — в одной системе индексов: каждое нормализованное слово
+        # помнит номер токена new.split(), из которого взято. До 13.09 индексы
+        # блоков (по nw) применялись к words напрямую: токен без букв («—»,
+        # «...») сдвигал рез, и шовное слово дублировалось (аудит 13.09, DS M1).
+        nw: list[str] = []
+        owner: list[int] = []
+        for i, tok in enumerate(words):
+            for w in cls._norm_words(tok):
+                nw.append(w)
+                owner.append(i)
         if not pw or not nw:
             return new
-        words = new.split()
+
+        def tail_from(k: int) -> list[str]:
+            """Токены new, начиная с того, которому принадлежит nw[k]."""
+            return words[owner[k]:] if k < len(nw) else []
 
         # Границу перекрытия не угадываем по длине, а вычисляем по совпадающим
         # кускам. Берём все блоки, а не самый длинный: одно расслышанное иначе
@@ -167,7 +184,7 @@ class Transcript:
                 and matched >= 0.8 * min(len(pw), len(nw))
             )
             if enough and at_start and at_end:
-                rest = words[last.b + last.size:]
+                rest = tail_from(last.b + last.size)
                 # Огрызок в одно слово — хвост неверно расслышанной концовки
                 # («…нету адреса» / «…нету адреса»). Мусор, а не прирост.
                 if len(rest) <= 1 and cls._similar(pw, nw) >= cls._DUPLICATE_RATIO:
@@ -177,7 +194,7 @@ class Transcript:
         # Короткий хвост совпал точно — прежнее поведение, для «на» и «что»
         for k in range(min(8, len(pw), len(nw)), 1, -1):
             if pw[-k:] == nw[:k]:
-                return " ".join(words[k:])
+                return " ".join(tail_from(k))
         return new
 
     @staticmethod

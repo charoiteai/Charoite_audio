@@ -45,9 +45,29 @@ def _scratch_dir() -> pathlib.Path:
     atexit.register(shutil.rmtree, d, True)
     return d
 
+#: afconvert без потолка вешал импорт на битом или сетевом входе навсегда
+#: (аудит 13.09, DS M4); трёхчасовая запись сводится за минуты.
+AFCONVERT_TIMEOUT = 900
+
+
+def wav_is_mono_16bit(path: pathlib.Path, rate: int = 16000) -> bool:
+    """WAV уже в формате STT: моно, 16 бит, нужная частота. Не разобрали —
+    False: пусть сводит afconvert, он и скажет, что с файлом не так."""
+    try:
+        with wave.open(str(path), "rb") as w:
+            return (w.getnchannels() == 1 and w.getsampwidth() == 2
+                    and w.getframerate() == rate)
+    except (wave.Error, EOFError, OSError):
+        return False
+
+
 def to_wav16k(src: pathlib.Path, pcm_rate: int = 16000) -> pathlib.Path:
-    if src.suffix.lower() == ".wav":
+    if src.suffix.lower() == ".wav" and wav_is_mono_16bit(src):
         return src
+    # Стерео или не 16 кГц: до 13.09 такой WAV отдавался как есть — стерео
+    # читалось моно двойной скорости, 44,1 кГц уходило в модель под своей
+    # частотой, стенограмма выходила мусором без единой ошибки (аудит 13.09,
+    # DS I3 / GLM I1). Сводим тем же afconvert, что и m4a.
     if src.suffix.lower() == ".pcm":  # сырая запись AudioHub после крэша: s16le mono
         out = _scratch_dir() / "rec.wav"
         with wave.open(str(out), "wb") as w, src.open("rb") as f:
@@ -59,7 +79,8 @@ def to_wav16k(src: pathlib.Path, pcm_rate: int = 16000) -> pathlib.Path:
         return out
     out = _scratch_dir() / "rec.wav"
     subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1",
-                    str(src), str(out)], check=True, capture_output=True)
+                    str(src), str(out)], check=True, capture_output=True,
+                   timeout=AFCONVERT_TIMEOUT)
     return out
 
 
@@ -72,6 +93,9 @@ def main():
     stt = STT(cfg)
     wav = to_wav16k(src, pcm_rate=int(cfg["audio"]["samplerate"]))
     with wave.open(str(wav), "rb") as w:
+        if w.getnchannels() != 1 or w.getsampwidth() != 2:
+            sys.exit(f"{wav.name}: после сведения ожидался моно 16-бит WAV, "
+                     f"а не {w.getnchannels()} кан. × {w.getsampwidth() * 8} бит")
         sr = w.getframerate()
         audio = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
     dur = len(audio) / sr

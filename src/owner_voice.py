@@ -311,8 +311,11 @@ def owner_voice(heard: Heard, *, min_seconds: float = MIN_MIC_SECONDS,
     if not heard.call:
         return None                     # очная встреча: различать некого
     # Голоса, слышные и в системном канале, — это эхо собеседников.
+    # `echoed` липкое: голос, хоть раз звучавший в динамиках, после затухания
+    # bh снова проходил бы порог и мог выиграть долю — ровно баг 20.08, от
+    # которого защищено owner_voices(); здесь фильтра не было (аудит 13.09, GLM M1).
     candidates = {v: s for v, s in heard.mic.items()
-                  if heard.bh.get(v, 0.0) <= echo_seconds}
+                  if v not in heard.echoed and heard.bh.get(v, 0.0) <= echo_seconds}
     if not candidates:
         return None
     # Доля считается от речи ЛЮДЕЙ в комнате, а не от всего, что попало в
