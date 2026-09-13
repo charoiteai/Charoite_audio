@@ -477,6 +477,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             disarm(quiet: true)
             recorder = r
             isRecording = true
+            encodeErrors = 0                 // новый файл пишется — серия ошибок кодека прервана
             currentKind = kind
             resumeAttempts = 0
             elapsed = 0
@@ -612,10 +613,14 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.isRecording else { return }
-                self.lastResult = L.t("Аудиослужба перезапущена — запись остановлена, файл сохранён",
-                                      "Audio service reset — recording stopped, file kept",
-                                      "音频服务已重置 — 录音停止，文件已保留")
-                self.stop()
+                // mediaserverd перезапускается и без звонка (обновление, чужой VoIP):
+                // раньше здесь был stop() — остаток встречи не писался, а телефон лежал
+                // экраном вниз (аудит 13.09, GLM I2; кандидат в остановки из №200).
+                // После сброса новый рекордер валиден — закрываем файл и продолжаем новым.
+                self.lastResult = L.t("Аудиослужба перезапущена — файл сохранён, продолжаю встречу новым",
+                                      "Audio service reset — file kept, continuing the meeting in a new one",
+                                      "音频服务已重置 — 文件已保留，以新文件继续会议")
+                self.rotateFile()
             }
         })
         observers.append(nc.addObserver(
@@ -905,9 +910,12 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
 
     /// Закрыть текущий файл и продолжить встречу в следующем.
     ///
-    /// Потерять полчаса разговора хуже, чем получить встречу двумя кусками:
-    /// конвейер на Mac принимает оба файла, а склейка — вопрос порядка по
-    /// имени, в котором стоят секунды.
+    /// Потерять полчаса разговора хуже, чем получить встречу двумя кусками.
+    /// Склейки на Mac НЕТ: импорт различает записи по имени и размеру, и каждый
+    /// кусок становится своей встречей в графе (аудит 13.09, DS I2; склейка
+    /// сегментов `iphone_*` — отдельная карточка). Если вход после стопа занят,
+    /// старт взводится и поднимется сам — при открытом приложении: в фоне
+    /// таймер проб не тикает (GLM M5).
     private func rotateFile() {
         let kind = currentKind
         beginRotateTask()
@@ -920,12 +928,34 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         }
     }
 
+    /// Ошибок кодека подряд, после которых ротация уже не спасает: пустые куски
+    /// плодить незачем — честный стоп.
+    nonisolated static let maxEncodeErrors = 3
+
+    /// Ошибка кодека посреди встречи: сторож застоя в той же беде ротирует, а
+    /// делегат останавливал — час разговора после сбоя не писался (аудит 13.09,
+    /// DS I4 / GLM I3). Политика — статикой, чтобы её держал тест.
+    nonisolated static func actionAfterEncodeError(consecutive: Int) -> StallAction {
+        consecutive >= maxEncodeErrors ? .retry : .rotate
+    }
+
+    private var encodeErrors = 0
+
     nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
         Task { @MainActor [weak self] in
-            self?.lastResult = L.t("Сбой записи: \(error?.localizedDescription ?? "кодек")",
-                                   "Recording error: \(error?.localizedDescription ?? "codec")",
-                                   "录音错误：\(error?.localizedDescription ?? "编解码器")")
-            self?.stop()
+            guard let self else { return }
+            self.encodeErrors += 1
+            if Self.actionAfterEncodeError(consecutive: self.encodeErrors) == .rotate {
+                self.lastResult = L.t("Сбой записи (\(error?.localizedDescription ?? "кодек")) — закрываю файл и продолжаю встречу новым",
+                                      "Recording error (\(error?.localizedDescription ?? "codec")) — closing the file and continuing in a new one",
+                                      "录音错误（\(error?.localizedDescription ?? "编解码器")）— 关闭文件并以新文件继续")
+                self.rotateFile()
+            } else {
+                self.lastResult = L.t("Сбой записи: \(error?.localizedDescription ?? "кодек") — \(Self.maxEncodeErrors) раза подряд, запись остановлена",
+                                      "Recording error: \(error?.localizedDescription ?? "codec") — \(Self.maxEncodeErrors) times in a row, recording stopped",
+                                      "录音错误：\(error?.localizedDescription ?? "编解码器") — 连续 \(Self.maxEncodeErrors) 次，录音已停止")
+                self.stop()
+            }
         }
     }
 
