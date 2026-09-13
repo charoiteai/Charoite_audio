@@ -5,6 +5,13 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.2](https://github.com/charoiteai/Charoite_audio/compare/v0.81.1...v0.81.2) (2026-09-13)
+
+
+### Bug Fixes
+
+* **ios:** после звонка ждать микрофон до минуты и продолжать встречу новым файлом ([#530](https://github.com/charoiteai/Charoite_audio/issues/530)) ([5efabf6](https://github.com/charoiteai/Charoite_audio/commit/5efabf6dc29cd1a2ba8c3225e34c34900f72456b))
+
 ## [0.81.1](https://github.com/charoiteai/Charoite_audio/compare/v0.81.0...v0.81.1) (2026-09-13)
 
 
