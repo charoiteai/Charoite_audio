@@ -711,7 +711,9 @@ class AudioHub:
         # дренаж ниже, а рост очереди после финализации ограничен секундами до
         # выхода процесса (критика DS r1 по #557). Все каналы разом, один потолок
         # на всех: грейс приложения до terminate — секунды.
-        skip = self._hung | getattr(self, "_restarting", set())
+        # getattr: хабы без конструктора (тесты через object.__new__) этих полей не
+        # заводят — stop() обязан работать и у них (CI по #557: test_audio_buffer_drop)
+        skip = getattr(self, "_hung", set()) | getattr(self, "_restarting", set())
         workers = [(c, threading.Thread(target=self._quiet_stop, args=(c,), daemon=True,
                                         name=f"stop-{c.label}"))
                    for c in self.captures if c.label not in skip]
