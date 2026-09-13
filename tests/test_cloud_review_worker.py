@@ -1909,12 +1909,30 @@ def test_cli_failure_is_retried_once_after_a_pause_and_outside_a_live_meeting(tm
     calls.clear()
     assert cloud_review.run("2026-07-15_1400", transcript, tmp_path / "g", rev, log, {}) == cloud_review.RC_CLI
     assert len(calls) == 2 and "повтор не помог" in log.read_text(encoding="utf-8")
-    # за паузу ревизию довёз другой воркер — повтор отменяется (GLM r1 I2)
+    # за паузу сосед опубликовал ревизию, но этап не закрыт (убит до доставки):
+    # свежести файла мало, повтор идёт (аудит 13.09, DS I2 / GLM M2)
+    from meeting_processing import MeetingStatusStore
+    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
     calls.clear(); events.clear(); log.unlink()
     rev.write_text("# Ревизия\n", encoding="utf-8")
     outcomes = [cloud_review.RC_CLI, cloud_review.RC_OK]
     assert cloud_review.run("2026-07-15_1400", transcript, tmp_path / "g", rev, log, {}) == cloud_review.RC_OK
+    assert len(calls) == 2, "ревизия соседа без этапа «ok» — не доставка"
+    # сосед закрыл этап во время паузы — повтор отменяется (GLM r1 I2)
+    store = MeetingStatusStore(tmp_path / "data")
+    store.processing(transcript, "ревизия")
+    store.review(transcript, "running")
+    monkeypatch.setattr(cloud_review, "_sleep", lambda s: (events.append(f"sleep {s}"), store.review(transcript, "ok")))
+    calls.clear(); events.clear(); log.unlink()
+    outcomes = [cloud_review.RC_CLI, cloud_review.RC_OK]
+    assert cloud_review.run("2026-07-15_1400", transcript, tmp_path / "g", rev, log, {}) == cloud_review.RC_OK
     assert len(calls) == 1 and "уже доставлена другим прогоном" in log.read_text(encoding="utf-8")
+    # этап «ok» уже стоял, когда наша попытка упала: ни «retrying» поверх чужого
+    # «ok», ни паузы (аудит 13.09, GLM M3)
+    calls.clear(); events.clear(); log.unlink()
+    outcomes = [cloud_review.RC_CLI, cloud_review.RC_OK]
+    assert cloud_review.run("2026-07-15_1400", transcript, tmp_path / "g", rev, log, {}) == cloud_review.RC_OK
+    assert len(calls) == 1 and not events and "повтор не нужен" in log.read_text(encoding="utf-8")
 
 
 def test_retry_runs_the_real_worker_twice_and_cleans_the_partial(tmp_path, monkeypatch):
@@ -2107,6 +2125,24 @@ def test_redelivering_the_same_stub_is_a_quiet_no_op(tmp_path):
     assert v.displaced == [] and not cloud_review.displaced_dir(qdir).exists()
 
 
+def test_a_stub_that_lists_facts_is_displaced_before_a_shorter_stub_lands(tmp_path):
+    """Заглушка с перечнем слитых фактов — единственная запись этих фактов:
+    новая заглушка ложится только после копии старой в «вытеснено»
+    (аудит 13.09, DS I1 по зоне контроля #550)."""
+    graph = _graph(tmp_path)
+    facts = "- факт про сроки\n- факт про бюджет\n- факт про людей\n"
+    (graph / "Ядра" / "Канон.md").write_text("# Ядро\n" + facts, encoding="utf-8")
+    old = "# Дубль → [[Ядра/Канон]]\n\nДубль. Смерджен; слито:\n" + facts
+    d = graph / "Ядра" / "Дубль.md"; d.write_text(old, encoding="utf-8")
+
+    def worked(pen):
+        (pen / "Ядра" / "Дубль.md").write_text("# Дубль → [[Ядра/Канон]]\n\nДубль. Смерджен.\n", encoding="utf-8")
+
+    v, qdir = _cloud_worked(graph, tmp_path, worked)
+    assert "Ядра/Дубль.md" in v.applied and "Ядра/Дубль.md" in v.displaced
+    assert (cloud_review.displaced_dir(qdir) / "Ядра" / "Дубль.md").read_text(encoding="utf-8") == old
+
+
 def test_an_applied_canon_is_measured_like_any_other(tmp_path):
     """Канон, правленный этой же дельтой, не освобождён от проверки фактов:
     облако могло заявить слияние и переписать канон о другом (критика GLM
@@ -2141,6 +2177,11 @@ def test_displaced_bodies_outlive_quarantine_rotation(tmp_path):
     assert len(runs) == cloud_review.QUARANTINE_KEEP
     cloud_review.rotate_quarantine(root / cloud_review.DISPLACED_DIR, keep=cloud_review.DISPLACED_KEEP)
     assert len(list((root / cloud_review.DISPLACED_DIR).iterdir())) == cloud_review.DISPLACED_KEEP
+    # keep=0 сносит все прогоны — гвард виден только так: «вытеснено» начинается
+    # с буквы и в отсортированном списке всегда последнее, runs[:-keep] его не
+    # трогал бы и без гварда (аудит 13.09, DS M4 по зоне контроля)
+    cloud_review.rotate_quarantine(root, keep=0, current=current)
+    assert [p.name for p in root.iterdir()] == [cloud_review.DISPLACED_DIR]
 
 
 def test_review_landed_since_needs_a_change_a_fresh_file_and_a_closed_stage(tmp_path, monkeypatch):

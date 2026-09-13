@@ -783,8 +783,12 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 # единственная ветка переноса, где терялся текст ГРАФА, а не
                 # облака (аудит 12.09, DS I1/GLM I1). Узел, уже бывший
                 # заглушкой, вытеснять нечем — повторная доставка той же
-                # заглушки тихая (DS M5).
-                if gpath.is_file() and not is_redirect_stub(old):
+                # заглушки тихая (DS M5). Заглушка с перечнем слитых фактов —
+                # исключение: этот перечень и есть единственная запись фактов,
+                # более короткая заглушка затирала бы его без копии (аудит 13.09,
+                # DS I1 по зоне контроля); копия — только когда новый текст
+                # какой-то пункт теряет, иначе повтор плодил бы копии (DS M5).
+                if gpath.is_file() and (not is_redirect_stub(old) or listed_facts(old) - facts_of(new_text)):
                     quarantine(gpath, graph, displaced_dir(qdir), move=False)
                     v.displaced.append(name)
                 safe_write.write_text(gpath, new_text)
@@ -807,6 +811,15 @@ def facts_of(text: str) -> collections.Counter:
     return collections.Counter(
         n for ln in text.splitlines()
         if not ln.lstrip().startswith("#") and len((n := _norm(ln)).split()) >= 2)
+
+
+def listed_facts(text: str) -> collections.Counter:
+    """Факты, перечисленные списком (строки-пункты). У заглушки это единственная
+    запись слитого — их и бережём при вытеснении; фраза «Дубль. Смерджен.»
+    фактом не считается, иначе любая заглушка плодила бы копии."""
+    return collections.Counter(
+        n for ln in text.splitlines()
+        if ln.lstrip().startswith(("- ", "* ", "• ")) and len((n := _norm(ln)).split()) >= 2)
 
 
 def facts_kept(dup_body: str, holder: str) -> bool:
@@ -999,6 +1012,12 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     там повтор бьёт в тот же потолок или в тот же ответ модели."""
     rc = _run_once(stamp, transcript, graph, rev, log, cfg, force=force)
     if rc == RC_CLI and attempt == 1:
+        # Сосед мог довезти ревизию, пока наша попытка падала: тогда «retrying»
+        # затёр бы его «ok», а вторая попытка всё равно отменилась бы — и статус
+        # висел бы «retrying» до expire_reviews (аудит 13.09, GLM M3).
+        if not force and fresh_review(rev, transcript) and review_delivered(transcript):
+            _log_line(log, "CLI упал, но ревизию за это время довёз другой воркер — повтор не нужен")
+            return RC_OK
         _log_line(log, f"повтор ревизии через {RETRY_DELAY // 60} мин: процесс CLI не запустился "
                        "или завершился с ошибкой — попытка 2 из 2")
         _review_stage(transcript, "retrying", "повтор через десять минут")
@@ -1011,8 +1030,12 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         gate()
         # За паузу ревизию мог довезти другой воркер («Повторить обработку»
         # запускает второго: .partial первого он не считает ревизией) — тот
-        # же дедуп, что у graph_updater перед запуском (GLM r1 I2)
-        if not force and fresh_review(rev, transcript):
+        # же дедуп, что у graph_updater перед запуском (GLM r1 I2). Свежести
+        # файла мало: сосед, опубликовавший ревизию и убитый до доставки,
+        # оставлял бы её без архива и графа, а нас — без второй попытки; этап
+        # «ok» пишется последним, под замком (аудит 13.09, DS I2 / GLM M2 —
+        # тот же предохранитель, что в _run_once).
+        if not force and fresh_review(rev, transcript) and review_delivered(transcript):
             _log_line(log, "ревизия уже доставлена другим прогоном — повтор отменён")
             return RC_OK
         return run(stamp, transcript, graph, rev, log, cfg, attempt=2, force=force)
@@ -1412,7 +1435,9 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                         names_failed = True
                         lines.append(f"[cloud-review] имена меток не перештампованы: {e}\n")
                         try:
-                            renamed = name_fixes.planned(rev, transcript, cfg)
+                            # с dropped, как соседние вызовы: непонятые строки
+                            # раздела нужны в логе именно здесь (аудит 13.09, DS M5)
+                            renamed = name_fixes.planned(rev, transcript, cfg, dropped=dropped_n)
                         except Exception as e2:  # noqa: BLE001
                             lines.append(f"[cloud-review] имена меток: раздел не разобран ({e2})\n")
                     except Exception as e:  # noqa: BLE001
