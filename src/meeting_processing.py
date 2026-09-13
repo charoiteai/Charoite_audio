@@ -278,6 +278,15 @@ class MeetingStatusStore:
         current["review"] = {"state": state, "note": str(note)[:300], "updated_at": float(self._now())}
         return self._write(transcript, current)
 
+    def review_state(self, transcript: pathlib.Path) -> str | None:
+        """Состояние этапа ревизии («running», «retrying», «ok», «failed») или
+        None — статуса или этапа нет. Читает воркер ревизии: по «ok» соседа
+        он отличает доставленную ревизию от файла, опубликованного воркером,
+        убитым до доставки (критика DS по #550)."""
+        rv = self._read(pathlib.Path(transcript)).get("review")
+        state = rv.get("state") if isinstance(rv, dict) else None
+        return str(state) if state else None
+
     def expire_reviews(self, *, stale_after: float = REVIEW_STALE) -> list[pathlib.Path]:
         """Этап `running`/`retrying`, который никто не закрыл, — в `failed`:
         воркер убит в паузе повтора или на живом гейте, и поле иначе висело

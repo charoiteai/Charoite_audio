@@ -365,11 +365,17 @@ targets, and the removed targets accumulate in `logs/graph_unlinked.log`
 as candidates for a node or an alias — before this, such links landed in
 the graph broken.
 When a duplicate node is turned into a redirect stub, the body it displaces
-is copied into the run's quarantine (`вытеснено/`), and the stub lands only
-if its canon was edited in the same run or already holds the duplicate's
-lines — until 13.09 the old body survived only in one run's snapshot. A worker
-that takes the graph lock after a neighbour and finds a review fresher than
-the transcript does not start a second paid pass (`--force` overrides).
+is copied next to the run quarantine but outside its rotation
+(`cloud_quarantine/вытеснено/<run>/`, the last 100 runs are kept), and the
+stub lands only if its canon — together with the text of the stub itself —
+holds the duplicate's facts: at least a third of its content lines and no
+fewer than two; headings and one-word lines such as «Решено» do not count,
+a canon edited in the same run is measured the same way, and a node that is
+already a stub has nothing to lose. Until 13.09 the old body survived only
+in one run's snapshot. A worker that takes the graph lock after a neighbour
+(or gives up waiting for it) does not start a second paid pass when the
+review file changed while it waited, is not older than the transcript and
+the neighbour closed the review stage with «ok» (`--force` overrides).
 
 ## Dossiers: a floor between search and the graph
 

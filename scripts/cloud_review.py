@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import math
 import contextlib
 import ctypes
 import dataclasses
@@ -93,6 +94,10 @@ QUARANTINE_KEEP = 10
 # Подпапка карантина прогона для ТЕЛ узлов, вытесненных заглушками-редиректами
 # облака: до 13.09 прежний текст жил только в снимке одного прогона (аудит 12.09)
 DISPLACED_DIR = "вытеснено"
+# Вытесненные тела живут МИМО ротации карантина прогонов: десять прогонов
+# — сутки активной недели, а обещание «текст не потерян» на сутки — не
+# обещание (критика DS и GLM по #550). Своя ротация, щедрая.
+DISPLACED_KEEP = 100
 # Сколько path-rules запрета влезает в команду: граф с тысячей симлинков —
 # не граф, а чужая файловая система; такому — только чтение.
 DENY_MAX = 200
@@ -477,9 +482,16 @@ def rotate_quarantine(root: pathlib.Path, keep: int = QUARANTINE_KEEP,
     в хвост (круг-2 по PR #381, DeepSeek)."""
     if not root.is_dir():
         return
-    runs = sorted(p for p in root.iterdir() if p.is_dir() and p != current)
+    runs = sorted(p for p in root.iterdir()
+                  if p.is_dir() and p != current and p.name != DISPLACED_DIR)
     for stale in runs[:-keep] if keep > 0 else runs:
         shutil.rmtree(stale, ignore_errors=True)
+
+
+def displaced_dir(qdir: pathlib.Path) -> pathlib.Path:
+    """Куда прогон складывает тела узлов, ставших заглушками: рядом с
+    карантином прогонов, но вне их ротации — `…/вытеснено/<прогон>/`."""
+    return qdir.parent / DISPLACED_DIR / qdir.name
 
 
 def graph_lock(graph: pathlib.Path, wait: float | None = None):
@@ -724,7 +736,7 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 # правка ушла в карантин (переписан заново, конфликт), в
                 # графе остался бы редирект на узел без слитых фактов (GLM,
                 # круг-2 И3). Откладываем до конца прохода.
-                pending_stubs.append((rel, cpath, gpath, name, target))
+                pending_stubs.append((rel, cpath, gpath, name, target, old))
                 continue
             # переносы строк внутри [[…]] — стиль CLI при правке, для Obsidian
             # ссылка мертва; чиним в единственной точке входа (Sonnet 28.08)
@@ -739,7 +751,7 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 _journal_unlinked(name, gone)
         except OSError:
             v.failed.append(name)
-    for rel, cpath, gpath, name, target in pending_stubs:
+    for rel, cpath, gpath, name, target, old in pending_stubs:
         try:
             # Канон ищем И от корня графа, И рядом с заглушкой: `[[Канон]]`
             # без папки — частая форма Obsidian, когда дубль и канон лежат
@@ -761,17 +773,21 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
             cands = [os.path.normpath(c) for c in cands]
             bad = set(v.reverted) | set(v.removed) | set(v.conflicts) \
                 | set(v.deleted) | set(v.failed)
-            old_body = _read(gpath) if gpath.is_file() else ""
-            canon_ok = any(canon_merged(c, graph, v, bad, old_body) for c in cands)
-            if canon_ok:
-                # Тело вытесняемого узла — в карантин ДО записи заглушки. До
-                # 13.09 оно жило только в снимке одного прогона, а снимок
-                # ротирует следующий запуск: единственная ветка переноса,
-                # где терялся текст ГРАФА, а не облака (аудит 12.09, DS I1/GLM I1).
-                if gpath.is_file():
-                    quarantine(gpath, graph, qdir / DISPLACED_DIR, move=False)
+            # Старый текст — из СНИМКА (`old`), как и у judge выше: живой
+            # файл мог уехать под конвейером после сверки хешей (DS M4 по #550).
+            new_text = graph_updater.tidy_links(_read(cpath))
+            if any(canon_merged(c, graph, bad, old, new_text) for c in cands):
+                # Тело вытесняемого узла — в копию ДО записи заглушки, мимо
+                # ротации карантина прогонов. До 13.09 оно жило только в
+                # снимке одного прогона, а снимок ротирует следующий запуск:
+                # единственная ветка переноса, где терялся текст ГРАФА, а не
+                # облака (аудит 12.09, DS I1/GLM I1). Узел, уже бывший
+                # заглушкой, вытеснять нечем — повторная доставка той же
+                # заглушки тихая (DS M5).
+                if gpath.is_file() and not is_redirect_stub(old):
+                    quarantine(gpath, graph, displaced_dir(qdir), move=False)
                     v.displaced.append(name)
-                safe_write.write_text(gpath, graph_updater.tidy_links(_read(cpath)))
+                safe_write.write_text(gpath, new_text)
                 v.applied.append(name)
             else:
                 quarantine(cpath, copy, qdir, move=False)
@@ -781,21 +797,48 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
     return v
 
 
-def canon_merged(c: str, graph: pathlib.Path, v: "Verdict", bad: set, dup_body: str) -> bool:
+def facts_of(text: str) -> collections.Counter:
+    """Содержательные строки узла: без заголовков и однословных строк.
+
+    «## Статус» и «Решено» есть почти в любом каноне, и в счёте уцелевших
+    они делали бы дубль из трёх фактов «слитым» при нуле его фактов в
+    каноне (GLM I1 по #550). Сравнение — по _norm, как у retention.
+    """
+    return collections.Counter(
+        n for ln in text.splitlines()
+        if not ln.lstrip().startswith("#") and len((n := _norm(ln)).split()) >= 2)
+
+
+def facts_kept(dup_body: str, holder: str) -> bool:
+    """Удерживает ли `holder` факты дубля: не меньше REWRITE_KEEP его
+    содержательных строк и не меньше двух (или всех, если их меньше двух).
+    Дубль без содержательных строк терять нечего."""
+    before = facts_of(dup_body)
+    total = sum(before.values())
+    if not total:
+        return True
+    kept = sum((before & facts_of(holder)).values())
+    return kept >= max(math.ceil(total * REWRITE_KEEP), min(2, total))
+
+
+def canon_merged(c: str, graph: pathlib.Path, bad: set, dup_body: str, new_text: str) -> bool:
     """Годится ли канон для заглушки-редиректа на него.
 
-    Да — если канон лёг этой же дельтой (облако его правило, слияние
-    состоялось) либо уже цел в графе, не забракован и УДЕРЖИВАЕТ факты
-    дубля: не меньше REWRITE_KEEP содержательных строк дубля есть в каноне.
-    Одного существования файла мало: заглушка стирает тело дубля, и
-    редирект на канон без его фактов — потеря (аудит 12.09, DS I1).
+    Да — если канон цел в графе (в том числе лёг этой же дельтой: перенос
+    канона идёт раньше заглушек, и мерится он тем же правилом — слово
+    облака «слил» проверкой не является, критика GLM по #550), не
+    забракован и вместе с текстом самой заглушки УДЕРЖИВАЕТ факты дубля
+    (facts_kept): облако вправе перечислить слитые факты прямо в заглушке
+    (DS M3). Одного существования файла мало: заглушка стирает тело дубля,
+    и редирект на канон без его фактов — потеря (аудит 12.09, DS I1).
+    Тело, которое уже заглушка, фактов не несёт — годится любой целый канон.
     """
-    if c in v.applied:
-        return True
     p = graph / c
     if c in bad or not may_write(p, graph) or not p.is_file():
         return False
-    return retention(dup_body, _read(p)) >= REWRITE_KEEP
+    if is_redirect_stub(dup_body):
+        return True
+    return facts_kept(dup_body, _read(p) + "\n" + new_text)
 
 
 def fresh_review(rev: pathlib.Path, transcript: pathlib.Path) -> bool:
@@ -807,18 +850,50 @@ def fresh_review(rev: pathlib.Path, transcript: pathlib.Path) -> bool:
         return False
 
 
-def review_landed_since(rev: pathlib.Path, started: float) -> bool:
-    """Ревизия появилась или обновилась ПОСЛЕ старта этого воркера — то есть
-    пока он ждал замок, её довёз сосед. Кнопка «Повторить обработку»
-    появляется через 30 минут тишины статуса, когда первый воркер ещё жив:
-    второй ждёт замок и запускал бы второй платный прогон, перезаписывая
-    свежую ревизию и доставку (аудит 12.09, GLM I1). Ревизия, лежавшая ДО
-    старта, не считается: осознанный перезапуск на той же стенограмме
-    остаётся возможным, дедуп на спавне — в graph_updater."""
+def rev_mtime(rev: pathlib.Path) -> float | None:
+    """Снимок mtime файла ревизии до ожидания замка; None — файла нет."""
     try:
-        return rev.exists() and rev.stat().st_mtime >= started
+        return rev.stat().st_mtime if rev.exists() else None
     except OSError:
+        return None
+
+
+def review_landed_since(rev: pathlib.Path, before: float | None,
+                        transcript: pathlib.Path) -> bool:
+    """Ревизия появилась или сменилась, ПОКА этот воркер ждал замок, и она
+    не старше стенограммы — то есть её довёз сосед. Кнопка «Повторить
+    обработку» появляется через 30 минут тишины статуса, когда первый
+    воркер ещё жив: второй ждёт замок и запускал бы второй платный прогон,
+    перезаписывая свежую ревизию и доставку (аудит 12.09, GLM I1).
+    Сравнение — со снимком mtime до ожидания, а не с часами старта:
+    касание файла редактором или синхронизатором при стенограмме новее
+    ревизии второй прогон не отменяет (DS I1 по #550). Ревизия, лежавшая
+    до старта нетронутой, не считается: осознанный перезапуск на той же
+    стенограмме остаётся возможным, дедуп на спавне — в graph_updater."""
+    now = rev_mtime(rev)
+    return now is not None and now != before and fresh_review(rev, transcript)
+
+
+def review_delivered(transcript: pathlib.Path) -> bool:
+    """Этап ревизии в статусе встречи — «ok»: сосед довёл прогон до конца,
+    включая доставку в граф (этап пишется последним, под замком). Файл
+    ревизии публикуется раньше доставки, и воркер, убитый между ними,
+    оставлял бы ревизию без архива и графа, а предохранитель — без второго
+    шанса (критика DS по #550). Нет статуса — нет и подтверждения."""
+    try:
+        from meeting_processing import MeetingStatusStore
+        return MeetingStatusStore(ROOT).review_state(transcript) == "ok"
+    except Exception as e:  # noqa: BLE001 — статус вторичен: без него второй прогон идёт
+        print(f"этап ревизии не прочитан: {e}")
         return False
+
+
+def neighbour_delivered(rev: pathlib.Path, before: float | None,
+                        transcript: pathlib.Path, force: bool) -> bool:
+    """Второй полный прогон не нужен: пока ждали замок, сосед довёз ревизию
+    и закрыл этап. `--force` снимает предохранитель."""
+    return (not force and review_landed_since(rev, before, transcript)
+            and review_delivered(transcript))
 
 
 def looks_like_report(text: str) -> bool:
@@ -922,9 +997,7 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     замок графа берётся заново. Таймаут (RC_TIMEOUT), несверенный перенос
     и ответ с кодом 0, не похожий на ревизию (RC_ERROR), не повторяются —
     там повтор бьёт в тот же потолок или в тот же ответ модели."""
-    # force передаём только когда он поднят: тесты подменяют _run_once заглушкой
-    # с шестью позиционными аргументами, и лишний kwarg их ронял бы
-    rc = _run_once(stamp, transcript, graph, rev, log, cfg, **({"force": True} if force else {}))
+    rc = _run_once(stamp, transcript, graph, rev, log, cfg, force=force)
     if rc == RC_CLI and attempt == 1:
         _log_line(log, f"повтор ревизии через {RETRY_DELAY // 60} мин: процесс CLI не запустился "
                        "или завершился с ошибкой — попытка 2 из 2")
@@ -939,7 +1012,7 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # За паузу ревизию мог довезти другой воркер («Повторить обработку»
         # запускает второго: .partial первого он не считает ревизией) — тот
         # же дедуп, что у graph_updater перед запуском (GLM r1 I2)
-        if fresh_review(rev, transcript):
+        if not force and fresh_review(rev, transcript):
             _log_line(log, "ревизия уже доставлена другим прогоном — повтор отменён")
             return RC_OK
         return run(stamp, transcript, graph, rev, log, cfg, attempt=2, force=force)
@@ -986,7 +1059,7 @@ def _run_once(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     # Не дождавшийся работает на чтение и НЕ доставляет ревизию в граф —
     # сосед мог бы принять его файлы за правки облака (круг-1 по #381).
     deliver = graph_available
-    started = time.time()
+    rev_before = rev_mtime(rev)          # снимок ДО ожидания замка
     with contextlib.ExitStack() as stack:
         # Замок нужен ВСЕГДА, когда мы пишем в граф. Доставка ревизии пишет
         # в защищённые папки и при may_edit=False (cloud_edit_graph
@@ -994,13 +1067,20 @@ def _run_once(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # облака и убирал в карантин (аудит облака, DS M4).
         if may_edit or deliver:
             if not stack.enter_context(graph_lock(graph)):
+                # Не дождавшийся замка тоже мог пережидать соседа, который
+                # всё довёз: read-only прогон переписал бы его ревизию
+                # (publish замком не гейтится) — DS I2 по #550.
+                if neighbour_delivered(rev, rev_before, transcript, force):
+                    _log_line(log, "замка не дождались, но ревизию за это время довёз другой воркер "
+                                   "— второй прогон не запускаю; заново — cloud_review.py --force")
+                    return RC_OK
                 print(f"граф занят другим разбором дольше {LOCK_WAIT // 60} мин — "
                       "работаю на чтение")
                 may_edit = deliver = False
-            elif not force and review_landed_since(rev, started):
+            elif neighbour_delivered(rev, rev_before, transcript, force):
                 # Замок взят ПОСЛЕ чужого прогона: пока ждали, сосед довёз
-                # ревизию. Второй полный платный прогон перезаписал бы её и
-                # доставку (аудит 12.09, GLM I1). Заново — только --force.
+                # ревизию и закрыл этап. Второй полный платный прогон
+                # перезаписал бы её и доставку (аудит 12.09, GLM I1).
                 _log_line(log, "ревизия появилась, пока ждали замок, — второй прогон не запускаю "
                                "(её довёз другой воркер); заново — cloud_review.py --force")
                 return RC_OK
@@ -1286,6 +1366,9 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
             try:
                 if qdir.is_dir():
                     rotate_quarantine(quarantine_root(graph), current=qdir)
+                ddir = displaced_dir(qdir)
+                if ddir.is_dir():
+                    rotate_quarantine(ddir.parent, keep=DISPLACED_KEEP, current=ddir)
             except OSError as e:
                 lines.append(f"[cloud-review] ротация карантина не удалась ({e})\n")
         # Доставка — ПОСЛЕ сверки границ и только после ПОЛНОЙ сверки: архив
@@ -1445,7 +1528,7 @@ def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:
     if v.unlinked:
         parts.append(f"ссылки без узла стали текстом: {'; '.join(v.unlinked)}")
     if v.displaced:
-        parts.append(f"тела узлов, ставших заглушками, в карантине {qdir}/{DISPLACED_DIR}: "
+        parts.append(f"тела узлов, ставших заглушками, сохранены в {displaced_dir(qdir)}: "
                      f"{', '.join(v.displaced)}")
     if v.conflicts:
         # Не авария, а нормальная развязка: конвейер писал в тот же файл,

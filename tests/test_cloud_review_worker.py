@@ -21,6 +21,7 @@ CHR-AUD-003. В режиме записи модель правила граф �
 написал человек или записала машина с его слов, и облаку там делать нечего.
 """
 import contextlib
+import os
 import pathlib
 import sys
 
@@ -1843,7 +1844,7 @@ def test_cli_failure_is_retried_once_after_a_pause_and_outside_a_live_meeting(tm
                         lambda root, log=print, **kw: (events.append("gate"), log("повтор ревизии: живой встречи нет"), False)[2])
     monkeypatch.setattr(cloud_review, "_review_stage", lambda *a, **k: None)
 
-    def once(*args):
+    def once(*args, **kw):
         calls.append(len(calls))
         return outcomes[len(calls) - 1]
 
@@ -1971,8 +1972,10 @@ def test_a_stub_keeps_the_displaced_body_in_quarantine(tmp_path):
 
     assert "Ядра/Провайдер платежей.md" in v.applied
     assert v.displaced == ["Ядра/Провайдер платежей.md"]
-    saved = qdir / cloud_review.DISPLACED_DIR / "Ядра" / "Провайдер платежей.md"
+    saved = cloud_review.displaced_dir(qdir) / "Ядра" / "Провайдер платежей.md"
     assert saved.read_text(encoding="utf-8") == dup_body, "прежнее тело дубля не сохранено"
+    assert saved.parent.parent.parent == qdir.parent / cloud_review.DISPLACED_DIR, \
+        "вытесненное тело должно лежать МИМО ротации карантина прогонов"
     assert dup.read_text(encoding="utf-8").startswith("# Провайдер платежей → [[")
     assert cloud_review.DISPLACED_DIR in cloud_review._verdict_line(v, qdir)
 
@@ -2003,10 +2006,140 @@ def test_a_stub_needs_its_canon_merged_or_holding_the_facts(tmp_path):
     assert dup2.read_text(encoding="utf-8").startswith("# Дубль два → [[")
 
 
+def test_skeleton_lines_do_not_count_as_kept_facts(tmp_path):
+    """«## Статус» и «Решено» есть в любом каноне: дубль из двух фактов не
+    считается слитым, пока в каноне нет самих фактов (GLM I1 по #550)."""
+    canon = "# Ядро\n## Статус\nРешено\n"
+    dup = "# Дубль\n## Статус\nРешено\n- факт А про сроки\n- факт Б про бюджет\n"
+    assert not cloud_review.facts_kept(dup, canon)
+    assert cloud_review.facts_kept(dup, canon + "- факт А про сроки\n- факт Б про бюджет\n")
+    # один из двух — мало: не меньше двух строк или всех, если их меньше
+    assert not cloud_review.facts_kept(dup, canon + "- факт А про сроки\n")
+    assert cloud_review.facts_kept("# Дубль\n- единственный факт\n", "- единственный факт\n")
+    assert cloud_review.facts_kept("# Дубль\n## Статус\nРешено\n", canon), "терять нечего"
+    graph = _graph(tmp_path)
+    (graph / "Ядра" / "Скелет.md").write_text(canon, encoding="utf-8")
+    d = graph / "Ядра" / "Дубль.md"; d.write_text(dup, encoding="utf-8")
+
+    def worked(pen):
+        (pen / "Ядра" / "Дубль.md").write_text("# Дубль → [[Ядра/Скелет]]\n\nСмерджен.\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, worked)
+    assert "Ядра/Дубль.md" in v.reverted and d.read_text(encoding="utf-8") == dup
+
+
+def test_facts_listed_in_the_stub_itself_count_as_kept(tmp_path):
+    """Облако вправе перечислить слитые факты прямо в заглушке: канон не
+    тронут, факты никуда не делись — заглушка ложится (DS M3 по #550)."""
+    graph = _graph(tmp_path)
+    facts = "- факт про сроки\n- факт про бюджет\n- факт про людей\n"
+    (graph / "Ядра" / "Канон.md").write_text("# Ядро\nдругая тема целиком\n", encoding="utf-8")
+    d = graph / "Ядра" / "Дубль.md"; d.write_text("# Дубль\n" + facts, encoding="utf-8")
+
+    def worked(pen):
+        (pen / "Ядра" / "Дубль.md").write_text(
+            "# Дубль → [[Ядра/Канон]]\n\nДубль. Смерджен; слито:\n" + facts, encoding="utf-8")
+
+    v, qdir = _cloud_worked(graph, tmp_path, worked)
+    assert "Ядра/Дубль.md" in v.applied
+    assert (cloud_review.displaced_dir(qdir) / "Ядра" / "Дубль.md").read_text(encoding="utf-8") == "# Дубль\n" + facts
+
+
+def test_redelivering_the_same_stub_is_a_quiet_no_op(tmp_path):
+    """Узел уже заглушка — терять нечего: повторная доставка не идёт в
+    reverted с ложным обвинением и не плодит копий (DS M5 по #550)."""
+    graph = _graph(tmp_path)
+    (graph / "Ядра" / "Канон.md").write_text("# Ядро\n- факт\n", encoding="utf-8")
+    stub = "# Дубль → [[Ядра/Канон]]\n\nДубль. Смерджен.\n"
+    d = graph / "Ядра" / "Дубль.md"; d.write_text(stub, encoding="utf-8")
+
+    # байт в байт та же заглушка — не правка вовсе
+    v, qdir = _cloud_worked(graph, tmp_path, lambda pen: (pen / "Ядра" / "Дубль.md").write_text(stub, encoding="utf-8"))
+    assert v.touched == 0 and not v.reverted
+
+    def worked(pen):
+        (pen / "Ядра" / "Дубль.md").write_text(stub.replace("Смерджен.", "Смерджен ещё раз."), encoding="utf-8")
+
+    v, qdir = _cloud_worked(graph, tmp_path, worked)
+    assert "Ядра/Дубль.md" in v.applied and not v.reverted
+    assert v.displaced == [] and not cloud_review.displaced_dir(qdir).exists()
+
+
+def test_an_applied_canon_is_measured_like_any_other(tmp_path):
+    """Канон, правленный этой же дельтой, не освобождён от проверки фактов:
+    облако могло заявить слияние и переписать канон о другом (критика GLM
+    по #550)."""
+    graph = _graph(tmp_path)
+    facts = "".join(f"- факт номер {i}\n" for i in range(6))
+    (graph / "Ядра" / "Канон.md").write_text("# Ядро\n- старая строка канона\n", encoding="utf-8")
+    d = graph / "Ядра" / "Дубль.md"; d.write_text("# Дубль\n" + facts, encoding="utf-8")
+
+    def worked(pen):
+        (pen / "Ядра" / "Канон.md").write_text("# Ядро\n- старая строка канона\n- дописано о другом\n", encoding="utf-8")
+        (pen / "Ядра" / "Дубль.md").write_text("# Дубль → [[Ядра/Канон]]\n\nСмерджен.\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, worked)
+    assert "Ядра/Канон.md" in v.applied
+    assert "Ядра/Дубль.md" in v.reverted, "заглушка легла на канон без фактов дубля"
+    assert d.read_text(encoding="utf-8") == "# Дубль\n" + facts
+
+
+def test_displaced_bodies_outlive_quarantine_rotation(tmp_path):
+    """Ротация карантина прогонов не трогает `вытеснено/`; у него своя,
+    щедрая ротация (критика DS и GLM по #550)."""
+    root = tmp_path / "q"
+    for i in range(cloud_review.QUARANTINE_KEEP + 3):
+        (root / f"2026-07-15_14{i:02d}-100000").mkdir(parents=True)
+    for i in range(cloud_review.DISPLACED_KEEP + 2):
+        (root / cloud_review.DISPLACED_DIR / f"2026-07-15_1{i:03d}-100000").mkdir(parents=True)
+    current = root / "2026-07-15_1499-100000"
+    cloud_review.rotate_quarantine(root, current=current)
+    assert (root / cloud_review.DISPLACED_DIR).is_dir()
+    runs = [p for p in root.iterdir() if p.name != cloud_review.DISPLACED_DIR]
+    assert len(runs) == cloud_review.QUARANTINE_KEEP
+    cloud_review.rotate_quarantine(root / cloud_review.DISPLACED_DIR, keep=cloud_review.DISPLACED_KEEP)
+    assert len(list((root / cloud_review.DISPLACED_DIR).iterdir())) == cloud_review.DISPLACED_KEEP
+
+
+def test_review_landed_since_needs_a_change_a_fresh_file_and_a_closed_stage(tmp_path, monkeypatch):
+    """Предохранитель второго прогона — по трём признакам: файл ревизии
+    сменился с момента снимка, он не старше стенограммы, этап ревизии в
+    статусе «ok» (DS I1 и критика DS по #550)."""
+    from meeting_processing import MeetingStatusStore
+    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    transcript = tmp_path / "2026-07-15_1400.md"
+    transcript.write_text("текст\n", encoding="utf-8")
+    rev = tmp_path / "2026-07-15_1400_ревизия.md"
+    assert cloud_review.rev_mtime(rev) is None
+    # появилась, свежее стенограммы
+    rev.write_text("ревизия\n", encoding="utf-8")
+    assert cloud_review.review_landed_since(rev, None, transcript)
+    # лежала до старта и не менялась — не считается
+    before = cloud_review.rev_mtime(rev)
+    assert not cloud_review.review_landed_since(rev, before, transcript)
+    # сменилась, но старше стенограммы (касание синхронизатора) — не считается
+    t = transcript.stat().st_mtime
+    os.utime(rev, (t - 100, t - 100))
+    assert not cloud_review.review_landed_since(rev, before, transcript)
+    # этап: статуса нет — доставка не подтверждена
+    assert not cloud_review.review_delivered(transcript)
+    store = MeetingStatusStore(tmp_path / "data")
+    store.processing(transcript, "ревизия")
+    store.review(transcript, "running")
+    assert store.review_state(transcript) == "running"
+    assert not cloud_review.review_delivered(transcript)
+    store.review(transcript, "ok")
+    assert cloud_review.review_delivered(transcript)
+    assert not cloud_review.neighbour_delivered(rev, None, transcript, force=True)
+
+
 def test_run_does_not_start_a_second_full_pass_over_a_fresh_review(tmp_path, monkeypatch):
-    """Воркер, взявший замок после соседа, видит появившуюся за это время
-    ревизию и не запускает второй платный прогон (аудит 12.09, GLM I1);
-    ревизия, лежавшая до старта, перезапуск не блокирует; --force запускает."""
+    """Воркер, взявший замок после соседа (или не дождавшийся его), видит
+    появившуюся за это время ревизию с закрытым этапом и не запускает второй
+    платный прогон (аудит 12.09, GLM I1; DS I1/I2 по #550); ревизия,
+    лежавшая до старта, и ревизия соседа, убитого до доставки, перезапуск не
+    блокируют; --force запускает."""
+    from meeting_processing import MeetingStatusStore
     stamp = "2026-07-15_1400"
     graph = _graph(tmp_path)
     monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
@@ -2015,18 +2148,32 @@ def test_run_does_not_start_a_second_full_pass_over_a_fresh_review(tmp_path, mon
     transcript = transcripts / f"{stamp}.md"
     transcript.write_text("текст встречи\n", encoding="utf-8")
     rev, log = transcripts / f"{stamp}_ревизия.md", tmp_path / "cloud.log"
+    store = MeetingStatusStore(tmp_path / "data")
+    store.processing(transcript, "ревизия")
     calls = []
-    # сосед довозит ревизию, ПОКА мы ждём замок: подменяем замок так, чтобы
-    # файл появился между стартом воркера и захватом
     real_lock = cloud_review.graph_lock
+
+    def neighbour(state):
+        """сосед довозит ревизию, ПОКА мы ждём замок, и закрывает этап"""
+        rev.write_text("- **Решение:** уже доставлено соседом\n" * 3, encoding="utf-8")
+        store.review(transcript, state)
 
     @contextlib.contextmanager
     def lock_after_neighbour(graph_, wait=None):
-        rev.write_text("- **Решение:** уже доставлено соседом\n" * 3, encoding="utf-8")
+        neighbour("ok")
         with real_lock(graph_, wait) as got:
             yield got
 
-    monkeypatch.setattr(cloud_review, "graph_lock", lock_after_neighbour)
+    @contextlib.contextmanager
+    def lock_after_dead_neighbour(graph_, wait=None):
+        neighbour("running")           # опубликовал, но убит до доставки
+        with real_lock(graph_, wait) as got:
+            yield got
+
+    @contextlib.contextmanager
+    def lock_never_taken(graph_, wait=None):
+        neighbour("ok")
+        yield False
 
     class Result:
         returncode = 0
@@ -2038,13 +2185,22 @@ def test_run_does_not_start_a_second_full_pass_over_a_fresh_review(tmp_path, mon
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False}}
+    monkeypatch.setattr(cloud_review, "graph_lock", lock_after_neighbour)
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
     assert calls == [], "второй полный прогон запущен при свежей ревизии соседа"
     assert "второй прогон не запускаю" in log.read_text(encoding="utf-8")
-    # ревизия, лежавшая ДО старта, перезапуск не блокирует (дедуп на спавне — в graph_updater)
+    # замок не дождались, а сосед всё довёз — read-only прогон не переписывает его ревизию (DS I2)
+    monkeypatch.setattr(cloud_review, "graph_lock", lock_never_taken)
+    assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
+    assert calls == [] and "замка не дождались" in log.read_text(encoding="utf-8")
+    # ревизия, лежавшая ДО старта нетронутой, перезапуск не блокирует (дедуп на спавне — в graph_updater)
     monkeypatch.setattr(cloud_review, "graph_lock", real_lock)
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
     assert len(calls) == 1, "прежняя ревизия заблокировала осознанный перезапуск"
+    # сосед опубликовал файл и умер до доставки: этап не «ok» — идём работать
+    monkeypatch.setattr(cloud_review, "graph_lock", lock_after_dead_neighbour)
+    assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
+    assert len(calls) == 2, "ревизия убитого соседа осталась без доставки"
     monkeypatch.setattr(cloud_review, "graph_lock", lock_after_neighbour)
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg, force=True) == cloud_review.RC_OK
-    assert len(calls) == 2, "--force не запустил разбор"
+    assert len(calls) == 3, "--force не запустил разбор"
