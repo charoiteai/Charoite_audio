@@ -275,6 +275,16 @@ class MeetingStatusStore:
         current = self._read(transcript)
         if not current:
             return None
+        # «ok» терминален для чужих неудач: воркер, ушедший на чтение и упавший
+        # на CLI, писал «failed»/«retrying» поверх «ok» соседа и стирал
+        # доказательство доставки — вторая попытка шла платным прогоном поверх
+        # доставленной ревизии (DS r1 Critical по #556). Проверка здесь, в той же
+        # read-modify-write, а не отдельным чтением у вызывающего: между двумя
+        # чтениями сосед успевал записать «ok» (GLM r2 по #556). «running» поверх
+        # «ok» разрешён — осознанный повтор обработки.
+        prev = current.get("review")
+        if state in ("failed", "retrying") and isinstance(prev, dict) and prev.get("state") == "ok":
+            return None
         current["review"] = {"state": state, "note": str(note)[:300], "updated_at": float(self._now())}
         return self._write(transcript, current)
 

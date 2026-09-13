@@ -110,6 +110,12 @@ def test_plan_drops_the_owner_the_same_name_placeholders_and_unknown_labels():
     assert nf.plan([("Б", "Я", ""), ("А", "Б", "")], headers={"А", "Б"}, protected={"Я"}, dropped=dropped) == {}
     assert any("её правка отклонена" in d for d in dropped)
     assert nf.plan([("", "Мария", "")], headers={""}, protected=set(), dropped=dropped) == {} and "пустая метка" in dropped[-1]
+    # цепочка А→Б→В→Г с живой «Г»: отказ каскадом до неподвижной точки, иначе «А → Б»
+    # сливал бы А в живую дорожку Б (аудит 13.09, GLM M1 по зоне контроля)
+    dropped.clear()
+    assert nf.plan([("А", "Б", ""), ("Б", "В", ""), ("В", "Г", "")], headers={"А", "Б", "В", "Г"},
+                   protected=set(), dropped=dropped) == {}
+    assert len(dropped) == 3 and all("другой дорожки" in d for d in dropped)
     # основание в скобках — та же строгая форма (DS M6); скобка без слова «основание» — не форма (DS r2 M1)
     assert nf.name_fixes("## Исправления имён\n- **Сергей** → **Мария** (основание: два обращения)\n") == [("Сергей", "Мария", "два обращения")]
     dropped.clear()

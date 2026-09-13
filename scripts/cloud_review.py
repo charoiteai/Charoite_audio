@@ -783,8 +783,12 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 # единственная ветка переноса, где терялся текст ГРАФА, а не
                 # облака (аудит 12.09, DS I1/GLM I1). Узел, уже бывший
                 # заглушкой, вытеснять нечем — повторная доставка той же
-                # заглушки тихая (DS M5).
-                if gpath.is_file() and not is_redirect_stub(old):
+                # заглушки тихая (DS M5). Заглушка с перечнем слитых фактов —
+                # исключение: этот перечень и есть единственная запись фактов,
+                # более короткая заглушка затирала бы его без копии (аудит 13.09,
+                # DS I1 по зоне контроля); копия — только когда новый текст
+                # какой-то пункт теряет, иначе повтор плодил бы копии (DS M5).
+                if gpath.is_file() and (not is_redirect_stub(old) or listed_facts(old) - facts_of(new_text)):
                     quarantine(gpath, graph, displaced_dir(qdir), move=False)
                     v.displaced.append(name)
                 safe_write.write_text(gpath, new_text)
@@ -806,7 +810,32 @@ def facts_of(text: str) -> collections.Counter:
     """
     return collections.Counter(
         n for ln in text.splitlines()
-        if not ln.lstrip().startswith("#") and len((n := _norm(ln)).split()) >= 2)
+        if not ln.lstrip().startswith("#") and len((n := fact_key(ln)).split()) >= 2)
+
+
+# Маркер списка — только с пробелом после него: «**жирная**» строка, дата
+# «15.09 — срок» и дробь «1.5 млн» пунктами не считаются (DS r2 I1/M3,
+# GLM r2 M1 по #556); «-факт» без пробела — тоже нет, цена принята.
+_LIST_ITEM = re.compile(r"(?:[-*•+]|\d{1,2}[.)])\s+\S")
+_LIST_MARK = re.compile(r"^(?:[-*•+]|\d{1,2}[.)])\s+")
+
+
+def fact_key(line: str) -> str:
+    """Ключ факта для счёта уцелевших: без маркера списка и через _norm — «- X»,
+    «1. X» и «2) X» один и тот же факт, иначе перечень, переномерованный
+    облаком, выглядел бы потерянным целиком (GLM r1 по #556)."""
+    return _norm(_LIST_MARK.sub("", line.lstrip(), count=1))
+
+
+def listed_facts(text: str) -> collections.Counter:
+    """Факты, перечисленные списком (строки-пункты: «- », «* », «• », «+ », «1. »,
+    «2) » — маркер с пробелом). У заглушки это единственная запись слитого — их
+    и бережём при вытеснении; фраза «Дубль. Смерджен.» фактом не считается,
+    иначе любая заглушка плодила бы копии. Нумерованные пункты — по GLM r1 по
+    #556: промпт облаку маркер списка не диктует."""
+    return collections.Counter(
+        n for ln in text.splitlines()
+        if _LIST_ITEM.match(ln.lstrip()) and len((n := fact_key(ln)).split()) >= 2)
 
 
 def facts_kept(dup_body: str, holder: str) -> bool:
@@ -886,6 +915,30 @@ def review_delivered(transcript: pathlib.Path) -> bool:
     except Exception as e:  # noqa: BLE001 — статус вторичен: без него второй прогон идёт
         print(f"этап ревизии не прочитан: {e}")
         return False
+
+
+def retry_pointless(rev: pathlib.Path, transcript: pathlib.Path, force: bool) -> bool:
+    """Повтор после сбоя CLI не нужен: ревизия на месте и свежее стенограммы, а
+    этап либо «ok» (доставил свой прошлый прогон или сосед), либо статуса нет
+    вовсе — старые встречи и ручной запуск scripts/cloud_review.py этапов не
+    ведут, и требовать от них «ok» значило бы всегда гнать второй платный прогон
+    поверх соседской ревизии (DS r1 I2 по #556). Этап судит только там, где он
+    есть: «running»/«retrying» соседа — не доставка. Один предикат на оба места
+    в run(): копии условия уже разъезжались (критика GLM r1 по #556)."""
+    if force or not fresh_review(rev, transcript):
+        return False
+    return _review_state(transcript) in (None, "ok")
+
+
+STATE_UNKNOWN = "?"   # статус не прочитался — не «статуса нет»: повтор идёт (DS r2 M1 по #556)
+
+
+def _review_state(transcript: pathlib.Path) -> str | None:
+    try:
+        from meeting_processing import MeetingStatusStore
+        return MeetingStatusStore(ROOT).review_state(transcript)
+    except Exception:  # noqa: BLE001 — статус вторичен, но «не знаю» ≠ «нет»
+        return STATE_UNKNOWN
 
 
 def neighbour_delivered(rev: pathlib.Path, before: float | None,
@@ -981,10 +1034,20 @@ def _log_line(log: pathlib.Path, line: str) -> None:
 
 def _review_stage(transcript: pathlib.Path, state: str, note: str = "") -> None:
     """Этап ревизии в статусе встречи: приложение видело «готово» при идущей
-    или упавшей ревизии (№240). Статуса нет — не заводим; сбой — не гейт."""
+    или упавшей ревизии (№240). Статуса нет — не заводим; сбой — не гейт.
+
+    «ok» — терминальный: сосед, довёзший ревизию, закрыл этап, и падение
+    ДРУГОГО воркера (не дождался замка, ушёл на чтение, CLI упал) — не исход
+    встречи. Иначе наш «failed»/«retrying» стирал единственное доказательство
+    доставки, по которому судит review_delivered, и вторая попытка шла платным
+    прогоном поверх доставленной ревизии (DS r1 Critical по #556). «running»
+    поверх «ok» разрешён: это осознанный повтор обработки."""
     try:
         from meeting_processing import MeetingStatusStore
-        MeetingStatusStore(ROOT).review(transcript, state, note)
+        store = MeetingStatusStore(ROOT)
+        # терминальность «ok» — внутри store.review, одной записью (GLM r2 по #556)
+        if store.review(transcript, state, note) is None and state in ("failed", "retrying"):
+            print(f"этап ревизии не понижен до «{state}»: статуса нет или ревизия уже доставлена («ok»)")
     except Exception as e:  # noqa: BLE001 — статус вторичен, ревизия важнее
         print(f"статус этапа ревизии не записан: {e}")
 
@@ -999,6 +1062,17 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     там повтор бьёт в тот же потолок или в тот же ответ модели."""
     rc = _run_once(stamp, transcript, graph, rev, log, cfg, force=force)
     if rc == RC_CLI and attempt == 1:
+        # Сосед мог довезти ревизию, пока наша попытка падала: тогда «retrying»
+        # затёр бы его «ok», а вторая попытка всё равно отменилась бы — и статус
+        # висел бы «retrying» до expire_reviews (аудит 13.09, GLM M3).
+        if retry_pointless(rev, transcript, force):
+            # «ok» может быть и от прошлого прогона этой же встречи (осознанный
+            # перезапуск): кто довёз — не знаем, и не утверждаем (GLM r1 M1 по #556);
+            # без статуса вовсе — говорим правду, а не «доставлена» (GLM r2 M2)
+            _log_line(log, "CLI упал, но повтор не нужен: " + (
+                "ревизия уже доставлена" if _review_state(transcript) == "ok"
+                else "статуса встречи нет, а ревизия на месте и свежее стенограммы"))
+            return RC_OK
         _log_line(log, f"повтор ревизии через {RETRY_DELAY // 60} мин: процесс CLI не запустился "
                        "или завершился с ошибкой — попытка 2 из 2")
         _review_stage(transcript, "retrying", "повтор через десять минут")
@@ -1011,8 +1085,12 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         gate()
         # За паузу ревизию мог довезти другой воркер («Повторить обработку»
         # запускает второго: .partial первого он не считает ревизией) — тот
-        # же дедуп, что у graph_updater перед запуском (GLM r1 I2)
-        if not force and fresh_review(rev, transcript):
+        # же дедуп, что у graph_updater перед запуском (GLM r1 I2). Свежести
+        # файла мало: сосед, опубликовавший ревизию и убитый до доставки,
+        # оставлял бы её без архива и графа, а нас — без второй попытки; этап
+        # «ok» пишется последним, под замком (аудит 13.09, DS I2 / GLM M2 —
+        # тот же предохранитель, что в _run_once).
+        if retry_pointless(rev, transcript, force):
             _log_line(log, "ревизия уже доставлена другим прогоном — повтор отменён")
             return RC_OK
         return run(stamp, transcript, graph, rev, log, cfg, attempt=2, force=force)
@@ -1412,7 +1490,13 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                         names_failed = True
                         lines.append(f"[cloud-review] имена меток не перештампованы: {e}\n")
                         try:
-                            renamed = name_fixes.planned(rev, transcript, cfg)
+                            # с dropped, как соседние вызовы: непонятые строки
+                            # раздела нужны в логе именно здесь (аудит 13.09, DS M5)
+                            # apply() уже наполнил dropped_n до LostRace — второй разбор
+                            # дописывает только новое (DS r1 M2 по #556)
+                            again: list[str] = []
+                            renamed = name_fixes.planned(rev, transcript, cfg, dropped=again)
+                            dropped_n.extend(x for x in again if x not in dropped_n)
                         except Exception as e2:  # noqa: BLE001
                             lines.append(f"[cloud-review] имена меток: раздел не разобран ({e2})\n")
                     except Exception as e:  # noqa: BLE001

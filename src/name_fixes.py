@@ -106,12 +106,17 @@ def plan(fixes: list[tuple[str, str, str]], headers: set[str], protected: set[st
             continue
         mapping[label] = name
     # обмен/цепочка обещаны только если ВСЕ участники переименованы: «Б → Я»
-    # отклонён, а «А → Б» применился бы слиянием (DS r2 I1, GLM r2 M1)
-    for label in [k for k, v in mapping.items() if v in headers and v not in mapping]:
-        if dropped is not None:
-            dropped.append(f"«{label} → {mapping[label]}» — имя — метка другой дорожки «{mapping[label]}», её правка отклонена")
-        del mapping[label]
-    return mapping
+    # отклонён, а «А → Б» применился бы слиянием (DS r2 I1, GLM r2 M1). До
+    # неподвижной точки: снятое «Б → В» делает «А → Б» слиянием в живую «Б»,
+    # один проход этого не видел (аудит 13.09, GLM M1 по зоне контроля).
+    while True:
+        stale = [k for k, v in mapping.items() if v in headers and v not in mapping]
+        if not stale:
+            return mapping
+        for label in stale:
+            if dropped is not None:
+                dropped.append(f"«{label} → {mapping[label]}» — имя — метка другой дорожки «{mapping[label]}», её правка отклонена")
+            del mapping[label]
 
 
 def _word_map(text: str, mapping: dict[str, str]) -> str:
