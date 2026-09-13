@@ -169,20 +169,80 @@ def is_counterpart(speaker: str, owner_name: str) -> bool:
     return bool((speaker or "").strip()) and not is_owner(speaker, owner_name)
 
 
-def _own_lines_only(name: str, sample: str, label: str) -> bool:
+def heard_forms(name: str, sample: str) -> tuple[str, ...]:
+    """Формы, в которых `name` слышно в стенограмме: само имя целым словом и
+    слова с заглавной, чьей звательной или творительной формой оно могло быть
+    («Саш» для «Саша», «Колей» для «Коля»). Пусто — имени в разговоре не было.
+
+    Правило 3 требует, чтобы имя звучало в тексте, но модель отдаёт
+    именительный падеж, а в речи имя чаще звучит обращением: «Тань, глянь»
+    — это «Таня». Прямая подстрока отвергала бы такое имя как выдуманное.
+    Обратный ход — тем же `nominative_candidates`, которым граф клеит
+    обращение к узлу человека, и только из положения, где так и звучит имя:
+    обращение отделено знаком или стоит в конце («Коль, ты тут?», «Саш!»,
+    «…спроси, Тань»), творительный падеж — после «с»/«со» («договорились с
+    Сашей»). Слово с заглавной в начале предложения без такого контекста
+    («Ром был отличный», «Людей было много») формой имени не считается
+    (DS I1 по #551); косвенные падежи третьего лица («звонил Тане») сюда
+    намеренно не входят — цена ложного имени выше цены пропуска.
+    """
+    low = (name or "").casefold()
+    if not low:
+        return ()
+    forms: list[str] = []
+    # целым словом, не подстрокой: «Ян» в «Январь» уже ловили в перештамповке
+    # минуток (DS Critical по #464), «Коль» в «кольцо» — та же дыра (критика
+    # GLM по #551)
+    if _whole_word(low, sample):
+        forms.append(low)
+    for m in re.finditer(r"(?<!\w)([А-ЯЁA-Z][\w-]*)", sample):
+        word = m.group(1).strip("-")
+        if not word or low not in {c.casefold() for c in nominative_candidates(word)}:
+            continue
+        if _instrumental_like(word):
+            heard = re.search(r"(?<!\w)со?\s+$", sample[max(0, m.start() - 4):m.start()], re.I) is not None
+        else:
+            heard = re.match(r"\s*(?:[,!?…—–:;.-]|\n|$)", sample[m.end():m.end() + 3]) is not None
+        if heard and word.casefold() not in forms:
+            forms.append(word.casefold())
+    return tuple(forms)
+
+
+def _instrumental_like(word: str) -> bool:
+    """«Сашей», «Ромой», «Иваном», «Игорем» — творительный падеж, который
+    nominative_candidates умеет разворачивать; ему нужен предлог «с» рядом."""
+    low = word.casefold()
+    return len(low) >= 4 and low.endswith(("ей", "ой", "ом", "ем"))
+
+
+def _whole_word(form: str, text: str) -> bool:
+    return re.search(rf"(?<!\w){re.escape(form)}(?!\w)", text, re.I) is not None
+
+
+def _own_lines_only(name: str, sample: str, label: str,
+                    forms: tuple[str, ...] | None = None) -> bool:
     """Имя звучит ТОЛЬКО в репликах самой метки и это не представление.
 
     Формат хвоста стенограммы — «[ЧЧ:ММ] метка: текст», метка не в начале
-    строки, поэтому ищем «] метка:», а не `startswith`.
+    строки, поэтому ищем «] метка:», а не `startswith`. `forms` — в каких
+    формах имя слышно (heard_forms): обращение «Саш, а ты…» в собственной
+    реплике — тот самый случай, ради которого правило и писалось. Не
+    передали — считаем сами: молчаливого отката к голой подстроке нет
+    (критика GLM по #551).
     """
-    low = name.casefold()
-    lines_with = [ln for ln in sample.splitlines() if low in ln.casefold()]
+    if forms is None:
+        forms = heard_forms(name, sample)
+    if not forms:
+        return False
+    lines_with = [ln for ln in sample.splitlines()
+                  if any(_whole_word(f, ln) for f in forms)]
     if not lines_with:
         return False
     own = [ln for ln in lines_with if re.search(rf"\]\s*{re.escape(label)}\s*:", ln)]
     if len(own) != len(lines_with):
         return False    # имя звучало и с другой стороны — законный источник
-    return not re.search(_INTRO + re.escape(name), sample, re.I)
+    intro = _INTRO + "(?:" + "|".join(re.escape(f) for f in forms) + ")"
+    return not re.search(intro, sample, re.I)
 
 
 def trustworthy_name(raw: str, *, sample: str, label: str,
@@ -214,7 +274,8 @@ def trustworthy_name(raw: str, *, sample: str, label: str,
         return None
     if name.casefold() == label.casefold() or name.casefold().startswith("собеседник"):
         return None
-    if name.casefold() not in sample.casefold():
+    forms = heard_forms(name, sample)
+    if not forms:
         return None    # модель выдумала имя, которого в разговоре не было
 
     # падежи — по известным людям графа, до проверки владельца: «Игорёк» из
@@ -234,7 +295,7 @@ def trustworthy_name(raw: str, *, sample: str, label: str,
 
     if is_owner(name, owner_name):
         return None
-    if _own_lines_only(name, sample, label):
+    if _own_lines_only(name, sample, label, forms):
         return None
     if voice_pitch.contradicts(voice, name_gender):
         return None     # басовитый голос и женское имя — оставляем «Собеседник N»

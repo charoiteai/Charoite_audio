@@ -55,7 +55,7 @@ def test_mic_only_reaches_owner_decision(mic_only, monkeypatch):
     monkeypatch.setattr(rt.owner_voice_rules, "Heard", spy)
     monkeypatch.setattr(rt, "STT", lambda cfg: object())
     monkeypatch.setattr(rt, "stt_segment", lambda *a: "реплика")
-    monkeypatch.setattr(rt, "name_speakers", lambda cfg, lines: ({}, False))
+    monkeypatch.setattr(rt, "name_speakers", lambda cfg, lines, **kw: ({}, False))
 
     cfg = {"audio": {"samplerate": 16000}, "sufler": {"user_name": "Игорь Ветров"}}
     try:
