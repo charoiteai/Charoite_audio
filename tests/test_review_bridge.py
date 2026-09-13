@@ -661,9 +661,24 @@ def test_rewrite_file_fails_closed_without_a_snapshot(tmp_path, monkeypatch):
     path = tmp_path / "m.md"
     path.write_text("x\n", encoding="utf-8")
     monkeypatch.setattr(safe_write, "stat_snapshot", lambda p: None)
-    with pytest.raises(rb.LostRace):
+    with pytest.raises(rb.LostRace) as exc:
         rb.rewrite_file(path, lambda t: (t + "y\n", 1), "проверка")
     assert path.read_text(encoding="utf-8") == "x\n"
+    # причина названа честно: снимок не снят, а не «сменились под рукой» (DS M3, круг 2)
+    assert "снимок файла не снят" in str(exc.value) and "сменились под рукой" not in str(exc.value)
+    assert rb.LostRace is safe_write.LostRace and rb.rewrite_file is safe_write.rewrite_file
+
+
+def test_dedup_looks_at_every_assignment_section_but_writes_into_the_current_one():
+    """Легаси-блок выше, текущий ниже: пункт из старого блока — не новый (GLM M1, круг 2)."""
+    minutes = ("# М\n## Поручения и сроки\n- [ ] **Иван** — прислать сводку\n\n"
+               "## Поручения\n- [ ] **Олег** — начать\n")
+    text, added = rb.merge_into_minutes(minutes, ["**Иван** — прислать сводку"])
+    assert added == 0 and text == minutes
+    text, added = rb.merge_into_minutes(minutes, ["**Анна** — новое дело"])
+    assert added == 1
+    assert text.index("**Анна** — новое дело") > text.index("## Поручения\n"), "запись — в текущий блок"
+    assert text.count("**Иван** — прислать сводку") == 1
 
 
 def test_section_bounds_prefer_the_current_heading_over_a_legacy_one():

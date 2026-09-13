@@ -181,17 +181,25 @@ def restamp_transcript(live: pathlib.Path, mapping: dict[str, str]) -> int:
     def transform(text: str) -> tuple[str, int]:
         fixed, n = rename_headers(text, mapping)
         if n:
-            state["owned"] = _machine_owned(live, "transcript_sha256", text)
-            prev_dir = live.parent / ".prev"
-            prev_dir.mkdir(exist_ok=True)
-            safe_write.write_text(prev_dir / live.name, text)
-            state["fixed"] = fixed
+            state.update(owned=_machine_owned(live, "transcript_sha256", text), before=text, fixed=fixed)
         return fixed, n
 
     n = review_bridge.rewrite_file(live, transform, "заголовки реплик не тронуты")
-    if n and state.get("owned"):
-        live_sidecar.remember(live, "transcript_sha256", live_sidecar.sha(state["fixed"]))
+    if n:
+        # .prev — ПОСЛЕ удачной записи и текстом той попытки, что записалась:
+        # внутри transform вторая попытка перезаписывала его чужой версией, а
+        # при проигранной гонке исходник терялся (DS M1, круг 2 по #553)
+        _keep_prev(live.parent, live.name, state["before"])
+        if state.get("owned"):
+            live_sidecar.remember(live, "transcript_sha256", live_sidecar.sha(state["fixed"]))
     return n
+
+
+def _keep_prev(folder: pathlib.Path, name: str, text: str) -> None:
+    """Версия до правки — в .prev/ (одно поколение, как у пересборки)."""
+    prev_dir = folder / ".prev"
+    prev_dir.mkdir(exist_ok=True)
+    safe_write.write_text(prev_dir / name, text)
 
 
 def restamp_minutes(live: pathlib.Path, mapping: dict[str, str]) -> bool:
@@ -208,15 +216,12 @@ def restamp_minutes(live: pathlib.Path, mapping: dict[str, str]) -> bool:
         fixed = rename_participants(text, mapping)
         if fixed == text:
             return text, 0
-        state["owned"] = _machine_owned(live, "minutes_sha256", text)
-        prev_dir = live.parent / ".prev"          # версия до правки — как у пересборки (DS r1 I3)
-        prev_dir.mkdir(exist_ok=True)
-        safe_write.write_text(prev_dir / mpath.name, text)
-        state["fixed"] = fixed
+        state.update(owned=_machine_owned(live, "minutes_sha256", text), before=text, fixed=fixed)
         return fixed, 1
 
     if not review_bridge.rewrite_file(mpath, transform, "участники не тронуты"):
         return False
+    _keep_prev(live.parent, mpath.name, state["before"])      # версия до правки — как у пересборки (DS r1 I3)
     if state.get("owned"):
         live_sidecar.remember(live, "minutes_sha256", live_sidecar.sha(state["fixed"]))
     return True

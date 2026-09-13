@@ -63,39 +63,10 @@ _OWN_ITEM = re.compile(r"^\s*\*\*[^*]+\*\*\s*[—–-]|^\s*\*\*[^*:：]+\*\*\s*[
 _PAREN_NOTE = re.compile(r"^\s*[(（][^)）]*[)）]\s*$")
 
 
-class LostRace(RuntimeError):
-    """Файл сменился между чтением и записью дважды подряд — запись не сделана,
-    чужая версия осталась. Машинный сигнал вызывающему (лог не должен
-    выдавать это за «нечего дописывать» — GLM I2 / DS I2 по #553); строки
-    с PREFIX в списках `dropped` — тот же сигнал, где исключение не проходит."""
-
-    PREFIX = "запись не состоялась: "
-
-    def __init__(self, path: pathlib.Path, what: str):
-        self.path = path
-        super().__init__(f"{self.PREFIX}{path.name} сменились под рукой — {what}")
-
-
-def rewrite_file(path: pathlib.Path, transform, what: str, *, errors: str = "strict") -> int:
-    """Чтение → преобразование → запись с гейтом expect по снимку до чтения,
-    две попытки — как canonize_file и restamp_minutes пересборки: чужой
-    процесс замка демона не видит, а одноразовый прогон ревизии повторять
-    некому (DS I3 по #553). `transform(text) -> (new_text, n)`; n == 0 —
-    менять нечего, записи нет. Снимок не снялся — отказ, не свободная запись
-    (DS M5). После второй неудачи — LostRace. `errors` — как читать не-UTF-8:
-    мост минуток читает с заменой (прежнее поведение), перештамповка имён —
-    строго, чтобы не записать битый файл обратно с «�» (контракт name_fixes)."""
-    for _attempt in (1, 2):
-        snap = safe_write.stat_snapshot(path)
-        if snap is None:
-            raise LostRace(path, f"{what}: снимок файла не снят")
-        before = path.read_text(encoding="utf-8", errors=errors)
-        after, n = transform(before)
-        if not n:
-            return 0
-        if safe_write.write_text(path, after, expect=snap):
-            return n
-    raise LostRace(path, what)
+# Гейт потери обновления с повтором и его сигнал живут в safe_write (один на
+# всех писателей); здесь — те же имена для cloud_review, name_fixes и тестов.
+LostRace = safe_write.LostRace
+rewrite_file = safe_write.rewrite_file
 
 
 # Классы строк внутри раздела ревизии. Один классификатор вместо цепочки
@@ -322,6 +293,25 @@ def _section_bounds(lines: list[str]) -> tuple[int, int] | None:
     return start, end
 
 
+def _section_spans(lines: list[str]) -> list[tuple[int, int]]:
+    """(начало, конец) КАЖДОГО раздела поручений в файле — текущего и легаси
+    заголовков; граница раздела та же, что у _section_bounds."""
+    spans: list[tuple[int, int]] = []
+    for i, line in enumerate(lines):
+        if not action_items.is_section_heading(line):
+            continue
+        end = len(lines)
+        for j in range(i + 1, len(lines)):
+            nxt = lines[j]
+            if ((action_items._OTHER_SECTION.match(nxt)
+                 or (action_items._BARE_HEADING.match(nxt) and action_items._KNOWN_BARE_SECTION.match(nxt)))
+                    and not action_items._BULLET.match(nxt)):
+                end = j
+                break
+        spans.append((i, end))
+    return spans
+
+
 def _dedup_view(line: str, owner: str) -> str:
     """Строка минуток ДЛЯ СРАВНЕНИЯ с пунктом ревизии: владелец в том же
     каноне, что у ревизии (canon_owner_item), а полное user_name жирным —
@@ -382,7 +372,12 @@ def merge_into_minutes(minutes: str, items: list[str], participants: set[str] | 
         start, end = len(lines) - 1, len(lines)
     else:
         start, end = bounds
-    existing = [_dedup_view(line, owner) for line in lines[start + 1:end] if _key(line)]
+    # дедуп — по ВСЕМ разделам поручений файла (текущий и легаси), запись — в
+    # выбранный: минутки с «## Поручения и сроки» выше и «## Поручения» ниже
+    # иначе получали дубль пункта из старого блока (GLM M1, круг 2 по #553)
+    existing = [_dedup_view(line, owner)
+                for s_, e_ in (_section_spans(lines) or [(start, end)])
+                for line in lines[s_ + 1:e_] if _key(line)]
     # сравнение — в одном каноне с обеих сторон (полное имя владельца из
     # двух слов → первое слово), в минутки пункт идёт как есть (DS r2 по #545)
     new_lines = [f"- [ ] {item} {mark}" for item in fresh

@@ -837,6 +837,48 @@ def test_name_fixes_go_before_withdraw_and_bridge_and_only_with_a_checked_graph(
     assert "**Участники:** Мария, Юля" in minutes.read_text(encoding="utf-8")
 
 
+def test_lost_race_on_the_transcript_keeps_the_corrected_names_as_participants(tmp_path, monkeypatch):
+    """Стенограмма сменилась под перештамповкой дважды: файлы не тронуты, лог
+    называет причину, а верные имена из раздела ревизии всё равно идут мосту
+    участниками — иначе восстановленный пункт с верным именем получал бы
+    «⚠ не участник» по старой шапке (DS I1, круг 2 по #553)."""
+    import review_bridge
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    minutes = transcript.with_name(transcript.stem + "_minutes.md")
+    transcript.write_text("# Встреча\n\nУчастники (звучали в разговоре): Сергей, Юля\n\n**Сергей** [14:00]:\nначнём\n\n"
+                          "**Юля** [14:01]:\nМаш, ты согласуешь?\n", encoding="utf-8")
+    minutes.write_text("# Минутки\n**Участники:** Сергей, Юля\n\n## Поручения\n- [ ] **Сергей** — согласовать план\n",
+                       encoding="utf-8")
+    rev.unlink(missing_ok=True)
+    review = (_REPORT + "\n## Исправления имён\n- **Сергей** → **Мария** — основание: обращение «Маш»\n"
+              "## Снятые поручения\n- **Сергей** — согласовать план — причина: метка не того человека\n"
+              "## Восстановленные поручения\n- [ ] **Мария** — согласовать план\n")
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        kwargs["stdout"].write(review)
+        return Result()
+
+    def lost(*a, **k):
+        raise review_bridge.LostRace(transcript, "заголовки реплик не тронуты")
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    monkeypatch.setattr(cloud_review.name_fixes, "apply", lost)
+    assert cloud_review.run(stamp, transcript, graph, rev, log,
+                            {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}) == 0
+    text = log.read_text(encoding="utf-8")
+    assert "имена меток не перештампованы: запись не состоялась: " in text and "заголовки реплик не тронуты" in text
+    assert "имена меток исправлены" not in text, "ничего не применено — «исправлено» было бы ложью"
+    assert "**Сергей** [14:00]:" in transcript.read_text(encoding="utf-8")
+    tasks = minutes.read_text(encoding="utf-8").split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
+    assert "- [ ] **Мария** — согласовать план (из ревизии)" in tasks and "⚠" not in tasks, tasks
+
+
 def test_unreadable_subfolder_downgrades_to_read_only(tmp_path, monkeypatch):
     """os.walk молча пропускал нечитаемый подкаталог: список запретов и
     снимок становились неполными (круг-2 по #381, Codex)."""

@@ -1404,10 +1404,23 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 if may_edit and checked:
                     try:
                         renamed, heads, parts = name_fixes.apply(rev, transcript, cfg, dropped=dropped_n)
+                    except review_bridge.LostRace as e:
+                        # стенограмма сменилась под перештамповкой дважды — файлы не
+                        # тронуты, но верные имена мосту всё равно нужны как участники:
+                        # иначе восстановленный пункт с верным именем получал бы
+                        # «⚠ не участник» по старой шапке (DS I1, круг 2 по #553)
+                        names_failed = True
+                        lines.append(f"[cloud-review] имена меток не перештампованы: {e}\n")
+                        try:
+                            renamed = name_fixes.planned(rev, transcript, cfg)
+                        except Exception as e2:  # noqa: BLE001
+                            lines.append(f"[cloud-review] имена меток: раздел не разобран ({e2})\n")
                     except Exception as e:  # noqa: BLE001
                         names_failed = True
                         lines.append(f"[cloud-review] имена меток не перештампованы: {e}\n")
-                    if renamed:
+                    # карта после LostRace добрана для моста, но ничего не применено:
+                    # строки «исправлены … заголовков N» быть не должно (GLM M5)
+                    if renamed and not names_failed:
                         lines.append("[cloud-review] имена меток исправлены по ревизии: "
                                      + ", ".join(f"{k} → {v}" for k, v in renamed.items())
                                      + f" — заголовков реплик {heads}, участники минуток "

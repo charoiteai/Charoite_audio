@@ -217,6 +217,7 @@ def test_restamp_refuses_to_overwrite_files_changed_underneath(tmp_path, monkeyp
     text = live.read_text(encoding="utf-8")
     assert text.startswith(SPEECH) and "чужая правка" in text and "**Мария**" not in text
     assert hits == ["transcript_sha256"] * 2, "две попытки на стенограмму"
+    assert not (tmp_path / ".prev" / live.name).exists(), ".prev пишется только после удачной записи (DS M1, круг 2)"
     assert mpath.read_text(encoding="utf-8") == MINUTES, "минутки не тронуты, пока стенограмма не записана"
     meta = json.loads((tmp_path / "2026-09-11_1533_Планёрка.md.live.json").read_text(encoding="utf-8"))
     assert meta["transcript_sha256"] == live_sidecar.sha(SPEECH), "хеш не обновлён — запись не состоялась"
@@ -230,4 +231,6 @@ def test_restamp_refuses_to_overwrite_files_changed_underneath(tmp_path, monkeyp
     assert "**Мария** [15:33]:" in live.read_text(encoding="utf-8")
     mtext = mpath.read_text(encoding="utf-8")
     assert mtext.startswith(MINUTES) and "чужая правка" in mtext and "Мария" not in mtext.split("\n", 3)[0:3].__str__()
+    assert (tmp_path / ".prev" / live.name).read_text(encoding="utf-8") == SPEECH, ".prev стенограммы — исходник, не чужая версия"
+    assert not (tmp_path / ".prev" / mpath.name).exists(), "минутки не записаны — .prev минуток нет"
     assert any(d.startswith(review_bridge.LostRace.PREFIX) and "участники не тронуты" in d for d in dropped), dropped

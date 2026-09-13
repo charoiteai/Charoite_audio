@@ -508,7 +508,12 @@ def test_same_case_form_is_case_only_without_diminutives():
     for a, b in (("Вере", "Веронике"), ("Славе", "Ярославу"), ("Жене", "Евгении"), ("Марине", "Мария"),
                  ("Диме", "Дмитрий")):
         assert not ai.same_case_form(a, b), (a, b)
-        assert ai._same_person(a, b) or (a, b) == ("Марине", "Мария"), "уменьшительные остались у _same_person"
+    for a, b in (("Славе", "Ярославу"), ("Жене", "Евгении"), ("Диме", "Дмитрий")):
+        assert ai._same_person(a, b), "уменьшительные остались у _same_person"
+    # «Вера» — самостоятельное имя, не уменьшительное Вероники (критика GLM, круг 2 по #553):
+    # пункт Вероники при Вере на встрече получает пометку, а не проходит участником
+    assert not ai._same_person("Вере", "Веронике")
+    assert f"{OUTSIDER_MARK} (Вероника)" in flag_outsiders("## Поручения\n- [ ] **Вероника** — смета\n", {"Вера", "Игорь"})
 
 
 def test_legacy_heading_is_the_same_section_for_every_reader():
