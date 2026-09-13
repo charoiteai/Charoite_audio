@@ -810,10 +810,18 @@ def facts_of(text: str) -> collections.Counter:
     """
     return collections.Counter(
         n for ln in text.splitlines()
-        if not ln.lstrip().startswith("#") and len((n := _norm(ln)).split()) >= 2)
+        if not ln.lstrip().startswith("#") and len((n := fact_key(ln)).split()) >= 2)
 
 
 _LIST_ITEM = re.compile(r"(?:[-*•]|\d{1,2}[.)])\s*\S")
+_LIST_MARK = re.compile(r"^(?:[-*•]|\d{1,2}[.)])\s*")
+
+
+def fact_key(line: str) -> str:
+    """Ключ факта для счёта уцелевших: без маркера списка и через _norm — «- X»,
+    «1. X» и «2) X» один и тот же факт, иначе перечень, переномерованный
+    облаком, выглядел бы потерянным целиком (GLM r1 по #556)."""
+    return _norm(_LIST_MARK.sub("", line.lstrip(), count=1))
 
 
 def listed_facts(text: str) -> collections.Counter:
@@ -824,7 +832,7 @@ def listed_facts(text: str) -> collections.Counter:
     #556: промпт облаку маркер списка не диктует."""
     return collections.Counter(
         n for ln in text.splitlines()
-        if _LIST_ITEM.match(ln.lstrip()) and len((n := _norm(ln)).split()) >= 2)
+        if _LIST_ITEM.match(ln.lstrip()) and len((n := fact_key(ln)).split()) >= 2)
 
 
 def facts_kept(dup_body: str, holder: str) -> bool:
