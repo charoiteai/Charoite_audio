@@ -107,3 +107,42 @@ def _carry_over_metadata(src: pathlib.Path, dst: pathlib.Path) -> None:
                 continue
     except (OSError, AttributeError):
         pass
+
+
+class LostRace(RuntimeError):
+    """Файл сменился между чтением и записью дважды подряд (или снимок не
+    снялся) — запись не сделана, чужая версия осталась. Машинный сигнал
+    вызывающему: лог не должен выдавать это за «нечего дописывать» (GLM I2 /
+    DS I2 по #553); строки с PREFIX в списках `dropped` — тот же сигнал там,
+    где исключение не проходит. `reason` — что именно случилось: «сменились
+    под рукой» против «снимок не снят: файла нет или он недоступен» (DS M3 r2)."""
+
+    PREFIX = "запись не состоялась: "
+
+    def __init__(self, path: pathlib.Path, what: str, reason: str = "сменились под рукой"):
+        self.path = path
+        super().__init__(f"{self.PREFIX}{path.name} {reason} — {what}")
+
+
+def rewrite_file(path: pathlib.Path, transform, what: str, *, errors: str = "strict") -> int:
+    """Чтение → преобразование → запись с гейтом expect по снимку до чтения,
+    две попытки — как canonize_file и restamp_minutes пересборки: чужой
+    процесс замка демона не видит, а одноразовый прогон ревизии повторять
+    некому (DS I3 по #553). `transform(text) -> (new_text, n)`; n == 0 —
+    менять нечего, записи нет. Снимок не снялся — отказ, не свободная запись
+    (DS M5). После второй неудачи — LostRace. `errors` — как читать не-UTF-8:
+    мост минуток читает с заменой (прежнее поведение), перештамповка имён —
+    строго, чтобы не записать битый файл обратно с «�». Живёт здесь, рядом с
+    write_text: гейт потери обновления один на всех писателей, и цикл повтора
+    тоже (критика DS r2 по #553)."""
+    for _attempt in (1, 2):
+        snap = stat_snapshot(path)
+        if snap is None:
+            raise LostRace(path, what, reason="снимок файла не снят: файла нет или он недоступен")
+        before = path.read_text(encoding="utf-8", errors=errors)
+        after, n = transform(before)
+        if not n:
+            return 0
+        if write_text(path, after, expect=snap):
+            return n
+    raise LostRace(path, what)

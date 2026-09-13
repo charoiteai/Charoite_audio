@@ -172,39 +172,58 @@ def restamp_transcript(live: pathlib.Path, mapping: dict[str, str]) -> int:
     """Заголовки реплик стенограммы под верными именами. Версия до правки —
     в .prev/ (одно поколение, как у пересборки); хеш машинного текста в
     сайдкаре обновляется, только если он совпадал до правки: правленную
-    руками стенограмму пересборка и дальше должна считать ручной."""
-    text = live.read_text(encoding="utf-8")
-    fixed, n = rename_headers(text, mapping)
-    if not n:
-        return 0
-    owned = _machine_owned(live, "transcript_sha256", text)
-    prev_dir = live.parent / ".prev"
-    prev_dir.mkdir(exist_ok=True)
-    safe_write.write_text(prev_dir / live.name, text)
-    safe_write.write_text(live, fixed)
-    if owned:
-        live_sidecar.remember(live, "transcript_sha256", live_sidecar.sha(fixed))
+    руками стенограмму пересборка и дальше должна считать ручной. Файл,
+    сменившийся между чтением и записью (пересборка, редактор), не
+    затирается: вторая попытка, затем review_bridge.LostRace (аудит зон
+    12.09, зона 4; DS I3 по #553)."""
+    state: dict = {}
+
+    def transform(text: str) -> tuple[str, int]:
+        fixed, n = rename_headers(text, mapping)
+        if n:
+            state.update(owned=_machine_owned(live, "transcript_sha256", text), before=text, fixed=fixed)
+        return fixed, n
+
+    n = review_bridge.rewrite_file(live, transform, "заголовки реплик не тронуты")
+    if n:
+        # .prev — ПОСЛЕ удачной записи и текстом той попытки, что записалась:
+        # внутри transform вторая попытка перезаписывала его чужой версией, а
+        # при проигранной гонке исходник терялся (DS M1, круг 2 по #553)
+        _keep_prev(live.parent, live.name, state["before"])
+        if state.get("owned"):
+            live_sidecar.remember(live, "transcript_sha256", live_sidecar.sha(state["fixed"]))
     return n
+
+
+def _keep_prev(folder: pathlib.Path, name: str, text: str) -> None:
+    """Версия до правки — в .prev/ (одно поколение, как у пересборки)."""
+    prev_dir = folder / ".prev"
+    prev_dir.mkdir(exist_ok=True)
+    safe_write.write_text(prev_dir / name, text)
 
 
 def restamp_minutes(live: pathlib.Path, mapping: dict[str, str]) -> bool:
     """Строка участников минуток рядом со стенограммой; хеш машинных минуток
     обновляется тем же правилом, что у стенограммы. Нет минуток или строки —
-    False."""
+    False; сменившийся под рукой файл не затирается — тот же гейт и повтор,
+    что у моста поручений, затем review_bridge.LostRace."""
     mpath = review_bridge.minutes_path(live)
     if not mpath.is_file():
         return False
-    text = mpath.read_text(encoding="utf-8")
-    fixed = rename_participants(text, mapping)
-    if fixed == text:
+    state: dict = {}
+
+    def transform(text: str) -> tuple[str, int]:
+        fixed = rename_participants(text, mapping)
+        if fixed == text:
+            return text, 0
+        state.update(owned=_machine_owned(live, "minutes_sha256", text), before=text, fixed=fixed)
+        return fixed, 1
+
+    if not review_bridge.rewrite_file(mpath, transform, "участники не тронуты"):
         return False
-    owned = _machine_owned(live, "minutes_sha256", text)
-    prev_dir = live.parent / ".prev"          # версия до правки — как у пересборки (DS r1 I3)
-    prev_dir.mkdir(exist_ok=True)
-    safe_write.write_text(prev_dir / mpath.name, text)
-    safe_write.write_text(mpath, fixed)
-    if owned:
-        live_sidecar.remember(live, "minutes_sha256", live_sidecar.sha(fixed))
+    _keep_prev(live.parent, mpath.name, state["before"])      # версия до правки — как у пересборки (DS r1 I3)
+    if state.get("owned"):
+        live_sidecar.remember(live, "minutes_sha256", live_sidecar.sha(state["fixed"]))
     return True
 
 
@@ -250,11 +269,19 @@ def apply(review: pathlib.Path, live: pathlib.Path, cfg: dict,
     mapping = planned(review, live, cfg, dropped=dropped)
     if not mapping:
         return {}, 0, False
+    # стенограмма сменилась под рукой — ничего не применено, LostRace идёт
+    # вызывающему целиком: «исправлено: … — заголовков 0» в логе было бы ложью
+    # (GLM M5 по #553)
     n = restamp_transcript(live, mapping)
     mpath = review_bridge.minutes_path(live)
     touched = False
     try:
         touched = restamp_minutes(live, mapping)
+    except review_bridge.LostRace as e:
+        # стенограмма уже перештампована, минутки — нет: факт по файлам, сигнал
+        # вызывающему строкой с LostRace.PREFIX (не «отброшенная строка раздела»)
+        if dropped is not None:
+            dropped.append(str(e))
     except UnicodeDecodeError as e:
         if dropped is not None:
             dropped.append(f"{mpath.name} не в UTF-8 — участники минуток не перештампованы ({e.reason})")
