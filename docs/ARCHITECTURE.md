@@ -364,6 +364,12 @@ that exists in neither becomes plain text, the log names the file and the
 targets, and the removed targets accumulate in `logs/graph_unlinked.log`
 as candidates for a node or an alias — before this, such links landed in
 the graph broken.
+When a duplicate node is turned into a redirect stub, the body it displaces
+is copied into the run's quarantine (`вытеснено/`), and the stub lands only
+if its canon was edited in the same run or already holds the duplicate's
+lines — until 13.09 the old body survived only in one run's snapshot. A worker
+that takes the graph lock after a neighbour and finds a review fresher than
+the transcript does not start a second paid pass (`--force` overrides).
 
 ## Dossiers: a floor between search and the graph
 

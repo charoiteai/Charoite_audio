@@ -90,6 +90,9 @@ _sleep = time.sleep                 # подменяется тестами
 # unlink'а у сверки больше нет (карточки №40 и №88). Держим десять последних.
 QUARANTINE_KIND = "cloud_quarantine"
 QUARANTINE_KEEP = 10
+# Подпапка карантина прогона для ТЕЛ узлов, вытесненных заглушками-редиректами
+# облака: до 13.09 прежний текст жил только в снимке одного прогона (аудит 12.09)
+DISPLACED_DIR = "вытеснено"
 # Сколько path-rules запрета влезает в команду: граф с тысячей симлинков —
 # не граф, а чужая файловая система; такому — только чтение.
 DENY_MAX = 200
@@ -509,6 +512,7 @@ class Verdict:
     deleted: list[str] = dataclasses.field(default_factory=list)    # облако стёрло — в графе оставлено
     failed: list[str] = dataclasses.field(default_factory=list)     # перенос не смог (OSError)
     unlinked: list[str] = dataclasses.field(default_factory=list)   # «файл: цели» — ссылки без узла, ставшие текстом
+    displaced: list[str] = dataclasses.field(default_factory=list)  # тела узлов, ставших заглушками, — в карантине
     rolled_back: bool = False        # ответ невалиден — откачено всё
 
     @property
@@ -757,12 +761,16 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
             cands = [os.path.normpath(c) for c in cands]
             bad = set(v.reverted) | set(v.removed) | set(v.conflicts) \
                 | set(v.deleted) | set(v.failed)
-            canon_ok = any(
-                c in v.applied or (
-                    may_write(graph / c, graph) and (graph / c).is_file()
-                    and c not in bad)
-                for c in cands)
+            old_body = _read(gpath) if gpath.is_file() else ""
+            canon_ok = any(canon_merged(c, graph, v, bad, old_body) for c in cands)
             if canon_ok:
+                # Тело вытесняемого узла — в карантин ДО записи заглушки. До
+                # 13.09 оно жило только в снимке одного прогона, а снимок
+                # ротирует следующий запуск: единственная ветка переноса,
+                # где терялся текст ГРАФА, а не облака (аудит 12.09, DS I1/GLM I1).
+                if gpath.is_file():
+                    quarantine(gpath, graph, qdir / DISPLACED_DIR, move=False)
+                    v.displaced.append(name)
                 safe_write.write_text(gpath, graph_updater.tidy_links(_read(cpath)))
                 v.applied.append(name)
             else:
@@ -771,6 +779,46 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
         except OSError:
             v.failed.append(name)
     return v
+
+
+def canon_merged(c: str, graph: pathlib.Path, v: "Verdict", bad: set, dup_body: str) -> bool:
+    """Годится ли канон для заглушки-редиректа на него.
+
+    Да — если канон лёг этой же дельтой (облако его правило, слияние
+    состоялось) либо уже цел в графе, не забракован и УДЕРЖИВАЕТ факты
+    дубля: не меньше REWRITE_KEEP содержательных строк дубля есть в каноне.
+    Одного существования файла мало: заглушка стирает тело дубля, и
+    редирект на канон без его фактов — потеря (аудит 12.09, DS I1).
+    """
+    if c in v.applied:
+        return True
+    p = graph / c
+    if c in bad or not may_write(p, graph) or not p.is_file():
+        return False
+    return retention(dup_body, _read(p)) >= REWRITE_KEEP
+
+
+def fresh_review(rev: pathlib.Path, transcript: pathlib.Path) -> bool:
+    """Ревизия уже есть и она не старше стенограммы — повтор после паузы не
+    нужен: за десять минут её мог довезти другой воркер."""
+    try:
+        return rev.exists() and rev.stat().st_mtime >= transcript.stat().st_mtime
+    except OSError:
+        return False
+
+
+def review_landed_since(rev: pathlib.Path, started: float) -> bool:
+    """Ревизия появилась или обновилась ПОСЛЕ старта этого воркера — то есть
+    пока он ждал замок, её довёз сосед. Кнопка «Повторить обработку»
+    появляется через 30 минут тишины статуса, когда первый воркер ещё жив:
+    второй ждёт замок и запускал бы второй платный прогон, перезаписывая
+    свежую ревизию и доставку (аудит 12.09, GLM I1). Ревизия, лежавшая ДО
+    старта, не считается: осознанный перезапуск на той же стенограмме
+    остаётся возможным, дедуп на спавне — в graph_updater."""
+    try:
+        return rev.exists() and rev.stat().st_mtime >= started
+    except OSError:
+        return False
 
 
 def looks_like_report(text: str) -> bool:
@@ -867,13 +915,16 @@ def _review_stage(transcript: pathlib.Path, state: str, note: str = "") -> None:
 
 
 def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
-        rev: pathlib.Path, log: pathlib.Path, cfg: dict, attempt: int = 1) -> int:
+        rev: pathlib.Path, log: pathlib.Path, cfg: dict, attempt: int = 1,
+        force: bool = False) -> int:
     """Один разбор — и один повтор, если процесс CLI не запустился или
     вернул ненулевой код (RC_CLI): пауза RETRY_DELAY, не под живой встречей,
     замок графа берётся заново. Таймаут (RC_TIMEOUT), несверенный перенос
     и ответ с кодом 0, не похожий на ревизию (RC_ERROR), не повторяются —
     там повтор бьёт в тот же потолок или в тот же ответ модели."""
-    rc = _run_once(stamp, transcript, graph, rev, log, cfg)
+    # force передаём только когда он поднят: тесты подменяют _run_once заглушкой
+    # с шестью позиционными аргументами, и лишний kwarg их ронял бы
+    rc = _run_once(stamp, transcript, graph, rev, log, cfg, **({"force": True} if force else {}))
     if rc == RC_CLI and attempt == 1:
         _log_line(log, f"повтор ревизии через {RETRY_DELAY // 60} мин: процесс CLI не запустился "
                        "или завершился с ошибкой — попытка 2 из 2")
@@ -888,13 +939,10 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # За паузу ревизию мог довезти другой воркер («Повторить обработку»
         # запускает второго: .partial первого он не считает ревизией) — тот
         # же дедуп, что у graph_updater перед запуском (GLM r1 I2)
-        try:
-            if rev.exists() and rev.stat().st_mtime >= transcript.stat().st_mtime:
-                _log_line(log, "ревизия уже доставлена другим прогоном — повтор отменён")
-                return RC_OK
-        except OSError:
-            pass
-        return run(stamp, transcript, graph, rev, log, cfg, attempt=2)
+        if fresh_review(rev, transcript):
+            _log_line(log, "ревизия уже доставлена другим прогоном — повтор отменён")
+            return RC_OK
+        return run(stamp, transcript, graph, rev, log, cfg, attempt=2, force=force)
     if rc == RC_CLI:
         _log_line(log, "повтор не помог — ревизии нет; «Повторить обработку» в приложении "
                        "или запуск scripts/cloud_review.py руками")
@@ -905,7 +953,7 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
 
 
 def _run_once(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
-              rev: pathlib.Path, log: pathlib.Path, cfg: dict) -> int:
+              rev: pathlib.Path, log: pathlib.Path, cfg: dict, *, force: bool = False) -> int:
     # Разрешение спрашиваем ЗДЕСЬ, а не полагаемся на вызывающего: воркер —
     # отдельный процесс, и запустить его можно руками. Рубильник
     # CHAROITE_NO_CLOUD действует и на этом пути.
@@ -938,15 +986,24 @@ def _run_once(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
     # Не дождавшийся работает на чтение и НЕ доставляет ревизию в граф —
     # сосед мог бы принять его файлы за правки облака (круг-1 по #381).
     deliver = graph_available
+    started = time.time()
     with contextlib.ExitStack() as stack:
         # Замок нужен ВСЕГДА, когда мы пишем в граф. Доставка ревизии пишет
         # в защищённые папки и при may_edit=False (cloud_edit_graph
         # выключен) — без замка сосед-воркер видел эти файлы как правку
         # облака и убирал в карантин (аудит облака, DS M4).
-        if (may_edit or deliver) and not stack.enter_context(graph_lock(graph)):
-            print(f"граф занят другим разбором дольше {LOCK_WAIT // 60} мин — "
-                  "работаю на чтение")
-            may_edit = deliver = False
+        if may_edit or deliver:
+            if not stack.enter_context(graph_lock(graph)):
+                print(f"граф занят другим разбором дольше {LOCK_WAIT // 60} мин — "
+                      "работаю на чтение")
+                may_edit = deliver = False
+            elif not force and review_landed_since(rev, started):
+                # Замок взят ПОСЛЕ чужого прогона: пока ждали, сосед довёз
+                # ревизию. Второй полный платный прогон перезаписал бы её и
+                # доставку (аудит 12.09, GLM I1). Заново — только --force.
+                _log_line(log, "ревизия появилась, пока ждали замок, — второй прогон не запускаю "
+                               "(её довёз другой воркер); заново — cloud_review.py --force")
+                return RC_OK
         rc = _run_locked(stamp, transcript, graph, rev, log, cfg,
                          may_edit=may_edit, graph_available=graph_available,
                          deliver=deliver, unlock=stack.close)
@@ -1387,6 +1444,9 @@ def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:
         parts.append(f"перенесено в граф: {', '.join(v.applied)}")
     if v.unlinked:
         parts.append(f"ссылки без узла стали текстом: {'; '.join(v.unlinked)}")
+    if v.displaced:
+        parts.append(f"тела узлов, ставших заглушками, в карантине {qdir}/{DISPLACED_DIR}: "
+                     f"{', '.join(v.displaced)}")
     if v.conflicts:
         # Не авария, а нормальная развязка: конвейер писал в тот же файл,
         # пока облако думало. Живая работа осталась, версия облака — рядом.
@@ -1414,11 +1474,13 @@ def main() -> int:
     ap.add_argument("--graph", type=pathlib.Path, required=True)
     ap.add_argument("--rev", type=pathlib.Path, required=True)
     ap.add_argument("--log", type=pathlib.Path, required=True)
+    ap.add_argument("--force", action="store_true",
+                    help="запустить разбор, даже если ревизия уже свежее стенограммы")
     args = ap.parse_args()
     charoite_paths.harden_umask()      # лог, .partial, карантин — 0600/0700
     cfg = graph_updater.load_cfg()
     args.log.parent.mkdir(parents=True, exist_ok=True)
-    return run(args.stamp, args.transcript, args.graph, args.rev, args.log, cfg)
+    return run(args.stamp, args.transcript, args.graph, args.rev, args.log, cfg, force=args.force)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ CHR-AUD-003. В режиме записи модель правила граф �
 Стенограммы, минутки и раздел «## Правки автора» неприкосновенны: это то, что
 написал человек или записала машина с его слов, и облаку там делать нечего.
 """
+import contextlib
 import pathlib
 import sys
 
@@ -1945,3 +1946,105 @@ def test_run_once_tells_cli_failure_from_timeout_and_writes_the_review_stage(tmp
     assert cloud_review._run_once(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
     data = json.loads(status.read_text(encoding="utf-8"))
     assert data["review"]["state"] == "ok" and data["state"] == "ready"
+
+
+def test_a_stub_keeps_the_displaced_body_in_quarantine(tmp_path):
+    """Тело узла, ставшего заглушкой-редиректом, лежит в карантине прогона.
+
+    Аудит 12.09 (DS I1, GLM I1, зона 3): во всех ветках переноса в карантин
+    уходит версия ОБЛАКА, а здесь вытесняется текст ГРАФА — и он жил только
+    в снимке одного прогона, который ротирует следующий запуск.
+    """
+    graph = _graph(tmp_path)
+    body = "# Ядро\n## Статус\nРешено\n" + "".join(f"- факт {i}\n" for i in range(8))
+    (graph / "Ядра" / "Платёжный провайдер.md").write_text(body, encoding="utf-8")
+    dup_body = body.replace("Ядро", "Дубль")
+    dup = graph / "Ядра" / "Провайдер платежей.md"
+    dup.write_text(dup_body, encoding="utf-8")
+
+    def worked(pen):
+        (pen / "Ядра" / "Платёжный провайдер.md").write_text(body + "- факт из дубля\n", encoding="utf-8")
+        (pen / "Ядра" / "Провайдер платежей.md").write_text(
+            "# Провайдер платежей → [[Ядра/Платёжный провайдер]]\n\nДубль. Смерджен.\n", encoding="utf-8")
+
+    v, qdir = _cloud_worked(graph, tmp_path, worked)
+
+    assert "Ядра/Провайдер платежей.md" in v.applied
+    assert v.displaced == ["Ядра/Провайдер платежей.md"]
+    saved = qdir / cloud_review.DISPLACED_DIR / "Ядра" / "Провайдер платежей.md"
+    assert saved.read_text(encoding="utf-8") == dup_body, "прежнее тело дубля не сохранено"
+    assert dup.read_text(encoding="utf-8").startswith("# Провайдер платежей → [[")
+    assert cloud_review.DISPLACED_DIR in cloud_review._verdict_line(v, qdir)
+
+
+def test_a_stub_needs_its_canon_merged_or_holding_the_facts(tmp_path):
+    """Канон, которого облако не трогало, годится для заглушки только если
+    он уже удерживает факты дубля; иначе заглушка стёрла бы единственную
+    копию фактов (аудит 12.09, DS I1 — усиление canon_ok)."""
+    graph = _graph(tmp_path)
+    facts = "".join(f"- факт {i}\n" for i in range(8))
+    dup_body = "# Дубль\n## Статус\nРешено\n" + facts
+    # канон без фактов дубля — облако его не правило
+    (graph / "Ядра" / "Пустой канон.md").write_text("# Ядро\nдругая тема\n", encoding="utf-8")
+    # канон, куда факты уже слиты раньше
+    (graph / "Ядра" / "Слитый канон.md").write_text("# Ядро\n## Статус\nРешено\n" + facts, encoding="utf-8")
+    dup1 = graph / "Ядра" / "Дубль один.md"; dup1.write_text(dup_body, encoding="utf-8")
+    dup2 = graph / "Ядра" / "Дубль два.md"; dup2.write_text(dup_body, encoding="utf-8")
+
+    def worked(pen):
+        (pen / "Ядра" / "Дубль один.md").write_text("# Дубль один → [[Ядра/Пустой канон]]\n\nСмерджен.\n", encoding="utf-8")
+        (pen / "Ядра" / "Дубль два.md").write_text("# Дубль два → [[Ядра/Слитый канон]]\n\nСмерджен.\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, worked)
+
+    assert "Ядра/Дубль один.md" in v.reverted, "заглушка на канон без фактов дубля применена"
+    assert dup1.read_text(encoding="utf-8") == dup_body
+    assert "Ядра/Дубль два.md" in v.applied, "канон удерживает факты — заглушка должна лечь"
+    assert dup2.read_text(encoding="utf-8").startswith("# Дубль два → [[")
+
+
+def test_run_does_not_start_a_second_full_pass_over_a_fresh_review(tmp_path, monkeypatch):
+    """Воркер, взявший замок после соседа, видит появившуюся за это время
+    ревизию и не запускает второй платный прогон (аудит 12.09, GLM I1);
+    ревизия, лежавшая до старта, перезапуск не блокирует; --force запускает."""
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+    transcripts = tmp_path / "transcripts"; transcripts.mkdir()
+    transcript = transcripts / f"{stamp}.md"
+    transcript.write_text("текст встречи\n", encoding="utf-8")
+    rev, log = transcripts / f"{stamp}_ревизия.md", tmp_path / "cloud.log"
+    calls = []
+    # сосед довозит ревизию, ПОКА мы ждём замок: подменяем замок так, чтобы
+    # файл появился между стартом воркера и захватом
+    real_lock = cloud_review.graph_lock
+
+    @contextlib.contextmanager
+    def lock_after_neighbour(graph_, wait=None):
+        rev.write_text("- **Решение:** уже доставлено соседом\n" * 3, encoding="utf-8")
+        with real_lock(graph_, wait) as got:
+            yield got
+
+    monkeypatch.setattr(cloud_review, "graph_lock", lock_after_neighbour)
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        kwargs["stdout"].write("- **Решение:** повтор\n- **Поручение:** проверить\n- **Риск:** нет\n")
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    cfg = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": False}}
+    assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
+    assert calls == [], "второй полный прогон запущен при свежей ревизии соседа"
+    assert "второй прогон не запускаю" in log.read_text(encoding="utf-8")
+    # ревизия, лежавшая ДО старта, перезапуск не блокирует (дедуп на спавне — в graph_updater)
+    monkeypatch.setattr(cloud_review, "graph_lock", real_lock)
+    assert cloud_review.run(stamp, transcript, graph, rev, log, cfg) == cloud_review.RC_OK
+    assert len(calls) == 1, "прежняя ревизия заблокировала осознанный перезапуск"
+    monkeypatch.setattr(cloud_review, "graph_lock", lock_after_neighbour)
+    assert cloud_review.run(stamp, transcript, graph, rev, log, cfg, force=True) == cloud_review.RC_OK
+    assert len(calls) == 2, "--force не запустил разбор"
