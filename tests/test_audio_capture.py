@@ -291,6 +291,72 @@ def test_stop_дренирует_очередь_в_запись_до_финал�
     assert not any("ОСТАНОВИЛАСЬ" in m for m in said)
 
 
+def test_stop_с_живым_pump_не_теряет_и_не_дублирует_блоки(tmp_path):
+    """Настоящий поток _pump читает очередь, stop() дожидается его в пределах
+    бюджета и добирает остаток дренажом: каждый блок в файле ровно один раз
+    (DS r1 M1 по #557 — тесты глушили настоящую финализацию)."""
+    import threading
+
+    hub = _hub()
+    cap = _QueueCapture("mic")
+    hub.captures = [cap]
+    hub.on_status = lambda _msg: None
+    pcm = tmp_path / "s_mic.pcm"
+    hub._sinks = {"mic": pcm.open("wb")}
+    hub._bufs["mic"] = np.zeros(0, dtype=np.float32)
+    block = _tone(4000)
+    for _ in range(3):
+        cap.q.put(block)
+    hub._running = True
+    hub._pump_thread = threading.Thread(target=hub._pump, daemon=True)
+    hub._pump_thread.start()
+    time.sleep(0.4)                          # _pump успел взять первые блоки
+    for _ in range(4):
+        cap.q.put(block)                     # хвост, который достанется дренажу
+    sizes: list[int] = []
+    real_finalize = hub._finalize_recordings
+
+    def finalize():
+        hub._sinks["mic"].flush()
+        sizes.append(pcm.stat().st_size)
+        real_finalize()
+
+    hub._finalize_recordings = finalize
+    hub.stop()
+    assert not hub._pump_thread.is_alive()
+    assert sizes == [7 * 4000 * 2], "семь блоков — ровно семь в файле, без дублей и потерь"
+
+
+def test_сбой_дренажа_не_срывает_финализацию():
+    """Хаб без STT-буфера канала: _consume падает на KeyError — финализация всё
+    равно вызывается (DS r1 I2 по #557)."""
+    hub = _hub()
+    cap = _QueueCapture("mic")
+    hub.captures = [cap]
+    cap.q.put(_tone(4000))
+    said: list[str] = []
+    hub.on_status = said.append
+    done: list[str] = []
+    hub._finalize_recordings = lambda: done.append("finalized")
+    hub.stop()
+    assert done == ["finalized"] and any("хвост очереди не дописан" in m for m in said)
+
+
+def test_канал_с_перезапуском_в_полёте_не_останавливается_параллельно():
+    """Перезапуск канала висит в отдельном потоке — stop() не входит в тот же
+    стрим вторым потоком (DS r1 M4 по #557) и укладывается в бюджет."""
+    hub = _hub()
+    hub.RESTART_TIMEOUT = 0.3
+    slow = _QueueCapture("blackhole", hang_seconds=5.0)
+    hub.captures = [slow]
+    hub.on_status = lambda _msg: None
+    hub._restarting = {"blackhole"}          # _restart_guarded в полёте
+    hub._finalize_recordings = lambda: None
+    started = time.time()
+    hub.stop()
+    assert time.time() - started < 1 and slow.stopped == 0
+
+
 def test_частичный_отказ_open_sinks_не_оставляет_сирот(tmp_path):
     """Второй канал не открылся (коллизия штампа) — заготовка первого закрыта и
     убрана, а не висит .pcm без кадров до ретеншна (аудит 13.09, DS M4)."""

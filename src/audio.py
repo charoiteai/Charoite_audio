@@ -439,6 +439,7 @@ class AudioHub:
         self._lock = threading.Lock()
         self._running = False
         self._pump_thread: threading.Thread | None = None
+        self._restarting: set[str] = set()   # каналы, чей перезапуск сейчас в полёте (_restart_guarded)
 
         mode = a["device"]
         # Метка канала осталась «blackhole» намеренно: по ней названы файлы
@@ -630,9 +631,11 @@ class AudioHub:
     # Пять секунд: закрытие живого стрима укладывается в доли секунды, а
     # мёртвый не возвращается никогда.
     RESTART_TIMEOUT = 5.0
-    #: сколько stop() ждёт выхода _pump до дренажа очередей: штатно он выходит за
-    #: такт (0,15 с), дольше — только застряв в _restart_guarded (≤ RESTART_TIMEOUT)
-    PUMP_JOIN_TIMEOUT = 3.0
+    #: сколько stop() ждёт выхода _pump до дренажа очередей — в пределах ОБЩЕГО
+    #: бюджета RESTART_TIMEOUT: join покупает лишь то, что _pump не окажется внутри
+    #: sink.write при закрытии файла, хвост спасает _drain_queues; 3 с сверх бюджета
+    #: съедали грейс приложения до terminate (DS r1 I1 по #557)
+    PUMP_JOIN_TIMEOUT = 1.0
 
     def start(self):
         self._running = True
@@ -693,17 +696,21 @@ class AudioHub:
 
     def stop(self):
         self._running = False
-        self._say_last_drops()
         # Каналы останавливаем тем же приёмом, что _restart_guarded: stop()
         # мёртвого PortAudio-стрима не возвращается, и try/except от этого не
-        # спасает — зависание не исключение. Канал из _hung уже держит
-        # застрявший поток перезапуска, второй такой вызов вешал бы stop() хаба
-        # навсегда: до _finalize_recordings дело не доходило, демон не завершался
-        # и приложение добивало его сторожем (аудит 13.09, DS I1). Все каналы
-        # разом, один потолок на всех: грейс приложения до terminate — секунды.
+        # спасает — зависание не исключение. Канал из _hung (и канал, чей
+        # перезапуск сейчас в полёте) уже держит поток в close/open того же
+        # стрима: второй вход в PortAudio параллельно — недокументированная
+        # территория, а stop() хаба на нём висел навсегда, до
+        # _finalize_recordings дело не доходило (аудит 13.09, DS I1; DS r1 M4 по
+        # #557). Решение явное: такой стрим не закрываем, его очередь читает
+        # дренаж ниже, а рост очереди после финализации ограничен секундами до
+        # выхода процесса (критика DS r1 по #557). Все каналы разом, один потолок
+        # на всех: грейс приложения до terminate — секунды.
+        skip = self._hung | getattr(self, "_restarting", set())
         workers = [threading.Thread(target=self._quiet_stop, args=(c,), daemon=True,
                                     name=f"stop-{c.label}")
-                   for c in self.captures if c.label not in self._hung]
+                   for c in self.captures if c.label not in skip]
         for w in workers:
             w.start()
         deadline = time.monotonic() + self.RESTART_TIMEOUT
@@ -715,16 +722,19 @@ class AudioHub:
         # Хвост очередей: _pump выходит по _running, не дренируя c.q. В норме там
         # ≤1 блок (0,25 с), но пока _pump стоит в _restart_guarded, копится до
         # RESTART_TIMEOUT на канал. Сначала дожидаемся самого _pump (он же читает
-        # очереди), потом добираем остаток в sink и STT-буфер и только затем
-        # закрываем файлы: иначе _pump писал в уже закрытый sink и кричал
-        # «ЗАПИСЬ НА ДИСК ОСТАНОВИЛАСЬ» о звуке, который записан (аудит 13.09,
-        # DS I2/M3, GLM M3/M4).
+        # очереди) — в пределах того же бюджета, потом добираем остаток в sink и
+        # STT-буфер и только затем закрываем файлы: иначе _pump писал в уже
+        # закрытый sink и кричал «ЗАПИСЬ НА ДИСК ОСТАНОВИЛАСЬ» о звуке, который
+        # записан (аудит 13.09, DS I2/M3, GLM M3/M4). Финализация — в finally:
+        # сбой дренажа не должен оставить .pcm без .wav (DS r1 I2 по #557).
         pump = getattr(self, "_pump_thread", None)
         if pump is not None and pump is not threading.current_thread():
-            pump.join(self.PUMP_JOIN_TIMEOUT)
-        self._drain_queues()
-        self._say_last_drops()
-        self._finalize_recordings()
+            pump.join(max(0.0, min(self.PUMP_JOIN_TIMEOUT, deadline - time.monotonic())))
+        try:
+            self._drain_queues()
+            self._say_last_drops()
+        finally:
+            self._finalize_recordings()
 
     @staticmethod
     def _quiet_stop(c) -> None:
@@ -735,14 +745,19 @@ class AudioHub:
 
     def _drain_queues(self) -> None:
         """Остаток очередей захвата после выхода _pump — тем же путём, что и
-        живой блок: файл записи, STT-буфер, триггер."""
+        живой блок: файл записи и STT-буфер; быстрый триггер не дёргаем —
+        подсказка после «Стоп» никому не нужна (DS r1 M3 по #557). Сбой одного
+        канала не останавливает дренаж остальных."""
         for c in self.captures:
-            while True:
-                try:
-                    part = c.q.get_nowait()
-                except queue.Empty:
-                    break
-                self._consume(c, part)
+            try:
+                while True:
+                    try:
+                        part = c.q.get_nowait()
+                    except queue.Empty:
+                        break
+                    self._consume(c, part, notify_frame=False)
+            except Exception as e:  # noqa: BLE001 — хвост важен, но финализация важнее
+                self._say(f"🎙 канал {c.label}: хвост очереди не дописан ({e})")
 
     def _say_last_drops(self) -> None:
         """Досказать потери, не дожившие до очередного отчёта.
@@ -977,7 +992,7 @@ class AudioHub:
         # (ревью 20.08, круг 3, DeepSeek).
         self._say_last_drops()
 
-    def _consume(self, c, part) -> None:
+    def _consume(self, c, part, notify_frame: bool = True) -> None:
         """Один блок канала: файл записи, STT-буфер, триггер. Общий для _pump и
         дренажа очередей при stop()."""
         # под тем же локом, что и снапшот: новый ключ в словаре во
@@ -1021,7 +1036,7 @@ class AudioHub:
             # «не вернуть» превращалось бы в ложное «будет полной»
             # (ревью 20.08, круг 3, DeepSeek).
             self._note_drop(c.label, dropped, written)
-        if self.on_frame is not None:
+        if notify_frame and self.on_frame is not None:
             try:
                 self.on_frame(c.label, part)
             except Exception:  # noqa: BLE001 — триггер не должен ронять захват
@@ -1045,8 +1060,13 @@ class AudioHub:
                 box["err"] = e
 
         worker = threading.Thread(target=run, daemon=True, name=f"restart-{c.label}")
+        restarting = getattr(self, "_restarting", None)
+        if restarting is not None:
+            restarting.add(c.label)
         worker.start()
         worker.join(self.RESTART_TIMEOUT)
+        if restarting is not None and not worker.is_alive():
+            restarting.discard(c.label)   # завис — остаётся «в полёте», stop() его не тронет
         if worker.is_alive():
             # Поток бросаем: убить его нельзя, но он daemon и уйдёт с процессом.
             return TimeoutError(f"перезапуск не вернулся за {self.RESTART_TIMEOUT:.0f}с")
