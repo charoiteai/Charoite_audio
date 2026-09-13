@@ -813,13 +813,18 @@ def facts_of(text: str) -> collections.Counter:
         if not ln.lstrip().startswith("#") and len((n := _norm(ln)).split()) >= 2)
 
 
+_LIST_ITEM = re.compile(r"(?:[-*•]|\d{1,2}[.)])\s*\S")
+
+
 def listed_facts(text: str) -> collections.Counter:
-    """Факты, перечисленные списком (строки-пункты). У заглушки это единственная
-    запись слитого — их и бережём при вытеснении; фраза «Дубль. Смерджен.»
-    фактом не считается, иначе любая заглушка плодила бы копии."""
+    """Факты, перечисленные списком (строки-пункты: «- », «* », «• », «1. », «2) »,
+    маркер без пробела тоже). У заглушки это единственная запись слитого — их
+    и бережём при вытеснении; фраза «Дубль. Смерджен.» фактом не считается,
+    иначе любая заглушка плодила бы копии. Нумерованные пункты — по GLM r1 по
+    #556: промпт облаку маркер списка не диктует."""
     return collections.Counter(
         n for ln in text.splitlines()
-        if ln.lstrip().startswith(("- ", "* ", "• ")) and len((n := _norm(ln)).split()) >= 2)
+        if _LIST_ITEM.match(ln.lstrip()) and len((n := _norm(ln)).split()) >= 2)
 
 
 def facts_kept(dup_body: str, holder: str) -> bool:
@@ -899,6 +904,14 @@ def review_delivered(transcript: pathlib.Path) -> bool:
     except Exception as e:  # noqa: BLE001 — статус вторичен: без него второй прогон идёт
         print(f"этап ревизии не прочитан: {e}")
         return False
+
+
+def retry_pointless(rev: pathlib.Path, transcript: pathlib.Path, force: bool) -> bool:
+    """Повтор после сбоя CLI не нужен: ревизия на месте, свежее стенограммы, и
+    этап «ok» закрыт — своим прошлым прогоном или соседом. Один предикат на
+    оба места в run(): копии условия уже разъезжались (GLM M2/M3 аудита 13.09,
+    критика GLM r1 по #556)."""
+    return not force and fresh_review(rev, transcript) and review_delivered(transcript)
 
 
 def neighbour_delivered(rev: pathlib.Path, before: float | None,
@@ -1015,8 +1028,10 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # Сосед мог довезти ревизию, пока наша попытка падала: тогда «retrying»
         # затёр бы его «ok», а вторая попытка всё равно отменилась бы — и статус
         # висел бы «retrying» до expire_reviews (аудит 13.09, GLM M3).
-        if not force and fresh_review(rev, transcript) and review_delivered(transcript):
-            _log_line(log, "CLI упал, но ревизию за это время довёз другой воркер — повтор не нужен")
+        if retry_pointless(rev, transcript, force):
+            # «ok» может быть и от прошлого прогона этой же встречи (осознанный
+            # перезапуск): кто довёз — не знаем, и не утверждаем (GLM r1 M1 по #556)
+            _log_line(log, "CLI упал, но ревизия уже доставлена — повтор не нужен")
             return RC_OK
         _log_line(log, f"повтор ревизии через {RETRY_DELAY // 60} мин: процесс CLI не запустился "
                        "или завершился с ошибкой — попытка 2 из 2")
@@ -1035,7 +1050,7 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # оставлял бы её без архива и графа, а нас — без второй попытки; этап
         # «ok» пишется последним, под замком (аудит 13.09, DS I2 / GLM M2 —
         # тот же предохранитель, что в _run_once).
-        if not force and fresh_review(rev, transcript) and review_delivered(transcript):
+        if retry_pointless(rev, transcript, force):
             _log_line(log, "ревизия уже доставлена другим прогоном — повтор отменён")
             return RC_OK
         return run(stamp, transcript, graph, rev, log, cfg, attempt=2, force=force)

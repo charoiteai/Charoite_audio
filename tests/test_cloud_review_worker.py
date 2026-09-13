@@ -2141,6 +2141,10 @@ def test_a_stub_that_lists_facts_is_displaced_before_a_shorter_stub_lands(tmp_pa
     v, qdir = _cloud_worked(graph, tmp_path, worked)
     assert "Ядра/Дубль.md" in v.applied and "Ядра/Дубль.md" in v.displaced
     assert (cloud_review.displaced_dir(qdir) / "Ядра" / "Дубль.md").read_text(encoding="utf-8") == old
+    # нумерованный перечень — тот же перечень (GLM r1 по #556)
+    numbered = old.replace("- факт про сроки", "1. факт про сроки").replace("- факт про бюджет", "2) факт про бюджет").replace("- факт про людей", "3. факт про людей")
+    assert cloud_review.listed_facts(numbered) == cloud_review.listed_facts(old)
+    assert not cloud_review.listed_facts("# Дубль → [[Ядра/Канон]]\n\nДубль. Смерджен ещё раз.\n")
 
 
 def test_an_applied_canon_is_measured_like_any_other(tmp_path):
