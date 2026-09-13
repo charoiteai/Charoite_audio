@@ -45,6 +45,7 @@ import uuid
 CODE = pathlib.Path(__file__).resolve().parent.parent
 ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 sys.path.insert(0, str(CODE / "src"))
+import frontmatter  # noqa: E402
 
 MOC = "_MOC.md"
 
@@ -151,7 +152,9 @@ def plan(src: pathlib.Path, dst: pathlib.Path) -> tuple[list, list, list[str]]:
     dst_text = read_utf8(dst / MOC, "оглавление приёмника")
     for ln in moc_meeting_lines(read_utf8(src_moc, "оглавление донора")):
         link = ln.split("|")[0].removeprefix("- [[")
-        if link not in dst_text:
+        # граница ссылки, не подстрока: минутная ссылка донора — префикс посекундной
+        # в приёмнике, и строка встречи терялась при слиянии (аудит 13.09, DS I2 / GLM I1)
+        if not re.search(r"\[\[" + re.escape(link) + r"(?:\]\]|\||#)", dst_text):
             moc_lines.append(ln)
     return moves, appends, moc_lines
 
@@ -251,9 +254,15 @@ def apply(src: pathlib.Path, dst: pathlib.Path,
             # shutil.move, не Path.rename: донор бывает на другом томе.
             shutil.move(str(f), str(target))
         for f, target in appends:
-            body = strip_frontmatter(read_utf8(f, "файл донора")).strip()
+            donor_text = read_utf8(f, "файл донора")
+            body = strip_frontmatter(donor_text).strip()
             merged = (read_utf8(target, "файл приёмника").rstrip()
                       + f"\n\n---\n## Перенесено из графа {src.name} ({stamp})\n\n{body}\n")
+            # псевдонимы донора — в шапку приёмника: срез шапки терял aliases, и
+            # ссылки по бывшему псевдониму становились битыми (аудит 13.09, GLM M6)
+            names = frontmatter.aliases(donor_text, f.name)
+            if names:
+                merged = frontmatter.with_aliases(merged, names)
             atomic_write_text(target, merged)
             f.unlink()
         dst_moc = dst / MOC
