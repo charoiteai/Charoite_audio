@@ -5,6 +5,15 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.1](https://github.com/charoiteai/Charoite_audio/compare/v0.81.0...v0.81.1) (2026-09-13)
+
+
+### Bug Fixes
+
+* **cloud-review:** keep displaced node bodies and skip a second pass when a neighbour delivered ([#550](https://github.com/charoiteai/Charoite_audio/issues/550)) ([042707f](https://github.com/charoiteai/Charoite_audio/commit/042707f7c017372133a354409113b71f52e875ef))
+* **rebuild:** trust guards for model names, capped yield to live, minutes names by their own numbering ([#551](https://github.com/charoiteai/Charoite_audio/issues/551)) ([9b28ec9](https://github.com/charoiteai/Charoite_audio/commit/9b28ec9c53b30a6af31176d3b5c4078c51eef2ff))
+* **review:** one section predicate for the minutes, assignee case in the bridge dedup, expect gate on minutes writes ([#553](https://github.com/charoiteai/Charoite_audio/issues/553)) ([eb7e23a](https://github.com/charoiteai/Charoite_audio/commit/eb7e23af8a67037e5c674a66845678d683d3ddad))
+
 ## [0.81.0](https://github.com/charoiteai/Charoite_audio/compare/v0.80.0...v0.81.0) (2026-09-12)
 
 
