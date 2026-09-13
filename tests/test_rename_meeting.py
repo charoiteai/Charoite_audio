@@ -188,6 +188,37 @@ def test_apply_renames_all_five_places(world):
     assert data["transcript_path"].endswith(f"{STAMP}_Инцидент_загрузки.md")
 
 
+def test_rename_keeps_the_source_marker_in_the_note_header(world):
+    """Хвост «— импорт <файл> (N Б)» — след исходника для дедупа повторного
+    импорта; переименование его стирало, и тот же файл импортировался второй раз
+    (аудит 13.09, DS I2)."""
+    graph, tdir = world
+    note = graph / "Встречи" / f"{STAMP}.md"
+    note.write_text(note.read_text(encoding="utf-8").replace(
+        f"# Встреча {STAMP} — Обновление ОС", f"# Встреча {STAMP} — Обновление ОС — импорт rec.m4a (12 Б)"),
+        encoding="utf-8")
+    pretty, slug = rm.pretty_and_slug("Инцидент загрузки")
+    rm.apply(rm.plan(graph, tdir, STAMP, pretty, slug), graph, STAMP, pretty)
+    text = note.read_text(encoding="utf-8")
+    assert f"# Встреча {STAMP} — Инцидент загрузки — импорт rec.m4a (12 Б)" in text
+    assert "Обновление ОС —" not in text
+
+
+def test_rename_refuses_when_the_target_archive_folder_exists(world):
+    """rename на существующую папку падал посреди применения — файлы переехали,
+    папка и заметка нет (аудит 13.09, GLM M5). Отказ — до первого шага."""
+    import pytest
+    graph, tdir = world
+    # своя папка — по манифесту; чужая одноимённая минута без манифеста рядом
+    (graph / rm.ARCHIVE_DIR / "2026-08-03 11-30 — Обновление ОС" / "meeting.meta.json").write_text(
+        json.dumps({"meeting_id": STAMP}), encoding="utf-8")
+    (graph / rm.ARCHIVE_DIR / "2026-08-03 11-30 — Инцидент загрузки").mkdir()
+    pretty, slug = rm.pretty_and_slug("Инцидент загрузки")
+    with pytest.raises(SystemExit):
+        rm.plan(graph, tdir, STAMP, pretty, slug)
+    assert (tdir / f"{STAMP}_Обновление_ОС.md").exists(), "ничего не тронуто"
+
+
 def test_apply_rebuilds_portable_manifest(world):
     """Телефоны читают тему из meeting.meta.json: после переименования
     манифест обязан говорить новую тему, а не прошлогоднюю."""

@@ -271,6 +271,13 @@ def _wav(p: pathlib.Path) -> dt.datetime | None:
             if len(ch) < 8:
                 return None
             typ, size = struct.unpack("<4sI", ch)
+            if typ == b"data" and size in (0, 0xFFFFFFFF):
+                # Потоковый писатель размер ещё не проставил (0 или -1 — штатно для
+                # import_meeting.wav_complete): дальше идут сэмплы, а не заголовки
+                # чанков. Разбор их как заголовков шагал по файлу случайными
+                # смещениями до конца — на сотнях мегабайт это минуты без пользы:
+                # LIST/INFO после такого data всё равно не найти (аудит 13.09, DS I1).
+                return None
             if typ == b"LIST":
                 body = fh.read(min(size, _LIST_LIMIT))
                 if body[:4] == b"INFO":

@@ -19,6 +19,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from llm import LLM, LLMHTTPError  # noqa: E402
 import meeting_stamp  # noqa: E402
+import safe_write  # noqa: E402
 from meeting_archive import archive_meeting  # noqa: E402
 
 from charoite_paths import harden_umask, resolve_root
@@ -94,7 +95,7 @@ def main():
             out = gen(cfg, "Ты секретарь встречи. Пишешь точные, сухие минутки по-русски.",
                       text, MINUTES_PROMPT)
             if out:
-                mpath.write_text(NOTE + out + "\n", encoding="utf-8")
+                safe_write.write_text(mpath, NOTE + out + "\n")   # обрыв не оставит «готовый» битый файл (аудит 13.09, GLM M6)
                 made.append("минутки")
 
         dpath = pathlib.Path(str(base) + "_разбор.md")
@@ -102,7 +103,7 @@ def main():
             out = gen(cfg, "Ты аналитик после рабочей встречи. Пиши по-русски, сухо, markdown. "
                            "Не выдумывай факты.", text, DEBRIEF_PROMPT)
             if out:
-                dpath.write_text(NOTE + out + "\n", encoding="utf-8")
+                safe_write.write_text(dpath, NOTE + out + "\n")
                 made.append("разбор")
 
         folder = archive_meeting(graph, tdir, stamp, slug, files_key=f.stem)
@@ -112,9 +113,9 @@ def main():
                 out = gen(cfg, "Ты выделяешь ценное из стенограмм. Телеграфно, по-русски.",
                           text, THESES_PROMPT)
                 if out:
-                    tpath.write_text(
-                        "# Тезисы встречи (📌 КТ · 💎 факты · 💭 мысли)\n" + NOTE + "\n"
-                        + out + "\n", encoding="utf-8")
+                    safe_write.write_text(
+                        tpath, "# Тезисы встречи (📌 КТ · 💎 факты · 💭 мысли)\n" + NOTE + "\n"
+                        + out + "\n")
                     made.append("тезисы")
         print(f"{stamp}: {', '.join(made) if made else 'полная'}")
 

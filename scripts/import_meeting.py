@@ -724,6 +724,8 @@ def import_stamp(tdir: pathlib.Path, minute: str, src_name: str,
 # синк положил), сутки разницы — это скачивание, копирование или синк,
 # тронувший mtime без записи.
 MOMENT_DRIFT = dt.timedelta(minutes=2)
+#: потолок одного импорта в дочернем процессе (см. _scan_one)
+IMPORT_CHILD_TIMEOUT = 2 * 3600
 
 
 def meeting_moment(src: pathlib.Path) -> tuple[dt.datetime, str | None]:
@@ -866,12 +868,13 @@ def main() -> None:
         print(f"встреча {already.name} уже импортирована — повтор не нужен")
         _status("ready", already, _note_for(cfg, already))
         old_stamp = meeting_stamp.stamp_of(already.stem)
-        old_folder = archive_folder_for(graphs.graph_dir(cfg) or pathlib.Path(""), old_stamp) if old_stamp else None
-        old_src = old_folder / f"Исходник{src.suffix.lower()}" if old_folder is not None else None
+        # archive_source у повтора не пишем: ретеншн КОПИИ повтора удалял бы
+        # аудио-исходник первой встречи из архива, хотя с ней ничего не случилось
+        # (аудит 13.09, GLM M4); заодно нет глоба от CWD при незаданном graph_dir (GLM M7)
         _report(args.result_json, {"kind": "meeting", "source": src.name,
                                    "size": src.stat().st_size, "repeat": True,
                                    "stamp": old_stamp, "transcript": str(already),
-                                   "archive_source": str(old_src) if old_src is not None and old_src.exists() else None})
+                                   "archive_source": None})
         return
     if stamp != f"{day}_{hhmm}":
         print(f"в минуте {day}_{hhmm} уже есть другая встреча — импорт под штампом {stamp}")
@@ -1011,9 +1014,20 @@ def _scan_one(f: pathlib.Path, done: pathlib.Path, keep_days: float) -> bool:
         # приложение читает наш stdout через трубу, и мегабайт логов
         # транскрибации подвесил бы импорт на полном буфере. Наружу —
         # хвост, в метку ошибки — тоже хвост.
-        r = subprocess.run([sys.executable, __file__, str(f),
-                            "--result-json", str(result_path)],
-                           capture_output=True, text=True, errors="replace")
+        try:
+            r = subprocess.run([sys.executable, __file__, str(f),
+                                "--result-json", str(result_path)],
+                               capture_output=True, text=True, errors="replace",
+                               timeout=IMPORT_CHILD_TIMEOUT)
+        except subprocess.TimeoutExpired as e:
+            # Ребёнок без потолка держал скан и воркер импорта приложения навсегда
+            # (аудит 13.09, DS I1). Трёхчасовая запись при RTF ~28x — минуты; два
+            # часа — потолок с запасом на диаризацию и граф.
+            def _text(x):
+                return x if isinstance(x, str) else (x or b"").decode("utf-8", "replace")
+            r = subprocess.CompletedProcess(
+                e.cmd, 124, _text(e.stdout),
+                _text(e.stderr) + f"\nимпорт не уложился в {IMPORT_CHILD_TIMEOUT // 3600} ч — прерван")
         lines = [ln for ln in (r.stdout + "\n" + r.stderr).splitlines() if ln.strip()]
         for ln in lines[-8:]:
             print(f"  {ln}")
@@ -1079,8 +1093,15 @@ def import_voice_note(src: pathlib.Path, diary: bool) -> None:
         wav.unlink(missing_ok=True)
     if len(text) < 3:
         sys.exit("в записи не расслышалось ни слова")
+    # Момент — из записи (метаданные контейнера, как у встреч), а не время
+    # импорта: заметка вчерашнего вечера иначе ложилась в сегодняшний дневник
+    # под временем синка (аудит 13.09, GLM I3 / DS M4)
+    moment, why = meeting_moment(src)
+    if why:
+        print(why)
     mode = ["--diary"] if diary else []
-    r = sp.run([sys.executable, str(CODE / "src" / "dictate_note.py"), "--text", *mode],
+    r = sp.run([sys.executable, str(CODE / "src" / "dictate_note.py"), "--text",
+                "--moment", f"{moment:%Y-%m-%d %H:%M}", *mode],
                input=text, text=True)
     if r.returncode != 0:
         sys.exit("конвейер заметки завершился с ошибкой")

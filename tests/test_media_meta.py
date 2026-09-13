@@ -317,3 +317,18 @@ def test_wav_huge_info_list_is_scanned_past_first_mebibyte(tmp_path):
     p = tmp_path / "big.wav"
     p.write_bytes(b"RIFF" + struct.pack("<I", 4 + len(chunks)) + b"WAVE" + chunks)
     assert media_meta.recorded_at(p) == LOCAL
+
+
+def test_wav_with_a_zero_data_size_gives_up_instead_of_walking_the_samples(tmp_path):
+    """Потоковый писатель ещё не проставил размер data (0 или -1 — штатно для
+    wav_complete): дальше сэмплы, а не заголовки чанков; разбор их как заголовков
+    шагал по сотням мегабайт до конца файла (аудит 13.09, DS I1)."""
+    import time
+    fmt = b"fmt " + struct.pack("<I", 16) + b"\0" * 16
+    body = fmt + b"data" + struct.pack("<I", 0) + b"\x01\x00" * 200_000   # 400 КБ «сэмплов»
+    p = tmp_path / "stream.wav"
+    p.write_bytes(b"RIFF" + struct.pack("<I", 0) + b"WAVE" + body)
+    t0 = time.monotonic()
+    assert media_meta.recorded_at(p) is None
+    assert time.monotonic() - t0 < 0.5
+

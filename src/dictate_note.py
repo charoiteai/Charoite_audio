@@ -49,6 +49,7 @@ _llm = LLM(cfg)
 import os  # noqa: E402
 
 import meeting_stamp  # noqa: E402
+import safe_write  # noqa: E402
 
 # Дневник — отдельная граф-сфера РЯДОМ с рабочей (личное не всплывает в
 # рабочем поиске), но в том же Obsidian-vault: ссылки и backlinks между
@@ -58,6 +59,20 @@ def diary_dir() -> pathlib.Path:
     if raw:
         return pathlib.Path(raw).expanduser()
     return GRAPH.parent / "Дневник"
+
+
+def _moment() -> dt.datetime:
+    """Момент заметки: `--moment "YYYY-MM-DD HH:MM"` от импорта голосовых заметок
+    (время записи на телефоне), иначе сейчас. До 13.09 заметка вчерашнего вечера
+    ложилась в сегодняшний дневник под временем синка (GLM I3 / DS M4)."""
+    if "--moment" in sys.argv:
+        i = sys.argv.index("--moment") + 1
+        raw = sys.argv[i] if i < len(sys.argv) else ""
+        try:
+            return dt.datetime.strptime(raw, "%Y-%m-%d %H:%M")
+        except ValueError:
+            print(f"--moment «{raw}» не разобран — беру текущее время", file=sys.stderr)
+    return dt.datetime.now()
 
 
 def last_meeting_today() -> tuple[str, str] | None:
@@ -73,7 +88,10 @@ def last_meeting_today() -> tuple[str, str] | None:
     cands = sorted(p for p in tdir.glob(f"{today}_*.md") if meeting_stamp.stamp_of(p.stem))
     if not cands:
         return None
-    stamp = cands[-1].stem
+    # Ключ графа, не стем файла: заметка встречи называется минутным штампом
+    # (`Встречи/<штамп>.md`), а стем после наката темы — «<штамп>_Тема»; ссылка
+    # по стему висела в пустоте после любого наката (аудит 13.09, DS I3 / GLM I2)
+    stamp = meeting_stamp.graph_key(tdir, cands[-1].stem, GRAPH if str(GRAPH) else None)
     first = cands[-1].read_text(encoding="utf-8").splitlines()[:1]
     topic = first[0].lstrip("# ").strip() if first else stamp
     # «# Встреча <stamp> — Тема» → только тема
@@ -176,11 +194,17 @@ def main():
         words = re.findall(r"[А-Яа-яЁёA-Za-z0-9-]+", raw)
         title = " ".join(words[:3]) or "заметка"
 
-    now = dt.datetime.now()
+    now = _moment()
     ndir = GRAPH / "Заметки"
     ndir.mkdir(parents=True, exist_ok=True)
     slug = re.sub(r"[^\wА-Яа-яЁё-]+", "_", title).strip("_")[:40]
     path = ndir / f"{now:%Y-%m-%d_%H%M}_{slug}.md"
+    n = 2
+    while path.exists():
+        # две заметки в минуту с одним заголовком: вторая молча затирала первую
+        # вместе с «Как сказано» (аудит 13.09, GLM I1 / DS M5) — свободное имя
+        path = ndir / f"{now:%Y-%m-%d_%H%M}_{slug}-{n}.md"
+        n += 1
     parts = [
         f"---\ntype: voice-note\ndate: {now:%Y-%m-%d %H:%M}\n---\n",
         f"# {title}\n",
@@ -189,7 +213,7 @@ def main():
     if tasks:
         parts.append("\n## Задачи\n" + "\n".join(f"- [ ] {t}" for t in tasks) + "\n")
     parts.append(f"\n## Как сказано\n> {raw}\n")
-    path.write_text("\n".join(parts), encoding="utf-8")
+    safe_write.write_text(path, "\n".join(parts))
 
     # оглавление заметок — свежие сверху
     moc = ndir / "_ЗАМЕТКИ.md"
@@ -214,7 +238,7 @@ def main():
 
 def diary_entry(raw: str) -> None:
     """Дневниковая запись: причесать голосом автора и дозаписать в день."""
-    now = dt.datetime.now()
+    now = _moment()
     meeting = last_meeting_today()
 
     # qwen: первое лицо, идеи, задачи, флаг связи со встречей. Ссылку
