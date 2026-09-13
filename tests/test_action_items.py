@@ -494,8 +494,21 @@ def test_section_heading_predicate_covers_current_and_legacy_forms():
                  "Поручения и сроки:", "**Поручения и сроки:**", "## Action items", "## 行动项"):
         assert ai.is_section_heading(line), line
     for line in ("## Решения", "Открытые вопросы:", "- [ ] **Иван** — поручения и сроки согласовать",
-                 "Поручения по срокам обсудили"):
-        assert not ai.is_section_heading(line), line
+                 "Поручения по срокам обсудили", "## Поручения команды",
+                 "## Action items deferred", "Поручения и сроки"):
+        assert not ai.is_section_heading(line), line       # хвост заякорен (GLM I1 по #553)
+
+
+def test_same_case_form_is_case_only_without_diminutives():
+    """Склейка исполнителей — только падежи: «Вере»/«Веронике» — разные люди,
+    их поручения не сливаются (DS Critical по #553); «Витя»/«Вита» — принятая коллизия."""
+    for a, b in (("Сергею", "Сергей"), ("Ивану", "Иван"), ("Орлову", "Орлов"), ("Ольгой", "Ольга"),
+                 ("Игорем", "Игорь"), ("Вите", "Вита")):
+        assert ai.same_case_form(a, b) and ai.same_case_form(b, a), (a, b)
+    for a, b in (("Вере", "Веронике"), ("Славе", "Ярославу"), ("Жене", "Евгении"), ("Марине", "Мария"),
+                 ("Диме", "Дмитрий")):
+        assert not ai.same_case_form(a, b), (a, b)
+        assert ai._same_person(a, b) or (a, b) == ("Марине", "Мария"), "уменьшительные остались у _same_person"
 
 
 def test_legacy_heading_is_the_same_section_for_every_reader():

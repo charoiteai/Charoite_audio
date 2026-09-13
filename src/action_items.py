@@ -32,9 +32,12 @@ _SECTION = re.compile(
 # поручение чужому человеку оставалось задачей без пометки «не участник»
 # (аудит зон 12.09, зона 4).
 _LEGACY_SECTION = re.compile(
-    r"^\s*(?:#{1,6}\s*(?:\*\*)?\s*(?:поручени|action item|行动项)"
+    r"^\s*(?:#{1,6}\s*(?:\*\*)?\s*(?:поручени\w*|action items?|行动项)(?:\s+и\s+сроки)?\s*[:：]?\s*(?:\*\*)?\s*$"
     r"|(?:\*\*)?\s*(?:поручения|поручения и сроки|action items|行动项)\s*[:：]\s*\**\s*$)",
     re.IGNORECASE)
+# Хвост заякорен закрытым списком: «## Поручения команды» (чужие задачи для
+# сведения) разделом не является — flag_outsiders снял бы с них чекбоксы
+# (GLM I1 по #553); незаякоренный хвост был только у моста, который лишь дописывал.
 # Любой другой заголовок — конец раздела: markdown-заголовок или жирный
 # «**Решения:**».
 _OTHER_SECTION = re.compile(r"^\s*(?:#{1,6}\s|\*\*[^*]+:\*\*\s*$)")
@@ -268,6 +271,25 @@ def participants_of(transcript: str, owner: str = "") -> set[str]:
     return participants_set(names, owner)
 
 
+def same_case_form(word: str, known_word: str) -> bool:
+    """Одно имя в разных падежах или то же слово — БЕЗ таблицы уменьшительных.
+
+    Для склейки (дедуп моста ревизии, снятие поручений), где цена ошибки —
+    съеденное поручение: «Сергею»/«Сергей», «Ивану Орлову»/«Иван Орлов» —
+    да; «Вере»/«Веронике», «Славе»/«Ярославу» — нет (Critical DS/GLM по #536
+    для владельца, DS Critical по #553 для остальных). Коллизия «Витя»/«Вита»
+    (одна основа) остаётся принятой ценой. Правила — первые два из
+    _same_person; уменьшительные там же, третьим."""
+    word, known_word = _norm(word), _norm(known_word)
+    if word == known_word:
+        return True
+    a, b = _stem(word), _stem(known_word)
+    if len(a) >= 2 and a == b:
+        return True
+    short, long = sorted((a, b), key=len)
+    return len(short) >= 3 and long.startswith(short) and _CASE_TAIL.fullmatch(long[len(short):]) is not None
+
+
 def _same_person(word: str, known_word: str) -> bool:
     """Одно имя в разных падежах, уменьшительное к полному, или то же слово.
 
@@ -279,15 +301,9 @@ def _same_person(word: str, known_word: str) -> bool:
     «Витя»/«Вита» (одна основа) и «Ветровой»/«Ветров» (хвост «ой» падежный)
     — приняты: цена ошибки здесь «задача осталась», а не «задача пропала».
     ё и е — одна буква (DS M3, круг 2)."""
+    if same_case_form(word, known_word):
+        return True
     word, known_word = _norm(word), _norm(known_word)
-    if word == known_word:
-        return True
-    a, b = _stem(word), _stem(known_word)
-    if len(a) >= 2 and a == b:
-        return True
-    short, long = sorted((a, b), key=len)
-    if len(short) >= 3 and long.startswith(short) and _CASE_TAIL.fullmatch(long[len(short):]) is not None:
-        return True
     # уменьшительное ↔ полное, в любом падеже: сравниваем основы
     for small, full_names in ((word, known_word), (known_word, word)):
         fulls = _DIMINUTIVES.get(small) or _DIMINUTIVES.get(_stem(small) + "а") or _DIMINUTIVES.get(_stem(small) + "я")

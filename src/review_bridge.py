@@ -63,6 +63,41 @@ _OWN_ITEM = re.compile(r"^\s*\*\*[^*]+\*\*\s*[—–-]|^\s*\*\*[^*:：]+\*\*\s*[
 _PAREN_NOTE = re.compile(r"^\s*[(（][^)）]*[)）]\s*$")
 
 
+class LostRace(RuntimeError):
+    """Файл сменился между чтением и записью дважды подряд — запись не сделана,
+    чужая версия осталась. Машинный сигнал вызывающему (лог не должен
+    выдавать это за «нечего дописывать» — GLM I2 / DS I2 по #553); строки
+    с PREFIX в списках `dropped` — тот же сигнал, где исключение не проходит."""
+
+    PREFIX = "запись не состоялась: "
+
+    def __init__(self, path: pathlib.Path, what: str):
+        self.path = path
+        super().__init__(f"{self.PREFIX}{path.name} сменились под рукой — {what}")
+
+
+def rewrite_file(path: pathlib.Path, transform, what: str, *, errors: str = "strict") -> int:
+    """Чтение → преобразование → запись с гейтом expect по снимку до чтения,
+    две попытки — как canonize_file и restamp_minutes пересборки: чужой
+    процесс замка демона не видит, а одноразовый прогон ревизии повторять
+    некому (DS I3 по #553). `transform(text) -> (new_text, n)`; n == 0 —
+    менять нечего, записи нет. Снимок не снялся — отказ, не свободная запись
+    (DS M5). После второй неудачи — LostRace. `errors` — как читать не-UTF-8:
+    мост минуток читает с заменой (прежнее поведение), перештамповка имён —
+    строго, чтобы не записать битый файл обратно с «�» (контракт name_fixes)."""
+    for _attempt in (1, 2):
+        snap = safe_write.stat_snapshot(path)
+        if snap is None:
+            raise LostRace(path, f"{what}: снимок файла не снят")
+        before = path.read_text(encoding="utf-8", errors=errors)
+        after, n = transform(before)
+        if not n:
+            return 0
+        if safe_write.write_text(path, after, expect=snap):
+            return n
+    raise LostRace(path, what)
+
+
 # Классы строк внутри раздела ревизии. Один классификатор вместо цепочки
 # условий в цикле: пять кругов по #518 двигали по одному крайнему случаю за
 # раз, и каждый круг менял ветвление в теле цикла. Теперь у строки ровно один
@@ -216,17 +251,20 @@ def _split(item: str) -> tuple[str, set[str]]:
 
 
 def _same_assignee(na: str, nb: str) -> bool:
-    """Один исполнитель в разных падежах или написаниях: «сергею» и «сергей»,
-    «иван орлов» и «ивану орлову» — пословно через action_items._same_person.
-    Владелец приводится к канону раньше (_dedup_view); остальные участники
-    до 13.09 сравнивались строкой, и «**Сергею** — позвонить» дописывался
-    вторым пунктом рядом с «**Сергей** — позвонить» (аудит зон 12.09, зона 4)."""
+    """Один исполнитель в разных падежах: «сергею» и «сергей», «иван орлов» и
+    «ивану орлову» — пословно через action_items.same_case_form, БЕЗ таблицы
+    уменьшительных: «Вере» и «Веронике» — разные люди, и склейка съела бы
+    поручение (DS Critical по #553). Владелец приводится к канону раньше
+    (_dedup_view); остальные участники до 13.09 сравнивались строкой, и
+    «**Сергею** — позвонить» дописывался вторым пунктом рядом с «**Сергей**
+    — позвонить» (аудит зон 12.09, зона 4). Разное число слов — разные
+    записи: дубль «Иван Петрович»/«Иван» дешевле съеденного пункта."""
     if not na or not nb:
         return False
     if na == nb:
         return True
     pa, pb = na.split(), nb.split()
-    return len(pa) == len(pb) and all(action_items._same_person(x, y) for x, y in zip(pa, pb))
+    return len(pa) == len(pb) and all(action_items.same_case_form(x, y) for x, y in zip(pa, pb))
 
 
 def _same_item(a: str, b: str) -> bool:
@@ -261,11 +299,16 @@ def _empty_line(line: str) -> bool:
 def _section_bounds(lines: list[str]) -> tuple[int, int] | None:
     """(начало, конец) строк раздела поручений: конец — следующий заголовок
     или конец файла (граница — как у action_items)."""
-    # Один предикат с action_items (normalize, canon_owner, flag_outsiders):
+    # Предикат общий с action_items (normalize, canon_owner, flag_outsiders):
     # «## Поручения и сроки» прежних минуток — тот же раздел, а не повод
     # завести второй (DS r1 M3 по #518), и пометка «не участник» обязана
-    # видеть его так же, как мост (аудит зон 12.09, зона 4)
-    start = next((i for i, line in enumerate(lines) if action_items.is_section_heading(line)), None)
+    # видеть его так же, как мост (аудит зон 12.09, зона 4). Но приоритет
+    # прежний: сначала текущий заголовок по всему файлу, легаси — только
+    # если текущего нет; иначе минутки с обоими получали пункты в старый
+    # блок (GLM M3 / DS I4 по #553)
+    start = next((i for i, line in enumerate(lines) if action_items._SECTION.match(line)), None)
+    if start is None:
+        start = next((i for i, line in enumerate(lines) if action_items.is_section_heading(line)), None)
     if start is None:
         return None
     end = len(lines)
@@ -395,18 +438,12 @@ def bridge(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
     participants = action_items.participants_of(speech, owner) if speech else set()
     if extra_participants:
         participants = participants | action_items.participants_set(sorted(extra_participants), owner)
-    # Снимок ДО чтения: минутки правят и пересборка, и mcp «Минутки», и
-    # редактор — запись без гейта затирала бы их версию своей (аудит зон
-    # 12.09, зона 4). Проиграли гонку — ничего не пишем, говорим в лог:
-    # следующая ревизия допишет заново.
-    snap = safe_write.stat_snapshot(minutes)
-    before = minutes.read_text(encoding="utf-8", errors="replace")
-    after, added = merge_into_minutes(before, items, participants, lang=lang, owner=owner)
-    if added and not safe_write.write_text(minutes, after, expect=snap):
-        if dropped is not None:
-            dropped.append(f"{minutes.name} сменились под мостом — поручения ({added}) не дописаны")
-        return 0
-    return added
+    # Снимок ДО чтения и две попытки (rewrite_file): минутки правят и
+    # пересборка, и mcp «Минутки», и редактор — запись без гейта затирала бы
+    # их версию своей (аудит зон 12.09, зона 4); проиграли дважды — LostRace.
+    return rewrite_file(
+        minutes, lambda before: merge_into_minutes(before, items, participants, lang=lang, owner=owner),
+        f"поручения ({len(items)}) не дописаны", errors="replace")
 
 
 def _continuation(line: str) -> bool:
@@ -552,11 +589,16 @@ def withdraw(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
     minutes = minutes_path(transcript)
     if not minutes.is_file():
         return 0
-    snap = safe_write.stat_snapshot(minutes)          # гейт потери обновления — как у bridge
-    before = minutes.read_text(encoding="utf-8", errors="replace")
-    after, moved = withdraw_from_minutes(before, items, lang=lang, owner=owner, dropped=dropped)
-    if moved and not safe_write.write_text(minutes, after, expect=snap):
-        if dropped is not None:
-            dropped.append(f"{minutes.name} сменились под мостом — снятые ({moved}) не перенесены")
-        return 0
-    return moved
+    # гейт потери обновления и повтор — как у bridge; строки «подходит к N
+    # пунктам» собираются с последней попытки, чтобы повтор их не удваивал
+    tries: list[list[str]] = []
+
+    def transform(before: str) -> tuple[str, int]:
+        tries.append([])
+        return withdraw_from_minutes(before, items, lang=lang, owner=owner, dropped=tries[-1])
+
+    try:
+        return rewrite_file(minutes, transform, f"снятые ({len(items)}) не перенесены", errors="replace")
+    finally:
+        if dropped is not None and tries:
+            dropped.extend(tries[-1])

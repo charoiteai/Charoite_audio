@@ -1060,7 +1060,8 @@ it signals degradation, it does not break the loop.
   review bridge appends under an old heading gets the mark too; the bridge
   treats an assignee in another grammatical case («Сергею» is «Сергей») as
   the same item, and neither the bridge nor the name restamp overwrites a file
-  that changed between their read and write — they log it and step back.
+  that changed between their read and write — they retry once, then log it
+  and step back.
 - **Streaming archive answers** — first words in ~1s, token-by-token
   with a typing cursor; the chat model picker lists what Ollama
   actually has.

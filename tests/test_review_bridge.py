@@ -554,6 +554,15 @@ def test_non_owner_assignee_in_another_case_is_the_same_item():
     assert rb._same_item("**Сергею** — позвонить подрядчику по смете", "**Сергей** — позвонить подрядчику по смете")
     assert rb._same_item("**Ивану Орлову** — собрать примеры", "**Иван Орлов** — собрать примеры вопросов для теста")
     assert not rb._same_item("**Сергею** — позвонить подрядчику", "**Марине** — позвонить подрядчику")
+    # разные люди с одинаковым делом — два пункта, не один (DS Critical по #553)
+    for a, b in (("**Вере** — согласовать смету", "**Веронике** — согласовать смету"),
+                 ("**Славе** — подготовить макет", "**Ярославу** — подготовить макет"),
+                 ("**Жене** — прислать отчёт", "**Евгении** — прислать отчёт"),
+                 ("**Ивану Петровичу** — созвон", "**Ивану** — созвон")):
+        assert not rb._same_item(a, b) and not rb._same_item(b, a), (a, b)
+    _, added = rb.merge_into_minutes("## Поручения\n- [ ] **Вера** — согласовать смету\n",
+                                     ["**Веронике** — согласовать смету"])
+    assert added == 1, "поручение Вероники съедено дедупом"
     minutes = "## Поручения\n- [ ] **Сергей** — позвонить подрядчику по смете\n"
     _, added = rb.merge_into_minutes(minutes, ["**Сергею** — позвонить подрядчику по смете"])
     assert added == 0, "тот же человек в другом падеже — не второй пункт"
@@ -583,31 +592,83 @@ def _disk(tmp_path):
 
 def test_bridge_and_withdraw_do_not_overwrite_minutes_changed_underneath(tmp_path, monkeypatch):
     """Пересборка или редактор записали минутки между чтением моста и его
-    записью — мост ничего не пишет, говорит в лог, чужая версия остаётся."""
+    записью — мост пробует второй раз (как canonize_file), после второй
+    неудачи поднимает LostRace, чужая версия остаётся (DS I3, M5 по #553)."""
+    import pytest
     transcript, minutes, review = _disk(tmp_path)
     foreign = "# Минутки\n## Поручения\n- [ ] **Иван** — совсем другое, записано рядом\n"
+    calls: list[int] = []
 
-    def clobber(fn):
+    def clobber(fn, text):
         def wrapped(*a, **k):
             out = fn(*a, **k)
-            minutes.write_text(foreign, encoding="utf-8")
+            calls.append(1)
+            # каждая чужая запись — своя длина: одинаковые байты в один тик mtime
+            # прошли бы гейт, это заявленная граница safe_write, не предмет теста
+            minutes.write_text(text + "- ещё\n" * len(calls), encoding="utf-8")
             return out
         return wrapped
 
-    monkeypatch.setattr(rb, "merge_into_minutes", clobber(rb.merge_into_minutes))
+    monkeypatch.setattr(rb, "merge_into_minutes", clobber(rb.merge_into_minutes, foreign))
+    with pytest.raises(rb.LostRace) as exc:
+        rb.bridge(review, transcript, owner="Владелец")
+    assert str(exc.value).startswith(rb.LostRace.PREFIX) and "поручения (1) не дописаны" in str(exc.value)
+    assert minutes.read_text(encoding="utf-8").startswith(foreign), "мост затёр чужую запись"
+    assert len(calls) == 2, "вторая попытка обязана быть"
+    calls.clear()
+    original = "# Минутки\n## Поручения\n- [ ] **Иван** — прислать сводку по плану к пятнице\n"
+    minutes.write_text(original, encoding="utf-8")
+    # чужая запись сохраняет снимаемый пункт: иначе вторая попытка честно
+    # находит «снимать нечего» и возвращает 0 — это не гонка
+    monkeypatch.setattr(rb, "withdraw_from_minutes", clobber(rb.withdraw_from_minutes, original + foreign.split("\n")[2] + "\n"))
     dropped: list[str] = []
-    assert rb.bridge(review, transcript, owner="Владелец", dropped=dropped) == 0
-    assert minutes.read_text(encoding="utf-8") == foreign, "мост затёр чужую запись"
-    assert dropped and "сменились под мостом" in dropped[-1]
-    minutes.write_text("# Минутки\n## Поручения\n- [ ] **Иван** — прислать сводку по плану к пятнице\n", encoding="utf-8")
-    monkeypatch.setattr(rb, "withdraw_from_minutes", clobber(rb.withdraw_from_minutes))
-    dropped.clear()
-    assert rb.withdraw(review, transcript, owner="Владелец", dropped=dropped) == 0
-    assert minutes.read_text(encoding="utf-8") == foreign
-    assert dropped and "сменились под мостом" in dropped[-1]
+    with pytest.raises(rb.LostRace):
+        rb.withdraw(review, transcript, owner="Владелец", dropped=dropped)
+    assert minutes.read_text(encoding="utf-8").startswith(original) and "~~" not in minutes.read_text(encoding="utf-8")
+    assert len(calls) == 2 and dropped == [], "строки последней попытки не удвоены и не выдуманы"
     # без гонки — прежнее поведение
     monkeypatch.undo()
     minutes.write_text("# Минутки\n## Поручения\n- [ ] **Иван** — прислать сводку по плану к пятнице\n", encoding="utf-8")
     assert rb.withdraw(review, transcript, owner="Владелец") == 1
     assert rb.bridge(review, transcript, owner="Владелец") == 1
     assert safe_write.stat_snapshot(minutes) is not None
+
+
+def test_second_attempt_merges_into_the_foreign_version(tmp_path, monkeypatch):
+    """Гонка проиграна один раз — вторая попытка читает чужую версию и
+    дописывает уже в неё: ни своё, ни чужое не теряется."""
+    transcript, minutes, review = _disk(tmp_path)
+    foreign = "# Минутки\n## Поручения\n- [ ] **Иван** — прислать сводку по плану к пятнице\n- [ ] **Иван** — записано рядом\n"
+    real = rb.merge_into_minutes
+    state = {"n": 0}
+
+    def clobber_once(*a, **k):
+        out = real(*a, **k)
+        state["n"] += 1
+        if state["n"] == 1:
+            minutes.write_text(foreign, encoding="utf-8")
+        return out
+
+    monkeypatch.setattr(rb, "merge_into_minutes", clobber_once)
+    assert rb.bridge(review, transcript, owner="Владелец") == 1
+    text = minutes.read_text(encoding="utf-8")
+    assert "- [ ] **Иван** — записано рядом" in text and "- [ ] **Олег** — собрать команду (из ревизии)" in text
+    assert state["n"] == 2
+
+
+def test_rewrite_file_fails_closed_without_a_snapshot(tmp_path, monkeypatch):
+    import pytest
+    path = tmp_path / "m.md"
+    path.write_text("x\n", encoding="utf-8")
+    monkeypatch.setattr(safe_write, "stat_snapshot", lambda p: None)
+    with pytest.raises(rb.LostRace):
+        rb.rewrite_file(path, lambda t: (t + "y\n", 1), "проверка")
+    assert path.read_text(encoding="utf-8") == "x\n"
+
+
+def test_section_bounds_prefer_the_current_heading_over_a_legacy_one():
+    """Оба заголовка в файле — раздел там, где текущий (GLM M3 / DS I4 по #553)."""
+    lines = "# M\n## Поручения и сроки\n- старое\n## Поручения\n- новое".split("\n")
+    assert rb._section_bounds(lines) == (3, 5)
+    lines = "# M\n## Поручения и сроки\n- старое\n## Решения\n- да\n".split("\n")
+    assert rb._section_bounds(lines) == (1, 3)
