@@ -304,6 +304,10 @@ def test_backup_копирует_досье_и_режет_старые(tmp_path)
         assert dst.read_text(encoding="utf-8") == "старое тело"
     left = sorted(p.name for p in (folder / ".backup").iterdir())
     assert left == ["2026-09-13_020000", "2026-09-13_030000"], left
+    # случайный файл в .backup/ (упавший tmp) тоже уходит под нож (GLM M4 по #561)
+    (folder / ".backup" / "0000_мусор.tmp").write_text("x", encoding="utf-8")
+    dossier.backup(folder, "2026-09-13_040000", path, keep=2)
+    assert sorted(p.name for p in (folder / ".backup").iterdir()) == ["2026-09-13_030000", "2026-09-13_040000"]
 
 
 def test_пересборка_делает_копию_досье_до_перезаписи(tmp_path, monkeypatch):
@@ -326,3 +330,27 @@ def test_пересборка_делает_копию_досье_до_перез
     assert len(copies) == 1, "копии досье до перезаписи нет"
     assert "правка ревизии, которую нельзя терять" in copies[0].read_text(encoding="utf-8")
     assert "всё в порядке" in (folder / "Настройка доступа.md").read_text(encoding="utf-8")
+
+
+def test_пересборка_без_копии_не_перезаписывает_и_не_падает(tmp_path, monkeypatch):
+    """OSError копии (права на .backup, iCloud) убивал весь прогон — остальные темы
+    и индекс терялись (круг-1 по #561: DS I2 / GLM I1)."""
+    nd = _скрипт_пересборки()
+    g = _граф(tmp_path)
+    folder = g / dossier.DOSSIER_DIR
+    folder.mkdir()
+    old = ("---\nтема: Настройка доступа\nотпечаток: старый\nсобрано: 2026-07-20\n---\n# Настройка доступа\n"
+           "## Сейчас\nбыло\n## Как пришли\n—\n## Решено\n—\n## Открыто\n—\n## Кто в теме\n—\n"
+           "## Источники\n- x\n## Правки автора\n\n—\n")
+    (folder / "Настройка доступа.md").write_text(old, encoding="utf-8")
+    good = ("## Сейчас\nвсё в порядке\n## Как пришли\nт\n## Решено\nт\n## Открыто\nт\n## Кто в теме\nт")
+    monkeypatch.setattr(nd, "generate", lambda *a, **k: good)
+
+    def no_copy(*a, **k):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(nd.dossier, "backup", no_copy)
+    r = nd.run(g, {"sufler": {}}, full=False, dry=False, limit=5)
+    assert r["собрано"] == 0 and r["отказы"] == 1
+    assert (folder / "Настройка доступа.md").read_text(encoding="utf-8") == old, "переписано без копии"
+    assert {e["тема"] for e in dossier.load_index(folder)} == {"Настройка доступа"}, "тема выпала из индекса"

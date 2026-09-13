@@ -31,6 +31,7 @@ import dossier  # noqa: E402
 import file_locks  # noqa: E402
 import graphs  # noqa: E402
 import live_gate  # noqa: E402
+import safe_write  # noqa: E402
 import tier3  # noqa: E402
 from config_loader import load_user_or_example  # noqa: E402
 
@@ -212,7 +213,14 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
                 entries.append(_index_entry_from_disk(theme, members, path, fp, today))
             continue
 
-        manual = dossier.preserve_manual(path.read_text(encoding="utf-8")) if path.exists() else None
+        try:
+            manual = dossier.preserve_manual(path.read_text(encoding="utf-8")) if path.exists() else None
+        except (OSError, UnicodeDecodeError) as e:
+            # не-UTF-8 обрывок iCloud или снятые права на одно досье — отказ темы,
+            # не падение всей пересборки (DS M4 по #561)
+            print(f"  ✗ {theme}: прежнее досье не прочитано ({e}) — не трогаю")
+            отказы += 1
+            continue
         text = dossier.render(theme, body, members, files, fp, today)
         if manual:
             text = text.replace("## Правки автора\n\n—\n", f"## Правки автора\n\n{manual}\n")
@@ -229,12 +237,21 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
             folder.mkdir(parents=True, exist_ok=True)
             # копия прежнего досье: пересборка сохраняла только «Правки автора» и
             # стирала тело с редактурой облачной ревизии без единой копии
-            # (аудит 13.09, GLM C1); тот же .backup/, что у ревизии
-            dossier.backup(folder, stamp, path)
-            tmp = path.with_suffix(".md.tmp")   # атомарно: папка синхронизируется iCloud
-            tmp.write_text(text, encoding="utf-8")
-            tmp.replace(path)
+            # (аудит 13.09, GLM C1); тот же .backup/, что у ревизии. Не вышла
+            # копия — тему не перезаписываем, остальные не теряем (DS I2 / GLM I1 по #561)
+            try:
+                copy = dossier.backup(folder, stamp, path)
+            except OSError as e:
+                print(f"  ✗ {theme}: копия прежнего досье не сделана ({e}) — не перезаписываю")
+                отказы += 1
+                if path.exists():
+                    entries.append(_index_entry_from_disk(theme, members, path, fp, today))
+                continue
+            # safe_write: во временный и replace, с переносом прав и меток файла (DS M2 по #561)
+            safe_write.write_text(path, text)
         built += 1
+        if copy is not None:
+            print(f"  копия прежнего досье: {dossier.DOSSIER_DIR}/.backup/{stamp}/")
         print(f"  ✓ {theme}: {len(members)} источников, {len(body)} зн., {time.time()-t0:.0f}с")
 
         entries.append({

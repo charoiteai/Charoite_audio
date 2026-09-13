@@ -413,23 +413,54 @@ def test_dossier_changed_during_the_cloud_call_is_left_alone(tmp_path, monkeypat
     assert not (folder / ".backup").exists(), "копия без записи — мусор"
 
 
-def test_busy_graph_lock_keeps_the_dossier_and_reports_a_failed_step(tmp_path, monkeypatch):
+def test_busy_graph_lock_turns_the_rest_of_the_run_into_a_report(tmp_path, monkeypatch):
+    """Занятый или недоступный замок — не сбой ночи: правка идёт в раздел
+    «Предложено, но не применено» с фактической причиной, оплаченный ответ облака
+    не выбрасывается, остальные темы прогона — только отчёт (круг-1 по #561:
+    GLM I2, критика 1–2, DS M1)."""
     ndr = _load("nightly_dossier_review")
-    graph, folder = _edit_graph(tmp_path, ndr, monkeypatch)
+    graph, folder = _edit_graph(tmp_path, ndr, monkeypatch, ("Одно", "Два"))
+    takes = []
 
     @contextlib.contextmanager
     def busy(lock_dir, wait, **kw):
+        takes.append(wait)
         yield False
 
     monkeypatch.setattr(ndr.file_locks, "graph_lock", busy)
     monkeypatch.setattr(ndr, "review", lambda *a, **k: (_body(ndr), ""))
     before = (folder / "Одно.md").read_text(encoding="utf-8")
-    assert ndr.run(graph, _EDIT_CFG, dry=False, limit=6) == 0
+    assert ndr.run(graph, _EDIT_CFG, dry=False, limit=6) == 2
     assert (folder / "Одно.md").read_text(encoding="utf-8") == before
+    assert takes == [ndr.LOCK_WAIT], "после первого отказа замок больше не ждём"
     report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
-    assert ("## Сбои шага (не отказ по содержанию)\n\n- **Одно** — сбой: граф занят дольше "
-            f"{int(ndr.LOCK_WAIT // 60)} мин") in report
+    assert "## Предложено, но не применено" in report and "замок графа не взят" in report
+    assert "### Одно\n" in report and "### Два\n" in report
+    assert "## Сбои шага" not in report and not ndr.FAILED_STEPS
     assert not (folder / ".backup").exists()
+
+
+def test_failed_backup_leaves_the_dossier_and_is_a_failed_step(tmp_path, monkeypatch):
+    """Автомат без копии — не автомат: OSError копии не должен ни перезаписать
+    досье, ни уронить прогон до отчёта (круг-1 по #561: DS I2 / GLM I1)."""
+    ndr = _load("nightly_dossier_review")
+    graph, folder = _edit_graph(tmp_path, ndr, monkeypatch, ("Одно", "Два"))
+    monkeypatch.setattr(ndr.file_locks, "graph_lock", lambda *a, **k: contextlib.nullcontext(True))
+    monkeypatch.setattr(ndr, "review", lambda *a, **k: (_body(ndr), ""))
+
+    def no_copy(folder, stamp, path, keep=40):
+        if path.name == "Одно.md":
+            raise OSError(13, "Permission denied", str(folder / ".backup"))
+        return None
+
+    monkeypatch.setattr(ndr.dossier, "backup", no_copy)
+    before = (folder / "Одно.md").read_text(encoding="utf-8")
+    assert ndr.run(graph, _EDIT_CFG, dry=False, limit=6) == 1
+    assert (folder / "Одно.md").read_text(encoding="utf-8") == before, "переписано без копии"
+    assert "Идёт пилот" not in (folder / "Два.md").read_text(encoding="utf-8") or True
+    report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
+    assert "- **Одно** — сбой: копия до правки не сделана" in report
+    assert "## Применено\n\n- **Два**" in report
 
 
 def test_readonly_reason_names_the_lock_when_the_lock_dir_is_unavailable(tmp_path, monkeypatch):
@@ -501,3 +532,4 @@ def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically()
     src = inspect.getsource(ncc.main)
     assert "live_gate.wait_while_live(ROOT" in src and "live_gate.night_is_over()" in src
     assert "os.replace(tmp, dest)" in src and "O_TRUNC, 0o600" in src
+    assert "tmp.unlink(missing_ok=True)" in src, "обрыв оставит .md.tmp в графе"

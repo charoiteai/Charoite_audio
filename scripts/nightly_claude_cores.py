@@ -298,12 +298,15 @@ def main() -> None:
     # во временный файл и переименованием: O_TRUNC при смерти процесса оставлял
     # обрезанный отчёт, а утренний бриф брал его за свежий (аудит 13.09, GLM M3)
     tmp = dest.with_suffix(".md.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(f"---\ntype: служебное\nдата: {day}\nмодель: {model}\n---\n"
-                f"# Ночная ревизия ядер ({model})\n\n{out}\n")
-    os.replace(tmp, dest)
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(f"---\ntype: служебное\nдата: {day}\nмодель: {model}\n---\n"
+                    f"# Ночная ревизия ядер ({model})\n\n{out}\n")
+        os.replace(tmp, dest)
+    finally:
+        tmp.unlink(missing_ok=True)   # обрыв между open и replace не оставит .md.tmp в графе (DS M3 по #561)
     print(f"отчёт: {dest.name} ({len(out)} зн., ядер в ревизии {len(chosen)} из {len(fresh)})")
     # Чистка карты — по всем ядрам графа, не только свежим: несвежее, но
     # живое ядро память о показе не теряет (круг-2 по PR #380, Codex).

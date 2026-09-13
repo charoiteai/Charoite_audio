@@ -48,7 +48,7 @@ from config_loader import load_user_or_example  # noqa: E402
 
 FRESH_DAYS = 3          # смотрим досье, собранные за последние сутки-трое
 MAX_SRC_CHARS = 45_000  # потолок на один запрос к Opus
-BACKUP_KEEP = 20
+BACKUP_KEEP = 40      # каталог .backup/ общий с пересборкой: два штампа за ночь (GLM M3 по #561)
 KEEP_REPORTS = 14       # служебных отчётов в корне графа
 DEFAULT_LIMIT = 6       # досье за прогон: облако не бесплатное по времени
 SECTIONS = ("## Сейчас", "## Как пришли", "## Решено", "## Открыто", "## Кто в теме")
@@ -406,6 +406,13 @@ def cli_back() -> bool:
 CLI_DOWN = [False]
 
 
+def _proposed(theme: str, fixed: str) -> str:
+    """Правка в отчёт: заголовки досье на уровень ниже, чтобы «## Сейчас» не
+    спорил с разделами самого отчёта."""
+    body = fixed.replace(chr(10) + "## ", chr(10) + "#### ").replace("## ", "#### ", 1)
+    return f"### {theme}\n{body}\n"
+
+
 def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
                  dry: bool, limit: int, may_edit: bool,
                  lock_dir: pathlib.Path | None = None,
@@ -449,9 +456,7 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
             continue
 
         if not may_edit:
-            # заголовки досье опускаем на уровень ниже, чтобы «## Сейчас» не
-            # спорил с разделами самого отчёта
-            notes.append(f"### {theme}\n{fixed.replace(chr(10) + '## ', chr(10) + '#### ').replace('## ', '#### ', 1)}\n")
+            notes.append(_proposed(theme, fixed))
             print(f"  ○ {theme}: правка готова, но запись выключена (cloud_edit_graph)")
             done += 1
             continue
@@ -465,22 +470,40 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
                 + "## Правки автора\n\n" + (manual or "—") + "\n")
 
         # замок на одну запись; за время облачного вызова файл мог смениться —
-        # перечитываем и сверяем с `old`, чужие правки не затираем (аудит 13.09, GLM I2)
-        with file_locks.graph_lock(lock_dir, LOCK_WAIT) as taken:
-            if not taken:
-                failed.append(f"- **{theme}** — сбой: граф занят дольше {int(LOCK_WAIT // 60)} мин — правка не записана")
-                continue
-            try:
-                if path.read_text(encoding="utf-8") != old:
-                    rejected.append(f"- **{theme}** — досье сменилось под рукой за время ревизии — не трогаем")
+        # перечитываем и сверяем с `old`, чужие правки не затираем (аудит 13.09, GLM I2).
+        # Ожидание — не дольше остатка ночи: 10 мин на каждую из шести тем
+        # вылезали за потолок на час (DS I1 по #561)
+        cap = tier3.night_wait_cap(default=LOCK_WAIT)
+        lock_wait = min(LOCK_WAIT, cap if cap is not None else LOCK_WAIT)
+        with file_locks.graph_lock(lock_dir, lock_wait) as taken:
+            if taken:
+                try:
+                    if path.read_text(encoding="utf-8") != old:
+                        rejected.append(f"- **{theme}** — досье сменилось под рукой за время ревизии — не трогаем")
+                        continue
+                except (OSError, UnicodeDecodeError) as e:
+                    failed.append(f"- **{theme}** — сбой: досье не перечитано перед записью ({e})")
                     continue
-            except (OSError, UnicodeDecodeError) as e:
-                failed.append(f"- **{theme}** — сбой: досье не перечитано перед записью ({e})")
-                continue
-            _backup(folder, stamp, path)
-            tmp = path.with_suffix(".md.tmp")
-            tmp.write_text(text, encoding="utf-8")
-            tmp.replace(path)
+                try:
+                    _backup(folder, stamp, path)
+                except OSError as e:
+                    # без копии не перезаписываем — правило tier3 (DS I2 / GLM I1 по #561)
+                    failed.append(f"- **{theme}** — сбой: копия до правки не сделана ({e}) — без копии не перезаписываю")
+                    continue
+                safe_write.write_text(path, text)   # с переносом прав и меток файла (DS M2 по #561)
+        if not taken:
+            # Замок не взят: граф занят соседом (разбор ночной встречи, ревизия до
+            # 30 мин) или недоступен (нет каталога, ФС без flock). Это не сбой ночи:
+            # остаток прогона идёт отчётом-рекомендацией, оплаченный ответ облака
+            # не выбрасываем (GLM I2 и критика 1–2, DS M1 по #561)
+            may_edit = False
+            why_readonly = (f"Запись не состоялась: замок графа не взят (граф занят дольше "
+                            f"{int(lock_wait // 60)} мин или замок недоступен); тумблер "
+                            "cloud_edit_graph включён — правки ниже можно перенести руками.")
+            notes.append(_proposed(theme, fixed))
+            print(f"  ○ {theme}: замок графа не взят — правка в отчёт, дальше только отчёт")
+            done += 1
+            continue
         done += 1
         stats = revision_stats(old_body, fixed)
         applied.append(f"- **{theme}** — {stats}; копия до правки — "
