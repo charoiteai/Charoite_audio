@@ -81,3 +81,15 @@ def test_the_tree_of_this_repository_is_clean():
     hits = guard.scan_files(guard.build_pattern(markers), guard.tracked_files())
     assert not hits, ("приватные маркеры в опубликованном дереве: "
                       + ", ".join(hits))
+
+
+def test_personal_path_pattern_catches_a_capitalised_user_name():
+    """Путь с именем пользователя с заглавной — самый частый формат утечки — не
+    ловился: шаблон требовал строчную первую букву (GLM M6)."""
+    import re
+    pat = re.compile(guard.PUBLIC_PATTERNS["личный путь"])
+    # образцы собраны из кусков, чтобы страж не ловил сам тест  # приватный-образец
+    assert pat.search("cd /Users/" + "Vasilii" + "/Project/charoite")
+    assert pat.search("файл /Users/" + "Василий" + "/Desktop/x.md")
+    assert pat.search("/Users/" + "vasilii" + "/x/")
+    assert not pat.search("/Users/user/x/") and not pat.search("/Users/ПУТЬ/x/")

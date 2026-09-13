@@ -92,6 +92,8 @@ def is_local(cfg: dict) -> bool:
 # которая его и занимает (так граф 12.08 трижды ронял Ollama под соседней
 # пересборкой: «LLM не отвечает на пробу — перезапускаю»).
 BUSY = "busy"
+MISSING = "missing"   # сервер ответил 404: модели из конфига на нём нет — перезапуск не лечит (DS I2)
+SLOW = "slow"         # сервер на связи, генерация не ответила за таймаут: очередь или зависание (GLM I2)
 BUSY_STATUSES = (429, 502, 503)
 
 
@@ -102,8 +104,12 @@ def probe(cfg: dict, timeout: float = PROBE_TIMEOUT) -> bool | str:
     сервера список моделей отдаётся мгновенно, и проба по нему говорит
     «здорова» ровно в том случае, который мы ловим.
 
-    True — ответила; False — не ответила (сеть, таймаут, HTTP-ошибка);
-    BUSY — сервер жив, но модель занята (503/429): не чинить, а подождать.
+    True — ответила; False — не ответила (сеть, HTTP-ошибка);
+    BUSY — сервер жив, но модель занята (503/429): не чинить, а подождать;
+    MISSING — сервер ответил 404: модели с таким именем нет, перезапуск не
+    поможет (аудит 13.09, DS I2); SLOW — соединение есть, а ответа за таймаут
+    нет: у Ollama так выглядит и очередь за длинной генерацией, и зависание —
+    решать перезапуском сразу нельзя (аудит 13.09, GLM I2).
     """
     try:
         if privacy.cloud_engine_active(cfg):
@@ -151,10 +157,14 @@ def probe(cfg: dict, timeout: float = PROBE_TIMEOUT) -> bool | str:
                 },
                 timeout=timeout,
             )
+    except requests.ReadTimeout:
+        return SLOW
     except (requests.RequestException, RuntimeError, KeyError):
         return False
     if r.status_code in BUSY_STATUSES:
         return BUSY
+    if r.status_code == 404:
+        return MISSING
     return r.status_code == 200
 
 
@@ -292,6 +302,13 @@ def _restart_mlx(cfg: dict, log: Callable[[str], None]) -> bool:
     return True
 
 
+def _missing_msg(cfg: dict) -> str:
+    llm_cfg = cfg.get("llm") or {}
+    key = "mlx_model" if privacy.llm_engine(cfg) == "mlx-server" else "model"
+    return (f"сервер отвечает, но модели «{llm_cfg.get(key) or '?'}» на нём нет (HTTP 404) — "
+            f"перезапуск не поможет: установите модель или поправьте llm.{key}")
+
+
 def ensure_alive(cfg: dict, log: Callable[[str], None] = print,
                  wait: float = RESTART_WAIT) -> bool:
     """Убедиться, что модель отвечает; вставшую локальную — перезапустить.
@@ -307,6 +324,12 @@ def ensure_alive(cfg: dict, log: Callable[[str], None] = print,
     state = probe(cfg)
     if state is True:
         return True
+    if state == MISSING:
+        if privacy.cloud_engine_active(cfg):
+            log("шлюз ответил 404 — проверьте llm.cloud_model; иду за ним самим запросом")
+            return True
+        log(_missing_msg(cfg))
+        return False
     if state == BUSY and privacy.cloud_engine_active(cfg):
         # 429/503 шлюза — это лимит или очередь на чужой стороне, а не
         # занятая своя модель: ждать её освобождения 180 с бессмысленно,
@@ -322,6 +345,9 @@ def ensure_alive(cfg: dict, log: Callable[[str], None] = print,
             if state is True:
                 log("LLM освободилась")
                 return True
+            if state == MISSING:
+                log(_missing_msg(cfg))
+                return False
             if state is False:
                 break          # была занята, а теперь молчит — дальше обычный путь
         else:
@@ -339,6 +365,29 @@ def ensure_alive(cfg: dict, log: Callable[[str], None] = print,
     if not is_local(cfg):
         log("LLM не отвечает, но адрес не локальный — перезапуск не наше дело")
         return False
+    if state == SLOW:
+        # Сервер на связи, а генерация не ответила за PROBE_TIMEOUT: у Ollama
+        # очередь за длинной генерацией (разбор графа, минутки) выглядит ровно
+        # как зависание, и перезапуск по одной пробе убивал ту самую работу,
+        # что занимала сервер (инцидент 12.08; аудит 13.09, GLM I2). Даём
+        # `wait` секунд: ответила — перезапуск не нужен, молчит и дальше —
+        # зависание подтверждено (03.08: HTTP жив, llama-server на нуле).
+        log(f"LLM не ответила на пробу за {int(PROBE_TIMEOUT)} с, но сервер на связи — "
+            f"жду до {int(wait)} с, не перезапускаю")
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            time.sleep(RESTART_POLL)
+            state = probe(cfg, timeout=min(60, wait))
+            if state is True or state == BUSY:
+                log("LLM ответила — перезапуск не нужен")
+                return True
+            if state == MISSING:
+                log(_missing_msg(cfg))
+                return False
+            if state is False:
+                break          # теперь и сервер молчит — перезапуск
+        else:
+            log(f"LLM молчит {int(wait)} с при живом сервере — перезапускаю")
     mlx = privacy.llm_engine(cfg) == "mlx-server"
     log("LLM не отвечает на пробу — перезапускаю "
         + ("mlx_lm.server" if mlx else "Ollama"))
@@ -348,8 +397,12 @@ def ensure_alive(cfg: dict, log: Callable[[str], None] = print,
     deadline = time.monotonic() + wait
     while time.monotonic() < deadline:
         time.sleep(RESTART_POLL)
-        if probe(cfg, timeout=min(60, wait)):   # True или BUSY — сервер поднялся
+        state = probe(cfg, timeout=min(60, wait))
+        if state is True or state == BUSY:      # сервер поднялся
             log("LLM ожила после перезапуска")
             return True
+        if state == MISSING:
+            log(_missing_msg(cfg))
+            return False
     log(f"LLM не ответила за {int(wait)} с после перезапуска")
     return False
