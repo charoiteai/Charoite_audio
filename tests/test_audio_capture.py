@@ -201,6 +201,115 @@ class _HangingCapture:
         pass
 
 
+class _QueueCapture:
+    """Канал без устройства: очередь блоков и счётчик stop(); hang_seconds —
+    stop() мёртвого стрима, который не возвращается."""
+
+    def __init__(self, label, hang_seconds=0.0):
+        self.label = label
+        self.q = queue.Queue()
+        self.hang = hang_seconds
+        self.stopped = 0
+
+    def stop(self):
+        self.stopped += 1
+        if self.hang:
+            time.sleep(self.hang)
+
+    def restart(self):
+        pass
+
+
+def test_stop_не_виснет_на_канале_из_hung_и_финализирует_запись():
+    """Канал, чей перезапуск завис, уже держит застрявший поток; второй stop()
+    того же стрима вешал stop() хаба навсегда — до финализации записи дело не
+    доходило, демон не завершался (аудит 13.09, DS I1)."""
+    hub = _hub()
+    hub.RESTART_TIMEOUT = 0.3
+    dead = _QueueCapture("blackhole", hang_seconds=5.0)
+    live = _QueueCapture("mic")
+    hub.captures = [dead, live]
+    hub._hung = {"blackhole"}
+    hub.on_status = lambda _msg: None
+    done: list[str] = []
+    hub._finalize_recordings = lambda: done.append("finalized")
+
+    started = time.time()
+    hub.stop()
+    spent = time.time() - started
+
+    assert spent < 2, f"stop() хаба не вернулся за {spent:.1f}с"
+    assert done == ["finalized"]
+    assert dead.stopped == 0, "мёртвый канал не трогаем — его stop() не вернётся"
+    assert live.stopped == 1
+
+
+def test_stop_не_виснет_и_на_живом_канале_со_зависшим_стримом():
+    """Канал ещё не в _hung, но стрим уже мёртв: stop() под тем же потолком,
+    что и перезапуск, — финализация идёт, статус говорит о брошенном стриме."""
+    hub = _hub()
+    hub.RESTART_TIMEOUT = 0.3
+    hub.captures = [_QueueCapture("mic", hang_seconds=5.0)]
+    said: list[str] = []
+    hub.on_status = said.append
+    done: list[str] = []
+    hub._finalize_recordings = lambda: done.append("finalized")
+    started = time.time()
+    hub.stop()
+    assert time.time() - started < 2 and done == ["finalized"]
+    assert any("не закрылся" in m for m in said)
+
+
+def test_stop_дренирует_очередь_в_запись_до_финализации(tmp_path):
+    """_pump выходит по _running, не читая остаток c.q; stop() добирает его в
+    файл записи ДО закрытия sink — иначе хвост встречи терялся, а запись в
+    закрытый файл кричала ложное «ЗАПИСЬ НА ДИСК ОСТАНОВИЛАСЬ» (аудит 13.09,
+    DS I2/M3, GLM M3/M4)."""
+    hub = _hub()
+    cap = _QueueCapture("mic")
+    hub.captures = [cap]
+    said: list[str] = []
+    hub.on_status = said.append
+    pcm = tmp_path / "s_mic.pcm"
+    hub._sinks = {"mic": pcm.open("wb")}
+    hub._bufs["mic"] = np.zeros(0, dtype=np.float32)   # STT-буфер канала, как после start()
+    block = _tone(4000)                      # 0,25 с при 16 кГц
+    for _ in range(5):
+        cap.q.put(block)
+    seen: list[int] = []
+    real_finalize = hub._finalize_recordings
+
+    def finalize():
+        hub._sinks["mic"].flush()
+        seen.append(pcm.stat().st_size)
+        real_finalize()
+
+    hub._finalize_recordings = finalize
+    hub.stop()
+    assert seen == [5 * 4000 * 2], "весь хвост очереди — в файле до закрытия"
+    assert cap.q.empty()
+    assert not any("ОСТАНОВИЛАСЬ" in m for m in said)
+
+
+def test_частичный_отказ_open_sinks_не_оставляет_сирот(tmp_path):
+    """Второй канал не открылся (коллизия штампа) — заготовка первого закрыта и
+    убрана, а не висит .pcm без кадров до ретеншна (аудит 13.09, DS M4)."""
+    hub = _hub()
+    hub.record_dir = tmp_path
+    hub.record_keep_days = 30
+    hub.stamp = "2026-07-15_1400"
+    hub.protect_stamps = frozenset()
+    hub.captures = [_QueueCapture("mic"), _QueueCapture("blackhole")]
+    busy = a.meeting_stamp.recording_path(tmp_path, hub.stamp, "blackhole", "pcm")
+    busy.write_bytes(b"x")                   # чужой файл — "xb" откажет
+    said: list[str] = []
+    hub.on_status = said.append
+    hub._open_sinks()
+    assert hub._sinks == {}
+    assert not a.meeting_stamp.recording_path(tmp_path, hub.stamp, "mic", "pcm").exists()
+    assert busy.exists() and any("ВЫКЛЮЧЕНА" in m for m in said)
+
+
 def test_зависший_перезапуск_не_останавливает_конвейер():
     """06.08: четыре записи подряд оборвались на 31-й секунде.
 

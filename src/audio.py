@@ -438,6 +438,7 @@ class AudioHub:
         self.chunk_no: dict[str, int] = {}   # канал → номер последнего физического чанка
         self._lock = threading.Lock()
         self._running = False
+        self._pump_thread: threading.Thread | None = None
 
         mode = a["device"]
         # Метка канала осталась «blackhole» намеренно: по ней названы файлы
@@ -629,6 +630,9 @@ class AudioHub:
     # Пять секунд: закрытие живого стрима укладывается в доли секунды, а
     # мёртвый не возвращается никогда.
     RESTART_TIMEOUT = 5.0
+    #: сколько stop() ждёт выхода _pump до дренажа очередей: штатно он выходит за
+    #: такт (0,15 с), дольше — только застряв в _restart_guarded (≤ RESTART_TIMEOUT)
+    PUMP_JOIN_TIMEOUT = 3.0
 
     def start(self):
         self._running = True
@@ -684,17 +688,61 @@ class AudioHub:
         now = time.time()
         for c in self.captures:
             self._last_frame[c.label] = now
-        threading.Thread(target=self._pump, daemon=True).start()
+        self._pump_thread = threading.Thread(target=self._pump, daemon=True, name="audio-pump")
+        self._pump_thread.start()
 
     def stop(self):
         self._running = False
         self._say_last_drops()
-        for c in self.captures:
-            try:
-                c.stop()
-            except Exception:  # noqa: BLE001 — мёртвый PortAudio-стрим виснет на close,
-                pass           # не даём ему сорвать финализацию записи и стоп демона
+        # Каналы останавливаем тем же приёмом, что _restart_guarded: stop()
+        # мёртвого PortAudio-стрима не возвращается, и try/except от этого не
+        # спасает — зависание не исключение. Канал из _hung уже держит
+        # застрявший поток перезапуска, второй такой вызов вешал бы stop() хаба
+        # навсегда: до _finalize_recordings дело не доходило, демон не завершался
+        # и приложение добивало его сторожем (аудит 13.09, DS I1). Все каналы
+        # разом, один потолок на всех: грейс приложения до terminate — секунды.
+        workers = [threading.Thread(target=self._quiet_stop, args=(c,), daemon=True,
+                                    name=f"stop-{c.label}")
+                   for c in self.captures if c.label not in self._hung]
+        for w in workers:
+            w.start()
+        deadline = time.monotonic() + self.RESTART_TIMEOUT
+        for w in workers:
+            w.join(max(0.0, deadline - time.monotonic()))
+            if w.is_alive():
+                self._say(f"🎙 {w.name}: стрим не закрылся за {self.RESTART_TIMEOUT:.0f}с — "
+                          "бросаю, запись финализирую без него")
+        # Хвост очередей: _pump выходит по _running, не дренируя c.q. В норме там
+        # ≤1 блок (0,25 с), но пока _pump стоит в _restart_guarded, копится до
+        # RESTART_TIMEOUT на канал. Сначала дожидаемся самого _pump (он же читает
+        # очереди), потом добираем остаток в sink и STT-буфер и только затем
+        # закрываем файлы: иначе _pump писал в уже закрытый sink и кричал
+        # «ЗАПИСЬ НА ДИСК ОСТАНОВИЛАСЬ» о звуке, который записан (аудит 13.09,
+        # DS I2/M3, GLM M3/M4).
+        pump = getattr(self, "_pump_thread", None)
+        if pump is not None and pump is not threading.current_thread():
+            pump.join(self.PUMP_JOIN_TIMEOUT)
+        self._drain_queues()
+        self._say_last_drops()
         self._finalize_recordings()
+
+    @staticmethod
+    def _quiet_stop(c) -> None:
+        try:
+            c.stop()
+        except Exception:  # noqa: BLE001 — исключение из мёртвого стрима не новость
+            pass
+
+    def _drain_queues(self) -> None:
+        """Остаток очередей захвата после выхода _pump — тем же путём, что и
+        живой блок: файл записи, STT-буфер, триггер."""
+        for c in self.captures:
+            while True:
+                try:
+                    part = c.q.get_nowait()
+                except queue.Empty:
+                    break
+                self._consume(c, part)
 
     def _say_last_drops(self) -> None:
         """Досказать потери, не дожившие до очередного отчёта.
@@ -748,6 +796,15 @@ class AudioHub:
                 # а не молчаливым обнулением чужой записи.
                 self._sinks[c.label] = path.open("xb")
         except Exception as e:  # noqa: BLE001 — захват важнее записи, но не молча
+            # Уже открытые файлы соседних каналов — закрыть и убрать: кадров в них
+            # нет, а без этого .pcm-заготовка висела бы до ретеншна, не попадая ни
+            # в finalized, ни в уборку (аудит 13.09, DS M4).
+            for f in self._sinks.values():
+                try:
+                    f.close()
+                    pathlib.Path(f.name).unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001 — уборка сирот не важнее статуса
+                    pass
             self._sinks = {}
             self._say(f"ЗАПИСЬ НА ДИСК ВЫКЛЮЧЕНА: {e} — после сбоя встречу будет не восстановить")
 
@@ -866,7 +923,8 @@ class AudioHub:
     def _finalize_recordings(self):
         """.pcm → .wav при штатном стопе; при крэше остаётся .pcm — его дотранскрибирует
         transcribe_file.py. Почти пустые записи (нет встречи) убираем.
-        Готовые .wav — в self.finalized[label]: демон отдаёт их диаризации."""
+        Готовые .wav — в self.finalized[label] (для тестов и вызывающих; демон их
+        не читает — пересборку .wav подбирает rebuild_transcript.wait_recording)."""
         self.finalized: dict[str, pathlib.Path] = {}
         # под локом: _pump может ещё жить между _running=False и выходом
         # потока и делать pop умершего sink — копия словаря на смене размера
@@ -909,52 +967,7 @@ class AudioHub:
                 except queue.Empty:
                     continue
                 got = True
-                # под тем же локом, что и снапшот: новый ключ в словаре во
-                # время его копирования — та же гонка, что и pop у _sinks
-                with self._lock:
-                    self._last_frame[c.label] = time.time()
-                sink = self._sinks.get(c.label)
-                written = sink is not None
-                sink_error = None
-                if sink is not None:
-                    try:
-                        sink.write((np.clip(part, -1, 1) * 32767).astype("<i2").tobytes())
-                        # flush, иначе `written` означает «принято в буфер
-                        # файла»: кончившийся диск всплыл бы только на close(),
-                        # где исключение глотается, — и мы бы уже пообещали
-                        # полную стенограмму (ревью 20.08, круг 4, DeepSeek).
-                        sink.flush()
-                    except Exception as e:  # noqa: BLE001 — диск кончился: живём без записи
-                        # pop — под локом: health_snapshot из STT-потока в это
-                        # же время итерирует _sinks, и смена размера словаря на
-                        # середине итерации роняла бы сам STT RuntimeError'ом
-                        # (ревью 21.08, Gemini + локальная).
-                        with self._lock:
-                            self._sinks.pop(c.label, None)
-                        written = False
-                        sink_error = e
-                dropped = self._append(c.label, part)
-                if sink_error is not None:
-                    # Не ждём переполнения минутного STT-буфера, чтобы сказать
-                    # о смерти страховочной записи. После pop эта ветка для
-                    # канала больше не повторится, то есть статус не спамит.
-                    msg = (f"ЗАПИСЬ НА ДИСК ОСТАНОВИЛАСЬ ({c.label}: {sink_error}) — "
-                           "после сбоя этот звук будет не восстановить")
-                    print(msg, file=sys.stderr, flush=True)
-                    self._say(msg)
-                if dropped:
-                    # Вне лока: статус уходит в UI через колбэк демона, и
-                    # держать на нём аудиопоток нельзя. Факт записи берём
-                    # ОТСЮДА, а не из `_sinks` позже: между этим местом и
-                    # отчётом стоп успевает обнулить словарь, и правдивое
-                    # «не вернуть» превращалось бы в ложное «будет полной»
-                    # (ревью 20.08, круг 3, DeepSeek).
-                    self._note_drop(c.label, dropped, written)
-                if self.on_frame is not None:
-                    try:
-                        self.on_frame(c.label, part)
-                    except Exception:  # noqa: BLE001 — триггер не должен ронять захват
-                        pass
+                self._consume(c, part)
             self._watch_streams()
             if not got:
                 continue
@@ -963,6 +976,56 @@ class AudioHub:
         # отработал. Метод идемпотентен, двойной строки не будет
         # (ревью 20.08, круг 3, DeepSeek).
         self._say_last_drops()
+
+    def _consume(self, c, part) -> None:
+        """Один блок канала: файл записи, STT-буфер, триггер. Общий для _pump и
+        дренажа очередей при stop()."""
+        # под тем же локом, что и снапшот: новый ключ в словаре во
+        # время его копирования — та же гонка, что и pop у _sinks
+        with self._lock:
+            self._last_frame[c.label] = time.time()
+        sink = self._sinks.get(c.label)
+        written = sink is not None
+        sink_error = None
+        if sink is not None:
+            try:
+                sink.write((np.clip(part, -1, 1) * 32767).astype("<i2").tobytes())
+                # flush, иначе `written` означает «принято в буфер
+                # файла»: кончившийся диск всплыл бы только на close(),
+                # где исключение глотается, — и мы бы уже пообещали
+                # полную стенограмму (ревью 20.08, круг 4, DeepSeek).
+                sink.flush()
+            except Exception as e:  # noqa: BLE001 — диск кончился: живём без записи
+                # pop — под локом: health_snapshot из STT-потока в это
+                # же время итерирует _sinks, и смена размера словаря на
+                # середине итерации роняла бы сам STT RuntimeError'ом
+                # (ревью 21.08, Gemini + локальная).
+                with self._lock:
+                    self._sinks.pop(c.label, None)
+                written = False
+                sink_error = e
+        dropped = self._append(c.label, part)
+        if sink_error is not None:
+            # Не ждём переполнения минутного STT-буфера, чтобы сказать
+            # о смерти страховочной записи. После pop эта ветка для
+            # канала больше не повторится, то есть статус не спамит.
+            msg = (f"ЗАПИСЬ НА ДИСК ОСТАНОВИЛАСЬ ({c.label}: {sink_error}) — "
+                   "после сбоя этот звук будет не восстановить")
+            print(msg, file=sys.stderr, flush=True)
+            self._say(msg)
+        if dropped:
+            # Вне лока: статус уходит в UI через колбэк демона, и
+            # держать на нём аудиопоток нельзя. Факт записи берём
+            # ОТСЮДА, а не из `_sinks` позже: между этим местом и
+            # отчётом стоп успевает обнулить словарь, и правдивое
+            # «не вернуть» превращалось бы в ложное «будет полной»
+            # (ревью 20.08, круг 3, DeepSeek).
+            self._note_drop(c.label, dropped, written)
+        if self.on_frame is not None:
+            try:
+                self.on_frame(c.label, part)
+            except Exception:  # noqa: BLE001 — триггер не должен ронять захват
+                pass
 
     def _restart_guarded(self, c):
         """Перезапустить канал, не подставив под удар конвейер.
