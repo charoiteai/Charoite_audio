@@ -4,6 +4,11 @@ from __future__ import annotations
 import numpy as np
 
 
+#: afconvert без потолка вешал импорт на битом или сетевом входе навсегда (аудит
+#: 13.09, DS M4); трёхчасовая запись сводится за минуты. Одна константа на
+#: transcribe_file и diarize — два дословных дубля разъезжались бы (GLM r1 по #555).
+AFCONVERT_TIMEOUT = 900
+
 class STT:
     def __init__(self, cfg: dict):
         import privacy

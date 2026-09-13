@@ -23,7 +23,7 @@ import fact_check  # noqa: E402
 from audio import AudioHub, list_devices  # noqa: E402
 from llm import LLM  # noqa: E402
 from stt import STT  # noqa: E402
-from transcript import NOISE, Transcript  # noqa: E402
+from transcript import Transcript, is_noise  # noqa: E402
 
 from charoite_paths import harden_umask, resolve_root
 
@@ -49,7 +49,7 @@ def stt_loop(hub: AudioHub, stt: STT, tr: Transcript, stop: threading.Event):
         except Exception as e:  # noqa: BLE001
             console.print(f"[red]STT: {e}[/red]")
             continue
-        if not text or text.lower().strip(" .!») ") in NOISE:
+        if not text or is_noise(text):
             continue
         tr.add(text)
         console.print(f"[dim]{dt.datetime.now():%H:%M:%S}[/dim] {text}")

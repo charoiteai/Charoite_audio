@@ -250,9 +250,15 @@ def human_seconds(heard: Heard, *, echo_seconds: float = ECHO_SECONDS) -> float:
     слышно несколько человек»: считая эхо, он сообщал это в звонке, где
     второй «человек» — колонки владельца (ревью 19.08, третий круг).
     """
-    return sum(s for v, s in heard.mic.items()
-               if v not in heard.echoed
-               and heard.bh.get(v, 0.0) <= echo_seconds)
+    return sum(s for v, s in heard.mic.items() if not is_echo(heard, v, echo_seconds))
+
+
+def is_echo(heard: Heard, voice: int, echo_seconds: float = ECHO_SECONDS) -> bool:
+    """Голос из микрофона — эхо собеседника: липко (хоть раз звучал в динамиках
+    дольше порога) или прямо сейчас слышен в системном канале. Один предикат на
+    human_seconds, owner_voices и owner_voice: три копии условия в файле, чья
+    история — рассинхрон живого и офлайна (критика GLM r1 по #555)."""
+    return voice in heard.echoed or heard.bh.get(voice, 0.0) > echo_seconds
 
 
 def owner_voices(heard: Heard, *, min_seconds: float = MIN_MIC_SECONDS,
@@ -288,8 +294,7 @@ def owner_voices(heard: Heard, *, min_seconds: float = MIN_MIC_SECONDS,
     """
     if not heard.call:
         return set()
-    mine = {v: s for v, s in heard.mic.items()
-            if v not in heard.echoed and heard.bh.get(v, 0.0) <= echo_seconds}
+    mine = {v: s for v, s in heard.mic.items() if not is_echo(heard, v, echo_seconds)}
     if not heard.owner_ready:
         if sum(mine.values()) < min_seconds:
             return set()    # речи ещё мало: случайный кашель не подписываем
@@ -311,8 +316,10 @@ def owner_voice(heard: Heard, *, min_seconds: float = MIN_MIC_SECONDS,
     if not heard.call:
         return None                     # очная встреча: различать некого
     # Голоса, слышные и в системном канале, — это эхо собеседников.
-    candidates = {v: s for v, s in heard.mic.items()
-                  if heard.bh.get(v, 0.0) <= echo_seconds}
+    # `echoed` липкое: голос, хоть раз звучавший в динамиках, после затухания
+    # bh снова проходил бы порог и мог выиграть долю — ровно баг 20.08, от
+    # которого защищено owner_voices(); здесь фильтра не было (аудит 13.09, GLM M1).
+    candidates = {v: s for v, s in heard.mic.items() if not is_echo(heard, v, echo_seconds)}
     if not candidates:
         return None
     # Доля считается от речи ЛЮДЕЙ в комнате, а не от всего, что попало в

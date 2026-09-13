@@ -1,6 +1,7 @@
 """Диаризация записи встречи: кто из НЕСКОЛЬКИХ голосов что сказал, с именами.
 
-Запуск: .venv/bin/python src/diarize.py <запись.wav|m4a> [--channel right] [ЧЧММ]
+Запуск: .venv/bin/python src/diarize.py <запись.wav|m4a> [--channel right|--channel=right]
+        [--speakers N] [ЧЧММ]
 
 Конвейер: sherpa-onnx (pyannote-сегментация + eres2net-эмбеддинги, чистый ONNX,
 всё локально) → сегменты Speaker N → GigaAM по сегментам → qwen сопоставляет
@@ -25,7 +26,7 @@ import wave
 import numpy as np
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from stt import STT  # noqa: E402
+from stt import AFCONVERT_TIMEOUT, STT  # noqa: E402
 
 from charoite_paths import resolve_root
 from config_loader import load_user_or_example
@@ -50,11 +51,26 @@ def _scratch_dir() -> pathlib.Path:
     atexit.register(shutil.rmtree, d, True)
     return d
 
+def wav_is_int16(path: pathlib.Path) -> bool:
+    """WAV читается модулем wave и хранит 16-битный PCM. 8-бит читался как int16
+    (мусор или ValueError на нечётной длине), float32 и WAVE_FORMAT_EXTENSIBLE
+    (ffmpeg, Audacity) роняли CLI wave.Error — при том, что transcribe_file тот же
+    файл сводил (GLM r1 I1 по #555). Не разобрали — False: сведёт afconvert."""
+    try:
+        with wave.open(str(path), "rb") as w:
+            return w.getsampwidth() == 2
+    except (wave.Error, EOFError, OSError):
+        return False
+
+
 def load_audio(src: pathlib.Path, channel: str) -> tuple[np.ndarray, int]:
-    if src.suffix.lower() != ".wav":
+    if src.suffix.lower() != ".wav" or not wav_is_int16(src):
+        # без -c 1: каналы нужны раздельно — выбор left/right ниже и есть смысл
+        # этой функции, сведение усреднило бы владельца с собеседниками
         tmp = _scratch_dir() / "d.wav"
         subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@16000",
-                        str(src), str(tmp)], check=True, capture_output=True)
+                        str(src), str(tmp)], check=True, capture_output=True,
+                       timeout=AFCONVERT_TIMEOUT)
         src = tmp
     with wave.open(str(src), "rb") as w:
         sr = w.getframerate()
@@ -90,7 +106,8 @@ def diarize(audio: np.ndarray, sr: int, num_speakers: int = -1, threshold: float
         min_duration_off=0.6,
     )
     sd = sherpa_onnx.OfflineSpeakerDiarization(cfg)
-    assert sd.sample_rate == sr, f"диаризатор ждёт {sd.sample_rate} Гц"
+    if sd.sample_rate != sr:   # assert исчезает под -O — дальше шёл бы тихий мусор (аудит 13.09, GLM M4)
+        raise RuntimeError(f"диаризатор ждёт {sd.sample_rate} Гц, дано {sr}")
     print("диаризация…", flush=True)
     result = sd.process(audio).sort_by_start_time()
     segs = [(s.start, s.end, s.speaker) for s in result]
@@ -123,6 +140,12 @@ def pool_voiceless(segs, min_seg: float = EMB_MIN_SEG_S) -> dict[int, int]:
     сказал «да», мы не знаем, и приписать конкретному человеку значило бы
     подменить автора. Общая метка честнее — она говорит «короткие реплики,
     голос не опознан».
+
+    Текст этих реплик в стенограмму не попадает: и main() ниже, и
+    rebuild_transcript.diarize_channel отдают STT только сегменты от секунды —
+    порог один, иначе секундные обрывки плодили бы «да»/«угу» мимо контекста.
+    Слияние влияет на счёт голосов («Голосов: N») и на метки, не на реплики
+    (аудит 13.09, DS M2 / GLM I2).
 
     Возвращает {кластер: общий канон}; канон в ответе не встречается.
     """
@@ -289,14 +312,50 @@ def name_speakers(cfg: dict, lines: list[tuple[str, float, float, str]]) -> dict
         return {}
 
 
+def parse_args(argv: list[str]) -> tuple[list[str], str, int]:
+    """Позиционные аргументы, канал и число спикеров.
+
+    До 13.09 разбор резал только ключи: значение «right» из `--channel right`
+    оставалось среди позиционных и уезжало в штамп — файл `<дата>_right_спикеры.md`,
+    который к встрече не привязывается; форма `--channel=right` молча давала left
+    (диаризовался канал владельца); `--speakers 2` без «=» игнорировался, мусор в
+    значении падал голым ValueError (аудит 13.09, DS I1/I2/M5, GLM M3). Обе формы
+    ключей равноправны, неверное значение — явный отказ. Неизвестный ключ — тоже:
+    внешних вызывающих с другими ключами в проекте нет (rg по src/scripts/app)."""
+    pos: list[str] = []
+    channel, num_speakers = "left", -1
+    it = iter(argv)
+    for a in it:
+        if a in ("--channel", "--speakers"):
+            key, val = a, next(it, None)
+            if val is None:
+                raise SystemExit(f"{a}: не хватает значения")
+        elif a.startswith("--channel=") or a.startswith("--speakers="):
+            key, val = a.split("=", 1)
+        elif a.startswith("--"):
+            raise SystemExit(f"неизвестный ключ {a}; есть --channel left|right и --speakers N")
+        else:
+            pos.append(a)
+            continue
+        if key == "--channel":
+            if val not in ("left", "right"):
+                raise SystemExit(f"--channel: ожидается left или right, не «{val}»")
+            channel = val
+        else:
+            try:
+                num_speakers = int(val)
+            except ValueError:
+                raise SystemExit(f"--speakers: ожидается число, не «{val}»") from None
+            if num_speakers != -1 and num_speakers < 1:
+                # 0 и отрицательные молча уходили в авто-режим (DS/GLM M2 по #555)
+                raise SystemExit("--speakers: 1 или больше; без ключа или -1 — авто")
+    if not pos:
+        raise SystemExit("укажите файл записи: diarize.py <запись.wav> [--channel right] [--speakers N] [ЧЧММ]")
+    return pos, channel, num_speakers
+
+
 def main():
-    argv = sys.argv[1:]
-    args = [a for a in argv if not a.startswith("--")]
-    channel = "right" if ("--channel" in argv and "right" in argv) else "left"
-    num_speakers = -1
-    for a in argv:
-        if a.startswith("--speakers="):
-            num_speakers = int(a.split("=", 1)[1])
+    args, channel, num_speakers = parse_args(sys.argv[1:])
     src = pathlib.Path(args[0]).expanduser()
     if not src.exists():
         sys.exit(f"нет файла: {src}")

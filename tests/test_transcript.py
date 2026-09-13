@@ -246,6 +246,25 @@ def test_snapshot_update_is_compare_and_swap(tmp_path, monkeypatch):
     assert "Устаревшая правка" not in tr.path.read_text(encoding="utf-8")
 
 
+def test_cut_overlap_indexes_tokens_without_letters_consistently():
+    """Индексы совпадений считаются по нормализованным словам, а рез — по
+    токенам new.split(): токен без букв («—», «...») сдвигал рез, и шовное
+    слово дублировалось (аудит 13.09, DS M1)."""
+    prev = "мы обсудили сроки по задаче план такой"
+    plain = "мы обсудили сроки по задаче план такой продолжим дальше"
+    assert Transcript._cut_overlap(prev, plain) == "продолжим дальше"
+    assert Transcript._cut_overlap(prev, "— " + plain) == "продолжим дальше"
+    assert Transcript._cut_overlap(prev, "мы обсудили сроки ... по задаче план такой продолжим дальше") == "продолжим дальше"
+    # короткий точный хвост — тот же владелец индекса
+    assert Transcript._cut_overlap("а вот на что", "... на что смотреть") == "смотреть"
+    # всё совпало, кроме токена без букв — прироста нет
+    assert Transcript._cut_overlap(prev, plain.rsplit(" ", 2)[0] + " —") == ""
+    # токен из двух нормализованных слов режется целиком: «1.5» уходит в хвост,
+    # а не обрубок «5» (DS r1 M1 по #555 — заявленная граница, не дефект)
+    assert Transcript._cut_overlap("обсудили бюджет на", "бюджет на 1.5 млн рублей") == "1.5 млн рублей"
+    assert Transcript._norm_tokens("а — б.в") == [(0, "а"), (2, "б"), (2, "в")]
+
+
 def test_transcript_boundary_does_not_load_runtime_stack():
     code = """
 import sys

@@ -57,7 +57,7 @@ from diarize import diarize  # noqa: E402 — pyannote-сегментация + 
 from exit_codes import EXIT_NO_GRAPH, EXIT_NO_SPEECH  # noqa: E402
 from meeting_processing import MeetingStatusStore, find_meeting_note  # noqa: E402
 from stt import STT  # noqa: E402
-from transcript import NOISE, Transcript  # noqa: E402
+from transcript import Transcript, is_noise  # noqa: E402
 
 SEG_S, OVERLAP_S = 25.0, 1.0
 WAIT_WAV_S = 45  # демон финализирует .wav параллельно нашему старту
@@ -221,7 +221,7 @@ def stt_segment(stt: STT, audio: np.ndarray, sr: int) -> str:
         if len(piece) < sr * 0.6:
             break
         t = stt.transcribe(piece, sr).strip()
-        if not t or t.lower().strip(" .!») ") in NOISE:
+        if not t or is_noise(t):
             continue
         t = Transcript._cut_overlap(prev, t) if prev else t
         if t:
