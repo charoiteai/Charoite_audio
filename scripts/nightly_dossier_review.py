@@ -22,12 +22,10 @@ from __future__ import annotations
 
 import argparse
 import collections
-import contextlib
 import datetime as dt
 import os
 import pathlib
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -45,6 +43,7 @@ import graphs  # noqa: E402
 import live_gate  # noqa: E402
 import tier3  # noqa: E402
 import privacy  # noqa: E402
+import safe_write  # noqa: E402
 from config_loader import load_user_or_example  # noqa: E402
 
 FRESH_DAYS = 3          # смотрим досье, собранные за последние сутки-трое
@@ -171,13 +170,9 @@ def _cfg() -> dict:
 
 
 def _backup(folder: pathlib.Path, stamp: str, path: pathlib.Path) -> None:
-    """Автомат без бэкапа — не автомат, а рулетка (то же правило, что в tier3)."""
-    bdir = folder / ".backup" / stamp
-    bdir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(path, bdir / path.name)
-    backups = sorted((folder / ".backup").iterdir(), reverse=True)
-    for old in backups[BACKUP_KEEP:]:
-        shutil.rmtree(old, ignore_errors=True)
+    """Автомат без бэкапа — не автомат, а рулетка (то же правило, что в tier3).
+    Реализация общая с пересборкой — dossier.backup (аудит 13.09, GLM C1)."""
+    dossier.backup(folder, stamp, path, keep=BACKUP_KEEP)
 
 
 PROMPT = """Ниже досье по теме «{theme}» и его источники из графа рабочих встреч.
@@ -319,6 +314,14 @@ def review(theme: str, path: pathlib.Path, graph: pathlib.Path,
     return out, ""
 
 
+def _mtime(p: pathlib.Path) -> float:
+    """mtime или 0 — файл, исчезнувший между glob и stat, не роняет прогон (GLM M4)."""
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
     folder = graph / dossier.DOSSIER_DIR
     if not folder.is_dir():
@@ -336,7 +339,7 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
     # сводки облаку сверять не с чем, и трогать их оно не должно.
     fresh = [p for p in sorted(folder.glob("*.md"))
              if not p.name.startswith("_")
-             and dt.datetime.fromtimestamp(p.stat().st_mtime) > cutoff
+             and dt.datetime.fromtimestamp(_mtime(p)) > cutoff
              and cl.get(p.stem)]
     if not fresh:
         print("  свежих автособранных досье нет — пропуск")
@@ -346,32 +349,27 @@ def run(graph: pathlib.Path, cfg: dict, dry: bool, limit: int) -> int:
     # клали бэкап в один каталог, и копия до первого прогона терялась.
     stamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
 
-    with contextlib.ExitStack() as stack:
-        if may_edit:
-            # Замок графа общий с разбором встречи (cloud_review): без него
-            # правки этой ревизии попадали в чужую сверку и уезжали в
-            # карантин, а прогон отчитывался «✓ применены» (аудит облака
-            # 26.08, GLM I3). Ждём недолго: ночь под потолком; не дождались —
-            # работаем как при выключенной записи: отчёт-рекомендации.
-            # secure_dir — как у соседа: каталог данных может ещё не
-            # существовать, а без него os.open даёт ENOENT, и замок молча
-            # «не берётся» (поймано тестом ревизии досье).
-            try:
-                lock_dir = charoite_paths.secure_dir(
-                    charoite_paths.graph_backups(
-                        graph, "cloud_backup", root=ROOT).parent)
-                taken = stack.enter_context(
-                    file_locks.graph_lock(lock_dir, LOCK_WAIT))
-            except OSError as e:
-                print(f"  замок графа не взять ({e}) — правки не пишу")
-                taken = False
-            if not taken:
-                print(f"  граф занят разбором встречи дольше "
-                      f"{int(LOCK_WAIT // 60)} мин — правки не пишу, "
-                      f"только отчёт")
-                may_edit = False
-        return _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg,
-                            dry=dry, limit=limit, may_edit=may_edit)
+    # Замок графа общий с разбором встречи (cloud_review): без него правки
+    # этой ревизии попадали в чужую сверку и уезжали в карантин (аудит облака
+    # 26.08, GLM I3). С 13.09 замок берётся НА ОДНУ ЗАПИСЬ внутри цикла, как у
+    # пересборки: прогон держал его под ожиданием живой встречи и облачными
+    # вызовами до часа, и разбор только что закончившейся встречи не дожидался
+    # замка — уходил «на чтение» (аудит 13.09, GLM I2). secure_dir — как у
+    # соседа: каталог данных может ещё не существовать (ENOENT → замок молча
+    # «не берётся»).
+    lock_dir = None
+    why_readonly = "Запись выключена: `sufler.cloud_edit_graph: false`. Включите тумблер, если хотите, чтобы облако правило граф само."
+    if may_edit:
+        try:
+            lock_dir = charoite_paths.secure_dir(
+                charoite_paths.graph_backups(graph, "cloud_backup", root=ROOT).parent)
+        except OSError as e:
+            print(f"  замок графа не взять ({e}) — правки не пишу, только отчёт")
+            may_edit = False
+            why_readonly = f"Запись не состоялась: замок графа не взять ({e}); тумблер cloud_edit_graph включён."
+    return _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg,
+                        dry=dry, limit=limit, may_edit=may_edit, lock_dir=lock_dir,
+                        why_readonly=why_readonly)
 
 
 # Сбои шага (не отказ по содержанию) за прогон: main() отдаёт по ним код 2 —
@@ -409,7 +407,12 @@ CLI_DOWN = [False]
 
 
 def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
-                 dry: bool, limit: int, may_edit: bool) -> int:
+                 dry: bool, limit: int, may_edit: bool,
+                 lock_dir: pathlib.Path | None = None,
+                 why_readonly: str = "Запись выключена: `sufler.cloud_edit_graph: false`.") -> int:
+    if may_edit and not dry and lock_dir is None:
+        # запись без замка графа — тот самый путь в карантин (аудит 26.08); ошибка вызова, не режим
+        raise ValueError("_review_loop: запись включена, а каталог замка графа не передан")
     done, notes, applied, rejected, failed = 0, [], [], [], []
     for path in fresh[:limit]:
         theme = path.stem
@@ -432,7 +435,13 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         if CLI_DOWN[0] and not cli_back():
             print("  ⏹ CLI облака не запускается — остальные досье завтра")
             break
-        old = path.read_text(encoding="utf-8")     # одно чтение на проверку и запись
+        try:
+            old = path.read_text(encoding="utf-8")     # одно чтение на проверку и запись
+        except (OSError, UnicodeDecodeError) as e:
+            # файл исчез между glob и чтением (владелец удалил, iCloud выгрузил)
+            # или не в UTF-8 — не ронять ночь целиком (аудит 13.09, GLM M4)
+            failed.append(f"- **{theme}** — сбой: досье не прочитано ({e})")
+            continue
         fixed, why = review(theme, path, graph, files, members, model, cfg, current=old)
         if not fixed:
             why = " ".join(why.split())
@@ -455,10 +464,23 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
         text = (head + fixed + "\n\n## Источники\n" + (sources + "\n\n" if sources else "\n")
                 + "## Правки автора\n\n" + (manual or "—") + "\n")
 
-        _backup(folder, stamp, path)
-        tmp = path.with_suffix(".md.tmp")
-        tmp.write_text(text, encoding="utf-8")
-        tmp.replace(path)
+        # замок на одну запись; за время облачного вызова файл мог смениться —
+        # перечитываем и сверяем с `old`, чужие правки не затираем (аудит 13.09, GLM I2)
+        with file_locks.graph_lock(lock_dir, LOCK_WAIT) as taken:
+            if not taken:
+                failed.append(f"- **{theme}** — сбой: граф занят дольше {int(LOCK_WAIT // 60)} мин — правка не записана")
+                continue
+            try:
+                if path.read_text(encoding="utf-8") != old:
+                    rejected.append(f"- **{theme}** — досье сменилось под рукой за время ревизии — не трогаем")
+                    continue
+            except (OSError, UnicodeDecodeError) as e:
+                failed.append(f"- **{theme}** — сбой: досье не перечитано перед записью ({e})")
+                continue
+            _backup(folder, stamp, path)
+            tmp = path.with_suffix(".md.tmp")
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(path)
         done += 1
         stats = revision_stats(old_body, fixed)
         applied.append(f"- **{theme}** — {stats}; копия до правки — "
@@ -479,11 +501,11 @@ def _review_loop(graph, folder, cl, files, fresh, stamp, model, cfg, *,
             report += "## Сбои шага (не отказ по содержанию)\n\n" + "\n".join(failed) + "\n\n"
             FAILED_STEPS.extend(failed)
         if notes:
-            report += ("## Предложено, но не применено\n\n"
-                       "Запись выключена: `sufler.cloud_edit_graph: false`. Включите "
-                       "тумблер, если хотите, чтобы облако правило граф само.\n\n"
+            # причина — фактическая: тумблер или замок, а не всегда «тумблер»
+            # (аудит 13.09, GLM M5)
+            report += ("## Предложено, но не применено\n\n" + why_readonly + "\n\n"
                        + "\n".join(notes))
-        dest.write_text(report.rstrip() + "\n", encoding="utf-8")
+        safe_write.write_text(dest, report.rstrip() + "\n")   # обрыв не оставит обрезанный отчёт (GLM M3)
         print(f"  отчёт: {dest.name}")
         # ретеншн ПОСЛЕ записи: отчёты копились бесконечно (аудит GLM 17.08)
         for old in sorted(graph.glob("Служебное_ревизия_досье_*.md"))[:-KEEP_REPORTS]:

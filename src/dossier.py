@@ -34,6 +34,7 @@ import os
 import time
 import pathlib
 import re
+import shutil
 import unicodedata
 from collections import defaultdict
 from datetime import date
@@ -391,6 +392,27 @@ def render(theme: str, body: str, members: list[str], files: dict[str, dict],
 
 
 KEEP_RE = re.compile(r"## Правки автора\n(.*?)$", re.S)
+
+
+def backup(folder: pathlib.Path, stamp: str, path: pathlib.Path, keep: int = 20) -> pathlib.Path | None:
+    """Копия досье перед перезаписью — в `Досье/.backup/<штамп>/`, старые
+    каталоги сверх `keep` убираются. Один бэкап на пересборку и ревизию:
+    автомат без копии — не автомат, а рулетка (правило tier3); пересборка
+    до 13.09 копии не делала и стирала правки облачной ревизии (аудит 13.09,
+    GLM C1). Нет файла — копировать нечего."""
+    if not path.exists():
+        return None
+    bdir = folder / ".backup" / stamp
+    bdir.mkdir(parents=True, exist_ok=True)
+    dst = bdir / path.name
+    shutil.copy2(path, dst)
+    try:
+        backups = sorted((p for p in (folder / ".backup").iterdir() if p.is_dir()), reverse=True)
+    except OSError:
+        return dst
+    for old in backups[keep:]:
+        shutil.rmtree(old, ignore_errors=True)
+    return dst
 
 
 def preserve_manual(old_text: str) -> str | None:

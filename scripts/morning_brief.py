@@ -28,6 +28,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 import graphs  # noqa: E402
 import meeting_archive  # noqa: E402
 import redirects  # noqa: E402
+import safe_write  # noqa: E402
 
 
 def sect(text: str, title: str) -> list[str]:
@@ -110,7 +111,10 @@ def build_brief(graph: pathlib.Path) -> str | None:
         summary = mdir / "Саммари.md"
         gist = ""
         if summary.exists():
-            text = summary.read_text(encoding="utf-8")
+            try:
+                text = summary.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                text = ""            # битое или исчезнувшее саммари — без пунктов, но бриф выходит (аудит 13.09, DS M4)
             gist = meeting_archive.summary_gist(text) or ""
             decided += [f"{ln}  ·  {title}" for ln in sect_any(text, "decisions")]
             tasks += [f"{ln}  ·  {title}" for ln in sect_any(text, "tasks")]
@@ -131,7 +135,10 @@ def build_brief(graph: pathlib.Path) -> str | None:
         for p in sorted(cores_dir.glob("*.md")):
             if p.name.startswith("_"):
                 continue
-            text = p.read_text(encoding="utf-8")
+            try:
+                text = p.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue             # одно битое ядро не валит весь бриф (аудит 13.09, DS M4)
             if redirects.is_merged(text):
                 continue
             sm = re.search(r"## Статус\n(.+)", text)
@@ -198,7 +205,7 @@ def main() -> None:
             print(f"{g.name}: встреч нет — пропуск")
             continue
         out = g / "_Сегодня.md"
-        out.write_text(brief + "\n", encoding="utf-8")
+        safe_write.write_text(out, brief + "\n")   # обрыв не оставит обрезанный бриф (аудит 13.09, GLM M3)
         print(f"{g.name}: бриф записан ({out})")
 
 

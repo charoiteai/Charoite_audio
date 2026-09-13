@@ -14,6 +14,7 @@ import datetime as dt
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -30,6 +31,8 @@ import graphs  # noqa: E402
 import charoite_paths  # noqa: E402 — путь к src задаётся строкой выше
 import cloud  # noqa: E402
 import privacy  # noqa: E402
+import live_gate  # noqa: E402
+import tier3  # noqa: E402
 from config_loader import load_user_or_example  # noqa: E402
 
 
@@ -179,7 +182,9 @@ def report_problem(returncode: int, out: str) -> str:
         return f"CLI облака завершился с кодом {returncode}"
     if not out.strip():
         return "пустой ответ"
-    missing = [h for h in REPORT_SECTIONS if h not in out]
+    # заголовки — построчно: упоминание «## Слияния» внутри абзаца секцией не
+    # является, а бриф потом молча терял раздел (аудит 13.09, DS M7)
+    missing = [h for h in REPORT_SECTIONS if not re.search(rf"^{re.escape(h)}\s*$", out, re.M)]
     if missing:
         return "нет секций: " + ", ".join(missing)
     return ""
@@ -255,6 +260,12 @@ def main() -> None:
         "## Потерянные хвосты\n## Три риска недели\n"
         "Внутри — маркированные пункты со ссылками [[Ядра/…]]. Не выдумывай."
     )
+    # единственный ночной шаг без живого гейта внутри: встреча, начавшаяся после
+    # старта шага, отдавала до 10 минут облаку рядом с живой работой (аудит 13.09, DS M5)
+    live_gate.wait_while_live(ROOT, what="ревизия ядер", cap=tier3.night_wait_cap())
+    if live_gate.night_is_over():
+        print("время ночного прогона вышло — ревизия ядер завтра")
+        sys.exit(0)
     try:
         # Ревизии не положено НИ ОДНОГО инструмента: ядра и индекс уже в
         # промпте (blob выше), а Read/Grep/Glob, разрешённые прежним
@@ -284,11 +295,15 @@ def main() -> None:
     day = dt.date.today().isoformat()
     dest = graph / f"Служебное_ночная_ревизия_{day}.md"
     # 0600: отчёт несёт темы встреч, как и логи (круг-2 по PR #380, DS).
-    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # во временный файл и переименованием: O_TRUNC при смерти процесса оставлял
+    # обрезанный отчёт, а утренний бриф брал его за свежий (аудит 13.09, GLM M3)
+    tmp = dest.with_suffix(".md.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(f"---\ntype: служебное\nдата: {day}\nмодель: {model}\n---\n"
                 f"# Ночная ревизия ядер ({model})\n\n{out}\n")
+    os.replace(tmp, dest)
     print(f"отчёт: {dest.name} ({len(out)} зн., ядер в ревизии {len(chosen)} из {len(fresh)})")
     # Чистка карты — по всем ядрам графа, не только свежим: несвежее, но
     # живое ядро память о показе не теряет (круг-2 по PR #380, Codex).

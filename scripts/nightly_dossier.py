@@ -22,7 +22,7 @@ import os
 import pathlib
 import sys
 import time
-from datetime import date
+from datetime import date, datetime
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
@@ -125,6 +125,7 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
 
     cl = dossier.clusters(files, backlinks)
     today = date.today().isoformat()
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")   # штамп копий .backup/, с секундами как у ревизии
     entries, built, skipped = [], 0, 0
     # Раздельно, иначе ночь с занятым графом выглядит как «всё без
     # изменений» (круг-2 по PR #438, DS Minor 9).
@@ -226,6 +227,10 @@ def run(graph: pathlib.Path, c: dict, full: bool, dry: bool, limit: int) -> dict
                     entries.append(_index_entry_from_disk(theme, members, path, fp, today))
                 continue
             folder.mkdir(parents=True, exist_ok=True)
+            # копия прежнего досье: пересборка сохраняла только «Правки автора» и
+            # стирала тело с редактурой облачной ревизии без единой копии
+            # (аудит 13.09, GLM C1); тот же .backup/, что у ревизии
+            dossier.backup(folder, stamp, path)
             tmp = path.with_suffix(".md.tmp")   # атомарно: папка синхронизируется iCloud
             tmp.write_text(text, encoding="utf-8")
             tmp.replace(path)

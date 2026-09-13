@@ -281,3 +281,48 @@ def test_bigram_query_matches_a_whole_cjk_key_of_an_old_index(tmp_path):
     hits = dossier.lookup(folder, "бюджет квартала")
     assert hits and hits[0]["тема"] == "Отчётность", hits
     assert all(len(k) == 2 for k in dossier.load_index(folder)[0]["ключи"]), "старый ключ порезан на биграммы при чтении"
+
+
+def _скрипт_пересборки():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "nightly_dossier", pathlib.Path(__file__).resolve().parent.parent / "scripts" / "nightly_dossier.py")
+    nd = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(nd)
+    return nd
+
+
+def test_backup_копирует_досье_и_режет_старые(tmp_path):
+    folder = tmp_path / "Досье"
+    folder.mkdir()
+    path = folder / "Тема.md"
+    path.write_text("старое тело", encoding="utf-8")
+    assert dossier.backup(folder, "2026-09-13_010000", folder / "нет.md") is None
+    for stamp in ("2026-09-13_010000", "2026-09-13_020000", "2026-09-13_030000"):
+        dst = dossier.backup(folder, stamp, path, keep=2)
+        assert dst == folder / ".backup" / stamp / "Тема.md"
+        assert dst.read_text(encoding="utf-8") == "старое тело"
+    left = sorted(p.name for p in (folder / ".backup").iterdir())
+    assert left == ["2026-09-13_020000", "2026-09-13_030000"], left
+
+
+def test_пересборка_делает_копию_досье_до_перезаписи(tmp_path, monkeypatch):
+    """Пересборка сохраняла только «Правки автора», а тело с редактурой облачной
+    ревизии стирала без единой копии (аудит 13.09, GLM C1)."""
+    nd = _скрипт_пересборки()
+    g = _граф(tmp_path)
+    folder = g / dossier.DOSSIER_DIR
+    folder.mkdir()
+    (folder / "Настройка доступа.md").write_text(
+        "---\nтема: Настройка доступа\nотпечаток: старый\nсобрано: 2026-07-20\n---\n# Настройка доступа\n"
+        "## Сейчас\nправка ревизии, которую нельзя терять\n## Как пришли\n—\n## Решено\n—\n"
+        "## Открыто\n—\n## Кто в теме\n—\n## Источники\n- x\n## Правки автора\n\n—\n",
+        encoding="utf-8")
+    good = ("## Сейчас\nвсё в порядке\n## Как пришли\nт\n## Решено\nт\n## Открыто\nт\n## Кто в теме\nт")
+    monkeypatch.setattr(nd, "generate", lambda *a, **k: good)
+    r = nd.run(g, {"sufler": {}}, full=False, dry=False, limit=5)
+    assert r["собрано"] == 1
+    copies = list((folder / ".backup").glob("*/Настройка доступа.md"))
+    assert len(copies) == 1, "копии досье до перезаписи нет"
+    assert "правка ревизии, которую нельзя терять" in copies[0].read_text(encoding="utf-8")
+    assert "всё в порядке" in (folder / "Настройка доступа.md").read_text(encoding="utf-8")

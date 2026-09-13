@@ -42,3 +42,23 @@ def test_russian_and_legacy_headings_still_work(tmp_path):
     text = morning_brief.build_brief(graph)
     assert "договорились о релизе" in text
     assert "релиз 15-го" in text and "Анна: план" in text and "бюджет?" in text
+
+
+def test_unreadable_summary_or_core_does_not_kill_the_brief(tmp_path):
+    """Битое саммари или ядро роняло весь утренний бриф исключением на чтении
+    (аудит 13.09, DS M4)."""
+    graph = tmp_path / "Работа"
+    _meeting(graph, "2026-08-10 10-00 — Планёрка",
+             "# Саммари\n\n**Суть одной строкой:** договорились о релизе\n\n## Решения\n- релиз 15-го\n")
+    broken = graph / "Встречи-архив" / "2026-08-10 11-00 — Сломанная"
+    broken.mkdir()
+    (broken / "Саммари.md").mkdir()      # каталог вместо файла: exists() истина, read_text — IsADirectoryError
+    cores = graph / "Ядра"
+    cores.mkdir()
+    (cores / "Битое.md").write_bytes(b"\xff\xfe# not utf-8 \x80\n" + "## Статус\nx\n".encode("utf-8"))
+    (cores / "Живое.md").write_text(
+        "# Живое\n## Статус\nв работе _(обновлено 2026-08-10)_\n", encoding="utf-8")
+    text = morning_brief.build_brief(graph)
+    assert text is not None and "договорились о релизе" in text
+    assert "Сломанная" in text, "встреча с битым саммари выпала из списка"
+    assert "[[Ядра/Живое|Живое]]" in text, "ядро после битого не прочитано"
