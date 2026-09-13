@@ -631,6 +631,10 @@ class AudioHub:
     # Пять секунд: закрытие живого стрима укладывается в доли секунды, а
     # мёртвый не возвращается никогда.
     RESTART_TIMEOUT = 5.0
+    #: бюджет стоп-фазы (остановка каналов + ожидание _pump) — отдельно от потолка
+    #: перезапуска: тот настраивают ради живой ленты, этот зажат грейсом
+    #: приложения до terminate (8 с от «stop»; критика GLM r1 по #557)
+    STOP_TIMEOUT = 5.0
     #: сколько stop() ждёт выхода _pump до дренажа очередей — в пределах ОБЩЕГО
     #: бюджета RESTART_TIMEOUT: join покупает лишь то, что _pump не окажется внутри
     #: sink.write при закрытии файла, хвост спасает _drain_queues; 3 с сверх бюджета
@@ -708,16 +712,16 @@ class AudioHub:
         # выхода процесса (критика DS r1 по #557). Все каналы разом, один потолок
         # на всех: грейс приложения до terminate — секунды.
         skip = self._hung | getattr(self, "_restarting", set())
-        workers = [threading.Thread(target=self._quiet_stop, args=(c,), daemon=True,
-                                    name=f"stop-{c.label}")
+        workers = [(c, threading.Thread(target=self._quiet_stop, args=(c,), daemon=True,
+                                        name=f"stop-{c.label}"))
                    for c in self.captures if c.label not in skip]
-        for w in workers:
+        for _c, w in workers:
             w.start()
-        deadline = time.monotonic() + self.RESTART_TIMEOUT
-        for w in workers:
+        deadline = time.monotonic() + self.STOP_TIMEOUT
+        for c, w in workers:
             w.join(max(0.0, deadline - time.monotonic()))
             if w.is_alive():
-                self._say(f"🎙 {w.name}: стрим не закрылся за {self.RESTART_TIMEOUT:.0f}с — "
+                self._say(f"🎙 канал {c.label}: стрим не закрылся за {self.STOP_TIMEOUT:.0f}с — "
                           "бросаю, запись финализирую без него")
         # Хвост очередей: _pump выходит по _running, не дренируя c.q. В норме там
         # ≤1 блок (0,25 с), но пока _pump стоит в _restart_guarded, копится до
@@ -731,9 +735,21 @@ class AudioHub:
         if pump is not None and pump is not threading.current_thread():
             pump.join(max(0.0, min(self.PUMP_JOIN_TIMEOUT, deadline - time.monotonic())))
         try:
-            self._drain_queues()
+            if pump is not None and pump.is_alive() and pump is not threading.current_thread():
+                # _pump не вернулся за бюджет — он застрял внутри _consume (диск), а
+                # не в _restart_guarded (оттуда выход по _running мгновенный). Второй
+                # читатель той же очереди перемешал бы хвост, а запись в закрытый
+                # sink кричала бы ложное «ЗАПИСЬ НА ДИСК ОСТАНОВИЛАСЬ»: очередь ему,
+                # финализация — с флагом _closing, который _consume проверяет до
+                # записи (GLM r1 I1 по #557).
+                self._say("🎙 поток захвата не вернулся за бюджет стопа — хвост очередей "
+                          "не добираю, запись финализирую")
+            else:
+                self._drain_queues()
             self._say_last_drops()
         finally:
+            with self._lock:
+                self._closing = True
             self._finalize_recordings()
 
     @staticmethod
@@ -999,7 +1015,9 @@ class AudioHub:
         # время его копирования — та же гонка, что и pop у _sinks
         with self._lock:
             self._last_frame[c.label] = time.time()
-        sink = self._sinks.get(c.label)
+            # после _closing файлы закрываются — блок в них не пишем и не кричим
+            # о «сбое диска»: sink для него уже «нет» (GLM r1 I1 по #557)
+            sink = None if getattr(self, "_closing", False) else self._sinks.get(c.label)
         written = sink is not None
         sink_error = None
         if sink is not None:

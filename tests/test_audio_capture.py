@@ -220,26 +220,29 @@ class _QueueCapture:
         pass
 
 
-def test_stop_не_виснет_на_канале_из_hung_и_финализирует_запись():
+def test_stop_не_виснет_на_канале_из_hung_и_финализирует_запись(tmp_path):
     """Канал, чей перезапуск завис, уже держит застрявший поток; второй stop()
     того же стрима вешал stop() хаба навсегда — до финализации записи дело не
     доходило, демон не завершался (аудит 13.09, DS I1)."""
     hub = _hub()
-    hub.RESTART_TIMEOUT = 0.3
+    hub.STOP_TIMEOUT = 0.3
     dead = _QueueCapture("blackhole", hang_seconds=5.0)
     live = _QueueCapture("mic")
     hub.captures = [dead, live]
     hub._hung = {"blackhole"}
     hub.on_status = lambda _msg: None
-    done: list[str] = []
-    hub._finalize_recordings = lambda: done.append("finalized")
+    # настоящая финализация: sink с шестью секундами звука должен стать .wav
+    # (GLM r1 M2 по #557 — подмена лямбдой не доказывала, что файл закрыт)
+    pcm = tmp_path / "s_mic.pcm"
+    pcm.write_bytes(b"\0" * (16000 * 2 * 6))
+    hub._sinks = {"mic": pcm.open("ab")}
 
     started = time.time()
     hub.stop()
     spent = time.time() - started
 
     assert spent < 2, f"stop() хаба не вернулся за {spent:.1f}с"
-    assert done == ["finalized"]
+    assert (tmp_path / "s_mic.wav").exists() and not pcm.exists()
     assert dead.stopped == 0, "мёртвый канал не трогаем — его stop() не вернётся"
     assert live.stopped == 1
 
@@ -248,7 +251,7 @@ def test_stop_не_виснет_и_на_живом_канале_со_завис�
     """Канал ещё не в _hung, но стрим уже мёртв: stop() под тем же потолком,
     что и перезапуск, — финализация идёт, статус говорит о брошенном стриме."""
     hub = _hub()
-    hub.RESTART_TIMEOUT = 0.3
+    hub.STOP_TIMEOUT = 0.3
     hub.captures = [_QueueCapture("mic", hang_seconds=5.0)]
     said: list[str] = []
     hub.on_status = said.append
@@ -346,7 +349,7 @@ def test_канал_с_перезапуском_в_полёте_не_остан�
     """Перезапуск канала висит в отдельном потоке — stop() не входит в тот же
     стрим вторым потоком (DS r1 M4 по #557) и укладывается в бюджет."""
     hub = _hub()
-    hub.RESTART_TIMEOUT = 0.3
+    hub.STOP_TIMEOUT = 0.3
     slow = _QueueCapture("blackhole", hang_seconds=5.0)
     hub.captures = [slow]
     hub.on_status = lambda _msg: None
@@ -355,6 +358,54 @@ def test_канал_с_перезапуском_в_полёте_не_остан�
     started = time.time()
     hub.stop()
     assert time.time() - started < 1 and slow.stopped == 0
+
+
+def test_застрявший_в_записи_pump_не_кричит_ложную_тревогу_при_финализации(tmp_path):
+    """_pump висит внутри sink.write (медленный диск) дольше бюджета: stop() не
+    заводит второго читателя очереди, финализирует с флагом _closing, и
+    отвисший _pump молча пропускает блок, а не кричит «ЗАПИСЬ НА ДИСК
+    ОСТАНОВИЛАСЬ» (GLM r1 I1 по #557)."""
+    import threading
+
+    hub = _hub()
+    hub.STOP_TIMEOUT = 0.3
+    hub.PUMP_JOIN_TIMEOUT = 0.2
+    cap = _QueueCapture("mic")
+    hub.captures = [cap]
+    said: list[str] = []
+    hub.on_status = said.append
+    hub._bufs["mic"] = np.zeros(0, dtype=np.float32)
+
+    class SlowSink:
+        def __init__(self):
+            self.writes = 0
+            self.closed = False
+
+        def write(self, b):
+            self.writes += 1
+            time.sleep(0.8)              # первый блок «пишется» дольше бюджета стопа
+
+        def flush(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+        name = str(tmp_path / "slow.pcm")
+
+    sink = SlowSink()
+    hub._sinks = {"mic": sink}
+    for _ in range(3):
+        cap.q.put(_tone(4000))
+    hub._running = True
+    hub._pump_thread = threading.Thread(target=hub._pump, daemon=True)
+    hub._pump_thread.start()
+    time.sleep(0.1)                      # _pump взял первый блок и застрял в write
+    hub.stop()
+    hub._pump_thread.join(3)
+    assert sink.closed and sink.writes == 1, "второго читателя очереди не было, блоки после закрытия не пишутся"
+    assert not any("ОСТАНОВИЛАСЬ" in m for m in said)
+    assert any("не вернулся за бюджет" in m for m in said)
 
 
 def test_частичный_отказ_open_sinks_не_оставляет_сирот(tmp_path):
