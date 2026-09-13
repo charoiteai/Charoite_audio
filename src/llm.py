@@ -99,6 +99,10 @@ CLOUD_TIMEOUT = (5.0, 45.0)
 #: и строки thinking сбрасывают таймер, так что долгая, но живая генерация
 #: под потолок не попадает.
 STREAM_TIMEOUT = (10.0, 120.0)
+#: Документы (протокол, минутки): префилл 25-тысячезначного куска на холодной
+#: модели или медленной машине молчит дольше двух минут — им прежний потолок
+#: (DS r1 критика / GLM r1 M5 по #558).
+DOC_STREAM_TIMEOUT = (10.0, 300.0)
 #: Сколько ждём ПЕРВЫЙ токен, прежде чем считать шлюз молчащим.
 CLOUD_FIRST_TOKEN = 30.0
 #: Во сколько раз терпеливее к шлюзу, который шлёт keepalive: он
@@ -271,7 +275,8 @@ class LLM:
     def stream(self, prompt: str, model: str | None = None, system: str | None = None,
                think: bool = False, num_predict: int | None = None,
                temperature: float | None = None,
-               busy_wait: float = BUSY_WAIT_LIVE) -> Iterator[str]:
+               busy_wait: float = BUSY_WAIT_LIVE,
+               timeout: tuple[float, float] = STREAM_TIMEOUT) -> Iterator[str]:
         # think=False КРИТИЧЕН для live-контуров: дефолтный thinking у gemma4
         # молча съедает ~10с до первого слова (замер 17.07: TTFT 10.4с → 0.5с).
         # think=True в живом контуре не используется (deep_loop удалён 26.08).
@@ -299,7 +304,7 @@ class LLM:
             yield from self._stream_mlx(messages, think=think,
                                         num_predict=num_predict,
                                         temperature=temperature,
-                                        busy_wait=busy_wait)
+                                        busy_wait=busy_wait, timeout=timeout)
             return
         if self.cloud_ready:
             yield from self._stream_cloud(messages, num_predict=num_predict,
@@ -321,7 +326,7 @@ class LLM:
             "options": options,
         }
         with self._open_stream(f"{self.base}/api/chat", payload, busy_wait,
-                               timeout=STREAM_TIMEOUT) as r:
+                               timeout=timeout) as r:
             done = False
             for line in r.iter_lines():
                 if not line:
@@ -439,7 +444,8 @@ class LLM:
 
     def stream_messages(self, messages: list[dict], *, num_predict: int | None = None,
                         temperature: float | None = None,
-                        busy_wait: float = BUSY_WAIT_LIVE) -> Iterator[str]:
+                        busy_wait: float = BUSY_WAIT_LIVE,
+                        timeout: tuple[float, float] = STREAM_TIMEOUT) -> Iterator[str]:
         """Стрим по готовым messages — путь для локального запаса облака.
 
         stream() собирает messages из prompt+system; здесь они уже собраны,
@@ -454,7 +460,8 @@ class LLM:
             return
         if self.engine == "mlx-server":
             yield from self._stream_mlx(messages, think=False, num_predict=num_predict,
-                                        temperature=temperature, busy_wait=busy_wait)
+                                        temperature=temperature, busy_wait=busy_wait,
+                                        timeout=timeout)
             return
         options: dict = {
             "temperature": self.temperature if temperature is None else temperature,
@@ -466,7 +473,7 @@ class LLM:
                    "stream": True, "think": False, "keep_alive": "90m",
                    "options": options}
         with self._open_stream(f"{self.base}/api/chat", payload, busy_wait,
-                               timeout=STREAM_TIMEOUT) as r:
+                               timeout=timeout) as r:
             for line in r.iter_lines():
                 if not line:
                     continue
@@ -564,10 +571,14 @@ class LLM:
     def _stream_mlx(self, messages: list[dict], *, think: bool | None,
                     num_predict: int | None,
                     temperature: float | None,
-                    busy_wait: float = BUSY_WAIT_LIVE) -> Iterator[str]:
+                    busy_wait: float = BUSY_WAIT_LIVE,
+                    timeout: tuple[float, float] = STREAM_TIMEOUT) -> Iterator[str]:
         payload = self._mlx_payload(messages, think=think, num_predict=num_predict,
                                     temperature=temperature, stream=True)
-        yield from self._sse(f"{self.base}/v1/chat/completions", payload, busy_wait)
+        # тот же потолок, что у Ollama-стрима: mlx-server держал hint_lock 300 с
+        # на молчащей генерации (GLM r1 M2 по #558)
+        yield from self._sse(f"{self.base}/v1/chat/completions", payload, busy_wait,
+                             timeout=timeout)
 
     def _sse(self, url: str, payload: dict, busy_wait: float,
              timeout: float | tuple = 300,
@@ -995,7 +1006,7 @@ class LLM:
 
     def summary(self, transcript: str, busy_wait: float = BUSY_WAIT_LIVE) -> Iterator[str]:
         if self.lang == "zh":
-            return self.stream(
+            return self._doc_stream(
                 f"会议记录：\n\n{transcript}\n\n"
                 "压缩成会议纪要：决定事项、任务用「- **谁** — 做什么 — 期限」格式、"
                 "待解决问题。用列表，中文。"
@@ -1007,7 +1018,7 @@ class LLM:
                 busy_wait=busy_wait,
             )
         if self.lang == "en":
-            return self.stream(
+            return self._doc_stream(
                 f"Meeting transcript:\n\n{transcript}\n\n"
                 "Compress into a protocol: decisions, tasks as «- **Who** — what — due», "
                 "open questions. Bullets, in English. "
@@ -1018,7 +1029,7 @@ class LLM:
                 temperature=0.0,
                 busy_wait=busy_wait,
             )
-        return self.stream(
+        return self._doc_stream(
             f"Стенограмма встречи:\n\n{transcript}\n\n"
             "Сожми в протокол: решения, задачи списком «- **Кто** — что — срок», "
             "открытые вопросы. Маркерами, по-русски. "
@@ -1028,6 +1039,13 @@ class LLM:
             num_predict=320,
             temperature=0.0,  # см. minutes(): документ — не творческая задача
         )
+
+    def _doc_stream(self, *args, **kwargs) -> Iterator[str]:
+        """Стрим документа (протокол, минутки): тот же stream(), но с потолком
+        DOC_STREAM_TIMEOUT — префилл большого куска на холодной модели молчит
+        дольше двух минут живого потолка (DS/GLM r1 по #558)."""
+        kwargs.setdefault("timeout", DOC_STREAM_TIMEOUT)
+        return self.stream(*args, **kwargs)
 
     def _fit(self, transcript: str) -> str:
         """Длинную встречу сворачиваем в сводки частей, а не отдаём на обрезку.
@@ -1074,7 +1092,7 @@ class LLM:
         """Полноценные минутки встречи (markdown, сохраняются файлом)."""
         transcript = self._fit(transcript)
         if self.lang == "zh":
-            return self.stream(
+            return self._doc_stream(
                 f"<transcript>\n{transcript}\n</transcript>\n\n"
                 "按以下模板用 markdown 写会议纪要：\n"
                 + (self.minutes_template + "\n\n" if self.minutes_template else
@@ -1097,7 +1115,7 @@ class LLM:
                 temperature=0.0,
             )
         if self.lang == "en":
-            return self.stream(
+            return self._doc_stream(
                 f"<transcript>\n{transcript}\n</transcript>\n\n"
                 "Write meeting minutes in markdown using this template:\n"
                 + (self.minutes_template + "\n\n" if self.minutes_template else
@@ -1121,7 +1139,7 @@ class LLM:
                 num_predict=420,
                 temperature=0.0,
             )
-        return self.stream(
+        return self._doc_stream(
             # Данные отделены тегами от инструкций, правила — позитивные
             # («пиши так»), а не отрицания: qwen следует им заметно лучше
             f"<стенограмма>\n{transcript}\n</стенограмма>\n\n"
