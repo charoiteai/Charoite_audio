@@ -1404,10 +1404,23 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 if may_edit and checked:
                     try:
                         renamed, heads, parts = name_fixes.apply(rev, transcript, cfg, dropped=dropped_n)
+                    except review_bridge.LostRace as e:
+                        # стенограмма сменилась под перештамповкой дважды — файлы не
+                        # тронуты, но верные имена мосту всё равно нужны как участники:
+                        # иначе восстановленный пункт с верным именем получал бы
+                        # «⚠ не участник» по старой шапке (DS I1, круг 2 по #553)
+                        names_failed = True
+                        lines.append(f"[cloud-review] имена меток не перештампованы: {e}\n")
+                        try:
+                            renamed = name_fixes.planned(rev, transcript, cfg)
+                        except Exception as e2:  # noqa: BLE001
+                            lines.append(f"[cloud-review] имена меток: раздел не разобран ({e2})\n")
                     except Exception as e:  # noqa: BLE001
                         names_failed = True
                         lines.append(f"[cloud-review] имена меток не перештампованы: {e}\n")
-                    if renamed:
+                    # карта после LostRace добрана для моста, но ничего не применено:
+                    # строки «исправлены … заголовков N» быть не должно (GLM M5)
+                    if renamed and not names_failed:
                         lines.append("[cloud-review] имена меток исправлены по ревизии: "
                                      + ", ".join(f"{k} → {v}" for k, v in renamed.items())
                                      + f" — заголовков реплик {heads}, участники минуток "
@@ -1433,20 +1446,33 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 # ревизия заменяет пункт похожим верным, дедуп не должен
                 # принять новый за уже существующий ложный (№238)
                 dropped_w: list[str] = []          # свой список: лог называет раздел (DS r1 M2)
-                withdrawn = review_bridge.withdraw(rev, transcript, owner=owner, lang=lang, dropped=dropped_w)
+                # Проигранная гонка записи — свой сигнал (LostRace) и своя строка
+                # лога: «пунктов не извлечено или все уже в минутках» про неё
+                # было бы ложью (GLM I2 / DS I2 по #553)
+                withdrawn, raced = 0, False
+                try:
+                    withdrawn = review_bridge.withdraw(rev, transcript, owner=owner, lang=lang, dropped=dropped_w)
+                except review_bridge.LostRace as e:
+                    raced = True
+                    lines.append(f"[cloud-review] мост ревизии: {e} — минутки менял кто-то ещё, снятие не применено\n")
                 if withdrawn:
                     lines.append(f"[cloud-review] мост ревизии ({verified}): снято поручений — {withdrawn} "
                                  f"(перенесены в «{review_bridge.WITHDRAWN_TITLE.get(lang[:2], review_bridge.WITHDRAWN_TITLE['ru'])[3:]}»)\n")
-                elif has_minutes and review_bridge.withdrawn_section_present(rev_text):
+                elif has_minutes and not raced and review_bridge.withdrawn_section_present(rev_text):
                     lines.append("[cloud-review] мост ревизии: раздел о снятых поручениях есть, "
                                  "пунктов не извлечено или в минутках их нет\n")
-                added = review_bridge.bridge(rev, transcript, owner=owner, lang=lang, dropped=dropped,
-                                             extra_participants=set(renamed.values()))
+                added, raced = 0, False
+                try:
+                    added = review_bridge.bridge(rev, transcript, owner=owner, lang=lang, dropped=dropped,
+                                                 extra_participants=set(renamed.values()))
+                except review_bridge.LostRace as e:
+                    raced = True
+                    lines.append(f"[cloud-review] мост ревизии: {e} — минутки менял кто-то ещё, поручения не дописаны\n")
                 if added:
                     lines.append(f"[cloud-review] мост ревизии ({verified}): в минутки дописано поручений — {added}\n")
                 elif not has_minutes:
                     lines.append("[cloud-review] мост ревизии: минуток рядом со стенограммой нет\n")
-                elif review_bridge.section_present(rev_text):
+                elif not raced and review_bridge.section_present(rev_text):
                     lines.append("[cloud-review] мост ревизии: раздел о восстановленных поручениях есть, "
                                  "пунктов не извлечено или все уже в минутках\n")
                 # Что мост выбросил из раздела — в лог: «нет», комментарии модели,
@@ -1454,6 +1480,11 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 # пустой раздел выглядели одинаково (GLM r4 по #518, критика 1).
                 # Отдельным if ПОСЛЕ цепочки: врезанный в неё, он перехватывал
                 # elif у `if added` — лог врал на каждом чистом прогоне (DS/GLM r1 по #533)
+                # Отказ записи перештамповки — не «отброшенная строка раздела», а
+                # своё событие (GLM M4 по #553): строки с LostRace.PREFIX — отдельно
+                for note in [d for d in dropped_n if d.startswith(review_bridge.LostRace.PREFIX)]:
+                    lines.append(f"[cloud-review] имена меток: {note}\n")
+                dropped_n = [d for d in dropped_n if not d.startswith(review_bridge.LostRace.PREFIX)]
                 for what, junk in (("восстановленных", dropped), ("снятых", dropped_w),
                                    ("исправлений имён", dropped_n)):
                     if junk:

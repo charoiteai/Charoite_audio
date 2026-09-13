@@ -182,3 +182,55 @@ def test_l4_prompt_names_the_strict_section_in_both_modes():
                                                    rev_name="r.md", stamp="2026-09-05_1413", may_edit=may_edit, context="")
         assert "## Исправления имён" in prompt and "**Метка** → **Имя** — основание: …" in prompt
         assert ("из узла Люди с ошибочным именем убери строку" in prompt) is may_edit
+
+
+def test_restamp_refuses_to_overwrite_files_changed_underneath(tmp_path, monkeypatch):
+    """Гейт expect с повтором на обеих записях (аудит зон 12.09, зона 4; DS I3 по
+    #553): файл, сменившийся между чтением и записью дважды, не затирается.
+    Стенограмма — LostRace наружу целиком (ничего не применено, лог не скажет
+    «исправлено»); минутки после удачной стенограммы — строка с PREFIX в dropped."""
+    import pytest
+    import review_bridge
+    live, mpath, rev = _world(tmp_path)
+    cfg = {"sufler": {"user_name": "Владелец"}}
+    owned = nf._machine_owned
+    hits: list[str] = []
+
+    def clobber(targets):
+        def wrapped(live_, key, text):
+            out = owned(live_, key, text)
+            if key in targets:
+                hits.append(key)
+                # чужая запись ДОПИСЫВАЕТ к прежнему тексту: заголовки/участники для
+                # перештамповки остаются, и вторая попытка тоже хочет писать; своя
+                # длина на каждую попытку — одинаковые байты в один тик mtime это
+                # заявленная граница safe_write
+                target, base = ((live, SPEECH) if key == "transcript_sha256" else (mpath, MINUTES))
+                target.write_text(base + "\nчужая правка\n" * len(hits), encoding="utf-8")
+            return out
+        return wrapped
+
+    monkeypatch.setattr(nf, "_machine_owned", clobber({"transcript_sha256"}))
+    dropped: list[str] = []
+    with pytest.raises(review_bridge.LostRace):
+        nf.apply(rev, live, cfg, dropped=dropped)
+    text = live.read_text(encoding="utf-8")
+    assert text.startswith(SPEECH) and "чужая правка" in text and "**Мария**" not in text
+    assert hits == ["transcript_sha256"] * 2, "две попытки на стенограмму"
+    assert not (tmp_path / ".prev" / live.name).exists(), ".prev пишется только после удачной записи (DS M1, круг 2)"
+    assert mpath.read_text(encoding="utf-8") == MINUTES, "минутки не тронуты, пока стенограмма не записана"
+    meta = json.loads((tmp_path / "2026-09-11_1533_Планёрка.md.live.json").read_text(encoding="utf-8"))
+    assert meta["transcript_sha256"] == live_sidecar.sha(SPEECH), "хеш не обновлён — запись не состоялась"
+
+    live, mpath, rev = _world(tmp_path)
+    hits.clear()
+    monkeypatch.setattr(nf, "_machine_owned", clobber({"minutes_sha256"}))
+    dropped = []
+    mapping, heads, parts = nf.apply(rev, live, cfg, dropped=dropped)
+    assert mapping and heads == 3 and parts is False
+    assert "**Мария** [15:33]:" in live.read_text(encoding="utf-8")
+    mtext = mpath.read_text(encoding="utf-8")
+    assert mtext.startswith(MINUTES) and "чужая правка" in mtext and "Мария" not in mtext.split("\n", 3)[0:3].__str__()
+    assert (tmp_path / ".prev" / live.name).read_text(encoding="utf-8") == SPEECH, ".prev стенограммы — исходник, не чужая версия"
+    assert not (tmp_path / ".prev" / mpath.name).exists(), "минутки не записаны — .prev минуток нет"
+    assert any(d.startswith(review_bridge.LostRace.PREFIX) and "участники не тронуты" in d for d in dropped), dropped

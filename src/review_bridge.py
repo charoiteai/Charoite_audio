@@ -60,14 +60,13 @@ _EMPTY_ITEM = re.compile(r"^(?:нет|none|无|[—–\-•⁃‣▪*\s]+)\.?$",
 # критика 1); «**на стенд** до пятницы» и «**срок:** пятница» — перенос с
 # жирного спана, его клеим
 _OWN_ITEM = re.compile(r"^\s*\*\*[^*]+\*\*\s*[—–-]|^\s*\*\*[^*:：]+\*\*\s*[:：]")
-# легаси-заголовок раздела: markdown-заголовок со слова «Поручения» либо
-# голая/жирная строка из известного списка — форму «слово + что угодно +
-# двоеточие» не угадываем, как и action_items (GLM r5, критика 2)
-_SECTION_WORD = re.compile(
-    r"^\s*(?:#{1,6}\s*(?:\*\*)?\s*(?:поручени|action item|行动项)"
-    r"|(?:\*\*)?\s*(?:поручения|поручения и сроки|action items|行动项)\s*[:：]\s*\**\s*$)",
-    re.IGNORECASE)
 _PAREN_NOTE = re.compile(r"^\s*[(（][^)）]*[)）]\s*$")
+
+
+# Гейт потери обновления с повтором и его сигнал живут в safe_write (один на
+# всех писателей); здесь — те же имена для cloud_review, name_fixes и тестов.
+LostRace = safe_write.LostRace
+rewrite_file = safe_write.rewrite_file
 
 
 # Классы строк внутри раздела ревизии. Один классификатор вместо цепочки
@@ -222,16 +221,33 @@ def _split(item: str) -> tuple[str, set[str]]:
     return name, {w for w in _key(m.group("rest")).split() if len(w) > 2}
 
 
+def _same_assignee(na: str, nb: str) -> bool:
+    """Один исполнитель в разных падежах: «сергею» и «сергей», «иван орлов» и
+    «ивану орлову» — пословно через action_items.same_case_form, БЕЗ таблицы
+    уменьшительных: «Вере» и «Веронике» — разные люди, и склейка съела бы
+    поручение (DS Critical по #553). Владелец приводится к канону раньше
+    (_dedup_view); остальные участники до 13.09 сравнивались строкой, и
+    «**Сергею** — позвонить» дописывался вторым пунктом рядом с «**Сергей**
+    — позвонить» (аудит зон 12.09, зона 4). Разное число слов — разные
+    записи: дубль «Иван Петрович»/«Иван» дешевле съеденного пункта."""
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    pa, pb = na.split(), nb.split()
+    return len(pa) == len(pb) and all(action_items.same_case_form(x, y) for x, y in zip(pa, pb))
+
+
 def _same_item(a: str, b: str) -> bool:
-    """Один и тот же пункт: тот же ключ, либо тот же исполнитель и то же дело
-    другими словами (пересечение значимых слов ≥ SIMILAR по Жаккару) —
-    ревизия пересказывает поручение минуток, а не находит новое."""
+    """Один и тот же пункт: тот же ключ, либо тот же исполнитель (в любом
+    падеже) и то же дело другими словами (пересечение значимых слов ≥ SIMILAR
+    по Жаккару) — ревизия пересказывает поручение минуток, а не находит новое."""
     ka, kb = _key(a), _key(b)
     if ka == kb:
         return True
     na, wa = _split(a)
     nb, wb = _split(b)
-    if not na or na != nb or not wa or not wb:
+    if not _same_assignee(na, nb) or not wa or not wb:
         return False
     common = len(wa & wb)
     # ревизия сжимает: «собрать примеры вопросов» ⊂ «… для теста» — то же
@@ -254,18 +270,16 @@ def _empty_line(line: str) -> bool:
 def _section_bounds(lines: list[str]) -> tuple[int, int] | None:
     """(начало, конец) строк раздела поручений: конец — следующий заголовок
     или конец файла (граница — как у action_items)."""
-    start = None
-    for i, line in enumerate(lines):
-        if action_items._SECTION.match(line):
-            start = i
-            break
+    # Предикат общий с action_items (normalize, canon_owner, flag_outsiders):
+    # «## Поручения и сроки» прежних минуток — тот же раздел, а не повод
+    # завести второй (DS r1 M3 по #518), и пометка «не участник» обязана
+    # видеть его так же, как мост (аудит зон 12.09, зона 4). Но приоритет
+    # прежний: сначала текущий заголовок по всему файлу, легаси — только
+    # если текущего нет; иначе минутки с обоими получали пункты в старый
+    # блок (GLM M3 / DS I4 по #553)
+    start = next((i for i, line in enumerate(lines) if action_items._SECTION.match(line)), None)
     if start is None:
-        # «## Поручения и сроки» прежних минуток — тот же раздел, а не повод
-        # завести второй (DS r1 M3 по #518)
-        for i, line in enumerate(lines):
-            if _SECTION_WORD.match(line):
-                start = i
-                break
+        start = next((i for i, line in enumerate(lines) if action_items.is_section_heading(line)), None)
     if start is None:
         return None
     end = len(lines)
@@ -277,6 +291,25 @@ def _section_bounds(lines: list[str]) -> tuple[int, int] | None:
             end = j
             break
     return start, end
+
+
+def _section_spans(lines: list[str]) -> list[tuple[int, int]]:
+    """(начало, конец) КАЖДОГО раздела поручений в файле — текущего и легаси
+    заголовков; граница раздела та же, что у _section_bounds."""
+    spans: list[tuple[int, int]] = []
+    for i, line in enumerate(lines):
+        if not action_items.is_section_heading(line):
+            continue
+        end = len(lines)
+        for j in range(i + 1, len(lines)):
+            nxt = lines[j]
+            if ((action_items._OTHER_SECTION.match(nxt)
+                 or (action_items._BARE_HEADING.match(nxt) and action_items._KNOWN_BARE_SECTION.match(nxt)))
+                    and not action_items._BULLET.match(nxt)):
+                end = j
+                break
+        spans.append((i, end))
+    return spans
 
 
 def _dedup_view(line: str, owner: str) -> str:
@@ -339,7 +372,12 @@ def merge_into_minutes(minutes: str, items: list[str], participants: set[str] | 
         start, end = len(lines) - 1, len(lines)
     else:
         start, end = bounds
-    existing = [_dedup_view(line, owner) for line in lines[start + 1:end] if _key(line)]
+    # дедуп — по ВСЕМ разделам поручений файла (текущий и легаси), запись — в
+    # выбранный: минутки с «## Поручения и сроки» выше и «## Поручения» ниже
+    # иначе получали дубль пункта из старого блока (GLM M1, круг 2 по #553)
+    existing = [_dedup_view(line, owner)
+                for s_, e_ in (_section_spans(lines) or [(start, end)])
+                for line in lines[s_ + 1:e_] if _key(line)]
     # сравнение — в одном каноне с обеих сторон (полное имя владельца из
     # двух слов → первое слово), в минутки пункт идёт как есть (DS r2 по #545)
     new_lines = [f"- [ ] {item} {mark}" for item in fresh
@@ -395,11 +433,12 @@ def bridge(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
     participants = action_items.participants_of(speech, owner) if speech else set()
     if extra_participants:
         participants = participants | action_items.participants_set(sorted(extra_participants), owner)
-    before = minutes.read_text(encoding="utf-8", errors="replace")
-    after, added = merge_into_minutes(before, items, participants, lang=lang, owner=owner)
-    if added:
-        safe_write.write_text(minutes, after)
-    return added
+    # Снимок ДО чтения и две попытки (rewrite_file): минутки правят и
+    # пересборка, и mcp «Минутки», и редактор — запись без гейта затирала бы
+    # их версию своей (аудит зон 12.09, зона 4); проиграли дважды — LostRace.
+    return rewrite_file(
+        minutes, lambda before: merge_into_minutes(before, items, participants, lang=lang, owner=owner),
+        f"поручения ({len(items)}) не дописаны", errors="replace")
 
 
 def _continuation(line: str) -> bool:
@@ -518,10 +557,7 @@ def _matches_withdrawn(item: str, view: str) -> bool:
         return True
     na, wa = _split(item)
     nb, wb = _split(view)
-    if not (na and nb and wa and wb) or na == nb:
-        return False
-    pa, pb = na.split(), nb.split()
-    if len(pa) != len(pb) or not all(action_items._same_person(x, y) for x, y in zip(pa, pb)):
+    if not (wa and wb) or not _same_assignee(na, nb):
         return False
     common = len(wa & wb)
     if common >= 2 and (common == len(wa) or common == len(wb)):
@@ -548,8 +584,16 @@ def withdraw(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
     minutes = minutes_path(transcript)
     if not minutes.is_file():
         return 0
-    before = minutes.read_text(encoding="utf-8", errors="replace")
-    after, moved = withdraw_from_minutes(before, items, lang=lang, owner=owner, dropped=dropped)
-    if moved:
-        safe_write.write_text(minutes, after)
-    return moved
+    # гейт потери обновления и повтор — как у bridge; строки «подходит к N
+    # пунктам» собираются с последней попытки, чтобы повтор их не удваивал
+    tries: list[list[str]] = []
+
+    def transform(before: str) -> tuple[str, int]:
+        tries.append([])
+        return withdraw_from_minutes(before, items, lang=lang, owner=owner, dropped=tries[-1])
+
+    try:
+        return rewrite_file(minutes, transform, f"снятые ({len(items)}) не перенесены", errors="replace")
+    finally:
+        if dropped is not None and tries:
+            dropped.extend(tries[-1])

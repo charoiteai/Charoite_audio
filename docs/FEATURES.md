@@ -1060,7 +1060,13 @@ it signals degradation, it does not break the loop.
   checkbox and gets a «⚠ не участник» mark: it stays out of the Tasks window
   and the reader sees the assignee must be chosen again. Participants come
   from the transcript header, speaker labels and the owner; unknown — nothing
-  is marked.
+  is marked. One heading predicate serves every reader of the minutes — the
+  legacy «## Поручения и сроки» of older minutes included — so an item the
+  review bridge appends under an old heading gets the mark too; the bridge
+  treats an assignee in another grammatical case («Сергею» is «Сергей») as
+  the same item, and neither the bridge nor the name restamp overwrites a file
+  that changed between their read and write — they retry once, then log it
+  and step back.
 - **Streaming archive answers** — first words in ~1s, token-by-token
   with a typing cursor; the chat model picker lists what Ollama
   actually has.
