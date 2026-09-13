@@ -34,6 +34,7 @@ import meeting_stamp
 from meeting_stamp import files_with_stamp, stamp_of
 import frontmatter
 import graphs
+import graph_links
 import redirects
 from speaker_names import resolve_vocative
 from action_items import PARTICIPANTS_HEAD, SPEAKER_LABEL
@@ -838,9 +839,27 @@ def canon_link(graph: pathlib.Path, name: str, default_folder: str | None = None
     создаст upsert_entity; совсем без папки — короткая [[Имя]].
     """
     p = find_canonical(graph, name, folder=default_folder)   # luna I1: папка и в ссылке
+    if default_folder == "Ядра" and p is not None and p.parent.name != "Ядра":
+        # Тема заведена и узлом другого типа (Системы/X), и ядром — upsert_core
+        # держит параллельное Ядра/X. Ссылка «## Ядра» в заметке встречи должна
+        # вести в ядро, иначе оно остаётся без входящих (аудит 13.09, DS I4 / GLM I2)
+        core = graph / "Ядра" / f"{safe_name(name)}.md"
+        if core.exists():
+            resolved = resolve_core_path(graph / "Ядра", name, graph)
+            rtext = _read_node(resolved)
+            # заглушка «→ [[Системы/X]]» в Ядрах — не ядро: живой канон остаётся (GLM M2 по #563)
+            if rtext is not None and not redirects.is_merged(rtext):
+                p = resolved
     if p is not None:
         return f"[[{p.parent.name}/{p.stem}|{p.stem}]]"
     disp = safe_name(name)
+    if default_folder == "Ядра":
+        # ядро не заведено из-за неоднозначности (upsert_core): ссылка на несуществующий
+        # узел была бы фантомом — текст со ссылками на кандидатов (DS I3 по #563)
+        amb: list[str] = []
+        if find_canonical(graph, name, ambiguous=amb, folder="Ядра") is None and amb:
+            cands = ", ".join(f"[[Ядра/{c}|{c}]]" for c in sorted(set(amb)))
+            return f"{disp} _(тема подходит к: {cands})_"
     if default_folder:
         return f"[[{default_folder}/{disp}|{disp}]]"
     return f"[[{disp}]]"
@@ -1044,6 +1063,24 @@ def _journal_graph_event(kind: str, what: str, meeting_link: str) -> None:
             fh.write(f"{_dt.datetime.now():%Y-%m-%d %H:%M}\t{meeting_link}\t{kind}: {what}\n")
     except OSError:
         pass
+
+
+_SKIPPED_NODES: list[str] = []   # нечитаемые узлы прогона — в итоговую строку main() (критика GLM 2 по #563)
+
+
+def _read_node(p: pathlib.Path, meeting_link: str = "") -> str | None:
+    """Текст узла или None. Не-UTF-8 (конфликт iCloud, чужая правка) и снятые
+    права роняли весь графовый этап встречи — заметка, MOC, архив не писались,
+    и каждый ретрай падал на том же узле (аудит 13.09, DS I3 / GLM I3).
+    Событие — в журнал, узел пропускается."""
+    try:
+        return p.read_text(encoding="utf-8")
+    except (OSError, ValueError) as e:          # UnicodeDecodeError — ValueError
+        _journal_graph_event("узел не прочитан", f"{p.parent.name}/{p.stem}: {e}", meeting_link)
+        _SKIPPED_NODES.append(f"{p.parent.name}/{p.stem}")
+        print(f"граф: узел {p.parent.name}/{p.stem} не прочитан ({e}) — пропущен",
+              file=sys.stderr, flush=True)
+        return None
 
 
 def follow_stubs(graph: pathlib.Path, p: pathlib.Path) -> pathlib.Path | None:
@@ -1275,7 +1312,9 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
     # (№194): раньше описание писалось один раз и устаревало молча.
     day = pathlib.PurePosixPath(meeting_link).name[:10]
     if p.exists():
-        text = p.read_text(encoding="utf-8")
+        text = _read_node(p, meeting_link)
+        if text is None:
+            return
         if redirects.is_merged(text):
             # Канон не нашёлся (цепочка заглушек оборвана), а файл с этим
             # именем — заглушка. В мёртвый файл не пишем (DS r2 B1); узел
@@ -1285,7 +1324,9 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
             target = redirects.stub_target(text)
             leaf = pathlib.PurePosixPath(target).name if target else ""
             alt = (graph / target) if target and "/" in target else (graph / folder / leaf if leaf else None)
-            if alt is None or alt == p or (alt.exists() and redirects.is_merged(alt.read_text(encoding="utf-8", errors="replace"))):
+            # чтение цели — под той же охраной: снятые права на ней роняли этап (DS I2 / GLM I3 по #563)
+            alt_text = _read_node(alt, meeting_link) if alt is not None and alt != p and alt.exists() else None
+            if alt is None or alt == p or (alt.exists() and (alt_text is None or redirects.is_merged(alt_text))):
                 _journal_graph_event("заглушка без канона", f"{p.parent.name}/{p.stem}", meeting_link)
                 print(f"граф: «{p.stem}» — заглушка без живого канона, встреча {meeting_link} не дописана")
                 return
@@ -1301,7 +1342,9 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
                     + f"## Встречи\n{stamp}\n",
                 )
                 return
-            text = p.read_text(encoding="utf-8")
+            text = _read_node(p, meeting_link)
+            if text is None:
+                return
         if has_link(text, meeting_link):
             return
         # Описание — факт с датой, как статус у Ядер: существенно другое
@@ -1773,7 +1816,10 @@ def resolve_core_path(d: pathlib.Path, name: str,
         visited.add(p)
         if not p.exists():
             return p
-        text = p.read_text(encoding="utf-8")
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            return p            # нечитаемый — не заглушка; upsert_core скажет и пропустит (DS I3 / GLM I3)
         if not redirects.is_merged(text):
             return p
         t = redirects.stub_target(text)
@@ -1799,8 +1845,9 @@ def _clip(s: str, limit: int = 160) -> str:
 
 def _link_re(meeting_link: str) -> re.Pattern:
     """Ссылка на встречу целиком: минутный штамп — префикс посекундного
-    (`_1000` ⊂ `_100012`), подстрочная проверка их путала (luna, круг-2 #451)."""
-    return re.compile(r"\[\[" + re.escape(meeting_link) + r"(?:\]\]|\||#)")
+    (`_1000` ⊂ `_100012`), подстрочная проверка их путала (luna, круг-2 #451).
+    Граница — общая с merge_graphs (graph_links.link_re; круг-1 по #563)."""
+    return graph_links.link_re(meeting_link)
 
 
 def has_link(text: str, meeting_link: str) -> bool:
@@ -1841,12 +1888,38 @@ def _current_status(text: str) -> tuple[str, str]:
     return ("" if block in ("", "—") else block), since
 
 
+def _insert_chronicle_line(text: str, line: str) -> str:
+    """Строка хроники ядра — под заголовком «## Хроника» тела узла, а не под
+    первым вхождением подстроки: «## Хроника» в шапке или прозе (цитата облака)
+    вклинивало строку в чужое место (аудит 13.09, GLM M4; тот же класс — #539)."""
+    m = re.compile(r"^## Хроника[ \t]*\r?$", re.M).search(text, _body_at(text))   # CRLF-узлы тоже (DS I1 по #563)
+    if m:
+        end = m.end() - (1 if text[m.start():m.end()].endswith("\r") else 0)
+        nl = "\r\n" if text[end:end + 2] == "\r\n" else "\n"
+        return text[:end] + nl + line + text[end:]
+    return text.rstrip("\r\n") + f"\n\n## Хроника\n{line}\n"
+
+
 def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
                 transcript: str = "", speakers: set[str] | None = None):
     """Ядро — сквозная тема/задача: статус ПЕРЕЗАПИСЫВАЕТСЯ каждой встречей,
     хроника копится. В графе Obsidian ядра становятся хабами над-уровня."""
     d = graph / "Ядра"
     d.mkdir(parents=True, exist_ok=True)
+    if not (d / f"{safe_name(core['имя'])}.md").exists():
+        # Теме отвечают ДВА ядра и больше («Пилот проект 2026» и «… 2027» на
+        # «Пилот проект»): find_canonical по правилу «не гадать» отдаёт None, и
+        # рядом вырастало третье ядро на ту же тему. Дубль хуже пропуска:
+        # кандидаты — в журнал, ядро не заводим (аудит 13.09, DS M6)
+        amb: list[str] = []
+        if find_canonical(graph, core["имя"], ambiguous=amb, folder="Ядра") is None and amb:
+            # тем же путём, что сущности (№193): журнал и _Кандидаты.md в корне графа —
+            # его читают в Obsidian, машинный лог никто не открывает (критика DS по #563)
+            _journal_held_entity(graph, "Ядра", core["имя"], "ядро", "ambiguous",
+                                 [f"Ядра/{c}" for c in sorted(set(amb))], meeting_link)
+            print(f"граф: ядро «{core['имя']}» подходит к нескольким: {', '.join(sorted(set(amb)))} — "
+                  "новое не завожу, свести руками", file=sys.stderr, flush=True)
+            return
     p = resolve_core_path(d, core["имя"], graph)
     status = (core.get("статус") or "").strip()
     if status == "—":
@@ -1856,7 +1929,9 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
     stamp_line = (f"- [[{meeting_link}]] — {upd}{anchor}" if upd
                   else f"- [[{meeting_link}]]{anchor}")
     if p.exists():
-        text = p.read_text(encoding="utf-8")
+        text = _read_node(p, meeting_link)
+        if text is None:
+            return
         # Вытесненный статус не исчезает, а уходит в хронику с датой, с
         # которой он держался: у факта появляются «с» и «по» (Graphiti/Zep,
         # №127). Ретрай той же встречи с тем же статусом строку не дублирует;
@@ -1877,18 +1952,13 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
             text = re.sub(r"## Статус\n.*?(?=\n## |\Z)",
                           lambda _: repl, text, count=1, flags=re.S)
         if not seen_link:
-            line = stamp_line + superseded
-            if "## Хроника" in text:
-                text = text.replace("## Хроника", f"## Хроника\n{line}", 1)
-            else:
-                text += f"\n## Хроника\n{line}\n"
+            text = _insert_chronicle_line(text, stamp_line + superseded)
         elif changed:
             text, found = _annotate_chronicle(
                 text, meeting_link, f"статус уточнён повторным разбором, было «{_clip(old_status)}»")
             if not found:   # ссылка есть, но не в хронике (человек перенёс) — след всё равно нужен
                 line = stamp_line + f" · вытеснило статус{f' (с {since})' if since else ''}: «{_clip(old_status)}»"
-                text = (text.replace("## Хроника", f"## Хроника\n{line}", 1)
-                        if "## Хроника" in text else text + f"\n## Хроника\n{line}\n")
+                text = _insert_chronicle_line(text, line)
         safe_write.write_text(p, text)
     else:
         safe_write.write_text(
@@ -1897,6 +1967,22 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
             f"tags: [ядро, авто]\n---\n"
             f"# {core['имя']}\n\n## Статус\n{status or '—'} _(обновлено {stamp[:10]})_\n\n"
             f"## Хроника\n{stamp_line}\n")
+
+
+def append_moc_line(moc: pathlib.Path, meeting_link: str, line: str) -> bool:
+    """Строка встречи в _MOC.md, если её там ещё нет. Проверка — по границе
+    ссылки (has_link), не подстрокой: минутный штамп — префикс посекундного
+    (`_1130` ⊂ `_113012`), и вторая встреча той же минуты в оглавление не
+    попадала никогда (аудит 13.09, DS I1 / GLM I1)."""
+    text = _read_node(moc, meeting_link)
+    if text is None or has_link(text, meeting_link):
+        return False
+    if "## 🗓 Встречи" in text:
+        text = text.replace("## 🗓 Встречи", f"## 🗓 Встречи\n{line}", 1)
+    else:
+        text += f"\n## 🗓 Встречи\n{line}\n"
+    safe_write.write_text(moc, text)
+    return True
 
 
 def rebuild_cores_moc(graph: pathlib.Path):
@@ -1909,7 +1995,10 @@ def rebuild_cores_moc(graph: pathlib.Path):
     for p in sorted(d.glob("*.md")):
         if p.name.startswith("_"):
             continue
-        text = p.read_text(encoding="utf-8")
+        text = _read_node(p)
+        if text is None:
+            lines.append(f"- [[Ядра/{p.stem}|{p.stem}]] — ⚠ файл не прочитан")   # пропажа видна глазом (DS M7 по #563)
+            continue
         if redirects.is_merged(text):
             continue        # заглушка после слияния — мёртвая строка «— —» (Sonnet 28.08 M8)
         m = re.search(r"## Статус\n(.+)", text)
@@ -1946,8 +2035,10 @@ def rebuild_folder_index(graph: pathlib.Path, folder: str) -> None:
             continue
         # только секция «## Встречи»: ссылка на старую встречу в прозе от облака
         # завышала счётчик и «последнюю» (GLM M12)
-        m = re.search(r"## Встречи\n(.*?)(?=\n## |\Z)", text, re.S)
-        stamps = set(re.findall(r"\[\[Встречи/(\d{4}-\d{2}-\d{2}[^\]|#]*)", m.group(1) if m else text))
+        # заголовок — строкой (CRLF, конец файла без перевода строки), без секции —
+        # ноль, а не весь узел: фолбэк снова считал ссылки из прозы (DS M7 / GLM M5)
+        m = re.search(r"^## Встречи[ \t]*\r?$\n?(.*?)(?=^## |\Z)", text, re.M | re.S)
+        stamps = set(re.findall(r"\[\[Встречи/(\d{4}-\d{2}-\d{2}[^\]|#]*)", m.group(1) if m else ""))
         dates = {s[:10] for s in stamps}          # две встречи одного дня — две (luna M1)
         rows.append((max(dates) if dates else "", len(stamps), p.stem))
     rows.sort(key=lambda r: (r[0], r[1], r[2]), reverse=True)
@@ -2232,17 +2323,14 @@ def main():
     # 3) строка в MOC
     moc = graph / "_MOC.md"
     if graph_ok and moc.exists():
-        text = moc.read_text(encoding="utf-8")
-        line = f"- [[{meeting_link}|{title or stamp}]] — {', '.join(topics[:2]) if topics else 'встреча'}"
-        if meeting_link not in text:
-            if "## 🗓 Встречи" in text:
-                text = text.replace("## 🗓 Встречи", f"## 🗓 Встречи\n{line}", 1)
-            else:
-                text += f"\n## 🗓 Встречи\n{line}\n"
-            safe_write.write_text(moc, text)
+        append_moc_line(moc, meeting_link,
+                        f"- [[{meeting_link}|{title or stamp}]] — {', '.join(topics[:2]) if topics else 'встреча'}")
 
     if graph_ok:
         print(f"граф обновлён: встреча {stamp}, людей {len(people)}, сущностей {len(ents)}, решений {len(decisions)}")
+        if _SKIPPED_NODES:
+            print(f"граф: пропущено нечитаемых узлов: {len(_SKIPPED_NODES)} — "
+                  + ", ".join(dict.fromkeys(_SKIPPED_NODES)))
 
     # 3б) факты встречи → память Чароита (brain :8100), чтобы recall в чате и
     # сессиях знал о встречах, а не только vault_search.
