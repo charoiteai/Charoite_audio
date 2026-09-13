@@ -75,6 +75,7 @@ from charoite_paths import (
 ROOT = resolve_root(__file__)      # данные пользователя
 CODE = code_root(__file__)         # src/ и scripts/ — рядом с этим файлом
 THESIS_EVERY = 40.0     # автотезисы: раз в N секунд по новым фразам
+THINK_MAX_CHARS = 6_000  # тезисы: потолок свежего фрагмента в промпте (~четверть num_ctx)
 HINT_EVERY = 75.0       # автоподсказки: не чаще, чем раз в N секунд
 HINT_MIN_NEW = 220      # и только если накопилось столько новых знаков разговора
 HINT_RETRY = 20.0       # сорвалась (модель занята) — следующая попытка раньше, а не через 75 с
@@ -1310,19 +1311,32 @@ def main():
             fresh = full[seen:]
             if len(fresh) < 120:  # мало нового — не гонять модель
                 continue
+            # После часа выключенных тезисов или серии сбоев fresh — вся встреча:
+            # Ollama молча режет голову промпта по num_ctx, ранняя часть теряется
+            # без следа. Отдаём хвост по потолку (аудит 13.09, GLM M1).
+            if len(fresh) > THINK_MAX_CHARS:
+                fresh = fresh[-THINK_MAX_CHARS:]
             try:
                 parts: list[str] = []
                 yielded = False
-                for tok in llm.stream(
-                        (f"Контекст (уже обработано):\n{context_tail}\n\n" if context_tail else "")
-                        + f"НОВЫЙ фрагмент стенограммы:\n{fresh}",
-                        model=cfg["sufler"].get("think_model", llm.small),
-                        system=thesis_rules.THINK_SYSTEM,
-                ):
-                    if manual_evt.is_set():
-                        yielded = True   # человек задал вопрос — тяжёлая модель ему нужнее
-                        break
-                    parts.append(tok)
+                # Под арбитром, как разметка и нить: в дефолтном шаблоне think_model
+                # = model, и тезисы каждые 40 с держали ту же очередь Ollama, что
+                # подсказки, — ручной вопрос ждал 45 с и получал «занято» (аудит
+                # 13.09, DS I1 / GLM I2; остаток №53). Замок тихо, на секунду: не
+                # взяли — фрагмент разберём следующим тиком, seen не двигаем.
+                with hint_slot("тезисы", timeout=1.0, quiet=True) as got:
+                    if not got:
+                        continue
+                    for tok in llm.stream(
+                            (f"Контекст (уже обработано):\n{context_tail}\n\n" if context_tail else "")
+                            + f"НОВЫЙ фрагмент стенограммы:\n{fresh}",
+                            model=cfg["sufler"].get("think_model", llm.small),
+                            system=thesis_rules.THINK_SYSTEM,
+                    ):
+                        if manual_evt.is_set():
+                            yielded = True   # человек задал вопрос — тяжёлая модель ему нужнее
+                            break
+                        parts.append(tok)
                 if yielded:
                     continue   # seen не двигаем: фрагмент разберём следующим тиком
                 seen = len(full)
@@ -1552,6 +1566,14 @@ def main():
                 elif parts:  # авто оборвалась после токенов: обрезок не должен выглядеть целым
                     emit({"type": "hint", "text": " …⚠", "manual": False})
                     parts.append(" …⚠")
+            if not parts and failed is None and not yielded:
+                # Пустой стрим без исключения — не подсказка: кусок разговора
+                # считался разобранным, серия сбоев обнулялась, а человек не видел
+                # ни символа (аудит 13.09, DS M3). Дальше — путь обычного сбоя.
+                failed = RuntimeError("модель вернула пустой ответ")
+                if manual:
+                    emit({"type": "hint", "text": "\n⚠ модель вернула пустой ответ — попробуйте ещё раз",
+                          "manual": True})
             # Модель отработала здесь. Дальше идут доставка в UI и запись
             # файла: замок вывода, пайп, диск. Их место — не в model_ms,
             # иначе занятый пайп читается как медленная модель (круг-2).
@@ -2099,8 +2121,11 @@ def main():
             # (облачной ленты в приложении больше нет — №53, круг по #466).
             # cloud_done больше не эмитим: приложение канал cloud не слушает
             # (лента выпилена — №53), а другого потребителя у события не было.
-            if failure:
-                continue          # в аудит идут ответы, а не сообщения о сбое
+            if failure or not out or question_filter.is_refusal(out):
+                # в аудит идут ответы, а не сообщения о сбое и не отказы «не вижу
+                # вопроса»: в нить отказ не шёл, а в файле выглядел отвеченным
+                # вопросом (аудит 13.09, DS M4)
+                continue
             label = f"☁️ {model} — на: {q[:400]}" if q else f"☁️ {model}"
             append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] {label}", out)
 
@@ -2263,7 +2288,6 @@ def main():
             fresh = full[seen_len:]
             if len(fresh) < 300:
                 continue
-            seen_len = len(full)
             try:
                 cores = [p for p in sorted(cores_dir.glob("*.md"))
                          if not p.name.startswith("_")]
@@ -2284,6 +2308,10 @@ def main():
                 qv = embed([" ".join(fresh[-1500:].split())])
                 if not qv:
                     continue
+                # прирост «израсходован» только после удачного эмбеддинга: занятая
+                # Ollama (штатный 20-с таймаут) иначе выбрасывала фрагмент из сверки
+                # с ядрами навсегда (аудит 13.09, DS M5 / GLM M2)
+                seen_len = len(full)
                 scored = sorted(((cosine(qv[0], vecs[p.stem]), p) for p in cores
                                  if p.stem in vecs), key=lambda x: -x[0])
                 if len(scored) < 3:
@@ -2366,9 +2394,9 @@ def main():
                     or (dt.datetime.now() - t1).total_seconds() < 6:
                 continue
             seen.add(key)
-            # Единственный LLM-контур вне арбитра держал модель на 900 токенов
-            # каждые 6 с, пока подсказчик и ⚡ стояли в очереди к ней (аудит
-            # 30.08, DS I1). Контракт арбитра целиком: выключенные подсказки и
+            # Разметка вне арбитра держала модель на 900 токенов каждые 6 с, пока
+            # подсказчик и ⚡ стояли в очереди к ней (аудит 30.08, DS I1); с 13.09
+            # под арбитром и тезисы с черновиком минуток. Контракт целиком: выключенные подсказки и
             # взведённый manual_evt (ручной вопрос ждёт) — уступаем, замок берём
             # тихо на секунду; во всех трёх случаях абзац вернётся в следующий
             # цикл — разметка дешевле задержки подсказки (DS r1 по #457).
@@ -2474,8 +2502,13 @@ def main():
         # Строка идёт в speaker_names целиком: сравнение по словам, потому что
         # в user_name обычно имя И фамилия, а модель предлагает одно имя.
         owner_name = chan.owner_name
+        last_len = -1
         while not stop.is_set():
             time.sleep(90)
+            grown = len(tr.full())
+            if grown == last_len:
+                continue  # с прошлого такта ничего не сказано — тот же ответ, зря гонять модель (аудит 13.09, GLM M4)
+            last_len = grown
             sample = tr.tail(3000)
             if sample.count("Собеседник") < 2 and not listed:
                 continue  # та сторона ещё толком не говорила
@@ -2574,8 +2607,10 @@ def main():
     def minutes_loop():
         """Живые минутки: черновик _minutes.md дорабатывается по ходу встречи.
 
-        Идёт на лёгкой модели ПАРАЛЛЕЛЬНО подсказкам (другая модель Ollama).
-        Финальную версию делает кнопка «Протокол» (26b).
+        Идёт на think_model под тем же арбитром, что подсказки: в дефолтном
+        шаблоне это одна модель и одна очередь Ollama, и черновик каждые 150 с
+        иначе ставил подсказки в очередь на минуты (аудит 13.09, GLM I2).
+        Финальную версию делает кнопка «Протокол».
         """
         seen = 0
         mpath = tr.path.with_name(tr.path.stem + "_minutes.md")
@@ -2601,8 +2636,11 @@ def main():
             if len(full) > 18_000:
                 full = full[:3_000] + "\n\n[… середина опущена …]\n\n" + full[-14_000:]
             try:
-                out = "".join(
-                    llm.stream(
+                with hint_slot("черновик минуток", timeout=1.0, quiet=True) as got:
+                    if not got:
+                        continue   # seen не двигаем — черновик в следующий такт
+                    out = "".join(
+                      llm.stream(
                         f"Стенограмма встречи (идёт, реплики по спикерам):\n\n{full}\n\n"
                         "Обнови ЧЕРНОВИК минуток (markdown): участники (из контекста), "
                         "темы, решения, поручения списком «- **Кто** — что — срок», "

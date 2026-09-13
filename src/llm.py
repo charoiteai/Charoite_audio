@@ -93,6 +93,12 @@ CLOUD_BUSY_WAIT = 5.0
 #: помогает против шлюза, который принял соединение и молчит: один запрос с
 #: дефолтными 300 с держал бы живую подсказку пять минут (круг-2 DS, I2).
 CLOUD_TIMEOUT = (5.0, 45.0)
+#: Стрим локальной модели: connect и read-таймаут МЕЖДУ байтами. Прежние 300 с
+#: держали hint_lock пять минут на молчащей генерации — все контуры подсказок
+#: стояли, ручная отвечала «занято» (аудит 13.09, DS I2 / GLM I1; №53). Токены
+#: и строки thinking сбрасывают таймер, так что долгая, но живая генерация
+#: под потолок не попадает.
+STREAM_TIMEOUT = (10.0, 120.0)
 #: Сколько ждём ПЕРВЫЙ токен, прежде чем считать шлюз молчащим.
 CLOUD_FIRST_TOKEN = 30.0
 #: Во сколько раз терпеливее к шлюзу, который шлёт keepalive: он
@@ -314,7 +320,8 @@ class LLM:
             "keep_alive": "90m",  # держать модель в памяти всю встречу
             "options": options,
         }
-        with self._open_stream(f"{self.base}/api/chat", payload, busy_wait) as r:
+        with self._open_stream(f"{self.base}/api/chat", payload, busy_wait,
+                               timeout=STREAM_TIMEOUT) as r:
             done = False
             for line in r.iter_lines():
                 if not line:
@@ -458,7 +465,8 @@ class LLM:
         payload = {"model": self.resolve_model(), "messages": messages,
                    "stream": True, "think": False, "keep_alive": "90m",
                    "options": options}
-        with self._open_stream(f"{self.base}/api/chat", payload, busy_wait) as r:
+        with self._open_stream(f"{self.base}/api/chat", payload, busy_wait,
+                               timeout=STREAM_TIMEOUT) as r:
             for line in r.iter_lines():
                 if not line:
                     continue

@@ -409,3 +409,43 @@ def test_as_context_does_not_duplicate_title_when_last_topic_fits_in_tail():
     assert ctx.count("Новая короткая тема") == 1
     assert "переходим к релизу" in ctx
     assert len(ctx) <= Thread.CONTEXT_CHARS + 200
+
+
+def test_repeated_topic_header_is_not_counted_as_a_new_line():
+    """Модель ставит тот же «● Якорь» на каждом тике: open_topic возвращает
+    прежнюю тему, а счётчик ingest снимал торможение thread_loop (аудит 13.09, DS I1)."""
+    t = Thread()
+    assert t.ingest(f"{TOPIC} Обновление операционной системы") == 1
+    assert t.ingest(f"{TOPIC} Обновление операционной системы") == 0
+    assert len(t.topics) == 1
+    assert t.ingest(f"{TOPIC} Обновление операционной системы\n{SAY} Собеседник 1: обновляемся в пятницу вечером") == 1
+
+
+def test_short_old_line_inside_a_longer_new_fact_is_not_a_duplicate():
+    """Порог длины стоит над вхождением: «срок 1.08» входит в любое решение с
+    той же датой и молча съедало его (аудит 13.09, DS I2)."""
+    t = Thread()
+    assert t.add("say", "Собеседник 4: срок 1.08")
+    assert t.add("decision", "срок 1.08 согласован с командой сопровождения, мяч у них")
+    assert not t.add("decision", "срок 1.08 согласован с командой сопровождения, мяч у них")
+    assert sum(len(tp.lines) for tp in t.topics) == 2
+    # длинная старая строка внутри длинной новой — по-прежнему повтор
+    assert not t.add("say", "Собеседник 4: срок 1.08 согласован с командой сопровождения, мяч у них, ждём письма")
+
+
+def test_context_with_zero_topics_stays_bounded():
+    t = Thread()
+    for i in range(60):
+        t.add("say", f"Собеседник 2: достаточно длинная строка номер {i} для проверки потолка контекста")
+    assert len(t.as_context(topics=0)) <= Thread.CONTEXT_CHARS
+
+
+def test_edit_prefers_the_exact_line_over_a_longer_lookalike():
+    """Правка «поток упал» ложится на строку «поток упал», а не на более позднюю
+    «поток упал в цехе…» с тем же началом (аудит 13.09, GLM M7)."""
+    t = Thread()
+    t.add("say", "Собеседник 1: поток упал")
+    t.add("say", "Собеседник 1: поток упал в цехе номер четыре после обновления прошивки контроллера")
+    applied = t.apply_edits([("поток упал", "поток встал")])
+    assert len(applied) == 1 and "цехе" not in applied[0][0]
+
