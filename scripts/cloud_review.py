@@ -813,8 +813,11 @@ def facts_of(text: str) -> collections.Counter:
         if not ln.lstrip().startswith("#") and len((n := fact_key(ln)).split()) >= 2)
 
 
-_LIST_ITEM = re.compile(r"(?:[-*•+]|\d{1,2}[.)])\s*\S")
-_LIST_MARK = re.compile(r"^(?:[-*•+]|\d{1,2}[.)])\s*")
+# Маркер списка — только с пробелом после него: «**жирная**» строка, дата
+# «15.09 — срок» и дробь «1.5 млн» пунктами не считаются (DS r2 I1/M3,
+# GLM r2 M1 по #556); «-факт» без пробела — тоже нет, цена принята.
+_LIST_ITEM = re.compile(r"(?:[-*•+]|\d{1,2}[.)])\s+\S")
+_LIST_MARK = re.compile(r"^(?:[-*•+]|\d{1,2}[.)])\s+")
 
 
 def fact_key(line: str) -> str:
@@ -825,8 +828,8 @@ def fact_key(line: str) -> str:
 
 
 def listed_facts(text: str) -> collections.Counter:
-    """Факты, перечисленные списком (строки-пункты: «- », «* », «• », «1. », «2) »,
-    маркер без пробела тоже). У заглушки это единственная запись слитого — их
+    """Факты, перечисленные списком (строки-пункты: «- », «* », «• », «+ », «1. »,
+    «2) » — маркер с пробелом). У заглушки это единственная запись слитого — их
     и бережём при вытеснении; фраза «Дубль. Смерджен.» фактом не считается,
     иначе любая заглушка плодила бы копии. Нумерованные пункты — по GLM r1 по
     #556: промпт облаку маркер списка не диктует."""
@@ -927,12 +930,15 @@ def retry_pointless(rev: pathlib.Path, transcript: pathlib.Path, force: bool) ->
     return _review_state(transcript) in (None, "ok")
 
 
+STATE_UNKNOWN = "?"   # статус не прочитался — не «статуса нет»: повтор идёт (DS r2 M1 по #556)
+
+
 def _review_state(transcript: pathlib.Path) -> str | None:
     try:
         from meeting_processing import MeetingStatusStore
         return MeetingStatusStore(ROOT).review_state(transcript)
-    except Exception:  # noqa: BLE001 — статус вторичен
-        return None
+    except Exception:  # noqa: BLE001 — статус вторичен, но «не знаю» ≠ «нет»
+        return STATE_UNKNOWN
 
 
 def neighbour_delivered(rev: pathlib.Path, before: float | None,
@@ -1039,10 +1045,9 @@ def _review_stage(transcript: pathlib.Path, state: str, note: str = "") -> None:
     try:
         from meeting_processing import MeetingStatusStore
         store = MeetingStatusStore(ROOT)
-        if state in ("failed", "retrying") and store.review_state(transcript) == "ok":
-            print(f"этап ревизии «ok» не понижаю до «{state}»: ревизия уже доставлена")
-            return
-        store.review(transcript, state, note)
+        # терминальность «ok» — внутри store.review, одной записью (GLM r2 по #556)
+        if store.review(transcript, state, note) is None and state in ("failed", "retrying"):
+            print(f"этап ревизии не понижен до «{state}»: статуса нет или ревизия уже доставлена («ok»)")
     except Exception as e:  # noqa: BLE001 — статус вторичен, ревизия важнее
         print(f"статус этапа ревизии не записан: {e}")
 
@@ -1062,8 +1067,11 @@ def run(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
         # висел бы «retrying» до expire_reviews (аудит 13.09, GLM M3).
         if retry_pointless(rev, transcript, force):
             # «ok» может быть и от прошлого прогона этой же встречи (осознанный
-            # перезапуск): кто довёз — не знаем, и не утверждаем (GLM r1 M1 по #556)
-            _log_line(log, "CLI упал, но ревизия уже доставлена — повтор не нужен")
+            # перезапуск): кто довёз — не знаем, и не утверждаем (GLM r1 M1 по #556);
+            # без статуса вовсе — говорим правду, а не «доставлена» (GLM r2 M2)
+            _log_line(log, "CLI упал, но повтор не нужен: " + (
+                "ревизия уже доставлена" if _review_state(transcript) == "ok"
+                else "статуса встречи нет, а ревизия на месте и свежее стенограммы"))
             return RC_OK
         _log_line(log, f"повтор ревизии через {RETRY_DELAY // 60} мин: процесс CLI не запустился "
                        "или завершился с ошибкой — попытка 2 из 2")

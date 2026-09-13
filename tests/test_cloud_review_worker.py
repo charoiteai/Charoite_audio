@@ -2147,6 +2147,17 @@ def test_review_stage_ok_is_terminal_for_failures_of_other_workers(tmp_path, mon
     cloud_review._review_stage(transcript, "failed", "CLI упал")
     cloud_review._review_stage(transcript, "retrying", "повтор")
     assert store.review_state(transcript) == "ok"
+    # гвард живёт в самой записи store.review — одним read-modify-write (GLM r2 по #556)
+    assert store.review(transcript, "failed", "напрямую") is None and store.review_state(transcript) == "ok"
+    # статус не прочитался — «не знаю», повтор идёт (DS r2 M1): отдельный контекст,
+    # чтобы не снимать monkeypatch ROOT этого теста
+    rev = tmp_path / "2026-07-15_1400_ревизия.md"
+    rev.write_text("# Ревизия\n", encoding="utf-8")
+    assert cloud_review.retry_pointless(rev, transcript, False), "этап «ok» и свежая ревизия — повтор не нужен"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(MeetingStatusStore, "review_state", lambda self, t: (_ for _ in ()).throw(OSError("диск")))
+        assert cloud_review._review_state(transcript) == cloud_review.STATE_UNKNOWN
+        assert not cloud_review.retry_pointless(rev, transcript, False), "«не знаю» — не повод пропускать повтор"
     assert cloud_review.review_delivered(transcript)
     cloud_review._review_stage(transcript, "running", "осознанный повтор")
     assert store.review_state(transcript) == "running"
@@ -2174,6 +2185,9 @@ def test_a_stub_that_lists_facts_is_displaced_before_a_shorter_stub_lands(tmp_pa
     numbered = old.replace("- факт про сроки", "1. факт про сроки").replace("- факт про бюджет", "2) факт про бюджет").replace("- факт про людей", "+ факт про людей")
     assert cloud_review.listed_facts(numbered) == cloud_review.listed_facts(old)
     assert not cloud_review.listed_facts("# Дубль → [[Ядра/Канон]]\n\nДубль. Смерджен ещё раз.\n")
+    # жирная шапка, дата и дробь — не пункты списка (DS r2 I1/M3, GLM r2 M1 по #556)
+    assert not cloud_review.listed_facts("**Дубль.** Смерджен ещё раз.\n15.09 — дедлайн\n1.5 млн рублей — бюджет\n")
+    assert cloud_review.fact_key("15.09 — дедлайн") == cloud_review.fact_key("- 15.09 — дедлайн") == "15 09 дедлайн"
 
 
 def test_an_applied_canon_is_measured_like_any_other(tmp_path):
