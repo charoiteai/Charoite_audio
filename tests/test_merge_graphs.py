@@ -215,3 +215,52 @@ def test_failure_after_move_rolls_every_file_back(tmp_path, monkeypatch):
     assert (src / "_MOC.md").read_text(encoding="utf-8") == donor_moc
     assert (dst / "_MOC.md").read_text(encoding="utf-8") == receiver_moc
     assert list(tmp_path.glob(".charoite-merge-backup-*")), "backup должен остаться"
+
+
+def test_moc_line_with_a_minute_stamp_is_not_shadowed_by_a_seconds_stamp(tmp_path):
+    """Минутная ссылка донора — префикс посекундной в приёмнике: подстрочная
+    проверка выкидывала строку встречи из плана (аудит 13.09, DS I2 / GLM I1)."""
+    src = _graph(tmp_path, "Донор")
+    dst = _graph(tmp_path, "Приёмник")
+    (src / "Встречи" / "2026-08-01_1000.md").write_text("встреча", encoding="utf-8")
+    (src / "_MOC.md").write_text("# Донор — MOC\n\n## 🗓 Встречи\n- [[Встречи/2026-08-01_1000|Тема]] — тема\n",
+                                 encoding="utf-8")
+    (dst / "_MOC.md").write_text("# Приёмник — MOC\n\n## 🗓 Встречи\n- [[Встречи/2026-08-01_100012|Другая]] — x\n",
+                                 encoding="utf-8")
+    _, _, moc_lines = mg.plan(src, dst)
+    assert moc_lines == ["- [[Встречи/2026-08-01_1000|Тема]] — тема"]
+
+
+def test_collision_carries_donor_aliases_into_the_receiver(tmp_path):
+    """Срез шапки донора терял aliases — ссылки по бывшему псевдониму становились
+    битыми (аудит 13.09, GLM M6)."""
+    src = _graph(tmp_path, "Донор")
+    dst = _graph(tmp_path, "Приёмник")
+    (src / "Люди" / "Иван.md").write_text("---\ntype: person\naliases: [Ваня, Иван П.]\n---\nдонорская история",
+                                          encoding="utf-8")
+    (dst / "Люди" / "Иван.md").write_text("---\ntype: person\naliases: [Ванька]\n---\nприёмная история",
+                                          encoding="utf-8")
+    mg.apply(src, dst, *mg.plan(src, dst))
+    merged = (dst / "Люди" / "Иван.md").read_text(encoding="utf-8")
+    assert merged.count("---\n") >= 2 and merged.count("type: person") == 1
+    import frontmatter
+    assert frontmatter.aliases(merged) == ["Ванька", "Ваня", "Иван П."]
+    assert "донорская история" in merged
+
+
+def test_moc_line_without_a_pipe_is_deduplicated_too(tmp_path):
+    """`split("|")` оставлял `]]` в цели, и строка без темы дописывалась при каждом
+    слиянии (круг-1 по #563, DS I4 / GLM I1)."""
+    src = _graph(tmp_path, "Донор")
+    dst = _graph(tmp_path, "Приёмник")
+    (src / "_MOC.md").write_text("# Донор — MOC\n\n## 🗓 Встречи\n- [[Встречи/2026-08-01_1000]]\n"
+                                 "- [[Встречи/2026-08-02_1000]]\n", encoding="utf-8")
+    (dst / "_MOC.md").write_text("# Приёмник — MOC\n\n## 🗓 Встречи\n- [[Встречи/2026-08-01_1000]]\n",
+                                 encoding="utf-8")
+    _, _, moc_lines = mg.plan(src, dst)
+    assert moc_lines == ["- [[Встречи/2026-08-02_1000]]"]
+
+
+def test_crlf_donor_frontmatter_is_stripped(tmp_path):
+    assert mg.strip_frontmatter("---\r\ntype: person\r\n---\r\nтело\r\n") == "тело\r\n"
+    assert mg.strip_frontmatter("---\ntype: person\n---\nтело\n") == "тело\n"

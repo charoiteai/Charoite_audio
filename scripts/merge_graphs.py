@@ -45,6 +45,8 @@ import uuid
 CODE = pathlib.Path(__file__).resolve().parent.parent
 ROOT = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
 sys.path.insert(0, str(CODE / "src"))
+import frontmatter  # noqa: E402
+import graph_links  # noqa: E402
 
 MOC = "_MOC.md"
 
@@ -108,7 +110,7 @@ def ensure_confined(path: pathlib.Path, root: pathlib.Path, role: str) -> None:
 
 def strip_frontmatter(text: str) -> str:
     """YAML-шапка донора срезается: две шапки в одном файле ломают Obsidian."""
-    m = re.match(r"^---\n.*?\n---\n", text, flags=re.DOTALL)
+    m = re.match(r"^---\r?\n.*?\r?\n---\r?\n", text, flags=re.DOTALL)   # и CRLF-шапка (DS M8 по #563)
     return text[m.end():] if m else text
 
 
@@ -150,8 +152,11 @@ def plan(src: pathlib.Path, dst: pathlib.Path) -> tuple[list, list, list[str]]:
     src_moc = src / MOC
     dst_text = read_utf8(dst / MOC, "оглавление приёмника")
     for ln in moc_meeting_lines(read_utf8(src_moc, "оглавление донора")):
-        link = ln.split("|")[0].removeprefix("- [[")
-        if link not in dst_text:
+        # цель и граница ссылки — общие с graph_updater (graph_links): минутная ссылка
+        # донора — префикс посекундной в приёмнике, строка терялась (аудит 13.09,
+        # DS I2 / GLM I1); строка без `|` оставляла `]]` в цели (круг-1 по #563)
+        link = graph_links.moc_line_target(ln)
+        if link is None or not graph_links.link_re(link).search(dst_text):
             moc_lines.append(ln)
     return moves, appends, moc_lines
 
@@ -251,9 +256,15 @@ def apply(src: pathlib.Path, dst: pathlib.Path,
             # shutil.move, не Path.rename: донор бывает на другом томе.
             shutil.move(str(f), str(target))
         for f, target in appends:
-            body = strip_frontmatter(read_utf8(f, "файл донора")).strip()
+            donor_text = read_utf8(f, "файл донора")
+            body = strip_frontmatter(donor_text).strip()
             merged = (read_utf8(target, "файл приёмника").rstrip()
                       + f"\n\n---\n## Перенесено из графа {src.name} ({stamp})\n\n{body}\n")
+            # псевдонимы донора — в шапку приёмника: срез шапки терял aliases, и
+            # ссылки по бывшему псевдониму становились битыми (аудит 13.09, GLM M6)
+            names = frontmatter.aliases(donor_text, f.name)
+            if names:
+                merged = frontmatter.with_aliases(merged, names)
             atomic_write_text(target, merged)
             f.unlink()
         dst_moc = dst / MOC
