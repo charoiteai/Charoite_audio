@@ -169,20 +169,51 @@ def is_counterpart(speaker: str, owner_name: str) -> bool:
     return bool((speaker or "").strip()) and not is_owner(speaker, owner_name)
 
 
-def _own_lines_only(name: str, sample: str, label: str) -> bool:
+def heard_forms(name: str, sample: str) -> tuple[str, ...]:
+    """Формы, в которых `name` слышно в стенограмме: само имя (без учёта
+    регистра) и слова с заглавной, чьей звательной или творительной формой
+    оно могло быть («Саш» для «Саша», «Колей» для «Коля»). Пусто — имени
+    в разговоре не было.
+
+    Правило 3 требует, чтобы имя звучало в тексте, но модель отдаёт
+    именительный падеж, а в речи имя чаще звучит обращением: «Тань, глянь»
+    — это «Таня». Прямая подстрока отвергала бы такое имя как выдуманное.
+    Обратный ход — тем же `nominative_candidates`, которым граф клеит
+    обращение к узлу человека; берутся только слова с заглавной, чтобы
+    «ром» из «выпили ром» не делал Рому услышанной.
+    """
+    low = (name or "").casefold()
+    if not low:
+        return ()
+    forms: list[str] = []
+    if low in sample.casefold():
+        forms.append(low)
+    for word in sorted({w.strip("-") for w in re.findall(r"[А-ЯЁA-Z][\w-]*", sample)}):
+        if low in {c.casefold() for c in nominative_candidates(word)}:
+            if word.casefold() not in forms:
+                forms.append(word.casefold())
+    return tuple(forms)
+
+
+def _own_lines_only(name: str, sample: str, label: str,
+                    forms: tuple[str, ...] = ()) -> bool:
     """Имя звучит ТОЛЬКО в репликах самой метки и это не представление.
 
     Формат хвоста стенограммы — «[ЧЧ:ММ] метка: текст», метка не в начале
-    строки, поэтому ищем «] метка:», а не `startswith`.
+    строки, поэтому ищем «] метка:», а не `startswith`. `forms` — в каких
+    формах имя слышно (heard_forms): обращение «Саш, а ты…» в собственной
+    реплике — тот самый случай, ради которого правило и писалось.
     """
-    low = name.casefold()
-    lines_with = [ln for ln in sample.splitlines() if low in ln.casefold()]
+    forms = tuple(forms) or (name.casefold(),)
+    lines_with = [ln for ln in sample.splitlines()
+                  if any(f in ln.casefold() for f in forms)]
     if not lines_with:
         return False
     own = [ln for ln in lines_with if re.search(rf"\]\s*{re.escape(label)}\s*:", ln)]
     if len(own) != len(lines_with):
         return False    # имя звучало и с другой стороны — законный источник
-    return not re.search(_INTRO + re.escape(name), sample, re.I)
+    intro = _INTRO + "(?:" + "|".join(re.escape(f) for f in forms) + ")"
+    return not re.search(intro, sample, re.I)
 
 
 def trustworthy_name(raw: str, *, sample: str, label: str,
@@ -214,7 +245,8 @@ def trustworthy_name(raw: str, *, sample: str, label: str,
         return None
     if name.casefold() == label.casefold() or name.casefold().startswith("собеседник"):
         return None
-    if name.casefold() not in sample.casefold():
+    forms = heard_forms(name, sample)
+    if not forms:
         return None    # модель выдумала имя, которого в разговоре не было
 
     # падежи — по известным людям графа, до проверки владельца: «Игорёк» из
@@ -234,7 +266,7 @@ def trustworthy_name(raw: str, *, sample: str, label: str,
 
     if is_owner(name, owner_name):
         return None
-    if _own_lines_only(name, sample, label):
+    if _own_lines_only(name, sample, label, forms):
         return None
     if voice_pitch.contradicts(voice, name_gender):
         return None     # басовитый голос и женское имя — оставляем «Собеседник N»
