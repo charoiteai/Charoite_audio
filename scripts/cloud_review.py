@@ -813,8 +813,8 @@ def facts_of(text: str) -> collections.Counter:
         if not ln.lstrip().startswith("#") and len((n := fact_key(ln)).split()) >= 2)
 
 
-_LIST_ITEM = re.compile(r"(?:[-*•]|\d{1,2}[.)])\s*\S")
-_LIST_MARK = re.compile(r"^(?:[-*•]|\d{1,2}[.)])\s*")
+_LIST_ITEM = re.compile(r"(?:[-*•+]|\d{1,2}[.)])\s*\S")
+_LIST_MARK = re.compile(r"^(?:[-*•+]|\d{1,2}[.)])\s*")
 
 
 def fact_key(line: str) -> str:
@@ -915,11 +915,24 @@ def review_delivered(transcript: pathlib.Path) -> bool:
 
 
 def retry_pointless(rev: pathlib.Path, transcript: pathlib.Path, force: bool) -> bool:
-    """Повтор после сбоя CLI не нужен: ревизия на месте, свежее стенограммы, и
-    этап «ok» закрыт — своим прошлым прогоном или соседом. Один предикат на
-    оба места в run(): копии условия уже разъезжались (GLM M2/M3 аудита 13.09,
-    критика GLM r1 по #556)."""
-    return not force and fresh_review(rev, transcript) and review_delivered(transcript)
+    """Повтор после сбоя CLI не нужен: ревизия на месте и свежее стенограммы, а
+    этап либо «ok» (доставил свой прошлый прогон или сосед), либо статуса нет
+    вовсе — старые встречи и ручной запуск scripts/cloud_review.py этапов не
+    ведут, и требовать от них «ok» значило бы всегда гнать второй платный прогон
+    поверх соседской ревизии (DS r1 I2 по #556). Этап судит только там, где он
+    есть: «running»/«retrying» соседа — не доставка. Один предикат на оба места
+    в run(): копии условия уже разъезжались (критика GLM r1 по #556)."""
+    if force or not fresh_review(rev, transcript):
+        return False
+    return _review_state(transcript) in (None, "ok")
+
+
+def _review_state(transcript: pathlib.Path) -> str | None:
+    try:
+        from meeting_processing import MeetingStatusStore
+        return MeetingStatusStore(ROOT).review_state(transcript)
+    except Exception:  # noqa: BLE001 — статус вторичен
+        return None
 
 
 def neighbour_delivered(rev: pathlib.Path, before: float | None,
@@ -1015,10 +1028,21 @@ def _log_line(log: pathlib.Path, line: str) -> None:
 
 def _review_stage(transcript: pathlib.Path, state: str, note: str = "") -> None:
     """Этап ревизии в статусе встречи: приложение видело «готово» при идущей
-    или упавшей ревизии (№240). Статуса нет — не заводим; сбой — не гейт."""
+    или упавшей ревизии (№240). Статуса нет — не заводим; сбой — не гейт.
+
+    «ok» — терминальный: сосед, довёзший ревизию, закрыл этап, и падение
+    ДРУГОГО воркера (не дождался замка, ушёл на чтение, CLI упал) — не исход
+    встречи. Иначе наш «failed»/«retrying» стирал единственное доказательство
+    доставки, по которому судит review_delivered, и вторая попытка шла платным
+    прогоном поверх доставленной ревизии (DS r1 Critical по #556). «running»
+    поверх «ok» разрешён: это осознанный повтор обработки."""
     try:
         from meeting_processing import MeetingStatusStore
-        MeetingStatusStore(ROOT).review(transcript, state, note)
+        store = MeetingStatusStore(ROOT)
+        if state in ("failed", "retrying") and store.review_state(transcript) == "ok":
+            print(f"этап ревизии «ok» не понижаю до «{state}»: ревизия уже доставлена")
+            return
+        store.review(transcript, state, note)
     except Exception as e:  # noqa: BLE001 — статус вторичен, ревизия важнее
         print(f"статус этапа ревизии не записан: {e}")
 
@@ -1460,7 +1484,11 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                         try:
                             # с dropped, как соседние вызовы: непонятые строки
                             # раздела нужны в логе именно здесь (аудит 13.09, DS M5)
-                            renamed = name_fixes.planned(rev, transcript, cfg, dropped=dropped_n)
+                            # apply() уже наполнил dropped_n до LostRace — второй разбор
+                            # дописывает только новое (DS r1 M2 по #556)
+                            again: list[str] = []
+                            renamed = name_fixes.planned(rev, transcript, cfg, dropped=again)
+                            dropped_n.extend(x for x in again if x not in dropped_n)
                         except Exception as e2:  # noqa: BLE001
                             lines.append(f"[cloud-review] имена меток: раздел не разобран ({e2})\n")
                     except Exception as e:  # noqa: BLE001

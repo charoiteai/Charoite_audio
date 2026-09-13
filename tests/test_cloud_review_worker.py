@@ -1909,18 +1909,25 @@ def test_cli_failure_is_retried_once_after_a_pause_and_outside_a_live_meeting(tm
     calls.clear()
     assert cloud_review.run("2026-07-15_1400", transcript, tmp_path / "g", rev, log, {}) == cloud_review.RC_CLI
     assert len(calls) == 2 and "повтор не помог" in log.read_text(encoding="utf-8")
-    # за паузу сосед опубликовал ревизию, но этап не закрыт (убит до доставки):
-    # свежести файла мало, повтор идёт (аудит 13.09, DS I2 / GLM M2)
+    # статуса нет вовсе (старая встреча, ручной запуск): свежая ревизия отменяет
+    # повтор, как и до 13.09 — этапов у таких встреч не бывает (DS r1 I2 по #556)
     from meeting_processing import MeetingStatusStore
     monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
     calls.clear(); events.clear(); log.unlink()
     rev.write_text("# Ревизия\n", encoding="utf-8")
     outcomes = [cloud_review.RC_CLI, cloud_review.RC_OK]
     assert cloud_review.run("2026-07-15_1400", transcript, tmp_path / "g", rev, log, {}) == cloud_review.RC_OK
-    assert len(calls) == 2, "ревизия соседа без этапа «ok» — не доставка"
-    # сосед закрыл этап во время паузы — повтор отменяется (GLM r1 I2)
+    assert len(calls) == 1 and "повтор не нужен" in log.read_text(encoding="utf-8")
+    # этап ведётся и он «running» (сосед опубликовал файл и убит до доставки):
+    # свежести файла мало, повтор идёт (аудит 13.09, DS I2 / GLM M2)
     store = MeetingStatusStore(tmp_path / "data")
     store.processing(transcript, "ревизия")
+    store.review(transcript, "running")
+    calls.clear(); events.clear(); log.unlink()
+    outcomes = [cloud_review.RC_CLI, cloud_review.RC_OK]
+    assert cloud_review.run("2026-07-15_1400", transcript, tmp_path / "g", rev, log, {}) == cloud_review.RC_OK
+    assert len(calls) == 2, "ревизия соседа без этапа «ok» — не доставка"
+    # сосед закрыл этап во время паузы — повтор отменяется (GLM r1 I2)
     store.review(transcript, "running")
     monkeypatch.setattr(cloud_review, "_sleep", lambda s: (events.append(f"sleep {s}"), store.review(transcript, "ok")))
     calls.clear(); events.clear(); log.unlink()
@@ -2125,6 +2132,28 @@ def test_redelivering_the_same_stub_is_a_quiet_no_op(tmp_path):
     assert v.displaced == [] and not cloud_review.displaced_dir(qdir).exists()
 
 
+def test_review_stage_ok_is_terminal_for_failures_of_other_workers(tmp_path, monkeypatch):
+    """Сосед довёз ревизию и закрыл этап «ok»; наш воркер, ушедший на чтение и
+    упавший на CLI, не понижает его до «failed»/«retrying» — иначе
+    review_delivered терял доказательство доставки и вторая попытка шла платным
+    прогоном поверх доставленной ревизии (DS r1 Critical по #556)."""
+    from meeting_processing import MeetingStatusStore
+    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "data")
+    transcript = tmp_path / "2026-07-15_1400.md"
+    transcript.write_text("текст\n", encoding="utf-8")
+    store = MeetingStatusStore(tmp_path / "data")
+    store.processing(transcript, "ревизия")
+    store.review(transcript, "ok")
+    cloud_review._review_stage(transcript, "failed", "CLI упал")
+    cloud_review._review_stage(transcript, "retrying", "повтор")
+    assert store.review_state(transcript) == "ok"
+    assert cloud_review.review_delivered(transcript)
+    cloud_review._review_stage(transcript, "running", "осознанный повтор")
+    assert store.review_state(transcript) == "running"
+    cloud_review._review_stage(transcript, "failed", "и он упал")
+    assert store.review_state(transcript) == "failed"
+
+
 def test_a_stub_that_lists_facts_is_displaced_before_a_shorter_stub_lands(tmp_path):
     """Заглушка с перечнем слитых фактов — единственная запись этих фактов:
     новая заглушка ложится только после копии старой в «вытеснено»
@@ -2142,7 +2171,7 @@ def test_a_stub_that_lists_facts_is_displaced_before_a_shorter_stub_lands(tmp_pa
     assert "Ядра/Дубль.md" in v.applied and "Ядра/Дубль.md" in v.displaced
     assert (cloud_review.displaced_dir(qdir) / "Ядра" / "Дубль.md").read_text(encoding="utf-8") == old
     # нумерованный перечень — тот же перечень (GLM r1 по #556)
-    numbered = old.replace("- факт про сроки", "1. факт про сроки").replace("- факт про бюджет", "2) факт про бюджет").replace("- факт про людей", "3. факт про людей")
+    numbered = old.replace("- факт про сроки", "1. факт про сроки").replace("- факт про бюджет", "2) факт про бюджет").replace("- факт про людей", "+ факт про людей")
     assert cloud_review.listed_facts(numbered) == cloud_review.listed_facts(old)
     assert not cloud_review.listed_facts("# Дубль → [[Ядра/Канон]]\n\nДубль. Смерджен ещё раз.\n")
 
