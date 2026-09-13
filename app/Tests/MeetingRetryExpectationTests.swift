@@ -41,6 +41,16 @@ final class MeetingRetryExpectationTests: XCTestCase {
         XCTAssertEqual(MeetingProcessingPolicy.latest([rerun, fresh], now: now)?.meetingID, fresh.meetingID)
     }
 
+    func testFailedRerunClosesTheExpectationToo() {
+        // ошибка повторного прогона — честный результат, ожидание закрывается
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        let old = snapshot(id: "2026-09-12_1000", state: .error, started: 1_900_000, updated: 1_990_000)
+        let retry = RetryExpectation(meetingID: old.meetingID, afterUpdatedAt: old.updatedAt,
+                                     transcriptPath: old.transcriptPath)
+        let failedAgain = snapshot(id: old.meetingID, state: .error, started: 1_900_000, updated: 1_999_500)
+        XCTAssertEqual(MeetingProcessingPolicy.expected(in: [failedAgain], since: now, retry: retry, now: now)?.state, .error)
+    }
+
     func testStopExpectationStillUsesTheLatestStart() {
         let now = Date(timeIntervalSince1970: 2_000_000)
         let older = snapshot(id: "a", state: .ready, started: 1_999_000, updated: 1_999_000)

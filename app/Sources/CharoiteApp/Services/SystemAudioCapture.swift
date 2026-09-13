@@ -199,8 +199,11 @@ final class SystemAudioCapture: NSObject {
         // «mic» демон открывал микрофон через PortAudio — ровно тот путь, от
         // которого ушли на macOS 15 (аудит 13.09, DS I1). Ждём, как syncMicRate:
         // до трёх раз по 3 с; Stop за это время — обычный выход.
+        // Без устройства ввода кадров не будет никогда: не ждать 9 с и не обещать
+        // «пишется отдельно» (GLM M2 по #564)
+        let hasInput = AVCaptureDevice.default(for: .audio) != nil
         var micAttempt = 0
-        while micInStream && sink.micFrames == 0 && micAttempt < 3 {
+        while micInStream && hasInput && sink.micFrames == 0 && micAttempt < 3 {
             micAttempt += 1
             log("микрофон ещё не дал кадров — жду 3 с (попытка \(micAttempt) из 3)")
             do {
@@ -210,9 +213,11 @@ final class SystemAudioCapture: NSObject {
                 return false
             }
         }
-        micFallback = micInStream && sink.micFrames == 0
+        micFallback = micInStream && hasInput && sink.micFrames == 0
         if micFallback {
             log("микрофон не дал ни кадра за 10 с — в манифест не пишу, демон откроет его отдельно")
+        } else if micInStream && !hasInput {
+            log("устройства ввода нет — микрофон в манифест не пишу")
         }
         writeManifest(micInStream: micInStream && sink.micFrames > 0)
         log("системный звук через ScreenCaptureKit: \(sink.systemFrames) кадров за секунду"
@@ -545,12 +550,17 @@ final class SystemAudioCapture: NSObject {
             "format": "s16le",
             "system": paths.systemURL.path,
             "system_rate": Self.sampleRate,
+            // С какого байта демону читать: 0 — с первого кадра. Каталог сессии
+            // уникален, в файле только эта встреча; без поля демон прыгал в хвост и
+            // терял всё, что записано до его старта (круг-1 по #564, DS Critical)
+            "system_start": 0,
             // Кто именно владеет этими файлами прямо сейчас. Демон поле
             // игнорирует, а нам оно нужно при остановке — см. `stop()`.
             "session": sessionID.uuidString,
         ]
         if micInStream {
             manifest["mic"] = paths.micURL.path
+            manifest["mic_start"] = 0
             // Частота микрофона — фактическая, а не запрошенная.
             manifest["mic_rate"] = sink?.micSampleRate ?? Self.sampleRate
         }

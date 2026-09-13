@@ -67,6 +67,13 @@ final class SuflerService: ObservableObject {
         statusIsError = true
         statusErrorFromDaemon = false
     }
+    /// Снять оба флага ошибки: `statusErrorFromDaemon` закрыт для записи снаружи,
+    /// а «захват восстановлен» с одним снятым флагом прятал баннер отказа диска
+    /// (DS I4 по #564).
+    func clearErrorFlags() {
+        statusIsError = false
+        statusErrorFromDaemon = false
+    }
     @Published var lines: [TranscriptLine] = []
     /// Тень ленты (№153): мутации — ТОЛЬКО из consume и сбросов start(),
     /// мимо коалессера (SuflerTranscriptFeed.swift, там история) — шторм
@@ -317,6 +324,7 @@ final class SuflerService: ObservableObject {
         statusIsError = false
         statusErrorFromDaemon = false
         stickyStatus = nil          // новая встреча — прошлое предупреждение не её
+        notificationsDeniedShown = false   // липкий слот чистится каждую встречу — и подсказка о нём тоже (критика GLM по #564)
 
         // Статус TCC проверяем на каждый Start. Кэшировать сам факт проверки
         // нельзя: после отказа второе нажатие раньше запускало демон в тишине.
@@ -449,9 +457,11 @@ final class SuflerService: ObservableObject {
                     // микрофон в поток не попал — демон пишет его отдельно через PortAudio;
                     // молча это выглядело как «встреча идёт», а владельца в стенограмме
                     // могло не быть (аудит 13.09, DS I1)
-                    self.status = L.t("Микрофон не попал в поток системного звука — пишется отдельно",
-                                      "The microphone did not join the system-audio stream — recorded separately",
-                                      "麦克风未进入系统音频流——将单独录制")
+                    // липко: обычный статус демон перебивает через секунды («Слушаю…»),
+                    // а предупреждение — на всю встречу (DS I2 по #564)
+                    self.stickyStatus = L.t("Микрофон не попал в поток системного звука — пишется отдельно",
+                                            "The microphone did not join the system-audio stream — recorded separately",
+                                            "麦克风未进入系统音频流——将单独录制")
                 }
                 SystemAudioCapture.captureLog(ready ? "захват готов — демон стартует с манифестом" : "захват НЕ поднялся — демон уйдёт на BlackHole")
                 self.launchDaemon(preserveUI: preserveUI, token: token)
@@ -916,6 +926,10 @@ final class SuflerService: ObservableObject {
                 // «Минутки…»), а минута на ответ — короткая: когда окна не
                 // видно, шлём ещё и баннер (ревью 18.08, GLM).
                 status = text
+                // поверх липкого слоя: при отказе в уведомлениях липкая строка иначе
+                // закрывала единственное предупреждение о скорой остановке (DS I3 по #564)
+                statusIsError = true
+                statusErrorFromDaemon = false
                 MeetingNotificationService.shared.presentAutostopWarning(text)
             case "hint":
                 // Демон помечает стрим: manual — запрошен человеком, иначе

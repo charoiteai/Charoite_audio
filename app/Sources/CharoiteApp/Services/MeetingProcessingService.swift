@@ -723,7 +723,13 @@ final class MeetingProcessingService: ObservableObject {
             let box = Box(p: p)
             DispatchQueue.global().asyncAfter(deadline: .now() + Self.renameTimeout) {
                 guard once.first() else { return }
-                if box.p.isRunning { box.p.terminate() }
+                if box.p.isRunning {
+                    box.p.terminate()
+                    // python, глотающий SIGTERM, иначе правил файлы встречи после «не вышло» (DS M6)
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+                        if box.p.isRunning { kill(box.p.processIdentifier, SIGKILL) }
+                    }
+                }
                 cont.resume(returning: false)
             }
         }
@@ -882,7 +888,7 @@ final class MeetingProcessingService: ObservableObject {
         }
     }
 
-    private func accept(_ latest: MeetingProcessingSnapshot?, all snapshots: [MeetingProcessingSnapshot] = []) {
+    private func accept(_ latest: MeetingProcessingSnapshot?, all snapshots: [MeetingProcessingSnapshot]) {
         if let waitingSince {
             if let hit = MeetingProcessingPolicy.expected(
                 in: snapshots, since: waitingSince, retry: retryExpectation) {
