@@ -261,12 +261,14 @@ def _caf_info(body: bytes) -> dt.datetime | None:
 
 # --- WAV ------------------------------------------------------------------
 
+_WAV_MAX_CHUNKS = 1024   # честный WAV — единицы чанков; дальше это не заголовки
+
 def _wav(p: pathlib.Path) -> dt.datetime | None:
     with p.open("rb") as fh:
         head = fh.read(12)
         if len(head) < 12 or head[:4] != b"RIFF" or head[8:12] != b"WAVE":
             return None
-        while True:
+        for _step in range(_WAV_MAX_CHUNKS):   # потолок обхода: битый файл не гуляет до EOF (критика DS r1 по #559)
             ch = fh.read(8)
             if len(ch) < 8:
                 return None
@@ -292,6 +294,7 @@ def _wav(p: pathlib.Path) -> dt.datetime | None:
                 # data — тоже мимо: многие диктофоны пишут LIST/INFO после него
                 fh.seek(size + (size & 1), 1)
 
+        return None
 
 def _riff_info(body: bytes) -> dt.datetime | None:
     off = 0

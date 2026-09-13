@@ -75,13 +75,15 @@ def _moment() -> dt.datetime:
     return dt.datetime.now()
 
 
-def last_meeting_today() -> tuple[str, str] | None:
-    """(stamp, тема) последней сегодняшней стенограммы — кандидат на связь."""
+def last_meeting_today(day: str | None = None) -> tuple[str, str] | None:
+    """(stamp, тема) последней стенограммы дня — кандидат на связь. `day` —
+    день записи (`--moment`), иначе сегодня: заметка вчерашнего вечера иначе
+    искала встречу среди сегодняшних (DS/GLM r1 по #559)."""
     tdir = pathlib.Path(os.environ.get("SUFLER_TRANSCRIPTS_DIR")
                         or ROOT / cfg["log"]["transcripts_dir"])
     if not tdir.exists():
         return None
-    today = f"{dt.datetime.now():%Y-%m-%d}"
+    today = day or f"{dt.datetime.now():%Y-%m-%d}"
     # Только главные файлы встреч: список производных знает meeting_stamp
     # (`_разбор`, `_ревизия_claude`, `_спикеры` тоже) — раньше три исключения
     # руками, и ссылка дневника вела в файл разбора (аудит DeepSeek 17.08).
@@ -91,7 +93,9 @@ def last_meeting_today() -> tuple[str, str] | None:
     # Ключ графа, не стем файла: заметка встречи называется минутным штампом
     # (`Встречи/<штамп>.md`), а стем после наката темы — «<штамп>_Тема»; ссылка
     # по стему висела в пустоте после любого наката (аудит 13.09, DS I3 / GLM I2)
-    stamp = meeting_stamp.graph_key(tdir, cands[-1].stem, GRAPH if str(GRAPH) else None)
+    # graph_dir(cfg) даёт None при незаданном графе; GRAPH тогда Path("") = ".", и
+    # ключ решался бы по чужому ./Встречи относительно CWD (DS/GLM r1 по #559)
+    stamp = meeting_stamp.graph_key(tdir, cands[-1].stem, graphs.graph_dir(cfg))
     first = cands[-1].read_text(encoding="utf-8").splitlines()[:1]
     topic = first[0].lstrip("# ").strip() if first else stamp
     # «# Встреча <stamp> — Тема» → только тема
@@ -199,12 +203,6 @@ def main():
     ndir.mkdir(parents=True, exist_ok=True)
     slug = re.sub(r"[^\wА-Яа-яЁё-]+", "_", title).strip("_")[:40]
     path = ndir / f"{now:%Y-%m-%d_%H%M}_{slug}.md"
-    n = 2
-    while path.exists():
-        # две заметки в минуту с одним заголовком: вторая молча затирала первую
-        # вместе с «Как сказано» (аудит 13.09, GLM I1 / DS M5) — свободное имя
-        path = ndir / f"{now:%Y-%m-%d_%H%M}_{slug}-{n}.md"
-        n += 1
     parts = [
         f"---\ntype: voice-note\ndate: {now:%Y-%m-%d %H:%M}\n---\n",
         f"# {title}\n",
@@ -213,16 +211,21 @@ def main():
     if tasks:
         parts.append("\n## Задачи\n" + "\n".join(f"- [ ] {t}" for t in tasks) + "\n")
     parts.append(f"\n## Как сказано\n> {raw}\n")
-    safe_write.write_text(path, "\n".join(parts))
+    # две заметки в минуту с одним заголовком: вторая молча затирала первую вместе с
+    # «Как сказано» (аудит 13.09, GLM I1 / DS M5). Свободное имя — атомарно с записью
+    # (expect_absent): две одновременные диктовки иначе выбирали одно имя (DS r1 M5 по #559)
+    n = 2
+    while not safe_write.write_text(path, "\n".join(parts), expect_absent=True):
+        path = ndir / f"{now:%Y-%m-%d_%H%M}_{slug}-{n}.md"
+        n += 1
 
     # оглавление заметок — свежие сверху
     moc = ndir / "_ЗАМЕТКИ.md"
     notes = sorted((p for p in ndir.glob("*.md") if not p.name.startswith("_")), reverse=True)
-    moc.write_text(
+    safe_write.write_text(moc,
         "# Голосовые заметки\n\n" +
         "\n".join(f"- [[Заметки/{p.stem}|{p.stem[16:].replace('_', ' ') or p.stem}]] — {p.stem[:15].replace('_', ' ')}"
-                  for p in notes) + "\n",
-        encoding="utf-8")
+                  for p in notes) + "\n")
 
     # память Чароита: заметка находима через recall
     try:
@@ -239,12 +242,12 @@ def main():
 def diary_entry(raw: str) -> None:
     """Дневниковая запись: причесать голосом автора и дозаписать в день."""
     now = _moment()
-    meeting = last_meeting_today()
+    meeting = last_meeting_today(f"{now:%Y-%m-%d}")
 
     # qwen: первое лицо, идеи, задачи, флаг связи со встречей. Ссылку
     # строим МЫ по флагу — модель не выдумывает пути.
     body, ideas, tasks, about_meeting = raw, [], [], False
-    meet_hint = (f"Сегодня была встреча «{meeting[1]}». " if meeting else "")
+    meet_hint = (f"В этот день ({now:%Y-%m-%d}) была встреча «{meeting[1]}». " if meeting else "")
     try:
         content = _llm.complete(
             "Это надиктованная дневниковая запись (сырой текст с распознавания). "
@@ -272,8 +275,8 @@ def diary_entry(raw: str) -> None:
     ddir.mkdir(parents=True, exist_ok=True)
     day = ddir / f"{now:%Y-%m-%d}.md"
     if not day.exists():
-        day.write_text(f"---\ntype: diary\ndate: {now:%Y-%m-%d}\n---\n"
-                       f"# Дневник {now:%Y-%m-%d}\n", encoding="utf-8")
+        safe_write.write_text(day, f"---\ntype: diary\ndate: {now:%Y-%m-%d}\n---\n"
+                                   f"# Дневник {now:%Y-%m-%d}\n", expect_absent=True)
 
     parts = [f"\n## {now:%H:%M}\n", body + "\n"]
     if ideas:

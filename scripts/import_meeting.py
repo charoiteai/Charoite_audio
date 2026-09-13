@@ -36,6 +36,7 @@ import math
 import os
 import pathlib
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -237,6 +238,11 @@ def _archive_source_for(meta: dict, done_file: pathlib.Path,
     ищем по штампу в графе, тем же поиском, что и импорт. Только аудио и
     только имя «Исходник…», которое писали сами.
     """
+    if meta.get("repeat"):
+        # Копия ПОВТОРА исходником архива не владеет: фолбэк по штампу ниже
+        # находил папку первой встречи и ретеншн копии удалял её «Исходник»,
+        # хотя с той встречей ничего не случилось (Critical DS/GLM r1 по #559).
+        return None
     candidates: list[pathlib.Path] = []
     archive = meta.get("archive_source")
     if isinstance(archive, str):
@@ -591,6 +597,7 @@ def archive_folder_for(graph: pathlib.Path, stamp: str) -> pathlib.Path | None:
     # глоб брал папку соседки той же минуты (круг-1 по PR #388, Codex).
     head = f"{stamp[:10]} {meeting_stamp.archive_time(stamp)}"
     patterns = (f"{head} — *", f"{stamp} — *")
+    unowned: pathlib.Path | None = None
     for pat in patterns:
         for f in sorted(graph.parent.glob(f"*/Встречи-архив/{pat}")) + sorted(graph.glob(f"Встречи-архив/{pat}")):
             if not f.is_dir():
@@ -599,9 +606,11 @@ def archive_folder_for(graph: pathlib.Path, stamp: str) -> pathlib.Path | None:
                 owner = json.loads((f / "meeting.meta.json").read_text(encoding="utf-8")).get("meeting_id")
             except (OSError, ValueError, AttributeError):
                 owner = None
-            if owner is None or owner == stamp:
-                return f
-    return None
+            if owner == stamp:
+                return f                 # своя по манифесту — сильнее безхозной
+            if owner is None and unowned is None:
+                unowned = f              # безхозная — кандидат, если своей не найдётся (GLM r1 M4 по #559)
+    return unowned
 
 
 def title_slug(title: str) -> str:
@@ -1004,6 +1013,33 @@ def _note_for(cfg: dict, transcript: pathlib.Path) -> pathlib.Path | None:
         return None
 
 
+def run_child(cmd: list[str], timeout: float | None = None) -> subprocess.CompletedProcess:
+    """Дочерний импорт в своей сессии процессов и с потолком времени.
+
+    Ребёнок без потолка держал скан и воркер импорта приложения навсегда (аудит
+    13.09, DS I1); трёхчасовая запись при RTF ~28x — минуты, два часа — потолок с
+    запасом на диаризацию и граф. kill одного ребёнка оставлял внуков
+    (transcribe_file, graph_updater) дописывать стенограмму после метки ошибки —
+    поэтому своя сессия и killpg (DS/GLM r1 по #559). Шов для тестов: подменяют
+    его, а не subprocess.run."""
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, errors="replace",
+                            start_new_session=True)
+    limit = IMPORT_CHILD_TIMEOUT if timeout is None else timeout
+    try:
+        out, err = proc.communicate(timeout=limit)
+        return subprocess.CompletedProcess(cmd, proc.returncode, out or "", err or "")
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        out, err = proc.communicate()
+        return subprocess.CompletedProcess(
+            cmd, 124, out or "",
+            (err or "") + f"\nимпорт не уложился в {limit / 3600:.0f} ч — прерван вместе с потомками")
+
+
 def _scan_one(f: pathlib.Path, done: pathlib.Path, keep_days: float) -> bool:
     """Один файл папки импорта: ребёнок → done/ с сайдкаром (True) или метка
     ошибки (False)."""
@@ -1014,20 +1050,7 @@ def _scan_one(f: pathlib.Path, done: pathlib.Path, keep_days: float) -> bool:
         # приложение читает наш stdout через трубу, и мегабайт логов
         # транскрибации подвесил бы импорт на полном буфере. Наружу —
         # хвост, в метку ошибки — тоже хвост.
-        try:
-            r = subprocess.run([sys.executable, __file__, str(f),
-                                "--result-json", str(result_path)],
-                               capture_output=True, text=True, errors="replace",
-                               timeout=IMPORT_CHILD_TIMEOUT)
-        except subprocess.TimeoutExpired as e:
-            # Ребёнок без потолка держал скан и воркер импорта приложения навсегда
-            # (аудит 13.09, DS I1). Трёхчасовая запись при RTF ~28x — минуты; два
-            # часа — потолок с запасом на диаризацию и граф.
-            def _text(x):
-                return x if isinstance(x, str) else (x or b"").decode("utf-8", "replace")
-            r = subprocess.CompletedProcess(
-                e.cmd, 124, _text(e.stdout),
-                _text(e.stderr) + f"\nимпорт не уложился в {IMPORT_CHILD_TIMEOUT // 3600} ч — прерван")
+        r = run_child([sys.executable, __file__, str(f), "--result-json", str(result_path)])
         lines = [ln for ln in (r.stdout + "\n" + r.stderr).splitlines() if ln.strip()]
         for ln in lines[-8:]:
             print(f"  {ln}")

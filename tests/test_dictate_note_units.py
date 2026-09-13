@@ -23,6 +23,10 @@ def test_last_meeting_today_links_the_graph_key_not_the_file_stem(tmp_path, monk
     stamp, topic = dn.last_meeting_today()
     assert stamp == f"{today}_1000", "ссылка [[Встречи/<стем с темой>]] висела в пустоте"
     assert topic == "Итоги квартала"
+    # день записи из --moment: вчерашняя заметка ищет вчерашнюю встречу, не сегодняшнюю
+    (tdir / "2026-01-05_0900_Ретро.md").write_text("# Встреча 2026-01-05_0900 — Ретро\nтело\n", encoding="utf-8")
+    assert dn.last_meeting_today("2026-01-05") == ("2026-01-05_0900", "Ретро")
+    assert dn.last_meeting_today("2026-01-06") is None
 
 
 def test_moment_comes_from_the_flag_and_falls_back_to_now(monkeypatch):

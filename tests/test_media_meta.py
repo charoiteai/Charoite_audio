@@ -325,7 +325,9 @@ def test_wav_with_a_zero_data_size_gives_up_instead_of_walking_the_samples(tmp_p
     шагал по сотням мегабайт до конца файла (аудит 13.09, DS I1)."""
     import time
     fmt = b"fmt " + struct.pack("<I", 16) + b"\0" * 16
-    body = fmt + b"data" + struct.pack("<I", 0) + b"\x01\x00" * 200_000   # 400 КБ «сэмплов»
+    # тишина: каждый ложный «заголовок» имел бы размер 0 и шаг 8 байт — без потолка
+    # это миллион итераций по 8 МБ (GLM r1 M3 по #559: сэмплы 0x0001 тест не ловили)
+    body = fmt + b"data" + struct.pack("<I", 0) + bytes(8 * 1024 * 1024)
     p = tmp_path / "stream.wav"
     p.write_bytes(b"RIFF" + struct.pack("<I", 0) + b"WAVE" + body)
     t0 = time.monotonic()

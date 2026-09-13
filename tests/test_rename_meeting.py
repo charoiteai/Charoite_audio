@@ -202,6 +202,13 @@ def test_rename_keeps_the_source_marker_in_the_note_header(world):
     text = note.read_text(encoding="utf-8")
     assert f"# Встреча {STAMP} — Инцидент загрузки — импорт rec.m4a (12 Б)" in text
     assert "Обновление ОС —" not in text
+    # тема с тире и словом «запись» — не хвост исходника (GLM r1 I1 / DS M4 по #559)
+    note.write_text(text.replace("— Инцидент загрузки — импорт rec.m4a (12 Б)",
+                                 "— Диктофон — запись идей — импорт rec.m4a (12 Б)"), encoding="utf-8")
+    pretty2, slug2 = rm.pretty_and_slug("Планёрка")
+    rm.apply(rm.plan(graph, tdir, STAMP, pretty2, slug2), graph, STAMP, pretty2)
+    text = note.read_text(encoding="utf-8")
+    assert f"# Встреча {STAMP} — Планёрка — импорт rec.m4a (12 Б)" in text and "запись идей" not in text.splitlines()[4]
 
 
 def test_rename_refuses_when_the_target_archive_folder_exists(world):
