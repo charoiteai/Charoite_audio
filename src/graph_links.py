@@ -31,6 +31,26 @@ _FENCE_RE = re.compile(r"^[ \t]*(```|~~~)")
 ARCHIVE_DIRS = ("Встречи-архив",)
 
 
+def link_re(target: str) -> re.Pattern:
+    """Ссылка на узел или встречу целиком: после цели — не буква, цифра, «-» и «_».
+    Минутный штамп — префикс посекундного (`_1000` ⊂ `_100012`), а белый список
+    границ `]]`/`|`/`#` пропускал пробел перед `]]` и `^блок` — на каждом ретрае
+    строка дописывалась снова (круг-1 по #563, DS I5). Одна реализация на
+    graph_updater и merge_graphs (критика GLM)."""
+    return re.compile(r"\[\[" + re.escape(target) + r"(?![\w-])")
+
+
+_MOC_LINE_RE = re.compile(r"^-\s*\[\[([^\]|#^]+?)\s*(?:\]\]|\||#|\^)")
+
+
+def moc_line_target(line: str) -> str | None:
+    """Цель ссылки из строки MOC `- [[Встречи/…|Тема]] — …`, в том числе без `|`:
+    `split("|")` на такой строке оставлял хвост `]]` в цели, и проверка не
+    совпадала никогда (круг-1 по #563, DS I4 / GLM I1)."""
+    m = _MOC_LINE_RE.match(line)
+    return m.group(1) if m else None
+
+
 def norm(s: str) -> str:
     return unicodedata.normalize("NFC", s).strip().casefold()
 

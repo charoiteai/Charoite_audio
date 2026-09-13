@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import pathlib
 import sys
 from pathlib import Path
 
@@ -54,7 +55,8 @@ def test_unreadable_node_is_skipped_with_a_journal_line_not_a_crash(tmp_path, mo
     (g / "Ядра" / "Живое.md").write_text("# Живое\n## Статус\nв работе\n", encoding="utf-8")
     gu.rebuild_cores_moc(g)
     idx = (g / "Ядра" / "_ЯДРА.md").read_text(encoding="utf-8")
-    assert "[[Ядра/Живое|Живое]] — в работе" in idx and "Тема" not in idx
+    assert "[[Ядра/Живое|Живое]] — в работе" in idx
+    assert "[[Ядра/Тема|Тема]] — ⚠ файл не прочитан" in idx, "пропажа ядра должна быть видна (DS M7)"
 
 
 def test_core_link_in_meeting_note_prefers_the_core_over_a_namesake_system(tmp_path):
@@ -98,6 +100,77 @@ def test_ambiguous_core_name_does_not_spawn_a_third_core(tmp_path, monkeypatch):
     gu.upsert_core(g, {"имя": "Пилот проект", "статус": "новый"}, LINK, "2026-09-13_1200")
     assert not (g / "Ядра" / "Пилот проект.md").exists(), "третье ядро на ту же тему"
     journal = (tmp_path / "logs" / "graph_unlinked.log").read_text(encoding="utf-8")
-    assert "ядро неоднозначно: Пилот проект" in journal
+    assert "Ядра/Пилот проект: подходит нескольким узлам" in journal
+    cands = (g / gu.CANDIDATES_NOTE).read_text(encoding="utf-8")
+    assert "«Пилот проект» (ядро)" in cands and "[[Ядра/Пилот проект 2026]]" in cands, cands
+    # заметка встречи: не фантом [[Ядра/Пилот проект]], а текст со ссылками на кандидатов (DS I3)
+    line = gu.canon_link(g, "Пилот проект", "Ядра")
+    assert "[[Ядра/Пилот проект|" not in line and "[[Ядра/Пилот проект 2026|Пилот проект 2026]]" in line, line
     gu.upsert_core(g, {"имя": "Новая тема", "статус": "новый"}, LINK, "2026-09-13_1200")
     assert (g / "Ядра" / "Новая тема.md").exists(), "однозначно новая тема заводится как раньше"
+
+
+def test_chronicle_line_lands_under_the_heading_in_a_crlf_core(tmp_path):
+    """DS I1 (круг-1 по #563): регекс заголовка без `\\r?` на CRLF-ядре. По факту
+    read_text приводит CRLF к LF ещё при чтении, так что регрессии не было; тест
+    закрепляет, что CRLF-ядро даёт одну секцию хроники и обе строки."""
+    g = _graph(tmp_path)
+    core = g / "Ядра" / "Тема.md"
+    core.write_bytes("---\r\ntype: ядро\r\n---\r\n# Тема\r\n\r\n## Статус\r\nстарый _(обновлено 2026-09-01)_\r\n\r\n"
+                     "## Хроника\r\n- [[Встречи/2026-09-01_1000]]\r\n".encode("utf-8"))
+    gu.upsert_core(g, {"имя": "Тема", "статус": "новый", "обновление": "раз"}, LINK, "2026-09-13_1200")
+    gu.upsert_core(g, {"имя": "Тема", "статус": "новее", "обновление": "два"}, "Встречи/2026-09-13_1300", "2026-09-13_1300")
+    # read_text приводит CRLF к LF, safe_write пишет LF: файл нормализуется, секция одна
+    text = core.read_text(encoding="utf-8")
+    assert text.count("## Хроника") == 1, text
+    assert "## Хроника\n- [[Встречи/2026-09-13_1300]] — два" in text, text
+    assert "- [[Встречи/2026-09-13_1200]] — раз" in text
+
+
+def test_link_boundary_accepts_space_and_block_ref_but_not_a_longer_stamp():
+    """Белый список границ `]]`/`|`/`#` пропускал пробел перед `]]` и `^блок`,
+    и строка дописывалась на каждом ретрае (круг-1 по #563, DS I5)."""
+    link = "Встречи/2026-09-13_1130"
+    for text in ("- [[Встречи/2026-09-13_1130]]", "- [[Встречи/2026-09-13_1130|Тема]]",
+                 "- [[Встречи/2026-09-13_1130#Решения]]", "- [[Встречи/2026-09-13_1130^abc]]",
+                 "- [[Встречи/2026-09-13_1130 ]]"):
+        assert gu.has_link(text, link), text
+    assert not gu.has_link("- [[Встречи/2026-09-13_113012|Другая]]", link)
+    assert not gu.has_link("- [[Встречи/2026-09-13_1130-2]]", link)
+
+
+def test_unreadable_moc_or_stub_target_does_not_crash_the_meeting(tmp_path, monkeypatch):
+    """Чтение _MOC.md и цели заглушки остались без охраны (круг-1 по #563: DS I2/M6, GLM I2/I3)."""
+    g = _graph(tmp_path)
+    monkeypatch.setattr(gu, "ROOT", tmp_path)
+    moc = g / "_MOC.md"
+    moc.write_bytes(b"# MOC\n\n## \xf0\x9f\x97\x93 \xff\n")
+    assert gu.append_moc_line(moc, LINK, f"- [[{LINK}|Тема]] — x") is False
+    (g / "Люди" / "Иван.md").write_text("---\ntype: person\ntags: [дубль, redirect, tier3-nli]\n---\n"
+                                        "# Иван → [[Люди/Иван Петров]]\n\n⚠️ **Дубль. Смерджен Tier3-NLI.**\n",
+                                        encoding="utf-8")
+    target = g / "Люди" / "Иван Петров.md"
+    target.write_text("# Иван Петров\n## Встречи\n", encoding="utf-8")
+    real_read = pathlib.Path.read_text
+
+    def read_text(self, *a, **k):
+        if self.name == "Иван Петров.md":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "read_text", read_text)
+    gu.upsert_entity(g, "Люди", "Иван", "человек", "", LINK, "сказал")
+    monkeypatch.setattr(pathlib.Path, "read_text", real_read)
+    assert target.read_text(encoding="utf-8") == "# Иван Петров\n## Встречи\n", "нечитаемую цель не трогаем"
+    journal = (tmp_path / "logs" / "graph_unlinked.log").read_text(encoding="utf-8")
+    assert "узел не прочитан: Люди/Иван Петров" in journal and "узел не прочитан: Граф/_MOC" in journal
+
+
+def test_core_stub_pointing_to_a_system_keeps_the_live_canon(tmp_path):
+    """Заглушка «→ [[Системы/X]]» в Ядрах — не ядро: ссылка встречи идёт в живой узел (GLM M2 по #563)."""
+    g = _graph(tmp_path)
+    (g / "Системы" / "Витрина.md").write_text("# Витрина\n", encoding="utf-8")
+    (g / "Ядра" / "Витрина.md").write_text("---\ntype: ядро\ntags: [дубль, redirect, tier3-nli]\n---\n"
+                                           "# Витрина → [[Системы/Витрина]]\n\n⚠️ **Дубль. Смерджен Tier3-NLI.**\n",
+                                           encoding="utf-8")
+    assert gu.canon_link(g, "Витрина", "Ядра") == "[[Системы/Витрина|Витрина]]"
