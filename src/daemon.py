@@ -56,7 +56,7 @@ import voice_pitch  # noqa: E402
 from audio import AudioHub  # noqa: E402
 from llm import LLM, embed as llm_embed  # noqa: E402
 from stt import STT  # noqa: E402
-from transcript import MINUTES_DRAFT_MARK, NOISE, Transcript  # noqa: E402
+from transcript import MINUTES_DRAFT_MARK, Transcript, is_noise  # noqa: E402
 
 import brain  # noqa: E402
 import file_locks  # noqa: E402
@@ -1154,7 +1154,7 @@ def main():
                         except (TypeError, ValueError, ZeroDivisionError):
                             pass        # телеметрия не смеет ронять распознавание
                         mark_stt_stage("postprocess")
-                    if not text or text.lower().strip(" .!») ") in NOISE:
+                    if not text or is_noise(text):
                         continue
                     # Секунды речи по голосам — ПОСЛЕ отсева: клавиатура и
                     # шум комнаты добирали порог «15 секунд речи» вместо

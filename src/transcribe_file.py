@@ -19,8 +19,8 @@ import wave
 import numpy as np
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from stt import STT  # noqa: E402
-from transcript import NOISE, Transcript  # noqa: E402
+from stt import AFCONVERT_TIMEOUT, STT  # noqa: E402
+from transcript import Transcript, is_noise  # noqa: E402
 
 from charoite_paths import harden_umask, resolve_root
 from config_loader import load_user_or_example
@@ -45,9 +45,35 @@ def _scratch_dir() -> pathlib.Path:
     atexit.register(shutil.rmtree, d, True)
     return d
 
-def to_wav16k(src: pathlib.Path, pcm_rate: int = 16000) -> pathlib.Path:
-    if src.suffix.lower() == ".wav":
+STT_RATE = 16000   # контракт STT.transcribe — float32 mono 16 кГц (stt.py)
+
+
+def _afconvert(src: pathlib.Path, out: pathlib.Path) -> pathlib.Path:
+    """Свести что угодно к моно 16 бит 16 кГц; потолок — против зависшего входа."""
+    subprocess.run(["afconvert", "-f", "WAVE", "-d", f"LEI16@{STT_RATE}", "-c", "1",
+                    str(src), str(out)], check=True, capture_output=True,
+                   timeout=AFCONVERT_TIMEOUT)
+    return out
+
+
+def wav_is_mono_16bit(path: pathlib.Path, rate: int = STT_RATE) -> bool:
+    """WAV уже в формате STT: моно, 16 бит, нужная частота. Не разобрали —
+    False: пусть сводит afconvert, он и скажет, что с файлом не так."""
+    try:
+        with wave.open(str(path), "rb") as w:
+            return (w.getnchannels() == 1 and w.getsampwidth() == 2
+                    and w.getframerate() == rate)
+    except (wave.Error, EOFError, OSError):
+        return False
+
+
+def to_wav16k(src: pathlib.Path, pcm_rate: int = STT_RATE) -> pathlib.Path:
+    if src.suffix.lower() == ".wav" and wav_is_mono_16bit(src):
         return src
+    # Стерео или не 16 кГц: до 13.09 такой WAV отдавался как есть — стерео
+    # читалось моно двойной скорости, 44,1 кГц уходило в модель под своей
+    # частотой, стенограмма выходила мусором без единой ошибки (аудит 13.09,
+    # DS I3 / GLM I1). Сводим тем же afconvert, что и m4a.
     if src.suffix.lower() == ".pcm":  # сырая запись AudioHub после крэша: s16le mono
         out = _scratch_dir() / "rec.wav"
         with wave.open(str(out), "wb") as w, src.open("rb") as f:
@@ -56,11 +82,12 @@ def to_wav16k(src: pathlib.Path, pcm_rate: int = 16000) -> pathlib.Path:
             w.setframerate(pcm_rate)  # из audio.samplerate конфига, не хардкод
             while chunk := f.read(1 << 20):
                 w.writeframes(chunk)
-        return out
-    out = _scratch_dir() / "rec.wav"
-    subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1",
-                    str(src), str(out)], check=True, capture_output=True)
-    return out
+        if pcm_rate == STT_RATE:
+            return out
+        # крэш-запись на частоте конфига (audio.samplerate ≠ 16000): гейт ниже
+        # её не пропустит, сводим тем же afconvert (DS r1 I1 / GLM M4 по #555)
+        return _afconvert(out, _scratch_dir() / "rec16k.wav")
+    return _afconvert(src, _scratch_dir() / "rec.wav")
 
 
 def main():
@@ -72,6 +99,9 @@ def main():
     stt = STT(cfg)
     wav = to_wav16k(src, pcm_rate=int(cfg["audio"]["samplerate"]))
     with wave.open(str(wav), "rb") as w:
+        if w.getnchannels() != 1 or w.getsampwidth() != 2 or w.getframerate() != STT_RATE:
+            sys.exit(f"{wav.name}: после сведения ожидался моно 16-бит WAV {STT_RATE} Гц, "
+                     f"а не {w.getnchannels()} кан. × {w.getsampwidth() * 8} бит @ {w.getframerate()} Гц")
         sr = w.getframerate()
         audio = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
     dur = len(audio) / sr
@@ -101,7 +131,7 @@ def main():
         if len(chunk) < sr:  # хвост меньше секунды
             break
         text = stt.transcribe(chunk, sr).strip()
-        if not text or text.lower().strip(" .!») ") in NOISE:
+        if not text or is_noise(text):
             continue
         text = Transcript._cut_overlap(prev, text) if prev else text
         if text:
