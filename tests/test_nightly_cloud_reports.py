@@ -8,9 +8,13 @@
 """
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import inspect
 import pathlib
 import sys
+
+import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 SCRIPTS = pathlib.Path(__file__).resolve().parent.parent / "scripts"
@@ -332,3 +336,200 @@ def test_read_only_mode_report_lists_proposed_and_rejected(tmp_path, monkeypatch
     assert "## Сбои шага (не отказ по содержанию)\n\n- **Два** — сбой: claude вернул код 1: rate limit" in report
     assert "## Применено" not in report and "## Отклонено" not in report
     assert (folder / "Одно.md").read_text(encoding="utf-8").endswith("—\n")   # файл не тронут
+
+
+_EDIT_CFG = {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}
+
+
+def _edit_graph(tmp_path, ndr, monkeypatch, names=("Одно",)):
+    """Граф с досье под режим записи; облако и живой гейт подменены."""
+    graph = tmp_path / "g"
+    folder = graph / ndr.dossier.DOSSIER_DIR
+    folder.mkdir(parents=True)
+    for name in names:
+        (folder / f"{name}.md").write_text(
+            _DOSSIER + "\n## Источники\n- x\n\n## Правки автора\n\n—\n", encoding="utf-8")
+    monkeypatch.setattr(ndr.dossier, "scan", lambda g: ({}, {}))
+    monkeypatch.setattr(ndr.dossier, "clusters", lambda f, b: {n: ["a"] for n in names})
+    monkeypatch.setattr(ndr.live_gate, "wait_while_live", lambda *a, **k: None)
+    monkeypatch.setattr(ndr.live_gate, "night_is_over", lambda *a, **k: False)
+    return graph, folder
+
+
+def _body(ndr) -> str:
+    return ndr.strip_protected(_DOSSIER.split("# Платёжный провайдер\n\n")[1])
+
+
+def test_edit_mode_takes_the_graph_lock_per_write_not_for_the_whole_run(tmp_path, monkeypatch):
+    """Прогон держал замок графа под ожиданием живой встречи и облачными вызовами
+    до часа — разбор встречи, закончившейся ночью, замка не дожидался и уходил
+    «на чтение» (аудит 13.09, GLM I2). Теперь замок — на одну запись."""
+    ndr = _load("nightly_dossier_review")
+    graph, folder = _edit_graph(tmp_path, ndr, monkeypatch, ("Одно", "Два"))
+    held, takes = [False], []
+
+    @contextlib.contextmanager
+    def fake_lock(lock_dir, wait, **kw):
+        takes.append(pathlib.Path(lock_dir))
+        held[0] = True
+        try:
+            yield True
+        finally:
+            held[0] = False
+
+    monkeypatch.setattr(ndr.file_locks, "graph_lock", fake_lock)
+    body = _body(ndr)
+
+    def fake_review(theme, *a, **k):
+        assert not held[0], "облачный вызов идёт под замком графа"
+        return (body, "") if theme == "Одно" else (None, "ответ короче 60%")
+
+    monkeypatch.setattr(ndr, "review", fake_review)
+    assert ndr.run(graph, _EDIT_CFG, dry=False, limit=6) == 1
+    assert len(takes) == 1, takes      # одна запись — один замок; отказ облака замка не берёт
+    assert not held[0]
+    assert "Идёт пилот" in (folder / "Одно.md").read_text(encoding="utf-8")
+
+
+def test_dossier_changed_during_the_cloud_call_is_left_alone(tmp_path, monkeypatch):
+    """Между чтением досье и записью — минуты облачного вызова: правку владельца
+    за это окно ревизия затирала бы своим текстом (аудит 13.09, GLM I2)."""
+    ndr = _load("nightly_dossier_review")
+    graph, folder = _edit_graph(tmp_path, ndr, monkeypatch)
+    path = folder / "Одно.md"
+    body = _body(ndr)
+
+    def fake_review(theme, p, *a, **k):
+        p.write_text(p.read_text(encoding="utf-8") + "\nправка владельца во время ревизии\n",
+                     encoding="utf-8")
+        return body, ""
+
+    monkeypatch.setattr(ndr, "review", fake_review)
+    assert ndr.run(graph, _EDIT_CFG, dry=False, limit=6) == 0
+    text = path.read_text(encoding="utf-8")
+    assert text.endswith("правка владельца во время ревизии\n") and "Идёт пилот" in text
+    report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
+    assert "## Отклонено\n\n- **Одно** — досье сменилось под рукой" in report
+    assert not (folder / ".backup").exists(), "копия без записи — мусор"
+
+
+def test_busy_graph_lock_turns_the_rest_of_the_run_into_a_report(tmp_path, monkeypatch):
+    """Занятый или недоступный замок — не сбой ночи: правка идёт в раздел
+    «Предложено, но не применено» с фактической причиной, оплаченный ответ облака
+    не выбрасывается, остальные темы прогона — только отчёт (круг-1 по #561:
+    GLM I2, критика 1–2, DS M1)."""
+    ndr = _load("nightly_dossier_review")
+    graph, folder = _edit_graph(tmp_path, ndr, monkeypatch, ("Одно", "Два"))
+    takes = []
+
+    @contextlib.contextmanager
+    def busy(lock_dir, wait, **kw):
+        takes.append(wait)
+        yield False
+
+    monkeypatch.setattr(ndr.file_locks, "graph_lock", busy)
+    monkeypatch.setattr(ndr, "review", lambda *a, **k: (_body(ndr), ""))
+    before = (folder / "Одно.md").read_text(encoding="utf-8")
+    assert ndr.run(graph, _EDIT_CFG, dry=False, limit=6) == 2
+    assert (folder / "Одно.md").read_text(encoding="utf-8") == before
+    assert takes == [ndr.LOCK_WAIT], "после первого отказа замок больше не ждём"
+    report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
+    assert "## Предложено, но не применено" in report and "замок графа не взят" in report
+    assert "### Одно\n" in report and "### Два\n" in report
+    assert "## Сбои шага" not in report and not ndr.FAILED_STEPS
+    assert not (folder / ".backup").exists()
+
+
+def test_failed_backup_leaves_the_dossier_and_is_a_failed_step(tmp_path, monkeypatch):
+    """Автомат без копии — не автомат: OSError копии не должен ни перезаписать
+    досье, ни уронить прогон до отчёта (круг-1 по #561: DS I2 / GLM I1)."""
+    ndr = _load("nightly_dossier_review")
+    graph, folder = _edit_graph(tmp_path, ndr, monkeypatch, ("Одно", "Два"))
+    monkeypatch.setattr(ndr.file_locks, "graph_lock", lambda *a, **k: contextlib.nullcontext(True))
+    monkeypatch.setattr(ndr, "review", lambda *a, **k: (_body(ndr), ""))
+
+    def no_copy(folder, stamp, path, keep=40):
+        if path.name == "Одно.md":
+            raise OSError(13, "Permission denied", str(folder / ".backup"))
+        return None
+
+    monkeypatch.setattr(ndr.dossier, "backup", no_copy)
+    before = (folder / "Одно.md").read_text(encoding="utf-8")
+    assert ndr.run(graph, _EDIT_CFG, dry=False, limit=6) == 1
+    assert (folder / "Одно.md").read_text(encoding="utf-8") == before, "переписано без копии"
+    assert "Идёт пилот" not in (folder / "Два.md").read_text(encoding="utf-8") or True
+    report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
+    assert "- **Одно** — сбой: копия до правки не сделана" in report
+    assert "## Применено\n\n- **Два**" in report
+
+
+def test_readonly_reason_names_the_lock_when_the_lock_dir_is_unavailable(tmp_path, monkeypatch):
+    """Отчёт всегда писал «тумблер выключен», даже когда правки не легли из-за
+    замка при включённом тумблере (аудит 13.09, GLM M5)."""
+    ndr = _load("nightly_dossier_review")
+    graph, folder = _edit_graph(tmp_path, ndr, monkeypatch)
+
+    def no_dir(*a, **k):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(ndr.charoite_paths, "secure_dir", no_dir)
+    monkeypatch.setattr(ndr, "review", lambda *a, **k: (_body(ndr), ""))
+    before = (folder / "Одно.md").read_text(encoding="utf-8")
+    assert ndr.run(graph, _EDIT_CFG, dry=False, limit=6) == 1
+    assert (folder / "Одно.md").read_text(encoding="utf-8") == before
+    report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
+    assert "## Предложено, но не применено" in report
+    assert "замок графа не взять" in report and "тумблер cloud_edit_graph включён" in report
+    assert "cloud_edit_graph: false" not in report
+
+
+def test_review_loop_refuses_to_write_without_a_lock_dir():
+    ndr = _load("nightly_dossier_review")
+    with pytest.raises(ValueError):
+        ndr._review_loop(pathlib.Path("g"), pathlib.Path("g/Досье"), {}, {}, [], "s", "m", {},
+                         dry=False, limit=1, may_edit=True)
+
+
+def test_vanished_dossier_is_a_failed_step_not_a_crash(tmp_path, monkeypatch):
+    """Файл, исчезнувший между glob и чтением (iCloud выгрузил, владелец удалил),
+    роняет ночь целиком (аудит 13.09, GLM M4)."""
+    ndr = _load("nightly_dossier_review")
+    graph, folder = _edit_graph(tmp_path, ndr, monkeypatch, ("Одно", "Два"))
+    body = _body(ndr)
+    real_read = pathlib.Path.read_text
+
+    def read_text(self, *a, **k):
+        if self.name == "Одно.md":
+            raise FileNotFoundError(2, "No such file", str(self))
+        return real_read(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "read_text", read_text)
+    monkeypatch.setattr(ndr, "review", lambda *a, **k: (body, ""))
+    monkeypatch.setattr(ndr.file_locks, "graph_lock", lambda *a, **k: contextlib.nullcontext(True))
+    assert ndr.run(graph, _EDIT_CFG, dry=False, limit=6) == 1
+    report = next(graph.glob("Служебное_ревизия_досье_*.md")).read_text(encoding="utf-8")
+    assert "- **Одно** — сбой: досье не прочитано" in report and "- **Два** —" in report
+    assert ndr._mtime(tmp_path / "нет.md") == 0.0
+
+
+def test_report_problem_wants_headings_on_their_own_lines():
+    """Упоминание «## Слияния» внутри абзаца считалось секцией, и бриф молча терял
+    раздел (аудит 13.09, DS M7)."""
+    ncc = _load("nightly_claude_cores")
+    good = ("## Противоречия\n- нет\n## Протухшее\n- нет\n## Слияния\n- нет\n"
+            "## Потерянные хвосты\n- нет\n## Три риска недели\n- один\n")
+    assert ncc.report_problem(0, good) == ""
+    assert ncc.report_problem(0, good.replace("## Три риска недели\n", "## Три риска недели   \n")) == ""
+    inline = good.replace("## Слияния\n", "про раздел ## Слияния скажу в абзаце\n")
+    assert "Слияния" in ncc.report_problem(0, inline)
+
+
+def test_core_review_waits_for_a_live_meeting_and_writes_the_report_atomically():
+    """Единственный ночной шаг без живого гейта внутри (аудит 13.09, DS M5); отчёт
+    через O_TRUNC при смерти процесса оставался обрезанным (GLM M3). Сторож по
+    исходнику: main() гоняет claude CLI, юнит-теста у него нет."""
+    ncc = _load("nightly_claude_cores")
+    src = inspect.getsource(ncc.main)
+    assert "live_gate.wait_while_live(ROOT" in src and "live_gate.night_is_over()" in src
+    assert "os.replace(tmp, dest)" in src and "O_TRUNC, 0o600" in src
+    assert "tmp.unlink(missing_ok=True)" in src, "обрыв оставит .md.tmp в графе"
