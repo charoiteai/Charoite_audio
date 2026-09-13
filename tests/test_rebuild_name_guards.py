@@ -48,14 +48,14 @@ def test_invented_name_is_refused(monkeypatch):
     _model(monkeypatch, {"Собеседник 1": "Виктор", "Собеседник 2": "?"})
     names, answered = rt.name_speakers(CFG, lines)
     assert names == {}
-    assert answered is True, "отказ гварда — не молчание модели"
+    assert answered is False, "всё предложенное отвергнуто — снаружи это молчание, плашка остаётся (критика DS по #551)"
 
 
 def test_address_in_own_line_is_not_the_speaker(monkeypatch):
     """Р2: «Маш, ты смету видела?» говорит НЕ Маша."""
     lines = [("Собеседник 1", "Маш, ты смету видела?"), ("Собеседник 2", "Потом посмотрю")]
     _model(monkeypatch, {"Собеседник 1": "Маша"})
-    assert rt.name_speakers(CFG, lines) == ({}, True)
+    assert rt.name_speakers(CFG, lines) == ({}, False)
 
 
 def test_vocative_from_the_other_side_is_accepted_in_nominative(monkeypatch):
@@ -67,9 +67,16 @@ def test_vocative_from_the_other_side_is_accepted_in_nominative(monkeypatch):
 
 
 def test_junk_keys_and_values_are_ignored(monkeypatch):
+    """Мусорные ключи и «?» — не предложения: модель честно сказала «имён нет»."""
     lines = [("Собеседник 1", "Привет, я Сергей")]
     _model(monkeypatch, {"Я": "Сергей", "Собеседник 1": 7, "Собеседник 9": " ", "Собеседник 3": "?"})
     assert rt.name_speakers(CFG, lines) == ({}, True)
+
+
+def test_partial_acceptance_is_still_an_answer(monkeypatch):
+    lines = [("Собеседник 1", "Привет, я Сергей"), ("Собеседник 2", "А я тут")]
+    _model(monkeypatch, {"Собеседник 1": "Сергей", "Собеседник 2": "Виктор"})
+    assert rt.name_speakers(CFG, lines) == ({"Собеседник 1": "Сергей"}, True)
 
 
 def test_yield_to_live_has_a_cap(monkeypatch):
@@ -108,16 +115,16 @@ def test_sample_is_cut_on_a_line_boundary(monkeypatch):
     monkeypatch.setattr(rt, "_yield_to_live", lambda *a, **k: None)
     filler = " ".join(["слово"] * 30)
     lines: list[tuple[str, str]] = [("Собеседник 1", "начнём")]
-    while len("\n".join(f"[{i}] {s_}: {t}" for i, (s_, t) in enumerate(lines, 1))) <= 6600:
+    while len("\n".join(rt._sample_line(s_, t) for s_, t in lines)) <= 6600:
         lines.append(("Собеседник 2", filler))
-    joined = "\n".join(f"[{i}] {s_}: {t}" for i, (s_, t) in enumerate(lines, 1))
-    start = len(joined) + 1 + len(f"[{len(lines) + 1}] Собеседник 2: ")
+    joined = "\n".join(rt._sample_line(s_, t) for s_, t in lines)
+    start = len(joined) + 1 + len(rt._sample_line("Собеседник 2", ""))
     pad = "x" * (7000 - start - 4)
     lines.append(("Собеседник 2", pad + " Ленинградское шоссе обсудили"))
-    joined = "\n".join(f"[{i}] {s_}: {t}" for i, (s_, t) in enumerate(lines, 1))
+    joined = "\n".join(rt._sample_line(s_, t) for s_, t in lines)
     assert joined[6997:7000] == "Лен", joined[6990:7005]
     names, answered = rt.name_speakers(CFG, lines)
-    assert answered is True and names == {}, names
+    assert names == {} and answered is False, names       # единственное предложенное отвергнуто
     assert seen["sample"] == rt._cut_lines(joined, 7000)
     assert joined.startswith(seen["sample"] + "\n"), "обрезка не по границе строки"
     assert "Лен" not in seen["sample"]

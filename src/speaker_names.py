@@ -170,17 +170,21 @@ def is_counterpart(speaker: str, owner_name: str) -> bool:
 
 
 def heard_forms(name: str, sample: str) -> tuple[str, ...]:
-    """Формы, в которых `name` слышно в стенограмме: само имя (без учёта
-    регистра) и слова с заглавной, чьей звательной или творительной формой
-    оно могло быть («Саш» для «Саша», «Колей» для «Коля»). Пусто — имени
-    в разговоре не было.
+    """Формы, в которых `name` слышно в стенограмме: само имя целым словом и
+    слова с заглавной, чьей звательной или творительной формой оно могло быть
+    («Саш» для «Саша», «Колей» для «Коля»). Пусто — имени в разговоре не было.
 
     Правило 3 требует, чтобы имя звучало в тексте, но модель отдаёт
     именительный падеж, а в речи имя чаще звучит обращением: «Тань, глянь»
     — это «Таня». Прямая подстрока отвергала бы такое имя как выдуманное.
     Обратный ход — тем же `nominative_candidates`, которым граф клеит
-    обращение к узлу человека; берутся только слова с заглавной, чтобы
-    «ром» из «выпили ром» не делал Рому услышанной.
+    обращение к узлу человека, и только из положения, где так и звучит имя:
+    обращение отделено знаком или стоит в конце («Коль, ты тут?», «Саш!»,
+    «…спроси, Тань»), творительный падеж — после «с»/«со» («договорились с
+    Сашей»). Слово с заглавной в начале предложения без такого контекста
+    («Ром был отличный», «Людей было много») формой имени не считается
+    (DS I1 по #551); косвенные падежи третьего лица («звонил Тане») сюда
+    намеренно не входят — цена ложного имени выше цены пропуска.
     """
     low = (name or "").casefold()
     if not low:
@@ -191,11 +195,24 @@ def heard_forms(name: str, sample: str) -> tuple[str, ...]:
     # GLM по #551)
     if _whole_word(low, sample):
         forms.append(low)
-    for word in sorted({w.strip("-") for w in re.findall(r"[А-ЯЁA-Z][\w-]*", sample)}):
-        if low in {c.casefold() for c in nominative_candidates(word)}:
-            if word.casefold() not in forms:
-                forms.append(word.casefold())
+    for m in re.finditer(r"(?<!\w)([А-ЯЁA-Z][\w-]*)", sample):
+        word = m.group(1).strip("-")
+        if not word or low not in {c.casefold() for c in nominative_candidates(word)}:
+            continue
+        if _instrumental_like(word):
+            heard = re.search(r"(?<!\w)со?\s+$", sample[max(0, m.start() - 4):m.start()], re.I) is not None
+        else:
+            heard = re.match(r"\s*(?:[,!?…—–:;.-]|\n|$)", sample[m.end():m.end() + 3]) is not None
+        if heard and word.casefold() not in forms:
+            forms.append(word.casefold())
     return tuple(forms)
+
+
+def _instrumental_like(word: str) -> bool:
+    """«Сашей», «Ромой», «Иваном», «Игорем» — творительный падеж, который
+    nominative_candidates умеет разворачивать; ему нужен предлог «с» рядом."""
+    low = word.casefold()
+    return len(low) >= 4 and low.endswith(("ей", "ой", "ом", "ем"))
 
 
 def _whole_word(form: str, text: str) -> bool:

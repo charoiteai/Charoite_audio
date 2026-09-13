@@ -41,8 +41,9 @@
   embeddings do (see [PRIVACY.md](../PRIVACY.md)).
 - **Live names** — once someone introduces themselves (or is addressed and
   replies), their label is replaced with the name — retroactively across the
-  transcript and in all future utterances. The name must literally occur in
-  the text, which kills hallucinations. All trust checks live in one place
+  transcript and in all future utterances. The name must be heard in the text —
+  literally, as an address set off by punctuation («Тань, глянь…») or after
+  «с» in the instrumental («с Таней») — which kills hallucinations. All trust checks live in one place
   (`src/speaker_names.py`) and are equally strict with and without the voice
   model: a name from `sufler.user_name` never goes to a participant (matched
   word by word, so "Igor" is recognised inside "Igor Vetrov"); a name heard
