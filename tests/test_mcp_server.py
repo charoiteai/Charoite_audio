@@ -70,6 +70,8 @@ def test_live_transcript_keeps_dashes_inside_speech(tmp_path, monkeypatch):
     out = mcp_server.sufler_live_transcript()
     assert "и продолжили" in out and "ещё реплика" in out
     assert "заметка модели" not in out
+    tail = mcp_server.sufler_live_transcript(max_chars=0)     # 0 давал всю стенограмму (GLM M4)
+    assert tail.startswith("[") and len(tail.split("\n", 1)[1]) == 1
 
 
 def test_status_pattern_matches_the_daemon_process_not_an_editor():
@@ -79,6 +81,8 @@ def test_status_pattern_matches_the_daemon_process_not_an_editor():
     assert pat.search("python src/daemon.py --flag")
     assert not pat.search("vim src/daemon.py")
     assert not pat.search("less /tmp/src/daemon.py.bak")
+    assert pat.search("/x/.venv/bin/python3 -u /y/src/daemon.py")
+    assert not pat.search("python -m pylint src/daemon.py"), "скрипт не первый аргумент — не демон (GLM M6)"
 
 
 def test_make_minutes_fits_a_long_transcript_like_the_daemon(tmp_path, monkeypatch):
@@ -103,8 +107,8 @@ def test_make_minutes_fits_a_long_transcript_like_the_daemon(tmp_path, monkeypat
 
 def test_update_graph_timeout_is_a_message_not_a_crash(tmp_path, monkeypatch):
     def run(*a, **k):
-        raise subprocess.TimeoutExpired(cmd=a[0], timeout=600)
+        raise subprocess.TimeoutExpired(cmd=a[0], timeout=mcp_server.GRAPH_UPDATE_TIMEOUT)
 
     monkeypatch.setattr(mcp_server.subprocess, "run", run)
     out = mcp_server.sufler_update_graph()
-    assert "600" in out and "прерван" in out
+    assert "20 мин" in out and "прерван" in out

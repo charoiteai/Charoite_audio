@@ -16,7 +16,6 @@ import action_items
 import transcript
 
 import meeting_stamp
-import privacy
 from llm import LLM, LLMHTTPError
 
 # pyproject разрешает mcp>=1.0, а в 2.0 класс переехал: FastMCP из
@@ -45,7 +44,6 @@ def _cfg() -> dict:
 
 _CFG = _cfg()
 _LLM = _CFG.get("llm", {})
-OLLAMA = privacy.llm_base_url(_CFG)
 MODEL = _LLM.get("model", "qwen3.6:35b-a3b")  # боевая модель из конфига, не хардкод
 
 
@@ -82,7 +80,9 @@ def _latest(pattern: str = "*.md") -> pathlib.Path | None:
     return max(files)[1] if files else None
 
 
-DAEMON_PATTERN = r"python[^ ]* .*src/daemon\.py($| )"
+# скрипт — первый не-флаговый аргумент python: «python -m pylint src/daemon.py» не демон (GLM M6)
+DAEMON_PATTERN = r"python[^ ]*( -[^ ]+)* [^ ]*src/daemon\.py($| )"
+GRAPH_UPDATE_TIMEOUT = 20 * 60   # худший ensure_alive при SLOW ≈ 10 мин до первого куска разбора (GLM M5)
 
 
 @mcp.tool()
@@ -107,6 +107,7 @@ def sufler_live_transcript(max_chars: int = 6000) -> str:
     f = _latest()
     if not f:
         return "Стенограмм нет."
+    max_chars = max(1, int(max_chars))       # 0 давал срез body[0:] — всю стенограмму (GLM M4)
     text = f.read_text(encoding="utf-8")
     # граница заметок — канон transcript.notes_start: самодельный split("---") резал
     # стенограмму на первом же «---» внутри сказанного (аудит 13.09, DS M4)
@@ -204,12 +205,13 @@ def sufler_update_graph() -> str:
     try:
         r = subprocess.run(
             [_sys.executable, str(CODE / "src" / "graph_updater.py")],
-            capture_output=True, text=True, timeout=600,
+            capture_output=True, text=True, timeout=GRAPH_UPDATE_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
         # сырой краш инструмента вместо ответа; отцеплённый облачный воркер
         # graph_updater переживёт, локальный прогон остаётся без отчёта (GLM M5)
-        return "разбор не уложился в 600 с и прерван — повторите позже или запустите graph_updater.py вручную"
+        return (f"разбор не уложился в {GRAPH_UPDATE_TIMEOUT // 60} мин и прерван — повторите позже "
+                "или запустите graph_updater.py вручную")
     return (r.stdout + r.stderr).strip() or "готово"
 
 

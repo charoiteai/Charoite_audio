@@ -113,14 +113,39 @@ def test_remote_http_outside_own_network_is_refused_even_with_allow_remote():
             privacy.llm_base_url(cfg, NO_ENV)
 
 
-def test_remote_http_inside_own_network_and_https_anywhere_are_allowed_with_flag():
+def _resolving_to(monkeypatch, ip: str | None):
+    """Подмена резолва имени: None — имя не резолвится."""
+    def getaddrinfo(host, *a, **k):
+        if ip is None:
+            raise OSError("no such host")
+        return [(2, 1, 6, "", (ip, 0))]
+    monkeypatch.setattr(privacy.socket, "getaddrinfo", getaddrinfo)
+    privacy._resolves_private.cache_clear()
+
+
+def test_remote_http_inside_own_network_and_https_anywhere_are_allowed_with_flag(monkeypatch):
+    _resolving_to(monkeypatch, "192.168.1.7")
     for url in ("http://192.168.1.50:11434", "http://10.0.0.7:11434", "http://ollama.local:11434",
-                "http://studio:11434", "https://llm.example.com"):
+                "http://nas.home.arpa:11434", "http://studio:11434", "http://nas.local.:11434",
+                "https://llm.example.com"):
         cfg = {"llm": {"base_url": url, "allow_remote": True}}
         assert privacy.llm_base_url(cfg, NO_ENV) == url
 
 
-def test_unknown_scheme_is_refused():
-    cfg = {"llm": {"base_url": "ftp://192.168.1.50:11434", "allow_remote": True}}
-    with pytest.raises(RuntimeError, match="схема"):
-        privacy.llm_base_url(cfg, NO_ENV)
+def test_home_name_that_resolves_outside_the_home_network_is_refused(monkeypatch):
+    """Имя без точки дополняется search domain: «ollama» в корпоративной сети — чужой
+    хост, стенограмма ушла бы открытым текстом (круг-1 по #562, GLM I1)."""
+    for ip in ("8.8.8.8", None):
+        _resolving_to(monkeypatch, ip)
+        for url in ("http://ollama:11434", "http://ollama.local:11434"):
+            cfg = {"llm": {"base_url": url, "allow_remote": True}}
+            with pytest.raises(RuntimeError, match="https"):
+                privacy.llm_base_url(cfg, NO_ENV)
+    privacy._resolves_private.cache_clear()
+
+
+def test_unknown_scheme_is_refused_even_for_loopback():
+    for url in ("ftp://192.168.1.50:11434", "ftp://127.0.0.1:11434"):     # и loopback (DS M7 по #562)
+        cfg = {"llm": {"base_url": url, "allow_remote": True}}
+        with pytest.raises(RuntimeError, match="схема"):
+            privacy.llm_base_url(cfg, NO_ENV)

@@ -72,14 +72,25 @@ def parse_json_block(text: str) -> dict | None:
     """
     text = text or ""
     dec = json.JSONDecoder()
-    for m in re.finditer(r"\{", text):
-        try:
-            data, _ = dec.raw_decode(text, m.start())
-        except json.JSONDecodeError:
-            continue
-        if isinstance(data, dict):
-            return data
-    return None
+
+    def first_object(s: str) -> dict | None:
+        for m in re.finditer(r"\{", s):
+            try:
+                data, _ = dec.raw_decode(s, m.start())
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict):
+                return data
+        return None
+
+    # ```json-забор — явный ответ: пример из прозы перед ним не должен победить
+    # (круг-1 по #562, DS M8)
+    fence = re.search(r"```(?:json)?[ \t]*\n(.*?)```", text, re.S)
+    if fence:
+        found = first_object(fence.group(1))
+        if found is not None:
+            return found
+    return first_object(text)
 
 
 # Дефолтные веса для mlx-server: тот же MoE, что боевой ollama-тег, только
@@ -322,7 +333,7 @@ class LLM:
         if self.cloud_ready:
             yield from self._stream_cloud(messages, num_predict=num_predict,
                                           temperature=temperature,
-                                          busy_wait=busy_wait)
+                                          busy_wait=busy_wait, timeout=timeout)
             return
         options: dict = {
             "temperature": self.temperature if temperature is None else temperature,
@@ -350,7 +361,7 @@ class LLM:
                     # без этой проверки поток заканчивался «нормально» пустым,
                     # и подсказка тихо не приходила (аудит 18.08)
                     raise self._fail(r.status_code, str(data["error"]))
-                chunk = data.get("message", {}).get("content", "")
+                chunk = self._ndjson_chunk(r, data, line)
                 if chunk:
                     yield chunk
                 if data.get("done"):
@@ -361,6 +372,14 @@ class LLM:
                 # оборвалась. Усечённый ответ не выдаём за целый — минутки
                 # без хвоста встречи внешне неотличимы от готовых.
                 raise self._fail(r.status_code, "стрим оборван без завершения")
+
+    def _ndjson_chunk(self, r, data: dict, line: bytes) -> str:
+        """Текст чанка NDJSON-строки Ollama; `message: null` — пустой чанк, иная
+        форма — LLMHTTPError, как у SSE (круг-1 по #562, GLM M1)."""
+        try:
+            return (data.get("message") or {}).get("content") or ""
+        except AttributeError:
+            raise self._fail(r.status_code, f"неожиданная форма строки потока: {line[:120]!r}") from None
 
     def _json_line(self, r, line: bytes):
         """Строка потока → JSON, иначе LLMHTTPError по контракту стрима.
@@ -507,7 +526,7 @@ class LLM:
                 data = self._json_line(r, line)
                 if data.get("error"):
                     raise self._fail(r.status_code, str(data["error"]))
-                chunk = data.get("message", {}).get("content", "")
+                chunk = self._ndjson_chunk(r, data, line)
                 if chunk:
                     yield chunk
                 if data.get("done"):
@@ -535,7 +554,8 @@ class LLM:
         return payload
 
     def _stream_cloud(self, messages: list[dict], *, num_predict: int | None,
-                      temperature: float | None, busy_wait: float) -> Iterator[str]:
+                      temperature: float | None, busy_wait: float,
+                      timeout: float | tuple = CLOUD_TIMEOUT) -> Iterator[str]:
         """Стрим облачного шлюза с падением обратно на локальную модель.
 
         Фолбэк разрешён СТРОГО до первого отданного токена: подсказка,
@@ -555,9 +575,13 @@ class LLM:
         # «занято» проходит само, а недоступный шлюз лечится только запасом.
         # Живая подсказка не должна молчать полминуты (круг-1 DS, Minor).
         wait = min(busy_wait, CLOUD_BUSY_WAIT) if self.fallback_local else busy_wait
+        # read-таймаут — от вызывающего, не меньше облачного минимума: документные
+        # стримы (минутки, сводки — DOC_STREAM_TIMEOUT 300 с) резались 45 с и молча
+        # уходили на локальную модель (круг-1 по #562, DS I1)
+        read = timeout[1] if isinstance(timeout, tuple) else float(timeout)
         try:
             for chunk in self._sse(f"{self.base}/chat/completions", payload, wait,
-                                   timeout=CLOUD_TIMEOUT,
+                                   timeout=(CLOUD_TIMEOUT[0], max(CLOUD_TIMEOUT[1], read)),
                                    first_token=CLOUD_FIRST_TOKEN):
                 emitted = True
                 yield chunk
@@ -648,6 +672,8 @@ class LLM:
                 if not line or not line.startswith(b"data:"):
                     continue
                 line = line[5:].lstrip(b" ")
+                if not line:
+                    continue        # пустое поле data: — keepalive у части шлюзов (круг-1 по #562)
                 if line.strip() == b"[DONE]":
                     done = True
                     break
@@ -657,7 +683,7 @@ class LLM:
                 try:
                     chunk = (((data.get("choices") or [{}])[0].get("delta") or {})
                              .get("content") or "")
-                except (AttributeError, TypeError, IndexError):
+                except (AttributeError, TypeError, IndexError, KeyError):
                     raise self._fail(r.status_code,
                                      f"неожиданная форма SSE: {line[:120]!r}") from None
                 if chunk:

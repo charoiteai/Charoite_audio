@@ -526,6 +526,13 @@ def test_garbage_line_in_ndjson_stream_is_an_http_error(monkeypatch):
     monkeypatch.setattr(llm_mod, "requests", _BusyThenOk(0, _StreamResp([b"[1, 2]"])))
     with pytest.raises(LLMHTTPError, match="форма"):
         list(LLM(CFG).stream("в", model="м"))
+    # message: null — пустой чанк, message списком — форма (GLM M1 по #562)
+    ok = _StreamResp([b'{"message": null, "done": false}', b'{"message":{"content":"a"},"done":true}'])
+    monkeypatch.setattr(llm_mod, "requests", _BusyThenOk(0, ok))
+    assert "".join(LLM(CFG).stream("в", model="м")) == "a"
+    monkeypatch.setattr(llm_mod, "requests", _BusyThenOk(0, _StreamResp([b'{"message": [1], "done": false}'])))
+    with pytest.raises(LLMHTTPError, match="форма"):
+        list(LLM(CFG).stream("в", model="м"))
 
 
 def test_sse_accepts_data_without_space_and_rejects_garbage(monkeypatch):
@@ -541,6 +548,14 @@ def test_sse_accepts_data_without_space_and_rejects_garbage(monkeypatch):
         list(LLM(CFG_MLX).stream("в"))
 
     monkeypatch.setattr(llm_mod, "requests", _Requests(_SSEResp(['data: {"choices":["строка"]}'.encode("utf-8")])))
+    with pytest.raises(LLMHTTPError, match="форма"):
+        list(LLM(CFG_MLX).stream("в"))
+
+    # пустое поле data: — keepalive, не обрыв; choices словарём — форма, не KeyError (круг-1 по #562)
+    fake = _Requests(_SSEResp([b"data:", b'data:{"choices":[{"delta":{"content":"y"}}]}', b"data: [DONE]"]))
+    monkeypatch.setattr(llm_mod, "requests", fake)
+    assert "".join(LLM(CFG_MLX).stream("в")) == "y"
+    monkeypatch.setattr(llm_mod, "requests", _Requests(_SSEResp([b'data: {"choices":{"0":{"delta":{"content":"x"}}}}'])))
     with pytest.raises(LLMHTTPError, match="форма"):
         list(LLM(CFG_MLX).stream("в"))
 
@@ -572,3 +587,28 @@ def test_cloud_fallback_flag_is_strictly_boolean(capsys):
     assert "cloud_fallback_local" in capsys.readouterr().err
     assert LLM({**CFG, "llm": {**CFG["llm"], "cloud_fallback_local": False}}).fallback_local is False
     assert LLM(CFG).fallback_local is True
+
+
+def test_cloud_stream_honours_the_callers_read_timeout(monkeypatch):
+    """Документные стримы (минутки, сводки) в облаке резались 45 с CLOUD_TIMEOUT и
+    молча уходили на локальную модель (круг-1 по #562, DS I1)."""
+    inst = LLM(CFG)
+    inst.cloud_ready = True
+    seen = {}
+
+    def sse(url, payload, wait, timeout=None, first_token=None):
+        seen["timeout"] = timeout
+        yield "ок"
+
+    monkeypatch.setattr(inst, "_cloud_payload", lambda *a, **k: {"m": 1})
+    monkeypatch.setattr(inst, "_sse", sse)
+    assert "".join(inst.stream("в", timeout=llm_mod.DOC_STREAM_TIMEOUT)) == "ок"
+    assert seen["timeout"] == (llm_mod.CLOUD_TIMEOUT[0], llm_mod.DOC_STREAM_TIMEOUT[1])
+    "".join(inst.stream("в", timeout=(5.0, 20.0)))
+    assert seen["timeout"] == llm_mod.CLOUD_TIMEOUT, "короче облачного минимума не режем"
+
+
+def test_parse_json_block_prefers_the_fenced_answer_over_a_prose_example():
+    text = 'Пример формата: {"заголовок": "X"}.\n```json\n{"заголовок": "Итог"}\n```\nготово'
+    assert parse_json_block(text) == {"заголовок": "Итог"}
+    assert parse_json_block('```json\nне json\n```\n{"a": 1}') == {"a": 1}
