@@ -209,6 +209,20 @@ def test_rename_keeps_the_source_marker_in_the_note_header(world):
     rm.apply(rm.plan(graph, tdir, STAMP, pretty2, slug2), graph, STAMP, pretty2)
     text = note.read_text(encoding="utf-8")
     assert f"# Встреча {STAMP} — Планёрка — импорт rec.m4a (12 Б)" in text and "запись идей" not in text.splitlines()[4]
+    # заметка демона без хвоста, тема кончается на «— запись <слово>»: легаси-ветка без размера
+    # не должна выдумывать хвост из темы (DS r2 I1 / GLM r2 M2 по #559)
+    note.write_text(text.replace("— Планёрка — импорт rec.m4a (12 Б)", "— Обзор рынка — запись планов"),
+                    encoding="utf-8")
+    pretty3, slug3 = rm.pretty_and_slug("Итоги квартала")
+    rm.apply(rm.plan(graph, tdir, STAMP, pretty3, slug3), graph, STAMP, pretty3)
+    head = [ln for ln in note.read_text(encoding="utf-8").splitlines() if ln.startswith("# Встреча")][0]
+    assert head == f"# Встреча {STAMP} — Итоги квартала", head
+    # …а настоящий легаси-хвост (имя файла без размера, импорт до 23.08) сохраняется
+    note.write_text(note.read_text(encoding="utf-8").replace(
+        f"# Встреча {STAMP} — Итоги квартала", f"# Встреча {STAMP} — Итоги квартала — запись memo.m4a"), encoding="utf-8")
+    rm.apply(rm.plan(graph, tdir, STAMP, pretty2, slug2), graph, STAMP, pretty2)
+    head = [ln for ln in note.read_text(encoding="utf-8").splitlines() if ln.startswith("# Встреча")][0]
+    assert head == f"# Встреча {STAMP} — Планёрка — запись memo.m4a", head
 
 
 def test_rename_refuses_when_the_target_archive_folder_exists(world):

@@ -134,3 +134,15 @@ def test_expect_absent_keeps_a_file_that_appeared_meanwhile(tmp_path):
         "файл появился — чужой документ остаётся")
     assert path.read_text(encoding="utf-8") == "первые\n"
     assert not list(tmp_path.glob("*.tmp*")), "временный файл убран"
+
+
+def test_claim_takes_a_name_exactly_once_and_write_text_fills_it(tmp_path):
+    """Имя заметки занимается эксклюзивным созданием: `expect_absent` сжимал окно
+    гонки, но проверка и replace — две операции (DS r2 M2 / GLM r2 M4 по #559)."""
+    path = tmp_path / "Заметки" / "2026-09-13_1200_идея.md"
+    assert safe_write.claim(path) is True
+    assert path.exists() and path.read_text(encoding="utf-8") == ""
+    assert safe_write.claim(path) is False, "занятое имя отдано второй раз"
+    assert safe_write.write_text(path, "текст") is True
+    assert path.read_text(encoding="utf-8") == "текст"
+    assert oct(path.stat().st_mode & 0o777) == oct(0o644)

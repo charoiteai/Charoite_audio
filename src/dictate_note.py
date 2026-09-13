@@ -212,12 +212,14 @@ def main():
         parts.append("\n## Задачи\n" + "\n".join(f"- [ ] {t}" for t in tasks) + "\n")
     parts.append(f"\n## Как сказано\n> {raw}\n")
     # две заметки в минуту с одним заголовком: вторая молча затирала первую вместе с
-    # «Как сказано» (аудит 13.09, GLM I1 / DS M5). Свободное имя — атомарно с записью
-    # (expect_absent): две одновременные диктовки иначе выбирали одно имя (DS r1 M5 по #559)
+    # «Как сказано» (аудит 13.09, GLM I1 / DS M5). Имя занимается эксклюзивным созданием
+    # (safe_write.claim, O_EXCL): две одновременные диктовки разводятся по «-2» без окна
+    # гонки, которое оставлял expect_absent (DS r2 M2 / GLM r2 M4 по #559)
     n = 2
-    while not safe_write.write_text(path, "\n".join(parts), expect_absent=True):
+    while not safe_write.claim(path):
         path = ndir / f"{now:%Y-%m-%d_%H%M}_{slug}-{n}.md"
         n += 1
+    safe_write.write_text(path, "\n".join(parts))
 
     # оглавление заметок — свежие сверху
     moc = ndir / "_ЗАМЕТКИ.md"

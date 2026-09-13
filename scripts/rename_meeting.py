@@ -405,8 +405,10 @@ def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
             rest = m_head.group("rest")
             # внутри хвоста нет « — »: иначе тема «Диктофон — запись идей» съедалась
             # леворасположенным матчем вместе с настоящим хвостом
+            # легаси-хвост (до 23.08, без размера) обязан быть похож на имя файла:
+            # «— запись планов» в теме заметки демона — не хвост (DS r2 I1 / GLM r2 M2 по #559)
             src_tail = (re.search(r" — (?:импорт|запись) (?:(?! — ).)+ \(\d+ Б\)$", rest)
-                        or re.search(r" — (?:импорт|запись) [^—]+$", rest))
+                        or re.search(r" — (?:импорт|запись) [^—]*\.[A-Za-z0-9]{1,5}$", rest))
             keep = src_tail.group(0) if src_tail else ""
             text = text[:m_head.start()] + f"# Встреча {stamp} — {pretty}{keep}" + text[m_head.end():]
             n = 1

@@ -955,8 +955,9 @@ def main() -> None:
     print("— догенерирую минутки/разбор/тезисы и раскладываю архив…")
     tail_run = subprocess.run([sys.executable, str(CODE / "src" / "retro_fill.py")])
     # исходник — рядом с материалами встречи (APFS-клон: без лишнего места)
-    graph = graphs.graph_dir(cfg) or pathlib.Path("")
-    folder = archive_folder_for(graph, stamp)
+    # без графа в конфиге — не Path("") (это «.», глоб от CWD демона; DS r2 M1 / GLM r2 M5 по #559)
+    graph = graphs.graph_dir(cfg)
+    folder = archive_folder_for(graph, stamp) if graph else None
     archived: pathlib.Path | None = None
     if folder is None:
         print(f"папка архива встречи {stamp} не найдена — исходник в архив не скопирован")
@@ -1022,22 +1023,32 @@ def run_child(cmd: list[str], timeout: float | None = None) -> subprocess.Comple
     (transcribe_file, graph_updater) дописывать стенограмму после метки ошибки —
     поэтому своя сессия и killpg (DS/GLM r1 по #559). Шов для тестов: подменяют
     его, а не subprocess.run."""
+    # байты и своё декодирование: `errors=` у Popen бракует semgrep (CI lint), а
+    # UnicodeDecodeError на выводе ребёнка ронять скан не должен
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, errors="replace",
-                            start_new_session=True)
+                            stderr=subprocess.PIPE, start_new_session=True)
     limit = IMPORT_CHILD_TIMEOUT if timeout is None else timeout
+    dec = lambda b: (b or b"").decode("utf-8", "replace")  # noqa: E731
     try:
         out, err = proc.communicate(timeout=limit)
-        return subprocess.CompletedProcess(cmd, proc.returncode, out or "", err or "")
+        return subprocess.CompletedProcess(cmd, proc.returncode, dec(out), dec(err))
     except subprocess.TimeoutExpired:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except OSError:
             pass
-        out, err = proc.communicate()
+        try:
+            # потомок в непрерываемом read на сетевом маунте не отпустит трубу и после
+            # SIGKILL — второй потолок, иначе скан висит навсегда (GLM r2 M1 по #559)
+            out, err = proc.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe:
+                    pipe.close()
+            out, err = b"", b""
         return subprocess.CompletedProcess(
-            cmd, 124, out or "",
-            (err or "") + f"\nимпорт не уложился в {limit / 3600:.0f} ч — прерван вместе с потомками")
+            cmd, 124, dec(out),
+            dec(err) + f"\nимпорт не уложился в {limit / 3600:.0f} ч — прерван вместе с потомками")
 
 
 def _scan_one(f: pathlib.Path, done: pathlib.Path, keep_days: float) -> bool:
