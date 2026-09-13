@@ -83,8 +83,23 @@ final class RecorderAfterCallTests: XCTestCase {
     /// окно с ротацией: звонок мог ещё идти (GLM I1, DS I1-B).
     func testПринудительнаяПробаМинуетПороги() {
         XCTAssertFalse(Recorder.shouldProbeInterruption(interruptedFor: 1, sinceLastProbe: 1))
-        XCTAssertTrue(Recorder.shouldProbeInterruption(interruptedFor: 1, sinceLastProbe: 1, forced: true))
+        XCTAssertTrue(Recorder.shouldProbeInterruption(interruptedFor: 1, sinceLastProbe: nil, forced: true))
         XCTAssertTrue(Recorder.shouldProbeInterruption(interruptedFor: Recorder.probeAfterInterruption,
                                                        sinceLastProbe: nil))
+    }
+
+    /// Окно принудительных проб идёт лестницей resumeAfterCallDelay, а не раз в
+    /// 30 с: одна проба после возврата в приложение оставляла дыру до 30 с
+    /// (DS I1, круг 2).
+    func testПринудительныеПробыИдутЛестницейАНеРазВПолминуты() {
+        let step = Recorder.resumeAfterCallDelay(attempt: 1)
+        XCTAssertFalse(Recorder.shouldProbeInterruption(interruptedFor: 1, sinceLastProbe: step / 2,
+                                                        forced: true, forcedDelay: step),
+                       "чаще лестницы вход не долбим")
+        XCTAssertTrue(Recorder.shouldProbeInterruption(interruptedFor: 1, sinceLastProbe: step,
+                                                       forced: true, forcedDelay: step))
+        XCTAssertFalse(Recorder.shouldProbeInterruption(interruptedFor: 1, sinceLastProbe: step,
+                                                        forced: false),
+                       "без окна — прежние пороги: короткая пауза не пробуется")
     }
 }

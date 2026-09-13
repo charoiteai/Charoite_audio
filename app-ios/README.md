@@ -32,9 +32,11 @@ runs on your Mac.
   (iOS hands it back a few seconds after a long call, not instantly) and
   continues the same file; if the input never comes back, it closes the
   file and continues the meeting in a new one. A second call inside that
-  minute cancels the wait — the file is never cut while a call is live —
-  and opening the app during a pause only probes the input, it does not
-  start the countdown. If the new file cannot start because the input is
+  minute cancels the wait, so the countdown itself never cuts the file
+  while iOS has told the app a call is live. Opening the app during a pause
+  does not start that countdown: for up to a minute it probes the input on
+  the same ladder, without rotating, and continues the same file the moment
+  the microphone is back. If the new file cannot start because the input is
   still busy, the start is armed; in the background that arm cannot fire
   on its own (iOS suspends the app), so the recording picks up when the app
   is opened again or when the system grants it time. Calls are recorded by

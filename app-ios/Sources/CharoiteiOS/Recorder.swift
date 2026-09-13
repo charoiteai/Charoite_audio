@@ -235,9 +235,15 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     /// вправе усыпить приложение между попытками, и вход не вернётся никому.
     private var afterCallTask: UIBackgroundTaskIdentifier = .invalid
     private var rotateTask: UIBackgroundTaskIdentifier = .invalid
-    /// Проверить вход на ближайшем такте, минуя пороги пробы: возврат в
-    /// приложение посреди паузы (`.ended` мог потеряться).
-    private var probeNow = false
+    /// Окно принудительных проб входа после возврата в приложение посреди
+    /// паузы (`.ended` мог потеряться): до дедлайна пробуем лестницей
+    /// `resumeAfterCallDelay` без ротации и держим фоновую задачу — одна
+    /// проба оставляла дыру до 30 с, а в фоне — до следующего открытия
+    /// приложения (DS I1, круг 2 по #530). Срок жизни ограничен бюджетом:
+    /// флаг без TTL доживал до следующего звонка (DS M1). Новый звонок,
+    /// успех или дедлайн закрывают окно.
+    private var probeUntil: Date?
+    private var forcedProbeAttempts = 0
 
     /// Сколько ждём микрофон после конца звонка, прежде чем закрыть файл и
     /// продолжить встречу новым.
@@ -292,12 +298,18 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     nonisolated static func shouldProbeInterruption(
         interruptedFor: TimeInterval,
         sinceLastProbe: TimeInterval?,
-        forced: Bool = false
+        forced: Bool = false,
+        forcedDelay: TimeInterval = 0
     ) -> Bool {
-        // Принудительная проба — возврат в приложение посреди паузы: `.ended`
-        // мог потеряться, проверяем вход сразу. Проба безопасна: не ротирует
-        // и ничего не считает, поэтому пороги ей не указ (GLM I1 по #530).
-        if forced { return true }
+        // Принудительные пробы — окно после возврата в приложение посреди
+        // паузы: `.ended` мог потеряться, вход проверяем сразу и дальше по
+        // лестнице `forcedDelay` (resumeAfterCallDelay), а не раз в 30 с.
+        // Проба безопасна: не ротирует и ничего не считает, поэтому обычные
+        // пороги ей не указ (GLM I1 круга 1, DS I1 круга 2 по #530).
+        if forced {
+            guard let sinceLastProbe else { return true }
+            return sinceLastProbe >= forcedDelay
+        }
         guard interruptedFor >= probeAfterInterruption else { return false }
         guard let sinceLastProbe else { return true }
         return sinceLastProbe >= probeEvery
@@ -587,7 +599,10 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
                 // живого звонка (GLM I1, DS I1-B по #530). Проба безопасна:
                 // вход наш — продолжаем тот же файл, нет — ждём дальше.
                 if self.isRecording, self.interrupted, self.recorder != nil, self.callEndedAt == nil {
-                    self.probeNow = true
+                    self.probeUntil = Date().addingTimeInterval(Self.resumeAfterCallBudget)
+                    self.forcedProbeAttempts = 0
+                    self.lastInterruptionProbe = nil
+                    self.beginAfterCallTask()      // такты должны жить, если снова свернут
                 }
             }
         })
@@ -628,8 +643,11 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             // Новый звонок гасит окно ожидания предыдущего: иначе бюджет
             // первого `.ended` дотикивал посреди живого второго звонка и
             // резал файл, а остаток встречи в фоне не писался (GLM Critical,
-            // DS I1 по #530). Следующий `.ended` откроет окно заново.
+            // DS I1 по #530). Следующий `.ended` откроет окно заново. Окно
+            // принудительных проб тоже закрывается: звонок жив, пробовать нечего.
             callEndedAt = nil
+            probeUntil = nil
+            forcedProbeAttempts = 0
             endAfterCallTask()
             lastResult = L.t("Пауза: идёт звонок — микрофон у него. Запись продолжится после",
                              "Paused: a call owns the microphone. Recording resumes after it",
@@ -739,7 +757,8 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         interruptedAt = nil
         callEndedAt = nil
         lastInterruptionProbe = nil
-        probeNow = false
+        probeUntil = nil
+        forcedProbeAttempts = 0
         endAfterCallTask()
         lastGrowth = nil
         level = 0
@@ -783,18 +802,32 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     /// не тратит: не вышло — просто ждём дальше.
     private func probeInterruptionIfNeeded() {
         guard isRecording, interrupted, let since = interruptedAt, let r = recorder else { return }
-        // Пока открыто окно после звонка, вход долбит его цикл — проба
-        // рядом не нужна (GLM M1 по #530)
-        guard callEndedAt == nil else { return }
-        let forced = probeNow
-        probeNow = false
+        // Пока открыто окно после `.ended`, вход долбит его цикл — проба
+        // рядом не нужна, а окно принудительных проб ему уступает (GLM M1,
+        // DS M1 по #530)
+        if callEndedAt != nil {
+            probeUntil = nil
+            forcedProbeAttempts = 0
+            return
+        }
+        let now = Date()
+        let forced = probeUntil.map { now < $0 } ?? false
+        if probeUntil != nil, !forced {
+            // дедлайн вышел, вход так и не вернулся: дальше — штатные пробы
+            // раз в 30 с, держатель фоновой задачи снимаем
+            probeUntil = nil
+            forcedProbeAttempts = 0
+            endAfterCallTask()
+        }
         guard Self.shouldProbeInterruption(
-            interruptedFor: Date().timeIntervalSince(since),
-            sinceLastProbe: lastInterruptionProbe.map { Date().timeIntervalSince($0) },
-            forced: forced
+            interruptedFor: now.timeIntervalSince(since),
+            sinceLastProbe: lastInterruptionProbe.map { now.timeIntervalSince($0) },
+            forced: forced,
+            forcedDelay: Self.resumeAfterCallDelay(attempt: forcedProbeAttempts + 1)
         ) else { return }
 
-        lastInterruptionProbe = Date()
+        if forced { forcedProbeAttempts += 1 }
+        lastInterruptionProbe = now
         try? AVAudioSession.sharedInstance().setActive(true)
         guard r.record() else { return }      // звонок ещё идёт — ждём дальше
 
@@ -802,6 +835,8 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         interruptedAt = nil
         callEndedAt = nil
         lastInterruptionProbe = nil
+        probeUntil = nil
+        forcedProbeAttempts = 0
         stalled = false
         endAfterCallTask()
         lastResult = L.t("Запись продолжается — звонок закончился",
