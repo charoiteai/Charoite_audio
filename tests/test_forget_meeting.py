@@ -747,6 +747,30 @@ def test_cloud_quarantine_of_the_meeting_is_forgotten_too(tmp_path, monkeypatch)
     assert (other / "Ядра" / "Другая.md").exists(), "чужой карантин тронут"
 
 
+def test_displaced_bodies_of_the_meeting_are_forgotten_too(tmp_path, monkeypatch):
+    """Тела узлов, вытесненные заглушками по ревизии этой встречи, лежат мимо
+    ротации карантина (`вытеснено/<прогон>/`, #550): каталог её прогона уходит
+    целиком, чужой прогон нетронут; имя каталога — общее с cloud_review."""
+    import charoite_paths
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+    import cloud_review
+    assert forget.DISPLACED_DIR == cloud_review.DISPLACED_DIR
+    root, graph = _world(tmp_path)
+    monkeypatch.setattr(forget, "ROOT", root)
+    q = charoite_paths.graph_backups(graph, "cloud_quarantine", root=root) / forget.DISPLACED_DIR
+    mine = q / f"{STAMP}-101500"
+    (mine / "Ядра").mkdir(parents=True)
+    (mine / "Ядра" / "Дубль.md").write_text("вытесненное тело", encoding="utf-8")
+    other = q / "2026-07-20_1500-090000"
+    (other / "Ядра").mkdir(parents=True)
+    (other / "Ядра" / "Другой дубль.md").write_text("чужое тело", encoding="utf-8")
+
+    forget.apply(forget.plan(STAMP, root, graph), yes=True)
+
+    assert not mine.exists(), "вытесненные тела по ревизии этой встречи остались"
+    assert (other / "Ядра" / "Другой дубль.md").exists(), "чужой прогон тронут"
+
+
 def test_quarantine_is_matched_by_exact_stem_not_minute_prefix(tmp_path, monkeypatch):
     """Каталог запуска назван точным стемом стенограммы: посекундная встреча
     находит свой, а сестринская встреча той же минуты остаётся нетронутой —

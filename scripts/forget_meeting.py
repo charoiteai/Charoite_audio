@@ -80,6 +80,7 @@ DOCS_DIR = pathlib.Path("Документация") / "Стенограммы в
 BACKUP_DIR = ".forget_backup"
 CLOUD_BACKUP_DIR = ".cloud_backup"      # снимки графа перед облачной правкой
 CLOUD_QUARANTINE = "cloud_quarantine"   # версии облака, убранные сверкой (№88)
+DISPLACED_DIR = "вытеснено"             # тела узлов, ставших заглушками (cloud_review.DISPLACED_DIR)
 REMOVED_NOTE = "(встреча удалена)"
 
 
@@ -709,6 +710,14 @@ def plan(stamp: str, root: pathlib.Path,
                     p.delete.append(node_copy)
                 p.delete += _with_stamp(run_dir / DOCS_DIR, stamp, suffix=".md")
                 p.delete += _archive_folders(run_dir, stamp)
+            # Тела узлов, вытесненные заглушками по ревизии ЭТОЙ встречи, лежат
+            # мимо ротации прогонов — `вытеснено/<прогон>/`; каталог её
+            # прогона уходит целиком, чужие прогоны не трогаем (#550).
+            displaced = quarantine / DISPLACED_DIR
+            if displaced.is_dir():
+                for run_dir in sorted(d for d in displaced.iterdir() if d.is_dir()):
+                    if _quarantine_of(run_dir.name, stamp):
+                        p.delete.append(run_dir)
 
         # Файлы внутри удаляемой папки править не нужно и нельзя: папка уйдёт
         # целиком, а запись в неё после удаления — FileNotFoundError.
