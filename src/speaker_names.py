@@ -186,7 +186,10 @@ def heard_forms(name: str, sample: str) -> tuple[str, ...]:
     if not low:
         return ()
     forms: list[str] = []
-    if low in sample.casefold():
+    # целым словом, не подстрокой: «Ян» в «Январь» уже ловили в перештамповке
+    # минуток (DS Critical по #464), «Коль» в «кольцо» — та же дыра (критика
+    # GLM по #551)
+    if _whole_word(low, sample):
         forms.append(low)
     for word in sorted({w.strip("-") for w in re.findall(r"[А-ЯЁA-Z][\w-]*", sample)}):
         if low in {c.casefold() for c in nominative_candidates(word)}:
@@ -195,18 +198,27 @@ def heard_forms(name: str, sample: str) -> tuple[str, ...]:
     return tuple(forms)
 
 
+def _whole_word(form: str, text: str) -> bool:
+    return re.search(rf"(?<!\w){re.escape(form)}(?!\w)", text, re.I) is not None
+
+
 def _own_lines_only(name: str, sample: str, label: str,
-                    forms: tuple[str, ...] = ()) -> bool:
+                    forms: tuple[str, ...] | None = None) -> bool:
     """Имя звучит ТОЛЬКО в репликах самой метки и это не представление.
 
     Формат хвоста стенограммы — «[ЧЧ:ММ] метка: текст», метка не в начале
     строки, поэтому ищем «] метка:», а не `startswith`. `forms` — в каких
     формах имя слышно (heard_forms): обращение «Саш, а ты…» в собственной
-    реплике — тот самый случай, ради которого правило и писалось.
+    реплике — тот самый случай, ради которого правило и писалось. Не
+    передали — считаем сами: молчаливого отката к голой подстроке нет
+    (критика GLM по #551).
     """
-    forms = tuple(forms) or (name.casefold(),)
+    if forms is None:
+        forms = heard_forms(name, sample)
+    if not forms:
+        return False
     lines_with = [ln for ln in sample.splitlines()
-                  if any(f in ln.casefold() for f in forms)]
+                  if any(_whole_word(f, ln) for f in forms)]
     if not lines_with:
         return False
     own = [ln for ln in lines_with if re.search(rf"\]\s*{re.escape(label)}\s*:", ln)]

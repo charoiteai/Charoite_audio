@@ -89,3 +89,67 @@ def test_yield_to_live_has_a_cap(monkeypatch):
     monkeypatch.setattr(rt, "_yield_to_live", fake_yield)
     rt.name_speakers(CFG, [("Собеседник 1", "да")])
     assert seen == {"what": "имена", "cap": 600}
+
+
+def test_sample_is_cut_on_a_line_boundary(monkeypatch):
+    """Обрезок слова с заглавной на границе 7000 знаков («Лен» от
+    «Ленинградское») в чужой реплике не должен становиться формой имени «Лена»
+    (GLM I1 по #551): режем по границе строки, как tr.tail в демоне."""
+    seen: dict = {}
+
+    class _Fake:
+        def __init__(self, cfg):
+            pass
+
+        def complete(self, sample, *a, **k) -> str:
+            seen["sample"] = sample
+            return json.dumps({"Собеседник 1": "Лена"}, ensure_ascii=False)
+    monkeypatch.setattr(llm_mod, "LLM", _Fake)
+    monkeypatch.setattr(rt, "_yield_to_live", lambda *a, **k: None)
+    filler = " ".join(["слово"] * 30)
+    lines: list[tuple[str, str]] = [("Собеседник 1", "начнём")]
+    while len("\n".join(f"[{i}] {s_}: {t}" for i, (s_, t) in enumerate(lines, 1))) <= 6600:
+        lines.append(("Собеседник 2", filler))
+    joined = "\n".join(f"[{i}] {s_}: {t}" for i, (s_, t) in enumerate(lines, 1))
+    start = len(joined) + 1 + len(f"[{len(lines) + 1}] Собеседник 2: ")
+    pad = "x" * (7000 - start - 4)
+    lines.append(("Собеседник 2", pad + " Ленинградское шоссе обсудили"))
+    joined = "\n".join(f"[{i}] {s_}: {t}" for i, (s_, t) in enumerate(lines, 1))
+    assert joined[6997:7000] == "Лен", joined[6990:7005]
+    names, answered = rt.name_speakers(CFG, lines)
+    assert answered is True and names == {}, names
+    assert seen["sample"] == rt._cut_lines(joined, 7000)
+    assert joined.startswith(seen["sample"] + "\n"), "обрезка не по границе строки"
+    assert "Лен" not in seen["sample"]
+    assert rt._cut_lines("a b\nc d\ne f", 5) == "a b" and rt._cut_lines("abc def ghi", 7) == "abc" \
+        and rt._cut_lines("short", 10) == "short"
+
+
+def test_non_object_json_is_not_an_answer(monkeypatch):
+    """Массив или строка под json_format — тот же мусор, что молчание:
+    плашка «имена не разобраны» обязана остаться (GLM M1 по #551)."""
+    class _Fake:
+        def __init__(self, cfg):
+            pass
+
+        def complete(self, *a, **k) -> str:
+            return json.dumps(["Собеседник 1"])
+    monkeypatch.setattr(llm_mod, "LLM", _Fake)
+    monkeypatch.setattr(rt, "_yield_to_live", lambda *a, **k: None)
+    assert rt.name_speakers(CFG, [("Собеседник 1", "да")]) == ({}, False)
+
+
+def test_known_people_of_the_graph_fold_the_case(monkeypatch, tmp_path):
+    """Правило 4 и в пересборке: «Полин» с чужой стороны при узле «Полина»
+    записывается каноном, а не звательным падежом (GLM M2 по #551)."""
+    people = tmp_path / "Люди"
+    people.mkdir()
+    (people / "Полина Иванова.md").write_text("# Полина\n", encoding="utf-8")
+    (people / "Собеседник 3.md").write_text("# ?\n", encoding="utf-8")
+    monkeypatch.setattr(rt.graphs, "graph_dir", lambda cfg=None, **k: tmp_path)
+    assert rt.known_first_names(CFG) == ("Полина",)
+    lines = [("Собеседник 1", "Полин, привет, глянь смету"), ("Собеседник 2", "Привет, гляну")]
+    _model(monkeypatch, {"Собеседник 2": "Полин"})
+    assert rt.name_speakers(CFG, lines, known=rt.known_first_names(CFG)) == ({"Собеседник 2": "Полина"}, True)
+    monkeypatch.setattr(rt.graphs, "graph_dir", lambda cfg=None, **k: None)
+    assert rt.known_first_names(CFG) == ()

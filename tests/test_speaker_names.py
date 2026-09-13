@@ -273,3 +273,13 @@ def test_lowercase_common_word_is_not_a_heard_name():
 def test_heard_forms_lists_the_literal_name_first():
     sample = "[10:00] Я: Коля, привет.\n[10:01] Я: Коль, ты тут?"
     assert heard_forms("Коля", sample) == ("коля", "коль")
+
+
+def test_forms_match_whole_words_only():
+    """«Коль» в «кольцо» — не обращение и не форма имени (критика GLM по #551)."""
+    assert heard_forms("Коля", "[10:00] Я: кольцо на столе.\n[10:01] Собеседник: угу.") == ()
+    own = "[10:00] Собеседник: кольцо нашли.\n[10:01] Собеседник: Коль, ты тут?"
+    assert heard_forms("Коля", own) == ("коль",)
+    assert trustworthy_name("Коля", sample=own, label="Собеседник", owner_name=OWNER) is None
+    other = "[10:00] Я: Коль, ты тут?\n[10:01] Собеседник: тут, кольцо нашёл."
+    assert trustworthy_name("Коля", sample=other, label="Собеседник", owner_name=OWNER) == "Коля"

@@ -251,7 +251,33 @@ def overlap_frac(a: tuple[float, float], b: tuple[float, float]) -> float:
     return inter / max(1e-6, a[1] - a[0])
 
 
-def name_speakers(cfg: dict, lines: list[tuple[str, str]]) -> tuple[dict[str, str], bool]:
+def _cut_lines(text: str, limit: int) -> str:
+    """Первые `limit` знаков, но по границе строки (или слова, если строка
+    одна): обрезок слова с заглавной («Лен» от «Ленинградское») стал бы для
+    гвардов доверия формой имени «Лена» (GLM I1 по #551)."""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    sep = "\n" if "\n" in head else " "
+    return head.rsplit(sep, 1)[0] if sep in head else head
+
+
+def known_first_names(cfg: dict) -> tuple[str, ...]:
+    """Первые имена людей графа — для приведения падежей (правило 4
+    speaker_names), тем же путём, что у живого опознания в демоне."""
+    try:
+        root = graphs.graph_dir(cfg)
+        people = root / "Люди" if root else None
+        if people is None or not people.is_dir():
+            return ()
+        return tuple(sorted({q.stem.split()[0] for q in people.glob("*.md")
+                             if q.stem.strip() and not q.stem.startswith("Собеседник")}))
+    except OSError:
+        return ()
+
+
+def name_speakers(cfg: dict, lines: list[tuple[str, str]],
+                  known: tuple[str, ...] = ()) -> tuple[dict[str, str], bool]:
     """qwen: «Собеседник N» ↔ имена из разговора; владельца не трогаем.
 
     Возвращает (имена, ответила ли модель). Второе — не педантизм: пустой
@@ -274,8 +300,8 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]]) -> tuple[dict[str, st
     # Формат хвоста живой стенограммы — «[…] метка: текст»: его читают
     # гварды доверия («] метка:» — реплика самой метки). Времени у строк
     # пересборки тут нет, в скобках — номер реплики.
-    sample = "\n".join(f"[{i}] {spk}: {text}"
-                       for i, (spk, text) in enumerate(lines, 1) if text)[:7000]
+    sample = _cut_lines("\n".join(f"[{i}] {spk}: {text}"
+                                  for i, (spk, text) in enumerate(lines, 1) if text), 7000)
     # Уступка живой встрече — с потолком: очередь пересборок (rebuild.lock)
     # уже взята, бесконечное ожидание парковало бы её на всю чужую встречу
     # (тот же потолок, что у минуток).
@@ -305,12 +331,16 @@ def name_speakers(cfg: dict, lines: list[tuple[str, str]]) -> tuple[dict[str, st
             continue
         if v.strip() in ("", "?"):
             continue
-        name = speaker_names.trustworthy_name(v, sample=sample, label=k, owner_name=user_name)
+        name = speaker_names.trustworthy_name(v, sample=sample, label=k, owner_name=user_name,
+                                              known=known)
         if name:
             names[k] = name
         else:
             log(f"имена: «{v.strip()}» для «{k}» не принято — владелец, не звучало или обращение")
-    return names, True  # владелец определён каналом
+    # «ответила» — вернула объект: массив или строка под json_format — тот же
+    # мусор, что и молчание, и плашка «имена не разобраны» обязана остаться
+    # (GLM M1 по #551); владелец определён каналом и в ответе не ждётся
+    return names, isinstance(data, dict)
 
 
 def live_meta(live: pathlib.Path) -> dict:
@@ -680,7 +710,8 @@ def rebuild(live: pathlib.Path, cfg: dict) -> pathlib.Path | None:
     model_answered = True
     if rest:
         guessed, model_answered = name_speakers(
-            cfg, [(spk, txt) for _, _, spk, txt in lines if spk in rest])
+            cfg, [(spk, txt) for _, _, spk, txt in lines if spk in rest],
+            known=known_first_names(cfg))
         for k, v in guessed.items():
             if k in rest and v not in names.values():  # одно имя — одной метке
                 names[k] = v
