@@ -272,6 +272,12 @@ def plan(graph: pathlib.Path, tdir: pathlib.Path, stamp: str,
                   if old_folder is not None else None)
     if old_folder is not None and old_folder == new_folder:
         old_folder = new_folder = None
+    if new_folder is not None and new_folder.exists():
+        # rename на существующую папку падал посреди применения: файлы уже
+        # переехали, папка, заметка и манифест — нет, а повторный запуск папку
+        # так и не переносил (аудит 13.09, GLM M5). Отказ — до первого шага.
+        raise SystemExit(f"папка архива «{new_folder.name}» уже существует — "
+                         "переименование отменено, разберите её руками")
 
     return {"moves": moves, "stamps": stamps, "old_folder": old_folder, "new_folder": new_folder,
             "note": meeting_stamp.find_note(graph, stamp, tdir) or graph / "Встречи" / f"{stamp}.md"}
@@ -312,6 +318,7 @@ def archive_folder(graph: pathlib.Path, stamp: str) -> pathlib.Path | None:
     if not root.exists():
         return None
     head = f"{stamp[:10]} {meeting_stamp.archive_time(stamp)}"
+    unowned: pathlib.Path | None = None
     for d in sorted(root.iterdir()):
         if not d.is_dir() or not (d.name == head or d.name.startswith(head + " ")):
             continue
@@ -319,9 +326,11 @@ def archive_folder(graph: pathlib.Path, stamp: str) -> pathlib.Path | None:
             owner = json.loads((d / "meeting.meta.json").read_text(encoding="utf-8")).get("meeting_id")
         except (OSError, ValueError, AttributeError):
             owner = None
-        if owner is None or owner == stamp:
-            return d
-    return None
+        if owner == stamp:
+            return d                     # своя по манифесту — сильнее любой безхозной
+        if owner is None and unowned is None:
+            unowned = d                  # безхозная — кандидат, если своей не найдётся
+    return unowned
 
 
 BRAIN = "http://127.0.0.1:8100"
@@ -382,8 +391,27 @@ def apply(p: dict, graph: pathlib.Path, stamp: str, pretty: str) -> None:
     note = p["note"]
     if note.exists():
         text = note.read_text(encoding="utf-8")
-        text, n = re.subn(rf"(?m)^# Встреча {re.escape(stamp)}.*$",
-                          f"# Встреча {stamp} — {pretty}", text, count=1)
+        # Хвост «— импорт/запись <файл> (N Б)» в шапке заметки графа — след
+        # исходника, как в стенограмме (graph_updater.retitle его бережёт). Дедуп
+        # повтора (import_meeting.same_source) читает СТЕНОГРАММУ, которую это
+        # переименование не трогает, — здесь хвост сохраняем ради аудита и
+        # симметрии, не ради дедупа (DS r1 I2 по #559 поправил обоснование).
+        # Канонический хвост кончается «(N Б)»; легаси до 23.08 — без размера, но
+        # без второго тире: тема «Обзор — запись семинара» хвостом не считается
+        # (GLM r1 I1 / DS M4 по #559).
+        m_head = re.search(rf"(?m)^# Встреча {re.escape(stamp)}(?P<rest>.*)$", text)
+        n = 0
+        if m_head:
+            rest = m_head.group("rest")
+            # внутри хвоста нет « — »: иначе тема «Диктофон — запись идей» съедалась
+            # леворасположенным матчем вместе с настоящим хвостом
+            # легаси-хвост (до 23.08, без размера) обязан быть похож на имя файла:
+            # «— запись планов» в теме заметки демона — не хвост (DS r2 I1 / GLM r2 M2 по #559)
+            src_tail = (re.search(r" — (?:импорт|запись) (?:(?! — ).)+ \(\d+ Б\)$", rest)
+                        or re.search(r" — (?:импорт|запись) [^—]*\.[A-Za-z0-9]{1,5}$", rest))
+            keep = src_tail.group(0) if src_tail else ""
+            text = text[:m_head.start()] + f"# Встреча {stamp} — {pretty}{keep}" + text[m_head.end():]
+            n = 1
         # Старая тема — в aliases: по ней встречу уже искали и находили,
         # обрывать этот след переименованием нельзя.
         m = re.search(r'(?m)^aliases:\s*\[(.*)\]$', text)
@@ -433,10 +461,13 @@ def main() -> None:
                  + "\nиспользование: rename_meeting.py <штамп> <новая тема> [--yes]")
     pretty, slug = pretty_and_slug(args[1])
 
-    import yaml
-    cfg = yaml.safe_load((ROOT / "config" / "config.yaml").read_text(encoding="utf-8"))
+    from config_loader import load_user_or_example
+    # без config.yaml — пример, как у import_meeting и retro_fill: прямое чтение
+    # падало трейсбеком (аудит 13.09, DS M7); каталог стенограмм — с тем же
+    # env-override, что у dictate_note и тестов
+    cfg = load_user_or_example(ROOT)
     graph = resolve_graph(cfg)
-    tdir = ROOT / cfg["log"]["transcripts_dir"]
+    tdir = pathlib.Path(os.environ.get("SUFLER_TRANSCRIPTS_DIR") or ROOT / cfg["log"]["transcripts_dir"])
     stamp = resolve_key(tdir, short_stamp(args[0]), graph)
 
     p = plan(graph, tdir, stamp, pretty, slug)

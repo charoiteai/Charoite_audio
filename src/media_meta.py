@@ -261,16 +261,25 @@ def _caf_info(body: bytes) -> dt.datetime | None:
 
 # --- WAV ------------------------------------------------------------------
 
+_WAV_MAX_CHUNKS = 1024   # честный WAV — единицы чанков; дальше это не заголовки
+
 def _wav(p: pathlib.Path) -> dt.datetime | None:
     with p.open("rb") as fh:
         head = fh.read(12)
         if len(head) < 12 or head[:4] != b"RIFF" or head[8:12] != b"WAVE":
             return None
-        while True:
+        for _step in range(_WAV_MAX_CHUNKS):   # потолок обхода: битый файл не гуляет до EOF (критика DS r1 по #559)
             ch = fh.read(8)
             if len(ch) < 8:
                 return None
             typ, size = struct.unpack("<4sI", ch)
+            if typ == b"data" and size in (0, 0xFFFFFFFF):
+                # Потоковый писатель размер ещё не проставил (0 или -1 — штатно для
+                # import_meeting.wav_complete): дальше идут сэмплы, а не заголовки
+                # чанков. Разбор их как заголовков шагал по файлу случайными
+                # смещениями до конца — на сотнях мегабайт это минуты без пользы:
+                # LIST/INFO после такого data всё равно не найти (аудит 13.09, DS I1).
+                return None
             if typ == b"LIST":
                 body = fh.read(min(size, _LIST_LIMIT))
                 if body[:4] == b"INFO":
@@ -285,6 +294,7 @@ def _wav(p: pathlib.Path) -> dt.datetime | None:
                 # data — тоже мимо: многие диктофоны пишут LIST/INFO после него
                 fh.seek(size + (size & 1), 1)
 
+        return None
 
 def _riff_info(body: bytes) -> dt.datetime | None:
     off = 0

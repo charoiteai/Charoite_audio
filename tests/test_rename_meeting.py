@@ -188,6 +188,58 @@ def test_apply_renames_all_five_places(world):
     assert data["transcript_path"].endswith(f"{STAMP}_Инцидент_загрузки.md")
 
 
+def test_rename_keeps_the_source_marker_in_the_note_header(world):
+    """Хвост «— импорт <файл> (N Б)» — след исходника для дедупа повторного
+    импорта; переименование его стирало, и тот же файл импортировался второй раз
+    (аудит 13.09, DS I2)."""
+    graph, tdir = world
+    note = graph / "Встречи" / f"{STAMP}.md"
+    note.write_text(note.read_text(encoding="utf-8").replace(
+        f"# Встреча {STAMP} — Обновление ОС", f"# Встреча {STAMP} — Обновление ОС — импорт rec.m4a (12 Б)"),
+        encoding="utf-8")
+    pretty, slug = rm.pretty_and_slug("Инцидент загрузки")
+    rm.apply(rm.plan(graph, tdir, STAMP, pretty, slug), graph, STAMP, pretty)
+    text = note.read_text(encoding="utf-8")
+    assert f"# Встреча {STAMP} — Инцидент загрузки — импорт rec.m4a (12 Б)" in text
+    assert "Обновление ОС —" not in text
+    # тема с тире и словом «запись» — не хвост исходника (GLM r1 I1 / DS M4 по #559)
+    note.write_text(text.replace("— Инцидент загрузки — импорт rec.m4a (12 Б)",
+                                 "— Диктофон — запись идей — импорт rec.m4a (12 Б)"), encoding="utf-8")
+    pretty2, slug2 = rm.pretty_and_slug("Планёрка")
+    rm.apply(rm.plan(graph, tdir, STAMP, pretty2, slug2), graph, STAMP, pretty2)
+    text = note.read_text(encoding="utf-8")
+    assert f"# Встреча {STAMP} — Планёрка — импорт rec.m4a (12 Б)" in text and "запись идей" not in text.splitlines()[4]
+    # заметка демона без хвоста, тема кончается на «— запись <слово>»: легаси-ветка без размера
+    # не должна выдумывать хвост из темы (DS r2 I1 / GLM r2 M2 по #559)
+    note.write_text(text.replace("— Планёрка — импорт rec.m4a (12 Б)", "— Обзор рынка — запись планов"),
+                    encoding="utf-8")
+    pretty3, slug3 = rm.pretty_and_slug("Итоги квартала")
+    rm.apply(rm.plan(graph, tdir, STAMP, pretty3, slug3), graph, STAMP, pretty3)
+    head = [ln for ln in note.read_text(encoding="utf-8").splitlines() if ln.startswith("# Встреча")][0]
+    assert head == f"# Встреча {STAMP} — Итоги квартала", head
+    # …а настоящий легаси-хвост (имя файла без размера, импорт до 23.08) сохраняется
+    note.write_text(note.read_text(encoding="utf-8").replace(
+        f"# Встреча {STAMP} — Итоги квартала", f"# Встреча {STAMP} — Итоги квартала — запись memo.m4a"), encoding="utf-8")
+    rm.apply(rm.plan(graph, tdir, STAMP, pretty2, slug2), graph, STAMP, pretty2)
+    head = [ln for ln in note.read_text(encoding="utf-8").splitlines() if ln.startswith("# Встреча")][0]
+    assert head == f"# Встреча {STAMP} — Планёрка — запись memo.m4a", head
+
+
+def test_rename_refuses_when_the_target_archive_folder_exists(world):
+    """rename на существующую папку падал посреди применения — файлы переехали,
+    папка и заметка нет (аудит 13.09, GLM M5). Отказ — до первого шага."""
+    import pytest
+    graph, tdir = world
+    # своя папка — по манифесту; чужая одноимённая минута без манифеста рядом
+    (graph / rm.ARCHIVE_DIR / "2026-08-03 11-30 — Обновление ОС" / "meeting.meta.json").write_text(
+        json.dumps({"meeting_id": STAMP}), encoding="utf-8")
+    (graph / rm.ARCHIVE_DIR / "2026-08-03 11-30 — Инцидент загрузки").mkdir()
+    pretty, slug = rm.pretty_and_slug("Инцидент загрузки")
+    with pytest.raises(SystemExit):
+        rm.plan(graph, tdir, STAMP, pretty, slug)
+    assert (tdir / f"{STAMP}_Обновление_ОС.md").exists(), "ничего не тронуто"
+
+
 def test_apply_rebuilds_portable_manifest(world):
     """Телефоны читают тему из meeting.meta.json: после переименования
     манифест обязан говорить новую тему, а не прошлогоднюю."""
