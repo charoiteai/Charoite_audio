@@ -36,6 +36,7 @@ import math
 import os
 import pathlib
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -237,6 +238,11 @@ def _archive_source_for(meta: dict, done_file: pathlib.Path,
     ищем по штампу в графе, тем же поиском, что и импорт. Только аудио и
     только имя «Исходник…», которое писали сами.
     """
+    if meta.get("repeat"):
+        # Копия ПОВТОРА исходником архива не владеет: фолбэк по штампу ниже
+        # находил папку первой встречи и ретеншн копии удалял её «Исходник»,
+        # хотя с той встречей ничего не случилось (Critical DS/GLM r1 по #559).
+        return None
     candidates: list[pathlib.Path] = []
     archive = meta.get("archive_source")
     if isinstance(archive, str):
@@ -591,6 +597,7 @@ def archive_folder_for(graph: pathlib.Path, stamp: str) -> pathlib.Path | None:
     # глоб брал папку соседки той же минуты (круг-1 по PR #388, Codex).
     head = f"{stamp[:10]} {meeting_stamp.archive_time(stamp)}"
     patterns = (f"{head} — *", f"{stamp} — *")
+    unowned: pathlib.Path | None = None
     for pat in patterns:
         for f in sorted(graph.parent.glob(f"*/Встречи-архив/{pat}")) + sorted(graph.glob(f"Встречи-архив/{pat}")):
             if not f.is_dir():
@@ -599,9 +606,11 @@ def archive_folder_for(graph: pathlib.Path, stamp: str) -> pathlib.Path | None:
                 owner = json.loads((f / "meeting.meta.json").read_text(encoding="utf-8")).get("meeting_id")
             except (OSError, ValueError, AttributeError):
                 owner = None
-            if owner is None or owner == stamp:
-                return f
-    return None
+            if owner == stamp:
+                return f                 # своя по манифесту — сильнее безхозной
+            if owner is None and unowned is None:
+                unowned = f              # безхозная — кандидат, если своей не найдётся (GLM r1 M4 по #559)
+    return unowned
 
 
 def title_slug(title: str) -> str:
@@ -724,6 +733,8 @@ def import_stamp(tdir: pathlib.Path, minute: str, src_name: str,
 # синк положил), сутки разницы — это скачивание, копирование или синк,
 # тронувший mtime без записи.
 MOMENT_DRIFT = dt.timedelta(minutes=2)
+#: потолок одного импорта в дочернем процессе (см. _scan_one)
+IMPORT_CHILD_TIMEOUT = 2 * 3600
 
 
 def meeting_moment(src: pathlib.Path) -> tuple[dt.datetime, str | None]:
@@ -866,12 +877,13 @@ def main() -> None:
         print(f"встреча {already.name} уже импортирована — повтор не нужен")
         _status("ready", already, _note_for(cfg, already))
         old_stamp = meeting_stamp.stamp_of(already.stem)
-        old_folder = archive_folder_for(graphs.graph_dir(cfg) or pathlib.Path(""), old_stamp) if old_stamp else None
-        old_src = old_folder / f"Исходник{src.suffix.lower()}" if old_folder is not None else None
+        # archive_source у повтора не пишем: ретеншн КОПИИ повтора удалял бы
+        # аудио-исходник первой встречи из архива, хотя с ней ничего не случилось
+        # (аудит 13.09, GLM M4); заодно нет глоба от CWD при незаданном graph_dir (GLM M7)
         _report(args.result_json, {"kind": "meeting", "source": src.name,
                                    "size": src.stat().st_size, "repeat": True,
                                    "stamp": old_stamp, "transcript": str(already),
-                                   "archive_source": str(old_src) if old_src is not None and old_src.exists() else None})
+                                   "archive_source": None})
         return
     if stamp != f"{day}_{hhmm}":
         print(f"в минуте {day}_{hhmm} уже есть другая встреча — импорт под штампом {stamp}")
@@ -943,8 +955,9 @@ def main() -> None:
     print("— догенерирую минутки/разбор/тезисы и раскладываю архив…")
     tail_run = subprocess.run([sys.executable, str(CODE / "src" / "retro_fill.py")])
     # исходник — рядом с материалами встречи (APFS-клон: без лишнего места)
-    graph = graphs.graph_dir(cfg) or pathlib.Path("")
-    folder = archive_folder_for(graph, stamp)
+    # без графа в конфиге — не Path("") (это «.», глоб от CWD демона; DS r2 M1 / GLM r2 M5 по #559)
+    graph = graphs.graph_dir(cfg)
+    folder = archive_folder_for(graph, stamp) if graph else None
     archived: pathlib.Path | None = None
     if folder is None:
         print(f"папка архива встречи {stamp} не найдена — исходник в архив не скопирован")
@@ -1001,6 +1014,43 @@ def _note_for(cfg: dict, transcript: pathlib.Path) -> pathlib.Path | None:
         return None
 
 
+def run_child(cmd: list[str], timeout: float | None = None) -> subprocess.CompletedProcess:
+    """Дочерний импорт в своей сессии процессов и с потолком времени.
+
+    Ребёнок без потолка держал скан и воркер импорта приложения навсегда (аудит
+    13.09, DS I1); трёхчасовая запись при RTF ~28x — минуты, два часа — потолок с
+    запасом на диаризацию и граф. kill одного ребёнка оставлял внуков
+    (transcribe_file, graph_updater) дописывать стенограмму после метки ошибки —
+    поэтому своя сессия и killpg (DS/GLM r1 по #559). Шов для тестов: подменяют
+    его, а не subprocess.run."""
+    # байты и своё декодирование: `errors=` у Popen бракует semgrep (CI lint), а
+    # UnicodeDecodeError на выводе ребёнка ронять скан не должен
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, start_new_session=True)
+    limit = IMPORT_CHILD_TIMEOUT if timeout is None else timeout
+    dec = lambda b: (b or b"").decode("utf-8", "replace")  # noqa: E731
+    try:
+        out, err = proc.communicate(timeout=limit)
+        return subprocess.CompletedProcess(cmd, proc.returncode, dec(out), dec(err))
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            # потомок в непрерываемом read на сетевом маунте не отпустит трубу и после
+            # SIGKILL — второй потолок, иначе скан висит навсегда (GLM r2 M1 по #559)
+            out, err = proc.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe:
+                    pipe.close()
+            out, err = b"", b""
+        return subprocess.CompletedProcess(
+            cmd, 124, dec(out),
+            dec(err) + f"\nимпорт не уложился в {limit / 3600:.0f} ч — прерван вместе с потомками")
+
+
 def _scan_one(f: pathlib.Path, done: pathlib.Path, keep_days: float) -> bool:
     """Один файл папки импорта: ребёнок → done/ с сайдкаром (True) или метка
     ошибки (False)."""
@@ -1011,9 +1061,7 @@ def _scan_one(f: pathlib.Path, done: pathlib.Path, keep_days: float) -> bool:
         # приложение читает наш stdout через трубу, и мегабайт логов
         # транскрибации подвесил бы импорт на полном буфере. Наружу —
         # хвост, в метку ошибки — тоже хвост.
-        r = subprocess.run([sys.executable, __file__, str(f),
-                            "--result-json", str(result_path)],
-                           capture_output=True, text=True, errors="replace")
+        r = run_child([sys.executable, __file__, str(f), "--result-json", str(result_path)])
         lines = [ln for ln in (r.stdout + "\n" + r.stderr).splitlines() if ln.strip()]
         for ln in lines[-8:]:
             print(f"  {ln}")
@@ -1079,8 +1127,15 @@ def import_voice_note(src: pathlib.Path, diary: bool) -> None:
         wav.unlink(missing_ok=True)
     if len(text) < 3:
         sys.exit("в записи не расслышалось ни слова")
+    # Момент — из записи (метаданные контейнера, как у встреч), а не время
+    # импорта: заметка вчерашнего вечера иначе ложилась в сегодняшний дневник
+    # под временем синка (аудит 13.09, GLM I3 / DS M4)
+    moment, why = meeting_moment(src)
+    if why:
+        print(why)
     mode = ["--diary"] if diary else []
-    r = sp.run([sys.executable, str(CODE / "src" / "dictate_note.py"), "--text", *mode],
+    r = sp.run([sys.executable, str(CODE / "src" / "dictate_note.py"), "--text",
+                "--moment", f"{moment:%Y-%m-%d %H:%M}", *mode],
                input=text, text=True)
     if r.returncode != 0:
         sys.exit("конвейер заметки завершился с ошибкой")

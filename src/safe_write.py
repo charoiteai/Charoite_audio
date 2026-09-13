@@ -73,6 +73,22 @@ def write_text(path: pathlib.Path, text: str, *, encoding: str = "utf-8",
     return True
 
 
+def claim(path: pathlib.Path) -> bool:
+    """Занять имя файла: `O_CREAT|O_EXCL` — единственная атомарная проверка «файла
+    не было» в POSIX. `write_text(expect_absent=True)` сжимает окно гонки, но
+    проверка и `replace` там — две операции: две диктовки в одну минуту с одним
+    заголовком могли обе пройти «файла нет» и затереть друг друга (DS r2 M2 /
+    GLM r2 M4 по #559). Занятое имя — False, вызывающий берёт следующее. Файл
+    остаётся пустым до `write_text`, который заменит его целиком."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        return False
+    os.close(fd)
+    return True
+
+
 def _carry_over_metadata(src: pathlib.Path, dst: pathlib.Path) -> None:
     """Перенести на новый файл права и метки Finder со старого.
 

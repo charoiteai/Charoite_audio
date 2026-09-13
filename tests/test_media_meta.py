@@ -317,3 +317,39 @@ def test_wav_huge_info_list_is_scanned_past_first_mebibyte(tmp_path):
     p = tmp_path / "big.wav"
     p.write_bytes(b"RIFF" + struct.pack("<I", 4 + len(chunks)) + b"WAVE" + chunks)
     assert media_meta.recorded_at(p) == LOCAL
+
+
+def test_wav_with_a_zero_data_size_gives_up_instead_of_walking_the_samples(tmp_path):
+    """Потоковый писатель ещё не проставил размер data (0 или -1 — штатно для
+    wav_complete): дальше сэмплы, а не заголовки чанков; разбор их как заголовков
+    шагал по сотням мегабайт до конца файла (аудит 13.09, DS I1)."""
+    import time
+    fmt = b"fmt " + struct.pack("<I", 16) + b"\0" * 16
+    # тишина: каждый ложный «заголовок» имел бы размер 0 и шаг 8 байт — без потолка
+    # это миллион итераций по 8 МБ (GLM r1 M3 по #559: сэмплы 0x0001 тест не ловили)
+    body = fmt + b"data" + struct.pack("<I", 0) + bytes(8 * 1024 * 1024)
+    p = tmp_path / "stream.wav"
+    p.write_bytes(b"RIFF" + struct.pack("<I", 0) + b"WAVE" + body)
+    t0 = time.monotonic()
+    assert media_meta.recorded_at(p) is None
+    assert time.monotonic() - t0 < 0.5
+
+
+
+def test_wav_chunk_walk_has_a_ceiling(tmp_path):
+    """Потолок обхода `_WAV_MAX_CHUNKS`: тысяча пустых чанков перед LIST/INFO — это не
+    заголовки честного файла; тест с data=0 до потолка не доходил (GLM r2 M3 по #559)."""
+    import time
+    raw = b"2026-09-05 14:13:00\0"
+    info_body = b"INFO" + b"ICRD" + struct.pack("<I", len(raw)) + raw
+    junk = (b"JUNK" + struct.pack("<I", 0)) * (media_meta._WAV_MAX_CHUNKS + 100)
+    good = b"fmt " + struct.pack("<I", 16) + b"\0" * 16 + b"LIST" + struct.pack("<I", len(info_body)) + info_body
+    p = tmp_path / "junk.wav"
+    p.write_bytes(b"RIFF" + struct.pack("<I", 4 + len(junk) + len(good)) + b"WAVE" + junk + good)
+    t0 = time.monotonic()
+    assert media_meta.recorded_at(p) is None
+    assert time.monotonic() - t0 < 0.5
+    # та же дата за десятком пустых чанков — читается: потолок не режет честные файлы
+    p.write_bytes(b"RIFF" + struct.pack("<I", 4 + 80 + len(good)) + b"WAVE"
+                  + (b"JUNK" + struct.pack("<I", 0)) * 10 + good)
+    assert media_meta.recorded_at(p) == LOCAL

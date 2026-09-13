@@ -369,7 +369,7 @@ def test_failed_import_is_marked_kept_and_not_rescanned(tmp_path, monkeypatch):
         stdout = "что-то пошло\nтранскрибация не удалась\n"
         stderr = ""
 
-    monkeypatch.setattr(im.subprocess, "run", lambda cmd, **kw: (calls.append(cmd), Failed())[1])
+    monkeypatch.setattr(im, "run_child", lambda cmd, **kw: (calls.append(cmd), Failed())[1])
     monkeypatch.setattr(im, "_cfg", lambda: {"audio": {"import_keep_days": 2}})
     monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
     im._seen_marker(bad).write_text("300 1\n", encoding="ascii")
@@ -414,7 +414,7 @@ def test_successful_import_lands_in_done_with_sidecar(tmp_path, monkeypatch):
             stderr = ""
         return Ok()
 
-    monkeypatch.setattr(im.subprocess, "run", fake_child)
+    monkeypatch.setattr(im, "run_child", fake_child)
     monkeypatch.setattr(im, "_cfg", lambda: {"audio": {"import_keep_days": "1.5"}})
     monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
     before = time.time()
@@ -542,6 +542,28 @@ def test_prune_finds_archive_source_by_stamp_when_sidecar_lacks_it(tmp_path):
     assert copy in removed and src in removed and not src.exists()
 
 
+def test_prune_of_a_repeat_copy_never_touches_the_first_meetings_source(tmp_path):
+    """Копия повтора исходником архива не владеет: фолбэк по штампу находил папку
+    первой встречи и ретеншн копии удалял её «Исходник» (Critical DS/GLM r1 по #559)."""
+    import import_meeting as im
+
+    graph = tmp_path / "vault" / "Работа"
+    folder = graph / "Встречи-архив" / "2026-09-05 12-00 — Тема"
+    folder.mkdir(parents=True)
+    src = folder / "Исходник.m4a"
+    src.write_bytes(b"a")
+    done = tmp_path / "done"
+    done.mkdir()
+    copy = done / "rec.m4a"
+    copy.write_bytes(b"c")
+    now = time.time()
+    im._write_json(im.imported_sidecar(copy), {"imported_at": now - 9, "delete_after": now - 1,
+                                               "stamp": "2026-09-05_1200", "repeat": True,
+                                               "archive_source": None})
+    removed = im.prune_done(tmp_path, 2, now=now, graph=graph)
+    assert copy in removed and src not in removed and src.exists(), "исходник первой встречи цел"
+
+
 def test_orphan_error_marker_does_not_haunt_the_next_file(tmp_path, monkeypatch):
     """Сбойный файл убрали руками, метка осталась; новый файл с тем же
     именем не должен считаться сбойным (GLM r1 по #496)."""
@@ -561,7 +583,7 @@ def test_orphan_error_marker_does_not_haunt_the_next_file(tmp_path, monkeypatch)
         stdout = ""
         stderr = ""
 
-    monkeypatch.setattr(im.subprocess, "run", lambda cmd, **kw: (calls.append(cmd), Ok())[1])
+    monkeypatch.setattr(im, "run_child", lambda cmd, **kw: (calls.append(cmd), Ok())[1])
     monkeypatch.setattr(im, "_cfg", lambda: {"audio": {}})
     monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
     _run_scan(monkeypatch, tmp_path)               # скан без файла — сирота-метка убрана
@@ -586,7 +608,7 @@ def test_one_broken_file_does_not_stop_the_queue(tmp_path, monkeypatch):
         stdout = ""
         stderr = ""
 
-    monkeypatch.setattr(im.subprocess, "run", lambda cmd, **kw: Ok())
+    monkeypatch.setattr(im, "run_child", lambda cmd, **kw: Ok())
     monkeypatch.setattr(im, "_cfg", lambda: {"audio": {"import_keep_days": 0}})
     monkeypatch.setattr(im.graphs, "graph_dir", lambda cfg: None)
     real_rename = pathlib.Path.rename
@@ -859,7 +881,7 @@ def test_scan_copies_new_voice_memos_into_the_folder_first(tmp_path, monkeypatch
         stdout = "транскрибация не удалась\n"
         stderr = ""
 
-    monkeypatch.setattr(im.subprocess, "run", lambda cmd, **kw: Failed())
+    monkeypatch.setattr(im, "run_child", lambda cmd, **kw: Failed())
     monkeypatch.setenv("CHAROITE_ROOT", str(tmp_path / "data"))
     monkeypatch.setattr(im, "ROOT", tmp_path / "data")
 
@@ -871,3 +893,28 @@ def test_scan_copies_new_voice_memos_into_the_folder_first(tmp_path, monkeypatch
     assert (folder / "Новая запись 7.m4a").read_bytes() == rec.read_bytes()
     assert rec.exists() and not list(folder.glob(".*.part"))
     assert (tmp_path / "data" / "logs" / "voice_memos_bridge.json").exists()
+
+
+def test_run_child_kills_the_whole_process_group_on_timeout(tmp_path):
+    """Потолок бьёт по всей сессии ребёнка: внук, переживший kill родителя,
+    дописывал стенограмму после метки ошибки (DS/GLM r1 по #559)."""
+    import sys
+    import time
+
+    import import_meeting as im
+
+    marker = tmp_path / "grandchild.txt"
+    grandchild = f"import time, pathlib; time.sleep(3); pathlib.Path({str(marker)!r}).write_text('жив')"
+    code = (
+        "import subprocess, sys, time\n"
+        f"subprocess.Popen([sys.executable, '-c', {grandchild!r}])\n"
+        "time.sleep(30)\n"
+    )
+    t0 = time.monotonic()
+    r = im.run_child([sys.executable, "-c", code], timeout=0.5)
+    assert r.returncode == 124 and "не уложился" in r.stderr and time.monotonic() - t0 < 5
+    time.sleep(3.5)
+    assert not marker.exists(), "внук пережил потолок — killpg не сработал"
+    ok = im.run_child([sys.executable, "-c", "print('готово')"], timeout=10)
+    assert ok.returncode == 0 and ok.stdout.strip() == "готово"
+
