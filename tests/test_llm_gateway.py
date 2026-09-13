@@ -523,6 +523,9 @@ def test_garbage_line_in_ndjson_stream_is_an_http_error(monkeypatch):
     monkeypatch.setattr(llm_mod, "requests", fake)
     with pytest.raises(LLMHTTPError, match="не-JSON"):
         list(LLM(CFG).stream("в", model="м"))
+    monkeypatch.setattr(llm_mod, "requests", _BusyThenOk(0, _StreamResp([b"[1, 2]"])))
+    with pytest.raises(LLMHTTPError, match="форма"):
+        list(LLM(CFG).stream("в", model="м"))
 
 
 def test_sse_accepts_data_without_space_and_rejects_garbage(monkeypatch):

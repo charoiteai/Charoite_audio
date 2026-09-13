@@ -369,9 +369,12 @@ class LLM:
         ValueError мимо задокументированного LLMHTTPError, и обработчики живого
         контура его не ловили (аудит 13.09, DS M1/M2)."""
         try:
-            return json.loads(line)
+            data = json.loads(line)
         except ValueError:
             raise self._fail(r.status_code, f"не-JSON в потоке: {line[:120]!r}") from None
+        if not isinstance(data, dict):
+            raise self._fail(r.status_code, f"неожиданная форма строки потока: {line[:120]!r}")
+        return data
 
     def _fail(self, status: int, detail: str) -> LLMHTTPError:
         """ЕДИНСТВЕННЫЙ способ создать LLMHTTPError внутри клиента.
