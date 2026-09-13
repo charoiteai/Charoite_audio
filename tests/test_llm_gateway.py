@@ -39,6 +39,9 @@ class _Resp:
     def json(self) -> dict:
         return self._payload
 
+    def close(self) -> None:   # _post_busy закрывает ответ «занято» перед паузой
+        pass
+
 
 class _Requests:
     """Подмена модуля requests: запоминает запрос, отвечает заготовкой."""
@@ -501,3 +504,111 @@ def test_fit_stops_after_two_failed_parts_in_a_row(monkeypatch):
         l._fit("А" * 40_000)
     assert calls["n"] == 2, "после двух отказов подряд остальные части не мучаем"
     assert all(b == llm_mod.FIT_PART_BUSY_WAIT for b in calls["budgets"]), "у сводок частей маленький бюджет"
+
+
+# ── Аудит 13.09, зона 4 ──────────────────────────────────────────────────
+
+def test_parse_json_block_takes_the_first_object_not_the_whole_span():
+    """Жадный «{.*}» брал диапазон от первой скобки до последней и не разбирал
+    ответ с двумя объектами вовсе (GLM M1)."""
+    assert parse_json_block('Вот: {"a": 1}\nПримечание: {"b": 2}') == {"a": 1}
+    assert parse_json_block('{не json} потом {"x": 2}') == {"x": 2}
+    assert parse_json_block('{"a": {"b": 1}} и {"c": 2}') == {"a": {"b": 1}}
+
+
+def test_garbage_line_in_ndjson_stream_is_an_http_error(monkeypatch):
+    """Страница прокси внутри 200-стрима роняла итератор голым ValueError мимо
+    контракта LLMHTTPError (DS M2)."""
+    fake = _BusyThenOk(0, _StreamResp([b"<html>proxy portal</html>"]))
+    monkeypatch.setattr(llm_mod, "requests", fake)
+    with pytest.raises(LLMHTTPError, match="не-JSON"):
+        list(LLM(CFG).stream("в", model="м"))
+    monkeypatch.setattr(llm_mod, "requests", _BusyThenOk(0, _StreamResp([b"[1, 2]"])))
+    with pytest.raises(LLMHTTPError, match="форма"):
+        list(LLM(CFG).stream("в", model="м"))
+    # message: null — пустой чанк, message списком — форма (GLM M1 по #562)
+    ok = _StreamResp([b'{"message": null, "done": false}', b'{"message":{"content":"a"},"done":true}'])
+    monkeypatch.setattr(llm_mod, "requests", _BusyThenOk(0, ok))
+    assert "".join(LLM(CFG).stream("в", model="м")) == "a"
+    monkeypatch.setattr(llm_mod, "requests", _BusyThenOk(0, _StreamResp([b'{"message": [1], "done": false}'])))
+    with pytest.raises(LLMHTTPError, match="форма"):
+        list(LLM(CFG).stream("в", model="м"))
+
+
+def test_sse_accepts_data_without_space_and_rejects_garbage(monkeypatch):
+    """«data:{…}» без пробела — валидный SSE, а не мусор; мусор и неожиданная
+    форма — LLMHTTPError, не ValueError/AttributeError (DS M1)."""
+    fake = _Requests(_SSEResp([b'data:{"choices":[{"delta":{"content":"x"}}]}',
+                               b"data: [DONE]"]))
+    monkeypatch.setattr(llm_mod, "requests", fake)
+    assert "".join(LLM(CFG_MLX).stream("в")) == "x"
+
+    monkeypatch.setattr(llm_mod, "requests", _Requests(_SSEResp([b"data: <html>oops</html>"])))
+    with pytest.raises(LLMHTTPError, match="не-JSON"):
+        list(LLM(CFG_MLX).stream("в"))
+
+    monkeypatch.setattr(llm_mod, "requests", _Requests(_SSEResp(['data: {"choices":["строка"]}'.encode("utf-8")])))
+    with pytest.raises(LLMHTTPError, match="форма"):
+        list(LLM(CFG_MLX).stream("в"))
+
+    # пустое поле data: — keepalive, не обрыв; choices словарём — форма, не KeyError (круг-1 по #562)
+    fake = _Requests(_SSEResp([b"data:", b'data:{"choices":[{"delta":{"content":"y"}}]}', b"data: [DONE]"]))
+    monkeypatch.setattr(llm_mod, "requests", fake)
+    assert "".join(LLM(CFG_MLX).stream("в")) == "y"
+    monkeypatch.setattr(llm_mod, "requests", _Requests(_SSEResp([b'data: {"choices":{"0":{"delta":{"content":"x"}}}}'])))
+    with pytest.raises(LLMHTTPError, match="форма"):
+        list(LLM(CFG_MLX).stream("в"))
+
+
+def test_cloud_complete_honours_the_callers_read_timeout(monkeypatch):
+    """Облачный complete() резал документы 45-секундным CLOUD_TIMEOUT и молча
+    уходил на локальную модель; таймаут вызывающего не читался вовсе (DS I1)."""
+    inst = LLM(CFG)
+    inst.cloud_ready = True
+    seen = {}
+
+    def post_busy(url, payload, timeout, wait):
+        seen["timeout"] = timeout
+        return _Resp({"choices": [{"message": {"content": "ок"}}]})
+
+    monkeypatch.setattr(inst, "_cloud_payload", lambda *a, **k: {"m": 1})
+    monkeypatch.setattr(inst, "_post_busy", post_busy)
+    assert inst.complete("вопрос", timeout=600) == "ок"
+    assert seen["timeout"] == (llm_mod.CLOUD_TIMEOUT[0], 600.0)
+    inst.complete("вопрос", timeout=7)
+    assert seen["timeout"] == llm_mod.CLOUD_TIMEOUT, "короче облачного минимума не режем"
+
+
+def test_cloud_fallback_flag_is_strictly_boolean(capsys):
+    """«false» в кавычках из YAML — не False: модуль приватности требует явного
+    булева, а флаг читался как «не False» (DS M5)."""
+    cfg = {**CFG, "llm": {**CFG["llm"], "cloud_fallback_local": "false"}}
+    assert LLM(cfg).fallback_local is True
+    assert "cloud_fallback_local" in capsys.readouterr().err
+    assert LLM({**CFG, "llm": {**CFG["llm"], "cloud_fallback_local": False}}).fallback_local is False
+    assert LLM(CFG).fallback_local is True
+
+
+def test_cloud_stream_honours_the_callers_read_timeout(monkeypatch):
+    """Документные стримы (минутки, сводки) в облаке резались 45 с CLOUD_TIMEOUT и
+    молча уходили на локальную модель (круг-1 по #562, DS I1)."""
+    inst = LLM(CFG)
+    inst.cloud_ready = True
+    seen = {}
+
+    def sse(url, payload, wait, timeout=None, first_token=None):
+        seen["timeout"] = timeout
+        yield "ок"
+
+    monkeypatch.setattr(inst, "_cloud_payload", lambda *a, **k: {"m": 1})
+    monkeypatch.setattr(inst, "_sse", sse)
+    assert "".join(inst.stream("в", timeout=llm_mod.DOC_STREAM_TIMEOUT)) == "ок"
+    assert seen["timeout"] == (llm_mod.CLOUD_TIMEOUT[0], llm_mod.DOC_STREAM_TIMEOUT[1])
+    "".join(inst.stream("в", timeout=(5.0, 20.0)))
+    assert seen["timeout"] == llm_mod.CLOUD_TIMEOUT, "короче облачного минимума не режем"
+
+
+def test_parse_json_block_prefers_the_fenced_answer_over_a_prose_example():
+    text = 'Пример формата: {"заголовок": "X"}.\n```json\n{"заголовок": "Итог"}\n```\nготово'
+    assert parse_json_block(text) == {"заголовок": "Итог"}
+    assert parse_json_block('```json\nне json\n```\n{"a": 1}') == {"a": 1}

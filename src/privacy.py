@@ -39,7 +39,9 @@ True, то есть строка вместо булева давала обла
 """
 from __future__ import annotations
 
+import functools
 import ipaddress
+import socket
 import os
 import urllib.parse
 
@@ -215,11 +217,53 @@ def mlx_base_url(cfg: dict, env: dict | None = None) -> str:
     return _guarded_url(cfg, env, key="mlx_base_url", default=DEFAULT_MLX_URL)
 
 
+_HOME_SUFFIXES = (".local", ".lan", ".home", ".internal", ".home.arpa")   # RFC 8375 — .home.arpa
+
+
+def _ip_private(ip) -> bool:
+    return ip.is_private or ip.is_link_local or ip.is_loopback
+
+
+@functools.lru_cache(maxsize=64)
+def _resolves_private(host: str) -> bool:
+    """Имя своей сети обязано и резолвиться в свою сеть: имя без точки на macOS
+    дополняется search domain, и «ollama» в корпоративной сети — чужой хост
+    (круг-1 по #562, GLM I1). Не резолвится или публичный адрес — отказ."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    ips = {info[4][0].split("%")[0] for info in infos}
+    try:
+        return bool(ips) and all(_ip_private(ipaddress.ip_address(ip)) for ip in ips)
+    except ValueError:
+        return False
+
+
+def _is_private_host(host: str | None) -> bool:
+    """Адрес своей сети: частный, link-local или loopback IP; имя из домашних
+    доменов (.local, .home.arpa и подобные) или без точек — если резолвится в
+    такой же адрес. Для него http допустим."""
+    if not host:
+        return False
+    try:
+        return _ip_private(ipaddress.ip_address(host))
+    except ValueError:
+        h = host.lower().rstrip(".")       # FQDN с корневой точкой — то же имя (DS I2)
+        if "." not in h or h.endswith(_HOME_SUFFIXES):
+            return _resolves_private(h)
+        return False
+
+
 def _guarded_url(cfg: dict, env: dict | None, *, key: str, default: str) -> str:
     env = os.environ if env is None else env
     raw = str((cfg.get("llm") or {}).get(key) or default)
     url = raw.rstrip("/")
-    host = urllib.parse.urlsplit(url).hostname
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname
+    scheme = parts.scheme.lower()
+    if scheme not in ("http", "https"):     # и для loopback: requests такую схему не поймёт (DS M7)
+        raise RuntimeError(f"llm.{key} = {raw}: схема «{scheme or '—'}» не поддерживается, нужен http(s)")
     if _is_loopback(host):
         return url
     if any(env.get(k) for k in KILL_SWITCHES):
@@ -227,6 +271,15 @@ def _guarded_url(cfg: dict, env: dict | None, *, key: str, default: str) -> str:
             f"llm.{key} = {raw} указывает не на эту машину, а рубильник "
             f"{'/'.join(k for k in KILL_SWITCHES if env.get(k))} запрещает "
             "любой выход наружу")
+    # Схема — часть политики, не только адрес: allow_remote разрешал http на
+    # чужую машину, и стенограмма шла бы по сети открытым текстом (аудит 13.09,
+    # DS M3). Своя сеть (RFC 1918, link-local, .local) — http допустим: Ollama
+    # на соседнем Mac TLS не умеет; всё, что дальше, — только https.
+    if scheme == "http" and not _is_private_host(host):
+        raise RuntimeError(
+            f"llm.{key} = {raw} — адрес вне своей сети по открытому http: стенограмма "
+            "ушла бы по сети открытым текстом. Для удалённого адреса нужен https "
+            "(llm.allow_remote этого не снимает)")
     if (cfg.get("llm") or {}).get("allow_remote") is True:
         return url
     raise RuntimeError(

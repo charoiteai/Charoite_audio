@@ -244,6 +244,17 @@ def check_llm_alive(cfg: dict) -> None:
              "перезапускать не нужно: дождитесь конца разбора встречи или "
              "ночного цикла — конвейер сам ждёт занятую модель")
         return
+    if state == llm_health.MISSING:
+        line(FAIL, "сервер отвечает, а модели из конфига на нём нет (HTTP 404)",
+             "установите модель (ollama pull …) или поправьте llm.model — "
+             "перезапуск сервера тут не поможет")
+        return
+    if state == llm_health.SLOW:
+        line(WARN, "сервер на связи, но генерация не ответила за 90 с",
+             "модель может быть занята длинной генерацией (разбор встречи, ночной "
+             "цикл); конвейер ждёт до 5 минут (проба 120 с и ожидание 180 с), "
+             "прежде чем перезапускать")
+        return
     sys.path.insert(0, str(CODE / "src"))
     import privacy as _privacy
     if _privacy.cloud_engine_active(cfg):

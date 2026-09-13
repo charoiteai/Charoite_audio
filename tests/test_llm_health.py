@@ -245,3 +245,54 @@ def test_still_busy_after_wait_is_alive_not_broken(monkeypatch):
     said: list[str] = []
     assert llm_health.ensure_alive(LOCAL, log=said.append, wait=1) is True
     assert any("всё ещё занята" in m for m in said)
+
+
+# ── Аудит 13.09, зона 4 ──────────────────────────────────────────────────
+
+def test_missing_model_is_not_a_dead_server(monkeypatch):
+    """404 «model not found» считался смертью сервера: здоровая Ollama уходила в
+    pkill и 180 с ожидания, разбор встречи пропадал из-за опечатки в llm.model
+    (DS I2)."""
+    monkeypatch.setattr(llm_health.requests, "post", lambda *a, **kw: _Resp(404))
+    assert llm_health.probe(LOCAL) == llm_health.MISSING
+    monkeypatch.setattr(llm_health, "_restart",
+                        lambda cfg, log: pytest.fail("перезапуск не лечит отсутствующую модель"))
+    said: list[str] = []
+    assert llm_health.ensure_alive(LOCAL, log=said.append) is False
+    assert any("404" in m and "qwen3.6:35b-a3b" in m for m in said), said
+
+
+def test_read_timeout_gets_a_grace_period_before_restart(monkeypatch):
+    """Проба в очереди за длинной генерацией упиралась в ReadTimeout, и сторож
+    перезапускал живой сервер — убивая ту самую генерацию (инцидент 12.08,
+    GLM I2). Ответила в течение wait — перезапуска нет."""
+    calls = {"n": 0}
+
+    def post(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise llm_health.requests.ReadTimeout("в очереди")
+        return _Resp()
+
+    monkeypatch.setattr(llm_health.requests, "post", post)
+    monkeypatch.setattr(llm_health, "_restart",
+                        lambda cfg, log: pytest.fail("перезапуск живого сервера"))
+    monkeypatch.setattr(llm_health.time, "sleep", lambda s: None)
+    said: list[str] = []
+    assert llm_health.ensure_alive(LOCAL, log=said.append, wait=30) is True
+    assert any("не перезапускаю" in m for m in said), said
+    assert calls["n"] == 3
+
+
+def test_persistent_silence_at_a_live_server_still_restarts(monkeypatch):
+    """Зависание 03.08 (HTTP жив, генерация мёртва) лечится по-прежнему — после
+    отведённого срока, а не по первой пробе."""
+    monkeypatch.setattr(llm_health.requests, "post",
+                        lambda *a, **kw: (_ for _ in ()).throw(llm_health.requests.ReadTimeout("тишина")))
+    restarts: list[int] = []
+    monkeypatch.setattr(llm_health, "_restart", lambda cfg, log: restarts.append(1) or True)
+    monkeypatch.setattr(llm_health.time, "sleep", lambda s: None)
+    said: list[str] = []
+    assert llm_health.ensure_alive(LOCAL, log=said.append, wait=0.05) is False
+    assert restarts == [1]
+    assert any("молчит" in m for m in said) and any("не ответила" in m for m in said), said
