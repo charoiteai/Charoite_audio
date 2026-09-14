@@ -249,6 +249,16 @@ enum Inbox {
     /// Файл — в очередь, затем попытка доставки всей очереди.
     static func deliver(_ file: URL, status: @MainActor @escaping (String) -> Void) async {
         let fm = FileManager.default
+        // огрызок ротации при живом сбое кодека (меньше порога заготовки контейнера)
+        // на Mac уезжал бы «встречей» (GLM M6 r1 по #565)
+        let bytes = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        if bytes < orphanMinBytes {
+            try? fm.removeItem(at: file)
+            await status(L.t("Пустая запись (\(bytes) Б) — не отправляю",
+                             "Empty recording (\(bytes) B) — not sending",
+                             "空录音（\(bytes) B）— 不发送"))
+            return
+        }
         do {
             try fm.moveItem(at: file, to: uniqueName(in: outbox, like: file))
         } catch {
@@ -273,19 +283,26 @@ enum Inbox {
         // Один проход за раз: `.task` вкладки и стоп приходят вместе, а check-then-set
         // на статике из разных потоков пропускал оба — два копирования одного файла
         // в один `.part` (аудит 13.09, DS I3 / GLM M4). Замок — актор.
-        guard await gate.enter() else { return }
-        // Стоп с локскрина гасит аудиосессию, и копия 40-мегабайтной встречи
-        // замирала в `.part` до следующего запуска (GLM M6): просим у системы
-        // время на доставку.
-        let bg = await MainActor.run {
-            UIApplication.shared.beginBackgroundTask(withName: "charoite.inbox-flush")
+        await gate.run {
+            // Стоп с локскрина гасит аудиосессию, и копия 40-мегабайтной встречи
+            // замирала в `.part` до следующего запуска (GLM M6): просим у системы
+            // время на доставку; истёк бюджет — дописываем текущий файл и выходим,
+            // остальное подберёт следующий проход (DS I4 r1 по #565).
+            expired = false
+            let bg = await MainActor.run {
+                UIApplication.shared.beginBackgroundTask(withName: "charoite.inbox-flush") {
+                    Inbox.expired = true
+                }
+            }
+            await flushLocked(status: status)
+            await MainActor.run {
+                if bg != .invalid { UIApplication.shared.endBackgroundTask(bg) }
+            }
         }
-        await flushLocked(status: status)
-        await MainActor.run {
-            if bg != .invalid { UIApplication.shared.endBackgroundTask(bg) }
-        }
-        await gate.leave()
     }
+
+    /// Фоновый бюджет истёк: цикл доставки должен остановиться после текущего файла.
+    private nonisolated(unsafe) static var expired = false
 
     private static func flushLocked(status: @MainActor @escaping (String) -> Void) async {
         let fm = FileManager.default
@@ -305,10 +322,14 @@ enum Inbox {
         var waiting = 0
         var stuck: [String] = []
         for f in files {
+            if expired { break }                 // фоновый бюджет вышел — остальное следующим проходом
             // Скопирован прошлым проходом и ждёт выгрузки: не копировать второй раз
             // (иначе на Mac уехал бы дубль с суффиксом «-1»), а сверить состояние.
+            // Копию при ошибке НЕ удаляем: ошибка бывает остаточной или временной, а
+            // перекопирование 40 МБ по кругу и дубль на Mac хуже висящей записи в
+            // очереди с честным статусом (DS I3, критика GLM r1 по #565).
             if let pending = pendingDest(for: f) {
-                switch uploadState(of: pending) {
+                switch await awaitUpload(of: pending, upTo: uploadGrace) {
                 case .uploaded, .unknown:
                     retire(f)
                     delivered += 1
@@ -316,8 +337,7 @@ enum Inbox {
                     waiting += 1
                 case .failed(let why):
                     stuck.append(f.lastPathComponent)
-                    try? fm.removeItem(at: pending)                // отвергнутую копию убираем — файл поедет заново
-                    try? fm.removeItem(at: pendingMark(for: f))
+                    waiting += 1
                     await status(L.t("iCloud не принял \(f.lastPathComponent): \(why)",
                                      "iCloud rejected \(f.lastPathComponent): \(why)",
                                      "iCloud 拒绝了 \(f.lastPathComponent)：\(why)"))
@@ -329,14 +349,17 @@ enum Inbox {
             do {
                 try? fm.removeItem(at: part)
                 try fm.copyItem(at: f, to: part)
-                try fm.moveItem(at: part, to: dest)     // публикация одним шагом
                 // Из очереди убираем, только когда iCloud ВЫГРУЗИЛ файл. Проверка
                 // «ошибки выгрузки сразу после moveItem» была мёртвой: выгрузка к
                 // тому моменту ещё не начиналась, ключ всегда пуст, и «Уехало на
                 // Mac» печаталось по факту локального копирования; при переполненной
                 // квоте копия потом вытеснялась из Sent (аудит 13.09, DS I1 / GLM I1).
-                // Метка рядом с файлом: скопирован, куда, ждёт подтверждения.
-                markPending(f, dest: dest)
+                // Метка рядом с файлом — ДО публикации: убийство между публикацией и
+                // меткой давало второй экземпляр в iCloud (DS I2 r1 по #565); при
+                // падении после метки следующий проход увидит «копии нет», снимет
+                // метку и скопирует заново — дубля нет.
+                try markPending(f, dest: dest)
+                try fm.moveItem(at: part, to: dest)     // публикация одним шагом
                 switch await awaitUpload(of: dest, upTo: uploadGrace) {
                 case .uploaded, .unknown:
                     retire(f)
@@ -345,8 +368,7 @@ enum Inbox {
                     waiting += 1                                   // подтвердим следующим проходом
                 case .failed(let why):
                     stuck.append(f.lastPathComponent)
-                    try? fm.removeItem(at: dest)
-                    try? fm.removeItem(at: pendingMark(for: f))
+                    waiting += 1
                     await status(L.t("iCloud не принял \(f.lastPathComponent): \(why)",
                                      "iCloud rejected \(f.lastPathComponent): \(why)",
                                      "iCloud 拒绝了 \(f.lastPathComponent)：\(why)"))
@@ -355,6 +377,7 @@ enum Inbox {
                 // continue, а не return: один сбойный файл не должен запирать
                 // всю очередь, включая сегодняшнюю встречу.
                 try? fm.removeItem(at: part)
+                if !fm.fileExists(atPath: dest.path) { try? fm.removeItem(at: pendingMark(for: f)) }
                 stuck.append(f.lastPathComponent)
                 await status(L.t("Не отправилось (\(f.lastPathComponent)): \(error.localizedDescription)",
                                  "Failed (\(f.lastPathComponent)): \(error.localizedDescription)",
@@ -365,11 +388,13 @@ enum Inbox {
         if waiting > 0 {
             // копии в iCloud, выгрузка идёт: «Уехало» ещё нельзя, но и не сбой —
             // досверим сами через полминуты, пока приложение открыто
-            await status(L.t("Скопировано в iCloud, ждёт выгрузки: \(waiting)" + (delivered > 0 ? ", уехало: \(delivered)" : ""),
-                             "Copied to iCloud, uploading: \(waiting)" + (delivered > 0 ? ", delivered: \(delivered)" : ""),
-                             "已复制到 iCloud，正在上传：\(waiting)" + (delivered > 0 ? "，已发送：\(delivered)" : "")))
+            let failed = stuck.isEmpty ? ("", "", "") : (", не отправилось: \(stuck.count)", ", failed: \(stuck.count)", "，失败：\(stuck.count)")
+            await status(L.t("Скопировано в iCloud, ждёт выгрузки: \(waiting)" + (delivered > 0 ? ", уехало: \(delivered)" : "") + failed.0,
+                             "Copied to iCloud, uploading: \(waiting)" + (delivered > 0 ? ", delivered: \(delivered)" : "") + failed.1,
+                             "已复制到 iCloud，正在上传：\(waiting)" + (delivered > 0 ? "，已发送：\(delivered)" : "") + failed.2))
             scheduleRecheck(status: status)
         } else if left == 0 {
+            rechecks = 0                                       // эпизод ожидания закрыт — бюджет перепроверок полный (DS M9)
             await status(L.t("Уехало на Mac: \(delivered) файл(а)",
                              "Delivered to Mac: \(delivered)",
                              "已发送到 Mac：\(delivered)"))
@@ -396,8 +421,10 @@ enum Inbox {
             .ubiquitousItemIsUploadingKey, .ubiquitousItemUploadingErrorKey,
         ]) else { return .unknown }
         if v.isUbiquitousItem == false { return .uploaded }     // папка не в iCloud — доставка локальная
-        if let err = v.ubiquitousItemUploadingError { return .failed(err.localizedDescription) }
+        // «выгружено» сильнее остаточной ошибки прошлой попытки: иначе доехавший файл
+        // читался как отвергнутый (DS I3 / GLM I3 r1 по #565)
         if v.ubiquitousItemIsUploaded == true { return .uploaded }
+        if let err = v.ubiquitousItemUploadingError { return .failed(err.localizedDescription) }
         if v.ubiquitousItemIsUploading == true { return .uploading }
         // Для папки вне контейнера (security-scoped bookmark) ключи часто пусты:
         // судить нечем — считаем принятым, как считалось всегда.
@@ -407,8 +434,18 @@ enum Inbox {
     private static func awaitUpload(of dest: URL, upTo limit: TimeInterval) async -> UploadState {
         let deadline = Date().addingTimeInterval(limit)
         var state = uploadState(of: dest)
-        while state == .uploading, Date() < deadline {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        var polls = 0
+        // «неизвестно» на первом опросе — ключи могли не успеть появиться: перечитываем
+        // несколько раз, прежде чем считать принятым (GLM I2 r1 по #565). Отмена
+        // задачи и истёкший фоновый бюджет прерывают ожидание сразу — иначе
+        // проглоченная CancellationError крутила цикл вхолостую 10 с (DS I5).
+        while (state == .uploading || (state == .unknown && polls < 3)), Date() < deadline, !expired {
+            do {
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            } catch {
+                break
+            }
+            polls += 1
             state = uploadState(of: dest)
         }
         return state
@@ -420,8 +457,8 @@ enum Inbox {
         file.appendingPathExtension("sent")
     }
 
-    static func markPending(_ file: URL, dest: URL) {
-        try? dest.path.write(to: pendingMark(for: file), atomically: true, encoding: .utf8)
+    static func markPending(_ file: URL, dest: URL) throws {
+        try dest.path.write(to: pendingMark(for: file), atomically: true, encoding: .utf8)
     }
 
     /// Куда файл уже скопирован прошлым проходом; nil — не копировался или копия
@@ -440,9 +477,9 @@ enum Inbox {
     /// Досверить выгрузку, пока приложение открыто: не больше `maxRechecks` раз
     /// подряд, чтобы не крутиться вечно при мёртвом iCloud.
     private static let maxRechecks = 6
-    private nonisolated(unsafe) static var rechecks = 0
+    private nonisolated(unsafe) static var rechecks = 0     // пишется только под замком прохода
     private static func scheduleRecheck(status: @MainActor @escaping (String) -> Void) {
-        guard rechecks < maxRechecks else { rechecks = 0; return }
+        guard rechecks < maxRechecks else { return }
         rechecks += 1
         Task {
             try? await Task.sleep(nanoseconds: 30_000_000_000)
@@ -455,7 +492,9 @@ enum Inbox {
     /// телефоне независимо от того, доехали ли они до Mac.
     private static func retire(_ file: URL) {
         let fm = FileManager.default
-        try? fm.removeItem(at: pendingMark(for: file))   // подтверждено — метка больше не нужна
+        // сначала файл, потом метка: падение между ними иначе оставляло файл в очереди
+        // без метки, и подтверждённая копия ехала второй раз (DS I2 r1 по #565)
+        defer { try? fm.removeItem(at: pendingMark(for: file)) }
         guard (try? fm.moveItem(at: file, to: uniqueName(in: sent, like: file))) != nil else {
             // Переложить не вышло — из очереди файл убрать всё равно надо,
             // иначе он поедет в iCloud на каждом flush по кругу.
@@ -469,12 +508,14 @@ enum Inbox {
     /// Замок одного прохода flush — актор вместо гонки на статике.
     private actor FlushGate {
         private var busy = false
-        func enter() -> Bool {
-            if busy { return false }
+        /// Критическая секция внутри актора: замок отпускается при любом выходе
+        /// из тела, включая будущие ранние return (DS I6 r1 по #565).
+        func run(_ body: () async -> Void) async {
+            guard !busy else { return }
             busy = true
-            return true
+            defer { busy = false }
+            await body()
         }
-        func leave() { busy = false }
     }
     private static let gate = FlushGate()
 }

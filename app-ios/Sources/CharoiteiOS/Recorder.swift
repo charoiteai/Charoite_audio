@@ -202,6 +202,8 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         case retry
         /// Хватит: закрыть файл и продолжить встречу следующим.
         case rotate
+        /// Ротация уже не спасает: честный стоп.
+        case stop
     }
 
     /// Решение вынесено отдельной функцией, чтобы политика проверялась тестом,
@@ -477,7 +479,6 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             disarm(quiet: true)
             recorder = r
             isRecording = true
-            encodeErrors = 0                 // новый файл пишется — серия ошибок кодека прервана
             currentKind = kind
             resumeAttempts = 0
             elapsed = 0
@@ -861,6 +862,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         }
         if now > last.seconds {
             lastGrowth = (Date(), now)
+            encodeErrors = 0       // файл растёт — серия ошибок кодека прервана (не на старте: DS Critical r1 по #565)
             if stalled {
                 stalled = false
                 lastResult = L.t("Запись продолжается", "Recording resumed", "录音已恢复")
@@ -936,14 +938,16 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     /// делегат останавливал — час разговора после сбоя не писался (аудит 13.09,
     /// DS I4 / GLM I3). Политика — статикой, чтобы её держал тест.
     nonisolated static func actionAfterEncodeError(consecutive: Int) -> StallAction {
-        consecutive >= maxEncodeErrors ? .retry : .rotate
+        consecutive >= maxEncodeErrors ? .stop : .rotate
     }
 
     private var encodeErrors = 0
 
     nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
         Task { @MainActor [weak self] in
-            guard let self else { return }
+            // после «Стоп» ошибка финализации приходит сюда же: без гварда ротация
+            // через 0,7 с включала запись, о которой никто не просил (GLM I1 r1 по #565)
+            guard let self, self.isRecording else { return }
             self.encodeErrors += 1
             if Self.actionAfterEncodeError(consecutive: self.encodeErrors) == .rotate {
                 self.lastResult = L.t("Сбой записи (\(error?.localizedDescription ?? "кодек")) — закрываю файл и продолжаю встречу новым",

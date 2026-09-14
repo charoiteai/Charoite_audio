@@ -15,7 +15,8 @@ final class InboxPendingMarkTests: XCTestCase {
     }
 
     func testPendingMarkRoundTripsAndDropsWhenTheCopyIsGone() throws {
-        let queued = Inbox.outbox.appendingPathComponent("test_pending.caf")
+        // всё во временном каталоге: очередь тестового хоста — не место для мусора (DS M10)
+        let queued = fm.temporaryDirectory.appendingPathComponent("test_pending.caf")
         try Data("звук".utf8).write(to: queued)
         made.append(queued)
         let dest = fm.temporaryDirectory.appendingPathComponent("test_pending_copy.caf")
@@ -23,10 +24,10 @@ final class InboxPendingMarkTests: XCTestCase {
         made.append(dest)
 
         XCTAssertNil(Inbox.pendingDest(for: queued), "без метки файл ещё не копировался")
-        Inbox.markPending(queued, dest: dest)
+        try Inbox.markPending(queued, dest: dest)
         made.append(Inbox.pendingMark(for: queued))
         XCTAssertEqual(Inbox.pendingDest(for: queued)?.path, dest.path)
-        XCTAssertFalse(Inbox.queued.contains(Inbox.pendingMark(for: queued)), "метка — не запись")
+        XCTAssertEqual(Inbox.pendingMark(for: queued).pathExtension, "sent", "метка — не запись: расширение вне audioExts")
 
         try fm.removeItem(at: dest)
         XCTAssertNil(Inbox.pendingDest(for: queued), "копия исчезла — файл поедет заново")

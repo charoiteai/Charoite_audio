@@ -11,7 +11,6 @@ final class RecorderEncodeErrorTests: XCTestCase {
     }
 
     func testSeriesOfErrorsStopsInsteadOfSpawningEmptyChunks() {
-        XCTAssertEqual(Recorder.actionAfterEncodeError(consecutive: Recorder.maxEncodeErrors), .retry,
-                       ".retry здесь читается как «не ротировать» — делегат делает stop()")
+        XCTAssertEqual(Recorder.actionAfterEncodeError(consecutive: Recorder.maxEncodeErrors), .stop)
     }
 }
