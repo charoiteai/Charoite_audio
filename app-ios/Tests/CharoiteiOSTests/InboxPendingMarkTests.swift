@@ -42,4 +42,12 @@ final class InboxPendingMarkTests: XCTestCase {
         let state = Inbox.uploadState(of: local)
         XCTAssertTrue(state == .uploaded || state == .unknown, "\(state)")
     }
+
+    func testPendingVerdictTable() {
+        // копия при ошибке НЕ удаляется и не перекопируется: файл держится в очереди
+        XCTAssertEqual(Inbox.pendingVerdict(.uploaded), .retire)
+        XCTAssertEqual(Inbox.pendingVerdict(.unknown), .retire, "ключей нет — судить нечем, принято")
+        XCTAssertEqual(Inbox.pendingVerdict(.uploading), .wait)
+        XCTAssertEqual(Inbox.pendingVerdict(.failed("квота")), .keep)
+    }
 }

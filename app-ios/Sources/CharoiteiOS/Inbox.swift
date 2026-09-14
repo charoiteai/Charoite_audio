@@ -247,16 +247,21 @@ enum Inbox {
     }
 
     /// Файл — в очередь, затем попытка доставки всей очереди.
-    static func deliver(_ file: URL, status: @MainActor @escaping (String) -> Void) async {
+    /// `seconds` — длительность по рекордеру: секунда живого звука в очередь идёт
+    /// при любом битрейте, порог байтов — только для заготовки контейнера.
+    static func deliver(_ file: URL, seconds: TimeInterval? = nil,
+                        status: @MainActor @escaping (String) -> Void) async {
         let fm = FileManager.default
-        // огрызок ротации при живом сбое кодека (меньше порога заготовки контейнера)
-        // на Mac уезжал бы «встречей» (GLM M6 r1 по #565)
-        let bytes = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-        if bytes < orphanMinBytes {
-            try? fm.removeItem(at: file)
-            await status(L.t("Пустая запись (\(bytes) Б) — не отправляю",
-                             "Empty recording (\(bytes) B) — not sending",
-                             "空录音（\(bytes) B）— 不发送"))
+        // огрызок ротации при живом сбое кодека (меньше порога заготовки контейнера и
+        // короче секунды) на Mac уезжал бы «встречей» (GLM M6 r1 по #565). Не удаляем:
+        // остаётся в current/, rescueOrphans уберёт его на следующем старте, а до тех
+        // пор файл можно отдать руками (критика DS r2); размер только измеренный (GLM M2)
+        if let bytes = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
+           bytes < orphanMinBytes, (seconds ?? 0) < 1 {
+            await status(L.t("Пустая запись (\(bytes) Б) — не отправляю; уберётся при следующем запуске",
+                             "Empty recording (\(bytes) B) — not sending; removed on next launch",
+                             "空录音（\(bytes) B）— 不发送；下次启动时清理"))
+            await flush(status: status)      // очередь всё равно досылаем (GLM M1 r2)
             return
         }
         do {
@@ -320,27 +325,33 @@ enum Inbox {
 
         var delivered = 0
         var waiting = 0
+        var processed = 0
         var stuck: [String] = []
         for f in files {
-            if expired { break }                 // фоновый бюджет вышел — остальное следующим проходом
+            // фоновый бюджет вышел — остальное следующим проходом; первый файл доводим всегда:
+            // отказ системы во времени иначе давал пустой проход на каждом стопе с локскрина (DS I3 r2)
+            if expired, processed > 0 { break }
+            processed += 1
             // Скопирован прошлым проходом и ждёт выгрузки: не копировать второй раз
             // (иначе на Mac уехал бы дубль с суффиксом «-1»), а сверить состояние.
             // Копию при ошибке НЕ удаляем: ошибка бывает остаточной или временной, а
             // перекопирование 40 МБ по кругу и дубль на Mac хуже висящей записи в
             // очереди с честным статусом (DS I3, критика GLM r1 по #565).
             if let pending = pendingDest(for: f) {
-                switch await awaitUpload(of: pending, upTo: uploadGrace) {
-                case .uploaded, .unknown:
+                let state = await awaitUpload(of: pending, upTo: uploadGrace)
+                switch pendingVerdict(state) {
+                case .retire:
                     retire(f)
                     delivered += 1
-                case .uploading:
+                case .wait:
                     waiting += 1
-                case .failed(let why):
+                case .keep:
                     stuck.append(f.lastPathComponent)
-                    waiting += 1
-                    await status(L.t("iCloud не принял \(f.lastPathComponent): \(why)",
-                                     "iCloud rejected \(f.lastPathComponent): \(why)",
-                                     "iCloud 拒绝了 \(f.lastPathComponent)：\(why)"))
+                    if case .failed(let why) = state {
+                        await status(L.t("iCloud не принял \(f.lastPathComponent): \(why)",
+                                         "iCloud rejected \(f.lastPathComponent): \(why)",
+                                         "iCloud 拒绝了 \(f.lastPathComponent)：\(why)"))
+                    }
                 }
                 continue
             }
@@ -360,24 +371,27 @@ enum Inbox {
                 // метку и скопирует заново — дубля нет.
                 try markPending(f, dest: dest)
                 try fm.moveItem(at: part, to: dest)     // публикация одним шагом
-                switch await awaitUpload(of: dest, upTo: uploadGrace) {
-                case .uploaded, .unknown:
+                let state = await awaitUpload(of: dest, upTo: uploadGrace)
+                switch pendingVerdict(state) {
+                case .retire:
                     retire(f)
                     delivered += 1
-                case .uploading:
+                case .wait:
                     waiting += 1                                   // подтвердим следующим проходом
-                case .failed(let why):
+                case .keep:
                     stuck.append(f.lastPathComponent)
-                    waiting += 1
-                    await status(L.t("iCloud не принял \(f.lastPathComponent): \(why)",
-                                     "iCloud rejected \(f.lastPathComponent): \(why)",
-                                     "iCloud 拒绝了 \(f.lastPathComponent)：\(why)"))
+                    if case .failed(let why) = state {
+                        await status(L.t("iCloud не принял \(f.lastPathComponent): \(why)",
+                                         "iCloud rejected \(f.lastPathComponent): \(why)",
+                                         "iCloud 拒绝了 \(f.lastPathComponent)：\(why)"))
+                    }
                 }
             } catch {
                 // continue, а не return: один сбойный файл не должен запирать
                 // всю очередь, включая сегодняшнюю встречу.
                 try? fm.removeItem(at: part)
-                if !fm.fileExists(atPath: dest.path) { try? fm.removeItem(at: pendingMark(for: f)) }
+                // метка — безусловно: при занятом dest иначе усыновлялся чужой файл (GLM I2 r2)
+                try? fm.removeItem(at: pendingMark(for: f))
                 stuck.append(f.lastPathComponent)
                 await status(L.t("Не отправилось (\(f.lastPathComponent)): \(error.localizedDescription)",
                                  "Failed (\(f.lastPathComponent)): \(error.localizedDescription)",
@@ -385,6 +399,9 @@ enum Inbox {
             }
         }
         let left = queuedCount
+        if delivered > 0 || left == 0 {
+            rechecks = 0     // прогресс есть — бюджет перепроверок полный; висящий файл его не съедает (DS M2 r2)
+        }
         if waiting > 0 {
             // копии в iCloud, выгрузка идёт: «Уехало» ещё нельзя, но и не сбой —
             // досверим сами через полминуты, пока приложение открыто
@@ -394,7 +411,6 @@ enum Inbox {
                              "已复制到 iCloud，正在上传：\(waiting)" + (delivered > 0 ? "，已发送：\(delivered)" : "") + failed.2))
             scheduleRecheck(status: status)
         } else if left == 0 {
-            rechecks = 0                                       // эпизод ожидания закрыт — бюджет перепроверок полный (DS M9)
             await status(L.t("Уехало на Mac: \(delivered) файл(а)",
                              "Delivered to Mac: \(delivered)",
                              "已发送到 Mac：\(delivered)"))
@@ -409,6 +425,20 @@ enum Inbox {
     enum UploadState: Equatable {
         case uploaded, uploading, unknown
         case failed(String)
+    }
+
+    /// Что делать с файлом очереди по состоянию его копии: убрать из очереди,
+    /// ждать выгрузку или держать с отказом. Чистая политика — таблица в тесте
+    /// (DS M3 r2 по #565). «Неизвестно» = принято: для папки вне контейнера
+    /// ключей часто нет, судить нечем.
+    enum PendingVerdict: Equatable { case retire, wait, keep }
+
+    static func pendingVerdict(_ state: UploadState) -> PendingVerdict {
+        switch state {
+        case .uploaded, .unknown: return .retire
+        case .uploading: return .wait
+        case .failed: return .keep
+        }
     }
 
     /// Сколько ждём выгрузку в том же проходе: маленькие заметки успевают,

@@ -41,6 +41,9 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     @Published var elapsed: TimeInterval = 0
     @Published var level: Float = 0          // 0…1 для волны
     @Published var lastResult: String?       // статус доставки/очереди
+    /// Почему встреча кончилась или файл сменился — отдельно от статуса доставки:
+    /// тот приходит через секунду и затирал причину (DS I2 r2 по #565).
+    @Published var lastStopReason: String?
 
     /// Запись идёт, но в файл ничего не прибавляется.
     ///
@@ -485,6 +488,12 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             stalled = false
             lastGrowth = nil
             lastResult = nil
+            if !rotating {
+                // новая встреча — счётчик ошибок кодека и причина прошлого стопа чисты;
+                // ротация — серия продолжается (DS I1 r2 по #565)
+                encodeErrors = 0
+                lastStopReason = nil
+            }
             timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.tick() }
             }
@@ -769,6 +778,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         lastGrowth = nil
         level = 0
         let url = r.url
+        let seconds = elapsed
         recorder = nil
         if let a = activity {
             activity = nil
@@ -779,7 +789,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         // приватность это выглядит хуже любого бага.
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         Task { [weak self] in
-            await Inbox.deliver(url) { msg in self?.lastResult = msg }
+            await Inbox.deliver(url, seconds: seconds) { msg in self?.lastResult = msg }
             self?.refreshLastRecording()
         }
     }
@@ -920,11 +930,16 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     /// таймер проб не тикает (GLM M5).
     private func rotateFile() {
         let kind = currentKind
+        rotating = true                   // свой флаг: rotateTask гаснет от истечения бюджета (DS I1 r2)
+        lastStopReason = lastResult       // причина смены файла переживёт статус доставки (DS I2 r2)
         beginRotateTask()
         stop()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
             guard let self else { return }
-            defer { self.endRotateTask() }
+            defer {
+                self.rotating = false
+                self.endRotateTask()
+            }
             guard !self.isRecording else { return }
             self.start(kind: kind)
         }
@@ -942,12 +957,16 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     }
 
     private var encodeErrors = 0
+    /// Идёт ротация файла: старт нового файла — продолжение серии, не новая встреча.
+    private var rotating = false
 
     nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
         Task { @MainActor [weak self] in
             // после «Стоп» ошибка финализации приходит сюда же: без гварда ротация
-            // через 0,7 с включала запись, о которой никто не просил (GLM I1 r1 по #565)
-            guard let self, self.isRecording else { return }
+            // через 0,7 с включала запись, о которой никто не просил (GLM I1 r1 по #565);
+            // ошибка СТАРОГО рекордера, доставленная после ротации, — не ошибка нового
+            // (GLM I1 / DS M1 r2)
+            guard let self, self.isRecording, recorder === self.recorder else { return }
             self.encodeErrors += 1
             if Self.actionAfterEncodeError(consecutive: self.encodeErrors) == .rotate {
                 self.lastResult = L.t("Сбой записи (\(error?.localizedDescription ?? "кодек")) — закрываю файл и продолжаю встречу новым",
@@ -958,6 +977,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
                 self.lastResult = L.t("Сбой записи: \(error?.localizedDescription ?? "кодек") — \(Self.maxEncodeErrors) раза подряд, запись остановлена",
                                       "Recording error: \(error?.localizedDescription ?? "codec") — \(Self.maxEncodeErrors) times in a row, recording stopped",
                                       "录音错误：\(error?.localizedDescription ?? "编解码器") — 连续 \(Self.maxEncodeErrors) 次，录音已停止")
+                self.lastStopReason = self.lastResult
                 self.stop()
             }
         }
