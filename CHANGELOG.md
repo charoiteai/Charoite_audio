@@ -5,6 +5,22 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.3](https://github.com/charoiteai/Charoite_audio/compare/v0.81.2...v0.81.3) (2026-09-14)
+
+
+### Bug Fixes
+
+* **audio:** stop() without hanging on a dead stream, queue drain before finalising, partial sink cleanup ([#557](https://github.com/charoiteai/Charoite_audio/issues/557)) ([4003afa](https://github.com/charoiteai/Charoite_audio/commit/4003afa4bc05e3669fdf388e124b378c9ac5635c))
+* **cloud-review:** displaced stub facts, retry gate by review stage, name-fix chain to a fixed point ([#556](https://github.com/charoiteai/Charoite_audio/issues/556)) ([071121e](https://github.com/charoiteai/Charoite_audio/commit/071121ebee6e5d456a6c271794dc7bc68d990c73))
+* **graph:** граница ссылки в MOC и слиянии, нечитаемый узел не роняет встречу, ссылка ядра в ядро ([#563](https://github.com/charoiteai/Charoite_audio/issues/563)) ([9481544](https://github.com/charoiteai/Charoite_audio/commit/948154482aa0edf45c761805bd69a4d24cb291d8))
+* **import:** source marker survives rename, diary links the graph key, voice notes keep their recording moment ([#559](https://github.com/charoiteai/Charoite_audio/issues/559)) ([f8b941d](https://github.com/charoiteai/Charoite_audio/commit/f8b941d565140b4712330d0f7cccff0397918e29))
+* **ios:** доставка ждёт выгрузку iCloud, ошибка кодека и сброс аудиослужбы продолжают встречу новым файлом ([#565](https://github.com/charoiteai/Charoite_audio/issues/565)) ([91ed286](https://github.com/charoiteai/Charoite_audio/commit/91ed2860b4309e98f0a4134d26f7f8543630760a))
+* **live:** theses and minutes drafts under the hint arbiter, two-minute stream read timeout, honest thread counters ([#558](https://github.com/charoiteai/Charoite_audio/issues/558)) ([348ed32](https://github.com/charoiteai/Charoite_audio/commit/348ed32625f889f26e6e39303422d4fc56d482ef))
+* **llm:** таймаут облака от вызывающего, 404 модели не смерть сервера, минутки MCP через свёртку ([#562](https://github.com/charoiteai/Charoite_audio/issues/562)) ([d1b71d5](https://github.com/charoiteai/Charoite_audio/commit/d1b71d550110dac07afc38da03e6c1f7de041987))
+* **mac:** микрофон дожидается кадров до манифеста, повтор ищет снимок своей встречи, статусы сбоев честнее ([#564](https://github.com/charoiteai/Charoite_audio/issues/564)) ([1a01533](https://github.com/charoiteai/Charoite_audio/commit/1a01533755f1cc6cce8684c7c549bc5e41c79efa))
+* **nightly:** копия досье перед пересборкой, замок графа на одну запись, отчёты атомарно ([#561](https://github.com/charoiteai/Charoite_audio/issues/561)) ([2acd93d](https://github.com/charoiteai/Charoite_audio/commit/2acd93dacf46fefa92d09907ab3240dac87db998))
+* **stt:** offline tools — diarize CLI args, WAV normalisation, seam indexes, sticky echo ([#555](https://github.com/charoiteai/Charoite_audio/issues/555)) ([fc17b9d](https://github.com/charoiteai/Charoite_audio/commit/fc17b9d5c9a1a51ea0a0e416dcc6fbc8e4da00ce))
+
 ## [0.81.2](https://github.com/charoiteai/Charoite_audio/compare/v0.81.1...v0.81.2) (2026-09-13)
 
 
