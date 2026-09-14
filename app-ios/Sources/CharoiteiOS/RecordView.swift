@@ -108,6 +108,14 @@ struct RecordView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
             } else {
+                if let why = rec.lastStopReason {
+                    // причина стопа/смены файла — над статусом доставки, а не вместо него
+                    Text(why)
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.orange)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                }
                 Text(rec.lastResult ?? L.t(
                     "Стоп — и запись уедет на Mac через iCloud.\nДальше он сам: стенограмма, минутки, граф.",
                     "Stop, and the recording travels to the Mac over iCloud.\nThe rest is on it: transcript, minutes, graph.",

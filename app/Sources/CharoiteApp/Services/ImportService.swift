@@ -305,6 +305,7 @@ final class ImportService: ObservableObject {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDir),
               isDir.boolValue else {
+            runningSettleAll = false     // иначе следующий scan унаследует чужой --settle-all (аудит 13.09, DS M2)
             status = L.t("папка импорта не найдена", "import folder not found", "未找到导入文件夹")
             return
         }
