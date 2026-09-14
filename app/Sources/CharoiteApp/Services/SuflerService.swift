@@ -298,8 +298,7 @@ final class SuflerService: ObservableObject {
             self?.noteNotificationsDenied()
         }
         status = L.t("Запускаю…", "Starting…", "启动中…")
-        statusIsError = false
-        statusErrorFromDaemon = false
+        clearErrorFlags()
         stickyStatus = nil          // новая встреча — прошлое предупреждение не её
         notificationsDeniedShown = false   // липкий слот чистится каждую встречу — и подсказка о нём тоже (критика GLM по #564)
 
@@ -430,12 +429,10 @@ final class SuflerService: ObservableObject {
                 if !ready {
                     self.systemAudioCapture = nil
                     self.announceCaptureFallback()   // фолбэк — вслух, не молча на BlackHole (№140)
-                } else if capture.micFallback {
+                } else if capture.micFallback != .none {
                     // микрофон в поток не попал — демон пишет его отдельно (аудит 13.09, DS I1)
                     // а предупреждение — на всю встречу (DS I2 по #564)
-                    self.stickyStatus = L.t("Микрофон не попал в поток системного звука — пишется отдельно",
-                                            "The microphone did not join the system-audio stream — recorded separately",
-                                            "麦克风未进入系统音频流——将单独录制")
+                    self.stickyStatus = Self.micFallbackText(capture.micFallback)
                 }
                 SystemAudioCapture.captureLog(ready ? "захват готов — демон стартует с манифестом" : "захват НЕ поднялся — демон уйдёт на BlackHole")
                 self.launchDaemon(preserveUI: preserveUI, token: token)
@@ -889,9 +886,7 @@ final class SuflerService: ObservableObject {
                     : L.t("⏹ Запись остановлена автоматически: \(text)",
                           "⏹ Recording stopped automatically: \(text)",
                           "⏹ 录音已自动停止：\(text)")
-                // автостоп — не отказ: чужой флаг ошибки красил строку (аудит 13.09, DS M3)
-                statusIsError = false
-                statusErrorFromDaemon = false
+                clearErrorFlags()   // автостоп — не отказ: чужой флаг ошибки красил строку (DS M3)
             case "autostop_warning":
                 // Предупреждение перед автостопом: любая речь его снимает, и
                 // тогда демон пришлёт обычный статус «автостоп отменён».

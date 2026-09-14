@@ -28,4 +28,23 @@ extension SuflerService {
                            "Notifications are off: autostop and capture loss are reported only in this window",
                            "通知已关闭：自动停止和捕获丢失只会在此窗口提示")
     }
+
+    /// Почему микрофона нет в потоке ScreenCaptureKit — липкая строка на всю встречу
+    /// (DS I1/I2, DS M1 и критика DS r2 по #564).
+    static func micFallbackText(_ kind: SystemAudioCapture.MicFallback) -> String {
+        switch kind {
+        case .denied:
+            return L.t("Права на микрофон нет — голос владельца не запишется",
+                       "No microphone permission — your own voice will not be recorded",
+                       "没有麦克风权限——您的声音不会被录制")
+        case .noDevice:
+            return L.t("Устройства ввода нет — пишется только системный звук",
+                       "No input device — only system audio is recorded",
+                       "没有输入设备——仅录制系统音频")
+        case .silent, .none:
+            return L.t("Микрофон не попал в поток системного звука — пишется отдельно",
+                       "The microphone did not join the system-audio stream — recorded separately",
+                       "麦克风未进入系统音频流——将单独录制")
+        }
+    }
 }

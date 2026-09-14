@@ -12,6 +12,7 @@ import time
 import wave
 
 import numpy as np
+import pytest
 
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
@@ -1452,6 +1453,19 @@ def test_поток_приложения_читается_с_объявленн�
     finally:
         cap.stop()
     assert sum(len(g) for g in got) >= 16000, "записанное до старта демона пропало"
+    # нечётное смещение — не граница сэмпла s16: игнорируется, хвост (GLM M1 r2 по #564)
+    raw3 = tmp_path / "odd.raw"
+    raw3.write_bytes(tone)
+    cap3 = a.TapStreamCapture(dict(m, system=str(raw3), system_start=1), 16000, "blackhole", key="system")
+    with pytest.raises(RuntimeError, match="не растёт"):
+        cap3.start()
+    # размер на момент манифеста: файл обязан вырасти сверх него за 3 с, иначе
+    # приёмник мёртв — чтение с нуля не должно обесценивать проверку (критика GLM r2)
+    raw4 = tmp_path / "dead.raw"
+    raw4.write_bytes(tone)
+    cap4 = a.TapStreamCapture(dict(m, system=str(raw4), system_bytes=len(tone)), 16000, "blackhole", key="system")
+    with pytest.raises(RuntimeError, match="не растёт"):
+        cap4.start()
     # без поля — старое приложение: хвост, как прежде (файл не растёт → отказ вслух)
     raw2 = tmp_path / "old.raw"
     raw2.write_bytes(tone)

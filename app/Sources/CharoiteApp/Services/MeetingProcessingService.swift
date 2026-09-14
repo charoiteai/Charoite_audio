@@ -694,10 +694,14 @@ final class MeetingProcessingService: ObservableObject {
     /// Переименование — пять правок файлами python-скриптом; дольше двух минут оно
     /// не живёт, а висит.
     static let renameTimeout: TimeInterval = 120
+    /// Живой процесс переименования: второй запуск гейтится по нему, а не по
+    /// кнопке — после «не вышло» python ещё до 2 с правит файлы (DS I1 r2 по #564).
+    private var renameProcess: Process?
 
     func rename(_ snapshot: MeetingProcessingSnapshot, to title: String) async -> Bool {
         let cleaned = title.trimmingCharacters(in: .whitespaces)
         guard !cleaned.isEmpty else { return false }
+        guard renameProcess?.isRunning != true else { return false }
         let cmd = MeetingRenameCommand.build(
             root: AppSettings.charoiteRoot, meetingID: snapshot.meetingID, title: cleaned)
         // Потолок: зависший python иначе держал continuation вечно, вызывающий
@@ -716,7 +720,9 @@ final class MeetingProcessingService: ObservableObject {
             p.terminationHandler = { proc in
                 if once.first() { cont.resume(returning: proc.terminationStatus == 0) }
             }
+            renameProcess = p
             do { try p.run() } catch {
+                renameProcess = nil
                 if once.first() { cont.resume(returning: false) }
                 return
             }
