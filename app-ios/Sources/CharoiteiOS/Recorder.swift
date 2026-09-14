@@ -41,6 +41,9 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     @Published var elapsed: TimeInterval = 0
     @Published var level: Float = 0          // 0…1 для волны
     @Published var lastResult: String?       // статус доставки/очереди
+    /// Почему встреча кончилась или файл сменился — отдельно от статуса доставки:
+    /// тот приходит через секунду и затирал причину (DS I2 r2 по #565).
+    @Published var lastStopReason: String?
 
     /// Запись идёт, но в файл ничего не прибавляется.
     ///
@@ -202,6 +205,8 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         case retry
         /// Хватит: закрыть файл и продолжить встречу следующим.
         case rotate
+        /// Ротация уже не спасает: честный стоп.
+        case stop
     }
 
     /// Решение вынесено отдельной функцией, чтобы политика проверялась тестом,
@@ -483,6 +488,10 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             stalled = false
             lastGrowth = nil
             lastResult = nil
+            if !rotating {                    // новая встреча — серия ошибок кодека и причина стопа чисты (DS I1 r2)
+                encodeErrors = 0
+                lastStopReason = nil
+            }
             timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.tick() }
             }
@@ -612,10 +621,12 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.isRecording else { return }
-                self.lastResult = L.t("Аудиослужба перезапущена — запись остановлена, файл сохранён",
-                                      "Audio service reset — recording stopped, file kept",
-                                      "音频服务已重置 — 录音停止，文件已保留")
-                self.stop()
+                // mediaserverd перезапускается и без звонка: stop() здесь оставлял остаток
+                // встречи незаписанным (аудит 13.09, GLM I2, №200) — ротация
+                self.lastResult = L.t("Аудиослужба перезапущена — файл сохранён, продолжаю встречу новым",
+                                      "Audio service reset — file kept, continuing the meeting in a new one",
+                                      "音频服务已重置 — 文件已保留，以新文件继续会议")
+                self.rotateFile()
             }
         })
         observers.append(nc.addObserver(
@@ -763,6 +774,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         lastGrowth = nil
         level = 0
         let url = r.url
+        let seconds = elapsed
         recorder = nil
         if let a = activity {
             activity = nil
@@ -773,7 +785,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         // приватность это выглядит хуже любого бага.
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         Task { [weak self] in
-            await Inbox.deliver(url) { msg in self?.lastResult = msg }
+            await Inbox.deliver(url, seconds: seconds) { msg in self?.lastResult = msg }
             self?.refreshLastRecording()
         }
     }
@@ -856,6 +868,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         }
         if now > last.seconds {
             lastGrowth = (Date(), now)
+            encodeErrors = 0       // файл растёт — серия ошибок кодека прервана (не на старте: DS Critical r1 по #565)
             if stalled {
                 stalled = false
                 lastResult = L.t("Запись продолжается", "Recording resumed", "录音已恢复")
@@ -905,27 +918,50 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
 
     /// Закрыть текущий файл и продолжить встречу в следующем.
     ///
-    /// Потерять полчаса разговора хуже, чем получить встречу двумя кусками:
-    /// конвейер на Mac принимает оба файла, а склейка — вопрос порядка по
-    /// имени, в котором стоят секунды.
+    /// Потерять полчаса разговора хуже, чем получить встречу двумя кусками.
+    /// Склейки на Mac НЕТ: импорт различает записи по имени и размеру, и каждый
+    /// кусок становится своей встречей в графе (аудит 13.09, DS I2; склейка
+    /// сегментов `iphone_*` — отдельная карточка). Если вход после стопа занят,
+    /// старт взводится и поднимется сам — при открытом приложении: в фоне
+    /// таймер проб не тикает (GLM M5).
     private func rotateFile() {
         let kind = currentKind
+        rotating = true                   // свой флаг: rotateTask гаснет от истечения бюджета (DS I1 r2)
+        lastStopReason = lastResult       // причина смены файла переживёт статус доставки (DS I2 r2)
         beginRotateTask()
         stop()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
             guard let self else { return }
-            defer { self.endRotateTask() }
+            defer {
+                self.rotating = false
+                self.endRotateTask()
+            }
             guard !self.isRecording else { return }
             self.start(kind: kind)
         }
     }
 
+    private var encodeErrors = 0     // политика — Recorder+EncodePolicy.swift
+    private var rotating = false     // старт нового файла — продолжение серии, не новая встреча
+
     nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
         Task { @MainActor [weak self] in
-            self?.lastResult = L.t("Сбой записи: \(error?.localizedDescription ?? "кодек")",
-                                   "Recording error: \(error?.localizedDescription ?? "codec")",
-                                   "录音错误：\(error?.localizedDescription ?? "编解码器")")
-            self?.stop()
+            // ошибка финализации после «Стоп» или от старого рекордера после ротации —
+            // не повод трогать запись (GLM I1 r1, GLM I1 / DS M1 r2 по #565)
+            guard let self, self.isRecording, recorder === self.recorder else { return }
+            self.encodeErrors += 1
+            if Self.actionAfterEncodeError(consecutive: self.encodeErrors) == .rotate {
+                self.lastResult = L.t("Сбой записи (\(error?.localizedDescription ?? "кодек")) — закрываю файл и продолжаю встречу новым",
+                                      "Recording error (\(error?.localizedDescription ?? "codec")) — closing the file and continuing in a new one",
+                                      "录音错误（\(error?.localizedDescription ?? "编解码器")）— 关闭文件并以新文件继续")
+                self.rotateFile()
+            } else {
+                self.lastResult = L.t("Сбой записи: \(error?.localizedDescription ?? "кодек") — \(Self.maxEncodeErrors) раза подряд, запись остановлена",
+                                      "Recording error: \(error?.localizedDescription ?? "codec") — \(Self.maxEncodeErrors) times in a row, recording stopped",
+                                      "录音错误：\(error?.localizedDescription ?? "编解码器") — 连续 \(Self.maxEncodeErrors) 次，录音已停止")
+                self.lastStopReason = self.lastResult
+                self.stop()
+            }
         }
     }
 
