@@ -98,6 +98,7 @@ class TapStreamCapture:
 
     def __init__(self, manifest: dict, samplerate: int, label: str, key: str):
         self.label = label
+        self.key = key
         self.samplerate = int(samplerate)
         self.q: queue.Queue[np.ndarray] = queue.Queue()
         # key указывает, какой из потоков манифеста читаем: у ScreenCaptureKit
@@ -124,13 +125,31 @@ class TapStreamCapture:
         if self._pos is not None and self._pos <= size:
             stream.seek(self._pos)          # рестарт: продолжаем, где остановились
         else:
-            stream.seek(0, 2)               # первый старт: хвост прошлой встречи не нужен
+            # Первый старт. Приложение с #564 пишет в манифест «<key>_start» — с
+            # какого байта читать: каталог сессии уникален, в файле только эта
+            # встреча, и 0 означает «с первого кадра». Раньше прыгали в хвост, и
+            # всё, что приёмник записал до старта демона (1,2 с ожидания кадров,
+            # до 10 с ожидания микрофона, загрузка python), в стенограмму не
+            # попадало (круг-1 по #564, DS Critical / GLM I1). Без поля — старое
+            # приложение: хвост, как прежде.
+            start = self._m.get(f"{self.key}_start")
+            if (isinstance(start, (int, float)) and not isinstance(start, bool)
+                    and 0 <= int(start) <= size and int(start) % 2 == 0):   # граница сэмпла s16 (GLM M1 r2)
+                stream.seek(int(start))
+            else:
+                stream.seek(0, 2)           # хвост прошлой встречи не нужен
         # Первые байты обязаны прийти быстро: приложение выписывает манифест
         # только после реальных кадров. Нет роста — канала нет, и честнее
         # упасть здесь (поканальный старт скажет об этом вслух), чем писать
         # пустоту до конца встречи.
+        # Рост считаем сверх размера на момент манифеста (`<key>_bytes`), а не
+        # сверх позиции чтения: при чтении с нуля по непустому файлу проверка
+        # иначе проходила сразу, и мёртвый приёмник ловил только сторож тишины
+        # (критика GLM r2 по #564). Без поля — старое приложение, прежняя проверка.
+        floor = self._m.get(f"{self.key}_bytes")
+        floor = int(floor) if isinstance(floor, (int, float)) and not isinstance(floor, bool) else stream.tell()
         deadline = time.time() + 3.0
-        while path.stat().st_size <= stream.tell():
+        while path.stat().st_size <= max(floor, stream.tell()):
             if time.time() > deadline:
                 stream.close()
                 raise RuntimeError("поток приложения не растёт — приложение кадров не пишет")

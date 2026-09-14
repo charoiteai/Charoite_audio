@@ -350,6 +350,27 @@ enum MeetingProcessingPolicy {
         }
         return snapshot.startedAt >= since.timeIntervalSince1970 - 5
     }
+
+    /// Снимок, закрывающий ожидание. После «Повторить» — снимок ТОЙ встречи по
+    /// meetingID, а не «последний по началу»: повтор не последней встречи иначе не
+    /// совпадал никогда (latest() отдавал более новую встречу), через три минуты UI
+    /// объявлял конвейер молчащим, а кнопка снова разрешала второй прогон поверх
+    /// работающего первого (аудит 13.09, DS I2). После «Стоп» — как раньше, latest().
+    static func expected(
+        in snapshots: [MeetingProcessingSnapshot],
+        since: Date,
+        retry: RetryExpectation?,
+        now: Date = Date()
+    ) -> MeetingProcessingSnapshot? {
+        if let retry {
+            return snapshots
+                .filter { $0.meetingID == retry.meetingID }
+                .max { $0.updatedAt < $1.updatedAt }
+                .flatMap { matchesExpectation($0, since: since, retry: retry) ? $0 : nil }
+        }
+        return latest(snapshots, now: now)
+            .flatMap { matchesExpectation($0, since: since, retry: nil) ? $0 : nil }
+    }
 }
 
 extension MeetingProcessingSnapshot {
@@ -670,19 +691,53 @@ final class MeetingProcessingService: ObservableObject {
     /// Переименовать встречу: скрипт разносит новую тему по всем местам —
     /// transcripts/, архивная папка со ссылками, копии в Документации,
     /// заголовок заметки графа, статус. Пять мест руками не обойти.
+    /// Переименование — пять правок файлами python-скриптом; дольше двух минут оно
+    /// не живёт, а висит.
+    static let renameTimeout: TimeInterval = 120
+    /// Живой процесс переименования: второй запуск гейтится по нему, а не по
+    /// кнопке — после «не вышло» python ещё до 2 с правит файлы (DS I1 r2 по #564).
+    private var renameProcess: Process?
+
     func rename(_ snapshot: MeetingProcessingSnapshot, to title: String) async -> Bool {
         let cleaned = title.trimmingCharacters(in: .whitespaces)
         guard !cleaned.isEmpty else { return false }
+        guard renameProcess?.isRunning != true else { return false }
         let cmd = MeetingRenameCommand.build(
             root: AppSettings.charoiteRoot, meetingID: snapshot.meetingID, title: cleaned)
+        // Потолок: зависший python иначе держал continuation вечно, вызывающий
+        // UI-контекст подвисал (аудит 13.09, GLM M2). Резюмируем ровно один раз.
+        final class Once: @unchecked Sendable {
+            private let lock = NSLock()
+            private var done = false
+            func first() -> Bool { lock.lock(); defer { lock.unlock() }; if done { return false }; done = true; return true }
+        }
+        struct Box: @unchecked Sendable { let p: Process }
+        let once = Once()
         let ok: Bool = await withCheckedContinuation { cont in
             let p = Process()
             p.arguments = cmd.args
             AppSettings.preparePython(p, executable: cmd.exec)
             p.terminationHandler = { proc in
-                cont.resume(returning: proc.terminationStatus == 0)
+                if once.first() { cont.resume(returning: proc.terminationStatus == 0) }
             }
-            do { try p.run() } catch { cont.resume(returning: false) }
+            renameProcess = p
+            do { try p.run() } catch {
+                renameProcess = nil
+                if once.first() { cont.resume(returning: false) }
+                return
+            }
+            let box = Box(p: p)
+            DispatchQueue.global().asyncAfter(deadline: .now() + Self.renameTimeout) {
+                guard once.first() else { return }
+                if box.p.isRunning {
+                    box.p.terminate()
+                    // python, глотающий SIGTERM, иначе правил файлы встречи после «не вышло» (DS M6)
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+                        if box.p.isRunning { kill(box.p.processIdentifier, SIGKILL) }
+                    }
+                }
+                cont.resume(returning: false)
+            }
         }
         if ok { refresh() }
         return ok
@@ -835,20 +890,20 @@ final class MeetingProcessingService: ObservableObject {
                 self.lastHistoryResolved = resolved
                 self.history = history
             }
-            self.accept(MeetingProcessingPolicy.latest(snapshots))
+            self.accept(MeetingProcessingPolicy.latest(snapshots), all: snapshots)
         }
     }
 
-    private func accept(_ latest: MeetingProcessingSnapshot?) {
+    private func accept(_ latest: MeetingProcessingSnapshot?, all snapshots: [MeetingProcessingSnapshot]) {
         if let waitingSince {
-            if let latest, MeetingProcessingPolicy.matchesExpectation(
-                latest, since: waitingSince, retry: retryExpectation) {
+            if let hit = MeetingProcessingPolicy.expected(
+                in: snapshots, since: waitingSince, retry: retryExpectation) {
                 self.waitingSince = nil
                 retryExpectation = nil
                 waitingForPipeline = false
                 pipelineSilent = false
-                lastResolved = MeetingProcessingPolicy.resolvedState(latest)
-                snapshot = latest
+                lastResolved = MeetingProcessingPolicy.resolvedState(hit)
+                snapshot = hit
             } else if MeetingProcessingPolicy.waitingExpired(since: waitingSince) {
                 // Конвейер так и не объявил о себе — честная ошибка вместо
                 // вечного «Запускаю…». Стенограмма при этом на диске, просто

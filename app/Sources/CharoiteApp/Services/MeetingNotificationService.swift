@@ -91,8 +91,14 @@ final class MeetingNotificationService: NSObject, UNUserNotificationCenterDelega
     }
 
     /// Вызывается вместе с явным включением календаря в Настройках.
-    func requestAuthorization() {
-        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    /// `onDenied` — отказ в праве: весь слой баннеров при нём молча мёртв, а
+    /// баннеры автостопа и потери захвата обещаны «всегда» (аудит 13.09, GLM I1) —
+    /// сказать об этом может только окно.
+    func requestAuthorization(onDenied: (@MainActor @Sendable () -> Void)? = nil) {
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard !granted, let onDenied else { return }
+            Task { @MainActor in onDenied() }
+        }
     }
 
     func present(_ cue: MeetingCue.Cue) {
