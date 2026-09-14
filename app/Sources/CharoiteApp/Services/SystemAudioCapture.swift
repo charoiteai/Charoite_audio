@@ -120,12 +120,22 @@ final class SystemAudioCapture: NSObject {
     /// Сколько ждём системные вызовы ScreenCaptureKit при сборке потока:
     /// они не отменяются и таймаута не имеют, а подвисший сервис захвата —
     /// ровно тот сценарий, ради которого пересоздание и нужно (DS, круг-1).
+    /// Почему микрофона нет в потоке: SuflerService говорит об этом вслух
+    /// (аудит 13.09, DS I1; причины разведены по DS M1 и критике DS r2 по #564).
+    enum MicFallback: Equatable {
+        case none            // микрофон в потоке
+        case silent          // кадров не дал за 10 с — демон откроет его отдельно
+        case denied          // права на микрофон нет — голос владельца не запишется
+        case noDevice        // устройства ввода нет — пишется только системный звук
+    }
+    private(set) var micFallback: MicFallback = .none
     nonisolated static let openTimeout: UInt64 = 10_000_000_000
 
     /// Поднять захват. Возвращает false, если система отказала — вызывающий
     /// обязан откатиться на BlackHole, а не остаться без второй стороны.
     @discardableResult
     func start() async -> Bool {
+        Self.discardStaleManifest(notOwnedBy: sessionID)
         guard stream == nil else { return true }
         guard !Task.isCancelled else { return false }
         stopping = false
@@ -190,6 +200,41 @@ final class SystemAudioCapture: NSObject {
             log("кадров нет за секунду — остаёмся на BlackHole")
             await stop()
             return false
+        }
+        // Первый буфер микрофона может прийти позже секунды проверки (гарнитура
+        // по USB или Bluetooth на старте): манифест пишется один раз, и без
+        // «mic» демон открывал микрофон через PortAudio — ровно тот путь, от
+        // которого ушли на macOS 15 (аудит 13.09, DS I1). Ждём, как syncMicRate:
+        // до трёх раз по 3 с; Stop за это время — обычный выход.
+        // Без устройства ввода или права на него кадров не будет никогда: не ждать
+        // 9 с и не обещать «пишется отдельно» (GLM M2, DS M1 r2 по #564)
+        let micAllowed = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        let hasDevice = AVCaptureDevice.default(for: .audio) != nil
+        let hasInput = micAllowed && hasDevice
+        var micAttempt = 0
+        while micInStream && hasInput && sink.micFrames == 0 && micAttempt < 3 {
+            micAttempt += 1
+            log("микрофон ещё не дал кадров — жду 3 с (попытка \(micAttempt) из 3)")
+            do {
+                try await Task.sleep(nanoseconds: 3_000_000_000)
+            } catch {
+                await stop()
+                return false
+            }
+        }
+        if !micInStream {
+            micFallback = .none
+        } else if !micAllowed {
+            micFallback = .denied
+            log("права на микрофон нет — в манифест не пишу, голос владельца не запишется")
+        } else if !hasDevice {
+            micFallback = .noDevice
+            log("устройства ввода нет — микрофон в манифест не пишу")
+        } else if sink.micFrames == 0 {
+            micFallback = .silent
+            log("микрофон не дал ни кадра за 10 с — в манифест не пишу, демон откроет его отдельно")
+        } else {
+            micFallback = .none
         }
         writeManifest(micInStream: micInStream && sink.micFrames > 0)
         log("системный звук через ScreenCaptureKit: \(sink.systemFrames) кадров за секунду"
@@ -508,6 +553,15 @@ final class SystemAudioCapture: NSObject {
 
     /// Идентификатор сессии из манифеста на диске; nil — манифеста нет или он
     /// от версии без поля (тогда владение недоказуемо и удалять нельзя).
+    /// Манифест чужой сессии (приложение убито посреди записи) мёртв по построению:
+    /// с `system_start` демон прочитал бы прошлую встречу с первого байта в новую
+    /// стенограмму, если сработает по свежести (GLM M3 r2 по #564). Своя сессия
+    /// и манифест без поля session не трогаются — как в `stop()`.
+    static func discardStaleManifest(notOwnedBy sessionID: UUID) {
+        guard let stale = manifestSession(), stale != sessionID.uuidString else { return }
+        try? FileManager.default.removeItem(at: manifestURL)
+    }
+
     static func manifestSession() -> String? {
         guard let data = try? Data(contentsOf: manifestURL),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -522,12 +576,21 @@ final class SystemAudioCapture: NSObject {
             "format": "s16le",
             "system": paths.systemURL.path,
             "system_rate": Self.sampleRate,
+            // С какого байта демону читать: 0 — с первого кадра. Каталог сессии
+            // уникален, в файле только эта встреча; без поля демон прыгал в хвост и
+            // терял всё, что записано до его старта (круг-1 по #564, DS Critical)
+            "system_start": 0,
+            // размер на момент манифеста: демон требует роста сверх него за 3 с — иначе
+            // проверка «приёмник жив» при чтении с нуля была бы обесценена (критика GLM r2)
+            "system_bytes": 2 * (sink?.systemFrames ?? 0),
             // Кто именно владеет этими файлами прямо сейчас. Демон поле
             // игнорирует, а нам оно нужно при остановке — см. `stop()`.
             "session": sessionID.uuidString,
         ]
         if micInStream {
             manifest["mic"] = paths.micURL.path
+            manifest["mic_start"] = 0
+            manifest["mic_bytes"] = 2 * (sink?.micFrames ?? 0)
             // Частота микрофона — фактическая, а не запрошенная.
             manifest["mic_rate"] = sink?.micSampleRate ?? Self.sampleRate
         }

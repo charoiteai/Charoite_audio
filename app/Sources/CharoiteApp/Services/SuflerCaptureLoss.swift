@@ -97,6 +97,7 @@ extension SuflerService {
 
     func captureRecovered() {
         guard isRunning else { return }
+        clearErrorFlags()          // восстановление рисовалось красным и прятало баннер диска (GLM M1, DS I4)
         status = L.t("Захват звука восстановлен после сбоя",
                           "Audio capture recovered after a failure",
                           "音频捕获在故障后已恢复")

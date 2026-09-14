@@ -12,6 +12,7 @@ import time
 import wave
 
 import numpy as np
+import pytest
 
 SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
@@ -1429,3 +1430,52 @@ def test_смерть_канала_собеседников_после_стар�
         tick(storm)
     assert len([m for m in storm.said if "СОБЕСЕДНИКОВ" in m]) == 5, "каждая потеря — строка"
     assert len(calls) - before == a.AudioHub.LOUD_SCREAMS == 3, "звук — не чаще трёх за встречу"
+
+
+def test_поток_приложения_читается_с_объявленного_начала(tmp_path):
+    """Манифест с #564 говорит, с какого байта читать: демон стартует позже
+    приёмника на секунды (ожидание кадров, микрофона, загрузка python), а прыжок
+    в хвост терял начало встречи (круг-1 по #564, DS Critical / GLM I1)."""
+    m, raw = _manifest(tmp_path, sr=16000)
+    tone = (np.ones(16000, dtype=np.float32) * 0.25 * 32767).astype("<i2").tobytes()   # секунда ДО старта демона
+    raw.write_bytes(tone)
+    m["system_start"] = 0
+    cap = a.TapStreamCapture(m, 16000, "blackhole", key="system")
+    cap.start()
+    try:
+        got = []
+        deadline = time.time() + 5
+        while sum(len(g) for g in got) < 16000 and time.time() < deadline:
+            try:
+                got.append(cap.q.get(timeout=0.5))
+            except queue.Empty:
+                pass
+    finally:
+        cap.stop()
+    assert sum(len(g) for g in got) >= 16000, "записанное до старта демона пропало"
+    # нечётное смещение — не граница сэмпла s16: игнорируется, хвост (GLM M1 r2 по #564)
+    raw3 = tmp_path / "odd.raw"
+    raw3.write_bytes(tone)
+    cap3 = a.TapStreamCapture(dict(m, system=str(raw3), system_start=1), 16000, "blackhole", key="system")
+    with pytest.raises(RuntimeError, match="не растёт"):
+        cap3.start()
+    # размер на момент манифеста: файл обязан вырасти сверх него за 3 с, иначе
+    # приёмник мёртв — чтение с нуля не должно обесценивать проверку (критика GLM r2)
+    raw4 = tmp_path / "dead.raw"
+    raw4.write_bytes(tone)
+    cap4 = a.TapStreamCapture(dict(m, system=str(raw4), system_bytes=len(tone)), 16000, "blackhole", key="system")
+    with pytest.raises(RuntimeError, match="не растёт"):
+        cap4.start()
+    # без поля — старое приложение: хвост, как прежде (файл не растёт → отказ вслух)
+    raw2 = tmp_path / "old.raw"
+    raw2.write_bytes(tone)
+    m2 = dict(m, system=str(raw2))
+    m2.pop("system_start")
+    cap2 = a.TapStreamCapture(m2, 16000, "blackhole", key="system")
+    try:
+        cap2.start()
+    except RuntimeError as e:
+        assert "не растёт" in str(e)
+    else:
+        cap2.stop()
+        raise AssertionError("без system_start старт обязан прыгать в хвост")

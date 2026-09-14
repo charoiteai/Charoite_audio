@@ -47,14 +47,14 @@ final class SuflerService: ObservableObject {
 
     /// Ошибка от самого демона (`status` c `error: true`), не Swift-`fail()`:
     /// только ей позволено заменять критикал на экране (круг-2 DS, I1).
-    @Published private(set) var statusErrorFromDaemon = false
+    @Published var statusErrorFromDaemon = false   // setter внутренний: пишет SuflerService+Status
 
     /// Липкое предупреждение демона (`status` с `sticky: true`): «собеседников
     /// в записи не будет» — про всю встречу, а не про момент. Обычные статусы
     /// его не снимают (нелипкий error жил доли секунды: сразу после старта
     /// демон шлёт «👥 живая диаризация…», и предупреждение исчезало — №228);
     /// снимается явным `sticky: false` от демона или новым стартом.
-    @Published private(set) var stickyStatus: String?
+    @Published var stickyStatus: String?           // setter внутренний: пишет SuflerService+Status
 
     /// Структурное здоровье живого конвейера. Обычные `status`-события его
     /// не сбрасывают: сообщение про обновлённые минутки не имеет права скрыть
@@ -62,11 +62,6 @@ final class SuflerService: ObservableObject {
     @Published private(set) var pipelineHealth = PipelineHealthMonitor()
 
     /// Ставит статус и помечает его как сообщение об отказе.
-    func fail(_ text: String) {
-        status = text
-        statusIsError = true
-        statusErrorFromDaemon = false
-    }
     @Published var lines: [TranscriptLine] = []
     /// Тень ленты (№153): мутации — ТОЛЬКО из consume и сбросов start(),
     /// мимо коалессера (SuflerTranscriptFeed.swift, там история) — шторм
@@ -193,6 +188,8 @@ final class SuflerService: ObservableObject {
     /// Текст сбоя, который обязан пережить остановку с `.preserveFailure`:
     /// демон по пути остановки шлёт свои статусы и затирает его.
     var preservedFailure: String?
+    /// Подсказка об отказе в уведомлениях показана в этой встрече (SuflerService+Status).
+    var notificationsDeniedShown = false
     private var lifecycleGate = RecordingLifecycleGate()
 
     // Gate остаётся закрытым, а подсистема остановки (соседний файл) ходит к
@@ -297,11 +294,13 @@ final class SuflerService: ObservableObject {
         // Автостоп извещает баннером того, кого нет у экрана. Разрешение
         // раньше запрашивал только календарь — у всех остальных единственный
         // канал оповещения молча не существовал (ревью 18.08 ×2).
-        MeetingNotificationService.shared.requestAuthorization()
+        MeetingNotificationService.shared.requestAuthorization { [weak self] in
+            self?.noteNotificationsDenied()
+        }
         status = L.t("Запускаю…", "Starting…", "启动中…")
-        statusIsError = false
-        statusErrorFromDaemon = false
+        clearErrorFlags()
         stickyStatus = nil          // новая встреча — прошлое предупреждение не её
+        notificationsDeniedShown = false   // липкий слот чистится каждую встречу — и подсказка о нём тоже (критика GLM по #564)
 
         // Статус TCC проверяем на каждый Start. Кэшировать сам факт проверки
         // нельзя: после отказа второе нажатие раньше запускало демон в тишине.
@@ -430,6 +429,10 @@ final class SuflerService: ObservableObject {
                 if !ready {
                     self.systemAudioCapture = nil
                     self.announceCaptureFallback()   // фолбэк — вслух, не молча на BlackHole (№140)
+                } else if capture.micFallback != .none {
+                    // микрофон в поток не попал — демон пишет его отдельно (аудит 13.09, DS I1)
+                    // а предупреждение — на всю встречу (DS I2 по #564)
+                    self.stickyStatus = Self.micFallbackText(capture.micFallback)
                 }
                 SystemAudioCapture.captureLog(ready ? "захват готов — демон стартует с манифестом" : "захват НЕ поднялся — демон уйдёт на BlackHole")
                 self.launchDaemon(preserveUI: preserveUI, token: token)
@@ -545,6 +548,9 @@ final class SuflerService: ObservableObject {
         stdoutHandle = nil
         try? errHandle?.close()
         errHandle = nil
+        // write-end stdin жил до конца сеанса — та же fd-утечка, что у errHandle (аудит 13.09, DS M2)
+        try? stdinPipe?.fileHandleForWriting.close()
+        stdinPipe = nil
         let wasRecording = lifecycle == .recording
         stopClock()
         isHinting = false   // ждать hint_done от мёртвого демона бессмысленно
@@ -584,6 +590,7 @@ final class SuflerService: ObservableObject {
                 fail(L.t("⛔️ Захват звука потерян (\(reason)) и не восстановился. Нажмите «Слушать встречу» ещё раз",
                          "⛔️ Audio capture lost (\(reason)) and did not recover. Press \u{201C}Listen to the meeting\u{201D} again",
                          "⛔️ 音频捕获已丢失（\(reason)）且未能恢复。请再次点击「旁听会议」"))
+                preservedFailure = status   // .preserveFailure без текста: запоздавший статус демона затирал причину (аудит 13.09, DS M1)
                 guard let token = lifecycleGate.beginStop() else { return }
                 cleanupDisposition = .preserveFailure
                 publishLifecycle()
@@ -598,6 +605,7 @@ final class SuflerService: ObservableObject {
             fail(L.t("⛔️ Запись остановилась и не восстановилась. Нажмите «Слушать встречу» ещё раз",
                      "⛔️ Recording stopped and did not recover. Press \u{201C}Listen to the meeting\u{201D} again",
                      "⛔️ 录音已停止且未能恢复。请再次点击「旁听会议」"))
+            preservedFailure = status   // .preserveFailure без текста: запоздавший статус демона затирал причину (аудит 13.09, DS M1)
             guard let token = lifecycleGate.beginStop() else { return }
             cleanupDisposition = .preserveFailure
             publishLifecycle()
@@ -878,6 +886,7 @@ final class SuflerService: ObservableObject {
                     : L.t("⏹ Запись остановлена автоматически: \(text)",
                           "⏹ Recording stopped automatically: \(text)",
                           "⏹ 录音已自动停止：\(text)")
+                clearErrorFlags()   // автостоп — не отказ: чужой флаг ошибки красил строку (DS M3)
             case "autostop_warning":
                 // Предупреждение перед автостопом: любая речь его снимает, и
                 // тогда демон пришлёт обычный статус «автостоп отменён».
@@ -885,6 +894,9 @@ final class SuflerService: ObservableObject {
                 // «Минутки…»), а минута на ответ — короткая: когда окна не
                 // видно, шлём ещё и баннер (ревью 18.08, GLM).
                 status = text
+                // поверх липкого слоя — иначе строка про уведомления закрывала предупреждение (DS I3 по #564)
+                statusIsError = true
+                statusErrorFromDaemon = false
                 MeetingNotificationService.shared.presentAutostopWarning(text)
             case "hint":
                 // Демон помечает стрим: manual — запрошен человеком, иначе
