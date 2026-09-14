@@ -488,9 +488,7 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             stalled = false
             lastGrowth = nil
             lastResult = nil
-            if !rotating {
-                // новая встреча — счётчик ошибок кодека и причина прошлого стопа чисты;
-                // ротация — серия продолжается (DS I1 r2 по #565)
+            if !rotating {                    // новая встреча — серия ошибок кодека и причина стопа чисты (DS I1 r2)
                 encodeErrors = 0
                 lastStopReason = nil
             }
@@ -623,10 +621,8 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.isRecording else { return }
-                // mediaserverd перезапускается и без звонка (обновление, чужой VoIP):
-                // раньше здесь был stop() — остаток встречи не писался, а телефон лежал
-                // экраном вниз (аудит 13.09, GLM I2; кандидат в остановки из №200).
-                // После сброса новый рекордер валиден — закрываем файл и продолжаем новым.
+                // mediaserverd перезапускается и без звонка: stop() здесь оставлял остаток
+                // встречи незаписанным (аудит 13.09, GLM I2, №200) — ротация
                 self.lastResult = L.t("Аудиослужба перезапущена — файл сохранён, продолжаю встречу новым",
                                       "Audio service reset — file kept, continuing the meeting in a new one",
                                       "音频服务已重置 — 文件已保留，以新文件继续会议")
@@ -945,27 +941,13 @@ final class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         }
     }
 
-    /// Ошибок кодека подряд, после которых ротация уже не спасает: пустые куски
-    /// плодить незачем — честный стоп.
-    nonisolated static let maxEncodeErrors = 3
-
-    /// Ошибка кодека посреди встречи: сторож застоя в той же беде ротирует, а
-    /// делегат останавливал — час разговора после сбоя не писался (аудит 13.09,
-    /// DS I4 / GLM I3). Политика — статикой, чтобы её держал тест.
-    nonisolated static func actionAfterEncodeError(consecutive: Int) -> StallAction {
-        consecutive >= maxEncodeErrors ? .stop : .rotate
-    }
-
-    private var encodeErrors = 0
-    /// Идёт ротация файла: старт нового файла — продолжение серии, не новая встреча.
-    private var rotating = false
+    private var encodeErrors = 0     // политика — Recorder+EncodePolicy.swift
+    private var rotating = false     // старт нового файла — продолжение серии, не новая встреча
 
     nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
         Task { @MainActor [weak self] in
-            // после «Стоп» ошибка финализации приходит сюда же: без гварда ротация
-            // через 0,7 с включала запись, о которой никто не просил (GLM I1 r1 по #565);
-            // ошибка СТАРОГО рекордера, доставленная после ротации, — не ошибка нового
-            // (GLM I1 / DS M1 r2)
+            // ошибка финализации после «Стоп» или от старого рекордера после ротации —
+            // не повод трогать запись (GLM I1 r1, GLM I1 / DS M1 r2 по #565)
             guard let self, self.isRecording, recorder === self.recorder else { return }
             self.encodeErrors += 1
             if Self.actionAfterEncodeError(consecutive: self.encodeErrors) == .rotate {
