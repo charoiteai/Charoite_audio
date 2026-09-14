@@ -135,12 +135,7 @@ final class SystemAudioCapture: NSObject {
     /// обязан откатиться на BlackHole, а не остаться без второй стороны.
     @discardableResult
     func start() async -> Bool {
-        // Манифест чужой сессии (приложение убито посреди записи) мёртв по построению:
-        // с system_start демон прочитал бы прошлую встречу с первого байта в новую
-        // стенограмму, если сработает по свежести (GLM M3 r2 по #564)
-        if let stale = Self.manifestSession(), stale != sessionID.uuidString {
-            try? FileManager.default.removeItem(at: Self.manifestURL)
-        }
+        Self.discardStaleManifest(notOwnedBy: sessionID)
         guard stream == nil else { return true }
         guard !Task.isCancelled else { return false }
         stopping = false
@@ -558,6 +553,15 @@ final class SystemAudioCapture: NSObject {
 
     /// Идентификатор сессии из манифеста на диске; nil — манифеста нет или он
     /// от версии без поля (тогда владение недоказуемо и удалять нельзя).
+    /// Манифест чужой сессии (приложение убито посреди записи) мёртв по построению:
+    /// с `system_start` демон прочитал бы прошлую встречу с первого байта в новую
+    /// стенограмму, если сработает по свежести (GLM M3 r2 по #564). Своя сессия
+    /// и манифест без поля session не трогаются — как в `stop()`.
+    static func discardStaleManifest(notOwnedBy sessionID: UUID) {
+        guard let stale = manifestSession(), stale != sessionID.uuidString else { return }
+        try? FileManager.default.removeItem(at: manifestURL)
+    }
+
     static func manifestSession() -> String? {
         guard let data = try? Data(contentsOf: manifestURL),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
