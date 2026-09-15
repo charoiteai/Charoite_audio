@@ -660,12 +660,17 @@ def test_rewrite_file_fails_closed_without_a_snapshot(tmp_path, monkeypatch):
     import pytest
     path = tmp_path / "m.md"
     path.write_text("x\n", encoding="utf-8")
-    monkeypatch.setattr(safe_write, "stat_snapshot", lambda p: None)
+    # Подменяем то, что rewrite_file ДЕЙСТВИТЕЛЬНО зовёт: с №273 снимок и
+    # причину отказа даёт один `stat`, а `stat_snapshot` в этом пути не
+    # участвует — подмена его сделала бы тест «зелёным не о том» (DS r5 I1)
+    monkeypatch.setattr(safe_write, "_snapshot_or_why",
+                        lambda p: (None, "снимок не снят: Permission denied"))
     with pytest.raises(rb.LostRace) as exc:
         rb.rewrite_file(path, lambda t: (t + "y\n", 1), "проверка")
     assert path.read_text(encoding="utf-8") == "x\n"
     # причина названа честно: снимок не снят, а не «сменились под рукой» (DS M3, круг 2)
-    assert "снимок файла не снят" in str(exc.value) and "сменились под рукой" not in str(exc.value)
+    assert exc.value.reason == "снимок не снят: Permission denied", exc.value.reason
+    assert "сменились под рукой" not in str(exc.value)
     assert rb.LostRace is safe_write.LostRace and rb.rewrite_file is safe_write.rewrite_file
 
 

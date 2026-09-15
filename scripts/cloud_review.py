@@ -525,6 +525,7 @@ class Verdict:
     failed: list[str] = dataclasses.field(default_factory=list)     # перенос не смог (OSError)
     mangled: list[str] = dataclasses.field(default_factory=list)    # не UTF-8 в песочнице → в карантин, граф цел
     unlinked: list[str] = dataclasses.field(default_factory=list)   # «файл: цели» — ссылки без узла, ставшие текстом
+    unlink_failed: list[str] = dataclasses.field(default_factory=list)  # снятие не удалось — мёртвые ссылки остались
     displaced: list[str] = dataclasses.field(default_factory=list)  # тела узлов, ставших заглушками, — в карантине
     rolled_back: bool = False        # ответ невалиден — откачено всё
 
@@ -704,29 +705,6 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
     # Резолвер — по ЖИВОМУ графу (узлы, заведённые конвейером после снимка,
     # тоже цели) плюс правки самой копии (узлы, созданные облаком в этом же
     # прогоне); снимок сам по себе устаревает за время работы облака.
-    resolver = graph_links.LinkResolver(graph) if valid and edits else None   # без правок граф не читаем (GLM r2 I2)
-    if resolver is not None:
-        for rel in edits:
-            cpath = copy / rel
-            if cpath.is_file():
-                # Новый файл в защищённой зоне judge забракует (`removed`), и
-                # цель на него — та же живая ссылка в никуда, что у mangled
-                # (DS r4 I1). Существующие файлы пропускаем как были: их
-                # отказ — это конфликт или правило, а узел в графе есть.
-                if rel.as_posix() not in before and not may_write(graph / rel, graph):
-                    continue
-                try:
-                    # Строго и БЕЗ поблажек на нечитаемый файл: узел, чью правку
-                    # мы не смогли прочитать, в граф не попадёт — ни как
-                    # `mangled`, ни как пропавший из песочницы. Зарегистрировать
-                    # его как цель значит оставить живую `[[ссылку]]` на узел,
-                    # которого не будет, мимо unlink-гейта и graph_unlinked.log
-                    # (GLM r1 I1 по №263; ветка `OSError → пустое тело` была
-                    # попыткой сохранить прежнее поведение и оказалась ровно тем
-                    # вредом, который этот гейт запрещает — GLM r3 I1).
-                    resolver.add(graph / rel, _read_exact(cpath))
-                except (OSError, ValueError):     # UnicodeDecodeError — подкласс ValueError
-                    continue
     pending_stubs: list[tuple] = []       # заглушки-редиректы — после канона
     for rel in edits:
         cpath, gpath = copy / rel, graph / rel
@@ -820,14 +798,8 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
             # переносы строк внутри [[…]] — стиль CLI при правке, для Obsidian
             # ссылка мертва; чиним в единственной точке входа (Sonnet 28.08)
             new = graph_updater.tidy_links(new)
-            gone: list[str] = []
-            if resolver is not None:
-                new, gone = graph_links.unlink_unresolved(new, resolver)
-            safe_write.write_text(gpath, new)
+            safe_write.write_text(gpath, new)     # ссылки снимаются ПОСЛЕ всех записей
             v.applied.append(name)
-            if gone:                              # журнал — после успешной записи (GLM r3 M2)
-                v.unlinked.append(f"{name}: {', '.join(gone)}")
-                _journal_unlinked(name, gone)
         except OSError:
             v.failed.append(name)
     for rel, cpath, gpath, name, target, old in pending_stubs:
@@ -897,7 +869,76 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 v.reverted.append(name)
         except OSError:
             v.failed.append(name)
+    unlink_after_transfer(v, graph)
     return v
+
+
+def unlink_after_transfer(v: Verdict, graph: pathlib.Path) -> None:
+    """Ссылки без узла — текстом; считается по ФАКТУ, а не по предсказанию.
+
+    До №273 цели строились ДО проходов переноса, и множество «что будет в
+    графе» приходилось угадывать. Любая проба — второй экземпляр правил
+    прохода (`may_write` → конфликт → `adds_mangled` → `judge` → заглушка) и
+    обречена разойтись: мимо неё прошли и заглушка с неслитым каноном, и
+    упавшая запись (`v.failed`), где узел не ложится уже ПОСЛЕ решения, и
+    гонки конвейера (DS и GLM, круг 1 по №273).
+
+    Поэтому снятие уехало сюда, за оба прохода: резолвер строится из графа,
+    каким он стал, и «цель жива» = «файл в графе есть» по построению. Один
+    источник истины вместо правила и его копии.
+
+    Цена, названная честно. Файл, у которого что-то сняли, пишется дважды —
+    сначала текст облака, потом он же без мёртвых ссылок; прежняя схема писала
+    один раз, но ценой предсказания. И запись со снятием перестала быть
+    атомарной: между двумя записями файл живёт с мёртвыми ссылками, и процесс,
+    убитый в этом окне, оставит их в графе без строки в вердикте и без журнала.
+    Ловит это `graph_doctor` — он и считает мёртвые ссылки (GLM r2 I2).
+
+    Поздние писатели прогона (указатели папок, перештамповка имён, раскладка
+    архива) кладут файлы уже ПОСЛЕ снятия, и ссылка на такой артефакт будет
+    снята как мёртвая. Не регресс — прежний резолвер строился ещё раньше, — но
+    доктрина «цель жива = файл в графе есть» до конца прогона пока не доведена
+    (DS r2 I1, отдельная карточка).
+    """
+    if not v.applied:
+        return
+    after = graph_links.LinkResolver(graph)
+    for name in list(v.applied):
+        gpath = graph / name
+        gone: list[str] = []
+
+        def strip(text, _gone=gone):
+            clean, targets = graph_links.unlink_unresolved(text, after)
+            _gone[:] = targets
+            return clean, len(targets)
+
+        try:
+            # rewrite_file, а не read→write: конвейер пишет в граф без замка, и
+            # доклейка, попавшая между чтением и записью, терялась бы без следа.
+            # Гейт `expect` по снимку до чтения — штатное средство проекта, и
+            # здесь окно сжимается до нуля (GLM r2 I1).
+            if safe_write.rewrite_file(gpath, strip, "ссылки без узла не сняты") == 0:
+                continue                          # нечего снимать
+        except (OSError, UnicodeDecodeError, safe_write.LostRace) as exc:
+            if isinstance(exc, safe_write.LostRace) and exc.reason == "файла нет":
+                # Конвейер переименовал или слил узел, сработал forget_meeting,
+                # iCloud вытеснил. Мёртвых ссылок в несуществующем файле не
+                # бывает, и говорить «остались» — врать в единственном канале
+                # воркера (DS r3 Critical 1). Причина приходит из `rewrite_file`,
+                # где её даёт ошибка ЕДИНСТВЕННОГО stat: второго опроса диска
+                # нет вовсе — он был бы тем же самым stat, который уже отказал
+                # (DS r4 и r5 Critical).
+                continue
+            # Логгера в этом модуле нет, а stderr воркера уходит в DEVNULL:
+            # деградация должна ехать в вердикт, иначе её не увидит никто
+            # (DS r2 Critical 1 и 2, GLM r2 Critical 1). Имя файла уже есть в
+            # `name`, из сообщения LostRace его срезаем (DS r3 Minor).
+            why = (f"{exc.reason} — запись не состоялась" if isinstance(exc, safe_write.LostRace)
+                   else f"{getattr(exc, 'strerror', None) or exc} — запись не состоялась")
+            v.unlink_failed.append(f"{name}: {why}")
+            continue
+        v.unlinked.append(f"{name}: {', '.join(gone)}")
+        _journal_unlinked(name, gone)
 
 
 def facts_of(text: str) -> collections.Counter:
@@ -1791,6 +1832,8 @@ def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:
         parts.append(f"не UTF-8, в граф НЕ перенесено: {', '.join(v.mangled)}")
     if v.failed:
         parts.append(f"ПЕРЕНОС НЕ СМОГ (ошибка диска/прав): {', '.join(v.failed)}")
+    if v.unlink_failed:
+        parts.append(f"мёртвые ссылки ОСТАЛИСЬ (снятие не удалось): {', '.join(v.unlink_failed)}")
     if v.reverted or v.removed or v.conflicts or v.mangled:
         # именно то, что реально ЛЕЖИТ в карантине: удаления туда не
         # кладутся — файла в песочнице нет (luna, M2)
