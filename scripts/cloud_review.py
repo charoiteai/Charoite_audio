@@ -523,6 +523,7 @@ class Verdict:
     removed: list[str] = dataclasses.field(default_factory=list)    # служебная зона → в карантин
     deleted: list[str] = dataclasses.field(default_factory=list)    # облако стёрло — в графе оставлено
     failed: list[str] = dataclasses.field(default_factory=list)     # перенос не смог (OSError)
+    mangled: list[str] = dataclasses.field(default_factory=list)    # не UTF-8 в песочнице → в карантин, граф цел
     unlinked: list[str] = dataclasses.field(default_factory=list)   # «файл: цели» — ссылки без узла, ставшие текстом
     displaced: list[str] = dataclasses.field(default_factory=list)  # тела узлов, ставших заглушками, — в карантине
     rolled_back: bool = False        # ответ невалиден — откачено всё
@@ -562,13 +563,57 @@ def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
     return None
 
 
+MANGLED = review_bridge.MANGLED     # одна константа на проект (DS r5 Minor 7)
+
+
+def adds_mangled(old_text: str, new_text: str) -> bool:
+    """Правка приносит «�» в строку, которой в узле не было.
+
+    Строгое чтение ловит битые байты, но «�» бывает и законным содержимым
+    валидного UTF-8: облако видит в промпте наши минутки и соседние узлы и
+    переносит символ оттуда. Отвергать всякий узел с «�» нельзя — узел,
+    испорченный однажды, стал бы вечно неприкасаемым для облака (DS r4
+    Critical 1). Но и считать символы нельзя: «столько же» не значит «та же
+    порча» — облако убирает один «�» и приносит другой в новый абзац, или
+    переносит тот же символ из тела в заголовок, откуда он уходит в имя
+    узла, MOC и индексы (DS r5 Critical 1). Поэтому сверка построчная:
+    нетронутая строка со старым символом проходит, новая — нет.
+
+    `old_text` вызывающий обязан читать СТРОГО: снимок, прочитанный с
+    заменой, подмешал бы в базу собственные «�» и разрешил бы литеральный
+    символ в правке (DS r5 I3).
+    """
+    if MANGLED not in new_text:
+        return False
+    was = set(old_text.splitlines())
+    return any(MANGLED in line and line not in was for line in new_text.splitlines())
+
+
 def _read(p: pathlib.Path) -> str:
-    """Текст файла или пустая строка: в графе бинарников нет, а битую
-    кодировку заменяем, а не роняем на ней перенос."""
+    """Текст файла или пустая строка ДЛЯ РЕШЕНИЯ: в графе бинарников нет, а
+    битую кодировку заменяем, а не роняем на ней перенос. Так читается только
+    то, от чего не зависит ни один записанный байт: снимок для `judge` и текст
+    канона для `canon_merged`. Цели ссылок сюда НЕ входят — от них зависит,
+    останется ли ссылка живой, и резолвер читает строго. Текст, который уедет
+    в граф, берётся `_read_exact` (№263, DS r2 I2)."""
     try:
         return p.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
+
+
+def _read_exact(p: pathlib.Path) -> str:
+    """Текст файла БЕЗ подмены нечитаемых байтов — для того, что пишется в граф.
+
+    Замена (`errors="replace"`) здесь не спасала перенос, а тихо портила
+    узел: один оборванный байт в песочнице (обрыв записи посреди UTF-8,
+    файл из чужого редактора) — и «�» встаёт в текст графа навсегда,
+    причём прежняя версия уже перезаписана. Целый файл в чужой кодировке
+    ловил judge по retention, а несколько байт в валидном тексте проходили
+    все гейты. Отказ честнее: правка облака уходит в карантин, граф цел
+    (№263).
+    """
+    return p.read_text(encoding="utf-8")
 
 
 def edits_in_copy(before: dict[str, str], copy: pathlib.Path) -> list[pathlib.Path]:
@@ -664,9 +709,23 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
         for rel in edits:
             cpath = copy / rel
             if cpath.is_file():
+                # Новый файл в защищённой зоне judge забракует (`removed`), и
+                # цель на него — та же живая ссылка в никуда, что у mangled
+                # (DS r4 I1). Существующие файлы пропускаем как были: их
+                # отказ — это конфликт или правило, а узел в графе есть.
+                if rel.as_posix() not in before and not may_write(graph / rel, graph):
+                    continue
                 try:
-                    resolver.add(graph / rel, _read(cpath))
-                except (OSError, ValueError):
+                    # Строго и БЕЗ поблажек на нечитаемый файл: узел, чью правку
+                    # мы не смогли прочитать, в граф не попадёт — ни как
+                    # `mangled`, ни как пропавший из песочницы. Зарегистрировать
+                    # его как цель значит оставить живую `[[ссылку]]` на узел,
+                    # которого не будет, мимо unlink-гейта и graph_unlinked.log
+                    # (GLM r1 I1 по №263; ветка `OSError → пустое тело` была
+                    # попыткой сохранить прежнее поведение и оказалась ровно тем
+                    # вредом, который этот гейт запрещает — GLM r3 I1).
+                    resolver.add(graph / rel, _read_exact(cpath))
+                except (OSError, ValueError):     # UnicodeDecodeError — подкласс ValueError
                     continue
     pending_stubs: list[tuple] = []       # заглушки-редиректы — после канона
     for rel in edits:
@@ -693,7 +752,15 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
             # нормализуем ДО judge и распознавания заглушки: «[[Ядра/ Канон]]»
             # иначе не находил канон, а перенос в первой строке ломал
             # is_redirect_stub (luna, круг-1 #448 I6); карантин берёт cpath как есть
-            new = graph_updater.tidy_links(_read(cpath)) if cpath.is_file() else None
+            try:
+                new = graph_updater.tidy_links(_read_exact(cpath)) if cpath.is_file() else None
+            except UnicodeDecodeError:
+                # Не UTF-8 — в граф не пойдёт: это единственная ветка, где
+                # порча приезжала в узел молча и мимо judge (№263). Версия
+                # облака остаётся человеку в карантине, файл графа цел.
+                quarantine(cpath, copy, qdir, move=False)
+                v.mangled.append(name)
+                continue
             if new is None:                       # облако стёрло файл
                 # Удаление НЕ переносим: у облака нет причин стирать чужое,
                 # а восстановление стёртого — это и был откат, из-за
@@ -724,6 +791,18 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 # файл: резолв уводит путь из-под точки, но цель существует.
                 quarantine(cpath, copy, qdir, move=False)
                 v.conflicts.append(name)
+                continue
+            # ПОСЛЕ проверки конфликта: если файл трогал конвейер, это его
+            # работа, и обвинять облако в порче нельзя (DS r5 I4). База —
+            # строгое чтение снимка: лояльное подмешало бы свои «�» и
+            # разрешило литеральный символ в правке (DS r5 I3); см. adds_mangled.
+            try:
+                old_clean = _read_exact(backup / rel) if existed else ""
+            except (OSError, UnicodeDecodeError):
+                old_clean = ""
+            if adds_mangled(old_clean, new):
+                quarantine(cpath, copy, qdir, move=False)
+                v.mangled.append(name)
                 continue
             why = judge(gpath, graph, old, new, existed)
             if why is not None:
@@ -772,10 +851,30 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 cands.append((rel.parent / target).as_posix())
             cands = [os.path.normpath(c) for c in cands]
             bad = set(v.reverted) | set(v.removed) | set(v.conflicts) \
-                | set(v.deleted) | set(v.failed)
+                | set(v.deleted) | set(v.failed) | set(v.mangled)
             # Старый текст — из СНИМКА (`old`), как и у judge выше: живой
             # файл мог уехать под конвейером после сверки хешей (DS M4 по #550).
-            new_text = graph_updater.tidy_links(_read(cpath))
+            # Строго, как в первом проходе: заглушка — тоже текст графа (№263).
+            # Второй рубеж, а не первый: битую заглушку ловит уже основной
+            # проход (строгое чтение стоит ДО распознавания редиректа), а
+            # песочница между проходами не меняется — сюда попадает только то,
+            # что строгое чтение прошло. Ветку держим на случай, если этот
+            # инвариант однажды нарушат: без неё UnicodeDecodeError уйдёт мимо
+            # `except OSError` и уронит весь перенос (DS r1 I2, GLM r1 I3).
+            try:
+                new_text = graph_updater.tidy_links(_read_exact(cpath))
+            except UnicodeDecodeError:
+                quarantine(cpath, copy, qdir, move=False)
+                v.mangled.append(name)
+                continue
+            try:                                  # та же сверка, что в основном проходе
+                old_clean = _read_exact(backup / rel) if name in before else ""
+            except (OSError, UnicodeDecodeError):
+                old_clean = ""
+            if adds_mangled(old_clean, new_text):
+                quarantine(cpath, copy, qdir, move=False)
+                v.mangled.append(name)
+                continue
             if any(canon_merged(c, graph, bad, old, new_text) for c in cands):
                 # Тело вытесняемого узла — в копию ДО записи заглушки, мимо
                 # ротации карантина прогонов. До 13.09 оно жило только в
@@ -996,6 +1095,23 @@ def deliver_review(rev: pathlib.Path, transcript: pathlib.Path, graph: pathlib.P
     же ключом файлов, копию в Документацию кладём рядом с остальными.
     """
     try:
+        # Файл ревизии копируется в граф БАЙТ В БАЙТ, и декодировать его
+        # некому — зато каждый читатель графа откроет его с заменой и
+        # размножит «�» дальше по индексам и производным файлам. Ревизия с
+        # обрывом ответа для моста штатна (`read_review`), но в графе ей не
+        # место: остаётся рядом со стенограммой, где её правит человек
+        # (DS r4 Critical 2). Гасим ТОЛЬКО копии ревизии: archive_meeting —
+        # единственный путь дополненных мостом минуток в граф и во вкладку
+        # «Задачи», и отменять его из-за ревизии нельзя (DS r5 Critical 2).
+        rev_ok = True
+        try:
+            rev.read_text(encoding="utf-8")
+        except UnicodeDecodeError as e:
+            rev_ok = False
+            lf.write(f"[cloud-review] ревизия НЕ доставлена в граф: {rev.name} не в UTF-8 "
+                     f"({e.reason}) — файл рядом со стенограммой\n")
+        except OSError:
+            pass                      # нет/недоступен — упадёт ниже в общий except
         from meeting_archive import archive_meeting
         slug = transcript.stem[len(stamp):].lstrip("_") if transcript.stem.startswith(stamp) else ""
         if slug[:1].isdigit():
@@ -1005,11 +1121,12 @@ def deliver_review(rev: pathlib.Path, transcript: pathlib.Path, graph: pathlib.P
         # Имя ревизии строится от минутного штампа, а ключ файлов архива — от
         # стема стенограммы (у посекундной без темы они расходятся): кладём
         # копию в папку явно, а не надеемся на глоб.
-        if folder is not None:
+        if folder is not None and rev_ok:
             shutil.copy2(rev, folder / "Ревизия Claude.md")
         vdocs = graph / "Документация" / "Стенограммы встреч"
         if vdocs.is_dir():
-            shutil.copy2(rev, vdocs / rev.name)
+            if rev_ok:
+                shutil.copy2(rev, vdocs / rev.name)
             # Стенограмма и минутки после моста (имена меток, снятые и
             # восстановленные поручения) — заново, как в разборе: копия в
             # Документации иначе оставалась довозной версией (№239)
@@ -1533,30 +1650,42 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 # Проигранная гонка записи — свой сигнал (LostRace) и своя строка
                 # лога: «пунктов не извлечено или все уже в минутках» про неё
                 # было бы ложью (GLM I2 / DS I2 по #553)
-                withdrawn, raced = 0, False
+                withdrawn, bridge_blocked = 0, False
                 try:
                     withdrawn = review_bridge.withdraw(rev, transcript, owner=owner, lang=lang, dropped=dropped_w)
                 except review_bridge.LostRace as e:
-                    raced = True
+                    bridge_blocked = True
                     lines.append(f"[cloud-review] мост ревизии: {e} — минутки менял кто-то ещё, снятие не применено\n")
+                except review_bridge.MangledFile as e:
+                    # Тот же класс лжи, что у LostRace: пункты извлечены,
+                    # отказала запись — «снимать нечего» было бы неправдой (№263).
+                    # Причину НЕ додумываем: «не в UTF-8» уже в самом сигнале, а
+                    # откуда битый байт (чужой редактор, оборванная синхронизация)
+                    # ничем не подтверждено — в отличие от LostRace, где чужую
+                    # правку доказывает снимок (DS r2 I1).
+                    bridge_blocked = True
+                    lines.append(f"[cloud-review] мост ревизии: {e}\n")
                 if withdrawn:
                     lines.append(f"[cloud-review] мост ревизии ({verified}): снято поручений — {withdrawn} "
                                  f"(перенесены в «{review_bridge.WITHDRAWN_TITLE.get(lang[:2], review_bridge.WITHDRAWN_TITLE['ru'])[3:]}»)\n")
-                elif has_minutes and not raced and review_bridge.withdrawn_section_present(rev_text):
+                elif has_minutes and not bridge_blocked and review_bridge.withdrawn_section_present(rev_text):
                     lines.append("[cloud-review] мост ревизии: раздел о снятых поручениях есть, "
                                  "пунктов не извлечено или в минутках их нет\n")
-                added, raced = 0, False
+                added, bridge_blocked = 0, False
                 try:
                     added = review_bridge.bridge(rev, transcript, owner=owner, lang=lang, dropped=dropped,
                                                  extra_participants=set(renamed.values()))
                 except review_bridge.LostRace as e:
-                    raced = True
+                    bridge_blocked = True
                     lines.append(f"[cloud-review] мост ревизии: {e} — минутки менял кто-то ещё, поручения не дописаны\n")
+                except review_bridge.MangledFile as e:
+                    bridge_blocked = True
+                    lines.append(f"[cloud-review] мост ревизии: {e}\n")
                 if added:
                     lines.append(f"[cloud-review] мост ревизии ({verified}): в минутки дописано поручений — {added}\n")
                 elif not has_minutes:
                     lines.append("[cloud-review] мост ревизии: минуток рядом со стенограммой нет\n")
-                elif not raced and review_bridge.section_present(rev_text):
+                elif not bridge_blocked and review_bridge.section_present(rev_text):
                     lines.append("[cloud-review] мост ревизии: раздел о восстановленных поручениях есть, "
                                  "пунктов не извлечено или все уже в минутках\n")
                 # Что мост выбросил из раздела — в лог: «нет», комментарии модели,
@@ -1656,9 +1785,13 @@ def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:
         parts.append(f"облако стёрло — в графе ОСТАВЛЕНО: {', '.join(v.deleted)}")
     if v.removed:
         parts.append(f"создано в служебной зоне — в карантин: {', '.join(v.removed)}")
+    if v.mangled:
+        # Не «не смог», а «не понёс»: файл читается, но не в UTF-8, и запись
+        # такого в граф оставила бы «�» в узле навсегда (№263)
+        parts.append(f"не UTF-8, в граф НЕ перенесено: {', '.join(v.mangled)}")
     if v.failed:
         parts.append(f"ПЕРЕНОС НЕ СМОГ (ошибка диска/прав): {', '.join(v.failed)}")
-    if v.reverted or v.removed or v.conflicts:
+    if v.reverted or v.removed or v.conflicts or v.mangled:
         # именно то, что реально ЛЕЖИТ в карантине: удаления туда не
         # кладутся — файла в песочнице нет (luna, M2)
         parts.append(f"версии облака в карантине {qdir}")

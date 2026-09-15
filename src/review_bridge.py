@@ -68,6 +68,82 @@ _PAREN_NOTE = re.compile(r"^\s*[(（][^)）]*[)）]\s*$")
 LostRace = safe_write.LostRace
 rewrite_file = safe_write.rewrite_file
 
+# Ревизию (ответ облака) читаем СТРОГО, при отказе — с заменой (`read_review`):
+# обрыв ответа не должен глушить мост целиком. Но то, что из неё ВЗЯТО и уедет
+# в минутки, проверяется по СОДЕРЖИМОМУ в обоих случаях: «�» в пункте остался
+# бы в графе навсегда, а целый файл ревизии ничего не доказывает — модель
+# цитирует наши же минутки, и символ приезжает оттуда (№263, DS r3 Critical 1).
+# Проверка одна на восстановленные и снятые пункты.
+MANGLED = "�"
+
+
+class MangledFile(RuntimeError):
+    """Файл, который мост должен переписать, не в UTF-8 — запись не сделана.
+
+    Свой сигнал, а не `return 0`: ноль вызывающий печатает как «пунктов не
+    извлечено или все уже в минутках», хотя пункты извлечены и отказала
+    ЗАПИСЬ. Ровно от этой лжи в #553 завели LostRace — здесь тот же случай
+    (DS r1 I1 и GLM r1 I2 по №263)."""
+
+    PREFIX = "запись не состоялась: "
+
+    def __init__(self, path: pathlib.Path, what: str, reason: str):
+        self.path = path
+        super().__init__(f"{self.PREFIX}{path.name} не в UTF-8 ({reason}) — {what}")
+
+
+def read_review(review: pathlib.Path) -> tuple[str, bool]:
+    """Текст ревизии и признак «читали с заменой».
+
+    Сначала СТРОГО: у целого ответа облака «�» — это авторский символ, а не
+    потеря, и фильтровать по нему пункты нельзя (luna, критика решения по
+    №263) — флаг нужен только для формулировки в логе, фильтр по «�» работает
+    в обоих случаях. Не декодируется — заменяем: обрыв ответа не должен глушить
+    мост целиком. Байты читаются ОДИН раз: два захода к файлу давали окно, в
+    котором флаг и текст описывали разные версии, а OSError на втором заходе
+    притворялся «ревизии нет» (DS r3 I3). Файла нет — пусто и False."""
+    try:
+        data = review.read_bytes()
+    except OSError:
+        return "", False
+    try:
+        return data.decode("utf-8"), False
+    except UnicodeDecodeError:
+        return data.decode("utf-8", "replace"), True
+
+
+def _drop_mangled(items: list, dropped: list[str] | None, what: str, lossy: bool = True) -> list:
+    """Пункты без нечитаемых символов; выброшенное — строкой в `dropped`.
+
+    Элемент — строка (восстановленные) или пара (снятые: пункт, причина).
+    ПРИЧИНА проверяется наравне с пунктом: `withdraw_from_minutes` пишет её в
+    строку минуток («~~пункт~~ _(снято ревизией: причина)_»), и битый байт в
+    хвосте «— причина: …» уезжал бы в граф тем же путём (DS r1 Critical по
+    №263). Но целое поручение из-за испорченного хвоста не теряем: пункт
+    остаётся, причина обнуляется, строка об этом — в `dropped`.
+
+    Фильтр работает по СОДЕРЖИМОМУ и не зависит от того, как читался файл:
+    целый UTF-8 ничего не говорит о том, авторский ли это символ. Модель
+    получает в промпт наши же минутки и стенограмму, и «�», уже лежащий там,
+    она процитирует — ревизия останется валидной, а порча расползётся дальше
+    (DS r3 Critical 1). `lossy` меняет только формулировку в `dropped`.
+    """
+    why_lost = "ревизию читали с заменой" if lossy else "нечитаемый символ в целом файле"
+    ok = []
+    for item in items:
+        text, why = (item, "") if isinstance(item, str) else (item[0], item[1])
+        if MANGLED in text:
+            if dropped is not None:
+                dropped.append(f"{what}: {why_lost}, в минутки не дописан: {text[:60]}")
+            continue
+        if MANGLED in why:
+            if dropped is not None:
+                dropped.append(f"{what}: причина — {why_lost}, снимаем без причины: {text[:60]}")
+            ok.append((text, ""))
+            continue
+        ok.append(item)
+    return ok
+
 
 # Классы строк внутри раздела ревизии. Один классификатор вместо цепочки
 # условий в цикле: пять кругов по #518 двигали по одному крайнему случаю за
@@ -413,11 +489,8 @@ def bridge(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
     — верные имена меток из «## Исправления имён» ревизии, когда файлы не
     перештампованы (без права правки графа): иначе пункт с верным именем
     получал бы «⚠ не участник» по старой шапке (DS r2 I2 по #548)."""
-    try:
-        text = review.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return 0
-    items = recovered_items(text, dropped=dropped)
+    text, lossy = read_review(review)
+    items = _drop_mangled(recovered_items(text, dropped=dropped), dropped, "пункт ревизии", lossy)
     if not items:
         return 0
     # Владелец — одним написанием ДО сверки с минутками: «**Игорю** — позвонить»
@@ -436,9 +509,17 @@ def bridge(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
     # Снимок ДО чтения и две попытки (rewrite_file): минутки правят и
     # пересборка, и mcp «Минутки», и редактор — запись без гейта затирала бы
     # их версию своей (аудит зон 12.09, зона 4); проиграли дважды — LostRace.
-    return rewrite_file(
-        minutes, lambda before: merge_into_minutes(before, items, participants, lang=lang, owner=owner),
-        f"поручения ({len(items)}) не дописаны", errors="replace")
+    # Минутки читаются СТРОГО: их текст переписывается целиком, и замена
+    # нечитаемого байта записала бы «�» в файл человека навсегда — как у
+    # перештамповки имён (№263). Не в UTF-8 — MangledFile, а не тихий 0:
+    # ноль вызывающий печатает как «пунктов не извлечено», хотя пункты
+    # извлечены и отказала запись (DS r1 I1, GLM r1 I2).
+    try:
+        return rewrite_file(
+            minutes, lambda before: merge_into_minutes(before, items, participants, lang=lang, owner=owner),
+            f"поручения ({len(items)}) не дописаны")
+    except UnicodeDecodeError as e:
+        raise MangledFile(minutes, f"поручения ({len(items)}) не дописаны", e.reason) from e
 
 
 def _continuation(line: str) -> bool:
@@ -571,11 +652,8 @@ def withdraw(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
              lang: str = "ru", dropped: list[str] | None = None) -> int:
     """Перенести снятые ревизией поручения из задач минуток в «Снято ревизией».
     Возвращает число перенесённых; нет ревизии, минуток или пунктов — 0."""
-    try:
-        text = review.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return 0
-    items = withdrawn_items(text, dropped=dropped)
+    text, lossy = read_review(review)
+    items = _drop_mangled(withdrawn_items(text, dropped=dropped), dropped, "снятый пункт ревизии", lossy)
     if not items:
         return 0
     # Пункт ревизии — в том же каноне, что строки минуток (_dedup_view: канон
@@ -595,7 +673,12 @@ def withdraw(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
         return withdraw_from_minutes(before, items, lang=lang, owner=owner, dropped=tries[-1])
 
     try:
-        return rewrite_file(minutes, transform, f"снятые ({len(items)}) не перенесены", errors="replace")
+        # Строго, как у bridge: минутки переписываются целиком, и «�» вместо
+        # нечитаемого байта остался бы в файле человека навсегда (№263);
+        # отказ — MangledFile, чтобы лог не выдал его за «снимать нечего»
+        return rewrite_file(minutes, transform, f"снятые ({len(items)}) не перенесены")
+    except UnicodeDecodeError as e:
+        raise MangledFile(minutes, f"снятые ({len(items)}) не перенесены", e.reason) from e
     finally:
         if dropped is not None and tries:
             dropped.extend(tries[-1])
