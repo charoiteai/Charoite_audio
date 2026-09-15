@@ -638,7 +638,11 @@ def edits_in_copy(before: dict[str, str], copy: pathlib.Path) -> list[pathlib.Pa
 
 
 def _no_write_said(exc: safe_write.LostRace, subject: str, consequence: str) -> str:
-    """Почему записи не было — одной фразой, ОДИНАКОВО во всех местах лога.
+    """Почему записи не было — одной фразой, ОДИНАКОВО в обоих вызовах моста.
+
+    `subject` — существительное в РОДИТЕЛЬНОМ падеже («минуток»): оно нужно
+    ровно одной ветке, остальные говорят о файле вообще, и имя файла уже стоит
+    в тексте сигнала рядом.
 
     Предложение о том, кто виноват, раньше набиралось заново в каждом
     `except`, и за один коммит это разъехалось: у одного вызова моста стояло
@@ -650,8 +654,13 @@ def _no_write_said(exc: safe_write.LostRace, subject: str, consequence: str) -> 
     if exc.gone:
         return f"{subject} больше нет, {consequence}"
     if exc.unreachable:
-        return f"до файла не дотянулись ({exc.detail}), {consequence}"
-    return f"{subject} менял кто-то ещё, {consequence}"
+        # подробность системы НЕ пересказываем: она уже в тексте самого сигнала,
+        # который печатается рядом (DS M1/M2 r2)
+        return f"до файла не дотянулись, {consequence}"
+    # существительное здесь было бы в другом падеже, чем в ветке «больше нет»,
+    # и одна форма на две роли уже дала «минуток менял кто-то ещё» (DS I1 r2).
+    # Имя файла и так стоит в тексте сигнала — хватает слова «файл».
+    return f"файл менял кто-то ещё, {consequence}"
 
 
 def _journal_unlinked(name: str, gone: list[str]) -> None:

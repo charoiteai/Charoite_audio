@@ -160,11 +160,19 @@ class LostRace(RuntimeError):
              GONE: "файла нет",
              UNREACHABLE: "снимок не снят"}
 
-    def __init__(self, path: pathlib.Path, what: str, kind: str = CHANGED, detail: str = ""):
+    def __init__(self, path: pathlib.Path, what: str, kind: str, detail: str = ""):
+        # Вид обязателен и без умолчания: умолчанием был CHANGED — самая
+        # обвинительная из трёх причин, и новое место отказа получало
+        # «поверх писал кто-то ещё» бесплатно, ничем не подтверждённое
+        # (DS I2 r2). Неизвестный вид — своя ошибка, а не KeyError поверх
+        # настоящей причины отказа записи (DS M3 r2).
+        said = self._SAID.get(kind)
+        if said is None:
+            raise ValueError(f"неизвестный вид причины: {kind!r}")
         self.path = path
         self.kind = kind              # вид причины — значение, его и спрашивают
         self.detail = detail          # подробность системы, отдельно от вида
-        self.reason = self._SAID[kind] + (f": {detail}" if detail else "")
+        self.reason = said + (f": {detail}" if detail else "")
         super().__init__(f"{self.PREFIX}{path.name} {self.reason} — {what}")
 
     @property
@@ -229,4 +237,4 @@ def rewrite_file(path: pathlib.Path, transform, what: str) -> int:
             return 0
         if write_text(path, after, expect=snap):
             return n
-    raise LostRace(path, what)
+    raise LostRace(path, what, kind=LostRace.CHANGED)

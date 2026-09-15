@@ -378,9 +378,10 @@ vanished file has nothing to fix and nothing to be blamed for, an unreachable
 one stayed as it was and must be reported out loud, and a lost race means
 someone else wrote over it. The reason text is for a human reading the log and
 changed twice within one review round — matching against it from another module
-would break silently. One place builds the log phrase for every site: written
-out by hand in each handler, it drifted apart between neighbouring calls into
-the very same bridge within a single commit.
+would break silently. One place builds the blame phrase for BOTH bridge calls:
+written out by hand in each handler, it drifted apart between neighbouring
+calls into the very same bridge within a single commit. Every other site prints
+the reason text as it is and invents no culprit.
 Text on its way into the graph is read STRICTLY and must not bring
 unreadable characters with it: a sandbox file that does not decode as UTF-8
 goes to quarantine with its own verdict line, and so does an edit that adds

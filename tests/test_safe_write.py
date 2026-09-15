@@ -195,3 +195,26 @@ def test_lost_race_tells_a_missing_file_from_an_unreachable_one(tmp_path, monkey
     # текстом (DS I3 и GLM критика 1, круг 1 по №277)
     assert exc3.value.detail and "Permission denied" in exc3.value.detail, exc3.value.detail
     assert exc3.value.reason == f"снимок не снят: {exc3.value.detail}", exc3.value.reason
+
+
+def test_the_kind_of_a_lost_race_must_be_chosen_not_inherited(tmp_path):
+    """№277, круг 2, DS I2 и M3. Умолчанием вида был CHANGED — самая
+    обвинительная из трёх причин: новое место отказа получало «поверх писал
+    кто-то ещё» бесплатно, ничем не подтверждённое, в единственный канал
+    воркера. Вид обязан быть решением вызывающего. Неизвестный вид — своя
+    понятная ошибка, а не KeyError поверх настоящей причины отказа записи."""
+    p = tmp_path / "узел.md"
+    with pytest.raises(TypeError):
+        safe_write.LostRace(p, "что-то не сделано")          # без вида — нельзя
+    with pytest.raises(ValueError) as bad:
+        safe_write.LostRace(p, "что-то не сделано", kind="unreachble")
+    assert "неизвестный вид причины" in str(bad.value), bad.value
+    # все три вида живые и различимы признаками, ни один не «по умолчанию»
+    kinds = {safe_write.LostRace.CHANGED: (False, False),
+             safe_write.LostRace.GONE: (True, False),
+             safe_write.LostRace.UNREACHABLE: (False, True)}
+    for kind, (gone, unreachable) in kinds.items():
+        exc = safe_write.LostRace(p, "что-то не сделано", kind=kind)
+        assert (exc.gone, exc.unreachable) == (gone, unreachable), kind
+        assert exc.reason and exc.path is p and kind not in exc.reason, \
+            "вид — ключ для машины, reason — текст для человека"

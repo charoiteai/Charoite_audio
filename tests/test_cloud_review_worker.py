@@ -876,7 +876,8 @@ def test_lost_race_on_the_transcript_keeps_the_corrected_names_as_participants(t
         return Result()
 
     def lost(*a, **k):
-        raise review_bridge.LostRace(transcript, "заголовки реплик не тронуты")
+        raise review_bridge.LostRace(transcript, "заголовки реплик не тронуты",
+                                     kind=review_bridge.LostRace.CHANGED)
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
@@ -920,9 +921,12 @@ def test_the_log_does_not_blame_a_stranger_when_the_minutes_are_simply_gone(tmp_
 
     kinds = (
         (review_bridge.LostRace.GONE, "", "минуток больше нет", "менял кто-то ещё"),
-        (review_bridge.LostRace.CHANGED, "", "минуток менял кто-то ещё", "больше нет"),
+        # падеж: одна форма существительного на две синтаксические роли дала
+        # «минуток менял кто-то ещё» (DS I1 r2) — в этой ветке говорим о файле
+        (review_bridge.LostRace.CHANGED, "", "файл менял кто-то ещё", "больше нет"),
+        # подробность системы печатается ОДИН раз, из текста сигнала (DS M1 r2)
         (review_bridge.LostRace.UNREACHABLE, "Permission denied",
-         "до файла не дотянулись (Permission denied)", "менял кто-то ещё"),
+         "до файла не дотянулись,", "менял кто-то ещё"),
     )
     # оба вызова моста в одном прогоне: у withdraw различение было, у bridge —
     # безусловная фраза, и это выяснилось только потому, что головы прочли
@@ -942,6 +946,10 @@ def test_the_log_does_not_blame_a_stranger_when_the_minutes_are_simply_gone(tmp_
             assert "мост ревизии: " in text and expected in text, (who, kind, text)
             assert forbidden not in text, (who, kind, text)
             assert "снимать нечего" not in text, "пункт извлечён, отказала запись"
+            if detail:
+                # подробность системы печатается один раз — она уже в тексте
+                # сигнала, и хелпер её не пересказывает (DS M1 r2)
+                assert text.count(detail) == 1, (who, kind, text)
         monkeypatch.undo()
         monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
         monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
