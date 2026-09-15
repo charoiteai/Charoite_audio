@@ -2482,3 +2482,75 @@ def test_a_node_that_already_had_one_can_still_be_edited(tmp_path):
     v, _ = _cloud_worked(graph, tmp_path, work)
     assert v.applied == ["Встречи/2026-07-15_1400.md"], v
     assert not v.mangled and "дописано облаком" in node.read_text(encoding="utf-8")
+
+
+def test_a_swapped_replacement_char_does_not_slip_through_by_count(tmp_path):
+    """№263, круг 5, DS Critical 1. Счёт символов не различает, ГДЕ они:
+    облако убирает старый «�» и приносит новый в другой абзац — счёт тот же,
+    а порча новая. Сверка построчная: нетронутая строка со старым символом
+    проходит, новая — нет."""
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+    node.write_text("# Встреча\nстарый симв�ол\nхвост\n", encoding="utf-8")
+
+    def work(pen):                       # рокировка: убрали один, принесли другой
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\nстарый символ\nхвост\n## Решения\nновый симв�ол\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, work)
+    assert v.mangled == ["Встречи/2026-07-15_1400.md"], v
+    assert node.read_text(encoding="utf-8") == "# Встреча\nстарый симв�ол\nхвост\n"
+
+
+def test_a_replacement_char_moved_into_the_title_is_caught(tmp_path):
+    """Тот же круг 5: перенос символа из тела в H1 — счёт не меняется, но
+    символ уезжает в имя узла, MOC и индексы."""
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+    node.write_text("# Встреча\nтело с симв�олом\n", encoding="utf-8")
+
+    def work(pen):
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встр�еча\nтело с символом\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, work)
+    assert v.mangled == ["Встречи/2026-07-15_1400.md"], v
+
+
+def test_a_lossy_snapshot_does_not_raise_the_baseline(tmp_path):
+    """№263, круг 5, DS Important 3. База читалась лояльно, и битый БАЙТ в
+    снимке становился «�», разрешая литеральный символ в правке. База берётся
+    строго: не прочиталась — любой «�» в правке считается новым."""
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+    node.write_bytes("# Встреча\nтело с ".encode("utf-8") + b"\xd0" + "байтом\n".encode("utf-8"))
+
+    def work(pen):                       # тот же текст, но байт стал литеральным «�»
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\nтело с �байтом\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, work)
+    assert v.mangled == ["Встречи/2026-07-15_1400.md"], v
+
+
+def test_the_meeting_is_still_archived_when_the_review_is_not_utf8(tmp_path, monkeypatch):
+    """№263, круг 5, DS Critical 2. Гейт доставки я поставил через `return`, и
+    он гасил не копию ревизии, а всю раскладку встречи: archive_meeting —
+    единственный путь дополненных мостом минуток в граф и во вкладку «Задачи».
+    Гасить полагается только копии самой ревизии."""
+    graph = _graph(tmp_path)
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    transcript = tdir / "2026-07-15_1400.md"
+    transcript.write_text("# Встреча\n**Оля** [14:00]: начнём\n", encoding="utf-8")
+    rev = tdir / "2026-07-15_1400_ревизия_claude.md"
+    rev.write_bytes("# Ревизия\n".encode("utf-8") + b"\xd0")
+    called: list[str] = []
+    monkeypatch.setitem(sys.modules, "meeting_archive", type(sys)("meeting_archive"))
+    sys.modules["meeting_archive"].archive_meeting = (
+        lambda *a, **k: called.append("archive") or None)
+    import io
+    buf = io.StringIO()
+    cloud_review.deliver_review(rev, transcript, graph, "2026-07-15_1400", buf)
+    assert called == ["archive"], "раскладка встречи отменена из-за ревизии"
+    assert "не в UTF-8" in buf.getvalue(), buf.getvalue()

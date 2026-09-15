@@ -563,20 +563,30 @@ def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
     return None
 
 
-MANGLED = "\ufffd"
+MANGLED = review_bridge.MANGLED     # одна константа на проект (DS r5 Minor 7)
 
 
 def adds_mangled(old_text: str, new_text: str) -> bool:
-    """Правка ДОБАВЛЯЕТ нечитаемые символы к тому, что уже было в узле.
+    """Правка приносит «�» в строку, которой в узле не было.
 
     Строгое чтение ловит битые байты, но «�» бывает и законным содержимым
     валидного UTF-8: облако видит в промпте наши минутки и соседние узлы и
     переносит символ оттуда. Отвергать всякий узел с «�» нельзя — узел,
-    испорченный однажды, стал бы вечно неприкасаемым для облака. Сравниваем
-    со снимком: столько же символов или меньше — правка порчи не вносит
-    (№263, DS r4 Critical 1).
+    испорченный однажды, стал бы вечно неприкасаемым для облака (DS r4
+    Critical 1). Но и считать символы нельзя: «столько же» не значит «та же
+    порча» — облако убирает один «�» и приносит другой в новый абзац, или
+    переносит тот же символ из тела в заголовок, откуда он уходит в имя
+    узла, MOC и индексы (DS r5 Critical 1). Поэтому сверка построчная:
+    нетронутая строка со старым символом проходит, новая — нет.
+
+    `old_text` вызывающий обязан читать СТРОГО: снимок, прочитанный с
+    заменой, подмешал бы в базу собственные «�» и разрешил бы литеральный
+    символ в правке (DS r5 I3).
     """
-    return new_text.count(MANGLED) > old_text.count(MANGLED)
+    if MANGLED not in new_text:
+        return False
+    was = set(old_text.splitlines())
+    return any(MANGLED in line and line not in was for line in new_text.splitlines())
 
 
 def _read(p: pathlib.Path) -> str:
@@ -751,17 +761,6 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 quarantine(cpath, copy, qdir, move=False)
                 v.mangled.append(name)
                 continue
-            if new is not None and adds_mangled(old, new):
-                # Строгое чтение ловит битые БАЙТЫ, но «�» бывает и внутри
-                # валидного UTF-8: облако видит в промпте наши минутки и
-                # соседние узлы и переносит символ оттуда в текст узла
-                # (DS r4 Critical 1). Сверяем со снимком: узел, где «�» жил
-                # и раньше, править по-прежнему можно — иначе испорченный
-                # однажды узел облако не смогло бы тронуть никогда; новый
-                # символ — новая порча, и она в граф не едет.
-                quarantine(cpath, copy, qdir, move=False)
-                v.mangled.append(name)
-                continue
             if new is None:                       # облако стёрло файл
                 # Удаление НЕ переносим: у облака нет причин стирать чужое,
                 # а восстановление стёртого — это и был откат, из-за
@@ -792,6 +791,18 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 # файл: резолв уводит путь из-под точки, но цель существует.
                 quarantine(cpath, copy, qdir, move=False)
                 v.conflicts.append(name)
+                continue
+            # ПОСЛЕ проверки конфликта: если файл трогал конвейер, это его
+            # работа, и обвинять облако в порче нельзя (DS r5 I4). База —
+            # строгое чтение снимка: лояльное подмешало бы свои «�» и
+            # разрешило литеральный символ в правке (DS r5 I3); см. adds_mangled.
+            try:
+                old_clean = _read_exact(backup / rel) if existed else ""
+            except (OSError, UnicodeDecodeError):
+                old_clean = ""
+            if adds_mangled(old_clean, new):
+                quarantine(cpath, copy, qdir, move=False)
+                v.mangled.append(name)
                 continue
             why = judge(gpath, graph, old, new, existed)
             if why is not None:
@@ -856,7 +867,11 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 quarantine(cpath, copy, qdir, move=False)
                 v.mangled.append(name)
                 continue
-            if adds_mangled(old, new_text):       # та же сверка, что в основном проходе
+            try:                                  # та же сверка, что в основном проходе
+                old_clean = _read_exact(backup / rel) if name in before else ""
+            except (OSError, UnicodeDecodeError):
+                old_clean = ""
+            if adds_mangled(old_clean, new_text):
                 quarantine(cpath, copy, qdir, move=False)
                 v.mangled.append(name)
                 continue
@@ -1085,15 +1100,18 @@ def deliver_review(rev: pathlib.Path, transcript: pathlib.Path, graph: pathlib.P
         # размножит «�» дальше по индексам и производным файлам. Ревизия с
         # обрывом ответа для моста штатна (`read_review`), но в графе ей не
         # место: остаётся рядом со стенограммой, где её правит человек
-        # (DS r4 Critical 2).
+        # (DS r4 Critical 2). Гасим ТОЛЬКО копии ревизии: archive_meeting —
+        # единственный путь дополненных мостом минуток в граф и во вкладку
+        # «Задачи», и отменять его из-за ревизии нельзя (DS r5 Critical 2).
+        rev_ok = True
         try:
-            rev.read_bytes().decode("utf-8")
+            rev.read_text(encoding="utf-8")
         except UnicodeDecodeError as e:
+            rev_ok = False
             lf.write(f"[cloud-review] ревизия НЕ доставлена в граф: {rev.name} не в UTF-8 "
                      f"({e.reason}) — файл рядом со стенограммой\n")
-            return
         except OSError:
-            pass                      # нет файла — разберётся archive_meeting
+            pass                      # нет/недоступен — упадёт ниже в общий except
         from meeting_archive import archive_meeting
         slug = transcript.stem[len(stamp):].lstrip("_") if transcript.stem.startswith(stamp) else ""
         if slug[:1].isdigit():
@@ -1103,11 +1121,12 @@ def deliver_review(rev: pathlib.Path, transcript: pathlib.Path, graph: pathlib.P
         # Имя ревизии строится от минутного штампа, а ключ файлов архива — от
         # стема стенограммы (у посекундной без темы они расходятся): кладём
         # копию в папку явно, а не надеемся на глоб.
-        if folder is not None:
+        if folder is not None and rev_ok:
             shutil.copy2(rev, folder / "Ревизия Claude.md")
         vdocs = graph / "Документация" / "Стенограммы встреч"
         if vdocs.is_dir():
-            shutil.copy2(rev, vdocs / rev.name)
+            if rev_ok:
+                shutil.copy2(rev, vdocs / rev.name)
             # Стенограмма и минутки после моста (имена меток, снятые и
             # восстановленные поручения) — заново, как в разборе: копия в
             # Документации иначе оставалась довозной версией (№239)
