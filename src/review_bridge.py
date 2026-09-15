@@ -90,6 +90,26 @@ class MangledFile(RuntimeError):
         super().__init__(f"{self.PREFIX}{path.name} не в UTF-8 ({reason}) — {what}")
 
 
+def read_review(review: pathlib.Path) -> tuple[str, bool]:
+    """Текст ревизии и признак «читали с заменой».
+
+    Сначала СТРОГО: у целого ответа облака «�» — это авторский символ, а не
+    потеря, и фильтровать по нему пункты нельзя (luna, критика решения по
+    №263). Не декодируется — второй заход с заменой: обрыв ответа не должен
+    глушить мост целиком, но взятое из такого текста проверяется.
+    Файла нет или он недоступен — пусто и False."""
+    try:
+        return review.read_text(encoding="utf-8"), False
+    except UnicodeDecodeError:
+        pass
+    except OSError:
+        return "", False
+    try:
+        return review.read_text(encoding="utf-8", errors="replace"), True
+    except OSError:
+        return "", False
+
+
 def _drop_mangled(items: list, dropped: list[str] | None, what: str) -> list:
     """Пункты без нечитаемых символов; выброшенное — строкой в `dropped`.
 
@@ -460,11 +480,10 @@ def bridge(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
     — верные имена меток из «## Исправления имён» ревизии, когда файлы не
     перештампованы (без права правки графа): иначе пункт с верным именем
     получал бы «⚠ не участник» по старой шапке (DS r2 I2 по #548)."""
-    try:
-        text = review.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return 0
-    items = _drop_mangled(recovered_items(text, dropped=dropped), dropped, "пункт ревизии")
+    text, lossy = read_review(review)
+    items = recovered_items(text, dropped=dropped)
+    if lossy:                                  # «�» здесь — потерянный байт, а не символ
+        items = _drop_mangled(items, dropped, "пункт ревизии")
     if not items:
         return 0
     # Владелец — одним написанием ДО сверки с минутками: «**Игорю** — позвонить»
@@ -626,11 +645,10 @@ def withdraw(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
              lang: str = "ru", dropped: list[str] | None = None) -> int:
     """Перенести снятые ревизией поручения из задач минуток в «Снято ревизией».
     Возвращает число перенесённых; нет ревизии, минуток или пунктов — 0."""
-    try:
-        text = review.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return 0
-    items = _drop_mangled(withdrawn_items(text, dropped=dropped), dropped, "снятый пункт ревизии")
+    text, lossy = read_review(review)
+    items = withdrawn_items(text, dropped=dropped)
+    if lossy:
+        items = _drop_mangled(items, dropped, "снятый пункт ревизии")
     if not items:
         return 0
     # Пункт ревизии — в том же каноне, что строки минуток (_dedup_view: канон

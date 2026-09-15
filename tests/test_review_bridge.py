@@ -744,3 +744,18 @@ def test_a_mangled_reason_does_not_ride_into_minutes_and_does_not_kill_the_item(
     assert "�" not in text, "нечитаемая причина уехала в минутки"
     assert "прислать сводку" in text and "~~" in text, "поручение потеряно из-за хвоста причины"
     assert any("причина не в UTF-8" in d for d in dropped), dropped
+
+
+def test_an_authentic_replacement_char_in_a_whole_review_is_not_treated_as_damage(tmp_path):
+    """luna, критика решения по №263: «�» бывает и авторским символом. Пока
+    ревизия читается СТРОГО и читается целиком, потери не было — фильтровать
+    по нему пункты нельзя, иначе валидное поручение пропадёт молча."""
+    transcript, minutes, review = _disk(tmp_path)
+    review.write_text("# Ревизия\n## Восстановленные поручения\n"
+                      "- [ ] **Олег** — разобрать символ � в выгрузке\n", encoding="utf-8")
+    text, lossy = rb.read_review(review)
+    assert lossy is False and "�" in text
+    dropped: list[str] = []
+    assert rb.bridge(review, transcript, owner="Владелец", dropped=dropped) == 1
+    assert "разобрать символ" in minutes.read_text(encoding="utf-8"), "целый пункт отброшен"
+    assert not [d for d in dropped if "не в UTF-8" in d], dropped

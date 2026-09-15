@@ -76,7 +76,7 @@ def section_present(review: str) -> bool:
 
 
 def plan(fixes: list[tuple[str, str, str]], headers: set[str], protected: set[str],
-         dropped: list[str] | None = None) -> dict[str, str]:
+         dropped: list[str] | None = None, lossy: bool = False) -> dict[str, str]:
     """Метка → имя, что реально применимо. Не применяется: та же или пустая
     метка; метка микрофона владельца (канал — факт железа, не догадка
     модели) — ни как метка, ни как цель (иначе чужая дорожка стала бы
@@ -85,7 +85,11 @@ def plan(fixes: list[tuple[str, str, str]], headers: set[str], protected: set[st
     правка той же метки; имя — метка ДРУГОЙ живой дорожки, которую никто не
     переименовывает (слияние двух голосов в одного человека без отката —
     не делаем, критика DS r2; обмен A↔B при этом применим: обе дорожки
-    переименованы одним проходом). Причина — в `dropped`."""
+    переименованы одним проходом). Причина — в `dropped`.
+
+    `lossy` — ревизию пришлось читать с заменой нечитаемых байтов: только тогда
+    «�» в имени считается потерей. У целого ответа это авторский символ, и
+    отбрасывать по нему имя нельзя (luna, критика решения по №263)."""
     mapping: dict[str, str] = {}
     labels = {label for label, _, _ in fixes}
     for label, name, _why in fixes:
@@ -98,7 +102,7 @@ def plan(fixes: list[tuple[str, str, str]], headers: set[str], protected: set[st
             reason = "метка владельца (канал микрофона) не переименовывается"
         elif name in protected:
             reason = "целевое имя — метка владельца (канал микрофона)"
-        elif _MANGLED_NAME in name:
+        elif lossy and _MANGLED_NAME in name:
             reason = "в имени нечитаемый байт, ревизию читали с заменой"
         elif not name or channel_labels.is_neutral_label(name) or _BAD_NAME.search(name) or len(name) > MAX_NAME:
             reason = "имя не годится (заглушка, разметка или длина)"
@@ -249,7 +253,7 @@ def planned(review: pathlib.Path, live: pathlib.Path, cfg: dict,
     имена из этой карты мост добавляет к участникам. Файл не в UTF-8 —
     пусто со строкой в `dropped`."""
     try:
-        text = review.read_text(encoding="utf-8", errors="replace")
+        text, lossy = review_bridge.read_review(review)
         speech = live.read_text(encoding="utf-8")
     except UnicodeDecodeError as e:
         if dropped is not None:
@@ -266,7 +270,7 @@ def planned(review: pathlib.Path, live: pathlib.Path, cfg: dict,
     protected = {channel_labels.mic_label_for(cfg), channel_labels.NEUTRAL_MIC}
     if owner:
         protected |= {owner, owner.split()[0]}
-    return plan(fixes, headers, protected, dropped=dropped)
+    return plan(fixes, headers, protected, dropped=dropped, lossy=lossy)
 
 
 def apply(review: pathlib.Path, live: pathlib.Path, cfg: dict,

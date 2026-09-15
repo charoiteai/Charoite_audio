@@ -2399,18 +2399,27 @@ def test_the_stub_pass_has_its_own_net_if_the_sandbox_changes(tmp_path, monkeypa
     graph = _graph(tmp_path)
     dup = graph / "Ядра" / "Дубль.md"
     dup.write_text("# Дубль\n## Статус\nстарое тело\n", encoding="utf-8")
-    real = cloud_review._read_exact
+    real_read, real_stub = cloud_review._read_exact, cloud_review.is_redirect_stub
     seen: list[str] = []
+    recognised: list[bool] = []
+
+    def watch_stub(text):
+        ok = real_stub(text)
+        if ok:
+            recognised.append(True)      # заглушка распознана — дальше отложенный проход
+        return ok
 
     def flaky(path):
         if path.name == "Дубль.md":
             seen.append(path.name)
-            # 1 — резолвер ссылок, 2 — основной проход, 3 — отложенный проход
-            # заглушек: падаем ровно на нём, иначе тест проверял бы первый рубеж
-            if len(seen) >= 3:
+            # Привязка к ФАКТУ «заглушка распознана», а не к счёту чтений:
+            # лишнее строгое чтение выше по потоку иначе сдвинуло бы счётчик, и
+            # тест зеленел бы на первом рубеже впустую (GLM r2 Critical 4)
+            if recognised:
                 raise UnicodeDecodeError("utf-8", b"\xd0", 0, 1, "invalid continuation byte")
-        return real(path)
+        return real_read(path)
 
+    monkeypatch.setattr(cloud_review, "is_redirect_stub", watch_stub)
     monkeypatch.setattr(cloud_review, "_read_exact", flaky)
 
     def work(pen):
@@ -2418,7 +2427,7 @@ def test_the_stub_pass_has_its_own_net_if_the_sandbox_changes(tmp_path, monkeypa
             "# Дубль → [[Ядра/Платёжный провайдер]]\n\nДубль. Смерджен.\n", encoding="utf-8")
 
     v, qdir = _cloud_worked(graph, tmp_path, work)
-    assert len(seen) == 3, f"проход заглушек файл не перечитывал ({len(seen)}) — тест не о том"
+    assert recognised, "заглушка не распознана — отложенного прохода не было, тест не о том"
     assert v.mangled == ["Ядра/Дубль.md"], v
     assert not v.failed, v
     assert dup.read_text(encoding="utf-8") == "# Дубль\n## Статус\nстарое тело\n"

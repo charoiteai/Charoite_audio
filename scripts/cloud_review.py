@@ -564,10 +564,12 @@ def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
 
 
 def _read(p: pathlib.Path) -> str:
-    """Текст файла или пустая строка ДЛЯ СВЕРКИ: в графе бинарников нет, а
-    битую кодировку заменяем, а не роняем на ней перенос. Читать так можно
-    только то, что никуда не записывается (снимок для judge, цели ссылок):
-    текст, который уедет в граф, берётся `_read_exact` (№263)."""
+    """Текст файла или пустая строка ДЛЯ РЕШЕНИЯ: в графе бинарников нет, а
+    битую кодировку заменяем, а не роняем на ней перенос. Так читается только
+    то, от чего не зависит ни один записанный байт: снимок для `judge` и текст
+    канона для `canon_merged`. Цели ссылок сюда НЕ входят — от них зависит,
+    останется ли ссылка живой, и резолвер читает строго. Текст, который уедет
+    в граф, берётся `_read_exact` (№263, DS r2 I2)."""
     try:
         return p.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -685,9 +687,18 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                     # Строго: узел, чья правка уйдёт в `mangled`, в графе НЕ
                     # появится, а зарегистрированная цель оставила бы живую
                     # ссылку на несуществующий узел мимо unlink-гейта и мимо
-                    # graph_unlinked.log (GLM r1 I1 по №263). UnicodeDecodeError —
-                    # подкласс ValueError, его ловит except ниже.
-                    resolver.add(graph / rel, _read_exact(cpath))
+                    # graph_unlinked.log (GLM r1 I1 по №263).
+                    body = _read_exact(cpath)
+                except UnicodeDecodeError:
+                    continue
+                except OSError:
+                    # Файл исчез между is_file() и чтением — узел по пути и
+                    # стему всё равно цель: прежнее поведение, ссылка живой и
+                    # остаётся. Не-UTF-8 и пропажа файла — разные случаи
+                    # (GLM r2 Minor 1).
+                    body = ""
+                try:
+                    resolver.add(graph / rel, body)
                 except (OSError, ValueError):
                     continue
     pending_stubs: list[tuple] = []       # заглушки-редиректы — после канона
@@ -1575,38 +1586,42 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 # Проигранная гонка записи — свой сигнал (LostRace) и своя строка
                 # лога: «пунктов не извлечено или все уже в минутках» про неё
                 # было бы ложью (GLM I2 / DS I2 по #553)
-                withdrawn, raced = 0, False
+                withdrawn, bridge_blocked = 0, False
                 try:
                     withdrawn = review_bridge.withdraw(rev, transcript, owner=owner, lang=lang, dropped=dropped_w)
                 except review_bridge.LostRace as e:
-                    raced = True
+                    bridge_blocked = True
                     lines.append(f"[cloud-review] мост ревизии: {e} — минутки менял кто-то ещё, снятие не применено\n")
                 except review_bridge.MangledFile as e:
                     # Тот же класс лжи, что у LostRace: пункты извлечены,
-                    # отказала запись — «снимать нечего» было бы неправдой (№263)
-                    raced = True
-                    lines.append(f"[cloud-review] мост ревизии: {e} — минутки не в UTF-8, правит человек\n")
+                    # отказала запись — «снимать нечего» было бы неправдой (№263).
+                    # Причину НЕ додумываем: «не в UTF-8» уже в самом сигнале, а
+                    # откуда битый байт (чужой редактор, оборванная синхронизация)
+                    # ничем не подтверждено — в отличие от LostRace, где чужую
+                    # правку доказывает снимок (DS r2 I1).
+                    bridge_blocked = True
+                    lines.append(f"[cloud-review] мост ревизии: {e}\n")
                 if withdrawn:
                     lines.append(f"[cloud-review] мост ревизии ({verified}): снято поручений — {withdrawn} "
                                  f"(перенесены в «{review_bridge.WITHDRAWN_TITLE.get(lang[:2], review_bridge.WITHDRAWN_TITLE['ru'])[3:]}»)\n")
-                elif has_minutes and not raced and review_bridge.withdrawn_section_present(rev_text):
+                elif has_minutes and not bridge_blocked and review_bridge.withdrawn_section_present(rev_text):
                     lines.append("[cloud-review] мост ревизии: раздел о снятых поручениях есть, "
                                  "пунктов не извлечено или в минутках их нет\n")
-                added, raced = 0, False
+                added, bridge_blocked = 0, False
                 try:
                     added = review_bridge.bridge(rev, transcript, owner=owner, lang=lang, dropped=dropped,
                                                  extra_participants=set(renamed.values()))
                 except review_bridge.LostRace as e:
-                    raced = True
+                    bridge_blocked = True
                     lines.append(f"[cloud-review] мост ревизии: {e} — минутки менял кто-то ещё, поручения не дописаны\n")
                 except review_bridge.MangledFile as e:
-                    raced = True
-                    lines.append(f"[cloud-review] мост ревизии: {e} — минутки не в UTF-8, правит человек\n")
+                    bridge_blocked = True
+                    lines.append(f"[cloud-review] мост ревизии: {e}\n")
                 if added:
                     lines.append(f"[cloud-review] мост ревизии ({verified}): в минутки дописано поручений — {added}\n")
                 elif not has_minutes:
                     lines.append("[cloud-review] мост ревизии: минуток рядом со стенограммой нет\n")
-                elif not raced and review_bridge.section_present(rev_text):
+                elif not bridge_blocked and review_bridge.section_present(rev_text):
                     lines.append("[cloud-review] мост ревизии: раздел о восстановленных поручениях есть, "
                                  "пунктов не извлечено или все уже в минутках\n")
                 # Что мост выбросил из раздела — в лог: «нет», комментарии модели,
