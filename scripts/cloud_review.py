@@ -920,14 +920,15 @@ def unlink_after_transfer(v: Verdict, graph: pathlib.Path) -> None:
             if safe_write.rewrite_file(gpath, strip, "ссылки без узла не сняты") == 0:
                 continue                          # нечего снимать
         except (OSError, UnicodeDecodeError, safe_write.LostRace) as exc:
-            if isinstance(exc, safe_write.LostRace) and exc.reason == "файла нет":
+            if isinstance(exc, safe_write.LostRace) and exc.gone:
                 # Конвейер переименовал или слил узел, сработал forget_meeting,
                 # iCloud вытеснил. Мёртвых ссылок в несуществующем файле не
                 # бывает, и говорить «остались» — врать в единственном канале
-                # воркера (DS r3 Critical 1). Причина приходит из `rewrite_file`,
-                # где её даёт ошибка ЕДИНСТВЕННОГО stat: второго опроса диска
-                # нет вовсе — он был бы тем же самым stat, который уже отказал
-                # (DS r4 и r5 Critical).
+                # воркера (DS r3 Critical 1). Факт берём у `rewrite_file`: его
+                # даёт ошибка ЕДИНСТВЕННОГО stat, а при исчезновении между stat
+                # и чтением — ошибка чтения. Второго опроса диска нет вовсе: он
+                # был бы тем же stat, который уже отказал (DS r4 и r5 Critical).
+                # Спрашиваем свойство, а не текст причины (DS M2 r6).
                 continue
             # Логгера в этом модуле нет, а stderr воркера уходит в DEVNULL:
             # деградация должна ехать в вердикт, иначе её не увидит никто
@@ -1696,7 +1697,13 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                     withdrawn = review_bridge.withdraw(rev, transcript, owner=owner, lang=lang, dropped=dropped_w)
                 except review_bridge.LostRace as e:
                     bridge_blocked = True
-                    lines.append(f"[cloud-review] мост ревизии: {e} — минутки менял кто-то ещё, снятие не применено\n")
+                    # «Файла нет» — не чужая правка: `withdraw` проверяет is_file()
+                    # перед вызовом, значит минутки исчезли между этой проверкой и
+                    # записью. Называть это чужой правкой — та же ложь в логе, от
+                    # которой заведён сам LostRace (DS M4 r6 по №273).
+                    why = ("минуток больше нет, снятие не применено" if e.gone
+                           else "минутки менял кто-то ещё, снятие не применено")
+                    lines.append(f"[cloud-review] мост ревизии: {e} — {why}\n")
                 except review_bridge.MangledFile as e:
                     # Тот же класс лжи, что у LostRace: пункты извлечены,
                     # отказала запись — «снимать нечего» было бы неправдой (№263).

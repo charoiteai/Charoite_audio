@@ -891,6 +891,49 @@ def test_lost_race_on_the_transcript_keeps_the_corrected_names_as_participants(t
     assert "- [ ] **Мария** — согласовать план (из ревизии)" in tasks and "⚠" not in tasks, tasks
 
 
+def test_the_log_does_not_blame_a_stranger_when_the_minutes_are_simply_gone(tmp_path, monkeypatch):
+    """№273, круг 6, DS M4. `withdraw` проверяет is_file() перед записью, значит
+    LostRace с причиной «файла нет» означает окно между проверкой и записью, а
+    не чужую правку. Лог говорил «минутки менял кто-то ещё» в обоих случаях —
+    та же ложь в единственном канале воркера, от которой заведён сам LostRace."""
+    import review_bridge
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    minutes = transcript.with_name(transcript.stem + "_minutes.md")
+    minutes.write_text("# Минутки\n**Участники:** Сергей\n\n## Поручения\n- [ ] **Сергей** — согласовать план\n",
+                       encoding="utf-8")
+    rev.unlink(missing_ok=True)
+    review = _REPORT + "\n## Снятые поручения\n- **Сергей** — согласовать план — причина: не звучало\n"
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        kwargs["stdout"].write(review)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+
+    for reason, expected, forbidden in (
+        (review_bridge.LostRace.GONE, "минуток больше нет", "менял кто-то ещё"),
+        (review_bridge.LostRace.CHANGED, "менял кто-то ещё", "минуток больше нет"),
+    ):
+        log.write_text("", encoding="utf-8")
+
+        def lost(*a, _reason=reason, **k):
+            raise review_bridge.LostRace(minutes, "снятые (1) не перенесены", reason=_reason)
+
+        monkeypatch.setattr(cloud_review.review_bridge, "withdraw", lost)
+        assert cloud_review.run(stamp, transcript, graph, rev, log,
+                                {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}) == 0
+        text = log.read_text(encoding="utf-8")
+        assert "мост ревизии: " in text and expected in text, text
+        assert forbidden not in text, text
+        assert "снимать нечего" not in text, "пункт извлечён, отказала запись"
+
+
 def test_unreadable_subfolder_downgrades_to_read_only(tmp_path, monkeypatch):
     """os.walk молча пропускал нечитаемый подкаталог: список запретов и
     снимок становились неполными (круг-2 по #381, Codex)."""
