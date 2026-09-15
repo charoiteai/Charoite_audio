@@ -57,6 +57,18 @@ def _graph(tmp: pathlib.Path) -> pathlib.Path:
     return graph
 
 
+@pytest.fixture(autouse=True)
+def _backups_out_of_the_repo(tmp_path, monkeypatch):
+    """Снимки и песочницы — в tmp теста, а не в данных установки.
+
+    `backup_root` кладёт их под `cloud_review.ROOT`, и на машине разработчика
+    это корень репозитория: каждый тест переноса оставлял там каталог. Тест
+    приватности (`test_no_voice_biometrics`) сверяет, что в репозитории не
+    появилось файлов, и падал, когда случайный порядок ставил его ПОСЛЕ
+    этих тестов. Прогон не должен зависеть от порядка."""
+    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "данные")
+
+
 def _cloud_worked(graph: pathlib.Path, tmp: pathlib.Path, work) -> tuple:
     """Облако поработало в песочнице — вернуть вердикт переноса и карантин.
 
@@ -2554,3 +2566,48 @@ def test_the_meeting_is_still_archived_when_the_review_is_not_utf8(tmp_path, mon
     cloud_review.deliver_review(rev, transcript, graph, "2026-07-15_1400", buf)
     assert called == ["archive"], "раскладка встречи отменена из-за ревизии"
     assert "не в UTF-8" in buf.getvalue(), buf.getvalue()
+
+
+def test_a_link_to_a_new_node_that_never_lands_becomes_text(tmp_path):
+    """№273 (DS r5 I5). Цели ссылок регистрируются ДО проходов переноса, а
+    судьба правки решается в них. Новый узел, ушедший в карантин, оставался
+    живой целью: `[[ссылка]]` на него из другой правки переживала unlink-гейт
+    и не попадала в журнал снятых — узла нет, а ссылка цела.
+
+    Здесь облако заводит узел в ЗАЩИЩЁННОЙ зоне (judge вернёт `removed`) и
+    ссылается на него из обычного узла.
+    """
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+
+    def work(pen):
+        (pen / "Встречи-архив").mkdir(exist_ok=True)
+        (pen / "Встречи-архив" / "Новый.md").write_text("# Новый\nтело\n", encoding="utf-8")
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\n## Связи\nсм. [[Встречи-архив/Новый]]\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, work)
+    assert "Встречи-архив/Новый.md" in v.removed, v
+    assert not (graph / "Встречи-архив" / "Новый.md").exists(), "узел в защищённой зоне не должен лечь"
+    text = node.read_text(encoding="utf-8")
+    assert "[[Встречи-архив/Новый]]" not in text, "живая ссылка на узел, которого нет"
+    assert "см. Новый" in text, "текст ссылки должен остаться текстом (unlink снимает скобки)"
+    assert any("Новый" in u for u in v.unlinked), v.unlinked
+
+
+def test_a_link_to_a_new_node_that_does_land_stays_a_link(tmp_path):
+    """Контроль к №273: узел, который реально ляжет, целью остаётся —
+    проба консервативна, но не запрещает законное."""
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+
+    def work(pen):
+        (pen / "Системы").mkdir(exist_ok=True)
+        (pen / "Системы" / "Квен.md").write_text("# Квен\nмодель\n", encoding="utf-8")
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\n## Связи\nсм. [[Системы/Квен]]\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, work)
+    assert (graph / "Системы" / "Квен.md").exists(), v
+    assert "[[Системы/Квен]]" in node.read_text(encoding="utf-8"), "законная ссылка снята зря"
+    assert not v.unlinked, v.unlinked
