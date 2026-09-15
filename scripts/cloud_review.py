@@ -616,44 +616,6 @@ def _read_exact(p: pathlib.Path) -> str:
     return p.read_text(encoding="utf-8")
 
 
-def new_node_may_land(rel, copy, graph, before):
-    """Новый узел облака МОЖЕТ лечь в граф — проба перед регистрацией цели.
-
-    Цели ссылок регистрируются ДО проходов переноса, а судьба правки решается
-    в них. Новый узел, ушедший в карантин, оставался живой целью: `[[ссылка]]`
-    на него из другой правки переживала unlink-гейт и не попадала в
-    `graph_unlinked.log` — узла нет, а ссылка цела (DS r5 I5 по №263).
-
-    Проба СОЗНАТЕЛЬНО консервативна: ошибка в сторону «нет» стоит одной живой
-    ссылки, ставшей текстом, и она видна в журнале; ошибка в сторону «да» —
-    это как раз мёртвая ссылка в графе. Поэтому проверяются только чистые
-    признаки, известные ДО записи, и любой отказ — это «нет».
-
-    Существующие файлы проба не касается: их узел в графе уже есть, и
-    отказ переноса (конфликт, правило) цель не убивает.
-
-    Остаточный случай назван честно: новый файл — заглушка-редирект, чей канон
-    не слился (`reverted` в отложенном проходе). Ссылаться на заглушку —
-    редкость (это надгробие узла, а не узел), а предсказать слияние канона до
-    прохода нельзя: он зависит от того, что ляжет из остальных правок.
-    """
-    name = rel.as_posix()
-    if name in before:                       # узел в графе есть — цель валидна
-        return True
-    gpath = graph / rel
-    if not may_write(gpath, graph):          # защищённая зона — judge забракует
-        return False
-    if gpath.exists():                       # конвейер создал его в окне — конфликт
-        return False
-    try:
-        new = graph_updater.tidy_links(_read_exact(copy / rel))
-    except (OSError, UnicodeDecodeError):
-        return False
-    if adds_mangled("", new):
-        return False
-    return judge(gpath, graph, "", new, False) is None
-
-
 def edits_in_copy(before: dict[str, str], copy: pathlib.Path) -> list[pathlib.Path]:
     """Что облако сделало в песочнице: относительные пути.
 
@@ -742,29 +704,6 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
     # Резолвер — по ЖИВОМУ графу (узлы, заведённые конвейером после снимка,
     # тоже цели) плюс правки самой копии (узлы, созданные облаком в этом же
     # прогоне); снимок сам по себе устаревает за время работы облака.
-    resolver = graph_links.LinkResolver(graph) if valid and edits else None   # без правок граф не читаем (GLM r2 I2)
-    if resolver is not None:
-        for rel in edits:
-            cpath = copy / rel
-            if cpath.is_file():
-                # Новый узел регистрируется целью, только если он ВООБЩЕ может
-                # лечь: защищённая зона, конфликт, нечитаемый символ и любое
-                # правило judge — это карантин, а ссылка на него была бы живой
-                # в никуда (DS r4 I1, r5 I5). См. new_node_may_land.
-                if not new_node_may_land(rel, copy, graph, before):
-                    continue
-                try:
-                    # Строго и БЕЗ поблажек на нечитаемый файл: узел, чью правку
-                    # мы не смогли прочитать, в граф не попадёт — ни как
-                    # `mangled`, ни как пропавший из песочницы. Зарегистрировать
-                    # его как цель значит оставить живую `[[ссылку]]` на узел,
-                    # которого не будет, мимо unlink-гейта и graph_unlinked.log
-                    # (GLM r1 I1 по №263; ветка `OSError → пустое тело` была
-                    # попыткой сохранить прежнее поведение и оказалась ровно тем
-                    # вредом, который этот гейт запрещает — GLM r3 I1).
-                    resolver.add(graph / rel, _read_exact(cpath))
-                except (OSError, ValueError):     # UnicodeDecodeError — подкласс ValueError
-                    continue
     pending_stubs: list[tuple] = []       # заглушки-редиректы — после канона
     for rel in edits:
         cpath, gpath = copy / rel, graph / rel
@@ -858,14 +797,8 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
             # переносы строк внутри [[…]] — стиль CLI при правке, для Obsidian
             # ссылка мертва; чиним в единственной точке входа (Sonnet 28.08)
             new = graph_updater.tidy_links(new)
-            gone: list[str] = []
-            if resolver is not None:
-                new, gone = graph_links.unlink_unresolved(new, resolver)
-            safe_write.write_text(gpath, new)
+            safe_write.write_text(gpath, new)     # ссылки снимаются ПОСЛЕ всех записей
             v.applied.append(name)
-            if gone:                              # журнал — после успешной записи (GLM r3 M2)
-                v.unlinked.append(f"{name}: {', '.join(gone)}")
-                _journal_unlinked(name, gone)
         except OSError:
             v.failed.append(name)
     for rel, cpath, gpath, name, target, old in pending_stubs:
@@ -935,7 +868,47 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 v.reverted.append(name)
         except OSError:
             v.failed.append(name)
+    unlink_after_transfer(v, graph)
     return v
+
+
+def unlink_after_transfer(v, graph):
+    """Ссылки без узла — текстом; считается по ФАКТУ, а не по предсказанию.
+
+    До №273 цели строились ДО проходов переноса, и множество «что будет в
+    графе» приходилось угадывать. Любая проба — второй экземпляр правил
+    прохода (`may_write` → конфликт → `adds_mangled` → `judge` → заглушка) и
+    обречена разойтись: мимо неё прошли и заглушка с неслитым каноном, и
+    упавшая запись (`v.failed`), где узел не ложится уже ПОСЛЕ решения, и
+    гонки конвейера (DS и GLM, круг 1 по №273).
+
+    Поэтому снятие уехало сюда, за оба прохода: резолвер строится из графа,
+    каким он стал, и «цель жива» = «файл в графе есть» по построению. Один
+    источник истины вместо правила и его копии.
+
+    Цена, названная честно: файл, у которого что-то сняли, пишется дважды —
+    сначала текст облака, потом он же без мёртвых ссылок. Прежняя схема
+    писала один раз, но ценой предсказания.
+    """
+    if not v.applied:
+        return
+    after = graph_links.LinkResolver(graph)
+    for name in list(v.applied):
+        gpath = graph / name
+        try:
+            text = _read_exact(gpath)
+        except (OSError, UnicodeDecodeError):
+            continue                              # файла уже нет или он чужой — не наше дело
+        clean, gone = graph_links.unlink_unresolved(text, after)
+        if not gone:
+            continue
+        try:
+            safe_write.write_text(gpath, clean)
+        except OSError:
+            LOG.warning("ссылки без узла не сняты в %s — файл не переписался", name)
+            continue
+        v.unlinked.append(f"{name}: {', '.join(gone)}")
+        _journal_unlinked(name, gone)
 
 
 def facts_of(text: str) -> collections.Counter:

@@ -2611,3 +2611,34 @@ def test_a_link_to_a_new_node_that_does_land_stays_a_link(tmp_path):
     assert (graph / "Системы" / "Квен.md").exists(), v
     assert "[[Системы/Квен]]" in node.read_text(encoding="utf-8"), "законная ссылка снята зря"
     assert not v.unlinked, v.unlinked
+
+
+def test_a_link_survives_nothing_when_the_write_of_its_target_fails(tmp_path, monkeypatch):
+    """№273, круг 1, DS и GLM Critical 1. Запись узла может упасть уже ПОСЛЕ
+    того, как решение принято (ENOSPC, права, вытеснение файла из iCloud) —
+    предсказание такое не ловит по определению. Снятие ссылок работает по
+    факту графа, поэтому случай закрыт тем же одним правилом."""
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+    real_write = cloud_review.safe_write.write_text
+
+    def flaky(path, text, **kw):
+        if path.name == "Квен.md":
+            raise OSError(28, "No space left on device")
+        return real_write(path, text, **kw)
+
+    monkeypatch.setattr(cloud_review.safe_write, "write_text", flaky)
+
+    def work(pen):
+        (pen / "Системы").mkdir(exist_ok=True)
+        (pen / "Системы" / "Квен.md").write_text("# Квен\nмодель\n", encoding="utf-8")
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\n## Связи\nсм. [[Системы/Квен]]\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, work)
+    assert v.failed == ["Системы/Квен.md"], v
+    assert not (graph / "Системы" / "Квен.md").exists(), "узел не записался — его нет"
+    text = node.read_text(encoding="utf-8")
+    assert "[[Системы/Квен]]" not in text, "живая ссылка на узел, запись которого упала"
+    assert "см. Квен" in text
+    assert any("Квен" in u for u in v.unlinked), v.unlinked
