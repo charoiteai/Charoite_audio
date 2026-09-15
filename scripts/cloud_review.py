@@ -684,22 +684,16 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
             cpath = copy / rel
             if cpath.is_file():
                 try:
-                    # Строго: узел, чья правка уйдёт в `mangled`, в графе НЕ
-                    # появится, а зарегистрированная цель оставила бы живую
-                    # ссылку на несуществующий узел мимо unlink-гейта и мимо
-                    # graph_unlinked.log (GLM r1 I1 по №263).
-                    body = _read_exact(cpath)
-                except UnicodeDecodeError:
-                    continue
-                except OSError:
-                    # Файл исчез между is_file() и чтением — узел по пути и
-                    # стему всё равно цель: прежнее поведение, ссылка живой и
-                    # остаётся. Не-UTF-8 и пропажа файла — разные случаи
-                    # (GLM r2 Minor 1).
-                    body = ""
-                try:
-                    resolver.add(graph / rel, body)
-                except (OSError, ValueError):
+                    # Строго и БЕЗ поблажек на нечитаемый файл: узел, чью правку
+                    # мы не смогли прочитать, в граф не попадёт — ни как
+                    # `mangled`, ни как пропавший из песочницы. Зарегистрировать
+                    # его как цель значит оставить живую `[[ссылку]]` на узел,
+                    # которого не будет, мимо unlink-гейта и graph_unlinked.log
+                    # (GLM r1 I1 по №263; ветка `OSError → пустое тело` была
+                    # попыткой сохранить прежнее поведение и оказалась ровно тем
+                    # вредом, который этот гейт запрещает — GLM r3 I1).
+                    resolver.add(graph / rel, _read_exact(cpath))
+                except (OSError, ValueError):     # UnicodeDecodeError — подкласс ValueError
                     continue
     pending_stubs: list[tuple] = []       # заглушки-редиректы — после канона
     for rel in edits:

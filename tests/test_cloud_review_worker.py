@@ -2405,8 +2405,8 @@ def test_the_stub_pass_has_its_own_net_if_the_sandbox_changes(tmp_path, monkeypa
 
     def watch_stub(text):
         ok = real_stub(text)
-        if ok:
-            recognised.append(True)      # заглушка распознана — дальше отложенный проход
+        if ok and "Смерджен" in text:    # именно НАША заглушка, а не любая в фикстуре
+            recognised.append(True)      # распознана — дальше отложенный проход
         return ok
 
     def flaky(path):

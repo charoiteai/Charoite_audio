@@ -68,10 +68,12 @@ _PAREN_NOTE = re.compile(r"^\s*[(（][^)）]*[)）]\s*$")
 LostRace = safe_write.LostRace
 rewrite_file = safe_write.rewrite_file
 
-# Ревизию (ответ облака) читаем с заменой — обрыв ответа не должен глушить
-# мост целиком. Но то, что из неё ВЗЯТО и уедет в минутки, проверяется: пункт
-# с «�» — это потерянный байт, а не текст, и в графе он останется навсегда
-# (№263). Проверка одна на восстановленные и снятые пункты.
+# Ревизию (ответ облака) читаем СТРОГО, при отказе — с заменой (`read_review`):
+# обрыв ответа не должен глушить мост целиком. Но то, что из неё ВЗЯТО и уедет
+# в минутки, проверяется по СОДЕРЖИМОМУ в обоих случаях: «�» в пункте остался
+# бы в графе навсегда, а целый файл ревизии ничего не доказывает — модель
+# цитирует наши же минутки, и символ приезжает оттуда (№263, DS r3 Critical 1).
+# Проверка одна на восстановленные и снятые пункты.
 MANGLED = "�"
 
 
@@ -95,22 +97,22 @@ def read_review(review: pathlib.Path) -> tuple[str, bool]:
 
     Сначала СТРОГО: у целого ответа облака «�» — это авторский символ, а не
     потеря, и фильтровать по нему пункты нельзя (luna, критика решения по
-    №263). Не декодируется — второй заход с заменой: обрыв ответа не должен
-    глушить мост целиком, но взятое из такого текста проверяется.
-    Файла нет или он недоступен — пусто и False."""
+    №263) — флаг нужен только для формулировки в логе, фильтр по «�» работает
+    в обоих случаях. Не декодируется — заменяем: обрыв ответа не должен глушить
+    мост целиком. Байты читаются ОДИН раз: два захода к файлу давали окно, в
+    котором флаг и текст описывали разные версии, а OSError на втором заходе
+    притворялся «ревизии нет» (DS r3 I3). Файла нет — пусто и False."""
     try:
-        return review.read_text(encoding="utf-8"), False
+        data = review.read_bytes()
+    except OSError:
+        return "", False
+    try:
+        return data.decode("utf-8"), False
     except UnicodeDecodeError:
-        pass
-    except OSError:
-        return "", False
-    try:
-        return review.read_text(encoding="utf-8", errors="replace"), True
-    except OSError:
-        return "", False
+        return data.decode("utf-8", "replace"), True
 
 
-def _drop_mangled(items: list, dropped: list[str] | None, what: str) -> list:
+def _drop_mangled(items: list, dropped: list[str] | None, what: str, lossy: bool = True) -> list:
     """Пункты без нечитаемых символов; выброшенное — строкой в `dropped`.
 
     Элемент — строка (восстановленные) или пара (снятые: пункт, причина).
@@ -119,17 +121,24 @@ def _drop_mangled(items: list, dropped: list[str] | None, what: str) -> list:
     хвосте «— причина: …» уезжал бы в граф тем же путём (DS r1 Critical по
     №263). Но целое поручение из-за испорченного хвоста не теряем: пункт
     остаётся, причина обнуляется, строка об этом — в `dropped`.
+
+    Фильтр работает по СОДЕРЖИМОМУ и не зависит от того, как читался файл:
+    целый UTF-8 ничего не говорит о том, авторский ли это символ. Модель
+    получает в промпт наши же минутки и стенограмму, и «�», уже лежащий там,
+    она процитирует — ревизия останется валидной, а порча расползётся дальше
+    (DS r3 Critical 1). `lossy` меняет только формулировку в `dropped`.
     """
+    why_lost = "ревизию читали с заменой" if lossy else "нечитаемый символ в целом файле"
     ok = []
     for item in items:
         text, why = (item, "") if isinstance(item, str) else (item[0], item[1])
         if MANGLED in text:
             if dropped is not None:
-                dropped.append(f"{what} не в UTF-8 — в минутки не дописан: {text[:60]}")
+                dropped.append(f"{what}: {why_lost}, в минутки не дописан: {text[:60]}")
             continue
         if MANGLED in why:
             if dropped is not None:
-                dropped.append(f"{what}: причина не в UTF-8, снимаем без причины: {text[:60]}")
+                dropped.append(f"{what}: причина — {why_lost}, снимаем без причины: {text[:60]}")
             ok.append((text, ""))
             continue
         ok.append(item)
@@ -481,9 +490,7 @@ def bridge(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
     перештампованы (без права правки графа): иначе пункт с верным именем
     получал бы «⚠ не участник» по старой шапке (DS r2 I2 по #548)."""
     text, lossy = read_review(review)
-    items = recovered_items(text, dropped=dropped)
-    if lossy:                                  # «�» здесь — потерянный байт, а не символ
-        items = _drop_mangled(items, dropped, "пункт ревизии")
+    items = _drop_mangled(recovered_items(text, dropped=dropped), dropped, "пункт ревизии", lossy)
     if not items:
         return 0
     # Владелец — одним написанием ДО сверки с минутками: «**Игорю** — позвонить»
@@ -646,9 +653,7 @@ def withdraw(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
     """Перенести снятые ревизией поручения из задач минуток в «Снято ревизией».
     Возвращает число перенесённых; нет ревизии, минуток или пунктов — 0."""
     text, lossy = read_review(review)
-    items = withdrawn_items(text, dropped=dropped)
-    if lossy:
-        items = _drop_mangled(items, dropped, "снятый пункт ревизии")
+    items = _drop_mangled(withdrawn_items(text, dropped=dropped), dropped, "снятый пункт ревизии", lossy)
     if not items:
         return 0
     # Пункт ревизии — в том же каноне, что строки минуток (_dedup_view: канон

@@ -82,7 +82,7 @@ def test_plan_drops_the_owner_the_same_name_placeholders_and_unknown_labels():
              ("Собеседник 3", "Собеседник 4", ""), ("Иван", "Ольга", ""), ("Сергей", "Анна", ""),
              ("Юля", "[[Люди/Юля]]", ""), ("Юля", "Мари\ufffdя", ""), ("Собеседник 3", "Пётр", "")]
     mapping = nf.plan(fixes, headers={"Сергей", "Юля", "Собеседник 3", "Владелец"},
-                      protected={"Владелец"}, dropped=dropped, lossy=True)
+                      protected={"Владелец"}, dropped=dropped)
     assert mapping == {"Сергей": "Мария", "Собеседник 3": "Пётр"}
     unfit = "имя не годится (заглушка, разметка или длина)"
     assert [d.split(" — ")[1] for d in dropped] == [

@@ -703,7 +703,7 @@ def test_a_mangled_item_from_the_review_never_lands_in_minutes(tmp_path):
     text = minutes.read_text(encoding="utf-8")
     assert "�" not in text, "нечитаемый байт уехал в минутки"
     assert "прислать план" in text, "целый пункт не дописан"
-    assert any("не в UTF-8" in d for d in dropped), dropped
+    assert any("ревизию читали с заменой" in d for d in dropped), dropped
 
 
 def test_minutes_that_are_not_utf8_are_left_alone(tmp_path):
@@ -743,19 +743,34 @@ def test_a_mangled_reason_does_not_ride_into_minutes_and_does_not_kill_the_item(
     text = minutes.read_text(encoding="utf-8")
     assert "�" not in text, "нечитаемая причина уехала в минутки"
     assert "прислать сводку" in text and "~~" in text, "поручение потеряно из-за хвоста причины"
-    assert any("причина не в UTF-8" in d for d in dropped), dropped
+    assert any("причина — ревизию читали с заменой" in d for d in dropped), dropped
 
 
-def test_an_authentic_replacement_char_in_a_whole_review_is_not_treated_as_damage(tmp_path):
-    """luna, критика решения по №263: «�» бывает и авторским символом. Пока
-    ревизия читается СТРОГО и читается целиком, потери не было — фильтровать
-    по нему пункты нельзя, иначе валидное поручение пропадёт молча."""
+def test_a_replacement_char_is_filtered_even_when_the_review_file_is_whole(tmp_path):
+    """№263, круг 3, DS Critical 1. Круг 2 поставил фильтр за гейт «файл
+    читался с заменой» — а это про транспорт, не про содержимое. Модель
+    получает в промпт наши же минутки, и «�», уже лежащий там, она процитирует:
+    файл ревизии останется валидным UTF-8, а порча поедет дальше в граф.
+    Фильтр работает по содержимому; флаг меняет только формулировку причины."""
     transcript, minutes, review = _disk(tmp_path)
     review.write_text("# Ревизия\n## Восстановленные поручения\n"
-                      "- [ ] **Олег** — разобрать символ � в выгрузке\n", encoding="utf-8")
+                      "- [ ] **Олег** — разобрать символ � в выгрузке\n"
+                      "- [ ] **Иван** — прислать план\n", encoding="utf-8")
     text, lossy = rb.read_review(review)
-    assert lossy is False and "�" in text
+    assert lossy is False and "�" in text, "файл должен быть валидным UTF-8"
     dropped: list[str] = []
     assert rb.bridge(review, transcript, owner="Владелец", dropped=dropped) == 1
-    assert "разобрать символ" in minutes.read_text(encoding="utf-8"), "целый пункт отброшен"
-    assert not [d for d in dropped if "не в UTF-8" in d], dropped
+    body = minutes.read_text(encoding="utf-8")
+    assert "�" not in body, "символ уехал в минутки при целом файле"
+    assert "прислать план" in body, "целый пункт потерян"
+    assert any("нечитаемый символ в целом файле" in d for d in dropped), dropped
+
+
+def test_read_review_touches_the_file_once(tmp_path):
+    """DS r3 I3: два захода к файлу давали окно, где флаг и текст описывали
+    разные версии, а OSError на втором заходе притворялся «ревизии нет»."""
+    transcript, minutes, review = _disk(tmp_path)
+    review.write_bytes("# Ревизия\n".encode("utf-8") + b"\xd0")
+    text, lossy = rb.read_review(review)
+    assert lossy is True and "�" in text
+    assert rb.read_review(tmp_path / "нет.md") == ("", False)

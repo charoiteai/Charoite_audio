@@ -41,11 +41,12 @@ _FIX = re.compile(r"^\*\*(?P<label>[^*\n]+?)\*\*\s*(?:→|->|=>|—>|⇒)\s*\*\*
                   r"|\(\s*(?:основание|причина|reason|原因)\s*[:：]\s*(?P<why2>[^)\n]+?)\s*\))?\s*$",
                   re.IGNORECASE)
 _BAD_NAME = re.compile(r"[\[\]*|#\n]")
-# «�» — отдельная причина, не «разметка»: ревизия читается с заменой
-# нечитаемых байтов, и имя с таким символом — потерянный байт, а не имя.
-# Написать его в заголовки реплик, участников минуток и узел Люди значило бы
-# оставить порчу в графе навсегда (№263). Своя строка в логе, чтобы человек
-# не искал байты там, где имя отвергли за длину или разметку (DS r1 M2).
+# «�» — отдельная причина, не «разметка». Имя с этим символом отвергается
+# ВСЕГДА, каким бы целым ни был файл ревизии: автором такой символ в имени не
+# бывает, он приезжает из испорченного источника, который модель процитировала
+# (№263, DS r3 Critical 2). Написать его в заголовки реплик, участников минуток
+# и узел Люди значило бы оставить порчу в графе навсегда. Своя строка в логе,
+# чтобы человек не искал байты там, где имя отвергли за длину или разметку.
 _MANGLED_NAME = "�"
 # строка участников: «**Участники:** …» в шапке минуток (посреди строки) и
 # «Участники (звучали в разговоре): …» в шапке стенограммы; хвост головы —
@@ -76,7 +77,7 @@ def section_present(review: str) -> bool:
 
 
 def plan(fixes: list[tuple[str, str, str]], headers: set[str], protected: set[str],
-         dropped: list[str] | None = None, lossy: bool = False) -> dict[str, str]:
+         dropped: list[str] | None = None) -> dict[str, str]:
     """Метка → имя, что реально применимо. Не применяется: та же или пустая
     метка; метка микрофона владельца (канал — факт железа, не догадка
     модели) — ни как метка, ни как цель (иначе чужая дорожка стала бы
@@ -87,9 +88,11 @@ def plan(fixes: list[tuple[str, str, str]], headers: set[str], protected: set[st
     не делаем, критика DS r2; обмен A↔B при этом применим: обе дорожки
     переименованы одним проходом). Причина — в `dropped`.
 
-    `lossy` — ревизию пришлось читать с заменой нечитаемых байтов: только тогда
-    «�» в имени считается потерей. У целого ответа это авторский символ, и
-    отбрасывать по нему имя нельзя (luna, критика решения по №263)."""
+    «�» в имени — всегда отказ, каким бы целым ни был файл ревизии: автором
+    такой символ в имени не бывает, а приходит он из испорченного источника,
+    который модель процитировала. Имя уезжает в заголовки реплик, в строку
+    участников и в узел Люди — оттуда его уже не достать (DS r3 Critical 2;
+    гейт по способу чтения был ошибкой круга 2)."""
     mapping: dict[str, str] = {}
     labels = {label for label, _, _ in fixes}
     for label, name, _why in fixes:
@@ -102,7 +105,7 @@ def plan(fixes: list[tuple[str, str, str]], headers: set[str], protected: set[st
             reason = "метка владельца (канал микрофона) не переименовывается"
         elif name in protected:
             reason = "целевое имя — метка владельца (канал микрофона)"
-        elif lossy and _MANGLED_NAME in name:
+        elif _MANGLED_NAME in name:
             reason = "в имени нечитаемый байт, ревизию читали с заменой"
         elif not name or channel_labels.is_neutral_label(name) or _BAD_NAME.search(name) or len(name) > MAX_NAME:
             reason = "имя не годится (заглушка, разметка или длина)"
@@ -253,7 +256,7 @@ def planned(review: pathlib.Path, live: pathlib.Path, cfg: dict,
     имена из этой карты мост добавляет к участникам. Файл не в UTF-8 —
     пусто со строкой в `dropped`."""
     try:
-        text, lossy = review_bridge.read_review(review)
+        text, _lossy = review_bridge.read_review(review)
         speech = live.read_text(encoding="utf-8")
     except UnicodeDecodeError as e:
         if dropped is not None:
@@ -270,7 +273,7 @@ def planned(review: pathlib.Path, live: pathlib.Path, cfg: dict,
     protected = {channel_labels.mic_label_for(cfg), channel_labels.NEUTRAL_MIC}
     if owner:
         protected |= {owner, owner.split()[0]}
-    return plan(fixes, headers, protected, dropped=dropped, lossy=lossy)
+    return plan(fixes, headers, protected, dropped=dropped)
 
 
 def apply(review: pathlib.Path, live: pathlib.Path, cfg: dict,
