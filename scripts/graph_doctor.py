@@ -145,6 +145,24 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
         except OSError:
             continue
 
+    # Файлы, которые не читаются строго. `read_notes` берёт граф с заменой
+    # нечитаемых байтов, поэтому такой файл выглядит целым, а на деле его текст
+    # уже потерян: облачная ревизия его не тронет (правка, приносящая «U+FFFD»,
+    # уходит в карантин — №263), поиск и индексы разъедутся на этом месте.
+    # Доктор — справка человеку, а не гейт: он только называет файлы (№275).
+    # Кандидаты — где символ вообще появился: чисто декодируемый файл его не
+    # даст. Их и перечитываем байтами, вместо второго прохода по всему графу.
+    not_utf8: list[tuple[str, str]] = []
+    for p_, text in notes.items():
+        if "\ufffd" not in text:
+            continue
+        try:
+            p_.read_bytes().decode("utf-8")
+        except UnicodeDecodeError as exc:
+            not_utf8.append((rel[p_], f"байт {exc.start}: {exc.reason}"))
+        except OSError:
+            continue                    # исчез между обходом и чтением — не наше дело
+
     links_total = sum(outbound.values())
     rep = {
         "graph": root.name, "root": str(root), "notes": len(notes), "nodes": len(nodes), "links": links_total,
@@ -155,6 +173,7 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
         "near_dups": len(near_dups), "moc": moc.exists(), "moc_linked": len(moc_linked),
         "moc_missing": len([p for p in nodes if p not in moc_linked]), "fresh_7d": fresh,
         "orphans_by_dir": dict(collections.Counter(rel[p].split("/", 1)[0] for p in orphans)),
+        "not_utf8": len(not_utf8),
     }
     warnings: list[str] = []
     if links_active and broken_active / links_active > THRESHOLDS["broken_share"]:
@@ -168,6 +187,9 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
         warnings.append(f"одноимённых узлов в разных папках: {len(dup_real)} групп")
     if near_dups:
         warnings.append(f"почти-дублей по имени: {len(near_dups)} (пунктуация/скобки/дефис/порядок слов)")
+    if not_utf8:
+        warnings.append(f"файлов не в UTF-8: {len(not_utf8)} — текст уже потерян, "
+                        "облако их не правит, чинить руками")
     rep["warnings"] = warnings
     if examples:
         rep["examples"] = {
@@ -177,6 +199,7 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
             "orphans": [rel[p] for p in orphans[:examples]],
             "dup_real": [" | ".join(g) for g in dup_real[:examples]],
             "near_dups": [" | ".join(g) for g in near_dups[:examples]],
+            "not_utf8": [f"{s} — {why}" for s, why in not_utf8[:examples]],
         }
     return rep
 
@@ -187,7 +210,8 @@ def summary(rep: dict) -> str:
              f"целей {rep['broken_targets']}, с переносом {rep['wrapped_links']}); "
              f"сирот {rep['orphans']}; меток {rep['placeholders']}; "
              f"дублей {rep['dup_real']} (+{rep['dup_stubs']} заглушек); почти-дублей {rep['near_dups']}; "
-             f"вне MOC {rep['moc_missing']}; изменено за 7 дн. {rep['fresh_7d']}"]
+             f"вне MOC {rep['moc_missing']}; не в UTF-8 {rep.get('not_utf8', 0)}; "
+             f"изменено за 7 дн. {rep['fresh_7d']}"]
     lines += [f"  ⚠️ {w}" for w in rep["warnings"]]
     for kind, items in (rep.get("examples") or {}).items():
         if items:

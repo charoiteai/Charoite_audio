@@ -525,6 +525,7 @@ class Verdict:
     failed: list[str] = dataclasses.field(default_factory=list)     # перенос не смог (OSError)
     mangled: list[str] = dataclasses.field(default_factory=list)    # не UTF-8 в песочнице → в карантин, граф цел
     unlinked: list[str] = dataclasses.field(default_factory=list)   # «файл: цели» — ссылки без узла, ставшие текстом
+    unlink_failed: list[str] = dataclasses.field(default_factory=list)  # снятие не удалось — мёртвые ссылки остались
     displaced: list[str] = dataclasses.field(default_factory=list)  # тела узлов, ставших заглушками, — в карантине
     rolled_back: bool = False        # ответ невалиден — откачено всё
 
@@ -872,7 +873,7 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
     return v
 
 
-def unlink_after_transfer(v, graph):
+def unlink_after_transfer(v: Verdict, graph: pathlib.Path) -> None:
     """Ссылки без узла — текстом; считается по ФАКТУ, а не по предсказанию.
 
     До №273 цели строились ДО проходов переноса, и множество «что будет в
@@ -886,26 +887,43 @@ def unlink_after_transfer(v, graph):
     каким он стал, и «цель жива» = «файл в графе есть» по построению. Один
     источник истины вместо правила и его копии.
 
-    Цена, названная честно: файл, у которого что-то сняли, пишется дважды —
-    сначала текст облака, потом он же без мёртвых ссылок. Прежняя схема
-    писала один раз, но ценой предсказания.
+    Цена, названная честно. Файл, у которого что-то сняли, пишется дважды —
+    сначала текст облака, потом он же без мёртвых ссылок; прежняя схема писала
+    один раз, но ценой предсказания. И запись со снятием перестала быть
+    атомарной: между двумя записями файл живёт с мёртвыми ссылками, и процесс,
+    убитый в этом окне, оставит их в графе без строки в вердикте и без журнала.
+    Ловит это `graph_doctor` — он и считает мёртвые ссылки (GLM r2 I2).
+
+    Поздние писатели прогона (указатели папок, перештамповка имён, раскладка
+    архива) кладут файлы уже ПОСЛЕ снятия, и ссылка на такой артефакт будет
+    снята как мёртвая. Не регресс — прежний резолвер строился ещё раньше, — но
+    доктрина «цель жива = файл в графе есть» до конца прогона пока не доведена
+    (DS r2 I1, отдельная карточка).
     """
     if not v.applied:
         return
     after = graph_links.LinkResolver(graph)
     for name in list(v.applied):
         gpath = graph / name
+        gone: list[str] = []
+
+        def strip(text, _gone=gone):
+            clean, targets = graph_links.unlink_unresolved(text, after)
+            _gone[:] = targets
+            return clean, len(targets)
+
         try:
-            text = _read_exact(gpath)
-        except (OSError, UnicodeDecodeError):
-            continue                              # файла уже нет или он чужой — не наше дело
-        clean, gone = graph_links.unlink_unresolved(text, after)
-        if not gone:
-            continue
-        try:
-            safe_write.write_text(gpath, clean)
-        except OSError:
-            LOG.warning("ссылки без узла не сняты в %s — файл не переписался", name)
+            # rewrite_file, а не read→write: конвейер пишет в граф без замка, и
+            # доклейка, попавшая между чтением и записью, терялась бы без следа.
+            # Гейт `expect` по снимку до чтения — штатное средство проекта, и
+            # здесь окно сжимается до нуля (GLM r2 I1).
+            if not safe_write.rewrite_file(gpath, strip, "ссылки без узла не сняты"):
+                continue
+        except (OSError, UnicodeDecodeError, safe_write.LostRace) as exc:
+            # Логгера в этом модуле нет, а stderr воркера уходит в DEVNULL:
+            # деградация должна ехать в вердикт, иначе её не увидит никто
+            # (DS r2 Critical 1 и 2, GLM r2 Critical 1).
+            v.unlink_failed.append(f"{name}: {exc}")
             continue
         v.unlinked.append(f"{name}: {', '.join(gone)}")
         _journal_unlinked(name, gone)
@@ -1802,6 +1820,8 @@ def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:
         parts.append(f"не UTF-8, в граф НЕ перенесено: {', '.join(v.mangled)}")
     if v.failed:
         parts.append(f"ПЕРЕНОС НЕ СМОГ (ошибка диска/прав): {', '.join(v.failed)}")
+    if v.unlink_failed:
+        parts.append(f"мёртвые ссылки ОСТАЛИСЬ (снятие не удалось): {', '.join(v.unlink_failed)}")
     if v.reverted or v.removed or v.conflicts or v.mangled:
         # именно то, что реально ЛЕЖИТ в карантине: удаления туда не
         # кладутся — файла в песочнице нет (luna, M2)

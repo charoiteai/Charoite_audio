@@ -2569,10 +2569,10 @@ def test_the_meeting_is_still_archived_when_the_review_is_not_utf8(tmp_path, mon
 
 
 def test_a_link_to_a_new_node_that_never_lands_becomes_text(tmp_path):
-    """№273 (DS r5 I5). Цели ссылок регистрируются ДО проходов переноса, а
-    судьба правки решается в них. Новый узел, ушедший в карантин, оставался
-    живой целью: `[[ссылка]]` на него из другой правки переживала unlink-гейт
-    и не попадала в журнал снятых — узла нет, а ссылка цела.
+    """№273. Узел, ушедший в карантин, не должен оставаться живой целью:
+    `[[ссылка]]` на него из другой правки переживала unlink-гейт и не попадала
+    в журнал снятых — узла нет, а ссылка цела. Снятие идёт по факту графа,
+    поэтому случай закрыт тем же одним правилом.
 
     Здесь облако заводит узел в ЗАЩИЩЁННОЙ зоне (judge вернёт `removed`) и
     ссылается на него из обычного узла.
@@ -2596,8 +2596,8 @@ def test_a_link_to_a_new_node_that_never_lands_becomes_text(tmp_path):
 
 
 def test_a_link_to_a_new_node_that_does_land_stays_a_link(tmp_path):
-    """Контроль к №273: узел, который реально ляжет, целью остаётся —
-    проба консервативна, но не запрещает законное."""
+    """Контроль к №273: узел, который реально лёг, целью остаётся — снятие
+    работает по факту графа и законную ссылку не трогает."""
     graph = _graph(tmp_path)
     node = graph / "Встречи" / "2026-07-15_1400.md"
 
@@ -2642,3 +2642,37 @@ def test_a_link_survives_nothing_when_the_write_of_its_target_fails(tmp_path, mo
     assert "[[Системы/Квен]]" not in text, "живая ссылка на узел, запись которого упала"
     assert "см. Квен" in text
     assert any("Квен" in u for u in v.unlinked), v.unlinked
+
+
+def test_a_failed_second_write_degrades_into_the_verdict(tmp_path, monkeypatch):
+    """№273, круг 2, Critical обеих голов. Отказ ВТОРОЙ записи (снятие мёртвых
+    ссылок) обрабатывался строкой с логгером, которого в модуле нет: первый же
+    сбой поднимал NameError уже ПОСЛЕ того, как оба прохода всё записали, и
+    лог сообщал «ПЕРЕНОС УПАЛ, граф цел» — ложь вдвойне. Логгера здесь и не
+    должно быть: stderr воркера уходит в никуда, деградация едет в вердикт."""
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+    real_write = cloud_review.safe_write.write_text
+    seen: list[str] = []
+
+    def flaky(path, text, **kw):
+        if path.name == "2026-07-15_1400.md":
+            seen.append(path.name)
+            if len(seen) > 1:                     # вторая запись — та самая, со снятием
+                raise OSError(28, "No space left on device")
+        return real_write(path, text, **kw)
+
+    monkeypatch.setattr(cloud_review.safe_write, "write_text", flaky)
+
+    def work(pen):
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\n## Связи\nсм. [[Системы/Нет такого узла]]\n", encoding="utf-8")
+
+    v, qdir = _cloud_worked(graph, tmp_path, work)
+    assert len(seen) == 2, f"второй записи не было ({len(seen)}) — тест не о том"
+    assert v.applied == ["Встречи/2026-07-15_1400.md"], v
+    assert v.unlink_failed and "2026-07-15_1400" in v.unlink_failed[0], v.unlink_failed
+    assert not v.unlinked, "снятия не было — в журнал писать нечего"
+    assert "мёртвые ссылки ОСТАЛИСЬ" in cloud_review._verdict_line(v, qdir)
+    assert "[[Системы/Нет такого узла]]" in node.read_text(encoding="utf-8"), \
+        "текст облака записан первой записью, снятие не удалось — так и должно быть видно"

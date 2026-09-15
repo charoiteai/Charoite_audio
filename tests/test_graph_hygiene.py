@@ -1254,3 +1254,44 @@ def test_placeholder_migration_waits_for_the_shared_graph_lock_and_reports_lefto
     assert not (graph / "Люди" / "Собеседник 2.md").exists() and "cloud.lock" in r.stdout
     assert "- Собеседник 2 сказал" in (graph / "Встречи" / "2026-08-01_1000.md").read_text(encoding="utf-8")
 
+
+
+def test_doctor_names_files_that_do_not_decode_strictly(tmp_path):
+    """№275. `read_notes` читает граф с ЗАМЕНОЙ нечитаемых байтов, поэтому
+    испорченный файл выглядит целым: текст уже потерян, облачная ревизия его
+    не тронет (правка с «U+FFFD» уходит в карантин, №263), а поиск и индексы
+    разъедутся на этом месте. Доктор — справка человеку: он называет такие
+    файлы и позицию байта, ничего не чиня."""
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+    import graph_doctor
+    graph = tmp_path / "Работа"
+    (graph / "Люди").mkdir(parents=True)
+    (graph / "Системы").mkdir()
+    (graph / "Люди" / "Иван.md").write_text("# Иван\nцелый файл\n", encoding="utf-8")
+    (graph / "Системы" / "Битая.md").write_bytes(
+        "# Битая\nтело с ".encode("utf-8") + b"\xd0" + "байтом\n".encode("utf-8"))
+    # авторский «U+FFFD» в валидном UTF-8 — не порча файла, доктор его не считает
+    (graph / "Системы" / "Символ.md").write_text(
+        "# Символ\nразбор знака � в выгрузке\n", encoding="utf-8")
+
+    rep = graph_doctor.inspect(graph, examples=5)
+
+    assert rep["not_utf8"] == 1, rep
+    assert any("Системы/Битая.md" in x and "байт" in x for x in rep["examples"]["not_utf8"]), rep["examples"]
+    assert not any("Символ" in x for x in rep["examples"]["not_utf8"]), "авторский символ — не порча"
+    assert any("не в UTF-8" in w for w in rep["warnings"]), rep["warnings"]
+    assert "не в UTF-8 1" in graph_doctor.summary(rep)
+
+
+def test_doctor_stays_quiet_when_every_file_decodes(tmp_path):
+    """Контроль: на чистом графе проверка молчит и лишнего прохода по диску
+    не делает — кандидаты только там, где символ вообще появился."""
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+    import graph_doctor
+    graph = tmp_path / "Работа"
+    (graph / "Люди").mkdir(parents=True)
+    (graph / "Люди" / "Иван.md").write_text("# Иван\nвсё в порядке\n", encoding="utf-8")
+
+    rep = graph_doctor.inspect(graph, examples=5)
+    assert rep["not_utf8"] == 0 and not rep["examples"]["not_utf8"], rep
+    assert not any("UTF-8" in w for w in rep["warnings"]), rep["warnings"]
