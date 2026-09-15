@@ -664,7 +664,8 @@ def test_rewrite_file_fails_closed_without_a_snapshot(tmp_path, monkeypatch):
     # причину отказа даёт один `stat`, а `stat_snapshot` в этом пути не
     # участвует — подмена его сделала бы тест «зелёным не о том» (DS r5 I1)
     def unreachable(path, what):
-        raise safe_write.LostRace(path, what, reason=f"{safe_write.LostRace.UNREACHABLE}Permission denied")
+        raise safe_write.LostRace(path, what, kind=safe_write.LostRace.UNREACHABLE,
+                                  detail="Permission denied")
 
     monkeypatch.setattr(safe_write, "_snapshot_or_raise", unreachable)
     with pytest.raises(rb.LostRace) as exc:
@@ -672,7 +673,7 @@ def test_rewrite_file_fails_closed_without_a_snapshot(tmp_path, monkeypatch):
     assert path.read_text(encoding="utf-8") == "x\n"
     # причина названа честно: снимок не снят, а не «сменились под рукой» (DS M3, круг 2)
     assert exc.value.reason == "снимок не снят: Permission denied", exc.value.reason
-    assert not exc.value.gone, "недоступный файл — не исчезнувший"
+    assert not exc.value.gone and exc.value.unreachable, exc.value.kind
     assert "сменились под рукой" not in str(exc.value)
     assert rb.LostRace is safe_write.LostRace and rb.rewrite_file is safe_write.rewrite_file
 
@@ -782,3 +783,37 @@ def test_read_review_touches_the_file_once(tmp_path):
     text, lossy = rb.read_review(review)
     assert lossy is True and "�" in text
     assert rb.read_review(tmp_path / "нет.md") == ("", False)
+
+
+def test_minutes_vanishing_between_the_check_and_the_write_are_told_apart(tmp_path, monkeypatch):
+    """№277, круг 1, DS M6. Тест воркера подменял `withdraw` целиком, поэтому
+    заявленный механизм — «is_file() прошёл, файл исчез до записи, и это НЕ
+    чужая правка» — не проверялся ни одним прогоном. Здесь всё настоящее:
+    проверка честно проходит на существующем файле, файл исчезает сразу за
+    ней, и связка withdraw → rewrite_file → снимок называет вид причины."""
+    import pathlib
+    import pytest
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    transcript = tdir / "2026-09-15_1200_Планёрка.md"
+    transcript.write_text("# Встреча\n\n**Владелец** [12:00]: начнём\n", encoding="utf-8")
+    mpath = tdir / "2026-09-15_1200_Планёрка_minutes.md"
+    mpath.write_text("# Минутки\n## Поручения\n- [ ] **Владелец** — собрать смету\n", encoding="utf-8")
+    review = tdir / "2026-09-15_1200_Планёрка_ревизия_claude.md"
+    review.write_text("# Ревизия\n## Снятые поручения\n"
+                      "- **Владелец** — собрать смету — причина: не прозвучало\n", encoding="utf-8")
+
+    real_is_file = pathlib.Path.is_file
+
+    def vanish_right_after_the_check(self):
+        ok = real_is_file(self)
+        if ok and self.name.endswith("_minutes.md"):
+            self.unlink()                 # то самое окно, шириной в одну строку
+        return ok
+
+    monkeypatch.setattr(pathlib.Path, "is_file", vanish_right_after_the_check)
+    with pytest.raises(rb.LostRace) as exc:
+        rb.withdraw(review, transcript, owner="Владелец")
+    assert exc.value.gone, exc.value.kind
+    assert not exc.value.unreachable and exc.value.detail == "", exc.value.reason
+    assert not mpath.exists(), "файла нет — писать было некуда, и воскресать он не должен"

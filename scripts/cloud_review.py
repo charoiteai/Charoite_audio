@@ -637,6 +637,23 @@ def edits_in_copy(before: dict[str, str], copy: pathlib.Path) -> list[pathlib.Pa
     return [pathlib.Path(r) for r in sorted(set(rels))]
 
 
+def _no_write_said(exc: safe_write.LostRace, subject: str, consequence: str) -> str:
+    """Почему записи не было — одной фразой, ОДИНАКОВО во всех местах лога.
+
+    Предложение о том, кто виноват, раньше набиралось заново в каждом
+    `except`, и за один коммит это разъехалось: у одного вызова моста стояло
+    различение причин, у соседнего — безусловное «менял кто-то ещё» (DS C1/C2
+    и GLM C1 r1 по №277). Вид причины спрашивается значением, не текстом:
+    «до файла не дотянулись» — не чужая правка, и говорить о человеке,
+    которого не было, нельзя в единственном канале воркера.
+    """
+    if exc.gone:
+        return f"{subject} больше нет, {consequence}"
+    if exc.unreachable:
+        return f"до файла не дотянулись ({exc.detail}), {consequence}"
+    return f"{subject} менял кто-то ещё, {consequence}"
+
+
 def _journal_unlinked(name: str, gone: list[str]) -> None:
     """Снятые цели — в журнал `logs/graph_unlinked.log` корня данных: цель,
     которую модель пишет второй месяц («Kwen 32B»), должна всплыть как
@@ -1699,11 +1716,14 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                     bridge_blocked = True
                     # «Файла нет» — не чужая правка: `withdraw` проверяет is_file()
                     # перед вызовом, значит минутки исчезли между этой проверкой и
-                    # записью. Называть это чужой правкой — та же ложь в логе, от
-                    # которой заведён сам LostRace (DS M4 r6 по №273).
-                    why = ("минуток больше нет, снятие не применено" if e.gone
-                           else "минутки менял кто-то ещё, снятие не применено")
-                    lines.append(f"[cloud-review] мост ревизии: {e} — {why}\n")
+                    # записью (а на второй попытке — после чужой правки поверх;
+                    # конец тот же: файла больше нет, GLM M1 r1). Называть это
+                    # чужой правкой — та же ложь в логе, от которой заведён сам
+                    # LostRace (DS M4 r6 по №273). Фразу собирает один хелпер:
+                    # набранная заново в каждом except, она разъехалась между
+                    # соседними вызовами того же моста (DS C2, GLM C1 r1).
+                    lines.append("[cloud-review] мост ревизии: "
+                                 f"{e} — {_no_write_said(e, 'минуток', 'снятие не применено')}\n")
                 except review_bridge.MangledFile as e:
                     # Тот же класс лжи, что у LostRace: пункты извлечены,
                     # отказала запись — «снимать нечего» было бы неправдой (№263).
@@ -1725,7 +1745,11 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                                                  extra_participants=set(renamed.values()))
                 except review_bridge.LostRace as e:
                     bridge_blocked = True
-                    lines.append(f"[cloud-review] мост ревизии: {e} — минутки менял кто-то ещё, поручения не дописаны\n")
+                    # `bridge` проверяет is_file() ровно так же (review_bridge.py),
+                    # значит и здесь причина бывает всех трёх видов — фраза общая
+                    # с соседним вызовом, не переписанная от руки
+                    lines.append("[cloud-review] мост ревизии: "
+                                 f"{e} — {_no_write_said(e, 'минуток', 'поручения не дописаны')}\n")
                 except review_bridge.MangledFile as e:
                     bridge_blocked = True
                     lines.append(f"[cloud-review] мост ревизии: {e}\n")

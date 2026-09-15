@@ -156,7 +156,7 @@ def test_lost_race_tells_a_missing_file_from_an_unreachable_one(tmp_path, monkey
     gone = tmp_path / "нет.md"
     with pytest.raises(safe_write.LostRace) as exc:
         safe_write.rewrite_file(gone, lambda t: (t, 1), "проверка")
-    assert exc.value.reason == safe_write.LostRace.GONE, exc.value.reason
+    assert exc.value.reason == "файла нет", exc.value.reason
     assert exc.value.gone, "исчезнувший файл опознаётся свойством, а не сверкой текста"
 
     # Файл исчез МЕЖДУ снимком и чтением — тот же факт, та же причина, иначе
@@ -173,7 +173,7 @@ def test_lost_race_tells_a_missing_file_from_an_unreachable_one(tmp_path, monkey
     monkeypatch.setattr(pathlib.Path, "read_text", vanish)
     with pytest.raises(safe_write.LostRace) as exc2:
         safe_write.rewrite_file(live, lambda t: (t, 1), "проверка")
-    assert exc2.value.gone, exc2.value.reason
+    assert exc2.value.gone and exc2.value.reason == "файла нет", exc2.value.reason
 
     # А теперь ВТОРАЯ половина имени теста: «не дотянулись». Настоящий EACCES,
     # без подмен — иначе текст причины, который воркер печатает в единственный
@@ -188,6 +188,10 @@ def test_lost_race_tells_a_missing_file_from_an_unreachable_one(tmp_path, monkey
             safe_write.rewrite_file(hidden, lambda t: (t, 1), "проверка")
     finally:
         closed.chmod(0o700)
-    assert exc3.value.reason.startswith(safe_write.LostRace.UNREACHABLE), exc3.value.reason
-    assert exc3.value.reason != safe_write.LostRace.UNREACHABLE, "текст ошибки обязан быть назван"
+    assert exc3.value.unreachable, exc3.value.kind
     assert not exc3.value.gone, "недоступный файл не «исчез» — он остался как был"
+    # подробность системы — ОТДЕЛЬНОЕ поле, а не хвост текста: пока она жила
+    # в `reason` за префиксом, третий вид опознавали через startswith, то есть
+    # текстом (DS I3 и GLM критика 1, круг 1 по №277)
+    assert exc3.value.detail and "Permission denied" in exc3.value.detail, exc3.value.detail
+    assert exc3.value.reason == f"снимок не снят: {exc3.value.detail}", exc3.value.reason

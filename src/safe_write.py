@@ -131,29 +131,51 @@ class LostRace(RuntimeError):
     DS I2 по #553); строки с PREFIX в списках `dropped` — тот же сигнал там,
     где исключение не проходит.
 
-    Причина — ЗНАЧЕНИЕ, а не текст: три вида, и каждый требует от вызывающего
-    разного. `CHANGED` — файл сменился под рукой дважды подряд, наша правка
-    не легла на живой файл. `GONE` — файла нет (исчез до снимка или между
-    снимком и чтением): править нечего, и обвинять его в чём-либо нельзя.
-    `UNREACHABLE` — до файла не дотянулись, он остался как был; после префикса
-    идёт `strerror` системы. Вызывающий читает `gone` / `reason`, а не разбирает
-    сообщение: текст причины за один круг менялся дважды, и сравнение с
-    литералом в чужом модуле ломалось бы молча (DS M1/M2 r6 по №273)."""
+    Причина — ЗНАЧЕНИЕ (`kind`), а не текст: ТРИ вида, и каждый требует от
+    вызывающего разного.
+
+    `CHANGED` — файл сменился под рукой дважды подряд: наша правка не легла на
+    живой файл, поверх писал кто-то ещё. `GONE` — файла нет (исчез до снимка
+    или между снимком и чтением): править нечего, и упрекнуть его не в чем. Это
+    конец состояния, а не отсутствие истории: на второй попытке `GONE` приходит
+    ПОСЛЕ проигранной записи, то есть чужая правка была — но файла всё равно
+    больше нет (GLM M1 r1 по №277). `UNREACHABLE` — до файла не дотянулись
+    (права, том, ввод-вывод), он остался как был, и сказать об этом надо вслух;
+    подробность системы лежит в `detail` ОТДЕЛЬНЫМ полем.
+
+    Человеческий текст (`reason`, и через него сообщение) собирается здесь, в
+    одном месте, из вида и подробности. Вызывающий спрашивает `gone` /
+    `unreachable` / `kind` и НИКОГДА не разбирает текст: он за один круг
+    менялся дважды, и сравнение с литералом в чужом модуле ломалось бы молча.
+    Первая версия этого набора оставила `UNREACHABLE` префиксом текста — и
+    третий вид немедленно снова начали опознавать через `startswith`, то есть
+    дефект воспроизвёлся внутри решения (DS C1/I3 и GLM I1, критика 1, r1)."""
 
     PREFIX = "запись не состоялась: "
-    CHANGED = "сменились под рукой"
-    GONE = "файла нет"
-    UNREACHABLE = "снимок не снят: "
+    CHANGED = "changed"
+    GONE = "gone"
+    UNREACHABLE = "unreachable"
 
-    def __init__(self, path: pathlib.Path, what: str, reason: str = CHANGED):
+    _SAID = {CHANGED: "сменились под рукой",
+             GONE: "файла нет",
+             UNREACHABLE: "снимок не снят"}
+
+    def __init__(self, path: pathlib.Path, what: str, kind: str = CHANGED, detail: str = ""):
         self.path = path
-        self.reason = reason          # чтобы вызывающий не разбирал текст сообщения
-        super().__init__(f"{self.PREFIX}{path.name} {reason} — {what}")
+        self.kind = kind              # вид причины — значение, его и спрашивают
+        self.detail = detail          # подробность системы, отдельно от вида
+        self.reason = self._SAID[kind] + (f": {detail}" if detail else "")
+        super().__init__(f"{self.PREFIX}{path.name} {self.reason} — {what}")
 
     @property
     def gone(self) -> bool:
-        """Файла нет — в нём нечего править и не в чем его обвинять."""
-        return self.reason == self.GONE
+        """Файла нет — в нём нечего править и не в чем его упрекнуть."""
+        return self.kind == self.GONE
+
+    @property
+    def unreachable(self) -> bool:
+        """До файла не дотянулись — он остался как был, и это надо сказать."""
+        return self.kind == self.UNREACHABLE
 
 
 def _snapshot_or_raise(path: pathlib.Path, what: str) -> tuple[int, int]:
@@ -173,9 +195,10 @@ def _snapshot_or_raise(path: pathlib.Path, what: str) -> tuple[int, int]:
     try:
         st = path.stat()
     except FileNotFoundError:
-        raise LostRace(path, what, reason=LostRace.GONE) from None
+        raise LostRace(path, what, kind=LostRace.GONE) from None
     except OSError as exc:
-        raise LostRace(path, what, reason=f"{LostRace.UNREACHABLE}{exc.strerror or exc}") from None
+        raise LostRace(path, what, kind=LostRace.UNREACHABLE,
+                       detail=str(exc.strerror or exc)) from None
     return st.st_mtime_ns, st.st_size
 
 
@@ -200,7 +223,7 @@ def rewrite_file(path: pathlib.Path, transform, what: str) -> int:
             # Файл исчез между снимком и чтением. Это тот же факт «файла нет»,
             # и называть его надо так же: иначе вызывающий обвинит в мёртвых
             # ссылках файл, которого нет (DS r5 Critical 2).
-            raise LostRace(path, what, reason=LostRace.GONE) from None
+            raise LostRace(path, what, kind=LostRace.GONE) from None
         after, n = transform(before)
         if not n:
             return 0
