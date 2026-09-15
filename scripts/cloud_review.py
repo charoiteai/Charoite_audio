@@ -563,6 +563,22 @@ def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
     return None
 
 
+MANGLED = "\ufffd"
+
+
+def adds_mangled(old_text: str, new_text: str) -> bool:
+    """Правка ДОБАВЛЯЕТ нечитаемые символы к тому, что уже было в узле.
+
+    Строгое чтение ловит битые байты, но «�» бывает и законным содержимым
+    валидного UTF-8: облако видит в промпте наши минутки и соседние узлы и
+    переносит символ оттуда. Отвергать всякий узел с «�» нельзя — узел,
+    испорченный однажды, стал бы вечно неприкасаемым для облака. Сравниваем
+    со снимком: столько же символов или меньше — правка порчи не вносит
+    (№263, DS r4 Critical 1).
+    """
+    return new_text.count(MANGLED) > old_text.count(MANGLED)
+
+
 def _read(p: pathlib.Path) -> str:
     """Текст файла или пустая строка ДЛЯ РЕШЕНИЯ: в графе бинарников нет, а
     битую кодировку заменяем, а не роняем на ней перенос. Так читается только
@@ -683,6 +699,12 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
         for rel in edits:
             cpath = copy / rel
             if cpath.is_file():
+                # Новый файл в защищённой зоне judge забракует (`removed`), и
+                # цель на него — та же живая ссылка в никуда, что у mangled
+                # (DS r4 I1). Существующие файлы пропускаем как были: их
+                # отказ — это конфликт или правило, а узел в графе есть.
+                if rel.as_posix() not in before and not may_write(graph / rel, graph):
+                    continue
                 try:
                     # Строго и БЕЗ поблажек на нечитаемый файл: узел, чью правку
                     # мы не смогли прочитать, в граф не попадёт — ни как
@@ -726,6 +748,17 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 # Не UTF-8 — в граф не пойдёт: это единственная ветка, где
                 # порча приезжала в узел молча и мимо judge (№263). Версия
                 # облака остаётся человеку в карантине, файл графа цел.
+                quarantine(cpath, copy, qdir, move=False)
+                v.mangled.append(name)
+                continue
+            if new is not None and adds_mangled(old, new):
+                # Строгое чтение ловит битые БАЙТЫ, но «�» бывает и внутри
+                # валидного UTF-8: облако видит в промпте наши минутки и
+                # соседние узлы и переносит символ оттуда в текст узла
+                # (DS r4 Critical 1). Сверяем со снимком: узел, где «�» жил
+                # и раньше, править по-прежнему можно — иначе испорченный
+                # однажды узел облако не смогло бы тронуть никогда; новый
+                # символ — новая порча, и она в граф не едет.
                 quarantine(cpath, copy, qdir, move=False)
                 v.mangled.append(name)
                 continue
@@ -820,6 +853,10 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
             try:
                 new_text = graph_updater.tidy_links(_read_exact(cpath))
             except UnicodeDecodeError:
+                quarantine(cpath, copy, qdir, move=False)
+                v.mangled.append(name)
+                continue
+            if adds_mangled(old, new_text):       # та же сверка, что в основном проходе
                 quarantine(cpath, copy, qdir, move=False)
                 v.mangled.append(name)
                 continue
@@ -1043,6 +1080,20 @@ def deliver_review(rev: pathlib.Path, transcript: pathlib.Path, graph: pathlib.P
     же ключом файлов, копию в Документацию кладём рядом с остальными.
     """
     try:
+        # Файл ревизии копируется в граф БАЙТ В БАЙТ, и декодировать его
+        # некому — зато каждый читатель графа откроет его с заменой и
+        # размножит «�» дальше по индексам и производным файлам. Ревизия с
+        # обрывом ответа для моста штатна (`read_review`), но в графе ей не
+        # место: остаётся рядом со стенограммой, где её правит человек
+        # (DS r4 Critical 2).
+        try:
+            rev.read_bytes().decode("utf-8")
+        except UnicodeDecodeError as e:
+            lf.write(f"[cloud-review] ревизия НЕ доставлена в граф: {rev.name} не в UTF-8 "
+                     f"({e.reason}) — файл рядом со стенограммой\n")
+            return
+        except OSError:
+            pass                      # нет файла — разберётся archive_meeting
         from meeting_archive import archive_meeting
         slug = transcript.stem[len(stamp):].lstrip("_") if transcript.stem.startswith(stamp) else ""
         if slug[:1].isdigit():

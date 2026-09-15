@@ -2446,3 +2446,39 @@ def test_a_clean_edit_still_goes_through(tmp_path):
     v, _ = _cloud_worked(graph, tmp_path, work)
     assert v.applied == ["Встречи/2026-07-15_1400.md"], v
     assert not v.mangled and "дописано облаком" in node.read_text(encoding="utf-8")
+
+
+def test_a_replacement_char_added_to_a_node_is_quarantined(tmp_path):
+    """№263, круг 4, DS Critical 1. Строгое чтение ловит битые БАЙТЫ, но «�»
+    бывает и внутри валидного UTF-8: облако видит в промпте наши минутки и
+    соседние узлы и переносит символ оттуда в текст узла. Файл валиден, judge
+    про «�» не знает — символ уезжал в граф навсегда."""
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+    was = node.read_text(encoding="utf-8")
+
+    def work(pen):
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            was + "## Решения\nоблако принесло симв�ол из промпта\n", encoding="utf-8")
+
+    v, qdir = _cloud_worked(graph, tmp_path, work)
+    assert v.mangled == ["Встречи/2026-07-15_1400.md"], v
+    assert node.read_text(encoding="utf-8") == was, "символ уехал в узел графа"
+    assert list(qdir.rglob("2026-07-15_1400.md")), "правку облака не сохранили"
+
+
+def test_a_node_that_already_had_one_can_still_be_edited(tmp_path):
+    """Обратная сторона: узел, где «�» жил и раньше, править по-прежнему
+    можно — иначе испорченный однажды узел облако не тронуло бы никогда.
+    Сверка идёт со снимком, а не с абсолютным «символа быть не должно»."""
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+    node.write_text("# Встреча\nстарый симв�ол\n", encoding="utf-8")
+
+    def work(pen):
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\nстарый симв�ол\n## Решения\nдописано облаком\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, work)
+    assert v.applied == ["Встречи/2026-07-15_1400.md"], v
+    assert not v.mangled and "дописано облаком" in node.read_text(encoding="utf-8")
