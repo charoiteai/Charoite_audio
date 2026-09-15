@@ -687,3 +687,90 @@ def test_section_bounds_prefer_the_current_heading_over_a_legacy_one():
     assert rb._section_bounds(lines) == (3, 5)
     lines = "# M\n## Поручения и сроки\n- старое\n## Решения\n- да\n".split("\n")
     assert rb._section_bounds(lines) == (1, 3)
+
+
+def test_a_mangled_item_from_the_review_never_lands_in_minutes(tmp_path):
+    """№263. Ревизия — ответ облака, и читается она с заменой нечитаемых
+    байтов: обрыв ответа не должен глушить мост целиком. Но взятый оттуда
+    ПУНКТ уезжает в минутки человека, и «�» остался бы там навсегда.
+    Такой пункт не дописывается, а называется в `dropped`."""
+    transcript, minutes, review = _disk(tmp_path)
+    review.write_bytes(
+        "# Ревизия\n## Восстановленные поручения\n- [ ] **Олег** — собрать ко".encode("utf-8")
+        + b"\xd0" + "манду\n- [ ] **Иван** — прислать план\n".encode("utf-8"))
+    dropped: list[str] = []
+    assert rb.bridge(review, transcript, owner="Владелец", dropped=dropped) == 1
+    text = minutes.read_text(encoding="utf-8")
+    assert "�" not in text, "нечитаемый байт уехал в минутки"
+    assert "прислать план" in text, "целый пункт не дописан"
+    assert any("ревизию читали с заменой" in d for d in dropped), dropped
+
+
+def test_minutes_that_are_not_utf8_are_left_alone(tmp_path):
+    """№263, вторая сторона: минутки переписываются целиком. Раньше мост
+    читал их с заменой и записывал результат — один битый байт в файле
+    человека размножался в «�» на весь файл. Теперь файл не трогается, а
+    причина попадает в лог через `dropped`."""
+    transcript, minutes, review = _disk(tmp_path)
+    minutes.write_bytes("# Минутки\n## Поручения\n- [ ] **Иван** — прислать сво".encode("utf-8")
+                        + b"\xd0" + "дку\n".encode("utf-8"))
+    was = minutes.read_bytes()
+    import pytest
+    # Сигнал, а не тихий 0: ноль вызывающий печатает как «пунктов не
+    # извлечено», хотя пункты извлечены и отказала запись (DS r1 I1, GLM r1 I2)
+    with pytest.raises(rb.MangledFile) as e:
+        rb.bridge(review, transcript, owner="Владелец")
+    assert "не в UTF-8" in str(e.value) and "поручения" in str(e.value), str(e.value)
+    assert minutes.read_bytes() == was, "битые минутки переписаны"
+    with pytest.raises(rb.MangledFile) as e:
+        rb.withdraw(review, transcript, owner="Владелец")
+    assert "снятые" in str(e.value), str(e.value)
+    assert minutes.read_bytes() == was
+
+
+def test_a_mangled_reason_does_not_ride_into_minutes_and_does_not_kill_the_item(tmp_path):
+    """№263, круг 1, DS Critical: у снятых пунктов проверялся только текст, а
+    в минутки пишется ещё и ПРИЧИНА («~~пункт~~ _(снято ревизией: причина)_»).
+    Битый байт в хвосте «— причина: …» уезжал в граф тем же путём, который
+    фикс закрывал. Теперь причина проверяется наравне с пунктом — но целое
+    поручение из-за испорченного хвоста не теряется: снимаем без причины."""
+    transcript, minutes, review = _disk(tmp_path)
+    review.write_bytes(
+        "# Ревизия\n## Снятые поручения\n- **Иван** — прислать сводку по плану к пятнице — причина: срок уж".encode("utf-8")
+        + b"\xd0" + "е прошёл\n".encode("utf-8"))
+    dropped: list[str] = []
+    assert rb.withdraw(review, transcript, owner="Владелец", dropped=dropped) == 1
+    text = minutes.read_text(encoding="utf-8")
+    assert "�" not in text, "нечитаемая причина уехала в минутки"
+    assert "прислать сводку" in text and "~~" in text, "поручение потеряно из-за хвоста причины"
+    assert any("причина — ревизию читали с заменой" in d for d in dropped), dropped
+
+
+def test_a_replacement_char_is_filtered_even_when_the_review_file_is_whole(tmp_path):
+    """№263, круг 3, DS Critical 1. Круг 2 поставил фильтр за гейт «файл
+    читался с заменой» — а это про транспорт, не про содержимое. Модель
+    получает в промпт наши же минутки, и «�», уже лежащий там, она процитирует:
+    файл ревизии останется валидным UTF-8, а порча поедет дальше в граф.
+    Фильтр работает по содержимому; флаг меняет только формулировку причины."""
+    transcript, minutes, review = _disk(tmp_path)
+    review.write_text("# Ревизия\n## Восстановленные поручения\n"
+                      "- [ ] **Олег** — разобрать символ � в выгрузке\n"
+                      "- [ ] **Иван** — прислать план\n", encoding="utf-8")
+    text, lossy = rb.read_review(review)
+    assert lossy is False and "�" in text, "файл должен быть валидным UTF-8"
+    dropped: list[str] = []
+    assert rb.bridge(review, transcript, owner="Владелец", dropped=dropped) == 1
+    body = minutes.read_text(encoding="utf-8")
+    assert "�" not in body, "символ уехал в минутки при целом файле"
+    assert "прислать план" in body, "целый пункт потерян"
+    assert any("нечитаемый символ в целом файле" in d for d in dropped), dropped
+
+
+def test_read_review_touches_the_file_once(tmp_path):
+    """DS r3 I3: два захода к файлу давали окно, где флаг и текст описывали
+    разные версии, а OSError на втором заходе притворялся «ревизии нет»."""
+    transcript, minutes, review = _disk(tmp_path)
+    review.write_bytes("# Ревизия\n".encode("utf-8") + b"\xd0")
+    text, lossy = rb.read_review(review)
+    assert lossy is True and "�" in text
+    assert rb.read_review(tmp_path / "нет.md") == ("", False)

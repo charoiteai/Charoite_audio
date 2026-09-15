@@ -140,22 +140,24 @@ class LostRace(RuntimeError):
         super().__init__(f"{self.PREFIX}{path.name} {reason} — {what}")
 
 
-def rewrite_file(path: pathlib.Path, transform, what: str, *, errors: str = "strict") -> int:
+def rewrite_file(path: pathlib.Path, transform, what: str) -> int:
     """Чтение → преобразование → запись с гейтом expect по снимку до чтения,
     две попытки — как canonize_file и restamp_minutes пересборки: чужой
     процесс замка демона не видит, а одноразовый прогон ревизии повторять
     некому (DS I3 по #553). `transform(text) -> (new_text, n)`; n == 0 —
     менять нечего, записи нет. Снимок не снялся — отказ, не свободная запись
-    (DS M5). После второй неудачи — LostRace. `errors` — как читать не-UTF-8:
-    мост минуток читает с заменой (прежнее поведение), перештамповка имён —
-    строго, чтобы не записать битый файл обратно с «�». Живёт здесь, рядом с
+    (DS M5). После второй неудачи — LostRace. Читаем ВСЕГДА строго: файл
+    переписывается целиком, и замена нечитаемого байта записала бы «�» в него
+    навсегда. Параметра `errors` здесь нет намеренно — именно лояльное чтение
+    у вызывающего и было дефектом №263, а параметр документировал бы способ
+    вернуть его одной правкой вызова (GLM r2, критика 1). Живёт здесь, рядом с
     write_text: гейт потери обновления один на всех писателей, и цикл повтора
     тоже (критика DS r2 по #553)."""
     for _attempt in (1, 2):
         snap = stat_snapshot(path)
         if snap is None:
             raise LostRace(path, what, reason="снимок файла не снят: файла нет или он недоступен")
-        before = path.read_text(encoding="utf-8", errors=errors)
+        before = path.read_text(encoding="utf-8")
         after, n = transform(before)
         if not n:
             return 0

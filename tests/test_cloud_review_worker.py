@@ -2334,3 +2334,223 @@ def test_run_does_not_start_a_second_full_pass_over_a_fresh_review(tmp_path, mon
     monkeypatch.setattr(cloud_review, "graph_lock", lock_after_neighbour)
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg, force=True) == cloud_review.RC_OK
     assert len(calls) == 3, "--force не запустил разбор"
+
+
+def test_broken_bytes_from_the_sandbox_never_reach_the_graph(tmp_path):
+    """№263. Облако правило узел, но записало его не в UTF-8 — оборвало
+    многобайтный символ, или файл побывал в чужом редакторе.
+
+    Перенос читал такой файл с заменой (`errors="replace"`) и писал результат
+    в граф: «�» вставал в текст узла НАВСЕГДА, а прежняя версия была уже
+    перезаписана. Целую страницу в чужой кодировке ловил judge по retention —
+    несколько битых байт в валидном тексте проходили все гейты молча.
+
+    Теперь текст, который уедет в граф, читается строго: правка облака идёт в
+    карантин, узел остаётся прежним, а строка лога называет файл.
+    """
+    graph = _graph(tmp_path)
+    node = graph / "Ядра" / "Платёжный провайдер.md"
+    was = node.read_text(encoding="utf-8")
+
+    def work(pen):
+        good = was.encode("utf-8")
+        tail = "\n## Статус\nОблако дописало: платёж прошёл\n".encode("utf-8")
+        (pen / "Ядра" / "Платёжный провайдер.md").write_bytes(good + tail[:20] + b"\xd0" + tail[20:])
+
+    v, qdir = _cloud_worked(graph, tmp_path, work)
+    assert v.touched == 1
+    assert v.mangled == ["Ядра/Платёжный провайдер.md"], v
+    assert not v.applied and not v.failed, v
+    assert node.read_text(encoding="utf-8") == was, "битый текст уехал в граф"
+    assert "�" not in node.read_bytes().decode("utf-8", "replace")
+    # версия облака человеку — в карантине, а не потеряна
+    assert list(qdir.rglob("Платёжный провайдер.md")), "правку облака не сохранили"
+    line = cloud_review._verdict_line(v, qdir)
+    assert "не UTF-8" in line and "Платёжный провайдер" in line, line
+
+
+def test_a_broken_redirect_stub_is_quarantined_too(tmp_path):
+    """Тот же №263 на заглушке-редиректе при слиянии дублей.
+
+    Ловит её ОСНОВНОЙ проход: строгое чтение стоит до распознавания редиректа,
+    и до отложенного прохода заглушек файл не доходит (DS r1 I2, GLM r1 I3 —
+    докстринг круга 1 утверждал обратное). Проверка всё равно нужна: узел не
+    должен превратиться в битую заглушку, потеряв тело.
+    """
+    graph = _graph(tmp_path)
+    dup = graph / "Ядра" / "Дубль.md"
+    dup.write_text("# Дубль\n## Статус\nстарое тело\n", encoding="utf-8")
+
+    def work(pen):
+        stub = ("# Дубль → [[Ядра/Платёжный провайдер]]\n\nДубль. Смерджен.\n").encode("utf-8")
+        (pen / "Ядра" / "Дубль.md").write_bytes(stub[:44] + b"\xd0" + stub[44:])
+
+    v, qdir = _cloud_worked(graph, tmp_path, work)
+    assert v.mangled == ["Ядра/Дубль.md"], v
+    assert dup.read_text(encoding="utf-8") == "# Дубль\n## Статус\nстарое тело\n"
+
+
+def test_the_stub_pass_has_its_own_net_if_the_sandbox_changes(tmp_path, monkeypatch):
+    """Второй рубеж прохода заглушек: если инвариант «песочница между
+    проходами не меняется» однажды нарушат, отказ должен быть карантином, а не
+    падением всего переноса (UnicodeDecodeError мимо `except OSError`).
+    Ветка недостижима штатно — подменяем чтение так, чтобы упал ВТОРОЙ вызов
+    по этому файлу (GLM r1 I3: либо покрыть, либо признать непокрытой)."""
+    graph = _graph(tmp_path)
+    dup = graph / "Ядра" / "Дубль.md"
+    dup.write_text("# Дубль\n## Статус\nстарое тело\n", encoding="utf-8")
+    real_read, real_stub = cloud_review._read_exact, cloud_review.is_redirect_stub
+    seen: list[str] = []
+    recognised: list[bool] = []
+
+    def watch_stub(text):
+        ok = real_stub(text)
+        if ok and "Смерджен" in text:    # именно НАША заглушка, а не любая в фикстуре
+            recognised.append(True)      # распознана — дальше отложенный проход
+        return ok
+
+    def flaky(path):
+        if path.name == "Дубль.md":
+            seen.append(path.name)
+            # Привязка к ФАКТУ «заглушка распознана», а не к счёту чтений:
+            # лишнее строгое чтение выше по потоку иначе сдвинуло бы счётчик, и
+            # тест зеленел бы на первом рубеже впустую (GLM r2 Critical 4)
+            if recognised:
+                raise UnicodeDecodeError("utf-8", b"\xd0", 0, 1, "invalid continuation byte")
+        return real_read(path)
+
+    monkeypatch.setattr(cloud_review, "is_redirect_stub", watch_stub)
+    monkeypatch.setattr(cloud_review, "_read_exact", flaky)
+
+    def work(pen):
+        (pen / "Ядра" / "Дубль.md").write_text(
+            "# Дубль → [[Ядра/Платёжный провайдер]]\n\nДубль. Смерджен.\n", encoding="utf-8")
+
+    v, qdir = _cloud_worked(graph, tmp_path, work)
+    assert recognised, "заглушка не распознана — отложенного прохода не было, тест не о том"
+    assert v.mangled == ["Ядра/Дубль.md"], v
+    assert not v.failed, v
+    assert dup.read_text(encoding="utf-8") == "# Дубль\n## Статус\nстарое тело\n"
+
+
+def test_a_clean_edit_still_goes_through(tmp_path):
+    """Контроль к №263: строгое чтение не мешает обычной правке в UTF-8."""
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+    was = node.read_text(encoding="utf-8")
+
+    def work(pen):
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            was + "## Решения\nдописано облаком\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, work)
+    assert v.applied == ["Встречи/2026-07-15_1400.md"], v
+    assert not v.mangled and "дописано облаком" in node.read_text(encoding="utf-8")
+
+
+def test_a_replacement_char_added_to_a_node_is_quarantined(tmp_path):
+    """№263, круг 4, DS Critical 1. Строгое чтение ловит битые БАЙТЫ, но «�»
+    бывает и внутри валидного UTF-8: облако видит в промпте наши минутки и
+    соседние узлы и переносит символ оттуда в текст узла. Файл валиден, judge
+    про «�» не знает — символ уезжал в граф навсегда."""
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+    was = node.read_text(encoding="utf-8")
+
+    def work(pen):
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            was + "## Решения\nоблако принесло симв�ол из промпта\n", encoding="utf-8")
+
+    v, qdir = _cloud_worked(graph, tmp_path, work)
+    assert v.mangled == ["Встречи/2026-07-15_1400.md"], v
+    assert node.read_text(encoding="utf-8") == was, "символ уехал в узел графа"
+    assert list(qdir.rglob("2026-07-15_1400.md")), "правку облака не сохранили"
+
+
+def test_a_node_that_already_had_one_can_still_be_edited(tmp_path):
+    """Обратная сторона: узел, где «�» жил и раньше, править по-прежнему
+    можно — иначе испорченный однажды узел облако не тронуло бы никогда.
+    Сверка идёт со снимком, а не с абсолютным «символа быть не должно»."""
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+    node.write_text("# Встреча\nстарый симв�ол\n", encoding="utf-8")
+
+    def work(pen):
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\nстарый симв�ол\n## Решения\nдописано облаком\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, work)
+    assert v.applied == ["Встречи/2026-07-15_1400.md"], v
+    assert not v.mangled and "дописано облаком" in node.read_text(encoding="utf-8")
+
+
+def test_a_swapped_replacement_char_does_not_slip_through_by_count(tmp_path):
+    """№263, круг 5, DS Critical 1. Счёт символов не различает, ГДЕ они:
+    облако убирает старый «�» и приносит новый в другой абзац — счёт тот же,
+    а порча новая. Сверка построчная: нетронутая строка со старым символом
+    проходит, новая — нет."""
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+    node.write_text("# Встреча\nстарый симв�ол\nхвост\n", encoding="utf-8")
+
+    def work(pen):                       # рокировка: убрали один, принесли другой
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\nстарый символ\nхвост\n## Решения\nновый симв�ол\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, work)
+    assert v.mangled == ["Встречи/2026-07-15_1400.md"], v
+    assert node.read_text(encoding="utf-8") == "# Встреча\nстарый симв�ол\nхвост\n"
+
+
+def test_a_replacement_char_moved_into_the_title_is_caught(tmp_path):
+    """Тот же круг 5: перенос символа из тела в H1 — счёт не меняется, но
+    символ уезжает в имя узла, MOC и индексы."""
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+    node.write_text("# Встреча\nтело с симв�олом\n", encoding="utf-8")
+
+    def work(pen):
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встр�еча\nтело с символом\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, work)
+    assert v.mangled == ["Встречи/2026-07-15_1400.md"], v
+
+
+def test_a_lossy_snapshot_does_not_raise_the_baseline(tmp_path):
+    """№263, круг 5, DS Important 3. База читалась лояльно, и битый БАЙТ в
+    снимке становился «�», разрешая литеральный символ в правке. База берётся
+    строго: не прочиталась — любой «�» в правке считается новым."""
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+    node.write_bytes("# Встреча\nтело с ".encode("utf-8") + b"\xd0" + "байтом\n".encode("utf-8"))
+
+    def work(pen):                       # тот же текст, но байт стал литеральным «�»
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\nтело с �байтом\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, work)
+    assert v.mangled == ["Встречи/2026-07-15_1400.md"], v
+
+
+def test_the_meeting_is_still_archived_when_the_review_is_not_utf8(tmp_path, monkeypatch):
+    """№263, круг 5, DS Critical 2. Гейт доставки я поставил через `return`, и
+    он гасил не копию ревизии, а всю раскладку встречи: archive_meeting —
+    единственный путь дополненных мостом минуток в граф и во вкладку «Задачи».
+    Гасить полагается только копии самой ревизии."""
+    graph = _graph(tmp_path)
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    transcript = tdir / "2026-07-15_1400.md"
+    transcript.write_text("# Встреча\n**Оля** [14:00]: начнём\n", encoding="utf-8")
+    rev = tdir / "2026-07-15_1400_ревизия_claude.md"
+    rev.write_bytes("# Ревизия\n".encode("utf-8") + b"\xd0")
+    called: list[str] = []
+    monkeypatch.setitem(sys.modules, "meeting_archive", type(sys)("meeting_archive"))
+    sys.modules["meeting_archive"].archive_meeting = (
+        lambda *a, **k: called.append("archive") or None)
+    import io
+    buf = io.StringIO()
+    cloud_review.deliver_review(rev, transcript, graph, "2026-07-15_1400", buf)
+    assert called == ["archive"], "раскладка встречи отменена из-за ревизии"
+    assert "не в UTF-8" in buf.getvalue(), buf.getvalue()
