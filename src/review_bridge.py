@@ -75,15 +75,42 @@ rewrite_file = safe_write.rewrite_file
 MANGLED = "�"
 
 
+class MangledFile(RuntimeError):
+    """Файл, который мост должен переписать, не в UTF-8 — запись не сделана.
+
+    Свой сигнал, а не `return 0`: ноль вызывающий печатает как «пунктов не
+    извлечено или все уже в минутках», хотя пункты извлечены и отказала
+    ЗАПИСЬ. Ровно от этой лжи в #553 завели LostRace — здесь тот же случай
+    (DS r1 I1 и GLM r1 I2 по №263)."""
+
+    PREFIX = "запись не состоялась: "
+
+    def __init__(self, path: pathlib.Path, what: str, reason: str):
+        self.path = path
+        super().__init__(f"{self.PREFIX}{path.name} не в UTF-8 ({reason}) — {what}")
+
+
 def _drop_mangled(items: list, dropped: list[str] | None, what: str) -> list:
-    """Пункты без нечитаемых символов; выброшенные — строкой в `dropped`.
-    Элемент списка — строка (восстановленные) или пара (снятые: пункт, почему)."""
+    """Пункты без нечитаемых символов; выброшенное — строкой в `dropped`.
+
+    Элемент — строка (восстановленные) или пара (снятые: пункт, причина).
+    ПРИЧИНА проверяется наравне с пунктом: `withdraw_from_minutes` пишет её в
+    строку минуток («~~пункт~~ _(снято ревизией: причина)_»), и битый байт в
+    хвосте «— причина: …» уезжал бы в граф тем же путём (DS r1 Critical по
+    №263). Но целое поручение из-за испорченного хвоста не теряем: пункт
+    остаётся, причина обнуляется, строка об этом — в `dropped`.
+    """
     ok = []
     for item in items:
-        text = item if isinstance(item, str) else item[0]
+        text, why = (item, "") if isinstance(item, str) else (item[0], item[1])
         if MANGLED in text:
             if dropped is not None:
                 dropped.append(f"{what} не в UTF-8 — в минутки не дописан: {text[:60]}")
+            continue
+        if MANGLED in why:
+            if dropped is not None:
+                dropped.append(f"{what}: причина не в UTF-8, снимаем без причины: {text[:60]}")
+            ok.append((text, ""))
             continue
         ok.append(item)
     return ok
@@ -458,16 +485,15 @@ def bridge(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
     # их версию своей (аудит зон 12.09, зона 4); проиграли дважды — LostRace.
     # Минутки читаются СТРОГО: их текст переписывается целиком, и замена
     # нечитаемого байта записала бы «�» в файл человека навсегда — как у
-    # перештамповки имён (№263). Не в UTF-8 — строка в `dropped`, а не
-    # исключение: мост не важнее самой ревизии, а разбираться тут человеку.
+    # перештамповки имён (№263). Не в UTF-8 — MangledFile, а не тихий 0:
+    # ноль вызывающий печатает как «пунктов не извлечено», хотя пункты
+    # извлечены и отказала запись (DS r1 I1, GLM r1 I2).
     try:
         return rewrite_file(
             minutes, lambda before: merge_into_minutes(before, items, participants, lang=lang, owner=owner),
             f"поручения ({len(items)}) не дописаны")
     except UnicodeDecodeError as e:
-        if dropped is not None:
-            dropped.append(f"{minutes.name} не в UTF-8 — поручения не дописаны ({e.reason})")
-        return 0
+        raise MangledFile(minutes, f"поручения ({len(items)}) не дописаны", e.reason) from e
 
 
 def _continuation(line: str) -> bool:
@@ -625,12 +651,11 @@ def withdraw(review: pathlib.Path, transcript: pathlib.Path, owner: str = "",
 
     try:
         # Строго, как у bridge: минутки переписываются целиком, и «�» вместо
-        # нечитаемого байта остался бы в файле человека навсегда (№263)
+        # нечитаемого байта остался бы в файле человека навсегда (№263);
+        # отказ — MangledFile, чтобы лог не выдал его за «снимать нечего»
         return rewrite_file(minutes, transform, f"снятые ({len(items)}) не перенесены")
     except UnicodeDecodeError as e:
-        if dropped is not None:
-            dropped.append(f"{minutes.name} не в UTF-8 — снятые не перенесены ({e.reason})")
-        return 0
+        raise MangledFile(minutes, f"снятые ({len(items)}) не перенесены", e.reason) from e
     finally:
         if dropped is not None and tries:
             dropped.extend(tries[-1])

@@ -715,11 +715,32 @@ def test_minutes_that_are_not_utf8_are_left_alone(tmp_path):
     minutes.write_bytes("# Минутки\n## Поручения\n- [ ] **Иван** — прислать сво".encode("utf-8")
                         + b"\xd0" + "дку\n".encode("utf-8"))
     was = minutes.read_bytes()
-    dropped: list[str] = []
-    assert rb.bridge(review, transcript, owner="Владелец", dropped=dropped) == 0
+    import pytest
+    # Сигнал, а не тихий 0: ноль вызывающий печатает как «пунктов не
+    # извлечено», хотя пункты извлечены и отказала запись (DS r1 I1, GLM r1 I2)
+    with pytest.raises(rb.MangledFile) as e:
+        rb.bridge(review, transcript, owner="Владелец")
+    assert "не в UTF-8" in str(e.value) and "поручения" in str(e.value), str(e.value)
     assert minutes.read_bytes() == was, "битые минутки переписаны"
-    assert any("не в UTF-8" in d and "поручения не дописаны" in d for d in dropped), dropped
-    dropped_w: list[str] = []
-    assert rb.withdraw(review, transcript, owner="Владелец", dropped=dropped_w) == 0
+    with pytest.raises(rb.MangledFile) as e:
+        rb.withdraw(review, transcript, owner="Владелец")
+    assert "снятые" in str(e.value), str(e.value)
     assert minutes.read_bytes() == was
-    assert any("не в UTF-8" in d and "снятые не перенесены" in d for d in dropped_w), dropped_w
+
+
+def test_a_mangled_reason_does_not_ride_into_minutes_and_does_not_kill_the_item(tmp_path):
+    """№263, круг 1, DS Critical: у снятых пунктов проверялся только текст, а
+    в минутки пишется ещё и ПРИЧИНА («~~пункт~~ _(снято ревизией: причина)_»).
+    Битый байт в хвосте «— причина: …» уезжал в граф тем же путём, который
+    фикс закрывал. Теперь причина проверяется наравне с пунктом — но целое
+    поручение из-за испорченного хвоста не теряется: снимаем без причины."""
+    transcript, minutes, review = _disk(tmp_path)
+    review.write_bytes(
+        "# Ревизия\n## Снятые поручения\n- **Иван** — прислать сводку по плану к пятнице — причина: срок уж".encode("utf-8")
+        + b"\xd0" + "е прошёл\n".encode("utf-8"))
+    dropped: list[str] = []
+    assert rb.withdraw(review, transcript, owner="Владелец", dropped=dropped) == 1
+    text = minutes.read_text(encoding="utf-8")
+    assert "�" not in text, "нечитаемая причина уехала в минутки"
+    assert "прислать сводку" in text and "~~" in text, "поручение потеряно из-за хвоста причины"
+    assert any("причина не в UTF-8" in d for d in dropped), dropped

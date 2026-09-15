@@ -2370,19 +2370,57 @@ def test_broken_bytes_from_the_sandbox_never_reach_the_graph(tmp_path):
 
 
 def test_a_broken_redirect_stub_is_quarantined_too(tmp_path):
-    """Тот же №263 на второй ветке записи: заглушка-редирект при слиянии
-    дублей пишется отдельным проходом, после канона, и читала файл тем же
-    лояльным способом."""
+    """Тот же №263 на заглушке-редиректе при слиянии дублей.
+
+    Ловит её ОСНОВНОЙ проход: строгое чтение стоит до распознавания редиректа,
+    и до отложенного прохода заглушек файл не доходит (DS r1 I2, GLM r1 I3 —
+    докстринг круга 1 утверждал обратное). Проверка всё равно нужна: узел не
+    должен превратиться в битую заглушку, потеряв тело.
+    """
     graph = _graph(tmp_path)
     dup = graph / "Ядра" / "Дубль.md"
     dup.write_text("# Дубль\n## Статус\nстарое тело\n", encoding="utf-8")
 
     def work(pen):
-        stub = "# Дубль\n\nСлито в [[Ядра/Платёжный провайдер]]\n".encode("utf-8")
-        (pen / "Ядра" / "Дубль.md").write_bytes(stub[:12] + b"\xd0" + stub[12:])
+        stub = ("# Дубль → [[Ядра/Платёжный провайдер]]\n\nДубль. Смерджен.\n").encode("utf-8")
+        (pen / "Ядра" / "Дубль.md").write_bytes(stub[:44] + b"\xd0" + stub[44:])
 
     v, qdir = _cloud_worked(graph, tmp_path, work)
     assert v.mangled == ["Ядра/Дубль.md"], v
+    assert dup.read_text(encoding="utf-8") == "# Дубль\n## Статус\nстарое тело\n"
+
+
+def test_the_stub_pass_has_its_own_net_if_the_sandbox_changes(tmp_path, monkeypatch):
+    """Второй рубеж прохода заглушек: если инвариант «песочница между
+    проходами не меняется» однажды нарушат, отказ должен быть карантином, а не
+    падением всего переноса (UnicodeDecodeError мимо `except OSError`).
+    Ветка недостижима штатно — подменяем чтение так, чтобы упал ВТОРОЙ вызов
+    по этому файлу (GLM r1 I3: либо покрыть, либо признать непокрытой)."""
+    graph = _graph(tmp_path)
+    dup = graph / "Ядра" / "Дубль.md"
+    dup.write_text("# Дубль\n## Статус\nстарое тело\n", encoding="utf-8")
+    real = cloud_review._read_exact
+    seen: list[str] = []
+
+    def flaky(path):
+        if path.name == "Дубль.md":
+            seen.append(path.name)
+            # 1 — резолвер ссылок, 2 — основной проход, 3 — отложенный проход
+            # заглушек: падаем ровно на нём, иначе тест проверял бы первый рубеж
+            if len(seen) >= 3:
+                raise UnicodeDecodeError("utf-8", b"\xd0", 0, 1, "invalid continuation byte")
+        return real(path)
+
+    monkeypatch.setattr(cloud_review, "_read_exact", flaky)
+
+    def work(pen):
+        (pen / "Ядра" / "Дубль.md").write_text(
+            "# Дубль → [[Ядра/Платёжный провайдер]]\n\nДубль. Смерджен.\n", encoding="utf-8")
+
+    v, qdir = _cloud_worked(graph, tmp_path, work)
+    assert len(seen) == 3, f"проход заглушек файл не перечитывал ({len(seen)}) — тест не о том"
+    assert v.mangled == ["Ядра/Дубль.md"], v
+    assert not v.failed, v
     assert dup.read_text(encoding="utf-8") == "# Дубль\n## Статус\nстарое тело\n"
 
 

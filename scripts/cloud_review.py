@@ -682,7 +682,12 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
             cpath = copy / rel
             if cpath.is_file():
                 try:
-                    resolver.add(graph / rel, _read(cpath))
+                    # Строго: узел, чья правка уйдёт в `mangled`, в графе НЕ
+                    # появится, а зарегистрированная цель оставила бы живую
+                    # ссылку на несуществующий узел мимо unlink-гейта и мимо
+                    # graph_unlinked.log (GLM r1 I1 по №263). UnicodeDecodeError —
+                    # подкласс ValueError, его ловит except ниже.
+                    resolver.add(graph / rel, _read_exact(cpath))
                 except (OSError, ValueError):
                     continue
     pending_stubs: list[tuple] = []       # заглушки-редиректы — после канона
@@ -801,6 +806,12 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
             # Старый текст — из СНИМКА (`old`), как и у judge выше: живой
             # файл мог уехать под конвейером после сверки хешей (DS M4 по #550).
             # Строго, как в первом проходе: заглушка — тоже текст графа (№263).
+            # Второй рубеж, а не первый: битую заглушку ловит уже основной
+            # проход (строгое чтение стоит ДО распознавания редиректа), а
+            # песочница между проходами не меняется — сюда попадает только то,
+            # что строгое чтение прошло. Ветку держим на случай, если этот
+            # инвариант однажды нарушат: без неё UnicodeDecodeError уйдёт мимо
+            # `except OSError` и уронит весь перенос (DS r1 I2, GLM r1 I3).
             try:
                 new_text = graph_updater.tidy_links(_read_exact(cpath))
             except UnicodeDecodeError:
@@ -1570,6 +1581,11 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 except review_bridge.LostRace as e:
                     raced = True
                     lines.append(f"[cloud-review] мост ревизии: {e} — минутки менял кто-то ещё, снятие не применено\n")
+                except review_bridge.MangledFile as e:
+                    # Тот же класс лжи, что у LostRace: пункты извлечены,
+                    # отказала запись — «снимать нечего» было бы неправдой (№263)
+                    raced = True
+                    lines.append(f"[cloud-review] мост ревизии: {e} — минутки не в UTF-8, правит человек\n")
                 if withdrawn:
                     lines.append(f"[cloud-review] мост ревизии ({verified}): снято поручений — {withdrawn} "
                                  f"(перенесены в «{review_bridge.WITHDRAWN_TITLE.get(lang[:2], review_bridge.WITHDRAWN_TITLE['ru'])[3:]}»)\n")
@@ -1583,6 +1599,9 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                 except review_bridge.LostRace as e:
                     raced = True
                     lines.append(f"[cloud-review] мост ревизии: {e} — минутки менял кто-то ещё, поручения не дописаны\n")
+                except review_bridge.MangledFile as e:
+                    raced = True
+                    lines.append(f"[cloud-review] мост ревизии: {e} — минутки не в UTF-8, правит человек\n")
                 if added:
                     lines.append(f"[cloud-review] мост ревизии ({verified}): в минутки дописано поручений — {added}\n")
                 elif not has_minutes:
