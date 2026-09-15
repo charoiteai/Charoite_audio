@@ -173,3 +173,20 @@ def test_lost_race_tells_a_missing_file_from_an_unreachable_one(tmp_path, monkey
     with pytest.raises(safe_write.LostRace) as exc2:
         safe_write.rewrite_file(live, lambda t: (t, 1), "проверка")
     assert exc2.value.reason == "файла нет", exc2.value.reason
+
+    # А теперь ВТОРАЯ половина имени теста: «не дотянулись». Настоящий EACCES,
+    # без подмен — иначе текст причины, который воркер печатает в единственный
+    # канал, не закреплён ничем (DS r6 I1)
+    closed = tmp_path / "закрыто"
+    closed.mkdir()
+    hidden = closed / "узел.md"
+    hidden.write_text("текст\n", encoding="utf-8")
+    closed.chmod(0o000)
+    try:
+        with pytest.raises(safe_write.LostRace) as exc3:
+            safe_write.rewrite_file(hidden, lambda t: (t, 1), "проверка")
+    finally:
+        closed.chmod(0o700)
+    assert exc3.value.reason.startswith("снимок не снят: "), exc3.value.reason
+    assert exc3.value.reason != "снимок не снят: ", "текст ошибки обязан быть назван"
+    assert "файла нет" not in exc3.value.reason
