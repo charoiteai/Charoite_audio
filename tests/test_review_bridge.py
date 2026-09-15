@@ -687,3 +687,39 @@ def test_section_bounds_prefer_the_current_heading_over_a_legacy_one():
     assert rb._section_bounds(lines) == (3, 5)
     lines = "# M\n## Поручения и сроки\n- старое\n## Решения\n- да\n".split("\n")
     assert rb._section_bounds(lines) == (1, 3)
+
+
+def test_a_mangled_item_from_the_review_never_lands_in_minutes(tmp_path):
+    """№263. Ревизия — ответ облака, и читается она с заменой нечитаемых
+    байтов: обрыв ответа не должен глушить мост целиком. Но взятый оттуда
+    ПУНКТ уезжает в минутки человека, и «�» остался бы там навсегда.
+    Такой пункт не дописывается, а называется в `dropped`."""
+    transcript, minutes, review = _disk(tmp_path)
+    review.write_bytes(
+        "# Ревизия\n## Восстановленные поручения\n- [ ] **Олег** — собрать ко".encode("utf-8")
+        + b"\xd0" + "манду\n- [ ] **Иван** — прислать план\n".encode("utf-8"))
+    dropped: list[str] = []
+    assert rb.bridge(review, transcript, owner="Владелец", dropped=dropped) == 1
+    text = minutes.read_text(encoding="utf-8")
+    assert "�" not in text, "нечитаемый байт уехал в минутки"
+    assert "прислать план" in text, "целый пункт не дописан"
+    assert any("не в UTF-8" in d for d in dropped), dropped
+
+
+def test_minutes_that_are_not_utf8_are_left_alone(tmp_path):
+    """№263, вторая сторона: минутки переписываются целиком. Раньше мост
+    читал их с заменой и записывал результат — один битый байт в файле
+    человека размножался в «�» на весь файл. Теперь файл не трогается, а
+    причина попадает в лог через `dropped`."""
+    transcript, minutes, review = _disk(tmp_path)
+    minutes.write_bytes("# Минутки\n## Поручения\n- [ ] **Иван** — прислать сво".encode("utf-8")
+                        + b"\xd0" + "дку\n".encode("utf-8"))
+    was = minutes.read_bytes()
+    dropped: list[str] = []
+    assert rb.bridge(review, transcript, owner="Владелец", dropped=dropped) == 0
+    assert minutes.read_bytes() == was, "битые минутки переписаны"
+    assert any("не в UTF-8" in d and "поручения не дописаны" in d for d in dropped), dropped
+    dropped_w: list[str] = []
+    assert rb.withdraw(review, transcript, owner="Владелец", dropped=dropped_w) == 0
+    assert minutes.read_bytes() == was
+    assert any("не в UTF-8" in d and "снятые не перенесены" in d for d in dropped_w), dropped_w

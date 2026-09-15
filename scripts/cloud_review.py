@@ -523,6 +523,7 @@ class Verdict:
     removed: list[str] = dataclasses.field(default_factory=list)    # служебная зона → в карантин
     deleted: list[str] = dataclasses.field(default_factory=list)    # облако стёрло — в графе оставлено
     failed: list[str] = dataclasses.field(default_factory=list)     # перенос не смог (OSError)
+    mangled: list[str] = dataclasses.field(default_factory=list)    # не UTF-8 в песочнице → в карантин, граф цел
     unlinked: list[str] = dataclasses.field(default_factory=list)   # «файл: цели» — ссылки без узла, ставшие текстом
     displaced: list[str] = dataclasses.field(default_factory=list)  # тела узлов, ставших заглушками, — в карантине
     rolled_back: bool = False        # ответ невалиден — откачено всё
@@ -563,12 +564,28 @@ def judge(path: pathlib.Path, graph: pathlib.Path, old_text: str, new_text: str,
 
 
 def _read(p: pathlib.Path) -> str:
-    """Текст файла или пустая строка: в графе бинарников нет, а битую
-    кодировку заменяем, а не роняем на ней перенос."""
+    """Текст файла или пустая строка ДЛЯ СВЕРКИ: в графе бинарников нет, а
+    битую кодировку заменяем, а не роняем на ней перенос. Читать так можно
+    только то, что никуда не записывается (снимок для judge, цели ссылок):
+    текст, который уедет в граф, берётся `_read_exact` (№263)."""
     try:
         return p.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
+
+
+def _read_exact(p: pathlib.Path) -> str:
+    """Текст файла БЕЗ подмены нечитаемых байтов — для того, что пишется в граф.
+
+    Замена (`errors="replace"`) здесь не спасала перенос, а тихо портила
+    узел: один оборванный байт в песочнице (обрыв записи посреди UTF-8,
+    файл из чужого редактора) — и «�» встаёт в текст графа навсегда,
+    причём прежняя версия уже перезаписана. Целый файл в чужой кодировке
+    ловил judge по retention, а несколько байт в валидном тексте проходили
+    все гейты. Отказ честнее: правка облака уходит в карантин, граф цел
+    (№263).
+    """
+    return p.read_text(encoding="utf-8")
 
 
 def edits_in_copy(before: dict[str, str], copy: pathlib.Path) -> list[pathlib.Path]:
@@ -693,7 +710,15 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
             # нормализуем ДО judge и распознавания заглушки: «[[Ядра/ Канон]]»
             # иначе не находил канон, а перенос в первой строке ломал
             # is_redirect_stub (luna, круг-1 #448 I6); карантин берёт cpath как есть
-            new = graph_updater.tidy_links(_read(cpath)) if cpath.is_file() else None
+            try:
+                new = graph_updater.tidy_links(_read_exact(cpath)) if cpath.is_file() else None
+            except UnicodeDecodeError:
+                # Не UTF-8 — в граф не пойдёт: это единственная ветка, где
+                # порча приезжала в узел молча и мимо judge (№263). Версия
+                # облака остаётся человеку в карантине, файл графа цел.
+                quarantine(cpath, copy, qdir, move=False)
+                v.mangled.append(name)
+                continue
             if new is None:                       # облако стёрло файл
                 # Удаление НЕ переносим: у облака нет причин стирать чужое,
                 # а восстановление стёртого — это и был откат, из-за
@@ -772,10 +797,16 @@ def apply_from_copy(before: dict[str, str], copy: pathlib.Path,
                 cands.append((rel.parent / target).as_posix())
             cands = [os.path.normpath(c) for c in cands]
             bad = set(v.reverted) | set(v.removed) | set(v.conflicts) \
-                | set(v.deleted) | set(v.failed)
+                | set(v.deleted) | set(v.failed) | set(v.mangled)
             # Старый текст — из СНИМКА (`old`), как и у judge выше: живой
             # файл мог уехать под конвейером после сверки хешей (DS M4 по #550).
-            new_text = graph_updater.tidy_links(_read(cpath))
+            # Строго, как в первом проходе: заглушка — тоже текст графа (№263).
+            try:
+                new_text = graph_updater.tidy_links(_read_exact(cpath))
+            except UnicodeDecodeError:
+                quarantine(cpath, copy, qdir, move=False)
+                v.mangled.append(name)
+                continue
             if any(canon_merged(c, graph, bad, old, new_text) for c in cands):
                 # Тело вытесняемого узла — в копию ДО записи заглушки, мимо
                 # ротации карантина прогонов. До 13.09 оно жило только в
@@ -1656,9 +1687,13 @@ def _verdict_line(v: Verdict, qdir: pathlib.Path) -> str:
         parts.append(f"облако стёрло — в графе ОСТАВЛЕНО: {', '.join(v.deleted)}")
     if v.removed:
         parts.append(f"создано в служебной зоне — в карантин: {', '.join(v.removed)}")
+    if v.mangled:
+        # Не «не смог», а «не понёс»: файл читается, но не в UTF-8, и запись
+        # такого в граф оставила бы «�» в узле навсегда (№263)
+        parts.append(f"не UTF-8, в граф НЕ перенесено: {', '.join(v.mangled)}")
     if v.failed:
         parts.append(f"ПЕРЕНОС НЕ СМОГ (ошибка диска/прав): {', '.join(v.failed)}")
-    if v.reverted or v.removed or v.conflicts:
+    if v.reverted or v.removed or v.conflicts or v.mangled:
         # именно то, что реально ЛЕЖИТ в карантине: удаления туда не
         # кладутся — файла в песочнице нет (luna, M2)
         parts.append(f"версии облака в карантине {qdir}")

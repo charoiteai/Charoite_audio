@@ -2334,3 +2334,68 @@ def test_run_does_not_start_a_second_full_pass_over_a_fresh_review(tmp_path, mon
     monkeypatch.setattr(cloud_review, "graph_lock", lock_after_neighbour)
     assert cloud_review.run(stamp, transcript, graph, rev, log, cfg, force=True) == cloud_review.RC_OK
     assert len(calls) == 3, "--force не запустил разбор"
+
+
+def test_broken_bytes_from_the_sandbox_never_reach_the_graph(tmp_path):
+    """№263. Облако правило узел, но записало его не в UTF-8 — оборвало
+    многобайтный символ, или файл побывал в чужом редакторе.
+
+    Перенос читал такой файл с заменой (`errors="replace"`) и писал результат
+    в граф: «�» вставал в текст узла НАВСЕГДА, а прежняя версия была уже
+    перезаписана. Целую страницу в чужой кодировке ловил judge по retention —
+    несколько битых байт в валидном тексте проходили все гейты молча.
+
+    Теперь текст, который уедет в граф, читается строго: правка облака идёт в
+    карантин, узел остаётся прежним, а строка лога называет файл.
+    """
+    graph = _graph(tmp_path)
+    node = graph / "Ядра" / "Платёжный провайдер.md"
+    was = node.read_text(encoding="utf-8")
+
+    def work(pen):
+        good = was.encode("utf-8")
+        tail = "\n## Статус\nОблако дописало: платёж прошёл\n".encode("utf-8")
+        (pen / "Ядра" / "Платёжный провайдер.md").write_bytes(good + tail[:20] + b"\xd0" + tail[20:])
+
+    v, qdir = _cloud_worked(graph, tmp_path, work)
+    assert v.touched == 1
+    assert v.mangled == ["Ядра/Платёжный провайдер.md"], v
+    assert not v.applied and not v.failed, v
+    assert node.read_text(encoding="utf-8") == was, "битый текст уехал в граф"
+    assert "�" not in node.read_bytes().decode("utf-8", "replace")
+    # версия облака человеку — в карантине, а не потеряна
+    assert list(qdir.rglob("Платёжный провайдер.md")), "правку облака не сохранили"
+    line = cloud_review._verdict_line(v, qdir)
+    assert "не UTF-8" in line and "Платёжный провайдер" in line, line
+
+
+def test_a_broken_redirect_stub_is_quarantined_too(tmp_path):
+    """Тот же №263 на второй ветке записи: заглушка-редирект при слиянии
+    дублей пишется отдельным проходом, после канона, и читала файл тем же
+    лояльным способом."""
+    graph = _graph(tmp_path)
+    dup = graph / "Ядра" / "Дубль.md"
+    dup.write_text("# Дубль\n## Статус\nстарое тело\n", encoding="utf-8")
+
+    def work(pen):
+        stub = "# Дубль\n\nСлито в [[Ядра/Платёжный провайдер]]\n".encode("utf-8")
+        (pen / "Ядра" / "Дубль.md").write_bytes(stub[:12] + b"\xd0" + stub[12:])
+
+    v, qdir = _cloud_worked(graph, tmp_path, work)
+    assert v.mangled == ["Ядра/Дубль.md"], v
+    assert dup.read_text(encoding="utf-8") == "# Дубль\n## Статус\nстарое тело\n"
+
+
+def test_a_clean_edit_still_goes_through(tmp_path):
+    """Контроль к №263: строгое чтение не мешает обычной правке в UTF-8."""
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+    was = node.read_text(encoding="utf-8")
+
+    def work(pen):
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            was + "## Решения\nдописано облаком\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, work)
+    assert v.applied == ["Встречи/2026-07-15_1400.md"], v
+    assert not v.mangled and "дописано облаком" in node.read_text(encoding="utf-8")
