@@ -364,6 +364,17 @@ that exists in neither becomes plain text, the log names the file and the
 targets, and the removed targets accumulate in `logs/graph_unlinked.log`
 as candidates for a node or an alias — before this, such links landed in
 the graph broken.
+Text on its way into the graph is read STRICTLY and must not bring
+unreadable characters with it: a sandbox file that does not decode as UTF-8
+goes to quarantine with its own verdict line, and so does an edit that adds
+«�» to a line the node did not have — a node where such a character
+already lived can still be edited. The same on the bridge side: the minutes
+are rewritten after a strict read, an item or a withdrawal reason carrying
+the character never reaches them, a name carrying it never reaches speaker
+headings or a People node, and a revision that is itself not UTF-8 is not
+copied into the graph (the meeting is still archived). Before this the
+transfer read the file with replacement and wrote the result back, so a
+single truncated byte stayed in the node forever.
 When a duplicate node is turned into a redirect stub, the body it displaces
 is copied next to the run quarantine but outside its rotation
 (`cloud_quarantine/вытеснено/<run>/`, the last 100 runs are kept), and the
