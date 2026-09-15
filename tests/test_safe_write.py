@@ -157,6 +157,7 @@ def test_lost_race_tells_a_missing_file_from_an_unreachable_one(tmp_path, monkey
     with pytest.raises(safe_write.LostRace) as exc:
         safe_write.rewrite_file(gone, lambda t: (t, 1), "проверка")
     assert exc.value.reason == "файла нет", exc.value.reason
+    assert exc.value.gone, "исчезнувший файл опознаётся свойством, а не сверкой текста"
 
     # Файл исчез МЕЖДУ снимком и чтением — тот же факт, та же причина, иначе
     # вызывающий обвинит в мёртвых ссылках файл, которого нет (DS r5 Critical 2)
@@ -172,7 +173,7 @@ def test_lost_race_tells_a_missing_file_from_an_unreachable_one(tmp_path, monkey
     monkeypatch.setattr(pathlib.Path, "read_text", vanish)
     with pytest.raises(safe_write.LostRace) as exc2:
         safe_write.rewrite_file(live, lambda t: (t, 1), "проверка")
-    assert exc2.value.reason == "файла нет", exc2.value.reason
+    assert exc2.value.gone and exc2.value.reason == "файла нет", exc2.value.reason
 
     # А теперь ВТОРАЯ половина имени теста: «не дотянулись». Настоящий EACCES,
     # без подмен — иначе текст причины, который воркер печатает в единственный
@@ -187,6 +188,33 @@ def test_lost_race_tells_a_missing_file_from_an_unreachable_one(tmp_path, monkey
             safe_write.rewrite_file(hidden, lambda t: (t, 1), "проверка")
     finally:
         closed.chmod(0o700)
-    assert exc3.value.reason.startswith("снимок не снят: "), exc3.value.reason
-    assert exc3.value.reason != "снимок не снят: ", "текст ошибки обязан быть назван"
-    assert "файла нет" not in exc3.value.reason
+    assert exc3.value.unreachable, exc3.value.kind
+    assert not exc3.value.gone, "недоступный файл не «исчез» — он остался как был"
+    # подробность системы — ОТДЕЛЬНОЕ поле, а не хвост текста: пока она жила
+    # в `reason` за префиксом, третий вид опознавали через startswith, то есть
+    # текстом (DS I3 и GLM критика 1, круг 1 по №277)
+    assert exc3.value.detail and "Permission denied" in exc3.value.detail, exc3.value.detail
+    assert exc3.value.reason == f"снимок не снят: {exc3.value.detail}", exc3.value.reason
+
+
+def test_the_kind_of_a_lost_race_must_be_chosen_not_inherited(tmp_path):
+    """№277, круг 2, DS I2 и M3. Умолчанием вида был CHANGED — самая
+    обвинительная из трёх причин: новое место отказа получало «поверх писал
+    кто-то ещё» бесплатно, ничем не подтверждённое, в единственный канал
+    воркера. Вид обязан быть решением вызывающего. Неизвестный вид — своя
+    понятная ошибка, а не KeyError поверх настоящей причины отказа записи."""
+    p = tmp_path / "узел.md"
+    with pytest.raises(TypeError):
+        safe_write.LostRace(p, "что-то не сделано")          # без вида — нельзя
+    with pytest.raises(ValueError) as bad:
+        safe_write.LostRace(p, "что-то не сделано", kind="unreachble")
+    assert "неизвестный вид причины" in str(bad.value), bad.value
+    # все три вида живые и различимы признаками, ни один не «по умолчанию»
+    kinds = {safe_write.LostRace.CHANGED: (False, False),
+             safe_write.LostRace.GONE: (True, False),
+             safe_write.LostRace.UNREACHABLE: (False, True)}
+    for kind, (gone, unreachable) in kinds.items():
+        exc = safe_write.LostRace(p, "что-то не сделано", kind=kind)
+        assert (exc.gone, exc.unreachable) == (gone, unreachable), kind
+        assert exc.reason and exc.path is p and kind not in exc.reason, \
+            "вид — ключ для машины, reason — текст для человека"

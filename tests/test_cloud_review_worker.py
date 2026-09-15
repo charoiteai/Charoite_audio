@@ -876,7 +876,8 @@ def test_lost_race_on_the_transcript_keeps_the_corrected_names_as_participants(t
         return Result()
 
     def lost(*a, **k):
-        raise review_bridge.LostRace(transcript, "заголовки реплик не тронуты")
+        raise review_bridge.LostRace(transcript, "заголовки реплик не тронуты",
+                                     kind=review_bridge.LostRace.CHANGED)
 
     monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
     monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
@@ -889,6 +890,69 @@ def test_lost_race_on_the_transcript_keeps_the_corrected_names_as_participants(t
     assert "**Сергей** [14:00]:" in transcript.read_text(encoding="utf-8")
     tasks = minutes.read_text(encoding="utf-8").split("## Поручения\n", 1)[1].split("\n## ", 1)[0]
     assert "- [ ] **Мария** — согласовать план (из ревизии)" in tasks and "⚠" not in tasks, tasks
+
+
+def test_the_log_does_not_blame_a_stranger_when_the_minutes_are_simply_gone(tmp_path, monkeypatch):
+    """№273 круг 6 (DS M4) и №277 круг 1 (DS C1/C2, GLM C1/I1). Оба моста
+    проверяют is_file() перед записью, значит LostRace с причиной «файла нет»
+    означает окно между проверкой и записью, а не чужую правку; «не дотянулись»
+    — тем более не правка. Лог говорил «минутки менял кто-то ещё» на все три
+    вида и у ОБОИХ вызовов — та же ложь в единственном канале воркера, от
+    которой заведён сам LostRace. Здесь закреплены три вида × два вызова."""
+    import review_bridge
+    stamp = "2026-07-15_1400"
+    graph = _graph(tmp_path)
+    transcript, rev, log = _meeting(tmp_path)
+    minutes = transcript.with_name(transcript.stem + "_minutes.md")
+    minutes.write_text("# Минутки\n**Участники:** Сергей\n\n## Поручения\n- [ ] **Сергей** — согласовать план\n",
+                       encoding="utf-8")
+    rev.unlink(missing_ok=True)
+    review = _REPORT + "\n## Снятые поручения\n- **Сергей** — согласовать план — причина: не звучало\n"
+
+    class Result:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        kwargs["stdout"].write(review)
+        return Result()
+
+    monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
+
+    kinds = (
+        (review_bridge.LostRace.GONE, "", "минуток больше нет", "менял кто-то ещё"),
+        # падеж: одна форма существительного на две синтаксические роли дала
+        # «минуток менял кто-то ещё» (DS I1 r2) — в этой ветке говорим о файле
+        (review_bridge.LostRace.CHANGED, "", "файл менял кто-то ещё", "больше нет"),
+        # подробность системы печатается ОДИН раз, из текста сигнала (DS M1 r2)
+        (review_bridge.LostRace.UNREACHABLE, "Permission denied",
+         "до файла не дотянулись,", "менял кто-то ещё"),
+    )
+    # оба вызова моста в одном прогоне: у withdraw различение было, у bridge —
+    # безусловная фраза, и это выяснилось только потому, что головы прочли
+    # соседние тридцать строк (DS C2, GLM C1)
+    for who, what in (("withdraw", "снятые (1) не перенесены"),
+                      ("bridge", "поручения (1) не дописаны")):
+        for kind, detail, expected, forbidden in kinds:
+            log.write_text("", encoding="utf-8")
+
+            def lost(*a, _kind=kind, _detail=detail, _what=what, **k):
+                raise review_bridge.LostRace(minutes, _what, kind=_kind, detail=_detail)
+
+            monkeypatch.setattr(cloud_review.review_bridge, who, lost)
+            assert cloud_review.run(stamp, transcript, graph, rev, log,
+                                    {"sufler": {"cloud_enrich": True, "cloud_edit_graph": True}}) == 0
+            text = log.read_text(encoding="utf-8")
+            assert "мост ревизии: " in text and expected in text, (who, kind, text)
+            assert forbidden not in text, (who, kind, text)
+            assert "снимать нечего" not in text, "пункт извлечён, отказала запись"
+            if detail:
+                # подробность системы печатается один раз — она уже в тексте
+                # сигнала, и хелпер её не пересказывает (DS M1 r2)
+                assert text.count(detail) == 1, (who, kind, text)
+        monkeypatch.undo()
+        monkeypatch.setattr(cloud_review.subprocess, "run", fake_run)
+        monkeypatch.setattr(cloud_review.graph_updater, "cloud_graph_available", lambda g: True)
 
 
 def test_unreadable_subfolder_downgrades_to_read_only(tmp_path, monkeypatch):

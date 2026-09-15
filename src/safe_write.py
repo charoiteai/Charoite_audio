@@ -126,37 +126,88 @@ def _carry_over_metadata(src: pathlib.Path, dst: pathlib.Path) -> None:
 
 
 class LostRace(RuntimeError):
-    """Файл сменился между чтением и записью дважды подряд (или снимок не
-    снялся) — запись не сделана, чужая версия осталась. Машинный сигнал
+    """Запись не сделана, на диске осталась чужая версия. Машинный сигнал
     вызывающему: лог не должен выдавать это за «нечего дописывать» (GLM I2 /
     DS I2 по #553); строки с PREFIX в списках `dropped` — тот же сигнал там,
-    где исключение не проходит. `reason` — что именно случилось: «сменились
-    под рукой» против «снимок не снят: файла нет или он недоступен» (DS M3 r2)."""
+    где исключение не проходит.
+
+    Причина — ЗНАЧЕНИЕ (`kind`), а не текст: ТРИ вида, и каждый требует от
+    вызывающего разного.
+
+    `CHANGED` — файл сменился под рукой дважды подряд: наша правка не легла на
+    живой файл, поверх писал кто-то ещё. `GONE` — файла нет (исчез до снимка
+    или между снимком и чтением): править нечего, и упрекнуть его не в чем. Это
+    конец состояния, а не отсутствие истории: на второй попытке `GONE` приходит
+    ПОСЛЕ проигранной записи, то есть чужая правка была — но файла всё равно
+    больше нет (GLM M1 r1 по №277). `UNREACHABLE` — до файла не дотянулись
+    (права, том, ввод-вывод), он остался как был, и сказать об этом надо вслух;
+    подробность системы лежит в `detail` ОТДЕЛЬНЫМ полем.
+
+    Человеческий текст (`reason`, и через него сообщение) собирается здесь, в
+    одном месте, из вида и подробности. Вызывающий спрашивает `gone` /
+    `unreachable` / `kind` и НИКОГДА не разбирает текст: он за один круг
+    менялся дважды, и сравнение с литералом в чужом модуле ломалось бы молча.
+    Первая версия этого набора оставила `UNREACHABLE` префиксом текста — и
+    третий вид немедленно снова начали опознавать через `startswith`, то есть
+    дефект воспроизвёлся внутри решения (DS C1/I3 и GLM I1, критика 1, r1)."""
 
     PREFIX = "запись не состоялась: "
+    CHANGED = "changed"
+    GONE = "gone"
+    UNREACHABLE = "unreachable"
 
-    def __init__(self, path: pathlib.Path, what: str, reason: str = "сменились под рукой"):
+    _SAID = {CHANGED: "сменились под рукой",
+             GONE: "файла нет",
+             UNREACHABLE: "снимок не снят"}
+
+    def __init__(self, path: pathlib.Path, what: str, kind: str, detail: str = ""):
+        # Вид обязателен и без умолчания: умолчанием был CHANGED — самая
+        # обвинительная из трёх причин, и новое место отказа получало
+        # «поверх писал кто-то ещё» бесплатно, ничем не подтверждённое
+        # (DS I2 r2). Неизвестный вид — своя ошибка, а не KeyError поверх
+        # настоящей причины отказа записи (DS M3 r2).
+        said = self._SAID.get(kind)
+        if said is None:
+            raise ValueError(f"неизвестный вид причины: {kind!r}")
         self.path = path
-        self.reason = reason          # чтобы вызывающий не разбирал текст сообщения
-        super().__init__(f"{self.PREFIX}{path.name} {reason} — {what}")
+        self.kind = kind              # вид причины — значение, его и спрашивают
+        self.detail = detail          # подробность системы, отдельно от вида
+        self.reason = said + (f": {detail}" if detail else "")
+        super().__init__(f"{self.PREFIX}{path.name} {self.reason} — {what}")
+
+    @property
+    def gone(self) -> bool:
+        """Файла нет — в нём нечего править и не в чем его упрекнуть."""
+        return self.kind == self.GONE
+
+    @property
+    def unreachable(self) -> bool:
+        """До файла не дотянулись — он остался как был, и это надо сказать."""
+        return self.kind == self.UNREACHABLE
 
 
-def _snapshot_or_why(path: pathlib.Path) -> tuple[tuple[int, int] | None, str]:
-    """Снимок ОДНИМ stat — или причина, почему его нет.
+def _snapshot_or_raise(path: pathlib.Path, what: str) -> tuple[int, int]:
+    """Снимок ОДНИМ stat — или LostRace с причиной из ошибки этого же stat.
 
     «Файла нет» и «не дотянулись» — разные факты, и вызывающему важна именно
     эта разница: в исчезнувшем файле нечего править, а недоступный остаётся
     как был. Второй опрос диска для различения не годится — это тот же `stat`,
     который только что отказал, и он либо соврёт на гонке, либо бросит сам
     (DS r4 и r5 по №273). Поэтому причину берём прямо из ошибки первого.
+
+    Бросает сама, а не возвращает пару «снимок или причина»: причина без
+    исключения — значение, которое вызывающий может забыть проверить, и
+    «причины нет» пришлось бы кодировать пустой строкой, неотличимой от
+    настоящей (DS M5 r6).
     """
     try:
         st = path.stat()
     except FileNotFoundError:
-        return None, "файла нет"
+        raise LostRace(path, what, kind=LostRace.GONE) from None
     except OSError as exc:
-        return None, f"снимок не снят: {exc.strerror or exc}"
-    return (st.st_mtime_ns, st.st_size), ""
+        raise LostRace(path, what, kind=LostRace.UNREACHABLE,
+                       detail=str(exc.strerror or exc)) from None
+    return st.st_mtime_ns, st.st_size
 
 
 def rewrite_file(path: pathlib.Path, transform, what: str) -> int:
@@ -173,19 +224,17 @@ def rewrite_file(path: pathlib.Path, transform, what: str) -> int:
     write_text: гейт потери обновления один на всех писателей, и цикл повтора
     тоже (критика DS r2 по #553)."""
     for _attempt in (1, 2):
-        snap, why = _snapshot_or_why(path)
-        if snap is None:
-            raise LostRace(path, what, reason=why)
+        snap = _snapshot_or_raise(path, what)
         try:
             before = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             # Файл исчез между снимком и чтением. Это тот же факт «файла нет»,
             # и называть его надо так же: иначе вызывающий обвинит в мёртвых
             # ссылках файл, которого нет (DS r5 Critical 2).
-            raise LostRace(path, what, reason="файла нет") from None
+            raise LostRace(path, what, kind=LostRace.GONE) from None
         after, n = transform(before)
         if not n:
             return 0
         if write_text(path, after, expect=snap):
             return n
-    raise LostRace(path, what)
+    raise LostRace(path, what, kind=LostRace.CHANGED)
