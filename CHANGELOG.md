@@ -5,6 +5,15 @@ All notable changes to Charoite are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.4](https://github.com/charoiteai/Charoite_audio/compare/v0.81.3...v0.81.4) (2026-09-15)
+
+
+### Bug Fixes
+
+* **graph:** мёртвые ссылки снимаются по факту графа, доктор видит не-UTF-8 ([#571](https://github.com/charoiteai/Charoite_audio/issues/571)) ([5b18ee4](https://github.com/charoiteai/Charoite_audio/commit/5b18ee45ce92b9d3d0946f82b43908eb0e238034))
+* **graph:** причина отказа записи — значение, а не текст в чужом модуле ([#572](https://github.com/charoiteai/Charoite_audio/issues/572)) ([d616e30](https://github.com/charoiteai/Charoite_audio/commit/d616e306ce4df29bc8456f5a918e185b07e5739e))
+* **graph:** текст с нечитаемыми символами не уезжает в граф ([#569](https://github.com/charoiteai/Charoite_audio/issues/569)) ([ca6c06f](https://github.com/charoiteai/Charoite_audio/commit/ca6c06fd00a8798f0d9d1e1bb013edcba9df9c45))
+
 ## [0.81.3](https://github.com/charoiteai/Charoite_audio/compare/v0.81.2...v0.81.3) (2026-09-14)
 
 
