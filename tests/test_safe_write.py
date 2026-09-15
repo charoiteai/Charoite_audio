@@ -146,3 +146,47 @@ def test_claim_takes_a_name_exactly_once_and_write_text_fills_it(tmp_path):
     assert safe_write.write_text(path, "текст") is True
     assert path.read_text(encoding="utf-8") == "текст"
     # права не проверяем: их задаёт umask процесса (CI прогоняет всё дерево одним процессом)
+
+
+def test_lost_race_tells_a_missing_file_from_an_unreachable_one(tmp_path, monkeypatch):
+    """№273, круг 4. «Файла нет» и «не дотянулись» — разные факты: в
+    исчезнувшем файле нечего править, недоступный остаётся как был. Различаем
+    в момент отказа, а не опросом диска в обработчике: `Path.exists()` там сам
+    бросает на EACCES/EIO и роняет перенос уже ПОСЛЕ записи."""
+    gone = tmp_path / "нет.md"
+    with pytest.raises(safe_write.LostRace) as exc:
+        safe_write.rewrite_file(gone, lambda t: (t, 1), "проверка")
+    assert exc.value.reason == "файла нет", exc.value.reason
+
+    # Файл исчез МЕЖДУ снимком и чтением — тот же факт, та же причина, иначе
+    # вызывающий обвинит в мёртвых ссылках файл, которого нет (DS r5 Critical 2)
+    live = tmp_path / "жил.md"
+    live.write_text("текст\n", encoding="utf-8")
+    real_read = pathlib.Path.read_text
+
+    def vanish(self, *a, **kw):
+        if self.name == "жил.md":
+            raise FileNotFoundError(2, "No such file or directory", str(self))
+        return real_read(self, *a, **kw)
+
+    monkeypatch.setattr(pathlib.Path, "read_text", vanish)
+    with pytest.raises(safe_write.LostRace) as exc2:
+        safe_write.rewrite_file(live, lambda t: (t, 1), "проверка")
+    assert exc2.value.reason == "файла нет", exc2.value.reason
+
+    # А теперь ВТОРАЯ половина имени теста: «не дотянулись». Настоящий EACCES,
+    # без подмен — иначе текст причины, который воркер печатает в единственный
+    # канал, не закреплён ничем (DS r6 I1)
+    closed = tmp_path / "закрыто"
+    closed.mkdir()
+    hidden = closed / "узел.md"
+    hidden.write_text("текст\n", encoding="utf-8")
+    closed.chmod(0o000)
+    try:
+        with pytest.raises(safe_write.LostRace) as exc3:
+            safe_write.rewrite_file(hidden, lambda t: (t, 1), "проверка")
+    finally:
+        closed.chmod(0o700)
+    assert exc3.value.reason.startswith("снимок не снят: "), exc3.value.reason
+    assert exc3.value.reason != "снимок не снят: ", "текст ошибки обязан быть назван"
+    assert "файла нет" not in exc3.value.reason

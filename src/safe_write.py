@@ -137,7 +137,26 @@ class LostRace(RuntimeError):
 
     def __init__(self, path: pathlib.Path, what: str, reason: str = "сменились под рукой"):
         self.path = path
+        self.reason = reason          # чтобы вызывающий не разбирал текст сообщения
         super().__init__(f"{self.PREFIX}{path.name} {reason} — {what}")
+
+
+def _snapshot_or_why(path: pathlib.Path) -> tuple[tuple[int, int] | None, str]:
+    """Снимок ОДНИМ stat — или причина, почему его нет.
+
+    «Файла нет» и «не дотянулись» — разные факты, и вызывающему важна именно
+    эта разница: в исчезнувшем файле нечего править, а недоступный остаётся
+    как был. Второй опрос диска для различения не годится — это тот же `stat`,
+    который только что отказал, и он либо соврёт на гонке, либо бросит сам
+    (DS r4 и r5 по №273). Поэтому причину берём прямо из ошибки первого.
+    """
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return None, "файла нет"
+    except OSError as exc:
+        return None, f"снимок не снят: {exc.strerror or exc}"
+    return (st.st_mtime_ns, st.st_size), ""
 
 
 def rewrite_file(path: pathlib.Path, transform, what: str) -> int:
@@ -154,10 +173,16 @@ def rewrite_file(path: pathlib.Path, transform, what: str) -> int:
     write_text: гейт потери обновления один на всех писателей, и цикл повтора
     тоже (критика DS r2 по #553)."""
     for _attempt in (1, 2):
-        snap = stat_snapshot(path)
+        snap, why = _snapshot_or_why(path)
         if snap is None:
-            raise LostRace(path, what, reason="снимок файла не снят: файла нет или он недоступен")
-        before = path.read_text(encoding="utf-8")
+            raise LostRace(path, what, reason=why)
+        try:
+            before = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # Файл исчез между снимком и чтением. Это тот же факт «файла нет»,
+            # и называть его надо так же: иначе вызывающий обвинит в мёртвых
+            # ссылках файл, которого нет (DS r5 Critical 2).
+            raise LostRace(path, what, reason="файла нет") from None
         after, n = transform(before)
         if not n:
             return 0

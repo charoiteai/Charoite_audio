@@ -364,6 +364,12 @@ that exists in neither becomes plain text, the log names the file and the
 targets, and the removed targets accumulate in `logs/graph_unlinked.log`
 as candidates for a node or an alias — before this, such links landed in
 the graph broken.
+Dead links are stripped AFTER every write of the run, from the graph as it
+now stands: a target is alive if the file is there. An edit's fate cannot be
+predicted — a write fails after the decision — so the «will this node land»
+probe is gone, and a failure of the stripping pass goes into the verdict as
+«dead links remain». The cost: a file that lost a link is written twice, and
+the window between the writes is what the doctor catches.
 Text on its way into the graph is read STRICTLY and must not bring
 unreadable characters with it: a sandbox file that does not decode as UTF-8
 goes to quarantine with its own verdict line, and so does an edit that adds

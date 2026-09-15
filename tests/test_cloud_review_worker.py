@@ -57,6 +57,18 @@ def _graph(tmp: pathlib.Path) -> pathlib.Path:
     return graph
 
 
+@pytest.fixture(autouse=True)
+def _backups_out_of_the_repo(tmp_path, monkeypatch):
+    """Снимки и песочницы — в tmp теста, а не в данных установки.
+
+    `backup_root` кладёт их под `cloud_review.ROOT`, и на машине разработчика
+    это корень репозитория: каждый тест переноса оставлял там каталог. Тест
+    приватности (`test_no_voice_biometrics`) сверяет, что в репозитории не
+    появилось файлов, и падал, когда случайный порядок ставил его ПОСЛЕ
+    этих тестов. Прогон не должен зависеть от порядка."""
+    monkeypatch.setattr(cloud_review, "ROOT", tmp_path / "данные")
+
+
 def _cloud_worked(graph: pathlib.Path, tmp: pathlib.Path, work) -> tuple:
     """Облако поработало в песочнице — вернуть вердикт переноса и карантин.
 
@@ -2554,3 +2566,158 @@ def test_the_meeting_is_still_archived_when_the_review_is_not_utf8(tmp_path, mon
     cloud_review.deliver_review(rev, transcript, graph, "2026-07-15_1400", buf)
     assert called == ["archive"], "раскладка встречи отменена из-за ревизии"
     assert "не в UTF-8" in buf.getvalue(), buf.getvalue()
+
+
+def test_a_link_to_a_new_node_that_never_lands_becomes_text(tmp_path):
+    """№273. Узел, ушедший в карантин, не должен оставаться живой целью:
+    `[[ссылка]]` на него из другой правки переживала unlink-гейт и не попадала
+    в журнал снятых — узла нет, а ссылка цела. Снятие идёт по факту графа,
+    поэтому случай закрыт тем же одним правилом.
+
+    Здесь облако заводит узел в ЗАЩИЩЁННОЙ зоне (judge вернёт `removed`) и
+    ссылается на него из обычного узла.
+    """
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+
+    def work(pen):
+        (pen / "Встречи-архив").mkdir(exist_ok=True)
+        (pen / "Встречи-архив" / "Новый.md").write_text("# Новый\nтело\n", encoding="utf-8")
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\n## Связи\nсм. [[Встречи-архив/Новый]]\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, work)
+    assert "Встречи-архив/Новый.md" in v.removed, v
+    assert not (graph / "Встречи-архив" / "Новый.md").exists(), "узел в защищённой зоне не должен лечь"
+    text = node.read_text(encoding="utf-8")
+    assert "[[Встречи-архив/Новый]]" not in text, "живая ссылка на узел, которого нет"
+    assert "см. Новый" in text, "текст ссылки должен остаться текстом (unlink снимает скобки)"
+    assert any("Новый" in u for u in v.unlinked), v.unlinked
+
+
+def test_a_link_to_a_new_node_that_does_land_stays_a_link(tmp_path):
+    """Контроль к №273: узел, который реально лёг, целью остаётся — снятие
+    работает по факту графа и законную ссылку не трогает."""
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+
+    def work(pen):
+        (pen / "Системы").mkdir(exist_ok=True)
+        (pen / "Системы" / "Квен.md").write_text("# Квен\nмодель\n", encoding="utf-8")
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\n## Связи\nсм. [[Системы/Квен]]\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, work)
+    assert (graph / "Системы" / "Квен.md").exists(), v
+    assert "[[Системы/Квен]]" in node.read_text(encoding="utf-8"), "законная ссылка снята зря"
+    assert not v.unlinked, v.unlinked
+
+
+def test_a_link_survives_nothing_when_the_write_of_its_target_fails(tmp_path, monkeypatch):
+    """№273, круг 1, DS и GLM Critical 1. Запись узла может упасть уже ПОСЛЕ
+    того, как решение принято (ENOSPC, права, вытеснение файла из iCloud) —
+    предсказание такое не ловит по определению. Снятие ссылок работает по
+    факту графа, поэтому случай закрыт тем же одним правилом."""
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+    real_write = cloud_review.safe_write.write_text
+
+    def flaky(path, text, **kw):
+        if path.name == "Квен.md":
+            raise OSError(28, "No space left on device")
+        return real_write(path, text, **kw)
+
+    monkeypatch.setattr(cloud_review.safe_write, "write_text", flaky)
+
+    def work(pen):
+        (pen / "Системы").mkdir(exist_ok=True)
+        (pen / "Системы" / "Квен.md").write_text("# Квен\nмодель\n", encoding="utf-8")
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\n## Связи\nсм. [[Системы/Квен]]\n", encoding="utf-8")
+
+    v, _ = _cloud_worked(graph, tmp_path, work)
+    assert v.failed == ["Системы/Квен.md"], v
+    assert not (graph / "Системы" / "Квен.md").exists(), "узел не записался — его нет"
+    text = node.read_text(encoding="utf-8")
+    assert "[[Системы/Квен]]" not in text, "живая ссылка на узел, запись которого упала"
+    assert "см. Квен" in text
+    assert any("Квен" in u for u in v.unlinked), v.unlinked
+
+
+def test_a_failed_second_write_degrades_into_the_verdict(tmp_path, monkeypatch):
+    """№273, круг 2, Critical обеих голов. Отказ ВТОРОЙ записи (снятие мёртвых
+    ссылок) обрабатывался строкой с логгером, которого в модуле нет: первый же
+    сбой поднимал NameError уже ПОСЛЕ того, как оба прохода всё записали, и
+    лог сообщал «ПЕРЕНОС УПАЛ, граф цел» — ложь вдвойне. Логгера здесь и не
+    должно быть: stderr воркера уходит в никуда, деградация едет в вердикт."""
+    graph = _graph(tmp_path)
+    node = graph / "Встречи" / "2026-07-15_1400.md"
+    real_write = cloud_review.safe_write.write_text
+    seen: list[str] = []
+
+    def flaky(path, text, **kw):
+        if path.name == "2026-07-15_1400.md":
+            seen.append(path.name)
+            if len(seen) > 1:                     # вторая запись — та самая, со снятием
+                raise OSError(28, "No space left on device")
+        return real_write(path, text, **kw)
+
+    monkeypatch.setattr(cloud_review.safe_write, "write_text", flaky)
+
+    def work(pen):
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\n## Связи\nсм. [[Системы/Нет такого узла]]\n", encoding="utf-8")
+
+    v, qdir = _cloud_worked(graph, tmp_path, work)
+    assert len(seen) == 2, f"второй записи не было ({len(seen)}) — тест не о том"
+    assert v.applied == ["Встречи/2026-07-15_1400.md"], v
+    assert v.unlink_failed and "2026-07-15_1400" in v.unlink_failed[0], v.unlink_failed
+    assert not v.unlinked, "снятия не было — в журнал писать нечего"
+    assert "мёртвые ссылки ОСТАЛИСЬ" in cloud_review._verdict_line(v, qdir)
+    assert "[[Системы/Нет такого узла]]" in node.read_text(encoding="utf-8"), \
+        "текст облака записан первой записью, снятие не удалось — так и должно быть видно"
+
+
+def test_a_vanished_file_is_not_accused_of_keeping_dead_links(tmp_path):
+    """№273, круг 3, DS Critical 1. Файл мог исчезнуть между записью переноса
+    и проходом снятия: конвейер переименовал или слил узел, сработало
+    «забыть встречу», iCloud вытеснил. Мёртвых ссылок в несуществующем файле
+    не бывает — говорить «остались» значит врать в единственном канале
+    воркера, где логгера нет намеренно."""
+    graph = _graph(tmp_path)
+    v = cloud_review.Verdict(touched=1, applied=["Люди/Иван.md"])   # файла в графе нет
+
+    cloud_review.unlink_after_transfer(v, graph)
+
+    assert not v.unlink_failed, v.unlink_failed
+    assert "мёртвые ссылки ОСТАЛИСЬ" not in cloud_review._verdict_line(v, tmp_path / "q")
+
+
+def test_a_lost_race_on_the_second_write_is_named_once_and_honestly(tmp_path, monkeypatch):
+    """№273, круг 4, DS I4. Ветка `LostRace` в пост-проходе не была покрыта:
+    её формат («имя файла не дублируется», причина из атрибута) держался ни на
+    чём. Здесь обе попытки `rewrite_file` теряют гонку — файл на месте, ссылки
+    в нём остались, и вердикт говорит об этом прямо и один раз."""
+    graph = _graph(tmp_path)
+    real_write = cloud_review.safe_write.write_text
+    seen: list[str] = []
+
+    def flaky(path, text, expect=None, **kw):
+        if path.name == "2026-07-15_1400.md":
+            seen.append(path.name)
+            if len(seen) > 1:
+                return False                      # снимок не совпал: гонка проиграна
+        return real_write(path, text, expect=expect, **kw)
+
+    monkeypatch.setattr(cloud_review.safe_write, "write_text", flaky)
+
+    def work(pen):
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\n## Связи\nсм. [[Системы/Нет такого узла]]\n", encoding="utf-8")
+
+    v, qdir = _cloud_worked(graph, tmp_path, work)
+    assert v.unlink_failed, v
+    line = v.unlink_failed[0]
+    assert line.count("2026-07-15_1400") == 1, line      # имя один раз, не дважды
+    assert "сменились под рукой" in line, line
+    assert "мёртвые ссылки ОСТАЛИСЬ" in cloud_review._verdict_line(v, qdir)
