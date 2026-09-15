@@ -924,16 +924,17 @@ def unlink_after_transfer(v: Verdict, graph: pathlib.Path) -> None:
                 # Конвейер переименовал или слил узел, сработал forget_meeting,
                 # iCloud вытеснил. Мёртвых ссылок в несуществующем файле не
                 # бывает, и говорить «остались» — врать в единственном канале
-                # воркера (DS r3 Critical 1). Смотрим на ПРИЧИНУ отказа, а не
-                # опрашиваем диск заново: `Path.exists()` в обработчике сам
-                # бросает на EACCES/EIO, и это уронило бы перенос уже ПОСЛЕ
-                # записи, с ложью «граф цел» (DS r4 Critical).
+                # воркера (DS r3 Critical 1). Причина приходит из `rewrite_file`,
+                # где её даёт ошибка ЕДИНСТВЕННОГО stat: второго опроса диска
+                # нет вовсе — он был бы тем же самым stat, который уже отказал
+                # (DS r4 и r5 Critical).
                 continue
             # Логгера в этом модуле нет, а stderr воркера уходит в DEVNULL:
             # деградация должна ехать в вердикт, иначе её не увидит никто
             # (DS r2 Critical 1 и 2, GLM r2 Critical 1). Имя файла уже есть в
             # `name`, из сообщения LostRace его срезаем (DS r3 Minor).
-            why = f"{exc.reason} — запись не состоялась" if isinstance(exc, safe_write.LostRace) else str(exc)
+            why = (f"{exc.reason} — запись не состоялась" if isinstance(exc, safe_write.LostRace)
+                   else f"{getattr(exc, 'strerror', None) or exc} — запись не состоялась")
             v.unlink_failed.append(f"{name}: {why}")
             continue
         v.unlinked.append(f"{name}: {', '.join(gone)}")
