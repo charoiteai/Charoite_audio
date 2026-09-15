@@ -637,6 +637,32 @@ def edits_in_copy(before: dict[str, str], copy: pathlib.Path) -> list[pathlib.Pa
     return [pathlib.Path(r) for r in sorted(set(rels))]
 
 
+def _no_write_said(exc: safe_write.LostRace, subject: str, consequence: str) -> str:
+    """Почему записи не было — одной фразой, ОДИНАКОВО в обоих вызовах моста.
+
+    `subject` — существительное в РОДИТЕЛЬНОМ падеже («минуток»): оно нужно
+    ровно одной ветке, остальные говорят о файле вообще, и имя файла уже стоит
+    в тексте сигнала рядом.
+
+    Предложение о том, кто виноват, раньше набиралось заново в каждом
+    `except`, и за один коммит это разъехалось: у одного вызова моста стояло
+    различение причин, у соседнего — безусловное «менял кто-то ещё» (DS C1/C2
+    и GLM C1 r1 по №277). Вид причины спрашивается значением, не текстом:
+    «до файла не дотянулись» — не чужая правка, и говорить о человеке,
+    которого не было, нельзя в единственном канале воркера.
+    """
+    if exc.gone:
+        return f"{subject} больше нет, {consequence}"
+    if exc.unreachable:
+        # подробность системы НЕ пересказываем: она уже в тексте самого сигнала,
+        # который печатается рядом (DS M1/M2 r2)
+        return f"до файла не дотянулись, {consequence}"
+    # существительное здесь было бы в другом падеже, чем в ветке «больше нет»,
+    # и одна форма на две роли уже дала «минуток менял кто-то ещё» (DS I1 r2).
+    # Имя файла и так стоит в тексте сигнала — хватает слова «файл».
+    return f"файл менял кто-то ещё, {consequence}"
+
+
 def _journal_unlinked(name: str, gone: list[str]) -> None:
     """Снятые цели — в журнал `logs/graph_unlinked.log` корня данных: цель,
     которую модель пишет второй месяц («Kwen 32B»), должна всплыть как
@@ -920,14 +946,15 @@ def unlink_after_transfer(v: Verdict, graph: pathlib.Path) -> None:
             if safe_write.rewrite_file(gpath, strip, "ссылки без узла не сняты") == 0:
                 continue                          # нечего снимать
         except (OSError, UnicodeDecodeError, safe_write.LostRace) as exc:
-            if isinstance(exc, safe_write.LostRace) and exc.reason == "файла нет":
+            if isinstance(exc, safe_write.LostRace) and exc.gone:
                 # Конвейер переименовал или слил узел, сработал forget_meeting,
                 # iCloud вытеснил. Мёртвых ссылок в несуществующем файле не
                 # бывает, и говорить «остались» — врать в единственном канале
-                # воркера (DS r3 Critical 1). Причина приходит из `rewrite_file`,
-                # где её даёт ошибка ЕДИНСТВЕННОГО stat: второго опроса диска
-                # нет вовсе — он был бы тем же самым stat, который уже отказал
-                # (DS r4 и r5 Critical).
+                # воркера (DS r3 Critical 1). Факт берём у `rewrite_file`: его
+                # даёт ошибка ЕДИНСТВЕННОГО stat, а при исчезновении между stat
+                # и чтением — ошибка чтения. Второго опроса диска нет вовсе: он
+                # был бы тем же stat, который уже отказал (DS r4 и r5 Critical).
+                # Спрашиваем свойство, а не текст причины (DS M2 r6).
                 continue
             # Логгера в этом модуле нет, а stderr воркера уходит в DEVNULL:
             # деградация должна ехать в вердикт, иначе её не увидит никто
@@ -1696,7 +1723,16 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                     withdrawn = review_bridge.withdraw(rev, transcript, owner=owner, lang=lang, dropped=dropped_w)
                 except review_bridge.LostRace as e:
                     bridge_blocked = True
-                    lines.append(f"[cloud-review] мост ревизии: {e} — минутки менял кто-то ещё, снятие не применено\n")
+                    # «Файла нет» — не чужая правка: `withdraw` проверяет is_file()
+                    # перед вызовом, значит минутки исчезли между этой проверкой и
+                    # записью (а на второй попытке — после чужой правки поверх;
+                    # конец тот же: файла больше нет, GLM M1 r1). Называть это
+                    # чужой правкой — та же ложь в логе, от которой заведён сам
+                    # LostRace (DS M4 r6 по №273). Фразу собирает один хелпер:
+                    # набранная заново в каждом except, она разъехалась между
+                    # соседними вызовами того же моста (DS C2, GLM C1 r1).
+                    lines.append("[cloud-review] мост ревизии: "
+                                 f"{e} — {_no_write_said(e, 'минуток', 'снятие не применено')}\n")
                 except review_bridge.MangledFile as e:
                     # Тот же класс лжи, что у LostRace: пункты извлечены,
                     # отказала запись — «снимать нечего» было бы неправдой (№263).
@@ -1718,7 +1754,11 @@ def _run_locked(stamp: str, transcript: pathlib.Path, graph: pathlib.Path,
                                                  extra_participants=set(renamed.values()))
                 except review_bridge.LostRace as e:
                     bridge_blocked = True
-                    lines.append(f"[cloud-review] мост ревизии: {e} — минутки менял кто-то ещё, поручения не дописаны\n")
+                    # `bridge` проверяет is_file() ровно так же (review_bridge.py),
+                    # значит и здесь причина бывает всех трёх видов — фраза общая
+                    # с соседним вызовом, не переписанная от руки
+                    lines.append("[cloud-review] мост ревизии: "
+                                 f"{e} — {_no_write_said(e, 'минуток', 'поручения не дописаны')}\n")
                 except review_bridge.MangledFile as e:
                     bridge_blocked = True
                     lines.append(f"[cloud-review] мост ревизии: {e}\n")

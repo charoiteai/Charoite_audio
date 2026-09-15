@@ -370,6 +370,18 @@ predicted — a write fails after the decision — so the «will this node land�
 probe is gone, and a failure of the stripping pass goes into the verdict as
 «dead links remain». The cost: a file that lost a link is written twice, and
 the window between the writes is what the doctor catches.
+Why a write did not happen is a VALUE, not a text: «changed under our hands»,
+«the file is gone» and «could not reach the file» are three kinds carried by
+the signal itself, with the system's own detail in a separate field rather than
+glued onto the end of a string. Each case demands something different: a
+vanished file has nothing to fix and nothing to be blamed for, an unreachable
+one stayed as it was and must be reported out loud, and a lost race means
+someone else wrote over it. The reason text is for a human reading the log and
+changed twice within one review round — matching against it from another module
+would break silently. One place builds the blame phrase for BOTH bridge calls:
+written out by hand in each handler, it drifted apart between neighbouring
+calls into the very same bridge within a single commit. Every other site prints
+the reason text as it is and invents no culprit.
 Text on its way into the graph is read STRICTLY and must not bring
 unreadable characters with it: a sandbox file that does not decode as UTF-8
 goes to quarantine with its own verdict line, and so does an edit that adds
