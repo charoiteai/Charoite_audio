@@ -920,19 +920,20 @@ def unlink_after_transfer(v: Verdict, graph: pathlib.Path) -> None:
             if safe_write.rewrite_file(gpath, strip, "ссылки без узла не сняты") == 0:
                 continue                          # нечего снимать
         except (OSError, UnicodeDecodeError, safe_write.LostRace) as exc:
-            if not gpath.exists():
-                # Файла уже нет: конвейер переименовал или слил узел, сработал
-                # forget_meeting, iCloud вытеснил. Мёртвых ссылок в
-                # несуществующем файле не бывает, и говорить «остались» — врать
-                # в единственном канале воркера (DS r3 Critical 1).
+            if isinstance(exc, safe_write.LostRace) and exc.reason == "файла нет":
+                # Конвейер переименовал или слил узел, сработал forget_meeting,
+                # iCloud вытеснил. Мёртвых ссылок в несуществующем файле не
+                # бывает, и говорить «остались» — врать в единственном канале
+                # воркера (DS r3 Critical 1). Смотрим на ПРИЧИНУ отказа, а не
+                # опрашиваем диск заново: `Path.exists()` в обработчике сам
+                # бросает на EACCES/EIO, и это уронило бы перенос уже ПОСЛЕ
+                # записи, с ложью «граф цел» (DS r4 Critical).
                 continue
             # Логгера в этом модуле нет, а stderr воркера уходит в DEVNULL:
             # деградация должна ехать в вердикт, иначе её не увидит никто
             # (DS r2 Critical 1 и 2, GLM r2 Critical 1). Имя файла уже есть в
             # `name`, из сообщения LostRace его срезаем (DS r3 Minor).
-            why = str(exc)
-            if isinstance(exc, safe_write.LostRace):
-                why = f"{exc.reason} — запись не состоялась"
+            why = f"{exc.reason} — запись не состоялась" if isinstance(exc, safe_write.LostRace) else str(exc)
             v.unlink_failed.append(f"{name}: {why}")
             continue
         v.unlinked.append(f"{name}: {', '.join(gone)}")

@@ -664,8 +664,12 @@ def test_rewrite_file_fails_closed_without_a_snapshot(tmp_path, monkeypatch):
     with pytest.raises(rb.LostRace) as exc:
         rb.rewrite_file(path, lambda t: (t + "y\n", 1), "проверка")
     assert path.read_text(encoding="utf-8") == "x\n"
-    # причина названа честно: снимок не снят, а не «сменились под рукой» (DS M3, круг 2)
-    assert "снимок файла не снят" in str(exc.value) and "сменились под рукой" not in str(exc.value)
+    # причина названа честно: снимок не снят, а не «сменились под рукой» (DS M3, круг 2).
+    # С №273 она ещё и различает «файла нет» от «файл недоступен»: вызывающему
+    # важно, есть ли что править в файле (DS r4 Critical)
+    assert "снимок не снят: файл недоступен" in str(exc.value), str(exc.value)
+    assert "сменились под рукой" not in str(exc.value)
+    assert exc.value.reason == "снимок не снят: файл недоступен"
     assert rb.LostRace is safe_write.LostRace and rb.rewrite_file is safe_write.rewrite_file
 
 

@@ -146,3 +146,15 @@ def test_claim_takes_a_name_exactly_once_and_write_text_fills_it(tmp_path):
     assert safe_write.write_text(path, "текст") is True
     assert path.read_text(encoding="utf-8") == "текст"
     # права не проверяем: их задаёт umask процесса (CI прогоняет всё дерево одним процессом)
+
+
+def test_lost_race_tells_a_missing_file_from_an_unreachable_one(tmp_path):
+    """№273, круг 4. «Файла нет» и «не дотянулись» — разные факты: в
+    исчезнувшем файле нечего править, недоступный остаётся как был. Различаем
+    в момент отказа, а не опросом диска в обработчике: `Path.exists()` там сам
+    бросает на EACCES/EIO и роняет перенос уже ПОСЛЕ записи."""
+    import pytest
+    gone = tmp_path / "нет.md"
+    with pytest.raises(safe_write.LostRace) as exc:
+        safe_write.rewrite_file(gone, lambda t: (t, 1), "проверка")
+    assert exc.value.reason == "файла нет", exc.value.reason

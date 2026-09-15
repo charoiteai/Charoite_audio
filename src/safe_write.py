@@ -157,7 +157,13 @@ def rewrite_file(path: pathlib.Path, transform, what: str) -> int:
     for _attempt in (1, 2):
         snap = stat_snapshot(path)
         if snap is None:
-            raise LostRace(path, what, reason="снимок файла не снят: файла нет или он недоступен")
+            # «Файла нет» и «не дотянулись» — разные факты, и вызывающему
+            # важна именно эта разница: в исчезнувшем файле нечего править, а
+            # недоступный остаётся как был. Различаем ЗДЕСЬ, в момент отказа:
+            # опрос диска потом — второй источник истины и своя гонка, а в
+            # обработчике он ещё и сам умеет бросить (DS r4 Critical).
+            reason = "файла нет" if not path.exists() else "снимок не снят: файл недоступен"
+            raise LostRace(path, what, reason=reason)
         before = path.read_text(encoding="utf-8")
         after, n = transform(before)
         if not n:

@@ -1316,3 +1316,6 @@ def test_doctor_does_not_nag_about_the_archive_but_still_counts_it(tmp_path):
     assert rep["not_utf8"] == 0 and rep["not_utf8_archive"] == 1, rep
     assert not any("UTF-8" in w for w in rep["warnings"]), rep["warnings"]
     assert "не в UTF-8 0 (архив 1)" in graph_doctor.summary(rep)
+    # файл назван: счёт без списка — тупик, найти потерянный текст нечем
+    assert any("Встречи-архив/Старая.md" in x and "байт" in x
+               for x in rep["examples"]["not_utf8_archive"]), rep["examples"]

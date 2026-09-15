@@ -2691,3 +2691,33 @@ def test_a_vanished_file_is_not_accused_of_keeping_dead_links(tmp_path):
 
     assert not v.unlink_failed, v.unlink_failed
     assert "мёртвые ссылки ОСТАЛИСЬ" not in cloud_review._verdict_line(v, tmp_path / "q")
+
+
+def test_a_lost_race_on_the_second_write_is_named_once_and_honestly(tmp_path, monkeypatch):
+    """№273, круг 4, DS I4. Ветка `LostRace` в пост-проходе не была покрыта:
+    её формат («имя файла не дублируется», причина из атрибута) держался ни на
+    чём. Здесь обе попытки `rewrite_file` теряют гонку — файл на месте, ссылки
+    в нём остались, и вердикт говорит об этом прямо и один раз."""
+    graph = _graph(tmp_path)
+    real_write = cloud_review.safe_write.write_text
+    seen: list[str] = []
+
+    def flaky(path, text, expect=None, **kw):
+        if path.name == "2026-07-15_1400.md":
+            seen.append(path.name)
+            if len(seen) > 1:
+                return False                      # снимок не совпал: гонка проиграна
+        return real_write(path, text, expect=expect, **kw)
+
+    monkeypatch.setattr(cloud_review.safe_write, "write_text", flaky)
+
+    def work(pen):
+        (pen / "Встречи" / "2026-07-15_1400.md").write_text(
+            "# Встреча\n## Связи\nсм. [[Системы/Нет такого узла]]\n", encoding="utf-8")
+
+    v, qdir = _cloud_worked(graph, tmp_path, work)
+    assert v.unlink_failed, v
+    line = v.unlink_failed[0]
+    assert line.count("2026-07-15_1400") == 1, line      # имя один раз, не дважды
+    assert "сменились под рукой" in line, line
+    assert "мёртвые ссылки ОСТАЛИСЬ" in cloud_review._verdict_line(v, qdir)
