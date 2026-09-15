@@ -1295,3 +1295,24 @@ def test_doctor_stays_quiet_when_every_file_decodes(tmp_path):
     rep = graph_doctor.inspect(graph, examples=5)
     assert rep["not_utf8"] == 0 and not rep["examples"]["not_utf8"], rep
     assert not any("UTF-8" in w for w in rep["warnings"]), rep["warnings"]
+
+
+def test_doctor_does_not_nag_about_the_archive_but_still_counts_it(tmp_path):
+    """№275, круг 3, DS Important 2. Архив — легаси: конвейер его не
+    перечитывает и не чинит, а утренний бриф печатает ВСЕ предупреждения
+    каждую ночь. Битый байт в архиве дал бы вечное ⚠️ и привыкание к нему.
+    Считаем отдельно, кричим только по активным папкам — как у битых ссылок."""
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+    import graph_doctor
+    graph = tmp_path / "Работа"
+    (graph / "Люди").mkdir(parents=True)
+    (graph / "Встречи-архив").mkdir()
+    (graph / "Люди" / "Иван.md").write_text("# Иван\nцелый\n", encoding="utf-8")
+    (graph / "Встречи-архив" / "Старая.md").write_bytes(
+        "# Старая\nтело ".encode("utf-8") + b"\xd0" + " байтом\n".encode("utf-8"))
+
+    rep = graph_doctor.inspect(graph, examples=5)
+
+    assert rep["not_utf8"] == 0 and rep["not_utf8_archive"] == 1, rep
+    assert not any("UTF-8" in w for w in rep["warnings"]), rep["warnings"]
+    assert "не в UTF-8 0 (архив 1)" in graph_doctor.summary(rep)

@@ -917,13 +917,23 @@ def unlink_after_transfer(v: Verdict, graph: pathlib.Path) -> None:
             # доклейка, попавшая между чтением и записью, терялась бы без следа.
             # Гейт `expect` по снимку до чтения — штатное средство проекта, и
             # здесь окно сжимается до нуля (GLM r2 I1).
-            if not safe_write.rewrite_file(gpath, strip, "ссылки без узла не сняты"):
-                continue
+            if safe_write.rewrite_file(gpath, strip, "ссылки без узла не сняты") == 0:
+                continue                          # нечего снимать
         except (OSError, UnicodeDecodeError, safe_write.LostRace) as exc:
+            if not gpath.exists():
+                # Файла уже нет: конвейер переименовал или слил узел, сработал
+                # forget_meeting, iCloud вытеснил. Мёртвых ссылок в
+                # несуществующем файле не бывает, и говорить «остались» — врать
+                # в единственном канале воркера (DS r3 Critical 1).
+                continue
             # Логгера в этом модуле нет, а stderr воркера уходит в DEVNULL:
             # деградация должна ехать в вердикт, иначе её не увидит никто
-            # (DS r2 Critical 1 и 2, GLM r2 Critical 1).
-            v.unlink_failed.append(f"{name}: {exc}")
+            # (DS r2 Critical 1 и 2, GLM r2 Critical 1). Имя файла уже есть в
+            # `name`, из сообщения LostRace его срезаем (DS r3 Minor).
+            why = str(exc)
+            if isinstance(exc, safe_write.LostRace):
+                why = f"{exc.reason} — запись не состоялась"
+            v.unlink_failed.append(f"{name}: {why}")
             continue
         v.unlinked.append(f"{name}: {', '.join(gone)}")
         _journal_unlinked(name, gone)

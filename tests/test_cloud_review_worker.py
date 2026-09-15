@@ -2676,3 +2676,18 @@ def test_a_failed_second_write_degrades_into_the_verdict(tmp_path, monkeypatch):
     assert "мёртвые ссылки ОСТАЛИСЬ" in cloud_review._verdict_line(v, qdir)
     assert "[[Системы/Нет такого узла]]" in node.read_text(encoding="utf-8"), \
         "текст облака записан первой записью, снятие не удалось — так и должно быть видно"
+
+
+def test_a_vanished_file_is_not_accused_of_keeping_dead_links(tmp_path):
+    """№273, круг 3, DS Critical 1. Файл мог исчезнуть между записью переноса
+    и проходом снятия: конвейер переименовал или слил узел, сработало
+    «забыть встречу», iCloud вытеснил. Мёртвых ссылок в несуществующем файле
+    не бывает — говорить «остались» значит врать в единственном канале
+    воркера, где логгера нет намеренно."""
+    graph = _graph(tmp_path)
+    v = cloud_review.Verdict(touched=1, applied=["Люди/Иван.md"])   # файла в графе нет
+
+    cloud_review.unlink_after_transfer(v, graph)
+
+    assert not v.unlink_failed, v.unlink_failed
+    assert "мёртвые ссылки ОСТАЛИСЬ" not in cloud_review._verdict_line(v, tmp_path / "q")

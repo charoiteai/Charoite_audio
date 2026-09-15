@@ -137,6 +137,7 @@ class LostRace(RuntimeError):
 
     def __init__(self, path: pathlib.Path, what: str, reason: str = "сменились под рукой"):
         self.path = path
+        self.reason = reason          # чтобы вызывающий не разбирал текст сообщения
         super().__init__(f"{self.PREFIX}{path.name} {reason} — {what}")
 
 
