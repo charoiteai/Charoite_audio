@@ -616,6 +616,19 @@ def main():
     except Exception as e:  # noqa: BLE001 — сверка вспомогательна
         print(f"узлы графа: {e}", file=sys.stderr, flush=True)
     threading.Thread(target=llm.warmup, daemon=True).start()
+
+    # память подсказок — индекс графа в процессе демона (№250): прогреть до
+    # первого вопроса владельца, векторы блоков — из кэша; сервер памяти и сеть
+    # не нужны. Файлы на встрече не индексируются — только вектор запроса.
+    def _warm_memory() -> None:
+        try:
+            mem = brain.warm(cfg)
+        except Exception as e:  # noqa: BLE001 — память вспомогательна
+            print(f"память по графу: {e}", file=sys.stderr, flush=True)
+            return
+        if mem is not None:
+            emit({"type": "status", "text": f"Память по графу: {mem.size} файлов, векторов {mem.vectors}"})
+    threading.Thread(target=_warm_memory, daemon=True, name="memory-warm").start()
     emit({"type": "status", "text": f"Слушаю: {' + '.join(hub.sources)} · LLM: {llm.resolve_model()}"})
 
     stop = threading.Event()
@@ -1831,14 +1844,14 @@ def main():
             try:
                 v = brain.vault_search(cfg, title, limit=3,
                                        snippet_chars=700, timeout=8)
-            except Exception:  # noqa: BLE001 — brain лежит: сначала узлы, потом честный статус
+            except Exception:  # noqa: BLE001 — память не прогрета: сначала узлы, потом честный статус
                 added = _nodes_direct()
                 if added:
                     emit({"type": "thread", "text": thread.render()})
                     append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ⏮ {title} (узлы)",
                                 thread.full())
                 else:
-                    emit({"type": "status", "text": "⏮ архив недоступен (brain не отвечает)"})
+                    emit({"type": "status", "text": "⏮ архив недоступен (память по графу ещё прогревается)"})
                 return
             if not v or v.startswith("⚠") or "не найдено" in v.lower():
                 added = _nodes_direct()
@@ -2761,7 +2774,7 @@ def main():
         # vault ищем ДО лока: HTTP на 2.5с не смеет держать очередь подсказок
         # (⚡ и авто ждут тот же lock), а сам поиск в модели не нуждается
         extra = ""
-        try:  # граф и документы через brain Чароита (если поднят)
+        try:  # граф и документы — память по графу в процессе демона (№250)
             v = brain.vault_search(cfg, question, limit=4,
                                    snippet_chars=600, timeout=2.5)
             if v and "не найдено" not in v.lower():
@@ -3006,7 +3019,7 @@ def main():
                 v = brain.vault_search(cfg, query, limit=4,
                                        snippet_chars=500, timeout=6)
             except Exception:  # noqa: BLE001
-                # brain лежит — память собирается из узлов графа (ревью
+                # память не прогрета — собирается из узлов графа (ревью
                 # 15.08): деградация мягкая, а не «архива нет вовсе»
                 v = ""
             if not v or v.startswith("⚠") or "не найдено" in v.lower():

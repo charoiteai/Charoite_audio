@@ -156,6 +156,15 @@ $PY scripts/graph_doctor.py --all-graphs || {
   rm -f "${CHAROITE_ROOT:-$PWD}/logs/graph_doctor.json"   # вчерашний отчёт — не сегодняшний
 }
 
+step "memory vectors"
+# Векторы памяти подсказок (src/graph_search.py): блоки изменившихся файлов
+# графа → bge-m3 через Ollama, кэш в data/graph_search/. Ночь — единственное
+# время, когда модель эмбеддингов свободна и записи нет; после встречи
+# graph_updater докладывает только за 45 с. Скрипт сам молчит при живой записи.
+$PY scripts/graph_search_index.py --budget-s "${MEMORY_INDEX_BUDGET:-1500}" || {
+  echo "⚠️ векторы памяти не собраны"; FAILED="$FAILED memory-vectors"
+}
+
 step "morning brief (ранний)"
 # Страховочный проход: бриф на данных, какие есть. Упал — не авария, впереди
 # основной; ронять из-за него ночь нельзя.

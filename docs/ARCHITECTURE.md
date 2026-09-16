@@ -616,6 +616,20 @@ freshness) and semantic (bge-m3 through the local Ollama). Neither is enough
 alone — lexical catches internal identifiers a vector never will, semantic
 closes the vocabulary gap when the question uses different words than the note.
 
+**The daemon's memory during a meeting is the same design in Python**
+(`src/graph_search.py`). Until №250 the live contours asked a separate memory
+server over HTTP, and on a working graph it answered in 2.6–22 s — the instant
+answer has a 2.5 s budget, so in practice it ran without memory. Now the index
+lives in the daemon process: files of the project graph without the meeting
+archive and transcript copies (3 160 files warm up in under two seconds),
+BM25-lite over stems with IDF, length normalisation and a capped hub boost —
+a 280 KB owner node no longer surfaces for every query — freshness, dossier
+summaries first, one hop over `[[links]]` from a found node, and the same
+honesty gate. Vectors are per chunk (headings, breadcrumbs), cached in
+`data/graph_search/` by mtime; during a meeting only the query is embedded,
+files are indexed after the meeting (45 s cap) and at night. A warm query
+costs ~0.1 s of lexical work plus one embedding call when Ollama is free.
+
 **Chunks, not files.** Each file is split by markdown headings; long sections
 are split by paragraphs with overlap, and text without punctuation by length.
 Every chunk carries a breadcrumb (`File → H1 → H2`) into the embedder, because
@@ -719,9 +733,10 @@ numbers that cannot tell you whether a change helped or you got lucky. The
 pinned bench is what caught a prompt "improvement" of mine that was actually a
 regression.
 
-The older `scripts/memory_bench.py` measures a different implementation (the
-brain server, or its own Python fallback), so it cannot answer questions about
-the app's search.
+`scripts/memory_bench.py` measures the daemon's memory (`src/graph_search.py`)
+— what the owner sees during a meeting; `--brain` and `--legacy` keep the old
+contours for before/after comparisons. It still cannot answer questions about
+the app's search, which is a separate Swift implementation.
 
 ## Where code and data live
 
