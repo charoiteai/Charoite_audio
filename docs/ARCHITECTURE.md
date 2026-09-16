@@ -370,6 +370,33 @@ predicted — a write fails after the decision — so the «will this node land�
 probe is gone, and a failure of the stripping pass goes into the verdict as
 «dead links remain». The cost: a file that lost a link is written twice, and
 the window between the writes is what the doctor catches.
+An entity whose name matches several nodes, or differs from an existing
+node by one character, does not become a node: the name stays as text in
+the meeting note and the candidates go to `_Кандидаты.md` at the graph
+root for a human. Holding a node for one meeting is right; holding it at
+every meeting until someone opens that list means losing the entity as
+memory — in three days one system was held six times and nobody looked.
+So the same held pair «name → candidates» in a SECOND meeting is counted
+on its line, and a typo with a single candidate gets an `aliases:` entry
+in that node automatically — the meeting lands in the node right away,
+with a «by repeat» trace in its «## Встречи» and in the log. Merging without
+a human is allowed only on a shared number in the name («Kwen 32B» → «Qwen
+32B»); a name without digits («Препрод» → «Препрот», «Реестр Витрен» →
+«Реестр Витрин») only gets the counter. Undoing a wrong merge means removing
+the alias from the front matter and the meeting lines from the node — the
+trace is there for that. A pair the machine has merged once it never merges
+again: its own «→ псевдоним записан» line in `_Кандидаты.md` next to a node
+without the alias means a human removed it, and the pair only gets a note
+«псевдоним снимал человек». To allow the machine again, delete that line
+from `_Кандидаты.md` — the count then continues from the remaining lines,
+so the very next meeting may merge. «The same pair» means name, reason and
+the same set of candidates: a node merged into another one gives the
+verdict a new address, and that is a new pair — the old anchor does not
+veto it. A resolved path is written to only if the node still
+exists — a node that vanished between the verdict and the write is a log
+event, not a new node with the parser's type.
+A real ambiguity (several candidates) only gets the counter: the machine
+must not merge it.
 A topic that already lives as a node of another kind (`Системы/X`) and is
 then named a core gets a parallel `Ядра/X` — the two cannot be merged, their
 structures differ — and from now on both carry a «see also» line under
