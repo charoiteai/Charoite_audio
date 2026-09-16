@@ -1323,12 +1323,14 @@ def test_doctor_does_not_nag_about_the_archive_but_still_counts_it(tmp_path):
 
 def test_held_entity_repeat_escalates(tmp_path, monkeypatch):
     """№236: та же отложенная пара во второй встрече. Опечатка с одним и тем же
-    кандидатом — псевдоним в узле-кандидате «по повтору», встреча ложится в узел
-    сразу со следом в его «## Встречи»; настоящая неоднозначность — только
-    счётчик; ретрай той же встречи счётчик не крутит. Круг 1 (DS/GLM): вердикт с
-    папкой ТИПА видит псевдоним в чужой папке (третья встреча не заводит фантом),
-    успех записи псевдонима приходит от гейта, а не флагом до записи; повтор
-    считается по строкам и по ключу имени; однословное без цифр не склеивается."""
+    кандидатом и общим числом — псевдоним в узле-кандидате «по повтору», встреча
+    ложится в узел сразу по РЕШЁННОМУ пути со следом в его «## Встречи»;
+    настоящая неоднозначность — только счётчик; ретрай той же встречи в любой
+    раскладке — не повтор. Круг 1 (DS/GLM): вердикт с папкой ТИПА видит псевдоним
+    в чужой папке, успех записи — от гейта. Круг 2: адрес не перерешивается при
+    тёзке (DS C1), псевдоним человека — не «по повтору» (DS I2), снятый человеком
+    псевдоним машина не переклеивает (GLM I1), в шапку человека не пишем (GLM M2),
+    строка с хвостом человека считается (DS I4), склейка — только по общему числу."""
     graph = tmp_path / "g"
     (graph / "Системы").mkdir(parents=True)
     (graph / "Модели").mkdir()
@@ -1340,6 +1342,7 @@ def test_held_entity_repeat_escalates(tmp_path, monkeypatch):
     ents = [{"имя": "Kwen 32B", "тип": "система", "суть": "модель"},
             {"имя": "ИИ агент", "тип": "система", "суть": "агент"}]
     note_path = graph / g.CANDIDATES_NOTE
+    unlinked = tmp_path / "logs" / "graph_unlinked.log"
     # встреча 1: оба отложены, псевдонимов нет, счётчика нет
     held1 = g.apply_entities(graph, ents, "Встречи/2026-09-14_1000")
     assert held1[("Системы", "Kwen 32B")] == ("near", ["Модели/Qwen 32B"])
@@ -1348,7 +1351,9 @@ def test_held_entity_repeat_escalates(tmp_path, monkeypatch):
     note = note_path.read_text(encoding="utf-8")
     assert "повтор" not in note and note.count("\n- ") == 2
     g.apply_entities(graph, ents, "Встречи/2026-09-14_1000")            # ретрай той же встречи
-    assert note_path.read_text(encoding="utf-8").count("\n- ") == 2, "ретрай — не повтор"
+    g.apply_entities(graph, [{"имя": "kwen  32b", "тип": "система", "суть": "модель"}], "Встречи/2026-09-14_1000")
+    assert note_path.read_text(encoding="utf-8").count("\n- ") == 2, "ретрай в любой раскладке — не повтор (DS I3)"
+    assert "aliases" not in node.read_text(encoding="utf-8")
     # встреча 2: опечатка получает псевдоним, встреча ложится в узел со следом; неоднозначность — счётчик
     held2 = g.apply_entities(graph, ents, "Встречи/2026-09-15_1100")
     assert held2[("Системы", "Kwen 32B")] == ("aliased", ["Модели/Qwen 32B"]), held2
@@ -1364,58 +1369,68 @@ def test_held_entity_repeat_escalates(tmp_path, monkeypatch):
     for stem in ("ИИ-агент", "ИИ_агент"):
         assert "aliases" not in (graph / "Системы" / f"{stem}.md").read_text(encoding="utf-8"), "неоднозначность не склеиваем"
     assert g.entity_line(graph, ents[0], held2) == "- [[Модели/Qwen 32B|Kwen 32B]] (система) — модель _(псевдоним по повтору)_"
-    unlinked = (tmp_path / "logs" / "graph_unlinked.log").read_text(encoding="utf-8")
-    assert "псевдоним по повтору: Модели/Qwen 32B ← «Kwen 32B»" in unlinked
-    # боевой путь: вердикт с папкой ТИПА, а не папкой узла, видит псевдоним в чужой папке (DS C1 / GLM C1)
-    assert g.entity_node_verdict(graph, "Системы", "Kwen 32B") == ("existing", ["Модели/Qwen 32B"])
-    # встреча 3: ложится в узел штатно, фантома нет, строк кандидатов не прибавилось
+    log = unlinked.read_text(encoding="utf-8")
+    assert "псевдоним по повтору: Модели/Qwen 32B ← «Kwen 32B»" in log
+    assert "узел не создан: Системы/Kwen 32B: похоже на существующий узел — Модели/Qwen 32B → лёг в Модели/Qwen 32B по псевдониму" in log
+    # боевой путь: вердикт с папкой ТИПА видит псевдоним в чужой папке — отдельным словом (DS C1 / GLM C1, GLM К2)
+    assert g.entity_node_verdict(graph, "Системы", "Kwen 32B") == ("resolved", ["Модели/Qwen 32B"])
+    # встреча 3: ложится в узел по псевдониму штатно — обычной ссылкой, без пометки «по повтору» (DS I2)
     held3 = g.apply_entities(graph, ents, "Встречи/2026-09-16_1200")
-    assert held3[("Системы", "Kwen 32B")] == ("aliased", ["Модели/Qwen 32B"]), held3
+    assert held3[("Системы", "Kwen 32B")] == ("by_alias", ["Модели/Qwen 32B"]), held3
     assert "[[Встречи/2026-09-16_1200]]" in node.read_text(encoding="utf-8")
     assert not (graph / "Системы" / "Kwen 32B.md").exists()
     assert note_path.read_text(encoding="utf-8").count("«Kwen 32B»") == 2, "третья встреча в кандидаты не пишет"
-    assert g.entity_line(graph, ents[0], held3) == "- [[Модели/Qwen 32B|Kwen 32B]] (система) — модель _(псевдоним по повтору)_"
-    # ретрай второй встречи после записи псевдонима — заметка не врёт «узел не создан»
-    assert g.apply_entities(graph, ents, "Встречи/2026-09-15_1100")[("Системы", "Kwen 32B")][0] == "aliased"
-    # два ключ-равных псевдонима в двух ЧУЖИХ папках — не гадаем; псевдоним в папке типа
-    # перехватывает первым (правило #451 — папочный hit главнее глобального)
+    assert g.entity_line(graph, ents[0], held3) == "- [[Модели/Qwen 32B|Kwen 32B]] (система) — модель"
+    assert g.apply_entities(graph, ents, "Встречи/2026-09-15_1100")[("Системы", "Kwen 32B")][0] == "by_alias"
+    # тёзка в папке типа: адрес решён вердиктом, писатель его не перерешивает (DS C1 круга 2)
+    twin = graph / "Системы" / "Qwen 32B.md"
+    twin.write_text("# Qwen 32B\n\n## Встречи\n", encoding="utf-8")
+    g.apply_entities(graph, ents, "Встречи/2026-09-16_1300")
+    assert "[[Встречи/2026-09-16_1300]]" in node.read_text(encoding="utf-8")
+    assert "[[Встречи/2026-09-16_1300]]" not in twin.read_text(encoding="utf-8"), "встреча не уехала в тёзку"
+    twin.unlink()
+    # человек снял псевдоним — отсчёт повторов заново, машина не переклеивает (GLM I1)
+    node.write_text(node.read_text(encoding="utf-8").split("---\n", 2)[2], encoding="utf-8")
+    assert "aliases" not in node.read_text(encoding="utf-8")
+    held5 = g.apply_entities(graph, ents, "Встречи/2026-09-17_1000")
+    assert held5[("Системы", "Kwen 32B")] == ("near", ["Модели/Qwen 32B"]), held5
+    assert "aliases" not in node.read_text(encoding="utf-8"), "снятый человеком псевдоним не вернулся"
+    assert "- 2026-09-17 [[Встречи/2026-09-17_1000]] · «Kwen 32B» (система) — похоже на существующий узел: [[Модели/Qwen 32B]]\n" in note_path.read_text(encoding="utf-8")
+    # два ключ-равных псевдонима в двух ЧУЖИХ папках — не гадаем; в папке типа — перехватывает первым (#451)
     (graph / "Команды").mkdir()
     (graph / "Команды" / "Другой.md").write_text('---\naliases: ["Kwen 32B"]\n---\n# Другой\n', encoding="utf-8")
-    assert g.entity_node_verdict(graph, "Системы", "Kwen 32B") == ("ambiguous", ["Команды/Другой", "Модели/Qwen 32B"])
+    (graph / "Модели" / "Третий.md").write_text('---\naliases: ["Kwen 32B"]\n---\n# Третий\n', encoding="utf-8")
+    assert g.entity_node_verdict(graph, "Системы", "Kwen 32B") == ("ambiguous", ["Команды/Другой", "Модели/Третий"])
     (graph / "Системы" / "Свой.md").write_text('---\naliases: ["Kwen 32B"]\n---\n# Свой\n', encoding="utf-8")
     assert g.entity_node_verdict(graph, "Системы", "Kwen 32B") == ("existing", [])
-    (graph / "Системы" / "Свой.md").unlink()
-    (graph / "Команды" / "Другой.md").unlink()
-    # повтор — по строкам и по ключу имени: строка с бо́льшим набором кандидатов не считается за пару
-    # с меньшим (GLM I3 / DS M2), а «kwen 32b» и «Kwen 32B» — одна пара (DS I1)
-    text = note_path.read_text(encoding="utf-8")
-    assert len([1 for k, f, w, c in g._held_pairs(text) if k == g.name_key("kwen 32b")]) == 2
+    for f in ("Системы/Свой", "Команды/Другой", "Модели/Третий"):
+        (graph / f"{f}.md").unlink()
+    # повтор — по строкам, по ключу имени, без папки; строка с хвостом человека считается (DS I4)
     for stem in ("Реестр Витрин", "Реестр Витрон"):
         (graph / "Системы" / f"{stem}.md").write_text(f"# {stem}\n\n## Встречи\n", encoding="utf-8")
     ent_r = [{"имя": "Реестр Витрен", "тип": "система", "суть": "реестр"}]
     assert g.apply_entities(graph, ent_r, "Встречи/2026-09-14_1300")[("Системы", "Реестр Витрен")] == \
         ("near", ["Системы/Реестр Витрин", "Системы/Реестр Витрон"])
     (graph / "Системы" / "Реестр Витрон.md").unlink()                    # один кандидат слили руками
-    held_r = g.apply_entities(graph, ent_r, "Встречи/2026-09-15_1300")
-    # счётчик — по паре «имя → почему» (набор кандидатов сменился, но сущность та же — DS I1),
-    # а склейка требует ОДНОГО И ТОГО ЖЕ кандидата во всех повторах: его не было — псевдонима нет
+    note_path.write_text(note_path.read_text(encoding="utf-8").rstrip("\n") + " (проверено)\n", encoding="utf-8")
+    held_r = g.apply_entities(graph, [dict(ent_r[0], тип="проект")], "Встречи/2026-09-15_1300")   # тип прыгнул — пара та же
     assert held_r[("Системы", "Реестр Витрен")] == ("near", ["Системы/Реестр Витрин"])
     note = note_path.read_text(encoding="utf-8")
-    assert "«Реестр Витрен» (система) — похоже на существующий узел: [[Системы/Реестр Витрин]] — повтор ×2\n" in note
-    assert "псевдоним записан в [[Системы/Реестр Витрин]]" not in note
+    assert "«Реестр Витрен» (проект) — похоже на существующий узел: [[Системы/Реестр Витрин]] — повтор ×2\n" in note
+    assert "псевдоним записан в [[Системы/Реестр Витрин]]" not in note, "склейка требует того же кандидата и общего числа"
     assert "aliases" not in (graph / "Системы" / "Реестр Витрин.md").read_text(encoding="utf-8")
-    # однословное без цифр не склеивается (DS I2): «Препрод» → «Препрот» — только счётчик
-    (graph / "Системы" / "Препрот.md").write_text("# Препрот\n\n## Встречи\n", encoding="utf-8")
-    ent_p = [{"имя": "Препрод", "тип": "система", "суть": "среда"}]
-    g.apply_entities(graph, ent_p, "Встречи/2026-09-14_1400")
-    held_p = g.apply_entities(graph, ent_p, "Встречи/2026-09-15_1400")
-    assert held_p[("Системы", "Препрод")] == ("near", ["Системы/Препрот"])
-    assert "«Препрод» (система) — похоже на существующий узел: [[Системы/Препрот]] — повтор ×2\n" in note_path.read_text(encoding="utf-8")
-    assert "aliases" not in (graph / "Системы" / "Препрот.md").read_text(encoding="utf-8")
-    assert g._safe_to_auto_alias("Kwen 32B", "Модели/Qwen 32B") and g._safe_to_auto_alias("Реестр Витрен", "Системы/Реестр Витрин")
-    assert not g._safe_to_auto_alias("Препрод", "Системы/Препрот")
-    # проигранная гонка записи (GLM C2 / DS C2): write_text узла отвечает False дважды → LostRace →
-    # «не записан», пара остаётся отложенной, узел без псевдонима
+    assert g._safe_to_auto_alias("Kwen 32B", "Модели/Qwen 32B") and g._safe_to_auto_alias("Кэш 1494", "Системы/Кеш 1494")
+    assert not g._safe_to_auto_alias("Препрод", "Системы/Препрот") and not g._safe_to_auto_alias("Реестр Витрен", "Системы/Реестр Витрин")
+    # автопсевдоним в узел человека не пишется, даже с общим числом (GLM M2)
+    (graph / "Люди").mkdir()
+    (graph / "Люди" / "Оператор 42.md").write_text("# Оператор 42\n\n## Встречи\n", encoding="utf-8")
+    ent_h = [{"имя": "Оператр 42", "тип": "команда", "суть": "смена"}]
+    g.apply_entities(graph, ent_h, "Встречи/2026-09-14_1600")
+    held_h = g.apply_entities(graph, ent_h, "Встречи/2026-09-15_1600")
+    assert held_h[("Команды", "Оператр 42")] == ("near", ["Люди/Оператор 42"])
+    assert "aliases" not in (graph / "Люди" / "Оператор 42.md").read_text(encoding="utf-8")
+    assert "псевдоним по повтору не записан: Люди/Оператор 42 ← «Оператр 42»: кандидат — узел человека" in unlinked.read_text(encoding="utf-8")
+    # проигранная гонка записи (GLM C2 / DS C2): write_text узла отвечает False дважды → LostRace → «не записан»
     (graph / "Системы" / "Кеш 1494.md").write_text("# Кеш 1494\n\n## Встречи\n", encoding="utf-8")
     ent_k = [{"имя": "Кэш 1494", "тип": "система", "суть": "кэш"}]
     g.apply_entities(graph, ent_k, "Встречи/2026-09-14_1500")
@@ -1426,13 +1441,11 @@ def test_held_entity_repeat_escalates(tmp_path, monkeypatch):
     held_k = g.apply_entities(graph, ent_k, "Встречи/2026-09-15_1500")
     assert held_k[("Системы", "Кэш 1494")] == ("near", ["Системы/Кеш 1494"]), held_k
     assert "aliases" not in target.read_text(encoding="utf-8")
-    note = note_path.read_text(encoding="utf-8")
-    assert "«Кэш 1494» (система) — похоже на существующий узел: [[Системы/Кеш 1494]] — повтор ×2\n" in note
-    unlinked = (tmp_path / "logs" / "graph_unlinked.log").read_text(encoding="utf-8")
-    assert "псевдоним по повтору не записан: Системы/Кеш 1494 ← «Кэш 1494»:" in unlinked
+    assert "«Кэш 1494» (система) — похоже на существующий узел: [[Системы/Кеш 1494]] — повтор ×2\n" in note_path.read_text(encoding="utf-8")
+    assert "псевдоним по повтору не записан: Системы/Кеш 1494 ← «Кэш 1494»:" in unlinked.read_text(encoding="utf-8")
     monkeypatch.setattr(g.safe_write, "write_text", real_write)
     # не-UTF-8 байт в журнале кандидатов (конфликтная копия iCloud) встречу не роняет (GLM I4)
     note_path.write_bytes(b"# \xff\xfe\n")
-    held_b = g.apply_entities(graph, ent_p, "Встречи/2026-09-16_1400")
-    assert held_b[("Системы", "Препрод")][0] == "near"
-    assert "журнал кандидатов не прочитан" in (tmp_path / "logs" / "graph_unlinked.log").read_text(encoding="utf-8")
+    held_b = g.apply_entities(graph, ent_k, "Встречи/2026-09-16_1500")
+    assert held_b[("Системы", "Кэш 1494")][0] == "near"
+    assert "журнал кандидатов не прочитан" in unlinked.read_text(encoding="utf-8")

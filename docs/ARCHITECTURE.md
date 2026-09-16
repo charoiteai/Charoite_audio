@@ -380,11 +380,12 @@ So the same held pair «name → candidates» in a SECOND meeting is counted
 on its line, and a typo with a single candidate gets an `aliases:` entry
 in that node automatically — the meeting lands in the node right away,
 with a «by repeat» trace in its «## Встречи» and in the log. Merging without
-a human is allowed only on a shared number or a shared word of four letters
-or more («Kwen 32B» → «Qwen 32B»); a one-word name without digits («Препрод»
-→ «Препрот») only gets the counter. Undoing a wrong merge means removing the
-alias from the front matter and the meeting lines from the node — the trace
-is there for that.
+a human is allowed only on a shared number in the name («Kwen 32B» → «Qwen
+32B»); a name without digits («Препрод» → «Препрот», «Реестр Витрен» →
+«Реестр Витрин») only gets the counter. Undoing a wrong merge means removing
+the alias from the front matter and the meeting lines from the node — the
+trace is there for that, and the repeat count starts over after the removal,
+so the machine does not merge again.
 A real ambiguity (several candidates) only gets the counter: the machine
 must not merge it.
 Why a write did not happen is a VALUE, not a text: «changed under our hands»,
