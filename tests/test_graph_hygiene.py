@@ -1319,3 +1319,45 @@ def test_doctor_does_not_nag_about_the_archive_but_still_counts_it(tmp_path):
     # файл назван: счёт без списка — тупик, найти потерянный текст нечем
     assert any("Встречи-архив/Старая.md" in x and "байт" in x
                for x in rep["examples"]["not_utf8_archive"]), rep["examples"]
+
+
+def test_parallel_core_and_its_twin_node_point_at_each_other(tmp_path, monkeypatch):
+    """№266: тема заведена узлом Системы/X, потом названа ядром — Ядра/X и
+    Системы/X получают по строке «смотри также» под «## Связи», идемпотентно;
+    существующий раздел «## Связи» не дублируется; заглушка-двойник ведёт к
+    своему канону; нечитаемый двойник — событие в журнал, ядро пишется."""
+    graph = tmp_path / "g"
+    (graph / "Системы").mkdir(parents=True)
+    (graph / "Ядра").mkdir()
+    monkeypatch.setattr(g, "ROOT", tmp_path)
+    twin = graph / "Системы" / "Внеплановый бэкап.md"
+    twin.write_text("# Внеплановый бэкап\n\n## Связи\n- [[Люди/Кто-то]] → ведёт\n\n## Встречи\n", encoding="utf-8")
+    core_dict = {"имя": "Внеплановый бэкап", "статус": "идёт", "обновление": "старт"}
+    g.upsert_core(graph, core_dict, "Встречи/2026-09-16_1000", "2026-09-16 10:00")
+    core = graph / "Ядра" / "Внеплановый бэкап.md"
+    assert core.exists()
+    ct, tt = core.read_text(encoding="utf-8"), twin.read_text(encoding="utf-8")
+    assert "\n## Связи\n- смотри также [[Системы/Внеплановый бэкап]] — та же тема узлом другого типа\n" in ct
+    assert "## Связи\n- смотри также [[Ядра/Внеплановый бэкап]] — сквозная тема\n- [[Люди/Кто-то]] → ведёт\n" in tt, tt
+    assert tt.count("## Связи") == 1, "существующий раздел не дублируется"
+    g.upsert_core(graph, core_dict, "Встречи/2026-09-16_1000", "2026-09-16 10:00")          # ретрай
+    g.upsert_core(graph, dict(core_dict, статус="готово"), "Встречи/2026-09-17_1000", "2026-09-17 10:00")
+    assert core.read_text(encoding="utf-8").count("смотри также") == 1
+    assert twin.read_text(encoding="utf-8").count("смотри также") == 1
+    # двойник — заглушка-редирект: связка идёт с её каноном, в заглушку не пишем
+    (graph / "Команды").mkdir()
+    (graph / "Команды" / "Канон.md").write_text("# Канон\n\n## Встречи\n", encoding="utf-8")
+    (graph / "Системы" / "Дубль.md").write_text("# Дубль → [[Команды/Канон]]\n\nДубль. Смерджен\n", encoding="utf-8")
+    g.upsert_core(graph, {"имя": "Дубль", "статус": "идёт", "обновление": "старт"}, "Встречи/2026-09-16_1100", "2026-09-16 11:00")
+    assert "смотри также [[Команды/Канон]]" in (graph / "Ядра" / "Дубль.md").read_text(encoding="utf-8")
+    assert "смотри также [[Ядра/Дубль]]" in (graph / "Команды" / "Канон.md").read_text(encoding="utf-8")
+    assert "смотри также" not in (graph / "Системы" / "Дубль.md").read_text(encoding="utf-8")
+    # двойник не читается — ядро всё равно записано, сбой связки назван в журнале
+    bad = graph / "Системы" / "Битый.md"
+    bad.write_bytes(b"# \xff\n")
+    g.upsert_core(graph, {"имя": "Битый", "статус": "идёт", "обновление": "старт"}, "Встречи/2026-09-16_1200", "2026-09-16 12:00")
+    assert (graph / "Ядра" / "Битый.md").exists()
+    assert "связь ядра и узла не записана: Системы/Битый" in (tmp_path / "logs" / "graph_unlinked.log").read_text(encoding="utf-8")
+    # ядро без двойника — связей не появляется
+    g.upsert_core(graph, {"имя": "Одиночка", "статус": "идёт", "обновление": "старт"}, "Встречи/2026-09-16_1300", "2026-09-16 13:00")
+    assert "смотри также" not in (graph / "Ядра" / "Одиночка.md").read_text(encoding="utf-8")

@@ -1888,16 +1888,52 @@ def _current_status(text: str) -> tuple[str, str]:
     return ("" if block in ("", "—") else block), since
 
 
-def _insert_chronicle_line(text: str, line: str) -> str:
-    """Строка хроники ядра — под заголовком «## Хроника» тела узла, а не под
-    первым вхождением подстроки: «## Хроника» в шапке или прозе (цитата облака)
-    вклинивало строку в чужое место (аудит 13.09, GLM M4; тот же класс — #539)."""
-    m = re.compile(r"^## Хроника[ \t]*\r?$", re.M).search(text, _body_at(text))   # CRLF-узлы тоже (DS I1 по #563)
+def _insert_under_heading(text: str, heading: str, line: str) -> str:
+    """Строка — под заголовком `## <heading>` тела узла, а не под первым
+    вхождением подстроки: «## Хроника» в шапке или прозе (цитата облака)
+    вклинивало строку в чужое место (аудит 13.09, GLM M4; тот же класс — #539).
+    Раздела нет — заводится в конце."""
+    m = re.compile(rf"^## {re.escape(heading)}[ \t]*\r?$", re.M).search(text, _body_at(text))   # CRLF-узлы тоже (DS I1 по #563)
     if m:
         end = m.end() - (1 if text[m.start():m.end()].endswith("\r") else 0)
         nl = "\r\n" if text[end:end + 2] == "\r\n" else "\n"
         return text[:end] + nl + line + text[end:]
-    return text.rstrip("\r\n") + f"\n\n## Хроника\n{line}\n"
+    return text.rstrip("\r\n") + f"\n\n## {heading}\n{line}\n"
+
+
+def _insert_chronicle_line(text: str, line: str) -> str:
+    return _insert_under_heading(text, "Хроника", line)
+
+
+def _core_twin(graph: pathlib.Path, d: pathlib.Path, name: str) -> pathlib.Path | None:
+    """Тема ядра, уже заведённая узлом другого типа (Системы/X, Команды/X):
+    живой узел вне папки ядер или None. Слить их нельзя — структуры разные, —
+    но и оставлять пару несвязанной нельзя: tier3 или entity_node_verdict
+    однажды сольют их, и причину будут искать в canon_link (№266, критика DS
+    по #563)."""
+    other = find_canonical(graph, name)
+    if other is None or other.parent == d:
+        return None
+    return follow_stubs(graph, other)
+
+
+def _link_core_twin(graph: pathlib.Path, core: pathlib.Path, twin: pathlib.Path, meeting_link: str) -> None:
+    """Пара «Ядра/X ↔ Системы/X» — по строке «смотри также» под «## Связи» в
+    ОБОИХ узлах, идемпотентно (ссылка уже есть — не трогаем; ретрай не
+    дублирует), под гейтом потери обновления. Заглушку-редиректа не пишем.
+    Сбой — событие в журнал, встреча не падает."""
+    pairs = ((core, f"{twin.parent.name}/{twin.stem}", "та же тема узлом другого типа"),
+             (twin, f"{core.parent.name}/{core.stem}", "сквозная тема"))
+    for path, target, why in pairs:
+        def transform(text: str, target=target, why=why) -> tuple[str, int]:
+            if redirects.is_merged(text) or f"[[{target}]]" in text or f"[[{target}|" in text:
+                return text, 0
+            return _insert_under_heading(text, "Связи", f"- смотри также [[{target}]] — {why}"), 1
+        try:
+            safe_write.rewrite_file(path, transform, "связь ядра и узла")
+        except (OSError, ValueError, safe_write.LostRace) as exc:   # ValueError — не-UTF-8: гейт читает строго (№263)
+            _journal_graph_event("связь ядра и узла не записана",
+                                 f"{path.parent.name}/{path.stem} → {target}: {exc}", meeting_link)
 
 
 def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
@@ -1920,6 +1956,7 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
             print(f"граф: ядро «{core['имя']}» подходит к нескольким: {', '.join(sorted(set(amb)))} — "
                   "новое не завожу, свести руками", file=sys.stderr, flush=True)
             return
+    twin = _core_twin(graph, d, core["имя"])          # узел другого типа на ту же тему (№266)
     p = resolve_core_path(d, core["имя"], graph)
     status = (core.get("статус") or "").strip()
     if status == "—":
@@ -1967,6 +2004,10 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
             f"tags: [ядро, авто]\n---\n"
             f"# {core['имя']}\n\n## Статус\n{status or '—'} _(обновлено {stamp[:10]})_\n\n"
             f"## Хроника\n{stamp_line}\n")
+    if twin is not None:
+        # параллельное ядро и узел-двойник ссылаются друг на друга; после записи
+        # ядра, чтобы обе ссылки вели на существующие файлы (№266)
+        _link_core_twin(graph, p, twin, meeting_link)
 
 
 def append_moc_line(moc: pathlib.Path, meeting_link: str, line: str) -> bool:
