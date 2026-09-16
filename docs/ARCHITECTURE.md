@@ -370,6 +370,18 @@ predicted — a write fails after the decision — so the «will this node land�
 probe is gone, and a failure of the stripping pass goes into the verdict as
 «dead links remain». The cost: a file that lost a link is written twice, and
 the window between the writes is what the doctor catches.
+An entity whose name matches several nodes, or differs from an existing
+node by one character, does not become a node: the name stays as text in
+the meeting note and the candidates go to `_Кандидаты.md` at the graph
+root for a human. Holding a node for one meeting is right; holding it at
+every meeting until someone opens that list means losing the entity as
+memory — in three days one system was held six times and nobody looked.
+So the same held pair «name → candidates» in a SECOND meeting is counted
+on its line, and a typo with a single candidate gets an `aliases:` entry
+in that node automatically, marked «by repeat» — the meeting lands in the
+node right away, and a wrong merge is one line in a front matter to undo.
+A real ambiguity (several candidates) only gets the counter: the machine
+must not merge it.
 Why a write did not happen is a VALUE, not a text: «changed under our hands»,
 «the file is gone» and «could not reach the file» are three kinds carried by
 the signal itself, with the system's own detail in a separate field rather than
