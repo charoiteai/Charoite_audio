@@ -1888,47 +1888,98 @@ def _current_status(text: str) -> tuple[str, str]:
     return ("" if block in ("", "—") else block), since
 
 
+_FENCE_RE = re.compile(r"^[ \t]*(```|~~~)")
+
+
 def _insert_under_heading(text: str, heading: str, line: str) -> str:
     """Строка — под заголовком `## <heading>` тела узла, а не под первым
     вхождением подстроки: «## Хроника» в шапке или прозе (цитата облака)
-    вклинивало строку в чужое место (аудит 13.09, GLM M4; тот же класс — #539).
-    Раздела нет — заводится в конце."""
-    m = re.compile(rf"^## {re.escape(heading)}[ \t]*\r?$", re.M).search(text, _body_at(text))   # CRLF-узлы тоже (DS I1 по #563)
-    if m:
-        end = m.end() - (1 if text[m.start():m.end()].endswith("\r") else 0)
-        nl = "\r\n" if text[end:end + 2] == "\r\n" else "\n"
-        return text[:end] + nl + line + text[end:]
-    return text.rstrip("\r\n") + f"\n\n## {heading}\n{line}\n"
+    вклинивало строку в чужое место (аудит 13.09, GLM M4; тот же класс — #539);
+    заголовок внутри фенса ```/~~~ — тоже цитата, не раздел (DS M5 по #575).
+    Раздела нет — заводится ПЕРЕД «## Архив хроники» (архив — всегда хвост
+    узла, как в upsert_entity; DS M4), иначе в конце; окончания строк — как в
+    файле (GLM M6)."""
+    nl = "\r\n" if "\r\n" in text else "\n"
+    idx = _body_at(text)
+    fenced = False
+    want = re.compile(rf"## {re.escape(heading)}[ \t]*")
+    for ln in text[idx:].splitlines(keepends=True):
+        bare = ln.rstrip("\r\n")
+        if _FENCE_RE.match(bare):
+            fenced = not fenced
+        elif not fenced and want.fullmatch(bare):
+            end = idx + len(bare)
+            return text[:end] + nl + line + text[end:]
+        idx += len(ln)
+    am = re.compile(r"^## Архив хроники[ \t]*\r?$", re.M).search(text, _body_at(text))
+    if am:
+        return text[:am.start()] + f"## {heading}{nl}{line}{nl}{nl}" + text[am.start():]
+    return text.rstrip("\r\n") + f"{nl}{nl}## {heading}{nl}{line}{nl}"
 
 
 def _insert_chronicle_line(text: str, line: str) -> str:
     return _insert_under_heading(text, "Хроника", line)
 
 
+# Двойник ядра: узел другого типа с ТЕМ ЖЕ ключом имени. Люди мимо — тема и
+# человек с одним именем не «одна тема узлом другого типа», а по порядку папок
+# человек затенял бы Системы/X (GLM I1 по #575).
+_TWIN_FOLDERS = ("Команды", "Системы", "Модели", "Блокеры")
+_TWIN_MARK = "_(авто, №266)_"
+_TWIN_LINE_RE = re.compile(r"^- смотри также \[\[[^\]]+\]\] — [^\r\n]*? _\(авто, №266\)_[ \t]*(?:\r?\n|$)", re.M)
+
+
 def _core_twin(graph: pathlib.Path, d: pathlib.Path, name: str) -> pathlib.Path | None:
-    """Тема ядра, уже заведённая узлом другого типа (Системы/X, Команды/X):
-    живой узел вне папки ядер или None. Слить их нельзя — структуры разные, —
-    но и оставлять пару несвязанной нельзя: tier3 или entity_node_verdict
-    однажды сольют их, и причину будут искать в canon_link (№266, критика DS
-    по #563)."""
-    other = find_canonical(graph, name)
-    if other is None or other.parent == d:
+    """Живой узел другого типа на ту же тему — по ТОЧНОМУ ключу имени, без
+    гадающих проходов find_canonical (подстрока, мешок слов): их догадка
+    обратима, пока не создан дубль, а записанное в оба узла «та же тема» —
+    утверждение (DS I3 по #575). Одно совпадение — двойник; несколько — не
+    гадаем. Слить пару нельзя — структуры разные, — но и оставлять её
+    несвязанной нельзя: tier3 или вердикт сущности однажды сольют их, и причину
+    будут искать в canon_link (№266, критика DS по #563)."""
+    key = name_key(name)
+    if not key:
         return None
-    return follow_stubs(graph, other)
+    hits: list[pathlib.Path] = []
+    for place in _TWIN_FOLDERS:
+        folder = graph / place
+        if not folder.is_dir():
+            continue
+        for f in sorted(folder.glob("*.md")):
+            if f.name.startswith("_") or name_key(f.stem) != key:
+                continue
+            live = follow_stubs(graph, f)
+            if live is not None and live.parent != d and live not in hits:
+                hits.append(live)
+    return hits[0] if len(hits) == 1 else None
 
 
-def _link_core_twin(graph: pathlib.Path, core: pathlib.Path, twin: pathlib.Path, meeting_link: str) -> None:
-    """Пара «Ядра/X ↔ Системы/X» — по строке «смотри также» под «## Связи» в
-    ОБОИХ узлах, идемпотентно (ссылка уже есть — не трогаем; ретрай не
-    дублирует), под гейтом потери обновления. Заглушку-редиректа не пишем.
-    Сбой — событие в журнал, встреча не падает."""
+def _link_core_twin(core: pathlib.Path, twin: pathlib.Path, meeting_link: str) -> None:
+    """Пара «Ядра/X ↔ Системы/X» — по одной машинной строке «смотри также» под
+    «## Связи» в ОБОИХ узлах, под гейтом потери обновления. Пара целиком или
+    никак: если любая сторона — заглушка-редирект или не читается, не пишем ни
+    одной строки — ссылка на заглушку жила бы в узле вечно, а уборка мёртвых
+    ссылок её не видит (DS I1 / GLM I2 по #575). Уже есть ссылка на цель (наша
+    или человека) — не трогаем; прежняя машинная строка пары на другой адрес
+    (ядро слито, канон сменился) снимается — одна строка на пару (DS I2); маркер
+    машинности нужен уборке и снятию (GLM К2). Сбой — событие в журнал,
+    следующая встреча с той же темой связку восстановит."""
+    for path in (core, twin):
+        text = _read_node(path, meeting_link)
+        if text is None or redirects.is_merged(text):
+            why = "не прочитан" if text is None else "заглушка-редирект"
+            _journal_graph_event("связь ядра и узла не ставится",
+                                 f"{core.parent.name}/{core.stem} ↔ {twin.parent.name}/{twin.stem}: "
+                                 f"{path.parent.name}/{path.stem} — {why}", meeting_link)
+            return
     pairs = ((core, f"{twin.parent.name}/{twin.stem}", "та же тема узлом другого типа"),
              (twin, f"{core.parent.name}/{core.stem}", "сквозная тема"))
     for path, target, why in pairs:
         def transform(text: str, target=target, why=why) -> tuple[str, int]:
-            if redirects.is_merged(text) or f"[[{target}]]" in text or f"[[{target}|" in text:
+            if redirects.is_merged(text) or has_link(text, target):
                 return text, 0
-            return _insert_under_heading(text, "Связи", f"- смотри также [[{target}]] — {why}"), 1
+            stripped = _TWIN_LINE_RE.sub("", text)
+            return _insert_under_heading(stripped, "Связи", f"- смотри также [[{target}]] — {why} {_TWIN_MARK}"), 1
         try:
             safe_write.rewrite_file(path, transform, "связь ядра и узла")
         except (OSError, ValueError, safe_write.LostRace) as exc:   # ValueError — не-UTF-8: гейт читает строго (№263)
@@ -2007,7 +2058,7 @@ def upsert_core(graph: pathlib.Path, core: dict, meeting_link: str, stamp: str,
     if twin is not None:
         # параллельное ядро и узел-двойник ссылаются друг на друга; после записи
         # ядра, чтобы обе ссылки вели на существующие файлы (№266)
-        _link_core_twin(graph, p, twin, meeting_link)
+        _link_core_twin(p, twin, meeting_link)
 
 
 def append_moc_line(moc: pathlib.Path, meeting_link: str, line: str) -> bool:
