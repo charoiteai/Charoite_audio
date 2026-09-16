@@ -388,7 +388,11 @@ trace is there for that. A pair the machine has merged once it never merges
 again: its own «→ псевдоним записан» line in `_Кандидаты.md` next to a node
 without the alias means a human removed it, and the pair only gets a note
 «псевдоним снимал человек». To allow the machine again, delete that line
-from `_Кандидаты.md`. A resolved path is written to only if the node still
+from `_Кандидаты.md` — the count then continues from the remaining lines,
+so the very next meeting may merge. «The same pair» means name, reason and
+the same set of candidates: a node merged into another one gives the
+verdict a new address, and that is a new pair — the old anchor does not
+veto it. A resolved path is written to only if the node still
 exists — a node that vanished between the verdict and the write is a log
 event, not a new node with the parser's type.
 A real ambiguity (several candidates) only gets the counter: the machine

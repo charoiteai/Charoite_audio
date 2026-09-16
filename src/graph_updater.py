@@ -35,6 +35,7 @@ from meeting_stamp import files_with_stamp, stamp_of
 import frontmatter
 import graphs
 import graph_links
+import graph_nodes
 import redirects
 from speaker_names import resolve_vocative
 from action_items import PARTICIPANTS_HEAD, SPEAKER_LABEL
@@ -826,11 +827,13 @@ def retitle(tpath: pathlib.Path, stamp: str, bare: str, title: str) -> pathlib.P
     return tpath
 
 
-# Папки узлов графа в порядке сканов. Один перечень: из него и сканы вердикта
-# и канона, и политика псевдонимов (_AUTO_ALIAS_FOLDERS) — папка, добавленная в
-# один список и забытая в другом, давала псевдоним, невидимый вердикту
-# (круг 3, DS M5 / GLM M4).
-NODE_FOLDERS = ("Люди", "Команды", "Системы", "Модели", "Блокеры", "Ядра")
+# Папки узлов — перечень ПРОЕКТА (graph_nodes.NODE_FOLDERS: русские боевые и
+# английские демо-графа), не свой список рядом: сканы вердикта и канона и
+# политика псевдонимов (_AUTO_ALIAS_FOLDERS) читают его — папка, добавленная в
+# один перечень и забытая в другом, давала псевдоним, невидимый вердикту
+# (круг 3, DS M5 / GLM M4; круг 4, DS I4 — третий список в другом модуле).
+NODE_FOLDERS = graph_nodes.NODE_FOLDERS
+_PEOPLE_FOLDERS = ("Люди", "People")
 
 ENT_FOLDER = {"система": "Системы", "команда": "Команды", "проект": "Системы",
               "документ": "Системы", "модель": "Модели"}   # «модель» шла в Системы мимо живой Модели/ (GLM I5, 07.09)
@@ -998,7 +1001,7 @@ _HELD_WHY = {"junk": "не имя", "ambiguous": "подходит нескол�
 # «ИС 1494» систему не перехватывает (#451), а опечатка в имени системы не
 # должна поселиться в шапке человека (круг 2, GLM M2). Одна политика на обе
 # стороны, а не два списка.
-_AUTO_ALIAS_FOLDERS = tuple(f for f in NODE_FOLDERS if f != "Люди")
+_AUTO_ALIAS_FOLDERS = tuple(f for f in NODE_FOLDERS if f not in _PEOPLE_FOLDERS)
 
 
 CANDIDATES_NOTE = "_Кандидаты.md"   # в корне графа: `_`-файлы из сканов find_canonical и near исключены
@@ -1058,11 +1061,13 @@ def _journal_held_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
 
     Та же пара «имя → почему» из ДРУГОЙ встречи — повтор (№236): строка
     получает счётчик, а опечатка с одним и тем же единственным кандидатом с
-    HELD_REPEAT_AUTO_ALIAS-го раза — псевдоним в узле-кандидате. Пара, которую
-    машина уже склеивала, а вердикт снова «похоже» (псевдонима в узле нет —
-    его снял человек), — вето: машина не переклеивает, ни через одну
-    встречу, ни через две; снять вето — убрать строку с пометкой «→ псевдоним
-    записан» из журнала (круг 2, GLM I1; круг 3, DS C1 / GLM I1).
+    HELD_REPEAT_AUTO_ALIAS-го раза — псевдоним в узле-кандидате. «Та же пара»
+    для вето и счётчика — имя, причина И набор кандидатов; для ретрая — имя и
+    причина (круг 4, DS I1). Пара, которую машина уже склеивала, а вердикт
+    снова «похоже» (псевдонима в узле нет — его снял человек), — вето: машина
+    не переклеивает, ни через одну встречу, ни через две; снять вето — убрать
+    строку с пометкой «→ псевдоним записан» из журнала (круг 2, GLM I1;
+    круг 3, DS C1 / GLM I1).
     Порядок: решение → действие → запись о нём (DS M3); событие журнала — с
     исходом, а не до решения (DS M1). -> (путь узла, записан ли псевдоним
     сейчас) или None."""
@@ -1083,9 +1088,15 @@ def _journal_held_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         _journal_graph_event("узел не создан", what, meeting_link)
         return None
     key = name_key(name)
-    mine = [pr for pr in _held_pairs(text) if pr[0] == key and pr[1] == why]
-    if any(pr[3] == meeting_link for pr in mine):
-        return None                                        # ретрай той же встречи
+    pair = [pr for pr in _held_pairs(text) if pr[0] == key and pr[1] == why]
+    if any(pr[3] == meeting_link for pr in pair):
+        return None                                        # ретрай той же встречи — в любом наборе кандидатов
+    # Состояние пары — по имени, причине И набору кандидатов, одно определение
+    # для вето и счётчика. Сменился адрес (узел слили в другой, переименовали)
+    # — это другая пара: якорь на старый адрес её не ветоит, счёт заново;
+    # раньше вето читало якорь любой строки с этим именем и писало человеку
+    # «снимал человек» о том, чего он не делал (круг 4, DS I1)
+    mine = [pr for pr in pair if pr[2] == tuple(cands)]
     # Строка с пометкой «→ псевдоним записан» у этой пары есть, а вердикт снова
     # «похоже» — псевдонима в узле нет, его снял человек. Это вето, не пауза:
     # счётчик «повторов после последней склейки» возвращал псевдоним через
@@ -1102,10 +1113,9 @@ def _journal_held_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         what += veto
     elif repeat >= HELD_REPEAT_AUTO_ALIAS:
         line += f" — повтор ×{repeat}"
-        # кандидат должен быть один и ТОТ ЖЕ во всех повторах: сменился набор —
-        # ситуация изменилась, склеивать не по чему
-        if (verdict == "near" and len(cands) == 1 and all(pr[2] == tuple(cands) for pr in mine)
-                and _safe_to_auto_alias(name, cands[0])):
+        # кандидат один (набор кандидатов — в ключе пары, так что он один и тот
+        # же во всех повторах) и с общим числом в имени
+        if verdict == "near" and len(cands) == 1 and _safe_to_auto_alias(name, cands[0]):
             aliased = _auto_alias(graph, cands[0], name, meeting_link)
             if aliased is not None:
                 # пометка «записан» — из значения гейта: она же якорь вето, и при
@@ -1140,8 +1150,14 @@ def _auto_alias(graph: pathlib.Path, cand: str, name: str, meeting_link: str) ->
             if redirects.is_merged(text):
                 state["why"] = "узел-кандидат — заглушка-редирект"
                 return text, 0
-            state.pop("why", None)
             new = frontmatter.with_aliases(text, [name])
+            if new == text and name_key(name) not in {name_key(a) for a in frontmatter.aliases(text)}:
+                # «0 изменений» от шапки — не только «псевдоним уже был»: незакрытую
+                # шапку with_aliases возвращает как есть, и след «лёг в узел» был бы
+                # ложью в файле, который читает человек (круг 4, DS I2)
+                state["why"] = "шапка не приняла псевдоним"
+                return text, 0
+            state.pop("why", None)
             return new, int(new != text)
 
         try:
@@ -1484,6 +1500,15 @@ def merge_vocatives(people: list[dict]) -> list[dict]:
     return out
 
 
+def _resolved_gone(node: pathlib.Path, meeting_link: str) -> None:
+    """Решённый путь без файла на диске: писать некуда, создавать нельзя — иначе
+    фантом с типом из разбора в папке псевдонима (круг 3, DS M1 / GLM M2). В
+    поток тоже, как соседние отказы: оператор должен видеть, что сущность легла
+    в никуда (круг 4, DS M2)."""
+    _journal_graph_event("узел по решённому пути исчез", f"{node.parent.name}/{node.stem}", meeting_link)
+    print(f"граф: «{node.stem}» — узел по решённому пути исчез, встреча {meeting_link} не дописана")
+
+
 def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
                   desc: str, meeting_link: str, contrib: str,
                   node: pathlib.Path | None = None):
@@ -1493,14 +1518,7 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
     find_canonical ищет точное имя по всем папкам и при тёзке Системы/X увёл бы
     встречу в него, а заметка ссылалась бы на Модели/X (круг 2, DS C1)."""
     if node is not None:
-        if not node.exists():
-            # решённый путь — «писать в существующий», не «создать при нужде»:
-            # узел, исчезнувший между вердиктом и записью (параллельный писатель
-            # графа), иначе воскресал бы фантомом с типом из разбора в папке
-            # псевдонима (круг 3, DS M1 / GLM M2)
-            _journal_graph_event("узел по решённому пути исчез", f"{node.parent.name}/{node.stem}", meeting_link)
-            return
-        p = node
+        p = node    # решённый путь — «писать в существующий»: ветка создания ниже для него закрыта
     elif (canonical := find_canonical(graph, name, folder=folder)) is not None:
         p = canonical  # дописываем в существующий узел, а не плодим дубль
     else:
@@ -1578,6 +1596,11 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         if event:   # после записи: журнал не должен обещать то, чего в узле нет
             _journal_graph_event(event[0], event[1], meeting_link)
     else:
+        if node is not None:
+            # исчез между предчеком и этой веткой — создание по решённому пути
+            # недостижимо по построению, не только по предчеку (круг 4, DS I3)
+            _resolved_gone(node, meeting_link)
+            return
         safe_write.write_text(
             p,
             f"---\ntype: {typ}\ntags: [встречи, авто]\n---\n# {name}\n"
