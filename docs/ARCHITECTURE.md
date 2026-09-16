@@ -384,8 +384,13 @@ a human is allowed only on a shared number in the name («Kwen 32B» → «Qwen
 32B»); a name without digits («Препрод» → «Препрот», «Реестр Витрен» →
 «Реестр Витрин») only gets the counter. Undoing a wrong merge means removing
 the alias from the front matter and the meeting lines from the node — the
-trace is there for that, and the repeat count starts over after the removal,
-so the machine does not merge again.
+trace is there for that. A pair the machine has merged once it never merges
+again: its own «→ псевдоним записан» line in `_Кандидаты.md` next to a node
+without the alias means a human removed it, and the pair only gets a note
+«псевдоним снимал человек». To allow the machine again, delete that line
+from `_Кандидаты.md`. A resolved path is written to only if the node still
+exists — a node that vanished between the verdict and the write is a log
+event, not a new node with the parser's type.
 A real ambiguity (several candidates) only gets the counter: the machine
 must not merge it.
 Why a write did not happen is a VALUE, not a text: «changed under our hands»,
