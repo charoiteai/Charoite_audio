@@ -370,6 +370,12 @@ predicted — a write fails after the decision — so the «will this node land�
 probe is gone, and a failure of the stripping pass goes into the verdict as
 «dead links remain». The cost: a file that lost a link is written twice, and
 the window between the writes is what the doctor catches.
+A topic that already lives as a node of another kind (`Системы/X`) and is
+then named a core gets a parallel `Ядра/X` — the two cannot be merged, their
+structures differ — and from now on both carry a «see also» line under
+`## Связи` pointing at each other, written once and idempotent on retry, so
+a later merge by the reviewer or by the entity verdict has a visible cause
+instead of a mystery in `canon_link`.
 Why a write did not happen is a VALUE, not a text: «changed under our hands»,
 «the file is gone» and «could not reach the file» are three kinds carried by
 the signal itself, with the system's own detail in a separate field rather than
