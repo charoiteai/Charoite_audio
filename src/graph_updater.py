@@ -989,10 +989,10 @@ def entity_node_verdict(graph: pathlib.Path, folder: str, name: str) -> tuple[st
     return ("near", sorted(near)) if near else ("new", [])
 
 
-# Тексты причин — ещё и ключ строк `_Кандидаты.md`: _held_pairs сравнивает «почему»
-# текстом, и правка формулировки обнуляет счётчики всех пар этого вердикта.
-# Менять — только с миграцией строк журнала; по устройству ключом должно быть
-# состояние в узле, не копирайт (круг 3, DS M3 — долг, карточка трекера).
+# Тексты причин — ещё и часть ключа строк `_Кандидаты.md` для счёта повторов:
+# _held_pairs сравнивает «почему» текстом, правка формулировки начинает счёт
+# пар этого вердикта заново (менять — с миграцией строк). Состояния склейки в
+# журнале нет — оно в шапке узла (AUTO_ALIASES_KEY, №286).
 _HELD_WHY = {"junk": "не имя", "ambiguous": "подходит нескольким узлам", "near": "похоже на существующий узел",
              "aliased": "псевдоним по повтору", "by_alias": "по псевдониму узла"}
 
@@ -1002,6 +1002,16 @@ _HELD_WHY = {"junk": "не имя", "ambiguous": "подходит нескол�
 # должна поселиться в шапке человека (круг 2, GLM M2). Одна политика на обе
 # стороны, а не два списка.
 _AUTO_ALIAS_FOLDERS = tuple(f for f in NODE_FOLDERS if f not in _PEOPLE_FOLDERS)
+
+# След склейки машины — в шапке узла-кандидата рядом с `aliases:`: имена, которые
+# машина приписала по повтору. Вето читается отсюда, не из журнала: имя есть в
+# `auto_aliases:`, но нет в `aliases:` — человек снял псевдоним, машина его не
+# вернёт; снял и след — разрешил склеить снова (повторы по строкам журнала уже
+# накоплены — склейка может прийти следующей же встречей). `_Кандидаты.md` — отчёт
+# человеку и лог событий, состояния в его строках нет (№286: «Как чинить» DS и GLM
+# кругов 3–4 по №236 — признак-подстрока в человеческом файле терялся при чистке
+# и врал). Ключ поля живёт в frontmatter: переносчики узлов берут его оттуда.
+AUTO_ALIASES_KEY = frontmatter.AUTO_ALIASES
 
 
 CANDIDATES_NOTE = "_Кандидаты.md"   # в корне графа: `_`-файлы из сканов find_canonical и near исключены
@@ -1020,11 +1030,13 @@ HELD_REPEAT_AUTO_ALIAS = 2
 _HELD_LINE_RE = re.compile(r"^- (\d{4}-\d{2}-\d{2}) \[\[([^\]]+)\]\] · «(.+?)» \((.+?)\) — (.+?): (.*)$")
 
 
-def _held_pairs(text: str) -> list[tuple[str, str, tuple[str, ...], str, bool]]:
-    """Строки `_Кандидаты.md` → (ключ имени, почему, кандидаты, встреча,
-    записан ли автопсевдоним). Разбираем только собственный формат; хвост после
-    кандидатов — « — повтор ×N», «→ псевдоним записан», пометки ревизии или
-    что дописал человек — не мешает строке считаться (круг 2, DS I4). Ключ —
+def _held_pairs(text: str) -> list[tuple[str, str, tuple[str, ...], str]]:
+    """Строки `_Кандидаты.md` → (ключ имени, почему, кандидаты, встреча) —
+    события «пара отложена», и только они. Хвост после кандидатов — « — повтор
+    ×N», «→ псевдоним записан», пометки ревизии или что дописал человек — не
+    мешает строке считаться (круг 2, DS I4) и НЕ читается как состояние: вето и
+    след склейки живут в шапке узла (№286), а признак-подстрока в человеческом
+    файле терялся при чистке и врал при нулевой записи (круги 3–4). Ключ —
     name_key без папки: тип сущности прыгает («система» ↔ «модель»), и папка в
     ключе разваливала счётчик там, где он нужнее (GLM М3/К1); повтор считается
     по строкам, не подстрокой (DS M2 / GLM I3)."""
@@ -1035,7 +1047,7 @@ def _held_pairs(text: str) -> list[tuple[str, str, tuple[str, ...], str, bool]]:
             continue
         _day, meeting, nm, _typ, why, tail = m.groups()
         cands = tuple(re.findall(r"\[\[([^\]|]+)", tail.split(" — ", 1)[0]))
-        out.append((name_key(nm), why, cands, meeting, "→ псевдоним записан" in tail))
+        out.append((name_key(nm), why, cands, meeting))
     return out
 
 
@@ -1050,6 +1062,25 @@ def _safe_to_auto_alias(name: str, cand: str) -> bool:
     return bool(nums) and nums == re.findall(r"\d+", name_key(cand.split("/", 1)[-1]))
 
 
+def _alias_veto(graph: pathlib.Path, cand: str, name: str, meeting_link: str) -> bool:
+    """Человек снял псевдоним, который машина приписала по повтору: имя есть в
+    следе `auto_aliases:` узла-кандидата, а в `aliases:` его нет. Читается из
+    узла, не из журнала: строка-якорь в `_Кандидаты.md` терялась при чистке
+    файла человеком и конфликтной копии iCloud, и вето уходило молча (круг 4,
+    DS критика 1). Снял и след — вето снято; повторы по журналу уже накоплены,
+    склейка может прийти следующей же встречей (GLM I1 по #576). Нечитаемый
+    узел — не вето, но и не молча: чтение — через _read_node, с событием и
+    сводкой нечитаемых (DS M3 / GLM M1 по #576); склейка в него всё равно
+    упрётся в гейт записи."""
+    folder, _, stem = cand.partition("/")
+    text = _read_node(graph / folder / f"{stem}.md", meeting_link)
+    if text is None:
+        return False
+    key = name_key(name)
+    return (key in {name_key(a) for a in frontmatter.list_field(text, AUTO_ALIASES_KEY)}
+            and key not in {name_key(a) for a in frontmatter.aliases(text)})
+
+
 def _journal_held_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
                          verdict: str, cands: list[str], meeting_link: str) -> tuple[pathlib.Path, bool] | None:
     """Кандидаты на узел, которых конвейер не завёл (№193), — `_Кандидаты.md`
@@ -1062,15 +1093,19 @@ def _journal_held_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
     Та же пара «имя → почему» из ДРУГОЙ встречи — повтор (№236): строка
     получает счётчик, а опечатка с одним и тем же единственным кандидатом с
     HELD_REPEAT_AUTO_ALIAS-го раза — псевдоним в узле-кандидате. «Та же пара»
-    для вето и счётчика — имя, причина И набор кандидатов; для ретрая — имя и
-    причина (круг 4, DS I1). Пара, которую машина уже склеивала, а вердикт
-    снова «похоже» (псевдонима в узле нет — его снял человек), — вето: машина
-    не переклеивает, ни через одну встречу, ни через две; снять вето — убрать
-    строку с пометкой «→ псевдоним записан» из журнала (круг 2, GLM I1;
-    круг 3, DS C1 / GLM I1).
+    для счётчика — имя, причина И набор кандидатов; для ретрая — имя и
+    причина (круг 4, DS I1). Вето — из узла (_alias_veto): машина уже
+    приписывала это имя кандидату, а человек псевдоним снял — не переклеиваем,
+    ни через одну встречу, ни через две; снять вето — убрать имя и из
+    `auto_aliases:`, тогда склейка может прийти следующей же встречей — повторы
+    уже накоплены (круг 2, GLM I1; круг 3, DS C1 / GLM I1; №286). Имя здесь —
+    в той же нормализации, что у вердикта (safe_name): ключ пары, след и вето
+    считаются от одного имени (DS I1 по #576). Журнал пишется через гейт
+    обновления: человек правит его параллельно (GLM I2 по #576).
     Порядок: решение → действие → запись о нём (DS M3); событие журнала — с
     исходом, а не до решения (DS M1). -> (путь узла, записан ли псевдоним
     сейчас) или None."""
+    name = safe_name(name)
     why = _HELD_WHY[verdict]
     what = f"{folder}/{name}: {why}" + (" — " + ", ".join(cands) if cands else "")
     if verdict == "junk":
@@ -1082,7 +1117,10 @@ def _journal_held_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
             "# Кандидаты на узлы графа, которых конвейер не завёл\n\n"
             "Узел не заводится, когда имя подходит нескольким узлам или отличается от "
             "существующего на одну букву. Подтвердить: добавить `aliases:` в узел-кандидат "
-            "или создать узел руками — следующая встреча ляжет туда. Свежее снизу.\n\n")
+            "или создать узел руками — следующая встреча ляжет туда. Склейку машины "
+            "(след `auto_aliases:` в шапке узла) отменить — убрать имя из `aliases:`; убрать "
+            "и из `auto_aliases:` — разрешить машине склеить снова (повторы уже накоплены — "
+            "может уже следующей встречей). Свежее снизу.\n\n")
     except (OSError, ValueError) as e:      # UnicodeDecodeError — ValueError: конфликтная копия iCloud (GLM I4)
         _journal_graph_event("журнал кандидатов не прочитан", f"{CANDIDATES_NOTE}: {e}", meeting_link)
         _journal_graph_event("узел не создан", what, meeting_link)
@@ -1097,12 +1135,12 @@ def _journal_held_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
     # раньше вето читало якорь любой строки с этим именем и писало человеку
     # «снимал человек» о том, чего он не делал (круг 4, DS I1)
     mine = [pr for pr in pair if pr[2] == tuple(cands)]
-    # Строка с пометкой «→ псевдоним записан» у этой пары есть, а вердикт снова
-    # «похоже» — псевдонима в узле нет, его снял человек. Это вето, не пауза:
-    # счётчик «повторов после последней склейки» возвращал псевдоним через
-    # две встречи, доки обещали обратное (круг 3, DS C1 / GLM I1)
-    vetoed = any(pr[4] for pr in mine)
     repeat = len(mine) + 1
+    # Вето — из шапки узла-кандидата, не из строк журнала: машина уже приписывала
+    # это имя, а человек псевдоним снял. Это вето, не пауза: счётчик «повторов
+    # после последней склейки» возвращал псевдоним через две встречи (круг 3,
+    # DS C1 / GLM I1), а якорь-подстрока в журнале терялся при чистке (№286)
+    vetoed = verdict == "near" and len(cands) == 1 and _alias_veto(graph, cands[0], name, meeting_link)
     day = pathlib.PurePosixPath(meeting_link).name[:10]
     links = ", ".join(f"[[{c}]]" for c in cands)
     line = f"- {day} [[{meeting_link}]] · «{name}» ({typ}) — {why}: {links}"
@@ -1118,13 +1156,19 @@ def _journal_held_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         if verdict == "near" and len(cands) == 1 and _safe_to_auto_alias(name, cands[0]):
             aliased = _auto_alias(graph, cands[0], name, meeting_link)
             if aliased is not None:
-                # пометка «записан» — из значения гейта: она же якорь вето, и при
-                # нулевой записи (псевдоним уже был) врала бы (круг 3, DS M2)
+                # отчёт человеку по исходу гейта: записан псевдоним этой встречей или
+                # уже стоял; состояния здесь нет — оно в шапке узла (круг 3, DS M2; №286)
                 line += (f" → псевдоним записан в [[{cands[0]}]] (по повтору, {day})" if aliased[1]
                          else f" → лёг в [[{cands[0]}]] (псевдоним уже был)")
+    # Журнал — под тем же гейтом потери обновления, что узлы: человек правит его
+    # в Obsidian параллельно, и запись «прочитанное + строка» без expect стирала
+    # бы его правку молча (GLM I2 по #576). Нет файла — заводим с гейтом «файла
+    # не было», появился в окне — дописываем в него.
+    append = lambda t: (t + line + "\n", 1)  # noqa: E731
     try:
-        safe_write.write_text(log, text + line + "\n")
-    except OSError as e:
+        if log.exists() or not safe_write.write_text(log, text + line + "\n", expect_absent=True):
+            safe_write.rewrite_file(log, append, "журнал кандидатов")
+    except (OSError, UnicodeDecodeError, safe_write.LostRace) as e:
         _journal_graph_event("журнал кандидатов не записан", f"{CANDIDATES_NOTE}: {e}", meeting_link)
     _journal_graph_event("узел не создан", what + (f" → лёг в {cands[0]} по псевдониму" if aliased else ""), meeting_link)
     return aliased
@@ -1137,8 +1181,10 @@ def _auto_alias(graph: pathlib.Path, cand: str, name: str, meeting_link: str) ->
     трогаем: её шапка не читается сканами (см. _alias_index). Исход — от
     самого гейта: исключение или причина пропуска — не записан; иначе записан.
     Флага успеха до записи нет: он рапортовал успех при проигранной гонке
-    (круг 1, DS C2 / GLM C2). -> (путь, записан ли СЕЙЧАС: 0 изменений —
-    псевдоним уже был, следа «записан по повтору» тогда не заслуживает) или None."""
+    (круг 1, DS C2 / GLM C2). Вместе с псевдонимом в шапку ложится след
+    `auto_aliases:` — по нему потом читается вето (№286); псевдоним уже стоял
+    (поставил человек) — след не пишем, машина ничего не приписывала.
+    -> (путь, записан ли псевдоним СЕЙЧАС) или None."""
     folder, _, stem = cand.partition("/")
     path = graph / folder / f"{stem}.md"
     state: dict[str, str] = {}
@@ -1147,23 +1193,26 @@ def _auto_alias(graph: pathlib.Path, cand: str, name: str, meeting_link: str) ->
         state["why"] = "кандидат — узел человека, автопсевдоним туда не пишем"
     else:
         def transform(text: str) -> tuple[str, int]:
+            state.pop("why", None)
             if redirects.is_merged(text):
                 state["why"] = "узел-кандидат — заглушка-редирект"
                 return text, 0
-            new = frontmatter.with_aliases(text, [name])
-            if new == text and name_key(name) not in {name_key(a) for a in frontmatter.aliases(text)}:
-                # «0 изменений» от шапки — не только «псевдоним уже был»: незакрытую
-                # шапку with_aliases возвращает как есть, и след «лёг в узел» был бы
-                # ложью в файле, который читает человек (круг 4, DS I2)
+            key = name_key(name)
+            if key in {name_key(a) for a in frontmatter.aliases(text)}:
+                return text, 0          # уже стоит (поставил человек) — машине приписывать нечего
+            new = frontmatter.with_list_field(frontmatter.with_aliases(text, [name]), AUTO_ALIASES_KEY, [name])
+            if key not in {name_key(a) for a in frontmatter.aliases(new)}:
+                # «0 изменений» от шапки — не «псевдоним уже был»: незакрытую шапку
+                # with_aliases возвращает как есть, и след «лёг в узел» был бы ложью
+                # в файле, который читает человек (круг 4, DS I2)
                 state["why"] = "шапка не приняла псевдоним"
                 return text, 0
-            state.pop("why", None)
-            return new, int(new != text)
+            return new, 1
 
         try:
             n = safe_write.rewrite_file(path, transform, "псевдоним по повтору")
-        except (OSError, ValueError, safe_write.LostRace) as exc:
-            state["why"] = str(exc)
+        except (OSError, UnicodeDecodeError, safe_write.LostRace) as exc:    # ValueError целиком глотал бы
+            state["why"] = str(exc)                                         # ошибку самого преобразования (DS M4)
     if "why" in state:
         _journal_graph_event("псевдоним по повтору не записан", f"{cand} ← «{name}»: {state['why']}", meeting_link)
         return None
@@ -1224,7 +1273,9 @@ def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str) -> 
             path, wrote = aliased
             upsert_entity(graph, path.parent.name, path.stem, typ, desc, meeting_link,
                           f"псевдоним «{name}» записан по повтору" if wrote else "", node=path)
-            held[(folder, name)] = ("aliased", [f"{path.parent.name}/{path.stem}"])
+            # псевдоним уже стоял (поставил человек, машина ничего не приписала) —
+            # в заметке обычная ссылка, а не пометка «по повтору» (DS I1 по #576)
+            held[(folder, name)] = ("aliased" if wrote else "by_alias", [f"{path.parent.name}/{path.stem}"])
             continue
         held[(folder, name)] = (verdict, cands)
     landed = [(k, v, c[0]) for k, (v, c) in held.items() if v in ("aliased", "by_alias")]
@@ -1509,6 +1560,83 @@ def _resolved_gone(node: pathlib.Path, meeting_link: str) -> None:
     print(f"граф: «{node.stem}» — узел по решённому пути исчез, встреча {meeting_link} не дописана")
 
 
+def _entity_new_text(title: str, typ: str, desc: str, day: str, stamp: str) -> str:
+    """Текст нового узла сущности: шапка, заголовок, описание, дата, «## Встречи»."""
+    return (f"---\ntype: {typ}\ntags: [встречи, авто]\n---\n# {title}\n"
+            + (f"{desc}\n\n" if desc else "\n")   # без описания — одна пустая, как на всех остальных путях
+            + (f"_(последнее упоминание: {day})_\n\n" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else "")
+            + f"## Встречи\n{stamp}\n")
+
+
+def _stamp_entity(text: str, stamp: str, desc: str, meeting_link: str, day: str,
+                  label: str, events: list[tuple[str, str]]) -> tuple[str, int]:
+    """Преобразование существующего узла под гейтом rewrite_file: ссылка на встречу
+    уже есть — менять нечего; заглушкой стал под рукой — не пишем; иначе описание
+    вытесняется существенно новым фактом со следом в «## Хроника» (№194, Q4 аудита
+    памяти 07.09; пересказ того же новым фактом не считается, пустое не вытесняет),
+    строка встречи ложится в «## Встречи» — заголовок целиком и только в теле
+    («## Встречи-архив» и «## …» в шапке — не раздел, DS r1 по #539 / GLM r2), нет
+    раздела — перед «## Архив хроники» (архив — всегда хвост, DS/GLM r1 по #542)
+    или в конец, — дата последнего упоминания подтягивается. События копятся в
+    `events`, с чистого листа на каждую попытку гейта: журнал получает их после
+    записи, чтобы не обещать того, чего в узле нет."""
+    events.clear()
+    if has_link(text, meeting_link):
+        return text, 0
+    if redirects.is_merged(text):
+        events.append(("узел стал заглушкой под рукой", label))
+        return text, 0
+    text, event = _supersede_description(text, desc, meeting_link, name=label.rsplit("/", 1)[-1])
+    if event:
+        events.append(event)
+    m = re.compile(r"^## Встречи[ \t]*$", re.M).search(text, _body_at(text))
+    if m:
+        text = text[:m.end()] + f"\n{stamp}" + text[m.end():]
+    else:
+        am = re.compile(r"^## Архив хроники[ \t]*$", re.M).search(text, _body_at(text))
+        if am:
+            text = text[:am.start()] + f"## Встречи\n{stamp}\n\n" + text[am.start():]
+        else:
+            text += f"\n## Встречи\n{stamp}\n"
+    return _touch_last_seen(text, day), 1
+
+
+def _write_entity(p: pathlib.Path, stamp: str, desc: str, meeting_link: str, day: str) -> None:
+    """Строка встречи в СУЩЕСТВУЮЩИЙ узел — только через гейт потери обновления
+    (rewrite_file: снимок до чтения, две попытки; файла нет — LostRace.GONE, а не
+    создание). Раньше ветка читала узел и писала write_text без expect: узел,
+    подменённый между чтением и записью, перезаписывался прочитанным, а «решённый
+    путь пишет в существующий» держался на предчеке exists() с окном (круг 4 по
+    №236, DS I3; №286). Отказ гейта — событие с причиной-значением (`exc.reason`),
+    встреча в узел не дописана."""
+    label = f"{p.parent.name}/{p.stem}"
+    events: list[tuple[str, str]] = []
+    try:
+        safe_write.rewrite_file(p, lambda t: _stamp_entity(t, stamp, desc, meeting_link, day, label, events),
+                                "встреча в узел")
+    except safe_write.LostRace as exc:
+        _journal_graph_event("встреча в узел не дописана", f"{label}: {exc.reason}", meeting_link)
+        print(f"граф: «{p.stem}» — {exc.reason}, встреча {meeting_link} не дописана")
+        return
+    except (OSError, UnicodeDecodeError) as exc:    # узел стал нечитаемым под рукой; ValueError целиком
+        _journal_graph_event("встреча в узел не дописана", f"{label}: {exc}", meeting_link)   # прятал бы ошибку
+        _SKIPPED_NODES.append(label)                # преобразования под «не прочитан» (DS M4 / GLM M2 по #576)
+        print(f"граф: «{p.stem}» — не прочитан ({exc}), встреча {meeting_link} не дописана",
+              file=sys.stderr, flush=True)
+        return
+    for kind, what in events:
+        _journal_graph_event(kind, what, meeting_link)
+
+
+def _create_entity(p: pathlib.Path, title: str, typ: str, desc: str, day: str, stamp: str,
+                   meeting_link: str) -> None:
+    """Новый узел — с гейтом «файла не было»: появился в окне между проверкой и
+    записью (параллельный писатель графа) — дописываем в него как в
+    существующий, а не затираем прочитанным."""
+    if not safe_write.write_text(p, _entity_new_text(title, typ, desc, day, stamp), expect_absent=True):
+        _write_entity(p, stamp, desc, meeting_link, day)
+
+
 def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
                   desc: str, meeting_link: str, contrib: str,
                   node: pathlib.Path | None = None):
@@ -1516,7 +1644,9 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
     `folder`. `node` — путь, УЖЕ решённый вызывающим (вердикт по псевдониму,
     автосклейка): тогда идентичность здесь не перерешивается — проход 1
     find_canonical ищет точное имя по всем папкам и при тёзке Системы/X увёл бы
-    встречу в него, а заметка ссылалась бы на Модели/X (круг 2, DS C1)."""
+    встречу в него, а заметка ссылалась бы на Модели/X (круг 2, DS C1). Запись в
+    существующий узел — через гейт (_write_entity), создание — только для узла,
+    которого никто не решал (_create_entity)."""
     if node is not None:
         p = node    # решённый путь — «писать в существующий»: ветка создания ниже для него закрыта
     elif (canonical := find_canonical(graph, name, folder=folder)) is not None:
@@ -1536,78 +1666,38 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
     # описание — но только существенно новым фактом и со следом в «## Хроника»
     # (№194): раньше описание писалось один раз и устаревало молча.
     day = pathlib.PurePosixPath(meeting_link).name[:10]
-    if p.exists():
-        text = _read_node(p, meeting_link)
-        if text is None:
-            return
-        if redirects.is_merged(text):
-            # Канон не нашёлся (цепочка заглушек оборвана), а файл с этим
-            # именем — заглушка. В мёртвый файл не пишем (DS r2 B1); узел
-            # заводим ПО ЦЕЛИ заглушки — слияние сказало «этот человек
-            # теперь там», и имя заглушки иначе навсегда закрывает ветку
-            # «создать» (DS r3 I1). Событие — в журнал, не только в stdout.
-            target = redirects.stub_target(text)
-            leaf = pathlib.PurePosixPath(target).name if target else ""
-            alt = (graph / target) if target and "/" in target else (graph / folder / leaf if leaf else None)
-            # чтение цели — под той же охраной: снятые права на ней роняли этап (DS I2 / GLM I3 по #563)
-            alt_text = _read_node(alt, meeting_link) if alt is not None and alt != p and alt.exists() else None
-            if alt is None or alt == p or (alt.exists() and (alt_text is None or redirects.is_merged(alt_text))):
-                _journal_graph_event("заглушка без канона", f"{p.parent.name}/{p.stem}", meeting_link)
-                print(f"граф: «{p.stem}» — заглушка без живого канона, встреча {meeting_link} не дописана")
-                return
-            _journal_graph_event("узел по цели заглушки", f"{p.parent.name}/{p.stem} → {alt.parent.name}/{alt.stem}", meeting_link)
-            p = alt
-            if not p.exists():
-                p.parent.mkdir(parents=True, exist_ok=True)
-                safe_write.write_text(
-                    p,
-                    f"---\ntype: {typ}\ntags: [встречи, авто]\n---\n# {p.stem}\n"
-                    + (f"{desc}\n\n" if desc else "\n")
-                    + (f"_(последнее упоминание: {day})_\n\n" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else "")
-                    + f"## Встречи\n{stamp}\n",
-                )
-                return
-            text = _read_node(p, meeting_link)
-            if text is None:
-                return
-        if has_link(text, meeting_link):
-            return
-        # Описание — факт с датой, как статус у Ядер: существенно другое
-        # вытесняет прежнее, прежнее уходит в «## Хроника» строкой с обеими
-        # формулировками и датой встречи. Пересказ того же (вложение, общие
-        # слова) новым фактом не считается — иначе каждая встреча плодила бы
-        # строку; пустое не вытесняет (№194, Q4 аудита памяти 07.09).
-        text, event = _supersede_description(text, desc, meeting_link, name=p.stem)
-        # строка-заголовок целиком и только в теле: «## Встречи-архив» выше
-        # настоящего раздела получал ссылку встречи внутрь своего имени (DS r1
-        # по #539), «## …» в YAML-шапке — не раздел (GLM r2)
-        m = re.compile(r"^## Встречи[ \t]*$", re.M).search(text, _body_at(text))
-        if m:
-            text = text[:m.end()] + f"\n{stamp}" + text[m.end():]
-        else:
-            # раздела нет (человек снёс) — заводим перед «## Архив хроники»,
-            # если он уже есть: архив — всегда хвост узла (Minor DS/GLM r1 по #542)
-            am = re.compile(r"^## Архив хроники[ \t]*$", re.M).search(text, _body_at(text))
-            if am:
-                text = text[:am.start()] + f"## Встречи\n{stamp}\n\n" + text[am.start():]
-            else:
-                text += f"\n## Встречи\n{stamp}\n"
-        safe_write.write_text(p, _touch_last_seen(text, day))
-        if event:   # после записи: журнал не должен обещать то, чего в узле нет
-            _journal_graph_event(event[0], event[1], meeting_link)
-    else:
+    if not p.exists():
         if node is not None:
-            # исчез между предчеком и этой веткой — создание по решённому пути
-            # недостижимо по построению, не только по предчеку (круг 4, DS I3)
+            # решённый путь без файла — событие, не фантом с типом из разбора в
+            # папке псевдонима (круг 3, DS M1 / GLM M2; круг 4, DS I3)
             _resolved_gone(node, meeting_link)
             return
-        safe_write.write_text(
-            p,
-            f"---\ntype: {typ}\ntags: [встречи, авто]\n---\n# {name}\n"
-            + (f"{desc}\n\n" if desc else "\n")   # без описания — одна пустая, как на всех остальных путях
-            + (f"_(последнее упоминание: {day})_\n\n" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else "")
-            + f"## Встречи\n{stamp}\n",
-        )
+        _create_entity(p, name, typ, desc, day, stamp, meeting_link)
+        return
+    text = _read_node(p, meeting_link)
+    if text is None:
+        return
+    if redirects.is_merged(text):
+        # Канон не нашёлся (цепочка заглушек оборвана), а файл с этим
+        # именем — заглушка. В мёртвый файл не пишем (DS r2 B1); узел
+        # заводим ПО ЦЕЛИ заглушки — слияние сказало «этот человек
+        # теперь там», и имя заглушки иначе навсегда закрывает ветку
+        # «создать» (DS r3 I1). Событие — в журнал, не только в stdout.
+        target = redirects.stub_target(text)
+        leaf = pathlib.PurePosixPath(target).name if target else ""
+        alt = (graph / target) if target and "/" in target else (graph / folder / leaf if leaf else None)
+        # чтение цели — под той же охраной: снятые права на ней роняли этап (DS I2 / GLM I3 по #563)
+        alt_text = _read_node(alt, meeting_link) if alt is not None and alt != p and alt.exists() else None
+        if alt is None or alt == p or (alt.exists() and (alt_text is None or redirects.is_merged(alt_text))):
+            _journal_graph_event("заглушка без канона", f"{p.parent.name}/{p.stem}", meeting_link)
+            print(f"граф: «{p.stem}» — заглушка без живого канона, встреча {meeting_link} не дописана")
+            return
+        _journal_graph_event("узел по цели заглушки", f"{p.parent.name}/{p.stem} → {alt.parent.name}/{alt.stem}", meeting_link)
+        p = alt
+        if not p.exists():
+            _create_entity(p, p.stem, typ, desc, day, stamp, meeting_link)
+            return
+    _write_entity(p, stamp, desc, meeting_link, day)
 
 
 _LAST_SEEN_RE = re.compile(r"^_\(последнее упоминание: (\d{4}-\d{2}-\d{2})\)_[ \t]*\r?$", re.M)

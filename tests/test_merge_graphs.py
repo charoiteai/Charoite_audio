@@ -236,7 +236,7 @@ def test_collision_carries_donor_aliases_into_the_receiver(tmp_path):
     битыми (аудит 13.09, GLM M6)."""
     src = _graph(tmp_path, "Донор")
     dst = _graph(tmp_path, "Приёмник")
-    (src / "Люди" / "Иван.md").write_text("---\ntype: person\naliases: [Ваня, Иван П.]\n---\nдонорская история",
+    (src / "Люди" / "Иван.md").write_text("---\ntype: person\naliases: [Ваня, Иван П.]\nauto_aliases: [Ванёк]\n---\nдонорская история",
                                           encoding="utf-8")
     (dst / "Люди" / "Иван.md").write_text("---\ntype: person\naliases: [Ванька]\n---\nприёмная история",
                                           encoding="utf-8")
@@ -245,6 +245,8 @@ def test_collision_carries_donor_aliases_into_the_receiver(tmp_path):
     assert merged.count("---\n") >= 2 and merged.count("type: person") == 1
     import frontmatter
     assert frontmatter.aliases(merged) == ["Ванька", "Ваня", "Иван П."]
+    # след склейки машины едет с донором: иначе снятое человеком вето исчезало (№286, DS I2 по #576)
+    assert frontmatter.list_field(merged, frontmatter.AUTO_ALIASES) == ["Ванёк"]
     assert "донорская история" in merged
 
 

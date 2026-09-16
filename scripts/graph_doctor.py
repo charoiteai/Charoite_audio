@@ -35,6 +35,7 @@ import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import frontmatter  # noqa: E402
 import graph_links  # noqa: E402
 import graph_names  # noqa: E402
 import graph_updater  # noqa: E402
@@ -170,6 +171,23 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
         except OSError:
             continue                    # исчез между обходом и чтением — не наше дело
 
+    # След склейки машины без псевдонима: человек снял то, что машина приписала
+    # по повтору (№236/№286) — вето, машина не переклеит. Доктор называет пары
+    # СПРАВКОЙ (счёт в сводке и примеры), не тревогой: «тревога → чинить» толкала
+    # бы снести машинное поле уборкой — ровно то, что снимает вето (DS критика 2
+    # по #576). Ходим по папкам, куда машина вправе писать след — включая демо-
+    # граф на английском, не только HUB_DIRS (DS M5); следы с одним ключом имени
+    # не схлопываем — считаем как вето (GLM M3).
+    alias_vetoes: list[str] = []
+    for p, text in notes.items():
+        if p.parent.name not in graph_updater._AUTO_ALIAS_FOLDERS or p.name.startswith("_"):
+            continue
+        traced = [(graph_names.name_key(a), a) for a in frontmatter.list_field(text, graph_updater.AUTO_ALIASES_KEY)]
+        if not traced:
+            continue
+        live = {graph_names.name_key(a) for a in frontmatter.aliases(text)}
+        alias_vetoes += [f"{rel[p]} ← «{a}»" for k, a in traced if k not in live]
+
     links_total = sum(outbound.values())
     rep = {
         "graph": root.name, "root": str(root), "notes": len(notes), "nodes": len(nodes), "links": links_total,
@@ -181,6 +199,7 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
         "moc_missing": len([p for p in nodes if p not in moc_linked]), "fresh_7d": fresh,
         "orphans_by_dir": dict(collections.Counter(rel[p].split("/", 1)[0] for p in orphans)),
         "not_utf8": len(not_utf8), "not_utf8_archive": len(not_utf8_archive),
+        "alias_vetoes": len(alias_vetoes),
     }
     warnings: list[str] = []
     if links_active and broken_active / links_active > THRESHOLDS["broken_share"]:
@@ -209,6 +228,7 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
             "near_dups": [" | ".join(g) for g in near_dups[:examples]],
             "not_utf8": [f"{s} — {why}" for s, why in not_utf8[:examples]],
             "not_utf8_archive": [f"{s} — {why}" for s, why in not_utf8_archive[:examples]],
+            "alias_vetoes": alias_vetoes[:examples],
         }
     return rep
 
@@ -220,7 +240,7 @@ def summary(rep: dict) -> str:
              f"сирот {rep['orphans']}; меток {rep['placeholders']}; "
              f"дублей {rep['dup_real']} (+{rep['dup_stubs']} заглушек); почти-дублей {rep['near_dups']}; "
              f"вне MOC {rep['moc_missing']}; не в UTF-8 {rep.get('not_utf8', 0)}"
-             f" (архив {rep.get('not_utf8_archive', 0)}); "
+             f" (архив {rep.get('not_utf8_archive', 0)}); вето склеек {rep.get('alias_vetoes', 0)}; "
              f"изменено за 7 дн. {rep['fresh_7d']}"]
     lines += [f"  ⚠️ {w}" for w in rep["warnings"]]
     for kind, items in (rep.get("examples") or {}).items():

@@ -260,11 +260,11 @@ def apply(src: pathlib.Path, dst: pathlib.Path,
             body = strip_frontmatter(donor_text).strip()
             merged = (read_utf8(target, "файл приёмника").rstrip()
                       + f"\n\n---\n## Перенесено из графа {src.name} ({stamp})\n\n{body}\n")
-            # псевдонимы донора — в шапку приёмника: срез шапки терял aliases, и
-            # ссылки по бывшему псевдониму становились битыми (аудит 13.09, GLM M6)
-            names = frontmatter.aliases(donor_text, f.name)
-            if names:
-                merged = frontmatter.with_aliases(merged, names)
+            # поля-списки донора — в шапку приёмника: срез шапки терял aliases, и
+            # ссылки по бывшему псевдониму становились битыми (аудит 13.09, GLM M6);
+            # след склейки машины едет тем же переносчиком — иначе снятое человеком
+            # вето исчезало вместе с донором (№286, DS I2 по #576)
+            merged = frontmatter.carry_list_fields(donor_text, merged)
             atomic_write_text(target, merged)
             f.unlink()
         dst_moc = dst / MOC
