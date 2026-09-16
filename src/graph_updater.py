@@ -935,15 +935,32 @@ def entity_node_verdict(graph: pathlib.Path, folder: str, name: str) -> tuple[st
         return "existing", []
     if ambiguous:
         return "ambiguous", sorted({f"{folder}/{c}" for c in ambiguous})
+    places = ("Люди", "Команды", "Системы", "Модели", "Блокеры", "Ядра")
+    files = [f for place in places if (graph / place).is_dir()
+             for f in sorted((graph / place).glob("*.md")) if not f.name.startswith("_")]
+    # Псевдоним с ТОЧНЫМ ключом имени в узле другой папки — узел уже есть:
+    # идентичность решается до папки, папка отвечает только за то, куда
+    # положить новый узел. Иначе псевдоним, записанный по повтору (№236) в
+    # Модели/X, был невидим вердикту с папкой «Системы» из типа сущности, и
+    # третья встреча заводила фантомный Системы/X (круг 1, DS C1 / GLM C1).
+    # Люди — мимо: у них свои правила, и человек с псевдонимом «ИС 1494» не
+    # должен перехватывать систему (#451). Один живой узел — existing с его
+    # адресом; несколько — не гадаем.
+    hits: list[str] = []
+    for f in _alias_index([f for f in files if f.parent.name != "Люди"]).get(key, []):
+        live = follow_stubs(graph, f)
+        if live is not None and f"{live.parent.name}/{live.stem}" not in hits:
+            hits.append(f"{live.parent.name}/{live.stem}")
+    if len(hits) == 1:
+        return "existing", hits
+    if hits:
+        return "ambiguous", sorted(hits)
     nums = re.findall(r"\d+", key)
     near: list[str] = []
     if len(key) >= 5:
         # Стемы и псевдонимы (GLM M2 r1); заглушка-редиректа отдаёт свой
         # канон, оборванная — мимо; точный стем с оборванным каноном — не
         # кандидат сам себе (DS I1/I2 r1)
-        places = ("Люди", "Команды", "Системы", "Модели", "Блокеры", "Ядра")
-        files = [f for place in places if (graph / place).is_dir()
-                 for f in sorted((graph / place).glob("*.md")) if not f.name.startswith("_")]
         by_key: dict[str, list[pathlib.Path]] = {}
         for f in files:
             by_key.setdefault(name_key(f.stem), []).append(f)
@@ -977,6 +994,44 @@ CANDIDATES_NOTE = "_Кандидаты.md"   # в корне графа: `_`-ф�
 HELD_REPEAT_AUTO_ALIAS = 2
 
 
+_HELD_LINE_RE = re.compile(
+    r"^- (\d{4}-\d{2}-\d{2}) \[\[([^\]]+)\]\] · «(.+?)» \((.+?)\) — (.+?): "
+    r"(\[\[[^\]]+\]\](?:, \[\[[^\]]+\]\])*)(?: — .*)?$")
+
+
+def _held_pairs(text: str) -> list[tuple[str, str, str, tuple[str, ...]]]:
+    """Строки `_Кандидаты.md` → (ключ имени, папка, почему, кандидаты). Разбираем
+    только собственный формат строки; хвосты «— повтор ×N» и пометки ревизии
+    после « — » отрезаются. Ключ — name_key, а не сырой текст модели: «Kwen 32B»
+    и «kwen 32b» — одна пара (круг 1, DS I1); повтор считается по строкам, а не
+    подстрокой — строка с бо́льшим набором кандидатов не содержит меньшую
+    (DS M2 / GLM I3)."""
+    out = []
+    for ln in text.splitlines():
+        m = _HELD_LINE_RE.match(ln)
+        if not m:
+            continue
+        _day, _mtg, nm, typ, why, links = m.groups()
+        folder = "Ядра" if typ == "ядро" else ENT_FOLDER.get(typ, "Системы")
+        out.append((name_key(nm), folder, why, tuple(re.findall(r"\[\[([^\]|]+)", links))))
+    return out
+
+
+def _safe_to_auto_alias(name: str, cand: str) -> bool:
+    """Опечатка в одну букву — достаточное основание для псевдонима без человека
+    только при общем числе или общем слове от четырёх букв: «Kwen 32B» → «Qwen
+    32B», «Реестр Витрен» → «Реестр Витрин». Однословное без цифр («Препрод» →
+    «Препрот») — два разных объекта не реже, чем опечатка; там только счётчик
+    (круг 1, DS I2 / GLM К1)."""
+    stem = cand.split("/", 1)[-1]
+    a, b = name_key(name), name_key(stem)
+    if re.findall(r"\d+", a) and re.findall(r"\d+", a) == re.findall(r"\d+", b):
+        return True
+    wa = {name_key(w) for w in safe_name(name).split() if len(name_key(w)) >= 4}
+    wb = {name_key(w) for w in safe_name(stem).split() if len(name_key(w)) >= 4}
+    return bool(wa & wb)
+
+
 def _journal_held_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
                          verdict: str, cands: list[str], meeting_link: str) -> pathlib.Path | None:
     """Кандидаты на узел, которых конвейер не завёл (№193), — `_Кандидаты.md`
@@ -986,47 +1041,59 @@ def _journal_held_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
     только в graph_unlinked.log: человеку в нём подтверждать нечего. Сбой
     журнала встречу не роняет.
 
-    Та же пара «имя → кандидаты» из ДРУГОЙ встречи — повтор (№236): строка
-    получает счётчик, а опечатка с одним кандидатом с HELD_REPEAT_AUTO_ALIAS-го
-    раза — псевдоним в узле-кандидате. -> путь узла, куда записан псевдоним,
-    иначе None."""
+    Та же пара «имя → почему» из ДРУГОЙ встречи — повтор (№236): строка
+    получает счётчик, а опечатка с одним и тем же единственным кандидатом с
+    HELD_REPEAT_AUTO_ALIAS-го раза — псевдоним в узле-кандидате. Порядок:
+    решение → действие → запись о нём (DS M3). -> путь узла, куда записан
+    псевдоним, иначе None."""
     _journal_graph_event("узел не создан", f"{folder}/{name}: {_HELD_WHY[verdict]}"
                          + (" — " + ", ".join(cands) if cands else ""), meeting_link)
     if verdict == "junk":
         return None
+    log = graph / CANDIDATES_NOTE
+    mark = f"[[{meeting_link}]] · «{name}» ({typ})"
     try:
-        log = graph / CANDIDATES_NOTE
-        mark = f"[[{meeting_link}]] · «{name}» ({typ})"
         text = log.read_text(encoding="utf-8") if log.exists() else (
             "# Кандидаты на узлы графа, которых конвейер не завёл\n\n"
             "Узел не заводится, когда имя подходит нескольким узлам или отличается от "
             "существующего на одну букву. Подтвердить: добавить `aliases:` в узел-кандидат "
             "или создать узел руками — следующая встреча ляжет туда. Свежее снизу.\n\n")
-        if mark in text:
-            return None
-        day = pathlib.PurePosixPath(meeting_link).name[:10]
-        links = ", ".join(f"[[{c}]]" for c in cands)
-        pair = f"· «{name}» ({typ}) — {_HELD_WHY[verdict]}: {links}"   # ключ пары — без встречи
-        repeat = text.count(pair) + 1
-        line = f"- {day} {mark} — {_HELD_WHY[verdict]}: {links}"
-        aliased = None
-        if repeat >= HELD_REPEAT_AUTO_ALIAS:
-            line += f" — повтор ×{repeat}"
-            if verdict == "near" and len(cands) == 1:
-                aliased = _auto_alias(graph, cands[0], name, meeting_link)
-                if aliased is not None:
-                    line += f" → псевдоним записан в [[{cands[0]}]] (по повтору, {day})"
-        safe_write.write_text(log, text + line + "\n")
-        return aliased
-    except OSError:
+    except (OSError, ValueError) as e:      # UnicodeDecodeError — ValueError: конфликтная копия iCloud (GLM I4)
+        _journal_graph_event("журнал кандидатов не прочитан", f"{CANDIDATES_NOTE}: {e}", meeting_link)
         return None
+    if mark in text:
+        return None
+    day = pathlib.PurePosixPath(meeting_link).name[:10]
+    links = ", ".join(f"[[{c}]]" for c in cands)
+    same = [c for (k, f, w, c) in _held_pairs(text)
+            if k == name_key(name) and f == folder and w == _HELD_WHY[verdict]]
+    repeat = len(same) + 1
+    line = f"- {day} {mark} — {_HELD_WHY[verdict]}: {links}"
+    aliased = None
+    if repeat >= HELD_REPEAT_AUTO_ALIAS:
+        line += f" — повтор ×{repeat}"
+        # кандидат должен быть один и ТОТ ЖЕ во всех повторах: сменился набор —
+        # ситуация изменилась, склеивать не по чему
+        if (verdict == "near" and len(cands) == 1 and all(c == tuple(cands) for c in same)
+                and _safe_to_auto_alias(name, cands[0])):
+            aliased = _auto_alias(graph, cands[0], name, meeting_link)
+            if aliased is not None:
+                line += f" → псевдоним записан в [[{cands[0]}]] (по повтору, {day})"
+    try:
+        safe_write.write_text(log, text + line + "\n")
+    except OSError as e:
+        _journal_graph_event("журнал кандидатов не записан", f"{CANDIDATES_NOTE}: {e}", meeting_link)
+    return aliased
 
 
 def _auto_alias(graph: pathlib.Path, cand: str, name: str, meeting_link: str) -> pathlib.Path | None:
     """Псевдоним `name` в шапку узла-кандидата «Папка/Имя» по повтору (№236) —
     через гейт потери обновления, как все правки узлов. Заглушку-редиректа не
-    трогаем: её шапка не читается сканами (см. _alias_index). Не смог —
-    пара остаётся отложенной, причина в журнале. -> путь узла или None."""
+    трогаем: её шапка не читается сканами (см. _alias_index). Исход — от
+    самого гейта: исключение или причина пропуска — не записан; иначе записан
+    (0 изменений — псевдоним уже был, это тоже «есть»). Флага успеха до записи
+    нет: он рапортовал успех при проигранной гонке (круг 1, DS C2 / GLM C2).
+    -> путь узла или None."""
     folder, _, stem = cand.partition("/")
     path = graph / folder / f"{stem}.md"
     state: dict[str, str] = {}
@@ -1035,17 +1102,16 @@ def _auto_alias(graph: pathlib.Path, cand: str, name: str, meeting_link: str) ->
         if redirects.is_merged(text):
             state["why"] = "узел-кандидат — заглушка-редирект"
             return text, 0
+        state.pop("why", None)
         new = frontmatter.with_aliases(text, [name])
-        state["ok"] = "да"
         return new, int(new != text)
 
     try:
         safe_write.rewrite_file(path, transform, "псевдоним по повтору")
     except (OSError, safe_write.LostRace) as exc:
         state["why"] = str(exc)
-    if "ok" not in state:
-        _journal_graph_event("псевдоним по повтору не записан",
-                             f"{cand} ← «{name}»: {state.get('why', 'неизвестно')}", meeting_link)
+    if "why" in state:
+        _journal_graph_event("псевдоним по повтору не записан", f"{cand} ← «{name}»: {state['why']}", meeting_link)
         return None
     _journal_graph_event("псевдоним по повтору", f"{cand} ← «{name}»", meeting_link)
     return path
@@ -1078,25 +1144,36 @@ def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str) -> 
     held: dict[tuple[str, str], tuple[str, list[str]]] = {}
     for e in ents:
         folder = ENT_FOLDER.get(e.get("тип", ""), "Системы")
-        verdict, cands = entity_node_verdict(graph, folder, e["имя"])
+        name, typ, desc = e["имя"], e.get("тип", "entity"), e.get("суть", "")
+        verdict, cands = entity_node_verdict(graph, folder, name)
+        if verdict == "existing" and cands:
+            # узел найден по псевдониму в ДРУГОЙ папке, чем сказал тип (тип — самое
+            # ненадёжное поле разбора): пишем в него по его адресу, ссылка в заметке —
+            # на него же; в папке типа фантом не заводим (круг 1, DS C1 / GLM C1)
+            tf, tstem = cands[0].split("/", 1)
+            upsert_entity(graph, tf, tstem, typ, desc, meeting_link, "")
+            held[(folder, name)] = ("aliased", cands)
+            continue
         if verdict in ("existing", "new"):
-            upsert_entity(graph, folder, e["имя"], e.get("тип", "entity"),
-                          e.get("суть", ""), meeting_link, "")
-        else:
-            aliased = _journal_held_entity(graph, folder, e["имя"], e.get("тип", "entity"), verdict, cands, meeting_link)
-            if aliased is not None:
-                # псевдоним по повтору записан (№236) — встреча ложится в узел-кандидат
-                # СЕЙЧАС, а не со следующей встречи; узел может быть в другой папке,
-                # чем сказал тип (тип — самое ненадёжное поле разбора), поэтому
-                # пишем в него по его собственному имени и папке
-                upsert_entity(graph, aliased.parent.name, aliased.stem, e.get("тип", "entity"),
-                              e.get("суть", ""), meeting_link, "")
-                held[(folder, e["имя"])] = ("aliased", [f"{aliased.parent.name}/{aliased.stem}"])
-                continue
-            held[(folder, e["имя"])] = (verdict, cands)
-    if held:
+            upsert_entity(graph, folder, name, typ, desc, meeting_link, "")
+            continue
+        aliased = _journal_held_entity(graph, folder, name, typ, verdict, cands, meeting_link)
+        if aliased is not None:
+            # псевдоним по повтору записан (№236) — встреча ложится в узел-кандидат
+            # СЕЙЧАС, со следом в его «## Встречи»: через месяц автосклейка должна
+            # быть отличима от псевдонима, поставленного человеком (DS К2 / GLM К1)
+            upsert_entity(graph, aliased.parent.name, aliased.stem, typ, desc, meeting_link,
+                          f"псевдоним «{name}» записан по повтору")
+            held[(folder, name)] = ("aliased", [f"{aliased.parent.name}/{aliased.stem}"])
+            continue
+        held[(folder, name)] = (verdict, cands)
+    landed = {n: c[0] for (_, n), (v, c) in held.items() if v == "aliased"}
+    if landed:
+        print("граф: по псевдониму легло в узел — " + "; ".join(f"{n} → {t}" for n, t in landed.items()))
+    rest = {n: (v, c) for (_, n), (v, c) in held.items() if v != "aliased"}
+    if rest:
         print("граф: узла не получили — " + "; ".join(
-            f"{n} ({_HELD_WHY[v]}{': ' + ', '.join(c) if c else ''})" for (_, n), (v, c) in held.items()))
+            f"{n} ({_HELD_WHY[v]}{': ' + ', '.join(c) if c else ''})" for n, (v, c) in rest.items()))
     return held
 
 
@@ -2288,6 +2365,8 @@ def main():
     held = apply_entities(graph, ents, meeting_link)
 
     touched = ({"Люди"} if people else set()) | {ENT_FOLDER.get(e.get("тип", ""), "Системы") for e in ents}
+    # встреча по псевдониму легла в узел ДРУГОЙ папки — её указатель тоже тронут (DS M4 / GLM M5)
+    touched |= {c[0].split("/", 1)[0] for (v, c) in held.values() if v == "aliased" and c}
     for folder in sorted(touched & set(FOLDER_INDEX)):
         try:
             rebuild_folder_index(graph, folder)      # только тронутые папки (DS I3)
