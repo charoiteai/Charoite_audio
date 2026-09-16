@@ -187,3 +187,39 @@ def test_empty_summary_is_regenerated(tmp_path, monkeypatch):
     except Exception:   # noqa: BLE001 — дальше модель, нам важен только вход в генерацию
         pass
     assert calls, "пустое саммари должно уйти на пересборку"
+
+
+def test_archive_does_not_link_a_note_that_is_not_in_this_graph(graph, tmp_path):
+    """№276. Папка архива и заметка встречи расходятся штатно: сфера встречи
+    определяется по стенограмме уже после старта разбора, и личная встреча
+    уезжает узлом в свой граф, оставив папку в рабочем. Ссылка «[[Встречи/
+    штамп]]» после этого ведёт в никуда навсегда: снятие мёртвых ссылок идёт
+    раньше этой записи и её не видит. Замер боевого графа 16.09: 20 папок из
+    278, шесть — сентябрьские."""
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    (tdir / "2026-08-03_1130_Планёрка.md").write_text("стенограмма", encoding="utf-8")
+
+    # заметки в этом графе нет
+    folder = archive_meeting(graph, tdir, "2026-08-03_1130", "Планёрка")
+    assert folder is not None
+    link = (folder / "Граф.md").read_text(encoding="utf-8")
+    assert "[[Встречи/2026-08-03_1130]]" not in link, link
+    assert "obsidian://" not in link, "URL ведёт в ту же пустоту, что и ссылка"
+    assert "нет" in link and graph.name in link, "человеку сказано, где искать"
+    assert not (folder / "Открыть в Obsidian.command").exists()
+
+    # заметка появилась — ссылка и ярлык возвращаются тем же вызовом
+    (graph / "Встречи").mkdir(parents=True, exist_ok=True)
+    (graph / "Встречи" / "2026-08-03_1130.md").write_text("# Встреча\n", encoding="utf-8")
+    archive_meeting(graph, tdir, "2026-08-03_1130", "Планёрка")
+    link = (folder / "Граф.md").read_text(encoding="utf-8")
+    assert "[[Встречи/2026-08-03_1130]]" in link and "obsidian://" in link, link
+    assert (folder / "Открыть в Obsidian.command").exists()
+
+    # заметка уехала в другой граф — ярлык прежнего прогона снимается
+    (graph / "Встречи" / "2026-08-03_1130.md").unlink()
+    archive_meeting(graph, tdir, "2026-08-03_1130", "Планёрка")
+    assert "[[Встречи/2026-08-03_1130]]" not in (folder / "Граф.md").read_text(encoding="utf-8")
+    assert not (folder / "Открыть в Obsidian.command").exists(), \
+        "ярлык открывал бы Obsidian на несуществующей заметке"
