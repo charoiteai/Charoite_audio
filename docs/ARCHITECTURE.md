@@ -389,8 +389,11 @@ alias — `auto_aliases:` in the node's front matter — and reads the veto
 from there, not from the journal: a name that is in `auto_aliases:` but no
 longer in `aliases:` was removed by a human, and the machine never merges
 that pair again (the journal line only notes «псевдоним снимал человек»).
-Remove the name from `auto_aliases:` too, and the machine counts repeats
-from scratch. `_Кандидаты.md` is a report and an event log: repeats are
+Remove the name from `auto_aliases:` too, and the machine may merge again —
+at the very next meeting, since the repeats are already counted in the
+journal. Both list fields travel with the node when graphs are merged or a
+tier3 duplicate is folded into its canon (`frontmatter.carry_list_fields`),
+so a veto survives a move. `_Кандидаты.md` is a report and an event log: repeats are
 counted by its lines («the same pair» is name, reason and the same set of
 candidates), but no state hides in their tails — a state kept as a
 substring of a human-edited file was lost on cleanup and lied on a zero

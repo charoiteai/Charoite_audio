@@ -1006,10 +1006,12 @@ _AUTO_ALIAS_FOLDERS = tuple(f for f in NODE_FOLDERS if f not in _PEOPLE_FOLDERS)
 # След склейки машины — в шапке узла-кандидата рядом с `aliases:`: имена, которые
 # машина приписала по повтору. Вето читается отсюда, не из журнала: имя есть в
 # `auto_aliases:`, но нет в `aliases:` — человек снял псевдоним, машина его не
-# вернёт; снял и след — разрешил считать заново. `_Кандидаты.md` — отчёт человеку
-# и лог событий, состояния в его строках нет (№286: «Как чинить» DS и GLM кругов
-# 3–4 по №236 — признак-подстрока в человеческом файле терялся при чистке и врал).
-AUTO_ALIASES_KEY = "auto_aliases"
+# вернёт; снял и след — разрешил склеить снова (повторы по строкам журнала уже
+# накоплены — склейка может прийти следующей же встречей). `_Кандидаты.md` — отчёт
+# человеку и лог событий, состояния в его строках нет (№286: «Как чинить» DS и GLM
+# кругов 3–4 по №236 — признак-подстрока в человеческом файле терялся при чистке
+# и врал). Ключ поля живёт в frontmatter: переносчики узлов берут его оттуда.
+AUTO_ALIASES_KEY = frontmatter.AUTO_ALIASES
 
 
 CANDIDATES_NOTE = "_Кандидаты.md"   # в корне графа: `_`-файлы из сканов find_canonical и near исключены
@@ -1060,17 +1062,19 @@ def _safe_to_auto_alias(name: str, cand: str) -> bool:
     return bool(nums) and nums == re.findall(r"\d+", name_key(cand.split("/", 1)[-1]))
 
 
-def _alias_veto(graph: pathlib.Path, cand: str, name: str) -> bool:
+def _alias_veto(graph: pathlib.Path, cand: str, name: str, meeting_link: str) -> bool:
     """Человек снял псевдоним, который машина приписала по повтору: имя есть в
     следе `auto_aliases:` узла-кандидата, а в `aliases:` его нет. Читается из
     узла, не из журнала: строка-якорь в `_Кандидаты.md` терялась при чистке
     файла человеком и конфликтной копии iCloud, и вето уходило молча (круг 4,
-    DS критика 1). Снял и след — вето снято, счёт повторов заново. Нечитаемый
-    узел — не вето: склейка в него всё равно упрётся в гейт записи."""
+    DS критика 1). Снял и след — вето снято; повторы по журналу уже накоплены,
+    склейка может прийти следующей же встречей (GLM I1 по #576). Нечитаемый
+    узел — не вето, но и не молча: чтение — через _read_node, с событием и
+    сводкой нечитаемых (DS M3 / GLM M1 по #576); склейка в него всё равно
+    упрётся в гейт записи."""
     folder, _, stem = cand.partition("/")
-    try:
-        text = (graph / folder / f"{stem}.md").read_text(encoding="utf-8")
-    except (OSError, ValueError):          # UnicodeDecodeError — ValueError
+    text = _read_node(graph / folder / f"{stem}.md", meeting_link)
+    if text is None:
         return False
     key = name_key(name)
     return (key in {name_key(a) for a in frontmatter.list_field(text, AUTO_ALIASES_KEY)}
@@ -1093,10 +1097,15 @@ def _journal_held_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
     причина (круг 4, DS I1). Вето — из узла (_alias_veto): машина уже
     приписывала это имя кандидату, а человек псевдоним снял — не переклеиваем,
     ни через одну встречу, ни через две; снять вето — убрать имя и из
-    `auto_aliases:` (круг 2, GLM I1; круг 3, DS C1 / GLM I1; №286).
+    `auto_aliases:`, тогда склейка может прийти следующей же встречей — повторы
+    уже накоплены (круг 2, GLM I1; круг 3, DS C1 / GLM I1; №286). Имя здесь —
+    в той же нормализации, что у вердикта (safe_name): ключ пары, след и вето
+    считаются от одного имени (DS I1 по #576). Журнал пишется через гейт
+    обновления: человек правит его параллельно (GLM I2 по #576).
     Порядок: решение → действие → запись о нём (DS M3); событие журнала — с
     исходом, а не до решения (DS M1). -> (путь узла, записан ли псевдоним
     сейчас) или None."""
+    name = safe_name(name)
     why = _HELD_WHY[verdict]
     what = f"{folder}/{name}: {why}" + (" — " + ", ".join(cands) if cands else "")
     if verdict == "junk":
@@ -1110,7 +1119,8 @@ def _journal_held_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
             "существующего на одну букву. Подтвердить: добавить `aliases:` в узел-кандидат "
             "или создать узел руками — следующая встреча ляжет туда. Склейку машины "
             "(след `auto_aliases:` в шапке узла) отменить — убрать имя из `aliases:`; убрать "
-            "и из `auto_aliases:` — машина снова начнёт считать повторы. Свежее снизу.\n\n")
+            "и из `auto_aliases:` — разрешить машине склеить снова (повторы уже накоплены — "
+            "может уже следующей встречей). Свежее снизу.\n\n")
     except (OSError, ValueError) as e:      # UnicodeDecodeError — ValueError: конфликтная копия iCloud (GLM I4)
         _journal_graph_event("журнал кандидатов не прочитан", f"{CANDIDATES_NOTE}: {e}", meeting_link)
         _journal_graph_event("узел не создан", what, meeting_link)
@@ -1130,7 +1140,7 @@ def _journal_held_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
     # это имя, а человек псевдоним снял. Это вето, не пауза: счётчик «повторов
     # после последней склейки» возвращал псевдоним через две встречи (круг 3,
     # DS C1 / GLM I1), а якорь-подстрока в журнале терялся при чистке (№286)
-    vetoed = verdict == "near" and len(cands) == 1 and _alias_veto(graph, cands[0], name)
+    vetoed = verdict == "near" and len(cands) == 1 and _alias_veto(graph, cands[0], name, meeting_link)
     day = pathlib.PurePosixPath(meeting_link).name[:10]
     links = ", ".join(f"[[{c}]]" for c in cands)
     line = f"- {day} [[{meeting_link}]] · «{name}» ({typ}) — {why}: {links}"
@@ -1150,9 +1160,15 @@ def _journal_held_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
                 # уже стоял; состояния здесь нет — оно в шапке узла (круг 3, DS M2; №286)
                 line += (f" → псевдоним записан в [[{cands[0]}]] (по повтору, {day})" if aliased[1]
                          else f" → лёг в [[{cands[0]}]] (псевдоним уже был)")
+    # Журнал — под тем же гейтом потери обновления, что узлы: человек правит его
+    # в Obsidian параллельно, и запись «прочитанное + строка» без expect стирала
+    # бы его правку молча (GLM I2 по #576). Нет файла — заводим с гейтом «файла
+    # не было», появился в окне — дописываем в него.
+    append = lambda t: (t + line + "\n", 1)  # noqa: E731
     try:
-        safe_write.write_text(log, text + line + "\n")
-    except OSError as e:
+        if log.exists() or not safe_write.write_text(log, text + line + "\n", expect_absent=True):
+            safe_write.rewrite_file(log, append, "журнал кандидатов")
+    except (OSError, UnicodeDecodeError, safe_write.LostRace) as e:
         _journal_graph_event("журнал кандидатов не записан", f"{CANDIDATES_NOTE}: {e}", meeting_link)
     _journal_graph_event("узел не создан", what + (f" → лёг в {cands[0]} по псевдониму" if aliased else ""), meeting_link)
     return aliased
@@ -1195,8 +1211,8 @@ def _auto_alias(graph: pathlib.Path, cand: str, name: str, meeting_link: str) ->
 
         try:
             n = safe_write.rewrite_file(path, transform, "псевдоним по повтору")
-        except (OSError, ValueError, safe_write.LostRace) as exc:
-            state["why"] = str(exc)
+        except (OSError, UnicodeDecodeError, safe_write.LostRace) as exc:    # ValueError целиком глотал бы
+            state["why"] = str(exc)                                         # ошибку самого преобразования (DS M4)
     if "why" in state:
         _journal_graph_event("псевдоним по повтору не записан", f"{cand} ← «{name}»: {state['why']}", meeting_link)
         return None
@@ -1257,7 +1273,9 @@ def apply_entities(graph: pathlib.Path, ents: list[dict], meeting_link: str) -> 
             path, wrote = aliased
             upsert_entity(graph, path.parent.name, path.stem, typ, desc, meeting_link,
                           f"псевдоним «{name}» записан по повтору" if wrote else "", node=path)
-            held[(folder, name)] = ("aliased", [f"{path.parent.name}/{path.stem}"])
+            # псевдоним уже стоял (поставил человек, машина ничего не приписала) —
+            # в заметке обычная ссылка, а не пометка «по повтору» (DS I1 по #576)
+            held[(folder, name)] = ("aliased" if wrote else "by_alias", [f"{path.parent.name}/{path.stem}"])
             continue
         held[(folder, name)] = (verdict, cands)
     landed = [(k, v, c[0]) for k, (v, c) in held.items() if v in ("aliased", "by_alias")]
@@ -1600,8 +1618,9 @@ def _write_entity(p: pathlib.Path, stamp: str, desc: str, meeting_link: str, day
         _journal_graph_event("встреча в узел не дописана", f"{label}: {exc.reason}", meeting_link)
         print(f"граф: «{p.stem}» — {exc.reason}, встреча {meeting_link} не дописана")
         return
-    except (OSError, ValueError) as exc:        # UnicodeDecodeError — ValueError: узел стал нечитаемым под рукой
-        _journal_graph_event("встреча в узел не дописана", f"{label}: {exc}", meeting_link)
+    except (OSError, UnicodeDecodeError) as exc:    # узел стал нечитаемым под рукой; ValueError целиком
+        _journal_graph_event("встреча в узел не дописана", f"{label}: {exc}", meeting_link)   # прятал бы ошибку
+        _SKIPPED_NODES.append(label)                # преобразования под «не прочитан» (DS M4 / GLM M2 по #576)
         print(f"граф: «{p.stem}» — не прочитан ({exc}), встреча {meeting_link} не дописана",
               file=sys.stderr, flush=True)
         return

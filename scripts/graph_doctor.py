@@ -172,17 +172,21 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
             continue                    # исчез между обходом и чтением — не наше дело
 
     # След склейки машины без псевдонима: человек снял то, что машина приписала
-    # по повтору (№236/№286) — вето, машина не переклеит. Доктор называет пары,
-    # чтобы человек знал, где машина молчит по его слову: узел тот — вернуть имя
-    # в aliases:, не тот — оставить след как есть.
+    # по повтору (№236/№286) — вето, машина не переклеит. Доктор называет пары
+    # СПРАВКОЙ (счёт в сводке и примеры), не тревогой: «тревога → чинить» толкала
+    # бы снести машинное поле уборкой — ровно то, что снимает вето (DS критика 2
+    # по #576). Ходим по папкам, куда машина вправе писать след — включая демо-
+    # граф на английском, не только HUB_DIRS (DS M5); следы с одним ключом имени
+    # не схлопываем — считаем как вето (GLM M3).
     alias_vetoes: list[str] = []
-    for p in nodes:
-        traced = {graph_names.name_key(a): a
-                  for a in frontmatter.list_field(notes[p], graph_updater.AUTO_ALIASES_KEY)}
+    for p, text in notes.items():
+        if p.parent.name not in graph_updater._AUTO_ALIAS_FOLDERS or p.name.startswith("_"):
+            continue
+        traced = [(graph_names.name_key(a), a) for a in frontmatter.list_field(text, graph_updater.AUTO_ALIASES_KEY)]
         if not traced:
             continue
-        live = {graph_names.name_key(a) for a in frontmatter.aliases(notes[p])}
-        alias_vetoes += [f"{rel[p]} ← «{a}»" for k, a in traced.items() if k not in live]
+        live = {graph_names.name_key(a) for a in frontmatter.aliases(text)}
+        alias_vetoes += [f"{rel[p]} ← «{a}»" for k, a in traced if k not in live]
 
     links_total = sum(outbound.values())
     rep = {
@@ -213,9 +217,6 @@ def inspect(root: pathlib.Path, examples: int = 0) -> dict:
         warnings.append(f"файлов не в UTF-8: {len(not_utf8)} — правь в редакторе, "
                         "облако их не тронет"
                         + (f" (в архиве ещё {len(not_utf8_archive)})" if not_utf8_archive else ""))
-    if alias_vetoes:
-        warnings.append(f"склеек машины, снятых человеком: {len(alias_vetoes)} — машина их не повторит; "
-                        "узел тот — вернуть имя в aliases:, не тот — оставить след auto_aliases:")
     rep["warnings"] = warnings
     if examples:
         rep["examples"] = {

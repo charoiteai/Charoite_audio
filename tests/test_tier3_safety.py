@@ -450,8 +450,8 @@ def test_merge_carries_the_duplicate_name_and_aliases_into_the_canon(graph):
     круг-1 #451); заглушка псевдонимов не несёт."""
     import frontmatter
     for p in sorted(graph.glob("Ядра/*.md")):
-        p.write_text(frontmatter.with_aliases(p.read_text(encoding="utf-8"), [f"псевдоним {p.stem}"]),
-                     encoding="utf-8")
+        text = frontmatter.with_aliases(p.read_text(encoding="utf-8"), [f"псевдоним {p.stem}"])
+        p.write_text(frontmatter.with_list_field(text, frontmatter.AUTO_ALIASES, [f"след {p.stem}"]), encoding="utf-8")
     assert tier3.revise(graph, apply=True)["log"]
     texts = {p: p.read_text(encoding="utf-8") for p in graph.glob("Ядра/*.md")}
     stubs = {p: t for p, t in texts.items() if "Дубль. Смерджен" in t}
@@ -461,6 +461,8 @@ def test_merge_carries_the_duplicate_name_and_aliases_into_the_canon(graph):
         canon = graph / "Ядра" / f"{m.group(1)}.md"
         got = frontmatter.aliases(texts[canon])
         assert stub_path.stem in got and f"псевдоним {stub_path.stem}" in got, got
+        # след склейки машины едет в канон вместе с псевдонимами (№286, DS I2 по #576)
+        assert f"след {stub_path.stem}" in frontmatter.list_field(texts[canon], frontmatter.AUTO_ALIASES)
         assert frontmatter.aliases(stub_text) == [], "заглушка псевдонимов не несёт"
         body = frontmatter.split(texts[canon])[1]
         assert "## Статус" in body and "## Хроника" in body, "шапка переписана, тело цело"

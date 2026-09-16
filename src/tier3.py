@@ -246,8 +246,9 @@ def _merge(folder: pathlib.Path, stamp: str, a: dict, b: dict, log: list[str]) -
     text += f"\n> 🔀 Tier3-NLI: сюда влита хроника дубля «{dup['name']}».\n"
     # Имя дубля и его псевдонимы — в шапку канона: иначе следующее упоминание
     # короткого псевдонима («МБ») не находит ничего и заводит дубль заново
-    # (GLM, круг-1 #451); в заглушку они не пишутся.
-    text = frontmatter.with_aliases(text, [dup["name"], *frontmatter.aliases(dup["text"])])
+    # (GLM, круг-1 #451); в заглушку они не пишутся. След склейки машины
+    # (auto_aliases) едет тем же переносчиком (№286, DS I2 по #576).
+    text = frontmatter.carry_list_fields(dup["text"], text, extra_aliases=[dup["name"]])
     safe_write.write_text(canon["path"], text)
     canon["text"] = text
     canon["mtime"] = canon["path"].stat().st_mtime   # своя запись — не «чужая рука»

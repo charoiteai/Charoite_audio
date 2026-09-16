@@ -16,6 +16,14 @@ import sys
 import yaml
 
 _MAX_HEAD = 20_000   # шапка длиннее — не шапка
+
+# Поля-списки узла, которые едут с ним при любом переносе (слияние графов,
+# дубль tier3): `aliases:` — псевдонимы, `auto_aliases:` — след склейки машины
+# (№286: имя в следе без псевдонима = человек снял, машина не переклеивает).
+# Переносчик, взявший одно поле и забывший другое, молча снимал вето (DS I2,
+# круг 1 по #576) — поэтому перечень один, и переносит его carry_list_fields.
+AUTO_ALIASES = "auto_aliases"
+NODE_LIST_FIELDS = ("aliases", AUTO_ALIASES)
 _CLOSER_RE = re.compile(r"\r?\n---[ \t]*(?:\r?\n|$)")   # ровно `---` (и CRLF), не `----`
 
 
@@ -188,3 +196,16 @@ def with_list_field(text: str, key: str, names: list[str]) -> str:
 def with_aliases(text: str, names: list[str]) -> str:
     """Дописать псевдонимы (`aliases:`) в шапку."""
     return with_list_field(text, "aliases", names)
+
+
+def carry_list_fields(src_text: str, dst_text: str, extra_aliases: list[str] | tuple[str, ...] = ()) -> str:
+    """Перенести поля-списки узла (NODE_LIST_FIELDS) из шапки `src_text` в шапку
+    `dst_text`; `extra_aliases` — имена, которые едут в `aliases:` сверх шапки
+    источника (имя самого дубля). Единственный переносчик: инструмент, который
+    решает сам, какие поля брать, теряет след машины (№286, DS I2 по #576)."""
+    for key in NODE_LIST_FIELDS:
+        names = list(extra_aliases) if key == "aliases" else []
+        names += [n for n in list_field(src_text, key) if n not in names]
+        if names:
+            dst_text = with_list_field(dst_text, key, names)
+    return dst_text
