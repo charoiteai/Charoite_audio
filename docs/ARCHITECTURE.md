@@ -393,6 +393,12 @@ exists — a node that vanished between the verdict and the write is a log
 event, not a new node with the parser's type.
 A real ambiguity (several candidates) only gets the counter: the machine
 must not merge it.
+A topic that already lives as a node of another kind (`Системы/X`) and is
+then named a core gets a parallel `Ядра/X` — the two cannot be merged, their
+structures differ — and from now on both carry a «see also» line under
+`## Связи` pointing at each other, written once and idempotent on retry, so
+a later merge by the reviewer or by the entity verdict has a visible cause
+instead of a mystery in `canon_link`.
 Why a write did not happen is a VALUE, not a text: «changed under our hands»,
 «the file is gone» and «could not reach the file» are three kinds carried by
 the signal itself, with the system's own detail in a separate field rather than
