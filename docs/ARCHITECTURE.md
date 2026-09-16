@@ -384,17 +384,20 @@ a human is allowed only on a shared number in the name («Kwen 32B» → «Qwen
 32B»); a name without digits («Препрод» → «Препрот», «Реестр Витрен» →
 «Реестр Витрин») only gets the counter. Undoing a wrong merge means removing
 the alias from the front matter and the meeting lines from the node — the
-trace is there for that. A pair the machine has merged once it never merges
-again: its own «→ псевдоним записан» line in `_Кандидаты.md` next to a node
-without the alias means a human removed it, and the pair only gets a note
-«псевдоним снимал человек». To allow the machine again, delete that line
-from `_Кандидаты.md` — the count then continues from the remaining lines,
-so the very next meeting may merge. «The same pair» means name, reason and
-the same set of candidates: a node merged into another one gives the
-verdict a new address, and that is a new pair — the old anchor does not
-veto it. A resolved path is written to only if the node still
-exists — a node that vanished between the verdict and the write is a log
-event, not a new node with the parser's type.
+trace is there for that. The machine leaves its own trace next to the
+alias — `auto_aliases:` in the node's front matter — and reads the veto
+from there, not from the journal: a name that is in `auto_aliases:` but no
+longer in `aliases:` was removed by a human, and the machine never merges
+that pair again (the journal line only notes «псевдоним снимал человек»).
+Remove the name from `auto_aliases:` too, and the machine counts repeats
+from scratch. `_Кандидаты.md` is a report and an event log: repeats are
+counted by its lines («the same pair» is name, reason and the same set of
+candidates), but no state hides in their tails — a state kept as a
+substring of a human-edited file was lost on cleanup and lied on a zero
+write. A resolved path is written only through the update gate
+(`rewrite_file`): a node that vanished or changed under our hands between
+the verdict and the write is a log event with a reason value, not a new
+node with the parser's type and not an overwrite.
 A real ambiguity (several candidates) only gets the counter: the machine
 must not merge it.
 A topic that already lives as a node of another kind (`Системы/X`) and is
