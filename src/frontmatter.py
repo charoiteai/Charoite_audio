@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import functools
 import json
 import re
 import sys
@@ -15,6 +16,14 @@ import sys
 import yaml
 
 _MAX_HEAD = 20_000   # шапка длиннее — не шапка
+
+# Поля-списки узла, которые едут с ним при любом переносе (слияние графов,
+# дубль tier3): `aliases:` — псевдонимы, `auto_aliases:` — след склейки машины
+# (№286: имя в следе без псевдонима = человек снял, машина не переклеивает).
+# Переносчик, взявший одно поле и забывший другое, молча снимал вето (DS I2,
+# круг 1 по #576) — поэтому перечень один, и переносит его carry_list_fields.
+AUTO_ALIASES = "auto_aliases"
+NODE_LIST_FIELDS = ("aliases", AUTO_ALIASES)
 _CLOSER_RE = re.compile(r"\r?\n---[ \t]*(?:\r?\n|$)")   # ровно `---` (и CRLF), не `----`
 
 
@@ -43,9 +52,17 @@ def parse(text: str, where: str = "") -> dict:
     return data if isinstance(data, dict) else {}
 
 
-_ALIASES_INLINE_RE = re.compile(r"^aliases:[ \t]*\[(.*)\][ \t]*$", re.M)   # до последней `]` строки: `]` в кавычках не рвёт
-_ALIASES_BLOCK_RE = re.compile(r"^aliases:[ \t]*\r?\n((?:[ \t]*-[^\n]*\n?)+)", re.M)   # блок с отступом и без
-_ALIASES_SCALAR_RE = re.compile(r"^aliases:[ \t]*([^\[\s][^\n]*)$", re.M)   # не пробел: иначе `[ \t]*` отступал и ловил поток
+@functools.lru_cache(maxsize=None)
+def _list_res(key: str) -> tuple[re.Pattern, re.Pattern, re.Pattern]:
+    """Три формы поля-списка `key:` для шапки, которую YAML не разобрал: поток
+    `[...]` (до последней `]` строки: `]` в кавычках не рвёт), блок «- имя» с
+    отступом и без, одиночная строка (не пробел после двоеточия: иначе `[ \\t]*`
+    отступал и ловил поток). Ключ — параметр: тем же разбором читается след
+    машины `auto_aliases:` (№286), не второй копией регэкспов."""
+    k = re.escape(key)
+    return (re.compile(rf"^{k}:[ \t]*\[(.*)\][ \t]*$", re.M),
+            re.compile(rf"^{k}:[ \t]*\r?\n((?:[ \t]*-[^\n]*\n?)+)", re.M),
+            re.compile(rf"^{k}:[ \t]*([^\[\s][^\n]*)$", re.M))
 
 
 def _is_literal(x) -> bool:
@@ -61,27 +78,29 @@ def yaml_str(value: str) -> str:
                   json.dumps(value, ensure_ascii=False))
 
 
-def _aliases_fallback(fm: str) -> list:
-    """Поле `aliases:` из шапки, которую YAML не разобрал (незакавыченное
+def _list_fallback(fm: str, key: str) -> list:
+    """Поле-список `key:` из шапки, которую YAML не разобрал (незакавыченное
     двоеточие в соседнем поле и т. п.): узел не должен терять псевдонимы
     из-за чужой строки (DS r2 #451). Запятая в кавычках — часть имени."""
-    m = _ALIASES_INLINE_RE.search(fm)
+    inline_re, block_re, scalar_re = _list_res(key)
+    m = inline_re.search(fm)
     if m:
         return [x.strip().strip("\"'") for x in re.findall(r'"[^"]*"|\'[^\']*\'|[^,]+', m.group(1))]
-    m = _ALIASES_BLOCK_RE.search(fm)
+    m = block_re.search(fm)
     if m:
         return [ln.strip().lstrip("-").strip().strip("\"'") for ln in m.group(1).splitlines()]
-    m = _ALIASES_SCALAR_RE.search(fm)
+    m = scalar_re.search(fm)
     return [m.group(1).strip().strip("\"'")] if m else []
 
 
-def aliases(text: str, where: str = "") -> list[str]:
-    """Псевдонимы узла: список, блок или одиночная строка; пустые и дубли — вон."""
+def list_field(text: str, key: str, where: str = "") -> list[str]:
+    """Поле-список шапки (`aliases:`, `auto_aliases:`): список, блок или
+    одиночная строка; пустые и дубли — вон."""
     fm, _ = split(text)
     if fm is None:
         return []
     data = parse(text, where)
-    raw = data.get("aliases") if data else _aliases_fallback(fm)
+    raw = data.get(key) if data else _list_fallback(fm, key)
     if isinstance(raw, str):
         raw = [raw]
     if raw is None or isinstance(raw, (dict,)):
@@ -92,7 +111,7 @@ def aliases(text: str, where: str = "") -> list[str]:
         # число/дата/булево YAML уже «понял» по-своему (`01` → 1, `on` → True):
         # псевдоним берём из текста поля, как записан (GLM r2); если текст
         # поля fallback не разобрал — строки из YAML не выбрасываем (DS r3)
-        fb = [a for a in _aliases_fallback(fm) if a not in ("null", "~")]
+        fb = [a for a in _list_fallback(fm, key) if a not in ("null", "~")]
         raw = fb if fb else [str(x) for x in raw if isinstance(x, str) or _is_literal(x)]
     else:
         raw = [x for x in raw if isinstance(x, str)]   # null/mapping/список внутри — вон
@@ -104,6 +123,11 @@ def aliases(text: str, where: str = "") -> list[str]:
         if s and s not in out:
             out.append(s)
     return out
+
+
+def aliases(text: str, where: str = "") -> list[str]:
+    """Псевдонимы узла — поле `aliases:`."""
+    return list_field(text, "aliases", where)
 
 
 def _node_end(node) -> int:
@@ -140,24 +164,24 @@ def _field_span(fm: str, key: str) -> tuple[int, int] | None:
     return (m.start(), m.end()) if m else None
 
 
-def with_aliases(text: str, names: list[str]) -> str:
-    """Дописать псевдонимы в шапку (шапки нет — завести); порядок прежних
-    сохраняется, дубли не плодятся. Список пишется YAML-потоком в кавычках —
-    запятая внутри имени остаётся именем."""
-    current = aliases(text)
+def with_list_field(text: str, key: str, names: list[str]) -> str:
+    """Дописать имена в поле-список `key:` шапки (шапки нет — завести); порядок
+    прежних сохраняется, дубли не плодятся. Список пишется YAML-потоком в
+    кавычках — запятая внутри имени остаётся именем."""
+    current = list_field(text, key)
     merged = current + [n.strip() for n in names
                         if n and n.strip() and n.strip() not in current]
     merged = list(dict.fromkeys(merged))
     if merged == current:
         return text
-    line = "aliases: [" + ", ".join(yaml_str(m) for m in merged) + "]"
+    line = f"{key}: [" + ", ".join(yaml_str(m) for m in merged) + "]"
     fm, body = split(text)
     if fm is None:
         if text.startswith("---"):
             return text     # незакрытая шапка: новую поверх не заводим (DS r2)
         return f"---\n{line}\n---\n{text}"
     nl = "\r\n" if "\r\n" in fm else "\n"          # окончания строк — как в файле (DS r3)
-    span = _field_span(fm, "aliases")
+    span = _field_span(fm, key)
     if span:
         fm2 = fm[:span[0]] + line + nl + fm[span[1]:]
     else:
@@ -167,3 +191,21 @@ def with_aliases(text: str, names: list[str]) -> str:
     if not fm2.endswith(nl):
         fm2 = fm2.rstrip("\r\n") + nl
     return "---" + fm2 + "---" + nl + body
+
+
+def with_aliases(text: str, names: list[str]) -> str:
+    """Дописать псевдонимы (`aliases:`) в шапку."""
+    return with_list_field(text, "aliases", names)
+
+
+def carry_list_fields(src_text: str, dst_text: str, extra_aliases: list[str] | tuple[str, ...] = ()) -> str:
+    """Перенести поля-списки узла (NODE_LIST_FIELDS) из шапки `src_text` в шапку
+    `dst_text`; `extra_aliases` — имена, которые едут в `aliases:` сверх шапки
+    источника (имя самого дубля). Единственный переносчик: инструмент, который
+    решает сам, какие поля брать, теряет след машины (№286, DS I2 по #576)."""
+    for key in NODE_LIST_FIELDS:
+        names = list(extra_aliases) if key == "aliases" else []
+        names += [n for n in list_field(src_text, key) if n not in names]
+        if names:
+            dst_text = with_list_field(dst_text, key, names)
+    return dst_text
