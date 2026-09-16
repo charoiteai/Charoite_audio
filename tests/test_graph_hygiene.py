@@ -1361,3 +1361,8 @@ def test_parallel_core_and_its_twin_node_point_at_each_other(tmp_path, monkeypat
     # ядро без двойника — связей не появляется
     g.upsert_core(graph, {"имя": "Одиночка", "статус": "идёт", "обновление": "старт"}, "Встречи/2026-09-16_1300", "2026-09-16 13:00")
     assert "смотри также" not in (graph / "Ядра" / "Одиночка.md").read_text(encoding="utf-8")
+    # само ядро — заглушка с оборванным каноном (resolve_core_path отдаёт её): в заглушку связь не пишем
+    (graph / "Ядра" / "Оборв.md").write_text("# Оборв → [[Ядра/Нет такого]]\n\nДубль. Смерджен\n", encoding="utf-8")
+    (graph / "Системы" / "Оборв.md").write_text("# Оборв\n\n## Встречи\n", encoding="utf-8")
+    g.upsert_core(graph, {"имя": "Оборв", "статус": "идёт", "обновление": "старт"}, "Встречи/2026-09-16_1400", "2026-09-16 14:00")
+    assert "смотри также" not in (graph / "Ядра" / "Оборв.md").read_text(encoding="utf-8"), "в заглушку не пишем"
