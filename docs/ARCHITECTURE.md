@@ -548,6 +548,18 @@ judges each pair, and `tier3` merges the chronicles under
 `sufler.tier3_auto_apply`. This runs nightly and incrementally after each
 meeting.
 
+**An archive folder never links a note this graph does not have.** The
+`Граф.md` file inside the folder points Obsidian at the meeting note, but the
+folder and the note part ways as a matter of course: the meeting's sphere is
+decided from the transcript after the run has already started, so a personal
+meeting leaves as a note into its own graph while the earlier pass leaves the
+folder behind in the work one. A note that failed to land parts the same way.
+The link is then dead forever: stripping dead links runs before this folder is
+written and never sees it. So the link and the Finder shortcut are written only
+when the note exists; otherwise the file keeps a sentence telling the reader
+where to look, and a shortcut from an earlier run is removed. Measured on the
+work graph on 16.09: 20 folders out of 278 led nowhere, six of them recent.
+
 **Byte-identical copies of files** — the pipeline deliberately writes meeting
 documents twice: the original into `Документация/Стенограммы встреч`, a copy
 into `Встречи-архив/<date — title>` so the folder opens from Finder. On a
