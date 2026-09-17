@@ -37,6 +37,8 @@ from __future__ import annotations
 import array
 import dataclasses
 import datetime as dt
+import fcntl
+import hashlib
 import json
 import math
 import operator
@@ -55,6 +57,7 @@ import frontmatter  # noqa: E402
 import graph_nodes  # noqa: E402
 import graphs  # noqa: E402
 import llm as _llm  # noqa: E402
+import safe_write  # noqa: E402
 
 # Копии стенограмм и архив встреч: дублируют заметки встреч и узлы, но весят
 # втрое больше всего графа — без них холодный обход укладывается в секунды.
@@ -71,12 +74,19 @@ CHUNK_CHARS = 4_000        # блок для эмбеддера: заведом�
 MAX_CHUNKS = 12            # на файл: у узла новые встречи сверху — первые блоки самые свежие
 EMBED_BATCH = 16
 SIM_FLOOR = 0.35           # ниже — семантический шум, в список не берём
-LOW_SIM, LOW_COV = 0.47, 0.67   # гейт честности: слабы ОБА сигнала — «⚠»
+# Гейт честности «⚠»: с семантикой — слабы ОБА сигнала; без неё (Ollama занята
+# генерацией — на встрече это норма, 503 за четверть секунды) судить по одному
+# покрытию с тем же порогом нельзя: три слова из пяти — не «в архиве ничего нет»,
+# а контуры по «⚠» выбрасывают выдачу целиком (круг 1 по #577, DS C1). Один сигнал
+# — только совсем слабое покрытие. Пороги унаследованы от прежнего сервера, замер
+# на боевом графе — memory_bench --stats.
+LOW_SIM, LOW_COV, LOW_COV_ALONE = 0.47, 0.67, 0.34
+VEC_RETRY_S = 30.0         # неудачная загрузка кэша не защёлкивается: повтор не чаще
 HALFLIFE_DAYS = 90.0
 _STOP = {"что", "как", "где", "когда", "это", "нас", "наш", "наша", "наши", "есть",
          "про", "для", "или", "чем", "кто", "было", "быть", "графе", "граф", "мы",
          "решили", "the", "and", "what", "who", "how", "did", "for", "with"}
-_WORD_RX = re.compile(r"[А-Яа-яЁёA-Za-z0-9_-]{3,}")
+_WORD_RX = re.compile(r"[А-Яа-яЁёA-Za-z0-9_-]{2,}")
 _DATE_RX = re.compile(r"(20\d{2})-(\d{2})-(\d{2})")
 _MEETING_RX = re.compile(r"(20\d{2}-\d{2}-\d{2})[_ ]?(\d{4})?")
 _WIKILINK_RX = re.compile(r"\[\[([^\]|#\n]+)")
@@ -113,8 +123,21 @@ def needles(query: str) -> tuple[list[str], list[str]]:
     (повтор удваивал бы вклад в счёт). Пересечься списки не могут: слова — из
     латиницы, кириллицы и цифр, биграммы — только из иероглифов."""
     query = query.translate(_FULLWIDTH)      # ＹｕＰａｙ — слово, а не пропуск
-    words = [graph_nodes.stem(w) for w in _WORD_RX.findall(query) if norm(w) not in _STOP]
+    # двухзначные слова — только аббревиатуры и номера («ИИ», «БД», «РП», «v2»):
+    # предлоги и союзы той же длины — шум (круг 1 по #577, DS I4)
+    raw = [w for w in _WORD_RX.findall(query)
+           if len(w) >= 3 or w.isupper() or any(c.isdigit() for c in w)]
+    words = [graph_nodes.stem(w) for w in raw if norm(w) not in _STOP]
     return list(dict.fromkeys(norm(w) for w in words if w)), list(dict.fromkeys(cjk_grams(query)))
+
+
+def low_confidence(cov: float, sim: float, sem_used: bool) -> bool:
+    """«⚠ в архиве почти ничего нет» — по ДОСТУПНЫМ свидетельствам: с семантикой
+    слабы оба сигнала; без неё — только совсем слабое покрытие (один сигнал не
+    подстрахован вторым, и порог «всё нашли» ему не по силам)."""
+    if sem_used:
+        return cov < LOW_COV and sim < LOW_SIM
+    return cov < LOW_COV_ALONE
 
 
 def file_date_ts(rel: str, mtime: float) -> float:
@@ -266,7 +289,11 @@ def chunks(stem: str, text: str, chars: int = CHUNK_CHARS, limit: int = MAX_CHUN
     """Блоки файла для эмбеддера: по заголовкам markdown, длинные секции — по
     абзацам до `chars`, сплошной абзац — по длине; каждый блок с хлебной
     крошкой «Файл → H1 → H2» — «ну да, давайте так» сам по себе не значит
-    ничего. Не больше `limit` блоков на файл."""
+    ничего. Секция короче 40 знаков не выбрасывается, а приклеивается к
+    соседнему блоку («## Решения» из одной строки — самое ценное). Не больше
+    `limit` блоков на файл: половина с начала (у узла новые встречи сверху) и
+    половина с конца (у заметки решения в хвосте) — срез по хвосту терял бы
+    именно их (круг 1 по #577, DS I3 / GLM M7)."""
     body = frontmatter.split(text)[1]
     sections: list[tuple[str, str]] = []      # (крошка, текст секции)
     crumbs = {1: "", 2: "", 3: ""}
@@ -285,7 +312,13 @@ def chunks(stem: str, text: str, chars: int = CHUNK_CHARS, limit: int = MAX_CHUN
     out: list[str] = []
     for crumb_text, sec in sections:
         sec = sec.strip()
+        if not sec:
+            continue
         if len(sec) < 40:
+            if out and len(out[-1]) + len(sec) + 1 <= chars + 80:
+                out[-1] = f"{out[-1]}\n{crumb_text.rsplit(' → ', 1)[-1]}: {sec}"
+            else:
+                out.append(f"{crumb_text}\n{sec}")
             continue
         pieces: list[str] = []
         if len(sec) <= chars:
@@ -311,8 +344,9 @@ def chunks(stem: str, text: str, chars: int = CHUNK_CHARS, limit: int = MAX_CHUN
                 pieces.append(buf)
         for piece in pieces:
             out.append(f"{crumb_text}\n{piece}")
-            if len(out) >= limit:
-                return out
+    if len(out) > limit:
+        head = limit // 2
+        out = out[:head] + out[len(out) - (limit - head):]
     return out
 
 
@@ -334,6 +368,7 @@ class Result:
     low_conf: bool
     ready: bool = True
     dossiers: list[str] = dataclasses.field(default_factory=list)
+    sem_used: bool = False      # семантика посчиталась (вектор запроса получен)
 
     @property
     def empty(self) -> bool:
@@ -351,7 +386,16 @@ def _unit(vec: Sequence[float]) -> array.array:
 
 class GraphSearch:
     """Индекс одного графа и поиск по нему. Один экземпляр на процесс и граф
-    (см. shared()); обновление индекса и поиск — из разных потоков."""
+    (см. shared()); обновление индекса и поиск — из разных потоков.
+
+    Владение: `_docs` пишет только `_walk` (обходчики сериализует `_scan_lock`),
+    подмена и чистка — под `_lock`; читатели берут снимок под `_lock` и дальше
+    работают со списком. `_vecs` пишут `load_vectors`/`embed_pending`/`_walk`
+    (уборка исчезнувших) — тоже под `_lock`. Кэш векторов на диске: манифест с
+    именем неизменяемого блоба (запись — новый блоб, потом манифест через
+    tmp+replace, старые блобы стираются после) — читатель никогда не видит
+    полузаписанной пары; писателей сериализует flock рядом с манифестом.
+    """
 
     def __init__(self, graph_dir: pathlib.Path, cfg: dict | None = None, *,
                  data_dir: pathlib.Path | None = None,
@@ -370,9 +414,13 @@ class GraphSearch:
         self._scan_lock = threading.Lock()   # один обход за раз
         self._vecs: dict[str, tuple[float, list[array.array]]] = {}   # путь → (mtime, векторы блоков)
         base = pathlib.Path(data_dir) if data_dir else graphs.DATA_ROOT / "data"
-        self._vec_manifest = base / "graph_search" / f"{self.graph.name}.json"
-        self._vec_file = self._vec_manifest.with_suffix(".f32")
+        # имя кэша — по пути графа, не по имени папки: два графа «Работа» в разных
+        # vault-ах дрались бы за один файл (круг 1 по #577, GLM M6)
+        tag = hashlib.sha1(str(self.graph.resolve()).encode("utf-8")).hexdigest()[:8]
+        self._vec_manifest = base / "graph_search" / f"{self.graph.name}-{tag}.json"
         self._vecs_loaded = False
+        self._vecs_tried_at = 0.0
+        self.note = ""              # последнее «почему не сделали» для CLI и журнала
 
     # ---------------------------------------------------------------- индекс
     @property
@@ -442,12 +490,17 @@ class GraphSearch:
         with self._lock:
             for p in gone:
                 self._docs.pop(p, None)
+                self._vecs.pop(p, None)          # вектор исчезнувшего файла — вместе с ним (DS M3 / GLM M10)
             self._docs.update(fresh)
-            if changed or gone:
-                indeg: dict[str, int] = {}
-                for d in self._docs.values():
-                    for target in wiki_targets(d.text):
-                        indeg[target] = indeg.get(target, 0) + 1
+            snapshot = list(self._docs.values())
+        if changed or gone:
+            # входящие ссылки — по снимку вне замка: обход 28 МБ текста под замком
+            # заставлял бы каждый поиск встречи ждать (GLM M5)
+            indeg: dict[str, int] = {}
+            for d in snapshot:
+                for target in wiki_targets(d.text):
+                    indeg[target] = indeg.get(target, 0) + 1
+            with self._lock:
                 self._indeg = indeg
 
     # --------------------------------------------------------------- векторы
@@ -462,27 +515,35 @@ class GraphSearch:
             return []
 
     def load_vectors(self) -> int:
-        """Кэш векторов с диска: манифест (путь, mtime, число блоков) + плоский float32."""
+        """Кэш векторов с диска: манифест (путь, mtime, число блоков, имя блоба) +
+        неизменяемый плоский float32. Неудача не защёлкивается — повтор не чаще
+        VEC_RETRY_S: защёлка гасила семантику на всю встречу после одного
+        совпадения с писателем (круг 1 по #577, DS I1 / GLM I1)."""
         if self._vecs_loaded:
             return len(self._vecs)
-        self._vecs_loaded = True
+        if self._now() - self._vecs_tried_at < VEC_RETRY_S:
+            return len(self._vecs)
+        self._vecs_tried_at = self._now()
         try:
             manifest = json.loads(self._vec_manifest.read_text(encoding="utf-8"))
             dim, entries = int(manifest["dim"]), manifest["files"]
             flat = array.array("f")
-            with open(self._vec_file, "rb") as fh:
+            with open(self._vec_manifest.with_name(str(manifest["blob"])), "rb") as fh:
                 flat.frombytes(fh.read())
             if len(flat) != dim * sum(int(n) for _, _, n in entries):
-                return 0
+                return len(self._vecs)
         except (OSError, ValueError, KeyError, TypeError):
-            return 0
+            return len(self._vecs)
+        loaded: dict[str, tuple[float, list[array.array]]] = {}
+        off = 0
+        for path, mtime, n in entries:
+            loaded[path] = (float(mtime), [flat[off + i * dim:off + (i + 1) * dim] for i in range(int(n))])
+            off += int(n) * dim
         with self._lock:
-            off = 0
-            for path, mtime, n in entries:
-                vecs = [flat[off + i * dim:off + (i + 1) * dim] for i in range(int(n))]
-                off += int(n) * dim
-                self._vecs[path] = (float(mtime), vecs)
-        return len(self._vecs)
+            for path, entry in loaded.items():
+                self._vecs.setdefault(path, entry)   # свежепосчитанное в памяти главнее диска
+            self._vecs_loaded = True
+            return len(self._vecs)
 
     def save_vectors(self) -> None:
         with self._lock:
@@ -495,12 +556,20 @@ class GraphSearch:
             for v in vs:
                 flat.extend(v)
         self._vec_manifest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._vec_file.with_name(self._vec_file.name + f".tmp{os.getpid()}")
+        # блоб неизменяем и именован поколением: сначала он, потом манифест (tmp +
+        # replace) — читатель видит либо старую пару, либо новую; прежние блобы
+        # стираются последними
+        stem = self._vec_manifest.stem
+        blob = self._vec_manifest.with_name(f"{stem}.{int(self._now() * 1000)}.f32")
+        tmp = blob.with_name(blob.name + f".tmp{os.getpid()}")
         with open(tmp, "wb") as fh:
             fh.write(flat.tobytes())
-        tmp.replace(self._vec_file)
-        self._vec_manifest.write_text(json.dumps(
-            {"dim": dim, "files": [[p, m, len(vs)] for p, m, vs in items]}, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(blob)
+        safe_write.write_text(self._vec_manifest, json.dumps(
+            {"dim": dim, "blob": blob.name, "files": [[p, m, len(vs)] for p, m, vs in items]}, ensure_ascii=False))
+        for old in self._vec_manifest.parent.glob(f"{stem}.*.f32"):
+            if old != blob:
+                old.unlink(missing_ok=True)
 
     def pending_vectors(self) -> list[str]:
         self.load_vectors()
@@ -508,13 +577,33 @@ class GraphSearch:
             return [p for p, d in self._docs.items() if self._vecs.get(p, (None, None))[0] != d.mtime]
 
     def embed_pending(self, budget_s: float | None = None, batch: int = EMBED_BATCH,
-                      timeout: float = 60.0) -> int:
+                      timeout: float = 60.0, should_stop: Callable[[], bool] | None = None) -> int:
         """Доиндексация файлов с изменившимся mtime — по блокам, пачками, с
         потолком по времени. Вызывать ВНЕ живой записи: сотни файлов — минуты
-        работы модели эмбеддингов, на встрече они отняли бы слот у подсказок.
-        Файл готов, когда есть векторы всех его блоков; сервер не ответил —
-        останавливаемся, недобранное дособерём в следующий раз. -> сколько
-        файлов получили векторы."""
+        работы модели эмбеддингов, на встрече они отняли бы слот у подсказок;
+        `should_stop` (живая запись началась) спрашивается перед КАЖДОЙ пачкой,
+        а таймаут пачки не длиннее остатка бюджета — проверка на входе давала
+        окно в минуты (круг 1 по #577, DS I2). Писателей сериализует flock рядом
+        с манифестом: занято — выходим, self.note скажет. Файл готов, когда есть
+        векторы всех его блоков; сервер не ответил — останавливаемся, недобранное
+        дособерём в следующий раз. -> сколько файлов получили векторы."""
+        self.note = ""
+        self._vec_manifest.parent.mkdir(parents=True, exist_ok=True)
+        lock = open(self._vec_manifest.with_suffix(".lock"), "a+")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock.close()
+            self.note = "векторы уже собирает другой процесс"
+            return 0
+        except OSError:
+            pass                                     # том без flock — идём без него
+        try:
+            return self._embed_pending(budget_s, batch, timeout, should_stop)
+        finally:
+            lock.close()
+
+    def _embed_pending(self, budget_s, batch, timeout, should_stop) -> int:
         started = self._now()
         done = 0
         queue: list[tuple[str, float, int, int, str]] = []   # путь, mtime, номер блока, всего, текст
@@ -527,10 +616,15 @@ class GraphSearch:
                 queue += [(p, d.mtime, i, len(parts), t) for i, t in enumerate(parts)]
         got: dict[str, tuple[float, int, dict[int, array.array]]] = {}
         for i in range(0, len(queue), batch):
-            if budget_s is not None and self._now() - started > budget_s:
+            left = None if budget_s is None else budget_s - (self._now() - started)
+            if left is not None and left <= 0:
+                self.note = "бюджет времени исчерпан"
+                break
+            if should_stop is not None and should_stop():
+                self.note = "началась живая запись — векторы доберём позже"
                 break
             part = queue[i:i + batch]
-            embs = self._embed([t for _, _, _, _, t in part], timeout)
+            embs = self._embed([t for _, _, _, _, t in part], timeout if left is None else max(1.0, min(timeout, left)))
             if len(embs) != len(part):
                 break
             for (p, mtime, idx, total, _), emb in zip(part, embs):
@@ -564,6 +658,10 @@ class GraphSearch:
         avg_len = max(1.0, sum(len(d.low) for d in docs) / max(1, len(docs)))
         words, grams = needles(query)
         keys = words + grams
+        # игл нет (одни стоп-слова): ищем фразу подстрокой, но это слабое
+        # свидетельство — без IDF и покрытия гейт честности не судит, отдаём «⚠»
+        # сразу (круг 1 по #577, DS I4)
+        substring = not keys
         pattern = "|".join(re.escape(k) for k in keys) if keys else re.escape(norm(query.strip()))
         rx = re.compile(pattern or "$^")
         now = self._now()
@@ -605,17 +703,19 @@ class GraphSearch:
         # ----- семантика: вектор запроса против кэша векторов файлов
         sem: list[tuple[float, str]] = []
         best_sim = 0.0
+        sem_used = False
         if semantic and (self._vecs or self.load_vectors()):
             qv = self._embed([query], embed_timeout)
             if qv and qv[0]:
+                sem_used = True
                 q = _unit(qv[0])
                 with self._lock:
                     vecs = list(self._vecs.items())
                 paths = {d.path: d for d in docs}
                 sims = []
-                for path, (_m, vs) in vecs:
+                for path, (mt, vs) in vecs:
                     d = paths.get(path)
-                    if d is None:
+                    if d is None or mt != d.mtime:      # файл переписан — старые блоки не свидетели (GLM M3)
                         continue
                     sim = max((_dot(q, v) for v in vs if len(v) == len(q)), default=0.0)   # лучший блок файла
                     if sim >= SIM_FLOOR:
@@ -627,8 +727,8 @@ class GraphSearch:
 
         dossiers = self._dossier_blocks(query, snippet_chars)
         if not lex and not sem:
-            return Result([], 0, False, dossiers=dossiers)
-        low_conf = best_sim < LOW_SIM and best_cov < LOW_COV
+            return Result([], 0, False, dossiers=dossiers, sem_used=sem_used)
+        low_conf = substring or low_confidence(best_cov, best_sim, sem_used)
         fused = rrf_merge([[r for _, r in sorted(lex, key=lambda x: -x[0])],
                            [r for _, r in sorted(sem, key=lambda x: -x[0])]], weights=[1.0, 0.7])
         picked = diversify([(s, r) for r, s in fused], limit)
@@ -636,8 +736,7 @@ class GraphSearch:
         shown: list[str] = []
         for rel in picked:
             d = by_rel[rel]
-            frag = snippet(d.text, rx, snippet_chars, rare_first or keys, dense=raw_dampener(rel) == 1.0) \
-                or " ".join(d.text[:snippet_chars].split())
+            frag = _frag_or_head(d.text, rx, snippet_chars, rare_first or keys, dense=raw_dampener(rel) == 1.0)
             blocks.append(f"• {rel}\n  {frag}")
             shown.append(rel)
         total = len(fused)
@@ -645,7 +744,7 @@ class GraphSearch:
             hops = self._hops(shown, by_rel, keys, rx, snippet_chars, rare_first or keys, max(1, limit // 2))
             blocks += hops
             total += len(hops)
-        return Result(blocks, total, low_conf, dossiers=dossiers)
+        return Result(blocks, total, low_conf, dossiers=dossiers, sem_used=sem_used)
 
     def _dossier_blocks(self, query: str, snippet_chars: int, limit: int = 2) -> list[str]:
         """Готовые сводки по теме — ПЕРЕД фрагментами: индекс лексический, без моделей."""
@@ -706,14 +805,26 @@ class GraphSearch:
                         cands.append((cov * recency_factor(d.date_ts, self._now()) * raw_dampener(d.rel), d, matched))
                 cands.sort(key=lambda x: (x[0], x[1].rel), reverse=True)
                 for _s, d, _m in cands[:min(per_node, limit - len(out))]:
-                    frag = snippet(d.text, rx, snippet_chars, rare_first, dense=raw_dampener(d.rel) == 1.0)
-                    if not frag:
-                        continue
+                    frag = _frag_or_head(d.text, rx, snippet_chars, rare_first, dense=raw_dampener(d.rel) == 1.0)
                     seen.add(d.rel)
                     out.append(f"• {d.rel}\n  ↳ по ссылке из {node_rel}\n  {frag}")
                     if len(out) >= limit:
                         return out
         return out
+
+
+def _frag_or_head(text: str, rx: re.Pattern, chars: int, rare_first: Sequence[str], dense: bool) -> str:
+    """Окно вокруг игл, а если игл в тексте нет (файл пришёл семантикой или по
+    ссылке) — шапка файла: кандидат не должен молча выпадать (DS M5)."""
+    return snippet(text, rx, chars, rare_first, dense=dense) or " ".join(text[:chars].split())
+
+
+class NotReady(RuntimeError):
+    """Индекс ещё прогревается — контур деградирует по-своему и пробует позже."""
+
+
+class Unavailable(RuntimeError):
+    """Памяти по графу не будет: граф не настроен."""
 
 
 def render(result: Result, query: str, where: str = "графе") -> str:
@@ -724,10 +835,12 @@ def render(result: Result, query: str, where: str = "графе") -> str:
         return ""
     if result.empty:
         return f"Ничего не найдено по «{query}» в {where}"
+    if not result.blocks:
+        return "\n\n".join(result.dossiers)      # только сводка: «Найдено (0 из 0)» под ней врало бы
     header = f"Найдено в {where} ({len(result.blocks)} из {result.total}):"
     if result.low_conf:
         header = "⚠ Похоже, в архиве об этом почти ничего нет (слабые совпадения). Ниже ближайшее найденное:\n" + header
-    body = header + "\n\n" + "\n\n".join(result.blocks) if result.blocks else header
+    body = header + "\n\n" + "\n\n".join(result.blocks)
     if result.dossiers:
         body = "\n\n".join(result.dossiers) + "\n\n— — — ниже отдельные фрагменты графа — — —\n\n" + body
     return body

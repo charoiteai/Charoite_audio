@@ -34,7 +34,7 @@ def test_vault_search_reads_the_configured_graph_only(tmp_path, monkeypatch):
     mine = _graph(tmp_path, "проект", "МОЙ_МАРКЕР")
     _graph(tmp_path, "соседний", "ЧУЖОЙ_МАРКЕР")
     cfg = {"sufler": {"graph_dir": str(mine)}}
-    with pytest.raises(RuntimeError):
+    with pytest.raises(brain.MemoryNotReady):
         brain.vault_search(cfg, "что решили по релизу", limit=3, snippet_chars=700, timeout=5)   # не прогрет
     mem = brain.warm(cfg)
     assert mem is not None and mem.size == 1
@@ -50,6 +50,7 @@ def test_unconfigured_graph_raises(monkeypatch):
     monkeypatch.delenv("CHAROITE_GRAPH_DIR", raising=False)
     monkeypatch.delenv("SUFLER_GRAPH_DIR", raising=False)
     monkeypatch.setattr(graph_search, "_shared", {})
-    with pytest.raises(RuntimeError):
+    with pytest.raises(brain.MemoryUnavailable):
         brain.vault_search({"sufler": {}}, "вопрос", limit=1, snippet_chars=100, timeout=0.3)
+    assert issubclass(brain.MemoryUnavailable, RuntimeError) and issubclass(brain.MemoryNotReady, RuntimeError)
     assert brain.warm({"sufler": {}}) is None

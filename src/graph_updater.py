@@ -3209,9 +3209,12 @@ def reindex_memory(cfg: dict, graph: pathlib.Path | None, budget_s: float = 45.0
         import graph_search
         mem = graph_search.GraphSearch(graph, cfg)
         mem.refresh(force=True)
-        done = mem.embed_pending(budget_s=budget_s)
+        # живая запись спрашивается перед каждой пачкой, не только на входе: окно в
+        # 45 с — это как раз старт следующей встречи (круг 1 по #577, DS I2)
+        done = mem.embed_pending(budget_s=budget_s, should_stop=lambda: live_gate.daemon_alive(ROOT))
         left = len(mem.pending_vectors())
-        print(f"память подсказок: векторы для {done} файлов" + (f", ожидают ещё {left}" if left else ""))
+        print(f"память подсказок: векторы для {done} файлов" + (f", ожидают ещё {left}" if left else "")
+              + (f" ({mem.note})" if mem.note else ""))
     except Exception as e:  # noqa: BLE001
         print(f"память подсказок: {e}")
 

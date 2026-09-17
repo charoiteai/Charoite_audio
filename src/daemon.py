@@ -1844,14 +1844,16 @@ def main():
             try:
                 v = brain.vault_search(cfg, title, limit=3,
                                        snippet_chars=700, timeout=8)
-            except Exception:  # noqa: BLE001 — память не прогрета: сначала узлы, потом честный статус
+            except Exception as exc:  # noqa: BLE001 — память не готова: сначала узлы, потом честный статус
                 added = _nodes_direct()
                 if added:
                     emit({"type": "thread", "text": thread.render()})
                     append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ⏮ {title} (узлы)",
                                 thread.full())
                 else:
-                    emit({"type": "status", "text": "⏮ архив недоступен (память по графу ещё прогревается)"})
+                    why = ("граф не настроен" if isinstance(exc, brain.MemoryUnavailable)
+                           else "память по графу ещё прогревается")   # «прогревается» вечно — ложь (GLM M8)
+                    emit({"type": "status", "text": f"⏮ архив недоступен ({why})"})
                 return
             if not v or v.startswith("⚠") or "не найдено" in v.lower():
                 added = _nodes_direct()

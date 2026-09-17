@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import pathlib
 import sys
 import time
@@ -39,7 +38,7 @@ def main() -> int:
     if graph is None or not graph.is_dir():
         print(f"граф не найден: {graph}")
         return 2
-    root = pathlib.Path(os.environ.get("CHAROITE_ROOT") or CODE).expanduser()
+    root = graphs.DATA_ROOT      # корень данных — одна точка (resolve_root), не своя копия (DS M4)
     if not args.stats and not args.force and live_gate.daemon_alive(root):
         # индексация занимает модель эмбеддингов минутами — на встрече слот
         # принадлежит подсказкам; ночь и пауза между встречами дособерут
@@ -54,9 +53,11 @@ def main() -> int:
     if args.stats or not pending:
         return 0
     t = time.time()
-    done = mem.embed_pending(budget_s=args.budget_s)
+    stop = (lambda: False) if args.force else (lambda: live_gate.daemon_alive(root))
+    done = mem.embed_pending(budget_s=args.budget_s, should_stop=stop)
     left = len(mem.pending_vectors())
-    print(f"векторы: {done} файлов за {time.time() - t:.0f} с" + (f", ожидают ещё {left}" if left else ", всё собрано"))
+    print(f"векторы: {done} файлов за {time.time() - t:.0f} с" + (f", ожидают ещё {left}" if left else ", всё собрано")
+          + (f" — {mem.note}" if mem.note else ""))
     return 0
 
 

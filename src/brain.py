@@ -22,6 +22,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import graph_search  # noqa: E402
 
+MemoryNotReady = graph_search.NotReady          # индекс прогревается — попробовать позже
+MemoryUnavailable = graph_search.Unavailable    # граф не настроен — памяти не будет
+
 
 def warm(cfg: dict) -> graph_search.GraphSearch | None:
     """Прогрев на старте демона: обход графа и векторы блоков из кэша. None —
@@ -39,14 +42,15 @@ def vault_search(cfg: dict, query: str, *, limit: int, snippet_chars: int,
                  timeout: float) -> str:
     """Текст выдачи по ГРАФУ ПРОЕКТА — в том же виде, что отдавал сервер памяти
     («Найдено…», «⚠ …» при слабых совпадениях, «Ничего не найдено по …»).
-    Непрогретый индекс или ненастроенный граф — исключение: вызывающий
-    деградирует по-своему. `timeout` — потолок на вектор запроса: половина
+    Непрогретый индекс — MemoryNotReady, ненастроенный граф — MemoryUnavailable
+    (оба RuntimeError): вызывающий деградирует по-своему и различает «подождать»
+    и «не будет» (GLM M8 по #577). `timeout` — потолок на вектор запроса: половина
     бюджета вызывающего, чтобы лексика успела в любом случае."""
     mem = graph_search.shared(cfg)
     if mem is None:
-        raise RuntimeError("граф не настроен — памяти по нему нет")
+        raise MemoryUnavailable("граф не настроен — памяти по нему нет")
     result = mem.search(query, limit=limit, snippet_chars=snippet_chars,
                         embed_timeout=max(0.5, min(6.0, timeout / 2)))
     if not result.ready:
-        raise RuntimeError("память по графу ещё прогревается")
+        raise MemoryNotReady("память по графу ещё прогревается")
     return graph_search.render(result, query)
