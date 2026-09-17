@@ -67,7 +67,9 @@ def scope_note(result: graph_search.Result) -> str:
     в 29 случаях из 30."""
     if result.status is Verdict.CONFIDENT or not result.skipped:
         return ""
-    return "фрагменты искались без: " + ", ".join(result.skipped)
+    # «отдельные фрагменты» — тот же термин, что в разделителе выдачи: сводка по
+    # теме собрана по всему графу и под эту оговорку не попадает (GLM I2)
+    return "отдельные фрагменты графа искались без: " + ", ".join(result.skipped)
 
 
 def absence_note(result: graph_search.Result) -> str:

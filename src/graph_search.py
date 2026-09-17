@@ -630,6 +630,7 @@ class GraphSearch:
         self._embed_fn = embed
         self._docs: dict[str, Doc] = {}
         self._indeg: dict[str, int] = {}
+        self._skipped: tuple[str, ...] = ()   # что обход РЕАЛЬНО отсёк (см. _walk)
         self._canon: dict[str, str] = {}     # база заглушки → база канона (см. canon_bases)
         self._refreshed_at = 0.0
         self._lock = threading.RLock()       # индекс и векторы
@@ -688,11 +689,24 @@ class GraphSearch:
         fresh: dict[str, Doc] = {}
         changed = False
         root = str(self.graph)
+        # что отсечено ФАКТИЧЕСКИ, а не что записано в политике: на графе без
+        # архивной папки оговорка про непрочитанное соврала бы, а на графе с
+        # другими именами папок архив попал бы в индекс, и она соврала бы в
+        # обратную сторону (DS, круг по №295)
+        skipped: set[str] = set()
         for dirpath, dirnames, filenames in os.walk(root):
             rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
             rel_dir = "" if rel_dir == "." else rel_dir
-            dirnames[:] = [d for d in dirnames if not d.startswith(".")
-                           and (f"{rel_dir}/{d}" if rel_dir else d) not in self.exclude]
+            keep = []
+            for d in dirnames:
+                if d.startswith("."):
+                    continue
+                rel = f"{rel_dir}/{d}" if rel_dir else d
+                if rel in self.exclude:
+                    skipped.add(rel)
+                else:
+                    keep.append(d)
+            dirnames[:] = keep
             for fn in filenames:
                 if not fn.endswith(".md") or (not rel_dir and fn.startswith(_SERVICE_PREFIXES)):
                     continue
@@ -720,6 +734,8 @@ class GraphSearch:
                 fresh[path] = Doc(path, rel, mtime, text, norm(text), file_date_ts(rel, mtime),
                                   norm_text(os.path.splitext(fn)[0]), body, stub_base(text))
                 changed = True
+        with self._lock:
+            self._skipped = tuple(sorted(skipped))
         gone = [p for p in self._docs if p not in seen]
         if not fresh and not gone:
             return
@@ -965,7 +981,7 @@ class GraphSearch:
         вызывающего своя деградация (узлы графа, молчание). Протухший индекс
         обновляется фоном, ответ — по текущему."""
         if not self.ready:
-            return Result([], 0, ready=False, query=query, skipped=self.exclude)
+            return Result([], 0, ready=False, query=query, skipped=self._skipped)
         if not self._fresh():
             threading.Thread(target=self.refresh, daemon=True, name="graph-search-refresh").start()
         with self._lock:
@@ -1063,7 +1079,7 @@ class GraphSearch:
             if status is Verdict.WEAK and not dossiers:
                 status = Verdict.EMPTY
             return Result([], 0, status, dossiers=dossiers, sem_used=sem_used, query=query,
-                          reason=reason, skipped=self.exclude)
+                          reason=reason, skipped=self._skipped)
         low_conf = status is not Verdict.CONFIDENT
         fused = rrf_merge([[r for _, r in sorted(lex, key=lambda x: -x[0])],
                            [r for _, r in sorted(sem, key=lambda x: -x[0])]], weights=[1.0, 0.7])
@@ -1082,7 +1098,7 @@ class GraphSearch:
             blocks += hops
             total += len(hops)
         return Result(blocks, total, status, dossiers=dossiers, sem_used=sem_used, query=query,
-                      reason=reason, skipped=self.exclude)
+                      reason=reason, skipped=self._skipped)
 
     def _dossier_blocks(self, query: str, snippet_chars: int, limit: int = 2) -> tuple[list[str], float]:
         """Готовые сводки по теме — ПЕРЕД фрагментами: индекс лексический, без
@@ -1222,11 +1238,15 @@ def render(result: Result, query: str | None = None, where: str = "графе") 
     query = result.query if query is None else query
     if not result.ready:
         return ""
+    # «пусто» — сильнейшее утверждение модуля, и непрочитанное весит в нём
+    # больше всего: слабая форма оговорку получила, сильная оставалась без неё
+    # (GLM, круг по №295)
+    tail = f" (искали без: {', '.join(result.skipped)})" if result.skipped else ""
     if result.empty:
         if result.status is Verdict.UNVERIFIED:
-            return (f"⚠ По словам ничего не нашлось по «{query}» в {where}, семантикой не проверено "
+            return (f"⚠ По словам ничего не нашлось по «{query}» в {where}{tail}, семантикой не проверено "
                     f"({result.reason}) — не считать доказанным отсутствием")
-        return f"Ничего не найдено по «{query}» в {where}"
+        return f"Ничего не найдено по «{query}» в {where}{tail}"
     parts = list(result.dossiers)
     if result.blocks:
         if parts:

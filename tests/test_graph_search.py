@@ -194,7 +194,11 @@ def test_honesty_gate_and_render_markers(tmp_path):
     assert gs.render(off, "рецепт борща").startswith("⚠ В прочитанной части графа об этом почти ничего нет")
     none = s.search("qqqzzz")
     assert none.empty and none.status is gs.Verdict.EMPTY
-    assert gs.render(none, "qqqzzz") == "Ничего не найдено по «qqqzzz» в графе" == none.text
+    # «пусто» несёт ту же оговорку, что и слабый ответ: непрочитанное весит здесь
+    # больше всего, а раньше эту строку тест закреплял без хвоста (GLM, №295)
+    empty_text = gs.render(none, "qqqzzz")
+    assert empty_text.startswith("Ничего не найдено по «qqqzzz» в графе (искали без: ")
+    assert "Встречи-архив" in empty_text and empty_text == none.text
     # пусто без семантики — не доказанное отсутствие: «⚠» и своя причина (GLM C1 r3)
     blind = s.search("qqqzzz", semantic=False)
     assert blind.empty and blind.status is gs.Verdict.UNVERIFIED and blind.text.startswith("⚠ По словам ничего не нашлось")
@@ -356,7 +360,7 @@ def test_brain_facade_raises_until_warm_and_then_renders(tmp_path, monkeypatch):
 @pytest.mark.parametrize("cov, sim, sem_used, share, expected", [
     (1.0, 0.0, False, 1.0, gs.Verdict.UNVERIFIED),   # без семантики уверенности нет — даже при полном покрытии (замер 17.09)
     (0.5, 0.0, False, 1.0, gs.Verdict.UNVERIFIED),   # «одно из двух» без семантики — тем более
-    (0.5, 0.3, True, 1.0, gs.Verdict.WEAK),          # одно из двух и слабый косинус — «в архиве нет» (DS C1 круга 2)
+    (0.5, 0.3, True, 1.0, gs.Verdict.WEAK),          # одно из двух и слабый косинус — «в прочитанной части почти ничего» (DS C1 круга 2, формулировка по №295)
     (0.6, 0.3, True, 1.0, gs.Verdict.WEAK),          # оба слабые
     (0.5, 0.3, True, 0.5, gs.Verdict.UNVERIFIED),    # ...но кэш собран наполовину — «нет» не доказано (DS критика 2 r3)
     (0.5, 0.3, True, gs.SEM_SHARE_MIN, gs.Verdict.WEAK),          # граница порога закреплена (DS M4 r4)
@@ -584,7 +588,7 @@ def test_node_files_keep_twice_as_many_chunks(tmp_path):
 
 
 def test_weak_verdict_needs_a_mostly_vectorised_cache(tmp_path):
-    """«В архиве нет» — вердикт о проверенном архиве: пока векторы есть меньше чем у
+    """«Почти ничего» — вердикт о проверенной ЧАСТИ графа: пока векторы есть меньше чем у
     SEM_SHARE_MIN файлов, слабый лучший косинус говорит о векторизованной части, а не
     об архиве — выдача «не проверена», а не «слабая» (DS критика 2 r3)."""
     s = _search(tmp_path)
