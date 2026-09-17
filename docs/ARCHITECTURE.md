@@ -630,6 +630,23 @@ honesty gate. Vectors are per chunk (headings, breadcrumbs), cached in
 files are indexed after the meeting (45 s cap) and at night. A warm query
 costs ~0.1 s of lexical work plus one embedding call when Ollama is free.
 
+**A link to a merged node points at the canon.** When two notes about one thing
+are merged, the duplicate stays as a two-line redirect file. Search used to
+treat it as an ordinary document: incoming links fed the stub instead of the
+canon, a hop from a node dead-ended there, and in the answer it took a slot with
+an arrow instead of content. On the working graph (3 199 files, 404 stubs) that
+was 1 048 links pointing at dead files and 40 hops that never happened. A name
+is rewritten only when no live file carries it — a namesake is not always a
+duplicate, a merged core and a live dossier share a name in different folders.
+Who owns a name is decided by one key everywhere: newest first, shortest path on
+a tie, because a node's date is its mtime and a checkout or a graph copy moves
+it. Merge chains are walked by trying every candidate at every link, with cycle
+protection, a depth cap and a memo of successes. In the answer a stub is
+replaced by its canon before ranking, so the slot is never lost. Known limit: a
+link that names a folder is indistinguishable from a bare one here, because the
+search keys adjacency by name without folder — the shared link catalogue with
+path keys is a separate task.
+
 **The verdict is a field, not a prefix.** `brain.vault_search` returns a
 `Result`: `status` is one of *confident* / *weak* / *unverified* / *empty*,
 `fragments` is what goes into a prompt (dossiers and snippets, no headers, no
