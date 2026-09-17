@@ -685,3 +685,98 @@ def test_first_cache_read_is_not_throttled_by_a_zero_clock_and_foreign_key_is_no
     with um.patch.object(pathlib.Path, "read_text", counting_read):
         warm.search("платёжный шлюз", limit=2)
     assert reads["n"] == 2
+
+
+def _stub(name: str, canon: str) -> str:
+    return f"# {name} → [[{canon}]]\n\nДубль. Смерджен 17.09.\n"
+
+
+def test_stub_base_reads_the_canon_only_from_a_real_redirect():
+    assert gs.stub_base(_stub("Коля Соколов", "Люди/Николай Соколов")) == "николай соколов"
+    assert gs.stub_base("# Узел\nОбычный текст про → [[Люди/Кто-то]] в середине.\n") == ""
+    assert gs.stub_base("---\nnote: → [[Люди/Кто-то]]\n---\n# Узел\nТело.\n") == "", "стрелка в шапке — не редирект"
+    assert gs.stub_base("# Узел\nДубль. Смерджен\n") == "", "пометка без цели не переписывает имя"
+
+
+def test_canon_bases_unrolls_chains_keeps_namesakes_and_survives_cycles():
+    def d(base, stub_to=""):
+        return gs.Doc("", f"Ядра/{base}.md", 0.0, "", "", 0.0, base, "", stub_to)
+    # цепочка: «а» слит в «б», «б» — в живой «в»
+    chain = gs.canon_bases([d("а", "б"), d("б", "в"), d("в")])
+    assert chain == {"а": "в", "б": "в"}, chain
+    # живой однофамилец: под именем «отчёт» есть и заглушка, и живое досье — ссылка про досье
+    keep = gs.canon_bases([d("отчёт", "сводка"), d("сводка"),
+                           gs.Doc("", "Досье/отчёт.md", 0.0, "", "", 0.0, "отчёт", "", "")])
+    assert keep == {}, keep
+    assert gs.canon_bases([d("а", "б"), d("б", "а")]) == {}, "цикл заглушек не переписывает имена"
+    assert gs.canon_bases([d("а", "а")]) == {}, "ссылка на себя — не цепочка"
+
+
+def test_links_to_a_merged_node_feed_the_canon_and_the_hop_reaches_it(tmp_path):
+    """Заглушка после слияния не забирает ни входящие ссылки, ни переход.
+
+    Замер на рабочем графе 17.09: 404 заглушки, 1048 ссылок вели на них вместо
+    канонов, 40 переходов из узлов не состоялись вовсе. Цель перехода нарочно
+    не содержит слов запроса: иначе её нашла бы лексика и проверка была бы
+    пустой."""
+    s = _search(tmp_path)
+    g = s.graph
+    (g / "Ядра").mkdir(exist_ok=True)
+    (g / "Ядра" / "Расчёт премий.md").write_text(
+        "# Расчёт премий\nСводка темы.\n\n## Связи\n- [[Ядра/Бонусная схема]]\n", encoding="utf-8")
+    (g / "Ядра" / "Бонусная схема.md").write_text(
+        _stub("Бонусная схема", "Ядра/Программа лояльности"), encoding="utf-8")
+    (g / "Встречи" / "2026-08-03_1100.md").write_text(
+        "# Лояльность\nОбсуждали [[Ядра/Бонусная схема]] и сроки.\n", encoding="utf-8")
+    (g / "Документация" / "Программа лояльности.md").write_text(
+        "# Программа лояльности\nПодрядчик подтвердил ЭТАЛОННЫЙ_ФАКТ по кэшбэку.\n", encoding="utf-8")
+    s.refresh(force=True)
+    s.embed_pending()
+
+    assert s._indeg.get("программа лояльности") == 2, s._indeg   # узел и встреча; стрелка заглушки не голос
+    assert "бонусная схема" not in s._indeg, "входящие остались на мёртвой заглушке"
+
+    r = s.search("расчёт премий", limit=3)
+    assert r.status is gs.Verdict.CONFIDENT, r.status
+    hop = [b for b in r.blocks if "↳ по ссылке из" in b]
+    assert any("Документация/Программа лояльности.md" in b and "ЭТАЛОННЫЙ_ФАКТ" in b for b in hop), r.blocks
+    assert not any("Ядра/Бонусная схема.md" in b for b in r.blocks), "заглушка попала в выдачу"
+
+
+def test_a_search_for_the_old_name_returns_the_canon_not_the_arrow(tmp_path):
+    """«Как это раньше называли» — рабочий запрос: заглушка находится по старому
+    имени, но в блоке была бы одна стрелка. Слот отдаём канону."""
+    s = _search(tmp_path)
+    g = s.graph
+    (g / "Ядра").mkdir(exist_ok=True)
+    (g / "Ядра" / "Бонусная схема.md").write_text(
+        _stub("Бонусная схема", "Ядра/Программа лояльности"), encoding="utf-8")
+    (g / "Ядра" / "Программа лояльности.md").write_text(
+        "# Программа лояльности\nКэшбэк и уровни, ЭТАЛОННЫЙ_КАНОН.\n", encoding="utf-8")
+    s.refresh(force=True)
+    s.embed_pending()
+    r = s.search("бонусная схема", limit=3)
+    assert any("Ядра/Программа лояльности.md" in b and "ЭТАЛОННЫЙ_КАНОН" in b for b in r.blocks), r.blocks
+    assert not any("Ядра/Бонусная схема.md" in b for b in r.blocks), r.blocks
+
+
+def test_a_namesake_of_a_merged_node_keeps_its_own_links(tmp_path):
+    """Однофамилец заглушки — не дубль: `Ядра/Отчёт` слит в другое ядро, а
+    `Документация/Отчёт` живёт своей жизнью, и ссылка ведёт к нему (без этой
+    оговорки правка отнимала 4 живых перехода на рабочем графе, 17.09)."""
+    s = _search(tmp_path)
+    g = s.graph
+    (g / "Ядра").mkdir(exist_ok=True)
+    (g / "Ядра" / "Итоги квартала.md").write_text(
+        "# Итоги квартала\nЦифры квартала.\n\n## Связи\n- [[Отчёт по аварии]]\n", encoding="utf-8")
+    (g / "Ядра" / "Отчёт по аварии.md").write_text(
+        _stub("Отчёт по аварии", "Ядра/Разбор инцидента"), encoding="utf-8")
+    (g / "Документация" / "Отчёт по аварии.md").write_text(
+        "# Отчёт по аварии\nПричина — ОДИНОКИЙ_ФАКТ в балансировщике.\n", encoding="utf-8")
+    (g / "Ядра" / "Разбор инцидента.md").write_text("# Разбор инцидента\nСводка разбора.\n", encoding="utf-8")
+    s.refresh(force=True)
+    s.embed_pending()
+
+    assert "отчёт по аварии" not in gs.canon_bases(list(s._docs.values())), "имя с живым файлом переписано"
+    r = s.search("итоги квартала", limit=3)
+    assert any("Документация/Отчёт по аварии.md" in b and "↳ по ссылке из" in b for b in r.blocks), r.blocks

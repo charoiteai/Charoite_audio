@@ -57,6 +57,7 @@ import dossier  # noqa: E402
 import frontmatter  # noqa: E402
 import graph_nodes  # noqa: E402
 import graphs  # noqa: E402
+import redirects  # noqa: E402
 import llm as _llm  # noqa: E402
 import safe_write  # noqa: E402
 import uuid  # noqa: E402
@@ -253,6 +254,55 @@ def is_node_path(rel: str) -> bool:
     return len(parts) >= 2 and parts[-2] in NODE_DIRS and not parts[-1].startswith("_")
 
 
+def stub_base(text: str) -> str:
+    """Файл — заглушка-редирект после слияния узлов? Тогда база канона, иначе "".
+
+    Обход и так держит текст в руках, поэтому распознание стоит один разбор на
+    ИЗМЕНЁННЫЙ файл, а не на запрос. Замер 17.09 на рабочем графе: 417 заглушек
+    из 3230 файлов, 1234 входящие ссылки ведут на них, 459 переходов из узлов
+    упираются в заглушку, у которой канон по этой базе недостижим."""
+    if not (redirects.is_redirect_stub(text) or redirects.is_merged(text)):
+        return ""
+    target = redirects.stub_target(text)
+    if not target:
+        return ""
+    leaf = pathlib.PurePosixPath(target.split("|")[0].strip()).name
+    return norm_text(leaf[:-3] if leaf.casefold().endswith(".md") else leaf)
+
+
+def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
+    """База заглушки → база живого канона, цепочки развёрнуты, циклы отброшены.
+
+    Ссылка на слитый узел должна считаться ссылкой на канон: иначе буст хаба
+    достаётся мёртвому файлу, а переход через него отбрасывается фильтром узлов
+    и ответ молча обедает. Резолвер `graph_links` делает то же для писателей,
+    но ему нужен обход диска — здесь работаем по уже прочитанному снимку.
+
+    Имя переписывается, только если ЖИВОГО файла с таким именем нет вовсе.
+    Однофамилец бывает не дублем: `Ядра/Отчёт по аварии` слит в другое ядро, а
+    `Досье/Отчёт по аварии` — живая сводка по той же теме, и ссылка ведёт к ней
+    (замер 17.09: без этой оговорки правка отнимала 4 перехода, давая 43)."""
+    stubs: dict[str, str] = {}
+    live: set[str] = set()
+    for d in docs:
+        if d.stub_to and d.stub_to != d.base:
+            stubs.setdefault(d.base, d.stub_to)
+        else:
+            live.add(d.base)
+    out: dict[str, str] = {}
+    for start in stubs:
+        if start in live:   # под этим именем есть и живой файл — ссылка про него
+            continue
+        seen = {start}
+        cur = stubs[start]
+        while cur not in live and cur in stubs and cur not in seen:
+            seen.add(cur)
+            cur = stubs[cur]
+        if cur not in seen:           # цикл заглушек — оставляем как есть
+            out[start] = cur
+    return out
+
+
 def wiki_targets(text: str) -> set[str]:
     """Цели [[ссылок]] → базовые имена узлов (без папки и текста ссылки)."""
     out: set[str] = set()
@@ -406,6 +456,7 @@ class Doc:
     date_ts: float
     base: str          # нормализованное имя файла без расширения — цель [[ссылок]]
     body: str = ""     # текст без YAML-шапки — для фрагментов выдачи (шапка модели не нужна)
+    stub_to: str = ""  # заглушка-редирект: база канона, куда она ведёт (иначе пусто)
 
 
 @dataclasses.dataclass
@@ -483,6 +534,7 @@ class GraphSearch:
         self._embed_fn = embed
         self._docs: dict[str, Doc] = {}
         self._indeg: dict[str, int] = {}
+        self._canon: dict[str, str] = {}     # база заглушки → база канона (см. canon_bases)
         self._refreshed_at = 0.0
         self._lock = threading.RLock()       # индекс и векторы
         self._scan_lock = threading.Lock()   # один обход за раз
@@ -568,7 +620,7 @@ class GraphSearch:
                 except ValueError:
                     body = text
                 fresh[path] = Doc(path, rel, mtime, text, norm(text), file_date_ts(rel, mtime),
-                                  norm_text(os.path.splitext(fn)[0]), body)
+                                  norm_text(os.path.splitext(fn)[0]), body, stub_base(text))
                 changed = True
         gone = [p for p in self._docs if p not in seen]
         if not fresh and not gone:
@@ -582,12 +634,17 @@ class GraphSearch:
         if changed or gone:
             # входящие ссылки — по снимку вне замка: обход 28 МБ текста под замком
             # заставлял бы каждый поиск встречи ждать (GLM M5)
+            canon = canon_bases(snapshot)
             indeg: dict[str, int] = {}
             for d in snapshot:
+                if d.stub_to:        # единственная ссылка заглушки — служебная стрелка на канон
+                    continue
                 for target in wiki_targets(d.text):
+                    target = canon.get(target, target)   # ссылка на слитый узел — ссылка на канон
                     indeg[target] = indeg.get(target, 0) + 1
             with self._lock:
                 self._indeg = indeg
+                self._canon = canon
 
     # --------------------------------------------------------------- векторы
     def _embed(self, texts: list[str], timeout: float) -> list[list[float]]:
@@ -816,6 +873,7 @@ class GraphSearch:
         with self._lock:
             docs = list(self._docs.values())
             indeg = dict(self._indeg)
+            canon = dict(self._canon)
         avg_len = max(1.0, sum(len(d.low) for d in docs) / max(1, len(docs)))
         words, grams = needles(query)
         keys = words + grams
@@ -912,14 +970,31 @@ class GraphSearch:
         picked = diversify([(s, r) for r, s in fused], limit)
         blocks: list[str] = []
         shown: list[str] = []
+        live_by_base: dict[str, Doc] | None = None
         for rel in picked:
             d = by_rel[rel]
+            if d.stub_to:
+                # Заглушка после слияния — не документ, а указатель: в блоке была бы
+                # одна стрелка вместо содержания. Старое имя ищут по-прежнему («как
+                # раньше называли»), поэтому слот отдаём канону, а не выбрасываем.
+                if live_by_base is None:
+                    live_by_base = {}
+                    for o in docs:
+                        if o.stub_to:
+                            continue
+                        cur = live_by_base.get(o.base)
+                        if cur is None or o.date_ts > cur.date_ts:
+                            live_by_base[o.base] = o
+                target = live_by_base.get(canon.get(d.base, d.stub_to))
+                if target is None or target.rel in shown:
+                    continue
+                d, rel = target, target.rel
             frag = _frag_or_head(d.body or d.text, rx, snippet_chars, rare_first or keys, dense=raw_dampener(rel) == 1.0)
             blocks.append(f"• {rel}\n  {frag}")
             shown.append(rel)
         total = len(fused)
         if not low_conf:
-            hops = self._hops(shown, by_rel, keys, rx, snippet_chars, rare_first or keys, max(1, limit // 2))
+            hops = self._hops(shown, by_rel, canon, keys, rx, snippet_chars, rare_first or keys, max(1, limit // 2))
             blocks += hops
             total += len(hops)
         return Result(blocks, total, status, dossiers=dossiers, sem_used=sem_used, query=query, reason=reason)
@@ -947,18 +1022,24 @@ class GraphSearch:
             best = max(best, min(1.0, float(e.get("счёт", 0))))
         return out, best
 
-    def _hops(self, shown: list[str], by_rel: dict[str, Doc], keys: list[str], rx: re.Pattern,
-              snippet_chars: int, rare_first: Sequence[str], limit: int) -> list[str]:
+    def _hops(self, shown: list[str], by_rel: dict[str, Doc], canon: dict[str, str], keys: list[str],
+              rx: re.Pattern, snippet_chars: int, rare_first: Sequence[str], limit: int) -> list[str]:
         """Один переход по [[ссылкам]] из найденных узлов: заметки со стемами
         запроса ВНЕ имени узла (покрытие × свежесть), при голом имени — самые
         свежие; тёзки в разных папках — один кандидат; по одному слоту на узел,
-        потом добор — первый узел не съедает бюджет."""
+        потом добор — первый узел не съедает бюджет.
+
+        Ссылка на слитый узел ведёт к канону: иначе свежайшим кандидатом под
+        базой оказывается заглушка-редирект, её отбрасывает фильтр узлов, и
+        переход пропадает молча (замер 17.09: 459 недостижимых канонов)."""
         nodes = [r for r in shown if is_node_path(r)]
         if not nodes or limit <= 0:
             return []
         by_base: dict[str, list[Doc]] = {}
         for d in by_rel.values():
-            by_base.setdefault(d.base, []).append(d)
+            if d.stub_to:            # заглушка — не кандидат: за ней стоит канон
+                continue
+            by_base.setdefault(canon.get(d.base, d.base), []).append(d)
         out: list[str] = []
         seen = set(shown)
         for per_node in (1, limit):
@@ -975,7 +1056,7 @@ class GraphSearch:
                 other = [k for k in keys if not _is_name(k)]
                 cands: list[tuple[float, Doc, int]] = []
                 for base in wiki_targets(node.text):
-                    best = sorted(by_base.get(base, ()), key=lambda d: -d.date_ts)[:1]
+                    best = sorted(by_base.get(canon.get(base, base), ()), key=lambda d: -d.date_ts)[:1]
                     for d in best:
                         if d.rel in seen or is_node_path(d.rel) or d.rel.split("/")[-1].startswith("_"):
                             continue
