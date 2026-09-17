@@ -190,7 +190,8 @@ def test_honesty_gate_and_render_markers(tmp_path):
     s = _search(tmp_path)
     off = s.search("рецепт борща со сметаной для шлюза", limit=3)   # одно слово из графа, семантика мимо
     assert off.sem_used and off.low_conf and off.blocks
-    assert gs.render(off, "рецепт борща").startswith("⚠ Похоже, в архиве об этом почти ничего нет")
+    # не «в архиве»: индекс архив встреч не читает вовсе, и ответ не вправе о нём судить (№295)
+    assert gs.render(off, "рецепт борща").startswith("⚠ В прочитанной части графа об этом почти ничего нет")
     none = s.search("qqqzzz")
     assert none.empty and none.status is gs.Verdict.EMPTY
     assert gs.render(none, "qqqzzz") == "Ничего не найдено по «qqqzzz» в графе" == none.text
@@ -930,3 +931,23 @@ def test_hops_pick_the_same_owner_as_the_rest_of_the_search(tmp_path):
     hop = [b for b in r.blocks if "↳ по ссылке из" in b]
     assert hop, r.blocks
     assert any("РАНЬШЕ_ПО_АЛФАВИТУ" in b for b in hop), f"при равных датах взят не меньший путь: {hop}"
+
+
+def test_the_answer_never_claims_the_unread_archive_was_checked(tmp_path):
+    """Ответ не судит о том, чего не читал.
+
+    Индекс намеренно исключает архив встреч и копии стенограмм: замер 17.09 на
+    рабочем графе — 11 506 файлов вне индекса против 3 283 в нём, и 1 945
+    файлов архива несут строки решений. До правки таблицы говорили «скорее
+    всего в архиве ответа нет», то есть утверждали проверку того, что не
+    открывалось (DS и GLM, входной круг по №295)."""
+    s = _search(tmp_path)
+    assert s.exclude, "оснастка: в графе теста нет исключённых областей"
+    r = s.search("платёжный шлюз", limit=2)
+    assert r.skipped == s.exclude, "выдача не несёт, что осталось непрочитанным"
+
+    for v in gs.Verdict:
+        stub = gs.Result([], 0, v, query="q")
+        assert "в архиве" not in stub.why_low, f"{v}: выдача судит о непрочитанном"
+    weak = gs.Result([], 0, gs.Verdict.WEAK, query="q")
+    assert "прочитанной части" in weak.why_low, weak.why_low

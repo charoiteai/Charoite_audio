@@ -26,8 +26,10 @@ Ollama режет вход bge-m3 около 12 300 знаков). Счёт фа
 восстанавливать её из фрагментов не надо. Разнообразие: одна встреча (заметка,
 стенограмма, подсказки) не съедает все слоты. Один переход по [[ссылкам]] из
 найденного узла: «что решил X» находит узел Люди/X, а решение живёт в заметке
-встречи. Гейт честности: оба сигнала слабые → «⚠ …», и потребитель говорит
-«в архиве нет», а не сочиняет.
+встречи. Гейт честности: оба сигнала слабые → «⚠ …», и потребитель говорит «в
+прочитанной части почти ничего», а не сочиняет и не выдаёт непрочитанное за
+проверенное — архив встреч и копии стенограмм в индекс не входят, и что именно
+осталось за границей, несёт `Result.skipped`.
 
 Референсы дизайна: гибрид BM25 + вектор с временным слоем по Obsidian-графу,
 важность узла по степени (LightRAG), RRF с временным слоем (Zep/Graphiti).
@@ -178,16 +180,22 @@ class Verdict(str, enum.Enum):
     разбирали её префиксом: досье перед «⚠» глушили гейт, а «Ничего не найдено»
     без семантики читалось как доказанное отсутствие (DS C1 / GLM C1)."""
     CONFIDENT = "confident"       # семантика проверила, совпадения сильные
-    WEAK = "weak"                 # проверила: слабы оба сигнала — скорее всего в архиве нет
+    WEAK = "weak"                 # проверила: слабы оба сигнала — в ПРОЧИТАННОЙ части почти ничего
     UNVERIFIED = "unverified"     # семантика не отработала или кэш собран не весь — по словам, не проверено
-    EMPTY = "empty"               # ничего, и это проверено
+    EMPTY = "empty"               # ничего, и это проверено — в прочитанной части
 
 
 def verdict(cov: float, sim: float, sem_used: bool, sem_share: float = 1.0) -> Verdict:
     """Вердикт по свидетельствам: без семантики уверенности нет вовсе — одна
     лексика на большом графе не отличает вопрос от ловушки (замер 17.09); с ней
-    сильный любой из сигналов — уверенно (правило приложения), слабы оба — «в
-    архиве нет», но только если проверена достаточная доля архива (SEM_SHARE_MIN)."""
+    сильный любой из сигналов — уверенно (правило приложения), слабы оба — «почти
+    ничего», но только если проверена достаточная доля ИНДЕКСА (SEM_SHARE_MIN).
+
+    Доля считается по индексу, а не по графу, и индекс — не весь граф: архив
+    встреч и копии стенограмм исключены (EXCLUDE_DIRS). Поэтому ни один вердикт
+    не вправе говорить «в архиве нет»; что осталось непрочитанным, несёт
+    `Result.skipped`, а слова об этом собирает фасад (замер 17.09: 11 506
+    файлов вне индекса против 3 283 в нём, DS и GLM, входной круг по №295)."""
     if not sem_used:
         return Verdict.UNVERIFIED
     if cov >= LOW_COV or sim >= LOW_SIM:
@@ -553,6 +561,7 @@ class Result:
     sem_used: bool = False      # семантика посчиталась (вектор запроса получен)
     query: str = ""
     reason: str = ""            # почему UNVERIFIED — одно поле, три рендера (why_low, render, статус нити; GLM M2 r5)
+    skipped: tuple[str, ...] = ()   # области графа ВНЕ индекса: их не читали, и ответ не вправе о них судить
 
     @property
     def low_conf(self) -> bool:
@@ -560,11 +569,16 @@ class Result:
 
     @property
     def why_low(self) -> str:
-        """Причина «⚠» человеку: без семантики — не «в архиве нет», а «не проверено»."""
+        """Причина «⚠» человеку: без семантики — не «нет», а «не проверено».
+
+        Про непрочитанные области судить нельзя: раньше здесь стояло «похоже, в
+        архиве об этом почти ничего нет», хотя архив встреч в индекс не входит
+        вовсе (замер 17.09: 78 % файлов графа). Что именно не читалось — в
+        `skipped`, словами это разворачивает фасад."""
         if self.status is Verdict.UNVERIFIED:
             return f"Совпадения не проверены семантикой ({self.reason}) — найденное по словам, доверять с оглядкой"
         if self.status is Verdict.WEAK:
-            return "Похоже, в архиве об этом почти ничего нет (слабые совпадения)"
+            return "В прочитанной части графа об этом почти ничего нет (слабые совпадения)"
         return ""
 
     @property
@@ -951,7 +965,7 @@ class GraphSearch:
         вызывающего своя деградация (узлы графа, молчание). Протухший индекс
         обновляется фоном, ответ — по текущему."""
         if not self.ready:
-            return Result([], 0, ready=False, query=query)
+            return Result([], 0, ready=False, query=query, skipped=self.exclude)
         if not self._fresh():
             threading.Thread(target=self.refresh, daemon=True, name="graph-search-refresh").start()
         with self._lock:
@@ -1005,7 +1019,8 @@ class GraphSearch:
         sem: list[tuple[float, str]] = []
         best_sim = 0.0
         sem_used = False
-        sem_share = 0.0     # доля файлов индекса с актуальными векторами — свидетель «в архиве нет»
+        sem_share = 0.0     # доля файлов ИНДЕКСА с актуальными векторами: свидетель «проверено
+        # столько-то из прочитанного», но не свидетель по графу целиком (№295)
         # кэш сверяется каждый раз: stat манифеста дёшев, а чужую запись (ночь,
         # апдейтер) короткое замыкание по непустым векторам не видело (GLM I1 r3)
         if semantic and self.load_vectors():
@@ -1047,7 +1062,8 @@ class GraphSearch:
             # семантикой и без досье; без неё «ничего не найдено» читалось как факт (GLM C1 r3)
             if status is Verdict.WEAK and not dossiers:
                 status = Verdict.EMPTY
-            return Result([], 0, status, dossiers=dossiers, sem_used=sem_used, query=query, reason=reason)
+            return Result([], 0, status, dossiers=dossiers, sem_used=sem_used, query=query,
+                          reason=reason, skipped=self.exclude)
         low_conf = status is not Verdict.CONFIDENT
         fused = rrf_merge([[r for _, r in sorted(lex, key=lambda x: -x[0])],
                            [r for _, r in sorted(sem, key=lambda x: -x[0])]], weights=[1.0, 0.7])
@@ -1065,7 +1081,8 @@ class GraphSearch:
             hops = self._hops(shown, by_rel, canon, keys, rx, snippet_chars, rare_first or keys, max(1, limit // 2))
             blocks += hops
             total += len(hops)
-        return Result(blocks, total, status, dossiers=dossiers, sem_used=sem_used, query=query, reason=reason)
+        return Result(blocks, total, status, dossiers=dossiers, sem_used=sem_used, query=query,
+                      reason=reason, skipped=self.exclude)
 
     def _dossier_blocks(self, query: str, snippet_chars: int, limit: int = 2) -> tuple[list[str], float]:
         """Готовые сводки по теме — ПЕРЕД фрагментами: индекс лексический, без

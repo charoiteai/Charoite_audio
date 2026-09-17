@@ -1868,7 +1868,9 @@ def main():
                                 thread.full())
                     return
                 if mem.status is not brain.Verdict.UNVERIFIED or mem.empty:
-                    emit({"type": "status", "text": f"⏮ в архиве по «{title}»: {brain.absence_note(mem)}"})
+                    # не «в архиве»: индекс памяти архив встреч не читает вовсе, а
+                    # чего не читали — говорит сам фасад в absence_note (№295)
+                    emit({"type": "status", "text": f"⏮ по «{title}»: {brain.absence_note(mem)}"})
                     return
             v = brain.memory_block(mem, budget=3000)   # шапка с оговоркой — из таблицы фасада, как у остальных контуров (GLM r5)
             try:
@@ -2787,8 +2789,9 @@ def main():
             mem = brain.vault_search(cfg, question, limit=4,
                                      snippet_chars=600, timeout=2.5)
             # шапка и оговорка — из таблицы фасада по статусу (круги 3–4 по #577):
-            # слабые совпадения — модель обязана честно сказать «в архиве нет»,
-            # не проверенные семантикой — подавать как возможные, не как факт
+            # слабые совпадения — модель обязана честно сказать «почти ничего» по
+            # прочитанной части, а не проверенные семантикой — подавать как
+            # возможные, не как факт
             block = brain.memory_block(mem, budget=2000)
             if block:
                 extra = "\n\n" + block
