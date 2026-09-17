@@ -230,6 +230,16 @@ def test_dossier_comes_first(tmp_path):
     assert blind.dossiers and blind.blocks and blind.status is gs.Verdict.UNVERIFIED
     assert blind.text.startswith("⚠ Совпадения не проверены") and blind.text.index("📁 Досье") < blind.text.index("Найдено в графе")
     assert blind.fragments.startswith("📁 Досье") and "⚠" not in blind.fragments
+    # досье — свидетельство в вердикте: ключ темы, которого нет в текстах, даёт сводку без
+    # блоков — и статус по ней, а не «пусто»; один ключ из двух — слабо, но не EMPTY (DS I2/I3 r4)
+    dossier.write_index(folder, [{"тема": "Платёжный шлюз", "ключи": ["zzzключ", "qqqключ"],
+                                  "источников": 3, "собрано": "2026-08-02"}])
+    both = s.search("zzzключ qqqключ", limit=2)
+    assert not both.blocks and both.dossiers and both.status is gs.Verdict.CONFIDENT and both.text.startswith("📁 Досье")
+    one = s.search("zzzключ wwwслово", limit=2)   # покрытие запроса ключами темы 1 из 2
+    assert not one.blocks and one.dossiers and one.status is gs.Verdict.WEAK and not one.empty
+    assert s.search("zzzключ qqqключ", limit=2, semantic=False).status is gs.Verdict.UNVERIFIED
+    assert s.search("zzzключ", limit=2, semantic=False).status is gs.Verdict.UNVERIFIED
 
 
 def test_semantic_layer_uses_cached_vectors_and_survives_without_embeddings(tmp_path):
@@ -346,6 +356,8 @@ def test_brain_facade_raises_until_warm_and_then_renders(tmp_path, monkeypatch):
     (0.5, 0.3, True, 1.0, gs.Verdict.WEAK),          # одно из двух и слабый косинус — «в архиве нет» (DS C1 круга 2)
     (0.6, 0.3, True, 1.0, gs.Verdict.WEAK),          # оба слабые
     (0.5, 0.3, True, 0.5, gs.Verdict.UNVERIFIED),    # ...но кэш собран наполовину — «нет» не доказано (DS критика 2 r3)
+    (0.5, 0.3, True, gs.SEM_SHARE_MIN, gs.Verdict.WEAK),          # граница порога закреплена (DS M4 r4)
+    (0.5, 0.3, True, gs.SEM_SHARE_MIN - 0.01, gs.Verdict.UNVERIFIED),
     (0.6, 0.6, True, 0.1, gs.Verdict.CONFIDENT),     # семантика уверена — доля кэша не спорит с найденным
     (2 / 3, 0.1, True, 1.0, gs.Verdict.CONFIDENT),   # две иглы из трёх (0,6667) — правило приложения: порог 0,66, не 0,67
     (0.8, 0.1, True, 1.0, gs.Verdict.CONFIDENT),     # лексика уверена
@@ -575,12 +587,23 @@ def test_weak_verdict_needs_a_mostly_vectorised_cache(tmp_path):
     s = _search(tmp_path)
     off = s.search("рецепт борща со сметаной для шлюза", limit=3)
     assert off.status is gs.Verdict.WEAK
-    for i in range(12):   # новые файлы без векторов: доля проверенных падает ниже порога
+    extra = s.size // 4 + 1   # новые файлы без векторов: доля size/(size+extra) чуть ниже порога
+    for i in range(extra):
         (s.graph / "Встречи" / f"2026-08-1{i % 9}_{1000 + i}.md").write_text(
             f"# Встреча {i}\nобсуждали шлюз и сроки, пункт {i}\n", encoding="utf-8")
     s.refresh(force=True)
+    assert s.vectors / s.size < gs.SEM_SHARE_MIN
     half = s.search("рецепт борща со сметаной для шлюза", limit=3)
     assert half.sem_used and half.status is gs.Verdict.UNVERIFIED and "не проверены" in half.why_low
+    # пустые файлы векторов не получат никогда — в знаменателе доли им не место (DS M2 r4)
+    s.embed_pending()
+    for i in range(s.size // 4 + 1):
+        (s.graph / "Встречи" / f"2026-08-0{i % 9}_{2000 + i}.md").write_text("", encoding="utf-8")
+    s.refresh(force=True)
+    assert s.search("рецепт борща со сметаной для шлюза", limit=3).status is gs.Verdict.WEAK
+    for p in list(s.graph.glob("Встречи/2026-08-0*_2*.md")):
+        p.unlink()
+    s.refresh(force=True)
     assert s.search("платёжный шлюз", limit=2).status is gs.Verdict.CONFIDENT, "сильный сигнал доля кэша не отменяет"
     s.embed_pending()
     assert s.search("рецепт борща со сметаной для шлюза", limit=3).status is gs.Verdict.WEAK
@@ -597,6 +620,15 @@ def test_key_change_in_live_process_drops_vectors_before_search_and_indexing(tmp
     assert len(s.pending_vectors()) == s.size and s.embed_pending() == s.size
     assert json.loads(s._vec_manifest.read_text(encoding="utf-8"))["key"] == s.cache_key()
     assert s.search("платёжный шлюз", limit=2).status is gs.Verdict.CONFIDENT
+    # штамп неудачи сбрасывается вместе с векторами: чужой ключ на диске → поиск (штамп) →
+    # смена модели → свой кэш собран → поиск сразу с векторами, а не через VEC_RETRY_S (DS M1 r4)
+    clock = {"t": 1_700_000_000.0}
+    t = gs.GraphSearch(s.graph, {"sufler": {"embed_model": "third"}}, data_dir=tmp_path / "data",
+                       embed=fake_embed, now=lambda: clock["t"])
+    t.refresh(force=True)
+    assert not t.search("платёжный шлюз", limit=2).sem_used and t._vecs_tried_at is not None
+    t.cfg["sufler"] = {"embed_model": "other-model"}     # на диске — кэш под этот ключ
+    assert t.search("платёжный шлюз", limit=2).status is gs.Verdict.CONFIDENT
 
 
 def test_without_a_lock_nothing_is_written(tmp_path, monkeypatch):

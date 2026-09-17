@@ -636,10 +636,18 @@ class GraphSearch:
         key = self.cache_key()
         with self._lock:
             if self._vecs_key not in (None, key):
-                self._vecs.clear()
-                self._vecs_loaded = False
-                self._manifest_seen = 0.0
+                self._reset_vectors()
             self._vecs_key = key
+
+    def _reset_vectors(self) -> None:
+        """До холодного состояния — все поля памяти о кэше разом: штамп неудачи
+        поштучно забывали, и после смены ключа поиск до VEC_RETRY_S шёл без
+        векторов при готовом кэше на диске (DS M1 r4)."""
+        with self._lock:
+            self._vecs.clear()
+            self._vecs_loaded = False
+            self._manifest_seen = 0.0
+            self._vecs_tried_at = None
 
     def _read_cache(self, retry: bool):
         """Пара «манифест → блоб» и mtime прочитанного манифеста. Блоб исчез между
@@ -868,7 +876,9 @@ class GraphSearch:
                     sim = max((_dot(q, v) for v in vs if len(v) == len(q)), default=0.0)   # лучший блок файла
                     if sim >= SIM_FLOOR:
                         sims.append((sim, d))
-                sem_share = checked / max(1, len(docs))
+                # знаменатель — файлы, которым векторы вообще положены: пустой файл
+                # ждёт вектора вечно и держал бы долю ниже порога (DS M2 r4)
+                sem_share = checked / max(1, sum(1 for d in docs if d.low.strip()))
                 sims.sort(key=lambda x: -x[0])
                 best_sim = sims[0][0] if sims else 0.0
                 for sim, d in sims[:max(limit * 4, 20)]:
@@ -876,12 +886,15 @@ class GraphSearch:
                     # темы не должна всплывать через вектор, раз не всплывает через слова
                     sem.append((sim * recency_factor(d.date_ts, now) * raw_dampener(d.rel) * placeholder_factor(d.base), d.rel))
 
-        dossiers = self._dossier_blocks(query, snippet_chars)
-        status = verdict(best_cov, best_sim, sem_used, sem_share)   # подстрока — способ поиска, не уровень свидетельства (GLM M4 r2)
+        dossiers, dossier_cov = self._dossier_blocks(query, snippet_chars)
+        # вердикт — функция ВСЕГО, что несёт Result: досье — такое же лексическое
+        # свидетельство (доля ключей темы в запросе), без него статус говорил «пусто»
+        # при непустой сводке, и контуры домысливали по-своему (DS I2 / I3 r4)
+        status = verdict(max(best_cov, dossier_cov), best_sim, sem_used, sem_share)   # подстрока — способ поиска, не уровень свидетельства (GLM M4 r2)
         if not lex and not sem:
             # пусто по словам и по векторам — доказанное отсутствие только с проверенной
-            # семантикой; без неё «ничего не найдено» читалось как факт (GLM C1 r3)
-            if status is Verdict.WEAK:
+            # семантикой и без досье; без неё «ничего не найдено» читалось как факт (GLM C1 r3)
+            if status is Verdict.WEAK and not dossiers:
                 status = Verdict.EMPTY
             return Result([], 0, status, dossiers=dossiers, sem_used=sem_used, query=query)
         low_conf = status is not Verdict.CONFIDENT
@@ -902,14 +915,16 @@ class GraphSearch:
             total += len(hops)
         return Result(blocks, total, status, dossiers=dossiers, sem_used=sem_used, query=query)
 
-    def _dossier_blocks(self, query: str, snippet_chars: int, limit: int = 2) -> list[str]:
-        """Готовые сводки по теме — ПЕРЕД фрагментами: индекс лексический, без моделей."""
+    def _dossier_blocks(self, query: str, snippet_chars: int, limit: int = 2) -> tuple[list[str], float]:
+        """Готовые сводки по теме — ПЕРЕД фрагментами: индекс лексический, без
+        моделей. -> (блоки, лучшая доля ключей темы в запросе — в вердикт как покрытие)."""
         folder = self.graph / dossier.DOSSIER_DIR
         try:
             entries = dossier.lookup(folder, query, limit=limit)
         except Exception:  # noqa: BLE001 — досье вспомогательны
-            return []
+            return [], 0.0
         out: list[str] = []
+        best = 0.0
         for e in entries:
             if e.get("счёт", 0) < 0.3:
                 continue
@@ -920,7 +935,8 @@ class GraphSearch:
                 continue
             head = " ".join(body[:snippet_chars * 3].split())
             out.append(f"📁 Досье «{e['тема']}»\n  {head}")
-        return out
+            best = max(best, min(1.0, float(e.get("счёт", 0))))
+        return out, best
 
     def _hops(self, shown: list[str], by_rel: dict[str, Doc], keys: list[str], rx: re.Pattern,
               snippet_chars: int, rare_first: Sequence[str], limit: int) -> list[str]:

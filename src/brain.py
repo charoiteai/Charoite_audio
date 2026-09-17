@@ -26,6 +26,63 @@ MemoryNotReady = graph_search.NotReady          # индекс прогрева�
 MemoryUnavailable = graph_search.Unavailable    # граф не настроен — памяти не будет
 Verdict = graph_search.Verdict                  # состояние выдачи: confident / weak / unverified / empty
 
+# Политика «что честно сказать» — одна таблица на все контуры демона: шапка
+# блока в промпте, оговорка в строку промпта, слово в статус нити, когда подать
+# нечего. Полная по членам Verdict — новый статус без строки здесь падает
+# KeyError в тесте, а не молча берёт дефолт. До круга 4 по #577 каждый контур
+# толковал Verdict своим if/elif с рукописными оговорками: один забыл EMPTY,
+# другой резал фрагменты капом, третий терял досье (DS r4 I1–I3, критика 2).
+LEAD = {
+    Verdict.CONFIDENT: "Из графа и документов (vault):",
+    Verdict.WEAK: ("Из графа и документов (vault) — СОВПАДЕНИЯ СЛАБЫЕ, "
+                   "скорее всего в архиве ответа нет:"),
+    Verdict.UNVERIFIED: ("Из графа и документов (vault) — подобрано по словам, семантикой "
+                         "НЕ ПРОВЕРЕНО: опирайся, только если фрагмент явно о том же:"),
+    Verdict.EMPTY: "",
+}
+CAVEAT = {
+    Verdict.CONFIDENT: "",
+    Verdict.WEAK: "совпадения слабые — скорее всего в архиве этого нет",
+    Verdict.UNVERIFIED: "подобрано по словам, семантикой не проверено — только явно о том же",
+    Verdict.EMPTY: "",
+}
+ABSENCE = {
+    Verdict.CONFIDENT: "",
+    Verdict.WEAK: "почти ничего",
+    Verdict.UNVERIFIED: "не проверено семантикой (модель занята)",
+    Verdict.EMPTY: "пусто",
+}
+NODES_SHARE = 0.4      # доля бюджета блока памяти на узлы графа, когда есть и фрагменты
+
+
+def caveat(result: graph_search.Result) -> str:
+    """Оговорка к фрагментам для строки промпта («…{caveat}»); пусто — без оговорки."""
+    return CAVEAT[result.status]
+
+
+def absence_note(result: graph_search.Result) -> str:
+    """Слово в статус нити, когда подать нечего: «пусто» — только по проверенной
+    выдаче, непроверенная так не называется (DS C1 r4, тот же класс, что GLM C1 r3)."""
+    return ABSENCE[result.status]
+
+
+def memory_block(result: graph_search.Result | None, *, nodes: str = "", budget: int) -> str:
+    """Память в промпт одним блоком: узлы графа и фрагменты архива делят бюджет
+    по долям (остаток одного уходит другому), шапка и оговорка — из таблицы по
+    статусу; при EMPTY фрагментов нет, при непрогретой памяти (None) — только
+    узлы. Раньше узлы шли первыми под общий кап и съедали архив целиком (DS I1
+    r4). Пусто — ''."""
+    frags = "" if result is None or result.status is Verdict.EMPTY else result.fragments
+    nodes_part = f"Из узлов графа проекта:\n{nodes}" if nodes.strip() else ""
+    frag_part = f"{LEAD[result.status]}\n{frags}" if frags else ""
+    if nodes_part and frag_part:
+        n_budget = int(budget * NODES_SHARE)
+        f_budget = budget - n_budget
+        n_take = min(len(nodes_part), n_budget + max(0, f_budget - len(frag_part)))
+        f_take = min(len(frag_part), budget - n_take)
+        return nodes_part[:n_take] + "\n\n" + frag_part[:f_take]
+    return (nodes_part or frag_part)[:budget]
+
 
 def warm(cfg: dict) -> graph_search.GraphSearch | None:
     """Прогрев на старте демона: обход графа и векторы блоков из кэша. None —

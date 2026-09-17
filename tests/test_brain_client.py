@@ -58,3 +58,42 @@ def test_unconfigured_graph_raises(monkeypatch):
         brain.vault_search({"sufler": {}}, "вопрос", limit=1, snippet_chars=100, timeout=0.3)
     assert issubclass(brain.MemoryUnavailable, RuntimeError) and issubclass(brain.MemoryNotReady, RuntimeError)
     assert brain.warm({"sufler": {}}) is None
+
+
+def _res(status, blocks=(), dossiers=()):
+    return graph_search.Result(list(blocks), len(blocks), status, dossiers=list(dossiers), query="q")
+
+
+@pytest.mark.parametrize("status", list(brain.Verdict))
+@pytest.mark.parametrize("shape", ["blocks", "dossiers", "empty"])
+def test_memory_block_policy_is_one_table_for_every_status_and_shape(status, shape):
+    """Политика «что честно сказать» — таблица фасада, а не if/elif контуров:
+    шапка по статусу, EMPTY — без фрагментов, пусто и без узлов — '' (DS r4, критика 2)."""
+    r = _res(status, blocks=["• a.md\n  факт"] if shape == "blocks" else (),
+             dossiers=["📁 Досье «т»\n  сводка"] if shape == "dossiers" else ())
+    block = brain.memory_block(r, budget=500)
+    if shape == "empty" or status is brain.Verdict.EMPTY:
+        assert block == "" and brain.memory_block(r, nodes="узел: статус", budget=500).startswith("Из узлов графа проекта:")
+    else:
+        assert block.startswith(brain.LEAD[status]) and r.fragments in block and "⚠" not in block
+        if status is brain.Verdict.CONFIDENT:
+            assert "СЛАБЫЕ" not in block and "НЕ ПРОВЕРЕНО" not in block
+    assert brain.caveat(r) == brain.CAVEAT[status] and brain.absence_note(r) == brain.ABSENCE[status]
+    assert (status is brain.Verdict.EMPTY) == (brain.absence_note(r) == "пусто"), "«пусто» — только по проверенной выдаче (DS C1 r4)"
+    assert set(brain.LEAD) == set(brain.CAVEAT) == set(brain.ABSENCE) == set(brain.Verdict)
+
+
+def test_memory_block_splits_the_budget_between_nodes_and_fragments():
+    """Узлы первыми под общий кап съедали архив целиком (DS I1 r4): бюджет делится
+    по долям, остаток одного уходит другому."""
+    r = _res(brain.Verdict.UNVERIFIED, blocks=["• a.md\n  " + "ф" * 3000])
+    nodes = "у" * 3000
+    block = brain.memory_block(r, nodes=nodes, budget=2600)
+    assert len(block) <= 2600 + 2 and block.startswith("Из узлов графа проекта:")
+    assert brain.LEAD[brain.Verdict.UNVERIFIED] in block and block.count("ф") >= 1000, "фрагменты не съедены узлами"
+    assert block.count("у") <= int(2600 * brain.NODES_SHARE)
+    short_nodes = brain.memory_block(r, nodes="у" * 100, budget=2600)
+    assert short_nodes.count("ф") > 2000, "остаток бюджета узлов уходит фрагментам"
+    only_nodes = brain.memory_block(r, nodes=nodes, budget=1000) if False else brain.memory_block(None, nodes=nodes, budget=1000)
+    assert only_nodes.startswith("Из узлов графа проекта:") and len(only_nodes) == 1000 and "vault" not in only_nodes
+    assert brain.memory_block(None, budget=1000) == ""

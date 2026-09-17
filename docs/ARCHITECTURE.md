@@ -637,11 +637,16 @@ markers), `text` is the human rendering. Without an embedding (Ollama busy
 during a meeting) lexical matches are *unverified*, never confident and never
 "nothing in the archive"; "weak" — the honest "the archive has almost nothing"
 — is only pronounced when the vector cache covers at least 80 % of the index.
-Each contour decides by the field: the instant answer feeds weak and unverified
-fragments with their own disclaimer, déjà-vu and the deep contour fall back to
-graph nodes on weak/empty and add unverified fragments next to the nodes with a
-caveat. The previous contract was a string with "⚠" parsed by `startswith` in
-three places — a dossier printed before the marker silenced the gate.
+Dossiers count as evidence in the verdict (their key coverage of the query), so
+a summary without snippets is never "empty". What to *say* is one table in the
+facade (`LEAD` / `CAVEAT` / `ABSENCE`, complete over every status) and one
+builder, `memory_block`, that splits a prompt budget between graph nodes and
+archive snippets by share instead of letting the nodes eat the archive. Déjà-vu
+goes to graph nodes unless the verdict is confident and calls the archive
+"empty" only on a verified verdict; the instant answer and the deep contour feed
+the block as built. The previous contract was a string with "⚠" parsed by
+`startswith` in three places — a dossier printed before the marker silenced the
+gate — and then an enum re-interpreted by three hand-written `if/elif` chains.
 
 **Chunks, not files.** Each file is split by markdown headings; long sections
 are split by paragraphs with overlap, and text without punctuation by length.
