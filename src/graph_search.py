@@ -37,6 +37,7 @@ from __future__ import annotations
 import array
 import dataclasses
 import datetime as dt
+import enum
 import fcntl
 import hashlib
 import json
@@ -87,18 +88,31 @@ SIM_FLOOR = 0.35           # ниже — семантический шум, в 
 # «лучший блок из многих» перекрывается (ловушки 0,46–0,62, вопросы 0,49–0,74) —
 # калибровка на размеченном наборе — отдельная карточка, не угадывание здесь.
 LOW_SIM, LOW_COV = 0.47, 0.66
+# «В архиве нет» — вердикт о проверенном архиве: пока векторы есть меньше чем у
+# этой доли файлов индекса (кэш собирается вне встреч, по бюджету), низкий лучший
+# косинус говорит о векторизованной части, а не об архиве — выдача «не проверена»,
+# а не «слабая» (круг 3 по #577, DS критика 2).
+SEM_SHARE_MIN = 0.8
 VEC_RETRY_S = 30.0         # неудачная загрузка кэша не защёлкивается: повтор не чаще
+BLOB_GRACE_S = 300.0       # блоб вне текущего и предыдущего поколения стирается, только когда старше: читатель мог прочитать манифест секунды назад
 CHUNK_VERSION = 2          # правила нарезки — часть ключа кэша: сменились — кэш холодный (DS I2 r2)
 MAX_CHUNKS_NODE = 24       # узлы (Люди/Системы/…): история длиннее, середина ценнее (GLM r2, критика 1)
 HALFLIFE_DAYS = 90.0
-_STOP = {"что", "как", "где", "когда", "это", "нас", "наш", "наша", "наши", "есть",
-         "про", "для", "или", "чем", "кто", "было", "быть", "графе", "граф", "мы",
-         "решили", "the", "and", "what", "who", "how", "did", "for", "with",
-         # двухбуквенные служебные: остальные двухбуквенные — термины («тз», «ии», «бд», «рп»)
-         "по", "на", "из", "за", "от", "до", "не", "ни", "но", "же", "ли", "бы", "то",
-         "вы", "ты", "он", "их", "им", "ей", "ею", "ее", "со", "во", "об", "ко", "уж", "да",
-         "ну", "ах", "ох", "of", "to", "in", "on", "at", "by", "is", "it", "as", "or", "an",
-         "be", "we", "do", "if", "so", "no", "up", "us", "my", "me", "he", "ok"}
+# Частотный шум — один список на проект (dossier его уже держит: ключи тем и иглы
+# запроса режутся одним ситом, круг 3 по #577, DS M2); здесь — вопросительные слова
+# и двухбуквенные служебные, остальные двухбуквенные — термины («тз», «ии», «бд»).
+# Отрицания «не»/«ни» остаются служебными: как подстроки они есть почти в каждом
+# файле («нет», «неделя»), IDF≈0 — в ранг не вносят ничего, а покрытие завышают всем;
+# «согласовано»/«не согласовано» различит фразовый поиск, не стоп-лист.
+_STOP = dossier._STOP | {
+    "что", "как", "где", "когда", "это", "нас", "наш", "наша", "наши", "есть",
+    "про", "для", "или", "чем", "кто", "было", "быть", "графе", "граф", "мы",
+    "решили", "the", "and", "what", "who", "how", "did", "for", "with",
+    "по", "на", "из", "за", "от", "до", "не", "ни", "но", "же", "ли", "бы", "то",
+    "та", "те", "ту", "вы", "ты", "он", "их", "им", "ей", "ею", "ее", "со", "во", "об",
+    "ко", "уж", "да", "ну", "ах", "ох", "ок", "эм", "эй",
+    "of", "to", "in", "on", "at", "by", "is", "it", "as", "or", "an",
+    "be", "we", "do", "if", "so", "no", "up", "us", "my", "me", "he", "ok"}
 _WORD_RX = re.compile(r"[А-Яа-яЁёA-Za-z0-9_-]{2,}")
 _DATE_RX = re.compile(r"(20\d{2})-(\d{2})-(\d{2})")
 _MEETING_RX = re.compile(r"(20\d{2}-\d{2}-\d{2})[_ ]?(\d{4})?")
@@ -142,13 +156,29 @@ def needles(query: str) -> tuple[list[str], list[str]]:
     return list(dict.fromkeys(norm(w) for w in words if w)), list(dict.fromkeys(cjk_grams(query)))
 
 
-def low_confidence(cov: float, sim: float, sem_used: bool) -> bool:
-    """«⚠» — по свидетельствам: с семантикой — слабы оба сигнала (правило
-    приложения); без неё уверенности нет вовсе — одна лексика на большом графе
-    не отличает вопрос от ловушки (замер 17.09), и выдача помечается."""
+class Verdict(str, enum.Enum):
+    """Состояние выдачи — одно значение для всех потребителей (демон, бенч, CLI).
+    До круга 3 по #577 оно жило в строке с «⚠»/«не найдено», и три контура
+    разбирали её префиксом: досье перед «⚠» глушили гейт, а «Ничего не найдено»
+    без семантики читалось как доказанное отсутствие (DS C1 / GLM C1)."""
+    CONFIDENT = "confident"       # семантика проверила, совпадения сильные
+    WEAK = "weak"                 # проверила: слабы оба сигнала — скорее всего в архиве нет
+    UNVERIFIED = "unverified"     # семантика не отработала или кэш собран не весь — по словам, не проверено
+    EMPTY = "empty"               # ничего, и это проверено
+
+
+def verdict(cov: float, sim: float, sem_used: bool, sem_share: float = 1.0) -> Verdict:
+    """Вердикт по свидетельствам: без семантики уверенности нет вовсе — одна
+    лексика на большом графе не отличает вопрос от ловушки (замер 17.09); с ней
+    сильный любой из сигналов — уверенно (правило приложения), слабы оба — «в
+    архиве нет», но только если проверена достаточная доля архива (SEM_SHARE_MIN)."""
     if not sem_used:
-        return True
-    return cov < LOW_COV and sim < LOW_SIM
+        return Verdict.UNVERIFIED
+    if cov >= LOW_COV or sim >= LOW_SIM:
+        return Verdict.CONFIDENT
+    if sem_share < SEM_SHARE_MIN:
+        return Verdict.UNVERIFIED
+    return Verdict.WEAK
 
 
 def file_date_ts(rel: str, mtime: float) -> float:
@@ -376,24 +406,42 @@ class Doc:
 
 @dataclasses.dataclass
 class Result:
+    """Выдача как значение: потребитель судит по `status`, модели отдаёт
+    `fragments`, человеку — `text`; маркеры в тексте никто не разбирает."""
     blocks: list[str]
     total: int
-    low_conf: bool
+    status: Verdict = Verdict.EMPTY
     ready: bool = True
     dossiers: list[str] = dataclasses.field(default_factory=list)
     sem_used: bool = False      # семантика посчиталась (вектор запроса получен)
+    query: str = ""
+
+    @property
+    def low_conf(self) -> bool:
+        return self.status in (Verdict.WEAK, Verdict.UNVERIFIED)
 
     @property
     def why_low(self) -> str:
-        """Причина «⚠» человеку и модели: без семантики — не «в архиве нет», а «не проверено»."""
-        if not self.low_conf:
-            return ""
-        return ("семантика недоступна — совпадения только по словам, не проверены"
-                if not self.sem_used else "слабые совпадения")
+        """Причина «⚠» человеку: без семантики — не «в архиве нет», а «не проверено»."""
+        if self.status is Verdict.UNVERIFIED:
+            return "Совпадения не проверены семантикой (модель занята) — найденное по словам, доверять с оглядкой"
+        if self.status is Verdict.WEAK:
+            return "Похоже, в архиве об этом почти ничего нет (слабые совпадения)"
+        return ""
 
     @property
     def empty(self) -> bool:
         return not self.blocks and not self.dossiers
+
+    @property
+    def fragments(self) -> str:
+        """Досье и фрагменты без шапки и маркеров — в промпт: «⚠ …» в промпте
+        модель читает как указание отказаться (круг 3 по #577, DS I3)."""
+        return "\n\n".join(self.dossiers + self.blocks)
+
+    @property
+    def text(self) -> str:
+        return render(self, self.query)
 
 
 def _dot(a, b) -> float:
@@ -440,7 +488,8 @@ class GraphSearch:
         tag = hashlib.sha1(str(self.graph.resolve()).encode("utf-8")).hexdigest()[:8]
         self._vec_manifest = base / "graph_search" / f"{self.graph.name}-{tag}.json"
         self._vecs_loaded = False
-        self._vecs_tried_at = 0.0
+        self._vecs_tried_at: float | None = None   # None — не пробовали: часы могут считать от нуля (DS M3 r3)
+        self._vecs_key: str | None = None          # ключ, под который собраны векторы в памяти
         self._manifest_seen = 0.0   # mtime манифеста при последней загрузке: чужая запись — перечитать
         self.note = ""              # последнее «почему не сделали» для CLI и журнала
 
@@ -551,19 +600,20 @@ class GraphSearch:
         неизменяемый плоский float32. Неудача не защёлкивается — повтор не чаще
         VEC_RETRY_S: защёлка гасила семантику на всю встречу после одного
         совпадения с писателем (круг 1 по #577, DS I1 / GLM I1)."""
+        self._drop_foreign_vectors()
         try:
             seen = self._vec_manifest.stat().st_mtime
         except OSError:
             seen = 0.0
         if self._vecs_loaded and seen == self._manifest_seen:
             return len(self._vecs)          # чужая запись (ночь, апдейтер) — манифест новее, перечитаем (GLM M6 r2)
-        if not self._vecs_loaded and self._now() - self._vecs_tried_at < VEC_RETRY_S:
-            return len(self._vecs)
+        if self._vecs_tried_at is not None and self._now() - self._vecs_tried_at < VEC_RETRY_S:
+            return len(self._vecs)          # и после загрузки тоже: чужой ключ на диске иначе читался бы каждым поиском (GLM M3 r3)
         loaded = self._read_cache(retry=True)
         if loaded is None:
             self._vecs_tried_at = self._now()   # штамп — только на настоящую неудачу, не на гонку с уборкой (DS I4 r2)
             return len(self._vecs)
-        entries, flat, dim = loaded
+        entries, flat, dim, seen = loaded       # mtime прочитанного манифеста: после повтора — свежего (GLM M3 r3)
         got: dict[str, tuple[float, list[array.array]]] = {}
         off = 0
         for path, mtime, n in entries:
@@ -575,14 +625,29 @@ class GraphSearch:
                 if cur is None or cur[0] < entry[0]:
                     self._vecs[path] = entry       # свежее по mtime главнее, откуда бы ни пришло
             self._vecs_loaded = True
+            self._vecs_tried_at = None
             self._manifest_seen = seen
             return len(self._vecs)
 
+    def _drop_foreign_vectors(self) -> None:
+        """Ключ кэша сменился в живом процессе (модель эмбеддингов в конфиге) —
+        векторы в памяти считаны другой моделью, косинус с вектором запроса новой
+        — шум, а не свидетельство (DS I1 r3). Сброс до чтения кэша и до сборки."""
+        key = self.cache_key()
+        with self._lock:
+            if self._vecs_key not in (None, key):
+                self._vecs.clear()
+                self._vecs_loaded = False
+                self._manifest_seen = 0.0
+            self._vecs_key = key
+
     def _read_cache(self, retry: bool):
-        """Пара «манифест → блоб». Блоб исчез между чтением манифеста и открытием
-        (писатель опубликовал новое поколение) — один немедленный повтор по свежему
-        манифесту (GLM I1 r2). Ключ кэша не совпал — кэш холодный. None — не прочитан."""
+        """Пара «манифест → блоб» и mtime прочитанного манифеста. Блоб исчез между
+        чтением манифеста и открытием (писатель опубликовал новое поколение) — один
+        немедленный повтор по свежему манифесту (GLM I1 r2). Ключ кэша не совпал —
+        кэш холодный. None — не прочитан."""
         try:
+            mtime = self._vec_manifest.stat().st_mtime
             manifest = json.loads(self._vec_manifest.read_text(encoding="utf-8"))
             if manifest.get("key") != self.cache_key():
                 return None
@@ -596,7 +661,7 @@ class GraphSearch:
             return None
         if len(flat) != dim * sum(int(n) for _, _, n in entries):
             return None
-        return entries, flat, dim
+        return entries, flat, dim, mtime
 
     def save_vectors(self) -> None:
         with self._lock:
@@ -627,12 +692,19 @@ class GraphSearch:
             {"dim": dim, "key": self.cache_key(), "blob": blob.name,
              "files": [[p, m, len(vs)] for p, m, vs in items]}, ensure_ascii=False))
         # уборка поколений: текущее и предыдущее живут — читатель без лока может
-        # держать в руках прошлый манифест (DS I4 / GLM I1 r2); сравнение имён
-        # строковое — метасимволы в имени графа ломали glob (DS M7 r2)
+        # держать в руках прошлый манифест (DS I4 / GLM I1 r2); остальные — только
+        # старше BLOB_GRACE_S: окно читателя перекрывается временем, а не удачей, и
+        # замок писателей — оптимизация, не условие корректности (DS I2 r3);
+        # сравнение имён строковое — метасимволы в имени графа ломали glob (DS M7 r2)
         keep = {blob.name, previous}
+        stale_before = self._now() - BLOB_GRACE_S
         for old in self._vec_manifest.parent.iterdir():
             if old.name.startswith(f"{stem}.") and old.name.endswith(".f32") and old.name not in keep:
-                old.unlink(missing_ok=True)
+                try:
+                    if old.stat().st_mtime < stale_before:
+                        old.unlink()
+                except OSError:
+                    pass
 
     def pending_vectors(self) -> list[str]:
         self.load_vectors()
@@ -647,9 +719,10 @@ class GraphSearch:
         `should_stop` (живая запись началась) спрашивается перед КАЖДОЙ пачкой,
         а таймаут пачки не длиннее остатка бюджета — проверка на входе давала
         окно в минуты (круг 1 по #577, DS I2). Писателей сериализует flock рядом
-        с манифестом: занято — выходим, self.note скажет. Файл готов, когда есть
-        векторы всех его блоков; сервер не ответил — останавливаемся, недобранное
-        дособерём в следующий раз. -> сколько файлов получили векторы."""
+        с манифестом: занято — выходим, self.note скажет; замок не взялся — не
+        пишем вовсе. Файл готов, когда есть векторы всех его блоков; сервер не
+        ответил — останавливаемся, недобранное дособерём в следующий раз.
+        -> сколько файлов получили векторы."""
         self.note = ""
         lock = None
         try:
@@ -660,8 +733,13 @@ class GraphSearch:
             lock.close()
             self.note = "векторы уже собирает другой процесс"
             return 0
-        except OSError as exc:                       # каталог недоступен или том без flock — идём без лока (DS M8 r2)
-            self.note = f"без лока: {exc}"
+        except OSError as exc:
+            # каталог недоступен, том без flock, EMFILE: без замка два писателя стёрли
+            # бы блоб друг друга уборкой — не пишем вовсе (DS I2 / GLM M4 r3)
+            if lock is not None:
+                lock.close()
+            self.note = f"без замка не пишем: {exc}"
+            return 0
         try:
             return self._embed_pending(budget_s, batch, timeout, should_stop)
         finally:
@@ -716,7 +794,7 @@ class GraphSearch:
         вызывающего своя деградация (узлы графа, молчание). Протухший индекс
         обновляется фоном, ответ — по текущему."""
         if not self.ready:
-            return Result([], 0, False, ready=False)
+            return Result([], 0, ready=False, query=query)
         if not self._fresh():
             threading.Thread(target=self.refresh, daemon=True, name="graph-search-refresh").start()
         with self._lock:
@@ -769,7 +847,10 @@ class GraphSearch:
         sem: list[tuple[float, str]] = []
         best_sim = 0.0
         sem_used = False
-        if semantic and (self._vecs or self.load_vectors()):
+        sem_share = 0.0     # доля файлов индекса с актуальными векторами — свидетель «в архиве нет»
+        # кэш сверяется каждый раз: stat манифеста дёшев, а чужую запись (ночь,
+        # апдейтер) короткое замыкание по непустым векторам не видело (GLM I1 r3)
+        if semantic and self.load_vectors():
             qv = self._embed([query], embed_timeout)
             if qv and qv[0]:
                 sem_used = True
@@ -778,13 +859,16 @@ class GraphSearch:
                     vecs = list(self._vecs.items())
                 paths = {d.path: d for d in docs}
                 sims = []
+                checked = 0
                 for path, (mt, vs) in vecs:
                     d = paths.get(path)
                     if d is None or mt != d.mtime:      # файл переписан — старые блоки не свидетели (GLM M3)
                         continue
+                    checked += 1
                     sim = max((_dot(q, v) for v in vs if len(v) == len(q)), default=0.0)   # лучший блок файла
                     if sim >= SIM_FLOOR:
                         sims.append((sim, d))
+                sem_share = checked / max(1, len(docs))
                 sims.sort(key=lambda x: -x[0])
                 best_sim = sims[0][0] if sims else 0.0
                 for sim, d in sims[:max(limit * 4, 20)]:
@@ -793,9 +877,14 @@ class GraphSearch:
                     sem.append((sim * recency_factor(d.date_ts, now) * raw_dampener(d.rel) * placeholder_factor(d.base), d.rel))
 
         dossiers = self._dossier_blocks(query, snippet_chars)
+        status = verdict(best_cov, best_sim, sem_used, sem_share)   # подстрока — способ поиска, не уровень свидетельства (GLM M4 r2)
         if not lex and not sem:
-            return Result([], 0, False, dossiers=dossiers, sem_used=sem_used)
-        low_conf = low_confidence(best_cov, best_sim, sem_used)   # подстрока — способ поиска, не уровень свидетельства (GLM M4 r2)
+            # пусто по словам и по векторам — доказанное отсутствие только с проверенной
+            # семантикой; без неё «ничего не найдено» читалось как факт (GLM C1 r3)
+            if status is Verdict.WEAK:
+                status = Verdict.EMPTY
+            return Result([], 0, status, dossiers=dossiers, sem_used=sem_used, query=query)
+        low_conf = status is not Verdict.CONFIDENT
         fused = rrf_merge([[r for _, r in sorted(lex, key=lambda x: -x[0])],
                            [r for _, r in sorted(sem, key=lambda x: -x[0])]], weights=[1.0, 0.7])
         picked = diversify([(s, r) for r, s in fused], limit)
@@ -811,7 +900,7 @@ class GraphSearch:
             hops = self._hops(shown, by_rel, keys, rx, snippet_chars, rare_first or keys, max(1, limit // 2))
             blocks += hops
             total += len(hops)
-        return Result(blocks, total, low_conf, dossiers=dossiers, sem_used=sem_used)
+        return Result(blocks, total, status, dossiers=dossiers, sem_used=sem_used, query=query)
 
     def _dossier_blocks(self, query: str, snippet_chars: int, limit: int = 2) -> list[str]:
         """Готовые сводки по теме — ПЕРЕД фрагментами: индекс лексический, без моделей."""
@@ -901,26 +990,27 @@ class Unavailable(RuntimeError):
     """Памяти по графу не будет: граф не настроен."""
 
 
-def render(result: Result, query: str, where: str = "графе") -> str:
-    """Текст выдачи в том же виде, что отдавал сервер памяти: шапка «Найдено…»,
-    «⚠» при слабых совпадениях, «Ничего не найдено по «…»» — потребители
-    (мгновенный ответ, дежавю, глубокий контур, бенч) читают эти маркеры."""
+def render(result: Result, query: str | None = None, where: str = "графе") -> str:
+    """Текст выдачи человеку (CLI, журнал, тесты формата) в том же виде, что
+    отдавал сервер памяти: «⚠ …» первой строкой, досье, шапка «Найдено…»,
+    «Ничего не найдено по «…»». Контуры демона и бенч читают Result.status и
+    Result.fragments — маркеры здесь никто не разбирает (круг 3 по #577)."""
+    query = result.query if query is None else query
     if not result.ready:
         return ""
     if result.empty:
+        if result.status is Verdict.UNVERIFIED:
+            return (f"⚠ По словам ничего не нашлось по «{query}» в {where}, семантикой не проверено "
+                    "(модель занята) — не считать доказанным отсутствием")
         return f"Ничего не найдено по «{query}» в {where}"
-    if not result.blocks:
-        return "\n\n".join(result.dossiers)      # только сводка: «Найдено (0 из 0)» под ней врало бы
-    header = f"Найдено в {where} ({len(result.blocks)} из {result.total}):"
-    if result.low_conf:
-        header = (("⚠ Совпадения не проверены семантикой (модель занята) — ниже найденное по словам, доверять с оглядкой:\n"
-                   if not result.sem_used else
-                   "⚠ Похоже, в архиве об этом почти ничего нет (слабые совпадения). Ниже ближайшее найденное:\n")
-                  + header)
-    body = header + "\n\n" + "\n\n".join(result.blocks)
-    if result.dossiers:
-        body = "\n\n".join(result.dossiers) + "\n\n— — — ниже отдельные фрагменты графа — — —\n\n" + body
-    return body
+    parts = list(result.dossiers)
+    if result.blocks:
+        if parts:
+            parts.append("— — — ниже отдельные фрагменты графа — — —")
+        parts.append(f"Найдено в {where} ({len(result.blocks)} из {result.total}):\n\n" + "\n\n".join(result.blocks))
+    # иначе — только сводка: «Найдено (0 из 0)» под ней врало бы
+    warn = f"⚠ {result.why_low}. Ниже найденное:\n" if result.low_conf else ""   # первой строкой, ПЕРЕД досье (DS C1 r3)
+    return warn + "\n\n".join(parts)
 
 
 _shared: dict[str, GraphSearch] = {}

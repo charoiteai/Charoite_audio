@@ -630,6 +630,19 @@ honesty gate. Vectors are per chunk (headings, breadcrumbs), cached in
 files are indexed after the meeting (45 s cap) and at night. A warm query
 costs ~0.1 s of lexical work plus one embedding call when Ollama is free.
 
+**The verdict is a field, not a prefix.** `brain.vault_search` returns a
+`Result`: `status` is one of *confident* / *weak* / *unverified* / *empty*,
+`fragments` is what goes into a prompt (dossiers and snippets, no headers, no
+markers), `text` is the human rendering. Without an embedding (Ollama busy
+during a meeting) lexical matches are *unverified*, never confident and never
+"nothing in the archive"; "weak" — the honest "the archive has almost nothing"
+— is only pronounced when the vector cache covers at least 80 % of the index.
+Each contour decides by the field: the instant answer feeds weak and unverified
+fragments with their own disclaimer, déjà-vu and the deep contour fall back to
+graph nodes on weak/empty and add unverified fragments next to the nodes with a
+caveat. The previous contract was a string with "⚠" parsed by `startswith` in
+three places — a dossier printed before the marker silenced the gate.
+
 **Chunks, not files.** Each file is split by markdown headings; long sections
 are split by paragraphs with overlap, and text without punctuation by length.
 Every chunk carries a breadcrumb (`File → H1 → H2`) into the embedder, because

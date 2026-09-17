@@ -14,6 +14,7 @@ import os
 import pathlib
 import re
 import sys
+import time
 
 import pytest
 import yaml
@@ -94,6 +95,10 @@ def test_needles_stems_stop_words_cjk_and_fullwidth():
     assert "платежн" in words and "шлюз" in words and "yupay" in words
     assert "что" not in words and "решили" not in words
     assert grams == ["支付", "付服", "服务", "务商"]
+    # частотный шум — одним ситом с досье, двухбуквенные служебные — тоже; отрицание
+    # иглой не делаем: подстрока «не» есть почти в каждом файле (круг 3 по #577, DS M1/M2, GLM M2)
+    assert gs.needles("что уже там сделали, ок, та тема")[0] == ["сдела", "тема"]
+    assert gs.needles("почему не согласовали доступ")[0] == ["почем", "согласова", "доступ"]
 
 
 def test_index_skips_archive_transcript_copies_hidden_and_service_files(tmp_path):
@@ -185,15 +190,23 @@ def test_honesty_gate_and_render_markers(tmp_path):
     assert off.sem_used and off.low_conf and off.blocks
     assert gs.render(off, "рецепт борща").startswith("⚠ Похоже, в архиве об этом почти ничего нет")
     none = s.search("qqqzzz")
-    assert none.empty and gs.render(none, "qqqzzz") == "Ничего не найдено по «qqqzzz» в графе"
+    assert none.empty and none.status is gs.Verdict.EMPTY
+    assert gs.render(none, "qqqzzz") == "Ничего не найдено по «qqqzzz» в графе" == none.text
+    # пусто без семантики — не доказанное отсутствие: «⚠» и своя причина (GLM C1 r3)
+    blind = s.search("qqqzzz", semantic=False)
+    assert blind.empty and blind.status is gs.Verdict.UNVERIFIED and blind.text.startswith("⚠ По словам ничего не нашлось")
+    assert "не считать доказанным" in blind.text and "не найдено" not in blind.text.lower()
     good = s.search("платёжный шлюз", limit=2)
     text = gs.render(good, "платёжный шлюз")
     assert text.startswith("Найдено в графе (") and "• Системы/Платёжный шлюз.md\n  " in text
     # без семантики уверенности нет: та же выдача, но с «⚠» и своей причиной
     lex = s.search("платёжный шлюз", limit=2, semantic=False)
     assert lex.blocks and lex.low_conf and not lex.sem_used and "не проверены" in lex.why_low
+    assert lex.status is gs.Verdict.UNVERIFIED and off.status is gs.Verdict.WEAK and good.status is gs.Verdict.CONFIDENT
     assert gs.render(lex, "платёжный шлюз").startswith("⚠ Совпадения не проверены семантикой")
-    assert gs.render(gs.Result([], 0, False, ready=False), "x") == ""
+    assert gs.render(gs.Result([], 0, ready=False), "x") == ""
+    # модели — фрагменты без шапки и маркеров: «⚠» в промпте читается как отказ (DS I3 r3)
+    assert "⚠" not in lex.fragments and "Найдено" not in lex.fragments and "• Системы/Платёжный шлюз.md" in lex.fragments
 
 
 def test_dossier_comes_first(tmp_path):
@@ -209,8 +222,14 @@ def test_dossier_comes_first(tmp_path):
     text = gs.render(r, "что с платёжным шлюзом")
     assert text.index("📁 Досье") < text.index("Найдено в графе")
     # досье есть, фрагментов нет — только сводка, без «Найдено (0 из 0)» под ней
-    only = gs.render(gs.Result([], 0, False, dossiers=r.dossiers), "что с платёжным шлюзом")
+    only = gs.render(gs.Result([], 0, gs.Verdict.CONFIDENT, dossiers=r.dossiers), "что с платёжным шлюзом")
     assert only.startswith("📁 Досье") and "Найдено" not in only
+    # без семантики «⚠» стоит ПЕРВОЙ строкой, перед досье: досье глушили гейт потребителей
+    # по префиксу — а состояние теперь и вовсе полем, не строкой (DS C1 r3)
+    blind = s.search("что с платёжным шлюзом", limit=2, semantic=False)
+    assert blind.dossiers and blind.blocks and blind.status is gs.Verdict.UNVERIFIED
+    assert blind.text.startswith("⚠ Совпадения не проверены") and blind.text.index("📁 Досье") < blind.text.index("Найдено в графе")
+    assert blind.fragments.startswith("📁 Досье") and "⚠" not in blind.fragments
 
 
 def test_semantic_layer_uses_cached_vectors_and_survives_without_embeddings(tmp_path):
@@ -313,28 +332,32 @@ def test_brain_facade_raises_until_warm_and_then_renders(tmp_path, monkeypatch):
         brain.vault_search({"sufler": {}}, "платёжный шлюз", limit=2, snippet_chars=200, timeout=2.5)
     mem = brain.warm(cfg)
     assert mem is not None and mem.ready and brain.warm({"sufler": {}}) is None
-    text = brain.vault_search(cfg, "платёжный шлюз", limit=2, snippet_chars=200, timeout=2.5)
-    assert text.startswith("⚠ Совпадения не проверены семантикой") and "Системы/Платёжный шлюз.md" in text
-    assert "не найдено" in brain.vault_search(cfg, "qqqzzz", limit=2, snippet_chars=200, timeout=2.5).lower()
+    r = brain.vault_search(cfg, "платёжный шлюз", limit=2, snippet_chars=200, timeout=2.5)
+    # шов отдаёт значение: состояние полем, фрагменты — модели, текст — человеку (круг 3 по #577)
+    assert r.status is brain.Verdict.UNVERIFIED and "Системы/Платёжный шлюз.md" in r.fragments and "⚠" not in r.fragments
+    assert r.text.startswith("⚠ Совпадения не проверены семантикой") and "Системы/Платёжный шлюз.md" in r.text
+    none = brain.vault_search(cfg, "qqqzzz", limit=2, snippet_chars=200, timeout=2.5)
+    assert none.empty and none.status is brain.Verdict.UNVERIFIED and none.text.startswith("⚠ По словам ничего не нашлось")
 
 
-@pytest.mark.parametrize("cov, sim, sem_used, expected", [
-    (1.0, 0.0, False, True),     # без семантики уверенности нет — даже при полном покрытии (замер 17.09)
-    (0.5, 0.0, False, True),     # «одно из двух» без семантики — тем более
-    (0.5, 0.3, True, True),      # одно из двух и слабый косинус — «⚠» (DS C1 круга 2)
-    (0.6, 0.3, True, True),      # оба слабые
-    (0.6, 0.6, True, False),     # семантика уверена
-    (2 / 3, 0.1, True, False),   # две иглы из трёх (0,6667) — правило приложения: порог 0,66, не 0,67
-    (0.8, 0.1, True, False),     # лексика уверена
+@pytest.mark.parametrize("cov, sim, sem_used, share, expected", [
+    (1.0, 0.0, False, 1.0, gs.Verdict.UNVERIFIED),   # без семантики уверенности нет — даже при полном покрытии (замер 17.09)
+    (0.5, 0.0, False, 1.0, gs.Verdict.UNVERIFIED),   # «одно из двух» без семантики — тем более
+    (0.5, 0.3, True, 1.0, gs.Verdict.WEAK),          # одно из двух и слабый косинус — «в архиве нет» (DS C1 круга 2)
+    (0.6, 0.3, True, 1.0, gs.Verdict.WEAK),          # оба слабые
+    (0.5, 0.3, True, 0.5, gs.Verdict.UNVERIFIED),    # ...но кэш собран наполовину — «нет» не доказано (DS критика 2 r3)
+    (0.6, 0.6, True, 0.1, gs.Verdict.CONFIDENT),     # семантика уверена — доля кэша не спорит с найденным
+    (2 / 3, 0.1, True, 1.0, gs.Verdict.CONFIDENT),   # две иглы из трёх (0,6667) — правило приложения: порог 0,66, не 0,67
+    (0.8, 0.1, True, 1.0, gs.Verdict.CONFIDENT),     # лексика уверена
 ])
-def test_honesty_gate_is_a_function_of_available_evidence(cov, sim, sem_used, expected):
-    assert gs.low_confidence(cov, sim, sem_used) is expected
+def test_verdict_is_a_function_of_available_evidence(cov, sim, sem_used, share, expected):
+    assert gs.verdict(cov, sim, sem_used, share) is expected
 
 
-def test_gate_without_semantics_keeps_partial_matches_and_flags_nonsense(tmp_path):
-    """Ollama занята (эмбеддинг не отдал вектор) — гейт судит по покрытию мягко:
-    три слова из пяти проходят, одно из четырёх — «⚠»; с семантикой по синониму
-    выдача уверенная при нулевом покрытии; бессмысленный запрос — «⚠»."""
+def test_gate_without_semantics_is_unverified_and_synonym_semantics_is_confident(tmp_path):
+    """Ollama занята (эмбеддинг не отдал вектор) — найденное по словам отдаётся, но
+    как «не проверено», при любом покрытии (замер 17.09); с семантикой по синониму
+    выдача уверенная при нулевом покрытии; бессмысленный запрос — пусто или «⚠»."""
     calls = {"embed": 0}
     def busy(texts, timeout):
         calls["embed"] += 1
@@ -342,8 +365,8 @@ def test_gate_without_semantics_keeps_partial_matches_and_flags_nonsense(tmp_pat
     s = gs.GraphSearch(_graph(tmp_path), {}, data_dir=tmp_path / "data", embed=busy)
     s.refresh(force=True)
     r = s.search("интеграцию платёжного шлюза ведёт Иван до пятницы срок", limit=3)
-    assert not r.sem_used and r.low_conf and r.blocks, "нашли по словам, но не подтвердили — «⚠» с причиной"
-    assert "не проверены" in r.why_low and s.search("рецепт борща со сметаной для шлюза", limit=3).low_conf
+    assert not r.sem_used and r.status is gs.Verdict.UNVERIFIED and r.blocks, "нашли по словам, но не подтвердили — «⚠» с причиной"
+    assert "не проверены" in r.why_low and s.search("рецепт борща со сметаной для шлюза", limit=3).status is gs.Verdict.UNVERIFIED
     # семантика есть: синоним даёт уверенность без единого общего слова
     s2 = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=fake_embed)
     s2.refresh(force=True)
@@ -404,11 +427,13 @@ def test_vector_cache_survives_races_and_stale_entries(tmp_path):
     s2.refresh(force=True)
     assert s2.embed_pending() >= 1
     third_blob = manifest.with_name(json.loads(manifest.read_text(encoding="utf-8"))["blob"])
-    assert third_blob.exists() and second_blob.exists() and not first_blob.exists()
+    assert third_blob.exists() and second_blob.exists() and first_blob.exists(), \
+        "позапрошлое поколение моложе BLOB_GRACE_S — не трогаем: читатель мог прочитать его манифест секунды назад (DS I2 r3)"
+    os.utime(first_blob, (clock["t"] - gs.BLOB_GRACE_S - 1,) * 2)
     # два сохранения на застывших часах — разные блобы: имя поколения не из времени (DS I3 r2)
     s2.save_vectors()
     fourth_blob = manifest.with_name(json.loads(manifest.read_text(encoding="utf-8"))["blob"])
-    assert fourth_blob != third_blob and fourth_blob.exists() and third_blob.exists()
+    assert fourth_blob != third_blob and fourth_blob.exists() and third_blob.exists() and not first_blob.exists()
     # чужая запись (ночь, апдейтер): манифест новее — экземпляр перечитывает, а не живёт старым
     fresh = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=fake_embed, now=now)
     fresh.refresh(force=True)
@@ -421,7 +446,7 @@ def test_vector_cache_survives_races_and_stale_entries(tmp_path):
     assert other.embed_pending() >= 1
     os.utime(manifest, (clock["t"] + 3, clock["t"] + 3))
     fresh.refresh(force=True)
-    fresh.load_vectors()
+    fresh.search("четвёртый узел", limit=2)   # через поиск, не через load_vectors: короткое замыкание по непустым векторам гасило перечитывание (GLM I1 r3)
     assert str(s.graph / "Системы" / "Четвёртый.md") in fresh._vecs, "новый манифест на диске — перечитан без перезапуска"
     # ключ кэша: сменилась модель или нарезка — кэш холодный целиком (DS I2 r2)
     cold = gs.GraphSearch(s.graph, {"sufler": {"embed_model": "other-model"}}, data_dir=tmp_path / "data", embed=fake_embed, now=now)
@@ -481,10 +506,14 @@ def test_metacharacters_in_graph_name_do_not_break_generation_cleanup(tmp_path):
     (g / "Системы" / "Узел.md").write_text("# Узел\nдостаточно длинный текст для блока и вектора здесь\n", encoding="utf-8")
     s = gs.GraphSearch(g, {}, data_dir=tmp_path / "data", embed=fake_embed)
     s.refresh(force=True)
+    aged = time.time() - gs.BLOB_GRACE_S - 1
     for i in range(3):
         (g / "Системы" / f"У{i}.md").write_text(f"# У{i}\nещё один достаточно длинный текст для блока и вектора\n", encoding="utf-8")
         s.refresh(force=True)
         assert s.embed_pending() >= 1
+        for b in (tmp_path / "data" / "graph_search").iterdir():   # уборка стирает только старые (DS I2 r3)
+            if b.name.endswith(".f32"):
+                os.utime(b, (aged, aged))
     blobs = [p for p in (tmp_path / "data" / "graph_search").iterdir() if p.name.endswith(".f32")]
     assert len(blobs) == 2, f"текущее и предыдущее поколение, не больше: {[b.name for b in blobs]}"
 
@@ -511,6 +540,7 @@ def test_reader_retries_when_writer_publishes_between_manifest_and_blob(tmp_path
     import unittest.mock as um
     with um.patch.object(pathlib.Path, "read_text", flaky_read):
         assert r.load_vectors() >= 1, "повтор по свежему манифесту, а не 30 секунд без семантики"
+    assert r._manifest_seen == manifest.stat().st_mtime, "запомнен mtime ПРОЧИТАННОГО манифеста, не старого (GLM M3 r3)"
 
 
 def test_semantic_fallback_fragment_skips_frontmatter(tmp_path):
@@ -536,3 +566,80 @@ def test_node_files_keep_twice_as_many_chunks(tmp_path):
     node_vecs = s._vecs[str(s.graph / "Люди" / "Иван Долгий.md")][1]
     note_vecs = s._vecs[str(s.graph / "Встречи" / "2026-08-09_1000.md")][1]
     assert len(node_vecs) == gs.MAX_CHUNKS_NODE and len(note_vecs) == gs.MAX_CHUNKS
+
+
+def test_weak_verdict_needs_a_mostly_vectorised_cache(tmp_path):
+    """«В архиве нет» — вердикт о проверенном архиве: пока векторы есть меньше чем у
+    SEM_SHARE_MIN файлов, слабый лучший косинус говорит о векторизованной части, а не
+    об архиве — выдача «не проверена», а не «слабая» (DS критика 2 r3)."""
+    s = _search(tmp_path)
+    off = s.search("рецепт борща со сметаной для шлюза", limit=3)
+    assert off.status is gs.Verdict.WEAK
+    for i in range(12):   # новые файлы без векторов: доля проверенных падает ниже порога
+        (s.graph / "Встречи" / f"2026-08-1{i % 9}_{1000 + i}.md").write_text(
+            f"# Встреча {i}\nобсуждали шлюз и сроки, пункт {i}\n", encoding="utf-8")
+    s.refresh(force=True)
+    half = s.search("рецепт борща со сметаной для шлюза", limit=3)
+    assert half.sem_used and half.status is gs.Verdict.UNVERIFIED and "не проверены" in half.why_low
+    assert s.search("платёжный шлюз", limit=2).status is gs.Verdict.CONFIDENT, "сильный сигнал доля кэша не отменяет"
+    s.embed_pending()
+    assert s.search("рецепт борща со сметаной для шлюза", limit=3).status is gs.Verdict.WEAK
+
+
+def test_key_change_in_live_process_drops_vectors_before_search_and_indexing(tmp_path):
+    """Модель эмбеддингов сменилась в конфиге живого процесса — векторы в памяти
+    считаны другой моделью, косинус с ними — шум: сброс до поиска и до сборки (DS I1 r3)."""
+    s = _search(tmp_path)
+    assert s.vectors and s.search("платёжный шлюз", limit=2).status is gs.Verdict.CONFIDENT
+    s.cfg["sufler"] = {"embed_model": "other-model"}
+    r = s.search("платёжный шлюз", limit=2)
+    assert s.vectors == 0 and not r.sem_used and r.status is gs.Verdict.UNVERIFIED
+    assert len(s.pending_vectors()) == s.size and s.embed_pending() == s.size
+    assert json.loads(s._vec_manifest.read_text(encoding="utf-8"))["key"] == s.cache_key()
+    assert s.search("платёжный шлюз", limit=2).status is gs.Verdict.CONFIDENT
+
+
+def test_without_a_lock_nothing_is_written(tmp_path, monkeypatch):
+    """Замок не взялся (том без flock, EMFILE): два писателя без замка стёрли бы блоб
+    друг друга уборкой — не пишем вовсе, причина в note (DS I2 / GLM M4 r3)."""
+    import fcntl
+    s = gs.GraphSearch(_graph(tmp_path), {}, data_dir=tmp_path / "data", embed=fake_embed)
+    s.refresh(force=True)
+    monkeypatch.setattr(fcntl, "flock", lambda *a: (_ for _ in ()).throw(OSError(1, "Operation not permitted")))
+    assert s.embed_pending() == 0 and "без замка" in s.note and not s._vec_manifest.exists()
+    monkeypatch.undo()
+    assert s.embed_pending() == s.size and s._vec_manifest.exists()
+
+
+def test_first_cache_read_is_not_throttled_by_a_zero_clock_and_foreign_key_is_not_reread_each_search(tmp_path):
+    """Штамп неудачи — None, а не 0.0: часы от нуля давали «недавно пробовали» на первом
+    же чтении (DS M3 r3). Чужой ключ на диске у прогретого экземпляра — одна неудача и
+    пауза VEC_RETRY_S, а не чтение манифеста каждым поиском (GLM M3 r3)."""
+    s = _search(tmp_path)
+    zero = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=fake_embed, now=lambda: 0.0)
+    zero.refresh(force=True)
+    assert zero.load_vectors() == s.vectors, "первое чтение — сразу, без оглядки на часы"
+    clock = {"t": 1_700_000_000.0}
+    warm = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=fake_embed, now=lambda: clock["t"])
+    warm.refresh(force=True)
+    assert warm.load_vectors() == s.vectors
+    foreign = json.loads(s._vec_manifest.read_text(encoding="utf-8"))
+    foreign["key"] = "другая-модель|chunks9"
+    s._vec_manifest.write_text(json.dumps(foreign), encoding="utf-8")
+    os.utime(s._vec_manifest, (clock["t"] + 10, clock["t"] + 10))
+    reads = {"n": 0}
+    real_read = pathlib.Path.read_text
+    def counting_read(self, *a, **kw):
+        if self == s._vec_manifest:
+            reads["n"] += 1
+        return real_read(self, *a, **kw)
+    import unittest.mock as um
+    with um.patch.object(pathlib.Path, "read_text", counting_read):
+        assert warm.search("платёжный шлюз", limit=2).status is gs.Verdict.CONFIDENT, "свои векторы под свой ключ остаются"
+        warm.search("платёжный шлюз", limit=2)
+        warm.search("платёжный шлюз", limit=2)
+    assert reads["n"] == 1, "чужой ключ — одна попытка, дальше пауза, а не чтение манифеста каждым поиском"
+    clock["t"] += gs.VEC_RETRY_S + 1
+    with um.patch.object(pathlib.Path, "read_text", counting_read):
+        warm.search("платёжный шлюз", limit=2)
+    assert reads["n"] == 2

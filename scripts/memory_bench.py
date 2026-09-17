@@ -222,7 +222,9 @@ def search(graph: pathlib.Path, query: str, cfg: dict | None = None) -> str:
         mem.refresh(force=True)
         mem.load_vectors()
     result = mem.search(query, limit=LIMIT_FILES, snippet_chars=SNIPPET)
-    return "" if result.empty else graph_search.render(result, query)
+    # в промпт синтеза — фрагменты без шапки и «⚠»: маркер модель читает как
+    # указание отказаться, и провал поиска маскируется провалом синтеза (DS I3 r3)
+    return "" if result.empty else result.fragments
 
 
 def search_legacy(graph: pathlib.Path, query: str) -> str:
@@ -355,7 +357,7 @@ def main() -> None:
         for i, case in enumerate(cases, 1):
             r = mem.search(case["q"], limit=LIMIT_FILES, snippet_chars=SNIPPET)
             hit = "; ".join(b.split("\n")[0][2:] for b in r.blocks[:3])
-            print(f"[{i}/{len(cases)}] {'⚠' if r.low_conf else '✓'} sem={'да' if r.sem_used else 'нет'} {case['q']} → {hit}")
+            print(f"[{i}/{len(cases)}] {'⚠' if r.low_conf else '✓'} {r.status.value} sem={'да' if r.sem_used else 'нет'} {case['q']} → {hit}")
         return
     llm = LLM(cfg)
     passed, failures = 0, []

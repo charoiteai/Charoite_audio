@@ -1842,8 +1842,8 @@ def main():
                 return thread.add_archive(found[0].name, lines)
 
             try:
-                v = brain.vault_search(cfg, title, limit=3,
-                                       snippet_chars=700, timeout=8)
+                mem = brain.vault_search(cfg, title, limit=3,
+                                         snippet_chars=700, timeout=8)
             except Exception as exc:  # noqa: BLE001 — память не готова: сначала узлы, потом честный статус
                 added = _nodes_direct()
                 if added:
@@ -1855,21 +1855,29 @@ def main():
                            else "память по графу ещё прогревается")   # «прогревается» вечно — ложь (GLM M8)
                     emit({"type": "status", "text": f"⏮ архив недоступен ({why})"})
                 return
-            if not v or v.startswith("⚠") or "не найдено" in v.lower():
+            # состояние памяти — полем, не префиксом строки (круг 3 по #577):
+            # уверенная выдача — модели; слабая или пустая — узлы графа; не
+            # проверенная семантикой — сначала узлы (точные по имени), без них —
+            # фрагменты по словам с пометкой, а не молчание (DS критика 1 r3)
+            unverified = mem.status is brain.Verdict.UNVERIFIED and not mem.empty
+            if mem.status is not brain.Verdict.CONFIDENT:
                 added = _nodes_direct()
                 if added:
                     emit({"type": "thread", "text": thread.render()})
                     append_hint(tr.path, f"[{dt.datetime.now():%H:%M}] ⏮ {title} (узлы)",
                                 thread.full())
-                else:
+                    return
+                if not unverified:
                     emit({"type": "status", "text": f"⏮ в архиве по «{title}» пусто"})
-                return
+                    return
+            v = mem.fragments
+            caveat = " (подобрано по словам, семантикой не проверено — только явно о том же)" if unverified else ""
             try:
                 with hint_slot("⏮ прошлые встречи") as got:  # не толкаться на одной модели
                     if not got:
                         return
                     out = "".join(llm.stream(
-                        f"Выдержки из архива прошлых встреч по теме «{title}»:\n\n{v}\n\n"
+                        f"Выдержки из архива прошлых встреч по теме «{title}»{caveat}:\n\n{v}\n\n"
                         "Выпиши 2-3 самых важных факта прошлых встреч по этой теме: "
                         "решение, статус, кто ведёт — с датой, если она видна. "
                         "По строке на факт, без вступлений и нумерации.",
@@ -2777,16 +2785,19 @@ def main():
         # (⚡ и авто ждут тот же lock), а сам поиск в модели не нуждается
         extra = ""
         try:  # граф и документы — память по графу в процессе демона (№250)
-            v = brain.vault_search(cfg, question, limit=4,
-                                   snippet_chars=600, timeout=2.5)
-            if v and "не найдено" not in v.lower():
-                # «⚠» — гейт уверенности brain: совпадения слабые, модель
-                # обязана честно сказать «в архиве нет», а не сочинять
-                if v.startswith("⚠"):
-                    extra = ("\n\nИз графа и документов (vault) — СОВПАДЕНИЯ "
-                             "СЛАБЫЕ, скорее всего в архиве ответа нет:\n" + v[:2000])
-                else:
-                    extra = "\n\nИз графа и документов (vault):\n" + v[:2000]
+            mem = brain.vault_search(cfg, question, limit=4,
+                                     snippet_chars=600, timeout=2.5)
+            if not mem.empty:
+                # состояние выдачи — полем (круг 3 по #577): слабые совпадения —
+                # модель обязана честно сказать «в архиве нет», а не сочинять;
+                # не проверенные семантикой — подавать как возможные, не как факт
+                lead = {
+                    brain.Verdict.WEAK: ("Из графа и документов (vault) — СОВПАДЕНИЯ СЛАБЫЕ, "
+                                         "скорее всего в архиве ответа нет:"),
+                    brain.Verdict.UNVERIFIED: ("Из графа и документов (vault) — подобрано по словам, "
+                                               "семантикой НЕ ПРОВЕРЕНО: опирайся, только если фрагмент явно о том же:"),
+                }.get(mem.status, "Из графа и документов (vault):")
+                extra = f"\n\n{lead}\n" + mem.fragments[:2000]
         except Exception:  # noqa: BLE001
             pass
         with hint_slot("ответ на вопрос", timeout=45.0, clear_manual_on_busy=True) as got:
@@ -3018,18 +3029,30 @@ def main():
                     break   # одна вставка за такт: нить не заливается
 
             try:
-                v = brain.vault_search(cfg, query, limit=4,
-                                       snippet_chars=500, timeout=6)
+                mem = brain.vault_search(cfg, query, limit=4,
+                                         snippet_chars=500, timeout=6)
             except Exception:  # noqa: BLE001
                 # память не прогрета — собирается из узлов графа (ревью
                 # 15.08): деградация мягкая, а не «архива нет вовсе»
-                v = ""
-            if not v or v.startswith("⚠") or "не найдено" in v.lower():
+                mem = None
+            # состояние памяти — полем (круг 3 по #577): слабые совпадения и
+            # пустота — узлы; не проверенные семантикой фрагменты идут ВМЕСТЕ с
+            # узлами и с пометкой — на встрече с занятой Ollama иначе глубокий
+            # контур системно терял архив (DS критика 1 r3)
+            if mem is None or mem.empty or mem.status is brain.Verdict.WEAK:
                 fallback = "\n".join(
                     ln for n in (node_hits or []) for ln in node_index.digest(n))
                 if not fallback:
                     continue   # ни brain, ни узлов — не портим то, что есть
                 v = "Из узлов графа проекта:\n" + fallback
+            elif mem.status is brain.Verdict.UNVERIFIED:
+                fallback = "\n".join(
+                    ln for n in (node_hits or []) for ln in node_index.digest(n))
+                v = (f"Из узлов графа проекта:\n{fallback}\n\n" if fallback else "") + (
+                    "Фрагменты архива по словам темы (семантикой не проверены — "
+                    "упоминать только при явном совпадении):\n" + mem.fragments)
+            else:
+                v = mem.fragments
             llm.system = (system_base +
                           "\n\nПамять прошлых встреч (подобрано по теме идущей "
                           "встречи; договорённости и решения оттуда можно "

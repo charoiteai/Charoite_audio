@@ -2,9 +2,10 @@
 
 До №250 здесь жил HTTP-клиент сервера памяти (:8100) и тест держал его контракт
 живым сервером. Теперь память — индекс графа в процессе демона
-(src/graph_search.py); контракт для трёх контуров демона тот же: текст с
-маркерами «Найдено…» / «⚠» / «не найдено», а сбой — исключение, деградацию
-каждый контур выбирает сам.
+(src/graph_search.py); контракт для трёх контуров демона — значение: состояние
+полем `status` (Verdict), фрагменты для модели, текст для человека (круг 3 по
+#577: маркеры в строке разбирались префиксом и ломались), а сбой — исключение,
+деградацию каждый контур выбирает сам.
 """
 import pathlib
 import sys
@@ -39,10 +40,12 @@ def test_vault_search_reads_the_configured_graph_only(tmp_path, monkeypatch):
     mem = brain.warm(cfg)
     assert mem is not None and mem.size == 1
     out = brain.vault_search(cfg, "что решили по релизу", limit=3, snippet_chars=700, timeout=5)
-    # без кэша векторов семантики нет — выдача честно помечена, но не пуста
-    assert out.startswith("⚠ Совпадения не проверены семантикой") and "• Системы/Релиз.md" in out
-    assert "МОЙ_МАРКЕР" in out and "ЧУЖОЙ_МАРКЕР" not in out, "соседние графы в ответы не попадают"
-    assert brain.vault_search(cfg, "qqqzzz", limit=3, snippet_chars=700, timeout=5).startswith("Ничего не найдено по")
+    # без кэша векторов семантики нет — выдача честно помечена полем, но не пуста
+    assert out.status is brain.Verdict.UNVERIFIED and "• Системы/Релиз.md" in out.fragments and "⚠" not in out.fragments
+    assert out.text.startswith("⚠ Совпадения не проверены семантикой") and "• Системы/Релиз.md" in out.text
+    assert "МОЙ_МАРКЕР" in out.fragments and "ЧУЖОЙ_МАРКЕР" not in out.text, "соседние графы в ответы не попадают"
+    none = brain.vault_search(cfg, "qqqzzz", limit=3, snippet_chars=700, timeout=5)
+    assert none.empty and none.status is brain.Verdict.UNVERIFIED, "пусто без семантики — не доказанное отсутствие (GLM C1 r3)"
 
 
 def test_unconfigured_graph_raises(monkeypatch):

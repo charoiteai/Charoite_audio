@@ -24,6 +24,7 @@ import graph_search  # noqa: E402
 
 MemoryNotReady = graph_search.NotReady          # индекс прогревается — попробовать позже
 MemoryUnavailable = graph_search.Unavailable    # граф не настроен — памяти не будет
+Verdict = graph_search.Verdict                  # состояние выдачи: confident / weak / unverified / empty
 
 
 def warm(cfg: dict) -> graph_search.GraphSearch | None:
@@ -39,13 +40,17 @@ def warm(cfg: dict) -> graph_search.GraphSearch | None:
 
 
 def vault_search(cfg: dict, query: str, *, limit: int, snippet_chars: int,
-                 timeout: float) -> str:
-    """Текст выдачи по ГРАФУ ПРОЕКТА — в том же виде, что отдавал сервер памяти
-    («Найдено…», «⚠ …» при слабых совпадениях, «Ничего не найдено по …»).
-    Непрогретый индекс — MemoryNotReady, ненастроенный граф — MemoryUnavailable
-    (оба RuntimeError): вызывающий деградирует по-своему и различает «подождать»
-    и «не будет» (GLM M8 по #577). `timeout` — потолок на вектор запроса: половина
-    бюджета вызывающего, чтобы лексика успела в любом случае."""
+                 timeout: float) -> graph_search.Result:
+    """Выдача по ГРАФУ ПРОЕКТА как значение: `status` (Verdict) — уверенно /
+    слабо / не проверено семантикой / пусто, `fragments` — досье и фрагменты без
+    шапок и маркеров для промпта, `text` — тот же вид, что отдавал сервер памяти,
+    для человека. Состояние — полем, а не префиксом строки: досье перед «⚠» и
+    «Ничего не найдено» без семантики ломали разбор строки у трёх контуров
+    (круг 3 по #577, DS C1 / GLM C1). Непрогретый индекс — MemoryNotReady,
+    ненастроенный граф — MemoryUnavailable (оба RuntimeError): вызывающий
+    деградирует по-своему и различает «подождать» и «не будет» (GLM M8 по #577).
+    `timeout` — потолок на вектор запроса: половина бюджета вызывающего, чтобы
+    лексика успела в любом случае."""
     mem = graph_search.shared(cfg)
     if mem is None:
         raise MemoryUnavailable("граф не настроен — памяти по нему нет")
@@ -53,4 +58,4 @@ def vault_search(cfg: dict, query: str, *, limit: int, snippet_chars: int,
                         embed_timeout=max(0.5, min(6.0, timeout / 2)))
     if not result.ready:
         raise MemoryNotReady("память по графу ещё прогревается")
-    return graph_search.render(result, query)
+    return result
