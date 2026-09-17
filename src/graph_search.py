@@ -300,7 +300,8 @@ def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
     Однофамилец бывает не дублем: `Ядра/Отчёт по аварии` слит в другое ядро, а
     `Досье/Отчёт по аварии` — живая сводка по той же теме, и ссылка ведёт к ней
     (замер 17.09: без этой оговорки правка отнимала 4 перехода, давая 43)."""
-    live = live_owners(docs)
+    docs = list(docs)          # два прохода по снимку: генератор исчерпался бы на
+    live = live_owners(docs)   # первом и вернул «ссылки никуда» вместо ошибки (DS r5)
     # «# X → [[X]]» сюда не попадает: ни живой файл, ни звено цепочки. В живых она
     # собирала бы на себя чужие ссылки, в звеньях — вытесняла настоящий редирект
     # той же базы (DS, круг 2 по №291)
@@ -308,41 +309,53 @@ def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
     for d in docs:
         if d.stub_to and d.stub_to != d.base:
             cands.setdefault(d.base, []).append(d)
-    # звено цепочки — по СТАБИЛЬНОМУ представителю базы: mtime двигают git checkout,
-    # копия графа и синк облака, а путь не двигается ничем (DS, круг 4)
-    link = {base: min(ds, key=lambda d: d.rel).stub_to for base, ds in cands.items()}
+
+    def resolve(base: str, seen: frozenset[str]) -> str | None:
+        """Живой канон за цепочкой заглушек этого имени или None.
+
+        Кандидаты перебираются на КАЖДОМ звене, не только на первом: у
+        промежуточного имени тоже бывают две стрелки, и если представитель
+        выбран заранее и ведёт в никуда, рабочая ветка не пробуется вовсе
+        (DS, круг 5 по №291)."""
+        if base in live:
+            return base
+        for d in sorted(cands.get(base, ()), key=owner_key):
+            if d.stub_to in seen:      # цикл или самопетля — следующая стрелка
+                continue
+            found = resolve(d.stub_to, seen | {d.stub_to})
+            if found is not None:
+                return found
+        return None
 
     out: dict[str, str] = {}
-    for base, ds in cands.items():
+    for base in cands:
         if base in live:   # под этим именем есть и живой файл — ссылка про него
             continue
-        for d in sorted(ds, key=lambda x: x.rel):
-            seen = {base}
-            cur = d.stub_to
-            while cur not in live and cur in link and cur not in seen:
-                seen.add(cur)
-                cur = link[cur]
-            if cur not in seen and cur in live:
-                out[base] = cur   # первый кандидат, чья цепочка кончилась живым
-                break
-            # иначе цикл, самопетля или оборванная стрелка: пробуем следующий
-            # редирект той же базы, а не отдаём имя мёртвой цели (DS, круг 4)
+        found = resolve(base, frozenset({base}))
+        if found is not None:
+            out[base] = found
     return out
 
 
-def live_owners(docs: Iterable[Doc]) -> dict[str, Doc]:
-    """База → живой документ под этим именем, выбор детерминированный.
+def owner_key(d: Doc) -> tuple[float, str]:
+    """Ключ «кто представляет имя»: свежайший, при равной дате — меньший путь.
 
-    Свежайший, при равной дате — меньший путь. Тай-брейк обязателен: у узлов
-    дата берётся из mtime, а его двигают `git checkout`, копия графа целиком и
-    синк облака, — одинаковые даты у тёзок штатны, и без второго ключа хозяин
-    имени решался порядком обхода каталога (DS, круг 4 по №291)."""
+    Один ключ на все места, где имя достаётся одному из нескольких файлов.
+    Тай-брейк по пути обязателен: дата узла — это mtime, а его двигают
+    `git checkout`, копия графа целиком и синк облака, поэтому равные даты у
+    тёзок штатны. Без второго ключа хозяин имени решался порядком обхода
+    каталога, а без первого — алфавитом папки (DS, круги 4 и 5 по №291)."""
+    return (-d.date_ts, d.rel)
+
+
+def live_owners(docs: Iterable[Doc]) -> dict[str, Doc]:
+    """База → живой документ под этим именем, выбор детерминированный."""
     out: dict[str, Doc] = {}
     for d in docs:
         if d.stub_to:
             continue
         cur = out.get(d.base)
-        if cur is None or (d.date_ts, cur.rel) > (cur.date_ts, d.rel):
+        if cur is None or owner_key(d) < owner_key(cur):
             out[d.base] = d
     return out
 
@@ -1077,11 +1090,15 @@ class GraphSearch:
         nodes = [r for r in shown if is_node_path(r)]
         if not nodes or limit <= 0:
             return []
-        by_base: dict[str, list[Doc]] = {}
-        for d in by_rel.values():
-            if d.stub_to:            # заглушка — не кандидат: за ней стоит канон
-                continue
-            by_base.setdefault(canon.get(d.base, d.base), []).append(d)
+        # хозяин имени — из общей карты: своя сортировка здесь брала свежайшего без
+        # тай-брейка, и при равных датах (копия графа, git checkout) цель перехода
+        # решал порядок чтения каталога — третья копия правила (DS, круг 5 по №291)
+        by_base: dict[str, Doc] = {}
+        for base, d in live_owners(by_rel.values()).items():
+            key = canon.get(base, base)
+            cur = by_base.get(key)
+            if cur is None or owner_key(d) < owner_key(cur):
+                by_base[key] = d
         out: list[str] = []
         seen = set(shown)
         for per_node in (1, limit):
@@ -1098,8 +1115,8 @@ class GraphSearch:
                 other = [k for k in keys if not _is_name(k)]
                 cands: list[tuple[float, Doc, int]] = []
                 for base in wiki_targets(node.text):
-                    best = sorted(by_base.get(canon.get(base, base), ()), key=lambda d: -d.date_ts)[:1]
-                    for d in best:
+                    hit = by_base.get(canon.get(base, base))
+                    for d in ([hit] if hit is not None else []):
                         if d.rel in seen or is_node_path(d.rel) or d.rel.split("/")[-1].startswith("_"):
                             continue
                         matched = sum(1 for k in other if k in d.low)
