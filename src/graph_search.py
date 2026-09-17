@@ -490,7 +490,7 @@ class GraphSearch:
         base = pathlib.Path(data_dir) if data_dir else graphs.DATA_ROOT / "data"
         # имя кэша — по пути графа, не по имени папки: два графа «Работа» в разных
         # vault-ах дрались бы за один файл (круг 1 по #577, GLM M6)
-        tag = hashlib.sha1(str(self.graph.resolve()).encode("utf-8")).hexdigest()[:8]
+        tag = hashlib.sha256(str(self.graph.resolve()).encode("utf-8")).hexdigest()[:8]   # имя файла по пути, не подпись; sha256 — чтобы CI не спорил
         self._vec_manifest = base / "graph_search" / f"{self.graph.name}-{tag}.json"
         self._vecs_loaded = False
         self._vecs_tried_at: float | None = None   # None — не пробовали: часы могут считать от нуля (DS M3 r3)
