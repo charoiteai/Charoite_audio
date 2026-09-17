@@ -2878,6 +2878,7 @@ def main():
             print(f"cloud-enrich не запустился: {e}")
 
     run_post_hook(cfg, tpath, stamp)
+    reindex_memory(cfg, graph)
     # Выключенный профилем граф — не отказ модели: код 0, статус «готово».
     # EXIT_NO_GRAPH означал бы ошибку и повтор каждой встречи по кругу.
     if not graph_ok and not graph_off:
@@ -3191,6 +3192,31 @@ def cloud_enrich_prompt(*, transcript_name: str, folder: pathlib.Path,
         "«- …» с жирным ключом, БЕЗ markdown-таблиц (|…|).\n"
         "4. Ревизию верни ТЕКСТОМ ответа — её сохранит Чароит. Копировать "
         "артефакты встречи не нужно: это делает конвейер сам.")
+
+
+def reindex_memory(cfg: dict, graph: pathlib.Path | None, budget_s: float = 45.0) -> None:
+    """Векторы памяти подсказок (src/graph_search.py) по свежим файлам графа —
+    сразу после встречи, коротко и только без живой записи: демон жив —
+    следующая встреча уже идёт, слот модели эмбеддингов принадлежит её
+    подсказкам, векторы доберёт ночь (scripts/nightly.sh). Сбой — не сбой
+    конвейера: файл без вектора участвует в памяти лексически."""
+    if graph is None or not graph.is_dir():
+        return
+    if live_gate.daemon_alive(ROOT):
+        print("память подсказок: идёт запись — векторы доберёт ночь")
+        return
+    try:
+        import graph_search
+        mem = graph_search.GraphSearch(graph, cfg)
+        mem.refresh(force=True)
+        # живая запись спрашивается перед каждой пачкой, не только на входе: окно в
+        # 45 с — это как раз старт следующей встречи (круг 1 по #577, DS I2)
+        done = mem.embed_pending(budget_s=budget_s, should_stop=lambda: live_gate.daemon_alive(ROOT))
+        left = len(mem.pending_vectors())
+        print(f"память подсказок: векторы для {done} файлов" + (f", ожидают ещё {left}" if left else "")
+              + (f" ({mem.note})" if mem.note else ""))
+    except Exception as e:  # noqa: BLE001
+        print(f"память подсказок: {e}")
 
 
 def run_post_hook(cfg: dict, tpath: pathlib.Path, stamp: str) -> None:
