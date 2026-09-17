@@ -630,6 +630,19 @@ honesty gate. Vectors are per chunk (headings, breadcrumbs), cached in
 files are indexed after the meeting (45 s cap) and at night. A warm query
 costs ~0.1 s of lexical work plus one embedding call when Ollama is free.
 
+**The answer never claims the unread part was checked.** The index leaves out
+the meeting archive and transcript copies on purpose — without that the cold
+walk does not fit in seconds. On the working graph that is 11 506 files out of
+14 789, and 1 945 archive files carry decision lines. The answer tables used to
+say the opposite («probably nothing in the archive»), asserting a check of what
+was never opened. Now every negative answer carries what stayed out: the fields
+come from the walk itself, not from the configured list, so a graph without an
+archive folder produces no caveat and a graph whose folders are named
+differently is not described as unread. Files the walk reached and could not
+open are counted the same way. The wording lives in one facade table, and the
+caveat names *separate fragments* — topic summaries are built by a walk over the
+whole graph, archive included, so claiming otherwise would be a lie in reverse.
+
 **A link to a merged node points at the canon.** When two notes about one thing
 are merged, the duplicate stays as a two-line redirect file. Search used to
 treat it as an ordinary document: incoming links fed the stub instead of the

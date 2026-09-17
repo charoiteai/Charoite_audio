@@ -190,10 +190,15 @@ def test_honesty_gate_and_render_markers(tmp_path):
     s = _search(tmp_path)
     off = s.search("рецепт борща со сметаной для шлюза", limit=3)   # одно слово из графа, семантика мимо
     assert off.sem_used and off.low_conf and off.blocks
-    assert gs.render(off, "рецепт борща").startswith("⚠ Похоже, в архиве об этом почти ничего нет")
+    # не «в архиве»: индекс архив встреч не читает вовсе, и ответ не вправе о нём судить (№295)
+    assert gs.render(off, "рецепт борща").startswith("⚠ В прочитанной части графа об этом почти ничего нет")
     none = s.search("qqqzzz")
     assert none.empty and none.status is gs.Verdict.EMPTY
-    assert gs.render(none, "qqqzzz") == "Ничего не найдено по «qqqzzz» в графе" == none.text
+    # «пусто» несёт ту же оговорку, что и слабый ответ: непрочитанное весит здесь
+    # больше всего, а раньше эту строку тест закреплял без хвоста (GLM, №295)
+    empty_text = gs.render(none, "qqqzzz")
+    assert empty_text.startswith("Ничего не найдено по «qqqzzz» в графе (искали без: ")
+    assert "Встречи-архив" in empty_text and empty_text == none.text
     # пусто без семантики — не доказанное отсутствие: «⚠» и своя причина (GLM C1 r3)
     blind = s.search("qqqzzz", semantic=False)
     assert blind.empty and blind.status is gs.Verdict.UNVERIFIED and blind.text.startswith("⚠ По словам ничего не нашлось")
@@ -355,7 +360,7 @@ def test_brain_facade_raises_until_warm_and_then_renders(tmp_path, monkeypatch):
 @pytest.mark.parametrize("cov, sim, sem_used, share, expected", [
     (1.0, 0.0, False, 1.0, gs.Verdict.UNVERIFIED),   # без семантики уверенности нет — даже при полном покрытии (замер 17.09)
     (0.5, 0.0, False, 1.0, gs.Verdict.UNVERIFIED),   # «одно из двух» без семантики — тем более
-    (0.5, 0.3, True, 1.0, gs.Verdict.WEAK),          # одно из двух и слабый косинус — «в архиве нет» (DS C1 круга 2)
+    (0.5, 0.3, True, 1.0, gs.Verdict.WEAK),          # одно из двух и слабый косинус — «в прочитанной части почти ничего» (DS C1 круга 2, формулировка по №295)
     (0.6, 0.3, True, 1.0, gs.Verdict.WEAK),          # оба слабые
     (0.5, 0.3, True, 0.5, gs.Verdict.UNVERIFIED),    # ...но кэш собран наполовину — «нет» не доказано (DS критика 2 r3)
     (0.5, 0.3, True, gs.SEM_SHARE_MIN, gs.Verdict.WEAK),          # граница порога закреплена (DS M4 r4)
@@ -583,7 +588,7 @@ def test_node_files_keep_twice_as_many_chunks(tmp_path):
 
 
 def test_weak_verdict_needs_a_mostly_vectorised_cache(tmp_path):
-    """«В архиве нет» — вердикт о проверенном архиве: пока векторы есть меньше чем у
+    """«Почти ничего» — вердикт о проверенной ЧАСТИ графа: пока векторы есть меньше чем у
     SEM_SHARE_MIN файлов, слабый лучший косинус говорит о векторизованной части, а не
     об архиве — выдача «не проверена», а не «слабая» (DS критика 2 r3)."""
     s = _search(tmp_path)
@@ -930,3 +935,57 @@ def test_hops_pick_the_same_owner_as_the_rest_of_the_search(tmp_path):
     hop = [b for b in r.blocks if "↳ по ссылке из" in b]
     assert hop, r.blocks
     assert any("РАНЬШЕ_ПО_АЛФАВИТУ" in b for b in hop), f"при равных датах взят не меньший путь: {hop}"
+
+
+def test_the_answer_never_claims_the_unread_archive_was_checked(tmp_path):
+    """Ответ не судит о том, чего не читал.
+
+    Индекс намеренно исключает архив встреч и копии стенограмм: замер 17.09 на
+    рабочем графе — 11 506 файлов вне индекса против 3 283 в нём, и 1 945
+    файлов архива несут строки решений. До правки таблицы говорили «скорее
+    всего в архиве ответа нет», то есть утверждали проверку того, что не
+    открывалось (DS и GLM, входной круг по №295)."""
+    s = _search(tmp_path)
+    assert s.exclude, "оснастка: в графе теста нет исключённых областей"
+    r = s.search("платёжный шлюз", limit=2)
+    assert r.skipped == s.exclude, "выдача не несёт, что осталось непрочитанным"
+
+    # охват — ФАКТ обхода, а не политика: на графе без архивных папок оговорки
+    # быть не должно. Без этой половины теста правка была бы неотличима от
+    # прежней `skipped=self.exclude` (DS, круг 2 по №295)
+    bare = tmp_path / "Голый"
+    (bare / "Люди").mkdir(parents=True)
+    (bare / "Люди" / "Иван.md").write_text("# Иван\nВедёт интеграцию.\n", encoding="utf-8")
+    s2 = gs.GraphSearch(bare, {}, data_dir=tmp_path / "d2", embed=fake_embed)
+    s2.refresh(force=True)
+    empty2 = s2.search("qqqzzz", limit=2)
+    assert s2.exclude and empty2.skipped == (), "названо исключённым то, чего в графе нет"
+    assert "искали без" not in gs.render(empty2, "qqqzzz")
+
+
+def test_a_file_that_would_not_open_stays_named_in_the_coverage(tmp_path):
+    """Файл, до которого обход дошёл и не смог прочитать, тоже вне индекса.
+
+    Молчать о нём значит снова выдать непрочитанное за проверенное: ответ
+    «ничего не найдено в графе» утверждал бы проверку файла, который не
+    открывался (DS, круг 2 по №295; класс известен по №275)."""
+    s = _search(tmp_path)
+    before = s.search("qqqzzz", limit=1)
+    assert before.unread == 0, before.unread
+
+    locked = s.graph / "Люди" / "Закрытый.md"
+    locked.write_text("# Закрытый\nплатёжный шлюз секрет\n", encoding="utf-8")
+    locked.chmod(0o000)
+    try:
+        s.refresh(force=True)
+        r = s.search("qqqzzz", limit=1)
+        assert r.unread >= 1, "нечитаемый файл не назван"
+        assert "нечитаемых файлов" in gs.render(r, "qqqzzz"), gs.render(r, "qqqzzz")
+    finally:
+        locked.chmod(0o600)
+
+    for v in gs.Verdict:
+        stub = gs.Result([], 0, v, query="q")
+        assert "в архиве" not in stub.why_low, f"{v}: выдача судит о непрочитанном"
+    weak = gs.Result([], 0, gs.Verdict.WEAK, query="q")
+    assert "прочитанной части" in weak.why_low, weak.why_low
