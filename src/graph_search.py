@@ -97,6 +97,7 @@ LOW_SIM, LOW_COV = 0.47, 0.66
 SEM_SHARE_MIN = 0.8
 VEC_RETRY_S = 30.0         # неудачная загрузка кэша не защёлкивается: повтор не чаще
 BLOB_GRACE_S = 300.0       # блоб вне текущего и предыдущего поколения стирается, только когда старше: читатель мог прочитать манифест секунды назад
+MAX_STUB_HOPS = 64         # длина цепочки слияний: 64 подряд под одним именем не бывает
 CHUNK_VERSION = 3          # правила нарезки — часть ключа кэша: сменились — кэш холодный (DS I2 r2).
 # 3 — текст приводится к NFC при чтении, значит блоки NFD-заметок другие (GLM I2 r3)
 MAX_CHUNKS_NODE = 24       # узлы (Люди/Системы/…): история длиннее, середина ценнее (GLM r2, критика 1)
@@ -310,20 +311,33 @@ def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
         if d.stub_to and d.stub_to != d.base:
             cands.setdefault(d.base, []).append(d)
 
+    found_cache: dict[str, str] = {}
+
     def resolve(base: str, seen: frozenset[str]) -> str | None:
         """Живой канон за цепочкой заглушек этого имени или None.
 
         Кандидаты перебираются на КАЖДОМ звене, не только на первом: у
         промежуточного имени тоже бывают две стрелки, и если представитель
         выбран заранее и ведёт в никуда, рабочая ветка не пробуется вовсе
-        (DS, круг 5 по №291)."""
+        (DS, круг 5 по №291).
+
+        Потолок глубины и памятка удач — против данных, а не кода: цепочка
+        длиннее предела рекурсии уронила бы весь обход, а перебор ветвлений
+        без памятки растёт как степень двойки по длине (DS, круг 6). Неудачи
+        не кэшируются: «не дошли» может значить «путь упёрся в собственного
+        предка», и для другого корня ответ был бы иным."""
         if base in live:
             return base
+        if base in found_cache:
+            return found_cache[base]
+        if len(seen) > MAX_STUB_HOPS:
+            return None
         for d in sorted(cands.get(base, ()), key=owner_key):
             if d.stub_to in seen:      # цикл или самопетля — следующая стрелка
                 continue
             found = resolve(d.stub_to, seen | {d.stub_to})
             if found is not None:
+                found_cache[base] = found
                 return found
         return None
 

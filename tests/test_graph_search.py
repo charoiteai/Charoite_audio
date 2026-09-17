@@ -892,3 +892,41 @@ def test_a_node_recognises_its_own_decomposed_name(tmp_path):
     s.embed_pending()
     r = s.search("что решили по Ёлкина", limit=3)
     assert any("СЕКРЕТНЫЙ_МАРКЕР" in b for b in r.blocks), r.blocks
+
+
+def test_a_long_stub_chain_does_not_break_the_walk(tmp_path):
+    """Цепочка слияний длиннее предела рекурсии не роняет обход графа.
+
+    `canon_bases` зовётся из обхода без перехвата, а обход в поиске идёт в
+    отдельной нити — падение ушло бы в stderr и оставило индекс без карты
+    ссылок молча (DS, круг 6 по №291)."""
+    docs = [gs.Doc("", f"Ядра/н{i}.md", 0.0, "", "", float(i), f"н{i}", "", f"н{i + 1}")
+            for i in range(gs.MAX_STUB_HOPS + 200)]
+    docs.append(gs.Doc("", "Ядра/живой.md", 0.0, "", "", 0.0, f"н{len(docs)}", "", ""))
+    assert gs.canon_bases(docs) is not None, "обход упал на длинной цепочке"
+
+
+def test_hops_pick_the_same_owner_as_the_rest_of_the_search(tmp_path):
+    """Переход из узла выбирает хозяина имени тем же правилом, что и остальные.
+
+    Своя сортировка в переходах брала свежайшего без второго ключа, и при
+    равных датах (копия графа, git checkout) цель решал порядок чтения
+    каталога — правка без наблюдателя (DS, круг 6 по №291)."""
+    s = _search(tmp_path)
+    g = s.graph
+    (g / "Ядра").mkdir(exist_ok=True)
+    (g / "Ядра" / "Сводка квартала.md").write_text(
+        "# Сводка квартала\nИтоги.\n\n## Связи\n- [[Отчёт приёмки]]\n", encoding="utf-8")
+    later = g / "Ядра" / "Отчёт приёмки.md"          # «Ядра» позже «Документации» по алфавиту
+    earlier = g / "Документация" / "Отчёт приёмки.md"
+    later.write_text("# Отчёт приёмки\nПОЗЖЕ_ПО_АЛФАВИТУ.\n", encoding="utf-8")
+    earlier.write_text("# Отчёт приёмки\nРАНЬШЕ_ПО_АЛФАВИТУ.\n", encoding="utf-8")
+    same = 1_700_000_000
+    for p in (later, earlier):
+        os.utime(p, (same, same))
+    s.refresh(force=True)
+    s.embed_pending()
+    r = s.search("сводка квартала", limit=3)
+    hop = [b for b in r.blocks if "↳ по ссылке из" in b]
+    assert hop, r.blocks
+    assert any("РАНЬШЕ_ПО_АЛФАВИТУ" in b for b in hop), f"при равных датах взят не меньший путь: {hop}"
