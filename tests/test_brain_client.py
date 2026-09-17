@@ -107,3 +107,62 @@ def test_memory_block_splits_the_budget_between_nodes_and_fragments():
     assert brain.memory_block(sure, nodes=nodes, budget=2600).count("ж") >= 2500
     short_sure = _res(brain.Verdict.CONFIDENT, blocks=["• a.md\n  " + "ж" * 500])
     assert 1500 < brain.memory_block(short_sure, nodes=nodes, budget=2600).count("ъ") <= 2100
+
+
+def test_scope_note_names_what_was_not_read_and_stays_silent_when_it_was():
+    """Оговорка про непрочитанное — только при отрицательном ответе и без досье.
+
+    Сборщик сводок по темам обходит ВЕСЬ граф, архив включительно, поэтому при
+    досье в выдаче «архив не читался» было бы ложью в обратную сторону (DS,
+    входной круг по №295). При уверенном ответе оговорка не нужна вовсе."""
+    skipped = ("Встречи-архив", "Документация/Стенограммы встреч")
+    weak = _res(brain.Verdict.WEAK)
+    weak.skipped = skipped
+    note = brain.scope_note(weak)
+    assert "Встречи-архив" in note and "фрагменты" in note, note
+    assert "не читал" not in note, "оговорка про фрагменты: сводки по темам собраны по всему графу"
+    assert brain.scope_note(weak) in brain.absence_note(weak), "оговорка не дошла до статуса нити"
+
+    sure = _res(brain.Verdict.CONFIDENT)
+    sure.skipped = skipped
+    assert brain.scope_note(sure) == "", "уверенный ответ не нуждается в оговорке"
+
+    # досье оговорку НЕ глушат: замер 17.09 — они есть в 29 неуверенных ответах
+    # из 30, и правка молчала бы почти всегда
+    with_dossier = _res(brain.Verdict.WEAK, dossiers=["📁 Досье «т»\n  сводка"])
+    with_dossier.skipped = skipped
+    assert brain.scope_note(with_dossier) == note
+    assert brain.scope_note(_res(brain.Verdict.WEAK)) == "", "нечего исключать — молчим"
+
+    # файл, который не открылся, тоже остался за индексом (DS, круг 2)
+    unread = _res(brain.Verdict.EMPTY)
+    unread.unread = 3
+    assert "не открылось файлов: 3" in brain.scope_note(unread)
+
+
+def test_no_policy_line_claims_the_unread_archive_was_checked():
+    """Ни одна строка фасада не утверждает проверку архива: индекс его не читает.
+
+    Замер 17.09 на рабочем графе: 11 506 файлов вне индекса против 3 283 в нём,
+    1 945 файлов архива несут строки решений. До правки таблица говорила
+    «скорее всего в архиве ответа нет»."""
+    for table_name, table in (("LEAD", brain.LEAD), ("ABSENCE", brain.ABSENCE)):
+        for status, text in table.items():
+            assert "в архиве" not in text, f"{table_name}[{status}]: {text}"
+
+
+@pytest.mark.parametrize("status", list(brain.Verdict))
+def test_absence_only_is_a_table_not_an_if_in_the_contour(status):
+    """«Подавать нечего» — политика по вердикту, и живёт она рядом с таблицами.
+
+    Слабый ответ со сводкой по теме уходит в пересказ, а не в «почти ничего»:
+    сводка собрана обходом всего графа и сама является свидетельством (GLM,
+    круг 2 по №295). Раньше это условие стояло рукописным if в контуре."""
+    empty = _res(status)
+    assert brain.absence_only(empty) is True, "без блоков и сводок подавать нечего"
+
+    with_dossier = _res(status, dossiers=["📁 Досье «т»\n  сводка"])
+    assert brain.absence_only(with_dossier) is False, "сводка — свидетельство, не пустота"
+
+    with_blocks = _res(status, blocks=["• a.md\n  факт"])
+    assert brain.absence_only(with_blocks) is (status is not brain.Verdict.UNVERIFIED)
