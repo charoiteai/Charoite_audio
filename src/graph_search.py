@@ -49,6 +49,7 @@ import re
 import sys
 import threading
 import time
+import unicodedata
 from collections.abc import Callable, Iterable, Sequence
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -131,8 +132,14 @@ _HEADING_RX = re.compile(r"^(#{1,3})[ \t]+(.+?)[ \t]*$", re.M)
 
 
 def norm(s: str) -> str:
-    """Регистр, ё→е, полноширинные латиница и цифры → обычные."""
-    return graph_nodes.norm(s).translate(_FULLWIDTH)
+    """Регистр, ё→е, полноширинные латиница и цифры → обычные, форма NFC.
+
+    NFC обязателен именно здесь: имя файла приходит от macOS в NFD, а тот же
+    текст внутри заметки набран в NFC, и «Ёлка» из имени не совпала бы с
+    «Ёлка» из ссылки (та же ловушка, что `graph_links.norm` закрыл по #450).
+    Форма приводится ДО замены ё→е: в разложенной форме «ё» — это «е» плюс
+    отдельные точки, и замена по ней не срабатывает вовсе."""
+    return graph_nodes.norm(unicodedata.normalize("NFC", s)).translate(_FULLWIDTH)
 
 
 def norm_text(s: str) -> str:
@@ -258,9 +265,8 @@ def stub_base(text: str) -> str:
     """Файл — заглушка-редирект после слияния узлов? Тогда база канона, иначе "".
 
     Обход и так держит текст в руках, поэтому распознание стоит один разбор на
-    ИЗМЕНЁННЫЙ файл, а не на запрос. Замер 17.09 на рабочем графе: 417 заглушек
-    из 3230 файлов, 1234 входящие ссылки ведут на них, 459 переходов из узлов
-    упираются в заглушку, у которой канон по этой базе недостижим."""
+    ИЗМЕНЁННЫЙ файл, а не на запрос. Замер 17.09 на рабочем графе: 404 заглушки
+    с целью из 3199 файлов, 1048 входящих ссылок вели на них вместо канонов."""
     if not (redirects.is_redirect_stub(text) or redirects.is_merged(text)):
         return ""
     target = redirects.stub_target(text)
@@ -275,8 +281,17 @@ def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
 
     Ссылка на слитый узел должна считаться ссылкой на канон: иначе буст хаба
     достаётся мёртвому файлу, а переход через него отбрасывается фильтром узлов
-    и ответ молча обедает. Резолвер `graph_links` делает то же для писателей,
-    но ему нужен обход диска — здесь работаем по уже прочитанному снимку.
+    и ответ молча обедает.
+
+    ДОЛГ, названный вслух (вердикты DS и GLM 17.09). Это ВТОРАЯ реализация
+    правила «куда ведёт заглушка»: первая — `graph_updater.follow_stubs`, она
+    ходит по путям и читает диск. `graph_links.LinkResolver` тут ни при чём —
+    он резолвит «как Obsidian», то есть В саму заглушку, и снимок принимает
+    (`notes=`), так что «ему нужен диск» — неверное обоснование, его тут не
+    было. Карта живёт по базам без папки, потому что по базам ключуется весь
+    поиск (`wiki_targets`, `_indeg`, `by_base`), и переезд на пути меняет их
+    разом — это №292. Известная цена промедления: ссылка, назвавшая папку
+    явно, здесь неотличима от голой.
 
     Имя переписывается, только если ЖИВОГО файла с таким именем нет вовсе.
     Однофамилец бывает не дублем: `Ядра/Отчёт по аварии` слит в другое ядро, а
@@ -285,7 +300,7 @@ def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
     stubs: dict[str, str] = {}
     live: set[str] = set()
     for d in docs:
-        if d.stub_to and d.stub_to != d.base:
+        if d.stub_to:
             stubs.setdefault(d.base, d.stub_to)
         else:
             live.add(d.base)
@@ -298,7 +313,7 @@ def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
         while cur not in live and cur in stubs and cur not in seen:
             seen.add(cur)
             cur = stubs[cur]
-        if cur not in seen:           # цикл заглушек — оставляем как есть
+        if cur not in seen:           # цикл и самопетля «# X → [[X]]» — имя не трогаем
             out[start] = cur
     return out
 
@@ -1015,7 +1030,8 @@ class GraphSearch:
 
         Ссылка на слитый узел ведёт к канону: иначе свежайшим кандидатом под
         базой оказывается заглушка-редирект, её отбрасывает фильтр узлов, и
-        переход пропадает молча (замер 17.09: 459 недостижимых канонов)."""
+        переход пропадает молча (замер 17.09: 40 переходов из 27 663 целей —
+        столько доезжает до выдачи после всех фильтров и лимитов)."""
         nodes = [r for r in shown if is_node_path(r)]
         if not nodes or limit <= 0:
             return []
@@ -1082,7 +1098,9 @@ def _swap_stubs(hits: Sequence[tuple[str, float]], by_rel: dict[str, Doc],
     for rel, score in hits:
         d = by_rel[rel]
         if d.stub_to:
-            target = live.get(canon.get(d.base, d.stub_to))
+            # у базы заглушки есть живой тёзка — правило однофамильца оставило имя
+            # за ним, и слот по праву его: цель стрелки могла вообще не дожить
+            target = live.get(canon.get(d.base, d.stub_to)) or live.get(d.base)
             if target is None:        # канон не дожил до индекса — показывать нечего
                 continue
             rel = target.rel

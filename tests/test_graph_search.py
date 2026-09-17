@@ -710,6 +710,9 @@ def test_canon_bases_unrolls_chains_keeps_namesakes_and_survives_cycles():
     assert keep == {}, keep
     assert gs.canon_bases([d("а", "б"), d("б", "а")]) == {}, "цикл заглушек не переписывает имена"
     assert gs.canon_bases([d("а", "а")]) == {}, "ссылка на себя — не цепочка"
+    # заглушка «# X → [[X]]» не живой файл: раньше она уходила в live и собирала
+    # на себя ссылки третьих узлов — ровно тот дефект, который правка закрывает
+    assert gs.canon_bases([d("а", "б"), d("б", "б")]) == {}, "цепочка упёрлась в самопетлю"
 
 
 def test_links_to_a_merged_node_feed_the_canon_and_the_hop_reaches_it(tmp_path):
@@ -780,3 +783,33 @@ def test_a_namesake_of_a_merged_node_keeps_its_own_links(tmp_path):
     assert "отчёт по аварии" not in gs.canon_bases(list(s._docs.values())), "имя с живым файлом переписано"
     r = s.search("итоги квартала", limit=3)
     assert any("Документация/Отчёт по аварии.md" in b and "↳ по ссылке из" in b for b in r.blocks), r.blocks
+
+
+def test_a_stub_slot_falls_back_to_its_living_namesake(tmp_path):
+    """Правило однофамильца оставило имя живому файлу — слот заглушки его же.
+
+    Цель стрелки при этом могла не дожить до индекса (узел переименован,
+    цепочка оборвана): выбрасывать слот в таком случае нечестно, живой тёзка
+    под тем же именем и есть ответ на запрос (DS, круг 1 по №291)."""
+    s = _search(tmp_path)
+    g = s.graph
+    (g / "Ядра").mkdir(exist_ok=True)
+    (g / "Ядра" / "Отчёт по сбою.md").write_text(
+        _stub("Отчёт по сбою", "Ядра/Пропавший разбор"), encoding="utf-8")
+    (g / "Документация" / "Отчёт по сбою.md").write_text(
+        "# Отчёт по сбою\nПричина — ЖИВОЙ_ТЁЗКА в балансировщике.\n", encoding="utf-8")
+    s.refresh(force=True)
+    s.embed_pending()
+    r = s.search("отчёт по сбою", limit=3)
+    assert any("Документация/Отчёт по сбою.md" in b and "ЖИВОЙ_ТЁЗКА" in b for b in r.blocks), r.blocks
+    assert not any("Ядра/Отчёт по сбою.md" in b for b in r.blocks), "заглушка в выдаче"
+
+
+def test_normalisation_survives_a_decomposed_file_name():
+    """Имя файла от macOS приходит в NFD, ссылка в тексте — в NFC: без общей
+    формы ключ канона не совпал бы с базой файла (GLM, круг 1 по №291)."""
+    import unicodedata
+    nfd = unicodedata.normalize("NFD", "Ёлка")
+    assert nfd != "Ёлка", "оснастка сломана: формы совпали"
+    assert gs.norm_text(nfd) == gs.norm_text("Ёлка")
+    assert gs.stub_base(f"# Старое → [[Ядра/{nfd}]]\n\nДубль. Смерджен\n") == gs.norm_text("Ёлка")
