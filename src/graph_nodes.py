@@ -18,6 +18,7 @@ from __future__ import annotations
 import dataclasses
 import pathlib
 import re
+import unicodedata
 import threading
 
 import frontmatter
@@ -48,6 +49,14 @@ _EN_SUFFIXES = ("ing", "ed", "es", "s")
 
 
 def norm(s: str) -> str:
+    """Регистр и ё→е, поверх единой формы Unicode.
+
+    NFC первой строкой: macOS отдаёт имя файла в разложенной форме, где «ё» —
+    это «е» плюс отдельные точки. Без сборки `_WORD` режет такое имя на «е» и
+    «лка» ещё до стемминга, и узел перестаёт узнавать сам себя (GLM, круг 2
+    по №291; та же ловушка, что `graph_links.norm` закрыл по #450)."""
+    if not s.isascii() and not unicodedata.is_normalized("NFC", s):
+        s = unicodedata.normalize("NFC", s)
     return s.lower().replace("ё", "е")
 
 
@@ -70,7 +79,16 @@ _WORD = re.compile(r"[0-9a-zA-Zа-яА-ЯёЁ]+(?:-[0-9a-zA-Zа-яА-ЯёЁ]+)*"
 
 
 def tokens(text: str) -> list[str]:
-    """Слова текста в порядке появления (дефисные — одним словом)."""
+    """Слова текста в порядке появления (дефисные — одним словом).
+
+    Форма Unicode собирается ЗДЕСЬ, до разрезки: в разложенном имени «Ёлка»
+    буква ё — это «е» плюс отдельные точки, а класс `_WORD` комбинирующих
+    знаков не знает и рвёт слово надвое. Нормализация в `norm` этого не
+    спасает — она видит уже обрывки (DS и GLM независимо, круг 3 по №291).
+    Swift-стеммер приложения работает по graphemes и не рвёт — здесь тот же
+    результат достигается сборкой формы на входе."""
+    if not text.isascii() and not unicodedata.is_normalized("NFC", text):
+        text = unicodedata.normalize("NFC", text)
     return [m.group(0) for m in _WORD.finditer(text)]
 
 
@@ -233,7 +251,9 @@ class NodeIndex:
 
     def _load(self, p: pathlib.Path, folder: str, st) -> Node | None:
         try:
-            text = p.read_text(encoding="utf-8")
+            # форма Unicode — как в поиске: узлы и индекс поиска читают один граф,
+            # и разная форма одного текста расходилась бы молча (DS, круг 4 по №291)
+            text = unicodedata.normalize("NFC", p.read_text(encoding="utf-8"))
             st2 = p.stat()
         except (OSError, ValueError):   # ValueError — не-UTF8 (DS r2 #451)
             return self._nodes.get(p)   # держим прошлый снапшот

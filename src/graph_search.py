@@ -49,6 +49,7 @@ import re
 import sys
 import threading
 import time
+import unicodedata
 from collections.abc import Callable, Iterable, Sequence
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -57,6 +58,7 @@ import dossier  # noqa: E402
 import frontmatter  # noqa: E402
 import graph_nodes  # noqa: E402
 import graphs  # noqa: E402
+import redirects  # noqa: E402
 import llm as _llm  # noqa: E402
 import safe_write  # noqa: E402
 import uuid  # noqa: E402
@@ -95,7 +97,9 @@ LOW_SIM, LOW_COV = 0.47, 0.66
 SEM_SHARE_MIN = 0.8
 VEC_RETRY_S = 30.0         # неудачная загрузка кэша не защёлкивается: повтор не чаще
 BLOB_GRACE_S = 300.0       # блоб вне текущего и предыдущего поколения стирается, только когда старше: читатель мог прочитать манифест секунды назад
-CHUNK_VERSION = 2          # правила нарезки — часть ключа кэша: сменились — кэш холодный (DS I2 r2)
+MAX_STUB_HOPS = 64         # длина цепочки слияний: 64 подряд под одним именем не бывает
+CHUNK_VERSION = 3          # правила нарезки — часть ключа кэша: сменились — кэш холодный (DS I2 r2).
+# 3 — текст приводится к NFC при чтении, значит блоки NFD-заметок другие (GLM I2 r3)
 MAX_CHUNKS_NODE = 24       # узлы (Люди/Системы/…): история длиннее, середина ценнее (GLM r2, критика 1)
 HALFLIFE_DAYS = 90.0
 # Частотный шум — один список на проект (dossier его уже держит: ключи тем и иглы
@@ -130,7 +134,13 @@ _HEADING_RX = re.compile(r"^(#{1,3})[ \t]+(.+?)[ \t]*$", re.M)
 
 
 def norm(s: str) -> str:
-    """Регистр, ё→е, полноширинные латиница и цифры → обычные."""
+    """Регистр, ё→е, полноширинные латиница и цифры → обычные.
+
+    Форму Unicode приводит `graph_nodes.norm` — одна нормализация на проект.
+    Здесь её повторять нельзя: NFC меняет ДЛИНУ разложенного текста, а
+    `snippet` по совпадению длин решает, из чего резать фрагмент, и NFD-заметка
+    уехала бы в выдачу строчными буквами (DS, круг 2 по №291). Текст приводится
+    к NFC один раз при чтении файла, в `_walk`."""
     return graph_nodes.norm(s).translate(_FULLWIDTH)
 
 
@@ -149,7 +159,9 @@ def needles(query: str) -> tuple[list[str], list[str]]:
     """Иглы запроса: стемы слов и биграммы иероглифов, каждая по одному разу
     (повтор удваивал бы вклад в счёт). Пересечься списки не могут: слова — из
     латиницы, кириллицы и цифр, биграммы — только из иероглифов."""
-    query = query.translate(_FULLWIDTH)      # ＹｕＰａｙ — слово, а не пропуск
+    query = unicodedata.normalize("NFC", query).translate(_FULLWIDTH)   # ＹｕＰａｙ — слово, а не пропуск;
+    # форма — до разрезки: разложенный «май» дал бы иглу «ми», а она подстрокой
+    # ловит «ками» и «милионер» (GLM, круг 3 по №291)
     # двухбуквенные слова — термины («ИИ», «тз», «БД», «v2»), кроме служебных из
     # _STOP: отсев по регистру терял строчные аббревиатуры (круг 2 по #577, DS I6 / GLM M3)
     words = [graph_nodes.stem(w) for w in _WORD_RX.findall(query) if norm(w) not in _STOP]
@@ -251,6 +263,126 @@ def meeting_key(rel: str) -> str | None:
 def is_node_path(rel: str) -> bool:
     parts = norm(rel).replace("\\", "/").split("/")
     return len(parts) >= 2 and parts[-2] in NODE_DIRS and not parts[-1].startswith("_")
+
+
+def stub_base(text: str) -> str:
+    """Файл — заглушка-редирект после слияния узлов? Тогда база канона, иначе "".
+
+    Обход и так держит текст в руках, поэтому распознание стоит один разбор на
+    ИЗМЕНЁННЫЙ файл, а не на запрос. Замер 17.09 на рабочем графе: 404 заглушки
+    с целью из 3199 файлов, 1048 входящих ссылок вели на них вместо канонов."""
+    if not (redirects.is_redirect_stub(text) or redirects.is_merged(text)):
+        return ""
+    target = redirects.stub_target(text)
+    if not target:
+        return ""
+    leaf = pathlib.PurePosixPath(target.split("|")[0].strip()).name
+    return norm_text(leaf[:-3] if leaf.casefold().endswith(".md") else leaf)
+
+
+def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
+    """База заглушки → база живого канона, цепочки развёрнуты, циклы отброшены.
+
+    Ссылка на слитый узел должна считаться ссылкой на канон: иначе буст хаба
+    достаётся мёртвому файлу, а переход через него отбрасывается фильтром узлов
+    и ответ молча обедает.
+
+    ДОЛГ, названный вслух (вердикты DS и GLM 17.09). Это ВТОРАЯ реализация
+    правила «куда ведёт заглушка»: первая — `graph_updater.follow_stubs`, она
+    ходит по путям и читает диск. `graph_links.LinkResolver` тут ни при чём —
+    он резолвит «как Obsidian», то есть В саму заглушку, и снимок принимает
+    (`notes=`), так что «ему нужен диск» — неверное обоснование, его тут не
+    было. Карта живёт по базам без папки, потому что по базам ключуется весь
+    поиск (`wiki_targets`, `_indeg`, `by_base`), и переезд на пути меняет их
+    разом — это №292. Известная цена промедления: ссылка, назвавшая папку
+    явно, здесь неотличима от голой.
+
+    Имя переписывается, только если ЖИВОГО файла с таким именем нет вовсе.
+    Однофамилец бывает не дублем: `Ядра/Отчёт по аварии` слит в другое ядро, а
+    `Досье/Отчёт по аварии` — живая сводка по той же теме, и ссылка ведёт к ней
+    (замер 17.09: без этой оговорки правка отнимала 4 перехода, давая 43)."""
+    docs = list(docs)          # два прохода по снимку: генератор исчерпался бы на
+    live = live_owners(docs)   # первом и вернул «ссылки никуда» вместо ошибки (DS r5)
+    # «# X → [[X]]» сюда не попадает: ни живой файл, ни звено цепочки. В живых она
+    # собирала бы на себя чужие ссылки, в звеньях — вытесняла настоящий редирект
+    # той же базы (DS, круг 2 по №291)
+    cands: dict[str, list[Doc]] = {}
+    for d in docs:
+        if d.stub_to and d.stub_to != d.base:
+            cands.setdefault(d.base, []).append(d)
+
+    found_cache: dict[str, str] = {}
+
+    def resolve(base: str, seen: frozenset[str]) -> str | None:
+        """Живой канон за цепочкой заглушек этого имени или None.
+
+        Кандидаты перебираются на КАЖДОМ звене, не только на первом: у
+        промежуточного имени тоже бывают две стрелки, и если представитель
+        выбран заранее и ведёт в никуда, рабочая ветка не пробуется вовсе
+        (DS, круг 5 по №291).
+
+        Потолок глубины и памятка удач — против данных, а не кода: цепочка
+        длиннее предела рекурсии уронила бы весь обход, а перебор ветвлений
+        без памятки растёт как степень двойки по длине (DS, круг 6). Неудачи
+        не кэшируются: «не дошли» может значить «путь упёрся в собственного
+        предка», и для другого корня ответ был бы иным."""
+        if base in live:
+            return base
+        if base in found_cache:
+            return found_cache[base]
+        if len(seen) > MAX_STUB_HOPS:
+            return None
+        for d in sorted(cands.get(base, ()), key=owner_key):
+            if d.stub_to in seen:      # цикл или самопетля — следующая стрелка
+                continue
+            found = resolve(d.stub_to, seen | {d.stub_to})
+            if found is not None:
+                found_cache[base] = found
+                return found
+        return None
+
+    out: dict[str, str] = {}
+    for base in cands:
+        if base in live:   # под этим именем есть и живой файл — ссылка про него
+            continue
+        found = resolve(base, frozenset({base}))
+        if found is not None:
+            out[base] = found
+    return out
+
+
+def owner_key(d: Doc) -> tuple[float, str]:
+    """Ключ «кто представляет имя»: свежайший, при равной дате — меньший путь.
+
+    Один ключ на все места, где имя достаётся одному из нескольких файлов.
+    Тай-брейк по пути обязателен: дата узла — это mtime, а его двигают
+    `git checkout`, копия графа целиком и синк облака, поэтому равные даты у
+    тёзок штатны. Без второго ключа хозяин имени решался порядком обхода
+    каталога, а без первого — алфавитом папки (DS, круги 4 и 5 по №291)."""
+    return (-d.date_ts, d.rel)
+
+
+def live_owners(docs: Iterable[Doc]) -> dict[str, Doc]:
+    """База → живой документ под этим именем, выбор детерминированный."""
+    out: dict[str, Doc] = {}
+    for d in docs:
+        if d.stub_to:
+            continue
+        cur = out.get(d.base)
+        if cur is None or owner_key(d) < owner_key(cur):
+            out[d.base] = d
+    return out
+
+
+def name_owner(base: str, stub_to: str, live: dict[str, Doc], canon: dict[str, str]) -> Doc | None:
+    """Кто отвечает за это имя: живой тёзка, иначе канон за стрелкой заглушки.
+
+    Одно правило на всех потребителей. Приоритет тёзки тот же, что в
+    `canon_bases`: есть под именем живой файл — имя про него, и стрелка
+    мёртвого дубля его не перебивает. Круг 2 по №291 поймал, как два
+    экземпляра этого правила в одном файле разошлись: подмена в выдаче
+    отдавала слот живой цели стрелки, а переходы — тёзке."""
+    return live.get(base) or live.get(canon.get(base, stub_to))
 
 
 def wiki_targets(text: str) -> set[str]:
@@ -406,6 +538,7 @@ class Doc:
     date_ts: float
     base: str          # нормализованное имя файла без расширения — цель [[ссылок]]
     body: str = ""     # текст без YAML-шапки — для фрагментов выдачи (шапка модели не нужна)
+    stub_to: str = ""  # заглушка-редирект: база канона, куда она ведёт (иначе пусто)
 
 
 @dataclasses.dataclass
@@ -483,6 +616,7 @@ class GraphSearch:
         self._embed_fn = embed
         self._docs: dict[str, Doc] = {}
         self._indeg: dict[str, int] = {}
+        self._canon: dict[str, str] = {}     # база заглушки → база канона (см. canon_bases)
         self._refreshed_at = 0.0
         self._lock = threading.RLock()       # индекс и векторы
         self._scan_lock = threading.Lock()   # один обход за раз
@@ -559,7 +693,9 @@ class GraphSearch:
                     continue
                 try:
                     with open(path, encoding="utf-8", errors="ignore") as fh:
-                        text = fh.read()
+                        # одна форма Unicode на весь конвейер: имя файла от macOS
+                        # приходит разложенным, текст заметки — собранным
+                        text = unicodedata.normalize("NFC", fh.read())
                 except OSError:
                     continue
                 rel = os.path.relpath(path, root).replace(os.sep, "/")
@@ -568,7 +704,7 @@ class GraphSearch:
                 except ValueError:
                     body = text
                 fresh[path] = Doc(path, rel, mtime, text, norm(text), file_date_ts(rel, mtime),
-                                  norm_text(os.path.splitext(fn)[0]), body)
+                                  norm_text(os.path.splitext(fn)[0]), body, stub_base(text))
                 changed = True
         gone = [p for p in self._docs if p not in seen]
         if not fresh and not gone:
@@ -582,12 +718,17 @@ class GraphSearch:
         if changed or gone:
             # входящие ссылки — по снимку вне замка: обход 28 МБ текста под замком
             # заставлял бы каждый поиск встречи ждать (GLM M5)
+            canon = canon_bases(snapshot)
             indeg: dict[str, int] = {}
             for d in snapshot:
+                if d.stub_to:        # единственная ссылка заглушки — служебная стрелка на канон
+                    continue
                 for target in wiki_targets(d.text):
+                    target = canon.get(target, target)   # ссылка на слитый узел — ссылка на канон
                     indeg[target] = indeg.get(target, 0) + 1
             with self._lock:
                 self._indeg = indeg
+                self._canon = canon
 
     # --------------------------------------------------------------- векторы
     def _embed(self, texts: list[str], timeout: float) -> list[list[float]]:
@@ -816,6 +957,7 @@ class GraphSearch:
         with self._lock:
             docs = list(self._docs.values())
             indeg = dict(self._indeg)
+            canon = dict(self._canon)
         avg_len = max(1.0, sum(len(d.low) for d in docs) / max(1, len(docs)))
         words, grams = needles(query)
         keys = words + grams
@@ -909,6 +1051,7 @@ class GraphSearch:
         low_conf = status is not Verdict.CONFIDENT
         fused = rrf_merge([[r for _, r in sorted(lex, key=lambda x: -x[0])],
                            [r for _, r in sorted(sem, key=lambda x: -x[0])]], weights=[1.0, 0.7])
+        fused = _swap_stubs(fused, by_rel, docs, canon)
         picked = diversify([(s, r) for r, s in fused], limit)
         blocks: list[str] = []
         shown: list[str] = []
@@ -919,7 +1062,7 @@ class GraphSearch:
             shown.append(rel)
         total = len(fused)
         if not low_conf:
-            hops = self._hops(shown, by_rel, keys, rx, snippet_chars, rare_first or keys, max(1, limit // 2))
+            hops = self._hops(shown, by_rel, canon, keys, rx, snippet_chars, rare_first or keys, max(1, limit // 2))
             blocks += hops
             total += len(hops)
         return Result(blocks, total, status, dossiers=dossiers, sem_used=sem_used, query=query, reason=reason)
@@ -939,7 +1082,7 @@ class GraphSearch:
                 continue
             p = folder / f"{e['тема']}.md"
             try:
-                body = frontmatter.split(p.read_text(encoding="utf-8"))[1]
+                body = frontmatter.split(unicodedata.normalize("NFC", p.read_text(encoding="utf-8")))[1]
             except (OSError, ValueError):
                 continue
             head = " ".join(body[:snippet_chars * 3].split())
@@ -947,18 +1090,29 @@ class GraphSearch:
             best = max(best, min(1.0, float(e.get("счёт", 0))))
         return out, best
 
-    def _hops(self, shown: list[str], by_rel: dict[str, Doc], keys: list[str], rx: re.Pattern,
-              snippet_chars: int, rare_first: Sequence[str], limit: int) -> list[str]:
+    def _hops(self, shown: list[str], by_rel: dict[str, Doc], canon: dict[str, str], keys: list[str],
+              rx: re.Pattern, snippet_chars: int, rare_first: Sequence[str], limit: int) -> list[str]:
         """Один переход по [[ссылкам]] из найденных узлов: заметки со стемами
         запроса ВНЕ имени узла (покрытие × свежесть), при голом имени — самые
         свежие; тёзки в разных папках — один кандидат; по одному слоту на узел,
-        потом добор — первый узел не съедает бюджет."""
+        потом добор — первый узел не съедает бюджет.
+
+        Ссылка на слитый узел ведёт к канону: иначе свежайшим кандидатом под
+        базой оказывается заглушка-редирект, её отбрасывает фильтр узлов, и
+        переход пропадает молча (замер 17.09: 40 переходов из 27 663 целей —
+        столько доезжает до выдачи после всех фильтров и лимитов)."""
         nodes = [r for r in shown if is_node_path(r)]
         if not nodes or limit <= 0:
             return []
-        by_base: dict[str, list[Doc]] = {}
-        for d in by_rel.values():
-            by_base.setdefault(d.base, []).append(d)
+        # хозяин имени — из общей карты: своя сортировка здесь брала свежайшего без
+        # тай-брейка, и при равных датах (копия графа, git checkout) цель перехода
+        # решал порядок чтения каталога — третья копия правила (DS, круг 5 по №291)
+        by_base: dict[str, Doc] = {}
+        for base, d in live_owners(by_rel.values()).items():
+            key = canon.get(base, base)
+            cur = by_base.get(key)
+            if cur is None or owner_key(d) < owner_key(cur):
+                by_base[key] = d
         out: list[str] = []
         seen = set(shown)
         for per_node in (1, limit):
@@ -975,8 +1129,8 @@ class GraphSearch:
                 other = [k for k in keys if not _is_name(k)]
                 cands: list[tuple[float, Doc, int]] = []
                 for base in wiki_targets(node.text):
-                    best = sorted(by_base.get(base, ()), key=lambda d: -d.date_ts)[:1]
-                    for d in best:
+                    hit = by_base.get(canon.get(base, base))
+                    for d in ([hit] if hit is not None else []):
                         if d.rel in seen or is_node_path(d.rel) or d.rel.split("/")[-1].startswith("_"):
                             continue
                         matched = sum(1 for k in other if k in d.low)
@@ -992,6 +1146,34 @@ class GraphSearch:
                     if len(out) >= limit:
                         return out
         return out
+
+
+def _swap_stubs(hits: Sequence[tuple[str, float]], by_rel: dict[str, Doc],
+                docs: Sequence[Doc], canon: dict[str, str]) -> list[tuple[str, float]]:
+    """Заглушка-редирект в выдаче → канон, на который она указывает.
+
+    Заглушка — не документ, а указатель: блок показал бы одну стрелку вместо
+    содержания. Выбросить её тоже нельзя — старое имя ищут («как это раньше
+    называли»), поэтому её ранг достаётся канону. Подмена идёт ДО отбора: иначе
+    совпавший с уже показанным канон терял слот, и выдача молча становилась
+    короче на строку (замер 17.09 на рабочем графе, запрос про статус человека)."""
+    if not any(by_rel[rel].stub_to for rel, _ in hits):
+        return list(hits)
+    live = live_owners(docs)
+    out: list[tuple[str, float]] = []
+    seen: set[str] = set()
+    for rel, score in hits:
+        d = by_rel[rel]
+        if d.stub_to:
+            target = name_owner(d.base, d.stub_to, live, canon)
+            if target is None:        # канон не дожил до индекса — показывать нечего
+                continue
+            rel = target.rel
+        if rel in seen:
+            continue
+        seen.add(rel)
+        out.append((rel, score))
+    return out
 
 
 def _frag_or_head(text: str, rx: re.Pattern, chars: int, rare_first: Sequence[str], dense: bool) -> str:

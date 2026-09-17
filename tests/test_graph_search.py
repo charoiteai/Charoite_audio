@@ -15,6 +15,7 @@ import pathlib
 import re
 import sys
 import time
+import unicodedata
 
 import pytest
 import yaml
@@ -23,6 +24,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
 import dossier  # noqa: E402
+import graph_nodes  # noqa: E402
 import graph_search as gs  # noqa: E402
 
 
@@ -685,3 +687,246 @@ def test_first_cache_read_is_not_throttled_by_a_zero_clock_and_foreign_key_is_no
     with um.patch.object(pathlib.Path, "read_text", counting_read):
         warm.search("платёжный шлюз", limit=2)
     assert reads["n"] == 2
+
+
+def _stub(name: str, canon: str) -> str:
+    return f"# {name} → [[{canon}]]\n\nДубль. Смерджен 17.09.\n"
+
+
+def test_stub_base_reads_the_canon_only_from_a_real_redirect():
+    assert gs.stub_base(_stub("Коля Соколов", "Люди/Николай Соколов")) == "николай соколов"
+    assert gs.stub_base("# Узел\nОбычный текст про → [[Люди/Кто-то]] в середине.\n") == ""
+    assert gs.stub_base("---\nnote: → [[Люди/Кто-то]]\n---\n# Узел\nТело.\n") == "", "стрелка в шапке — не редирект"
+    assert gs.stub_base("# Узел\nДубль. Смерджен\n") == "", "пометка без цели не переписывает имя"
+
+
+def test_canon_bases_unrolls_chains_keeps_namesakes_and_survives_cycles():
+    def d(base, stub_to=""):
+        return gs.Doc("", f"Ядра/{base}.md", 0.0, "", "", 0.0, base, "", stub_to)
+    # цепочка: «а» слит в «б», «б» — в живой «в»
+    chain = gs.canon_bases([d("а", "б"), d("б", "в"), d("в")])
+    assert chain == {"а": "в", "б": "в"}, chain
+    # живой однофамилец: под именем «отчёт» есть и заглушка, и живое досье — ссылка про досье
+    keep = gs.canon_bases([d("отчёт", "сводка"), d("сводка"),
+                           gs.Doc("", "Досье/отчёт.md", 0.0, "", "", 0.0, "отчёт", "", "")])
+    assert keep == {}, keep
+    assert gs.canon_bases([d("а", "б"), d("б", "а")]) == {}, "цикл заглушек не переписывает имена"
+    assert gs.canon_bases([d("а", "а")]) == {}, "ссылка на себя — не цепочка"
+    # заглушка «# X → [[X]]» не живой файл: раньше она уходила в live и собирала
+    # на себя ссылки третьих узлов — ровно тот дефект, который правка закрывает
+    assert gs.canon_bases([d("а", "б"), d("б", "б")]) == {}, "цепочка упёрлась в самопетлю"
+    # две заглушки под одним именем: самопетля не должна вытеснять настоящий
+    # редирект — иначе победитель зависит от порядка обхода каталога
+    loop, real, alive = d("отчёт", "отчёт"), d("отчёт", "итоги"), d("итоги")
+    assert gs.canon_bases([loop, real, alive]) == {"отчёт": "итоги"}
+    assert gs.canon_bases([real, loop, alive]) == {"отчёт": "итоги"}, "исход зависит от порядка обхода"
+    # два РАЗНЫХ редиректа под одним именем: берём свежий, а не первого по обходу
+    old_stub = gs.Doc("", "Ядра/отчёт.md", 0.0, "", "", 100.0, "отчёт", "", "архив")
+    new_stub = gs.Doc("", "Досье/отчёт.md", 0.0, "", "", 200.0, "отчёт", "", "итоги")
+    both = [d("итоги"), d("архив")]
+    assert gs.canon_bases([old_stub, new_stub, *both]) == {"отчёт": "итоги"}
+    assert gs.canon_bases([new_stub, old_stub, *both]) == {"отчёт": "итоги"}, "выбор решил порядок обхода"
+    # свежий редирект ведёт в никуда, старый — к живому: имя достаётся рабочему,
+    # иначе свежая оборванная стрелка съедала бы базу целиком (DS, круг 4)
+    dead = gs.Doc("", "Досье/отчёт.md", 0.0, "", "", 300.0, "отчёт", "", "исчез")
+    assert gs.canon_bases([dead, old_stub, d("архив")]) == {"отчёт": "архив"}
+    # свежесть решает независимо от алфавита папки: прошлый тест проходил случайно,
+    # потому что свежая заглушка лежала в папке с буквой раньше (DS, круг 5)
+    new_late = gs.Doc("", "Ядра/отчёт.md", 0.0, "", "", 200.0, "отчёт", "", "итоги")
+    old_early = gs.Doc("", "Досье/отчёт.md", 0.0, "", "", 100.0, "отчёт", "", "архив")
+    assert gs.canon_bases([old_early, new_late, d("итоги"), d("архив")]) == {"отчёт": "итоги"}
+    # две стрелки у ПРОМЕЖУТОЧНОГО имени: первая ведёт в никуда, вторая к живому —
+    # перебор идёт на каждом звене, а не только на старте (DS, круг 5)
+    x = gs.Doc("", "Ядра/икс.md", 0.0, "", "", 50.0, "икс", "", "игрек")
+    y_dead = gs.Doc("", "Досье/игрек.md", 0.0, "", "", 300.0, "игрек", "", "исчез")
+    y_live = gs.Doc("", "Ядра/игрек.md", 0.0, "", "", 100.0, "игрек", "", "итоги")
+    assert gs.canon_bases([x, y_dead, y_live, d("итоги")])["икс"] == "итоги"
+
+
+def test_links_to_a_merged_node_feed_the_canon_and_the_hop_reaches_it(tmp_path):
+    """Заглушка после слияния не забирает ни входящие ссылки, ни переход.
+
+    Замер на рабочем графе 17.09: 404 заглушки, 1048 ссылок вели на них вместо
+    канонов, 40 переходов из узлов не состоялись вовсе. Цель перехода нарочно
+    не содержит слов запроса: иначе её нашла бы лексика и проверка была бы
+    пустой."""
+    s = _search(tmp_path)
+    g = s.graph
+    (g / "Ядра").mkdir(exist_ok=True)
+    (g / "Ядра" / "Расчёт премий.md").write_text(
+        "# Расчёт премий\nСводка темы.\n\n## Связи\n- [[Ядра/Бонусная схема]]\n", encoding="utf-8")
+    (g / "Ядра" / "Бонусная схема.md").write_text(
+        _stub("Бонусная схема", "Ядра/Программа лояльности"), encoding="utf-8")
+    (g / "Встречи" / "2026-08-03_1100.md").write_text(
+        "# Лояльность\nОбсуждали [[Ядра/Бонусная схема]] и сроки.\n", encoding="utf-8")
+    (g / "Документация" / "Программа лояльности.md").write_text(
+        "# Программа лояльности\nПодрядчик подтвердил ЭТАЛОННЫЙ_ФАКТ по кэшбэку.\n", encoding="utf-8")
+    s.refresh(force=True)
+    s.embed_pending()
+
+    assert s._indeg.get("программа лояльности") == 2, s._indeg   # узел и встреча; стрелка заглушки не голос
+    assert "бонусная схема" not in s._indeg, "входящие остались на мёртвой заглушке"
+
+    r = s.search("расчёт премий", limit=3)
+    assert r.status is gs.Verdict.CONFIDENT, r.status
+    hop = [b for b in r.blocks if "↳ по ссылке из" in b]
+    assert any("Документация/Программа лояльности.md" in b and "ЭТАЛОННЫЙ_ФАКТ" in b for b in hop), r.blocks
+    assert not any("Ядра/Бонусная схема.md" in b for b in r.blocks), "заглушка попала в выдачу"
+
+
+def test_a_search_for_the_old_name_returns_the_canon_not_the_arrow(tmp_path):
+    """«Как это раньше называли» — рабочий запрос: заглушка находится по старому
+    имени, но в блоке была бы одна стрелка. Слот отдаём канону."""
+    s = _search(tmp_path)
+    g = s.graph
+    (g / "Ядра").mkdir(exist_ok=True)
+    (g / "Ядра" / "Бонусная схема.md").write_text(
+        _stub("Бонусная схема", "Ядра/Программа лояльности"), encoding="utf-8")
+    (g / "Ядра" / "Программа лояльности.md").write_text(
+        "# Программа лояльности\nКэшбэк и уровни, ЭТАЛОННЫЙ_КАНОН.\n", encoding="utf-8")
+    s.refresh(force=True)
+    s.embed_pending()
+    r = s.search("бонусная схема", limit=3)
+    assert any("Ядра/Программа лояльности.md" in b and "ЭТАЛОННЫЙ_КАНОН" in b for b in r.blocks), r.blocks
+    assert not any("Ядра/Бонусная схема.md" in b for b in r.blocks), r.blocks
+
+
+def test_a_namesake_of_a_merged_node_keeps_its_own_links(tmp_path):
+    """Однофамилец заглушки — не дубль: `Ядра/Отчёт` слит в другое ядро, а
+    `Документация/Отчёт` живёт своей жизнью, и ссылка ведёт к нему (без этой
+    оговорки правка отнимала 4 живых перехода на рабочем графе, 17.09)."""
+    s = _search(tmp_path)
+    g = s.graph
+    (g / "Ядра").mkdir(exist_ok=True)
+    (g / "Ядра" / "Итоги квартала.md").write_text(
+        "# Итоги квартала\nЦифры квартала.\n\n## Связи\n- [[Отчёт по аварии]]\n", encoding="utf-8")
+    (g / "Ядра" / "Отчёт по аварии.md").write_text(
+        _stub("Отчёт по аварии", "Ядра/Разбор инцидента"), encoding="utf-8")
+    (g / "Документация" / "Отчёт по аварии.md").write_text(
+        "# Отчёт по аварии\nПричина — ОДИНОКИЙ_ФАКТ в балансировщике.\n", encoding="utf-8")
+    (g / "Ядра" / "Разбор инцидента.md").write_text("# Разбор инцидента\nСводка разбора.\n", encoding="utf-8")
+    s.refresh(force=True)
+    s.embed_pending()
+
+    assert "отчёт по аварии" not in gs.canon_bases(list(s._docs.values())), "имя с живым файлом переписано"
+    r = s.search("итоги квартала", limit=3)
+    assert any("Документация/Отчёт по аварии.md" in b and "↳ по ссылке из" in b for b in r.blocks), r.blocks
+
+
+def test_a_stub_slot_falls_back_to_its_living_namesake(tmp_path):
+    """Правило однофамильца оставило имя живому файлу — слот заглушки его же.
+
+    Цель стрелки при этом могла не дожить до индекса (узел переименован,
+    цепочка оборвана): выбрасывать слот в таком случае нечестно, живой тёзка
+    под тем же именем и есть ответ на запрос (DS, круг 1 по №291)."""
+    s = _search(tmp_path)
+    g = s.graph
+    (g / "Ядра").mkdir(exist_ok=True)
+    (g / "Ядра" / "Отчёт по сбою.md").write_text(
+        _stub("Отчёт по сбою", "Ядра/Пропавший разбор"), encoding="utf-8")
+    (g / "Документация" / "Отчёт по сбою.md").write_text(
+        "# Отчёт по сбою\nПричина — ЖИВОЙ_ТЁЗКА в балансировщике.\n", encoding="utf-8")
+    s.refresh(force=True)
+    s.embed_pending()
+    r = s.search("отчёт по сбою", limit=3)
+    assert any("Документация/Отчёт по сбою.md" in b and "ЖИВОЙ_ТЁЗКА" in b for b in r.blocks), r.blocks
+    assert not any("Ядра/Отчёт по сбою.md" in b for b in r.blocks), "заглушка в выдаче"
+
+    # цель стрелки ожила — имя всё равно за тёзкой: иначе слот, заработанный
+    # именем «Отчёт по сбою», уезжает документу с другим именем (GLM, круг 2)
+    (g / "Ядра" / "Пропавший разбор.md").write_text(
+        "# Пропавший разбор\nВосстановленный разбор ЧУЖОЕ_ИМЯ.\n", encoding="utf-8")
+    s.refresh(force=True)
+    s.embed_pending()
+    r2 = s.search("отчёт по сбою", limit=3)
+    assert any("Документация/Отчёт по сбою.md" in b for b in r2.blocks), r2.blocks
+    assert not any("ЧУЖОЕ_ИМЯ" in b for b in r2.blocks), "слот имени уехал цели стрелки"
+
+
+def test_normalisation_survives_a_decomposed_file_name():
+    """Имя файла от macOS приходит в NFD, ссылка в тексте — в NFC: без общей
+    формы ключ канона не совпал бы с базой файла (GLM, круг 1 по №291)."""
+    nfd = unicodedata.normalize("NFD", "Ёлка")
+    assert nfd != "Ёлка", "оснастка сломана: формы совпали"
+    assert gs.norm_text(nfd) == gs.norm_text("Ёлка")
+    assert gs.stub_base(f"# Старое → [[Ядра/{nfd}]]\n\nДубль. Смерджен\n") == gs.norm_text("Ёлка")
+
+
+def test_a_fragment_keeps_its_case_in_a_decomposed_note(tmp_path):
+    """Заметка в разложенной форме печатается как есть, а не строчными.
+
+    `snippet` решает по совпадению длин, из чего резать фрагмент; нормализация
+    внутри `norm()` меняла длину, и весь блок уезжал в нижний регистр вместе с
+    ё→е (DS, круг 2 по №291). Форма приводится при чтении файла."""
+    s = _search(tmp_path)
+    body = "ПРОПИСНЫЕ буквы и ёлка. " + "Хвост про платёжный шлюз и сроки. " * 40
+    (s.graph / "Документация" / "Разложенная.md").write_text(
+        unicodedata.normalize("NFD", "# Разложенная\n" + body), encoding="utf-8")
+    s.refresh(force=True)
+    s.embed_pending()
+    r = s.search("ёлка", limit=3, snippet_chars=400)
+    frag = next((b for b in r.blocks if "Разложенная.md" in b), "")
+    assert frag, r.blocks
+    assert "ПРОПИСНЫЕ" in frag, f"фрагмент пришёл нормализованным: {frag[:200]}"
+
+
+def test_a_node_recognises_its_own_decomposed_name(tmp_path):
+    """Узел с «ё» в имени, записанный macOS в разложенной форме, узнаёт себя.
+
+    Форма собирается в `tokens()`, до разрезки: класс слова не знает
+    комбинирующих знаков и делил такое имя надвое, а стеммер получал обрывки
+    «е» и «лка» вместо «елк» (DS и GLM независимо, круг 3 по №291)."""
+    nfd_name = unicodedata.normalize("NFD", "Ёлкина")
+    assert nfd_name != "Ёлкина", "оснастка сломана: формы совпали"
+    assert gs.needles(nfd_name)[0] == gs.needles("Ёлкина")[0]
+    assert graph_nodes.tokens(nfd_name) == ["Ёлкина"], graph_nodes.tokens(nfd_name)
+
+    s = _search(tmp_path)
+    (s.graph / "Люди" / f"{nfd_name}.md").write_text(
+        "# Ёлкина\nВедёт приёмку СЕКРЕТНЫЙ_МАРКЕР.\n", encoding="utf-8")
+    on_disk = [f for f in os.listdir(s.graph / "Люди") if f.startswith(("Ё", "Е", "\u0415"))]
+    if not any(unicodedata.is_normalized("NFD", f) and f != unicodedata.normalize("NFC", f)
+               for f in on_disk):
+        pytest.skip(f"файловая система нормализует имена: {on_disk}")
+    s.refresh(force=True)
+    s.embed_pending()
+    r = s.search("что решили по Ёлкина", limit=3)
+    assert any("СЕКРЕТНЫЙ_МАРКЕР" in b for b in r.blocks), r.blocks
+
+
+def test_a_long_stub_chain_does_not_break_the_walk(tmp_path):
+    """Цепочка слияний длиннее предела рекурсии не роняет обход графа.
+
+    `canon_bases` зовётся из обхода без перехвата, а обход в поиске идёт в
+    отдельной нити — падение ушло бы в stderr и оставило индекс без карты
+    ссылок молча (DS, круг 6 по №291)."""
+    docs = [gs.Doc("", f"Ядра/н{i}.md", 0.0, "", "", float(i), f"н{i}", "", f"н{i + 1}")
+            for i in range(gs.MAX_STUB_HOPS + 200)]
+    docs.append(gs.Doc("", "Ядра/живой.md", 0.0, "", "", 0.0, f"н{len(docs)}", "", ""))
+    assert gs.canon_bases(docs) is not None, "обход упал на длинной цепочке"
+
+
+def test_hops_pick_the_same_owner_as_the_rest_of_the_search(tmp_path):
+    """Переход из узла выбирает хозяина имени тем же правилом, что и остальные.
+
+    Своя сортировка в переходах брала свежайшего без второго ключа, и при
+    равных датах (копия графа, git checkout) цель решал порядок чтения
+    каталога — правка без наблюдателя (DS, круг 6 по №291)."""
+    s = _search(tmp_path)
+    g = s.graph
+    (g / "Ядра").mkdir(exist_ok=True)
+    (g / "Ядра" / "Сводка квартала.md").write_text(
+        "# Сводка квартала\nИтоги.\n\n## Связи\n- [[Отчёт приёмки]]\n", encoding="utf-8")
+    later = g / "Ядра" / "Отчёт приёмки.md"          # «Ядра» позже «Документации» по алфавиту
+    earlier = g / "Документация" / "Отчёт приёмки.md"
+    later.write_text("# Отчёт приёмки\nПОЗЖЕ_ПО_АЛФАВИТУ.\n", encoding="utf-8")
+    earlier.write_text("# Отчёт приёмки\nРАНЬШЕ_ПО_АЛФАВИТУ.\n", encoding="utf-8")
+    same = 1_700_000_000
+    for p in (later, earlier):
+        os.utime(p, (same, same))
+    s.refresh(force=True)
+    s.embed_pending()
+    r = s.search("сводка квартала", limit=3)
+    hop = [b for b in r.blocks if "↳ по ссылке из" in b]
+    assert hop, r.blocks
+    assert any("РАНЬШЕ_ПО_АЛФАВИТУ" in b for b in hop), f"при равных датах взят не меньший путь: {hop}"
