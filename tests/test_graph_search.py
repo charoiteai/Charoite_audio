@@ -23,6 +23,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
 import dossier  # noqa: E402
+import graph_nodes  # noqa: E402
 import graph_search as gs  # noqa: E402
 
 
@@ -718,6 +719,12 @@ def test_canon_bases_unrolls_chains_keeps_namesakes_and_survives_cycles():
     loop, real, alive = d("отчёт", "отчёт"), d("отчёт", "итоги"), d("итоги")
     assert gs.canon_bases([loop, real, alive]) == {"отчёт": "итоги"}
     assert gs.canon_bases([real, loop, alive]) == {"отчёт": "итоги"}, "исход зависит от порядка обхода"
+    # два РАЗНЫХ редиректа под одним именем: берём свежий, а не первого по обходу
+    old_stub = gs.Doc("", "Ядра/отчёт.md", 0.0, "", "", 100.0, "отчёт", "", "архив")
+    new_stub = gs.Doc("", "Досье/отчёт.md", 0.0, "", "", 200.0, "отчёт", "", "итоги")
+    both = [d("итоги"), d("архив")]
+    assert gs.canon_bases([old_stub, new_stub, *both]) == {"отчёт": "итоги"}
+    assert gs.canon_bases([new_stub, old_stub, *both]) == {"отчёт": "итоги"}, "выбор решил порядок обхода"
 
 
 def test_links_to_a_merged_node_feed_the_canon_and_the_hop_reaches_it(tmp_path):
@@ -847,3 +854,24 @@ def test_a_fragment_keeps_its_case_in_a_decomposed_note(tmp_path):
     frag = next((b for b in r.blocks if "Разложенная.md" in b), "")
     assert frag, r.blocks
     assert "ПРОПИСНЫЕ" in frag, f"фрагмент пришёл нормализованным: {frag[:200]}"
+
+
+def test_a_node_recognises_its_own_decomposed_name(tmp_path):
+    """Узел с «ё» в имени, записанный macOS в разложенной форме, узнаёт себя.
+
+    Форма собирается в `tokens()`, до разрезки: класс слова не знает
+    комбинирующих знаков и делил такое имя надвое, а стеммер получал обрывки
+    «е» и «лка» вместо «елк» (DS и GLM независимо, круг 3 по №291)."""
+    import unicodedata
+    nfd_name = unicodedata.normalize("NFD", "Ёлкина")
+    assert nfd_name != "Ёлкина", "оснастка сломана: формы совпали"
+    assert gs.needles(nfd_name)[0] == gs.needles("Ёлкина")[0]
+    assert graph_nodes.tokens(nfd_name) == ["Ёлкина"], graph_nodes.tokens(nfd_name)
+
+    s = _search(tmp_path)
+    (s.graph / "Люди" / f"{nfd_name}.md").write_text(
+        "# Ёлкина\nВедёт приёмку СЕКРЕТНЫЙ_МАРКЕР.\n", encoding="utf-8")
+    s.refresh(force=True)
+    s.embed_pending()
+    r = s.search("что решили по Ёлкина", limit=3)
+    assert any("СЕКРЕТНЫЙ_МАРКЕР" in b for b in r.blocks), r.blocks

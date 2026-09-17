@@ -97,7 +97,8 @@ LOW_SIM, LOW_COV = 0.47, 0.66
 SEM_SHARE_MIN = 0.8
 VEC_RETRY_S = 30.0         # неудачная загрузка кэша не защёлкивается: повтор не чаще
 BLOB_GRACE_S = 300.0       # блоб вне текущего и предыдущего поколения стирается, только когда старше: читатель мог прочитать манифест секунды назад
-CHUNK_VERSION = 2          # правила нарезки — часть ключа кэша: сменились — кэш холодный (DS I2 r2)
+CHUNK_VERSION = 3          # правила нарезки — часть ключа кэша: сменились — кэш холодный (DS I2 r2).
+# 3 — текст приводится к NFC при чтении, значит блоки NFD-заметок другие (GLM I2 r3)
 MAX_CHUNKS_NODE = 24       # узлы (Люди/Системы/…): история длиннее, середина ценнее (GLM r2, критика 1)
 HALFLIFE_DAYS = 90.0
 # Частотный шум — один список на проект (dossier его уже держит: ключи тем и иглы
@@ -157,7 +158,9 @@ def needles(query: str) -> tuple[list[str], list[str]]:
     """Иглы запроса: стемы слов и биграммы иероглифов, каждая по одному разу
     (повтор удваивал бы вклад в счёт). Пересечься списки не могут: слова — из
     латиницы, кириллицы и цифр, биграммы — только из иероглифов."""
-    query = query.translate(_FULLWIDTH)      # ＹｕＰａｙ — слово, а не пропуск
+    query = unicodedata.normalize("NFC", query).translate(_FULLWIDTH)   # ＹｕＰａｙ — слово, а не пропуск;
+    # форма — до разрезки: разложенный «май» дал бы иглу «ми», а она подстрокой
+    # ловит «ками» и «милионер» (GLM, круг 3 по №291)
     # двухбуквенные слова — термины («ИИ», «тз», «БД», «v2»), кроме служебных из
     # _STOP: отсев по регистру терял строчные аббревиатуры (круг 2 по #577, DS I6 / GLM M3)
     words = [graph_nodes.stem(w) for w in _WORD_RX.findall(query) if norm(w) not in _STOP]
@@ -297,13 +300,18 @@ def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
     Однофамилец бывает не дублем: `Ядра/Отчёт по аварии` слит в другое ядро, а
     `Досье/Отчёт по аварии` — живая сводка по той же теме, и ссылка ведёт к ней
     (замер 17.09: без этой оговорки правка отнимала 4 перехода, давая 43)."""
-    stubs: dict[str, str] = {}
+    pick: dict[str, Doc] = {}
     live: set[str] = set()
     for d in docs:
         if d.stub_to and d.stub_to != d.base:
-            stubs.setdefault(d.base, d.stub_to)
+            cur = pick.get(d.base)
+            # два разных редиректа под одним именем: берём свежий, при равной дате —
+            # меньший путь. Иначе исход решал порядок обхода каталога (GLM M3 r3)
+            if cur is None or (d.date_ts, cur.rel) > (cur.date_ts, d.rel):
+                pick[d.base] = d
         elif not d.stub_to:
             live.add(d.base)
+    stubs = {base: d.stub_to for base, d in pick.items()}
         # «# X → [[X]]» — ни живой файл, ни звено: в live она собирала бы на себя
         # чужие ссылки, в stubs — вытесняла настоящий редирект той же базы, и
         # победитель решался порядком обхода каталога (DS, круг 2 по №291)
@@ -1031,7 +1039,7 @@ class GraphSearch:
                 continue
             p = folder / f"{e['тема']}.md"
             try:
-                body = frontmatter.split(p.read_text(encoding="utf-8"))[1]
+                body = frontmatter.split(unicodedata.normalize("NFC", p.read_text(encoding="utf-8")))[1]
             except (OSError, ValueError):
                 continue
             head = " ".join(body[:snippet_chars * 3].split())
