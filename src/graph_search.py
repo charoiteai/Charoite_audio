@@ -284,8 +284,10 @@ def stub_base(text: str) -> str:
     target = redirects.stub_target(text)
     if not target:
         return ""
-    leaf = pathlib.PurePosixPath(target.split("|")[0].strip()).name
-    return norm_text(leaf[:-3] if leaf.casefold().endswith(".md") else leaf)
+    # путь как написан, а не лист: цель стрелки — тот же ключ связи, что и цель
+    # [[ссылки]] (DS и GLM, входной круг по №292)
+    t = target.split("|")[0].strip().strip("/ ")
+    return norm_text(t.removesuffix(".md"))
 
 
 def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
@@ -314,10 +316,11 @@ def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
     # «# X → [[X]]» сюда не попадает: ни живой файл, ни звено цепочки. В живых она
     # собирала бы на себя чужие ссылки, в звеньях — вытесняла настоящий редирект
     # той же базы (DS, круг 2 по №291)
+    by_key = {d.key: d for d in docs if not d.stub_to}
     cands: dict[str, list[Doc]] = {}
     for d in docs:
-        if d.stub_to and d.stub_to != d.base:
-            cands.setdefault(d.base, []).append(d)
+        if d.stub_to and d.stub_to != d.key:
+            cands.setdefault(d.key, []).append(d)
 
     found_cache: dict[str, str] = {}
 
@@ -334,8 +337,9 @@ def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
         без памятки растёт как степень двойки по длине (DS, круг 6). Неудачи
         не кэшируются: «не дошли» может значить «путь упёрся в собственного
         предка», и для другого корня ответ был бы иным."""
-        if base in live:
-            return base
+        hit = target_doc(base, by_key, live)
+        if hit is not None and not hit.stub_to:
+            return hit.key
         if base in found_cache:
             return found_cache[base]
         if len(seen) > MAX_STUB_HOPS:
@@ -351,7 +355,7 @@ def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
 
     out: dict[str, str] = {}
     for base in cands:
-        if base in live:   # под этим именем есть и живой файл — ссылка про него
+        if base in by_key:   # под этим ключом есть живой файл — ссылка про него
             continue
         found = resolve(base, frozenset({base}))
         if found is not None:
@@ -382,7 +386,8 @@ def live_owners(docs: Iterable[Doc]) -> dict[str, Doc]:
     return out
 
 
-def name_owner(base: str, stub_to: str, live: dict[str, Doc], canon: dict[str, str]) -> Doc | None:
+def name_owner(key: str, stub_to: str, live: dict[str, Doc], canon: dict[str, str],
+               by_key: dict[str, Doc] | None = None) -> Doc | None:
     """Кто отвечает за это имя: живой тёзка, иначе канон за стрелкой заглушки.
 
     Одно правило на всех потребителей. Приоритет тёзки тот же, что в
@@ -390,17 +395,40 @@ def name_owner(base: str, stub_to: str, live: dict[str, Doc], canon: dict[str, s
     мёртвого дубля его не перебивает. Круг 2 по №291 поймал, как два
     экземпляра этого правила в одном файле разошлись: подмена в выдаче
     отдавала слот живой цели стрелки, а переходы — тёзке."""
-    return live.get(base) or live.get(canon.get(base, stub_to))
+    by_key = by_key or {}
+    return (by_key.get(key) or live.get(key.split("/")[-1])
+            or target_doc(canon.get(key, stub_to), by_key, live))
 
 
 def wiki_targets(text: str) -> set[str]:
-    """Цели [[ссылок]] → базовые имена узлов (без папки и текста ссылки)."""
+    """Цели [[ссылок]] как НАПИСАНЫ: с папкой, если автор её назвал.
+
+    Папку раньше срезали здесь же, и однозначность, которую автор дал руками,
+    терялась на входе. Разрешение цели в документ — `target_doc`, там же и
+    правило голой ссылки."""
     out: set[str] = set()
     for target in _WIKILINK_RX.findall(text):
-        base = target.strip().split("/")[-1].strip()
-        if base:
-            out.add(norm_text(base))
+        t = target.strip().removesuffix(".md").strip("/ ")
+        if t:
+            out.add(norm_text(t))
     return out
+
+
+def target_doc(target: str, by_key: dict[str, Doc], live: dict[str, Doc]) -> Doc | None:
+    """Цель ссылки → документ. Единственное правило разрешения в поиске.
+
+    Папка названа — берём её путь и ничего не угадываем. Путь не найден или
+    ссылка голая — идём по имени через `live`, где хозяин имени выбран
+    `owner_key`. Обратный порядок (сначала имя) и был дефектом: ссылка на ядро
+    темы уезжала в одноимённую сводку.
+
+    Замер 17.09: путь как написан есть у 41 390 папочных ссылок из 41 409, по
+    имени пришлось бы резолвить 3, не нашлось ни так ни так 16 — то есть
+    фолбэк нужен, но он редкий (GLM, входной круг по №292)."""
+    hit = by_key.get(target)
+    if hit is not None:
+        return hit
+    return live.get(target.split("/")[-1])
 
 
 def rrf_merge(ranked: Sequence[Sequence[str]], weights: Sequence[float] | None = None,
@@ -544,9 +572,21 @@ class Doc:
     text: str
     low: str
     date_ts: float
-    base: str          # нормализованное имя файла без расширения — цель [[ссылок]]
+    base: str          # нормализованное имя файла без расширения — цель ГОЛОЙ [[ссылки]]
     body: str = ""     # текст без YAML-шапки — для фрагментов выдачи (шапка модели не нужна)
-    stub_to: str = ""  # заглушка-редирект: база канона, куда она ведёт (иначе пусто)
+    stub_to: str = ""  # заглушка-редирект: КЛЮЧ канона, куда она ведёт (иначе пусто)
+
+    @property
+    def key(self) -> str:
+        """Ключ связи: нормализованный путь без расширения.
+
+        Ссылка, назвавшая папку, обязана резолвиться однозначно — автор уже дал
+        эту однозначность, а ключ-имя её терял. Замер 17.09 на рабочем графе:
+        41 409 папочных ссылок из узлов, у 5 708 имя носят несколько файлов, и
+        3 532 сегодня резолвятся НЕ в названный файл — систематически в сводку
+        вместо ядра, потому что сводки пересобираются каждую ночь и всегда
+        свежее (DS и GLM, входной круг по №292)."""
+        return norm_text(self.rel.removesuffix(".md"))
 
 
 @dataclasses.dataclass
@@ -755,13 +795,18 @@ class GraphSearch:
             # входящие ссылки — по снимку вне замка: обход 28 МБ текста под замком
             # заставлял бы каждый поиск встречи ждать (GLM M5)
             canon = canon_bases(snapshot)
+            by_key = {d.key: d for d in snapshot if not d.stub_to}
+            live = live_owners(snapshot)
             indeg: dict[str, int] = {}
             for d in snapshot:
                 if d.stub_to:        # единственная ссылка заглушки — служебная стрелка на канон
                     continue
                 for target in wiki_targets(d.text):
                     target = canon.get(target, target)   # ссылка на слитый узел — ссылка на канон
-                    indeg[target] = indeg.get(target, 0) + 1
+                    hit = target_doc(target, by_key, live)
+                    if hit is None:
+                        continue      # цель не дожила до индекса — голос некому отдать
+                    indeg[hit.key] = indeg.get(hit.key, 0) + 1
             with self._lock:
                 self._indeg = indeg
                 self._canon = canon
@@ -1029,7 +1074,7 @@ class GraphSearch:
                 matched = sum(1 for i in range(len(keys)) if t[i] or p[i])
                 best_cov = max(best_cov, matched / len(keys))
                 score *= coverage_factor(matched, len(keys)) * recency_factor(d.date_ts, now)
-                score *= hub_factor(indeg.get(d.base, 0)) * placeholder_factor(d.base) * raw_dampener(d.rel)
+                score *= hub_factor(indeg.get(d.key, 0)) * placeholder_factor(d.base) * raw_dampener(d.rel)
                 lex.append((score, d.rel))
         else:
             for d in docs:
@@ -1146,12 +1191,11 @@ class GraphSearch:
         # хозяин имени — из общей карты: своя сортировка здесь брала свежайшего без
         # тай-брейка, и при равных датах (копия графа, git checkout) цель перехода
         # решал порядок чтения каталога — третья копия правила (DS, круг 5 по №291)
-        by_base: dict[str, Doc] = {}
-        for base, d in live_owners(by_rel.values()).items():
-            key = canon.get(base, base)
-            cur = by_base.get(key)
-            if cur is None or owner_key(d) < owner_key(cur):
-                by_base[key] = d
+        # каталог перехода: ключ-путь на первом месте, имя — фолбэк для голой
+        # ссылки. Раньше ключом было только имя, и ссылка на ядро темы уводила в
+        # одноимённую сводку (замер 17.09: 3 532 такие ссылки, №292)
+        live_here = live_owners(by_rel.values())
+        by_key_here = {d.key: d for d in by_rel.values() if not d.stub_to}
         out: list[str] = []
         seen = set(shown)
         for per_node in (1, limit):
@@ -1168,7 +1212,7 @@ class GraphSearch:
                 other = [k for k in keys if not _is_name(k)]
                 cands: list[tuple[float, Doc, int]] = []
                 for base in wiki_targets(node.text):
-                    hit = by_base.get(canon.get(base, base))
+                    hit = target_doc(canon.get(base, base), by_key_here, live_here)
                     for d in ([hit] if hit is not None else []):
                         if d.rel in seen or is_node_path(d.rel) or d.rel.split("/")[-1].startswith("_"):
                             continue
@@ -1199,12 +1243,13 @@ def _swap_stubs(hits: Sequence[tuple[str, float]], by_rel: dict[str, Doc],
     if not any(by_rel[rel].stub_to for rel, _ in hits):
         return list(hits)
     live = live_owners(docs)
+    by_key = {d.key: d for d in docs if not d.stub_to}
     out: list[tuple[str, float]] = []
     seen: set[str] = set()
     for rel, score in hits:
         d = by_rel[rel]
         if d.stub_to:
-            target = name_owner(d.base, d.stub_to, live, canon)
+            target = name_owner(d.key, d.stub_to, live, canon, by_key)
             if target is None:        # канон не дожил до индекса — показывать нечего
                 continue
             rel = target.rel
