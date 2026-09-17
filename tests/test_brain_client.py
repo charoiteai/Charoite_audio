@@ -134,6 +134,11 @@ def test_scope_note_names_what_was_not_read_and_stays_silent_when_it_was():
     assert brain.scope_note(with_dossier) == note
     assert brain.scope_note(_res(brain.Verdict.WEAK)) == "", "нечего исключать — молчим"
 
+    # файл, который не открылся, тоже остался за индексом (DS, круг 2)
+    unread = _res(brain.Verdict.EMPTY)
+    unread.unread = 3
+    assert "не открылось файлов: 3" in brain.scope_note(unread)
+
 
 def test_no_policy_line_claims_the_unread_archive_was_checked():
     """Ни одна строка фасада не утверждает проверку архива: индекс его не читает.
@@ -144,3 +149,20 @@ def test_no_policy_line_claims_the_unread_archive_was_checked():
     for table_name, table in (("LEAD", brain.LEAD), ("ABSENCE", brain.ABSENCE)):
         for status, text in table.items():
             assert "в архиве" not in text, f"{table_name}[{status}]: {text}"
+
+
+@pytest.mark.parametrize("status", list(brain.Verdict))
+def test_absence_only_is_a_table_not_an_if_in_the_contour(status):
+    """«Подавать нечего» — политика по вердикту, и живёт она рядом с таблицами.
+
+    Слабый ответ со сводкой по теме уходит в пересказ, а не в «почти ничего»:
+    сводка собрана обходом всего графа и сама является свидетельством (GLM,
+    круг 2 по №295). Раньше это условие стояло рукописным if в контуре."""
+    empty = _res(status)
+    assert brain.absence_only(empty) is True, "без блоков и сводок подавать нечего"
+
+    with_dossier = _res(status, dossiers=["📁 Досье «т»\n  сводка"])
+    assert brain.absence_only(with_dossier) is False, "сводка — свидетельство, не пустота"
+
+    with_blocks = _res(status, blocks=["• a.md\n  факт"])
+    assert brain.absence_only(with_blocks) is (status is not brain.Verdict.UNVERIFIED)

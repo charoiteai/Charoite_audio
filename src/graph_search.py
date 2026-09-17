@@ -562,6 +562,7 @@ class Result:
     query: str = ""
     reason: str = ""            # почему UNVERIFIED — одно поле, три рендера (why_low, render, статус нити; GLM M2 r5)
     skipped: tuple[str, ...] = ()   # области графа ВНЕ индекса: их не читали, и ответ не вправе о них судить
+    unread: int = 0                 # файлы, до которых обход дошёл, но не смог прочитать
 
     @property
     def low_conf(self) -> bool:
@@ -631,6 +632,7 @@ class GraphSearch:
         self._docs: dict[str, Doc] = {}
         self._indeg: dict[str, int] = {}
         self._skipped: tuple[str, ...] = ()   # что обход РЕАЛЬНО отсёк (см. _walk)
+        self._unread = 0                      # файлы, которые не открылись (права, битая ссылка)
         self._canon: dict[str, str] = {}     # база заглушки → база канона (см. canon_bases)
         self._refreshed_at = 0.0
         self._lock = threading.RLock()       # индекс и векторы
@@ -694,6 +696,7 @@ class GraphSearch:
         # другими именами папок архив попал бы в индекс, и она соврала бы в
         # обратную сторону (DS, круг по №295)
         skipped: set[str] = set()
+        unread = 0
         for dirpath, dirnames, filenames in os.walk(root):
             rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
             rel_dir = "" if rel_dir == "." else rel_dir
@@ -715,6 +718,7 @@ class GraphSearch:
                 try:
                     mtime = os.stat(path).st_mtime
                 except OSError:
+                    unread += 1     # права, битая ссылка, сорванный синк — файл вне индекса
                     continue
                 cached = self._docs.get(path)
                 if cached is not None and cached.mtime == mtime:
@@ -725,6 +729,7 @@ class GraphSearch:
                         # приходит разложенным, текст заметки — собранным
                         text = unicodedata.normalize("NFC", fh.read())
                 except OSError:
+                    unread += 1     # тот же класс: ответ не вправе считать его проверенным
                     continue
                 rel = os.path.relpath(path, root).replace(os.sep, "/")
                 try:
@@ -736,6 +741,7 @@ class GraphSearch:
                 changed = True
         with self._lock:
             self._skipped = tuple(sorted(skipped))
+            self._unread = unread
         gone = [p for p in self._docs if p not in seen]
         if not fresh and not gone:
             return
@@ -981,7 +987,7 @@ class GraphSearch:
         вызывающего своя деградация (узлы графа, молчание). Протухший индекс
         обновляется фоном, ответ — по текущему."""
         if not self.ready:
-            return Result([], 0, ready=False, query=query, skipped=self._skipped)
+            return Result([], 0, ready=False, query=query, skipped=self._skipped, unread=self._unread)
         if not self._fresh():
             threading.Thread(target=self.refresh, daemon=True, name="graph-search-refresh").start()
         with self._lock:
@@ -1079,7 +1085,7 @@ class GraphSearch:
             if status is Verdict.WEAK and not dossiers:
                 status = Verdict.EMPTY
             return Result([], 0, status, dossiers=dossiers, sem_used=sem_used, query=query,
-                          reason=reason, skipped=self._skipped)
+                          reason=reason, skipped=self._skipped, unread=self._unread)
         low_conf = status is not Verdict.CONFIDENT
         fused = rrf_merge([[r for _, r in sorted(lex, key=lambda x: -x[0])],
                            [r for _, r in sorted(sem, key=lambda x: -x[0])]], weights=[1.0, 0.7])
@@ -1098,7 +1104,7 @@ class GraphSearch:
             blocks += hops
             total += len(hops)
         return Result(blocks, total, status, dossiers=dossiers, sem_used=sem_used, query=query,
-                      reason=reason, skipped=self._skipped)
+                      reason=reason, skipped=self._skipped, unread=self._unread)
 
     def _dossier_blocks(self, query: str, snippet_chars: int, limit: int = 2) -> tuple[list[str], float]:
         """Готовые сводки по теме — ПЕРЕД фрагментами: индекс лексический, без
@@ -1241,7 +1247,8 @@ def render(result: Result, query: str | None = None, where: str = "графе") 
     # «пусто» — сильнейшее утверждение модуля, и непрочитанное весит в нём
     # больше всего: слабая форма оговорку получила, сильная оставалась без неё
     # (GLM, круг по №295)
-    tail = f" (искали без: {', '.join(result.skipped)})" if result.skipped else ""
+    gaps = list(result.skipped) + ([f"{result.unread} нечитаемых файлов"] if result.unread else [])
+    tail = f" (искали без: {', '.join(gaps)})" if gaps else ""
     if result.empty:
         if result.status is Verdict.UNVERIFIED:
             return (f"⚠ По словам ничего не нашлось по «{query}» в {where}{tail}, семантикой не проверено "

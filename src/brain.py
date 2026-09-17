@@ -65,11 +65,18 @@ def scope_note(result: graph_search.Result) -> str:
     Глушить оговорку по наличию досье нельзя: замер 17.09 — на 30 типовых
     запросах досье нашлись в 29 неуверенных ответах, и оговорка молчала бы
     в 29 случаях из 30."""
-    if result.status is Verdict.CONFIDENT or not result.skipped:
+    if result.status is Verdict.CONFIDENT:
         return ""
-    # «отдельные фрагменты» — тот же термин, что в разделителе выдачи: сводка по
-    # теме собрана по всему графу и под эту оговорку не попадает (GLM I2)
-    return "отдельные фрагменты графа искались без: " + ", ".join(result.skipped)
+    parts = []
+    if result.skipped:
+        # «отдельные фрагменты» — тот же термин, что в разделителе выдачи: сводка
+        # по теме собрана по всему графу и под эту оговорку не попадает (GLM I2)
+        parts.append("отдельные фрагменты графа искались без: " + ", ".join(result.skipped))
+    if result.unread:
+        # файл, который не открылся, тоже остался за индексом — молчать о нём
+        # значит снова выдать непрочитанное за проверенное (DS I2, круг 2)
+        parts.append(f"не открылось файлов: {result.unread}")
+    return "; ".join(parts)
 
 
 def absence_note(result: graph_search.Result) -> str:
@@ -81,6 +88,17 @@ def absence_note(result: graph_search.Result) -> str:
         note = f"{note} ({result.reason})"
     scope = scope_note(result)
     return f"{note}; {scope}" if scope else note
+
+
+def absence_only(result: graph_search.Result) -> bool:
+    """Подавать нечего: остаётся сказать слово отсутствия, а не звать модель.
+
+    Политика по вердикту живёт здесь, рядом с таблицами: контур спрашивает, а
+    не решает сам. Сводка по теме в выдаче — уже свидетельство, и слабый ответ
+    с ней уходит в пересказ, а не в «почти ничего» (GLM, круг 2 по №295)."""
+    if result.empty:
+        return True
+    return result.status is not Verdict.UNVERIFIED and not result.dossiers
 
 
 def memory_block(result: graph_search.Result | None, *, nodes: str = "", budget: int) -> str:

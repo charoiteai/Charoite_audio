@@ -950,6 +950,40 @@ def test_the_answer_never_claims_the_unread_archive_was_checked(tmp_path):
     r = s.search("платёжный шлюз", limit=2)
     assert r.skipped == s.exclude, "выдача не несёт, что осталось непрочитанным"
 
+    # охват — ФАКТ обхода, а не политика: на графе без архивных папок оговорки
+    # быть не должно. Без этой половины теста правка была бы неотличима от
+    # прежней `skipped=self.exclude` (DS, круг 2 по №295)
+    bare = tmp_path / "Голый"
+    (bare / "Люди").mkdir(parents=True)
+    (bare / "Люди" / "Иван.md").write_text("# Иван\nВедёт интеграцию.\n", encoding="utf-8")
+    s2 = gs.GraphSearch(bare, {}, data_dir=tmp_path / "d2", embed=fake_embed)
+    s2.refresh(force=True)
+    empty2 = s2.search("qqqzzz", limit=2)
+    assert s2.exclude and empty2.skipped == (), "названо исключённым то, чего в графе нет"
+    assert "искали без" not in gs.render(empty2, "qqqzzz")
+
+
+def test_a_file_that_would_not_open_stays_named_in_the_coverage(tmp_path):
+    """Файл, до которого обход дошёл и не смог прочитать, тоже вне индекса.
+
+    Молчать о нём значит снова выдать непрочитанное за проверенное: ответ
+    «ничего не найдено в графе» утверждал бы проверку файла, который не
+    открывался (DS, круг 2 по №295; класс известен по №275)."""
+    s = _search(tmp_path)
+    before = s.search("qqqzzz", limit=1)
+    assert before.unread == 0, before.unread
+
+    locked = s.graph / "Люди" / "Закрытый.md"
+    locked.write_text("# Закрытый\nплатёжный шлюз секрет\n", encoding="utf-8")
+    locked.chmod(0o000)
+    try:
+        s.refresh(force=True)
+        r = s.search("qqqzzz", limit=1)
+        assert r.unread >= 1, "нечитаемый файл не назван"
+        assert "нечитаемых файлов" in gs.render(r, "qqqzzz"), gs.render(r, "qqqzzz")
+    finally:
+        locked.chmod(0o600)
+
     for v in gs.Verdict:
         stub = gs.Result([], 0, v, query="q")
         assert "в архиве" not in stub.why_low, f"{v}: выдача судит о непрочитанном"
