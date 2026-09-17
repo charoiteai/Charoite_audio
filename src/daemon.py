@@ -1870,14 +1870,13 @@ def main():
                 if mem.status is not brain.Verdict.UNVERIFIED or mem.empty:
                     emit({"type": "status", "text": f"⏮ в архиве по «{title}»: {brain.absence_note(mem)}"})
                     return
-            v = mem.fragments
-            caveat = f" ({brain.caveat(mem)})" if brain.caveat(mem) else ""
+            v = brain.memory_block(mem, budget=3000)   # шапка с оговоркой — из таблицы фасада, как у остальных контуров (GLM r5)
             try:
                 with hint_slot("⏮ прошлые встречи") as got:  # не толкаться на одной модели
                     if not got:
                         return
                     out = "".join(llm.stream(
-                        f"Выдержки из архива прошлых встреч по теме «{title}»{caveat}:\n\n{v}\n\n"
+                        f"Выдержки из архива прошлых встреч по теме «{title}»:\n\n{v}\n\n"
                         "Выпиши 2-3 самых важных факта прошлых встреч по этой теме: "
                         "решение, статус, кто ведёт — с датой, если она видна. "
                         "По строке на факт, без вступлений и нумерации.",

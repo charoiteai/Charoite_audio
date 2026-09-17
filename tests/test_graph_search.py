@@ -595,13 +595,23 @@ def test_weak_verdict_needs_a_mostly_vectorised_cache(tmp_path):
     assert s.vectors / s.size < gs.SEM_SHARE_MIN
     half = s.search("рецепт борща со сметаной для шлюза", limit=3)
     assert half.sem_used and half.status is gs.Verdict.UNVERIFIED and "не проверены" in half.why_low
+    assert half.reason == gs.REASON_CACHE and gs.REASON_CACHE in half.why_low, "причина — кэш, не «модель занята» (GLM M2 r5)"
+    assert s.search("qqqzzz", limit=2, semantic=False).reason == gs.REASON_EMBED
     # пустые файлы векторов не получат никогда — в знаменателе доли им не место (DS M2 r4)
     s.embed_pending()
     for i in range(s.size // 4 + 1):
         (s.graph / "Встречи" / f"2026-08-0{i % 9}_{2000 + i}.md").write_text("", encoding="utf-8")
     s.refresh(force=True)
     assert s.search("рецепт борща со сметаной для шлюза", limit=3).status is gs.Verdict.WEAK
-    for p in list(s.graph.glob("Встречи/2026-08-0*_2*.md")):
+    # ...и в числителе им не место: пустой файл с вектором-заглушкой считал бы архив
+    # проверенным при четырёх непустых без векторов (12 из 16 = 0,75 — «не проверено»)
+    s.embed_pending()
+    for i in range(4):
+        (s.graph / "Встречи" / f"2026-08-2{i}_{3000 + i}.md").write_text(
+            f"# Встреча {i}\nещё тема без векторов, пункт {i}\n", encoding="utf-8")
+    s.refresh(force=True)
+    assert s.search("рецепт борща со сметаной для шлюза", limit=3).status is gs.Verdict.UNVERIFIED
+    for p in list(s.graph.glob("Встречи/2026-08-0*_2*.md")) + list(s.graph.glob("Встречи/2026-08-2*_3*.md")):
         p.unlink()
     s.refresh(force=True)
     assert s.search("платёжный шлюз", limit=2).status is gs.Verdict.CONFIDENT, "сильный сигнал доля кэша не отменяет"

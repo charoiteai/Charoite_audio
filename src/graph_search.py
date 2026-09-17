@@ -156,6 +156,10 @@ def needles(query: str) -> tuple[list[str], list[str]]:
     return list(dict.fromkeys(norm(w) for w in words if w)), list(dict.fromkeys(cjk_grams(query)))
 
 
+REASON_EMBED = "модель эмбеддингов занята или не ответила"
+REASON_CACHE = "кэш векторов собран не весь"
+
+
 class Verdict(str, enum.Enum):
     """Состояние выдачи — одно значение для всех потребителей (демон, бенч, CLI).
     До круга 3 по #577 оно жило в строке с «⚠»/«не найдено», и три контура
@@ -415,6 +419,7 @@ class Result:
     dossiers: list[str] = dataclasses.field(default_factory=list)
     sem_used: bool = False      # семантика посчиталась (вектор запроса получен)
     query: str = ""
+    reason: str = ""            # почему UNVERIFIED — одно поле, три рендера (why_low, render, статус нити; GLM M2 r5)
 
     @property
     def low_conf(self) -> bool:
@@ -424,7 +429,7 @@ class Result:
     def why_low(self) -> str:
         """Причина «⚠» человеку: без семантики — не «в архиве нет», а «не проверено»."""
         if self.status is Verdict.UNVERIFIED:
-            return "Совпадения не проверены семантикой (модель занята) — найденное по словам, доверять с оглядкой"
+            return f"Совпадения не проверены семантикой ({self.reason}) — найденное по словам, доверять с оглядкой"
         if self.status is Verdict.WEAK:
             return "Похоже, в архиве об этом почти ничего нет (слабые совпадения)"
         return ""
@@ -632,7 +637,10 @@ class GraphSearch:
     def _drop_foreign_vectors(self) -> None:
         """Ключ кэша сменился в живом процессе (модель эмбеддингов в конфиге) —
         векторы в памяти считаны другой моделью, косинус с вектором запроса новой
-        — шум, а не свидетельство (DS I1 r3). Сброс до чтения кэша и до сборки."""
+        — шум, а не свидетельство (DS I1 r3). Сброс до чтения кэша и до сборки.
+        Сегодня это страховка: демон читает cfg один раз на старте и не мутирует
+        его, чужой кэш на диске под старым ключом сюда не проходит; триггер
+        станет боевым с хот-релоадом конфига (GLM r5, критика 2)."""
         key = self.cache_key()
         with self._lock:
             if self._vecs_key not in (None, key):
@@ -870,7 +878,7 @@ class GraphSearch:
                 checked = 0
                 for path, (mt, vs) in vecs:
                     d = paths.get(path)
-                    if d is None or mt != d.mtime:      # файл переписан — старые блоки не свидетели (GLM M3)
+                    if d is None or mt != d.mtime or not d.low.strip():   # переписан — старые блоки не свидетели (GLM M3); пустой — не свидетель
                         continue
                     checked += 1
                     sim = max((_dot(q, v) for v in vs if len(v) == len(q)), default=0.0)   # лучший блок файла
@@ -891,12 +899,13 @@ class GraphSearch:
         # свидетельство (доля ключей темы в запросе), без него статус говорил «пусто»
         # при непустой сводке, и контуры домысливали по-своему (DS I2 / I3 r4)
         status = verdict(max(best_cov, dossier_cov), best_sim, sem_used, sem_share)   # подстрока — способ поиска, не уровень свидетельства (GLM M4 r2)
+        reason = "" if status is not Verdict.UNVERIFIED else (REASON_CACHE if sem_used else REASON_EMBED)
         if not lex and not sem:
             # пусто по словам и по векторам — доказанное отсутствие только с проверенной
             # семантикой и без досье; без неё «ничего не найдено» читалось как факт (GLM C1 r3)
             if status is Verdict.WEAK and not dossiers:
                 status = Verdict.EMPTY
-            return Result([], 0, status, dossiers=dossiers, sem_used=sem_used, query=query)
+            return Result([], 0, status, dossiers=dossiers, sem_used=sem_used, query=query, reason=reason)
         low_conf = status is not Verdict.CONFIDENT
         fused = rrf_merge([[r for _, r in sorted(lex, key=lambda x: -x[0])],
                            [r for _, r in sorted(sem, key=lambda x: -x[0])]], weights=[1.0, 0.7])
@@ -913,7 +922,7 @@ class GraphSearch:
             hops = self._hops(shown, by_rel, keys, rx, snippet_chars, rare_first or keys, max(1, limit // 2))
             blocks += hops
             total += len(hops)
-        return Result(blocks, total, status, dossiers=dossiers, sem_used=sem_used, query=query)
+        return Result(blocks, total, status, dossiers=dossiers, sem_used=sem_used, query=query, reason=reason)
 
     def _dossier_blocks(self, query: str, snippet_chars: int, limit: int = 2) -> tuple[list[str], float]:
         """Готовые сводки по теме — ПЕРЕД фрагментами: индекс лексический, без
@@ -1017,7 +1026,7 @@ def render(result: Result, query: str | None = None, where: str = "графе") 
     if result.empty:
         if result.status is Verdict.UNVERIFIED:
             return (f"⚠ По словам ничего не нашлось по «{query}» в {where}, семантикой не проверено "
-                    "(модель занята) — не считать доказанным отсутствием")
+                    f"({result.reason}) — не считать доказанным отсутствием")
         return f"Ничего не найдено по «{query}» в {where}"
     parts = list(result.dossiers)
     if result.blocks:

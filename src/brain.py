@@ -40,30 +40,21 @@ LEAD = {
                          "НЕ ПРОВЕРЕНО: опирайся, только если фрагмент явно о том же:"),
     Verdict.EMPTY: "",
 }
-CAVEAT = {
-    Verdict.CONFIDENT: "",
-    Verdict.WEAK: "совпадения слабые — скорее всего в архиве этого нет",
-    Verdict.UNVERIFIED: "подобрано по словам, семантикой не проверено — только явно о том же",
-    Verdict.EMPTY: "",
-}
 ABSENCE = {
     Verdict.CONFIDENT: "",
     Verdict.WEAK: "почти ничего",
-    Verdict.UNVERIFIED: "не проверено семантикой (модель занята)",
+    Verdict.UNVERIFIED: "не проверено семантикой",
     Verdict.EMPTY: "пусто",
 }
-NODES_SHARE = 0.4      # доля бюджета блока памяти на узлы графа, когда есть и фрагменты
-
-
-def caveat(result: graph_search.Result) -> str:
-    """Оговорка к фрагментам для строки промпта («…{caveat}»); пусто — без оговорки."""
-    return CAVEAT[result.status]
+NODES_SHARE = 0.4      # доля бюджета блока памяти на узлы графа, когда есть и фрагменты, а выдача не уверенная
 
 
 def absence_note(result: graph_search.Result) -> str:
     """Слово в статус нити, когда подать нечего: «пусто» — только по проверенной
-    выдаче, непроверенная так не называется (DS C1 r4, тот же класс, что GLM C1 r3)."""
-    return ABSENCE[result.status]
+    выдаче, непроверенная так не называется (DS C1 r4, тот же класс, что GLM C1
+    r3); причина «не проверено» — из поля результата, а не из таблицы (GLM M2 r5)."""
+    note = ABSENCE[result.status]
+    return f"{note} ({result.reason})" if result.reason else note
 
 
 def memory_block(result: graph_search.Result | None, *, nodes: str = "", budget: int) -> str:
@@ -71,12 +62,13 @@ def memory_block(result: graph_search.Result | None, *, nodes: str = "", budget:
     по долям (остаток одного уходит другому), шапка и оговорка — из таблицы по
     статусу; при EMPTY фрагментов нет, при непрогретой памяти (None) — только
     узлы. Раньше узлы шли первыми под общий кап и съедали архив целиком (DS I1
-    r4). Пусто — ''."""
+    r4). При уверенной выдаче главные — фрагменты: узлам достаётся остаток, не
+    доля (GLM M3 r5). Пусто — ''."""
     frags = "" if result is None or result.status is Verdict.EMPTY else result.fragments
     nodes_part = f"Из узлов графа проекта:\n{nodes}" if nodes.strip() else ""
     frag_part = f"{LEAD[result.status]}\n{frags}" if frags else ""
     if nodes_part and frag_part:
-        n_budget = int(budget * NODES_SHARE)
+        n_budget = 0 if result.status is Verdict.CONFIDENT else int(budget * NODES_SHARE)
         f_budget = budget - n_budget
         n_take = min(len(nodes_part), n_budget + max(0, f_budget - len(frag_part)))
         f_take = min(len(frag_part), budget - n_take)
