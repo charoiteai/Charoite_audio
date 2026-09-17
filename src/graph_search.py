@@ -967,28 +967,12 @@ class GraphSearch:
         low_conf = status is not Verdict.CONFIDENT
         fused = rrf_merge([[r for _, r in sorted(lex, key=lambda x: -x[0])],
                            [r for _, r in sorted(sem, key=lambda x: -x[0])]], weights=[1.0, 0.7])
+        fused = _swap_stubs(fused, by_rel, docs, canon)
         picked = diversify([(s, r) for r, s in fused], limit)
         blocks: list[str] = []
         shown: list[str] = []
-        live_by_base: dict[str, Doc] | None = None
         for rel in picked:
             d = by_rel[rel]
-            if d.stub_to:
-                # Заглушка после слияния — не документ, а указатель: в блоке была бы
-                # одна стрелка вместо содержания. Старое имя ищут по-прежнему («как
-                # раньше называли»), поэтому слот отдаём канону, а не выбрасываем.
-                if live_by_base is None:
-                    live_by_base = {}
-                    for o in docs:
-                        if o.stub_to:
-                            continue
-                        cur = live_by_base.get(o.base)
-                        if cur is None or o.date_ts > cur.date_ts:
-                            live_by_base[o.base] = o
-                target = live_by_base.get(canon.get(d.base, d.stub_to))
-                if target is None or target.rel in shown:
-                    continue
-                d, rel = target, target.rel
             frag = _frag_or_head(d.body or d.text, rx, snippet_chars, rare_first or keys, dense=raw_dampener(rel) == 1.0)
             blocks.append(f"• {rel}\n  {frag}")
             shown.append(rel)
@@ -1073,6 +1057,40 @@ class GraphSearch:
                     if len(out) >= limit:
                         return out
         return out
+
+
+def _swap_stubs(hits: Sequence[tuple[str, float]], by_rel: dict[str, Doc],
+                docs: Sequence[Doc], canon: dict[str, str]) -> list[tuple[str, float]]:
+    """Заглушка-редирект в выдаче → канон, на который она указывает.
+
+    Заглушка — не документ, а указатель: блок показал бы одну стрелку вместо
+    содержания. Выбросить её тоже нельзя — старое имя ищут («как это раньше
+    называли»), поэтому её ранг достаётся канону. Подмена идёт ДО отбора: иначе
+    совпавший с уже показанным канон терял слот, и выдача молча становилась
+    короче на строку (замер 17.09 на рабочем графе, запрос про статус человека)."""
+    if not any(by_rel[rel].stub_to for rel, _ in hits):
+        return list(hits)
+    live: dict[str, Doc] = {}
+    for d in docs:
+        if d.stub_to:
+            continue
+        cur = live.get(d.base)
+        if cur is None or d.date_ts > cur.date_ts:
+            live[d.base] = d
+    out: list[tuple[str, float]] = []
+    seen: set[str] = set()
+    for rel, score in hits:
+        d = by_rel[rel]
+        if d.stub_to:
+            target = live.get(canon.get(d.base, d.stub_to))
+            if target is None:        # канон не дожил до индекса — показывать нечего
+                continue
+            rel = target.rel
+        if rel in seen:
+            continue
+        seen.add(rel)
+        out.append((rel, score))
+    return out
 
 
 def _frag_or_head(text: str, rx: re.Pattern, chars: int, rare_first: Sequence[str], dense: bool) -> str:
