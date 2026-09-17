@@ -251,7 +251,9 @@ class NodeIndex:
 
     def _load(self, p: pathlib.Path, folder: str, st) -> Node | None:
         try:
-            text = p.read_text(encoding="utf-8")
+            # форма Unicode — как в поиске: узлы и индекс поиска читают один граф,
+            # и разная форма одного текста расходилась бы молча (DS, круг 4 по №291)
+            text = unicodedata.normalize("NFC", p.read_text(encoding="utf-8"))
             st2 = p.stat()
         except (OSError, ValueError):   # ValueError — не-UTF8 (DS r2 #451)
             return self._nodes.get(p)   # держим прошлый снапшот

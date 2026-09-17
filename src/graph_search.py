@@ -300,34 +300,50 @@ def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
     Однофамилец бывает не дублем: `Ядра/Отчёт по аварии` слит в другое ядро, а
     `Досье/Отчёт по аварии` — живая сводка по той же теме, и ссылка ведёт к ней
     (замер 17.09: без этой оговорки правка отнимала 4 перехода, давая 43)."""
-    pick: dict[str, Doc] = {}
-    live: set[str] = set()
+    live = live_owners(docs)
+    # «# X → [[X]]» сюда не попадает: ни живой файл, ни звено цепочки. В живых она
+    # собирала бы на себя чужие ссылки, в звеньях — вытесняла настоящий редирект
+    # той же базы (DS, круг 2 по №291)
+    cands: dict[str, list[Doc]] = {}
     for d in docs:
         if d.stub_to and d.stub_to != d.base:
-            cur = pick.get(d.base)
-            # два разных редиректа под одним именем: берём свежий, при равной дате —
-            # меньший путь. Иначе исход решал порядок обхода каталога (GLM M3 r3)
-            if cur is None or (d.date_ts, cur.rel) > (cur.date_ts, d.rel):
-                pick[d.base] = d
-        elif not d.stub_to:
-            live.add(d.base)
-    stubs = {base: d.stub_to for base, d in pick.items()}
-        # «# X → [[X]]» — ни живой файл, ни звено: в live она собирала бы на себя
-        # чужие ссылки, в stubs — вытесняла настоящий редирект той же базы, и
-        # победитель решался порядком обхода каталога (DS, круг 2 по №291)
+            cands.setdefault(d.base, []).append(d)
+    # звено цепочки — по СТАБИЛЬНОМУ представителю базы: mtime двигают git checkout,
+    # копия графа и синк облака, а путь не двигается ничем (DS, круг 4)
+    link = {base: min(ds, key=lambda d: d.rel).stub_to for base, ds in cands.items()}
+
     out: dict[str, str] = {}
-    for start in stubs:
-        if start in live:   # под этим именем есть и живой файл — ссылка про него
+    for base, ds in cands.items():
+        if base in live:   # под этим именем есть и живой файл — ссылка про него
             continue
-        seen = {start}
-        cur = stubs[start]
-        while cur not in live and cur in stubs and cur not in seen:
-            seen.add(cur)
-            cur = stubs[cur]
-        if cur not in seen and cur in live:
-            out[start] = cur          # цепочка кончилась живым файлом — только тогда
-        # иначе цикл, самопетля или оборванная стрелка: имя не переписываем, иначе
-        # голос ушёл бы ключу, под которым документа нет вовсе (DS I3, круг 2)
+        for d in sorted(ds, key=lambda x: x.rel):
+            seen = {base}
+            cur = d.stub_to
+            while cur not in live and cur in link and cur not in seen:
+                seen.add(cur)
+                cur = link[cur]
+            if cur not in seen and cur in live:
+                out[base] = cur   # первый кандидат, чья цепочка кончилась живым
+                break
+            # иначе цикл, самопетля или оборванная стрелка: пробуем следующий
+            # редирект той же базы, а не отдаём имя мёртвой цели (DS, круг 4)
+    return out
+
+
+def live_owners(docs: Iterable[Doc]) -> dict[str, Doc]:
+    """База → живой документ под этим именем, выбор детерминированный.
+
+    Свежайший, при равной дате — меньший путь. Тай-брейк обязателен: у узлов
+    дата берётся из mtime, а его двигают `git checkout`, копия графа целиком и
+    синк облака, — одинаковые даты у тёзок штатны, и без второго ключа хозяин
+    имени решался порядком обхода каталога (DS, круг 4 по №291)."""
+    out: dict[str, Doc] = {}
+    for d in docs:
+        if d.stub_to:
+            continue
+        cur = out.get(d.base)
+        if cur is None or (d.date_ts, cur.rel) > (cur.date_ts, d.rel):
+            out[d.base] = d
     return out
 
 
@@ -1112,13 +1128,7 @@ def _swap_stubs(hits: Sequence[tuple[str, float]], by_rel: dict[str, Doc],
     короче на строку (замер 17.09 на рабочем графе, запрос про статус человека)."""
     if not any(by_rel[rel].stub_to for rel, _ in hits):
         return list(hits)
-    live: dict[str, Doc] = {}
-    for d in docs:
-        if d.stub_to:
-            continue
-        cur = live.get(d.base)
-        if cur is None or d.date_ts > cur.date_ts:
-            live[d.base] = d
+    live = live_owners(docs)
     out: list[tuple[str, float]] = []
     seen: set[str] = set()
     for rel, score in hits:

@@ -15,6 +15,7 @@ import pathlib
 import re
 import sys
 import time
+import unicodedata
 
 import pytest
 import yaml
@@ -725,6 +726,10 @@ def test_canon_bases_unrolls_chains_keeps_namesakes_and_survives_cycles():
     both = [d("итоги"), d("архив")]
     assert gs.canon_bases([old_stub, new_stub, *both]) == {"отчёт": "итоги"}
     assert gs.canon_bases([new_stub, old_stub, *both]) == {"отчёт": "итоги"}, "выбор решил порядок обхода"
+    # свежий редирект ведёт в никуда, старый — к живому: имя достаётся рабочему,
+    # иначе свежая оборванная стрелка съедала бы базу целиком (DS, круг 4)
+    dead = gs.Doc("", "Досье/отчёт.md", 0.0, "", "", 300.0, "отчёт", "", "исчез")
+    assert gs.canon_bases([dead, old_stub, d("архив")]) == {"отчёт": "архив"}
 
 
 def test_links_to_a_merged_node_feed_the_canon_and_the_hop_reaches_it(tmp_path):
@@ -830,7 +835,6 @@ def test_a_stub_slot_falls_back_to_its_living_namesake(tmp_path):
 def test_normalisation_survives_a_decomposed_file_name():
     """Имя файла от macOS приходит в NFD, ссылка в тексте — в NFC: без общей
     формы ключ канона не совпал бы с базой файла (GLM, круг 1 по №291)."""
-    import unicodedata
     nfd = unicodedata.normalize("NFD", "Ёлка")
     assert nfd != "Ёлка", "оснастка сломана: формы совпали"
     assert gs.norm_text(nfd) == gs.norm_text("Ёлка")
@@ -843,7 +847,6 @@ def test_a_fragment_keeps_its_case_in_a_decomposed_note(tmp_path):
     `snippet` решает по совпадению длин, из чего резать фрагмент; нормализация
     внутри `norm()` меняла длину, и весь блок уезжал в нижний регистр вместе с
     ё→е (DS, круг 2 по №291). Форма приводится при чтении файла."""
-    import unicodedata
     s = _search(tmp_path)
     body = "ПРОПИСНЫЕ буквы и ёлка. " + "Хвост про платёжный шлюз и сроки. " * 40
     (s.graph / "Документация" / "Разложенная.md").write_text(
@@ -862,7 +865,6 @@ def test_a_node_recognises_its_own_decomposed_name(tmp_path):
     Форма собирается в `tokens()`, до разрезки: класс слова не знает
     комбинирующих знаков и делил такое имя надвое, а стеммер получал обрывки
     «е» и «лка» вместо «елк» (DS и GLM независимо, круг 3 по №291)."""
-    import unicodedata
     nfd_name = unicodedata.normalize("NFD", "Ёлкина")
     assert nfd_name != "Ёлкина", "оснастка сломана: формы совпали"
     assert gs.needles(nfd_name)[0] == gs.needles("Ёлкина")[0]
@@ -871,6 +873,10 @@ def test_a_node_recognises_its_own_decomposed_name(tmp_path):
     s = _search(tmp_path)
     (s.graph / "Люди" / f"{nfd_name}.md").write_text(
         "# Ёлкина\nВедёт приёмку СЕКРЕТНЫЙ_МАРКЕР.\n", encoding="utf-8")
+    on_disk = [f for f in os.listdir(s.graph / "Люди") if f.startswith(("Ё", "Е", "\u0415"))]
+    if not any(unicodedata.is_normalized("NFD", f) and f != unicodedata.normalize("NFC", f)
+               for f in on_disk):
+        pytest.skip(f"файловая система нормализует имена: {on_disk}")
     s.refresh(force=True)
     s.embed_pending()
     r = s.search("что решили по Ёлкина", limit=3)
