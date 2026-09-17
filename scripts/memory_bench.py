@@ -208,8 +208,28 @@ def search_brain(graph: pathlib.Path, query: str) -> str | None:
     return body or text
 
 
-def search(graph: pathlib.Path, query: str) -> str:
-    """Локальный фолбэк: та же механика, что vault_search: слова → скоринг файлов → сниппеты."""
+_INDEX: dict[str, object] = {}
+
+
+def search(graph: pathlib.Path, query: str, cfg: dict | None = None) -> str:
+    """Боевой контур подсказок демона — src/graph_search.py (№250): лексика,
+    семантика по кэшу векторов (если cfg задан и Ollama доступна), досье,
+    переход по ссылкам. Бенч меряет то, что видит владелец на встрече."""
+    import graph_search
+    mem = _INDEX.get(str(graph))
+    if mem is None:
+        mem = _INDEX[str(graph)] = graph_search.GraphSearch(graph, cfg or {})
+        mem.refresh(force=True)
+        mem.load_vectors()
+    result = mem.search(query, limit=LIMIT_FILES, snippet_chars=SNIPPET)
+    # в промпт синтеза — фрагменты без шапки и «⚠»: маркер модель читает как
+    # указание отказаться, и провал поиска маскируется провалом синтеза (DS I3 r3)
+    return "" if result.empty else result.fragments
+
+
+def search_legacy(graph: pathlib.Path, query: str) -> str:
+    """Прежний локальный фолбэк (до №250): слова → счёт файлов → сниппеты. Остался
+    для сравнения «до/после» и как эталон иголок с иероглифами."""
     stop = {"что", "как", "где", "когда", "это", "нас", "есть", "про", "для",
             "или", "чем", "кто", "было", "быть", "по", "мы", "решили"}
     words, grams = needles(query, stop)
@@ -275,6 +295,12 @@ def main() -> None:
                     help="английский демо-граф (demo/graph_en) и английские кейсы")
     ap.add_argument("--demo-zh", action="store_true",
                     help="китайский демо-граф (demo/graph_zh) и китайские кейсы")
+    ap.add_argument("--brain", action="store_true",
+                    help="искать через сервер памяти :8100 (сравнение с прежним контуром)")
+    ap.add_argument("--legacy", action="store_true",
+                    help="прежний локальный фолбэк вместо src/graph_search.py (сравнение до/после)")
+    ap.add_argument("--stats", action="store_true",
+                    help="без синтеза: по каждому кейсу покрытие, лучший косинус и вердикт гейта — для калибровки порогов")
     args = ap.parse_args()
 
     cfg_path = ROOT / "config" / "config.yaml"
@@ -320,16 +346,31 @@ def main() -> None:
     if args.limit:
         cases = cases[:args.limit]
 
+    if args.stats:
+        # Калибровка гейта честности (круги 1–2 по #577): распределение сигналов на
+        # своих вопросах, без модели. Пороги — в src/graph_search.py.
+        import graph_search
+        mem = graph_search.GraphSearch(graph, cfg if not args.demo else {})
+        mem.refresh(force=True)
+        mem.load_vectors()
+        print(f"файлов {mem.size}, с векторами {mem.vectors}; пороги sim<{graph_search.LOW_SIM} и cov<{graph_search.LOW_COV}")
+        for i, case in enumerate(cases, 1):
+            r = mem.search(case["q"], limit=LIMIT_FILES, snippet_chars=SNIPPET)
+            hit = "; ".join(b.split("\n")[0][2:] for b in r.blocks[:3])
+            print(f"[{i}/{len(cases)}] {'⚠' if r.low_conf else '✓'} {r.status.value} sem={'да' if r.sem_used else 'нет'} {case['q']} → {hit}")
+        return
     llm = LLM(cfg)
     passed, failures = 0, []
-    # демо-граф живёт в репозитории, вне vault brain-сервера — только локальный
-    brain_alive = (not args.demo) and search_brain(graph, "проверка") is not None
-    print(f"контур поиска: {'brain :8100 (боевой)' if brain_alive else 'локальный фолбэк (brain лежит)'}")
+    # по умолчанию — память демона (src/graph_search.py): то, что видит владелец
+    # на встрече; сервер и прежний фолбэк — только по флагам, для сравнения
+    brain_alive = args.brain and (not args.demo) and search_brain(graph, "проверка") is not None
+    print("контур поиска: " + ("сервер памяти :8100" if brain_alive else
+                               "прежний локальный фолбэк" if args.legacy else "память демона (graph_search)"))
     for i, case in enumerate(cases, 1):
         q, must = case["q"], case.get("must", [])
         found = (search_brain(graph, q) if brain_alive else None)
         if found is None:
-            found = search(graph, q)
+            found = search_legacy(graph, q) if args.legacy else search(graph, q, cfg if not args.demo else None)
         if not found:
             failures.append((q, must, "поиск ничего не нашёл"))
             print(f"[{i}/{len(cases)}] ✗ {q} — поиск пуст")

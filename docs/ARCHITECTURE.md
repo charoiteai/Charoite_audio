@@ -616,6 +616,39 @@ freshness) and semantic (bge-m3 through the local Ollama). Neither is enough
 alone — lexical catches internal identifiers a vector never will, semantic
 closes the vocabulary gap when the question uses different words than the note.
 
+**The daemon's memory during a meeting is the same design in Python**
+(`src/graph_search.py`). Until №250 the live contours asked a separate memory
+server over HTTP, and on a working graph it answered in 2.6–22 s — the instant
+answer has a 2.5 s budget, so in practice it ran without memory. Now the index
+lives in the daemon process: files of the project graph without the meeting
+archive and transcript copies (3 160 files warm up in under two seconds),
+BM25-lite over stems with IDF, length normalisation and a capped hub boost —
+a 280 KB owner node no longer surfaces for every query — freshness, dossier
+summaries first, one hop over `[[links]]` from a found node, and the same
+honesty gate. Vectors are per chunk (headings, breadcrumbs), cached in
+`data/graph_search/` by mtime; during a meeting only the query is embedded,
+files are indexed after the meeting (45 s cap) and at night. A warm query
+costs ~0.1 s of lexical work plus one embedding call when Ollama is free.
+
+**The verdict is a field, not a prefix.** `brain.vault_search` returns a
+`Result`: `status` is one of *confident* / *weak* / *unverified* / *empty*,
+`fragments` is what goes into a prompt (dossiers and snippets, no headers, no
+markers), `text` is the human rendering. Without an embedding (Ollama busy
+during a meeting) lexical matches are *unverified*, never confident and never
+"nothing in the archive"; "weak" — the honest "the archive has almost nothing"
+— is only pronounced when the vector cache covers at least 80 % of the index.
+Dossiers count as evidence in the verdict (their key coverage of the query), so
+a summary without snippets is never "empty". What to *say* is one table in the
+facade (`LEAD` / `ABSENCE`, complete over every status; the reason behind
+"unverified" — embedder busy or cache incomplete — is a field of the result) and
+one builder, `memory_block`, that splits a prompt budget between graph nodes and
+archive snippets by share instead of letting the nodes eat the archive; on a
+confident verdict the snippets come first and nodes get only the remainder.
+Déjà-vu goes to graph nodes unless the verdict is confident and calls the archive
+"empty" only on a verified verdict; all three contours feed the block as built. The previous contract was a string with "⚠" parsed by
+`startswith` in three places — a dossier printed before the marker silenced the
+gate — and then an enum re-interpreted by three hand-written `if/elif` chains.
+
 **Chunks, not files.** Each file is split by markdown headings; long sections
 are split by paragraphs with overlap, and text without punctuation by length.
 Every chunk carries a breadcrumb (`File → H1 → H2`) into the embedder, because
@@ -719,9 +752,10 @@ numbers that cannot tell you whether a change helped or you got lucky. The
 pinned bench is what caught a prompt "improvement" of mine that was actually a
 regression.
 
-The older `scripts/memory_bench.py` measures a different implementation (the
-brain server, or its own Python fallback), so it cannot answer questions about
-the app's search.
+`scripts/memory_bench.py` measures the daemon's memory (`src/graph_search.py`)
+— what the owner sees during a meeting; `--brain` and `--legacy` keep the old
+contours for before/after comparisons. It still cannot answer questions about
+the app's search, which is a separate Swift implementation.
 
 ## Where code and data live
 
