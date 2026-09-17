@@ -639,12 +639,13 @@ during a meeting) lexical matches are *unverified*, never confident and never
 — is only pronounced when the vector cache covers at least 80 % of the index.
 Dossiers count as evidence in the verdict (their key coverage of the query), so
 a summary without snippets is never "empty". What to *say* is one table in the
-facade (`LEAD` / `CAVEAT` / `ABSENCE`, complete over every status) and one
-builder, `memory_block`, that splits a prompt budget between graph nodes and
-archive snippets by share instead of letting the nodes eat the archive. Déjà-vu
-goes to graph nodes unless the verdict is confident and calls the archive
-"empty" only on a verified verdict; the instant answer and the deep contour feed
-the block as built. The previous contract was a string with "⚠" parsed by
+facade (`LEAD` / `ABSENCE`, complete over every status; the reason behind
+"unverified" — embedder busy or cache incomplete — is a field of the result) and
+one builder, `memory_block`, that splits a prompt budget between graph nodes and
+archive snippets by share instead of letting the nodes eat the archive; on a
+confident verdict the snippets come first and nodes get only the remainder.
+Déjà-vu goes to graph nodes unless the verdict is confident and calls the archive
+"empty" only on a verified verdict; all three contours feed the block as built. The previous contract was a string with "⚠" parsed by
 `startswith` in three places — a dossier printed before the marker silenced the
 gate — and then an enum re-interpreted by three hand-written `if/elif` chains.
 
