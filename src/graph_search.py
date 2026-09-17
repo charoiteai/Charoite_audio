@@ -58,6 +58,7 @@ import graph_nodes  # noqa: E402
 import graphs  # noqa: E402
 import llm as _llm  # noqa: E402
 import safe_write  # noqa: E402
+import uuid  # noqa: E402
 
 # Копии стенограмм и архив встреч: дублируют заметки встреч и узлы, но весят
 # втрое больше всего графа — без них холодный обход укладывается в секунды.
@@ -74,18 +75,30 @@ CHUNK_CHARS = 4_000        # блок для эмбеддера: заведом�
 MAX_CHUNKS = 12            # на файл: у узла новые встречи сверху — первые блоки самые свежие
 EMBED_BATCH = 16
 SIM_FLOOR = 0.35           # ниже — семантический шум, в список не берём
-# Гейт честности «⚠»: с семантикой — слабы ОБА сигнала; без неё (Ollama занята
-# генерацией — на встрече это норма, 503 за четверть секунды) судить по одному
-# покрытию с тем же порогом нельзя: три слова из пяти — не «в архиве ничего нет»,
-# а контуры по «⚠» выбрасывают выдачу целиком (круг 1 по #577, DS C1). Один сигнал
-# — только совсем слабое покрытие. Пороги унаследованы от прежнего сервера, замер
-# на боевом графе — memory_bench --stats.
-LOW_SIM, LOW_COV, LOW_COV_ALONE = 0.47, 0.67, 0.34
+# Гейт честности «⚠» — правило проекта, то же, что у поиска приложения
+# (ArchiveSearch: bestSim < 0.47 && bestCov < 0.66; 0,66 — «две иглы из трёх»):
+# слабы ОБА сигнала. Без семантики (Ollama занята — на встрече это норма) гейт
+# НЕ судит по одной лексике: замер 17.09 на рабочем графе (3 160 файлов) — ловушки
+# «бюджет релиза», «витрина обуви», «риски погоды» дают 2 совпадения из 2 с той же
+# массой IDF, что настоящие вопросы; ни доля, ни редкость слов их не разделяют
+# (круг 1 DS C1 → круг 2 DS C1: любой порог по доле уверен где-то зря). Поэтому
+# без семантики выдача идёт с «⚠» и своей причиной — потребитель подаёт её модели
+# как ненадёжную или уходит к узлам, но не принимает за память. Порог 0,47 под
+# «лучший блок из многих» перекрывается (ловушки 0,46–0,62, вопросы 0,49–0,74) —
+# калибровка на размеченном наборе — отдельная карточка, не угадывание здесь.
+LOW_SIM, LOW_COV = 0.47, 0.66
 VEC_RETRY_S = 30.0         # неудачная загрузка кэша не защёлкивается: повтор не чаще
+CHUNK_VERSION = 2          # правила нарезки — часть ключа кэша: сменились — кэш холодный (DS I2 r2)
+MAX_CHUNKS_NODE = 24       # узлы (Люди/Системы/…): история длиннее, середина ценнее (GLM r2, критика 1)
 HALFLIFE_DAYS = 90.0
 _STOP = {"что", "как", "где", "когда", "это", "нас", "наш", "наша", "наши", "есть",
          "про", "для", "или", "чем", "кто", "было", "быть", "графе", "граф", "мы",
-         "решили", "the", "and", "what", "who", "how", "did", "for", "with"}
+         "решили", "the", "and", "what", "who", "how", "did", "for", "with",
+         # двухбуквенные служебные: остальные двухбуквенные — термины («тз», «ии», «бд», «рп»)
+         "по", "на", "из", "за", "от", "до", "не", "ни", "но", "же", "ли", "бы", "то",
+         "вы", "ты", "он", "их", "им", "ей", "ею", "ее", "со", "во", "об", "ко", "уж", "да",
+         "ну", "ах", "ох", "of", "to", "in", "on", "at", "by", "is", "it", "as", "or", "an",
+         "be", "we", "do", "if", "so", "no", "up", "us", "my", "me", "he", "ok"}
 _WORD_RX = re.compile(r"[А-Яа-яЁёA-Za-z0-9_-]{2,}")
 _DATE_RX = re.compile(r"(20\d{2})-(\d{2})-(\d{2})")
 _MEETING_RX = re.compile(r"(20\d{2}-\d{2}-\d{2})[_ ]?(\d{4})?")
@@ -123,21 +136,19 @@ def needles(query: str) -> tuple[list[str], list[str]]:
     (повтор удваивал бы вклад в счёт). Пересечься списки не могут: слова — из
     латиницы, кириллицы и цифр, биграммы — только из иероглифов."""
     query = query.translate(_FULLWIDTH)      # ＹｕＰａｙ — слово, а не пропуск
-    # двухзначные слова — только аббревиатуры и номера («ИИ», «БД», «РП», «v2»):
-    # предлоги и союзы той же длины — шум (круг 1 по #577, DS I4)
-    raw = [w for w in _WORD_RX.findall(query)
-           if len(w) >= 3 or w.isupper() or any(c.isdigit() for c in w)]
-    words = [graph_nodes.stem(w) for w in raw if norm(w) not in _STOP]
+    # двухбуквенные слова — термины («ИИ», «тз», «БД», «v2»), кроме служебных из
+    # _STOP: отсев по регистру терял строчные аббревиатуры (круг 2 по #577, DS I6 / GLM M3)
+    words = [graph_nodes.stem(w) for w in _WORD_RX.findall(query) if norm(w) not in _STOP]
     return list(dict.fromkeys(norm(w) for w in words if w)), list(dict.fromkeys(cjk_grams(query)))
 
 
 def low_confidence(cov: float, sim: float, sem_used: bool) -> bool:
-    """«⚠ в архиве почти ничего нет» — по ДОСТУПНЫМ свидетельствам: с семантикой
-    слабы оба сигнала; без неё — только совсем слабое покрытие (один сигнал не
-    подстрахован вторым, и порог «всё нашли» ему не по силам)."""
-    if sem_used:
-        return cov < LOW_COV and sim < LOW_SIM
-    return cov < LOW_COV_ALONE
+    """«⚠» — по свидетельствам: с семантикой — слабы оба сигнала (правило
+    приложения); без неё уверенности нет вовсе — одна лексика на большом графе
+    не отличает вопрос от ловушки (замер 17.09), и выдача помечается."""
+    if not sem_used:
+        return True
+    return cov < LOW_COV and sim < LOW_SIM
 
 
 def file_date_ts(rel: str, mtime: float) -> float:
@@ -293,7 +304,8 @@ def chunks(stem: str, text: str, chars: int = CHUNK_CHARS, limit: int = MAX_CHUN
     соседнему блоку («## Решения» из одной строки — самое ценное). Не больше
     `limit` блоков на файл: половина с начала (у узла новые встречи сверху) и
     половина с конца (у заметки решения в хвосте) — срез по хвосту терял бы
-    именно их (круг 1 по #577, DS I3 / GLM M7)."""
+    именно их (круг 1 по #577, DS I3 / GLM M7); у узлов лимит вдвое больше
+    (MAX_CHUNKS_NODE): середина их истории — то, о чём спрашивают через полгода."""
     body = frontmatter.split(text)[1]
     sections: list[tuple[str, str]] = []      # (крошка, текст секции)
     crumbs = {1: "", 2: "", 3: ""}
@@ -359,6 +371,7 @@ class Doc:
     low: str
     date_ts: float
     base: str          # нормализованное имя файла без расширения — цель [[ссылок]]
+    body: str = ""     # текст без YAML-шапки — для фрагментов выдачи (шапка модели не нужна)
 
 
 @dataclasses.dataclass
@@ -369,6 +382,14 @@ class Result:
     ready: bool = True
     dossiers: list[str] = dataclasses.field(default_factory=list)
     sem_used: bool = False      # семантика посчиталась (вектор запроса получен)
+
+    @property
+    def why_low(self) -> str:
+        """Причина «⚠» человеку и модели: без семантики — не «в архиве нет», а «не проверено»."""
+        if not self.low_conf:
+            return ""
+        return ("семантика недоступна — совпадения только по словам, не проверены"
+                if not self.sem_used else "слабые совпадения")
 
     @property
     def empty(self) -> bool:
@@ -420,6 +441,7 @@ class GraphSearch:
         self._vec_manifest = base / "graph_search" / f"{self.graph.name}-{tag}.json"
         self._vecs_loaded = False
         self._vecs_tried_at = 0.0
+        self._manifest_seen = 0.0   # mtime манифеста при последней загрузке: чужая запись — перечитать
         self.note = ""              # последнее «почему не сделали» для CLI и журнала
 
     # ---------------------------------------------------------------- индекс
@@ -437,6 +459,12 @@ class GraphSearch:
 
     def _fresh(self) -> bool:
         return self._now() - self._refreshed_at < REFRESH_S
+
+    def cache_key(self) -> str:
+        """Всё, что определяет содержимое кэша, кроме файлов: модель эмбеддингов и
+        правила нарезки. Сменилось — кэш холодный целиком (круг 2 по #577, DS I2)."""
+        model = str((self.cfg.get("sufler") or {}).get("embed_model", "bge-m3:latest"))
+        return f"{model}|chunks{CHUNK_VERSION}|{CHUNK_CHARS}|{MAX_CHUNKS}|{MAX_CHUNKS_NODE}"
 
     def refresh(self, force: bool = False) -> bool:
         """Обход графа по mtime: новые и изменённые файлы перечитываются,
@@ -481,8 +509,12 @@ class GraphSearch:
                 except OSError:
                     continue
                 rel = os.path.relpath(path, root).replace(os.sep, "/")
+                try:
+                    body = frontmatter.split(text)[1]
+                except ValueError:
+                    body = text
                 fresh[path] = Doc(path, rel, mtime, text, norm(text), file_date_ts(rel, mtime),
-                                  norm_text(os.path.splitext(fn)[0]))
+                                  norm_text(os.path.splitext(fn)[0]), body)
                 changed = True
         gone = [p for p in self._docs if p not in seen]
         if not fresh and not gone:
@@ -519,31 +551,52 @@ class GraphSearch:
         неизменяемый плоский float32. Неудача не защёлкивается — повтор не чаще
         VEC_RETRY_S: защёлка гасила семантику на всю встречу после одного
         совпадения с писателем (круг 1 по #577, DS I1 / GLM I1)."""
-        if self._vecs_loaded:
+        try:
+            seen = self._vec_manifest.stat().st_mtime
+        except OSError:
+            seen = 0.0
+        if self._vecs_loaded and seen == self._manifest_seen:
+            return len(self._vecs)          # чужая запись (ночь, апдейтер) — манифест новее, перечитаем (GLM M6 r2)
+        if not self._vecs_loaded and self._now() - self._vecs_tried_at < VEC_RETRY_S:
             return len(self._vecs)
-        if self._now() - self._vecs_tried_at < VEC_RETRY_S:
+        loaded = self._read_cache(retry=True)
+        if loaded is None:
+            self._vecs_tried_at = self._now()   # штамп — только на настоящую неудачу, не на гонку с уборкой (DS I4 r2)
             return len(self._vecs)
-        self._vecs_tried_at = self._now()
+        entries, flat, dim = loaded
+        got: dict[str, tuple[float, list[array.array]]] = {}
+        off = 0
+        for path, mtime, n in entries:
+            got[path] = (float(mtime), [flat[off + i * dim:off + (i + 1) * dim] for i in range(int(n))])
+            off += int(n) * dim
+        with self._lock:
+            for path, entry in got.items():
+                cur = self._vecs.get(path)
+                if cur is None or cur[0] < entry[0]:
+                    self._vecs[path] = entry       # свежее по mtime главнее, откуда бы ни пришло
+            self._vecs_loaded = True
+            self._manifest_seen = seen
+            return len(self._vecs)
+
+    def _read_cache(self, retry: bool):
+        """Пара «манифест → блоб». Блоб исчез между чтением манифеста и открытием
+        (писатель опубликовал новое поколение) — один немедленный повтор по свежему
+        манифесту (GLM I1 r2). Ключ кэша не совпал — кэш холодный. None — не прочитан."""
         try:
             manifest = json.loads(self._vec_manifest.read_text(encoding="utf-8"))
+            if manifest.get("key") != self.cache_key():
+                return None
             dim, entries = int(manifest["dim"]), manifest["files"]
             flat = array.array("f")
             with open(self._vec_manifest.with_name(str(manifest["blob"])), "rb") as fh:
                 flat.frombytes(fh.read())
-            if len(flat) != dim * sum(int(n) for _, _, n in entries):
-                return len(self._vecs)
+        except FileNotFoundError:
+            return self._read_cache(retry=False) if retry else None
         except (OSError, ValueError, KeyError, TypeError):
-            return len(self._vecs)
-        loaded: dict[str, tuple[float, list[array.array]]] = {}
-        off = 0
-        for path, mtime, n in entries:
-            loaded[path] = (float(mtime), [flat[off + i * dim:off + (i + 1) * dim] for i in range(int(n))])
-            off += int(n) * dim
-        with self._lock:
-            for path, entry in loaded.items():
-                self._vecs.setdefault(path, entry)   # свежепосчитанное в памяти главнее диска
-            self._vecs_loaded = True
-            return len(self._vecs)
+            return None
+        if len(flat) != dim * sum(int(n) for _, _, n in entries):
+            return None
+        return entries, flat, dim
 
     def save_vectors(self) -> None:
         with self._lock:
@@ -560,15 +613,25 @@ class GraphSearch:
         # replace) — читатель видит либо старую пару, либо новую; прежние блобы
         # стираются последними
         stem = self._vec_manifest.stem
-        blob = self._vec_manifest.with_name(f"{stem}.{int(self._now() * 1000)}.f32")
+        previous = None
+        try:
+            previous = json.loads(self._vec_manifest.read_text(encoding="utf-8")).get("blob")
+        except (OSError, ValueError):
+            pass
+        blob = self._vec_manifest.with_name(f"{stem}.{uuid.uuid4().hex[:12]}.f32")   # уникально по построению, не по часам (DS I3 r2)
         tmp = blob.with_name(blob.name + f".tmp{os.getpid()}")
         with open(tmp, "wb") as fh:
             fh.write(flat.tobytes())
         tmp.replace(blob)
         safe_write.write_text(self._vec_manifest, json.dumps(
-            {"dim": dim, "blob": blob.name, "files": [[p, m, len(vs)] for p, m, vs in items]}, ensure_ascii=False))
-        for old in self._vec_manifest.parent.glob(f"{stem}.*.f32"):
-            if old != blob:
+            {"dim": dim, "key": self.cache_key(), "blob": blob.name,
+             "files": [[p, m, len(vs)] for p, m, vs in items]}, ensure_ascii=False))
+        # уборка поколений: текущее и предыдущее живут — читатель без лока может
+        # держать в руках прошлый манифест (DS I4 / GLM I1 r2); сравнение имён
+        # строковое — метасимволы в имени графа ломали glob (DS M7 r2)
+        keep = {blob.name, previous}
+        for old in self._vec_manifest.parent.iterdir():
+            if old.name.startswith(f"{stem}.") and old.name.endswith(".f32") and old.name not in keep:
                 old.unlink(missing_ok=True)
 
     def pending_vectors(self) -> list[str]:
@@ -588,20 +651,22 @@ class GraphSearch:
         векторы всех его блоков; сервер не ответил — останавливаемся, недобранное
         дособерём в следующий раз. -> сколько файлов получили векторы."""
         self.note = ""
-        self._vec_manifest.parent.mkdir(parents=True, exist_ok=True)
-        lock = open(self._vec_manifest.with_suffix(".lock"), "a+")
+        lock = None
         try:
+            self._vec_manifest.parent.mkdir(parents=True, exist_ok=True)
+            lock = open(self._vec_manifest.with_suffix(".lock"), "a+")
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             lock.close()
             self.note = "векторы уже собирает другой процесс"
             return 0
-        except OSError:
-            pass                                     # том без flock — идём без него
+        except OSError as exc:                       # каталог недоступен или том без flock — идём без лока (DS M8 r2)
+            self.note = f"без лока: {exc}"
         try:
             return self._embed_pending(budget_s, batch, timeout, should_stop)
         finally:
-            lock.close()
+            if lock is not None:
+                lock.close()
 
     def _embed_pending(self, budget_s, batch, timeout, should_stop) -> int:
         started = self._now()
@@ -612,7 +677,8 @@ class GraphSearch:
                 d = self._docs.get(p)
                 if d is None:
                     continue
-                parts = chunks(pathlib.PurePosixPath(d.rel).stem, d.text) or [d.text[:CHUNK_CHARS]]
+                limit = MAX_CHUNKS_NODE if is_node_path(d.rel) else MAX_CHUNKS
+                parts = chunks(pathlib.PurePosixPath(d.rel).stem, d.text, limit=limit) or [d.text[:CHUNK_CHARS]]
                 queue += [(p, d.mtime, i, len(parts), t) for i, t in enumerate(parts)]
         got: dict[str, tuple[float, int, dict[int, array.array]]] = {}
         for i in range(0, len(queue), batch):
@@ -626,6 +692,7 @@ class GraphSearch:
             part = queue[i:i + batch]
             embs = self._embed([t for _, _, _, _, t in part], timeout if left is None else max(1.0, min(timeout, left)))
             if len(embs) != len(part):
+                self.note = "сервер эмбеддингов не ответил — недобранное дособерём позже"   # (DS I5 / GLM M5 r2)
                 break
             for (p, mtime, idx, total, _), emb in zip(part, embs):
                 if not emb:
@@ -658,10 +725,8 @@ class GraphSearch:
         avg_len = max(1.0, sum(len(d.low) for d in docs) / max(1, len(docs)))
         words, grams = needles(query)
         keys = words + grams
-        # игл нет (одни стоп-слова): ищем фразу подстрокой, но это слабое
-        # свидетельство — без IDF и покрытия гейт честности не судит, отдаём «⚠»
-        # сразу (круг 1 по #577, DS I4)
-        substring = not keys
+        # игл нет (одни стоп-слова): ищем фразу целиком подстрокой — точное
+        # совпадение фразы и есть свидетельство, промах даст пустую выдачу
         pattern = "|".join(re.escape(k) for k in keys) if keys else re.escape(norm(query.strip()))
         rx = re.compile(pattern or "$^")
         now = self._now()
@@ -723,12 +788,14 @@ class GraphSearch:
                 sims.sort(key=lambda x: -x[0])
                 best_sim = sims[0][0] if sims else 0.0
                 for sim, d in sims[:max(limit * 4, 20)]:
-                    sem.append((sim * recency_factor(d.date_ts, now) * raw_dampener(d.rel), d.rel))
+                    # те же демпферы, что у лексики: метка диаризации с сотней упоминаний
+                    # темы не должна всплывать через вектор, раз не всплывает через слова
+                    sem.append((sim * recency_factor(d.date_ts, now) * raw_dampener(d.rel) * placeholder_factor(d.base), d.rel))
 
         dossiers = self._dossier_blocks(query, snippet_chars)
         if not lex and not sem:
             return Result([], 0, False, dossiers=dossiers, sem_used=sem_used)
-        low_conf = substring or low_confidence(best_cov, best_sim, sem_used)
+        low_conf = low_confidence(best_cov, best_sim, sem_used)   # подстрока — способ поиска, не уровень свидетельства (GLM M4 r2)
         fused = rrf_merge([[r for _, r in sorted(lex, key=lambda x: -x[0])],
                            [r for _, r in sorted(sem, key=lambda x: -x[0])]], weights=[1.0, 0.7])
         picked = diversify([(s, r) for r, s in fused], limit)
@@ -736,7 +803,7 @@ class GraphSearch:
         shown: list[str] = []
         for rel in picked:
             d = by_rel[rel]
-            frag = _frag_or_head(d.text, rx, snippet_chars, rare_first or keys, dense=raw_dampener(rel) == 1.0)
+            frag = _frag_or_head(d.body or d.text, rx, snippet_chars, rare_first or keys, dense=raw_dampener(rel) == 1.0)
             blocks.append(f"• {rel}\n  {frag}")
             shown.append(rel)
         total = len(fused)
@@ -805,7 +872,7 @@ class GraphSearch:
                         cands.append((cov * recency_factor(d.date_ts, self._now()) * raw_dampener(d.rel), d, matched))
                 cands.sort(key=lambda x: (x[0], x[1].rel), reverse=True)
                 for _s, d, _m in cands[:min(per_node, limit - len(out))]:
-                    frag = _frag_or_head(d.text, rx, snippet_chars, rare_first, dense=raw_dampener(d.rel) == 1.0)
+                    frag = _frag_or_head(d.body or d.text, rx, snippet_chars, rare_first, dense=raw_dampener(d.rel) == 1.0)
                     seen.add(d.rel)
                     out.append(f"• {d.rel}\n  ↳ по ссылке из {node_rel}\n  {frag}")
                     if len(out) >= limit:
@@ -815,8 +882,15 @@ class GraphSearch:
 
 def _frag_or_head(text: str, rx: re.Pattern, chars: int, rare_first: Sequence[str], dense: bool) -> str:
     """Окно вокруг игл, а если игл в тексте нет (файл пришёл семантикой или по
-    ссылке) — шапка файла: кандидат не должен молча выпадать (DS M5)."""
-    return snippet(text, rx, chars, rare_first, dense=dense) or " ".join(text[:chars].split())
+    ссылке) — начало ТЕЛА файла без YAML-шапки (DS M5, DS M9 r2)."""
+    frag = snippet(text, rx, chars, rare_first, dense=dense)
+    if frag:
+        return frag
+    try:
+        body = frontmatter.split(text)[1]
+    except ValueError:
+        body = text
+    return " ".join(body[:chars].split())
 
 
 class NotReady(RuntimeError):
@@ -839,7 +913,10 @@ def render(result: Result, query: str, where: str = "графе") -> str:
         return "\n\n".join(result.dossiers)      # только сводка: «Найдено (0 из 0)» под ней врало бы
     header = f"Найдено в {where} ({len(result.blocks)} из {result.total}):"
     if result.low_conf:
-        header = "⚠ Похоже, в архиве об этом почти ничего нет (слабые совпадения). Ниже ближайшее найденное:\n" + header
+        header = (("⚠ Совпадения не проверены семантикой (модель занята) — ниже найденное по словам, доверять с оглядкой:\n"
+                   if not result.sem_used else
+                   "⚠ Похоже, в архиве об этом почти ничего нет (слабые совпадения). Ниже ближайшее найденное:\n")
+                  + header)
     body = header + "\n\n" + "\n\n".join(result.blocks)
     if result.dossiers:
         body = "\n\n".join(result.dossiers) + "\n\n— — — ниже отдельные фрагменты графа — — —\n\n" + body

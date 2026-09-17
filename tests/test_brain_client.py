@@ -39,7 +39,8 @@ def test_vault_search_reads_the_configured_graph_only(tmp_path, monkeypatch):
     mem = brain.warm(cfg)
     assert mem is not None and mem.size == 1
     out = brain.vault_search(cfg, "что решили по релизу", limit=3, snippet_chars=700, timeout=5)
-    assert out.startswith("Найдено в графе (1 из 1):") and "• Системы/Релиз.md" in out
+    # без кэша векторов семантики нет — выдача честно помечена, но не пуста
+    assert out.startswith("⚠ Совпадения не проверены семантикой") and "• Системы/Релиз.md" in out
     assert "МОЙ_МАРКЕР" in out and "ЧУЖОЙ_МАРКЕР" not in out, "соседние графы в ответы не попадают"
     assert brain.vault_search(cfg, "qqqzzz", limit=3, snippet_chars=700, timeout=5).startswith("Ничего не найдено по")
 

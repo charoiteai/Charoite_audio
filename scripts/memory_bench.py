@@ -297,6 +297,8 @@ def main() -> None:
                     help="искать через сервер памяти :8100 (сравнение с прежним контуром)")
     ap.add_argument("--legacy", action="store_true",
                     help="прежний локальный фолбэк вместо src/graph_search.py (сравнение до/после)")
+    ap.add_argument("--stats", action="store_true",
+                    help="без синтеза: по каждому кейсу покрытие, лучший косинус и вердикт гейта — для калибровки порогов")
     args = ap.parse_args()
 
     cfg_path = ROOT / "config" / "config.yaml"
@@ -342,6 +344,19 @@ def main() -> None:
     if args.limit:
         cases = cases[:args.limit]
 
+    if args.stats:
+        # Калибровка гейта честности (круги 1–2 по #577): распределение сигналов на
+        # своих вопросах, без модели. Пороги — в src/graph_search.py.
+        import graph_search
+        mem = graph_search.GraphSearch(graph, cfg if not args.demo else {})
+        mem.refresh(force=True)
+        mem.load_vectors()
+        print(f"файлов {mem.size}, с векторами {mem.vectors}; пороги sim<{graph_search.LOW_SIM} и cov<{graph_search.LOW_COV}")
+        for i, case in enumerate(cases, 1):
+            r = mem.search(case["q"], limit=LIMIT_FILES, snippet_chars=SNIPPET)
+            hit = "; ".join(b.split("\n")[0][2:] for b in r.blocks[:3])
+            print(f"[{i}/{len(cases)}] {'⚠' if r.low_conf else '✓'} sem={'да' if r.sem_used else 'нет'} {case['q']} → {hit}")
+        return
     llm = LLM(cfg)
     passed, failures = 0, []
     # по умолчанию — память демона (src/graph_search.py): то, что видит владелец

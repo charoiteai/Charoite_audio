@@ -25,7 +25,7 @@ import dossier  # noqa: E402
 import graph_search as gs  # noqa: E402
 
 
-_SYNONYMS = {"поставщик": "провайдер", "поставщика": "провайдер"}   # «семантика» подделки: синоним — то же слово
+_SYNONYMS = {"поставщик": "провайдер", "поставщика": "провайдер", "gateway": "шлюз"}   # «семантика» подделки: синоним — то же слово
 
 
 def fake_embed(texts: list[str], timeout: float) -> list[list[float]]:
@@ -77,8 +77,11 @@ def _graph(tmp_path: pathlib.Path) -> pathlib.Path:
 
 
 def _search(tmp_path, **kw) -> gs.GraphSearch:
+    """Индекс с векторами блоков: без семантики гейт всегда «⚠» (замер 17.09), так
+    что уверенная выдача, переходы и досье проверяются с подделкой эмбеддинга."""
     s = gs.GraphSearch(_graph(tmp_path), {}, data_dir=tmp_path / "data", embed=fake_embed, **kw)
     s.refresh(force=True)
+    s.embed_pending()
     return s
 
 
@@ -128,10 +131,12 @@ def test_refresh_follows_mtime_and_removals(tmp_path):
 
 def test_ranking_prefers_path_coverage_recency_and_damps_hubs_raw_and_placeholders(tmp_path):
     s = _search(tmp_path)
-    r = s.search("платёжный шлюз", limit=6, semantic=False)
+    r = s.search("платёжный шлюз", limit=6)
     rels = _rels(r)
     assert rels[0] == "Системы/Платёжный шлюз.md", "слово в имени файла — сильнейший сигнал"
-    assert "Люди/Собеседник 3.md" not in rels[:3], "метка диаризации с 24 упоминаниями — не хаб"
+    # в графе из девяти файлов метка всё равно попадает в выдачу — но не выше настоящих
+    # узла и документа: демпфер ×0,2 действует и на лексику, и на семантику
+    assert "Люди/Собеседник 3.md" not in rels[:2], "метка диаризации с 24 упоминаниями — не хаб"
     r2 = _rels(s.search("срок интеграции 15 августа", limit=6, semantic=False))
     assert r2.index("Встречи/2026-08-01_1000.md") < r2.index("Встречи/2026-08-01_1000_стенограмма.md"), \
         "заметка встречи выше сырой стенограммы при равной релевантности"
@@ -149,6 +154,16 @@ def test_ranking_prefers_path_coverage_recency_and_damps_hubs_raw_and_placeholde
     s.refresh(force=True)
     assert _rels(s.search("уникальный_факт_ретро", semantic=False))[0] == "Встречи/2026-08-05_1000.md"
     assert gs.hub_factor(10_000) == gs.HUB_CAP and gs.placeholder_factor("собеседник 3") == 0.2
+    # демпфер метки действует и на семантику: запрос-синоним («gateway» лексика не
+    # видит) — файл-метка с сотней повторов слова, семантически ближайший, не выше
+    # настоящего узла системы
+    (s.graph / "Люди" / "Собеседник 7.md").write_text("# Собеседник 7\n" + "шлюз " * 300 + "\n", encoding="utf-8")
+    s.refresh(force=True)
+    s.embed_pending()
+    sem_only = s.search("gateway", limit=4)
+    top = _rels(sem_only)
+    assert sem_only.sem_used and "Люди/Собеседник 7.md" in top
+    assert top.index("Системы/Платёжный шлюз.md") < top.index("Люди/Собеседник 7.md"), top
     assert gs.bm25_lite(300, 0, 1.0, len_norm=13.0) < gs.bm25_lite(300, 0, 1.0, len_norm=1.0)
 
 
@@ -158,7 +173,7 @@ def test_one_meeting_does_not_eat_all_slots_and_hop_follows_links_from_a_node(tm
     assert len({gs.meeting_key(r) for r in rels}) >= 2, f"три грани одной встречи заняли все слоты: {rels}"
     # «что решил Иван» — запрос из одного имени: узел находится, а решение живёт в
     # заметке встречи по ссылке из него — самой свежей, раз других слов в запросе нет
-    r = s.search("что решил Иван Мироненко", limit=1, semantic=False)
+    r = s.search("что решил Иван Мироненко", limit=1)
     assert _rels(r) == ["Люди/Иван Мироненко.md", "Встречи/2026-08-01_1000.md"], r.blocks
     assert "↳ по ссылке из Люди/Иван Мироненко.md" in r.blocks[1] and "15 августа" in r.blocks[1]
     assert r.total >= len(r.blocks)
@@ -166,14 +181,18 @@ def test_one_meeting_does_not_eat_all_slots_and_hop_follows_links_from_a_node(tm
 
 def test_honesty_gate_and_render_markers(tmp_path):
     s = _search(tmp_path)
-    off = s.search("рецепт борща со сметаной для шлюза", limit=3, semantic=False)   # одно слово из графа
-    assert off.low_conf and off.blocks
+    off = s.search("рецепт борща со сметаной для шлюза", limit=3)   # одно слово из графа, семантика мимо
+    assert off.sem_used and off.low_conf and off.blocks
     assert gs.render(off, "рецепт борща").startswith("⚠ Похоже, в архиве об этом почти ничего нет")
-    none = s.search("qqqzzz", semantic=False)
+    none = s.search("qqqzzz")
     assert none.empty and gs.render(none, "qqqzzz") == "Ничего не найдено по «qqqzzz» в графе"
-    good = s.search("платёжный шлюз", limit=2, semantic=False)
+    good = s.search("платёжный шлюз", limit=2)
     text = gs.render(good, "платёжный шлюз")
     assert text.startswith("Найдено в графе (") and "• Системы/Платёжный шлюз.md\n  " in text
+    # без семантики уверенности нет: та же выдача, но с «⚠» и своей причиной
+    lex = s.search("платёжный шлюз", limit=2, semantic=False)
+    assert lex.blocks and lex.low_conf and not lex.sem_used and "не проверены" in lex.why_low
+    assert gs.render(lex, "платёжный шлюз").startswith("⚠ Совпадения не проверены семантикой")
     assert gs.render(gs.Result([], 0, False, ready=False), "x") == ""
 
 
@@ -185,7 +204,7 @@ def test_dossier_comes_first(tmp_path):
                                               encoding="utf-8")
     dossier.write_index(folder, [{"тема": "Платёжный шлюз", "ключи": ["платежн", "шлюз", "провайдер"],
                                   "источников": 3, "собрано": "2026-08-02"}])
-    r = s.search("что с платёжным шлюзом", limit=2, semantic=False)
+    r = s.search("что с платёжным шлюзом", limit=2)
     assert r.dossiers and r.dossiers[0].startswith("📁 Досье «Платёжный шлюз»") and "ЮPay" in r.dossiers[0]
     text = gs.render(r, "что с платёжным шлюзом")
     assert text.index("📁 Досье") < text.index("Найдено в графе")
@@ -195,7 +214,8 @@ def test_dossier_comes_first(tmp_path):
 
 
 def test_semantic_layer_uses_cached_vectors_and_survives_without_embeddings(tmp_path):
-    s = _search(tmp_path)
+    s = gs.GraphSearch(_graph(tmp_path), {}, data_dir=tmp_path / "data", embed=fake_embed)
+    s.refresh(force=True)
     assert s.pending_vectors() and s.embed_pending(budget_s=0) == 0, "нулевой бюджет — ни одного вызова"
     n = s.embed_pending()
     assert n == s.size and not s.pending_vectors()
@@ -294,15 +314,17 @@ def test_brain_facade_raises_until_warm_and_then_renders(tmp_path, monkeypatch):
     mem = brain.warm(cfg)
     assert mem is not None and mem.ready and brain.warm({"sufler": {}}) is None
     text = brain.vault_search(cfg, "платёжный шлюз", limit=2, snippet_chars=200, timeout=2.5)
-    assert text.startswith("Найдено в графе (") and "Системы/Платёжный шлюз.md" in text
+    assert text.startswith("⚠ Совпадения не проверены семантикой") and "Системы/Платёжный шлюз.md" in text
     assert "не найдено" in brain.vault_search(cfg, "qqqzzz", limit=2, snippet_chars=200, timeout=2.5).lower()
 
 
 @pytest.mark.parametrize("cov, sim, sem_used, expected", [
-    (0.6, 0.0, False, False),    # семантика недоступна, покрытие 3/5 — не «в архиве нет» (DS C1)
-    (0.25, 0.0, False, True),    # один сигнал, и тот совсем слабый
+    (1.0, 0.0, False, True),     # без семантики уверенности нет — даже при полном покрытии (замер 17.09)
+    (0.5, 0.0, False, True),     # «одно из двух» без семантики — тем более
+    (0.5, 0.3, True, True),      # одно из двух и слабый косинус — «⚠» (DS C1 круга 2)
     (0.6, 0.3, True, True),      # оба слабые
     (0.6, 0.6, True, False),     # семантика уверена
+    (2 / 3, 0.1, True, False),   # две иглы из трёх (0,6667) — правило приложения: порог 0,66, не 0,67
     (0.8, 0.1, True, False),     # лексика уверена
 ])
 def test_honesty_gate_is_a_function_of_available_evidence(cov, sim, sem_used, expected):
@@ -320,8 +342,8 @@ def test_gate_without_semantics_keeps_partial_matches_and_flags_nonsense(tmp_pat
     s = gs.GraphSearch(_graph(tmp_path), {}, data_dir=tmp_path / "data", embed=busy)
     s.refresh(force=True)
     r = s.search("интеграцию платёжного шлюза ведёт Иван до пятницы срок", limit=3)
-    assert not r.sem_used and not r.low_conf and r.blocks, r
-    assert s.search("рецепт борща со сметаной для шлюза", limit=3).low_conf
+    assert not r.sem_used and r.low_conf and r.blocks, "нашли по словам, но не подтвердили — «⚠» с причиной"
+    assert "не проверены" in r.why_low and s.search("рецепт борща со сметаной для шлюза", limit=3).low_conf
     # семантика есть: синоним даёт уверенность без единого общего слова
     s2 = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=fake_embed)
     s2.refresh(force=True)
@@ -336,11 +358,13 @@ def test_gate_without_semantics_keeps_partial_matches_and_flags_nonsense(tmp_pat
     (s.graph / "Системы" / "ИИ помощник.md").write_text("# ИИ помощник\nИИ-помощник по данным, пилот\n", encoding="utf-8")
     s2.refresh(force=True)
     assert gs.needles("что по ИИ")[0] == ["ии"] and gs.needles("что как где")[0] == []
+    assert gs.needles("тз по интеграции")[0] == ["тз", "интеграц"], "строчная аббревиатура — тоже термин (DS I6 / GLM M3 r2)"
     assert _rels(s2.search("что по ИИ", limit=2, semantic=False))[0] == "Системы/ИИ помощник.md"
     (s.graph / "Системы" / "Стоп.md").write_text("# Стоп\nкак где что — фраза из одних служебных слов\n", encoding="utf-8")
     s2.refresh(force=True)
-    only_stop = s2.search("как где что", limit=2, semantic=False)
-    assert only_stop.blocks and only_stop.low_conf, "подстрока без игл — находка, но слабое свидетельство"
+    s2.embed_pending()
+    only_stop = s2.search("как где что", limit=2)
+    assert only_stop.blocks and not only_stop.low_conf, "точное совпадение фразы — свидетельство, не «⚠» (GLM M4 r2)"
 
 
 def test_vector_cache_survives_races_and_stale_entries(tmp_path):
@@ -371,11 +395,38 @@ def test_vector_cache_survives_races_and_stale_entries(tmp_path):
     s2.refresh(force=True)
     assert "Системы/Платёжный шлюз.md" not in _rels(s2.search("пилот сентября провайдер", limit=6)), \
         "переписанный файл ищется по свежему тексту, а не по старым векторам"
-    # новое сохранение — новый блоб, старый стёрт
-    clock["t"] += 1
+    # новое сохранение — новый блоб (имя уникально и на застывших часах), предыдущее
+    # поколение живёт (читатель без лока может держать его манифест), позапрошлое стёрто
     assert s2.embed_pending() >= 1
-    new_blob = manifest.with_name(json.loads(manifest.read_text(encoding="utf-8"))["blob"])
-    assert new_blob != first_blob and new_blob.exists() and not first_blob.exists()
+    second_blob = manifest.with_name(json.loads(manifest.read_text(encoding="utf-8"))["blob"])
+    assert second_blob != first_blob and second_blob.exists() and first_blob.exists()
+    (s.graph / "Системы" / "Третий.md").write_text("# Третий\nещё один узел с достаточно длинным текстом для блока\n", encoding="utf-8")
+    s2.refresh(force=True)
+    assert s2.embed_pending() >= 1
+    third_blob = manifest.with_name(json.loads(manifest.read_text(encoding="utf-8"))["blob"])
+    assert third_blob.exists() and second_blob.exists() and not first_blob.exists()
+    # два сохранения на застывших часах — разные блобы: имя поколения не из времени (DS I3 r2)
+    s2.save_vectors()
+    fourth_blob = manifest.with_name(json.loads(manifest.read_text(encoding="utf-8"))["blob"])
+    assert fourth_blob != third_blob and fourth_blob.exists() and third_blob.exists()
+    # чужая запись (ночь, апдейтер): манифест новее — экземпляр перечитывает, а не живёт старым
+    fresh = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=fake_embed, now=now)
+    fresh.refresh(force=True)
+    assert fresh.load_vectors() >= 1 and str(s.graph / "Системы" / "Третий.md") in fresh._vecs
+    # ... и уже загрузивший экземпляр видит чужую запись по mtime манифеста, а не живёт старым (GLM M6 r2)
+    (s.graph / "Системы" / "Четвёртый.md").write_text("# Четвёртый\nещё узел с достаточно длинным текстом для блока\n", encoding="utf-8")
+    other = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=fake_embed, now=now)
+    other.refresh(force=True)
+    clock["t"] += 2
+    assert other.embed_pending() >= 1
+    os.utime(manifest, (clock["t"] + 3, clock["t"] + 3))
+    fresh.refresh(force=True)
+    fresh.load_vectors()
+    assert str(s.graph / "Системы" / "Четвёртый.md") in fresh._vecs, "новый манифест на диске — перечитан без перезапуска"
+    # ключ кэша: сменилась модель или нарезка — кэш холодный целиком (DS I2 r2)
+    cold = gs.GraphSearch(s.graph, {"sufler": {"embed_model": "other-model"}}, data_dir=tmp_path / "data", embed=fake_embed, now=now)
+    cold.refresh(force=True)
+    assert cold.load_vectors() == 0 and len(cold.pending_vectors()) == cold.size
     # файл исчез — вектор уходит из памяти вместе с ним (DS M3)
     node.unlink()
     s2.refresh(force=True)
@@ -389,6 +440,12 @@ def test_vector_cache_survives_races_and_stale_entries(tmp_path):
     assert s2.embed_pending() == 0 and "другой процесс" in s2.note
     holder.close()
     assert s2.embed_pending() == 1
+    # сервер эмбеддингов не ответил — причина названа (DS I5 / GLM M5 r2)
+    mute = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=lambda t, to: [], now=now)
+    mute.refresh(force=True)
+    (s.graph / "Системы" / "Новый узел.md").write_text("# Новый узел\nдостаточно длинный текст для блока и вектора\n", encoding="utf-8")
+    mute.refresh(force=True)
+    assert mute.embed_pending() == 0 and "не ответил" in mute.note
 
 
 def test_indexing_stops_on_live_recording_and_respects_the_budget(tmp_path):
@@ -415,3 +472,67 @@ def test_indexing_stops_on_live_recording_and_respects_the_budget(tmp_path):
     assert len(calls) >= 2 and calls[0] == 25.0 and calls[1] == 15.0 and all(0 < t <= 25 for t in calls), \
         f"таймаут пачки — остаток бюджета, не 60: {calls}"
 
+
+
+def test_metacharacters_in_graph_name_do_not_break_generation_cleanup(tmp_path):
+    """Имя папки графа с метасимволами ломало glob уборки — блобы копились (DS M7 r2)."""
+    g = tmp_path / "Граф [тест]"
+    (g / "Системы").mkdir(parents=True)
+    (g / "Системы" / "Узел.md").write_text("# Узел\nдостаточно длинный текст для блока и вектора здесь\n", encoding="utf-8")
+    s = gs.GraphSearch(g, {}, data_dir=tmp_path / "data", embed=fake_embed)
+    s.refresh(force=True)
+    for i in range(3):
+        (g / "Системы" / f"У{i}.md").write_text(f"# У{i}\nещё один достаточно длинный текст для блока и вектора\n", encoding="utf-8")
+        s.refresh(force=True)
+        assert s.embed_pending() >= 1
+    blobs = [p for p in (tmp_path / "data" / "graph_search").iterdir() if p.name.endswith(".f32")]
+    assert len(blobs) == 2, f"текущее и предыдущее поколение, не больше: {[b.name for b in blobs]}"
+
+
+def test_reader_retries_when_writer_publishes_between_manifest_and_blob(tmp_path):
+    """Блоб исчез между чтением манифеста и открытием — один повтор по свежему манифесту (GLM I1 r2)."""
+    s = _search(tmp_path)
+    manifest = s._vec_manifest
+    stale = json.loads(manifest.read_text(encoding="utf-8"))
+    r = gs.GraphSearch(s.graph, {}, data_dir=tmp_path / "data", embed=fake_embed)
+    r.refresh(force=True)
+    real_read = pathlib.Path.read_text
+    state = {"n": 0}
+    def flaky_read(self, *a, **kw):
+        text = real_read(self, *a, **kw)
+        if self == manifest and state["n"] == 0:
+            state["n"] += 1
+            # писатель успел: старый манифест в руках читателя указывает на стёртый блоб
+            (s.graph / "Системы" / "Ещё.md").write_text("# Ещё\nдостаточно длинный текст для блока и вектора здесь\n", encoding="utf-8")
+            s.refresh(force=True); s.embed_pending(); s.refresh(force=True); s.embed_pending()
+            manifest.with_name(stale["blob"]).unlink(missing_ok=True)
+            return json.dumps(stale)
+        return text
+    import unittest.mock as um
+    with um.patch.object(pathlib.Path, "read_text", flaky_read):
+        assert r.load_vectors() >= 1, "повтор по свежему манифесту, а не 30 секунд без семантики"
+
+
+def test_semantic_fallback_fragment_skips_frontmatter(tmp_path):
+    """Файл, найденный семантикой без единой иглы, показывается телом, не YAML-шапкой (DS M9 r2)."""
+    s = _search(tmp_path)
+    (s.graph / "Системы" / "Поставщик.md").write_text("---\ntype: система\ntags: [встречи]\n---\n# Поставщик\nпоставщик платежей: договор подписан\n", encoding="utf-8")
+    s.refresh(force=True)
+    s.embed_pending()
+    r = s.search("провайдер", limit=4)
+    block = next(b for b in r.blocks if b.startswith("• Системы/Поставщик.md"))
+    assert "type: система" not in block and "поставщик платежей" in block
+
+
+def test_node_files_keep_twice_as_many_chunks(tmp_path):
+    """Узел человека с длинной историей: лимит блоков вдвое выше, чем у заметки —
+    середина истории не исчезает целиком (GLM r2, критика 1)."""
+    s = gs.GraphSearch(_graph(tmp_path), {}, data_dir=tmp_path / "data", embed=fake_embed)
+    long = "# Иван\n" + "\n\n".join(f"## Встреча {i}\n" + f"встреча {i} " + "слово " * 90 for i in range(40))
+    (s.graph / "Люди" / "Иван Долгий.md").write_text(long, encoding="utf-8")
+    (s.graph / "Встречи" / "2026-08-09_1000.md").write_text(long, encoding="utf-8")
+    s.refresh(force=True)
+    s.embed_pending()
+    node_vecs = s._vecs[str(s.graph / "Люди" / "Иван Долгий.md")][1]
+    note_vecs = s._vecs[str(s.graph / "Встречи" / "2026-08-09_1000.md")][1]
+    assert len(node_vecs) == gs.MAX_CHUNKS_NODE and len(note_vecs) == gs.MAX_CHUNKS
