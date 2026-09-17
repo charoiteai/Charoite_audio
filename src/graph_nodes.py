@@ -18,6 +18,7 @@ from __future__ import annotations
 import dataclasses
 import pathlib
 import re
+import unicodedata
 import threading
 
 import frontmatter
@@ -48,6 +49,14 @@ _EN_SUFFIXES = ("ing", "ed", "es", "s")
 
 
 def norm(s: str) -> str:
+    """Регистр и ё→е, поверх единой формы Unicode.
+
+    NFC первой строкой: macOS отдаёт имя файла в разложенной форме, где «ё» —
+    это «е» плюс отдельные точки. Без сборки `_WORD` режет такое имя на «е» и
+    «лка» ещё до стемминга, и узел перестаёт узнавать сам себя (GLM, круг 2
+    по №291; та же ловушка, что `graph_links.norm` закрыл по #450)."""
+    if not s.isascii() and not unicodedata.is_normalized("NFC", s):
+        s = unicodedata.normalize("NFC", s)
     return s.lower().replace("ё", "е")
 
 

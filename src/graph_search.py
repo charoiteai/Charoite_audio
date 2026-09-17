@@ -132,14 +132,14 @@ _HEADING_RX = re.compile(r"^(#{1,3})[ \t]+(.+?)[ \t]*$", re.M)
 
 
 def norm(s: str) -> str:
-    """Регистр, ё→е, полноширинные латиница и цифры → обычные, форма NFC.
+    """Регистр, ё→е, полноширинные латиница и цифры → обычные.
 
-    NFC обязателен именно здесь: имя файла приходит от macOS в NFD, а тот же
-    текст внутри заметки набран в NFC, и «Ёлка» из имени не совпала бы с
-    «Ёлка» из ссылки (та же ловушка, что `graph_links.norm` закрыл по #450).
-    Форма приводится ДО замены ё→е: в разложенной форме «ё» — это «е» плюс
-    отдельные точки, и замена по ней не срабатывает вовсе."""
-    return graph_nodes.norm(unicodedata.normalize("NFC", s)).translate(_FULLWIDTH)
+    Форму Unicode приводит `graph_nodes.norm` — одна нормализация на проект.
+    Здесь её повторять нельзя: NFC меняет ДЛИНУ разложенного текста, а
+    `snippet` по совпадению длин решает, из чего резать фрагмент, и NFD-заметка
+    уехала бы в выдачу строчными буквами (DS, круг 2 по №291). Текст приводится
+    к NFC один раз при чтении файла, в `_walk`."""
+    return graph_nodes.norm(s).translate(_FULLWIDTH)
 
 
 def norm_text(s: str) -> str:
@@ -300,10 +300,13 @@ def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
     stubs: dict[str, str] = {}
     live: set[str] = set()
     for d in docs:
-        if d.stub_to:
+        if d.stub_to and d.stub_to != d.base:
             stubs.setdefault(d.base, d.stub_to)
-        else:
+        elif not d.stub_to:
             live.add(d.base)
+        # «# X → [[X]]» — ни живой файл, ни звено: в live она собирала бы на себя
+        # чужие ссылки, в stubs — вытесняла настоящий редирект той же базы, и
+        # победитель решался порядком обхода каталога (DS, круг 2 по №291)
     out: dict[str, str] = {}
     for start in stubs:
         if start in live:   # под этим именем есть и живой файл — ссылка про него
@@ -313,9 +316,22 @@ def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
         while cur not in live and cur in stubs and cur not in seen:
             seen.add(cur)
             cur = stubs[cur]
-        if cur not in seen:           # цикл и самопетля «# X → [[X]]» — имя не трогаем
-            out[start] = cur
+        if cur not in seen and cur in live:
+            out[start] = cur          # цепочка кончилась живым файлом — только тогда
+        # иначе цикл, самопетля или оборванная стрелка: имя не переписываем, иначе
+        # голос ушёл бы ключу, под которым документа нет вовсе (DS I3, круг 2)
     return out
+
+
+def name_owner(base: str, stub_to: str, live: dict[str, Doc], canon: dict[str, str]) -> Doc | None:
+    """Кто отвечает за это имя: живой тёзка, иначе канон за стрелкой заглушки.
+
+    Одно правило на всех потребителей. Приоритет тёзки тот же, что в
+    `canon_bases`: есть под именем живой файл — имя про него, и стрелка
+    мёртвого дубля его не перебивает. Круг 2 по №291 поймал, как два
+    экземпляра этого правила в одном файле разошлись: подмена в выдаче
+    отдавала слот живой цели стрелки, а переходы — тёзке."""
+    return live.get(base) or live.get(canon.get(base, stub_to))
 
 
 def wiki_targets(text: str) -> set[str]:
@@ -626,7 +642,9 @@ class GraphSearch:
                     continue
                 try:
                     with open(path, encoding="utf-8", errors="ignore") as fh:
-                        text = fh.read()
+                        # одна форма Unicode на весь конвейер: имя файла от macOS
+                        # приходит разложенным, текст заметки — собранным
+                        text = unicodedata.normalize("NFC", fh.read())
                 except OSError:
                     continue
                 rel = os.path.relpath(path, root).replace(os.sep, "/")
@@ -1098,9 +1116,7 @@ def _swap_stubs(hits: Sequence[tuple[str, float]], by_rel: dict[str, Doc],
     for rel, score in hits:
         d = by_rel[rel]
         if d.stub_to:
-            # у базы заглушки есть живой тёзка — правило однофамильца оставило имя
-            # за ним, и слот по праву его: цель стрелки могла вообще не дожить
-            target = live.get(canon.get(d.base, d.stub_to)) or live.get(d.base)
+            target = name_owner(d.base, d.stub_to, live, canon)
             if target is None:        # канон не дожил до индекса — показывать нечего
                 continue
             rel = target.rel

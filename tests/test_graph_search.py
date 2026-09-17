@@ -713,6 +713,11 @@ def test_canon_bases_unrolls_chains_keeps_namesakes_and_survives_cycles():
     # заглушка «# X → [[X]]» не живой файл: раньше она уходила в live и собирала
     # на себя ссылки третьих узлов — ровно тот дефект, который правка закрывает
     assert gs.canon_bases([d("а", "б"), d("б", "б")]) == {}, "цепочка упёрлась в самопетлю"
+    # две заглушки под одним именем: самопетля не должна вытеснять настоящий
+    # редирект — иначе победитель зависит от порядка обхода каталога
+    loop, real, alive = d("отчёт", "отчёт"), d("отчёт", "итоги"), d("итоги")
+    assert gs.canon_bases([loop, real, alive]) == {"отчёт": "итоги"}
+    assert gs.canon_bases([real, loop, alive]) == {"отчёт": "итоги"}, "исход зависит от порядка обхода"
 
 
 def test_links_to_a_merged_node_feed_the_canon_and_the_hop_reaches_it(tmp_path):
@@ -804,6 +809,16 @@ def test_a_stub_slot_falls_back_to_its_living_namesake(tmp_path):
     assert any("Документация/Отчёт по сбою.md" in b and "ЖИВОЙ_ТЁЗКА" in b for b in r.blocks), r.blocks
     assert not any("Ядра/Отчёт по сбою.md" in b for b in r.blocks), "заглушка в выдаче"
 
+    # цель стрелки ожила — имя всё равно за тёзкой: иначе слот, заработанный
+    # именем «Отчёт по сбою», уезжает документу с другим именем (GLM, круг 2)
+    (g / "Ядра" / "Пропавший разбор.md").write_text(
+        "# Пропавший разбор\nВосстановленный разбор ЧУЖОЕ_ИМЯ.\n", encoding="utf-8")
+    s.refresh(force=True)
+    s.embed_pending()
+    r2 = s.search("отчёт по сбою", limit=3)
+    assert any("Документация/Отчёт по сбою.md" in b for b in r2.blocks), r2.blocks
+    assert not any("ЧУЖОЕ_ИМЯ" in b for b in r2.blocks), "слот имени уехал цели стрелки"
+
 
 def test_normalisation_survives_a_decomposed_file_name():
     """Имя файла от macOS приходит в NFD, ссылка в тексте — в NFC: без общей
@@ -813,3 +828,22 @@ def test_normalisation_survives_a_decomposed_file_name():
     assert nfd != "Ёлка", "оснастка сломана: формы совпали"
     assert gs.norm_text(nfd) == gs.norm_text("Ёлка")
     assert gs.stub_base(f"# Старое → [[Ядра/{nfd}]]\n\nДубль. Смерджен\n") == gs.norm_text("Ёлка")
+
+
+def test_a_fragment_keeps_its_case_in_a_decomposed_note(tmp_path):
+    """Заметка в разложенной форме печатается как есть, а не строчными.
+
+    `snippet` решает по совпадению длин, из чего резать фрагмент; нормализация
+    внутри `norm()` меняла длину, и весь блок уезжал в нижний регистр вместе с
+    ё→е (DS, круг 2 по №291). Форма приводится при чтении файла."""
+    import unicodedata
+    s = _search(tmp_path)
+    body = "ПРОПИСНЫЕ буквы и ёлка. " + "Хвост про платёжный шлюз и сроки. " * 40
+    (s.graph / "Документация" / "Разложенная.md").write_text(
+        unicodedata.normalize("NFD", "# Разложенная\n" + body), encoding="utf-8")
+    s.refresh(force=True)
+    s.embed_pending()
+    r = s.search("ёлка", limit=3, snippet_chars=400)
+    frag = next((b for b in r.blocks if "Разложенная.md" in b), "")
+    assert frag, r.blocks
+    assert "ПРОПИСНЫЕ" in frag, f"фрагмент пришёл нормализованным: {frag[:200]}"
