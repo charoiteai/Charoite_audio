@@ -34,6 +34,8 @@ from collections.abc import Iterator
 
 import requests
 
+import charoite_paths
+import model_lease
 import privacy
 
 # «Модель занята» — не сбой, а очередь без очереди. Ollama 0.32 с MLX-раннером
@@ -434,10 +436,66 @@ class LLM:
             return {}
         return {"headers": {"Authorization": f"Bearer {self._key}"}}
 
+    # ---- аренда модели: «наша генерация в полёте» как факт для llm_health ----
+    # Два шва ниже — единственная дверь к локальному серверу для стримов и
+    # complete (все движки, фолбэк облака на локальную, warmup). На время
+    # запроса клиент держит flock-файл (model_lease): решение о перезапуске
+    # сервера в llm_health перестаёт тикать константой и щадит живую работу
+    # (№264; входной круг DS и GLM 18.09). Аренда живёт короче вызова: у
+    # стрима — до закрытия ответа, у complete — на один POST, поэтому к
+    # моменту, когда _post_with_revive позовёт ensure_alive после отказа,
+    # своей аренды на диске уже нет и вопрос «свой или чужой» не возникает.
+    # Мимо швов к модели ходят только embed() (0,2 с, убить не жалко) и проба
+    # llm_health.probe (тот, кто спрашивает) — структурный тест пиннит список.
+    _ROOT = charoite_paths.resolve_root(__file__)
+
+    def _lease(self, kind: str, *, budget: float | None) -> model_lease.Lease:
+        return model_lease.Lease(self._ROOT, server=self.base, engine=self.engine,
+                                 kind=kind, budget=budget)
+
+    class _LeasedStream:
+        """Стримовый ответ с арендой: байты катят deadline, выход из with —
+        снимает аренду вместе с закрытием ответа. Всё остальное — у ответа."""
+
+        def __init__(self, r, lease: model_lease.Lease) -> None:
+            self._r, self._lease = r, lease
+
+        def __enter__(self):
+            enter = getattr(self._r, "__enter__", None)
+            if enter is not None:
+                enter()
+            return self
+
+        def __exit__(self, *exc) -> None:
+            try:
+                leave = getattr(self._r, "__exit__", None)
+                if leave is not None:
+                    leave(*exc)
+            finally:
+                self._lease.__exit__(*exc)
+
+        def iter_lines(self, *a, **kw):
+            for line in self._r.iter_lines(*a, **kw):
+                if line:
+                    self._lease.progress()
+                yield line
+
+        def close(self) -> None:
+            try:
+                self._r.close()
+            finally:
+                self._lease.__exit__(None, None, None)
+
+        def __getattr__(self, name: str):
+            return getattr(self._r, name)
+
     def _open_stream(self, url: str, payload: dict, busy_wait: float,
                      timeout: float | tuple = 300):
         """POST со стримом; занятый сервер (503/429, отказ соединения) —
-        повторяем с растущей паузой, пока не выйдем за busy_wait."""
+        повторяем с растущей паузой, пока не выйдем за busy_wait. Аренда
+        модели берётся, когда сервер ПРИНЯЛ запрос (200) — очередь за занятым
+        сервером аренду не держит: она самозалечивается ретраями, а на
+        висящем сервере держала бы перезапуск навсегда."""
         deadline = time.monotonic() + max(0.0, busy_wait)
         for n, delay in enumerate(BUSY_BACKOFF + (BUSY_BACKOFF[-1],) * 1000):
             try:
@@ -458,7 +516,7 @@ class LLM:
                 detail = r.text[:500]
                 r.close()
                 raise self._fail(r.status_code, detail)
-            return r
+            return self._LeasedStream(r, self._lease("stream", budget=None).__enter__())
         raise RuntimeError("unreachable")  # pragma: no cover
 
     def _mlx_payload(self, messages: list[dict], *, think: bool | None,
@@ -828,8 +886,12 @@ class LLM:
         _post_with_revive: там решается, поднимать ли модель.
         """
         deadline = time.monotonic() + max(0.0, busy_wait)
+        # бюджет аренды — read-таймаут одного POST: не-стрим генерирует весь
+        # ответ внутри него; паузы «занято» между попытками — без аренды
+        read_budget = timeout[1] if isinstance(timeout, tuple) else timeout
         for delay in BUSY_BACKOFF + (BUSY_BACKOFF[-1],) * 1000:
-            r = requests.post(url, json=payload, timeout=timeout, **self._auth())
+            with self._lease("complete", budget=read_budget):
+                r = requests.post(url, json=payload, timeout=timeout, **self._auth())
             if r.status_code in BUSY_STATUSES and time.monotonic() + delay <= deadline:
                 r.close()          # соединение не держим до GC на каждой паузе (GLM M2), как в _open_stream
                 time.sleep(delay)

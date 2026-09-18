@@ -66,6 +66,22 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
   pauses within the caller's budget (live loops up to 30 s, graph extraction
   up to 10 min); `llm_health.probe` distinguishes `BUSY` and never restarts
   the server under someone else's generation.
+- **Our own generation in flight is a fact, not a guess.** For the duration of
+  every request to the local model the transport (`llm._open_stream`,
+  `llm._post_busy`) holds a lease file `data/llm_inflight/<pid>-<id>.json`
+  under `flock` (`model_lease`): the kernel releases it the moment the
+  process dies, so no pid or mtime heuristics. One file per call, not per
+  process: the daemon runs several generations from one pid. Liveness has a
+  single criterion, `deadline`: the request budget for non-streams, a
+  rolling one for streams that moves on every byte (`STALL_S` exceeds the
+  read timeout of document streams, otherwise a live prefill would count as a
+  hang). Before restarting, `llm_health` reads the leases for this server: a
+  live, non-stalled one means the server is busy with our work and the caller
+  queues behind it; a stalled or absent one means restart as before. The
+  guard lives inside `_restart*` itself, so every path to a kill inherits it;
+  `force=True` is the manual emergency restart. Leases on the cloud gateway
+  never hold a local restart (matched by server address); waiting in the
+  busy queue holds no lease — that queue heals itself.
 - **An error inside a stream is an error.** An `{"error": …}` line inside a
   200 response, or a stream that ends without its terminator, raises: a
   truncated set of minutes is never passed off as complete.

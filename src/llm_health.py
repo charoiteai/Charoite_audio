@@ -47,6 +47,8 @@ from pathlib import Path
 
 import requests
 
+import model_lease
+
 import privacy
 from charoite_paths import resolve_root, trim_log
 from llm import DEFAULT_MLX_MODEL
@@ -220,7 +222,39 @@ def _gui_restart() -> list[list[str]]:
     return [["pkill", "-f", "Ollama.app/Contents"], ["open", "-a", "Ollama"]]
 
 
-def _restart(cfg: dict, log: Callable[[str], None]) -> bool:
+def busy_with_ours(cfg: dict, *, now: float | None = None) -> list[dict]:
+    """Живые аренды НАШИХ клиентов на сервер, который собираемся трогать.
+
+    Аренда протухшая (стрим без байта дольше model_lease.STALL_S, не-стрим
+    дольше своего бюджета) — работа висит, её не щадят; сирота (процесс умер)
+    — убрана читателем. Адрес — тот же, что у пробы и перезапуска: аренда
+    облачного шлюза не должна держать перезапуск локальной Ollama (I6 DS)."""
+    try:
+        leases = model_lease.live(ROOT, server=_base_url(cfg), now=now)
+    except Exception:  # noqa: BLE001 — мусор в служебной папке не роняет решение
+        return []
+    return [x for x in leases if not x.get("stalled")]
+
+
+def _spare(cfg: dict, log: Callable[[str], None], *, force: bool) -> bool:
+    """Страховка перед kill: есть живая аренда — перезапуск не наш ход.
+
+    Стоит в самом перезапуске, а не только в ensure_alive: любой будущий путь
+    к kill наследует защиту (входной круг GLM по №264). `force` — ручной
+    аварийный перезапуск, когда застрявшее надо убрать из-под аренд."""
+    if force:
+        return False
+    live = busy_with_ours(cfg)
+    if not live:
+        return False
+    log("LLM: перезапуск отложен — модель занята живой работой: "
+        + model_lease.describe(live))
+    return True
+
+
+def _restart(cfg: dict, log: Callable[[str], None], *, force: bool = False) -> bool:
+    if _spare(cfg, log, force=force):
+        return False
     try:
         listener = listener_path(privacy.llm_base_url(cfg))
     except RuntimeError:
@@ -261,7 +295,7 @@ def _mlx_listener_pid(url: str) -> int | None:
         return None
 
 
-def _restart_mlx(cfg: dict, log: Callable[[str], None]) -> bool:
+def _restart_mlx(cfg: dict, log: Callable[[str], None], *, force: bool = False) -> bool:
     """Перезапуск mlx_lm.server: снять владельца порта, поднять свой процесс.
 
     Убиваем ТОЛЬКО владельца порта из loopback-адреса конфига — это либо наш
@@ -270,6 +304,8 @@ def _restart_mlx(cfg: dict, log: Callable[[str], None]) -> bool:
     logs/mlx_server.log: молча умерший сервер без лога — это снова «молчание
     вместо результата».
     """
+    if _spare(cfg, log, force=force):
+        return False
     url = privacy.mlx_base_url(cfg)
     pid = _mlx_listener_pid(url)
     if pid is not None:
@@ -387,6 +423,18 @@ def ensure_alive(cfg: dict, log: Callable[[str], None] = print,
             if state is False:
                 break          # теперь и сервер молчит — перезапуск
         else:
+            # Грейс истёк, сервер на связи, а пробу так и не пропустили. Прежде
+            # чем убивать, спросить своих: держит ли кто-то из наших процессов
+            # живую аренду модели (model_lease). Держит — это очередь за длинной
+            # работой, а не зависание: перезапуск убил бы ту работу, ради
+            # которой грейс завели (инцидент 12.08; №264). Вызывающий встанет в
+            # очередь своим busy_wait, как при BUSY. Аренда без прогресса
+            # дольше STALL_S живой не считается — тогда перезапуск, как прежде
+            live = busy_with_ours(cfg)
+            if live:
+                log(f"LLM молчит {int(wait)} с, но модель занята живой работой — "
+                    f"иду в очередь за ней: {model_lease.describe(live)}")
+                return True
             log(f"LLM молчит {int(wait)} с при живом сервере — перезапускаю")
     mlx = privacy.llm_engine(cfg) == "mlx-server"
     log("LLM не отвечает на пробу — перезапускаю "
