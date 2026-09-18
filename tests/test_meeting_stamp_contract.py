@@ -480,9 +480,11 @@ def test_демон_пишет_посекундный_штамп_в_сайдка
     src = (pathlib.Path(__file__).resolve().parents[1] / "src" / "daemon.py").read_text(encoding="utf-8")
     # якорь — сам словарь сайдкара, а не первое упоминание live.json выше по
     # файлу (DS r1 M1 по #492: срез от чужого упоминания молча уехал бы)
-    start = src.index('json.dumps({"speakers": len(voice_names)')
-    block = src[start:src.index("ensure_ascii", start)]
-    assert '"stamp": tr.stamp' in block
+    # с №234 сайдкар пишется СЛИЯНИЕМ (live_sidecar.merge), не дампом одной
+    # строкой: во время встречи туда уже пишет след канала
+    start = src.index('live_sidecar.merge(pathlib.Path(tr.path),')
+    block = src[start:src.index("bare=tr.stamp)", start)]
+    assert '"stamp": tr.stamp' in block and '"speakers": len(voice_names)' in block
 
 
 def test_посекундный_штамп_находит_свою_запись(tmp_path):

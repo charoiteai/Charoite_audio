@@ -47,6 +47,8 @@ import fact_check  # noqa: E402
 import frame_drops  # noqa: E402
 from meeting_processing import MeetingStatusStore  # noqa: E402
 from meeting_thread import Thread as MeetingThread  # noqa: E402
+import channel_trace  # noqa: E402
+import live_sidecar  # noqa: E402
 import privacy  # noqa: E402
 import question_filter  # noqa: E402
 import speaker_names  # noqa: E402
@@ -542,6 +544,11 @@ def main():
     # по имени .md, и разъехавшиеся на границе минуты штампы означали молча
     # пропущенную финальную пересборку.
     hub = AudioHub.for_meeting(cfg, stamp=tr.stamp)
+    # След события канала в документах встречи (№234): сайдкар (долговечно),
+    # хвост «Ко-мышления» стенограммы и нить — одним владельцем по структурному
+    # событию хаба, не по подстрокам статуса
+    trace = channel_trace.ChannelTrace(pathlib.Path(tr.path), tr.note, thread.add_system, bare=tr.stamp)
+    hub.on_channel = trace.on_event
     # Смерть записи на диск — не серый статус, который затрёт следующий же
     # «⚡ отвечаю»: флаг error красит строку как отказ, и человек видит её
     # до конца встречи (ревью 21.08, GLM).
@@ -3270,16 +3277,20 @@ def main():
             # Атомарно: по хешу в этом файле пересборка решает, трогать ли
             # минутки, а демона в этот момент может добивать watchdog — обрыв
             # write_text оставлял бы битый JSON (advisory GLM по #483).
-            safe_write.write_text(
-                pathlib.Path(str(tr.path) + ".live.json"),
-                json.dumps({"speakers": len(voice_names), "names": tr.names(),
-                            "minutes_sha256": minutes_sha["v"],
-                            # посекундный штамп встречи: после наката темы имя
-                            # файла его теряет, а пересборке он нужен точно —
-                            # иначе она ищет записи по минуте и может взять
-                            # запись соседки (№164)
-                            "stamp": tr.stamp},
-                           ensure_ascii=False))
+            # Итог по каналам — до спавна пересборки: хвост переносится regex-ом,
+            # строка должна лежать в файле к её чтению (№234)
+            hub.end_channel_episodes()
+            trace.close()
+            # СЛИЯНИЕ, не дамп: во время встречи сайдкар уже пишет след канала,
+            # и дамп одной строкой стирал бы его (Critical DS и GLM по №234)
+            live_sidecar.merge(pathlib.Path(tr.path),
+                               {"speakers": len(voice_names), "names": tr.names(),
+                                "minutes_sha256": minutes_sha["v"],
+                                # посекундный штамп встречи: после наката темы имя
+                                # файла его теряет, а пересборке он нужен точно —
+                                # иначе она ищет записи по минуте и может взять
+                                # запись соседки (№164)
+                                "stamp": tr.stamp}, bare=tr.stamp)
         except Exception:  # noqa: BLE001 — подсказка вспомогательна, не рушим финал
             pass
         try:

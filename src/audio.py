@@ -62,6 +62,40 @@ MIC_LOST_LOG_MARK = "ЗАПИСЬ БЕЗ МИКРОФОНА"
 LOSS_LOG_MARKS = (MIC_ONLY_LOG_MARK, MIC_LOST_LOG_MARK)
 
 
+# Виды события канала (№234): единственный структурный выход хаба о том, что
+# канал перестал или снова начал писать. Из события собираются и крик человеку
+# (статус, уведомление, capture.log), и след встречи (сайдкар, хвост
+# стенограммы, нить) — до этого событие существовало только как строка
+# `on_status`, и документы встречи о пропаже узнать не могли (входной круг DS
+# и GLM: «событие записи живёт только в статусе UI и логе»).
+CH_LOST = "lost"      # канал жил и пропал (или не захвачен с начала — died=False)
+CH_BACK = "back"      # канал снова пишет; silent_s — от истинного начала тишины
+CH_GAP = "gap"        # молчал ≥ порога, перезапуск удался с первой попытки — крика
+#                       не было, но дыра в записи была (Critical GLM входного круга)
+CH_END = "end"        # запись остановлена, канал так и не вернулся (закрытие эпизода)
+# машинный класс причины — контракт для потребителей вместо разбора подстрок
+# (критика GLM входного круга): restart_failed | hung | start_error | missing |
+# restarted | stop
+CH_CAUSES = ("restart_failed", "hung", "start_error", "missing", "restarted", "stop")
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ChannelEvent:
+    label: str
+    kind: str
+    at: float                         # момент события (стенные часы)
+    stopped_at: float | None          # истинное начало тишины — последний кадр канала,
+    #                                   не момент крика: крик опаздывает на порог сторожа
+    #                                   и попытки рестарта (66–96 с; Critical GLM)
+    silent_s: float | None            # длительность эпизода от stopped_at (back/gap/end)
+    died: bool                        # жил и пропал / не захвачен с начала
+    cause: str                        # из CH_CAUSES
+    reason: str                       # человеческая причина, как в статусе
+
+    def as_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+
 class Loss:
     """Запись реестра потерь: почему канал не пишет и что с ним будет.
 
@@ -73,13 +107,17 @@ class Loss:
     невыразимо (Critical DS и Important GLM выходного круга по №235 — «канал
     перезапускается сам» о канале, который сторож больше не трогает).
     """
-    __slots__ = ("reason", "retriable", "died", "cause", "since")
+    __slots__ = ("reason", "retriable", "died", "cause", "since", "stopped_at")
 
     def __init__(self, reason: str, *, retriable: bool, died: bool, cause: str = "",
-                 since: float = 0.0) -> None:
+                 since: float = 0.0, stopped_at: float | None = None) -> None:
         self.reason = reason
         self.retriable = retriable
         self.died = died
+        # последний кадр канала перед потерей — истинная граница дыры в записи
+        # для следа встречи (№234); `since` остаётся моментом постановки в
+        # реестр: на нём построено «кадр после него — ожил»
+        self.stopped_at = stopped_at
         # повод, когда канал не жил: "start_error" (устройство есть, не
         # открылось) или "missing" (канала нет вовсе) — совет выбирается по
         # нему, а не по подстроке причины (Minor DS/GLM круга 2)
@@ -510,6 +548,10 @@ class AudioHub:
     on_frame = None
     # Статусы для UI (рестарт стрима и т.п.): callback(str)
     on_status = None
+    # Событие канала (пропал / вернулся / дыра / не вернулся до конца): callback(ChannelEvent).
+    # Структурный выход рядом со строковым: след встречи строится по нему, не по
+    # подстрокам статуса (№234; строковый контракт статуса — №310)
+    on_channel = None
 
     """Держит источники (mic = владелец, blackhole = собеседники) РАЗДЕЛЬНО.
 
@@ -607,6 +649,14 @@ class AudioHub:
         # статуса — при каждой смене состава.
         self._lost: dict[str, Loss] = {}
         self._warned: set[str] = set()
+        self.channel_log: list[ChannelEvent] = []   # журнал событий канала за запись (№234)
+        self._ended: set[str] = set()                # эпизоды, закрытые остановкой (end — один раз)
+        # последний НАСТОЯЩИЙ кадр канала — граница дыры для следа. `_last_frame`
+        # служит свежести и анти-шторму: удачный рестарт ставит в него time.time()
+        # без единого кадра, и следующая дыра отсчитывалась бы от подделки, а
+        # первый кусок тишины выпадал из интервалов (Important DS выходного круга)
+        self._real_frame: dict[str, float] = {}
+        self._channel_closed = False                 # след закрыт остановкой: событий больше нет
         self._mode = mode                          # `device` из конфига: намеренный один канал ≠ авария (DS M4)
         self._fail_streak: dict[str, int] = {}   # неудачные рестарты подряд по каналу
         self._scream_count = 0            # криков за встречу — потолок звука LOUD_SCREAMS
@@ -823,6 +873,8 @@ class AudioHub:
         # finally сторожа и убил бы объявление вместе с потоком-потребителем
         # (Important DS входного круга по №311) — считаем «жил и пропал», если
         # так у любой из потерь, и оставляем след
+        if self._channel_closed:
+            return                             # запись остановлена — потерь больше не объявляем
         phases = {v.died for v in losses.values()}
         if len(phases) > 1:
             _safe_stderr("потери одного объявления пришли разных фаз: " + ", ".join(sorted(losses)))
@@ -838,8 +890,20 @@ class AudioHub:
             if prev is None:
                 # кадр ПОСЛЕ этого момента — канал ожил (Important GLM круга 1)
                 loss.since = max(now, self._last_frame.get(lbl, 0.0))
+                # граница дыры — последний кадр, не момент крика; канала без
+                # кадров (не захвачен с начала) — начало записи неизвестно: None
+                loss.stopped_at = self._real_frame.get(lbl) or None
+                if not loss.cause:
+                    loss.cause = (("restart_failed" if loss.retriable else "hung")
+                                  if loss.died else "start_error")
+                # смена фазы того же эпизода (повторы → брошен) — не новое событие:
+                # эпизод один, след встречи считает по парам, не по крикам (I4 GLM)
+                self._channel_event(CH_LOST, lbl, now, loss.stopped_at, None, loss)
             else:
                 loss.since = prev.since
+                loss.stopped_at = prev.stopped_at
+                if not loss.cause:
+                    loss.cause = prev.cause
             if lbl not in self._warned or (prev is not None and prev.phase() != loss.phase()):
                 fresh.append(lbl)
         self._lost.update(losses)
@@ -895,10 +959,20 @@ class AudioHub:
         он один на все каналы. Канал возвращается и сторожу: из `_hung`
         снимается, иначе следующая смерть не получила бы ни рестарта, ни
         крика (Important GLM выходного круга)."""
-        self._lost.pop(label, None)
+        if self._channel_closed:
+            # запись остановлена: «снова пишется» после «не вернулся до конца» —
+            # фантом и для статуса, не только для следа (Important DS круга 2)
+            return ""
+        loss = self._lost.pop(label, None)
         self._warned.discard(label)          # следующая потеря этого канала кричит заново
         self._fail_streak.pop(label, None)
         self._hung.discard(label)
+        if loss is not None:
+            now = time.time()
+            # длительность — от последнего кадра, не от крика: крик опаздывает на
+            # порог сторожа и попытки рестарта (Critical GLM входного круга по №234)
+            true_silent = now - loss.stopped_at if loss.stopped_at else silent
+            self._channel_event(CH_BACK, label, now, loss.stopped_at, true_silent, loss)
         name = "канал собеседников" if label == "blackhole" else "ваш микрофон"
         if not self._lost:
             back = stt_runtime.MIC_BACK_NOTICE if label == "blackhole" else stt_runtime.OWNER_MIC_BACK
@@ -987,6 +1061,7 @@ class AudioHub:
 
     def stop(self):
         self._running = False
+        self.end_channel_episodes()
         # Каналы останавливаем тем же приёмом, что _restart_guarded: stop()
         # мёртвого PortAudio-стрима не возвращается, и try/except от этого не
         # спасает — зависание не исключение. Канал из _hung (и канал, чей
@@ -1381,7 +1456,7 @@ class AudioHub:
         # под тем же локом, что и снапшот: новый ключ в словаре во
         # время его копирования — та же гонка, что и pop у _sinks
         with self._lock:
-            self._last_frame[c.label] = time.time()
+            self._last_frame[c.label] = self._real_frame[c.label] = time.time()
             # после _closing файлы закрываются — блок в них не пишем и не кричим
             # о «сбое диска»: sink для него уже «нет» (GLM r1 I1 по #557)
             sink = None if self._closing else self._sinks.get(c.label)
@@ -1515,6 +1590,14 @@ class AudioHub:
             if outcome is None:
                 msg = f"🎙 канал {c.label} молчал {int(silent)}с — аудио-стрим перезапущен"
                 self._fail_streak.pop(c.label, None)
+                if c.label not in self._lost:
+                    # крика не было — дыра в записи была: ≥ порога тишины без
+                    # единого события (Critical GLM входного круга по №234)
+                    # граница — только настоящий кадр; без кадров она неизвестна, а не
+                    # «штамп старта/рестарта» (Important DS и Minor GLM круга 2)
+                    real = self._real_frame.get(c.label)
+                    self._channel_event(CH_GAP, c.label, now, real, (now - real) if real else silent,
+                                        Loss(msg, retriable=True, died=True, cause="restarted"))
                 if c.label in self._lost:
                     # Кричали о потере канала, а он ожил (приложение снова пишет
                     # поток, устройство освободилось): липкую строку снимаем
@@ -1562,6 +1645,49 @@ class AudioHub:
                 with self._lock:
                     self._last_frame[c.label] = time.time()
             self._emit(msg)
+
+    def end_channel_episodes(self) -> None:
+        """Открытые эпизоды закрываются остановкой записи: канал, потерянный и не
+        вернувшийся, иначе остался бы без длительности, а итог встречи — без
+        правой границы дыры (Important DS I3 / GLM I8 входного круга по №234).
+        Идемпотентно: демон зовёт до спавна пересборки (итог должен лечь в хвост
+        раньше неё), stop() — для остальных вызывающих."""
+        # след закрыт ДО закрывающих событий: сторож ещё жив до stop() хаба, и
+        # его «вернулся» между снимком реестра и `end` перевернул бы эпизод
+        # (микрогонка — Minor GLM круга 2); после флага производители потерь и
+        # возвратов молчат целиком — статус, журнал и след замолкают одним
+        # условием (Important DS круга 2), а `end` проходит
+        self._channel_closed = True
+        now = time.time()
+        for label, loss in list(self._lost.items()):
+            if label in self._ended:
+                continue
+            self._ended.add(label)
+            silent = now - loss.stopped_at if loss.stopped_at else None
+            self._channel_event(CH_END, label, now, loss.stopped_at, silent,
+                                Loss(loss.reason, retriable=False, died=loss.died, cause="stop"))
+
+    def _channel_event(self, kind: str, label: str, at: float, stopped_at: float | None,
+                       silent_s: float | None, loss: "Loss") -> ChannelEvent | None:
+        """Единственная точка, где переход состояния канала становится событием:
+        журнал хаба + подписчик. Все поводы (крик на старте, сторож, возврат по
+        кадру, тихий перезапуск, остановка) проходят здесь — потребители следа
+        не разбирают строки статуса (входной круг DS и GLM по №234). Отказ
+        подписчика запись не роняет."""
+        ev = ChannelEvent(label=label, kind=kind, at=at, stopped_at=stopped_at,
+                          silent_s=silent_s, died=loss.died,
+                          cause=loss.cause if loss.cause in CH_CAUSES else "unknown",
+                          reason=loss.reason)
+        if self._channel_closed and kind != CH_END:
+            _safe_stderr(f"событие канала после закрытия следа отброшено: {kind} {label}")
+            return None                       # события не было — и объекта нет (Important DS круга 2)
+        self.channel_log.append(ev)
+        if self.on_channel is not None:
+            try:
+                self.on_channel(ev)
+            except Exception:  # noqa: BLE001 — след встречи не должен ронять запись
+                _safe_stderr(f"подписчик события канала упал: {kind} {label}")
+        return ev
 
     def _emit(self, msg: str | None) -> None:
         if msg is not None and self.on_status is not None:

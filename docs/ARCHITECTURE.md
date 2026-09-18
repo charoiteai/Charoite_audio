@@ -654,6 +654,29 @@ devices, the production path is `AudioHub.for_meeting`; tests call the real
 constructor, so production code no longer defends against its own test
 harness (input round DS and GLM on №311).
 
+**A lost channel leaves a trace in the meeting documents, not only in the
+status.** Before №234 the event "the counterpart channel (or the microphone)
+stopped writing" lived as one `on_status` string: sticky status, notification,
+`capture.log`; the channel coming back left no trace in any file, and a reader
+of the transcript a day later saw "the counterpart went silent at 14:32"
+indistinguishable from a pause in the conversation. Measured over 14–18.09: 12
+of 36 recordings had system-audio losses, up to 21 "lost → watchdog restarted
+→ lost" cycles per meeting. Now the hub has one point where a channel state
+transition becomes a structured event (`ChannelEvent`: lost / back / gap on a
+quiet restart / never returned before the end; the true boundary is the
+channel's last frame, not the moment of the cry, which lags by the watchdog
+threshold and the restarts; a machine cause class instead of substring
+parsing). The trace has one owner — the daemon (`channel_trace`): the event
+goes to the sidecar (key `channel_events`, merged — the stop-time sidecar dump
+no longer overwrites the whole file), as a line into the transcript's
+"Co-thinking" tail (not speech: derivative hashes do not move, the rebuild
+carries the tail over, the archive does not turn the line into a thesis) and
+as a `system` thread line without dedup and without cloud editing. There is no
+duration threshold — an episode that looks short in the report is a real hole;
+coalescing is by count: after six lines per channel only the stop summary goes
+into the documents ("recording incomplete: no system audio 14:32–14:35,
+14:50–until the end"). The string status contract stays — that is №310.
+
 ## Stopping a recording
 
 Stop is not one action but a wait: the daemon has to flush audio, run the

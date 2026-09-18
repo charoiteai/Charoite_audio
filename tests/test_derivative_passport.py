@@ -37,9 +37,13 @@ def test_speech_of_ignores_the_title_and_the_notes_tail():
     bare = "# Встреча 2026-09-02_1021\n" + SPEECH
     titled = "# Встреча 2026-09-02_1021 — Смета\n" + SPEECH
     with_notes = titled + transcript.NOTES_HEAD + "\n> 10:22 📌 мысль модели\n"
-    assert transcript.speech_of(bare) == transcript.speech_of(titled) == transcript.speech_of(with_notes) == SPEECH
-    assert transcript.speech_of(SPEECH) == SPEECH, "без заголовка — весь текст"
-    assert rebuild_transcript._speech(with_notes) == SPEECH, "пересборка живёт тем же правилом"
+    speech = SPEECH.rstrip("\n")
+    assert transcript.speech_of(bare) == transcript.speech_of(titled) == transcript.speech_of(with_notes) == speech
+    assert transcript.speech_of(SPEECH) == speech, "без заголовка — весь текст"
+    assert rebuild_transcript._speech(with_notes) == speech, "пересборка живёт тем же правилом"
+    # хвостовые переводы строк — не речь: первая же заметка ко-мышления или след
+    # канала (№234) иначе сдвигали бы хеш источника на один «\n»
+    assert transcript.speech_of(titled + "\n\n") == transcript.speech_of(titled + transcript.NOTES_HEAD + "\n> 10:22 📌 x\n")
 
 
 def test_derivative_state_table(tmp_path):
@@ -63,12 +67,12 @@ def test_derivative_state_table(tmp_path):
 def test_attest_writes_both_keys_and_creates_the_sidecar(tmp_path):
     live = tmp_path / "2026-09-02_1021.md"
     live.write_text("# Встреча\n" + SPEECH, encoding="utf-8")
-    assert live_sidecar.attest(live, "debrief", "текст разбора", live_sidecar.sha(SPEECH))
+    assert live_sidecar.attest(live, "debrief", "текст разбора", live_sidecar.sha(SPEECH.rstrip("\n")))
     meta = live_sidecar.read(live)
-    assert meta["debrief_sha256"] == live_sidecar.sha("текст разбора") and meta["debrief_source_sha256"] == live_sidecar.sha(SPEECH)
+    assert meta["debrief_sha256"] == live_sidecar.sha("текст разбора") and meta["debrief_source_sha256"] == live_sidecar.sha(SPEECH.rstrip("\n"))
     dpath = tmp_path / "x_разбор.md"
     dpath.write_text("текст разбора", encoding="utf-8")
-    assert live_sidecar.derivative_state(dpath, meta, "debrief", live_sidecar.sha(SPEECH)) == live_sidecar.FRESH
+    assert live_sidecar.derivative_state(dpath, meta, "debrief", live_sidecar.sha(SPEECH.rstrip("\n"))) == live_sidecar.FRESH
 
 
 def test_debrief_path_follows_the_graph_key_like_graph_updater(tmp_path):
@@ -125,7 +129,7 @@ def test_retro_fill_writes_missing_derivatives_with_passports(tmp_path, monkeypa
     made = retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir)
     assert made == ["минутки", "разбор"]
     meta = live_sidecar.read(live)
-    src = live_sidecar.sha(SPEECH)
+    src = live_sidecar.sha(SPEECH.rstrip("\n"))
     for kind in ("minutes", "debrief"):
         assert meta[f"{kind}_source_sha256"] == src, kind
     mpath = live.with_name("2026-09-02_1021_minutes.md")
@@ -196,7 +200,7 @@ def test_finalize_minutes_skips_the_model_when_the_source_is_unchanged(tmp_path,
     mpath = live.with_name("2026-09-02_1021_minutes.md")
     mpath.write_text("# Минутки машинные\n", encoding="utf-8")
     meta = {"minutes_sha256": live_sidecar.sha("# Минутки машинные\n"),
-            "minutes_source_sha256": live_sidecar.sha(SPEECH)}
+            "minutes_source_sha256": live_sidecar.sha(SPEECH.rstrip("\n"))}
     assert rebuild_transcript.finalize_minutes(live, "# Встреча\n" + SPEECH, meta, _cfg(tmp_path), {}) == "fresh"
     assert _FakeLLM.calls == []
     assert rebuild_transcript.finalize_minutes(live, "# Встреча\n" + SPEECH + "новое\n", meta, _cfg(tmp_path), {}) == "regenerated"
@@ -313,7 +317,7 @@ def test_live_cothinking_theses_are_kept_and_the_model_is_not_paid_for_them(tmp_
     _FakeLLM.calls = []
     assert "тезисы" in retro_fill.process(live2, _cfg(tmp_path), tmp_path / "graph", tdir)
     meta = live_sidecar.read(live2)
-    assert live_sidecar.derivative_state(folder2 / "Тезисы.md", meta, "theses", live_sidecar.sha(SPEECH)) == live_sidecar.FRESH
+    assert live_sidecar.derivative_state(folder2 / "Тезисы.md", meta, "theses", live_sidecar.sha(SPEECH.rstrip("\n"))) == live_sidecar.FRESH
     live2.write_text("# Встреча 2026-09-03_1100\n" + SPEECH + "ещё речь\n", encoding="utf-8")
     old = (folder2 / "Тезисы.md").read_text(encoding="utf-8")
     assert "тезисы" in retro_fill.process(live2, _cfg(tmp_path), tmp_path / "graph", tdir)

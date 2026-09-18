@@ -108,13 +108,13 @@ def test_edited_path_rebuilds_minutes_file_and_hashes(root, monkeypatch):
     meta = json.loads(live.with_name(live.name + ".live.json").read_text(encoding="utf-8"))
     assert meta["transcript_sha256"] == _sha("машинный текст"), "хеш стенограммы не трогаем — файл правленый"
     assert meta["minutes_sha256"] == _sha(mpath.read_text(encoding="utf-8"))
-    assert meta["minutes_source_sha256"] == _sha(edited)   # речь без «Ко-мышления» = весь текст
+    assert meta["minutes_source_sha256"] == _sha(rt._speech(edited))   # речь = одно определение (speech_of)
 
 
 def test_second_click_without_changes_does_nothing(root, monkeypatch):
     edited = "правленый текст\n"
     live = _meeting(root, edited, {"transcript_sha256": _sha("машинный текст"),
-                                   "minutes_source_sha256": _sha(edited)})
+                                   "minutes_source_sha256": _sha(rt._speech(edited))})
     monkeypatch.setattr(rt, "STT", _NoSTT)
     monkeypatch.setattr(rt, "finalize_minutes", lambda *a, **k: pytest.fail("минутки перегенерированы без изменений"))
     assert rt.rebuild(live, CFG) == live
@@ -195,7 +195,7 @@ def test_notes_tail_edit_does_not_regenerate(root, monkeypatch):
     speech = "речь\n"
     text = speech + transcript.NOTES_HEAD + "\nправка в ко-мышлении\n"
     live = _meeting(root, text, {"transcript_sha256": _sha("машинный"),
-                                 "minutes_source_sha256": _sha(speech)})
+                                 "minutes_source_sha256": _sha(rt._speech(speech))})
     monkeypatch.setattr(rt, "STT", _NoSTT)
     monkeypatch.setattr(rt, "finalize_minutes", lambda *a, **k: pytest.fail("речь не менялась"))
     assert rt.rebuild(live, CFG) == live

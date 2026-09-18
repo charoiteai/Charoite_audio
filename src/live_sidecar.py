@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import pathlib
 import re
 
@@ -353,10 +354,40 @@ def _seconds_stamp_of_minute(value, key: str) -> bool:
         return False
 
 
+# Один замок на все read-modify-write сайдкара в процессе: с №234 у файла два
+# писателя внутри демона (след канала из потока сторожа и стоп-слияние из
+# главного), и без замка второй затирал бы правку первого между чтением и
+# записью (Critical GLM выходного круга). Чужие процессы (пересборка,
+# graph_updater) пишут после остановки демона — окно между ними закрывает
+# порядок финализации, не этот замок.
+_RMW_LOCK = threading.RLock()
+
+
+def merge(live: pathlib.Path, updates: dict, bare: str | None = None) -> bool:
+    """Записать несколько ключей одним слиянием (read-modify-write), не дампом
+    всего файла: стоп-дамп демона одной строкой `json.dumps({...})` затирал бы
+    всё, что записали во время встречи (`channel_events`, №234) — сайдкар с
+    живым писателем обязан писаться только слиянием (Critical DS и GLM
+    входного круга). Правила выбора файла — те же, что у `remember`."""
+    ok = True
+    with _RMW_LOCK:
+        for key, value in updates.items():
+            if not remember(live, key, value, bare):
+                ok = False
+    return ok
+
+
 def remember(live: pathlib.Path, key: str, value: str, bare: str | None = None) -> bool:
     """Записать ключ в сайдкар; нет файла — создать (импортированные встречи и
     сироты без live.json иначе оставались без защиты — DS M4 / GLM M1).
-    Неоднозначный сайдкар — не писать, вернуть False."""
+    Неоднозначный сайдкар — не писать, вернуть False. Под замком — и выбор
+    файла (усыновление легаси переименовывает): иначе два писателя могли бы
+    переименовать по-разному (Minor DS круга 2 по №234)."""
+    with _RMW_LOCK:
+        return _remember_locked(live, key, value, bare)
+
+
+def _remember_locked(live: pathlib.Path, key: str, value: str, bare: str | None) -> bool:
     p = sidecar_for(live, bare)
     if p is None:
         return False
