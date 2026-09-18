@@ -327,10 +327,12 @@ class LinkCatalog:
     Три потребителя — голос входящей ссылки, переход по ссылке из найденного
     узла, подмена заглушки в выдаче — раньше строили свои карты и каждый вносил
     своё правило выбора хозяина ключа. Каждый круг находил очередного
-    потребителя, который разошёлся с остальными: `_indeg` (№291), `target_doc`
-    (круг 2 по №292). Каталог строится ОДИН раз на снимок, и карты — его
-    приватные поля: получить из него заглушку или недетерминированного хозяина
-    снаружи нельзя (схождение DS и GLM, круг 2 по №292).
+    потребителя, который разошёлся с остальными: `_indeg` (№291), разворот
+    заглушки (круг 2 по №292). Каталог строится ОДИН раз на снимок, и карты — его
+    приватные поля, поэтому недетерминированного хозяина ключа снаружи не
+    достать (схождение DS и GLM, круг 2 по №292). Наружу два уровня: `named`
+    отвечает про написанное и может вернуть указатель, `live` — только живой
+    документ.
 
     Ключ связи — нормализованный путь без расширения. Нормализация схлопывает
     регистр и ё/е, поэтому `Ядра/Отчёт.md` и `Ядра/Отчет.md` — два РАЗНЫХ файла
@@ -388,8 +390,15 @@ class LinkCatalog:
         Сначала СТРЕЛКА через карту канонов, и только потом имя. Обратный
         порядок давал однофамильца вместо объявленной цели (DS, круг 1 по
         №292). Живой тёзка — последняя ступень: заглушка с мёртвой стрелкой всё
-        же про своё имя, и показать по нему живой файл лучше, чем ничего."""
-        hit = self.live(self._canon.get(stub.key, stub.stub_to))
+        же про своё имя, и показать по нему живой файл лучше, чем ничего.
+
+        Карта канонов отвечает про ХОЗЯИНА ключа, поэтому спрашивать её можно
+        только за него: при коллизии (`Ядра/Ёлка.md` и `Ядра/Елка.md` — один
+        ключ) второй файл в выдаче находится по своему тексту, и ответ хозяина
+        показал бы ему чужую цель. Не хозяин — идём по собственной стрелке
+        (Important DS, круг 3 по №292)."""
+        owned = self._by_path.get(stub.key) is stub
+        hit = self.live(self._canon.get(stub.key, stub.stub_to) if owned else stub.stub_to)
         if hit is not None:
             return hit
         twin = self._names.get(stub.base)
@@ -828,31 +837,36 @@ class GraphSearch:
         with self._lock:
             self._skipped = tuple(sorted(skipped))
             self._unread = unread
-        gone = [p for p in self._docs if p not in seen]
-        if not fresh and not gone:
-            return
+            gone = [p for p in self._docs if p not in seen]
+            if not fresh and not gone:
+                return
+            # поколение собирается в СТОРОНЕ и публикуется одним присваиванием:
+            # раньше документы уезжали в мир первым замком, а каталог и голоса —
+            # вторым, и всю секунду между ними поиск видел новые документы со
+            # старым каталогом. Заглушка подменялась на канон прошлого
+            # поколения, которого в снимке читателя уже нет, — `by_rel[rel]`
+            # ронял поиск с KeyError прямо на встрече (Critical DS, круг 3)
+            dropped = set(gone)
+            docs = {p: d for p, d in self._docs.items() if p not in dropped}
+        docs.update(fresh)
+        snapshot = list(docs.values())
+        # обход 28 МБ текста — вне замка: под ним каждый поиск встречи ждал бы (GLM M5)
+        catalog = LinkCatalog(snapshot)
+        indeg: dict[str, int] = {}
+        for d in snapshot:
+            if d.stub_to:            # единственная ссылка заглушки — служебная стрелка на канон
+                continue
+            for target in wiki_targets(d.text):
+                hit = catalog.live(target)
+                if hit is None:
+                    continue          # цели нет или цепочка оборвана — голос некому отдать
+                indeg[hit.key] = indeg.get(hit.key, 0) + 1
         with self._lock:
             for p in gone:
-                self._docs.pop(p, None)
-                self._vecs.pop(p, None)          # вектор исчезнувшего файла — вместе с ним (DS M3 / GLM M10)
-            self._docs.update(fresh)
-            snapshot = list(self._docs.values())
-        if changed or gone:
-            # входящие ссылки — по снимку вне замка: обход 28 МБ текста под замком
-            # заставлял бы каждый поиск встречи ждать (GLM M5)
-            catalog = LinkCatalog(snapshot)
-            indeg: dict[str, int] = {}
-            for d in snapshot:
-                if d.stub_to:        # единственная ссылка заглушки — служебная стрелка на канон
-                    continue
-                for target in wiki_targets(d.text):
-                    hit = catalog.live(target)
-                    if hit is None:
-                        continue      # цели нет или цепочка оборвана — голос некому отдать
-                    indeg[hit.key] = indeg.get(hit.key, 0) + 1
-            with self._lock:
-                self._indeg = indeg
-                self._catalog = catalog
+                self._vecs.pop(p, None)      # вектор исчезнувшего файла — вместе с ним (DS M3 / GLM M10)
+            self._docs = docs
+            self._indeg = indeg
+            self._catalog = catalog
 
     # --------------------------------------------------------------- векторы
     def _embed(self, texts: list[str], timeout: float) -> list[list[float]]:
