@@ -458,7 +458,7 @@ class LLM:
         адрес в лог не идёт) и годность каталога — писатель и читатель аренд
         в разных процессах обязаны сходиться по обоим (круг 2 DS I2/M4)."""
         import hashlib
-        fp = hashlib.sha1(self.base.encode("utf-8")).hexdigest()[:8]
+        fp = hashlib.sha256(self.base.encode("utf-8")).hexdigest()[:8]
         bad = model_lease.selfcheck(self._ROOT)
         return f"{self.lease_dir()} · сервер {fp}" + (f" · НЕ РАБОТАЮТ: {bad}" if bad else " · годен")
 
