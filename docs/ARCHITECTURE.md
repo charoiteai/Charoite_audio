@@ -672,7 +672,13 @@ missed on bare targets.
 The catalogue is built once per snapshot and published together with the documents
 and the votes in a single assignment: while documents reached the world separately
 from the catalogue, a search could see new files with old resolution and crash on a
-target its own snapshot no longer had.
+target its own snapshot no longer had. The assignment itself is one operation with
+a mandatory base: the walk takes the generation under the lock as its first line
+and hands it to the publisher explicitly — the publisher cannot re-read the field.
+"Decide on one snapshot, write another" is thereby inexpressible rather than
+forbidden in prose; three review rounds in a row had caught exactly that in
+different branches of the walk, and a test now guards the shape (exactly two
+assignments).
 
 Who owns a key — a name or a path — is decided by one function everywhere: newest
 first, shortest path on a tie, because a node's date is its mtime and a checkout or

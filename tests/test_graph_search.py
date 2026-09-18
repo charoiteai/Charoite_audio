@@ -7,7 +7,9 @@ retrieval — факт обязан быть в найденном тексте 
 """
 from __future__ import annotations
 
+import ast
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -819,6 +821,36 @@ def test_the_index_generation_is_published_in_one_piece(tmp_path):
         hit = s._gen.catalog.live(key)
         assert hit is None or hit.rel in rels, f"каталог отдал {key} → {hit.rel} мимо снимка"
     assert s.search("старое", limit=3) is not None, "поиск упал на чужом поколении"
+
+
+def test_the_generation_is_written_only_by_publish_from_a_base():
+    """`_gen` после инициализации пишет одна операция, и ей нужна основа.
+
+    Три круга подряд (5, 6, 7 по №292) ловили один и тот же класс в разных
+    ветках `_walk`: основа читалась в одном месте, решение принималось по ней,
+    а публиковалась производная от другого чтения поля. Проза шапки про
+    «всегда под замком» дважды оказывалась ложной. Здесь проверяется ФОРМА,
+    а не гонка: присваиваний `self._gen` в модуле ровно два — `__init__` и
+    `_publish`; у `_publish` основа — позиционный аргумент без умолчания;
+    обход читает поле один раз."""
+    tree = ast.parse(inspect.getsource(gs))
+    writers = []
+    readers_in_walk = 0
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Attribute) and node.attr == "_gen" \
+                    and isinstance(node.value, ast.Name) and node.value.id == "self":
+                if isinstance(node.ctx, ast.Store):
+                    writers.append(fn.name)
+                elif fn.name == "_walk":
+                    readers_in_walk += 1
+    assert sorted(writers) == ["__init__", "_publish"], f"`_gen` пишут ещё где-то: {writers}"
+    assert readers_in_walk == 1, f"обход читает поле {readers_in_walk} раз(а), основа должна сниматься один раз"
+    base = inspect.signature(gs.GraphSearch._publish).parameters["base"]
+    assert base.default is inspect.Parameter.empty, "у публикации появилась основа по умолчанию"
+    assert base.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
 
 
 def test_a_broken_stub_chain_gives_nobody_a_vote():
