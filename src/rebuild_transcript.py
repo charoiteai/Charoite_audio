@@ -801,7 +801,7 @@ def _finish(live: pathlib.Path, final_text: str, meta: dict, cfg: dict) -> None:
     # никаких; пересборочный `names` живёт в другом пространстве номеров и
     # клеил бы имя не тому — GLM Critical по #464, аудит зон 12.09).
     outcome = finalize_minutes(live, final_text, meta, cfg, minutes_names(meta))
-    mpath = live.with_name(live.stem + "_minutes.md")
+    mpath = meeting_stamp.derivative_path(live, "minutes")   # одно правило имени на всех писателей (№309)
     record_minutes_passport(live, mpath, outcome, final_text, cfg)
 
 
