@@ -353,8 +353,90 @@ def test_main_addresses_the_meeting_by_its_final_name_not_the_path_it_was_given(
     stray = tmp_path / "2026-09-05_1200.md"
     stray.write_text("# Встреча\n" + SPEECH, encoding="utf-8")
     seen.clear()
-    retro_fill.main([str(stray)])                                 # вне каталога стенограмм
-    assert seen == []
+    with pytest.raises(SystemExit) as e:
+        retro_fill.main([str(stray)])                             # вне каталога стенограмм — отказ, не «ready»
+    assert seen == [] and "вне каталога" in str(e.value)
     with pytest.raises(SystemExit) as e:
         retro_fill.main([str(tdir / "2026-09-09_0900.md")])       # такой встречи нет
     assert "стенограммы нет" in str(e.value)
+    # резолвер нашёл файл другой минуты (чужая встреча) — отказ со строкой, не тихая запись не по адресу
+    monkeypatch.setattr(retro_fill, "find_final_transcript", lambda p: final.resolve())
+    seen.clear()
+    with pytest.raises(SystemExit) as e:
+        retro_fill.main([str(tdir / "2026-09-02_1100.md")])
+    assert seen == [] and "другой минуты" in str(e.value)
+
+
+def test_a_read_error_is_unknown_even_where_chmod_cannot_prove_it(tmp_path, monkeypatch):
+    """Гейт правами файловой системы под root молчит (Minor DS круга 2) — тот же
+    отказ подставляется в шов чтения."""
+    body = "# Разбор\n"
+    p = tmp_path / "2026-09-02_1021_разбор.md"
+    p.write_text(body, encoding="utf-8")
+    meta = {"debrief_sha256": live_sidecar.sha(body), "debrief_source_sha256": "a" * 64}
+    real = pathlib.Path.read_text
+
+    def denied(self, *a, **k):
+        if self == p:
+            raise PermissionError(13, "нет доступа")
+        return real(self, *a, **k)
+    monkeypatch.setattr(pathlib.Path, "read_text", denied)
+    assert live_sidecar.derivative_state(p, meta, "debrief", "a" * 64) == live_sidecar.UNKNOWN
+
+
+def test_a_silent_model_is_reported_not_hidden_behind_full(tmp_path, monkeypatch, capsys):
+    """`gen` при отказе модели возвращал «» — ни в «собрано», ни в «пропущено»,
+    строка говорила «полная» без разбора (Important GLM круга 2)."""
+    live, tdir = _meeting(tmp_path, monkeypatch)
+    monkeypatch.setattr(retro_fill, "gen", lambda *a, **k: "")
+    made = retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir)
+    assert "разбор" not in made
+    out = capsys.readouterr().out
+    assert "разбор — модель не ответила" in out and "полная" not in out
+
+
+def test_live_theses_are_judged_by_the_file_the_archive_made(tmp_path, monkeypatch):
+    """Признак «живые» считался по стенограмме из tdir, а файл архив собирает
+    из копии — если копию перебила легаси-производная без строк ко-мышления,
+    файла нет, а отчёт говорил «тезисы живые» (Important DS круга 2)."""
+    live, tdir = _meeting(tmp_path, monkeypatch,
+                          text="# Встреча 2026-09-02_1021\n" + SPEECH + "> 10:22 📌 смета к пятому\n")
+    folder = tmp_path / "graph" / "Встречи-архив" / "2026-09-02_1021"
+    folder.mkdir(parents=True)
+    monkeypatch.setattr(retro_fill, "archive_meeting", lambda *a, **k: folder)   # файла тезисов архив НЕ создал
+    made = retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir)
+    assert "тезисы" in made and (folder / "Тезисы.md").exists(), "нет файла — к модели, как у встречи без живого контура"
+
+
+def test_cothinking_lines_are_the_loop_s_own_not_any_quote_with_an_emoji():
+    """Цитата из прежней сводки внутри разговора — не тезис (Minor DS круга 2)."""
+    text = ("> 10:22 📌 смета к пятому\n"
+            "> 💭 мысль без времени (старый формат)\n"
+            "> он сказал: «в сводке было 📌 про смету» — цитата\n"
+            "📌 не цитата вовсе\n")
+    assert meeting_archive.cothinking_notes(text) == ["10:22 📌 смета к пятому", "💭 мысль без времени (старый формат)"]
+
+
+def test_the_archive_takes_the_debrief_the_writers_own_not_the_alphabetical_twin(tmp_path):
+    """Архив брал разбор по префиксу стема: у голой посекундной стенограммы разбор
+    назван минутным ключом графа и под префикс не попадает, а старое имя от стема
+    рядом — двойня, которая и уезжала в папку. Читатель — по тому же правилу, что
+    писатели: `derivative_path` (критика DS круга 0 и GLM круга 2 по №309)."""
+    graph = tmp_path / "graph"
+    (graph / "Встречи").mkdir(parents=True)
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    main = tdir / "2026-09-02_102113.md"                     # голая посекундная, минута свободна
+    main.write_text("# Встреча 2026-09-02_102113\n" + SPEECH, encoding="utf-8")
+    ours = meeting_stamp.derivative_path(main, "debrief", graph)
+    assert ours.name == "2026-09-02_1021_разбор.md"
+    ours.write_text("наш разбор\n", encoding="utf-8")
+    twin = tdir / "2026-09-02_102113_разбор.md"              # старое имя от стема — под префиксом
+    twin.write_text("двойня по стему\n", encoding="utf-8")
+    folder = meeting_archive.archive_meeting(graph, tdir, "2026-09-02_1021", "", files_key=main.stem)
+    assert (folder / "Разбор.md").read_text(encoding="utf-8") == "наш разбор\n"
+    # ожидаемого нет — прежний порядок: что нашлось по префиксу
+    ours.unlink()
+    (folder / "Разбор.md").unlink()
+    folder = meeting_archive.archive_meeting(graph, tdir, "2026-09-02_1021", "", files_key=main.stem)
+    assert (folder / "Разбор.md").read_text(encoding="utf-8") == "двойня по стему\n"

@@ -129,25 +129,28 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path)
     if live_sidecar.wants_build(state, live_sidecar.POLICY_RETRO):
         out = gen(cfg, "Ты аналитик после рабочей встречи. Пиши по-русски, сухо, markdown. "
                        "Не выдумывай факты.", transcript.speech_of(text), DEBRIEF_PROMPT)
-        if out and _write_derivative(f, dpath, "debrief", NOTE + out + "\n", speech_sha):
-            made.append("разбор")
+        _built(made, skipped, "разбор", out,
+               lambda: _write_derivative(f, dpath, "debrief", NOTE + out + "\n", speech_sha))
     else:
         skipped.append(f"разбор {state}")
 
     folder = archive_meeting(graph, tdir, stamp, slug, files_key=f.stem)
     if folder is not None:
         tpath = _theses_path(folder)
-        if cothinking_notes(text):
+        # «живые» — по факту: архив собирает файл из КОПИИ стенограммы, и если
+        # копию перебила легаси-производная без строк ко-мышления, файла нет —
+        # тогда к модели, как у встречи без живого контура (Important DS круга 2)
+        if cothinking_notes(text) and tpath.exists():
             skipped.append("тезисы живые")        # файл собрал архив из строк ко-мышления
         else:
             state = live_sidecar.derivative_state(tpath, meta, "theses", speech_sha)
             if live_sidecar.wants_build(state, live_sidecar.POLICY_RETRO):
                 out = gen(cfg, "Ты выделяешь ценное из стенограмм. Телеграфно, по-русски.",
                           transcript.speech_of(text), THESES_PROMPT)
-                if out and _write_derivative(f, tpath, "theses",
-                                             "# Тезисы встречи (📌 КТ · 💎 факты · 💭 мысли)\n" + NOTE + "\n"
-                                             + out + "\n", speech_sha):
-                    made.append("тезисы")
+                _built(made, skipped, "тезисы", out,
+                       lambda: _write_derivative(f, tpath, "theses",
+                                                 "# Тезисы встречи (📌 КТ · 💎 факты · 💭 мысли)\n" + NOTE + "\n"
+                                                 + out + "\n", speech_sha))
             else:
                 skipped.append(f"тезисы {state}")
     parts = []
@@ -155,8 +158,21 @@ def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path)
         parts.append("собрано: " + ", ".join(made))
     if skipped:
         parts.append("пропущено: " + ", ".join(skipped))
-    print(f"{stamp}: {'; '.join(parts) if parts else 'полная'}")
+    print(f"{stamp}: {'; '.join(parts) if parts else 'ничего не менялось'}")
     return made
+
+
+def _built(made: list[str], skipped: list[str], kind: str, out: str, write) -> None:
+    """Исход генерации — в отчёт: пустой ответ модели раньше не попадал ни в
+    «собрано», ни в «пропущено», и строка говорила «полная» без разбора
+    (Important GLM круга 2 по №309; у облачной модели 20 таймаутов из 75 прогонов
+    за август–сентябрь, №189)."""
+    if not out:
+        skipped.append(f"{kind} — модель не ответила")
+    elif write():
+        made.append(kind)
+    else:
+        skipped.append(f"{kind} — запись отклонена")
 
 
 def prev_path(live: pathlib.Path, path: pathlib.Path) -> pathlib.Path:
@@ -165,7 +181,10 @@ def prev_path(live: pathlib.Path, path: pathlib.Path) -> pathlib.Path:
     скрытый каталог в графе синкался бы iCloud и попадал под `_unhide` архива
     (Important DS выходного круга по №309). Файл из чужой папки получает
     префикс стема стенограммы — иначе «Тезисы.md» всех встреч легли бы в одно имя."""
-    name = path.name if path.parent == live.parent else f"{live.stem}__{path.name}"
+    # имя чужой папки — от голого штампа, не от стема: ретитл меняет стем, и
+    # каждое поколение получало бы своё имя навсегда (Minor GLM круга 2)
+    bare = meeting_stamp.stamp_of(live.stem) or live.stem
+    name = path.name if path.parent == live.parent else f"{bare}__{path.name}"
     return live.parent / ".prev" / name
 
 
@@ -193,6 +212,11 @@ def _write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: s
     return True
 
 
+def _minute(stem: str) -> str | None:
+    bare = meeting_stamp.stamp_of(stem)
+    return meeting_stamp.minute_of(bare) if bare else None
+
+
 def main(argv: list[str] | None = None):
     harden_umask()   # минутки, разбор, архив — данные встреч, только владельцу
     cfg = load_user_or_example(ROOT)
@@ -211,11 +235,19 @@ def main(argv: list[str] | None = None):
         # пустую папку в графе (Minor GLM).
         files = []
         for a in args:
-            f = find_final_transcript(pathlib.Path(a))
+            given = pathlib.Path(a)
+            f = find_final_transcript(given)
+            # резолвер ищет по каталогу; своя ли это встреча — по минуте штампа
+            # (ретитл меняет секунды на минуту, минуту — никогда); чужая минута
+            # или чужой каталог — не «пропуск в stderr», а отказ хвоста кодом 1:
+            # иначе импорт показал бы «ready» без единой производной
+            # (Important DS и Minor GLM круга 2)
             if not f.is_file():
                 missing.append(a)
             elif f.parent != tdir.resolve():
-                print(f"ретро: {a}: не в каталоге стенограмм — пропуск", file=sys.stderr)
+                missing.append(f"{a} (вне каталога стенограмм)")
+            elif _minute(f.stem) != _minute(given.stem):
+                missing.append(f"{a} (резолвер нашёл встречу другой минуты: {f.name})")
             else:
                 files.append(f)
     else:
