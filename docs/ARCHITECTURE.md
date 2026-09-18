@@ -648,17 +648,49 @@ are merged, the duplicate stays as a two-line redirect file. Search used to
 treat it as an ordinary document: incoming links fed the stub instead of the
 canon, a hop from a node dead-ended there, and in the answer it took a slot with
 an arrow instead of content. On the working graph (3 199 files, 404 stubs) that
-was 1 048 links pointing at dead files and 40 hops that never happened. A name
-is rewritten only when no live file carries it — a namesake is not always a
-duplicate, a merged core and a live dossier share a name in different folders.
-Who owns a name is decided by one key everywhere: newest first, shortest path on
-a tie, because a node's date is its mtime and a checkout or a graph copy moves
-it. Merge chains are walked by trying every candidate at every link, with cycle
-protection, a depth cap and a memo of successes. In the answer a stub is
-replaced by its canon before ranking, so the slot is never lost. Known limit: a
-link that names a folder is indistinguishable from a bare one here, because the
-search keys adjacency by name without folder — the shared link catalogue with
-path keys is a separate task.
+was 1 048 links pointing at dead files and 40 hops that never happened. Merge
+chains are walked with cycle protection and a depth cap. In the answer a stub is
+replaced by its canon before ranking, so the slot is never lost.
+
+**Adjacency is keyed by path, not by file name.** A link that names a folder must
+resolve unambiguously — the author already gave that certainty, and a name key
+threw it away. Measured on the working graph on 17 Sep: 3 532 links out of 41 409
+landed on a file other than the one named, systematically on a digest instead of
+a core, because digests are rebuilt nightly and are always fresher. After the fix
+not a single link lands elsewhere; 17 links point at a path that no longer exists.
+
+Resolution lives in `LinkCatalog`, one link catalogue per index generation. Two
+levels face outwards: `named` answers which document is NAMED (a path in the
+catalogue wins; a path named with no file behind it is a miss, not a namesake
+lookup; a bare target goes through the name catalogue, where a live file always
+beats a stub), and `live` answers which LIVE document stands behind it — a stub
+is unrolled through the canon map, and a stub behind a stub is an honest "nowhere".
+The unrolling lives here rather than in each consumer (incoming-link votes, hops,
+stub replacement in the answer), because each of them did it differently and
+missed on bare targets.
+
+The catalogue is built once per snapshot and published together with the documents
+and the votes in a single assignment: while documents reached the world separately
+from the catalogue, a search could see new files with old resolution and crash on a
+target its own snapshot no longer had. The assignment itself is one operation with
+a mandatory base: the walk takes the generation under the lock as its first line
+and hands it to the publisher explicitly — the publisher cannot re-read the field.
+"Decide on one snapshot, write another" is thereby inexpressible rather than
+forbidden in prose; three review rounds in a row had caught exactly that in
+different branches of the walk, and a test now guards the shape (exactly two
+assignments).
+
+Who owns a key — a name or a path — is decided by one function everywhere: newest
+first, shortest path on a tie, because a node's date is its mtime and a checkout or
+a graph copy moves it. The single priority on top of that: for the name catalogue a
+live file beats a stub.
+
+What the fix did to ranking (30 queries, top 5): lexical coverage of the query did
+not move at all — 0.989 before and after, every reshuffle happens between files
+with FULL coverage. What changed is who gets shown at equal relevance: digests take
+half as many slots (34 → 17), primary nodes more (47 → 61), median age 10 → 9 days.
+The hub boost needed no recalibration: 462 nodes sit at the cap against 467, the
+same set.
 
 **The verdict is a field, not a prefix.** `brain.vault_search` returns a
 `Result`: `status` is one of *confident* / *weak* / *unverified* / *empty*,

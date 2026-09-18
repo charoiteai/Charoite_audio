@@ -50,9 +50,10 @@ import pathlib
 import re
 import sys
 import threading
+import types
 import time
 import unicodedata
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
@@ -228,7 +229,12 @@ def recency_factor(ts: float | None, now: float | None = None) -> float:
 def hub_factor(in_degree: int) -> float:
     """Логарифм входящих ссылок с потолком: хаб выше свежесозданного узла, но
     не давит точный текст, а узел владельца (ссылка из каждой встречи) не
-    всплывает в любой выдаче только за счёт степени."""
+    всплывает в любой выдаче только за счёт степени.
+
+    Перекалибровка после №292 не понадобилась, хотя круг её и требовал: ключ
+    связи стал путём, и на потолке буста осталось 462 узла против 467 — тот же
+    набор хабов. Доля выросла (10 % → 17 %) только потому, что упал
+    знаменатель: ключи-имена плодили узлы, которых в графе нет (4 458 → 2 697)."""
     return min(HUB_CAP, 1.0 + 0.15 * math.log1p(max(0, in_degree)))
 
 
@@ -274,7 +280,7 @@ def is_node_path(rel: str) -> bool:
 
 
 def stub_base(text: str) -> str:
-    """Файл — заглушка-редирект после слияния узлов? Тогда база канона, иначе "".
+    """Файл — заглушка-редирект после слияния узлов? Тогда КЛЮЧ канона, иначе "".
 
     Обход и так держит текст в руках, поэтому распознание стоит один разбор на
     ИЗМЕНЁННЫЙ файл, а не на запрос. Замер 17.09 на рабочем графе: 404 заглушки
@@ -284,124 +290,214 @@ def stub_base(text: str) -> str:
     target = redirects.stub_target(text)
     if not target:
         return ""
-    leaf = pathlib.PurePosixPath(target.split("|")[0].strip()).name
-    return norm_text(leaf[:-3] if leaf.casefold().endswith(".md") else leaf)
-
-
-def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
-    """База заглушки → база живого канона, цепочки развёрнуты, циклы отброшены.
-
-    Ссылка на слитый узел должна считаться ссылкой на канон: иначе буст хаба
-    достаётся мёртвому файлу, а переход через него отбрасывается фильтром узлов
-    и ответ молча обедает.
-
-    ДОЛГ, названный вслух (вердикты DS и GLM 17.09). Это ВТОРАЯ реализация
-    правила «куда ведёт заглушка»: первая — `graph_updater.follow_stubs`, она
-    ходит по путям и читает диск. `graph_links.LinkResolver` тут ни при чём —
-    он резолвит «как Obsidian», то есть В саму заглушку, и снимок принимает
-    (`notes=`), так что «ему нужен диск» — неверное обоснование, его тут не
-    было. Карта живёт по базам без папки, потому что по базам ключуется весь
-    поиск (`wiki_targets`, `_indeg`, `by_base`), и переезд на пути меняет их
-    разом — это №292. Известная цена промедления: ссылка, назвавшая папку
-    явно, здесь неотличима от голой.
-
-    Имя переписывается, только если ЖИВОГО файла с таким именем нет вовсе.
-    Однофамилец бывает не дублем: `Ядра/Отчёт по аварии` слит в другое ядро, а
-    `Досье/Отчёт по аварии` — живая сводка по той же теме, и ссылка ведёт к ней
-    (замер 17.09: без этой оговорки правка отнимала 4 перехода, давая 43)."""
-    docs = list(docs)          # два прохода по снимку: генератор исчерпался бы на
-    live = live_owners(docs)   # первом и вернул «ссылки никуда» вместо ошибки (DS r5)
-    # «# X → [[X]]» сюда не попадает: ни живой файл, ни звено цепочки. В живых она
-    # собирала бы на себя чужие ссылки, в звеньях — вытесняла настоящий редирект
-    # той же базы (DS, круг 2 по №291)
-    cands: dict[str, list[Doc]] = {}
-    for d in docs:
-        if d.stub_to and d.stub_to != d.base:
-            cands.setdefault(d.base, []).append(d)
-
-    found_cache: dict[str, str] = {}
-
-    def resolve(base: str, seen: frozenset[str]) -> str | None:
-        """Живой канон за цепочкой заглушек этого имени или None.
-
-        Кандидаты перебираются на КАЖДОМ звене, не только на первом: у
-        промежуточного имени тоже бывают две стрелки, и если представитель
-        выбран заранее и ведёт в никуда, рабочая ветка не пробуется вовсе
-        (DS, круг 5 по №291).
-
-        Потолок глубины и памятка удач — против данных, а не кода: цепочка
-        длиннее предела рекурсии уронила бы весь обход, а перебор ветвлений
-        без памятки растёт как степень двойки по длине (DS, круг 6). Неудачи
-        не кэшируются: «не дошли» может значить «путь упёрся в собственного
-        предка», и для другого корня ответ был бы иным."""
-        if base in live:
-            return base
-        if base in found_cache:
-            return found_cache[base]
-        if len(seen) > MAX_STUB_HOPS:
-            return None
-        for d in sorted(cands.get(base, ()), key=owner_key):
-            if d.stub_to in seen:      # цикл или самопетля — следующая стрелка
-                continue
-            found = resolve(d.stub_to, seen | {d.stub_to})
-            if found is not None:
-                found_cache[base] = found
-                return found
-        return None
-
-    out: dict[str, str] = {}
-    for base in cands:
-        if base in live:   # под этим именем есть и живой файл — ссылка про него
-            continue
-        found = resolve(base, frozenset({base}))
-        if found is not None:
-            out[base] = found
-    return out
+    # путь как написан, а не лист: цель стрелки — тот же ключ связи, что и цель
+    # [[ссылки]] (DS и GLM, входной круг по №292)
+    t = target.split("|")[0].strip().strip("/ ")
+    return norm_text(t.removesuffix(".md"))
 
 
 def owner_key(d: Doc) -> tuple[float, str]:
-    """Ключ «кто представляет имя»: свежайший, при равной дате — меньший путь.
+    """Ключ «кто представляет ключ»: свежайший, при равной дате — меньший путь.
 
-    Один ключ на все места, где имя достаётся одному из нескольких файлов.
-    Тай-брейк по пути обязателен: дата узла — это mtime, а его двигают
-    `git checkout`, копия графа целиком и синк облака, поэтому равные даты у
-    тёзок штатны. Без второго ключа хозяин имени решался порядком обхода
-    каталога, а без первого — алфавитом папки (DS, круги 4 и 5 по №291)."""
+    Один ключ на все места, где ключ достаётся одному из нескольких файлов —
+    и по имени, и по пути. Тай-брейк по пути обязателен: дата узла это mtime,
+    а его двигают `git checkout`, копия графа целиком и синк облака, поэтому
+    равные даты у тёзок штатны. Без второго ключа хозяин решался порядком
+    обхода каталога, а без первого — алфавитом папки (DS, круги 4 и 5 по №291;
+    круг 2 по №292 поймал тот же недетерминизм, вернувшийся на путях)."""
     return (-d.date_ts, d.rel)
 
 
-def live_owners(docs: Iterable[Doc]) -> dict[str, Doc]:
-    """База → живой документ под этим именем, выбор детерминированный."""
-    out: dict[str, Doc] = {}
-    for d in docs:
-        if d.stub_to:
-            continue
-        cur = out.get(d.base)
-        if cur is None or owner_key(d) < owner_key(cur):
-            out[d.base] = d
-    return out
-
-
-def name_owner(base: str, stub_to: str, live: dict[str, Doc], canon: dict[str, str]) -> Doc | None:
-    """Кто отвечает за это имя: живой тёзка, иначе канон за стрелкой заглушки.
-
-    Одно правило на всех потребителей. Приоритет тёзки тот же, что в
-    `canon_bases`: есть под именем живой файл — имя про него, и стрелка
-    мёртвого дубля его не перебивает. Круг 2 по №291 поймал, как два
-    экземпляра этого правила в одном файле разошлись: подмена в выдаче
-    отдавала слот живой цели стрелки, а переходы — тёзке."""
-    return live.get(base) or live.get(canon.get(base, stub_to))
-
-
 def wiki_targets(text: str) -> set[str]:
-    """Цели [[ссылок]] → базовые имена узлов (без папки и текста ссылки)."""
+    """Цели [[ссылок]] как НАПИСАНЫ: с папкой, если автор её назвал.
+
+    Папку раньше срезали здесь же, и однозначность, которую автор дал руками,
+    терялась на входе. Разрешение цели в документ — `LinkCatalog`, там же и
+    правило голой ссылки."""
     out: set[str] = set()
     for target in _WIKILINK_RX.findall(text):
-        base = target.strip().split("/")[-1].strip()
-        if base:
-            out.add(norm_text(base))
+        t = target.strip().removesuffix(".md").strip("/ ")
+        if t:
+            out.add(norm_text(t))
     return out
 
+
+class LinkCatalog:
+    """Единственный ответ на вопрос «куда ведёт ссылка» для всего поиска.
+
+    Три потребителя — голос входящей ссылки, переход по ссылке из найденного
+    узла, подмена заглушки в выдаче — раньше строили свои карты и каждый вносил
+    своё правило выбора хозяина ключа. Каждый круг находил очередного
+    потребителя, который разошёлся с остальными: `_indeg` (№291), разворот
+    заглушки (круг 2 по №292). Каталог строится ОДИН раз на снимок, и карты — его
+    приватные поля, поэтому недетерминированного хозяина ключа снаружи не
+    достать (схождение DS и GLM, круг 2 по №292). Наружу два уровня: `named`
+    отвечает про написанное и может вернуть указатель, `live` — только живой
+    документ.
+
+    Ключ связи — нормализованный путь без расширения. Нормализация схлопывает
+    регистр и ё/е, поэтому `Ядра/Отчёт.md` и `Ядра/Отчет.md` — два РАЗНЫХ файла
+    с одним ключом; хозяина такой коллизии выбирает `owner_key`, а не порядок
+    обхода каталога."""
+
+    def __init__(self, docs: Iterable[Doc]) -> None:
+        docs = list(docs)      # два прохода по снимку: генератор исчерпался бы на
+                               # первом и вернул «ссылки никуда» вместо ошибки (DS r5)
+        self._by_path = _owned(docs, lambda d: d.key)
+        self._names = _owned(docs, lambda d: d.base, stubs_last=True)
+        self._canon = self._build_canon(docs)
+
+    @property
+    def canon(self) -> dict[str, str]:
+        """Ключ заглушки → ключ живого канона. Наружу — только для отчётов."""
+        return dict(self._canon)
+
+    def named(self, target: str) -> Doc | None:
+        """Какой документ НАЗВАН этой целью. Может быть заглушкой.
+
+        Папка названа — берём её путь и ничего не угадываем: путь назван, а
+        файла нет — промах, иначе однофамилец перехватывает объявленную цель.
+        Цель голая — идём по имени, где живой бьёт заглушку (DS и GLM, круг 1
+        по №292).
+
+        Замер 17.09: путь как написан есть у 41 390 папочных ссылок из 41 409,
+        по имени пришлось бы резолвить 3, не нашлось ни так ни так 16 — фолбэк
+        нужен, но он редкий."""
+        hit = self._by_path.get(target)
+        if hit is not None:
+            return hit
+        return None if "/" in target else self._names.get(target)
+
+    def live(self, target: str) -> Doc | None:
+        """Какой ЖИВОЙ документ стоит за целью. Заглушку не вернёт никогда.
+
+        То, что нужно всем потребителям. Разворот здесь, а не у каждого из них:
+        каждый делал его по-своему, и на голых целях промахивался. Если за
+        заглушкой снова заглушка — цепочка оборвана (взаимные стрелки, мёртвое
+        звено), и честный ответ «никуда», а не следующее звено: иначе голос
+        уходил мёртвому файлу — ровно дефект, который закрывал №291
+        (Critical DS, круг 2 по №292)."""
+        hit = self.named(target)
+        if hit is None or not hit.stub_to:
+            return hit
+        # куда ведёт заглушка, уже посчитано по её КЛЮЧУ: стрелка бывает звеном
+        # цепочки, ключ указывает на её конец
+        end = self.named(self._canon.get(hit.key, hit.stub_to))
+        return None if end is None or end.stub_to else end
+
+    def instead_of_stub(self, stub: Doc) -> Doc | None:
+        """Кого показать вместо заглушки, попавшей в выдачу.
+
+        Сначала СТРЕЛКА через карту канонов, и только потом имя. Обратный
+        порядок давал однофамильца вместо объявленной цели (DS, круг 1 по
+        №292). Живой тёзка — последняя ступень: заглушка с мёртвой стрелкой всё
+        же про своё имя, и показать по нему живой файл лучше, чем ничего.
+
+        Карта канонов отвечает про ХОЗЯИНА ключа, поэтому спрашивать её можно
+        только за него: при коллизии (`Ядра/Ёлка.md` и `Ядра/Елка.md` — один
+        ключ) второй файл в выдаче находится по своему тексту, и ответ хозяина
+        показал бы ему чужую цель. Не хозяин — идём по собственной стрелке
+        (Important DS, круг 3 по №292)."""
+        owned = self._by_path.get(stub.key) is stub
+        hit = self.live(self._canon.get(stub.key, stub.stub_to) if owned else stub.stub_to)
+        if hit is not None:
+            return hit
+        twin = self._names.get(stub.base)
+        return twin if twin is not None and not twin.stub_to else None
+
+    def _build_canon(self, docs: Sequence[Doc]) -> dict[str, str]:
+        """Ключ заглушки → ключ живого канона, цепочки развёрнуты, циклы прочь.
+
+        Ссылка на слитый узел должна считаться ссылкой на канон: иначе буст
+        хаба достаётся мёртвому файлу, а переход через него отбрасывается
+        фильтром узлов и ответ молча обедает.
+
+        ДОЛГ, названный вслух (вердикты DS и GLM 17.09): это ВТОРАЯ реализация
+        правила «куда ведёт заглушка»; первая — `graph_updater.follow_stubs`,
+        она ходит по путям и читает диск. Свести их — отдельная карточка."""
+        cands = _owned([d for d in docs if d.stub_to], lambda d: d.key)
+
+        def resolve(target: str, seen: frozenset[str]) -> str | None:
+            """Живой канон за цепочкой заглушек или None.
+
+            Потолок глубины — против данных, а не кода: цепочка длиннее предела
+            рекурсии уронила бы весь обход (DS, круг 6 по №291)."""
+            hit = self.named(target)      # `live` тут нельзя: карта ровно сейчас
+            if hit is None:               # и строится, цепочку идём сами
+                return None               # цель не дожила до индекса
+            if not hit.stub_to:
+                return hit.key            # живой файл — конец цепочки
+            if hit.stub_to in seen or len(seen) > MAX_STUB_HOPS:
+                # `seen` заряжена ключом заглушки И её стрелкой, поэтому она же
+                # отсекает самопетлю в любой записи: `# X → [[X]]` голой строкой,
+                # путём, через коллизию ё/е. Отдельная сверка «стрелка ведёт в
+                # себя» была бы мёртвым кодом — перебор всех сочетаний пути и
+                # стрелки дал 0 расхождений (проверка круга 2 по №292)
+                return None               # цикл, самопетля или слишком длинная цепь
+            return resolve(hit.stub_to, seen | {hit.stub_to})
+
+        out: dict[str, str] = {}
+        for key, stub in cands.items():
+            # идём ПО СТРЕЛКЕ заглушки, а не ищем однофамильца: ключ-путь почти
+            # всегда уникален, и кандидат на каждом звене ровно один (№292)
+            found = resolve(stub.stub_to, frozenset({key, stub.stub_to}))
+            if found is not None and found != key:
+                out[key] = found
+        return out
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class Generation:
+    """Поколение индекса: документы, голоса и каталог связей ОДНИМ значением.
+
+    Три отдельных поля публиковались тремя присваиваниями, и корректность
+    держалась на том, что все три строки попали в один захват замка —
+    соглашение в голове, а не инвариант. Пока они были врозь, поиск успевал
+    увидеть новые документы со старым каталогом и падал на цели, которой в его
+    снимке уже нет. Одно поле делает такой рассинхрон невыразимым, а проверку —
+    структурной, а не гоночной (Critical DS, круги 3 и 4 по №292).
+
+    Охват обхода (`skipped`, `unread`) живёт здесь же: пока он был отдельными
+    полями, ответ мог соединить документы одного поколения с честностью
+    другого — «найдено в этом снимке» и «столько-то не открылось» из разных
+    обходов. Частичный тип — то же соглашение в голове, только с убедительным
+    именем (Critical DS, круг 5). Словари заворачиваются в неизменяемый вид:
+    значение, которое отдаётся читателю без копии, не должно быть мутируемым."""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "docs", types.MappingProxyType(dict(self.docs)))
+        object.__setattr__(self, "indeg", types.MappingProxyType(dict(self.indeg)))
+
+    docs: Mapping[str, Doc]
+    indeg: Mapping[str, int]
+    catalog: LinkCatalog
+    skipped: tuple[str, ...] = ()   # что обход РЕАЛЬНО отсёк (см. `_walk`)
+    unread: int = 0                 # файлы, которые не открылись (права, битая ссылка)
+
+
+def _owned(docs: Iterable[Doc], key: Callable[[Doc], str], *,
+           stubs_last: bool = False) -> dict[str, Doc]:
+    """Ключ → документ, который за него отвечает. Выбор детерминирован.
+
+    Плоское `{key(d): d for d in docs}` отдавало ключ последнему в обходе
+    каталога — тому самому недетерминизму, ради которого писался `owner_key`
+    (Critical DS и GLM, круг 2 по №292: `Ядра/Отчёт.md` и `Ядра/Отчет.md`
+    дают один ключ, победитель менялся между перезапусками демона).
+
+    `stubs_last` — для карты имён: живой файл всегда бьёт заглушку, иначе
+    стрелка мёртвого дубля перехватывает голую ссылку у живого тёзки. Для карты
+    путей приоритета нет: путь — это один файл, спорить не о чем."""
+    out: dict[str, Doc] = {}
+    for d in docs:
+        k = key(d)
+        cur = out.get(k)
+        if cur is None or _rank(d, stubs_last) < _rank(cur, stubs_last):
+            out[k] = d
+    return out
+
+
+def _rank(d: Doc, stubs_last: bool) -> tuple[bool, float, str]:
+    return (bool(d.stub_to) if stubs_last else False, *owner_key(d))
 
 def rrf_merge(ranked: Sequence[Sequence[str]], weights: Sequence[float] | None = None,
               k: float = 60.0) -> list[tuple[str, float]]:
@@ -544,9 +640,38 @@ class Doc:
     text: str
     low: str
     date_ts: float
-    base: str          # нормализованное имя файла без расширения — цель [[ссылок]]
+    base: str          # нормализованное имя файла без расширения — цель ГОЛОЙ [[ссылки]]
     body: str = ""     # текст без YAML-шапки — для фрагментов выдачи (шапка модели не нужна)
-    stub_to: str = ""  # заглушка-редирект: база канона, куда она ведёт (иначе пусто)
+    stub_to: str = ""  # заглушка-редирект: КЛЮЧ канона, куда она ведёт (иначе пусто)
+
+    def __post_init__(self) -> None:
+        # имя и стрелка нормализуются В ДОКУМЕНТЕ: обход их нормализует, а
+        # оснастка тестов передавала сырыми — и тест «отчёт» против ключа
+        # «отчет» проходил случайно, мимо продакшн-инварианта. Инвариант
+        # «ключ, база и стрелка живут в одном пространстве имён» держит сам
+        # документ, иначе его держать некому (GLM, круги 1 и 2 по №292)
+        self.base = norm_text(self.base)
+        self.stub_to = norm_text(self.stub_to)
+
+    @property
+    def key(self) -> str:
+        """Ключ связи: нормализованный путь без расширения.
+
+        Ссылка, назвавшая папку, обязана резолвиться однозначно — автор уже дал
+        эту однозначность, а ключ-имя её терял. Замер 17.09 на рабочем графе:
+        41 409 папочных ссылок из узлов, у 5 708 имя носят несколько файлов, и
+        3 532 сегодня резолвятся НЕ в названный файл — систематически в сводку
+        вместо ядра, потому что сводки пересобираются каждую ночь и всегда
+        свежее (DS и GLM, входной круг по №292).
+
+        Что правка сделала с выдачей (30 запросов, топ-5): лексическое покрытие
+        запроса не сдвинулось вовсе — 0,989 и до и после, все перестановки идут
+        между файлами с ПОЛНЫМ покрытием. Различает их только источник: сводок
+        в выдаче стало вдвое меньше (34 → 17 слотов), ядер и систем больше
+        (47 → 61), медиана возраста 10 → 9 дней. Голос вернулся тому, на кого
+        ссылались, и это отвечает на «улучшение или регресс»: спор шёл не о
+        релевантности, а о том, кого показывать при равной релевантности."""
+        return norm_text(self.rel.removesuffix(".md"))
 
 
 @dataclasses.dataclass
@@ -610,9 +735,28 @@ class GraphSearch:
     """Индекс одного графа и поиск по нему. Один экземпляр на процесс и граф
     (см. shared()); обновление индекса и поиск — из разных потоков.
 
-    Владение: `_docs` пишет только `_walk` (обходчики сериализует `_scan_lock`),
-    подмена и чистка — под `_lock`; читатели берут снимок под `_lock` и дальше
-    работают со списком. `_vecs` пишут `load_vectors`/`embed_pending`/`_walk`
+    Владение: `_gen` — снимок индекса целиком (документы, голоса, каталог
+    связей, охват обхода). После инициализации его пишет ТОЛЬКО `_publish` —
+    одним присваиванием под `_lock`, производной от ОСНОВЫ, которую
+    вызывающий снял под тем же замком и передал явно. Публикация поле не
+    читает, а основу СВЕРЯЕТ с текущим поколением: устаревшая — ошибка, не
+    молчаливый откат. Так «решение по одному снимку, запись другого» внутри
+    одного вызова не выразить, а публикация поверх чужой правки не проходит
+    (три круга подряд ловили первое в разных ветках `_walk` — Critical DS,
+    круги 5–7 по №292; второе назвал круг 8). Обход запускается только из
+    `refresh`, сериализацию обходов держит его `_scan_lock`. Второй писатель
+    — скажем, досыпка одной свежей заметки без полного обхода — сегодня не
+    существует; появится — идёт через `_publish` со своей основой, и если
+    обход успел опубликоваться раньше, получит ошибку и снимет основу заново,
+    а не сотрёт чужое.
+
+    Читатель берёт `gen = self._gen` ОДИН раз и дальше работает с ним, не
+    трогая `self`: замок ему не нужен, потому что значение неизменяемо, а
+    ссылка меняется атомарно. Второе обращение к полю в одном действии
+    возвращает дефект круга 3 — половины ответа окажутся из разных поколений
+    (Critical и Important DS, круги 3–7 по №292).
+
+    `_vecs` пишут `load_vectors`/`embed_pending`/`_walk`
     (уборка исчезнувших) — тоже под `_lock`. Кэш векторов на диске: манифест с
     именем неизменяемого блоба (запись — новый блоб, потом манифест через
     tmp+replace, старые блобы стираются после) — читатель никогда не видит
@@ -629,11 +773,7 @@ class GraphSearch:
         self.exclude = tuple(exclude)
         self._now = now
         self._embed_fn = embed
-        self._docs: dict[str, Doc] = {}
-        self._indeg: dict[str, int] = {}
-        self._skipped: tuple[str, ...] = ()   # что обход РЕАЛЬНО отсёк (см. _walk)
-        self._unread = 0                      # файлы, которые не открылись (права, битая ссылка)
-        self._canon: dict[str, str] = {}     # база заглушки → база канона (см. canon_bases)
+        self._gen = Generation({}, {}, LinkCatalog([]))   # снимок публикуется одним присваиванием
         self._refreshed_at = 0.0
         self._lock = threading.RLock()       # индекс и векторы
         self._scan_lock = threading.Lock()   # один обход за раз
@@ -652,11 +792,11 @@ class GraphSearch:
     # ---------------------------------------------------------------- индекс
     @property
     def ready(self) -> bool:
-        return bool(self._docs)
+        return bool(self._gen.docs)
 
     @property
     def size(self) -> int:
-        return len(self._docs)
+        return len(self._gen.docs)
 
     @property
     def vectors(self) -> int:
@@ -686,10 +826,29 @@ class GraphSearch:
         finally:
             self._scan_lock.release()
 
+    def _publish(self, base: Generation, gone: Iterable[str] = (), **changes: object) -> None:
+        """Единственная запись `_gen` после инициализации: производная от
+        `base` одним присваиванием под `_lock`. Основа — обязательный
+        аргумент без умолчания: обход снимает её под замком первой строкой и
+        отдаёт сюда. Публикация поле не перечитывает, но сверяет: основа
+        обязана быть текущим поколением, иначе это запись поверх правки,
+        которой вызывающий не видел, — ошибка, а не молчаливый откат
+        (Important DS, круг 8 по №292). `gone` — пути исчезнувших файлов: их
+        векторы уходят тем же замком, что документы (DS M3 / GLM M10). Что
+        это сторожит — `tests/test_graph_search.py`, тест на форму."""
+        with self._lock:
+            if base is not self._gen:
+                raise RuntimeError("публикация поколения от устаревшей основы")
+            for p in gone:
+                self._vecs.pop(p, None)
+            self._gen = dataclasses.replace(base, **changes)
+
     def _walk(self) -> None:
         seen: set[str] = set()
         fresh: dict[str, Doc] = {}
-        changed = False
+        with self._lock:           # основа обхода — единственное чтение поля в обходе,
+            current = self._gen    # под замком; обе публикации ниже — производные от неё
+                                   # (Critical DS, круги 6–7 по №292)
         root = str(self.graph)
         # что отсечено ФАКТИЧЕСКИ, а не что записано в политике: на графе без
         # архивной папки оговорка про непрочитанное соврала бы, а на графе с
@@ -720,7 +879,7 @@ class GraphSearch:
                 except OSError:
                     unread += 1     # права, битая ссылка, сорванный синк — файл вне индекса
                     continue
-                cached = self._docs.get(path)
+                cached = current.docs.get(path)
                 if cached is not None and cached.mtime == mtime:
                     continue
                 try:
@@ -738,33 +897,40 @@ class GraphSearch:
                     body = text
                 fresh[path] = Doc(path, rel, mtime, text, norm(text), file_date_ts(rel, mtime),
                                   norm_text(os.path.splitext(fn)[0]), body, stub_base(text))
-                changed = True
-        with self._lock:
-            self._skipped = tuple(sorted(skipped))
-            self._unread = unread
-        gone = [p for p in self._docs if p not in seen]
+        scope = (tuple(sorted(skipped)), unread)
+        gone = [p for p in current.docs if p not in seen]
         if not fresh and not gone:
+            # граф не изменился, но охват мог: файл стал нечитаемым, папка
+            # архива появилась. Публикуем то же поколение с новым охватом —
+            # порознь они уезжать не должны (Critical DS, круг 5). Основа —
+            # та же `current`, что и у основного пути: раньше эта ветка читала
+            # поле заново, и решение принималось по одному снимку, а
+            # записывался другой (Important DS, круг 7)
+            self._publish(current, skipped=scope[0], unread=scope[1])
             return
-        with self._lock:
-            for p in gone:
-                self._docs.pop(p, None)
-                self._vecs.pop(p, None)          # вектор исчезнувшего файла — вместе с ним (DS M3 / GLM M10)
-            self._docs.update(fresh)
-            snapshot = list(self._docs.values())
-        if changed or gone:
-            # входящие ссылки — по снимку вне замка: обход 28 МБ текста под замком
-            # заставлял бы каждый поиск встречи ждать (GLM M5)
-            canon = canon_bases(snapshot)
-            indeg: dict[str, int] = {}
-            for d in snapshot:
-                if d.stub_to:        # единственная ссылка заглушки — служебная стрелка на канон
-                    continue
-                for target in wiki_targets(d.text):
-                    target = canon.get(target, target)   # ссылка на слитый узел — ссылка на канон
-                    indeg[target] = indeg.get(target, 0) + 1
-            with self._lock:
-                self._indeg = indeg
-                self._canon = canon
+        # поколение собирается в СТОРОНЕ и публикуется одним присваиванием:
+        # раньше документы уезжали в мир первым замком, а каталог и голоса —
+        # вторым, и всю секунду между ними поиск видел новые документы со
+        # старым каталогом. Заглушка подменялась на канон прошлого
+        # поколения, которого в снимке читателя уже нет, — `by_rel[rel]`
+        # ронял поиск с KeyError прямо на встрече (Critical DS, круг 3)
+        dropped = set(gone)
+        docs = {p: d for p, d in current.docs.items() if p not in dropped}
+        docs.update(fresh)
+        snapshot = list(docs.values())
+        # обход 28 МБ текста — вне замка: под ним каждый поиск встречи ждал бы (GLM M5)
+        catalog = LinkCatalog(snapshot)
+        indeg: dict[str, int] = {}
+        for d in snapshot:
+            if d.stub_to:            # единственная ссылка заглушки — служебная стрелка на канон
+                continue
+            for target in wiki_targets(d.text):
+                hit = catalog.live(target)
+                if hit is None:
+                    continue          # цели нет или цепочка оборвана — голос некому отдать
+                indeg[hit.key] = indeg.get(hit.key, 0) + 1
+        self._publish(current, gone=gone, docs=docs, indeg=indeg, catalog=catalog,
+                      skipped=scope[0], unread=scope[1])
 
     # --------------------------------------------------------------- векторы
     def _embed(self, texts: list[str], timeout: float) -> list[list[float]]:
@@ -858,7 +1024,7 @@ class GraphSearch:
 
     def save_vectors(self) -> None:
         with self._lock:
-            items = [(p, m, vs) for p, (m, vs) in self._vecs.items() if p in self._docs and vs]
+            items = [(p, m, vs) for p, (m, vs) in self._vecs.items() if p in self._gen.docs and vs]
         if not items:
             return
         dim = len(items[0][2][0])
@@ -899,10 +1065,13 @@ class GraphSearch:
                 except OSError:
                     pass
 
-    def pending_vectors(self) -> list[str]:
+    def pending_vectors(self, gen: Generation | None = None) -> list[str]:
+        """Файлы без свежего вектора. `gen` — поколение вызывающего, если он уже
+        его взял: иначе список и тексты приедут из разных снимков."""
         self.load_vectors()
+        gen = gen or self._gen
         with self._lock:
-            return [p for p, d in self._docs.items() if self._vecs.get(p, (None, None))[0] != d.mtime]
+            return [p for p, d in gen.docs.items() if self._vecs.get(p, (None, None))[0] != d.mtime]
 
     def embed_pending(self, budget_s: float | None = None, batch: int = EMBED_BATCH,
                       timeout: float = 60.0, should_stop: Callable[[], bool] | None = None) -> int:
@@ -944,8 +1113,9 @@ class GraphSearch:
         done = 0
         queue: list[tuple[str, float, int, int, str]] = []   # путь, mtime, номер блока, всего, текст
         with self._lock:
-            for p in self.pending_vectors():
-                d = self._docs.get(p)
+            gen = self._gen          # одно чтение на всё действие: список и тексты
+            for p in self.pending_vectors(gen):   # обязаны быть одного поколения
+                d = gen.docs.get(p)
                 if d is None:
                     continue
                 limit = MAX_CHUNKS_NODE if is_node_path(d.rel) else MAX_CHUNKS
@@ -987,13 +1157,14 @@ class GraphSearch:
         вызывающего своя деградация (узлы графа, молчание). Протухший индекс
         обновляется фоном, ответ — по текущему."""
         if not self.ready:
-            return Result([], 0, ready=False, query=query, skipped=self._skipped, unread=self._unread)
+            gen = self._gen
+            return Result([], 0, ready=False, query=query, skipped=gen.skipped, unread=gen.unread)
         if not self._fresh():
             threading.Thread(target=self.refresh, daemon=True, name="graph-search-refresh").start()
-        with self._lock:
-            docs = list(self._docs.values())
-            indeg = dict(self._indeg)
-            canon = dict(self._canon)
+        gen = self._gen          # одно поле — одно поколение: документы, голоса и
+        docs = list(gen.docs.values())   # каталог не могут разъехаться по построению
+        indeg = gen.indeg
+        catalog = gen.catalog
         avg_len = max(1.0, sum(len(d.low) for d in docs) / max(1, len(docs)))
         words, grams = needles(query)
         keys = words + grams
@@ -1029,7 +1200,7 @@ class GraphSearch:
                 matched = sum(1 for i in range(len(keys)) if t[i] or p[i])
                 best_cov = max(best_cov, matched / len(keys))
                 score *= coverage_factor(matched, len(keys)) * recency_factor(d.date_ts, now)
-                score *= hub_factor(indeg.get(d.base, 0)) * placeholder_factor(d.base) * raw_dampener(d.rel)
+                score *= hub_factor(indeg.get(d.key, 0)) * placeholder_factor(d.base) * raw_dampener(d.rel)
                 lex.append((score, d.rel))
         else:
             for d in docs:
@@ -1085,11 +1256,11 @@ class GraphSearch:
             if status is Verdict.WEAK and not dossiers:
                 status = Verdict.EMPTY
             return Result([], 0, status, dossiers=dossiers, sem_used=sem_used, query=query,
-                          reason=reason, skipped=self._skipped, unread=self._unread)
+                          reason=reason, skipped=gen.skipped, unread=gen.unread)
         low_conf = status is not Verdict.CONFIDENT
         fused = rrf_merge([[r for _, r in sorted(lex, key=lambda x: -x[0])],
                            [r for _, r in sorted(sem, key=lambda x: -x[0])]], weights=[1.0, 0.7])
-        fused = _swap_stubs(fused, by_rel, docs, canon)
+        fused = _swap_stubs(fused, by_rel, catalog)
         picked = diversify([(s, r) for r, s in fused], limit)
         blocks: list[str] = []
         shown: list[str] = []
@@ -1100,11 +1271,11 @@ class GraphSearch:
             shown.append(rel)
         total = len(fused)
         if not low_conf:
-            hops = self._hops(shown, by_rel, canon, keys, rx, snippet_chars, rare_first or keys, max(1, limit // 2))
+            hops = self._hops(shown, by_rel, catalog, keys, rx, snippet_chars, rare_first or keys, max(1, limit // 2))
             blocks += hops
             total += len(hops)
         return Result(blocks, total, status, dossiers=dossiers, sem_used=sem_used, query=query,
-                      reason=reason, skipped=self._skipped, unread=self._unread)
+                      reason=reason, skipped=gen.skipped, unread=gen.unread)
 
     def _dossier_blocks(self, query: str, snippet_chars: int, limit: int = 2) -> tuple[list[str], float]:
         """Готовые сводки по теме — ПЕРЕД фрагментами: индекс лексический, без
@@ -1129,7 +1300,7 @@ class GraphSearch:
             best = max(best, min(1.0, float(e.get("счёт", 0))))
         return out, best
 
-    def _hops(self, shown: list[str], by_rel: dict[str, Doc], canon: dict[str, str], keys: list[str],
+    def _hops(self, shown: list[str], by_rel: dict[str, Doc], catalog: LinkCatalog, keys: list[str],
               rx: re.Pattern, snippet_chars: int, rare_first: Sequence[str], limit: int) -> list[str]:
         """Один переход по [[ссылкам]] из найденных узлов: заметки со стемами
         запроса ВНЕ имени узла (покрытие × свежесть), при голом имени — самые
@@ -1143,15 +1314,6 @@ class GraphSearch:
         nodes = [r for r in shown if is_node_path(r)]
         if not nodes or limit <= 0:
             return []
-        # хозяин имени — из общей карты: своя сортировка здесь брала свежайшего без
-        # тай-брейка, и при равных датах (копия графа, git checkout) цель перехода
-        # решал порядок чтения каталога — третья копия правила (DS, круг 5 по №291)
-        by_base: dict[str, Doc] = {}
-        for base, d in live_owners(by_rel.values()).items():
-            key = canon.get(base, base)
-            cur = by_base.get(key)
-            if cur is None or owner_key(d) < owner_key(cur):
-                by_base[key] = d
         out: list[str] = []
         seen = set(shown)
         for per_node in (1, limit):
@@ -1168,7 +1330,7 @@ class GraphSearch:
                 other = [k for k in keys if not _is_name(k)]
                 cands: list[tuple[float, Doc, int]] = []
                 for base in wiki_targets(node.text):
-                    hit = by_base.get(canon.get(base, base))
+                    hit = catalog.live(base)
                     for d in ([hit] if hit is not None else []):
                         if d.rel in seen or is_node_path(d.rel) or d.rel.split("/")[-1].startswith("_"):
                             continue
@@ -1188,7 +1350,7 @@ class GraphSearch:
 
 
 def _swap_stubs(hits: Sequence[tuple[str, float]], by_rel: dict[str, Doc],
-                docs: Sequence[Doc], canon: dict[str, str]) -> list[tuple[str, float]]:
+                catalog: LinkCatalog) -> list[tuple[str, float]]:
     """Заглушка-редирект в выдаче → канон, на который она указывает.
 
     Заглушка — не документ, а указатель: блок показал бы одну стрелку вместо
@@ -1198,13 +1360,12 @@ def _swap_stubs(hits: Sequence[tuple[str, float]], by_rel: dict[str, Doc],
     короче на строку (замер 17.09 на рабочем графе, запрос про статус человека)."""
     if not any(by_rel[rel].stub_to for rel, _ in hits):
         return list(hits)
-    live = live_owners(docs)
     out: list[tuple[str, float]] = []
     seen: set[str] = set()
     for rel, score in hits:
         d = by_rel[rel]
         if d.stub_to:
-            target = name_owner(d.base, d.stub_to, live, canon)
+            target = catalog.instead_of_stub(d)
             if target is None:        # канон не дожил до индекса — показывать нечего
                 continue
             rel = target.rel
