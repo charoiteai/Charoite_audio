@@ -240,7 +240,7 @@ def test_untouched_draft_is_regenerated_from_final(tmp_path, monkeypatch):
     owned = rebuild_transcript.finalize_minutes(live, FINAL, meta, {}, {"Собеседник 2": "Инга"})
     out = mpath.read_text(encoding="utf-8")
     assert owned != "human"
-    assert _FakeLLM.calls == [FINAL], "минутки — по ФИНАЛЬНОЙ стенограмме"
+    assert _FakeLLM.calls == [FINAL.rstrip("\n")], "минутки — по ФИНАЛЬНОЙ стенограмме (речь без хвостовых переводов строк)"
     assert "Черновик" not in out and "- [ ] **Инга** — прислать смету" in out
     # прежняя версия — в .prev/ рядом со стенограммой (advisory DS r1 по #483)
     assert (tmp_path / ".prev" / "2026-09-02_1021_minutes.md").read_text(encoding="utf-8") == draft
@@ -330,7 +330,7 @@ def test_model_gets_speech_without_the_notes_tail(tmp_path, monkeypatch):
     live, mpath, meta = _prep(tmp_path, monkeypatch, None, None)
     notes = transcript.NOTES_HEAD + " (📌 КТ · 💎 факты · 💭 мысли)\n> 💎 факт, которого не звучало\n" * 40
     rebuild_transcript.finalize_minutes(live, FINAL + notes, meta, {}, {})
-    assert _FakeLLM.calls == [FINAL], "в промпт ушла только речь"
+    assert _FakeLLM.calls == [FINAL.rstrip("\n")], "в промпт ушла только речь"
     _FakeLLM.calls = []
     live2 = tmp_path / "2026-09-02_1100.md"
     live2.write_text("# Встреча\n", encoding="utf-8")

@@ -353,6 +353,19 @@ def _seconds_stamp_of_minute(value, key: str) -> bool:
         return False
 
 
+def merge(live: pathlib.Path, updates: dict, bare: str | None = None) -> bool:
+    """Записать несколько ключей одним слиянием (read-modify-write), не дампом
+    всего файла: стоп-дамп демона одной строкой `json.dumps({...})` затирал бы
+    всё, что записали во время встречи (`channel_events`, №234) — сайдкар с
+    живым писателем обязан писаться только слиянием (Critical DS и GLM
+    входного круга). Правила выбора файла — те же, что у `remember`."""
+    ok = True
+    for i, (key, value) in enumerate(updates.items()):
+        if not remember(live, key, value, bare):
+            ok = False
+    return ok
+
+
 def remember(live: pathlib.Path, key: str, value: str, bare: str | None = None) -> bool:
     """Записать ключ в сайдкар; нет файла — создать (импортированные встречи и
     сироты без live.json иначе оставались без защиты — DS M4 / GLM M1).
