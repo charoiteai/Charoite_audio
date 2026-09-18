@@ -1670,20 +1670,18 @@ def test_поток_приложения_читается_с_объявленн�
 # ------------------------------------------------- №311: чистый конструктор и гвард прохода
 
 def _init_assigned_attrs() -> set[str]:
-    """Имена `self.<x> = …` в __init__ и вызванных им хелперах регистрации."""
+    """Имена `self.<x> = …` в __init__ и вызванных им хелперах регистрации —
+    только цели в Store-контексте: `self._x[key] = v` заводит не поле, а
+    элемент, и считаться заведением поля не должен (DS M2 выходного круга)."""
     tree = ast.parse((REPO / "src" / "audio.py").read_text(encoding="utf-8"))
     cls = next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "AudioHub")
     names: set[str] = set()
     for fn in cls.body:
         if isinstance(fn, ast.FunctionDef) and fn.name in ("__init__", "_register_captures"):
             for node in ast.walk(fn):
-                if isinstance(node, (ast.Assign, ast.AnnAssign)):
-                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                    for t in targets:
-                        for leaf in ast.walk(t):
-                            if isinstance(leaf, ast.Attribute) and isinstance(leaf.value, ast.Name) \
-                                    and leaf.value.id == "self":
-                                names.add(leaf.attr)
+                if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store) \
+                        and isinstance(node.value, ast.Name) and node.value.id == "self":
+                    names.add(node.attr)
     return names
 
 
@@ -1713,9 +1711,9 @@ def test_the_constructor_owns_every_field_and_touches_no_device():
                 if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self" \
                         and isinstance(node.ctx, ast.Load):
                     read.add(node.attr)
-    missing = read - assigned - {"said"}          # `said` — только у оснастки тестов
+    missing = read - assigned
     assert not missing, f"методы читают поля, которых конструктор не заводит: {sorted(missing)}"
-    for shim in ('getattr(self, "_', 'hasattr(self, "', "self.__dict__", "_ensure_loss_state"):
+    for shim in ('getattr(self, "_', 'hasattr(self, "', "self.__dict__", "_ensure_loss_state", "setattr(self,"):
         assert shim not in src, f"страховка от оснастки осталась в бою: {shim}"
     hub = _hub()
     assert hub._closing is False and hub._last_check == 0.0 and hub.chunk_no == {} and hub._lost == {}
@@ -1732,9 +1730,22 @@ def test_for_meeting_is_the_only_place_that_discovers_devices(monkeypatch):
     hub = a.AudioHub.for_meeting(_hub_cfg())
     assert [c.label for c in hub.captures] == ["mic"] and hub.sources == ["Микрофон"]
     assert hub._no_system_channel == {"sck_missing": True, "bh_missing": True}
-    for path in ("daemon.py", "main.py"):
-        text = (REPO / "src" / path).read_text(encoding="utf-8")
-        assert "AudioHub.for_meeting(" in text and "AudioHub(cfg" not in text, path
+    # ни один модуль вне audio.py не строит хаб конструктором: новый вход (CLI,
+    # диктовка) обязан идти через for_meeting — сверка по AST всех src/*.py (DS M3)
+    builders: dict[str, list[str]] = {}
+    for path in sorted((REPO / "src").glob("*.py")):
+        if path.name == "audio.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                name = ast.unparse(node.func)
+                if name.endswith("AudioHub"):
+                    builders.setdefault(path.name, []).append(name)
+                if name.endswith("AudioHub.for_meeting"):
+                    builders.setdefault("for_meeting", []).append(path.name)
+    assert {k: v for k, v in builders.items() if k != "for_meeting"} == {}, builders
+    assert set(builders.get("for_meeting", [])) == {"daemon.py", "main.py"}
 
 
 def test_a_failing_watchdog_does_not_kill_the_consumer(monkeypatch):
@@ -1742,10 +1753,8 @@ def test_a_failing_watchdog_does_not_kill_the_consumer(monkeypatch):
     убивало поток, остаток встречи не писался, а watchdog приложения смерти
     помпы не видит. Гвард — на весь проход: блоки продолжают потребляться,
     сбой назван владельцу (строка статуса) и в stderr, не чаще окна на тип."""
-    hub = _hub()
     cap = _QueueCapture("mic")
-    hub.captures = [cap]
-    hub._bufs["mic"] = np.zeros(0, dtype=np.float32)
+    hub = _hub(captures=[cap])
     boom = {"n": 0}
 
     def broken_watch():
@@ -1778,10 +1787,8 @@ def test_a_failing_watchdog_does_not_kill_the_consumer(monkeypatch):
 def test_pump_thread_survives_a_watchdog_exception_end_to_end():
     """То же — настоящим потоком `_pump`: после падения сторожа поток жив и
     продолжает писать блоки, пока `_running`."""
-    hub = _hub()
     cap = _QueueCapture("mic")
-    hub.captures = [cap]
-    hub._bufs["mic"] = np.zeros(0, dtype=np.float32)
+    hub = _hub(captures=[cap])
     hub._watch_streams = lambda: (_ for _ in ()).throw(ValueError("упал"))
     hub.on_status = lambda m: None
     hub._running = True
@@ -1809,10 +1816,8 @@ def test_stderr_failure_on_the_consumer_path_is_harmless(monkeypatch):
 
     monkeypatch.setattr(a.sys, "stderr", Closed())
     a._safe_stderr("проба")                                   # не бросает
-    hub = _hub()
     cap = _QueueCapture("mic")
-    hub.captures = [cap]
-    hub._bufs["mic"] = np.zeros(0, dtype=np.float32)
+    hub = _hub(captures=[cap])
 
     class BrokenSink:
         def write(self, *_): raise OSError("диск кончился")
@@ -1835,3 +1840,72 @@ def test_mixed_loss_phases_are_announced_not_raised(monkeypatch):
     hub._announce_losses({"mic": a.Loss("умер", retriable=False, died=True),
                           "blackhole": a.Loss("не открылся", retriable=False, died=False)})
     assert set(hub._lost) == {"mic", "blackhole"} and said, "обе потери объявлены"
+
+
+def test_a_bad_block_on_one_channel_does_not_starve_the_neighbour_or_the_watchdog(monkeypatch):
+    """Гвард — у единицы работы, не у прохода (Critical DS выходного круга): один
+    гвард на весь проход обрывал его на дурном блоке первого канала — сторож не
+    вызывался больше ни разу, очередь второго канала росла до конца встречи, а
+    `input_age_seconds` (min по каналам) оставался нулём, и приложение не
+    перезапускало ничего. Теперь сосед дренируется, сторож идёт всегда, счётчик
+    сбоев виден в снапшоте."""
+    bad, good = _QueueCapture("blackhole"), _QueueCapture("mic")
+    hub = _hub(captures=[bad, good])
+    real_append = hub._append
+
+    def append(label, part):
+        if label == "blackhole":
+            raise ValueError("битый блок")
+        return real_append(label, part)
+
+    hub._append = append
+    watched = {"n": 0}
+    hub._watch_streams = lambda: watched.__setitem__("n", watched["n"] + 1)
+    hub.on_status = lambda m: None
+    monkeypatch.setattr(a, "_safe_stderr", lambda m: None)
+    hub._running = True
+    for _ in range(4):
+        bad.q.put(_tone(1600))
+        good.q.put(_tone(1600))
+        hub._tick()
+    assert watched["n"] == 4, "сторож идёт каждый проход, несмотря на падающий канал"
+    assert good.q.qsize() == 0 and len(hub._bufs["mic"]) == 6400, "сосед дренирован"
+    assert bad.q.qsize() == 0, "дурные блоки тоже сняты с очереди — она не растёт"
+    assert hub._pump_failures == 4 and hub.health_snapshot()["pump_failures"] == 4
+    hub._append = real_append
+    bad.q.put(_tone(1600))
+    hub._tick()
+    assert hub._pump_failures == 0, "проход без сбоев обнуляет счётчик"
+
+
+def test_an_exception_with_a_broken_str_does_not_kill_the_reporter(monkeypatch):
+    """Репортёр — последний рубеж: `str(exc)` с битым `__str__` убил бы поток из
+    except-блока — ровно тот отказ, который гвард закрывает (DS M1 / GLM I2)."""
+    class Nasty(Exception):
+        def __str__(self):
+            raise RuntimeError("нет строки")
+
+    cap = _QueueCapture("mic")
+    hub = _hub(captures=[cap])
+    hub._watch_streams = lambda: (_ for _ in ()).throw(Nasty())
+    said: list[str] = []
+    hub.on_status = said.append
+    errs: list[str] = []
+    monkeypatch.setattr(a, "_safe_stderr", errs.append)
+    hub._running = True
+    cap.q.put(_tone(1600))
+    hub._tick()                                              # не бросает
+    assert hub._pump_failures == 1 and len(hub._bufs["mic"]) == 1600
+    assert errs and "Nasty" in errs[0] and "недоступен" in errs[0] and said
+
+
+def test_health_snapshot_reaches_the_app_whole(monkeypatch):
+    """Новый датчик снапшота обязан доезжать до приложения без правки белого
+    списка ключей: `stt_progress` отдаёт снапшот целиком, `hb` — pump_alive
+    (DS I2 выходного круга). Проверка по тексту демона — контракт emit."""
+    src = (REPO / "src" / "daemon.py").read_text(encoding="utf-8")
+    i = src.index('"type": "stt_progress"')
+    assert "**health," in src[i - 600:i], "stt_progress без снапшота целиком"
+    assert 'hb_event["pump_alive"] = snap["pump_alive"]' in src
+    snap = _hub().health_snapshot()
+    assert snap["pump_alive"] is False and snap["pump_failures"] == 0

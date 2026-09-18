@@ -945,6 +945,11 @@ def main():
             input_age = health["input_age_seconds"]
             stage, stage_age = stt_stage_snapshot()
             emit({
+                # весь снапшот здоровья — приложение игнорирует неизвестные ключи,
+                # и «датчик появился в снапшоте» = «датчик есть у приложения»:
+                # рукописный белый список ключей уже потерял pump_alive (DS I2
+                # выходного круга по №311); именные поля ниже — поверх
+                **health,
                 "type": "stt_progress",
                 "state": "lagging" if lagging else "healthy",
                 "stage": stage,
@@ -3170,8 +3175,9 @@ def main():
                 # main-loop (круг-2 DS, M3): исключение — hb без поля,
                 # Swift терпит его по контракту совместимости.
                 try:
-                    hb_event["recording_ok"] = (
-                        hub.health_snapshot()["recording_ok"])
+                    snap = hub.health_snapshot()
+                    hb_event["recording_ok"] = snap["recording_ok"]
+                    hb_event["pump_alive"] = snap["pump_alive"]
                 except Exception:  # noqa: BLE001
                     pass
                 emit(hb_event)

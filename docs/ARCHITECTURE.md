@@ -577,15 +577,18 @@ UI would: the daemon finishes normally with graph and minutes written, instead
 of losing the STT thread silently while heartbeats keep the watchdog calm.
 
 **The audio consumer thread lives as long as the recording does.** `AudioHub`
-has one loop — a `_tick` pass entirely under one guard: channel blocks to the
-file and the STT buffer, then the channel watchdog. The watchdog used to sit
-bare in the loop, and any exception in its pass killed the thread: the rest of
-the meeting was not written, and the app watchdog could not see it — the
-heartbeat comes from the main thread. A failed pass is not silent: a stderr
-line and a status to the owner, at most once per 30 s per exception type; no
-channel loss is declared — the channels are alive, the hub failed. The health
-snapshot carries `pump_alive` so the app can tell "no frames" from "consumer
-dead". The `AudioHub` constructor does no I/O: `discover_captures` finds the
+has one loop — a `_tick` pass: each channel's block to the file and the STT
+buffer, then the channel watchdog; the guard sits on each unit of work and the
+watchdog runs last and always — a bad block on one channel neither starves its
+neighbours nor cancels the watchdog. The watchdog used to sit bare in the
+loop, and any exception in its pass killed the thread: the rest of the meeting
+was not written, and the app saw it only as "audio input stalled" up to 100 s
+later, answering with a restart of the whole meeting. A failure is not
+silent: a stderr line and a status to the owner, at most once per 30 s per
+exception type; no channel loss is declared — the channels are alive, the hub
+failed. The health snapshot carries `pump_alive` and `pump_failures` and
+reaches the app whole — a precise signal without restarting the recording.
+The `AudioHub` constructor does no I/O: `discover_captures` finds the
 devices, the production path is `AudioHub.for_meeting`; tests call the real
 constructor, so production code no longer defends against its own test
 harness (input round DS and GLM on №311).

@@ -460,9 +460,9 @@ class Discovery:
 
 
 def discover_captures(mode: str, sr: int) -> Discovery:
-    """Найти источники звука для режима `audio.device` — единственное место,
-    где код трогает ScreenCaptureKit и PortAudio при сборке хаба. Чистая
-    функция от режима и частоты: конструктор `AudioHub` вызовов наружу не
+    """Найти источники звука для режима `audio.device` — единственное место с
+    вводом-выводом (опрос ScreenCaptureKit и PortAudio) при сборке хаба;
+    состояния хаба не трогает. Конструктор `AudioHub` вызовов наружу не
     делает, и тесты зовут его напрямую (входной круг DS и GLM по №311).
 
     Порядок источников системного звука — от лучшего к запасному:
@@ -1297,46 +1297,66 @@ class AudioHub:
             self._report_pump_failure(e)
 
     def _tick(self) -> None:
-        """Один проход потребителя целиком под одной защитой: блоки каналов →
-        файл и STT-буфер (`_consume`), затем сторож (`_watch_streams`).
+        """Один проход потребителя: блок каждого канала → файл и STT-буфер
+        (`_consume`), затем сторож каналов (`_watch_streams`). Гвард — у каждой
+        ЕДИНИЦЫ работы, а сторож идёт последним и всегда.
 
         До №311 сторож стоял в цикле голым, и любое исключение его прохода —
         баг в `_sweep`, незаведённое поле, отказ носителя — убивало поток:
-        остаток встречи не писался ни на диск, ни в STT, а watchdog приложения
-        смерть этого потока не видит (heartbeat шлёт главный поток). Защищать
-        каждый вызов отдельно — новый шанс забыть на каждом новом месте (так
-        печать о сбое записи осталась без защиты); гвард — на проход, один.
-        Сбой прохода не тихий: строка в stderr и статус владельцу через
-        репортёр с окном по типу (входной круг DS и GLM по №311)."""
-        try:
-            for c in self.captures:
-                try:
-                    part = c.q.get(timeout=0.15)
-                except queue.Empty:
-                    continue
+        остаток встречи не писался ни на диск, ни в STT; приложение видело это
+        лишь как «аудиовход замер» спустя до 100 с и отвечало перезапуском всей
+        встречи. Один гвард на весь проход (первая правка) был хуже: устойчивый
+        сбой блока одного канала обрывал проход до сторожа — мёртвый канал не
+        детектировался никогда, очереди соседей росли, а `input_age_seconds`
+        оставался нулевым, и приложение не перезапускало ничего (Critical DS
+        выходного круга). Поэтому: дурной блок не съедает блоки соседей и не
+        отменяет сторож. Сбой не тихий: репортёр (stderr + статус владельцу,
+        окно по типу) и счётчик `pump_failures` в снапшоте здоровья."""
+        failed = False
+        for c in self.captures:
+            try:
+                part = c.q.get(timeout=0.15)
+            except queue.Empty:
+                continue
+            try:
                 self._consume(c, part)
+            except Exception as e:  # noqa: BLE001 — потребитель обязан жить, пока _running
+                failed = True
+                self._report_pump_failure(e)
+        try:
             self._watch_streams()
-        except Exception as e:  # noqa: BLE001 — потребитель обязан жить, пока _running
+        except Exception as e:  # noqa: BLE001 — сторож — вспомогательный контур, не цена записи
+            failed = True
             self._report_pump_failure(e)
-        else:
+        if not failed:
             self._pump_failures = 0
 
     def _report_pump_failure(self, exc: BaseException) -> None:
-        """Сбой прохода потребителя — не молча: полный текст в stderr и статус
-        владельцу, не чаще GUARD_REPORT_S на тип исключения. Потерю каналов НЕ
-        объявляем: каналы живы, сбой — у хаба, и ложное «канал потерян» в
-        липкой строке было бы ложью (критика GLM входного круга)."""
-        self._pump_failures += 1
-        key = type(exc).__name__
-        now = time.monotonic()
-        last = self._guard_said.get(key)
-        if last is not None and now - last < self.GUARD_REPORT_S:
-            return
-        self._guard_said[key] = now
-        text = " ".join(str(exc).split())[:300]
-        _safe_stderr(f"сбой прохода аудиопотока ({key}: {text}), подряд {self._pump_failures} — "
-                     "поток жив, проход повторяется")
-        self._say(f"⚠️ сбой аудиопотока: {key} — запись продолжается, сторож каналов может молчать")
+        """Сбой единицы работы потребителя — не молча: полный текст в stderr и
+        статус владельцу, не чаще GUARD_REPORT_S на тип исключения. Потерю
+        каналов НЕ объявляем: каналы живы, сбой — у хаба, и ложное «канал
+        потерян» в липкой строке было бы ложью (критика GLM входного круга).
+
+        Репортёр — последний рубеж и обязан не бросать сам: `str(exc)` с битым
+        `__str__` убил бы поток из except-блока (DS M1 / GLM I2 выходного
+        круга) — всё тело под своим try, текст собирается защищённо."""
+        try:
+            self._pump_failures += 1
+            key = type(exc).__name__
+            now = time.monotonic()
+            last = self._guard_said.get(key)
+            if last is not None and now - last < self.GUARD_REPORT_S:
+                return
+            self._guard_said[key] = now
+            try:
+                text = " ".join(str(exc).split())[:300]
+            except Exception:  # noqa: BLE001 — текст исключения недоступен, имя типа есть
+                text = "<текст исключения недоступен>"
+            _safe_stderr(f"сбой аудиопотока ({key}: {text}), подряд {self._pump_failures} — "
+                         "поток жив, проход повторяется")
+            self._say(f"⚠️ сбой аудиопотока: {key} — запись продолжается")
+        except Exception:  # noqa: BLE001 — репортёр не роняет то, о чём докладывает
+            pass
 
     def _consume(self, c, part, notify_frame: bool = True) -> None:
         """Один блок канала: файл записи, STT-буфер, триггер. Общий для _pump и
@@ -1622,10 +1642,12 @@ class AudioHub:
         }
         pump = self._pump_thread
         return {
-            # поток-потребитель жив? Watchdog приложения смотрит heartbeat главного
-            # потока и смерть помпы не видит (GLM I3 по №311); одно поле в уже
-            # сериализуемом снапшоте даёт ему этот сигнал без нового наблюдателя
+            # поток-потребитель жив и сколько его проходов подряд падают: до №311
+            # приложение видело смерть помпы лишь как «аудиовход замер» спустя до
+            # 100 с (input_age по min каналов) и перезапускало всю встречу; поле в
+            # уже сериализуемом снапшоте даёт точный сигнал без нового наблюдателя
             "pump_alive": bool(pump is not None and pump.is_alive()),
+            "pump_failures": self._pump_failures,
             "backlog_seconds": max(backlog.values(), default=0.0),
             "input_age_seconds": min(seen_ages, default=None),
             "recording_ok": (not self.record_on

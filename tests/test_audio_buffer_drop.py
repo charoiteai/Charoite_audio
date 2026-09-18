@@ -35,7 +35,6 @@ def Hub(recording: bool = True, chunk_s: float = 3.0, overlap_s: float = 0.5):
            "log": {"recordings_dir": "recordings"}, "sufler": {"user_name": "Владелец"}}
     hub = audio.AudioHub(cfg)
     hub._bufs = {"mic": np.zeros(0, dtype=np.float32)}
-    hub._watch_streams = lambda: None
     # Настоящий file-like sink: `_pump` пишет и flush'ит его ровно как .pcm.
     # Голый object раньше был достаточен, пока тесты не проверяли немедленную
     # видимость смерти записи, но реальным состоянием runtime он не является.
