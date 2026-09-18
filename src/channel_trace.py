@@ -13,10 +13,13 @@
 - **нить встречи** (`Thread.add_system`) — та же строка на экране, без дедупа.
 
 Свёртки по порогу длительности нет: короткий по отчёту эпизод — это реальная
-дыра ≥ порога сторожа (критика DS и GLM входного круга). Свёртка — по счёту:
-после `LINES_MAX` строк на канал в хвост и нить идёт только итог; события в
-сайдкаре — все. Итог при остановке (`close`) закрывает картину: интервалы без
-канала и их сумма, открытые эпизоды — «до конца записи».
+дыра ≥ порога сторожа (критика DS и GLM входного круга). Свёртка — по счёту
+ЭПИЗОДОВ: после `LINES_MAX` эпизодов на канал (пара lost+back — две строки
+одного эпизода) в хвост и нить идёт только итог; события в сайдкаре — все.
+Итог при остановке (`close`) закрывает картину: интервалы без канала и их
+сумма, открытые эпизоды — «до конца записи»; после `close` след закрыт и
+события не принимает — гейт у владельца, не только у излучателя (критика GLM
+круга 2).
 """
 from __future__ import annotations
 
@@ -92,9 +95,13 @@ class ChannelTrace:
         self.events: list[dict] = []
         self._episodes_shown: Counter[str] = Counter()   # эпизодов на канал уже в документах
         self._open_shown: set[str] = set()               # открытые эпизоды, чей lost показан
-        self.persist_failed = False
+        self.persist_failed = False        # исход ПОСЛЕДНЕЙ записи в сайдкар (список пишется целиком)
+        self._warned_persist = False       # строка stderr об отказе — одна
+        self.closed = False                # после close() события не принимаются
 
     def on_event(self, ev) -> None:
+        if self.closed:
+            return                         # итог написан — событие в документы не попадёт (критика GLM круга 2)
         self.events.append(ev.as_dict())
         self._persist()
         text = render(ev)
@@ -122,13 +129,19 @@ class ChannelTrace:
                                        json.dumps(self.events, ensure_ascii=False), self.bare)
         except Exception:  # noqa: BLE001 — след не роняет запись
             ok = False
-        if not ok and not self.persist_failed:
+        if not ok and not self._warned_persist:
             # отказ долговечной записи — не молча: сайдкар и есть носитель следа
-            # для пересборки; итог тоже скажет об этом (Important GLM выходного круга)
-            print(f"след канала: сайдкар {self.live.name} не пишется — события только в "
-                  "хвосте и нити", file=sys.stderr)
-        if not ok:
-            self.persist_failed = True
+            # для пересборки; итог тоже скажет об этом (Important GLM круга 1).
+            # flush — строка важнее всего, когда демона добивает watchdog (GLM круга 2)
+            self._warned_persist = True
+            try:
+                print(f"след канала: сайдкар {self.live.name} не пишется — события только в "
+                      "хвосте и нити", file=sys.stderr, flush=True)
+            except Exception:  # noqa: BLE001
+                pass
+        # состояние ФАЙЛА — по последней записи: список пишется целиком, и удавшаяся
+        # запись после разового отказа значит, что в сайдкаре всё (Important DS круга 2)
+        self.persist_failed = not ok
 
     def _say(self, text: str, at: str) -> None:
         for fn, args in ((self._note, (text,)), (self._thread_add, (text, at))):
@@ -153,7 +166,9 @@ class ChannelTrace:
                 if label in open_:
                     continue
                 open_[label] = len(out)
-                out.append(Episode(label, e["stopped_at"] or e["at"], None, False))
+                # граница — как в событии; None — «время неизвестно», а не момент
+                # крика (Important DS круга 2: рендер уже отказался его подставлять)
+                out.append(Episode(label, e["stopped_at"], None, False))
             elif kind in ("back", "end"):
                 i = open_.pop(label, None)
                 if i is None:
@@ -173,16 +188,20 @@ class ChannelTrace:
         parts = []
         for label in dict.fromkeys(e.label for e in eps):
             mine = [e for e in eps if e.label == label]
-            spans, total = [], 0.0
+            spans, total, unknown = [], 0.0, False
             for ep in mine:
                 if ep.start is not None and ep.end is not None:
                     total += max(0.0, ep.end - ep.start)
+                else:
+                    unknown = True            # граница неизвестна — сумму не выдумываем
                 spans.append(f"{_hm(ep.start)}–{_hm(ep.end) if ep.end is not None else 'до конца записи'}")
             shown = ", ".join(spans[:8]) + (f" и ещё {len(spans) - 8}" if len(spans) > 8 else "")
-            parts.append(f"{ABSENT.get(label, label)} {shown} (эпизодов {len(mine)}, всего {_dur(total)})")
+            total_s = _dur(total) + (" без учёта эпизодов с неизвестной границей" if unknown else "")
+            parts.append(f"{ABSENT.get(label, label)} {shown} (эпизодов {len(mine)}, всего {total_s})")
         text = "📋 запись неполная: " + "; ".join(parts)
         if self.persist_failed:
-            text += " · в сайдкар след не лёг"
+            # слова читателя протокола, не кодовой базы (Minor GLM круга 2)
+            text += " · пометки о пропусках могли сохраниться не полностью"
         return text
 
     def close(self) -> str | None:
@@ -192,19 +211,23 @@ class ChannelTrace:
         text = self.summary()
         if text:
             self._say(text, "")
+        self.closed = True
         return text
 
 
 def _merge_windows(eps: list[Episode]) -> list[Episode]:
-    """Слить наложившиеся окна одного канала (порядок событий сохраняется)."""
+    """Слить наложившиеся окна одного канала (порядок событий сохраняется).
+    Индекс последнего окна метки — рядом, не поиск по значению (Minor DS круга 2)."""
     out: list[Episode] = []
+    last: dict[str, int] = {}
     for ep in eps:
-        prev = next((o for o in reversed(out) if o.label == ep.label), None)
+        i = last.get(ep.label)
+        prev = out[i] if i is not None else None
         if (prev is not None and ep.start is not None and prev.start is not None
                 and prev.end is not None and ep.start <= prev.end):
-            merged = prev._replace(end=None if ep.end is None else max(prev.end, ep.end),
+            out[i] = prev._replace(end=None if ep.end is None else max(prev.end, ep.end),
                                    revived=ep.revived)
-            out[out.index(prev)] = merged
             continue
+        last[ep.label] = len(out)
         out.append(ep)
     return out

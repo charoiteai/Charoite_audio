@@ -380,7 +380,14 @@ def merge(live: pathlib.Path, updates: dict, bare: str | None = None) -> bool:
 def remember(live: pathlib.Path, key: str, value: str, bare: str | None = None) -> bool:
     """Записать ключ в сайдкар; нет файла — создать (импортированные встречи и
     сироты без live.json иначе оставались без защиты — DS M4 / GLM M1).
-    Неоднозначный сайдкар — не писать, вернуть False."""
+    Неоднозначный сайдкар — не писать, вернуть False. Под замком — и выбор
+    файла (усыновление легаси переименовывает): иначе два писателя могли бы
+    переименовать по-разному (Minor DS круга 2 по №234)."""
+    with _RMW_LOCK:
+        return _remember_locked(live, key, value, bare)
+
+
+def _remember_locked(live: pathlib.Path, key: str, value: str, bare: str | None) -> bool:
     p = sidecar_for(live, bare)
     if p is None:
         return False
@@ -395,18 +402,17 @@ def remember(live: pathlib.Path, key: str, value: str, bare: str | None = None) 
             p = _direct(live)
         except OSError:
             return False
-    with _RMW_LOCK:
-        meta: dict = {}
-        if p.exists():
-            try:
-                loaded = json.loads(p.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    meta = loaded
-            except (OSError, ValueError):
-                return False
-        meta[key] = value
+    meta: dict = {}
+    if p.exists():
         try:
-            safe_write.write_text(p, json.dumps(meta, ensure_ascii=False))
-        except OSError:
+            loaded = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                meta = loaded
+        except (OSError, ValueError):
             return False
+    meta[key] = value
+    try:
+        safe_write.write_text(p, json.dumps(meta, ensure_ascii=False))
+    except OSError:
+        return False
     return True

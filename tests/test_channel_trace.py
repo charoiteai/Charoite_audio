@@ -233,17 +233,39 @@ def test_two_sidecar_writers_in_one_process_do_not_lose_each_other_s_keys(tmp_pa
     stop = threading.Event()
     n = {"events": 0}
 
-    def writer():
-        while not stop.is_set():
-            trace.on_event(_events(("gap", "blackhole", base + n["events"], base + n["events"] + 1, 1.0, True))[0])
-            n["events"] += 1
-    t = threading.Thread(target=writer, daemon=True)
-    t.start()
-    for i in range(30):
-        assert live_sidecar.merge(live, {"speakers": i, "stamp": "2026-09-02_102113"}, bare="2026-09-02_102113")
-    stop.set()
-    t.join(5)
+    # чередование форсируется швом записи, а не расписанием планировщика (Minor DS
+    # и GLM круга 2): первая запись потока событий замирает между «прочитал» и
+    # «записал», пока главный поток не попробует слияние; без замка слияние
+    # пройдёт в этот зазор и будет затёрто, с замком — дождётся своей очереди
+    real_write = live_sidecar.safe_write.write_text
+    in_gap, main_tried = threading.Event(), threading.Event()
+    writer_thread = {"id": None}
+
+    def hooked(path, text, **kw):
+        if threading.get_ident() == writer_thread["id"] and not in_gap.is_set():
+            in_gap.set()
+            main_tried.wait(1.5)
+        return real_write(path, text, **kw)
+    monkeypatch_target = live_sidecar.safe_write
+    monkeypatch_target.write_text = hooked
+    try:
+        def writer():
+            writer_thread["id"] = threading.get_ident()
+            while not stop.is_set():
+                trace.on_event(_events(("gap", "blackhole", base + n["events"], base + n["events"] + 1, 1.0, True))[0])
+                n["events"] += 1
+        t = threading.Thread(target=writer, daemon=True)
+        t.start()
+        assert in_gap.wait(3), "поток событий не дошёл до записи"
+        main_tried.set()                                   # главный идёт в слияние ровно в зазор
+        for i in range(30):
+            assert live_sidecar.merge(live, {"speakers": i, "stamp": "2026-09-02_102113"}, bare="2026-09-02_102113")
+        stop.set()
+        t.join(5)
+    finally:
+        monkeypatch_target.write_text = real_write
     meta = json.loads((tmp_path / "2026-09-02_102113.md.live.json").read_text(encoding="utf-8"))
+    assert n["events"] >= 1
     assert meta["speakers"] == 29 and meta["stamp"] == "2026-09-02_102113", "ключи стоп-слияния целы"
     assert len(json.loads(meta[channel_trace.SIDECAR_KEY])) == n["events"], "ни одно событие не затёрто слиянием"
 
@@ -296,15 +318,74 @@ def test_the_hole_boundary_is_the_real_frame_not_the_restart_stamp(monkeypatch):
     assert "эпизодов 1" in trace.summary()
 
 
-def test_a_failing_sidecar_is_reported_once_and_named_in_the_summary(tmp_path, monkeypatch, capsys):
+def test_a_failing_sidecar_is_reported_once_and_the_summary_reflects_the_last_write(tmp_path, monkeypatch, capsys):
+    """Отказ записи — одна строка stderr; итог говорит о ПОСЛЕДНЕЙ записи: список
+    пишется целиком, и удавшаяся запись после разового отказа значит, что в
+    сайдкаре всё (Important DS круга 2). Слова — читателя протокола (GLM)."""
     live = tmp_path / "2026-09-02_1021.md"
-    monkeypatch.setattr(live_sidecar, "remember", lambda *a, **k: False)
+    outcome = {"ok": False}
+    monkeypatch.setattr(live_sidecar, "remember", lambda *a, **k: outcome["ok"])
     trace = channel_trace.ChannelTrace(live, None, None, bare="2026-09-02_1021")
     trace.on_event(_events(("lost", "mic", 1.0, 2.0, None, True))[0])
-    trace.on_event(_events(("end", "mic", 1.0, 60.0, 59.0, True))[0])
+    assert trace.persist_failed and trace.summary().endswith("пометки о пропусках могли сохраниться не полностью")
+    trace.on_event(_events(("gap", "blackhole", 5.0, 40.0, 35.0, True))[0])   # второй отказ — строки нет
+    outcome["ok"] = True
+    trace.on_event(_events(("end", "mic", 1.0, 60.0, 59.0, True))[0])        # удалось — весь список лёг
     err = capsys.readouterr().err
-    assert err.count("не пишется") == 1 and trace.persist_failed
-    assert trace.summary().endswith("в сайдкар след не лёг")
+    assert err.count("не пишется") == 1
+    assert not trace.persist_failed and "могли сохраниться" not in trace.summary()
+    assert "сайдкар" not in trace.summary(), "жаргон кодовой базы в протокол не идёт"
+
+
+def test_the_trace_owner_ignores_events_after_close(tmp_path):
+    """Гейт у владельца, не только у излучателя: второй подписчик или новый
+    эмиттер не обойдут закрытие следа молча (критика GLM круга 2)."""
+    live = tmp_path / "2026-09-02_1021.md"
+    notes: list[str] = []
+    trace = channel_trace.ChannelTrace(live, notes.append, None, bare="2026-09-02_1021")
+    trace.on_event(_events(("lost", "mic", 1.0, 2.0, None, True))[0])
+    assert trace.close().startswith("📋")
+    trace.on_event(_events(("back", "mic", 1.0, 90.0, 89.0, True))[0])
+    assert len(trace.events) == 1 and notes[-1].startswith("📋"), "после итога событий в документах нет"
+
+
+def test_a_channel_without_frames_has_no_invented_boundary(tmp_path, monkeypatch):
+    """Без настоящих кадров граница неизвестна — ни в строке, ни в итоге не
+    подставляется момент крика или штамп старта (Important DS круга 2 ×2)."""
+    _quiet(monkeypatch)
+    hub = _hub("blackhole")
+    got = []
+    hub.on_channel = got.append
+    now = time.time()
+    hub._last_frame["blackhole"] = now - 40                 # штамп старта, кадров не было
+    monkeypatch.setattr(hub, "_restart_guarded", lambda c: None)
+    hub._sweep(now, {})
+    assert got[-1].kind == a.CH_GAP and got[-1].stopped_at is None and abs(got[-1].silent_s - 40) < 1
+    live = tmp_path / "2026-09-02_1021.md"
+    trace = channel_trace.ChannelTrace(live, None, None, bare="2026-09-02_1021")
+    trace.on_event(_events(("lost", "blackhole", None, 100.0, None, True))[0])
+    trace.on_event(_events(("end", "blackhole", None, 600.0, None, True))[0])
+    s = trace.summary()
+    assert "время неизвестно" in s and "без учёта эпизодов с неизвестной границей" in s
+    assert trace.episodes()[0].start is None
+
+
+def test_producers_are_silent_after_the_trace_is_closed(monkeypatch):
+    """Гейт — на производителе: после закрытия `_announce_back` не шлёт «снова
+    пишется» в статус и не трогает реестр, `_announce_losses` не кричит
+    (Important DS круга 2 / Minor GLM)."""
+    _quiet(monkeypatch)
+    hub = _hub("mic", "blackhole")
+    said: list[str] = []
+    hub.on_status = said.append
+    now = time.time()
+    hub._last_frame["blackhole"] = hub._real_frame["blackhole"] = now - 100
+    hub._announce_losses({"blackhole": a.Loss("умер", retriable=True, died=True)})
+    hub.end_channel_episodes()
+    said.clear()
+    assert hub._announce_back("blackhole", 3.0) == "" and said == [] and "blackhole" in hub._lost
+    hub._announce_losses({"mic": a.Loss("умер", retriable=False, died=True)})
+    assert "mic" not in hub._lost and said == []
 
 
 def test_episode_contract_is_named_not_positional():

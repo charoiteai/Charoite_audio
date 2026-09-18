@@ -873,6 +873,8 @@ class AudioHub:
         # finally сторожа и убил бы объявление вместе с потоком-потребителем
         # (Important DS входного круга по №311) — считаем «жил и пропал», если
         # так у любой из потерь, и оставляем след
+        if self._channel_closed:
+            return                             # запись остановлена — потерь больше не объявляем
         phases = {v.died for v in losses.values()}
         if len(phases) > 1:
             _safe_stderr("потери одного объявления пришли разных фаз: " + ", ".join(sorted(losses)))
@@ -957,6 +959,10 @@ class AudioHub:
         он один на все каналы. Канал возвращается и сторожу: из `_hung`
         снимается, иначе следующая смерть не получила бы ни рестарта, ни
         крика (Important GLM выходного круга)."""
+        if self._channel_closed:
+            # запись остановлена: «снова пишется» после «не вернулся до конца» —
+            # фантом и для статуса, не только для следа (Important DS круга 2)
+            return ""
         loss = self._lost.pop(label, None)
         self._warned.discard(label)          # следующая потеря этого канала кричит заново
         self._fail_streak.pop(label, None)
@@ -1587,8 +1593,10 @@ class AudioHub:
                 if c.label not in self._lost:
                     # крика не было — дыра в записи была: ≥ порога тишины без
                     # единого события (Critical GLM входного круга по №234)
-                    real = self._real_frame.get(c.label) or (now - silent)
-                    self._channel_event(CH_GAP, c.label, now, real, now - real,
+                    # граница — только настоящий кадр; без кадров она неизвестна, а не
+                    # «штамп старта/рестарта» (Important DS и Minor GLM круга 2)
+                    real = self._real_frame.get(c.label)
+                    self._channel_event(CH_GAP, c.label, now, real, (now - real) if real else silent,
                                         Loss(msg, retriable=True, died=True, cause="restarted"))
                 if c.label in self._lost:
                     # Кричали о потере канала, а он ожил (приложение снова пишет
@@ -1644,6 +1652,12 @@ class AudioHub:
         правой границы дыры (Important DS I3 / GLM I8 входного круга по №234).
         Идемпотентно: демон зовёт до спавна пересборки (итог должен лечь в хвост
         раньше неё), stop() — для остальных вызывающих."""
+        # след закрыт ДО закрывающих событий: сторож ещё жив до stop() хаба, и
+        # его «вернулся» между снимком реестра и `end` перевернул бы эпизод
+        # (микрогонка — Minor GLM круга 2); после флага производители потерь и
+        # возвратов молчат целиком — статус, журнал и след замолкают одним
+        # условием (Important DS круга 2), а `end` проходит
+        self._channel_closed = True
         now = time.time()
         for label, loss in list(self._lost.items()):
             if label in self._ended:
@@ -1652,14 +1666,9 @@ class AudioHub:
             silent = now - loss.stopped_at if loss.stopped_at else None
             self._channel_event(CH_END, label, now, loss.stopped_at, silent,
                                 Loss(loss.reason, retriable=False, died=loss.died, cause="stop"))
-        # след закрыт: сторож ещё жив до stop() хаба, и его «вернулся» после
-        # «не вернулся до конца» дал бы фантомный второй эпизод, а событие после
-        # итога легло бы в хвост уже прочитанного пересборкой черновика
-        # (Important GLM 2 и DS 3 выходного круга)
-        self._channel_closed = True
 
     def _channel_event(self, kind: str, label: str, at: float, stopped_at: float | None,
-                       silent_s: float | None, loss: "Loss") -> ChannelEvent:
+                       silent_s: float | None, loss: "Loss") -> ChannelEvent | None:
         """Единственная точка, где переход состояния канала становится событием:
         журнал хаба + подписчик. Все поводы (крик на старте, сторож, возврат по
         кадру, тихий перезапуск, остановка) проходят здесь — потребители следа
@@ -1671,7 +1680,7 @@ class AudioHub:
                           reason=loss.reason)
         if self._channel_closed and kind != CH_END:
             _safe_stderr(f"событие канала после закрытия следа отброшено: {kind} {label}")
-            return ev
+            return None                       # события не было — и объекта нет (Important DS круга 2)
         self.channel_log.append(ev)
         if self.on_channel is not None:
             try:
