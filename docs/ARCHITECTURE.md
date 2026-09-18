@@ -479,10 +479,16 @@ read the role, not the path string. Only primaries cast incoming-link votes
 for the hub boost: a summary retells the very nodes it would vote for, and the
 boost went to whoever it happened to mention (16 % of votes in the working
 graph). A dossier stays a link target and the «📁» section, but takes no slot
-in "Found in the graph" and no hop from a node. Service files stay out of the
-index but inside the answer's coverage: "searched without: … N service
-pointers". Vote statistics by role are a property of the snapshot
-(`memory_bench --stats`).
+in "Found in the graph" and no hop from a node — not even through a redirect
+stub whose arrow points at a summary: the stub resolver never accepts a
+derived document as a replacement. The generation publishes ready slices (the
+primary documents, a dossier map keyed by normalised key) — consumers take
+their slice instead of filtering the common list; vectors are computed for
+primaries only. Service files stay out of the index but inside the answer's
+coverage, and the coverage words come from one formatter shared by the facade,
+the memory block header and the thread status: "searched without: … service
+files outside the index: N". Vote statistics by role are a property of the
+snapshot (`memory_bench --stats`).
 
 **An optional cloud pass.** The local model retells faithfully but misses
 links: that one decision supersedes another, that a deadline has expired,
