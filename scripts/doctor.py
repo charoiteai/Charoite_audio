@@ -359,10 +359,24 @@ def restart_llm() -> None:
         sys.exit(1)
     sys.path.insert(0, str(CODE / "src"))
     import llm_health
-    ok = llm_health.force_restart(cfg, print)
-    line(OK if ok else FAIL, "сервер моделей перезапущен" if ok else "перезапуск не удался",
-         "" if ok else "см. строки выше: команда перезапуска или владелец порта")
-    sys.exit(0 if ok else 1)
+    if not llm_health.force_restart(cfg, print):
+        line(FAIL, "перезапуск не удался", "см. строки выше: адрес не локальный, команда перезапуска или владелец порта")
+        sys.exit(1)
+    # «перезапуск состоялся» = проба ответила, а не subprocess вернул 0: Ollama.app
+    # поднимается 10–30 с, и рапорт сразу после команды врал бы (круг 2 GLM M2)
+    deadline = time.monotonic() + llm_health.RESTART_WAIT
+    state = None
+    while time.monotonic() < deadline:
+        time.sleep(llm_health.RESTART_POLL)
+        state = llm_health.probe(cfg, timeout=60)
+        if state is True or state == llm_health.BUSY:
+            break
+    if state is True or state == llm_health.BUSY:
+        line(OK, f"сервер моделей перезапущен, проба ответила ({time.monotonic() - deadline + llm_health.RESTART_WAIT:.0f} с)")
+        sys.exit(0)
+    line(FAIL, f"команды перезапуска отданы, но проба не ответила за {llm_health.RESTART_WAIT} с",
+         "смотрите лог сервера моделей; повторный --restart-llm не раньше, чем он поднимется")
+    sys.exit(1)
 
 
 def main() -> None:

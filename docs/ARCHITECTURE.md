@@ -84,10 +84,12 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
   (the next writer sweeps them). Before restarting, `llm_health` reads the
   leases for this server: a live, non-stalled one means the server is busy
   with our work and the caller queues behind it; a stalled or absent one
-  means restart as before; an unreadable sensor is logged once and restart
-  proceeds as before. The guard lives inside `_restart*` itself, so every path
-  to a kill inherits it; the manual emergency restart over live leases is
-  `scripts/doctor.py --restart-llm`. Leases on the cloud gateway never hold a
+  means restart as before; an unreadable sensor is logged once — restart
+  proceeds as before if the sensor never worked, and is held until a manual
+  restart if it worked and then broke. The guard lives inside `_restart*`
+  itself together with the ban on touching a non-loopback address, so every
+  path to a kill inherits both; the manual emergency restart over live leases
+  is `scripts/doctor.py --restart-llm`, and success means the probe answered. Leases on the cloud gateway never hold a
   local restart (matched by server address); waiting in the busy queue holds
   no lease — that queue heals itself.
 - **An error inside a stream is an error.** An `{"error": …}` line inside a

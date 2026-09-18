@@ -43,6 +43,7 @@ import fcntl
 import json
 import os
 import pathlib
+import sys
 import time
 import uuid
 
@@ -65,6 +66,40 @@ _TMP_SUFFIX = ".tmp"          # временные имена не попада�
 
 def lease_dir(root: pathlib.Path) -> pathlib.Path:
     return root / LEASE_DIR
+
+
+_writer_reported = False
+_last_sweep = 0.0
+
+
+def _report_writer_failure(exc: BaseException) -> None:
+    """Аренду не записать — генерация идёт, но защита от перезапуска для неё
+    выключена. Читатель при этом видит честно пустой каталог и сказать ничего
+    не может — говорит писатель, один раз на процесс (круг 2 DS I2)."""
+    global _writer_reported
+    if _writer_reported:
+        return
+    _writer_reported = True
+    with contextlib.suppress(Exception):
+        print(f"аренды модели не пишутся ({type(exc).__name__}: {exc}) — "
+              "перезапуск сервера не увидит эту генерацию", file=sys.stderr, flush=True)
+
+
+def selfcheck(root: pathlib.Path) -> str:
+    """Годен ли каталог аренд: создать → запереть → прочитать → убрать.
+
+    Для строки старта процесса-писателя: узнать о read-only каталоге или ФС
+    без замков до встречи, а не в момент решения о kill. Пусто — годен,
+    иначе текст причины."""
+    try:
+        with Lease(root, server="selfcheck", engine="selfcheck", kind="selfcheck") as lease:
+            if lease.path is None:
+                return "каталог не пишется или замок не берётся"
+            if not live(root, server="selfcheck"):
+                return "записанная аренда не читается назад"
+    except Exception as exc:  # noqa: BLE001 — самопроверка сообщает причину, не падает
+        return f"{type(exc).__name__}: {exc}"
+    return ""
 
 
 def stall_for(read_timeout: float | None) -> float:
@@ -109,8 +144,9 @@ class Lease:
             d.mkdir(parents=True, exist_ok=True)
             self.path = d / f"{os.getpid()}-{uuid.uuid4().hex[:8]}.json"
             self._publish()
-        except OSError:
+        except OSError as exc:
             self._drop()
+            _report_writer_failure(exc)
             return self
         self._sweep_orphans(d)
         return self
@@ -125,8 +161,8 @@ class Lease:
             return
         try:
             self._publish()
-        except OSError:
-            pass                              # прежняя публикация остаётся под замком
+        except OSError as exc:
+            _report_writer_failure(exc)       # прежняя публикация остаётся под замком
 
     def _publish(self) -> None:
         """Новый inode → flock → права → полный JSON → rename поверх имени.
@@ -161,12 +197,20 @@ class Lease:
     @staticmethod
     def _sweep_orphans(d: pathlib.Path) -> None:
         """Уборка сирот — у писателя: файл без замка и старше ORPHAN_GRACE_S
-        оставил умерший процесс. Читатель сирот только не считает."""
+        оставил умерший процесс. Читатель сирот только не считает. Не чаще
+        раза в ORPHAN_GRACE_S на процесс: куча сирот растёт ровно в нездоровые
+        периоды, и уборка на горячем пути каждого POST умножалась бы на частоту
+        ретраев (круг 2 GLM, критика 2)."""
+        global _last_sweep
+        now = time.time()
+        if now - _last_sweep < ORPHAN_GRACE_S:
+            return
+        _last_sweep = now
         try:
             files = list(d.iterdir())
         except OSError:
             return
-        cutoff = time.time() - ORPHAN_GRACE_S
+        cutoff = now - ORPHAN_GRACE_S
         for p in files:
             with contextlib.suppress(OSError):
                 if p.stat().st_mtime > cutoff:
@@ -251,6 +295,12 @@ def _read_held(p: pathlib.Path, attempts: int = 3) -> dict | None:
                 fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 pass                          # держат — живой владелец
+            except OSError:
+                # ФС без замков (сетевой/FUSE-каталог): по этой записи судить не
+                # по чему — писатель на такой ФС аренду и не создал бы (его flock
+                # падает раньше публикации). Одна запись не роняет сенсор целиком
+                # (круг 2 DS I3): None — «не считается», а не исключение наружу
+                return None
             else:
                 fcntl.flock(f, fcntl.LOCK_UN)
                 return None                   # никто не держит — сирота

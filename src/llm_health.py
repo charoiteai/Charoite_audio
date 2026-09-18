@@ -223,6 +223,7 @@ def _gui_restart() -> list[list[str]]:
 
 
 _sensor_reported = False
+_sensor_worked = False        # хоть раз прочитали каталог аренд: с этого момента его отказ — не «никого»
 
 
 def busy_with_ours(cfg: dict, *, now: float | None = None,
@@ -235,30 +236,51 @@ def busy_with_ours(cfg: dict, *, now: float | None = None,
     локальной Ollama (I6 DS). `None` — сенсор недоступен (каталог не
     читается, ошибка внутри читателя): это не «никого», и решающий обязан
     сказать об этом в лог хотя бы раз — молча выключенная защита неотличима
-    от честной пустоты (выходной круг DS I3 по №264)."""
-    global _sensor_reported
+    от честной пустоты (выходной круг DS I3 по №264). Решающий различает
+    два отказа: сенсор не работал ни разу (перезапуск как прежде, до аренд)
+    и работал, а потом перестал (каталог снесён, права сменились) — тогда
+    перезапуск держится до ручного `--restart-llm`: иначе каждый цикл SLOW
+    кончался бы перезапуском под живую работу (круг 2 GLM, критика 1)."""
+    global _sensor_reported, _sensor_worked
     try:
         leases = model_lease.live(ROOT, server=_base_url(cfg), now=now)
     except Exception as exc:  # noqa: BLE001 — мусор в служебной папке не роняет решение о перезапуске
         if log is not None and not _sensor_reported:
             _sensor_reported = True
             log(f"LLM: аренды модели не прочитались ({model_lease.lease_dir(ROOT)}: "
-                f"{type(exc).__name__}: {exc}) — перезапуск решается как прежде, без них")
+                f"{type(exc).__name__}: {exc}) — "
+                + ("перезапуск держится до ручного --restart-llm: сенсор работал и перестал"
+                   if _sensor_worked else "перезапуск решается как прежде, без них"))
         return None
+    _sensor_worked = True
     return [x for x in leases if not x.get("stalled")]
 
 
+def sensor_broke() -> bool:
+    """Сенсор аренд работал в этом процессе и перестал — kill без него не наш ход."""
+    return _sensor_worked and _sensor_reported
+
+
 def _spare(cfg: dict, log: Callable[[str], None], *, force: bool) -> bool:
-    """Страховка перед kill: есть живая аренда — перезапуск не наш ход.
+    """Страховка перед kill: сервер не наш или у него живая аренда — перезапуск не наш ход.
 
     Стоит в самом перезапуске, а не только в ensure_alive: любой будущий путь
-    к kill наследует защиту (входной круг GLM по №264). `force` — ручной
-    аварийный перезапуск, когда застрявшее надо убрать из-под аренд."""
+    к kill наследует защиту (входной круг GLM по №264). Инвариант модуля
+    «перезапуск — только для loopback-адреса» держался единственным
+    вызывающим, и `--restart-llm` на облачной установке убил бы локальную
+    Ollama с эмбеддером (круг 2 DS I1) — поэтому он тоже здесь. `force` —
+    ручной аварийный перезапуск, когда застрявшее надо убрать из-под аренд;
+    чужой сервер он не трогает."""
+    if not is_local(cfg):
+        log("LLM: адрес сервера не локальный — перезапускать нечего и не наше дело")
+        return True
     if force:
         return False
     live = busy_with_ours(cfg, log=log)
+    if live is None and sensor_broke():
+        return True                       # работал и перестал — под слепым сенсором не убиваем
     if not live:
-        return False                      # никого — или сенсор недоступен (сказано в лог один раз)
+        return False                      # никого — или сенсор не работал ни разу (сказано в лог)
     log("LLM: перезапуск отложен — модель занята живой работой: "
         + model_lease.describe(live))
     return True
@@ -452,8 +474,9 @@ def ensure_alive(cfg: dict, log: Callable[[str], None] = print,
             # живую аренду модели (model_lease). Держит — это очередь за длинной
             # работой, а не зависание: перезапуск убил бы ту работу, ради
             # которой грейс завели (инцидент 12.08; №264). Вызывающий встанет в
-            # очередь своим busy_wait, как при BUSY. Аренда без прогресса
-            # дольше STALL_S живой не считается — тогда перезапуск, как прежде
+            # очередь своим busy_wait, как при BUSY. Аренда без прогресса дольше
+            # своего порога (model_lease.stall_for от read-таймаута запроса)
+            # живой не считается — тогда перезапуск, как прежде
             live = busy_with_ours(cfg, log=log)
             if live:
                 log(f"LLM молчит {int(wait)} с, но модель занята живой работой — "
@@ -464,6 +487,12 @@ def ensure_alive(cfg: dict, log: Callable[[str], None] = print,
     log("LLM не отвечает на пробу — перезапускаю "
         + ("mlx_lm.server" if mlx else "Ollama"))
     if not (_restart_mlx(cfg, log) if mlx else _restart(cfg, log)):
+        # перезапуск отложен ради аренды, появившейся между проверкой и kill, —
+        # это очередь за живой работой, как в ветке BUSY, а не «не оживили»
+        # (круг 2 DS M2); отказ по другой причине — честный False
+        if busy_with_ours(cfg, log=log):
+            log("LLM: перезапуск отложен ради живой работы — иду в очередь за ней")
+            return True
         return False
 
     deadline = time.monotonic() + wait

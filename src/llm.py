@@ -450,8 +450,17 @@ class LLM:
     _ROOT = charoite_paths.resolve_root(__file__)
 
     def lease_dir(self) -> pathlib.Path:
-        """Куда этот процесс кладёт аренды модели — для строки в логе старта."""
+        """Куда этот процесс кладёт аренды модели."""
         return model_lease.lease_dir(self._ROOT)
+
+    def lease_stamp(self) -> str:
+        """Строка в лог старта: каталог аренд, отпечаток адреса сервера (сам
+        адрес в лог не идёт) и годность каталога — писатель и читатель аренд
+        в разных процессах обязаны сходиться по обоим (круг 2 DS I2/M4)."""
+        import hashlib
+        fp = hashlib.sha1(self.base.encode("utf-8")).hexdigest()[:8]
+        bad = model_lease.selfcheck(self._ROOT)
+        return f"{self.lease_dir()} · сервер {fp}" + (f" · НЕ РАБОТАЮТ: {bad}" if bad else " · годен")
 
     def _lease(self, kind: str, timeout) -> model_lease.Lease:
         """Аренда на один запрос; порог зависания — из read-таймаута этого же

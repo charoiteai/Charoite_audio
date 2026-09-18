@@ -132,6 +132,7 @@ def test_orphan_files_are_not_alive_and_the_writer_sweeps_them(tmp_path, monkeyp
     файле) и НЕ удаляет: путь решения о kill без прав уничтожителя (критика 2
     GLM). Убирает писатель при следующем взятии аренды — и только старых:
     молодой незапертый файл — возможное окно чужой публикации."""
+    monkeypatch.setattr(model_lease, "_last_sweep", 0.0)     # уборка троттлится на процесс
     d = model_lease.lease_dir(tmp_path)
     d.mkdir(parents=True)
     body = json.dumps({"pid": os.getpid(), "server": SRV, "engine": "ollama", "kind": "stream",
@@ -470,3 +471,144 @@ def test_restart_itself_refuses_over_a_live_lease_unless_forced(tmp_path, monkey
     assert llm_health._restart(LOCAL, lambda m: None) is True and ran, "без аренд — перезапуск как прежде"
     doctor = (REPO / "scripts" / "doctor.py").read_text(encoding="utf-8")
     assert "force_restart(" in doctor and "--restart-llm" in doctor, "ручной выход должен быть у человека, не только в тестах"
+
+
+# ------------------------------------------------------ круг 2 (DS I1–I3, M2)
+
+REMOTE = {"llm": {"base_url": "http://192.168.1.50:11434", "model": "qwen3.6:35b-a3b", "allow_remote": True}}
+
+
+def test_restart_never_touches_a_server_that_is_not_ours(tmp_path, monkeypatch):
+    """Инвариант модуля «перезапуск — только для loopback» держался единственным
+    вызывающим (ensure_alive); `--restart-llm` на облачной или удалённой
+    установке убил бы ЛОКАЛЬНУЮ Ollama с эмбеддером и доложил об успехе (круг 2
+    DS I1). Запрет — в самом перезапуске, его наследует и force."""
+    monkeypatch.setattr(llm_health, "ROOT", tmp_path)
+    ran = []
+    monkeypatch.setattr(llm_health.subprocess, "run", lambda *a, **kw: ran.append(a[0]))
+    monkeypatch.setattr(llm_health, "listener_path", lambda url: None)
+    monkeypatch.setattr(llm_health, "restart_commands", lambda *a, **kw: [["true"]])
+    said: list[str] = []
+    assert llm_health._restart(REMOTE, said.append) is False
+    assert llm_health._restart(REMOTE, said.append, force=True) is False
+    assert llm_health.force_restart(REMOTE, said.append) is False
+    assert not ran and all("не локальный" in m for m in said) and len(said) == 3
+
+
+def test_writer_failure_is_reported_once(tmp_path, monkeypatch, capsys):
+    """Каталог аренд не пишется — генерация идёт без защиты, а читатель видит
+    честно пустой каталог и молчит. Говорит писатель: одна строка на процесс
+    (круг 2 DS I2); `selfcheck` называет причину до встречи."""
+    monkeypatch.setattr(model_lease, "_writer_reported", False)
+    blocked = tmp_path / "ro"
+    blocked.mkdir()
+    blocked.chmod(0o500)
+    try:
+        with model_lease.Lease(blocked, server=SRV, engine="e", kind="stream") as a:
+            assert a.path is None, "аренды нет, но генерация не упала"
+        with model_lease.Lease(blocked, server=SRV, engine="e", kind="stream"):
+            pass
+        err = capsys.readouterr().err
+        assert err.count("аренды модели не пишутся") == 1 and "PermissionError" in err
+        assert model_lease.selfcheck(blocked), "самопроверка должна назвать причину"
+        assert model_lease.selfcheck(tmp_path) == "", "годный каталог — пустая причина"
+        assert model_lease.live(tmp_path, server="selfcheck") == [], "самопроверка за собой убрала"
+    finally:
+        blocked.chmod(0o700)
+
+
+def test_a_filesystem_without_flock_drops_the_record_not_the_sensor(tmp_path, monkeypatch):
+    """ENOTSUP от flock на одной записи не роняет `live()` целиком: иначе один
+    файл на ФС без замков выключал бы защиту для всех аренд разом (круг 2 DS
+    I3). Запись не судится — не считается; сенсор жив."""
+    with model_lease.Lease(tmp_path, server=SRV, engine="e", kind="stream") as st:
+        real = model_lease.fcntl.flock
+        odd = st.path.with_name("999-nolock.json")
+        odd.write_text(st.path.read_text())
+
+        def flock(f, op):
+            if pathlib.Path(f.name) == odd:
+                raise OSError(45, "Operation not supported")
+            return real(f, op)
+
+        monkeypatch.setattr(model_lease.fcntl, "flock", flock)
+        live = model_lease.live(tmp_path, server=SRV)
+        assert [x["path"] for x in live] == [str(st.path)], "своя аренда видна, чужая без замка не судится"
+        monkeypatch.setattr(llm_health, "ROOT", tmp_path)
+        assert llm_health.busy_with_ours(LOCAL) is not None, "сенсор не упал"
+
+
+def test_restart_deferred_for_a_fresh_lease_means_queue_not_failure(tmp_path, monkeypatch):
+    """Аренда появилась между проверкой SLOW-ветки и kill: `_restart` отказал —
+    это очередь за живой работой (True, как при BUSY), а не «не оживили»
+    (круг 2 DS M2)."""
+    monkeypatch.setattr(llm_health, "ROOT", tmp_path)
+    monkeypatch.setattr(llm_health, "probe", lambda cfg, timeout=None: llm_health.SLOW)
+    monkeypatch.setattr(llm_health.time, "sleep", lambda s: None)
+    monkeypatch.setattr(llm_health, "listener_path", lambda url: None)
+    monkeypatch.setattr(llm_health, "restart_commands", lambda *a, **kw: [["true"]])
+    monkeypatch.setattr(llm_health.subprocess, "run", lambda *a, **kw: pytest.fail("kill под живой арендой"))
+    calls = {"n": 0}
+    real = llm_health.busy_with_ours
+    holder: list = []
+
+    def busy(cfg, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            holder.append(_lease_file(tmp_path))       # аренда появилась сразу после первой проверки
+            return []
+        return real(cfg, **kw)
+
+    monkeypatch.setattr(llm_health, "busy_with_ours", busy)
+    try:
+        said: list[str] = []
+        assert llm_health.ensure_alive(LOCAL, log=said.append, wait=0.05) is True
+        assert any("отложен ради живой работы" in m for m in said)
+    finally:
+        for h in holder:
+            h.__exit__(None, None, None)
+
+
+def test_a_sensor_that_worked_and_broke_holds_the_restart(tmp_path, monkeypatch):
+    """Разовый отказ сенсора до первого успеха — fail-open (как до аренд); отказ
+    ПОСЛЕ успешных чтений — каталог снесён, права сменились — держит перезапуск
+    до ручного --restart-llm: иначе каждый SLOW кончался бы перезапуском под
+    живую работу, системно и без голоса в логе (круг 2 GLM, критика 1)."""
+    monkeypatch.setattr(llm_health, "ROOT", tmp_path)
+    monkeypatch.setattr(llm_health, "_sensor_reported", False)
+    monkeypatch.setattr(llm_health, "_sensor_worked", False)
+    said: list[str] = []
+    assert llm_health.busy_with_ours(LOCAL, log=said.append) == [] and llm_health._sensor_worked
+    monkeypatch.setattr(model_lease, "live", lambda *a, **kw: (_ for _ in ()).throw(PermissionError("снесли")))
+    assert llm_health.busy_with_ours(LOCAL, log=said.append) is None
+    assert any("работал и перестал" in m for m in said)
+    assert llm_health._spare(LOCAL, said.append, force=False) is True, "слепой сенсор после успеха — не убиваем"
+    assert llm_health._spare(LOCAL, said.append, force=True) is False, "ручной выход остаётся"
+
+
+def test_orphan_sweep_is_throttled_per_process(tmp_path, monkeypatch):
+    """Уборка сирот — не чаще раза в ORPHAN_GRACE_S на процесс: на горячем пути
+    каждого POST и ретрая она умножалась бы на частоту попыток ровно тогда,
+    когда машина задыхается (круг 2 GLM, критика 2)."""
+    clock = _Clock()
+    monkeypatch.setattr(model_lease, "time", clock)
+    monkeypatch.setattr(model_lease, "_last_sweep", 0.0)
+    d = model_lease.lease_dir(tmp_path)
+    d.mkdir(parents=True)
+
+    def orphan(name):
+        p = d / name
+        p.write_text("{}")
+        os.utime(p, (clock.t - 3600, clock.t - 3600))
+        return p
+
+    first = orphan("1-aaaa0001.json")
+    with model_lease.Lease(tmp_path, server=SRV, engine="e", kind="stream"):
+        assert not first.exists(), "первая аренда убрала сироту"
+    second = orphan("1-aaaa0002.json")
+    clock.t += 10
+    with model_lease.Lease(tmp_path, server=SRV, engine="e", kind="stream"):
+        assert second.exists(), "через 10 с уборка не повторяется"
+    clock.t += model_lease.ORPHAN_GRACE_S
+    with model_lease.Lease(tmp_path, server=SRV, engine="e", kind="stream"):
+        assert not second.exists(), "после окна — убрала"
