@@ -467,7 +467,22 @@ useful: incremental updates gradually blur cluster boundaries.
 
 **Index lookup** (`Dossiers/_index.json`) is lexical, over word stems with
 prefix matching, so `qwen` finds `qwen3-32b`. No embeddings and no running
-Ollama required; semantics is layered on top.
+Ollama required; semantics is layered on top. The dossier body in an answer
+comes from the search index snapshot, not from disk: a summary the walk has
+not seen yet stays out of the answer until the next walk.
+
+**Derived is not on a par with primary.** Every document in the search index
+has a role derived from its path once, at read time: primary (meeting, node,
+document), dossier (the top-level summaries folder) or service (pointer,
+candidates, report — a file with a service prefix in any folder). Consumers
+read the role, not the path string. Only primaries cast incoming-link votes
+for the hub boost: a summary retells the very nodes it would vote for, and the
+boost went to whoever it happened to mention (16 % of votes in the working
+graph). A dossier stays a link target and the «📁» section, but takes no slot
+in "Found in the graph" and no hop from a node. Service files stay out of the
+index but inside the answer's coverage: "searched without: … N service
+pointers". Vote statistics by role are a property of the snapshot
+(`memory_bench --stats`).
 
 **An optional cloud pass.** The local model retells faithfully but misses
 links: that one decision supersedes another, that a deadline has expired,

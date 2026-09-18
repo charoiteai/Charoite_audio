@@ -71,8 +71,17 @@ import uuid  # noqa: E402
 # Пути относительно корня графа; сами документы (тезисы, концепции, ресёрчи)
 # в «Документации» остаются — исключена только папка копий стенограмм.
 EXCLUDE_DIRS = ("Встречи-архив", "Документация/Стенограммы встреч")
-# Служебные файлы в корне графа (указатели, кандидаты, отчёты ревизий) — не память
+# Служебные файлы (указатели, кандидаты, отчёты ревизий) — не память: в любой папке
 _SERVICE_PREFIXES = ("_", "Служебное_")
+# Роль документа — ставится ОДИН раз при чтении и живёт в `Doc`; потребители
+# (голоса, обход, переходы, отбор слотов) читают поле, а не строку пути.
+# Раньше каждый выводил своё правило из фрагмента пути — заглушки в цикле
+# голосов, `_`-указатели только в корне при обходе и по имени в переходах,
+# досье — нигде: 16 % голосов графа отдавали сводки, пересказавшие тех, за кого
+# голосуют (входной круг DS и GLM по №296, 18.09)
+PRIMARY = "primary"        # заметка встречи, узел, документ — первичное знание
+DOSSIER = "dossier"        # ночная сводка по теме: цель ссылок и секция «📁», не голос и не слот
+SERVICE = "service"        # указатель/кандидаты/отчёт: вне индекса, но в охвате
 BM25_B = 0.5               # нормализация длины: узел на 280 КБ не должен матчить всё подряд
 HUB_CAP = 1.5              # потолок буста хаба: владелец графа упомянут в каждой встрече
 NODE_DIRS = tuple(graph_nodes.norm(d) for d in graph_nodes.NODE_FOLDERS)
@@ -149,6 +158,23 @@ def norm(s: str) -> str:
 
 def norm_text(s: str) -> str:
     return " ".join(norm(s).split())
+
+
+_SERVICE_PREFIXES_N = tuple(norm(p) for p in _SERVICE_PREFIXES)
+_DOSSIER_DIR_N = norm(dossier.DOSSIER_DIR)
+
+
+def doc_role(rel: str) -> str:
+    """Роль документа по относительному пути — единственное место, где она
+    выводится. Служебный: имя файла с служебным префиксом в ЛЮБОЙ папке (то же
+    правило, что у `dossier.scan`). Досье: верхняя папка `dossier.DOSSIER_DIR`.
+    Иначе первичный. Сравнение — в нормализованном виде, как у `NODE_DIRS`."""
+    parts = norm(rel).replace("\\", "/").strip("/").split("/")
+    if parts[-1].startswith(_SERVICE_PREFIXES_N):
+        return SERVICE
+    if len(parts) >= 2 and parts[0] == _DOSSIER_DIR_N:
+        return DOSSIER
+    return PRIMARY
 
 
 def cjk_grams(text: str) -> list[str]:
@@ -276,7 +302,7 @@ def meeting_key(rel: str) -> str | None:
 
 def is_node_path(rel: str) -> bool:
     parts = norm(rel).replace("\\", "/").split("/")
-    return len(parts) >= 2 and parts[-2] in NODE_DIRS and not parts[-1].startswith("_")
+    return len(parts) >= 2 and parts[-2] in NODE_DIRS and doc_role(rel) != SERVICE
 
 
 def stub_base(text: str) -> str:
@@ -473,6 +499,7 @@ class Generation:
     catalog: LinkCatalog
     skipped: tuple[str, ...] = ()   # что обход РЕАЛЬНО отсёк (см. `_walk`)
     unread: int = 0                 # файлы, которые не открылись (права, битая ссылка)
+    service: int = 0                # служебные файлы вне индекса — тоже часть охвата (№295)
 
 
 def _owned(docs: Iterable[Doc], key: Callable[[Doc], str], *,
@@ -643,6 +670,7 @@ class Doc:
     base: str          # нормализованное имя файла без расширения — цель ГОЛОЙ [[ссылки]]
     body: str = ""     # текст без YAML-шапки — для фрагментов выдачи (шапка модели не нужна)
     stub_to: str = ""  # заглушка-редирект: КЛЮЧ канона, куда она ведёт (иначе пусто)
+    role: str = ""     # PRIMARY / DOSSIER / SERVICE — выводится из пути один раз, здесь
 
     def __post_init__(self) -> None:
         # имя и стрелка нормализуются В ДОКУМЕНТЕ: обход их нормализует, а
@@ -652,6 +680,9 @@ class Doc:
         # документ, иначе его держать некому (GLM, круги 1 и 2 по №292)
         self.base = norm_text(self.base)
         self.stub_to = norm_text(self.stub_to)
+        # роль — тоже свойство документа, а не потребителя: тестовая оснастка
+        # и обход получают её из одного предиката (№296)
+        self.role = self.role or doc_role(self.rel)
 
     @property
     def key(self) -> str:
@@ -688,6 +719,7 @@ class Result:
     reason: str = ""            # почему UNVERIFIED — одно поле, три рендера (why_low, render, статус нити; GLM M2 r5)
     skipped: tuple[str, ...] = ()   # области графа ВНЕ индекса: их не читали, и ответ не вправе о них судить
     unread: int = 0                 # файлы, до которых обход дошёл, но не смог прочитать
+    service: int = 0                # служебные указатели, сознательно оставленные вне индекса
 
     @property
     def low_conf(self) -> bool:
@@ -798,6 +830,34 @@ class GraphSearch:
     def size(self) -> int:
         return len(self._gen.docs)
 
+    def vote_stats(self) -> dict[str, int]:
+        """Статистика поколения для калибровки хаба: кто в индексе по ролям,
+        сколько голосов и целей, сколько целей на потолке буста, и сколько
+        голосов НЕ отдают досье — с потолком, который был бы при их голосах.
+        Свойство снимка, а не сценария бенча: одна цифра «до/после» для бенча,
+        доктора и калибровки порогов (входной круг DS и GLM по №296)."""
+        gen = self._gen
+        docs = list(gen.docs.values())
+        by_role = {PRIMARY: 0, DOSSIER: 0}
+        for d in docs:
+            by_role[d.role] = by_role.get(d.role, 0) + 1
+        dossier_votes: dict[str, int] = {}
+        for d in docs:
+            if d.role != DOSSIER or d.stub_to:
+                continue
+            for target in wiki_targets(d.text):
+                hit = gen.catalog.live(target)
+                if hit is not None:
+                    dossier_votes[hit.key] = dossier_votes.get(hit.key, 0) + 1
+        at_cap = sum(1 for n in gen.indeg.values() if hub_factor(n) >= HUB_CAP)
+        merged = dict(gen.indeg)
+        for k, n in dossier_votes.items():
+            merged[k] = merged.get(k, 0) + n
+        return {"primary": by_role.get(PRIMARY, 0), "dossier": by_role.get(DOSSIER, 0),
+                "service": gen.service, "votes": sum(gen.indeg.values()), "targets": len(gen.indeg),
+                "at_cap": at_cap, "dossier_votes": sum(dossier_votes.values()),
+                "cap_if_dossier_voted": sum(1 for n in merged.values() if hub_factor(n) >= HUB_CAP)}
+
     @property
     def vectors(self) -> int:
         return len(self._vecs)
@@ -856,6 +916,7 @@ class GraphSearch:
         # обратную сторону (DS, круг по №295)
         skipped: set[str] = set()
         unread = 0
+        service = 0
         for dirpath, dirnames, filenames in os.walk(root):
             rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
             rel_dir = "" if rel_dir == "." else rel_dir
@@ -870,7 +931,13 @@ class GraphSearch:
                     keep.append(d)
             dirnames[:] = keep
             for fn in filenames:
-                if not fn.endswith(".md") or (not rel_dir and fn.startswith(_SERVICE_PREFIXES)):
+                if not fn.endswith(".md"):
+                    continue
+                rel = f"{rel_dir}/{fn}" if rel_dir else fn
+                if doc_role(rel) == SERVICE:
+                    # указатель на всех людей конкурировал с заметками о людях по
+                    # любому имени; вне индекса — но не молча: он в охвате ответа
+                    service += 1
                     continue
                 path = os.path.join(dirpath, fn)
                 seen.add(path)
@@ -890,14 +957,10 @@ class GraphSearch:
                 except OSError:
                     unread += 1     # тот же класс: ответ не вправе считать его проверенным
                     continue
-                rel = os.path.relpath(path, root).replace(os.sep, "/")
-                try:
-                    body = frontmatter.split(text)[1]
-                except ValueError:
-                    body = text
+                body = frontmatter.split(text)[1]     # по контракту не бросает: (None, text) без шапки
                 fresh[path] = Doc(path, rel, mtime, text, norm(text), file_date_ts(rel, mtime),
                                   norm_text(os.path.splitext(fn)[0]), body, stub_base(text))
-        scope = (tuple(sorted(skipped)), unread)
+        scope = (tuple(sorted(skipped)), unread, service)
         gone = [p for p in current.docs if p not in seen]
         if not fresh and not gone:
             # граф не изменился, но охват мог: файл стал нечитаемым, папка
@@ -906,7 +969,7 @@ class GraphSearch:
             # та же `current`, что и у основного пути: раньше эта ветка читала
             # поле заново, и решение принималось по одному снимку, а
             # записывался другой (Important DS, круг 7)
-            self._publish(current, skipped=scope[0], unread=scope[1])
+            self._publish(current, skipped=scope[0], unread=scope[1], service=scope[2])
             return
         # поколение собирается в СТОРОНЕ и публикуется одним присваиванием:
         # раньше документы уезжали в мир первым замком, а каталог и голоса —
@@ -922,7 +985,10 @@ class GraphSearch:
         catalog = LinkCatalog(snapshot)
         indeg: dict[str, int] = {}
         for d in snapshot:
-            if d.stub_to:            # единственная ссылка заглушки — служебная стрелка на канон
+            # голосуют только первичные: единственная ссылка заглушки — служебная
+            # стрелка на канон, а сводка досье пересказывает тех, за кого голосует —
+            # буст хаба доставался тому, кого она сама и упомянула (№296)
+            if d.stub_to or d.role != PRIMARY:
                 continue
             for target in wiki_targets(d.text):
                 hit = catalog.live(target)
@@ -930,7 +996,7 @@ class GraphSearch:
                     continue          # цели нет или цепочка оборвана — голос некому отдать
                 indeg[hit.key] = indeg.get(hit.key, 0) + 1
         self._publish(current, gone=gone, docs=docs, indeg=indeg, catalog=catalog,
-                      skipped=scope[0], unread=scope[1])
+                      skipped=scope[0], unread=scope[1], service=scope[2])
 
     # --------------------------------------------------------------- векторы
     def _embed(self, texts: list[str], timeout: float) -> list[list[float]]:
@@ -1158,11 +1224,16 @@ class GraphSearch:
         обновляется фоном, ответ — по текущему."""
         if not self.ready:
             gen = self._gen
-            return Result([], 0, ready=False, query=query, skipped=gen.skipped, unread=gen.unread)
+            return Result([], 0, ready=False, query=query, skipped=gen.skipped, unread=gen.unread,
+                          service=gen.service)
         if not self._fresh():
             threading.Thread(target=self.refresh, daemon=True, name="graph-search-refresh").start()
         gen = self._gen          # одно поле — одно поколение: документы, голоса и
-        docs = list(gen.docs.values())   # каталог не могут разъехаться по построению
+        all_docs = list(gen.docs.values())   # каталог не могут разъехаться по построению
+        # слоты выдачи — только первичным: сводка досье идёт своей секцией «📁»,
+        # а в «Найдено в графе» вытесняла бы заметку, которую сама пересказала;
+        # целью ссылок и переходов она остаётся (`by_rel` — по всем)
+        docs = [d for d in all_docs if d.role == PRIMARY]
         indeg = gen.indeg
         catalog = gen.catalog
         avg_len = max(1.0, sum(len(d.low) for d in docs) / max(1, len(docs)))
@@ -1178,7 +1249,7 @@ class GraphSearch:
         lex: list[tuple[float, str]] = []
         best_cov = 0.0
         rare_first: list[str] = []
-        by_rel: dict[str, Doc] = {d.rel: d for d in docs}
+        by_rel: dict[str, Doc] = {d.rel: d for d in all_docs}
         if keys:
             hits: list[tuple[Doc, list[int], list[int]]] = []
             for d in docs:
@@ -1244,7 +1315,7 @@ class GraphSearch:
                     # темы не должна всплывать через вектор, раз не всплывает через слова
                     sem.append((sim * recency_factor(d.date_ts, now) * raw_dampener(d.rel) * placeholder_factor(d.base), d.rel))
 
-        dossiers, dossier_cov = self._dossier_blocks(query, snippet_chars)
+        dossiers, dossier_cov = self._dossier_blocks(query, snippet_chars, by_rel)
         # вердикт — функция ВСЕГО, что несёт Result: досье — такое же лексическое
         # свидетельство (доля ключей темы в запросе), без него статус говорил «пусто»
         # при непустой сводке, и контуры домысливали по-своему (DS I2 / I3 r4)
@@ -1256,7 +1327,7 @@ class GraphSearch:
             if status is Verdict.WEAK and not dossiers:
                 status = Verdict.EMPTY
             return Result([], 0, status, dossiers=dossiers, sem_used=sem_used, query=query,
-                          reason=reason, skipped=gen.skipped, unread=gen.unread)
+                          reason=reason, skipped=gen.skipped, unread=gen.unread, service=gen.service)
         low_conf = status is not Verdict.CONFIDENT
         fused = rrf_merge([[r for _, r in sorted(lex, key=lambda x: -x[0])],
                            [r for _, r in sorted(sem, key=lambda x: -x[0])]], weights=[1.0, 0.7])
@@ -1275,27 +1346,32 @@ class GraphSearch:
             blocks += hops
             total += len(hops)
         return Result(blocks, total, status, dossiers=dossiers, sem_used=sem_used, query=query,
-                      reason=reason, skipped=gen.skipped, unread=gen.unread)
+                      reason=reason, skipped=gen.skipped, unread=gen.unread, service=gen.service)
 
-    def _dossier_blocks(self, query: str, snippet_chars: int, limit: int = 2) -> tuple[list[str], float]:
+    def _dossier_blocks(self, query: str, snippet_chars: int, by_rel: Mapping[str, Doc],
+                        limit: int = 2) -> tuple[list[str], float]:
         """Готовые сводки по теме — ПЕРЕД фрагментами: индекс лексический, без
-        моделей. -> (блоки, лучшая доля ключей темы в запросе — в вердикт как покрытие)."""
+        моделей. -> (блоки, лучшая доля ключей темы в запросе — в вердикт как покрытие).
+
+        Тело сводки — из поколения (`_walk` читает `Досье/*.md` наравне со всеми),
+        а не с диска: путь к графу в сборке ответа из проиндексированного не
+        участвует, и тема из JSON не склеивается в путь (`../` читал бы вне папки).
+        Сводки, которой в снимке ещё нет, в ответе нет — до следующего обхода
+        (входной круг DS по №296)."""
         folder = self.graph / dossier.DOSSIER_DIR
         try:
             entries = dossier.lookup(folder, query, limit=limit)
-        except Exception:  # noqa: BLE001 — досье вспомогательны
+        except (OSError, ValueError, KeyError, TypeError):   # битый индекс — без секции, не без ответа
             return [], 0.0
         out: list[str] = []
         best = 0.0
         for e in entries:
             if e.get("счёт", 0) < 0.3:
                 continue
-            p = folder / f"{e['тема']}.md"
-            try:
-                body = frontmatter.split(unicodedata.normalize("NFC", p.read_text(encoding="utf-8")))[1]
-            except (OSError, ValueError):
+            d = by_rel.get(f"{dossier.DOSSIER_DIR}/{e['тема']}.md")
+            if d is None or d.role != DOSSIER:
                 continue
-            head = " ".join(body[:snippet_chars * 3].split())
+            head = " ".join((d.body or d.text)[:snippet_chars * 3].split())
             out.append(f"📁 Досье «{e['тема']}»\n  {head}")
             best = max(best, min(1.0, float(e.get("счёт", 0))))
         return out, best
@@ -1332,8 +1408,8 @@ class GraphSearch:
                 for base in wiki_targets(node.text):
                     hit = catalog.live(base)
                     for d in ([hit] if hit is not None else []):
-                        if d.rel in seen or is_node_path(d.rel) or d.rel.split("/")[-1].startswith("_"):
-                            continue
+                        if d.rel in seen or is_node_path(d.rel) or d.role != PRIMARY:
+                            continue      # переход — к первичной заметке, не к узлу и не к сводке
                         matched = sum(1 for k in other if k in d.low)
                         if other and not matched:
                             continue
@@ -1382,10 +1458,7 @@ def _frag_or_head(text: str, rx: re.Pattern, chars: int, rare_first: Sequence[st
     frag = snippet(text, rx, chars, rare_first, dense=dense)
     if frag:
         return frag
-    try:
-        body = frontmatter.split(text)[1]
-    except ValueError:
-        body = text
+    body = frontmatter.split(text)[1]
     return " ".join(body[:chars].split())
 
 
@@ -1408,7 +1481,8 @@ def render(result: Result, query: str | None = None, where: str = "графе") 
     # «пусто» — сильнейшее утверждение модуля, и непрочитанное весит в нём
     # больше всего: слабая форма оговорку получила, сильная оставалась без неё
     # (GLM, круг по №295)
-    gaps = list(result.skipped) + ([f"{result.unread} нечитаемых файлов"] if result.unread else [])
+    gaps = (list(result.skipped) + ([f"{result.unread} нечитаемых файлов"] if result.unread else [])
+            + ([f"{result.service} служебных указателей"] if result.service else []))
     tail = f" (искали без: {', '.join(gaps)})" if gaps else ""
     if result.empty:
         if result.status is Verdict.UNVERIFIED:

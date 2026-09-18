@@ -172,12 +172,19 @@ def resolve_lang(cfg, *, demo_zh: bool, demo_en: bool, demo: bool) -> str:
     return lang if lang in SYNTH else "ru"
 
 
-def search_brain(graph: pathlib.Path, query: str) -> str | None:
-    """Боевой контур: vault_search на brain :8100 (тот же, что в приложении).
+# Исходы обращения к серверу памяти — одно значение с причиной вместо None на
+# три случая: «лежит», «жив, но граф вне его vault» и «жив, пусто» раньше
+# сливались, и отказ по --brain объяснялся бы неверно (входной круг DS по №296)
+BRAIN_DEAD = "dead"          # :8100 не отвечает (выключен решением по №250)
+BRAIN_FOREIGN = "foreign"    # сервер жив, но этого графа в его vault нет (демо, другой диск)
+BRAIN_ALIVE = "alive"
 
-    Бенч обязан мерить то, что видит пользователь, а не свою копию
-    алгоритма — иначе улучшения ранжирования в brain остаются незамеренными.
-    None → сервер лежит, вызывающий уходит на локальный фолбэк.
+
+def search_brain(graph: pathlib.Path, query: str) -> tuple[str, str]:
+    """Прежний контур: vault_search на brain :8100 (тот, что был в приложении).
+
+    -> (исход, текст выдачи): текст непустой только при BRAIN_ALIVE; пустая
+    выдача живого сервера — ("alive", "").
     """
     import json
     import urllib.request
@@ -195,17 +202,28 @@ def search_brain(graph: pathlib.Path, query: str) -> str | None:
         # nosemgrep — адрес локального brain/Ollama из конфига, не внешний ввод
         with urllib.request.urlopen(req, timeout=25) as resp:
             text = json.load(resp).get("text", "")
-    except OSError:
-        return None
+    except (OSError, ValueError):
+        return BRAIN_DEAD, ""
     if text.startswith("Ничего не найдено"):
-        return ""
-    # граф вне vault brain-сервера (демо, другой диск): честный фолбэк
-    # на локальный поиск, а не сообщение об ошибке в роли «сырья»
+        return BRAIN_ALIVE, ""
     if text.startswith("Папка не найдена") or text.startswith("Недопустимый путь"):
-        return None
+        return BRAIN_FOREIGN, ""
     # срезаем шапку «Найдено в vault (N из M):»
     _, _, body = text.partition("\n\n")
-    return body or text
+    return BRAIN_ALIVE, body or text
+
+
+def require_brain(graph: pathlib.Path, demo: bool) -> None:
+    """`--brain` — явный отказ с причиной, а не молчаливый уход на другой контур:
+    иначе заголовок «память демона» печатался при любом выборе (№296)."""
+    if demo:
+        sys.exit("--brain неприменим к демо-графу: его нет в vault сервера памяти")
+    outcome, _ = search_brain(graph, "проверка")
+    if outcome == BRAIN_DEAD:
+        sys.exit("--brain: сервер памяти :8100 не отвечает — он выключен решением по №250; "
+                 "снимите флаг или поднимите сервер")
+    if outcome == BRAIN_FOREIGN:
+        sys.exit("--brain: сервер памяти жив, но этого графа в его vault нет — флаг неприменим")
 
 
 _INDEX: dict[str, object] = {}
@@ -346,6 +364,9 @@ def main() -> None:
     if args.limit:
         cases = cases[:args.limit]
 
+    if args.brain:
+        require_brain(graph, args.demo)     # до любой ветки: --brain --stats тоже не должен мерить молча другой контур
+
     if args.stats:
         # Калибровка гейта честности (круги 1–2 по #577): распределение сигналов на
         # своих вопросах, без модели. Пороги — в src/graph_search.py.
@@ -354,6 +375,10 @@ def main() -> None:
         mem.refresh(force=True)
         mem.load_vectors()
         print(f"файлов {mem.size}, с векторами {mem.vectors}; пороги sim<{graph_search.LOW_SIM} и cov<{graph_search.LOW_COV}")
+        v = mem.vote_stats()
+        print(f"роли: первичных {v['primary']}, досье {v['dossier']}, служебных вне индекса {v['service']}; "
+              f"голосов {v['votes']} за {v['targets']} целей, на потолке хаба {v['at_cap']}; "
+              f"не голосуют (досье): {v['dossier_votes']} голосов, которые сняли бы потолок ещё у {v['cap_if_dossier_voted'] - v['at_cap']}")
         for i, case in enumerate(cases, 1):
             r = mem.search(case["q"], limit=LIMIT_FILES, snippet_chars=SNIPPET)
             hit = "; ".join(b.split("\n")[0][2:] for b in r.blocks[:3])
@@ -363,13 +388,15 @@ def main() -> None:
     passed, failures = 0, []
     # по умолчанию — память демона (src/graph_search.py): то, что видит владелец
     # на встрече; сервер и прежний фолбэк — только по флагам, для сравнения
-    brain_alive = args.brain and (not args.demo) and search_brain(graph, "проверка") is not None
-    print("контур поиска: " + ("сервер памяти :8100" if brain_alive else
+    print("контур поиска: " + ("сервер памяти :8100" if args.brain else
                                "прежний локальный фолбэк" if args.legacy else "память демона (graph_search)"))
     for i, case in enumerate(cases, 1):
         q, must = case["q"], case.get("must", [])
-        found = (search_brain(graph, q) if brain_alive else None)
-        if found is None:
+        if args.brain:
+            outcome, found = search_brain(graph, q)
+            if outcome != BRAIN_ALIVE:
+                sys.exit(f"--brain: сервер памяти отпал посреди прогона ({outcome}) — итог не сравним")
+        else:
             found = search_legacy(graph, q) if args.legacy else search(graph, q, cfg if not args.demo else None)
         if not found:
             failures.append((q, must, "поиск ничего не нашёл"))
