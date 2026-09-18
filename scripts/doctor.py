@@ -252,8 +252,9 @@ def check_llm_alive(cfg: dict) -> None:
     if state == llm_health.SLOW:
         line(WARN, "сервер на связи, но генерация не ответила за 90 с",
              "модель может быть занята длинной генерацией (разбор встречи, ночной "
-             "цикл); конвейер ждёт до 5 минут (проба 120 с и ожидание 180 с), "
-             "прежде чем перезапускать")
+             "цикл); конвейер ждёт до 5 минут (проба 120 с и ожидание 180 с) и "
+             "не перезапускает сервер под своей живой генерацией; застряло "
+             "наверняка — scripts/doctor.py --restart-llm")
         return
     sys.path.insert(0, str(CODE / "src"))
     import privacy as _privacy
@@ -346,7 +347,42 @@ def check_disk() -> None:
         line(OK, f"на диске {free:.0f} ГБ")
 
 
+def restart_llm() -> None:
+    """`--restart-llm`: аварийный перезапуск сервера моделей поверх живых аренд.
+
+    Конвейер сам никогда не убивает сервер под своей генерацией (аренда
+    модели, src/model_lease.py); это единственный ручной выход, когда
+    владелец аренды завис так, что его порог зависания не срабатывает."""
+    cfg = check_config()
+    base = llm_url(cfg)
+    if base is None:
+        sys.exit(1)
+    sys.path.insert(0, str(CODE / "src"))
+    import llm_health
+    if not llm_health.force_restart(cfg, print):
+        line(FAIL, "перезапуск не удался", "см. строки выше: адрес не локальный, команда перезапуска или владелец порта")
+        sys.exit(1)
+    # «перезапуск состоялся» = проба ответила, а не subprocess вернул 0: Ollama.app
+    # поднимается 10–30 с, и рапорт сразу после команды врал бы (круг 2 GLM M2)
+    deadline = time.monotonic() + llm_health.RESTART_WAIT
+    state = None
+    while time.monotonic() < deadline:
+        time.sleep(llm_health.RESTART_POLL)
+        state = llm_health.probe(cfg, timeout=60)
+        if state is True or state == llm_health.BUSY:
+            break
+    if state is True or state == llm_health.BUSY:
+        line(OK, f"сервер моделей перезапущен, проба ответила ({time.monotonic() - deadline + llm_health.RESTART_WAIT:.0f} с)")
+        sys.exit(0)
+    line(FAIL, f"команды перезапуска отданы, но проба не ответила за {llm_health.RESTART_WAIT} с",
+         "смотрите лог сервера моделей; повторный --restart-llm не раньше, чем он поднимется")
+    sys.exit(1)
+
+
 def main() -> None:
+    if "--restart-llm" in sys.argv[1:]:
+        restart_llm()
+        return
     print("Charoite doctor\n")
     print("Установка")
     check_python()
