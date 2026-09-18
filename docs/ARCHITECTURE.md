@@ -66,6 +66,32 @@ recording (18.08) left a meeting without hints for 45 minutes. Three rules:
   pauses within the caller's budget (live loops up to 30 s, graph extraction
   up to 10 min); `llm_health.probe` distinguishes `BUSY` and never restarts
   the server under someone else's generation.
+- **Our own generation in flight is a fact, not a guess.** For the duration of
+  every request to the local model the transport (`llm._open_stream`,
+  `llm._post_busy`) holds a lease file `data/llm_inflight/<pid>-<id>.json`
+  under `flock` (`model_lease`): the kernel releases it the moment the
+  process dies, so no pid or mtime heuristics. One file per call, not per
+  process: the daemon runs several generations from one pid. Liveness has a
+  single criterion, `deadline` = the last moment the work was known alive
+  plus a stall threshold derived from the read timeout of that same request
+  (the transport itself aborts silence longer than its timeout; the threshold
+  sits just above it, otherwise a live document prefill would count as a
+  hang); for streams a data line rolls the deadline, `: keepalive` comments
+  do not. The file protocol belongs to the writer: a lease is never visible
+  without its lock and is never rewritten in place — every publication is a
+  fresh locked inode renamed over the name; the reader judges liveness by the
+  lock alone (locked but unreadable means alive) and never deletes orphans
+  (the next writer sweeps them). Before restarting, `llm_health` reads the
+  leases for this server: a live, non-stalled one means the server is busy
+  with our work and the caller queues behind it; a stalled or absent one
+  means restart as before; an unreadable sensor is logged once — restart
+  proceeds as before if the sensor never worked, and is held until a manual
+  restart if it worked and then broke. The guard lives inside `_restart*`
+  itself together with the ban on touching a non-loopback address, so every
+  path to a kill inherits both; the manual emergency restart over live leases
+  is `scripts/doctor.py --restart-llm`, and success means the probe answered. Leases on the cloud gateway never hold a
+  local restart (matched by server address); waiting in the busy queue holds
+  no lease — that queue heals itself.
 - **An error inside a stream is an error.** An `{"error": …}` line inside a
   200 response, or a stream that ends without its terminator, raises: a
   truncated set of minutes is never passed off as complete.
