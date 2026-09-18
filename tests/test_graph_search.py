@@ -7,10 +7,13 @@ retrieval — факт обязан быть в найденном тексте 
 """
 from __future__ import annotations
 
+import ast
 import hashlib
+import inspect
 import json
 import math
 import os
+import dataclasses
 import pathlib
 import re
 import sys
@@ -105,7 +108,7 @@ def test_needles_stems_stop_words_cjk_and_fullwidth():
 
 def test_index_skips_archive_transcript_copies_hidden_and_service_files(tmp_path):
     s = _search(tmp_path)
-    rels = {d.rel for d in s._docs.values()}
+    rels = {d.rel for d in s._gen.docs.values()}
     assert "Встречи-архив/2026-01-01_старое.md" not in rels
     assert "Документация/Стенограммы встреч/копия.md" not in rels
     assert "Документация/Концепция шлюза.md" in rels, "сами документы остаются, исключены только копии стенограмм"
@@ -126,14 +129,14 @@ def test_refresh_follows_mtime_and_removals(tmp_path):
     new.write_text("# Новая\nуникальный_терм_нового_узла\n", encoding="utf-8")
     assert s.refresh() is False, "свежий индекс без force не обходится"
     clock["t"] += gs.REFRESH_S + 1
-    assert s.refresh() is True and any(d.rel == "Системы/Новая.md" for d in s._docs.values())
+    assert s.refresh() is True and any(d.rel == "Системы/Новая.md" for d in s._gen.docs.values())
     node = s.graph / "Системы" / "Платёжный шлюз.md"
     node.write_text(node.read_text(encoding="utf-8") + "\nдописанный_терм\n", encoding="utf-8")
     os.utime(node, (clock["t"] + 5, clock["t"] + 5))
     new.unlink()
     s.refresh(force=True)
     assert _rels(s.search("дописанный_терм", semantic=False)) == ["Системы/Платёжный шлюз.md"]
-    assert not any(d.rel == "Системы/Новая.md" for d in s._docs.values())
+    assert not any(d.rel == "Системы/Новая.md" for d in s._gen.docs.values())
 
 
 def test_ranking_prefers_path_coverage_recency_and_damps_hubs_raw_and_placeholders(tmp_path):
@@ -699,7 +702,9 @@ def _stub(name: str, canon: str) -> str:
 
 
 def test_stub_base_reads_the_canon_only_from_a_real_redirect():
-    assert gs.stub_base(_stub("Коля Соколов", "Люди/Николай Соколов")) == "николай соколов"
+    # ключ связи — ПУТЬ цели, как её написали: имя терял однозначность, которую
+    # автор уже дал (замер 17.09: 3 532 ссылки резолвились не туда, №292)
+    assert gs.stub_base(_stub("Коля Соколов", "Люди/Николай Соколов")) == "люди/николай соколов"
     assert gs.stub_base("# Узел\nОбычный текст про → [[Люди/Кто-то]] в середине.\n") == ""
     assert gs.stub_base("---\nnote: → [[Люди/Кто-то]]\n---\n# Узел\nТело.\n") == "", "стрелка в шапке — не редирект"
     assert gs.stub_base("# Узел\nДубль. Смерджен\n") == "", "пометка без цели не переписывает имя"
@@ -707,45 +712,227 @@ def test_stub_base_reads_the_canon_only_from_a_real_redirect():
 
 def test_canon_bases_unrolls_chains_keeps_namesakes_and_survives_cycles():
     def d(base, stub_to=""):
-        return gs.Doc("", f"Ядра/{base}.md", 0.0, "", "", 0.0, base, "", stub_to)
-    # цепочка: «а» слит в «б», «б» — в живой «в»
-    chain = gs.canon_bases([d("а", "б"), d("б", "в"), d("в")])
-    assert chain == {"а": "в", "б": "в"}, chain
+        """Документ с ключом-путём: `Ядра/<имя>` — так его видит каталог связей."""
+        target = f"ядра/{stub_to}" if stub_to and "/" not in stub_to else stub_to
+        return gs.Doc("", f"Ядра/{base}.md", 0.0, "", "", 0.0, base, "", target)
+    # цепочка: «а» слит в «б», «б» — в живой «в»; ключи — пути (№292)
+    chain = gs.LinkCatalog([d("а", "б"), d("б", "в"), d("в")]).canon
+    assert chain == {"ядра/а": "ядра/в", "ядра/б": "ядра/в"}, chain
     # живой однофамилец: под именем «отчёт» есть и заглушка, и живое досье — ссылка про досье
-    keep = gs.canon_bases([d("отчёт", "сводка"), d("сводка"),
-                           gs.Doc("", "Досье/отчёт.md", 0.0, "", "", 0.0, "отчёт", "", "")])
-    assert keep == {}, keep
-    assert gs.canon_bases([d("а", "б"), d("б", "а")]) == {}, "цикл заглушек не переписывает имена"
-    assert gs.canon_bases([d("а", "а")]) == {}, "ссылка на себя — не цепочка"
-    # заглушка «# X → [[X]]» не живой файл: раньше она уходила в live и собирала
-    # на себя ссылки третьих узлов — ровно тот дефект, который правка закрывает
-    assert gs.canon_bases([d("а", "б"), d("б", "б")]) == {}, "цепочка упёрлась в самопетлю"
-    # две заглушки под одним именем: самопетля не должна вытеснять настоящий
-    # редирект — иначе победитель зависит от порядка обхода каталога
-    loop, real, alive = d("отчёт", "отчёт"), d("отчёт", "итоги"), d("итоги")
-    assert gs.canon_bases([loop, real, alive]) == {"отчёт": "итоги"}
-    assert gs.canon_bases([real, loop, alive]) == {"отчёт": "итоги"}, "исход зависит от порядка обхода"
-    # два РАЗНЫХ редиректа под одним именем: берём свежий, а не первого по обходу
-    old_stub = gs.Doc("", "Ядра/отчёт.md", 0.0, "", "", 100.0, "отчёт", "", "архив")
-    new_stub = gs.Doc("", "Досье/отчёт.md", 0.0, "", "", 200.0, "отчёт", "", "итоги")
+    # ключ-путь снял оговорку про однофамильца: «Досье/Отчёт» и «Ядра/Отчёт» —
+    # разные ключи, и заглушка в одной папке не спорит с живым файлом в другой.
+    # При ключе-имени это был костыль, без которого правка отнимала переходы (№291)
+    keep = gs.LinkCatalog([gs.Doc("", "Досье/отчёт.md", 0.0, "", "", 0.0, "отчёт", "", "ядра/сводка"),
+                           d("сводка"), d("отчёт")]).canon
+    assert keep == {"досье/отчет": "ядра/сводка"}, keep
+    # одного ключа у заглушки и живого файла быть не может: путь уникален, и
+    # прежняя оговорка «живой перебивает» потеряла предмет (№292)
+    assert gs.LinkCatalog([d("а", "б"), d("б", "а")]).canon == {}, "цикл заглушек не переписывает ключи"
+    assert gs.LinkCatalog([d("а", "а")]).canon == {}, "ссылка на себя — не цепочка"
+    assert gs.LinkCatalog([d("а", "б"), d("б", "б")]).canon == {}, "цепочка упёрлась в самопетлю"
+    # «две заглушки под одним ключом» невозможны: путь уникален. Класс, на
+    # который в №291 ушло три круга (детерминированный выбор между ними),
+    # исчез вместе с ключом-именем
+    # два редиректа с одним ИМЕНЕМ в разных папках больше не спорят: путь уникален,
+    # и каждый ведёт туда, куда написано. При ключе-имени здесь нужен был тай-брейк
+    # по свежести, и три круга ушло на то, чтобы сделать его детерминированным (№291)
+    in_cores = gs.Doc("", "Ядра/отчёт.md", 0.0, "", "", 100.0, "отчёт", "", "ядра/архив")
+    in_dossier = gs.Doc("", "Досье/отчёт.md", 0.0, "", "", 200.0, "отчёт", "", "ядра/итоги")
     both = [d("итоги"), d("архив")]
-    assert gs.canon_bases([old_stub, new_stub, *both]) == {"отчёт": "итоги"}
-    assert gs.canon_bases([new_stub, old_stub, *both]) == {"отчёт": "итоги"}, "выбор решил порядок обхода"
+    expect = {"ядра/отчет": "ядра/архив", "досье/отчет": "ядра/итоги"}
+    assert gs.LinkCatalog([in_cores, in_dossier, *both]).canon == expect
+    assert gs.LinkCatalog([in_dossier, in_cores, *both]).canon == expect, "исход решил порядок обхода"
     # свежий редирект ведёт в никуда, старый — к живому: имя достаётся рабочему,
     # иначе свежая оборванная стрелка съедала бы базу целиком (DS, круг 4)
-    dead = gs.Doc("", "Досье/отчёт.md", 0.0, "", "", 300.0, "отчёт", "", "исчез")
-    assert gs.canon_bases([dead, old_stub, d("архив")]) == {"отчёт": "архив"}
+    # оборванная стрелка не даёт записи вовсе: канона нет — ключ не переписываем
+    dead = gs.Doc("", "Досье/пропажа.md", 0.0, "", "", 300.0, "пропажа", "", "ядра/исчез")
+    assert gs.LinkCatalog([dead, in_cores, d("архив")]).canon == {"ядра/отчет": "ядра/архив"}
     # свежесть решает независимо от алфавита папки: прошлый тест проходил случайно,
     # потому что свежая заглушка лежала в папке с буквой раньше (DS, круг 5)
-    new_late = gs.Doc("", "Ядра/отчёт.md", 0.0, "", "", 200.0, "отчёт", "", "итоги")
-    old_early = gs.Doc("", "Досье/отчёт.md", 0.0, "", "", 100.0, "отчёт", "", "архив")
-    assert gs.canon_bases([old_early, new_late, d("итоги"), d("архив")]) == {"отчёт": "итоги"}
-    # две стрелки у ПРОМЕЖУТОЧНОГО имени: первая ведёт в никуда, вторая к живому —
-    # перебор идёт на каждом звене, а не только на старте (DS, круг 5)
-    x = gs.Doc("", "Ядра/икс.md", 0.0, "", "", 50.0, "икс", "", "игрек")
-    y_dead = gs.Doc("", "Досье/игрек.md", 0.0, "", "", 300.0, "игрек", "", "исчез")
-    y_live = gs.Doc("", "Ядра/игрек.md", 0.0, "", "", 100.0, "игрек", "", "итоги")
-    assert gs.canon_bases([x, y_dead, y_live, d("итоги")])["икс"] == "итоги"
+    # один КЛЮЧ теперь у одного файла, поэтому свежесть решает внутри одного пути
+    # один путь — один файл, поэтому свежесть решает только среди дублей ключа
+    new_late = gs.Doc("", "Ядра/отчёт.md", 0.0, "", "", 200.0, "отчёт", "", "ядра/итоги")
+    old_early = gs.Doc("", "Ядра/отчёт.md", 0.0, "", "", 100.0, "отчёт", "", "ядра/архив")
+    assert gs.LinkCatalog([old_early, new_late, d("итоги"), d("архив")]).canon == {"ядра/отчет": "ядра/итоги"}
+    # КОЛЛИЗИЯ КЛЮЧА: нормализация схлопывает ё/е, поэтому два разных файла
+    # дают один ключ. Хозяина выбирает owner_key — свежайший, — и цепочка идёт
+    # по ЕГО стрелке. Перебор веток («возьмём стрелку того из двух, чья удачнее»)
+    # был правилом мира, где одно ИМЯ законно носили два файла; для коллизии
+    # путей он означал бы, что хозяин ключа зависит от данных на другом конце
+    # цепочки. Стрелка свежайшего мертва — честный ответ «никуда» (круг 2 №292)
+    x = gs.Doc("", "Ядра/икс.md", 0.0, "", "", 50.0, "икс", "", "ядра/игрек")
+    fresh_dead = gs.Doc("", "Ядра/игрёк.md", 0.0, "", "", 300.0, "игрёк", "", "ядра/исчез")
+    older_live = gs.Doc("", "Ядра/игрек.md", 0.0, "", "", 100.0, "игрек", "", "ядра/итоги")
+    pair = [x, fresh_dead, older_live, d("итоги")]
+    assert fresh_dead.key == older_live.key, "ё и е обязаны схлопнуться в один ключ"
+    assert gs.LinkCatalog(pair).canon == {}, "цепочка пошла мимо хозяина ключа"
+    assert gs.LinkCatalog(pair[::-1]).canon == {}, "исход решил порядок обхода"
+
+
+def test_each_stub_of_a_key_collision_leads_to_its_own_target():
+    """Две заглушки с одним ключом ведут каждая к СВОЕЙ цели, не к цели хозяина.
+
+    `Ядра/Ёлка.md` и `Ядра/Елка.md` — разные файлы, но нормализация схлопывает
+    ё/е в один ключ. Карта канонов отвечает про хозяина ключа, и заглушка-
+    неудачник, найденная поиском по своему тексту, показывала чужой документ, а
+    её собственная цель не показывалась никогда (Important DS, круг 3 по №292)."""
+    fresh = gs.Doc("", "Ядра/Ёлка.md", 0.0, "", "", 200.0, "Ёлка", "", "ядра/а")
+    older = gs.Doc("", "Ядра/Елка.md", 0.0, "", "", 100.0, "Елка", "", "ядра/б")
+    a = gs.Doc("", "Ядра/А.md", 0.0, "", "", 0.0, "А", "", "")
+    b = gs.Doc("", "Ядра/Б.md", 0.0, "", "", 0.0, "Б", "", "")
+    cat = gs.LinkCatalog([fresh, older, a, b])
+    assert fresh.key == older.key, "ё и е обязаны схлопнуться в один ключ"
+    assert cat.instead_of_stub(fresh).rel == "Ядра/А.md"
+    assert cat.instead_of_stub(older).rel == "Ядра/Б.md", "не-хозяин ключа увёл к чужой цели"
+
+
+def test_the_index_generation_is_published_in_one_piece(tmp_path):
+    """Документы, голоса и каталог связей уезжают в мир одним присваиванием.
+
+    Раньше документы публиковались первым замком, а каталог и голоса — вторым,
+    и всю секунду между ними поиск видел новые документы со старым каталогом.
+    Заглушка подменялась на канон прошлого поколения, которого в снимке
+    читателя уже нет, и `by_rel[rel]` ронял поиск с KeyError прямо на встрече
+    (Critical DS, круг 3 по №292).
+
+    Проверка СТРУКТУРНАЯ, а не гоночная: пока документы, голоса и каталог были
+    тремя полями, корректность держалась на том, что три присваивания попали в
+    один захват замка, и однопоточный тест такую мутацию не ловил — круг 4 это
+    показал. Теперь состояние — одно значение `Generation`, и рассинхрон
+    невыразим: отдельных полей у поиска нет вовсе."""
+    assert {f.name for f in dataclasses.fields(gs.Generation)} == {
+        "docs", "indeg", "catalog", "skipped", "unread"}, "снимок описан типом не целиком"
+    s = _search(tmp_path)
+    g = s.graph
+    (g / "Ядра").mkdir(exist_ok=True)
+    (g / "Ядра" / "Старое.md").write_text(_stub("Старое", "Ядра/Канон"), encoding="utf-8")
+    (g / "Ядра" / "Канон.md").write_text("# Канон\nТекст канона.\n", encoding="utf-8")
+    (g / "Встречи" / "2026-08-03_1100.md").write_text(
+        "# Тема\nОбсуждали [[Ядра/Старое]].\n", encoding="utf-8")
+    s.refresh(force=True)
+    (g / "Ядра" / "Канон.md").unlink()
+    s.refresh(force=True)
+
+    split = [f for f in vars(s)
+             if f.endswith(("docs", "indeg", "catalog", "skipped", "unread")) and f != "_gen"]
+    assert split == [], f"состояние индекса живёт ещё и отдельными полями: {split}"
+    rels = {d.rel for d in s._gen.docs.values()}
+    for key in ("ядра/старое", "ядра/канон", "старое", "канон"):
+        hit = s._gen.catalog.live(key)
+        assert hit is None or hit.rel in rels, f"каталог отдал {key} → {hit.rel} мимо снимка"
+    assert s.search("старое", limit=3) is not None, "поиск упал на чужом поколении"
+
+
+def _lock_guarded_reads(fn: ast.FunctionDef, attr: str) -> tuple[int, int]:
+    """(чтений `self.<attr>` в функции, из них под `with self._lock`).
+
+    Обход рекурсивный, с флагом вложенности: `ast.walk` теряет, ВНУТРИ чего
+    лежит узел, а три круга назад ломалось именно место чтения, не число."""
+    total = guarded = 0
+
+    def guards_lock(node: ast.With) -> bool:
+        return any(isinstance(it.context_expr, ast.Attribute) and it.context_expr.attr == "_lock"
+                   and isinstance(it.context_expr.value, ast.Name) and it.context_expr.value.id == "self"
+                   for it in node.items)
+
+    def visit(node: ast.AST, inside: bool) -> None:
+        nonlocal total, guarded
+        if isinstance(node, ast.Attribute) and node.attr == attr and isinstance(node.ctx, ast.Load) \
+                and isinstance(node.value, ast.Name) and node.value.id == "self":
+            total += 1
+            guarded += inside
+        here = inside or (isinstance(node, ast.With) and guards_lock(node))
+        for child in ast.iter_child_nodes(node):
+            visit(child, here)
+
+    for stmt in fn.body:
+        visit(stmt, False)
+    return total, guarded
+
+
+def test_the_generation_is_written_only_by_publish_from_a_base():
+    """`_gen` после инициализации пишет одна операция, ей нужна основа, и
+    основа — текущее поколение.
+
+    Три круга подряд (5, 6, 7 по №292) ловили один и тот же класс в разных
+    ветках `_walk`: основа читалась в одном месте, решение принималось по ней,
+    а публиковалась производная от другого чтения поля. Проза шапки про
+    «всегда под замком» дважды оказывалась ложной. Здесь проверяется ФОРМА, а
+    не гонка: присваиваний `self._gen` в модуле ровно два — `__init__` и
+    `_publish`, обходных записей (`setattr`, `__dict__`) нет; у `_publish`
+    основа — позиционный аргумент без умолчания; обход читает поле не больше
+    одного раза, и если читает — под `with self._lock` (круг 8: считать
+    число чтений мало, ломалось место). Плюс поведение: публикация от чужой
+    основы — ошибка, а не молчаливый откат чужой правки."""
+    src = inspect.getsource(gs)
+    tree = ast.parse(src)
+    writers = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Attribute) and node.attr == "_gen" and isinstance(node.ctx, ast.Store) \
+                    and isinstance(node.value, ast.Name) and node.value.id == "self":
+                writers.append(fn.name)
+        if fn.name == "_walk":
+            total, guarded = _lock_guarded_reads(fn, "_gen")
+            assert total <= 1, f"обход читает поле {total} раз(а), основа снимается один раз"
+            assert guarded == total, "обход читает основу вне `with self._lock`"
+    assert sorted(writers) == ["__init__", "_publish"], f"`_gen` пишут ещё где-то: {writers}"
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and node.value == "_gen":
+            raise AssertionError("к `_gen` обращаются строкой (setattr/__dict__) — обход гейта")
+    base = inspect.signature(gs.GraphSearch._publish).parameters["base"]
+    assert base.default is inspect.Parameter.empty, "у публикации появилась основа по умолчанию"
+    assert base.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    # поведение: устаревшая основа не публикуется
+    s = gs.GraphSearch.__new__(gs.GraphSearch)
+    s._lock = __import__("threading").RLock()
+    s._vecs = {}
+    s._gen = gs.Generation({}, {}, gs.LinkCatalog([]))
+    stale = gs.Generation({}, {}, gs.LinkCatalog([]))
+    with pytest.raises(RuntimeError):
+        s._publish(stale, skipped=("x",))
+    live = s._gen
+    s._publish(live, skipped=("x",))
+    assert s._gen.skipped == ("x",) and s._gen is not live
+
+
+def test_a_broken_stub_chain_gives_nobody_a_vote():
+    """Заглушка на заглушку с оборванным концом — голос никому, а не второму звену.
+
+    `live` обещает живой документ; если за целью снова указатель, честный ответ
+    «никуда». Иначе мёртвый файл получал входящий голос и буст хаба — ровно
+    дефект, который закрывал №291 (Critical DS, круг 2 по №292)."""
+    a = gs.Doc("", "Ядра/а.md", 0.0, "", "", 0.0, "а", "", "досье/б")
+    b = gs.Doc("", "Досье/б.md", 0.0, "", "", 0.0, "б", "", "ядра/исчез")
+    cat = gs.LinkCatalog([a, b])
+    assert cat.canon == {}, "цепочка без живого конца попала в карту канонов"
+    assert cat.named("ядра/а") is a, "документ по пути перестал находиться"
+    assert cat.live("ядра/а") is None, "голос ушёл второму звену цепочки"
+
+
+def test_a_self_loop_is_judged_by_where_the_arrow_resolves():
+    """Самопетля — когда стрелка приводит в САМ этот файл, в любой записи.
+
+    Сверка по разрешённой цели, а не по строке: `стрелка != ключ` пропускала
+    голую форму `# Тема → [[Тема]]` из `Ядра/Тема.md`, потому что «тема» и
+    «ядра/тема» — разные строки.
+
+    Отдельно: круг 2 по №292 назвал самопетлёй и случай с живым тёзкой, но это
+    не он. Голая стрелка `[[Тема]]` при живом `Досье/Тема.md` разрешается
+    ровно туда же, куда разрешилась бы любая другая голая ссылка, — в хозяина
+    имени; сама заглушка хозяином имени не бывает, живой бьёт её. Прежнее
+    правило `стрелка != база` отсекало этот случай по совпадению строк, а не по
+    смыслу. В рабочем графе 18.09: 418 заглушек со стрелкой-путём, 2 с голым
+    именем, ни одна не указывает на своё же имя."""
+    alone = gs.Doc("", "Ядра/тема.md", 0.0, "", "", 0.0, "тема", "", "тема")
+    assert gs.LinkCatalog([alone]).canon == {}, "голая стрелка в себя стала цепочкой"
+    by_path = gs.Doc("", "Ядра/тема.md", 0.0, "", "", 0.0, "тема", "", "ядра/тема")
+    assert gs.LinkCatalog([by_path]).canon == {}, "стрелка путём в себя стала цепочкой"
+    # живой тёзка — законная цель голой стрелки, а не жертва самопетли
+    twin = gs.Doc("", "Досье/тема.md", 0.0, "", "", 0.0, "тема", "", "")
+    assert gs.LinkCatalog([alone, twin]).canon == {"ядра/тема": "досье/тема"}
 
 
 def test_links_to_a_merged_node_feed_the_canon_and_the_hop_reaches_it(tmp_path):
@@ -760,8 +947,11 @@ def test_links_to_a_merged_node_feed_the_canon_and_the_hop_reaches_it(tmp_path):
     (g / "Ядра").mkdir(exist_ok=True)
     (g / "Ядра" / "Расчёт премий.md").write_text(
         "# Расчёт премий\nСводка темы.\n\n## Связи\n- [[Ядра/Бонусная схема]]\n", encoding="utf-8")
+    # стрелка ведёт на РЕАЛЬНЫЙ путь: с ключом-путём битая стрелка честно
+    # считается промахом и голоса не передаёт, а раньше её подхватывал
+    # однофамилец в любой папке (№292)
     (g / "Ядра" / "Бонусная схема.md").write_text(
-        _stub("Бонусная схема", "Ядра/Программа лояльности"), encoding="utf-8")
+        _stub("Бонусная схема", "Документация/Программа лояльности"), encoding="utf-8")
     (g / "Встречи" / "2026-08-03_1100.md").write_text(
         "# Лояльность\nОбсуждали [[Ядра/Бонусная схема]] и сроки.\n", encoding="utf-8")
     (g / "Документация" / "Программа лояльности.md").write_text(
@@ -769,14 +959,63 @@ def test_links_to_a_merged_node_feed_the_canon_and_the_hop_reaches_it(tmp_path):
     s.refresh(force=True)
     s.embed_pending()
 
-    assert s._indeg.get("программа лояльности") == 2, s._indeg   # узел и встреча; стрелка заглушки не голос
-    assert "бонусная схема" not in s._indeg, "входящие остались на мёртвой заглушке"
+    # ключ входящих — путь документа, которому голос достался (№292)
+    assert s._gen.indeg.get("документация/программа лояльности") == 2, s._gen.indeg
+    assert not any(k.endswith("бонусная схема") for k in s._gen.indeg), "входящие на мёртвой заглушке"
 
     r = s.search("расчёт премий", limit=3)
     assert r.status is gs.Verdict.CONFIDENT, r.status
     hop = [b for b in r.blocks if "↳ по ссылке из" in b]
     assert any("Документация/Программа лояльности.md" in b and "ЭТАЛОННЫЙ_ФАКТ" in b for b in hop), r.blocks
     assert not any("Ядра/Бонусная схема.md" in b for b in r.blocks), "заглушка попала в выдачу"
+
+
+def test_a_bare_link_to_a_merged_node_feeds_the_canon_too(tmp_path):
+    """Ссылка без папки на слитый узел отдаёт голос канону, как и ссылка с папкой.
+
+    Ключ связи стал путём, и голая цель перестала попадать в карту канонов:
+    голос молча пропадал. В рабочем графе 409 голых ссылок из узлов, на
+    заглушку 17.09 не ведёт ни одна — но слияния создают заглушки каждую ночь
+    (Important DS и GLM, круг 1 по №292)."""
+    s = _search(tmp_path)
+    g = s.graph
+    (g / "Ядра").mkdir(exist_ok=True)
+    (g / "Ядра" / "Бонусная схема.md").write_text(
+        _stub("Бонусная схема", "Документация/Программа лояльности"), encoding="utf-8")
+    (g / "Документация" / "Программа лояльности.md").write_text(
+        "# Программа лояльности\nПодрядчик подтвердил условия.\n", encoding="utf-8")
+    (g / "Встречи" / "2026-08-03_1100.md").write_text(
+        "# Лояльность\nОбсуждали [[Бонусная схема]] без папки.\n", encoding="utf-8")
+    s.refresh(force=True)
+
+    assert s._gen.indeg.get("документация/программа лояльности") == 1, s._gen.indeg
+    assert not any(k.endswith("бонусная схема") for k in s._gen.indeg), "голос остался на заглушке"
+
+
+def test_a_living_namesake_outranks_a_stub_for_a_bare_link(tmp_path):
+    """Заглушки в карте имён стоят ПОСЛЕ живых: голая ссылка на имя, которое
+    носят и живой файл, и заглушка, ведёт к живому, а не к чужому канону.
+
+    Оба тай-брейка `owner_key` нарочно ПРОТИВ правила: заглушка и записана
+    позже (свежее), и лежит в алфавитно более ранней папке. Без этого тест
+    зелен при снятом правиле — дважды пойманный на этой зоне класс (№291,
+    №292)."""
+    s = _search(tmp_path)
+    g = s.graph
+    (g / "Ядра").mkdir(exist_ok=True)
+    (g / "Досье").mkdir(exist_ok=True)
+    (g / "Ядра" / "Бонусная схема.md").write_text(
+        "# Бонусная схема\nЖивое ядро по той же теме.\n", encoding="utf-8")
+    (g / "Досье" / "Бонусная схема.md").write_text(
+        _stub("Бонусная схема", "Документация/Программа лояльности"), encoding="utf-8")
+    (g / "Документация" / "Программа лояльности.md").write_text(
+        "# Программа лояльности\nПодрядчик подтвердил условия.\n", encoding="utf-8")
+    (g / "Встречи" / "2026-08-03_1100.md").write_text(
+        "# Лояльность\nОбсуждали [[Бонусная схема]] без папки.\n", encoding="utf-8")
+    s.refresh(force=True)
+
+    assert s._gen.indeg.get("ядра/бонусная схема") == 1, s._gen.indeg
+    assert "документация/программа лояльности" not in s._gen.indeg, "стрелка заглушки перебила живого тёзку"
 
 
 def test_a_search_for_the_old_name_returns_the_canon_not_the_arrow(tmp_path):
@@ -813,7 +1052,7 @@ def test_a_namesake_of_a_merged_node_keeps_its_own_links(tmp_path):
     s.refresh(force=True)
     s.embed_pending()
 
-    assert "отчёт по аварии" not in gs.canon_bases(list(s._docs.values())), "имя с живым файлом переписано"
+    assert "отчёт по аварии" not in gs.LinkCatalog(list(s._gen.docs.values())).canon, "имя с живым файлом переписано"
     r = s.search("итоги квартала", limit=3)
     assert any("Документация/Отчёт по аварии.md" in b and "↳ по ссылке из" in b for b in r.blocks), r.blocks
 
@@ -837,15 +1076,16 @@ def test_a_stub_slot_falls_back_to_its_living_namesake(tmp_path):
     assert any("Документация/Отчёт по сбою.md" in b and "ЖИВОЙ_ТЁЗКА" in b for b in r.blocks), r.blocks
     assert not any("Ядра/Отчёт по сбою.md" in b for b in r.blocks), "заглушка в выдаче"
 
-    # цель стрелки ожила — имя всё равно за тёзкой: иначе слот, заработанный
-    # именем «Отчёт по сбою», уезжает документу с другим именем (GLM, круг 2)
+    # цель стрелки ожила — слот достаётся ЕЙ, а не однофамильцу: автор написал,
+    # куда ведёт заглушка, и имя эту запись не перебивает. Правило развёрнуто
+    # по вердикту круга №292: раньше выигрывал тёзка, и объявленная стрелка не
+    # читалась вовсе, если где-то в графе есть файл с тем же именем
     (g / "Ядра" / "Пропавший разбор.md").write_text(
-        "# Пропавший разбор\nВосстановленный разбор ЧУЖОЕ_ИМЯ.\n", encoding="utf-8")
+        "# Пропавший разбор\nВосстановленный разбор ЦЕЛЬ_СТРЕЛКИ.\n", encoding="utf-8")
     s.refresh(force=True)
     s.embed_pending()
     r2 = s.search("отчёт по сбою", limit=3)
-    assert any("Документация/Отчёт по сбою.md" in b for b in r2.blocks), r2.blocks
-    assert not any("ЧУЖОЕ_ИМЯ" in b for b in r2.blocks), "слот имени уехал цели стрелки"
+    assert any("ЦЕЛЬ_СТРЕЛКИ" in b for b in r2.blocks), r2.blocks
 
 
 def test_normalisation_survives_a_decomposed_file_name():
@@ -854,7 +1094,7 @@ def test_normalisation_survives_a_decomposed_file_name():
     nfd = unicodedata.normalize("NFD", "Ёлка")
     assert nfd != "Ёлка", "оснастка сломана: формы совпали"
     assert gs.norm_text(nfd) == gs.norm_text("Ёлка")
-    assert gs.stub_base(f"# Старое → [[Ядра/{nfd}]]\n\nДубль. Смерджен\n") == gs.norm_text("Ёлка")
+    assert gs.stub_base(f"# Старое → [[Ядра/{nfd}]]\n\nДубль. Смерджен\n") == gs.norm_text("Ядра/Ёлка")
 
 
 def test_a_fragment_keeps_its_case_in_a_decomposed_note(tmp_path):
@@ -900,15 +1140,28 @@ def test_a_node_recognises_its_own_decomposed_name(tmp_path):
 
 
 def test_a_long_stub_chain_does_not_break_the_walk(tmp_path):
-    """Цепочка слияний длиннее предела рекурсии не роняет обход графа.
+    """Цепочка слияний длиннее потолка обрезается, а не роняет обход графа.
 
-    `canon_bases` зовётся из обхода без перехвата, а обход в поиске идёт в
-    отдельной нити — падение ушло бы в stderr и оставило индекс без карты
-    ссылок молча (DS, круг 6 по №291)."""
+    Каталог строится из обхода без перехвата, а обход в поиске идёт в отдельной
+    нити — падение ушло бы в stderr и оставило индекс без карты ссылок молча
+    (DS, круг 6 по №291). Проверяем ИСХОД, а не «не бросило»: `canon is not
+    None` истинно всегда, потому что это свойство со словарём (Minor DS, круг 3
+    по №292)."""
     docs = [gs.Doc("", f"Ядра/н{i}.md", 0.0, "", "", float(i), f"н{i}", "", f"н{i + 1}")
             for i in range(gs.MAX_STUB_HOPS + 200)]
     docs.append(gs.Doc("", "Ядра/живой.md", 0.0, "", "", 0.0, f"н{len(docs)}", "", ""))
-    assert gs.canon_bases(docs) is not None, "обход упал на длинной цепочке"
+    cat = gs.LinkCatalog(docs)
+    # хвост цепочки короче потолка и честно доходит до живого; начало — нет.
+    # Предложенное кругом `canon == {}` неверно ровно поэтому: обрезается не вся
+    # цепочка, а та её часть, что дальше MAX_STUB_HOPS от живого конца
+    assert cat.live("ядра/н0") is None, "звено за потолком отдало документ"
+    assert cat.live(f"ядра/н{len(docs) - 2}").rel == "Ядра/живой.md", "хвост не дошёл до живого"
+    assert "ядра/н0" not in cat.canon, "звено за потолком попало в карту канонов"
+    # короткая цепочка тем же кодом доходит до живого конца
+    short = [gs.Doc("", "Ядра/а.md", 0.0, "", "", 0.0, "а", "", "ядра/б"),
+             gs.Doc("", "Ядра/б.md", 0.0, "", "", 0.0, "б", "", "ядра/в"),
+             gs.Doc("", "Ядра/в.md", 0.0, "", "", 0.0, "в", "", "")]
+    assert gs.LinkCatalog(short).live("ядра/а").rel == "Ядра/в.md"
 
 
 def test_hops_pick_the_same_owner_as_the_rest_of_the_search(tmp_path):
