@@ -36,7 +36,9 @@ def _hub(sr=16000, chunk_s=3.0, overlap_s=0.5, vad_db=-45.0):
     # иначе тест падает на AttributeError вместо проверки поведения.
     hub._hung = set()
     hub._lost = {}          # реестр потерь по метке канала (№235) — вместо двух флагов про собеседников
+    hub._lost_since = {}
     hub._warned = set()
+    hub._mode = "auto"
     hub._fail_streak = {}
     hub._scream_count = 0
     hub._last_frame = {}
@@ -1370,8 +1372,11 @@ def test_смерть_канала_собеседников_после_стар�
     assert not any("СОБЕСЕДНИКОВ" in m for m in mic.said), "потерян микрофон — не собеседники"
     assert not any("пишется остальными" in m for m in mic.said), "причина один раз: криком, не тихой строкой"
     assert len(calls) == 2 and "без ваших реплик" in calls[-1][0][0][-1], calls[-1]
-    assert "остановите" not in calls[-1][0][0][-1] and "наушники" in calls[-1][0][0][-1], \
-        "железо пропало — перезапуск записи его не вернёт (критика GLM входного круга)"
+    # канал в _hung — сторож его больше не трогает: совет «не прерывайте, перезапустится
+    # сам» был бы ложью (Critical DS и Important GLM выходного круга); честный совет —
+    # перезапуск записи, как у умершего канала собеседников
+    assert "остановите и запустите запись заново" in calls[-1][0][0][-1] and "наушники" not in calls[-1][0][0][-1], calls[-1]
+    assert mic._lost["mic"].retriable is False and mic._lost["mic"].died is True
     log = (tmp_path / "logs" / "capture.log").read_text(encoding="utf-8")
     assert a.MIC_LOST_LOG_MARK in log and log.count(a.MIC_ONLY_LOG_MARK) == 1, "у микрофона своя метка лога"
     assert a.stt_runtime.is_sticky_status(scream[0]), "строка про микрофон липкая, как про собеседников"
@@ -1510,13 +1515,16 @@ def test_потеря_канала_одно_событие_на_любой_ка�
     assert hub._lost.keys() == {"mic"}, hub._lost
     assert not any(rt.is_sticky_clear(m) for m in back), "отбой при живом-мёртвом микрофоне снял бы слой целиком (C1)"
     sticky = [m for m in back if rt.is_sticky_status(m)]
-    assert sticky and rt.OWNER_MIC_LOST in sticky[-1] and "по-прежнему нет: ваш микрофон" in sticky[-1], back
+    assert sticky and rt.OWNER_MIC_LOST in sticky[-1] and "по-прежнему нет: вашего микрофона" in sticky[-1], back
     tick(hub, set(), None)                                                 # ожил и микрофон
     clear = [m for m in hub.said if rt.is_sticky_clear(m)]
     assert len(clear) == 1 and rt.OWNER_MIC_BACK in clear[0] and not hub._lost and not hub._warned, hub.said
-    # следующая потеря микрофона — снова звук (потолок общий на встречу: 3)
+    # следующая потеря микрофона — снова звук (потолок общий на встречу: 3); канал ещё
+    # перезапускается — совет «не прерывайте», а не «перезапустите запись» (критика GLM входного круга)
     tick(hub, {"mic"}, err); tick(hub, {"mic"}, err)
     assert len(calls) == 3 and rt.OWNER_MIC_LOST in hub.said[-1]
+    assert "не прерывайте" in calls[-1][0][0][-1] and "остановите" not in calls[-1][0][0][-1], calls[-1]
+    assert hub._lost["mic"].retriable is True
     tick(hub, set(), None)
     tick(hub, {"mic"}, err); tick(hub, {"mic"}, err)
     assert len(calls) == 3, "звук — не чаще LOUD_SCREAMS за встречу, строка — при каждой потере"
@@ -1531,6 +1539,56 @@ def test_потеря_канала_одно_событие_на_любой_ка�
     assert sck.live_labels() == []
     log = (tmp_path / "logs" / "capture.log").read_text(encoding="utf-8")
     assert a.MIC_LOST_LOG_MARK in log and a.MIC_ONLY_LOG_MARK in log, "у каждой потери своя метка в логе"
+
+    # --- Important GLM: канал ожил мимо сторожа — кадр после постановки снимает потерю ---
+    revive = hub_of(["blackhole", "mic"])
+    tick(revive, {"mic"}, TimeoutError("не вернулся за 5с"))          # микрофон в _hung и в реестре
+    assert revive._hung == {"mic"} and "mic" in revive._lost and "mic" in revive._lost_since
+    revive._last_frame["mic"] = revive._lost_since["mic"] + 3           # зависший restart отлип — кадры пошли
+    revive._last_check = 0.0
+    monkeypatch.setattr(revive, "_restart_guarded", lambda c: (_ for _ in ()).throw(AssertionError("рестарт не нужен")))
+    revive._watch_streams()
+    assert not revive._lost and "mic" not in revive._hung, (revive._lost, revive._hung)
+    assert any(rt.OWNER_MIC_BACK in m for m in revive.said), "оживление по факту кадров, а не по исходу рестарта"
+
+    # --- Important DS: исключение на соседнем канале не глотает накопленную потерю ---
+    boom = hub_of(["blackhole", "mic"])
+    boom._last_frame = {lbl: a.time.time() - 40 for lbl in ("blackhole", "mic")}
+    boom._last_check = 0.0
+    def guarded(c):
+        if c.label == "blackhole":
+            return TimeoutError("не вернулся за 5с")
+        raise RuntimeError("can't start new thread")
+    monkeypatch.setattr(boom, "_restart_guarded", guarded)
+    with pytest.raises(RuntimeError):
+        boom._watch_streams()
+    assert "blackhole" in boom._lost and any(rt.MIC_ONLY_WARNING in m for m in boom.said), \
+        "потеря первого канала объявлена, хотя проход упал на втором"
+
+    # --- Important DS: stderr недоступен — потеря всё равно объявлена ---
+    class _Dead2:
+        def write(self, *a): raise OSError(28, "No space left on device")
+        def flush(self): pass
+    monkeypatch.setattr(a.sys, "stderr", _Dead2())
+    quiet = hub_of(["blackhole", "mic"])
+    quiet._announce_loss("mic", "тест")
+    assert "mic" in quiet._lost and any(rt.OWNER_MIC_LOST in m for m in quiet.said)
+    monkeypatch.undo() if False else None
+    monkeypatch.setattr(a.sys, "stderr", __import__("sys").__stderr__)
+
+    # --- Minor DS: device: mic — один канал выбран намеренно, о собеседниках ни слова ---
+    solo = hub_of(["mic"])
+    solo._mode = "mic"
+    tick(solo, {"mic"}, TimeoutError("не вернулся за 5с"))
+    s_txt = [m for m in solo.said if rt.RECORDING_EMPTY in m]
+    assert s_txt and "собеседник" not in s_txt[-1] and "запись пуста" in s_txt[-1], solo.said
+
+    # --- Minor GLM: падеж в пересобранной строке ---
+    pad = hub_of(["blackhole", "mic"])
+    tick(pad, {"blackhole", "mic"}, err); tick(pad, {"blackhole", "mic"}, err)
+    n0 = len(pad.said)
+    tick(pad, {"mic"}, err)                                             # собеседники ожили, микрофон нет
+    assert any("по-прежнему нет: вашего микрофона" in m for m in pad.said[n0:]), pad.said[n0:]
 
     # --- I2: микрофон не открылся на старте при живых собеседниках -----------
     monkeypatch.setattr(a, "fresh_sck_manifest", lambda: None)
