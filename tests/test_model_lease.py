@@ -241,11 +241,13 @@ def test_the_lock_decides_liveness_and_content_only_decides_stalled(tmp_path):
     грейса, ложная «мёртвая» — убитую генерацию."""
     with model_lease.Lease(tmp_path, server=SRV, engine="ollama", kind="stream") as st:
         st.path.write_text('{"pid": 123, "ser')          # порванная запись под нашим же замком
-        live = model_lease.live(tmp_path)                 # без фильтра сервера: поля не прочитались
-        assert len(live) == 1 and not live[0]["stalled"]
-        assert model_lease.live(tmp_path, server=SRV) == [], "сервер не прочитан — под чужой фильтр не подходит"
+        live = model_lease.live(tmp_path, server=SRV)
+        assert len(live) == 1 and not live[0]["stalled"] and live[0]["unreadable"]
+        assert model_lease.live(tmp_path, server="https://gateway.example/v1"), \
+            "сервер не прочитан — фильтр по адресу отсеивать живого владельца не вправе"
         st.path.write_text("[1, 2]")                      # не dict — тоже «живая, без полей»
-        assert len(model_lease.live(tmp_path)) == 1
+        assert len(model_lease.live(tmp_path, server=SRV)) == 1
+        assert "pid ?" in model_lease.describe(model_lease.live(tmp_path, server=SRV))
 
 
 def test_reader_rereads_a_file_replaced_under_its_hand(tmp_path, monkeypatch):

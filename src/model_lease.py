@@ -216,12 +216,19 @@ def live(root: pathlib.Path, *, server: str | None = None,
         info = _read_held(p)
         if info is None:
             continue                          # сирота или файл исчез под рукой
+        if not info:
+            # замок держат, а полей нет: живой владелец, о котором известно
+            # только это — ни сервер, ни deadline. Считаем живой и на ЭТОТ
+            # сервер: фильтр по адресу отсеивать её не вправе, иначе порванная
+            # запись выпадает из живых ровно там, где решают о kill
+            out.append({"stalled": False, "unreadable": True, "path": str(p)})
+            continue
         if server is not None and info.get("server") != server:
             continue                          # аренда на другой сервер — не наш перезапуск
         try:
             deadline = float(info["deadline"])
         except (KeyError, TypeError, ValueError):
-            deadline = None                   # JSON не прочитался: живая, deadline неизвестен
+            deadline = None                   # поля deadline нет: живая, висящей не считаем
         info["stalled"] = deadline is not None and deadline < now
         info["path"] = str(p)
         out.append(info)
