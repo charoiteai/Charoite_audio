@@ -228,7 +228,12 @@ def recency_factor(ts: float | None, now: float | None = None) -> float:
 def hub_factor(in_degree: int) -> float:
     """Логарифм входящих ссылок с потолком: хаб выше свежесозданного узла, но
     не давит точный текст, а узел владельца (ссылка из каждой встречи) не
-    всплывает в любой выдаче только за счёт степени."""
+    всплывает в любой выдаче только за счёт степени.
+
+    Перекалибровка после №292 не понадобилась, хотя круг её и требовал: ключ
+    связи стал путём, и на потолке буста осталось 462 узла против 467 — тот же
+    набор хабов. Доля выросла (10 % → 17 %) только потому, что упал
+    знаменатель: ключи-имена плодили узлы, которых в графе нет (4 458 → 2 697)."""
     return min(HUB_CAP, 1.0 + 0.15 * math.log1p(max(0, in_degree)))
 
 
@@ -312,17 +317,12 @@ def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
     `Досье/Отчёт по аварии` — живая сводка по той же теме, и ссылка ведёт к ней
     (замер 17.09: без этой оговорки правка отнимала 4 перехода, давая 43)."""
     docs = list(docs)          # два прохода по снимку: генератор исчерпался бы на
-    live = live_owners(docs)   # первом и вернул «ссылки никуда» вместо ошибки (DS r5)
+    names = name_owners(docs)  # первом и вернул «ссылки никуда» вместо ошибки (DS r5)
     # «# X → [[X]]» сюда не попадает: ни живой файл, ни звено цепочки. В живых она
     # собирала бы на себя чужие ссылки, в звеньях — вытесняла настоящий редирект
     # той же базы (DS, круг 2 по №291)
-    by_key = {d.key: d for d in docs if not d.stub_to}
-    cands: dict[str, list[Doc]] = {}
-    for d in docs:
-        if d.stub_to and d.stub_to != d.key:
-            cands.setdefault(d.key, []).append(d)
-
-    found_cache: dict[str, str] = {}
+    by_path = {d.key: d for d in docs}          # ВСЕ, заглушки включительно
+    cands = {d.key: d for d in docs if d.stub_to and d.stub_to != d.key}
 
     def resolve(base: str, seen: frozenset[str]) -> str | None:
         """Живой канон за цепочкой заглушек этого имени или None.
@@ -337,28 +337,23 @@ def canon_bases(docs: Iterable[Doc]) -> dict[str, str]:
         без памятки растёт как степень двойки по длине (DS, круг 6). Неудачи
         не кэшируются: «не дошли» может значить «путь упёрся в собственного
         предка», и для другого корня ответ был бы иным."""
-        hit = target_doc(base, by_key, live)
-        if hit is not None and not hit.stub_to:
-            return hit.key
-        if base in found_cache:
-            return found_cache[base]
-        if len(seen) > MAX_STUB_HOPS:
-            return None
-        for d in sorted(cands.get(base, ()), key=owner_key):
-            if d.stub_to in seen:      # цикл или самопетля — следующая стрелка
-                continue
-            found = resolve(d.stub_to, seen | {d.stub_to})
-            if found is not None:
-                found_cache[base] = found
-                return found
-        return None
+        # здесь именно `find_doc`, а не `target_doc`: карта канонов ровно
+        # сейчас и строится, разворачивать заглушку нечем — цепочку идём сами
+        hit = find_doc(base, by_path, names)
+        if hit is None:
+            return None            # цель не дожила до индекса
+        if not hit.stub_to:
+            return hit.key         # живой файл — конец цепочки
+        if hit.stub_to in seen or len(seen) > MAX_STUB_HOPS:
+            return None            # цикл, самопетля или слишком длинная цепочка
+        return resolve(hit.stub_to, seen | {hit.stub_to})
 
     out: dict[str, str] = {}
-    for base in cands:
-        if base in by_key:   # под этим ключом есть живой файл — ссылка про него
-            continue
-        found = resolve(base, frozenset({base}))
-        if found is not None:
+    for base, stub in cands.items():
+        # идём ПО СТРЕЛКЕ заглушки, а не ищем однофамильца: путь уникален, и
+        # кандидат на каждом звене ровно один — перебор больше не нужен (№292)
+        found = resolve(stub.stub_to, frozenset({base, stub.stub_to}))
+        if found is not None and found != base:
             out[base] = found
     return out
 
@@ -374,30 +369,37 @@ def owner_key(d: Doc) -> tuple[float, str]:
     return (-d.date_ts, d.rel)
 
 
-def live_owners(docs: Iterable[Doc]) -> dict[str, Doc]:
-    """База → живой документ под этим именем, выбор детерминированный."""
+def name_owners(docs: Iterable[Doc]) -> dict[str, Doc]:
+    """База → документ, отвечающий за это имя. Живой всегда бьёт заглушку.
+
+    Заглушки здесь нужны, но последними: голая ссылка `[[Бонусная схема]]` на
+    слитый узел иначе не резолвится вовсе, и её голос пропадает — карта
+    канонов ключуется путями, а голая цель в неё не попадает (Important DS и
+    GLM, круг 1 по №292; в рабочем графе 409 голых ссылок из узлов, на
+    заглушку сегодня не ведёт ни одна, но слияния их создают каждую ночь).
+    Разворачивать найденную заглушку — забота `target_doc`."""
     out: dict[str, Doc] = {}
     for d in docs:
-        if d.stub_to:
-            continue
         cur = out.get(d.base)
-        if cur is None or owner_key(d) < owner_key(cur):
+        if cur is None or (bool(d.stub_to), owner_key(d)) < (bool(cur.stub_to), owner_key(cur)):
             out[d.base] = d
     return out
 
 
-def name_owner(key: str, stub_to: str, live: dict[str, Doc], canon: dict[str, str],
-               by_key: dict[str, Doc] | None = None) -> Doc | None:
-    """Кто отвечает за это имя: живой тёзка, иначе канон за стрелкой заглушки.
+def name_owner(key: str, stub_to: str, names: dict[str, Doc], canon: dict[str, str],
+               by_path: dict[str, Doc] | None = None) -> Doc | None:
+    """Кого показать вместо заглушки, попавшей в выдачу.
 
-    Одно правило на всех потребителей. Приоритет тёзки тот же, что в
-    `canon_bases`: есть под именем живой файл — имя про него, и стрелка
-    мёртвого дубля его не перебивает. Круг 2 по №291 поймал, как два
-    экземпляра этого правила в одном файле разошлись: подмена в выдаче
-    отдавала слот живой цели стрелки, а переходы — тёзке."""
-    by_key = by_key or {}
-    return (by_key.get(key) or live.get(key.split("/")[-1])
-            or target_doc(canon.get(key, stub_to), by_key, live))
+    Сначала СТРЕЛКА через карту канонов, и только потом имя. Обратный порядок
+    давал однофамильца вместо объявленной цели (DS, круг 1 по №292). Живой
+    тёзка — последняя ступень: заглушка с мёртвой стрелкой всё же про своё имя,
+    и показать по нему живой файл лучше, чем не показать ничего."""
+    by_path = by_path or {}
+    hit = target_doc(canon.get(key, stub_to), by_path, names, canon)
+    if hit is not None and not hit.stub_to:
+        return hit
+    twin = names.get(key.split("/")[-1])
+    return twin if twin is not None and not twin.stub_to else None
 
 
 def wiki_targets(text: str) -> set[str]:
@@ -414,21 +416,48 @@ def wiki_targets(text: str) -> set[str]:
     return out
 
 
-def target_doc(target: str, by_key: dict[str, Doc], live: dict[str, Doc]) -> Doc | None:
-    """Цель ссылки → документ. Единственное правило разрешения в поиске.
+def find_doc(target: str, by_path: dict[str, Doc], names: dict[str, Doc]) -> Doc | None:
+    """Цель ссылки → документ, как написана. Единственное правило разрешения.
 
-    Папка названа — берём её путь и ничего не угадываем. Путь не найден или
-    ссылка голая — идём по имени через `live`, где хозяин имени выбран
-    `owner_key`. Обратный порядок (сначала имя) и был дефектом: ссылка на ядро
-    темы уезжала в одноимённую сводку.
+    Папка названа — берём её путь и ничего не угадываем. Ссылка голая — идём
+    по имени через `names`, где хозяина выбрал `owner_key`. Обратный порядок
+    (сначала имя) и был дефектом: ссылка на ядро темы уезжала в одноимённую
+    сводку.
+
+    По пути ищем среди ВСЕХ документов, заглушки включительно: если исключить
+    их из карты путей, ссылка на путь, где лежит заглушка, читается как «пути
+    нет» и уходит в поиск по имени — то есть правило однофамильца перебивает
+    стрелку, написанную автором (DS, круг 1 по №292).
+
+    Возвращённый документ САМ может быть заглушкой: развернуть его в живой —
+    дело `target_doc`, которому для этого нужна карта канонов.
 
     Замер 17.09: путь как написан есть у 41 390 папочных ссылок из 41 409, по
     имени пришлось бы резолвить 3, не нашлось ни так ни так 16 — то есть
     фолбэк нужен, но он редкий (GLM, входной круг по №292)."""
-    hit = by_key.get(target)
+    hit = by_path.get(target)
     if hit is not None:
         return hit
-    return live.get(target.split("/")[-1])
+    if "/" in target:
+        return None     # папка названа, а файла по ней нет: промах есть промах,
+                        # иначе однофамилец перехватывает объявленную цель (GLM)
+    return names.get(target)
+
+
+def target_doc(target: str, by_path: dict[str, Doc], names: dict[str, Doc],
+               canon: dict[str, str]) -> Doc | None:
+    """Цель ссылки → ЖИВОЙ документ, за цепочкой заглушек.
+
+    То, что нужно всем потребителям: голос входящей ссылки, переход по хопу,
+    подмена заглушки в выдаче. Разворот здесь, а не у каждого из них, потому
+    что каждый разворачивал по-своему — до №291 поиск этого не делал вовсе, а
+    после правки путевые цели разворачивались, голые нет."""
+    hit = find_doc(target, by_path, names)
+    if hit is None or not hit.stub_to:
+        return hit
+    # заглушка: куда она ведёт, уже посчитал `canon_bases` — по её КЛЮЧУ, а не
+    # по стрелке: стрелка может быть звеном цепочки, ключ указывает на её конец
+    return find_doc(canon.get(hit.key, hit.stub_to), by_path, names)
 
 
 def rrf_merge(ranked: Sequence[Sequence[str]], weights: Sequence[float] | None = None,
@@ -576,6 +605,12 @@ class Doc:
     body: str = ""     # текст без YAML-шапки — для фрагментов выдачи (шапка модели не нужна)
     stub_to: str = ""  # заглушка-редирект: КЛЮЧ канона, куда она ведёт (иначе пусто)
 
+    def __post_init__(self) -> None:
+        # имя нормализуется В ДОКУМЕНТЕ: обход его нормализует, а оснастка
+        # тестов передавала сырым — и тест «отчёт» против ключа «отчет»
+        # проходил случайно, мимо продакшн-инварианта (GLM, круг по №292)
+        self.base = norm_text(self.base)
+
     @property
     def key(self) -> str:
         """Ключ связи: нормализованный путь без расширения.
@@ -585,7 +620,15 @@ class Doc:
         41 409 папочных ссылок из узлов, у 5 708 имя носят несколько файлов, и
         3 532 сегодня резолвятся НЕ в названный файл — систематически в сводку
         вместо ядра, потому что сводки пересобираются каждую ночь и всегда
-        свежее (DS и GLM, входной круг по №292)."""
+        свежее (DS и GLM, входной круг по №292).
+
+        Что правка сделала с выдачей (30 запросов, топ-5): лексическое покрытие
+        запроса не сдвинулось вовсе — 0,989 и до и после, все перестановки идут
+        между файлами с ПОЛНЫМ покрытием. Различает их только источник: сводок
+        в выдаче стало вдвое меньше (34 → 17 слотов), ядер и систем больше
+        (47 → 61), медиана возраста 10 → 9 дней. Голос вернулся тому, на кого
+        ссылались, и это отвечает на «улучшение или регресс»: спор шёл не о
+        релевантности, а о том, кого показывать при равной релевантности."""
         return norm_text(self.rel.removesuffix(".md"))
 
 
@@ -795,17 +838,19 @@ class GraphSearch:
             # входящие ссылки — по снимку вне замка: обход 28 МБ текста под замком
             # заставлял бы каждый поиск встречи ждать (GLM M5)
             canon = canon_bases(snapshot)
-            by_key = {d.key: d for d in snapshot if not d.stub_to}
-            live = live_owners(snapshot)
+            by_path = {d.key: d for d in snapshot}
+            names = name_owners(snapshot)
             indeg: dict[str, int] = {}
             for d in snapshot:
                 if d.stub_to:        # единственная ссылка заглушки — служебная стрелка на канон
                     continue
                 for target in wiki_targets(d.text):
-                    target = canon.get(target, target)   # ссылка на слитый узел — ссылка на канон
-                    hit = target_doc(target, by_key, live)
+                    # ссылка на слитый узел — ссылка на канон; разворот внутри
+                    # `target_doc`, снаружи он промахивался на голых целях:
+                    # канон ключуется путями (Important DS и GLM, круг 1 по №292)
+                    hit = target_doc(target, by_path, names, canon)
                     if hit is None:
-                        continue      # цель не дожила до индекса — голос некому отдать
+                        continue      # цели нет — голос некому отдать
                     indeg[hit.key] = indeg.get(hit.key, 0) + 1
             with self._lock:
                 self._indeg = indeg
@@ -1194,8 +1239,8 @@ class GraphSearch:
         # каталог перехода: ключ-путь на первом месте, имя — фолбэк для голой
         # ссылки. Раньше ключом было только имя, и ссылка на ядро темы уводила в
         # одноимённую сводку (замер 17.09: 3 532 такие ссылки, №292)
-        live_here = live_owners(by_rel.values())
-        by_key_here = {d.key: d for d in by_rel.values() if not d.stub_to}
+        names_here = name_owners(by_rel.values())
+        by_path_here = {d.key: d for d in by_rel.values()}
         out: list[str] = []
         seen = set(shown)
         for per_node in (1, limit):
@@ -1212,7 +1257,7 @@ class GraphSearch:
                 other = [k for k in keys if not _is_name(k)]
                 cands: list[tuple[float, Doc, int]] = []
                 for base in wiki_targets(node.text):
-                    hit = target_doc(canon.get(base, base), by_key_here, live_here)
+                    hit = target_doc(base, by_path_here, names_here, canon)
                     for d in ([hit] if hit is not None else []):
                         if d.rel in seen or is_node_path(d.rel) or d.rel.split("/")[-1].startswith("_"):
                             continue
@@ -1242,14 +1287,14 @@ def _swap_stubs(hits: Sequence[tuple[str, float]], by_rel: dict[str, Doc],
     короче на строку (замер 17.09 на рабочем графе, запрос про статус человека)."""
     if not any(by_rel[rel].stub_to for rel, _ in hits):
         return list(hits)
-    live = live_owners(docs)
-    by_key = {d.key: d for d in docs if not d.stub_to}
+    names = name_owners(docs)
+    by_path = {d.key: d for d in docs}
     out: list[tuple[str, float]] = []
     seen: set[str] = set()
     for rel, score in hits:
         d = by_rel[rel]
         if d.stub_to:
-            target = name_owner(d.key, d.stub_to, live, canon, by_key)
+            target = name_owner(d.key, d.stub_to, names, canon, by_path)
             if target is None:        # канон не дожил до индекса — показывать нечего
                 continue
             rel = target.rel
