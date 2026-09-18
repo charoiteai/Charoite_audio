@@ -35,8 +35,9 @@ def _hub(sr=16000, chunk_s=3.0, overlap_s=0.5, vad_db=-45.0):
     # Поля, которые в бою ставит конструктор: заглушка обязана их повторять,
     # иначе тест падает на AttributeError вместо проверки поведения.
     hub._hung = set()
-    hub._mic_only_warned = False
-    hub._system_dead = False
+    hub._lost = {}          # реестр потерь по метке канала (№235) — вместо двух флагов про собеседников
+    hub._warned = set()
+    hub._mode = "auto"
     hub._fail_streak = {}
     hub._scream_count = 0
     hub._last_frame = {}
@@ -1331,7 +1332,10 @@ def test_смерть_канала_собеседников_после_стар�
     def dead_hub(labels, *, warned=False):
         hub = _hub()
         hub.captures = [_Dead(lbl) for lbl in labels]
-        hub._mic_only_warned = warned
+        if warned:                      # уже кричали о собеседниках на старте
+            hub._lost = {"blackhole": a.Loss("не открылся при старте", retriable=False, died=False,
+                                              cause="start_error", since=a.time.time())}
+            hub._warned = {"blackhole"}
         hub.said = []
         hub.on_status = hub.said.append
         monkeypatch.setattr(hub, "_restart_guarded", lambda c: TimeoutError("не вернулся за 5с"))
@@ -1357,17 +1361,41 @@ def test_смерть_канала_собеседников_после_стар�
     hub._watch_streams()
     assert len([m for m in hub.said if "СОБЕСЕДНИКОВ" in m]) == 1 and len(calls) == 1
 
-    # микрофон умер — обычная строка сторожа, крика про собеседников нет
-    mic = dead_hub(["mic"])
+    # микрофон умер при живых собеседниках — тот же крик, что про собеседников (№235):
+    # липкая строка со своим маркером, уведомление, честный носитель, без совета «перезапустите»
+    mic = dead_hub(["blackhole", "mic"])
+    mic._last_frame["blackhole"] = a.time.time()               # собеседники живы
     mic._watch_streams()
-    assert mic._hung == {"mic"} and any("перезапуск завис" in m for m in mic.said)
-    assert not any("СОБЕСЕДНИКОВ" in m for m in mic.said) and len(calls) == 1
+    assert mic._hung == {"mic"} and mic._lost.keys() == {"mic"}
+    scream = [m for m in mic.said if a.stt_runtime.OWNER_MIC_LOST in m]
+    assert len(scream) == 1 and "ваш микрофон пропал" in scream[0] and "только собеседников" in scream[0], mic.said
+    assert not any("СОБЕСЕДНИКОВ" in m for m in mic.said), "потерян микрофон — не собеседники"
+    assert not any("пишется остальными" in m for m in mic.said), "причина один раз: криком, не тихой строкой"
+    assert len(calls) == 2 and "без ваших реплик" in calls[-1][0][0][-1], calls[-1]
+    # канал в _hung — сторож его больше не трогает: совет «не прерывайте, перезапустится
+    # сам» был бы ложью (Critical DS и Important GLM выходного круга); честный совет —
+    # перезапуск записи, как у умершего канала собеседников
+    assert "остановите и запустите запись заново" in calls[-1][0][0][-1] and "наушники" not in calls[-1][0][0][-1], calls[-1]
+    assert mic._lost["mic"].retriable is False and mic._lost["mic"].died is True
+    log = (tmp_path / "logs" / "capture.log").read_text(encoding="utf-8")
+    assert a.MIC_LOST_LOG_MARK in log and log.count(a.MIC_ONLY_LOG_MARK) == 1, "у микрофона своя метка лога"
+    assert a.stt_runtime.is_sticky_status(scream[0]), "строка про микрофон липкая, как про собеседников"
 
-    # уже кричали на старте — сторож второй раз не кричит, но канал отключает и говорит об этом
+    # микрофон — единственный канал (device: mic): не «пишется остальными», а «запись пуста»
+    solo_mic = dead_hub(["mic"])
+    solo_mic._watch_streams()
+    scream = [m for m in solo_mic.said if a.stt_runtime.RECORDING_EMPTY in m]
+    assert len(scream) == 1 and "ни собеседников, ни вас" in scream[0], solo_mic.said
+    assert not any("остальными" in m for m in solo_mic.said) and len(calls) == 3
+
+    # уже кричали на старте — сторож второй раз не звенит, но канал отключает и строку обновляет
     again = dead_hub(["blackhole"], warned=True)
     again._watch_streams()
     assert again._hung == {"blackhole"} and any("перезапуск завис" in m for m in again.said)
-    assert not any("СОБЕСЕДНИКОВ" in m for m in again.said) and len(calls) == 1
+    assert len(calls) == 3, "уведомление — одно на потерю канала"
+    assert all(a.stt_runtime.is_sticky_status(m) for m in again.said if "перезапуск завис" in m), \
+        "строка о потере — липкая при каждой смене, не тихая"
+    calls[:] = calls[:1]                                       # дальше сценарии считают от одного
 
     # Основной путь macOS 15+ (Critical DS r1 по #541): поток ScreenCaptureKit перестал расти,
     # restart() возвращает обычную ошибку за ~3 с, не TimeoutError — первая неудача тихая,
@@ -1395,7 +1423,8 @@ def test_смерть_канала_собеседников_после_стар�
     monkeypatch.setattr(sck, "_restart_guarded", lambda c: None)
     tick(sck)
     back = [m for m in sck.said if a.stt_runtime.MIC_BACK_NOTICE in m]
-    assert len(back) == 1 and not sck._mic_only_warned and not sck._system_dead and not sck._fail_streak, sck.said
+    assert len(back) == 1 and not sck._lost and not sck._warned and not sck._fail_streak, sck.said
+    assert a.stt_runtime.is_sticky_clear(back[0]), "отбой снимает липкий слой"
     assert "полная" not in back[0] and "снова пишется" in back[0]
     dead_stream(sck)
     sck._last_frame["blackhole"] = a.time.time() - 40
@@ -1430,6 +1459,176 @@ def test_смерть_канала_собеседников_после_стар�
         tick(storm)
     assert len([m for m in storm.said if "СОБЕСЕДНИКОВ" in m]) == 5, "каждая потеря — строка"
     assert len(calls) - before == a.AudioHub.LOUD_SCREAMS == 3, "звук — не чаще трёх за встречу"
+
+
+def test_потеря_канала_одно_событие_на_любой_канал_и_один_липкий_слой(monkeypatch, tmp_path):
+    """№235: потеря канала — одно событие с носителем по составу живых, а не
+    специальный случай собеседников. Три сценария входного круга (DS и GLM):
+    C1 — липкий слой в приложении один: собеседники умерли, потом микрофон,
+    собеседники ожили — предупреждение о микрофоне НЕ снимается, слой
+    пересобирается; отбой — только когда потерянных нет. C2 — на macOS 15+
+    оба канала один поток и умирают вместе: текст «ни собеседников, ни вас»,
+    а не «дальше только собеседники». I2 — отказ микрофона на старте — крик,
+    не тихая строка (зеркало №230)."""
+    monkeypatch.setattr(a, "ROOT", tmp_path)
+    calls = []
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: calls.append((args, kw)))
+
+    class _Dead:
+        def __init__(self, label):
+            self.label = label
+            self.q = queue.Queue()
+        def start(self): pass
+        def stop(self): pass
+
+    def hub_of(labels):
+        hub = _hub()
+        hub.captures = [_Dead(lbl) for lbl in labels]
+        hub.said = []
+        hub.on_status = hub.said.append
+        hub._last_frame = {lbl: a.time.time() for lbl in labels}
+        return hub
+
+    def tick(hub, dead: set[str], outcome):
+        hub._last_check = 0.0
+        hub._last_try = {}
+        for lbl in dead:
+            hub._last_frame[lbl] = a.time.time() - 40
+        monkeypatch.setattr(hub, "_restart_guarded",
+                            lambda c, _o=outcome, _d=dead: _o if c.label in _d else None)
+        hub._watch_streams()
+
+    rt = a.stt_runtime
+    # --- C1: поочерёдная смерть и частичное оживление -----------------------
+    hub = hub_of(["blackhole", "mic"])
+    err = RuntimeError("поток приложения не растёт")
+    tick(hub, {"blackhole"}, err); tick(hub, {"blackhole"}, err)          # две неудачи — собеседники потеряны
+    assert hub._lost.keys() == {"blackhole"} and any(rt.MIC_ONLY_WARNING in m for m in hub.said)
+    tick(hub, {"blackhole", "mic"}, err); tick(hub, {"blackhole", "mic"}, err)   # микрофон тоже
+    assert hub._lost.keys() == {"blackhole", "mic"}
+    both = [m for m in hub.said if rt.RECORDING_EMPTY in m]
+    assert both and "ни собеседников, ни вас" in both[-1] and "только собеседников" not in both[-1], hub.said
+    assert len(calls) == 2, "уведомление — одно на потерю каждого канала"
+    n_said = len(hub.said)
+    tick(hub, {"mic"}, err)                                                # собеседники ожили, микрофон мёртв
+    back = hub.said[n_said:]
+    assert hub._lost.keys() == {"mic"}, hub._lost
+    assert not any(rt.is_sticky_clear(m) for m in back), "отбой при живом-мёртвом микрофоне снял бы слой целиком (C1)"
+    sticky = [m for m in back if rt.is_sticky_status(m)]
+    assert sticky and rt.OWNER_MIC_LOST in sticky[-1] and "по-прежнему нет: вашего микрофона" in sticky[-1], back
+    tick(hub, set(), None)                                                 # ожил и микрофон
+    clear = [m for m in hub.said if rt.is_sticky_clear(m)]
+    assert len(clear) == 1 and rt.OWNER_MIC_BACK in clear[0] and not hub._lost and not hub._warned, hub.said
+    # следующая потеря микрофона — снова звук (потолок общий на встречу: 3); канал ещё
+    # перезапускается — совет «не прерывайте», а не «перезапустите запись» (критика GLM входного круга)
+    tick(hub, {"mic"}, err); tick(hub, {"mic"}, err)
+    assert len(calls) == 3 and rt.OWNER_MIC_LOST in hub.said[-1]
+    assert "не прерывайте" in calls[-1][0][0][-1] and "остановите" not in calls[-1][0][0][-1], calls[-1]
+    assert hub._lost["mic"].retriable is True
+    tick(hub, set(), None)
+    tick(hub, {"mic"}, err); tick(hub, {"mic"}, err)
+    assert len(calls) == 3, "звук — не чаще LOUD_SCREAMS за встречу, строка — при каждой потере"
+
+    # --- C2: один поток ScreenCaptureKit — умирают оба сразу -----------------
+    sck = hub_of(["blackhole", "mic"])
+    tick(sck, {"blackhole", "mic"}, TimeoutError("не вернулся за 5с"))
+    assert sck._hung == {"blackhole", "mic"} and sck._lost.keys() == {"blackhole", "mic"}
+    texts = [m for m in sck.said if rt.is_sticky_status(m)]
+    assert texts and all("только собеседников" not in m and "только микрофон" not in m for m in texts), texts
+    assert rt.RECORDING_EMPTY in texts[-1] and "ни собеседников, ни вас" in texts[-1]
+    assert sck.live_labels() == []
+    log = (tmp_path / "logs" / "capture.log").read_text(encoding="utf-8")
+    assert a.MIC_LOST_LOG_MARK in log and a.MIC_ONLY_LOG_MARK in log, "у каждой потери своя метка в логе"
+
+    # --- Important GLM: канал ожил мимо сторожа — кадр после постановки снимает потерю ---
+    revive = hub_of(["blackhole", "mic"])
+    revive._restarting = set()
+    tick(revive, {"mic"}, TimeoutError("не вернулся за 5с"))          # микрофон в _hung и в реестре
+    assert revive._hung == {"mic"} and "mic" in revive._lost and revive._lost["mic"].since > 0
+    revive._restarting.add("mic")                                       # зависший поток ещё «в полёте»
+    revive._last_frame["mic"] = revive._lost["mic"].since + 3           # зависший restart отлип — кадры пошли
+    revive._last_check = 0.0
+    monkeypatch.setattr(revive, "_restart_guarded", lambda c: (_ for _ in ()).throw(AssertionError("рестарт не нужен")))
+    revive._watch_streams()
+    assert not revive._lost and "mic" not in revive._hung, (revive._lost, revive._hung)
+    assert any(rt.OWNER_MIC_BACK in m for m in revive.said), "оживление по факту кадров, а не по исходу рестарта"
+    # метку «в полёте» снимает сам поток рестарта (finally в run) — здесь поток поддельный,
+    # поэтому проверяем контракт stop(): один предикат занятости на сторож и стоп
+    assert revive._busy("mic") and not revive._busy("blackhole")
+
+    # --- Important DS/GLM круга 2: смена фазы потери звучит заново, момент эпизода сохраняется ---
+    phase = hub_of(["blackhole", "mic"])
+    tick(phase, {"mic"}, err); tick(phase, {"mic"}, err)                # повторы: «не прерывайте»
+    n_calls = len(calls)
+    since0 = phase._lost["mic"].since
+    assert phase._lost["mic"].retriable and "не прерывайте" in calls[-1][0][0][-1]
+    tick(phase, {"mic"}, TimeoutError("не вернулся за 5с"))           # бросили: совет требует действия
+    assert phase._lost["mic"].retriable is False and phase._lost["mic"].since == since0, \
+        "момент постановки — от начала эпизода, а не от переобъявления (M3 DS)"
+    assert len(calls) == n_calls + 1 and "остановите и запустите запись заново" in calls[-1][0][0][-1], \
+        "смена фазы — новое событие: человек слышал «не прерывайте», теперь нужно действие"
+    assert "до конца встречи" not in calls[-1][0][0][-1], "финальность не обещаем — канал может ожить (M3 GLM)"
+
+    # --- Important DS: исключение на соседнем канале не глотает накопленную потерю ---
+    boom = hub_of(["blackhole", "mic"])
+    boom._last_frame = {lbl: a.time.time() - 40 for lbl in ("blackhole", "mic")}
+    boom._last_check = 0.0
+    def guarded(c):
+        if c.label == "blackhole":
+            return TimeoutError("не вернулся за 5с")
+        raise RuntimeError("can't start new thread")
+    monkeypatch.setattr(boom, "_restart_guarded", guarded)
+    with pytest.raises(RuntimeError):
+        boom._watch_streams()
+    assert "blackhole" in boom._lost and any(rt.MIC_ONLY_WARNING in m for m in boom.said), \
+        "потеря первого канала объявлена, хотя проход упал на втором"
+
+    # --- Important DS: stderr недоступен — потеря всё равно объявлена ---
+    class _Dead2:
+        def write(self, *a): raise OSError(28, "No space left on device")
+        def flush(self): pass
+    monkeypatch.setattr(a.sys, "stderr", _Dead2())
+    quiet = hub_of(["blackhole", "mic"])
+    quiet._announce_loss("mic", "тест")
+    assert "mic" in quiet._lost and any(rt.OWNER_MIC_LOST in m for m in quiet.said)
+    monkeypatch.setattr(a.sys, "stderr", __import__("sys").stderr)     # обратно на захват pytest
+
+    # --- Minor DS: device: mic — один канал выбран намеренно, о собеседниках ни слова ---
+    solo = hub_of(["mic"])
+    solo._mode = "mic"
+    tick(solo, {"mic"}, TimeoutError("не вернулся за 5с"))
+    s_txt = [m for m in solo.said if rt.RECORDING_EMPTY in m]
+    assert s_txt and "собеседник" not in s_txt[-1] and "запись пуста" in s_txt[-1], solo.said
+
+    # --- Minor GLM: падеж в пересобранной строке ---
+    pad = hub_of(["blackhole", "mic"])
+    tick(pad, {"blackhole", "mic"}, err); tick(pad, {"blackhole", "mic"}, err)
+    n0 = len(pad.said)
+    tick(pad, {"mic"}, err)                                             # собеседники ожили, микрофон нет
+    assert any("по-прежнему нет: вашего микрофона" in m for m in pad.said[n0:]), pad.said[n0:]
+
+    # --- I2: микрофон не открылся на старте при живых собеседниках -----------
+    monkeypatch.setattr(a, "fresh_sck_manifest", lambda: None)
+    monkeypatch.setattr(a, "find_system_audio", lambda: 7)
+    monkeypatch.setattr(a.sd.default, "device", (1, None), raising=False)
+
+    def start(self):
+        if self.label == "mic":
+            raise RuntimeError("PortAudio: input device unplugged")
+    monkeypatch.setattr(a.Capture, "start", start)
+    monkeypatch.setattr(a.threading, "Thread",
+                        lambda *args, **kw: type("_T", (), {"start": lambda s: None})())
+    calls.clear()
+    real = a.AudioHub(_hub_cfg())
+    said = []
+    real.on_status = said.append
+    real.start()
+    msg = "\n".join(said)
+    assert rt.OWNER_MIC_LOST in msg and "не открылся при старте" in msg and "unplugged" in msg, said
+    assert "не захвачен" in msg and "будут только собеседники" in calls[0][0][0][-1], (said, calls)
+    assert not any("канал mic не открылся" in m and rt.OWNER_MIC_LOST not in m for m in said), \
+        "причина один раз: криком, не тихой строкой"
+    assert real._lost.keys() == {"mic"} and real.live_labels() == ["blackhole"]
 
 
 def test_поток_приложения_читается_с_объявленного_начала(tmp_path):

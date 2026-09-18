@@ -145,7 +145,19 @@ channel comes back, the line is cleared and says so. The sound notification
 fires at most three times per meeting, the status line on every outage.
 The exception is
 `device: mic` in `config.yaml`: the microphone is chosen deliberately there,
-and no warning is raised.
+and no warning about the other side is raised.
+
+The same holds for your own microphone. If it dies (headphones unplugged, a
+hub gone, the stream failing to restart) or fails to open at start while the
+other side is alive, the alarm is the same: "your microphone is not in the
+recording, only the other side is being recorded from now on", a
+notification, a line in capture.log. The advice differs: do not restart the
+recording, check the microphone — the watchdog restarts the channel itself
+and the line clears. Both channels lost (on macOS 15+ they share one stream)
+reads "recording is empty". The red line is one for all channels: it is
+rebuilt on every loss and cleared only when everything records again; if one
+channel comes back while another is still dead, the line names what is still
+missing.
 
 ## 4. macOS permissions
 
