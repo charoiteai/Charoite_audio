@@ -25,26 +25,22 @@ SR = 16000
 
 
 def Hub(recording: bool = True, chunk_s: float = 3.0, overlap_s: float = 0.5):
-    """Настоящий AudioHub без __init__: устройства и потоки этой логике не
-    нужны, а методы берём те же, что работают на встрече."""
-    hub = audio.AudioHub.__new__(audio.AudioHub)
-    hub.sr = SR
+    """Настоящий AudioHub настоящим конструктором: он без ввода-вывода
+    (обнаружение устройств — `discover_captures`), поэтому оснастке не нужен
+    свой список полей — она отставала от конструктора (входной круг DS и GLM
+    по №311). Поверх — ровно то, что проверяет этот файл: sink канала mic,
+    заглушенный сторож и включённый цикл."""
+    cfg = {"audio": {"samplerate": SR, "chunk_seconds": chunk_s, "overlap_seconds": overlap_s,
+                     "vad_energy_db": -45.0, "record": recording, "device": "auto"},
+           "log": {"recordings_dir": "recordings"}, "sufler": {"user_name": "Владелец"}}
+    hub = audio.AudioHub(cfg)
     hub._bufs = {"mic": np.zeros(0, dtype=np.float32)}
-    hub._drops = {}
-    hub._sys_speech_until = 0.0
-    hub.on_frame = None
-    hub._last_frame = {}
     hub._watch_streams = lambda: None
     # Настоящий file-like sink: `_pump` пишет и flush'ит его ровно как .pcm.
     # Голый object раньше был достаточен, пока тесты не проверяли немедленную
     # видимость смерти записи, но реальным состоянием runtime он не является.
     hub._sinks = {"mic": io.BytesIO()} if recording else {}
-    hub.record_on = recording
-    hub.chunk_s = chunk_s
-    hub.overlap_s = overlap_s
     hub._running = True
-    hub.captures = []
-    hub._lock = threading.Lock()
     hub.said = []
     hub.on_status = hub.said.append
     return hub
