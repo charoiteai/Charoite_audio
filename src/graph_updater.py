@@ -424,6 +424,11 @@ def tidy_links_deep(obj):
     return obj
 
 
+class _DebriefKept(Exception):
+    """Разбор сознательно не перезаписан (байты не наши) — выход из блока
+    разбора без строки «не удался» (Minor DS выходного круга по №309)."""
+
+
 def parse_stem(stem: str) -> tuple[str, str, bool]:
     """Стем стенограммы → (минутный штамп, голый штамп, есть ли уже тема).
 
@@ -2758,6 +2763,32 @@ def main():
     try:
         if not graph_ok:
             raise RuntimeError("модель не отвечала — разбор пропущен")
+        # Владение — ДО вызова модели: разбор правлен человеком → не
+        # генерировать вовсе, а не «сгенерировать и выбросить» (Important GLM
+        # входного круга по №309). Имя файла — ОДНИМ правилом с retro_fill и
+        # архивом (`derivative_path`, от стема стенограммы после retitle), а не
+        # от темы, которую модель назвала в этом прогоне: у уже названной
+        # стенограммы повторный разбор с другой темой заводил второй файл —
+        # 69 встреч из ~300 с двумя разборами на боевом каталоге 18.09, у 68
+        # свежее был лишний, и в архив уезжал тот, что позже по алфавиту.
+        # Политика живого пути — `POLICY_LIVE`: пересобирать и при FRESH, и
+        # при UNKNOWN (паспорта нет — старый корпус): источник разбора — речь
+        # и граф, «свежесть по речи» к нему не применима; паспорт — с этой
+        # записи вперёд. Ретро-обход живёт по другой политике, и обе названы
+        # в одном месте (`live_sidecar`), а не в двух `if` по двум модулям.
+        # Снимок — до генерации: минута работы модели — окно для редактора,
+        # запись под гейтом (Important GLM 2).
+        dpath = meeting_stamp.derivative_path(tpath, "debrief", graph)
+        import transcript as transcript_mod2  # локально, как выше: модуль документов тяжёлым не считается, но шапку не трогаем
+        # хеш — от файла стенограммы, не от `context` (туда дописаны минутки):
+        # иначе паспорт разбора не совпал бы с тем, что считает retro_fill
+        speech_sha = live_sidecar.sha(transcript_mod2.speech_of(tpath.read_text(encoding="utf-8")))
+        d_state = live_sidecar.derivative_state(dpath, live_sidecar.read(tpath) or {}, "debrief", speech_sha)
+        if not live_sidecar.wants_build(d_state, live_sidecar.POLICY_LIVE):
+            # сознательный пропуск, не сбой: строка говорит «оставлен», а не «не удался»
+            print(f"разбор оставлен: {dpath.name} — байты не наши (правка руками или перештамповка), не перезаписываю")
+            raise _DebriefKept()
+        d_before = safe_write.stat_snapshot(dpath)
         gctx_parts = []
         moc2 = graph / "_MOC.md"
         if moc2.exists():
@@ -2796,13 +2827,17 @@ def main():
             timeout=LLM_TIMEOUT, revive=True, busy_wait=BUSY_WAIT,
         )
         if debrief.strip():
-            slug2 = theme_slug(title) if title else ""
-            dpath = tpath.with_name(f"{stamp}_{slug2}_разбор.md" if slug2 else f"{stamp}_разбор.md")
             # шапка честно называет автора: облачная ревизия рядом сверяет и
             # снимает ошибки, а сам разбор остаётся черновиком (№241)
-            safe_write.write_text(dpath, f"<!-- {stamp} · {title or 'встреча'} -->\n"
-                                  f"{DEBRIEF_NOTE}\n" + debrief)
-            print(f"разбор: {dpath.name}")
+            body = f"<!-- {stamp} · {title or 'встреча'} -->\n{DEBRIEF_NOTE}\n" + debrief
+            if not safe_write.write_text(dpath, body, expect=d_before, expect_absent=d_before is None):
+                print(f"разбор: {dpath.name} изменился под рукой — не перезаписываю")
+            else:
+                if not live_sidecar.attest(tpath, "debrief", body, speech_sha):
+                    print(f"разбор: паспорт не записан — следующий прогон сочтёт {dpath.name} чужим")
+                print(f"разбор: {dpath.name}")
+    except _DebriefKept:
+        pass
     except Exception as e:
         print(f"разбор не удался: {e}")
 

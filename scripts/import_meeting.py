@@ -953,7 +953,9 @@ def main() -> None:
                                    "stamp": stamp, "transcript": str(tpath)})
         return
     print("— догенерирую минутки/разбор/тезисы и раскладываю архив…")
-    tail_run = subprocess.run([sys.executable, str(CODE / "src" / "retro_fill.py")])
+    # только своя стенограмма: обход всех 302 звал archive_meeting и переиндексацию
+    # архива на каждую (DS I4 по №309); догон чужих пропусков — ручной прогон без аргумента
+    tail_run = subprocess.run([sys.executable, str(CODE / "src" / "retro_fill.py"), str(tpath)])
     # исходник — рядом с материалами встречи (APFS-клон: без лишнего места)
     # без графа в конфиге — не Path("") (это «.», глоб от CWD демона; DS r2 M1 / GLM r2 M5 по #559)
     graph = graphs.graph_dir(cfg)

@@ -29,6 +29,77 @@ def sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+# Состояние производной встречи по её паспорту в сайдкаре (№309). Паспорт —
+# пара ключей `<вид>_sha256` (байты последней МАШИННОЙ записи) и
+# `<вид>_source_sha256` (хеш речи источника, из которой собрана). У минуток
+# он был и раньше (`minutes_*`), у разбора и тезисов появляется здесь же.
+MISSING = "missing"      # файла нет — собрать
+FRESH = "fresh"          # машинная, источник тот же — модель не звать
+STALE = "stale"          # машинная, речь изменилась — пересобрать (прежняя в .prev/)
+HUMAN = "human"          # байты НЕ наши: правка руками ИЛИ машинная перештамповка без
+#                          обновления хеша (55 из 69 сайдкаров минуток на 18.09 — вторая
+#                          причина). Это консервативная граница «не трогать», а не
+#                          свидетельство о человеке (Important DS выходного круга по №309)
+UNKNOWN = "unknown"      # паспорта нет (старые артефакты, чужой писатель) или файл не
+#                          прочитался — знания нет; не трогать, но и не считать
+#                          человеческой: HUMAN — это знание, UNKNOWN — его отсутствие;
+#                          схлопнуть их значило бы навсегда запереть старый корпус
+#                          (232 из 302 встреч без сайдкара — входной круг по №309)
+
+# Политика вызывающего: при каких состояниях производную СТРОИТЬ. Двум
+# писателям она нужна разная, и раньше разница жила в двух `if` по разным
+# модулям (критика GLM выходного круга по №309): живой путь после встречи
+# освежает разбор всегда, кроме правленного руками — его источник речь + граф,
+# и старый корпус без паспорта он должен обслуживать как прежде; ретро-обход
+# трогает только то, что заведомо наше и устарело — массовый бэкфилл UNKNOWN
+# запрещён решением входного круга (час модели, риск затереть правки).
+POLICY_LIVE = frozenset({MISSING, STALE, FRESH, UNKNOWN})
+POLICY_RETRO = frozenset({MISSING, STALE})
+
+
+def wants_build(state: str, policy: frozenset[str]) -> bool:
+    """Строить ли производную в состоянии `state` по политике вызывающего."""
+    return state in policy
+
+
+def derivative_state(path: pathlib.Path, meta: dict | None, kind: str, source_sha: str) -> str:
+    """Что делать с производной `path` вида `kind` при текущей речи источника
+    `source_sha` — единственное место, где производная решает о своей свежести.
+    Раньше шесть писателей выводили её каждый своим способом: «если файла
+    нет», «пишу всегда», по mtime, «если непустой» — и лишь минутки по хешу.
+
+    Ошибка ввода-вывода знания не даёт: EACCES от редактора или бэкапа, EAGAIN,
+    недописанный файл — UNKNOWN, как и у `exists()` выше, а не HUMAN, который
+    навсегда останавливал бы живой путь «разбор правлен руками» (Important GLM
+    выходного круга). Байты есть, но это не наш текст (не UTF-8) — HUMAN."""
+    try:
+        if not path.exists():
+            return MISSING
+    except OSError:
+        return UNKNOWN
+    meta = meta if isinstance(meta, dict) else {}
+    recorded = valid_sha(meta.get(f"{kind}_sha256"))
+    if recorded is None:
+        return UNKNOWN
+    try:
+        current = sha(path.read_text(encoding="utf-8"))
+    except OSError:
+        return UNKNOWN                        # не прочиталось — ничего не доказано
+    except UnicodeDecodeError:
+        return HUMAN                          # байты есть, но не наш текст — не наш
+    if current != recorded:
+        return HUMAN
+    return FRESH if valid_sha(meta.get(f"{kind}_source_sha256")) == source_sha else STALE
+
+
+def attest(live: pathlib.Path, kind: str, file_text: str, source_sha: str,
+           bare: str | None = None) -> bool:
+    """Выдать производной паспорт после МАШИННОЙ записи: байты и речь источника.
+    Обёртка над `remember` — сайдкара нет — создаст; неоднозначный — False."""
+    return (remember(live, f"{kind}_sha256", sha(file_text), bare)
+            and remember(live, f"{kind}_source_sha256", source_sha, bare))
+
+
 def valid_sha(value) -> str | None:
     """Хеш из сайдкара или None, если там мусор (обрезанная строка, число):
     мусор не должен превращаться в вечный «правлено руками» (GLM M2)."""

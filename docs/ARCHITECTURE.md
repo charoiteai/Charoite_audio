@@ -290,6 +290,44 @@ code path is shared.
 
 ## Post-meeting pipeline (src/graph_updater.py)
 
+**A derivative has a passport.** Minutes, debrief and theses derive from the
+transcript, and each keeps a pair of keys in the `.md.live.json` sidecar: the
+bytes of the last machine write (`<kind>_sha256`) and the hash of the source
+speech (`<kind>_source_sha256`). Speech excludes the title and the
+"Co-thinking" tail (`transcript.speech_of`): a retitle rewrites the first
+line, and a hash with the title made the minutes "built from other speech"
+on the very first retitle. Freshness is decided in one place,
+`live_sidecar.derivative_state`: no file — build; machine-owned and same
+speech — do not call the model; machine-owned and speech changed — rebuild
+(previous version in `.prev/`); bytes not machine — edited by a human, leave
+alone; no passport — leave alone too: that is absence of knowledge, not
+knowledge of a human, and the old corpus (232 of 302 meetings without a
+sidecar) is not locked as "human"; passports are issued from now on. Minutes
+are built by one pipeline on every path (`finalize_minutes` +
+`record_minutes_passport`); the debrief checks ownership before calling the
+model and writes under a "file unchanged under our hands" gate. The debrief
+file name follows one rule derived from the transcript stem
+(`meeting_stamp.derivative_path`), not from the title the model produced in
+this run: a second formula left two debriefs per meeting for 69 of ~300 in
+the live corpus, and the archive took whichever sorted last. The "when to
+build" policies are named in one place (`live_sidecar.POLICY_LIVE` /
+`POLICY_RETRO`): the live path after a meeting refreshes the debrief always,
+except when edited by a human — its source is speech plus graph; the retro
+sweep builds only what is ours and stale, there is no mass backfill. A read
+error is ignorance (UNKNOWN), not "edited by a human": otherwise a transient
+permission failure would stop the live path forever. For a meeting with live
+co-thinking the archive builds the theses from the `> HH:MM 📌 …` lines and
+the model is not paid for them; model-made retro theses exist only for
+meetings without the live loop (import, recovery). Previous versions of every
+derivative live in `.prev/` next to the transcript, not in the graph. The
+mtime criterion was rejected by measurement: minutes are older than the
+transcript by time for 204 of 302 meetings — time is moved by retitle,
+co-thinking and revision, not by speech. The import tail runs the retro pass
+for its own transcript only and addresses it by its final name
+(`find_final_transcript`: graph_updater has already renamed the file after
+its title by then); the full sweep is manual, one line per meeting: what was
+built, what was skipped and why.
+
 1. The LLM extracts JSON from the transcript: title (2-3 words),
    participants, topics, decisions, action items, entities, Cores.
 2. Graph update: a meeting note with `[[Folder/Name|Name]]` links, upserts
