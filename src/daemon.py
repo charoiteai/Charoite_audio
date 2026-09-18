@@ -944,32 +944,15 @@ def main():
             backlog = float(health["backlog_seconds"])
             input_age = health["input_age_seconds"]
             stage, stage_age = stt_stage_snapshot()
-            emit({
-                # весь снапшот здоровья — приложение игнорирует неизвестные ключи,
-                # и «датчик появился в снапшоте» = «датчик есть у приложения»:
-                # рукописный белый список ключей уже потерял pump_alive (DS I2
-                # выходного круга по №311); именные поля ниже — поверх
-                **health,
-                "type": "stt_progress",
-                "state": "lagging" if lagging else "healthy",
-                "stage": stage,
-                "stage_age_seconds": round(stage_age, 2),
-                "backlog_seconds": round(backlog, 2),
-                "input_age_seconds": stt_runtime.input_age_value(input_age),
-                "cycle_ms": round(last_cycle_ms),
-                "diarization_ms": round(last_diarization_ms),
-                "transcription_ms": round(last_transcription_ms),
-                "audio_s": round(last_audio_s, 2),
-                "calls_total": total_stt_calls,
-                "audio_s_total": round(total_audio_s, 1),
-                "shortest_s": round(shortest_piece_s, 2),
-                "rtf_total": stt_runtime.realtime_factor(total_audio_s,
-                                                         total_transcription_ms),
-                "rtf": stt_runtime.realtime_factor(last_audio_s,
-                                                   last_transcription_ms),
-                "recording_ok": health["recording_ok"],
-                "channels": health["channels"],
-            })
+            # снапшот здоровья целиком (через JSON-гейт) плюс именные поля —
+            # одной функцией: датчик, появившийся в снапшоте, доезжает до
+            # приложения, а несериализуемое значение не убивает поток STT (№311)
+            emit(stt_runtime.progress_event(
+                health, lagging=lagging, stage=stage, stage_age=stage_age,
+                last_cycle_ms=last_cycle_ms, last_diarization_ms=last_diarization_ms,
+                last_transcription_ms=last_transcription_ms, last_audio_s=last_audio_s,
+                total_stt_calls=total_stt_calls, total_audio_s=total_audio_s,
+                total_transcription_ms=total_transcription_ms, shortest_piece_s=shortest_piece_s))
             last_progress_emit = now_mono
             if stt_runtime.lag_log_due(lagging=lagging, now=now_mono,
                                        last=last_lag_log, every=STT_LAG_LOG_EVERY):
@@ -3177,7 +3160,10 @@ def main():
                 try:
                     snap = hub.health_snapshot()
                     hb_event["recording_ok"] = snap["recording_ok"]
+                    # hb — канал, который замирает только с процессом: оба датчика
+                    # потребителя сюда (stt_progress замирает вместе с STT — DS M4)
                     hb_event["pump_alive"] = snap["pump_alive"]
+                    hb_event["pump_failures"] = snap["pump_failures"]
                 except Exception:  # noqa: BLE001
                     pass
                 emit(hb_event)

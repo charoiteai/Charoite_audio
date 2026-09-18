@@ -1750,9 +1750,9 @@ def test_for_meeting_is_the_only_place_that_discovers_devices(monkeypatch):
 
 def test_a_failing_watchdog_does_not_kill_the_consumer(monkeypatch):
     """Сторож живёт в потоке-потребителе: до №311 любое исключение его прохода
-    убивало поток, остаток встречи не писался, а watchdog приложения смерти
-    помпы не видит. Гвард — на весь проход: блоки продолжают потребляться,
-    сбой назван владельцу (строка статуса) и в stderr, не чаще окна на тип."""
+    убивало поток, остаток встречи не писался. Гвард — у единицы работы: сбой
+    сторожа проход не отменяет, блоки продолжают потребляться, сбой назван
+    владельцу (строка статуса) и в stderr, не чаще окна на тип."""
     cap = _QueueCapture("mic")
     hub = _hub(captures=[cap])
     boom = {"n": 0}
@@ -1771,9 +1771,9 @@ def test_a_failing_watchdog_does_not_kill_the_consumer(monkeypatch):
         cap.q.put(_tone(1600))
         hub._tick()
     assert boom["n"] == 3 and len(hub._bufs["mic"]) == 4800, "блоки потреблены несмотря на падающий сторож"
-    assert hub._pump_failures == 3
+    assert hub._pump_failures == 3, "три прохода подряд со сбоем"
     assert sum("сбой аудиопотока" in m for m in said) == 1, "статус — один на окно по типу"
-    assert len(errs) == 1 and "RuntimeError" in errs[0] and "сторож сломан" in errs[0]
+    assert len(errs) == 1 and "RuntimeError" in errs[0] and "сторож сломан" in errs[0] and "подряд 1" in errs[0]
     hub._guard_said["RuntimeError"] -= hub.GUARD_REPORT_S + 1     # окно вышло — сказать снова
     cap.q.put(_tone(1600))
     hub._tick()
@@ -1871,7 +1871,9 @@ def test_a_bad_block_on_one_channel_does_not_starve_the_neighbour_or_the_watchdo
     assert watched["n"] == 4, "сторож идёт каждый проход, несмотря на падающий канал"
     assert good.q.qsize() == 0 and len(hub._bufs["mic"]) == 6400, "сосед дренирован"
     assert bad.q.qsize() == 0, "дурные блоки тоже сняты с очереди — она не растёт"
-    assert hub._pump_failures == 4 and hub.health_snapshot()["pump_failures"] == 4
+    assert hub._pump_failures == 4 and hub.health_snapshot()["pump_failures"] == 4, "единица — проход"
+    # сбой обработки блока — видимая потеря живого звука, а не здоровый канал (DS I5 круга 2)
+    assert hub._drops.get("blackhole", [0])[0] > 0, "потеря блока учтена в отчёте о потерях"
     hub._append = real_append
     bad.q.put(_tone(1600))
     hub._tick()
@@ -1899,13 +1901,62 @@ def test_an_exception_with_a_broken_str_does_not_kill_the_reporter(monkeypatch):
     assert errs and "Nasty" in errs[0] and "недоступен" in errs[0] and said
 
 
-def test_health_snapshot_reaches_the_app_whole(monkeypatch):
-    """Новый датчик снапшота обязан доезжать до приложения без правки белого
-    списка ключей: `stt_progress` отдаёт снапшот целиком, `hb` — pump_alive
-    (DS I2 выходного круга). Проверка по тексту демона — контракт emit."""
-    src = (REPO / "src" / "daemon.py").read_text(encoding="utf-8")
-    i = src.index('"type": "stt_progress"')
-    assert "**health," in src[i - 600:i], "stt_progress без снапшота целиком"
-    assert 'hb_event["pump_alive"] = snap["pump_alive"]' in src
+def test_health_snapshot_has_the_consumer_gauges():
     snap = _hub().health_snapshot()
     assert snap["pump_alive"] is False and snap["pump_failures"] == 0
+
+
+def test_the_pump_survives_an_exception_in_the_pass_skeleton(monkeypatch):
+    """Гвард у тела потока — второй, отдельный от гвардов единиц работы: канал
+    без очереди (AttributeError из скелета прохода) раньше уносил поток целиком,
+    `_pump_failures` оставался 0 и снапшот не говорил, почему (круг 2 DS I1)."""
+    hub = _hub(captures=[type("_NoQueue", (), {"label": "mic"})()])
+    hub.on_status = lambda m: None
+    errs: list[str] = []
+    monkeypatch.setattr(a, "_safe_stderr", errs.append)
+    hub._running = True
+    hub._pump_thread = threading.Thread(target=hub._pump, daemon=True)
+    hub._pump_thread.start()
+    time.sleep(0.3)
+    assert hub._pump_thread.is_alive() and hub.health_snapshot()["pump_alive"] is True
+    assert errs and "AttributeError" in errs[0]
+    hub._running = False
+    hub._pump_thread.join(2)
+    assert not hub._pump_thread.is_alive()
+
+
+def test_two_bad_channels_in_one_pass_count_as_one_failed_pass():
+    """Единица счётчика — проход, как читает потребитель снапшота (DS I2)."""
+    bad1, bad2 = _QueueCapture("blackhole"), _QueueCapture("mic")
+    hub = _hub(captures=[bad1, bad2])
+    hub._append = lambda label, part: (_ for _ in ()).throw(ValueError("битый"))
+    hub.on_status = lambda m: None
+    hub._watch_streams = lambda: None
+    hub._running = True
+    for _ in range(2):
+        bad1.q.put(_tone(1600))
+        bad2.q.put(_tone(1600))
+        hub._tick()
+    assert hub._pump_failures == 2, "два прохода — два, а не четыре"
+
+
+def test_progress_event_carries_the_snapshot_through_a_json_gate():
+    """Событие stt_progress собирается одной функцией: снапшот целиком (новый
+    датчик доезжает без белого списка), но через JSON-гейт — несериализуемое
+    значение не убьёт поток STT TypeError'ом в emit (DS I4/M1 круга 2); именные
+    поля с приведением типов — поверх."""
+    import json
+    import stt_runtime
+    health = {"backlog_seconds": 1.234, "input_age_seconds": None, "recording_ok": True,
+              "channels": {"mic": {"backlog_seconds": 0.1, "recording": True}},
+              "pump_alive": True, "pump_failures": 2, "sinks": {"mic"}, "path": pathlib.Path("/x")}
+    ev = stt_runtime.progress_event(health, lagging=False, stage="idle", stage_age=0.123456,
+                                    last_cycle_ms=10.6, last_diarization_ms=0.0, last_transcription_ms=5.0,
+                                    last_audio_s=3.0, total_stt_calls=1, total_audio_s=3.0,
+                                    total_transcription_ms=5.0, shortest_piece_s=3.0)
+    json.dumps(ev)                                             # ничего несериализуемого
+    assert ev["pump_alive"] is True and ev["pump_failures"] == 2 and "sinks" not in ev and "path" not in ev
+    assert ev["type"] == "stt_progress" and ev["backlog_seconds"] == 1.23 and ev["stage_age_seconds"] == 0.12
+    assert ev["input_age_seconds"] == stt_runtime.input_age_value(None), "именные поля поверх снапшота"
+    src = (REPO / "src" / "daemon.py").read_text(encoding="utf-8")
+    assert "emit(stt_runtime.progress_event(" in src and 'hb_event["pump_failures"] = snap["pump_failures"]' in src

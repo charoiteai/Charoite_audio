@@ -586,9 +586,11 @@ was not written, and the app saw it only as "audio input stalled" up to 100 s
 later, answering with a restart of the whole meeting. A failure is not
 silent: a stderr line and a status to the owner, at most once per 30 s per
 exception type; no channel loss is declared — the channels are alive, the hub
-failed. The health snapshot carries `pump_alive` and `pump_failures` and
-reaches the app whole — a precise signal without restarting the recording.
-The `AudioHub` constructor does no I/O: `discover_captures` finds the
+failed. The health snapshot carries `pump_alive` and `pump_failures` (into
+`stt_progress` through a JSON gate and into `hb`); the app has no reader for
+them yet — they are diagnostics, and an app reaction without restarting the
+recording is a separate card. The `AudioHub` constructor does no I/O:
+`discover_captures` finds the
 devices, the production path is `AudioHub.for_meeting`; tests call the real
 constructor, so production code no longer defends against its own test
 harness (input round DS and GLM on №311).

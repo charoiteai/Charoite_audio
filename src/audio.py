@@ -585,7 +585,7 @@ class AudioHub:
         # сбои прохода потребителя: тип исключения → когда о нём говорили
         # последний раз (троттлинг репортёра, см. _tick)
         self._guard_said: dict[str, float] = {}
-        self._pump_failures = 0        # проходов потребителя, упавших подряд
+        self._pump_failures = 0        # проходов потребителя, упавших подряд (единица — проход, не блок)
         # Метка канала осталась «blackhole» намеренно: по ней названы файлы
         # записей (`..._blackhole.wav`), её знают rebuild_transcript и
         # meeting_stamp. Переименование метки сломало бы пересборку старых
@@ -1285,7 +1285,15 @@ class AudioHub:
         точка, владеющая его живучестью, а не набор вызовов, каждый из
         которых защищён или нет по отдельности."""
         while self._running:
-            self._tick()
+            try:
+                self._tick()
+            except Exception as e:  # noqa: BLE001 — скелет прохода (get, атрибуты канала) тоже не роняет поток
+                # два разных гварда, нужны оба: внутренние (у единицы работы) не
+                # дают дурному блоку съесть соседей и сторож, внешний — не даёт
+                # потоку умереть от исключения в самом скелете прохода (круг 2 DS
+                # I1 по №311). Сон — против холостого цикла на 100 % ядра
+                self._report_pump_failure(e)
+                time.sleep(0.05)
         # Хвост, домолотый уже после `stop()`, иначе не озвучивает никто:
         # окно отчёта — полминуты, а досказ в `stop()` к этому моменту уже
         # отработал. Метод идемпотентен, двойной строки не будет
@@ -1323,13 +1331,22 @@ class AudioHub:
             except Exception as e:  # noqa: BLE001 — потребитель обязан жить, пока _running
                 failed = True
                 self._report_pump_failure(e)
+                # сбой обработки — видимая потеря живого звука, не тихая: кадр
+                # пришёл (свежесть канала штампуется первой строкой _consume), но
+                # до ленты не дошёл; иначе снаружи канал выглядел бы здоровым
+                # (круг 2 DS I5)
+                try:
+                    self._note_drop(c.label, len(part) / float(self.sr), written=c.label in self._sinks)
+                except Exception:  # noqa: BLE001 — отчёт о потере не важнее прохода
+                    pass
         try:
             self._watch_streams()
         except Exception as e:  # noqa: BLE001 — сторож — вспомогательный контур, не цена записи
             failed = True
             self._report_pump_failure(e)
-        if not failed:
-            self._pump_failures = 0
+        # единица счётчика — ПРОХОД, как читает потребитель снапшота: два дурных
+        # канала в одном проходе — один упавший проход, не два (круг 2 DS I2)
+        self._pump_failures = self._pump_failures + 1 if failed else 0
 
     def _report_pump_failure(self, exc: BaseException) -> None:
         """Сбой единицы работы потребителя — не молча: полный текст в stderr и
@@ -1341,7 +1358,6 @@ class AudioHub:
         `__str__` убил бы поток из except-блока (DS M1 / GLM I2 выходного
         круга) — всё тело под своим try, текст собирается защищённо."""
         try:
-            self._pump_failures += 1
             key = type(exc).__name__
             now = time.monotonic()
             last = self._guard_said.get(key)
@@ -1352,7 +1368,8 @@ class AudioHub:
                 text = " ".join(str(exc).split())[:300]
             except Exception:  # noqa: BLE001 — текст исключения недоступен, имя типа есть
                 text = "<текст исключения недоступен>"
-            _safe_stderr(f"сбой аудиопотока ({key}: {text}), подряд {self._pump_failures} — "
+            # счётчик проходов растёт в конце прохода — этот сбой в него ещё не вошёл
+            _safe_stderr(f"сбой аудиопотока ({key}: {text}), упавших проходов подряд {self._pump_failures + 1} — "
                          "поток жив, проход повторяется")
             self._say(f"⚠️ сбой аудиопотока: {key} — запись продолжается")
         except Exception:  # noqa: BLE001 — репортёр не роняет то, о чём докладывает
