@@ -203,7 +203,9 @@ def test_main_heartbeat_exposes_stall_without_forging_stt_progress():
     # О диске судит тоже сервер: снапшот recording_ok в hb, потому что
     # stt_progress замерзает вместе с STT (круг-1 GLM по #431, I1);
     # вызов обёрнут — телеметрия не роняет main-loop (круг-2 DS, M3).
-    assert 'hub.health_snapshot()["recording_ok"]' in heartbeat
+    # снапшот берётся один раз и отдаёт в hb и recording_ok, и pump_alive (№311)
+    assert 'snap = hub.health_snapshot()' in heartbeat and 'hb_event["recording_ok"] = snap["recording_ok"]' in heartbeat
+    assert 'hb_event["pump_alive"] = snap["pump_alive"]' in heartbeat
     assert heartbeat.index("try:") < heartbeat.index("hub.health_snapshot")
 
 
