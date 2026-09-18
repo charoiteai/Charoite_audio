@@ -222,17 +222,29 @@ def _gui_restart() -> list[list[str]]:
     return [["pkill", "-f", "Ollama.app/Contents"], ["open", "-a", "Ollama"]]
 
 
-def busy_with_ours(cfg: dict, *, now: float | None = None) -> list[dict]:
+_sensor_reported = False
+
+
+def busy_with_ours(cfg: dict, *, now: float | None = None,
+                   log: Callable[[str], None] | None = None) -> list[dict] | None:
     """Живые аренды НАШИХ клиентов на сервер, который собираемся трогать.
 
-    Аренда протухшая (стрим без байта дольше model_lease.STALL_S, не-стрим
-    дольше своего бюджета) — работа висит, её не щадят; сирота (процесс умер)
-    — убрана читателем. Адрес — тот же, что у пробы и перезапуска: аренда
-    облачного шлюза не должна держать перезапуск локальной Ollama (I6 DS)."""
+    Аренда висящая (без прогресса дольше своего порога) — работу не щадят;
+    сирота (процесс умер) — не считается. Адрес — тот же, что у пробы и
+    перезапуска: аренда облачного шлюза не должна держать перезапуск
+    локальной Ollama (I6 DS). `None` — сенсор недоступен (каталог не
+    читается, ошибка внутри читателя): это не «никого», и решающий обязан
+    сказать об этом в лог хотя бы раз — молча выключенная защита неотличима
+    от честной пустоты (выходной круг DS I3 по №264)."""
+    global _sensor_reported
     try:
         leases = model_lease.live(ROOT, server=_base_url(cfg), now=now)
-    except Exception:  # noqa: BLE001 — мусор в служебной папке не роняет решение
-        return []
+    except Exception as exc:  # noqa: BLE001 — мусор в служебной папке не роняет решение о перезапуске
+        if log is not None and not _sensor_reported:
+            _sensor_reported = True
+            log(f"LLM: аренды модели не прочитались ({model_lease.lease_dir(ROOT)}: "
+                f"{type(exc).__name__}: {exc}) — перезапуск решается как прежде, без них")
+        return None
     return [x for x in leases if not x.get("stalled")]
 
 
@@ -244,12 +256,24 @@ def _spare(cfg: dict, log: Callable[[str], None], *, force: bool) -> bool:
     аварийный перезапуск, когда застрявшее надо убрать из-под аренд."""
     if force:
         return False
-    live = busy_with_ours(cfg)
+    live = busy_with_ours(cfg, log=log)
     if not live:
-        return False
+        return False                      # никого — или сенсор недоступен (сказано в лог один раз)
     log("LLM: перезапуск отложен — модель занята живой работой: "
         + model_lease.describe(live))
     return True
+
+
+def force_restart(cfg: dict, log: Callable[[str], None] = print) -> bool:
+    """Ручной аварийный перезапуск ПОВЕРХ живых аренд — единственный
+    вызывающий `force=True` (`scripts/doctor.py --restart-llm`). Человек
+    решил, что застрявшее надо убрать; аренды, которые при этом умрут,
+    называются в лог до kill (выходной круг DS I2 / GLM M4 по №264)."""
+    live = busy_with_ours(cfg, log=log) or []
+    if live:
+        log("LLM: перезапуск поверх живой работы: " + model_lease.describe(live))
+    mlx = privacy.llm_engine(cfg) == "mlx-server"
+    return _restart_mlx(cfg, log, force=True) if mlx else _restart(cfg, log, force=True)
 
 
 def _restart(cfg: dict, log: Callable[[str], None], *, force: bool = False) -> bool:
@@ -430,7 +454,7 @@ def ensure_alive(cfg: dict, log: Callable[[str], None] = print,
             # которой грейс завели (инцидент 12.08; №264). Вызывающий встанет в
             # очередь своим busy_wait, как при BUSY. Аренда без прогресса
             # дольше STALL_S живой не считается — тогда перезапуск, как прежде
-            live = busy_with_ours(cfg)
+            live = busy_with_ours(cfg, log=log)
             if live:
                 log(f"LLM молчит {int(wait)} с, но модель занята живой работой — "
                     f"иду в очередь за ней: {model_lease.describe(live)}")

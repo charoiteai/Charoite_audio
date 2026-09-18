@@ -449,9 +449,29 @@ class LLM:
     # llm_health.probe (тот, кто спрашивает) — структурный тест пиннит список.
     _ROOT = charoite_paths.resolve_root(__file__)
 
-    def _lease(self, kind: str, *, budget: float | None) -> model_lease.Lease:
+    def lease_dir(self) -> pathlib.Path:
+        """Куда этот процесс кладёт аренды модели — для строки в логе старта."""
+        return model_lease.lease_dir(self._ROOT)
+
+    def _lease(self, kind: str, timeout) -> model_lease.Lease:
+        """Аренда на один запрос; порог зависания — из read-таймаута этого же
+        запроса (тот самый, по которому транспорт сам оборвёт молчание)."""
+        read = timeout[1] if isinstance(timeout, tuple) else timeout
         return model_lease.Lease(self._ROOT, server=self.base, engine=self.engine,
-                                 kind=kind, budget=budget)
+                                 kind=kind, read_timeout=read)
+
+    @staticmethod
+    def _is_payload(line: bytes) -> bool:
+        """Строка стрима, которая считается прогрессом генерации: NDJSON-объект
+        или SSE `data:` с непустым полем. Комментарии `: keepalive` и пустые
+        `data:` — «жив и молчит», ими шлюз держал бы аренду вечно (выходной
+        круг DS I1 по №264)."""
+        line = line.strip()
+        if not line or line.startswith(b":"):
+            return False
+        if line.startswith(b"data:"):
+            return bool(line[5:].strip())
+        return True
 
     class _LeasedStream:
         """Стримовый ответ с арендой: байты катят deadline, выход из with —
@@ -476,7 +496,7 @@ class LLM:
 
         def iter_lines(self, *a, **kw):
             for line in self._r.iter_lines(*a, **kw):
-                if line:
+                if LLM._is_payload(line):
                     self._lease.progress()
                 yield line
 
@@ -516,7 +536,7 @@ class LLM:
                 detail = r.text[:500]
                 r.close()
                 raise self._fail(r.status_code, detail)
-            return self._LeasedStream(r, self._lease("stream", budget=None).__enter__())
+            return self._LeasedStream(r, self._lease("stream", timeout).__enter__())
         raise RuntimeError("unreachable")  # pragma: no cover
 
     def _mlx_payload(self, messages: list[dict], *, think: bool | None,
@@ -886,11 +906,10 @@ class LLM:
         _post_with_revive: там решается, поднимать ли модель.
         """
         deadline = time.monotonic() + max(0.0, busy_wait)
-        # бюджет аренды — read-таймаут одного POST: не-стрим генерирует весь
-        # ответ внутри него; паузы «занято» между попытками — без аренды
-        read_budget = timeout[1] if isinstance(timeout, tuple) else timeout
+        # аренда — на один POST: не-стрим генерирует весь ответ внутри него;
+        # паузы «занято» между попытками — без аренды
         for delay in BUSY_BACKOFF + (BUSY_BACKOFF[-1],) * 1000:
-            with self._lease("complete", budget=read_budget):
+            with self._lease("complete", timeout):
                 r = requests.post(url, json=payload, timeout=timeout, **self._auth())
             if r.status_code in BUSY_STATUSES and time.monotonic() + delay <= deadline:
                 r.close()          # соединение не держим до GC на каждой паузе (GLM M2), как в _open_stream

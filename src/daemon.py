@@ -527,6 +527,12 @@ def main():
     emit({"type": "status", "text": "Загружаю модели…"})
     stt = STT(cfg)
     llm = LLM(cfg)
+    # Каталог аренд модели — в лог один раз: писатель и читатель аренд
+    # (транспорт демона и llm_health любого процесса) обязаны смотреть в один
+    # корень, а расхождение CHAROITE_ROOT между процессами иначе немо —
+    # защита от перезапуска под живой генерацией выключилась бы без следа
+    # (выходной круг GLM M2 / DS I3 по №264)
+    print(f"аренды модели: {llm.lease_dir()}", file=sys.stderr, flush=True)
     # env-override для тестов: стенограммы в песочницу, не в боевую папку
     tdir = os.environ.get("SUFLER_TRANSCRIPTS_DIR")
     tr = Transcript(pathlib.Path(tdir) if tdir else ROOT / cfg["log"]["transcripts_dir"])
