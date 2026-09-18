@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import dataclasses
 import pathlib
 import re
 import sys
@@ -105,7 +106,7 @@ def test_needles_stems_stop_words_cjk_and_fullwidth():
 
 def test_index_skips_archive_transcript_copies_hidden_and_service_files(tmp_path):
     s = _search(tmp_path)
-    rels = {d.rel for d in s._docs.values()}
+    rels = {d.rel for d in s._gen.docs.values()}
     assert "Встречи-архив/2026-01-01_старое.md" not in rels
     assert "Документация/Стенограммы встреч/копия.md" not in rels
     assert "Документация/Концепция шлюза.md" in rels, "сами документы остаются, исключены только копии стенограмм"
@@ -126,14 +127,14 @@ def test_refresh_follows_mtime_and_removals(tmp_path):
     new.write_text("# Новая\nуникальный_терм_нового_узла\n", encoding="utf-8")
     assert s.refresh() is False, "свежий индекс без force не обходится"
     clock["t"] += gs.REFRESH_S + 1
-    assert s.refresh() is True and any(d.rel == "Системы/Новая.md" for d in s._docs.values())
+    assert s.refresh() is True and any(d.rel == "Системы/Новая.md" for d in s._gen.docs.values())
     node = s.graph / "Системы" / "Платёжный шлюз.md"
     node.write_text(node.read_text(encoding="utf-8") + "\nдописанный_терм\n", encoding="utf-8")
     os.utime(node, (clock["t"] + 5, clock["t"] + 5))
     new.unlink()
     s.refresh(force=True)
     assert _rels(s.search("дописанный_терм", semantic=False)) == ["Системы/Платёжный шлюз.md"]
-    assert not any(d.rel == "Системы/Новая.md" for d in s._docs.values())
+    assert not any(d.rel == "Системы/Новая.md" for d in s._gen.docs.values())
 
 
 def test_ranking_prefers_path_coverage_recency_and_damps_hubs_raw_and_placeholders(tmp_path):
@@ -792,8 +793,12 @@ def test_the_index_generation_is_published_in_one_piece(tmp_path):
     читателя уже нет, и `by_rel[rel]` ронял поиск с KeyError прямо на встрече
     (Critical DS, круг 3 по №292).
 
-    Проверяем инвариант, а не гонку: каталог обязан разрешать ссылки ровно в те
-    документы, которые опубликованы вместе с ним."""
+    Проверка СТРУКТУРНАЯ, а не гоночная: пока документы, голоса и каталог были
+    тремя полями, корректность держалась на том, что три присваивания попали в
+    один захват замка, и однопоточный тест такую мутацию не ловил — круг 4 это
+    показал. Теперь состояние — одно значение `Generation`, и рассинхрон
+    невыразим: отдельных полей у поиска нет вовсе."""
+    assert {f.name for f in dataclasses.fields(gs.Generation)} == {"docs", "indeg", "catalog"}
     s = _search(tmp_path)
     g = s.graph
     (g / "Ядра").mkdir(exist_ok=True)
@@ -805,9 +810,12 @@ def test_the_index_generation_is_published_in_one_piece(tmp_path):
     (g / "Ядра" / "Канон.md").unlink()
     s.refresh(force=True)
 
-    rels = {d.rel for d in s._docs.values()}
+    split = [f for f in vars(s) if f.startswith("_") and f.endswith(("docs", "indeg", "catalog"))
+             and f != "_gen"]
+    assert split == [], f"состояние индекса живёт ещё и отдельными полями: {split}"
+    rels = {d.rel for d in s._gen.docs.values()}
     for key in ("ядра/старое", "ядра/канон", "старое", "канон"):
-        hit = s._catalog.live(key)
+        hit = s._gen.catalog.live(key)
         assert hit is None or hit.rel in rels, f"каталог отдал {key} → {hit.rel} мимо снимка"
     assert s.search("старое", limit=3) is not None, "поиск упал на чужом поколении"
 
@@ -874,8 +882,8 @@ def test_links_to_a_merged_node_feed_the_canon_and_the_hop_reaches_it(tmp_path):
     s.embed_pending()
 
     # ключ входящих — путь документа, которому голос достался (№292)
-    assert s._indeg.get("документация/программа лояльности") == 2, s._indeg
-    assert not any(k.endswith("бонусная схема") for k in s._indeg), "входящие на мёртвой заглушке"
+    assert s._gen.indeg.get("документация/программа лояльности") == 2, s._gen.indeg
+    assert not any(k.endswith("бонусная схема") for k in s._gen.indeg), "входящие на мёртвой заглушке"
 
     r = s.search("расчёт премий", limit=3)
     assert r.status is gs.Verdict.CONFIDENT, r.status
@@ -902,8 +910,8 @@ def test_a_bare_link_to_a_merged_node_feeds_the_canon_too(tmp_path):
         "# Лояльность\nОбсуждали [[Бонусная схема]] без папки.\n", encoding="utf-8")
     s.refresh(force=True)
 
-    assert s._indeg.get("документация/программа лояльности") == 1, s._indeg
-    assert not any(k.endswith("бонусная схема") for k in s._indeg), "голос остался на заглушке"
+    assert s._gen.indeg.get("документация/программа лояльности") == 1, s._gen.indeg
+    assert not any(k.endswith("бонусная схема") for k in s._gen.indeg), "голос остался на заглушке"
 
 
 def test_a_living_namesake_outranks_a_stub_for_a_bare_link(tmp_path):
@@ -928,8 +936,8 @@ def test_a_living_namesake_outranks_a_stub_for_a_bare_link(tmp_path):
         "# Лояльность\nОбсуждали [[Бонусная схема]] без папки.\n", encoding="utf-8")
     s.refresh(force=True)
 
-    assert s._indeg.get("ядра/бонусная схема") == 1, s._indeg
-    assert "документация/программа лояльности" not in s._indeg, "стрелка заглушки перебила живого тёзку"
+    assert s._gen.indeg.get("ядра/бонусная схема") == 1, s._gen.indeg
+    assert "документация/программа лояльности" not in s._gen.indeg, "стрелка заглушки перебила живого тёзку"
 
 
 def test_a_search_for_the_old_name_returns_the_canon_not_the_arrow(tmp_path):
@@ -966,7 +974,7 @@ def test_a_namesake_of_a_merged_node_keeps_its_own_links(tmp_path):
     s.refresh(force=True)
     s.embed_pending()
 
-    assert "отчёт по аварии" not in gs.LinkCatalog(list(s._docs.values())).canon, "имя с живым файлом переписано"
+    assert "отчёт по аварии" not in gs.LinkCatalog(list(s._gen.docs.values())).canon, "имя с живым файлом переписано"
     r = s.search("итоги квартала", limit=3)
     assert any("Документация/Отчёт по аварии.md" in b and "↳ по ссылке из" in b for b in r.blocks), r.blocks
 

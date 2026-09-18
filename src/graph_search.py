@@ -445,6 +445,22 @@ class LinkCatalog:
         return out
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class Generation:
+    """Поколение индекса: документы, голоса и каталог связей ОДНИМ значением.
+
+    Три отдельных поля публиковались тремя присваиваниями, и корректность
+    держалась на том, что все три строки попали в один захват замка —
+    соглашение в голове, а не инвариант. Пока они были врозь, поиск успевал
+    увидеть новые документы со старым каталогом и падал на цели, которой в его
+    снимке уже нет. Одно поле делает такой рассинхрон невыразимым, а проверку —
+    структурной, а не гоночной (Critical DS, круги 3 и 4 по №292)."""
+
+    docs: dict[str, Doc]
+    indeg: dict[str, int]
+    catalog: LinkCatalog
+
+
 def _owned(docs: Iterable[Doc], key: Callable[[Doc], str], *,
            stubs_last: bool = False) -> dict[str, Doc]:
     """Ключ → документ, который за него отвечает. Выбор детерминирован.
@@ -724,11 +740,9 @@ class GraphSearch:
         self.exclude = tuple(exclude)
         self._now = now
         self._embed_fn = embed
-        self._docs: dict[str, Doc] = {}
-        self._indeg: dict[str, int] = {}
+        self._gen = Generation({}, {}, LinkCatalog([]))   # публикуется одним присваиванием
         self._skipped: tuple[str, ...] = ()   # что обход РЕАЛЬНО отсёк (см. _walk)
         self._unread = 0                      # файлы, которые не открылись (права, битая ссылка)
-        self._catalog = LinkCatalog([])      # каталог связей текущего поколения индекса
         self._refreshed_at = 0.0
         self._lock = threading.RLock()       # индекс и векторы
         self._scan_lock = threading.Lock()   # один обход за раз
@@ -747,11 +761,11 @@ class GraphSearch:
     # ---------------------------------------------------------------- индекс
     @property
     def ready(self) -> bool:
-        return bool(self._docs)
+        return bool(self._gen.docs)
 
     @property
     def size(self) -> int:
-        return len(self._docs)
+        return len(self._gen.docs)
 
     @property
     def vectors(self) -> int:
@@ -784,7 +798,7 @@ class GraphSearch:
     def _walk(self) -> None:
         seen: set[str] = set()
         fresh: dict[str, Doc] = {}
-        changed = False
+        current = self._gen        # поколение, от которого отталкивается обход
         root = str(self.graph)
         # что отсечено ФАКТИЧЕСКИ, а не что записано в политике: на графе без
         # архивной папки оговорка про непрочитанное соврала бы, а на графе с
@@ -815,7 +829,7 @@ class GraphSearch:
                 except OSError:
                     unread += 1     # права, битая ссылка, сорванный синк — файл вне индекса
                     continue
-                cached = self._docs.get(path)
+                cached = current.docs.get(path)
                 if cached is not None and cached.mtime == mtime:
                     continue
                 try:
@@ -833,11 +847,10 @@ class GraphSearch:
                     body = text
                 fresh[path] = Doc(path, rel, mtime, text, norm(text), file_date_ts(rel, mtime),
                                   norm_text(os.path.splitext(fn)[0]), body, stub_base(text))
-                changed = True
         with self._lock:
             self._skipped = tuple(sorted(skipped))
             self._unread = unread
-            gone = [p for p in self._docs if p not in seen]
+            gone = [p for p in current.docs if p not in seen]
             if not fresh and not gone:
                 return
             # поколение собирается в СТОРОНЕ и публикуется одним присваиванием:
@@ -847,7 +860,7 @@ class GraphSearch:
             # поколения, которого в снимке читателя уже нет, — `by_rel[rel]`
             # ронял поиск с KeyError прямо на встрече (Critical DS, круг 3)
             dropped = set(gone)
-            docs = {p: d for p, d in self._docs.items() if p not in dropped}
+            docs = {p: d for p, d in current.docs.items() if p not in dropped}
         docs.update(fresh)
         snapshot = list(docs.values())
         # обход 28 МБ текста — вне замка: под ним каждый поиск встречи ждал бы (GLM M5)
@@ -864,9 +877,7 @@ class GraphSearch:
         with self._lock:
             for p in gone:
                 self._vecs.pop(p, None)      # вектор исчезнувшего файла — вместе с ним (DS M3 / GLM M10)
-            self._docs = docs
-            self._indeg = indeg
-            self._catalog = catalog
+            self._gen = Generation(docs, indeg, catalog)
 
     # --------------------------------------------------------------- векторы
     def _embed(self, texts: list[str], timeout: float) -> list[list[float]]:
@@ -960,7 +971,7 @@ class GraphSearch:
 
     def save_vectors(self) -> None:
         with self._lock:
-            items = [(p, m, vs) for p, (m, vs) in self._vecs.items() if p in self._docs and vs]
+            items = [(p, m, vs) for p, (m, vs) in self._vecs.items() if p in self._gen.docs and vs]
         if not items:
             return
         dim = len(items[0][2][0])
@@ -1004,7 +1015,7 @@ class GraphSearch:
     def pending_vectors(self) -> list[str]:
         self.load_vectors()
         with self._lock:
-            return [p for p, d in self._docs.items() if self._vecs.get(p, (None, None))[0] != d.mtime]
+            return [p for p, d in self._gen.docs.items() if self._vecs.get(p, (None, None))[0] != d.mtime]
 
     def embed_pending(self, budget_s: float | None = None, batch: int = EMBED_BATCH,
                       timeout: float = 60.0, should_stop: Callable[[], bool] | None = None) -> int:
@@ -1047,7 +1058,7 @@ class GraphSearch:
         queue: list[tuple[str, float, int, int, str]] = []   # путь, mtime, номер блока, всего, текст
         with self._lock:
             for p in self.pending_vectors():
-                d = self._docs.get(p)
+                d = self._gen.docs.get(p)
                 if d is None:
                     continue
                 limit = MAX_CHUNKS_NODE if is_node_path(d.rel) else MAX_CHUNKS
@@ -1092,10 +1103,10 @@ class GraphSearch:
             return Result([], 0, ready=False, query=query, skipped=self._skipped, unread=self._unread)
         if not self._fresh():
             threading.Thread(target=self.refresh, daemon=True, name="graph-search-refresh").start()
-        with self._lock:
-            docs = list(self._docs.values())
-            indeg = dict(self._indeg)
-            catalog = self._catalog
+        gen = self._gen          # одно поле — одно поколение: документы, голоса и
+        docs = list(gen.docs.values())   # каталог не могут разъехаться по построению
+        indeg = gen.indeg
+        catalog = gen.catalog
         avg_len = max(1.0, sum(len(d.low) for d in docs) / max(1, len(docs)))
         words, grams = needles(query)
         keys = words + grams
