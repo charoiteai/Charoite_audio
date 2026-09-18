@@ -50,9 +50,10 @@ import pathlib
 import re
 import sys
 import threading
+import types
 import time
 import unicodedata
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
@@ -454,11 +455,24 @@ class Generation:
     соглашение в голове, а не инвариант. Пока они были врозь, поиск успевал
     увидеть новые документы со старым каталогом и падал на цели, которой в его
     снимке уже нет. Одно поле делает такой рассинхрон невыразимым, а проверку —
-    структурной, а не гоночной (Critical DS, круги 3 и 4 по №292)."""
+    структурной, а не гоночной (Critical DS, круги 3 и 4 по №292).
 
-    docs: dict[str, Doc]
-    indeg: dict[str, int]
+    Охват обхода (`skipped`, `unread`) живёт здесь же: пока он был отдельными
+    полями, ответ мог соединить документы одного поколения с честностью
+    другого — «найдено в этом снимке» и «столько-то не открылось» из разных
+    обходов. Частичный тип — то же соглашение в голове, только с убедительным
+    именем (Critical DS, круг 5). Словари заворачиваются в неизменяемый вид:
+    значение, которое отдаётся читателю без копии, не должно быть мутируемым."""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "docs", types.MappingProxyType(dict(self.docs)))
+        object.__setattr__(self, "indeg", types.MappingProxyType(dict(self.indeg)))
+
+    docs: Mapping[str, Doc]
+    indeg: Mapping[str, int]
     catalog: LinkCatalog
+    skipped: tuple[str, ...] = ()   # что обход РЕАЛЬНО отсёк (см. `_walk`)
+    unread: int = 0                 # файлы, которые не открылись (права, битая ссылка)
 
 
 def _owned(docs: Iterable[Doc], key: Callable[[Doc], str], *,
@@ -721,9 +735,13 @@ class GraphSearch:
     """Индекс одного графа и поиск по нему. Один экземпляр на процесс и граф
     (см. shared()); обновление индекса и поиск — из разных потоков.
 
-    Владение: `_docs` пишет только `_walk` (обходчики сериализует `_scan_lock`),
-    подмена и чистка — под `_lock`; читатели берут снимок под `_lock` и дальше
-    работают со списком. `_vecs` пишут `load_vectors`/`embed_pending`/`_walk`
+    Владение: `_gen` — снимок индекса целиком (документы, голоса, каталог
+    связей, охват обхода). Пишет его только `_walk` (обходчики сериализует
+    `_scan_lock`), одним присваиванием под `_lock`; читатель берёт `gen =
+    self._gen` ОДИН раз и дальше работает с ним, не трогая `self` — замок ему
+    не нужен, потому что значение неизменяемо, а ссылка меняется атомарно.
+    Второе обращение к `self._gen` в одном действии возвращает дефект круга 3:
+    половины ответа окажутся из разных поколений (Important DS, круг 5). `_vecs` пишут `load_vectors`/`embed_pending`/`_walk`
     (уборка исчезнувших) — тоже под `_lock`. Кэш векторов на диске: манифест с
     именем неизменяемого блоба (запись — новый блоб, потом манифест через
     tmp+replace, старые блобы стираются после) — читатель никогда не видит
@@ -740,9 +758,7 @@ class GraphSearch:
         self.exclude = tuple(exclude)
         self._now = now
         self._embed_fn = embed
-        self._gen = Generation({}, {}, LinkCatalog([]))   # публикуется одним присваиванием
-        self._skipped: tuple[str, ...] = ()   # что обход РЕАЛЬНО отсёк (см. _walk)
-        self._unread = 0                      # файлы, которые не открылись (права, битая ссылка)
+        self._gen = Generation({}, {}, LinkCatalog([]))   # снимок публикуется одним присваиванием
         self._refreshed_at = 0.0
         self._lock = threading.RLock()       # индекс и векторы
         self._scan_lock = threading.Lock()   # один обход за раз
@@ -847,11 +863,14 @@ class GraphSearch:
                     body = text
                 fresh[path] = Doc(path, rel, mtime, text, norm(text), file_date_ts(rel, mtime),
                                   norm_text(os.path.splitext(fn)[0]), body, stub_base(text))
+        scope = (tuple(sorted(skipped)), unread)
         with self._lock:
-            self._skipped = tuple(sorted(skipped))
-            self._unread = unread
             gone = [p for p in current.docs if p not in seen]
             if not fresh and not gone:
+                # граф не изменился, но охват мог: файл стал нечитаемым, папка
+                # архива появилась. Публикуем то же поколение с новым охватом —
+                # порознь они уезжать не должны (Critical DS, круг 5)
+                self._gen = dataclasses.replace(current, skipped=scope[0], unread=scope[1])
                 return
             # поколение собирается в СТОРОНЕ и публикуется одним присваиванием:
             # раньше документы уезжали в мир первым замком, а каталог и голоса —
@@ -877,7 +896,7 @@ class GraphSearch:
         with self._lock:
             for p in gone:
                 self._vecs.pop(p, None)      # вектор исчезнувшего файла — вместе с ним (DS M3 / GLM M10)
-            self._gen = Generation(docs, indeg, catalog)
+            self._gen = Generation(docs, indeg, catalog, *scope)
 
     # --------------------------------------------------------------- векторы
     def _embed(self, texts: list[str], timeout: float) -> list[list[float]]:
@@ -1012,10 +1031,13 @@ class GraphSearch:
                 except OSError:
                     pass
 
-    def pending_vectors(self) -> list[str]:
+    def pending_vectors(self, gen: Generation | None = None) -> list[str]:
+        """Файлы без свежего вектора. `gen` — поколение вызывающего, если он уже
+        его взял: иначе список и тексты приедут из разных снимков."""
         self.load_vectors()
+        gen = gen or self._gen
         with self._lock:
-            return [p for p, d in self._gen.docs.items() if self._vecs.get(p, (None, None))[0] != d.mtime]
+            return [p for p, d in gen.docs.items() if self._vecs.get(p, (None, None))[0] != d.mtime]
 
     def embed_pending(self, budget_s: float | None = None, batch: int = EMBED_BATCH,
                       timeout: float = 60.0, should_stop: Callable[[], bool] | None = None) -> int:
@@ -1057,8 +1079,9 @@ class GraphSearch:
         done = 0
         queue: list[tuple[str, float, int, int, str]] = []   # путь, mtime, номер блока, всего, текст
         with self._lock:
-            for p in self.pending_vectors():
-                d = self._gen.docs.get(p)
+            gen = self._gen          # одно чтение на всё действие: список и тексты
+            for p in self.pending_vectors(gen):   # обязаны быть одного поколения
+                d = gen.docs.get(p)
                 if d is None:
                     continue
                 limit = MAX_CHUNKS_NODE if is_node_path(d.rel) else MAX_CHUNKS
@@ -1100,7 +1123,8 @@ class GraphSearch:
         вызывающего своя деградация (узлы графа, молчание). Протухший индекс
         обновляется фоном, ответ — по текущему."""
         if not self.ready:
-            return Result([], 0, ready=False, query=query, skipped=self._skipped, unread=self._unread)
+            gen = self._gen
+            return Result([], 0, ready=False, query=query, skipped=gen.skipped, unread=gen.unread)
         if not self._fresh():
             threading.Thread(target=self.refresh, daemon=True, name="graph-search-refresh").start()
         gen = self._gen          # одно поле — одно поколение: документы, голоса и
@@ -1198,7 +1222,7 @@ class GraphSearch:
             if status is Verdict.WEAK and not dossiers:
                 status = Verdict.EMPTY
             return Result([], 0, status, dossiers=dossiers, sem_used=sem_used, query=query,
-                          reason=reason, skipped=self._skipped, unread=self._unread)
+                          reason=reason, skipped=gen.skipped, unread=gen.unread)
         low_conf = status is not Verdict.CONFIDENT
         fused = rrf_merge([[r for _, r in sorted(lex, key=lambda x: -x[0])],
                            [r for _, r in sorted(sem, key=lambda x: -x[0])]], weights=[1.0, 0.7])
@@ -1217,7 +1241,7 @@ class GraphSearch:
             blocks += hops
             total += len(hops)
         return Result(blocks, total, status, dossiers=dossiers, sem_used=sem_used, query=query,
-                      reason=reason, skipped=self._skipped, unread=self._unread)
+                      reason=reason, skipped=gen.skipped, unread=gen.unread)
 
     def _dossier_blocks(self, query: str, snippet_chars: int, limit: int = 2) -> tuple[list[str], float]:
         """Готовые сводки по теме — ПЕРЕД фрагментами: индекс лексический, без

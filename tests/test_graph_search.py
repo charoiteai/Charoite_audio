@@ -798,7 +798,8 @@ def test_the_index_generation_is_published_in_one_piece(tmp_path):
     один захват замка, и однопоточный тест такую мутацию не ловил — круг 4 это
     показал. Теперь состояние — одно значение `Generation`, и рассинхрон
     невыразим: отдельных полей у поиска нет вовсе."""
-    assert {f.name for f in dataclasses.fields(gs.Generation)} == {"docs", "indeg", "catalog"}
+    assert {f.name for f in dataclasses.fields(gs.Generation)} == {
+        "docs", "indeg", "catalog", "skipped", "unread"}, "снимок описан типом не целиком"
     s = _search(tmp_path)
     g = s.graph
     (g / "Ядра").mkdir(exist_ok=True)
@@ -810,8 +811,8 @@ def test_the_index_generation_is_published_in_one_piece(tmp_path):
     (g / "Ядра" / "Канон.md").unlink()
     s.refresh(force=True)
 
-    split = [f for f in vars(s) if f.startswith("_") and f.endswith(("docs", "indeg", "catalog"))
-             and f != "_gen"]
+    split = [f for f in vars(s)
+             if f.endswith(("docs", "indeg", "catalog", "skipped", "unread")) and f != "_gen"]
     assert split == [], f"состояние индекса живёт ещё и отдельными полями: {split}"
     rels = {d.rel for d in s._gen.docs.values()}
     for key in ("ядра/старое", "ядра/канон", "старое", "канон"):
