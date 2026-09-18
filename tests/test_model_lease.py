@@ -287,6 +287,7 @@ def test_reader_failure_is_reported_once_and_does_not_block_restart(tmp_path, mo
     выключенная защита неотличима от честной пустоты (I3 DS / M2 GLM)."""
     monkeypatch.setattr(llm_health, "ROOT", tmp_path)
     monkeypatch.setattr(llm_health, "_sensor_reported", False)
+    monkeypatch.setattr(llm_health, "_sensor_worked", False)     # ветка «не работал ни разу»: флаги — на процесс
     monkeypatch.setattr(model_lease, "live", lambda *a, **kw: (_ for _ in ()).throw(PermissionError("нет доступа")))
     said: list[str] = []
     assert llm_health.busy_with_ours(LOCAL, log=said.append) is None
