@@ -156,11 +156,11 @@ def test_finalize_publishes_wav_atomically(tmp_path):
     """Готовый .wav появляется одним движением, а не растёт на глазах у чтеца."""
     import audio
 
-    hub = object.__new__(audio.AudioHub)
-    hub.sr = 16000
-    # в бою лок ставит конструктор; _finalize_recordings забирает _sinks
-    # под ним (круг 3, GLM) — стаб обязан повторять боевые поля
-    hub._lock = __import__("threading").Lock()
+    # настоящий конструктор — он без ввода-вывода (№311); стабу больше не
+    # нужно повторять боевые поля (_lock, _sinks) руками
+    hub = audio.AudioHub({"audio": {"samplerate": 16000, "chunk_seconds": 3.0, "overlap_seconds": 0.5,
+                                    "vad_energy_db": -45.0, "record": False, "device": "auto"},
+                          "log": {"recordings_dir": str(tmp_path)}, "sufler": {"user_name": "Владелец"}})
     pcm = tmp_path / "s_mic.pcm"
     pcm.write_bytes(b"\0" * (16000 * 2 * 6))       # 6 секунд, больше порога мусора
     hub._sinks = {"mic": pcm.open("ab")}

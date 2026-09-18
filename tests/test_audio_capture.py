@@ -5,9 +5,12 @@
 то есть весь путь, на котором теряется встреча. Устройство ввода для этого
 не нужно: всё перечисленное — чистые функции над буфером.
 """
+import ast
 import pathlib
 import queue
 import sys
+import tempfile
+import threading
 import time
 import wave
 
@@ -19,38 +22,23 @@ sys.path.insert(0, str(SRC))
 
 import audio as a  # noqa: E402
 
+REPO = pathlib.Path(__file__).resolve().parent.parent
 
-def _hub(sr=16000, chunk_s=3.0, overlap_s=0.5, vad_db=-45.0):
-    """AudioHub без устройств: конструктор трогает PortAudio, а нам нужна логика."""
-    hub = object.__new__(a.AudioHub)
-    hub.sr = sr
-    hub.chunk_s = chunk_s
-    hub.overlap_s = overlap_s
-    hub.vad_db = vad_db
-    hub.SPEAKER = a.AudioHub.SPEAKER
-    hub._bufs = {}
-    hub._sinks = {}
-    hub._drops = {}
-    hub._lock = __import__("threading").Lock()
-    # Поля, которые в бою ставит конструктор: заглушка обязана их повторять,
-    # иначе тест падает на AttributeError вместо проверки поведения.
-    hub._hung = set()
-    hub._lost = {}          # реестр потерь по метке канала (№235) — вместо двух флагов про собеседников
-    hub._warned = set()
-    hub._mode = "auto"
-    hub._fail_streak = {}
-    hub._scream_count = 0
-    hub._last_frame = {}
-    hub._last_try = {}
-    hub._last_check = 0.0
-    hub._running = False
-    hub.captures = []
-    hub._sys_speech_until = 0.0
-    hub.sources = []
-    hub.record_on = False
-    hub.on_status = None
-    hub.on_frame = None
-    return hub
+
+def _hub(sr=16000, chunk_s=3.0, overlap_s=0.5, vad_db=-45.0, captures=(), device="auto"):
+    """AudioHub без устройств — НАСТОЯЩИМ конструктором: он больше не трогает
+    PortAudio/ScreenCaptureKit (обнаружение — `discover_captures`, боевой путь —
+    `for_meeting`). Оснастка со своим списком полей через `object.__new__`
+    отставала от конструктора, и боевой код 14 местами страховался от неё
+    `getattr` (входной круг DS и GLM по №311). `record: False` — файлы записи
+    в тестах не открываются."""
+    cfg = {
+        "audio": {"samplerate": sr, "chunk_seconds": chunk_s, "overlap_seconds": overlap_s,
+                  "vad_energy_db": vad_db, "record": False, "device": device},
+        "log": {"recordings_dir": "recordings"},
+        "sufler": {"user_name": "Владелец"},
+    }
+    return a.AudioHub(cfg, captures=list(captures))
 
 
 def _tone(n, amp=0.3):
@@ -1044,8 +1032,7 @@ def test_missing_system_channel_screams_and_names_the_reason(tmp_path, monkeypat
     вторая сторона разговора не запишется, и предупредить надо СРАЗУ.
     """
     said = []
-    hub = object.__new__(a.AudioHub)
-    hub.captures = [type("_Mic", (), {"label": "mic"})()]   # как в бою при auto: микрофон открыт (текст — по составу, r2 #541)
+    hub = _hub(captures=[type("_Mic", (), {"label": "mic"})()])   # как в бою при auto: микрофон открыт (текст — по составу, r2 #541)
     hub.on_status = said.append
     monkeypatch.setattr(a, "ROOT", tmp_path)          # свой logs/, боевой не трогаем
     calls = []
@@ -1089,7 +1076,7 @@ def test_предупреждение_переживает_недоступны�
         raise OSError("уведомления недоступны")
 
     monkeypatch.setattr("subprocess.Popen", boom)
-    hub = a.AudioHub(_hub_cfg())
+    hub = a.AudioHub.for_meeting(_hub_cfg())
     said = []
     hub.on_status = said.append
     hub.start()                                      # не должен бросить
@@ -1135,7 +1122,7 @@ def test_предупреждение_доходит_до_ui_потому_что
     было до этой правки. Тест повторяет боевой порядок целиком."""
     _no_system_channel(monkeypatch, tmp_path)
 
-    hub = a.AudioHub(_hub_cfg())          # как daemon.py:537 — on_status ещё нет
+    hub = a.AudioHub.for_meeting(_hub_cfg())          # как daemon.py:537 — on_status ещё нет
     assert hub.on_status is None, "заглушка теста разошлась с боевым порядком"
 
     said = []
@@ -1160,7 +1147,7 @@ def test_режим_только_микрофон_не_поднимает_лож
     предупреждения вовсе."""
     _no_system_channel(monkeypatch, tmp_path)
 
-    hub = a.AudioHub(_hub_cfg(device="mic"))
+    hub = a.AudioHub.for_meeting(_hub_cfg(device="mic"))
     # Прямо про гейт, а не про доставку: пустой said бывает и когда крик
     # просто не долетел (так этот тест и прошёл на мутации 11.09 — зелёный
     # по неверной причине). Факт не должен быть зафиксирован вовсе.
@@ -1175,7 +1162,7 @@ def test_режим_только_микрофон_не_поднимает_лож
 
     # Контроль: в auto на той же машине предупреждение обязано взводиться —
     # иначе тест выше зелёный просто потому, что сломан весь механизм.
-    assert a.AudioHub(_hub_cfg())._no_system_channel is not None, \
+    assert a.AudioHub.for_meeting(_hub_cfg())._no_system_channel is not None, \
         "в auto предупреждение не взводится — проверка режима mic ничего не значит"
 
 
@@ -1205,7 +1192,7 @@ def test_отказ_канала_собеседников_на_старте_кр
     «канал blackhole не открылся», и встреча шла одним микрофоном без
     уведомления и без строки в capture.log. Тот же симптом, тот же крик."""
     calls = _system_device_that_fails_to_open(monkeypatch, tmp_path)
-    hub = a.AudioHub(_hub_cfg())
+    hub = a.AudioHub.for_meeting(_hub_cfg())
     assert hub._no_system_channel is None, "гейт конструктора молчит: устройство найдено"
     said = []
     hub.on_status = said.append
@@ -1226,7 +1213,7 @@ def test_отказ_канала_собеседников_на_старте_кр
 
     # контроль: тот же канал открылся — крика нет (иначе тест выше зелёный от шума)
     calls = _system_device_that_fails_to_open(monkeypatch, tmp_path, fail=False)
-    hub = a.AudioHub(_hub_cfg())
+    hub = a.AudioHub.for_meeting(_hub_cfg())
     said = []
     hub.on_status = said.append
     hub.start()
@@ -1255,7 +1242,7 @@ def test_отказ_потока_sck_при_старте_не_винит_ни_п
     calls = []
     monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: calls.append((args, kw)))
 
-    hub = a.AudioHub(_hub_cfg())
+    hub = a.AudioHub.for_meeting(_hub_cfg())
     assert [c.label for c in hub.captures] == ["blackhole", "mic"] and hub._no_system_channel is None
     said = []
     hub.on_status = said.append
@@ -1282,7 +1269,7 @@ def test_битый_лог_не_срывает_старт_записи(tmp_path,
     # дописывает многобайтовую букву прямо сейчас.
     log.write_bytes(b"SCK: denied\n\xff\xfe" + "оборванный хвост".encode("utf-8"))
 
-    hub = a.AudioHub(_hub_cfg())
+    hub = a.AudioHub.for_meeting(_hub_cfg())
     said = []
     hub.on_status = said.append
     hub.start()                            # не должен бросить
@@ -1302,7 +1289,7 @@ def test_причиной_не_становится_собственное_пр�
         f"2026-09-10 12:00:00 {a.MIC_ONLY_LOG_MARK}: прошлая встреча\n",
         encoding="utf-8")
 
-    hub = a.AudioHub(_hub_cfg())
+    hub = a.AudioHub.for_meeting(_hub_cfg())
     said = []
     hub.on_status = said.append
     hub.start()
@@ -1619,7 +1606,7 @@ def test_потеря_канала_одно_событие_на_любой_ка�
     monkeypatch.setattr(a.threading, "Thread",
                         lambda *args, **kw: type("_T", (), {"start": lambda s: None})())
     calls.clear()
-    real = a.AudioHub(_hub_cfg())
+    real = a.AudioHub.for_meeting(_hub_cfg())
     said = []
     real.on_status = said.append
     real.start()
@@ -1678,3 +1665,298 @@ def test_поток_приложения_читается_с_объявленн�
     else:
         cap2.stop()
         raise AssertionError("без system_start старт обязан прыгать в хвост")
+
+
+# ------------------------------------------------- №311: чистый конструктор и гвард прохода
+
+def _init_assigned_attrs() -> set[str]:
+    """Имена `self.<x> = …` в __init__ и вызванных им хелперах регистрации —
+    только цели в Store-контексте: `self._x[key] = v` заводит не поле, а
+    элемент, и считаться заведением поля не должен (DS M2 выходного круга)."""
+    tree = ast.parse((REPO / "src" / "audio.py").read_text(encoding="utf-8"))
+    cls = next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "AudioHub")
+    names: set[str] = set()
+    for fn in cls.body:
+        if isinstance(fn, ast.FunctionDef) and fn.name in ("__init__", "_register_captures"):
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store) \
+                        and isinstance(node.value, ast.Name) and node.value.id == "self":
+                    names.add(node.attr)
+    return names
+
+
+def test_the_constructor_owns_every_field_and_touches_no_device():
+    """Гейт класса «оснастка подменяет конструктор» (Как чинить DS/GLM по №311):
+    всё, что методы хаба читают у `self`, заводит `__init__` (или класс), и в
+    самом `__init__` нет ни одного вызова к ScreenCaptureKit/PortAudio —
+    обнаружение живёт в `discover_captures`. Пока конструктор делал ввод-вывод,
+    четыре оснастки собирали хаб через `object.__new__` со своими списками
+    полей, и боевой код 14 местами страховался `getattr`/`hasattr`/`__dict__`
+    от собственной оснастки — а слой был неполон (`_last_check`, `_closing`)."""
+    src = (REPO / "src" / "audio.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    cls = next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "AudioHub")
+    init = next(fn for fn in cls.body if isinstance(fn, ast.FunctionDef) and fn.name == "__init__")
+    calls = {ast.unparse(n.func) for n in ast.walk(init) if isinstance(n, ast.Call)}
+    forbidden = {c for c in calls if c.startswith("sd.") or c in ("fresh_sck_manifest", "find_system_audio",
+                                                                  "Capture", "TapStreamCapture")}
+    assert not forbidden, f"конструктор трогает устройства: {forbidden}"
+    class_attrs = {t.id for n in cls.body if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
+    methods = {fn.name for fn in cls.body if isinstance(fn, ast.FunctionDef)}
+    assigned = _init_assigned_attrs() | class_attrs | methods
+    read: set[str] = set()
+    for fn in cls.body:
+        if isinstance(fn, ast.FunctionDef):
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self" \
+                        and isinstance(node.ctx, ast.Load):
+                    read.add(node.attr)
+    missing = read - assigned
+    assert not missing, f"методы читают поля, которых конструктор не заводит: {sorted(missing)}"
+    for shim in ('getattr(self, "_', 'hasattr(self, "', "self.__dict__", "_ensure_loss_state", "setattr(self,"):
+        assert shim not in src, f"страховка от оснастки осталась в бою: {shim}"
+    hub = _hub()
+    assert hub._closing is False and hub._last_check == 0.0 and hub.chunk_no == {} and hub._lost == {}
+
+
+def test_for_meeting_is_the_only_place_that_discovers_devices(monkeypatch):
+    """Боевой путь: `for_meeting` = обнаружение + конструктор; итог обнаружения
+    едет в хаб аргументами, а не присваивается изнутри."""
+    monkeypatch.setattr(a, "fresh_sck_manifest", lambda: None)
+    monkeypatch.setattr(a, "find_system_audio", lambda: None)
+    monkeypatch.setattr(a.sd.default, "device", (1, None), raising=False)
+    found = a.discover_captures("auto", 16000)
+    assert [c.label for c in found.captures] == ["mic"] and found.system_origin == {"sck_missing": True, "bh_missing": True}
+    hub = a.AudioHub.for_meeting(_hub_cfg())
+    assert [c.label for c in hub.captures] == ["mic"] and hub.sources == ["Микрофон"]
+    assert hub._no_system_channel == {"sck_missing": True, "bh_missing": True}
+    # ни один модуль вне audio.py не строит хаб конструктором: новый вход (CLI,
+    # диктовка) обязан идти через for_meeting — сверка по AST всех src/*.py (DS M3)
+    builders: dict[str, list[str]] = {}
+    for path in sorted((REPO / "src").glob("*.py")):
+        if path.name == "audio.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                name = ast.unparse(node.func)
+                if name.endswith("AudioHub"):
+                    builders.setdefault(path.name, []).append(name)
+                if name.endswith("AudioHub.for_meeting"):
+                    builders.setdefault("for_meeting", []).append(path.name)
+    assert {k: v for k, v in builders.items() if k != "for_meeting"} == {}, builders
+    assert set(builders.get("for_meeting", [])) == {"daemon.py", "main.py"}
+
+
+def test_a_failing_watchdog_does_not_kill_the_consumer(monkeypatch):
+    """Сторож живёт в потоке-потребителе: до №311 любое исключение его прохода
+    убивало поток, остаток встречи не писался. Гвард — у единицы работы: сбой
+    сторожа проход не отменяет, блоки продолжают потребляться, сбой назван
+    владельцу (строка статуса) и в stderr, не чаще окна на тип."""
+    cap = _QueueCapture("mic")
+    hub = _hub(captures=[cap])
+    boom = {"n": 0}
+
+    def broken_watch():
+        boom["n"] += 1
+        raise RuntimeError("сторож сломан")
+
+    hub._watch_streams = broken_watch
+    said: list[str] = []
+    hub.on_status = said.append
+    errs: list[str] = []
+    monkeypatch.setattr(a, "_safe_stderr", errs.append)
+    hub._running = True
+    for _ in range(3):
+        cap.q.put(_tone(1600))
+        hub._tick()
+    assert boom["n"] == 3 and len(hub._bufs["mic"]) == 4800, "блоки потреблены несмотря на падающий сторож"
+    assert hub._pump_failures == 3, "три прохода подряд со сбоем"
+    assert sum("сбой аудиопотока" in m for m in said) == 1, "статус — один на окно по типу"
+    assert len(errs) == 1 and "RuntimeError" in errs[0] and "сторож сломан" in errs[0] and "подряд 1" in errs[0]
+    hub._guard_said["RuntimeError"] -= hub.GUARD_REPORT_S + 1     # окно вышло — сказать снова
+    cap.q.put(_tone(1600))
+    hub._tick()
+    assert len(errs) == 2 and "подряд 4" in errs[1]
+    hub._watch_streams = lambda: None
+    cap.q.put(_tone(1600))
+    hub._tick()
+    assert hub._pump_failures == 0, "удачный проход обнуляет счётчик"
+
+
+def test_pump_thread_survives_a_watchdog_exception_end_to_end():
+    """То же — настоящим потоком `_pump`: после падения сторожа поток жив и
+    продолжает писать блоки, пока `_running`."""
+    cap = _QueueCapture("mic")
+    hub = _hub(captures=[cap])
+    hub._watch_streams = lambda: (_ for _ in ()).throw(ValueError("упал"))
+    hub.on_status = lambda m: None
+    hub._running = True
+    hub._pump_thread = threading.Thread(target=hub._pump, daemon=True)
+    hub._pump_thread.start()
+    for _ in range(5):
+        cap.q.put(_tone(1600))
+    deadline = time.time() + 5
+    while time.time() < deadline and len(hub._bufs["mic"]) < 8000:
+        time.sleep(0.05)
+    assert len(hub._bufs["mic"]) == 8000 and hub._pump_thread.is_alive()
+    assert hub.health_snapshot()["pump_alive"] is True
+    hub._running = False
+    hub._pump_thread.join(2)
+    assert not hub._pump_thread.is_alive() and hub.health_snapshot()["pump_alive"] is False
+
+
+def test_stderr_failure_on_the_consumer_path_is_harmless(monkeypatch):
+    """Закрытый stderr или ENOSPC на flush в сообщении о сбое записи убивал бы
+    поток на сообщении о сбое (Critical GLM входного круга): все строки с пути
+    потребителя идут через один хелпер, который отказ носителя глотает."""
+    class Closed:
+        def write(self, *_): raise ValueError("I/O operation on closed file")
+        def flush(self): raise ValueError("closed")
+
+    monkeypatch.setattr(a.sys, "stderr", Closed())
+    a._safe_stderr("проба")                                   # не бросает
+    cap = _QueueCapture("mic")
+    hub = _hub(captures=[cap])
+
+    class BrokenSink:
+        def write(self, *_): raise OSError("диск кончился")
+        def flush(self): pass
+
+    hub._sinks = {"mic": BrokenSink()}
+    hub.on_status = lambda m: None
+    hub._consume(cap, _tone(1600))                             # сообщение о сбое записи — в закрытый stderr
+    assert "mic" not in hub._sinks and len(hub._bufs["mic"]) == 1600
+
+
+def test_mixed_loss_phases_are_announced_not_raised(monkeypatch):
+    """Смешанная фаза потерь в одном объявлении — не повод молчать: raise стоял
+    в finally сторожа и убил бы объявление вместе с потоком (DS I3 по №311)."""
+    hub = _hub(captures=[_QueueCapture("mic"), _QueueCapture("blackhole")])
+    said: list[str] = []
+    hub.on_status = said.append
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **kw: None)
+    monkeypatch.setattr(a, "ROOT", pathlib.Path(tempfile.mkdtemp()))
+    hub._announce_losses({"mic": a.Loss("умер", retriable=False, died=True),
+                          "blackhole": a.Loss("не открылся", retriable=False, died=False)})
+    assert set(hub._lost) == {"mic", "blackhole"} and said, "обе потери объявлены"
+
+
+def test_a_bad_block_on_one_channel_does_not_starve_the_neighbour_or_the_watchdog(monkeypatch):
+    """Гвард — у единицы работы, не у прохода (Critical DS выходного круга): один
+    гвард на весь проход обрывал его на дурном блоке первого канала — сторож не
+    вызывался больше ни разу, очередь второго канала росла до конца встречи, а
+    `input_age_seconds` (min по каналам) оставался нулём, и приложение не
+    перезапускало ничего. Теперь сосед дренируется, сторож идёт всегда, счётчик
+    сбоев виден в снапшоте."""
+    bad, good = _QueueCapture("blackhole"), _QueueCapture("mic")
+    hub = _hub(captures=[bad, good])
+    real_append = hub._append
+
+    def append(label, part):
+        if label == "blackhole":
+            raise ValueError("битый блок")
+        return real_append(label, part)
+
+    hub._append = append
+    watched = {"n": 0}
+    hub._watch_streams = lambda: watched.__setitem__("n", watched["n"] + 1)
+    hub.on_status = lambda m: None
+    monkeypatch.setattr(a, "_safe_stderr", lambda m: None)
+    hub._running = True
+    for _ in range(4):
+        bad.q.put(_tone(1600))
+        good.q.put(_tone(1600))
+        hub._tick()
+    assert watched["n"] == 4, "сторож идёт каждый проход, несмотря на падающий канал"
+    assert good.q.qsize() == 0 and len(hub._bufs["mic"]) == 6400, "сосед дренирован"
+    assert bad.q.qsize() == 0, "дурные блоки тоже сняты с очереди — она не растёт"
+    assert hub._pump_failures == 4 and hub.health_snapshot()["pump_failures"] == 4, "единица — проход"
+    # сбой обработки блока — видимая потеря живого звука, а не здоровый канал (DS I5 круга 2)
+    assert hub._drops.get("blackhole", [0])[0] > 0, "потеря блока учтена в отчёте о потерях"
+    hub._append = real_append
+    bad.q.put(_tone(1600))
+    hub._tick()
+    assert hub._pump_failures == 0, "проход без сбоев обнуляет счётчик"
+
+
+def test_an_exception_with_a_broken_str_does_not_kill_the_reporter(monkeypatch):
+    """Репортёр — последний рубеж: `str(exc)` с битым `__str__` убил бы поток из
+    except-блока — ровно тот отказ, который гвард закрывает (DS M1 / GLM I2)."""
+    class Nasty(Exception):
+        def __str__(self):
+            raise RuntimeError("нет строки")
+
+    cap = _QueueCapture("mic")
+    hub = _hub(captures=[cap])
+    hub._watch_streams = lambda: (_ for _ in ()).throw(Nasty())
+    said: list[str] = []
+    hub.on_status = said.append
+    errs: list[str] = []
+    monkeypatch.setattr(a, "_safe_stderr", errs.append)
+    hub._running = True
+    cap.q.put(_tone(1600))
+    hub._tick()                                              # не бросает
+    assert hub._pump_failures == 1 and len(hub._bufs["mic"]) == 1600
+    assert errs and "Nasty" in errs[0] and "недоступен" in errs[0] and said
+
+
+def test_health_snapshot_has_the_consumer_gauges():
+    snap = _hub().health_snapshot()
+    assert snap["pump_alive"] is False and snap["pump_failures"] == 0
+
+
+def test_the_pump_survives_an_exception_in_the_pass_skeleton(monkeypatch):
+    """Гвард у тела потока — второй, отдельный от гвардов единиц работы: канал
+    без очереди (AttributeError из скелета прохода) раньше уносил поток целиком,
+    `_pump_failures` оставался 0 и снапшот не говорил, почему (круг 2 DS I1)."""
+    hub = _hub(captures=[type("_NoQueue", (), {"label": "mic"})()])
+    hub.on_status = lambda m: None
+    errs: list[str] = []
+    monkeypatch.setattr(a, "_safe_stderr", errs.append)
+    hub._running = True
+    hub._pump_thread = threading.Thread(target=hub._pump, daemon=True)
+    hub._pump_thread.start()
+    time.sleep(0.3)
+    assert hub._pump_thread.is_alive() and hub.health_snapshot()["pump_alive"] is True
+    assert errs and "AttributeError" in errs[0]
+    hub._running = False
+    hub._pump_thread.join(2)
+    assert not hub._pump_thread.is_alive()
+
+
+def test_two_bad_channels_in_one_pass_count_as_one_failed_pass():
+    """Единица счётчика — проход, как читает потребитель снапшота (DS I2)."""
+    bad1, bad2 = _QueueCapture("blackhole"), _QueueCapture("mic")
+    hub = _hub(captures=[bad1, bad2])
+    hub._append = lambda label, part: (_ for _ in ()).throw(ValueError("битый"))
+    hub.on_status = lambda m: None
+    hub._watch_streams = lambda: None
+    hub._running = True
+    for _ in range(2):
+        bad1.q.put(_tone(1600))
+        bad2.q.put(_tone(1600))
+        hub._tick()
+    assert hub._pump_failures == 2, "два прохода — два, а не четыре"
+
+
+def test_progress_event_carries_the_snapshot_through_a_json_gate():
+    """Событие stt_progress собирается одной функцией: снапшот целиком (новый
+    датчик доезжает без белого списка), но через JSON-гейт — несериализуемое
+    значение не убьёт поток STT TypeError'ом в emit (DS I4/M1 круга 2); именные
+    поля с приведением типов — поверх."""
+    import json
+    import stt_runtime
+    health = {"backlog_seconds": 1.234, "input_age_seconds": None, "recording_ok": True,
+              "channels": {"mic": {"backlog_seconds": 0.1, "recording": True}},
+              "pump_alive": True, "pump_failures": 2, "sinks": {"mic"}, "path": pathlib.Path("/x")}
+    ev = stt_runtime.progress_event(health, lagging=False, stage="idle", stage_age=0.123456,
+                                    last_cycle_ms=10.6, last_diarization_ms=0.0, last_transcription_ms=5.0,
+                                    last_audio_s=3.0, total_stt_calls=1, total_audio_s=3.0,
+                                    total_transcription_ms=5.0, shortest_piece_s=3.0)
+    json.dumps(ev)                                             # ничего несериализуемого
+    assert ev["pump_alive"] is True and ev["pump_failures"] == 2 and "sinks" not in ev and "path" not in ev
+    assert ev["type"] == "stt_progress" and ev["backlog_seconds"] == 1.23 and ev["stage_age_seconds"] == 0.12
+    assert ev["input_age_seconds"] == stt_runtime.input_age_value(None), "именные поля поверх снапшота"
+    src = (REPO / "src" / "daemon.py").read_text(encoding="utf-8")
+    assert "emit(stt_runtime.progress_event(" in src and 'hb_event["pump_failures"] = snap["pump_failures"]' in src

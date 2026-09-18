@@ -223,3 +223,54 @@ def next_channel_label(prev_label: str | None, added_labels: list[str]) -> str |
     реально добавленного куска; ничего не добавлено — прежняя."""
     return added_labels[-1] if added_labels else prev_label
 
+
+
+_JSON_SCALARS = (bool, int, float, str, type(None))
+
+
+def snapshot_fields(health: dict) -> dict:
+    """Поля снапшота здоровья, годные в NDJSON-событие: скаляры и словари
+    скаляров. Снапшот уезжает в `stt_progress` целиком, чтобы новый датчик не
+    терялся в рукописном белом списке (pump_alive — круг 1 DS I2 по №311), но
+    `emit` ловит только BrokenPipe/ValueError, и несериализуемое значение
+    (set, Path, numpy-скаляр) убило бы поток STT TypeError'ом (круг 2 DS I4).
+    Граница сериализации — здесь, одной функцией, а не белым списком."""
+    out: dict = {}
+    for key, value in health.items():
+        if isinstance(value, _JSON_SCALARS):
+            out[key] = value
+        elif isinstance(value, dict) and all(
+                isinstance(v, _JSON_SCALARS) or (isinstance(v, dict) and all(isinstance(x, _JSON_SCALARS) for x in v.values()))
+                for v in value.values()):
+            out[key] = value
+    return out
+
+
+def progress_event(health: dict, *, lagging: bool, stage: str, stage_age: float,
+                   last_cycle_ms: float, last_diarization_ms: float, last_transcription_ms: float,
+                   last_audio_s: float, total_stt_calls: int, total_audio_s: float,
+                   total_transcription_ms: float, shortest_piece_s: float) -> dict:
+    """Событие `stt_progress`: снапшот здоровья целиком (после гейта) и поверх —
+    именные поля с приведением типов (`input_age_seconds` через
+    input_age_value, округления). Одна функция вместо литерала в демоне: тест
+    проверяет результат, а не текст исходника (круг 2 DS M1 по №311)."""
+    return {
+        **snapshot_fields(health),
+        "type": "stt_progress",
+        "state": "lagging" if lagging else "healthy",
+        "stage": stage,
+        "stage_age_seconds": round(stage_age, 2),
+        "backlog_seconds": round(float(health["backlog_seconds"]), 2),
+        "input_age_seconds": input_age_value(health["input_age_seconds"]),
+        "cycle_ms": round(last_cycle_ms),
+        "diarization_ms": round(last_diarization_ms),
+        "transcription_ms": round(last_transcription_ms),
+        "audio_s": round(last_audio_s, 2),
+        "calls_total": total_stt_calls,
+        "audio_s_total": round(total_audio_s, 1),
+        "shortest_s": round(shortest_piece_s, 2),
+        "rtf_total": realtime_factor(total_audio_s, total_transcription_ms),
+        "rtf": realtime_factor(last_audio_s, last_transcription_ms),
+        "recording_ok": health["recording_ok"],
+        "channels": health["channels"],
+    }

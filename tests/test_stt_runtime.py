@@ -66,11 +66,14 @@ def test_daemon_measures_and_sheds_before_positional_split():
     assert 'if plan == "shed":' in loop[policy:split]
     assert "jobs = [(chunk, stt_runtime.CHANNEL_LABEL_ONLY, None)]" in loop[policy:split]
     assert 'elif plan == "diarize":' in loop[policy:split]
-    assert '"type": "stt_progress"' in loop
+    assert "emit(stt_runtime.progress_event(" in loop, "событие прогресса собирается одной функцией (№311)"
+    runtime_src = (pathlib.Path(__file__).resolve().parent.parent / "src" / "stt_runtime.py").read_text(encoding="utf-8")
+    event = runtime_src[runtime_src.index("def progress_event("):]
+    assert '"type": "stt_progress"' in event
     for metric in ("state", "stage", "stage_age_seconds", "backlog_seconds",
                    "diarization_ms", "transcription_ms", "input_age_seconds",
                    "recording_ok", "channels"):
-        assert f'"{metric}"' in loop
+        assert f'"{metric}"' in event
     assert "mark_stt_stage(\"diarization\")" in loop
     assert "mark_stt_stage(\"transcription\")" in loop
     assert "stt-health state=stalled" in source
@@ -203,7 +206,10 @@ def test_main_heartbeat_exposes_stall_without_forging_stt_progress():
     # О диске судит тоже сервер: снапшот recording_ok в hb, потому что
     # stt_progress замерзает вместе с STT (круг-1 GLM по #431, I1);
     # вызов обёрнут — телеметрия не роняет main-loop (круг-2 DS, M3).
-    assert 'hub.health_snapshot()["recording_ok"]' in heartbeat
+    # снапшот берётся один раз и отдаёт в hb и recording_ok, и pump_alive (№311)
+    assert 'snap = hub.health_snapshot()' in heartbeat and 'hb_event["recording_ok"] = snap["recording_ok"]' in heartbeat
+    assert 'hb_event["pump_alive"] = snap["pump_alive"]' in heartbeat
+    assert 'hb_event["pump_failures"] = snap["pump_failures"]' in heartbeat
     assert heartbeat.index("try:") < heartbeat.index("hub.health_snapshot")
 
 
@@ -255,8 +261,9 @@ def test_lag_line_carries_time_audio_and_rtf():
     for field in ("backlog_s=", "cycle_ms=", "diarization_ms=",
                   "transcription_ms=", "audio_s=", "rtf="):
         assert field in line, f"в строке отставания нет {field}"
-    event = src[src.index('"type": "stt_progress"'):]
-    event = event[:event.index("})")]
+    runtime_src = (pathlib.Path(__file__).resolve().parent.parent / "src" / "stt_runtime.py").read_text(encoding="utf-8")
+    event = runtime_src[runtime_src.index('"type": "stt_progress"'):]
+    event = event[:event.index("}")]
     assert '"audio_s"' in event and '"rtf"' in event, "событие без RTF"
 
 
@@ -338,7 +345,8 @@ def test_lag_line_carries_totals_because_the_lagging_cycle_never_splits():
     lag = lag[:lag.index("file=sys.stderr")]
     for field in ("calls=", "shortest_s=", "rtf_total="):
         assert field in lag, f"строка отставания молчит о {field}"
-    assert '"calls_total"' in src and '"rtf_total"' in src, (
+    runtime_src = (pathlib.Path(__file__).resolve().parent.parent / "src" / "stt_runtime.py").read_text(encoding="utf-8")
+    assert '"calls_total"' in runtime_src and '"rtf_total"' in runtime_src, (
         "итоги есть в логе, но не в stt_progress — приложение их не увидит"
     )
 
