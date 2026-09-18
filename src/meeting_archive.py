@@ -665,12 +665,19 @@ def _unhide(path: pathlib.Path):
         pass
 
 
+def cothinking_notes(text: str) -> list[str]:
+    """Строки живого ко-мышления в стенограмме: «> HH:MM 📌/💎/💭/🔬 …». Одно
+    правило на архив (собирает из них Тезисы.md) и retro_fill (у такой встречи
+    модель за тезисы не платит: живые тезисы старше ретро-сводки, №309)."""
+    return [line[2:].strip() for line in text.splitlines()
+            if line.startswith("> ") and re.search(r"[📌💎💭🔬]", line)]
+
+
 def _derive_extras(folder: pathlib.Path):
     """Производные файлы: Тезисы.md и Вопросы и ответы.md из уже скопированных."""
     tr = folder / "Стенограмма.md"
     if tr.exists():  # тезисы ко-мышления: строки «> HH:MM 📌/💎/💭/🔬 …»
-        notes = [line[2:].strip() for line in tr.read_text(encoding="utf-8").splitlines()
-                 if line.startswith("> ") and re.search(r"[📌💎💭🔬]", line)]
+        notes = cothinking_notes(tr.read_text(encoding="utf-8"))
         # существующие тезисы не переписываем: LLM-тезисы retro_fill с паспортом
         # затирались цитатами ко-мышления при каждом архивировании, и паспорт
         # переставал совпадать с диском (Critical DS входного круга по №309)

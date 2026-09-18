@@ -227,3 +227,134 @@ def test_import_tail_runs_retro_fill_for_its_own_transcript_only():
     i = gu.index("derivative_state(dpath")
     assert i < gu.index("debrief = LLM(cfg).complete("), "владение разбора — до вызова модели"
     assert "expect=d_before" in gu and 'live_sidecar.attest(tpath, "debrief"' in gu
+
+
+def test_the_debrief_name_has_one_formula_across_writers():
+    """graph_updater строил имя разбора от темы, названной моделью В ЭТОМ прогоне,
+    retro_fill и архив — от стема файла. У уже названной стенограммы повторный
+    разбор с другой темой заводил второй файл (69 встреч из ~300 на боевом
+    каталоге 18.09), паспорт писался на файл, которого retro_fill не искал, а
+    в архив уезжал тот, что позже по алфавиту. Правило одно — `derivative_path`."""
+    gu = (REPO / "src" / "graph_updater.py").read_text(encoding="utf-8")
+    assert 'dpath = meeting_stamp.derivative_path(tpath, "debrief", graph)' in gu
+    assert '_разбор.md"' not in gu, "второй формулы имени разбора в graph_updater быть не должно"
+    for name in ("retro_fill.py", "meeting_archive.py", "rebuild_transcript.py"):
+        src = (REPO / "src" / name).read_text(encoding="utf-8")
+        assert 'f"{' not in src or '_разбор.md"' not in src.replace('("_разбор.md", "Разбор.md")', ""), name
+    # уже названная стенограмма: тема в имени решает, а не новая тема модели
+    titled = REPO / "transcripts" / "2026-09-02_1021_Смета.md"   # путь не читается — только имя
+    assert meeting_stamp.derivative_path(titled, "debrief").name == "2026-09-02_1021_Смета_разбор.md"
+
+
+def test_io_errors_are_ignorance_not_a_human_hand(tmp_path):
+    """OSError при чтении давал HUMAN — транзиентный EACCES от редактора или
+    бэкапа навсегда останавливал живой путь «разбор правлен руками» (Important
+    GLM выходного круга). Байты есть, но не UTF-8 — вот это не наш текст."""
+    body = "# Разбор\n- пункт\n"
+    meta = {"debrief_sha256": live_sidecar.sha(body), "debrief_source_sha256": "a" * 64}
+    p = tmp_path / "2026-09-02_1021_разбор.md"
+    p.write_text(body, encoding="utf-8")
+    assert live_sidecar.derivative_state(p, meta, "debrief", "a" * 64) == live_sidecar.FRESH
+    p.chmod(0)
+    try:
+        if p.stat().st_uid != 0:      # root читает всё — гейт прав бессмысленен
+            assert live_sidecar.derivative_state(p, meta, "debrief", "a" * 64) == live_sidecar.UNKNOWN
+    finally:
+        p.chmod(0o600)
+    p.write_bytes(b"\xff\xfe\x00 not utf-8")
+    assert live_sidecar.derivative_state(p, meta, "debrief", "a" * 64) == live_sidecar.HUMAN
+
+
+def test_build_policies_are_named_in_one_place_and_used_by_both_writers():
+    """Живой путь освежает разбор и при FRESH, и при UNKNOWN (источник — речь +
+    граф, старый корпус без паспорта обслуживается как прежде); ретро-обход
+    строит только заведомо своё и устаревшее. Раньше разница жила в двух `if`
+    по двум модулям (критика GLM выходного круга по №309)."""
+    live, retro = live_sidecar.POLICY_LIVE, live_sidecar.POLICY_RETRO
+    assert live_sidecar.wants_build(live_sidecar.HUMAN, live) is False
+    assert live_sidecar.wants_build(live_sidecar.HUMAN, retro) is False
+    assert live_sidecar.wants_build(live_sidecar.UNKNOWN, live) and not live_sidecar.wants_build(live_sidecar.UNKNOWN, retro)
+    assert live_sidecar.wants_build(live_sidecar.FRESH, live) and not live_sidecar.wants_build(live_sidecar.FRESH, retro)
+    for st in (live_sidecar.MISSING, live_sidecar.STALE):
+        assert live_sidecar.wants_build(st, live) and live_sidecar.wants_build(st, retro)
+    gu = (REPO / "src" / "graph_updater.py").read_text(encoding="utf-8")
+    rf = (REPO / "src" / "retro_fill.py").read_text(encoding="utf-8")
+    assert "live_sidecar.wants_build(d_state, live_sidecar.POLICY_LIVE)" in gu
+    assert rf.count("live_sidecar.wants_build(state, live_sidecar.POLICY_RETRO)") == 3, "минутки, разбор, тезисы"
+    assert "== live_sidecar.HUMAN" not in gu and "in (live_sidecar.MISSING, live_sidecar.STALE)" not in rf
+
+
+def test_live_cothinking_theses_are_kept_and_the_model_is_not_paid_for_them(tmp_path, monkeypatch, capsys):
+    """У встречи с живым ко-мышлением файл тезисов собирает архив из строк
+    «> HH:MM 📌 …»; retro_fill за тезисы модель не зовёт — правило названо, а не
+    выходит случайно из порядка «архив раньше проверки» (Critical DS выходного
+    круга). Без живого ко-мышления — ретро-тезисы модели с паспортом."""
+    live, tdir = _meeting(tmp_path, monkeypatch,
+                          text="# Встреча 2026-09-02_1021\n" + SPEECH + "> 10:22 📌 смета к пятому\n")
+    folder = tmp_path / "graph" / "Встречи-архив" / "2026-09-02_1021"
+    folder.mkdir(parents=True)
+
+    def fake_archive(graph, tdir_, stamp, slug, files_key=None):
+        (folder / "Стенограмма.md").write_text(live.read_text(encoding="utf-8"), encoding="utf-8")
+        meeting_archive._derive_extras(folder)
+        return folder
+    monkeypatch.setattr(retro_fill, "archive_meeting", fake_archive)
+    made = retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir)
+    assert "тезисы" not in made
+    assert "смета к пятому" in (folder / "Тезисы.md").read_text(encoding="utf-8"), "живые тезисы собрал архив"
+    assert all(retro_fill.THESES_PROMPT not in t for _, t in _FakeLLM.calls), "модель за тезисы не платила"
+    assert "тезисы живые" in capsys.readouterr().out
+    # без ко-мышления — ретро-тезисы с паспортом, прежняя версия — у стенограммы, не в графе
+    live2 = tdir / "2026-09-03_1100.md"
+    live2.write_text("# Встреча 2026-09-03_1100\n" + SPEECH, encoding="utf-8")
+    folder2 = tmp_path / "graph" / "Встречи-архив" / "2026-09-03_1100"
+    folder2.mkdir()
+    monkeypatch.setattr(retro_fill, "archive_meeting", lambda *a, **k: folder2)
+    _FakeLLM.calls = []
+    assert "тезисы" in retro_fill.process(live2, _cfg(tmp_path), tmp_path / "graph", tdir)
+    meta = live_sidecar.read(live2)
+    assert live_sidecar.derivative_state(folder2 / "Тезисы.md", meta, "theses", live_sidecar.sha(SPEECH)) == live_sidecar.FRESH
+    live2.write_text("# Встреча 2026-09-03_1100\n" + SPEECH + "ещё речь\n", encoding="utf-8")
+    old = (folder2 / "Тезисы.md").read_text(encoding="utf-8")
+    assert "тезисы" in retro_fill.process(live2, _cfg(tmp_path), tmp_path / "graph", tdir)
+    assert (tdir / ".prev" / "2026-09-03_1100__Тезисы.md").read_text(encoding="utf-8") == old
+    assert not (folder2 / ".prev").exists(), "скрытый каталог в графе синкался бы iCloud (Important DS)"
+
+
+def test_the_report_line_names_what_was_skipped_instead_of_saying_full(tmp_path, monkeypatch, capsys):
+    """«полная» печаталась и для HUMAN, и для UNKNOWN — «всё на месте» было
+    неотличимо от «всё заперто» (Important DS выходного круга)."""
+    live, tdir = _meeting(tmp_path, monkeypatch)
+    live.with_name("2026-09-02_1021_minutes.md").write_text("старые минутки без паспорта", encoding="utf-8")
+    live.with_name("2026-09-02_1021_разбор.md").write_text("старый разбор без паспорта", encoding="utf-8")
+    assert retro_fill.process(live, _cfg(tmp_path), tmp_path / "graph", tdir) == []
+    out = capsys.readouterr().out
+    assert "полная" not in out and "минутки unknown" in out and "разбор unknown" in out
+    assert retro_fill.process(tdir / "без_штампа.md", _cfg(tmp_path), tmp_path / "graph", tdir) == []
+
+
+def test_main_addresses_the_meeting_by_its_final_name_not_the_path_it_was_given(tmp_path, monkeypatch):
+    """Хвост импорта отдаёт путь ДО ретитла: graph_updater в своём процессе уже
+    переименовал файл под тему — хвост падал на `stat()` со стеком, импорт
+    объявлялся проваленным (Critical GLM выходного круга). Путь вне каталога
+    стенограмм — не встреча: архив завёл бы пустую папку в графе (Minor GLM)."""
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir()
+    final = tdir / "2026-09-02_1021_Смета.md"
+    final.write_text("# Встреча 2026-09-02_1021 — Смета\n" + SPEECH, encoding="utf-8")
+    seen: list[pathlib.Path] = []
+    monkeypatch.setattr(retro_fill, "ROOT", tmp_path)
+    monkeypatch.setattr(retro_fill, "load_user_or_example", lambda root: {"log": {"transcripts_dir": "transcripts"}})
+    monkeypatch.setattr(retro_fill.graphs, "graph_dir", lambda cfg: tmp_path / "graph")
+    monkeypatch.setattr(retro_fill, "harden_umask", lambda: None)
+    monkeypatch.setattr(retro_fill, "process", lambda f, cfg, graph, tdir_: seen.append(f))
+    retro_fill.main([str(tdir / "2026-09-02_1021.md")])          # путь до ретитла
+    assert seen == [final.resolve()]
+    stray = tmp_path / "2026-09-05_1200.md"
+    stray.write_text("# Встреча\n" + SPEECH, encoding="utf-8")
+    seen.clear()
+    retro_fill.main([str(stray)])                                 # вне каталога стенограмм
+    assert seen == []
+    with pytest.raises(SystemExit) as e:
+        retro_fill.main([str(tdir / "2026-09-09_0900.md")])       # такой встречи нет
+    assert "стенограммы нет" in str(e.value)
