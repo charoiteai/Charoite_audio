@@ -68,7 +68,7 @@ def main():
     # границе секунды файлы каналов и .md расходятся именами, и пересборка
     # запись не находит (контракт meeting_stamp; аудит DeepSeek 16.08).
     tr = Transcript(ROOT / cfg["log"]["transcripts_dir"])
-    hub = AudioHub(cfg, stamp=tr.stamp)
+    hub = AudioHub.for_meeting(cfg, stamp=tr.stamp)
 
     console.print(f"Аудио: [green]{' + '.join(hub.sources)}[/green] · STT: [green]{cfg['stt']['backend']}[/green] · LLM: [green]{model}[/green]")
     console.print("[dim]Прогреваю LLM (первая подсказка будет быстрой)…[/dim]")

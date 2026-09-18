@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import pathlib
+import dataclasses
 import queue
 import sys
 import threading
@@ -438,6 +439,72 @@ class Capture:
         self.start()
 
 
+def _safe_stderr(msg: str) -> None:
+    """Строка в stderr демона с пути потока-потребителя: полный диск или закрытый
+    stderr не должны ронять запись (I3 DS по №235). Одна обёртка на модуль —
+    раньше их было три ручных, и четвёртая (сообщение о сбое записи) стояла
+    без защиты (Critical GLM входного круга по №311)."""
+    try:
+        print(msg, file=sys.stderr, flush=True)
+    except Exception:  # noqa: BLE001 — носитель отказал, работа важнее следа
+        pass
+
+
+@dataclasses.dataclass(frozen=True)
+class Discovery:
+    """Итог обнаружения устройств: каналы, их человеческие имена и
+    происхождение канала собеседников (для причины в предупреждении)."""
+    captures: list
+    sources: list[str]
+    system_origin: dict
+
+
+def discover_captures(mode: str, sr: int) -> Discovery:
+    """Найти источники звука для режима `audio.device` — единственное место с
+    вводом-выводом (опрос ScreenCaptureKit и PortAudio) при сборке хаба;
+    состояния хаба не трогает. Конструктор `AudioHub` вызовов наружу не
+    делает, и тесты зовут его напрямую (входной круг DS и GLM по №311).
+
+    Порядок источников системного звука — от лучшего к запасному:
+    1. ScreenCaptureKit: ничего не создаёт в CoreAudio, а с macOS 15
+       приносит и микрофон тем же потоком — PortAudio не нужен вовсе;
+    2. BlackHole — проверенный драйвер, но требует установки руками.
+    Третьего пути нет: поток Core Audio tap снят 02.09 (см. find_system_audio).
+    """
+    captures: list = []
+    sources: list[str] = []
+    sck = fresh_sck_manifest()
+    bh = None if sck else find_system_audio()
+    mic = sd.default.device[0] if sd.default.device else None
+    # Микрофон в манифесте = система отдаёт оба канала одним потоком.
+    mic_from_stream = bool(sck and sck.get("mic"))
+
+    if mode in ("auto", "mix", "blackhole") and sck is not None:
+        captures.append(TapStreamCapture(sck, sr, "blackhole", key="system"))
+        sources.append("Системный звук (ScreenCaptureKit)")
+    elif mode in ("auto", "mix", "blackhole") and bh is not None:
+        captures.append(Capture(bh, sr, "blackhole"))
+        sources.append("BlackHole")
+    # auto = система И микрофон: на встрече нужны обе стороны разговора
+    if mode in ("mic", "mix", "auto") and mode != "blackhole":
+        if mic_from_stream:
+            # Микрофон тем же потоком (macOS 15+): PortAudio не открывается
+            # вообще, и вместе с ним уходит класс аварий «мёртвый стрим
+            # виснет на close», стоивший записей 20.07 и 06.08.
+            captures.append(TapStreamCapture(sck, sr, "mic", key="mic"))
+            sources.append("Микрофон (ScreenCaptureKit)")
+        elif mode != "auto" or bh is None or mic is not None or sck is not None:
+            captures.append(Capture(mic, sr, "mic"))
+            sources.append("Микрофон")
+    if not captures:  # blackhole запрошен, но не найден
+        captures.append(Capture(mic, sr, "mic"))
+        sources.append("Микрофон (fallback)")
+    # BlackHole ищут только без SCK (строка выше), поэтому «устройства не видно»
+    # — правда лишь при sck is None; иначе это ложная причина (DS и GLM r1 по #537)
+    return Discovery(captures, sources,
+                     {"sck_missing": sck is None, "bh_missing": bh is None and sck is None})
+
+
 class AudioHub:
     # Подписка на сырые фреймы (для быстрого триггера gigastt): callback(source, float32[])
     on_frame = None
@@ -453,7 +520,18 @@ class AudioHub:
 
     SPEAKER = {"blackhole": "Собеседник", "mic": "Я"}
 
-    def __init__(self, cfg: dict, stamp: str | None = None):
+    def __init__(self, cfg: dict, stamp: str | None = None, *,
+                 captures: abc.Iterable = (), sources: abc.Iterable[str] = (),
+                 system_origin: dict | None = None):
+        """Состояние хаба — и только оно. Ни одного вызова наружу: устройства
+        находит `discover_captures`, боевой путь собирает хаб через
+        `for_meeting`. Раньше конструктор трогал ScreenCaptureKit/PortAudio, и
+        тесты не могли его звать: четыре оснастки собирали хаб через
+        `object.__new__` со своими списками полей, а боевой код 14 местами
+        страховался от собственной оснастки `getattr`/`hasattr`. Все поля —
+        здесь, одним списком, включая флаги жизненного цикла (`_closing`) и
+        итоги обнаружения (дефолты «не видно», бой перезаписывает через
+        аргументы) — входной круг DS и GLM по №311, 18.09."""
         a = cfg["audio"]
         # Штамп берём у стенограммы, а не считаем свой: два независимых
         # datetime.now() на границе минуты давали `..._1359.md` и `..._1400_mic.pcm`,
@@ -483,8 +561,8 @@ class AudioHub:
         # самодостаточным в тестах и в CLI.
         self.protect_stamps: abc.Collection[str] = frozenset()
         self.record_dir = ROOT / (cfg.get("log", {}) or {}).get("recordings_dir", "recordings")
-        self.captures: list[Capture] = []
-        self.sources: list[str] = []
+        self.captures: list = list(captures)
+        self.sources: list[str] = list(sources)
         self._bufs: dict[str, np.ndarray] = {}
         self._sinks: dict = {}          # label → открытый .pcm (сырая запись встречи)
         self._last_frame: dict[str, float] = {}
@@ -500,70 +578,24 @@ class AudioHub:
         self.chunk_no: dict[str, int] = {}   # канал → номер последнего физического чанка
         self._lock = threading.Lock()
         self._running = False
+        self._closing = False          # stop() финализирует файлы: блоки в них больше не пишем
         self._pump_thread: threading.Thread | None = None
         self._restarting: set[str] = set()   # каналы, чей перезапуск сейчас в полёте (_restart_guarded)
-
-        mode = a["device"]
+        self.finalized: dict[str, pathlib.Path] = {}   # готовые .wav после stop() — по метке канала
+        # сбои прохода потребителя: тип исключения → когда о нём говорили
+        # последний раз (троттлинг репортёра, см. _tick)
+        self._guard_said: dict[str, float] = {}
+        self._pump_failures = 0        # проходов потребителя, упавших подряд (единица — проход, не блок)
         # Метка канала осталась «blackhole» намеренно: по ней названы файлы
         # записей (`..._blackhole.wav`), её знают rebuild_transcript и
         # meeting_stamp. Переименование метки сломало бы пересборку старых
         # встреч ради косметики.
-        # Порядок источников системного звука — от лучшего к запасному:
-        # 1. ScreenCaptureKit: ничего не создаёт в CoreAudio, а с macOS 15
-        #    приносит и микрофон тем же потоком — PortAudio не нужен вовсе;
-        # 2. BlackHole — проверенный драйвер, но требует установки руками.
-        # Третьего пути нет: поток Core Audio tap снят 02.09 (см. find_system_audio).
-        sck = fresh_sck_manifest()
-        bh = None if sck else find_system_audio()
-        mic = sd.default.device[0] if sd.default.device else None
-        # Микрофон в манифесте = система отдаёт оба канала одним потоком.
-        mic_from_stream = bool(sck and sck.get("mic"))
-
-        if mode in ("auto", "mix", "blackhole") and sck is not None:
-            self.captures.append(
-                TapStreamCapture(sck, self.sr, "blackhole", key="system"))
-            self.sources.append("Системный звук (ScreenCaptureKit)")
-        elif mode in ("auto", "mix", "blackhole") and bh is not None:
-            self.captures.append(Capture(bh, self.sr, "blackhole"))
-            self.sources.append("BlackHole")
-        # auto = система И микрофон: на встрече нужны обе стороны разговора
-        if mode in ("mic", "mix", "auto") and mode != "blackhole":
-            if mic_from_stream:
-                # Микрофон тем же потоком (macOS 15+): PortAudio не открывается
-                # вообще, и вместе с ним уходит класс аварий «мёртвый стрим
-                # виснет на close», стоивший записей 20.07 и 06.08.
-                self.captures.append(
-                    TapStreamCapture(sck, self.sr, "mic", key="mic"))
-                self.sources.append("Микрофон (ScreenCaptureKit)")
-            elif mode != "auto" or bh is None or mic is not None or sck is not None:
-                self.captures.append(Capture(mic, self.sr, "mic"))
-                self.sources.append("Микрофон")
-        if not self.captures:  # blackhole запрошен, но не найден
-            self.captures.append(Capture(mic, self.sr, "mic"))
-            self.sources.append("Микрофон (fallback)")
-        # Канала собеседников нет — встреча запишется ОДНИМ микрофоном, и в
-        # стенограмме не будет второй стороны разговора. До 10.09 об этом
-        # сообщала только строка статуса «Слушаю: Микрофон (fallback)» рядом
-        # с названием модели: на встрече такое не замечают, а узнают через час
-        # по пустой стенограмме. С удалением BlackHole (№137) запасного пути
-        # не осталось вовсе, поэтому предупреждение обязано быть громким.
-        #
-        # Здесь только ЗАПОМИНАЕМ факт, а говорим в start(). Причина в порядке
-        # проводки: daemon.py строит AudioHub (стр. 537) и лишь потом вешает
-        # on_status (стр. 541), а main.py не вешает его вовсе. Предупреждение
-        # из конструктора уходило в `self.on_status is None` и не долетало до
-        # интерфейса НИКОГДА — то есть «громко» было ровно наполовину
-        # (уведомление и лог), а обещанная строка статуса молчала (круг 1,
-        # DS и GLM независимо, 10.09).
-        #
-        # Режим mic исключён сознательно: там пользователь сам просит один
-        # микрофон (диктовка, личные заметки), и канала собеседников не будет
-        # по построению. Кричать об этом — ложная тревога на каждом запуске.
-        # Происхождение канала запоминаем всегда: start() судит ещё раз, уже
-        # по факту открытия (№230), и ему нужна та же причина. BlackHole ищут
-        # только без SCK (строка выше), поэтому «устройства не видно» — правда
-        # лишь при sck is None; иначе это ложная причина (DS и GLM r1 по #537).
-        self._system_origin = {"sck_missing": sck is None, "bh_missing": bh is None and sck is None}
+        mode = a["device"]
+        # Происхождение канала собеседников: start() судит ещё раз, уже по факту
+        # открытия (№230), и ему нужна та же причина. Без обнаружения (тесты,
+        # CLI без устройств) — «устройств не видно»: честный дефолт, а не
+        # выдуманная причина (Minor DS/GLM r1 по #537)
+        self._system_origin = dict(system_origin or {"sck_missing": True, "bh_missing": True})
         self._no_system_channel = None
         # Реестр потерь — единственное состояние «какие каналы сейчас не
         # пишут»: метка → причина. Заполняют все поводы (нет на старте, не
@@ -578,10 +610,42 @@ class AudioHub:
         self._mode = mode                          # `device` из конфига: намеренный один канал ≠ авария (DS M4)
         self._fail_streak: dict[str, int] = {}   # неудачные рестарты подряд по каналу
         self._scream_count = 0            # криков за встречу — потолок звука LOUD_SCREAMS
-        if mode != "mic" and not any(c.label == "blackhole" for c in self.captures):
+        # Канала собеседников нет — встреча запишется ОДНИМ микрофоном, и в
+        # стенограмме не будет второй стороны разговора. До 10.09 об этом
+        # сообщала только строка статуса «Слушаю: Микрофон (fallback)» рядом
+        # с названием модели: на встрече такое не замечают, а узнают через час
+        # по пустой стенограмме. С удалением BlackHole (№137) запасного пути
+        # не осталось вовсе, поэтому предупреждение обязано быть громким.
+        #
+        # Здесь только ЗАПОМИНАЕМ факт, а говорим в start(). Причина в порядке
+        # проводки: daemon.py строит AudioHub и лишь потом вешает on_status, а
+        # main.py не вешает его вовсе. Предупреждение из конструктора уходило в
+        # `self.on_status is None` и не долетало до интерфейса НИКОГДА — то есть
+        # «громко» было ровно наполовину (уведомление и лог), а обещанная строка
+        # статуса молчала (круг 1, DS и GLM независимо, 10.09).
+        #
+        # Режим mic исключён сознательно: там пользователь сам просит один
+        # микрофон (диктовка, личные заметки), и канала собеседников не будет
+        # по построению. Кричать об этом — ложная тревога на каждом запуске.
+        if mode != "mic" and self.captures and not any(c.label == "blackhole" for c in self.captures):
             self._no_system_channel = dict(self._system_origin)
-        for c in self.captures:
-            self._bufs[c.label] = np.zeros(0, dtype=np.float32)
+        self._register_captures(self.captures)
+
+    def _register_captures(self, captures: abc.Iterable) -> None:
+        """Поканальные словари под состав: STT-буфер на каждую метку. Один
+        путь для конструктора и для оснастки, которая подставляет каналы
+        после (Important GLM 2 входного круга по №311)."""
+        for c in captures:
+            self._bufs.setdefault(c.label, np.zeros(0, dtype=np.float32))
+
+    @classmethod
+    def for_meeting(cls, cfg: dict, stamp: str | None = None) -> "AudioHub":
+        """Боевой путь: найти устройства и собрать хаб. Единственное место,
+        где конструирование хаба трогает ScreenCaptureKit и PortAudio."""
+        a = cfg["audio"]
+        found = discover_captures(a["device"], int(a["samplerate"]))
+        return cls(cfg, stamp, captures=found.captures, sources=found.sources,
+                   system_origin=found.system_origin)
 
     # Уведомлений со звуком за встречу — не больше трёх: флапающий поток
     # (то пишется, то нет) иначе звенел бы каждые полторы минуты до конца
@@ -667,22 +731,9 @@ class AudioHub:
     # ещё мёртвом канале (Critical DS и GLM входного круга).
     _NAMES_GEN = {"blackhole": "собеседников", "mic": "вашего микрофона"}   # для «нет X»
 
-    def _ensure_loss_state(self) -> None:
-        """Хаб без конструктора (тесты через object.__new__) полей реестра не
-        знает — завести пустые, а не падать AttributeError (Minor DS r2)."""
-        for name, empty in (("_lost", dict), ("_warned", set), ("_fail_streak", dict),
-                            ("_hung", set), ("_restarting", set), ("_last_frame", dict), ("_last_try", dict)):
-            if not hasattr(self, name):
-                setattr(self, name, empty())
-        if not hasattr(self, "_scream_count"):
-            self._scream_count = 0
-        if not hasattr(self, "_mode"):
-            self._mode = "auto"
-
     def live_labels(self) -> list[str]:
         """Каналы, которые пишут сейчас: состав минус потерянные."""
-        lost = getattr(self, "_lost", {})
-        return [c.label for c in getattr(self, "captures", []) if c.label not in lost]
+        return [c.label for c in self.captures if c.label not in self._lost]
 
     def _carrier(self, *, died: bool = True) -> tuple[str, str, str]:
         """(маркер липкой строки, что осталось — для строки статуса, то же —
@@ -693,7 +744,7 @@ class AudioHub:
         live = set(self.live_labels())
         lost = set(self._lost)
         later = "дальше " if died else ""
-        if getattr(self, "_mode", "auto") == "mic" and lost == {"mic"}:
+        if self._mode == "mic" and lost == {"mic"}:
             # один микрофон выбран сознательно: о собеседниках здесь не
             # говорят вовсе — их и не должно было быть (Minor DS выходного круга)
             return (stt_runtime.RECORDING_EMPTY, ": микрофон не пишется, запись пуста",
@@ -767,11 +818,14 @@ class AudioHub:
         import datetime                       # локально: шапку аудио-модуля не трогаем
         import subprocess
 
-        self._ensure_loss_state()
-        if len({v.died for v in losses.values()}) > 1:
-            # фаза у пачки одна — иначе глагол и текст врали бы половине каналов;
-            # лучше громко, чем молча (M2 DS круга 2)
-            raise ValueError("потери одного объявления обязаны быть одной фазы")
+        # фаза у пачки одна по построению (_loss_of ставит died=True всем потерям
+        # прохода); смешанная — не повод молчать о потерях: raise здесь стоял в
+        # finally сторожа и убил бы объявление вместе с потоком-потребителем
+        # (Important DS входного круга по №311) — считаем «жил и пропал», если
+        # так у любой из потерь, и оставляем след
+        phases = {v.died for v in losses.values()}
+        if len(phases) > 1:
+            _safe_stderr("потери одного объявления пришли разных фаз: " + ", ".join(sorted(losses)))
         now = time.time()
         # событие — не «метка появилась», а «значение изменилось»: канал,
         # который пробовали перезапустить (звук «не прерывайте»), а потом
@@ -789,7 +843,7 @@ class AudioHub:
             if lbl not in self._warned or (prev is not None and prev.phase() != loss.phase()):
                 fresh.append(lbl)
         self._lost.update(losses)
-        died = all(v.died for v in losses.values())
+        died = any(v.died for v in losses.values())   # смешанная фаза → «жил и пропал» (DS I3 по №311)
         mark, what, banner_what = self._carrier(died=died)
         names = {"blackhole": "системный звук", "mic": "ваш микрофон"}
         lost_names = [names.get(lbl, lbl) for lbl in losses]
@@ -831,14 +885,8 @@ class AudioHub:
             except OSError:
                 pass
             # след в stderr демона: статусы каналов в его лог не пишутся, и
-            # частота потерь до сих пор была неизмерима (Minor DS входного
-            # круга). Под защитой, как остальные носители: полный диск или
-            # закрытый stderr не должны ронять поток-потребитель (I3 DS)
-            try:
-                print(f"канал {label} потерян: {loss.reason}; пишут: {', '.join(self.live_labels()) or 'никто'}",
-                      file=sys.stderr, flush=True)
-            except Exception:                   # noqa: BLE001
-                pass
+            # частота потерь до сих пор была неизмерима (Minor DS входного круга)
+            _safe_stderr(f"канал {label} потерян: {loss.reason}; пишут: {', '.join(self.live_labels()) or 'никто'}")
 
     def _announce_back(self, label: str, silent: float) -> str:
         """Канал `label` ожил -> строка статуса. Потерянных не осталось —
@@ -847,7 +895,6 @@ class AudioHub:
         он один на все каналы. Канал возвращается и сторожу: из `_hung`
         снимается, иначе следующая смерть не получила бы ни рестарта, ни
         крика (Important GLM выходного круга)."""
-        self._ensure_loss_state()
         self._lost.pop(label, None)
         self._warned.discard(label)          # следующая потеря этого канала кричит заново
         self._fail_streak.pop(label, None)
@@ -887,7 +934,7 @@ class AudioHub:
         # (диаризация, первые чанки) его сменяет за секунды — главный носитель
         # для человека это уведомление со звуком и строка в capture.log; липкий
         # статус ошибки записи — отдельная работа (круг 2 GLM по #531).
-        if getattr(self, "_no_system_channel", None):
+        if self._no_system_channel:
             self._warn_no_system_channel(**self._no_system_channel)
         if self.record_on:
             self._open_sinks()
@@ -928,13 +975,11 @@ class AudioHub:
         for lbl, err in failed:
             short = " ".join(str(err).split())[:300]
             if lbl == "blackhole":
-                if getattr(self, "_no_system_channel", None):
+                if self._no_system_channel:
                     continue                  # канала не было с конструктора — уже кричали
                 # одной строкой: текст уходит и в capture.log, где запись = строка,
-                # а хвост без метки припишется Swift-части (DS r1 по #537).
-                # Хаб без конструктора (тесты через object.__new__) причин не знает —
-                # пустой словарь, а не выдуманная (Minor DS/GLM r1 по #537)
-                self._warn_no_system_channel(**getattr(self, "_system_origin", {}), start_error=short)
+                # а хвост без метки припишется Swift-части (DS r1 по #537)
+                self._warn_no_system_channel(**self._system_origin, start_error=short)
             else:
                 self._announce_loss(lbl, f"канал не открылся при старте: {short}", died=False)
         self._pump_thread = threading.Thread(target=self._pump, daemon=True, name="audio-pump")
@@ -953,8 +998,6 @@ class AudioHub:
         # дренаж ниже, а рост очереди после финализации ограничен секундами до
         # выхода процесса (критика DS r1 по #557). Все каналы разом, один потолок
         # на всех: грейс приложения до terminate — секунды.
-        # getattr: хабы без конструктора (тесты через object.__new__) этих полей не
-        # заводят — stop() обязан работать и у них (CI по #557: test_audio_buffer_drop)
         skip = {c.label for c in self.captures if self._busy(c.label)}
         workers = [(c, threading.Thread(target=self._quiet_stop, args=(c,), daemon=True,
                                         name=f"stop-{c.label}"))
@@ -975,7 +1018,7 @@ class AudioHub:
         # закрытый sink и кричал «ЗАПИСЬ НА ДИСК ОСТАНОВИЛАСЬ» о звуке, который
         # записан (аудит 13.09, DS I2/M3, GLM M3/M4). Финализация — в finally:
         # сбой дренажа не должен оставить .pcm без .wav (DS r1 I2 по #557).
-        pump = getattr(self, "_pump_thread", None)
+        pump = self._pump_thread
         if pump is not None and pump is not threading.current_thread():
             pump.join(max(0.0, min(self.PUMP_JOIN_TIMEOUT, deadline - time.monotonic())))
         try:
@@ -1232,25 +1275,105 @@ class AudioHub:
             except Exception:  # noqa: BLE001 — .pcm остаётся, восстановим оффлайн
                 pass
 
+    #: не чаще этого репортёр говорит об одном типе сбоя прохода: сторож идёт
+    #: раз в 5 с, и без окна устойчивый баг дал бы строку каждые пять секунд
+    GUARD_REPORT_S = 30.0
+
     def _pump(self):
-        """Каждый источник — в свой буфер, без микса (спикеры не смешиваются)."""
+        """Поток-потребитель: каждый источник — в свой буфер, без микса
+        (спикеры не смешиваются). Цикл — только `_tick`: у потребителя одна
+        точка, владеющая его живучестью, а не набор вызовов, каждый из
+        которых защищён или нет по отдельности."""
         while self._running:
-            got = False
-            for c in self.captures:
-                try:
-                    part = c.q.get(timeout=0.15)
-                except queue.Empty:
-                    continue
-                got = True
-                self._consume(c, part)
-            self._watch_streams()
-            if not got:
-                continue
+            try:
+                self._tick()
+            except Exception as e:  # noqa: BLE001 — скелет прохода (get, атрибуты канала) тоже не роняет поток
+                # два разных гварда, нужны оба: внутренние (у единицы работы) не
+                # дают дурному блоку съесть соседей и сторож, внешний — не даёт
+                # потоку умереть от исключения в самом скелете прохода (круг 2 DS
+                # I1 по №311). Сон — против холостого цикла на 100 % ядра
+                self._report_pump_failure(e)
+                time.sleep(0.05)
         # Хвост, домолотый уже после `stop()`, иначе не озвучивает никто:
         # окно отчёта — полминуты, а досказ в `stop()` к этому моменту уже
         # отработал. Метод идемпотентен, двойной строки не будет
-        # (ревью 20.08, круг 3, DeepSeek).
-        self._say_last_drops()
+        # (ревью 20.08, круг 3, DeepSeek). Исключение здесь уже никого не
+        # убивает, но унесло бы тишину о недобранном хвосте (Minor DS по №311)
+        try:
+            self._say_last_drops()
+        except Exception as e:  # noqa: BLE001
+            self._report_pump_failure(e)
+
+    def _tick(self) -> None:
+        """Один проход потребителя: блок каждого канала → файл и STT-буфер
+        (`_consume`), затем сторож каналов (`_watch_streams`). Гвард — у каждой
+        ЕДИНИЦЫ работы, а сторож идёт последним и всегда.
+
+        До №311 сторож стоял в цикле голым, и любое исключение его прохода —
+        баг в `_sweep`, незаведённое поле, отказ носителя — убивало поток:
+        остаток встречи не писался ни на диск, ни в STT; приложение видело это
+        лишь как «аудиовход замер» спустя до 100 с и отвечало перезапуском всей
+        встречи. Один гвард на весь проход (первая правка) был хуже: устойчивый
+        сбой блока одного канала обрывал проход до сторожа — мёртвый канал не
+        детектировался никогда, очереди соседей росли, а `input_age_seconds`
+        оставался нулевым, и приложение не перезапускало ничего (Critical DS
+        выходного круга). Поэтому: дурной блок не съедает блоки соседей и не
+        отменяет сторож. Сбой не тихий: репортёр (stderr + статус владельцу,
+        окно по типу) и счётчик `pump_failures` в снапшоте здоровья."""
+        failed = False
+        for c in self.captures:
+            try:
+                part = c.q.get(timeout=0.15)
+            except queue.Empty:
+                continue
+            try:
+                self._consume(c, part)
+            except Exception as e:  # noqa: BLE001 — потребитель обязан жить, пока _running
+                failed = True
+                self._report_pump_failure(e)
+                # сбой обработки — видимая потеря живого звука, не тихая: кадр
+                # пришёл (свежесть канала штампуется первой строкой _consume), но
+                # до ленты не дошёл; иначе снаружи канал выглядел бы здоровым
+                # (круг 2 DS I5)
+                try:
+                    self._note_drop(c.label, len(part) / float(self.sr), written=c.label in self._sinks)
+                except Exception:  # noqa: BLE001 — отчёт о потере не важнее прохода
+                    pass
+        try:
+            self._watch_streams()
+        except Exception as e:  # noqa: BLE001 — сторож — вспомогательный контур, не цена записи
+            failed = True
+            self._report_pump_failure(e)
+        # единица счётчика — ПРОХОД, как читает потребитель снапшота: два дурных
+        # канала в одном проходе — один упавший проход, не два (круг 2 DS I2)
+        self._pump_failures = self._pump_failures + 1 if failed else 0
+
+    def _report_pump_failure(self, exc: BaseException) -> None:
+        """Сбой единицы работы потребителя — не молча: полный текст в stderr и
+        статус владельцу, не чаще GUARD_REPORT_S на тип исключения. Потерю
+        каналов НЕ объявляем: каналы живы, сбой — у хаба, и ложное «канал
+        потерян» в липкой строке было бы ложью (критика GLM входного круга).
+
+        Репортёр — последний рубеж и обязан не бросать сам: `str(exc)` с битым
+        `__str__` убил бы поток из except-блока (DS M1 / GLM I2 выходного
+        круга) — всё тело под своим try, текст собирается защищённо."""
+        try:
+            key = type(exc).__name__
+            now = time.monotonic()
+            last = self._guard_said.get(key)
+            if last is not None and now - last < self.GUARD_REPORT_S:
+                return
+            self._guard_said[key] = now
+            try:
+                text = " ".join(str(exc).split())[:300]
+            except Exception:  # noqa: BLE001 — текст исключения недоступен, имя типа есть
+                text = "<текст исключения недоступен>"
+            # счётчик проходов растёт в конце прохода — этот сбой в него ещё не вошёл
+            _safe_stderr(f"сбой аудиопотока ({key}: {text}), упавших проходов подряд {self._pump_failures + 1} — "
+                         "поток жив, проход повторяется")
+            self._say(f"⚠️ сбой аудиопотока: {key} — запись продолжается")
+        except Exception:  # noqa: BLE001 — репортёр не роняет то, о чём докладывает
+            pass
 
     def _consume(self, c, part, notify_frame: bool = True) -> None:
         """Один блок канала: файл записи, STT-буфер, триггер. Общий для _pump и
@@ -1261,7 +1384,7 @@ class AudioHub:
             self._last_frame[c.label] = time.time()
             # после _closing файлы закрываются — блок в них не пишем и не кричим
             # о «сбое диска»: sink для него уже «нет» (GLM r1 I1 по #557)
-            sink = None if getattr(self, "_closing", False) else self._sinks.get(c.label)
+            sink = None if self._closing else self._sinks.get(c.label)
         written = sink is not None
         sink_error = None
         if sink is not None:
@@ -1288,7 +1411,7 @@ class AudioHub:
             # канала больше не повторится, то есть статус не спамит.
             msg = (f"ЗАПИСЬ НА ДИСК ОСТАНОВИЛАСЬ ({c.label}: {sink_error}) — "
                    "после сбоя этот звук будет не восстановить")
-            print(msg, file=sys.stderr, flush=True)
+            _safe_stderr(msg)
             self._say(msg)
         if dropped:
             # Вне лока: статус уходит в UI через колбэк демона, и
@@ -1313,7 +1436,7 @@ class AudioHub:
         виснет, а зависание не ловится через try/except.
         """
         box: dict = {}
-        restarting = getattr(self, "_restarting", None)
+        restarting = self._restarting
 
         def run():
             try:
@@ -1351,7 +1474,6 @@ class AudioHub:
         if now - self._last_check < 5:
             return
         self._last_check = now
-        self._ensure_loss_state()                 # хаб без конструктора (object.__new__) — Minor DS r2
         # потери этого прохода: метка -> (почему, канал ещё пробуем). Объявляются
         # РАЗОМ после цикла — носитель считается по полному составу (C2 DS по №235)
         lost_now: dict[str, Loss] = {}
@@ -1452,8 +1574,7 @@ class AudioHub:
         """Канал нельзя трогать: перезапуск завис (`_hung`) или ещё в полёте
         (`_restarting`). Один предикат на сторож и stop() — раньше сторож
         смотрел одно множество, stop() — оба (I1 DS круга 2)."""
-        # getattr: хабы без конструктора (тесты через object.__new__) полей не заводят
-        return label in getattr(self, "_hung", set()) or label in getattr(self, "_restarting", set())
+        return label in self._hung or label in self._restarting
 
     def _loss_of(self, c, why: str, *, retriable: bool) -> Loss:
         """Значение потери канала посреди встречи — формируется в момент
@@ -1536,7 +1657,14 @@ class AudioHub:
             }
             for label in labels
         }
+        pump = self._pump_thread
         return {
+            # поток-потребитель жив и сколько его проходов подряд падают: до №311
+            # приложение видело смерть помпы лишь как «аудиовход замер» спустя до
+            # 100 с (input_age по min каналов) и перезапускало всю встречу; поле в
+            # уже сериализуемом снапшоте даёт точный сигнал без нового наблюдателя
+            "pump_alive": bool(pump is not None and pump.is_alive()),
+            "pump_failures": self._pump_failures,
             "backlog_seconds": max(backlog.values(), default=0.0),
             "input_age_seconds": min(seen_ages, default=None),
             "recording_ok": (not self.record_on
@@ -1632,7 +1760,7 @@ class AudioHub:
             # как эхо: шов стенограммы считает соседями только n и n-1, а тихий
             # чанк между двумя речевыми — разрыв, не перекрытие (luna, круг-2 #452).
             # Под тем же локом, что и срез (GLM #453); ключ — физический канал.
-            chunk_no = self.__dict__.setdefault("chunk_no", {})   # хаб в тестах собирают мимо __init__
+            chunk_no = self.chunk_no
             for label, c in cut.items():
                 if c is not None:
                     chunk_no[label] = chunk_no.get(label, -1) + 1
@@ -1673,7 +1801,7 @@ class AudioHub:
         номер тоже потребляет (luna, круг-2 #452)."""
         label = self.channel_of(speaker)
         with self._lock:
-            n = self.__dict__.get("chunk_no", {}).get(label)
+            n = self.chunk_no.get(label)
         return None if n is None else (label, n)
 
     def pull(self) -> np.ndarray | None:
