@@ -290,6 +290,28 @@ code path is shared.
 
 ## Post-meeting pipeline (src/graph_updater.py)
 
+**A derivative has a passport.** Minutes, debrief and theses derive from the
+transcript, and each keeps a pair of keys in the `.md.live.json` sidecar: the
+bytes of the last machine write (`<kind>_sha256`) and the hash of the source
+speech (`<kind>_source_sha256`). Speech excludes the title and the
+"Co-thinking" tail (`transcript.speech_of`): a retitle rewrites the first
+line, and a hash with the title made the minutes "built from other speech"
+on the very first retitle. Freshness is decided in one place,
+`live_sidecar.derivative_state`: no file — build; machine-owned and same
+speech — do not call the model; machine-owned and speech changed — rebuild
+(previous version in `.prev/`); bytes not machine — edited by a human, leave
+alone; no passport — leave alone too: that is absence of knowledge, not
+knowledge of a human, and the old corpus (232 of 302 meetings without a
+sidecar) is not locked as "human"; passports are issued from now on. Minutes
+are built by one pipeline on every path (`finalize_minutes` +
+`record_minutes_passport`); the debrief checks ownership before calling the
+model and writes under a "file unchanged under our hands" gate; the debrief
+file name follows one rule (`meeting_stamp.derivative_path`). The mtime
+criterion was rejected by measurement: minutes are older than the transcript
+by time for 204 of 302 meetings — time is moved by retitle, co-thinking and
+revision, not by speech. The import tail runs the retro pass for its own
+transcript only; the full sweep is manual.
+
 1. The LLM extracts JSON from the transcript: title (2-3 words),
    participants, topics, decisions, action items, entities, Cores.
 2. Graph update: a meeting note with `[[Folder/Name|Name]]` links, upserts

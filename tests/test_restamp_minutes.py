@@ -258,12 +258,17 @@ def test_rebuild_records_hash_after_canonization_only_for_machine_text():
     лексикон делал файл «правленным руками», а транзиентный отказ модели
     навсегда выключал регенерацию."""
     src = (SRC / "rebuild_transcript.py").read_text(encoding="utf-8")
-    fn = src[src.index("def rebuild("):src.index("def finalize_minutes(")]
+    fn = src[src.index("def rebuild("):src.index("def record_minutes_passport(")]
     i_fin = fn.index("outcome = finalize_minutes(")
-    i_can = fn.index("canonize_file(mpath, cfg)")
-    i_sha = fn.index("_remember_minutes_sha(live, _sha(mpath.read_text(")
-    assert i_fin < i_can < i_sha, "порядок: finalize → canonize → хеш по байтам с диска"
-    assert "if machine_owned:" in fn[i_can:i_sha], "хеш — только для машинного файла"
+    i_pass = fn.index("record_minutes_passport(live, mpath, outcome, final_text, cfg)")
+    assert i_fin < i_pass, "паспорт — после finalize"
+    # тройка «канон → хеш байтов → хеш речи» живёт одной функцией для пересборки и
+    # ретро-прогона (№309): канон раньше хеша, хеш — только для машинного файла
+    passport = src[src.index("def record_minutes_passport("):src.index("def finalize_minutes(")]
+    i_can = passport.index("canonize_file(mpath, cfg)")
+    i_sha = passport.index("_remember_minutes_sha(live, _sha(mpath.read_text(")
+    assert i_can < i_sha, "порядок: canonize → хеш по байтам с диска"
+    assert 'if outcome == "human":\n        return' in passport[i_can:i_sha], "хеш — только для машинного файла"
     body = src[src.index("def finalize_minutes("):src.index("def restamp_minutes(")]
     assert "_remember_minutes_sha(" not in body, "finalize_minutes сам хеш не пишет"
 

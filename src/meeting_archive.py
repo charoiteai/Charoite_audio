@@ -671,7 +671,10 @@ def _derive_extras(folder: pathlib.Path):
     if tr.exists():  # тезисы ко-мышления: строки «> HH:MM 📌/💎/💭/🔬 …»
         notes = [line[2:].strip() for line in tr.read_text(encoding="utf-8").splitlines()
                  if line.startswith("> ") and re.search(r"[📌💎💭🔬]", line)]
-        if notes:
+        # существующие тезисы не переписываем: LLM-тезисы retro_fill с паспортом
+        # затирались цитатами ко-мышления при каждом архивировании, и паспорт
+        # переставал совпадать с диском (Critical DS входного круга по №309)
+        if notes and not (folder / "Тезисы.md").exists():
             safe_write.write_text(folder / "Тезисы.md",
                 "# Тезисы встречи (📌 КТ · 💎 факты · 💭 мысли · 🔬 переоценка)\n\n"
                 + "\n".join(f"- {n}" for n in notes) + "\n")
@@ -724,7 +727,7 @@ def _derive_extras(folder: pathlib.Path):
                 qa.append("---")
             if qa[-1] == "---":
                 qa.pop()
-    if qa:
+    if qa and not (folder / "Вопросы и ответы.md").exists():   # тот же класс: не затирать готовое
         safe_write.write_text(folder / "Вопросы и ответы.md",
             "# Вопросы и ответы\n\n" + "\n".join(qa) + "\n")
 

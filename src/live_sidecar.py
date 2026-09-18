@@ -29,6 +29,51 @@ def sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+# Состояние производной встречи по её паспорту в сайдкаре (№309). Паспорт —
+# пара ключей `<вид>_sha256` (байты последней МАШИННОЙ записи) и
+# `<вид>_source_sha256` (хеш речи источника, из которой собрана). У минуток
+# он был и раньше (`minutes_*`), у разбора и тезисов появляется здесь же.
+MISSING = "missing"      # файла нет — собрать
+FRESH = "fresh"          # машинная, источник тот же — модель не звать
+STALE = "stale"          # машинная, речь изменилась — пересобрать (прежняя в .prev/)
+HUMAN = "human"          # байты не машинные (правлена, перештампована) — не трогать
+UNKNOWN = "unknown"      # паспорта нет (старые артефакты, чужой писатель) — не трогать,
+#                          но и не считать человеческой: HUMAN — это знание, UNKNOWN — его
+#                          отсутствие; схлопнуть их значило бы навсегда запереть старый
+#                          корпус (232 из 302 встреч без сайдкара — входной круг по №309)
+
+
+def derivative_state(path: pathlib.Path, meta: dict | None, kind: str, source_sha: str) -> str:
+    """Что делать с производной `path` вида `kind` при текущей речи источника
+    `source_sha` — единственное место, где производная решает о своей свежести.
+    Раньше шесть писателей выводили её каждый своим способом: «если файла
+    нет», «пишу всегда», по mtime, «если непустой» — и лишь минутки по хешу."""
+    try:
+        if not path.exists():
+            return MISSING
+    except OSError:
+        return UNKNOWN
+    meta = meta if isinstance(meta, dict) else {}
+    recorded = valid_sha(meta.get(f"{kind}_sha256"))
+    if recorded is None:
+        return UNKNOWN
+    try:
+        current = sha(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return HUMAN                          # не читается как наш текст — не наш
+    if current != recorded:
+        return HUMAN
+    return FRESH if valid_sha(meta.get(f"{kind}_source_sha256")) == source_sha else STALE
+
+
+def attest(live: pathlib.Path, kind: str, file_text: str, source_sha: str,
+           bare: str | None = None) -> bool:
+    """Выдать производной паспорт после МАШИННОЙ записи: байты и речь источника.
+    Обёртка над `remember` — сайдкара нет — создаст; неоднозначный — False."""
+    return (remember(live, f"{kind}_sha256", sha(file_text), bare)
+            and remember(live, f"{kind}_source_sha256", source_sha, bare))
+
+
 def valid_sha(value) -> str | None:
     """Хеш из сайдкара или None, если там мусор (обрезанная строка, число):
     мусор не должен превращаться в вечный «правлено руками» (GLM M2)."""

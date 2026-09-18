@@ -2758,6 +2758,25 @@ def main():
     try:
         if not graph_ok:
             raise RuntimeError("модель не отвечала — разбор пропущен")
+        # Владение — ДО вызова модели: разбор правлен человеком → не
+        # генерировать вовсе, а не «сгенерировать и выбросить» (Important GLM
+        # входного круга по №309). Имя файла — одним правилом с retro_fill
+        # (`derivative_path`): у посекундной стенограммы без темы выходило два
+        # разбора на встречу (Critical DS). При UNKNOWN (паспорта нет — старый
+        # корпус) разбор пересобирается, как и раньше: его источник — речь и
+        # граф, и «свежесть по речи» к нему не применима; паспорт — с этой
+        # записи вперёд. Снимок — до генерации: минута работы модели — окно
+        # для редактора, запись под гейтом (Important GLM 2).
+        slug2 = theme_slug(title) if title else ""
+        dpath = tpath.with_name(f"{stamp}_{slug2}_разбор.md" if slug2 else f"{stamp}_разбор.md")
+        import transcript as transcript_mod2  # локально, как выше: модуль документов тяжёлым не считается, но шапку не трогаем
+        # хеш — от файла стенограммы, не от `context` (туда дописаны минутки):
+        # иначе паспорт разбора не совпал бы с тем, что считает retro_fill
+        speech_sha = live_sidecar.sha(transcript_mod2.speech_of(tpath.read_text(encoding="utf-8")))
+        d_state = live_sidecar.derivative_state(dpath, live_sidecar.read(tpath) or {}, "debrief", speech_sha)
+        if d_state == live_sidecar.HUMAN:
+            raise RuntimeError(f"разбор правлен руками ({dpath.name}) — не перезаписываю")
+        d_before = safe_write.stat_snapshot(dpath)
         gctx_parts = []
         moc2 = graph / "_MOC.md"
         if moc2.exists():
@@ -2796,13 +2815,15 @@ def main():
             timeout=LLM_TIMEOUT, revive=True, busy_wait=BUSY_WAIT,
         )
         if debrief.strip():
-            slug2 = theme_slug(title) if title else ""
-            dpath = tpath.with_name(f"{stamp}_{slug2}_разбор.md" if slug2 else f"{stamp}_разбор.md")
             # шапка честно называет автора: облачная ревизия рядом сверяет и
             # снимает ошибки, а сам разбор остаётся черновиком (№241)
-            safe_write.write_text(dpath, f"<!-- {stamp} · {title or 'встреча'} -->\n"
-                                  f"{DEBRIEF_NOTE}\n" + debrief)
-            print(f"разбор: {dpath.name}")
+            body = f"<!-- {stamp} · {title or 'встреча'} -->\n{DEBRIEF_NOTE}\n" + debrief
+            if not safe_write.write_text(dpath, body, expect=d_before, expect_absent=d_before is None):
+                print(f"разбор: {dpath.name} изменился под рукой — не перезаписываю")
+            else:
+                if not live_sidecar.attest(tpath, "debrief", body, speech_sha):
+                    print(f"разбор: паспорт не записан — следующий прогон сочтёт {dpath.name} чужим")
+                print(f"разбор: {dpath.name}")
     except Exception as e:
         print(f"разбор не удался: {e}")
 

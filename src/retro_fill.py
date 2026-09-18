@@ -13,13 +13,14 @@
 from __future__ import annotations
 
 import pathlib
-import re
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from llm import LLM, LLMHTTPError  # noqa: E402
+import live_sidecar  # noqa: E402
 import meeting_stamp  # noqa: E402
 import safe_write  # noqa: E402
+import transcript  # noqa: E402
 from meeting_archive import archive_meeting  # noqa: E402
 
 from charoite_paths import harden_umask, resolve_root
@@ -70,54 +71,111 @@ def gen(cfg: dict, system: str, transcript: str, task: str) -> str:
         return ""
 
 
-def main():
+def _theses_path(folder: pathlib.Path) -> pathlib.Path:
+    return folder / "Тезисы.md"
+
+
+def process(f: pathlib.Path, cfg: dict, graph: pathlib.Path, tdir: pathlib.Path) -> list[str]:
+    """Производные одной стенограммы по паспорту (№309), не «если файла нет».
+
+    Минутки — тем же конвейером, что пересборка (`finalize_minutes` +
+    `record_minutes_passport`): ретро-генерация своим промптом была третьим
+    конвейером — без среза «Ко-мышления», без нормализации поручений, канона и
+    `.prev` (Critical GLM входного круга). Разбор и тезисы — по состоянию
+    паспорта: MISSING/STALE → собрать (прежняя версия в `.prev/` рядом с
+    файлом), FRESH → модель не звать, HUMAN и UNKNOWN → не трогать (у старого
+    корпуса паспорта нет — это не знание о человеке, а его отсутствие;
+    бэкфилла по решению нет, паспорта выдаются с этой минуты вперёд)."""
+    import rebuild_transcript as rt
+
+    bare = meeting_stamp.stamp_of(f.stem)
+    stamp = meeting_stamp.graph_key(tdir, f.stem, graph)
+    slug = f.stem[len(bare) + 1:] if f.stem != bare else ""
+    text = f.read_text(encoding="utf-8")
+    speech_sha = live_sidecar.sha(transcript.speech_of(text))
+    meta = live_sidecar.read(f) or {}
+    made: list[str] = []
+
+    mpath = meeting_stamp.derivative_path(f, "minutes", graph)
+    state = live_sidecar.derivative_state(mpath, meta, "minutes", speech_sha)
+    if state in (live_sidecar.MISSING, live_sidecar.STALE):
+        outcome = rt.finalize_minutes(f, text, meta, cfg, rt.minutes_names(meta))
+        rt.record_minutes_passport(f, mpath, outcome, text, cfg)
+        if outcome == "regenerated":
+            made.append("минутки")
+    else:
+        print(f"{stamp}: минутки — {state}", file=sys.stderr)
+
+    dpath = meeting_stamp.derivative_path(f, "debrief", graph)
+    state = live_sidecar.derivative_state(dpath, meta, "debrief", speech_sha)
+    if state in (live_sidecar.MISSING, live_sidecar.STALE):
+        out = gen(cfg, "Ты аналитик после рабочей встречи. Пиши по-русски, сухо, markdown. "
+                       "Не выдумывай факты.", transcript.speech_of(text), DEBRIEF_PROMPT)
+        if out and _write_derivative(f, dpath, "debrief", NOTE + out + "\n", speech_sha):
+            made.append("разбор")
+    else:
+        print(f"{stamp}: разбор — {state}", file=sys.stderr)
+
+    folder = archive_meeting(graph, tdir, stamp, slug, files_key=f.stem)
+    if folder is not None:
+        tpath = _theses_path(folder)
+        state = live_sidecar.derivative_state(tpath, meta, "theses", speech_sha)
+        if state in (live_sidecar.MISSING, live_sidecar.STALE):
+            out = gen(cfg, "Ты выделяешь ценное из стенограмм. Телеграфно, по-русски.",
+                      transcript.speech_of(text), THESES_PROMPT)
+            if out and _write_derivative(f, tpath, "theses",
+                                         "# Тезисы встречи (📌 КТ · 💎 факты · 💭 мысли)\n" + NOTE + "\n"
+                                         + out + "\n", speech_sha):
+                made.append("тезисы")
+        else:
+            print(f"{stamp}: тезисы — {state}", file=sys.stderr)
+    print(f"{stamp}: {', '.join(made) if made else 'полная'}")
+    return made
+
+
+def _write_derivative(live: pathlib.Path, path: pathlib.Path, kind: str, body: str,
+                      speech_sha: str) -> bool:
+    """Записать производную и выдать ей паспорт. Прежняя версия — в `.prev/`
+    рядом с файлом (у тезисов — в папке архива): уверенная, но неверная
+    генерация не должна быть невозвратной (как у минуток)."""
+    before = safe_write.stat_snapshot(path)
+    if before is not None:
+        try:
+            prev = path.parent / ".prev"
+            prev.mkdir(exist_ok=True)
+            safe_write.write_text(prev / path.name, path.read_text(encoding="utf-8"))
+        except OSError as e:
+            print(f"ретро: прежняя версия {path.name} не сохранена ({e}) — не перезаписываю", file=sys.stderr)
+            return False
+    # запись под гейтом «файл не менялся под рукой»: минута генерации — окно
+    # для редактора; обрыв не оставит «готовый» битый файл (аудит 13.09, GLM M6)
+    if not safe_write.write_text(path, body, expect=before, expect_absent=before is None):
+        print(f"ретро: {path.name} изменился под рукой — не перезаписываю", file=sys.stderr)
+        return False
+    if not live_sidecar.attest(live, kind, body, speech_sha):
+        print(f"ретро: паспорт {kind} не записан — следующая пересборка сочтёт файл чужим", file=sys.stderr)
+    return True
+
+
+def main(argv: list[str] | None = None):
     harden_umask()   # минутки, разбор, архив — данные встреч, только владельцу
     cfg = load_user_or_example(ROOT)
     graph = graphs.graph_dir(cfg) or sys.exit("sufler.graph_dir не задан")
     tdir = ROOT / cfg["log"]["transcripts_dir"]
-
-    for f in sorted(tdir.glob("*.md")):
-        if re.search(r"_(minutes|hints|разбор|ревизия_claude|спикеры)\.md$", f.name):
-            continue
-        # Посекундные стенограммы (с 28.07) минутный регэксп пропускал
-        # целиком (круг-1 по PR #388, Codex); ключ — как у graph_updater.
+    args = sys.argv[1:] if argv is None else argv
+    if args:
+        # хвост импорта — только своя стенограмма: обход всех 302 звал
+        # archive_meeting (и переиндексацию архива) на каждую (DS I4 по №309)
+        files = [pathlib.Path(a) for a in args]
+    else:
+        files = sorted(tdir.glob("*.md"))
+    for f in files:
+        if any(f.stem.endswith(s) for s in meeting_stamp.AUX_SUFFIXES):
+            continue     # производные, копии — один список хвостов на проект (GLM I3 по №309)
         bare = meeting_stamp.stamp_of(f.stem)
         if bare is None or f.stat().st_size < 600:
             continue
-        stamp = meeting_stamp.graph_key(tdir, f.stem, graph)
-        slug = f.stem[len(bare) + 1:] if f.stem != bare else ""
-        text = f.read_text(encoding="utf-8")
-        base = f.with_suffix("")
-        made = []
-
-        mpath = pathlib.Path(str(base) + "_minutes.md")
-        if not mpath.exists():
-            out = gen(cfg, "Ты секретарь встречи. Пишешь точные, сухие минутки по-русски.",
-                      text, MINUTES_PROMPT)
-            if out:
-                safe_write.write_text(mpath, NOTE + out + "\n")   # обрыв не оставит «готовый» битый файл (аудит 13.09, GLM M6)
-                made.append("минутки")
-
-        dpath = pathlib.Path(str(base) + "_разбор.md")
-        if not dpath.exists():
-            out = gen(cfg, "Ты аналитик после рабочей встречи. Пиши по-русски, сухо, markdown. "
-                           "Не выдумывай факты.", text, DEBRIEF_PROMPT)
-            if out:
-                safe_write.write_text(dpath, NOTE + out + "\n")
-                made.append("разбор")
-
-        folder = archive_meeting(graph, tdir, stamp, slug, files_key=f.stem)
-        if folder is not None:
-            tpath = folder / "Тезисы.md"
-            if not tpath.exists():
-                out = gen(cfg, "Ты выделяешь ценное из стенограмм. Телеграфно, по-русски.",
-                          text, THESES_PROMPT)
-                if out:
-                    safe_write.write_text(
-                        tpath, "# Тезисы встречи (📌 КТ · 💎 факты · 💭 мысли)\n" + NOTE + "\n"
-                        + out + "\n")
-                    made.append("тезисы")
-        print(f"{stamp}: {', '.join(made) if made else 'полная'}")
+        process(f, cfg, graph, tdir)
 
 
 if __name__ == "__main__":

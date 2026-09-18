@@ -165,6 +165,26 @@ def minute_of(stamp: str) -> str:
     return m.group(1)[:15] if m else stamp
 
 
+def derivative_path(tpath: pathlib.Path, kind: str, graph: pathlib.Path | None = None) -> pathlib.Path:
+    """Путь производной данного вида по стенограмме — одно правило на всех
+    писателей. Два соглашения, оба живые: минутки называет демон по СТЕМУ
+    стенограммы (`<стем>_minutes.md` — черновик пишется во время встречи,
+    когда минутного ключа ещё нет); разбор называет graph_updater по КЛЮЧУ
+    графа (`graph_key`: минутный штамп + тема). retro_fill строил имя разбора
+    от стема, и у посекундной стенограммы без темы выходило два разбора на
+    встречу — модель платилась дважды, в архив ехал не тот (Critical DS
+    входного круга по №309)."""
+    stem = tpath.stem
+    if kind == "minutes":
+        return tpath.with_name(stem + "_minutes.md")
+    if kind == "debrief":
+        bare = stamp_of(stem)
+        key = graph_key(tpath.parent, stem, graph) if bare else stem
+        slug = stem[len(bare) + 1:] if bare and stem != bare else ""
+        return tpath.with_name(f"{key}_{slug}_разбор.md" if slug else f"{key}_разбор.md")
+    raise ValueError(f"неизвестный вид производной: {kind}")
+
+
 def graph_key(tdir: pathlib.Path, stem: str,
               graph: pathlib.Path | None = None) -> str:
     """Ключ встречи в графе: имя заметки `Встречи/<ключ>.md`, ссылка
