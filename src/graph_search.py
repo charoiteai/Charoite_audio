@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import array
 import dataclasses
+import functools
 import datetime as dt
 import enum
 import fcntl
@@ -426,10 +427,14 @@ class LinkCatalog:
         (Important DS, круг 3 по №292)."""
         owned = self._by_path.get(stub.key) is stub
         hit = self.live(self._canon.get(stub.key, stub.stub_to) if owned else stub.stub_to)
-        if hit is not None:
-            return hit
-        twin = self._names.get(stub.base)
-        return twin if twin is not None and not twin.stub_to else None
+        if hit is None:
+            twin = self._names.get(stub.base)
+            hit = twin if twin is not None and not twin.stub_to else None
+        # производное — не замена заглушке в слоте: стрелка на сводку (или тёзка в
+        # «Досье/») протаскивала бы досье в «Найдено в графе» мимо разреза
+        # первичных (выходной круг GLM I1 по №296). Гейт здесь, в резолвере:
+        # каждый будущий потребитель получает его даром
+        return hit if hit is not None and hit.role == PRIMARY else None
 
     def _build_canon(self, docs: Sequence[Doc]) -> dict[str, str]:
         """Ключ заглушки → ключ живого канона, цепочки развёрнуты, циклы прочь.
@@ -493,6 +498,7 @@ class Generation:
     def __post_init__(self) -> None:
         object.__setattr__(self, "docs", types.MappingProxyType(dict(self.docs)))
         object.__setattr__(self, "indeg", types.MappingProxyType(dict(self.indeg)))
+        object.__setattr__(self, "dossiers", types.MappingProxyType(dict(self.dossiers)))
 
     docs: Mapping[str, Doc]
     indeg: Mapping[str, int]
@@ -500,6 +506,13 @@ class Generation:
     skipped: tuple[str, ...] = ()   # что обход РЕАЛЬНО отсёк (см. `_walk`)
     unread: int = 0                 # файлы, которые не открылись (права, битая ссылка)
     service: int = 0                # служебные файлы вне индекса — тоже часть охвата (№295)
+    # Разрезы по роли — готовые, а не фильтр у каждого потребителя: слоты и
+    # голоса берут `primary`, секция «📁» — `dossiers` по ключу документа (тот
+    # же `Doc.key`, что у ссылок: имя на диске знает только обход, и путь из
+    # темы индекса не собирается строкой). Нефильтрованного списка для этих
+    # решений нет — «забыл про роль» невыразимо (выходной круг DS/GLM по №296)
+    primary: tuple[Doc, ...] = ()
+    dossiers: Mapping[str, Doc] = dataclasses.field(default_factory=dict)
 
 
 def _owned(docs: Iterable[Doc], key: Callable[[Doc], str], *,
@@ -670,7 +683,6 @@ class Doc:
     base: str          # нормализованное имя файла без расширения — цель ГОЛОЙ [[ссылки]]
     body: str = ""     # текст без YAML-шапки — для фрагментов выдачи (шапка модели не нужна)
     stub_to: str = ""  # заглушка-редирект: КЛЮЧ канона, куда она ведёт (иначе пусто)
-    role: str = ""     # PRIMARY / DOSSIER / SERVICE — выводится из пути один раз, здесь
 
     def __post_init__(self) -> None:
         # имя и стрелка нормализуются В ДОКУМЕНТЕ: обход их нормализует, а
@@ -680,9 +692,15 @@ class Doc:
         # документ, иначе его держать некому (GLM, круги 1 и 2 по №292)
         self.base = norm_text(self.base)
         self.stub_to = norm_text(self.stub_to)
-        # роль — тоже свойство документа, а не потребителя: тестовая оснастка
-        # и обход получают её из одного предиката (№296)
-        self.role = self.role or doc_role(self.rel)
+
+    @functools.cached_property
+    def role(self) -> str:
+        """PRIMARY / DOSSIER / SERVICE — из пути, одним предикатом, и только так:
+        поле с умолчанием позволяло бы оснастке подсунуть чужую роль мимо
+        предиката — тот же класс «каждый выводит своё правило» через дверь
+        тестов (выходной круг GLM по №296). `rel` после конструирования не
+        меняется, значение считается один раз."""
+        return doc_role(self.rel)
 
     @property
     def key(self) -> str:
@@ -983,12 +1001,14 @@ class GraphSearch:
         snapshot = list(docs.values())
         # обход 28 МБ текста — вне замка: под ним каждый поиск встречи ждал бы (GLM M5)
         catalog = LinkCatalog(snapshot)
+        primary = tuple(d for d in snapshot if d.role == PRIMARY)
+        dossiers = {d.key: d for d in snapshot if d.role == DOSSIER}
         indeg: dict[str, int] = {}
-        for d in snapshot:
+        for d in primary:
             # голосуют только первичные: единственная ссылка заглушки — служебная
             # стрелка на канон, а сводка досье пересказывает тех, за кого голосует —
             # буст хаба доставался тому, кого она сама и упомянула (№296)
-            if d.stub_to or d.role != PRIMARY:
+            if d.stub_to:
                 continue
             for target in wiki_targets(d.text):
                 hit = catalog.live(target)
@@ -996,6 +1016,7 @@ class GraphSearch:
                     continue          # цели нет или цепочка оборвана — голос некому отдать
                 indeg[hit.key] = indeg.get(hit.key, 0) + 1
         self._publish(current, gone=gone, docs=docs, indeg=indeg, catalog=catalog,
+                      primary=primary, dossiers=dossiers,
                       skipped=scope[0], unread=scope[1], service=scope[2])
 
     # --------------------------------------------------------------- векторы
@@ -1137,7 +1158,10 @@ class GraphSearch:
         self.load_vectors()
         gen = gen or self._gen
         with self._lock:
-            return [p for p, d in gen.docs.items() if self._vecs.get(p, (None, None))[0] != d.mtime]
+            # векторы положены тем, кто участвует в семантике — первичным: сводки
+            # досье в слоты и переходы не идут, их косинусы никто не читал бы, а
+            # 256 файлов переэмбеддивались бы после каждой ночи (DS M3 / GLM M4)
+            return [d.path for d in gen.primary if self._vecs.get(d.path, (None, None))[0] != d.mtime]
 
     def embed_pending(self, budget_s: float | None = None, batch: int = EMBED_BATCH,
                       timeout: float = 60.0, should_stop: Callable[[], bool] | None = None) -> int:
@@ -1230,10 +1254,10 @@ class GraphSearch:
             threading.Thread(target=self.refresh, daemon=True, name="graph-search-refresh").start()
         gen = self._gen          # одно поле — одно поколение: документы, голоса и
         all_docs = list(gen.docs.values())   # каталог не могут разъехаться по построению
-        # слоты выдачи — только первичным: сводка досье идёт своей секцией «📁»,
-        # а в «Найдено в графе» вытесняла бы заметку, которую сама пересказала;
-        # целью ссылок и переходов она остаётся (`by_rel` — по всем)
-        docs = [d for d in all_docs if d.role == PRIMARY]
+        # слоты выдачи — только первичным (разрез поколения): сводка досье идёт
+        # своей секцией «📁», а в «Найдено в графе» вытесняла бы заметку, которую
+        # сама пересказала; целью ссылок и переходов она остаётся (`by_rel` — по всем)
+        docs = list(gen.primary)
         indeg = gen.indeg
         catalog = gen.catalog
         avg_len = max(1.0, sum(len(d.low) for d in docs) / max(1, len(docs)))
@@ -1315,7 +1339,7 @@ class GraphSearch:
                     # темы не должна всплывать через вектор, раз не всплывает через слова
                     sem.append((sim * recency_factor(d.date_ts, now) * raw_dampener(d.rel) * placeholder_factor(d.base), d.rel))
 
-        dossiers, dossier_cov = self._dossier_blocks(query, snippet_chars, by_rel)
+        dossiers, dossier_cov = self._dossier_blocks(query, snippet_chars, gen)
         # вердикт — функция ВСЕГО, что несёт Result: досье — такое же лексическое
         # свидетельство (доля ключей темы в запросе), без него статус говорил «пусто»
         # при непустой сводке, и контуры домысливали по-своему (DS I2 / I3 r4)
@@ -1348,16 +1372,18 @@ class GraphSearch:
         return Result(blocks, total, status, dossiers=dossiers, sem_used=sem_used, query=query,
                       reason=reason, skipped=gen.skipped, unread=gen.unread, service=gen.service)
 
-    def _dossier_blocks(self, query: str, snippet_chars: int, by_rel: Mapping[str, Doc],
+    def _dossier_blocks(self, query: str, snippet_chars: int, gen: Generation,
                         limit: int = 2) -> tuple[list[str], float]:
         """Готовые сводки по теме — ПЕРЕД фрагментами: индекс лексический, без
         моделей. -> (блоки, лучшая доля ключей темы в запросе — в вердикт как покрытие).
 
-        Тело сводки — из поколения (`_walk` читает `Досье/*.md` наравне со всеми),
-        а не с диска: путь к графу в сборке ответа из проиндексированного не
-        участвует, и тема из JSON не склеивается в путь (`../` читал бы вне папки).
-        Сводки, которой в снимке ещё нет, в ответе нет — до следующего обхода
-        (входной круг DS по №296)."""
+        Индекс тем (`Досье/_index.json`) читается с диска — сознательно, кэш
+        снят (входной круг GLM по №296). Тело сводки — из поколения по карте
+        `gen.dossiers` (ключ — `Doc.key`, нормализованный путь без расширения):
+        имя на диске знает только обход, а тема из JSON в путь не склеивается —
+        ни `../` вне папки, ни расхождение регистра или формы Unicode между
+        темой и файлом (выходной круг DS I1 / GLM M3). Сводки, которой в снимке
+        ещё нет, в ответе нет — до следующего обхода."""
         folder = self.graph / dossier.DOSSIER_DIR
         try:
             entries = dossier.lookup(folder, query, limit=limit)
@@ -1368,8 +1394,8 @@ class GraphSearch:
         for e in entries:
             if e.get("счёт", 0) < 0.3:
                 continue
-            d = by_rel.get(f"{dossier.DOSSIER_DIR}/{e['тема']}.md")
-            if d is None or d.role != DOSSIER:
+            d = gen.dossiers.get(norm_text(f"{dossier.DOSSIER_DIR}/{e['тема']}"))
+            if d is None:
                 continue
             head = " ".join((d.body or d.text)[:snippet_chars * 3].split())
             out.append(f"📁 Досье «{e['тема']}»\n  {head}")
@@ -1470,6 +1496,19 @@ class Unavailable(RuntimeError):
     """Памяти по графу не будет: граф не настроен."""
 
 
+def coverage_gaps(result: Result) -> list[str]:
+    """Чего индекс НЕ читал — словами, из одного места: фасад `render`, шапка блока
+    памяти и статус нити (`brain.scope_note`) собирали одну мысль тремя циклами,
+    и новое поле охвата дошло до человека, но не до модели (выходной круг DS I2 /
+    GLM I2 по №296). Порядок — как весит: области, нечитаемые, служебные."""
+    gaps = list(result.skipped)
+    if result.unread:
+        gaps.append(f"не открылось файлов: {result.unread}")
+    if result.service:
+        gaps.append(f"служебных файлов вне индекса: {result.service}")
+    return gaps
+
+
 def render(result: Result, query: str | None = None, where: str = "графе") -> str:
     """Текст выдачи человеку (CLI, журнал, тесты формата) в том же виде, что
     отдавал сервер памяти: «⚠ …» первой строкой, досье, шапка «Найдено…»,
@@ -1481,8 +1520,7 @@ def render(result: Result, query: str | None = None, where: str = "графе") 
     # «пусто» — сильнейшее утверждение модуля, и непрочитанное весит в нём
     # больше всего: слабая форма оговорку получила, сильная оставалась без неё
     # (GLM, круг по №295)
-    gaps = (list(result.skipped) + ([f"{result.unread} нечитаемых файлов"] if result.unread else [])
-            + ([f"{result.service} служебных указателей"] if result.service else []))
+    gaps = coverage_gaps(result)
     tail = f" (искали без: {', '.join(gaps)})" if gaps else ""
     if result.empty:
         if result.status is Verdict.UNVERIFIED:

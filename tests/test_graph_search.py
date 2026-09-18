@@ -806,7 +806,8 @@ def test_the_index_generation_is_published_in_one_piece(tmp_path):
     показал. Теперь состояние — одно значение `Generation`, и рассинхрон
     невыразим: отдельных полей у поиска нет вовсе."""
     assert {f.name for f in dataclasses.fields(gs.Generation)} == {
-        "docs", "indeg", "catalog", "skipped", "unread", "service"}, "снимок описан типом не целиком"
+        "docs", "indeg", "catalog", "skipped", "unread", "service", "primary", "dossiers"}, \
+        "снимок описан типом не целиком"
     s = _search(tmp_path)
     g = s.graph
     (g / "Ядра").mkdir(exist_ok=True)
@@ -819,7 +820,8 @@ def test_the_index_generation_is_published_in_one_piece(tmp_path):
     s.refresh(force=True)
 
     split = [f for f in vars(s)
-             if f.endswith(("docs", "indeg", "catalog", "skipped", "unread", "service")) and f != "_gen"]
+             if f.endswith(("docs", "indeg", "catalog", "skipped", "unread", "service", "primary", "dossiers"))
+             and f != "_gen"]
     assert split == [], f"состояние индекса живёт ещё и отдельными полями: {split}"
     rels = {d.rel for d in s._gen.docs.values()}
     for key in ("ядра/старое", "ядра/канон", "старое", "канон"):
@@ -1238,7 +1240,7 @@ def test_a_file_that_would_not_open_stays_named_in_the_coverage(tmp_path):
         s.refresh(force=True)
         r = s.search("qqqzzz", limit=1)
         assert r.unread >= 1, "нечитаемый файл не назван"
-        assert "нечитаемых файлов" in gs.render(r, "qqqzzz"), gs.render(r, "qqqzzz")
+        assert "не открылось файлов" in gs.render(r, "qqqzzz"), gs.render(r, "qqqzzz")
     finally:
         locked.chmod(0o600)
 
@@ -1288,7 +1290,14 @@ def test_service_files_in_subfolders_leave_the_index_but_stay_in_coverage(tmp_pa
     assert s._gen.service == 3, "два в корне и один в подпапке — все в охвате"
     r = s.search("платёжный шлюз", limit=20, semantic=False)
     assert "УКАЗАТЕЛЬ_МАРКЕР" not in gs.render(r) and r.service == 3
-    assert "3 служебных указателей" in gs.render(gs.Result([], 0, service=3, query="x"), "x")
+    assert "служебных файлов вне индекса: 3" in gs.render(gs.Result([], 0, service=3, query="x"), "x")
+    # те же слова доезжают до модели: шапка блока памяти и статус нити берут охват
+    # из того же форматтера, что фасад (DS I2 / GLM I2 выходного круга)
+    import brain
+    weak = gs.Result([], 0, gs.Verdict.WEAK, service=3, skipped=("Встречи-архив",), unread=1, query="x")
+    note = brain.scope_note(weak)
+    assert "Встречи-архив" in note and "не открылось файлов: 1" in note and "служебных файлов вне индекса: 3" in note
+    assert gs.coverage_gaps(weak) == ["Встречи-архив", "не открылось файлов: 1", "служебных файлов вне индекса: 3"]
     # переход из узла, не документ индекса — правило одно, локального `startswith("_")` в _hops нет
     src = (REPO / "src" / "graph_search.py").read_text(encoding="utf-8")
     hops = src[src.index("def _hops"):src.index("def _hops") + 4000]
@@ -1370,3 +1379,58 @@ def test_hops_lead_to_primary_notes_only(tmp_path):
     s.embed_pending()
     r = s.search("платёжный шлюз токен", limit=4)
     assert "ПЕРЕХОД_В_СВОДКУ" not in gs.render(r)
+
+
+def test_a_stub_pointing_at_a_dossier_does_not_smuggle_it_into_slots(tmp_path):
+    """Заглушка-редирект со стрелкой на сводку (или тёзка в «Досье/») подменялась
+    каноном-досье в `_swap_stubs` мимо разреза первичных — сводка занимала слот
+    «Найдено в графе». Гейт — в резолвере `instead_of_stub`: производное не
+    замена заглушке (выходной круг GLM I1 по №296)."""
+    s = _search(tmp_path)
+    folder = s.graph / dossier.DOSSIER_DIR
+    folder.mkdir()
+    (folder / "Старый шлюз.md").write_text("---\ntype: досье\n---\n# Старый шлюз\nСВОДКА_ВМЕСТО_ЗАГЛУШКИ\n",
+                                           encoding="utf-8")
+    (s.graph / "Системы" / "Старый шлюз.md").write_text(_stub("Старый шлюз", "Досье/Старый шлюз"), encoding="utf-8")
+    s.refresh(force=True)
+    stub = next(d for d in s._gen.docs.values() if d.rel == "Системы/Старый шлюз.md")
+    assert stub.stub_to and s._gen.catalog.instead_of_stub(stub) is None, "сводка — не замена заглушке"
+    r = s.search("старый шлюз", limit=3, semantic=False)
+    assert not any("Досье/" in b for b in r.blocks) and "СВОДКА_ВМЕСТО_ЗАГЛУШКИ" not in gs.render(r)
+
+
+def test_dossier_theme_is_resolved_by_normalised_key_not_raw_path(tmp_path):
+    """Тема в индексе и имя файла на диске расходятся регистром или формой
+    Unicode (человек поправил заголовок узла, ночь переписала индекс; NFD от
+    macOS) — файловая система это прощала, байтовое сравнение `rel` нет. Карта
+    досье поколения — по `Doc.key`, нормализованному, как у ссылок (DS I1 / GLM
+    M3 выходного круга)."""
+    s = _search(tmp_path)
+    folder = s.graph / dossier.DOSSIER_DIR
+    folder.mkdir()
+    (folder / "платёжный шлюз.md").write_text("---\ntype: досье\n---\n# платёжный шлюз\nпилот, провайдер ЮPay\n",
+                                              encoding="utf-8")
+    dossier.write_index(folder, [{"тема": "Платёжный шлюз", "ключи": ["платежн", "шлюз"],   # регистр + NFD «ё»
+                                  "источников": 3, "собрано": "2026-08-02"}])
+    s.refresh(force=True)
+    assert set(s._gen.dossiers) == {gs.norm_text(f"{dossier.DOSSIER_DIR}/платёжный шлюз")}
+    r = s.search("что с платёжным шлюзом", limit=2, semantic=False)
+    assert len(r.dossiers) == 1 and "ЮPay" in r.dossiers[0], "тема нашла файл несмотря на регистр и форму"
+
+
+def test_only_primary_documents_get_vectors(tmp_path):
+    """Сводки в слоты и переходы не идут — их векторы никто не читал бы, а 256
+    файлов переэмбеддивались бы после каждой ночи (DS M3 / GLM M4)."""
+    s = _search(tmp_path)
+    folder = s.graph / dossier.DOSSIER_DIR
+    folder.mkdir()
+    (folder / "Тема.md").write_text("---\ntype: досье\n---\n# Тема\nтекст сводки для эмбеддера\n", encoding="utf-8")
+    (s.graph / "Встречи" / "2026-08-09_1000.md").write_text("# Новая\nтекст заметки для эмбеддера\n", encoding="utf-8")
+    s.refresh(force=True)
+    pending = s.pending_vectors()
+    assert any(p.endswith("2026-08-09_1000.md") for p in pending), "первичная заметка ждёт вектора"
+    assert not any(p.endswith("Тема.md") for p in pending), "сводка вектора не ждёт"
+    s.embed_pending()
+    assert not any(p.endswith("Тема.md") for p in s._vecs)
+    d = next(d for d in s._gen.docs.values() if d.rel.endswith("Тема.md"))
+    assert d.role == gs.DOSSIER and d in s._gen.dossiers.values() and d not in s._gen.primary
