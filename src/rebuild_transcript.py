@@ -801,32 +801,8 @@ def _finish(live: pathlib.Path, final_text: str, meta: dict, cfg: dict) -> None:
     # никаких; пересборочный `names` живёт в другом пространстве номеров и
     # клеил бы имя не тому — GLM Critical по #464, аудит зон 12.09).
     outcome = finalize_minutes(live, final_text, meta, cfg, minutes_names(meta))
-    machine_owned = outcome != "human"
-    mpath = live.with_name(live.stem + "_minutes.md")
-    canonize_file(mpath, cfg)
-    # Хеш — по байтам, которые ЛЕЖАТ на диске после канона, и только когда
-    # файл машинный. Раньше он писался до canonize_file (лексикон менял
-    # байты — вторая пересборка видела «правку руками»), а после
-    # транзиентного отказа модели перештампованный файл терял признак
-    # автотекста навсегда (DS r1 Imp-1/Imp-2 по #483).
-    if machine_owned:
-        try:
-            _remember_minutes_sha(live, _sha(mpath.read_text(encoding="utf-8")))
-            # По какой речи собраны: повторный клик без правок не должен
-            # перегенерировать протокол (advisory GLM r1 по #489). Только
-            # после настоящей регенерации — перештамповка не собирала
-            # минутки из этого текста (DS I1 / GLM I2 r2); хвост
-            # «Ко-мышление» в речь не входит (GLM M4 r2).
-            if outcome == "regenerated" and not _remember_sha(live, "minutes_source_sha256",
-                                                              _sha(_speech(final_text))):
-                # Без этого хеша minutes_names сочтёт минутки живыми и следующая
-                # перештамповка возьмёт имена live.json на нумерацию пересборки
-                # (DS I3 по #551): сказать громко, пока минутки нетронуты
-                log("⚠️ минутки пересобраны, а признак их нумерации не записан — "
-                    "следующая пересборка может перештамповать их именами живой сессии; "
-                    "проверьте сайдкар .live.json")
-        except (OSError, UnicodeDecodeError) as e:
-            log(f"хеш минуток не снят ({e}) — следующая пересборка их не тронет")
+    mpath = meeting_stamp.derivative_path(live, "minutes")   # одно правило имени на всех писателей (№309)
+    record_minutes_passport(live, mpath, outcome, final_text, cfg)
 
 
 _LEX_CACHE: list = [None]
@@ -988,8 +964,9 @@ def _sha(text: str) -> str:
 
 
 def _speech(text: str) -> str:
-    """Речь без хвоста «Ко-мышление» — то, из чего собираются минутки."""
-    return re.split(re.escape(transcript.NOTES_HEAD), text, maxsplit=1)[0]
+    """Речь источника — одним правилом на всех писателей (без H1 и без
+    «Ко-мышления»): `transcript.speech_of`, см. там про ретитл (№309)."""
+    return transcript.speech_of(text)
 
 
 def _remember_minutes_sha(live: pathlib.Path, sha: str) -> None:
@@ -1008,6 +985,36 @@ def _remember_sha(live: pathlib.Path, key: str, sha: str) -> bool:
     if not ok:
         log(f"хеш {key} не записан: сайдкар неоднозначен или не пишется")
     return ok
+
+
+def record_minutes_passport(live: pathlib.Path, mpath: pathlib.Path, outcome: str,
+                            final_text: str, cfg: dict) -> None:
+    """Канонизация и паспорт минуток после `finalize_minutes` — одна тройка
+    «запись → канон → хеши» для пересборки и ретро-прогона (ретро писал
+    минутки без канона и без паспорта — DS M7 входного круга по №309).
+
+    Хеш — по байтам, которые ЛЕЖАТ на диске после канона, и только когда файл
+    машинный. Раньше он писался до canonize_file (лексикон менял байты —
+    вторая пересборка видела «правку руками»), а после транзиентного отказа
+    модели перештампованный файл терял признак автотекста навсегда (DS r1
+    Imp-1/Imp-2 по #483). Хеш речи-источника — только после настоящей
+    регенерации: перештамповка не собирала минутки из этого текста (DS I1 /
+    GLM I2 r2); речь — без H1 и «Ко-мышления» (`transcript.speech_of`)."""
+    canonize_file(mpath, cfg)
+    if outcome == "human":
+        return
+    try:
+        _remember_minutes_sha(live, _sha(mpath.read_text(encoding="utf-8")))
+        if outcome == "regenerated" and not _remember_sha(live, "minutes_source_sha256",
+                                                          _sha(_speech(final_text))):
+            # Без этого хеша minutes_names сочтёт минутки живыми и следующая
+            # перештамповка возьмёт имена live.json на нумерацию пересборки
+            # (DS I3 по #551): сказать громко, пока минутки нетронуты
+            log("⚠️ минутки пересобраны, а признак их нумерации не записан — "
+                "следующая пересборка может перештамповать их именами живой сессии; "
+                "проверьте сайдкар .live.json")
+    except (OSError, UnicodeDecodeError) as e:
+        log(f"хеш минуток не снят ({e}) — следующая пересборка их не тронет")
 
 
 def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
@@ -1064,7 +1071,15 @@ def finalize_minutes(live: pathlib.Path, final_text: str, meta: dict, cfg: dict,
     # создании с нуля: существующий черновик сам доказывает, что встреча
     # короткой не была, а финал бывает короче живого текста (эхо-фильтр
     # микрофона; GLM Minor-5).
-    speech = re.split(re.escape(transcript.NOTES_HEAD), final_text, maxsplit=1)[0]
+    speech = _speech(final_text)
+    if current is not None and live_sidecar.valid_sha(
+            meta.get("minutes_source_sha256") if isinstance(meta, dict) else None) == _sha(speech):
+        # машинные минутки уже собраны по этой самой речи: повторный клик без
+        # правок не должен перегенерировать протокол — обещание стояло в
+        # комментарии при записи хеша, а читал хеш только путь правленой
+        # стенограммы (Critical GLM входного круга по №309)
+        log("минутки уже собраны по этой речи — модель не зову")
+        return "fresh"
     if len(speech) < MINUTES_MIN_CHARS:
         # Замена содержательного черновика регенератом из пустого промпта
         # хуже, чем создание с нуля (advisory GLM r2): короткий финал —

@@ -80,9 +80,16 @@ def test_rebuild_wires_canonize():
     src = (SRC / "rebuild_transcript.py").read_text(encoding="utf-8")
     fn = src[src.index("def rebuild("):src.index("def write_final(")]
     assert "canonize(final_text, cfg)" in fn or "final_text = canonize(" in fn
-    # минутки: mpath = live.with_name(... "_minutes.md"); canonize_file(mpath, cfg)
-    assert 'mpath = live.with_name(live.stem + "_minutes.md")' in fn
-    assert "canonize_file(mpath, cfg)" in fn
+    # минутки: rebuild → _finish → record_minutes_passport → canonize_file(mpath, cfg);
+    # имя минуток — одним правилом с остальными писателями (№309)
+    assert "_finish(live, final_text, meta, cfg)" in fn
+    finish = src[src.index("def _finish("):src.index("def record_minutes_passport(", src.index("def _finish("))] \
+        if src.index("def _finish(") < src.index("def record_minutes_passport(") else src[src.index("def _finish("):]
+    assert 'mpath = meeting_stamp.derivative_path(live, "minutes")' in finish
+    assert "record_minutes_passport(live, mpath, outcome, final_text, cfg)" in finish
+    passport = src[src.index("def record_minutes_passport("):]
+    passport = passport[:passport.index("\ndef ", 1)]
+    assert "canonize_file(mpath, cfg)" in passport
 
 
 def test_first_name_alias_never_maps_to_surname(tmp_path):

@@ -24,7 +24,7 @@ import stat as _stat
 import sys
 
 from charoite_paths import resolve_root
-from meeting_stamp import archive_time, files_with_stamp, graph_key, stamp_of
+from meeting_stamp import archive_time, derivative_path, files_with_stamp, graph_key, stamp_of
 import safe_write
 import graphs
 
@@ -157,13 +157,26 @@ def archive_meeting(graph: pathlib.Path, tdir: pathlib.Path, stamp: str, title: 
     # глоб `{stamp}*.md` тянул в папку файлы второй встречи той же минуты
     # (крэш-рестарт), причём с перезаписью по одноимённому назначению
     # (аудит DeepSeek 16.08). Правило границы — одно, в meeting_stamp.
+    # Разбор — тот, что назвали писатели (`derivative_path` от главного файла),
+    # а не любой файл с суффиксом под префиксом стема: у голой посекундной
+    # стенограммы разбор назван минутным ключом графа и под префикс стема не
+    # попадает вовсе, а старое имя от стема рядом с ним — двойня (№309, круг 2).
+    # Ожидаемого файла нет — прежний порядок: что нашлось по префиксу.
+    main = tdir / f"{files_key or stamp}.md"
+    expected_debrief = derivative_path(main, "debrief", graph) if main.is_file() else None
+    if expected_debrief is not None and not expected_debrief.is_file():
+        expected_debrief = None
     for f in files_with_stamp(tdir, files_key or stamp, suffix=".md"):
         dest = "Стенограмма.md"
         for suf, nice in NICE:
             if f.name.endswith(suf):
                 dest = nice
                 break
+        if dest == "Разбор.md" and expected_debrief is not None and f != expected_debrief:
+            continue                                   # двойня под другим именем — не наш разбор
         shutil.copy2(f, folder / dest)
+    if expected_debrief is not None:
+        shutil.copy2(expected_debrief, folder / "Разбор.md")
     obs_url = _obsidian_url(graph, f"{graph.name}/Встречи/{stamp}")
     # Ссылку на заметку пишем, ТОЛЬКО если заметка есть в ЭТОМ графе. Папка
     # архива и узел встречи расходятся штатно: сфера встречи определяется по
@@ -665,13 +678,28 @@ def _unhide(path: pathlib.Path):
         pass
 
 
+# строка живого контура: цитата, (время,) знак тезиса СРАЗУ — не любая цитата
+# со знаком где-то внутри (цитата из прежней сводки в разговоре — не тезис;
+# Minor DS круга 2 по №309)
+_COTHINKING_LINE = re.compile(r"^> (?:\d{1,2}:\d{2} )?[📌💎💭🔬]")
+
+
+def cothinking_notes(text: str) -> list[str]:
+    """Строки живого ко-мышления в стенограмме: «> HH:MM 📌/💎/💭/🔬 …». Одно
+    правило на архив (собирает из них Тезисы.md) и retro_fill (у такой встречи
+    модель за тезисы не платит: живые тезисы старше ретро-сводки, №309)."""
+    return [line[2:].strip() for line in text.splitlines() if _COTHINKING_LINE.match(line)]
+
+
 def _derive_extras(folder: pathlib.Path):
     """Производные файлы: Тезисы.md и Вопросы и ответы.md из уже скопированных."""
     tr = folder / "Стенограмма.md"
     if tr.exists():  # тезисы ко-мышления: строки «> HH:MM 📌/💎/💭/🔬 …»
-        notes = [line[2:].strip() for line in tr.read_text(encoding="utf-8").splitlines()
-                 if line.startswith("> ") and re.search(r"[📌💎💭🔬]", line)]
-        if notes:
+        notes = cothinking_notes(tr.read_text(encoding="utf-8"))
+        # существующие тезисы не переписываем: LLM-тезисы retro_fill с паспортом
+        # затирались цитатами ко-мышления при каждом архивировании, и паспорт
+        # переставал совпадать с диском (Critical DS входного круга по №309)
+        if notes and not (folder / "Тезисы.md").exists():
             safe_write.write_text(folder / "Тезисы.md",
                 "# Тезисы встречи (📌 КТ · 💎 факты · 💭 мысли · 🔬 переоценка)\n\n"
                 + "\n".join(f"- {n}" for n in notes) + "\n")
@@ -724,7 +752,7 @@ def _derive_extras(folder: pathlib.Path):
                 qa.append("---")
             if qa[-1] == "---":
                 qa.pop()
-    if qa:
+    if qa and not (folder / "Вопросы и ответы.md").exists():   # тот же класс: не затирать готовое
         safe_write.write_text(folder / "Вопросы и ответы.md",
             "# Вопросы и ответы\n\n" + "\n".join(qa) + "\n")
 
