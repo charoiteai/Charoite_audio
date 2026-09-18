@@ -72,15 +72,31 @@ class Loss:
     невыразимо (Critical DS и Important GLM выходного круга по №235 — «канал
     перезапускается сам» о канале, который сторож больше не трогает).
     """
-    __slots__ = ("reason", "retriable", "died")
+    __slots__ = ("reason", "retriable", "died", "cause", "since")
 
-    def __init__(self, reason: str, *, retriable: bool, died: bool) -> None:
+    def __init__(self, reason: str, *, retriable: bool, died: bool, cause: str = "",
+                 since: float = 0.0) -> None:
         self.reason = reason
         self.retriable = retriable
         self.died = died
+        # повод, когда канал не жил: "start_error" (устройство есть, не
+        # открылось) или "missing" (канала нет вовсе) — совет выбирается по
+        # нему, а не по подстроке причины (Minor DS/GLM круга 2)
+        self.cause = cause
+        # момент постановки в реестр: кадр ПОСЛЕ него — канал ожил; при смене
+        # фазы (повторы → брошен) сохраняется, чтобы «без канала было N с»
+        # считалось от начала эпизода, а не от последнего объявления (M3 DS)
+        self.since = since
+
+    def phase(self) -> bool:
+        """Фаза, смена которой — новое событие для человека: канал ещё
+        пробуют перезапустить или уже бросили. От неё зависит совет; смена
+        «не захвачен → пропал» совет не меняет и звука не заслуживает
+        (сценарий «кричали на старте, потом сторож бросил» из теста №232)."""
+        return self.retriable
 
     def __repr__(self) -> str:                    # в логах и assert-ах тестов
-        return f"Loss({self.reason!r}, retriable={self.retriable}, died={self.died})"
+        return f"Loss({self.reason!r}, retriable={self.retriable}, died={self.died}, cause={self.cause!r})"
 
 
 def _fresh_manifest(path: pathlib.Path, *keys: str) -> dict | None:
@@ -558,7 +574,6 @@ class AudioHub:
         # потерю уже звенели: уведомление — одно на потерю канала, строка
         # статуса — при каждой смене состава.
         self._lost: dict[str, Loss] = {}
-        self._lost_since: dict[str, float] = {}   # момент постановки: кадр ПОСЛЕ него — канал ожил
         self._warned: set[str] = set()
         self._mode = mode                          # `device` из конфига: намеренный один канал ≠ авария (DS M4)
         self._fail_streak: dict[str, int] = {}   # неудачные рестарты подряд по каналу
@@ -583,7 +598,8 @@ class AudioHub:
         # повод старта без открывшегося устройства — не «перезапустим»: сторож
         # канала, которого нет в captures, не увидит; при отказе открытия и
         # зависании — тоже нет повторных попыток
-        self._announce_losses({"blackhole": Loss(reason, retriable=retrying, died=bool(died))})
+        cause = "" if died else ("start_error" if start_error else "missing")
+        self._announce_losses({"blackhole": Loss(reason, retriable=retrying, died=bool(died), cause=cause)})
 
     def _system_loss(self, *, sck_missing: bool = False, bh_missing: bool = False,
                      start_error: str | None = None, died: str | None = None) -> str:
@@ -654,8 +670,8 @@ class AudioHub:
     def _ensure_loss_state(self) -> None:
         """Хаб без конструктора (тесты через object.__new__) полей реестра не
         знает — завести пустые, а не падать AttributeError (Minor DS r2)."""
-        for name, empty in (("_lost", dict), ("_lost_since", dict), ("_warned", set),
-                            ("_fail_streak", dict), ("_hung", set), ("_last_frame", dict)):
+        for name, empty in (("_lost", dict), ("_warned", set), ("_fail_streak", dict),
+                            ("_hung", set), ("_restarting", set), ("_last_frame", dict), ("_last_try", dict)):
             if not hasattr(self, name):
                 setattr(self, name, empty())
         if not hasattr(self, "_scream_count"):
@@ -715,7 +731,11 @@ class AudioHub:
                 return ("Проверьте, на месте ли микрофон или наушники; запись не прерывайте — "
                         "канал перезапускается сам, предупреждение снимется.")
             if loss.died:
-                return "Микрофон потерян до конца встречи — остановите и запустите запись заново."
+                # без «до конца встречи»: детектор по кадрам умеет снять потерю,
+                # если зависший поток отлип (M3 GLM); без «не прерывайте»:
+                # повторных попыток сторож не делает (Critical DS круга 1)
+                return ("Микрофон потерян — проверьте устройство; не вернулся за минуту — "
+                        "остановите и запустите запись заново.")
             return "Микрофон не открылся — проверьте устройство и запустите запись ещё раз."
         if loss.retriable:
             # ветка повторов канал не бросает — совет «перезапустите» тут
@@ -724,16 +744,16 @@ class AudioHub:
                     "минут — остановите и запустите запись заново.")
         if loss.died:
             return "Канал собеседников отвалился во время встречи — остановите и запустите запись заново."
-        if "не открылся при старте" in loss.reason:
+        if loss.cause == "start_error":
             # при отказе открытия право «Запись экрана» в порядке, и посылать
             # человека в настройки TCC — ложный адрес (Important DS и GLM r1 по #537)
             return "Устройство собеседников не открылось — освободите его и запустите запись ещё раз."
         return "Проверьте право «Запись экрана»."
 
     def _announce_loss(self, label: str, reason: str, *, died: bool = True,
-                       retriable: bool = False) -> None:
+                       retriable: bool = False, cause: str = "") -> None:
         """Один канал не пишет — см. `_announce_losses`."""
-        self._announce_losses({label: Loss(reason, retriable=retriable, died=died)})
+        self._announce_losses({label: Loss(reason, retriable=retriable, died=died, cause=cause)})
 
     def _announce_losses(self, losses: dict[str, "Loss"]) -> None:
         """Каналы `losses` (метка -> Loss) не пишут: запомнить все, потом
@@ -748,12 +768,26 @@ class AudioHub:
         import subprocess
 
         self._ensure_loss_state()
-        fresh = [lbl for lbl in losses if lbl not in self._warned]
+        if len({v.died for v in losses.values()}) > 1:
+            # фаза у пачки одна — иначе глагол и текст врали бы половине каналов;
+            # лучше громко, чем молча (M2 DS круга 2)
+            raise ValueError("потери одного объявления обязаны быть одной фазы")
         now = time.time()
-        for lbl in losses:
-            # момент постановки: кадр, пришедший ПОСЛЕ него, — канал ожил
-            # (Important GLM: оживший мимо сторожа канал сидел в реестре навсегда)
-            self._lost_since[lbl] = max(now, self._last_frame.get(lbl, 0.0))
+        # событие — не «метка появилась», а «значение изменилось»: канал,
+        # который пробовали перезапустить (звук «не прерывайте»), а потом
+        # бросили, обязан прозвучать снова — совет стал требовать действия
+        # (Important DS и GLM круга 2). Момент постановки при смене фазы
+        # сохраняется: «без канала было N с» — от начала эпизода (M3 DS)
+        fresh = []
+        for lbl, loss in losses.items():
+            prev = self._lost.get(lbl)
+            if prev is None:
+                # кадр ПОСЛЕ этого момента — канал ожил (Important GLM круга 1)
+                loss.since = max(now, self._last_frame.get(lbl, 0.0))
+            else:
+                loss.since = prev.since
+            if lbl not in self._warned or (prev is not None and prev.phase() != loss.phase()):
+                fresh.append(lbl)
         self._lost.update(losses)
         died = all(v.died for v in losses.values())
         mark, what, banner_what = self._carrier(died=died)
@@ -815,7 +849,6 @@ class AudioHub:
         крика (Important GLM выходного круга)."""
         self._ensure_loss_state()
         self._lost.pop(label, None)
-        self._lost_since.pop(label, None)
         self._warned.discard(label)          # следующая потеря этого канала кричит заново
         self._fail_streak.pop(label, None)
         self._hung.discard(label)
@@ -922,7 +955,7 @@ class AudioHub:
         # на всех: грейс приложения до terminate — секунды.
         # getattr: хабы без конструктора (тесты через object.__new__) этих полей не
         # заводят — stop() обязан работать и у них (CI по #557: test_audio_buffer_drop)
-        skip = getattr(self, "_hung", set()) | getattr(self, "_restarting", set())
+        skip = {c.label for c in self.captures if self._busy(c.label)}
         workers = [(c, threading.Thread(target=self._quiet_stop, args=(c,), daemon=True,
                                         name=f"stop-{c.label}"))
                    for c in self.captures if c.label not in skip]
@@ -1280,6 +1313,7 @@ class AudioHub:
         виснет, а зависание не ловится через try/except.
         """
         box: dict = {}
+        restarting = getattr(self, "_restarting", None)
 
         def run():
             try:
@@ -1287,9 +1321,15 @@ class AudioHub:
                 box["ok"] = True
             except Exception as e:  # noqa: BLE001 — доносим наружу как значение
                 box["err"] = e
+            finally:
+                # метку «рестарт в полёте» снимает сам поток, когда вернулся из
+                # close/open — сколько бы он ни висел: иначе канал, чей зависший
+                # рестарт отлип и кадры пошли, оставался «в полёте» навсегда, и
+                # stop() пропускал его хвост молча (Important DS круга 2 по №235)
+                if restarting is not None:
+                    restarting.discard(c.label)
 
         worker = threading.Thread(target=run, daemon=True, name=f"restart-{c.label}")
-        restarting = getattr(self, "_restarting", None)
         if restarting is not None:
             restarting.add(c.label)
         try:
@@ -1299,8 +1339,6 @@ class AudioHub:
                 restarting.discard(c.label)
             return exc                        # контракт функции — исход значением, не броском (GLM M4)
         worker.join(self.RESTART_TIMEOUT)
-        if restarting is not None and not worker.is_alive():
-            restarting.discard(c.label)   # завис — остаётся «в полёте», stop() его не тронет
         if worker.is_alive():
             # Поток бросаем: убить его нельзя, но он daemon и уйдёт с процессом.
             return TimeoutError(f"перезапуск не вернулся за {self.RESTART_TIMEOUT:.0f}с")
@@ -1316,7 +1354,7 @@ class AudioHub:
         self._ensure_loss_state()                 # хаб без конструктора (object.__new__) — Minor DS r2
         # потери этого прохода: метка -> (почему, канал ещё пробуем). Объявляются
         # РАЗОМ после цикла — носитель считается по полному составу (C2 DS по №235)
-        lost_now: dict[str, tuple[str, bool]] = {}
+        lost_now: dict[str, Loss] = {}
         try:
             self._sweep(now, lost_now)
         finally:
@@ -1324,28 +1362,30 @@ class AudioHub:
             # иначе канал уже в _hung, в реестре его нет, и о потере не узнает
             # никто и никогда (Important DS выходного круга по №235)
             if lost_now:
-                self._announce_sweep(lost_now)
+                self._announce_losses(lost_now)
 
-    def _sweep(self, now: float, lost_now: dict[str, tuple[str, bool]]) -> None:
+    def _sweep(self, now: float, lost_now: dict[str, Loss]) -> None:
         """Один проход сторожа по каналам: оживление по факту кадров, перезапуск
         молчащих, накопление потерь прохода в `lost_now`."""
         for c in self.captures:
             msg = None
-            last = self._last_frame.get(c.label, now)
-            since = self._lost_since.get(c.label)
-            if c.label in self._lost and since is not None and last > since:
+            loss = self._lost.get(c.label)
+            last = self._last_frame.get(c.label, 0.0)
+            if loss is not None and last > loss.since:
                 # кадр пришёл ПОСЛЕ постановки в реестр — канал пишет, каким бы
                 # путём он ни ожил (зависший restart() отлип, устройство
                 # вернулось): детектор — факт кадра, а не исход рестарта
-                # (Important GLM выходного круга по №235)
-                msg = self._announce_back(c.label, last - since)
+                # (Important GLM выходного круга по №235). Без возраста
+                # (канала нет в _last_frame) оживления нет — иначе метка
+                # оживала бы мгновенно и ложно
+                msg = self._announce_back(c.label, last - loss.since)
                 self._emit(msg)
                 continue
-            silent = now - last
+            silent = now - self._last_frame.get(c.label, now)
             if silent < 30:
                 continue
-            if c.label in self._hung:
-                continue        # перезапуск этого канала уже завис — не трогаем повторно
+            if self._busy(c.label):
+                continue        # перезапуск этого канала завис или в полёте — не трогаем повторно
             if now - self._last_try.get(c.label, 0.0) < 30:
                 continue        # анти-шторм: между попытками — пауза, но возраст честный
             self._last_try[c.label] = now
@@ -1373,7 +1413,8 @@ class AudioHub:
                 # он получал «канал отключён — встреча пишется остальными», хотя
                 # остальных могло и не быть. Крик запускает Popen без ожидания —
                 # конвейер _pump это не задерживает (№232).
-                lost_now[c.label] = (f"перезапуск завис после {int(silent)}с без кадров", False)
+                lost_now[c.label] = self._loss_of(c, f"перезапуск завис после {int(silent)}с без кадров",
+                                                  retriable=False)
                 msg = None                    # причина уйдёт криком, не дважды (как в start)
             else:
                 n = self._fail_streak[c.label] = self._fail_streak.get(c.label, 0) + 1
@@ -1385,7 +1426,8 @@ class AudioHub:
                 # канала, дальше ждать нечего. Канал не бросаем: поток может
                 # ожить, и тогда ветка выше снимет строку
                 if n >= 2 and c.label not in self._lost:
-                    lost_now[c.label] = (f"рестарт не удался {n} раза подряд: {outcome}", True)
+                    lost_now[c.label] = self._loss_of(c, f"рестарт не удался {n} раза подряд: {outcome}",
+                                                      retriable=True)
                     msg = None
             if outcome is None:
                 # Возраст кадров сбрасываем ТОЛЬКО при удачном перезапуске.
@@ -1406,26 +1448,30 @@ class AudioHub:
             except Exception:  # noqa: BLE001
                 pass
 
-    def _announce_sweep(self, lost_now: dict[str, tuple[str, bool]]) -> None:
-        """Потери одного прохода сторожа — одним объявлением. Причина
-        собеседников — с хвостом capture.log (_system_loss); микрофона — исход
-        рестарта и секунды тишины; хвост лога и микрофону, если он идёт тем же
-        потоком ScreenCaptureKit (TapStreamCapture): его диагностика живёт в
-        том же capture.log (критика GLM выходного круга)."""
-        losses: dict[str, Loss] = {}
-        by_label = {c.label: c for c in self.captures}
-        for label, (why, again) in lost_now.items():
-            if label == "blackhole":
-                reason = self._system_loss(died=why)
-            else:
-                reason = f"канал {label}: {why}" + ("; пробуем перезапустить каждые полминуты"
-                                                    if again else ", канал отключён")
-                if isinstance(by_label.get(label), TapStreamCapture):
-                    tail = self._capture_log_tail()
-                    if tail:
-                        reason += f"; последняя строка capture.log: {tail}"
-            losses[label] = Loss(reason, retriable=again, died=True)
-        self._announce_losses(losses)
+    def _busy(self, label: str) -> bool:
+        """Канал нельзя трогать: перезапуск завис (`_hung`) или ещё в полёте
+        (`_restarting`). Один предикат на сторож и stop() — раньше сторож
+        смотрел одно множество, stop() — оба (I1 DS круга 2)."""
+        # getattr: хабы без конструктора (тесты через object.__new__) полей не заводят
+        return label in getattr(self, "_hung", set()) or label in getattr(self, "_restarting", set())
+
+    def _loss_of(self, c, why: str, *, retriable: bool) -> Loss:
+        """Значение потери канала посреди встречи — формируется в момент
+        потери, не в компоновщике (критика DS круга 2: признаки ехали
+        позиционным кортежем). Причина собеседников — с хвостом capture.log
+        (_system_loss); микрофона — исход рестарта и секунды тишины; хвост лога
+        и микрофону, если он идёт тем же потоком ScreenCaptureKit
+        (TapStreamCapture) и собеседники в этом проходе не потеряны — иначе
+        один хвост склеился бы в строку дважды (M4 GLM круга 2)."""
+        if c.label == "blackhole":
+            return Loss(self._system_loss(died=why), retriable=retriable, died=True)
+        reason = f"канал {c.label}: {why}" + ("; пробуем перезапустить каждые полминуты"
+                                                if retriable else ", канал отключён")
+        if isinstance(c, TapStreamCapture) and "blackhole" not in self._lost:
+            tail = self._capture_log_tail()
+            if tail:
+                reason += f"; последняя строка capture.log: {tail}"
+        return Loss(reason, retriable=retriable, died=True)
 
     BUF_CAP_S = 60            # сколько живого звука держим в памяти на канал
 

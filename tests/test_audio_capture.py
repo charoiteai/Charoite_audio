@@ -36,7 +36,6 @@ def _hub(sr=16000, chunk_s=3.0, overlap_s=0.5, vad_db=-45.0):
     # иначе тест падает на AttributeError вместо проверки поведения.
     hub._hung = set()
     hub._lost = {}          # реестр потерь по метке канала (№235) — вместо двух флагов про собеседников
-    hub._lost_since = {}
     hub._warned = set()
     hub._mode = "auto"
     hub._fail_streak = {}
@@ -1334,7 +1333,8 @@ def test_смерть_канала_собеседников_после_стар�
         hub = _hub()
         hub.captures = [_Dead(lbl) for lbl in labels]
         if warned:                      # уже кричали о собеседниках на старте
-            hub._lost = {"blackhole": "не открылся при старте"}
+            hub._lost = {"blackhole": a.Loss("не открылся при старте", retriable=False, died=False,
+                                              cause="start_error", since=a.time.time())}
             hub._warned = {"blackhole"}
         hub.said = []
         hub.on_status = hub.said.append
@@ -1542,14 +1542,32 @@ def test_потеря_канала_одно_событие_на_любой_ка�
 
     # --- Important GLM: канал ожил мимо сторожа — кадр после постановки снимает потерю ---
     revive = hub_of(["blackhole", "mic"])
+    revive._restarting = set()
     tick(revive, {"mic"}, TimeoutError("не вернулся за 5с"))          # микрофон в _hung и в реестре
-    assert revive._hung == {"mic"} and "mic" in revive._lost and "mic" in revive._lost_since
-    revive._last_frame["mic"] = revive._lost_since["mic"] + 3           # зависший restart отлип — кадры пошли
+    assert revive._hung == {"mic"} and "mic" in revive._lost and revive._lost["mic"].since > 0
+    revive._restarting.add("mic")                                       # зависший поток ещё «в полёте»
+    revive._last_frame["mic"] = revive._lost["mic"].since + 3           # зависший restart отлип — кадры пошли
     revive._last_check = 0.0
     monkeypatch.setattr(revive, "_restart_guarded", lambda c: (_ for _ in ()).throw(AssertionError("рестарт не нужен")))
     revive._watch_streams()
     assert not revive._lost and "mic" not in revive._hung, (revive._lost, revive._hung)
     assert any(rt.OWNER_MIC_BACK in m for m in revive.said), "оживление по факту кадров, а не по исходу рестарта"
+    # метку «в полёте» снимает сам поток рестарта (finally в run) — здесь поток поддельный,
+    # поэтому проверяем контракт stop(): один предикат занятости на сторож и стоп
+    assert revive._busy("mic") and not revive._busy("blackhole")
+
+    # --- Important DS/GLM круга 2: смена фазы потери звучит заново, момент эпизода сохраняется ---
+    phase = hub_of(["blackhole", "mic"])
+    tick(phase, {"mic"}, err); tick(phase, {"mic"}, err)                # повторы: «не прерывайте»
+    n_calls = len(calls)
+    since0 = phase._lost["mic"].since
+    assert phase._lost["mic"].retriable and "не прерывайте" in calls[-1][0][0][-1]
+    tick(phase, {"mic"}, TimeoutError("не вернулся за 5с"))           # бросили: совет требует действия
+    assert phase._lost["mic"].retriable is False and phase._lost["mic"].since == since0, \
+        "момент постановки — от начала эпизода, а не от переобъявления (M3 DS)"
+    assert len(calls) == n_calls + 1 and "остановите и запустите запись заново" in calls[-1][0][0][-1], \
+        "смена фазы — новое событие: человек слышал «не прерывайте», теперь нужно действие"
+    assert "до конца встречи" not in calls[-1][0][0][-1], "финальность не обещаем — канал может ожить (M3 GLM)"
 
     # --- Important DS: исключение на соседнем канале не глотает накопленную потерю ---
     boom = hub_of(["blackhole", "mic"])
@@ -1573,8 +1591,7 @@ def test_потеря_канала_одно_событие_на_любой_ка�
     quiet = hub_of(["blackhole", "mic"])
     quiet._announce_loss("mic", "тест")
     assert "mic" in quiet._lost and any(rt.OWNER_MIC_LOST in m for m in quiet.said)
-    monkeypatch.undo() if False else None
-    monkeypatch.setattr(a.sys, "stderr", __import__("sys").__stderr__)
+    monkeypatch.setattr(a.sys, "stderr", __import__("sys").stderr)     # обратно на захват pytest
 
     # --- Minor DS: device: mic — один канал выбран намеренно, о собеседниках ни слова ---
     solo = hub_of(["mic"])
