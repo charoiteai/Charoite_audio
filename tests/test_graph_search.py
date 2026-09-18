@@ -823,34 +823,79 @@ def test_the_index_generation_is_published_in_one_piece(tmp_path):
     assert s.search("старое", limit=3) is not None, "поиск упал на чужом поколении"
 
 
+def _lock_guarded_reads(fn: ast.FunctionDef, attr: str) -> tuple[int, int]:
+    """(чтений `self.<attr>` в функции, из них под `with self._lock`).
+
+    Обход рекурсивный, с флагом вложенности: `ast.walk` теряет, ВНУТРИ чего
+    лежит узел, а три круга назад ломалось именно место чтения, не число."""
+    total = guarded = 0
+
+    def guards_lock(node: ast.With) -> bool:
+        return any(isinstance(it.context_expr, ast.Attribute) and it.context_expr.attr == "_lock"
+                   and isinstance(it.context_expr.value, ast.Name) and it.context_expr.value.id == "self"
+                   for it in node.items)
+
+    def visit(node: ast.AST, inside: bool) -> None:
+        nonlocal total, guarded
+        if isinstance(node, ast.Attribute) and node.attr == attr and isinstance(node.ctx, ast.Load) \
+                and isinstance(node.value, ast.Name) and node.value.id == "self":
+            total += 1
+            guarded += inside
+        here = inside or (isinstance(node, ast.With) and guards_lock(node))
+        for child in ast.iter_child_nodes(node):
+            visit(child, here)
+
+    for stmt in fn.body:
+        visit(stmt, False)
+    return total, guarded
+
+
 def test_the_generation_is_written_only_by_publish_from_a_base():
-    """`_gen` после инициализации пишет одна операция, и ей нужна основа.
+    """`_gen` после инициализации пишет одна операция, ей нужна основа, и
+    основа — текущее поколение.
 
     Три круга подряд (5, 6, 7 по №292) ловили один и тот же класс в разных
     ветках `_walk`: основа читалась в одном месте, решение принималось по ней,
     а публиковалась производная от другого чтения поля. Проза шапки про
-    «всегда под замком» дважды оказывалась ложной. Здесь проверяется ФОРМА,
-    а не гонка: присваиваний `self._gen` в модуле ровно два — `__init__` и
-    `_publish`; у `_publish` основа — позиционный аргумент без умолчания;
-    обход читает поле один раз."""
-    tree = ast.parse(inspect.getsource(gs))
+    «всегда под замком» дважды оказывалась ложной. Здесь проверяется ФОРМА, а
+    не гонка: присваиваний `self._gen` в модуле ровно два — `__init__` и
+    `_publish`, обходных записей (`setattr`, `__dict__`) нет; у `_publish`
+    основа — позиционный аргумент без умолчания; обход читает поле не больше
+    одного раза, и если читает — под `with self._lock` (круг 8: считать
+    число чтений мало, ломалось место). Плюс поведение: публикация от чужой
+    основы — ошибка, а не молчаливый откат чужой правки."""
+    src = inspect.getsource(gs)
+    tree = ast.parse(src)
     writers = []
-    readers_in_walk = 0
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.FunctionDef):
             continue
         for node in ast.walk(fn):
-            if isinstance(node, ast.Attribute) and node.attr == "_gen" \
+            if isinstance(node, ast.Attribute) and node.attr == "_gen" and isinstance(node.ctx, ast.Store) \
                     and isinstance(node.value, ast.Name) and node.value.id == "self":
-                if isinstance(node.ctx, ast.Store):
-                    writers.append(fn.name)
-                elif fn.name == "_walk":
-                    readers_in_walk += 1
+                writers.append(fn.name)
+        if fn.name == "_walk":
+            total, guarded = _lock_guarded_reads(fn, "_gen")
+            assert total <= 1, f"обход читает поле {total} раз(а), основа снимается один раз"
+            assert guarded == total, "обход читает основу вне `with self._lock`"
     assert sorted(writers) == ["__init__", "_publish"], f"`_gen` пишут ещё где-то: {writers}"
-    assert readers_in_walk == 1, f"обход читает поле {readers_in_walk} раз(а), основа должна сниматься один раз"
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and node.value == "_gen":
+            raise AssertionError("к `_gen` обращаются строкой (setattr/__dict__) — обход гейта")
     base = inspect.signature(gs.GraphSearch._publish).parameters["base"]
     assert base.default is inspect.Parameter.empty, "у публикации появилась основа по умолчанию"
     assert base.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    # поведение: устаревшая основа не публикуется
+    s = gs.GraphSearch.__new__(gs.GraphSearch)
+    s._lock = __import__("threading").RLock()
+    s._vecs = {}
+    s._gen = gs.Generation({}, {}, gs.LinkCatalog([]))
+    stale = gs.Generation({}, {}, gs.LinkCatalog([]))
+    with pytest.raises(RuntimeError):
+        s._publish(stale, skipped=("x",))
+    live = s._gen
+    s._publish(live, skipped=("x",))
+    assert s._gen.skipped == ("x",) and s._gen is not live
 
 
 def test_a_broken_stub_chain_gives_nobody_a_vote():
