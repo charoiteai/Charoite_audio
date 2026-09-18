@@ -43,6 +43,17 @@ ANSWER = "⚡"
 KINDS = {SAY: "say", DECISION: "decision", QUESTION: "question",
          ARCHIVE: "archive", THOUGHT: "thought", ANSWER: "answer"}
 
+# Событие записи (канал пропал / вернулся / дыра) — строка нити вида `system`
+# (№234). Знак — в таблице РЕНДЕРА, а не в KINDS: KINDS — протокол разбора
+# ответа модели (`ingest`), и знак в нём разрешил бы суммаризатору вливать
+# «системные» строки, неотличимые от настоящих (Important GLM входного круга).
+WARN = "⚠️"
+SYSTEM = "system"
+RENDER_MARK = {kind: mark for mark, kind in KINDS.items()}     # system — без знака рендера: он в тексте
+# виды, которые облачная доводка НЕ правит: событие записи и факт из графа —
+# не утверждение модели, переписывать их нечем (Important DS входного круга)
+UNEDITABLE = frozenset({SYSTEM, "archive"})
+
 # Насколько строки должны совпасть, чтобы считаться повтором. 0.82 — компромисс
 # из наблюдений: модель переписывает одну мысль другими словами чаще, чем
 # рождает две действительно похожих.
@@ -101,7 +112,9 @@ class Line:
     speaker: str = ""
 
     def render(self, show_speaker: bool = True) -> str:
-        mark = next((m for m, k in KINDS.items() if k == self.kind), SAY)
+        if self.kind == SYSTEM:
+            return f"  {self.text}"        # событие записи несёт свой знак (⚠️ / ✅) в тексте
+        mark = RENDER_MARK.get(self.kind, SAY)
         pad = "    " if self.kind == "say" else "  "
         stamp = f"    {self.at}" if self.at and self.kind == "decision" else ""
         head = f"{self.speaker}: " if self.speaker and show_speaker else ""
@@ -182,6 +195,20 @@ class Thread:
             if self.knows(text):
                 return False
             topic.lines.append(Line(kind=kind, text=text, at=at, speaker=speaker))
+            return True
+
+    def add_system(self, text: str, at: str = "") -> bool:
+        """Событие записи — строкой нити без дедупа: два одинаковых «канал
+        пропал» — два события, не повтор мысли (`knows` — правило про
+        УТВЕРЖДЕНИЯ; Important DS и GLM входного круга по №234). Время — в
+        тексте: рендер показывает штамп только у решений."""
+        text = text.strip()
+        if not text:
+            return False
+        with self._mutex:
+            if not self.topics:
+                self.open_topic("Разговор", at)
+            self.topics[-1].lines.append(Line(kind=SYSTEM, text=text, at=at))
             return True
 
     def knows(self, text: str) -> bool:
@@ -329,6 +356,8 @@ class Thread:
         for exact in (True, False):
             for topic in reversed(self.topics):
                 for line in reversed(topic.lines):
+                    if line.kind in UNEDITABLE:
+                        continue          # событие записи облако не переписывает (№234)
                     clean = _norm(re.sub(r"==", "", line.text))
                     if (clean == probe) if exact else _same_norm(probe, clean):
                         return line
