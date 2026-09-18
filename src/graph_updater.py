@@ -1560,15 +1560,15 @@ def _resolved_gone(node: pathlib.Path, meeting_link: str) -> None:
     print(f"граф: «{node.stem}» — узел по решённому пути исчез, встреча {meeting_link} не дописана")
 
 
-def _entity_new_text(title: str, typ: str, desc: str, day: str, stamp: str) -> str:
+def _entity_new_text(title: str, typ: str, desc: str, day: str, meeting_line: str) -> str:
     """Текст нового узла сущности: шапка, заголовок, описание, дата, «## Встречи»."""
     return (f"---\ntype: {typ}\ntags: [встречи, авто]\n---\n# {title}\n"
             + (f"{desc}\n\n" if desc else "\n")   # без описания — одна пустая, как на всех остальных путях
             + (f"_(последнее упоминание: {day})_\n\n" if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) else "")
-            + f"## Встречи\n{stamp}\n")
+            + f"## Встречи\n{meeting_line}\n")
 
 
-def _stamp_entity(text: str, stamp: str, desc: str, meeting_link: str, day: str,
+def _stamp_entity(text: str, meeting_line: str, desc: str, meeting_link: str, day: str,
                   label: str, events: list[tuple[str, str]]) -> tuple[str, int]:
     """Преобразование существующего узла под гейтом rewrite_file: ссылка на встречу
     уже есть — менять нечего; заглушкой стал под рукой — не пишем; иначе описание
@@ -1591,17 +1591,17 @@ def _stamp_entity(text: str, stamp: str, desc: str, meeting_link: str, day: str,
         events.append(event)
     m = re.compile(r"^## Встречи[ \t]*$", re.M).search(text, _body_at(text))
     if m:
-        text = text[:m.end()] + f"\n{stamp}" + text[m.end():]
+        text = text[:m.end()] + f"\n{meeting_line}" + text[m.end():]
     else:
         am = re.compile(r"^## Архив хроники[ \t]*$", re.M).search(text, _body_at(text))
         if am:
-            text = text[:am.start()] + f"## Встречи\n{stamp}\n\n" + text[am.start():]
+            text = text[:am.start()] + f"## Встречи\n{meeting_line}\n\n" + text[am.start():]
         else:
-            text += f"\n## Встречи\n{stamp}\n"
+            text += f"\n## Встречи\n{meeting_line}\n"
     return _touch_last_seen(text, day), 1
 
 
-def _write_entity(p: pathlib.Path, stamp: str, desc: str, meeting_link: str, day: str) -> None:
+def _write_entity(p: pathlib.Path, meeting_line: str, desc: str, meeting_link: str, day: str) -> None:
     """Строка встречи в СУЩЕСТВУЮЩИЙ узел — только через гейт потери обновления
     (rewrite_file: снимок до чтения, две попытки; файла нет — LostRace.GONE, а не
     создание). Раньше ветка читала узел и писала write_text без expect: узел,
@@ -1612,7 +1612,7 @@ def _write_entity(p: pathlib.Path, stamp: str, desc: str, meeting_link: str, day
     label = f"{p.parent.name}/{p.stem}"
     events: list[tuple[str, str]] = []
     try:
-        safe_write.rewrite_file(p, lambda t: _stamp_entity(t, stamp, desc, meeting_link, day, label, events),
+        safe_write.rewrite_file(p, lambda t: _stamp_entity(t, meeting_line, desc, meeting_link, day, label, events),
                                 "встреча в узел")
     except safe_write.LostRace as exc:
         _journal_graph_event("встреча в узел не дописана", f"{label}: {exc.reason}", meeting_link)
@@ -1628,13 +1628,13 @@ def _write_entity(p: pathlib.Path, stamp: str, desc: str, meeting_link: str, day
         _journal_graph_event(kind, what, meeting_link)
 
 
-def _create_entity(p: pathlib.Path, title: str, typ: str, desc: str, day: str, stamp: str,
+def _create_entity(p: pathlib.Path, title: str, typ: str, desc: str, day: str, meeting_line: str,
                    meeting_link: str) -> None:
     """Новый узел — с гейтом «файла не было»: появился в окне между проверкой и
     записью (параллельный писатель графа) — дописываем в него как в
     существующий, а не затираем прочитанным."""
-    if not safe_write.write_text(p, _entity_new_text(title, typ, desc, day, stamp), expect_absent=True):
-        _write_entity(p, stamp, desc, meeting_link, day)
+    if not safe_write.write_text(p, _entity_new_text(title, typ, desc, day, meeting_line), expect_absent=True):
+        _write_entity(p, meeting_line, desc, meeting_link, day)
 
 
 def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
@@ -1655,7 +1655,7 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         d = graph / folder
         d.mkdir(parents=True, exist_ok=True)
         p = d / f"{safe_name(name)}.md"
-    stamp = f"- [[{meeting_link}]] — {contrib}" if contrib else f"- [[{meeting_link}]]"
+    meeting_line = f"- [[{meeting_link}]] — {contrib}" if contrib else f"- [[{meeting_link}]]"
     # Прочерк любого вида от модели — не описание, ни в новом узле, ни в
     # старом: иначе следующая встреча вытесняла бы «–» строкой хроники с
     # фиктивным «было» (Important DS r3 по #539)
@@ -1672,7 +1672,7 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
             # папке псевдонима (круг 3, DS M1 / GLM M2; круг 4, DS I3)
             _resolved_gone(node, meeting_link)
             return
-        _create_entity(p, name, typ, desc, day, stamp, meeting_link)
+        _create_entity(p, name, typ, desc, day, meeting_line, meeting_link)
         return
     text = _read_node(p, meeting_link)
     if text is None:
@@ -1695,9 +1695,9 @@ def upsert_entity(graph: pathlib.Path, folder: str, name: str, typ: str,
         _journal_graph_event("узел по цели заглушки", f"{p.parent.name}/{p.stem} → {alt.parent.name}/{alt.stem}", meeting_link)
         p = alt
         if not p.exists():
-            _create_entity(p, p.stem, typ, desc, day, stamp, meeting_link)
+            _create_entity(p, p.stem, typ, desc, day, meeting_line, meeting_link)
             return
-    _write_entity(p, stamp, desc, meeting_link, day)
+    _write_entity(p, meeting_line, desc, meeting_link, day)
 
 
 _LAST_SEEN_RE = re.compile(r"^_\(последнее упоминание: (\d{4}-\d{2}-\d{2})\)_[ \t]*\r?$", re.M)
